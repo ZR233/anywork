@@ -4,6 +4,7 @@ import 'package:anywork_client/studio_client.dart' show CloseReport;
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter/scheduler.dart';
 
 import '../infrastructure/frb/studio_api.dart';
 import '../domain/models/studio_models.dart';
@@ -199,6 +200,8 @@ class StudioExitCoordinator {
     this.onFailure,
     this.shutdownOverride,
     this.closeClient,
+    this.readyUpdateVersion,
+    this.onBeginExit,
   });
 
   final StudioTransport _api;
@@ -210,6 +213,10 @@ class StudioExitCoordinator {
   /// 注入式清理（测试/自定义），成功即视为 Clean；默认走 [runStudioShutdown]。
   final Future<void> Function()? shutdownOverride;
   final Future<CloseReport> Function(DateTime deadline)? closeClient;
+  final String? Function()? readyUpdateVersion;
+  final void Function(String? version, bool restart)? onBeginExit;
+  StudioExitIntent? _intent;
+  bool _updateNotice = false;
 
   static StudioExitCoordinator? _active;
 
@@ -225,7 +232,7 @@ class StudioExitCoordinator {
   // 只复用该期限，绝不复位、绝不延长。
   Stopwatch? _exitClock;
   int _exitAnchorRemainingMs = 0;
-  Future<StudioShutdownReport>? _cleanup;
+  Future<StudioExitReport>? _cleanup;
   Future<StudioShutdownReport>? _cleanupOnlyFuture;
   Future<void>? _arming;
 
@@ -237,10 +244,13 @@ class StudioExitCoordinator {
   }
 
   /// 请求退出：重复调用共享同一条 future 与同一条 native 期限。
-  static Future<void> requestExit() {
+  static Future<void> requestExit({
+    StudioExitIntent intent = StudioExitIntent.exit,
+    String? updateVersion,
+  }) {
     final active = _active;
     if (active == null) return Future<void>.value();
-    return active._requestExit();
+    return active._requestExit(intent: intent, updateVersion: updateVersion);
   }
 
   static Future<StudioShutdownReport> cleanupActive() {
@@ -256,11 +266,12 @@ class StudioExitCoordinator {
       _cleanupOnlyFuture ??= _cleanupOnly();
 
   Future<StudioShutdownReport> _cleanupOnly() async {
+    _intent ??= StudioExitIntent.exit;
     final budget = await _armAndComputeBudget();
     // 清理必须有总上限：即使桥不返回，也按同一绝对期限截断为 Degraded。
     StudioShutdownReport report;
     try {
-      report = await _runCleanupBounded(budget);
+      report = (await _runCleanupBounded(budget)).shutdown;
     } on Object catch (error, stackTrace) {
       // 同一次失败只在报出 issue 的地方生成一次 correlation，并配套脱敏同步诊断。
       final correlationId = _correlationFor(error);
@@ -294,7 +305,18 @@ class StudioExitCoordinator {
     return report;
   }
 
-  Future<void> _requestExit() {
+  Future<void> _requestExit({
+    StudioExitIntent intent = StudioExitIntent.exit,
+    String? updateVersion,
+  }) {
+    final running = _exitFuture;
+    if (running != null) return running;
+    _intent ??= intent;
+    final completed = Completer<void>();
+    _exitFuture = completed.future;
+    final version = updateVersion ?? readyUpdateVersion?.call();
+    _updateNotice = version != null;
+    onBeginExit?.call(version, _intent == StudioExitIntent.updateRestart);
     // 单一 shared future：重复退出 / dispose / driver 复用同一次收束，期限不刷新。
     StudioDriverState.markExitRequested();
     final hook = beforeExit;
@@ -309,21 +331,38 @@ class StudioExitCoordinator {
         debugPrint('studio_exit_before_exit_failed=$error\n$stackTrace');
       }
     }
-    final running = _exitFuture;
-    if (running != null) return running;
-    final attempt = _drive();
-    _exitFuture = attempt;
-    return attempt;
+    unawaited(
+      _drive().then(completed.complete, onError: completed.completeError),
+    );
+    return completed.future;
   }
 
   Future<void> _drive() async {
-    final budget = await _armAndComputeBudget();
+    var budget = await _armAndComputeBudget();
+    if (_updateNotice) {
+      // Tray exit may start with a hidden window; reveal the existing host so
+      // the update notice is visible without extending the first exit deadline.
+      await _runBounded(
+        StudioHostLifecycle.showMainWindow,
+        _remainingDiagnosticsDuration(),
+      );
+      // Render the update notice before a fast cached handoff can end the GUI.
+      // A hidden screen cannot hold the fixed native exit deadline open.
+      await SchedulerBinding.instance.endOfFrame.timeout(
+        const Duration(milliseconds: 200),
+        onTimeout: () {},
+      );
+      budget = _remainingCleanupBudget();
+    }
     StudioShutdownReport report;
+    StudioUpdateHandoff handoff = const NoStudioUpdateHandoff();
     Object? failure;
     StackTrace? stackTrace;
     String? cleanupCorrelationId;
     try {
-      report = await _runCleanupBounded(budget);
+      final result = await _runCleanupBounded(budget);
+      report = result.shutdown;
+      handoff = result.updateHandoff;
     } on Object catch (error, stack) {
       failure = error;
       stackTrace = stack;
@@ -361,6 +400,38 @@ class StudioExitCoordinator {
     }
     StudioDriverState.publishShutdownReport(report);
     await _reportTerminalDiagnostics(report);
+    if (handoff case FailedStudioUpdateHandoff(:final code, :final message)) {
+      onFailure?.call(message);
+      reportedFailure = true;
+      await StudioHostLifecycle.updateExitDiagnostics(
+        stage: 'update',
+        code: code,
+        timeout: _remainingDiagnosticsDuration(),
+      );
+    }
+    if (!report.allowsCleanExit && !reportedFailure) {
+      onFailure?.call(_reportFailure(report));
+      reportedFailure = true;
+    }
+    if (reportedFailure && onFailure != null) {
+      // A failed save needs the same readable feedback as a failed launch.
+      // Both the frame and reading interval consume the first exit deadline.
+      var visible = _remainingDiagnosticsDuration();
+      if (visible > Duration.zero) {
+        await SchedulerBinding.instance.endOfFrame.timeout(
+          visible < const Duration(milliseconds: 200)
+              ? visible
+              : const Duration(milliseconds: 200),
+          onTimeout: () {},
+        );
+        visible = _remainingDiagnosticsDuration();
+        await Future<void>.delayed(
+          visible < const Duration(milliseconds: 1200)
+              ? visible
+              : const Duration(milliseconds: 1200),
+        );
+      }
+    }
     // 最终报告（含 Dart 订阅/stream 收束）不是可靠 Clean 时撤销安全 dispose，绝不
     // 在仍有订阅或事件循环占用时释放 RustLib 把正常关闭拖成 watchdog degraded。
     if (!report.allowsCleanExit) {
@@ -374,13 +445,15 @@ class StudioExitCoordinator {
     // 只有全部关闭报告（含 Dart 订阅 / 诊断清理）确认可靠后才发布终态 `Stopped`；
     // 早于 Dart 侧收束发布正是「伪 Stopped」的来源。
     if (report.isClean) {
-      _onProgress(const StoppedProgress());
+      if (handoff is! FailedStudioUpdateHandoff) {
+        _onProgress(const StoppedProgress());
+      }
       StudioDriverState.publishShutdownProgress(const StoppedProgress());
-    } else if (!report.allowsCleanExit && !reportedFailure) {
-      onFailure?.call(_reportFailure(report));
     }
     await StudioHostLifecycle.finishExit(
-      exitCode: report.allowsCleanExit ? 0 : 1,
+      exitCode: report.allowsCleanExit && handoff is! FailedStudioUpdateHandoff
+          ? 0
+          : 1,
       timeout: _remainingDiagnosticsDuration(),
     );
   }
@@ -429,27 +502,29 @@ class StudioExitCoordinator {
 
   /// 有界清理：按剩余预算截断；超时是真实的 [StudioShutdownOutcome.degraded]
   /// （保存事实未知），绝不抛出异常覆盖可靠的 runtime 报告。
-  Future<StudioShutdownReport> _runCleanupBounded(int budget) {
+  Future<StudioExitReport> _runCleanupBounded(int budget) {
     final timeout = Duration(milliseconds: budget <= 0 ? 1 : budget);
     return _runCleanup(budget).timeout(
       timeout,
-      onTimeout: () => StudioShutdownReport(
-        outcome: StudioShutdownOutcome.degraded,
-        issues: [
-          StudioShutdownIssue(
-            stage: 'cleanup',
-            code: 'shutdownTimeout',
-            message: 'shutdown exceeded its cleanup budget',
-            retryable: false,
-            correlationId: newStudioCorrelationId(),
-          ),
-        ],
-        persistence: const UnknownStudioPendingPersistence(),
+      onTimeout: () => StudioExitReport(
+        shutdown: StudioShutdownReport(
+          outcome: StudioShutdownOutcome.degraded,
+          issues: [
+            StudioShutdownIssue(
+              stage: 'cleanup',
+              code: 'shutdownTimeout',
+              message: 'shutdown exceeded its cleanup budget',
+              retryable: false,
+              correlationId: newStudioCorrelationId(),
+            ),
+          ],
+          persistence: const UnknownStudioPendingPersistence(),
+        ),
       ),
     );
   }
 
-  Future<StudioShutdownReport> _runCleanup(int budget) {
+  Future<StudioExitReport> _runCleanup(int budget) {
     // 关闭路径绝不 ensureReady / retryInitialization：只收束既有 owner。
     final override = shutdownOverride;
     if (override != null) {
@@ -459,11 +534,12 @@ class StudioExitCoordinator {
       _api,
       _onProgress,
       remainingMs: budget,
+      intent: _intent ?? StudioExitIntent.exit,
       closeClient: closeClient,
     );
   }
 
-  Future<StudioShutdownReport> _runCustomCleanup(
+  Future<StudioExitReport> _runCustomCleanup(
     Future<void> Function() action,
     int budget,
   ) async {
@@ -477,21 +553,23 @@ class StudioExitCoordinator {
             }),
     ]);
     final unresolved = clientReport?.unresolved ?? const [];
-    return StudioShutdownReport(
-      outcome: unresolved.isEmpty
-          ? StudioShutdownOutcome.clean
-          : StudioShutdownOutcome.degraded,
-      issues: [
-        for (final _ in unresolved)
-          StudioShutdownIssue(
-            stage: 'client',
-            code: 'unresolvedResource',
-            message: 'client resource cleanup did not confirm',
-            retryable: false,
-            correlationId: newStudioCorrelationId(),
-          ),
-      ],
-      persistence: const DrainedStudioPendingPersistence(),
+    return StudioExitReport(
+      shutdown: StudioShutdownReport(
+        outcome: unresolved.isEmpty
+            ? StudioShutdownOutcome.clean
+            : StudioShutdownOutcome.degraded,
+        issues: [
+          for (final _ in unresolved)
+            StudioShutdownIssue(
+              stage: 'client',
+              code: 'unresolvedResource',
+              message: 'client resource cleanup did not confirm',
+              retryable: false,
+              correlationId: newStudioCorrelationId(),
+            ),
+        ],
+        persistence: const DrainedStudioPendingPersistence(),
+      ),
     );
   }
 

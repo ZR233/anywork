@@ -17,6 +17,10 @@ model 不依赖 tool；tool 消费 model 已解释的 account 能力与路由。
 专属概念分别归对应适配层，不借 core 门面镜像。完整成员清单以根
 Cargo.toml 为准；Flutter 应用目录本身不是 workspace 成员，其 Rust 桥接 crate 单独纳入成员。
 
+厂商协议的 HTTP 客户端（目录发现、文件与图像生成）归 pl-model：它们与账号配置、协议
+endpoint、模型目录和凭据解析同源，并由 `pl-model` 公开入口的集成测试覆盖；工具层只做参数
+校验、结果编排与媒体归档，不复制第二份协议或凭据事实。
+
 ## 2.2 稳定职责
 
 库 crate 统一使用 `pl-` 前缀；Flutter 应用的 package 名是 `anywork`。
@@ -24,9 +28,9 @@ Cargo.toml 为准；Flutter 应用目录本身不是 workspace 成员，其 Rust
 | crate | 所有权 |
 | --- | --- |
 | pl-core | context/model/tool/thread 通用契约、内存 owner、当前状态 checkpoint、不可变 effect，以及产品无关的 Session 内容分页、尾部订阅与详情读取 |
-| pl-model | 账号配置与厂商协议/transport、模型目录、配置值对象、路由、媒体编码、缓存、usage 与核心模型会话适配 |
+| pl-model | 账号配置与厂商协议/transport、模型目录、配置值对象、路由、provider 图像 API、媒体编码、缓存、usage 与核心模型会话适配 |
 | pl-provider-fixture | 独立的 loopback 模型与外部平台协议 peer、严格请求校验、场景控制与环境证据，不实现被测产品业务 |
-| pl-tool | 文件、命令、SSH、Git、LSP、MCP、Skill、搜索、交互、笔记、todo、完成、协作与机器人会话工具 |
+| pl-tool | 文件、命令、SSH、Git、LSP、MCP、Skill、搜索、图像生成与图像展示、交互、笔记、todo、完成、协作与机器人会话工具 |
 | pl-protocol | Studio 与外围 adapter 使用的产品 wire、DTO、错误和业务状态类型 |
 | pl-trace | core effect 与调用记录的只读诊断和用量投影 |
 | pl-lsp | 语言服务连接、探测和协议 |

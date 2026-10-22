@@ -182,7 +182,6 @@ class SettingsGeneralView {
     required this.settings,
     required this.webSearch,
     required this.deepSeekWebSearch,
-    required this.runtimeBusy,
     required this.settingsRevision,
     required this.threadRevision,
   });
@@ -190,7 +189,6 @@ class SettingsGeneralView {
   final GeneralSettingsView settings;
   final WebSearchSettingsView webSearch;
   final DeepSeekWebSearchSettingsView deepSeekWebSearch;
-  final bool runtimeBusy;
   final int settingsRevision;
   final int threadRevision;
 
@@ -198,7 +196,6 @@ class SettingsGeneralView {
   bool operator ==(Object other) =>
       identical(this, other) ||
       other is SettingsGeneralView &&
-          runtimeBusy == other.runtimeBusy &&
           settingsRevision == other.settingsRevision &&
           threadRevision == other.threadRevision &&
           identical(settings, other.settings) &&
@@ -207,7 +204,6 @@ class SettingsGeneralView {
 
   @override
   int get hashCode => Object.hash(
-    runtimeBusy,
     settingsRevision,
     threadRevision,
     identityHashCode(settings),
@@ -231,7 +227,6 @@ final settingsGeneralViewProvider = Provider.autoDispose<SettingsGeneralView>((
     webSearch: canonical?.webSearch ?? const WebSearchSettingsView(),
     deepSeekWebSearch:
         canonical?.deepSeekWebSearch ?? const DeepSeekWebSearchSettingsView(),
-    runtimeBusy: session?.busy ?? false,
     settingsRevision: revision,
     threadRevision: session?.revision ?? 0,
   );

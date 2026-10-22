@@ -56,21 +56,6 @@ const _imageCallIds = <String>[
 String _fixtureEntryName(int index) =>
     'entry-${index.toString().padLeft(3, '0')}.txt';
 
-/// 剧本给 `scroll-call-arguments` 生成的 `exec` 参数原文（与 fixture 逐字节一致）。
-///
-/// 来源：`pl-provider-fixture` 的 `realtime_exec_arguments`（`{"command": ...}` 单键
-/// JSON）+ 12000 字符 padding 的命令构造。这里由 fixture 事实推出**期望原文**，不是
-/// 从实际加载内容反推。
-String _expectedScrollArguments() {
-  const lines = 12;
-  const padding = 12000;
-  final command =
-      'i=1; while [ "\$i" -le $lines ]; do '
-      "printf 'line-%s tool output\\n' \"\$i\"; "
-      'i=\$((i+1)); done # ${'argument ' * (padding ~/ 9)}';
-  return jsonEncode(<String, Object?>{'command': command});
-}
-
 /// FNV-1a over the code units. Must stay identical to the Driver-side helper.
 int _fnv1a64(String text) {
   var hash = 0xcbf29ce484222325;
@@ -223,6 +208,12 @@ String? _scrollDirectionToward(int ordinal, List<int> visibleOrdinals) {
 }
 
 Future<void> main(List<String> args) async {
+  // Prepared from the fixture's original input, independently of the rendered or copied text.
+  final expectedArguments = Map<String, String>.from(
+    jsonDecode(
+      await File('${args[1]}/tool-arguments-fixture.json').readAsString(),
+    ) as Map,
+  );
   String? remoteProject;
   if (args.length >= 3 && args[2] != '--observe-only') {
     final fixtures = Directory('${args[2]}/scroll-fixture');
@@ -1159,7 +1150,10 @@ Future<void> main(List<String> args) async {
       }
       if (callId == 'scroll-call-arguments') {
         final detail = toolItem.detail('tool-arguments');
-        final expected = _expectedScrollArguments();
+        final expected = expectedArguments[callId];
+        if (expected == null) {
+          throw StateError('Fixture arguments are missing for $callId');
+        }
         final expectedBytes = utf8.encode(expected).length;
         if (detail == null || detail.totalBytes != expectedBytes) {
           throw StateError(

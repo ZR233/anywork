@@ -58,7 +58,7 @@ pub(in crate::studio) fn project_runtime(
             turn_id: observation.turn_id.clone(),
             attempt_id: observation.attempt_id.clone(),
             completion_tokens: observation.completion_tokens,
-            decode_millis: observation.decode_millis,
+            response_millis: observation.response_millis,
             latest_context_tokens: observation.latest_context_tokens,
             state: match observation.state {
                 pl_core::model::ModelUsageObservationState::Live => ThreadRuntimeUsageState::Live,
@@ -145,7 +145,7 @@ pub(in crate::studio) fn project_runtime(
         usage,
         live_usage,
         turn_completion_tokens: summary.turn_completion_tokens,
-        turn_decode_millis: summary.turn_decode_millis,
+        turn_response_millis: summary.turn_response_millis,
         todo,
         workflow,
         plan,
@@ -248,18 +248,22 @@ fn fold_effect_accounting_in_place(
                             && let Some(output_tokens) =
                                 timing.throughput_output_tokens(&receipt.response.accounting.usage)
                         {
-                            if summary.turn_id != update.turn_id {
+                            // 同一 Turn 内的旧口径分子也必须随首个新样本一起作废：只比较 turn_id
+                            // 会把旧口径的输出词元与新口径的总响应耗时凑成一对。
+                            if summary.turn_id != update.turn_id
+                                || summary.turn_response_millis == 0
+                            {
                                 summary.turn_id.clone_from(&update.turn_id);
                                 summary.turn_completion_tokens = 0;
-                                summary.turn_decode_millis = 0;
+                                summary.turn_response_millis = 0;
                             }
                             summary.turn_completion_tokens = summary
                                 .turn_completion_tokens
                                 .checked_add(output_tokens)
                                 .ok_or(ProjectionError::Count)?;
-                            summary.turn_decode_millis = summary
-                                .turn_decode_millis
-                                .checked_add(timing.decode_millis)
+                            summary.turn_response_millis = summary
+                                .turn_response_millis
+                                .checked_add(timing.response_millis)
                                 .ok_or(ProjectionError::Count)?;
                         }
                         receipt.response.accounting

@@ -20,7 +20,12 @@ final class StudioLayout {
 
   static const sidebarWidth = 336.0;
   static const compactRailWidth = 60.0;
-  static const conversationWidth = 860.0;
+
+  /// 会话阅读列最大宽度：时间线、活动栏与输入区共享同一中心轴（design/19 §19.7）。
+  static const conversationWidth = 1040.0;
+
+  /// 用户与父代理消息的紧凑气泡上限：右对齐，但不占满整条阅读列。
+  static const conversationPromptWidth = 680.0;
   static const settingsNavigationWidth = 196.0;
   static const compactBreakpoint = 960.0;
 }

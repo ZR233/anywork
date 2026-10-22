@@ -5,6 +5,10 @@
 //! itself persisted. Both sides scan every committed delivery and reject contradictory facts
 //! instead of trusting the first match. Neither side guesses sizes, trusts client paths, or
 //! scans a second registry.
+//!
+//! 展示工具回执是本模块唯一不依赖模型图片输入能力的附件来源：它只引用本 Thread 已归档的
+//! 图片，因此没有图片输入能力的 prepared 模型同样能在时间线上展示该图片
+//! （见 design/06 §6.13）。
 use super::ProjectionError;
 use crate::resource_store::FileResourceStore;
 use anyhow::Context;
@@ -52,6 +56,11 @@ fn rejected(message: &str) -> ProjectionError {
 /// it describes exactly one archived image attachment: a receipt that claims several attachments
 /// or a non-image modality is contradictory and rejected. The receipt never contributes a
 /// dimension because it does not bind to a specific archived variant.
+///
+/// An image card receipt contributes the archived image it displays, because the card never
+/// delivers image bytes and therefore never repeats the attachment projection. A card that names
+/// an already delivered attachment is not duplicated; one that names the same identity with a
+/// different reference or modality contradicts the delivered fact and is rejected.
 fn archived_media(delivery: &ToolDelivery) -> Result<Vec<ArchivedToolMedia>, ProjectionError> {
     let receipt = pl_tool::image::saved_view_image_receipt(delivery.output.payload())
         .map_err(ProjectionError::ToolMedia)?;
@@ -81,14 +90,37 @@ fn archived_media(delivery: &ToolDelivery) -> Result<Vec<ArchivedToolMedia>, Pro
         }
         (None, _) => None,
     };
-    Ok(attachments
+    let mut media: Vec<ArchivedToolMedia> = attachments
         .into_iter()
         .map(|attachment| ArchivedToolMedia {
             reference: attachment.reference,
             modality: attachment.modality,
             filename: filename.clone(),
         })
-        .collect())
+        .collect();
+    if let Some(card) = pl_tool::image_card::saved_image_card_receipt(delivery.output.payload())
+        .map_err(ProjectionError::ToolMedia)?
+    {
+        match media
+            .iter()
+            .position(|existing| existing.reference.id() == card.image.id())
+        {
+            Some(index)
+                if media[index].reference == card.image
+                    && media[index].modality == AttachmentModality::Image => {}
+            Some(_) => {
+                return Err(rejected(
+                    "image card receipt conflicts with the archived attachment",
+                ));
+            }
+            None => media.push(ArchivedToolMedia {
+                reference: card.image,
+                modality: AttachmentModality::Image,
+                filename: None,
+            }),
+        }
+    }
+    Ok(media)
 }
 
 /// Typed attachments for one terminal tool delivery, in delivered order.

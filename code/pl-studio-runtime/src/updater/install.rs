@@ -4,12 +4,11 @@ use super::manifest::validate_update;
 use super::types::{StudioUpdate, StudioUpdateEvent};
 use minisign_verify::{PublicKey, Signature};
 use sha2::{Digest, Sha256};
-use std::future::Future;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::Ordering;
-use std::sync::{Arc, Mutex};
+
 use tokio::io::AsyncWriteExt;
 use tokio::sync::mpsc::UnboundedSender;
 use tokio_util::sync::CancellationToken;
@@ -53,165 +52,32 @@ impl PreparedStudioUpdate {
     }
 }
 
-#[derive(Clone)]
+/// 只负责准备阶段的取消；安装交接属于已完成准备后的退出流程。
+#[derive(Clone, Default)]
 pub struct StudioUpdateCancellation {
-    inner: Arc<StudioUpdateCancellationInner>,
-}
-
-struct StudioUpdateCancellationInner {
     token: CancellationToken,
-    phase: Mutex<StudioUpdateCancellationPhase>,
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum StudioUpdateCancellationPhase {
-    Downloading,
-    Cancelled,
-    Launching,
-    InstallerLaunched,
-    Finished,
 }
 
 impl StudioUpdateCancellation {
     pub fn new() -> Self {
-        Self {
-            inner: Arc::new(StudioUpdateCancellationInner {
-                token: CancellationToken::new(),
-                phase: Mutex::new(StudioUpdateCancellationPhase::Downloading),
-            }),
-        }
+        Self::default()
     }
 
-    pub fn cancel(&self) -> Result<(), StudioUpdateError> {
-        let mut phase = self
-            .inner
-            .phase
-            .lock()
-            .expect("update cancellation phase lock must not be poisoned");
-        match *phase {
-            StudioUpdateCancellationPhase::Downloading => {
-                *phase = StudioUpdateCancellationPhase::Cancelled;
-                self.inner.token.cancel();
-                Ok(())
-            }
-            StudioUpdateCancellationPhase::Cancelled => Ok(()),
-            StudioUpdateCancellationPhase::Launching
-            | StudioUpdateCancellationPhase::InstallerLaunched
-            | StudioUpdateCancellationPhase::Finished => Err(StudioUpdateError::new(
-                StudioUpdateErrorCode::CancellationTooLate,
-                "the verified installer is already launching",
-            )),
-        }
+    pub fn cancel(&self) {
+        self.token.cancel();
     }
 
     /// 等待取消广播，不转移操作的完成与回收责任。
     pub async fn cancelled(&self) {
-        self.inner.token.cancelled().await;
+        self.token.cancelled().await;
     }
 
     fn check(&self) -> Result<(), StudioUpdateError> {
-        if self.inner.token.is_cancelled() {
+        if self.token.is_cancelled() {
             return Err(cancelled_error());
         }
         Ok(())
     }
-
-    /// Reports the actual process handoff even if its state projection failed.
-    pub fn installer_launched(&self) -> bool {
-        *self
-            .inner
-            .phase
-            .lock()
-            .expect("update cancellation phase lock must not be poisoned")
-            == StudioUpdateCancellationPhase::InstallerLaunched
-    }
-
-    fn mark_installer_launched(&self) {
-        *self
-            .inner
-            .phase
-            .lock()
-            .expect("update cancellation phase lock must not be poisoned") =
-            StudioUpdateCancellationPhase::InstallerLaunched;
-    }
-
-    fn begin_launch(&self) -> Result<(), StudioUpdateError> {
-        let mut phase = self
-            .inner
-            .phase
-            .lock()
-            .expect("update cancellation phase lock must not be poisoned");
-        match *phase {
-            StudioUpdateCancellationPhase::Downloading => {
-                *phase = StudioUpdateCancellationPhase::Launching;
-                Ok(())
-            }
-            StudioUpdateCancellationPhase::Cancelled => Err(cancelled_error()),
-            StudioUpdateCancellationPhase::Launching
-            | StudioUpdateCancellationPhase::InstallerLaunched
-            | StudioUpdateCancellationPhase::Finished => Err(StudioUpdateError::new(
-                StudioUpdateErrorCode::CancellationTooLate,
-                "the verified installer is already launching",
-            )),
-        }
-    }
-
-    fn finish(&self) {
-        let mut phase = self
-            .inner
-            .phase
-            .lock()
-            .expect("update cancellation phase lock must not be poisoned");
-        if *phase == StudioUpdateCancellationPhase::Launching {
-            *phase = StudioUpdateCancellationPhase::Finished;
-        }
-    }
-}
-
-impl Default for StudioUpdateCancellation {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-pub(super) async fn install_after<F, Fut>(
-    updater: &StudioUpdater,
-    update: StudioUpdate,
-    progress: UnboundedSender<StudioUpdateEvent>,
-    cancellation: StudioUpdateCancellation,
-    before_launch: F,
-) -> Result<(), StudioUpdateError>
-where
-    F: FnOnce() -> Fut,
-    Fut: Future<Output = Result<(), StudioUpdateError>>,
-{
-    let guard = InstallGuard::acquire(updater)?;
-    let result: Result<(), StudioUpdateError> = async {
-        validate_update(&update)?;
-        cancellation.check()?;
-        let _ = progress.send(StudioUpdateEvent::Started {
-            total: update.installer.size,
-        });
-        let cached = prepare_installer(updater, &update, &progress, &cancellation).await?;
-        let mut installer = lease_verified_installer(updater, &update, cached).await?;
-        cancellation.check()?;
-        cancellation.begin_launch()?;
-        before_launch().await?;
-        installer.launch(StudioUpdateLaunch::Restart)?;
-        cancellation.mark_installer_launched();
-        let _ = progress.send(StudioUpdateEvent::InstallerLaunched);
-        Ok(())
-    }
-    .await;
-    cancellation.finish();
-    if let Err(error) = &result {
-        let _ = progress.send(StudioUpdateEvent::Failed {
-            code: error.code().as_str().to_string(),
-            message: error.to_string(),
-        });
-    }
-    drop(guard);
-    result
 }
 
 pub(super) async fn download(
@@ -347,7 +213,7 @@ async fn prepare_installer(
         )
     })?;
     let signature_bytes = tokio::select! {
-        _ = cancellation.inner.token.cancelled() => return Err(cancelled_error()),
+        _ = cancellation.token.cancelled() => return Err(cancelled_error()),
         result = updater.request_bytes(signature_url, MAX_SIGNATURE_BYTES) => result?,
     };
     cancellation.check()?;
@@ -372,7 +238,7 @@ async fn prepare_installer(
             update.installer.clone(),
             partial.clone(),
             progress.clone(),
-            cancellation.inner.token.clone(),
+            cancellation.token.clone(),
         )
         .await?;
         cancellation.check()?;
@@ -561,13 +427,9 @@ fn launch_installer(path: &Path, mode: StudioUpdateLaunch) -> Result<(), StudioU
     })
 }
 
-fn installer_arguments(mode: StudioUpdateLaunch) -> [&'static str; 6] {
+fn installer_arguments(mode: StudioUpdateLaunch) -> [&'static str; 5] {
     [
-        match mode {
-            StudioUpdateLaunch::Restart => "/SILENT",
-            StudioUpdateLaunch::OnExit => "/VERYSILENT",
-        },
-        "/SUPPRESSMSGBOXES",
+        "/SILENT",
         "/NORESTART",
         "/NORESTARTAPPLICATIONS",
         "/NOCLOSEAPPLICATIONS",

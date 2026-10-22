@@ -53,9 +53,20 @@ impl StudioStore {
     ) -> Result<()> {
         // Workspace/Project TOML is the canonical directory fact; the product SQLite tables remain
         // write-behind mirrors for migration and diagnostics only.
+        for project in &delta.project_upserts {
+            self.prepare_project_manifest(&crate::studio::records::ProjectRecord {
+                id: project.id.clone(),
+                name: project.name.clone(),
+                path: project.path.clone(),
+                ssh_alias: project.ssh_alias.clone(),
+                updated_at: project.updated_at,
+            })
+            .await?;
+        }
         self.workspaces().apply_delta(delta).await?;
         let catalog = self.catalog();
         for thread in &delta.thread_upserts {
+            self.prepare_session_manifest(thread).await?;
             catalog.upsert(CatalogEntry::from_thread(thread)).await?;
         }
         let archived_at = delta

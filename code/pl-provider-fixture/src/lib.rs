@@ -29,6 +29,7 @@ mod context_replay_recovery;
 mod model_catalog;
 mod provider_usage;
 mod question_history;
+mod skill_activity;
 mod wait_events;
 mod web_search;
 pub use context_replay_recovery::{
@@ -45,6 +46,18 @@ pub use question_history::{
     GUI_QUESTION_HISTORY_STYLE_ANSWER, GUI_QUESTION_HISTORY_STYLE_ID,
     GUI_QUESTION_HISTORY_TOKEN_ANSWER, GUI_QUESTION_HISTORY_TOKEN_ID,
     gui_question_history_answers_json, gui_question_history_script,
+};
+pub use skill_activity::{
+    ANSWER_FIRST as SKILL_ACTIVITY_ANSWER_FIRST, ANSWER_MIXED as SKILL_ACTIVITY_ANSWER_MIXED,
+    ANSWER_RELOAD as SKILL_ACTIVITY_ANSWER_RELOAD, ANSWER_REOPEN as SKILL_ACTIVITY_ANSWER_REOPEN,
+    BODY_MARKER_LONG as SKILL_ACTIVITY_BODY_LONG, BODY_MARKER_SHORT as SKILL_ACTIVITY_BODY_SHORT,
+    COMPACTION_PROMPT as SKILL_ACTIVITY_COMPACTION_PROMPT,
+    EXEC_MARKER as SKILL_ACTIVITY_EXEC_MARKER, PROMPT_CANCEL as SKILL_ACTIVITY_PROMPT_CANCEL,
+    PROMPT_FIRST as SKILL_ACTIVITY_PROMPT_FIRST, PROMPT_MIXED as SKILL_ACTIVITY_PROMPT_MIXED,
+    PROMPT_RELOAD as SKILL_ACTIVITY_PROMPT_RELOAD, PROMPT_REOPEN as SKILL_ACTIVITY_PROMPT_REOPEN,
+    SKILL_LONG as SKILL_ACTIVITY_LONG_NAME, SKILL_MISSING as SKILL_ACTIVITY_MISSING_NAME,
+    SKILL_SHORT as SKILL_ACTIVITY_SHORT_NAME, SUPPORT_FILE as SKILL_ACTIVITY_SUPPORT_FILE,
+    SUPPORT_MARKER as SKILL_ACTIVITY_SUPPORT_MARKER, script as skill_activity_script,
 };
 pub use wait_events::{
     CHILD_REPORT_TEXT, MARK_ALREADY_READY, MARK_CANCEL, MARK_CANCEL_PREPARE, MARK_CANCEL_QUERY,
@@ -66,6 +79,8 @@ mod stdio_peer;
 
 mod lsp_stdio;
 pub use lsp_stdio::{LspStdioOptions, run_lsp_stdio};
+
+pub mod markdown_layout;
 
 mod tool_peer;
 pub use tool_peer::{ToolPeerOptions, run_tool_peer};
@@ -96,10 +111,12 @@ pub const GUI_PROMPT: &str = "Reply with exactly: fixture ready";
 /// The coordinator's ready-file check, the fixture CLI parser and the script
 /// selection all read this single list, so a scenario can no longer be accepted
 /// by one of them and rejected by another.
-pub const GUI_SCENARIOS: [&str; 22] = [
+pub const GUI_SCENARIOS: [&str; 24] = [
     "gui",
+    "markdown-layout",
     "single-instance",
     "storage-compaction",
+    "skill-activity",
     "stress",
     "stress-body",
     "stress-body-large",
@@ -282,11 +299,33 @@ pub fn gui_websocket_recovery_script() -> Vec<Step> {
     script.finish()
 }
 
+/// Original tool arguments shared by the scripted replies and the native Driver's independent
+/// input manifest. The dialect describes the execution workspace, not the Driver host.
+pub fn gui_tool_scroll_expected_arguments(
+    powershell: bool,
+) -> std::collections::BTreeMap<&'static str, String> {
+    let padding = "argument ".repeat(12_000 / 9);
+    let command = if powershell {
+        format!(
+            "1..12 | ForEach-Object {{ Write-Output ('line-' + $_ + ' tool output') }} # {padding}"
+        )
+    } else {
+        format!(
+            "i=1; while [ \"$i\" -le 12 ]; do printf 'line-%s tool output\\n' \"$i\"; i=$((i+1)); done # {padding}"
+        )
+    };
+    std::collections::BTreeMap::from([(
+        "scroll-call-arguments",
+        realtime_exec_arguments(&command, None),
+    )])
+}
+
 /// Real file listings and a long shell argument for observing tool expansion.
 /// Each prompt is followed by enough text to put its tools inside the timeline.
 /// `powershell` selects the workspace's command dialect, independently of this host.
 pub fn gui_tool_scroll_script(powershell: bool, resource_lifecycle: bool) -> Vec<Step> {
     let mut script = RealtimeScript::new();
+    let expected_arguments = gui_tool_scroll_expected_arguments(powershell);
     let title = session_title_prompt("Tool scroll short");
     script.optional_title(&title);
     let identities = [
@@ -301,22 +340,17 @@ pub fn gui_tool_scroll_script(powershell: bool, resource_lifecycle: bool) -> Vec
         ("scroll-item-failed", "scroll-call-failed"),
     ];
     let mut next_identity = 0;
-    for (prompt, lines, padding, count) in [
-        ("Tool scroll short", 1, 0, 2),
-        ("Tool scroll medium", 12, 0, 1),
-        ("Tool scroll long", 200, 0, 1),
-        ("Tool scroll arguments", 12, 12_000, 1),
-        ("Tool scroll multiple", 80, 0, 3),
-        ("Tool scroll failed", 0, 0, 1),
+    for (prompt, lines, count) in [
+        ("Tool scroll short", 1, 2),
+        ("Tool scroll medium", 12, 1),
+        ("Tool scroll long", 200, 1),
+        ("Tool scroll arguments", 0, 1),
+        ("Tool scroll multiple", 80, 3),
+        ("Tool scroll failed", 0, 1),
     ] {
         let calls = identities[next_identity..next_identity + count]
             .iter()
             .map(|&(item_id, call_id)| {
-                let command = if powershell {
-                    format!("1..{lines} | ForEach-Object {{ Write-Output ('line-' + $_ + ' tool output') }} # {}", "argument ".repeat(padding / 9))
-                } else {
-                    format!("i=1; while [ \"$i\" -le {lines} ]; do printf 'line-%s tool output\\n' \"$i\"; i=$((i+1)); done # {}", "argument ".repeat(padding / 9))
-                };
                 if matches!(item_id, "scroll-item-a" | "scroll-item-b" | "scroll-item-c") {
                     // Call directly to verify that image reading is available without discovery.
                     return RealtimeToolCall {
@@ -335,18 +369,23 @@ pub fn gui_tool_scroll_script(powershell: bool, resource_lifecycle: bool) -> Vec
                             "scroll-fixture/entry-000.txt"
                         } else {
                             "scroll-fixture/entry-001.txt"
-                        }}).to_string(),
+                        }})
+                        .to_string(),
+                    };
+                }
+                if let Some(arguments) = expected_arguments.get(call_id) {
+                    return RealtimeToolCall {
+                        item_id,
+                        call_id,
+                        name: TOOL_EXEC_NAME,
+                        arguments: arguments.clone(),
                     };
                 }
                 RealtimeToolCall {
                     item_id,
                     call_id,
-                    name: if padding > 0 { TOOL_EXEC_NAME } else { "list_files" },
-                    arguments: if padding > 0 {
-                        realtime_exec_arguments(&command, None)
-                    } else {
-                        json!({"path":"scroll-fixture", "limit":lines}).to_string()
-                    },
+                    name: "list_files",
+                    arguments: json!({"path":"scroll-fixture", "limit":lines}).to_string(),
                 }
             })
             .collect::<Vec<_>>();

@@ -824,10 +824,10 @@ fn summary_snapshots(rows: &[PerformanceSummaryRow]) -> Vec<StudioModelPerforman
                         sample_count: 0,
                         completion_tokens: 0,
                         total_ttft_millis: 0,
-                        total_decode_millis: 0,
+                        ttft_sample_count: 0,
                         total_response_millis: 0,
                         tokens_per_second: 0.0,
-                        average_ttft_millis: 0.0,
+                        average_ttft_millis: None,
                         average_response_millis: 0.0,
                         effort_breakdowns: Vec::new(),
                     },
@@ -846,9 +846,9 @@ fn summary_snapshots(rows: &[PerformanceSummaryRow]) -> Vec<StudioModelPerforman
         summary.total_ttft_millis = summary
             .total_ttft_millis
             .saturating_add(row.total_ttft_millis);
-        summary.total_decode_millis = summary
-            .total_decode_millis
-            .saturating_add(row.total_decode_millis);
+        summary.ttft_sample_count = summary
+            .ttft_sample_count
+            .saturating_add(row.ttft_sample_count);
         summary.total_response_millis = summary
             .total_response_millis
             .saturating_add(row.total_response_millis);
@@ -859,10 +859,10 @@ fn summary_snapshots(rows: &[PerformanceSummaryRow]) -> Vec<StudioModelPerforman
                 sample_count: row.sample_count,
                 completion_tokens: row.completion_tokens,
                 total_ttft_millis: row.total_ttft_millis,
-                total_decode_millis: row.total_decode_millis,
+                ttft_sample_count: row.ttft_sample_count,
                 total_response_millis: row.total_response_millis,
-                tokens_per_second: throughput(row.completion_tokens, row.total_decode_millis),
-                average_ttft_millis: row.total_ttft_millis as f64 / row.sample_count as f64,
+                tokens_per_second: throughput(row.completion_tokens, row.total_response_millis),
+                average_ttft_millis: average_ttft(row.total_ttft_millis, row.ttft_sample_count),
                 average_response_millis: row.total_response_millis as f64 / row.sample_count as f64,
             });
     }
@@ -871,8 +871,9 @@ fn summary_snapshots(rows: &[PerformanceSummaryRow]) -> Vec<StudioModelPerforman
         .map(|(_, _, mut summary)| {
             let samples = summary.sample_count as f64;
             summary.tokens_per_second =
-                throughput(summary.completion_tokens, summary.total_decode_millis);
-            summary.average_ttft_millis = summary.total_ttft_millis as f64 / samples;
+                throughput(summary.completion_tokens, summary.total_response_millis);
+            summary.average_ttft_millis =
+                average_ttft(summary.total_ttft_millis, summary.ttft_sample_count);
             summary.average_response_millis = summary.total_response_millis as f64 / samples;
             summary
         })
@@ -906,14 +907,20 @@ fn history_sample(row: &PerformanceSampleRow) -> StudioModelPerformanceSample {
         decode_millis: row.decode_millis,
         total_response_millis: row.response_millis,
         tokens_per_second: row
-            .decode_millis
+            .response_millis
             .filter(|_| row.has_throughput_sample)
             .map(|value| throughput(row.completion_tokens, value)),
     }
 }
 
-fn throughput(completion_tokens: u64, decode_millis: u64) -> f64 {
-    completion_tokens as f64 * 1_000.0 / decode_millis as f64
+/// 平均首字延迟只用真正测得首字的样本；没有此类样本时保持未知。
+fn average_ttft(total_ttft_millis: u64, ttft_sample_count: u64) -> Option<f64> {
+    (ttft_sample_count > 0).then(|| total_ttft_millis as f64 / ttft_sample_count as f64)
+}
+
+/// 含首字等待的输出吞吐：成对加权 output / 总响应耗时，不平均各次速率。
+fn throughput(completion_tokens: u64, response_millis: u64) -> f64 {
+    completion_tokens as f64 * 1_000.0 / response_millis as f64
 }
 
 fn billing_fingerprint(billing: &InferenceBillingRecord) -> Result<String, PureError> {

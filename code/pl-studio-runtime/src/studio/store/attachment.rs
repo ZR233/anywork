@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 use base64::Engine;
@@ -20,6 +20,8 @@ pub(in crate::studio) struct AttachmentCatalog {
 }
 
 impl StudioStore {
+    /// Lists attachments with session-relative blob references. Use the materialization methods
+    /// to read their bytes; the returned references are independent of the process working directory.
     pub async fn list_thread_attachments(&self, thread_id: &str) -> Result<Vec<AttachmentRecord>> {
         let _guard = self.attachment_lock().lock().await;
         self.load_attachment_catalog(thread_id).await
@@ -74,12 +76,30 @@ impl StudioStore {
         Ok(ordered)
     }
 
+    /// Retains an attachment in its owning Thread's reliable resource store.
+    /// Both source resolution and integrity validation belong to this storage boundary.
+    pub(in crate::studio) async fn retain_attachment_resource(
+        &self,
+        record: &AttachmentRecord,
+    ) -> Result<pl_core::context::ResourceReference> {
+        let session = self.registered_session_paths(&record.thread_id)?;
+        let source = resolve_attachment_host_path(&session, &record.blob_relative_path)?;
+        let resources = crate::resource_store::FileResourceStore::new(session.resources_dir());
+        let reference = resources.retain_file(&source, &record.media_type).await?;
+        anyhow::ensure!(
+            reference.byte_len() == record.byte_size
+                && reference.content_digest() == format!("sha256:{}", record.content_sha256),
+            "attachment changed while preparing input"
+        );
+        Ok(reference)
+    }
+
     pub async fn materialize_thread_attachments(
         &self,
         thread_id: &str,
     ) -> Result<Vec<MaterializedAttachment>> {
         let records = self.list_thread_attachments(thread_id).await?;
-        materialize_attachment_records(records).await
+        self.materialize_attachment_records(records).await
     }
 
     pub async fn materialize_attachments(
@@ -88,7 +108,7 @@ impl StudioStore {
         attachment_ids: &[String],
     ) -> Result<Vec<MaterializedAttachment>> {
         let records = self.load_attachments(thread_id, attachment_ids).await?;
-        materialize_attachment_records(records).await
+        self.materialize_attachment_records(records).await
     }
 
     pub(crate) async fn read_attachment_bytes(
@@ -102,9 +122,51 @@ impl StudioStore {
             .into_iter()
             .next()
             .context("attachment is unavailable")?;
-        tokio::fs::read(record.storage_path)
+        tokio::fs::read(self.attachment_host_path(&record)?)
             .await
             .with_context(|| format!("failed to load attachment {attachment_id}"))
+    }
+
+    fn attachment_host_path(&self, record: &AttachmentRecord) -> Result<PathBuf> {
+        let session = self.registered_session_paths(&record.thread_id)?;
+        resolve_attachment_host_path(&session, &record.blob_relative_path)
+    }
+
+    async fn materialize_attachment_records(
+        &self,
+        records: Vec<AttachmentRecord>,
+    ) -> Result<Vec<MaterializedAttachment>> {
+        let mut materialized = Vec::with_capacity(records.len());
+        for record in records {
+            let bytes = tokio::fs::read(self.attachment_host_path(&record)?)
+                .await
+                .with_context(|| {
+                    let id = &record.id;
+                    format!("failed to read attachment {id}")
+                })?;
+            materialized.push(MaterializedAttachment {
+                attachment_id: record.id,
+                modality: match record.modality {
+                    pl_protocol::studio::StudioAttachmentModality::Image => {
+                        pl_protocol::AttachmentModality::Image
+                    }
+                    pl_protocol::studio::StudioAttachmentModality::Video => {
+                        pl_protocol::AttachmentModality::Video
+                    }
+                    pl_protocol::studio::StudioAttachmentModality::File => {
+                        pl_protocol::AttachmentModality::File
+                    }
+                },
+                media_type: record.media_type,
+                filename: record.filename,
+                data: base64::engine::general_purpose::STANDARD.encode(bytes),
+                byte_size: record.byte_size,
+                width: record.width,
+                height: record.height,
+                initial_remote_url: None,
+            });
+        }
+        Ok(materialized)
     }
 
     /// Unified blob fence: makes every attachment blob a checkpoint still names durable.
@@ -130,14 +192,14 @@ impl StudioStore {
                     "checkpoint names attachment {attachment_id} with no catalog record for Thread {thread_id}"
                 );
             };
-            let path = std::path::Path::new(&record.storage_path);
-            if !tokio::fs::try_exists(path).await? {
+            let path = self.attachment_host_path(record)?;
+            if !tokio::fs::try_exists(&path).await? {
                 anyhow::bail!(
                     "checkpoint names missing attachment blob {} for Thread {thread_id}",
                     path.display()
                 );
             }
-            sync_blob(path).await?;
+            sync_blob(&path).await?;
         }
         Ok(())
     }
@@ -154,7 +216,7 @@ impl StudioStore {
                 // Current attachments share the per-session content-addressed blob root
                 // (`sessions/<storage-key>/blobs`) with their catalog.
                 let dir = self
-                    .thread_blobs_dir(thread_id)
+                    .thread_blobs_dir(thread_id)?
                     .join(&draft.content_sha256[..2]);
                 tokio::fs::create_dir_all(&dir).await?;
                 let storage_path = dir.join(&draft.content_sha256);
@@ -187,29 +249,36 @@ impl StudioStore {
             }
         }
 
-        Ok(prepared
+        let session = self.registered_session_paths(thread_id)?;
+        prepared
             .into_iter()
-            .map(|(draft, storage_path)| AttachmentRecord {
-                id: new_id("attachment"),
-                thread_id: thread_id.to_string(),
-                modality: draft.modality,
-                media_type: draft.media_type.clone(),
-                filename: Some(draft.filename.clone()),
-                storage_path: storage_path.to_string_lossy().to_string(),
-                byte_size: draft.byte_size,
-                content_sha256: draft.content_sha256.clone(),
-                width: draft.width,
-                height: draft.height,
-                created_at: unix_seconds(),
+            .map(|(draft, storage_path)| {
+                Ok(AttachmentRecord {
+                    id: new_id("attachment"),
+                    thread_id: thread_id.to_string(),
+                    modality: draft.modality,
+                    media_type: draft.media_type.clone(),
+                    filename: Some(draft.filename.clone()),
+                    blob_relative_path: crate::studio::store::session_layout::relative_blob_path(
+                        &session,
+                        &storage_path,
+                    )?,
+                    byte_size: draft.byte_size,
+                    content_sha256: draft.content_sha256.clone(),
+                    width: draft.width,
+                    height: draft.height,
+                    created_at: unix_seconds(),
+                })
             })
-            .collect())
+            .collect()
     }
 
     async fn load_attachment_catalog(&self, thread_id: &str) -> Result<Vec<AttachmentRecord>> {
-        let path = self.thread_storage_dir(thread_id).join("attachments.toml");
+        let session = self.registered_session_paths(thread_id)?;
+        let path = session.attachments_catalog();
         match tokio::fs::read_to_string(&path).await {
             Ok(content) => {
-                let mut catalog: AttachmentCatalog = toml::from_str(&content)
+                let catalog: AttachmentCatalog = toml::from_str(&content)
                     .with_context(|| format!("invalid attachment catalog {}", path.display()))?;
                 anyhow::ensure!(
                     catalog.schema_version == ATTACHMENT_CATALOG_SCHEMA_VERSION
@@ -220,21 +289,8 @@ impl StudioStore {
                             .all(|record| record.thread_id == thread_id),
                     "attachment catalog identity or schema mismatch"
                 );
-                let directory = self.thread_storage_dir(thread_id);
-                let blobs = self.thread_blobs_dir(thread_id);
-                for record in &mut catalog.records {
-                    let recorded = PathBuf::from(&record.storage_path);
-                    let resolved = if recorded.is_absolute() {
-                        recorded
-                    } else {
-                        directory.join(recorded)
-                    };
-                    anyhow::ensure!(
-                        resolved.starts_with(&blobs),
-                        "attachment {} is outside its Thread blob root",
-                        record.id
-                    );
-                    record.storage_path = resolved.to_string_lossy().into_owned();
+                for record in &catalog.records {
+                    resolve_attachment_host_path(&session, &record.blob_relative_path)?;
                 }
                 Ok(catalog.records)
             }
@@ -251,10 +307,35 @@ impl StudioStore {
         thread_id: &str,
         records: &[AttachmentRecord],
     ) -> Result<()> {
-        let directory = self.thread_storage_dir(thread_id);
-        tokio::fs::create_dir_all(&directory).await?;
-        write_attachment_catalog(&directory.join("attachments.toml"), thread_id, records).await
+        let session = self.registered_session_paths(thread_id)?;
+        tokio::fs::create_dir_all(session.root()).await?;
+        for record in records {
+            resolve_attachment_host_path(&session, &record.blob_relative_path)?;
+        }
+        write_attachment_catalog(&session.attachments_catalog(), thread_id, records).await
     }
+}
+
+fn resolve_attachment_host_path(
+    session: &crate::studio::paths::SessionPaths,
+    stored: &str,
+) -> Result<PathBuf> {
+    let recorded = PathBuf::from(stored);
+    anyhow::ensure!(
+        !recorded.is_absolute(),
+        "persistent attachments must use session-relative blob paths"
+    );
+    let relative = crate::studio::paths::posix_relative(&recorded)?;
+    anyhow::ensure!(
+        stored == relative,
+        "attachment reference must use canonical POSIX form"
+    );
+    let resolved = session.root().join(Path::new(&relative));
+    anyhow::ensure!(
+        resolved.starts_with(session.blobs_dir()),
+        "attachment is outside its Thread blob root"
+    );
+    Ok(resolved)
 }
 
 /// Writes the canonical attachment catalog for one Thread.
@@ -396,42 +477,6 @@ fn encode_jpeg(image: &image::DynamicImage, quality: u8) -> Result<Vec<u8>> {
         )
         .with_context(|| "failed to compress image attachment")?;
     Ok(bytes)
-}
-
-pub(crate) async fn materialize_attachment_records(
-    records: Vec<AttachmentRecord>,
-) -> Result<Vec<MaterializedAttachment>> {
-    let mut materialized = Vec::with_capacity(records.len());
-    for record in records {
-        let bytes = tokio::fs::read(PathBuf::from(&record.storage_path))
-            .await
-            .with_context(|| {
-                let id = &record.id;
-                format!("failed to read attachment {id}")
-            })?;
-        materialized.push(MaterializedAttachment {
-            attachment_id: record.id,
-            modality: match record.modality {
-                pl_protocol::studio::StudioAttachmentModality::Image => {
-                    pl_protocol::AttachmentModality::Image
-                }
-                pl_protocol::studio::StudioAttachmentModality::Video => {
-                    pl_protocol::AttachmentModality::Video
-                }
-                pl_protocol::studio::StudioAttachmentModality::File => {
-                    pl_protocol::AttachmentModality::File
-                }
-            },
-            media_type: record.media_type,
-            filename: record.filename,
-            data: base64::engine::general_purpose::STANDARD.encode(bytes),
-            byte_size: record.byte_size,
-            width: record.width,
-            height: record.height,
-            initial_remote_url: None,
-        });
-    }
-    Ok(materialized)
 }
 
 pub(crate) fn thread_attachment(record: &AttachmentRecord) -> ThreadAttachment {

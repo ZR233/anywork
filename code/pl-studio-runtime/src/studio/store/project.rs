@@ -9,7 +9,7 @@ use sea_orm::{
 };
 
 use crate::studio::catalog::CatalogStore;
-use crate::studio::paths::{StudioPaths, default_db_path, sqlite_read_only_url, sqlite_url};
+use crate::studio::paths::{SqliteFileMode, StudioPaths, default_db_path, sqlite_file_options};
 use crate::studio::records::ProjectRecord;
 use crate::studio::store::settings::SettingsStore;
 use crate::studio::store::workspaces::WorkspaceStore;
@@ -54,12 +54,7 @@ impl StudioStore {
     }
 
     pub async fn open_memory() -> Result<Self> {
-        let db = connect_sqlite(
-            "sqlite::memory:",
-            SqliteSynchronous::Normal,
-            /* max_connections */ 1,
-        )
-        .await?;
+        let db = connect_memory().await?;
         initialize_studio_schema(&db).await?;
         validate_database(&db).await?;
         let home = tempfile::Builder::new()
@@ -116,8 +111,10 @@ impl StudioStore {
         // store below (calls, database) materializes files on a fresh open.
         let installation = detect_installation(&paths).await?;
         let db = connect_sqlite(
-            &sqlite_url(&path),
-            SqliteSynchronous::Full,
+            sqlite_file_options(&path, SqliteFileMode::Create, |options| {
+                configure_sqlite(options, SqliteSynchronous::Full)
+            })
+            .await?,
             /* max_connections */ 1,
         )
         .await?;
@@ -194,6 +191,21 @@ impl StudioStore {
             attachment_lock: Default::default(),
             paths,
         };
+        if let Err(error) = super::session_layout::migrate_flat_sessions(
+            &store.paths,
+            &store.catalog,
+            &store.workspaces,
+        )
+        .await
+        {
+            let close = store.close().await;
+            return Err(match close {
+                Ok(()) => error,
+                Err(close_error) => {
+                    crate::studio::startup::cleanup_error(close_error).context(error)
+                }
+            });
+        }
         Ok(store)
     }
 
@@ -286,7 +298,8 @@ pub(in crate::studio) struct ProjectRow {
 /// Classifies the resolved Studio home before any store-owned file is created.
 async fn detect_installation(paths: &StudioPaths) -> Result<InstallationState> {
     for candidate in [
-        paths.sessions_dir(),
+        paths.projects_dir(),
+        paths.legacy_sessions_dir(),
         paths.migrations_dir(),
         paths.calls_database(),
         paths.attachment_drafts_dir(),
@@ -400,30 +413,39 @@ async fn require_canonical_document(path: &Path, name: &str) -> Result<()> {
     Ok(())
 }
 
+async fn connect_memory() -> Result<DatabaseConnection> {
+    let mut options = ConnectOptions::new("sqlite::memory:");
+    options.map_sqlx_sqlite_opts(|options| configure_sqlite(options, SqliteSynchronous::Normal));
+    connect_sqlite(options, /* max_connections */ 1).await
+}
+
 async fn connect_sqlite(
-    url: &str,
-    synchronous: SqliteSynchronous,
+    mut options: ConnectOptions,
     max_connections: u32,
 ) -> Result<DatabaseConnection> {
-    let mut options = ConnectOptions::new(url.to_string());
     options
         .max_connections(max_connections)
         .min_connections(1)
         .connect_timeout(Duration::from_secs(8))
         .acquire_timeout(Duration::from_secs(8))
-        .map_sqlx_sqlite_opts(move |options| {
-            options
-                .journal_mode(SqliteJournalMode::Wal)
-                .synchronous(synchronous)
-                .busy_timeout(Duration::from_secs(5))
-                .foreign_keys(true)
-        })
         .sqlx_logging(false);
     Ok(Database::connect(options).await?)
 }
 
+fn configure_sqlite(
+    options: sea_orm::sqlx::sqlite::SqliteConnectOptions,
+    synchronous: SqliteSynchronous,
+) -> sea_orm::sqlx::sqlite::SqliteConnectOptions {
+    options
+        .journal_mode(SqliteJournalMode::Wal)
+        .synchronous(synchronous)
+        .busy_timeout(Duration::from_secs(5))
+        .foreign_keys(true)
+}
+
 async fn connect_read_only_database(path: &Path) -> Result<DatabaseConnection> {
-    let mut options = ConnectOptions::new(sqlite_read_only_url(path));
+    let mut options =
+        sqlite_file_options(path, SqliteFileMode::ReadOnly, |options| options).await?;
     options
         .max_connections(1)
         .min_connections(1)
@@ -547,12 +569,7 @@ async fn database_schema_version(db: &impl sea_orm::ConnectionTrait) -> Result<i
 }
 
 async fn expected_schema_fingerprint() -> Result<String> {
-    let database = connect_sqlite(
-        "sqlite::memory:",
-        SqliteSynchronous::Normal,
-        /* max_connections */ 1,
-    )
-    .await?;
+    let database = connect_memory().await?;
     initialize_studio_schema(&database).await?;
     let fingerprint = schema_fingerprint(&database).await;
     database.close().await?;

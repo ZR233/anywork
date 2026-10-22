@@ -489,6 +489,16 @@ impl Owner {
                     .get(id)
                     .is_some_and(|task| task.status == task::TaskStatus::Running)
         });
+        // 正在被取消或关闭的尝试不产生任何可确认的速度：这类快照保留观察到的内容与失败
+        // 观察，但撤销整组 live 用量与耗时，消费者因此回退到 canonical 成对样本。门控在
+        // 每次发布时重新计算，所以随后到达的在途观察也无法把这个代次的 pair 复活。
+        //
+        // 直接取消输入代次 token 或调用 `ThreadHandle::interrupt` 不经过 `interrupted_turn`，
+        // 因此门控同时读取真实 active token 的取消状态；否则这些入口的下一次发布仍会带着
+        // 停止前的成对样本。
+        let live_measurement_withdrawn = self.interrupted_turn.is_some()
+            || self.interrupt.is_closing()
+            || self.interrupt.active_cancelled();
         snapshot.model_progress = self
             .model_progress
             .as_ref()
@@ -497,9 +507,15 @@ impl Owner {
                     &attempt.attempt_id == id && attempt.status == AttemptStatus::Running
                 })
             })
-            .map(|(id, receiver)| crate::model::ActiveModelProgress {
-                attempt_id: id.clone(),
-                progress: receiver.borrow().clone(),
+            .map(|(id, receiver)| {
+                let mut progress = receiver.borrow().clone();
+                if live_measurement_withdrawn {
+                    progress.withdraw_live_usage();
+                }
+                crate::model::ActiveModelProgress {
+                    attempt_id: id.clone(),
+                    progress,
+                }
             });
         snapshot.input_execution = if let Some(error) = self.input_driver.error() {
             input::InputExecution::Failed {

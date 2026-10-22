@@ -31,7 +31,7 @@ impl StudioRuntime {
         request: StudioSubmitPromptRequest,
     ) -> Result<StudioSubmitPromptResponse> {
         validate_prompt_content(&request.input)?;
-        // Serialize turn registration with the updater's final idle check.
+        // Serialize turn registration with the shared shutdown admission fence.
         let _lifecycle_guard = self.lifecycle_lock.lock().await;
         self.submit_prompt_with_lifecycle_lock(request).await
     }
@@ -162,9 +162,6 @@ impl StudioRuntime {
             .store
             .promote_attachment_drafts(&thread_id, &drafts)
             .await?;
-        let resources = crate::resource_store::FileResourceStore::new(
-            self.store.session_resources_dir(&thread_id),
-        );
         let mut context = Vec::new();
         if !prompt.is_empty() {
             context.push(pl_core::context::ContextContent::Text {
@@ -172,18 +169,7 @@ impl StudioRuntime {
             });
         }
         for attachment in &attachments {
-            let reference = resources
-                .retain_file(
-                    std::path::Path::new(&attachment.storage_path),
-                    &attachment.media_type,
-                )
-                .await?;
-            anyhow::ensure!(
-                reference.byte_len() == attachment.byte_size
-                    && reference.content_digest()
-                        == format!("sha256:{}", attachment.content_sha256),
-                "attachment changed while preparing input"
-            );
+            let reference = self.store.retain_attachment_resource(attachment).await?;
             if let Some(filename) = &attachment.filename {
                 context.push(pl_core::context::ContextContent::Text {
                     text: format!("Attachment: {filename}").into(),

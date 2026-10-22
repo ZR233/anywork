@@ -16,10 +16,17 @@ import '../shared/studio_driver_state.dart';
 part 'studio_shutdown.g.dart';
 
 class StudioShutdownView {
-  const StudioShutdownView({this.progress, this.error});
+  const StudioShutdownView({
+    this.progress,
+    this.error,
+    this.updateVersion,
+    this.restart = false,
+  });
 
   final StudioShutdownProgress? progress;
   final String? error;
+  final String? updateVersion;
+  final bool restart;
 }
 
 /// 当前关机进度或失败状态；两者均为空表示未在关机。
@@ -28,11 +35,25 @@ class StudioShutdownProgressState extends _$StudioShutdownProgressState {
   @override
   StudioShutdownView build() => const StudioShutdownView();
 
-  void update(StudioShutdownProgress progress) =>
-      state = StudioShutdownView(progress: progress);
+  void update(StudioShutdownProgress progress) => state = StudioShutdownView(
+    progress: progress,
+    updateVersion: state.updateVersion,
+    restart: state.restart,
+  );
 
-  void fail(Object error) =>
-      state = StudioShutdownView(error: error.toString());
+  void fail(Object error) => state = StudioShutdownView(
+    error: error.toString(),
+    updateVersion: state.updateVersion,
+    restart: state.restart,
+  );
+
+  void beginExit(String? version, bool restart) {
+    state = StudioShutdownView(
+      progress: const StoppingSubscriptionsProgress(),
+      updateVersion: version,
+      restart: restart,
+    );
+  }
 }
 
 /// 关闭 runtime：在同一个绝对预算内**并发**收束 Dart 拥有的外部 owner（产品/Thread 流与
@@ -45,10 +66,11 @@ class StudioShutdownProgressState extends _$StudioShutdownProgressState {
 /// 返回 runtime 的 typed 报告；只有真实 `Clean` 才发布 `Stopped`，degraded 与超时都不得
 /// 伪造终态。订阅创建/取消都有界：同步失败、取消错误或进度流错误都只累积为独立诊断，
 /// 绝不覆盖可靠的 runtime 报告，也绝不挂起退出。
-Future<StudioShutdownReport> runStudioShutdown(
+Future<StudioExitReport> runStudioShutdown(
   StudioTransport api,
   void Function(StudioShutdownProgress progress) onProgress, {
   required int remainingMs,
+  StudioExitIntent intent = StudioExitIntent.exit,
   Future<CloseReport> Function(DateTime deadline)? closeClient,
 }) async {
   // 本次清理预算的本地单调时钟：所有阶段共享并随时扣除真实耗时，绝不另起 2s。
@@ -194,6 +216,7 @@ Future<StudioShutdownReport> runStudioShutdown(
   return api.shutdownRuntime(
     remainingMs: _remainingBudget(remainingMs, watch),
     externalIssues: List<StudioShutdownIssue>.unmodifiable(issues),
+    intent: intent,
   );
 }
 
@@ -307,7 +330,8 @@ Future<void> _cancelBounded(
   }
 }
 
-/// 关机阶段 overlay：不可关闭，展示阶段文案与落库进度，等待数据库存完。
+/// 关机页面：替换 Router 子树，让被覆盖、暂停观察的页面也真实卸载并释放展示 lease。
+/// 应用 owner 与退出协调器仍位于 Router 之外，持续收束资源并展示进度。
 class StudioShutdownOverlay extends ConsumerWidget {
   const StudioShutdownOverlay({required this.child, super.key});
 
@@ -317,20 +341,17 @@ class StudioShutdownOverlay extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final shutdown = ref.watch(studioShutdownProgressStateProvider);
     if (shutdown.progress == null && shutdown.error == null) return child;
-    return Stack(
-      children: [
-        child,
-        Positioned.fill(
-          child: ColoredBox(
-            color: Theme.of(context).colorScheme.scrim.withValues(alpha: 0.45),
-            child: Center(
-              child: shutdown.error != null
-                  ? _ShutdownFailureCard(error: shutdown.error!)
-                  : _ShutdownProgressCard(progress: shutdown.progress!),
-            ),
-          ),
-        ),
-      ],
+    return ColoredBox(
+      color: Theme.of(context).colorScheme.surface,
+      child: Center(
+        child: shutdown.error != null
+            ? _ShutdownFailureCard(error: shutdown.error!)
+            : _ShutdownProgressCard(
+                progress: shutdown.progress!,
+                updateVersion: shutdown.updateVersion,
+                restart: shutdown.restart,
+              ),
+      ),
     );
   }
 }
@@ -371,9 +392,15 @@ class _ShutdownFailureCard extends StatelessWidget {
 }
 
 class _ShutdownProgressCard extends StatelessWidget {
-  const _ShutdownProgressCard({required this.progress});
+  const _ShutdownProgressCard({
+    required this.progress,
+    this.updateVersion,
+    this.restart = false,
+  });
 
   final StudioShutdownProgress progress;
+  final String? updateVersion;
+  final bool restart;
 
   @override
   Widget build(BuildContext context) {
@@ -397,7 +424,9 @@ class _ShutdownProgressCard extends StatelessWidget {
                 ),
                 const SizedBox(width: 12),
                 Text(
-                  l10n.shutdownTitle,
+                  updateVersion == null
+                      ? l10n.shutdownTitle
+                      : l10n.shutdownUpdateTitle(updateVersion!),
                   style: Theme.of(context).textTheme.titleMedium
                       ?.copyWith(fontWeight: FontWeight.w700),
                 ),
@@ -405,9 +434,19 @@ class _ShutdownProgressCard extends StatelessWidget {
             ),
             const SizedBox(height: 14),
             Text(
-              shutdownPhaseLabel(l10n, progress),
+              updateVersion == null
+                  ? shutdownPhaseLabel(l10n, progress)
+                  : l10n.shutdownUpdateSaving,
               style: Theme.of(context).textTheme.bodyMedium,
             ),
+            if (updateVersion != null) ...[
+              const SizedBox(height: 10),
+              Text(
+                restart
+                    ? l10n.shutdownUpdateRestartHint
+                    : l10n.shutdownUpdateExitHint,
+              ),
+            ],
             // 关闭是并发收束，进度事件不再按串行阶段 ordinal 单调递增；不显示内部阶段
             // 序号（既不真实也不代表完成比例），只展示当前正在收束的真实内容。
           ],

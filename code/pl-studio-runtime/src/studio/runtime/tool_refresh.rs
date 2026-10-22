@@ -73,10 +73,13 @@ impl CatalogSources {
             StudioProductEventKind::ThreadModeCatalogChanged(value) => {
                 Some(("modes".into(), serde_json::json!(value)))
             }
+            StudioProductEventKind::ModelCatalogStateChanged(value) => Some((
+                "model-catalogs".into(),
+                model_catalog_witness(value.as_ref()),
+            )),
             StudioProductEventKind::ThreadDirectoryChanged(_)
             | StudioProductEventKind::AgentDirectoryChanged(_)
             | StudioProductEventKind::SettingsConfigStateChanged(_)
-            | StudioProductEventKind::ModelCatalogStateChanged(_)
             | StudioProductEventKind::RecoveryStateChanged(_)
             | StudioProductEventKind::McpStateChanged(_)
             | StudioProductEventKind::AccountUsageStateChanged(_)
@@ -92,6 +95,42 @@ impl CatalogSources {
             self.0.insert(key, crate::hash::canonical_json_hash(&value));
         }
     }
+}
+
+/// Secret-free identity of one published model directory observation.
+///
+/// The witness carries only directory facts that can change tool availability: account ids, the
+/// effective chat catalog slugs and whether the inventory behind them was replaced. Service-only
+/// slugs stay out of the effective chat catalog, so the inventory success watermark is what moves
+/// when a new observation replaces the cached one. Probe progress, status timestamps and failure
+/// text are excluded: they change without changing any installed tool, and a published directory
+/// that is unchanged must not replan the catalog again. No endpoint, header or credential enters
+/// the witness.
+fn model_catalog_witness(
+    value: &crate::protocol::StudioModelCatalogStateSnapshot,
+) -> serde_json::Value {
+    let accounts = value.state.value().map(|snapshot| {
+        snapshot
+            .accounts
+            .iter()
+            .map(|account| {
+                let mut models = account
+                    .effective_models
+                    .iter()
+                    .map(|model| model.model_id.as_str())
+                    .collect::<Vec<_>>();
+                models.sort_unstable();
+                let facts = serde_json::json!({
+                    "models": models,
+                    "supported": account.model_catalog.supported,
+                    "source": account.model_catalog.source,
+                    "inventorySuccessAt": account.model_catalog.last_success_at,
+                });
+                (account.account_id.clone(), facts)
+            })
+            .collect::<BTreeMap<_, _>>()
+    });
+    serde_json::json!({ "accounts": accounts })
 }
 
 impl StudioRuntime {
@@ -264,11 +303,18 @@ impl StudioRuntime {
             if snapshot.tool_cleanup.pending > 0 && !authority_invalidated {
                 continue;
             }
-            if let Some(fact) = self.thread_factory.skill_catalog_fact(&id, &snapshot)
-                && let Err(error) = thread.queue_runtime_facts(vec![fact]).await
+            let mut facts = Vec::new();
+            if let Some(fact) = self.thread_factory.session_files_fact(&id, &snapshot) {
+                facts.push(fact);
+            }
+            if let Some(fact) = self.thread_factory.skill_catalog_fact(&id, &snapshot) {
+                facts.push(fact);
+            }
+            if !facts.is_empty()
+                && let Err(error) = thread.queue_runtime_facts(facts).await
                 && !matches!(error, pl_core::thread::ThreadError::Closed)
             {
-                tracing::warn!(thread_id = %id, %error, "could not queue refreshed Skill catalog facts");
+                tracing::warn!(thread_id = %id, %error, "could not queue refreshed host facts");
             }
             if snapshot.lifecycle != ThreadLifecycle::Open {
                 continue;
@@ -413,11 +459,16 @@ impl StudioRuntime {
             .await?;
         self.publish_tool_binding(id, thread, snapshot.extension_sequence, binding)
             .await?;
-        if let Some(fact) = self
-            .thread_factory
-            .skill_catalog_fact(id, &thread.snapshot())
-        {
-            thread.queue_runtime_facts(vec![fact]).await?;
+        let snapshot = thread.snapshot();
+        let mut facts = Vec::new();
+        if let Some(fact) = self.thread_factory.session_files_fact(id, &snapshot) {
+            facts.push(fact);
+        }
+        if let Some(fact) = self.thread_factory.skill_catalog_fact(id, &snapshot) {
+            facts.push(fact);
+        }
+        if !facts.is_empty() {
+            thread.queue_runtime_facts(facts).await?;
         }
         Ok(())
     }

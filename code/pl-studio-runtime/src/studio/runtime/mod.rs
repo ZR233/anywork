@@ -53,7 +53,6 @@ mod updater;
 
 pub(crate) use account_usage::AccountUsageRuntime;
 pub use account_usage::{AccountUsageStateData, AccountUsageStateSnapshot};
-pub use lifecycle::shutdown::ShutdownExternalHook;
 pub(crate) use model_performance::ModelPerformanceOwner;
 pub(crate) use shutdown_progress::ShutdownProgressBus;
 pub(crate) use skill_catalog::SkillCatalogRuntime;
@@ -399,11 +398,6 @@ impl StudioRuntime {
             .thread_persistence()
             .report_calls(self.store.calls().metrics());
         self.store.thread_persistence().queue_snapshot()
-    }
-
-    /// Returns whether an active turn prevents a safe application update.
-    pub async fn is_busy_for_update(&self) -> Result<bool> {
-        Ok(!self.derive_active_turns().await?.is_empty())
     }
 
     /// 从 agent framework 派生当前所有活动 turn。

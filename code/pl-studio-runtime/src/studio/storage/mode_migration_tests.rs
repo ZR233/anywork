@@ -381,7 +381,51 @@ async fn migrate_model_access(
 
 /// 故障注入与结构降级只通过真实 SQLite 文件完成，不使用生产句柄的私有入口。
 async fn raw_database(path: &std::path::Path) -> Result<sea_orm::DatabaseConnection> {
-    Ok(sea_orm::Database::connect(crate::studio::paths::sqlite_url(path)).await?)
+    Ok(sea_orm::Database::connect(
+        crate::studio::paths::sqlite_file_options(
+            path,
+            crate::studio::paths::SqliteFileMode::Create,
+            |options| options,
+        )
+        .await?,
+    )
+    .await?)
+}
+
+fn bound_thread(thread_id: &str) -> pl_protocol::Thread {
+    let mut thread = pl_protocol::Thread::placeholder(thread_id);
+    thread.project_id = "project-test".into();
+    thread.agent_path = thread_id.to_owned();
+    thread.root_thread_id = thread_id.to_owned();
+    thread
+}
+
+async fn register_test_thread(
+    store: &crate::studio::StudioStore,
+    thread: &pl_protocol::Thread,
+) -> Result<()> {
+    let mut delta = crate::studio::store::directory::DirectoryDelta::upsert_project(
+        crate::studio::store::directory::ProjectDirectoryRecord {
+            id: thread.project_id.clone(),
+            name: "Test".into(),
+            path: "/tmp/project-test".into(),
+            ssh_alias: None,
+            created_at: 1,
+            updated_at: 1,
+            last_opened_at: None,
+            closed: false,
+        },
+    );
+    delta.thread_upserts = vec![thread.clone()];
+    store.persist_directory_summaries(&delta).await
+}
+
+async fn registered_history(
+    store: &crate::studio::StudioStore,
+    thread: &pl_protocol::Thread,
+) -> Result<HistoryStore> {
+    register_test_thread(store, thread).await?;
+    store.history_for(&thread.project_id, &thread.id).await
 }
 
 #[tokio::test]
@@ -484,7 +528,8 @@ async fn shared_recovery_entry_commits_saved_representations_before_publishing()
     let directory = tempfile::tempdir()?;
     let database_path = directory.path().join("studio/v2/studio.sqlite");
     let store = crate::studio::StudioStore::open(&database_path).await?;
-    let history = store.history("migration").await?;
+    let thread = bound_thread("migration");
+    let history = registered_history(&store, &thread).await?;
     let original = saved_state(BTreeMap::from([
         (
             "studio.model-route".into(),
@@ -496,7 +541,6 @@ async fn shared_recovery_entry_commits_saved_representations_before_publishing()
         ),
     ]));
     persist(&history, original.clone(), true).await?;
-    let thread = pl_protocol::Thread::placeholder("migration");
 
     let recovered =
         crate::studio::thread_factory::recovery::load_checkpoint_for_recovery(&store, &thread)
@@ -536,7 +580,7 @@ async fn shared_recovery_entry_commits_saved_representations_before_publishing()
     drop(store);
 
     let reopened = crate::studio::StudioStore::open(&database_path).await?;
-    let history = reopened.history("migration").await?;
+    let history = reopened.history_for(&thread.project_id, &thread.id).await?;
     let saved = history.checkpoint().await?.context("reopened checkpoint")?;
     assert_eq!(
         saved.state.extensions["studio.model-route"]
@@ -706,8 +750,11 @@ async fn legacy_native_compaction_receipt_upgrades_sources_through_the_history_u
     let directory = tempfile::tempdir()?;
     let database_path = directory.path().join("studio/v2/studio.sqlite");
     let store = crate::studio::StudioStore::open(&database_path).await?;
-    let history_path = store.thread_storage_dir("migration").join("history.sqlite");
-    let history = store.history("migration").await?;
+    let thread = bound_thread("migration");
+    let history = registered_history(&store, &thread).await?;
+    let history_path = store
+        .session_paths(&thread.project_id, &thread.id)?
+        .history_database();
     let mut state = saved_state(BTreeMap::from([(
         crate::compaction::LATEST_RECEIPT.into(),
         record(7, "pl.studio.compaction", 1, LEGACY_NATIVE_RECEIPT)?,
@@ -733,8 +780,7 @@ async fn legacy_native_compaction_receipt_upgrades_sources_through_the_history_u
 
     // 真实共同恢复入口：旧库结构升级必须能从 v1 原生回执恢复来源而不是先硬失败。
     let reopened = crate::studio::StudioStore::open(&database_path).await?;
-    let upgraded = reopened.history("migration").await?;
-    let thread = pl_protocol::Thread::placeholder("migration");
+    let upgraded = reopened.history_for(&thread.project_id, &thread.id).await?;
     let checkpoint =
         crate::studio::thread_factory::recovery::load_checkpoint_for_recovery(&reopened, &thread)
             .await?
@@ -872,9 +918,11 @@ async fn shared_history_checkpoint_waits_for_identity_and_keeps_cold_reads_empty
     let database_path = directory.path().join("studio/v2/studio.sqlite");
     let store = crate::studio::StudioStore::open(&database_path).await?;
     let thread_id = "migration";
-    let history = store.history(thread_id).await?;
-    let history_path = store.thread_storage_dir(thread_id).join("history.sqlite");
-    let thread = pl_protocol::Thread::placeholder(thread_id);
+    let thread = bound_thread(thread_id);
+    let history = registered_history(&store, &thread).await?;
+    let history_path = store
+        .session_paths(&thread.project_id, thread_id)?
+        .history_database();
 
     let missing = crate::studio::thread_factory::recovery::load_checkpoint(&store, &thread).await?;
     assert!(missing.is_none(), "缺库冷读必须为空且不创建文件");
@@ -897,7 +945,7 @@ async fn shared_history_checkpoint_waits_for_identity_and_keeps_cold_reads_empty
     assert_eq!(recovered.thread_id, thread_id);
     assert_eq!(recovered.state_revision, 1);
     let foreign = store
-        .state("other-thread")
+        .state_for(&thread.project_id, "other-thread")?
         .load(&history)
         .await
         .expect_err("错 Thread 的 history 句柄必须失败闭锁");

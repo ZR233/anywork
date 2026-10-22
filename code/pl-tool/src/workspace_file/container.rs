@@ -314,4 +314,31 @@ where
         files.truncate(request.max_files);
         Ok(WorkspaceFileListResult { files, truncated })
     }
+
+    async fn create_directory(&self, path: String, cwd: Option<String>) -> Result<()> {
+        let path = resolve_container_workspace_path(&path, cwd.as_deref())?;
+        let command = format!("mkdir -p -- {}", shell_quote_word(&path));
+        let output = self
+            .backend
+            .exec(ContainerExecRequest {
+                call_id: None,
+                command,
+                cwd,
+                timeout_secs: Some(20),
+                output_bytes_cap: None,
+                cancellation_token: None,
+            })
+            .await
+            .map_err(|error| tool_error("create_directory", error))?;
+        if output.status != 0 {
+            return Err(tool_error(
+                "create_directory",
+                format!(
+                    "failed to create directory: {}",
+                    preview_error(&output.stderr, &output.stdout)
+                ),
+            ));
+        }
+        Ok(())
+    }
 }

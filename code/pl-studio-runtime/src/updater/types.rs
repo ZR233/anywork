@@ -33,6 +33,5 @@ pub enum StudioUpdateEvent {
     Started { total: u64 },
     Progress { downloaded: u64, total: u64 },
     Verifying,
-    InstallerLaunched,
     Failed { code: String, message: String },
 }

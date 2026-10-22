@@ -160,6 +160,15 @@ cargo xtask run-gui --demo
 cargo xtask build-gui
 ```
 
+### 4. 数据与临时文件在哪里？
+
+- **用户配置**默认位于 `~/.anywork/config.toml`（Windows 为 `%USERPROFILE%\.anywork\config.toml`），密钥保存在系统凭据库。可用 `--studio-home` 或 `ANYWORK_HOME` 指定独立数据根。
+- **项目与会话数据**按稳定身份收在 `<studio-home>/v2/projects/<project-key>/sessions/<thread-key>/`；历史、附件和可靠工具输出随会话保存。归档不是删除历史，既有 v2 平铺会话通过可接续迁移整理到新目录。
+- **智能体临时文件**位于实际工作区的 `.anywork/sessions/<thread-key>/scratch/`，待交付产物位于同级 `artifacts/`；SSH 会话使用远端工作区路径。系统提示词会给出本会话的准确位置，运行池内的忽略文件避免把临时产物误提交到 Git。
+
+内部数据库和归属清单由应用管理，不要手工编辑。目录职责、迁移与 helper 传输边界详见
+[存储契约](design/17-studio-storage.md) 和 [SSH 远程开发](design/22-ssh-remote.md)。
+
 ---
 
 ## 📖 延伸阅读

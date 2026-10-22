@@ -389,12 +389,9 @@ impl CallLog {
                         record.kind.as_str(),
                         event::CALL_LOG_KIND_BILLING | event::CALL_LOG_KIND_MIGRATED
                     )
+                    && let Some(sample) = super::performance::sample_from_record(&record)
                 {
-                    super::performance::record(
-                        &tx,
-                        &super::performance::sample_from_record(&record),
-                    )
-                    .await?;
+                    super::performance::record(&tx, &sample).await?;
                     recovered_samples += 1;
                     if recovered_samples.is_multiple_of(256) {
                         super::performance::trim(&tx).await?;

@@ -14,7 +14,6 @@ class GeneralTab extends StatefulWidget {
     required this.settings,
     required this.webSearch,
     required this.deepSeekWebSearch,
-    required this.runtimeBusy,
     required this.onCommand,
     required this.onSaveWebSearch,
     required this.onDeepSeekSearchChanged,
@@ -24,7 +23,6 @@ class GeneralTab extends StatefulWidget {
   final GeneralSettingsView settings;
   final WebSearchSettingsView webSearch;
   final DeepSeekWebSearchSettingsView deepSeekWebSearch;
-  final bool runtimeBusy;
   final Future<void> Function(SettingsFieldCommand) onCommand;
   final Future<WebSearchSettingsView> Function(List<SettingsFieldCommand>)
   onSaveWebSearch;
@@ -87,7 +85,7 @@ class _GeneralTabState extends State<GeneralTab> {
         ),
         SettingsSectionPanel(
           title: context.l10n.settingsUpdatesGroup,
-          children: [StudioUpdateSettingsRow(runtimeBusy: widget.runtimeBusy)],
+          children: [const StudioUpdateSettingsRow()],
         ),
         if (_error != null) SettingsInlineError(message: _error!),
       ],

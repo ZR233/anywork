@@ -149,7 +149,10 @@ pub struct AttachmentRecord {
     pub modality: pl_protocol::studio::StudioAttachmentModality,
     pub media_type: String,
     pub filename: Option<String>,
-    pub storage_path: String,
+    /// POSIX blob reference relative to the owning session, never a host filesystem path.
+    /// Read bytes through `StudioStore` so the Thread identity selects the correct session root.
+    #[serde(rename = "storagePath")]
+    pub blob_relative_path: String,
     pub byte_size: u64,
     pub content_sha256: String,
     pub width: Option<u32>,

@@ -73,6 +73,13 @@ void main() {
     StudioExitCoordinator(
       graph.client.transport,
       _container.read(studioShutdownProgressStateProvider.notifier).update,
+      readyUpdateVersion: () =>
+          graph.client.updates.state is ReadyUpdaterStateSnapshot
+          ? graph.client.updates.state.update?.version
+          : null,
+      onBeginExit: _container
+          .read(studioShutdownProgressStateProvider.notifier)
+          .beginExit,
       // 退出（含失败取消）在 `graph.close` 之前取消 runtime 取证观察：共享 Session／
       // Client 仍由既有 owner 关闭，记录器不改变任何业务 demand。
       closeClient: (deadline) {
@@ -163,6 +170,22 @@ Future<String> _handleDriverData(String? message) async {
       });
     case 'snapshot':
       return _driverSnapshotJson();
+    case 'updater-state':
+      // Read-only Client/canonical facts, including the request that survives routes.
+      final updater = _client.updates.state;
+      final request = _client.updates.request.value;
+      return jsonEncode({
+        'state': updater.runtimeType.toString(),
+        'revision': updater.revision,
+        'version': updater.update?.version,
+        'request': request.phase.name,
+        'pending': request.pending,
+        if (updater is DownloadingUpdaterStateSnapshot)
+          'downloaded': updater.downloaded,
+        if (updater is DownloadingUpdaterStateSnapshot) 'total': updater.total,
+        if (updater is InstallFailedUpdaterStateSnapshot)
+          'error': updater.error.code,
+      });
     case 'mode-editor-state':
       final editor = _client.modeEditor.state;
       final catalog = _client.modeCatalog.state;
@@ -239,6 +262,8 @@ Future<String> _handleDriverData(String? message) async {
               'samples': summary.sampleCount,
               'tokens': summary.completionTokens,
               'tokensPerSecond': summary.tokensPerSecond,
+              'ttftSampleCount': summary.ttftSampleCount,
+              'averageTtftMillis': summary.averageTtftMillis,
               'effortBreakdowns': [
                 for (final effort in summary.effortBreakdowns)
                   {
@@ -246,6 +271,8 @@ Future<String> _handleDriverData(String? message) async {
                     'samples': effort.sampleCount,
                     'tokens': effort.completionTokens,
                     'tokensPerSecond': effort.tokensPerSecond,
+                    'ttftSampleCount': effort.ttftSampleCount,
+                    'averageTtftMillis': effort.averageTtftMillis,
                   },
               ],
             },
@@ -406,6 +433,18 @@ Future<String> _handleDriverData(String? message) async {
       final startup = diagnostics['startup'];
       return jsonEncode({
         ...diagnostics,
+        'clientResources': [
+          for (final resource in _client.budget.usage)
+            {
+              'kind': resource.kind.name,
+              'owner': resource.owner,
+              'phase': resource.phase.name,
+            },
+        ],
+        'unresolvedClientResources': [
+          for (final resource in _client.unresolvedResources)
+            {'owner': resource.owner, 'reason': resource.reason.toString()},
+        ],
         'startup': {
           if (startup is Map<String, Object?>) ...startup,
           'phase': FrbStudioTransport.startupProgress.value.name,
@@ -1053,14 +1092,14 @@ Map<String, Object?> _driverDiagnostics({StudioDriverFacts? observed}) {
   final outputTokens = defaultProneCount(runtime?.completionTokens);
   final reasoningTokens = defaultProneCount(runtime?.reasoningTokens);
   final liveOutputTokens = explicitUsageCount(observedUsage?.completionTokens);
-  final liveDecodeMillis = explicitUsageCount(observedUsage?.decodeMillis);
+  final liveResponseMillis = explicitUsageCount(observedUsage?.responseMillis);
   final throughputSource = runtime == null
       ? null
       : ModelRouteQueries.throughputSource(runtime);
   // Preserve source counters for diagnostics, but only derive throughput from
-  // a complete output/decode pair chosen by the canonical Client query.
+  // a complete output/response pair chosen by the canonical Client query.
   final turnOutputTokens = throughputSource?.outputTokens;
-  final decodeMillis = throughputSource?.decodeMillis;
+  final responseMillis = throughputSource?.responseMillis;
   final tokensPerSecond = throughputSource?.tokensPerSecond;
   return <String, Object?>{
     'schemaVersion': 1,
@@ -1086,20 +1125,25 @@ Map<String, Object?> _driverDiagnostics({StudioDriverFacts? observed}) {
       'outputTokens': outputTokens,
       'reasoningTokens': reasoningTokens,
       'liveOutputTokens': liveOutputTokens,
-      'liveDecodeMillis': liveDecodeMillis,
+      'liveResponseMillis': liveResponseMillis,
       'turnOutputTokens': turnOutputTokens,
-      'decodeMillis': decodeMillis,
+      'responseMillis': responseMillis,
       'tokensPerSecond': tokensPerSecond,
+      // 当前 Thread runtime 快照声明的技能激活列表：直接读 Client runtime
+      // read-model 的 typed 字段，不另建 Driver 状态，也不从历史 Skill 条目推断。
+      // 没有选中 Thread 的 workspace 时为 null，与其它 runtime 事实一致。
+      'activeSkills': runtime?.activeSkills,
       // Keep throughput as an explicit typed group only when both source
       // counters are known; an unknown group is represented by null.
       'throughput': tokensPerSecond == null
           ? null
           : <String, Object?>{
               'outputTokens': turnOutputTokens,
-              'decodeMillis': decodeMillis,
+              'responseMillis': responseMillis,
               'tokensPerSecond': tokensPerSecond,
             },
     },
+    'skills': _driverSkillsDiagnostics(),
     'composer': <String, Object?>{
       'newThread': _driverComposerDiagnostics(facts.newThreadComposer),
       'thread': _driverComposerDiagnostics(facts.threadComposer),
@@ -1120,6 +1164,74 @@ Map<String, Object?> _driverDiagnostics({StudioDriverFacts? observed}) {
       'runtimeEventEndpoint': 'unsupported',
       'systemClipboardTouched': false,
     },
+  };
+}
+
+/// Project Skill discovery as the GUI's own Client read-model reports it.
+///
+/// The native acceptance seeds synthetic Skills into the isolated home, so this
+/// Driver-only group carries the canonical discovered names, warnings and typed
+/// state. Its `config` member is the read-only projection of the canonical Skill
+/// directories the runtime was configured with; nothing here reads a file or a
+/// Skill body, and no second Driver-side fact source is introduced.
+Map<String, Object?> _driverSkillsDiagnostics() {
+  final projectId = _client.selection.state.selectedProjectId;
+  final snapshot = projectId == null
+      ? null
+      : _client.existingSkills(projectId)?.state.value;
+  if (projectId == null || snapshot == null) {
+    return <String, Object?>{
+      'projectId': projectId,
+      'status': null,
+      'catalogRevision': null,
+      'skills': null,
+      'warnings': null,
+      'error': null,
+    };
+  }
+  final resource = snapshot.state;
+  return <String, Object?>{
+    'projectId': projectId,
+    'status': switch (resource) {
+      UninitializedObservedResource() => 'uninitialized',
+      LoadingObservedResource() => 'loading',
+      ReadyObservedResource() => 'ready',
+      RefreshingObservedResource() => 'refreshing',
+      StaleObservedResource() => 'stale',
+      DegradedObservedResource() => 'degraded',
+      FailedObservedResource() => 'failed',
+      StoppedObservedResource() => 'stopped',
+    },
+    'catalogRevision': resource.value?.catalogRevision,
+    'skills': List<String>.of(snapshot.skills),
+    'warnings': List<String>.of(snapshot.warnings),
+    'error': switch (resource) {
+      DegradedObservedResource(:final error) => error.message,
+      FailedObservedResource(:final error) => error.message,
+      _ => null,
+    },
+    'config': _driverSkillsConfigDiagnostics(),
+  };
+}
+
+/// The Skill directories the runtime is configured to scan.
+///
+/// Discovery can only find a seeded Skill when this configuration points at the
+/// isolated user directory, so the acceptance records it next to the discovered
+/// names instead of inferring the cause from an empty list.
+Map<String, Object?> _driverSkillsConfigDiagnostics() {
+  final skills = _client.settings.state.canonical?.skills;
+  if (skills == null) {
+    return <String, Object?>{'availability': 'unavailable'};
+  }
+  return <String, Object?>{
+    'availability': 'available',
+    'enabled': skills.enabled,
+    'systemEnabled': skills.systemEnabled,
+    'projectDir': skills.projectDir,
+    'userDir': skills.userDir,
+    'externalDirs': List<String>.of(skills.externalDirs),
+    'disabledCount': skills.disabled.length,
   };
 }
 

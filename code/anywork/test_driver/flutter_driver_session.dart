@@ -80,7 +80,7 @@ abstract interface class FlutterDriverClient {
 
   /// Sends a key (optionally with shift held) through the framework's focus path.
   ///
-  /// Pure integers on purpose: host Driver scripts run under `dart run` and must
+  /// Pure integers on purpose: host Driver scripts run in a Dart VM and must
   /// not import `package:flutter/services.dart` (it pulls in `dart:ui`).
   Future<void> pressKey(
     int keyId,

@@ -280,7 +280,8 @@ cargo xtask run-gui --driver
                 let mut gui = OwnedProcess::start(&mut command, false)?;
                 let vm_url = wait_for_vm(&gui_log, &mut gui, &mut fixture, context.interrupt)?;
                 let log = File::create(&driver_log)?;
-                let mut command = process::path_command("dart", &[]);
+                let mut command =
+                    driver_command(context.app_dir, "test_driver/account_usage_journey.dart");
                 let label = |id: &str| -> Result<String> {
                     Ok(catalog
                         .templates
@@ -291,8 +292,6 @@ cargo xtask run-gui --driver
                         .clone())
                 };
                 command
-                    .current_dir(context.app_dir)
-                    .args(["run", "test_driver/account_usage_journey.dart"])
                     .arg(vm_url)
                     .arg(&project)
                     .arg(context.output)

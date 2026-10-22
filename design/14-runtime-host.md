@@ -28,6 +28,14 @@ pending update，反之亦然；selector 表示 desired route，实际模型仍�
 account 设置更新可触发模型和工具刷新，但刷新必须逐 Thread 读取自身 selector 并重新解析，
 不得广播某个全局角色路由。selector 已失效时 Thread 进入明确 unavailable 状态，不猜测 fallback。
 
+执行文件位置是宿主运行事实而非首轮固定用户指令。统一装配以当前 Project、Thread 和实际
+workspace 绑定生成 `studio.session-files`，声明执行侧 scratch、artifacts、命令目录及它们
+所属的本地/SSH 环境（布局见 [17](./17-studio-storage.md)）。新建 root、child、reviewer、
+冷恢复与工具刷新均使用同一份路径值；directory 的自身临时目录许可也消费此值。恢复后的
+最新事实在安全模型边界替换同 source 的旧值，不能重渲染历史请求或改变已冻结请求。
+上下文压缩保留最新宿主事实，旧摘要里的路径不能覆盖它。宿主内部数据库、清单和传输
+scratch 不作为模型可写目录提供；Platform 与通用系统提示词解释这一区别。
+
 ## 14.2 输入受理与驱动
 
 输入以调用方稳定 ID 幂等受理；Studio 的 submitPrompt 由 core 原子选择启动或打断后继续，

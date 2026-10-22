@@ -549,10 +549,10 @@ class BridgeModelPerformanceEffortSummary {
   final BigInt sampleCount;
   final BigInt completionTokens;
   final BigInt totalTtftMillis;
-  final BigInt totalDecodeMillis;
+  final BigInt ttftSampleCount;
   final BigInt totalResponseMillis;
   final double tokensPerSecond;
-  final double averageTtftMillis;
+  final double? averageTtftMillis;
   final double averageResponseMillis;
 
   const BridgeModelPerformanceEffortSummary({
@@ -560,10 +560,10 @@ class BridgeModelPerformanceEffortSummary {
     required this.sampleCount,
     required this.completionTokens,
     required this.totalTtftMillis,
-    required this.totalDecodeMillis,
+    required this.ttftSampleCount,
     required this.totalResponseMillis,
     required this.tokensPerSecond,
-    required this.averageTtftMillis,
+    this.averageTtftMillis,
     required this.averageResponseMillis,
   });
 
@@ -573,7 +573,7 @@ class BridgeModelPerformanceEffortSummary {
       sampleCount.hashCode ^
       completionTokens.hashCode ^
       totalTtftMillis.hashCode ^
-      totalDecodeMillis.hashCode ^
+      ttftSampleCount.hashCode ^
       totalResponseMillis.hashCode ^
       tokensPerSecond.hashCode ^
       averageTtftMillis.hashCode ^
@@ -588,7 +588,7 @@ class BridgeModelPerformanceEffortSummary {
           sampleCount == other.sampleCount &&
           completionTokens == other.completionTokens &&
           totalTtftMillis == other.totalTtftMillis &&
-          totalDecodeMillis == other.totalDecodeMillis &&
+          ttftSampleCount == other.ttftSampleCount &&
           totalResponseMillis == other.totalResponseMillis &&
           tokensPerSecond == other.tokensPerSecond &&
           averageTtftMillis == other.averageTtftMillis &&
@@ -715,10 +715,12 @@ class BridgeModelPerformanceSummary {
   final BigInt sampleCount;
   final BigInt completionTokens;
   final BigInt totalTtftMillis;
-  final BigInt totalDecodeMillis;
+  final BigInt ttftSampleCount;
   final BigInt totalResponseMillis;
   final double tokensPerSecond;
-  final double averageTtftMillis;
+
+  /// 没有已知首字样本时保持未知。
+  final double? averageTtftMillis;
   final double averageResponseMillis;
 
   /// 该 (accountId, modelId) 组内的推理强度二级细分。
@@ -731,10 +733,10 @@ class BridgeModelPerformanceSummary {
     required this.sampleCount,
     required this.completionTokens,
     required this.totalTtftMillis,
-    required this.totalDecodeMillis,
+    required this.ttftSampleCount,
     required this.totalResponseMillis,
     required this.tokensPerSecond,
-    required this.averageTtftMillis,
+    this.averageTtftMillis,
     required this.averageResponseMillis,
     required this.effortBreakdowns,
   });
@@ -747,7 +749,7 @@ class BridgeModelPerformanceSummary {
       sampleCount.hashCode ^
       completionTokens.hashCode ^
       totalTtftMillis.hashCode ^
-      totalDecodeMillis.hashCode ^
+      ttftSampleCount.hashCode ^
       totalResponseMillis.hashCode ^
       tokensPerSecond.hashCode ^
       averageTtftMillis.hashCode ^
@@ -765,7 +767,7 @@ class BridgeModelPerformanceSummary {
           sampleCount == other.sampleCount &&
           completionTokens == other.completionTokens &&
           totalTtftMillis == other.totalTtftMillis &&
-          totalDecodeMillis == other.totalDecodeMillis &&
+          ttftSampleCount == other.ttftSampleCount &&
           totalResponseMillis == other.totalResponseMillis &&
           tokensPerSecond == other.tokensPerSecond &&
           averageTtftMillis == other.averageTtftMillis &&

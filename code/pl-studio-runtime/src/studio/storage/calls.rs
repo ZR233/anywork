@@ -13,9 +13,10 @@
 //! 单库只有一个逻辑 writer：轻量调用事件进入同一条有界队列，后台批量落盘（JSONL 追加 + SQLite
 //! 索引/统计）。队列满或写入失败只记录统计缺口，不阻塞 Thread 的权威历史提交。
 //!
-//! 打开时会校验 `calls_meta.schema_version`：schema <= 4 的旧库先保全累计摘要与性能样本、再把保留
-//! 期正文转换进日志，全部成功后才前移版本并删除旧结构；schema 5 修复遗留样本外键，并从保留
-//! 日志重建性能投影。未来版本显式失败并保留原字节，不触碰用户 home 下的旧数据根。
+//! 打开时会校验 `calls_meta.schema_version`：schema <= 4 的旧库先保全累计摘要、再把保留期正文转换
+//! 进日志，全部成功后才前移版本并删除旧结构；schema 5 修复遗留样本外键。性能样本只由当前统计口径
+//! （`calls_meta.throughput_epoch`）的记录建立，旧口径样本在口径切换时一次性丢弃，且不会从仍保留的
+//! 旧日志回填。未来版本显式失败并保留原字节，不触碰用户 home 下的旧数据根。
 
 use std::collections::{BTreeSet, VecDeque};
 use std::path::{Path, PathBuf};
@@ -30,8 +31,8 @@ use pl_core::thread::{AttemptOutcome, ThreadEffectBatch};
 use pl_protocol::{InferenceBillingRecord, RuntimeCostAmount};
 use sea_orm::sqlx::sqlite::{SqliteJournalMode, SqliteSynchronous};
 use sea_orm::{
-    ConnectOptions, ConnectionTrait, Database, DatabaseBackend, DatabaseConnection,
-    DatabaseTransaction, QueryResult, Statement, TransactionTrait, Value,
+    ConnectionTrait, Database, DatabaseBackend, DatabaseConnection, DatabaseTransaction,
+    QueryResult, Statement, TransactionTrait, Value,
 };
 use tokio::sync::{Notify, watch};
 
@@ -159,8 +160,10 @@ pub(crate) struct PerformanceSummaryRow {
     pub(crate) effort: Option<String>,
     pub(crate) sample_count: u64,
     pub(crate) completion_tokens: u64,
+    /// 只有真正测得首字的样本才累加，因此它同时是平均首字的独立分母。
     pub(crate) total_ttft_millis: u64,
-    pub(crate) total_decode_millis: u64,
+    pub(crate) ttft_sample_count: u64,
+    /// 含首字等待的总响应耗时；输出吞吐的分母。
     pub(crate) total_response_millis: u64,
 }
 
@@ -297,19 +300,23 @@ impl CallsStore {
             CallsOpenPolicy::Degraded => CallLog::open(root_dir.join(CALL_LOG_DIR_NAME)).await?,
             CallsOpenPolicy::Strict => CallLog::prepare(root_dir.join(CALL_LOG_DIR_NAME)).await?,
         };
-        let mut options = ConnectOptions::new(crate::studio::paths::sqlite_url(path));
-        options
-            .max_connections(2)
-            .min_connections(2)
-            .connect_timeout(Duration::from_secs(8))
-            .acquire_timeout(Duration::from_secs(8))
-            .map_sqlx_sqlite_opts(|options| {
+        let mut options = crate::studio::paths::sqlite_file_options(
+            path,
+            crate::studio::paths::SqliteFileMode::Create,
+            |options| {
                 options
                     .journal_mode(SqliteJournalMode::Wal)
                     .synchronous(SqliteSynchronous::Full)
                     .busy_timeout(Duration::from_secs(5))
                     .foreign_keys(true)
-            })
+            },
+        )
+        .await?;
+        options
+            .max_connections(2)
+            .min_connections(2)
+            .connect_timeout(Duration::from_secs(8))
+            .acquire_timeout(Duration::from_secs(8))
             .sqlx_logging(false);
         let db = Database::connect(options).await?;
         if let Err(error) = schema::initialize(&db, &mut log, &root_dir).await {
@@ -732,6 +739,10 @@ impl CallsStore {
             if record.status != CallStatus::Committed.as_str() {
                 continue;
             }
+            // 旧统计口径的记录只保留为原始调用日志，不能回到性能历史。
+            if !record.is_current_throughput_epoch() {
+                continue;
+            }
             let has_throughput_sample = record.throughput_sample().is_some();
             samples.push(PerformanceSampleRow {
                 completed_at: record.recorded_at,
@@ -745,9 +756,9 @@ impl CallsStore {
                     .usage
                     .and_then(|usage| usage.output_tokens)
                     .unwrap_or(0),
-                ttft_millis: record.timing.map(|timing| timing.ttft_millis),
-                decode_millis: record.timing.map(|timing| timing.decode_millis),
-                response_millis: record.timing.map(|timing| timing.response_millis),
+                ttft_millis: record.timing.and_then(|timing| timing.ttft_millis),
+                decode_millis: record.timing.and_then(|timing| timing.decode_millis),
+                response_millis: record.timing.and_then(|timing| timing.response_millis),
                 has_throughput_sample,
             });
         }
@@ -757,7 +768,8 @@ impl CallsStore {
     /// 按账号/冻结配置模型/effort 聚合性能汇总（数据库聚合投影）。
     ///
     /// 顶层身份是 (account_id, model_id)，effort 为组内二级细分；未知账号或未知配置模型的
-    /// 旧样本不进入任何已知账号模型汇总。只取有效成对 output/decode 正数样本，缺失不是 0。
+    /// 旧样本不进入任何已知账号模型汇总。只取成对有效的 output/response 正数样本：
+    /// 首字可缺失，缺失时它既不冒充零也不参与首字均值；缺失不是 0。
     pub(crate) async fn performance_summary_rows(&self) -> Result<Vec<PerformanceSummaryRow>> {
         let rows = self
             .writer
@@ -770,13 +782,18 @@ impl CallsStore {
                         COUNT(*) AS sample_count,
                         COALESCE(SUM(output_tokens), 0) AS completion_tokens,
                         COALESCE(SUM(ttft_millis), 0) AS total_ttft_millis,
-                        COALESCE(SUM(decode_millis), 0) AS total_decode_millis,
+                        COUNT(ttft_millis) AS ttft_sample_count,
                         COALESCE(SUM(response_millis), 0) AS total_response_millis
                  FROM performance_samples
                  WHERE account_id IS NOT NULL AND account_id <> '' AND model_id IS NOT NULL
-                   AND output_tokens > 0 AND decode_millis > 0
-                   AND ttft_millis >= 0 AND response_millis >= ttft_millis
+                   AND output_tokens > 0 AND response_millis > 0
+                   AND (
+                     (ttft_millis IS NULL AND decode_millis IS NULL)
+                     OR (
+                       ttft_millis >= 0 AND response_millis >= ttft_millis
                    AND decode_millis = response_millis - ttft_millis
+                     )
+                   )
                  GROUP BY account_id, model_id, effort
                  ORDER BY account_id, model_id, effort IS NOT NULL, effort",
                 vec![],
@@ -1169,8 +1186,9 @@ async fn apply_billing(
     }
     let now = crate::studio::unix_seconds();
     append_record(db, log, record, now).await?;
-    if record.status == CallStatus::Committed.as_str() {
-        let sample = performance::sample_from_record(record);
+    if record.status == CallStatus::Committed.as_str()
+        && let Some(sample) = performance::sample_from_record(record)
+    {
         performance::record(db, &sample).await?;
     }
     Ok(())
@@ -1252,7 +1270,7 @@ fn performance_summary_row(row: &QueryResult) -> Result<PerformanceSummaryRow> {
         sample_count: required_u64(row, "sample_count")?,
         completion_tokens: required_u64(row, "completion_tokens")?,
         total_ttft_millis: required_u64(row, "total_ttft_millis")?,
-        total_decode_millis: required_u64(row, "total_decode_millis")?,
+        ttft_sample_count: required_u64(row, "ttft_sample_count")?,
         total_response_millis: required_u64(row, "total_response_millis")?,
     })
 }

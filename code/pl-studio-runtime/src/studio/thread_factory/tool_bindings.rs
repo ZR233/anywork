@@ -114,6 +114,25 @@ impl StudioThreadFactory {
         *current = candidate.binding;
         Ok(())
     }
+    pub(in crate::studio) fn session_files_fact(
+        &self,
+        id: &str,
+        snapshot: &ThreadSnapshot,
+    ) -> Option<pl_core::thread::RuntimeFact> {
+        let binding = self
+            .bindings
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(id)?
+            .clone();
+        let fact = super::session_files::session_files_fact(&binding.workspace)?;
+        let previous = snapshot
+            .runtime_facts
+            .iter()
+            .find(|current| current.source_id == "studio.session-files");
+        (previous != Some(&fact)).then_some(fact)
+    }
+
     pub(in crate::studio) fn skill_catalog_fact(
         &self,
         id: &str,
@@ -323,7 +342,10 @@ impl StudioThreadFactory {
         };
         let route = config.models.resolve_route(role, &selector)?;
         let resources = crate::resource_store::FileResourceStore::new(
-            self.services.store.session_resources_dir(&thread.id),
+            self.services
+                .store
+                .session_resources_dir_for(&thread.project_id, &thread.id)
+                .map_err(|error| resource_error("resolve refreshed session resources", error))?,
         );
         let remote = match &project.ssh_alias {
             Some(server) => {

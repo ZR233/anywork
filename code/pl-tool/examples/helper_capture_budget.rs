@@ -156,8 +156,73 @@ async fn main() -> anyhow::Result<()> {
         }
         println!("case={id} raw_stdout={out} raw_stderr={err} exit={exit:?}");
     }
+    atomic_overwrite_publishes_and_refuses_symlinks(client.clone(), root.path()).await?;
     client.close().await?;
     anyhow::ensure!(child.wait().await?.success(), "helper did not close");
     println!("header_preflight=passed");
+    Ok(())
+}
+
+async fn atomic_overwrite_publishes_and_refuses_symlinks(
+    client: RemoteClient,
+    root: &std::path::Path,
+) -> anyhow::Result<()> {
+    use pl_protocol::remote::{RemotePathRequest, RemoteWriteMode, RemoteWriteRequest};
+    let opened = client
+        .request(
+            RemoteRequest::OpenWorkspace {
+                path: root.display().to_string(),
+            },
+            &[],
+        )
+        .await?;
+    let RemoteResponse::WorkspaceOpened(workspace) = opened.response else {
+        anyhow::bail!("unexpected workspace response");
+    };
+    client
+        .request(
+            RemoteRequest::WriteFile(RemoteWriteRequest {
+                target: RemotePathRequest {
+                    workspace_id: workspace.workspace_id.clone(),
+                    path: "atomic.txt".into(),
+                },
+                mode: RemoteWriteMode::Overwrite,
+            }),
+            b"published",
+        )
+        .await?;
+    anyhow::ensure!(std::fs::read(root.join("atomic.txt"))? == b"published");
+    let leftovers: Vec<_> = std::fs::read_dir(root)?
+        .filter_map(|entry| entry.ok())
+        .filter(|entry| {
+            entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".pure-write-")
+        })
+        .collect();
+    anyhow::ensure!(
+        leftovers.is_empty(),
+        "successful overwrite must not leave temps"
+    );
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(root.join("atomic.txt"), root.join("link.txt"))?;
+        let linked = client
+            .request(
+                RemoteRequest::WriteFile(RemoteWriteRequest {
+                    target: RemotePathRequest {
+                        workspace_id: workspace.workspace_id,
+                        path: "link.txt".into(),
+                    },
+                    mode: RemoteWriteMode::Overwrite,
+                }),
+                b"via-link",
+            )
+            .await;
+        anyhow::ensure!(linked.is_err(), "writeAtomic must refuse symlink entries");
+        anyhow::ensure!(std::fs::read(root.join("atomic.txt"))? == b"published");
+    }
+    println!("OK  writeAtomic publishes atomically and refuses symlink entries");
     Ok(())
 }

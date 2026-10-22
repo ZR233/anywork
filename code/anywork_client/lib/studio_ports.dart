@@ -246,9 +246,10 @@ abstract class StudioTransport
   /// 作为本次关闭的最终成功前置条件随请求交给 runtime 单编排；默认空表示调用方已确保无
   /// 外部问题。只有真实 `Clean` 才代表持久化已安全排空；`Degraded` 或超时不代表保存成
   /// 功，调用方据此决定退出码。Cleanup 失败时保留 native owner 并把错误抛给调用方。
-  Future<StudioShutdownReport> shutdownRuntime({
+  Future<StudioExitReport> shutdownRuntime({
     required int remainingMs,
     List<StudioShutdownIssue> externalIssues = const [],
+    StudioExitIntent intent = StudioExitIntent.exit,
   });
 
   Future<SubmitPromptReceipt> submitPrompt(
@@ -355,17 +356,26 @@ abstract interface class StudioUpdateApi {
   Future<UpdaterStateSnapshot> check();
   Future<void> startAutomaticUpdate();
   Future<void> cancelAutomaticUpdate();
-  Future<StudioUpdateOperation> startInstall({
+  Future<StudioUpdateOperation> startPreparation({
     required int expectedRevision,
     required String version,
   });
 }
 
-/// A strong owner of one installation and its ordered progress observer.
+/// The backend rejected preparation before creating an operation. A lost or
+/// undecodable transport reply must never be represented by this exception.
+final class StudioUpdatePreparationRejected implements Exception {
+  const StudioUpdatePreparationRejected(this.message);
+  final String message;
+  @override
+  String toString() => message;
+}
+
+/// A strong owner of one preparation and its ordered progress observer.
 abstract interface class StudioUpdateOperation {
   Stream<UpdaterStateSnapshot> get events;
   Future<void> cancel();
-  Future<bool> finishHandoff();
+  Future<void> finishPreparation();
 
   /// Releases the already joined transport handle; it does not join tasks.
   void dispose();

@@ -1,10 +1,10 @@
 use super::protocol::error::{FeishuError, FeishuErrorKind};
-use crate::studio::paths::sqlite_url;
+use crate::studio::paths::{SqliteFileMode, sqlite_file_options};
 use crate::studio::unix_seconds;
 use sea_orm::sqlx::sqlite::{SqliteJournalMode, SqliteSynchronous};
 use sea_orm::{
-    ConnectOptions, ConnectionTrait, Database, DatabaseBackend, DatabaseConnection, QueryResult,
-    Statement, TransactionTrait, Value,
+    ConnectionTrait, Database, DatabaseBackend, DatabaseConnection, QueryResult, Statement,
+    TransactionTrait, Value,
 };
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -1832,19 +1832,20 @@ async fn open_bot_state(path: &Path) -> Result<DatabaseConnection, FeishuError> 
     if let Some(parent) = path.parent() {
         tokio::fs::create_dir_all(parent).await.map_err(storage)?;
     }
-    let mut options = ConnectOptions::new(sqlite_url(path));
+    let mut options = sqlite_file_options(path, SqliteFileMode::Create, |options| {
+        options
+            .journal_mode(SqliteJournalMode::Wal)
+            .synchronous(SqliteSynchronous::Full)
+            .busy_timeout(Duration::from_secs(5))
+            .foreign_keys(true)
+    })
+    .await
+    .map_err(storage)?;
     options
         .max_connections(1)
         .min_connections(1)
         .connect_timeout(Duration::from_secs(8))
         .acquire_timeout(Duration::from_secs(8))
-        .map_sqlx_sqlite_opts(|options| {
-            options
-                .journal_mode(SqliteJournalMode::Wal)
-                .synchronous(SqliteSynchronous::Full)
-                .busy_timeout(Duration::from_secs(5))
-                .foreign_keys(true)
-        })
         .sqlx_logging(false);
     let db = Database::connect(options).await.map_err(storage)?;
     initialize(&db).await.map_err(storage)?;
@@ -2148,7 +2149,9 @@ mod tests {
     /// 直接以 v3 形态建库并塞入真实业务行：一条远古过期 claimed 的 work、
     /// 一个 bound 绑定与一条发送事实，用于验证 v4 迁移的真实保全与 lease 语义。
     async fn v3_database(path: &Path) -> DatabaseConnection {
-        let mut options = ConnectOptions::new(sqlite_url(path));
+        let mut options = sqlite_file_options(path, SqliteFileMode::Create, |options| options)
+            .await
+            .unwrap();
         options.max_connections(1);
         let db = Database::connect(options).await.unwrap();
         db.execute_unprepared(

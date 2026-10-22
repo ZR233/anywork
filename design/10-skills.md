@@ -152,6 +152,12 @@ root agent 和 subagent 使用同一工具入口，因此共享同一项目 skil
 系统 skills 与用户/外部 skills 一样对 root 和 subagent 可见，但只读；模型如需沉淀新的项目
 经验，必须通过 `skill_manage` 写入项目目录。
 
+Skill 执行的中间文件、探针与未交付产物消费当前 Thread 的执行文件事实，位置与边界统一见
+[17](./17-studio-storage.md)；不能把只读 Skill 安装目录、资源目录或默认 cwd 当作输出目录。
+上游示例的 `out/`、相对文件名和系统临时路径只表达用法，应改传当前会话的实际输出路径，
+除非用户明确指定交付位置。该规则由系统提示词和原创技能说明，上游同步技能保持原文；
+可复用知识仍写项目 Skill，不把临时脚本、截图或一次性验收日志沉淀为 Skill 资产。
+
 ## 10.6 激活与投影
 
 Studio 状态栏的 Skills 只展示当前 Thread 已激活的 skills。激活定义为该 Thread 中成功的
@@ -164,10 +170,21 @@ Turn 级 user instruction 注入，同时明确提示模型无需再调用 `skil
 每次成功加载都由后端记录为 SkillActivated runtime fact，来源是带不变量的
 `Tool { tool_call_id }` 或 `UserGesture { invocation_id }`，并投影为独立、终态的 durable
 Skill Timeline Item；重复读取同一 skill 仍保留多条激活 Item，同一 Turn 同名用户手势只产生
-一次。Item ID 分别由 Turn ID 与 tool call ID、Turn ID 与用户 invocation ID 确定。runtime
-snapshot 的 activeSkills 按 Skill Item 的首次出现顺序去重，并在冷恢复时由持久化 Item
-重建，不另设平行 activation 表；前端只消费 typed Skill Item 和 runtime snapshot，不解析
-工具输出 JSON。
+一次。Item ID 分别由 Turn ID 与 tool call ID、Turn ID 与用户 invocation ID 确定。
+历史 Skill Item 表达当时的加载事实，不等同于当前模型上下文仍持有的技能集合。
+runtime snapshot 的 activeSkills 由 Thread 内持久化的 `pl.tool.skill-view` 激活扩展派生，
+按名称去重排序；冷恢复消费同一 checkpoint 与 journal，不扫描历史 Item 或另设 activation 表。
+前端只消费 typed Skill Item 和 runtime snapshot，不解析工具输出 JSON。
+
+成功的上下文压缩在提交上下文替换的同一原子边界清空这些激活扩展，activeSkills 随即为空，
+之后的成功加载重新累计。自动阈值压缩、容量恢复和手动压缩遵守相同规则；未触发、失败、
+取消或被拒绝的压缩，以及非压缩的上下文更新不清空。清空不删除历史 Skill 或工具 Item，
+也不影响技能目录与调用权限；删除事实随 checkpoint 与 journal 保留，重开不会从旧历史
+重新激活。该规则从后续成功压缩开始生效，不追溯删除现有会话记录。
+
+Timeline 将技能与相邻同轮思考、普通工具组成统一活动组。一次工具加载的 Skill 与原调用
+保留两份 canonical 身份，只合并其可见活动行；分组、配对、详情与半对呈现遵循
+[26](./26-timeline-content.md)，视觉规范见 [19](./19-studio-ui.md) §19.9。
 
 Studio 设置页的 Skills 标签页展示已发布的完整项目 catalog，包括调用策略、Provider、warning
 和完整性；进入标签页只读缓存，不访问文件系统，显式发现命令强制扫描。每个新代理 Turn 的

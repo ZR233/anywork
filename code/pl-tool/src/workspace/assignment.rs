@@ -1,4 +1,5 @@
 //! Host-supplied workspace and file mutation boundaries.
+use super::session_files::SessionFiles;
 use super::{ToolPathPolicy, path_policy::path_is_inside_workspace};
 use std::path::PathBuf;
 
@@ -36,6 +37,7 @@ pub struct AgentWorkspace {
     boundary: WorkspaceBoundary,
     mutability: WorkspaceMutability,
     writable_paths: Option<Vec<PathBuf>>,
+    session_files: Option<SessionFiles>,
 }
 
 impl AgentWorkspace {
@@ -72,6 +74,7 @@ impl AgentWorkspace {
             boundary: WorkspaceBoundary::HostPermitted,
             mutability: WorkspaceMutability::ReadWrite,
             writable_paths,
+            session_files: None,
         }
     }
 
@@ -83,6 +86,7 @@ impl AgentWorkspace {
             boundary: WorkspaceBoundary::Confined,
             mutability: WorkspaceMutability::ReadWrite,
             writable_paths: None,
+            session_files: None,
         }
     }
 
@@ -94,6 +98,7 @@ impl AgentWorkspace {
             boundary: WorkspaceBoundary::Confined,
             mutability,
             writable_paths: None,
+            session_files: None,
         }
     }
 
@@ -111,6 +116,28 @@ impl AgentWorkspace {
 
     pub fn project_root(&self) -> &std::path::Path {
         &self.project_root
+    }
+
+    /// Binds host-derived session files for this Thread.
+    ///
+    /// Directory mutation policy additionally permits this Thread's `scratch` and
+    /// `artifacts` directories. Neighbor sessions, command capture, the sessions
+    /// pool parent, and `.anywork` itself stay outside that extra allowance.
+    /// ReadOnly workspaces are not relaxed. The bound layout is not merged into
+    /// [`Self::writable_paths`]; those remain the business write scope.
+    pub fn with_session_files(mut self, files: SessionFiles) -> Self {
+        self.session_files = Some(files);
+        self
+    }
+
+    /// Binds session files derived from the original Thread identity.
+    pub fn with_session_id(self, thread_id: impl AsRef<str>) -> Self {
+        self.with_session_files(SessionFiles::new(thread_id))
+    }
+
+    /// Host-bound execution-side session layout, if the host attached one.
+    pub fn session_files(&self) -> Option<&SessionFiles> {
+        self.session_files.as_ref()
     }
 
     /// Overlays a directory mutation policy on this workspace's existing path boundary.
@@ -139,7 +166,10 @@ impl AgentWorkspace {
         if !path_is_inside_workspace(path, policy.root()) {
             return Ok(());
         }
-        for allowed in writable_paths {
+        for allowed in writable_paths
+            .iter()
+            .chain(self.session_write_allowances().iter())
+        {
             // Use the same physical resolver as file tools, including missing directories,
             // Windows verbatim paths and link/reparse rejection. Textual strip_prefix on
             // the canonical Project path cannot describe a session checkout's write scope.
@@ -182,13 +212,16 @@ impl AgentWorkspace {
         } else {
             format!("{workspace_root}/{relative}")
         };
-        let allowed = writable_paths.iter().any(|path| {
-            let path = comparable_policy_path(path);
-            path == target
-                || target
-                    .strip_prefix(&path)
-                    .is_some_and(|suffix| suffix.starts_with('/'))
-        });
+        let allowed = writable_paths
+            .iter()
+            .chain(self.session_write_allowances().iter())
+            .any(|path| {
+                let path = comparable_policy_path(path);
+                path == target
+                    || target
+                        .strip_prefix(&path)
+                        .is_some_and(|suffix| suffix.starts_with('/'))
+            });
         if allowed {
             return Ok(());
         }
@@ -198,6 +231,16 @@ impl AgentWorkspace {
                 "workspace path '{relative}' is outside the directory Agent writablePaths boundary"
             ),
         })
+    }
+
+    fn session_write_allowances(&self) -> Vec<PathBuf> {
+        let Some(files) = &self.session_files else {
+            return Vec::new();
+        };
+        vec![
+            self.root.join(files.scratch()),
+            self.root.join(files.artifacts()),
+        ]
     }
 }
 

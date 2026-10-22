@@ -172,7 +172,14 @@ impl StudioThreadFactory {
         }
         let workspace = super::child_resources::assigned_workspace(&assignment, workspace_mode);
 
-        let resources = FileResourceStore::new(self.services.store.session_resources_dir(id));
+        let resources = FileResourceStore::new(
+            self.services
+                .store
+                .session_resources_dir_for(&thread.project_id, id)
+                .map_err(|error| {
+                    resource_error("resolve restored child session resources", error)
+                })?,
+        );
         let mut prepared = self
             .prepare_thread_tools(ThreadToolAssembly {
                 thread_id: id,
@@ -230,6 +237,9 @@ impl StudioThreadFactory {
             model,
             checkpoint: Some(checkpoint),
             initial_context: Vec::new(),
+            initial_runtime_facts: super::session_files::session_files_fact(&prepared.workspace)
+                .into_iter()
+                .collect(),
             initial_extensions,
             tools: Vec::new(),
             resources: ResourceAccess::new(resources),

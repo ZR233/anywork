@@ -329,7 +329,7 @@ impl<B: CommandBackend, A: CommandOutputArchive> Tool for ThreadExecTool<B, A> {
                 timeout: Duration::from_secs(input.timeout_seconds.unwrap_or(DEFAULT_TIMEOUT_SECS)),
                 yield_time: Duration::ZERO,
                 max_output_chars,
-                session_id: safe_identity(&context.thread_id),
+                session_id: context.thread_id.clone(),
                 tool_id: task_id.clone(),
                 call_id: task_id.clone(),
                 cancellation_token: Some(context.cancellation.clone()),

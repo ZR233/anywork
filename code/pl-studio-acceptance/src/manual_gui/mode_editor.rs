@@ -276,15 +276,9 @@ fn run_phase(
     let outcome = (|| -> Result<()> {
         let vm_url = wait_for_vm(&gui_log, &mut gui, fixture, context.interrupt)?;
         let log = File::create(&driver_log)?;
-        let mut command = process::path_command("dart", &[]);
+        let mut command = driver_command(context.app_dir, "test_driver/mode_editor_journey.dart");
         command
-            .current_dir(context.app_dir)
-            .args([
-                "run",
-                "test_driver/mode_editor_journey.dart",
-                phase,
-                &vm_url,
-            ])
+            .args([phase, &vm_url])
             .arg(project)
             .arg(context.output)
             .arg(coord)

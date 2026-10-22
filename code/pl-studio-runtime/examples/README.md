@@ -48,3 +48,11 @@ GUI 真实任务通过 `cargo xtask run-gui --driver` 启动，由观察者使�
 提交任务、查看流、截图和产物，并人工记录结论。自动 Rust 测试仅保留在
 `pl-core` 和 `pl-model` 两库；此处不再承诺配置迁移、恢复或
 GUI 场景的自动断言；隔离模拟入口使用 `cargo xtask manual-gui`。
+
+执行侧会话目录与 Git 池 ignore 可用 `session_layout_observe` 观察，不读取用户供应商配置：
+
+```bash
+cargo run -p pl-studio-runtime --example session_layout_observe -- /absolute/new-artifacts
+```
+
+可选 SSH 观察复用已授权的隔离 helper 环境变量（`PURE_SSH_TEST_SERVER` 等），不改用户 `~/.ssh/config`。

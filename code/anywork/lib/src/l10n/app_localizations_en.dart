@@ -40,6 +40,22 @@ class AppLocalizationsEn extends AppLocalizations {
   String get shutdownTitle => 'Shutting down safely';
 
   @override
+  String shutdownUpdateTitle(String version) {
+    return 'Installing update $version';
+  }
+
+  @override
+  String get shutdownUpdateSaving => 'Stopping chats and saving data…';
+
+  @override
+  String get shutdownUpdateRestartHint =>
+      'Installation progress will appear after saving. The app will reopen automatically.';
+
+  @override
+  String get shutdownUpdateExitHint =>
+      'Installation progress will appear after saving. The app will stay closed.';
+
+  @override
   String get shutdownFinalizing => 'Finishing up';
 
   @override
@@ -203,10 +219,6 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get timelineItemBodyLoad => 'Load full content';
-
-  @override
-  String get timelineItemBodyTruncated =>
-      'This page shows a truncated preview of a large item.';
 
   @override
   String get timelineItemBodyLoading => 'Loading full content…';
@@ -1060,10 +1072,6 @@ class AppLocalizationsEn extends AppLocalizations {
       'This session is running or waiting for input, so the model cannot be changed yet. Stop the current run or wait for it to finish.';
 
   @override
-  String get statusModelSwitchWhileWorkflowActive =>
-      'The current workflow is still active, so the model cannot be changed yet. Wait for the workflow to finish.';
-
-  @override
   String get statusModelSwitchWhileInactive =>
       'This session is closing, closed, or unavailable due to an error. Restore it before changing the model.';
 
@@ -1190,7 +1198,8 @@ class AppLocalizationsEn extends AppLocalizations {
       'The SSH alias for this project is no longer in ~/.ssh/config';
 
   @override
-  String get statusLastConfirmedAgentTokenSpeed => 'Last confirmed token speed';
+  String get statusLastConfirmedAgentTokenSpeed =>
+      'Last confirmed output speed (includes the first-token wait)';
 
   @override
   String get settingsStatisticsTitle => 'Statistics';
@@ -1217,13 +1226,6 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get settingsStatisticsFilteredEmpty => 'No calls match these filters.';
-
-  @override
-  String get settingsStatisticsPendingTitle => 'Statistics pending write';
-
-  @override
-  String get settingsStatisticsPendingBody =>
-      'Recent calls are still being written to statistics and may not appear yet.';
 
   @override
   String get settingsStatisticsGapTitle => 'Statistics have gaps';
@@ -1293,7 +1295,7 @@ class AppLocalizationsEn extends AppLocalizations {
       'Unspecified / not recorded';
 
   @override
-  String get statisticsSpeed => 'Speed';
+  String get statisticsSpeed => 'Output TPS (incl. first token)';
 
   @override
   String get statisticsSamples => 'Samples';
@@ -1302,19 +1304,28 @@ class AppLocalizationsEn extends AppLocalizations {
   String get statisticsOutputTokens => 'Output tokens';
 
   @override
-  String get statisticsAverageTtft => 'Average TTFT';
+  String get statisticsAverageTtft => 'Average first token';
 
   @override
-  String get statisticsAverageResponse => 'Average response';
+  String get statisticsAverageResponse => 'Average total response';
 
   @override
   String get statisticsCompletedAt => 'Completed';
 
   @override
-  String get statisticsDecode => 'Decode';
+  String get statisticsDecode => 'After first token';
 
   @override
-  String get statisticsTotalResponse => 'Total';
+  String get statisticsTotalResponse => 'Total response';
+
+  @override
+  String statisticsTtftSampleCount(int count) {
+    return '$count first-token samples';
+  }
+
+  @override
+  String get settingsStatisticsThroughputNote =>
+      'Output TPS = provider-confirmed output tokens × 1000 ÷ total response time (including the first-token wait). Total response runs from the request that produced the result to its normalized terminal event; failed retries, backoff, tool execution and post-terminal collection or saving are excluded. The first token is the first non-empty text, reasoning or tool-input increment, and output may include reasoning tokens without double counting. The after-first-token time is diagnostic, not hardware decode time. Samples from the previous statistics definition were discarded; raw calls and billing remain.';
 
   @override
   String get statusTurnQueued => 'Queued';
@@ -1446,6 +1457,12 @@ class AppLocalizationsEn extends AppLocalizations {
   String get timelineImageClose => 'Close image preview';
 
   @override
+  String get timelineImageCardTitle => 'Image card';
+
+  @override
+  String get timelineImageCardEmpty => 'This image is unavailable';
+
+  @override
   String timelineRemoteImageSource(String host) {
     return 'External image from $host';
   }
@@ -1483,7 +1500,31 @@ class AppLocalizationsEn extends AppLocalizations {
   String get timelineReasoningActive => 'Thinking';
 
   @override
-  String get timelineReasoningCompleted => 'Thought';
+  String get timelineReasoningEnded => 'Thought ended';
+
+  @override
+  String get timelineReasoningFailed => 'Thinking failed';
+
+  @override
+  String get timelineReasoningCancelled => 'Thinking cancelled';
+
+  @override
+  String get timelineReasoningElapsedUnderSecond => 'Thought for less than 1s';
+
+  @override
+  String timelineReasoningElapsedSeconds(int seconds) {
+    return 'Thought for ${seconds}s';
+  }
+
+  @override
+  String timelineReasoningElapsedMinutes(int minutes) {
+    return 'Thought for ${minutes}m';
+  }
+
+  @override
+  String timelineReasoningElapsedMinutesSeconds(int minutes, int seconds) {
+    return 'Thought for ${minutes}m ${seconds}s';
+  }
 
   @override
   String get timelineReasoningSummary => 'Summary';
@@ -1584,6 +1625,167 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get timelineReadFileFailed => 'Unable to read';
+
+  @override
+  String get timelineToolEditSucceeded => 'Edited';
+
+  @override
+  String get timelineToolEditRunning => 'Editing';
+
+  @override
+  String get timelineToolEditFailed => 'Couldn\'t edit';
+
+  @override
+  String timelineToolPatchFilesMore(String first, int more) {
+    return '$first, and $more more';
+  }
+
+  @override
+  String get timelineSessionNoteName => 'session note';
+
+  @override
+  String get timelineToolCommandSucceeded => 'Ran';
+
+  @override
+  String get timelineToolCommandRunning => 'Running';
+
+  @override
+  String get timelineToolCommandFailed => 'Command failed';
+
+  @override
+  String get timelineToolStdinSucceeded => 'Wrote input';
+
+  @override
+  String get timelineToolStdinRunning => 'Writing input';
+
+  @override
+  String get timelineToolStdinFailed => 'Input not written';
+
+  @override
+  String get timelineToolElapsedUnderSecond => 'Took less than 1s';
+
+  @override
+  String timelineToolElapsedSeconds(int seconds) {
+    return 'Took ${seconds}s';
+  }
+
+  @override
+  String timelineToolElapsedMinutes(int minutes) {
+    return 'Took ${minutes}m';
+  }
+
+  @override
+  String timelineToolElapsedMinutesSeconds(int minutes, int seconds) {
+    return 'Took ${minutes}m ${seconds}s';
+  }
+
+  @override
+  String get timelineToolSearchSucceeded => 'Searched';
+
+  @override
+  String get timelineToolSearchRunning => 'Searching';
+
+  @override
+  String get timelineToolSearchFailed => 'Search failed';
+
+  @override
+  String get timelineToolAgentSucceeded => 'Spawned subagent';
+
+  @override
+  String get timelineToolAgentRunning => 'Subagent running';
+
+  @override
+  String get timelineToolAgentFailed => 'Subagent failed';
+
+  @override
+  String get timelineToolMessageSucceeded => 'Sent message';
+
+  @override
+  String get timelineToolMessageRunning => 'Sending message';
+
+  @override
+  String get timelineToolMessageFailed => 'Message not sent';
+
+  @override
+  String get timelineToolCreateSucceeded => 'Created directory';
+
+  @override
+  String get timelineToolCreateRunning => 'Creating directory';
+
+  @override
+  String get timelineToolCreateFailed => 'Directory not created';
+
+  @override
+  String get timelineToolDeleteSucceeded => 'Deleted';
+
+  @override
+  String get timelineToolDeleteRunning => 'Deleting';
+
+  @override
+  String get timelineToolDeleteFailed => 'Not deleted';
+
+  @override
+  String get timelineToolCopySucceeded => 'Copied';
+
+  @override
+  String get timelineToolCopyRunning => 'Copying';
+
+  @override
+  String get timelineToolCopyFailed => 'Not copied';
+
+  @override
+  String get timelineToolMoveSucceeded => 'Moved';
+
+  @override
+  String get timelineToolMoveRunning => 'Moving';
+
+  @override
+  String get timelineToolMoveFailed => 'Not moved';
+
+  @override
+  String get timelineToolFetchSucceeded => 'Fetched web page';
+
+  @override
+  String get timelineToolFetchRunning => 'Fetching web page';
+
+  @override
+  String get timelineToolFetchFailed => 'Web page not fetched';
+
+  @override
+  String get timelineToolPlanSucceeded => 'Updated plan';
+
+  @override
+  String get timelineToolPlanRunning => 'Updating plan';
+
+  @override
+  String get timelineToolPlanFailed => 'Plan update failed';
+
+  @override
+  String get timelineToolWorkflowSucceeded => 'Updated workflow';
+
+  @override
+  String get timelineToolWorkflowRunning => 'Updating workflow';
+
+  @override
+  String get timelineToolWorkflowFailed => 'Workflow update failed';
+
+  @override
+  String get timelineToolLspSucceeded => 'Queried code';
+
+  @override
+  String get timelineToolLspRunning => 'Querying code';
+
+  @override
+  String get timelineToolLspFailed => 'Code query failed';
+
+  @override
+  String get timelineToolWaitSucceeded => 'Waited';
+
+  @override
+  String get timelineToolWaitRunning => 'Waiting';
+
+  @override
+  String get timelineToolWaitFailed => 'Wait failed';
 
   @override
   String timelineToolCompleted(String name) {
@@ -2517,14 +2719,23 @@ class AppLocalizationsEn extends AppLocalizations {
   }
 
   @override
-  String get settingsStudioUpdateBusy =>
-      'Finish the active turn or task before installing.';
+  String get settingsStudioUpdatePreparing => 'Preparing update…';
+
+  @override
+  String get settingsStudioUpdateWhenReady => 'Install and restart when ready';
+
+  @override
+  String get settingsStudioUpdateCancelling => 'Cancelling update…';
+
+  @override
+  String get settingsStudioUpdateCancelled =>
+      'Update cancelled. You can retry anytime.';
 
   @override
   String get settingsStudioUpdateCheck => 'Check for updates';
 
   @override
-  String get settingsStudioUpdateInstall => 'Download and install';
+  String get settingsStudioUpdateInstall => 'Download, install and restart';
 
   @override
   String get settingsStudioUpdateRestart => 'Install and restart';
@@ -2548,6 +2759,24 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get timelineWebSearchFinding => 'Finding text on a page';
+
+  @override
+  String get timelineWebSearchSearched => 'Searched the web';
+
+  @override
+  String get timelineWebSearchOpened => 'Opened a web page';
+
+  @override
+  String get timelineWebSearchFound => 'Searched page text';
+
+  @override
+  String get timelineWebSearchFailed => 'Web search failed';
+
+  @override
+  String get timelineWebSearchOpenFailed => 'Couldn\'t open a web page';
+
+  @override
+  String get timelineWebSearchFindFailed => 'Page search failed';
 
   @override
   String get timelineWebSearchResults => 'Result links';

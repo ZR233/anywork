@@ -578,6 +578,19 @@ abstract final class StudioDriverKeys {
   static ValueKey<String> toolImageGallery(String groupId) =>
       ValueKey<String>('tool-image-gallery-$groupId');
 
+  /// 展示工具图片卡片：卡片本身、成功加载的图片与失败重试入口。
+  ///
+  /// `entryId` 沿用 [toolImageEntryId] 的 owning 调用 + 附件身份公式，因此同一资源被
+  /// 不同调用展示时仍各自拥有独立的卡片身份。
+  static ValueKey<String> imageCard(String entryId) =>
+      ValueKey<String>('image-card-$entryId');
+
+  static ValueKey<String> imageCardImage(String entryId) =>
+      ValueKey<String>('image-card-image-$entryId');
+
+  static ValueKey<String> imageCardRetry(String entryId) =>
+      ValueKey<String>('image-card-retry-$entryId');
+
   static ValueKey<String> markdownImageSource(String url) =>
       ValueKey<String>('markdown-image-source-$url');
 

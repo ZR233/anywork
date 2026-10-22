@@ -1,27 +1,24 @@
 use crate::api::studio::bridge_runtime::{
-    BridgeRuntime, active_bridge, arm_exit_latch, fix_exit_deadline, install_bridge_runtime,
-    installed_bridge, late_install_refused, lifecycle_gate, remaining_until,
+    active_bridge, arm_exit_latch, fix_exit_deadline, install_bridge_runtime, installed_bridge,
+    late_install_refused, lifecycle_gate, remaining_until,
 };
 use crate::api::studio::convert::runtime::{
     bridge_shutdown_report, runtime_shutdown_issue, runtime_snapshot,
 };
 use crate::api::studio::types::{
-    BridgeError, BridgePendingPersistence, BridgeShutdownIssue, BridgeShutdownOutcome,
-    BridgeShutdownReport, ProjectDto, RuntimeSnapshot,
+    BridgeError, BridgeExitIntent, BridgeExitReport, BridgePendingPersistence, BridgeShutdownIssue,
+    BridgeShutdownOutcome, BridgeShutdownReport, BridgeStateError, BridgeUpdateHandoff, ProjectDto,
+    RuntimeSnapshot,
 };
 use anyhow::Context;
 use flutter_rust_bridge::frb;
 use pl_studio_runtime::StudioRuntimeStateKind;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use super::updater::{
-    broadcast_cancel_update_operations, broadcast_cancel_update_operations_excluding,
-    observe_update_operations,
+    broadcast_cancel_update_operations, collect_cancel_update_operations, observe_update_operations,
 };
 // ── Runtime lifecycle ──
-
-/// Budget for cancelling bridge-owned subscriptions inside the update install's strict shutdown.
-const UPDATE_SHUTDOWN_BUDGET: Duration = Duration::from_secs(5);
 
 /// native 首次 close 的早期桥端广播（订阅关闭帧与更新操作取消）观测到的真实失败。
 ///
@@ -184,7 +181,8 @@ pub async fn begin_runtime_exit(remaining_ms: u32) -> Result<(), BridgeError> {
 pub async fn shutdown_runtime(
     remaining_ms: u32,
     external_issues: Vec<BridgeShutdownIssue>,
-) -> Result<BridgeShutdownReport, BridgeError> {
+    intent: BridgeExitIntent,
+) -> Result<BridgeExitReport, BridgeError> {
     // Close the exit latch synchronously first (and observe the published runtime atomically with
     // that decision): never wait on the gate before refusing late installs, and never miss a
     // runtime that a concurrent install published first.
@@ -205,6 +203,7 @@ pub async fn shutdown_runtime(
     let mut owner_id: Option<String> = None;
     let mut save_watermark: Option<u64> = None;
     let external_issues_present = !external_issues.is_empty();
+    let mut update_handoff = BridgeUpdateHandoff::NotRequested;
     let report = match bridge {
         Some(bridge) => {
             // Capture real persistence facts before shutdown so the emergency diagnostic is not a
@@ -217,7 +216,7 @@ pub async fn shutdown_runtime(
             // Their errors become runtime shutdown preconditions below.
             bridge.shutdown.cancel();
             let pending_subscriptions = bridge.subscriptions.broadcast_cancel(deadline).await;
-            let pending_updates = broadcast_cancel_update_operations_excluding(None, true).await;
+            let pending_updates = collect_cancel_update_operations(true).await;
             // Two independent owner groups (bridge-owned subscriptions and update operations) are
             // observed **concurrently** under the same first deadline: a slow join of one group must
             // not consume the budget before the other group has been observed. Broadcast already
@@ -248,25 +247,35 @@ pub async fn shutdown_runtime(
                     )
                     .await,
             );
-            if report.outcome == BridgeShutdownOutcome::Clean
-                && !remaining_until(deadline).is_zero()
-            {
-                // 此处只有真实 Clean；交接不访问网络、不重新下载，也不改变可靠关停结论。
-                // 安装器等待旧进程真正退出后才写入，并在普通关闭后保持应用关闭。
-                match tokio::time::timeout(
+            if report.outcome == BridgeShutdownOutcome::Clean {
+                let mode = match intent {
+                    BridgeExitIntent::Exit => pl_studio_runtime::StudioUpdateLaunch::OnExit,
+                    BridgeExitIntent::UpdateRestart => {
+                        pl_studio_runtime::StudioUpdateLaunch::Restart
+                    }
+                };
+                update_handoff = match tokio::time::timeout(
                     remaining_until(deadline),
-                    bridge.studio.launch_studio_update_on_exit(),
+                    bridge.studio.launch_studio_update_on_exit(mode),
                 )
                 .await
                 {
-                    Ok(Ok(())) => {}
-                    Ok(Err(error)) => {
-                        tracing::error!(error = %error, "Studio exit update handoff failed; verified cache is retained for next start")
+                    Ok(Ok(Some(version))) => BridgeUpdateHandoff::Launched { version },
+                    Ok(Ok(None)) if intent == BridgeExitIntent::Exit => {
+                        BridgeUpdateHandoff::NotRequested
                     }
-                    Err(_) => tracing::error!(
-                        "Studio exit update handoff exceeded the remaining exit budget"
+                    Ok(Ok(None)) => handoff_failure(
+                        "updateNotReady",
+                        "The prepared update is no longer available",
                     ),
-                }
+                    Ok(Err(error)) => {
+                        handoff_failure("installerLaunchFailed", &format!("{error:#}"))
+                    }
+                    Err(_) => handoff_failure(
+                        "deadlineExceeded",
+                        "Update handoff exceeded the remaining exit budget",
+                    ),
+                };
             }
             report
         }
@@ -298,7 +307,10 @@ pub async fn shutdown_runtime(
         owner_id.as_deref(),
         save_watermark,
     );
-    Ok(report)
+    Ok(BridgeExitReport {
+        shutdown: report,
+        update_handoff,
+    })
 }
 
 fn remaining_ms_u32(deadline: Instant) -> u32 {
@@ -328,66 +340,18 @@ pub async fn finish_shutdown_diagnostics() -> Result<(), BridgeError> {
     Ok(())
 }
 
-pub(super) async fn shutdown_runtime_for_update(
-    bridge: &'static BridgeRuntime,
-    handoff_operation_id: u64,
-) -> Result<bool, BridgeError> {
-    // The idle check stays atomic with the transition away from `Ready` inside the runtime. The
-    // bridge-owned subscription cancellation runs as an adapter hook **inside the same strict
-    // orchestration**: it is invoked only after the idle check commits and before finalization, so
-    // a busy runtime is never cancelled and its ACK is a precondition of the same `Clean`
-    // decision — a subscription that does not stop keeps the runtime `Failed`, never publishing
-    // `Stopped` or releasing the instance lock. No post-`Stopped` merge, no second cleanup path.
-    //
-    // Any *other* live update operation is an independent external owner of the same shutdown and
-    // must be signalled here and acknowledged within the shared deadline, before the runtime may
-    // report `Clean`. Every owner — the bridge-owned subscriptions and the other live update
-    // operations — is signalled before any bounded join, so a slow join of one owner can never
-    // consume the shared budget before another owner has been cancelled. The operation that owns
-    // this handoff (`handoff_operation_id`) is excluded: it is the caller, currently holding the
-    // install command lock and the install-active flag, so cancelling it would self-cancel the
-    // handoff and awaiting it would wait on this very hook. No competing install blocks on those
-    // locks (both acquisitions are non-blocking), so the bounded observation cannot deadlock.
-    let deadline = Instant::now() + UPDATE_SHUTDOWN_BUDGET;
-    let hook: pl_studio_runtime::ShutdownExternalHook = Box::new(move || {
-        Box::pin(async move {
-            // The runtime has committed the strict shutdown when this hook runs: invalidate the
-            // startup token synchronously as the first step, before any await / cancel / join of the
-            // hook, so a not-yet-settled pre-active startup observer is woken immediately. The idle
-            // check itself never invalidates the token: a busy runtime that refuses to shut down
-            // keeps its current attempt.
-            STARTUP.begin_shutdown();
-            bridge.shutdown.cancel();
-            // Phase 1: signal every independent owner (no joins).
-            let pending_subscriptions = bridge.subscriptions.broadcast_cancel(deadline).await;
-            let pending_updates =
-                broadcast_cancel_update_operations_excluding(Some(handoff_operation_id), false)
-                    .await;
-            // Phase 2: bounded joins under the same first deadline. The two independent owner
-            // groups are observed concurrently, so a slow join of one never consumes the shared
-            // budget before the other has been observed.
-            let (subscription_issues, update_issues) = futures::join!(
-                bridge
-                    .subscriptions
-                    .join_cancelled(pending_subscriptions, deadline),
-                observe_update_operations(pending_updates, deadline),
-            );
-            let mut issues: Vec<pl_studio_runtime::StudioShutdownIssue> = subscription_issues
-                .into_iter()
-                .map(runtime_shutdown_issue)
-                .collect();
-            issues.extend(update_issues.into_iter().map(runtime_shutdown_issue));
-            issues
-        })
-    });
-    match bridge.studio.shutdown_runtime_if_idle(Some(hook)).await {
-        Ok(Some(_)) => {
-            tracing::info!("Studio runtime shutdown completed for update");
-            Ok(true)
-        }
-        // 空闲检查未通过：没有发生 shutdown，不得凭猜测失效当前令牌。
-        Ok(None) => Ok(false),
-        Err(error) => Err(error.into()),
+fn handoff_failure(code: &str, message: &str) -> BridgeUpdateHandoff {
+    tracing::error!(
+        code,
+        message,
+        "Studio update handoff failed; cache retained for next start"
+    );
+    BridgeUpdateHandoff::Failed {
+        error: BridgeStateError {
+            code: code.to_string(),
+            message: message.to_string(),
+            retryable: true,
+        },
     }
 }
 

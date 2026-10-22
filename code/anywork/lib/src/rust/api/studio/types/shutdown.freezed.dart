@@ -310,4 +310,338 @@ String toString() {
 
 
 
+/// @nodoc
+mixin _$BridgeUpdateHandoff {
+
+
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeUpdateHandoff);
+}
+
+
+@override
+int get hashCode => runtimeType.hashCode;
+
+@override
+String toString() {
+    return 'BridgeUpdateHandoff()';
+}
+
+
+}
+
+/// @nodoc
+class $BridgeUpdateHandoffCopyWith<$Res>  {
+$BridgeUpdateHandoffCopyWith(BridgeUpdateHandoff _, $Res Function(BridgeUpdateHandoff) __);
+}
+
+
+/// Adds pattern-matching-related methods to [BridgeUpdateHandoff].
+extension BridgeUpdateHandoffPatterns on BridgeUpdateHandoff {
+/// A variant of `map` that fallback to returning `orElse`.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case _:
+///     return orElse();
+/// }
+/// ```
+
+@optionalTypeArgs TResult maybeMap<TResult extends Object?>({TResult Function( BridgeUpdateHandoff_NotRequested value)?  notRequested,TResult Function( BridgeUpdateHandoff_Launched value)?  launched,TResult Function( BridgeUpdateHandoff_Failed value)?  failed,required TResult orElse(),}){
+final _that = this;
+switch (_that) {
+case BridgeUpdateHandoff_NotRequested() when notRequested != null:
+return notRequested(_that);case BridgeUpdateHandoff_Launched() when launched != null:
+return launched(_that);case BridgeUpdateHandoff_Failed() when failed != null:
+return failed(_that);case _:
+  return orElse();
+
+}
+}
+/// A `switch`-like method, using callbacks.
+///
+/// Callbacks receives the raw object, upcasted.
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case final Subclass2 value:
+///     return ...;
+/// }
+/// ```
+
+@optionalTypeArgs TResult map<TResult extends Object?>({required TResult Function( BridgeUpdateHandoff_NotRequested value)  notRequested,required TResult Function( BridgeUpdateHandoff_Launched value)  launched,required TResult Function( BridgeUpdateHandoff_Failed value)  failed,}){
+final _that = this;
+switch (_that) {
+case BridgeUpdateHandoff_NotRequested():
+return notRequested(_that);case BridgeUpdateHandoff_Launched():
+return launched(_that);case BridgeUpdateHandoff_Failed():
+return failed(_that);}
+}
+/// A variant of `map` that fallback to returning `null`.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case _:
+///     return null;
+/// }
+/// ```
+
+@optionalTypeArgs TResult? mapOrNull<TResult extends Object?>({TResult? Function( BridgeUpdateHandoff_NotRequested value)?  notRequested,TResult? Function( BridgeUpdateHandoff_Launched value)?  launched,TResult? Function( BridgeUpdateHandoff_Failed value)?  failed,}){
+final _that = this;
+switch (_that) {
+case BridgeUpdateHandoff_NotRequested() when notRequested != null:
+return notRequested(_that);case BridgeUpdateHandoff_Launched() when launched != null:
+return launched(_that);case BridgeUpdateHandoff_Failed() when failed != null:
+return failed(_that);case _:
+  return null;
+
+}
+}
+/// A variant of `when` that fallback to an `orElse` callback.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case _:
+///     return orElse();
+/// }
+/// ```
+
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function()?  notRequested,TResult Function( String version)?  launched,TResult Function( BridgeStateError error)?  failed,required TResult orElse(),}) {final _that = this;
+switch (_that) {
+case BridgeUpdateHandoff_NotRequested() when notRequested != null:
+return notRequested();case BridgeUpdateHandoff_Launched() when launched != null:
+return launched(_that.version);case BridgeUpdateHandoff_Failed() when failed != null:
+return failed(_that.error);case _:
+  return orElse();
+
+}
+}
+/// A `switch`-like method, using callbacks.
+///
+/// As opposed to `map`, this offers destructuring.
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case Subclass2(:final field2):
+///     return ...;
+/// }
+/// ```
+
+@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function()  notRequested,required TResult Function( String version)  launched,required TResult Function( BridgeStateError error)  failed,}) {final _that = this;
+switch (_that) {
+case BridgeUpdateHandoff_NotRequested():
+return notRequested();case BridgeUpdateHandoff_Launched():
+return launched(_that.version);case BridgeUpdateHandoff_Failed():
+return failed(_that.error);}
+}
+/// A variant of `when` that fallback to returning `null`
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case _:
+///     return null;
+/// }
+/// ```
+
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function()?  notRequested,TResult? Function( String version)?  launched,TResult? Function( BridgeStateError error)?  failed,}) {final _that = this;
+switch (_that) {
+case BridgeUpdateHandoff_NotRequested() when notRequested != null:
+return notRequested();case BridgeUpdateHandoff_Launched() when launched != null:
+return launched(_that.version);case BridgeUpdateHandoff_Failed() when failed != null:
+return failed(_that.error);case _:
+  return null;
+
+}
+}
+
+}
+
+/// @nodoc
+
+
+class BridgeUpdateHandoff_NotRequested extends BridgeUpdateHandoff {
+  const BridgeUpdateHandoff_NotRequested(): super._();
+
+
+
+
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeUpdateHandoff_NotRequested);
+}
+
+
+@override
+int get hashCode => runtimeType.hashCode;
+
+@override
+String toString() {
+    return 'BridgeUpdateHandoff.notRequested()';
+}
+
+
+}
+
+
+
+
+/// @nodoc
+
+
+class BridgeUpdateHandoff_Launched extends BridgeUpdateHandoff {
+  const BridgeUpdateHandoff_Launched({required this.version}): super._();
+
+
+ final  String version;
+
+/// Create a copy of BridgeUpdateHandoff
+/// with the given fields replaced by the non-null parameter values.
+@JsonKey(includeFromJson: false, includeToJson: false)
+@pragma('vm:prefer-inline')
+$BridgeUpdateHandoff_LaunchedCopyWith<BridgeUpdateHandoff_Launched> get copyWith => _$BridgeUpdateHandoff_LaunchedCopyWithImpl<BridgeUpdateHandoff_Launched>(this, _$identity);
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeUpdateHandoff_Launched&&(identical(other.version, version) || other.version == version));
+}
+
+
+@override
+int get hashCode {
+    return Object.hash(runtimeType,version);
+}
+
+@override
+String toString() {
+    return 'BridgeUpdateHandoff.launched(version: $version)';
+}
+
+
+}
+
+/// @nodoc
+abstract mixin class $BridgeUpdateHandoff_LaunchedCopyWith<$Res> implements $BridgeUpdateHandoffCopyWith<$Res> {
+  factory $BridgeUpdateHandoff_LaunchedCopyWith(BridgeUpdateHandoff_Launched value, $Res Function(BridgeUpdateHandoff_Launched) _then) = _$BridgeUpdateHandoff_LaunchedCopyWithImpl;
+@useResult
+$Res call({
+ String version
+});
+
+
+
+
+}
+/// @nodoc
+class _$BridgeUpdateHandoff_LaunchedCopyWithImpl<$Res>
+    implements $BridgeUpdateHandoff_LaunchedCopyWith<$Res> {
+  _$BridgeUpdateHandoff_LaunchedCopyWithImpl(this._self, this._then);
+
+  final BridgeUpdateHandoff_Launched _self;
+  final $Res Function(BridgeUpdateHandoff_Launched) _then;
+
+/// Create a copy of BridgeUpdateHandoff
+/// with the given fields replaced by the non-null parameter values.
+@pragma('vm:prefer-inline') $Res call({Object? version = null,}) {
+  return _then(BridgeUpdateHandoff_Launched(
+version: null == version ? _self.version : version // ignore: cast_nullable_to_non_nullable
+as String,
+  ));
+}
+
+
+}
+
+/// @nodoc
+
+
+class BridgeUpdateHandoff_Failed extends BridgeUpdateHandoff {
+  const BridgeUpdateHandoff_Failed({required this.error}): super._();
+
+
+ final  BridgeStateError error;
+
+/// Create a copy of BridgeUpdateHandoff
+/// with the given fields replaced by the non-null parameter values.
+@JsonKey(includeFromJson: false, includeToJson: false)
+@pragma('vm:prefer-inline')
+$BridgeUpdateHandoff_FailedCopyWith<BridgeUpdateHandoff_Failed> get copyWith => _$BridgeUpdateHandoff_FailedCopyWithImpl<BridgeUpdateHandoff_Failed>(this, _$identity);
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeUpdateHandoff_Failed&&(identical(other.error, error) || other.error == error));
+}
+
+
+@override
+int get hashCode {
+    return Object.hash(runtimeType,error);
+}
+
+@override
+String toString() {
+    return 'BridgeUpdateHandoff.failed(error: $error)';
+}
+
+
+}
+
+/// @nodoc
+abstract mixin class $BridgeUpdateHandoff_FailedCopyWith<$Res> implements $BridgeUpdateHandoffCopyWith<$Res> {
+  factory $BridgeUpdateHandoff_FailedCopyWith(BridgeUpdateHandoff_Failed value, $Res Function(BridgeUpdateHandoff_Failed) _then) = _$BridgeUpdateHandoff_FailedCopyWithImpl;
+@useResult
+$Res call({
+ BridgeStateError error
+});
+
+
+
+
+}
+/// @nodoc
+class _$BridgeUpdateHandoff_FailedCopyWithImpl<$Res>
+    implements $BridgeUpdateHandoff_FailedCopyWith<$Res> {
+  _$BridgeUpdateHandoff_FailedCopyWithImpl(this._self, this._then);
+
+  final BridgeUpdateHandoff_Failed _self;
+  final $Res Function(BridgeUpdateHandoff_Failed) _then;
+
+/// Create a copy of BridgeUpdateHandoff
+/// with the given fields replaced by the non-null parameter values.
+@pragma('vm:prefer-inline') $Res call({Object? error = null,}) {
+  return _then(BridgeUpdateHandoff_Failed(
+error: null == error ? _self.error : error // ignore: cast_nullable_to_non_nullable
+as BridgeStateError,
+  ));
+}
+
+
+}
+
 // dart format on

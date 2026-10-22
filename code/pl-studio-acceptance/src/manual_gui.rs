@@ -4,6 +4,7 @@ mod context_replay_recovery;
 mod mode_editor;
 mod model_catalog;
 mod shutdown;
+mod skill_activity;
 mod wait_events;
 mod web_search;
 mod websocket_recovery;
@@ -793,6 +794,7 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
             | "provider-usage"
             | "shutdown"
             | "timeline-history"
+            | "skill-activity"
             | "wait-events"
     ) && !options.model_catalog_restart
         && !options.model_catalog_restart_check
@@ -920,6 +922,7 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
             | "call-lifecycle-recovery"
             | "shutdown"
             | "timeline-history"
+            | "skill-activity"
     ) {
         fixture_command.arg("--status-file").arg(&status_file);
     }
@@ -1138,6 +1141,23 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
             keep_isolated_environment(working, &home, &output, Some(&project))?;
         }
         return result;
+    }
+
+    if options.scenario == "skill-activity" {
+        return skill_activity::run(
+            &skill_activity::SkillActivityScenario {
+                workspace: &workspace,
+                app_dir: &app_dir,
+                home: &home,
+                working: working.path(),
+                output: &output,
+                fixture_log: &fixture_log_path,
+                requests_file: &requests_file,
+                status_file: &status_file,
+                interrupt: &interrupt_rx,
+            },
+            fixture,
+        );
     }
 
     if matches!(
@@ -1397,11 +1417,18 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
             );
         }
         if options.scenario == "tool-scroll" {
+            fs::write(
+                output.join("tool-arguments-fixture.json"),
+                serde_json::to_vec_pretty(
+                    &pl_provider_fixture::gui_tool_scroll_expected_arguments(
+                        cfg!(windows) && options.ssh_target.is_none(),
+                    ),
+                )?,
+            )?;
             let log = File::create(output.join("tool-scroll-driver.log"))?;
-            let mut command = process::path_command("dart", &[]);
+            let mut command = driver_command(&app_dir, "test_driver/tool_scroll_journey.dart");
             command
-                .current_dir(&app_dir)
-                .args(["run", "test_driver/tool_scroll_journey.dart", &vm_url])
+                .arg(&vm_url)
                 .arg(&output)
                 .arg(working.path().join("tool-scroll-project"))
                 .stdout(Stdio::from(log.try_clone()?))
@@ -1458,10 +1485,9 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
                 git.success(),
                 "failed to initialize isolated stress project"
             );
-            let mut command = process::path_command("dart", &[]);
+            let mut command = driver_command(&app_dir, "test_driver/stress_probe.dart");
             command
-                .current_dir(&app_dir)
-                .args(["run", "test_driver/stress_probe.dart", &vm_url])
+                .arg(&vm_url)
                 .arg(&probe_stop)
                 .arg(&probe_report)
                 .arg(&probe_ready)
@@ -2389,10 +2415,9 @@ fn run_timeline_history_scenario(
             let target = persisted_identity.as_ref().context(
                 "native displacement requires the live timeline-history persisted identity",
             )?;
-            let mut command = process::path_command("dart", &[]);
+            let mut command =
+                driver_command(app_dir, "test_driver/timeline_displacement_journey.dart");
             command
-                .current_dir(app_dir)
-                .args(["run", "test_driver/timeline_displacement_journey.dart"])
                 .arg(&vm_url)
                 .arg(output)
                 .arg("--project-id")
@@ -2704,10 +2729,9 @@ fn start_timeline_history_driver(
     log_path: &Path,
 ) -> Result<OwnedProcess> {
     let log = File::create(log_path)?;
-    let mut command = process::path_command("dart", &[]);
+    let mut command = driver_command(app_dir, "test_driver/timeline_history_journey.dart");
     command
-        .current_dir(app_dir)
-        .args(["run", "test_driver/timeline_history_journey.dart", phase])
+        .arg(phase)
         .arg(vm_url)
         .arg(project)
         .arg(output)
@@ -3365,6 +3389,17 @@ fn copy_startup_evidence(source: &Path, target: &Path) -> Result<()> {
     Ok(())
 }
 
+// Driver hosts connect to an existing Flutter VM. Reuse its package mapping
+// without re-entering the application's native build hooks through `dart run`.
+fn driver_command(app_dir: &Path, script: &str) -> Command {
+    let mut command = process::path_command(
+        "dart",
+        &["--packages=.dart_tool/package_config.json".into()],
+    );
+    command.current_dir(app_dir).arg(script);
+    command
+}
+
 fn capture(
     app_dir: &Path,
     home: &Path,
@@ -3374,15 +3409,9 @@ fn capture(
 ) -> Result<()> {
     let driver_log_path = output.join("capture-driver.log");
     let driver_log = File::create(&driver_log_path)?;
-    // This host script only connects to the existing Flutter VM. Running it directly
-    // avoids rebuilding the application's unrelated native assets via `dart run`.
-    let mut command = process::path_command(
-        "dart",
-        &["--packages=.dart_tool/package_config.json".into()],
-    );
+    let mut command = driver_command(app_dir, "test_driver/manual_capture.dart");
     command
-        .current_dir(app_dir)
-        .args(["test_driver/manual_capture.dart", vm_url])
+        .arg(vm_url)
         .arg(output)
         .env("ANYWORK_HOME", home)
         .stdout(Stdio::from(driver_log.try_clone()?))
@@ -3419,10 +3448,9 @@ fn start_stress_turn(
     stage: &Path,
     interrupt: &mpsc::Receiver<()>,
 ) -> Result<()> {
-    let mut command = process::path_command("dart", &[]);
+    let mut command = driver_command(app_dir, "test_driver/stress_start.dart");
     command
-        .current_dir(app_dir)
-        .args(["run", "test_driver/stress_start.dart", vm_url])
+        .arg(vm_url)
         .arg(project)
         .arg(prompt)
         .arg(stage)
@@ -3458,10 +3486,9 @@ fn run_stress_sessions(
     stage: &Path,
     interrupt: &mpsc::Receiver<()>,
 ) -> Result<()> {
-    let mut command = process::path_command("dart", &[]);
+    let mut command = driver_command(app_dir, "test_driver/stress_sessions.dart");
     command
-        .current_dir(app_dir)
-        .args(["run", "test_driver/stress_sessions.dart", vm_url])
+        .arg(vm_url)
         .arg(pl_provider_fixture::GUI_STRESS_SESSION_COUNT.to_string())
         .arg(pl_provider_fixture::GUI_STRESS_FOLLOWUP_PROMPT_PREFIX)
         .arg(report)
@@ -3901,10 +3928,9 @@ fn start_statistics_driver(
     } else {
         "0".to_owned()
     };
-    let mut command = process::path_command("dart", &[]);
+    let mut command = driver_command(app_dir, "test_driver/statistics_journey.dart");
     command
-        .current_dir(app_dir)
-        .args(["run", "test_driver/statistics_journey.dart", phase, vm_url])
+        .args([phase, vm_url])
         .arg(project)
         .arg(output)
         .arg(working)
@@ -3993,7 +4019,7 @@ fn statistics_db_counts(home: &Path) -> Result<StatisticsDbCounts> {
         let (rows, committed, samples): (i64, i64, i64) = sea_orm::sqlx::query_as(
             "SELECT (SELECT COUNT(*) FROM call_log_index WHERE kind='attempt'),
                     COUNT(*),
-                    COALESCE(SUM(CASE WHEN decode_millis>0 AND output_tokens IS NOT NULL THEN 1 ELSE 0 END),0)
+                    COALESCE(SUM(CASE WHEN response_millis>0 AND output_tokens IS NOT NULL THEN 1 ELSE 0 END),0)
              FROM performance_samples",
         )
         .fetch_one(&mut connection)
@@ -5529,15 +5555,9 @@ fn start_plan_recovery_driver(
             .working
             .join(format!("plan-recovery-{phase}-driver.log")),
     )?;
-    let mut command = process::path_command("dart", &[]);
+    let mut command = driver_command(context.app_dir, "test_driver/plan_recovery_journey.dart");
     command
-        .current_dir(context.app_dir)
-        .args([
-            "run",
-            "test_driver/plan_recovery_journey.dart",
-            phase,
-            vm_url,
-        ])
+        .args([phase, vm_url])
         .arg(project)
         .arg(context.output)
         .arg(context.working)
@@ -5694,20 +5714,26 @@ struct HistoryLockTurnItems {
 /// is isolated to this run and holds exactly one Thread, so more than one
 /// candidate (or none) is reported instead of guessing which library to lock.
 fn history_lock_database(home: &Path) -> Result<std::path::PathBuf> {
-    let sessions = home.join("v2/sessions");
+    let projects = home.join("v2/projects");
     let mut candidates = Vec::new();
-    if sessions.is_dir() {
-        for entry in fs::read_dir(&sessions)? {
-            let database = entry?.path().join("history.sqlite");
-            if database.is_file() {
-                candidates.push(database);
+    if projects.is_dir() {
+        for project in fs::read_dir(&projects)? {
+            let sessions = project?.path().join("sessions");
+            if !sessions.is_dir() {
+                continue;
+            }
+            for session in fs::read_dir(&sessions)? {
+                let database = session?.path().join("history.sqlite");
+                if database.is_file() {
+                    candidates.push(database);
+                }
             }
         }
     }
     ensure!(
         candidates.len() == 1,
         "expected exactly one per-session history.sqlite under {}, found {}",
-        sessions.display(),
+        projects.display(),
         candidates.len()
     );
     Ok(candidates.remove(0))
@@ -5858,10 +5884,9 @@ fn start_stress_body_driver(
     stage: &Path,
 ) -> Result<OwnedProcess> {
     let log = File::create(stage.with_extension("driver.log"))?;
-    let mut command = process::path_command("dart", &[]);
+    let mut command = driver_command(context.app_dir, "test_driver/stress_body.dart");
     command
-        .current_dir(context.app_dir)
-        .args(["run", "test_driver/stress_body.dart", vm_url])
+        .arg(vm_url)
         .arg(project)
         .arg(context.output)
         .arg(context.working)
@@ -5895,10 +5920,9 @@ fn start_realtime_driver(
     stage: &Path,
 ) -> Result<OwnedProcess> {
     let log = File::create(stage.with_extension("driver.log"))?;
-    let mut command = process::path_command("dart", &[]);
+    let mut command = driver_command(app_dir, "test_driver/realtime_journey.dart");
     command
-        .current_dir(app_dir)
-        .args(["run", "test_driver/realtime_journey.dart", vm_url])
+        .arg(vm_url)
         .arg(project)
         .arg(output)
         .arg(working)
@@ -5964,10 +5988,9 @@ fn start_history_lock_driver(
     stage: &Path,
 ) -> Result<OwnedProcess> {
     let log = File::create(stage.with_extension("driver.log"))?;
-    let mut command = process::path_command("dart", &[]);
+    let mut command = driver_command(app_dir, "test_driver/history_writer_journey.dart");
     command
-        .current_dir(app_dir)
-        .args(["run", "test_driver/history_writer_journey.dart", vm_url])
+        .arg(vm_url)
         .arg(project)
         .arg(output)
         .arg(working)
@@ -6071,10 +6094,9 @@ fn start_history_fault_driver(
     stage: &Path,
 ) -> Result<OwnedProcess> {
     let log = File::create(stage.with_extension("driver.log"))?;
-    let mut command = process::path_command("dart", &[]);
+    let mut command = driver_command(app_dir, "test_driver/history_fault_journey.dart");
     command
-        .current_dir(app_dir)
-        .args(["run", "test_driver/history_fault_journey.dart", vm_url])
+        .arg(vm_url)
         .arg(project)
         .arg(output)
         .arg(working)

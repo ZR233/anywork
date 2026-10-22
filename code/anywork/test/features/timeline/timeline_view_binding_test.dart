@@ -12,6 +12,7 @@ import 'package:anywork/src/app/theme/material3_theme.dart';
 import 'package:anywork/src/presentation/providers/client_provider.dart';
 import 'package:anywork/src/shared/studio_driver_key_values.dart';
 import 'package:anywork/src/domain/models/timeline_commands.dart';
+import 'package:anywork/src/features/timeline/timeline_activity_row.dart';
 import 'package:anywork/src/features/timeline/timeline_view.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
 import 'package:anywork/src/presentation/view_models/timeline_session_owner.dart';
@@ -753,11 +754,16 @@ void main() {
     );
     await tester.pumpAndSettle();
     final rect = tester.getRect(find.byKey(StudioDriverKeys.timeline));
-    // 轨道点击（拇指很小，靠近轨道顶端一定是 track 而不是 thumb）。
-    await tester.tapAt(Offset(rect.right - 2, rect.top + 12));
+    // 原生悬停唤回淡出的滚动条，再点击轨道（顶端不在底部 thumb 内）。
+    final trackPoint = Offset(rect.right - 2, rect.top + 12);
+    final mouse = TestPointer(1, PointerDeviceKind.mouse);
+    await tester.sendEventToBinding(mouse.hover(trackPoint));
+    await tester.pumpAndSettle();
+    await tester.tapAt(trackPoint, kind: PointerDeviceKind.mouse);
     await tester.pumpAndSettle();
     expect(enteredHistory, greaterThan(0), reason: '轨道点击是真实用户意图');
     expect(lease.scrollController.position.pixels, greaterThan(0.5));
+    await tester.sendEventToBinding(mouse.removePointer());
   });
 
   testWidgets('详情字段 token 由唯一 formatter 给出且不同问答 part 不撞', (tester) async {
@@ -1261,10 +1267,10 @@ void main() {
 
   // ---- R4 正文选择边界：界面提示不是 canonical 正文 -------------------------------
 
-  /// design/26 §26.8：正文选择只包含所选内容域的文本。截断说明与详情入口文案不属于
+  /// design/26 §26.8：正文选择只包含所选内容域的文本。详情入口行是界面提示，不属于
   /// canonical 正文，不随跨块选择进入剪贴板；入口的点击、焦点与辅助语义保留。
   testWidgets(
-    '跨块全选的实际复制内容只含 canonical 正文，提示与按钮文案不进入剪贴板',
+    '跨块全选的实际复制内容只含 canonical 正文，入口行文案不进入剪贴板',
     variant: TargetPlatformVariant.only(TargetPlatform.linux),
     (tester) async {
       final (client, owner, transport) = await _openDetailSession(
@@ -1294,6 +1300,14 @@ void main() {
       // 提示子树当前真实渲染的文案：不是测试自己构造的字符串。
       final notice = find.byKey(StudioDriverKeys.timelineItemBodyNotice('big'));
       expect(notice, findsOneWidget);
+      final rows = find.descendant(
+        of: notice,
+        matching: find.byType(TimelineActivityRow),
+      );
+      final activityRows = tester
+          .widgetList<TimelineActivityRow>(rows)
+          .toList();
+      expect(activityRows, hasLength(1), reason: '基线只有一个被截断字段，因此只有一行入口');
       final hints = tester
           .widgetList<Text>(
             find.descendant(of: notice, matching: find.byType(Text)),
@@ -1301,7 +1315,17 @@ void main() {
           .map((widget) => widget.data)
           .whereType<String>()
           .toList();
-      expect(hints, hasLength(2), reason: '截断说明 + 详情入口文案');
+      expect(hints, hasLength(1), reason: '每字段一行入口文案，不再有截断说明句');
+      expect(activityRows.single.label, hints.single, reason: '活动行文案就是唯一入口文案');
+      expect(
+        tester
+            .widget<Text>(
+              find.descendant(of: notice, matching: find.byType(Text)).first,
+            )
+            .maxLines,
+        1,
+        reason: '入口行只占一行，超出在行内省略',
+      );
 
       // 选择边界不夺走入口：仍可点击、可进入键盘焦点、保留辅助语义标签。
       final open = find.byKey(
@@ -1312,9 +1336,9 @@ void main() {
           ),
         ),
       );
-      expect(tester.widget<TextButton>(open).onPressed, isNotNull);
+      expect(tester.widget<InkWell>(open).onTap, isNotNull);
       final semantics = tester.ensureSemantics();
-      expect(find.bySemanticsLabel(hints[1]), findsWidgets);
+      expect(find.bySemanticsLabel(hints.single), findsWidgets);
       semantics.dispose();
       final buttonLabel = tester.element(
         find.descendant(of: open, matching: find.byType(Text)).first,
@@ -1395,6 +1419,85 @@ void main() {
       await _pumpFrames(tester, frames: 2);
     },
   );
+
+  // ---- 详情入口行：每个被截断字段一行，不额外渲染说明句 ----------------------------
+
+  testWidgets('参数与输出同时被截断时每个字段恰好一行活动行入口', (tester) async {
+    final (client, owner, _) = await _openDetailSession(
+      tester,
+      baseline: _twoFieldBaseline(),
+    );
+    final deadline = DateTime.now().add(const Duration(seconds: 5));
+    final lease = owner.lease('thread')!;
+
+    await tester.pumpWidget(
+      host(
+        TimelineView(
+          threadId: 'thread',
+          view: owner.source.value!,
+          lease: lease,
+          onLoadOlder: () async {},
+          onRetryOlder: () async {},
+          onReturnLive: () async {},
+          onEnterHistory: () {},
+          onRetryConnection: () async {},
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    // 工具条目属于活动组：展开后成员行与其详情入口才构建。
+    final group = lease.presentationFor('tool')!;
+    await tester.tap(
+      find
+          .ancestor(
+            of: find.byKey(StudioDriverKeys.timelineActivitySummary(group.id)),
+            matching: find.byType(ListTile),
+          )
+          .first,
+    );
+    await tester.pumpAndSettle();
+
+    final notice = find.byKey(StudioDriverKeys.timelineItemBodyNotice('tool'));
+    expect(notice, findsOneWidget);
+    final rows = find.descendant(
+      of: notice,
+      matching: find.byType(TimelineActivityRow),
+    );
+    // 基线恰好两个被截断字段：入口行数必须等于字段数，没有额外的说明行。
+    expect(rows, findsNWidgets(2), reason: '每个被截断字段一行入口');
+    final l10n = AppLocalizations.of(tester.element(notice));
+    expect(
+      tester.widgetList<TimelineActivityRow>(rows).map((row) => row.label),
+      [l10n.timelineToolArguments, l10n.timelineToolOutput],
+      reason: '行文案是字段领域名，不是截断说明句',
+    );
+    for (final field in const <ThreadContentFieldView>[
+      ThreadToolArgumentsFieldView(),
+      ThreadToolResultFieldView(),
+    ]) {
+      final open = find.byKey(
+        StudioDriverKeys.timelineDetailOpen(
+          'tool',
+          StudioDriverKeyValues.timelineDetailField(field),
+        ),
+      );
+      expect(open, findsOneWidget, reason: '每个被截断字段都有自己的入口');
+      expect(tester.widget<InkWell>(open).onTap, isNotNull);
+      expect(
+        find.descendant(of: open, matching: find.byType(TimelineActivityRow)),
+        findsOneWidget,
+        reason: '入口就是一行活动行，不另建行样式',
+      );
+    }
+
+    await tester.pumpWidget(const SizedBox.shrink());
+    await _pumpFrames(tester);
+    await tester.runAsync(() async {
+      await owner.close(deadline: deadline);
+      await client.close(deadline: deadline);
+    });
+    await _pumpFrames(tester, frames: 2);
+  });
 
   // ---- 只读滚动诊断：查询时现场读取当前 controller，不复用通知快照 -----------------
 
@@ -1512,7 +1615,7 @@ void main() {
     await _pumpFrames(tester, frames: 2);
   });
 
-  testWidgets('思考展开保留概要和内容，缺失字段不生成空区块', (tester) async {
+  testWidgets('单段思考一次展开保留概要和内容，缺失字段不生成空区块', (tester) async {
     for (final (summary, content) in [
       (['Summary evidence'], ['Full reasoning evidence']),
       (['Summary evidence'], <String>[]),
@@ -1573,19 +1676,10 @@ void main() {
       await tester.pumpAndSettle();
       final hasSummary = summary.any((chunk) => chunk.trim().isNotEmpty);
       final hasContent = content.any((chunk) => chunk.trim().isNotEmpty);
-      if (hasSummary || hasContent) {
-        await tester.tap(
-          find
-              .ancestor(
-                of: find.byKey(
-                  StudioDriverKeys.timelineActivitySummary('thinking'),
-                ),
-                matching: find.byType(ListTile),
-              )
-              .first,
-        );
-        await tester.pumpAndSettle();
-      }
+      expect(
+        find.byKey(StudioDriverKeys.timelineActivitySummary('thinking')),
+        findsNothing,
+      );
       expect(
         find.byKey(const ValueKey('timeline-thinking-summary-thinking')),
         hasSummary ? findsOneWidget : findsNothing,
@@ -2105,10 +2199,33 @@ void main() {
         .byWidgetPredicate((widget) => widget is RawScrollbar)
         .first;
     final barRect = tester.getRect(scrollbar);
-    await tester.tapAt(
-      Offset(barRect.right - 6, barRect.bottom - 4),
-      kind: PointerDeviceKind.mouse,
+    final endpoint = Offset(barRect.right - 6, barRect.bottom - 4);
+    // 自动淡出后先按真实鼠标悬停唤回滚动条，避免透明时点击穿透使本用例空跑。
+    final mouse = TestPointer(1, PointerDeviceKind.mouse);
+    await tester.sendEventToBinding(mouse.hover(endpoint));
+    await tester.pumpAndSettle();
+    final paintFinder = find.descendant(
+      of: scrollbar,
+      matching: find.byWidgetPredicate(
+        (widget) =>
+            widget is CustomPaint &&
+            widget.foregroundPainter is ScrollbarPainter,
+      ),
     );
+    final painter =
+        tester.widget<CustomPaint>(paintFinder).foregroundPainter!
+            as ScrollbarPainter;
+    final box = tester.renderObject<RenderBox>(paintFinder);
+    expect(
+      painter.hitTestOnlyThumbInteractive(
+        box.globalToLocal(endpoint),
+        PointerDeviceKind.mouse,
+      ),
+      isTrue,
+      reason: '端点动作必须命中可见 thumb，而不是穿透到正文',
+    );
+    await tester.tapAt(endpoint, kind: PointerDeviceKind.mouse);
+    await tester.sendEventToBinding(mouse.removePointer());
     await tester.pumpAndSettle();
     expect(position.pixels, 0, reason: '底端轨道动作不产生位移');
     lease.scrollController.jumpTo(200);
@@ -2333,7 +2450,7 @@ StudioTimelineBaseline _longBaseline({int count = 40}) {
   );
 }
 
-/// 跨块正文选择夹具：前后 canonical 正文夹一条带截断提示与详情入口的大条目。
+/// 跨块正文选择夹具：前后 canonical 正文夹一条带详情入口行的大条目。
 StudioTimelineBaseline _selectionBaseline() {
   final timestamp = DateTime.utc(2026);
   StudioTimelineItem canonical(String id, int ordinal, String body) =>
@@ -2399,6 +2516,65 @@ StudioTimelineBaseline _selectionBaseline() {
         ],
       ),
       canonical('after', 3, '后段canonical正文'),
+    ],
+  );
+}
+
+/// 双字段夹具：一次工具调用的参数与输出同时被截断，两条详情引用都可读。
+StudioTimelineBaseline _twoFieldBaseline() {
+  final timestamp = DateTime.utc(2026);
+  return StudioTimelineBaseline(
+    subscriptionId: 'sub',
+    version: 1,
+    before: null,
+    hasOlder: false,
+    items: [
+      StudioTimelineItem(
+        item: ThreadItemView(
+          id: 'tool',
+          threadId: 'thread',
+          turnId: 'turn',
+          ordinal: 1,
+          revision: 1,
+          createdAt: timestamp,
+          updatedAt: timestamp,
+          saved: true,
+          executionTerminal: true,
+          state: ThreadToolItemStateView(
+            invocation: ThreadToolInvocationView(
+              toolCallId: 'tool',
+              callId: 'tool',
+              name: 'exec_command',
+              arguments: '{"command":"cargo test"}',
+            ),
+            lifecycle: SucceededThreadToolView(
+              timestamp,
+              ThreadToolOutputView(
+                result: 'ok',
+                attachments: const [],
+                outputArtifacts: const [],
+              ),
+            ),
+          ),
+        ),
+        saved: true,
+        lifecycle: StudioTimelineLifecycle.terminal,
+        omittedBytes: 12,
+        details: const [
+          StudioTimelineDetailRef(
+            field: ThreadToolArgumentsFieldView(),
+            revision: 1,
+            totalBytes: 8,
+            previewBytes: 4,
+          ),
+          StudioTimelineDetailRef(
+            field: ThreadToolResultFieldView(),
+            revision: 1,
+            totalBytes: 8,
+            previewBytes: 4,
+          ),
+        ],
+      ),
     ],
   );
 }

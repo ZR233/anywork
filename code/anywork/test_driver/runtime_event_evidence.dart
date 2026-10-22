@@ -59,7 +59,7 @@ final class RuntimePublishFact {
     this.attemptId,
     this.observationSequence,
     this.completionTokens,
-    this.decodeMillis,
+    this.responseMillis,
     this.latestContextTokens,
     this.clearedPreviousLive,
   });
@@ -81,7 +81,7 @@ final class RuntimePublishFact {
 
   /// account 确认的轻量计量，缺失保持 null，不以 0 猜测。
   final int? completionTokens;
-  final int? decodeMillis;
+  final int? responseMillis;
   final int? latestContextTokens;
 
   /// 仅 `cleared` 携带：被清除的 live 观察引用。
@@ -101,7 +101,7 @@ final class RuntimePublishFact {
             ? null
             : Map<String, Object?>.unmodifiable(<String, Object?>{
                 'completionTokens': completionTokens,
-                'decodeMillis': decodeMillis,
+                'responseMillis': responseMillis,
                 'latestContextTokens': latestContextTokens,
               }),
         'clearedPreviousLive': clearedPreviousLive?.toJson(),
@@ -302,7 +302,7 @@ final class RuntimeEventEvidenceRecorder {
       attemptId: baselineUsage?.attemptId,
       observationSequence: baselineUsage?.observationSequence,
       completionTokens: baselineUsage?.completionTokens,
-      decodeMillis: baselineUsage?.decodeMillis,
+      responseMillis: baselineUsage?.responseMillis,
       latestContextTokens: baselineUsage?.latestContextTokens,
     );
     _facts.add(baseline);
@@ -491,7 +491,7 @@ final class RuntimeEventEvidenceRecorder {
         attemptId: usage.attemptId,
         observationSequence: sequence,
         completionTokens: usage.completionTokens,
-        decodeMillis: usage.decodeMillis,
+        responseMillis: usage.responseMillis,
         latestContextTokens: usage.latestContextTokens,
       ),
     );

@@ -44,16 +44,12 @@ pub(super) fn run(
                 let mut gui = start_recovery_gui(context.workspace, &home, &gui_log)?;
                 let vm_url = wait_for_vm(&gui_log, &mut gui, &mut fixture, context.interrupt)?;
                 let log = File::create(&driver_log)?;
-                let mut command = process::path_command("dart", &[]);
+                let mut command = driver_command(
+                    context.app_dir,
+                    "test_driver/context_replay_recovery_journey.dart",
+                );
                 command
-                    .current_dir(context.app_dir)
-                    .args([
-                        "run",
-                        "test_driver/context_replay_recovery_journey.dart",
-                        phase,
-                        label,
-                        &vm_url,
-                    ])
+                    .args([phase, label, &vm_url])
                     .arg(&project)
                     .arg(&output)
                     .arg(&coord)

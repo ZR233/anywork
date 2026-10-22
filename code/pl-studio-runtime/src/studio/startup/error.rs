@@ -44,7 +44,8 @@ impl StudioStartupError {
                         | crate::ConfigRuntimeError::ModeDefinitions(_)
                 )
             )
-        }) {
+        }) || is_session_layout_migration(&source)
+        {
             StudioStartupErrorKind::Migration
         } else if is_data_error(&source) {
             StudioStartupErrorKind::PersistentData
@@ -76,15 +77,22 @@ pub(crate) fn cleanup_error(error: impl Into<anyhow::Error>) -> anyhow::Error {
 /// Mark errors originating in a decoder/validator, while preserving access failures.
 pub(crate) fn input_error(error: impl Into<anyhow::Error>) -> anyhow::Error {
     let error = error.into();
-    if has_environment_error(&error) {
+    if is_session_layout_migration(&error) || has_environment_error(&error) {
         error
     } else {
         data_error(error)
     }
 }
 
+fn is_session_layout_migration(error: &anyhow::Error) -> bool {
+    error.is::<crate::studio::store::SessionLayoutMigrationFailed>()
+        || error
+            .chain()
+            .any(|cause| cause.is::<crate::studio::store::SessionLayoutMigrationFailed>())
+}
+
 fn is_data_error(error: &anyhow::Error) -> bool {
-    if has_environment_error(error) {
+    if is_session_layout_migration(error) || has_environment_error(error) {
         return false;
     }
     error.is::<PersistentDataError>()
@@ -101,11 +109,18 @@ fn is_data_error(error: &anyhow::Error) -> bool {
 }
 
 fn has_environment_error(error: &anyhow::Error) -> bool {
-    error.is::<CleanupFailure>() || error.chain().any(|cause| {
-        cause.downcast_ref::<std::io::Error>().is_some_and(|error| error.kind() != std::io::ErrorKind::InvalidData)
-            || cause.downcast_ref::<crate::PureError>().is_some_and(|error| matches!(error, crate::PureError::Io(io) if io.kind() != std::io::ErrorKind::InvalidData))
-            || cause.downcast_ref::<DbErr>().is_some_and(|error| !sqlite_data_error(error))
-    })
+    error.is::<CleanupFailure>()
+        || error.chain().any(|cause| {
+            cause
+                .downcast_ref::<std::io::Error>()
+                .is_some_and(|error| error.kind() != std::io::ErrorKind::InvalidData)
+                || cause.downcast_ref::<crate::PureError>().is_some_and(|error| {
+                    matches!(error, crate::PureError::Io(io) if io.kind() != std::io::ErrorKind::InvalidData)
+                })
+                || cause
+                    .downcast_ref::<DbErr>()
+                    .is_some_and(|error| !sqlite_data_error(error))
+        })
 }
 
 fn sqlite_data_error(error: &DbErr) -> bool {

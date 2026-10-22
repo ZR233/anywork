@@ -236,15 +236,9 @@ fn start_wait_events_driver(
     stage: &Path,
 ) -> Result<OwnedProcess> {
     let log = File::create(stage.with_extension("driver.log"))?;
-    // Host Driver scripts only talk to the existing Flutter VM. Direct dart with
-    // the app package config avoids `dart run` rebuilding unrelated native assets.
-    let mut command = process::path_command(
-        "dart",
-        &["--packages=.dart_tool/package_config.json".into()],
-    );
+    let mut command = driver_command(app_dir, "test_driver/wait_events_journey.dart");
     command
-        .current_dir(app_dir)
-        .args(["test_driver/wait_events_journey.dart", vm_url])
+        .arg(vm_url)
         .arg(project)
         .arg(output)
         .arg(working)

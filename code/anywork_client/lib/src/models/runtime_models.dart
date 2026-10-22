@@ -118,14 +118,15 @@ class SessionCostView {
 /// 组内 effort 细分读数。
 ///
 /// `effort` 为请求期思考强度原值；`null` 表示未指定/未记录，与显式 `none` 独立。
-/// 细分不另立账号模型身份，只是所属顶层汇总的一部分。
+/// 细分不另立账号模型身份，只是所属顶层汇总的一部分。输出速度按
+/// `Σ输出词元 × 1000 ÷ Σ总响应毫秒` 成对加权；`ttftSampleCount` 是平均首字的独立分母。
 class ModelPerformanceEffortSummaryView {
   const ModelPerformanceEffortSummaryView({
     required this.effort,
     required this.sampleCount,
     required this.completionTokens,
     required this.totalTtftMillis,
-    required this.totalDecodeMillis,
+    required this.ttftSampleCount,
     required this.totalResponseMillis,
     required this.tokensPerSecond,
     required this.averageTtftMillis,
@@ -136,10 +137,12 @@ class ModelPerformanceEffortSummaryView {
   final int sampleCount;
   final int completionTokens;
   final int totalTtftMillis;
-  final int totalDecodeMillis;
+  final int ttftSampleCount;
   final int totalResponseMillis;
   final double tokensPerSecond;
-  final double averageTtftMillis;
+
+  /// 只按已知首字样本求平均；没有首字样本时保持未知，不用速度样本数稀释。
+  final double? averageTtftMillis;
   final double averageResponseMillis;
 
   @override
@@ -150,7 +153,7 @@ class ModelPerformanceEffortSummaryView {
           sampleCount == other.sampleCount &&
           completionTokens == other.completionTokens &&
           totalTtftMillis == other.totalTtftMillis &&
-          totalDecodeMillis == other.totalDecodeMillis &&
+          ttftSampleCount == other.ttftSampleCount &&
           totalResponseMillis == other.totalResponseMillis &&
           tokensPerSecond == other.tokensPerSecond &&
           averageTtftMillis == other.averageTtftMillis &&
@@ -162,7 +165,7 @@ class ModelPerformanceEffortSummaryView {
     sampleCount,
     completionTokens,
     totalTtftMillis,
-    totalDecodeMillis,
+    ttftSampleCount,
     totalResponseMillis,
     tokensPerSecond,
     averageTtftMillis,
@@ -185,7 +188,7 @@ class ModelPerformanceSummaryView {
     required this.sampleCount,
     required this.completionTokens,
     required this.totalTtftMillis,
-    required this.totalDecodeMillis,
+    required this.ttftSampleCount,
     required this.totalResponseMillis,
     required this.tokensPerSecond,
     required this.averageTtftMillis,
@@ -199,10 +202,12 @@ class ModelPerformanceSummaryView {
   final int sampleCount;
   final int completionTokens;
   final int totalTtftMillis;
-  final int totalDecodeMillis;
+  final int ttftSampleCount;
   final int totalResponseMillis;
   final double tokensPerSecond;
-  final double averageTtftMillis;
+
+  /// 只按已知首字样本求平均；没有首字样本时保持未知，不用速度样本数稀释。
+  final double? averageTtftMillis;
   final double averageResponseMillis;
   final List<ModelPerformanceEffortSummaryView> effortBreakdowns;
 
@@ -216,7 +221,7 @@ class ModelPerformanceSummaryView {
           sampleCount == other.sampleCount &&
           completionTokens == other.completionTokens &&
           totalTtftMillis == other.totalTtftMillis &&
-          totalDecodeMillis == other.totalDecodeMillis &&
+          ttftSampleCount == other.ttftSampleCount &&
           totalResponseMillis == other.totalResponseMillis &&
           tokensPerSecond == other.tokensPerSecond &&
           averageTtftMillis == other.averageTtftMillis &&
@@ -231,7 +236,7 @@ class ModelPerformanceSummaryView {
     sampleCount,
     completionTokens,
     totalTtftMillis,
-    totalDecodeMillis,
+    ttftSampleCount,
     totalResponseMillis,
     tokensPerSecond,
     averageTtftMillis,
@@ -423,7 +428,7 @@ class ThreadRuntimeLiveUsageView {
     required this.turnId,
     required this.attemptId,
     this.completionTokens,
-    this.decodeMillis,
+    this.responseMillis,
     this.latestContextTokens,
     required this.state,
     required this.observationSequence,
@@ -432,7 +437,9 @@ class ThreadRuntimeLiveUsageView {
   final String turnId;
   final String attemptId;
   final int? completionTokens;
-  final int? decodeMillis;
+
+  /// 本次 attempt 起点的单调总响应耗时；透明重试换代后从零重新计时。
+  final int? responseMillis;
   final int? latestContextTokens;
   final ThreadRuntimeUsageState state;
   final int observationSequence;
@@ -444,7 +451,7 @@ class ThreadRuntimeLiveUsageView {
           turnId == other.turnId &&
           attemptId == other.attemptId &&
           completionTokens == other.completionTokens &&
-          decodeMillis == other.decodeMillis &&
+          responseMillis == other.responseMillis &&
           latestContextTokens == other.latestContextTokens &&
           state == other.state &&
           observationSequence == other.observationSequence;
@@ -454,7 +461,7 @@ class ThreadRuntimeLiveUsageView {
     turnId,
     attemptId,
     completionTokens,
-    decodeMillis,
+    responseMillis,
     latestContextTokens,
     state,
     observationSequence,
@@ -490,7 +497,7 @@ class ThreadRuntimeView {
     this.promptCachePolicy,
     this.prefixChangedReason,
     this.turnCompletionTokens = 0,
-    this.turnDecodeMillis = 0,
+    this.turnResponseMillis = 0,
     this.liveUsage,
     this.workflow,
     this.plan,
@@ -526,7 +533,7 @@ class ThreadRuntimeView {
   final String? promptCachePolicy;
   final String? prefixChangedReason;
   final int turnCompletionTokens;
-  final int turnDecodeMillis;
+  final int turnResponseMillis;
   final ThreadRuntimeLiveUsageView? liveUsage;
   final WorkflowRuntimeView? workflow;
   final PlanRuntimeView? plan;
@@ -536,8 +543,8 @@ class ThreadRuntimeView {
   bool get hasUsage =>
       inferenceCount > 0 || promptTokens > 0 || completionTokens > 0;
   double? get turnTokensPerSecond =>
-      turnCompletionTokens > 0 && turnDecodeMillis > 0
-      ? turnCompletionTokens * 1000 / turnDecodeMillis
+      turnCompletionTokens > 0 && turnResponseMillis > 0
+      ? turnCompletionTokens * 1000 / turnResponseMillis
       : null;
 
   @override
@@ -569,7 +576,7 @@ class ThreadRuntimeView {
             promptCachePolicy == other.promptCachePolicy &&
             prefixChangedReason == other.prefixChangedReason &&
             turnCompletionTokens == other.turnCompletionTokens &&
-            turnDecodeMillis == other.turnDecodeMillis &&
+            turnResponseMillis == other.turnResponseMillis &&
             liveUsage == other.liveUsage &&
             workflow == other.workflow &&
             plan == other.plan &&
@@ -603,7 +610,7 @@ class ThreadRuntimeView {
     promptCachePolicy,
     prefixChangedReason,
     turnCompletionTokens,
-    turnDecodeMillis,
+    turnResponseMillis,
     liveUsage,
     workflow,
     plan,
@@ -636,7 +643,7 @@ class ThreadRuntimeView {
     String? promptCachePolicy,
     String? prefixChangedReason,
     int? turnCompletionTokens,
-    int? turnDecodeMillis,
+    int? turnResponseMillis,
     Object? liveUsage = _threadRuntimeUnset,
     WorkflowRuntimeView? workflow,
     Object? plan = _threadRuntimeUnset,
@@ -673,7 +680,7 @@ class ThreadRuntimeView {
       promptCachePolicy: promptCachePolicy ?? this.promptCachePolicy,
       prefixChangedReason: prefixChangedReason ?? this.prefixChangedReason,
       turnCompletionTokens: turnCompletionTokens ?? this.turnCompletionTokens,
-      turnDecodeMillis: turnDecodeMillis ?? this.turnDecodeMillis,
+      turnResponseMillis: turnResponseMillis ?? this.turnResponseMillis,
       liveUsage: identical(liveUsage, _threadRuntimeUnset)
           ? this.liveUsage
           : liveUsage as ThreadRuntimeLiveUsageView?,

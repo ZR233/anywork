@@ -16,7 +16,7 @@ pub(crate) fn fold_effect(summary: &mut UsageSummary, effect: &ThreadEffectBatch
     {
         summary.turn_id.clone_from(&turn.turn_id);
         summary.turn_completion_tokens = 0;
-        summary.turn_decode_millis = 0;
+        summary.turn_response_millis = 0;
     }
     if let Some(attempt) = &effect.attempt {
         // The binding facts are projected as one group: a newer attempt either replaces all of them

@@ -158,6 +158,30 @@ abstract class AppLocalizations {
   /// **'Shutting down safely'**
   String get shutdownTitle;
 
+  /// No description provided for @shutdownUpdateTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Installing update {version}'**
+  String shutdownUpdateTitle(String version);
+
+  /// No description provided for @shutdownUpdateSaving.
+  ///
+  /// In en, this message translates to:
+  /// **'Stopping chats and saving data…'**
+  String get shutdownUpdateSaving;
+
+  /// No description provided for @shutdownUpdateRestartHint.
+  ///
+  /// In en, this message translates to:
+  /// **'Installation progress will appear after saving. The app will reopen automatically.'**
+  String get shutdownUpdateRestartHint;
+
+  /// No description provided for @shutdownUpdateExitHint.
+  ///
+  /// In en, this message translates to:
+  /// **'Installation progress will appear after saving. The app will stay closed.'**
+  String get shutdownUpdateExitHint;
+
   /// No description provided for @shutdownFinalizing.
   ///
   /// In en, this message translates to:
@@ -433,12 +457,6 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Load full content'**
   String get timelineItemBodyLoad;
-
-  /// No description provided for @timelineItemBodyTruncated.
-  ///
-  /// In en, this message translates to:
-  /// **'This page shows a truncated preview of a large item.'**
-  String get timelineItemBodyTruncated;
 
   /// No description provided for @timelineItemBodyLoading.
   ///
@@ -1970,12 +1988,6 @@ abstract class AppLocalizations {
   /// **'This session is running or waiting for input, so the model cannot be changed yet. Stop the current run or wait for it to finish.'**
   String get statusModelSwitchWhileRunning;
 
-  /// No description provided for @statusModelSwitchWhileWorkflowActive.
-  ///
-  /// In en, this message translates to:
-  /// **'The current workflow is still active, so the model cannot be changed yet. Wait for the workflow to finish.'**
-  String get statusModelSwitchWhileWorkflowActive;
-
   /// No description provided for @statusModelSwitchWhileInactive.
   ///
   /// In en, this message translates to:
@@ -2213,7 +2225,7 @@ abstract class AppLocalizations {
   /// No description provided for @statusLastConfirmedAgentTokenSpeed.
   ///
   /// In en, this message translates to:
-  /// **'Last confirmed token speed'**
+  /// **'Last confirmed output speed (includes the first-token wait)'**
   String get statusLastConfirmedAgentTokenSpeed;
 
   /// No description provided for @settingsStatisticsTitle.
@@ -2263,18 +2275,6 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'No calls match these filters.'**
   String get settingsStatisticsFilteredEmpty;
-
-  /// No description provided for @settingsStatisticsPendingTitle.
-  ///
-  /// In en, this message translates to:
-  /// **'Statistics pending write'**
-  String get settingsStatisticsPendingTitle;
-
-  /// No description provided for @settingsStatisticsPendingBody.
-  ///
-  /// In en, this message translates to:
-  /// **'Recent calls are still being written to statistics and may not appear yet.'**
-  String get settingsStatisticsPendingBody;
 
   /// No description provided for @settingsStatisticsGapTitle.
   ///
@@ -2405,7 +2405,7 @@ abstract class AppLocalizations {
   /// No description provided for @statisticsSpeed.
   ///
   /// In en, this message translates to:
-  /// **'Speed'**
+  /// **'Output TPS (incl. first token)'**
   String get statisticsSpeed;
 
   /// No description provided for @statisticsSamples.
@@ -2423,13 +2423,13 @@ abstract class AppLocalizations {
   /// No description provided for @statisticsAverageTtft.
   ///
   /// In en, this message translates to:
-  /// **'Average TTFT'**
+  /// **'Average first token'**
   String get statisticsAverageTtft;
 
   /// No description provided for @statisticsAverageResponse.
   ///
   /// In en, this message translates to:
-  /// **'Average response'**
+  /// **'Average total response'**
   String get statisticsAverageResponse;
 
   /// No description provided for @statisticsCompletedAt.
@@ -2441,14 +2441,26 @@ abstract class AppLocalizations {
   /// No description provided for @statisticsDecode.
   ///
   /// In en, this message translates to:
-  /// **'Decode'**
+  /// **'After first token'**
   String get statisticsDecode;
 
   /// No description provided for @statisticsTotalResponse.
   ///
   /// In en, this message translates to:
-  /// **'Total'**
+  /// **'Total response'**
   String get statisticsTotalResponse;
+
+  /// No description provided for @statisticsTtftSampleCount.
+  ///
+  /// In en, this message translates to:
+  /// **'{count} first-token samples'**
+  String statisticsTtftSampleCount(int count);
+
+  /// No description provided for @settingsStatisticsThroughputNote.
+  ///
+  /// In en, this message translates to:
+  /// **'Output TPS = provider-confirmed output tokens × 1000 ÷ total response time (including the first-token wait). Total response runs from the request that produced the result to its normalized terminal event; failed retries, backoff, tool execution and post-terminal collection or saving are excluded. The first token is the first non-empty text, reasoning or tool-input increment, and output may include reasoning tokens without double counting. The after-first-token time is diagnostic, not hardware decode time. Samples from the previous statistics definition were discarded; raw calls and billing remain.'**
+  String get settingsStatisticsThroughputNote;
 
   /// No description provided for @statusTurnQueued.
   ///
@@ -2660,6 +2672,18 @@ abstract class AppLocalizations {
   /// **'Close image preview'**
   String get timelineImageClose;
 
+  /// No description provided for @timelineImageCardTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Image card'**
+  String get timelineImageCardTitle;
+
+  /// No description provided for @timelineImageCardEmpty.
+  ///
+  /// In en, this message translates to:
+  /// **'This image is unavailable'**
+  String get timelineImageCardEmpty;
+
   /// No description provided for @timelineRemoteImageSource.
   ///
   /// In en, this message translates to:
@@ -2726,11 +2750,47 @@ abstract class AppLocalizations {
   /// **'Thinking'**
   String get timelineReasoningActive;
 
-  /// No description provided for @timelineReasoningCompleted.
+  /// No description provided for @timelineReasoningEnded.
   ///
   /// In en, this message translates to:
-  /// **'Thought'**
-  String get timelineReasoningCompleted;
+  /// **'Thought ended'**
+  String get timelineReasoningEnded;
+
+  /// No description provided for @timelineReasoningFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Thinking failed'**
+  String get timelineReasoningFailed;
+
+  /// No description provided for @timelineReasoningCancelled.
+  ///
+  /// In en, this message translates to:
+  /// **'Thinking cancelled'**
+  String get timelineReasoningCancelled;
+
+  /// No description provided for @timelineReasoningElapsedUnderSecond.
+  ///
+  /// In en, this message translates to:
+  /// **'Thought for less than 1s'**
+  String get timelineReasoningElapsedUnderSecond;
+
+  /// No description provided for @timelineReasoningElapsedSeconds.
+  ///
+  /// In en, this message translates to:
+  /// **'Thought for {seconds}s'**
+  String timelineReasoningElapsedSeconds(int seconds);
+
+  /// No description provided for @timelineReasoningElapsedMinutes.
+  ///
+  /// In en, this message translates to:
+  /// **'Thought for {minutes}m'**
+  String timelineReasoningElapsedMinutes(int minutes);
+
+  /// No description provided for @timelineReasoningElapsedMinutesSeconds.
+  ///
+  /// In en, this message translates to:
+  /// **'Thought for {minutes}m {seconds}s'**
+  String timelineReasoningElapsedMinutesSeconds(int minutes, int seconds);
 
   /// No description provided for @timelineReasoningSummary.
   ///
@@ -2867,6 +2927,312 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Unable to read'**
   String get timelineReadFileFailed;
+
+  /// No description provided for @timelineToolEditSucceeded.
+  ///
+  /// In en, this message translates to:
+  /// **'Edited'**
+  String get timelineToolEditSucceeded;
+
+  /// No description provided for @timelineToolEditRunning.
+  ///
+  /// In en, this message translates to:
+  /// **'Editing'**
+  String get timelineToolEditRunning;
+
+  /// No description provided for @timelineToolEditFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Couldn\'t edit'**
+  String get timelineToolEditFailed;
+
+  /// No description provided for @timelineToolPatchFilesMore.
+  ///
+  /// In en, this message translates to:
+  /// **'{first}, and {more} more'**
+  String timelineToolPatchFilesMore(String first, int more);
+
+  /// No description provided for @timelineSessionNoteName.
+  ///
+  /// In en, this message translates to:
+  /// **'session note'**
+  String get timelineSessionNoteName;
+
+  /// No description provided for @timelineToolCommandSucceeded.
+  ///
+  /// In en, this message translates to:
+  /// **'Ran'**
+  String get timelineToolCommandSucceeded;
+
+  /// No description provided for @timelineToolCommandRunning.
+  ///
+  /// In en, this message translates to:
+  /// **'Running'**
+  String get timelineToolCommandRunning;
+
+  /// No description provided for @timelineToolCommandFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Command failed'**
+  String get timelineToolCommandFailed;
+
+  /// No description provided for @timelineToolStdinSucceeded.
+  ///
+  /// In en, this message translates to:
+  /// **'Wrote input'**
+  String get timelineToolStdinSucceeded;
+
+  /// No description provided for @timelineToolStdinRunning.
+  ///
+  /// In en, this message translates to:
+  /// **'Writing input'**
+  String get timelineToolStdinRunning;
+
+  /// No description provided for @timelineToolStdinFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Input not written'**
+  String get timelineToolStdinFailed;
+
+  /// No description provided for @timelineToolElapsedUnderSecond.
+  ///
+  /// In en, this message translates to:
+  /// **'Took less than 1s'**
+  String get timelineToolElapsedUnderSecond;
+
+  /// No description provided for @timelineToolElapsedSeconds.
+  ///
+  /// In en, this message translates to:
+  /// **'Took {seconds}s'**
+  String timelineToolElapsedSeconds(int seconds);
+
+  /// No description provided for @timelineToolElapsedMinutes.
+  ///
+  /// In en, this message translates to:
+  /// **'Took {minutes}m'**
+  String timelineToolElapsedMinutes(int minutes);
+
+  /// No description provided for @timelineToolElapsedMinutesSeconds.
+  ///
+  /// In en, this message translates to:
+  /// **'Took {minutes}m {seconds}s'**
+  String timelineToolElapsedMinutesSeconds(int minutes, int seconds);
+
+  /// No description provided for @timelineToolSearchSucceeded.
+  ///
+  /// In en, this message translates to:
+  /// **'Searched'**
+  String get timelineToolSearchSucceeded;
+
+  /// No description provided for @timelineToolSearchRunning.
+  ///
+  /// In en, this message translates to:
+  /// **'Searching'**
+  String get timelineToolSearchRunning;
+
+  /// No description provided for @timelineToolSearchFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Search failed'**
+  String get timelineToolSearchFailed;
+
+  /// No description provided for @timelineToolAgentSucceeded.
+  ///
+  /// In en, this message translates to:
+  /// **'Spawned subagent'**
+  String get timelineToolAgentSucceeded;
+
+  /// No description provided for @timelineToolAgentRunning.
+  ///
+  /// In en, this message translates to:
+  /// **'Subagent running'**
+  String get timelineToolAgentRunning;
+
+  /// No description provided for @timelineToolAgentFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Subagent failed'**
+  String get timelineToolAgentFailed;
+
+  /// No description provided for @timelineToolMessageSucceeded.
+  ///
+  /// In en, this message translates to:
+  /// **'Sent message'**
+  String get timelineToolMessageSucceeded;
+
+  /// No description provided for @timelineToolMessageRunning.
+  ///
+  /// In en, this message translates to:
+  /// **'Sending message'**
+  String get timelineToolMessageRunning;
+
+  /// No description provided for @timelineToolMessageFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Message not sent'**
+  String get timelineToolMessageFailed;
+
+  /// No description provided for @timelineToolCreateSucceeded.
+  ///
+  /// In en, this message translates to:
+  /// **'Created directory'**
+  String get timelineToolCreateSucceeded;
+
+  /// No description provided for @timelineToolCreateRunning.
+  ///
+  /// In en, this message translates to:
+  /// **'Creating directory'**
+  String get timelineToolCreateRunning;
+
+  /// No description provided for @timelineToolCreateFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Directory not created'**
+  String get timelineToolCreateFailed;
+
+  /// No description provided for @timelineToolDeleteSucceeded.
+  ///
+  /// In en, this message translates to:
+  /// **'Deleted'**
+  String get timelineToolDeleteSucceeded;
+
+  /// No description provided for @timelineToolDeleteRunning.
+  ///
+  /// In en, this message translates to:
+  /// **'Deleting'**
+  String get timelineToolDeleteRunning;
+
+  /// No description provided for @timelineToolDeleteFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Not deleted'**
+  String get timelineToolDeleteFailed;
+
+  /// No description provided for @timelineToolCopySucceeded.
+  ///
+  /// In en, this message translates to:
+  /// **'Copied'**
+  String get timelineToolCopySucceeded;
+
+  /// No description provided for @timelineToolCopyRunning.
+  ///
+  /// In en, this message translates to:
+  /// **'Copying'**
+  String get timelineToolCopyRunning;
+
+  /// No description provided for @timelineToolCopyFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Not copied'**
+  String get timelineToolCopyFailed;
+
+  /// No description provided for @timelineToolMoveSucceeded.
+  ///
+  /// In en, this message translates to:
+  /// **'Moved'**
+  String get timelineToolMoveSucceeded;
+
+  /// No description provided for @timelineToolMoveRunning.
+  ///
+  /// In en, this message translates to:
+  /// **'Moving'**
+  String get timelineToolMoveRunning;
+
+  /// No description provided for @timelineToolMoveFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Not moved'**
+  String get timelineToolMoveFailed;
+
+  /// No description provided for @timelineToolFetchSucceeded.
+  ///
+  /// In en, this message translates to:
+  /// **'Fetched web page'**
+  String get timelineToolFetchSucceeded;
+
+  /// No description provided for @timelineToolFetchRunning.
+  ///
+  /// In en, this message translates to:
+  /// **'Fetching web page'**
+  String get timelineToolFetchRunning;
+
+  /// No description provided for @timelineToolFetchFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Web page not fetched'**
+  String get timelineToolFetchFailed;
+
+  /// No description provided for @timelineToolPlanSucceeded.
+  ///
+  /// In en, this message translates to:
+  /// **'Updated plan'**
+  String get timelineToolPlanSucceeded;
+
+  /// No description provided for @timelineToolPlanRunning.
+  ///
+  /// In en, this message translates to:
+  /// **'Updating plan'**
+  String get timelineToolPlanRunning;
+
+  /// No description provided for @timelineToolPlanFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Plan update failed'**
+  String get timelineToolPlanFailed;
+
+  /// No description provided for @timelineToolWorkflowSucceeded.
+  ///
+  /// In en, this message translates to:
+  /// **'Updated workflow'**
+  String get timelineToolWorkflowSucceeded;
+
+  /// No description provided for @timelineToolWorkflowRunning.
+  ///
+  /// In en, this message translates to:
+  /// **'Updating workflow'**
+  String get timelineToolWorkflowRunning;
+
+  /// No description provided for @timelineToolWorkflowFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Workflow update failed'**
+  String get timelineToolWorkflowFailed;
+
+  /// No description provided for @timelineToolLspSucceeded.
+  ///
+  /// In en, this message translates to:
+  /// **'Queried code'**
+  String get timelineToolLspSucceeded;
+
+  /// No description provided for @timelineToolLspRunning.
+  ///
+  /// In en, this message translates to:
+  /// **'Querying code'**
+  String get timelineToolLspRunning;
+
+  /// No description provided for @timelineToolLspFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Code query failed'**
+  String get timelineToolLspFailed;
+
+  /// No description provided for @timelineToolWaitSucceeded.
+  ///
+  /// In en, this message translates to:
+  /// **'Waited'**
+  String get timelineToolWaitSucceeded;
+
+  /// No description provided for @timelineToolWaitRunning.
+  ///
+  /// In en, this message translates to:
+  /// **'Waiting'**
+  String get timelineToolWaitRunning;
+
+  /// No description provided for @timelineToolWaitFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Wait failed'**
+  String get timelineToolWaitFailed;
 
   /// No description provided for @timelineToolCompleted.
   ///
@@ -4512,11 +4878,29 @@ abstract class AppLocalizations {
   /// **'Update failed: {error}'**
   String settingsStudioUpdateFailed(String error);
 
-  /// No description provided for @settingsStudioUpdateBusy.
+  /// No description provided for @settingsStudioUpdatePreparing.
   ///
   /// In en, this message translates to:
-  /// **'Finish the active turn or task before installing.'**
-  String get settingsStudioUpdateBusy;
+  /// **'Preparing update…'**
+  String get settingsStudioUpdatePreparing;
+
+  /// No description provided for @settingsStudioUpdateWhenReady.
+  ///
+  /// In en, this message translates to:
+  /// **'Install and restart when ready'**
+  String get settingsStudioUpdateWhenReady;
+
+  /// No description provided for @settingsStudioUpdateCancelling.
+  ///
+  /// In en, this message translates to:
+  /// **'Cancelling update…'**
+  String get settingsStudioUpdateCancelling;
+
+  /// No description provided for @settingsStudioUpdateCancelled.
+  ///
+  /// In en, this message translates to:
+  /// **'Update cancelled. You can retry anytime.'**
+  String get settingsStudioUpdateCancelled;
 
   /// No description provided for @settingsStudioUpdateCheck.
   ///
@@ -4527,7 +4911,7 @@ abstract class AppLocalizations {
   /// No description provided for @settingsStudioUpdateInstall.
   ///
   /// In en, this message translates to:
-  /// **'Download and install'**
+  /// **'Download, install and restart'**
   String get settingsStudioUpdateInstall;
 
   /// No description provided for @settingsStudioUpdateRestart.
@@ -4571,6 +4955,42 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Finding text on a page'**
   String get timelineWebSearchFinding;
+
+  /// No description provided for @timelineWebSearchSearched.
+  ///
+  /// In en, this message translates to:
+  /// **'Searched the web'**
+  String get timelineWebSearchSearched;
+
+  /// No description provided for @timelineWebSearchOpened.
+  ///
+  /// In en, this message translates to:
+  /// **'Opened a web page'**
+  String get timelineWebSearchOpened;
+
+  /// No description provided for @timelineWebSearchFound.
+  ///
+  /// In en, this message translates to:
+  /// **'Searched page text'**
+  String get timelineWebSearchFound;
+
+  /// No description provided for @timelineWebSearchFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Web search failed'**
+  String get timelineWebSearchFailed;
+
+  /// No description provided for @timelineWebSearchOpenFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Couldn\'t open a web page'**
+  String get timelineWebSearchOpenFailed;
+
+  /// No description provided for @timelineWebSearchFindFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Page search failed'**
+  String get timelineWebSearchFindFailed;
 
   /// No description provided for @timelineWebSearchResults.
   ///

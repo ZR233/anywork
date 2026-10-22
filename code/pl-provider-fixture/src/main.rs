@@ -214,6 +214,8 @@ async fn main() -> Result<()> {
     let mut realtime_host_cwd: Option<tempfile::TempDir> = None;
     let steps = match scenario {
         "gui" => gui_script(),
+        "markdown-layout" => pl_provider_fixture::markdown_layout::script(),
+        "skill-activity" => pl_provider_fixture::skill_activity_script(),
         "storage-compaction" => pl_provider_fixture::gui_storage_compaction_script(),
         "tool-scroll" => {
             gui_tool_scroll_script(cfg!(windows) && !args.posix_exec, args.resource_lifecycle)

@@ -1,4 +1,5 @@
-import 'package:anywork_client/studio_client.dart' show UpdaterStateSnapshot;
+import 'package:anywork_client/studio_client.dart'
+    show UpdaterStateSnapshot, StudioUpdateRequest;
 import 'package:flutter_riverpod/flutter_riverpod.dart' show Provider;
 import 'package:riverpod_annotation/riverpod_annotation.dart';
 
@@ -13,6 +14,12 @@ const _compiledStudioVersion = String.fromEnvironment(
 );
 
 final studioVersionProvider = Provider<String>((ref) => _compiledStudioVersion);
+
+final studioUpdateRequestProvider = Provider<StudioUpdateRequest>((ref) {
+  final request = ref.read(anyworkClientProvider).updates.request;
+  observeClient(ref, request, (_) => ref.invalidateSelf());
+  return request.value;
+});
 
 /// Update startup and installation survive observer and route lifetimes.
 @riverpod

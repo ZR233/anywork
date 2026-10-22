@@ -14,6 +14,7 @@ mod error;
 mod interaction;
 pub(in crate::studio) mod object;
 mod project;
+pub(in crate::studio) mod session_layout;
 pub(in crate::studio) mod settings;
 mod thread;
 pub(in crate::studio) mod workspaces;
@@ -30,7 +31,7 @@ pub struct StudioStore {
     paths: StudioPaths,
 }
 
-pub use error::StudioDatabaseError;
+pub use error::{SessionLayoutMigrationFailed, StudioDatabaseError};
 impl StudioStore {
     pub(crate) fn database(&self) -> &DatabaseConnection {
         &self.db
@@ -62,11 +63,24 @@ impl StudioStore {
     /// 登记进弱引用表，让并发 reader 与随后的 writer 共用同一初始化锁；最后一位持有者释放后
     /// 弱表回收，不会留下永不过期的强缓存。不存在的库继续读成空且不被创建。
     pub(crate) async fn history(&self, thread_id: &str) -> anyhow::Result<HistoryStore> {
+        let session = self.registered_session_paths(thread_id)?;
+        self.history_for(session.project_id(), thread_id).await
+    }
+
+    /// Explicit Project + Thread history handle for tests and child prepare before catalog
+    /// publication. Cold reads still do not create the database file.
+    pub(crate) async fn history_for(
+        &self,
+        project_id: &str,
+        thread_id: &str,
+    ) -> anyhow::Result<HistoryStore> {
         if let Some(shared) = self.thread_persistence.shared_history(thread_id) {
             return Ok(shared);
         }
         let opened = HistoryStore::open(
-            &self.thread_storage_dir(thread_id).join("history.sqlite"),
+            &self
+                .session_paths(project_id, thread_id)?
+                .history_database(),
             thread_id,
         )
         .await?;
@@ -81,18 +95,36 @@ impl StudioStore {
         &self,
         thread_id: &str,
     ) -> anyhow::Result<pl_core::chat::Session> {
+        let session = self.registered_session_paths(thread_id)?;
+        self.chat_session_for(session.project_id(), thread_id).await
+    }
+
+    pub(crate) async fn chat_session_for(
+        &self,
+        project_id: &str,
+        thread_id: &str,
+    ) -> anyhow::Result<pl_core::chat::Session> {
         if let Some(active) = self.thread_persistence.chat_session(thread_id) {
             return Ok(active);
         }
-        let session = pl_core::chat::Session::new(self.history(thread_id).await?);
+        let session = pl_core::chat::Session::new(self.history_for(project_id, thread_id).await?);
         Ok(self
             .thread_persistence
             .install_chat_session(thread_id, session))
     }
 
-    pub(crate) fn state(&self, thread_id: &str) -> StateStore {
-        StateStore::new(self.thread_storage_dir(thread_id), thread_id)
-            .with_legacy_calls(self.calls.clone())
+    pub(crate) fn state_for(
+        &self,
+        project_id: &str,
+        thread_id: &str,
+    ) -> anyhow::Result<StateStore> {
+        Ok(StateStore::new(
+            self.session_paths(project_id, thread_id)?
+                .root()
+                .to_path_buf(),
+            thread_id,
+        )
+        .with_legacy_calls(self.calls.clone()))
     }
 
     pub(crate) fn calls(&self) -> &CallsStore {
@@ -107,13 +139,16 @@ impl StudioStore {
         &self.attachment_lock
     }
 
-    pub(crate) fn thread_storage_dir(&self, thread_id: &str) -> PathBuf {
-        self.paths.thread_storage_dir(thread_id)
+    pub(crate) fn thread_storage_dir(&self, thread_id: &str) -> anyhow::Result<PathBuf> {
+        Ok(self
+            .registered_session_paths(thread_id)?
+            .root()
+            .to_path_buf())
     }
 
     /// 新附件与迁移附件共用的每会话 blob 根（content-addressed）。
-    pub(crate) fn thread_blobs_dir(&self, thread_id: &str) -> PathBuf {
-        self.paths.thread_blobs_dir(thread_id)
+    pub(crate) fn thread_blobs_dir(&self, thread_id: &str) -> anyhow::Result<PathBuf> {
+        Ok(self.registered_session_paths(thread_id)?.blobs_dir())
     }
 
     /// Temporary attachment-draft root derived from the canonical Studio layout.
@@ -122,8 +157,24 @@ impl StudioStore {
     }
 
     /// 每会话资源（工具持久化媒体等）根目录；与附件 blob 根同属一个会话目录。
-    pub(crate) fn session_resources_dir(&self, thread_id: &str) -> PathBuf {
-        self.thread_storage_dir(thread_id).join("thread-resources")
+    pub(crate) fn session_resources_dir(&self, thread_id: &str) -> anyhow::Result<PathBuf> {
+        Ok(self.thread_storage_dir(thread_id)?.join("thread-resources"))
+    }
+
+    pub(crate) fn session_resources_dir_for(
+        &self,
+        project_id: &str,
+        thread_id: &str,
+    ) -> anyhow::Result<PathBuf> {
+        Ok(self.session_paths(project_id, thread_id)?.resources_dir())
+    }
+
+    pub(crate) fn session_scratch_dir_for(
+        &self,
+        project_id: &str,
+        thread_id: &str,
+    ) -> anyhow::Result<PathBuf> {
+        Ok(self.session_paths(project_id, thread_id)?.scratch_dir())
     }
 }
 

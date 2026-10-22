@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:math' as math;
 
 import 'package:anywork_client/studio_client.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
@@ -22,11 +23,13 @@ import '../../shared/studio_driver_key_values.dart';
 import '../../shared/studio_driver_keys.dart';
 import '../../shared/typed_json.dart';
 import 'markdown_repair.dart';
+import 'timeline_activity_row.dart';
 import 'timeline_wait_blocks.dart';
 
 part 'timeline_agent_blocks.dart';
 part 'timeline_detail_viewer.dart';
 part 'timeline_image_blocks.dart';
+part 'timeline_image_card.dart';
 part 'timeline_markdown_blocks.dart';
 part 'timeline_message_blocks.dart';
 part 'timeline_group_blocks.dart';
@@ -395,10 +398,12 @@ class _TimelineGenerationState extends State<_TimelineGeneration> {
                                       .copyWith(scrollbars: false),
                                   child: _TimelineScrollbar(
                                     controller: widget.lease.scrollController,
-                                    // 轨道未设 trackColor 时不绘制（视觉不变），但
-                                    // trackVisibility 让轨道仍可点击分页。
-                                    thumbVisibility: true,
-                                    trackVisibility: true,
+                                    // 静止隐藏、滚动出现，停止后由 Flutter 原生淡出
+                                    // （design/19 §19.7）。可见期间的拖动与轨道分页来自
+                                    // RawScrollbar 自己的命中测试（`hitTestInteractive`
+                                    // 使用轨道矩形，与 trackVisibility 无关）；不可见时
+                                    // 官方约定不接收指针，因此不设置常显轨道。
+                                    thumbVisibility: false,
                                     onTrackTap: _recordTrackTapIntent,
                                     onNoMovement: _clearActionIntent,
                                     child: KeyedSubtree(
@@ -832,7 +837,6 @@ class _TimelineScrollbar extends RawScrollbar {
   const _TimelineScrollbar({
     required super.controller,
     required super.thumbVisibility,
-    required super.trackVisibility,
     required super.child,
     required this.onTrackTap,
     required this.onNoMovement,

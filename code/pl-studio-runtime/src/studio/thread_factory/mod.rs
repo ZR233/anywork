@@ -4,6 +4,7 @@ mod errors;
 pub(crate) mod recovery;
 mod restore_child;
 mod root_resources;
+mod session_files;
 mod thread_seed;
 mod thread_tools;
 mod tool_bindings;

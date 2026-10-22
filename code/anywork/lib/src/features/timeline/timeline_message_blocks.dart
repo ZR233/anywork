@@ -21,11 +21,25 @@ class _TimelineMessageBlock extends StatelessWidget {
     required this.payload,
     required this.lease,
     required this.threadId,
+    this.inActivityGroup = false,
+    this.embeddedReasoning = false,
+    this.pairedSkillTool,
   });
 
   final TimelineMessagePayload payload;
   final TimelineDisplayLease lease;
   final String threadId;
+
+  /// 该成员是否作为活动组成员呈现：组内节奏比独立条目更紧。
+  final bool inActivityGroup;
+
+  /// 单成员纯思考组：外层组摘要已承担折叠身份，正文直接展开显示。
+  final bool embeddedReasoning;
+
+  /// 与这条技能激活共享同一条可见行的原 `skill_view` 调用。
+  ///
+  /// 只由技能分支消费：包装、回退标记、间距与紧凑主题都沿用本成员原有路径。
+  final TimelineMessagePayload? pairedSkillTool;
 
   @override
   Widget build(BuildContext context) {
@@ -38,11 +52,21 @@ class _TimelineMessageBlock extends StatelessWidget {
     final compact = _isCompactActivity(item);
     final rolledBack =
         item.contextDisposition == ThreadContextDisposition.rolledBack;
+    Widget content = Opacity(
+      opacity: rolledBack ? 0.52 : 1,
+      child: _messageContent(context, payload),
+    );
+    if (compact) {
+      // 活动行自带行高，ListTile 默认垂直内边距只在这个作用域内收紧。
+      content = TimelineActivityTileTheme(child: content);
+    }
     return Padding(
       key: StudioDriverKeys.timelineRow(item.id),
       padding: EdgeInsets.only(
         bottom: isPrompt
             ? 14
+            : inActivityGroup
+            ? 2
             : compact
             ? 6
             : 12,
@@ -55,7 +79,13 @@ class _TimelineMessageBlock extends StatelessWidget {
         children: [
           Flexible(
             child: ConstrainedBox(
-              constraints: BoxConstraints(maxWidth: isPrompt ? 560 : 700),
+              // 回复正文使用阅读列内的可用宽度，不再叠加更窄的独立上限；
+              // 用户与父代理消息保持右对齐的紧凑气泡（design/19 §19.7）。
+              constraints: BoxConstraints(
+                maxWidth: isPrompt
+                    ? StudioLayout.conversationPromptWidth
+                    : double.infinity,
+              ),
               child: Column(
                 crossAxisAlignment: isPrompt
                     ? CrossAxisAlignment.end
@@ -79,10 +109,7 @@ class _TimelineMessageBlock extends StatelessWidget {
                             ?.copyWith(color: context.colors.onSurfaceVariant),
                       ),
                     ),
-                  Opacity(
-                    opacity: rolledBack ? 0.52 : 1,
-                    child: _messageContent(context, payload),
-                  ),
+                  content,
                   if (rolledBack)
                     Padding(
                       padding: const EdgeInsets.only(top: 6),
@@ -148,6 +175,7 @@ class _TimelineMessageBlock extends StatelessWidget {
         itemId: item.id,
         entry: _entryViewOf(item),
         details: _detailNotice(context, payload),
+        embedded: embeddedReasoning,
       ),
       ThreadToolItemStateView(:final userInput) => _toolOrReceipt(
         context,
@@ -156,9 +184,11 @@ class _TimelineMessageBlock extends StatelessWidget {
         userInput: userInput,
       ),
       final ThreadAgentItemStateView agent => _AgentPart(agent: agent),
-      ThreadSkillItemStateView() => _SkillActivationPart(
-        key: StudioDriverKeys.timelineSkillActivation(item.id),
-        activation: _skillOf(item)!,
+      ThreadSkillItemStateView() => _SkillActivityRow(
+        payload: payload,
+        tool: pairedSkillTool,
+        lease: lease,
+        threadId: threadId,
       ),
       final ThreadContextCompactionItemStateView compaction => _CompactionBlock(
         itemId: item.id,
@@ -215,23 +245,41 @@ class _TimelineMessageBlock extends StatelessWidget {
 
   /// 被省略的正文仍可显式读取：默认预览不因异步全文回包自动扩大历史行。
   Widget? _detailNotice(BuildContext context, TimelineMessagePayload payload) {
-    final truncated = [
-      for (final detail in payload.details)
-        if (detail.truncated) detail,
-    ];
-    if (truncated.isEmpty) {
-      // 省略量已声明但没有任何字段引用：如实显示“预览被截断”，
-      // 不把省略当成原文不存在，也不伪造可读入口。
-      if (!payload.hasOmittedBody) return null;
-      return _TimelineTruncationNotice(itemId: payload.item.id);
-    }
-    return _TimelineDetailNotice(
-      itemId: payload.item.id,
+    return _payloadDetailNotice(
+      context,
+      payload,
       lease: lease,
       threadId: threadId,
-      details: truncated,
     );
   }
+}
+
+/// 一条成员预览的详情入口：技能行复用同一入口访问原调用与被省略的正文。
+///
+/// 每个被截断字段占一行活动行，没有字段可读时用同一行的说明如实报告，两种形态都不额外
+/// 渲染“预览被截断”的解释段落（design/19 §19.9、design/26 §26.2）。
+Widget? _payloadDetailNotice(
+  BuildContext context,
+  TimelineMessagePayload payload, {
+  required TimelineDisplayLease lease,
+  required String threadId,
+}) {
+  final truncated = [
+    for (final detail in payload.details)
+      if (detail.truncated) detail,
+  ];
+  if (truncated.isEmpty) {
+    // 省略量已声明但没有任何字段引用：用不可点击的说明行如实报告原文不可得，
+    // 不把省略当成原文不存在，也不伪造可读入口。
+    if (!payload.hasOmittedBody) return null;
+    return _TimelineTruncationNotice(itemId: payload.item.id);
+  }
+  return _TimelineDetailNotice(
+    itemId: payload.item.id,
+    lease: lease,
+    threadId: threadId,
+    details: truncated,
+  );
 }
 
 /// 活动/推理/工具等紧凑行只占更小垂直间距。
@@ -349,11 +397,15 @@ class _ReasoningBlock extends StatefulWidget {
     required this.itemId,
     required this.entry,
     this.details,
+    this.embedded = false,
   });
 
   final String itemId;
   final TimelineEntry entry;
   final Widget? details;
+
+  /// 外层组摘要已承担折叠身份时，只渲染该思考的原有正文，不再重复折叠行。
+  final bool embedded;
 
   @override
   State<_ReasoningBlock> createState() => _ReasoningBlockState();
@@ -372,17 +424,44 @@ class _ReasoningBlockState extends State<_ReasoningBlock> {
         .where((chunk) => chunk.trim().isNotEmpty)
         .join('\n\n');
     final active = !isTerminalTimelineStatus(entry.status);
+    final isIssue = _issueStatuses.contains(entry.status);
+    final hasReasoning = summary.isNotEmpty || content.isNotEmpty;
+    if (widget.embedded) {
+      if (!hasReasoning && widget.details == null) {
+        return const SizedBox.shrink();
+      }
+      // 正文已经随组展开常驻，不再占用成员折叠细节的 key（该 key 表示“此处可展开”）。
+      return Padding(
+        padding: const EdgeInsets.only(
+          left: TimelineActivityRow.contentIndent,
+          top: 2,
+          bottom: 4,
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            ..._sections(context, summary: summary, content: content),
+            ?widget.details,
+          ],
+        ),
+      );
+    }
     final label = active
         ? plainReasoningSummary(entry.reasoningSummary.firstOrNull ?? '') ??
               context.l10n.timelineReasoningActive
-        : context.l10n.timelineReasoningCompleted;
-    final expandable =
-        summary.isNotEmpty || content.isNotEmpty || widget.details != null;
-    final title = _TimelineActivitySummary(
+        : _reasoningTerminalLabel(
+            context,
+            entry.status,
+            entry.createdAt,
+            entry.completedAt,
+          );
+    final expandable = hasReasoning || widget.details != null;
+    final title = TimelineActivityRow(
       key: StudioDriverKeys.timelineActivitySummary(widget.itemId),
       icon: Icons.psychology_alt_outlined,
       label: label,
       active: active,
+      isIssue: isIssue,
       expanded: _expanded,
       expandable: expandable,
     );
@@ -395,46 +474,49 @@ class _ReasoningBlockState extends State<_ReasoningBlock> {
       minTileHeight: 28,
       dense: true,
       tilePadding: EdgeInsets.zero,
-      childrenPadding: const EdgeInsets.only(left: 7, bottom: 6),
+      childrenPadding: EdgeInsets.zero,
       shape: const Border(),
       collapsedShape: const Border(),
       title: title,
       children: [
-        if (summary.isNotEmpty || content.isNotEmpty)
-          DecoratedBox(
+        if (hasReasoning)
+          Padding(
             key: const ValueKey('timeline-activity-details'),
-            decoration: BoxDecoration(
-              border: Border(
-                left: BorderSide(color: context.colors.outlineVariant),
-              ),
+            padding: const EdgeInsets.only(
+              left: TimelineActivityRow.contentIndent,
+              top: 2,
+              bottom: 4,
             ),
-            child: Padding(
-              padding: const EdgeInsets.only(left: 12, top: 4, bottom: 4),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  if (summary.isNotEmpty)
-                    _section(
-                      context,
-                      key: 'timeline-thinking-summary-${widget.itemId}',
-                      title: context.l10n.timelineReasoningSummary,
-                      text: summary,
-                    ),
-                  if (content.isNotEmpty)
-                    _section(
-                      context,
-                      key: 'timeline-thinking-content-${widget.itemId}',
-                      title: context.l10n.timelineReasoningContent,
-                      text: content,
-                    ),
-                ],
-              ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: _sections(context, summary: summary, content: content),
             ),
           ),
         ?widget.details,
       ],
     );
   }
+
+  List<Widget> _sections(
+    BuildContext context, {
+    required String summary,
+    required String content,
+  }) => [
+    if (summary.isNotEmpty)
+      _section(
+        context,
+        key: 'timeline-thinking-summary-${widget.itemId}',
+        title: context.l10n.timelineReasoningSummary,
+        text: summary,
+      ),
+    if (content.isNotEmpty)
+      _section(
+        context,
+        key: 'timeline-thinking-content-${widget.itemId}',
+        title: context.l10n.timelineReasoningContent,
+        text: content,
+      ),
+  ];
 
   Widget _section(
     BuildContext context, {
@@ -464,6 +546,47 @@ class _ReasoningBlockState extends State<_ReasoningBlock> {
       ],
     ),
   );
+}
+
+/// 终态思考的文案：失败与取消先保留真实状态，其余只报告该条目自身的有效耗时。
+String _reasoningTerminalLabel(
+  BuildContext context,
+  String status,
+  DateTime? createdAt,
+  DateTime? completedAt,
+) {
+  final l10n = context.l10n;
+  return switch (status) {
+    'failed' => l10n.timelineReasoningFailed,
+    'cancelled' => l10n.timelineReasoningCancelled,
+    _ => _reasoningElapsedLabel(
+      context,
+      _reasoningElapsed(createdAt, completedAt),
+    ),
+  };
+}
+
+/// 耗时只来自同一思考条目的创建时间与 canonical 终态时间。
+///
+/// 不使用保存或更新时间冒充完成时间；缺失终态时间或时间顺序无效时返回 null，
+/// 由调用方只说明思考结束，不 clamp 成看似正常的时长。
+Duration? _reasoningElapsed(DateTime? createdAt, DateTime? completedAt) {
+  if (createdAt == null || completedAt == null) return null;
+  final elapsed = completedAt.difference(createdAt);
+  return elapsed.isNegative ? null : elapsed;
+}
+
+String _reasoningElapsedLabel(BuildContext context, Duration? elapsed) {
+  final l10n = context.l10n;
+  if (elapsed == null) return l10n.timelineReasoningEnded;
+  final seconds = elapsed.inSeconds;
+  if (seconds <= 0) return l10n.timelineReasoningElapsedUnderSecond;
+  if (seconds < 60) return l10n.timelineReasoningElapsedSeconds(seconds);
+  final minutes = seconds ~/ 60;
+  final remainder = seconds % 60;
+  return remainder == 0
+      ? l10n.timelineReasoningElapsedMinutes(minutes)
+      : l10n.timelineReasoningElapsedMinutesSeconds(minutes, remainder);
 }
 
 /// raw 历史记录：展开只显示已交付的截断正文，完整字段走详情查看器。
@@ -530,10 +653,11 @@ class _CompactionBlock extends StatelessWidget {
           context.l10n.timelineCompactionDetail(before, after),
         _ => context.l10n.timelineContextCompacted,
       },
-      child: _TimelineActivitySummary(
+      child: TimelineActivityRow(
         key: StudioDriverKeys.timelineBlock(itemId),
         icon: Icons.compress_outlined,
         label: context.l10n.timelineContextCompacted,
+        expandable: false,
       ),
     );
   }
@@ -581,79 +705,171 @@ class _TurnOutcomeBlock extends StatelessWidget {
   }
 }
 
-class _SkillActivationPart extends StatelessWidget {
-  const _SkillActivationPart({required this.activation, super.key});
+/// 一条技能激活的可见活动行，必要时与原 `skill_view` 调用共享这一行。
+///
+/// 技能与其他活动成员使用同一个 [TimelineActivityRow]：固定图标列、单行次级文案与紧邻
+/// 文案的箭头，不使用彩底徽章或来源胶囊。完整名称、来源与资源位置保留在提示和按需详情中；
+/// 配对成功的原调用只隐藏它自己的行，参数、结果、诊断与全文详情仍从展开区读取
+/// （design/19 §19.9、design/26 §26.8）。
+class _SkillActivityRow extends StatefulWidget {
+  const _SkillActivityRow({
+    required this.payload,
+    required this.lease,
+    required this.threadId,
+    this.tool,
+  });
 
-  final TimelineSkillActivation activation;
+  /// 技能激活成员；标签与来源只来自它的 typed 事实。
+  final TimelineMessagePayload payload;
+
+  /// 同一 Turn 内被这次激活接管的 `skill_view` 成功调用；null 表示没有可配对的一侧。
+  final TimelineMessagePayload? tool;
+
+  final TimelineDisplayLease lease;
+  final String threadId;
+
+  @override
+  State<_SkillActivityRow> createState() => _SkillActivityRowState();
+}
+
+class _SkillActivityRowState extends State<_SkillActivityRow> {
+  bool _expanded = false;
 
   @override
   Widget build(BuildContext context) {
-    final label = switch (activation.cause.kind) {
-      SkillActivationCauseKind.tool => context.l10n.timelineSkillAgentActivated(
-        activation.name,
+    final activation = _skillOf(widget.payload.item);
+    if (activation == null) return const SizedBox.shrink();
+    final tool = widget.tool;
+    final meta = _skillActivityMeta(activation);
+    final toolNotice = tool == null
+        ? null
+        : _payloadDetailNotice(
+            context,
+            tool,
+            lease: widget.lease,
+            threadId: widget.threadId,
+          );
+    final skillNotice = _payloadDetailNotice(
+      context,
+      widget.payload,
+      lease: widget.lease,
+      threadId: widget.threadId,
+    );
+    final expandable = meta.isNotEmpty || tool != null || skillNotice != null;
+    final title = TimelineActivityRow(
+      key: StudioDriverKeys.timelineSkillActivation(widget.payload.item.id),
+      icon: Icons.extension_outlined,
+      label: switch (activation.cause.kind) {
+        SkillActivationCauseKind.tool =>
+          context.l10n.timelineSkillAgentActivated(activation.name),
+        SkillActivationCauseKind.userGesture =>
+          context.l10n.timelineSkillUserActivated(activation.name),
+      },
+      active: !widget.payload.item.isTerminal,
+      isIssue: _issueStatuses.contains(widget.payload.item.status),
+      expandable: expandable,
+      expanded: _expanded,
+      tooltip: [
+        activation.name.trim(),
+        ...meta,
+      ].where((value) => value.isNotEmpty).join('\n'),
+    );
+    if (!expandable) return title;
+    return ExpansionTile(
+      key: ValueKey('timeline-skill-details:${widget.payload.item.id}'),
+      initiallyExpanded: _expanded,
+      onExpansionChanged: (expanded) => setState(() => _expanded = expanded),
+      expandedCrossAxisAlignment: CrossAxisAlignment.stretch,
+      tilePadding: EdgeInsets.zero,
+      childrenPadding: const EdgeInsets.only(
+        left: TimelineActivityRow.contentIndent,
+        bottom: 8,
       ),
-      SkillActivationCauseKind.userGesture =>
-        context.l10n.timelineSkillUserActivated(activation.name),
-    };
-    return Semantics(
-      container: true,
-      label: label,
-      value: activation.source,
-      child: Tooltip(
-        message: activation.resourceBase.value,
-        child: DecoratedBox(
-          decoration: BoxDecoration(
-            color: context.colors.primaryContainer.withValues(alpha: 0.6),
-            border: Border.all(color: context.colors.outlineVariant),
-            borderRadius: BorderRadius.circular(StudioRadii.md),
-          ),
-          child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Icon(
-                  Icons.extension_outlined,
-                  size: 15,
-                  color: context.colors.onPrimaryContainer,
-                ),
-                const SizedBox(width: 7),
-                Flexible(
-                  child: Text(
-                    label,
-                    overflow: TextOverflow.ellipsis,
-                    style: context.text.bodySmall?.copyWith(
-                      color: context.colors.onSurface,
-                      fontWeight: FontWeight.w600,
-                    ),
-                  ),
-                ),
-                if (activation.source.trim().isNotEmpty) ...[
-                  const SizedBox(width: 8),
-                  DecoratedBox(
-                    decoration: BoxDecoration(
-                      color: context.colors.surfaceContainer,
-                      borderRadius: BorderRadius.circular(999),
-                    ),
-                    child: Padding(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 7,
-                        vertical: 2,
-                      ),
-                      child: Text(
-                        activation.source,
-                        style: context.text.labelSmall?.copyWith(
-                          color: context.colors.onSurfaceVariant,
-                        ),
-                      ),
-                    ),
-                  ),
-                ],
-              ],
+      shape: const Border(),
+      collapsedShape: const Border(),
+      dense: true,
+      minTileHeight: 28,
+      showTrailingIcon: false,
+      title: title,
+      children: [
+        if (meta.isNotEmpty)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 6),
+            child: Text(
+              meta.join(' · '),
+              maxLines: 4,
+              overflow: TextOverflow.ellipsis,
+              style: context.text.bodySmall?.copyWith(
+                color: context.colors.onSurfaceVariant,
+                height: 1.4,
+              ),
             ),
           ),
+        // 原调用的参数、结果、诊断与出错原因仍走同一工具详情实现。
+        if (tool != null)
+          _ToolDetails(item: _ToolItem(_entryViewOf(tool.item)), inline: true),
+        ?toolNotice,
+        ?skillNotice,
+      ],
+    );
+  }
+}
+
+/// 技能激活的来源与资源位置：只作按需详情与提示，不塞进单行文案。
+List<String> _skillActivityMeta(TimelineSkillActivation activation) {
+  final source = activation.source.trim();
+  final resourceBase = activation.resourceBase.value.trim();
+  return [
+    if (source.isNotEmpty) source,
+    if (resourceBase.isNotEmpty && resourceBase != source) resourceBase,
+  ];
+}
+
+/// 技能行与接管调用的成员监听绑定：任一侧更新只重建这一行。
+///
+/// 行内容仍走 [_TimelineMessageBlock]：canonical 行身份、回退标记、组内间距、阅读宽度与
+/// 紧凑主题都与其它活动成员一致，技能不重复实现一套包装。
+class _SkillActivity extends StatelessWidget {
+  const _SkillActivity({
+    required this.skill,
+    required this.lease,
+    required this.threadId,
+    this.tool,
+    super.key,
+  });
+
+  final ValueListenable<TimelineMessagePayload> skill;
+  final ValueListenable<TimelineMessagePayload>? tool;
+  final TimelineDisplayLease lease;
+  final String threadId;
+
+  @override
+  Widget build(BuildContext context) {
+    final tool = this.tool;
+    if (tool == null) {
+      return ValueListenableBuilder<TimelineMessagePayload>(
+        valueListenable: skill,
+        builder: (context, payload, _) => _TimelineMessageBlock(
+          payload: payload,
+          lease: lease,
+          threadId: threadId,
+          inActivityGroup: true,
         ),
-      ),
+      );
+    }
+    return ValueListenableBuilder<TimelineMessagePayload>(
+      valueListenable: skill,
+      builder: (context, skillPayload, _) =>
+          ValueListenableBuilder<TimelineMessagePayload>(
+            valueListenable: tool,
+            builder: (context, toolPayload, _) => _TimelineMessageBlock(
+              payload: skillPayload,
+              pairedSkillTool: toolPayload,
+              lease: lease,
+              threadId: threadId,
+              inActivityGroup: true,
+            ),
+          ),
     );
   }
 }
@@ -741,78 +957,6 @@ String _formatBytes(int bytes) {
   return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
 }
 
-class _TimelineActivitySummary extends StatelessWidget {
-  const _TimelineActivitySummary({
-    required this.icon,
-    required this.label,
-    this.isIssue = false,
-    this.expanded = false,
-    this.active = false,
-    this.expandable = true,
-    super.key,
-  });
-
-  final IconData icon;
-  final String label;
-  final bool isIssue;
-  final bool expanded;
-  final bool active;
-  final bool expandable;
-
-  @override
-  Widget build(BuildContext context) {
-    final color = context.colors.onSurfaceVariant;
-    return SelectionContainer.disabled(
-      child: ConstrainedBox(
-        constraints: const BoxConstraints(minHeight: 28),
-        child: Padding(
-          padding: const EdgeInsets.symmetric(vertical: 4),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(
-                isIssue
-                    ? Icons.error_outline
-                    : active
-                    ? Icons.pending_outlined
-                    : icon,
-                size: 15,
-                color: isIssue
-                    ? context.colors.error
-                    : color.withValues(alpha: .78),
-              ),
-              const SizedBox(width: 8),
-              Flexible(
-                // 摘要持续追加：普通 Text，避免每次增量重新淡入。
-                child: Text(
-                  label,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  softWrap: false,
-                  style: context.text.bodySmall?.copyWith(
-                    color: color,
-                    fontWeight: FontWeight.w400,
-                    height: 1.25,
-                  ),
-                ),
-              ),
-              if (expandable) const SizedBox(width: 4),
-              if (expandable)
-                Icon(
-                  expanded
-                      ? Icons.keyboard_arrow_down_rounded
-                      : Icons.chevron_right_rounded,
-                  size: 15,
-                  color: color.withValues(alpha: 0.72),
-                ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-}
-
 class _TimelineMetaRow extends StatelessWidget {
   const _TimelineMetaRow({
     required this.icon,
@@ -861,33 +1005,5 @@ class _TimelineMetaRow extends StatelessWidget {
         ],
       ),
     );
-  }
-}
-
-class _TimelinePanel extends StatelessWidget {
-  const _TimelinePanel({required this.child});
-
-  final Widget child;
-
-  @override
-  Widget build(BuildContext context) {
-    final colors = Theme.of(context).colorScheme;
-    return StudioPanel(
-      backgroundColor: context.colors.surfaceContainer,
-      borderColor: colors.outlineVariant.withValues(alpha: 0.82),
-      radius: StudioRadii.md,
-      child: child,
-    );
-  }
-}
-
-class _StatusPill extends StatelessWidget {
-  const _StatusPill({required this.label});
-
-  final String label;
-
-  @override
-  Widget build(BuildContext context) {
-    return StudioPill(label: label);
   }
 }

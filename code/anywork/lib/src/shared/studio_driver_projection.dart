@@ -187,6 +187,11 @@ TimelineDisplayFacts? _timelineFacts(
             kind: item.kind.name,
             ordinal: item.position.$1,
             memberIds: item.memberIds,
+            visibleMemberIds: item.visibleMemberIds,
+            skillPairs: {
+              for (final id in item.visibleMemberIds)
+                id: ?item.pairedToolId(id),
+            },
             expanded: item.expanded,
             activeCount: item.activeCount,
             issueCount: item.issueCount,

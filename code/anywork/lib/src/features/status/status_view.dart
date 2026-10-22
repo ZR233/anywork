@@ -38,7 +38,7 @@ List<LspServerStateView> statusLspServers(Ref ref) {
 }
 
 /// Stable status-bar fields for one Thread. Throughput and context are not
-/// part of this value, so decode updates cannot rebuild the chrome.
+/// part of this value, so response-timing updates cannot rebuild the chrome.
 @riverpod
 StatusBarView? statusBarView(Ref ref, String threadId) {
   final thread = _directoryThread(ref, threadId);
@@ -111,7 +111,7 @@ StudioThroughputProjection? statusThroughputProjection(
     return StudioThroughputProjection(
       threadId: threadId,
       completionTokens: source?.outputTokens ?? 0,
-      decodeMillis: source?.decodeMillis ?? 0,
+      responseMillis: source?.responseMillis ?? 0,
     );
   });
 }

@@ -6,7 +6,6 @@ use futures::StreamExt;
 use reqwest::{Client, Response, StatusCode};
 use std::env;
 use std::error::Error;
-use std::future::Future;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -86,21 +85,6 @@ impl StudioUpdater {
         evaluate_manifest(&bytes, current_version)
     }
 
-    /// 下载并验证更新，在启动安装器前执行调用方提供的最终 runtime 关停检查。
-    pub async fn install_after<F, Fut>(
-        &self,
-        update: StudioUpdate,
-        progress: UnboundedSender<StudioUpdateEvent>,
-        cancellation: StudioUpdateCancellation,
-        before_launch: F,
-    ) -> Result<(), StudioUpdateError>
-    where
-        F: FnOnce() -> Fut,
-        Fut: Future<Output = Result<(), StudioUpdateError>>,
-    {
-        install::install_after(self, update, progress, cancellation, before_launch).await
-    }
-
     /// 下载并验证更新，仅返回文件租约，不关闭应用或启动安装器。
     pub async fn download(
         &self,
@@ -109,21 +93,6 @@ impl StudioUpdater {
         cancellation: StudioUpdateCancellation,
     ) -> Result<PreparedStudioUpdate, StudioUpdateError> {
         install::download(self, update, progress, cancellation).await
-    }
-
-    /// 下载、验证并启动安装器。Bridge 应优先使用 [`Self::install_after`] 提供 busy guard。
-    pub async fn install(
-        &self,
-        update: StudioUpdate,
-        progress: UnboundedSender<StudioUpdateEvent>,
-    ) -> Result<(), StudioUpdateError> {
-        self.install_after(
-            update,
-            progress,
-            StudioUpdateCancellation::new(),
-            || async { Ok(()) },
-        )
-        .await
     }
 
     async fn request(&self, url: Url) -> Result<Response, StudioUpdateError> {

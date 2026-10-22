@@ -87,10 +87,11 @@ pub struct BridgeModelPerformanceSummary {
     pub sample_count: u64,
     pub completion_tokens: u64,
     pub total_ttft_millis: u64,
-    pub total_decode_millis: u64,
+    pub ttft_sample_count: u64,
     pub total_response_millis: u64,
     pub tokens_per_second: f64,
-    pub average_ttft_millis: f64,
+    /// 没有已知首字样本时保持未知。
+    pub average_ttft_millis: Option<f64>,
     pub average_response_millis: f64,
     /// 该 (accountId, modelId) 组内的推理强度二级细分。
     pub effort_breakdowns: Vec<BridgeModelPerformanceEffortSummary>,
@@ -104,10 +105,10 @@ pub struct BridgeModelPerformanceEffortSummary {
     pub sample_count: u64,
     pub completion_tokens: u64,
     pub total_ttft_millis: u64,
-    pub total_decode_millis: u64,
+    pub ttft_sample_count: u64,
     pub total_response_millis: u64,
     pub tokens_per_second: f64,
-    pub average_ttft_millis: f64,
+    pub average_ttft_millis: Option<f64>,
     pub average_response_millis: f64,
 }
 

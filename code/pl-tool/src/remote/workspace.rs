@@ -415,6 +415,10 @@ impl WorkspaceFileBackend for RemoteWorkspaceFileBackend {
             truncated: false,
         })
     }
+
+    async fn create_directory(&self, path: String, cwd: Option<String>) -> Result<()> {
+        RemoteWorkspaceFileBackend::create_directory(self, path, cwd).await
+    }
 }
 
 fn resolve_remote_path(path: String, cwd: Option<String>) -> Result<String> {

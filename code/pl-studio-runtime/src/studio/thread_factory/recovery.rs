@@ -12,8 +12,11 @@ pub(crate) async fn load_checkpoint(
     store: &StudioStore,
     thread: &pl_protocol::Thread,
 ) -> Result<Option<ThreadCheckpoint>> {
-    let history = store.history(&thread.id).await?;
-    store.state(&thread.id).load(&history).await
+    let history = store.history_for(&thread.project_id, &thread.id).await?;
+    store
+        .state_for(&thread.project_id, &thread.id)?
+        .load(&history)
+        .await
 }
 
 /// Explicit activation or parent continuation migrates history before decoding restart state.
@@ -27,9 +30,9 @@ pub(crate) async fn load_checkpoint_for_recovery(
     store: &StudioStore,
     thread: &pl_protocol::Thread,
 ) -> Result<Option<ThreadCheckpoint>> {
-    let history = store.history(&thread.id).await?;
+    let history = store.history_for(&thread.project_id, &thread.id).await?;
     let Some(checkpoint) = store
-        .state(&thread.id)
+        .state_for(&thread.project_id, &thread.id)?
         .load_after_migration(&history)
         .await?
     else {

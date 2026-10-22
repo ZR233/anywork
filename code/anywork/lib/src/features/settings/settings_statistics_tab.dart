@@ -67,10 +67,11 @@ class _StatisticsTabState extends ConsumerState<StatisticsTab> {
                     item.modelMatchState == ModelMatchState.mismatched))
               item,
         ];
-        final hasProjectionIssue =
-            snapshot.statisticsPending ||
-            snapshot.statisticsGap ||
-            snapshot.readFailed;
+        // gap/readFailed 是稳定异常，才在固定页头占一行；pending 是每轮调用落盘期间
+        // 的常规暂态，不再可见展示——状态行随其插拔会把整个页面往下推造成闪烁。
+        final headerIssue = snapshot.statisticsGap || snapshot.readFailed;
+        // pending 仍参与空态抑制：落盘完成前不提前显示「暂无调用历史」。
+        final hasProjectionIssue = snapshot.statisticsPending || headerIssue;
         return SettingsPageLayout(
           maxWidth: 1120,
           header: Column(
@@ -80,8 +81,8 @@ class _StatisticsTabState extends ConsumerState<StatisticsTab> {
                 title: context.l10n.settingsStatisticsTitle,
                 subtitle: context.l10n.settingsStatisticsSubtitle,
               ),
-              // pending/gap/readFailed 在固定页头轻量显示，不在正文顶部插拔大块。
-              if (visible && hasProjectionIssue)
+              // gap/readFailed 在固定页头轻量显示，不在正文顶部插拔大块。
+              if (visible && headerIssue)
                 Padding(
                   padding: const EdgeInsets.only(top: 10),
                   child: _StatisticsStatusLine(snapshot: snapshot),
@@ -151,6 +152,19 @@ class _StatisticsTabState extends ConsumerState<StatisticsTab> {
                   },
                 ),
               ],
+              // 口径说明放在页面末尾：既解释公式与耗时边界，也不挤占顶部筛选与汇总的
+              // 可视区域。
+              SliverToBoxAdapter(
+                child: Padding(
+                  padding: const EdgeInsets.only(top: 20),
+                  child: Text(
+                    context.l10n.settingsStatisticsThroughputNote,
+                    style: context.text.bodySmall?.copyWith(
+                      color: context.colors.onSurfaceVariant,
+                    ),
+                  ),
+                ),
+              ),
               const SliverToBoxAdapter(child: SizedBox(height: 24)),
             ],
           ),
@@ -160,8 +174,8 @@ class _StatisticsTabState extends ConsumerState<StatisticsTab> {
   }
 }
 
-/// 统计投影的轻量状态行：pending/gap/readFailed 只在固定页头占一行，避免正文顶部
-/// 反复插拔大块导致布局跳动。
+/// 统计投影的轻量状态行：gap/readFailed 只在固定页头占一行，避免正文顶部反复插拔
+/// 大块导致布局跳动；pending（保存中暂态）不做可见展示。
 class _StatisticsStatusLine extends StatelessWidget {
   const _StatisticsStatusLine({required this.snapshot});
 
@@ -183,13 +197,6 @@ class _StatisticsStatusLine extends StatelessWidget {
           icon: Icons.warning_amber_rounded,
           label: context.l10n.settingsStatisticsGapTitle,
           color: context.statusColors.warning,
-        ),
-      if (snapshot.statisticsPending)
-        _StatisticsStatusItem(
-          key: const ValueKey('statistics-status-pending'),
-          icon: Icons.schedule_rounded,
-          label: context.l10n.settingsStatisticsPendingTitle,
-          color: context.colors.onSurfaceVariant,
         ),
     ];
     if (items.isEmpty) return const SizedBox.shrink();
@@ -281,7 +288,15 @@ class _SummarySection extends StatelessWidget {
                       DataCell(
                         Text(formatTokenCount(summary.completionTokens)),
                       ),
-                      DataCell(Text(_formatMillis(summary.averageTtftMillis))),
+                      DataCell(
+                        Text(
+                          _formatAverageTtft(
+                            context,
+                            summary.averageTtftMillis,
+                            summary.ttftSampleCount,
+                          ),
+                        ),
+                      ),
                       DataCell(
                         Text(_formatMillis(summary.averageResponseMillis)),
                       ),
@@ -316,7 +331,15 @@ class _SummarySection extends StatelessWidget {
                         DataCell(
                           Text(formatTokenCount(effort.completionTokens)),
                         ),
-                        DataCell(Text(_formatMillis(effort.averageTtftMillis))),
+                        DataCell(
+                          Text(
+                            _formatAverageTtft(
+                              context,
+                              effort.averageTtftMillis,
+                              effort.ttftSampleCount,
+                            ),
+                          ),
+                        ),
                         DataCell(
                           Text(_formatMillis(effort.averageResponseMillis)),
                         ),
@@ -368,7 +391,11 @@ class _CompactSummaryCard extends StatelessWidget {
           ),
           SettingsMetric(
             context.l10n.statisticsAverageTtft,
-            _formatMillis(summary.averageTtftMillis),
+            _formatAverageTtft(
+              context,
+              summary.averageTtftMillis,
+              summary.ttftSampleCount,
+            ),
           ),
           SettingsMetric(
             context.l10n.statisticsAverageResponse,
@@ -895,6 +922,19 @@ class _EmptyState extends StatelessWidget {
 String _formatMillis(double millis) {
   if (millis < 1_000) return '${millis.round()} ms';
   return '${(millis / 1_000).toStringAsFixed(1)} s';
+}
+
+/// 平均首字只在真正测得首字的样本上求平均，并同时给出独立样本数。
+String _formatAverageTtft(
+  BuildContext context,
+  double? averageMillis,
+  int sampleCount,
+) {
+  if (averageMillis == null || sampleCount == 0) {
+    return context.l10n.statisticsMetricNotCollected;
+  }
+  return '${_formatMillis(averageMillis)} · '
+      '${context.l10n.statisticsTtftSampleCount(sampleCount)}';
 }
 
 String _formatSampleMillis(BuildContext context, int? millis) {

@@ -9,6 +9,11 @@
   "sidebarLoadingMore": "Loading more sessions…",
   "sidebarLoadError": "Failed to load more sessions",
   "shutdownTitle": "Shutting down safely",
+  "shutdownUpdateTitle": "Installing update {version}",
+  "@shutdownUpdateTitle": {"placeholders": {"version": {"type": "String"}}},
+  "shutdownUpdateSaving": "Stopping chats and saving data…",
+  "shutdownUpdateRestartHint": "Installation progress will appear after saving. The app will reopen automatically.",
+  "shutdownUpdateExitHint": "Installation progress will appear after saving. The app will stay closed.",
   "shutdownFinalizing": "Finishing up",
   "shutdownFinalizingHint": "Necessary diagnostics were recorded; the app will exit automatically.",
   "shutdownPhaseStoppingSubscriptions": "Stopping subscriptions",
@@ -114,7 +119,6 @@
   "threadUnopenedBody": "This session is only selected. Open it to load its current state and history; nothing resumes until you send a message.",
   "threadOpenAction": "Open session",
   "timelineItemBodyLoad": "Load full content",
-  "timelineItemBodyTruncated": "This page shows a truncated preview of a large item.",
   "timelineItemBodyLoading": "Loading full content…",
   "timelineItemBodyPending": "Full content is not durable yet; retry shortly.",
   "timelineItemBodyRetry": "Retry",
@@ -467,7 +471,6 @@
   },
   "statusModelRouteUnavailableFallback": "The current model route is unavailable. Check the account and model settings.",
   "statusModelSwitchWhileRunning": "This session is running or waiting for input, so the model cannot be changed yet. Stop the current run or wait for it to finish.",
-  "statusModelSwitchWhileWorkflowActive": "The current workflow is still active, so the model cannot be changed yet. Wait for the workflow to finish.",
   "statusModelSwitchWhileInactive": "This session is closing, closed, or unavailable due to an error. Restore it before changing the model.",
   "statusModelNoticeDismiss": "Dismiss model notice",
   "statusExecutorModel": "Executor model",
@@ -514,7 +517,7 @@
   "sessionZedOpenFailed": "Failed to open Zed",
   "sessionTerminalOpenFailed": "Failed to open terminal",
   "sessionOpenServerMissing": "The SSH alias for this project is no longer in ~/.ssh/config",
-  "statusLastConfirmedAgentTokenSpeed": "Last confirmed token speed",
+  "statusLastConfirmedAgentTokenSpeed": "Last confirmed output speed (includes the first-token wait)",
   "settingsStatisticsTitle": "Statistics",
   "settingsStatisticsSubtitle": "Recent successful calls grouped by account and configured model, with an in-group effort breakdown.",
   "settingsStatisticsSummaryTitle": "Model performance",
@@ -523,8 +526,6 @@
   "settingsStatisticsEmpty": "No call history yet.",
   "settingsStatisticsSummaryEmpty": "No model performance summaries yet.",
   "settingsStatisticsFilteredEmpty": "No calls match these filters.",
-  "settingsStatisticsPendingTitle": "Statistics pending write",
-  "settingsStatisticsPendingBody": "Recent calls are still being written to statistics and may not appear yet.",
   "settingsStatisticsGapTitle": "Statistics have gaps",
   "settingsStatisticsGapBody": "Some calls could not be recorded; summaries and history may be incomplete.",
   "settingsStatisticsReadFailedTitle": "Could not read statistics",
@@ -546,14 +547,23 @@
   "statisticsModelUnavailable": "Unavailable",
   "statisticsReasoningEffort": "Reasoning effort",
   "statisticsReasoningEffortUnspecified": "Unspecified / not recorded",
-  "statisticsSpeed": "Speed",
+  "statisticsSpeed": "Output TPS (incl. first token)",
   "statisticsSamples": "Samples",
   "statisticsOutputTokens": "Output tokens",
-  "statisticsAverageTtft": "Average TTFT",
-  "statisticsAverageResponse": "Average response",
+  "statisticsAverageTtft": "Average first token",
+  "statisticsAverageResponse": "Average total response",
   "statisticsCompletedAt": "Completed",
-  "statisticsDecode": "Decode",
-  "statisticsTotalResponse": "Total",
+  "statisticsDecode": "After first token",
+  "statisticsTotalResponse": "Total response",
+  "statisticsTtftSampleCount": "{count} first-token samples",
+  "@statisticsTtftSampleCount": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "settingsStatisticsThroughputNote": "Output TPS = provider-confirmed output tokens × 1000 ÷ total response time (including the first-token wait). Total response runs from the request that produced the result to its normalized terminal event; failed retries, backoff, tool execution and post-terminal collection or saving are excluded. The first token is the first non-empty text, reasoning or tool-input increment, and output may include reasoning tokens without double counting. The after-first-token time is diagnostic, not hardware decode time. Samples from the previous statistics definition were discarded; raw calls and billing remain.",
   "statusTurnQueued": "Queued",
   "statusTurnPreparing": "Preparing context",
   "statusTurnResponding": "Responding",
@@ -624,6 +634,8 @@
   "timelineImageLoadFailed": "Unable to load this image.",
   "timelineImageRetry": "Retry",
   "timelineImageClose": "Close image preview",
+  "timelineImageCardTitle": "Image card",
+  "timelineImageCardEmpty": "This image is unavailable",
   "timelineRemoteImageSource": "External image from {host}",
   "@timelineRemoteImageSource": {
     "placeholders": {
@@ -642,7 +654,37 @@
   "timelineConnectionFailed": "Unable to synchronize messages. Current content is preserved.",
   "timelineReasoningFallback": "Thinking",
   "timelineReasoningActive": "Thinking",
-  "timelineReasoningCompleted": "Thought",
+  "timelineReasoningEnded": "Thought ended",
+  "timelineReasoningFailed": "Thinking failed",
+  "timelineReasoningCancelled": "Thinking cancelled",
+  "timelineReasoningElapsedUnderSecond": "Thought for less than 1s",
+  "timelineReasoningElapsedSeconds": "Thought for {seconds}s",
+  "@timelineReasoningElapsedSeconds": {
+    "placeholders": {
+      "seconds": {
+        "type": "int"
+      }
+    }
+  },
+  "timelineReasoningElapsedMinutes": "Thought for {minutes}m",
+  "@timelineReasoningElapsedMinutes": {
+    "placeholders": {
+      "minutes": {
+        "type": "int"
+      }
+    }
+  },
+  "timelineReasoningElapsedMinutesSeconds": "Thought for {minutes}m {seconds}s",
+  "@timelineReasoningElapsedMinutesSeconds": {
+    "placeholders": {
+      "minutes": {
+        "type": "int"
+      },
+      "seconds": {
+        "type": "int"
+      }
+    }
+  },
   "timelineReasoningSummary": "Summary",
   "timelineReasoningContent": "Content",
   "timelineReasoningBudgetLimited": "Reasoning budget reached",
@@ -740,6 +782,91 @@
   "timelineReadFileCompleted": "Read",
   "timelineReadFileReading": "Reading",
   "timelineReadFileFailed": "Unable to read",
+  "timelineToolEditSucceeded": "Edited",
+  "timelineToolEditRunning": "Editing",
+  "timelineToolEditFailed": "Couldn't edit",
+  "timelineToolPatchFilesMore": "{first}, and {more} more",
+  "@timelineToolPatchFilesMore": {
+    "placeholders": {
+      "first": {
+        "type": "String"
+      },
+      "more": {
+        "type": "int"
+      }
+    }
+  },
+  "timelineSessionNoteName": "session note",
+  "timelineToolCommandSucceeded": "Ran",
+  "timelineToolCommandRunning": "Running",
+  "timelineToolCommandFailed": "Command failed",
+  "timelineToolStdinSucceeded": "Wrote input",
+  "timelineToolStdinRunning": "Writing input",
+  "timelineToolStdinFailed": "Input not written",
+  "timelineToolElapsedUnderSecond": "Took less than 1s",
+  "timelineToolElapsedSeconds": "Took {seconds}s",
+  "@timelineToolElapsedSeconds": {
+    "placeholders": {
+      "seconds": {
+        "type": "int"
+      }
+    }
+  },
+  "timelineToolElapsedMinutes": "Took {minutes}m",
+  "@timelineToolElapsedMinutes": {
+    "placeholders": {
+      "minutes": {
+        "type": "int"
+      }
+    }
+  },
+  "timelineToolElapsedMinutesSeconds": "Took {minutes}m {seconds}s",
+  "@timelineToolElapsedMinutesSeconds": {
+    "placeholders": {
+      "minutes": {
+        "type": "int"
+      },
+      "seconds": {
+        "type": "int"
+      }
+    }
+  },
+  "timelineToolSearchSucceeded": "Searched",
+  "timelineToolSearchRunning": "Searching",
+  "timelineToolSearchFailed": "Search failed",
+  "timelineToolAgentSucceeded": "Spawned subagent",
+  "timelineToolAgentRunning": "Subagent running",
+  "timelineToolAgentFailed": "Subagent failed",
+  "timelineToolMessageSucceeded": "Sent message",
+  "timelineToolMessageRunning": "Sending message",
+  "timelineToolMessageFailed": "Message not sent",
+  "timelineToolCreateSucceeded": "Created directory",
+  "timelineToolCreateRunning": "Creating directory",
+  "timelineToolCreateFailed": "Directory not created",
+  "timelineToolDeleteSucceeded": "Deleted",
+  "timelineToolDeleteRunning": "Deleting",
+  "timelineToolDeleteFailed": "Not deleted",
+  "timelineToolCopySucceeded": "Copied",
+  "timelineToolCopyRunning": "Copying",
+  "timelineToolCopyFailed": "Not copied",
+  "timelineToolMoveSucceeded": "Moved",
+  "timelineToolMoveRunning": "Moving",
+  "timelineToolMoveFailed": "Not moved",
+  "timelineToolFetchSucceeded": "Fetched web page",
+  "timelineToolFetchRunning": "Fetching web page",
+  "timelineToolFetchFailed": "Web page not fetched",
+  "timelineToolPlanSucceeded": "Updated plan",
+  "timelineToolPlanRunning": "Updating plan",
+  "timelineToolPlanFailed": "Plan update failed",
+  "timelineToolWorkflowSucceeded": "Updated workflow",
+  "timelineToolWorkflowRunning": "Updating workflow",
+  "timelineToolWorkflowFailed": "Workflow update failed",
+  "timelineToolLspSucceeded": "Queried code",
+  "timelineToolLspRunning": "Querying code",
+  "timelineToolLspFailed": "Code query failed",
+  "timelineToolWaitSucceeded": "Waited",
+  "timelineToolWaitRunning": "Waiting",
+  "timelineToolWaitFailed": "Wait failed",
   "timelineToolCompleted": "{name} completed",
   "@timelineToolCompleted": {
     "placeholders": {
@@ -1270,9 +1397,12 @@
       }
     }
   },
-  "settingsStudioUpdateBusy": "Finish the active turn or task before installing.",
+  "settingsStudioUpdatePreparing": "Preparing update…",
+  "settingsStudioUpdateWhenReady": "Install and restart when ready",
+  "settingsStudioUpdateCancelling": "Cancelling update…",
+  "settingsStudioUpdateCancelled": "Update cancelled. You can retry anytime.",
   "settingsStudioUpdateCheck": "Check for updates",
-  "settingsStudioUpdateInstall": "Download and install",
+  "settingsStudioUpdateInstall": "Download, install and restart",
   "settingsStudioUpdateRestart": "Install and restart",
   "settingsStudioUpdateReady": "Version {version} is downloaded and will install when you close anywork.",
   "@settingsStudioUpdateReady": {
@@ -1287,6 +1417,12 @@
   "timelineWebSearchSearching": "Searching the web",
   "timelineWebSearchOpening": "Opening a web page",
   "timelineWebSearchFinding": "Finding text on a page",
+  "timelineWebSearchSearched": "Searched the web",
+  "timelineWebSearchOpened": "Opened a web page",
+  "timelineWebSearchFound": "Searched page text",
+  "timelineWebSearchFailed": "Web search failed",
+  "timelineWebSearchOpenFailed": "Couldn't open a web page",
+  "timelineWebSearchFindFailed": "Page search failed",
   "timelineWebSearchResults": "Result links",
   "timelineLspQueryTitle": "LSP query",
   "timelineLspQueryTitleWithDetail": "LSP query · {detail}",

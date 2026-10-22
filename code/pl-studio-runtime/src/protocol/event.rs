@@ -224,11 +224,14 @@ pub struct StudioModelPerformanceSummary {
     pub model_id: String,
     pub sample_count: u64,
     pub completion_tokens: u64,
+    /// 已测得首字样本的首字耗时累计；分母是 `ttft_sample_count`，不是 `sample_count`。
     pub total_ttft_millis: u64,
-    pub total_decode_millis: u64,
+    pub ttft_sample_count: u64,
+    /// 含首字等待的总响应耗时；输出吞吐的分母。
     pub total_response_millis: u64,
     pub tokens_per_second: f64,
-    pub average_ttft_millis: f64,
+    /// 没有已知首字样本时保持未知，不用全部速度样本数稀释。
+    pub average_ttft_millis: Option<f64>,
     pub average_response_millis: f64,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub effort_breakdowns: Vec<StudioModelPerformanceEffortSummary>,
@@ -243,10 +246,10 @@ pub struct StudioModelPerformanceEffortSummary {
     pub sample_count: u64,
     pub completion_tokens: u64,
     pub total_ttft_millis: u64,
-    pub total_decode_millis: u64,
+    pub ttft_sample_count: u64,
     pub total_response_millis: u64,
     pub tokens_per_second: f64,
-    pub average_ttft_millis: f64,
+    pub average_ttft_millis: Option<f64>,
     pub average_response_millis: f64,
 }
 

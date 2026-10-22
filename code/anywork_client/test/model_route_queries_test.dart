@@ -168,7 +168,7 @@ void main() {
       activeMcpServers: [],
       activeLspServers: [],
       turnCompletionTokens: 1000,
-      turnDecodeMillis: 1000,
+      turnResponseMillis: 1000,
     );
     expect(ModelRouteQueries.throughput(runtime), 1000);
     expect(
@@ -186,7 +186,7 @@ void main() {
           turnId: 'next-turn',
           attemptId: 'next-attempt',
           completionTokens: sample.tokens,
-          decodeMillis: sample.millis,
+          responseMillis: sample.millis,
           state: ThreadRuntimeUsageState.live,
           observationSequence: 1,
         ),
@@ -203,14 +203,14 @@ void main() {
         turnId: 'next-turn',
         attemptId: 'next-attempt',
         completionTokens: 20,
-        decodeMillis: 500,
+        responseMillis: 500,
         state: ThreadRuntimeUsageState.live,
         observationSequence: 2,
       ),
     );
     expect(ModelRouteQueries.throughput(complete), 40);
     expect(ModelRouteQueries.throughputSource(complete)?.outputTokens, 20);
-    expect(ModelRouteQueries.throughputSource(complete)?.decodeMillis, 500);
+    expect(ModelRouteQueries.throughputSource(complete)?.responseMillis, 500);
     expect(
       ModelRouteQueries.throughputSource(
         runtime.copyWith(
@@ -227,12 +227,12 @@ void main() {
     );
     expect(
       ModelRouteQueries.throughput(
-        runtime.copyWith(turnCompletionTokens: 0, turnDecodeMillis: 0),
+        runtime.copyWith(turnCompletionTokens: 0, turnResponseMillis: 0),
       ),
       isNull,
     );
     expect(
-      ModelRouteQueries.throughput(runtime.copyWith(turnDecodeMillis: 0)),
+      ModelRouteQueries.throughput(runtime.copyWith(turnResponseMillis: 0)),
       isNull,
       reason: 'positive tokens without decode duration stay unknown',
     );

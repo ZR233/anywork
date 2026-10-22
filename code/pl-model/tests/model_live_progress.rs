@@ -7,10 +7,12 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use pl_core::chat::PresentationPart;
-use pl_core::context::{ContextContent, OpaquePayload};
+use pl_core::context::{
+    ContextContent, ContextRecord, ContextSnapshot, ContextSource, OpaquePayload,
+};
 use pl_core::model::{
     AggregateChannel, ModelError, ModelFactory, ModelFailureKind, ModelProgress,
-    ObservedPartIdentity,
+    ModelProgressSender, ModelRequest, ObservedPartIdentity, ToolCallMode,
 };
 use pl_core::thread::{ModelStepLimit, ThreadHandle, TurnInput};
 use pl_core::tool::{
@@ -25,7 +27,8 @@ use pl_model::completion::{
 use pl_model::model::{ModelInfo, ModelTransportProfile};
 use pl_model::protocol::ProtocolEndpoint;
 use pl_model::runtime::{
-    ModelInvocationContext, ModelRuntime, ModelSession, thread_tool_declaration,
+    ModelInvocationContext, ModelRuntime, ModelSession, model_failure_receipt,
+    thread_tool_declaration,
 };
 use pl_protocol::PureError;
 use pl_protocol::trace::TraceTextChannel;
@@ -615,6 +618,134 @@ fn legacy_binding() -> Value {
         "isolation": "fixture",
         "purpose": "turn",
     })
+}
+
+#[tokio::test]
+async fn a_provider_failure_withdraws_the_live_pair_before_the_attempt_returns() {
+    let fixture = FixtureServer::start(vec![Step::prompt(
+        Protocol::Chat,
+        "failed live pair",
+        0,
+        Reply::PacedEvents {
+            initial_delay_ms: 0,
+            step_millis: 200,
+            events: vec![
+                json!({"id":"chat-fail","model":"live-fixture","choices":[{"delta":{"content":"partial"},"finish_reason":null}]}),
+                json!({"id":"chat-fail","model":"live-fixture","choices":[],"usage":{"prompt_tokens":1,"completion_tokens":7}}),
+                json!({"type":"error","error":{"code":"invalid_request_error","message":"provider failed mid stream"}}),
+            ],
+        },
+    )])
+    .await
+    .expect("fixture starts");
+    let runtime = ModelRuntime::new_with_account_id(
+        "fixture",
+        ProtocolEndpoint::compatible("fixture", fixture.base_url()),
+        model(
+            "live-fixture",
+            ModelTransportProfile::chat_completions_http(),
+        ),
+    )
+    .expect("fixture endpoint is valid");
+    let sender = ModelProgressSender::detached(1 << 20);
+    sender.publish(ModelProgress::live("failed-turn", "failed-attempt"));
+    let request = ModelRequest {
+        progress: Some(sender.clone()),
+        thread_id: "failed-thread".into(),
+        turn_id: "failed-turn".into(),
+        attempt_id: "failed-attempt".into(),
+        context: ContextSnapshot {
+            revision: 1,
+            records: vec![ContextRecord {
+                id: "failed-input".into(),
+                turn_id: Some("failed-turn".into()),
+                source: ContextSource::User,
+                content: vec![ContextContent::Text {
+                    text: "failed live pair".into(),
+                }],
+                tool_calls: vec![],
+            }]
+            .into(),
+        },
+        tools: Default::default(),
+        tool_call_mode: ToolCallMode::Sequential,
+        solo_tool_ids: Default::default(),
+        committed_private_context: None,
+        resources: None,
+        cancellation: Default::default(),
+    };
+    let mut session = ModelFactory::new(pl_model::runtime::ThreadModel::new(runtime, None))
+        .open_session()
+        .await
+        .expect("model session opens");
+    let call = session
+        .prepare(request)
+        .await
+        .expect("the fixture request prepares");
+    let running = tokio::spawn(async move { call.execute().await });
+    // 失败之前的成对样本必须真的出现过：等到 provider 已报告输出词元并已发布响应耗时。
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let complete = sender.latest().usage_observation().is_some_and(|usage| {
+                usage.completion_tokens == Some(7) && usage.response_millis.is_some()
+            });
+            if complete {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the partial pair is observable before the failure");
+
+    let error = tokio::time::timeout(Duration::from_secs(10), running)
+        .await
+        .expect("the failure arrives")
+        .expect("the call task joins")
+        .expect_err("the provider fails mid stream");
+    let receipt = model_failure_receipt(&error)
+        .expect("the receipt decodes")
+        .expect("the failure carries a receipt");
+    let partial = receipt
+        .partial_progress
+        .expect("the receipt keeps the partial observation");
+    assert!(
+        partial.parts().iter().any(|part| part.text() == "partial"),
+        "已收到的内容必须保留"
+    );
+    // 失败收据只承载内容（live usage 不跨序列化边界），因此速度不可用性在同一 live 通道上确认：
+    // 失败之后该代次的 pair 整组撤销，而不是「失败前词元 + 失败时钟」。
+    let withdrawn = sender.latest();
+    let live = withdrawn
+        .usage_observation()
+        .expect("the live observation identity is retained");
+    assert_eq!(
+        live.completion_tokens, None,
+        "failure must not publish the pre-failure token count as a speed numerator"
+    );
+    assert_eq!(
+        live.response_millis, None,
+        "failure must not publish its terminal clock as a speed denominator"
+    );
+    assert!(
+        withdrawn
+            .parts()
+            .iter()
+            .any(|part| part.text() == "partial"),
+        "撤销用量不得丢弃已收到的内容"
+    );
+    // 失败之后到达的在途观察也不能复活这一代次的 pair。
+    sender.observe_usage(Some(9), None);
+    sender.observe_response_millis(9_999);
+    let latest = sender.latest();
+    let live = latest
+        .usage_observation()
+        .expect("the live observation identity is retained");
+    assert_eq!(live.completion_tokens, None);
+    assert_eq!(live.response_millis, None);
+    // 最终 accounting 仍保留 provider 报告的输出词元。
+    assert_eq!(error.usage.output_tokens, Some(7));
+    let _ = fixture.finish().await;
 }
 
 fn legacy_receipt(partial_progress: Value) -> ModelError {

@@ -74,7 +74,7 @@
 //! branch is never written as passed.
 
 use super::{
-    FixtureReady, LspServerSpec, OwnedProcess, SqliteWriteLock, count_gui_errors,
+    FixtureReady, LspServerSpec, OwnedProcess, SqliteWriteLock, count_gui_errors, driver_command,
     history_lock_database, history_lock_quick_check, history_lock_watermark, sanitize_requests,
     wait_for_vm, write_config, write_config_with_lsp_server, write_config_with_mcp_server,
     write_fixture_log, write_realtime_driver_evidence, write_sanitized_log,
@@ -2982,10 +2982,9 @@ fn start_driver(
     driver_log: &Path,
 ) -> Result<OwnedProcess> {
     let log = File::create(driver_log)?;
-    let mut command = process::path_command("dart", &[]);
+    let mut command = driver_command(app_dir, "test_driver/shutdown_journey.dart");
     command
-        .current_dir(app_dir)
-        .args(["run", "test_driver/shutdown_journey.dart", phase, vm_url])
+        .args([phase, vm_url])
         .arg(project)
         .arg(output)
         .arg(working)

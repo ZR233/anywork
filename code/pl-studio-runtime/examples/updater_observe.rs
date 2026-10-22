@@ -56,7 +56,7 @@ async fn observe_state(artifacts: &std::path::Path) -> Result<()> {
     readonly.set_readonly(true);
     std::fs::set_permissions(&path, readonly)?;
     let cancellation = StudioUpdateCancellation::new();
-    cancellation.cancel()?;
+    cancellation.cancel();
     let result = runtime.check_studio_update(&cancellation).await;
     std::fs::set_permissions(&path, original)?;
     let after = std::fs::read(&path)?;
@@ -113,7 +113,7 @@ async fn observe_download(artifacts: &std::path::Path, cancel_after: Option<u64>
                 && cancel_after
                     .is_some_and(|threshold| downloaded >= threshold && downloaded < total)
             {
-                observer_cancellation.cancel()?;
+                observer_cancellation.cancel();
             }
         }
         output.sync_all()?;

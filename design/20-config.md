@@ -30,8 +30,9 @@ schema 和 `configRevision`，不在主配置里新增 Node/MCP/provider 伪配�
 按钮才写入，取消则丢弃草稿。模型压缩阈值从账号详情卡的模型列表即时修改，不属于账号
 编辑页草稿；交互与失败反馈见 [19](./19-studio-ui.md)。
 
-配置版本演进必须满足以下迁移契约；存储隔离边界见
-[17.7](./17-studio-storage.md#177-大版本隔离与配置迁移)。本文定义目标契约，实际完成情况以迁移验证为准。
+配置版本演进必须满足以下迁移契约；会话和产品数据的隔离与布局演进另见
+[17.7](./17-studio-storage.md#177-大版本隔离与配置迁移)，不能把会话大版本隔离用作配置重置的理由。
+本文定义目标契约，实际完成情况以迁移验证为准。
 
 - 启动时在产品发布前识别配置版本，使用明确的版本转换路径将 anywork 历史配置与用户
   Agent Profile 转为当前结构，支持跨版本升级；保留用户选择、account 身份与凭据关联。
@@ -279,8 +280,9 @@ runtime 路由；模型 transport 是必填字段，合法矩阵为 Responses+WS
 
 服务能力不是模型能力的别名：account 服务能力表示 endpoint 可以执行 Responses hosted
 tools、hosted 或 standalone Web Search（hosted search 还携带 OpenAIResponses 或
-DeepSeekResponses 方言），模型能力仍表示当前模型能否使用 native search 或 function
-tools；核心编排必须同时检查 endpoint 服务能力、模型能力与模型 request profile。官方
+DeepSeekResponses 方言）以及图像生成（Images 方言与生图模型前缀），模型能力仍表示当前模型
+能否使用 native search 或 function tools；核心编排必须同时检查 endpoint 服务能力、模型能力
+与模型 request profile。官方
 OpenAI endpoint 默认开启 Responses hosted tools；覆盖自定义 `base_url` 后默认关闭，只有
 显式配置才能重新开启。产品 UI 从 catalog 的无密钥 descriptor 渲染预设和模型选项，不识别
 具体厂商 id。OpenAI、MiMo API、MiMo Token Plan、DeepSeek、xAI、Zhipu 与 Zhipu Coding Plan 都
@@ -368,6 +370,12 @@ Settings revision 提交。别家成功不得使本家 stale；用户更换地�
 source paths；已有 Thread 后续不会因配置或项目文档变化自动改变提示词，新 Thread 才使用
 新配置。
 
+上述冻结规则不冻结宿主运行事实：Platform、工作区绑定及 `studio.session-files` 在当前安全
+边界由实际服务提供，恢复/刷新后按同 source 更新，压缩保留最新值。会话文件路径、权限与
+helper 传输约定见 [14](./14-runtime-host.md)、[17](./17-studio-storage.md) 和
+[22](./22-ssh-remote.md)，不写入用户配置作为第二份事实源。项目/会话归属清单也不是新增的
+account 或模型设置入口，本次布局调整不改变全局配置 schema 与凭据解析。
+
 ## 20.7 运行态声明
 
 `[runtime]` 保存本地 Studio 运行态展示所需的可选声明：`permission_mode`、
@@ -377,7 +385,8 @@ source paths；已有 Thread 后续不会因配置或项目文档变化自动改
 `active_skills` 与 `active_mcp_servers` 只声明启动时预选项，不作为真实发现来源：MCP
 server 的用户启用意图来源为 `[mcp.servers.<id>].enabled`，真实可用性由进程内 registry
 探测，不写回配置；真实 skills 能力由 `[skills]` 配置和项目目录驱动，当前 Thread 的
-activeSkills 由后端持久化的 Thread 级激活记录派生（见 [10](./10-skills.md)）。
+activeSkills 由后端持久化的 Thread 级激活扩展派生，其压缩重置与恢复契约见
+[10](./10-skills.md) §10.6，不由启动声明或历史 Item 重新激活。
 
 ## 20.8 MCP 配置
 
@@ -603,3 +612,18 @@ Mode、role 的旧快照带入提交。
 
 自定义模式最多 128 个；每份 JSON 最大 256 KiB。布局最多 32 个节点，坐标必须有限且绝对值
 不超过 1,000,000。坏文件阻止启动并保留原文件及其他配置，不进入产品数据库的自动重置流程。
+
+## 20.16 图像生成配置边界
+
+图像生成能力不是用户配置项：它由目录声明的协议 endpoint 服务能力（Images 方言、生图模型 slug
+前缀与首选模型）、当前在线目录观察和账号凭据可用性共同决定，语义见 [06](./06-model.md) §6.13。
+本版本不提供独立开关、模型选择、尺寸/质量偏好或代理地址；配置中也不保存第二份生图模型名单。
+
+覆盖 `base_url` 的 account 继续沿用目录声明：Images 路径追加到该 `base_url` 前缀，与
+standalone Web Search 一致；凭据复用同一 account 的显式 secret 或 `bearer_token_env`，遵循
+20.11 的注入、脱敏与不回显规则。凭据缺失只让生图工具不注册，不改写配置、不产生错误弹窗，
+也不影响该 account 的对话模型与其他工具。
+
+目录观察不进入配置 command lane：它只推进 `modelCatalogRevision` 与有效目录，热刷新据此重新
+规划工具装配；删除或更换 account 后，原工具目录按撤销语义失效，配置只保留用户显式写入的
+account 与路由事实。

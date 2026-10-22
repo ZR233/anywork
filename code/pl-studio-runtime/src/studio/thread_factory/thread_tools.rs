@@ -29,6 +29,7 @@ pub(super) struct PreparedThreadTools {
     pub hosted: Vec<pl_model::runtime::HostedTool>,
     pub environment: pl_tool::environment::ExecutionEnvironment,
     pub remote: Option<pl_tool::remote::RemoteWorkspaceHost>,
+    pub workspace: ToolWorkspace,
 }
 
 pub(super) enum CatalogPreparation {
@@ -47,8 +48,10 @@ pub(super) enum CatalogPreparation {
 impl StudioThreadFactory {
     pub(super) async fn prepare_thread_tools(
         &self,
-        assembly: ThreadToolAssembly<'_>,
+        mut assembly: ThreadToolAssembly<'_>,
     ) -> Result<PreparedThreadTools, ThreadAssemblyError> {
+        assembly.workspace =
+            super::session_files::bind_thread_session_files(assembly.workspace, assembly.thread_id);
         let binding = super::tool_bindings::ToolBinding {
             lifetime: Default::default(),
             incarnation: std::sync::Arc::new(()),
@@ -139,6 +142,16 @@ impl StudioThreadFactory {
         search
             .hosted
             .extend(crate::programmatic::hosted_tool(route));
+        // Image generation is an account service capability: absence of the declaration, an
+        // online image model or a resolvable credential leaves the tool unregistered.
+        let image_generation = config
+            .models
+            .image_generation_backend()
+            .map_err(|error| resource_error("bind image generation", error))?;
+        let image_generation_media = image_generation
+            .backend
+            .is_some()
+            .then(|| Arc::new(crate::thread_assembler::media::MediaHost(store.clone())));
         let root = workspace.root().to_owned();
         let remote = match &preparation {
             CatalogPreparation::Refresh { remote, .. } => remote.as_deref().cloned(),
@@ -156,6 +169,7 @@ impl StudioThreadFactory {
         if cancellation.is_cancelled() {
             return Err(pl_core::thread::ThreadError::Cancelled.into());
         }
+        super::session_files::prepare_bound_session_files(&workspace, remote.as_ref()).await?;
         let environment = remote
             .as_ref()
             .map(|host| host.execution_environment.clone())
@@ -197,6 +211,13 @@ impl StudioThreadFactory {
                 binding,
                 store,
                 helper_source,
+                host_scratch: self
+                    .services
+                    .store
+                    .session_scratch_dir_for(&project.id, thread_id)
+                    .map_err(|error| {
+                        resource_error("resolve host session transfer scratch", error)
+                    })?,
                 capabilities: {
                     let mut capabilities = config.runtime.tool_capabilities.clone();
                     capabilities.ask_user &= thread_id == root_thread_id;
@@ -310,10 +331,10 @@ impl StudioThreadFactory {
         if config.runtime.tool_capabilities.lsp {
             let paths = match &remote {
                 Some(host) => pl_tool::lsp::LspPathBinding::Remote {
-                    workspace,
+                    workspace: workspace.clone(),
                     files: Arc::new(host.files.clone()),
                 },
-                None => pl_tool::lsp::LspPathBinding::Local(workspace),
+                None => pl_tool::lsp::LspPathBinding::Local(workspace.clone()),
             };
             tools = tools.with_lsp(self.services.lsp_runtime.clone(), paths)?;
         }
@@ -328,15 +349,18 @@ impl StudioThreadFactory {
             } if *policy_key == approval_policy_key(config, route) => policies.clone(),
             CatalogPreparation::Initial | CatalogPreparation::Refresh { .. } => Default::default(),
         };
+        let mut tools = tools.with_tools(search.tools);
+        if let (Some(backend), Some(media)) = (image_generation.backend, image_generation_media) {
+            tools = tools.with_image_generation(backend, media)?;
+        }
         Ok(PreparedThreadTools {
             binding_guard: None,
             catalog: skill_catalog,
-            tools: tools
-                .with_tools(search.tools)
-                .with_approval(approval, &policies),
+            tools: tools.with_approval(approval, &policies),
             hosted: search.hosted,
             environment,
             remote,
+            workspace,
         })
     }
 }

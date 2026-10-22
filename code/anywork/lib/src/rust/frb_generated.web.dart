@@ -1168,6 +1168,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   BridgeErrorCode dco_decode_bridge_error_code(dynamic raw);
 
   @protected
+  BridgeExitIntent dco_decode_bridge_exit_intent(dynamic raw);
+
+  @protected
+  BridgeExitReport dco_decode_bridge_exit_report(dynamic raw);
+
+  @protected
   BridgeFailedResource dco_decode_bridge_failed_resource(dynamic raw);
 
   @protected
@@ -2113,6 +2119,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   BridgeUpToDateUpdaterState dco_decode_bridge_up_to_date_updater_state(
     dynamic raw,
   );
+
+  @protected
+  BridgeUpdateHandoff dco_decode_bridge_update_handoff(dynamic raw);
 
   @protected
   BridgeUpdaterStateSnapshot dco_decode_bridge_updater_state_snapshot(
@@ -4250,6 +4259,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   BridgeErrorCode sse_decode_bridge_error_code(SseDeserializer deserializer);
 
   @protected
+  BridgeExitIntent sse_decode_bridge_exit_intent(SseDeserializer deserializer);
+
+  @protected
+  BridgeExitReport sse_decode_bridge_exit_report(SseDeserializer deserializer);
+
+  @protected
   BridgeFailedResource sse_decode_bridge_failed_resource(
     SseDeserializer deserializer,
   );
@@ -5421,6 +5436,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   BridgeUpToDateUpdaterState sse_decode_bridge_up_to_date_updater_state(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeUpdateHandoff sse_decode_bridge_update_handoff(
     SseDeserializer deserializer,
   );
 
@@ -7947,6 +7967,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_bridge_exit_intent(
+    BridgeExitIntent self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_exit_report(
+    BridgeExitReport self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_bridge_failed_resource(
     BridgeFailedResource self,
     SseSerializer serializer,
@@ -9377,6 +9409,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_bridge_up_to_date_updater_state(
     BridgeUpToDateUpdaterState self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_update_handoff(
+    BridgeUpdateHandoff self,
     SseSerializer serializer,
   );
 

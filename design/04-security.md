@@ -34,6 +34,13 @@ child 的 writablePaths 只约束内置 mutation 工具；worktree child 与会�
 被审者为 worktree child 时同样 Confined 于该 worktree 且不被权限模式放宽。GUI、工具描述与固定上下文必须
 如实区分这些边界。
 
+每个 Thread 还有 workspace 内独立的执行文件目录，布局见 [17](./17-studio-storage.md)。
+directory 写策略只额外允许本 Thread 的 `scratch/`、`artifacts/`；该许可不覆盖其他 Thread、
+命令 capture 或整个 `.anywork/`，不修改业务 `writablePaths` 的含义，也不使 ReadOnly workspace
+变可写。路径仍由同一物理解析器验证，symlink/traversal 不因属于临时目录而放行；helper 和
+worktree 仍然 confined，不向用户 home 开新通路。基础设施准备和 capture 写入由宿主负责，
+不能让模型以此修改内部数据库或归属清单。
+
 reviewer 可执行任意审查所需命令（含构建与测试），但不得修改源代码、Git 状态或外部系统；
 该纪律由 Profile 提示词承担，运行时不为 reviewer 裁剪 exec、Git 或文件工具。reviewer 通过
 自然 final 或 `finish_turn({message})` 结束本轮并汇报审查结论；命令产生的构建产物不构成
@@ -111,8 +118,8 @@ HTTP 与 FRB 统一返回脱敏错误信封：稳定错误码、可读消息、�
 
 ## 4.7 数据切换安全
 
-数据与配置升级分别遵循 [17](./17-studio-storage.md) 与 [20](./20-config.md)，当前实现缺口
-集中记录在 [17.7](./17-studio-storage.md#177-迁移实现状态与剩余边界)。迁移失败不能授权清空数据库、
+数据与配置升级分别遵循 [17](./17-studio-storage.md) 与 [20](./20-config.md)，大版本隔离和
+v2 内布局演进见 [17.7](./17-studio-storage.md#177-大版本隔离与配置迁移)。迁移失败不能授权清空数据库、
 删除附件或替换为默认配置；备份与迁移产物具有与原数据相同的私密性，诊断不得泄露凭据。
 
 迁移只操作已确认归属的 anywork 数据，拒绝符号链接 / reparse point 越界，不扫描或修改用户

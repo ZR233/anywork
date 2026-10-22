@@ -14,6 +14,12 @@
   使用外部 helper 模式的 Linux Studio/Server 入口按根 `AGENTS.md` 预先安装 remote helper；
   桌面 xtask 入口使用 bundle 内的 `data/remote-helper/`，不能以 PATH 中的程序代替资源校验。
 
+Markdown 排版定向复核可运行 `cargo xtask manual-gui --scenario markdown-layout`，
+通过真实输入框发送 `展示长 Markdown 表格、引用与代码排版样例`。模拟供应商逐行流式返回
+长表格、中文、行内代码、路径、链接、引用和缩进代码块；原文保存在 fixture 的
+`assets/markdown-layout.md`，可用于核对真实选择与复制。此场景沿用交互式记录与 `done`
+收束，不进入自动门禁；截图、快照与临时探针仍只保存在忽略的证据目录。
+
 ## Linux SSH：补齐终端和显示环境
 
 先检查事实，不根据控制端环境猜测：
@@ -126,6 +132,10 @@ bots-env conversations prepare-pages
 
 ## Flutter Driver 操作与取证
 
+临时文件位置遵循当前 `studio.session-files`，工程入口明确指定的证据目录除外。下面的
+`target/gui-acceptance/` 是显式的本地工程探针示例（便于复用相对导入），不是产品的命令
+capture 或通用会话临时目录；换位置时同时按本地真实目录调整导入和 Dart 启动参数。
+
 1. 使用 Flutter Driver，不用 Computer Use 覆盖 Driver 已支持的交互。优先复用
    `code/anywork/test_driver/flutter_driver_session.dart`；它提供有截止时间的操作和
    `readSnapshot()`、`renderTree()`、`screenshot()`。客户端在 `finally` 中关闭连接。
@@ -169,12 +179,12 @@ bots-env conversations prepare-pages
 
 ### Driver 宿主与原生文本输入
 
-- Journey 客户端由独立 `dart run` 执行，不能导入 `package:flutter/services.dart` 等依赖
+- Journey 客户端由独立 Dart VM 执行，不能导入 `package:flutter/services.dart` 等依赖
   `dart:ui` 的库；这些导入仅用于 app 侧 extension。`flutter_driver` 已导出宿主可用的
   `TextInputAction`，键盘扩展的 wire 参数使用已有纯 Dart 键值。`flutter analyze` 不证明
   宿主能运行；先用无参数入口核对预期 usage 退出码，再进行原生旅程。
-- 仅连接现有 GUI 的纯 Dart 脚本可使用当前应用的 `--packages=.dart_tool/package_config.json`
-  直接执行，避免为宿主脚本重新构建 Flutter native assets。工具包装可能把非零退出映射成
+- 仅连接现有 GUI 的纯 Dart 脚本统一使用当前应用的 `--packages=.dart_tool/package_config.json`
+  直接执行，不通过 `dart run` 重新触发应用的构建钩子或原生资源构建。工具包装可能把非零退出映射成
   自身失败；同时核对原始 Dart 退出码，不能把 usage 失败误认为导入或编译失败。
 - Driver 的 DTO 列表投影使用显式类型的空集合，避免 `?? const []` 将循环元素降为 dynamic、
   令分析器漏报已删除的 getter。统计等接口须以非空真实记录调用取证，空列表成功不能证明字段迁移完整。

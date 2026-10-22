@@ -542,9 +542,26 @@ impl Owner {
         operation: impl std::future::Future<Output = T> + Send,
     ) -> T {
         tokio::pin!(operation);
+        // 同一代次 token 的取消不产生 mailbox 消息，也不一定立刻产生新的进度观察：直接等待
+        // 它，才能在生产者停住时也立即发布一次撤销快照。token 在进入这里时克隆一次，等待期间
+        // 不再持有 interrupt 锁；已取消的 token 永远就绪，所以该分支只处理一次，避免空转。
+        // 等待 future 只构造一次：否则每次 watch 更新都要重新注册一个 waker。
+        let cancellation = self.interrupt.active_token();
+        let mut cancellation_observed = false;
+        let cancelled = async {
+            match cancellation.as_ref() {
+                Some(token) => token.cancelled().await,
+                None => std::future::pending().await,
+            }
+        };
+        tokio::pin!(cancelled);
         loop {
             tokio::select! {
                 result = &mut operation => return result,
+                () = &mut cancelled, if !cancellation_observed => {
+                    cancellation_observed = true;
+                    self.publish_snapshot();
+                },
                 () = self.tools.next_cleanup(), if self.tools.has_cleanup() => self.publish_snapshot(),
                 changed = async {
                     match self.model_progress.as_mut() {

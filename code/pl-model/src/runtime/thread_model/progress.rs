@@ -195,11 +195,21 @@ impl ProgressProjection {
         Ok(())
     }
 
-    /// Publishes the invocation timer's real monotonic decode elapsed time into the same live
+    /// Publishes the invocation timer's real monotonic response elapsed time into the same live
     /// observation channel as provider usage. No token value is inferred from this duration.
-    pub(crate) fn observe_decode_millis(&self, decode_millis: u64) {
+    pub(crate) fn observe_response_millis(&self, response_millis: u64) {
         if let Some(sender) = &self.sender {
-            sender.observe_decode_millis(decode_millis);
+            sender.observe_response_millis(response_millis);
+        }
+    }
+
+    /// Withdraws this generation's live pair without dropping the observed content.
+    ///
+    /// Used for terminal failure and for any outer error that never produced a `Failed` event, so no
+    /// publishable snapshot can pair pre-failure tokens with a failure clock.
+    pub(crate) fn close_live_usage(&self) {
+        if let Some(sender) = &self.sender {
+            sender.close_live_usage();
         }
     }
 
@@ -242,7 +252,12 @@ impl ProgressProjection {
             ModelStreamEvent::PresentationItem { item } => {
                 self.edit(|edit| edit.observe_item(item))?;
             }
-            ModelStreamEvent::Completed { .. } | ModelStreamEvent::Failed { .. } => {
+            ModelStreamEvent::Completed { .. } => {
+                self.terminal = true;
+            }
+            ModelStreamEvent::Failed { .. } => {
+                // 失败尝试不产生速度：先整组撤销 live 用量与耗时，再停止发布后续观察。
+                self.close_live_usage();
                 self.terminal = true;
             }
             ModelStreamEvent::ResponseStarted { .. }

@@ -25,9 +25,7 @@ use std::{
     time::Duration,
 };
 
-#[cfg(test)]
-use anyhow::Context;
-use anyhow::{Result, ensure};
+use anyhow::{Context, Result, ensure};
 use pl_core::thread::{
     ThreadCheckpoint, ThreadSnapshot, UsageSummary,
     cold::{ColdStore, ColdStoreError, StoragePressure, ThreadWrite},
@@ -762,6 +760,16 @@ impl ThreadStorageSink {
         thread: pl_protocol::Thread,
         restored_checkpoint: Option<&ThreadCheckpoint>,
     ) -> Result<Self> {
+        let registered = store
+            .catalog()
+            .get(&thread.id)
+            .context("Thread is not registered in the Studio catalog")?;
+        anyhow::ensure!(
+            registered.project_id == thread.project_id
+                && store.workspaces().get(&thread.project_id).is_some(),
+            "Thread {} Project identity is not registered in workspaces",
+            thread.id
+        );
         let chat = store.chat_session(&thread.id).await?;
         chat.initialize_order_allocator().await?;
         let channel = store.thread_persistence().history_channel(&thread.id);
@@ -1711,15 +1719,37 @@ mod storage_fault_tests {
         Ok(write)
     }
 
+    fn test_thread(thread_id: &str) -> pl_protocol::Thread {
+        let mut thread = pl_protocol::Thread::placeholder(thread_id);
+        thread.project_id = "project-test".into();
+        thread.agent_path = thread_id.to_owned();
+        thread.root_thread_id = thread_id.to_owned();
+        thread
+    }
+
+    async fn register_test_thread(store: &StudioStore, thread: &pl_protocol::Thread) -> Result<()> {
+        let mut delta = crate::studio::store::directory::DirectoryDelta::upsert_project(
+            crate::studio::store::directory::ProjectDirectoryRecord {
+                id: thread.project_id.clone(),
+                name: "Test".into(),
+                path: "/tmp/project-test".into(),
+                ssh_alias: None,
+                created_at: 1,
+                updated_at: 1,
+                last_opened_at: None,
+                closed: false,
+            },
+        );
+        delta.thread_upserts = vec![thread.clone()];
+        store.persist_directory_summaries(&delta).await
+    }
+
     async fn sink(thread_id: &str) -> Result<(tempfile::TempDir, StudioStore, ThreadStorageSink)> {
         let temp = tempfile::tempdir()?;
         let store = StudioStore::open(temp.path().join("studio/v2/studio.sqlite")).await?;
-        let sink = ThreadStorageSink::new(
-            store.clone(),
-            pl_protocol::Thread::placeholder(thread_id),
-            None,
-        )
-        .await?;
+        let thread = test_thread(thread_id);
+        register_test_thread(&store, &thread).await?;
+        let sink = ThreadStorageSink::new(store.clone(), thread, None).await?;
         spawn_live_projection(&sink);
         Ok((temp, store, sink))
     }
@@ -1727,7 +1757,18 @@ mod storage_fault_tests {
     #[tokio::test]
     async fn a_reopened_studio_sink_accepts_a_thread_with_durable_history() -> Result<()> {
         let id = "reopened-durable-thread";
-        let (temp, store, original) = sink(id).await?;
+        let temp = tempfile::tempdir()?;
+        // Native paths remain literal, including URI-looking characters and deep data roots.
+        let database = temp
+            .path()
+            .join("存储 %2F #")
+            .join("nested".repeat(16))
+            .join("studio/v2/studio.sqlite");
+        let store = StudioStore::open(&database).await?;
+        let thread = test_thread(id);
+        register_test_thread(&store, &thread).await?;
+        let original = ThreadStorageSink::new(store.clone(), thread, None).await?;
+        spawn_live_projection(&original);
         let write = ticket(id, 1);
         let checkpoint = write.checkpoint.clone();
         original.admit(id, write)?;
@@ -1735,23 +1776,15 @@ mod storage_fault_tests {
         drop(original);
         drop(store);
 
-        let reopened_store = StudioStore::open(temp.path().join("studio/v2/studio.sqlite")).await?;
+        let reopened_store = StudioStore::open(&database).await?;
         assert!(
-            ThreadStorageSink::new(
-                reopened_store.clone(),
-                pl_protocol::Thread::placeholder(id),
-                None,
-            )
-            .await
-            .is_err(),
+            ThreadStorageSink::new(reopened_store.clone(), test_thread(id), None,)
+                .await
+                .is_err(),
             "history ahead of the checkpoint must not silently skip effects"
         );
-        let reopened = ThreadStorageSink::new(
-            reopened_store,
-            pl_protocol::Thread::placeholder(id),
-            Some(&checkpoint),
-        )
-        .await?;
+        let reopened =
+            ThreadStorageSink::new(reopened_store, test_thread(id), Some(&checkpoint)).await?;
         spawn_live_projection(&reopened);
         let resumed = ThreadHandle::resume_without_model(id.into(), Some(checkpoint))?;
         resumed
@@ -1971,12 +2004,8 @@ mod storage_fault_tests {
     async fn a_commit_without_a_projection_handoff_is_never_saved() -> Result<()> {
         let temp = tempfile::tempdir()?;
         let store = StudioStore::open(temp.path().join("studio/v2/studio.sqlite")).await?;
-        let sink = ThreadStorageSink::new(
-            store.clone(),
-            pl_protocol::Thread::placeholder("no-handoff"),
-            None,
-        )
-        .await?;
+        register_test_thread(&store, &test_thread("no-handoff")).await?;
+        let sink = ThreadStorageSink::new(store.clone(), test_thread("no-handoff"), None).await?;
         let write = ticket("no-handoff", 1);
         sink.admit("no-handoff", write.clone())?;
         assert!(
@@ -2065,12 +2094,9 @@ mod storage_fault_tests {
         // fail closed instead of committing a timeline with a hole.
         let temp = tempfile::tempdir()?;
         let store = StudioStore::open(temp.path().join("studio/v2/studio.sqlite")).await?;
-        let sink = ThreadStorageSink::new(
-            store.clone(),
-            pl_protocol::Thread::placeholder("missing-visible"),
-            None,
-        )
-        .await?;
+        register_test_thread(&store, &test_thread("missing-visible")).await?;
+        let sink =
+            ThreadStorageSink::new(store.clone(), test_thread("missing-visible"), None).await?;
         let mut accepted = ticket("missing-visible", 1);
         let input = InputRecord {
             accepted_sequence: 1,
@@ -2110,9 +2136,18 @@ mod storage_fault_tests {
         tokio::time::timeout(Duration::from_secs(5), sink.flush("missing-visible", 1)).await??;
         let history = store.history("missing-visible").await?;
         let path = store
-            .thread_storage_dir("missing-visible")
+            .session_paths("project-test", "missing-visible")?
+            .root()
             .join("history.sqlite");
-        let db = Database::connect(crate::studio::paths::sqlite_url(&path)).await?;
+        let db = Database::connect(
+            crate::studio::paths::sqlite_file_options(
+                &path,
+                crate::studio::paths::SqliteFileMode::Create,
+                |options| options,
+            )
+            .await?,
+        )
+        .await?;
         db.execute_unprepared("DELETE FROM history_items WHERE item_id='visible-input'")
             .await?;
 
@@ -2148,9 +2183,8 @@ mod storage_fault_tests {
         let temp = tempfile::tempdir()?;
         let store = StudioStore::open(temp.path().join("studio/v2/studio.sqlite")).await?;
         let id = "unconsumed-retry";
-        let sink =
-            ThreadStorageSink::new(store.clone(), pl_protocol::Thread::placeholder(id), None)
-                .await?;
+        register_test_thread(&store, &test_thread(id)).await?;
+        let sink = ThreadStorageSink::new(store.clone(), test_thread(id), None).await?;
         let chat = store.chat_session(id).await?;
         let mut projection = live_projection();
         let mut input = consumed_visible_input("pending-input", "second-turn", 1)?;
@@ -2404,9 +2438,8 @@ mod storage_fault_tests {
         let temp = tempfile::tempdir()?;
         let store = StudioStore::open(temp.path().join("studio/v2/studio.sqlite")).await?;
         let id = "running-save-ack";
-        let sink =
-            ThreadStorageSink::new(store.clone(), pl_protocol::Thread::placeholder(id), None)
-                .await?;
+        register_test_thread(&store, &test_thread(id)).await?;
+        let sink = ThreadStorageSink::new(store.clone(), test_thread(id), None).await?;
         let chat = store.chat_session(id).await?;
         let mut projection = live_projection();
         let (mut attempt, mut update) = committed_parts_attempt("turn", "attempt", 0)?;
@@ -2493,8 +2526,9 @@ mod storage_fault_tests {
         let temp = tempfile::tempdir()?;
         let store = StudioStore::open(temp.path().join("studio/v2/studio.sqlite")).await?;
         let id = "child-message";
-        let mut thread = pl_protocol::Thread::placeholder(id);
+        let mut thread = test_thread(id);
         thread.parent_thread_id = Some("parent".into());
+        register_test_thread(&store, &thread).await?;
         let sink = ThreadStorageSink::new(store.clone(), thread, None).await?;
         let chat = store.chat_session(id).await?;
         let mut projection = live_projection();
@@ -2607,12 +2641,8 @@ mod storage_fault_tests {
     async fn a_live_turn_input_survives_a_window_smaller_than_its_parts() -> Result<()> {
         let temp = tempfile::tempdir()?;
         let store = StudioStore::open(temp.path().join("studio/v2/studio.sqlite")).await?;
-        let sink = ThreadStorageSink::new(
-            store.clone(),
-            pl_protocol::Thread::placeholder("window-input"),
-            None,
-        )
-        .await?;
+        register_test_thread(&store, &test_thread("window-input")).await?;
+        let sink = ThreadStorageSink::new(store.clone(), test_thread("window-input"), None).await?;
         let thread_id = "window-input";
         let turn_id = "long-turn";
         let attempt_id = "long-attempt";
@@ -2720,12 +2750,8 @@ mod storage_fault_tests {
         // while a Turn that is still running (or not yet durable) is never reported as finished.
         let temp = tempfile::tempdir()?;
         let store = StudioStore::open(temp.path().join("studio/v2/studio.sqlite")).await?;
-        let sink = ThreadStorageSink::new(
-            store.clone(),
-            pl_protocol::Thread::placeholder("cold-turn"),
-            None,
-        )
-        .await?;
+        register_test_thread(&store, &test_thread("cold-turn")).await?;
+        let sink = ThreadStorageSink::new(store.clone(), test_thread("cold-turn"), None).await?;
         let thread_id = "cold-turn";
         let turn_id = "terminal-turn";
         let input_id = "cold-input";
@@ -2736,7 +2762,7 @@ mod storage_fault_tests {
         // database, so this cold read can never make the live path wait on the writer.
         assert!(
             store
-                .history("never-written")
+                .history_for("project-test", "never-written")
                 .await?
                 .newest_terminal_turn()
                 .await?
@@ -2786,7 +2812,7 @@ mod storage_fault_tests {
         Arc::make_mut(&mut terminal.effect).turn = Some(finished());
         let prepared = projection.project_committed(
             &chat,
-            &pl_protocol::Thread::placeholder(thread_id),
+            &test_thread(thread_id),
             &terminal.effect,
             &terminal.checkpoint.state,
         )?;
@@ -2977,12 +3003,9 @@ mod storage_fault_tests {
         // still charged and every step below is deterministic.
         let temp = tempfile::tempdir()?;
         let store = StudioStore::open(temp.path().join("studio/v2/studio.sqlite")).await?;
-        let sink = ThreadStorageSink::new(
-            store.clone(),
-            pl_protocol::Thread::placeholder("output-transfer"),
-            None,
-        )
-        .await?;
+        register_test_thread(&store, &test_thread("output-transfer")).await?;
+        let sink =
+            ThreadStorageSink::new(store.clone(), test_thread("output-transfer"), None).await?;
         let channel = &sink.0.channel;
         let baseline = channel.process_bytes.load(Ordering::Acquire);
         // A quarter of the process budget each: four in-flight calls leave no headroom at all.
@@ -3117,9 +3140,18 @@ mod storage_fault_tests {
         sink.admit("sqlite-rejection", ticket("sqlite-rejection", 1))?;
         tokio::time::timeout(Duration::from_secs(5), sink.flush("sqlite-rejection", 1)).await??;
         let path = store
-            .thread_storage_dir("sqlite-rejection")
+            .session_paths("project-test", "sqlite-rejection")?
+            .root()
             .join("history.sqlite");
-        let db = Database::connect(crate::studio::paths::sqlite_url(&path)).await?;
+        let db = Database::connect(
+            crate::studio::paths::sqlite_file_options(
+                &path,
+                crate::studio::paths::SqliteFileMode::Create,
+                |options| options,
+            )
+            .await?,
+        )
+        .await?;
         db.execute_unprepared(
             "CREATE TRIGGER reject_history BEFORE UPDATE OF applied_write_seq ON history_meta \
              BEGIN SELECT RAISE(ABORT, 'controlled writer rejection'); END",
@@ -3229,9 +3261,18 @@ mod storage_fault_tests {
             .watermark()
             .await?;
         let path = store
-            .thread_storage_dir("concurrent-results")
+            .session_paths("project-test", "concurrent-results")?
+            .root()
             .join("history.sqlite");
-        let db = Database::connect(crate::studio::paths::sqlite_url(&path)).await?;
+        let db = Database::connect(
+            crate::studio::paths::sqlite_file_options(
+                &path,
+                crate::studio::paths::SqliteFileMode::Create,
+                |options| options,
+            )
+            .await?,
+        )
+        .await?;
         db.execute_unprepared(
             "CREATE TRIGGER reject_history BEFORE UPDATE OF applied_write_seq ON history_meta \
              BEGIN SELECT RAISE(ABORT, 'controlled concurrent rejection'); END",
@@ -3379,9 +3420,18 @@ mod storage_fault_tests {
         sink.admit("atomic-failure", ticket("atomic-failure", 1))?;
         tokio::time::timeout(Duration::from_secs(5), sink.flush("atomic-failure", 1)).await??;
         let path = store
-            .thread_storage_dir("atomic-failure")
+            .session_paths("project-test", "atomic-failure")?
+            .root()
             .join("history.sqlite");
-        let db = Database::connect(crate::studio::paths::sqlite_url(&path)).await?;
+        let db = Database::connect(
+            crate::studio::paths::sqlite_file_options(
+                &path,
+                crate::studio::paths::SqliteFileMode::Create,
+                |options| options,
+            )
+            .await?,
+        )
+        .await?;
         db.execute_unprepared(
             "CREATE TRIGGER reject_watermark BEFORE UPDATE OF applied_write_seq ON history_meta \
              BEGIN SELECT RAISE(ABORT, 'controlled atomic rejection'); END",
@@ -3423,21 +3473,42 @@ mod storage_fault_tests {
 
     #[tokio::test]
     async fn missing_blob_blocks_checkpoint_until_the_same_attachment_is_durable() -> Result<()> {
-        let (_temp, store, sink) = sink("blob-fence").await?;
-        let blob = store.thread_blobs_dir("blob-fence").join("restored-blob");
-        let attachment = crate::studio::AttachmentRecord {
-            id: "blob-1".to_owned(),
-            thread_id: "blob-fence".to_owned(),
+        use pl_core::context::ResourceReader as _;
+        use sha2::Digest as _;
+
+        let (temp, store, sink) = sink("blob-fence").await?;
+        let session = store.session_paths("project-test", "blob-fence")?;
+        let source = temp.path().join("attachment-draft");
+        let bytes = b"restored";
+        tokio::fs::write(&source, bytes).await?;
+        let draft = crate::studio::store::attachment::AttachmentDraftObject {
+            draft_id: "draft-1".to_owned(),
             modality: pl_protocol::studio::StudioAttachmentModality::File,
             media_type: "text/plain".to_owned(),
-            filename: None,
-            storage_path: blob.to_string_lossy().into_owned(),
-            byte_size: 8,
-            content_sha256: "0123456789abcdef".to_owned(),
+            filename: "attachment.txt".to_owned(),
+            storage_path: source,
+            byte_size: bytes.len() as u64,
+            content_sha256: hex::encode(sha2::Sha256::digest(bytes)),
             width: None,
             height: None,
-            created_at: 1,
+            initial_remote_url: None,
         };
+        let attachment = store
+            .promote_attachment_drafts("blob-fence", &[draft])
+            .await?
+            .pop()
+            .context("promoted attachment is missing")?;
+        let reference = store.retain_attachment_resource(&attachment).await?;
+        let blob = session.root().join(&attachment.blob_relative_path);
+        tokio::fs::remove_file(&blob).await?;
+        let resources = crate::resource_store::FileResourceStore::new(session.resources_dir());
+        assert_eq!(
+            resources
+                .read(reference, tokio_util::sync::CancellationToken::new())
+                .await?
+                .as_ref(),
+            bytes
+        );
         store.record_attachments(vec![attachment.clone()]).await?;
         let mut status = sink.0.channel.subscribe();
         sink.admit(
@@ -3462,7 +3533,7 @@ mod storage_fault_tests {
         assert_eq!(failed.queued_records, 1);
         assert!(sink.flush("blob-fence", 1).await.is_err());
         tokio::fs::create_dir_all(blob.parent().expect("blob has a parent")).await?;
-        tokio::fs::write(&blob, b"restored").await?;
+        tokio::fs::write(&blob, bytes).await?;
         tokio::time::timeout(
             Duration::from_secs(5),
             store
@@ -3482,9 +3553,18 @@ mod storage_fault_tests {
         tokio::time::timeout(Duration::from_secs(5), sink.flush("closed-view", 1)).await??;
         let chat = store.chat_session("closed-view").await?;
         let path = store
-            .thread_storage_dir("closed-view")
+            .session_paths("project-test", "closed-view")?
+            .root()
             .join("history.sqlite");
-        let db = Database::connect(crate::studio::paths::sqlite_url(&path)).await?;
+        let db = Database::connect(
+            crate::studio::paths::sqlite_file_options(
+                &path,
+                crate::studio::paths::SqliteFileMode::Create,
+                |options| options,
+            )
+            .await?,
+        )
+        .await?;
         db.execute_unprepared(
             "CREATE TRIGGER reject_history BEFORE UPDATE OF applied_write_seq ON history_meta \
              BEGIN SELECT RAISE(ABORT, 'controlled closed-view rejection'); END",
@@ -3676,12 +3756,9 @@ mod storage_fault_tests {
     async fn reprojecting_an_unchanged_effect_keeps_one_canonical_payload() -> Result<()> {
         let temp = tempfile::tempdir()?;
         let store = StudioStore::open(temp.path().join("studio/v2/studio.sqlite")).await?;
-        let sink = ThreadStorageSink::new(
-            store.clone(),
-            pl_protocol::Thread::placeholder("stable-payload"),
-            None,
-        )
-        .await?;
+        register_test_thread(&store, &test_thread("stable-payload")).await?;
+        let sink =
+            ThreadStorageSink::new(store.clone(), test_thread("stable-payload"), None).await?;
         let chat = store.chat_session("stable-payload").await?;
         // The commit sequence is deliberately far above the item's own content version, so a sequence
         // leaking into the version shows up as a value change instead of a coincidence.
@@ -3724,12 +3801,9 @@ mod storage_fault_tests {
     {
         let temp = tempfile::tempdir()?;
         let store = StudioStore::open(temp.path().join("studio/v2/studio.sqlite")).await?;
-        let sink = ThreadStorageSink::new(
-            store.clone(),
-            pl_protocol::Thread::placeholder("revision-fence"),
-            None,
-        )
-        .await?;
+        register_test_thread(&store, &test_thread("revision-fence")).await?;
+        let sink =
+            ThreadStorageSink::new(store.clone(), test_thread("revision-fence"), None).await?;
         let chat = store.chat_session("revision-fence").await?;
         // The commit sequence is deliberately far above the item's first content version: the
         // projection decides the content version, and the writer has to store that exact value.
@@ -3781,7 +3855,8 @@ mod storage_fault_tests {
         );
 
         let path = store
-            .thread_storage_dir("revision-fence")
+            .session_paths("project-test", "revision-fence")?
+            .root()
             .join("history.sqlite");
         let cold =
             crate::studio::storage::history::HistoryStore::open(&path, "revision-fence").await?;
@@ -3806,6 +3881,7 @@ mod storage_fault_tests {
     {
         let temp = tempfile::tempdir()?;
         let store = StudioStore::open(temp.path().join("studio/v2/studio.sqlite")).await?;
+        register_test_thread(&store, &test_thread("stale-ack")).await?;
         let chat = store.chat_session("stale-ack").await?;
 
         chat.publish_preview(revised_preview("stale-ack", "revised", 1, 1, "first body")?)?;
@@ -4258,7 +4334,7 @@ mod storage_fault_tests {
         let chat = store.chat_session("archive-repair").await?;
         let packaged = off_window.project_committed(
             &chat,
-            &pl_protocol::Thread::placeholder("archive-repair"),
+            &test_thread("archive-repair"),
             &repair_only,
             &ThreadSnapshot::default(),
         )?;

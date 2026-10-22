@@ -15,8 +15,6 @@ use std::time::{Duration, Instant};
 use tokio::sync::{Mutex, mpsc};
 use tokio::task::JoinHandle;
 
-use super::lifecycle::shutdown_runtime_for_update;
-
 /// Bound for taking the update registry lock during a broadcast so a contended registry can never
 /// stall the early exit broadcast (or the native deadline) that owns the single first deadline.
 const UPDATE_REGISTRY_LOCK_LIMIT: Duration = Duration::from_millis(100);
@@ -46,9 +44,8 @@ const SINK_FAILED: u8 = 3;
 /// Owner-published completion facts for one update operation.
 ///
 /// The values are written by the owned observer task the moment the real task ends, never by a
-/// waiter's first poll. That makes a completed handoff observable even when nobody awaits its
-/// completion — e.g. the desktop exits right after the installer-launch handoff without calling
-/// `finishHandoff`/`cancel`.
+/// waiter's first poll. Preparation completion remains observable even when a Dart caller drops
+/// its handle and application shutdown must join the retained owner.
 ///
 /// `#[frb(ignore)]` keeps this pure internal ownership state out of the generated API: `cargo-expand`
 /// turns `#[derive(Default)]` into an `impl Default`, and the code generator otherwise treats
@@ -101,16 +98,14 @@ pub struct BridgeStudioUpdateOperation {
 struct BridgeStudioUpdateOperationInner {
     id: u64,
     cancellation: StudioUpdateCancellation,
-    /// Owned install task completion; set once at spawn and retained for every later observer.
+    /// Owned preparation completion; set once at spawn and retained for every later observer.
     task: Mutex<Option<OperationCompletion>>,
     /// Owned progress-sink task completion; set when Dart opens the progress stream.
     sink: Mutex<Option<OperationCompletion>>,
     /// Progress events plus the authoritative terminal failure the Dart stream must observe.
     progress_receiver:
         Mutex<Option<mpsc::Receiver<Result<BridgeUpdaterStateSnapshot, BridgeError>>>>,
-    /// Whether the failed-update recovery restart has already been attempted.
-    restart_started: Mutex<bool>,
-    /// Owner-published completion facts for the install task and the progress sink.
+    /// Owner-published completion facts for preparation and the progress sink.
     facts: Arc<OperationCompletionFacts>,
 }
 
@@ -138,8 +133,8 @@ fn owned_completion(
     owner: OwnerTask,
 ) -> OperationCompletion {
     // The observer owns the real `JoinHandle` and publishes the terminal fact the moment the task
-    // ends, so a completed handoff is observable even when no waiter ever polls the returned
-    // completion (the desktop may exit right after the installer-launch handoff). A one-shot
+    // ends, so completed preparation is observable even when no waiter polls the returned
+    // completion before application shutdown. A one-shot
     // channel keeps the result buffered until some waiter observes it.
     let (published_tx, published_rx) = tokio::sync::oneshot::channel::<Result<(), Arc<String>>>();
     tokio::spawn(async move {
@@ -235,7 +230,7 @@ impl BridgeStudioUpdateOperation {
                     )),
                 };
                 if sent.is_err() {
-                    let _ = inner.cancellation.cancel();
+                    inner.cancellation.cancel();
                     break;
                 }
             }
@@ -252,11 +247,10 @@ impl BridgeStudioUpdateOperation {
 
     /// Cancels this operation and reports the *real* stop result.
     ///
-    /// Both the cancellation request error (`CancellationTooLate` when the installer is already
-    /// launching) and any task failure are surfaced instead of being swallowed, so a caller cannot
-    /// receive a false "cancelled" acknowledgement while the operation keeps running.
+    /// Cancellation signals preparation only; its task and progress owner must both confirm
+    /// completion before a caller receives the acknowledgement.
     pub async fn cancel(&self) -> Result<(), BridgeError> {
-        self.inner.cancellation.cancel()?;
+        self.inner.cancellation.cancel();
         self.inner.wait().await.map_err(|error| {
             BridgeError::from(anyhow::anyhow!(
                 "Studio update operation {} did not stop cleanly: {error}",
@@ -265,40 +259,20 @@ impl BridgeStudioUpdateOperation {
         })
     }
 
-    /// Completes the actual process handoff; true tells the old GUI to exit.
-    pub async fn finish_handoff(&self) -> Result<bool, BridgeError> {
-        // Wait for the owners to actually stop and keep the real failure: a panicked or stuck
-        // projection task must not be reported as a clean handoff.
-        let stop_result = self.inner.wait().await;
-        // The installer-launch fact wins: once the installer really launched, the old program must
-        // exit instead of restarting, even if the durable projection failed afterwards.
-        if self.inner.cancellation.installer_launched() {
-            return Ok(true);
-        }
-        let mut started = self.inner.restart_started.lock().await;
-        if !*started {
-            *started = installed_bridge()?
-                .studio
-                .restart_after_failed_update()
-                .await?;
-        }
-        if *started {
-            return Ok(true);
-        }
-        // No handoff and no recovery: surface the real task failure instead of pretending clean.
-        match stop_result {
-            Ok(()) => Ok(false),
-            Err(error) => Err(BridgeError::from(anyhow::anyhow!(
+    /// 等待准备任务和进度流真实完成；调用方随后才可进入统一退出。
+    pub async fn finish_preparation(&self) -> Result<(), BridgeError> {
+        self.inner.wait().await.map_err(|error| {
+            BridgeError::from(anyhow::anyhow!(
                 "Studio update operation {} did not stop cleanly: {error}",
                 self.inner.id
-            ))),
-        }
+            ))
+        })
     }
 }
 
 impl Drop for BridgeStudioUpdateOperation {
     fn drop(&mut self) {
-        let _ = self.inner.cancellation.cancel();
+        self.inner.cancellation.cancel();
     }
 }
 
@@ -376,7 +350,6 @@ async fn register_update_operation(
         task: Mutex::new(None),
         sink: Mutex::new(None),
         progress_receiver: Mutex::new(progress_receiver),
-        restart_started: Mutex::new(false),
         facts: Arc::clone(&facts),
     });
     let (start, started) = tokio::sync::oneshot::channel();
@@ -398,7 +371,7 @@ async fn register_update_operation(
         registry.push(Arc::clone(&inner));
     }
     if exit_latch_armed() {
-        let _ = inner.cancellation.cancel();
+        inner.cancellation.cancel();
     }
     let _ = start.send(());
     inner
@@ -455,87 +428,75 @@ pub async fn cancel_studio_background_update() -> Result<(), BridgeError> {
     Ok(())
 }
 
-pub async fn install_studio_update(
+pub async fn prepare_studio_update(
     expected_revision: u64,
     version: String,
 ) -> Result<BridgeStudioUpdateOperation, BridgeError> {
     let _gate = lifecycle_gate().lock().await;
     let bridge = active_bridge().await?;
-    if bridge.studio.is_busy_for_update().await? {
-        return Err(StudioUpdateError::new(
-            StudioUpdateErrorCode::RuntimeBusy,
-            "Studio runtime has an active turn or task",
-        )
-        .into());
-    }
     let update = bridge
         .studio
         .verified_studio_update(expected_revision, &version)
         .await?;
-    let cancellation = StudioUpdateCancellation::new();
+    let background_id = BACKGROUND_OPERATION_ID.load(Ordering::Relaxed);
+    let background = update_operations()
+        .lock()
+        .await
+        .iter()
+        .find(|operation| operation.id == background_id && !operation.is_quiescent())
+        .cloned();
+    // Manual requests join the same owner and cancellation token. The canonical updater
+    // subscription keeps delivering real progress; this operation confirms final completion.
+    let cancellation = background
+        .as_ref()
+        .map(|operation| operation.cancellation.clone())
+        .unwrap_or_default();
     let (bridge_progress_tx, bridge_progress_rx) = mpsc::channel(64);
     let operation_id = NEXT_OPERATION_ID.fetch_add(1, Ordering::Relaxed);
     let task_cancellation = cancellation.clone();
     let task = async move {
+        if let Some(background) = background {
+            let result = background.wait().await;
+            let _ = bridge_progress_tx
+                .send(Ok(bridge_update_state(
+                    bridge.studio.read_update_state().await,
+                )))
+                .await;
+            return result;
+        }
         let (progress_tx, mut progress_rx) = tokio::sync::mpsc::unbounded_channel();
         let final_progress_tx = bridge_progress_tx.clone();
         let forward_cancellation = task_cancellation.clone();
         let forward = tokio::spawn(async move {
             while let Some(state) = progress_rx.recv().await {
-                if bridge_progress_tx
-                    .send(Ok(bridge_update_state(state)))
-                    .await
-                    .is_err()
-                {
-                    let _ = forward_cancellation.cancel();
+                let sent = tokio::select! {
+                    _ = forward_cancellation.cancelled() => break,
+                    sent = bridge_progress_tx.send(Ok(bridge_update_state(state))) => sent,
+                };
+                if sent.is_err() {
+                    forward_cancellation.cancel();
                     break;
                 }
             }
         });
-        let progress_for_install = progress_tx.clone();
         let result = bridge
             .studio
-            .install_studio_update_after(
-                update,
-                progress_for_install,
-                task_cancellation,
-                || async {
-                    if !shutdown_runtime_for_update(bridge, operation_id)
-                        .await
-                        .map_err(runtime_error)?
-                    {
-                        return Err(StudioUpdateError::new(
-                            StudioUpdateErrorCode::RuntimeBusy,
-                            "Studio runtime became busy before installer launch",
-                        ));
-                    }
-                    Ok(())
-                },
-            )
+            .prepare_studio_update(update, progress_tx, task_cancellation)
             .await;
-        drop(progress_tx);
-        match forward.await {
-            Ok(()) => {
-                if let Err(error) = result {
-                    let _ = final_progress_tx.send(Err(error.into())).await;
-                }
-                Ok(())
-            }
-            // A nested progress task panic must not be reported as a clean stop; it is a real
-            // operation failure that both the Dart terminal stream and the shutdown aggregation
-            // observe. The raw panic payload is not propagated; the global panic hook keeps it.
-            Err(join) => {
-                if join.is_cancelled() {
-                    Ok(())
-                } else {
-                    let message = "Studio update progress projection task failed".to_string();
-                    let _ = final_progress_tx
-                        .send(Err(BridgeError::from(anyhow::anyhow!("{message}"))))
-                        .await;
-                    Err(message)
-                }
-            }
+        if let Err(join) = forward.await
+            && !join.is_cancelled()
+        {
+            let message = "Studio update progress projection task failed".to_string();
+            let _ =
+                final_progress_tx.try_send(Err(BridgeError::from(anyhow::anyhow!("{message}"))));
+            return Err(message);
         }
+        if let Err(error) = result {
+            let message = format!("Studio update preparation owner failed: {error:#}");
+            let _ = final_progress_tx.try_send(Err(BridgeError::from(error)));
+            return Err(message);
+        }
+        Ok(())
     };
     let inner =
         register_update_operation(operation_id, cancellation, Some(bridge_progress_rx), task).await;
@@ -556,30 +517,9 @@ impl PendingUpdateOperations {
     }
 }
 
-/// Signals every in-flight update operation except `exclude` **without joining** any of them.
-///
-/// Safe to run from the early exit entry: `cancel()` is idempotent and non-blocking, so a stalled
-/// install never blocks the broadcast. Real failures (`CancellationTooLate`) are returned so the
-/// caller retains them for the same shutdown collector; one failure never stops the broadcast to
-/// the remaining operations. The registry lock is bounded so a contended registry cannot stall the
-/// native exit deadline.
-///
-/// The signal is split from the join so every independent owner is signalled before any bounded
-/// join can block: a slow join of one owner must never consume the shared deadline before another
-/// owner has been cancelled. The handoff owner (`exclude`) is never cancelled or observed here: it
-/// is the caller, holding the install command lock and the install-active flag, so cancelling it
-/// would self-cancel the handoff and awaiting it would wait on the very task running the hook. No
-/// competing install blocks on those locks (`lock_install` uses a non-blocking `try_lock`,
-/// `InstallGuard::acquire` a non-blocking compare-exchange), so a competing operation fails fast
-/// instead of queueing and the bounded observation cannot deadlock.
-///
-/// An operation whose install task and progress sink have both actually ended is no longer an
-/// active resource: it is skipped, so a completed handoff (whose `cancel()` would only report
-/// `CancellationTooLate`) is not mistaken for a live resource that failed to stop. `include_stopped`
-/// additionally captures such already-stopped operations for the desktop exit report, so a real
-/// terminal failure still reaches the report instead of being dropped.
-pub(crate) async fn broadcast_cancel_update_operations_excluding(
-    exclude: Option<u64>,
+/// 广播所有独立准备操作的取消，不等待；后续 collector 在同一期限观察真实完成。
+/// 已完成的失败仍由最终退出 collector 收集，不把失败 owner 当作成功回收。
+pub(crate) async fn collect_cancel_update_operations(
     include_stopped: bool,
 ) -> PendingUpdateOperations {
     let operations = {
@@ -599,57 +539,32 @@ pub(crate) async fn broadcast_cancel_update_operations_excluding(
             }
         }
     };
-    let mut issues = Vec::new();
     let mut owners = Vec::new();
     for operation in operations {
-        if Some(operation.id) == exclude {
-            continue;
-        }
         if operation.is_quiescent() {
             if include_stopped {
                 owners.push(operation);
             }
             continue;
         }
-        match operation.cancellation.cancel() {
-            Ok(()) => owners.push(operation),
-            Err(error) => {
-                let code = error.code().as_str().to_string();
-                let correlation_id = pl_protocol::studio::StudioError::internal().correlation_id;
-                tracing::error!(
-                    pid = std::process::id(),
-                    stage = "updateOperations",
-                    code = %code,
-                    resource = operation.id,
-                    correlation_id = %correlation_id,
-                    backtrace = %std::backtrace::Backtrace::force_capture(),
-                    "Studio update operation could not be cancelled"
-                );
-                issues.push(update_issue_with_correlation(
-                    &code,
-                    &format!("a Studio update operation could not be cancelled: {error}"),
-                    correlation_id,
-                ));
-                // Still observe its completion so the real terminal state, not the cancel error, is
-                // what the report reflects; the owner stays registered on timeout.
-                owners.push(operation);
-            }
-        }
+        operation.cancellation.cancel();
+        owners.push(operation);
     }
-    PendingUpdateOperations { owners, issues }
+    PendingUpdateOperations {
+        owners,
+        issues: Vec::new(),
+    }
 }
 
 /// Early-exit broadcast: signals every in-flight update operation, discarding the captured owners
 /// because that entry point never joins them (the later desktop shutdown pass observes them).
 pub(crate) async fn broadcast_cancel_update_operations() -> Vec<BridgeShutdownIssue> {
-    broadcast_cancel_update_operations_excluding(None, false)
-        .await
-        .into_issues()
+    collect_cancel_update_operations(false).await.into_issues()
 }
 
 /// Bounded-observes previously broadcast update operations within the shared first deadline.
 ///
-/// A real cancellation failure (`CancellationTooLate`), a task failure, or a timeout is reported
+/// A task failure or a timeout is reported
 /// instead of swallowed; an operation that does not stop in time keeps its strong owner registered
 /// so a later pass can still observe it.
 pub(crate) async fn observe_update_operations(
@@ -719,14 +634,4 @@ fn update_issue_with_correlation(
 
 fn update_operations() -> &'static Mutex<Vec<Arc<BridgeStudioUpdateOperationInner>>> {
     UPDATE_OPERATIONS.get_or_init(|| Mutex::new(Vec::new()))
-}
-
-fn runtime_error(error: BridgeError) -> StudioUpdateError {
-    StudioUpdateError::new(
-        StudioUpdateErrorCode::RuntimeShutdownFailed,
-        format!(
-            "failed to stop Studio runtime safely: {} ({})",
-            error.message, error.correlation_id
-        ),
-    )
 }

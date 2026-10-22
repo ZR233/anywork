@@ -184,7 +184,7 @@ impl StudioUpdateStateSnapshot {
                 })
             }
             (
-                Self::Verifying(current),
+                Self::Ready(current),
                 StudioUpdateCommand::MarkInstallerLaunched { launched_at, .. },
             ) => Self::InstallerLaunched(InstallerLaunchedUpdateState {
                 revision,

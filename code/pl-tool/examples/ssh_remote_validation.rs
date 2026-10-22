@@ -10,8 +10,9 @@ use std::time::Duration;
 use pl_tool::skill::SkillsConfig;
 use pl_tool::skill::{SkillLoadInvocation, SkillProviderRequest, SkillRegistry};
 use pl_tool::workspace_file::{
-    WorkspaceFileBackend, WorkspaceFileListRequest, WorkspaceFileReadBytesRequest,
-    WorkspaceFileReadRequest, WorkspaceFileStatRequest, WorkspaceFileWriteRequest,
+    WorkspaceFileBackend, WorkspaceFileListRequest, WorkspaceFileListResult,
+    WorkspaceFileReadBytesRequest, WorkspaceFileReadRequest, WorkspaceFileRemoveRequest,
+    WorkspaceFileStat, WorkspaceFileStatRequest, WorkspaceFileWriteRequest,
 };
 
 use pl_tool::remote::{RemoteSkillProvider, SshConnectionState, SshManager, SshServerProfile};
@@ -34,15 +35,26 @@ async fn main() -> anyhow::Result<()> {
         "provide a remote helper artifact"
     );
     let isolated_config = tempfile::tempdir()?;
-    let manager = SshManager::new(aarch64, x86_64).with_ssh_config(
-        pl_tool::remote::SshConfigFile::at(isolated_config.path().join("ssh_config")),
-    );
+    let ssh_config_path = isolated_config.path().join("ssh_config");
+    let known_hosts = std::env::var("PURE_SSH_TEST_KNOWN_HOSTS").unwrap_or_else(|_| {
+        format!(
+            "{}/.ssh/known_hosts",
+            std::env::var("HOME").unwrap_or_default()
+        )
+    });
+    std::fs::write(
+        &ssh_config_path,
+        format!("UserKnownHostsFile {known_hosts}\nIdentitiesOnly yes\n"),
+    )?;
+    let manager = SshManager::new(aarch64, x86_64)
+        .with_ssh_config(pl_tool::remote::SshConfigFile::at(ssh_config_path));
+    let identity_file = std::env::var("PURE_SSH_TEST_IDENTITY").ok();
     let profile = SshServerProfile {
         alias: "validation".to_string(),
         host_name: host,
         port: 22,
         username: std::env::var("PURE_SSH_TEST_USERNAME").unwrap_or_else(|_| "root".to_string()),
-        identity_file: None,
+        identity_file,
     };
     manager.save_server(profile).await?;
     let snapshot = manager.test_connection("validation").await?;
@@ -173,6 +185,7 @@ async fn main() -> anyhow::Result<()> {
     assert!(capture.contains("stdout-one"));
     assert!(capture.contains("stderr-one"));
     assert!(capture.contains("stdin:hello"));
+    validate_session_capture_layout(files.as_ref(), &final_output.capture_file).await?;
 
     let environment = run_remote(
         &host.git,
@@ -343,6 +356,210 @@ async fn main() -> anyhow::Result<()> {
     manager.disconnect_server("validation").await?;
     println!("remote SSH validation passed");
     Ok(())
+}
+
+async fn validate_session_capture_layout(
+    files: &pl_tool::remote::RemoteWorkspaceFileBackend,
+    capture: &std::path::Path,
+) -> anyhow::Result<()> {
+    use pl_tool::workspace::{
+        AgentWorkspace, POOL_GITIGNORE, SessionFiles, prepare_session_files, prepare_worktree_pool,
+    };
+    let capture = capture.to_string_lossy().replace('\\', "/");
+    anyhow::ensure!(
+        capture.starts_with(".anywork/sessions/") && capture.ends_with("/output.log"),
+        "remote capture must use session commands layout: {capture}"
+    );
+    anyhow::ensure!(!capture.contains("target/pure"));
+    let alpha = SessionFiles::new("validation");
+    anyhow::ensure!(capture.contains(alpha.thread_key()));
+    if files
+        .stat_optional(".anywork/sessions/.gitignore".into(), None)
+        .await?
+        .is_none()
+    {
+        files
+            .write_text(WorkspaceFileWriteRequest {
+                mode: pl_tool::workspace::WriteMode::Create,
+                path: ".anywork/sessions/.gitignore".into(),
+                cwd: None,
+                content: "keep-remote\n".into(),
+            })
+            .await?;
+    }
+    let existing = files
+        .read_text(WorkspaceFileReadRequest {
+            path: ".anywork/sessions/.gitignore".into(),
+            cwd: None,
+        })
+        .await?;
+    prepare_session_files(files, &alpha).await?;
+    prepare_worktree_pool(files).await?;
+    let after = files
+        .read_text(WorkspaceFileReadRequest {
+            path: ".anywork/sessions/.gitignore".into(),
+            cwd: None,
+        })
+        .await?;
+    anyhow::ensure!(
+        after == existing,
+        "existing sessions ignore must be preserved"
+    );
+    let worktree_ignore = files
+        .read_text(WorkspaceFileReadRequest {
+            path: ".anywork/worktrees/.gitignore".into(),
+            cwd: None,
+        })
+        .await?;
+    anyhow::ensure!(worktree_ignore == POOL_GITIGNORE);
+    files.create_directory("nested".into(), None).await?;
+    let relative = files
+        .write_text(WorkspaceFileWriteRequest {
+            mode: pl_tool::workspace::WriteMode::Overwrite,
+            path: "from-cwd.txt".into(),
+            cwd: Some("nested".into()),
+            content: "cwd-ok\n".into(),
+        })
+        .await;
+    anyhow::ensure!(relative.is_ok());
+    anyhow::ensure!(
+        files
+            .create_directory("../escape".into(), None)
+            .await
+            .is_err()
+    );
+    let workspace = AgentWorkspace::directory("/remote", Some(vec!["/remote/src".into()]))
+        .with_session_id("validation");
+    anyhow::ensure!(
+        workspace
+            .ensure_relative_path_writable(None, &alpha.scratch().to_string_lossy())
+            .is_ok()
+    );
+    anyhow::ensure!(
+        workspace
+            .ensure_relative_path_writable(None, &alpha.commands().join("x").to_string_lossy())
+            .is_err()
+    );
+    let empty =
+        AgentWorkspace::directory("/remote", Some(Vec::new())).with_session_id("validation");
+    anyhow::ensure!(
+        empty
+            .ensure_relative_path_writable(None, &alpha.scratch().to_string_lossy())
+            .is_ok()
+    );
+    anyhow::ensure!(
+        empty
+            .ensure_relative_path_writable(None, &alpha.artifacts().to_string_lossy())
+            .is_ok()
+    );
+    anyhow::ensure!(
+        empty
+            .ensure_relative_path_writable(None, "src/lib.rs")
+            .is_err()
+    );
+    anyhow::ensure!(
+        empty
+            .ensure_relative_path_writable(None, &alpha.commands().join("x").to_string_lossy())
+            .is_err()
+    );
+    concurrent_remote_pool_ignore(files).await?;
+    println!("OK  remote SessionFiles capture, ignore, relative cwd");
+    Ok(())
+}
+
+async fn concurrent_remote_pool_ignore(
+    files: &pl_tool::remote::RemoteWorkspaceFileBackend,
+) -> anyhow::Result<()> {
+    use pl_tool::workspace::{POOL_GITIGNORE, prepare_worktree_pool};
+    use tokio::sync::Barrier;
+
+    files
+        .remove_path(".anywork/worktrees/.gitignore".into(), None, false)
+        .await
+        .ok();
+    files
+        .remove_path(".anywork/worktrees".into(), None, true)
+        .await
+        .ok();
+    let barrier = Arc::new(Barrier::new(2));
+    let left = RacingRemoteIgnore {
+        inner: files.clone(),
+        barrier: barrier.clone(),
+        ignore_path: ".anywork/worktrees/.gitignore".into(),
+    };
+    let right = RacingRemoteIgnore {
+        inner: files.clone(),
+        barrier,
+        ignore_path: ".anywork/worktrees/.gitignore".into(),
+    };
+    let (left_result, right_result) =
+        tokio::join!(prepare_worktree_pool(&left), prepare_worktree_pool(&right));
+    left_result?;
+    right_result?;
+    let ignore = files
+        .read_text(WorkspaceFileReadRequest {
+            path: ".anywork/worktrees/.gitignore".into(),
+            cwd: None,
+        })
+        .await?;
+    anyhow::ensure!(ignore == POOL_GITIGNORE);
+    println!("OK  remote concurrent worktree ignore create");
+    Ok(())
+}
+
+#[derive(Debug, Clone)]
+struct RacingRemoteIgnore {
+    inner: pl_tool::remote::RemoteWorkspaceFileBackend,
+    barrier: Arc<tokio::sync::Barrier>,
+    ignore_path: String,
+}
+
+impl WorkspaceFileBackend for RacingRemoteIgnore {
+    async fn default_cwd(&self) -> pl_protocol::Result<String> {
+        self.inner.default_cwd().await
+    }
+
+    async fn stat_optional(
+        &self,
+        request: WorkspaceFileStatRequest,
+    ) -> pl_protocol::Result<Option<WorkspaceFileStat>> {
+        let racing = request.path == self.ignore_path;
+        let result = WorkspaceFileBackend::stat_optional(&self.inner, request).await?;
+        if racing && result.is_none() {
+            self.barrier.wait().await;
+        }
+        Ok(result)
+    }
+
+    async fn read_text(&self, request: WorkspaceFileReadRequest) -> pl_protocol::Result<String> {
+        self.inner.read_text(request).await
+    }
+
+    async fn read_bytes(
+        &self,
+        request: WorkspaceFileReadBytesRequest,
+    ) -> pl_protocol::Result<Vec<u8>> {
+        self.inner.read_bytes(request).await
+    }
+
+    async fn write_text(&self, request: WorkspaceFileWriteRequest) -> pl_protocol::Result<()> {
+        self.inner.write_text(request).await
+    }
+
+    async fn remove_file(&self, request: WorkspaceFileRemoveRequest) -> pl_protocol::Result<()> {
+        self.inner.remove_file(request).await
+    }
+
+    async fn list(
+        &self,
+        request: WorkspaceFileListRequest,
+    ) -> pl_protocol::Result<WorkspaceFileListResult> {
+        self.inner.list(request).await
+    }
+
+    async fn create_directory(&self, path: String, cwd: Option<String>) -> pl_protocol::Result<()> {
+        self.inner.create_directory(path, cwd).await
+    }
 }
 
 async fn validate_git(

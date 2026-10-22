@@ -40,6 +40,20 @@ class AppLocalizationsZh extends AppLocalizations {
   String get shutdownTitle => '正在安全退出';
 
   @override
+  String shutdownUpdateTitle(String version) {
+    return '正在安装 $version 更新';
+  }
+
+  @override
+  String get shutdownUpdateSaving => '正在停止会话并保存数据…';
+
+  @override
+  String get shutdownUpdateRestartHint => '保存完成后将显示安装进度，并自动重新打开应用。';
+
+  @override
+  String get shutdownUpdateExitHint => '保存完成后将显示安装进度，安装后保持关闭。';
+
+  @override
   String get shutdownFinalizing => '正在结束';
 
   @override
@@ -196,9 +210,6 @@ class AppLocalizationsZh extends AppLocalizations {
 
   @override
   String get timelineItemBodyLoad => '加载完整内容';
-
-  @override
-  String get timelineItemBodyTruncated => '本页显示的是超大条目的截断预览。';
 
   @override
   String get timelineItemBodyLoading => '正在加载完整内容…';
@@ -1008,10 +1019,6 @@ class AppLocalizationsZh extends AppLocalizations {
       '会话正在执行或等待处理，暂时无法切换模型。请停止当前执行或等待完成后重试。';
 
   @override
-  String get statusModelSwitchWhileWorkflowActive =>
-      '当前工作流尚未结束，暂时无法切换模型。请等工作流结束后重试。';
-
-  @override
   String get statusModelSwitchWhileInactive =>
       '会话正在关闭、已关闭或出现故障，无法切换模型。请恢复会话后重试。';
 
@@ -1134,7 +1141,7 @@ class AppLocalizationsZh extends AppLocalizations {
   String get sessionOpenServerMissing => '该项目的 SSH 别名已不在 ~/.ssh/config 中';
 
   @override
-  String get statusLastConfirmedAgentTokenSpeed => '最近已确认速度';
+  String get statusLastConfirmedAgentTokenSpeed => '最近已确认输出速度（含首字等待）';
 
   @override
   String get settingsStatisticsTitle => '统计';
@@ -1159,12 +1166,6 @@ class AppLocalizationsZh extends AppLocalizations {
 
   @override
   String get settingsStatisticsFilteredEmpty => '当前筛选条件下没有调用记录。';
-
-  @override
-  String get settingsStatisticsPendingTitle => '统计待写入';
-
-  @override
-  String get settingsStatisticsPendingBody => '近期调用仍在写入统计，当前数据可能尚未包含这些记录。';
 
   @override
   String get settingsStatisticsGapTitle => '统计存在缺口';
@@ -1230,7 +1231,7 @@ class AppLocalizationsZh extends AppLocalizations {
   String get statisticsReasoningEffortUnspecified => '未指定/未记录';
 
   @override
-  String get statisticsSpeed => '速度';
+  String get statisticsSpeed => '输出 TPS（含首字等待）';
 
   @override
   String get statisticsSamples => '样本数';
@@ -1239,19 +1240,28 @@ class AppLocalizationsZh extends AppLocalizations {
   String get statisticsOutputTokens => '输出词元数';
 
   @override
-  String get statisticsAverageTtft => '平均 TTFT';
+  String get statisticsAverageTtft => '平均首字';
 
   @override
-  String get statisticsAverageResponse => '平均响应时间';
+  String get statisticsAverageResponse => '平均总响应';
 
   @override
   String get statisticsCompletedAt => '完成时间';
 
   @override
-  String get statisticsDecode => '解码';
+  String get statisticsDecode => '首字后耗时';
 
   @override
-  String get statisticsTotalResponse => '总响应';
+  String get statisticsTotalResponse => '总响应耗时';
+
+  @override
+  String statisticsTtftSampleCount(int count) {
+    return '$count 个首字样本';
+  }
+
+  @override
+  String get settingsStatisticsThroughputNote =>
+      '输出 TPS = 供应商确认的输出词元 × 1000 ÷ 总响应耗时（含首字等待）。总响应从产生结果的请求开始到归一化终态到达为止，不含失败重试、退避、工具执行与终态后的收集或保存；首字是首个非空文本、推理或工具输入增量，输出可含推理词元且不重复相加。首字后耗时只是诊断，不是硬件解码时间。旧统计口径的样本已丢弃，原始调用与账单保留。';
 
   @override
   String get statusTurnQueued => '排队中';
@@ -1369,6 +1379,12 @@ class AppLocalizationsZh extends AppLocalizations {
   String get timelineImageClose => '关闭图片预览';
 
   @override
+  String get timelineImageCardTitle => '图片展示';
+
+  @override
+  String get timelineImageCardEmpty => '这张图片无法显示';
+
+  @override
   String timelineRemoteImageSource(String host) {
     return '来自 $host 的外部图片';
   }
@@ -1404,7 +1420,31 @@ class AppLocalizationsZh extends AppLocalizations {
   String get timelineReasoningActive => '思考中';
 
   @override
-  String get timelineReasoningCompleted => '已思考';
+  String get timelineReasoningEnded => '思考结束';
+
+  @override
+  String get timelineReasoningFailed => '思考失败';
+
+  @override
+  String get timelineReasoningCancelled => '思考已取消';
+
+  @override
+  String get timelineReasoningElapsedUnderSecond => '思考了不到 1 秒';
+
+  @override
+  String timelineReasoningElapsedSeconds(int seconds) {
+    return '思考了 $seconds 秒';
+  }
+
+  @override
+  String timelineReasoningElapsedMinutes(int minutes) {
+    return '思考了 $minutes 分';
+  }
+
+  @override
+  String timelineReasoningElapsedMinutesSeconds(int minutes, int seconds) {
+    return '思考了 $minutes 分 $seconds 秒';
+  }
 
   @override
   String get timelineReasoningSummary => '概要';
@@ -1493,6 +1533,167 @@ class AppLocalizationsZh extends AppLocalizations {
 
   @override
   String get timelineReadFileFailed => '读取失败';
+
+  @override
+  String get timelineToolEditSucceeded => '已修改';
+
+  @override
+  String get timelineToolEditRunning => '正在修改';
+
+  @override
+  String get timelineToolEditFailed => '修改失败';
+
+  @override
+  String timelineToolPatchFilesMore(String first, int more) {
+    return '$first，另 $more 个文件';
+  }
+
+  @override
+  String get timelineSessionNoteName => '会话笔记';
+
+  @override
+  String get timelineToolCommandSucceeded => '已运行';
+
+  @override
+  String get timelineToolCommandRunning => '正在运行';
+
+  @override
+  String get timelineToolCommandFailed => '运行失败';
+
+  @override
+  String get timelineToolStdinSucceeded => '已写入输入';
+
+  @override
+  String get timelineToolStdinRunning => '正在写入输入';
+
+  @override
+  String get timelineToolStdinFailed => '输入写入失败';
+
+  @override
+  String get timelineToolElapsedUnderSecond => '用时不到 1 秒';
+
+  @override
+  String timelineToolElapsedSeconds(int seconds) {
+    return '用时 $seconds 秒';
+  }
+
+  @override
+  String timelineToolElapsedMinutes(int minutes) {
+    return '用时 $minutes 分';
+  }
+
+  @override
+  String timelineToolElapsedMinutesSeconds(int minutes, int seconds) {
+    return '用时 $minutes 分 $seconds 秒';
+  }
+
+  @override
+  String get timelineToolSearchSucceeded => '已搜索';
+
+  @override
+  String get timelineToolSearchRunning => '正在搜索';
+
+  @override
+  String get timelineToolSearchFailed => '搜索失败';
+
+  @override
+  String get timelineToolAgentSucceeded => '已启动子代理';
+
+  @override
+  String get timelineToolAgentRunning => '子代理运行中';
+
+  @override
+  String get timelineToolAgentFailed => '子代理失败';
+
+  @override
+  String get timelineToolMessageSucceeded => '已发送消息';
+
+  @override
+  String get timelineToolMessageRunning => '正在发送消息';
+
+  @override
+  String get timelineToolMessageFailed => '消息发送失败';
+
+  @override
+  String get timelineToolCreateSucceeded => '已新建目录';
+
+  @override
+  String get timelineToolCreateRunning => '正在新建目录';
+
+  @override
+  String get timelineToolCreateFailed => '新建目录失败';
+
+  @override
+  String get timelineToolDeleteSucceeded => '已删除';
+
+  @override
+  String get timelineToolDeleteRunning => '正在删除';
+
+  @override
+  String get timelineToolDeleteFailed => '删除失败';
+
+  @override
+  String get timelineToolCopySucceeded => '已复制';
+
+  @override
+  String get timelineToolCopyRunning => '正在复制';
+
+  @override
+  String get timelineToolCopyFailed => '复制失败';
+
+  @override
+  String get timelineToolMoveSucceeded => '已移动';
+
+  @override
+  String get timelineToolMoveRunning => '正在移动';
+
+  @override
+  String get timelineToolMoveFailed => '移动失败';
+
+  @override
+  String get timelineToolFetchSucceeded => '已获取网页';
+
+  @override
+  String get timelineToolFetchRunning => '正在获取网页';
+
+  @override
+  String get timelineToolFetchFailed => '获取网页失败';
+
+  @override
+  String get timelineToolPlanSucceeded => '已更新计划';
+
+  @override
+  String get timelineToolPlanRunning => '正在更新计划';
+
+  @override
+  String get timelineToolPlanFailed => '计划更新失败';
+
+  @override
+  String get timelineToolWorkflowSucceeded => '已更新工作流';
+
+  @override
+  String get timelineToolWorkflowRunning => '正在更新工作流';
+
+  @override
+  String get timelineToolWorkflowFailed => '工作流更新失败';
+
+  @override
+  String get timelineToolLspSucceeded => '已查询代码';
+
+  @override
+  String get timelineToolLspRunning => '正在查询代码';
+
+  @override
+  String get timelineToolLspFailed => '代码查询失败';
+
+  @override
+  String get timelineToolWaitSucceeded => '已等待';
+
+  @override
+  String get timelineToolWaitRunning => '正在等待';
+
+  @override
+  String get timelineToolWaitFailed => '等待失败';
 
   @override
   String timelineToolCompleted(String name) {
@@ -2391,13 +2592,22 @@ class AppLocalizationsZh extends AppLocalizations {
   }
 
   @override
-  String get settingsStudioUpdateBusy => '请先等待当前轮次或任务结束，再安装更新。';
+  String get settingsStudioUpdatePreparing => '正在准备更新…';
+
+  @override
+  String get settingsStudioUpdateWhenReady => '下载完成后安装并重启';
+
+  @override
+  String get settingsStudioUpdateCancelling => '正在取消更新…';
+
+  @override
+  String get settingsStudioUpdateCancelled => '已取消更新，可随时重试。';
 
   @override
   String get settingsStudioUpdateCheck => '检查更新';
 
   @override
-  String get settingsStudioUpdateInstall => '下载并安装';
+  String get settingsStudioUpdateInstall => '下载并重启更新';
 
   @override
   String get settingsStudioUpdateRestart => '安装并重启';
@@ -2421,6 +2631,24 @@ class AppLocalizationsZh extends AppLocalizations {
 
   @override
   String get timelineWebSearchFinding => '正在页内查找';
+
+  @override
+  String get timelineWebSearchSearched => '已搜索网页';
+
+  @override
+  String get timelineWebSearchOpened => '已打开网页';
+
+  @override
+  String get timelineWebSearchFound => '已查找页面内容';
+
+  @override
+  String get timelineWebSearchFailed => '网页搜索失败';
+
+  @override
+  String get timelineWebSearchOpenFailed => '打开网页失败';
+
+  @override
+  String get timelineWebSearchFindFailed => '页内查找失败';
 
   @override
   String get timelineWebSearchResults => '结果链接';
