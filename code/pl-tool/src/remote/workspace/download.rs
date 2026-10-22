@@ -1,11 +1,14 @@
 //! Bounded remote capture transfer into a caller-owned local writer.
-use pl_protocol::remote::{RemoteReadRangeRequest, RemoteRequest, RemoteResponse};
-use tokio::io::{AsyncWrite, AsyncWriteExt};
+//!
+//! The transfer streams from one opened remote file handle, so a capture is never preloaded into
+//! memory and its declared length is checked before the first local byte is staged.
+
+use pl_protocol::remote::{RemoteReadRequest, RemoteResourceClass};
+use pl_remote_helper::remote_transport::DATA_CHUNK_BYTES;
+use tokio::io::{AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 use super::RemoteWorkspaceFileBackend;
-use crate::remote::RemoteClientError;
-
-const CHUNK_BYTES: usize = 1024 * 1024;
+use crate::remote::error::RemoteClientError;
 
 #[derive(Debug, thiserror::Error)]
 pub enum RemoteDownloadError {
@@ -32,11 +35,12 @@ pub enum RemoteDownloadError {
 }
 
 impl RemoteWorkspaceFileBackend {
-    /// Copies a completed remote capture without imposing a single-frame total-size limit.
+    /// Copies a completed remote capture without imposing a total-size limit.
+    ///
     /// The caller owns the staging writer and publishes it only after this operation succeeds.
     ///
     /// # Errors
-    /// Rejects invalid paths, changed lengths, incomplete ranges, transport and staging failures.
+    /// Rejects invalid paths, changed lengths, incomplete transfers, transport and staging failures.
     pub async fn copy_file_to<W: AsyncWrite + Unpin + Send>(
         &self,
         path: &str,
@@ -47,14 +51,14 @@ impl RemoteWorkspaceFileBackend {
 
     /// Copies a completed remote capture only while its real length stays within `limit`.
     ///
-    /// The bound is enforced from the first range response's authoritative `total_len`, before any
-    /// byte is staged, so a runaway remote capture is refused with a typed reason instead of being
+    /// The bound is enforced from the opened handle's authoritative total length before any byte
+    /// is staged, so a runaway remote capture is refused with a typed reason instead of being
     /// transferred and rejected only after the whole copy. The caller owns the staging writer and
     /// publishes it only after this operation succeeds.
     ///
     /// # Errors
     /// Returns [`RemoteDownloadError::TooLarge`] for a capture past `limit`, plus the same path,
-    /// framing, transport and staging failures as [`Self::copy_file_to`].
+    /// transfer, transport and staging failures as [`Self::copy_file_to`].
     pub async fn copy_capture_bounded<W: AsyncWrite + Unpin + Send>(
         &self,
         path: &str,
@@ -70,60 +74,87 @@ impl RemoteWorkspaceFileBackend {
         writer: &mut W,
         limit: Option<u64>,
     ) -> Result<u64, RemoteDownloadError> {
-        let path = self
-            .path_request(path.to_owned(), None)
-            .map_err(RemoteDownloadError::Path)?;
-        let mut offset = 0_u64;
-        let mut expected_total = None;
-        loop {
-            let reply = self
-                .request(
-                    RemoteRequest::ReadRange(RemoteReadRangeRequest {
-                        workspace_id: path.workspace_id.clone(),
-                        path: path.path.clone(),
-                        offset,
-                        max_bytes: CHUNK_BYTES,
-                    }),
-                    &[],
+        let lease = self
+            .operation_lease(RemoteResourceClass::ReadFile)
+            .await
+            .map_err(|source| RemoteDownloadError::Read { offset: 0, source })?;
+        let workspace_id = lease
+            .workspace_id()
+            .ok_or_else(|| {
+                RemoteDownloadError::Response(
+                    "remote operation has no workspace handle".to_string(),
                 )
+            })?
+            .to_string();
+        let path =
+            super::resolve_remote_path(path.to_owned(), None).map_err(RemoteDownloadError::Path)?;
+        let mut reader = lease
+            .read_file(RemoteReadRequest {
+                workspace_id,
+                path,
+                offset: 0,
+                max_bytes: None,
+            })
+            .await
+            .map_err(|source| RemoteDownloadError::Read { offset: 0, source })?;
+        let total_len = reader.metadata().total_len;
+        // The ceiling is checked against the authoritative total before staging a single byte.
+        if let Some(limit) = limit
+            && total_len > limit
+        {
+            return Err(RemoteDownloadError::TooLarge {
+                total: total_len,
+                limit,
+            });
+        }
+        let mut buffer = vec![0_u8; DATA_CHUNK_BYTES];
+        let mut offset = 0_u64;
+        loop {
+            let count = reader
+                .read(&mut buffer)
                 .await
-                .map_err(|source| RemoteDownloadError::Read { offset, source })?;
-            let RemoteResponse::ByteRange {
-                offset: actual_offset,
-                total_len,
-            } = reply.response
-            else {
-                return Err(RemoteDownloadError::Response(format!(
-                    "{:?}",
-                    reply.response
-                )));
-            };
-            if actual_offset != offset
-                || offset > total_len
-                || expected_total.is_some_and(|expected| expected != total_len)
-                || reply.body.len() as u64 != (total_len - offset).min(CHUNK_BYTES as u64)
-            {
-                return Err(RemoteDownloadError::Inconsistent { offset });
-            }
-            // The bound is checked against the authoritative total before the first byte is staged,
-            // so a capture past the ceiling is refused without a full transfer.
-            if let Some(limit) = limit
-                && total_len > limit
-            {
-                return Err(RemoteDownloadError::TooLarge {
-                    total: total_len,
-                    limit,
-                });
+                .map_err(|error| stream_read_error(error, offset))?;
+            if count == 0 {
+                break;
             }
             writer
-                .write_all(&reply.body)
+                .write_all(&buffer[..count])
                 .await
                 .map_err(|source| RemoteDownloadError::Write { offset, source })?;
-            offset += reply.body.len() as u64;
-            expected_total = Some(total_len);
-            if offset == total_len {
-                return Ok(total_len);
+            offset += count as u64;
+            if offset > total_len {
+                return Err(RemoteDownloadError::Inconsistent { offset });
             }
         }
+        if offset != total_len {
+            return Err(RemoteDownloadError::Inconsistent { offset });
+        }
+        Ok(total_len)
+    }
+}
+
+/// Keeps a typed remote failure that travels through the reader's `io::Error`.
+///
+/// The file stream wraps its own [`RemoteClientError`] as the `io::Error` source, so a disconnect or a
+/// typed helper rejection keeps its code instead of becoming a string. A failure raised by the local
+/// stream itself is still reported as a read failure with the real I/O kind preserved.
+fn stream_read_error(error: std::io::Error, offset: u64) -> RemoteDownloadError {
+    if let Some(source) = error
+        .get_ref()
+        .and_then(|inner| inner.downcast_ref::<RemoteClientError>())
+    {
+        return RemoteDownloadError::Read {
+            offset,
+            source: source.clone(),
+        };
+    }
+    RemoteDownloadError::Read {
+        offset,
+        // A failure raised locally by the reader is not a helper-authored code, so it stays in the
+        // client-side protocol bucket instead of claiming a remote error code.
+        source: RemoteClientError::Protocol(format!(
+            "remote capture stream read failed locally ({:?}): {error}",
+            error.kind()
+        )),
     }
 }

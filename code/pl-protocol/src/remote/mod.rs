@@ -4,19 +4,13 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-pub const REMOTE_PROTOCOL_VERSION: u32 = 8;
-pub const REMOTE_REQUEST_CAPACITY: usize = 32;
-pub const REMOTE_OUTPUT_WINDOW: usize = 8;
-pub const REMOTE_OUTPUT_CHUNK_BYTES: usize = 8192;
-pub const REMOTE_MAX_HEADER_BYTES: usize = 64 * 1024;
-pub const REMOTE_MAX_BODY_BYTES: usize = 32 * 1024 * 1024;
+pub const REMOTE_PROTOCOL_VERSION: u32 = 9;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct RemoteFrameHeader {
-    pub request_id: Option<u64>,
+pub struct RemoteRecordHeader {
     pub message: RemoteMessage,
-    pub body_len: usize,
+    pub body_len: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -30,6 +24,17 @@ pub enum RemoteMessage {
     Request(RemoteRequest),
     Response(RemoteResponse),
     Event(RemoteEvent),
+    DirectoryEntry(RemoteDirectoryEntry),
+    /// Binary body bytes at this absolute file offset (zero-based for uploads).
+    Data {
+        offset: u64,
+    },
+    /// Explicit upload completion; EOF alone never commits a file.
+    UploadFinished {
+        total_len: u64,
+    },
+    Stdin,
+    StdinClosed,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -42,13 +47,11 @@ pub enum RemoteMessage {
 pub enum RemoteRequest {
     Hello { protocol_version: u32 },
     Heartbeat,
-    OutputConsumed { process_id: String },
     BrowseDirectories { path: Option<String> },
     OpenWorkspace { path: String },
     CloseWorkspace { workspace_id: String },
     Stat(RemotePathRequest),
-    ReadBytes(RemoteReadRequest),
-    ReadRange(RemoteReadRangeRequest),
+    ReadFile(RemoteReadRequest),
     WriteFile(RemoteWriteRequest),
     ListDirectory(RemotePathRequest),
     CreateDirectory(RemotePathRequest),
@@ -56,10 +59,60 @@ pub enum RemoteRequest {
     RenamePath(RemoteRenameRequest),
     CopyPath(RemoteCopyRequest),
     Spawn(RemoteSpawnRequest),
-    WriteStdin { process_id: String },
-    CloseStdin { process_id: String },
     Terminate { process_id: String },
     Shutdown,
+}
+
+impl RemoteRequest {
+    /// Classifies the request's descriptor responsibility, independently of transport scheduling.
+    pub fn resource_class(&self) -> RemoteResourceClass {
+        match self {
+            Self::Hello { .. }
+            | Self::Heartbeat
+            | Self::CloseWorkspace { .. }
+            | Self::Terminate { .. }
+            | Self::Shutdown => RemoteResourceClass::Control,
+            Self::OpenWorkspace { .. } => RemoteResourceClass::OpenWorkspace,
+            Self::BrowseDirectories { .. } | Self::ListDirectory(_) => {
+                RemoteResourceClass::Directory
+            }
+            Self::ReadFile(_) => RemoteResourceClass::ReadFile,
+            Self::WriteFile(_) => RemoteResourceClass::WriteFile,
+            Self::Spawn(_) => RemoteResourceClass::Spawn,
+            Self::CopyPath(request) => {
+                if request.recursive {
+                    RemoteResourceClass::Recursive
+                } else {
+                    RemoteResourceClass::CopyFile
+                }
+            }
+            Self::RemovePath(request) => {
+                if request.recursive {
+                    RemoteResourceClass::Recursive
+                } else {
+                    RemoteResourceClass::Metadata
+                }
+            }
+            Self::Stat(_) | Self::CreateDirectory(_) | Self::RenamePath(_) => {
+                RemoteResourceClass::Metadata
+            }
+        }
+    }
+}
+
+/// Descriptor ownership class; not another field on the wire request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RemoteResourceClass {
+    Control,
+    OpenWorkspace,
+    Metadata,
+    Directory,
+    ReadFile,
+    WriteFile,
+    CopyFile,
+    /// Exclusive use of a physical helper's operation descriptor budget.
+    Recursive,
+    Spawn,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -71,13 +124,21 @@ pub enum RemoteRequest {
 )]
 pub enum RemoteResponse {
     Hello(RemoteHello),
-    Directories(RemoteDirectoryListing),
     WorkspaceOpened(RemoteWorkspaceOpened),
     Stat(RemoteFileStat),
-    Bytes,
-    ByteRange { offset: u64, total_len: u64 },
-    Directory(RemoteDirectoryListing),
-    ProcessSpawned { process_id: String },
+    Directory(RemoteDirectoryMetadata),
+    File(RemoteFileMetadata),
+    /// File destination is prepared; the uploader may start sending chunks.
+    Ready,
+    /// Successful end of a directory sequence, distinct from transport EOF.
+    Complete,
+    /// Successful file transfer (and, for writes, publication) receipt.
+    Transferred {
+        bytes: u64,
+    },
+    ProcessSpawned {
+        process_id: String,
+    },
     Ack,
     Error(RemoteError),
 }
@@ -103,6 +164,30 @@ pub struct RemoteHello {
     pub architecture: String,
     pub capabilities: Vec<RemoteCapability>,
     pub shell: RemoteShellDescriptor,
+    pub resources: RemoteResourceLimits,
+}
+
+/// Per-physical-helper descriptor capacity, independent of the multiplexer's stream capacity.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoteResourceLimits {
+    pub operation_fds: u32,
+    pub workspace_fds: u32,
+    pub costs: RemoteResourceCosts,
+}
+
+/// Descriptor peaks advertised by the helper; consumers do not duplicate implementation costs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoteResourceCosts {
+    pub workspace_open: u32,
+    pub workspace_retained: u32,
+    pub metadata: u32,
+    pub directory: u32,
+    pub read_file: u32,
+    pub write_file: u32,
+    pub copy_file: u32,
+    pub spawn: u32,
 }
 
 /// Shell selected by the helper for all remote command processes.
@@ -161,6 +246,7 @@ pub enum RemoteWriteMode {
 pub struct RemoteWriteRequest {
     pub target: RemotePathRequest,
     pub mode: RemoteWriteMode,
+    pub total_len: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -168,17 +254,17 @@ pub struct RemoteWriteRequest {
 pub struct RemoteReadRequest {
     pub workspace_id: String,
     pub path: String,
-    pub max_bytes: usize,
+    pub offset: u64,
+    /// Range length, or the remainder of the opened file when absent.
+    pub max_bytes: Option<u64>,
 }
 
-/// A bounded read; response bytes are carried in the frame body.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct RemoteReadRangeRequest {
-    pub workspace_id: String,
-    pub path: String,
+pub struct RemoteFileMetadata {
     pub offset: u64,
-    pub max_bytes: usize,
+    pub total_len: u64,
+    pub transfer_len: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -230,6 +316,14 @@ pub struct RemoteFileStat {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct RemoteDirectoryMetadata {
+    pub path: String,
+    pub parent: Option<String>,
+}
+
+/// Consumer-owned aggregate for GUI APIs; never a wire response record.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct RemoteDirectoryListing {
     pub path: String,
     pub parent: Option<String>,
@@ -249,6 +343,7 @@ pub struct RemoteDirectoryEntry {
 #[serde(rename_all = "camelCase")]
 pub struct RemoteProcessOutput {
     pub process_id: String,
+    /// Starts at one and increases within this process, not across the connection.
     pub sequence: u64,
     pub stream: RemoteOutputStream,
 }
@@ -303,6 +398,8 @@ pub struct RemoteError {
 #[serde(rename_all = "camelCase")]
 pub enum RemoteErrorCode {
     OutputLimitExceeded,
+    /// The operation could not acquire its helper-owned resource budget; never implies replay safety.
+    ResourceExhausted,
     InvalidRequest,
     ProtocolMismatch,
     WorkspaceNotFound,
@@ -312,4 +409,7 @@ pub enum RemoteErrorCode {
     Io,
     Unsupported,
     RemoteDisconnected,
+    TransferIncomplete,
+    InvalidRecord,
+    Cancelled,
 }

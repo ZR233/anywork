@@ -1857,28 +1857,39 @@ async fn metadata_only_stream_keeps_total_response_time_without_a_first_token() 
 
 #[tokio::test]
 async fn untrustworthy_usage_never_becomes_a_throughput_sample() {
+    // Both streams stay paced so the total response window is measurably non-zero:
+    // the assertions below judge usage validity, not a sub-millisecond round trip
+    // that would leave `response_millis` at zero.
     let fixture = FixtureServer::start(vec![
         Step::prompt(
             Protocol::ResponsesHttp,
             "invalid usage stream",
             0,
-            Reply::Sse(vec![
+            Reply::PacedEvents {
+                initial_delay_ms: 0,
+                step_millis: 10,
+                events: vec![
                 json!({"type":"response.created","response":{"id":"invalid-usage","model":"fixture-model"}}),
                 json!({"type":"response.output_item.added","output_index":0,"item":{"id":"invalid-item","type":"message","role":"assistant","content":[]}}),
                 json!({"type":"response.output_text.delta","output_index":0,"item_id":"invalid-item","content_index":0,"delta":"partial"}),
                 json!({"type":"response.completed","response":{"id":"invalid-usage","model":"fixture-model","usage":{"input_tokens":1,"output_tokens":2,"total_tokens":9}}}),
-            ]),
+                ],
+            },
         ),
         Step::prompt(
             Protocol::ResponsesHttp,
             "missing output stream",
             1,
-            Reply::Sse(vec![
+            Reply::PacedEvents {
+                initial_delay_ms: 0,
+                step_millis: 10,
+                events: vec![
                 json!({"type":"response.created","response":{"id":"missing-output","model":"fixture-model"}}),
                 json!({"type":"response.output_item.added","output_index":0,"item":{"id":"missing-item","type":"message","role":"assistant","content":[]}}),
                 json!({"type":"response.output_text.delta","output_index":0,"item_id":"missing-item","content_index":0,"delta":"partial"}),
                 json!({"type":"response.completed","response":{"id":"missing-output","model":"fixture-model","usage":{"input_tokens":4}}}),
-            ]),
+                ],
+            },
         ),
     ])
     .await

@@ -15,6 +15,10 @@ use crate::remote::{RemoteClientError, SshAuthFailure};
 use pl_remote_helper::process::wrap_parent_bound_command;
 
 const SSH_ASKPASS_SECRET_ENV: &str = "ANYWORK_SSH_ASKPASS_SECRET";
+/// Grace window for the SSH client to exit on its own after a graceful shutdown.
+const REAP_GRACE: std::time::Duration = std::time::Duration::from_secs(2);
+/// Bound on the wait after this caller had to terminate the process itself.
+const REAP_KILL_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
 
 pub(super) struct PreparedSshCommand {
     pub(super) command: CommandWrap,
@@ -269,21 +273,73 @@ pub(super) async fn run_bounded_ssh(
 /// retains the wrapper until this attempt finishes or reports a cleanup error.
 pub(super) async fn terminate_ssh_child(
     child: &mut Box<dyn ChildWrapper>,
-    stage: &str,
+    stage: &'static str,
 ) -> Result<(), RemoteClientError> {
-    let termination = child.start_kill();
-    tokio::time::timeout(std::time::Duration::from_secs(2), child.wait())
-        .await
-        .map_err(|_| RemoteClientError::Protocol(format!("SSH {stage} cleanup timed out")))?
-        .map_err(|error| {
-            RemoteClientError::Protocol(format!("failed to reap SSH {stage}: {error}"))
-        })?;
-    if let Err(error) = termination {
-        tracing::debug!(%stage, %error, "SSH termination request failed, but the process exited");
-    }
-    Ok(())
+    reap_ssh_child(child, stage).await.map(|_| ())
 }
 
+/// What one reap observed: the exit fact and whether this caller had to terminate the process.
+///
+/// `forced` is what separates "the helper exited on its own" from "we killed the SSH client": only a
+/// natural non-zero exit is a real helper failure, while a forced kill is our own teardown.
+pub(in crate::remote) struct ReapOutcome {
+    pub(in crate::remote) status: Option<std::process::ExitStatus>,
+    /// Whether this caller really issued a forced termination.
+    pub(in crate::remote) forced: bool,
+    /// The termination request's own failure, kept instead of being logged away.
+    pub(in crate::remote) kill_error: Option<RemoteClientError>,
+}
+
+impl ReapOutcome {
+    /// The natural exit status, present only when this caller did not have to kill the process.
+    pub(in crate::remote) fn natural_status(&self) -> Option<std::process::ExitStatus> {
+        if self.forced { None } else { self.status }
+    }
+}
+
+/// Waits for the process to exit on its own, terminating it only when the grace window expires.
+///
+/// The observed status is returned so the connection owner can retain it; a failed wait leaves the
+/// wrapper owned by the caller, and a non-zero natural exit stays visible instead of being treated as
+/// a successful cleanup.
+pub(super) async fn reap_ssh_child(
+    child: &mut Box<dyn ChildWrapper>,
+    stage: &'static str,
+) -> Result<ReapOutcome, RemoteClientError> {
+    // A graceful shutdown lets the helper exit by itself; only then does its status mean anything.
+    match tokio::time::timeout(REAP_GRACE, child.wait()).await {
+        Ok(Ok(status)) => {
+            return Ok(ReapOutcome {
+                status: Some(status),
+                forced: false,
+                kill_error: None,
+            });
+        }
+        Ok(Err(error)) => return Err(RemoteClientError::io(stage, error)),
+        Err(_) => {}
+    }
+    // Only a termination request that really went out may mark this reap as forced: a failed kill
+    // leaves whatever natural exit the wait observes as the real verdict.
+    let (forced, kill_error) = match child.start_kill() {
+        Ok(()) => (true, None),
+        Err(error) => {
+            tracing::debug!(%stage, %error, "SSH termination request failed");
+            (false, Some(RemoteClientError::io(stage, error)))
+        }
+    };
+    let status = tokio::time::timeout(REAP_KILL_WAIT, child.wait())
+        .await
+        .map_err(|_| RemoteClientError::Protocol(format!("SSH {stage} cleanup timed out")))?
+        // The real wait failure keeps its I/O source instead of becoming formatted text.
+        .map_err(|error| RemoteClientError::io(stage, error))?;
+    Ok(ReapOutcome {
+        status: Some(status),
+        forced,
+        kill_error,
+    })
+}
+
+/// Reads a child stream into a bounded buffer; the limit is enforced while reading, not after.
 async fn capture_bounded<R: tokio::io::AsyncRead + Unpin>(
     reader: Option<R>,
     limit: usize,
@@ -301,16 +357,4 @@ async fn capture_bounded<R: tokio::io::AsyncRead + Unpin>(
         }
         retained.extend_from_slice(&buffer[..count.min(limit.saturating_sub(retained.len()))]);
     }
-}
-
-pub(super) async fn initialization_diagnostic(
-    stderr: Option<tokio::process::ChildStderr>,
-) -> Result<String, RemoteClientError> {
-    use tokio::io::AsyncReadExt;
-    let Some(stderr) = stderr else {
-        return Ok(String::new());
-    };
-    let mut bytes = Vec::new();
-    stderr.take(4096).read_to_end(&mut bytes).await?;
-    Ok(String::from_utf8_lossy(&bytes).trim().to_string())
 }

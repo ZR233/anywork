@@ -1,4 +1,4 @@
-//! Manager-wide connection admission and ordered transport shutdown.
+//! Manager-wide endpoint admission and ordered connection-pool shutdown.
 
 use std::sync::Arc;
 
@@ -16,38 +16,6 @@ impl SshManager {
             .clone()
     }
 
-    // Caller owns server serialization, or has sealed and drained all operations.
-    pub(super) async fn close_connection(&self, server_id: &str) -> Result<(), RemoteClientError> {
-        let connection = self.connections.lock().await.get(server_id).cloned();
-        if let Some(connection) = connection {
-            connection.heartbeat.cancel();
-            if !connection.client.is_disconnected() {
-                // Only local frame flush is observed. The remote lease handles loss of SSH.
-                if let Ok(Err(error)) = tokio::time::timeout(
-                    std::time::Duration::from_millis(250),
-                    connection.client.request_shutdown(),
-                )
-                .await
-                {
-                    tracing::warn!(%server_id, %error, "SSH shutdown frame was not written");
-                }
-            }
-            let transport = connection.client.close().await;
-            let mut process = connection.process.lock().await;
-            super::ssh::terminate_ssh_child(&mut process, server_id).await?;
-            transport?;
-            drop(process);
-            let removed = self.connections.lock().await.remove(server_id);
-            drop(removed);
-        }
-        self.workspaces
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .retain(|(id, _), _| id != server_id);
-        self.set_state(server_id, SshConnectionState::Disconnected)
-            .await;
-        Ok(())
-    }
     pub(super) async fn admit_connection(&self) -> Result<TaskTrackerToken, RemoteClientError> {
         let accepting = self.admission.lock().await;
         if !*accepting {
@@ -56,19 +24,18 @@ impl SshManager {
         Ok(self.operations.token())
     }
 
-    /// Permanently seals connection admission and drains owned SSH connections.
+    /// Permanently seals endpoint admission and reclaims every owned physical connection.
     ///
-    /// Every connection is an independent owner: their closes are issued and observed
-    /// concurrently so one hanging or failing connection never delays the others. Only a
-    /// connection confirmed closed is removed; a failed one stays owned (retained in the
-    /// registry) and is retried by a later call.
+    /// Each endpoint is an independent owner: their closes are issued and observed concurrently so
+    /// one hanging or failing endpoint never delays the others. Only an endpoint whose teardown was
+    /// confirmed is removed; a failed one stays owned and is retried by a later call.
     ///
-    /// Repeated calls reuse retained connections after a failure or canceled wait.
-    /// Dependent remote tools and services must be stopped before calling this.
+    /// Repeated calls reuse retained endpoints after a failure or canceled wait. Dependent remote
+    /// tools and services must be stopped before calling this.
     ///
     /// # Errors
-    /// Returns an aggregated transport or process-wait failure; every failed connection is
-    /// retained until it is confirmed closed.
+    /// Returns an aggregated transport or process-wait failure; every failed endpoint is retained
+    /// until it is confirmed closed.
     pub async fn shutdown(&self) -> Result<(), RemoteClientError> {
         {
             let mut accepting = self.admission.lock().await;
@@ -79,44 +46,62 @@ impl SshManager {
         self.desired_connections.write().await.clear();
         self.operations.wait().await;
 
-        let connections = self
-            .connections
+        let endpoints = self
+            .endpoints
             .lock()
             .await
-            .keys()
-            .cloned()
+            .iter()
+            .map(|(server_id, endpoint)| (server_id.clone(), endpoint.clone()))
             .collect::<Vec<_>>();
         // Admission is sealed and all operations are drained above, so no per-server
-        // serialization is needed: closing distinct connections concurrently is safe, and
-        // each `close_connection` still removes its own entry only after a confirmed close.
+        // serialization is needed: closing distinct endpoints concurrently is safe, and each
+        // endpoint removes itself from the registry only after a confirmed close.
         let outcomes = futures::future::join_all(
-            connections
+            endpoints
                 .iter()
-                .map(|server_id| self.close_connection(server_id)),
+                .map(|(_, endpoint)| endpoint.close("manager shutdown")),
         )
         .await;
-        let mut failures = Vec::new();
-        for (server_id, outcome) in connections.iter().zip(outcomes) {
-            if let Err(error) = outcome {
-                self.set_state(
-                    server_id,
-                    SshConnectionState::Failed {
-                        code: "sshShutdownFailed".to_string(),
-                        message: error.to_string(),
-                    },
-                )
-                .await;
-                failures.push(format!("{server_id}: {error}"));
+
+        let mut failures: Vec<(String, RemoteClientError)> = Vec::new();
+        let mut closed = Vec::new();
+        for ((server_id, _), outcome) in endpoints.iter().zip(outcomes) {
+            match outcome {
+                Ok(()) => closed.push(server_id.clone()),
+                Err(error) => failures.push((server_id.clone(), error)),
             }
+        }
+        {
+            let mut registered = self.endpoints.lock().await;
+            for server_id in closed {
+                registered.remove(&server_id);
+            }
+        }
+        for (server_id, error) in &failures {
+            // The canonical connection state carries a diagnostic string by design; the error returned
+            // to the caller below keeps its typed source.
+            self.set_state(
+                server_id,
+                SshConnectionState::Failed {
+                    code: "sshShutdownFailed".to_string(),
+                    message: error.to_string(),
+                },
+            )
+            .await;
         }
         if failures.is_empty() {
             Ok(())
         } else {
-            Err(RemoteClientError::Protocol(format!(
-                "{} SSH connection(s) did not confirm closure: {}",
-                failures.len(),
-                failures.join("; ")
-            )))
+            let first = failures.first().map(|(_, error)| error.clone());
+            let notes = failures
+                .iter()
+                .map(|(server_id, error)| format!("{server_id}: {error}"))
+                .collect::<Vec<_>>();
+            Err(RemoteClientError::aggregate(
+                "SSH endpoint shutdown did not confirm",
+                first,
+                &notes,
+            ))
         }
     }
 }

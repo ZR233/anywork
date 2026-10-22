@@ -1,7 +1,8 @@
 use std::collections::BTreeMap;
 use std::path::Path;
+use std::sync::Arc;
 
-use pl_protocol::remote::{RemoteCapture, RemoteSpawnRequest};
+use pl_protocol::remote::{RemoteCapture, RemoteResourceClass, RemoteSpawnRequest};
 use pl_protocol::{PureError, Result};
 use serde_json::Value;
 
@@ -10,30 +11,33 @@ use crate::command::{
     CommandOutputTarget, CommandSpawnRequest, ManagedCommand, command_output_model_path,
 };
 
-use super::RemoteClient;
+use super::manager::{BindingId, Endpoint};
 
+/// 远端 workspace 的命令 backend：进程流、输入与 capture 都在所选物理连接上结算。
 #[derive(Debug, Clone)]
 pub struct RemoteCommandBackend {
-    lease: std::sync::Arc<super::client::workspace::WorkspaceLease>,
-    client: RemoteClient,
-    workspace_id: String,
+    endpoint: Arc<Endpoint>,
+    canonical_path: String,
+    binding: BindingId,
 }
 
 impl RemoteCommandBackend {
-    pub(super) fn new(
-        client: RemoteClient,
-        lease: std::sync::Arc<super::client::workspace::WorkspaceLease>,
-    ) -> Self {
+    pub(super) fn new(endpoint: Arc<Endpoint>, canonical_path: String, binding: BindingId) -> Self {
         Self {
-            client,
-            workspace_id: lease.id.clone(),
-            lease,
+            endpoint,
+            canonical_path,
+            binding,
         }
     }
 
-    fn lease_files(&self) -> super::RemoteWorkspaceFileBackend {
-        super::RemoteWorkspaceFileBackend::new(self.client.clone(), self.lease.clone())
+    fn files(&self) -> super::RemoteWorkspaceFileBackend {
+        super::RemoteWorkspaceFileBackend::new(
+            self.endpoint.clone(),
+            self.canonical_path.clone(),
+            self.binding,
+        )
     }
+
     /// 常驻协议进程仅传输 stdin/stdout，不创建命令捕获或消费一次性命令额度。
     pub(super) async fn spawn_stream(
         &self,
@@ -41,20 +45,46 @@ impl RemoteCommandBackend {
         command: String,
         cwd: String,
     ) -> Result<ManagedCommand> {
-        self.spawn_remote(RemoteSpawnRequest {
+        self.spawn_remote(
             process_id,
-            workspace_id: self.workspace_id.clone(),
             command,
             cwd,
-            environment: BTreeMap::new(),
-            capture: RemoteCapture::None,
-        })
+            BTreeMap::new(),
+            RemoteCapture::None,
+        )
         .await
     }
 
-    async fn spawn_remote(&self, request: RemoteSpawnRequest) -> Result<ManagedCommand> {
-        self.client
-            .spawn_workspace_process(self.lease.clone(), request)
+    async fn spawn_remote(
+        &self,
+        process_id: String,
+        command: String,
+        cwd: String,
+        environment: BTreeMap<String, String>,
+        capture: RemoteCapture,
+    ) -> Result<ManagedCommand> {
+        let lease = self
+            .endpoint
+            .acquire(
+                &self.canonical_path,
+                self.binding,
+                RemoteResourceClass::Spawn,
+            )
+            .await
+            .map_err(remote_exec_error)?;
+        let workspace_id = lease
+            .workspace_id()
+            .ok_or_else(|| remote_exec_error("remote operation has no workspace handle"))?
+            .to_string();
+        lease
+            .spawn_process(RemoteSpawnRequest {
+                process_id,
+                workspace_id,
+                command,
+                cwd,
+                environment,
+                capture,
+            })
             .await
             .map_err(remote_exec_error)
     }
@@ -73,7 +103,7 @@ impl CommandBackend for RemoteCommandBackend {
         _stream: CommandCaptureStream,
         chunk: &[u8],
     ) -> u64 {
-        // Producer 不调用该计价入口；磁盘预算由 helper 执行，客户端仅受传输窗口约束。
+        // Producer 不调用该计价入口；磁盘预算由 helper 执行，客户端仅受传输背压约束。
         chunk.len() as u64
     }
 
@@ -97,17 +127,16 @@ impl CommandBackend for RemoteCommandBackend {
     }
 
     async fn spawn(&self, request: CommandSpawnRequest) -> Result<ManagedCommand> {
-        self.spawn_remote(RemoteSpawnRequest {
-            process_id: request.process_id,
-            workspace_id: self.workspace_id.clone(),
-            command: request.command,
-            cwd: request.cwd,
-            environment: BTreeMap::new(),
-            capture: RemoteCapture::File {
+        self.spawn_remote(
+            request.process_id,
+            request.command,
+            request.cwd,
+            BTreeMap::new(),
+            RemoteCapture::File {
                 path: path_to_posix(request.output_target.capture_file())?,
                 limit_bytes: request.capture_limit_bytes,
             },
-        })
+        )
         .await
     }
 
@@ -118,7 +147,7 @@ impl CommandBackend for RemoteCommandBackend {
         _working_directory: &str,
         _capture_limit_bytes: u64,
     ) -> Result<u64> {
-        crate::workspace::prepare_command_capture(&self.lease_files(), target.model_file()).await?;
+        crate::workspace::prepare_command_capture(&self.files(), target.model_file()).await?;
         // The remote helper owns the capture beside the remote workspace and streams it to the live
         // observer; there is no local fragment, so the local committed length starts at zero.
         Ok(0)

@@ -9,7 +9,7 @@ use std::collections::{BTreeMap, HashSet};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-use super::client::RemoteClientError;
+use super::error::RemoteClientError;
 use super::manager::SshServerProfile;
 
 const BEGIN_MARKER: &str = "# BEGIN anywork server:";

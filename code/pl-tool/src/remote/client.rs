@@ -1,312 +1,898 @@
+//! 单物理连接的 typed client。
+//!
+//! 一个 [`RemoteClient`] 只拥有一条 T1 共用传输的物理连接：握手与之后的长驻控制事务由一个独立
+//! owner 串行执行，普通操作各自取得真实子流预留。连接、操作、进程与 workspace 句柄的责任计数
+//! 供端点裁决基线/扩展连接的收缩，client 本身不猜测容量上限。每条连接另有两个由 helper 公告的
+//! 描述符预算：发送请求前同时取得该业务类别的整份 FD 峰值与物理子流，二者都不是可调大的常量。
+
+use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, OnceLock, Weak};
+use std::time::Duration;
+
 use futures::FutureExt;
 use futures::future::{BoxFuture, Shared};
-use std::collections::HashMap;
-use std::io;
-use std::pin::Pin;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::task::{Context, Poll};
-
 use pl_protocol::remote::{
-    REMOTE_OUTPUT_CHUNK_BYTES, REMOTE_OUTPUT_WINDOW, RemoteError, RemoteEvent, RemoteMessage,
-    RemoteOutputStream, RemoteProcessExit, RemoteRequest, RemoteResponse, RemoteSpawnRequest,
+    RemoteHello, RemoteReadRequest, RemoteRequest, RemoteResourceClass, RemoteResponse,
+    RemoteSpawnRequest, RemoteWorkspaceOpened, RemoteWriteRequest,
 };
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, DuplexStream, ReadBuf};
-use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore, mpsc, oneshot, watch};
+use pl_remote_helper::remote_transport::{
+    ConnectionHandle, ConnectionOwner, IncomingStreams, Role, TransportError,
+};
+use tokio::sync::{Mutex, Notify, mpsc, oneshot};
 use tokio::time::Instant;
-use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
 
-use super::codec::{EncodedFrame, encode_frame, read_frame};
+use self::control::ControlChannel;
+use self::session::describe_transport_error;
+use super::error::RemoteClientError;
 
-use pl_protocol::remote::REMOTE_REQUEST_CAPACITY as REQUEST_CAPACITY;
-
+mod control;
+mod directory;
+mod fds;
+mod files;
 mod process;
-pub(super) mod workspace;
+mod session;
+pub(in crate::remote) mod workspace;
 
-struct PendingRequest {
-    reply: oneshot::Sender<Result<RemoteReply, RemoteClientError>>,
-    _permit: OwnedSemaphorePermit,
-    _workspace: Option<Arc<workspace::WorkspaceLease>>,
+pub use self::directory::RemoteDirectoryStream;
+pub(in crate::remote) use self::fds::{FdAcquire, FdAdmission, FdBudget, WorkspaceRetained};
+pub use self::files::RemoteFileReader;
+pub(in crate::remote) use self::session::{StreamLease, response_kind};
+pub(in crate::remote) use self::workspace::{WorkspaceCache, WorkspaceLease};
+
+/// Bounded queue of close/abort signals; only the owner task consumes it.
+const CLOSE_QUEUE: usize = 8;
+/// A heartbeat without any transport byte progress for this long ends the connection.
+const HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(15);
+/// Bound on observing the driver after a heartbeat abort was requested.
+const ABORT_OBSERVE: Duration = Duration::from_secs(2);
+/// Bound on the whole close request, observed terminal state and supervised-task join.
+const CLOSE_TOTAL: Duration = Duration::from_secs(8);
+/// Handshake budget of a caller-owned startup, so a peer that never answers cannot hang it.
+const CONNECT_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(25);
+/// Retry cadence while driving an unaccepted client's teardown to its terminal state.
+const ABANDON_RETRY: Duration = Duration::from_millis(200);
+
+static NEXT_CLIENT_INSTANCE: AtomicU64 = AtomicU64::new(0);
+
+/// Bound on waiting for an in-flight shutdown frame to settle before classifying a terminal state.
+const SHUTDOWN_SETTLE_WAIT: Duration = Duration::from_millis(250);
+
+/// Progress of the one-way shutdown frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ShutdownProgress {
+    NotStarted = 0,
+    InFlight = 1,
+    Published = 2,
+    Failed = 3,
 }
 
-struct ControlFrame {
-    frame: EncodedFrame,
-    written: oneshot::Sender<io::Result<()>>,
+/// Shared progress of the one-way shutdown frame.
+struct ShutdownState {
+    progress: std::sync::atomic::AtomicU8,
+    settled: Notify,
 }
 
-struct TransportLifetime {
-    cancellation: CancellationToken,
-    completion: Shared<BoxFuture<'static, Result<(), Arc<tokio::task::JoinError>>>>,
-}
-
-impl Drop for TransportLifetime {
-    fn drop(&mut self) {
-        self.cancellation.cancel();
-    }
-}
-
-impl std::fmt::Debug for TransportLifetime {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter
-            .debug_struct("TransportLifetime")
-            .field("cancellation", &self.cancellation)
-            .finish_non_exhaustive()
-    }
-}
-
-/// SSH 认证失败诊断：保留原始失败文本，并在能解析时附带服务器公布的认证方法。
-///
-/// `password_offered()` 在未能从 OpenSSH `Permission denied (...)` 文本解析出方法列表时返回
-/// `None`，调用方应按需要密码处理，以保持旧行为。
-#[derive(Debug, Clone)]
-pub struct SshAuthFailure {
-    reason: String,
-    methods: Vec<String>,
-}
-
-impl SshAuthFailure {
-    /// 用原始失败文本与已解析的认证方法构造诊断。
-    pub fn new(reason: impl Into<String>, methods: Vec<String>) -> Self {
+impl ShutdownState {
+    fn new() -> Self {
         Self {
-            reason: reason.into(),
-            methods,
+            progress: std::sync::atomic::AtomicU8::new(ShutdownProgress::NotStarted as u8),
+            settled: Notify::new(),
         }
     }
 
-    /// 服务器是否公布了密码类认证。
-    ///
-    /// - 方法列表含精确的 `password`，或前缀为 `keyboard-interactive`（容忍 `keyboard-interactive:pam` 等后缀）→ `Some(true)`
-    /// - 解析到方法列表但两者都没有 → `Some(false)`
-    /// - 解析不到方法列表 → `None`
-    pub fn password_offered(&self) -> Option<bool> {
-        if self.methods.is_empty() {
-            None
-        } else {
-            Some(
-                self.methods.iter().any(|method| {
-                    method == "password" || method.starts_with("keyboard-interactive")
-                }),
-            )
+    fn current(&self) -> ShutdownProgress {
+        match self.progress.load(Ordering::Acquire) {
+            1 => ShutdownProgress::InFlight,
+            2 => ShutdownProgress::Published,
+            3 => ShutdownProgress::Failed,
+            _ => ShutdownProgress::NotStarted,
         }
     }
 }
 
-impl std::fmt::Display for SshAuthFailure {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str(&self.reason)
-    }
-}
-
-#[derive(Debug, thiserror::Error)]
-pub enum RemoteClientError {
-    /// The host has sealed SSH connection admission for shutdown.
-    #[error("SSH manager is closing")]
-    ManagerClosing,
-    #[error("remoteDisconnected")]
-    Disconnected,
-    #[error("remote operation cancelled before admission")]
-    Cancelled,
-    /// SSH authentication failed (e.g. password required or rejected).
-    #[error("SSH authentication required or failed: {0}")]
-    AuthenticationFailed(SshAuthFailure),
-    #[error("remote helper protocol failed: {0}")]
-    Protocol(String),
-    #[error("remote helper rejected the request ({code:?}): {message}")]
-    Remote {
-        code: pl_protocol::remote::RemoteErrorCode,
-        message: String,
-    },
-}
-
-impl From<io::Error> for RemoteClientError {
-    fn from(error: io::Error) -> Self {
-        Self::Protocol(error.to_string())
-    }
-}
-
-#[derive(Debug)]
-pub struct RemoteReply {
-    pub response: RemoteResponse,
-    pub body: Vec<u8>,
-}
-
-struct RemoteProcessChannels {
-    output: Option<mpsc::Sender<(RemoteOutputStream, Vec<u8>)>>,
-    exit: Option<oneshot::Sender<Result<RemoteProcessExit, RemoteClientError>>>,
-}
-
-impl std::fmt::Debug for RemoteProcessChannels {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter
-            .debug_struct("RemoteProcessChannels")
-            .finish_non_exhaustive()
-    }
-}
-
-struct RemoteClientInner {
-    writer: mpsc::Sender<EncodedFrame>,
-    control_writer: mpsc::Sender<ControlFrame>,
-    capacity: Arc<Semaphore>,
-    control_capacity: Arc<Semaphore>,
-    pending: Mutex<HashMap<u64, PendingRequest>>,
-    processes: Mutex<HashMap<String, RemoteProcessChannels>>,
-    next_request_id: AtomicU64,
-    last_output_sequence: AtomicU64,
-    disconnected: CancellationToken,
-    disconnect_reason: std::sync::Mutex<Option<String>>,
-    streams: TaskTracker,
-    progress: watch::Sender<Instant>,
-}
-
-impl std::fmt::Debug for RemoteClientInner {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter
-            .debug_struct("RemoteClientInner")
-            .field("next_request_id", &self.next_request_id)
-            .field("disconnected", &self.disconnected)
-            .finish_non_exhaustive()
-    }
-}
-
-#[derive(Debug, Clone)]
+/// One owned physical connection with its long-lived control transaction owner.
+#[derive(Clone)]
 pub struct RemoteClient {
-    inner: Arc<RemoteClientInner>,
-    transport: Arc<TransportLifetime>,
+    pub(super) inner: Arc<ClientInner>,
+}
+
+impl std::fmt::Debug for RemoteClient {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("RemoteClient")
+            .field("instance", &self.inner.instance)
+            .field("protocol_version", &self.inner.hello.protocol_version)
+            .field("activity", &self.inner.activity())
+            .field("workspace_roots", &self.inner.active_workspaces())
+            .field("closed", &self.inner.handle.is_closed())
+            .finish_non_exhaustive()
+    }
+}
+
+/// Shared state of one physical connection.
+pub(super) struct ClientInner {
+    instance: u64,
+    handle: ConnectionHandle,
+    hello: RemoteHello,
+    control: ControlChannel,
+    close: mpsc::Sender<CloseRequest>,
+    /// The shared terminal observation of this connection; carries the driver's real result.
+    closed: OnceLock<Shared<BoxFuture<'static, Result<(), RemoteClientError>>>>,
+    /// The shared real teardown; per-call waiting deadlines never complete or replace it.
+    teardown: OnceLock<Shared<BoxFuture<'static, Result<(), RemoteClientError>>>>,
+    disconnect_reason: std::sync::Mutex<Option<String>>,
+    /// Progress of the one-way shutdown frame; the terminal classification depends on it being
+    /// published, so an expected end is never mistaken for an unexpected one.
+    shutdown: ShutdownState,
+    /// Local admission gate: sealed before the driver close so new work fails fast instead of
+    /// queueing behind a teardown. Physical capacity is owned by the shared transport only.
+    admission_sealed: std::sync::atomic::AtomicBool,
+    /// Outstanding responsibilities: operations, processes, workspace handles, workspace closes.
+    active: AtomicU64,
+    /// Physical workspace handles whose `closeWorkspace` is still owed on this connection.
+    pending_workspace_closes: AtomicU64,
+    workspace_closes: std::sync::Mutex<HashSet<String>>,
+    /// Descriptor admission of this physical helper, independent of the multiplexer's stream budget.
+    fds: FdBudget,
+    /// Active workspace roots whose persistent descriptor peak is still owed on this connection.
+    ///
+    /// The entry is the authority for that charge: it is dropped when the helper acknowledged the
+    /// release or when the connection reached its terminal state, and real users keep their own share
+    /// so permits return only after the last one ends. It never holds a `RemoteClient`.
+    workspaces: std::sync::Mutex<HashMap<String, Arc<WorkspaceRetained>>>,
+    idle: Notify,
+    /// Every supervised task of this connection; the close path closes and drains it.
+    pub(super) tasks: TaskTracker,
+    /// Kept so inbound polling stays owned by the shared driver for the connection's lifetime.
+    _incoming: Mutex<IncomingStreams>,
+}
+
+impl ClientInner {
+    fn instance(&self) -> u64 {
+        self.instance
+    }
+
+    fn activity(&self) -> u64 {
+        self.active.load(Ordering::Acquire)
+    }
+
+    fn begin_activity(&self) {
+        self.active.fetch_add(1, Ordering::AcqRel);
+    }
+
+    /// Seals local admission before the driver is asked to close, so a new operation fails fast
+    /// instead of queueing behind the teardown.
+    fn seal_admission(&self) {
+        self.admission_sealed.store(true, Ordering::Release);
+        // Both descriptor pools stop admitting and wake every waiter with the real closed state, so no
+        // reservation can queue behind the teardown.
+        self.fds.close();
+    }
+
+    fn admission_is_sealed(&self) -> bool {
+        self.admission_sealed.load(Ordering::Acquire)
+    }
+
+    fn end_activity(&self) {
+        if self.active.fetch_sub(1, Ordering::AcqRel) == 1 {
+            self.wake_if_idle();
+        }
+    }
+
+    fn is_idle(&self) -> bool {
+        self.activity() == 0
+            && self.pending_workspace_closes() == 0
+            && self.active_workspaces() == 0
+    }
+
+    /// Active workspace roots still charged on this connection.
+    fn active_workspaces(&self) -> usize {
+        self.workspaces
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .len()
+    }
+
+    fn pending_workspace_closes(&self) -> u64 {
+        self.pending_workspace_closes.load(Ordering::Acquire)
+    }
+
+    fn wake_if_idle(&self) {
+        if self.is_idle() {
+            self.idle.notify_waiters();
+        }
+    }
+
+    /// Takes responsibility for releasing one physical workspace handle.
+    ///
+    /// The handle stays in this registry until the helper confirmed the release or the whole
+    /// connection ended, so a healthy baseline never keeps a remote handle that the local table
+    /// already forgot.
+    fn begin_workspace_close(&self, workspace_id: &str) {
+        let mut closes = self
+            .workspace_closes
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if closes.insert(workspace_id.to_string()) {
+            self.pending_workspace_closes.fetch_add(1, Ordering::AcqRel);
+        }
+    }
+
+    /// Drops one release responsibility after a confirmed release.
+    fn finish_workspace_close(&self, workspace_id: &str) {
+        let removed = {
+            let mut closes = self
+                .workspace_closes
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            closes.remove(workspace_id)
+        };
+        if removed {
+            self.pending_workspace_closes.fetch_sub(1, Ordering::AcqRel);
+            self.wake_if_idle();
+        }
+    }
+
+    /// Clears every release responsibility once the connection itself ended; the helper reclaims
+    /// all handles when the control stream ends.
+    fn clear_workspace_closes(&self, reason: &str) {
+        let drained = {
+            let mut closes = self
+                .workspace_closes
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let drained = closes.len();
+            closes.clear();
+            drained
+        };
+        if drained > 0 {
+            tracing::debug!(
+                connection = self.instance,
+                drained,
+                reason,
+                "helper reclaims workspace handles after connection end"
+            );
+            self.pending_workspace_closes.store(0, Ordering::Release);
+            self.wake_if_idle();
+        }
+    }
+
+    /// Registers the persistent charge of one active workspace root on this connection.
+    ///
+    /// A second open that the helper answered with the same opaque handle shares the existing charge
+    /// instead of charging twice; the newly split permit is then dropped and simply returns.
+    fn charge_workspace(
+        &self,
+        id: &str,
+        permit: tokio::sync::OwnedSemaphorePermit,
+    ) -> Option<Arc<WorkspaceRetained>> {
+        let mut workspaces = self
+            .workspaces
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(existing) = workspaces.get(id) {
+            return Some(Arc::clone(existing));
+        }
+        if self.admission_is_sealed() || self.handle.is_closed() {
+            // The connection is already ending, so the helper reclaims every handle with it: registering
+            // a charge now could only survive a table that was already cleared at the terminal state.
+            return None;
+        }
+        let retained = Arc::new(WorkspaceRetained::new(id.to_string(), permit));
+        workspaces.insert(id.to_string(), Arc::clone(&retained));
+        Some(retained)
+    }
+
+    /// Drops the registry responsibility of a root the helper confirmed as released.
+    ///
+    /// Real users keep their own share, so the permits themselves return only when the last of them
+    /// ends; a root that nobody else holds releases them here.
+    fn release_workspace_root(&self, id: &str) {
+        let removed = {
+            let mut workspaces = self
+                .workspaces
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            workspaces.remove(id)
+        };
+        if let Some(retained) = removed {
+            tracing::debug!(
+                connection = self.instance,
+                workspace = %retained.id(),
+                permits = retained.permits(),
+                "workspace root charge released"
+            );
+            self.wake_if_idle();
+        }
+    }
+
+    /// The live persistent charge of one active root, read under the same lock that removes it.
+    ///
+    /// An operation that captured the share before an acknowledgement keeps the descriptors until its
+    /// own local end; an id this connection no longer knows yields `None`, so nothing is invented.
+    fn capture_workspace(&self, id: &str) -> Option<Arc<WorkspaceRetained>> {
+        self.workspaces
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(id)
+            .cloned()
+    }
+
+    /// Clears every active root once the connection itself ended.
+    ///
+    /// The helper reclaims its handles when the control stream ends, so no release is owed any more;
+    /// the local descriptor charge of every root returns with this table.
+    fn clear_active_workspaces(&self, reason: &str) {
+        let drained = {
+            let mut workspaces = self
+                .workspaces
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let drained = workspaces.len();
+            workspaces.clear();
+            drained
+        };
+        if drained > 0 {
+            tracing::debug!(
+                connection = self.instance,
+                drained,
+                reason,
+                "helper reclaims workspace roots after connection end"
+            );
+            self.wake_if_idle();
+        }
+    }
+
+    /// Retains the first bounded failure reason of this connection.
+    fn retain_reason(&self, reason: String) {
+        let mut stored = self
+            .disconnect_reason
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if stored.is_none() {
+            *stored = Some(reason.chars().take(512).collect());
+        }
+    }
+
+    /// Marks the start of the one-way shutdown frame, so a terminal state observed while it is in
+    /// flight waits for its verdict instead of being classified too early.
+    fn begin_shutdown(&self) {
+        let _ = self.shutdown.progress.compare_exchange(
+            ShutdownProgress::NotStarted as u8,
+            ShutdownProgress::InFlight as u8,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        );
+    }
+
+    /// Publishes the verdict of the one-way shutdown frame.
+    ///
+    /// Only an in-flight frame can be settled, so a cancellation before the request reaches the control
+    /// owner or a late guard can never overwrite a verdict the owner already published.
+    fn settle_shutdown(&self, published: bool) {
+        let state = if published {
+            ShutdownProgress::Published
+        } else {
+            ShutdownProgress::Failed
+        };
+        if self
+            .shutdown
+            .progress
+            .compare_exchange(
+                ShutdownProgress::InFlight as u8,
+                state as u8,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .is_ok()
+        {
+            self.shutdown.settled.notify_waiters();
+        }
+    }
+
+    /// Whether a complete shutdown frame was published to the helper.
+    fn shutdown_published(&self) -> bool {
+        self.shutdown.current() == ShutdownProgress::Published
+    }
+
+    /// Waits for an in-flight shutdown frame to settle, bounded so observation never blocks a close.
+    async fn settle_shutdown_wait(&self) {
+        if self.shutdown.current() != ShutdownProgress::InFlight {
+            return;
+        }
+        let notified = self.shutdown.settled.notified();
+        tokio::pin!(notified);
+        notified.as_mut().enable();
+        let _ = tokio::time::timeout(SHUTDOWN_SETTLE_WAIT, notified).await;
+    }
+
+    /// Observes the driver's real terminal state once, shared by every waiter.
+    ///
+    /// The observed `Result` is preserved instead of being flattened into a diagnostic: a driver
+    /// that ended abnormally must never be reported as a clean close.
+    fn observe_closed(
+        self: &Arc<Self>,
+    ) -> Shared<BoxFuture<'static, Result<(), RemoteClientError>>> {
+        self.closed
+            .get_or_init(|| {
+                let handle = self.handle.clone();
+                let client = Arc::downgrade(self);
+                async move {
+                    let outcome = handle.wait_closed().await;
+                    let reason = match &outcome {
+                        Ok(()) => "SSH transport closed".to_string(),
+                        Err(error) => {
+                            format!("SSH transport closed: {}", describe_transport_error(error))
+                        }
+                    };
+                    let Some(inner) = client.upgrade() else {
+                        // No connection state is left: only a clean end can be reported.
+                        return match outcome {
+                            Ok(()) => Ok(()),
+                            Err(_) => Err(RemoteClientError::Disconnected),
+                        };
+                    };
+                    // An expected terminal state depends on the shutdown frame being published, so a
+                    // frame in flight is settled first instead of being classified too early.
+                    inner.settle_shutdown_wait().await;
+                    let result = match outcome {
+                        Ok(()) => Ok(()),
+                        Err(error) => inner.classify_terminal(error),
+                    };
+                    inner.retain_reason(reason.clone());
+                    inner.clear_workspace_closes(&reason);
+                    inner.clear_active_workspaces(&reason);
+                    result
+                }
+                .boxed()
+                .shared()
+            })
+            .clone()
+    }
+
+    /// Classifies the driver's real terminal error.
+    ///
+    /// A published shutdown makes the helper's own close the expected local terminal state; every real
+    /// I/O, driver-task, multiplex or record failure stays a failure with its typed source, and an EOF
+    /// without a published shutdown is a disconnect. No string and no `is_closed` is used here.
+    fn classify_terminal(&self, error: TransportError) -> Result<(), RemoteClientError> {
+        let published = self.shutdown_published();
+        match error {
+            TransportError::Closed if published => Ok(()),
+            TransportError::Closed => Err(RemoteClientError::Disconnected),
+            // T1 already owns these sources in an `Arc`, so they move straight into the typed
+            // variants instead of being formatted.
+            TransportError::Io(source) => Err(RemoteClientError::Io {
+                stage: "transport",
+                source,
+            }),
+            TransportError::DriverTask(source) => Err(RemoteClientError::Task {
+                stage: "transport driver",
+                source,
+            }),
+            TransportError::Multiplex(source) => Err(RemoteClientError::protocol(format!(
+                "transport multiplexer failed: {source}"
+            ))),
+            TransportError::InvalidRecord { .. }
+            | TransportError::RecordTooLarge { .. }
+            | TransportError::Encoding { .. }
+            | TransportError::ControlAlreadyOpened
+            | TransportError::Cancelled => Err(RemoteClientError::protocol(format!(
+                "transport ended: {}",
+                describe_transport_error(&error)
+            ))),
+        }
+    }
+
+    /// Runs this connection's one real teardown, shared so repeated closes observe one result.
+    ///
+    /// Admission is sealed synchronously before the shared future is returned. The future carries no
+    /// caller deadline: a waiting caller that times out only stops waiting, so its deadline can never
+    /// be cached as this connection's result and a later caller keeps observing the same unfinished
+    /// teardown instead of a permanent failure.
+    fn teardown_once(
+        self: &Arc<Self>,
+    ) -> Shared<BoxFuture<'static, Result<(), RemoteClientError>>> {
+        self.teardown
+            .get_or_init(|| {
+                self.seal_admission();
+                let client = Arc::downgrade(self);
+                async move {
+                    let Some(inner) = client.upgrade() else {
+                        return Ok(());
+                    };
+                    let request = inner.request_close().await;
+                    let observed = inner.observe_closed().await;
+                    // Closing the tracker and waiting for it happens inside this shared teardown, so
+                    // abandoning a caller never abandons the supervised tasks.
+                    inner.tasks.close();
+                    inner.tasks.wait().await;
+                    match (request, observed) {
+                        // A real terminal failure keeps its typed source whichever fact carried it.
+                        (_, Err(error)) if !matches!(&error, RemoteClientError::Disconnected) => {
+                            Err(error)
+                        }
+                        // A close request that itself failed is a real close failure.
+                        (CloseCause::Failed(error), _) => {
+                            let reason = format!(
+                                "close SSH transport: {}",
+                                describe_transport_error(&error)
+                            );
+                            inner.retain_reason(reason.clone());
+                            Err(RemoteClientError::protocol(reason))
+                        }
+                        // This side ended the transport, so closing it without a shutdown frame is the
+                        // expected result of that deliberate close.
+                        (CloseCause::Requested, _) => Ok(()),
+                        // The driver ended before it was asked: only a fully published shutdown frame
+                        // makes that the expected transport end.
+                        (CloseCause::NotRequested, observed) => observed,
+                    }
+                }
+                .boxed()
+                .shared()
+            })
+            .clone()
+    }
+
+    /// Whether the real teardown finished and every supervised task ended.
+    ///
+    /// The shared teardown future resolves only after `tasks.wait()` returned, so a resolved teardown
+    /// plus an empty tracker is the internal proof that client cleanup is complete. Callers must not
+    /// infer this from an error string or from `wait_disconnected`.
+    fn teardown_is_complete(&self) -> bool {
+        self.teardown.get().and_then(Shared::peek).is_some() && self.tasks.is_empty()
+    }
+
+    /// Asks the owner to close the driver and reports how that request relates to its real end.
+    ///
+    /// The distinction is a transport fact, not a formatted result: this call returning
+    /// [`CloseCause::Requested`] means the driver ended because this request closed it, while
+    /// [`CloseCause::NotRequested`] means the driver had already ended on its own, and the shared
+    /// terminal observation in [`Self::teardown_once`] then decides whether that end was expected.
+    async fn request_close(self: &Arc<Self>) -> CloseCause {
+        // The owner is always notified, even when the driver already ended: the local owner task must
+        // observe the request and end, or `tasks.wait()` would keep waiting for a task nobody wakes.
+        let (done, completed) = oneshot::channel();
+        if self.close.send(CloseRequest::Close { done }).await.is_err() {
+            // The owner already finished, so this request cannot claim the end it never caused.
+            return CloseCause::NotRequested;
+        }
+        match completed.await {
+            Ok(Ok(())) => CloseCause::Requested,
+            // The driver had already ended: the terminal observation decides whether that was expected.
+            Ok(Err(TransportError::Closed)) | Err(_) => CloseCause::NotRequested,
+            Ok(Err(error)) => CloseCause::Failed(error),
+        }
+    }
+
+    /// Requests connection abort after a connection-level protocol violation.
+    fn request_abort(&self, reason: String) {
+        self.retain_reason(reason.clone());
+        let close = self.close.clone();
+        let instance = self.instance;
+        tokio::spawn(async move {
+            if close.send(CloseRequest::Abort { reason }).await.is_err() {
+                tracing::debug!(instance, "connection owner already finished");
+            }
+        });
+    }
+
+    /// Waits until no responsibility remains on this connection.
+    async fn wait_idle(&self) {
+        loop {
+            let notified = self.idle.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            if self.is_idle() {
+                return;
+            }
+            notified.await;
+        }
+    }
+}
+
+enum CloseRequest {
+    /// Close the driver and report its observed terminal state.
+    Close {
+        done: oneshot::Sender<Result<(), TransportError>>,
+    },
+    /// Abort after a protocol violation; observers read the retained reason.
+    Abort { reason: String },
+}
+
+/// How this connection's driver end relates to a local close request.
+///
+/// The two facts are independent: an expected transport end needs either a fully published shutdown
+/// frame or a close this connection itself requested, and neither may be inferred from an error text.
+enum CloseCause {
+    /// The driver ended because this call's close request closed it.
+    Requested,
+    /// The driver had already ended, or the owner had finished, before it could be asked.
+    NotRequested,
+    /// The close request itself failed.
+    Failed(TransportError),
+}
+
+/// One physical transport that is owned before the handshake can be cancelled.
+///
+/// The transport owner is taken synchronously, so a handshake timeout or a cancelled caller can still
+/// close and join the driver. Nothing here is a second connection manager: the pool and the public
+/// [`RemoteClient::connect`] use this one startup path.
+pub(in crate::remote) struct StartupOwner {
+    owner: ConnectionOwner,
+    handle: ConnectionHandle,
+    incoming: IncomingStreams,
+    negotiated: Option<control::NegotiatedControl>,
+}
+
+impl StartupOwner {
+    /// Takes ownership of the transport before any cancellable await.
+    pub(in crate::remote) fn start<R, W>(reader: R, writer: W) -> Self
+    where
+        R: tokio::io::AsyncRead + Unpin + Send + 'static,
+        W: tokio::io::AsyncWrite + Unpin + Send + 'static,
+    {
+        let (owner, handle, incoming) = ConnectionOwner::start(reader, writer, Role::Client);
+        Self {
+            owner,
+            handle,
+            incoming,
+            negotiated: None,
+        }
+    }
+
+    /// Runs the hello transaction on the reserved control stream.
+    ///
+    /// The transport stays owned here, so a caller that cancels this wait must call
+    /// [`Self::release`] to close and join it.
+    pub(in crate::remote) async fn handshake(&mut self) -> Result<(), RemoteClientError> {
+        let negotiated = control::negotiate(&self.handle).await?;
+        self.negotiated = Some(negotiated);
+        Ok(())
+    }
+
+    /// Converts a completed handshake into the typed client.
+    ///
+    /// # Errors
+    /// Reports a startup whose handshake never completed; the caller then releases it.
+    pub(in crate::remote) fn into_client(self) -> Result<RemoteClient, RemoteClientError> {
+        let Self {
+            owner,
+            handle,
+            incoming,
+            negotiated,
+        } = self;
+        let negotiated = negotiated.ok_or_else(|| {
+            RemoteClientError::protocol("helper handshake was not completed before assembling")
+        })?;
+        Ok(RemoteClient::assemble(owner, handle, incoming, negotiated))
+    }
+
+    /// Drives this startup in an owned task and hands the client to the caller.
+    ///
+    /// The task owns the transport for the whole startup, so a cancelled caller neither abandons a
+    /// started driver nor keeps a client it never accepted: the task closes and joins the driver on a
+    /// failed handshake, and tears down a client no waiter claimed. Cancelling before the first poll
+    /// owns nothing, because the task is spawned only when this future is first polled.
+    pub(in crate::remote) async fn connect_owned(self) -> Result<RemoteClient, RemoteClientError> {
+        let (mut ready, accepted) = oneshot::channel::<Result<RemoteClient, RemoteClientError>>();
+        let (claim, claimed) = oneshot::channel::<()>();
+        tokio::spawn(async move {
+            let mut startup = self;
+            // The caller dropping its receiver, or a peer that never answers, ends this wait; the
+            // transport is still owned here, so it is closed and joined below instead of hanging.
+            let handshake = tokio::select! {
+                biased;
+                () = ready.closed() => None,
+                result = tokio::time::timeout(CONNECT_HANDSHAKE_TIMEOUT, startup.handshake()) => {
+                    match result {
+                        Ok(result) => Some(result),
+                        Err(_) => Some(Err(RemoteClientError::protocol(
+                            "helper handshake timed out",
+                        ))),
+                    }
+                }
+            };
+            let Some(handshake) = handshake else {
+                // No caller will ever accept this startup: release the transport here.
+                if let Err(error) = startup.release("cancelled helper handshake").await {
+                    tracing::debug!(%error, "cancelled helper startup cleanup reported");
+                }
+                return;
+            };
+            if let Err(error) = handshake {
+                // The transport is still owned here, so the release is real and its failure is
+                // reported instead of being swallowed.
+                let error = match startup.release("helper handshake").await {
+                    Ok(()) => error,
+                    Err(release_error) => RemoteClientError::aggregate(
+                        "helper handshake failed",
+                        Some(error),
+                        &[release_error.to_string()],
+                    ),
+                };
+                let _ = ready.send(Err(error));
+                return;
+            }
+            let client = match startup.into_client() {
+                Ok(client) => client,
+                Err(error) => {
+                    let _ = ready.send(Err(error));
+                    return;
+                }
+            };
+            let owned = client.clone();
+            if ready.send(Ok(client)).is_err() {
+                // No caller is waiting any more: this task owns the release to a real terminal state.
+                release_unaccepted(&owned).await;
+                return;
+            }
+            // The caller claims synchronously after receiving; a dropped caller is cleaned up here.
+            if claimed.await.is_err() {
+                release_unaccepted(&owned).await;
+            }
+        });
+        match accepted.await {
+            Ok(Ok(client)) => {
+                // Claimed without an intervening await, so no cancellation can lose this client.
+                let _ = claim.send(());
+                Ok(client)
+            }
+            Ok(Err(error)) => Err(error),
+            // The startup task ended without a result: the transport is already released.
+            Err(_) => Err(RemoteClientError::Disconnected),
+        }
+    }
+
+    /// Closes and joins the transport of a startup that never produced a client.
+    ///
+    /// # Errors
+    /// Reports the driver's real terminal failure instead of swallowing it.
+    pub(in crate::remote) async fn release(
+        self,
+        stage: &'static str,
+    ) -> Result<(), RemoteClientError> {
+        match self.owner.close().await {
+            Ok(()) => Ok(()),
+            // A startup never published a shutdown frame, so its terminal state is classified like any
+            // other unexpected end: real I/O and driver-task sources are kept, EOF is a disconnect.
+            Err(error) => Err(match error {
+                TransportError::Closed => RemoteClientError::Disconnected,
+                TransportError::Io(source) => RemoteClientError::Io { stage, source },
+                TransportError::DriverTask(source) => RemoteClientError::Task {
+                    stage: "transport driver",
+                    source,
+                },
+                TransportError::Multiplex(source) => RemoteClientError::protocol(format!(
+                    "{stage}: transport multiplexer failed: {source}"
+                )),
+                TransportError::Cancelled => RemoteClientError::Cancelled,
+                TransportError::ControlAlreadyOpened
+                | TransportError::InvalidRecord { .. }
+                | TransportError::RecordTooLarge { .. }
+                | TransportError::Encoding { .. } => RemoteClientError::protocol(format!(
+                    "{stage}: transport close failed: {}",
+                    describe_transport_error(&error)
+                )),
+            }),
+        }
+    }
 }
 
 impl RemoteClient {
-    pub fn from_streams<R, W>(reader: R, writer: W) -> Self
+    /// Starts one client-role connection and completes the v9 hello handshake.
+    ///
+    /// The returned client owns its control stream and never shares a request/response table with
+    /// other connections. The startup runs in a task that owns the transport, so cancelling this call
+    /// still closes and joins the driver instead of detaching it.
+    ///
+    /// # Errors
+    /// Reports a transport failure, an application hello rejection, or a protocol mismatch.
+    pub async fn connect<R, W>(reader: R, writer: W) -> Result<Self, RemoteClientError>
     where
-        R: AsyncRead + Send + Unpin + 'static,
-        W: AsyncWrite + Send + Unpin + 'static,
+        R: tokio::io::AsyncRead + Unpin + Send + 'static,
+        W: tokio::io::AsyncWrite + Unpin + Send + 'static,
     {
-        let (sender, receiver) = mpsc::channel(REQUEST_CAPACITY);
-        let (control_writer, control_frames) = mpsc::channel(1);
-        let inner = Arc::new(RemoteClientInner {
-            writer: sender,
-            control_writer,
-            capacity: Arc::new(Semaphore::new(REQUEST_CAPACITY)),
-            control_capacity: Arc::new(Semaphore::new(REQUEST_CAPACITY)),
-            pending: Mutex::new(HashMap::new()),
-            processes: Mutex::new(HashMap::new()),
-            next_request_id: AtomicU64::new(0),
-            last_output_sequence: AtomicU64::new(0),
-            disconnected: CancellationToken::new(),
+        StartupOwner::start(reader, writer).connect_owned().await
+    }
+
+    /// Builds the typed client from an owned transport with a completed handshake.
+    fn assemble(
+        owner: ConnectionOwner,
+        handle: ConnectionHandle,
+        incoming: IncomingStreams,
+        negotiated: control::NegotiatedControl,
+    ) -> Self {
+        let (control, control_requests) = ControlChannel::channel();
+        let (close, close_requests) = mpsc::channel(CLOSE_QUEUE);
+        // The advertised peaks are logged from the one copy this connection validates and then keeps;
+        // they are public hello facts, so no payload, path or credential is involved.
+        let limits = negotiated.fds.limits();
+        let inner = Arc::new(ClientInner {
+            instance: NEXT_CLIENT_INSTANCE.fetch_add(1, Ordering::Relaxed) + 1,
+            handle: handle.clone(),
+            hello: negotiated.hello,
+            fds: negotiated.fds,
+            control,
+            close,
+            closed: OnceLock::new(),
+            teardown: OnceLock::new(),
+            shutdown: ShutdownState::new(),
             disconnect_reason: Default::default(),
-            streams: TaskTracker::new(),
-            progress: watch::channel(Instant::now()).0,
+            admission_sealed: std::sync::atomic::AtomicBool::new(false),
+            active: AtomicU64::new(0),
+            pending_workspace_closes: AtomicU64::new(0),
+            workspace_closes: Default::default(),
+            workspaces: Default::default(),
+            idle: Notify::new(),
+            tasks: TaskTracker::new(),
+            _incoming: Mutex::new(incoming),
         });
-        let buffer_capacity = REMOTE_OUTPUT_CHUNK_BYTES * REMOTE_OUTPUT_WINDOW;
-        let reader = tokio::io::BufReader::with_capacity(
-            buffer_capacity,
-            ProgressIo {
-                io: reader,
-                progress: inner.progress.clone(),
-            },
+        // Both driver-side tasks are owned by this connection's task tracker: closing the
+        // connection seals the tracker and waits for the real end of its owners.
+        let control_task = inner.tasks.track_future(control::run(
+            negotiated.reader,
+            negotiated.writer,
+            control_requests,
+            Arc::downgrade(&inner),
+        ));
+        tokio::spawn(control_task);
+        let owner_task = inner.tasks.track_future(run_connection_owner(
+            owner,
+            close_requests,
+            Arc::downgrade(&inner),
+        ));
+        tokio::spawn(owner_task);
+        tracing::debug!(
+            connection = inner.instance(),
+            helper_version = %inner.hello.helper_version,
+            os = %inner.hello.os,
+            architecture = %inner.hello.architecture,
+            operation_fds = limits.operation_fds,
+            workspace_fds = limits.workspace_fds,
+            cost_workspace_open = limits.costs.workspace_open,
+            cost_workspace_retained = limits.costs.workspace_retained,
+            cost_metadata = limits.costs.metadata,
+            cost_directory = limits.costs.directory,
+            cost_read_file = limits.costs.read_file,
+            cost_write_file = limits.costs.write_file,
+            cost_copy_file = limits.costs.copy_file,
+            cost_spawn = limits.costs.spawn,
+            "connected remote helper"
         );
-        let writer = tokio::io::BufWriter::with_capacity(
-            buffer_capacity,
-            ProgressIo {
-                io: writer,
-                progress: inner.progress.clone(),
-            },
-        );
-        let read = tokio::spawn(read_loop(reader, inner.clone()));
-        let write = tokio::spawn(write_loop(writer, receiver, control_frames, inner.clone()));
-        let streams = inner.streams.clone();
-        let transport = Arc::new(TransportLifetime {
-            cancellation: inner.disconnected.clone(),
-            completion: async move {
-                let (read, write) = tokio::join!(read, write);
-                streams.close();
-                streams.wait().await;
-                read.and(write).map_err(Arc::new)
-            }
-            .boxed()
-            .shared(),
-        });
-        Self { inner, transport }
+        Self { inner }
     }
 
-    /// Waits for bounded admission and then for the remote response.
-    /// Canceling before admission sends nothing. Once admitted, the pending table
-    /// retains the slot until response or transport closure, even if this wait is dropped.
-    /// # Errors
-    /// Reports validation, disconnection and remote rejection errors.
-    pub async fn request(
-        &self,
-        request: RemoteRequest,
-        body: &[u8],
-    ) -> Result<RemoteReply, RemoteClientError> {
-        request_inner(&self.inner, request, body).await
+    /// The helper handshake observed on this connection.
+    pub fn hello(&self) -> &RemoteHello {
+        &self.inner.hello
     }
 
-    /// Starts an owned command. Dropping the start wait or returned command requests
-    /// cancellation; a tracked supervisor retains startup and physical exit ownership.
-    /// # Errors
-    /// Reports failure to admit, start or validate the remote process.
-    pub async fn spawn_process(
-        &self,
-        request: RemoteSpawnRequest,
-    ) -> Result<crate::command::ManagedCommand, RemoteClientError> {
-        process::spawn(self, request, None).await
+    /// Stable in-process identity of this physical connection.
+    pub(in crate::remote) fn instance(&self) -> u64 {
+        self.inner.instance()
+    }
+
+    /// Whether both clients are the same physical connection.
+    pub fn is_same_connection(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.inner, &other.inner)
     }
 
     pub fn is_disconnected(&self) -> bool {
-        self.inner.disconnected.is_cancelled()
+        self.inner.handle.is_closed()
     }
 
+    /// Completes when the driver reached its terminal state; repeated waits share one observation.
     pub async fn wait_disconnected(&self) {
-        self.inner.disconnected.cancelled().await;
+        // The observation carries the real terminal result; callers of this signal-only wait read
+        // the retained reason instead of receiving a fabricated success.
+        let _ = self.inner.observe_closed().await;
     }
 
-    /// Closes this transport and waits for both owned IO tasks to exit.
-    ///
-    /// Canceling this wait does not discard their completion handles.
-    /// # Errors
-    /// Reports a transport task panic after both tasks have been joined.
-    pub async fn close(&self) -> Result<(), RemoteClientError> {
-        self.inner.disconnected.cancel();
-        self.transport.completion.clone().await.map_err(|error| {
-            RemoteClientError::Protocol(format!("remote transport task failed: {error}"))
-        })
-    }
-
-    /// Completes an application-level heartbeat without ordinary request capacity.
-    pub(crate) async fn heartbeat(&self) -> Result<(), RemoteClientError> {
-        let timeout = std::time::Duration::from_secs(15);
-        let request = self.request(RemoteRequest::Heartbeat, &[]);
-        tokio::pin!(request);
-        let mut deadline = Instant::now() + timeout;
-        loop {
-            if let Ok(reply) = tokio::time::timeout_at(deadline, &mut request).await {
-                return expect_ack(reply?);
-            }
-            // Control cannot overtake a partially transferred file frame. Actual
-            // byte progress extends this wait; merely enqueueing work does not.
-            deadline = *self.inner.progress.borrow() + timeout;
-            if deadline <= Instant::now() {
-                retain_disconnect_reason(
-                    &self.inner,
-                    "helper heartbeat response timed out without transport progress".into(),
-                );
-                self.inner.disconnected.cancel();
-                return Err(RemoteClientError::Disconnected);
-            }
-        }
-    }
-
-    /// Flushes the one-way shutdown frame locally; remote cleanup is not acknowledged.
-    pub(crate) async fn request_shutdown(&self) -> Result<(), RemoteClientError> {
-        self.send_control(RemoteRequest::Shutdown).await
-    }
-
-    async fn send_control(&self, request: RemoteRequest) -> Result<(), RemoteClientError> {
-        send_control(&self.inner, request).await
-    }
-
-    /// First transport failure, excluding request contents and credentials.
+    /// First transport failure reason, excluding payloads, environment and credentials.
     pub fn disconnect_reason(&self) -> Option<String> {
         self.inner
             .disconnect_reason
@@ -315,428 +901,506 @@ impl RemoteClient {
             .clone()
     }
 
-    pub(crate) fn is_same_connection(&self, other: &Self) -> bool {
-        Arc::ptr_eq(&self.inner, &other.inner)
+    /// Whether this connection's client cleanup is confirmed complete.
+    ///
+    /// The caller uses it to decide between "resources released" and "still owned", so it never has to
+    /// parse an error string or mistake a dead driver for a drained task set.
+    pub(in crate::remote) fn is_teardown_complete(&self) -> bool {
+        self.inner.teardown_is_complete()
     }
-    pub(super) async fn workspace_request(
+
+    /// Last actual byte progress observed by the shared transport.
+    pub fn last_progress(&self) -> Instant {
+        self.inner.handle.last_progress()
+    }
+
+    /// Closes this transport once and returns the real teardown result.
+    ///
+    /// The remote helper also reclaims its handles when the control stream ends, so no remote
+    /// acknowledgement is required here. The teardown itself carries no deadline: this call only
+    /// bounds how long *it* waits, so a timed-out caller can never cache its timeout as the result and
+    /// the next call keeps observing the same real teardown, which is idempotently `Ok` on success and
+    /// a stable `Err` after a real driver failure.
+    ///
+    /// # Errors
+    /// Reports the driver's abnormal terminal state or a supervised task that did not finish; the
+    /// failure is retained as this connection's reason so the caller keeps the resource owned.
+    pub async fn close(&self) -> Result<(), RemoteClientError> {
+        let teardown = self.inner.teardown_once();
+        match tokio::time::timeout(CLOSE_TOTAL, teardown).await {
+            Ok(result) => result,
+            // A caller deadline is not a terminal state: the shared teardown keeps running for the
+            // next caller, and the residual ownership is reported here instead of being hidden.
+            Err(_) => {
+                let residual = self.inner.tasks.len();
+                let reason = format!(
+                    "SSH close did not finish within {CLOSE_TOTAL:?}; {residual} supervised remote task(s) remain"
+                );
+                self.inner.retain_reason(reason.clone());
+                Err(RemoteClientError::protocol(reason))
+            }
+        }
+    }
+
+    /// Runs one unary or control request.
+    ///
+    /// File, directory and process requests own their own streams and are rejected here.
+    ///
+    /// # Errors
+    /// Reports admission, transport, protocol and typed helper errors.
+    pub async fn request(
         &self,
-        lease: Arc<workspace::WorkspaceLease>,
         request: RemoteRequest,
-        body: &[u8],
-    ) -> Result<RemoteReply, RemoteClientError> {
-        submit_workspace_request(&self.inner, request, body, Some(lease))
-            .await?
-            .await
-            .unwrap_or(Err(RemoteClientError::Disconnected))
+    ) -> Result<RemoteResponse, RemoteClientError> {
+        match request {
+            RemoteRequest::Hello { .. } => Err(RemoteClientError::protocol(
+                "the helper handshake is completed by connect()",
+            )),
+            RemoteRequest::Shutdown => Err(RemoteClientError::protocol(
+                "shutdown is a one-way frame; use request_shutdown()",
+            )),
+            RemoteRequest::Heartbeat => {
+                self.heartbeat().await?;
+                Ok(RemoteResponse::Ack)
+            }
+            request @ (RemoteRequest::Terminate { .. } | RemoteRequest::CloseWorkspace { .. }) => {
+                let workspace_id = match &request {
+                    RemoteRequest::CloseWorkspace { workspace_id } => Some(workspace_id.clone()),
+                    _ => None,
+                };
+                let response = self.inner.control.transaction(&self.inner, request).await?;
+                if let Some(workspace_id) = workspace_id
+                    && matches!(response, RemoteResponse::Ack)
+                {
+                    // The helper confirmed the release: the release responsibility and the persistent
+                    // root charge are no longer owed here. Real users keep their own share, so the
+                    // descriptors themselves return only after the last of them ends.
+                    self.inner.finish_workspace_close(&workspace_id);
+                    self.inner.release_workspace_root(&workspace_id);
+                }
+                Ok(response)
+            }
+            request @ (RemoteRequest::ReadFile(_)
+            | RemoteRequest::WriteFile(_)
+            | RemoteRequest::ListDirectory(_)
+            | RemoteRequest::BrowseDirectories { .. }
+            | RemoteRequest::Spawn(_)) => Err(RemoteClientError::protocol(format!(
+                "{} owns a dedicated operation stream",
+                session::method_name(&request)
+            ))),
+            // Every workspace open — including this public entry point — runs on its own tracked owner
+            // that keeps the persistent root charge and hands the result to this caller.
+            RemoteRequest::OpenWorkspace { path } => self.open_workspace_request(path).await,
+            request => {
+                // The addressed root is captured before the request is sent, so a concurrent release
+                // acknowledgement can never return its descriptors while this operation still runs.
+                let class = request.resource_class();
+                let workspace_id = session::request_workspace_id(&request);
+                self.lease_for(class, workspace_id)
+                    .await?
+                    .request(request)
+                    .await
+            }
+        }
     }
-    pub(super) async fn spawn_workspace_process(
+
+    /// Opens one workspace for a direct caller and keeps its persistent charge on this connection.
+    ///
+    /// The transaction runs on its own tracked owner, so a cancelled caller cannot leave a half-open
+    /// handle: an unclaimed result is closed on this same connection. The active table keeps the root
+    /// charged until a matching `closeWorkspace` is acknowledged or the connection ends.
+    async fn open_workspace_request(
         &self,
-        lease: Arc<workspace::WorkspaceLease>,
+        path: String,
+    ) -> Result<RemoteResponse, RemoteClientError> {
+        let lease = self.lease(RemoteResourceClass::OpenWorkspace).await?;
+        let opened = self
+            .open_workspace_owned(lease, path)
+            .await
+            .map_err(|_| RemoteClientError::Disconnected)??;
+        // The caller accepts the root here: the response and the connection's active table keep it
+        // alive, and the registry charge returns when a matching `closeWorkspace` is acknowledged or
+        // the link ends.
+        let (workspace_id, canonical_path, _retained) = opened.into_parts();
+        Ok(RemoteResponse::WorkspaceOpened(RemoteWorkspaceOpened {
+            workspace_id,
+            canonical_path,
+        }))
+    }
+
+    /// Opens one incremental directory or browse sequence.
+    ///
+    /// # Errors
+    /// Rejects every request that is not a directory/browse request, plus admission and
+    /// transport failures.
+    pub async fn directory(
+        &self,
+        request: RemoteRequest,
+    ) -> Result<RemoteDirectoryStream, RemoteClientError> {
+        match request {
+            request @ (RemoteRequest::ListDirectory(_)
+            | RemoteRequest::BrowseDirectories { .. }) => {
+                let workspace_id = session::request_workspace_id(&request);
+                self.lease_for(RemoteResourceClass::Directory, workspace_id)
+                    .await?
+                    .directory(request)
+                    .await
+            }
+            other => Err(RemoteClientError::protocol(format!(
+                "{} does not produce a directory sequence",
+                session::method_name(&other)
+            ))),
+        }
+    }
+
+    /// Opens one file read stream; EOF is reported only after a verified transfer end.
+    ///
+    /// # Errors
+    /// Reports admission, transport, protocol and typed helper errors.
+    pub async fn read_file(
+        &self,
+        request: RemoteReadRequest,
+    ) -> Result<RemoteFileReader, RemoteClientError> {
+        self.lease_for(
+            RemoteResourceClass::ReadFile,
+            Some(request.workspace_id.as_str()),
+        )
+        .await?
+        .read_file(request)
+        .await
+    }
+
+    /// Uploads exactly `request.total_len` bytes and returns the confirmed transferred length.
+    ///
+    /// # Errors
+    /// Reports admission, transport, protocol, short-source and typed helper errors.
+    pub async fn write_file<R>(
+        &self,
+        request: RemoteWriteRequest,
+        reader: &mut R,
+    ) -> Result<u64, RemoteClientError>
+    where
+        R: tokio::io::AsyncRead + Unpin + Send,
+    {
+        self.lease_for(
+            RemoteResourceClass::WriteFile,
+            Some(request.target.workspace_id.as_str()),
+        )
+        .await?
+        .write_file(request, reader)
+        .await
+    }
+
+    /// Starts one remote process and transfers its supervision into the returned command lease.
+    ///
+    /// # Errors
+    /// Reports admission, transport, protocol and typed helper startup errors.
+    pub async fn spawn_process(
+        &self,
         request: RemoteSpawnRequest,
     ) -> Result<crate::command::ManagedCommand, RemoteClientError> {
-        process::spawn(self, request, Some(lease)).await
-    }
-}
-
-enum RequestAdmission<'a> {
-    Ordinary(mpsc::Permit<'a, EncodedFrame>),
-    Control(mpsc::Permit<'a, ControlFrame>),
-}
-
-type PendingReply = oneshot::Receiver<Result<RemoteReply, RemoteClientError>>;
-
-async fn request_inner(
-    inner: &Arc<RemoteClientInner>,
-    request: RemoteRequest,
-    body: &[u8],
-) -> Result<RemoteReply, RemoteClientError> {
-    submit_request(inner, request, body)
+        self.lease_for(
+            RemoteResourceClass::Spawn,
+            Some(request.workspace_id.as_str()),
+        )
         .await?
+        .spawn_process(request)
         .await
-        .unwrap_or(Err(RemoteClientError::Disconnected))
-}
+    }
 
-async fn submit_request(
-    inner: &Arc<RemoteClientInner>,
-    request: RemoteRequest,
-    body: &[u8],
-) -> Result<PendingReply, RemoteClientError> {
-    submit_workspace_request(inner, request, body, None).await
-}
-async fn submit_workspace_request(
-    inner: &Arc<RemoteClientInner>,
-    request: RemoteRequest,
-    body: &[u8],
-    workspace: Option<Arc<workspace::WorkspaceLease>>,
-) -> Result<PendingReply, RemoteClientError> {
-    let control = matches!(
-        request,
-        RemoteRequest::Terminate { .. } | RemoteRequest::Heartbeat
-    );
-    let capacity = if control {
-        &inner.control_capacity
-    } else {
-        &inner.capacity
-    };
-    let capacity = tokio::select! {
-        biased;
-        () = inner.disconnected.cancelled() => return Err(RemoteClientError::Disconnected),
-        permit = capacity.clone().acquire_owned() => permit.map_err(|_| RemoteClientError::Disconnected)?,
-    };
-    let request_id = inner
-        .next_request_id
-        .try_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
-        .map_err(|_| RemoteClientError::Protocol("remote request identity exhausted".into()))?
-        + 1;
-    let frame = encode_frame(Some(request_id), RemoteMessage::Request(request), body)?;
-    let admission = tokio::select! {
-        biased;
-        () = inner.disconnected.cancelled() => return Err(RemoteClientError::Disconnected),
-        permit = async {
-            if control { inner.control_writer.reserve().await.map(RequestAdmission::Control) }
-            else { inner.writer.reserve().await.map(RequestAdmission::Ordinary) }
-        } => permit.map_err(|_| RemoteClientError::Disconnected)?,
-    };
-    let (reply, receiver) = oneshot::channel();
-    {
-        let mut pending = inner.pending.lock().await;
-        if inner.disconnected.is_cancelled() {
+    /// Completes one acknowledged control heartbeat.
+    ///
+    /// The wait is extended only by actual transport byte progress, so a slow but live transfer is
+    /// never mistaken for a lost connection.
+    ///
+    /// # Errors
+    /// Reports a typed rejection, a closed connection, or a no-progress timeout after aborting it.
+    pub async fn heartbeat(&self) -> Result<(), RemoteClientError> {
+        let reply = self
+            .inner
+            .control
+            .transaction(&self.inner, RemoteRequest::Heartbeat);
+        tokio::pin!(reply);
+        let mut deadline = Instant::now() + HEARTBEAT_TIMEOUT;
+        loop {
+            match tokio::time::timeout_at(deadline, reply.as_mut()).await {
+                Ok(result) => {
+                    session::expect_ack(result?)?;
+                    return Ok(());
+                }
+                Err(_) => {
+                    let next = self.inner.handle.last_progress() + HEARTBEAT_TIMEOUT;
+                    if next <= Instant::now() {
+                        self.inner.request_abort(
+                            "helper heartbeat response timed out without transport progress"
+                                .to_string(),
+                        );
+                        let _ =
+                            tokio::time::timeout(ABORT_OBSERVE, self.inner.observe_closed()).await;
+                        return Err(RemoteClientError::Disconnected);
+                    }
+                    deadline = next;
+                }
+            }
+        }
+    }
+
+    /// Asks the driver to end after a connection-level failure, without waiting for teardown.
+    ///
+    /// The connection owner observes it exactly like any other close, so no caller can mistake this
+    /// connection for a clean one, and no second teardown is started beside the physical teardown.
+    pub(in crate::remote) fn abort(&self, reason: String) {
+        self.inner.request_abort(reason);
+    }
+
+    /// Publishes the one-way shutdown frame locally; remote cleanup is not acknowledged.
+    ///
+    /// # Errors
+    /// Reports a control admission or transport failure.
+    pub async fn request_shutdown(&self) -> Result<(), RemoteClientError> {
+        self.inner
+            .control
+            .one_way(&self.inner, RemoteRequest::Shutdown)
+            .await
+    }
+
+    /// Cancellable admission for a direct caller: this connection's own capacity decides.
+    ///
+    /// Both budgets are taken in one fixed order — descriptors first, then the physical stream — and a
+    /// failure or cancellation of the second step drops the first, so no half reservation survives.
+    /// Waiting uses the real semaphores: a released descriptor or stream wakes the waiter, and sealing
+    /// or a driver close ends it with the real error instead of a poll/yield loop.
+    ///
+    /// # Errors
+    /// Reports a closed connection, a control class misuse, or a reserve failure.
+    pub(in crate::remote) async fn lease(
+        &self,
+        class: RemoteResourceClass,
+    ) -> Result<StreamLease, RemoteClientError> {
+        self.lease_for(class, None).await
+    }
+
+    /// Admits one operation of `class` and keeps the workspace root it addresses charged until it ends.
+    ///
+    /// The root share is captured under the same lock that `closeWorkspace` acknowledgement uses, so an
+    /// acknowledgement that lands while this operation is still running removes only the registry entry:
+    /// the descriptors stay with the running operation until its own local completion.
+    pub(in crate::remote) async fn lease_for(
+        &self,
+        class: RemoteResourceClass,
+        workspace_id: Option<&str>,
+    ) -> Result<StreamLease, RemoteClientError> {
+        if class == RemoteResourceClass::Control {
+            return Err(RemoteClientError::protocol(
+                "control requests reserve the stream for their own class on the control stream",
+            ));
+        }
+        if self.inner.admission_is_sealed() || self.inner.handle.is_closed() {
             return Err(RemoteClientError::Disconnected);
         }
-        pending.insert(
-            request_id,
-            PendingRequest {
-                reply,
-                _permit: capacity,
-                _workspace: workspace,
-            },
+        let root = workspace_id.and_then(|id| self.inner.capture_workspace(id));
+        let fds = tokio::select! {
+            biased;
+            _ = self.inner.observe_closed() => return Err(RemoteClientError::Disconnected),
+            admission = self.inner.fds.acquire(class) => admission,
+        };
+        let fds = match fds {
+            FdAcquire::Granted(lease) => lease,
+            FdAcquire::Closed => return Err(RemoteClientError::Disconnected),
+        };
+        // The shared transport owns the physical permit and its close linearization: waiting for a
+        // real released slot is the only stream admission wait here (no local capacity estimate, no
+        // timer/yield loop), and a driver close or a local seal ends it with the real error.
+        let reservation = tokio::select! {
+            biased;
+            _ = self.inner.observe_closed() => return Err(RemoteClientError::Disconnected),
+            result = self.inner.handle.reserve() => result.map_err(|error| {
+                self.transport_failure("reserve operation stream", error)
+            })?,
+        };
+        if self.inner.admission_is_sealed() {
+            // Both reservations return to their real budgets when this scope ends.
+            drop(reservation);
+            return Err(RemoteClientError::Disconnected);
+        }
+        let (operation_fds, workspace_fds) = fds.permits();
+        tracing::trace!(
+            connection = self.instance(),
+            class = ?class,
+            operation_fds,
+            workspace_fds,
+            "reserved remote operation descriptors"
         );
+        Ok(StreamLease::new(self.clone(), reservation, fds, root))
     }
-    // No suspension between registration and transfer to the single transport writer.
-    match admission {
-        RequestAdmission::Ordinary(permit) => {
-            permit.send(frame);
+
+    /// Non-blocking admission for the endpoint pool; `None` means this healthy connection cannot give
+    /// the whole demand — no free physical stream, or no free descriptor of this class — and the pool
+    /// may extend.
+    ///
+    /// # Errors
+    /// Reports a sealed/closed connection as [`RemoteClientError::Disconnected`]; a live connection
+    /// without capacity is `Ok(None)`, never an error.
+    pub(in crate::remote) fn try_lease(
+        &self,
+        class: RemoteResourceClass,
+    ) -> Result<Option<StreamLease>, RemoteClientError> {
+        if class == RemoteResourceClass::Control {
+            return Err(RemoteClientError::protocol(
+                "control requests reserve the stream for their own class on the control stream",
+            ));
         }
-        RequestAdmission::Control(permit) => {
-            let (written, _) = oneshot::channel();
-            permit.send(ControlFrame { frame, written });
+        if self.inner.admission_is_sealed() || self.inner.handle.is_closed() {
+            return Err(RemoteClientError::Disconnected);
         }
-    }
-    Ok(receiver)
-}
-
-struct ProgressIo<T> {
-    io: T,
-    progress: watch::Sender<Instant>,
-}
-
-impl<T: AsyncRead + Unpin> AsyncRead for ProgressIo<T> {
-    fn poll_read(
-        mut self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-        buffer: &mut ReadBuf<'_>,
-    ) -> Poll<io::Result<()>> {
-        let before = buffer.filled().len();
-        let result = Pin::new(&mut self.io).poll_read(cx, buffer);
-        if buffer.filled().len() > before {
-            self.progress.send_replace(Instant::now());
-        }
-        result
-    }
-}
-
-impl<T: AsyncWrite + Unpin> AsyncWrite for ProgressIo<T> {
-    fn poll_write(
-        mut self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-        bytes: &[u8],
-    ) -> Poll<io::Result<usize>> {
-        let result = Pin::new(&mut self.io).poll_write(cx, bytes);
-        if let Poll::Ready(Ok(count)) = &result
-            && *count > 0
-        {
-            self.progress.send_replace(Instant::now());
-        }
-        result
-    }
-
-    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        Pin::new(&mut self.io).poll_flush(cx)
-    }
-
-    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        Pin::new(&mut self.io).poll_shutdown(cx)
-    }
-}
-
-async fn forward_output(
-    inner: Arc<RemoteClientInner>,
-    process_id: String,
-    mut incoming: mpsc::Receiver<(RemoteOutputStream, Vec<u8>)>,
-    mut stdout: DuplexStream,
-    mut stderr: DuplexStream,
-    discard: CancellationToken,
-) {
-    // This task alone may wait for a consumer. The frame reader never does.
-    let result: Result<(), RemoteClientError> = tokio::select! {
-        biased;
-        () = inner.disconnected.cancelled() => return,
-        result = async {
-            while let Some((stream, body)) = incoming.recv().await {
-                let writer = match stream {
-                    RemoteOutputStream::Stdout => &mut stdout,
-                    RemoteOutputStream::Stderr => &mut stderr,
-                };
-                let written = tokio::select! {
-                    biased;
-                    () = discard.cancelled() => Ok(()),
-                    result = writer.write_all(&body) => result,
-                };
-                if let Err(error) = written && error.kind() != io::ErrorKind::BrokenPipe {
-                    return Err(RemoteClientError::from(error));
-                }
-                send_control(&inner, RemoteRequest::OutputConsumed {
-                    process_id: process_id.clone(),
-                }).await?;
+        let fds = match self.inner.fds.try_lease(class) {
+            FdAdmission::Granted(lease) => lease,
+            FdAdmission::Exhausted => return Ok(None),
+            FdAdmission::Closed => return Err(RemoteClientError::Disconnected),
+        };
+        match self.inner.handle.try_reserve() {
+            Ok(Some(reservation)) => {
+                let (operation_fds, workspace_fds) = fds.permits();
+                tracing::trace!(
+                    connection = self.instance(),
+                    class = ?class,
+                    operation_fds,
+                    workspace_fds,
+                    "reserved remote operation descriptors"
+                );
+                Ok(Some(StreamLease::new(self.clone(), reservation, fds, None)))
             }
-            Ok(())
-        } => result,
-    };
-    if let Err(error) = result {
-        retain_disconnect_reason(&inner, format!("forward process output: {error}"));
-        inner.disconnected.cancel();
-    }
-}
-
-async fn send_control(
-    inner: &RemoteClientInner,
-    request: RemoteRequest,
-) -> Result<(), RemoteClientError> {
-    if inner.disconnected.is_cancelled() {
-        return Err(RemoteClientError::Disconnected);
-    }
-    let frame = encode_frame(None, RemoteMessage::Request(request), &[])?;
-    let (written, completed) = oneshot::channel();
-    tokio::select! {
-        biased;
-        () = inner.disconnected.cancelled() => return Err(RemoteClientError::Disconnected),
-        result = inner.control_writer.send(ControlFrame { frame, written }) => {
-            result.map_err(|_| RemoteClientError::Disconnected)?;
+            // A live connection without a free stream releases the descriptor lease with this scope.
+            Ok(None) => Ok(None),
+            Err(error) => Err(self.transport_failure("reserve operation stream", error)),
         }
     }
-    completed
-        .await
-        .map_err(|_| RemoteClientError::Disconnected)??;
-    Ok(())
-}
 
-struct DisconnectOnExit(CancellationToken);
+    /// Waits until every operation, process, workspace handle and workspace close has ended.
+    pub(in crate::remote) async fn wait_idle(&self) {
+        self.inner.wait_idle().await;
+    }
 
-impl Drop for DisconnectOnExit {
-    fn drop(&mut self) {
-        self.0.cancel();
+    /// Maps one transport failure, retaining the first reason only when the connection is gone.
+    pub(in crate::remote) fn transport_failure(
+        &self,
+        stage: &'static str,
+        error: TransportError,
+    ) -> RemoteClientError {
+        let description = describe_transport_error(&error);
+        match error {
+            // A closed connection or a multiplexer failure is connection-terminal and keeps the real
+            // cause as this connection's first failure.
+            TransportError::Closed | TransportError::Multiplex(_) => {
+                self.inner.retain_reason(format!("{stage}: {description}"));
+                RemoteClientError::Disconnected
+            }
+            // A real I/O failure keeps its source. It is connection-fatal, so the typed source never
+            // makes a broken connection look healthy.
+            TransportError::Io(source) => {
+                self.inner.retain_reason(format!("{stage}: {description}"));
+                tracing::debug!(
+                    connection = self.instance(),
+                    stage,
+                    io = %source,
+                    "remote stream I/O failure"
+                );
+                RemoteClientError::Io { stage, source }
+            }
+            // An abnormally ended driver keeps its join source as a task failure.
+            TransportError::DriverTask(source) => {
+                self.inner.retain_reason(format!("{stage}: {description}"));
+                RemoteClientError::Task {
+                    stage: "transport driver",
+                    source,
+                }
+            }
+            // A locally abandoned operation is not a physical failure.
+            TransportError::Cancelled => RemoteClientError::Cancelled,
+            // A second control claim is a client defect, not a transport outage.
+            TransportError::ControlAlreadyOpened => {
+                RemoteClientError::protocol(format!("{stage}: {description}"))
+            }
+            // Record and I/O problems end only the affected stream and leave the connection usable.
+            TransportError::InvalidRecord { .. }
+            | TransportError::RecordTooLarge { .. }
+            | TransportError::Encoding { .. } => {
+                tracing::debug!(
+                    connection = self.instance(),
+                    stage,
+                    %description,
+                    "remote stream failure"
+                );
+                RemoteClientError::Protocol(format!("{stage}: {description}"))
+            }
+        }
     }
 }
 
-async fn write_loop<W>(
-    mut writer: W,
-    mut frames: mpsc::Receiver<EncodedFrame>,
-    mut controls: mpsc::Receiver<ControlFrame>,
-    inner: Arc<RemoteClientInner>,
-) where
-    W: AsyncWrite + Unpin,
-{
-    let _disconnect = DisconnectOnExit(inner.disconnected.clone());
+/// Drives a client that no caller accepted to its real terminal state.
+///
+/// One `close` call only bounds the wait and leaves the shared teardown for the next caller, so this
+/// loop keeps observing it until the client reports a completed teardown. The abnormal terminal cause
+/// stays in the client's retained reason instead of being formatted away.
+async fn release_unaccepted(client: &RemoteClient) {
     loop {
-        let (frame, receipt) = tokio::select! {
-            biased;
-            _ = inner.disconnected.cancelled() => break,
-            control = controls.recv() => match control {
-                Some(control) => (control.frame, Some(control.written)),
-                None => break,
-            },
-            frame = frames.recv() => match frame {
-                Some(frame) => (frame, None),
-                None => break,
-            },
-        };
-        let result = tokio::select! {
-            biased;
-            _ = inner.disconnected.cancelled() => break,
-            result = frame.write(&mut writer) => result,
-        };
-        if let Some(receipt) = receipt {
-            let _ = receipt.send(
-                result
-                    .as_ref()
-                    .map(|_| ())
-                    .map_err(|error| io::Error::new(error.kind(), error.to_string())),
-            );
-        }
-        if let Err(error) = result {
-            retain_disconnect_reason(&inner, format!("write transport: {}", error.kind()));
-            break;
+        match client.close().await {
+            Ok(()) => return,
+            Err(error) => {
+                if client.is_teardown_complete() {
+                    tracing::debug!(
+                        %error,
+                        "unaccepted helper transport was released after an abnormal end"
+                    );
+                    return;
+                }
+                tracing::debug!(%error, "unaccepted helper transport teardown is not finished yet");
+                tokio::time::sleep(ABANDON_RETRY).await;
+            }
         }
     }
-    // Dropping the stream is mandatory even when cancellation interrupted a frame.
-    drop(writer);
-    drop(frames);
-    mark_disconnected(&inner).await;
 }
 
-async fn read_loop<R>(reader: R, inner: Arc<RemoteClientInner>)
-where
-    R: AsyncRead + Unpin,
-{
-    let _disconnect = DisconnectOnExit(inner.disconnected.clone());
+/// The single owner of the driver's lifetime: one close/abort, then cancellation on drop.
+async fn run_connection_owner(
+    owner: ConnectionOwner,
+    mut requests: mpsc::Receiver<CloseRequest>,
+    client: Weak<ClientInner>,
+) {
+    let closed = match client.upgrade() {
+        Some(inner) => inner.observe_closed(),
+        None => return,
+    };
     tokio::select! {
         biased;
-        _ = inner.disconnected.cancelled() => {},
-        result = read_frames(reader, &inner) => {
-            retain_disconnect_reason(&inner, match result {
-                Ok(()) => "read transport: EOF".into(),
-                Err(error) => format!("read transport: {error}"),
-            });
+        // The driver already reached its terminal state: this owner has no further work, so it ends
+        // here and can be joined instead of waiting for a request nobody will send.
+        _ = closed => {}
+        request = requests.recv() => match request {
+            Some(CloseRequest::Close { done }) => {
+                let result = owner.close().await;
+                if let Err(error) = &result
+                    && let Some(inner) = client.upgrade()
+                {
+                    inner.retain_reason(format!(
+                        "close SSH transport: {}",
+                        describe_transport_error(error)
+                    ));
+                }
+                let _ = done.send(result);
+            }
+            Some(CloseRequest::Abort { reason }) => {
+                if let Err(error) = owner.close().await
+                    && let Some(inner) = client.upgrade()
+                {
+                    inner.retain_reason(format!(
+                        "abort SSH transport after {reason}: {}",
+                        describe_transport_error(&error)
+                    ));
+                }
+            }
+            None => {}
         },
     }
-    mark_disconnected(&inner).await;
-}
-
-async fn read_frames<R>(mut reader: R, inner: &Arc<RemoteClientInner>) -> io::Result<()>
-where
-    R: AsyncRead + Unpin,
-{
-    while let Some(frame) = read_frame(&mut reader).await? {
-        match frame.message {
-            RemoteMessage::Response(response) => {
-                let Some(request_id) = frame.request_id else {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        "response missing request identity",
-                    ));
-                };
-                let result = match response {
-                    RemoteResponse::Error(RemoteError { code, message }) => {
-                        Err(RemoteClientError::Remote { code, message })
-                    }
-                    response => Ok(RemoteReply {
-                        response,
-                        body: frame.body,
-                    }),
-                };
-                if let Some(sender) = inner.pending.lock().await.remove(&request_id)
-                    && let Err(Ok(reply)) = sender.reply.send(result)
-                    && let RemoteResponse::WorkspaceOpened(opened) = reply.response
-                {
-                    workspace::close_workspace(inner.clone(), opened.workspace_id);
-                }
-            }
-            RemoteMessage::Event(event) => {
-                handle_event(inner, event, frame.body).await?;
-            }
-            RemoteMessage::Request(_) => {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "unexpected helper request",
-                ));
-            }
-        }
-    }
-    Ok(())
-}
-
-fn retain_disconnect_reason(inner: &RemoteClientInner, reason: String) {
-    let mut stored = inner
-        .disconnect_reason
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    if stored.is_none() {
-        *stored = Some(reason.chars().take(512).collect());
-    }
-}
-
-async fn handle_event(
-    inner: &RemoteClientInner,
-    event: RemoteEvent,
-    body: Vec<u8>,
-) -> Result<(), io::Error> {
-    match event {
-        RemoteEvent::ProcessOutput(output) => {
-            let previous = inner.last_output_sequence.load(Ordering::Relaxed);
-            if output.sequence <= previous {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    format!(
-                        "remote process output sequence {} is not greater than {previous}",
-                        output.sequence
-                    ),
-                ));
-            }
-            inner
-                .last_output_sequence
-                .store(output.sequence, Ordering::Relaxed);
-            if body.len() > REMOTE_OUTPUT_CHUNK_BYTES {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "oversized process output",
-                ));
-            }
-            let processes = inner.processes.lock().await;
-            let Some(channels) = processes.get(&output.process_id) else {
-                return Ok(());
-            };
-            channels
-                .output
-                .as_ref()
-                .ok_or_else(|| {
-                    io::Error::new(io::ErrorKind::InvalidData, "output after process exit")
-                })?
-                .try_send((output.stream, body))
-                .map_err(|_| {
-                    io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        "process output exceeded its negotiated window",
-                    )
-                })
-        }
-        RemoteEvent::ProcessExit(exit) => {
-            if let Some(channels) = inner.processes.lock().await.get_mut(&exit.process_id) {
-                channels.output.take();
-                if let Some(sender) = channels.exit.take() {
-                    let result = match exit.failure.as_ref() {
-                        Some(error) => Err(RemoteClientError::Remote {
-                            code: error.code,
-                            message: error.message.clone(),
-                        }),
-                        None => Ok(exit),
-                    };
-                    let _ = sender.send(result);
-                }
-            }
-            Ok(())
-        }
-    }
-}
-
-async fn mark_disconnected(inner: &RemoteClientInner) {
-    // Repeated drains are intentional: a canceled cleanup waiter must not prevent
-    // another observer from finishing delivery of the disconnected result.
-    inner.disconnected.cancel();
-    for (_, sender) in inner.pending.lock().await.drain() {
-        let _ = sender.reply.send(Err(RemoteClientError::Disconnected));
-    }
-    for (_, mut channels) in inner.processes.lock().await.drain() {
-        if let Some(sender) = channels.exit.take() {
-            let _ = sender.send(Err(RemoteClientError::Disconnected));
-        }
-    }
-}
-
-pub(super) fn expect_ack(reply: RemoteReply) -> Result<(), RemoteClientError> {
-    match reply.response {
-        RemoteResponse::Ack => Ok(()),
-        response => Err(RemoteClientError::Protocol(format!(
-            "expected ack, received {response:?}"
-        ))),
-    }
+    // Dropping the owner here requests driver cancellation when no explicit close arrived.
 }

@@ -158,6 +158,17 @@ fn remote_client_error(error: &pl_tool::remote::RemoteClientError) -> StudioErro
             format!("{code:?}: {message}"),
             false,
         ),
+        RemoteClientError::Io { .. } => {
+            StudioError::new(StudioErrorCode::Unavailable, error.to_string(), true)
+        }
+        RemoteClientError::Task { .. } => {
+            StudioError::new(StudioErrorCode::Internal, error.to_string(), false)
+        }
+        RemoteClientError::Context { source, .. } => {
+            let mut mapped = remote_client_error(source);
+            mapped.message = error.to_string();
+            mapped
+        }
     }
 }
 

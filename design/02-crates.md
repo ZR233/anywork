@@ -34,7 +34,7 @@ endpoint、模型目录和凭据解析同源，并由 `pl-model` 公开入口的
 | pl-trace | core effect 与调用记录的只读诊断和用量投影 |
 | pl-lsp | 语言服务连接、探测和协议 |
 | pl-output / pl-patch / pl-skill-core | 输出算法、patch 规则、Skill 元数据与路径规则 |
-| pl-remote-helper | 本地进程监督、SSH 远端文件/进程协议及统一进程创建策略 |
+| pl-remote-helper | 本地进程监督、SSH 远端文件/进程服务、双侧共用子流传输适配及统一进程创建策略 |
 | pl-studio-runtime | TOML/SQLite 持久化及 core 时间线存储适配、产品条目投影、项目、Profile、Mode/workflow/Plan、子代理协调、资源租约与 root/child/恢复的唯一 Thread 装配 |
 | pl-studio-bridge / pl-studio-server | 同一 Studio 运行时的 FRB / HTTP 适配 |
 | pl-xtask | 轻量工程命令编排；按需通过子进程调用独立验收工具，不链接 Studio 运行时、模型或数据库 |
@@ -50,6 +50,11 @@ xtask 对验收工具只有命令调用关系，不建立 Cargo 依赖；验收�
 core 不提供默认工具安装、account 配置、MCP 目录、产品 working set 或旧引擎门面。工具实例通过
 不透明注册句柄向 Thread 转移所有权（见 [09](./09-tool-runtime.md)）；模型通过核心模型会话契约
 传入。共用物理服务通过明确租约共享，不共享可变 Thread 工具实例。
+
+SSH 子流传输适配归 pl-remote-helper，由 helper server 与 pl-tool client 共同消费；typed wire
+归 pl-protocol。逻辑 endpoint、弹性连接池及 workspace/命令操作租约归 pl-tool，不能下沉到
+无 Thread 概念的 helper，也不能上移为 Studio 专属实现。依赖仍为 pl-tool → pl-remote-helper，
+helper 不反向依赖工具或产品层。具体资源和失败语义见 [22](./22-ssh-remote.md)。
 
 ## 2.3 存储与投影
 

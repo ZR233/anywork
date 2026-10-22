@@ -60,6 +60,20 @@ GDK_BACKEND=x11 xvfb-run -a -s '-screen 0 1440x1000x24' \
 不足以重开同一合成会话。随后可构建正式程序，以该文件中的 home 作为进程级 `ANYWORK_HOME`
 运行 `cargo xtask run-gui --release`，进行系统截图复核；不要将合成配置写入用户的数据根。
 
+## SSH 场景的 HOME 与配置隔离
+
+Linux 上仅设置隔离 `HOME`，不保证系统 OpenSSH 会读取该目录的 `.ssh/config`：应用可能按
+环境变量保存新别名，而 OpenSSH 仍按系统账户的 home 查找默认配置。连接前分别检查应用
+实际写入的配置路径，以及 `ssh -G <alias>` / `ssh -F <owned-config> -G <alias>` 的 `hostname`
+是否一致；把别名当作 DNS 主机名解析时，先排查配置来源，不扩大目录等待或关闭超时。
+
+优先使用现有显式 SSH 配置入口；原生 GUI 无对应入口时，可在本次会话 `scratch` 的专属
+PATH 目录放一个只执行 `exec <system-ssh> -F <owned-config> "$@"` 的验收适配脚本。它仅
+对齐隔离环境，不替代真实 SSH，不写入生产代码或用户配置；保持原主机校验和认证策略，
+不复制私钥、不关闭 `StrictHostKeyChecking`。记录该环境适配与首次失败，重跑使用新的
+证据目录；失败轮次也须核对所属进程回收。连接错误与退出阶段的有界降级分别判断，不能
+把一次环境故障直接认定为传输实现缺陷，也不能用环境解释掩盖已证实的取消或回收问题。
+
 ## 涉及系统凭据的隔离场景
 
 `ANYWORK_HOME` 只隔离产品数据，系统 keyring 的 `account:<id>` 项不随数据根改变；

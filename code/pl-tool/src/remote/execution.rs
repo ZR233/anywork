@@ -1,36 +1,34 @@
 use std::path::Path;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use pl_protocol::remote::{RemoteCapture, RemoteSpawnRequest};
+use pl_protocol::remote::{RemoteCapture, RemoteResourceClass, RemoteSpawnRequest};
 use tokio::io::{AsyncRead, AsyncReadExt};
 
 use crate::execution::{ExecutionBackend, ExecutionOutput, ExecutionRequest};
 use crate::shell::shell_quote_word;
 
-use super::RemoteClient;
+use super::manager::{BindingId, Endpoint};
 use super::path::relative_workspace_path;
 
 static NEXT_EXECUTION_ID: AtomicU64 = AtomicU64::new(0);
 
 /// 在远端 workspace 中执行宿主传入的 Git/worktree 命令。
+///
+/// 每次执行在所选物理连接上取得 workspace/stream 租约，进程捕获与退出结算都留在该连接。
 #[derive(Debug, Clone)]
 pub struct RemoteExecutionBackend {
-    lease: std::sync::Arc<super::client::workspace::WorkspaceLease>,
-    client: RemoteClient,
-    workspace_id: String,
-    canonical_root: String,
+    endpoint: Arc<Endpoint>,
+    canonical_path: String,
+    binding: BindingId,
 }
 
 impl RemoteExecutionBackend {
-    pub(super) fn new(
-        client: RemoteClient,
-        lease: std::sync::Arc<super::client::workspace::WorkspaceLease>,
-    ) -> Self {
+    pub(super) fn new(endpoint: Arc<Endpoint>, canonical_path: String, binding: BindingId) -> Self {
         Self {
-            client,
-            workspace_id: lease.id.clone(),
-            canonical_root: lease.path.clone(),
-            lease,
+            endpoint,
+            canonical_path,
+            binding,
         }
     }
 }
@@ -46,25 +44,34 @@ impl ExecutionBackend for RemoteExecutionBackend {
             .fetch_add(1, Ordering::Relaxed)
             .saturating_add(1);
         let process_id = format!("execution-{}-{sequence}", std::process::id());
-        let cwd = remote_cwd(&request.cwd, &self.canonical_root)?;
+        let cwd = remote_cwd(&request.cwd, &self.canonical_path)?;
         let command = std::iter::once(request.program.to_string_lossy().into_owned())
             .chain(request.args)
             .map(|part| shell_quote_word(&part))
             .collect::<Vec<_>>()
             .join(" ");
-        let mut transport = self
-            .client
-            .spawn_workspace_process(
-                self.lease.clone(),
-                RemoteSpawnRequest {
-                    process_id: process_id.clone(),
-                    workspace_id: self.workspace_id.clone(),
-                    command,
-                    cwd,
-                    environment: request.env,
-                    capture: RemoteCapture::None,
-                },
+        let lease = self
+            .endpoint
+            .acquire(
+                &self.canonical_path,
+                self.binding,
+                RemoteResourceClass::Spawn,
             )
+            .await
+            .map_err(|error| error.to_string())?;
+        let workspace_id = lease
+            .workspace_id()
+            .ok_or("remote operation has no workspace handle")?
+            .to_string();
+        let mut transport = lease
+            .spawn_process(RemoteSpawnRequest {
+                process_id: process_id.clone(),
+                workspace_id,
+                command,
+                cwd,
+                environment: request.env,
+                capture: RemoteCapture::None,
+            })
             .await
             .map_err(|error| error.to_string())?;
         drop(transport.take_stdin());

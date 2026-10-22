@@ -3,6 +3,7 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 
+use pl_lsp::host::LspHostBackend;
 use pl_tool::workspace::resolve_workspace_root;
 
 use super::super::StudioRuntime;
@@ -33,7 +34,7 @@ impl StudioRuntime {
             let fingerprint = format!(
                 "ssh:{server_id}:{}:{}:{}",
                 workspace_root.display(),
-                host.files.workspace_id(),
+                host.identity(),
                 super::super::skill_catalog::skills_fingerprint(&settings.config.skills)?,
             );
             let _activation_command = self.activation.command_lock.lock().await;

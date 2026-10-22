@@ -5,14 +5,13 @@ pub use pl_protocol::remote::RemoteError;
 /// Host process creation and background ownership shared by execution adapters.
 pub mod process;
 
+/// Shared SSH substream transport and bounded record framing for both peers.
+pub mod remote_transport;
+
 /// Host-side physical process supervision, shared by local execution and the SSH service.
 #[cfg(target_os = "linux")]
 pub mod client;
 
-#[cfg(target_os = "linux")]
-mod codec;
-#[cfg(target_os = "linux")]
-mod path;
 #[cfg(target_os = "linux")]
 mod server;
 

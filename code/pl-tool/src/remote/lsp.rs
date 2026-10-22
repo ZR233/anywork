@@ -68,18 +68,19 @@ impl LspHostBackend for RemoteWorkspaceHost {
     ) -> BoxFuture<'a, Result<Vec<String>, LspHostError>> {
         async move {
             let path = self.relative_path(path)?;
-            self.files
+            // Consumption stays incremental: one entry at a time, no second directory snapshot.
+            let mut listing = self
+                .files
                 .list_directory_entries(path)
                 .await
-                .map(|listing| {
-                    listing
-                        .entries
-                        .into_iter()
-                        .filter(|entry| !entry.is_symlink)
-                        .map(|entry| entry.name)
-                        .collect()
-                })
-                .map_err(host_error)
+                .map_err(host_error)?;
+            let mut names = Vec::new();
+            while let Some(entry) = listing.next_entry().await.map_err(host_error)? {
+                if !entry.is_symlink {
+                    names.push(entry.name);
+                }
+            }
+            Ok(names)
         }
         .boxed()
     }

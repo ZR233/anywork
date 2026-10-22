@@ -1,6 +1,6 @@
 use crate::tool_error;
 use base64::Engine;
-use pl_protocol::{PureError, Result};
+use pl_protocol::Result;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -15,7 +15,6 @@ use super::schema::*;
 
 const DEFAULT_READ_FILE_LINES: usize = 200;
 const MAX_READ_FILE_LINES: usize = 500;
-const MAX_READ_PATH_SUGGESTIONS: usize = 5;
 const DEFAULT_LIST_FILES_LIMIT: usize = 100;
 const MAX_LIST_FILES_LIMIT: usize = 200;
 
@@ -100,12 +99,9 @@ where
         path: input.path.clone(),
         cwd: input.working_directory.cwd.clone(),
     };
-    let stat = match backend.stat(stat_request).await {
-        Ok(stat) => stat,
-        Err(error) => {
-            return Err(unresolved_read_path_error(backend, &input.path, error).await);
-        }
-    };
+    // Absence, permission and transport failures stay as the backend reported them.
+    // Locating a misnamed file is an explicit list/search request, never a hidden scan.
+    let stat = backend.stat(stat_request).await?;
     if !stat.is_file {
         return Err(tool_error(
             TOOL_READ_FILE,
@@ -137,58 +133,6 @@ where
         "contentHash": pl_core::context::content_hash(content.as_bytes()),
         "text": text,
     }))
-}
-
-async fn unresolved_read_path_error<B>(backend: &B, path: &str, error: PureError) -> PureError
-where
-    B: WorkspaceFileBackend,
-{
-    let candidates = same_name_candidates(backend, path).await;
-    tool_error(
-        TOOL_READ_FILE,
-        format!(
-            "{error}; recovery={}",
-            json!({ "candidatePaths": candidates })
-        ),
-    )
-}
-
-async fn same_name_candidates<B>(backend: &B, path: &str) -> Vec<String>
-where
-    B: WorkspaceFileBackend,
-{
-    let Some(file_name) = path_file_name(path) else {
-        return Vec::new();
-    };
-    let Ok(result) = backend
-        .list(WorkspaceFileListRequest {
-            path: ".".to_string(),
-            cwd: None,
-            glob: format!("**/{file_name}"),
-            max_files: MAX_READ_PATH_SUGGESTIONS,
-            include_dirs: false,
-        })
-        .await
-    else {
-        return Vec::new();
-    };
-    result
-        .files
-        .into_iter()
-        .filter(|candidate| path_file_name(candidate).is_some_and(|name| name == file_name))
-        .take(MAX_READ_PATH_SUGGESTIONS)
-        .map(|candidate| {
-            candidate
-                .strip_prefix("./")
-                .unwrap_or(&candidate)
-                .replace('\\', "/")
-        })
-        .collect()
-}
-
-fn path_file_name(path: &str) -> Option<&str> {
-    path.rsplit(['/', '\\'])
-        .find(|component| !component.is_empty())
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
