@@ -98,19 +98,9 @@ impl StudioRuntime {
                         .await,
                 ))
             }
-            StudioProductTopic::SettingsConfig => {
-                let settings =
-                    super::settings_api::settings_config_snapshot(&self.config_runtime.read()?)?;
-                StudioProductBaselineState::SettingsConfig(Box::new(
-                    crate::StudioSettingsConfigStateSnapshot {
-                        state: pl_protocol::ObservedResource::ready(
-                            settings.revision,
-                            settings.updated_at,
-                            settings,
-                        ),
-                    },
-                ))
-            }
+            StudioProductTopic::SettingsConfig => StudioProductBaselineState::SettingsConfig(
+                Box::new(self.read_settings_config_state()?),
+            ),
             StudioProductTopic::ModelCatalog => {
                 let (settings, catalog_state) = self.config_runtime.read_with_catalog()?;
                 let catalog =
@@ -145,6 +135,9 @@ impl StudioRuntime {
             StudioProductTopic::AccountUsage => StudioProductBaselineState::AccountUsage(Box::new(
                 self.read_account_usage_state().await,
             )),
+            StudioProductTopic::AcpAuth => {
+                StudioProductBaselineState::AcpAuth(Box::new(self.acp_auth.read_state()))
+            }
             StudioProductTopic::ModelPerformance => StudioProductBaselineState::ModelPerformance(
                 Box::new(self.model_performance.snapshot().await),
             ),

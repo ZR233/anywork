@@ -25,9 +25,19 @@ impl StudioRuntime {
             .product_events
             .read_agent_directory()
             .await;
-        let (settings, catalog) = self.config_runtime.read_with_catalog()?;
-        let settings_config = super::settings_api::settings_config_snapshot(&settings)?;
-        let model_catalog = super::settings_api::model_catalog_snapshot(&settings, &catalog)?;
+        // 同一 Settings command 边界内投影配置与 ACP 身份，避免读到提交与身份对齐之间的状态。
+        let projected = self
+            .config_runtime
+            .with_consistent_snapshot(|settings, catalog| {
+                let acp_accounts = self
+                    .acp_auth
+                    .settings_view(settings.revision, settings.canonical_config())?;
+                Ok::<_, anyhow::Error>((
+                    super::settings_api::settings_config_snapshot(settings, acp_accounts)?,
+                    super::settings_api::model_catalog_snapshot(settings, catalog)?,
+                ))
+            })?;
+        let (settings_config, model_catalog) = projected?;
         let recovery = crate::StudioRecoveryStateSnapshot {
             state: self.recovery.state(),
         };

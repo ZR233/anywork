@@ -1,5 +1,148 @@
 part of 'studio_api.dart';
 
+/// Demo/preview 使用的 ACP 目录：官方 server 契约与安装说明由真实 catalog 拥有，
+/// 这里只是 demo 的 typed 替身，不参与生产判定。
+const demoAcpAccountCatalogFixture = AcpAccountCatalogView(
+  templates: [
+    AcpAccountTemplateView(
+      provider: AcpProviderView.antigravity,
+      displayName: 'Antigravity',
+      description: '通过官方 ACP server 连接 Antigravity，并使用其自身登录凭据。',
+      iconKey: 'antigravity',
+      // 官方默认 argv 由后端按平台给出；demo 不伪造任何平台参数。
+      defaultArgs: [],
+      installUrl: 'https://antigravity.google/docs/ide/extensions',
+    ),
+  ],
+);
+
+/// Demo 的认证观察替身。
+///
+/// 它只模拟后端发布的 canonical 事实（未检查 → 需要登录 → 认证通过/取消），
+/// 不模拟真实进程，也不参与生产路径；真实 Authenticating/Verifying 由 fake CLI
+/// 与生产 bridge 的 manual-gui 验收覆盖。
+class DemoAcpAuth {
+  final Map<String, AcpAuthAccountView> _accounts = {};
+  final Set<String> _verifiedConnectionKeys = {};
+  int _revision = 0;
+
+  static const methods = [
+    AcpAuthMethodView(
+      id: 'browser',
+      name: 'Sign in with browser',
+      description: '官方登录窗口完成授权',
+      kind: AcpAuthMethodKindView.agent,
+    ),
+    AcpAuthMethodView(
+      id: 'terminal',
+      name: 'Terminal sign-in',
+      description: '需要终端交互，本阶段不支持',
+      kind: AcpAuthMethodKindView.terminal,
+    ),
+  ];
+
+  static const server = AcpServerInfoView(
+    name: 'antigravity',
+    title: 'Antigravity',
+    version: '0.0.0-demo',
+  );
+
+  AcpAuthSnapshotView get snapshot => AcpAuthSnapshotView(
+    revision: _revision,
+    updatedAt: DateTime.now().millisecondsSinceEpoch ~/ 1000,
+    accounts: _accounts.values.toList(growable: false),
+  );
+
+  AcpAuthStateView stateOf(String accountId) =>
+      _accounts[accountId]?.state ?? const AcpUncheckedState();
+
+  /// 保存后登记连接身份；连接身份变化让旧观察失效。
+  void retain(AcpAccountSettingsView account) {
+    final existing = _accounts[account.accountId];
+    if (existing != null &&
+        existing.connectionRevision == account.connectionRevision) {
+      return;
+    }
+    _accounts[account.accountId] = AcpAuthAccountView(
+      accountId: account.accountId,
+      connectionRevision: account.connectionRevision,
+      state: const AcpUncheckedState(),
+    );
+    _revision += 1;
+  }
+
+  void forget(String accountId) {
+    if (_accounts.remove(accountId) == null) return;
+    _revision += 1;
+  }
+
+  String _connectionKey(AcpAccountSettingsView account) =>
+      '${account.accountId}:${account.connectionRevision}';
+
+  AcpAuthSnapshotView check(AcpAccountSettingsView account) {
+    if (_verifiedConnectionKeys.contains(_connectionKey(account))) {
+      _set(
+        account,
+        AcpVerifiedState(
+          checkedAt: DateTime.now().millisecondsSinceEpoch ~/ 1000,
+          server: server,
+        ),
+      );
+      return snapshot;
+    }
+    _set(account, const AcpRequiredState(server: server, methods: methods));
+    return snapshot;
+  }
+
+  AcpAuthSnapshotView authenticate(
+    AcpAccountSettingsView account,
+    String methodId,
+  ) {
+    final method = methods.where((item) => item.id == methodId).firstOrNull;
+    if (method == null || !method.isAgent) {
+      throw StudioFailure(
+        code: StudioFailureCode.invalidArgument,
+        message: 'Unsupported ACP authentication method: $methodId',
+        retryable: false,
+        correlationId: 'demo-acp-auth',
+      );
+    }
+    _verifiedConnectionKeys.add(_connectionKey(account));
+    _set(
+      account,
+      AcpVerifiedState(
+        checkedAt: DateTime.now().millisecondsSinceEpoch ~/ 1000,
+        server: server,
+      ),
+    );
+    return snapshot;
+  }
+
+  AcpAuthSnapshotView cancel(AcpAccountSettingsView account, String target) {
+    if (stateOf(account.accountId).operationId != target) {
+      throw StudioFailure(
+        code: StudioFailureCode.staleRevision,
+        message: 'ACP operation is no longer current: $target',
+        retryable: false,
+        correlationId: 'demo-acp-auth',
+      );
+    }
+    _set(account, const AcpCancelledState());
+    return snapshot;
+  }
+
+  void _set(AcpAccountSettingsView account, AcpAuthStateView state) {
+    _accounts[account.accountId] = AcpAuthAccountView(
+      accountId: account.accountId,
+      connectionRevision: account.connectionRevision,
+      // demo 不合成真实阶段：检查/登录直接收敛到需要登录或认证通过，
+      // Authenticating/Verifying 只由 fake CLI + 生产 bridge 验收覆盖。
+      state: state,
+    );
+    _revision += 1;
+  }
+}
+
 const demoAccountCatalogFixture = AccountCatalogView(
   schemaVersion: 6,
   revision: 'demo-future-catalog-v6',

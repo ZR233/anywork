@@ -10,6 +10,11 @@ class SettingsTextEdit extends StatefulWidget {
     required this.onChanged,
     this.enabled = true,
     this.obscureText = false,
+    this.maxLines = 1,
+    this.suffixIcon,
+    this.helperText,
+    this.onSubmitted,
+    this.inputKey,
   });
 
   final String label;
@@ -17,6 +22,24 @@ class SettingsTextEdit extends StatefulWidget {
   final ValueChanged<String> onChanged;
   final bool enabled;
   final bool obscureText;
+
+  /// 单行字段就是 1；长路径等需要换行显示时可放宽。
+  final int maxLines;
+
+  /// 与字段对齐的行内操作（例如原生文件选择）。
+  final Widget? suffixIcon;
+
+  /// 字段下方的次要说明；为空时不占位。
+  final String? helperText;
+
+  /// 键盘 Enter 提交（例如表单主操作）；为空时保持默认换行/失焦行为。
+  final VoidCallback? onSubmitted;
+
+  /// 真实输入控件（`TextFormField`）自己的键。
+  ///
+  /// 外层键标识卡片字段本身（点击/几何）；需要读取**实际文本**时用这个键，让 Driver
+  /// 的 `getText` 命中输入控件，而不是用光标动画或固定等待推断编辑完成。
+  final Key? inputKey;
 
   @override
   State<SettingsTextEdit> createState() => _SettingsTextEditState();
@@ -49,12 +72,23 @@ class _SettingsTextEditState extends State<SettingsTextEdit> {
   @override
   Widget build(BuildContext context) {
     return TextFormField(
+      key: widget.inputKey,
       controller: _controller,
       enabled: widget.enabled,
       obscureText: widget.obscureText,
+      maxLines: widget.maxLines,
+      minLines: 1,
       style: context.text.bodyMedium?.copyWith(color: context.colors.onSurface),
-      decoration: InputDecoration(labelText: widget.label),
+      decoration: InputDecoration(
+        labelText: widget.label,
+        helperText: widget.helperText,
+        helperMaxLines: 3,
+        suffixIcon: widget.suffixIcon,
+      ),
       onChanged: widget.onChanged,
+      onFieldSubmitted: widget.onSubmitted == null
+          ? null
+          : (_) => widget.onSubmitted!.call(),
     );
   }
 }

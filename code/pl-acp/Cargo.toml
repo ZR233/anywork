@@ -1,0 +1,10 @@
+[package]
+name = "pl-acp"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+agent-client-protocol = { workspace = true }
+tokio = { workspace = true }
+tokio-util = { workspace = true, features = ["compat"] }

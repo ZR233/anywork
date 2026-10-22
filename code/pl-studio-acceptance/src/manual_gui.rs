@@ -1,4 +1,5 @@
 mod account_usage;
+mod acp_account;
 mod context_replay_recovery;
 mod mode_editor;
 mod model_catalog;
@@ -44,7 +45,9 @@ pub(crate) struct ManualGuiOptions {
     /// history-writer, history-fault retry/resume, plan shutdown/restart
     /// recovery (`plan-recovery`), or the 30-second application shutdown
     /// acceptance journey (`shutdown`), or the wait/sleep/child observation
-    /// journey (`wait-events`).
+    /// journey (`wait-events`), or the Antigravity ACP account add / connect /
+    /// authenticate journey (`acp-account`), which drives a fake ACP Agent
+    /// through the real product bridge and needs no HTTP provider fixture.
     #[arg(long, default_value = "gui", value_parser = pl_provider_fixture::GUI_SCENARIOS)]
     pub(crate) scenario: String,
     /// Directory for sanitized evidence (defaults to target/manual-gui/<timestamp>-<pid>).
@@ -535,6 +538,59 @@ impl OwnedProcess {
         Ok(self.child.try_wait()?.is_some())
     }
 
+    /// Marks this owner as already reaped after the caller independently proved
+    /// its whole process tree is gone, so `Drop` does not signal a process group
+    /// that may already belong to another process.
+    fn mark_reaped(&mut self) {
+        self.stopped = true;
+    }
+
+    /// Delivers one stop request to this owner's process group without escalating.
+    ///
+    /// The `--native-launch` launcher runs a supervisor that handles SIGTERM
+    /// (`ctrlc` with the `termination` feature): it cancels its own children,
+    /// reclaims them and still reports the real native outcome. Killing the group
+    /// would take that responsibility away from the supervisor, so this owner
+    /// accepts only stop requests; waiting for the real exit belongs to the caller.
+    fn request_stop(&self) -> bool {
+        #[cfg(unix)]
+        {
+            Command::new("kill")
+                .arg("-TERM")
+                .arg("--")
+                .arg(format!("-{}", self.child.id()))
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .is_ok_and(|status| status.success())
+        }
+        #[cfg(windows)]
+        {
+            // The launcher is not created as its own console process group here, so
+            // no portable stop request can be addressed to it. The caller records
+            // that the request was unavailable instead of pretending it was sent.
+            false
+        }
+    }
+
+    /// Waits, bounded, for this owner to exit on its own, then reaps it.
+    ///
+    /// `Ok(None)` means it was still running at the deadline; the caller keeps
+    /// ownership and decides the next step instead of dropping a live tree.
+    fn wait_exit(&mut self, timeout: Duration) -> Result<Option<std::process::ExitStatus>> {
+        let deadline = Instant::now() + timeout;
+        loop {
+            if let Some(status) = self.child.try_wait()? {
+                self.stopped = true;
+                return Ok(Some(status));
+            }
+            if Instant::now() >= deadline {
+                return Ok(None);
+            }
+            thread::sleep(Duration::from_millis(100));
+        }
+    }
+
     fn terminate(&mut self) {
         if self.stopped {
             return;
@@ -669,9 +725,10 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
                     | "timeline-history"
                     | "stress-body-large"
                     | "wait-events"
+                    | "acp-account"
             ),
         "--retain-environment is supported by --scenario gui, single-instance, tool-scroll, \
-         timeline-history, stress-body-large and wait-events"
+         timeline-history, stress-body-large, wait-events and acp-account"
     );
     ensure!(
         !options.timeline_displacement || options.scenario == "timeline-history",
@@ -758,6 +815,7 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
             | "timeline-history"
             | "skill-activity"
             | "wait-events"
+            | "acp-account"
     ) && !options.model_catalog_restart
         && !options.model_catalog_restart_check
     {
@@ -812,6 +870,27 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
         .context("failed to create isolated GUI home")?;
     let home = working.path().join("home");
     fs::create_dir(&home)?;
+
+    // The ACP account journey never needs an HTTP model step: it drives the fake
+    // ACP Agent through the real product. The HTTP provider fixture is therefore
+    // not started at all, so its unexercised main flow can never be reported as
+    // an accepted scenario.
+    if options.scenario == "acp-account" {
+        let result = acp_account::run(&acp_account::AcpAccountScenario {
+            workspace: &workspace,
+            app_dir: &app_dir,
+            home: &home,
+            working: working.path(),
+            output: &output,
+            fixture_program: &fixture_executable,
+            interrupt: &interrupt_rx,
+        });
+        if result.is_ok() && options.retain_environment {
+            keep_isolated_environment(working, &home, &output, None)?;
+        }
+        return result;
+    }
+
     let ready_file = working.path().join("fixture-ready.json");
     let requests_file = working.path().join("requests.json");
     let stress_report_file = working.path().join("stress-report.json");
@@ -3127,25 +3206,7 @@ fn wait_for_vm(
     let deadline = Instant::now() + Duration::from_secs(600);
     loop {
         let log = fs::read_to_string(path)?;
-        if let Some(url) = log
-            .lines()
-            .filter_map(|line| {
-                // The Flutter launch tool prints `available at:`; a directly
-                // launched debug/profile artifact prints the engine's own
-                // `The Dart VM service is listening on`. Either is the real VM
-                // service for the running host.
-                line.split("available at: http://127.0.0.1:")
-                    .nth(1)
-                    .or_else(|| line.split("listening on http://127.0.0.1:").nth(1))
-                    .map(|tail| {
-                        format!(
-                            "http://127.0.0.1:{}",
-                            tail.split_whitespace().next().unwrap_or("")
-                        )
-                    })
-            })
-            .next_back()
-        {
+        if let Some(url) = vm_service_url(&log) {
             return Ok(url);
         }
         ensure!(!gui.exited()?, "GUI exited before publishing VM service");
@@ -3163,6 +3224,27 @@ fn wait_for_vm(
         );
         thread::sleep(Duration::from_millis(300));
     }
+}
+
+/// Extracts the VM service URL a GUI launcher published in its log.
+///
+/// The Flutter launch tool prints `available at:`; a directly launched
+/// debug/profile artifact prints the engine's own `The Dart VM service is
+/// listening on`. Either is the real VM service for the running host.
+fn vm_service_url(log: &str) -> Option<String> {
+    log.lines()
+        .filter_map(|line| {
+            line.split("available at: http://127.0.0.1:")
+                .nth(1)
+                .or_else(|| line.split("listening on http://127.0.0.1:").nth(1))
+                .map(|tail| {
+                    format!(
+                        "http://127.0.0.1:{}",
+                        tail.split_whitespace().next().unwrap_or("")
+                    )
+                })
+        })
+        .next_back()
 }
 
 fn seed_startup_fault(home: &Path, fault: &str) -> Result<()> {

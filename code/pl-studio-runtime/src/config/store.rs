@@ -167,8 +167,9 @@ impl ConfigStore {
         }
         let content = fs::read(self.paths.config_file())
             .map_err(|error| self.config_path_error(error.into()))?;
-        // Version dispatch precedes the strict parse so the supported 18..=22 configs reach
-        // their data-preserving migration instead of failing current-schema validation.
+        // Version dispatch precedes the strict parse so every supported older schema
+        // (`OLDEST_SUPPORTED_SCHEMA..=PREVIOUS_CONFIG_SCHEMA`) reaches its data-preserving
+        // migration instead of failing current-schema validation.
         #[derive(serde::Deserialize)]
         struct Version {
             schema_version: u32,
@@ -179,7 +180,7 @@ impl ConfigStore {
             .map(|version| version.schema_version)
             .filter(|version| {
                 (super::schema_migration::OLDEST_SUPPORTED_SCHEMA
-                    ..=super::schema_migration::LEGACY_ACCOUNT_SCHEMA)
+                    ..=super::schema_migration::PREVIOUS_CONFIG_SCHEMA)
                     .contains(version)
             })
         {
@@ -237,7 +238,8 @@ impl ConfigStore {
         })?;
         let rewritten = rewrite_legacy_deepseek_standalone_dialect(text)?;
         let rewritten = migrate_model_identifiers(&rewritten)?;
-        // 18..22 先完成各自的既有转换，再统一执行 Provider/Preset → Account/AccountTemplate。
+        // 18..22 先完成各自的既有转换，再统一执行 Provider/Preset → Account/AccountTemplate；
+        // 23 只需前进版本并补出空 ACP 集合，账号、路由、Profile 与凭据关联全部原样保留。
         let mut inline_tokens = std::collections::BTreeMap::new();
         let rewritten =
             super::schema_migration::rewrite_account_document(&rewritten, &mut inline_tokens)?;
@@ -249,7 +251,8 @@ impl ConfigStore {
                 migrate_legacy_planner_route(&mut config, source_version)?;
             }
             19 => migrate_legacy_planner_route(&mut config, source_version)?,
-            20..=22 => {}
+            20..=super::schema_migration::LEGACY_ACCOUNT_SCHEMA => {}
+            23 => {}
             other => {
                 return Err(PureError::ConfigError(format!(
                     "unsupported Studio config schema version: {other}"
@@ -260,14 +263,18 @@ impl ConfigStore {
         config.validate_declarations()?;
         let persisted = serialize_persisted_config(&config)?;
         let backup = write_config_backup(self.paths.config_file(), original, "migrated")?;
-        // 主配置与用户 Profile 在同一可恢复操作内准备、校验、复制凭据并逐资源提交。
+        // 主配置与（确实需要改键的旧版本的）用户 Profile 在同一可恢复操作内准备、校验、复制
+        // 凭据并逐资源提交；是否重排 Profile 由 schema_migration 按源版本统一判定，
+        // 只前进版本（如 23→24）保留 Profile 原字节与注释。
         let mut config = super::schema_migration::migrate(
             &self.paths,
             self.credentials.as_ref(),
-            original,
-            source_version,
-            persisted.into_bytes(),
-            inline_tokens,
+            super::schema_migration::MigrationSource {
+                original,
+                source_version,
+                candidate: persisted.into_bytes(),
+                inline_tokens,
+            },
             &replace,
         )?;
         self.hydrate_credentials(&mut config)?;
@@ -884,7 +891,7 @@ mod tests {
         assert_eq!(migrated_backups(path).len(), 1);
     }
 
-    /// 使用真实凭据存储边界（私有构造）验证 22→23 的启动路径。
+    /// 使用真实凭据存储边界（私有构造）验证 22→24 的启动路径。
     fn store_with_credentials(
         directory: &tempfile::TempDir,
         credentials: super::super::credential::MemoryCredentialStore,
@@ -967,7 +974,7 @@ mod tests {
         );
         // 持久化文档是当前结构：无 providers/preset/adapter/preset_defaults。
         let persisted = fs::read_to_string(path).unwrap();
-        assert!(persisted.contains("schema_version = 23"));
+        assert!(persisted.contains("schema_version = 24"));
         assert!(persisted.contains("template_defaults"));
         assert!(!persisted.contains("models.providers"));
         assert!(!persisted.contains("preset_defaults"));
@@ -980,7 +987,7 @@ mod tests {
     }
 
     #[test]
-    fn schema_21_startup_migrates_legacy_identifiers_and_continues_to_23() {
+    fn schema_21_startup_migrates_legacy_identifiers_and_continues_to_current_schema() {
         let directory = tempfile::tempdir().expect("isolated config directory");
         let credentials = crate::config::credential::MemoryCredentialStore::default();
         credentials.seed_legacy_provider("deepseek", "legacy-secret");
@@ -1005,7 +1012,7 @@ mod tests {
 
         let loaded = store
             .load_for_startup()
-            .expect("schema 21 continues through the account migration to 23");
+            .expect("schema 21 continues through the account migration to the current schema");
         // 迁移后 canonical 配置由凭据存储注入 token，期望值同样注入。
         let mut expected = config.clone();
         expected
@@ -1020,7 +1027,7 @@ mod tests {
             Some("legacy-secret")
         );
         let persisted = fs::read_to_string(path).unwrap();
-        assert!(persisted.contains("schema_version = 23"));
+        assert!(persisted.contains("schema_version = 24"));
         assert!(!persisted.contains("models.providers"));
         assert_eq!(store.load_for_startup().unwrap(), expected);
         assert_eq!(migrated_backups(path).len(), 1);
@@ -1239,7 +1246,7 @@ mod tests {
             loaded.schema_version,
             super::super::STUDIO_CONFIG_SCHEMA_VERSION
         );
-        assert_eq!(loaded.schema_version, 23);
+        assert_eq!(loaded.schema_version, 24);
         assert_eq!(
             capabilities.web_search.standalone,
             Some(StandaloneWebSearchDialect::DeepSeekToolsApi)
@@ -1264,7 +1271,10 @@ mod tests {
         let persisted = fs::read_to_string(path).expect("read migrated config");
         let persisted_table: toml::Table =
             toml::from_str(&persisted).expect("parse migrated config");
-        assert_eq!(persisted_table["schema_version"].as_integer(), Some(23));
+        assert_eq!(
+            persisted_table["schema_version"].as_integer(),
+            Some(i64::from(super::super::STUDIO_CONFIG_SCHEMA_VERSION))
+        );
         assert_eq!(
             persisted_table["models"]["accounts"]["deepseek"]["capabilities"]["web_search"]
                 ["standalone"]
@@ -1303,7 +1313,7 @@ mod tests {
         let loaded = store
             .load_for_startup()
             .expect("schema 20 without dialect token migrates");
-        assert_eq!(loaded.schema_version, 23);
+        assert_eq!(loaded.schema_version, 24);
         assert_eq!(loaded.mode_model_routes, config.mode_model_routes);
         assert_eq!(loaded.models.routes, config.models.routes);
         assert_eq!(
@@ -1317,6 +1327,57 @@ mod tests {
         assert!(loaded.deepseek_web_search.fetch_enabled);
     }
 
+    /// 23→24：只前进版本并补出空 ACP 集合，Native 账号、路由、搜索设置与用户 Profile 原样保留。
+    #[test]
+    fn schema_23_gains_empty_acp_and_preserves_native_config_and_profiles() {
+        let (_directory, store) = isolated_store();
+        let config = StudioConfig::default_config().expect("bundled defaults");
+        store.save(&config).expect("save current schema");
+        let path = store.paths.config_file();
+        let mut table = read_table(path);
+        table.insert("schema_version".into(), toml::Value::Integer(23));
+        let _ = table.remove("acp");
+        write_table(path, &table);
+        let original = fs::read(path).expect("original schema 23 bytes");
+        let agents = store.paths.agents_dir();
+        fs::create_dir_all(&agents).expect("agents directory");
+        let profile = concat!(
+            "display_name = \"Verify\"\n",
+            "description = \"Checks conversions\"\n",
+            "when_to_use = \"after a migration\"\n",
+            "system_instructions = \"verify\"\n",
+            "account_id = \"deepseek\"\n",
+            "model_id = \"deepseek-flash\"\n",
+            "effort = \"high\"\n",
+        );
+        fs::write(agents.join("verify.toml"), profile).expect("write user profile");
+
+        let loaded = store.load_for_startup().expect("schema 23 migrates");
+        assert_eq!(
+            loaded.schema_version,
+            super::super::STUDIO_CONFIG_SCHEMA_VERSION
+        );
+        assert!(
+            loaded.acp.accounts.is_empty(),
+            "schema 23 carries no ACP accounts"
+        );
+        assert_eq!(loaded.models.accounts, config.models.accounts);
+        assert_eq!(loaded.models.routes, config.models.routes);
+        assert_eq!(loaded.mode_model_routes, config.mode_model_routes);
+        assert_eq!(loaded.web_search, config.web_search);
+        assert_eq!(loaded.deepseek_web_search, config.deepseek_web_search);
+        assert_eq!(loaded.skills, config.skills);
+        assert_eq!(
+            fs::read(agents.join("verify.toml")).expect("reread profile"),
+            profile.as_bytes(),
+            "user Agent Profile is preserved across 23→24"
+        );
+        assert_eq!(
+            fs::read(migrated_backups(path).pop().expect("migration backup")).expect("read backup"),
+            original
+        );
+    }
+
     #[test]
     fn unknown_future_schema_fails_closed_without_rewrite() {
         let (_directory, store) = isolated_store();
@@ -1324,7 +1385,7 @@ mod tests {
         store.save(&config).expect("save current schema");
         let path = store.paths.config_file();
         let mut table = read_table(path);
-        table.insert("schema_version".into(), toml::Value::Integer(24));
+        table.insert("schema_version".into(), toml::Value::Integer(25));
         write_table(path, &table);
         let original = fs::read(path).expect("original future-schema bytes");
 

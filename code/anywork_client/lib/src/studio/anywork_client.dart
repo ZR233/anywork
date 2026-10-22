@@ -9,6 +9,7 @@ import 'bridge/product_topic_registry.dart';
 import 'commands/directory_commands.dart';
 import 'commands/account_usage_queries.dart';
 import 'commands/settings_commands.dart';
+import 'commands/acp_commands.dart';
 import 'commands/thread_commands.dart';
 import 'commands/command_lane.dart';
 import 'drafts/attachment_drafts.dart';
@@ -26,6 +27,7 @@ import 'stores/lsp_store.dart';
 import 'stores/mode_catalog_store.dart';
 import 'stores/model_performance_store.dart';
 import 'stores/account_usage_store.dart';
+import 'stores/acp_auth_store.dart';
 import 'stores/recovery_store.dart';
 import 'stores/session_costs_store.dart';
 import 'stores/skills_store.dart';
@@ -53,6 +55,7 @@ class AnyworkClient {
     directoryCommands = DirectoryCommands(this);
     accountUsageQueries = AccountUsageQueries(this);
     settingsCommands = SettingsCommands(this);
+    acpCommands = AcpCommands(this);
     threadCommands = ThreadCommands(this);
     remote = RemoteActions(transport);
     attachments = AttachmentDraftsOwner(
@@ -93,6 +96,15 @@ class AnyworkClient {
         if (value.loaded)
           observeResource('thread-mode-catalog', value.revision);
       }),
+      // ACP 认证回执的 targets 是 `acp-auth`：产品 topic 帧与命令响应进入同一
+      // reducer，因此该领域也必须把 canonical 水位登记给 MutationBoard，否则
+      // check/login/cancel 受理后永远停在 awaitingObservation。未加载时没有水位，
+      // 首帧（含 revision 0）才是有效观察。
+      acpAuth.source.watch((value) {
+        final snapshot = value.value;
+        if (value.loaded && snapshot != null)
+          observeResource('acp-auth', snapshot.revision);
+      }),
     ]);
   }
 
@@ -106,6 +118,7 @@ class AnyworkClient {
   late final DirectoryCommands directoryCommands;
   late final AccountUsageQueries accountUsageQueries;
   late final SettingsCommands settingsCommands;
+  late final AcpCommands acpCommands;
   late final ThreadCommands threadCommands;
   late final RemoteActions remote;
   late final AttachmentDraftsOwner attachments;
@@ -120,6 +133,7 @@ class AnyworkClient {
   final modeCatalog = ModeCatalogStore();
   final modelPerformance = ModelPerformanceStore();
   final accountUsage = AccountUsageStore();
+  final acpAuth = AcpAuthStore();
   final recovery = RecoveryStore();
   final updater = UpdaterStore();
   final persistence = PersistenceStore();
@@ -400,9 +414,15 @@ class AnyworkClient {
     final catalog = await transport.loadAccountCatalog();
     if (_closed) return;
     settings.applyAccountCatalog(catalog);
+    // ACP 目录是只读默认值：只登记模板与官方安装说明，不启动外部程序。
+    final acpCatalog = await transport.loadAcpAccountCatalog();
+    if (_closed) return;
+    settings.applyAcpAccountCatalog(acpCatalog);
     _applicationTopics = channels.acquireTopics([
       ...bridgeShellTopics,
       const AgentProfilesTopic(),
+      // ACP 认证观察属于应用级业务 owner：页面只借用快照，不创建/关闭订阅。
+      const AcpAuthTopic(),
       const McpTopic(),
       const LspTopic(),
       const ModelPerformanceTopic(),
@@ -443,6 +463,23 @@ class AnyworkClient {
         needsOpen: snapshot.selectedThreadId != null,
       );
     }
+  }
+
+  /// 账号面板的 typed 聚合视图：Native 账号与 ACP 接入按各自事实源合并。
+  ///
+  /// 读取不改变 demand：没有 ACP 目录或认证观察时只是没有对应条目。
+  AccountDirectoryView get accountDirectory {
+    final current = settings.state;
+    return AccountDirectoryView.from(
+      nativeAccounts: accountsWithCatalogMetadata(
+        current.canonical?.accounts ?? const <AccountSettingsView>[],
+        current.accountCatalog,
+      ),
+      acpAccounts: current.canonical?.acpAccounts ?? const [],
+      nativeCatalog: current.accountCatalog,
+      acpCatalog: current.acpCatalog,
+      auth: acpAuth.state.value ?? const AcpAuthSnapshotView.empty(),
+    );
   }
 
   StudioThread? findThread(String id) {
@@ -619,6 +656,7 @@ class AnyworkClient {
         accountUsageQueries.close(),
         deadline,
       ),
+      _joinOwner('acp-commands', acpCommands.close(), deadline),
       _joinOwner('thread-commands', threadCommands.close(), deadline),
       _joinOwner('mode-editor', modeEditor.close(), deadline),
       _joinOwner('remote-commands', remote.close(), deadline),

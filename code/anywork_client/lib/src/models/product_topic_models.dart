@@ -1,5 +1,6 @@
 import 'collection_equality.dart';
 
+import 'acp_models.dart';
 import 'agent_profile_models.dart';
 import 'persistence_models.dart';
 import 'runtime_models.dart';
@@ -190,6 +191,19 @@ final class AgentProfilesTopic extends ProductTopic {
   int get hashCode => 0x0116;
 }
 
+/// ACP 认证观察：独立版本域，与配置修订和目录修订互不替代。
+///
+/// 只读查询、订阅与页面进入都不启动外部程序；检查、登录与取消是显式命令。
+final class AcpAuthTopic extends ProductTopic {
+  const AcpAuthTopic();
+
+  @override
+  bool operator ==(Object other) => other is AcpAuthTopic;
+
+  @override
+  int get hashCode => 0x0118;
+}
+
 /// 订阅首帧携带的 canonical 基线 payload；每个 topic 只有自己的领域状态。
 sealed class ProductTopicBaselineState {
   const ProductTopicBaselineState();
@@ -297,6 +311,12 @@ final class AgentProfilesBaseline extends ProductTopicBaselineState {
   const AgentProfilesBaseline(this.state);
 
   final AgentProfilesStateView state;
+}
+
+final class AcpAuthBaseline extends ProductTopicBaselineState {
+  const AcpAuthBaseline(this.state);
+
+  final AcpAuthSnapshotView state;
 }
 
 /// 单个 topic 订阅交付的帧。
@@ -424,6 +444,7 @@ sealed class ProductTopicEventPayload {
     PersistenceStateChangedPayload() => const PersistenceTopic(),
     PersistenceQueueStateChangedPayload() => const PersistenceQueueTopic(),
     AgentProfilesStateChangedPayload() => const AgentProfilesTopic(),
+    AcpAuthStateChangedPayload() => const AcpAuthTopic(),
   };
 }
 
@@ -538,6 +559,12 @@ final class AgentProfilesStateChangedPayload extends ProductTopicEventPayload {
   const AgentProfilesStateChangedPayload(this.state);
 
   final AgentProfilesStateView state;
+}
+
+final class AcpAuthStateChangedPayload extends ProductTopicEventPayload {
+  const AcpAuthStateChangedPayload(this.state);
+
+  final AcpAuthSnapshotView state;
 }
 
 /// 单个 root 会话的作用域费用状态。

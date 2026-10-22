@@ -475,6 +475,7 @@ void main() {
       final json = jsonDecode(
         StudioDriverState.snapshotJson(
           observed: StudioDriverFacts(
+            acpAuthLoaded: false,
             workspace: _identityWorkspace(route: route),
           ),
         ),

@@ -8,6 +8,7 @@ import '../../frb_generated.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 import 'package:freezed_annotation/freezed_annotation.dart' hide protected;
 
+import 'types/acp.dart';
 import 'types/agent_profile.dart';
 import 'types/error.dart';
 import 'types/event.dart';

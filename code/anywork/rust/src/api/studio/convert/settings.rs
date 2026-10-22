@@ -115,6 +115,11 @@ pub(crate) fn bridge_settings(
                 catalog_id: account.catalog_id,
             })
             .collect(),
+        acp_accounts: settings
+            .acp_accounts
+            .into_iter()
+            .map(super::acp::bridge_acp_account_settings)
+            .collect(),
         mode_model_routes: settings
             .mode_model_routes
             .into_iter()

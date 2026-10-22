@@ -54,6 +54,17 @@ impl StudioRuntime {
             config_runtime.clone(),
             product_events.clone(),
         );
+        // ACP 认证 owner 只持有身份与操作事实；构造期不启动任何外部程序，只把当前配置的
+        // 连接身份登记为 `Unchecked`。
+        let acp_auth = super::super::acp_auth::AcpAuthRuntime::new(
+            store.clone(),
+            config_runtime.clone(),
+            product_events.clone(),
+            helper_source.clone(),
+        );
+        // 安装 Settings 提交观察者并立即观察当前 canonical 快照；安装、首次观察与后续提交共用
+        // 同一 Settings command 锁，因此不会有提交落在两者之间。
+        acp_auth.install_settings_observer(&config_runtime)?;
         let updater = StudioUpdateRuntime::new(product_events.clone())?;
         let mcp_state = McpStateRuntime::new();
         let lsp_state = LspStateRuntime::new(product_events.clone());
@@ -152,6 +163,7 @@ impl StudioRuntime {
             skills,
             thread_modes,
             account_usage,
+            acp_auth,
             model_performance,
             updater,
             activation: Default::default(),

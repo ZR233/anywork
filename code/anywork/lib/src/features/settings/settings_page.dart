@@ -257,25 +257,18 @@ class _SettingsScaffold extends StatelessWidget {
     return LayoutBuilder(
       builder: (context, constraints) {
         final compact = constraints.maxWidth < 820;
-        if (compact) {
-          return Column(
-            children: [
-              _SettingsNav(compact: true),
-              Expanded(
-                child: TabBarView(
-                  physics: const NeverScrollableScrollPhysics(),
-                  children: [
-                    for (final view in views) _RetainedSettingsTab(child: view),
-                  ],
-                ),
-              ),
-            ],
-          );
-        }
-        return Row(
+        // 宽窄只切换**同一个 Flex 的方向**：导航、分隔、TabBarView 的槽位与类型都
+        // 不变，所以跨越 820 断点时内容子树（及其 State：未保存草稿、滚动、焦点）
+        // 不会被重建。此前 compact/wide 各自 new 一份 TabBarView，会销毁
+        // AccountsTab 的编辑现场，与“设置页保留输入”的约定相反。
+        return Flex(
+          direction: compact ? Axis.vertical : Axis.horizontal,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            const _SettingsNav(compact: false),
-            VerticalDivider(width: 1, color: context.colors.outlineVariant),
+            _SettingsNav(compact: compact),
+            _SettingsNavDivider(
+              direction: compact ? Axis.vertical : Axis.horizontal,
+            ),
             Expanded(
               child: TabBarView(
                 physics: const NeverScrollableScrollPhysics(),
@@ -288,6 +281,25 @@ class _SettingsScaffold extends StatelessWidget {
         );
       },
     );
+  }
+}
+
+/// 导航与内容之间的 1px 分隔。
+///
+/// 保持**同一个 widget 类型与槽位**，只按当前 Flex 轴切换尺寸（横向布局是左侧竖线，
+/// 纵向布局是底部横线）。用两种不同 widget 替换同一槽位会连同内容子树一起重建。
+class _SettingsNavDivider extends StatelessWidget {
+  const _SettingsNavDivider({required this.direction});
+
+  final Axis direction;
+
+  @override
+  Widget build(BuildContext context) {
+    final color = context.colors.outlineVariant;
+    return direction == Axis.vertical
+        // 紧凑模式的导航自带底部描边：这里只保留 1px 槽位，不叠加第二条线。
+        ? const SizedBox(height: 1)
+        : SizedBox(width: 1, child: ColoredBox(color: color));
   }
 }
 

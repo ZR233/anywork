@@ -106,6 +106,45 @@ abstract class StudioTransport
   Future<RecoveryStateSnapshot> retryRecovery();
   Future<AccountCatalogView> loadAccountCatalog();
 
+  /// 只读 ACP 接入目录；读取默认值，不启动外部程序、不检查凭据。
+  Future<AcpAccountCatalogView> loadAcpAccountCatalog();
+
+  /// 保存（或更新）一个 ACP 接入配置；走配置 CAS 通道，返回 canonical 设置快照。
+  ///
+  /// 保存成功只证明配置事实成立，不证明连接可用。
+  Future<SettingsCommandReply> saveAcpAccount(
+    int expectedSettingsRevision,
+    AcpAccountUpdateView account, {
+    required OperationId operationId,
+  });
+
+  /// 删除一个 ACP 接入配置；删除不等于注销，官方程序持有的凭据不受此命令影响。
+  Future<SettingsCommandReply> removeAcpAccount(
+    int expectedSettingsRevision,
+    String accountId, {
+    required OperationId operationId,
+  });
+
+  /// 读取 `acpAuth` 领域当前 canonical 观察；不会触发检查或启动进程。
+  Future<AcpAuthSnapshotView> readAcpAuthState();
+
+  /// 提交一次认证操作（检查连接或按方法登录）。
+  ///
+  /// 命令快速返回受理身份，进展经 `acpAuth` topic 发布；重复提交不创建第二个进程。
+  Future<AcpAuthCommandReply> startAcpAuth({
+    required OperationId operationId,
+    required String accountId,
+    required int expectedConnectionRevision,
+    required AcpAuthActionView action,
+  });
+
+  /// 取消指定接入当前 operation；必须命中当前代次。
+  Future<AcpAuthCommandReply> cancelAcpAuth({
+    required OperationId operationId,
+    required String accountId,
+    required OperationId targetOperationId,
+  });
+
   /// 配置级 Agent Profiles 的 canonical 资源快照（含 revision 与逐文件诊断）。
   Future<AgentProfilesStateView> readAgentProfilesState();
 

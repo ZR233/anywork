@@ -151,6 +151,8 @@ class DemoStudioTransport extends StudioTransport
   int _skillsRevision = 1;
   int _accountUsageRevision = 1;
   final Map<String, AccountUsageView> _accountUsages = {};
+  List<AcpAccountSettingsView> _acpAccounts = const [];
+  final DemoAcpAuth _demoAcpAuth = DemoAcpAuth();
   int _mcpRevision = 0;
   int _lspRevision = 0;
   int? _lspActivityPercentage = 40;
@@ -492,6 +494,7 @@ class DemoStudioTransport extends StudioTransport
         _settingsRevision,
         SettingsStateData(
           accounts: accounts,
+          acpAccounts: _acpAccounts,
           defaultAccountId: _defaultAccountId ?? accounts.firstOrNull?.id,
           modeModelRoutes: modeRoutes,
           roles: roles,
@@ -1035,6 +1038,145 @@ class DemoStudioTransport extends StudioTransport
   Future<AccountCatalogView> loadAccountCatalog() async => _accountCatalog;
 
   @override
+  Future<AcpAccountCatalogView> loadAcpAccountCatalog() async =>
+      demoAcpAccountCatalogFixture;
+
+  AcpAccountSettingsView _demoAcpAccount(String accountId) {
+    final account = _acpAccounts
+        .where((candidate) => candidate.accountId == accountId)
+        .firstOrNull;
+    if (account == null) {
+      throw StudioFailure(
+        code: StudioFailureCode.notFound,
+        message: 'ACP account is unavailable: $accountId',
+        retryable: false,
+        correlationId: 'demo-acp',
+      );
+    }
+    return account;
+  }
+
+  AcpAuthCommandReply _demoAcpReply(
+    OperationId operationId,
+    AcpAuthSnapshotView snapshot, {
+    CommitDisposition disposition = CommitDisposition.applied,
+  }) {
+    _publishProductPayload(AcpAuthStateChangedPayload(snapshot));
+    return AcpAuthCommandReply(
+      receipt: _demoReceipt(
+        operationId,
+        changed: disposition == CommitDisposition.applied,
+        targets: [_demoStamp('acp-auth', snapshot.revision)],
+        effect: EffectPoint.immediate,
+      ),
+      snapshot: snapshot,
+    );
+  }
+
+  @override
+  Future<SettingsCommandReply> saveAcpAccount(
+    int expectedSettingsRevision,
+    AcpAccountUpdateView account, {
+    required OperationId operationId,
+  }) async {
+    final before = _demoSettingsState();
+    _checkSettingsRevision(expectedSettingsRevision);
+    if (account.accountId.trim().isEmpty ||
+        account.name.trim().isEmpty ||
+        account.program.trim().isEmpty) {
+      throw StudioFailure(
+        code: StudioFailureCode.invalidArgument,
+        message: 'ACP account requires an id, a name and a program',
+        retryable: false,
+        correlationId: 'demo-acp',
+      );
+    }
+    final previous = _acpAccounts
+        .where((candidate) => candidate.accountId == account.accountId)
+        .firstOrNull;
+    final identityChanged =
+        previous == null ||
+        previous.program != account.program ||
+        previous.provider != account.provider ||
+        !_sameDemoArgs(previous.args, account.args);
+    final saved = AcpAccountSettingsView(
+      accountId: account.accountId,
+      name: account.name,
+      provider: account.provider,
+      program: account.program,
+      args: account.args,
+      connectionRevision: identityChanged
+          ? (previous?.connectionRevision ?? 0) + 1
+          : previous.connectionRevision,
+    );
+    _acpAccounts = [
+      for (final candidate in _acpAccounts)
+        if (candidate.accountId != saved.accountId) candidate,
+      saved,
+    ];
+    _demoAcpAuth.retain(saved);
+    _settingsRevision += 1;
+    return _demoSettingsReply(operationId, before);
+  }
+
+  @override
+  Future<SettingsCommandReply> removeAcpAccount(
+    int expectedSettingsRevision,
+    String accountId, {
+    required OperationId operationId,
+  }) async {
+    final before = _demoSettingsState();
+    _checkSettingsRevision(expectedSettingsRevision);
+    _acpAccounts = [
+      for (final account in _acpAccounts)
+        if (account.accountId != accountId) account,
+    ];
+    _demoAcpAuth.forget(accountId);
+    _settingsRevision += 1;
+    return _demoSettingsReply(operationId, before);
+  }
+
+  @override
+  Future<AcpAuthSnapshotView> readAcpAuthState() async => _demoAcpAuth.snapshot;
+
+  @override
+  Future<AcpAuthCommandReply> startAcpAuth({
+    required OperationId operationId,
+    required String accountId,
+    required int expectedConnectionRevision,
+    required AcpAuthActionView action,
+  }) async {
+    final account = _demoAcpAccount(accountId);
+    if (account.connectionRevision != expectedConnectionRevision) {
+      throw StudioFailure(
+        code: StudioFailureCode.staleRevision,
+        message: 'ACP connection identity changed for $accountId',
+        retryable: false,
+        correlationId: 'demo-acp',
+      );
+    }
+    final snapshot = switch (action) {
+      AcpCheckActionView() => _demoAcpAuth.check(account),
+      AcpAuthenticateActionView(:final methodId) => _demoAcpAuth.authenticate(
+        account,
+        methodId,
+      ),
+    };
+    return _demoAcpReply(operationId, snapshot);
+  }
+
+  @override
+  Future<AcpAuthCommandReply> cancelAcpAuth({
+    required OperationId operationId,
+    required String accountId,
+    required OperationId targetOperationId,
+  }) async {
+    final account = _demoAcpAccount(accountId);
+    final snapshot = _demoAcpAuth.cancel(account, targetOperationId.value);
+    return _demoAcpReply(operationId, snapshot);
+  }
+
+  @override
   Future<AgentProfilesStateView> readAgentProfilesState() async =>
       readAgentProfilesStateSync();
 
@@ -1558,6 +1700,16 @@ class DemoStudioTransport extends StudioTransport
   List<Object?> _demoSettingsFacts(SettingsStateSnapshot s) => [
     s.defaultAccountId,
     s.permissionMode,
+    {
+      for (final account in s.acpAccounts)
+        account.accountId: [
+          account.name,
+          account.provider.wire,
+          account.program,
+          account.args,
+          account.connectionRevision,
+        ],
+    },
     {
       for (final p in s.accounts)
         p.id: [
@@ -2739,6 +2891,7 @@ class DemoStudioTransport extends StudioTransport
       AgentProfilesTopic() => AgentProfilesBaseline(
         readAgentProfilesStateSync(),
       ),
+      AcpAuthTopic() => AcpAuthBaseline(_demoAcpAuth.snapshot),
     };
     final revision = switch (baseline) {
       ProjectDirectoryBaseline(:final state) => state.revision,
@@ -2758,6 +2911,7 @@ class DemoStudioTransport extends StudioTransport
       PersistenceBaseline(:final state) => state.revision,
       PersistenceQueueBaseline(:final state) => state.revision,
       AgentProfilesBaseline(:final state) => state.revision,
+      AcpAuthBaseline(:final state) => state.revision,
     };
     return ProductTopicBaselineFrame(
       topic: topic,
@@ -6064,4 +6218,13 @@ SkillsStateSnapshot _demoSkillsState(
       ),
     ),
   );
+}
+
+/// demo 内的 argv 值比较：顺序与内容都要一致，才可沿用旧连接身份。
+bool _sameDemoArgs(List<String> left, List<String> right) {
+  if (left.length != right.length) return false;
+  for (var index = 0; index < left.length; index += 1) {
+    if (left[index] != right[index]) return false;
+  }
+  return true;
 }

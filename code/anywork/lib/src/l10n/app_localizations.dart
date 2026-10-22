@@ -7211,6 +7211,684 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Custom'**
   String get settingsModelAutoCompactCustom;
+
+  /// No description provided for @acpAccountPickerTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Add account'**
+  String get acpAccountPickerTitle;
+
+  /// No description provided for @acpAccountPickerNativeGroup.
+  ///
+  /// In en, this message translates to:
+  /// **'Model API account'**
+  String get acpAccountPickerNativeGroup;
+
+  /// No description provided for @acpAccountPickerAcpGroup.
+  ///
+  /// In en, this message translates to:
+  /// **'Agent integration (ACP)'**
+  String get acpAccountPickerAcpGroup;
+
+  /// No description provided for @acpAccountNoApiKeyHint.
+  ///
+  /// In en, this message translates to:
+  /// **'No API key needed — the official program handles sign-in.'**
+  String get acpAccountNoApiKeyHint;
+
+  /// No description provided for @acpAccountProgramLabel.
+  ///
+  /// In en, this message translates to:
+  /// **'Server program'**
+  String get acpAccountProgramLabel;
+
+  /// No description provided for @acpAccountProgramHint.
+  ///
+  /// In en, this message translates to:
+  /// **'Absolute path to the official ACP server executable.'**
+  String get acpAccountProgramHint;
+
+  /// No description provided for @acpAccountProgramBrowse.
+  ///
+  /// In en, this message translates to:
+  /// **'Browse…'**
+  String get acpAccountProgramBrowse;
+
+  /// No description provided for @acpAccountProgramRequired.
+  ///
+  /// In en, this message translates to:
+  /// **'Choose the official ACP server program first.'**
+  String get acpAccountProgramRequired;
+
+  /// No description provided for @acpAccountProgramBrowseFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Could not open the file picker.'**
+  String get acpAccountProgramBrowseFailed;
+
+  /// No description provided for @acpAccountArgsTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Advanced arguments'**
+  String get acpAccountArgsTitle;
+
+  /// No description provided for @acpAccountArgsHelp.
+  ///
+  /// In en, this message translates to:
+  /// **'Each entry is passed to the server as one argv item.'**
+  String get acpAccountArgsHelp;
+
+  /// No description provided for @acpAccountArgsAdd.
+  ///
+  /// In en, this message translates to:
+  /// **'Add argument'**
+  String get acpAccountArgsAdd;
+
+  /// No description provided for @acpAccountArgsEmpty.
+  ///
+  /// In en, this message translates to:
+  /// **'No extra arguments.'**
+  String get acpAccountArgsEmpty;
+
+  /// No description provided for @acpAccountArgsRemove.
+  ///
+  /// In en, this message translates to:
+  /// **'Remove argument'**
+  String get acpAccountArgsRemove;
+
+  /// No description provided for @acpAccountSaveAndConnect.
+  ///
+  /// In en, this message translates to:
+  /// **'Save and connect'**
+  String get acpAccountSaveAndConnect;
+
+  /// No description provided for @acpAccountSavedConnectIncomplete.
+  ///
+  /// In en, this message translates to:
+  /// **'Account saved. Connection not finished: {reason}'**
+  String acpAccountSavedConnectIncomplete(String reason);
+
+  /// No description provided for @acpAccountSaveFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Could not save this integration: {reason}'**
+  String acpAccountSaveFailed(String reason);
+
+  /// No description provided for @acpAccountProviderChip.
+  ///
+  /// In en, this message translates to:
+  /// **'ACP'**
+  String get acpAccountProviderChip;
+
+  /// No description provided for @acpAccountScopeNotice.
+  ///
+  /// In en, this message translates to:
+  /// **'This version only configures the account and sign-in. ACP chat and model selection are not available yet.'**
+  String get acpAccountScopeNotice;
+
+  /// No description provided for @acpAccountRemoveNotLogout.
+  ///
+  /// In en, this message translates to:
+  /// **'Removing an integration does not sign out the official program.'**
+  String get acpAccountRemoveNotLogout;
+
+  /// No description provided for @acpAccountRemoveFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Could not remove this integration.'**
+  String get acpAccountRemoveFailed;
+
+  /// No description provided for @acpAuthUnchecked.
+  ///
+  /// In en, this message translates to:
+  /// **'Connection not checked yet.'**
+  String get acpAuthUnchecked;
+
+  /// No description provided for @acpAuthChecking.
+  ///
+  /// In en, this message translates to:
+  /// **'Checking connection…'**
+  String get acpAuthChecking;
+
+  /// No description provided for @acpAuthRequiredTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Sign-in required'**
+  String get acpAuthRequiredTitle;
+
+  /// No description provided for @acpAuthRequiredBody.
+  ///
+  /// In en, this message translates to:
+  /// **'The official program reported the sign-in methods below.'**
+  String get acpAuthRequiredBody;
+
+  /// No description provided for @acpAuthMethodLabel.
+  ///
+  /// In en, this message translates to:
+  /// **'Sign-in method'**
+  String get acpAuthMethodLabel;
+
+  /// No description provided for @acpAuthLogin.
+  ///
+  /// In en, this message translates to:
+  /// **'Sign in'**
+  String get acpAuthLogin;
+
+  /// No description provided for @acpAuthAuthenticatingTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Waiting for sign-in'**
+  String get acpAuthAuthenticatingTitle;
+
+  /// No description provided for @acpAuthAuthenticatingBody.
+  ///
+  /// In en, this message translates to:
+  /// **'Finish signing in inside the official sign-in window. This page keeps following the same attempt.'**
+  String get acpAuthAuthenticatingBody;
+
+  /// No description provided for @acpAuthVerifyingTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Verifying sign-in…'**
+  String get acpAuthVerifyingTitle;
+
+  /// No description provided for @acpAuthVerifiedTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Connected'**
+  String get acpAuthVerifiedTitle;
+
+  /// No description provided for @acpAuthVerifiedAt.
+  ///
+  /// In en, this message translates to:
+  /// **'Verified {time}'**
+  String acpAuthVerifiedAt(String time);
+
+  /// No description provided for @acpAuthRecheck.
+  ///
+  /// In en, this message translates to:
+  /// **'Check again'**
+  String get acpAuthRecheck;
+
+  /// No description provided for @acpAuthCheck.
+  ///
+  /// In en, this message translates to:
+  /// **'Check connection'**
+  String get acpAuthCheck;
+
+  /// No description provided for @acpAuthCancel.
+  ///
+  /// In en, this message translates to:
+  /// **'Cancel sign-in'**
+  String get acpAuthCancel;
+
+  /// No description provided for @acpAuthCancelCheck.
+  ///
+  /// In en, this message translates to:
+  /// **'Cancel check'**
+  String get acpAuthCancelCheck;
+
+  /// No description provided for @acpAuthCancelling.
+  ///
+  /// In en, this message translates to:
+  /// **'Cancelling…'**
+  String get acpAuthCancelling;
+
+  /// No description provided for @acpAuthCancelled.
+  ///
+  /// In en, this message translates to:
+  /// **'Cancelled.'**
+  String get acpAuthCancelled;
+
+  /// No description provided for @acpAuthFailedTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Connection failed'**
+  String get acpAuthFailedTitle;
+
+  /// No description provided for @acpAuthTerminalOnly.
+  ///
+  /// In en, this message translates to:
+  /// **'The server only offers terminal sign-in, which this version does not support.'**
+  String get acpAuthTerminalOnly;
+
+  /// No description provided for @acpAuthUnsupportedOnly.
+  ///
+  /// In en, this message translates to:
+  /// **'The server only offers sign-in methods this version does not implement.'**
+  String get acpAuthUnsupportedOnly;
+
+  /// No description provided for @acpAuthClosingTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Finishing cleanup'**
+  String get acpAuthClosingTitle;
+
+  /// No description provided for @acpAuthClosingBody.
+  ///
+  /// In en, this message translates to:
+  /// **'The protocol exchange is over; the process and its pipes are still being joined. No new attempt starts until this settles.'**
+  String get acpAuthClosingBody;
+
+  /// No description provided for @acpAuthServerUnknown.
+  ///
+  /// In en, this message translates to:
+  /// **'The server did not provide its identity.'**
+  String get acpAuthServerUnknown;
+
+  /// No description provided for @acpAuthMethodSelectHint.
+  ///
+  /// In en, this message translates to:
+  /// **'Choose a sign-in method'**
+  String get acpAuthMethodSelectHint;
+
+  /// No description provided for @acpAuthMethodRequired.
+  ///
+  /// In en, this message translates to:
+  /// **'Select a sign-in method to continue.'**
+  String get acpAuthMethodRequired;
+
+  /// No description provided for @acpAuthRowClosing.
+  ///
+  /// In en, this message translates to:
+  /// **'Cleaning up'**
+  String get acpAuthRowClosing;
+
+  /// No description provided for @acpAccountInstallOpen.
+  ///
+  /// In en, this message translates to:
+  /// **'Open official guide'**
+  String get acpAccountInstallOpen;
+
+  /// No description provided for @acpAuthNoMethods.
+  ///
+  /// In en, this message translates to:
+  /// **'The server did not offer a usable sign-in method.'**
+  String get acpAuthNoMethods;
+
+  /// No description provided for @acpAuthRetry.
+  ///
+  /// In en, this message translates to:
+  /// **'Retry'**
+  String get acpAuthRetry;
+
+  /// No description provided for @acpAuthEditConfig.
+  ///
+  /// In en, this message translates to:
+  /// **'Edit configuration'**
+  String get acpAuthEditConfig;
+
+  /// No description provided for @acpAuthDone.
+  ///
+  /// In en, this message translates to:
+  /// **'Done'**
+  String get acpAuthDone;
+
+  /// No description provided for @acpAuthDiagnostics.
+  ///
+  /// In en, this message translates to:
+  /// **'Technical details'**
+  String get acpAuthDiagnostics;
+
+  /// No description provided for @acpAuthStageLabel.
+  ///
+  /// In en, this message translates to:
+  /// **'Stage: {stage}'**
+  String acpAuthStageLabel(String stage);
+
+  /// No description provided for @acpAuthCodeLabel.
+  ///
+  /// In en, this message translates to:
+  /// **'Reason: {code}'**
+  String acpAuthCodeLabel(String code);
+
+  /// No description provided for @acpAuthRowUnchecked.
+  ///
+  /// In en, this message translates to:
+  /// **'Not checked'**
+  String get acpAuthRowUnchecked;
+
+  /// No description provided for @acpAuthRowChecking.
+  ///
+  /// In en, this message translates to:
+  /// **'Checking'**
+  String get acpAuthRowChecking;
+
+  /// No description provided for @acpAuthRowRequired.
+  ///
+  /// In en, this message translates to:
+  /// **'Sign-in required'**
+  String get acpAuthRowRequired;
+
+  /// No description provided for @acpAuthRowAuthenticating.
+  ///
+  /// In en, this message translates to:
+  /// **'Signing in'**
+  String get acpAuthRowAuthenticating;
+
+  /// No description provided for @acpAuthRowVerifying.
+  ///
+  /// In en, this message translates to:
+  /// **'Verifying'**
+  String get acpAuthRowVerifying;
+
+  /// No description provided for @acpAuthRowVerified.
+  ///
+  /// In en, this message translates to:
+  /// **'Connected'**
+  String get acpAuthRowVerified;
+
+  /// No description provided for @acpAuthRowCancelling.
+  ///
+  /// In en, this message translates to:
+  /// **'Cancelling'**
+  String get acpAuthRowCancelling;
+
+  /// No description provided for @acpAuthRowCancelled.
+  ///
+  /// In en, this message translates to:
+  /// **'Cancelled'**
+  String get acpAuthRowCancelled;
+
+  /// No description provided for @acpAuthRowFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Connection failed'**
+  String get acpAuthRowFailed;
+
+  /// No description provided for @acpAuthPendingCommand.
+  ///
+  /// In en, this message translates to:
+  /// **'Sending…'**
+  String get acpAuthPendingCommand;
+
+  /// No description provided for @acpAccountDetailsSummary.
+  ///
+  /// In en, this message translates to:
+  /// **'Official ACP integration — no API key needed.'**
+  String get acpAccountDetailsSummary;
+
+  /// No description provided for @acpAccountConnectionInfoTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Connection details'**
+  String get acpAccountConnectionInfoTitle;
+
+  /// No description provided for @acpAccountProviderLabel.
+  ///
+  /// In en, this message translates to:
+  /// **'Provider'**
+  String get acpAccountProviderLabel;
+
+  /// No description provided for @acpAuthFailureSummary.
+  ///
+  /// In en, this message translates to:
+  /// **'{reason} ({stage})'**
+  String acpAuthFailureSummary(String reason, String stage);
+
+  /// No description provided for @acpFailureCodeStartup.
+  ///
+  /// In en, this message translates to:
+  /// **'Process start failed'**
+  String get acpFailureCodeStartup;
+
+  /// No description provided for @acpFailureCodeMissingExecutable.
+  ///
+  /// In en, this message translates to:
+  /// **'Server program not found'**
+  String get acpFailureCodeMissingExecutable;
+
+  /// No description provided for @acpFailureCodeIo.
+  ///
+  /// In en, this message translates to:
+  /// **'I/O error'**
+  String get acpFailureCodeIo;
+
+  /// No description provided for @acpFailureCodeUnsupportedVersion.
+  ///
+  /// In en, this message translates to:
+  /// **'Unsupported protocol version'**
+  String get acpFailureCodeUnsupportedVersion;
+
+  /// No description provided for @acpFailureCodeUnsupportedMethod.
+  ///
+  /// In en, this message translates to:
+  /// **'Unsupported sign-in method'**
+  String get acpFailureCodeUnsupportedMethod;
+
+  /// No description provided for @acpFailureCodeAuthentication.
+  ///
+  /// In en, this message translates to:
+  /// **'Sign-in failed'**
+  String get acpFailureCodeAuthentication;
+
+  /// No description provided for @acpFailureCodeProbe.
+  ///
+  /// In en, this message translates to:
+  /// **'Connection check failed'**
+  String get acpFailureCodeProbe;
+
+  /// No description provided for @acpFailureCodeProtocol.
+  ///
+  /// In en, this message translates to:
+  /// **'Protocol error'**
+  String get acpFailureCodeProtocol;
+
+  /// No description provided for @acpFailureCodeTransport.
+  ///
+  /// In en, this message translates to:
+  /// **'Transport error'**
+  String get acpFailureCodeTransport;
+
+  /// No description provided for @acpFailureCodeTimeout.
+  ///
+  /// In en, this message translates to:
+  /// **'Timed out'**
+  String get acpFailureCodeTimeout;
+
+  /// No description provided for @acpFailureCodeResourceLimit.
+  ///
+  /// In en, this message translates to:
+  /// **'Resource limit reached'**
+  String get acpFailureCodeResourceLimit;
+
+  /// No description provided for @acpFailureCodeCancelled.
+  ///
+  /// In en, this message translates to:
+  /// **'Cancelled'**
+  String get acpFailureCodeCancelled;
+
+  /// No description provided for @acpFailureCodeStaleOperation.
+  ///
+  /// In en, this message translates to:
+  /// **'Operation was superseded'**
+  String get acpFailureCodeStaleOperation;
+
+  /// No description provided for @acpFailureCodeConfigChanged.
+  ///
+  /// In en, this message translates to:
+  /// **'Configuration changed'**
+  String get acpFailureCodeConfigChanged;
+
+  /// No description provided for @acpFailureCodeCleanup.
+  ///
+  /// In en, this message translates to:
+  /// **'Cleanup failed'**
+  String get acpFailureCodeCleanup;
+
+  /// No description provided for @acpFailureCodeInternal.
+  ///
+  /// In en, this message translates to:
+  /// **'Internal error'**
+  String get acpFailureCodeInternal;
+
+  /// No description provided for @acpFailureStageProcess.
+  ///
+  /// In en, this message translates to:
+  /// **'during process start'**
+  String get acpFailureStageProcess;
+
+  /// No description provided for @acpFailureStageConfig.
+  ///
+  /// In en, this message translates to:
+  /// **'during configuration read'**
+  String get acpFailureStageConfig;
+
+  /// No description provided for @acpFailureStageInitialize.
+  ///
+  /// In en, this message translates to:
+  /// **'during initialize'**
+  String get acpFailureStageInitialize;
+
+  /// No description provided for @acpFailureStageAuthenticate.
+  ///
+  /// In en, this message translates to:
+  /// **'during sign-in'**
+  String get acpFailureStageAuthenticate;
+
+  /// No description provided for @acpFailureStageProbe.
+  ///
+  /// In en, this message translates to:
+  /// **'during connection check'**
+  String get acpFailureStageProbe;
+
+  /// No description provided for @acpFailureStageClose.
+  ///
+  /// In en, this message translates to:
+  /// **'during session close'**
+  String get acpFailureStageClose;
+
+  /// No description provided for @acpFailureStageCleanup.
+  ///
+  /// In en, this message translates to:
+  /// **'during cleanup'**
+  String get acpFailureStageCleanup;
+
+  /// No description provided for @studioFailureCodeNotInitialized.
+  ///
+  /// In en, this message translates to:
+  /// **'Not initialized'**
+  String get studioFailureCodeNotInitialized;
+
+  /// No description provided for @studioFailureCodeRuntimeStopped.
+  ///
+  /// In en, this message translates to:
+  /// **'Runtime stopped'**
+  String get studioFailureCodeRuntimeStopped;
+
+  /// No description provided for @studioFailureCodeInstanceBusy.
+  ///
+  /// In en, this message translates to:
+  /// **'Another operation is running'**
+  String get studioFailureCodeInstanceBusy;
+
+  /// No description provided for @studioFailureCodeInvalidArgument.
+  ///
+  /// In en, this message translates to:
+  /// **'Invalid request'**
+  String get studioFailureCodeInvalidArgument;
+
+  /// No description provided for @studioFailureCodeNotFound.
+  ///
+  /// In en, this message translates to:
+  /// **'Not found'**
+  String get studioFailureCodeNotFound;
+
+  /// No description provided for @studioFailureCodeBusy.
+  ///
+  /// In en, this message translates to:
+  /// **'Busy'**
+  String get studioFailureCodeBusy;
+
+  /// No description provided for @studioFailureCodeConflict.
+  ///
+  /// In en, this message translates to:
+  /// **'Conflict'**
+  String get studioFailureCodeConflict;
+
+  /// No description provided for @studioFailureCodeStaleRevision.
+  ///
+  /// In en, this message translates to:
+  /// **'Outdated revision'**
+  String get studioFailureCodeStaleRevision;
+
+  /// No description provided for @studioFailureCodePermissionDenied.
+  ///
+  /// In en, this message translates to:
+  /// **'Permission denied'**
+  String get studioFailureCodePermissionDenied;
+
+  /// No description provided for @studioFailureCodeCancelled.
+  ///
+  /// In en, this message translates to:
+  /// **'Cancelled'**
+  String get studioFailureCodeCancelled;
+
+  /// No description provided for @studioFailureCodeCancellationTooLate.
+  ///
+  /// In en, this message translates to:
+  /// **'Too late to cancel'**
+  String get studioFailureCodeCancellationTooLate;
+
+  /// No description provided for @studioFailureCodeOverloaded.
+  ///
+  /// In en, this message translates to:
+  /// **'Overloaded'**
+  String get studioFailureCodeOverloaded;
+
+  /// No description provided for @studioFailureCodeUnavailable.
+  ///
+  /// In en, this message translates to:
+  /// **'Unavailable'**
+  String get studioFailureCodeUnavailable;
+
+  /// No description provided for @studioFailureCodeProtocol.
+  ///
+  /// In en, this message translates to:
+  /// **'Protocol error'**
+  String get studioFailureCodeProtocol;
+
+  /// No description provided for @studioFailureCodeStorage.
+  ///
+  /// In en, this message translates to:
+  /// **'Storage error'**
+  String get studioFailureCodeStorage;
+
+  /// No description provided for @studioFailureCodeUpdate.
+  ///
+  /// In en, this message translates to:
+  /// **'Update error'**
+  String get studioFailureCodeUpdate;
+
+  /// No description provided for @studioFailureCodeInternal.
+  ///
+  /// In en, this message translates to:
+  /// **'Internal error'**
+  String get studioFailureCodeInternal;
+
+  /// No description provided for @acpAuthCancellingBody.
+  ///
+  /// In en, this message translates to:
+  /// **'Waiting for the sign-in window and its process to finish.'**
+  String get acpAuthCancellingBody;
+
+  /// No description provided for @acpAuthCancelledBody.
+  ///
+  /// In en, this message translates to:
+  /// **'No attempt is running now. You can check or sign in again.'**
+  String get acpAuthCancelledBody;
+
+  /// No description provided for @acpAuthCommandFailure.
+  ///
+  /// In en, this message translates to:
+  /// **'The request was not accepted. {reason}'**
+  String acpAuthCommandFailure(String reason);
+
+  /// No description provided for @acpAuthCommandUnavailable.
+  ///
+  /// In en, this message translates to:
+  /// **'The request could not be completed.'**
+  String get acpAuthCommandUnavailable;
 }
 
 class _AppLocalizationsDelegate

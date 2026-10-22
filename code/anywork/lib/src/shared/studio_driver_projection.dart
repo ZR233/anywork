@@ -118,6 +118,13 @@ StudioDriverFacts queryStudioDriverFacts(
     modeModelRoutes: canonical?.modeModelRoutes ?? const [],
     roles: canonical?.roles ?? const [],
     accounts: accounts,
+    acpAccounts: canonical?.acpAccounts ?? const [],
+    accountTemplates: [
+      for (final template in settings.accountCatalog.templates) template.id,
+    ],
+    acpAuth: client.acpAuth.state.value ?? const AcpAuthSnapshotView.empty(),
+    // 单一来源：canonical 观察的加载事实，不由 revision 或空快照推断。
+    acpAuthLoaded: client.acpAuth.state.loaded,
     commands: settings.commands.values.toList(growable: false),
     settingsReady: canonical?.state.value != null,
     persistence:
@@ -365,6 +372,7 @@ Map<String, int> _connectionCounts(AnyworkClient client) {
   counts.add(settings.configSync);
   counts.add(settings.catalogSync);
   counts.add(settings.agentProfilesSync);
+  counts.add(client.acpAuth.state.sync);
   counts.add(client.project.state.projectSync);
   counts.add(client.project.state.agentSync);
   counts.add(client.threadDirectory.state.sync);
@@ -416,6 +424,7 @@ Map<String, Object?> _projectionRevisions(AnyworkClient client) {
     'persistence': client.persistence.state.stateRevision,
     'persistenceQueue': client.persistence.state.queue?.revision,
     'agentProfiles': settings.agentProfiles?.revision,
+    'acpAuth': client.acpAuth.state.revision,
     'threadDirectory': client.threadDirectory.state.revision,
     'selectedThread': session?.workspace?.revision,
     'skills': {

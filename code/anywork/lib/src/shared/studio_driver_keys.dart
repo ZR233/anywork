@@ -246,6 +246,9 @@ abstract final class StudioDriverKeys {
   static const accountAdd = ValueKey<String>('account-add');
   static const accountTemplate = ValueKey<String>('account-template');
   static const accountBaseUrl = ValueKey<String>('account-base-url');
+  static const accountBaseUrlInput = ValueKey<String>(
+    StudioDriverKeyValues.accountBaseUrlInput,
+  );
   static const accountApiKey = ValueKey<String>('account-api-key');
   static const accountModelAdd = ValueKey<String>('account-model-add');
   static ValueKey<String> accountManualModelDelete(
@@ -262,6 +265,87 @@ abstract final class StudioDriverKeys {
   static ValueKey<String> customModelDisplayName(int index) =>
       ValueKey<String>('account-model-$index-display-name');
   static const accountCancel = ValueKey<String>('account-cancel');
+
+  /// ACP 账号：统一的模板选择入口与接入专有字段/认证操作。
+  static const accountTemplatePicker = ValueKey<String>(
+    StudioDriverKeyValues.accountTemplatePicker,
+  );
+  static ValueKey<String> accountTemplateOption(String token) =>
+      ValueKey<String>(StudioDriverKeyValues.accountTemplateOption(token));
+  static const accountTemplateList = ValueKey<String>(
+    StudioDriverKeyValues.accountTemplateList,
+  );
+  static const acpAccountProgram = ValueKey<String>(
+    StudioDriverKeyValues.acpAccountProgram,
+  );
+  static const acpAccountProgramInput = ValueKey<String>(
+    StudioDriverKeyValues.acpAccountProgramInput,
+  );
+  static const acpAccountName = ValueKey<String>(
+    StudioDriverKeyValues.acpAccountName,
+  );
+  static const acpAccountBack = ValueKey<String>(
+    StudioDriverKeyValues.acpAccountBack,
+  );
+  static const acpAccountRemove = ValueKey<String>(
+    StudioDriverKeyValues.acpAccountRemove,
+  );
+  static const acpAccountProgramBrowse = ValueKey<String>(
+    StudioDriverKeyValues.acpAccountProgramBrowse,
+  );
+  static const acpAccountArgs = ValueKey<String>(
+    StudioDriverKeyValues.acpAccountArgs,
+  );
+  static const acpAccountArgsHeader = ValueKey<String>(
+    StudioDriverKeyValues.acpAccountArgsHeader,
+  );
+  static const acpAccountArgsBody = ValueKey<String>(
+    StudioDriverKeyValues.acpAccountArgsBody,
+  );
+  static const acpAccountArgsAdd = ValueKey<String>(
+    StudioDriverKeyValues.acpAccountArgsAdd,
+  );
+  static const acpAccountInstallOpen = ValueKey<String>(
+    StudioDriverKeyValues.acpAccountInstallOpen,
+  );
+  static const acpAccountAuthState = ValueKey<String>(
+    StudioDriverKeyValues.acpAccountAuthState,
+  );
+  static const acpAccountConnectionInfo = ValueKey<String>(
+    StudioDriverKeyValues.acpAccountConnectionInfo,
+  );
+  static const acpAccountCheck = ValueKey<String>(
+    StudioDriverKeyValues.acpAccountCheck,
+  );
+  static const acpAccountLogin = ValueKey<String>(
+    StudioDriverKeyValues.acpAccountLogin,
+  );
+  static const acpAccountLoginMethod = ValueKey<String>(
+    StudioDriverKeyValues.acpAccountLoginMethod,
+  );
+  static const acpAccountCancelAuth = ValueKey<String>(
+    StudioDriverKeyValues.acpAccountCancelAuth,
+  );
+  static const acpAccountDone = ValueKey<String>(
+    StudioDriverKeyValues.acpAccountDone,
+  );
+  static ValueKey<String> acpAccountArg(int index) =>
+      ValueKey<String>(StudioDriverKeyValues.acpAccountArg(index));
+  static ValueKey<String> acpAccountArgInput(int index) =>
+      ValueKey<String>(StudioDriverKeyValues.acpAccountArgInput(index));
+  static ValueKey<String> acpAccountArgRemove(int index) =>
+      ValueKey<String>(StudioDriverKeyValues.acpAccountArgRemove(index));
+  static ValueKey<String> acpAccountRow(String accountId) =>
+      ValueKey<String>(StudioDriverKeyValues.acpAccountRow(accountId));
+  static ValueKey<String> acpAccountNotice(String accountId) =>
+      ValueKey<String>(StudioDriverKeyValues.acpAccountNotice(accountId));
+  static const acpAccountNoticeDetail = ValueKey<String>(
+    StudioDriverKeyValues.acpAccountNoticeDetail,
+  );
+  static ValueKey<String> acpAccountDetail(String accountId) =>
+      ValueKey<String>(StudioDriverKeyValues.acpAccountDetail(accountId));
+  static ValueKey<String> acpAccountAuthPhase(String phase) =>
+      ValueKey<String>(StudioDriverKeyValues.acpAccountAuthPhase(phase));
   static const toolApprove = ValueKey<String>('tool-approve');
   static const toolDeny = ValueKey<String>('tool-deny');
   static const userInputSubmit = ValueKey<String>('user-input-submit');

@@ -63,6 +63,17 @@ struct Args {
     /// can prove the product reclaims its own tool subtree.
     #[arg(long)]
     tool_peer: bool,
+    /// Run the scenario-owned fake ACP agent instead of the HTTP fixture.
+    ///
+    /// The product starts this as the configured Antigravity program and speaks
+    /// the real ACP handshake over stdin/stdout. Authentication, probe and
+    /// disconnect behaviour come from `--acp-state-dir`, which never touches
+    /// user configuration or credentials.
+    #[arg(long)]
+    acp_stdio: bool,
+    /// Absolute state directory for the ACP fake (behaviour, markers, evidence).
+    #[arg(long, value_name = "ABS_DIR", requires = "acp_stdio")]
+    acp_state_dir: Option<PathBuf>,
     /// Coordination file the stdio peer records its pids into.
     #[arg(long, value_name = "PATH")]
     coord_file: Option<PathBuf>,
@@ -96,6 +107,16 @@ async fn main() -> Result<()> {
         return Ok(());
     }
     let args = Args::parse();
+    if args.acp_stdio {
+        let state_dir = args
+            .acp_state_dir
+            .clone()
+            .context("--acp-state-dir is required with --acp-stdio")?;
+        return pl_provider_fixture::run_acp_stdio(pl_provider_fixture::AcpStdioOptions {
+            state_dir,
+        })
+        .await;
+    }
     if args.mcp_stdio {
         let coord_file = args
             .coord_file
@@ -162,10 +183,9 @@ async fn main() -> Result<()> {
         }
         return Ok(());
     }
-    let scenario = args
-        .scenario
-        .as_deref()
-        .context("--scenario is required without --mcp-stdio/--lsp-stdio/--tool-peer")?;
+    let scenario = args.scenario.as_deref().context(
+        "--scenario is required without --acp-stdio/--mcp-stdio/--lsp-stdio/--tool-peer",
+    )?;
     ensure!(
         GUI_SCENARIOS.contains(&scenario),
         "unknown fixture scenario: {scenario}"
@@ -220,6 +240,12 @@ async fn main() -> Result<()> {
         "shutdown" => gui_shutdown_script(),
         "provider-usage" => gui_script(),
         "wait-events" => gui_wait_events_script(),
+        // The manual-gui acceptance for this scenario drives the fake ACP agent
+        // (`--acp-stdio`) directly; serving an empty HTTP script here would hide
+        // that the scenario never expected provider traffic.
+        "acp-account" => bail!(
+            "the acp-account scenario runs the fake ACP agent (--acp-stdio), not the HTTP fixture"
+        ),
         value => bail!("unknown fixture scenario: {value}"),
     };
     let fault = match args.fault.as_deref() {

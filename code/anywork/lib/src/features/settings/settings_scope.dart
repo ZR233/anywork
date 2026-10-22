@@ -6,6 +6,7 @@ import '../../app/theme/studio_tokens.dart';
 import 'package:anywork_client/studio_client.dart';
 
 import '../../presentation/providers/client_provider.dart';
+import '../../presentation/providers/acp_auth_store.dart';
 import '../../presentation/providers/lsp_store.dart';
 import '../../presentation/providers/mcp_store.dart';
 import '../../presentation/providers/model_performance_store.dart';
@@ -74,6 +75,9 @@ final settingsTopicSyncProvider = Provider.autoDispose
         ),
         AccountUsageTopic() => ref.watch(
           accountUsageStoreProvider.select((state) => state.sync),
+        ),
+        AcpAuthTopic() => ref.watch(
+          acpAuthStateProvider.select((state) => state.sync),
         ),
         ModelPerformanceTopic() => ref.watch(
           modelPerformanceStoreProvider.select((state) => state.sync),

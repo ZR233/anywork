@@ -39,6 +39,7 @@
 | 24 | [测试与人工验收](./24-testing.md) | 两库公开 API 测试、本地模拟供应商、GUI 人工证据 |
 | 25 | [Client、前端状态与资源生命周期](./25-frontend-state.md) | SDK-only Client、FRB/Riverpod 边界、唯一 writer、命令回执、草稿与资源关闭契约（唯一权威源） |
 | 26 | [Timeline 内容源与原生列表](./26-timeline-content.md) | keyset 页、有界尾部订阅、详情、Live/History、原生列表与显示预算（唯一权威源） |
+| 27 | [ACP 接入与认证](./27-acp.md) | 外部 Agent 接入、认证检查、取消与进程资源生命周期；不混同 Native 模型协议 |
 
 配套资产：`concepts/` 保存产品概念设计（如项目侧栏），`prototypes/` 保存视觉原型
 （HTML 稿，不含架构约定），`assets/` 保存文档引用的图片。

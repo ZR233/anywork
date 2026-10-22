@@ -1,6 +1,7 @@
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../presentation/providers/acp_auth_store.dart';
 import '../../presentation/providers/lsp_store.dart';
 import '../../presentation/providers/mcp_store.dart';
 import '../../presentation/providers/model_performance_store.dart';
@@ -67,6 +68,7 @@ class SettingsAccountsView {
   SettingsAccountsView({
     required this.canonical,
     required this.accountCatalog,
+    required this.acpCatalog,
     required this.defaultAccountId,
     required this.settingsRevision,
     required this.modelCatalogRevision,
@@ -76,10 +78,17 @@ class SettingsAccountsView {
            canonical?.accounts ?? const <AccountSettingsView>[],
            accountCatalog,
          ),
+       ),
+       acpAccounts = List<AcpAccountSettingsView>.unmodifiable(
+         canonical?.acpAccounts ?? const <AcpAccountSettingsView>[],
        );
 
   final SettingsStateSnapshot? canonical;
   final AccountCatalogView accountCatalog;
+
+  /// ACP 接入目录（只读默认值）与已保存的接入配置；与 Native 账号并列。
+  final AcpAccountCatalogView acpCatalog;
+  final List<AcpAccountSettingsView> acpAccounts;
   final String? defaultAccountId;
   final int settingsRevision;
   final int modelCatalogRevision;
@@ -95,7 +104,8 @@ class SettingsAccountsView {
           modelCatalogRevision == other.modelCatalogRevision &&
           accountCatalogRevision == other.accountCatalogRevision &&
           identical(canonical, other.canonical) &&
-          identical(accountCatalog, other.accountCatalog);
+          identical(accountCatalog, other.accountCatalog) &&
+          identical(acpCatalog, other.acpCatalog);
 
   @override
   int get hashCode => Object.hash(
@@ -105,6 +115,7 @@ class SettingsAccountsView {
     accountCatalogRevision,
     identityHashCode(canonical),
     identityHashCode(accountCatalog),
+    identityHashCode(acpCatalog),
   );
 }
 
@@ -114,6 +125,7 @@ final settingsAccountsViewProvider = Provider.autoDispose<SettingsAccountsView>(
     return SettingsAccountsView(
       canonical: store.canonical,
       accountCatalog: store.accountCatalog,
+      acpCatalog: store.acpCatalog,
       defaultAccountId: store.canonical?.defaultAccountId,
       settingsRevision: store.settingsRevision,
       modelCatalogRevision: store.modelCatalogRevision,
@@ -122,6 +134,23 @@ final settingsAccountsViewProvider = Provider.autoDispose<SettingsAccountsView>(
   },
   name: 'settingsAccountsViewProvider',
 );
+
+/// 账号面板的 typed 聚合：Native 账号与 ACP 接入合并为一个条目/模板来源。
+///
+/// 只读投影：Native 的模型、默认账号与用量仍由 Native 路径拥有，ACP 的认证状态只来自
+/// `acpAuth` 观察。
+final settingsAccountDirectoryProvider =
+    Provider.autoDispose<AccountDirectoryView>((ref) {
+      final accounts = ref.watch(settingsAccountsViewProvider);
+      final auth = ref.watch(acpAuthStateProvider);
+      return AccountDirectoryView.from(
+        nativeAccounts: accounts.accounts,
+        acpAccounts: accounts.acpAccounts,
+        nativeCatalog: accounts.accountCatalog,
+        acpCatalog: accounts.acpCatalog,
+        auth: auth.value ?? const AcpAuthSnapshotView.empty(),
+      );
+    }, name: 'settingsAccountDirectoryProvider');
 
 /// 自动额度只消费 (id, usageQueryRevision)，不把 catalog/settings 全局水位当查询身份。
 final settingsAccountUsageQueryIdentitiesProvider =

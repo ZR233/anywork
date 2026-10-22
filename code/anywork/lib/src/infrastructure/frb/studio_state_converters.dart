@@ -93,6 +93,7 @@ SettingsStateSnapshot _settingsStateFromFrb(
   );
   return SettingsStateSnapshot(
     accounts: data.accounts,
+    acpAccounts: data.acpAccounts,
     defaultAccountId: data.defaultAccountId,
     modeModelRoutes: data.modeModelRoutes,
     roles: data.roles,
@@ -121,6 +122,8 @@ SettingsStateData _settingsDataFromFrb(
           ),
         )
         .toList(),
+    // ACP 接入是配置路的独立集合：与 Native 账号并列，不进入模型目录语义。
+    acpAccounts: settings.acpAccounts.map(_acpAccountFromFrb).toList(),
     defaultAccountId: settings.defaultAccountId,
     modeModelRoutes: settings.modeModelRoutes
         .map(_modeModelRouteFromFrb)

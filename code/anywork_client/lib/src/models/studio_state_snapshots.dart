@@ -1,5 +1,6 @@
 import 'agent_models.dart';
 import 'account_models.dart';
+import 'acp_models.dart';
 import 'recovery_models.dart';
 import 'settings_models.dart';
 import 'studio_enums.dart';
@@ -172,6 +173,7 @@ class SettingsStateData {
   const SettingsStateData({
     this.modelCatalogRevision = 0,
     this.accounts = const [],
+    this.acpAccounts = const [],
     this.defaultAccountId,
     this.modeModelRoutes = const [],
     this.roles = const [],
@@ -185,6 +187,9 @@ class SettingsStateData {
   });
   final int modelCatalogRevision;
   final List<AccountSettingsView> accounts;
+
+  /// ACP 接入配置；与 Native [accounts] 是并列的独立集合，不共享模型/凭据语义。
+  final List<AcpAccountSettingsView> acpAccounts;
   final String? defaultAccountId;
   final List<ModeModelRouteView> modeModelRoutes;
   final List<RoleSettingsView> roles;
@@ -232,6 +237,7 @@ class StudioMutationView {
 class SettingsStateSnapshot extends ObservedStateSnapshot<SettingsStateData> {
   SettingsStateSnapshot({
     List<AccountSettingsView> accounts = const [],
+    List<AcpAccountSettingsView> acpAccounts = const [],
     String? defaultAccountId,
     List<ModeModelRouteView> modeModelRoutes = const [],
     List<RoleSettingsView> roles = const [],
@@ -252,6 +258,7 @@ class SettingsStateSnapshot extends ObservedStateSnapshot<SettingsStateData> {
          value: SettingsStateData(
            modelCatalogRevision: modelCatalogRevision,
            accounts: accounts,
+           acpAccounts: acpAccounts,
            defaultAccountId: defaultAccountId,
            modeModelRoutes: modeModelRoutes,
            roles: roles,
@@ -272,6 +279,7 @@ class SettingsStateSnapshot extends ObservedStateSnapshot<SettingsStateData> {
   SettingsStateData get _data => state.value ?? const SettingsStateData();
   int get modelCatalogRevision => _data.modelCatalogRevision;
   List<AccountSettingsView> get accounts => _data.accounts;
+  List<AcpAccountSettingsView> get acpAccounts => _data.acpAccounts;
   String? get defaultAccountId => _data.defaultAccountId;
   List<ModeModelRouteView> get modeModelRoutes => _data.modeModelRoutes;
   List<RoleSettingsView> get roles => _data.roles;

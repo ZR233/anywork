@@ -4,6 +4,7 @@
 // ignore_for_file: invalid_use_of_internal_member, unused_import, unnecessary_import
 
 import '../../../frb_generated.dart';
+import 'acp.dart';
 import 'agent_profile.dart';
 
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
@@ -91,6 +92,9 @@ sealed class BridgeProductEventPayload with _$BridgeProductEventPayload {
   const factory BridgeProductEventPayload.accountUsageStateChanged(
     BridgeAccountUsageStateSnapshot field0,
   ) = BridgeProductEventPayload_AccountUsageStateChanged;
+  const factory BridgeProductEventPayload.acpAuthStateChanged(
+    BridgeAcpAuthSnapshot field0,
+  ) = BridgeProductEventPayload_AcpAuthStateChanged;
   const factory BridgeProductEventPayload.modelPerformanceStateChanged(
     BridgeModelPerformanceSnapshot field0,
   ) = BridgeProductEventPayload_ModelPerformanceStateChanged;

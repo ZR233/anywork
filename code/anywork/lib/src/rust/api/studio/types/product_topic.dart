@@ -4,6 +4,7 @@
 // ignore_for_file: invalid_use_of_internal_member, unused_import, unnecessary_import
 
 import '../../../frb_generated.dart';
+import 'acp.dart';
 import 'agent_profile.dart';
 import 'error.dart';
 import 'event.dart';
@@ -55,6 +56,8 @@ sealed class BridgeProductBaseline with _$BridgeProductBaseline {
   const factory BridgeProductBaseline.accountUsage(
     BridgeAccountUsageStateSnapshot field0,
   ) = BridgeProductBaseline_AccountUsage;
+  const factory BridgeProductBaseline.acpAuth(BridgeAcpAuthSnapshot field0) =
+      BridgeProductBaseline_AcpAuth;
   const factory BridgeProductBaseline.modelPerformance(
     BridgeModelPerformanceSnapshot field0,
   ) = BridgeProductBaseline_ModelPerformance;
@@ -98,6 +101,7 @@ sealed class BridgeProductTopic with _$BridgeProductTopic {
       BridgeProductTopic_ThreadModeCatalog;
   const factory BridgeProductTopic.accountUsage() =
       BridgeProductTopic_AccountUsage;
+  const factory BridgeProductTopic.acpAuth() = BridgeProductTopic_AcpAuth;
   const factory BridgeProductTopic.modelPerformance() =
       BridgeProductTopic_ModelPerformance;
   const factory BridgeProductTopic.sessionCosts({

@@ -120,6 +120,22 @@ canonical account 构造目标模型的覆盖变更，保留其余模型、连�
 
 ## 20.2 配置职责
 
+### ACP 接入配置
+
+账号设置入口以 Native/Acp 类型化分支汇集两类接入。Native 的 `models.accounts`、路由与
+凭据合同不变；Studio 独立拥有 `acp.accounts`，每个稳定 ID 保存名称、接入类型、可执行
+程序路径和 argv 列表，不使用空 base URL 或空模型目录伪装 Native 账号。模板提供本平台的
+默认启动参数，保存参数不进行 shell 拼接。ACP 不进入 Native 默认账号或模型路由候选。
+
+配置版本转换显式为既有配置增加空 ACP 集合，保留账号 ID、路由、Profile、所有用户设置与
+凭据关联；沿用本章的备份、校验和原子提交，不通过默认配置重建绕过迁移。
+ACP 保存/删除使用 Settings revision CAS，成功返回 canonical 设置，且不等待进程启动或
+认证。认证是独立显式操作，不推进 Settings 或模型目录水位，详见 [27](./27-acp.md)。
+
+Google 凭据继续由官方程序管理，不经过 Native API-key 凭据接口，不复制到 anywork 的
+TOML、数据库或 keyring。删除 ACP 配置只移除本地接入并取消所属操作，不注销 Google 或
+删除官方凭据；多个配置可能共享同一官方凭据环境，不能因配置 ID 不同宣称账号隔离。
+
 每个 account 的模型目录独立保存按模型 model_id 索引的压缩阈值覆盖值，bundled、附加与 explicit
 模型使用同一解析规则。覆盖值为正整数 tokens，缺省表示使用解析后的模型默认值（目录预设或
 安全输入容量推导）；恢复默认仅删除对应模型覆盖项，显式选择与非空默认值相等时也归一化为
@@ -197,7 +213,7 @@ catalog，被禁用的用户 Profile 仍可编辑并重新启用。
 本地 TOML 使用 `snake_case`，不同于 API wire 格式。精简示例：
 
 ```toml
-schema_version = 23
+schema_version = 24
 
 disabled_system_agents = []
 

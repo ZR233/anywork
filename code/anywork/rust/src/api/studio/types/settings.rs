@@ -339,6 +339,8 @@ pub struct BridgeDeepSeekWebSearchSettingsDto {
 pub struct BridgeStudioSettingsDto {
     pub default_account_id: Option<String>,
     pub accounts: Vec<BridgeAccountSettingsDto>,
+    /// ACP 接入的 desired 配置；与 Native `accounts` 是两套语义。
+    pub acp_accounts: Vec<super::BridgeAcpAccountSettings>,
     pub mode_model_routes: Vec<BridgeModeModelSettingsDto>,
     pub roles: Vec<BridgeRoleSettingsDto>,
     pub permission_mode: String,

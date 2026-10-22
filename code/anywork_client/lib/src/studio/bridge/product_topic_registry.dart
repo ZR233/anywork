@@ -30,7 +30,15 @@ const List<ProductTopic> bridgeShellTopics = [
 /// 每个 tab 是独立职责：MCP、LSP、项目 Skills、Provider usage、模型性能、
 /// 配置级 Profiles 不合并为一个含糊的 `services` 作用域；隐藏 tab 不持有租约，
 /// 只保留 UI 状态。Skills 作用域始终携带当前 project identity。
-enum BridgeSettingsScopeKind { statistics, agents, mcp, lsp, skills, usage }
+enum BridgeSettingsScopeKind {
+  statistics,
+  agents,
+  mcp,
+  lsp,
+  skills,
+  usage,
+  acp,
+}
 
 /// 该设置作用域需要的 topics。
 ///
@@ -56,6 +64,9 @@ List<ProductTopic> bridgeSettingsScopeTopics(
           : [SkillsTopic(projectId: projectId)];
     case BridgeSettingsScopeKind.usage:
       return const [AccountUsageTopic()];
+    case BridgeSettingsScopeKind.acp:
+      // Accounts 页可见时只租用认证观察；进入页面不启动检查。
+      return const [AcpAuthTopic()];
   }
 }
 
@@ -572,5 +583,6 @@ String describeBridgeProductTopic(ProductTopic topic) {
     PersistenceTopic() => 'persistence',
     PersistenceQueueTopic() => 'persistenceQueue',
     AgentProfilesTopic() => 'agentProfiles',
+    AcpAuthTopic() => 'acpAuth',
   };
 }

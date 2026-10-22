@@ -75,6 +75,13 @@ pub use web_search::{
 mod mcp_stdio;
 pub use mcp_stdio::{McpStdioOptions, run_mcp_stdio};
 
+mod acp_stdio;
+pub use acp_stdio::{
+    ACP_AUTH_METHOD_ID, ACP_AUTH_RELEASE_MARKER, ACP_AUTH_STARTED_MARKER, ACP_AUTHENTICATED_MARKER,
+    ACP_BEHAVIOR_FILE, ACP_EVENTS_FILE, AcpFixtureAuthentication, AcpFixtureBehavior,
+    AcpFixtureEvent, AcpFixtureProbe, AcpStdioOptions, run_acp_stdio,
+};
+
 mod stdio_peer;
 
 mod lsp_stdio;
@@ -104,7 +111,11 @@ pub const GUI_PROMPT: &str = "Reply with exactly: fixture ready";
 /// The coordinator's ready-file check, the fixture CLI parser and the script
 /// selection all read this single list, so a scenario can no longer be accepted
 /// by one of them and rejected by another.
-pub const GUI_SCENARIOS: [&str; 24] = [
+///
+/// `acp-account` is the exception: it is driven by the fake ACP agent
+/// (`--acp-stdio`), never by the HTTP fixture, so the CLI still refuses to serve
+/// it here instead of silently running an empty script.
+pub const GUI_SCENARIOS: [&str; 25] = [
     "gui",
     "markdown-layout",
     "single-instance",
@@ -129,6 +140,7 @@ pub const GUI_SCENARIOS: [&str; 24] = [
     "provider-usage",
     "timeline-history",
     "wait-events",
+    "acp-account",
 ];
 
 /// Root prompts consumed by the native Mode editor acceptance, in order.

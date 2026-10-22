@@ -68,6 +68,20 @@ typed code 与 correlation，不能困在 Widget 的局部等待标志里。显�
 配置与 catalog 的 revision 独立；Thread model route revision 是 route extension 的 CAS，
 不是 Thread 通知序号。`saved` 与执行终态独立。页查询不推进订阅基线，不存在用窗口版本猜测分页回执的语义。owner 更换后必须接受新 baseline，旧 epoch 的回执不能由新 epoch 满足。
 
+ACP 账号配置与认证观察也属于独立资源。Client 的“保存并连接”先消费 canonical 配置回执，
+再提交认证检查；后一步失败不得撤销前一步成功或清空草稿。认证帧与命令响应进入同一 reducer，
+按 owner/revision 与 operation 身份收敛，不靠 Widget 的 loading 布尔值推断已登录。认证观察
+投影到账号时还须匹配其 connection revision；跨资源帧乱序期间，不能把旧连接的成功用于新配置。
+Client 必须实际持有相应 topic 订阅，不能以只观察本地 store 代替订阅建立。Accounts
+可见需求只拥有 `acpAuth` 观察租约；离页、重建或返回不取消登录、不重启检查，重新观察读取
+当前基线。交互呈现见 [19](./19-studio-ui.md)，认证语义见 [27](./27-acp.md)。
+认证事件可先于 start 命令响应到达；一旦 canonical 状态提供当前 operation 身份，取消必须
+可独立提交，不能被 start 的本地 busy 标志或命令队列阻塞。命令回执仍经同一 reducer 收敛。
+已加载认证快照的水位同时参与 MutationBoard 的 `acp-auth` 资源观察，使用当前 runtime owner
+epoch；topic 名 `acpAuth` 与回执资源名不混用。命令响应与先到事件都通过同一 canonical
+观察满足回执，不能只更新画面而把已确认命令永久留在 awaiting-observation，也不能在退出时
+直接丢弃 pending 操作或用人工成功标志伪造观察完成。
+
 ## 25.4 观察与导航
 
 观察 API 同步登记接收者并返回当前值，检查当前镜像与注册 predicate 之间不能有 await。

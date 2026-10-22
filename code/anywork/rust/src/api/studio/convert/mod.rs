@@ -1,3 +1,4 @@
+pub(crate) mod acp;
 pub(crate) mod commands;
 pub(crate) mod event;
 pub(crate) mod mode_editor;

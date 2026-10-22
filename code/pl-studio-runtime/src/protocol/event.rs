@@ -35,6 +35,7 @@ pub enum StudioProductEventKind {
     SkillsStateChanged(StudioSkillsStateSnapshot),
     ThreadModeCatalogChanged(ThreadModeCatalogSnapshot),
     AccountUsageStateChanged(AccountUsageStateSnapshot),
+    AcpAuthStateChanged(Box<pl_protocol::studio::AcpAuthSnapshot>),
     ModelPerformanceStateChanged(StudioModelPerformanceSnapshot),
     SessionCostsChanged(StudioSessionCostsState),
     UpdaterStateChanged(StudioUpdateStateSnapshot),

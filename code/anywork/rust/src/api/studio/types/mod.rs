@@ -1,3 +1,4 @@
+pub mod acp;
 pub mod agent_profile;
 pub mod attachment;
 pub mod chat;
@@ -16,6 +17,7 @@ pub mod thread_preparation;
 pub mod thread_stream;
 pub mod updater;
 
+pub use acp::*;
 pub use agent_profile::*;
 pub use attachment::*;
 pub use chat::*;

@@ -90,6 +90,8 @@ SettingsStateSnapshot projectSettingsSnapshot({
   ];
   return SettingsStateSnapshot(
     accounts: accounts,
+    // ACP 接入只属于配置路：模型目录快照不携带它，也不得覆盖已保存的接入配置。
+    acpAccounts: configData.acpAccounts,
     defaultAccountId: configData.defaultAccountId,
     modeModelRoutes: configData.modeModelRoutes,
     roles: configData.roles,

@@ -10,6 +10,7 @@ live-tests = []
 
 [dependencies]
 pl-remote-helper = { workspace = true }
+pl-acp = { workspace = true }
 pl-model = { workspace = true }
 pl-core = { workspace = true, features = ["sqlite"] }
 pl-tool = { workspace = true }
@@ -45,6 +46,11 @@ zstd = { workspace = true }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { workspace = true }
+
+# 非 Linux 平台启动 ACP 官方程序走统一后台进程工厂（process-wrap）；Linux 复用 bundled
+# 受监督 worker，因此不需要该依赖。
+[target.'cfg(not(target_os = "linux"))'.dependencies]
+process-wrap = { workspace = true }
 
 [[example]]
 name = "collaboration_observe"

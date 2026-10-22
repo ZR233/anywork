@@ -3,6 +3,7 @@
 //! `pl-model` 定义可 serde 的模型路由值对象；本模块组合 Studio 的运行时、
 //! instructions、skills、MCP 与 UI 配置，并独占文件格式、schema 版本和默认角色。
 
+pub mod acp;
 mod agent_profile;
 mod instruction;
 mod profiles_resource;
@@ -45,15 +46,17 @@ pub use pl_tool::mcp::config::McpServerTransport;
 pub use pl_tool::mcp::config::validate_mcp_identifier;
 pub use profiles_resource::{AgentProfilesResource, AgentProfilesSnapshot};
 
+pub use acp::{AcpAccountConfig, AcpConfig, AcpProvider};
 pub use pl_model::config::{AccountId, AgentRoleId, ModelRouteConfig, ReasoningEffort};
 pub(crate) use runtime::ModeDefinitionCommandOutcome;
+pub(crate) use runtime::SettingsCommitObserver;
 pub use runtime::{
     ConfigRuntime, ConfigRuntimeError, ConfigRuntimeSnapshot, ModelCatalogRuntimeSnapshot,
     ResolvedAgentProfile,
 };
 pub use store::{ConfigPaths, ConfigStore};
 
-pub const STUDIO_CONFIG_SCHEMA_VERSION: u32 = 23;
+pub const STUDIO_CONFIG_SCHEMA_VERSION: u32 = 24;
 pub const STUDIO_CONFIG_DIR_NAME: &str = ".anywork";
 pub const STUDIO_CONFIG_FILE_NAME: &str = "config.toml";
 
@@ -235,6 +238,9 @@ pub struct StudioConfig {
     pub lsp: StudioLspConfig,
     #[serde(default, skip_serializing_if = "StudioUiConfig::is_default")]
     pub ui: StudioUiConfig,
+    /// ACP 接入的 desired 配置；与 `models.accounts` 是两套语义，互不进入对方的候选。
+    #[serde(default, skip_serializing_if = "acp::AcpConfig::is_empty")]
+    pub acp: acp::AcpConfig,
 }
 
 impl StudioConfig {
@@ -281,6 +287,7 @@ impl StudioConfig {
             mcp: StudioMcpConfig::default(),
             lsp: StudioLspConfig::default(),
             ui: StudioUiConfig::default(),
+            acp: acp::AcpConfig::default(),
         })
     }
 
@@ -341,6 +348,7 @@ impl StudioConfig {
         crate::config::mcp::validate_mcp_servers(&self.mcp.servers)?;
         crate::config::mcp::validate_builtin_mcp_server_states(&self.mcp.builtin_servers)?;
         validate_lsp_servers(&self.lsp.servers)?;
+        acp::validate_acp_config(&self.acp)?;
         Ok(())
     }
 

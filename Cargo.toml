@@ -3,6 +3,7 @@ members = [
     "code/pl-protocol",
     "code/pl-trace",
     "code/pl-model",
+    "code/pl-acp",
     "code/pl-provider-fixture",
     "code/pl-lsp",
     "code/pl-output",
@@ -26,6 +27,7 @@ edition = "2024"
 license = "Apache-2.0"
 
 [workspace.dependencies]
+agent-client-protocol = { version = "=3.4.0", default-features = false }
 percent-encoding = "2.3.2"
 procfs = { version = "0.18.0", default-features = false }
 tokio = { version = "1.53.3", features = ["full"] }
@@ -118,4 +120,5 @@ pl-studio-runtime = { path = "code/pl-studio-runtime" }
 pl-studio-acceptance = { path = "code/pl-studio-acceptance" }
 pl-studio-server = { path = "code/pl-studio-server" }
 pl-model = { path = "code/pl-model" }
+pl-acp = { path = "code/pl-acp" }
 pl-provider-fixture = { path = "code/pl-provider-fixture" }

@@ -185,6 +185,11 @@ impl StudioStore {
         self.paths.attachment_drafts_dir()
     }
 
+    /// 一条 ACP 接入专属的空探测工作目录；只由稳定接入 ID 派生，不使用用户项目。
+    pub(crate) fn acp_probe_dir(&self, account_id: &str) -> anyhow::Result<PathBuf> {
+        self.paths.acp_probe_dir(account_id)
+    }
+
     /// 每会话资源（工具持久化媒体等）根目录；与附件 blob 根同属一个会话目录。
     pub(crate) fn session_resources_dir(&self, thread_id: &str) -> anyhow::Result<PathBuf> {
         Ok(self.thread_storage_dir(thread_id)?.join("thread-resources"))

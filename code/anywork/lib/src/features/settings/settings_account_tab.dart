@@ -9,13 +9,20 @@ import '../../presentation/providers/account_usage_queries.dart';
 import 'package:anywork_client/studio_client.dart';
 
 import '../../l10n/studio_l10n.dart';
+import '../../platform/local_file_dialogs.dart';
 import '../../shared/studio_driver_keys.dart';
 import 'settings_account_details.dart';
 import 'settings_account_draft_save.dart';
 import 'settings_account_drafts.dart';
 import 'settings_account_editor.dart';
+import 'settings_account_editor_draft.dart';
 import 'settings_account_list.dart';
+import 'settings_account_template_picker.dart';
 import 'settings_account_usage_demand.dart';
+import 'settings_acp_failure_labels.dart';
+import 'settings_acp_account_details.dart';
+import 'settings_acp_account_draft.dart';
+import 'settings_acp_account_editor.dart';
 import 'settings_scope.dart';
 import 'settings_views.dart';
 
@@ -32,10 +39,26 @@ class AccountsTab extends ConsumerStatefulWidget {
 class _AccountsTabState extends ConsumerState<AccountsTab> {
   String _query = '';
   String? _selectedAccountId;
-  AccountDraft? _draft;
+
+  /// 当前选中的 ACP 接入身份；与 Native 选择互斥，避免两套详情同时可见。
+  String? _selectedAcpId;
+  AccountEditorDraft? _draft;
   GlobalKey<FormState> _draftFormKey = GlobalKey<FormState>();
   bool _showDetails = false;
   String? _draftError;
+
+  /// ACP 认证命令层的就地失败说明与在途标志（业务状态仍只来自 canonical）。
+  /// 命令层就地失败通知：按**目标 accountId** 记账，并绑定连接身份与在途操作。
+  ///
+  /// 列表里的删除失败只出现在目标行/目标详情，不会挂到另一个被选中的账号上；
+  /// 后续 canonical 进展或终态会取代旧拒绝。
+  final Map<String, AcpCommandNotice> _acpNotices = {};
+
+  /// start/check/login 在途：只挡新的 start，不挡取消。
+  bool _authBusy = false;
+
+  /// 正在取消的接入（按 accountId）：宽窗切换账号时只让对应详情忙，不误锁其它账号。
+  final Set<String> _cancelPending = <String>{};
   final AccountDraftSaveSession _saveSession = AccountDraftSaveSession();
   final AccountUsageAutoDemand _usageDemand = AccountUsageAutoDemand();
   ProviderSubscription<bool>? _visibilitySubscription;
@@ -174,6 +197,16 @@ class _AccountsTabState extends ConsumerState<AccountsTab> {
       _selectedAccountId = _settings.accounts.firstOrNull?.id;
       _showDetails = false;
     }
+    final selectedAcp = _selectedAcpId;
+    if (selectedAcp != null &&
+        !ref
+            .read(settingsAccountDirectoryProvider)
+            .acpEntries
+            .any((entry) => entry.id == selectedAcp)) {
+      _selectedAcpId = null;
+      _acpNotices.remove(selectedAcp);
+      if (_selectedAccountId == null) _showDetails = false;
+    }
   }
 
   @override
@@ -185,26 +218,17 @@ class _AccountsTabState extends ConsumerState<AccountsTab> {
       visible: visible,
       kind: BridgeSettingsScopeKind.usage,
     );
+    // ACP 认证观察是独立的可见需求：进入页面只租用观察，不启动检查。
+    watchSettingsScope(
+      ref,
+      visible: visible,
+      kind: BridgeSettingsScopeKind.acp,
+    );
     final settings = ref.watch(settingsAccountsViewProvider);
-    final catalog = settings.accountCatalog;
+    final directory = ref.watch(settingsAccountDirectoryProvider);
     final defaultAccountId = settings.defaultAccountId;
-    final selectedId =
-        _selectedAccountId ??
-        defaultAccountId ??
-        _settings.accounts.firstOrNull?.id;
-    final selected = _settings.accounts
-        .where((account) => account.id == selectedId)
-        .firstOrNull;
-    final filtered = _filteredAccounts();
-    final usageView = ref.watch(settingsUsageViewProvider);
-    final canonicalUsages = usageView.usages;
-    final usageByAccount = {
-      for (final usage in canonicalUsages) usage.accountId: usage,
-    };
-    final queryState = ref.watch(accountUsageQueriesProvider);
-    final usageErrorsByAccountId = queryState.errorsByAccountId;
-    final loadingAccountIds = queryState.loadingAccountIds;
-    if (_draft != null) {
+    final draft = _draft;
+    if (draft is NativeAccountEditorDraft) {
       return Padding(
         padding: const EdgeInsets.all(20),
         child: Center(
@@ -212,13 +236,13 @@ class _AccountsTabState extends ConsumerState<AccountsTab> {
             constraints: const BoxConstraints(maxWidth: 980),
             child: AccountEditor(
               key: ValueKey((
-                _draft!.mode,
-                _draft!.originalId,
-                _draft!.account.templateId,
+                draft.draft.mode,
+                draft.draft.originalId,
+                draft.draft.account.templateId,
               )),
               formKey: _draftFormKey,
-              draft: _draft!,
-              templates: catalog.templates,
+              draft: draft.draft,
+              templates: settings.accountCatalog.templates,
               saving: _saveSession.isSaving,
               error: _draftError,
               onCancel: () => setState(() {
@@ -237,40 +261,140 @@ class _AccountsTabState extends ConsumerState<AccountsTab> {
         ),
       );
     }
-    final details = AccountDetails(
-      account: selected,
-      usage: selected == null ? null : usageByAccount[selected.id],
-      usageLoading: selected != null && loadingAccountIds.contains(selected.id),
-      usageError: selected == null ? null : usageErrorsByAccountId[selected.id],
-      onBack: () {
-        _flushCompactIntents();
-        setState(() => _showDetails = false);
-      },
-      onEdit: _startEdit,
-      autoCompactEdits: {
-        for (final entry in _compactIntents.entries)
-          if (entry.key.$1 == selectedId)
-            entry.key.$2: (
-              overrideLimit: entry.value.value,
-              pending: !entry.value.failed,
-              failed: entry.value.failed,
+    if (draft is AcpAccountEditorDraft) {
+      return Padding(
+        padding: const EdgeInsets.all(20),
+        child: Center(
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 780),
+            child: AcpAccountEditor(
+              key: ValueKey(('acp', draft.draft.accountId)),
+              formKey: _draftFormKey,
+              draft: draft.draft,
+              saving: _saveSession.isSaving,
+              error: _draftError,
+              onCancel: () => setState(() {
+                _saveSession.abandon();
+                _draft = null;
+                _draftError = null;
+              }),
+              onSave: _saveAcpDraft,
+              onUpdate: _updateAcpDraft,
+              onPickProgram: _pickAcpProgram,
             ),
-      },
-      onAutoCompactChanged: (modelId, value) =>
-          _changeCompact(selectedId!, modelId, value),
-      onAutoCompactCommit: (modelId) => _commitCompact(selectedId!, modelId),
-      onAutoCompactInvalid: (modelId) =>
-          _invalidateCompact(selectedId!, modelId),
-      onRemoveManualModel: selected == null
-          ? (_) {}
-          : (model) => unawaited(_removeManualModel(selected, model)),
-      onRefreshUsage: selected == null
-          ? null
-          : () => unawaited(_refreshUsages(accountId: selected.id)),
-    );
+          ),
+        ),
+      );
+    }
+
+    final selectedAcp = _selectedAcpId == null
+        ? null
+        : directory.acpEntries
+              .where((entry) => entry.id == _selectedAcpId)
+              .firstOrNull;
+    // 只有 ACP 条目真实存在时才进入其详情；不把缺失条目当成空详情。
+    final AcpAccountEntryView? acpDetails = _showDetails ? selectedAcp : null;
+    final selectedId =
+        _selectedAccountId ??
+        defaultAccountId ??
+        settings.accounts.firstOrNull?.id;
+    final selected = settings.accounts
+        .where((account) => account.id == selectedId)
+        .firstOrNull;
+    final filtered = _filteredAccounts();
+    final usageView = ref.watch(settingsUsageViewProvider);
+    final canonicalUsages = usageView.usages;
+    final usageByAccount = {
+      for (final usage in canonicalUsages) usage.accountId: usage,
+    };
+    final queryState = ref.watch(accountUsageQueriesProvider);
+    final usageErrorsByAccountId = queryState.errorsByAccountId;
+    final loadingAccountIds = queryState.loadingAccountIds;
+    final details = switch (acpDetails) {
+      final entry? => AcpAccountDetails(
+        entry: entry,
+        busy: _authBusy,
+        cancelBusy: _cancelPending.contains(entry.id),
+        authNotice: _noticeFor(entry),
+        onBack: () {
+          _flushCompactIntents();
+          setState(() {
+            _showDetails = false;
+            _acpNotices.remove(entry.id);
+          });
+        },
+        onEdit: () => _startAcpEdit(entry),
+        onRemove: () => _removeAcpAccount(entry),
+        onCheck: () => _runAcpAuth(
+          entry.account.accountId,
+          () => ref
+              .read(anyworkClientProvider)
+              .acpCommands
+              .check(entry.account.accountId),
+        ),
+        // 取消绕过 start 的 busy 守卫：只要 canonical 给出 operation 身份就能提交。
+        onCancel: () => _runAcpCancel(entry.account.accountId),
+        onLogin: (methodId) => _runAcpAuth(
+          entry.account.accountId,
+          () => ref
+              .read(anyworkClientProvider)
+              .acpCommands
+              .login(entry.account.accountId, methodId: methodId),
+        ),
+      ),
+      null => AccountDetails(
+        account: selected,
+        usage: selected == null ? null : usageByAccount[selected.id],
+        usageLoading:
+            selected != null && loadingAccountIds.contains(selected.id),
+        usageError: selected == null
+            ? null
+            : usageErrorsByAccountId[selected.id],
+        onBack: () {
+          _flushCompactIntents();
+          setState(() => _showDetails = false);
+        },
+        onEdit: _startEdit,
+        autoCompactEdits: {
+          for (final entry in _compactIntents.entries)
+            if (entry.key.$1 == selectedId)
+              entry.key.$2: (
+                overrideLimit: entry.value.value,
+                pending: !entry.value.failed,
+                failed: entry.value.failed,
+              ),
+        },
+        onAutoCompactChanged: (modelId, value) =>
+            _changeCompact(selectedId!, modelId, value),
+        onAutoCompactCommit: (modelId) => _commitCompact(selectedId!, modelId),
+        onAutoCompactInvalid: (modelId) =>
+            _invalidateCompact(selectedId!, modelId),
+        onRemoveManualModel: selected == null
+            ? (_) {}
+            : (model) => unawaited(_removeManualModel(selected, model)),
+        onRefreshUsage: selected == null
+            ? null
+            : () => unawaited(_refreshUsages(accountId: selected.id)),
+      ),
+    };
+    final acpEntries = _filteredAcpEntries(directory);
     final list = AccountList(
       accounts: filtered,
-      selectedAccountId: _showDetails ? selectedId : null,
+      acpEntries: acpEntries,
+      // 只在目标账号行显示它自己的命令失败：不会跨账号、也不会被旧拒绝掩盖成功。
+      acpNotices: _visibleNotices(acpEntries),
+      selectedAccountId: acpDetails == null && _showDetails ? selectedId : null,
+      selectedAcpAccountId: acpDetails?.id,
+      onSelectAcp: (entry) {
+        _flushCompactIntents();
+        setState(() {
+          _selectedAcpId = entry.id;
+          _selectedAccountId = null;
+          _showDetails = true;
+        });
+      },
+      onEditAcp: _startAcpEdit,
+      onRemoveAcp: _removeAcpAccount,
       defaultAccountId: defaultAccountId,
       filtering: _query.trim().isNotEmpty,
       usageByAccount: usageByAccount,
@@ -282,6 +406,7 @@ class _AccountsTabState extends ConsumerState<AccountsTab> {
         _flushCompactIntents();
         setState(() {
           _selectedAccountId = account.id;
+          _selectedAcpId = null;
           _showDetails = true;
         });
       },
@@ -325,6 +450,302 @@ class _AccountsTabState extends ConsumerState<AccountsTab> {
     );
   }
 
+  List<AcpAccountEntryView> _filteredAcpEntries(
+    AccountDirectoryView directory,
+  ) {
+    final query = _query.trim().toLowerCase();
+    if (query.isEmpty) return directory.acpEntries;
+    return directory.acpEntries.where((entry) {
+      final haystack = [
+        entry.name,
+        entry.id,
+        entry.account.program,
+        entry.account.provider.wire,
+        ...entry.account.args,
+      ].join(' ').toLowerCase();
+      return haystack.contains(query);
+    }).toList();
+  }
+
+  void _startAcpEdit(AcpAccountEntryView entry) {
+    _flushCompactIntents();
+    setState(() {
+      _saveSession.abandon();
+      _selectedAcpId = entry.id;
+      _selectedAccountId = null;
+      _showDetails = false;
+      _draft = AcpAccountEditorDraft(
+        AcpAccountDraft.edit(account: entry.account, template: entry.template),
+      );
+      _draftFormKey = GlobalKey<FormState>();
+      _draftError = null;
+    });
+  }
+
+  void _updateAcpDraft(AcpAccountDraft Function(AcpAccountDraft) update) {
+    final editor = _draft;
+    if (editor is! AcpAccountEditorDraft) return;
+    setState(() => _draft = AcpAccountEditorDraft(update(editor.draft)));
+  }
+
+  /// 原生文件选择只写回草稿；失败就地说明，不静默丢弃。
+  Future<void> _pickAcpProgram() async {
+    final editor = _draft;
+    if (editor is! AcpAccountEditorDraft) return;
+    final l10n = context.l10n;
+    try {
+      final path = await pickLocalExecutablePath();
+      if (path == null || !mounted) return;
+      setState(
+        () => _draft = AcpAccountEditorDraft(
+          editor.draft.copyWith(program: path),
+        ),
+      );
+    } catch (_) {
+      if (!mounted) return;
+      setState(() => _draftError = l10n.acpAccountProgramBrowseFailed);
+    }
+  }
+
+  /// “保存并连接”：先确认 canonical 保存，再提交检查。
+  ///
+  /// 检查被拒绝时保留已保存的接入、进入同一账号的详情页并就地说明“账号已保存，
+  /// 连接未完成”；不重建账号、不回滚保存、不重复保存。
+  Future<void> _saveAcpDraft() async {
+    final editor = _draft;
+    if (editor is! AcpAccountEditorDraft || _saveSession.isSaving) return;
+    final l10n = context.l10n;
+    if (_draftFormKey.currentState?.validate() == false) return;
+    if (editor.draft.program.trim().isEmpty) {
+      setState(() => _draftError = l10n.acpAccountProgramRequired);
+      return;
+    }
+    final epoch = _saveSession.begin();
+    setState(() => _draftError = null);
+    try {
+      final result = await ref
+          .read(anyworkClientProvider)
+          .acpCommands
+          .saveAndConnect(editor.draft.toUpdate());
+      if (!_saveSession.owns(epoch)) return;
+      _saveSession.succeed(epoch);
+      if (!mounted) return;
+      final failure = result.checkFailure;
+      setState(() {
+        _selectedAcpId = result.saved.accountId;
+        _selectedAccountId = null;
+        _showDetails = true;
+        _draft = null;
+        final notice = failure == null
+            ? null
+            : _savedConnectNotice(
+                failure,
+                accountId: result.saved.accountId,
+                connectionRevision: result.saved.connectionRevision,
+              );
+        if (notice == null) {
+          _acpNotices.remove(result.saved.accountId);
+        } else {
+          _acpNotices[result.saved.accountId] = notice;
+        }
+      });
+    } catch (error) {
+      if (_saveSession.owns(epoch)) {
+        _saveSession.fail(epoch);
+        if (mounted) {
+          setState(() => _draftError = _saveFailureSummary(error));
+        }
+      }
+    }
+  }
+
+  Future<void> _removeAcpAccount(AcpAccountEntryView entry) async {
+    final l10n = context.l10n;
+    try {
+      await ref.read(anyworkClientProvider).acpCommands.removeAccount(entry.id);
+      if (!mounted) return;
+      setState(() {
+        if (_selectedAcpId == entry.id) {
+          _selectedAcpId = null;
+          _showDetails = false;
+        }
+        _acpNotices.remove(entry.id);
+      });
+    } catch (error) {
+      if (!mounted) return;
+      // 失败就地显示在**目标行**：不挂到另一个被选中的账号上；删除属于配置命令，
+      // 不会被该账号后续认证成功掩盖。
+      final notice = _commandNotice(
+        error,
+        kind: AcpCommandNoticeKind.remove,
+        accountId: entry.id,
+        connectionRevision: entry.account.connectionRevision,
+        summary: (code) =>
+            l10n.acpAuthCommandFailure(studioFailureCodeText(l10n, code)),
+        fallbackSummary: l10n.acpAccountRemoveFailed,
+      );
+      setState(() => _acpNotices[entry.id] = notice);
+    }
+  }
+
+  /// 取消命令：独立于 start 的在途标志，避免迟到的 start 回执锁死取消。
+  ///
+  /// 忙状态按传入的 [accountId] 记账（不是当前选中项）：切换详情页时只影响该账号，
+  /// 也不会用新的 selectedId 清掉别人的 pending。
+  Future<void> _runAcpCancel(String accountId) async {
+    if (_cancelPending.contains(accountId)) return;
+    final l10n = context.l10n;
+    // 身份在发起时冻结：响应晚于配置变化时按过时处理，而不是绑定新一代连接。
+    final requestConnectionRevision = _connectionRevisionOf(accountId);
+    setState(() {
+      _cancelPending.add(accountId);
+      _acpNotices.remove(accountId);
+    });
+    try {
+      await ref.read(anyworkClientProvider).acpCommands.cancel(accountId);
+    } catch (error) {
+      if (!mounted) return;
+      final notice = _commandNotice(
+        error,
+        kind: AcpCommandNoticeKind.authentication,
+        accountId: accountId,
+        connectionRevision: requestConnectionRevision,
+        operationId: _accountEntry(accountId)?.auth.operationId,
+        summary: (code) =>
+            l10n.acpAuthCommandFailure(studioFailureCodeText(l10n, code)),
+      );
+      setState(() => _acpNotices[accountId] = notice);
+    } finally {
+      if (mounted && _cancelPending.contains(accountId)) {
+        setState(() => _cancelPending.remove(accountId));
+      }
+    }
+  }
+
+  /// 认证命令只提交意图；状态仍由 `acpAuth` canonical 观察推进。
+  ///
+  /// typed `busy` 且该账号当前连接身份下**已有 canonical 在途操作**时，这只是一次
+  /// 重复输入：进度由 canonical 状态承接，不记成红色失败（其他账号的 busy、真正的
+  /// cleanup/认证失败仍照常呈现）。
+  Future<void> _runAcpAuth(
+    String accountId,
+    Future<void> Function() action,
+  ) async {
+    if (_authBusy) return;
+    final l10n = context.l10n;
+    // 请求身份在 await **之前**冻结：迟到的回执不会绑定到新一代连接。
+    final requestConnectionRevision = _connectionRevisionOf(accountId);
+    setState(() {
+      _authBusy = true;
+      _acpNotices.remove(accountId);
+    });
+    try {
+      await action();
+    } catch (error) {
+      if (!mounted) return;
+      if (isAcpAuthDuplicateWhileInFlight(
+        error: error,
+        accountId: accountId,
+        requestConnectionRevision: requestConnectionRevision,
+        entry: _accountEntry(accountId),
+      )) {
+        return;
+      }
+      final notice = _commandNotice(
+        error,
+        kind: AcpCommandNoticeKind.authentication,
+        accountId: accountId,
+        connectionRevision: requestConnectionRevision,
+        operationId: _accountEntry(accountId)?.auth.operationId,
+        summary: (code) =>
+            l10n.acpAuthCommandFailure(studioFailureCodeText(l10n, code)),
+      );
+      setState(() => _acpNotices[accountId] = notice);
+    } finally {
+      if (mounted) setState(() => _authBusy = false);
+    }
+  }
+
+  /// 该账号当前的连接身份；账号已不存在时用 0（notice 会因身份不匹配而不显示）。
+  int _connectionRevisionOf(String accountId) =>
+      _accountEntry(accountId)?.account.connectionRevision ?? 0;
+
+  AcpAccountEntryView? _accountEntry(String accountId) => ref
+      .read(settingsAccountDirectoryProvider)
+      .acpEntries
+      .where((entry) => entry.id == accountId)
+      .firstOrNull;
+
+  /// 列表行要显示的通知（逐账号过滤）。
+  Map<String, AcpCommandNotice> _visibleNotices(
+    List<AcpAccountEntryView> entries,
+  ) {
+    final visible = <String, AcpCommandNotice>{};
+    for (final entry in entries) {
+      final notice = _noticeFor(entry);
+      if (notice != null) visible[entry.id] = notice;
+    }
+    return visible;
+  }
+
+  /// 通知呈现规则由 `visibleAcpCommandNotice` 统一实现（可被适配层测试直接驱动）。
+  AcpCommandNotice? _noticeFor(AcpAccountEntryView entry) =>
+      visibleAcpCommandNotice(_acpNotices[entry.id], entry);
+
+  /// typed 命令失败 → 本地化摘要 + 可选后端安全原文（不是 raw stderr）。
+  AcpCommandNotice _commandNotice(
+    Object error, {
+    required AcpCommandNoticeKind kind,
+    required String accountId,
+    required int connectionRevision,
+    String? operationId,
+    required String Function(StudioFailureCode code) summary,
+    String? fallbackSummary,
+  }) {
+    final detail = error is StudioFailure && error.message.isNotEmpty
+        ? error.message
+        : null;
+    return AcpCommandNotice(
+      kind: kind,
+      summary: error is StudioFailure
+          ? summary(error.code)
+          : (fallbackSummary ?? context.l10n.acpAuthCommandUnavailable),
+      detail: detail,
+      accountId: accountId,
+      connectionRevision: connectionRevision,
+      operationId: operationId,
+    );
+  }
+
+  /// “账号已保存，连接未完成”：认证类通知，摘要本地化（typed code），原文作次级详情。
+  AcpCommandNotice _savedConnectNotice(
+    StudioFailure failure, {
+    required String accountId,
+    required int connectionRevision,
+  }) {
+    final l10n = context.l10n;
+    return AcpCommandNotice(
+      kind: AcpCommandNoticeKind.authentication,
+      summary: l10n.acpAccountSavedConnectIncomplete(
+        studioFailureCodeText(l10n, failure.code),
+      ),
+      detail: failure.message.isEmpty ? null : failure.message,
+      accountId: accountId,
+      connectionRevision: connectionRevision,
+    );
+  }
+
+  /// ACP 保存失败的本地化摘要：typed code → 文案，未知错误用通用文案。
+  /// 不把任意 `toString()`（可能含关联 ID/内部信息）放进产品文案。
+  String _saveFailureSummary(Object error) {
+    final l10n = context.l10n;
+    return l10n.acpAccountSaveFailed(
+      error is StudioFailure
+          ? studioFailureCodeText(l10n, error.code)
+          : l10n.acpAuthCommandUnavailable,
+    );
+  }
+
   List<AccountSettingsView> _filteredAccounts() {
     final query = _query.trim().toLowerCase();
     if (query.isEmpty) {
@@ -344,36 +765,56 @@ class _AccountsTabState extends ConsumerState<AccountsTab> {
     }).toList();
   }
 
-  void _startAdd() {
+  Future<void> _startAdd() async {
     _flushCompactIntents();
-    final catalog = ref.read(settingsAccountsViewProvider).accountCatalog;
-    final template = catalog.templates.firstOrNull;
-    if (template == null) {
-      setState(
-        () => _draftError = context.l10n.settingsAccountCatalogUnavailable,
-      );
+    final l10n = context.l10n;
+    final settings = ref.read(settingsAccountsViewProvider);
+    final directory = ref.read(settingsAccountDirectoryProvider);
+    if (directory.templates.isEmpty) {
+      setState(() => _draftError = l10n.settingsAccountCatalogUnavailable);
       return;
     }
-    final id = _suggestAccountId(template.id);
-    final draft = AccountDraftFactory.create(
-      catalog: catalog,
-      templateId: template.id,
-      accountId: id,
+    // 同一入口汇集两个 typed 目录；选择结果决定草稿分支，不按模板 id 猜协议。
+    final choice = await showAccountTemplatePicker(
+      context,
+      templates: directory.templates,
     );
-    if (draft == null) {
-      setState(
-        () => _draftError = context.l10n.settingsAccountTemplateUnavailable,
-      );
-      return;
+    if (choice == null || !mounted) return;
+    switch (choice) {
+      case NativeAccountTemplateChoice(:final template):
+        final id = directory.suggestId(template.id);
+        final draft = AccountDraftFactory.create(
+          catalog: settings.accountCatalog,
+          templateId: template.id,
+          accountId: id,
+        );
+        if (draft == null) {
+          setState(() => _draftError = l10n.settingsAccountTemplateUnavailable);
+          return;
+        }
+        setState(() {
+          _saveSession.abandon();
+          _selectedAccountId = id;
+          _selectedAcpId = null;
+          _showDetails = false;
+          _draft = NativeAccountEditorDraft(draft);
+          _draftFormKey = GlobalKey<FormState>();
+          _draftError = null;
+        });
+      case AcpAccountTemplateChoice(:final template):
+        final id = directory.suggestId(template.provider.wire);
+        setState(() {
+          _saveSession.abandon();
+          _selectedAcpId = id;
+          _selectedAccountId = null;
+          _showDetails = false;
+          _draft = AcpAccountEditorDraft(
+            AcpAccountDraft.create(template: template, accountId: id),
+          );
+          _draftFormKey = GlobalKey<FormState>();
+          _draftError = null;
+        });
     }
-    setState(() {
-      _saveSession.abandon();
-      _selectedAccountId = id;
-      _showDetails = false;
-      _draft = draft;
-      _draftFormKey = GlobalKey<FormState>();
-      _draftError = null;
-    });
   }
 
   Future<void> _startEdit(AccountSettingsView account) async {
@@ -387,8 +828,9 @@ class _AccountsTabState extends ConsumerState<AccountsTab> {
     setState(() {
       _saveSession.abandon();
       _selectedAccountId = account.id;
+      _selectedAcpId = null;
       _showDetails = false;
-      _draft = AccountDraft.edit(latest);
+      _draft = NativeAccountEditorDraft(AccountDraft.edit(latest));
       _draftFormKey = GlobalKey<FormState>();
       _draftError = null;
     });
@@ -396,8 +838,10 @@ class _AccountsTabState extends ConsumerState<AccountsTab> {
 
   void _changeDraftTemplate(String templateId) {
     final catalog = ref.read(settingsAccountsViewProvider).accountCatalog;
-    final current = _draft;
-    if (current == null || current.account.templateId == templateId) {
+    final editor = _draft;
+    if (editor is! NativeAccountEditorDraft) return;
+    final current = editor.draft;
+    if (current.account.templateId == templateId) {
       return;
     }
     // 账号 ID 只分配一次：切换模板重建草稿内容，但不改账号身份。
@@ -411,7 +855,7 @@ class _AccountsTabState extends ConsumerState<AccountsTab> {
       return;
     }
     setState(() {
-      _draft = next;
+      _draft = NativeAccountEditorDraft(next);
       // A retained GlobalKey would reparent the old Form under the new
       // AccountEditor and preserve its text, validation and secret fields.
       _draftFormKey = GlobalKey<FormState>();
@@ -419,11 +863,14 @@ class _AccountsTabState extends ConsumerState<AccountsTab> {
   }
 
   void _updateDraft(AccountSettingsView Function(AccountSettingsView) update) {
-    final current = _draft;
-    if (current == null) {
-      return;
-    }
-    setState(() => _draft = current.copyWith(account: update(current.account)));
+    final editor = _draft;
+    if (editor is! NativeAccountEditorDraft) return;
+    final current = editor.draft;
+    setState(
+      () => _draft = NativeAccountEditorDraft(
+        current.copyWith(account: update(current.account)),
+      ),
+    );
   }
 
   void _addCustomModel() {
@@ -541,10 +988,11 @@ class _AccountsTabState extends ConsumerState<AccountsTab> {
   }
 
   Future<void> _saveDraft() async {
-    final current = _draft;
-    if (current == null || _saveSession.isSaving) {
+    final editor = _draft;
+    if (editor is! NativeAccountEditorDraft || _saveSession.isSaving) {
       return;
     }
+    final current = editor.draft;
     if (_draftFormKey.currentState?.validate() == false) {
       return;
     }
@@ -621,7 +1069,8 @@ class _AccountsTabState extends ConsumerState<AccountsTab> {
       setState(() {
         _selectedAccountId = selectedAccountId;
         _showDetails = false;
-        if (_draft?.originalId == account.id) {
+        if (_draft case NativeAccountEditorDraft(:final draft)
+            when draft.originalId == account.id) {
           _draft = null;
         }
       });
@@ -654,19 +1103,6 @@ class _AccountsTabState extends ConsumerState<AccountsTab> {
   }
 
   List<AccountSettingsView> get _canonicalAccounts => _settings.accounts;
-
-  String _suggestAccountId(String base) {
-    final existing = _canonicalAccounts.map((account) => account.id).toSet();
-    if (!existing.contains(base)) {
-      return base;
-    }
-    for (var index = 2; ; index += 1) {
-      final candidate = '$base-$index';
-      if (!existing.contains(candidate)) {
-        return candidate;
-      }
-    }
-  }
 }
 
 /// 对象身份隔离旧完成通知；不把原始文本、焦点或 canonical 数据放进提交状态。

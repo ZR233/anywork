@@ -21,6 +21,8 @@ use crate::{PureError, Result};
 
 /// 迁移前最后一个使用 Provider/Preset 模型接入语义的配置版本。
 pub(super) const LEGACY_ACCOUNT_SCHEMA: u32 = 22;
+/// 仍受支持但需要迁移的最后一个配置版本（每次提升 `STUDIO_CONFIG_SCHEMA_VERSION` 时自动前进）。
+pub(super) const PREVIOUS_CONFIG_SCHEMA: u32 = STUDIO_CONFIG_SCHEMA_VERSION - 1;
 /// 仍受支持的迁移源版本下界。
 pub(super) const OLDEST_SUPPORTED_SCHEMA: u32 = 18;
 /// 操作记录格式版本；与配置 schema 版本相互独立。
@@ -134,22 +136,47 @@ pub(super) fn resume(
     Ok(Some(config))
 }
 
+/// 一次迁移的源侧输入。
+///
+/// 这些字段描述同一个源版本与同一份候选改写，必须一起传递：拆成散装参数容易把版本、
+/// 原文与候选配对错。是否需要重排 Profile 不单独传入，由 [`migrate`] 从源版本推导。
+pub(super) struct MigrationSource<'a> {
+    /// 主配置在磁盘上的原始字节；迁移期间不允许被外部改写。
+    pub original: &'a [u8],
+    /// 迁移前的 schema 版本。
+    pub source_version: u32,
+    /// 已按目标版本重写、尚未落盘的候选内容。
+    pub candidate: Vec<u8>,
+    /// 需要搬进 keyring 的旧版内联凭据。
+    pub inline_tokens: BTreeMap<String, String>,
+}
+
 /// 为主配置与用户 Profile 准备并提交一次迁移。
+///
+/// 是否需要重排 Profile 只由源版本决定：只有确实改变了 Profile 键（`provider`/`model` →
+/// `account_id`/`model_id`）的旧版本才重写。仅前进版本（如 23→24）时 Profile 原字节保留，
+/// 不重新序列化、不丢注释，也不产生多余资源计划。
 pub(super) fn migrate(
     paths: &ConfigPaths,
     credentials: &dyn CredentialStore,
-    original: &[u8],
-    source_version: u32,
-    config_candidate: Vec<u8>,
-    inline_tokens: BTreeMap<String, String>,
+    source: MigrationSource<'_>,
     write: ResourceWriter<'_>,
 ) -> Result<StudioConfig> {
+    let MigrationSource {
+        original,
+        source_version,
+        candidate,
+        inline_tokens,
+    } = source;
+    let rewrite_profiles = source_version <= LEGACY_ACCOUNT_SCHEMA;
     let mut plans = vec![ResourcePlan {
         relative_path: super::STUDIO_CONFIG_FILE_NAME.to_string(),
         original: original.to_vec(),
-        candidate: config_candidate,
+        candidate,
     }];
-    plans.extend(profile_plans(paths)?);
+    if rewrite_profiles {
+        plans.extend(profile_plans(paths)?);
+    }
     for plan in &plans {
         // 迁移失败时不允许覆盖中途被外部改写的原件。
         let disk = fs::read(config_resource_path(paths, &plan.relative_path))?;
@@ -694,10 +721,12 @@ effort = "high"
         migrate(
             &fixture.paths,
             &fixture.credentials,
-            &original,
-            LEGACY_ACCOUNT_SCHEMA,
-            candidate.into_bytes(),
-            inline_tokens,
+            MigrationSource {
+                original: &original,
+                source_version: LEGACY_ACCOUNT_SCHEMA,
+                candidate: candidate.into_bytes(),
+                inline_tokens,
+            },
             write,
         )
     }
@@ -771,7 +800,7 @@ effort = "high"
         // 操作目录在确认完成后清理；迁移备份与原字节仍在。
         assert!(!operation_dir(&fixture.paths).exists());
         let persisted = fs::read_to_string(fixture.paths.config_file()).unwrap();
-        assert!(persisted.contains("schema_version = 23"));
+        assert!(persisted.contains("schema_version = 24"));
         assert!(!persisted.contains("models.providers"));
     }
 
@@ -998,10 +1027,12 @@ catalog = "deepseek"
         migrate(
             paths,
             store,
-            &original,
-            LEGACY_ACCOUNT_SCHEMA,
-            candidate.into_bytes(),
-            inline_tokens,
+            MigrationSource {
+                original: &original,
+                source_version: LEGACY_ACCOUNT_SCHEMA,
+                candidate: candidate.into_bytes(),
+                inline_tokens,
+            },
             &atomic_write,
         )
     }
@@ -1155,10 +1186,12 @@ catalog = "deepseek"
             migrate(
                 &fixture.paths,
                 &unavailable,
-                &original,
-                LEGACY_ACCOUNT_SCHEMA,
-                candidate.into_bytes(),
-                inline_tokens,
+                MigrationSource {
+                    original: &original,
+                    source_version: LEGACY_ACCOUNT_SCHEMA,
+                    candidate: candidate.into_bytes(),
+                    inline_tokens,
+                },
                 &atomic_write,
             )
             .is_err()
