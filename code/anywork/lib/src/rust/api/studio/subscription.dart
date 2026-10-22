@@ -9,6 +9,7 @@ import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 import 'package:freezed_annotation/freezed_annotation.dart' hide protected;
 
 import 'types/agent_profile.dart';
+import 'types/bots.dart';
 import 'types/error.dart';
 import 'types/event.dart';
 import 'types/product_topic.dart';

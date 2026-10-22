@@ -107,6 +107,14 @@ SSE transport 按完整行向事件解析器交付数据，增量扫描只处理
 凭据身份和内容摘要隔离的可重建会话缓存。DeepSeek Files 上传使用 user_data 与 24 小时租期，
 取消和上传结果不明不得盲目重复 POST；明确不支持上传才允许在推理发送前回退 inline。
 
+OpenAI Responses 的文件输入使用官方 `input_file`：按已冻结媒体表示发送 `file_data` 与
+`filename`、`file_url` 或 `file_id`，与图片共用资源解析、大小限制和重放链路。内置视觉文本模型
+显式声明 PDF 与 UTF-8 文本文件，单文件与每请求文件总量限制为 50 MB；未声明类型仍由现有
+附件准入拒绝，不把机器人文件伪装成图片。历史资源缺少文件名时按明确媒体类型提供 `.pdf` / `.txt`
+名称。协议依据：[官方文件输入](https://developers.openai.com/api/docs/guides/file-inputs)。
+同账号在线缓存没有显式声明输入能力时，继承当前本地目录的能力及缺失的同协议媒体编码；
+已显式声明的在线输入仍优先，不能从另一账号或另一 wire API 补入编码。
+
 本次迁移以本地 Codex 的 endpoint/transport/session 分层为参照，不依赖其产品专属上传协议。
 握手 426 允许在统一预算内切换 HTTP，普通 400 保留为请求错误，不以扩大重试掩盖协议错误。
 

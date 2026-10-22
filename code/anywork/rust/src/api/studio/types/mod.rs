@@ -1,5 +1,6 @@
 pub mod agent_profile;
 pub mod attachment;
+pub mod bots;
 pub mod chat;
 pub mod command;
 pub mod error;
@@ -18,6 +19,7 @@ pub mod updater;
 
 pub use agent_profile::*;
 pub use attachment::*;
+pub use bots::*;
 pub use chat::*;
 pub use command::*;
 pub use error::*;

@@ -245,6 +245,8 @@ pub struct ThreadRuntimeLiveUsage {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct ThreadModelRouteSnapshot {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bot_id: Option<String>,
     pub account_id: String,
     pub model_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]

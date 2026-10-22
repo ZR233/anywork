@@ -1,8 +1,7 @@
 import 'dart:convert';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-
-import 'studio_platform.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 typedef ExternalUrlLauncher = Future<void> Function(String url);
 
@@ -12,6 +11,13 @@ final _urlControlCharacters = RegExp(r'[\u0000-\u001F\u007F-\u009F]');
 final externalUrlLauncherProvider = Provider<ExternalUrlLauncher>(
   (ref) => openExternalUrl,
 );
+
+Future<void> openExternalUrl(String url) async {
+  if (!await launchUrl(Uri.parse(url), mode: LaunchMode.externalApplication)) {
+    // Registration URLs can contain tickets; never include them in failures.
+    throw StateError('The system could not open the link');
+  }
+}
 
 /// Returns a browser-safe web destination or `null` for unsupported links.
 String? safeExternalWebUrl(String value) {

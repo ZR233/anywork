@@ -297,6 +297,71 @@ abstract final class StudioDriverKeys {
   static ValueKey<String> settingsTab(String id) =>
       ValueKey<String>('settings-tab-$id');
 
+  static const botsAdd = ValueKey<String>('bots-add');
+  static const botsBack = ValueKey<String>('bots-back');
+  static const botsChatBack = ValueKey<String>('bots-chat-back');
+  static const botsFilter = ValueKey<String>('bots-filter');
+  static const botsPlatformTools = ValueKey<String>('bots-platform-tools');
+  static const botsOpenFeishu = ValueKey<String>('bots-open-feishu');
+  static const botsOpenVerificationBrowser = ValueKey<String>(
+    'bots-open-verification-browser',
+  );
+  static const botsOpenChat = ValueKey<String>('bots-open-chat');
+  static const botsOpenChatBrowser = ValueKey<String>('bots-open-chat-browser');
+  static const botsName = ValueKey<String>('bots-name');
+  static const botsRiskAck = ValueKey<String>('bots-risk-ack');
+  static const botsEdit = ValueKey<String>('bots-edit');
+  static const botsEnabled = ValueKey<String>('bots-enabled');
+  static const botsRetry = ValueKey<String>('bots-retry');
+  static const botsCancelRegistration = ValueKey<String>(
+    'bots-registration-cancel',
+  );
+  static const botsRegistrationStatus = ValueKey<String>(
+    'bots-registration-status',
+  );
+  static const botsConfirmNewThread = ValueKey<String>(
+    'bots-confirm-new-thread',
+  );
+  static const botsRefreshConversations = ValueKey<String>(
+    'bots-refresh-conversations',
+  );
+  static const botsNextConversations = ValueKey<String>(
+    'bots-next-conversations',
+  );
+  static const botsRefreshMessages = ValueKey<String>('bots-refresh-messages');
+  static const botsNextMessages = ValueKey<String>('bots-next-messages');
+  static const botsStartTime = ValueKey<String>('bots-start-time');
+  static const botsEndTime = ValueKey<String>('bots-end-time');
+  static ValueKey<String> botsApproveUser(String id) =>
+      ValueKey<String>('bots-approve-user-$id');
+  static ValueKey<String> botsClearPairing(String id) =>
+      ValueKey<String>('bots-clear-pairing-$id');
+  static ValueKey<String> botsDiagnostic(String id) =>
+      ValueKey<String>('bots-diagnostic-$id');
+  static ValueKey<String> botsConversation(String id) =>
+      ValueKey<String>('bots-conversation-$id');
+  static ValueKey<String> botsConversationActions(String id) =>
+      ValueKey<String>('bots-conversation-actions-$id');
+  static const botsScan = ValueKey<String>('bots-scan');
+  static const botsManual = ValueKey<String>('bots-manual');
+  static const botsSave = ValueKey<String>('bots-save');
+  static const botsProject = ValueKey<String>('bots-project');
+  static const botsAppId = ValueKey<String>('bots-app-id');
+  static const botsSecret = ValueKey<String>('bots-secret');
+  static const botsSend = ValueKey<String>('bots-send');
+  static const botsSendInput = ValueKey<String>('bots-send-input');
+  static const botsOpenConsole = ValueKey<String>('bots-open-console');
+  static const botsOpenConsoleManual = ValueKey<String>(
+    'bots-open-console-manual',
+  );
+  static const botsFactConfig = ValueKey<String>('bots-fact-config');
+  static const botsFactConnection = ValueKey<String>('bots-fact-connection');
+  static const botsFactAuth = ValueKey<String>('bots-fact-auth');
+  static ValueKey<String> botsRow(String id) =>
+      ValueKey<String>('bots-row-$id');
+  static ValueKey<String> botsPending(String id) =>
+      ValueKey<String>('bots-pending-$id');
+
   static ValueKey<String> sshTest(String id) =>
       ValueKey<String>('ssh-test-$id');
 

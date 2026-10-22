@@ -161,6 +161,13 @@ class DemoStudioTransport extends StudioTransport
   String? _selectedProjectId;
   String? _selectedThreadId;
   DateTime? _fixtureNow;
+  int _botsRevision = 0;
+  final List<BotSnapshot> _bots = [];
+  BotRegistrationAttempt? _registration;
+  final List<BotPendingCredentialOperation> _pendingCredentialOps = [];
+  final Map<String, List<BotConversation>> _botConversations = {};
+  final Map<String, List<BotMessage>> _botMessages = {};
+  final Map<String, BotConversationThreadBinding> _botBindings = {};
 
   Duration get promptStartDelay => const Duration(milliseconds: 120);
 
@@ -2743,6 +2750,7 @@ class DemoStudioTransport extends StudioTransport
       AgentProfilesTopic() => AgentProfilesBaseline(
         readAgentProfilesStateSync(),
       ),
+      BotsTopic() => BotsBaseline(_demoBotsState()),
     };
     final revision = switch (baseline) {
       ProjectDirectoryBaseline(:final state) => state.revision,
@@ -2762,6 +2770,7 @@ class DemoStudioTransport extends StudioTransport
       PersistenceBaseline(:final state) => state.revision,
       PersistenceQueueBaseline(:final state) => state.revision,
       AgentProfilesBaseline(:final state) => state.revision,
+      BotsBaseline(:final state) => state.revision,
     };
     return ProductTopicBaselineFrame(
       topic: topic,
@@ -3745,6 +3754,419 @@ class DemoStudioTransport extends StudioTransport
   Future<LspStateSnapshot> resetLspWorkspace(String projectId) async {
     _lspRevision += 1;
     return _lspWriteResult();
+  }
+
+  BotsStateSnapshot _demoBotsState() {
+    return BotsStateSnapshot(
+      revision: _botsRevision,
+      updatedAt: 0,
+      bots: List<BotSnapshot>.unmodifiable(_bots),
+      registration: _registration,
+      pendingCredentialOperations:
+          List<BotPendingCredentialOperation>.unmodifiable(
+            _pendingCredentialOps,
+          ),
+    );
+  }
+
+  BotsStateSnapshot _botsWriteResult() {
+    _botsRevision += 1;
+    final state = _demoBotsState();
+    _publishProductPayload(BotsStateChangedPayload(state));
+    return state;
+  }
+
+  BotsCommandReply _botsReply(
+    OperationId operationId, {
+    required bool changed,
+  }) {
+    final snapshot = _botsWriteResult();
+    return BotsCommandReply(
+      snapshot: snapshot,
+      receipt: _demoReceipt(
+        operationId,
+        changed: changed,
+        targets: [_demoStamp('bots', snapshot.revision)],
+        effect: EffectPoint.immediate,
+      ),
+      stamp: _demoStamp('bots', snapshot.revision),
+    );
+  }
+
+  BotSnapshot? _findBot(String id) {
+    for (final bot in _bots) {
+      if (bot.id == id) return bot;
+    }
+    return null;
+  }
+
+  void _replaceBot(BotSnapshot next) {
+    final index = _bots.indexWhere((bot) => bot.id == next.id);
+    if (index < 0) {
+      _bots.add(next);
+    } else {
+      _bots[index] = next;
+    }
+  }
+
+  @override
+  Future<BotsStateSnapshot> readBots() async => _demoBotsState();
+
+  @override
+  Future<BotsCommandReply> saveBot(SaveBotRequest request) async {
+    final existing = request.botId == null ? null : _findBot(request.botId!);
+    if (existing != null &&
+        existing.configRevision != request.expectedConfigRevision) {
+      throw StudioFailure(
+        code: StudioFailureCode.staleRevision,
+        message: 'Bot config revision conflict',
+        retryable: true,
+        correlationId: request.operationId,
+      );
+    }
+    final id = request.botId ?? 'bot-${_bots.length + 1}';
+    final credential = switch (request.secret) {
+      BotSecretReplace() => BotCredentialAvailability.stored,
+      BotSecretClear() => BotCredentialAvailability.missing,
+      BotSecretPreserve() =>
+        existing?.credential ?? BotCredentialAvailability.missing,
+    };
+    _replaceBot(
+      BotSnapshot(
+        id: id,
+        name: request.name,
+        projectId: request.projectId,
+        appId: request.appId,
+        platform: BotPlatform.feishuChina,
+        enabled: request.enabled,
+        toolsEnabled: request.toolsEnabled,
+        configRevision: (existing?.configRevision ?? 0) + 1,
+        trustedOpenIds: existing?.trustedOpenIds ?? const [],
+        trustedChatIds: existing?.trustedChatIds ?? const [],
+        connection: existing?.connection ?? const BotConnectionDisabled(),
+        credential: credential,
+        pairing: existing?.pairing ?? const [],
+        canChangeProject: existing?.canChangeProject ?? true,
+        canChangeAppId: existing?.canChangeAppId ?? true,
+        createdAt: existing?.createdAt ?? 0,
+        updatedAt: 1,
+      ),
+    );
+    return _botsReply(OperationId(request.operationId), changed: true);
+  }
+
+  @override
+  Future<BotsCommandReply> startBotRegistration(
+    StartBotRegistrationRequest request,
+  ) async {
+    final attemptId = 'attempt-${request.operationId}';
+    _registration = BotRegistrationAttempt(
+      attemptId: attemptId,
+      name: request.name,
+      projectId: request.projectId,
+      status: BotRegistrationWaiting(
+        attemptId: attemptId,
+        verificationUrl: 'https://accounts.feishu.cn/demo-registration',
+        expiresAt: 1,
+        intervalSeconds: 5,
+      ),
+    );
+    return _botsReply(OperationId(request.operationId), changed: true);
+  }
+
+  @override
+  Future<BotsCommandReply> cancelBotRegistration(
+    CancelBotRegistrationRequest request,
+  ) async {
+    final current = _registration;
+    if (current != null && current.status is BotRegistrationCommitting) {
+      throw StudioFailure(
+        code: StudioFailureCode.busy,
+        message: 'Registration is committing',
+        retryable: false,
+        correlationId: request.operationId,
+      );
+    }
+    if (current != null && current.attemptId == request.attemptId) {
+      _registration = BotRegistrationAttempt(
+        attemptId: current.attemptId,
+        name: current.name,
+        projectId: current.projectId,
+        status: BotRegistrationCancelled(attemptId: current.attemptId),
+        completedBotId: current.completedBotId,
+      );
+    }
+    return _botsReply(OperationId(request.operationId), changed: true);
+  }
+
+  @override
+  Future<BotsCommandReply> setBotEnabled(SetBotEnabledRequest request) async {
+    final existing = _findBot(request.botId);
+    if (existing == null) {
+      throw StudioFailure(
+        code: StudioFailureCode.notFound,
+        message: 'Bot not found',
+        retryable: false,
+        correlationId: request.operationId,
+      );
+    }
+    if (existing.configRevision != request.expectedConfigRevision) {
+      throw StudioFailure(
+        code: StudioFailureCode.staleRevision,
+        message: 'Bot config revision conflict',
+        retryable: true,
+        correlationId: request.operationId,
+      );
+    }
+    _replaceBot(
+      BotSnapshot(
+        id: existing.id,
+        name: existing.name,
+        projectId: existing.projectId,
+        appId: existing.appId,
+        platform: existing.platform,
+        enabled: request.enabled,
+        toolsEnabled: existing.toolsEnabled,
+        configRevision: existing.configRevision + 1,
+        trustedOpenIds: existing.trustedOpenIds,
+        trustedChatIds: existing.trustedChatIds,
+        connection: request.enabled
+            ? const BotConnectionConnected()
+            : const BotConnectionDisabled(),
+        credential: existing.credential,
+        credentialOperation: existing.credentialOperation,
+        pairing: existing.pairing,
+        diagnostic: existing.diagnostic,
+        canChangeProject: existing.canChangeProject,
+        canChangeAppId: existing.canChangeAppId,
+        createdAt: existing.createdAt,
+        updatedAt: existing.updatedAt + 1,
+      ),
+    );
+    return _botsReply(OperationId(request.operationId), changed: true);
+  }
+
+  @override
+  Future<BotsCommandReply> retryBotConnection(
+    RetryBotConnectionRequest request,
+  ) async {
+    final existing = _findBot(request.botId);
+    if (existing == null) {
+      throw StudioFailure(
+        code: StudioFailureCode.notFound,
+        message: 'Bot not found',
+        retryable: false,
+        correlationId: request.operationId,
+      );
+    }
+    _replaceBot(
+      BotSnapshot(
+        id: existing.id,
+        name: existing.name,
+        projectId: existing.projectId,
+        appId: existing.appId,
+        platform: existing.platform,
+        enabled: existing.enabled,
+        toolsEnabled: existing.toolsEnabled,
+        configRevision: existing.configRevision,
+        trustedOpenIds: existing.trustedOpenIds,
+        trustedChatIds: existing.trustedChatIds,
+        connection: existing.enabled
+            ? const BotConnectionConnected()
+            : const BotConnectionDisabled(),
+        credential: existing.credential,
+        credentialOperation: existing.credentialOperation,
+        pairing: existing.pairing,
+        diagnostic: existing.diagnostic,
+        canChangeProject: existing.canChangeProject,
+        canChangeAppId: existing.canChangeAppId,
+        createdAt: existing.createdAt,
+        updatedAt: existing.updatedAt + 1,
+      ),
+    );
+    return _botsReply(OperationId(request.operationId), changed: true);
+  }
+
+  @override
+  Future<BotsCommandReply> setBotTrustedUser(
+    SetBotTrustedUserRequest request,
+  ) async {
+    final existing = _findBot(request.botId);
+    if (existing == null) {
+      throw StudioFailure(
+        code: StudioFailureCode.notFound,
+        message: 'Bot not found',
+        retryable: false,
+        correlationId: request.operationId,
+      );
+    }
+    if (existing.configRevision != request.expectedConfigRevision) {
+      throw StudioFailure(
+        code: StudioFailureCode.staleRevision,
+        message: 'Bot config revision conflict',
+        retryable: true,
+        correlationId: request.operationId,
+      );
+    }
+    final trusted = [...existing.trustedOpenIds];
+    if (request.trusted) {
+      if (!trusted.contains(request.openId)) trusted.add(request.openId);
+    } else {
+      trusted.remove(request.openId);
+    }
+    _replaceBot(
+      BotSnapshot(
+        id: existing.id,
+        name: existing.name,
+        projectId: existing.projectId,
+        appId: existing.appId,
+        platform: existing.platform,
+        enabled: existing.enabled,
+        toolsEnabled: existing.toolsEnabled,
+        configRevision: existing.configRevision + 1,
+        trustedOpenIds: List<String>.unmodifiable(trusted),
+        trustedChatIds: existing.trustedChatIds,
+        connection: existing.connection,
+        credential: existing.credential,
+        credentialOperation: existing.credentialOperation,
+        pairing: [
+          for (final item in existing.pairing)
+            if (item.openId != request.openId) item,
+        ],
+        diagnostic: existing.diagnostic,
+        canChangeProject: existing.canChangeProject,
+        canChangeAppId: existing.canChangeAppId,
+        createdAt: existing.createdAt,
+        updatedAt: existing.updatedAt + 1,
+      ),
+    );
+    return _botsReply(OperationId(request.operationId), changed: true);
+  }
+
+  @override
+  Future<BotsCommandReply> setBotTrustedChat(
+    SetBotTrustedChatRequest request,
+  ) async {
+    final existing = _findBot(request.botId);
+    if (existing == null) {
+      throw StudioFailure(
+        code: StudioFailureCode.notFound,
+        message: 'Bot not found',
+        retryable: false,
+        correlationId: request.operationId,
+      );
+    }
+    if (existing.configRevision != request.expectedConfigRevision) {
+      throw StudioFailure(
+        code: StudioFailureCode.staleRevision,
+        message: 'Bot config revision conflict',
+        retryable: true,
+        correlationId: request.operationId,
+      );
+    }
+    final trusted = [...existing.trustedChatIds];
+    if (request.trusted) {
+      if (!trusted.contains(request.chatId)) trusted.add(request.chatId);
+    } else {
+      trusted.remove(request.chatId);
+    }
+    _replaceBot(
+      BotSnapshot(
+        id: existing.id,
+        name: existing.name,
+        projectId: existing.projectId,
+        appId: existing.appId,
+        platform: existing.platform,
+        enabled: existing.enabled,
+        toolsEnabled: existing.toolsEnabled,
+        configRevision: existing.configRevision + 1,
+        trustedOpenIds: existing.trustedOpenIds,
+        trustedChatIds: List<String>.unmodifiable(trusted),
+        connection: existing.connection,
+        credential: existing.credential,
+        credentialOperation: existing.credentialOperation,
+        pairing: existing.pairing,
+        diagnostic: existing.diagnostic,
+        canChangeProject: existing.canChangeProject,
+        canChangeAppId: existing.canChangeAppId,
+        createdAt: existing.createdAt,
+        updatedAt: existing.updatedAt + 1,
+      ),
+    );
+    return _botsReply(OperationId(request.operationId), changed: true);
+  }
+
+  @override
+  Future<BotConversationPage> listBotConversations(
+    ListBotConversationsRequest request,
+  ) async {
+    final conversations = _botConversations[request.botId] ?? const [];
+    return BotConversationPage(
+      botId: request.botId,
+      conversations: conversations,
+    );
+  }
+
+  @override
+  Future<BotMessagePage> readBotMessages(ReadBotMessagesRequest request) async {
+    final key = '${request.botId}/${request.chatId}';
+    return BotMessagePage(
+      botId: request.botId,
+      chatId: request.chatId,
+      messages: _botMessages[key] ?? const [],
+    );
+  }
+
+  @override
+  Future<BotSendResult> sendBotMessage(SendBotMessageRequest request) async {
+    return BotSendResult(
+      operationId: request.operationId,
+      botId: request.botId,
+      chatId: request.chatId,
+      status: BotSendStatus.succeeded,
+      segments: [BotSendSegment(index: 0, status: BotSendStatus.succeeded)],
+      receipt: _demoReceipt(
+        OperationId(request.operationId),
+        changed: true,
+        targets: const [],
+        effect: EffectPoint.immediate,
+      ),
+    );
+  }
+
+  @override
+  Future<BotConversationThreadReply> createBotConversationThread(
+    CreateBotConversationThreadRequest request,
+  ) async {
+    final key = '${request.botId}/${request.chatId}';
+    final existing = _botBindings[key];
+    if (existing != null &&
+        existing.revision != request.expectedBindingRevision) {
+      throw StudioFailure(
+        code: StudioFailureCode.staleRevision,
+        message: 'Bot binding revision conflict',
+        retryable: true,
+        correlationId: request.operationId,
+      );
+    }
+    final binding = BotConversationThreadBinding(
+      botId: request.botId,
+      chatId: request.chatId,
+      projectId: _findBot(request.botId)?.projectId ?? '',
+      threadId: existing?.threadId ?? 'thread-bot-${request.chatId}',
+      revision: (existing?.revision ?? 0) + 1,
+      state: BotConversationThreadState.bound,
+    );
+    _botBindings[key] = binding;
+    return BotConversationThreadReply(
+      binding: binding,
+      receipt: _demoReceipt(
+        OperationId(request.operationId),
+        changed: true,
+        targets: const [],
+        effect: EffectPoint.immediate,
+      ),
+    );
   }
 
   McpStateSnapshot _mcpWriteResult() {

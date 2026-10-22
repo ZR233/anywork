@@ -132,7 +132,7 @@ class AgentRouteView extends StatelessWidget {
             accountId: selectedAccountId,
             modelId: selectedModel,
             unresolvedLabel: unresolvedLabel,
-            enabled: options.isNotEmpty,
+            enabled: options.isNotEmpty && !pending,
             onSelected: onModelChanged,
             optionKeyBuilder: (option) =>
                 StudioDriverKeys.settingsRoleModelOption(
@@ -164,7 +164,7 @@ class AgentRouteView extends StatelessWidget {
       label: Text(context.l10n.statusReasoningEffort),
       hintText: effortUnresolvedLabel,
       expandedInsets: EdgeInsets.zero,
-      enabled: efforts.isNotEmpty,
+      enabled: efforts.isNotEmpty && !pending,
       dropdownMenuEntries: [
         for (final effort in efforts)
           DropdownMenuEntry<String>(
@@ -187,7 +187,8 @@ class AgentRouteView extends StatelessWidget {
       padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
       child: LayoutBuilder(
         builder: (context, constraints) {
-          if (constraints.maxWidth < 760) {
+          final textScaler = MediaQuery.textScalerOf(context);
+          if (constraints.maxWidth < textScaler.scale(760)) {
             return Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
@@ -201,7 +202,7 @@ class AgentRouteView extends StatelessWidget {
             children: [
               Expanded(child: modelSelector),
               const SizedBox(width: 12),
-              SizedBox(width: 140, child: effortSelector),
+              SizedBox(width: textScaler.scale(140), child: effortSelector),
             ],
           );
         },

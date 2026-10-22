@@ -123,6 +123,75 @@ fn accept_observation(provider: &mut AccountConfig, mut models: Vec<ModelInfo>, 
     provider.set_model_catalog_overlay(models).unwrap();
 }
 
+#[test]
+fn cached_inventory_inherits_new_media_codecs_only_from_its_own_declaration() {
+    use pl_model::model::{ModelMetadataField, ModelObservation};
+
+    let mut inherited = provider("http://127.0.0.1:1", ProtocolKind::OpenAi);
+    let mut cached = inherited
+        .effective_models(None)
+        .unwrap()
+        .into_iter()
+        .find(|model| model.model_id == "gpt-6.1-sol")
+        .unwrap();
+    cached
+        .capabilities
+        .input
+        .retain(|input| input.modality != ModelModality::File);
+    cached
+        .binding
+        .request
+        .media
+        .retain(|profile| profile.modality != ModelModality::File);
+    cached.observation = Some(ModelObservation::default());
+    // The durable online inventory is separate from the desired account configuration.
+    cached = serde_json::from_value(serde_json::to_value(cached).unwrap()).unwrap();
+    inherited
+        .set_model_catalog_overlay(vec![cached.clone()])
+        .unwrap();
+
+    let mut explicit = provider("http://127.0.0.1:2", ProtocolKind::OpenAi);
+    cached
+        .observation
+        .as_mut()
+        .unwrap()
+        .declare(ModelMetadataField::Input);
+    accept_observation(&mut explicit, vec![cached], 1);
+    let inherited_id = AccountId::new("inherited").unwrap();
+    let explicit_id = AccountId::new("explicit").unwrap();
+    let mut config = AgentModelConfig {
+        accounts: [
+            (inherited_id.clone(), inherited),
+            (explicit_id.clone(), explicit),
+        ]
+        .into(),
+        routes: Default::default(),
+    };
+    config.reconcile_model_catalog().unwrap();
+    for (id, has_file) in [(inherited_id, true), (explicit_id, false)] {
+        let models = config.accounts[&id].effective_models(None).unwrap();
+        let model = models
+            .iter()
+            .find(|model| model.model_id == "gpt-6.1-sol")
+            .unwrap();
+        model.validate_media_contract().unwrap();
+        assert_eq!(
+            model
+                .capabilities
+                .supports_input_modality(ModelModality::File),
+            has_file
+        );
+        assert_eq!(
+            model
+                .binding
+                .request
+                .media_profile(ModelModality::File)
+                .is_some(),
+            has_file
+        );
+    }
+}
+
 #[tokio::test]
 async fn text_lists_and_route_admission_use_each_account_resolved_context() {
     let mut a = provider("http://127.0.0.1:1", ProtocolKind::OpenAi);

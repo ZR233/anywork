@@ -274,6 +274,7 @@ pub struct BridgeThreadRuntimeLiveUsage {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BridgeThreadModelRouteSnapshot {
+    pub bot_id: Option<String>,
     pub account_id: String,
     pub model_id: String,
     pub effort: Option<String>,

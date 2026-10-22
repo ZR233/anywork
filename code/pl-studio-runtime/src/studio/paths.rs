@@ -17,6 +17,7 @@ const WORKSPACES_FILE_NAME: &str = "workspaces.toml";
 const CATALOG_FILE_NAME: &str = "catalog.toml";
 const PROJECTS_DIR_NAME: &str = "projects";
 const SESSIONS_DIR_NAME: &str = "sessions";
+const BOTS_DIR_NAME: &str = "bots";
 const CALLS_DIR_NAME: &str = "calls";
 const MIGRATIONS_DIR_NAME: &str = "migrations";
 const ATTACHMENT_DRAFTS_DIR_NAME: &str = "attachment-drafts";
@@ -96,6 +97,16 @@ impl StudioPaths {
     /// config runtime consumes this view instead of re-deriving the layout.
     pub fn config_paths(&self) -> crate::config::ConfigPaths {
         crate::config::ConfigPaths::from_config_dir(self.home.clone())
+    }
+
+    /// Independent robot management root under the v2 data home.
+    pub fn bots_dir(&self) -> PathBuf {
+        self.versioned_home().join(BOTS_DIR_NAME)
+    }
+
+    /// Stable on-disk directory for one robot.
+    pub fn bot_dir(&self, bot_id: &str) -> PathBuf {
+        self.bots_dir().join(bot_id)
     }
 
     /// Canonical project roots: `v2/projects/<project-key>/`.

@@ -8,6 +8,29 @@ use pl_core::{
 use pl_model::config::{AccountId, ModelRouteConfig, ReasoningEffort};
 
 pub(crate) const MODEL_ROUTE_EXTENSION: &str = "studio.model-route";
+pub(crate) const BOT_OWNER_EXTENSION: &str = "studio.bot-owner";
+
+pub(crate) fn encode_bot_owner(bot_id: &str) -> Result<OpaquePayload> {
+    Ok(OpaquePayload::new(
+        "pl.studio.bot-owner",
+        1,
+        serde_json::to_string(bot_id)?,
+    )?)
+}
+
+pub(crate) fn bot_owner(state: &ThreadSnapshot) -> Result<Option<String>> {
+    state
+        .extensions
+        .get(BOT_OWNER_EXTENSION)
+        .map(|value| {
+            anyhow::ensure!(
+                value.payload.format() == "pl.studio.bot-owner" && value.payload.version() == 1,
+                "unsupported bot owner encoding"
+            );
+            Ok(serde_json::from_str(value.payload.content())?)
+        })
+        .transpose()
+}
 pub(crate) const MODEL_ROUTE_FORMAT: &str = "pl.studio.model-route";
 pub(crate) const AGENT_PROFILE_EXTENSION: &str = "studio.agent-profile";
 pub(crate) const AGENT_PROFILE_FORMAT: &str = "pl.studio.agent-profile";

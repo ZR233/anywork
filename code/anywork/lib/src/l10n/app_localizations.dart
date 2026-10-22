@@ -896,6 +896,714 @@ abstract class AppLocalizations {
   /// **'SSH'**
   String get settingsSshTab;
 
+  /// No description provided for @settingsBotsTab.
+  ///
+  /// In en, this message translates to:
+  /// **'Bots'**
+  String get settingsBotsTab;
+
+  /// No description provided for @settingsBotsTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Feishu bots'**
+  String get settingsBotsTitle;
+
+  /// No description provided for @settingsBotsSubtitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Local configuration, live connection, and inbound authorization are three separate facts.'**
+  String get settingsBotsSubtitle;
+
+  /// No description provided for @settingsBotsAdd.
+  ///
+  /// In en, this message translates to:
+  /// **'Add bot'**
+  String get settingsBotsAdd;
+
+  /// No description provided for @settingsBotsEmptyTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'No bots yet'**
+  String get settingsBotsEmptyTitle;
+
+  /// No description provided for @settingsBotsEmptyBody.
+  ///
+  /// In en, this message translates to:
+  /// **'Scan to create a Feishu China app, or connect an existing app. Secrets stay in memory until you save.'**
+  String get settingsBotsEmptyBody;
+
+  /// No description provided for @settingsBotsSelectTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Select a bot'**
+  String get settingsBotsSelectTitle;
+
+  /// No description provided for @settingsBotsSelectBody.
+  ///
+  /// In en, this message translates to:
+  /// **'Choose a bot to inspect configuration, connection, and authorization.'**
+  String get settingsBotsSelectBody;
+
+  /// No description provided for @settingsBotsSetupTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'First-time setup'**
+  String get settingsBotsSetupTitle;
+
+  /// No description provided for @settingsBotsSetupClose.
+  ///
+  /// In en, this message translates to:
+  /// **'Close setup'**
+  String get settingsBotsSetupClose;
+
+  /// No description provided for @settingsBotsRisk.
+  ///
+  /// In en, this message translates to:
+  /// **'Remote messages can start this computer\'s agent tools. The current policy is full-access. Linking a project is not an OS sandbox.'**
+  String get settingsBotsRisk;
+
+  /// No description provided for @settingsBotsPermissions.
+  ///
+  /// In en, this message translates to:
+  /// **'Requested scopes (preset=false): im:message:send_as_bot, im:message.p2p_msg:readonly, im:message.group_at_msg:readonly, im:chat:readonly, im:message:readonly. Event: im.message.receive_v1. Declaring them does not mean an admin has approved or published the app.'**
+  String get settingsBotsPermissions;
+
+  /// No description provided for @settingsBotsName.
+  ///
+  /// In en, this message translates to:
+  /// **'Name'**
+  String get settingsBotsName;
+
+  /// No description provided for @settingsBotsProject.
+  ///
+  /// In en, this message translates to:
+  /// **'Linked project'**
+  String get settingsBotsProject;
+
+  /// No description provided for @settingsBotsRiskAck.
+  ///
+  /// In en, this message translates to:
+  /// **'I understand remote messages can run local tools with full-access'**
+  String get settingsBotsRiskAck;
+
+  /// No description provided for @settingsBotsScan.
+  ///
+  /// In en, this message translates to:
+  /// **'Create and connect Feishu app'**
+  String get settingsBotsScan;
+
+  /// No description provided for @settingsBotsManual.
+  ///
+  /// In en, this message translates to:
+  /// **'Connect existing app'**
+  String get settingsBotsManual;
+
+  /// No description provided for @settingsBotsAppId.
+  ///
+  /// In en, this message translates to:
+  /// **'App ID'**
+  String get settingsBotsAppId;
+
+  /// No description provided for @settingsBotsSecret.
+  ///
+  /// In en, this message translates to:
+  /// **'App secret'**
+  String get settingsBotsSecret;
+
+  /// No description provided for @settingsBotsSave.
+  ///
+  /// In en, this message translates to:
+  /// **'Save configuration'**
+  String get settingsBotsSave;
+
+  /// No description provided for @settingsBotsPendingTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Unfinished local save'**
+  String get settingsBotsPendingTitle;
+
+  /// No description provided for @settingsBotsPendingPreparing.
+  ///
+  /// In en, this message translates to:
+  /// **'Preparing credentials'**
+  String get settingsBotsPendingPreparing;
+
+  /// No description provided for @settingsBotsPendingUncertain.
+  ///
+  /// In en, this message translates to:
+  /// **'Save needs local verification'**
+  String get settingsBotsPendingUncertain;
+
+  /// No description provided for @settingsBotsPendingCleanup.
+  ///
+  /// In en, this message translates to:
+  /// **'Cleanup pending'**
+  String get settingsBotsPendingCleanup;
+
+  /// No description provided for @settingsBotsPendingCleanupCommitted.
+  ///
+  /// In en, this message translates to:
+  /// **'Config saved; cleanup still pending'**
+  String get settingsBotsPendingCleanupCommitted;
+
+  /// No description provided for @settingsBotsPendingIdle.
+  ///
+  /// In en, this message translates to:
+  /// **'Idle'**
+  String get settingsBotsPendingIdle;
+
+  /// No description provided for @settingsBotsVerify.
+  ///
+  /// In en, this message translates to:
+  /// **'Verify original operation'**
+  String get settingsBotsVerify;
+
+  /// No description provided for @settingsBotsFactConfig.
+  ///
+  /// In en, this message translates to:
+  /// **'Configuration'**
+  String get settingsBotsFactConfig;
+
+  /// No description provided for @settingsBotsFactConnection.
+  ///
+  /// In en, this message translates to:
+  /// **'Connection'**
+  String get settingsBotsFactConnection;
+
+  /// No description provided for @settingsBotsFactAuth.
+  ///
+  /// In en, this message translates to:
+  /// **'Authorization'**
+  String get settingsBotsFactAuth;
+
+  /// No description provided for @settingsBotsFactMissing.
+  ///
+  /// In en, this message translates to:
+  /// **'No available configuration'**
+  String get settingsBotsFactMissing;
+
+  /// No description provided for @settingsBotsConnectionConnected.
+  ///
+  /// In en, this message translates to:
+  /// **'Connected'**
+  String get settingsBotsConnectionConnected;
+
+  /// No description provided for @settingsBotsConnectionConnecting.
+  ///
+  /// In en, this message translates to:
+  /// **'Connecting'**
+  String get settingsBotsConnectionConnecting;
+
+  /// No description provided for @settingsBotsConnectionFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Failed'**
+  String get settingsBotsConnectionFailed;
+
+  /// No description provided for @settingsBotsConnectionIdle.
+  ///
+  /// In en, this message translates to:
+  /// **'Not connected'**
+  String get settingsBotsConnectionIdle;
+
+  /// No description provided for @settingsBotsAuthGranted.
+  ///
+  /// In en, this message translates to:
+  /// **'Local inbound grants exist'**
+  String get settingsBotsAuthGranted;
+
+  /// No description provided for @settingsBotsAuthPending.
+  ///
+  /// In en, this message translates to:
+  /// **'Pairing pending'**
+  String get settingsBotsAuthPending;
+
+  /// No description provided for @settingsBotsAuthNone.
+  ///
+  /// In en, this message translates to:
+  /// **'No inbound trust'**
+  String get settingsBotsAuthNone;
+
+  /// No description provided for @settingsBotsCredentialStored.
+  ///
+  /// In en, this message translates to:
+  /// **'Stored'**
+  String get settingsBotsCredentialStored;
+
+  /// No description provided for @settingsBotsCredentialSession.
+  ///
+  /// In en, this message translates to:
+  /// **'Session only'**
+  String get settingsBotsCredentialSession;
+
+  /// No description provided for @settingsBotsCredentialMissing.
+  ///
+  /// In en, this message translates to:
+  /// **'Missing'**
+  String get settingsBotsCredentialMissing;
+
+  /// No description provided for @settingsBotsCredentialUnavailable.
+  ///
+  /// In en, this message translates to:
+  /// **'Unavailable'**
+  String get settingsBotsCredentialUnavailable;
+
+  /// No description provided for @settingsBotsRegistrationStatus.
+  ///
+  /// In en, this message translates to:
+  /// **'Registration: {status}'**
+  String settingsBotsRegistrationStatus(String status);
+
+  /// No description provided for @settingsBotsOpenLink.
+  ///
+  /// In en, this message translates to:
+  /// **'Continue in browser'**
+  String get settingsBotsOpenLink;
+
+  /// No description provided for @settingsBotsOpenFeishu.
+  ///
+  /// In en, this message translates to:
+  /// **'Continue in Feishu'**
+  String get settingsBotsOpenFeishu;
+
+  /// No description provided for @settingsBotsContinueHint.
+  ///
+  /// In en, this message translates to:
+  /// **'Confirm app creation in Feishu. This page will update automatically when registration completes.'**
+  String get settingsBotsContinueHint;
+
+  /// No description provided for @settingsBotsScanOnlyHint.
+  ///
+  /// In en, this message translates to:
+  /// **'Scan the QR code with Feishu on your phone and confirm app creation. This page will update automatically.'**
+  String get settingsBotsScanOnlyHint;
+
+  /// No description provided for @settingsBotsScanHint.
+  ///
+  /// In en, this message translates to:
+  /// **'You can also scan with Feishu on your phone. If the client does not open, continue in your browser or scan the code.'**
+  String get settingsBotsScanHint;
+
+  /// No description provided for @settingsBotsOpenLinkFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Could not open the link. Scan the QR code to continue, or try the browser option.'**
+  String get settingsBotsOpenLinkFailed;
+
+  /// No description provided for @settingsBotsOpenChat.
+  ///
+  /// In en, this message translates to:
+  /// **'Open chat in Feishu'**
+  String get settingsBotsOpenChat;
+
+  /// No description provided for @settingsBotsOpenChatBrowser.
+  ///
+  /// In en, this message translates to:
+  /// **'Open through browser'**
+  String get settingsBotsOpenChatBrowser;
+
+  /// No description provided for @settingsBotsPolicyDenied.
+  ///
+  /// In en, this message translates to:
+  /// **'Feishu\'s access control policy denied this app\'s API request.'**
+  String get settingsBotsPolicyDenied;
+
+  /// No description provided for @settingsBotsPolicyDeniedHint.
+  ///
+  /// In en, this message translates to:
+  /// **'Creating an app does not grant API access. Contact your organization\'s administrator to check the app\'s access policy, then retry once access is allowed.'**
+  String get settingsBotsPolicyDeniedHint;
+
+  /// No description provided for @settingsBotsPlatformCode.
+  ///
+  /// In en, this message translates to:
+  /// **'Feishu error code: {code}'**
+  String settingsBotsPlatformCode(String code);
+
+  /// No description provided for @settingsBotsCopyLink.
+  ///
+  /// In en, this message translates to:
+  /// **'Copy link'**
+  String get settingsBotsCopyLink;
+
+  /// No description provided for @settingsBotsRegistrationBusy.
+  ///
+  /// In en, this message translates to:
+  /// **'Local save is committing. Cancel is busy and does not mean cancelled.'**
+  String get settingsBotsRegistrationBusy;
+
+  /// No description provided for @settingsBotsCancelRegistration.
+  ///
+  /// In en, this message translates to:
+  /// **'Cancel registration'**
+  String get settingsBotsCancelRegistration;
+
+  /// No description provided for @settingsBotsRegIdle.
+  ///
+  /// In en, this message translates to:
+  /// **'Idle'**
+  String get settingsBotsRegIdle;
+
+  /// No description provided for @settingsBotsRegPreparing.
+  ///
+  /// In en, this message translates to:
+  /// **'Preparing'**
+  String get settingsBotsRegPreparing;
+
+  /// No description provided for @settingsBotsRegWaiting.
+  ///
+  /// In en, this message translates to:
+  /// **'Waiting for confirmation in Feishu'**
+  String get settingsBotsRegWaiting;
+
+  /// No description provided for @settingsBotsRegSlowDown.
+  ///
+  /// In en, this message translates to:
+  /// **'Slow down'**
+  String get settingsBotsRegSlowDown;
+
+  /// No description provided for @settingsBotsRegCommitting.
+  ///
+  /// In en, this message translates to:
+  /// **'Committing'**
+  String get settingsBotsRegCommitting;
+
+  /// No description provided for @settingsBotsRegCompleted.
+  ///
+  /// In en, this message translates to:
+  /// **'Completed'**
+  String get settingsBotsRegCompleted;
+
+  /// No description provided for @settingsBotsRegDenied.
+  ///
+  /// In en, this message translates to:
+  /// **'Denied'**
+  String get settingsBotsRegDenied;
+
+  /// No description provided for @settingsBotsRegExpired.
+  ///
+  /// In en, this message translates to:
+  /// **'Expired'**
+  String get settingsBotsRegExpired;
+
+  /// No description provided for @settingsBotsRegCancelled.
+  ///
+  /// In en, this message translates to:
+  /// **'Cancelled'**
+  String get settingsBotsRegCancelled;
+
+  /// No description provided for @settingsBotsRegFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Failed'**
+  String get settingsBotsRegFailed;
+
+  /// No description provided for @settingsBotsQrFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Could not encode the verification QR code. Use the local open or copy action for the current trusted link.'**
+  String get settingsBotsQrFailed;
+
+  /// No description provided for @settingsBotsAppIdLocked.
+  ///
+  /// In en, this message translates to:
+  /// **'App ID cannot change after platform conversations or durable records exist.'**
+  String get settingsBotsAppIdLocked;
+
+  /// No description provided for @settingsBotsProjectLocked.
+  ///
+  /// In en, this message translates to:
+  /// **'Project cannot change after Thread mapping or admitted input exists.'**
+  String get settingsBotsProjectLocked;
+
+  /// No description provided for @settingsBotsEnabled.
+  ///
+  /// In en, this message translates to:
+  /// **'Enable connection'**
+  String get settingsBotsEnabled;
+
+  /// No description provided for @settingsBotsRetryConnection.
+  ///
+  /// In en, this message translates to:
+  /// **'Retry connection'**
+  String get settingsBotsRetryConnection;
+
+  /// No description provided for @settingsBotsTools.
+  ///
+  /// In en, this message translates to:
+  /// **'Allow project tools'**
+  String get settingsBotsTools;
+
+  /// No description provided for @settingsBotsToolsHint.
+  ///
+  /// In en, this message translates to:
+  /// **'Only the four tools on the linked project root Thread. Local owner query/send and original auto-replies are not gated by this switch.'**
+  String get settingsBotsToolsHint;
+
+  /// No description provided for @settingsBotsTrustedUsers.
+  ///
+  /// In en, this message translates to:
+  /// **'Trusted users'**
+  String get settingsBotsTrustedUsers;
+
+  /// No description provided for @settingsBotsTrustedChats.
+  ///
+  /// In en, this message translates to:
+  /// **'Trusted groups'**
+  String get settingsBotsTrustedChats;
+
+  /// No description provided for @settingsBotsRevoke.
+  ///
+  /// In en, this message translates to:
+  /// **'Revoke'**
+  String get settingsBotsRevoke;
+
+  /// No description provided for @settingsBotsApprove.
+  ///
+  /// In en, this message translates to:
+  /// **'Approve'**
+  String get settingsBotsApprove;
+
+  /// No description provided for @settingsBotsPairingHint.
+  ///
+  /// In en, this message translates to:
+  /// **'Unknown DMs do not run the model. After approval, ask the user to resend; old messages are not executed.'**
+  String get settingsBotsPairingHint;
+
+  /// No description provided for @settingsBotsClearPairing.
+  ///
+  /// In en, this message translates to:
+  /// **'Clear request'**
+  String get settingsBotsClearPairing;
+
+  /// No description provided for @settingsBotsClearPairingHint.
+  ///
+  /// In en, this message translates to:
+  /// **'Clears only this local pairing request. This user\'s current trust setting stays unchanged, and their old messages are not executed.'**
+  String get settingsBotsClearPairingHint;
+
+  /// No description provided for @settingsBotsNoTrustedUsers.
+  ///
+  /// In en, this message translates to:
+  /// **'No trusted users yet. Manual apps start with an empty trust list.'**
+  String get settingsBotsNoTrustedUsers;
+
+  /// No description provided for @settingsBotsNoTrustedChats.
+  ///
+  /// In en, this message translates to:
+  /// **'Groups are off by default. Authorize a group plus the real @mention of this bot.'**
+  String get settingsBotsNoTrustedChats;
+
+  /// No description provided for @settingsBotsConversations.
+  ///
+  /// In en, this message translates to:
+  /// **'Conversations'**
+  String get settingsBotsConversations;
+
+  /// No description provided for @settingsBotsRefreshConversations.
+  ///
+  /// In en, this message translates to:
+  /// **'Refresh'**
+  String get settingsBotsRefreshConversations;
+
+  /// No description provided for @settingsBotsNewThread.
+  ///
+  /// In en, this message translates to:
+  /// **'Create local session'**
+  String get settingsBotsNewThread;
+
+  /// No description provided for @settingsBotsMessages.
+  ///
+  /// In en, this message translates to:
+  /// **'Messages'**
+  String get settingsBotsMessages;
+
+  /// No description provided for @settingsBotsSendHint.
+  ///
+  /// In en, this message translates to:
+  /// **'Send as this bot'**
+  String get settingsBotsSendHint;
+
+  /// No description provided for @settingsBotsSend.
+  ///
+  /// In en, this message translates to:
+  /// **'Send'**
+  String get settingsBotsSend;
+
+  /// No description provided for @settingsBotsSendStatus.
+  ///
+  /// In en, this message translates to:
+  /// **'Send status: {status}'**
+  String settingsBotsSendStatus(String status);
+
+  /// No description provided for @settingsBotsSourceGroup.
+  ///
+  /// In en, this message translates to:
+  /// **'Group chat'**
+  String get settingsBotsSourceGroup;
+
+  /// No description provided for @settingsBotsSourceDirect.
+  ///
+  /// In en, this message translates to:
+  /// **'Direct chat'**
+  String get settingsBotsSourceDirect;
+
+  /// No description provided for @settingsBotsEdit.
+  ///
+  /// In en, this message translates to:
+  /// **'Edit configuration'**
+  String get settingsBotsEdit;
+
+  /// No description provided for @settingsBotsDismiss.
+  ///
+  /// In en, this message translates to:
+  /// **'Cancel'**
+  String get settingsBotsDismiss;
+
+  /// No description provided for @settingsBotsPreserveSecret.
+  ///
+  /// In en, this message translates to:
+  /// **'Leave blank to keep the existing secret. It is never displayed.'**
+  String get settingsBotsPreserveSecret;
+
+  /// No description provided for @settingsBotsClearSecret.
+  ///
+  /// In en, this message translates to:
+  /// **'Remove the saved secret'**
+  String get settingsBotsClearSecret;
+
+  /// No description provided for @settingsBotsOperationFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'The operation could not finish. Check the current state and retry explicitly; an unknown send is not safe to replay.'**
+  String get settingsBotsOperationFailed;
+
+  /// No description provided for @settingsBotsModelReady.
+  ///
+  /// In en, this message translates to:
+  /// **'The Simple mode model route and its credential are configured. This is not a live model connectivity check.'**
+  String get settingsBotsModelReady;
+
+  /// No description provided for @settingsBotsModelMissing.
+  ///
+  /// In en, this message translates to:
+  /// **'Configure an account and a complete Simple mode model route before expecting remote messages to run. Saving this app does not check model connectivity.'**
+  String get settingsBotsModelMissing;
+
+  /// No description provided for @settingsBotsManualGuide.
+  ///
+  /// In en, this message translates to:
+  /// **'In the Feishu China developer console, enable the bot and long-connection event delivery, subscribe to im.message.receive_v1, request the scopes listed above, then publish the app and confirm its availability. Tenant administrators may need to approve permissions. Save here, then enable the connection.'**
+  String get settingsBotsManualGuide;
+
+  /// No description provided for @settingsBotsFirstMessageGuide.
+  ///
+  /// In en, this message translates to:
+  /// **'After a real connection, send the bot a message in Feishu. An unknown sender only creates a pairing request: approve it locally and ask them to send again. Group execution needs local group authorization and a user\'s actual @mention of this bot; @all is not sufficient.'**
+  String get settingsBotsFirstMessageGuide;
+
+  /// No description provided for @settingsBotsNewThreadWarning.
+  ///
+  /// In en, this message translates to:
+  /// **'Create a new local context for future messages? Existing history is retained. Already admitted messages and replies stay with their original context and are not moved.'**
+  String get settingsBotsNewThreadWarning;
+
+  /// No description provided for @settingsBotsApproveGroup.
+  ///
+  /// In en, this message translates to:
+  /// **'Authorize this group'**
+  String get settingsBotsApproveGroup;
+
+  /// No description provided for @settingsBotsNextPage.
+  ///
+  /// In en, this message translates to:
+  /// **'Next page'**
+  String get settingsBotsNextPage;
+
+  /// No description provided for @settingsBotsRefreshMessages.
+  ///
+  /// In en, this message translates to:
+  /// **'Apply range / refresh messages'**
+  String get settingsBotsRefreshMessages;
+
+  /// No description provided for @settingsBotsStartTime.
+  ///
+  /// In en, this message translates to:
+  /// **'Start time (Unix seconds; optional)'**
+  String get settingsBotsStartTime;
+
+  /// No description provided for @settingsBotsEndTime.
+  ///
+  /// In en, this message translates to:
+  /// **'End time (Unix seconds; optional)'**
+  String get settingsBotsEndTime;
+
+  /// No description provided for @settingsBotsHistoryPermissions.
+  ///
+  /// In en, this message translates to:
+  /// **'Only permitted history is available. Group history may additionally require im:message.group_msg, granted separately in Feishu. This app never requests it automatically or switches to a user identity.'**
+  String get settingsBotsHistoryPermissions;
+
+  /// No description provided for @settingsBotsOpenConsole.
+  ///
+  /// In en, this message translates to:
+  /// **'Open Feishu developer console'**
+  String get settingsBotsOpenConsole;
+
+  /// No description provided for @settingsBotsOpenConsoleHint.
+  ///
+  /// In en, this message translates to:
+  /// **'Opens the official Feishu China developer console page. There, choose the app matching the current App ID and open its permission management; permissions still require administrator approval and the app must stay published with its availability. Nothing is requested or approved automatically here.'**
+  String get settingsBotsOpenConsoleHint;
+
+  /// No description provided for @settingsBotsOpenConsoleFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Could not open the developer console. Please try again.'**
+  String get settingsBotsOpenConsoleFailed;
+
+  /// No description provided for @settingsBotsConnectionReconnecting.
+  ///
+  /// In en, this message translates to:
+  /// **'Reconnecting'**
+  String get settingsBotsConnectionReconnecting;
+
+  /// No description provided for @settingsBotsSendOperation.
+  ///
+  /// In en, this message translates to:
+  /// **'Send operation'**
+  String get settingsBotsSendOperation;
+
+  /// No description provided for @settingsBotsNoReplay.
+  ///
+  /// In en, this message translates to:
+  /// **'Some messages may already have been delivered. This result is retained and will not be replayed automatically.'**
+  String get settingsBotsNoReplay;
+
+  /// No description provided for @settingsBotsSendSucceeded.
+  ///
+  /// In en, this message translates to:
+  /// **'Delivered'**
+  String get settingsBotsSendSucceeded;
+
+  /// No description provided for @settingsBotsSendPartial.
+  ///
+  /// In en, this message translates to:
+  /// **'Partially delivered'**
+  String get settingsBotsSendPartial;
+
+  /// No description provided for @settingsBotsSendRejected.
+  ///
+  /// In en, this message translates to:
+  /// **'Rejected'**
+  String get settingsBotsSendRejected;
+
+  /// No description provided for @settingsBotsSendUnknown.
+  ///
+  /// In en, this message translates to:
+  /// **'Outcome unknown'**
+  String get settingsBotsSendUnknown;
+
   /// No description provided for @settingsSshTitle.
   ///
   /// In en, this message translates to:
@@ -7199,6 +7907,66 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Custom'**
   String get settingsModelAutoCompactCustom;
+
+  /// No description provided for @botsOverviewHint.
+  ///
+  /// In en, this message translates to:
+  /// **'Bring your sessions to Feishu to search, collaborate, and share files.'**
+  String get botsOverviewHint;
+
+  /// No description provided for @botsPlatformFeishu.
+  ///
+  /// In en, this message translates to:
+  /// **'Feishu'**
+  String get botsPlatformFeishu;
+
+  /// No description provided for @botsModelTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Model and reasoning'**
+  String get botsModelTitle;
+
+  /// No description provided for @botsModelHint.
+  ///
+  /// In en, this message translates to:
+  /// **'Applies to all chats with this bot from the next turn.'**
+  String get botsModelHint;
+
+  /// No description provided for @botsAccessTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'People and group access'**
+  String get botsAccessTitle;
+
+  /// No description provided for @botsAccessHint.
+  ///
+  /// In en, this message translates to:
+  /// **'Only approved people and groups can use this bot.'**
+  String get botsAccessHint;
+
+  /// No description provided for @botsConnectionSettings.
+  ///
+  /// In en, this message translates to:
+  /// **'Connection and settings'**
+  String get botsConnectionSettings;
+
+  /// No description provided for @botsWorkspace.
+  ///
+  /// In en, this message translates to:
+  /// **'Dedicated workspace'**
+  String get botsWorkspace;
+
+  /// No description provided for @botsPlatformTools.
+  ///
+  /// In en, this message translates to:
+  /// **'Feishu messages and test sending'**
+  String get botsPlatformTools;
+
+  /// No description provided for @botsManagedModel.
+  ///
+  /// In en, this message translates to:
+  /// **'Managed by bot settings'**
+  String get botsManagedModel;
 
   /// No description provided for @settingsSshNextPage.
   ///

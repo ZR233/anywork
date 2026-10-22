@@ -24,6 +24,10 @@ Studio home（`~/.anywork/`）的布局为：
 │   ├── workspaces.toml             # 本版本 Project/Workspace 定义
 │   ├── catalog.toml                # 本版本新会话目录摘要
 │   ├── model-catalogs/<account-key>/<query-key>/model.json # 各账号最后成功模型声明
+│   ├── bots/<bot-id>/              # 机器人管理根；稳定 ID，不使用平台身份作路径
+│   │   ├── config.toml            # 版本化非敏感配置与独立 config revision
+│   │   ├── state.sqlite           # 版本化会话映射、受理身份、配对及发送操作
+│   │   └── workspace/            # 受管本地执行根；复用 .anywork/sessions/<thread-key>/
 │   ├── projects/<project-key>/     # project-key = 稳定 Project id 的 sha256
 │   │   ├── project.toml            # 版本化项目身份与归属清单
 │   │   └── sessions/<thread-key>/  # thread-key = 稳定 Thread id 的 sha256
@@ -106,6 +110,30 @@ inode），不含程序位置、版本或构建模式；指向同一目录的符
 `workspaces.toml` 保存 Project/Workspace 定义和稳定引用；物理 worktree ownership 使用版本化
 lease 记录，保留 `prepared | active | preserved | cleanupRequested | cleaned`、owner Thread、
 repo/path/branch/base/revision。目录展示与物理 ownership 是不同职责，不能互相推导。
+
+SQLite 目录镜像可能落后于已持久化的 canonical 目录。写入 Thread 镜像时，如果所属 Project
+镜像缺失，必须在同一事务中从 `workspaces.toml` 的已加载事实补齐父行，再写入 Thread；
+不能要求用户先在 GUI 打开项目。缺少 canonical Project 时仍报错，不猜测项目归属，也不
+通过关闭外键约束继续写入。已有父行保持 FIFO 目录变更顺序，不被冷摘要覆盖。
+
+机器人独立管理根 `v2/bots/` 位于同一 v2 备份范围，每个 `config.toml` 保存版本化 desired
+配置及独立 revision，`state.sqlite` 保存版本化会话映射、可靠受理身份和发送操作记录。
+配置中的凭据版本引用和必要的提交恢复身份不含 secret；实际版本化材料仍只在系统凭据
+或进程 lease。配置引用发布、结果待确认与未引用材料回收分别恢复，不能假定原子写入
+报错就代表目标文件从未被替换。未决提交收敛前保留所需版本并封闭该机器人准入，见
+[27.2](./27-bots.md#272-管理配置与凭据)。备份普通数据不备份系统凭据或 lease；恢复历史
+配置也不隐式回退/选择其他密钥版本，所选材料不可用时明确要求恢复凭据。
+平台消息身份不是 Studio checkpoint 的替代事实源；机器人关联的 Thread 继续保存到普通
+`projects/<project-key>/sessions/<thread-key>/`。App Secret、租户 token 和长连接票据不进入上述文件；单机器人损坏保留现场并
+局部隔离，不触发全局恢复。生命周期和发送未知结果契约见 [27](./27-bots.md)。
+
+机器人的执行根固定在其管理目录的 `workspace/`。每个聊天独立使用现有 Thread 文件布局，
+其中 `uploads/` 保存下载或物化文件，`scratch/`、`artifacts/` 与 `commands/` 沿用已有职责，
+`.venv/` 按需由 uv 创建。`UV_PROJECT_ENVIRONMENT` 只注入该 Thread 的命令子进程。
+可靠附件目录和正文仍由普通会话存储拥有，执行目录不是附件或历史的第二个事实源。
+旧机器人的历史存储身份、凭据引用、Thread 和收发账本保持原样；执行文件只复制明确归属
+该 Thread 的旧目录，原业务项目与文件保留。逐文件原子发布并记录迁移完成；中断可接续，
+完成后不反复恢复已删除的工作文件。虚拟环境不可搬迁，保留原环境并按需重建新环境。
 
 项目和会话清单只描述版本、稳定身份与固定归属，作为目录自描述和绑定校验，不是第二套可编辑
 配置。项目名称、会话标题、归档与列表排序等可变摘要仍归全局轻量索引；当前模型 route、Mode、
@@ -372,6 +400,9 @@ Thread owner
 HistoryStore 只提供顺序键／身份读取与保存，不额外维护 GUI SQL 页缓存。活跃 reader 与
 writer 复用同一数据库身份与初始化状态；新库 schema/meta 尚未完成时等待本句柄 writer，
 冷读缺失库仍为空且不创建文件。损坏继续报错，不能重试后当作空历史。
+此共享义务也覆盖 checkpoint 与恢复栅栏的读取，以及尚未打开 writer 的冷读句柄；不能
+在同一 Thread 内另开独立初始化状态绕过正在进行的首次初始化。共享句柄本身不创建库、
+不升级 schema，不以全局强引用缓存延长冷会话资源寿命。
 
 查询先保留内存未保存引用，再读短 SQL 事务，返回前重新合入最新事实；并发 commit
 重叠按身份版本收敛，不漏行或回退内容。打开尾部订阅在同一同步边界登记接收者及建立

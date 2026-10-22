@@ -167,6 +167,9 @@ impl StudioRuntime {
             StudioProductTopic::AgentProfiles => StudioProductBaselineState::AgentProfiles(
                 Box::new(self.read_agent_profiles_state()?),
             ),
+            StudioProductTopic::Bots => {
+                StudioProductBaselineState::Bots(Box::new(self.bots.snapshot().await))
+            }
         };
         let revision = state.revision();
         Ok(StudioProductBaseline {

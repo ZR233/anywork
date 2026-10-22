@@ -25,7 +25,7 @@ impl StudioChildResources for StudioThreadFactory {
             .thread_snapshot(&request.caller)
             .map(ThreadRecord::from_directory_thread)
             .ok_or_else(|| ThreadAssemblyError::Identity(request.caller.clone()))?;
-        let project = self
+        let mut project = self
             .services
             .product_events
             .project_snapshot()
@@ -34,12 +34,22 @@ impl StudioChildResources for StudioThreadFactory {
             .find(|project| project.id == parent.project_id)
             .ok_or_else(|| ThreadAssemblyError::Identity(parent.project_id.clone()))?;
         let root_thread = self.thread_record(&parent.root_thread_id).await?;
+        let project_root = match self
+            .bind_bot_project(&request.id, &parent.root_thread_id, &mut project)
+            .await?
+        {
+            Some(root) => root,
+            None => {
+                crate::studio::agent_host::workspace_preparation::resolved_project_root(&project)
+                    .map_err(|error| resource_error("resolve child project root", error))?
+            }
+        };
         let session_root =
             crate::studio::agent_host::workspace_preparation::root_session_workspace_root(
                 &self.services.worktrees,
                 root_thread.workspace_mode,
                 &parent.root_thread_id,
-                &project,
+                project_root.clone(),
             )
             .map_err(|error| resource_error("resolve session workspace root", error))?;
         // child 的创建窗口与 root 会话一样由进程内 creating 标记保护：标记在记录 `prepared`
@@ -59,6 +69,7 @@ impl StudioChildResources for StudioThreadFactory {
                 &self.services.ssh_manager,
                 crate::studio::agent_host::workspace_preparation::WorkspacePreparation {
                     project: &project,
+                    project_root,
                     root_thread_id: &parent.root_thread_id,
                     child_id: &request.id,
                     mode: profile.profile.workspace_mode,

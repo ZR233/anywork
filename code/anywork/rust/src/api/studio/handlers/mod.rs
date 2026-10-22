@@ -1,6 +1,7 @@
 pub mod accounts;
 pub mod agent_profiles;
 pub mod attachment;
+pub mod bots;
 pub mod chat;
 pub mod external_state;
 pub mod history;
@@ -17,6 +18,7 @@ pub mod updater;
 pub use accounts::*;
 pub use agent_profiles::*;
 pub use attachment::*;
+pub use bots::*;
 pub use chat::*;
 pub use external_state::*;
 pub use history::*;

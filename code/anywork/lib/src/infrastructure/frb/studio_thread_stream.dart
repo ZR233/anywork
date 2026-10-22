@@ -757,6 +757,7 @@ ThreadRuntimeView _threadRuntimeFromFrb(frb.BridgeThreadRuntimeSnapshot value) {
     modelRoute: value.modelRoute == null
         ? null
         : ThreadModelRouteView(
+            botId: value.modelRoute!.botId,
             accountId: value.modelRoute!.accountId,
             modelId: value.modelRoute!.modelId,
             effort: value.modelRoute!.effort,

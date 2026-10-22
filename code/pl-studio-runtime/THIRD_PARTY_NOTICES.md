@@ -22,3 +22,26 @@ canonical 内容,构建期不访问网络。每次同步后需人工核对本文
 - 技能:`docx`、`pdf`、`powerpoint`、`xlsx`(位于 `skills/productivity/`)
 - 许可:MIT License,Copyright (c) Nous Research。按 MIT 条款在产物中随技能
   分发时保留本声明中的版权与许可指向;许可全文见上游仓库 `LICENSE`。
+
+## larksuite/node-sdk（协议对照，非运行依赖）
+
+- 上游:<https://github.com/larksuite/node-sdk>
+- npm 包:`@larksuiteoapi/node-sdk@1.76.0`
+- npm gitHead:`1889911f0841e669de0be5bd02c737a3f1fd20fa`（GitHub 无法按该 SHA 取路径）
+- 对照仓库 revision:`b188be60134d409b61259546bcf69c731d2b0b7c`
+- 使用范围:注册 begin/poll、addons gzip+base64url、`/callback/ws/endpoint`、pbbp2 Frame/Header 字段编号、ping/pong 与事件 ACK。不复制整个 SDK，不引入 Node 运行依赖。
+- 许可:MIT License, Copyright (c) 2022 Lark Technologies Pte. Ltd.
+
+许可原文（对应上述固定仓库 revision 的 `LICENSE`）：
+
+```text
+MIT License
+
+Copyright (c) 2022 Lark Technologies Pte. Ltd.
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice, shall be included in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+```

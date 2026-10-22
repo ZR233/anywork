@@ -7,6 +7,7 @@ mod agent_profile;
 mod instruction;
 mod profiles_resource;
 pub use instruction::{DEFAULT_PROJECT_DOC_MAX_BYTES, InstructionsConfig};
+mod bot_credentials;
 mod credential;
 mod execution;
 pub mod mcp;
@@ -45,6 +46,15 @@ pub use pl_tool::mcp::config::McpServerTransport;
 pub use pl_tool::mcp::config::validate_mcp_identifier;
 pub use profiles_resource::{AgentProfilesResource, AgentProfilesSnapshot};
 
+pub(crate) use bot_credentials::{
+    BotCredentialCapability, BotCredentialRef, BotCredentialRefKind, BotProtectedPayload,
+    BotSecretVersion, SelectedBotCredential, try_decode_current_payload,
+};
+#[cfg(test)]
+pub(crate) use credential::memory_faults;
+pub(crate) use credential::{
+    BotCredentialIoError, BotCredentialIoKind, BotProtectedPersist, BotProtectedRead,
+};
 pub use pl_model::config::{AccountId, AgentRoleId, ModelRouteConfig, ReasoningEffort};
 pub(crate) use runtime::ModeDefinitionCommandOutcome;
 pub use runtime::{

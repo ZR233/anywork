@@ -23,6 +23,7 @@ import 'settings_skills_tab.dart';
 import 'settings_ssh_tab.dart';
 import 'settings_statistics_tab.dart';
 import 'settings_views.dart';
+import 'settings_bots_tab.dart';
 
 class SettingsPage extends StatelessWidget {
   const SettingsPage({super.key});
@@ -197,6 +198,7 @@ const _settingsTabs = [
   _SettingsTabInfo(Icons.query_stats_outlined, _SettingsTab.statistics),
   _SettingsTabInfo(Icons.security_outlined, _SettingsTab.security),
   _SettingsTabInfo(Icons.tune_outlined, _SettingsTab.general),
+  _SettingsTabInfo(Icons.smart_toy_outlined, _SettingsTab.bots),
 ];
 
 class _SettingsTabInfo {
@@ -218,6 +220,7 @@ class _SettingsTabInfo {
       _SettingsTab.statistics => context.l10n.settingsStatisticsTab,
       _SettingsTab.security => context.l10n.settingsSecurityTab,
       _SettingsTab.general => context.l10n.settingsGeneralTab,
+      _SettingsTab.bots => context.l10n.settingsBotsTab,
     };
   }
 }
@@ -234,6 +237,7 @@ enum _SettingsTab {
   statistics,
   security,
   general,
+  bots,
 }
 
 class _SettingsScaffold extends StatelessWidget {
@@ -253,6 +257,7 @@ class _SettingsScaffold extends StatelessWidget {
       StatisticsTab(tabIndex: _SettingsTab.statistics.index),
       const SecurityTab(),
       const _GeneralSettingsTab(),
+      BotsTab(tabIndex: _SettingsTab.bots.index),
     ];
     return LayoutBuilder(
       builder: (context, constraints) {
@@ -362,7 +367,7 @@ class _SettingsNav extends ConsumerWidget {
                 _SettingsNavGroupLabel(context.l10n.settingsExtensionsGroup),
                 for (final index in [3, 5, 6, 7]) navItems[index],
                 _SettingsNavGroupLabel(context.l10n.settingsPreferencesGroup),
-                for (final index in [8, 9, 10]) navItems[index],
+                for (final index in [8, 9, 10, 11]) navItems[index],
               ],
             ),
           ),

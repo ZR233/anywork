@@ -516,6 +516,10 @@ impl StudioRuntime {
         let _guard = self.lifecycle_lock.lock().await;
         let record = self.read_owned_thread(thread_id).await?;
         anyhow::ensure!(
+            self.bots.config_for_thread(thread_id).await?.is_none(),
+            "该会话的模型由机器人统一管理，请打开机器人设置修改"
+        );
+        anyhow::ensure!(
             record.parent_thread_id.is_none(),
             "child Thread model routes are frozen by their Agent Profile"
         );

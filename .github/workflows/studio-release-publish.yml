@@ -184,7 +184,7 @@ jobs:
           mkdir -p "$tool_dir"
           tar -xJf "$archive" --strip-components=1 -C "$tool_dir"
           echo "$tool_dir" >> "$GITHUB_PATH"
-          cargo binstall --no-confirm --disable-strategies compile cargo-zigbuild@0.23.4
+          cargo binstall --no-confirm --force --disable-strategies compile cargo-zigbuild@0.23.4
 
       - name: Build all remote helper architectures
         env:
@@ -272,7 +272,7 @@ jobs:
       - name: Install prebuilt FRB tools
         env:
           GITHUB_TOKEN: ${{ github.token }}
-        run: cargo binstall --no-confirm --disable-strategies compile flutter_rust_bridge_codegen@2.13.0 cargo-expand@1.0.127
+        run: cargo binstall --no-confirm --force --disable-strategies compile flutter_rust_bridge_codegen@2.13.0 cargo-expand@1.0.127
 
       - name: Verify Flutter application
         run: cargo xtask verify-gui

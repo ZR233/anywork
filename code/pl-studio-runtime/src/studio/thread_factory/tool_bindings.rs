@@ -271,7 +271,7 @@ impl StudioThreadFactory {
             .thread_snapshot(id)
             .map(crate::studio::ThreadRecord::from_directory_thread)
             .ok_or_else(|| ThreadAssemblyError::Identity(id.into()))?;
-        let project = self
+        let mut project = self
             .services
             .product_events
             .project_snapshot()
@@ -283,6 +283,8 @@ impl StudioThreadFactory {
                     "project target disappeared; reactivate this Thread".into(),
                 )
             })?;
+        self.bind_bot_project(id, &thread.root_thread_id, &mut project)
+            .await?;
         ensure_same_target(&binding.project, &project)?;
         if let Some(previous) = &binding.ssh_profile {
             let current = self

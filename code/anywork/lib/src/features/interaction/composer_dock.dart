@@ -18,6 +18,7 @@ import '../../shared/studio_chrome.dart';
 import '../../shared/studio_driver_keys.dart';
 import '../../shared/studio_menu_label.dart';
 import '../status/session_selectors.dart';
+import '../settings/settings_bots_tab.dart' show BotDetailsPage;
 import 'composer_view.dart';
 import 'interaction_payload.dart';
 import 'multiline_enter_shortcuts.dart';
@@ -517,55 +518,69 @@ class _PromptComposerState extends ConsumerState<_PromptComposer> {
                             .setThreadMode(mode),
                       ),
                     ),
-                    ..._modelRouteSelectorChildren(
-                      accounts: view.accounts,
-                      accountId: route?.accountId,
-                      modelId: route?.modelId,
-                      effort: route?.effort,
-                      enabled: view.settingsLoaded,
-                      pending: view.routePending,
-                      available: route?.available ?? false,
-                      routeUnavailableReason: route?.unavailableReason,
-                      unavailableReason: unavailableReason,
-                      blockedReason: blockedReason,
-                      onExplain: (message) =>
-                          setState(() => _modelNotice = message),
-                      onModelSelected: (accountId, modelId) {
-                        unawaited(
-                          ref
-                              .read(anyworkClientProvider)
-                              .threadCommands
-                              .setThreadModelRoute(
-                                threadId: thread.id,
-                                accountId: accountId,
-                                modelId: modelId,
-                                effort:
-                                    ModelRouteQueries.effortAfterModelSelection(
-                                      ModelRouteQueries.model(
-                                        view.accounts,
-                                        accountId,
-                                        modelId,
+                    if (view.modelRoute?.botId case final botId?)
+                      TextButton.icon(
+                        key: const ValueKey('bot-model-settings'),
+                        icon: const Icon(Icons.smart_toy_outlined, size: 16),
+                        label: Text(
+                          '${route?.modelId ?? ''} · ${context.l10n.botsManagedModel}',
+                        ),
+                        onPressed: () => Navigator.of(context).push<void>(
+                          MaterialPageRoute(
+                            builder: (_) => BotDetailsPage(botId: botId),
+                          ),
+                        ),
+                      )
+                    else
+                      ..._modelRouteSelectorChildren(
+                        accounts: view.accounts,
+                        accountId: route?.accountId,
+                        modelId: route?.modelId,
+                        effort: route?.effort,
+                        enabled: view.settingsLoaded,
+                        pending: view.routePending,
+                        available: route?.available ?? false,
+                        routeUnavailableReason: route?.unavailableReason,
+                        unavailableReason: unavailableReason,
+                        blockedReason: blockedReason,
+                        onExplain: (message) =>
+                            setState(() => _modelNotice = message),
+                        onModelSelected: (accountId, modelId) {
+                          unawaited(
+                            ref
+                                .read(anyworkClientProvider)
+                                .threadCommands
+                                .setThreadModelRoute(
+                                  threadId: thread.id,
+                                  accountId: accountId,
+                                  modelId: modelId,
+                                  effort:
+                                      ModelRouteQueries.effortAfterModelSelection(
+                                        ModelRouteQueries.model(
+                                          view.accounts,
+                                          accountId,
+                                          modelId,
+                                        ),
+                                        route?.effort,
                                       ),
-                                      route?.effort,
-                                    ),
-                              ),
-                        );
-                      },
-                      onEffortSelected: (effort) {
-                        if (route == null) return;
-                        unawaited(
-                          ref
-                              .read(anyworkClientProvider)
-                              .threadCommands
-                              .setThreadModelRoute(
-                                threadId: thread.id,
-                                accountId: route.accountId,
-                                modelId: route.modelId,
-                                effort: effort,
-                              ),
-                        );
-                      },
-                    ),
+                                ),
+                          );
+                        },
+                        onEffortSelected: (effort) {
+                          if (route == null) return;
+                          unawaited(
+                            ref
+                                .read(anyworkClientProvider)
+                                .threadCommands
+                                .setThreadModelRoute(
+                                  threadId: thread.id,
+                                  accountId: route.accountId,
+                                  modelId: route.modelId,
+                                  effort: effort,
+                                ),
+                          );
+                        },
+                      ),
                   ],
                 )
               : null,

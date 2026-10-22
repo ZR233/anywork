@@ -6,11 +6,12 @@ use super::error::BridgeError;
 use super::event::BridgeProductEventEnvelope;
 use super::{
     BridgeAccountUsageStateSnapshot, BridgeAgentDirectoryState, BridgeAgentProfilesStateSnapshot,
-    BridgeLspStateSnapshot, BridgeMcpStateSnapshot, BridgeModelCatalogStateSnapshot,
-    BridgeModelPerformanceSnapshot, BridgePersistenceQueueStateSnapshot,
-    BridgePersistenceStateSnapshot, BridgeProjectDirectoryState, BridgeRecoveryStateSnapshot,
-    BridgeSessionCostsState, BridgeSettingsConfigStateSnapshot, BridgeSkillsStateSnapshot,
-    BridgeThreadDirectoryPage, BridgeThreadModeCatalogSnapshot, BridgeUpdaterStateSnapshot,
+    BridgeBotsStateSnapshot, BridgeLspStateSnapshot, BridgeMcpStateSnapshot,
+    BridgeModelCatalogStateSnapshot, BridgeModelPerformanceSnapshot,
+    BridgePersistenceQueueStateSnapshot, BridgePersistenceStateSnapshot,
+    BridgeProjectDirectoryState, BridgeRecoveryStateSnapshot, BridgeSessionCostsState,
+    BridgeSettingsConfigStateSnapshot, BridgeSkillsStateSnapshot, BridgeThreadDirectoryPage,
+    BridgeThreadModeCatalogSnapshot, BridgeUpdaterStateSnapshot,
 };
 
 /// 产品订阅 topic；带 payload 的变体表达作用域，不存在无作用域组合形式。
@@ -34,6 +35,7 @@ pub enum BridgeProductTopic {
     Persistence,
     PersistenceQueue,
     AgentProfiles,
+    Bots,
 }
 
 impl BridgeProductTopic {
@@ -73,6 +75,7 @@ impl BridgeProductTopic {
             Self::Persistence => StudioProductTopic::Persistence,
             Self::PersistenceQueue => StudioProductTopic::PersistenceQueue,
             Self::AgentProfiles => StudioProductTopic::AgentProfiles,
+            Self::Bots => StudioProductTopic::Bots,
         }
     }
 }
@@ -98,6 +101,7 @@ pub enum BridgeProductBaseline {
     Persistence(BridgePersistenceStateSnapshot),
     PersistenceQueue(Box<BridgePersistenceQueueStateSnapshot>),
     AgentProfiles(Box<BridgeAgentProfilesStateSnapshot>),
+    Bots(Box<BridgeBotsStateSnapshot>),
 }
 
 /// typed topic 订阅交付的帧。

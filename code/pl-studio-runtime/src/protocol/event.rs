@@ -41,6 +41,7 @@ pub enum StudioProductEventKind {
     PersistenceStateChanged(PersistenceStateSnapshot),
     PersistenceQueueStateChanged(StudioPersistenceQueueStateSnapshot),
     AgentProfilesStateChanged(Box<StudioAgentProfilesStateSnapshot>),
+    BotsStateChanged(pl_protocol::studio::BotsStateSnapshot),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -357,4 +358,5 @@ pub struct StudioStateSnapshot {
     pub persistence: PersistenceStateSnapshot,
     pub persistence_queue: StudioPersistenceQueueStateSnapshot,
     pub agent_profiles: StudioAgentProfilesStateSnapshot,
+    pub bots: pl_protocol::studio::BotsStateSnapshot,
 }

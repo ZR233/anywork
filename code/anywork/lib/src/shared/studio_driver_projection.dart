@@ -126,6 +126,7 @@ StudioDriverFacts queryStudioDriverFacts(
     recoveryIssues: client.recovery.state.value?.values ?? const [],
     project: project,
     workspace: workspace,
+    bots: _botsFacts(client),
   );
 }
 
@@ -377,6 +378,7 @@ Map<String, int> _connectionCounts(AnyworkClient client) {
   counts.add(client.updater.state.sync);
   counts.add(client.persistence.state.stateSync);
   counts.add(client.persistence.state.queueSync);
+  counts.add(client.bots.state.sync);
   for (final store in client.ownedSkills) {
     counts.add(store.state.sync);
   }
@@ -416,6 +418,7 @@ Map<String, Object?> _projectionRevisions(AnyworkClient client) {
     'persistence': client.persistence.state.stateRevision,
     'persistenceQueue': client.persistence.state.queue?.revision,
     'agentProfiles': settings.agentProfiles?.revision,
+    'bots': client.bots.state.revision,
     'threadDirectory': client.threadDirectory.state.revision,
     'selectedThread': session?.workspace?.revision,
     'skills': {
@@ -497,4 +500,78 @@ class _SyncCounts {
     'failedCount': failedCount,
     'errorCount': errorCount,
   };
+}
+
+StudioDriverBotsFacts? _botsFacts(AnyworkClient client) {
+  final clock = client.bots.state;
+  final snapshot = clock.value;
+  if (!clock.loaded && snapshot == null) return null;
+  final bots = snapshot?.bots ?? const <BotSnapshot>[];
+  String connectionKind(BotConnectionState state) => switch (state) {
+    BotConnectionDisabled() => 'disabled',
+    BotConnectionConnecting() => 'connecting',
+    BotConnectionConnected() => 'connected',
+    BotConnectionReconnecting() => 'reconnecting',
+    BotConnectionFailed() => 'failed',
+  };
+  String credentialKind(BotCredentialAvailability value) => value.name;
+  String? pendingKind(BotCredentialOperation value) => switch (value) {
+    BotCredentialOperationIdle() => null,
+    BotCredentialOperationPreparing() => 'preparing',
+    BotCredentialOperationCommitUncertain() => 'commitUncertain',
+    BotCredentialOperationCleanupPending() => 'cleanupPending',
+  };
+  bool? configCommitted(BotCredentialOperation value) => switch (value) {
+    BotCredentialOperationCleanupPending(:final configCommitted) =>
+      configCommitted,
+    _ => null,
+  };
+  String? registrationKind(BotRegistrationStatus? status) => switch (status) {
+    null || BotRegistrationIdle() => null,
+    BotRegistrationPreparing() => 'preparing',
+    BotRegistrationWaiting() => 'waiting',
+    BotRegistrationSlowDown() => 'slowDown',
+    BotRegistrationCompleted() => 'completed',
+    BotRegistrationCommitting() => 'committing',
+    BotRegistrationDenied() => 'denied',
+    BotRegistrationExpired() => 'expired',
+    BotRegistrationCancelled() => 'cancelled',
+    BotRegistrationFailed() => 'failed',
+  };
+  return StudioDriverBotsFacts(
+    revision: snapshot?.revision ?? clock.revision,
+    bots: [
+      for (final bot in bots)
+        StudioDriverBotFacts(
+          id: bot.id,
+          name: bot.name,
+          enabled: bot.enabled,
+          credential: credentialKind(bot.credential),
+          connectionKind: connectionKind(bot.connection),
+          pendingKind: pendingKind(bot.credentialOperation),
+          configCommitted: configCommitted(bot.credentialOperation),
+          configRevision: bot.configRevision,
+          trustedUserCount: bot.trustedOpenIds.length,
+          trustedGroupCount: bot.trustedChatIds.length,
+          pairingCount: bot.pairing.length,
+          canChangeProject: bot.canChangeProject,
+          canChangeAppId: bot.canChangeAppId,
+        ),
+    ],
+    pending: [
+      for (final pending in snapshot?.pendingCredentialOperations ?? const [])
+        StudioDriverPendingCredentialFacts(
+          botId: pending.botId,
+          kind: pendingKind(pending.credentialOperation) ?? 'idle',
+          configCommitted: configCommitted(pending.credentialOperation),
+        ),
+    ],
+    registrationAttemptId: snapshot?.registration?.attemptId,
+    registrationKind: registrationKind(snapshot?.registration?.status),
+    registrationBotId: switch (snapshot?.registration?.status) {
+      BotRegistrationCommitting(:final botId) => botId,
+      _ => null,
+    },
+    completedBotId: snapshot?.registration?.completedBotId,
+  );
 }

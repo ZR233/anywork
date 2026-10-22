@@ -37,6 +37,10 @@ impl StudioStore {
         &self.db
     }
 
+    pub(crate) fn paths(&self) -> &StudioPaths {
+        &self.paths
+    }
+
     /// 轻量会话目录摘要事实源；首屏/分页/搜索只读取这里。
     pub(in crate::studio) fn catalog(&self) -> &crate::studio::catalog::CatalogStore {
         &self.catalog
@@ -55,17 +59,12 @@ impl StudioStore {
     ///
     /// 该 Thread 已有活跃 writer 持有者时返回**同一个**权威句柄：reader 与 writer 复用同一份
     /// 数据库身份与初始化状态，冷读会等待本句柄 writer 完成建表与 identity meta，而不是在新库
-    /// `connect(mode=rwc)` 刚创建文件后就把它当成损坏库。没有活跃持有者时仍返回新的只读句柄，
-    /// 不存在的库继续读成空且不被创建。
+    /// `connect(mode=rwc)` 刚创建文件后就把它当成损坏库。没有活跃持有者时，新打开的句柄立刻
+    /// 登记进弱引用表，让并发 reader 与随后的 writer 共用同一初始化锁；最后一位持有者释放后
+    /// 弱表回收，不会留下永不过期的强缓存。不存在的库继续读成空且不被创建。
     pub(crate) async fn history(&self, thread_id: &str) -> anyhow::Result<HistoryStore> {
-        if let Some(shared) = self.thread_persistence.shared_history(thread_id) {
-            return Ok(shared);
-        }
-        HistoryStore::open(
-            &self.registered_session_paths(thread_id)?.history_database(),
-            thread_id,
-        )
-        .await
+        let session = self.registered_session_paths(thread_id)?;
+        self.history_for(session.project_id(), thread_id).await
     }
 
     /// Explicit Project + Thread history handle for tests and child prepare before catalog
@@ -78,40 +77,13 @@ impl StudioStore {
         if let Some(shared) = self.thread_persistence.shared_history(thread_id) {
             return Ok(shared);
         }
-        HistoryStore::open(
+        let opened = HistoryStore::open(
             &self
                 .session_paths(project_id, thread_id)?
                 .history_database(),
             thread_id,
         )
-        .await
-    }
-
-    /// 该 Thread 的唯一有序历史写者句柄（没有活跃持有者时登记一个新的）。
-    ///
-    /// effect commit 与实时订阅的 ordinal 预留都必须经由这一个句柄，同一 `history.sqlite` 才不会
-    /// 出现两条各自独立的 SQLite writer 互抢写锁。句柄只在真正的持有者（sink、订阅）存活期间存在，
-    /// 因此关闭/淘汰 Thread 会释放连接，而不是留下永不失效的强引用缓存；重复打开而未登记的句柄
-    /// 只绑定了路径（`HistoryStore::open` 不做 IO），不会产生第二条连接。
-    pub(crate) async fn history_writer(&self, thread_id: &str) -> anyhow::Result<HistoryStore> {
-        if let Some(shared) = self.thread_persistence.shared_history(thread_id) {
-            return Ok(shared);
-        }
-        let opened = self.history(thread_id).await?;
-        Ok(self
-            .thread_persistence
-            .install_shared_history(thread_id, &opened))
-    }
-
-    pub(crate) async fn history_writer_for(
-        &self,
-        project_id: &str,
-        thread_id: &str,
-    ) -> anyhow::Result<HistoryStore> {
-        if let Some(shared) = self.thread_persistence.shared_history(thread_id) {
-            return Ok(shared);
-        }
-        let opened = self.history_for(project_id, thread_id).await?;
+        .await?;
         Ok(self
             .thread_persistence
             .install_shared_history(thread_id, &opened))
@@ -135,8 +107,7 @@ impl StudioStore {
         if let Some(active) = self.thread_persistence.chat_session(thread_id) {
             return Ok(active);
         }
-        let session =
-            pl_core::chat::Session::new(self.history_writer_for(project_id, thread_id).await?);
+        let session = pl_core::chat::Session::new(self.history_for(project_id, thread_id).await?);
         Ok(self
             .thread_persistence
             .install_chat_session(thread_id, session))

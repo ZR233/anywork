@@ -110,17 +110,19 @@ impl StateStore {
         history: &super::history::HistoryStore,
     ) -> Result<Option<ThreadCheckpoint>> {
         history.prepare_activation().await?;
-        self.load().await
+        self.load(history).await
     }
 
-    pub(crate) async fn load(&self) -> Result<Option<ThreadCheckpoint>> {
-        let history = super::history::HistoryStore::open(
-            &self.directory.join("history.sqlite"),
-            &self.thread_id,
-        )
-        .await?;
+    pub(crate) async fn load(
+        &self,
+        history: &super::history::HistoryStore,
+    ) -> Result<Option<ThreadCheckpoint>> {
+        ensure!(
+            history.thread_id() == self.thread_id,
+            "history database belongs to another Thread"
+        );
         if let Some(checkpoint) = history.checkpoint().await? {
-            self.cleanup_legacy(&history).await?;
+            self.cleanup_legacy(history).await?;
             return Ok(Some(checkpoint));
         }
         let Some(mut checkpoint) = self.load_legacy().await? else {
@@ -190,7 +192,7 @@ impl StateStore {
             .checkpoint()
             .await?
             .context("imported checkpoint is absent")?;
-        self.cleanup_legacy(&history).await?;
+        self.cleanup_legacy(history).await?;
         Ok(Some(restored))
     }
 

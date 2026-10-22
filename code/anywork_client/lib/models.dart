@@ -4,6 +4,7 @@ library;
 export 'src/models/agent_models.dart';
 export 'src/models/agent_profile_models.dart';
 export 'src/models/attachment_models.dart';
+export 'src/models/bot_models.dart';
 export 'src/models/collection_extensions.dart';
 export 'src/models/command_receipts.dart';
 export 'src/models/composer_models.dart';

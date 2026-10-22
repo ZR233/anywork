@@ -160,6 +160,7 @@ class StudioChannels {
         _client.persistence.state.queueLoaded,
         _client.persistence.state.queueRevision,
       ),
+      BotsTopic() => _clock(_client.bots.state),
     };
   }
 
@@ -212,6 +213,8 @@ class StudioChannels {
         _client.persistence.applyQueue(state);
       case AgentProfilesBaseline(:final state):
         _client.settings.applyAgentProfiles(state);
+      case BotsBaseline(:final state):
+        _client.bots.apply(state);
     }
   }
 
@@ -264,6 +267,8 @@ class StudioChannels {
         _client.persistence.applyQueue(state);
       case AgentProfilesStateChangedPayload(:final state):
         _client.settings.applyAgentProfiles(state);
+      case BotsStateChangedPayload(:final state):
+        _client.bots.apply(state);
     }
   }
 
@@ -303,6 +308,8 @@ class StudioChannels {
         _client.persistence.applyStateTransport(sync);
       case PersistenceQueueTopic():
         _client.persistence.applyQueueTransport(sync);
+      case BotsTopic():
+        _client.bots.applyTransport(sync);
     }
   }
 
@@ -359,6 +366,7 @@ int? _incomingRevision(ProductTopicFrame frame) {
         PersistenceBaseline(:final state) => state.revision,
         PersistenceQueueBaseline(:final state) => state.revision,
         AgentProfilesBaseline(:final state) => state.revision,
+        BotsBaseline(:final state) => state.revision,
       },
     ProductTopicDataFrame(:final event) => switch (event.payload) {
       ProjectDirectoryChangedPayload(:final state) => state.revision,
@@ -379,6 +387,7 @@ int? _incomingRevision(ProductTopicFrame frame) {
       PersistenceStateChangedPayload(:final state) => state.revision,
       PersistenceQueueStateChangedPayload(:final state) => state.revision,
       AgentProfilesStateChangedPayload(:final state) => state.revision,
+      BotsStateChangedPayload(:final state) => state.revision,
     },
     ProductTopicLaggedFrame() || ProductTopicFailureFrame() => null,
   };

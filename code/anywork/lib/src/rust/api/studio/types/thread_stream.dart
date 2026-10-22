@@ -428,6 +428,7 @@ class BridgeThreadMcpServerDescriptor {
 }
 
 class BridgeThreadModelRouteSnapshot {
+  final String? botId;
   final String accountId;
   final String modelId;
   final String? effort;
@@ -436,6 +437,7 @@ class BridgeThreadModelRouteSnapshot {
   final String? unavailableReason;
 
   const BridgeThreadModelRouteSnapshot({
+    this.botId,
     required this.accountId,
     required this.modelId,
     this.effort,
@@ -446,6 +448,7 @@ class BridgeThreadModelRouteSnapshot {
 
   @override
   int get hashCode =>
+      botId.hashCode ^
       accountId.hashCode ^
       modelId.hashCode ^
       effort.hashCode ^
@@ -458,6 +461,7 @@ class BridgeThreadModelRouteSnapshot {
       identical(this, other) ||
       other is BridgeThreadModelRouteSnapshot &&
           runtimeType == other.runtimeType &&
+          botId == other.botId &&
           accountId == other.accountId &&
           modelId == other.modelId &&
           effort == other.effort &&

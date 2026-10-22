@@ -28,7 +28,10 @@ impl StudioThreadFactory {
                 "child role is retired: planner".into(),
             ));
         }
-        let project = self.project_record(&thread.project_id).await?;
+        let mut project = self.project_record(&thread.project_id).await?;
+        let bot_root = self
+            .bind_bot_project(id, &thread.root_thread_id, &mut project)
+            .await?;
         let protocol_thread: pl_protocol::Thread = thread.clone().into();
         let checkpoint =
             super::recovery::load_checkpoint_for_recovery(&self.services.store, &protocol_thread)
@@ -119,16 +122,18 @@ impl StudioThreadFactory {
         let project_copy = project.clone();
         let worktrees = self.services.worktrees.clone();
         let (root, session_root) = tokio::task::spawn_blocking(move || {
-            let project_root =
-                crate::studio::agent_host::workspace_preparation::resolved_project_root(
+            let project_root = match bot_root {
+                Some(root) => root,
+                None => crate::studio::agent_host::workspace_preparation::resolved_project_root(
                     &project_copy,
-                )?;
+                )?,
+            };
             let session_root =
                 crate::studio::agent_host::workspace_preparation::root_session_workspace_root(
                     &worktrees,
                     workspace_mode,
                     &root_thread_id,
-                    &project_copy,
+                    project_root.clone(),
                 )?;
             Ok::<_, crate::PureError>((project_root, session_root))
         })

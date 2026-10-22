@@ -701,6 +701,7 @@ class ThreadModelRouteView {
     required this.revision,
     required this.available,
     this.unavailableReason,
+    this.botId,
   });
 
   final String accountId;
@@ -709,10 +710,12 @@ class ThreadModelRouteView {
   final int revision;
   final bool available;
   final String? unavailableReason;
+  final String? botId;
 
   @override
   bool operator ==(Object other) =>
       other is ThreadModelRouteView &&
+      botId == other.botId &&
       accountId == other.accountId &&
       modelId == other.modelId &&
       effort == other.effort &&
