@@ -1,8 +1,8 @@
 {
   "schemaVersion": 2,
-  "baseline": "f6cb327ceb3416dca181790575711588571d3ec7",
+  "baseline": "b3f22b8f651816851852582a10a970fe25af3ae6",
   "tree": "committed",
-  "sourceContentHash": "sha256:92fe7fc5f6a0cef019f2e35899fa382be8aad74dc23ab436d0899cec00df5229",
+  "sourceContentHash": "sha256:3d704695398df730403932bd5d109eaac7a86d9c05d1daed9c48ed37fa52a27f",
   "classification": {
     "dartProduction": "lib/**/*.dart excluding generated sources",
     "dartGenerated": ".g.dart/.freezed.dart, app lib/src/rust/, app_localizations*",
@@ -22,63 +22,63 @@
   },
   "totals": {
     "app.driver": {
-      "files": 64,
-      "physicalLines": 32515,
-      "nonBlankLines": 30769
+      "files": 66,
+      "physicalLines": 35270,
+      "nonBlankLines": 33403
     },
     "app.generated": {
       "files": 85,
-      "physicalLines": 117072,
-      "nonBlankLines": 95151
+      "physicalLines": 118535,
+      "nonBlankLines": 96272
     },
     "app.production": {
-      "files": 204,
-      "physicalLines": 60014,
-      "nonBlankLines": 56274
+      "files": 206,
+      "physicalLines": 61689,
+      "nonBlankLines": 57833
     },
     "app.test": {
-      "files": 31,
-      "physicalLines": 14779,
-      "nonBlankLines": 14009
+      "files": 32,
+      "physicalLines": 16493,
+      "nonBlankLines": 15641
     },
     "client.production": {
       "files": 87,
-      "physicalLines": 23177,
-      "nonBlankLines": 20836
+      "physicalLines": 23299,
+      "nonBlankLines": 20948
     },
     "client.test": {
       "files": 21,
-      "physicalLines": 8801,
-      "nonBlankLines": 8318
+      "physicalLines": 8968,
+      "nonBlankLines": 8480
     },
     "rust.generated": {
       "files": 1,
-      "physicalLines": 33129,
-      "nonBlankLines": 32093
+      "physicalLines": 33315,
+      "nonBlankLines": 32273
     },
     "rust.handwritten_source": {
-      "files": 472,
-      "physicalLines": 109502,
-      "nonBlankLines": 102874
+      "files": 474,
+      "physicalLines": 112075,
+      "nonBlankLines": 105327
     }
   },
   "handwrittenFilesOver500": {
-    "app.production": 39,
+    "app.production": 42,
     "client.production": 14,
-    "rust.handwritten_source": 46
+    "rust.handwritten_source": 49
   },
   "largestHandwrittenFiles": [
     {
       "path": "code/anywork/lib/src/infrastructure/frb/studio_demo_api.dart",
-      "lines": 6062
+      "lines": 6067
     },
     {
       "path": "code/pl-studio-runtime/src/studio/storage/history.rs",
-      "lines": 5228
+      "lines": 5265
     },
     {
       "path": "code/pl-studio-runtime/src/studio/storage/thread_writer.rs",
-      "lines": 4833
+      "lines": 4909
     },
     {
       "path": "code/pl-studio-runtime/src/studio/thread_projection/live.rs",
@@ -90,15 +90,19 @@
     },
     {
       "path": "code/anywork/lib/src/infrastructure/frb/studio_api_contract.dart",
-      "lines": 2301
+      "lines": 2326
     },
     {
       "path": "code/pl-studio-runtime/src/studio/runtime/thread_observation.rs",
-      "lines": 1879
+      "lines": 1907
     },
     {
       "path": "code/pl-studio-runtime/src/studio/runtime/lifecycle/shutdown.rs",
-      "lines": 1813
+      "lines": 1767
+    },
+    {
+      "path": "code/pl-studio-runtime/src/studio/store/session_layout.rs",
+      "lines": 1685
     },
     {
       "path": "code/anywork/lib/src/infrastructure/frb/studio_frb_converters.dart",
@@ -106,7 +110,7 @@
     },
     {
       "path": "code/pl-studio-runtime/src/studio/storage/calls.rs",
-      "lines": 1441
+      "lines": 1459
     },
     {
       "path": "code/anywork/lib/src/features/settings/mode_editor/mode_editor_page.dart",
@@ -118,7 +122,7 @@
     },
     {
       "path": "code/anywork/lib/src/features/interaction/composer_dock.dart",
-      "lines": 1291
+      "lines": 1289
     },
     {
       "path": "code/pl-studio-server/src/routes.rs",
@@ -137,23 +141,19 @@
       "lines": 1168
     },
     {
-      "path": "code/anywork/lib/src/features/settings/mode_editor/mode_editor_panels.dart",
-      "lines": 1085
+      "path": "code/pl-studio-runtime/src/studio/storage/calls/schema.rs",
+      "lines": 1140
     },
     {
       "path": "code/pl-studio-runtime/src/thread_assembler.rs",
-      "lines": 1078
-    },
-    {
-      "path": "code/pl-studio-runtime/src/config/model_catalog.rs",
-      "lines": 1066
+      "lines": 1086
     }
   ],
   "handwrittenLibraries": [
     {
       "entry": "code/anywork/lib/src/infrastructure/frb/studio_api.dart",
       "handwrittenParts": 10,
-      "physicalLines": 12434,
+      "physicalLines": 12464,
       "parts": [
         "code/anywork/lib/src/infrastructure/frb/studio_account_catalog_converters.dart",
         "code/anywork/lib/src/infrastructure/frb/studio_api_contract.dart",
@@ -165,6 +165,25 @@
         "code/anywork/lib/src/infrastructure/frb/studio_thread_preparation.dart",
         "code/anywork/lib/src/infrastructure/frb/studio_thread_stream.dart",
         "code/anywork/lib/src/infrastructure/frb/studio_timeline.dart"
+      ]
+    },
+    {
+      "entry": "code/anywork/lib/src/features/timeline/timeline_view.dart",
+      "handwrittenParts": 12,
+      "physicalLines": 6757,
+      "parts": [
+        "code/anywork/lib/src/features/timeline/timeline_agent_blocks.dart",
+        "code/anywork/lib/src/features/timeline/timeline_detail_viewer.dart",
+        "code/anywork/lib/src/features/timeline/timeline_group_blocks.dart",
+        "code/anywork/lib/src/features/timeline/timeline_image_blocks.dart",
+        "code/anywork/lib/src/features/timeline/timeline_image_card.dart",
+        "code/anywork/lib/src/features/timeline/timeline_markdown_blocks.dart",
+        "code/anywork/lib/src/features/timeline/timeline_message_blocks.dart",
+        "code/anywork/lib/src/features/timeline/timeline_plan_blocks.dart",
+        "code/anywork/lib/src/features/timeline/timeline_preview_host.dart",
+        "code/anywork/lib/src/features/timeline/timeline_remote_image_blocks.dart",
+        "code/anywork/lib/src/features/timeline/timeline_tool_blocks.dart",
+        "code/anywork/lib/src/features/timeline/timeline_user_input_blocks.dart"
       ]
     },
     {
@@ -187,27 +206,9 @@
       ]
     },
     {
-      "entry": "code/anywork/lib/src/features/timeline/timeline_view.dart",
-      "handwrittenParts": 11,
-      "physicalLines": 5800,
-      "parts": [
-        "code/anywork/lib/src/features/timeline/timeline_agent_blocks.dart",
-        "code/anywork/lib/src/features/timeline/timeline_detail_viewer.dart",
-        "code/anywork/lib/src/features/timeline/timeline_group_blocks.dart",
-        "code/anywork/lib/src/features/timeline/timeline_image_blocks.dart",
-        "code/anywork/lib/src/features/timeline/timeline_markdown_blocks.dart",
-        "code/anywork/lib/src/features/timeline/timeline_message_blocks.dart",
-        "code/anywork/lib/src/features/timeline/timeline_plan_blocks.dart",
-        "code/anywork/lib/src/features/timeline/timeline_preview_host.dart",
-        "code/anywork/lib/src/features/timeline/timeline_remote_image_blocks.dart",
-        "code/anywork/lib/src/features/timeline/timeline_tool_blocks.dart",
-        "code/anywork/lib/src/features/timeline/timeline_user_input_blocks.dart"
-      ]
-    },
-    {
       "entry": "code/anywork/lib/src/features/interaction/composer_dock.dart",
       "handwrittenParts": 1,
-      "physicalLines": 1462,
+      "physicalLines": 1460,
       "parts": [
         "code/anywork/lib/src/features/interaction/composer_attachments.dart"
       ]
@@ -215,7 +216,7 @@
     {
       "entry": "code/anywork/lib/src/domain/models/timeline_presentation.dart",
       "handwrittenParts": 1,
-      "physicalLines": 664,
+      "physicalLines": 941,
       "parts": [
         "code/anywork/lib/src/domain/models/timeline_presentation_controller.dart"
       ]

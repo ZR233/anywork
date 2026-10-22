@@ -374,6 +374,16 @@ Widget 暴露。attempt、demand、permit 与 unresolved-close 所有权继续�
 load/focus/expand 控制面与 anchor 恢复。page/detail 是有类型返回值的查询，不通过
 “等待下一个窗口版本确认操作完成”收束。
 
+连接状态的 latest-value 观察不交付展示正文。内容服务只允许一个可等待的正文消费者，按
+原连接顺序完成转换、连续性校验、归并与消费后才确认 delivery sequence。消费者出错不 ACK；
+解绑只结束自己的回调准入和在途调用，不改变业务 demand。新消费者从新的 attempt 基线
+开始，不用状态镜像重放最后一条 Patch。尚未消费首基线的已登记 opening 可以将自己的首
+基线交给新消费者，不重复 opening；已经开始消费首基线则必须换 attempt。关闭拒绝新消费者
+准入，没有消费者时不另存未来展示用的正文队列。
+每次解绑都封闭并登记自己的 consumer 收束，后一次解绑不能复用前一个消费者的已完成结果
+而跳过实际 close。应用退出等待全部已受理消费者，包括尚未发布展示的基线回调；期限报告
+显式列出仍未结束的消费者，不能因当前没有展示 lease 就报告 Clean。
+
 内容连接只维护有界 tail 基线和连续性校验，Thread 状态观察不再携带一份决定历史展示
 结构的 workspace.items。领域包不引入 Flutter、Riverpod、FRB；Freezed 等纯 Dart 模型依赖
 遵循 [25](./25-frontend-state.md)，不再要求运行依赖为空。
@@ -384,8 +394,17 @@ Timeline AsyncNotifier 只暴露 Freezed 展示元数据与分页／重试／详
 正文列表，不保留旧窗口或兼容 provider。Smart 绑定 VM 与 UI-only 展示 lease，Dumb 只借用
 UI 控制器和 typed callbacks，不收 Repository 或业务 handle。FRB／demo 不依赖 Driver 的界面投影：关停进度只经已有 typed
 订阅交付，应用关停协调器记录其实际观察的进度和最终报告，不由适配层重复写 Driver 状态。
+借给Dumb的canvas binding只含Controller、Chat key、展示代次及真实子树mount/unmount能力，
+不暴露详情query、native句柄或Session关闭。每次真实挂载独立登记并幂等解除，迟到挂载仍
+参与释放屏障；不能用单个mounted布尔值覆盖另一个仍持有Controller的子树。详情/原图的
+需求由Smart与VM在原展示身份上发起，View只渲染结果和typed回调。
 FRB 连接的首帧、尾部、页、详情及清理失败在适配边界统一为 SDK 的 `StudioFailure`，
 保留类型化类别和可用诊断，不让生成的 BridgeError 穿过 SDK 暴露给 feature。
+
+FRB adapter 对本地原生流转发订阅与 native join 拥有同一关闭责任，两者必须真实收束后才
+释放 opaque；不能先等待其中一条，再为另一条迟挂错误处理。本地取消失败并入已有 typed
+关闭报告的 Unresolved，保留全部原生 issues；取消调用通过既有关闭失败类型观察该报告。
+该关闭责任不等待自己的 controller done／onCancel，也不接管 Channel 的业务消费者。
 
 公共 Dart 模型沿用现有非负 int 表达顺序、revision、内容版本和 UTF-8 字节数；这些数值
 不能混同各自的版本域或字符下标。FRB BigInt 转入前必须验证当前 Dart 平台能够精确表示，
@@ -421,6 +440,15 @@ Session 服务的唯一 push 消费交付 identity/field 增量；presentation �
 权威整条 Add 可保守提示可能有后台更新，不承诺为提示对整条预览做深相等去重；也不为
 区分提示另建正文副本或事件回放队列。
 
+一次正文帧或一页产生的 stock controller 写入必须有可等待的错误收束边界；不能把返回的
+Future 仅交给 unawaited／Zone 后提前 ACK。此边界确认消息写入，不等待绘制、滚动或动画，
+也不维护跨帧操作队列或第二份 Message 集合。新基线先准备未发布的候选展示 lease，写入
+成功且 Thread／代次仍匹配后才交换当前 binding、完成回实时或发送准备，再退役旧 lease。
+失败只收束候选并保留原展示与可见错误，不提前宣告准备成功。
+候选在首个 await 前绑定具体 Session 实例、consumer 绑定与候选代次；任何新候选开始即使
+尚未发布，也使旧候选失去发布资格。每次异步写入返回后重新核对这些身份，不能只比较
+Thread ID 或已发布代次。候选查询保持绑定原 Session，不能动态改查同 ID 的替换实例。
+
 显式回实时（包括发送前）刷新内容连接 attempt，从新订阅的一致最新 32 条首帧建立
 展示代次；旧 History 保留到新首帧成功，失败可见并可重试。采用新订阅避免将“页请求
 返回前已交付的 tail”拼接成应用侧第二套恢复算法；重连产生新基线也使用相同代次切换。
@@ -448,6 +476,7 @@ demo 内容连接遵守同一小页基线与有界尾部契约，不把全部历
 
 视图通过真实子树卸载确认释放绑定；lease 退役先停止发布和查询，再等已挂载旧代次
 解除绑定，最后销毁消息／滚动控制器并观察 stock operations stream 真正 done。
+已经受理的 controller 写入与查询同样须在销毁前结束；consumer 解绑不能代替这些完成事实。
 尚未挂载即退役的代次直接释放，不等待不存在的 widget 回调。挂载状态与 stream done
 是不同事实；不能用 disposeRequested flag、sleep、固定帧数或 provider 销毁替代确认。
 退役不等于已经释放；控制器尚存时发生的真实旧子树挂载仍须纳入卸载等待，已经释放的
@@ -522,6 +551,18 @@ sequence 或计量值，不把无身份的 unknown 快照拼成同身份终态�
 它包含 `threadId`、`generation`、`ready`、`mode`、`connection`、`appliedVersion`、
 `itemCount`、`itemIds`、`olderCursor`、`hasOlder`、`loadingOlder`、`olderError`、
 `hasNewOutput` 与 `preparingLive`；其中身份与数量来自当前 controller，不从状态流猜测。
+连接失败另携带四个 nullable 只读标量：`connectionErrorType: String?`、
+`connectionErrorCode: StudioFailureCode?`、`connectionErrorRetryable: bool?`、
+`connectionErrorCorrelationId: String?`。它们在同一次同步读取中来自当前
+`TimelineViewState.connectionError`，不依赖展示 lease 已建立；首基线前的失败也必须可诊断。
+无错误时四项均为 null；有错误时 type 为该对象的运行时类型名，只有 `StudioFailure` 才提取
+原有 code、retryable 和 correlationId，JSON 中 code 使用领域枚举名。未知异常的后三项为
+null，不猜测错误类别或重试资格。四个 JSON 键始终存在，Driver 严格区分缺键、类型错误与
+合法 null，不保留旧字段别名或缺键 fallback。
+连接错误诊断不输出异常 `message`、`detailsJson`、`toString()`、堆栈或任意正文；
+correlationId 只引用已有 typed 关联身份，不从消息提取。超时诊断在既有有界
+`last`／`lastWhileBusy` 中保留这四项，不新增采样、订阅、重试、业务写入或成功条件。
+该元数据只说明实际观察的失败，不能据此把重跑通过反推为旧失败已修复或已归因。
 按需的 `items` 是同一批 Message 的轻量 typed 预览诊断，包含稳定身份、顺序、revision、
 保存／终态、省略声明与逐字段详情引用，以及旅程需要的已脱敏正文、工具与附件预览；
 不展开全文、不重新解析工具参数、不构造活动合并行或保留第二套 row 模型。

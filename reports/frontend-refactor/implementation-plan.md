@@ -1,388 +1,315 @@
-# Rust／FRB／Dart 全链路重构与 Contract-First 实施计划
+# 全链路一次性重写计划 v4：最新主线、完整合同、并行实现、最终统一验证
 
-> 本文记录已批准的 v3 完整实施计划及明确的现场更新，不表示各阶段已实现。
-> canonical Plan revision 6，document version 3，批准内容身份：
-> `sha256:8dbea7a50d90d0cd6b6de5502a997923734e0cbd37459aaf0efa204596f56dc3`。
-> 现场更新：按用户要求拉取最新主干后，实施与最终贡献比较基线改为
-> `f6cb327ceb3416dca181790575711588571d3ec7`；用户另要求先建 Draft PR，后续阶段成果分别 commit/push。
-> 下文保留原计划完整的目标、架构、准入、验证与交付要求；原始基线只作历史记录。
+## 1. 最新要求与本次变更
 
-## 1. 目标、范围与交付
+本计划完整替代此前 v3 的实施节奏，保留已确认的业务目标与安全不变量，落实用户最新指令：
 
-对当前 Dart／Flutter 及必要的 Rust／FRB 边界进行彻底重构，不以旧目录、Client API、状态归属或设计文档为不可改变的前提。目标是降低重复知识与跨层耦合，让维护者能够从功能入口清楚追踪状态、意图、事件与资源生命周期，而不是只获得一次文件搬迁。
+1. **先基于最新主线完成 rebase／同步**，尽量由隔离工作树子代理执行，主代理负责备份、关键冲突决策与最终整合。
+2. **一次完成本次重构范围内全部代码的重写**，不再按 Timeline、Thread、Repository、单个页面依次测试放行，也不以旧 Client 外包一层作为中间交付。
+3. **中途不测试、不编译**。执行子代理和审查子代理均不得运行构建、测试或编译型检查；完成一项实现后立即安排独立静态审查。
+4. 在接口契约完整、写入范围互不重叠时，尽量并行修改不相干模块；不为并行而把关键设计交给执行者决定。
+5. **全部手写重写和消费者迁移完成后**，再统一生成、整体静态审查、编译、测试与原生集成验收；在最终验收阶段集中修复发现的问题。
+6. SSH 出问题时，**等待10秒再重试连接／只读状态核对**；不得重复启动状态未知的命令或重放可能已受理的业务操作。
 
-采用用户明确要求的技术路线：
+“全部重写”指本任务范围内 Dart／Flutter 领域与呈现代码、必要 Rust／FRB／server 接缝及其消费者，不扩展为无关 Rust 内核、供应商协议、第三方库或已生成源码的手工重写。设计、类型、方法和目录可以破坏性调整，但功能、安全语义和用户数据不能丢失。
 
-- **Feature-First** 组织功能。
-- Presentation 严格区分 **Smart Screen／Connector 与 Dumb View／Widget**。
-- 使用代码生成的 **AsyncNotifier 作为 ViewModel 核心**，承担真实的呈现状态与交互编排；同步纯计算仍使用派生 Provider。
-- 使用 **Freezed 定义不可变领域值与 ViewState**；连接、Controller、任务和资源 owner 保持适当的可变生命周期类型。
-- 实时变化通过 **Rust → FRB typed 事件推送**，按资源、作用域、频率和载荷大小分割投送；历史、详情、原图与显式查询按需读取，不轮询实时状态。
-- 主代理先确定架构、接口、状态机和验收合同，再委派实施；**未确定的设计问题不得下放给执行子代理自由决定**。
-- 最终提交 Conventional Commit、推送任务分支、创建 PR，交付可复算的代码量及工程质量前后证据，并等待实际 CI 终态。
+## 2. 交付目标与非目标
 
-保留用户能力与安全不变量，而不是保留旧实现：不丢用户数据／凭据，不改变未知结果、命令目标、保存与执行终态、脱敏及资源释放的正确含义。可以破坏旧内部 API，必须同步迁移消费者并删除旧入口，不长期保留两套状态或兼容 facade。
+### 2.1 必须实现
 
-非目标：无关 Rust 内核重写、供应商协议重做、视觉改版、用户数据删除、发布、部署或直接合并 PR。若确需修改持久化结构，必须提供并验证迁移，不能备份后清空。
+- **Feature-First** 功能组织。
+- Presentation 严格分为 **Smart Screen／Connector** 与 **Dumb View／Widget**。
+- **生成式 AsyncNotifier 是真正 ViewModel**：管理编辑、校验、呈现状态、可见需求和交互编排，不是旧巨型 Client 的只读投影壳。
+- **Freezed 定义不可变领域值与 ViewState**；连接、任务、Controller、原生句柄和资源 owner 不强行值对象化。
+- **typed FRB push** 按领域、频率、载荷和生命周期分割；历史、详情、原图、长文本使用明确的 typed 按需读取，不轮询实时状态。
+- Rust 是业务权威，分域 Repository 是 Dart canonical 镜像的唯一 writer。
+- 长寿命 Session、草稿、附件、冻结提交、操作结果和关闭责任留在对应领域／资源服务，不随 Widget 或 Provider 的 dispose 丢失。
+- 迁移所有生产、demo、fake、测试、Driver、server、公开导出与生成输入，删除旧入口、兼容别名、重复 owner 和旧目录转发。
+- 提交可复算的代码量、架构覆盖、重复实现和工程质量前后对比；最终提交、推送任务分支、更新现有 PR，核对实际 CI 终态。
 
-## 2. 依据、选择及纠错
+### 2.2 不变的限制
 
-### 2.1 已核实事实
+- 不删除用户数据，不清空数据库、草稿、历史、配置或凭据来解决迁移问题。
+- 按项目 v2 数据根隔离规则保留旧目录；本版本 v2 内实际结构变化仍须安全迁移，不能恢复默认值替代。
+- 不推 main、不合并 PR、不发布、不部署；不擅自选择版本号或 tag。
+- 不重做无关模型供应商协议、不做无关视觉改版、不增加自研状态管理、消息总线或 codec。
+- 不把已有局部批准、历史门禁、demo、fixture 请求成功、进程 exit0 或三次未复现冒充最终通过。
 
-原始基线 `824724165a99c30ec28e5f90e734aa6abfc64c91`，初始工作树干净；Flutter 3.47.7、Dart 3.13.5、FRB 2.13.0。最新基线见本文开头，不把主干新增代码算入重构贡献。
+## 3. 当前现场与证据保全
 
-已对照 Flutter Architecture guide／recommendations／case study、Effective Dart、Riverpod Providers／DO-DON'T／代码生成／副作用／select／autoDispose，以及 FRB v2 的 Stream、RustAutoOpaque Ownership／Dispose、Codec、Zero-copy 文档和锁定版本源码，核实：
+当前任务分支为 `pure-session-thread-65e3ee582f0d4-82`，已提交 HEAD 为：
 
-- 现有多层 provider／投影主要重复观察 Client，不宜在外面再套 AsyncNotifier。
-- Client 同时暴露 transport、可写 store、命令、草稿和资源；canonical 与命令呈现 overlay 有混放。
-- Thread／产品 topic 已有 StreamSink 推送；Timeline 正文仍由 Dart `initial/next` 泵消费。
-- 高频 runtime 更新会重传聚合状态，产品集合也有整包替换。
-- `StreamSink.add` 不是 Dart 消费完成 ACK；Rust mpsc 有界不等于 Dart port 在途消息有界。
-- Opaque `dispose`／GC、Stream.cancel、Ref.dispose 都不能单独证明 Rust 任务已经 join。
+`b98432fa809446d57be87a8b96379455ec8a4828`
 
-### 2.2 选定方案
+此前贡献比较基线为：
 
-采用 **分域 Repository＋Session／资源服务＋Feature AsyncNotifier ViewModel**：
+`f6cb327ceb3416dca181790575711588571d3ec7`
 
-- Rust 持有业务权威；Repository 是对应领域 Dart 镜像的唯一 writer。
-- Session／资源服务处理持续订阅、attempt、提交冻结、附件 ownership 与异步关闭。
-- ViewModel 管理编辑、校验、可见需求、操作呈现和查询编排，不复制领域 reducer。
-- Dumb Widget 只渲染 typed props 并发出意图。
+工作区有大量未提交生产、生成、测试、设计和报告改动。主代理已建立只读备份：
 
-排除旧 Client 外套 VM、将所有资源交给 autoDispose、仅靠末端 select 优化传输、以及自研状态管理／消息总线／codec。使用现有官方组件及成熟依赖，仅做必要的领域与边界适配。
+- 70 个已跟踪变更、20 个未跟踪文件，共90个路径；
+- tracked binary patch、index patch、NUL-separated status、完整变更文件归档、逐文件 hash／mode／删除身份；
+- 备份位于本 Thread 的 `artifacts/main-sync/20261022T011854Z/`；
+- identity SHA-256：`1df8ac4781d51af5be300505e89d84728755a75514840161bd7e3e2a6bcc43c4`。
 
-### 2.3 进一步澄清
+备份不是提交，也不是回滚授权。恢复前核对 hash，保留旧 stash 和原件，不重复 apply、不 drop 他人 stash、不清理无关 worktree。
 
-1. **业务终态与传输终态不同**：TurnCompleted、saved 等是有序业务数据，不能借“终帧”名义绕过顺序与投送窗口；取消控制及至多一次的传输 Failure／Closed 才不应被满窗口阻塞。
-2. **传输 ACK、领域 revision、命令效果、durable 保存不同**：ACK 只释放在途额度，不推进业务版本，不证明保存。
-3. **Freezed 不要求零依赖 SDK**：纯 Dart 数据包可以使用必要的纯 Dart annotation／生成工具，但不能引入 Flutter、Riverpod、FRB 或 native 句柄。
-4. **不机械要求每个 VM 合并多个来源或禁止单行 intent 方法**：是否保留一层取决于其封装责任，不按行数或来源数量凑架构。
-5. **跨两个 package 的分层不重复建设**：数据／领域层在纯 Dart 包，Flutter feature 不再为形式完整另建一套同构 Repository／Model。
+原生 QA 已按主代理要求暂停，报告三轮 v2 新环境 history-only 旅程已完成、所属进程已退出；其正式 v2 汇总尚未落库，原件仍保留。这些属于**旧基线的已有证据**，需要静态核对后记录，不能直接证明新主线重写后的版本。初始 connection failure 的旧原因仍未知；后续不再单独循环该诊断，纳入最终风险与验收矩阵。
 
-## 3. 固定架构层级、目录与依赖方向
+当前远端主线确实已前进，包含存储路径、Timeline、生图与退出流程等更新。远端实际名称／URL／提交以工具实核为准，不能用旧摘要中的仓库名或缓存 `origin/main` 冒充最新主线。
+
+## 4. 第一阶段：安全同步最新主线
+
+### 4.1 冻结与备份
+
+- 保持所有正在修改当前工作区的执行者暂停；确认其任务、GUI、fixture、Driver、编译器和子进程终态。
+- 在现有备份基础上复核最终冻结状态；如有新的合法文件变化，仅补充新的不可覆盖快照。
+- 记录任务分支、HEAD、upstream、已发布 PR head、remote、stash 清单、所有未提交和未跟踪文件身份。
+- 临时脚本、归档、冲突清单和命令输出只用各代理自身 session 目录；不把会话路径沉淀为正式设计。
+
+### 4.2 子代理隔离执行
+
+使用一个 `worktree_executor` 拥有本次主线同步任务：
+
+1. 在宿主分配的独立工作树核对基线，fetch 实际远端 main，记录本次冻结的主线完整 commit。
+2. 先确认已提交任务历史与主线的关系，rebase 任务已有提交；不修改 main 或其他 worktree 的分支。
+3. 将冻结的未提交成果以可追踪方式在候选工作树重放，必要时由主代理提供备份／stash 内容身份与受控传递；不把未审的重构成果提交为“备份 commit”并混入交付历史。
+4. 同步主线保留上游新能力，重构成果保留已批准的目标语义；不能用整文件 ours/theirs 丢掉一侧。
+5. 文档或业务接口冲突涉及关键语义时，由主代理先决定并同步设计；执行者不自行删字段、扩大输入、改保存／取消／凭据语义。
+6. 生成物冲突只记录输入与后续统一生成责任，不手工创造生成内容；若为安全重放需要暂时保留一侧，必须明确未验收，最终统一生成替换。
+
+### 4.3 静态接受与整合
+
+- 完成即派 fresh reviewer，仅静态审查 commit ancestry、diff、冲突解决、文件身份、上游能力和成果保全；**不测试、不编译**。
+- 主代理审查通过后，串行将候选基线与未提交成果整合到任务工作区；保留回退备份、旧 HEAD 与原件。
+- 不在同步阶段强推已发布分支。最终推送是否需要 lease-protected history update，依据真实提交图和已批准 rebase 范围处理；绝不覆盖 main 或他人的新提交。
+- 以本次冻结的新 main 作为新的贡献比较基线，重新计算静态源码基线；上游新增代码不算本任务收益。
+- 同步阶段只运行读取、hash、Git 完整性／差异空白等非编译核对，不跑旧基线或新基线测试。
+
+## 5. 第二阶段：主代理一次性冻结完整设计包
+
+在大规模并行重写前，主代理完成**全部共享接缝**，不是只给各子代理任务标题。
+
+### 5.1 固定目标调用链
 
 ```text
-Rust 领域 owner／Session／持久化
-  → typed resource feeds／queries／commands
-  → FRB adapter：生成 DTO、句柄、编码及 typed 转换
-  → Dart Repository／Session services：唯一领域归并与资源生命周期
-  → 生成式 AsyncNotifier：Feature ViewState 与交互编排
-  → Smart Screen／Connector：观察、意图绑定、导航及平台 UI
-  → Dumb View／Widget：数据、回调与局部 UI 状态
+Rust canonical owner / Session / persistence
+  → typed resource feeds / queries / commands
+  → FRB adapter（生成 DTO、句柄、typed 转换）
+  → Dart domain Repository / Session services
+  → generated AsyncNotifier + Freezed ViewState
+  → Smart Screen / Connector
+  → Dumb View / Widget
 ```
 
-### 3.1 目标组织
+- `anywork_client` 按 configuration、workspace、models、account_usage、conversation、drafts、modes、resources、updates 等真实领域组织。
+- Flutter `app` 负责 composition、bootstrap、routing、lifecycle；功能按 workspace、conversation、settings 组织。
+- Presentation 内按 screens/connectors、view_models、state、views/widgets 区分实际责任，不造空目录。
+- 通用视觉组件、主题、格式化、platform、FRB adapter、diagnostics 各有明确归属，不回到万能 shared。
+- 领域层已在纯 Dart 包时，Flutter 不再创建同构 Repository／Model。
 
-- `anywork_client`：按 configuration、workspace、models、account_usage、conversation、drafts、modes、resources、updates 等领域组织 domain／data；runtime 下只放操作、订阅、预算、生命周期等共享机制。
-- Flutter `app`：composition、bootstrap、routing、lifecycle。
-- Flutter `features/workspace`、`features/conversation`、`features/settings`：各自的 presentation；再按实际子功能分组，不为对称创建空目录。
-- presentation 内固定职责：`screens`／`connectors`、`view_models`、`state`、`views`／`widgets`。
-- 通用视觉组件和主题归 `core/ui`；通用纯展示格式化按语义归组；FRB adapter、platform、diagnostics 分别独立，不能回到万能 shared 目录。
-- 生成输出仍是独立生成边界，不混放手写 barrel 或业务默认值。
+### 5.2 依赖许可
 
-具体文件迁移表由主代理在派发前完整冻结；执行者不得自行更换 feature 名、引入第三套分层或保留旧转发目录。
-
-### 3.2 依赖许可表
-
-| 层 | 允许依赖 | 明确禁止 |
+| 层 | 允许依赖 | 禁止依赖 |
 | --- | --- | --- |
-| Dumb View／Widget | Flutter、主题／l10n、immutable props、UI-only Controller、回调 | Riverpod／Ref、Repository、Client、FRB、transport、service locator |
-| Freezed ViewState | 领域值、呈现枚举与不可变集合 | Widget、BuildContext、Ref、连接／任务／native handle |
-| Smart Screen／Connector | 对应 VM、View、导航／对话框／平台 UI 适配 | 直接调用 FRB、transport、可写领域 store |
-| ViewModel | 领域公共接口、Freezed state、Riverpod | Widget／BuildContext、具体 FRB adapter、数据库、provider 初始化中的业务写入 |
-| Repository／Session service | typed ports、领域模型、操作与资源机制 | Flutter、Riverpod、FRB 生成类型、前端 Controller |
-| FRB adapter | 生成 DTO／opaque、typed port、明确转换 | 业务 fallback、UI draft、第二 reducer、持久化事实 |
-| Rust 产品投影 | 真实领域 owner、Session、现有 Tokio 机制 | Widget 几何、GUI 全量历史缓存、第二业务事实源 |
+| Dumb View／Widget | Flutter、主题／l10n、immutable props、UI-only Controller、typed callback | Riverpod／Ref、Client、Repository、FRB、transport、service locator |
+| Freezed ViewState | 领域值、呈现枚举、不可变集合 | Widget、BuildContext、Ref、任务／连接／native handle |
+| Smart／Connector | 对应 VM、View、导航／对话框／平台 UI | 直接 FRB、transport、可写领域 store |
+| ViewModel | 领域公共接口、Freezed state、Riverpod | Widget／BuildContext、具体 FRB adapter、数据库、初始化业务写入 |
+| Repository／Session | typed port、领域模型、操作和资源机制 | Flutter、Riverpod、FRB 生成类型、前端 Controller |
+| FRB adapter | 生成 DTO／opaque、typed port、明确转换 | 业务 fallback、UI 草稿、第二 reducer、伪持久化事实 |
+| Rust 产品投影 | 真实领域 owner、Session、既有 Tokio 能力 | Widget 几何、GUI 全量正文缓存、第二业务事实源 |
 
-跨 feature 只消费公共能力，不导入其他 feature 的 ViewModel、私有 state 或具体实现。组合根可以装配多个领域，但不得成为新的 God facade。
+### 5.3 每项派发合同必须完整
 
-## 4. 状态、所有权与生命周期合同
+主代理给每个执行者提供：
 
-| 状态／资源 | 唯一 owner | 其他层的权利 | 结束条件 |
-| --- | --- | --- | --- |
-| 业务事实与可靠历史 | Rust 领域 owner／Session | typed 读取／命令 | 领域关闭与既有可靠保存规则 |
-| Dart canonical 镜像 | 对应 Repository reducer | 只读观察 | Repository/runtime 关闭 |
-| operation 身份、未知结果、receipt、观察水位 | 操作注册与领域写入边界 | VM 观察并决定呈现 | 真实结果／join，不随 Widget 消失 |
-| 会话连接、attempt、待返回 open、订阅与查询 | Session／资源服务 | VM 借用能力 | 显式目标切换／关闭／退出，真实 ACK 后释放 |
-| 长寿命 composer 草稿、冻结提交与附件 ledger | 领域草稿／附件服务 | VM 发编辑／提交／放弃意图 | 明确转移或放弃，不因 Settings 往返清理 |
-| 页面编辑原始输入、校验、防抖、操作呈现 | 对应 Feature VM／编辑会话 | View 渲染与回调 | 明确编辑会话结束；已受理任务仍由领域层 join |
-| 模式编辑 JSON／graph／撤销重做呈现 | 单一模式编辑 VM／编辑会话 | 两种 View 观察同一状态 | dirty guard 处理完成后结束，不双份编辑状态 |
-| Timeline 已加载 Message 与 UI 控制器 | 展示 coordinator／lease | View 借用 UI-only binding | 子树卸载确认后销毁；不停止 Session／writer |
-| 焦点、composing、动画、局部展开和滚动几何 | Widget／UI Controller | 不反写 canonical | 本地 UI dispose |
-| 页面导航 | go_router | Smart 发导航意图 | 路由生命周期 |
-| 当前工作区业务目标 | Workspace session coordinator | route／Screen 读取或发 activate 意图 | 显式目标变更，不保留第二可写 selection provider |
+1. 本完整批准计划及其任务验收范围。
+2. 最新主线、实际任务 HEAD、未提交前置的文件／diff 内容身份。
+3. 架构位置、唯一职责、生产者与消费者、允许／禁止依赖。
+4. **精确接口形式**：全部类型、字段、变体、单位、nullable、unknown、方法参数／返回／错误、provider family key、Widget props／callback。
+5. 状态 owner、创建／借用／释放者、跨路由保留与预算。
+6. **大致实现逻辑和关键时序**：首次 await 前冻结、同步观察登记、CAS、去重、晚到结果隔离、失败与取消路径、关闭顺序。
+7. 输入约束与错误矩阵，禁止的重试、fallback、静默截断和默认值。
+8. 新旧接口迁移和删除清单，包括测试／demo／Driver／server 消费者。
+9. 最窄写目录与逐文件所有权；共享、生成、manifest、Git 和设计禁区。
+10. 本轮静态审查清单，以及统一最终验证中对应的测试项；执行期间不得运行这些测试。
+11. 可自主选择的私有实现细节与必须交主代理决策的边界。
 
-### 4.1 共同规则
+字段、接口、owner、错误、预算或关键依赖尚有空白时，只做只读探索，不派编码。执行者可以选择合同内的私有函数和局部组织，不能改变架构、公共接口、允许输入或业务语义。
 
-- 首次 await 前冻结 ID、目标、revision、draft stamp、operation ID；后续完成不按新的“当前选择”重定向。
-- Repository 的观察登记与当前值读取是同一同步步骤，不能先读 snapshot、await 后再 listen。
-- last-known＋同步错误与“从无可渲染数据”的初始失败分开；局部保存或重连不把整页切成空白 loading。
-- 编辑 VM 不能因 canonical 更新整体重建并清空 dirty draft；同目标更新只按已定义的 merge 规则推进基线。
-- 每次 await 后核对 mounted／retired、目标与 generation；旧成功、失败、finally 只结算自己。
-- UnknownOutcome 不自动重放；Rejected、观察失败、效果生效与 durable 各自保留。
-- VM dispose 取消自己的观察／计时器，不自动关闭跨路由 Session 或清附件；应用级关闭显式 seal、cancel、join，最后再 dispose provider container／opaque。
-- `keepAlive`、family key、编辑会话保留和预算必须在每个 VM 的合同中指定，不交执行者猜测，也不以 keepAlive 掩盖资源泄漏。
+### 5.4 必须补齐的跨层协议
 
-## 5. 已选定的接口形式与设计模式
+- Thread execution／metrics／context／configuration／authoring 的全部具体 DTO、基线／变化、owner incarnation、域 revision、delivery sequence、错误、队列和字节预算。
+- 配置 owner 的 Settings／catalog 相容读取与 retained 来源通知、Mode 独立来源观察、closing 和 Thread 投影真实 join；不把全局产品 sequence 当来源屏障。
+- 当前模型策略与历史／在途请求冻结绑定分开，不在 Dart 重算模型策略或用当前配置回填旧来源。
+- Interaction 完整问题、选项、isOther／isSecret、purpose／continuation、生命周期与 terminal payload；大载荷读取、旧 revision、动作准入、草稿和回应 CAS 一并冻结。
+- Plan 文档只在身份变化交付；Workflow／Todo／指标不重传无关正文。
+- TurnFailure、storage last_error、动态活动列表等实际无界字段也纳入预算／读取设计，不只处理 Interaction。
+- 产品集合 scoped baseline／upsert-remove、有界分页和统计摘要／历史的独立合同。
+- Rust／FRB／server HTTP/SSE/OpenAPI／Dart port／Repository／receipt 的完整迁移，删除旧聚合公开入口；core 内部同名事实类型不误删。
+- Settings、ModeEditor、Composer、Interaction、Timeline、Status、Workspace、资源和更新 VM 的完整职责、family／保活规则及共享 UI 参数。
 
-本节是采用的接口基线；P0 中由主代理补齐所有字段／变体／签名、验证消费者，并冻结为有版本的完整契约。以下不是让执行者自由补全的模板：**缺失项未由主代理补齐前，不启动对应实施任务**。
+设计文档先记录稳定架构和接口；具体文件迁移、任务归属、输入身份和验收映射放工程合同，不在设计文档粘贴实现流水。
 
-### 5.1 FRB feed 形式
+## 6. 状态、命令、流控与关闭的不变合同
 
-采用具体的 typed opaque feed，而不是万能 JSON 流或泛型 RPC：
+### 6.1 状态归属
 
-```rust
-pub async fn open_thread_feed(
-    thread_id: String,
-    facet: BridgeThreadFacet,
-) -> Result<BridgeThreadFeed, BridgeError>;
+- Rust owner 保存业务权威和可靠历史。
+- 各 Repository 唯一归并自己的 canonical 镜像；不暴露可写 reducer/store 给 UI。
+- 操作身份、UnknownOutcome、receipt、effect／durable 水位由领域操作 owner 持有。
+- Session 服务持有 attempt、待返回 open、订阅、查询、预算和真实关闭责任。
+- 草稿、冻结提交和附件 ledger 属于领域，不因 Settings 往返或 Ref.dispose 消失。
+- VM 管编辑、校验、防抖、可见需求、pending／error／latestIntent，不重建 canonical reducer。
+- Mode JSON／graph／undo 使用单一编辑会话；最多64次撤销／重做的既有边界保留。
+- Timeline 唯一 Message 集合和 UI Controller 由展示 coordinator／lease 持有，不复制进 VM。
+- go_router 负责导航，Workspace session coordinator 是唯一可写业务目标，不保留第二 selection provider。
 
-impl BridgeThreadFeed {
-    pub async fn stream(
-        &self,
-        sink: StreamSink<BridgeThreadFrame>,
-    ) -> Result<(), BridgeError>;
+### 6.2 命令与观察
 
-    pub async fn ack_through(&self, delivery_sequence: u64)
-        -> Result<(), BridgeError>;
+- 首次 await 前冻结 Thread、operation、revision、draft stamp、attachment ownership 和目标；旧完成只结算自己。
+- 同步登记观察并取得当前值，不能 snapshot→await→listen 丢首帧。
+- 同目标 canonical 更新不清 dirty draft；保留 last-known 与局部错误，不为一次保存清空整页。
+- Accepted、Observed、Effective、Durable 独立，ACK 与业务 Completed 都不证明 durable。
+- UnknownOutcome 不自动重放，错误保留 typed 分类与 correlation，不从文本猜业务决策。
+- 相同资源冲突写串行；停止、分页、详情不排在无关长写 FIFO 后。
+- 成功不靠聚合 reload 补状态；冲突只恢复相关 owner，不顺带重开 Timeline。
+- 手动压缩没有原生 receipt 的现状不能被伪造为已保存 operation；若修改接口须完整迁移并保留未知结果语义。
 
-    pub fn request_close(&self);
-    pub async fn close(&self) -> Result<BridgeFeedCloseReport, BridgeError>;
-}
-```
+### 6.3 Feed 与关闭
 
-Timeline 与产品资源采用同样的**生命周期纪律**，但使用各自具体 feed／frame／query 类型，不为形式统一建巨型 trait 或万能 enum handler。Timeline 页／详情绑定同一 reader 身份，不能被同 ID 的另一次 runtime 替换，也不与事件等待共用阻塞锁。
+- typed push；Timeline 公开 initial/next pull 泵不恢复。
+- 每 feed 最多2个未 ACK data，baseline 也占额度；latest 待发仅1份，可靠队列另有明确帧数与源载荷字节预算。
+- ACK 只确认同一具体句柄已连续处理的前缀，旧 ACK 幂等，超 sent 明确拒绝；转换／归并／必要交接失败不 ACK。
+- 可靠域缺口显式 ResyncRequired／Lagged，只重建受影响域基线，不重放业务操作。
+- 业务终态是有序数据，不绕过窗口；取消控制与至多一次 Failure／Closed 不能被满窗口阻塞。
+- requestClose 同步封准入，close 真实等待 open、producer、sink、查询、consumer、stream cancel；全部结束后才释放 permit／dispose。
+- 关闭失败保留 unresolved owner、handle、全部 typed issues 和重试能力，不用超时、Drop、GC 或 Stream.cancel 假装 join。
+- 不发明第二套正文、配置、Model catalog 或交互事实源；预算不冒充 FRB wire bytes 或进程 RSS。
 
-`BridgeThreadFacet` 按 execution、metrics、context、configuration、plan/workflow 等内聚资源分组。facet 内的 PlanChanged／WorkflowChanged 等 typed 变化只携带变化字段，不因共用一个 feed 重传无关大字段。
+## 7. 第三阶段：按冻结接口并行完成全部重写
 
-### 5.2 Repository 读写形式
+### 7.1 调度原则
 
-共同接口纪律，不创建万能 Repository 基类：
+- 尽量使用本地 directory executor；跨目录共享协议、主线同步或需要物理隔离时使用 worktree executor。
+- 同一执行者同时只拥有一个清晰任务；同一文件只有一个 writer。
+- **依赖冻结接口，而不是等待前一模块测试通过。** 接口已冻结后，上下游可以按合同并行实现；允许中途尚未编译通过，但不允许接口自行漂移。
+- 若某任务必须等具体基础文件存在，先完成最小共享基础手写接缝，再释放依赖任务；不以临时兼容 facade 补缺。
+- 共享文件清理、公共导出和生成输入由指定单一 owner 负责，不能让各功能执行者互相修改 barrel、manifest 或 composition。
 
-- `snapshot`：同步只读当前领域状态。
-- `observe(listener)`：同步返回登记时的初始值和仅拥有自身观察的 lease；不暴露 publish/setState，不在返回前重入 listener。
-- 领域写动作：接受 typed intent，立即登记 operation／冻结目标，返回只读 operation ticket；ticket 暴露身份、状态观察与 typed 最终结果，不向 UI 暴露 reducer、permit 或重放按钮。
-- 显式 query：typed 请求与结果，携带目标／revision／cursor；由领域层登记、去重、取消与 join。
-- Repository／资源服务 close：幂等、真实异步收束，返回 typed 未解决资源报告。
+### 7.2 预计任务组与所有权
 
-分域方法面固定职责：
+最终逐文件范围在新主线核对后冻结，以下责任划分固定：
 
-| 能力 | 输入／输出形状 | 不得上移或混入的责任 |
+| 任务组 | 唯一职责 | 可并行条件 |
 | --- | --- | --- |
-| ConfigurationRepository | SettingsEdit → operation ticket／scoped commit；配置 observation | CAS、canonical merge 与配置版本不能由 View 猜测 |
-| ModelCatalogRepository | account/model key、typed filter／cursor → 候选／详情；catalog observation | 不以显示名作 key，不在 GUI 另算资格或默认路由 |
-| AccountUsageRepository | account ID＋usageQueryRevision → 去重 query／额度 observation | old query 不清新 pending；失败不因 rebuild 自动循环 |
-| WorkspaceRepository／Session coordinator | canonical 目录查询／变更；WorkspaceTarget → activation outcome | 分开目录事实与当前目标；不再保留双 selection 镜像 |
-| Conversation／Session services | Thread ID → scoped state／content observations；页／详情 query | attempt、订阅基线、取消／join 与预算归此层 |
-| Draft／Attachment services | typed edit／admission／freeze／submit／abandon → stamp／operation | 不用 View dispose 清理冻结 ownership，不接受目录／URL 冒充本地文件 |
-| ModeRepository | 定义／校验／预演／保存／删除的 typed 请求与结果 | 不维护第二份页面 JSON／graph 编辑状态 |
-| Resources／Updates | 明确资源 ID／意图 → observation／operation | 不通过通用 String command、反射或 raw map 分派 |
+| R：Rust／protocol／FRB／server | 新分域源投影、feed/query/command、错误、流控、取消/join、HTTP/SSE/OpenAPI迁移 | 共享 wire 合同全部冻结后，与 Dart 实现并行；同一组不再拆重叠协议 writer |
+| D0：Dart 共享基础 | typed ports、资源／operation机制、公共导出、共享不可变类型、跨域生命周期接口 | 先提供冻结的公共形状；禁止演变成新 God facade |
+| D1：Conversation／drafts 数据域 | 会话分域 Repository、正文消费、冻结提交、草稿与附件 ledger、互动 query/respond | 与 D2/D3 互斥目录；共享 runtime 由 D0 负责 |
+| D2：Configuration／models／modes 数据域 | Settings CAS、catalog、账号、额度、模式命令和领域 reducer | 与 D1/D3 按路径互斥 |
+| D3：Workspace／resources／updates 数据域 | 目录事实、唯一目标协调、资源、启动退出与更新领域接口 | 不与 Flutter app 装配共享 writer |
+| A：FRB adapter／demo／fakes | 新 wire 到 typed port 的唯一转换和资源适配，同步替身及测试调用方 | wire/port已冻结后并行；生成文件不归此组 |
+| U0：公共 UI／呈现基础 | 确认、附件元信息、状态展示、主题和共享 props；无业务 reducer | 先固定 props/callback，不反向依赖 feature VM |
+| U1：Settings 功能 | 账号、额度、模型、Agents、模式编辑、SSH、资源、一般设置和统计的真 VM／Freezed／Smart-Dumb | D2/D3和共享UI接口冻结后即可并行，不等测试 |
+| U2：Conversation 功能 | Composer、Interaction、Timeline、Status、Todo 的真 VM／Freezed／Smart-Dumb | D1和展示lease合同冻结后即可并行，不复制正文 |
+| U3：Workspace／App | Shell/sidebar/workspace、composition、bootstrap、routing、退出协调 | 各 feature 公共入口冻结后并行；唯一 app 装配 writer |
+| C：最终消费者和旧入口清除 | 跨 feature Driver、测试发现、AST边界、遗留路径及无消费者清理 | 按文件表避免与上组测试迁移重叠；不执行测试 |
 
-所有方法的完整参数类型、nullable、允许输入、错误及取消语义必须在派发契约中逐项列出，不以此表代替真实签名。
+不为凑数量保留无职责任务组；可合并写范围过小或强耦合的工作，但必须由主代理调整所有权表，不让执行者自行接管共享目录。
 
-### 5.3 ViewModel 与 Widget 形式
+### 7.3 执行期明确禁止
 
-- `@riverpod class …ViewModel extends _$…ViewModel`；异步页面的 `build` 返回 `FutureOr<…ViewState>`，family 只用稳定、值相等的身份 key，不用 Widget、Controller 或大型 mutable 对象作 key。
-- build 可以登记只读观察／必要读取，不能提交写操作、自动重放命令或依靠 Widget 调 init 才正确。
-- 主页面、编辑会话与交互动作方法名称表达领域意图；view callback 连接这些方法，不穿透 `vm.client.store.transport`。
-- Freezed ViewState 的业务字段引用 typed 领域值；操作呈现按 operation／target 区分，不能为一次保存把整页状态替换成 AsyncLoading。
-- Smart 用 `ref.watch/select` 观察，用 `ref.listen` 或动作的 typed 结果处理导航／提示；ViewModel 不拿 BuildContext。
-- Dumb 构造函数只接受 `ViewState`／明确数据、UI-only Controller 和 typed callbacks。Timeline binding 不含 Repository 或业务 handle，不将第二份完整 Message 列表放进 ViewState。
+在全部手写重写完成前，执行者、reviewer 和主代理都不运行：
 
-固定主 VM 责任包括 Workspace、Accounts／AccountEditor、Usage、ModeEditor、Composer、Interaction、Timeline、Status、ResourceManagement、Update。可以按真实独立状态进一步拆分，但必须由主代理先更新接口表，执行者不能自行拆出新层。
+- cargo build/check/test/clippy、Flutter/Dart analyze/test、原生 GUI／fixture／live 验收；
+- 以测试名义的临时反例、红绿回归、性能探针、验证性示例构建；
+- 单个生成器或会隐式构建／生成的检查入口；
+- 为证明中间状态可用而恢复旧 API、降低断言、增加 fallback 或删掉失败测试。
 
-## 6. FRB 实时、分割投送与流控合同
+允许的工作为：读取、rg／文件与符号定位、代码和测试源码编辑、静态 diff／契约核对、hash／引用／空白检查、受控 Git 操作。测试源码可以同步重写，但**不得执行**。生成源码不手改，统一留至全部手写范围稳定后处理。
 
-### 6.1 投送分类
+## 8. 每项实现完成后的独立静态审查
 
-| 数据 | 方式 |
-| --- | --- |
-| Turn／Interaction／可操作故障 | 有序基线＋typed 变化，不静默丢弃关键事实 |
-| throughput／实时 token | 独立小型 latest-value 样本，只带必要身份／样本序号／计数 |
-| context／累计 usage／费用 | 独立投影，按事实变化推送，unknown 与 zero 分开 |
-| route／workflow／plan／todo／活动／服务 | 按变化原因分域，plan 正文只在其版本变化时交付 |
-| Timeline 正文、字段变化、saved／terminal | FRB typed push；删除 Dart `next()` 泵，复用 Rust Session 的事件等待能力 |
-| 目录／账号／catalog／额度／配置集合 | scoped baseline／typed upsert-remove 或有界窗口，摘要与历史分离 |
-| 完整输出／原图／长文本／非首屏历史 | 按身份、revision、cursor 分页／分块 query，推送引用或版本变化 |
+- 每份执行报告到达后立即派 fresh reviewer，不等整批。
+- 派发包含本完整计划、精确任务合同、实际基线／diff／文件 hash、执行者身份、静态检查记录。
+- reviewer 亲读实际工作区、设计与代码，检查接口、层依赖、完整字段、错误、所有权、并发时序、取消/join、迁移删除和测试源码的缺陷敏感度。
+- **只静态审查，不运行测试、不编译、不执行 analyze/clippy/GUI。** 明确记录“未执行验证，按用户要求统一留到最终阶段”。
+- 不能因为中途生成物过期或未跑测试单独阻塞静态实现完成；但缺少接口、语义冲突、资源错误、遗漏消费者和不符合合同必须阻塞。
+- 问题交原执行者修改，再由新的 reviewer 静态复审；关键设计变化由主代理先同步合同。
+- 本地成果直接在工作区，不制造合入；worktree 成果静态审查通过且依赖满足后串行整合，影响已审范围的冲突需针对性静态复审。
+- 未完成全量重写前不提交／推送阶段实现，也不把局部静态批准当最终可交付。
 
-小而低频的对象可整体替换，不机械给每个标量开流，不发明万能 JSON patch。
+## 9. 第四阶段：全部完成后统一生成、整体审查与测试
 
-### 6.2 版本、一致性与消费确认
+### 9.1 进入条件
 
-- resource key、owner epoch、feed revision、订阅身份明确；可靠增量的 base→next 只能连接同一域。
-- 先登记 receiver 再取基线，按同域水位去重覆盖帧；分页快照不得假装完整集合。
-- latest 样本可以跳过中间样本，但不能将有损样本序号当可靠控制 revision。
-- 不能证明连续时显式 ResyncRequired／Lagged，只重建受影响域的新基线，保留 last-known 与错误，不重放业务操作。
-- delivery sequence 在单个 feed 内从首个 data frame 开始单调递增；基线也消耗额度。`ack_through` 确认已连续处理的前缀，重复旧确认幂等，确认尚未发送的序号明确拒绝。
-- ACK 绑定具体 opaque feed，不释放另一个订阅／attempt 的额度；转换或归并失败时关闭／重同步，不先 ACK 再假装处理成功。
-- 初始实现采用小型固定在途窗口，**每 feed 最多 2 个未确认 data frame**；latest 待发送值只保留 1 份。可靠待发送队列同时受帧数和领域载荷字节预算约束，具体每类预算由主代理在 feed 合同中冻结。
-- 大载荷依现有 Timeline 页／详情预算及新增分域读取合同交付，不以 silent truncate、无界队列或后台自动全文加载规避预算。
-- 在途上限是消息／载荷边界，不冒充整个进程 RSS 或精确 FRB wire bytes。
+所有手写任务完成，全部对应消费者和旧入口删除完成，互斥所有权已释放，worktree 成果已整合；每项有当前版本的静态审查结论。主代理先对完整需求—接口—实现—删除矩阵做跨任务审查。
 
-### 6.3 状态机与关闭
+随后统一执行根 `cargo xtask generate-gui`，再核 canonical 输出和孤儿清理；不手改 FRB、Riverpod、Freezed、l10n 生成物。生成所需的编译属于本最终整体验证阶段，不在执行期提前发生。
 
-统一生命周期：`opening → active → closing → closed`；未确认释放保留 unresolved owner，不把超时等同 closed。
+### 9.2 最终自动化检查
 
-- 每 feed 只允许一次 stream 消费者；重复打开明确报错。
-- 控制取消优先于等额度，业务终态仍按有序数据处理；传输 Failure／Closed 至多一次，不能因消费者停止 ACK 而阻塞 join。
-- `request_close` 同步封闭准入并发取消；`close` 等待 producer、sink 和所有登记调用真实结束，再释放句柄。
-- Stream.cancel 后 adapter 仍负责显式 request-close／join／dispose；GC 仅兜底。
-- page／detail 不等待挂起的事件接收锁；关闭后迟到成功按原 attempt 收束，不进入新 UI。
-- 错误转换进入 typed Failure，不能仅日志 warn 后跳过。取消、协议缺口、资源不足和内部错误不折叠成正常 EOF。
-
-使用官方 StreamSink、Tokio bounded channel／Semaphore／CancellationToken 与现有真实完成登记；消费额度仅是必要 FRB 边界适配，不扩展为重放日志、通用 RPC 或新消息框架。codec 沿用生成器支持的路线，不凭直觉切换或宣称 zero-copy。
-
-## 7. Contract-First 子代理实施规则（硬门槛）
-
-### 7.1 主代理必须先交付的设计包
-
-每项实施前，主代理形成有版本和内容身份的契约包，并核对以下项目全部完整：
-
-1. **完整最新批准计划**及本任务对应验收项，不仅发标题或链接。
-2. **现场基线**：实际 commit；已有未提交前置改动的文件内容／diff 身份；依赖任务与已批准调整。
-3. **架构位置**：唯一职责、调用／数据流、允许依赖、禁止依赖、所用设计模式及不使用的替代模式。
-4. **精确接口清单**：Rust／FRB／Dart 类型、全部字段与变体、数值单位／宽度、null／unknown／empty 语义、方法签名、provider 名／family key、Widget 构造参数和 callback 结果。
-5. **状态与所有权**：每份状态唯一 writer、谁创建／借用／取消／join／释放，生命周期及跨路由保留规则。
-6. **时序／并发合同**：首次 await 前冻结什么；代次检查；去重／CAS／retry；同步观察登记；背压、窗口、预算及关闭竞争。
-7. **错误矩阵**：输入拒绝、冲突、未知结果、观察失败、lag、取消、EOF、超限的 typed 结果及调用方动作；禁止的 fallback。
-8. **生产者—消费者迁移表**：本任务提供／消费哪些接口；哪些调用方必须迁移；哪些旧类型／路径／方法必须删除。
-9. **路径与 Git 权限**：最窄写目录和明确文件所有权、禁区、共享／生成文件 owner；不 stage/commit、不改其他任务。
-10. **依赖有序步骤与关键伪代码**：正常路径、失败／取消路径和回滚点，复杂流或编辑状态机不能只写“按最佳实践实现”。
-11. **验收矩阵**：每项要求对应已有／新增用例、定向命令、预期结果、已有证据及留给 root 的最终验收。
-12. **变更边界**：必须遵守的合同、仅供参考的局部建议、尚待核实但不影响接口的假设分别标注。
-
-**门槛：字段、方法、状态归属、错误语义或跨任务依赖有关键空白时，任务不进入实施。**主代理先调查和定稿，必要时只派只读探索，不以执行者“自行合理发挥”补设计。设计包与代码不一致时先修正契约或实现，不把矛盾留给集成阶段。
-
-架构文档保存稳定职责／协议／接口形状；工程迁移清单保存具体路径、任务归属、基线及验收映射，避免把实现流水塞进设计文档或维护两份相互冲突的权威事实。
-
-### 7.2 执行者可以与不可以决定的事项
-
-可以：在合同内选择私有函数、局部控制流、清晰的内部命名、注释和不改变语义的数据结构；发现更好实现可说明理由。
-
-不可以自行决定：公共／共享接口、层依赖、状态 owner、业务默认值、允许输入、转换规则、错误分类、重试／并发／流控策略、预算、provider 保活策略、生成边界、新依赖或迁移范围。不得为了让测试通过放宽业务输入、吞错误、保留兼容别名或新增平行缓存。
-
-遇到上述问题，停止受影响范围，报告**证据、冲突、影响消费者、建议及需要 root 的决定**；不先写临时 shim。其他互斥任务可继续。
-
-### 7.3 设计变更和返工流程
-
-- 主代理判定是局部实现问题、契约内调整，还是目标／范围／关键决策变化。
-- 契约内问题由原执行者修复；跨接口调整先由主代理更新设计包并标明新版本、替代旧要求和受影响消费者。
-- 真正改变已批准目标／范围／关键决策时，按 Plan 流程确认；普通实现修正不反复请求同一授权。
-- 用完整续跑消息通知原执行者，不只发“修一下”；旧输入或旧报告不能证明新版本已完成。
-- 不同执行者不得同时编辑共享协议／生成输入／同一接口的两端，除非已有明确互斥所有权与冻结合同。
-
-### 7.4 独立审查与接受条件
-
-每份执行完成报告到达后立即安排 fresh-context reviewer，提供完整批准计划、契约包版本、执行者／基线／实际 diff 身份、验证证据及本轮范围。
-
-审查不只看编译：逐项核对需求—接口—实现—测试矩阵、层依赖、失败／取消路径、旧实现删除、字段与业务语义，明确批准或阻塞。范围冻结后才能审查；返工交原执行者，再创建新 reviewer 复审。
-
-局部静态批准不等于 root 的跨层验收。交付报告必须有实际命令与结果、文件／内容身份、偏差、未覆盖项和未结束任务；受理回执或“本轮停止”不当作任务完成。
-
-## 8. 实施 DAG、所有权与生成协调
-
-### P0：root 设计／基线／接口冻结
-
-审批后 root 先更新 design/02、07、18、19、24、25、26 的受影响契约、设计索引及 AGENTS 中过时的 Client／provider／生成／测试约定。建立完整领域—feed—Repository—VM—Screen 矩阵、生命周期图、接口签名与旧入口删除清单。
-
-完成每项契约包的前置核对再派任务，补齐各 feed 预算、各 VM family／生命周期及所有现有动作的准确签名，不留给执行者决定。建立统一代码指标及相同合成场景基线。
-
-### T1：Rust／FRB 实时契约
-
-一个执行者拥有共享 protocol／runtime／bridge 的新 feed、分域投影、Timeline push、消费额度与取消／join，以及必要 server 映射；不与其他协议修改并行。只做相关 Rust 格式、静态检查和定向契约验证。root 管理跨语言生成。
-
-现场执行切片：先 T1.A Timeline 真正垂直接缝，再 T1.B Thread／产品 feeds；各自完整冻结合同、局部验证／独立审查，不将未使用 primitive 当作全部 T1 完成，不并行修改共享范围。T2 仍依赖完整 T1。
-
-### T2：Dart Repository／资源层／adapter
-
-依赖 T1 的接口固定。一个明确 owner 完成 Client 解体、分域 Repository／session services、Freezed 领域模型、typed ports、FRB adapter、操作呈现分离、bootstrap／demo／fakes 和测试调用方迁移。共享纯选择、跨 feature 能力与公共导出在此冻结，不为旧 Client 包转发壳。
-
-root 负责共享 UI 及 app 注入合同，先提供确认对话框、附件元信息、状态展示等跨任务组件的确定 props／回调，再释放使用它们的任务。
-
-### T3／T4：Settings 与 Conversation
-
-依赖 T2 和公共 UI／入口合同就绪后，按最窄互斥 feature 目录并行：
-
-- Settings：账号／额度／模型、Agents、模式编辑、SSH、资源、一般设置和统计的 VM／Freezed State／Smart-Dumb 迁移。
-- Conversation：composer、交互、timeline、status、todo，移除手写巨型 part，共用新分域 push；展示 coordinator 与唯一 Message 集合保持明确所有权。
-
-跨 feature 测试、共享接口、app 装配归 root；执行者不互改目录。保留 feature 公共入口的冻结构造，不到集成时才协商参数。
-
-### T5：Workspace／应用装配／清除旧架构
-
-依赖新功能入口稳定，完成 shell／sidebar／workspace／启动／恢复／更新、导航与退出协调。删除旧全局聚合模型、多余 provider、旧 facade／ports／路径／别名及第二选择／附件镜像，统一 diagnostics 和共享 UI。
-
-### 生成与版本管理
-
-- 优先使用本地 directory executor，成果直接在当前 workspace，不制造虚假合入。
-- 各执行者仅写自己的手写范围、不 stage/commit、不做全量门禁。
-- root 独占 manifest／lockfile 变更协调、跨层接口和全局生成；统一 xtask 入口生成纯 Dart 模型、FRB、Riverpod、Freezed 与 l10n。
-- 全局生成前协调输入稳定窗口；有未完成且会破坏生成的输入时不运行，不让执行者各跑全局生成相互覆盖。
-- 生成 diff 与手写 diff 分开审查，孤儿输出由统一入口清理，不手改生成文件。
-- 各任务审查／修复独立推进，依赖成立即释放后续任务，不为填满容量拆分真实依赖。
-
-## 9. 验证与完成标准
-
-### 9.1 定向自动化与架构门禁
-
-复用现有公开行为测试，迁移至新公共入口，不锁定旧私有实现。必要覆盖：
-
-- 同步观察登记／基线竞争、同域缺口、旧 epoch／attempt、实体删除与 A→B→A。
-- 速度独立投送且不通知 plan／workflow／catalog；正文 append／replace／remove、saved／terminal 正确。
-- 慢消费者在途上限、重复／越界 ACK、满窗口取消、晚到 open、重复 close、转换失败与真实 join。
-- dirty draft 不被 canonical 更新覆盖、首次 await 前冻结、旧 finally 不改新目标、UnknownOutcome 不自动重放。
-- 两实例隔离、Settings 往返保留会话与草稿，无关变化不触发消费者重建。
-- 新 AST 依赖规则及反例 fixture：Dumb／State、VM、数据包与 FRB adapter 的边界真正可拒绝。
-
-只在真实契约 owner 边界增加必要确定性测试，按本次设计同步测试约定；不为测试扩公共 API、不以 fake 代替 native FFI、不增加无关测试专项，也不削弱断言／静默跳过制造绿色。
-
-### 9.2 root 全量与集成门禁
-
-全部任务局部审查通过后，root 亲自对照完整计划、设计包、源码 diff、消费者与删除清单，执行：
+主代理统一执行适用项目门禁：
 
 - `cargo fmt --all --check`
 - `cargo clippy --workspace --all-targets -- -D warnings`
 - `cargo test -p pl-model`
 - `cargo test -p pl-core --features sqlite`
 - `cargo test -p pl-studio-runtime`
+- standalone core 两个 feature profile
+- 必要 bridge 契约测试及 server 编译
 - `cargo xtask verify-client`
 - `cargo xtask verify-gui`
-- CI 的 standalone core 两种 feature profile 检查，以及相关 bridge／server 编译与新增必要契约入口
+- 新 AST 规则及反例 fixture
 - `git diff --check`
 
-使用 `cargo xtask generate-gui`／canonical 检查的统一生成边界，不直接调用单个生成器；两包依赖快照审查后锁定。有效证据可复用，不机械重复全量验证。
+最终检查可以先按失败所属范围修复、复审并定向复验，再补齐受影响全量门禁；不为一次失败从头机械重跑未变化的全套。此时已经进入用户要求的“全重写后整体测试”阶段，必要红绿回归、故障注入与真实集成证据在这一阶段集中取得。
 
-审批时基线记录：Flutter analyze 零问题；此前 verify-client 总命令在 adapter 阶段因总超时终止，不能当完整门禁通过。现场已补充完成 `23dc4e87` 的完整 verify-client（adapter 194 tests）与 analyze；`f6cb327c` 未改变 Dart 输入，可复用为基线证据，不证明改动后的最终版本。
+不能省略或静默跳过已知失败、零测试、超时、取消、权限等待或环境故障；所有命令必须核真实终态。
 
-新增 bridge feed library 契约入口由 root 纳入本地／CI；其测试不能替代下述实际 StreamSink 与 Dart port 验收。
+### 9.3 最终原生与跨层验收
 
-### 9.3 原生 GUI／传输验收
+采用官方 xtask、真实 bridge、隔离本地模拟供应商、Flutter Driver，Linux SSH 下使用私有 Xvfb、绝对 XAUTHORITY 与受控进程树：
 
-Linux SSH 使用隔离 Xvfb、`cargo xtask manual-gui`、Flutter Driver 与真实 bridge／本地模拟供应商，检查：
+- 设置各子域保存、失败／显式重试、切 tab／返回、模型／模式选择、dirty guard；
+- 发送、停止、互动回应、UnknownOutcome、冻结目标与附件转移；
+- metrics／context 独立更新，catalog／Mode 在无 token 时刷新正确域，Plan／Workflow 不被速度重复投送；
+- Timeline 首屏、流式、历史分页、History冻结／回Live、长正文、附件、问答与计划回执；
+- 满窗口 ACK、query、resync、切 Thread、冷恢复及真实取消/join/dispose；
+- 关闭／更新退出、持久化失败与资源释放；
+- 正常和窄窗口截图、快照、日志及进程回收。
 
-- 设置主要子域的保存、失败／重试、切 tab／返回、模型／模式选择与编辑 guard。
-- 发送／停止／交互、指标／上下文独立更新、计划／工作流变化。
-- Timeline 首屏、流式、历史分页、回实时、长正文／附件／问答和计划回执。
-- 慢消费者、分域重同步、切 Thread、退出及订阅／进程回收。
-- 正常／窄窗口截图、快照、日志与交互边界。
+原初始连接失败作为待排查风险纳入最终场景：捕获实际 typed 错误，不以旧三次通过解释旧原因。若最终仍存在未解决的用户可见失败，不把阶段勾成通过。
 
-实际打开截图判断，不把 demo、成功启动、fake 或 exit 0 当完整原生验收。Linux、Windows CI／实测及真实供应商覆盖分别报告，不互相外推。
+Linux实测、Windows CI、真实供应商覆盖分开报告；模拟通过不等于真实厂商兼容，代理看图不冒用户人工批准。
 
-## 10. 工程质量前后证据与 PR
+### 9.4 SSH 恢复规则
 
-从同一基线与最终版本以相同规则复算，提交工程报告与复算命令：
+SSH失败后等10秒再恢复连接；先读原task、归档及所属进程。活跃任务继续等；确认终止后再恢复必要操作。可能已执行的提交、审批或数据写入不得重放；构建、只读检查可在确认旧进程结束后重启并保留失败证据。
 
-1. 手写生产 Dart／Rust、测试、生成代码分开统计文件数、LOC／非空行、增删净值及百分比，生成量增加不冒充维护成本减少。
-2. 最大手写文件／library、>500 行文件数、手写 part 数、平铺目录密度与旧 API／无消费者清理。
-3. Thread 树选择、附件格式／图标／元信息、确认／状态展示等重复实现份数与真实消费者；区分搬家、生成替代和去重。
-4. Repository／AsyncNotifier／Freezed／Smart-Dumb 的实际覆盖、依赖违规、静态分析与契约／原生验证结果。
-5. 相同合成工作负载的分域事件、无关字段投送、在途／队列高水位、重同步与关闭。业务载荷／诊断编码字节不冒充 FRB wire bytes；没有同条件测量不声称性能提升百分比。
-6. 契约—实现—验收完成矩阵、真实缺口与迁移说明。
+不得使用 nohup／detach 逃避生命周期管理，不全局 pkill，不杀用户桌面，不占1420。持续不可用时保留现场和准确待办，不以免责声明替代完成，也不伪造运行结果。
 
-原始日志、VM 地址、原始截图及未脱敏快照存忽略目录，不提交敏感或一次性材料。
+## 10. 最终工程对比、提交与 PR
 
-已核实 GitHub 登录 ZR233，remote 实际为 `ZR233/anywork`、默认 main、非 fork。用户最新要求提前建立 Draft PR、按阶段 commit/push；不降低局部审查与实际验证要求，不夹带未完成／未审实现。公开 Dart／FRB／共享事件协议破坏性变化使用真实 `!`／BREAKING CHANGE 和升级说明，不推 main、不合并、不发布。
+以冻结的新 main 和最终完成版本，用同一脚本、同一分类复算：
 
-最终交付：PR 链接、commit、质量对比表、实际本地／GUI 证据和 CI 终态。局部批准不等于整体完成，排队／运行中 CI 不算通过。最终验收成功后再关闭执行者并确认资源回收；受阻则保留未交付现场并明确剩余事项。
+1. 手写生产 Dart、限定 Rust、测试、Driver、生成代码分别列文件数、LOC／非空行、增删与百分比。
+2. 最大文件／library、严格>500行数量、手写 part、平铺目录密度、旧接口及无消费者清理。
+3. Thread树选择、附件元信息、确认／状态展示等重复实现份数和实际消费者；搬家、生成替代和去重分别说明。
+4. Repository／AsyncNotifier／Freezed／Smart-Dumb 的真实覆盖及依赖规则，不以命名或包装层数量冒充完成。
+5. 同条件合成场景下领域投送、无关字段、在途高水位、resync和关闭证据；无可比测量不报性能提升百分比，不把源JSON预算当wire/RSS。
+6. 完整迁移、架构、接口、测试和原生验收矩阵，明确未覆盖平台／来源。
 
-本计划完整替代前版，尤其将“主代理先确定接口再派发”提升为实施准入、变更控制和独立审查的共同硬门槛。
+全部验收通过后再提交 Conventional Commit、推送任务分支、更新现有 Draft PR #120，等待实际 CI 全部终态。破坏性 Dart／FRB／共享协议使用真实 `!`／BREAKING CHANGE 和升级说明，不隐藏真实迁移成本。
+
+保留执行者与工作树至最终验收完成；成功后按归属关闭和回收，失败／取消保留可恢复现场。最终一次性交付 PR、commit、新基线、质量对比、实际验证与 CI 状态，不把旧文档 CI 或中途静态批准当最终结果。
+
+## 11. 完成标准
+
+- 最新主线已安全整合，原未提交成果和上游能力未丢失。
+- 全范围按冻结合同完成真实重写，没有旧 facade、双状态源或兼容路径残留。
+- 实施期间遵守不测试、不编译；各模块按精确所有权并行，并经独立静态审查。
+- 全部重写后统一生成、整体审查、适用全量测试和原生验收通过，未解决失败为零。
+- 质量对比可复算且不混入主线贡献／生成增长／无数据性能猜测。
+- 最终 PR 与 CI 对应真实提交，权限边界、数据保全、证据和资源回收全部可追溯。
