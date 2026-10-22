@@ -227,17 +227,18 @@ pub(crate) fn classify_open_api(code: i64, msg: Option<&str>) -> FeishuError {
     let _ = msg;
     let (kind, retryable) = match code {
         99991663 | 99991664 | 1000040343 => (FeishuErrorKind::Auth, false),
-        99991672 | 230002 | 232009 => (FeishuErrorKind::Permission, false),
+        21001 | 99991672 | 230002 | 232009 => (FeishuErrorKind::Permission, false),
         99991400 | 230001 => (FeishuErrorKind::Rejected, false),
         99991404 => (FeishuErrorKind::NotFound, false),
         1 | 99991429 => (FeishuErrorKind::Unavailable, true),
         _ => (FeishuErrorKind::Unavailable, code > 0 && code < 100),
     };
-    let message = match kind {
-        FeishuErrorKind::Auth => "Feishu authentication was rejected",
-        FeishuErrorKind::Permission => "Feishu permission was denied",
-        FeishuErrorKind::Rejected => "Feishu rejected the request",
-        FeishuErrorKind::NotFound => "Feishu resource was not found",
+    let message = match (code, kind) {
+        (21001, _) => "Feishu access control policy denied the request",
+        (_, FeishuErrorKind::Auth) => "Feishu authentication was rejected",
+        (_, FeishuErrorKind::Permission) => "Feishu permission was denied",
+        (_, FeishuErrorKind::Rejected) => "Feishu rejected the request",
+        (_, FeishuErrorKind::NotFound) => "Feishu resource was not found",
         _ => "Feishu API rejected the request",
     };
     FeishuError::new(kind, message, retryable, Some(code.to_string()))

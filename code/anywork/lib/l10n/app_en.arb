@@ -305,6 +305,14 @@
   "settingsBotsOpenLinkFailed": "Could not open the link. Scan the QR code to continue, or try the browser option.",
   "settingsBotsOpenChat": "Open chat in Feishu",
   "settingsBotsOpenChatBrowser": "Open through browser",
+  "settingsBotsPolicyDenied": "Feishu's access control policy denied this app's API request.",
+  "settingsBotsPolicyDeniedHint": "Creating an app does not grant API access. Contact your organization's administrator to check the app's access policy, then retry once access is allowed.",
+  "settingsBotsPlatformCode": "Feishu error code: {code}",
+  "@settingsBotsPlatformCode": {
+    "placeholders": {
+      "code": { "type": "String" }
+    }
+  },
   "settingsBotsCopyLink": "Copy link",
   "settingsBotsRegistrationBusy": "Local save is committing. Cancel is busy and does not mean cancelled.",
   "settingsBotsCancelRegistration": "Cancel registration",

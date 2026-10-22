@@ -1202,6 +1202,24 @@ abstract class AppLocalizations {
   /// **'Open through browser'**
   String get settingsBotsOpenChatBrowser;
 
+  /// No description provided for @settingsBotsPolicyDenied.
+  ///
+  /// In en, this message translates to:
+  /// **'Feishu\'s access control policy denied this app\'s API request.'**
+  String get settingsBotsPolicyDenied;
+
+  /// No description provided for @settingsBotsPolicyDeniedHint.
+  ///
+  /// In en, this message translates to:
+  /// **'Creating an app does not grant API access. Contact your organization\'s administrator to check the app\'s access policy, then retry once access is allowed.'**
+  String get settingsBotsPolicyDeniedHint;
+
+  /// No description provided for @settingsBotsPlatformCode.
+  ///
+  /// In en, this message translates to:
+  /// **'Feishu error code: {code}'**
+  String settingsBotsPlatformCode(String code);
+
   /// No description provided for @settingsBotsCopyLink.
   ///
   /// In en, this message translates to:

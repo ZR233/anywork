@@ -103,8 +103,30 @@ class _BotDetail extends StatelessWidget {
             BotConnectionDisabled() => context.l10n.settingsBotsConnectionIdle,
           },
         ),
-        if (bot.connection case BotConnectionFailed(:final message))
-          SettingsInlineError(message: message),
+        if (bot.connection case BotConnectionFailed(
+          :final message,
+          :final platformCode,
+        )) ...[
+          SettingsInlineError(
+            message: platformCode == '21001'
+                ? context.l10n.settingsBotsPolicyDenied
+                : message,
+          ),
+          if (platformCode != null)
+            Text(context.l10n.settingsBotsPlatformCode(platformCode)),
+          if (platformCode == '21001') ...[
+            const SizedBox(height: 8),
+            Text(context.l10n.settingsBotsPolicyDeniedHint),
+            Align(
+              alignment: Alignment.centerLeft,
+              child: TextButton.icon(
+                onPressed: onOpenConsole,
+                icon: const Icon(Icons.open_in_new, size: 16),
+                label: Text(context.l10n.settingsBotsOpenConsole),
+              ),
+            ),
+          ],
+        ],
         // 已发布的机器人安全诊断（如配对清理未完成）单独呈现，不被连接状态
         // 或连接失败覆盖，也不据此推断本地业务动作。
         if (bot.diagnostic case final diagnostic?)

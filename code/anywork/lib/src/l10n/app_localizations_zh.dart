@@ -603,6 +603,18 @@ class AppLocalizationsZh extends AppLocalizations {
   String get settingsBotsOpenChatBrowser => '通过浏览器打开';
 
   @override
+  String get settingsBotsPolicyDenied => '飞书访问控制策略拒绝了此应用的 API 请求。';
+
+  @override
+  String get settingsBotsPolicyDeniedHint =>
+      '应用已创建不代表 API 访问已获准。请联系所属组织管理员检查应用访问策略，确认允许后再重试连接。';
+
+  @override
+  String settingsBotsPlatformCode(String code) {
+    return '飞书错误码：$code';
+  }
+
+  @override
   String get settingsBotsCopyLink => '复制链接';
 
   @override

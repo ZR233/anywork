@@ -71,7 +71,13 @@ impl FeishuError {
                 message: message.clone(),
                 retryable: *retryable,
                 platform_code: platform_code.clone(),
-                guidance: kind.guidance().map(str::to_string),
+                guidance: if *kind == FeishuErrorKind::Permission
+                    && platform_code.as_deref() == Some("21001")
+                {
+                    Some("checkTenantAccessPolicy".to_string())
+                } else {
+                    kind.guidance().map(str::to_string)
+                },
             },
         }
     }

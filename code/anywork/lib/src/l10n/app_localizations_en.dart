@@ -635,6 +635,19 @@ class AppLocalizationsEn extends AppLocalizations {
   String get settingsBotsOpenChatBrowser => 'Open through browser';
 
   @override
+  String get settingsBotsPolicyDenied =>
+      'Feishu\'s access control policy denied this app\'s API request.';
+
+  @override
+  String get settingsBotsPolicyDeniedHint =>
+      'Creating an app does not grant API access. Contact your organization\'s administrator to check the app\'s access policy, then retry once access is allowed.';
+
+  @override
+  String settingsBotsPlatformCode(String code) {
+    return 'Feishu error code: $code';
+  }
+
+  @override
   String get settingsBotsCopyLink => 'Copy link';
 
   @override
