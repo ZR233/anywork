@@ -81,7 +81,8 @@ pub(super) struct AcpSpawnRequest {
 pub(super) enum AcpSpawnStep {
     /// 准备本账号私有的探测目录。
     ProbeDirectory,
-    /// 解析并缓存受监督 worker 的可执行镜像。
+    /// 解析并缓存受监督 worker 的可执行镜像；只有 Linux 的 bundled supervisor 需要该步骤。
+    #[cfg(target_os = "linux")]
     WorkerAsset,
     /// 启动官方程序并接管其 stdio。
     Process,
@@ -92,6 +93,7 @@ impl AcpSpawnStep {
     pub(super) const fn label(self) -> &'static str {
         match self {
             Self::ProbeDirectory => "probeDirectory",
+            #[cfg(target_os = "linux")]
             Self::WorkerAsset => "workerAsset",
             Self::Process => "process",
         }
@@ -264,8 +266,6 @@ impl AcpWorker {
         }
         #[cfg(not(target_os = "linux"))]
         {
-            use process_wrap::tokio::ChildWrapper;
-
             let Some(child) = self.child.as_mut() else {
                 self.settled = Some(Ok(()));
                 return Reclaim::Stopped;
@@ -364,8 +364,6 @@ impl AcpWorker {
         cancellation: &CancellationToken,
     ) -> Result<Self, AcpSpawnError> {
         use std::process::Stdio;
-
-        use process_wrap::tokio::ChildWrapper;
 
         if cancellation.is_cancelled() {
             return Err(AcpSpawnError::Cancelled);
