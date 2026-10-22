@@ -46,6 +46,14 @@ draft 与已发布 Release 重跑均幂等成功。若存在尚未完成且未�
 workflow 优先恢复该 publisher，而不创建下一版 Release PR；publisher 保留带精确
 Release ID 的手动入口，仅用于故障恢复。
 
+同一不可变源码的发布构建由 stage 唯一负责 canonical 生成与一致性检查，不在构建前重复
+整套生成；Rust 与 Dart 格式、Flutter 静态分析仍须全部通过后才能交付发布资产。发布前的
+独立 verify 不以构建 job 的成功状态代替，但可以复用该 job 从同一 tag 提交编译的验证工具。
+工具仅作为同一 workflow run 的内部 artifact 传递，消费前核对摘要与编译工作区身份；不匹配
+必须终止，不从 PR、RC、其他 run 或不同提交获取可执行工具。没有上游构建的已发布版本验证
+仍从解析出的不可变源码构建工具，只复用其依赖缓存。工具 artifact 与安装器公开资产分离，
+不改变安装器签名、provenance 或 Release 资产集合。
+
 若 draft 的不可变源码存在只能通过后续提交修复的缺陷，可在主线维护明确的取代记录，
 以稳定 tag、精确提交 SHA 和原因标识该次未完成发布。记录必须与真实 tag 一致且属于
 主线历史，否则发现与发布均失败。被取代的 draft 保留原有 Release、资产和 tag，但不再
@@ -72,6 +80,12 @@ CI 的第三方 Rust 命令行工具通过固定版本的 `cargo-binstall` 安�
 优先使用工具上游 Release；未发布二进制的 `cargo-expand` 使用 cargo-bins 的 quickinstall
 产物。工具版本在工作流中固定，产物缺失或安装失败直接使 job 失败。项目自身的 xtask、bridge
 与 helper 仍从当前提交构建，Cargo 与 Flutter 的依赖快照约束保持不变。
+
+构建缓存按宿主平台、实际工具链及产物集合隔离，兼容的 RC 与稳定发布构建共享缓存域。
+不同产物集合的并行 job 不竞争同一不可变缓存条目，避免先写入的不完整集合阻止后续补齐。
+托管临时 runner 不让未使用的预装 `stable` 工具链改变缓存身份；Cargo 的编译器、依赖、feature、profile
+与环境失效检查继续生效。缓存未命中只增加构建成本，不能跳过任何当前源码的检查，也不能
+扩大 GitHub 的分支信任边界；PR 检查结果不替代稳定 tag 的发布检查。
 
 固定 channel 声明的工具链组件同时包含 `rustfmt`、`clippy` 与 `rust-analyzer`：编辑器语言服务
 与命令行构建共享同一工具链，不把 LSP 交给另一套 toolchain，也不要求开发者额外安装服务器。

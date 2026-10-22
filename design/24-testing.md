@@ -139,8 +139,14 @@ Client 格式/静态检查和纯 Dart tests，再以 `flutter test --no-pub` 执
 约束由 [AGENTS.md](../AGENTS.md) 和仓库工具维护，不从 SDK 安装目录运行项目命令。
 
 Rust、Linux server 与 Flutter 质量 job 独立执行，不通过先后依赖串行化；所有既有检查仍须
-通过。调用 xtask 的 job 同时缓存 workspace 与 xtask 的构建依赖，缓存只减少准备成本，
-不替代当前提交的检查。第三方生成工具安装遵循 [23](./23-release-update.md) 的预编译包约定。
+通过。同一 PR 的新提交可以取消已被取代的检查，主线及稳定发布不因此被取消。Linux 测试
+使用从当前提交构建并安装的 debug 执行 worker，与 server 和历史保存测试复用 debug 依赖；
+不改变发布 helper 的优化构建、目标架构或运行时加载契约。
+
+调用 xtask 的 job 缓存其实际使用的构建依赖，不为仅验证发布资产的轻量任务恢复整个 GUI
+构建目录。缓存只减少准备成本，不替代当前提交的检查；缓存域、同源工具 artifact 与发布
+信任边界遵循 [23](./23-release-update.md)。第三方生成工具仍使用固定版本预编译包，所有
+canonical 生成、格式、静态分析与既有测试责任保持不变。
 
 Client 自动用例使用屏障、可控 Future 和 fake clock 组织交错，不延长 sleep 等概率碰撞。
 必须覆盖以下缺陷敏感的行为；交付记录区分用例已存在、已执行与实际通过：
