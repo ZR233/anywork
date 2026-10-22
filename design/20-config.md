@@ -130,7 +130,7 @@ canonical account 构造目标模型的覆盖变更，保留其余模型、连�
 配置版本转换显式为既有配置增加空 ACP 集合，保留账号 ID、路由、Profile、所有用户设置与
 凭据关联；沿用本章的备份、校验和原子提交，不通过默认配置重建绕过迁移。
 ACP 保存/删除使用 Settings revision CAS，成功返回 canonical 设置，且不等待进程启动或
-认证。认证是独立显式操作，不推进 Settings 或模型目录水位，详见 [27](./27-acp.md)。
+认证。认证是独立显式操作，不推进 Settings 或模型目录水位，详见 [28](./28-acp.md)。
 
 Google 凭据继续由官方程序管理，不经过 Native API-key 凭据接口，不复制到 anywork 的
 TOML、数据库或 keyring。删除 ACP 配置只移除本地接入并取消所属操作，不注销 Google 或

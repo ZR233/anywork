@@ -74,7 +74,7 @@ ACP 账号配置与认证观察也属于独立资源。Client 的“保存并连
 投影到账号时还须匹配其 connection revision；跨资源帧乱序期间，不能把旧连接的成功用于新配置。
 Client 必须实际持有相应 topic 订阅，不能以只观察本地 store 代替订阅建立。Accounts
 可见需求只拥有 `acpAuth` 观察租约；离页、重建或返回不取消登录、不重启检查，重新观察读取
-当前基线。交互呈现见 [19](./19-studio-ui.md)，认证语义见 [27](./27-acp.md)。
+当前基线。交互呈现见 [19](./19-studio-ui.md)，认证语义见 [28](./28-acp.md)。
 认证事件可先于 start 命令响应到达；一旦 canonical 状态提供当前 operation 身份，取消必须
 可独立提交，不能被 start 的本地 busy 标志或命令队列阻塞。命令回执仍经同一 reducer 收敛。
 已加载认证快照的水位同时参与 MutationBoard 的 `acp-auth` 资源观察，使用当前 runtime owner
