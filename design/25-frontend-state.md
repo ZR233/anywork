@@ -87,6 +87,9 @@ undo/redo同属一个编辑VM；图形Controller只管理UI坐标/交互并提�
 配置、模型目录、账号模板与模型 route revision 各有 owner。route CAS 不是通知序号；
 页查询不推进尾部订阅版本；saved 与 terminal 独立。epoch 更换必须建立新基线，旧 owner
 的 observation 不满足新 owner 的 receipt，反之亦然。数值转换保留精度与单位，不能钳制溢出。
+产品读取引用离开feed封套后必须携带原owner epoch/incarnation；单独entry/revision不能
+证明来源。只读物化值和last-known同样保留原origin，旧command reply不能从最新feed补
+来源身份，跨owner的旧值不能提升成当前ready或满足动作准入。
 
 ## 25.4 观察、导航与需求
 

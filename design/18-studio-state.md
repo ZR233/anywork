@@ -230,6 +230,21 @@ operation ID、interaction ID及typed resolution一起校验；pending路径逐�
 Plan正文按文档身份独立读取，不随指标和状态重复交付；限额遵循真实writer：trim后正文
 UTF-8字节限制与包含原始空白的完整持久状态JSON限制是两个不同边界，不混称单字段上限。
 
+### 18.2.4 HTTP运输与读取归属
+
+Server与FRB消费同一组typed领域feed/read/command能力。HTTP按领域显式打开POST SSE，
+订阅认领与打开属于同一次请求；ACK、取消及等待关闭是独立控制能力，不以SSE id或TCP
+发送成功代替业务处理确认。不提供Last-Event-ID回放或旧聚合GET兼容入口。
+
+HTTP读取scope从其原父feed取得owner/incarnation，绑定不可变版本并受父连接关闭监督；
+断连不丢已经受理的open/query/producer。Server保留实际运输任务完成责任，在Rust
+finalizer之前汇总全部外部关闭问题，不以Drop/EOF/超时假称Clean。loopback Host/Origin
+检查继续保留，它不是用户级认证；控制请求不排在普通长写队列之后。
+
+拆分不能丢原公开查询的事实：完整Turn历史不等于Execution当前/最近Turn摘要；更新安装
+资产虽不在GUI摘要中，原Server公开详情仍须typed可达。runtime自身状态/恢复摘要也不能
+因删除聚合Studio快照而消失。历史页与目录页各自保留真实来源、排序和游标，不混用。
+
 ## 18.3 Activation
 
 启动通过唯一异步初始化入口返回已经就绪的运行时；构造和初始化不再分两次发布。

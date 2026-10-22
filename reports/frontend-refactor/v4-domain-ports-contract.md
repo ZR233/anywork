@@ -103,9 +103,9 @@ ConfigurationRepository
   state:ReadonlyLatestValue<ConfigurationState>
   profiles:ReadonlyLatestValue<ProfilesState>
   loadAccount(String accountId)->Future<AccountConfiguration>
-  loadInstructions()->Future<StudioInstructionsSettings>
-  loadSkillsSettings()->Future<StudioSkillsSettings>
-  loadGeneralSettings()->Future<StudioGeneralSettings>
+  loadInstructions()->Future<InstructionsSettings>
+  loadSkillsSettings()->Future<SkillsSettings>
+  loadGeneralSettings()->Future<GeneralSettings>
   loadWebSearchSettings()->Future<WebSearchConfiguration>
   loadDeepSeekSettings()->Future<DeepSeekSearchConfiguration>
   loadProfile(String profileId)->Future<AgentProfileSnapshot>
@@ -135,24 +135,29 @@ ConfigurationPort（adapter专用）：
 ```text
 openConfiguration()->Future<FeedConnection<ConfigurationFrame>>
 openAgentProfiles()->Future<FeedConnection<AgentProfilesFrame>>
-openConfigurationRead(ConfigurationReadRef ref)->Future<ConfigurationReadConnection>
-openProfilesRead(AgentProfilesReadRef ref)->Future<AgentProfilesReadConnection>
+openConfigurationRead(ConfigurationReadRef ref,{required ProductReadOrigin origin})->Future<ConfigurationReadConnection>
+openAgentProfilesRead(AgentProfilesReadRef ref,{required ProductReadOrigin origin})->Future<AgentProfilesReadConnection>
 saveAccount(UpdateAccountRequest request)->Future<ConfigurationCommandReply>
 setDefaultAccount(SetDefaultAccountRequest request)->Future<ConfigurationCommandReply>
 removeAccount(RemoveAccountRequest request)->Future<ConfigurationCommandReply>
 removeAccountModel(RemoveAccountModelRequest request)->Future<ConfigurationCommandReply>
 applyField(UpdateSettingsFieldRequest request)->Future<ConfigurationCommandReply>
 setPermission(UpdatePermissionSettingsRequest request)->Future<ConfigurationCommandReply>
-saveProfile(SaveProfileRequest request)->Future<ConfigurationCommandReply>
-setSystemProfileEnabled(SetSystemProfileEnabledRequest request)->Future<ConfigurationCommandReply>
+saveProfile(SaveProfileRequest request)->Future<ProfileCommandReply>
+setSystemProfileEnabled(SetSystemProfileEnabledRequest request)->Future<ProfileCommandReply>
 reload({required int expectedRevision})->Future<ConfigurationReloadResult>
 ```
 
-`ConfigurationCommandReply {receipt:CommitReceipt,configuration:ConfigurationReadRef,
-models:ModelCatalogReadRef}`；这是两个各自版本的canonical读取引用，不再携带旧聚合
+`ConfigurationCommandReply {receipt:CommitReceipt,configuration:ConfigurationReadTarget,
+models:ModelCatalogReadTarget}`；这是两个含原origin+reference的canonical读取目标，不再携带旧聚合
 SettingsStateSnapshot，也不由adapter拆旧Dart聚合快照。Mutation成功对应的推送与reply
 来源进入各自Repository归并，旧reply不覆盖新事实。native必须在返回前建立这些读取定位。
-`ConfigurationReloadResult`同样含两个ref但**无伪造receipt**；原reload没有operation receipt。
+`ConfigurationReloadResult {configuration:ConfigurationReadTarget,models:ModelCatalogReadTarget,
+profiles:AgentProfilesReadTarget}`保三份原origin+reference，但**无伪造receipt**；原reload没有operation receipt。
+Profile专用`ProfileCommandReply {receipt:CommitReceipt,configuration:ConfigurationReadTarget,
+models:ModelCatalogReadTarget,profiles:AgentProfilesReadTarget}`；Profiles在原Config command锁内
+adopt_scan后捕获，独立agent-profiles receipt target，不能只等settings。具体源水位与效果见
+[receipt观察合同](./v4-receipt-observation-contract.md)，普通Settings reply不增加Profiles大桶。
 
 ### 3.1 编辑intent与命令字段
 
@@ -232,7 +237,7 @@ batch与已排队步骤的实际工作归ConfigurationRepository，VM只借观�
 ## 4. Models / Modes
 
 ModelsRepository公开只读state与templates；`loadAccount(String)->Future<AccountCatalogEntry>`、
-`loadTemplates()->Future<AccountCatalogSnapshot>`、`loadModel(String accountId,String modelId)
+`loadTemplates()->Future<AccountTemplatesValue>`、`loadModel(String accountId,String modelId)
 ->Future<ModelDescriptor>`。不能重算context/effort/input能力，不提供保存配置的别名方法。
 其ModelsPort只含openModelCatalog/openAccountTemplates及各自openRead；具体返回都是本域
 FeedConnection<具体Frame>/ReadConnection。online model refresh若原产品没有独立公开命令，
@@ -252,8 +257,8 @@ reload({required int expectedRevision})->OperationTicket<ModeDefinitionResult>
 seal()/close()/retryCleanup()
 ```
 
-ModesPort对应openModeCatalog/openModeRead、readDefinition/validate/schema/preview，以及
-save/delete/reload增加required OperationId。`ModeDefinitionResult {catalog:ModeCatalogReadRef,
+ModesPort对应openModeCatalog/openModeCatalogRead、readDefinition/validate/schema/preview，以及
+save/delete/reload增加required OperationId。`ModeDefinitionResult {catalog:ModeCatalogReadTarget,
 definition:ModeDefinitionSnapshot?}`，native命令reply再含真实CommitReceipt，保留原definition
 可空语义。不在SDK保ModeEditorOwner/undo/dirty/rawJSON；它们唯一归U1真VM。
 
@@ -272,9 +277,9 @@ AccountUsageRepository
   seal()/close()/retryCleanup()
 AccountUsagePort
   openAccountUsage()->Future<FeedConnection<AccountUsageFrame>>
-  openUsageRead(AccountUsageReadRef ref)->Future<AccountUsageReadConnection>
+  openAccountUsageRead(AccountUsageReadRef ref,{required ProductReadOrigin origin})->Future<AccountUsageReadConnection>
   check(String accountId,{required int expectedUsageQueryRevision})->Future<AccountUsageCheckResult>
-AccountUsageCheckResult {reference:AccountUsageReadRef,accountId:String,usageQueryRevision:int}
+AccountUsageCheckResult {target:AccountUsageReadTarget,accountId:String,usageQueryRevision:int}
 ```
 
 check没有原生receipt，Repository在dispatch前冻结该账号真实usageQueryRevision，native
@@ -299,13 +304,13 @@ open/read能力只由StatisticsPort三个具体feed/scope提供。过滤、展�
 
 | Repository | 动作 | T与语义 |
 | --- | --- | --- |
-| RecoveryRepository | retry() | RecoveryReadRef；原审计重试，不是普通read |
+| RecoveryRepository | retry() | RecoveryReadTarget；原审计重试，不是普通read |
 | RecoveryRepository | cleanupWorktree(ownerKind,ownerThreadId,expectedLeaseRevision) | Unit；原lease CAS/受控清理，不扩大删用户数据授权 |
-| PersistenceRepository | retry() | PersistenceReadRef |
+| PersistenceRepository | retry() | PersistenceReadTarget |
 | PersistenceRepository | retryThreadHistory(threadId,faultGeneration) / resumeThreadHistory(threadId,faultGeneration) | PersistenceQueueSnapshot；原raw响应无发布revision，不写进versioned queue mirror |
-| McpRepository | resetServer(serverId) / resetAll() | McpReadRef；配置修改仍走ConfigurationRepository字段命令 |
-| LspRepository | probe(projectId) / repair(projectId,serverId) / resetServer(projectId,serverId) / resetWorkspace(projectId) | LspReadRef；仍归并全局真实LSP来源 |
-| SkillsRepository | discover(projectId) | SkillsReadRef；显式发现，不在watch/build扫描 |
+| McpRepository | resetServer(serverId) / resetAll() | McpReadTarget；配置修改仍走ConfigurationRepository字段命令 |
+| LspRepository | probe(projectId) / repair(projectId,serverId) / resetServer(projectId,serverId) / resetWorkspace(projectId) | LspReadTarget；仍归并全局真实LSP来源 |
+| SkillsRepository | discover(projectId) | SkillsReadTarget；显式发现，不在watch/build扫描 |
 | SkillsRepository | search(projectId,query,{limit=50}) | **只读Future<SkillSearchResult>**，不是OperationTicket；保project/catalog revision/matches/truncated |
 | RemoteRepository | save(SshServerProfile,SshPasswordUpdate) | SshServerRuntimeEntry |
 | RemoteRepository | delete(alias) | Unit |
@@ -341,7 +346,7 @@ String仍按ReadText、页/块仍256KiB；内部使用原helper的typed目录结
 - [x] D0错误详情、dispatch证据、无receipt成功后同步失败及batch结果，见失败合同/§3.3。
 - [ ] D1完整接缝；Session/草稿/冻结与真实durable证据已见[Conversation合同](./v4-conversation-contract.md)，其末尾未闭合项仍待定稿。
 - [ ] D3全部接口；显式启动/退出与组合根顺序见[应用生命周期](./v4-application-lifecycle-contract.md)，Workspace/Updates动作全集仍待补。
-- [ ] 所有State及产品Read DTO逐字段类型册、公共新文件/导出表、HTTP/FRB名字。
+- [ ] 所有接缝闭合；产品State/read port已见[产品读取port](./v4-product-read-ports-contract.md)与[产品类型册](./v4-product-type-catalog.md)，公共新文件/HTTP及明确待补项继续定稿。
 - [ ] 全VM对动作的具体消费/dirty/unknown/retry与最终验证矩阵。
 
 本文件已确定的接口可供后续合同引用，但有未闭合条目时仍不派编码。

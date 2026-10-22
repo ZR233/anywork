@@ -39,6 +39,8 @@ MetricsValue、ContextValue、ConfigurationValue、AuthoringBaseline/Change及�
 由D0 resources定义一次；各域只引用，不能各自复制成同构类型。
 原状态机错误统一采用`SourceStateError {code:String,message:String,retryable:bool}`及其
 typed读取形式SourceStateErrorRead；它没有correlationId，不与StudioFailure混为一类。
+Agent与Turn共用的BudgetLimitSnapshot/BudgetLimitKind/BudgetUsage由D0 resources唯一定义，
+完整字段沿Thread合同§9.2；D1/D3只引用，不建立同名独立序列化类型。
 新增应用启动/退出接缝见[应用生命周期](./v4-application-lifecycle-contract.md)，Conversation
 草稿及输入保存证据见[Conversation合同](./v4-conversation-contract.md)。
 
@@ -94,6 +96,10 @@ abstract interface class Observation {
 `ObservationStamp` 只允许 ResourceStamp／ViewStamp 两种现有版本域；covers 必须同时核对
 完整身份，不以更大的数字覆盖另一 owner。Freezed deep equality 只处理值；Future、stream、
 连接、Controller、取消 token、permit、操作 ticket、read lease 不放入 ViewState 或值模型。
+包含密码/token替换值、isSecret回答、原始编辑正文的Freezed值不得沿用会完整打印字段的
+自动toString/诊断输出；关闭该生成覆写或提供只含安全身份/phase的显式诊断。它们不生成
+用于日志/Driver的整值JSON，诊断继续用原白名单。不可变并不等于可公开记录，secret的
+Preserve/Replace/Clear语义与实际值归属不因此改变。
 
 Rust ID 仍用 String，时间戳仍为 Unix 秒 i64（字段 `*_at`），字节和计数保持原单位。
 FRB u64 到 Dart int 精确验证，不 double 化、截断或钳制。metrics 的耗时是 response_millis，
@@ -118,6 +124,10 @@ FRB u64 到 Dart int 精确验证，不 double 化、截断或钳制。metrics �
 上述是运行中资源数量预算，不是载荷字节、完整源对象大小、FRB wire bytes 或 RSS 上界。
 
 ## 5. 操作 owner 与呈现 owner 的固定分工
+
+所有具体resourceKey、canonical水位、effect/durable与identity predicate采用
+[receipt观察合同](./v4-receipt-observation-contract.md)。投影revision与delivery sequence
+不能满足业务receipt；Thread Mode不再观察旧thread-state聚合key。
 
 `operations` 内部登记真实操作；各领域 action 在首 await 前冻结目标、payload、CAS revision、
 OperationId、draft stamp 和附件归属。VM 只保留本页面 latestIntent／pending／error 呈现，
