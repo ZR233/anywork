@@ -298,6 +298,12 @@ abstract final class StudioDriverKeys {
       ValueKey<String>('settings-tab-$id');
 
   static const botsAdd = ValueKey<String>('bots-add');
+  static const botsOpenFeishu = ValueKey<String>('bots-open-feishu');
+  static const botsOpenVerificationBrowser = ValueKey<String>(
+    'bots-open-verification-browser',
+  );
+  static const botsOpenChat = ValueKey<String>('bots-open-chat');
+  static const botsOpenChatBrowser = ValueKey<String>('bots-open-chat-browser');
   static const botsName = ValueKey<String>('bots-name');
   static const botsRiskAck = ValueKey<String>('bots-risk-ack');
   static const botsEdit = ValueKey<String>('bots-edit');

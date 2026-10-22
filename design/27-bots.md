@@ -167,8 +167,28 @@ lease。后续明确 Clear 仍可撤销已经确定的关联。
 
 ## 27.3 首次配置与注册
 
-GUI 提供“扫码创建应用”和“连接已有应用”两条入口，均先确认名称、关联项目、模型可用性
+GUI 提供“创建并连接飞书应用”和“连接已有应用”两条入口，均先确认名称、关联项目、模型可用性
 与远程执行风险。扫码流程参考 OpenClaw 的首用户绑定体验，但不依赖其网关。
+
+注册开始后，当前尝试独立展示在机器人页顶部，不被首配表单或设置页导航隐藏；返回页面
+继续观察同一 canonical 尝试。等待期间提供“打开飞书继续”、手机扫码与浏览器继续三种
+本地入口，并保留可见的取消操作。只有用户点击才打开外部应用，不由轮询状态反复唤起。
+外部链接统一通过 Flutter 官方 [url_launcher](https://pub.dev/packages/url_launcher)
+打开；使用 `canLaunchUrl` 检查系统是否注册飞书协议，不自行维护安装路径或注册表判断。
+仅检测成功时显示客户端入口；未安装、检查中或检查失败时直接引导手机飞书扫码，二维码
+始终保留。检测结果不代表登录或授权状态，也不声称检查失败一定是未安装。
+采用官方 [AppLink 结构](https://open.feishu.cn/document/common-capabilities/applink-protocol/applink-introduction/applink-structure)
+定义的 `feishu://applink` 直接唤起协议，通过
+[端内网页协议](https://open.feishu.cn/document/common-capabilities/applink-protocol/supported-protocol/open-the-web-view-in-feishu-to-access-the-specified-url)
+在独立窗口打开当前可信验证链接；原始链接作为整体 query 值编码，不改写授权参数。
+只有生产允许的 HTTPS 授权来源可传入真实客户端；隔离 fixture 保留自身网页和二维码入口。
+操作系统接受唤起请求不等于客户端已打开，更不等于授权成功；仍保留扫码、浏览器入口及
+服务端轮询结果。链接打开失败不回显含授权材料的底层异常。
+
+保存后的机器人详情提供官方
+[打开机器人会话](https://open.feishu.cn/document/common-capabilities/applink-protocol/supported-protocol/open-a-bot)
+入口，按当前 App ID 打开飞书聊天，并提供 HTTPS AppLink 网页入口。
+打开聊天不授予入站信任、不代替发送消息，也不证明应用已发布或对当前用户可用。
 
 原生注册使用官方 SDK 所采用的设备授权接口，支持验证链接、二维码、服务端轮询间隔、
 `authorization_pending`、`slow_down`、拒绝、过期、取消与失败。二维码和验证链接是敏感的

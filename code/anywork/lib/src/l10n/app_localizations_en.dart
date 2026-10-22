@@ -520,7 +520,7 @@ class AppLocalizationsEn extends AppLocalizations {
       'I understand remote messages can run local tools with full-access';
 
   @override
-  String get settingsBotsScan => 'Scan to create app';
+  String get settingsBotsScan => 'Create and connect Feishu app';
 
   @override
   String get settingsBotsManual => 'Connect existing app';
@@ -607,7 +607,32 @@ class AppLocalizationsEn extends AppLocalizations {
   }
 
   @override
-  String get settingsBotsOpenLink => 'Open verification link';
+  String get settingsBotsOpenLink => 'Continue in browser';
+
+  @override
+  String get settingsBotsOpenFeishu => 'Continue in Feishu';
+
+  @override
+  String get settingsBotsContinueHint =>
+      'Confirm app creation in Feishu. This page will update automatically when registration completes.';
+
+  @override
+  String get settingsBotsScanOnlyHint =>
+      'Scan the QR code with Feishu on your phone and confirm app creation. This page will update automatically.';
+
+  @override
+  String get settingsBotsScanHint =>
+      'You can also scan with Feishu on your phone. If the client does not open, continue in your browser or scan the code.';
+
+  @override
+  String get settingsBotsOpenLinkFailed =>
+      'Could not open the link. Scan the QR code to continue, or try the browser option.';
+
+  @override
+  String get settingsBotsOpenChat => 'Open chat in Feishu';
+
+  @override
+  String get settingsBotsOpenChatBrowser => 'Open through browser';
 
   @override
   String get settingsBotsCopyLink => 'Copy link';
@@ -626,7 +651,7 @@ class AppLocalizationsEn extends AppLocalizations {
   String get settingsBotsRegPreparing => 'Preparing';
 
   @override
-  String get settingsBotsRegWaiting => 'Waiting for scan';
+  String get settingsBotsRegWaiting => 'Waiting for confirmation in Feishu';
 
   @override
   String get settingsBotsRegSlowDown => 'Slow down';

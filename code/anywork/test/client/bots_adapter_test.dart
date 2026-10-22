@@ -1,6 +1,7 @@
 import 'dart:convert';
 
 import 'package:anywork/src/app/app_graph.dart';
+import 'package:anywork/src/platform/feishu_app_links.dart';
 import 'package:anywork/src/presentation/view_models/timeline_session_owner.dart';
 import 'package:anywork/src/shared/studio_driver_projection.dart';
 import 'package:anywork/src/shared/studio_driver_state.dart';
@@ -12,6 +13,39 @@ import 'support/recording_demo_transport.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
+
+  test('registration handoff preserves the ticket and rejects other origins', () {
+    const verification =
+        'https://accounts.feishu.cn/oauth/authorize?code=a%2Bb%26c&redirect=%2Fconfirm&name=Bot test';
+    final link = Uri.parse(feishuRegistrationAppLink(verification)!);
+    expect(link.scheme, 'feishu');
+    expect(link.host, 'applink');
+    expect(link.path, '/client/web_url/open');
+    expect(link.queryParameters, {'mode': 'window', 'url': verification});
+    expect(link.query, isNot(contains('+')));
+    for (final rejected in [
+      'http://127.0.0.1:8192/fixture?code=local',
+      'https://accounts.feishu.cn.example.com/authorize',
+      'https://user@accounts.feishu.cn/authorize',
+      'https://accounts.feishu.cn:8443/authorize',
+      'https://accounts.feishu.cn/authorize#ticket',
+      'https://accounts.feishu.cn/authorize\n',
+    ]) {
+      expect(feishuRegistrationAppLink(rejected), isNull);
+    }
+  });
+
+  test('bot chat handoff keeps the selected app as a single encoded value', () {
+    const appId = 'cli_example test&url=https://unrelated.example';
+    for (final browser in [false, true]) {
+      final link = Uri.parse(feishuBotAppLink(appId, browser: browser));
+      expect(link.scheme, browser ? 'https' : 'feishu');
+      expect(link.host, browser ? 'applink.feishu.cn' : 'applink');
+      expect(link.path, '/client/bot/open');
+      expect(link.queryParameters, {'appId': appId});
+      expect(link.query, contains('cli_example%20test%26url%3D'));
+    }
+  });
 
   test(
     'demo adapter maps bot save, registration start and cancel states',

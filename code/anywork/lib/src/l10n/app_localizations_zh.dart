@@ -493,7 +493,7 @@ class AppLocalizationsZh extends AppLocalizations {
   String get settingsBotsRiskAck => '我理解远程消息可能以 full-access 运行本机工具';
 
   @override
-  String get settingsBotsScan => '扫码创建应用';
+  String get settingsBotsScan => '创建并连接飞书应用';
 
   @override
   String get settingsBotsManual => '连接已有应用';
@@ -579,7 +579,28 @@ class AppLocalizationsZh extends AppLocalizations {
   }
 
   @override
-  String get settingsBotsOpenLink => '打开验证链接';
+  String get settingsBotsOpenLink => '在浏览器中继续';
+
+  @override
+  String get settingsBotsOpenFeishu => '打开飞书继续';
+
+  @override
+  String get settingsBotsContinueHint => '在飞书中确认创建应用，此页会自动更新注册结果。';
+
+  @override
+  String get settingsBotsScanOnlyHint => '用手机飞书扫描二维码并确认创建应用，此页会自动更新注册结果。';
+
+  @override
+  String get settingsBotsScanHint => '也可用手机飞书扫码。若客户端未打开，请使用浏览器入口或扫码继续。';
+
+  @override
+  String get settingsBotsOpenLinkFailed => '无法打开链接。请扫码继续，或尝试浏览器入口。';
+
+  @override
+  String get settingsBotsOpenChat => '在飞书中打开聊天';
+
+  @override
+  String get settingsBotsOpenChatBrowser => '通过浏览器打开';
 
   @override
   String get settingsBotsCopyLink => '复制链接';
@@ -597,7 +618,7 @@ class AppLocalizationsZh extends AppLocalizations {
   String get settingsBotsRegPreparing => '准备中';
 
   @override
-  String get settingsBotsRegWaiting => '等待扫码';
+  String get settingsBotsRegWaiting => '等待飞书确认';
 
   @override
   String get settingsBotsRegSlowDown => '降频等待';

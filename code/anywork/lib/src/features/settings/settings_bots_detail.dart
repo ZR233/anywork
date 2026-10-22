@@ -4,6 +4,7 @@ class _BotDetail extends StatelessWidget {
   const _BotDetail({
     required this.bot,
     required this.view,
+    required this.canOpenFeishu,
     required this.selectedChatId,
     required this.sendController,
     required this.busy,
@@ -23,10 +24,13 @@ class _BotDetail extends StatelessWidget {
     required this.onLoadMessages,
     required this.onDraftChanged,
     required this.onOpenConsole,
+    required this.onOpenBot,
+    required this.onOpenBotBrowser,
   });
 
   final BotSnapshot bot;
   final SettingsBotsView view;
+  final bool canOpenFeishu;
   final String? selectedChatId;
   final TextEditingController sendController;
   final bool busy;
@@ -49,6 +53,8 @@ class _BotDetail extends StatelessWidget {
   final ValueChanged<BotConversation> onCreateThread;
   final VoidCallback onSend;
   final VoidCallback onOpenConsole;
+  final VoidCallback onOpenBot;
+  final VoidCallback onOpenBotBrowser;
 
   @override
   Widget build(BuildContext context) {
@@ -110,6 +116,25 @@ class _BotDetail extends StatelessWidget {
             ),
           ),
         Text(context.l10n.settingsBotsFirstMessageGuide),
+        const SizedBox(height: 8),
+        Wrap(
+          spacing: 8,
+          runSpacing: 8,
+          children: [
+            if (canOpenFeishu)
+              FilledButton.tonalIcon(
+                key: StudioDriverKeys.botsOpenChat,
+                onPressed: busy ? null : onOpenBot,
+                icon: const Icon(Icons.chat_bubble_outline, size: 18),
+                label: Text(context.l10n.settingsBotsOpenChat),
+              ),
+            TextButton(
+              key: StudioDriverKeys.botsOpenChatBrowser,
+              onPressed: busy ? null : onOpenBotBrowser,
+              child: Text(context.l10n.settingsBotsOpenChatBrowser),
+            ),
+          ],
+        ),
         if (!bot.canChangeAppId)
           Text(
             context.l10n.settingsBotsAppIdLocked,

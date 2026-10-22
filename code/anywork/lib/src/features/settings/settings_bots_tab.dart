@@ -8,6 +8,7 @@ import 'package:pretty_qr_code/pretty_qr_code.dart';
 import '../../app/theme/studio_tokens.dart';
 import '../../l10n/studio_l10n.dart';
 import '../../platform/external_url_launcher.dart';
+import '../../platform/feishu_app_links.dart';
 import '../../presentation/providers/client_provider.dart';
 import '../../shared/studio_driver_keys.dart';
 
@@ -19,6 +20,7 @@ import 'settings_views.dart';
 
 part 'settings_bots_editor.dart';
 part 'settings_bots_detail.dart';
+part 'settings_bots_registration.dart';
 
 /// 飞书中国版开发者后台固定入口；仅本机点击打开，不携带凭据或票据。
 const _feishuDeveloperConsoleUrl = 'https://open.feishu.cn/app';
@@ -91,15 +93,27 @@ class _BotsTabState extends ConsumerState<BotsTab> {
       kind: BridgeSettingsScopeKind.bots,
     );
     final view = ref.watch(settingsBotsViewProvider);
+    final canOpenFeishu =
+        ref.watch(feishuClientAvailableProvider).asData?.value == true;
     final snapshot = view.snapshot ?? const BotsStateSnapshot.empty();
     final selected = _selectedBot(snapshot);
+    final registration = snapshot.registration;
+    final registering = switch (registration?.status) {
+      BotRegistrationPreparing() ||
+      BotRegistrationWaiting() ||
+      BotRegistrationSlowDown() ||
+      BotRegistrationCommitting() => true,
+      _ => false,
+    };
     return SettingsPane(
       header: SettingsHeader(
         title: context.l10n.settingsBotsTitle,
         subtitle: context.l10n.settingsBotsSubtitle,
         trailing: FilledButton.tonalIcon(
           key: StudioDriverKeys.botsAdd,
-          onPressed: _busy ? null : () => setState(() => _setupOpen = true),
+          onPressed: _busy || registering
+              ? null
+              : () => setState(() => _setupOpen = true),
           icon: const Icon(Icons.add, size: 18),
           label: Text(context.l10n.settingsBotsAdd),
         ),
@@ -113,7 +127,28 @@ class _BotsTabState extends ConsumerState<BotsTab> {
           SettingsInlineError(message: error),
         ],
         const SizedBox(height: 16),
-        if (_setupOpen) _buildSetup(context, view, snapshot),
+        if (registration != null && (registering || !_setupOpen))
+          SettingsSectionPanel(
+            title: registration.name,
+            children: [
+              _RegistrationPanel(
+                attempt: registration,
+                busy: _busy,
+                canOpenFeishu: canOpenFeishu,
+                onOpenFeishu: (url) =>
+                    _openBotLink(feishuRegistrationAppLink(url)),
+                onOpenLink: (url) => _openBotLink(safeExternalWebUrl(url)),
+                onCopyLink: (url) =>
+                    _run(() => Clipboard.setData(ClipboardData(text: url))),
+                onCancel: () => _run(
+                  () => _client.botsCommands.cancelRegistration(
+                    attemptId: registration.attemptId,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        if (_setupOpen && !registering) _buildSetup(context, view),
         if (snapshot.pendingCredentialOperations.isNotEmpty) ...[
           SettingsSectionPanel(
             title: context.l10n.settingsBotsPendingTitle,
@@ -132,7 +167,7 @@ class _BotsTabState extends ConsumerState<BotsTab> {
             ],
           ),
         ],
-        if (snapshot.bots.isEmpty && !_setupOpen)
+        if (snapshot.bots.isEmpty && !_setupOpen && registration == null)
           SettingsEmptyMessage(
             icon: Icons.smart_toy_outlined,
             title: context.l10n.settingsBotsEmptyTitle,
@@ -164,6 +199,7 @@ class _BotsTabState extends ConsumerState<BotsTab> {
                   : _BotDetail(
                       bot: selected,
                       view: view,
+                      canOpenFeishu: canOpenFeishu,
                       selectedChatId: _selectedChatId,
                       sendController: _sendText,
                       busy: _busy,
@@ -271,6 +307,11 @@ class _BotsTabState extends ConsumerState<BotsTab> {
                         );
                       }),
                       onOpenConsole: _openDeveloperConsole,
+                      onOpenBot: () =>
+                          _openBotLink(feishuBotAppLink(selected.appId)),
+                      onOpenBotBrowser: () => _openBotLink(
+                        feishuBotAppLink(selected.appId, browser: true),
+                      ),
                     );
               if (stacked) {
                 return Column(
@@ -291,11 +332,7 @@ class _BotsTabState extends ConsumerState<BotsTab> {
     );
   }
 
-  Widget _buildSetup(
-    BuildContext context,
-    SettingsBotsView view,
-    BotsStateSnapshot snapshot,
-  ) {
+  Widget _buildSetup(BuildContext context, SettingsBotsView view) {
     return SettingsSectionPanel(
       title: context.l10n.settingsBotsSetupTitle,
       trailing: TextButton(
@@ -386,27 +423,6 @@ class _BotsTabState extends ConsumerState<BotsTab> {
             ),
           ],
         ),
-        if (snapshot.registration case final registration?) ...[
-          const SizedBox(height: 16),
-          _RegistrationPanel(
-            attempt: registration,
-            busy: _busy,
-            onOpenLink: (url) => _run(() async {
-              final safe = safeExternalWebUrl(url);
-              if (safe == null) {
-                throw StateError('Invalid verification destination');
-              }
-              await ref.read(externalUrlLauncherProvider)(safe);
-            }),
-            onCopyLink: (url) =>
-                _run(() => Clipboard.setData(ClipboardData(text: url))),
-            onCancel: () => _run(
-              () => _client.botsCommands.cancelRegistration(
-                attemptId: registration.attemptId,
-              ),
-            ),
-          ),
-        ],
         if (_manualSetup) ...[
           const SizedBox(height: 16),
           Text(context.l10n.settingsBotsManualGuide),
@@ -467,7 +483,7 @@ class _BotsTabState extends ConsumerState<BotsTab> {
 
   BotSnapshot? _selectedBot(BotsStateSnapshot snapshot) {
     if (snapshot.bots.isEmpty) return null;
-    final id = _selectedBotId;
+    final id = _selectedBotId ?? snapshot.registration?.completedBotId;
     for (final bot in snapshot.bots) {
       if (bot.id == id) return bot;
     }
@@ -493,12 +509,17 @@ class _BotsTabState extends ConsumerState<BotsTab> {
   Future<void> _startScan(SettingsBotsView view) {
     _syncDraft(view);
     final draft = _client.botsCommands.setupDraft;
-    return _run(
-      () => _client.botsCommands.startRegistration(
+    return _run(() async {
+      await _client.botsCommands.startRegistration(
         name: draft.name,
         projectId: draft.projectId,
-      ),
-    );
+      );
+      if (!mounted) return;
+      setState(() {
+        _setupOpen = false;
+        _selectedBotId = null;
+      });
+    });
   }
 
   Future<void> _saveManual(SettingsBotsView view) {
@@ -629,6 +650,20 @@ class _BotsTabState extends ConsumerState<BotsTab> {
     } catch (_) {
       if (!mounted) return;
       setState(() => _error = context.l10n.settingsBotsOpenConsoleFailed);
+    }
+  }
+
+  /// Dispatching an AppLink does not change registration or connection facts.
+  Future<void> _openBotLink(String? url) async {
+    if (url == null) {
+      setState(() => _error = context.l10n.settingsBotsOpenLinkFailed);
+      return;
+    }
+    try {
+      await ref.read(externalUrlLauncherProvider)(url);
+    } catch (_) {
+      if (!mounted) return;
+      setState(() => _error = context.l10n.settingsBotsOpenLinkFailed);
     }
   }
 
@@ -821,119 +856,6 @@ class _PendingCredentialTile extends StatelessWidget {
       trailing: TextButton(
         onPressed: onRetry,
         child: Text(context.l10n.settingsBotsVerify),
-      ),
-    );
-  }
-}
-
-class _RegistrationPanel extends StatelessWidget {
-  const _RegistrationPanel({
-    required this.attempt,
-    required this.busy,
-    required this.onCancel,
-    required this.onOpenLink,
-    required this.onCopyLink,
-  });
-
-  final BotRegistrationAttempt attempt;
-  final bool busy;
-  final VoidCallback onCancel;
-  final ValueChanged<String> onOpenLink;
-  final ValueChanged<String> onCopyLink;
-
-  @override
-  Widget build(BuildContext context) {
-    final status = attempt.status;
-    final url = status.verificationUrl;
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text(
-          key: StudioDriverKeys.botsRegistrationStatus,
-          context.l10n.settingsBotsRegistrationStatus(
-            _statusLabel(context, status),
-          ),
-          style: context.text.bodyMedium?.copyWith(fontWeight: FontWeight.w600),
-        ),
-        const SizedBox(height: 8),
-        if (url != null) ...[
-          _SafeQrView(url: url),
-          const SizedBox(height: 8),
-          Wrap(
-            spacing: 8,
-            children: [
-              TextButton.icon(
-                onPressed: busy ? null : () => onOpenLink(url),
-                icon: const Icon(Icons.open_in_new, size: 16),
-                label: Text(context.l10n.settingsBotsOpenLink),
-              ),
-              TextButton.icon(
-                onPressed: busy ? null : () => onCopyLink(url),
-                icon: const Icon(Icons.copy, size: 16),
-                label: Text(context.l10n.settingsBotsCopyLink),
-              ),
-            ],
-          ),
-        ],
-        if (status
-            case BotRegistrationFailed(:final message) ||
-                BotRegistrationDenied(:final message))
-          SettingsInlineError(message: message),
-        if (status is BotRegistrationCommitting)
-          Text(context.l10n.settingsBotsRegistrationBusy)
-        else if (status is! BotRegistrationCompleted)
-          TextButton(
-            key: StudioDriverKeys.botsCancelRegistration,
-            onPressed: busy ? null : onCancel,
-            child: Text(context.l10n.settingsBotsCancelRegistration),
-          ),
-      ],
-    );
-  }
-
-  String _statusLabel(BuildContext context, BotRegistrationStatus status) {
-    return switch (status) {
-      BotRegistrationIdle() => context.l10n.settingsBotsRegIdle,
-      BotRegistrationPreparing() => context.l10n.settingsBotsRegPreparing,
-      BotRegistrationWaiting() => context.l10n.settingsBotsRegWaiting,
-      BotRegistrationSlowDown() => context.l10n.settingsBotsRegSlowDown,
-      BotRegistrationCommitting() => context.l10n.settingsBotsRegCommitting,
-      BotRegistrationCompleted() => context.l10n.settingsBotsRegCompleted,
-      BotRegistrationDenied() => context.l10n.settingsBotsRegDenied,
-      BotRegistrationExpired() => context.l10n.settingsBotsRegExpired,
-      BotRegistrationCancelled() => context.l10n.settingsBotsRegCancelled,
-      BotRegistrationFailed() => context.l10n.settingsBotsRegFailed,
-    };
-  }
-}
-
-class _SafeQrView extends StatelessWidget {
-  const _SafeQrView({required this.url});
-
-  final String url;
-
-  @override
-  Widget build(BuildContext context) {
-    return SizedBox(
-      width: 168,
-      height: 168,
-      child: PrettyQrView.data(
-        data: url,
-        errorBuilder: (context, error, stackTrace) {
-          return ColoredBox(
-            color: context.colors.surfaceContainerHigh,
-            child: Center(
-              child: Padding(
-                padding: const EdgeInsets.all(12),
-                child: Text(
-                  context.l10n.settingsBotsQrFailed,
-                  textAlign: TextAlign.center,
-                  style: context.text.bodySmall,
-                ),
-              ),
-            ),
-          );
-        },
       ),
     );
   }

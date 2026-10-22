@@ -989,7 +989,7 @@ abstract class AppLocalizations {
   /// No description provided for @settingsBotsScan.
   ///
   /// In en, this message translates to:
-  /// **'Scan to create app'**
+  /// **'Create and connect Feishu app'**
   String get settingsBotsScan;
 
   /// No description provided for @settingsBotsManual.
@@ -1157,8 +1157,50 @@ abstract class AppLocalizations {
   /// No description provided for @settingsBotsOpenLink.
   ///
   /// In en, this message translates to:
-  /// **'Open verification link'**
+  /// **'Continue in browser'**
   String get settingsBotsOpenLink;
+
+  /// No description provided for @settingsBotsOpenFeishu.
+  ///
+  /// In en, this message translates to:
+  /// **'Continue in Feishu'**
+  String get settingsBotsOpenFeishu;
+
+  /// No description provided for @settingsBotsContinueHint.
+  ///
+  /// In en, this message translates to:
+  /// **'Confirm app creation in Feishu. This page will update automatically when registration completes.'**
+  String get settingsBotsContinueHint;
+
+  /// No description provided for @settingsBotsScanOnlyHint.
+  ///
+  /// In en, this message translates to:
+  /// **'Scan the QR code with Feishu on your phone and confirm app creation. This page will update automatically.'**
+  String get settingsBotsScanOnlyHint;
+
+  /// No description provided for @settingsBotsScanHint.
+  ///
+  /// In en, this message translates to:
+  /// **'You can also scan with Feishu on your phone. If the client does not open, continue in your browser or scan the code.'**
+  String get settingsBotsScanHint;
+
+  /// No description provided for @settingsBotsOpenLinkFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Could not open the link. Scan the QR code to continue, or try the browser option.'**
+  String get settingsBotsOpenLinkFailed;
+
+  /// No description provided for @settingsBotsOpenChat.
+  ///
+  /// In en, this message translates to:
+  /// **'Open chat in Feishu'**
+  String get settingsBotsOpenChat;
+
+  /// No description provided for @settingsBotsOpenChatBrowser.
+  ///
+  /// In en, this message translates to:
+  /// **'Open through browser'**
+  String get settingsBotsOpenChatBrowser;
 
   /// No description provided for @settingsBotsCopyLink.
   ///
@@ -1193,7 +1235,7 @@ abstract class AppLocalizations {
   /// No description provided for @settingsBotsRegWaiting.
   ///
   /// In en, this message translates to:
-  /// **'Waiting for scan'**
+  /// **'Waiting for confirmation in Feishu'**
   String get settingsBotsRegWaiting;
 
   /// No description provided for @settingsBotsRegSlowDown.
