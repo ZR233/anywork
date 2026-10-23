@@ -18,7 +18,7 @@ use pl_core::{
     tool::opaque::{CallContext, Registration, Tool},
 };
 use pl_tool::skill::{
-    FileSystemSkillProvider, FrozenSkillCatalog, SkillCandidate, SkillCatalog, SkillDefinition,
+    FileSystemSkillProvider, FrozenSkillCatalog, SkillCandidate, SkillDefinition,
     SkillDirectorySource, SkillProvider, SkillProviderId, SkillProviderObservation,
     SkillProviderRequest, SkillRegistry, SkillSourceKind, SkillsConfig, ThreadSkillKind,
     ThreadSkillTool,
@@ -295,6 +295,8 @@ async fn observe_static_root_isolated(root: &Path) -> anyhow::Result<()> {
 
 #[cfg(unix)]
 fn observe_static_root(root: &Path) -> anyhow::Result<()> {
+    use pl_tool::skill::SkillCatalog;
+
     let user_source = root.join("user-source");
     let config = SkillsConfig {
         user_dir: user_source.to_string_lossy().into_owned(),
