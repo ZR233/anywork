@@ -2,9 +2,10 @@ use std::fs;
 use std::path::{Component, Path, PathBuf};
 
 use pl_protocol::{PureError, Result};
+use tokio_util::sync::CancellationToken;
 
 use crate::workspace::path_safety::{
-    metadata_if_real, real_directory_entries, validate_existing_path,
+    is_link_or_reparse, metadata_if_real, real_directory_entries, validate_existing_path,
 };
 
 use super::util::category_path;
@@ -168,7 +169,16 @@ pub(super) fn metadata_from_file(
             skill_file.display()
         ))
     })?;
-    let mut metadata = validate_skill_document(&content, None)?;
+    metadata_from_content(&content, skill_file, source_root, source)
+}
+
+pub(super) fn metadata_from_content(
+    content: &str,
+    skill_file: &Path,
+    source_root: &Path,
+    source: SkillSourceKind,
+) -> Result<SkillMetadata> {
+    let mut metadata = validate_skill_document(content, None)?;
     let skill_dir = skill_file.parent().ok_or_else(|| {
         let display = skill_file.display();
         PureError::ConfigError(format!("invalid skill path: {display}"))
@@ -203,28 +213,43 @@ pub(super) struct SkillFileScan {
     pub warnings: Vec<String>,
 }
 
-pub(super) fn scan_skill_files(root: &Path) -> SkillFileScan {
+pub(super) fn scan_skill_files(
+    root: &Path,
+    cancellation: &CancellationToken,
+) -> Result<SkillFileScan> {
+    ensure_scan_active(cancellation)?;
     let mut files = Vec::new();
-    let root_metadata = match metadata_if_real(root) {
+    let root_metadata = match fs::symlink_metadata(root) {
         Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(SkillFileScan {
+                files,
+                complete: true,
+                warnings: Vec::new(),
+            });
+        }
         Err(error) => {
-            return SkillFileScan {
+            return Ok(SkillFileScan {
                 files,
                 complete: false,
                 warnings: vec![format!(
                     "failed to inspect skill root {}: {error}",
                     root.display()
                 )],
-            };
+            });
         }
     };
-    if !root_metadata.is_some_and(|metadata| metadata.is_dir()) {
-        return SkillFileScan {
+    if !root_metadata.is_dir() || is_link_or_reparse(&root_metadata) {
+        return Ok(SkillFileScan {
             files,
-            complete: true,
-            warnings: Vec::new(),
-        };
+            complete: false,
+            warnings: vec![format!(
+                "skill root is not a real directory: {}",
+                root.display()
+            )],
+        });
     }
+    let traversal_cancellation = cancellation.clone();
     let mut builder = ignore::WalkBuilder::new(root);
     builder
         .max_depth(Some(super::MAX_SKILL_SCAN_DEPTH + 1))
@@ -232,17 +257,19 @@ pub(super) fn scan_skill_files(root: &Path) -> SkillFileScan {
         .follow_links(false)
         .require_git(false)
         .sort_by_file_name(std::cmp::Ord::cmp)
-        .filter_entry(|entry| {
-            entry.depth() == 0
-                || entry
-                    .path()
-                    .file_name()
-                    .is_some_and(|name| name == SKILL_FILE_NAME)
-                || !should_skip_dir(entry.path())
+        .filter_entry(move |entry| {
+            !traversal_cancellation.is_cancelled()
+                && (entry.depth() == 0
+                    || entry
+                        .path()
+                        .file_name()
+                        .is_some_and(|name| name == SKILL_FILE_NAME)
+                    || !should_skip_dir(entry.path()))
         });
     let mut complete = true;
     let mut warnings = Vec::new();
     for entry in builder.build() {
+        ensure_scan_active(cancellation)?;
         let entry = match entry {
             Ok(entry) => entry,
             Err(error) => {
@@ -270,13 +297,16 @@ pub(super) fn scan_skill_files(root: &Path) -> SkillFileScan {
             }
         }
     }
+    ensure_scan_active(cancellation)?;
     files.sort();
     files.dedup();
     let mut top_level_skills = Vec::new();
     for skill_file in files {
+        ensure_scan_active(cancellation)?;
         let mut nested = false;
         if let Some(mut ancestor) = skill_file.parent().and_then(|directory| directory.parent()) {
             while ancestor.starts_with(root) && ancestor != root {
+                ensure_scan_active(cancellation)?;
                 let ancestor_skill = ancestor.join(SKILL_FILE_NAME);
                 match metadata_if_real(&ancestor_skill) {
                     Ok(Some(metadata)) if metadata.is_file() => {
@@ -302,15 +332,27 @@ pub(super) fn scan_skill_files(root: &Path) -> SkillFileScan {
             top_level_skills.push(skill_file);
         }
     }
-    SkillFileScan {
+    ensure_scan_active(cancellation)?;
+    Ok(SkillFileScan {
         files: top_level_skills,
         complete,
         warnings,
-    }
+    })
 }
 
-pub(super) fn find_skill_files(root: &Path) -> Vec<PathBuf> {
-    scan_skill_files(root).files
+pub(super) fn find_skill_files(root: &Path) -> Result<Vec<PathBuf>> {
+    let scan = scan_skill_files(root, &CancellationToken::new())?;
+    if !scan.complete {
+        return Err(PureError::ConfigError(scan.warnings.join("; ")));
+    }
+    Ok(scan.files)
+}
+
+fn ensure_scan_active(cancellation: &CancellationToken) -> Result<()> {
+    if cancellation.is_cancelled() {
+        return Err(super::provider::cancelled_error());
+    }
+    Ok(())
 }
 
 fn should_skip_dir(path: &Path) -> bool {

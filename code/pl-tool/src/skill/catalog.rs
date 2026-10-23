@@ -46,10 +46,7 @@ impl SkillCatalog {
             .collect::<BTreeSet<_>>();
 
         for source in sources {
-            if !source.root.exists() {
-                continue;
-            }
-            let files = find_skill_files(&source.root);
+            let files = find_skill_files(&source.root)?;
             for skill_file in files {
                 match metadata_from_file(&skill_file, &source.root, source.kind) {
                     Ok(metadata) => {

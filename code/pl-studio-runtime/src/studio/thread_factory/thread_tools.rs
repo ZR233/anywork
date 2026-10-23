@@ -282,50 +282,35 @@ impl StudioThreadFactory {
         let mut skill_catalog = None;
         if config.runtime.tool_capabilities.skills && config.skills.enabled {
             let catalog = if matches!(preparation, CatalogPreparation::Refresh { .. }) {
-                Some(
-                    self.services
-                        .skills
-                        .freeze_thread_catalog(
-                            &root,
-                            &config.skills,
-                            cancellation.clone(),
-                            remote.as_ref().map(|host| Arc::new(host.files.clone())),
-                        )
-                        .await
-                        .map_err(|error| resource_error("refresh Thread skill catalog", error))?,
-                )
+                let catalog = self
+                    .services
+                    .skills
+                    .freeze_thread_catalog(
+                        &root,
+                        &config.skills,
+                        cancellation.clone(),
+                        remote.as_ref().map(|host| Arc::new(host.files.clone())),
+                    )
+                    .await
+                    .map_err(|error| resource_error("refresh Thread skill catalog", error))?;
+                let sources = catalog.discovery_sources();
+                Some((catalog, sources))
             } else {
-                match &remote {
-                    Some(host) => {
-                        self.services
-                            .skills
-                            .discover_remote(
-                                &project.id,
-                                &root,
-                                &config.skills,
-                                cancellation.clone(),
-                                Arc::new(host.files.clone()),
-                            )
-                            .await
-                    }
-                    None => {
-                        self.services
-                            .skills
-                            .discover_with_cancellation(
-                                &project.id,
-                                &root,
-                                &config.skills,
-                                cancellation.clone(),
-                            )
-                            .await
-                    }
-                }
-                .map_err(|error| resource_error("discover child skills", error))?
-                .catalog_for_turn()
+                self.services
+                    .skills
+                    .prepare_thread_catalog(
+                        &project.id,
+                        &root,
+                        &config.skills,
+                        cancellation.clone(),
+                        remote.as_ref().map(|host| Arc::new(host.files.clone())),
+                    )
+                    .await
+                    .map_err(|error| resource_error("discover child skills", error))?
             };
-            if let Some(catalog) = catalog {
+            if let Some((catalog, sources)) = catalog {
                 skill_catalog = Some(catalog.clone());
-                tools = tools.with_skills(catalog.clone())?;
+                tools = tools.with_skills(sources)?;
                 if remote.is_none() {
                     tools = tools.with_local_skill_management(catalog, workspace.clone())?;
                 }

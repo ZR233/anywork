@@ -9,7 +9,9 @@ use crate::studio::ids::unix_seconds;
 use anyhow::{Error, Result};
 use pl_protocol::{ObservedResourceCommand, ObservedResourceKind, StateError, StateOperation};
 use pl_tool::skill::SkillsConfig;
-use pl_tool::skill::{SkillCatalog, SkillProviderRequest};
+use pl_tool::skill::{
+    FrozenSkillCatalog, SkillCatalog, SkillDiscoverySources, SkillProviderRequest,
+};
 
 use super::remote;
 use super::{SkillCatalogRuntime, SkillsStateData, SkillsStateSnapshot};
@@ -57,6 +59,7 @@ impl SkillCatalogRuntime {
             DiscoverySource::Remote(remote_backend),
         )
         .await
+        .map(|(snapshot, _)| snapshot)
     }
 
     pub async fn discover_with_cancellation(
@@ -74,6 +77,26 @@ impl SkillCatalogRuntime {
             DiscoverySource::Local,
         )
         .await
+        .map(|(snapshot, _)| snapshot)
+    }
+
+    /// Publishes preparation discovery while keeping the current source capability separate
+    /// from any last-good catalog retained by the Settings state machine.
+    pub(in crate::studio) async fn prepare_thread_catalog(
+        &self,
+        project_id: &str,
+        workspace_root: &Path,
+        config: &SkillsConfig,
+        cancellation: tokio_util::sync::CancellationToken,
+        remote: Option<Arc<pl_tool::remote::RemoteWorkspaceFileBackend>>,
+    ) -> Result<Option<(Arc<FrozenSkillCatalog>, SkillDiscoverySources)>> {
+        let source = remote.map_or(DiscoverySource::Local, DiscoverySource::Remote);
+        let (snapshot, sources) = self
+            .discover_from_source(project_id, workspace_root, config, cancellation, source)
+            .await?;
+        Ok(snapshot
+            .catalog_for_turn()
+            .map(|catalog| (catalog, sources)))
     }
 
     async fn discover_from_source(
@@ -83,7 +106,7 @@ impl SkillCatalogRuntime {
         config: &SkillsConfig,
         cancellation: tokio_util::sync::CancellationToken,
         source: DiscoverySource,
-    ) -> Result<SkillsStateSnapshot> {
+    ) -> Result<(SkillsStateSnapshot, SkillDiscoverySources)> {
         let _command = tokio::select! {
             biased;
             () = cancellation.cancelled() => anyhow::bail!("Skill discovery cancelled"),
@@ -171,6 +194,7 @@ impl SkillCatalogRuntime {
                 return Err(error);
             }
         };
+        let sources = catalog.discovery_sources();
         let checked_at = unix_seconds();
         if !catalog.snapshot().complete {
             let failed = SkillsStateSnapshot {
@@ -190,7 +214,7 @@ impl SkillCatalogRuntime {
                     .next_state,
             };
             self.publish(project_id, failed.clone()).await;
-            return Ok(failed);
+            return Ok((failed, sources));
         }
         let catalog_revision = previous.state.value().map_or(1, |data| {
             if catalog_content_eq(data.catalog.snapshot(), catalog.snapshot()) {
@@ -217,7 +241,7 @@ impl SkillCatalogRuntime {
                 .next_state,
         };
         self.publish(project_id, snapshot.clone()).await;
-        Ok(snapshot)
+        Ok((snapshot, sources))
     }
 
     /// Settings 变化只标记旧 payload stale，不执行扫描。

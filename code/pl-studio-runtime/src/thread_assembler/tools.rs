@@ -378,13 +378,13 @@ impl StudioThreadTools {
         Ok(self)
     }
 
-    /// Installs skill discovery and read snapshots over a frozen provider directory.
+    /// Installs per-call Skill discovery over fixed workspace/configuration and Providers.
     ///
     /// # Errors
     /// Returns declaration encoding or registry errors.
     pub fn with_skills(
         mut self,
-        catalog: Arc<pl_tool::skill::FrozenSkillCatalog>,
+        sources: pl_tool::skill::SkillDiscoverySources,
     ) -> Result<Self, ThreadAssemblyError> {
         if !self.capabilities.skills {
             return Ok(self);
@@ -394,7 +394,7 @@ impl StudioThreadTools {
             pl_tool::skill::ThreadSkillKind::View,
         ] {
             let declaration = pl_model::runtime::thread_tool_declaration(&kind.declaration())?;
-            let tool = pl_tool::skill::ThreadSkillTool::new(catalog.clone(), kind);
+            let tool = pl_tool::skill::ThreadSkillTool::new(sources.clone(), kind);
             self.registrations.push(tool.registration(declaration)?);
         }
         Ok(self)

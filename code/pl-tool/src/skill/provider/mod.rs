@@ -5,7 +5,6 @@ use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock, Weak};
 
-use futures::future::join_all;
 use pl_protocol::{PureError, Result};
 use pl_protocol::{SkillActivation, SkillActivationCause, SkillActivationResourceBase};
 use serde::{Deserialize, Serialize};
@@ -15,8 +14,10 @@ use super::util::expand_home;
 use super::{SkillCatalog, SkillMetadata, SkillSourceKind};
 use crate::skill::SkillsConfig;
 
+mod discovery;
 mod filesystem;
 
+pub use discovery::SkillDiscoverySources;
 pub use filesystem::{FileSystemSkillProvider, SkillDirectorySource};
 
 /// Stable identity of a process-registered Skill provider.
@@ -136,7 +137,18 @@ pub trait SkillProvider: Send + Sync + fmt::Debug {
     /// Returns the unique process-level Provider identity.
     fn id(&self) -> &SkillProviderId;
 
+    /// Identifies this Provider's complete, non-empty, non-secret in-process discovery capability.
+    ///
+    /// The identity covers the implementation, trust roots and connection boundary, remains
+    /// constant for this instance, and is stable across equivalent source reassembly. A new
+    /// implementation or permission boundary must use a different identity even when `id()`
+    /// is unchanged. File contents, candidates, cancellation and invalidation generations are
+    /// not capability changes. Fixed request fields are included separately by the registry.
+    fn discovery_identity(&self) -> String;
+
     /// Lists Provider-owned candidates for one workspace observation.
+    /// Cancellation is cooperative: settle owned discovery workers before returning, rather
+    /// than detaching them when the request token is cancelled.
     fn list<'a>(
         &'a self,
         request: SkillProviderRequest,
@@ -253,115 +265,34 @@ impl SkillRegistry {
 
     /// Discovers providers in parallel and retries once if registrations change.
     ///
+    /// The result retains the full source capability independently of its winners. Provider
+    /// failures are represented by `snapshot().complete == false` and warnings so product
+    /// catalog owners can retain their last-good projection. Tool calls instead use
+    /// [`SkillDiscoverySources::discover`], which rejects incomplete observations.
+    ///
     /// # Errors
     ///
     /// Returns an error when discovery is cancelled or its workspace/configuration is invalid.
     pub async fn discover(&self, request: SkillProviderRequest) -> Result<FrozenSkillCatalog> {
-        let first = self.discover_generation(request.clone()).await?;
-        if first.generation == self.inner.generation.load(Ordering::Acquire) {
-            return Ok(first.catalog);
+        let generation = self.inner.generation.load(Ordering::Acquire);
+        let sources = SkillDiscoverySources::capture(self.inner.clone(), &request)?;
+        let (_, first) = sources
+            .discover_generation(request.cancellation.clone())
+            .await?;
+        if generation == self.inner.generation.load(Ordering::Acquire) {
+            return Ok(first);
         }
-        let mut second = self.discover_generation(request).await?;
-        if second.generation != self.inner.generation.load(Ordering::Acquire) {
-            second.catalog.snapshot.complete = false;
+        let generation = self.inner.generation.load(Ordering::Acquire);
+        let sources = SkillDiscoverySources::capture(self.inner.clone(), &request)?;
+        let (_, mut second) = sources.discover_generation(request.cancellation).await?;
+        if generation != self.inner.generation.load(Ordering::Acquire) {
+            second.snapshot.complete = false;
             second
-                .catalog
                 .snapshot
                 .warnings
                 .push("skill provider registry changed repeatedly during discovery".to_string());
         }
-        Ok(second.catalog)
-    }
-
-    async fn discover_generation(
-        &self,
-        request: SkillProviderRequest,
-    ) -> Result<DiscoveryGeneration> {
-        if request.cancellation.is_cancelled() {
-            return Err(cancelled_error());
-        }
-        let generation = self.inner.generation.load(Ordering::Acquire);
-        let providers = self
-            .inner
-            .providers
-            .read()
-            .map_err(|_| {
-                PureError::ConfigError("skill provider registry lock poisoned".to_string())
-            })?
-            .iter()
-            .map(|registered| registered.provider.clone())
-            .collect::<Vec<_>>();
-        let observations = join_all(providers.iter().map(|provider| {
-            let request = request.clone();
-            async move {
-                let result = provider.list(request).await;
-                (provider.clone(), result)
-            }
-        }))
-        .await;
-        if request.cancellation.is_cancelled() {
-            return Err(cancelled_error());
-        }
-        let project_dir = super::project_skills_dir(&request.workspace_root, &request.config)?;
-        let mut warnings = Vec::new();
-        let mut complete = true;
-        let mut winners: BTreeMap<String, FrozenSkillEntry> = BTreeMap::new();
-        for (provider_order, (provider, observation)) in observations.into_iter().enumerate() {
-            let observation = match observation {
-                Ok(observation) => observation,
-                Err(error) => {
-                    complete = false;
-                    warnings.push(format!(
-                        "skill provider {} failed: {error}",
-                        provider.id().as_str()
-                    ));
-                    SkillProviderObservation::empty()
-                }
-            };
-            complete &= observation.complete;
-            warnings.extend(observation.warnings);
-            for candidate in observation.candidates {
-                if let Err(error) = validate_provider_candidate(provider.id(), &candidate) {
-                    warnings.push(format!(
-                        "skill provider {} returned an invalid candidate: {error}",
-                        provider.id().as_str()
-                    ));
-                    continue;
-                }
-                let key = candidate.summary.name.to_ascii_lowercase();
-                let ordering = (candidate.rank, provider_order, candidate.local_order);
-                let replace = winners
-                    .get(&key)
-                    .is_none_or(|existing| ordering < existing.ordering);
-                if replace {
-                    winners.insert(
-                        key,
-                        FrozenSkillEntry {
-                            ordering,
-                            candidate,
-                            provider: provider.clone(),
-                        },
-                    );
-                }
-            }
-        }
-        let skills = winners
-            .values()
-            .map(|entry| SkillMetadata::from(entry.candidate.summary.clone()))
-            .collect();
-        Ok(DiscoveryGeneration {
-            generation,
-            catalog: FrozenSkillCatalog {
-                snapshot: SkillCatalog {
-                    project_dir,
-                    skills,
-                    warnings,
-                    complete,
-                },
-                entries: winners,
-                invalidator: self.invalidator(),
-            },
-        })
+        Ok(second)
     }
 }
 
@@ -386,11 +317,6 @@ impl SkillProviderInvalidator {
     }
 }
 
-struct DiscoveryGeneration {
-    generation: u64,
-    catalog: FrozenSkillCatalog,
-}
-
 #[derive(Clone)]
 struct FrozenSkillEntry {
     ordering: (u16, usize, usize),
@@ -398,12 +324,12 @@ struct FrozenSkillEntry {
     provider: Arc<dyn SkillProvider>,
 }
 
-/// Turn-local immutable catalog retaining Provider locators and revisions.
+/// One immutable observation retaining winner Provider locators and its separate source capability.
 #[derive(Clone)]
 pub struct FrozenSkillCatalog {
     snapshot: SkillCatalog,
     entries: BTreeMap<String, FrozenSkillEntry>,
-    invalidator: SkillProviderInvalidator,
+    sources: SkillDiscoverySources,
 }
 
 impl fmt::Debug for FrozenSkillCatalog {
@@ -424,19 +350,9 @@ impl PartialEq for FrozenSkillCatalog {
 impl Eq for FrozenSkillCatalog {}
 
 impl FrozenSkillCatalog {
-    /// Creates an empty complete catalog for a validated project directory.
-    pub fn empty(project_dir: PathBuf) -> Self {
-        let registry = SkillRegistry::new();
-        Self {
-            snapshot: SkillCatalog {
-                project_dir,
-                skills: Vec::new(),
-                warnings: Vec::new(),
-                complete: true,
-            },
-            entries: BTreeMap::new(),
-            invalidator: registry.invalidator(),
-        }
+    /// Returns the complete fixed source capability without scanning, including zero-candidate Providers.
+    pub fn discovery_sources(&self) -> SkillDiscoverySources {
+        self.sources.clone()
     }
 
     /// Returns the serializable catalog projection.
@@ -446,7 +362,7 @@ impl FrozenSkillCatalog {
 
     /// Invalidates the Provider registry that produced this catalog.
     pub fn invalidate(&self) {
-        self.invalidator.invalidate();
+        self.sources.invalidate();
     }
 
     /// Finds a winning Skill by case-insensitive name.
@@ -475,11 +391,20 @@ impl FrozenSkillCatalog {
             PureError::ConfigError(format!("skill not found in frozen catalog: {name}"))
         })?;
         ensure_invocation_allowed(&entry.candidate.summary, invocation)?;
-        let loaded = entry.provider.load(&entry.candidate, cancellation).await?;
+        let loaded = entry
+            .provider
+            .load(&entry.candidate, cancellation)
+            .await
+            .inspect_err(|_| {
+                self.sources.invalidate();
+            })?;
         if !loaded.summary.name.eq_ignore_ascii_case(name)
             || loaded.summary.invocation != entry.candidate.summary.invocation
+            || loaded.summary.provider_id != entry.candidate.summary.provider_id
+            || loaded.summary.source != entry.candidate.summary.source
+            || loaded.summary.resource_base != entry.candidate.summary.resource_base
         {
-            self.invalidator.invalidate();
+            self.sources.invalidate();
             return Err(PureError::ConfigError(format!(
                 "skill identity or invocation policy changed since discovery: {name}"
             )));
@@ -758,6 +683,6 @@ pub(super) fn external_source_root(path: &str) -> Result<PathBuf> {
     expand_home(path)
 }
 
-fn cancelled_error() -> PureError {
+pub(super) fn cancelled_error() -> PureError {
     PureError::ConfigError("skill provider operation cancelled".to_string())
 }

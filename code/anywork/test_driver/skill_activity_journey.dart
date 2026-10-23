@@ -23,7 +23,10 @@ import 'realtime_journey.dart'
     show isBusy, isDurableSettled, turnFailed, turnId, turnStatus, workspaceOf;
 import 'sidebar_navigation.dart';
 import 'timeline_observation.dart';
+import 'tool_probe.dart';
 import 'window_control.dart';
+
+part 'skill_activity_dynamic.dart';
 
 const _phaseFirst = 'first';
 const _phaseReopen = 'reopen';
@@ -190,6 +193,7 @@ class SkillActivityJourney {
     await capture('project-opened');
     await _firstTurn();
     await _mixedTurn();
+    await _DynamicSkillActivity(this).run();
     await _manualCompactionFailure();
     await _manualCompactionSuccess();
     await _reloadTurn();
@@ -543,11 +547,16 @@ class SkillActivityJourney {
           });
         case 'toolCall':
           final tool = item.tool;
-          if (tool == null || tool.name != 'skill_view') continue;
+          if (tool == null ||
+              (tool.name != 'skill_view' &&
+                  !_dynamicCallIds.contains(tool.callId) &&
+                  !_isDynamicWaitCallId(tool.callId))) {
+            continue;
+          }
           fingerprint.add(<String, Object?>{
             'id': item.id,
             'ordinal': item.ordinal,
-            'kind': 'skill_view',
+            'kind': tool.name,
             'status': item.status,
             'callId': tool.callId,
             'arguments': tool.arguments,
@@ -591,6 +600,9 @@ class SkillActivityJourney {
     'skill-activity-short',
     'skill-activity-long-name-for-narrow-window-layout-review',
     'skill-activity-missing',
+    _dynamicViewedName,
+    _dynamicListedName,
+    _dynamicBodyMarker,
   ];
 
   List<String> _resultMarkers(String? result) => [
@@ -626,10 +638,17 @@ class SkillActivityJourney {
       for (final call in _skillViewCalls(timeline))
         if (call.status == 'failed') call,
     ];
-    if (failed.length != 1) {
+    final failedCallIds = [for (final item in failed) item.tool!.callId]
+      ..sort();
+    const expectedFailures = [
+      'skill-dynamic-view-deleted-call',
+      'skill-dynamic-view-invalid-call',
+      'skill-mixed-missing-call',
+    ];
+    if (jsonEncode(failedCallIds) != jsonEncode(expectedFailures)) {
       throw StateError(
-        'reopened history must keep exactly one failed skill_view call: '
-        '${failed.length}',
+        'reopened history must keep the original missing load and both '
+        'dynamic failed loads with their exact identities: $failedCallIds',
       );
     }
   }
@@ -935,7 +954,10 @@ class SkillActivityJourney {
     _requireNames(skills, const [
       'skill-activity-long-name-for-narrow-window-layout-review',
     ], 'post-compaction reload activation');
-    final timeline = _timeline(settled);
+    // Optional receipt waits add real canonical inference/tool items. Load the
+    // whole history before preserving the original exact long-load count;
+    // a bounded live tail is no substitute for the earlier mixed Turn.
+    final timeline = await _loadCompleteHistory();
     // Two long-name loads now exist; the newest one is this Turn's activation,
     // and the earlier one must stay readable as its own history item.
     final long = _skillItems(
@@ -1936,7 +1958,11 @@ class SkillActivityJourney {
     await stageFile.writeAsString(value);
   }
 
-  Future<void> capture(String name, {bool tree = false}) async {
+  Future<void> capture(
+    String name, {
+    bool tree = false,
+    Map<String, Object?>? evidence,
+  }) async {
     await mark(name);
     final state = await snapshot();
     final record = <String, Object?>{
@@ -1944,9 +1970,9 @@ class SkillActivityJourney {
       'at': DateTime.now().toUtc().toIso8601String(),
       'summary': _summarize(state),
     };
-    await File(
-      '${output.path}/skill-activity-$name.json',
-    ).writeAsString('${const JsonEncoder.withIndent('  ').convert(state)}\n');
+    await File('${output.path}/skill-activity-$name.json').writeAsString(
+      '${const JsonEncoder.withIndent('  ').convert(evidence ?? state)}\n',
+    );
     try {
       await File('${output.path}/skill-activity-$name.png')
           .writeAsBytes(await driver.screenshot());
