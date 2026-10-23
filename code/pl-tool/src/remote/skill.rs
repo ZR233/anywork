@@ -40,6 +40,10 @@ impl SkillProvider for RemoteSkillProvider {
         &self.id
     }
 
+    fn discovery_identity(&self) -> String {
+        self.backend.binding_identity()
+    }
+
     fn list<'a>(
         &'a self,
         request: SkillProviderRequest,
@@ -81,7 +85,10 @@ impl SkillProvider for RemoteSkillProvider {
                 {
                     continue;
                 }
-                match self.read_candidate(&root, entry.path, local_order).await {
+                // A read failure is not evidence that this Skill is invalid or absent.
+                // Only successfully read, malformed documents can be skipped as warnings.
+                let content = self.read_text(entry.path.clone()).await?;
+                match self.parse_candidate(&root, entry.path, &content, local_order) {
                     Ok(candidate)
                         if !disabled.contains(&candidate.summary.name.to_ascii_lowercase())
                             && remote_platform_matches(&candidate.summary.platforms) =>
@@ -143,14 +150,14 @@ impl SkillProvider for RemoteSkillProvider {
 }
 
 impl RemoteSkillProvider {
-    async fn read_candidate(
+    fn parse_candidate(
         &self,
         root: &str,
         skill_file: String,
+        content: &str,
         local_order: usize,
     ) -> Result<SkillCandidate> {
-        let content = self.read_text(skill_file.clone()).await?;
-        let mut metadata = validate_skill_document(&content, None)?;
+        let mut metadata = validate_skill_document(content, None)?;
         let locator = Path::new(&skill_file)
             .parent()
             .and_then(Path::to_str)
@@ -169,7 +176,7 @@ impl RemoteSkillProvider {
         Ok(SkillCandidate {
             summary: SkillSummary::from(metadata),
             locator,
-            revision: content_revision(&content),
+            revision: content_revision(content),
             rank: 0,
             local_order,
         })

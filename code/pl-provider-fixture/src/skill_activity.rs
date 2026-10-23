@@ -2,6 +2,8 @@
 //!
 //! The journey loads real synthetic skills next to ordinary tools, forces one
 //! failing and one succeeding manual context compaction, then reloads a skill.
+//! A separate Turn creates, discovers, deletes and invalidates project Skills
+//! through real file tools; the fixture only checks delivered result identities.
 //! Phase two reopens the same home with a one-token automatic threshold: the first
 //! Turn's automatic compaction must really commit and clear the restored
 //! activation, and the last Turn loads a Skill again before its own compaction
@@ -18,6 +20,8 @@ pub const PROMPT_FIRST: &str = "skill-activity-first";
 /// Phase-one mixed Turn: repeated loads, the long name, a support file and a
 /// failing load in one Turn.
 pub const PROMPT_MIXED: &str = "skill-activity-mixed";
+/// Phase-one same-Turn discovery after real project file mutations.
+pub const PROMPT_DYNAMIC: &str = "skill-activity-dynamic";
 /// Phase-one reload after the successful manual compaction.
 pub const PROMPT_RELOAD: &str = "skill-activity-reload";
 /// Phase-two Turn that the Driver cancels while the automatic compaction is
@@ -45,6 +49,15 @@ pub const SUPPORT_MARKER: &str = "skill-activity-support-marker";
 pub const BODY_MARKER_SHORT: &str = "skill-activity-body-alpha";
 pub const BODY_MARKER_LONG: &str = "skill-activity-body-beta";
 
+/// The first dynamic Skill must be viewable before any refreshed list.
+pub const DYNAMIC_DELETED: &str = "skill-activity-dynamic-view";
+/// Added after that view, so only the next list can discover this Skill.
+pub const DYNAMIC_INVALID: &str = "skill-activity-dynamic-list";
+const DYNAMIC_CATEGORY: &str = "skill-activity-dynamic";
+const DYNAMIC_BODY: &str = "skill-activity-dynamic-body-gamma";
+/// The invalid file remains present, unlike the other dynamic Skill's directory.
+pub const DYNAMIC_INVALID_MARKER: &str = "skill-activity-invalid-document";
+
 /// The local context-compaction requirement the runtime sends as the last user
 /// message of a compaction request (`pl-studio-runtime` compaction wording).
 pub const COMPACTION_PROMPT: &str = "请根据以上完整上下文生成压缩摘要。";
@@ -55,6 +68,7 @@ pub const EXEC_MARKER: &str = "skill-activity-exec-marker";
 /// Answers the journey asserts by exact text.
 pub const ANSWER_FIRST: &str = "skill-activity first answer";
 pub const ANSWER_MIXED: &str = "skill-activity mixed answer";
+pub const ANSWER_DYNAMIC: &str = "skill-activity dynamic answer";
 pub const ANSWER_RELOAD: &str = "skill-activity reload answer";
 pub const ANSWER_REOPEN: &str = "skill-activity reopen answer";
 
@@ -67,6 +81,7 @@ pub fn script() -> Vec<Step> {
     // candidates tolerate a runtime that names the session from a newer input.
     let first_title = session_title_prompt(PROMPT_FIRST);
     let mixed_title = session_title_prompt(PROMPT_MIXED);
+    let dynamic_title = session_title_prompt(PROMPT_DYNAMIC);
     let reload_title = session_title_prompt(PROMPT_RELOAD);
     let cancel_title = session_title_prompt(PROMPT_CANCEL);
     let reopen_title = session_title_prompt(PROMPT_REOPEN);
@@ -186,6 +201,9 @@ pub fn script() -> Vec<Step> {
         )
     });
     script.optional_title(&mixed_title);
+    script.optional_title(&dynamic_title);
+    dynamic_turn(&mut script);
+    script.optional_title(&dynamic_title);
     script.optional_title(&reload_title);
 
     // Manual compaction that fails: the fixture answers the summarization
@@ -330,6 +348,164 @@ pub fn script() -> Vec<Step> {
     script.finish()
 }
 
+/// Ten serial, real calls in one Turn. File tools do not know about Skill
+/// discovery, so a frozen-catalog implementation fails at the first direct
+/// view; a list that reuses the view's snapshot misses the second new Skill.
+fn dynamic_turn(script: &mut RealtimeScript) {
+    let valid = |name: &str, body: &str| {
+        format!(
+            "---\nname: {name}\ndescription: Synthetic same-Turn discovery skill.\n\
+             category: {DYNAMIC_CATEGORY}\n---\n\n# {name}\n\n{body}\n"
+        )
+    };
+    let invalid = format!(
+        "---\nname: {DYNAMIC_INVALID}\ndescription: Synthetic invalid skill.\n\
+         category: {DYNAMIC_CATEGORY}\ndisable-model-invocation: not-a-boolean\n\
+         ---\n\n{DYNAMIC_INVALID_MARKER}\n"
+    );
+    let calls = [
+        (Call::list("skill-dynamic-before"), "\"count\":0"),
+        (
+            Call::write_skill(
+                "skill-dynamic-create-view",
+                DYNAMIC_DELETED,
+                &valid(DYNAMIC_DELETED, DYNAMIC_BODY),
+                "create",
+            ),
+            "Wrote",
+        ),
+        (
+            Call::skill("skill-dynamic-view-new", DYNAMIC_DELETED, None),
+            DYNAMIC_BODY,
+        ),
+        (
+            Call::write_skill(
+                "skill-dynamic-create-list",
+                DYNAMIC_INVALID,
+                &valid(DYNAMIC_INVALID, "skill-activity-dynamic-body-delta"),
+                "create",
+            ),
+            "Wrote",
+        ),
+        (Call::list("skill-dynamic-added"), DYNAMIC_INVALID),
+        (
+            Call::new(
+                "skill-dynamic-delete",
+                "delete_path",
+                json!({
+                    "path": format!(".agents/skills/{DYNAMIC_DELETED}"),
+                    "mode": "recursiveDirectory",
+                }),
+            ),
+            "Deleted",
+        ),
+        (
+            Call::write_skill(
+                "skill-dynamic-invalidate",
+                DYNAMIC_INVALID,
+                &invalid,
+                "overwrite",
+            ),
+            "Wrote",
+        ),
+        (Call::list("skill-dynamic-empty"), "\"count\":0"),
+        (
+            Call::skill("skill-dynamic-view-deleted", DYNAMIC_DELETED, None),
+            DYNAMIC_DELETED,
+        ),
+        (
+            Call::skill("skill-dynamic-view-invalid", DYNAMIC_INVALID, None),
+            DYNAMIC_INVALID,
+        ),
+    ];
+    let mut previous: Option<(String, &'static str, &str)> = None;
+    for (call, marker) in calls {
+        let call_id = call.call_id.clone();
+        let tool_id = call.name;
+        if let Some((call_id, tool_id, _)) = &previous {
+            optional_dynamic_wait(script, call_id, tool_id);
+        }
+        script.add(|step| {
+            let reply = Reply::Sse(responses_tool_calls(
+                "skill-dynamic-tools",
+                "fixture-model",
+                &Call::refs(&[call]),
+            ));
+            match previous {
+                Some((call_id, tool_id, marker)) => {
+                    completion_step(call_id, tool_id, marker, step, reply)
+                }
+                None => Step::prompt(Protocol::ResponsesHttp, PROMPT_DYNAMIC, step, reply),
+            }
+        });
+        previous = Some((call_id, tool_id, marker));
+    }
+    script.add(|step| {
+        let (call_id, tool_id, marker) = previous.expect("the dynamic journey declares real calls");
+        completion_step(
+            call_id,
+            tool_id,
+            marker,
+            step,
+            Reply::Sse(responses_text(
+                ANSWER_DYNAMIC,
+                "skill-dynamic-answer",
+                "fixture-model",
+            )),
+        )
+    });
+}
+
+/// Only a real running receipt can select this optional path. A single bounded
+/// solo wait observes that receipt's exact task; the required completion step
+/// still checks the terminal output before any following business call.
+fn optional_dynamic_wait(script: &mut RealtimeScript, call_id: &str, tool_id: &str) {
+    // Skill views mutate Thread extensions and are always foreground.
+    if tool_id == "skill_view" {
+        return;
+    }
+    script.add(|step| {
+        let wait = Call::new(
+            &format!("{call_id}-wait"),
+            "wait",
+            serde_json::from_str(&realtime_wait_arguments(&[call_id]))
+                .expect("the shared wait argument builder emits JSON"),
+        );
+        Step::tool_output(
+            Protocol::ResponsesHttp,
+            call_id,
+            tool_running_receipt(call_id),
+            step,
+            Reply::Sse(responses_tool_calls(
+                "skill-dynamic-wait",
+                "fixture-model",
+                &Call::refs(&[wait]),
+            )),
+        )
+        .optional()
+    });
+}
+
+fn completion_step(
+    call_id: String,
+    tool_id: &str,
+    marker: &str,
+    step: usize,
+    reply: Reply,
+) -> Step {
+    Step {
+        protocol: Protocol::ResponsesHttp,
+        request: RequestMatch::ToolCompletion {
+            call_id,
+            tool_id: tool_id.to_owned(),
+            marker: marker.to_owned(),
+            step,
+        },
+        reply,
+        optional: false,
+    }
+}
+
 /// One assistant tool call with owned identity, converted at the call site.
 struct Call {
     item_id: String,
@@ -351,6 +527,22 @@ impl Call {
 
     fn exec(slug: &str, command: &str) -> Self {
         Self::new(slug, "exec", json!({ "command": command }))
+    }
+
+    fn list(slug: &str) -> Self {
+        Self::new(slug, "skills_list", json!({ "category": DYNAMIC_CATEGORY }))
+    }
+
+    fn write_skill(slug: &str, name: &str, content: &str, mode: &str) -> Self {
+        Self::new(
+            slug,
+            "write_file",
+            json!({
+                "path": format!(".agents/skills/{name}/SKILL.md"),
+                "content": content,
+                "mode": mode,
+            }),
+        )
     }
 
     fn new(slug: &str, name: &'static str, arguments: Value) -> Self {

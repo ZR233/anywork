@@ -53,6 +53,9 @@ pub use skill_activity::{
     ANSWER_RELOAD as SKILL_ACTIVITY_ANSWER_RELOAD, ANSWER_REOPEN as SKILL_ACTIVITY_ANSWER_REOPEN,
     BODY_MARKER_LONG as SKILL_ACTIVITY_BODY_LONG, BODY_MARKER_SHORT as SKILL_ACTIVITY_BODY_SHORT,
     COMPACTION_PROMPT as SKILL_ACTIVITY_COMPACTION_PROMPT,
+    DYNAMIC_DELETED as SKILL_ACTIVITY_DYNAMIC_DELETED,
+    DYNAMIC_INVALID as SKILL_ACTIVITY_DYNAMIC_INVALID,
+    DYNAMIC_INVALID_MARKER as SKILL_ACTIVITY_DYNAMIC_INVALID_MARKER,
     EXEC_MARKER as SKILL_ACTIVITY_EXEC_MARKER, PROMPT_CANCEL as SKILL_ACTIVITY_PROMPT_CANCEL,
     PROMPT_FIRST as SKILL_ACTIVITY_PROMPT_FIRST, PROMPT_MIXED as SKILL_ACTIVITY_PROMPT_MIXED,
     PROMPT_RELOAD as SKILL_ACTIVITY_PROMPT_RELOAD, PROMPT_REOPEN as SKILL_ACTIVITY_PROMPT_REOPEN,
@@ -1099,6 +1102,15 @@ pub enum RequestMatch {
     /// apart from "a request arrived early".
     ToolOutput {
         call_id: String,
+        marker: String,
+        step: usize,
+    },
+    /// One terminal tool result, either returned directly or delivered after
+    /// its running receipt. Both paths require the same real result marker;
+    /// the background path also requires this exact task/tool success notice.
+    ToolCompletion {
+        call_id: String,
+        tool_id: String,
         marker: String,
         step: usize,
     },
@@ -3749,6 +3761,16 @@ fn match_step(state: &AppState, method: &str, path: &str, body: &Value) -> Resul
                         marker,
                         step,
                     } => *step == index && tool_output_contains(body, call_id, marker),
+                    RequestMatch::ToolCompletion {
+                        call_id,
+                        tool_id,
+                        marker,
+                        step,
+                    } => {
+                        *step == index
+                            && (tool_output_contains(body, call_id, marker)
+                                || tool_delivery_contains(body, call_id, tool_id, marker))
+                    }
                 }
         });
     let accepted = selected.is_some();
@@ -3790,6 +3812,9 @@ fn reject_diagnostic(
         Some(RequestMatch::ToolOutput {
             call_id, marker, ..
         }) => ("tool_output", Some(format!("{call_id}:{marker}"))),
+        Some(RequestMatch::ToolCompletion {
+            call_id, marker, ..
+        }) => ("tool_completion", Some(format!("{call_id}:{marker}"))),
         Some(RequestMatch::Exact(_) | RequestMatch::Replay { .. }) => ("exact", None),
         None => ("none", None),
     };
@@ -3803,14 +3828,32 @@ fn reject_diagnostic(
         Some(RequestMatch::ToolOutput {
             call_id, marker, ..
         }) => tool_output_contains(body, call_id, marker),
+        Some(RequestMatch::ToolCompletion {
+            call_id,
+            tool_id,
+            marker,
+            ..
+        }) => {
+            tool_output_contains(body, call_id, marker)
+                || tool_delivery_contains(body, call_id, tool_id, marker)
+        }
         Some(RequestMatch::Exact(_) | RequestMatch::Replay { .. }) | None => false,
     };
     let delivery_seen = match expected.map(|step| step.request.base()) {
         Some(RequestMatch::Delivery { marker, .. }) => user_messages_contain(body, marker),
+        Some(RequestMatch::ToolCompletion {
+            call_id,
+            tool_id,
+            marker,
+            ..
+        }) => tool_delivery_contains(body, call_id, tool_id, marker),
         _ => false,
     };
     let tool_output_seen = match expected.map(|step| step.request.base()) {
         Some(RequestMatch::ToolOutput {
+            call_id, marker, ..
+        }) => tool_output_contains(body, call_id, marker),
+        Some(RequestMatch::ToolCompletion {
             call_id, marker, ..
         }) => tool_output_contains(body, call_id, marker),
         _ => false,
@@ -3819,7 +3862,10 @@ fn reject_diagnostic(
         "no_remaining_step"
     } else if expected_method.as_deref() != Some(method) || expected_path.as_deref() != Some(path) {
         "route_mismatch"
-    } else if expected_kind == "tool_output" && !tool_output_seen {
+    } else if matches!(expected_kind, "tool_output" | "tool_completion")
+        && !tool_output_seen
+        && !delivery_seen
+    {
         "tool_output_missing"
     } else if !actual_prompt_present {
         "unresolvable_prompt"
@@ -3887,6 +3933,41 @@ fn user_text(item: &Value) -> Option<&str> {
     content
         .as_str()
         .or_else(|| content.as_array()?.first()?.get("text")?.as_str())
+}
+
+/// The terminal notice and actual output must belong to the same delivered
+/// user message. Do not combine an unrelated task's payload with this task's
+/// notice, and do not accept a running receipt as completion.
+fn tool_delivery_contains(body: &Value, call_id: &str, tool_id: &str, marker: &str) -> bool {
+    if !tool_output_contains(body, call_id, &tool_running_receipt(call_id)) {
+        return false;
+    }
+    let notice = format!("Task task:{call_id} for tool {tool_id} finished: Succeeded.");
+    body.get("input")
+        .or_else(|| body.get("messages"))
+        .and_then(Value::as_array)
+        .is_some_and(|items| {
+            items.iter().any(|item| {
+                if item.get("role").and_then(Value::as_str) != Some("user")
+                    || !user_text(item).is_some_and(|text| text.starts_with(&notice))
+                {
+                    return false;
+                }
+                match item.get("content") {
+                    Some(Value::String(text)) => text.contains(marker),
+                    Some(Value::Array(parts)) => parts.iter().any(|part| {
+                        part.get("text")
+                            .and_then(Value::as_str)
+                            .is_some_and(|text| text.contains(marker))
+                    }),
+                    _ => false,
+                }
+            })
+        })
+}
+
+fn tool_running_receipt(call_id: &str) -> String {
+    format!("Task task:{call_id} is running. Its result will be delivered when execution finishes.")
 }
 
 /// Whether the request carries the committed tool output for `call_id`.
