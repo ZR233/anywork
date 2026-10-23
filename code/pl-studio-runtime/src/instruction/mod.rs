@@ -1,16 +1,20 @@
-//! Instruction profiles, assembly, and model-context projection.
+//! Agent/Mode instruction sources, unified assembly, and model-context projection.
+//!
+//! Agent definitions and Mode instructions are recorded as separate sources inside one frozen
+//! snapshot. Current readers only accept the current structure; `migration` is the single boundary
+//! that interprets obsolete payloads during recovery.
 
 mod assembler;
-mod profile;
+mod migration;
 mod snapshot;
+mod structure;
 mod types;
 
 pub use assembler::InstructionAssembler;
-pub use profile::InstructionProfile;
+pub(crate) use migration::{migrate_saved_representation, saved_mode_instruction};
+pub(crate) use snapshot::{decode_snapshot, encode_snapshot};
 pub use types::{
-    ExecutionInstructionProfile, InstructionAssemblyRequest, InstructionBlock, InstructionSnapshot,
-    InstructionSource, InstructionSourceKind, SkillSuggestionRequest,
+    InstructionAssemblyRequest, InstructionBlock, InstructionSnapshot, InstructionSource,
+    InstructionSourceKind, ModeInstructionProfile,
 };
-
-mod bundle;
-pub use bundle::InstructionBundle;
+pub(crate) use types::{SNAPSHOT_FORMAT, SNAPSHOT_VERSION};

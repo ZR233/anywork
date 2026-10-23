@@ -136,7 +136,7 @@ impl ConfigRuntime {
         let observations = model_catalog::reconcile(store.paths(), &desired, &BTreeMap::new())?;
         let config = effective_runtime_config(&desired, &observations)?;
         config.validate_declarations()?;
-        super::AgentProfileCatalog::validate_for_startup(store.paths(), &config)?;
+        super::AgentProfileCatalog::validate_for_startup(store.paths())?;
         // canonical Agent Profiles 资源：启动卸载一次扫描，之后查询/订阅只读缓存。
         let profiles = AgentProfilesResource::new(store.paths(), &config);
         let (modes, mode_documents) = mode_definitions::initialize(store.paths())
@@ -225,7 +225,11 @@ impl ConfigRuntime {
 
     /// 从已发布缓存取得启用 Profile 的执行视图；不扫描文件。
     pub fn agent_profiles(&self) -> ConfigRuntimeResult<super::AgentProfileCatalog> {
-        Ok(self.profiles.read().catalog.enabled_only())
+        Ok(self
+            .profiles
+            .read()
+            .catalog
+            .executable(pl_protocol::DelegationMode::Profile)?)
     }
 
     /// 读取已发布的 Agent Profiles 资源快照（完整配置与诊断）；纯缓存读取。
@@ -286,8 +290,17 @@ impl ConfigRuntime {
                 "planner is reserved for the main agent; this child role is retired and cannot resume".into(),
             ).into());
         }
+        // Root Agent definitions are product built-in roles, not dispatchable child Profiles.
+        if crate::agent::definition::is_root_definition_id(profile_id) {
+            return Err(PureError::ConfigError(format!(
+                "root Agent definition `{profile_id}` cannot be dispatched as a child agent"
+            ))
+            .into());
+        }
         let snapshot = self.read()?;
-        let catalog = self.profiles.read().catalog.enabled_only();
+        // Resolve the actual frozen/selected route below rather than replacing its diagnostic
+        // with a generic "missing Profile" from the model-visible availability filter.
+        let catalog = self.profiles.read().catalog.enabled_for_dispatch()?;
         let mut profile = catalog
             .profiles
             .into_iter()
@@ -468,7 +481,7 @@ impl ConfigRuntime {
             model_catalog::reconcile(self.store.paths(), &desired, &observations)?;
         let config = effective_runtime_config(&desired, &next_observations)?;
         config.validate_declarations()?;
-        super::AgentProfileCatalog::validate_for_startup(self.store.paths(), &config)?;
+        super::AgentProfileCatalog::validate_for_startup(self.store.paths())?;
         let next = ConfigRuntimeSnapshot {
             revision: current.revision.saturating_add(1),
             updated_at: unix_seconds(),

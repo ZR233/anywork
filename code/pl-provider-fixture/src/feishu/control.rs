@@ -5,9 +5,10 @@ use tokio_util::sync::CancellationToken;
 
 use super::state::{Shared, close_sockets, join_sockets_in_place, push_outbound};
 use super::types::{
-    CallBound, CallKind, ClientConfig, FeishuLiveStatus, FeishuReport, GroupChat, HistoryMessage,
-    OutboundWs, RegistrationBeginOptions, RegistrationPollScript, RegistrationTenantBrand,
-    SendDisposition, SyntheticEvent, TokenScript, WsDiscoveryScript, WsUpgradeScript,
+    CallBound, CallKind, CardDisposition, CardEntityReport, CardObservation, ClientConfig,
+    FeishuLiveStatus, FeishuReport, GroupChat, HistoryMessage, OutboundWs,
+    RegistrationBeginOptions, RegistrationPollScript, RegistrationTenantBrand, SendDisposition,
+    SyntheticEvent, TokenScript, WsDiscoveryScript, WsUpgradeScript,
 };
 use super::wire::{decode_addons, encode_addons, required_addons, validate_required_addons};
 
@@ -236,6 +237,97 @@ impl FeishuControl {
         } else {
             inner.im.hang.clear();
         }
+    }
+
+    /// Scripts the answers of the next CardKit requests (create, element
+    /// content, settings) in request order. An exhausted script succeeds.
+    pub async fn set_card_script(&self, steps: Vec<CardDisposition>) {
+        let mut inner = self.shared.lock().await;
+        let hang = steps
+            .iter()
+            .any(|step| matches!(step, CardDisposition::Hang));
+        inner.cards.script = steps.into();
+        if hang {
+            inner.cards.hang.arm();
+        } else {
+            inner.cards.hang.clear();
+        }
+    }
+
+    /// Synthetic application scope sample: `false` answers the documented
+    /// not-authorized business code without applying any card operation.
+    /// Arms the deterministic pre-commit stop point and returns its handle.
+    pub async fn arm_card_precommit_gate(&self) -> super::state::CardPrecommitGate {
+        let gate = super::state::CardPrecommitGate::new();
+        self.shared.lock().await.cards.precommit_gate = Some(gate.clone());
+        gate
+    }
+
+    /// Disarms the stop point so no later request parks.
+    pub async fn disarm_card_precommit_gate(&self) {
+        self.shared.lock().await.cards.precommit_gate = None;
+    }
+
+    pub async fn set_card_scope_allowed(&self, allowed: bool) {
+        self.shared.lock().await.cards.scope_allowed = allowed;
+    }
+
+    /// Marks one existing card entity as past its documented 14-day window.
+    /// Returns `false` when no such entity exists.
+    pub async fn expire_card(&self, card_id: &str) -> bool {
+        self.shared.lock().await.expire_card(card_id)
+    }
+
+    /// Ordered CardKit facts observed so far, including rejected attempts.
+    pub async fn card_observations(&self) -> Vec<CardObservation> {
+        self.shared.lock().await.card_observations()
+    }
+
+    /// Current platform state of every card this peer created.
+    pub async fn card_entities(&self) -> Vec<CardEntityReport> {
+        self.shared.lock().await.card_entity_reports()
+    }
+
+    /// Suspends the next CardKit response by queueing a real `Hang` gate into
+    /// the same script the other dispositions use, then arming that gate.
+    ///
+    /// One source of truth: the request that consumes this entry waits on the
+    /// armed generation, and [`Self::release_card`] releases exactly that
+    /// generation. Independent from the IM send gate.
+    pub async fn hang_card(&self) {
+        let mut inner = self.shared.lock().await;
+        inner.cards.script.push_back(CardDisposition::Hang);
+        inner.cards.hang.arm();
+    }
+
+    /// Releases the armed CardKit generation. Idempotent.
+    pub async fn release_card(&self) {
+        self.shared.lock().await.cards.hang.release();
+    }
+
+    /// Number of card dispositions still queued. A request that consumed the
+    /// `Hang` entry has left the queue even though it is still waiting.
+    pub async fn pending_card_script(&self) -> usize {
+        self.shared.lock().await.cards.script.len()
+    }
+
+    /// `(waiting, holders)` of one card serialization boundary.
+    ///
+    /// An operator can wait until a request is *inside* the boundary and the
+    /// next one is *queued on it*, instead of assuming an arbitrary delay means
+    /// that. Peer-side observation only; the product never sees these counters.
+    pub async fn card_lock_counters(&self, card_id: &str) -> (usize, usize) {
+        self.shared.lock().await.card_lock_counters(card_id)
+    }
+
+    /// Cancels the requests currently queued on one card boundary.
+    ///
+    /// Private environment control: it ends the peer-side handler future that is
+    /// waiting for the boundary, which is a different fact from a client abort
+    /// (an HTTP client disappearing does not by itself cancel the server task).
+    /// A later request gets a fresh generation and proceeds normally.
+    pub async fn cancel_card_waiters(&self, card_id: &str) {
+        self.shared.lock().await.cancel_card_waiters(card_id);
     }
 
     pub async fn hang_send(&self) {

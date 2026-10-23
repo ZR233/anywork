@@ -481,7 +481,7 @@ class AppLocalizationsZh extends AppLocalizations {
 
   @override
   String get settingsBotsPermissions =>
-      '申请范围（preset=false）：im:message:send_as_bot、im:message.p2p_msg:readonly、im:message.group_at_msg:readonly、im:chat:readonly、im:message:readonly。事件：im.message.receive_v1。声明权限不等于管理员已批准或应用已发布。';
+      '申请范围（preset=false）：im:message:send_as_bot、im:message.p2p_msg:readonly、im:message.group_at_msg:readonly、im:chat:readonly、im:message:readonly、im:resource、cardkit:card:write。事件：im.message.receive_v1。保留图片与文件接收，新增流式卡片创建与更新。已有应用需由管理员补充卡片权限并发布；声明权限不等于已获批准。';
 
   @override
   String get settingsBotsName => '名称';

@@ -5,7 +5,7 @@ core 内核契约见 [16](./16-core-contracts.md)，状态与历史存储见 [15
 
 ## 14.1 统一装配与激活
 
-Studio 的 Thread 工厂解析配置、Profile、Mode、项目和物理工作区绑定；Thread 装配器登记准备
+Studio 的 Thread 工厂解析配置、Agent 定义、Profile、Mode、项目和物理工作区绑定；Thread 装配器登记准备
 owner 并创建 core Thread。root、child、冷恢复走同一装配入口。准备中的 owner 不对外发布；
 失败或等待者取消不丢失释放责任——装配失败或调用方取消时仍由登记表保有已创建 owner，
 关闭成功才删除登记。关闭先封闭装配，等待准备收束，再按子到父顺序关闭，失败保留重试入口。
@@ -22,6 +22,12 @@ snapshot。服务可按隔离身份共享租约，关闭一个 Thread 不撤销
 其他 Thread 的租约。模型切换由 owner 串行执行：关闭旧会话后清空旧 continuation 与重试计划，
 再创建新会话；工厂失败时 Thread 明确保持模型不可用，保留历史并允许重新装配。执行中的
 Turn 不被参数刷新中途替换，后台工具任务与模型切换互相独立。
+
+所有会话从已解析的 Agent 定义进入同一指令装配，角色来源和 Mode 来源分别冻结、分别更新
+（定义契约见 [12](./12-collaboration.md)）。新建、恢复、Mode 切换、Turn 准备与压缩使用同一
+来源解释；只刷新 Mode 不得替换 Agent 指令。统一定义不接管路由、workspace assignment、
+步骤预算或工具权限，也不增加另一个执行 owner。旧指令来源的转换在恢复迁移事务中完成，
+不能在正常模型准备路径保留新旧格式并行解码。
 
 路由 selector 与 pending model update 必须由同一 owner mailbox 操作提交：扩展 CAS 失败不改变
 pending update，反之亦然；selector 表示 desired route，实际模型仍在下一 Turn 边界替换。
@@ -40,6 +46,10 @@ scratch 不作为模型可写目录提供；Platform 与通用系统提示词解
 
 输入以调用方稳定 ID 幂等受理；Studio 的 submitPrompt 由 core 原子选择启动或打断后继续，
 客户端不根据可能过期的活动状态选择命令。Core 的 Start/Steer/Queue 仍是独立的通用输入策略。
+机器人平台的独立新消息使用同一内容准备、权限、路由和持久受理边界，但选择 core 的
+非打断串行驱动，不把后到的独立消息当作对当前 Turn 的补充或中断。策略由产品入口显式
+选择，不根据瞬时 active Turn 快照分支，也不创建机器人专属执行队列；桌面提交和显式
+交互续接仍保持各自既有语义。重复身份只返回原回执，不重新启用驱动或重演已消费输入。
 HTTP 使用 `POST /api/v1/threads/{thread_id}/prompts`（`prompt.submit`），FRB 使用 `submitPrompt`；
 请求的 `input` 包含稳定 `inputId`、`text` 与 `attachmentDraftIds`。同 ID 重试必须保持原内容，
 附件草稿在首次受理后即提交，因此重复请求先从 canonical 输入记录返回原回执，再决定是否需要准备资源。受理不伪造 Turn ID：产品提示词

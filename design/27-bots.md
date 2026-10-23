@@ -8,13 +8,15 @@ Thread、历史、权限、配置与前端所有权分别遵循 [14](./14-runtim
 ## 27.1 目的与组件边界
 
 外部机器人把已授权的飞书用户消息送入现有 Studio Thread，并把正式回复送回原会话。
-它不是模型 provider、Agent Profile、MCP server 或另一套会话引擎。Studio runtime 是配置、
+渠道接入不是模型 provider、可派发的 child Agent Profile、MCP server 或另一套会话引擎。
+飞书会话和普通会话一样由统一 Agent 定义装配根 Thread（见 [12](./12-collaboration.md)）。Studio runtime 是配置、
 连接、消息受理、会话映射与发送操作的唯一 owner；GUI、HTTP 与模型工具共享这些能力。
 
 本版本仅接入飞书中国版的自建应用，采用原生 Rust HTTP/WebSocket 适配，无 Node/npm、
 OpenClaw 或第三方飞书 SDK 运行依赖。HTTP、WebSocket、Protobuf 分别复用成熟组件，
 产品只维护所需的飞书协议。微信、Lark 国际版、公网 webhook、用户身份 OAuth、媒体发送、
-流式卡片和文档/日历能力不在本次范围。
+卡片交互审批和文档/日历能力不在本次范围。出站支持 Markdown 与 JSON 2.0 流式卡片，
+使用官方消息与 CardKit HTTP 能力，不引入额外 SDK 运行时或自研 Markdown 渲染器。
 
 协议以飞书开放平台文档为准；文档未展开的注册与长连接细节参考官方
 [Node SDK](https://github.com/larksuite/node-sdk) 的 `1.76.0` 发布内容
@@ -252,16 +254,20 @@ debug fixture 只接受当前描述绑定的同一 loopback HTTP 来源，不能
 
 扫码注册使用显式的应用身份权限模板，不启用平台预设权限包，也不请求用户身份权限。
 默认模板包含 `im:message:send_as_bot`、`im:message.p2p_msg:readonly`、
-`im:message.group_at_msg:readonly`、`im:chat:readonly` 与 `im:message:readonly`，
+`im:message.group_at_msg:readonly`、`im:chat:readonly`、`im:message:readonly`、`im:resource`
+与 `cardkit:card:write`，
 订阅 `im.message.receive_v1`；分别用于统一发送、接收单聊与真实提及、群目录及按需历史
-读取。不以通用读写权限 `im:message` 替代这些能力，也不默认请求 `im:message.group_msg`。
+读取、既有图片/文件资源接收，以及流式卡片创建与更新。新增 CardKit 权限不替换或撤销
+既有 `im:resource` 能力。不以通用读写权限 `im:message` 替代这些能力，也不默认请求 `im:message.group_msg`。
 首次配置如实说明这些申请范围；声明权限不等于管理员已经批准或应用已经可访问数据。
 [获取历史消息的官方权限要求](https://open.feishu.cn/document/uAjLw4CM/ukTMukTMukTM/reference/im-v1/message/list)
 （文档标注更新于 2026-04-10）将单聊历史所需的消息只读权限与群历史额外权限分别列出；
 群历史仍需本地用户在平台单独开通相应权限，产品不能在遇到拒绝时自动扩大授权。
 
 手工配置指引明确机器人能力、`im.message.receive_v1` 事件、长连接接收方式、IM 查询/发送
-权限与发布要求。群历史等额外权限单独说明，不自动申请读取全部群消息。企业租户仍受
+权限、`cardkit:card:write` 与发布要求。既有应用缺少卡片权限时明确提示管理员补充授权，
+不将声明权限视为已经批准，也不悄悄改用普通消息掩盖卡片失败。群历史等额外权限单独说明，
+不自动申请读取全部群消息。企业租户仍受
 管理员审批和应用可用范围限制；没有获准发布时保留配置、呈现待办，不假装已可使用。
 
 ### 27.3.1 机器人工作区、模型与会话操作
@@ -319,7 +325,17 @@ StudioHome 位于仓库子目录，根会话、子会话及冷恢复也必须保
 映射以机器人和平台会话身份隔离，关联一个现有 Studio 根 Thread。首次创建和后续受理使用
 同一 Thread 工厂与用户输入链，复用 model route、历史、计费和目录时间。平台消息 ID 形成
 稳定输入身份；重推、重连、重启重复消息命中原身份，内容冲突显式失败，不能重复启动模型。
+同一平台会话的不同消息是独立输入，交给同一 Thread 的非打断串行驱动逐条消费；后到消息
+不取消正在生成的回复，也不将两条独立正文合并成一次执行。仍使用统一的资源准备、授权、
+路由与持久幂等边界，不新增机器人队列或绕过待决交互的专用决议入口。
 归档或缺失的目标 Thread 不偷偷映射到其他会话，应报告需要恢复或显式新建。
+新建飞书根会话选择固定的飞书 Agent 定义，不增加逐机器人提示词编辑或 Profile 选择入口。
+定义指导模型直接输出适合飞书的 Markdown：标题、段落、列表、引用、链接、行内代码、
+带语言的围栏代码块与简洁表格；区分普通消息和卡片能力，不输出 CardKit JSON、不把整段
+答复包装成代码块，也不承诺任意 HTML。自动回复由宿主发送，模型不得为同一答案重复调用
+发送工具。提示词只指导内容，不授予权限或替代大小和完整性校验。
+Agent 指令与 Mode 分离，冻结及迁移遵循 [20](./20-config.md#206-提示词配置)。已有会话
+保持原指令；采用新定义使用既有显式新建本机会话动作，不因升级自动重建 Thread。
 首次创建与绑定之间的失败必须可恢复到同一创建身份，不能留下永久占位或在每次重试时
 创建孤立 Thread。可靠受理记录须能恢复尚未交接的输入，并从既有 Thread 受理事实判断
 是否已经交接，不能把身份去重命中直接等同于执行和回复完成。
@@ -415,10 +431,18 @@ JavaScript 定时器毫秒，Rust 不得把线值再误当毫秒。
 [获取会话历史消息](https://open.feishu.cn/document/uAjLw4CM/ukTMukTMukTM/reference/im-v1/message/list)
 的字段契约，不能假定请求与响应单位相同。
 
-GUI、自动正式回复和模型工具调用同一发送服务。首次 await 前固定 bot、chat、正文和
+GUI、自动正式回复和模型工具使用同一机器人发送边界与授权规则。普通发送在首次 await 前固定 bot、chat、正文和
 operation ID，发送前按来源验证项目工具权限或本地/入站授权，并验证目标访问范围。
 按平台大小限制验证或分段，逐段使用稳定
 身份，分别记录已发消息、失败与未知结果；只有全部成功才表示完整送达。
+
+普通发送的公开 `text` 字段承载 Markdown，使用官方 `post` 消息中的 `md` 节点；纯文本
+同样作为 Markdown 正文发送，接口形状不变。内容结构遵循
+[发送消息内容结构](https://open.feishu.cn/document/server-docs/im-v1/message-content-description/create_json)，
+CommonMark/GFM 的解释由飞书负责。按真实序列化请求的 UTF-8 大小计量，包含 JSON 转义
+开销；分段优先自然段或行边界且拼接原文无损，不截断字符。超过既有总发送预算明确拒绝。
+消息发送遵守[发送消息](https://open.feishu.cn/document/server-docs/im-v1/message/create)的
+30 KB 限制与同一目标 5 QPS 限制；不能把原文字符数当成实际请求大小。
 
 官方发送 UUID 的去重窗口为一小时，不代表永久 exactly-once。超时、网络断开、取消等待或
 重启时遗留的在途发送都可能已发生：保存为 `unknown`，不自动重放；明确拒绝与已成功结果
@@ -430,8 +454,9 @@ operation ID，发送前按来源验证项目工具权限或本地/入站授权�
 已持久受理的本地创建按同一原则先识别原操作再接续本地义务；新意图仍执行实时目标
 可见性核验，不能把旧操作记录借给新的请求或不同正文。
 
-自动回复仅消费原 Thread 的正式、用户可见终态内容；隐藏推理、工具原始结果和 secret 不
-出站。需要本地确认的 Interaction 保持等待并提示用户回到桌面端处理，不通过聊天文本批准。
+自动回复以单张 JSON 2.0 卡片展示原 Thread 目标 Turn 的用户可见 Final 内容；生成中的正文
+只是预览，不能作为完整送达事实。隐藏推理、commentary、工具原始结果和 secret 不出站。
+需要本地确认的 Interaction 保持等待并提示用户回到桌面端处理，不通过聊天文本批准。
 目标 Turn 的完整性必须从统一内容源证明，有界尾部基线不能当作该 Turn 的全量正文。
 尾部重同步或重新打开观察后，正式发送前重新补齐并核对目标 Turn 的覆盖范围；不能证明
 完整时保留需处理状态与诊断，不发送残文或标记完成。单次正文恢复最多检查 16,384 条内容
@@ -472,6 +497,64 @@ continuation 身份由现有 Studio 交互提交边界提供，机器人只观�
 认领与退避状态属于现有入站工作账本并按版本迁移；故障或接管不重建空账本。认领失效后
 不再受理该旧持有者的新动作；已经按稳定身份受理的动作仍按原操作核实，不因接管重放。
 
+### 27.6.1 流式卡片协议与可靠收束
+
+自动回复采用官方[流式更新卡片](https://open.feishu.cn/document/cardkit-v1/streaming-updates-openapi-overview)
+流程，而非反复创建消息。仅在有非空、可验证的 Final 正文时开始卡片；空 Final 不产生空卡片。
+若已展示过非空预览，随后正常 Turn 的 canonical Final 为空或仅空白，关闭已知卡片并明确
+标记“未生成最终答复，所示内容仅为未完成预览”，保留需处理结局，不冒充交互结束或完整
+送达。该状态与从未创建卡片的空答复分别表达，不能给最后预览补造最终正文。
+卡片正文采用 [JSON 2.0](https://open.feishu.cn/document/feishu-cards/card-json-v2-structure)
+的 [Markdown 组件](https://open.feishu.cn/document/feishu-cards/card-json-v2-components/content-components/rich-text)，
+声明 `streaming_mode=true`、`update_multi=true` 与稳定且唯一的 `element_id`。
+
+| 操作 | 官方边界 |
+| --- | --- |
+| [创建实体](https://open.feishu.cn/document/cardkit-v1/card/create) | `POST /open-apis/cardkit/v1/cards`，`type=card_json`，`data` 为序列化卡片 JSON，返回 `card_id` |
+| 发送实体 | 普通 IM 发送接口，`msg_type=interactive`，`content` 为包含 `type=card` 和 `data.card_id` 的 JSON 字符串 |
+| [更新正文](https://open.feishu.cn/document/cardkit-v1/card-element/content) | `PUT /open-apis/cardkit/v1/cards/{card_id}/elements/{element_id}/content`，提交累计完整 `content`、`sequence` 和稳定 `uuid` |
+| [更新配置](https://open.feishu.cn/document/cardkit-v1/card/settings) | `PATCH /open-apis/cardkit/v1/cards/{card_id}/settings`，`settings` 为序列化配置，同时携带 `sequence`、`uuid` |
+
+创建、发送和更新使用同一应用身份。每实体只发送一次；实体可操作期为 14 天，过期不自动
+创建替代卡片。`sequence` 是同一卡片所有更新与配置操作共用的严格递增正 int32；
+UUID 按原操作稳定绑定，不把它解释成永久 exactly-once。完整文本的前缀扩展才对应平台
+打字效果，替换不是增量追加。最终完整正文确认后，再将 `streaming_mode` 设为 `false`；
+最终确认操作可以在更高序号提交与最后预览相同的完整正文；预览合并不意味着省略正式
+收束义务。序号严格递增，不要求每次提交的正文长度严格增长，也不允许无界重复提交。
+完成、等待本地交互、中断和失败的 `summary.content` 是产品显式文案，不依赖平台自动猜测。
+
+单卡最多每 200 ms 提交一次正文更新，未发送变化合并为最新可验证版本；同一卡片只允许
+一个受管发送 owner 串行推进。末次正文与关闭也经过同一有界速率和顺序边界，不用并发
+请求追赶内容。CardKit 的设置和内容操作共享序号；平台所述流式限频豁免不取消产品背压。
+卡片实际序列化后不得超过 30 KB；内容接口的 100,000 字符字段上限不扩大整卡限制。
+正文超限保留本地完整历史并发布需处理诊断；已展示预览不得被标记为成功全文，不能静默
+截断，也不无限追加卡片规避上限。平台 HTML/表格展示限制不由产品自行渲染或重写。
+
+预览只取 canonical 目标 Turn 的 Final 文本，尾部连续性、条目身份和 revision 必须一致；
+断链、重同步或详情版本变化后重新读取，不把截断预览或跨版本片段拼成正文。预览不推进
+正式送达状态；只有完整 Final 校验、最终更新与关闭均确认后才成功。交互续接仍由原输入的
+canonical continuation 决定，卡片归属不变，不能借同一 Thread 的其他 Turn 推进卡片。
+续接输入被消费后，卡片的目标 Turn 与 watch input 必须同步对应该 canonical 消费身份；
+新 Turn 在首段正文前立即失败、取消或耗尽预算也不能沿用上一 Turn 身份。未消费输入的
+结束与已消费 Turn 的终态分开表达，不从旧卡片状态猜测新输入的目标。
+
+可靠卡片进度属于现有机器人状态库与原入站工作的回复 owner，不建立第二套执行队列。
+记录原 bot/chat/message、Thread 与输入关联、卡片和平台消息身份、已确认及待确认操作的
+序号/内容身份，以及创建、发送、更新、关闭和最终结局。副作用前先持久认领其阶段，
+结果保存核对认领仍有效及同一操作版本；失租 owner 不发起新操作或覆盖后继结果。
+迁移保留旧入站、绑定与发送事实，不清空用户数据，也不把旧普通文本发送误识别为可重发卡片。
+
+未知创建、未知消息发送、未知更新或未知关闭均保留原操作事实并明确需核实，不自动重试、
+换 UUID、提升序号或新建卡片掩盖不确定性。只有已知实体且无未知在途操作的进度可从同一
+入站 owner 安全续接；恢复不能重复模型输入、卡片发送或已经确认的终态。模式关闭/超时的
+明确拒绝可通过官方配置接口有界重新开启，过期、无权限、序号冲突或超限不作为网络重试。
+本地明确取消或模型失败收束已知卡片并保留真实结局；运行时停止只结束当前观察并保留
+可恢复义务，不伪造任务完成。已经在途的操作按真实结果或未知事实落账，资源随原 owner
+取消和 join，不派生无人负责的网络任务。无法安全关闭时保留诊断，不以界面不再等待代替成功。
+canonical Turn 的 `Interrupted` 取消原因表示定向中断或新输入打断，不是机器人观察者
+停止的证据。已消费输入的该终态按取消收束，不能反复释放回待处理或在重启后重新执行；
+观察者停止则由其自身生命周期信号判定，恢复时仍核对原输入与目标 Turn 的实际结局。
+
 ## 27.7 产品 API、topic 与工具
 
 公共 DTO 使用 camelCase 字段、String ID 与 Unix 秒时间戳。机器人独立 `Bots` 产品 topic
@@ -504,7 +587,7 @@ snapshot 或 typed 查询/发送结果，不要求成功后聚合回读。注册
 | `list_bots` | 返回当前项目授权机器人的 ID、名称、连接状态及能力，不含凭据 |
 | `list_bot_conversations` | `botId`、分页/种类；返回群与已知单聊、来源及 next cursor |
 | `read_bot_messages` | `botId`、`chatId`、时间范围及 cursor/limit；返回 typed 消息页 |
-| `send_bot_message` | `botId`、`chatId`、文本；返回 operation ID、发送状态和已知消息身份 |
+| `send_bot_message` | `botId`、`chatId`、Markdown 文本；返回 operation ID、发送状态和已知消息身份 |
 
 工具不提供注册、凭据修改或远程授权管理，不借协作消息接口发送；发送是外部写操作，不
 取得只读 programmatic 资格。每 Thread 独占工具实例，物理机器人服务通过宿主能力共享。
@@ -603,6 +686,11 @@ Widget 重建自动重试。状态由 topic/回执推进，无 GUI 接口轮询�
 真实 bridge 与 Driver 核对截图、快照、错误和退出回收。平台模拟与 demo 不等同于真实
 飞书授权或兼容；真实账号验收需单独手机授权/测试应用，证据不得包含可用二维码、凭据、
 真实联系人或私聊正文。
+
+Markdown 与流式观察必须保留独立平台收到的 post/卡片 schema、同一实体的递增操作与
+最终正文证据，并证明至少一次正文更新早于模型 Turn 完成。协议 peer 不代替生产的
+授权、Agent 装配、正文筛选、认领或恢复判断。Linux 隔离 GUI 截图只证明本地原生界面的
+Markdown、生成中与终态呈现；不能把它标注为飞书客户端渲染，也不能单靠截图证明流式协议。
 
 已脱敏的原生界面展示见[截图说明](./assets/feishu-native/README.md)。图片只证明所标明的
 界面交互，不代替对应版本的持久化、状态传播与资源回收验收。

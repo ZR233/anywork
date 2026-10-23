@@ -269,6 +269,7 @@ async fn main() -> Result<()> {
         model_catalog,
         bind_port: args.bind_port,
         wait_events: scenario == "wait-events",
+        agent_definitions: None,
         delegation: pl_provider_fixture::delegation::Scenario::parse(scenario),
     };
     let fixture = Arc::new(FixtureServer::start_with_options(steps, options).await?);

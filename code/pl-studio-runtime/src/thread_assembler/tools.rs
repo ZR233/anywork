@@ -570,9 +570,11 @@ impl super::StudioThreadAssembler {
         tools: StudioWorkspaceTools,
     ) -> Result<pl_core::thread::ThreadHandle, ThreadAssemblyError> {
         spec.agent_controls = if spec.parent_id.is_none() {
-            super::AgentControlExposure::Enabled
+            let selection = spec.frozen_delegation()?;
+            let profiles = self.agent_profiles_snapshot()?;
+            self.agent_control_tools(&profiles, selection)?
         } else {
-            super::AgentControlExposure::Disabled
+            Vec::new()
         };
         let tools = StudioThreadTools::standard(tools).await?;
         self.assemble(tools.install(spec)).await

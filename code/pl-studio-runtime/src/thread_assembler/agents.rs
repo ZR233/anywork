@@ -10,7 +10,8 @@ use pl_core::{
     },
 };
 use pl_tool::collaboration::thread::{
-    AgentControlHost, AgentControlKind, AgentMessage, AgentSpawn, ThreadAgentControl,
+    AgentControlHost, AgentControlKind, AgentMessage, AgentSpawn, AgentSpawnProfile,
+    ThreadAgentControl,
 };
 use std::sync::{Arc, Weak};
 
@@ -540,14 +541,35 @@ impl AgentControlHost for AgentHost {
 }
 
 impl StudioThreadAssembler {
-    /// Creates control frontends with a weak coordinator reference; tools cannot keep their registry alive.
+    /// Creates control frontends and a query view from one published Profile generation.
+    /// Tools hold a weak coordinator reference and cannot keep their registry alive.
     ///
     /// # Errors
-    /// Returns model declaration encoding or registration errors.
+    /// Returns catalog, schema construction, model declaration encoding or registration errors.
     pub fn agent_control_tools(
         &self,
+        profiles: &crate::config::AgentProfilesSnapshot,
         selection: pl_protocol::DelegationSettings,
     ) -> Result<Vec<Registration>, ThreadAssemblyError> {
+        let mut catalog = profiles
+            .catalog
+            .executable(selection.mode)
+            .map_err(|source| ThreadAssemblyError::Resource {
+                operation: "read executable Agent Profile catalog",
+                source: Box::new(source),
+            })?;
+        catalog.profiles.retain(|profile| {
+            profile.profile_id != crate::config::StudioRole::Planner.key()
+                && !crate::agent::definition::is_root_definition_id(&profile.profile_id)
+        });
+        let profiles = catalog
+            .profiles
+            .iter()
+            .map(|profile| AgentSpawnProfile {
+                profile_id: profile.profile_id.clone(),
+                workspace_mode: profile.workspace_mode,
+            })
+            .collect::<Vec<_>>();
         let host = Arc::new(AgentHost(Arc::downgrade(&self.0)));
         let mut kinds = vec![
             AgentControlKind::Send,
@@ -558,18 +580,20 @@ impl StudioThreadAssembler {
         if self.0.state().child_factory.is_some() {
             kinds.push(AgentControlKind::Spawn);
         }
-        let mut tools = kinds
-            .into_iter()
-            .map(|kind| {
-                let mut spec = kind.declaration();
-                if matches!(kind, AgentControlKind::Spawn) {
-                    spec = self.spawn_declaration(selection)?;
-                }
+        let mut tools = Vec::new();
+        for kind in kinds {
+            let spec = kind
+                .declaration(&profiles, selection.mode)
+                .map_err(|source| ThreadAssemblyError::Resource {
+                    operation: "build Agent control schema",
+                    source: Box::new(source),
+                })?;
+            if let Some(spec) = spec {
                 let declaration = pl_model::runtime::thread_tool_declaration(&spec)?;
-                Ok(ThreadAgentControl::new(host.clone(), kind).registration(declaration)?)
-            })
-            .collect::<Result<Vec<_>, ThreadAssemblyError>>()?;
-        tools.extend(self.agent_query_tools(selection)?);
+                tools.push(ThreadAgentControl::new(host.clone(), kind).registration(declaration)?);
+            }
+        }
+        tools.extend(self.agent_query_tools(catalog, selection)?);
         Ok(tools)
     }
 }

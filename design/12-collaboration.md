@@ -6,9 +6,28 @@
 
 ## 12.1 边界与工作区模式
 
-Studio 的 child Agent 使用与 root 相同的 Thread/Turn/Tool 框架。创建时冻结最终模型路由与 Profile 工作区
-模式；路由由固定 Profile 或自动选模决定（见 12.7）。父 Agent 负责拆分工作、避免冲突、审查成果，并用普通 Git 显式整合 worktree child 的
-commit，不存在自动 merge 或 delivery gate。
+Studio 的所有会话均经 Agent 定义、指令装配与 Thread 执行边界。Agent 定义表达稳定身份、
+适用的 root/child 范围、角色指令及修订；普通 root 与飞书 root 使用产品内置定义，child
+从系统或用户 Profile 解析定义。已解析定义实际驱动统一指令装配，不是与旧角色字段并存的
+第二套来源。Thread 仍是唯一执行 owner，渠道只适配输入输出，不建立另一套 Agent runtime。
+
+Agent 角色与 Mode 正交：Agent 指令和 Mode 指令分别拥有独立来源。根会话可以切换执行方式，
+但不能因此失去其 Agent 角色；child 没有 root Mode/workflow。模型基础指令、项目指令、
+平台事实与技能仍经现有统一装配和更新边界，不能被角色定义旁路覆盖。
+
+root-only 定义不是可派发 Profile，不进入 child catalog、动态 spawn schema 或 Agents
+设置项；直接派发同样拒绝。飞书专用定义的选择来自已核实的机器人会话归属，不根据标题、
+用户正文或任意 metadata 猜测。其行为契约见 [27](./27-bots.md)。
+
+定义身份、修订与指令来源随已有 instruction snapshot 冻结；正常运行只消费当前结构。
+旧结构只在版本迁移边界依据已保存的 root/child、Mode 和 Profile 身份解释，保留原正文，
+不使用当前定义重写历史或替换已冻结指令。新建会话采用新定义，恢复不重新选择角色；
+迁移不能证明归属时明确失败并保留数据。具体持久化约定见 [20](./20-config.md#206-提示词配置)。
+
+Studio 的 child Agent 使用与 root 相同的 Thread/Turn/Tool 框架。创建时冻结最终模型路由与
+Profile 工作区模式；路由由固定 Profile 或自动选模决定（见 12.7）。父 Agent 负责拆分工作、
+避免冲突、审查成果，并用普通 Git 显式整合 worktree child 的 commit，不存在自动 merge
+或 delivery gate。
 
 根会话拥有会话级工作区模式 `ThreadWorkspaceMode`：`local`（默认）使用 Project 根目录，
 `worktree` 从 Project 的 Git 仓库 `HEAD` 派生独立 checkout 并在其中工作。它是 Thread 的
@@ -142,12 +161,27 @@ checkout 和其他会话/child checkout 不因此成为可写目录。
 模型可见的 `spawn_agent` schema 必须从本轮启用的 Profile 快照动态生成对象联合（oneOf），
 而不是在一个公共对象上暴露所有模式字段。每个分支以 `profileId` 常量绑定一个 Profile：
 directory 分支声明可选 `writablePaths`，unrestricted 与 worktree 分支不声明该字段；所有分支
-都使用 `additionalProperties:false`。schema 同时给出 profileId → workspace mode 映射，供模型
+都使用 `additionalProperties:false`。review 分支必须声明并要求 `reviewTargetAgentId`，其他
+分支不声明该字段；各分支保留相同的任务概要、完整消息及既有 metadata 语义，不扩大或
+收紧公共参数的有效输入。schema 同时给出 profileId → workspace mode 映射，供模型
 在首次调用前完成选择。用户 Profile 按冻结的 workspace_mode 进入相同分支。运行时保留独立
 硬拒绝，防止绕过 schema 的非法请求；explorer 的只读与 reviewer 的只审查是角色行为合同，
 不能用 `writablePaths:[]` 模拟，也不由工具层裁剪 reviewer 的命令能力。schema 约束用于降低
 模型首次调用错误，执行路径仍按 Profile 快照
 重做同一语义校验，不能把 schema 当作安全边界。
+
+Studio 从已发布的同一代 Profile 快照及会话冻结的分发模式形成派发声明和目录查询工具；
+固定模式只保留固定路由可执行的 Profile，自动模式保留启用且结构有效的角色，不因其
+固定路由不可用而排除。自动模式每个分支必填非 null 的 `modelSelection`，固定模式不声明
+该字段；其类型与真实派发请求一致，不经 metadata 隐式覆盖。目录查询使用与声明完全
+相同的角色集合；自动候选模型仍由 12.7 的独立查询和实时准入负责，不复制模型目录。
+查询使用该轮冻结的目录，而不是在执行中另取可能不同代的清单。配置或 Profile 目录变化通过现有工具
+刷新边界更新后续请求，Mode 切换与冷激活也采用当前快照。已经开始的模型请求保留原声明，
+已创建 child 保留原冻结 Profile、路由和工作区；执行时仍独立核对当前准入权限与启用状态。
+声明变化遵循工具内容身份与 deferred reveal 的既有失效规则，不另设目录缓存或执行器。
+该模式下无可用 child Profile 时不注册 `spawn_agent`，保留可解释的目录查询；恢复可用 Profile
+后由同一刷新边界重新注册。不得回退到无约束的通用派发 schema，也不把 root-only 定义
+作为空目录的默认候选。目录读取或声明构造错误按工具目录失败传播，不伪造空目录成功。
 
 spawn receipt 返回模式、实际 root、canonical 可写目录；worktree 模式额外返回 branch 与
 base commit；review 模式返回被审 agentId 与采用的目标工作区事实。Local 与 SSH backend 的所有 Pure 内置文件 mutation（apply patch、

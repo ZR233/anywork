@@ -24,7 +24,6 @@ pub use plan_confirmation::{PlanInteractionError, project_plan_confirmation};
 mod child_resources;
 mod children;
 mod published_resources;
-mod spawn_schema;
 pub use children::{
     ChildThreadRequest, ConfiguredChildFactory, StudioChildFactory, StudioChildResources,
 };
@@ -50,6 +49,7 @@ use pl_model::{
     config::ResolvedModelRoute,
     runtime::{ModelRuntime, ThreadModel},
 };
+pub use pl_protocol::DelegationSettings;
 
 /// Product-selected collaboration exposure, independent from core tool scheduling.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -64,7 +64,8 @@ pub struct StudioThreadSpec {
     /// Owns unpublished preparation until the assembler registers its cleanup owner.
     pub preparation_guard: Option<ThreadPreparationGuard>,
     pub context_preparation: Option<pl_core::thread::context_preparation::ContextPreparer>,
-    pub agent_controls: AgentControlExposure,
+    /// Root-only controls prepared from one Profile generation before allocating physical tools.
+    pub agent_controls: Vec<Registration>,
     pub execution: pl_core::thread::input::InputDriverOptions,
     pub id: String,
     pub parent_id: Option<String>,
@@ -83,6 +84,26 @@ pub struct StudioThreadSpec {
     pub resources: ResourceAccess,
     pub capacity: ContextCapacity,
     pub cold_store: Option<ColdStoreHandle>,
+}
+
+impl StudioThreadSpec {
+    fn frozen_delegation(&self) -> Result<pl_protocol::DelegationSettings, ThreadAssemblyError> {
+        let selection = match &self.checkpoint {
+            Some(checkpoint) => crate::studio::delegation::saved(&checkpoint.state),
+            None => self
+                .initial_extensions
+                .get(crate::studio::delegation::EXTENSION)
+                .map(crate::studio::delegation::decode)
+                .transpose(),
+        }
+        .map_err(|source| ThreadAssemblyError::Resource {
+            operation: "decode frozen root delegation selection",
+            source: source.into(),
+        })?;
+        selection.ok_or_else(|| {
+            ThreadAssemblyError::Identity("root has no frozen delegation selection".into())
+        })
+    }
 }
 
 /// Synchronous ownership transfer for preparation that has not entered the owner registry.
@@ -363,28 +384,10 @@ impl StudioThreadAssembler {
         {
             return Err(ThreadAssemblyError::Identity(spec.id));
         }
-        match spec.agent_controls {
-            AgentControlExposure::Disabled => {}
-            AgentControlExposure::Enabled => {
-                if spec.parent_id.is_some() {
-                    return Err(ThreadAssemblyError::ChildDepth);
-                }
-                let selection = if let Some(checkpoint) = &spec.checkpoint {
-                    crate::studio::delegation::saved(&checkpoint.state)
-                } else {
-                    spec.initial_extensions
-                        .get(crate::studio::delegation::EXTENSION)
-                        .map(crate::studio::delegation::decode)
-                        .transpose()
-                }
-                .map_err(|source| ThreadAssemblyError::Resource {
-                    operation: "decode root delegation selection",
-                    source: source.into(),
-                })?
-                .unwrap_or_default();
-                spec.tools.extend(self.agent_control_tools(selection)?);
-            }
+        if spec.parent_id.is_some() && !spec.agent_controls.is_empty() {
+            return Err(ThreadAssemblyError::ChildDepth);
         }
+        spec.tools.append(&mut spec.agent_controls);
         let thread = if spec.model_available {
             ThreadHandle::resume(
                 spec.id.clone(),

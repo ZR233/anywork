@@ -28,6 +28,26 @@ pub(crate) struct StudioHttp {
     base: String,
 }
 
+/// Public reply of one Turn interrupt command.
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct InterruptTurnReply {
+    pub thread_id: String,
+    pub turn_id: String,
+    /// The owner accepted the interrupt; the Turn still has to stop in its own
+    /// stream before the cancellation is effective.
+    pub interrupted: bool,
+}
+
+/// Public prompt.submit acknowledgement (the response's canonical wire DTO).
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct PromptReceipt {
+    pub thread_id: String,
+    pub input_id: String,
+    pub cursor: u64,
+}
+
 impl StudioHttp {
     pub fn new(listen: std::net::SocketAddr) -> Result<Self> {
         ensure!(
@@ -91,8 +111,83 @@ impl StudioHttp {
         .await
     }
 
+    pub async fn create_thread(
+        &self,
+        project_id: &str,
+        request: &pl_protocol::studio::CreateThreadRequest,
+    ) -> Result<pl_studio_runtime::StudioStartNewThreadResponse> {
+        let path = format!("/api/v1/projects/{project_id}/threads");
+        let (status, body) = self
+            .post_raw_with(&self.command_client, &path, request)
+            .await?;
+        decode_json(status, &body, &path)
+    }
+
+    pub async fn submit_prompt(
+        &self,
+        thread_id: &str,
+        request: &pl_protocol::studio::SubmitPromptRequest,
+    ) -> Result<PromptReceipt> {
+        self.post_json(&format!("/api/v1/threads/{thread_id}/prompts"), request)
+            .await
+    }
+
+    pub async fn set_thread_mode(
+        &self,
+        thread_id: &str,
+        request: &pl_protocol::studio::SetThreadModeRequest,
+    ) -> Result<pl_protocol::studio::ThreadModeCommandReply> {
+        self.put_json(&format!("/api/v1/threads/{thread_id}/mode"), request)
+            .await
+    }
+
+    pub async fn read_settings(&self) -> Result<pl_protocol::studio::SettingsStateResponse> {
+        self.get_json("/api/v1/settings").await
+    }
+
+    pub async fn save_account(
+        &self,
+        request: &pl_protocol::studio::UpdateAccountRequest,
+    ) -> Result<pl_protocol::studio::SettingsCommandReply> {
+        self.put_json("/api/v1/settings/account", request).await
+    }
+
+    async fn put_json<T: DeserializeOwned, B: Serialize>(&self, path: &str, body: &B) -> Result<T> {
+        let response = self
+            .command_client
+            .put(format!("{}{path}", self.base))
+            .json(body)
+            .send()
+            .await
+            .with_context(|| format!("PUT {path}"))?;
+        let status = response.status();
+        let text = response.text().await?;
+        decode_json(status, &text, path)
+    }
+
     pub async fn read_bots(&self) -> Result<BotsStateSnapshot> {
         self.get_json("/api/v1/bots").await
+    }
+
+    /// Canonical Thread snapshot (public projection, including the active Turn).
+    pub async fn read_thread(&self, thread_id: &str) -> Result<pl_protocol::ThreadSnapshot> {
+        self.get_json(&format!("/api/v1/threads/{thread_id}")).await
+    }
+
+    /// One page of the canonical Thread timeline (newest page by default).
+    ///
+    /// This is the same content source the GUI reads; previews carry per-field
+    /// `total_bytes`, so a case can prove full local history without pulling a
+    /// complete body into the report.
+    pub async fn read_timeline(
+        &self,
+        thread_id: &str,
+        limit: u32,
+    ) -> Result<pl_protocol::TimelinePage> {
+        self.get_json(&format!(
+            "/api/v1/threads/{thread_id}/timeline?limit={limit}"
+        ))
+        .await
     }
 
     pub async fn list_threads_page(
@@ -245,6 +340,30 @@ impl StudioHttp {
             bail!("{path}: {} ({:?})", error.message, error.code);
         }
         Ok(())
+    }
+
+    /// Public `DELETE /api/v1/threads/{thread_id}/turns/{turn_id}`.
+    ///
+    /// The reply is decoded by a local strict type: the product owns the wire
+    /// contract, and acceptance only asserts the identity and acknowledgement it
+    /// received through this public route.
+    pub async fn interrupt_turn(
+        &self,
+        thread_id: &str,
+        turn_id: &str,
+        operation_id: &str,
+    ) -> Result<InterruptTurnReply> {
+        let path = format!("/api/v1/threads/{thread_id}/turns/{turn_id}");
+        let response = self
+            .command_client
+            .delete(format!("{}{path}", self.base))
+            .json(&serde_json::json!({ "operationId": operation_id }))
+            .send()
+            .await
+            .with_context(|| format!("DELETE {path}"))?;
+        let status = response.status();
+        let text = response.text().await.unwrap_or_default();
+        decode_json(status, &text, &path)
     }
 
     async fn get_json<T: DeserializeOwned>(&self, path: &str) -> Result<T> {
