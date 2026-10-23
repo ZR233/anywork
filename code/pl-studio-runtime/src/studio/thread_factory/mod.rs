@@ -1,5 +1,6 @@
 //! Product configuration and shared service leases used to construct core Threads.
 mod child_resources;
+mod close_child;
 mod errors;
 pub(crate) mod recovery;
 mod restore_child;
@@ -43,7 +44,7 @@ pub(crate) struct StudioThreadFactory {
 }
 impl StudioThreadFactory {
     /// Fresh allowance for each child Turn, including explicit continuation after a step limit.
-    pub(in crate::studio) const CHILD_MODEL_STEP_LIMIT: pl_core::thread::ModelStepLimit =
+    pub(crate) const CHILD_MODEL_STEP_LIMIT: pl_core::thread::ModelStepLimit =
         pl_core::thread::ModelStepLimit::Limited(
             std::num::NonZeroU32::new(256).expect("positive child step limit"),
         );

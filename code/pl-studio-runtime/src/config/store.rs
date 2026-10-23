@@ -150,7 +150,7 @@ impl ConfigStore {
     ///
     /// 只有 `config.toml` 缺失时才采用内存默认配置。其余任何未知/未来版本、不可解析、
     /// 当前 schema 校验失败或含内联凭据的输入都保留原字节并返回错误，不重写文件、
-    /// 也不替换为默认配置；已知 18/19/20/21 版本走数据保全式迁移路径。
+    /// 也不替换为默认配置；已知 18 至 23 版本走数据保全式迁移路径。
     pub(crate) fn load_for_startup(
         &self,
     ) -> std::result::Result<StudioConfig, super::ConfigRuntimeError> {
@@ -165,13 +165,21 @@ impl ConfigStore {
                 |error| super::ConfigRuntimeError::Migration(self.config_path_error(error)),
             )?
         {
+            if config.schema_version == 23 {
+                // Finish an interrupted 22→23 journal before starting the 23→24 migration.
+                // No intermediate configuration is published and no old candidate hash changes.
+                let original = fs::read(self.paths.config_file()).map_err(PureError::from)?;
+                return self
+                    .migrate_legacy_config_for_startup(&original, 23)
+                    .map_err(super::ConfigRuntimeError::Migration);
+            }
             let mut config = config;
             self.hydrate_credentials(&mut config)?;
             return Ok(config);
         }
         let content = fs::read(self.paths.config_file())
             .map_err(|error| self.config_path_error(error.into()))?;
-        // Version dispatch precedes the strict parse so the supported 18..=22 configs reach
+        // Version dispatch precedes the strict parse so the supported 18..=23 configs reach
         // their data-preserving migration instead of failing current-schema validation.
         #[derive(serde::Deserialize)]
         struct Version {
@@ -183,7 +191,7 @@ impl ConfigStore {
             .map(|version| version.schema_version)
             .filter(|version| {
                 (super::schema_migration::OLDEST_SUPPORTED_SCHEMA
-                    ..=super::schema_migration::LEGACY_ACCOUNT_SCHEMA)
+                    ..super::STUDIO_CONFIG_SCHEMA_VERSION)
                     .contains(version)
             })
         {
@@ -239,12 +247,14 @@ impl ConfigStore {
         let text = std::str::from_utf8(original).map_err(|error| {
             PureError::ConfigError(format!("invalid schema {source_version} UTF-8: {error}"))
         })?;
-        let rewritten = rewrite_legacy_deepseek_standalone_dialect(text)?;
-        let rewritten = migrate_model_identifiers(&rewritten)?;
-        // 18..22 先完成各自的既有转换，再统一执行 Provider/Preset → Account/AccountTemplate。
         let mut inline_tokens = std::collections::BTreeMap::new();
-        let rewritten =
-            super::schema_migration::rewrite_account_document(&rewritten, &mut inline_tokens)?;
+        let rewritten = if source_version <= super::schema_migration::LEGACY_ACCOUNT_SCHEMA {
+            let rewritten = rewrite_legacy_deepseek_standalone_dialect(text)?;
+            let rewritten = migrate_model_identifiers(&rewritten)?;
+            super::schema_migration::rewrite_account_document(&rewritten, &mut inline_tokens)?
+        } else {
+            text.to_owned()
+        };
         let mut config = parse_typed_config(&rewritten)?;
         reject_inline_credentials(&config)?;
         match source_version {
@@ -253,7 +263,7 @@ impl ConfigStore {
                 migrate_legacy_planner_route(&mut config, source_version)?;
             }
             19 => migrate_legacy_planner_route(&mut config, source_version)?,
-            20..=22 => {}
+            20..=23 => {}
             other => {
                 return Err(PureError::ConfigError(format!(
                     "unsupported Studio config schema version: {other}"
@@ -261,6 +271,9 @@ impl ConfigStore {
             }
         }
         config.schema_version = super::STUDIO_CONFIG_SCHEMA_VERSION;
+        // Schema 23 has no delegation or enablement intent. Decode its missing fields only
+        // here, then durably write the current representation before publishing it.
+        config.delegation = pl_protocol::DelegationSettings::default();
         config.validate_declarations()?;
         let persisted = serialize_persisted_config(&config)?;
         let backup = write_config_backup(self.paths.config_file(), original, "migrated")?;
@@ -566,12 +579,23 @@ fn parse_typed_config(content: &str) -> Result<StudioConfig> {
 
 /// 迁移候选的 typed 校验：结构、禁用内联凭据与期望声明完整性。
 pub(super) fn parse_migrated_config(content: &[u8]) -> Result<StudioConfig> {
+    parse_migration_candidate(content, super::STUDIO_CONFIG_SCHEMA_VERSION)
+}
+
+pub(super) fn parse_migration_candidate(content: &[u8], target: u32) -> Result<StudioConfig> {
     let text = std::str::from_utf8(content).map_err(|error| {
         PureError::ConfigError(format!("migrated Studio config is not UTF-8: {error}"))
     })?;
     let config = parse_typed_config(text)?;
     reject_inline_credentials(&config)?;
-    config.validate_declarations()?;
+    if config.schema_version != target {
+        return Err(PureError::ConfigError(
+            "migration candidate schema does not match its journal".into(),
+        ));
+    }
+    let mut validation = config.clone();
+    validation.schema_version = super::STUDIO_CONFIG_SCHEMA_VERSION;
+    validation.validate_declarations()?;
     Ok(config)
 }
 
@@ -888,6 +912,74 @@ mod tests {
         assert_eq!(migrated_backups(path).len(), 1);
     }
 
+    #[test]
+    fn schema_23_upgrade_preserves_choices_and_credentials_after_commit_failure() {
+        let (_directory, store) = isolated_store();
+        let mut config = StudioConfig::default_config().unwrap();
+        config.instructions.user = "保留用户约定".into();
+        config
+            .models
+            .accounts
+            .get_mut(&AccountId::new("deepseek").unwrap())
+            .unwrap()
+            .bearer_token = Some("schema-23-account-secret".into());
+        store.save(&config).unwrap();
+        // HEAD 767771084f6c's persisted schema 23 differs here only by the absent
+        // delegation/enablement/billing fields; account IDs/routes already use current casing.
+        let path = store.paths.config_file();
+        let mut table = read_table(path);
+        table["schema_version"] = 23.into();
+        table.remove("delegation");
+        let accounts = table["models"]["accounts"].as_table_mut().unwrap();
+        for (_, account) in accounts.iter_mut() {
+            let account = account.as_table_mut().unwrap();
+            account.remove("disabled_models");
+            account.remove("billing_kind");
+        }
+        write_table(path, &table);
+        let original = fs::read(path).unwrap();
+        let failure = store
+            .migrate_legacy_config_for_startup_with(&original, 23, |_, _| {
+                Err(PureError::Io(std::io::Error::other(
+                    "injected config replacement failure",
+                )))
+            })
+            .unwrap_err();
+        assert!(
+            failure
+                .to_string()
+                .contains("injected config replacement failure")
+        );
+        assert_eq!(fs::read(path).unwrap(), original);
+        let loaded = store.load_for_startup().unwrap();
+        assert_eq!(loaded, config);
+        assert_eq!(
+            loaded.delegation,
+            pl_protocol::DelegationSettings::default()
+        );
+        assert!(
+            loaded
+                .models
+                .accounts
+                .values()
+                .all(|account| account.disabled_models().is_empty()
+                    && account.billing_kind.is_none())
+        );
+        assert_eq!(
+            store.credentials.load("deepseek").unwrap().as_deref(),
+            Some("schema-23-account-secret")
+        );
+        assert_eq!(
+            fs::read(migrated_backups(path).pop().unwrap()).unwrap(),
+            original
+        );
+        assert_eq!(
+            store.load_for_startup().unwrap(),
+            config,
+            "reopen is current and idempotent"
+        );
+    }
+
     /// 使用真实凭据存储边界（私有构造）验证 22→23 的启动路径。
     fn store_with_credentials(
         directory: &tempfile::TempDir,
@@ -971,7 +1063,7 @@ mod tests {
         );
         // 持久化文档是当前结构：无 providers/preset/adapter/preset_defaults。
         let persisted = fs::read_to_string(path).unwrap();
-        assert!(persisted.contains("schema_version = 23"));
+        assert!(persisted.contains("schema_version = 24"));
         assert!(persisted.contains("template_defaults"));
         assert!(!persisted.contains("models.providers"));
         assert!(!persisted.contains("preset_defaults"));
@@ -984,7 +1076,7 @@ mod tests {
     }
 
     #[test]
-    fn schema_21_startup_migrates_legacy_identifiers_and_continues_to_23() {
+    fn schema_21_startup_migrates_legacy_identifiers_and_continues_to_current() {
         let directory = tempfile::tempdir().expect("isolated config directory");
         let credentials = crate::config::credential::MemoryCredentialStore::default();
         credentials.seed_legacy_provider("deepseek", "legacy-secret");
@@ -1024,7 +1116,7 @@ mod tests {
             Some("legacy-secret")
         );
         let persisted = fs::read_to_string(path).unwrap();
-        assert!(persisted.contains("schema_version = 23"));
+        assert!(persisted.contains("schema_version = 24"));
         assert!(!persisted.contains("models.providers"));
         assert_eq!(store.load_for_startup().unwrap(), expected);
         assert_eq!(migrated_backups(path).len(), 1);
@@ -1243,7 +1335,7 @@ mod tests {
             loaded.schema_version,
             super::super::STUDIO_CONFIG_SCHEMA_VERSION
         );
-        assert_eq!(loaded.schema_version, 23);
+        assert_eq!(loaded.schema_version, 24);
         assert_eq!(
             capabilities.web_search.standalone,
             Some(StandaloneWebSearchDialect::DeepSeekToolsApi)
@@ -1268,7 +1360,7 @@ mod tests {
         let persisted = fs::read_to_string(path).expect("read migrated config");
         let persisted_table: toml::Table =
             toml::from_str(&persisted).expect("parse migrated config");
-        assert_eq!(persisted_table["schema_version"].as_integer(), Some(23));
+        assert_eq!(persisted_table["schema_version"].as_integer(), Some(24));
         assert_eq!(
             persisted_table["models"]["accounts"]["deepseek"]["capabilities"]["web_search"]
                 ["standalone"]
@@ -1307,7 +1399,7 @@ mod tests {
         let loaded = store
             .load_for_startup()
             .expect("schema 20 without dialect token migrates");
-        assert_eq!(loaded.schema_version, 23);
+        assert_eq!(loaded.schema_version, 24);
         assert_eq!(loaded.mode_model_routes, config.mode_model_routes);
         assert_eq!(loaded.models.routes, config.models.routes);
         assert_eq!(
@@ -1328,7 +1420,7 @@ mod tests {
         store.save(&config).expect("save current schema");
         let path = store.paths.config_file();
         let mut table = read_table(path);
-        table.insert("schema_version".into(), toml::Value::Integer(24));
+        table.insert("schema_version".into(), toml::Value::Integer(25));
         write_table(path, &table);
         let original = fs::read(path).expect("original future-schema bytes");
 

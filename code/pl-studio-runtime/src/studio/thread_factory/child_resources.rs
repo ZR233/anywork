@@ -115,6 +115,7 @@ impl StudioChildResources for StudioThreadFactory {
                 root: std::path::Path::new(&assignment.root),
                 label: &profile.profile.display_name,
                 instructions: &profile.profile.system_instructions,
+                delegation: None,
                 resources: &prepared_tools,
             })
             .await?;
@@ -130,6 +131,11 @@ impl StudioChildResources for StudioThreadFactory {
             tool_calls: Vec::new(),
         });
         let initial_extensions = BTreeMap::from([
+            (
+                crate::studio::delegation::EXTENSION.into(),
+                crate::studio::delegation::encode(request.delegation)
+                    .map_err(|error| resource_error("freeze child delegation provenance", error))?,
+            ),
             ("studio.instructions".into(), instruction_sources),
             (
                 "studio.project".into(),
@@ -155,6 +161,8 @@ impl StudioChildResources for StudioThreadFactory {
         self.services
             .product_events
             .register_child_thread(crate::studio::store::directory::RegisteredChildThread {
+                delegation: request.delegation,
+                frozen_model: Some(crate::studio::delegation::profile_model(&profile.profile)),
                 id: request.id.clone(),
                 parent_thread_id: request.caller.clone(),
                 root_thread_id: parent.root_thread_id,

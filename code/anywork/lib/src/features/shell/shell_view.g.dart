@@ -317,7 +317,7 @@ final class SidebarViewProvider
   }
 }
 
-String _$sidebarViewHash() => r'2e9bd913a9b350bdc9fbcdd3bd16ac8aa0113d76';
+String _$sidebarViewHash() => r'c9fb52d34eb9fad227a5950bcbdac09f0efd6f80';
 
 @ProviderFor(headerView)
 final headerViewProvider = HeaderViewProvider._();
@@ -358,7 +358,7 @@ final class HeaderViewProvider
   }
 }
 
-String _$headerViewHash() => r'466ac6c30420510eea3313d0644abd73844c0b4f';
+String _$headerViewHash() => r'a9aa9bfd421dbab70fc84c4b0ff4730b9a31c2e6';
 
 /// 当前选中会话的输入区事实。草稿仍由 interaction 域覆盖；这里只提供 canonical 会话。
 ///
@@ -417,7 +417,7 @@ final class ShellComposerWorkspaceProvider
 }
 
 String _$shellComposerWorkspaceHash() =>
-    r'54b143c6b87b647736b457aa271848e24fd18f74';
+    r'8d2c0adef766013fa8fa085c25456fe3674eb33c';
 
 @ProviderFor(conversationActivityInput)
 final conversationActivityInputProvider = ConversationActivityInputFamily._();

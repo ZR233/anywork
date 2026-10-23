@@ -82,7 +82,12 @@ SettingsStateSnapshot projectSettingsSnapshot({
     for (final account in configData.accounts)
       if (catalogByProvider[account.id] case final catalogProvider?)
         account.copyWith(
-          models: catalogProvider.models,
+          models: [
+            for (final model in catalogProvider.models)
+              model.copyWith(
+                enabled: !account.disabledModels.contains(model.modelId),
+              ),
+          ],
           modelCatalog: catalogProvider.modelCatalog,
         )
       else
@@ -97,6 +102,7 @@ SettingsStateSnapshot projectSettingsSnapshot({
     instructions: configData.instructions,
     skills: configData.skills,
     general: configData.general,
+    delegation: configData.delegation,
     webSearch: configData.webSearch,
     deepSeekWebSearch: configData.deepSeekWebSearch,
     permissionMode: configData.permissionMode,

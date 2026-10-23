@@ -103,6 +103,9 @@ fn settings_view(state: &ConfigRuntimeSnapshot) -> Result<StudioSettings> {
                 AccountModelCatalogConfig::Explicit { .. } => None,
             };
             Ok(StudioAccountSettings {
+                billing_kind: account.billing_kind()?,
+                billing_kind_override: account.billing_kind,
+                disabled_models: account.disabled_models().iter().cloned().collect(),
                 pricing_enabled: account.pricing_mode == pl_protocol::PricingMode::Catalog,
                 account_id: id.to_string(),
                 template_id: account.template_id().map(ToString::to_string),
@@ -221,6 +224,7 @@ fn settings_view(state: &ConfigRuntimeSnapshot) -> Result<StudioSettings> {
         .collect();
     let (web_search, deepseek_web_search) = search_settings(config)?;
     Ok(StudioSettings {
+        delegation: config.delegation,
         default_account_id: config
             .mode_model_routes
             .get(&pl_protocol::ThreadModeId::simple())

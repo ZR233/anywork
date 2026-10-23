@@ -27,7 +27,7 @@ schema 和 `configRevision`，不在主配置里新增 Node/MCP/provider 伪配�
 任一失败只写该实例状态；设置查询不触发额外联网，运行期也没有第二次自动同步。首屏先使用成功
 缓存或默认模型定义，不等待所有网络结果；模型观察不写回 config.toml。完整语义见 20.5。
 普通设置项在用户修改后即时写入配置；独立新增/编辑页面保留本地草稿，必须点击页面内保存
-按钮才写入，取消则丢弃草稿。模型压缩阈值从账号详情卡的模型列表即时修改，不属于账号
+按钮才写入，取消则丢弃草稿。模型启用与压缩阈值从账号详情卡的模型列表即时修改，不属于账号
 编辑页草稿；交互与失败反馈见 [19](./19-studio-ui.md)。
 
 配置版本演进必须满足以下迁移契约；会话和产品数据的隔离与布局演进另见
@@ -157,6 +157,46 @@ Account 编辑提交只发送既有或用户显式修改的连接覆盖，不把
 属于持久化设置。未知 UI 字段按既有规则忽略，正常保存后不再输出；启动不因未知字段重写
 配置、触发恢复或提升 schema。
 
+### 20.2.1 模型启用、计费类别与分发默认
+
+账号的 `disabled_models` 是精确 model_id 的禁用集合，缺省为空；可选 `billing_kind` 是
+`metered | subscription | unknown` 的显式覆盖，与金额统计开关独立。省略时只按明确
+模板与 canonical endpoint 推导生效类别，不匹配则未知；显式值优先且不被地址修改
+静默替换，推导结果不写回为显式意图。它们属于 desired 配置，不是
+在线观察。新增模型默认启用，目录撤回保留禁用覆盖，恢复同一模型后继续应用；管理页仍
+读取完整目录。普通选模、固定 Profile 和自动分发的统一资格与准入见 [06](./06-model.md)。
+
+模型启用使用独立 typed mutation，携带 `operationId`、`expectedSettingsRevision`、`accountId`、
+`modelId`、`enabled`。配置 owner 在最新账号上应用单一字段意图，保留凭据、其他模型、
+连接和压缩覆盖；在线成员不转成手工成员。提交推进设置水位，并在同一发布边界更新目录
+资格水位；失败不发布候选。禁用导致已有路由不可用不是配置损坏，不自动改写选择。
+管理页切换立即保存，Client 的串行与失败规则见 [25](./25-frontend-state.md)。
+
+计费类别使用独立账号级 typed mutation，携带 `operationId`、expected revision、`accountId` 和可空
+`billingKind`：非空为显式类别（包括显式 `unknown`），空值清除覆盖并恢复模板推导。
+canonical Settings 同时投影生效 `billingKind` 与可空 `billingKindOverride`，前者
+用于展示和过滤，后者表达用户意图；不能将推导值回写为覆盖。普通账号编辑保留未修改
+的覆盖，新建账号没有显式选择时保持缺省，地址变化只影响未覆盖时的推导结果。
+这些窄命令沿用设置命令的操作身份约定：请求必须提供有效 `operationId`，owner 在修改
+配置前验证，并在 Applied/NoChange 回执中原样返回；不能用目标字段的固定描述替代一次
+提交身份。HTTP 与 FRB 使用同一契约，不为缺失身份请求生成兼容 ID。
+
+`[delegation]` 保存 `mode = profile | automatic` 和
+`preference = economy | balanced | fast`，默认 `profile` 与 `balanced`。两个字段各自
+使用 typed 设置命令，只改变未来会话默认；偏好在固定模式中保存但不生效。新建会话请求
+携带草稿同步解析后的 `delegationMode` 和 `delegationPreference`，已有会话不回读默认。
+提示词、工具与冻结边界见 [12](./12-collaboration.md) §12.7。
+
+外部创建 API 的这两个字段允许分别省略，表示在本次创建准入时继承对应全局默认，
+而不是将缺字段解码为显式固定/平衡。GUI 已同步冻结有效值，因此始终显式传入；
+持久化的会话与目录事实保存解析后的非空枚举，重开不重新解释省略或全局默认。
+
+引入这些字段时执行明确配置版本升级：旧模型全部启用、旧默认固定/平衡，旧账号没有
+显式计费类别覆盖，生效类别由上述 canonical 推导给出，不把旧金额统计开关转换为类别。
+保持账号、路由、
+Profile、凭据关联及其他覆盖原值；先备份、校验、原子提交，失败保留现场。新增字段不在
+运行期借旧结构或重建默认配置补齐。当前 v2 会话的对应升级归 [17](./17-studio-storage.md)。
+
 ## 20.3 根路由与系统 Profile
 
 配置不使用 `active_account`。root Agent 的 desired route 属于各自 Thread；主配置以
@@ -183,8 +223,9 @@ Account 编辑提交只发送既有或用户显式修改的连接覆盖，不把
 不可编辑、不可删除，可通过主配置 `disabled_system_agents` 禁用。主智能体在会话起始页与
 会话状态栏选择模型，不在 Agents 页配置；系统 child route 在子代理区域配置。用户 Profile
 的文件名 stem 是 Agent ID。
-`list_agent_profiles` 只返回启用且路由可解析的 Profile；`spawn_agent` 创建 child 时冻结
-系统指令、account、model 与 effort，此后文件变化不改变既有 child；设置页另读完整
+`list_agent_profiles` 在固定模式只返回启用且路由可解析的 Profile；自动模式返回启用的
+角色声明，不以其固定路由判定资格（见 [12](./12-collaboration.md) §12.7）。`spawn_agent` 创建 child 时冻结
+系统指令、最终 account、model 与 effort，此后文件变化不改变既有 child；设置页另读完整
 catalog，被禁用的用户 Profile 仍可编辑并重新启用。
 
 每个角色必须配置 `account_id`、`model_id` 和可选 `effort`。`effort` 使用字符串，校验对象是
@@ -204,7 +245,7 @@ catalog，被禁用的用户 Profile 仍可编辑并重新启用。
 本地 TOML 使用 `snake_case`，不同于 API wire 格式。精简示例：
 
 ```toml
-schema_version = 23
+schema_version = 24
 
 disabled_system_agents = []
 
@@ -348,7 +389,8 @@ Settings revision 提交。别家成功不得使本家 stale；用户更换地�
 有效目录的每条成员携带来源：`online`（本次或同身份最后成功的在线名单）、`bundled`（尚无成功
 观察时的内置默认定义）、`manual`（用户手动添加）。来源由后端解析并随 descriptor 发布，界面
 据此分组与标注，不按配置差集或 template 自行推导。删除手动模型使用独立命令
-（`removeAccountModel`，携带 expected revision 与 account_id/model_id）：只接受手动条目，删除后同步
+（`removeAccountModel`，携带 `operationId`、expected revision 与 account_id/model_id，回执原样
+返回该操作身份）：只接受手动条目，删除后同步
 清除该 model_id 的连接覆盖与压缩阈值覆盖；若它是该实例的默认模型，保留字段并沿用“选择以不可用
 保留”的语义。目录观察、模型来源与手动模型增删都不改变 desired route 的其他字段。
 

@@ -122,6 +122,15 @@ impl StudioRuntime {
     }
 
     pub async fn archive_project(&self, project_id: &str) -> Result<Option<ProjectRecord>> {
+        let runtime = self.clone();
+        let project_id = project_id.to_owned();
+        self.run_archive(async move { runtime.archive_project_owned(&project_id).await })
+            .await
+    }
+
+    /// The retained archive worker owns lifecycle admission throughout this operation.
+    async fn archive_project_owned(&self, project_id: &str) -> Result<Option<ProjectRecord>> {
+        let threads = self.load_project_archive_scope(project_id).await?;
         let Some(project) = self
             .agent_facility
             .product_events
@@ -129,10 +138,37 @@ impl StudioRuntime {
             .await
             .into_iter()
             .find(|project| project.id == project_id)
+            .or_else(|| {
+                // workspaces.toml is written before catalog.toml. If the latter failed (including
+                // across restart), the canonical closed Project must still allow finishing its
+                // active catalog rows; absence from the open-project projection is not completion.
+                threads
+                    .iter()
+                    .any(|thread| thread.visibility == ThreadVisibility::Active)
+                    .then(|| {
+                        self.store
+                            .workspaces()
+                            .get(project_id)
+                            .map(|entry| entry.project())
+                    })
+                    .flatten()
+            })
         else {
             return Ok(None);
         };
-        let threads = self.activate_project_archive_scope(project_id).await?;
+        let mut roots = threads
+            .iter()
+            .filter(|thread| thread.parent_thread_id.is_none())
+            .map(|thread| thread.id.clone())
+            .collect::<Vec<_>>();
+        roots.sort();
+        let mut root_operations = Vec::new();
+        for root in &roots {
+            root_operations.push(self.threads.agent_operation(root).await);
+        }
+        // A spawn admitted before these permits may just have published another child. Re-read
+        // the directory only after root preparation is ordered, then seal children in stable order.
+        let threads = self.load_project_archive_scope(project_id).await?;
         let thread_ids = threads
             .iter()
             .map(|thread| thread.id.clone())
@@ -141,15 +177,27 @@ impl StudioRuntime {
             .iter()
             .filter(|thread| thread.visibility == ThreadVisibility::Active)
             .collect::<Vec<_>>();
-        let _pins = self
-            .residency
-            .pin_many(active_threads.iter().map(|thread| thread.id.clone()));
+        let _pins = self.residency.pin_many(thread_ids.iter().cloned());
+        let child_ids = threads
+            .iter()
+            .filter(|thread| thread.parent_thread_id.is_some())
+            .map(|thread| thread.id.clone())
+            .collect::<Vec<_>>();
+        let _child_seals = self.threads.seal_agent_operations(&child_ids).await;
+        let _root_seals = roots
+            .iter()
+            .map(|root| self.threads.seal_agent_operation(root))
+            .collect::<Vec<_>>();
+        drop(root_operations);
         for thread in &active_threads {
-            let _ = self.ensure_thread_owner(&thread.id).await?;
-        }
-        for thread in &active_threads {
-            if self.thread_is_busy(&thread.id).await? {
-                bail!("project has an active turn");
+            match self.thread_is_busy(&thread.id).await {
+                Ok(false) => {}
+                Ok(true) => {
+                    bail!("project has an active turn");
+                }
+                Err(error) => {
+                    return Err(error);
+                }
             }
         }
         self.retire_archived_thread_tree(&thread_ids).await?;
@@ -173,7 +221,18 @@ impl StudioRuntime {
         Ok(Some(project))
     }
 
-    async fn activate_project_archive_scope(&self, project_id: &str) -> Result<Vec<ThreadRecord>> {
+    pub(super) fn ensure_project_thread_admission_open(&self, project_id: &str) -> Result<()> {
+        anyhow::ensure!(
+            self.store
+                .workspaces()
+                .get(project_id)
+                .is_some_and(|entry| !entry.closed),
+            "selected Project is closed or its archive needs to be retried"
+        );
+        Ok(())
+    }
+
+    async fn load_project_archive_scope(&self, project_id: &str) -> Result<Vec<ThreadRecord>> {
         let threads = self.store.list_threads_for_project(project_id).await?;
         let entries = threads
             .iter()

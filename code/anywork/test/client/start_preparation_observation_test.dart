@@ -22,6 +22,8 @@ final class _PreparingTransport extends DemoStudioTransport {
     StudioPromptInput input,
     ThreadModeId mode, {
     required ModeModelRouteView route,
+    required DelegationMode delegationMode,
+    required DelegationPreference delegationPreference,
     String? workspaceMode,
   }) {
     entered.complete(input);

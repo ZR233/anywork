@@ -192,6 +192,8 @@ async fn collect(
                     effort: Some(route.effort).filter(|value| !value.trim().is_empty()),
                 },
                 workspace_mode,
+                delegation_mode: None,
+                delegation_preference: None,
             },
             None,
         )

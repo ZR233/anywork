@@ -3,6 +3,15 @@ import '../../../anywork_client.dart' show ReadModel;
 class SelectionStore extends ReadModel<SelectionStoreState> {
   SelectionStore() : super(const SelectionStoreState());
 
+  int _navigationGeneration = 0;
+
+  /// Register intent before queued work starts, without changing selection or
+  /// resource demand. Older navigation may finish, but can no longer publish.
+  int beginNavigation() => ++_navigationGeneration;
+
+  bool isCurrentNavigation(int generation) =>
+      generation == _navigationGeneration;
+
   void restoreStartup({
     required String? projectId,
     required String? threadId,
@@ -18,10 +27,6 @@ class SelectionStore extends ReadModel<SelectionStoreState> {
   }
 
   void selectProject(String projectId) {
-    if (state.selectedProjectId == projectId &&
-        state.selectedThreadId == null) {
-      return;
-    }
     _assign(
       SelectionStoreState(selectedProjectId: projectId, needsOpen: false),
     );
@@ -42,7 +47,6 @@ class SelectionStore extends ReadModel<SelectionStoreState> {
   }
 
   void beginNewThread() {
-    if (state.selectedThreadId == null && !state.needsOpen) return;
     _assign(
       SelectionStoreState(
         selectedProjectId: state.selectedProjectId,
@@ -52,7 +56,6 @@ class SelectionStore extends ReadModel<SelectionStoreState> {
   }
 
   void markOpened() {
-    if (!state.needsOpen) return;
     _assign(state.copyWith(needsOpen: false));
   }
 
@@ -74,6 +77,9 @@ class SelectionStore extends ReadModel<SelectionStoreState> {
   }
 
   void _assign(SelectionStoreState next) {
+    // Direct route/store changes and canonical removal also retire pending
+    // navigation, including explicit selection of an already selected value.
+    beginNavigation();
     if (next == state) return;
     state = next;
   }

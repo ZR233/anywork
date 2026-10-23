@@ -169,6 +169,28 @@ MutationBoard 分开保存每次真实结果与每个目标的 latest intent。�
 观察 predicate 原子检查当前镜像并注册，使帧先到和回执先到均不漏确认。观察水位只在相同
 owner epoch 和资源域合并。
 
+账号模型启用开关是目标为 `(accountId, modelId)` 的独立字段意图，切换立即交给 Client
+命令 owner，不等待账号编辑页保存。目标字段操作串行，CAS 冲突重读当前资源后只重施
+本次意图，不能回传陈旧账号快照覆盖凭据、目录或其他覆盖。pending/failure 由 mutation
+owner 持有，canonical enabled 仅由 Settings/目录响应和事件更新；旧完成不能覆盖新意图。
+页面退出只取消观察，已受理操作参与 Client 关闭 join，失败和未知结果沿用上述语义。
+启用、计费类别和手动模型删除的窄请求均显式传递本次 OperationId；Runtime 回执原样返回，
+Client 不改写不匹配的回执来强行关联。基于明确 CAS 拒绝的重试仍属于同一业务意图，
+不因刷新 revision 丢失操作身份；未知结果不自动重放。
+
+模型资料与评价详情是按账号模型身份有界的查询资源，不在 Widget 或 settings reducer
+合成另一份模型目录、评分或可用性；迟到详情响应不得写入已切换的模型。智能体列表
+直接消费 typed 冻结模型标识，字段参与镜像比较，不以 Profile 当前值填补历史未知。
+根会话的智能体成员集合由 canonical AgentDirectory 的根归属与父子身份确定；侧栏
+ThreadDirectory 的分页窗口和 session 热集合不代表完整成员，不能与它们取交集后再
+渲染菜单或计数。Client/展示投影按稳定身份消费目录成员，已有 Thread 元数据仅补充
+相应展示，不伪造缺失 Thread、路由、权限或工作区事实。切换根会话保持成员隔离，
+冷成员仅在显式选中时按需取得其会话数据；列举本身不激活 owner 或订阅全部 Timeline。
+导航以用户最新选择意图为准；新意图一经接收，就使旧的按需读取失去发布选择的资格，
+不能等串行命令真正执行才使旧意图失效。迟到结果不得并入目录、改变选择或启动已过时
+成员的历史观察；切项目、切根、选兄弟成员及新建会话遵守相同边界。当前有效选择的
+读取失败保持原错误可见，但过时读取的错误不覆盖较新的导航结果。
+
 账号详情模型列表的阈值编辑只拥有原始输入、短暂防抖与最新意图身份；原始覆盖由 Settings reducer 拥有，
 最终上下文解析结果由 catalog reducer 原样接收。有效输入和恢复自动触发同一
 account 原子保存，Client 在串行写 lane 内从最新 canonical account 应用目标模型变更，
@@ -206,9 +228,15 @@ pending/error 和在途任务，额度事实仍只经 AccountUsageStore 的唯�
 ## 25.8 草稿与附件
 
 StartDraft 与 ComposerDraft 有独立逻辑寿命，不随页面 observer 消失。freezeForSubmit 在
-同步阶段冻结 DraftStamp、项目/Thread 身份、文本、模式、工作区、完整 route 和附件 ID 集合。
+同步阶段冻结 DraftStamp、项目/Thread 身份、文本、模式、工作区、完整 route、解析后的
+分发模式/偏好和附件 ID 集合。
 新建 Thread 直接提交该 route，不先写全局默认设置再读取缓存。已有 Thread 提交携带所观察的
 route extension revision，受理 CAS 的语义见 [18](./18-studio-state.md)。
+
+新会话的分发模式和偏好是项目草稿内两个独立可选覆盖；空值表示跟随 canonical 设置，
+不复制一份默认值保存为覆盖。创建提交在首次 await 前解析并冻结两者，之后设置变化
+不能改写已提交值；成功只清理仍匹配 DraftStamp 的草稿，失败保留选择和附件。固定
+模式保留偏好选择但不应用提示词。已有会话的分发策略只读，不因路由观察者销毁而重置。
 
 markSubmitting、accepted、observed 和 durable 均关联同一 DraftStamp + OperationId。
 提交期间可继续输入和修改草稿；旧 ACK 只清理仍属于该提交且 revision 相符的字段。

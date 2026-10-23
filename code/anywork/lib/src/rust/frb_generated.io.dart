@@ -8,6 +8,7 @@ import 'api/studio/handlers/agent_profiles.dart';
 import 'api/studio/handlers/attachment.dart';
 import 'api/studio/handlers/bots.dart';
 import 'api/studio/handlers/chat.dart';
+import 'api/studio/handlers/delegation.dart';
 import 'api/studio/handlers/external_state.dart';
 import 'api/studio/handlers/history.dart';
 import 'api/studio/handlers/lifecycle.dart';
@@ -29,6 +30,7 @@ import 'api/studio/types/attachment.dart';
 import 'api/studio/types/bots.dart';
 import 'api/studio/types/chat.dart';
 import 'api/studio/types/command.dart';
+import 'api/studio/types/delegation.dart';
 import 'api/studio/types/error.dart';
 import 'api/studio/types/event.dart';
 import 'api/studio/types/mode_editor.dart';
@@ -233,12 +235,20 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  BridgeAgentTaskCategory dco_decode_box_autoadd_bridge_agent_task_category(
+    dynamic raw,
+  );
+
+  @protected
   BridgeAttachmentAdmissionContext
   dco_decode_box_autoadd_bridge_attachment_admission_context(dynamic raw);
 
   @protected
   BridgeAvailableUpdaterState
   dco_decode_box_autoadd_bridge_available_updater_state(dynamic raw);
+
+  @protected
+  BridgeBillingKind dco_decode_box_autoadd_bridge_billing_kind(dynamic raw);
 
   @protected
   BridgeBotConversationThreadBinding
@@ -320,6 +330,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   BridgeFaultedAgent dco_decode_box_autoadd_bridge_faulted_agent(dynamic raw);
 
   @protected
+  BridgeGetDelegationModelRequest
+  dco_decode_box_autoadd_bridge_get_delegation_model_request(dynamic raw);
+
+  @protected
   BridgeHistoryFault dco_decode_box_autoadd_bridge_history_fault(dynamic raw);
 
   @protected
@@ -345,6 +359,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   BridgeListBotConversationsRequest
   dco_decode_box_autoadd_bridge_list_bot_conversations_request(dynamic raw);
+
+  @protected
+  BridgeListDelegationModelsRequest
+  dco_decode_box_autoadd_bridge_list_delegation_models_request(dynamic raw);
 
   @protected
   BridgeListThreadsPageRequest
@@ -405,6 +423,19 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   BridgeModelReasoningDescriptor
   dco_decode_box_autoadd_bridge_model_reasoning_descriptor(dynamic raw);
+
+  @protected
+  BridgeModelSelectionGuide dco_decode_box_autoadd_bridge_model_selection_guide(
+    dynamic raw,
+  );
+
+  @protected
+  BridgeModelSelectionMeasurement
+  dco_decode_box_autoadd_bridge_model_selection_measurement(dynamic raw);
+
+  @protected
+  BridgeNewThreadModelRoute
+  dco_decode_box_autoadd_bridge_new_thread_model_route(dynamic raw);
 
   @protected
   BridgePersistenceStateSnapshot
@@ -782,6 +813,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   DeepSeekBalanceDto dco_decode_box_autoadd_deep_seek_balance_dto(dynamic raw);
 
   @protected
+  double dco_decode_box_autoadd_f_32(dynamic raw);
+
+  @protected
   double dco_decode_box_autoadd_f_64(dynamic raw);
 
   @protected
@@ -818,6 +852,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   BigInt dco_decode_box_autoadd_u_64(dynamic raw);
+
+  @protected
+  int dco_decode_box_autoadd_u_8(dynamic raw);
 
   @protected
   ZhipuCodingPlanUsageDto dco_decode_box_autoadd_zhipu_coding_plan_usage_dto(
@@ -949,6 +986,19 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  BridgeAgentEvaluation dco_decode_bridge_agent_evaluation(dynamic raw);
+
+  @protected
+  BridgeAgentEvaluationOutcome dco_decode_bridge_agent_evaluation_outcome(
+    dynamic raw,
+  );
+
+  @protected
+  BridgeAgentEvaluationSummary dco_decode_bridge_agent_evaluation_summary(
+    dynamic raw,
+  );
+
+  @protected
   BridgeAgentProfileDiagnostic dco_decode_bridge_agent_profile_diagnostic(
     dynamic raw,
   );
@@ -968,6 +1018,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   BridgeAgentState dco_decode_bridge_agent_state(dynamic raw);
+
+  @protected
+  BridgeAgentTaskCategory dco_decode_bridge_agent_task_category(dynamic raw);
 
   @protected
   BridgeAgentWorkspaceMode dco_decode_bridge_agent_workspace_mode(dynamic raw);
@@ -995,6 +1048,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   BridgeAvailableUpdaterState dco_decode_bridge_available_updater_state(
     dynamic raw,
   );
+
+  @protected
+  BridgeBillingKind dco_decode_bridge_billing_kind(dynamic raw);
 
   @protected
   BridgeBotConnectionState dco_decode_bridge_bot_connection_state(dynamic raw);
@@ -1152,6 +1208,37 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   BridgeDegradedResource dco_decode_bridge_degraded_resource(dynamic raw);
 
   @protected
+  BridgeDelegationMode dco_decode_bridge_delegation_mode(dynamic raw);
+
+  @protected
+  BridgeDelegationModelCapability dco_decode_bridge_delegation_model_capability(
+    dynamic raw,
+  );
+
+  @protected
+  BridgeDelegationModelDetail dco_decode_bridge_delegation_model_detail(
+    dynamic raw,
+  );
+
+  @protected
+  BridgeDelegationModelList dco_decode_bridge_delegation_model_list(
+    dynamic raw,
+  );
+
+  @protected
+  BridgeDelegationModelListItem dco_decode_bridge_delegation_model_list_item(
+    dynamic raw,
+  );
+
+  @protected
+  BridgeDelegationPreference dco_decode_bridge_delegation_preference(
+    dynamic raw,
+  );
+
+  @protected
+  BridgeDelegationSettings dco_decode_bridge_delegation_settings(dynamic raw);
+
+  @protected
   BridgeDirectoryFilter dco_decode_bridge_directory_filter(dynamic raw);
 
   @protected
@@ -1190,6 +1277,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   BridgeGeneralSettingsDto dco_decode_bridge_general_settings_dto(dynamic raw);
+
+  @protected
+  BridgeGetDelegationModelRequest
+  dco_decode_bridge_get_delegation_model_request(dynamic raw);
 
   @protected
   BridgeHistoryFault dco_decode_bridge_history_fault(dynamic raw);
@@ -1241,12 +1332,20 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   dco_decode_bridge_list_bot_conversations_request(dynamic raw);
 
   @protected
+  BridgeListDelegationModelsRequest
+  dco_decode_bridge_list_delegation_models_request(dynamic raw);
+
+  @protected
   BridgeListThreadsPageRequest dco_decode_bridge_list_threads_page_request(
     dynamic raw,
   );
 
   @protected
   BridgeLoadingResource dco_decode_bridge_loading_resource(dynamic raw);
+
+  @protected
+  BridgeLocalModelPerformanceSummary
+  dco_decode_bridge_local_model_performance_summary(dynamic raw);
 
   @protected
   BridgeLspActivity dco_decode_bridge_lsp_activity(dynamic raw);
@@ -1413,6 +1512,26 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  BridgeModelSelectionGuide dco_decode_bridge_model_selection_guide(
+    dynamic raw,
+  );
+
+  @protected
+  BridgeModelSelectionMeasurement dco_decode_bridge_model_selection_measurement(
+    dynamic raw,
+  );
+
+  @protected
+  BridgeModelSelectionSource dco_decode_bridge_model_selection_source(
+    dynamic raw,
+  );
+
+  @protected
+  BridgeModelSelectionSourceKind dco_decode_bridge_model_selection_source_kind(
+    dynamic raw,
+  );
+
+  @protected
   BridgeModelTransportDescriptor dco_decode_bridge_model_transport_descriptor(
     dynamic raw,
   );
@@ -1425,6 +1544,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   BridgeModelTypeSupport dco_decode_bridge_model_type_support(dynamic raw);
+
+  @protected
+  BridgeNewThreadModelRoute dco_decode_bridge_new_thread_model_route(
+    dynamic raw,
+  );
 
   @protected
   BridgeNewThreadStartEvent dco_decode_bridge_new_thread_start_event(
@@ -2228,6 +2352,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   DeepSeekBalanceInfoDto dco_decode_deep_seek_balance_info_dto(dynamic raw);
 
   @protected
+  double dco_decode_f_32(dynamic raw);
+
+  @protected
   double dco_decode_f_64(dynamic raw);
 
   @protected
@@ -2270,11 +2397,21 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   dco_decode_list_bridge_agent_directory_entry_dto(dynamic raw);
 
   @protected
+  List<BridgeAgentEvaluation> dco_decode_list_bridge_agent_evaluation(
+    dynamic raw,
+  );
+
+  @protected
   List<BridgeAgentProfileDiagnostic>
   dco_decode_list_bridge_agent_profile_diagnostic(dynamic raw);
 
   @protected
   List<BridgeAgentProfileDto> dco_decode_list_bridge_agent_profile_dto(
+    dynamic raw,
+  );
+
+  @protected
+  List<BridgeAgentTaskCategory> dco_decode_list_bridge_agent_task_category(
     dynamic raw,
   );
 
@@ -2319,6 +2456,14 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   List<BridgeCustomModelSettingsDto>
   dco_decode_list_bridge_custom_model_settings_dto(dynamic raw);
+
+  @protected
+  List<BridgeDelegationModelCapability>
+  dco_decode_list_bridge_delegation_model_capability(dynamic raw);
+
+  @protected
+  List<BridgeDelegationModelListItem>
+  dco_decode_list_bridge_delegation_model_list_item(dynamic raw);
 
   @protected
   List<BridgeInteractionRequest> dco_decode_list_bridge_interaction_request(
@@ -2388,6 +2533,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   List<BridgeModelPriceTier> dco_decode_list_bridge_model_price_tier(
     dynamic raw,
   );
+
+  @protected
+  List<BridgeModelSelectionSource>
+  dco_decode_list_bridge_model_selection_source(dynamic raw);
 
   @protected
   List<BridgeModelTypeExclusion> dco_decode_list_bridge_model_type_exclusion(
@@ -2584,6 +2733,15 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   bool? dco_decode_opt_box_autoadd_bool(dynamic raw);
 
   @protected
+  BridgeAgentTaskCategory?
+  dco_decode_opt_box_autoadd_bridge_agent_task_category(dynamic raw);
+
+  @protected
+  BridgeBillingKind? dco_decode_opt_box_autoadd_bridge_billing_kind(
+    dynamic raw,
+  );
+
+  @protected
   BridgeBotConversationThreadBinding?
   dco_decode_opt_box_autoadd_bridge_bot_conversation_thread_binding(
     dynamic raw,
@@ -2632,6 +2790,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   BridgeModelReasoningDescriptor?
   dco_decode_opt_box_autoadd_bridge_model_reasoning_descriptor(dynamic raw);
+
+  @protected
+  BridgeModelSelectionGuide?
+  dco_decode_opt_box_autoadd_bridge_model_selection_guide(dynamic raw);
+
+  @protected
+  BridgeModelSelectionMeasurement?
+  dco_decode_opt_box_autoadd_bridge_model_selection_measurement(dynamic raw);
+
+  @protected
+  BridgeNewThreadModelRoute?
+  dco_decode_opt_box_autoadd_bridge_new_thread_model_route(dynamic raw);
 
   @protected
   BridgePlanDocument? dco_decode_opt_box_autoadd_bridge_plan_document(
@@ -2759,6 +2929,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   dco_decode_opt_box_autoadd_bridge_worktree_recovery_preview_dto(dynamic raw);
 
   @protected
+  double? dco_decode_opt_box_autoadd_f_32(dynamic raw);
+
+  @protected
   double? dco_decode_opt_box_autoadd_f_64(dynamic raw);
 
   @protected
@@ -2778,6 +2951,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   BigInt? dco_decode_opt_box_autoadd_u_64(dynamic raw);
+
+  @protected
+  int? dco_decode_opt_box_autoadd_u_8(dynamic raw);
 
   @protected
   BridgeThreadActivity? dco_decode_opt_box_bridge_thread_activity(dynamic raw);
@@ -3057,6 +3233,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  BridgeAgentTaskCategory sse_decode_box_autoadd_bridge_agent_task_category(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   BridgeAttachmentAdmissionContext
   sse_decode_box_autoadd_bridge_attachment_admission_context(
     SseDeserializer deserializer,
@@ -3065,6 +3246,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   BridgeAvailableUpdaterState
   sse_decode_box_autoadd_bridge_available_updater_state(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeBillingKind sse_decode_box_autoadd_bridge_billing_kind(
     SseDeserializer deserializer,
   );
 
@@ -3170,6 +3356,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  BridgeGetDelegationModelRequest
+  sse_decode_box_autoadd_bridge_get_delegation_model_request(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   BridgeHistoryFault sse_decode_box_autoadd_bridge_history_fault(
     SseDeserializer deserializer,
   );
@@ -3205,6 +3397,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   BridgeListBotConversationsRequest
   sse_decode_box_autoadd_bridge_list_bot_conversations_request(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeListDelegationModelsRequest
+  sse_decode_box_autoadd_bridge_list_delegation_models_request(
     SseDeserializer deserializer,
   );
 
@@ -3287,6 +3485,23 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   BridgeModelReasoningDescriptor
   sse_decode_box_autoadd_bridge_model_reasoning_descriptor(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeModelSelectionGuide sse_decode_box_autoadd_bridge_model_selection_guide(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeModelSelectionMeasurement
+  sse_decode_box_autoadd_bridge_model_selection_measurement(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeNewThreadModelRoute
+  sse_decode_box_autoadd_bridge_new_thread_model_route(
     SseDeserializer deserializer,
   );
 
@@ -3776,6 +3991,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  double sse_decode_box_autoadd_f_32(SseDeserializer deserializer);
+
+  @protected
   double sse_decode_box_autoadd_f_64(SseDeserializer deserializer);
 
   @protected
@@ -3820,6 +4038,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   BigInt sse_decode_box_autoadd_u_64(SseDeserializer deserializer);
+
+  @protected
+  int sse_decode_box_autoadd_u_8(SseDeserializer deserializer);
 
   @protected
   ZhipuCodingPlanUsageDto sse_decode_box_autoadd_zhipu_coding_plan_usage_dto(
@@ -3983,6 +4204,21 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  BridgeAgentEvaluation sse_decode_bridge_agent_evaluation(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeAgentEvaluationOutcome sse_decode_bridge_agent_evaluation_outcome(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeAgentEvaluationSummary sse_decode_bridge_agent_evaluation_summary(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   BridgeAgentProfileDiagnostic sse_decode_bridge_agent_profile_diagnostic(
     SseDeserializer deserializer,
   );
@@ -4008,6 +4244,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   BridgeAgentState sse_decode_bridge_agent_state(SseDeserializer deserializer);
+
+  @protected
+  BridgeAgentTaskCategory sse_decode_bridge_agent_task_category(
+    SseDeserializer deserializer,
+  );
 
   @protected
   BridgeAgentWorkspaceMode sse_decode_bridge_agent_workspace_mode(
@@ -4039,6 +4280,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   BridgeAvailableUpdaterState sse_decode_bridge_available_updater_state(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeBillingKind sse_decode_bridge_billing_kind(
     SseDeserializer deserializer,
   );
 
@@ -4254,6 +4500,41 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  BridgeDelegationMode sse_decode_bridge_delegation_mode(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeDelegationModelCapability sse_decode_bridge_delegation_model_capability(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeDelegationModelDetail sse_decode_bridge_delegation_model_detail(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeDelegationModelList sse_decode_bridge_delegation_model_list(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeDelegationModelListItem sse_decode_bridge_delegation_model_list_item(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeDelegationPreference sse_decode_bridge_delegation_preference(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeDelegationSettings sse_decode_bridge_delegation_settings(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   BridgeDirectoryFilter sse_decode_bridge_directory_filter(
     SseDeserializer deserializer,
   );
@@ -4304,6 +4585,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   BridgeGeneralSettingsDto sse_decode_bridge_general_settings_dto(
     SseDeserializer deserializer,
   );
+
+  @protected
+  BridgeGetDelegationModelRequest
+  sse_decode_bridge_get_delegation_model_request(SseDeserializer deserializer);
 
   @protected
   BridgeHistoryFault sse_decode_bridge_history_fault(
@@ -4369,12 +4654,24 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  BridgeListDelegationModelsRequest
+  sse_decode_bridge_list_delegation_models_request(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   BridgeListThreadsPageRequest sse_decode_bridge_list_threads_page_request(
     SseDeserializer deserializer,
   );
 
   @protected
   BridgeLoadingResource sse_decode_bridge_loading_resource(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeLocalModelPerformanceSummary
+  sse_decode_bridge_local_model_performance_summary(
     SseDeserializer deserializer,
   );
 
@@ -4589,6 +4886,26 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  BridgeModelSelectionGuide sse_decode_bridge_model_selection_guide(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeModelSelectionMeasurement sse_decode_bridge_model_selection_measurement(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeModelSelectionSource sse_decode_bridge_model_selection_source(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeModelSelectionSourceKind sse_decode_bridge_model_selection_source_kind(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   BridgeModelTransportDescriptor sse_decode_bridge_model_transport_descriptor(
     SseDeserializer deserializer,
   );
@@ -4603,6 +4920,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   BridgeModelTypeSupport sse_decode_bridge_model_type_support(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeNewThreadModelRoute sse_decode_bridge_new_thread_model_route(
     SseDeserializer deserializer,
   );
 
@@ -5590,6 +5912,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  double sse_decode_f_32(SseDeserializer deserializer);
+
+  @protected
   double sse_decode_f_64(SseDeserializer deserializer);
 
   @protected
@@ -5644,11 +5969,21 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  List<BridgeAgentEvaluation> sse_decode_list_bridge_agent_evaluation(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   List<BridgeAgentProfileDiagnostic>
   sse_decode_list_bridge_agent_profile_diagnostic(SseDeserializer deserializer);
 
   @protected
   List<BridgeAgentProfileDto> sse_decode_list_bridge_agent_profile_dto(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  List<BridgeAgentTaskCategory> sse_decode_list_bridge_agent_task_category(
     SseDeserializer deserializer,
   );
 
@@ -5701,6 +6036,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   List<BridgeCustomModelSettingsDto>
   sse_decode_list_bridge_custom_model_settings_dto(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  List<BridgeDelegationModelCapability>
+  sse_decode_list_bridge_delegation_model_capability(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  List<BridgeDelegationModelListItem>
+  sse_decode_list_bridge_delegation_model_list_item(
     SseDeserializer deserializer,
   );
 
@@ -5788,6 +6135,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   List<BridgeModelPriceTier> sse_decode_list_bridge_model_price_tier(
     SseDeserializer deserializer,
   );
+
+  @protected
+  List<BridgeModelSelectionSource>
+  sse_decode_list_bridge_model_selection_source(SseDeserializer deserializer);
 
   @protected
   List<BridgeModelTypeExclusion> sse_decode_list_bridge_model_type_exclusion(
@@ -6022,6 +6373,17 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   bool? sse_decode_opt_box_autoadd_bool(SseDeserializer deserializer);
 
   @protected
+  BridgeAgentTaskCategory?
+  sse_decode_opt_box_autoadd_bridge_agent_task_category(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeBillingKind? sse_decode_opt_box_autoadd_bridge_billing_kind(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   BridgeBotConversationThreadBinding?
   sse_decode_opt_box_autoadd_bridge_bot_conversation_thread_binding(
     SseDeserializer deserializer,
@@ -6080,6 +6442,24 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   BridgeModelReasoningDescriptor?
   sse_decode_opt_box_autoadd_bridge_model_reasoning_descriptor(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeModelSelectionGuide?
+  sse_decode_opt_box_autoadd_bridge_model_selection_guide(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeModelSelectionMeasurement?
+  sse_decode_opt_box_autoadd_bridge_model_selection_measurement(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeNewThreadModelRoute?
+  sse_decode_opt_box_autoadd_bridge_new_thread_model_route(
     SseDeserializer deserializer,
   );
 
@@ -6245,6 +6625,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  double? sse_decode_opt_box_autoadd_f_32(SseDeserializer deserializer);
+
+  @protected
   double? sse_decode_opt_box_autoadd_f_64(SseDeserializer deserializer);
 
   @protected
@@ -6266,6 +6649,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   BigInt? sse_decode_opt_box_autoadd_u_64(SseDeserializer deserializer);
+
+  @protected
+  int? sse_decode_opt_box_autoadd_u_8(SseDeserializer deserializer);
 
   @protected
   BridgeThreadActivity? sse_decode_opt_box_bridge_thread_activity(
@@ -6604,6 +6990,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_box_autoadd_bridge_agent_task_category(
+    BridgeAgentTaskCategory self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_box_autoadd_bridge_attachment_admission_context(
     BridgeAttachmentAdmissionContext self,
     SseSerializer serializer,
@@ -6612,6 +7004,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_box_autoadd_bridge_available_updater_state(
     BridgeAvailableUpdaterState self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_bridge_billing_kind(
+    BridgeBillingKind self,
     SseSerializer serializer,
   );
 
@@ -6730,6 +7128,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_box_autoadd_bridge_get_delegation_model_request(
+    BridgeGetDelegationModelRequest self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_box_autoadd_bridge_history_fault(
     BridgeHistoryFault self,
     SseSerializer serializer,
@@ -6768,6 +7172,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_box_autoadd_bridge_list_bot_conversations_request(
     BridgeListBotConversationsRequest self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_bridge_list_delegation_models_request(
+    BridgeListDelegationModelsRequest self,
     SseSerializer serializer,
   );
 
@@ -6858,6 +7268,24 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_box_autoadd_bridge_model_reasoning_descriptor(
     BridgeModelReasoningDescriptor self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_bridge_model_selection_guide(
+    BridgeModelSelectionGuide self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_bridge_model_selection_measurement(
+    BridgeModelSelectionMeasurement self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_bridge_new_thread_model_route(
+    BridgeNewThreadModelRoute self,
     SseSerializer serializer,
   );
 
@@ -7396,6 +7824,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_box_autoadd_f_32(double self, SseSerializer serializer);
+
+  @protected
   void sse_encode_box_autoadd_f_64(double self, SseSerializer serializer);
 
   @protected
@@ -7451,6 +7882,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_encode_box_autoadd_u_64(BigInt self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_box_autoadd_u_8(int self, SseSerializer serializer);
 
   @protected
   void sse_encode_box_autoadd_zhipu_coding_plan_usage_dto(
@@ -7642,6 +8076,24 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_bridge_agent_evaluation(
+    BridgeAgentEvaluation self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_agent_evaluation_outcome(
+    BridgeAgentEvaluationOutcome self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_agent_evaluation_summary(
+    BridgeAgentEvaluationSummary self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_bridge_agent_profile_diagnostic(
     BridgeAgentProfileDiagnostic self,
     SseSerializer serializer,
@@ -7674,6 +8126,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_bridge_agent_state(
     BridgeAgentState self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_agent_task_category(
+    BridgeAgentTaskCategory self,
     SseSerializer serializer,
   );
 
@@ -7716,6 +8174,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_bridge_available_updater_state(
     BridgeAvailableUpdaterState self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_billing_kind(
+    BridgeBillingKind self,
     SseSerializer serializer,
   );
 
@@ -7972,6 +8436,48 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_bridge_delegation_mode(
+    BridgeDelegationMode self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_delegation_model_capability(
+    BridgeDelegationModelCapability self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_delegation_model_detail(
+    BridgeDelegationModelDetail self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_delegation_model_list(
+    BridgeDelegationModelList self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_delegation_model_list_item(
+    BridgeDelegationModelListItem self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_delegation_preference(
+    BridgeDelegationPreference self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_delegation_settings(
+    BridgeDelegationSettings self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_bridge_directory_filter(
     BridgeDirectoryFilter self,
     SseSerializer serializer,
@@ -8037,6 +8543,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_bridge_general_settings_dto(
     BridgeGeneralSettingsDto self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_get_delegation_model_request(
+    BridgeGetDelegationModelRequest self,
     SseSerializer serializer,
   );
 
@@ -8119,6 +8631,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_bridge_list_delegation_models_request(
+    BridgeListDelegationModelsRequest self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_bridge_list_threads_page_request(
     BridgeListThreadsPageRequest self,
     SseSerializer serializer,
@@ -8127,6 +8645,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_bridge_loading_resource(
     BridgeLoadingResource self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_local_model_performance_summary(
+    BridgeLocalModelPerformanceSummary self,
     SseSerializer serializer,
   );
 
@@ -8383,6 +8907,30 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_bridge_model_selection_guide(
+    BridgeModelSelectionGuide self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_model_selection_measurement(
+    BridgeModelSelectionMeasurement self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_model_selection_source(
+    BridgeModelSelectionSource self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_model_selection_source_kind(
+    BridgeModelSelectionSourceKind self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_bridge_model_transport_descriptor(
     BridgeModelTransportDescriptor self,
     SseSerializer serializer,
@@ -8403,6 +8951,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_bridge_model_type_support(
     BridgeModelTypeSupport self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_new_thread_model_route(
+    BridgeNewThreadModelRoute self,
     SseSerializer serializer,
   );
 
@@ -9607,6 +10161,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_f_32(double self, SseSerializer serializer);
+
+  @protected
   void sse_encode_f_64(double self, SseSerializer serializer);
 
   @protected
@@ -9667,6 +10224,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_list_bridge_agent_evaluation(
+    List<BridgeAgentEvaluation> self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_list_bridge_agent_profile_diagnostic(
     List<BridgeAgentProfileDiagnostic> self,
     SseSerializer serializer,
@@ -9675,6 +10238,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_list_bridge_agent_profile_dto(
     List<BridgeAgentProfileDto> self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_list_bridge_agent_task_category(
+    List<BridgeAgentTaskCategory> self,
     SseSerializer serializer,
   );
 
@@ -9735,6 +10304,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_list_bridge_custom_model_settings_dto(
     List<BridgeCustomModelSettingsDto> self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_list_bridge_delegation_model_capability(
+    List<BridgeDelegationModelCapability> self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_list_bridge_delegation_model_list_item(
+    List<BridgeDelegationModelListItem> self,
     SseSerializer serializer,
   );
 
@@ -9837,6 +10418,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_list_bridge_model_price_tier(
     List<BridgeModelPriceTier> self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_list_bridge_model_selection_source(
+    List<BridgeModelSelectionSource> self,
     SseSerializer serializer,
   );
 
@@ -10117,6 +10704,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   void sse_encode_opt_box_autoadd_bool(bool? self, SseSerializer serializer);
 
   @protected
+  void sse_encode_opt_box_autoadd_bridge_agent_task_category(
+    BridgeAgentTaskCategory? self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_opt_box_autoadd_bridge_billing_kind(
+    BridgeBillingKind? self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_opt_box_autoadd_bridge_bot_conversation_thread_binding(
     BridgeBotConversationThreadBinding? self,
     SseSerializer serializer,
@@ -10179,6 +10778,24 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_opt_box_autoadd_bridge_model_reasoning_descriptor(
     BridgeModelReasoningDescriptor? self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_opt_box_autoadd_bridge_model_selection_guide(
+    BridgeModelSelectionGuide? self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_opt_box_autoadd_bridge_model_selection_measurement(
+    BridgeModelSelectionMeasurement? self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_opt_box_autoadd_bridge_new_thread_model_route(
+    BridgeNewThreadModelRoute? self,
     SseSerializer serializer,
   );
 
@@ -10357,6 +10974,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_opt_box_autoadd_f_32(double? self, SseSerializer serializer);
+
+  @protected
   void sse_encode_opt_box_autoadd_f_64(double? self, SseSerializer serializer);
 
   @protected
@@ -10382,6 +11002,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_encode_opt_box_autoadd_u_64(BigInt? self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_opt_box_autoadd_u_8(int? self, SseSerializer serializer);
 
   @protected
   void sse_encode_opt_box_bridge_thread_activity(

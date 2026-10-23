@@ -45,16 +45,20 @@ const UNRESOLVED_THREAD_LOG_LIMIT: usize = 8;
 /// 单向关闭终止闩：一旦进入关闭，本进程余下生命周期内拒绝迟到安装。
 #[derive(Clone, Default)]
 pub(crate) struct ShutdownLatch {
-    committed: Arc<AtomicBool>,
+    committed: tokio_util::sync::CancellationToken,
 }
 
 impl ShutdownLatch {
     pub(crate) fn arm(&self) {
-        self.committed.store(true, Ordering::SeqCst);
+        self.committed.cancel();
     }
 
     pub(crate) fn is_committed(&self) -> bool {
-        self.committed.load(Ordering::SeqCst)
+        self.committed.is_cancelled()
+    }
+
+    pub(crate) async fn committed(&self) {
+        self.committed.cancelled().await;
     }
 }
 

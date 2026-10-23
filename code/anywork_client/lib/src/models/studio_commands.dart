@@ -1,4 +1,5 @@
 import 'account_models.dart';
+import 'delegation_models.dart';
 
 enum AccountSecretAction { preserve, replace, clear }
 
@@ -172,6 +173,16 @@ abstract final class AccountCommandBuilder {
 /// Bridge never receive a stale sibling settings snapshot to merge back.
 sealed class SettingsFieldCommand {
   const SettingsFieldCommand();
+}
+
+final class DelegationModeCommand extends SettingsFieldCommand {
+  const DelegationModeCommand(this.value);
+  final DelegationMode value;
+}
+
+final class DelegationPreferenceCommand extends SettingsFieldCommand {
+  const DelegationPreferenceCommand(this.value);
+  final DelegationPreference value;
 }
 
 class InstructionBaseOverrideCommand extends SettingsFieldCommand {

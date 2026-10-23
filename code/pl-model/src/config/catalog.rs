@@ -229,6 +229,43 @@ impl AccountCatalogRegistry {
                 )));
             }
         }
+        // 选模资料属于同一份内置目录：它必须命中真实成员并满足长度/来源上限，
+        // 否则是打包缺陷而不是用户配置问题。
+        let mut guides = BTreeSet::new();
+        for bundled in crate::model::bundled_selection_guides() {
+            bundled
+                .guide
+                .validate()
+                .map_err(|error| PureError::ConfigError(error.to_string()))?;
+            for catalog_id in bundled.catalogs {
+                let catalog = self
+                    .model_catalogs
+                    .keys()
+                    .find(|id| id.as_str() == *catalog_id)
+                    .ok_or_else(|| {
+                        PureError::ConfigError(format!(
+                            "selection guide references unknown model catalog: {catalog_id}"
+                        ))
+                    })?;
+                if !self.model_catalogs.get(catalog).is_some_and(|catalog| {
+                    catalog
+                        .models
+                        .iter()
+                        .any(|model| model.model_id == bundled.model_id)
+                }) {
+                    return Err(PureError::ConfigError(format!(
+                        "selection guide references unknown model: {catalog_id}/{}",
+                        bundled.model_id
+                    )));
+                }
+                if !guides.insert((*catalog_id, bundled.model_id)) {
+                    return Err(PureError::ConfigError(format!(
+                        "duplicate selection guide for {catalog_id}/{}",
+                        bundled.model_id
+                    )));
+                }
+            }
+        }
         Ok(())
     }
 
@@ -451,6 +488,7 @@ pub fn model_descriptor(entry: &AccountModelEntry) -> ModelDescriptor {
             AccountModelOrigin::Online => pl_protocol::ModelOriginDto::Online,
             AccountModelOrigin::Manual => pl_protocol::ModelOriginDto::Manual,
         },
+        enabled: entry.enabled,
         display_name: model.display_name.clone(),
         description: model.description.clone(),
         context_window: model.context_window,
@@ -500,6 +538,52 @@ fn protocol_label(protocol: WireApi) -> &'static str {
     match protocol {
         WireApi::Responses => "responses",
         WireApi::ChatCompletions => "chat_completions",
+    }
+}
+
+/// 把内置只读选模资料投影为跨产品 wire。
+///
+/// 投影只做字段搬运：长度上限、来源与测量条件在 [`crate::model::ModelSelectionGuide::validate`]
+/// 中校验，调用方不得静默截断简介或伪造分数。
+pub fn selection_guide_descriptor(
+    guide: &crate::model::ModelSelectionGuide,
+) -> pl_protocol::ModelSelectionGuideDto {
+    pl_protocol::ModelSelectionGuideDto {
+        summary: guide.summary.to_string(),
+        task_suitability: guide.task_suitability.to_vec(),
+        limitations: guide
+            .limitations
+            .iter()
+            .map(|limitation| (*limitation).to_string())
+            .collect(),
+        sources: guide
+            .sources
+            .iter()
+            .map(|source| pl_protocol::ModelSelectionSourceDto {
+                kind: match source.kind {
+                    crate::model::ModelSelectionSourceKind::Official => {
+                        pl_protocol::ModelSelectionSourceKindDto::Official
+                    }
+                    crate::model::ModelSelectionSourceKind::Benchmark => {
+                        pl_protocol::ModelSelectionSourceKindDto::Benchmark
+                    }
+                    crate::model::ModelSelectionSourceKind::Community => {
+                        pl_protocol::ModelSelectionSourceKindDto::Community
+                    }
+                },
+                url: source.url.to_string(),
+                verified_at: source.verified_at,
+                measurement: source.measurement.as_ref().map(|measurement| {
+                    pl_protocol::ModelSelectionMeasurementDto {
+                        model: measurement.model.to_string(),
+                        effort: measurement.effort.map(ToString::to_string),
+                        metric: measurement.metric.to_string(),
+                        metric_version: measurement.metric_version.map(ToString::to_string),
+                        score: measurement.score,
+                    }
+                }),
+            })
+            .collect(),
     }
 }
 

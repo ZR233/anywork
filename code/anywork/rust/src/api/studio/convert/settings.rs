@@ -76,6 +76,9 @@ pub(crate) fn bridge_settings(
             .into_iter()
             .map(|account| BridgeAccountSettingsDto {
                 pricing_enabled: account.pricing_enabled,
+                billing_kind: account.billing_kind.into(),
+                billing_kind_override: account.billing_kind_override.map(Into::into),
+                disabled_models: account.disabled_models,
                 account_id: account.account_id,
                 template_id: account.template_id,
                 protocol: account.protocol,
@@ -181,6 +184,10 @@ pub(crate) fn bridge_settings(
             sidebar_width: settings.general.sidebar_width,
             pinned_thread_ids: settings.general.pinned_thread_ids.clone(),
             pinned_project_ids: settings.general.pinned_project_ids.clone(),
+        },
+        delegation: super::super::types::BridgeDelegationSettings {
+            mode: settings.delegation.mode.into(),
+            preference: settings.delegation.preference.into(),
         },
         web_search: bridge_web_search_settings(settings.web_search),
         deepseek_web_search: bridge_deepseek_web_search_settings(settings.deepseek_web_search),

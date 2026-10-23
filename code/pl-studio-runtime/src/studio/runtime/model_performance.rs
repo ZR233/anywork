@@ -309,6 +309,22 @@ impl ModelPerformanceOwner {
         self.published.lock().await.global.clone()
     }
 
+    /// Small read projection for model selection; never clones the retained sample history.
+    pub(crate) async fn model_summary(
+        &self,
+        account: &str,
+        model: &str,
+    ) -> Option<(i64, StudioModelPerformanceSummary)> {
+        let published = self.published.lock().await;
+        published
+            .global
+            .summaries
+            .iter()
+            .find(|summary| summary.account_id == account && summary.model_id == model)
+            .cloned()
+            .map(|summary| (published.global.updated_at, summary))
+    }
+
     /// 单个 root 会话的作用域费用基线；纯读已发布缓存。
     ///
     /// 未缓存 root 返回当前费用水位的空基线，不落缓存、不扫描调用库；即使清除条目

@@ -5,9 +5,10 @@ use crate::api::studio::convert::settings::{
     bridge_web_search_settings,
 };
 use crate::api::studio::types::{
-    AccountSettingsInput, BridgeAccountCatalogSnapshot, BridgeDeepSeekWebSearchSettingsDto,
-    BridgeError, BridgeSettingsCommandReply, BridgeSettingsStateResponse,
-    BridgeWebSearchSettingsDto, RemoveAccountInput, SettingsFieldInput,
+    AccountSettingsInput, BridgeAccountCatalogSnapshot, BridgeBillingKind,
+    BridgeDeepSeekWebSearchSettingsDto, BridgeError, BridgeSettingsCommandReply,
+    BridgeSettingsStateResponse, BridgeWebSearchSettingsDto, RemoveAccountInput,
+    SettingsFieldInput,
 };
 // ── Settings ──
 
@@ -61,6 +62,7 @@ pub async fn read_settings_state() -> Result<BridgeSettingsStateResponse, Bridge
 }
 
 pub async fn remove_account_model(
+    operation_id: String,
     expected_settings_revision: u64,
     account_id: String,
     model_id: String,
@@ -68,11 +70,56 @@ pub async fn remove_account_model(
     let bridge = active_bridge().await?;
     Ok(settings_command_reply(bridge.studio.remove_account_model(
         pl_protocol::studio::RemoveAccountModelRequest {
+            operation_id,
             expected_revision: expected_settings_revision,
             account_id,
             model_id,
         },
     )?))
+}
+
+/// Changes only the unified enabled field of one exact catalog member.
+pub async fn set_account_model_enabled(
+    operation_id: String,
+    expected_settings_revision: u64,
+    account_id: String,
+    model_id: String,
+    enabled: bool,
+) -> Result<BridgeSettingsCommandReply, BridgeError> {
+    Ok(settings_command_reply(
+        active_bridge().await?.studio.set_account_model_enabled(
+            pl_protocol::studio::SetAccountModelEnabledRequest {
+                operation_id,
+                expected_revision: expected_settings_revision,
+                account_id,
+                model_id,
+                enabled,
+            },
+        )?,
+    ))
+}
+
+/// `None` explicitly clears the override; explicit Unknown is a distinct intent.
+pub async fn set_account_billing_kind(
+    operation_id: String,
+    expected_settings_revision: u64,
+    account_id: String,
+    billing_kind: Option<BridgeBillingKind>,
+) -> Result<BridgeSettingsCommandReply, BridgeError> {
+    let billing_kind = match billing_kind {
+        Some(kind) => pl_protocol::studio::BillingKindIntent::set(kind.into()),
+        None => pl_protocol::studio::BillingKindIntent::clear(),
+    };
+    Ok(settings_command_reply(
+        active_bridge().await?.studio.set_account_billing_kind(
+            pl_protocol::studio::SetAccountBillingKindRequest {
+                operation_id,
+                expected_revision: expected_settings_revision,
+                account_id,
+                billing_kind,
+            },
+        )?,
+    ))
 }
 
 pub async fn reload_settings_from_disk(

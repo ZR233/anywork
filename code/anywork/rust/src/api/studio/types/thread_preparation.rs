@@ -1,6 +1,9 @@
 use serde::{Deserialize, Serialize};
 
-use super::{BridgeError, BridgeStudioPromptInput, StartNewThreadResponse};
+use super::{
+    BridgeDelegationMode, BridgeDelegationPreference, BridgeError, BridgeStudioPromptInput,
+    StartNewThreadResponse,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BridgeStartNewThreadRequest {
@@ -11,6 +14,8 @@ pub struct BridgeStartNewThreadRequest {
     pub model_id: String,
     pub effort: Option<String>,
     pub workspace_mode: Option<String>,
+    pub delegation_mode: BridgeDelegationMode,
+    pub delegation_preference: BridgeDelegationPreference,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]

@@ -17,7 +17,7 @@ use crate::studio::store::{StudioDatabaseError, StudioStore};
 use crate::studio::store_support::{STUDIO_DATABASE_SCHEMA_VERSION, initialize_studio_schema};
 
 /// 可原地升级到当前 schema 的上一版本；模式匹配需要 const 模式。
-const UPGRADEABLE_STUDIO_DATABASE_SCHEMA_VERSION: i64 = STUDIO_DATABASE_SCHEMA_VERSION - 1;
+const UPGRADEABLE_STUDIO_DATABASE_SCHEMA_VERSION: i64 = 22;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ExistingDatabaseState {
@@ -465,7 +465,7 @@ async fn inspect_database(path: &Path) -> Result<ExistingDatabaseState> {
             .await
             .map(|()| ExistingDatabaseState::Current),
         // 上一个大版本的 v2 库可以在打开后原地升级；更早的 dev 版本仍交给启动入口。
-        Ok(UPGRADEABLE_STUDIO_DATABASE_SCHEMA_VERSION) => {
+        Ok(UPGRADEABLE_STUDIO_DATABASE_SCHEMA_VERSION..=24) => {
             Ok(ExistingDatabaseState::UpgradeRequired)
         }
         Ok(19..=21) => Err(StudioDatabaseError::StorageMigrationRequired.into()),
@@ -487,12 +487,11 @@ async fn inspect_database(path: &Path) -> Result<ExistingDatabaseState> {
     }
 }
 
-/// Applies the v22 → v23 product schema upgrade in one transaction.
+/// Applies v22..v24 → v25 in one transaction, preserving all existing v2 rows.
 ///
-/// The only structural change is the nullable `threads.last_user_message_at` column: existing
-/// rows keep `NULL` (no accepted user message is fabricated), and the added column lands in the
-/// same position as canonical creation so the schema fingerprint keeps matching. Idempotent for a
-/// database that already reached the current version.
+/// Missing directory fields retain their explicit historical defaults. In particular v24's core
+/// Closed rows do not acquire an explicit-close intent. Appended columns match canonical creation
+/// order so the schema fingerprint remains identical; existing evaluations and history survive.
 async fn upgrade_product_schema(db: &DatabaseConnection) -> Result<()> {
     let tx = db.begin().await?;
     let version = database_schema_version(&tx).await?;
@@ -501,12 +500,24 @@ async fn upgrade_product_schema(db: &DatabaseConnection) -> Result<()> {
         return Ok(());
     }
     anyhow::ensure!(
-        version == STUDIO_DATABASE_SCHEMA_VERSION - 1,
+        (22..=24).contains(&version),
         "Studio database upgrade requires schema version {}, found {version}",
         STUDIO_DATABASE_SCHEMA_VERSION - 1
     );
-    tx.execute_unprepared("ALTER TABLE threads ADD COLUMN last_user_message_at INTEGER")
+    if version == 22 {
+        tx.execute_unprepared("ALTER TABLE threads ADD COLUMN last_user_message_at INTEGER")
+            .await?;
+    }
+    if version <= 23 {
+        tx.execute_unprepared(
+            "ALTER TABLE threads ADD COLUMN delegation_mode TEXT NOT NULL DEFAULT 'profile';
+        ALTER TABLE threads ADD COLUMN delegation_preference TEXT NOT NULL DEFAULT 'balanced';
+        ALTER TABLE threads ADD COLUMN frozen_model_json TEXT;",
+        )
         .await?;
+        crate::studio::store_support::create_agent_evaluations(&tx).await?;
+    }
+    tx.execute_unprepared("ALTER TABLE threads ADD COLUMN explicitly_closed INTEGER NOT NULL DEFAULT 0 CHECK(explicitly_closed IN (0,1))").await?;
     tx.execute_unprepared(&format!(
         "PRAGMA user_version = {STUDIO_DATABASE_SCHEMA_VERSION}"
     ))
@@ -742,14 +753,287 @@ mod major_version_storage_tests {
     }
 }
 
-/// v2 内产品库结构升级（22 → 23）：原地加列、保留全部数据，不伪造用户消息时间。
+/// v2 内产品库结构升级：基线 v22/v23 的真实列布局，原地保全后校验 canonical 指纹。
 #[cfg(test)]
 mod v2_schema_upgrade_tests {
     use super::super::directory::{DirectoryDelta, ProjectDirectoryRecord, apply_directory_delta};
     use super::*;
 
     #[tokio::test]
-    async fn schema_22_to_23_preserves_threads_and_keeps_last_user_message_null() -> Result<()> {
+    async fn schema_24_catalog_3_closed_child_does_not_invent_close_intent() -> Result<()> {
+        use crate::studio::entity as entities;
+        use sea_orm::EntityTrait;
+        let temp = tempfile::tempdir()?;
+        let paths = StudioPaths::resolve(Some(temp.path().to_path_buf()))?;
+        let store = StudioStore::open(paths.database()).await?;
+        let mut delta = DirectoryDelta::upsert_project(ProjectDirectoryRecord {
+            id: "preserved-project".into(),
+            name: "Preserved".into(),
+            path: "/preserved".into(),
+            ssh_alias: None,
+            created_at: 1,
+            updated_at: 2,
+            last_opened_at: None,
+            closed: false,
+        });
+        let (_, root) = DirectoryDelta::register_root_thread(
+            "preserved-root".into(),
+            "preserved-project",
+            "Root",
+            pl_protocol::ThreadModeId::simple(),
+            pl_protocol::ThreadWorkspaceMode::Local,
+            "/preserved".into(),
+        );
+        let mut child = root.clone();
+        child.id = "preserved-child".into();
+        child.agent_path = child.id.clone();
+        child.parent_thread_id = Some(root.id.clone());
+        child.status = pl_protocol::ThreadStatus::Closed;
+        child.frozen_model = Some(pl_protocol::studio::NewThreadModelRoute {
+            account_id: "original-account".into(),
+            model_id: "original-model".into(),
+            effort: Some("high".into()),
+        });
+        delta.thread_upserts = vec![root, child.clone()];
+        let tx = store.database().begin().await?;
+        apply_directory_delta(&store, &tx, &delta).await?;
+        tx.commit().await?;
+        store
+            .database()
+            .execute_unprepared(
+                "ALTER TABLE threads DROP COLUMN explicitly_closed; PRAGMA user_version=24",
+            )
+            .await?;
+        store.close().await?;
+        drop(store);
+        let mut catalog: toml::Table =
+            toml::from_str(&tokio::fs::read_to_string(paths.catalog_file()).await?)?;
+        catalog["schemaVersion"] = 3.into();
+        for entry in catalog["entries"].as_array_mut().context("entries")? {
+            entry
+                .as_table_mut()
+                .context("entry")?
+                .remove("explicitlyClosed");
+        }
+        tokio::fs::write(paths.catalog_file(), toml::to_string(&catalog)?).await?;
+        let upgraded = StudioStore::open(paths.database()).await?;
+        assert_eq!(database_schema_version(upgraded.database()).await?, 25);
+        let saved = upgraded
+            .catalog()
+            .get(&child.id)
+            .context("retained child")?;
+        assert!(
+            !saved.explicitly_closed,
+            "old Closed must not imply parent close intent"
+        );
+        assert_eq!(saved.to_thread().status, pl_protocol::ThreadStatus::Idle);
+        assert_eq!(saved.frozen_model, child.frozen_model);
+        assert_eq!(saved.parent_thread_id, child.parent_thread_id);
+        let row = entities::thread::Entity::find_by_id(&child.id)
+            .one(upgraded.database())
+            .await?
+            .context("mirror")?;
+        assert_eq!(row.explicitly_closed, 0);
+        // Simulate a checkpoint-derived projection, then a delayed pre-close directory snapshot.
+        upgraded.catalog().project_explicit_close(&child.id).await?;
+        upgraded
+            .persist_directory_summaries(&DirectoryDelta {
+                thread_upserts: vec![child.clone()],
+                ..Default::default()
+            })
+            .await?;
+        let tx = upgraded.database().begin().await?;
+        apply_directory_delta(
+            &upgraded,
+            &tx,
+            &DirectoryDelta {
+                thread_upserts: vec![child.clone()],
+                ..Default::default()
+            },
+        )
+        .await?;
+        tx.commit().await?;
+        assert!(
+            upgraded
+                .catalog()
+                .get(&child.id)
+                .context("projected child")?
+                .explicitly_closed
+        );
+        assert_eq!(
+            entities::thread::Entity::find_by_id(&child.id)
+                .one(upgraded.database())
+                .await?
+                .context("projected mirror")?
+                .explicitly_closed,
+            1
+        );
+        upgraded.close().await?;
+        let reopened = StudioStore::open(paths.database()).await?;
+        assert!(
+            reopened
+                .catalog()
+                .get(&child.id)
+                .context("reopened child")?
+                .explicitly_closed
+        );
+        reopened.close().await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn schema_23_catalog_2_upgrade_and_evaluation_write_failure_preserve_v2_facts()
+    -> Result<()> {
+        use pl_protocol::{
+            AgentEvaluation, AgentEvaluationOutcome, AgentTaskCategory, EvaluateAgentRequest,
+        };
+        let temp = tempfile::tempdir()?;
+        let paths = StudioPaths::resolve(Some(temp.path().to_path_buf()))?;
+        let store = StudioStore::open(paths.database()).await?;
+        let mut delta = DirectoryDelta::upsert_project(ProjectDirectoryRecord {
+            id: "kept-project".into(),
+            name: "既有工程".into(),
+            path: "/retained-project".into(),
+            ssh_alias: None,
+            created_at: 10,
+            updated_at: 20,
+            last_opened_at: Some(30),
+            closed: false,
+        });
+        let (thread_delta, old) = DirectoryDelta::register_root_thread(
+            "kept-thread".into(),
+            "kept-project",
+            "保留的历史",
+            pl_protocol::ThreadModeId::simple(),
+            pl_protocol::ThreadWorkspaceMode::Local,
+            "/retained-project".into(),
+        );
+        delta.thread_upserts = thread_delta.thread_upserts;
+        let tx = store.database().begin().await?;
+        apply_directory_delta(&store, &tx, &delta).await?;
+        tx.commit().await?;
+        // Exact HEAD 767771084f6c schema 23: these columns/table did not exist. No
+        // session/history/calls table is rebuilt, and the old directory is schema 2.
+        store
+            .database()
+            .execute_unprepared(
+                "ALTER TABLE threads DROP COLUMN delegation_mode;
+            ALTER TABLE threads DROP COLUMN delegation_preference;
+            ALTER TABLE threads DROP COLUMN frozen_model_json;
+            ALTER TABLE threads DROP COLUMN explicitly_closed;
+            DROP TABLE agent_evaluations;
+            PRAGMA user_version = 23;",
+            )
+            .await?;
+        store.close().await?;
+        drop(store);
+        let mut catalog: toml::Table =
+            toml::from_str(&tokio::fs::read_to_string(paths.catalog_file()).await?)?;
+        catalog["schemaVersion"] = 2.into();
+        for entry in catalog["entries"]
+            .as_array_mut()
+            .context("catalog entries")?
+        {
+            let entry = entry.as_table_mut().context("catalog entry")?;
+            entry.remove("delegationMode");
+            entry.remove("delegationPreference");
+            entry.remove("frozenModel");
+            entry.remove("explicitlyClosed");
+        }
+        tokio::fs::write(paths.catalog_file(), toml::to_string(&catalog)?).await?;
+        let upgraded = StudioStore::open(paths.database()).await?;
+        assert_eq!(database_schema_version(upgraded.database()).await?, 25);
+        let kept: pl_protocol::Thread = upgraded
+            .read_thread("kept-thread")
+            .await?
+            .context("kept directory")?
+            .into();
+        assert_eq!(kept, old);
+        let durable_catalog: toml::Table =
+            toml::from_str(&tokio::fs::read_to_string(paths.catalog_file()).await?)?;
+        assert_eq!(durable_catalog["schemaVersion"].as_integer(), Some(4));
+
+        let request = EvaluateAgentRequest {
+            target: "kept-child".into(),
+            expected_turn_id: "final-1".into(),
+            expected_revision: 0,
+            task_category: AgentTaskCategory::Coding,
+            outcome: AgentEvaluationOutcome::Passed,
+            quality: Some(4),
+            instruction_following: Some(5),
+            comment: "真实事务保存证据".into(),
+        };
+        let candidate = AgentEvaluation {
+            agent_id: request.target.clone(),
+            parent_agent_id: "kept-thread".into(),
+            model: pl_protocol::studio::NewThreadModelRoute {
+                account_id: "kept-account".into(),
+                model_id: "kept-model".into(),
+                effort: Some("high".into()),
+            },
+            profile_id: "executor".into(),
+            mode: Default::default(),
+            preference: Default::default(),
+            turn_id: request.expected_turn_id.clone(),
+            revision: 0,
+            task_category: request.task_category,
+            outcome: request.outcome,
+            quality: request.quality,
+            instruction_following: request.instruction_following,
+            comment: request.comment.clone(),
+            created_at: 31,
+            updated_at: 31,
+        };
+        let first = upgraded
+            .write_agent_evaluation(&request, candidate.clone())
+            .await?;
+        upgraded
+            .database()
+            .execute_unprepared(
+                "CREATE TRIGGER evaluation_write_failure BEFORE UPDATE ON agent_evaluations
+            BEGIN SELECT RAISE(ABORT, 'injected evaluation persistence failure'); END;",
+            )
+            .await?;
+        let mut next = request.clone();
+        next.expected_turn_id = "final-2".into();
+        next.expected_revision = first.evaluation.revision;
+        let mut updated = candidate;
+        updated.turn_id = next.expected_turn_id.clone();
+        updated.updated_at = 32;
+        let error = upgraded
+            .write_agent_evaluation(&next, updated)
+            .await
+            .unwrap_err();
+        assert!(format!("{error:#}").contains("injected evaluation persistence failure"));
+        assert_eq!(
+            upgraded.read_agent_evaluation("kept-child").await?,
+            Some(first.evaluation.clone())
+        );
+        upgraded
+            .database()
+            .execute_unprepared("DROP TRIGGER evaluation_write_failure")
+            .await?;
+        upgraded.close().await?;
+        drop(upgraded);
+        let reopened = StudioStore::open(paths.database()).await?;
+        assert_eq!(
+            reopened.read_agent_evaluation("kept-child").await?,
+            Some(first.evaluation)
+        );
+        assert_eq!(
+            reopened
+                .read_thread("kept-thread")
+                .await?
+                .context("kept Thread")?
+                .title,
+            old.title
+        );
+        reopened.close().await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn schema_22_to_25_preserves_threads_and_keeps_unknown_facts_null() -> Result<()> {
         let temp = tempfile::tempdir()?;
         let paths = StudioPaths::resolve(Some(temp.path().to_path_buf()))?;
         let database = paths.database();
@@ -780,7 +1064,14 @@ mod v2_schema_upgrade_tests {
         // 把刚初始化的当前库降回上一版本：删除新列即得到与 v22 逐字一致的表结构。
         store
             .database()
-            .execute_unprepared("ALTER TABLE threads DROP COLUMN last_user_message_at")
+            .execute_unprepared(
+                "ALTER TABLE threads DROP COLUMN last_user_message_at;
+                ALTER TABLE threads DROP COLUMN delegation_mode;
+                ALTER TABLE threads DROP COLUMN delegation_preference;
+                ALTER TABLE threads DROP COLUMN frozen_model_json;
+                ALTER TABLE threads DROP COLUMN explicitly_closed;
+                DROP TABLE agent_evaluations;",
+            )
             .await?;
         store
             .database()

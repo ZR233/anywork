@@ -3,6 +3,13 @@ part of 'studio_api.dart';
 frb.SettingsFieldInput _settingsFieldInputFromDomain(
   SettingsFieldCommand command,
 ) => switch (command) {
+  DelegationModeCommand(:final value) => frb.SettingsFieldInput.delegationMode(
+    value: _delegationModeToFrb(value),
+  ),
+  DelegationPreferenceCommand(:final value) =>
+    frb.SettingsFieldInput.delegationPreference(
+      value: _delegationPreferenceToFrb(value),
+    ),
   InstructionBaseOverrideCommand(:final value) =>
     frb.SettingsFieldInput.instructionBaseOverride(value: value),
   InstructionDeveloperCommand(:final value) =>
@@ -174,6 +181,11 @@ AccountSettingsView _accountSettingsFromFrb(
         ? const ModelCatalogStatusView()
         : _modelCatalogStatusFromFrb(catalog.modelCatalog),
     pricingEnabled: value.pricingEnabled,
+    billingKind: _billingKindFromFrb(value.billingKind),
+    billingKindOverride: value.billingKindOverride == null
+        ? null
+        : _billingKindFromFrb(value.billingKindOverride!),
+    disabledModels: List.unmodifiable(value.disabledModels),
     id: value.accountId,
     templateId: value.templateId,
     protocol: value.protocol,

@@ -450,7 +450,9 @@ impl StudioRuntime {
         }
         match exposure {
             crate::thread_assembler::AgentControlExposure::Enabled => {
-                registrations.extend(self.threads.agent_control_tools()?);
+                registrations.extend(self.threads.agent_control_tools(
+                    crate::studio::delegation::saved(snapshot)?.unwrap_or_default(),
+                )?);
             }
             crate::thread_assembler::AgentControlExposure::Disabled => {}
         }

@@ -121,12 +121,21 @@ impl StudioThreadFactory {
         };
         let resolved_route = config
             .models
-            .resolve_route(crate::config::StudioRole::Planner.id(), &route_selector);
+            .resolve_route(crate::config::StudioRole::Planner.id(), &route_selector)
+            .and_then(|route| {
+                crate::studio::delegation::validate_credential(&route)?;
+                Ok(route)
+            });
         let (route, model_available) = match resolved_route {
             Ok(route) => (route, true),
             Err(error) if has_saved_route => {
                 tracing::warn!(thread_id = id, %error, "saved Thread model route is unavailable");
-                let fallback = config.resolve_mode_model_route(&selected_mode)?;
+                let fallback = crate::studio::model_route::unavailable_placeholder(
+                    &config,
+                    crate::config::StudioRole::Planner.id(),
+                    &route_selector,
+                )
+                .map_err(|error| resource_error("restore unavailable root placeholder", error))?;
 
                 (fallback, false)
             }
@@ -193,6 +202,19 @@ impl StudioThreadFactory {
             .with_tools(crate::workflow_tool::workflow_registrations()?);
         let mut initial_context = Vec::new();
         let mut initial_extensions = BTreeMap::new();
+        let delegation = crate::studio::delegation::saved(&saved)
+            .map_err(|error| resource_error("read saved delegation", error))?
+            .unwrap_or(pl_protocol::DelegationSettings {
+                mode: thread.delegation_mode,
+                preference: thread.delegation_preference,
+            });
+        if is_new {
+            initial_extensions.insert(
+                crate::studio::delegation::EXTENSION.into(),
+                crate::studio::delegation::encode(delegation)
+                    .map_err(|error| resource_error("freeze delegation selection", error))?,
+            );
+        }
         if let Some(bot) = &bot
             && !saved
                 .extensions
@@ -228,6 +250,7 @@ impl StudioThreadFactory {
                 root: &root,
                 label: &mode.descriptor().display_name,
                 instructions: mode.prompt(),
+                delegation: Some(delegation),
                 resources: &prepared,
             })
             .await?;

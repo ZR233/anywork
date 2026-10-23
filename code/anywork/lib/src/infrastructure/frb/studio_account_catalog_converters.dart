@@ -56,6 +56,7 @@ AccountModelView accountModelFromCatalog(frb.BridgeModelDescriptor model) {
   final pricing = model.pricing;
   return AccountModelView(
     modelId: model.modelId,
+    enabled: model.enabled,
     typeSupport: [
       for (final support in model.typeSupport)
         ModelTypeSupportView(
@@ -114,6 +115,7 @@ AccountModelView accountModelFromCatalog(frb.BridgeModelDescriptor model) {
     defaultReasoningEffort: reasoning?.defaultCandidate ?? '',
     currency: pricing?.currency ?? '',
     priceSource: pricing?.source ?? '',
+    priceVerifiedAt: pricing?.verifiedAt.toInt(),
     priceTiers: [
       for (final tier in pricing?.tiers ?? <frb.BridgeModelPriceTier>[])
         ModelPriceTierView(

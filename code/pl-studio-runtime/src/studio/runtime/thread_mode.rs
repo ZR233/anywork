@@ -249,7 +249,9 @@ impl StudioRuntime {
             return Err(pl_core::thread::ThreadError::Cancelled.into());
         }
         if exposure == crate::thread_assembler::AgentControlExposure::Enabled {
-            registrations.extend(self.threads.agent_control_tools()?);
+            registrations.extend(self.threads.agent_control_tools(
+                crate::studio::delegation::saved(&candidate)?.unwrap_or_default(),
+            )?);
         }
         let committed = thread
             .reconfigure(IdleReconfiguration {

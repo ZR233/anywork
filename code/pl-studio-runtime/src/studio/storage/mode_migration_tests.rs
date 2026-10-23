@@ -530,7 +530,7 @@ async fn shared_recovery_entry_commits_saved_representations_before_publishing()
     let store = crate::studio::StudioStore::open(&database_path).await?;
     let thread = bound_thread("migration");
     let history = registered_history(&store, &thread).await?;
-    let original = saved_state(BTreeMap::from([
+    let mut original = saved_state(BTreeMap::from([
         (
             "studio.model-route".into(),
             record(2, "pl.studio.model-route", 1, LEGACY_ROUTE)?,
@@ -540,13 +540,63 @@ async fn shared_recovery_entry_commits_saved_representations_before_publishing()
             record(3, "pl.studio.agent-profile", 1, LEGACY_PROFILE)?,
         ),
     ]));
+    original.lifecycle = pl_core::thread::ThreadLifecycle::Closed;
     persist(&history, original.clone(), true).await?;
+
+    let before = history
+        .checkpoint()
+        .await?
+        .context("pre-migration checkpoint")?;
+    let faults = raw_database(
+        &store
+            .session_paths(&thread.project_id, &thread.id)?
+            .history_database(),
+    )
+    .await?;
+    faults
+        .execute_unprepared(
+            "CREATE TRIGGER block_delegation_migration BEFORE UPDATE ON session_checkpoint
+        BEGIN SELECT RAISE(ABORT,'injected delegation migration write fault'); END",
+        )
+        .await?;
+    assert!(
+        crate::studio::thread_factory::recovery::load_checkpoint_for_recovery(&store, &thread)
+            .await
+            .is_err()
+    );
+    let preserved = history
+        .checkpoint()
+        .await?
+        .context("preserved checkpoint")?;
+    assert_eq!(
+        serde_json::to_vec(&preserved)?,
+        serde_json::to_vec(&before)?,
+        "failed extension migration preserves the full old checkpoint"
+    );
+    assert!(
+        !preserved
+            .state
+            .extensions
+            .contains_key(crate::studio::delegation::EXTENSION)
+    );
+    faults
+        .execute_unprepared("DROP TRIGGER block_delegation_migration")
+        .await?;
+    drop(faults);
 
     let recovered =
         crate::studio::thread_factory::recovery::load_checkpoint_for_recovery(&store, &thread)
             .await?
             .context("recovered checkpoint")?;
     assert_eq!(recovered.state_revision, original.commit_sequence);
+    assert_eq!(
+        recovered.state.lifecycle,
+        pl_core::thread::ThreadLifecycle::Closed
+    );
+    assert!(
+        !crate::studio::agent_close::is_explicitly_closed(&recovered.state)?,
+        "old owner closure must retain its original recoverable meaning"
+    );
     assert_eq!(
         recovered.state.extensions["studio.model-route"]
             .payload
@@ -564,6 +614,10 @@ async fn shared_recovery_entry_commits_saved_representations_before_publishing()
         "表示迁移保留扩展 revision"
     );
     assert_eq!(recovered.state.context, original.context);
+    assert_eq!(
+        crate::studio::delegation::saved(&recovered.state)?,
+        Some(pl_protocol::DelegationSettings::default())
+    );
     let durable = history.checkpoint().await?.context("durable checkpoint")?;
     assert_eq!(
         serde_json::to_vec(&durable)?,
@@ -583,6 +637,10 @@ async fn shared_recovery_entry_commits_saved_representations_before_publishing()
     let history = reopened.history_for(&thread.project_id, &thread.id).await?;
     let saved = history.checkpoint().await?.context("reopened checkpoint")?;
     assert_eq!(
+        crate::studio::delegation::saved(&saved.state)?,
+        Some(pl_protocol::DelegationSettings::default())
+    );
+    assert_eq!(
         saved.state.extensions["studio.model-route"]
             .payload
             .version(),
@@ -593,6 +651,38 @@ async fn shared_recovery_entry_commits_saved_representations_before_publishing()
         .route;
     assert_eq!(route.account_id.as_str(), "deepseek");
     assert_eq!(route.model_id, "deepseek-flash");
+    Ok(())
+}
+
+#[tokio::test]
+async fn unknown_close_intent_encoding_preserves_checkpoint_and_history() -> Result<()> {
+    for (format, version, content) in [
+        ("pl.studio.unrecognized-close", 1, "{}"),
+        ("pl.studio.agent-close", 2, "{}"),
+        ("pl.studio.agent-close", 1, r#"{"closed":false}"#),
+    ] {
+        let directory = tempfile::tempdir()?;
+        let store =
+            crate::studio::StudioStore::open(directory.path().join("studio/v2/studio.sqlite"))
+                .await?;
+        let thread = bound_thread("migration");
+        let history = registered_history(&store, &thread).await?;
+        let state = saved_state(BTreeMap::from([(
+            crate::studio::agent_close::EXTENSION.into(),
+            record(8, format, version, content)?,
+        )]));
+        persist(&history, state, true).await?;
+        let before = history.checkpoint().await?.context("original checkpoint")?;
+        assert!(
+            crate::studio::thread_factory::recovery::load_checkpoint_for_recovery(&store, &thread)
+                .await
+                .is_err()
+        );
+        let after = history.checkpoint().await?.context("retained checkpoint")?;
+        assert_eq!(serde_json::to_vec(&after)?, serde_json::to_vec(&before)?);
+        assert_eq!(history.watermark().await?, before.history_fence);
+        store.close().await?;
+    }
     Ok(())
 }
 

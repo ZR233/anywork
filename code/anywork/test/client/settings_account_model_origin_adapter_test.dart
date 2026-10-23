@@ -136,6 +136,8 @@ void main() {
       projectId: 'project',
       title: 'Thread',
       mode: ThreadModeId.simple,
+      delegationMode: DelegationMode.profile,
+      delegationPreference: DelegationPreference.balanced,
       updatedAt: DateTime.utc(2026),
       workspacePath: '/project',
     );

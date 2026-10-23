@@ -100,6 +100,10 @@ impl StudioThreadAssembler {
             let owner = self.clone();
             tokio::spawn(async move {
                 let operation = std::panic::AssertUnwindSafe(async {
+                    let _operation = owner.agent_operation(&identity.id).await;
+                    if owner.0.state().sealed_agents.contains_key(&identity.id) {
+                        return Err(ThreadAssemblyError::Closed);
+                    }
                     let spec = factory
                         .prepare(ThreadPreparation {
                             identity: identity.clone(),

@@ -20,6 +20,7 @@ import '../../shared/studio_menu_label.dart';
 import '../status/session_selectors.dart';
 import '../settings/settings_bots_tab.dart' show BotDetailsPage;
 import 'composer_view.dart';
+import 'session_settings_menu.dart';
 import 'interaction_payload.dart';
 import 'multiline_enter_shortcuts.dart';
 import '../../presentation/providers/start_session_controller.dart';
@@ -199,11 +200,6 @@ class _StartPageComposerBodyState
                     enabled: selectorsEnabled,
                     onSelected: (next) => _setMode(next),
                   ),
-                  SessionWorkspaceModeSelector(
-                    mode: projection.workspaceMode,
-                    enabled: selectorsEnabled,
-                    onSelected: _setWorkspaceMode,
-                  ),
                   ..._modelRouteSelectorChildren(
                     accounts: projection.accounts,
                     accountId: route?.accountId,
@@ -230,6 +226,12 @@ class _StartPageComposerBodyState
                 ],
               ),
               submissionLocked: projection.submitting,
+              settingsMenu: projectId == null
+                  ? null
+                  : SessionSettingsMenu(
+                      projectId: projectId,
+                      enabled: selectorsEnabled,
+                    ),
               showSubmissionError:
                   projection.preparation?.failure?.toString() != composer.error,
               onChanged: _updateDraft,
@@ -257,15 +259,6 @@ class _StartPageComposerBodyState
     final projectId = widget.projectId;
     if (projectId == null) return;
     ref.read(anyworkClientProvider).startDraft.setMode(projectId, mode);
-  }
-
-  void _setWorkspaceMode(ThreadWorkspaceMode mode) {
-    final projectId = widget.projectId;
-    if (projectId == null) return;
-    ref
-        .read(anyworkClientProvider)
-        .startDraft
-        .setWorkspaceMode(projectId, mode);
   }
 
   Future<void> _submit() async {
@@ -629,6 +622,7 @@ class _PromptComposerPanel extends StatefulWidget {
     required this.onRemoveAttachment,
     this.onStop,
     this.selectorBar,
+    this.settingsMenu,
     this.textController,
     this.compact = false,
     this.submissionLocked = false,
@@ -651,6 +645,7 @@ class _PromptComposerPanel extends StatefulWidget {
   final Future<void> Function(String draftId) onRemoveAttachment;
   final VoidCallback? onStop;
   final Widget? selectorBar;
+  final Widget? settingsMenu;
 
   /// 起始页正文由调用方持有。传入后不再用 [composer.draft] 覆盖输入框。
   final TextEditingController? textController;
@@ -961,6 +956,7 @@ class _PromptComposerPanelState extends State<_PromptComposerPanel> {
                 onPickLocal: _pickLocalAttachments,
                 onAddUrl: _showUrlDialog,
               ),
+              if (widget.settingsMenu != null) widget.settingsMenu!,
               const SizedBox(width: 6),
               Expanded(
                 child: Wrap(

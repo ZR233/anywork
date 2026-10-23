@@ -21,6 +21,7 @@ class AccountModelReadout extends StatelessWidget {
     this.onAutoCompactCommit,
     this.onAutoCompactInvalid,
     this.onDelete,
+    this.managementControls,
   });
 
   final AccountModelView model;
@@ -38,6 +39,7 @@ class AccountModelReadout extends StatelessWidget {
   final VoidCallback? onAutoCompactCommit;
   final VoidCallback? onAutoCompactInvalid;
   final VoidCallback? onDelete;
+  final Widget? managementControls;
 
   @override
   Widget build(BuildContext context) {
@@ -205,6 +207,7 @@ class AccountModelReadout extends StatelessWidget {
             ),
           ),
         ],
+        ?managementControls,
         if (autoCompact != null) ...[
           const Divider(height: 1),
           Padding(
