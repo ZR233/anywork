@@ -2,6 +2,7 @@ import 'dart:math';
 import 'dart:typed_data';
 
 import 'attachment_models.dart';
+import 'delegation_models.dart';
 import 'collection_equality.dart';
 import 'thread_directory_models.dart';
 import 'settings_models.dart';
@@ -538,21 +539,41 @@ class StartSessionProjectDraft {
     this.text = '',
     this.mode = ThreadModeId.simple,
     this.workspaceMode = ThreadWorkspaceMode.local,
+    this.delegationModeOverride,
+    this.delegationPreferenceOverride,
   });
 
   final String text;
   final ThreadModeId mode;
   final ThreadWorkspaceMode workspaceMode;
+  final DelegationMode? delegationModeOverride;
+  final DelegationPreference? delegationPreferenceOverride;
+
+  DelegationSettingsView resolveDelegation(DelegationSettingsView defaults) =>
+      DelegationSettingsView(
+        mode: delegationModeOverride ?? defaults.mode,
+        preference: delegationPreferenceOverride ?? defaults.preference,
+      );
 
   StartSessionProjectDraft copyWith({
     String? text,
     ThreadModeId? mode,
     ThreadWorkspaceMode? workspaceMode,
+    Object? delegationModeOverride = _delegationUnchanged,
+    Object? delegationPreferenceOverride = _delegationUnchanged,
   }) {
     return StartSessionProjectDraft(
       text: text ?? this.text,
       mode: mode ?? this.mode,
       workspaceMode: workspaceMode ?? this.workspaceMode,
+      delegationModeOverride:
+          identical(delegationModeOverride, _delegationUnchanged)
+          ? this.delegationModeOverride
+          : delegationModeOverride as DelegationMode?,
+      delegationPreferenceOverride:
+          identical(delegationPreferenceOverride, _delegationUnchanged)
+          ? this.delegationPreferenceOverride
+          : delegationPreferenceOverride as DelegationPreference?,
     );
   }
 
@@ -562,11 +583,21 @@ class StartSessionProjectDraft {
       other is StartSessionProjectDraft &&
           text == other.text &&
           mode == other.mode &&
+          delegationModeOverride == other.delegationModeOverride &&
+          delegationPreferenceOverride == other.delegationPreferenceOverride &&
           workspaceMode == other.workspaceMode;
 
   @override
-  int get hashCode => Object.hash(text, mode, workspaceMode);
+  int get hashCode => Object.hash(
+    text,
+    mode,
+    workspaceMode,
+    delegationModeOverride,
+    delegationPreferenceOverride,
+  );
 }
+
+const _delegationUnchanged = Object();
 
 class StartSessionModelIntent {
   const StartSessionModelIntent({

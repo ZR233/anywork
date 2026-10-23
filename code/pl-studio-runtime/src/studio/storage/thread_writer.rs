@@ -1755,6 +1755,103 @@ mod storage_fault_tests {
     }
 
     #[tokio::test]
+    async fn explicit_close_intent_is_atomic_retryable_and_survives_owner_shutdown() -> Result<()> {
+        use pl_core::thread::extensions::ExtensionMutation;
+        let id = "close-intent-storage";
+        let (_temp, store, sink) = sink(id).await?;
+        let thread = ThreadHandle::resume_without_model(id.into(), None)?;
+        thread
+            .attach_storage(ColdStoreHandle::new(sink.clone()))
+            .await?;
+        let route = pl_model::config::ModelRouteConfig {
+            account_id: pl_model::config::AccountId::new("frozen-account")?,
+            model_id: "frozen-model".into(),
+            effort: None,
+        };
+        thread
+            .mutate_extensions(vec![ExtensionMutation::Put {
+                id: crate::studio::model_route::MODEL_ROUTE_EXTENSION.into(),
+                expected_revision: None,
+                payload: crate::studio::model_route::encode(&route)?,
+            }])
+            .await?;
+        thread.flush().await?;
+        let history = store.history(id).await?;
+        let before = history.checkpoint().await?.context("saved baseline")?;
+        let db = Database::connect(
+            crate::studio::paths::sqlite_file_options(
+                &store.session_paths("project-test", id)?.history_database(),
+                crate::studio::paths::SqliteFileMode::Create,
+                |options| options,
+            )
+            .await?,
+        )
+        .await?;
+        db.execute_unprepared(
+            "CREATE TRIGGER reject_close_intent BEFORE UPDATE ON session_checkpoint
+            BEGIN SELECT RAISE(ABORT, 'controlled close intent rejection'); END",
+        )
+        .await?;
+        let rejected = tokio::time::timeout(
+            Duration::from_secs(5),
+            crate::studio::agent_close::commit(&thread),
+        )
+        .await?;
+        assert!(
+            rejected.is_err(),
+            "a rejected checkpoint cannot acknowledge explicit closure"
+        );
+        let unchanged = history.checkpoint().await?.context("retained checkpoint")?;
+        assert_eq!(
+            serde_json::to_vec(&unchanged)?,
+            serde_json::to_vec(&before)?
+        );
+        assert_eq!(history.watermark().await?, before.history_fence);
+        assert!(!crate::studio::agent_close::is_explicitly_closed(
+            &unchanged.state
+        )?);
+        let generation = sink.0.channel.subscribe().borrow().fault_generation;
+        db.execute_unprepared("DROP TRIGGER reject_close_intent")
+            .await?;
+        store
+            .thread_persistence()
+            .retry_history(id, generation)
+            .await?;
+        crate::studio::agent_close::commit(&thread).await?;
+        thread.close().await?;
+        let saved = history.checkpoint().await?.context("closed checkpoint")?;
+        assert_eq!(
+            saved.state.lifecycle,
+            pl_core::thread::ThreadLifecycle::Closed
+        );
+        assert!(crate::studio::agent_close::is_explicitly_closed(
+            &saved.state
+        )?);
+        assert_eq!(
+            saved.state.extensions[crate::studio::model_route::MODEL_ROUTE_EXTENSION],
+            before.state.extensions[crate::studio::model_route::MODEL_ROUTE_EXTENSION]
+        );
+        assert_eq!(saved.history_fence, history.watermark().await?);
+        drop(history);
+        let reloaded = crate::studio::thread_factory::recovery::load_checkpoint_for_recovery(
+            &store,
+            &test_thread(id),
+        )
+        .await?
+        .context("reopened canonical checkpoint")?;
+        assert!(crate::studio::agent_close::is_explicitly_closed(
+            &reloaded.state
+        )?);
+        assert_eq!(reloaded.history_fence, saved.history_fence);
+        assert_eq!(
+            reloaded.state.extensions[crate::studio::agent_close::EXTENSION],
+            saved.state.extensions[crate::studio::agent_close::EXTENSION]
+        );
+        db.close().await?;
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn a_reopened_studio_sink_accepts_a_thread_with_durable_history() -> Result<()> {
         let id = "reopened-durable-thread";
         let temp = tempfile::tempdir()?;
@@ -1793,6 +1890,31 @@ mod storage_fault_tests {
         assert_eq!(reopened.pressure(id).durable_sequence, 1);
         tokio::time::timeout(Duration::from_secs(5), resumed.flush()).await??;
         resumed.close().await?;
+        let saved = reopened
+            .0
+            .store
+            .history(id)
+            .await?
+            .checkpoint()
+            .await?
+            .context("owner shutdown checkpoint")?;
+        assert_eq!(
+            saved.state.lifecycle,
+            pl_core::thread::ThreadLifecycle::Closed
+        );
+        assert!(
+            !crate::studio::agent_close::is_explicitly_closed(&saved.state)?,
+            "ordinary shutdown must not seal future execution"
+        );
+        let restored = ThreadHandle::resume_without_model(id.into(), Some(saved))?;
+        assert_eq!(
+            restored.snapshot().lifecycle,
+            pl_core::thread::ThreadLifecycle::Open
+        );
+        assert!(!crate::studio::agent_close::is_explicitly_closed(
+            &restored.snapshot()
+        )?);
+        restored.close().await?;
         Ok(())
     }
 
@@ -2789,6 +2911,12 @@ mod storage_fault_tests {
                 .await?
                 .is_none()
         );
+        let history = store.history(thread_id).await?;
+        let admitted = history.latest_turn_at(1).await?.context("admitted Turn")?;
+        assert_eq!(admitted.id, turn_id);
+        assert!(!admitted.state.is_terminal());
+        assert!(history.latest_turn_at(0).await.is_err());
+        assert!(history.latest_turn_at(2).await.is_err());
 
         // Intervening commits advance the execution clock without changing the Turn item.
         // A terminal frame must outrank running frames even when its item content version is small.
@@ -2834,6 +2962,31 @@ mod storage_fault_tests {
         assert_eq!(cold.id, live.id);
         assert_eq!(cold.revision, live.revision);
         assert_eq!(cold.state, live.state);
+        let saved = history.checkpoint().await?.context("durable checkpoint")?;
+        assert!(saved.state.turns.is_empty(), "terminal Turns must retire");
+        assert_eq!(
+            history.latest_turn_at(saved.history_fence).await?,
+            Some(live.clone())
+        );
+
+        // A later running admission must outrank the saved terminal. Evaluation cannot use the
+        // terminal-only seed as a shortcut, even while that older terminal remains readable.
+        let next_id = "newer-running-turn";
+        let next_input = consumed_visible_input("newer-input", next_id, 12)?;
+        let mut next = ticket(thread_id, 12);
+        next.checkpoint.state.inputs = Arc::from([next_input.clone()]);
+        next.checkpoint.state.turns =
+            Arc::from([turn_record(next_id, "newer-input", TurnState::Running)]);
+        Arc::make_mut(&mut next.effect).inputs = Arc::from([InputChange::Accepted(next_input)]);
+        Arc::make_mut(&mut next.effect).turn =
+            Some(turn_record(next_id, "newer-input", TurnState::Running));
+        drive_live_projection(&mut projection, &chat, &sink, thread_id, next)?;
+        tokio::time::timeout(Duration::from_secs(30), sink.flush(thread_id, 12)).await??;
+        let latest = history.latest_turn_at(12).await?.context("latest Turn")?;
+        assert_eq!(latest.id, next_id);
+        assert!(!latest.state.is_terminal());
+        assert_eq!(history.newest_terminal_turn().await?, Some(cold));
+        assert!(history.latest_turn_at(11).await.is_err());
         Ok(())
     }
 

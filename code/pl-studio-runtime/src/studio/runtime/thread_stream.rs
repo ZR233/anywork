@@ -654,7 +654,22 @@ impl StudioRuntime {
         let _lifecycle_guard = self.lifecycle_lock.lock().await;
         let residency_pin = self.residency.pin_many([request.thread_id.clone()]);
         let thread = self.read_protocol_thread(&request.thread_id).await?;
-        let source = if thread.parent_thread_id.is_some() && thread.role == "planner" {
+        let explicitly_closed = thread.parent_thread_id.is_some()
+            && crate::studio::agent_close::is_explicitly_closed(
+                &self.read_thread_state(&request.thread_id).await?,
+            )?;
+        // A committed seal forbids activation, not observation of an owner still closing. Keep
+        // its live feed until it stops; a cold/ended owner needs only the saved readonly facts.
+        let closing_owner = self
+            .threads
+            .observed_thread(&request.thread_id)
+            .filter(|handle| {
+                explicitly_closed
+                    && handle.snapshot().lifecycle != pl_core::thread::ThreadLifecycle::Closed
+            });
+        let source = if thread.parent_thread_id.is_some()
+            && (thread.role == "planner" || (explicitly_closed && closing_owner.is_none()))
+        {
             // Explicitly opening retired history still prepares its persisted schema, but never
             // installs an execution owner. Regular snapshot and paging queries do not prepare
             // this SQLite upgrade.
@@ -682,7 +697,11 @@ impl StudioRuntime {
                 revision: 0,
             }))
         } else {
-            let handle = self.ensure_thread_owner(&request.thread_id).await?;
+            let handle = if let Some(handle) = closing_owner {
+                handle
+            } else {
+                self.ensure_thread_owner(&request.thread_id).await?
+            };
             // 先注册投影帧接收端，再捕获基线：观测任务在建线程时就接管了唯一投影，订阅的
             // 首个快照就是注册后可见的状态，注册与快照之间提交的效果仍然会被投递（其中已被
             // 快照覆盖的帧按 effect 序号丢弃）。反过来（先快照再订阅）会留下一个很窄的窗口，
@@ -921,37 +940,12 @@ impl StudioRuntime {
     }
 
     fn annotate_model_route(&self, snapshot: &mut pl_protocol::ThreadSnapshot) -> Result<()> {
-        let Some(route) = snapshot
-            .runtime
-            .as_mut()
-            .and_then(|runtime| runtime.model_route.as_mut())
-        else {
-            return Ok(());
-        };
-        let selector = pl_model::config::ModelRouteConfig {
-            account_id: pl_model::config::AccountId::new(route.account_id.clone())?,
-            model_id: route.model_id.clone(),
-            effort: route
-                .effort
-                .clone()
-                .map(pl_model::config::ReasoningEffort::new),
-        };
-        let config = self.config_runtime.read()?.config;
-        let role = if snapshot.thread.parent_thread_id.is_none() {
-            crate::config::StudioRole::Planner.id()
-        } else {
-            pl_protocol::AgentRoleId::new(snapshot.thread.role.clone())?
-        };
-        let resolved = config.models.resolve_route(role, &selector);
-        match resolved {
-            Ok(_) => {
-                route.available = true;
-                route.unavailable_reason = None;
-            }
-            Err(error) => {
-                route.available = false;
-                route.unavailable_reason = Some(error.to_string());
-            }
+        if let Some(runtime) = snapshot.runtime.as_mut() {
+            crate::studio::model_route::annotate_availability(
+                runtime,
+                &snapshot.thread,
+                &self.config_runtime.read()?.config,
+            )?;
         }
         Ok(())
     }

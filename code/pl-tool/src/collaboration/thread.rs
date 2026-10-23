@@ -6,6 +6,7 @@ use pl_core::{
         opaque::{CallContext, Registration, RegistryError, Tool, ToolError},
     },
 };
+pub use pl_protocol::studio::NewThreadModelRoute;
 use std::sync::Arc;
 
 /// A message whose id is assigned from the trusted core call identity, never supplied by model arguments.
@@ -21,6 +22,9 @@ pub struct AgentMessage {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AgentSpawn {
     pub profile_id: String,
+    /// Required only in automatic delegation; fixed Profile mode rejects overrides.
+    #[serde(default)]
+    pub model_selection: Option<NewThreadModelRoute>,
     /// Brief task description shown in the child list; required, nonempty, at most 80 Unicode characters.
     pub task_summary: AgentTaskSummary,
     /// Full self-contained task: goals, approved contract, facts, interfaces, steps, ownership and verification. No application length limit; include pseudocode when useful.

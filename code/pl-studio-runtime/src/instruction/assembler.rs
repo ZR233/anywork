@@ -47,6 +47,15 @@ impl InstructionAssembler {
                 execution.instructions,
             );
         }
+        if let Some(preference) = request.delegation_preference {
+            snapshot.push_developer(
+                InstructionSource::new(
+                    InstructionSourceKind::DelegationPreference,
+                    "delegation preference",
+                ),
+                preference,
+            );
+        }
         let environment = request
             .execution_environment
             .cloned()

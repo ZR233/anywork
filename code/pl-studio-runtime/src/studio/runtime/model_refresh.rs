@@ -78,6 +78,7 @@ impl StudioRuntime {
                 crate::config::StudioRole::Planner.id()
             };
             let route = config.models.resolve_route(role, &selector)?;
+            crate::studio::delegation::validate_credential(&route)?;
             Self::validate_model_media(&state, &route.model, &[])?;
             ThreadModel::new(ModelRuntime::from_route(&route)?, route.reasoning_config())
                 .validate_context_origin(&state.context)?;
@@ -118,41 +119,7 @@ impl StudioRuntime {
         route: &ResolvedModelRoute,
         config: &crate::config::StudioConfig,
     ) -> Result<DeferredModelUpdate> {
-        let search = pl_tool::search::plan_web_searches(
-            &config.models,
-            route,
-            &config.web_search,
-            &pl_tool::search::WebSearchDeepSeekOptions {
-                enabled: config.deepseek_web_search.enabled,
-                fetch_enabled: config.deepseek_web_search.fetch_enabled,
-            },
-        )?;
-        let mut hosted = search.hosted_tools(&config.web_search)?;
-        hosted.extend(crate::programmatic::hosted_tool(route));
-        // Hash sorted structured inputs in memory. Credentials never enter logs, storage or model context.
-        let key = crate::hash::canonical_json_hash(&serde_json::json!({
-            "account": route.account_id, "endpoint": route.endpoint, "model": route.model.model_id,
-            "effort": route.effort, "pricing": route.pricing_mode,
-            "contextPolicy": route.context, "modelDefinition": route.model,
-            "compaction": config.runtime.openai_compaction_mode,
-            "hosted": hosted.iter().map(|tool| match tool {
-                pl_model::runtime::HostedTool::WebSearch(options) => pl_protocol::ToolSpec::WebSearch { options: options.clone() },
-                pl_model::runtime::HostedTool::ProgrammaticToolCalling => pl_protocol::ToolSpec::ProgrammaticToolCalling,
-            }).collect::<Vec<_>>(),
-        }));
-        let model = ThreadModel::new(ModelRuntime::from_route(route)?, route.reasoning_config())
-            .with_hosted_tools(hosted);
-        let factory = ModelFactory::new(model.clone());
-        Ok(DeferredModelUpdate::new(
-            key,
-            factory,
-            crate::compaction::preparer(
-                route,
-                model,
-                config.runtime.openai_compaction_mode,
-                self.thread_modes.clone(),
-            )?,
-        ))
+        crate::studio::model_binding::deferred_update(route, config, self.thread_modes.clone())
     }
 
     pub(in crate::studio::runtime) async fn start_model_refresh(&self) {
@@ -192,6 +159,10 @@ impl StudioRuntime {
                 };
                 let revision = format!("{}:{}", settings.revision, catalog.revision);
                 for (id, thread) in runtime.threads.observed_threads() {
+                    let _operation = runtime.threads.agent_operation(&id).await;
+                    if runtime.threads.ensure_agent_admission_open(&id).is_err() {
+                        continue;
+                    }
                     if let Some(affected) = &affected {
                         let state = thread.snapshot();
                         let selector = crate::studio::model_route::route_record(

@@ -18,11 +18,63 @@ use super::ProductEventBus;
 
 impl ProductEventBus {
     pub async fn read_agent_directory(&self) -> StudioAgentDirectoryState {
+        let mut agents = self
+            .store
+            .catalog()
+            .entries()
+            .into_iter()
+            .filter(|entry| entry.parent_thread_id.is_some())
+            .map(|entry| {
+                let id = entry.id.clone();
+                let state = match entry.projected_status() {
+                    pl_protocol::ThreadStatus::Closed => {
+                        pl_protocol::AgentState::Closed(pl_protocol::ClosedAgentState::new())
+                    }
+                    pl_protocol::ThreadStatus::Closing => {
+                        pl_protocol::AgentState::Closing(pl_protocol::ClosingAgentState::new())
+                    }
+                    _ => pl_protocol::AgentState::idle(),
+                };
+                (
+                    id.clone(),
+                    StudioAgentDirectoryEntry {
+                        id: id.clone(),
+                        thread_id: id,
+                        root_thread_id: entry.root_thread_id,
+                        path: entry.agent_path,
+                        parent_path: entry.parent_thread_id,
+                        role: entry.role,
+                        task: entry.title,
+                        summary: None,
+                        depth: 1,
+                        state,
+                        delegation_mode: entry.delegation_mode,
+                        delegation_preference: entry.delegation_preference,
+                        frozen_model: entry.frozen_model,
+                        updated_at: entry.updated_at,
+                    },
+                )
+            })
+            .collect::<std::collections::BTreeMap<_, _>>();
+        for (id, mut observed) in self.agents.lock().await.clone() {
+            if let Some(entry) = self.store.catalog().get(&id)
+                && entry.explicitly_closed
+            {
+                if entry.projected_status() == pl_protocol::ThreadStatus::Closed {
+                    observed.state =
+                        pl_protocol::AgentState::Closed(pl_protocol::ClosedAgentState::new());
+                } else if !matches!(observed.state, pl_protocol::AgentState::Closed(_)) {
+                    observed.state =
+                        pl_protocol::AgentState::Closing(pl_protocol::ClosingAgentState::new());
+                }
+            }
+            agents.insert(id, observed);
+        }
         StudioAgentDirectoryState {
             state: self.resource(
                 &self.revisions.agent,
                 StudioAgentDirectoryData {
-                    agents: self.agents.lock().await.values().cloned().collect(),
+                    agents: agents.into_values().collect(),
                 },
             ),
         }

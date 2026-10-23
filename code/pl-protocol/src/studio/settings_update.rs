@@ -126,6 +126,14 @@ pub enum SettingsFieldUpdate {
         role: String,
         effort: Option<String>,
     },
+    /// 新会话默认分发模式；只影响未来会话。
+    DelegationMode {
+        value: crate::DelegationMode,
+    },
+    /// 自动选模默认偏好；固定模式保存但不生效。
+    DelegationPreference {
+        value: crate::DelegationPreference,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, ToSchema)]

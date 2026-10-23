@@ -61,6 +61,8 @@ impl StudioRuntime {
             "archived Thread cannot accept input"
         );
         let thread = self.ensure_thread_owner(&thread_id).await?;
+        let _agent_operation = self.threads.agent_operation(&thread_id).await;
+        self.threads.ensure_agent_admission_open(&thread_id)?;
         // Look up the canonical receipt before resolving drafts, which admission may already have consumed.
         if let Some(previous) = thread
             .snapshot()

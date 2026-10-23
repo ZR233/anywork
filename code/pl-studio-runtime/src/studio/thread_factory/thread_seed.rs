@@ -14,6 +14,7 @@ pub(super) struct ThreadInstructionSeed<'a> {
     pub root: &'a Path,
     pub label: &'a str,
     pub instructions: &'a str,
+    pub delegation: Option<pl_protocol::DelegationSettings>,
     pub resources: &'a PreparedThreadTools,
 }
 
@@ -69,6 +70,9 @@ pub(super) async fn capture(
             subagent_constraint: None,
             skill_suggestions: None,
             execution_environment: Some(&environment),
+            delegation_preference: seed
+                .delegation
+                .and_then(crate::studio::delegation::preference_prompt),
         })
     })
     .await??;

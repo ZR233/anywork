@@ -278,6 +278,7 @@ impl FirstRunConfigDraft {
 
         let config = StudioConfig {
             schema_version: STUDIO_CONFIG_SCHEMA_VERSION,
+            delegation: Default::default(),
             models: AgentModelConfig {
                 accounts,
                 routes: StudioRole::child_roles()

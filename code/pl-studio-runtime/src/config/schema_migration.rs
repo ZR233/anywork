@@ -118,7 +118,7 @@ pub(super) fn resume(
             journal.version
         )));
     }
-    if journal.target_version != STUDIO_CONFIG_SCHEMA_VERSION {
+    if journal.target_version != STUDIO_CONFIG_SCHEMA_VERSION && journal.target_version != 23 {
         return Err(PureError::ConfigError(format!(
             "Studio config migration target {} does not match the current schema",
             journal.target_version
@@ -149,7 +149,9 @@ pub(super) fn migrate(
         original: original.to_vec(),
         candidate: config_candidate,
     }];
-    plans.extend(profile_plans(paths)?);
+    if source_version <= LEGACY_ACCOUNT_SCHEMA {
+        plans.extend(profile_plans(paths)?);
+    }
     for plan in &plans {
         // 迁移失败时不允许覆盖中途被外部改写的原件。
         let disk = fs::read(config_resource_path(paths, &plan.relative_path))?;
@@ -222,9 +224,14 @@ fn commit_with_tokens(
 ) -> Result<StudioConfig> {
     let directory = operation_dir(paths);
     let candidate = read_candidate(&directory, super::STUDIO_CONFIG_FILE_NAME)?;
-    let candidate_config = super::store::parse_migrated_config(&candidate)?;
+    let candidate_config =
+        super::store::parse_migration_candidate(&candidate, journal.target_version)?;
     if journal.phase == MigrationPhase::Prepared {
-        copy_credentials(credentials, &candidate_config, inline_tokens)?;
+        // The 23→24 change preserves the already canonical credential association.
+        // Re-reading the retired provider namespace here could reject valid newer credentials.
+        if journal.source_version <= LEGACY_ACCOUNT_SCHEMA {
+            copy_credentials(credentials, &candidate_config, inline_tokens)?;
+        }
         journal.phase = MigrationPhase::Credentials;
         write_journal(&directory, journal)?;
     }
@@ -771,7 +778,7 @@ effort = "high"
         // 操作目录在确认完成后清理；迁移备份与原字节仍在。
         assert!(!operation_dir(&fixture.paths).exists());
         let persisted = fs::read_to_string(fixture.paths.config_file()).unwrap();
-        assert!(persisted.contains("schema_version = 23"));
+        assert!(persisted.contains("schema_version = 24"));
         assert!(!persisted.contains("models.providers"));
     }
 

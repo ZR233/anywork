@@ -9,6 +9,7 @@ import 'settings_account_model_readout.dart';
 import 'settings_account_usage.dart';
 import 'settings_model_catalog.dart';
 import 'settings_account_auto_compact.dart';
+import 'settings_account_selection.dart';
 
 class AccountDetails extends StatelessWidget {
   const AccountDetails({
@@ -137,6 +138,7 @@ class AccountDetails extends StatelessWidget {
         SettingsSectionPanel(
           title: context.l10n.settingsAccountModelsTitle,
           children: [
+            AccountBillingControl(account: account),
             if (account.modelCatalog.supported)
               ModelCatalogReadout(status: account.modelCatalog),
             if (account.models.isEmpty)
@@ -194,6 +196,10 @@ class AccountDetails extends StatelessWidget {
                 key: ValueKey((account.id, model.modelId)),
                 model: model,
                 accountId: account.id,
+                managementControls: AccountModelSelectionControl(
+                  accountId: account.id,
+                  model: model,
+                ),
                 framed: true,
                 autoCompact: account.autoCompactLimitFor(model),
                 autoCompactEdit: autoCompactEdits[model.modelId],

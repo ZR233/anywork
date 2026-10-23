@@ -38,6 +38,8 @@ pub async fn start_new_thread(
         model_id,
         effort,
         workspace_mode,
+        delegation_mode,
+        delegation_preference,
     } = request;
     // One invocation owns both observation and the final command outcome. A closed sink
     // only loses observation; the existing creation owner still settles all resources.
@@ -69,6 +71,8 @@ pub async fn start_new_thread(
                         effort,
                     },
                     workspace_mode,
+                    delegation_mode: Some(delegation_mode.into()),
+                    delegation_preference: Some(delegation_preference.into()),
                 },
                 Some(Arc::new(move |progress| {
                     let _ = progress_sink.add(BridgeNewThreadStartEvent::Progress(progress.into()));

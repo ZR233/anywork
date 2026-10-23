@@ -1,3 +1,5 @@
+import 'delegation_models.dart';
+
 sealed class StudioAgentState {
   const StudioAgentState();
 
@@ -173,6 +175,9 @@ class StudioAgentView {
     required this.threadId,
     required this.path,
     required this.role,
+    required this.delegationMode,
+    required this.delegationPreference,
+    this.frozenModel,
     required this.task,
     required this.state,
     required this.updatedAt,
@@ -187,6 +192,9 @@ class StudioAgentView {
   final String path;
   final String? parentPath;
   final String role;
+  final DelegationMode delegationMode;
+  final DelegationPreference delegationPreference;
+  final NewThreadModelRoute? frozenModel;
   final String task;
   final String? summary;
   final int depth;
@@ -207,6 +215,9 @@ class StudioAgentView {
           path == other.path &&
           parentPath == other.parentPath &&
           role == other.role &&
+          delegationMode == other.delegationMode &&
+          delegationPreference == other.delegationPreference &&
+          frozenModel == other.frozenModel &&
           task == other.task &&
           summary == other.summary &&
           depth == other.depth &&
@@ -221,6 +232,9 @@ class StudioAgentView {
     path,
     parentPath,
     role,
+    delegationMode,
+    delegationPreference,
+    frozenModel,
     task,
     summary,
     depth,

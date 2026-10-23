@@ -44,6 +44,26 @@ void main() {
         reason: 'list qualification is independent of execution availability',
       );
       expect(
+        ModelRouteQueries.roleRoute(
+          accounts: [
+            mixed.copyWith(
+              models: [unknown.copyWith(enabled: false), eligible],
+            ),
+          ],
+          roles: const [
+            RoleSettingsView(
+              key: 'worker',
+              accountId: 'account',
+              modelId: 'unknown-budget',
+              effort: 'high',
+            ),
+          ],
+          role: 'worker',
+        ).unavailable,
+        isTrue,
+        reason: 'Explicit unified disablement still blocks a configured route',
+      );
+      expect(
         ModelRouteQueries.newAgentProfileRoute([mixed]).modelId,
         'observed-model',
       );

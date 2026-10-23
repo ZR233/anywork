@@ -85,6 +85,7 @@ impl InstructionSnapshot {
                 &self.developer,
                 &[
                     InstructionSourceKind::ExecutionProfile,
+                    InstructionSourceKind::DelegationPreference,
                     InstructionSourceKind::SubagentConstraint,
                     InstructionSourceKind::SubagentForce,
                 ],

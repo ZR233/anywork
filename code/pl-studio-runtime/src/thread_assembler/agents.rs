@@ -91,10 +91,16 @@ pub(super) fn agent_row(
     id: &str,
     parent: Option<&str>,
     snapshot: &pl_core::thread::ThreadSnapshot,
-) -> serde_json::Value {
-    serde_json::json!({ "id":id, "parentId":parent, "lifecycle":snapshot.lifecycle,
+) -> anyhow::Result<serde_json::Value> {
+    let model = crate::studio::model_route::saved_profile(snapshot)?
+        .map(|(profile, _)| crate::studio::delegation::profile_model(&profile));
+    let delegation = crate::studio::delegation::saved(snapshot)?;
+    Ok(
+        serde_json::json!({ "id":id, "parentId":parent, "lifecycle":snapshot.lifecycle,
+        "frozenModel":model, "delegationMode":delegation.map(|value| value.mode), "delegationPreference":delegation.map(|value| value.preference),
         "lastTurn":snapshot.turns.last(), "pendingInputs":snapshot.inputs.iter().filter(|input| input.state == InputState::Pending).count(),
-        "runningTasks":snapshot.tasks.values().filter(|task| task.status == TaskStatus::Running).count() })
+        "runningTasks":snapshot.tasks.values().filter(|task| task.status == TaskStatus::Running).count() }),
+    )
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -102,6 +108,8 @@ pub(super) fn agent_row(
 struct SpawnReceipt {
     agent_id: String,
     profile_id: String,
+    model: pl_protocol::studio::NewThreadModelRoute,
+    delegation: pl_protocol::DelegationSettings,
     #[serde(skip_serializing_if = "Option::is_none")]
     workspace: Option<pl_protocol::AgentWorkspaceAssignmentSnapshot>,
     message_accepted: bool,
@@ -151,7 +159,25 @@ impl AgentControlHost for AgentHost {
         request: AgentSpawn,
     ) -> Result<ToolOutput, ToolError> {
         let owner = self.owner()?;
+        // Root preparation and directory enumeration share the root→child lock order. A tree
+        // archive cannot miss a child whose workspace was still being prepared at enumeration.
+        let _parent_operation = owner.agent_operation(&context.thread_id).await;
+        owner
+            .ensure_agent_admission_open(&context.thread_id)
+            .map_err(ToolError::new)?;
         let (factory, reservation) = owner.reserve_child(&context).map_err(ToolError::new)?;
+        let delegation = {
+            let state = owner.0.state();
+            let caller = state
+                .entries
+                .get(&context.thread_id)
+                .ok_or_else(|| ToolError::new(ControlError::Missing(context.thread_id.clone())))?;
+            crate::studio::delegation::saved(&caller.thread.snapshot())
+                .map_err(|error| ToolError::new(super::agent_services::ServiceError(error)))?
+                .ok_or_else(|| {
+                    ToolError::new(ControlError::Missing("saved delegation selection".into()))
+                })?
+        };
         let spec = factory
             .prepare(super::ChildThreadRequest {
                 id: reservation.id.clone(),
@@ -159,6 +185,8 @@ impl AgentControlHost for AgentHost {
                 caller: context.thread_id.clone(),
                 call_id: context.call_id.clone(),
                 profile_id: request.profile_id.clone(),
+                model_selection: request.model_selection,
+                delegation,
                 task_summary: request.task_summary,
                 writable_paths: request.writable_paths,
                 review_target_agent_id: request.review_target_agent_id,
@@ -213,6 +241,30 @@ impl AgentControlHost for AgentHost {
             Ok(workspace) => workspace,
             Err(error) => return Err(cleanup_spawn_failure(&owner, &id, error).await),
         };
+        let profile = match crate::studio::model_route::saved_profile(&child.snapshot()) {
+            Ok(Some((profile, _))) => profile,
+            Ok(None) => {
+                return Err(cleanup_spawn_failure(
+                    &owner,
+                    &id,
+                    ThreadAssemblyError::Identity("child has no frozen Profile".into()),
+                )
+                .await);
+            }
+            Err(source) => {
+                return Err(cleanup_spawn_failure(
+                    &owner,
+                    &id,
+                    ThreadAssemblyError::Resource {
+                        operation: "decode frozen child Profile",
+                        source: source.into(),
+                    },
+                )
+                .await);
+            }
+        };
+        let model = crate::studio::delegation::profile_model(&profile);
+        let _operation = owner.agent_operation(&id).await;
         if let Err(error) = owner.publish_child_resources(&id) {
             return Err(cleanup_spawn_failure(&owner, &id, error).await);
         }
@@ -231,10 +283,15 @@ impl AgentControlHost for AgentHost {
         // rejected rather than delivered again.
         let delivery = match owner.adjudicate_message(&id, &message).await {
             Ok(DeliveryDisposition::Receipt(sequence)) => Ok(sequence),
-            Ok(DeliveryDisposition::New) => child
-                .send_message_and_continue(message, options)
-                .await
-                .map_err(ThreadAssemblyError::from),
+            Ok(DeliveryDisposition::New) => {
+                match owner.prepare_input_admission(&id, &child).await {
+                    Ok(()) => child
+                        .send_message_and_continue(message, options)
+                        .await
+                        .map_err(ThreadAssemblyError::from),
+                    Err(error) => Err(error),
+                }
+            }
             Ok(DeliveryDisposition::Conflict) => {
                 Err(ThreadAssemblyError::MessageConflict(message.id.clone()))
             }
@@ -247,6 +304,8 @@ impl AgentControlHost for AgentHost {
             Ok(sequence) => output(SpawnReceipt {
                 agent_id: id,
                 profile_id: request.profile_id,
+                model,
+                delegation,
                 workspace,
                 message_accepted: true,
                 message_sequence: Some(sequence),
@@ -254,6 +313,8 @@ impl AgentControlHost for AgentHost {
             Err(source) => Err(ToolError::new(source).with_output(output(SpawnReceipt {
                 agent_id: id,
                 profile_id: request.profile_id,
+                model,
+                delegation,
                 workspace,
                 message_accepted: false,
                 message_sequence: None,
@@ -272,6 +333,10 @@ impl AgentControlHost for AgentHost {
                     .map_err(|error| ToolError::new(super::agent_services::ServiceError(error)))?;
             }
         }
+        let _operation = owner.agent_operation(&message.target).await;
+        owner
+            .ensure_agent_admission_open(&message.target)
+            .map_err(ToolError::new)?;
         let (target, options) = {
             let state = owner.0.state();
             if state.closing {
@@ -309,10 +374,16 @@ impl AgentControlHost for AgentHost {
             .map_err(ToolError::new)?
         {
             DeliveryDisposition::Receipt(sequence) => sequence,
-            DeliveryDisposition::New => target
-                .send_message_and_continue(delivery, options)
-                .await
-                .map_err(ToolError::new)?,
+            DeliveryDisposition::New => {
+                owner
+                    .prepare_input_admission(&message.target, &target)
+                    .await
+                    .map_err(ToolError::new)?;
+                target
+                    .send_message_and_continue(delivery, options)
+                    .await
+                    .map_err(ToolError::new)?
+            }
             DeliveryDisposition::Conflict => {
                 return Err(ToolError::new(ThreadAssemblyError::MessageConflict(
                     message.id.clone(),
@@ -351,7 +422,11 @@ impl AgentControlHost for AgentHost {
                 {
                     continue;
                 }
-                rows.push(agent_row(id, entry.parent_id.as_deref(), &snapshot));
+                rows.push(
+                    agent_row(id, entry.parent_id.as_deref(), &snapshot).map_err(|error| {
+                        ToolError::new(super::agent_services::ServiceError(error))
+                    })?,
+                );
             }
             rows
         };
@@ -397,6 +472,43 @@ impl AgentControlHost for AgentHost {
         disposition: pl_tool::collaboration::thread::AgentWorkspaceDisposition,
     ) -> Result<ToolOutput, ToolError> {
         let owner = self.owner()?;
+        let root_operation = owner.agent_operation(caller).await;
+        let services = owner.0.state().agent_services.clone();
+        if let Some(services) = services {
+            let admission = owner.clone();
+            let root = caller.to_owned();
+            let caller = caller.to_owned();
+            let target_id = target.to_owned();
+            services
+                .operations
+                .clone()
+                .run(
+                    caller.clone(),
+                    move || {
+                        admission.ensure_agent_admission_open(&root)?;
+                        anyhow::ensure!(
+                            admission
+                                .0
+                                .state()
+                                .entries
+                                .get(&root)
+                                .is_some_and(|entry| entry.parent_id.is_none()),
+                            "only a root may close child agents"
+                        );
+                        Ok(())
+                    },
+                    async move {
+                        services
+                            .close_child_tree(owner, caller, target_id, disposition, root_operation)
+                            .await
+                    },
+                )
+                .await
+                .map_err(|error| ToolError::new(super::agent_services::ServiceError(error)))?;
+            return output(
+                serde_json::json!({"target":target,"lifecycle":ThreadLifecycle::Closed,"workspaceDisposition":disposition}),
+            );
+        }
         let mut targets = {
             let state = owner.0.state();
             if state.closing {
@@ -413,9 +525,11 @@ impl AgentControlHost for AgentHost {
             targets
         };
         targets.sort_by(|left, right| right.0.cmp(&left.0).then_with(|| left.1.cmp(&right.1)));
-        owner
+        let _seals = owner
             .seal_agent_close(&targets, disposition)
+            .await
             .map_err(ToolError::new)?;
+        drop(root_operation);
         for (_, id) in targets {
             owner.close(&id).await.map_err(ToolError::new)?;
         }
@@ -430,7 +544,10 @@ impl StudioThreadAssembler {
     ///
     /// # Errors
     /// Returns model declaration encoding or registration errors.
-    pub fn agent_control_tools(&self) -> Result<Vec<Registration>, ThreadAssemblyError> {
+    pub fn agent_control_tools(
+        &self,
+        selection: pl_protocol::DelegationSettings,
+    ) -> Result<Vec<Registration>, ThreadAssemblyError> {
         let host = Arc::new(AgentHost(Arc::downgrade(&self.0)));
         let mut kinds = vec![
             AgentControlKind::Send,
@@ -444,11 +561,15 @@ impl StudioThreadAssembler {
         let mut tools = kinds
             .into_iter()
             .map(|kind| {
-                let declaration = pl_model::runtime::thread_tool_declaration(&kind.declaration())?;
+                let mut spec = kind.declaration();
+                if matches!(kind, AgentControlKind::Spawn) {
+                    spec = self.spawn_declaration(selection)?;
+                }
+                let declaration = pl_model::runtime::thread_tool_declaration(&spec)?;
                 Ok(ThreadAgentControl::new(host.clone(), kind).registration(declaration)?)
             })
             .collect::<Result<Vec<_>, ThreadAssemblyError>>()?;
-        tools.extend(self.agent_query_tools()?);
+        tools.extend(self.agent_query_tools(selection)?);
         Ok(tools)
     }
 }

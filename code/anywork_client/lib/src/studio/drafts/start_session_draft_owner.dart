@@ -37,6 +37,24 @@ class StartSessionDraftOwner extends ReadModel<StartSessionDraft> {
     _editProject(projectId, project.copyWith(workspaceMode: mode));
   }
 
+  void setDelegationModeOverride(String projectId, DelegationMode? mode) {
+    final project = state.forProject(projectId);
+    if (project.delegationModeOverride == mode) return;
+    _editProject(projectId, project.copyWith(delegationModeOverride: mode));
+  }
+
+  void setDelegationPreferenceOverride(
+    String projectId,
+    DelegationPreference? preference,
+  ) {
+    final project = state.forProject(projectId);
+    if (project.delegationPreferenceOverride == preference) return;
+    _editProject(
+      projectId,
+      project.copyWith(delegationPreferenceOverride: preference),
+    );
+  }
+
   void _editProject(String projectId, StartSessionProjectDraft project) {
     if (_closed) return;
     _reserve(projectId);
@@ -135,6 +153,8 @@ class StartSessionDraftOwner extends ReadModel<StartSessionDraft> {
       throw StateError('The previous submission outcome is unknown');
     }
     final route = _freezeRoute(project.mode);
+    final defaults = _client.settings.state.canonical!.delegation;
+    final delegation = project.resolveDelegation(defaults);
     final operation = _client.mutations.begin(
       target: 'start:$projectId',
       draft: stamp,
@@ -163,6 +183,7 @@ class StartSessionDraftOwner extends ReadModel<StartSessionDraft> {
       projectId: projectId,
       project: project,
       route: route,
+      delegation: delegation,
       input: input,
     );
   }
@@ -226,6 +247,8 @@ class StartSessionDraftOwner extends ReadModel<StartSessionDraft> {
         mode: frozen.project.mode,
         workspaceMode: frozen.project.workspaceMode.id,
         route: frozen.route,
+        delegationMode: frozen.delegation.mode,
+        delegationPreference: frozen.delegation.preference,
         onProgress: (progress) => _progress(frozen, progress),
       );
       if (result == null) {
@@ -423,7 +446,11 @@ class StartSessionDraftOwner extends ReadModel<StartSessionDraft> {
     final model = account?.models
         .where((value) => value.modelId == route.modelId)
         .firstOrNull;
-    if (model == null) throw StateError('The selected model is unavailable');
+    // Candidate lists use typeSupport; admission of an existing desired route
+    // stays with Runtime. Only explicit unified disablement is resolved here.
+    if (model == null || !model.enabled) {
+      throw StateError('The selected model is unavailable');
+    }
     return ModeModelRouteView(
       modeId: mode,
       accountId: route.accountId,
@@ -474,6 +501,7 @@ final class FrozenStartSessionSubmission {
     required this.projectId,
     required this.project,
     required this.route,
+    required this.delegation,
     required this.input,
   });
   final DraftStamp stamp;
@@ -482,5 +510,6 @@ final class FrozenStartSessionSubmission {
   final String projectId;
   final StartSessionProjectDraft project;
   final ModeModelRouteView route;
+  final DelegationSettingsView delegation;
   final StudioPromptInput input;
 }

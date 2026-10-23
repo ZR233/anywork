@@ -4216,4 +4216,240 @@ class AppLocalizationsZh extends AppLocalizations {
 
   @override
   String get settingsSshNextPage => '下一页';
+
+  @override
+  String get delegationSettingsTitle => '子智能体分发';
+
+  @override
+  String get delegationDefaultMode => '默认分发模式';
+
+  @override
+  String get delegationDefaultPreference => '默认自动选模偏好';
+
+  @override
+  String get delegationModeLabel => '分发模式';
+
+  @override
+  String get delegationPreferenceLabel => '自动选模偏好';
+
+  @override
+  String get delegationProfile => '固定 Profile';
+
+  @override
+  String get delegationAutomatic => '自动选模';
+
+  @override
+  String get delegationEconomy => '经济';
+
+  @override
+  String get delegationBalanced => '平衡';
+
+  @override
+  String get delegationFast => '快速';
+
+  @override
+  String get delegationOnlyAutomatic => '仅自动选模时生效；固定 Profile 模式下保留该值。';
+
+  @override
+  String get delegationEconomyHint => '满足任务能力与质量要求后，优先降低预计整体成本；未知价格不当免费。';
+
+  @override
+  String get delegationBalancedHint => '综合任务适配、近期评价、成本与完成时间，不降低质量要求。';
+
+  @override
+  String get delegationFastHint => '满足能力、质量与审查要求后，优先缩短整体完成时间。';
+
+  @override
+  String get delegationFollowDefault => '跟随默认';
+
+  @override
+  String get delegationSessionSettings => '会话设置';
+
+  @override
+  String get delegationInherited => '提交前跟随最新默认值';
+
+  @override
+  String get delegationOverride => '仅此草稿';
+
+  @override
+  String get delegationFrozen => '创建会话时已保存 · 只读';
+
+  @override
+  String get delegationModelNotRecorded => '模型未记录';
+
+  @override
+  String get settingsModelEnabled => '启用';
+
+  @override
+  String get settingsModelEnabledHint => '统一用于新的模型选择与子智能体分发，不打断在途调用。';
+
+  @override
+  String get settingsModelDisabled => '已禁用，不能用于新选择';
+
+  @override
+  String get settingsModelSaving => '保存中…';
+
+  @override
+  String get settingsModelSaveFailed => '尚未保存，开关显示上次确认的值。可再次切换重试。';
+
+  @override
+  String get settingsBillingKind => '计费类别';
+
+  @override
+  String get settingsBillingAutomatic => '自动推导 · 无显式覆盖';
+
+  @override
+  String get settingsBillingMetered => '按量计费';
+
+  @override
+  String get settingsBillingSubscription => '订阅 / 套餐';
+
+  @override
+  String get settingsBillingUnknown => '未知';
+
+  @override
+  String get settingsBillingEffective => '有效计费类别';
+
+  @override
+  String get settingsBillingOverride => '显式覆盖';
+
+  @override
+  String get settingsBillingHint => '与金额统计独立；计费类别不代表订阅仍有效或额度充足。';
+
+  @override
+  String get settingsModelDetails => '模型详情';
+
+  @override
+  String get modelDetailLoading => '正在读取模型详情…';
+
+  @override
+  String get modelDetailUnknown => '未知 / 未核实';
+
+  @override
+  String get modelDetailAvailable => '本地配置满足新选择准入';
+
+  @override
+  String get modelDetailAvailabilityHint => '本地可用不保证远端健康、订阅有效或额度充足。';
+
+  @override
+  String get modelDetailSummary => '简介与任务适配';
+
+  @override
+  String get modelDetailLimitations => '局限';
+
+  @override
+  String get modelDetailCapabilities => '能力与限制';
+
+  @override
+  String get modelDetailEfforts => '合法思考强度';
+
+  @override
+  String get modelDetailNoEffort => '不提供思考强度参数';
+
+  @override
+  String get modelDetailPricing => '价格（每百万 token）';
+
+  @override
+  String get modelDetailPriceInput => '输入';
+
+  @override
+  String get modelDetailPriceOutput => '输出';
+
+  @override
+  String get modelDetailPriceCacheRead => '缓存读取';
+
+  @override
+  String get modelDetailPriceCacheWrite => '缓存写入';
+
+  @override
+  String get modelDetailSources => '来源与核验';
+
+  @override
+  String get modelDetailOfficial => '官方文档';
+
+  @override
+  String get modelDetailBenchmark => '独立基准';
+
+  @override
+  String get modelDetailCommunity => '社区反馈';
+
+  @override
+  String get modelDetailVerifiedAt => '核验日期';
+
+  @override
+  String get modelDetailMeasurement => '测量条件';
+
+  @override
+  String get modelDetailPerformance => '本地调用性能';
+
+  @override
+  String get modelDetailThroughput => 'Tokens/s（含首字等待）';
+
+  @override
+  String get modelDetailTtft => '平均首字延迟（毫秒）';
+
+  @override
+  String get modelDetailSamples => '调用样本数';
+
+  @override
+  String get modelDetailTtftSamples => '首字样本数';
+
+  @override
+  String get modelDetailUpdatedAt => '更新时间';
+
+  @override
+  String get modelDetailPerformanceHint =>
+      '本机观察结果受账号、网络、思考强度与任务影响，不是供应商承诺，也不是任务评价。';
+
+  @override
+  String get modelDetailEvaluations => '最近最终任务评价（最多 10 条）';
+
+  @override
+  String get modelDetailEvaluationsEmpty => '此账号与模型尚无最终任务评价。';
+
+  @override
+  String get modelDetailEvaluationsHint =>
+      '每个子智能体仅保留一条有效最终评价。少量样本不代表统计显著；无法判断不是低分。';
+
+  @override
+  String get modelDetailEvaluationPassed => '通过';
+
+  @override
+  String get modelDetailEvaluationFailed => '未通过';
+
+  @override
+  String get modelDetailEvaluationNotRated => '无法判断';
+
+  @override
+  String get modelDetailQuality => '质量';
+
+  @override
+  String get modelDetailInstructionFollowing => '指令遵循';
+
+  @override
+  String get modelDetailTaskReasoning => '推理';
+
+  @override
+  String get modelDetailTaskCoding => '编码';
+
+  @override
+  String get modelDetailTaskTooling => '工具调用与编排';
+
+  @override
+  String get modelDetailTaskLongContext => '长上下文';
+
+  @override
+  String get modelDetailTaskMultimodal => '多模态';
+
+  @override
+  String get modelDetailTaskGeneral => '通用';
+
+  @override
+  String get modelDetailRetry => '重新读取详情';
+
+  @override
+  String get modelDetailClose => '关闭';
+
+  @override
+  String get modelDetailStale => '该模型的 canonical 身份已变化，请重新读取详情。';
 }

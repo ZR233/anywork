@@ -13,6 +13,8 @@ pub struct ChildThreadRequest {
     pub caller: String,
     pub call_id: String,
     pub profile_id: String,
+    pub model_selection: Option<pl_protocol::studio::NewThreadModelRoute>,
+    pub delegation: pl_protocol::DelegationSettings,
     pub task_summary: pl_tool::collaboration::thread::AgentTaskSummary,
     pub writable_paths: Option<Vec<String>>,
     pub review_target_agent_id: Option<String>,
@@ -127,9 +129,12 @@ impl<R: StudioChildResources> StudioChildFactory for ConfiguredChildFactory<R> {
         }
         let config = self.config.clone();
         let profile_id = request.profile_id.clone();
-        let profile =
-            tokio::task::spawn_blocking(move || config.resolve_agent_profile(&profile_id))
-                .await??;
+        let selection = request.model_selection.clone();
+        let delegation = request.delegation;
+        let profile = tokio::task::spawn_blocking(move || {
+            config.resolve_delegated_profile(&profile_id, delegation.mode, selection)
+        })
+        .await??;
         if request.cancellation.is_cancelled() {
             return Err(pl_core::thread::ThreadError::Cancelled.into());
         }
@@ -260,7 +265,10 @@ impl super::StudioThreadAssembler {
     ) -> Result<(ChildFactory, ChildReservation), ThreadAssemblyError> {
         const MAX_TREE_THREADS: usize = 16;
         let mut state = self.0.state();
-        if state.closing || context.cancellation.is_cancelled() {
+        if state.closing
+            || state.sealed_agents.contains_key(&context.thread_id)
+            || context.cancellation.is_cancelled()
+        {
             return Err(ThreadAssemblyError::Closed);
         }
         let parent = state

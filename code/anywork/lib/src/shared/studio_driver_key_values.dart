@@ -6,9 +6,35 @@
 /// driver 脚本需要新的键时，把字符串加进这里并在 `StudioDriverKeys` 中引用。
 library;
 
+import 'dart:convert';
+
 import 'package:anywork_client/models.dart';
 
 abstract final class StudioDriverKeyValues {
+  static const sessionSettings = 'delegation-session-settings';
+  static const defaultDelegationMode = 'delegation-default-mode';
+  static const defaultDelegationPreference = 'delegation-default-preference';
+  static const draftDelegationMode = 'delegation-draft-mode';
+  static const draftDelegationPreference = 'delegation-draft-preference';
+  static String delegationModeOption(String scope, DelegationMode? mode) =>
+      'delegation-$scope-mode-${mode?.name ?? 'inherit'}';
+  static String delegationPreferenceOption(
+    String scope,
+    DelegationPreference? preference,
+  ) => 'delegation-$scope-preference-${preference?.name ?? 'inherit'}';
+  static String modelEnabled(String accountId, String modelId) =>
+      'account-model-enabled:${jsonEncode([accountId, modelId])}';
+  static String modelDetails(String accountId, String modelId) =>
+      'account-model-details:${jsonEncode([accountId, modelId])}';
+  static String accountBillingKind(String accountId) =>
+      'account-billing-kind:${jsonEncode(accountId)}';
+  static String billingKindOption(BillingKind? kind) =>
+      'account-billing-kind-${kind?.name ?? 'automatic'}';
+  static const modelDetailDialog = 'model-detail-dialog';
+  static const modelDetailClose = 'model-detail-close';
+  static const modelDetailReload = 'model-detail-reload';
+  static const modelDetailEvaluations = 'model-detail-evaluations';
+  static String agentModel(String threadId) => 'agent-model-$threadId';
   static const shell = 'studio-shell';
   static const startPage = 'studio-start-page';
   static const threadPreparation = 'thread-preparation';

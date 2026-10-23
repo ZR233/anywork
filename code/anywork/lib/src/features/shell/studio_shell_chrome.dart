@@ -26,6 +26,21 @@ class _Header extends StatelessWidget {
                   fontWeight: FontWeight.w600,
                 ),
               ),
+              if (thread != null)
+                Tooltip(
+                  message: context.l10n.delegationFrozen,
+                  child: Text(
+                    context.delegationSummary(
+                      DelegationSettingsView(
+                        mode: thread.delegationMode,
+                        preference: thread.delegationPreference,
+                      ),
+                    ),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: Theme.of(context).textTheme.labelSmall,
+                  ),
+                ),
               if (projectLabel.isNotEmpty) ...[
                 const SizedBox(height: 4),
                 Tooltip(
@@ -61,13 +76,13 @@ class _Header extends StatelessWidget {
           if (constraints.maxWidth < 520) {
             return Column(
               crossAxisAlignment: CrossAxisAlignment.start,
-              children: [title, if (state.workspaceThreads.isNotEmpty) actions],
+              children: [title, if (state.agents.isNotEmpty) actions],
             );
           }
           return Row(
             children: [
               Expanded(child: title),
-              if (state.workspaceThreads.isNotEmpty) ...[
+              if (state.agents.isNotEmpty) ...[
                 const SizedBox(width: 16),
                 // Bound the actions: this non-flexible row child would
                 // otherwise receive unbounded width and let the overflow bar
@@ -453,8 +468,8 @@ class _AgentSwitcherState extends ConsumerState<_AgentSwitcher> {
 
   @override
   Widget build(BuildContext context) {
-    final threads = _orderedAgentThreads(widget.state.workspaceThreads);
-    final aggregateColor = _aggregateAgentColor(context, widget.state, threads);
+    final agents = AgentDirectoryQueries.menuOrder(widget.state.agents);
+    final aggregateColor = _aggregateAgentColor(context, widget.state, agents);
     final viewport = MediaQuery.sizeOf(context);
     final availableWidth = (viewport.width - 24)
         .clamp(0.0, double.infinity)
@@ -481,11 +496,11 @@ class _AgentSwitcherState extends ConsumerState<_AgentSwitcher> {
       ),
       alignmentOffset: const Offset(6, 6),
       menuChildren: [
-        for (final thread in threads)
+        for (final agent in agents)
           _agentRow(
-            thread,
-            depth: _agentDepth(thread, threads),
-            selected: thread.id == selectedId,
+            agent,
+            selected: agent.threadId == selectedId,
+            menuWidth: menuWidth,
           ),
       ],
       child: TextButton(
@@ -502,7 +517,7 @@ class _AgentSwitcherState extends ConsumerState<_AgentSwitcher> {
           children: [
             Icon(Icons.circle, size: 6, color: aggregateColor),
             const SizedBox(width: 8),
-            Text(context.l10n.statusAgentsCount(threads.length)),
+            Text(context.l10n.statusAgentsCount(agents.length)),
             const SizedBox(width: 4),
             const Icon(Icons.keyboard_arrow_down, size: 14),
           ],
@@ -514,33 +529,71 @@ class _AgentSwitcherState extends ConsumerState<_AgentSwitcher> {
   /// 单个智能体行：层级缩进、状态图标、任务概要/角色、右侧状态与选中勾。
   ///
   /// 图标、正文与尾部件分别落在 [MenuItemButton] 的官方槽位上，行内空间由 Flex
-  /// 与行内省略分配；条目本身不读取约束、也不推导行宽预算，因此菜单面板的
-  /// intrinsic 测量不会失败。选中勾在所有行保留同宽占位，各行状态右边缘因此对齐。
+  /// 与行内省略分配；正文持有显式有限宽度，状态列单独保留空间，深层缩进在窄窗有界。
+  /// 选中勾在所有行保留同宽占位，各行状态右边缘因此对齐。
   Widget _agentRow(
-    StudioThread thread, {
-    required int depth,
+    StudioAgentView agent, {
     required bool selected,
+    required double menuWidth,
   }) {
-    final error = _agentForThread(widget.state, thread.id)?.error;
+    final thread = widget.state.workspaceThreads
+        .where((thread) => thread.id == agent.threadId)
+        .firstOrNull;
+    final error = agent.error;
     final hasError = error != null;
-    final summary = _agentDisplayName(context, thread);
-    final status = error ?? _agentShortStatus(context, thread);
+    final summary = thread?.title.trim().isNotEmpty == true
+        ? thread!.title
+        : agent.task.trim().isNotEmpty
+        ? agent.task
+        : context.roleLabel(agent.role);
+    final status =
+        error ?? context.threadStatusLabel(_agentThreadStatus(agent.state));
     final secondaryStyle = Theme.of(context).textTheme.labelSmall
         ?.copyWith(color: context.colors.onSurfaceVariant);
-    final role = thread.role.trim();
+    final role = agent.role.trim();
     final roleLabel = role.isEmpty
         ? null
-        : (thread.isRetiredAgent
+        : (role == 'planner' && agent.parentPath != null
               ? context.l10n.agentRoleRetired
               : context.roleLabel(role));
+    final frozen = agent.frozenModel ?? thread?.frozenModel;
+    final account = ref
+        .watch(settingsStoreProvider)
+        .canonical
+        ?.accounts
+        .where((account) => account.id == frozen?.accountId)
+        .firstOrNull;
+    final descriptor = account?.models
+        .where((model) => model.modelId == frozen?.modelId)
+        .firstOrNull;
+    final modelLabel = frozen == null
+        ? context.l10n.delegationModelNotRecorded
+        : descriptor?.displayName.isNotEmpty == true
+        ? descriptor!.displayName
+        : frozen.modelId;
+    final modelTooltip = frozen == null
+        ? modelLabel
+        : '$modelLabel\n${frozen.accountId} / ${frozen.modelId}\n${context.l10n.statusReasoningEffort}: ${frozen.effort ?? context.l10n.statisticsReasoningEffortUnspecified}';
+    final indent = (agent.depth * _agentIndentStep).clamp(
+      0.0,
+      (menuWidth - 208).clamp(0.0, menuWidth),
+    );
+    final rowWidth = (menuWidth - 88 - indent).clamp(0.0, menuWidth);
+    final statusGap = rowWidth.clamp(0.0, _agentRowGap);
+    final statusWidth = (rowWidth - statusGap).clamp(0.0, 84.0);
     return MenuItemButton(
-      key: StudioDriverKeys.agentRow(thread.id),
+      key: StudioDriverKeys.agentRow(agent.threadId),
       onPressed: () {
         unawaited(
           ref
               .read(anyworkClientProvider)
               .directoryCommands
-              .selectAgentThread(thread.id),
+              .selectAgentThread(agent.threadId)
+              .catchError((Object error) {
+                if (!mounted) return;
+                ScaffoldMessenger.of(context)
+                    .showSnackBar(SnackBar(content: Text(error.toString())));
+              }),
         );
       },
       // 选中背景走官方样式工厂；内边距、行高、悬浮与墨迹效果沿用
@@ -552,13 +605,13 @@ class _AgentSwitcherState extends ConsumerState<_AgentSwitcher> {
       ),
       // 层级缩进按真实父子深度表达；Material 菜单项没有对应能力。
       leadingIcon: Padding(
-        padding: EdgeInsetsDirectional.only(start: depth * _agentIndentStep),
+        padding: EdgeInsetsDirectional.only(start: indent),
         child: Icon(
           hasError ? Icons.error_outline : Icons.circle,
           size: hasError ? 16 : 9,
           color: hasError
               ? Theme.of(context).colorScheme.error
-              : _statusColor(context, widget.state, thread),
+              : _statusColor(context, widget.state, agent),
         ),
       ),
       // 未选中行用官方 Visibility 保持同宽占位，状态列与指示列因此始终对齐。
@@ -569,47 +622,52 @@ class _AgentSwitcherState extends ConsumerState<_AgentSwitcher> {
         maintainState: true,
         child: const Icon(Icons.check, size: _agentCheckSize),
       ),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-        children: [
-          Flexible(
-            flex: 2,
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
+      child: SizedBox(
+        width: rowWidth,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
               children: [
-                Tooltip(
-                  message: summary,
-                  child: Text(
-                    summary,
-                    key: StudioDriverKeys.agentTaskSummary(thread.id),
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
+                Expanded(
+                  child: Tooltip(
+                    message: summary,
+                    child: Text(
+                      summary,
+                      key: StudioDriverKeys.agentTaskSummary(agent.threadId),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
                   ),
                 ),
-                if (roleLabel != null)
-                  Text(
-                    roleLabel,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: secondaryStyle,
+                SizedBox(width: statusGap),
+                SizedBox(
+                  width: statusWidth,
+                  child: Tooltip(
+                    message: status,
+                    child: Text(
+                      status,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: secondaryStyle,
+                    ),
                   ),
+                ),
               ],
             ),
-          ),
-          const SizedBox(width: _agentRowGap),
-          Flexible(
-            child: Tooltip(
-              message: status,
+            Tooltip(
+              message: modelTooltip,
               child: Text(
-                status,
+                '${roleLabel ?? role} · $modelLabel',
+                key: StudioDriverKeys.agentModel(agent.threadId),
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
                 style: secondaryStyle,
               ),
             ),
-          ),
-        ],
+          ],
+        ),
       ),
     );
   }
@@ -628,71 +686,21 @@ const double _agentCheckSize = 18;
 /// 宽屏顶栏 actions 最多占用的横向比例，其余横向空间留给会话标题。
 const double _headerActionsWidthFraction = 0.7;
 
-/// 运行状态展示分组：执行中、失败、空闲、关闭中或已关闭。
-int _agentStatusPriority(ThreadStatusView status) => switch (status) {
-  // 执行中，与 ThreadStatusView.isActive 保持一致。
-  ThreadStatusView.queued ||
-  ThreadStatusView.running ||
-  ThreadStatusView.waitingTool ||
-  ThreadStatusView.waitingInteraction ||
-  ThreadStatusView.cancelling => 0,
-  ThreadStatusView.faulted => 1,
-  ThreadStatusView.idle => 2,
-  ThreadStatusView.closing || ThreadStatusView.closed => 3,
-};
-
-/// 按运行状态分组稳定排序，同组内保持 canonical 的 owner/父子顺序。
-List<StudioThread> _orderedAgentThreads(List<StudioThread> threads) {
-  final indexed = [
-    for (var index = 0; index < threads.length; index++)
-      (index, threads[index]),
-  ];
-  indexed.sort((left, right) {
-    final byStatus = _agentStatusPriority(left.$2.status)
-        .compareTo(_agentStatusPriority(right.$2.status));
-    return byStatus != 0 ? byStatus : left.$1.compareTo(right.$1);
-  });
-  return [for (final entry in indexed) entry.$2];
-}
-
-StudioAgentView? _agentForThread(HeaderView state, String threadId) {
-  for (final agent in state.agents) {
-    if (agent.threadId == threadId) return agent;
-  }
-  return null;
-}
-
-int _agentDepth(StudioThread thread, List<StudioThread> threads) {
-  var depth = 0;
-  var parentId = thread.parentThreadId;
-  final visited = <String>{thread.id};
-  while (parentId != null && visited.add(parentId)) {
-    final parent = threads
-        .where((candidate) => candidate.id == parentId)
-        .firstOrNull;
-    if (parent == null) {
-      break;
-    }
-    depth += 1;
-    parentId = parent.parentThreadId;
-  }
-  return depth;
-}
-
 Color _aggregateAgentColor(
   BuildContext context,
   HeaderView state,
-  List<StudioThread> threads,
+  List<StudioAgentView> agents,
 ) {
-  if (threads.any((thread) => _isFaultedAgentStatus(thread.status))) {
+  if (agents.any((agent) => agent.state is FaultedStudioAgent)) {
     return context.colors.error;
   }
   if (state.pendingInteractions.any(
-    (interaction) => threads.any((thread) => thread.id == interaction.threadId),
+    (interaction) =>
+        agents.any((agent) => agent.threadId == interaction.threadId),
   )) {
     return context.statusColors.warning;
   }
-  if (threads.any((thread) => _isRunningAgentStatus(thread.status))) {
+  if (agents.any((agent) => agent.state.isActive)) {
     return context.statusColors.activeIndicator;
   }
   return context.statusColors.success;
@@ -701,42 +709,33 @@ Color _aggregateAgentColor(
 Color _statusColor(
   BuildContext context,
   HeaderView state,
-  StudioThread thread,
+  StudioAgentView agent,
 ) {
-  if (_isFaultedAgentStatus(thread.status)) {
+  if (agent.state is FaultedStudioAgent) {
     return context.colors.error;
   }
   if (state.pendingInteractions.any(
-    (interaction) => interaction.threadId == thread.id,
+    (interaction) => interaction.threadId == agent.threadId,
   )) {
     return context.statusColors.warning;
   }
-  if (_isRunningAgentStatus(thread.status)) {
+  if (agent.state.isActive) {
     return context.statusColors.activeIndicator;
   }
   return context.statusColors.success;
 }
 
-bool _isRunningAgentStatus(ThreadStatusView status) => status.isActive;
-
-bool _isFaultedAgentStatus(ThreadStatusView status) =>
-    status == ThreadStatusView.faulted;
-
-String _agentShortStatus(BuildContext context, StudioThread thread) =>
-    context.threadStatusLabel(thread.status);
-
-/// 菜单条目主文案：所有者与子智能体都直接展示自己的任务概要，角色与状态
-/// 另行显示；没有概要时回退到角色标签，仍在运行的会话不暴露内部 ID。
-String _agentDisplayName(BuildContext context, StudioThread thread) {
-  final title = thread.title.trim();
-  if (title.isNotEmpty) return title;
-  if (thread.isRetiredAgent) return thread.id;
-  final role = thread.role.trim();
-  if (role.isEmpty) {
-    return thread.isRoot ? context.l10n.roleEmpty : thread.id;
-  }
-  return context.roleLabel(role);
-}
+ThreadStatusView _agentThreadStatus(StudioAgentState state) => switch (state) {
+  IdleStudioAgent() => ThreadStatusView.idle,
+  QueuedStudioAgent() => ThreadStatusView.queued,
+  RunningStudioAgent() => ThreadStatusView.running,
+  WaitingToolStudioAgent() => ThreadStatusView.waitingTool,
+  WaitingInteractionStudioAgent() => ThreadStatusView.waitingInteraction,
+  CancellingStudioAgent() => ThreadStatusView.cancelling,
+  ClosingStudioAgent() => ThreadStatusView.closing,
+  ClosedStudioAgent() => ThreadStatusView.closed,
+  FaultedStudioAgent() => ThreadStatusView.faulted,
+};
 
 class _Footer extends StatelessWidget {
   const _Footer({

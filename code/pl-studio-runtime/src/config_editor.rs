@@ -151,10 +151,20 @@ impl AccountEdit {
         let mut config = match &self.template {
             Some(template_id) => {
                 let template = template.expect("resolved template for this account edit");
-                let mut config = current
-                    .filter(|current| current.template_id() == Some(template_id))
-                    .cloned()
-                    .unwrap_or(template.account);
+                let mut config = match current {
+                    Some(current) => {
+                        let mut config = current.clone();
+                        if current.template_id() != Some(template_id) {
+                            config.template = Some(template_id.clone());
+                            config.protocol = template.account.protocol;
+                            config.catalog = template.account.catalog;
+                            config.capabilities = template.account.capabilities;
+                            config.clear_model_catalog_overlay();
+                        }
+                        config
+                    }
+                    None => template.account,
+                };
                 if current.and_then(AccountConfig::template_id) == Some(template_id) {
                     let current = current.expect("matching current template is present");
                     config.bearer_token_env = current.bearer_token_env.clone();
@@ -188,7 +198,19 @@ impl AccountEdit {
                         .and_then(|account| account.service_capabilities().ok())
                         .unwrap_or_default(),
                 };
-                let mut config = AccountConfig::from_explicit_models(info, custom_models);
+                let fresh = AccountConfig::from_explicit_models(info, custom_models);
+                let mut config = match current {
+                    Some(current) => {
+                        let mut config = current.clone();
+                        config.template = None;
+                        config.protocol = fresh.protocol;
+                        config.catalog = fresh.catalog;
+                        config.capabilities = fresh.capabilities;
+                        config.clear_model_catalog_overlay();
+                        config
+                    }
+                    None => fresh,
+                };
                 config.bearer_token_env =
                     current_custom.and_then(|account| account.bearer_token_env.clone());
                 config

@@ -261,11 +261,7 @@ void main() {
     );
     expect(input.enabled, isFalse, reason: '未打开项目不能提交新会话');
 
-    for (final key in [
-      StudioDriverKeys.sessionMode,
-      StudioDriverKeys.sessionWorkspaceMode,
-      StudioDriverKeys.model,
-    ]) {
+    for (final key in [StudioDriverKeys.sessionMode, StudioDriverKeys.model]) {
       final trigger = find.descendant(
         of: find.byKey(key),
         matching: find.byType(TextButton),
@@ -277,6 +273,17 @@ void main() {
         reason: '$key 必须反映未打开项目的禁用状态',
       );
     }
+    expect(
+      find.byKey(StudioDriverKeys.sessionWorkspaceMode),
+      findsNothing,
+      reason:
+          'Workspace is only inside session settings, not a duplicate shortcut',
+    );
+    expect(
+      find.byKey(StudioDriverKeys.sessionSettings),
+      findsNothing,
+      reason: 'There is no project-scoped settings menu before a project is selected',
+    );
   });
 
   testWidgets('打开项目后原生输入框与工作区选择都更新新会话草稿', (tester) async {
@@ -295,18 +302,17 @@ void main() {
       '新会话正文',
     );
 
-    final workspaceTrigger = tester.widget<TextButton>(
-      find.descendant(
-        of: find.byKey(StudioDriverKeys.sessionWorkspaceMode),
-        matching: find.byType(TextButton),
-      ),
+    final settingsTrigger = tester.widget<IconButton>(
+      find.byKey(StudioDriverKeys.sessionSettings),
     );
     expect(
-      workspaceTrigger.onPressed,
+      settingsTrigger.onPressed,
       isNotNull,
       reason:
           'Demo must deliver the canonical mode catalog to enable selectors',
     );
+    await tester.tap(find.byKey(StudioDriverKeys.sessionSettings));
+    await tester.pumpAndSettle();
     await tester.tap(find.byKey(StudioDriverKeys.sessionWorkspaceMode));
     await tester.pumpAndSettle();
     final worktreeKey = StudioDriverKeys.sessionWorkspaceModeOption(

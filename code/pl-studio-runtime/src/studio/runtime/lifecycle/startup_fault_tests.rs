@@ -23,13 +23,47 @@ fn cold_session(paths: &StudioPaths) -> Result<crate::studio::paths::SessionPath
 
 #[tokio::test]
 async fn canonical_project_without_sqlite_mirror_accepts_and_restores_new_thread() -> Result<()> {
+    use crate::config::{ConfigPaths, ConfigStore, StudioConfig};
     use crate::studio::store::directory::{DirectoryDelta, ProjectDirectoryRecord};
+    use pl_model::config::{AccountConfig, AccountId, ModelRouteConfig};
+    use pl_model::model::ModelInfo;
+    use pl_model::protocol::ProtocolEndpoint;
     use sea_orm::EntityTrait;
 
     let temp = tempfile::tempdir()?;
     let home = temp.path().join("home");
     let workspace = temp.path().join("workspace");
     tokio::fs::create_dir_all(&workspace).await?;
+    // This storage scenario creates a real Thread on the second startup. Give all three
+    // startups one durable anonymous route, not a vendor default that needs external credentials.
+    let endpoint = std::net::TcpListener::bind("127.0.0.1:0")?;
+    let account_id = AccountId::new("storage-fixture")?;
+    let route = ModelRouteConfig {
+        account_id: account_id.clone(),
+        model_id: "storage-model".into(),
+        effort: None,
+    };
+    let mut config = StudioConfig::default_config()?;
+    config.models.accounts.clear();
+    config.models.accounts.insert(
+        account_id,
+        AccountConfig::from_explicit_models(
+            ProtocolEndpoint::compatible(
+                "Storage fixture",
+                format!("http://{}", endpoint.local_addr()?),
+            ),
+            vec![ModelInfo::compatible(&route.model_id)],
+        ),
+    );
+    for selected in config
+        .models
+        .routes
+        .values_mut()
+        .chain(config.mode_model_routes.values_mut())
+    {
+        *selected = route.clone();
+    }
+    ConfigStore::new(ConfigPaths::from_config_dir(&home)).save(&config)?;
     let runtime = StudioRuntime::initialize(options(&home)).await?;
     // Model a stop between canonical publication and its asynchronous SQLite mirror.
     runtime
@@ -71,6 +105,14 @@ async fn canonical_project_without_sqlite_mirror_accepts_and_restores_new_thread
     );
     assert!(runtime.runtime_snapshot().await?.startup_recovery.is_none());
     runtime.shutdown_runtime().await?;
+    endpoint.set_nonblocking(true)?;
+    assert!(
+        matches!(
+            endpoint.accept(),
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock
+        ),
+        "storage-only startup must not discover or invoke the model endpoint"
+    );
     Ok(())
 }
 

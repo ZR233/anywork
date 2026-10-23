@@ -11,10 +11,12 @@ pub(super) async fn publish(
     summary: Option<String>,
 ) -> Result<()> {
     let state = agent_state(snapshot)?;
-    let Some(thread) =
-        projector
-            .events
-            .patch_thread_runtime(&thread.id, thread.status, thread.updated_at)
+    let Some(thread) = projector.events.patch_thread_runtime(
+        &thread.id,
+        thread.status,
+        thread.updated_at,
+        snapshot,
+    )?
     else {
         return Ok(());
     };
@@ -25,6 +27,9 @@ pub(super) async fn publish(
         path: thread.agent_path.clone(),
         parent_path: thread.parent_thread_id.clone(),
         role: thread.role.clone(),
+        delegation_mode: thread.delegation_mode,
+        delegation_preference: thread.delegation_preference,
+        frozen_model: thread.frozen_model.clone(),
         task: thread.title.clone(),
         summary,
         depth: u32::from(thread.parent_thread_id.is_some()),
@@ -36,6 +41,11 @@ pub(super) async fn publish(
 }
 
 fn agent_state(snapshot: &ThreadSnapshot) -> Result<AgentState> {
+    if crate::studio::agent_close::is_explicitly_closed(snapshot)?
+        && snapshot.lifecycle == ThreadLifecycle::Open
+    {
+        return Ok(AgentState::Closing(pl_protocol::ClosingAgentState::new()));
+    }
     match snapshot.lifecycle {
         ThreadLifecycle::Closed => {
             return Ok(AgentState::Closed(pl_protocol::ClosedAgentState::new()));

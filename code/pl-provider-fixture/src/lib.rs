@@ -26,6 +26,7 @@ use tokio::{net::TcpListener, sync::oneshot, task::JoinHandle};
 use tokio_util::sync::CancellationToken;
 
 mod context_replay_recovery;
+pub mod delegation;
 mod model_catalog;
 mod provider_usage;
 mod question_history;
@@ -111,7 +112,7 @@ pub const GUI_PROMPT: &str = "Reply with exactly: fixture ready";
 /// The coordinator's ready-file check, the fixture CLI parser and the script
 /// selection all read this single list, so a scenario can no longer be accepted
 /// by one of them and rejected by another.
-pub const GUI_SCENARIOS: [&str; 24] = [
+pub const GUI_SCENARIOS: [&str; 29] = [
     "gui",
     "markdown-layout",
     "single-instance",
@@ -136,6 +137,11 @@ pub const GUI_SCENARIOS: [&str; 24] = [
     "provider-usage",
     "timeline-history",
     "wait-events",
+    "delegation-routing",
+    "delegation-lifecycle",
+    "delegation-window",
+    "delegation-enablement",
+    "delegation-recovery",
 ];
 
 /// Root prompts consumed by the native Mode editor acceptance, in order.
@@ -1552,6 +1558,7 @@ struct AppState {
     provider_usage: provider_usage::ProviderUsageGates,
     model_catalog: Option<Arc<model_catalog::ModelCatalogControl>>,
     model_catalog_hits: model_catalog::ModelCatalogHits,
+    delegation: delegation::Environment,
 }
 
 /// Optional fixture behaviours layered on top of the strict step script.
@@ -1570,6 +1577,8 @@ pub struct FixtureOptions {
     /// strict ordinal script. Child Threads share this listener, so a cursor
     /// script cannot accept their requests.
     pub wait_events: bool,
+    /// Dedicated scripted-provider journey; never changes product routing.
+    pub delegation: Option<delegation::Scenario>,
 }
 
 /// A listening fixture. Drop aborts the listener; `finish` additionally verifies the script.
@@ -1611,8 +1620,11 @@ impl FixtureServer {
             provider_usage: provider_usage::ProviderUsageGates::new(),
             model_catalog: options.model_catalog.map(Arc::new),
             model_catalog_hits: model_catalog::ModelCatalogHits::default(),
+            delegation: delegation::Environment::new(options.delegation),
         };
-        let responses_route = if web_search_enabled {
+        let responses_route = if options.delegation.is_some() {
+            post(delegation::responses)
+        } else if web_search_enabled {
             post(web_search::responses)
         } else if options.wait_events {
             post(wait_events::responses)
@@ -1740,6 +1752,11 @@ impl FixtureServer {
                 "/v1/mimo/chat/completions",
                 post(handle).fallback(unexpected_route),
             )
+        } else {
+            app
+        };
+        let app = if options.delegation.is_some() {
+            delegation::routes(app)
         } else {
             app
         };

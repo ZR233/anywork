@@ -61,6 +61,11 @@ pub enum ModelRouteAvailability {
         account_id: AccountId,
         model_id: String,
     },
+    /// 成员存在但被用户禁用；禁用是 desired 状态，不是配置损坏。
+    ModelDisabled {
+        account_id: AccountId,
+        model_id: String,
+    },
     TypeUnsupported {
         account_id: AccountId,
         model_id: String,
@@ -223,6 +228,13 @@ impl AgentModelConfig {
             });
         };
         let support = model.type_support(crate::model::ModelType::Text);
+        // 禁用是用户的 desired 意图：声明仍合法，但当前不可用于执行。
+        if !model.enabled {
+            return Ok(ModelRouteAvailability::ModelDisabled {
+                account_id: route.account_id.clone(),
+                model_id: route.model_id.clone(),
+            });
+        }
         if !support.exclusions.is_empty() {
             return Ok(ModelRouteAvailability::TypeUnsupported {
                 account_id: route.account_id.clone(),
@@ -333,6 +345,12 @@ impl AgentModelConfig {
                 ))
             })?;
         let context = model.context.clone();
+        if !model.enabled {
+            return Err(PureError::ConfigError(format!(
+                "role {role} uses disabled model {}.{}",
+                route.account_id, route.model_id
+            )));
+        }
         let support = model.type_support(crate::model::ModelType::Text);
         if !support.exclusions.is_empty() {
             return Err(PureError::ConfigError(format!(

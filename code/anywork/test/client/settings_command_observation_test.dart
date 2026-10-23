@@ -33,6 +33,72 @@ class _SettingsTransport extends RecordingDemoTransport {
 }
 
 void main() {
+  test('model enabled command accepts its own canonical receipt', () async {
+    final transport = RecordingDemoTransport();
+    final client = AnyworkClient(
+      transport: transport,
+      clientId: 'enabled-receipt',
+    );
+    addTearDown(client.close);
+    await client.bootstrap();
+    final account = client.settings.state.canonical!.accounts.first;
+    final model = account.models.first;
+    final key = accountModelEnabledMutationKey(account.id, model.modelId);
+    await client.settingsCommands.setAccountModelEnabled(
+      account.id,
+      model.modelId,
+      false,
+    );
+    expect(
+      client.settings.state.canonical!.accounts.first.models.first.enabled,
+      isFalse,
+    );
+    expect(client.settings.state.commands[key]?.isPending ?? false, isFalse);
+    expect(client.settings.state.commands[key]?.error, isNull);
+    await client.settingsCommands.setAccountBillingKind(
+      account.id,
+      BillingKind.unknown,
+    );
+    expect(
+      client.settings.state.canonical!.accounts.first.billingKindOverride,
+      BillingKind.unknown,
+    );
+    await client.settingsCommands.setAccountBillingKind(account.id, null);
+    expect(
+      client.settings.state.canonical!.accounts.first.billingKindOverride,
+      isNull,
+    );
+    final current = client.settings.state.canonical!.accounts.first;
+    await client.settingsCommands.saveAccount(
+      AccountCommandBuilder.buildAccount(
+        current.copyWith(
+          models: [
+            ...current.models,
+            const AccountModelView(
+              modelId: 'manual-receipt',
+              displayName: 'Manual',
+              reasoningEfforts: [],
+              contextWindow: 1000,
+              maxOutputTokens: 100,
+              origin: ModelOrigin.manual,
+            ),
+          ],
+        ),
+        secret: const AccountSecretCommand.preserve(),
+      ),
+    );
+    await client.settingsCommands.removeAccountModel(
+      account.id,
+      'manual-receipt',
+    );
+    expect(
+      client.settings.state.canonical!.accounts.first.models.any(
+        (m) => m.modelId == 'manual-receipt',
+      ),
+      isFalse,
+    );
+  });
+
   test(
     'old Settings ACK cannot clear newer intent and never rereads bootstrap',
     () async {

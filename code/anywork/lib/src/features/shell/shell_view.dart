@@ -127,7 +127,11 @@ SidebarView sidebarView(Ref ref) {
   final modes =
       ref.watch(modeCatalogStoreProvider).value?.modes ??
       const <ThreadModeDescriptorView>[];
-  final selected = threadById(threads, selection.selectedThreadId);
+  final selectedRootId = AgentDirectoryQueries.rootThreadId(
+    threadId: selection.selectedThreadId,
+    agents: ref.watch(projectStoreProvider).agents?.values ?? const [],
+    threads: [...threads, ...directory.overlayThreads],
+  );
   var busy = false;
   final selectedId = selection.selectedThreadId;
   if (selectedId != null && !selection.needsOpen) {
@@ -146,9 +150,7 @@ SidebarView sidebarView(Ref ref) {
         if (thread.isRoot) thread,
     ],
     selectedProjectId: selection.selectedProjectId,
-    selectedRootThreadId: selected == null
-        ? null
-        : rootThread(threads, selected)?.id,
+    selectedRootThreadId: selectedRootId,
     isBusy: busy,
     projectRecoveryIssues: {
       for (final issue in recovery)
@@ -170,10 +172,16 @@ SidebarView sidebarView(Ref ref) {
 @riverpod
 HeaderView headerView(Ref ref) {
   final selection = ref.watch(selectionStoreProvider);
-  final threads = ref.watch(threadDirectoryStoreProvider).window.threads;
+  final directory = ref.watch(threadDirectoryStoreProvider);
+  final threads = [...directory.window.threads, ...directory.overlayThreads];
   final projects = ref.watch(projectStoreProvider);
-  final selected = threadById(threads, selection.selectedThreadId);
-  final root = selected == null ? null : rootThread(threads, selected);
+  final agents = projects.agents?.values ?? const <StudioAgentView>[];
+  final rootId = AgentDirectoryQueries.rootThreadId(
+    threadId: selection.selectedThreadId,
+    agents: agents,
+    threads: threads,
+  );
+  final root = threadById(threads, rootId);
   final projectId = root?.projectId ?? selection.selectedProjectId;
   final workspaceThreads = root == null
       ? const <StudioThread>[]
@@ -186,7 +194,6 @@ HeaderView headerView(Ref ref) {
     runtime = session.runtime ?? shellEmptyRuntime;
     pending = session.interactions;
   }
-  final rootId = root?.id;
   return HeaderView(
     selectedRootThread: root,
     selectedProject: projectById(
@@ -195,9 +202,10 @@ HeaderView headerView(Ref ref) {
     ),
     selectedProjectId: selection.selectedProjectId,
     workspaceThreads: workspaceThreads,
-    agents: agentsForThreads(
-      workspaceThreads,
-      projects.agents?.values ?? const [],
+    agents: AgentDirectoryQueries.forRoot(
+      rootThreadId: rootId,
+      agents: agents,
+      threads: threads,
     ),
     selectedThreadId: selection.selectedThreadId,
     runtime: runtime,
@@ -217,21 +225,25 @@ AgentWorkspaceView? shellComposerWorkspace(Ref ref) {
   final threadId = selection.selectedThreadId;
   if (threadId == null) return null;
   final directory = ref.watch(threadDirectoryStoreProvider);
-  final threads = directory.window.threads;
-  final thread = threadById([
-    ...threads,
-    ...directory.overlayThreads,
-  ], threadId);
+  final threads = [...directory.window.threads, ...directory.overlayThreads];
   ThreadSessionState? session;
   if (!selection.needsOpen) {
     session = ref.watch(threadSessionStoreProvider(threadId));
   }
+  final thread = threadById(threads, threadId) ?? session?.workspace?.thread;
   if (thread == null) return null;
-  final root = rootThread(threads, thread) ?? thread;
+  final agents =
+      ref.watch(projectStoreProvider).agents?.values ??
+      const <StudioAgentView>[];
+  final rootId = AgentDirectoryQueries.rootThreadId(
+    threadId: threadId,
+    agents: agents,
+    threads: [...threads, thread],
+  );
+  final root = threadById(threads, rootId) ?? (thread.isRoot ? thread : null);
+  if (root == null) return null;
   final settings = ref.watch(settingsStoreProvider);
   final canonical = settings.canonical;
-  final workspaceThreads = threadsForRoot(threads, root);
-  final agents = ref.watch(projectStoreProvider).agents?.values ?? const [];
   return AgentWorkspaceView(
     thread: thread,
     rootThread: root,
@@ -256,7 +268,11 @@ AgentWorkspaceView? shellComposerWorkspace(Ref ref) {
     ),
     modeModelRoutes: canonical?.modeModelRoutes ?? const [],
     roles: canonical?.roles ?? const [],
-    agents: agentsForThreads(workspaceThreads, agents),
+    agents: AgentDirectoryQueries.forRoot(
+      rootThreadId: rootId,
+      agents: agents,
+      threads: threads,
+    ),
   );
 }
 
@@ -450,14 +466,6 @@ StudioThread? threadById(List<StudioThread> threads, String? id) {
   return null;
 }
 
-StudioThread? rootThread(List<StudioThread> threads, StudioThread selected) {
-  final rootId = selected.effectiveRootThreadId;
-  for (final thread in threads) {
-    if (thread.id == rootId && thread.isRoot) return thread;
-  }
-  return selected.isRoot ? selected : null;
-}
-
 StudioProject? projectById(List<StudioProject> projects, String? id) {
   if (id == null) return null;
   for (final project in projects) {
@@ -501,27 +509,4 @@ List<StudioThread> threadsForRoot(
     append(thread);
   }
   return ordered;
-}
-
-List<StudioAgentView> agentsForThreads(
-  List<StudioThread> threads,
-  List<StudioAgentView> agents,
-) {
-  final byThread = {for (final agent in agents) agent.threadId: agent};
-  return [
-    for (final thread in threads)
-      byThread[thread.id] ??
-          StudioAgentView(
-            id: thread.id,
-            threadId: thread.id,
-            path: thread.agentPath.isEmpty ? thread.id : thread.agentPath,
-            parentPath: thread.parentThreadId,
-            role: thread.role,
-            task: thread.title,
-            state: const IdleStudioAgent(),
-            summary: null,
-            depth: thread.isRoot ? 0 : 1,
-            updatedAt: thread.updatedAt,
-          ),
-  ];
 }
