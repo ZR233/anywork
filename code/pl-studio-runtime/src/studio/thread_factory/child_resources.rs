@@ -1,6 +1,7 @@
 //! Physical child resources assembled from one resolved product configuration snapshot.
 use super::StudioThreadFactory;
 use super::errors::resource_error;
+use crate::agent::definition::ResolvedAgentDefinition;
 use crate::resource_store::FileResourceStore;
 use crate::studio::ThreadRecord;
 use crate::thread_assembler::{
@@ -107,14 +108,17 @@ impl StudioChildResources for StudioThreadFactory {
         let workspace_payload = crate::studio::workspace_receipt::to_payload(&assignment)
             .map_err(|error| resource_error("encode child workspace receipt", error))?;
         let receipt = workspace_payload.content().to_owned();
+        let agent = ResolvedAgentDefinition::from_profile(&profile.profile).map_err(|error| {
+            ThreadAssemblyError::Identity(format!("invalid child Agent: {error}"))
+        })?;
         let (mut initial_context, instruction_sources) =
             super::thread_seed::capture(super::thread_seed::ThreadInstructionSeed {
                 thread_id: &request.id,
                 config: &profile.config,
                 model: &profile.route.model,
                 root: std::path::Path::new(&assignment.root),
-                label: &profile.profile.display_name,
-                instructions: &profile.profile.system_instructions,
+                agent: &agent,
+                mode: None,
                 resources: &prepared_tools,
             })
             .await?;
@@ -201,7 +205,7 @@ impl StudioChildResources for StudioThreadFactory {
                 profile.config.runtime.openai_compaction_mode,
                 self.services.thread_modes.clone(),
             )?,
-            agent_controls: crate::thread_assembler::AgentControlExposure::Disabled,
+            agent_controls: Vec::new(),
             execution: pl_core::thread::input::InputDriverOptions {
                 max_model_steps: Self::CHILD_MODEL_STEP_LIMIT,
             },

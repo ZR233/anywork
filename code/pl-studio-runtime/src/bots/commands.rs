@@ -559,6 +559,7 @@ impl BotRuntime {
                 store: &managed.store,
                 plan,
                 facts: planned,
+                rate: &managed.send_rate,
             })
             .await?
         };
@@ -1225,6 +1226,17 @@ impl BotRuntime {
         managed.token.access_token().await
     }
 
+    pub(super) async fn prepare_auto_reply_token(
+        &self,
+        managed: &ManagedBot,
+        chat_id: &str,
+    ) -> Result<String, FeishuError> {
+        let config = managed.config.lock().await.clone();
+        let membership = self.prepare_chat_access(managed, &config, chat_id).await?;
+        self.authorize_chat(&config, chat_id, SendAuthority::AutoReply, &membership)?;
+        self.token(managed, &config).await
+    }
+
     fn authorize_chat(
         &self,
         config: &BotConfigFile,
@@ -1663,7 +1675,24 @@ impl BotRuntime {
         // 交接给回复 owner 的两份材料：派发按值移动、收束用 finisher。不再克隆第三份，
         // 使峰值与冻结预算表一致。
         let finisher = inbound.clone();
-        self.inner.replies.lock().await.spawn(async move {
+        let mut replies = self.inner.replies.lock().await;
+        // Registration and shutdown's final join share this boundary. An enqueue
+        // that waited for its claim cannot register after shutdown drained owners.
+        if self.inner.sealed.load(Ordering::SeqCst) != 0 {
+            drop(replies);
+            managed
+                .store
+                .finish_inbound_work(
+                    &inbound.bot_id,
+                    &inbound.chat_id,
+                    &inbound.message_id,
+                    &worker_id,
+                    super::storage::WorkFinish::Interrupted,
+                )
+                .await?;
+            return Ok(());
+        }
+        replies.spawn(async move {
             let outcome = runtime.dispatch_prompt(inbound, &worker_id, cancel).await;
             if let Ok(managed) = runtime.managed(&finisher.bot_id).await {
                 let finish = match &outcome {

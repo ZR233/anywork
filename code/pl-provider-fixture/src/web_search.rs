@@ -176,6 +176,7 @@ fn record(
         expected_path: Some(path.to_owned()),
         expected_kind: "web_search".to_owned(),
         expected_prompt: None,
+        actual_prompt: None,
         expected_step: None,
         actual_prompt_present: true,
         prompt_matches_expected: accepted,

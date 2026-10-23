@@ -965,7 +965,7 @@ abstract class AppLocalizations {
   /// No description provided for @settingsBotsPermissions.
   ///
   /// In en, this message translates to:
-  /// **'Requested scopes (preset=false): im:message:send_as_bot, im:message.p2p_msg:readonly, im:message.group_at_msg:readonly, im:chat:readonly, im:message:readonly. Event: im.message.receive_v1. Declaring them does not mean an admin has approved or published the app.'**
+  /// **'Requested scopes (preset=false): im:message:send_as_bot, im:message.p2p_msg:readonly, im:message.group_at_msg:readonly, im:chat:readonly, im:message:readonly, im:resource, cardkit:card:write. Event: im.message.receive_v1. Image and file reception is retained; streaming cards add creation and update access. Existing apps need an administrator to grant card access and publish the app. Declaring permissions does not mean they are approved.'**
   String get settingsBotsPermissions;
 
   /// No description provided for @settingsBotsName.

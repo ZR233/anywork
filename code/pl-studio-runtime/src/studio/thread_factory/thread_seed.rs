@@ -1,19 +1,24 @@
 //! Creation-only instruction capture using the already selected physical workspace services.
 use super::{errors::resource_error, thread_tools::PreparedThreadTools};
 use crate::{
-    instruction::{ExecutionInstructionProfile, InstructionAssembler, InstructionAssemblyRequest},
+    agent::definition::ResolvedAgentDefinition,
+    instruction::{InstructionAssembler, InstructionAssemblyRequest, ModeInstructionProfile},
     thread_assembler::ThreadAssemblyError,
 };
 use pl_core::context::{ContextRecord, OpaquePayload};
 use std::path::Path;
 
+/// One Thread's resolved identity plus its optional Mode execution instructions.
+///
+/// The seed never selects a role: root callers pass the built-in definition or the frozen child
+/// Profile definition, and the Mode profile is a separate input that later Mode updates own.
 pub(super) struct ThreadInstructionSeed<'a> {
     pub thread_id: &'a str,
     pub config: &'a crate::config::StudioConfig,
     pub model: &'a pl_model::model::ModelInfo,
     pub root: &'a Path,
-    pub label: &'a str,
-    pub instructions: &'a str,
+    pub agent: &'a ResolvedAgentDefinition,
+    pub mode: Option<ModeInstructionProfile<'a>>,
     pub resources: &'a PreparedThreadTools,
 }
 
@@ -47,20 +52,26 @@ pub(super) async fn capture(
         }
     };
     let model = seed.model.clone();
-    let label = seed.label.to_owned();
-    let instructions = seed.instructions.to_owned();
+    let agent = seed.agent.clone();
+    let mode = seed
+        .mode
+        .map(|mode| (mode.label.to_owned(), mode.instructions.to_owned()));
     let environment = seed.resources.environment.clone();
     let catalog = seed.resources.catalog.clone();
     let skills = seed.config.skills.clone();
     let snapshot = tokio::task::spawn_blocking(move || {
+        let mode = mode
+            .as_ref()
+            .map(|(label, instructions)| ModeInstructionProfile {
+                label,
+                instructions,
+            });
         InstructionAssembler::assemble(InstructionAssemblyRequest {
             instructions: Some(&config),
             skills: catalog.as_ref().map(|_| &skills),
             skill_catalog: catalog.as_ref().map(|catalog| catalog.snapshot()),
-            execution_profile: Some(ExecutionInstructionProfile {
-                label: &label,
-                instructions: &instructions,
-            }),
+            agent: &agent,
+            mode,
             model: &model,
             workspace_root: &root,
             current_dir: &root,
@@ -72,13 +83,8 @@ pub(super) async fn capture(
         })
     })
     .await??;
-    let payload = OpaquePayload::new(
-        "pl.studio.instructions",
-        1,
-        serde_json::to_string(&snapshot)
-            .map_err(|error| resource_error("encode instruction sources", error))?,
-    )
-    .map_err(|error| resource_error("freeze instruction sources", error))?;
+    let payload = crate::instruction::encode_snapshot(&snapshot)
+        .map_err(|error| resource_error("freeze instruction sources", error))?;
     let records = snapshot.context_records(seed.thread_id);
     Ok((records, payload))
 }

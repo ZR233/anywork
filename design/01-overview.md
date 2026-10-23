@@ -23,6 +23,8 @@ HTTP → pl-studio-server ───┘                                  ↓
 ## 1.3 核心概念与事实源
 
 - Thread 是通用执行 owner：每个 Thread 独占模型会话、工具注册表和工具实例。
+- 普通 root、飞书 root 与 child 均由 Studio 的 Agent 定义进入统一指令装配；Agent 角色与
+  Mode 执行方式正交，渠道不拥有执行循环。定义、冻结与可派发边界见 [12](./12-collaboration.md)。
 - Turn 是一次输入驱动的有界执行；model attempt 与工具 task 保存独立生命周期。
 - 通用上下文条目包含角色、来源、文本、资源引用、不透明内容及工具调用关联。
 - Item、Agent Profile、Mode、workflow 和 Plan 是产品概念，由 Studio 从保存的事实投影。

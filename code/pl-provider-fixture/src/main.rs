@@ -268,6 +268,7 @@ async fn main() -> Result<()> {
         model_catalog,
         bind_port: args.bind_port,
         wait_events: scenario == "wait-events",
+        agent_definitions: None,
     };
     let fixture = Arc::new(FixtureServer::start_with_options(steps, options).await?);
     // The status watcher is a plain reader of the same script state the strict

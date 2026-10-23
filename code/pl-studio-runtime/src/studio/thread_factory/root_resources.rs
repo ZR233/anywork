@@ -6,6 +6,8 @@ use super::{
     thread_tools::ThreadToolAssembly,
 };
 use crate::{
+    agent::definition::{AgentChannel, ResolvedAgentDefinition, VerifiedAgentIdentity},
+    instruction::ModeInstructionProfile,
     resource_store::FileResourceStore,
     thread_assembler::{StudioThreadSpec, ThreadAssemblyError},
 };
@@ -45,6 +47,7 @@ impl StudioThreadFactory {
         &self,
         id: &str,
         cancellation: tokio_util::sync::CancellationToken,
+        agent_controls: Vec<pl_core::tool::opaque::Registration>,
     ) -> Result<StudioThreadSpec, ThreadAssemblyError> {
         let thread = self.thread_record(id).await?;
         if thread.parent_thread_id.is_some() {
@@ -73,6 +76,25 @@ impl StudioThreadFactory {
             super::recovery::load_checkpoint_for_recovery(&self.services.store, &protocol_thread)
                 .await
                 .map_err(|error| resource_error("load Thread checkpoint", error))?;
+        // Only decoded, validated ownership selects the bot definition: the live binding and the
+        // fact frozen in this session must agree when both exist. Titles, user text, paths and
+        // arbitrary metadata never decide the Agent role.
+        let bot_owner = crate::studio::model_route::verified_bot_owner(
+            bot.as_ref().map(|bot| bot.id.as_str()),
+            checkpoint.as_ref().map(|checkpoint| &checkpoint.state),
+        )
+        .map_err(|error| resource_error("verify bot ownership", error))?;
+        let agent = ResolvedAgentDefinition::root(if bot_owner.is_some() {
+            AgentChannel::Bot
+        } else {
+            AgentChannel::Studio
+        });
+        // 旧快照的身份由已核实事实决定：有 bot 归属证明时沿用飞书渠道，否则是明确渠道未指定
+        // 的 legacy-root；两者都不会伪装成当前内置的普通根定义。
+        let saved_identity = match bot_owner {
+            Some(_) => VerifiedAgentIdentity::BotRoot,
+            None => VerifiedAgentIdentity::GenericRoot,
+        };
         if let Some(checkpoint) = &mut checkpoint {
             let history = self
                 .services
@@ -83,10 +105,20 @@ impl StudioThreadFactory {
             *checkpoint = history
                 .migrate_recovery_checkpoint(checkpoint, |state| {
                     crate::mode::migrate_mode_snapshot(state, &self.services.thread_modes)?;
+                    // A root's saved Mode identity is required evidence: without it neither the
+                    // Mode nor the legacy Agent role can be attributed, so the original
+                    // checkpoint stays as it is.
+                    anyhow::ensure!(
+                        state.extensions.contains_key("studio.mode"),
+                        "root Thread has no saved Mode identity; original checkpoint preserved"
+                    );
+                    // Mode recovery reads the saved role text before this migration rewrites the
+                    // snapshot structure; the Agent identity is the verified one above.
+                    crate::instruction::migrate_saved_representation(state, &saved_identity)?;
                     Ok(())
                 })
                 .await
-                .map_err(|error| resource_error("migrate saved Mode", error))?;
+                .map_err(|error| resource_error("migrate saved Mode and instructions", error))?;
         }
         let saved = checkpoint
             .as_ref()
@@ -226,8 +258,11 @@ impl StudioThreadFactory {
                 config: &config,
                 model: &route.model,
                 root: &root,
-                label: &mode.descriptor().display_name,
-                instructions: mode.prompt(),
+                agent: &agent,
+                mode: Some(ModeInstructionProfile {
+                    label: mode.descriptor().display_name.as_str(),
+                    instructions: mode.prompt(),
+                }),
                 resources: &prepared,
             })
             .await?;
@@ -285,7 +320,7 @@ impl StudioThreadFactory {
                 config.runtime.openai_compaction_mode,
                 self.services.thread_modes.clone(),
             )?,
-            agent_controls: crate::thread_assembler::AgentControlExposure::Enabled,
+            agent_controls,
             execution: pl_core::thread::input::InputDriverOptions {
                 max_model_steps: pl_core::thread::ModelStepLimit::Unlimited,
             },

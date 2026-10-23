@@ -370,6 +370,25 @@ Settings revision 提交。别家成功不得使本家 stale；用户更换地�
 source paths；已有 Thread 后续不会因配置或项目文档变化自动改变提示词，新 Thread 才使用
 新配置。
 
+instruction snapshot 同时保存 Agent 定义身份、适用范围与修订，以及独立的 Agent、Mode
+指令来源（职责见 [12](./12-collaboration.md)）。普通 root、飞书 root 和 child 统一消费此
+快照，不额外维护一份可变角色提示词；root 路由与 child Profile 的原有配置所有权不变。
+Mode 的合法更新只变更 Mode 来源，模型基础指令重绑定只变更模型来源；恢复、压缩和工具
+刷新不能以当前 catalog 重建 Agent 指令。
+
+旧版混用的 execution-profile 来源在显式快照版本迁移中区分：root 依据保存的 Mode 转为
+Mode 来源，child 依据冻结 Profile 转为 Agent 来源。迁移保留原角色/模式正文、其他指令块
+和历史请求，不为旧飞书会话补入新专用指令。新定义的身份与迁移后保留的旧指令版本必须
+可区分，不伪称旧快照已经采用最新角色；缺失或冲突身份明确失败，不清空快照或恢复默认。
+迁移与当前结构的读写共用现有保存边界，重启可核实并继续，不在每次模型请求里兼容旧格式。
+旧根会话尚无独立 Agent 定义时，目录中的 root 身份与保存的 Mode/指令可证明原来的通用
+根角色；若没有可验证的渠道归属，只能保存明确的迁移来源、渠道未指定的 legacy-root
+定义身份，不能据“没有 bot owner”宣称它原本是普通渠道，也不能为此阻断全部旧普通会话。
+此身份只由迁移产生，不是可新建或派发的预设。已存在的 bot owner 必须解码并验证，不能
+仅凭同名扩展存在判定归属；缺失必要的 root/child、Mode/Profile 或指令事实仍须失败。
+当前快照恢复校验冻结定义 ID、scope 与来源/修订的合法组合；迁移身份可以保留旧版本，
+不要求与最新内置提示词版本相等，也不能借保留旧版本接受另一个 Profile 的身份。
+
 上述冻结规则不冻结宿主运行事实：Platform、工作区绑定及 `studio.session-files` 在当前安全
 边界由实际服务提供，恢复/刷新后按同 source 更新，压缩保留最新值。会话文件路径、权限与
 helper 传输约定见 [14](./14-runtime-host.md)、[17](./17-studio-storage.md) 和

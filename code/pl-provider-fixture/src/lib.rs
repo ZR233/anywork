@@ -25,6 +25,7 @@ use sha2::{Digest, Sha256};
 use tokio::{net::TcpListener, sync::oneshot, task::JoinHandle};
 use tokio_util::sync::CancellationToken;
 
+pub mod agent_definitions;
 mod context_replay_recovery;
 mod model_catalog;
 mod provider_usage;
@@ -104,6 +105,30 @@ pub use model_catalog::{
 
 /// The GUI script accepts exactly this user prompt for its sole completion step.
 pub const GUI_PROMPT: &str = "Reply with exactly: fixture ready";
+
+/// Second fixed GUI prompt: a Markdown sample streamed slowly enough for a
+/// human/Driver screenshot of the generating state.
+///
+/// It renders local native Markdown only. It says nothing about Feishu client
+/// rendering or about the CardKit wire, which the bots observation proves
+/// separately.
+pub const GUI_MARKDOWN_PROMPT: &str = "Reply with the fixture Markdown sample";
+
+/// Ordered Markdown chunks of [`GUI_MARKDOWN_PROMPT`]'s answer: Chinese heading,
+/// list, bold/inline code/link, fenced code block and a small table.
+pub const GUI_MARKDOWN_CHUNKS: [&str; 6] = [
+    "# 本地 Markdown 样例\n\n",
+    "这是**粗体**、`inline code` 与 [飞书开放平台](https://open.feishu.cn) 的组合。\n\n",
+    "- 第一项\n- 第二项\n\n",
+    "```rust\nlet markdown = true;\n```\n\n",
+    "| 列 A | 列 B |\n| --- | --- |\n| 1 | 2 |\n\n",
+    "生成完成，可以截图终态。\n",
+];
+
+/// Concatenation of [`GUI_MARKDOWN_CHUNKS`]; the exact expected local answer.
+pub fn gui_markdown_answer() -> String {
+    GUI_MARKDOWN_CHUNKS.concat()
+}
 
 /// Scenario names the fixture CLI accepts and the manual-GUI coordinator must
 /// agree on.
@@ -1134,6 +1159,30 @@ pub enum Reply {
     },
     /// Sends initial events then waits for shutdown or client cancellation.
     HangingSse(Vec<Value>),
+    /// Sends `before` frames, signals `reached`, then waits for `release` (or
+    /// shutdown) before sending `after` and `[DONE]`.
+    ///
+    /// This is an explicit stage handshake, not a timer: an observer that sees
+    /// `reached` knows the wire prefix was written, and the response cannot
+    /// complete until the observer cancels `release`. A scenario can therefore
+    /// prove that an intermediate product fact happened *inside* one model
+    /// attempt rather than after it.
+    GatedSse {
+        before: Vec<Value>,
+        reached: CancellationToken,
+        release: CancellationToken,
+        after: Vec<Value>,
+    },
+    /// Ordered segments between explicit stage gates.
+    ///
+    /// Segment `i` is written, then gate `i` publishes `reached` and waits for
+    /// `release` before segment `i+1`. This is the multi-stage form of
+    /// [`Reply::GatedSse`]: a scenario can hold the model before its terminal
+    /// events, not only before its first delta.
+    SegmentedSse {
+        segments: Vec<Vec<Value>>,
+        gates: Vec<(CancellationToken, CancellationToken)>,
+    },
     WebSocket(Vec<Value>),
     /// Ordered wire faults and synchronization points, without implementing retry policy.
     WebSocketScript(Vec<WebSocketAction>),
@@ -1164,6 +1213,80 @@ pub enum WebSocketAction {
         reached: CancellationToken,
         release: CancellationToken,
     },
+}
+
+/// Explicit stage handshake owned by the observer, not by a timer.
+///
+/// A [`Reply::GatedSse`] built from this stage writes its prefix, publishes
+/// [`Self::wait_reached`], and then waits for [`Self::release`]. The observer can
+/// therefore act strictly inside one model attempt: it cannot observe the
+/// prefix before it was written, and the attempt cannot finish before the
+/// observer releases it.
+#[derive(Debug, Clone)]
+pub struct ReplyStage {
+    reached: CancellationToken,
+    release: CancellationToken,
+}
+
+impl Default for ReplyStage {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl ReplyStage {
+    pub fn new() -> Self {
+        Self {
+            reached: CancellationToken::new(),
+            release: CancellationToken::new(),
+        }
+    }
+
+    /// Resolves once the gated reply wrote every prefix frame.
+    pub async fn wait_reached(&self) {
+        self.reached.cancelled().await;
+    }
+
+    /// Lets the gated reply continue with its suffix frames.
+    pub fn release(&self) {
+        self.release.cancel();
+    }
+
+    /// Checks (without waiting) whether the suffix was already released.
+    pub fn is_released(&self) -> bool {
+        self.release.is_cancelled()
+    }
+
+    /// Builds one gated reply for this stage.
+    pub fn gated(&self, before: Vec<Value>, after: Vec<Value>) -> Reply {
+        Reply::GatedSse {
+            before,
+            reached: self.reached.clone(),
+            release: self.release.clone(),
+            after,
+        }
+    }
+
+    /// Builds an ordered multi-stage reply: `segments.len() == stages.len() + 1`.
+    ///
+    /// A wrong shape is a hard failure here (release-active assert) instead of a
+    /// silently different staging that would make an observation vacuous.
+    pub fn staged(segments: Vec<Vec<Value>>, stages: &[&ReplyStage]) -> Reply {
+        assert_eq!(
+            segments.len(),
+            stages.len() + 1,
+            "staged reply needs segments == gates + 1, got {} segments and {} gates",
+            segments.len(),
+            stages.len()
+        );
+        Reply::SegmentedSse {
+            segments,
+            gates: stages
+                .iter()
+                .map(|stage| (stage.reached.clone(), stage.release.clone()))
+                .collect(),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -1264,6 +1387,12 @@ pub struct RejectDiagnostic {
     /// `prompt`, `delivery`, `tool_output` or `exact` for the step the cursor expected.
     pub expected_kind: String,
     pub expected_prompt: Option<String>,
+    /// Bounded copy of the actual last user message of the rejected request.
+    ///
+    /// Fail-closed matching stays intact; this only makes a strict mismatch
+    /// diagnosable without re-running the scenario to guess the text.
+    #[serde(default)]
+    pub actual_prompt: Option<String>,
     pub expected_step: Option<usize>,
     /// Whether the request carried a resolvable last user message at all.
     pub actual_prompt_present: bool,
@@ -1417,6 +1546,9 @@ impl FixtureReport {
                 single_line(prompt)
             ));
         }
+        if let Some(prompt) = diagnostic.actual_prompt.as_deref() {
+            detail.push_str(&format!("; actual prompt \"{prompt}\""));
+        }
         if diagnostic.expected_kind == "delivery" {
             detail.push_str(&format!(
                 "; delivery marker present in request context: {}",
@@ -1552,6 +1684,7 @@ struct AppState {
     provider_usage: provider_usage::ProviderUsageGates,
     model_catalog: Option<Arc<model_catalog::ModelCatalogControl>>,
     model_catalog_hits: model_catalog::ModelCatalogHits,
+    agent_definitions: Option<agent_definitions::AgentDefinitionControl>,
 }
 
 /// Optional fixture behaviours layered on top of the strict step script.
@@ -1570,6 +1703,8 @@ pub struct FixtureOptions {
     /// strict ordinal script. Child Threads share this listener, so a cursor
     /// script cannot accept their requests.
     pub wait_events: bool,
+    /// Finite Agent identity/Mode/dispatch-schema observation, never a generic fallback.
+    pub agent_definitions: Option<agent_definitions::AgentDefinitionControl>,
 }
 
 /// A listening fixture. Drop aborts the listener; `finish` additionally verifies the script.
@@ -1587,6 +1722,16 @@ impl FixtureServer {
 
     /// Starts the fixture with optional extra services enabled.
     pub async fn start_with_options(steps: Vec<Step>, options: FixtureOptions) -> Result<Self> {
+        if options.agent_definitions.is_some()
+            && (options.web_search.is_some()
+                || options.wait_events
+                || options.provider_usage
+                || !steps.is_empty())
+        {
+            bail!(
+                "Agent observation must own its dedicated fixture mode without other scripts/options"
+            );
+        }
         let bind = options.bind_port.map_or_else(
             || "127.0.0.1:0".to_owned(),
             |port| format!("127.0.0.1:{port}"),
@@ -1598,6 +1743,7 @@ impl FixtureServer {
         let web_search_enabled = options.web_search.is_some();
         let provider_usage_enabled = options.provider_usage;
         let model_catalog_enabled = options.model_catalog.is_some();
+        let agent_definitions_enabled = options.agent_definitions.is_some();
         let state = AppState {
             script: Arc::new(Mutex::new(ScriptState {
                 steps,
@@ -1611,8 +1757,11 @@ impl FixtureServer {
             provider_usage: provider_usage::ProviderUsageGates::new(),
             model_catalog: options.model_catalog.map(Arc::new),
             model_catalog_hits: model_catalog::ModelCatalogHits::default(),
+            agent_definitions: options.agent_definitions,
         };
-        let responses_route = if web_search_enabled {
+        let responses_route = if agent_definitions_enabled {
+            post(agent_definitions::responses)
+        } else if web_search_enabled {
             post(web_search::responses)
         } else if options.wait_events {
             post(wait_events::responses)
@@ -1710,7 +1859,13 @@ impl FixtureServer {
             )
             .route(
                 "/v1/openai/responses",
-                post(handle).get(websocket_route).fallback(unexpected_route),
+                (if agent_definitions_enabled {
+                    post(agent_definitions::responses)
+                } else {
+                    post(handle)
+                })
+                .get(websocket_route)
+                .fallback(unexpected_route),
             )
             .route(
                 "/v1/openai/chat/completions",
@@ -1937,6 +2092,50 @@ pub fn gui_script() -> Vec<Step> {
             2,
             Reply::Sse(responses_text(
                 "Fixture Session",
+                "title-response",
+                "fixture-model",
+            )),
+        )
+        .optional(),
+        // A second turn for Markdown observation. The title request of that turn
+        // is optional and precedes the paced answer, so a skipped title can
+        // never occupy the answer slot.
+        Step::prompt(
+            Protocol::ResponsesHttp,
+            session_title_prompt(GUI_MARKDOWN_PROMPT),
+            3,
+            Reply::Sse(responses_text(
+                "Fixture Markdown Session",
+                "title-response",
+                "fixture-model",
+            )),
+        )
+        .optional(),
+        Step::prompt(
+            Protocol::ResponsesHttp,
+            GUI_MARKDOWN_PROMPT,
+            4,
+            Reply::PacedEvents {
+                initial_delay_ms: 4_000,
+                step_millis: 1_200,
+                events: responses_text_chunks(
+                    &GUI_MARKDOWN_CHUNKS,
+                    "gui-markdown",
+                    "fixture-model",
+                ),
+            },
+        )
+        // Optional: existing GUI scenarios that never send this prompt keep
+        // their strict two-request script unchanged.
+        .optional(),
+        // The title request of that turn may arrive after the answer request;
+        // an optional trailing step keeps both orders matching.
+        Step::prompt(
+            Protocol::ResponsesHttp,
+            session_title_prompt(GUI_MARKDOWN_PROMPT),
+            5,
+            Reply::Sse(responses_text(
+                "Fixture Markdown Session",
                 "title-response",
                 "fixture-model",
             )),
@@ -3372,6 +3571,160 @@ pub fn responses_reasoning_text(
     events
 }
 
+/// Reasoning, a real `commentary`-phase message, then a final message whose
+/// text arrives in two stages.
+///
+/// The commentary item is an ordinary assistant message item that declares
+/// `phase: "commentary"` — the same wire field the model adapter maps to its
+/// commentary channel. Only the final message (no phase, or `final_answer`)
+/// carries the answer, so an observer can prove channel filtering rather than
+/// only filtering of reasoning text.
+pub fn responses_reasoning_commentary_text_staged(
+    reasoning_lines: &[&str],
+    commentary_lines: &[&str],
+    head: &str,
+    tail: &str,
+    id: &str,
+    model: &str,
+) -> (Vec<Value>, Vec<Value>) {
+    let mut segments = responses_reasoning_commentary_text_segments(
+        reasoning_lines,
+        commentary_lines,
+        head,
+        tail,
+        id,
+        model,
+    );
+    let terminal = segments.pop().expect("terminal segment");
+    let body = segments.pop().expect("body segment");
+    let prefix = segments.pop().expect("prefix segment");
+    let mut after = body;
+    after.extend(terminal);
+    (prefix, after)
+}
+
+/// The same reply as four ordered segments: prefix (head), body (tail),
+/// `output_item.done`, and `response.completed`.
+///
+/// Serving it through [`Reply::SegmentedSse`] lets an observer hold the attempt
+/// after the complete body was streamed but before any terminal event, which is
+/// what proves "closed only after the model terminal".
+pub fn responses_reasoning_commentary_text_segments(
+    reasoning_lines: &[&str],
+    commentary_lines: &[&str],
+    head: &str,
+    tail: &str,
+    id: &str,
+    model: &str,
+) -> Vec<Vec<Value>> {
+    let summary = reasoning_lines.join("\n");
+    let commentary = commentary_lines.join("\n");
+    let answer = format!("{head}{tail}");
+    let mut prefix = vec![
+        json!({"type":"response.created","response":{"id":id,"model":model}}),
+        json!({"type":"response.output_item.added","output_index":0,"item":{"id":"reasoning-1","type":"reasoning","summary":[],"content":[]}}),
+    ];
+    let last = reasoning_lines.len().saturating_sub(1);
+    for (index, line) in reasoning_lines.iter().enumerate() {
+        let delta = if index == last {
+            (*line).to_string()
+        } else {
+            format!("{line}\n")
+        };
+        prefix.push(json!({"type":"response.reasoning_summary_text.delta","output_index":0,"item_id":"reasoning-1","summary_index":0,"delta":delta}));
+    }
+    prefix.push(json!({"type":"response.output_item.done","output_index":0,"item":{"id":"reasoning-1","type":"reasoning","summary":[{"id":"reasoning-1-part","type":"summary_text","text":summary}]}}));
+    if !commentary.is_empty() {
+        prefix.push(json!({"type":"response.output_item.added","output_index":1,"item":{"id":"commentary-1","type":"message","role":"assistant","phase":"commentary","content":[]}}));
+        prefix.push(json!({"type":"response.output_text.delta","output_index":1,"item_id":"commentary-1","content_index":0,"delta":commentary}));
+        prefix.push(json!({"type":"response.output_item.done","output_index":1,"item":{"id":"commentary-1","type":"message","role":"assistant","phase":"commentary","content":[{"type":"output_text","text":commentary}]}}));
+    }
+    prefix.push(json!({"type":"response.output_item.added","output_index":2,"item":{"id":"message-1","type":"message","role":"assistant","content":[]}}));
+    prefix.push(json!({"type":"response.output_text.delta","output_index":2,"item_id":"message-1","content_index":0,"delta":head}));
+    let body = vec![
+        json!({"type":"response.output_text.delta","output_index":2,"item_id":"message-1","content_index":0,"delta":tail}),
+    ];
+    // The item completion and the response completion are separate stages: the
+    // message text is final at `output_item.done`, while the Turn only ends after
+    // `response.completed`.
+    let item_done = vec![
+        json!({"type":"response.output_item.done","output_index":2,"item":{"id":"message-1","type":"message","role":"assistant","content":[{"type":"output_text","text":answer}]}}),
+    ];
+    let response_completed = vec![
+        json!({"type":"response.completed","response":{"id":id,"model":model,"output":[
+            {"type":"message","role":"assistant","phase":"commentary","content":[{"type":"output_text","text":commentary}]},
+            {"type":"message","role":"assistant","content":[{"type":"output_text","text":answer}]}
+        ],"usage":{"input_tokens":11,"output_tokens":5,"output_tokens_details":{"reasoning_tokens":3}}}}),
+    ];
+    vec![prefix, body, item_done, response_completed]
+}
+
+/// Reasoning plus one final message whose text arrives in two stages.
+///
+/// `head` is streamed as the first `output_text.delta` of `message-1`; `tail`
+/// finishes the same identity. The returned prefix can be served by a
+/// [`Reply::GatedSse`] so an observer can act between the two stages while the
+/// attempt is still open.
+pub fn responses_reasoning_text_staged(
+    reasoning_lines: &[&str],
+    head: &str,
+    tail: &str,
+    id: &str,
+    model: &str,
+) -> (Vec<Value>, Vec<Value>) {
+    let summary = reasoning_lines.join("\n");
+    let answer = format!("{head}{tail}");
+    let mut before = vec![
+        json!({"type":"response.created","response":{"id":id,"model":model}}),
+        json!({"type":"response.output_item.added","output_index":0,"item":{"id":"reasoning-1","type":"reasoning","summary":[],"content":[]}}),
+    ];
+    let last = reasoning_lines.len().saturating_sub(1);
+    for (index, line) in reasoning_lines.iter().enumerate() {
+        let delta = if index == last {
+            (*line).to_string()
+        } else {
+            format!("{line}\n")
+        };
+        before.push(json!({"type":"response.reasoning_summary_text.delta","output_index":0,"item_id":"reasoning-1","summary_index":0,"delta":delta}));
+    }
+    before.push(json!({"type":"response.output_item.done","output_index":0,"item":{"id":"reasoning-1","type":"reasoning","summary":[{"id":"reasoning-1-part","type":"summary_text","text":summary}]}}));
+    before.push(json!({"type":"response.output_item.added","output_index":1,"item":{"id":"message-1","type":"message","role":"assistant","content":[]}}));
+    before.push(json!({"type":"response.output_text.delta","output_index":1,"item_id":"message-1","content_index":0,"delta":head}));
+    let after = vec![
+        json!({"type":"response.output_text.delta","output_index":1,"item_id":"message-1","content_index":0,"delta":tail}),
+        json!({"type":"response.output_item.done","output_index":1,"item":{"id":"message-1","type":"message","role":"assistant","content":[{"type":"output_text","text":answer}]}}),
+        json!({"type":"response.completed","response":{"id":id,"model":model,"output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":answer}]}],"usage":{"input_tokens":11,"output_tokens":5,"output_tokens_details":{"reasoning_tokens":3}}}}),
+    ];
+    (before, after)
+}
+
+/// One final message whose streamed prefix and authoritative text differ.
+///
+/// The deltas stream `prefix`, then the authoritative `output_item.done` and the
+/// terminal `response.completed` carry `final_text` verbatim. A real client
+/// replaces the accumulated text with the authoritative one, so this is the only
+/// shape that can produce an empty or whitespace-only canonical Final *after* a
+/// non-empty preview reached the platform. `final_text` is intentionally taken
+/// as-is (including empty or blank), while `prefix` must stay non-empty so the
+/// preview is observable.
+pub fn responses_authoritative_final(
+    prefix: &str,
+    final_text: &str,
+    id: &str,
+    model: &str,
+) -> (Vec<Value>, Vec<Value>) {
+    let before = vec![
+        json!({"type":"response.created","response":{"id":id,"model":model}}),
+        json!({"type":"response.output_item.added","output_index":0,"item":{"id":"message-1","type":"message","role":"assistant","content":[]}}),
+        json!({"type":"response.output_text.delta","output_index":0,"item_id":"message-1","content_index":0,"delta":prefix}),
+    ];
+    let after = vec![
+        json!({"type":"response.output_item.done","output_index":0,"item":{"id":"message-1","type":"message","role":"assistant","content":[{"type":"output_text","text":final_text}]}}),
+        json!({"type":"response.completed","response":{"id":id,"model":model,"output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":final_text}]}],"usage":{"input_tokens":11,"output_tokens":5,"output_tokens_details":{"reasoning_tokens":0}}}}),
+    ];
+    (before, after)
+}
+
 /// Responses SSE events that stream reasoning summary lines and then issue one
 /// or more assistant tool calls, with no final text.
 ///
@@ -3407,6 +3760,63 @@ pub fn responses_reasoning_tool_calls(
     }
     events.push(json!({"type":"response.completed","response":{"id":id,"model":model,"usage":{"input_tokens":11,"output_tokens":3}}}));
     events
+}
+
+/// Responses SSE events for one assistant message that streams text *and* issues
+/// tool calls in the same response.
+///
+/// This is the shape a Turn needs in order to stream a visible answer and then
+/// end by requesting a local interaction: the text is the Turn's assistant
+/// message, and the calls are what turn the attempt into an interaction.
+pub fn responses_text_and_tool_calls(
+    text: &str,
+    id: &str,
+    model: &str,
+    calls: &[RealtimeToolCall<'_>],
+) -> Vec<Value> {
+    let mut events = vec![
+        json!({"type":"response.created","response":{"id":id,"model":model}}),
+        json!({"type":"response.output_item.added","output_index":0,"item":{"id":"message-1","type":"message","role":"assistant","content":[]}}),
+        json!({"type":"response.output_text.delta","output_index":0,"item_id":"message-1","content_index":0,"delta":text}),
+        json!({"type":"response.output_item.done","output_index":0,"item":{"id":"message-1","type":"message","role":"assistant","content":[{"type":"output_text","text":text}]}}),
+    ];
+    for (index, call) in calls.iter().enumerate() {
+        let output_index = index + 1;
+        events.push(json!({"type":"response.output_item.added","output_index":output_index,"item":{"id":call.item_id,"type":"function_call","name":call.name,"call_id":call.call_id}}));
+        events.push(json!({"type":"response.function_call_arguments.delta","output_index":output_index,"item_id":call.item_id,"call_id":call.call_id,"delta":call.arguments}));
+        events.push(json!({"type":"response.output_item.done","output_index":output_index,"item":{"id":call.item_id,"call_id":call.call_id,"type":"function_call","name":call.name,"arguments":call.arguments}}));
+    }
+    events.push(json!({"type":"response.completed","response":{"id":id,"model":model,"usage":{"input_tokens":11,"output_tokens":4}}}));
+    events
+}
+
+/// Two stages of one assistant message that streams text and then calls tools.
+///
+/// `before` carries the streamed text only, so an observer can confirm a real
+/// preview while the attempt is still open; `after` completes that message and
+/// adds the tool calls, which is what turns the attempt into a local interaction.
+pub fn responses_text_and_tool_calls_staged(
+    text: &str,
+    id: &str,
+    model: &str,
+    calls: &[RealtimeToolCall<'_>],
+) -> (Vec<Value>, Vec<Value>) {
+    let before = vec![
+        json!({"type":"response.created","response":{"id":id,"model":model}}),
+        json!({"type":"response.output_item.added","output_index":0,"item":{"id":"message-1","type":"message","role":"assistant","content":[]}}),
+        json!({"type":"response.output_text.delta","output_index":0,"item_id":"message-1","content_index":0,"delta":text}),
+    ];
+    let mut after = vec![
+        json!({"type":"response.output_item.done","output_index":0,"item":{"id":"message-1","type":"message","role":"assistant","content":[{"type":"output_text","text":text}]}}),
+    ];
+    for (index, call) in calls.iter().enumerate() {
+        let output_index = index + 1;
+        after.push(json!({"type":"response.output_item.added","output_index":output_index,"item":{"id":call.item_id,"type":"function_call","name":call.name,"call_id":call.call_id}}));
+        after.push(json!({"type":"response.function_call_arguments.delta","output_index":output_index,"item_id":call.item_id,"call_id":call.call_id,"delta":call.arguments}));
+        after.push(json!({"type":"response.output_item.done","output_index":output_index,"item":{"id":call.item_id,"call_id":call.call_id,"type":"function_call","name":call.name,"arguments":call.arguments}}));
+    }
+    after.push(json!({"type":"response.completed","response":{"id":id,"model":model,"usage":{"input_tokens":11,"output_tokens":4}}}));
+    (before, after)
 }
 
 /// Responses SSE events for one assistant turn that issues the given tool calls.
@@ -3470,6 +3880,36 @@ async fn handle(State(state): State<AppState>, request: axum::extract::Request) 
             state.stress.clone(),
         ),
         Ok(Reply::HangingSse(events)) => sse_reply(events, true, state.stopping.clone()),
+        Ok(Reply::GatedSse {
+            before,
+            reached,
+            release,
+            after,
+        }) => gated_sse_reply(before, after, reached, release, state.stopping.clone()),
+        Ok(Reply::SegmentedSse { segments, gates }) => {
+            if segments.len() != gates.len() + 1 {
+                record_rejected(
+                    &state,
+                    method,
+                    path,
+                    json!({
+                        "segments": segments.len(),
+                        "gates": gates.len(),
+                    }),
+                );
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({
+                        "error": {
+                            "code": "fixture_stage_shape",
+                            "message": "segmented reply needs segments == gates + 1"
+                        }
+                    })),
+                )
+                    .into_response();
+            }
+            segmented_sse_reply(segments, gates, state.stopping.clone())
+        }
         Ok(Reply::HttpError {
             status,
             code,
@@ -3693,6 +4133,8 @@ fn match_step(state: &AppState, method: &str, path: &str, body: &Value) -> Resul
                         | Reply::PacedSse { .. }
                         | Reply::PacedBody { .. }
                         | Reply::HangingSse(_)
+                        | Reply::GatedSse { .. }
+                        | Reply::SegmentedSse { .. }
                         | Reply::Json(_)
                         | Reply::HttpError { .. }
                 ) | (Protocol::Files, Reply::Json(_) | Reply::HttpError { .. })
@@ -3817,6 +4259,7 @@ fn reject_diagnostic(
         expected_path,
         expected_kind: expected_kind.to_owned(),
         expected_prompt,
+        actual_prompt: actual.map(|text| single_line(&text.chars().take(240).collect::<String>())),
         expected_step: expected.map(|_| script.cursor),
         actual_prompt_present,
         prompt_matches_expected,
@@ -3923,6 +4366,70 @@ fn sse_reply(events: Vec<Value>, hanging: bool, stopping: CancellationToken) -> 
         Body::from_stream(items.boxed())
     };
     ([(header::CONTENT_TYPE, "text/event-stream")], body).into_response()
+}
+
+/// Emits `before` frames, publishes `reached`, then holds `after` until
+/// `release` (or fixture shutdown).
+///
+/// The handshake is a real ordering proof: the stage signal is only published
+/// once the prefix was written to the response, and the response cannot finish
+/// while the release is pending.
+fn gated_sse_reply(
+    before: Vec<Value>,
+    after: Vec<Value>,
+    reached: CancellationToken,
+    release: CancellationToken,
+    stopping: CancellationToken,
+) -> Response {
+    segmented_sse_reply(vec![before, after], vec![(reached, release)], stopping)
+}
+
+/// Emits ordered segments between explicit gates.
+///
+/// After segment `i` is written, gate `i` publishes `reached` and holds until
+/// `release` or fixture shutdown. The final `[DONE]` follows the last segment.
+fn segmented_sse_reply(
+    segments: Vec<Vec<Value>>,
+    gates: Vec<(CancellationToken, CancellationToken)>,
+    stopping: CancellationToken,
+) -> Response {
+    let mut frames: Vec<Bytes> = Vec::new();
+    let mut boundaries: Vec<usize> = Vec::new();
+    for (index, segment) in segments.into_iter().enumerate() {
+        for event in segment {
+            frames.push(Bytes::from(format!("data: {event}\n\n")));
+        }
+        if index < gates.len() {
+            boundaries.push(frames.len());
+        }
+    }
+    frames.push(Bytes::from_static(b"data: [DONE]\n\n"));
+    let frames = std::sync::Arc::new(frames);
+    let boundaries = std::sync::Arc::new(boundaries);
+    let gates = std::sync::Arc::new(gates);
+    let body = stream::unfold(0usize, move |index| {
+        let frames = std::sync::Arc::clone(&frames);
+        let boundaries = std::sync::Arc::clone(&boundaries);
+        let gates = std::sync::Arc::clone(&gates);
+        let stopping = stopping.clone();
+        async move {
+            let bytes = frames.get(index).cloned()?;
+            if let Some(position) = boundaries.iter().position(|boundary| *boundary == index) {
+                let (reached, release) = &gates[position];
+                reached.cancel();
+                tokio::select! {
+                    () = release.cancelled() => {}
+                    () = stopping.cancelled() => return None,
+                }
+            }
+            Some((Ok::<_, std::io::Error>(bytes), index + 1))
+        }
+    });
+    (
+        [(header::CONTENT_TYPE, "text/event-stream")],
+        Body::from_stream(body),
+    )
+        .into_response()
 }
 
 /// Emits one frame per event, spaced by `step_millis`, after `initial_delay_ms`.

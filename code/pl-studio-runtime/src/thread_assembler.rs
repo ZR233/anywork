@@ -58,7 +58,8 @@ pub struct StudioThreadSpec {
     /// Owns unpublished preparation until the assembler registers its cleanup owner.
     pub preparation_guard: Option<ThreadPreparationGuard>,
     pub context_preparation: Option<pl_core::thread::context_preparation::ContextPreparer>,
-    pub agent_controls: AgentControlExposure,
+    /// Root-only controls prepared from one Profile generation before allocating physical tools.
+    pub agent_controls: Vec<Registration>,
     pub execution: pl_core::thread::input::InputDriverOptions,
     pub id: String,
     pub parent_id: Option<String>,
@@ -303,15 +304,10 @@ impl StudioThreadAssembler {
         {
             return Err(ThreadAssemblyError::Identity(spec.id));
         }
-        match spec.agent_controls {
-            AgentControlExposure::Disabled => {}
-            AgentControlExposure::Enabled => {
-                if spec.parent_id.is_some() {
-                    return Err(ThreadAssemblyError::ChildDepth);
-                }
-                spec.tools.extend(self.agent_control_tools()?);
-            }
+        if spec.parent_id.is_some() && !spec.agent_controls.is_empty() {
+            return Err(ThreadAssemblyError::ChildDepth);
         }
+        spec.tools.append(&mut spec.agent_controls);
         let thread = if spec.model_available {
             ThreadHandle::resume(
                 spec.id.clone(),

@@ -22,9 +22,9 @@ impl std::fmt::Debug for AgentServices {
         f.write_str("AgentAgentServices")
     }
 }
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug)]
 enum Kind {
-    Profiles,
+    Profiles(crate::config::AgentProfileCatalog),
     Session,
 }
 #[derive(Debug)]
@@ -78,9 +78,9 @@ struct Cursor {
 }
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-struct Profiles {
-    profiles: Vec<pl_protocol::AgentProfileSnapshot>,
-    diagnostics: Vec<crate::config::AgentProfileDiagnostic>,
+struct Profiles<'a> {
+    profiles: &'a [pl_protocol::AgentProfileSnapshot],
+    diagnostics: &'a [crate::config::AgentProfileDiagnostic],
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -126,14 +126,12 @@ impl QueryTool {
                 .context("agent product queries were not configured")?
         };
         let owner = StudioThreadAssembler(registry.clone());
-        match self.kind {
-            Kind::Profiles => {
+        match &self.kind {
+            Kind::Profiles(catalog) => {
                 let _: Empty = serde_json::from_str(input.content())?;
-                // Agent Profiles 由配置 owner 的缓存提供；查询不扫描文件。
-                let catalog = services.config.agent_profiles()?;
                 output(&Profiles {
-                    profiles: catalog.profiles,
-                    diagnostics: catalog.diagnostics,
+                    profiles: &catalog.profiles,
+                    diagnostics: &catalog.diagnostics,
                 })
             }
             Kind::Session => {
@@ -342,15 +340,35 @@ impl StudioThreadAssembler {
         });
         Ok(())
     }
-    pub(super) fn agent_query_tools(&self) -> Result<Vec<Registration>, ThreadAssemblyError> {
+    pub(super) fn agent_profiles_snapshot(
+        &self,
+    ) -> Result<crate::config::AgentProfilesSnapshot, ThreadAssemblyError> {
+        let services =
+            self.0
+                .state()
+                .agent_services
+                .clone()
+                .ok_or_else(|| ThreadAssemblyError::Resource {
+                    operation: "read Agent Profile catalog",
+                    source: Box::new(std::io::Error::other(
+                        "Agent Profile service is not configured",
+                    )),
+                })?;
+        Ok(services.config.agent_profiles_snapshot()?)
+    }
+
+    pub(super) fn agent_query_tools(
+        &self,
+        catalog: crate::config::AgentProfileCatalog,
+    ) -> Result<Vec<Registration>, ThreadAssemblyError> {
         if self.0.state().agent_services.is_none() {
             return Ok(Vec::new());
         }
         let definitions = [
             (
                 "list_agent_profiles",
-                "List enabled Agent Profiles from the configured catalog.",
-                Kind::Profiles,
+                "List executable child Agent Profiles and diagnostics from the same frozen catalog as this request's spawn_agent declaration. An empty list means no child Profile is currently executable.",
+                Kind::Profiles(catalog),
                 serde_json::to_value(schemars::schema_for!(Empty)),
             ),
             (

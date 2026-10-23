@@ -101,8 +101,12 @@ impl crate::thread_assembler::StudioActivationFactory for StudioThreadFactory {
         if request.identity.parent_id.is_some() {
             self.prepare_restored_child(request).await
         } else {
-            self.prepare_root_thread(&request.identity.id, request.cancellation)
-                .await
+            self.prepare_root_thread(
+                &request.identity.id,
+                request.cancellation,
+                request.agent_controls,
+            )
+            .await
         }
     }
 }

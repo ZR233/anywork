@@ -19,10 +19,11 @@ use std::time::Instant;
 use super::env::{self, ObservePaths};
 use super::http::{self, StudioHttp};
 use super::report::{self, CaseResult, RunSummary};
-use super::server::{ServerLaunch, StudioServer};
+use super::server::{ServerLaunch, ServerRestart, StudioServer};
 use super::sqlite;
 use super::topic::{BotsTopicWatch, redact_connection};
 
+mod agent_definitions;
 mod owner_binding;
 mod registration;
 mod replies;
@@ -50,12 +51,16 @@ const FIRST_BATCH: &[&str] = &[
     CASE_SEND,
 ];
 const OPTIONAL_CASES: &[&str] = &[
+    agent_definitions::CASE,
     CASE_BLANK_FINAL,
     CASE_PREPARE_FAILURE,
     CASE_COMMAND_RESULTS,
     CASE_TOPIC,
     replies::CASE_INTERACTION_RESTART,
     replies::CASE_SEND_OUTCOMES,
+    replies::CASE_MARKDOWN_CARDS,
+    replies::CASE_CONTINUATION_OUTCOMES,
+    replies::CASE_RUNTIME_STOP,
     owner_binding::CASE,
     registration::CASE_LIFECYCLE,
     registration::CASE_NO_USER,
@@ -65,8 +70,12 @@ const OPTIONAL_CASES: &[&str] = &[
 /// script, and an in-case server restart). They must be selected alone.
 fn is_session_exclusive(name: &str) -> bool {
     registration::is_exclusive(name)
+        || name == agent_definitions::CASE
         || name == replies::CASE_INTERACTION_RESTART
         || name == replies::CASE_SEND_OUTCOMES
+        || name == replies::CASE_MARKDOWN_CARDS
+        || name == replies::CASE_CONTINUATION_OUTCOMES
+        || name == replies::CASE_RUNTIME_STOP
         || name == owner_binding::CASE
 }
 
@@ -117,6 +126,7 @@ pub(crate) struct Session {
     manifest: PathBuf,
     server_binary: Option<PathBuf>,
     model: Option<FixtureServer>,
+    agent_definitions: Option<pl_provider_fixture::agent_definitions::AgentDefinitionControl>,
     peer: Option<FeishuPeer>,
     server: Option<StudioServer>,
     http: Option<StudioHttp>,
@@ -141,6 +151,7 @@ impl Session {
             manifest: PathBuf::new(),
             server_binary: None,
             model: None,
+            agent_definitions: None,
             peer: None,
             server: None,
             http: None,
@@ -164,12 +175,33 @@ impl Session {
         cases: &[&'static str],
         server_binary: Option<&Path>,
     ) -> Result<()> {
-        let steps = model_steps(cases);
-        let model = FixtureServer::start(steps)
-            .await
-            .context("failed to start model fixture")?;
-        env::write_model_config(&paths.home, &model.base_url())?;
-        self.model = Some(model);
+        if cases == [agent_definitions::CASE] {
+            let control = pl_provider_fixture::agent_definitions::AgentDefinitionControl::new();
+            let model =
+                FixtureServer::start_with_options(
+                    Vec::new(),
+                    pl_provider_fixture::FixtureOptions {
+                        agent_definitions: Some(control.clone()),
+                        model_catalog: Some(
+                            pl_provider_fixture::ModelCatalogControl::inventory_empty(),
+                        ),
+                        ..Default::default()
+                    },
+                )
+                .await
+                .context("failed to start Agent model fixture")?;
+            let base_url = model.base_url();
+            self.model = Some(model);
+            self.agent_definitions = Some(control);
+            agent_definitions::prepare_config(&paths.home, &base_url)?;
+        } else {
+            let steps = model_steps(cases);
+            let model = FixtureServer::start(steps)
+                .await
+                .context("failed to start model fixture")?;
+            env::write_model_config(&paths.home, &model.base_url())?;
+            self.model = Some(model);
+        }
         let peer = FeishuPeer::start()
             .await
             .context("failed to start Feishu peer")?;
@@ -194,6 +226,7 @@ impl Session {
         }
         for name in cases {
             let result = match *name {
+                name if name == agent_definitions::CASE => agent_definitions::run(self).await,
                 CASE_SMOKE => self.case_smoke().await,
                 CASE_PAIRING => self.case_pairing().await,
                 CASE_IDEMPOTENT => self.case_idempotent().await,
@@ -207,6 +240,13 @@ impl Session {
                     replies::interaction_restart(self).await
                 }
                 name if name == replies::CASE_SEND_OUTCOMES => replies::send_outcomes(self).await,
+                name if name == replies::CASE_MARKDOWN_CARDS => {
+                    replies::markdown_streaming_cards(self).await
+                }
+                name if name == replies::CASE_CONTINUATION_OUTCOMES => {
+                    replies::continuation_outcomes(self).await
+                }
+                name if name == replies::CASE_RUNTIME_STOP => replies::runtime_stop(self).await,
                 name if name == owner_binding::CASE => {
                     owner_binding::owner_binding_occupancy(self).await
                 }
@@ -233,16 +273,38 @@ impl Session {
     /// and relaunches the same binary against the same home, manifest, and
     /// keyring store (a fresh daemon unlocks the same on-disk secret store).
     /// The model fixture and Feishu peer stay alive; only the Studio server
-    /// process is replaced. Returns safe PID/listen evidence for the report.
-    pub(crate) async fn restart_studio_server(&mut self) -> Result<String> {
+    /// process is replaced. Returns the measured stop/relaunch facts.
+    pub(crate) async fn restart_studio_server(&mut self) -> Result<ServerRestart> {
+        self.restart_studio_server_with_config(|_| Ok(())).await
+    }
+
+    /// The existing process owner stops and waits before the isolated-home
+    /// update. Model/peer/home/binary ownership and typed stop facts are kept.
+    pub(crate) async fn restart_studio_server_with_config(
+        &mut self,
+        update: impl FnOnce(&Path) -> Result<()>,
+    ) -> Result<ServerRestart> {
         let mut server = self
             .server
             .take()
             .context("studio server is not running before the restart")?;
         let (stopped_server_pid, stopped_wrapper_pid) = server.pids();
-        server.stop()?;
+        let stop = server.stop();
+        let (stopped_sigints, stopped_exit_code, stopped_graceful, stop_evidence) = (
+            server.signals_sent(),
+            server.exit_code(),
+            server.stopped_gracefully(),
+            server.stop_evidence(),
+        );
+        stop.with_context(|| {
+            format!(
+                "restart#{} stop failed; {stop_evidence}",
+                self.restart_count + 1
+            )
+        })?;
         drop(server);
         self.http = None;
+        update(&self.home)?;
         self.restart_count += 1;
         let launch = ServerLaunch {
             workspace: self.workspace.clone(),
@@ -260,10 +322,17 @@ impl Session {
         self.server = Some(server);
         self.http = Some(http);
         self.http()?.wait_health().await?;
-        Ok(format!(
-            "restart#{}: stopped serverPid={:?} wrapperPid={stopped_wrapper_pid}; started serverPid={:?} wrapperPid={started_wrapper_pid} listen={listen}",
-            self.restart_count, stopped_server_pid, started_server_pid
-        ))
+        Ok(ServerRestart {
+            restart_count: self.restart_count,
+            stopped_server_pid,
+            stopped_wrapper_pid,
+            stopped_sigints,
+            stopped_exit_code,
+            stopped_graceful,
+            started_server_pid,
+            started_wrapper_pid,
+            listen,
+        })
     }
 
     async fn abort(self) -> Result<()> {
@@ -458,6 +527,32 @@ impl Session {
                 Vec::new(),
             ))
             .await?;
+        let thread_id = sqlite::thread_bindings(&self.home, &bot_id)
+            .await?
+            .into_iter()
+            .find(|row| row.chat_id == DIRECT_CHAT_ID)
+            .map(|row| row.thread_id)
+            .context("the fixture DM must be bound to a Thread")?;
+        let deadline = Instant::now() + http::PREDICATE_TIMEOUT;
+        let concurrent_a_turn = loop {
+            if let Some(turn) = running_turn_id(self.http()?, &thread_id).await? {
+                break turn;
+            }
+            if Instant::now() >= deadline {
+                bail!("the first concurrent Turn never started running");
+            }
+            http::hold_for(http::POLL).await;
+        };
+        // The first concurrent Turn must really be running (its held model reply
+        // was served) before the second inbound is pushed.
+        tokio::time::timeout(http::PREDICATE_TIMEOUT, concurrent_stage().wait_reached())
+            .await
+            .context("the first concurrent reply never reached its held stage")?;
+        let running_a = running_turn_id(self.http()?, &thread_id).await?;
+        ensure!(
+            running_a.as_deref() == Some(concurrent_a_turn.as_str()),
+            "the first concurrent Turn must still be the active one, got {running_a:?} (expected {concurrent_a_turn})"
+        );
         self.control()?
             .send_event(text_event(
                 "om_concurrent_b",
@@ -469,6 +564,63 @@ impl Session {
                 Vec::new(),
             ))
             .await?;
+        // The second input is accepted while the first Turn is still running: that
+        // is the real overlap, not two events pushed back to back.
+        // The queued input must be accepted in the canonical Thread itself: a
+        // platform claim is not the queue. The public snapshot carries no input
+        // list, so read the same durable input identities the runtime consults
+        // after a restart (read-only history), and require one stable pending id
+        // with a higher ordinal than the running input.
+        let a_input_id = format!("bot:{bot_id}:{DIRECT_CHAT_ID}:om_concurrent_a");
+        let b_input_id = format!("bot:{bot_id}:{DIRECT_CHAT_ID}:om_concurrent_b");
+        let (queued_b, accepted_sequence) = {
+            let deadline = Instant::now() + http::PREDICATE_TIMEOUT;
+            loop {
+                let inputs = sqlite::thread_inputs(&self.home, &thread_id).await?;
+                let pick = |id: &str| -> Result<Option<sqlite::ThreadInputRow>> {
+                    let mut matches = inputs.iter().filter(|row| row.id == id);
+                    let first = matches.next().cloned();
+                    ensure!(
+                        matches.next().is_none(),
+                        "input {id} appears more than once in the canonical Thread"
+                    );
+                    Ok(first)
+                };
+                let consumed_a = pick(&a_input_id)?;
+                let pending_b = pick(&b_input_id)?;
+                let a_ok = consumed_a.as_ref().is_some_and(|row| {
+                    row.thread_id == thread_id
+                        && matches!(
+                            &row.state,
+                            sqlite::ThreadInputState::Consumed { turn_id } if turn_id == &concurrent_a_turn
+                        )
+                });
+                let b_ok = pending_b.as_ref().is_some_and(|row| {
+                    row.thread_id == thread_id
+                        && matches!(row.state, sqlite::ThreadInputState::Pending)
+                        && row.accepted_sequence != 0
+                        && row.revision != 0
+                        && row.delivery == sqlite::ThreadInputDelivery::NextTurn
+                        && consumed_a.as_ref().is_some_and(|a| row.ordinal > a.ordinal)
+                });
+                if a_ok && b_ok {
+                    let b = pending_b.context("accepted second input")?;
+                    break (b.id, b.accepted_sequence);
+                }
+                if Instant::now() >= deadline {
+                    bail!(
+                        "the second input never became a canonical pending input of Thread {thread_id}: {inputs:?}"
+                    );
+                }
+                http::hold_for(http::POLL).await;
+            }
+        };
+        let running_before_release = running_turn_id(self.http()?, &thread_id).await?;
+        ensure!(
+            running_before_release.as_deref() == Some(concurrent_a_turn.as_str()),
+            "the first Turn must still be running while the second input is queued, got {running_before_release:?}"
+        );
+        concurrent_stage().release();
         self.wait_inbound_completed(&bot_id, "om_concurrent_a")
             .await?;
         self.wait_inbound_completed(&bot_id, "om_concurrent_b")
@@ -515,7 +667,9 @@ impl Session {
         );
         Ok(report::passed(
             CASE_IDEMPOTENT,
-            "duplicate identity is idempotent, conflicting content is rejected, two same-body identities each execute once, reconnect keeps the existing DM binding",
+            format!(
+                "duplicate identity is idempotent, conflicting content is rejected, and two same-body identities each execute once: the second input became canonical pending input {queued_b} (acceptedSequence {accepted_sequence}) while the first Turn {concurrent_a_turn} was still running, reconnect keeps the existing DM binding"
+            ),
         ))
     }
 
@@ -796,10 +950,226 @@ impl Session {
             unknown_row.status == "unknown",
             "durable send fact must stay unknown"
         );
+
+        // ---- Long escaped Markdown: real wire segmentation stays lossless ----
+        let long_text = long_markdown_text();
+        ensure!(
+            long_text.len() > 30_000,
+            "the long sample must not fit one 30000-byte request, got {} bytes",
+            long_text.len()
+        );
+        let before_long = self.control()?.snapshot_report().await.calls.len();
+        self.control()?
+            .set_send_script(
+                std::iter::repeat_n(pl_provider_fixture::feishu::SendDisposition::Succeed, 32)
+                    .collect(),
+            )
+            .await;
+        let long_send = self
+            .http()?
+            .send_message(&SendBotMessageRequest {
+                operation_id: "op-send-long".into(),
+                bot_id: bot_id.clone(),
+                chat_id: DIRECT_CHAT_ID.into(),
+                text: long_text.clone(),
+            })
+            .await?;
+        ensure!(
+            long_send.status == BotSendStatus::Succeeded,
+            "a split Markdown send must fully succeed, got {:?}",
+            long_send.status
+        );
+        let long_calls = self.message_sends_from(before_long).await?;
+        ensure!(
+            long_calls.len() >= 2 && long_calls.len() <= 32,
+            "the long text must split into 2..=32 real wire segments, got {}",
+            long_calls.len()
+        );
+        for (index, call) in long_calls.iter().enumerate() {
+            ensure!(
+                call.request_bytes <= 30_000,
+                "segment {index} sent {} bytes, above the 30000-byte request bound",
+                call.request_bytes
+            );
+            ensure!(
+                call.msg_type.as_deref() == Some("post"),
+                "an ordinary owner send must stay a post message, got {:?}",
+                call.msg_type
+            );
+            ensure!(
+                call.uuid.as_deref().is_some_and(|uuid| uuid.len() == 32),
+                "every segment must carry its own stable 32-character uuid, got {:?}",
+                call.uuid
+            );
+        }
+        let segment_uuids: std::collections::BTreeSet<&str> = long_calls
+            .iter()
+            .filter_map(|call| call.uuid.as_deref())
+            .collect();
+        ensure!(
+            segment_uuids.len() == long_calls.len(),
+            "segment uuids must be distinct, got {} for {} segments",
+            segment_uuids.len(),
+            long_calls.len()
+        );
+        let joined: String = long_calls
+            .iter()
+            .filter_map(|call| call.md_text.clone())
+            .collect();
+        ensure!(
+            joined == long_text,
+            "the decoded segment texts must concatenate losslessly, got {} of {} bytes",
+            joined.len(),
+            long_text.len()
+        );
+
+        // ---- A rejected later segment is a real Partial ----------------------
+        let before_partial = self.control()?.snapshot_report().await.calls.len();
+        self.control()?
+            .set_send_script(vec![
+                pl_provider_fixture::feishu::SendDisposition::Succeed,
+                pl_provider_fixture::feishu::SendDisposition::Reject {
+                    code: 230020,
+                    msg: "rate limited".into(),
+                },
+            ])
+            .await;
+        let partial = self
+            .http()?
+            .send_message(&SendBotMessageRequest {
+                operation_id: "op-send-long-partial".into(),
+                bot_id: bot_id.clone(),
+                chat_id: DIRECT_CHAT_ID.into(),
+                text: long_text.clone(),
+            })
+            .await?;
+        ensure!(
+            partial.status == BotSendStatus::Partial,
+            "a rejected later segment must surface as Partial, got {:?}",
+            partial.status
+        );
+        let partial_calls = self.send_attempts_from(before_partial).await?;
+        let delivered_prefix: String = partial_calls
+            .iter()
+            .filter(|call| call.accepted)
+            .filter_map(|call| call.md_text.clone())
+            .collect();
+        ensure!(
+            !delivered_prefix.is_empty()
+                && delivered_prefix != long_text
+                && long_text.starts_with(&delivered_prefix),
+            "a Partial send must deliver a strict prefix of the text, got {} of {} bytes",
+            delivered_prefix.len(),
+            long_text.len()
+        );
+        ensure!(
+            partial_calls
+                .iter()
+                .all(|call| call.request_bytes <= 30_000),
+            "every attempted segment must stay inside the 30000-byte request bound"
+        );
+        http::hold_for(http::ACK_BUDGET).await;
+        let settled_attempts = self.send_attempts_from(before_partial).await?.len();
+        ensure!(
+            settled_attempts == partial_calls.len(),
+            "a Partial send must not attempt further segments afterwards ({} -> {})",
+            partial_calls.len(),
+            settled_attempts
+        );
+        let receipts_before_replay = sqlite::send_details(&self.home, &bot_id).await?.len();
+        let partial_replay = self
+            .http()?
+            .send_message(&SendBotMessageRequest {
+                operation_id: "op-send-long-partial".into(),
+                bot_id: bot_id.clone(),
+                chat_id: DIRECT_CHAT_ID.into(),
+                text: long_text.clone(),
+            })
+            .await?;
+        ensure!(
+            partial_replay.status == BotSendStatus::Partial,
+            "replaying a Partial send must read back the same fact, got {:?}",
+            partial_replay.status
+        );
+        http::hold_for(http::ACK_BUDGET).await;
+        ensure!(
+            self.control()?.snapshot_report().await.calls.len() == before_partial + 2,
+            "replaying a Partial send must not resend any segment"
+        );
+        ensure!(
+            sqlite::send_details(&self.home, &bot_id).await?.len() == receipts_before_replay,
+            "the durable send receipt must not change when a Partial is read back"
+        );
+
+        // ---- The unchanged hard budget still rejects before any send ---------
+        let before_oversize = self.control()?.snapshot_report().await.calls.len();
+        let oversized = self
+            .http()?
+            .send_message_result(&SendBotMessageRequest {
+                operation_id: "op-send-too-long".into(),
+                bot_id: bot_id.clone(),
+                chat_id: DIRECT_CHAT_ID.into(),
+                text: "a".repeat(200_001),
+            })
+            .await?;
+        let error = match oversized {
+            Ok(result) => bail!(
+                "text above 200000 characters must be refused before sending, got {:?}",
+                result.status
+            ),
+            Err(error) => error,
+        };
+        ensure!(
+            error.message.contains("send size bound"),
+            "the 200000-character budget must still be enforced, got {error:?}"
+        );
+        ensure!(
+            self.send_attempts_from(before_oversize).await?.is_empty(),
+            "an over-budget text must not reach the platform at all"
+        );
+        self.control()?.set_send_script(Vec::new()).await;
+
         Ok(report::passed(
             CASE_SEND,
-            "owner send is idempotent on same op, rejects conflicting body, and keeps AcceptThenDrop as Unknown",
+            format!(
+                "owner send is idempotent on same op, rejects conflicting body, keeps AcceptThenDrop as Unknown, splits long escaped Markdown into {} lossless post segments of at most 30000 wire bytes with stable uuids, reports a rejected later segment as Partial without further sends, and still refuses text above 200000 characters",
+                long_calls.len()
+            ),
         ))
+    }
+
+    /// Every message-send attempt (accepted or rejected) after a baseline.
+    ///
+    /// A rejected attempt is recorded with its raw body but without a platform
+    /// message identity, so filtering on accepted sends alone would hide the
+    /// segment that produced a `Partial`.
+    async fn send_attempts_from(
+        &self,
+        from: usize,
+    ) -> Result<Vec<pl_provider_fixture::feishu::RecordedCall>> {
+        let report = self.control()?.snapshot_report().await;
+        Ok(report
+            .calls
+            .iter()
+            .skip(from)
+            .filter(|call| call.send_body.is_some())
+            .cloned()
+            .collect())
+    }
+
+    /// Accepted message sends recorded after one call-count baseline.
+    async fn message_sends_from(
+        &self,
+        from: usize,
+    ) -> Result<Vec<pl_provider_fixture::feishu::RecordedCall>> {
+        let report = self.control()?.snapshot_report().await;
+        Ok(report
+            .calls
+            .iter()
+            .skip(from)
+            .filter(|call| call.kind == Some(pl_provider_fixture::feishu::CallKind::MessageSend))
+            .cloned()
+            .collect())
     }
 
     async fn case_blank_final(&mut self) -> Result<CaseResult> {
@@ -1480,12 +1850,8 @@ impl Session {
     }
 
     async fn send_text_count(&self, expected: &str) -> Result<usize> {
-        Ok(self
-            .send_bodies()
-            .await?
-            .iter()
-            .filter(|body| body_has_text(body, expected))
-            .count())
+        let (_, counts) = replies::delivered_counts(self, &[&[expected]]).await?;
+        Ok(counts[0])
     }
 
     fn model_executions(&self) -> usize {
@@ -1507,13 +1873,42 @@ impl Session {
             .unwrap_or(0)
     }
 
+    /// Every non-title model request the fixture received, accepted or not.
+    ///
+    /// A rejected request still proves the runtime tried to run the model, so a
+    /// replayed Turn stays visible even when the strict script refuses it.
+    fn model_attempts(&self) -> usize {
+        self.model
+            .as_ref()
+            .map(|model| {
+                model
+                    .recorded()
+                    .iter()
+                    .filter(|item| {
+                        !item
+                            .body
+                            .to_string()
+                            .contains("Create the session title now")
+                    })
+                    .count()
+            })
+            .unwrap_or(0)
+    }
+
     async fn send_count(&self) -> Result<usize> {
         let report = self.control()?.snapshot_report().await;
-        Ok(report
+        // Distinct platform messages only: an idempotent retry of the same
+        // identity is not another send.
+        let ids: std::collections::BTreeSet<&str> = report
             .calls
             .iter()
-            .filter(|call| call.kind == Some(CallKind::MessageSend) && call.accepted)
-            .count())
+            .filter(|call| {
+                call.kind == Some(CallKind::MessageSend) && call.accepted && !call.deduplicated
+            })
+            .filter_map(|call| call.assigned_message_id.as_deref())
+            .filter(|message_id| !message_id.is_empty())
+            .collect();
+        Ok(ids.len())
     }
 
     async fn ack_count(&self) -> Result<usize> {
@@ -1528,26 +1923,16 @@ impl Session {
         .context("Feishu peer did not ACK the inbound event within 3s")
     }
 
-    async fn send_bodies(&self) -> Result<Vec<serde_json::Value>> {
-        let report = self.control()?.snapshot_report().await;
-        Ok(report
-            .calls
-            .into_iter()
-            .filter_map(|call| call.send_body)
-            .collect())
-    }
-
     async fn assert_hidden_markers_absent(&self) -> Result<()> {
-        for body in self.send_bodies().await? {
-            let rendered = body.to_string().to_ascii_lowercase();
-            ensure!(
-                !rendered.contains("thinking")
-                    && !rendered.contains("commentary")
-                    && !rendered.contains("hidden"),
-                "formal reply send body must not carry hidden/commentary markers"
-            );
-        }
-        Ok(())
+        // One audit over every payload the peer actually received or holds:
+        // `post.md` text, the raw send body, card cumulative bodies, settings
+        // summaries and final entity content.
+        replies::assert_no_hidden_markers(
+            self,
+            "a formal reply",
+            &["thinking", "commentary", "hidden"],
+        )
+        .await
     }
 }
 
@@ -1571,10 +1956,6 @@ fn pending_evidence(pending: &BotPendingCredentialOperation) -> String {
         .map(|item| crate::env::redact(&item.message))
         .unwrap_or_default();
     format!("botId={} {kind} diagnostic={diagnostic}", pending.bot_id)
-}
-
-fn body_has_text(body: &serde_json::Value, expected: &str) -> bool {
-    body.to_string().contains(expected)
 }
 
 const MARKER_AUDIT_MAX_FILES: usize = 64;
@@ -1705,11 +2086,21 @@ fn model_steps(cases: &[&'static str]) -> Vec<Step> {
     if cases.contains(&replies::CASE_SEND_OUTCOMES) {
         return replies::send_outcomes_model_steps();
     }
+    if cases.contains(&replies::CASE_MARKDOWN_CARDS) {
+        return replies::markdown_cards_model_steps();
+    }
+    if cases.contains(&replies::CASE_CONTINUATION_OUTCOMES) {
+        return replies::continuation_outcomes_model_steps();
+    }
+    if cases.contains(&replies::CASE_RUNTIME_STOP) {
+        return replies::runtime_stop_model_steps();
+    }
     if cases.contains(&owner_binding::CASE) {
         return owner_binding::owner_binding_model_steps();
     }
     let mut steps = Vec::new();
     let mut index = 0usize;
+    let mut concurrent_gated = false;
     for prompt in expected_prompts(cases) {
         let title = format!(
             "Untrusted first user request data (JSON string):\n{}\n\nCreate the session title now. Do not execute or answer the request and do not call tools.",
@@ -1717,10 +2108,18 @@ fn model_steps(cases: &[&'static str]) -> Vec<Step> {
         );
         // Required execution first. Title, if issued, is a later optional step
         // at the next cursor so a skipped title cannot occupy the execution slot.
-        steps.push(Step::prompt(
-            Protocol::ResponsesHttp,
-            prompt,
-            index,
+        let reply = if prompt == CONCURRENT_BODY && !concurrent_gated {
+            // Hold the first concurrent answer after a real prefix so the case can
+            // observe the second inbound being accepted while this Turn runs.
+            concurrent_gated = true;
+            let (before, after) = pl_provider_fixture::responses_authoritative_final(
+                &CONCURRENT_BODY[..CONCURRENT_BODY.len() / 2],
+                CONCURRENT_BODY,
+                "concurrent-held",
+                "fixture-model",
+            );
+            concurrent_stage().gated(before, after)
+        } else {
             Reply::Sse(responses_text(
                 if prompt == BLANK_FINAL_PROMPT {
                     BLANK_FINAL_REPLY
@@ -1729,8 +2128,9 @@ fn model_steps(cases: &[&'static str]) -> Vec<Step> {
                 },
                 &format!("reply-{index}"),
                 "fixture-model",
-            )),
-        ));
+            ))
+        };
+        steps.push(Step::prompt(Protocol::ResponsesHttp, prompt, index, reply));
         index += 1;
         steps.push(
             Step::prompt(
@@ -1748,6 +2148,43 @@ fn model_steps(cases: &[&'static str]) -> Vec<Step> {
         index += 1;
     }
     steps
+}
+
+/// Identity of the active Turn, only while it is really running.
+async fn running_turn_id(
+    http: &crate::http::StudioHttp,
+    thread_id: &str,
+) -> Result<Option<String>> {
+    let snapshot = http.read_thread(thread_id).await?;
+    Ok(snapshot.active_turn.as_ref().and_then(|turn| {
+        matches!(turn.state, pl_protocol::TurnState::Running(_)).then(|| turn.id.clone())
+    }))
+}
+
+/// Synthetic long Markdown: Chinese text, quotes, backslashes and paragraphs.
+///
+/// The size is chosen so the real double-escaped JSON request cannot fit one
+/// 30000-byte segment, which is what forces the production splitter to run.
+/// Gate that holds the first concurrent reply, so the case can prove a second
+/// inbound is really accepted while the first Turn is still running.
+static CONCURRENT_STAGE: std::sync::OnceLock<pl_provider_fixture::ReplyStage> =
+    std::sync::OnceLock::new();
+
+fn concurrent_stage() -> &'static pl_provider_fixture::ReplyStage {
+    CONCURRENT_STAGE.get_or_init(pl_provider_fixture::ReplyStage::new)
+}
+
+fn long_markdown_text() -> String {
+    let mut text = String::from("# 长文样例 LONG_POST_HEAD\n\n");
+    let mut index = 0;
+    while text.len() < 60_000 {
+        text.push_str(&format!(
+            "## 第 {index} 段\n\n中文段落包含「书名号」、\"双引号\"、反斜杠 \\ 和 `code`。\n\n- 列表项 A{index}\n- 列表项 B{index}\n\n"
+        ));
+        index += 1;
+    }
+    text.push_str("\nLONG_POST_TAIL\n");
+    text
 }
 
 fn expected_prompts(cases: &[&'static str]) -> Vec<&'static str> {
