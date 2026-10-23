@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'flutter_driver_session.dart';
+import 'conversation_status_observation.dart';
 import 'timeline_observation.dart';
 
 Future<void> main(List<String> args) async {
@@ -56,8 +57,7 @@ Future<void> main(List<String> args) async {
 Map<String, Object?> _summary(Map<String, dynamic> snapshot) {
   final workspace = snapshot['workspace'];
   final details = workspace is Map ? workspace : const {};
-  final usage = details['usage'];
-  final usageDetails = usage is Map ? usage : const {};
+  final context = driverContextObservation(snapshot);
   final turn = details['turn'];
   final turnDetails = turn is Map ? turn : const {};
   final persistence = snapshot['persistence'];
@@ -80,6 +80,7 @@ Map<String, Object?> _summary(Map<String, dynamic> snapshot) {
       'pendingCommits': persistenceDetails['pendingCommits'],
       'needsAttention': persistenceDetails['needsAttention'],
     },
+    'context': context.toJson(),
     'workspace': workspace == null
         ? null
         : {
@@ -88,8 +89,8 @@ Map<String, Object?> _summary(Map<String, dynamic> snapshot) {
             'syncState': details['syncState'],
             'turnStatus': turnDetails['status'],
             'timelineItems': TimelineObservation.optional(snapshot)?.itemCount,
-            'outputTokens': usageDetails['outputTokens'],
-            'hasIncompleteUsage': usageDetails['hasIncompleteUsage'],
+            'outputTokens': context.completionTokens,
+            'hasIncompleteUsage': context.hasIncompleteUsage,
             'submissionPending': composerDetails['submissionPending'],
           },
   };

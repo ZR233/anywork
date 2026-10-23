@@ -20,12 +20,14 @@ use pl_core::thread::{
 };
 use std::{
     collections::BTreeMap,
+    num::NonZeroU64,
     sync::{Arc, Mutex},
 };
 use tokio::{
     sync::{Notify, broadcast, watch},
-    task::JoinHandle,
 };
+use super::background_task::BackgroundTask;
+pub(in crate::studio::runtime) mod facets;
 
 use crate::studio::storage::thread_writer::HistoryChannel;
 use crate::studio::thread_projection::{LiveEvent, LiveProjection, storage_state};
@@ -74,6 +76,8 @@ pub(in crate::studio) enum ThreadLiveEvent {
 /// session at the same time. Subscribers therefore forward typed events and never project, publish
 /// or read the effect window themselves.
 pub(in crate::studio) struct ThreadLiveFeed {
+    mode: pl_protocol::thread_facets::identity::ThreadObservationMode,
+    facets: Result<Arc<facets::ThreadFacetSources>, pl_protocol::studio::StudioError>,
     events: broadcast::Sender<ThreadLiveEvent>,
     /// The Thread's authoritative typed storage state, published by this owner only.
     ///
@@ -97,11 +101,15 @@ pub(in crate::studio) struct ThreadLiveFeed {
 }
 
 impl ThreadLiveFeed {
-    fn new(storage: Option<pl_protocol::ThreadStorageState>) -> Self {
+    fn new(storage: Option<pl_protocol::ThreadStorageState>, ids: &super::observation_ids::ObservationIds,
+        mode: pl_protocol::thread_facets::identity::ThreadObservationMode,
+        reads: &super::thread_reads::lifetime::ThreadReadRegistry, thread_id: &str) -> Self {
         let (events, _) = broadcast::channel(LIVE_FEED_FRAMES);
         let (storage, _) = watch::channel(storage);
         let (last_turn, _) = watch::channel(None);
         Self {
+            mode,
+            facets: facets::ThreadFacetSources::new(ids, reads, thread_id),
             events,
             storage,
             last_turn,
@@ -194,22 +202,17 @@ struct WorkerState {
 struct Observation {
     thread: ThreadHandle,
     state: Arc<WorkerState>,
-    task: Mutex<Option<JoinHandle<()>>>,
+    feed: Arc<ThreadLiveFeed>,
+    task: Arc<BackgroundTask>,
 }
 impl Drop for Observation {
     fn drop(&mut self) {
-        if let Some(task) = self
-            .task
-            .get_mut()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .take()
-        {
-            task.abort();
-        }
+        self.task.signal();
     }
 }
 #[derive(Clone)]
 pub(super) struct ObservationServices {
+    pub(super) observation_ids: super::observation_ids::ObservationIds,
     pub(super) recovery: crate::studio::StudioRecoveryRegistry,
     pub(super) store: StudioStore,
     pub(super) events: ProductEventBus,
@@ -222,17 +225,81 @@ struct Shared {
     observations: Mutex<BTreeMap<String, Vec<Arc<Observation>>>>,
     /// One feed per currently observed Thread; removed when the Thread is drained.
     live: Mutex<BTreeMap<String, Arc<ThreadLiveFeed>>>,
+    /// Frozen checkpoint projections never borrow or replace a live execution projection. They
+    /// own a separate read incarnation, but no Thread handle, writer or observation worker.
+    cold: Mutex<BTreeMap<String, ColdEntry>>,
+    reads: super::thread_reads::lifetime::ThreadReadRegistry,
 }
 #[derive(Clone)]
 pub(super) struct ThreadObservations(Arc<Shared>);
 
+struct ColdEntry {
+    facets: Arc<facets::ThreadFacetSources>,
+    /// Registered logical borrows, including admission guards. Arc clones are only memory
+    /// references and never decide whether this checkpoint generation remains reusable.
+    borrows: NonZeroU64,
+}
+
+/// Source acquisition and a final Cold borrow's retirement share the Cold registry guard. A lease
+/// is moved into the accepted feed/scope, or rolls back on every failed admission path.
+/// It is intentionally not Clone; feed samples may share an Arc of the same registered lease.
+pub(super) struct ThreadFacetLease {
+    owner: std::sync::Weak<Shared>,
+    thread_id: String,
+    facets: Arc<facets::ThreadFacetSources>,
+    mode: pl_protocol::thread_facets::identity::ThreadObservationMode,
+}
+
+impl ThreadFacetLease {
+    pub(super) fn source(&self) -> &facets::ThreadFacetSources { &self.facets }
+
+    pub(super) fn open_read<M: Send + Sync + 'static>(self, revision: u64,
+        material: impl FnOnce(pl_protocol::thread_facets::identity::ReadScopeIdentity) -> M,
+        residency: super::residency::ThreadResidencyPins,
+    ) -> Result<(Arc<super::thread_reads::lifetime::ThreadReadOwner>,
+        Arc<super::thread_reads::lifetime::PinnedMaterial<M>>), pl_protocol::studio::StudioError> {
+        // Keep the receiver's allocation alive while moving the actual borrow into the scope.
+        // On refusal, Group.open drops this lease after its admission locks; this Arc is not a
+        // logical borrow and cannot suppress retirement when that rollback is the last lease.
+        let facets = self.facets.clone();
+        facets.reads.open(revision, material, self, residency)
+    }
+}
+
+impl Drop for ThreadFacetLease {
+    fn drop(&mut self) {
+        if self.mode == pl_protocol::thread_facets::identity::ThreadObservationMode::Cold
+            && let Some(owner) = self.owner.upgrade() {
+            ThreadObservations(owner).release_cold_lease(self);
+        }
+    }
+}
+
 impl ThreadObservations {
-    pub(super) fn new(projector: ObservationServices) -> Self {
+    pub(super) fn new(projector: ObservationServices, reads: super::read_scopes::ReadScopeRegistry) -> Self {
         Self(Arc::new(Shared {
             projector,
             observations: Mutex::new(BTreeMap::new()),
             live: Mutex::new(BTreeMap::new()),
+            cold: Mutex::new(BTreeMap::new()),
+            reads: super::thread_reads::lifetime::ThreadReadRegistry::new(reads),
         }))
+    }
+
+    fn live_lease(&self, thread_id: &str, facets: Arc<facets::ThreadFacetSources>) -> ThreadFacetLease {
+        ThreadFacetLease { owner: Arc::downgrade(&self.0), thread_id: thread_id.to_owned(), facets,
+            mode: pl_protocol::thread_facets::identity::ThreadObservationMode::Live }
+    }
+
+    /// Called only with the Cold registry held, before the source can escape to a reader.
+    fn borrow_cold(&self, thread_id: &str, entry: &mut ColdEntry) -> Result<ThreadFacetLease> {
+        let thread_id = thread_id.to_owned();
+        let next = entry.borrows.checked_add(1).ok_or_else(|| pl_protocol::studio::StudioError::new(
+            pl_protocol::studio::StudioErrorCode::Overloaded, "Cold projection borrow counter is exhausted", false))?;
+        let lease = ThreadFacetLease { owner: Arc::downgrade(&self.0), thread_id, facets: entry.facets.clone(),
+            mode: pl_protocol::thread_facets::identity::ThreadObservationMode::Cold };
+        entry.borrows = next;
+        Ok(lease)
     }
 
     /// The live feed of one observed Thread, if its projection owner was installed.
@@ -242,7 +309,86 @@ impl ThreadObservations {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .get(id)
+            .filter(|feed| feed.mode == pl_protocol::thread_facets::identity::ThreadObservationMode::Live)
             .cloned()
+    }
+
+    pub(super) fn live_facet_lease(&self, id: &str) -> Result<Option<ThreadFacetLease>> {
+        self.0.live.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get(id)
+            .map(|feed| feed.facets.as_ref().map(|facets| self.live_lease(id, facets.clone()))
+                .map_err(|error| anyhow::Error::new(error.clone())))
+            .transpose()
+    }
+
+    /// A ref resolves only its original metrics incarnation, even when both modes coexist. An
+    /// unrelated failed Live allocation must not hide a valid checkpoint-backed Cold origin.
+    /// The returned admission lease is registered before identity validation or scope budgeting.
+    pub(super) fn metrics_sources_at(&self, id: &str,
+        origin: &pl_protocol::thread_facets::identity::ThreadFacetStamp) -> Result<Option<ThreadFacetLease>> {
+        let live = self.0.live.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(id).and_then(|feed| match &feed.facets {
+                Ok(facets) if facets.metrics.matches_origin(origin) => Some(self.live_lease(id, facets.clone())),
+                Ok(_) | Err(_) => None,
+            });
+        if live.is_some() { return Ok(live); }
+        let mut entries = self.0.cold.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        match entries.get_mut(id) {
+            Some(entry) if entry.facets.metrics.matches_origin(origin) => {
+                entry.facets.metrics.ensure_open()?;
+                self.borrow_cold(id, entry).map(Some)
+            }
+            Some(_) | None => Ok(None),
+        }
+    }
+
+    /// Reserve the unique cold entry before its first storage await. A concurrent caller reuses
+    /// that Pending source; only its opening owner performs the immutable checkpoint read.
+    pub(super) fn cold_facet_sources(&self, id: &str) -> Result<(ThreadFacetLease, bool)> {
+        let mut entries = self.0.cold.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(entry) = entries.get_mut(id) {
+            entry.facets.metrics.ensure_open()?;
+            return Ok((self.borrow_cold(id, entry)?, false));
+        }
+        let facets = facets::ThreadFacetSources::new(&self.0.projector.observation_ids, &self.0.reads, id)?;
+        let lease = ThreadFacetLease { owner: Arc::downgrade(&self.0), thread_id: id.to_owned(), facets: facets.clone(),
+            mode: pl_protocol::thread_facets::identity::ThreadObservationMode::Cold };
+        entries.insert(id.to_owned(), ColdEntry { facets, borrows: NonZeroU64::MIN });
+        Ok((lease, true))
+    }
+
+    /// A failed opening published no baseline. Later retry gets a new original incarnation,
+    /// rather than retaining an unchangeable transient read failure as the current cold owner.
+    pub(super) fn discard_cold_sources(&self, lease: &ThreadFacetLease) {
+        let entries = self.0.cold.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(entry) = entries.get(&lease.thread_id)
+            && Arc::ptr_eq(&entry.facets, &lease.facets) {
+            // Seal this failed generation, but keep its admission bookkeeping until all guards
+            // roll back. No failed opening can detach a still-registered borrow from its entry.
+            entry.facets.close(pl_protocol::thread_facets::identity::FeedClosedReason::OwnerReplaced);
+        }
+    }
+
+    fn release_cold_lease(&self, lease: &ThreadFacetLease) {
+        let retired = {
+        let mut entries = self.0.cold.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let remove = match entries.get_mut(&lease.thread_id) {
+                Some(entry) if Arc::ptr_eq(&entry.facets, &lease.facets) => {
+                    // A stored entry always has at least one registered lease. Removal, rather
+                    // than publishing zero, linearizes against every new Cold acquisition.
+                    match NonZeroU64::new(entry.borrows.get() - 1) {
+                        Some(remaining) => { entry.borrows = remaining; false }
+                        None => true,
+        }
+                }
+                Some(_) | None => false,
+            };
+            if remove { entries.remove(&lease.thread_id).map(|entry| entry.facets) } else { None }
+        };
+        if let Some(facets) = retired {
+            // Close only the removed generation, outside the registry lock. A new incarnation
+            // may already be registered; neither its lease count nor its source is touched here.
+            facets.close(pl_protocol::thread_facets::identity::FeedClosedReason::Requested);
+        }
     }
 
     pub(super) fn install(
@@ -269,7 +415,7 @@ impl ThreadObservations {
                         .ok_or(crate::thread_assembler::ThreadAssemblyError::Closed)?;
                     let observations = ThreadObservations(owner);
                     observations
-                        .synchronize(Some(&id))
+                        .drain(&id)
                         .await
                         .map_err(|source| {
                             crate::thread_assembler::ThreadAssemblyError::Resource {
@@ -278,7 +424,6 @@ impl ThreadObservations {
                             }
                         })?;
                     thread_factory.forget_tool_binding(&id);
-                    observations.drain(&id);
                     Ok(())
                 })
             },
@@ -346,19 +491,39 @@ impl ThreadObservations {
     /// registry released the owner would keep every session that was ever activated resident. The
     /// entry is removed once its final projection is durable, so a later re-activation installs a
     /// fresh observation instead of reusing the released handle.
-    fn drain(&self, id: &str) {
+    async fn drain(&self, id: &str) -> Result<()> {
+        let entries = self.observations(Some(id));
+        self.synchronize_entries(&entries).await?;
+        for (_, observation) in &entries {
+            observation.task.join().await.context("Thread product observer join failed")?;
+            if let Ok(facets) = &observation.feed.facets {
+                facets.close(pl_protocol::thread_facets::identity::FeedClosedReason::OwnerReplaced);
+                if !facets.reads.close().await.is_empty() {
+                    bail!("Thread detail scopes failed to join during observation drain");
+            }
+            }
+        }
         let mut all = self
             .0
             .observations
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let empty = if let Some(current) = all.get_mut(id) {
+            current.retain(|current| !entries.iter().any(|(_, drained)| Arc::ptr_eq(current, drained)));
+            current.is_empty()
+        } else {
+            false
+        };
+        if empty {
         all.remove(id);
+            }
         drop(all);
-        self.0
-            .live
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .remove(id);
+        let mut live = self.0.live.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if live.get(id).is_some_and(|current|
+            entries.iter().any(|(_, drained)| Arc::ptr_eq(current, &drained.feed))) {
+            live.remove(id);
+        }
+        Ok(())
     }
 
     fn observe(&self, id: String, thread: ThreadHandle) {
@@ -393,31 +558,45 @@ impl ThreadObservations {
             .iter()
             .find(|detail| detail.thread_id == id)
             .map(|detail| storage_state(&thread.snapshot(), detail));
-        let feed = Arc::new(ThreadLiveFeed::new(initial_storage));
-        self.0
+        let feed = Arc::new(ThreadLiveFeed::new(initial_storage, &self.0.projector.observation_ids,
+            pl_protocol::thread_facets::identity::ThreadObservationMode::Live, &self.0.reads, &id));
+        let previous = self.0
             .live
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .insert(id.clone(), feed.clone());
+        if let Some(previous) = previous && let Ok(facets) = &previous.facets {
+            facets.close(pl_protocol::thread_facets::identity::FeedClosedReason::OwnerReplaced);
+        }
         let worker_state = state.clone();
         let projector = self.0.projector.clone();
         let worker_thread = thread.clone();
         let worker_id = id.clone();
+        let worker_feed = feed.clone();
         let task = tokio::spawn(async move {
-            run(
+            use futures::FutureExt;
+            let failure_feed = worker_feed.clone();
+            let result = std::panic::AssertUnwindSafe(run(
                 projector,
                 worker_id,
                 worker_thread,
                 worker_state,
                 recovered_through,
-                feed,
-            )
-            .await;
+                worker_feed,
+            )).catch_unwind().await;
+            if let Err(panic) = result {
+                if let Ok(facets) = &failure_feed.facets {
+                    facets.metrics.fail(pl_protocol::studio::StudioError::internal());
+                }
+                // Publish the facet's failure, but preserve the real failed join for drain/exit.
+                std::panic::resume_unwind(panic);
+            }
         });
         let observation = Arc::new(Observation {
             thread,
             state,
-            task: Mutex::new(Some(task)),
+            feed,
+            task: BackgroundTask::new(task),
         });
         let mut all = self
             .0
@@ -427,14 +606,18 @@ impl ThreadObservations {
         let previous = all.entry(id).or_default();
         previous.retain(|entry| {
             let progress = entry.state.progress.borrow();
-            !progress.finished || progress.error.is_some()
+            !progress.finished || progress.error.is_some() || !entry.task.succeeded()
         });
         previous.push(observation);
     }
 
     async fn synchronize(&self, id: Option<&str>) -> Result<()> {
-        self.0.projector.writer.retry_now();
-        let observations: Vec<_> = self
+        let observations = self.observations(id);
+        self.synchronize_entries(&observations).await
+    }
+
+    fn observations(&self, id: Option<&str>) -> Vec<(String, Arc<Observation>)> {
+        self
             .0
             .observations
             .lock()
@@ -442,7 +625,11 @@ impl ThreadObservations {
             .iter()
             .filter(|(key, _)| id.is_none_or(|id| id == key.as_str()))
             .flat_map(|(id, entries)| entries.iter().map(|entry| (id.clone(), entry.clone())))
-            .collect();
+            .collect()
+    }
+
+    async fn synchronize_entries(&self, observations: &[(String, Arc<Observation>)]) -> Result<()> {
+        self.0.projector.writer.retry_now();
         for (id, observation) in observations {
             let target_snapshot = observation.thread.snapshot();
             let target = target_snapshot.commit_sequence;
@@ -467,10 +654,25 @@ impl ThreadObservations {
                 if state.finished {
                     bail!("Thread {id} product observer ended before commit {target}");
                 }
-                progress
-                    .changed()
-                    .await
-                    .context("Thread product observer progress closed")?;
+                // Observation retains this watch's sender even after an outer worker panic.
+                // The original retained join is therefore an independent wake/termination source.
+                tokio::select! {
+                    biased;
+                    result = observation.task.join() => {
+                        result.context("Thread product observer join failed while synchronizing")?;
+                        let final_state = progress.borrow().clone();
+                        if let Some(error) = final_state.error {
+                            bail!("Thread {id} product observation failed: {error:#}");
+                        }
+                        if !final_state.finished || !final_state.initialized || final_state.applied < target {
+                            bail!("Thread {id} product observer ended before final commit {target}");
+                        }
+                        break final_state.handoff;
+                    }
+                    result = progress.changed() => {
+                        result.context("Thread product observer progress closed")?;
+                    }
+                }
             };
             // A settled observation is also durable. Observation no longer flushes history per batch,
             // so this barrier is what keeps "the observer applied commit N" meaning "history holds
@@ -479,7 +681,7 @@ impl ThreadObservations {
             // projection had reached when it applied `target` — every commit up to `target` it owns —
             // so it neither waits on the owner's command queue nor on a later, unprojected commit, and
             // it never asks for a watermark a channel created by a re-activation cannot move.
-            await_history_durable(&observation.state.channel, &id, durable_through)
+            await_history_durable(&observation.state.channel, id, durable_through)
                 .await
                 .with_context(|| format!("Thread {id} product observation barrier"))?;
         }
@@ -547,6 +749,22 @@ impl ThreadObservations {
     }
 
     pub(super) async fn finish(&self) -> Result<()> {
+        // Cold has no writer/worker dependency. Seal its original entries before any await, even
+        // when a Live observation subsequently fails its own durable/join barrier.
+        let cold: Vec<_> = self.0.cold.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+            .values().map(|entry| entry.facets.clone()).collect();
+        for facets in cold {
+            facets.close(pl_protocol::thread_facets::identity::FeedClosedReason::RuntimeStopped);
+        }
+        // Read scopes and the observation writer are independent owners. A worker error must not
+        // prevent already admitted detail queries from receiving cancellation and being joined.
+        let (observations, issues) = futures::join!(self.finish_observers(), self.0.reads.close());
+        observations?;
+        if !issues.is_empty() { bail!("Thread detail scopes did not join successfully"); }
+        Ok(())
+    }
+
+    async fn finish_observers(&self) -> Result<()> {
         self.synchronize(None).await?;
         let observations: Vec<_> = self
             .0
@@ -567,18 +785,35 @@ impl ThreadObservations {
                 if state.finished {
                     break;
                 }
-                progress
-                    .changed()
-                    .await
-                    .context("Thread product observer ended without final state")?;
+                tokio::select! {
+                    biased;
+                    result = observation.task.join() => {
+                        result.context("Thread product observer join failed while finishing")?;
+                        let final_state = progress.borrow().clone();
+                        if let Some(error) = final_state.error {
+                            bail!("Thread product observer failed: {error:#}");
+                        }
+                        if !final_state.finished {
+                            bail!("Thread product observer ended without final state");
+                        }
+                        break;
+                    }
+                    result = progress.changed() => {
+                        result.context("Thread product observer ended without final state")?;
+                    }
+                }
             }
-            let task = observation
-                .task
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .take();
-            if let Some(task) = task {
-                task.await.context("Thread product observer join failed")?;
+            observation.task.join().await.context("Thread product observer join failed")?;
+            if let Ok(facets) = &observation.feed.facets {
+                facets.close(pl_protocol::thread_facets::identity::FeedClosedReason::RuntimeStopped);
+            }
+        }
+        // Close any remaining published Live entries after their observation completion.
+        let entries: Vec<_> = self.0.live.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+            .values().cloned().collect();
+        for entry in entries {
+            if let Ok(facets) = &entry.facets {
+                facets.close(pl_protocol::thread_facets::identity::FeedClosedReason::RuntimeStopped);
             }
         }
         Ok(())
@@ -635,6 +870,9 @@ impl LiveOwner {
         let id = thread.id.as_str();
         let chat = projector.store.chat_session(id).await?;
         let usage = live_usage(projector, id, snapshot);
+        if let Ok(facets) = &feed.facets {
+            facets.metrics.observe(snapshot, &usage);
+        }
         // The one cold read of a projection: the durable facts of work that already started before
         // this owner existed. Everything the commit and preview paths resolve afterwards comes from
         // these tables, so a re-activated Thread never waits on a history reader mid-Turn.
@@ -851,6 +1089,9 @@ impl LiveOwner {
     /// The preview is written into the shared session — the one content window — and emits no
     /// content frame; current activity and runtime facts are published separately.
     async fn stream(&mut self, snapshot: &ThreadSnapshot) -> Result<()> {
+        if let Ok(facets) = &self.feed.facets {
+            facets.metrics.observe(snapshot, &self.usage);
+        }
         self.projection
             .stream(&self.chat, &self.thread, snapshot, snapshot.commit_sequence)
             .await
@@ -1152,11 +1393,26 @@ async fn run(
             .cloned();
         // The projection stays isolated behind `catch_unwind`, so a panicking projection is
         // still reported as an error instead of taking down the observation worker.
-        let result =
+        let result = match
             std::panic::AssertUnwindSafe(worker.project(&current, products, detail.as_ref()))
                 .catch_unwind()
                 .await
-                .unwrap_or_else(|_| Err(anyhow::anyhow!("Thread product projection panicked")));
+        {
+            Ok(result) => result,
+            Err(_) => {
+                worker.feed.rebase(0);
+                if let Ok(facets) = &worker.feed.facets {
+                    facets.metrics.fail(pl_protocol::studio::StudioError::internal());
+                }
+                worker.state.progress.send_modify(|progress| {
+                    progress.error = Some(Arc::new(anyhow::anyhow!("Thread product projection panicked")));
+                    progress.finished = true;
+                });
+                // A partially panicked projection is terminal. Never replay its producer to
+                // disguise the failure as a cleanup retry.
+                return;
+            }
+        };
         match result {
             Ok(()) => {
                 if products {

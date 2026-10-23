@@ -136,7 +136,7 @@ fn prepare_resolution(
     )?;
     Ok(CoreResolution {
         id: record.request.id.clone(),
-        expected_revision: record.revision,
+        expected_revision: resolution.expected_revision,
         mutations: Vec::new(),
         response: InteractionResponse {
             payload,
@@ -181,7 +181,8 @@ impl StudioThreadAssembler {
             .ok_or(UserInteractionError::Identity)?;
         if let InteractionState::Resolved(saved) = &current.state {
             let answer: UserInputResolution = decode(&saved.payload, "pl.studio.user-answer")?;
-            if resolution.expected_revision.checked_add(1) == Some(current.revision)
+            if (resolution.expected_revision == current.revision
+                || resolution.expected_revision.checked_add(1) == Some(current.revision))
                 && answer.answers == resolution.answers
             {
                 return project_user_input(&thread_id, current);

@@ -216,12 +216,31 @@ struct PreparedThreadMode {
     workflow: Option<Arc<CompiledWorkflowDefinition>>,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 struct ThreadModeManagerState {
     revision: u64,
     next_graph_revision: u64,
+    updates: tokio::sync::watch::Sender<u64>,
     sources: BTreeMap<ThreadModeSourceId, SourceRegistration>,
     snapshot: Arc<ThreadModeRegistrySnapshot>,
+}
+
+impl Default for ThreadModeManagerState {
+    fn default() -> Self {
+        let (updates, _) = tokio::sync::watch::channel(0);
+        Self {
+            revision: 0,
+            next_graph_revision: 0,
+            sources: BTreeMap::new(),
+            snapshot: Default::default(),
+            updates,
+        }
+    }
+}
+
+pub(crate) struct ModeRegistryObservation {
+    pub current: Arc<ThreadModeRegistrySnapshot>,
+    pub updates: tokio::sync::watch::Receiver<u64>,
 }
 
 #[derive(Debug, Clone)]
@@ -237,6 +256,14 @@ pub struct ThreadModeManager {
 }
 
 impl ThreadModeManager {
+    /// Registers retained revision notification and its immutable baseline atomically.
+    pub(crate) fn observe_registry(&self) -> ModeRegistryObservation {
+        let state = self.state.read().unwrap_or_else(std::sync::PoisonError::into_inner);
+        ModeRegistryObservation {
+            current: state.snapshot.clone(),
+            updates: state.updates.subscribe(),
+        }
+    }
     /// 原子替换某一来源的全部 Mode。
     ///
     /// 所有定义先在锁外校验和编译；任一失败时，已发布快照不发生变化。
@@ -444,4 +471,5 @@ fn publish(state: &mut ThreadModeManagerState) {
             modes: descriptors,
         },
     });
+    state.updates.send_replace(state.revision);
 }

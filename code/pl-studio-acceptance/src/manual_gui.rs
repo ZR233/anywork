@@ -2048,6 +2048,10 @@ fn run_timeline_history_scenario(
             "failed to initialize isolated timeline-history project"
         );
         for phase in ["live", "restart"] {
+            // Register before starting work: failures before VM readiness or the
+            // Driver verdict still need this phase's original diagnostics.
+            let phase_index = phases.len();
+            phases.push((phase, None, None));
             let gui_log = working.join(format!("timeline-history-{phase}-gui.log"));
             let stage = working.join(format!("timeline-history-{phase}-stage"));
             let driver_log = working.join(format!("timeline-history-{phase}-driver.log"));
@@ -2057,7 +2061,20 @@ fn run_timeline_history_scenario(
                 &gui_log,
                 &output.join(format!("timeline-history-{phase}-native-exit.json")),
             )?;
-            let vm_url = wait_for_vm(&gui_log, &mut gui, &mut fixture, interrupt)?;
+            let vm_url =
+                wait_for_vm(&gui_log, &mut gui, &mut fixture, interrupt).map_err(|error| {
+                    // try_wait retains a previously observed status. Do not mark
+                    // stopped: Drop must still reclaim any surviving descendants.
+                    match gui.child.try_wait() {
+                        Ok(status) => {
+                            phases[phase_index].2 = status;
+                            error
+                        }
+                        Err(observe) => {
+                            error.context(format!("also failed to observe GUI exit: {observe}"))
+                        }
+                    }
+                })?;
             let mut driver = start_timeline_history_driver(
                 app_dir,
                 home,
@@ -2075,11 +2092,13 @@ fn run_timeline_history_scenario(
                 interrupt,
                 phase,
             )?;
+            phases[phase_index].1 = Some(driver_exit);
             ensure!(
                 driver_exit.success(),
                 "timeline-history {phase} Driver failed: {driver_exit}"
             );
             let gui_exit = wait_for_gui_exit(&mut gui, Duration::from_secs(120), phase)?;
+            phases[phase_index].2 = Some(gui_exit);
             ensure!(
                 gui_exit.success(),
                 "timeline-history {phase} GUI did not exit cleanly: {gui_exit}"
@@ -2289,9 +2308,10 @@ fn run_timeline_history_scenario(
                     "timeline-history cold start mislabels auto-opened vs selected: {restore:?}"
                 );
             }
-            phases.push((phase, Some(driver_exit), Some(gui_exit)));
         }
         if *run_displacement {
+            let phase_index = phases.len();
+            phases.push(("displacement", None, None));
             let gui_log = working.join("timeline-history-displacement-gui.log");
             let driver_log = working.join("timeline-history-displacement-driver.log");
             let stage = working.join("timeline-history-displacement-stage");
@@ -2301,7 +2321,17 @@ fn run_timeline_history_scenario(
                 &gui_log,
                 &output.join("timeline-history-displacement-native-exit.json"),
             )?;
-            let vm_url = wait_for_vm(&gui_log, &mut gui, &mut fixture, interrupt)?;
+            let vm_url = wait_for_vm(&gui_log, &mut gui, &mut fixture, interrupt).map_err(
+                |error| match gui.child.try_wait() {
+                    Ok(status) => {
+                        phases[phase_index].2 = status;
+                        error
+                    }
+                    Err(observe) => {
+                        error.context(format!("also failed to observe GUI exit: {observe}"))
+                    }
+                },
+            )?;
             let target = persisted_identity.as_ref().context(
                 "native displacement requires the live timeline-history persisted identity",
             )?;
@@ -2319,16 +2349,18 @@ fn run_timeline_history_scenario(
                 .stderr(Stdio::from(File::create(stage.with_extension("err"))?));
             let mut driver = OwnedProcess::start(&mut command, false)?;
             let deadline = Instant::now() + Duration::from_secs(3_600);
-            let driver_exit = loop {
+            loop {
                 if let Some(status) = driver.child.try_wait()? {
                     driver.stopped = true;
+                    phases[phase_index].1 = Some(status);
                     ensure!(
                         status.success(),
                         "native displacement collector failed: {status}"
                     );
-                    break status;
+                    break;
                 }
-                if gui.exited()? {
+                if let Some(status) = gui.child.try_wait()? {
+                    phases[phase_index].2 = Some(status);
                     // After the completed cleanup ACK the Driver requests the
                     // native exit. OS exit can precede the Driver socket closing;
                     // both real exit statuses are still required below.
@@ -2353,8 +2385,9 @@ fn run_timeline_history_scenario(
                     "displacement collection timed out"
                 );
                 thread::sleep(Duration::from_millis(100));
-            };
+            }
             let gui_exit = wait_for_gui_exit(&mut gui, Duration::from_secs(120), "displacement")?;
+            phases[phase_index].2 = Some(gui_exit);
             ensure!(
                 gui_exit.success(),
                 "displacement GUI did not exit cleanly: {gui_exit}"
@@ -2463,73 +2496,110 @@ fn run_timeline_history_scenario(
                 output.join("observations.json"),
                 output.join("timeline-displacement.json"),
             )?;
-            phases.push(("displacement", Some(driver_exit), Some(gui_exit)));
         }
         Ok(())
     })();
 
-    for (phase, driver_exit, gui_exit) in &phases {
-        for (source, suffix) in [
-            (
-                working.join(format!("timeline-history-{phase}-gui.log")),
-                "gui.log",
-            ),
-            (
-                working.join(format!("timeline-history-{phase}-driver.log")),
-                "driver.log",
-            ),
-        ] {
-            if source.is_file() {
-                let destination = output.join(format!("timeline-history-{phase}-{suffix}"));
-                write_sanitized_log(&source, &destination)?;
-            }
-        }
-        fs::write(
-            output.join(format!("timeline-history-{phase}-exit.json")),
-            serde_json::to_vec_pretty(&serde_json::json!({
-                "phase": phase,
-                "driverExit": driver_exit.map(|status| status.code()),
-                "guiExit": gui_exit.map(|status| status.code()),
-            }))?,
-        )?;
-    }
-    let stage = working.join("timeline-history-live-stage");
-    if stage.is_file() {
-        fs::copy(&stage, output.join("timeline-history-stage.txt"))?;
-    }
+    // Reclaim the fixture even if evidence I/O fails. Keep the original journey
+    // failure alongside an archival failure rather than replacing it with `?`.
     let fixture_result = fixture.stop(requests_file);
     drop(fixture);
-    write_fixture_log(fixture_log, &output.join("fixture.log"))?;
-    let requests = if requests_file.is_file() {
-        sanitize_requests(requests_file, &output.join("requests.json"))?;
-        serde_json::from_slice::<Vec<serde_json::Value>>(&fs::read(requests_file)?)?
-    } else {
-        Vec::new()
+    let evidence = (|| -> Result<_> {
+        let redactions = [
+            (project.to_string_lossy().into_owned(), "<project>"),
+            (home.to_string_lossy().into_owned(), "<home>"),
+            (working.to_string_lossy().into_owned(), "<coord>"),
+            (output.to_string_lossy().into_owned(), "<evidence>"),
+            (app_dir.to_string_lossy().into_owned(), "<app>"),
+            (workspace.to_string_lossy().into_owned(), "<workspace>"),
+        ];
+        for (phase, driver_exit, gui_exit) in &phases {
+            let stem = format!("timeline-history-{phase}");
+            for (source, kind, exit) in [
+                (
+                    working.join(format!("timeline-history-{phase}-gui.log")),
+                    "gui",
+                    *gui_exit,
+                ),
+                (
+                    working.join(format!("timeline-history-{phase}-driver.log")),
+                    "driver",
+                    *driver_exit,
+                ),
+                (
+                    working
+                        .join(format!("timeline-history-{phase}-stage"))
+                        .with_extension("err"),
+                    "driver.err",
+                    *driver_exit,
+                ),
+            ] {
+                if source.is_file() {
+                    write_process_evidence(
+                        &source,
+                        output,
+                        &stem,
+                        kind,
+                        exit,
+                        journey.as_ref().err(),
+                        &redactions,
+                    )?;
+                }
+            }
+            fs::write(
+                output.join(format!("timeline-history-{phase}-exit.json")),
+                serde_json::to_vec_pretty(&serde_json::json!({
+                    "phase": phase,
+                    "driverExit": driver_exit.map(|status| status.code()),
+                    "guiExit": gui_exit.map(|status| status.code()),
+                    "driverStatus": driver_exit.map(|status| status.to_string()),
+                    "guiStatus": gui_exit.map(|status| status.to_string()),
+                }))?,
+            )?;
+        }
+        let stage = working.join("timeline-history-live-stage");
+        if stage.is_file() {
+            fs::copy(&stage, output.join("timeline-history-stage.txt"))?;
+        }
+        write_fixture_log(fixture_log, &output.join("fixture.log"))?;
+        let requests = if requests_file.is_file() {
+            sanitize_requests(requests_file, &output.join("requests.json"))?;
+            serde_json::from_slice::<Vec<serde_json::Value>>(&fs::read(requests_file)?)?
+        } else {
+            Vec::new()
+        };
+        let accepted = requests
+            .iter()
+            .filter(|row| row["accepted"] == true)
+            .count();
+        let rejected = requests
+            .iter()
+            .filter(|row| row["accepted"] == false)
+            .count();
+        let live_status: Option<pl_provider_fixture::FixtureLiveStatus> = if status_file.is_file() {
+            Some(serde_json::from_slice(&fs::read(status_file)?)?)
+        } else {
+            None
+        };
+        fs::write(
+            output.join("fixture-status.json"),
+            serde_json::to_vec_pretty(&serde_json::json!({
+                "scenario": "timeline-history",
+                "acceptedRequests": accepted,
+                "rejectedRequests": rejected,
+                "completed": fixture_result.as_ref().is_ok_and(|status| status.success()),
+                "requiredStepsConsumed": live_status.map(|status| status.remaining_optional),
+            }))?,
+        )?;
+        Ok((accepted, rejected, live_status))
+    })();
+    let (accepted, rejected, live_status) = match (journey, evidence) {
+        (Err(journey), Err(evidence)) => {
+            return Err(journey.context(format!("also failed to archive evidence: {evidence:#}")));
+        }
+        (Err(journey), Ok(_)) => return Err(journey),
+        (Ok(()), evidence) => evidence?,
     };
-    let accepted = requests
-        .iter()
-        .filter(|row| row["accepted"] == true)
-        .count();
-    let rejected = requests
-        .iter()
-        .filter(|row| row["accepted"] == false)
-        .count();
-    let live_status: Option<pl_provider_fixture::FixtureLiveStatus> = if status_file.is_file() {
-        Some(serde_json::from_slice(&fs::read(status_file)?)?)
-    } else {
-        None
-    };
-    fs::write(
-        output.join("fixture-status.json"),
-        serde_json::to_vec_pretty(&serde_json::json!({
-            "scenario": "timeline-history",
-            "acceptedRequests": accepted,
-            "rejectedRequests": rejected,
-            "completed": fixture_result.as_ref().is_ok_and(|status| status.success()),
-            "requiredStepsConsumed": live_status.map(|status| status.remaining_optional),
-        }))?,
-    )?;
-    journey?;
     ensure!(
         rejected == 0,
         "timeline-history fixture rejected {rejected} account request(s)"
@@ -3920,10 +3990,11 @@ fn run_realtime_scenario(context: &RealtimeScenario<'_>, mut fixture: OwnedProce
     // removed with the run: persist a sanitized copy plus an error digest before
     // it disappears, so a Dart compile error or connection failure is always
     // reviewable and never leaves an empty error file.
-    write_realtime_driver_evidence(
+    write_process_evidence(
         &stage.with_extension("driver.log"),
         output,
         "realtime",
+        "driver",
         driver_exit,
         journey.as_ref().err(),
         &[
@@ -4077,10 +4148,11 @@ fn run_stress_body_scenario(
     if gui_log_path.is_file() {
         write_sanitized_log(&gui_log_path, &output.join("stress-body-gui.log"))?;
     }
-    write_realtime_driver_evidence(
+    write_process_evidence(
         &stage.with_extension("driver.log"),
         output,
         context.scenario,
+        "driver",
         driver_exit,
         journey.as_ref().err(),
         &[
@@ -4475,10 +4547,11 @@ fn run_history_lock_scenario(
     if gui_log_path.is_file() {
         write_sanitized_log(&gui_log_path, &output.join("history-lock-gui.log"))?;
     }
-    write_realtime_driver_evidence(
+    write_process_evidence(
         &stage.with_extension("driver.log"),
         output,
         "history-lock",
+        "driver",
         driver_exit,
         journey.as_ref().err(),
         &[
@@ -4813,10 +4886,11 @@ fn run_history_fault_scenario(
     if gui_log_path.is_file() {
         write_sanitized_log(&gui_log_path, &output.join("history-fault-gui.log"))?;
     }
-    write_realtime_driver_evidence(
+    write_process_evidence(
         &stage.with_extension("driver.log"),
         output,
         "history-fault",
+        "driver",
         driver_exit,
         journey.as_ref().err(),
         &[
@@ -5201,10 +5275,11 @@ fn run_plan_recovery_scenario(
     ];
     for phase in ["first", "restart", "recheck"] {
         let driver_log = working.join(format!("plan-recovery-{phase}-driver.log"));
-        write_realtime_driver_evidence(
+        write_process_evidence(
             &driver_log,
             output,
             &format!("plan-recovery-{phase}"),
+            "driver",
             driver_exits.get(phase).cloned().flatten(),
             journey.as_ref().err(),
             &redactions,
@@ -6038,28 +6113,29 @@ fn write_sanitized_log(source: &Path, destination: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Persists the Flutter Driver log and an error digest as reviewable evidence.
+/// Persists a GUI or Driver log and an error digest as reviewable evidence.
 ///
 /// The source log lives under the isolated coordination directory that is
 /// removed with the run, so both files are written here. The full log is
 /// sanitized line by line; the digest always records the exit code and the
 /// journey error and never ends up empty when the log has content.
-fn write_realtime_driver_evidence(
-    driver_log: &Path,
+fn write_process_evidence(
+    log: &Path,
     output: &Path,
     stem: &str,
+    kind: &str,
     exit: Option<std::process::ExitStatus>,
     journey_error: Option<&anyhow::Error>,
     redactions: &[(String, &str)],
 ) -> Result<()> {
-    let sanitized = if driver_log.is_file() {
-        let raw = fs::read_to_string(driver_log)?;
+    let sanitized = if log.is_file() {
+        let raw = fs::read_to_string(log)?;
         let mut sanitized = String::new();
         for line in raw.lines() {
             sanitized.push_str(&sanitize_driver_line(line, redactions));
             sanitized.push('\n');
         }
-        fs::write(output.join(format!("{stem}-driver.log")), &sanitized)?;
+        fs::write(output.join(format!("{stem}-{kind}.log")), &sanitized)?;
         sanitized
     } else {
         String::new()
@@ -6067,8 +6143,8 @@ fn write_realtime_driver_evidence(
 
     let mut digest = String::new();
     match exit {
-        Some(status) => digest.push_str(&format!("driver_exit={status}\n")),
-        None => digest.push_str("driver_exit=unknown (no exit status observed)\n"),
+        Some(status) => digest.push_str(&format!("{kind}_exit={status}\n")),
+        None => digest.push_str(&format!("{kind}_exit=unknown (no exit status observed)\n")),
     }
     if let Some(error) = journey_error {
         digest.push_str(&format!(
@@ -6085,7 +6161,7 @@ fn write_realtime_driver_evidence(
         }
     }
     if !wrote_diagnostic {
-        digest.push_str("driver_log_tail:\n");
+        digest.push_str(&format!("{kind}_log_tail:\n"));
         let mut tail: Vec<&str> = sanitized.lines().rev().take(40).collect();
         tail.reverse();
         for line in tail {
@@ -6093,7 +6169,7 @@ fn write_realtime_driver_evidence(
             digest.push('\n');
         }
     }
-    fs::write(output.join(format!("{stem}-driver-errors.txt")), digest)?;
+    fs::write(output.join(format!("{stem}-{kind}-errors.txt")), digest)?;
     Ok(())
 }
 

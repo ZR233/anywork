@@ -153,10 +153,19 @@ SourceStateError/其Read形式由D0 resources定义一次，保持原三字段�
 StudioFailure降级别名。StudioShutdownIssue同生命周期合同同一类型，不复制第二定义。
 时间余量是毫秒非Unix时间；pending count是原可靠保存工作数，不用Dart队列长度替换。
 
-U3协调器的root-only能力固定为
-`exit(ExitIntent intent)->Future<StudioExitReport>`。首次调用冻结原intent和native宿主已武装的
+U3协调器保留两个职责明确的root-only能力：
+`exit(ExitIntent intent)->Future<StudioExitReport>`收束并返回typed报告；
+`requestHostExit(ExitIntent intent)->Future<void>`复用同一exit责任，再在原期限内结束宿主。
+后者不是第二finalizer，也不重新初始化、选择退出意图或起计时。
+首次调用冻结原intent和native宿主已武装的
 30s绝对deadline，重复调用等待同一退出责任，不续期/替换intent。native清理上限28s，诊断
 预留2s；remainingMs始终来自原native宿主剩余时间，不从Dart调用时重新起30秒计时。
+
+生产窗口关闭、托盘退出、系统退出、更新后重启及Driver真正退出请求统一调用
+requestHostExit；不能只await exit后把进程留到watchdog超时。exit只供协调器内部及明确需要
+读取typed收束结果的受控测试/诊断使用，不作为用户退出按钮入口。Driver需要先回复请求时，
+仍调度同一requestHostExit，不新建退出owner；有意只观察exit报告的测试必须自行履行其
+已明确的宿主结束/隔离资源回收责任，不能把报告返回当进程退出。
 
 退出顺序与边界：
 

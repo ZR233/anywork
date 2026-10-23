@@ -1,8 +1,8 @@
 {
   "schemaVersion": 2,
-  "baseline": "b3f22b8f651816851852582a10a970fe25af3ae6",
+  "baseline": "d3bc74189b81dd8ad50ce71caa8aaaef4e3db525",
   "tree": "committed",
-  "sourceContentHash": "sha256:3d704695398df730403932bd5d109eaac7a86d9c05d1daed9c48ed37fa52a27f",
+  "sourceContentHash": "sha256:8bf9455a097da74863fda1bbfb35c22d3ea3b9f26f12f02d47804c598e0702a8",
   "classification": {
     "dartProduction": "lib/**/*.dart excluding generated sources",
     "dartGenerated": ".g.dart/.freezed.dart, app lib/src/rust/, app_localizations*",
@@ -23,18 +23,18 @@
   "totals": {
     "app.driver": {
       "files": 66,
-      "physicalLines": 35270,
-      "nonBlankLines": 33403
+      "physicalLines": 35273,
+      "nonBlankLines": 33406
     },
     "app.generated": {
       "files": 85,
-      "physicalLines": 118535,
-      "nonBlankLines": 96272
+      "physicalLines": 118583,
+      "nonBlankLines": 96319
     },
     "app.production": {
       "files": 206,
-      "physicalLines": 61689,
-      "nonBlankLines": 57833
+      "physicalLines": 61768,
+      "nonBlankLines": 57907
     },
     "app.test": {
       "files": 32,
@@ -43,34 +43,34 @@
     },
     "client.production": {
       "files": 87,
-      "physicalLines": 23299,
-      "nonBlankLines": 20948
+      "physicalLines": 23327,
+      "nonBlankLines": 20974
     },
     "client.test": {
-      "files": 21,
-      "physicalLines": 8968,
-      "nonBlankLines": 8480
+      "files": 22,
+      "physicalLines": 9053,
+      "nonBlankLines": 8559
     },
     "rust.generated": {
       "files": 1,
-      "physicalLines": 33315,
-      "nonBlankLines": 32273
+      "physicalLines": 33361,
+      "nonBlankLines": 32319
     },
     "rust.handwritten_source": {
       "files": 474,
-      "physicalLines": 112075,
-      "nonBlankLines": 105327
+      "physicalLines": 112296,
+      "nonBlankLines": 105541
     }
   },
   "handwrittenFilesOver500": {
-    "app.production": 42,
+    "app.production": 43,
     "client.production": 14,
-    "rust.handwritten_source": 49
+    "rust.handwritten_source": 50
   },
   "largestHandwrittenFiles": [
     {
       "path": "code/anywork/lib/src/infrastructure/frb/studio_demo_api.dart",
-      "lines": 6067
+      "lines": 6071
     },
     {
       "path": "code/pl-studio-runtime/src/studio/storage/history.rs",
@@ -85,12 +85,12 @@
       "lines": 2422
     },
     {
-      "path": "code/anywork_client/lib/src/models/thread_models.dart",
-      "lines": 2338
+      "path": "code/anywork/lib/src/infrastructure/frb/studio_api_contract.dart",
+      "lines": 2340
     },
     {
-      "path": "code/anywork/lib/src/infrastructure/frb/studio_api_contract.dart",
-      "lines": 2326
+      "path": "code/anywork_client/lib/src/models/thread_models.dart",
+      "lines": 2338
     },
     {
       "path": "code/pl-studio-runtime/src/studio/runtime/thread_observation.rs",
@@ -153,7 +153,7 @@
     {
       "entry": "code/anywork/lib/src/infrastructure/frb/studio_api.dart",
       "handwrittenParts": 10,
-      "physicalLines": 12464,
+      "physicalLines": 12482,
       "parts": [
         "code/anywork/lib/src/infrastructure/frb/studio_account_catalog_converters.dart",
         "code/anywork/lib/src/infrastructure/frb/studio_api_contract.dart",

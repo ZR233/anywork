@@ -80,7 +80,8 @@ pub async fn start_new_thread(
             receipt: SubmitPromptResponse {
                 thread_id: response.submission.thread_id,
                 input_id: response.submission.input_id,
-                revision: response.submission.cursor,
+                cursor: response.submission.cursor,
+                request_digest: response.submission.request_digest,
             },
         })
     }

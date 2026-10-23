@@ -3,8 +3,7 @@ use crate::api::studio::convert::commands::command_receipt;
 use crate::api::studio::convert::thread_stream::bridge_interaction;
 use crate::api::studio::types::{
     BridgeError, BridgeInteractionCommandReply, BridgeInteractionResolution,
-    BridgeInterruptTurnCommandReply, BridgeStudioPromptInput, BridgeToolApprovalResolution,
-    SubmitPromptResponse,
+    BridgeInterruptTurnCommandReply, BridgeToolApprovalResolution,
 };
 use pl_protocol::{
     InteractionResolution, ToolApprovalResolution, ToolApprovalResolutionPayload, UserInputAnswer,
@@ -13,27 +12,23 @@ use pl_protocol::{
 use std::collections::HashMap;
 // ── Prompt / Interaction ──
 
-pub async fn submit_prompt(
+pub async fn read_input_acceptance(
     thread_id: String,
-    input: BridgeStudioPromptInput,
-    expected_model_route_revision: u64,
-) -> Result<SubmitPromptResponse, BridgeError> {
+    input_id: String,
+) -> Result<Option<crate::api::studio::types::BridgeInputAcceptanceEvidence>, BridgeError> {
+    use crate::api::studio::types::{BridgeInputAcceptanceEvidence, BridgePersistedInputDisposition};
+    use pl_protocol::studio::PersistedInputDisposition;
     let bridge = active_bridge().await?;
-    let response = bridge
-        .studio
-        .submit_prompt_command(
-            thread_id,
-            pl_protocol::studio::SubmitPromptRequest {
-                input: input.into(),
-                expected_model_route_revision,
+    Ok(bridge.studio.read_input_acceptance(thread_id, input_id).await?.map(|evidence| {
+        BridgeInputAcceptanceEvidence {
+            accepted_sequence: evidence.accepted_sequence,
+            request_digest: evidence.request_digest,
+            disposition: match evidence.disposition {
+                PersistedInputDisposition::Consumed => BridgePersistedInputDisposition::Consumed,
+                PersistedInputDisposition::Discarded => BridgePersistedInputDisposition::Discarded,
             },
-        )
-        .await?;
-    Ok(SubmitPromptResponse {
-        thread_id: response.thread_id,
-        input_id: response.input_id,
-        revision: response.cursor,
-    })
+        }
+    }))
 }
 
 pub async fn interrupt_turn(
@@ -57,13 +52,19 @@ pub async fn interrupt_turn(
 pub async fn respond_interaction(
     operation_id: String,
     interaction_id: String,
+    expected_interaction_revision: u64,
     resolution: BridgeInteractionResolution,
 ) -> Result<BridgeInteractionCommandReply, BridgeError> {
     let bridge = active_bridge().await?;
     let resolution = interaction_resolution(resolution)?;
     let response = bridge
         .studio
-        .resolve_interaction(operation_id, interaction_id, resolution)
+        .resolve_interaction(
+            operation_id,
+            interaction_id,
+            expected_interaction_revision,
+            resolution,
+        )
         .await?;
     Ok(BridgeInteractionCommandReply {
         interaction: bridge_interaction(response.interaction)?,

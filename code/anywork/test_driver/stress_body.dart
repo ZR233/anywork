@@ -5,6 +5,7 @@ import 'dart:io';
 import 'package:flutter_driver/flutter_driver.dart';
 
 import 'driver_read_commands.dart';
+import 'conversation_status_observation.dart';
 import 'flutter_driver_session.dart';
 import 'scrolling_journey.dart';
 import 'timeline_observation.dart';
@@ -211,7 +212,7 @@ Future<void> main(List<String> args) async {
     final terminal = await _waitFor(
       driver,
       (snapshot) =>
-          _outputTokens(snapshot) >= _expectedTokens && !_isBusy(snapshot),
+          _hasExpectedOutput(snapshot) && !_isBusy(snapshot),
       'terminal',
       evidence: output,
     );
@@ -688,9 +689,12 @@ Map<String, dynamic>? _workspace(Map<String, dynamic> snapshot) {
 bool _isBusy(Map<String, dynamic> snapshot) =>
     _workspace(snapshot)?['isBusy'] == true;
 
-int _outputTokens(Map<String, dynamic> snapshot) {
-  final usage = _workspace(snapshot)?['usage'];
-  return usage is Map ? (usage['outputTokens'] as num? ?? 0).toInt() : 0;
+int? _outputTokens(Map<String, dynamic> snapshot) =>
+    driverContextObservation(snapshot).completionTokens;
+
+bool _hasExpectedOutput(Map<String, dynamic> snapshot) {
+  final tokens = _outputTokens(snapshot);
+  return tokens != null && tokens >= _expectedTokens;
 }
 
 bool _settled(Map<String, dynamic> snapshot) {
@@ -746,7 +750,7 @@ Future<Map<String, Object?>> _sampleStreamingLargeBody(
   while (DateTime.now().isBefore(deadline) && growthFrames < 2) {
     final snapshot = await driver.readSnapshot();
     final terminal =
-        _outputTokens(snapshot) >= _expectedTokens && !_isBusy(snapshot);
+        _hasExpectedOutput(snapshot) && !_isBusy(snapshot);
     if (terminal) break;
     final item = _longBodyItem(snapshot);
     final id = item?.id;

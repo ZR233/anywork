@@ -3,7 +3,7 @@ import 'dart:ui' show PointerDeviceKind;
 import 'package:anywork/src/features/status/session_selectors.dart';
 import 'package:anywork/src/features/status/status_view.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
-import 'package:anywork/src/shared/studio_driver_keys.dart';
+import 'package:anywork/src/diagnostics/studio_driver_keys.dart';
 import 'package:anywork_client/studio_client.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';

@@ -2016,5 +2016,12 @@
   "statusCompacting": "Compacting…",
   "statusCompactionFailed": "Compaction failed. Try again.",
   "settingsModelAutoCompactCustom": "Custom",
-  "settingsSshNextPage": "Next page"
+  "settingsSshNextPage": "Next page",
+  "resourceSourceUninitialized": "Not initialized",
+  "resourceSourceLoading": "Loading…",
+  "resourceSourceRefreshing": "Refreshing…",
+  "resourceSourceStale": "Out of date",
+  "resourceSourceDegraded": "Degraded",
+  "resourceSourceLastKnown": "Last-known state",
+  "interactionDiscardAnswersBody": "Discard the answers and close this editor? This does not answer or cancel the interaction."
 }

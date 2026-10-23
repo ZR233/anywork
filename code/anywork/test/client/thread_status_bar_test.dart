@@ -1,6 +1,7 @@
 import 'package:anywork/src/app/app_graph.dart';
 import 'package:anywork/src/features/status/status_view.dart';
 import 'package:anywork/src/domain/models/studio_reactive_projections.dart';
+import 'package:anywork_client/conversation.dart';
 import 'package:anywork_client/studio_client.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';

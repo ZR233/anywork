@@ -139,10 +139,11 @@ pub(super) fn run(context: &RecoveryScenario<'_>, mut fixture: OwnedProcess) -> 
         let driver_log = context
             .working
             .join(format!("mode-editor-{phase}-driver.log"));
-        write_realtime_driver_evidence(
+        write_process_evidence(
             &driver_log,
             context.output,
             &format!("mode-editor-{phase}"),
+            "driver",
             driver_exits.get(phase).cloned().flatten(),
             journey.as_ref().err(),
             &redactions,

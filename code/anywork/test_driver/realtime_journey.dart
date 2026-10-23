@@ -4,6 +4,8 @@ import 'dart:io';
 import 'package:flutter_driver/flutter_driver.dart';
 
 import 'driver_observation.dart';
+import 'conversation_status_observation.dart';
+import 'runtime_evidence_observation.dart';
 import 'flutter_driver_session.dart';
 import 'timeline_observation.dart';
 import 'window_control.dart';
@@ -142,14 +144,14 @@ const _terminalTurnStatuses = <String>{
   'budgetLimited',
 };
 
-/// 这份证据的取证范围：只证明当前这一次 Client 发布的顺序与显式清除。
+/// 这份证据只证明原具体 Session 的 Metrics 发布顺序与显式清除。
 ///
 /// 它不等于逐 token 的供应商原始事件，也不是传输时延或帧率证据。
 const _runtimePublishScope =
-    'one existing Client Session runtime read-model publication stream observed '
+    'one existing concrete Session Metrics publication stream observed '
     'passively by the Driver-only recorder: at least two actual live publishes '
     'of one Turn/attempt with strictly increasing observation sequence and '
-    'publication revision, followed by one explicit cleared publication. It is '
+    'Metrics facet revision, followed by one explicit cleared publication. It is '
     'not a account raw-event, transfer-latency or frame-rate proof.';
 
 Future<void> main(List<String> args) async {
@@ -369,8 +371,8 @@ class RealtimeJourney {
 
   /// 快照轮询样本：只作为 UI 就绪观察，永不作发布顺序判定输入（design/24 实时验收、
   /// design/26 §26.9）。真实发布证据只来自 Driver-only 记录器的实际 Client 发布回调。
-  final List<DriverRuntimeObservation> _runtimeSamples =
-      <DriverRuntimeObservation>[];
+  final List<DriverMetricsObservation> _runtimeSamples =
+      <DriverMetricsObservation>[];
 
   /// Driver-only 记录器返回的实际发布取证；缺失即失败，不退化成轮询样本。
   DriverRuntimePublishEvidence? _runtimePublish;
@@ -433,7 +435,7 @@ class RealtimeJourney {
 
   Future<Map<String, dynamic>> snapshot() async {
     final state = await driver.readSnapshot();
-    _runtimeSamples.add(driverRuntimeObservation(state));
+    _runtimeSamples.add(driverMetricsObservation(state));
     if (_runtimeSamples.length > 4096) {
       _runtimeSamples.removeRange(0, 1024);
     }
@@ -2544,8 +2546,8 @@ class RealtimeJourney {
     await waitFor(
       (snapshot) =>
           TimelineObservation.optional(snapshot)?.threadId == threadId &&
-          driverRuntimeObservation(snapshot).usageState !=
-              DriverRuntimeUsageState.live,
+          driverMetricsObservation(snapshot).ready &&
+          !driverMetricsObservation(snapshot).isLive,
       'delayed_runtime_publish_cleared_readiness',
       timeout: const Duration(seconds: 15),
       abort: threadFaulted,
@@ -2568,7 +2570,7 @@ class RealtimeJourney {
         'realtime-runtime-publish.json',
         <String, Object?>{
           'scenario': 'realtime',
-          'source': 'clientRuntimePublish',
+          'source': 'repositoryMetricsPublish',
           'scope': _runtimePublishScope,
           'target': <String, Object?>{'threadId': threadId, 'turnId': turn},
           'driver': decoded,
@@ -2580,7 +2582,7 @@ class RealtimeJourney {
     _runtimePublish = evidence;
     await _writeRequiredJson('realtime-runtime-publish.json', <String, Object?>{
       'scenario': 'realtime',
-      'source': 'clientRuntimePublish',
+      'source': 'repositoryMetricsPublish',
       'scope': _runtimePublishScope,
       'target': <String, Object?>{'threadId': threadId, 'turnId': turn},
       'driver': decoded,
@@ -2588,7 +2590,7 @@ class RealtimeJourney {
     });
     checks['runtimePublishLiveSequenceIncreasing'] =
         evidence.liveSequenceIncreasing &&
-        evidence.livePublicationRevisionsIncreasing;
+        evidence.liveMetricsRevisionsIncreasing;
     checks['runtimePublishIdentityStable'] = evidence.identityStable;
     checks['runtimePublishClearedAfterLive'] = evidence.clearedAfterLive;
     checks['runtimePublishBoundedAndClosed'] = evidence.boundedAndClosed;
@@ -2616,7 +2618,7 @@ class RealtimeJourney {
     counts['runtimePublishFacts'] = evidence.facts.length;
     counts['runtimePublishLiveFacts'] = evidence.liveFacts.length;
     if (!evidence.liveSequenceIncreasing ||
-        !evidence.livePublicationRevisionsIncreasing) {
+        !evidence.liveMetricsRevisionsIncreasing) {
       pendingEvidence.add(
         'runtime publish evidence: the actual Client publications did not '
         'advance one identity with at least two strictly increasing live '
@@ -2626,7 +2628,7 @@ class RealtimeJourney {
     if (!evidence.identityStable) {
       pendingEvidence.add(
         'runtime publish evidence: the recorded publications did not stay on '
-        'one Thread/Turn/attempt and stream epoch',
+        'one Thread/Turn/attempt and Metrics runtime epoch/incarnation',
       );
     }
     if (!evidence.clearedAfterLive) {
@@ -3109,10 +3111,8 @@ bool turnFailed(Map<String, dynamic> snapshot) {
   return threadFaulted(snapshot) || status == 'failed' || status == 'cancelled';
 }
 
-int outputTokens(Map<String, dynamic> snapshot) {
-  final usage = workspaceOf(snapshot)?['usage'];
-  return usage is Map ? (usage['outputTokens'] as num? ?? 0).toInt() : 0;
-}
+int? outputTokens(Map<String, dynamic> snapshot) =>
+    driverContextObservation(snapshot).completionTokens;
 
 bool isBusy(Map<String, dynamic> snapshot) =>
     workspaceOf(snapshot)?['isBusy'] == true;
@@ -3232,7 +3232,6 @@ List<Map<String, dynamic>> timelineRows(Map<String, dynamic> snapshot) {
 Map<String, Object?> summarize(Map<String, dynamic> snapshot) {
   final workspace = workspaceOf(snapshot);
   final details = workspace ?? const {};
-  final usage = details['usage'];
   final persistence = snapshot['persistence'];
   final timeline = TimelineObservation.optional(snapshot);
   final rows = timeline?.items ?? const <TimelineItemObservation>[];
@@ -3244,8 +3243,9 @@ Map<String, Object?> summarize(Map<String, dynamic> snapshot) {
     'turnId': turnId(snapshot),
     'turnStatus': turnStatus(snapshot),
     'interactionKind': interactionKind(snapshot),
-    'runtime': driverRuntimeObservation(snapshot).toJson(),
-    'outputTokens': usage is Map ? usage['outputTokens'] : null,
+    'metrics': driverMetricsObservation(snapshot).toJson(),
+    'context': driverContextObservation(snapshot).toJson(),
+    'outputTokens': outputTokens(snapshot),
     'persistenceKind': persistence is Map ? persistence['kind'] : null,
     'pendingCommits': persistence is Map ? persistence['pendingCommits'] : null,
     'mode': timeline?.mode,

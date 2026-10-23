@@ -10,7 +10,7 @@ use std::process::Command;
 use std::sync::atomic::Ordering;
 
 use tokio::io::AsyncWriteExt;
-use tokio::sync::mpsc::UnboundedSender;
+use tokio::sync::mpsc::Sender;
 use tokio_util::sync::CancellationToken;
 use url::Url;
 
@@ -83,16 +83,16 @@ impl StudioUpdateCancellation {
 pub(super) async fn download(
     updater: &StudioUpdater,
     update: StudioUpdate,
-    progress: UnboundedSender<StudioUpdateEvent>,
+    progress: Sender<StudioUpdateEvent>,
     cancellation: StudioUpdateCancellation,
 ) -> Result<PreparedStudioUpdate, StudioUpdateError> {
     let _guard = InstallGuard::acquire(updater)?;
     let result: Result<PreparedStudioUpdate, StudioUpdateError> = async {
         validate_update(&update)?;
         cancellation.check()?;
-        let _ = progress.send(StudioUpdateEvent::Started {
+        send_event(&progress, StudioUpdateEvent::Started {
             total: update.installer.size,
-        });
+        }).await?;
         let cached = prepare_installer(updater, &update, &progress, &cancellation).await?;
         let prepared = lease_verified_installer(updater, &update, cached).await?;
         cancellation.check()?;
@@ -100,10 +100,10 @@ pub(super) async fn download(
     }
     .await;
     if let Err(error) = &result {
-        let _ = progress.send(StudioUpdateEvent::Failed {
+        send_event(&progress, StudioUpdateEvent::Failed {
             code: error.code().as_str().to_string(),
             message: error.to_string(),
-        });
+        }).await?;
     }
     result
 }
@@ -173,7 +173,7 @@ async fn lease_verified_installer(
 async fn prepare_installer(
     updater: &StudioUpdater,
     update: &StudioUpdate,
-    progress: &UnboundedSender<StudioUpdateEvent>,
+    progress: &Sender<StudioUpdateEvent>,
     cancellation: &StudioUpdateCancellation,
 ) -> Result<CachedInstaller, StudioUpdateError> {
     cancellation.check()?;
@@ -242,7 +242,7 @@ async fn prepare_installer(
         )
         .await?;
         cancellation.check()?;
-        let _ = progress.send(StudioUpdateEvent::Verifying);
+        send_event(progress, StudioUpdateEvent::Verifying).await?;
         if hash_file(&partial).await? != update.installer.sha256 {
             return Err(StudioUpdateError::new(
                 StudioUpdateErrorCode::HashMismatch,
@@ -313,7 +313,7 @@ async fn verify_cached(
     update: &StudioUpdate,
     installer: &Path,
     signature: &Path,
-    progress: &UnboundedSender<StudioUpdateEvent>,
+    progress: &Sender<StudioUpdateEvent>,
     cancellation: &StudioUpdateCancellation,
 ) -> Result<bool, StudioUpdateError> {
     cancellation.check()?;
@@ -332,11 +332,11 @@ async fn verify_cached(
     }
     match verify_file(updater.public_key, signature, installer).await {
         Ok(()) => {
-            let _ = progress.send(StudioUpdateEvent::Progress {
+            send_event(progress, StudioUpdateEvent::Progress {
                 downloaded: update.installer.size,
                 total: update.installer.size,
-            });
-            let _ = progress.send(StudioUpdateEvent::Verifying);
+            }).await?;
+            send_event(progress, StudioUpdateEvent::Verifying).await?;
             Ok(true)
         }
         Err(_) => Ok(false),
@@ -348,6 +348,16 @@ fn cancelled_error() -> StudioUpdateError {
         StudioUpdateErrorCode::Cancelled,
         "Studio update installation was cancelled",
     )
+}
+
+pub(super) async fn send_event(
+    progress: &Sender<StudioUpdateEvent>,
+    event: StudioUpdateEvent,
+) -> Result<(), StudioUpdateError> {
+    progress.send(event).await.map_err(|_| StudioUpdateError::new(
+        StudioUpdateErrorCode::Io,
+        "the update progress owner stopped before accepting a required stage",
+    ))
 }
 
 async fn verify_file(

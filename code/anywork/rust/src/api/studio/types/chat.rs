@@ -210,3 +210,52 @@ pub struct BridgeTimelineDetailChunk {
     pub total_bytes: u64,
     pub continuation: Option<String>,
 }
+
+/// 一条 Timeline feed 推送给 Dart 的有序帧。
+#[derive(Debug, Clone, PartialEq)]
+pub enum BridgeTimelineFrame {
+    Data {
+        delivery_sequence: u64,
+        event: BridgeTimelineEvent,
+    },
+    Failure {
+        error: super::error::BridgeError,
+    },
+    Closed,
+}
+
+/// 一帧有序业务数据：首基线或后续补丁／重同步。
+#[derive(Debug, Clone, PartialEq)]
+pub enum BridgeTimelineEvent {
+    Baseline { baseline: BridgeTimelineBaseline },
+    Update { update: BridgeTimelineUpdate },
+}
+
+/// 一次 Timeline feed 关闭的真实 join 报告。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BridgeFeedCloseReport {
+    pub feed_id: String,
+    pub outcome: BridgeFeedCloseOutcome,
+}
+
+/// 关闭结果：只有全部 owner 被证实结束后才是 `Clean`。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BridgeFeedCloseOutcome {
+    Clean,
+    Unresolved {
+        issues: Vec<BridgeFeedCloseIssue>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BridgeFeedCloseIssue {
+    pub diagnostic: super::shutdown::BridgeShutdownIssue,
+    pub recovery: BridgeCleanupRecovery,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BridgeCleanupRecovery {
+    AwaitCompletion,
+    RetryClose,
+    Terminal,
+}

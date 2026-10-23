@@ -18,6 +18,16 @@ use sea_orm::{
 
 const HISTORY_SCHEMA_VERSION: i64 = 8;
 
+/// Typed context for read failures. The original SQL/decoder cause remains in the anyhow chain;
+/// adapters distinguish storage IO from an incompatible persisted fact without parsing messages.
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum HistoryReadFailure {
+    #[error("history storage read failed")]
+    Storage,
+    #[error("history read contains incompatible protocol data")]
+    Protocol,
+}
+
 mod checkpoint;
 /// 单页返回的总 payload 字节预算；达到预算即停止装入更多条目。
 const PAGE_BYTE_BUDGET: usize = 2 * 1024 * 1024;
@@ -114,6 +124,7 @@ pub(crate) struct InputIdentityReceipt {
 /// `payload` is the canonical record the effect committed, so a repeated command can be answered
 /// with the same receipt instead of minting a new revision or a new execution grant.
 pub(crate) struct FactReceipt {
+    pub revision: u64,
     pub kind: String,
     pub payload: String,
 }
@@ -236,7 +247,7 @@ impl HistoryStore {
             .state
             .reader
             .get_or_try_init(|| async {
-                let db = connect_read_only(&self.state.path).await?;
+                let db = connect_read_only(&self.state.path).await.context(HistoryReadFailure::Storage)?;
                 let (database_id, schema_version) =
                     validate_existing(&db, &self.state.thread_id).await?;
                 Ok::<HistoryConnection, anyhow::Error>(HistoryConnection {
@@ -548,10 +559,6 @@ impl HistoryStore {
             .collect()
     }
 
-    /// Reads the minimal identity of a previously admitted input, if the durable index knows it.
-    ///
-    /// This is the cross-restart idempotency lookup for `submitPrompt`: the returned record lets
-    /// the runtime rebuild the original receipt without re-admitting the input or replaying history.
     /// Reads the newest durable receipt of one interaction/permission identity.
     ///
     /// This is the cross-window/cross-restart authority for a repeated terminal interaction
@@ -572,16 +579,48 @@ impl HistoryStore {
                  WHERE item_id=? ORDER BY revision DESC LIMIT 1",
                 vec![item_id.to_owned().into()],
             ))
-            .await?;
+            .await.context(HistoryReadFailure::Storage)?;
         let Some(row) = row else {
             return Ok(None);
         };
-        Ok(Some(FactReceipt {
+        (|| -> Result<_> { Ok(Some(FactReceipt {
+            revision: u64::try_from(row.try_get::<i64>("", "revision")?)
+                .context("durable fact receipt has an invalid revision")?,
             kind: row.try_get("", "kind")?,
             payload: row.try_get("", "payload")?,
-        }))
+        })) })().context(HistoryReadFailure::Protocol)
     }
 
+    /// Reads exactly the original fact revision. Never substitutes the latest saved decision.
+    pub(crate) async fn fact_receipt_at(
+        &self,
+        item_id: &str,
+        revision: u64,
+    ) -> Result<Option<FactReceipt>> {
+        let revision = i64::try_from(revision)
+            .context("fact revision exceeds SQLite range").context(HistoryReadFailure::Protocol)?;
+        let Some(connection) = self.reader().await? else {
+            return Ok(None);
+        };
+        let row = connection
+            .db
+            .query_one_raw(statement(
+                "SELECT revision,kind,payload FROM history_fact_receipts WHERE item_id=? AND revision=?",
+                vec![item_id.to_owned().into(), revision.into()],
+            ))
+            .await.context(HistoryReadFailure::Storage)?;
+        row.map(|row| {
+            Ok::<_, anyhow::Error>(FactReceipt {
+                revision: u64::try_from(row.try_get::<i64>("", "revision")?)
+                    .context("durable fact receipt has an invalid revision")?,
+                kind: row.try_get("", "kind")?,
+                payload: row.try_get("", "payload")?,
+            })
+        })
+        .transpose().context(HistoryReadFailure::Protocol)
+    }
+
+    /// Reads an existing durable input identity without preparing or migrating storage.
     pub(crate) async fn input_identity(
         &self,
         input_id: &str,
@@ -589,20 +628,41 @@ impl HistoryStore {
         let Some(connection) = self.reader().await? else {
             return Ok(None);
         };
+        // Supported cold schemas are 2..=8. request_digest is an independent additive column,
+        // installed by writer initialization rather than by a dedicated schema-version step.
+        // Inspect only this known table's columns: version alone cannot prove column presence,
+        // and a pure evidence read must not call writer()/prepare_activation() to add it.
+        let columns = connection.db.query_all_raw(statement(
+            "PRAGMA table_info(history_input_identities)", vec![],
+        )).await.context(HistoryReadFailure::Storage)?;
+        let columns = columns.iter().map(|row| {
+            row.try_get::<String>("", "name").context(HistoryReadFailure::Protocol)
+        }).collect::<Result<std::collections::BTreeSet<_>>>()?;
+        ensure!(columns.contains("item_id") && columns.contains("payload"), HistoryReadFailure::Protocol);
+        let has_request_digest = columns.contains("request_digest");
+        let sql = if has_request_digest {
+            "SELECT payload,request_digest FROM history_input_identities WHERE item_id=?"
+        } else {
+            "SELECT payload FROM history_input_identities WHERE item_id=?"
+        };
         let row = connection
             .db
             .query_one_raw(statement(
-                "SELECT payload,request_digest FROM history_input_identities WHERE item_id=?",
+                sql,
                 vec![input_id.into()],
             ))
-            .await?;
-        match row {
+            .await.context(HistoryReadFailure::Storage)?;
+        (|| -> Result<_> { match row {
             Some(row) => Ok(Some(InputIdentityReceipt {
                 entry: serde_json::from_str(&row.try_get::<String>("", "payload")?)?,
-                request_digest: row.try_get::<Option<String>>("", "request_digest")?,
+                request_digest: if has_request_digest {
+                    row.try_get::<Option<String>>("", "request_digest")?
+                } else {
+                    None
+                },
             })),
             None => Ok(None),
-        }
+        } })().context(HistoryReadFailure::Protocol)
     }
 
     /// Upgrades existing history before an active owner seeds its canonical projection.
@@ -1602,7 +1662,9 @@ async fn validate_existing(db: &DatabaseConnection, thread_id: &str) -> Result<(
             vec![],
         ))
         .await
-        .context("history database has no readable identity table")?;
+        .context("history database has no readable identity table")
+        .context(HistoryReadFailure::Storage)?;
+    (|| -> Result<_> {
     let row = row.context("history database identity row is missing")?;
     let version: i64 = row.try_get("", "schema_version")?;
     ensure!(
@@ -1610,16 +1672,11 @@ async fn validate_existing(db: &DatabaseConnection, thread_id: &str) -> Result<(
         "unsupported history schema {version}; existing data preserved"
     );
     let owner: String = row.try_get("", "thread_id")?;
-    ensure!(
-        owner == thread_id,
-        "history database belongs to another Thread"
-    );
+        ensure!(owner == thread_id, "history database belongs to another Thread");
     let database_id: String = row.try_get("", "database_id")?;
-    ensure!(
-        !database_id.is_empty(),
-        "history database identity is empty"
-    );
+        ensure!(!database_id.is_empty(), "history database identity is empty");
     Ok((database_id, version))
+    })().context(HistoryReadFailure::Protocol)
 }
 
 async fn write_tool_task(
@@ -3261,6 +3318,7 @@ mod storage_fault_tests {
         assert!(save_receipt(&store, 2, "second").await.is_err());
         assert_eq!(store.watermark().await?, 1);
         assert!(store.latest_fact_receipt("second").await?.is_none());
+        assert!(store.fact_receipt_at("second", 2).await?.is_none());
         store
             .writer()
             .await?
@@ -3278,6 +3336,12 @@ mod storage_fault_tests {
                 .payload,
             "{}"
         );
+        save_receipt(&store, 3, "second").await?;
+        let exact = store.fact_receipt_at("second", 2).await?.context("missing exact receipt")?;
+        assert_eq!(exact.revision, 2, "a newer saved fact must not replace the requested revision");
+        assert_eq!(exact.kind, "interaction");
+        assert_eq!(store.latest_fact_receipt("second").await?.context("missing latest receipt")?.revision, 3);
+        assert!(store.fact_receipt_at("second", 4).await?.is_none());
         Ok(())
     }
 

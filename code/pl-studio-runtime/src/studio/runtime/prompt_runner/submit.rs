@@ -9,6 +9,44 @@ use super::super::{
 };
 
 impl StudioRuntime {
+    /// Pure read of the original durable input identity. Does not activate or prepare storage.
+    pub fn read_input_acceptance(
+        &self,
+        thread_id: String,
+        input_id: String,
+    ) -> impl std::future::Future<Output = Result<Option<pl_protocol::studio::InputAcceptanceEvidence>>> + Send + 'static {
+        let store = self.store.clone();
+        let closing = self.shutdown_committed();
+        self.read_calls.run(async move {
+            use pl_core::thread::input::InputState;
+            use pl_protocol::studio::{InputAcceptanceEvidence, PersistedInputDisposition, StudioError, StudioErrorCode};
+            if closing {
+                return Err(StudioError::new(StudioErrorCode::Cancelled, "Studio runtime is closing", false).into());
+            }
+            if thread_id.trim().is_empty() || input_id.trim().is_empty() {
+                return Err(StudioError::invalid_argument("Thread and input identities are required").into());
+            }
+            let Some(receipt) = store.history(&thread_id).await?.input_identity(&input_id).await? else {
+                return Ok(None);
+            };
+            if receipt.entry.id != input_id {
+                return Err(StudioError::new(StudioErrorCode::Protocol,
+                    "Durable input identity does not match its key", false).into());
+            }
+            let disposition = match receipt.entry.state {
+                InputState::Consumed { .. } => PersistedInputDisposition::Consumed,
+                InputState::Discarded => PersistedInputDisposition::Discarded,
+                InputState::Pending => return Err(StudioError::new(StudioErrorCode::Protocol,
+                    "A pending input cannot prove durable acceptance", false).into()),
+            };
+            Ok(Some(InputAcceptanceEvidence {
+                accepted_sequence: receipt.entry.accepted_sequence,
+                request_digest: receipt.request_digest,
+                disposition,
+            }))
+        })
+    }
+
     /// Atomically starts or interrupts and continues the canonical Thread.
     pub async fn submit_prompt_command(
         &self,
@@ -56,6 +94,10 @@ impl StudioRuntime {
             options,
         } = request;
         validate_prompt_content(&input)?;
+        let request_digest = crate::studio::thread_projection::prompt_request_digest(
+            &input,
+            options.presentation,
+        );
         anyhow::ensure!(
             thread_record.visibility == crate::studio::ThreadVisibility::Active,
             "archived Thread cannot accept input"
@@ -82,6 +124,7 @@ impl StudioRuntime {
                 thread_id,
                 input_id: previous.input.id.clone(),
                 cursor: previous.accepted_sequence,
+                request_digest,
             });
         }
         // 跨重启幂等：终态输入已经离开 core 的有界驻留窗口，改由 history.sqlite 的轻量身份
@@ -92,16 +135,14 @@ impl StudioRuntime {
             Ok(history) => history.input_identity(&input.input_id).await?,
             // 历史尚未追平 checkpoint fence 时退回普通受理：驻留队列仍然覆盖本 incarnation
             // 的重复提交，不能因为一次只读索引未就绪而拒绝新输入。
-            Err(_) => None,
+            Err(error) if error.downcast_ref::<pl_protocol::studio::StudioError>()
+                .is_some_and(|error| error.code == pl_protocol::studio::StudioErrorCode::Busy) => None,
+            Err(error) => return Err(error),
         };
         if let Some(previous) = durable_receipt {
-            let expected = crate::studio::thread_projection::prompt_request_digest(
-                &input,
-                options.presentation,
-            );
             match previous.request_digest.as_deref() {
                 Some(stored) => anyhow::ensure!(
-                    stored == expected,
+                    stored == request_digest,
                     "input identity conflicts with an accepted prompt"
                 ),
                 None => bail!(
@@ -112,6 +153,7 @@ impl StudioRuntime {
                 thread_id,
                 input_id: input.input_id,
                 cursor: previous.entry.accepted_sequence,
+                request_digest,
             });
         }
         // The caller's frozen route is a CAS against its canonical extension,
@@ -251,6 +293,7 @@ impl StudioRuntime {
             thread_id,
             input_id: accepted.input.id,
             cursor: accepted.accepted_sequence,
+            request_digest,
         })
     }
 

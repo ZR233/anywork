@@ -76,11 +76,20 @@ pub use protocol::{
     StudioAgentProfileDiagnostic, StudioAgentProfilesData, StudioAgentProfilesStateSnapshot,
     StudioPersistenceQueueStateSnapshot,
 };
+pub use pl_protocol::studio::{FeedCloseReport, InputAcceptanceEvidence, PersistedInputDisposition, StudioError, TextChunk};
+pub use pl_protocol::thread_facets::identity::{FeedClosedReason, MetricsIdentityRef,
+    ReadScopeIdentity, ThreadFacet, ThreadFacetStamp, ThreadFeedIdentity, ThreadObservationMode};
+pub use pl_protocol::thread_facets::metrics::MetricsValue;
+pub use pl_protocol::thread_facets::read::values::MetricsIdentityReadHeader;
+pub use tokio::sync::mpsc::Sender;
+pub use studio::models;
+
 pub use studio::{
     AccountUsageStateData, AccountUsageStateSnapshot, AttachmentRecord, PersistenceState,
     PersistenceStateSnapshot, ProductEventBus, ProjectRecord, SkillSearchResult,
     SkillsStateSnapshot, SshPasswordUpdate, SshServerRuntimeEntry, StudioDatabaseError,
     StudioHostKind, StudioInstance, StudioInstanceLease, StudioProductTopicSubscription,
+    StudioMetricsIdentityRead, StudioMetricsSample, StudioMetricsSourceEvent, StudioThreadMetricsSource,
     StudioRecoveryIssue, StudioRecoveryIssueAction, StudioRecoveryIssueCategory,
     StudioRecoveryIssueScope, StudioRecoveryWorktreeOwner, StudioRuntime,
     StudioRuntimeLifecycleState, StudioRuntimeOptions, StudioRuntimeSnapshot,

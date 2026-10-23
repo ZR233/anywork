@@ -61,6 +61,7 @@ pub async fn read_settings_state() -> Result<BridgeSettingsStateResponse, Bridge
 }
 
 pub async fn remove_account_model(
+    operation_id: String,
     expected_settings_revision: u64,
     account_id: String,
     model_id: String,
@@ -68,6 +69,7 @@ pub async fn remove_account_model(
     let bridge = active_bridge().await?;
     Ok(settings_command_reply(bridge.studio.remove_account_model(
         pl_protocol::studio::RemoveAccountModelRequest {
+            operation_id,
             expected_revision: expected_settings_revision,
             account_id,
             model_id,

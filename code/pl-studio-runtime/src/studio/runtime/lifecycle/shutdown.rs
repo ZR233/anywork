@@ -411,6 +411,16 @@ impl ShutdownCollector {
             detail = %mapped.message,
             "Studio shutdown stage failed"
         );
+        if let Some(reads) = error.downcast_ref::<super::super::read_scopes::ReadScopesCloseFailure>() {
+            // The shared scope owner retains every typed issue. Include each original diagnostic
+            // before finalization instead of replacing multiple unresolved queries with one label.
+            for issue in &reads.scope_issues { self.push(issue.diagnostic.clone()); }
+            for failure in &reads.call_failures {
+                self.push(StudioShutdownIssue { stage: stage.to_string(), code: "joinError".into(),
+                    message: format!("Detail read {} did not join successfully", failure.id),
+                    retryable: false, correlation_id: pl_protocol::studio::StudioError::internal().correlation_id });
+            }
+        }
         self.push(StudioShutdownIssue {
             stage: stage.to_string(),
             code: mapped.code.label().to_string(),
@@ -845,6 +855,7 @@ mod stage_order {
     pub(super) const PERSISTENCE_OBSERVER: usize = 14;
     pub(super) const SSH: usize = 15;
     pub(super) const AGENT_PROFILES: usize = 16;
+    pub(super) const DETAIL_READS: usize = 17;
 }
 
 /// 在常驻槽位上只启动一次真正的 stop 工作；已存在则返回同一共享句柄。
@@ -908,6 +919,10 @@ impl StudioRuntime {
     ) -> StudioShutdownReport {
         // 同步封闭 runtime 准入闩：先于任何 await 与锁等待，退出期间拒绝迟到安装与新 mutation。
         self.shutdown_latch.arm();
+        self.models_source.seal();
+        self.templates_source.seal();
+        self.read_scopes.seal();
+        self.read_calls.seal();
         let requested = Duration::from_millis(u64::from(remaining_ms));
         let deadline = self.shutdown_run.fixed_deadline(requested);
         let budget = ShutdownBudget::at_deadline(deadline);
@@ -939,6 +954,10 @@ impl StudioRuntime {
     /// 推进只持有无 await 的短临界区，绝不在任何锁上无界等待。
     pub async fn fence_exit_admission(&self) -> Vec<StudioShutdownIssue> {
         self.shutdown_latch.arm();
+        self.models_source.seal();
+        self.templates_source.seal();
+        self.read_scopes.seal();
+        self.read_calls.seal();
         let mut issues = Vec::new();
         let snapshot = self.runtime_state.snapshot();
         // 只对可关闭状态推进为 `ShuttingDown`；未安装 / 初始化中 / 已进入关闭或终态既不触发
@@ -1040,6 +1059,10 @@ impl StudioRuntime {
         // 单向终止闩：先于任何阶段武装，拒绝迟到安装；快照不可用时也照样封闭，绝不因只读观测
         // 失败而漏掉独立取消（准入封闭与取消不依赖 runtime 快照）。
         self.shutdown_latch.arm();
+        self.models_source.seal();
+        self.templates_source.seal();
+        self.read_scopes.seal();
+        self.read_calls.seal();
 
         if let Some(current) = current.as_ref()
             && matches!(current.state.kind(), StudioRuntimeStateKind::Initializing)
@@ -1293,6 +1316,13 @@ impl StudioRuntime {
         // issue、不会伪报 Clean）。这些阶段彼此独立，因此并发发起、并发等待（不会用前一个的等待
         // 耗尽后续阶段预算）。
         let mut producers: FuturesUnordered<StageBranch> = FuturesUnordered::new();
+        producers.push(self.stage_branch(
+            budget,
+            stage_order::DETAIL_READS,
+            "detailReads",
+            None,
+            |runtime| async move { runtime.close_detail_reads().await },
+        ));
         producers.push(self.stage_branch(
             budget,
             stage_order::MODEL_CATALOG,

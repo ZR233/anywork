@@ -361,11 +361,11 @@ impl StudioRuntime {
     }
 
     pub async fn reload_settings(&self, expected_revision: u64) -> Result<SettingsStateResponse> {
-        self.config_runtime.reload_from_disk(expected_revision)?;
+        let reloaded = self.config_runtime.reload_from_disk(expected_revision)?;
         self.publish_settings_state()?;
         self.skills.mark_all_stale().await;
         let _ = self.apply_account_config().await?;
-        self.read_settings_response()
+        settings_state_response(&reloaded.configuration, &reloaded.catalog)
     }
 
     pub async fn save_account(
@@ -451,6 +451,7 @@ impl StudioRuntime {
         &self,
         request: RemoveAccountModelRequest,
     ) -> Result<SettingsCommandReply> {
+        Self::validate_operation_id(&request.operation_id)?;
         let account_id = AccountId::new(request.account_id.trim())?;
         let model_id = request.model_id.trim();
         if model_id.is_empty() {
@@ -476,7 +477,7 @@ impl StudioRuntime {
         )?;
         self.publish_settings_state()?;
         self.settings_command_reply(
-            format!("remove-account-model:{account_id}:{model_id}"),
+            request.operation_id,
             &state,
             changed,
             CommandEffectPoint::FutureSession,

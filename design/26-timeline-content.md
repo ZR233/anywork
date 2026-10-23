@@ -236,6 +236,11 @@ writer。存储迁移、数据与凭据保留继续遵守 [17](./17-studio-stora
 Append/Replace/Remove/Unchanged、预期 revision、当前省略量与逐字段完整／预览长度等一次
 提交的元数据；即使预览已封顶而正文继续增长，这些元数据也必须随 revision 更新。同 revision 的保存
 确认是合法更新，不要求伪造新的正文 revision。退出热基线只释放订阅缓存，不发送 Remove。
+core 的 UpdateItem 同时交付同次捕获、同目标 revision 的有界 `preview: ChatItem`，用于
+产品层生成需要动态内容的权威 typed shell。它与字段差量来自同一捕获，沿用原单条和热尾部
+预览预算及共享不可变内容块；不是完整正文入口，也不建立第二份长期正文缓存。产品层先核
+原静态壳与捕获条目的身份／顺序，再物化动态字段；不得在补丁返回后查询 latest 或已淘汰的
+retained 内容来补齐旧 revision。普通字段仍沿用差量传输，真实 wire 载荷预算独立核算。
 同一 canonical revision 的预览完整度可以提升，字段因此可能 Append 或 Replace；预览
 字节变化不等于新的 canonical revision。执行终态也不禁止后续可靠权威修订，字段 Append
 只是一种差量编码，不能据此推断执行重新进入 streaming。producer 准入仍由 Session 负责，
@@ -491,6 +496,14 @@ Message.custom 呈现。每份预览只由所属展示项的成员持有，索�
 图片读取只合并连续调用，其他可见活动结束图片组。
 不显示正文的推理记账和文件引用不打断可见活动。
 
+`show_image` 保持每次调用独立的图片卡片，不加入普通工具组，也不跨调用去重。
+它只采用该调用 typed 附件原序中的第一张图片；没有图片仍显示不可用占位与真实工具
+状态，不用参数中的 ID 推测图片归属。Smart 在原展示身份内发起按需媒体读取，loading、
+失败与成功保持同一比例几何；图片字节和 ImageProvider 只归 UI 资源，不进入 ViewState。
+重试和放大查看核对原 Thread／附件／展示代次，旧 Future 只能结算自己的读取；页面
+卸载不关闭 Session 或取消已受理业务。caption 与网页命令详情必须有原生 typed 来源，
+不能为了补齐卡片而在 UI 解析 opaque arguments 或自动读取完整参数正文。
+
 成功主技能读取产生的 typed Skill 与原 `skill_view` Tool Item 通过同一 Turn 内的
 `Tool { toolCallId }` 来源配对，仅派生一条可见技能活动行，原始成员、顺序、revision、
 详情引用与诊断仍分别保留。配对只依据当前已加载同组的 typed 身份，不解析工具输出，
@@ -537,15 +550,27 @@ Driver 只借用当前应用的领域公共能力和 Timeline 展示 owner；绑
 订阅、业务 demand、草稿、展示 lease 或正文缓存。每次请求同步读取当前 lease 的 stock
 controller 与 typed 载荷，序列化后不保留投影。切换 Thread／代次后不能继续抓住旧正文。
 非 Timeline 的工作区、计划、退出与远程资源生命周期诊断保持各自权威来源。
+PageSwitch取证借用原具体display与原具体Session Timeline的只读生命周期能力，分别观察
+已受理查询计数、stock Controller真实释放，以及原已退役native attempts的join与数量。
+读取这些事实不新建查询/正文消费者，也不调用close、retire或retry；截止时间仅限制观察
+等待，不能取消原责任。切换后按原对象取证，不按Thread ID重新查当前实例；opening阶段、
+display释放与所有未发布候选/consumer收束是不同证明，不能互相冒充。
 runtime 顺序的原生取证使用 Driver-only 有界记录器，被动观察已存在 Session 服务的公开
-runtime read-model 发布；不创建 Session、不建立另一条 transport 订阅，也不改变业务 demand。
+Metrics read-model 发布；不创建 Session、不建立另一条 transport 订阅，也不改变业务 demand。
 记录器只保存 Thread／Turn／attempt、发布 revision、观察 sequence 与轻量计量事实，不保存
-Timeline 正文或整份工作区快照。登记与首个基线读取为同一同步边界，停止和退出只取消自己的
-观察；最多保留 4096 个事实，溢出、观察异常、身份不符或缺少终态均显式失败。
+Timeline 正文或整份工作区快照。登记与首个基线读取为同一同步边界，真实ID仅经原Session、
+原Metrics stamp/ref的immutable read scope取得；请求目标不冒充已观察身份。事实与在途
+metadata合计最多4096，溢出、观察/读取异常、身份不符或缺少终态均显式失败。停止和退出
+只封本记录器准入、取消自己的观察并真实join原已受理读取与scope；未决报告参与同一应用
+退出协调，不以取消观察当作资源Clean。Metrics使用其runtimeEpoch/incarnation/facet/revision，
+不保旧streamEpoch/workspace revision别名；Context计量独立诊断，不假装与Metrics同水位。
 当前 core 的执行期观察为 `live`，attempt 提交时清除 live 观察；验收分别证明同身份的多次
 真实 Repository 发布与递增 sequence，以及之后的显式清除。不伪造 authoritative 事件、终态
 sequence 或计量值，不把无身份的 unknown 快照拼成同身份终态。快照轮询仅用于就绪，不能
 代替发布回调证据；该证明不等于逐 token 的供应商原始事件或传输时延证明。
+显式清除要求同Metrics来源在实际live后以更高revision发布ready且value存在、live为空，
+并引用先前真实身份；它不声称清除瞬间Execution active/recent与Metrics原子同水位。
+旅程对完成与持久化的独立前置仍保留，不能拿清除事件替代这些证明。
 
 新的顶层 `timeline` 取代 `timelineWindow` 和 `workspace.timeline`，不提供旧字段别名。
 它包含 `threadId`、`generation`、`ready`、`mode`、`connection`、`appliedVersion`、

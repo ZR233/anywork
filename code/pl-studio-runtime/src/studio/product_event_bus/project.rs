@@ -37,11 +37,12 @@ impl ProductEventBus {
     }
 
     pub async fn read_project_directory(&self) -> Result<StudioProjectDirectoryState> {
+        let projects = self.project_snapshot.lock().await;
         Ok(StudioProjectDirectoryState {
             state: self.resource(
                 &self.revisions.project,
                 StudioProjectDirectoryData {
-                    projects: self.project_snapshot.lock().await.clone(),
+                    projects: projects.clone(),
                 },
             ),
         })
@@ -76,8 +77,8 @@ impl ProductEventBus {
                 .cmp(&left.updated_at)
                 .then_with(|| right.id.cmp(&left.id))
         });
-        drop(projects);
         self.bump(&self.revisions.project);
+        drop(projects);
         let state = self.read_project_directory().await?;
         Ok(Some(self.emit(
             StudioProductEventKind::ProjectDirectoryChanged(state),

@@ -3,6 +3,9 @@ import 'dart:async';
 import 'package:anywork/src/domain/models/timeline_commands.dart';
 import 'package:anywork/src/domain/models/timeline_presentation.dart';
 import 'package:anywork/src/presentation/view_models/timeline_session_owner.dart';
+import 'package:anywork_client/conversation.dart';
+import 'package:anywork_client/conversation_ports.dart';
+import 'package:anywork_client/resources.dart';
 import 'package:anywork_client/studio_client.dart';
 import 'package:flutter_chat_core/flutter_chat_core.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -207,6 +210,9 @@ void main() {
       expect(second.chatKey, isNot(first.chatKey));
       expect(ready.owner.source.value!.mode, TimelineDisplayMode.live);
       expect(ready.owner.source.value!.isPreparingLive, isFalse);
+      // 旧代次的释放是异步真实收束（已受理查询退出 → 已启动写入结束 →
+      // controller dispose → operations stream done）。
+      await first.released;
       expect(first.isReleased, isTrue, reason: '未挂载的旧代次直接释放');
     },
   );
@@ -422,7 +428,7 @@ void main() {
         subscriptionId: subscription,
         from: applied + 1,
         to: applied + 2,
-        changes: const [
+        changes: [
           StudioTimelineUpdateItem(
             itemId: 'done',
             expectedRevision: 6,
@@ -478,7 +484,7 @@ void main() {
         subscriptionId: 'sub-${ready.connection.baselineVersion}',
         from: applied,
         to: applied + 1,
-        changes: const [
+        changes: [
           StudioTimelineUpdateItem(
             itemId: 'done',
             expectedRevision: 5,
@@ -542,7 +548,7 @@ void main() {
       expect(lease.appliedVersion, watermark, reason: '分页不抬高冻结展示的内容水位');
       ready.connection.pageResult = Completer<StudioTimelinePage>()
         ..complete(
-          const StudioTimelinePage(items: [], before: null, hasOlder: false),
+          StudioTimelinePage(items: [], before: null, hasOlder: false),
         );
       await ready.owner.loadOlder(
         'thread',
@@ -581,7 +587,7 @@ void main() {
     expect(ready.owner.lease('thread')!.loadedCount, 2);
     ready.connection.pageResult = Completer<StudioTimelinePage>()
       ..complete(
-        const StudioTimelinePage(items: [], before: null, hasOlder: false),
+        StudioTimelinePage(items: [], before: null, hasOlder: false),
       );
     await ready.owner.retryOlder(
       'thread',
@@ -616,7 +622,7 @@ void main() {
     );
     ready.transport.connections.last.pageResult =
         Completer<StudioTimelinePage>()..complete(
-          const StudioTimelinePage(items: [], before: null, hasOlder: false),
+          StudioTimelinePage(items: [], before: null, hasOlder: false),
         );
     await ready.owner.retryOlder('thread', generation: lease.generation);
     expect(ready.owner.source.value!.olderError, isNull);
@@ -651,8 +657,13 @@ void main() {
 
   test('登记观察时消费已经就绪的当前基线', () async {
     final ready = await open();
+    // v3：同 channel 只有一个 active consumer；新展示 owner 登记前先真实关闭
+    // 原 owner（解绑 consumer 并释放旧代次）。channel 对重 attach 且已有 demand
+    // 强制新 attempt/baseline，新 owner 从该真实首帧建立完整展示。
+    await ready.owner.close();
     final secondOwner = TimelineSessionOwner(client: ready.client);
     addTearDown(secondOwner.close);
+    await secondOwner.source.waitFor((state) => state?.generation != 0);
     expect(secondOwner.lease('thread'), isNotNull);
     expect(secondOwner.source.value!.generation, greaterThan(0));
     expect(secondOwner.lease('thread')!.loadedCount, 2);
@@ -771,7 +782,7 @@ void main() {
       );
       expect(ready.owner.source.value!.olderError, isNull);
       retried.complete(
-        const StudioTimelinePage(items: [], before: null, hasOlder: false),
+        StudioTimelinePage(items: [], before: null, hasOlder: false),
       );
       await retrying;
       expect(ready.owner.source.value!.hasOlder, isFalse);
@@ -1816,7 +1827,7 @@ void main() {
     lease.bind();
     expect(lease.isMounted, isTrue);
     page.complete(
-      const StudioTimelinePage(items: [], before: null, hasOlder: false),
+      StudioTimelinePage(items: [], before: null, hasOlder: false),
     );
     await loading;
     expect(lease.isReleased, isFalse, reason: '真实子树仍持有控制器');
@@ -2252,7 +2263,7 @@ void main() {
     expect(budget.used(ResourceKind.pendingOperation), 1);
 
     page.complete(
-      const StudioTimelinePage(items: [], before: null, hasOlder: false),
+      StudioTimelinePage(items: [], before: null, hasOlder: false),
     );
     await loading;
     await lease.released;
@@ -2395,7 +2406,8 @@ final class _ScriptedConnection implements StudioTimelineConnection {
   _ScriptedConnection(this.scriptedItems);
 
   final Completer<StudioTimelineConnection> opened = Completer();
-  final List<Completer<StudioTimelineUpdate?>> frames = [];
+  final StreamController<StudioTimelineFeedFrame> _frames =
+      StreamController<StudioTimelineFeedFrame>();
   Completer<StudioTimelinePage>? pageResult;
   final List<({String itemId, StudioTimelineDetailQuery query})>
   detailRequests = [];
@@ -2407,35 +2419,57 @@ final class _ScriptedConnection implements StudioTimelineConnection {
   int nextCalls = 0;
   int closeCalls = 0;
   bool closed = false;
+  bool _claimed = false;
+  int _nextSequence = 1;
 
   @override
-  Future<StudioTimelineBaseline> initial() async {
+  Stream<StudioTimelineFeedFrame> get events {
+    if (_claimed) {
+      throw const StudioFailure(
+        code: StudioFailureCode.conflict,
+        message: 'The scripted feed stream was already claimed',
+        retryable: false,
+        correlationId: 'scripted-stream-conflict',
+      );
+    }
+    _claimed = true;
     initialCalls++;
-    return StudioTimelineBaseline(
-      subscriptionId: 'sub-$baselineVersion',
-      version: baselineVersion,
-      items:
-          scriptedItems ??
-          [
-            for (final entry in [('a', 1), ('b', 2)]) _item(entry.$1, entry.$2),
-          ],
-      before: 'tlp1.b',
-      hasOlder: true,
+    _frames.add(
+      StudioTimelineFeedFrame.data(
+        deliverySequence: _nextSequence++,
+        event: StudioTimelineFeedEvent.baseline(
+          baseline: StudioTimelineBaseline(
+            subscriptionId: 'sub-$baselineVersion',
+            version: baselineVersion,
+            items:
+                scriptedItems ??
+                [
+                  for (final entry in [('a', 1), ('b', 2)])
+                    _item(entry.$1, entry.$2),
+                ],
+            before: 'tlp1.b',
+            hasOlder: true,
+          ),
+        ),
+      ),
     );
+    return _frames.stream;
   }
 
   @override
-  Future<StudioTimelineUpdate?> next() {
-    if (closed) return Future.value(null);
+  Future<void> ackThrough(int deliverySequence) async {
+    // 每帧处理完成后的确认：作为测试里的“已消费帧数”进度。
     nextCalls++;
-    final pending = Completer<StudioTimelineUpdate?>();
-    frames.add(pending);
-    return pending.future;
   }
 
   void emit(StudioTimelineUpdate update) {
-    if (frames.isEmpty) throw StateError('No pending content read');
-    frames.removeAt(0).complete(update);
+    if (closed) return;
+    _frames.add(
+      StudioTimelineFeedFrame.data(
+        deliverySequence: _nextSequence++,
+        event: StudioTimelineFeedEvent.update(update: update),
+      ),
+    );
   }
 
   @override
@@ -2443,7 +2477,7 @@ final class _ScriptedConnection implements StudioTimelineConnection {
     final result = pageResult;
     if (result == null) {
       return Future.value(
-        const StudioTimelinePage(items: [], before: null, hasOlder: false),
+        StudioTimelinePage(items: [], before: null, hasOlder: false),
       );
     }
     return result.future;
@@ -2468,17 +2502,19 @@ final class _ScriptedConnection implements StudioTimelineConnection {
 
   @override
   void requestClose() {
+    if (closed) return;
     closed = true;
-    for (final pending in frames) {
-      if (!pending.isCompleted) pending.complete(null);
-    }
-    frames.clear();
+    if (!_frames.isClosed) scheduleMicrotask(_frames.close);
   }
 
   @override
-  Future<void> close() async {
+  Future<StudioFeedCloseReport> close() async {
     closeCalls++;
     requestClose();
+    return StudioFeedCloseReport(
+      feedId: 'sub-$baselineVersion',
+      outcome: const StudioFeedCloseOutcome.clean(),
+    );
   }
 
   StudioTimelineItem _item(String id, int revision) => StudioTimelineItem(

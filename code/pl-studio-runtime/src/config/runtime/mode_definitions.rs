@@ -418,7 +418,7 @@ fn validation_error(issues: Vec<ThreadModeValidationIssue>) -> anyhow::Error {
         "Thread Mode definition is invalid",
         false,
     )
-    .with_details(serde_json::json!({ "issues": issues }))
+    .with_details(pl_protocol::studio::StudioErrorDetails::Validation { issues })
     .into()
 }
 

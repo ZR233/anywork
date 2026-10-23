@@ -101,8 +101,20 @@ impl StudioRuntime {
             thread_factory.clone(),
         ))?;
         let recovery = crate::studio::StudioRecoveryRegistry::new();
+        let owner_epoch = crate::studio::ids::new_id("runtime");
+        let observation_ids = super::super::observation_ids::ObservationIds::new(owner_epoch.clone());
+        let models_source = config_runtime.attach_models_source(pl_protocol::products::identity::ProductReadOrigin {
+            owner_epoch: owner_epoch.clone(), incarnation: observation_ids.next()?,
+        })?;
+        let templates_source = super::super::models::TemplatesSource::new(
+            pl_protocol::products::identity::ProductReadOrigin { owner_epoch: owner_epoch.clone(),
+                incarnation: observation_ids.next()? },
+            pl_model::config::builtin_account_catalog()?.snapshot()?,
+        )?;
+        let read_scopes = super::super::read_scopes::ReadScopeRegistry::default();
         let thread_observations = super::super::thread_observation::ThreadObservations::new(
             super::super::thread_observation::ObservationServices {
+                observation_ids: observation_ids.clone(),
                 store: store.clone(),
                 events: product_events.clone(),
                 performance: model_performance.clone(),
@@ -110,12 +122,17 @@ impl StudioRuntime {
                 writer: persistence.clone(),
                 recovery: recovery.clone(),
             },
+            read_scopes.clone(),
         );
         let rejected_tools = super::super::rejected_tools::RejectedToolOwners::default();
         thread_observations.install(thread_factory.clone(), rejected_tools.clone())?;
         // 持久化观察在 runtime 装配完成后由 `start_persistence_observer` 启动并持有。
         Ok(Self {
-            owner_epoch: crate::studio::ids::new_id("runtime"),
+            owner_epoch,
+            read_calls: Default::default(),
+            read_scopes,
+            models_source,
+            templates_source,
             startup_recovery: None,
             persistence_observer: Default::default(),
             thread_observations,

@@ -3,7 +3,7 @@
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use tokio::sync::mpsc::UnboundedSender;
+use tokio::sync::mpsc::{Sender, error::TrySendError};
 use tokio_util::sync::CancellationToken;
 
 use super::error::{StudioUpdateError, StudioUpdateErrorCode};
@@ -13,12 +13,13 @@ pub(super) async fn download(
     client: &downlowd::Client,
     asset: StudioUpdateAsset,
     destination: PathBuf,
-    progress: UnboundedSender<StudioUpdateEvent>,
+    progress: Sender<StudioUpdateEvent>,
     cancellation: CancellationToken,
 ) -> Result<(), StudioUpdateError> {
     match tokio::fs::metadata(&destination).await {
         Ok(metadata) if metadata.len() == asset.size => {
-            report(&progress, asset.size, asset.size);
+            sync_downloaded_file(&destination, asset.size).await?;
+            report(&progress, asset.size, asset.size).await?;
             return Ok(());
         }
         Ok(_) => tokio::fs::remove_file(&destination)
@@ -66,10 +67,21 @@ pub(super) async fn download(
                 state.cancel();
                 return;
             }
-            if last_report.is_none_or(|last: Instant| last.elapsed() >= Duration::from_millis(250))
-                || state.bytes() == total
-            {
-                report(&progress_events, state.bytes(), total);
+            // The callback fires before downlowd has flushed/closed the destination. Only
+            // intermediate samples may be coalesced here; authoritative total is sent below.
+            if state.bytes() < total
+                && last_report.is_none_or(|last: Instant| last.elapsed() >= Duration::from_millis(250)) {
+                match progress_events.try_send(StudioUpdateEvent::Progress { downloaded: state.bytes(), total }) {
+                    Ok(()) | Err(TrySendError::Full(_)) => {}
+                    Err(TrySendError::Closed(_)) => {
+                        let _ = failure.try_send(StudioUpdateError::new(
+                            StudioUpdateErrorCode::Io,
+                            "the update progress owner stopped during download",
+                        ));
+                        progress_cancellation.cancel();
+                        state.cancel();
+                    }
+                }
                 last_report = Some(Instant::now());
             }
         })
@@ -100,10 +112,16 @@ pub(super) async fn download(
         ));
     }
     result.map_err(download_error)?;
+    sync_downloaded_file(&destination, total).await?;
+    report(&progress, total, total).await?;
+    Ok(())
+}
+
+async fn sync_downloaded_file(destination: &std::path::Path, total: u64) -> Result<(), StudioUpdateError> {
     let file = tokio::fs::OpenOptions::new()
         .read(true)
         .write(true)
-        .open(&destination)
+        .open(destination)
         .await
         .map_err(io_error)?;
     file.sync_all().await.map_err(io_error)?;
@@ -113,12 +131,11 @@ pub(super) async fn download(
             "downloaded installer length does not match the manifest",
         ));
     }
-    report(&progress, total, total);
     Ok(())
 }
 
-fn report(progress: &UnboundedSender<StudioUpdateEvent>, downloaded: u64, total: u64) {
-    let _ = progress.send(StudioUpdateEvent::Progress { downloaded, total });
+async fn report(progress: &Sender<StudioUpdateEvent>, downloaded: u64, total: u64) -> Result<(), StudioUpdateError> {
+    super::install::send_event(progress, StudioUpdateEvent::Progress { downloaded, total }).await
 }
 
 pub(super) fn download_error(error: downlowd::Error) -> StudioUpdateError {

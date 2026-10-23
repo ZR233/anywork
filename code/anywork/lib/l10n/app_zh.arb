@@ -1571,5 +1571,12 @@
   "statusCompacting": "正在压缩…",
   "statusCompactionFailed": "压缩失败，请重试。",
   "settingsModelAutoCompactCustom": "自定义",
-  "settingsSshNextPage": "下一页"
+  "settingsSshNextPage": "下一页",
+  "resourceSourceUninitialized": "未初始化",
+  "resourceSourceLoading": "正在加载…",
+  "resourceSourceRefreshing": "正在刷新…",
+  "resourceSourceStale": "已过时",
+  "resourceSourceDegraded": "已降级",
+  "resourceSourceLastKnown": "上次已知状态",
+  "interactionDiscardAnswersBody": "丢弃答案并关闭此编辑器？这不会回答或取消该交互。"
 }

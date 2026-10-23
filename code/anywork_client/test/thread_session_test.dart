@@ -1,5 +1,7 @@
 import 'dart:async';
 
+import 'package:anywork_client/conversation.dart';
+import 'package:anywork_client/conversation_ports.dart';
 import 'package:anywork_client/studio_client.dart';
 import 'package:test/test.dart';
 
@@ -333,7 +335,7 @@ void main() {
 
       // 内容进度也不能清除真实的 Thread 状态失败。
       session.markResync(StateError('runtime offline'), failed: true);
-      await connection.nextStarted.future;
+      await pumpEventQueue();
       connection.emit(patch(1, 2));
       await session.timeline.state.waitFor(
         (state) => state.snapshot is StudioTimelinePatchFrame,
@@ -650,14 +652,14 @@ void main() {
       final late = TestTimelineConnection(initial: baseline(99));
       lateOpen.complete(late);
       await late.closeCompleted.future;
-      expect(late.initialCalls, 0);
+      expect(late.wasSubscribed, isFalse);
       expect(session.timeline.lastDeliveredFrame, isNull);
 
       session.start();
       final failed = TestTimelineConnection();
       transport.pendingOpens.last.complete(failed);
-      await failed.initialStarted.future;
-      failed.initialResult.completeError(StateError('initial failed'));
+      await failed.subscribed.future;
+      failed.emitStreamError(StateError('initial failed'));
       await failed.closeCompleted.future;
       expect(session.timeline.lastDeliveredFrame, isNull);
       // 内容首帧失败不污染 Thread 状态同步：两路事实各自报告。
@@ -694,7 +696,7 @@ void main() {
     expect(reopened.baseline.subscriptionId, 'second');
     expect(reopened.baseline.version, 1);
     // 新 attempt 的补丁必须从它自己的基线开始。
-    await second.nextStarted.future;
+    await pumpEventQueue();
     second.emit(patch(1, 2, subscriptionId: 'second'));
     final delivered = await session.timeline.state.waitFor(
       (state) => state.snapshot is StudioTimelinePatchFrame,

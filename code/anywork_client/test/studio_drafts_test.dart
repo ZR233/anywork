@@ -1,7 +1,10 @@
 import 'dart:async';
 import 'dart:typed_data';
 
+import 'package:anywork_client/conversation.dart';
+import 'package:anywork_client/conversation_ports.dart';
 import 'package:anywork_client/studio_client.dart';
+import 'package:anywork_client/resources.dart';
 import 'package:test/test.dart';
 
 /// Only transport responses and asynchronous barriers are fake. Draft revision,
@@ -143,49 +146,67 @@ final class _DraftTransport implements StudioTransport {
 final class _DraftConnection implements StudioTimelineConnection {
   _DraftConnection();
 
-  Completer<StudioTimelineUpdate?>? _next;
+  final StreamController<StudioTimelineFeedFrame> _frames =
+      StreamController<StudioTimelineFeedFrame>();
   int _version = 1;
+  int _sequence = 1;
   bool _closed = false;
+  bool _claimed = false;
 
   @override
-  Future<StudioTimelineBaseline> initial() async => StudioTimelineBaseline(
-    subscriptionId: 'draft',
-    version: _version,
-    items: const [],
-    before: null,
-    hasOlder: false,
-  );
-
-  @override
-  Future<StudioTimelineUpdate?> next() {
-    if (_closed) return Future.value(null);
-    if (_next != null) throw StateError('Two outstanding next calls');
-    final pending = Completer<StudioTimelineUpdate?>();
-    _next = pending;
-    return pending.future.whenComplete(() {
-      _next = null;
-    });
+  Stream<StudioTimelineFeedFrame> get events {
+    if (_claimed) {
+      throw const StudioFailure(
+        code: StudioFailureCode.conflict,
+        message: 'The draft test feed stream was already claimed',
+        retryable: false,
+        correlationId: 'draft-test-stream-conflict',
+      );
+    }
+    _claimed = true;
+    _frames.add(
+      StudioTimelineFeedFrame.data(
+        deliverySequence: _sequence++,
+        event: StudioTimelineFeedEvent.baseline(
+          baseline: StudioTimelineBaseline(
+            subscriptionId: 'draft',
+            version: _version,
+            items: const [],
+            before: null,
+            hasOlder: false,
+          ),
+        ),
+      ),
+    );
+    return _frames.stream;
   }
 
+  @override
+  Future<void> ackThrough(int deliverySequence) async {}
+
   Future<void> emit(StudioTimelineChange change) async {
-    final pending = _next;
-    if (pending == null) throw StateError('No pending content read');
+    if (_closed) return;
     final from = _version;
     _version = from + 1;
-    pending.complete(
-      StudioTimelinePatch(
-        subscriptionId: 'draft',
-        from: from,
-        to: _version,
-        changes: [change],
-        priority: StudioTimelinePriority.immediate,
+    _frames.add(
+      StudioTimelineFeedFrame.data(
+        deliverySequence: _sequence++,
+        event: StudioTimelineFeedEvent.update(
+          update: StudioTimelinePatch(
+            subscriptionId: 'draft',
+            from: from,
+            to: _version,
+            changes: [change],
+            priority: StudioTimelinePriority.immediate,
+          ),
+        ),
       ),
     );
   }
 
   @override
   Future<StudioTimelinePage> page({String? before, int? limit}) => Future.value(
-    const StudioTimelinePage(items: [], before: null, hasOlder: false),
+    StudioTimelinePage(items: [], before: null, hasOlder: false),
   );
 
   @override
@@ -196,14 +217,18 @@ final class _DraftConnection implements StudioTimelineConnection {
 
   @override
   void requestClose() {
+    if (_closed) return;
     _closed = true;
-    final pending = _next;
-    if (pending != null && !pending.isCompleted) pending.complete(null);
+    unawaited(_frames.close());
   }
 
   @override
-  Future<void> close() async {
+  Future<StudioFeedCloseReport> close() async {
     requestClose();
+    return const StudioFeedCloseReport(
+      feedId: 'draft',
+      outcome: StudioFeedCloseOutcome.clean(),
+    );
   }
 }
 
@@ -779,7 +804,7 @@ void main() {
     );
     expect(client.budget.used(ResourceKind.observer), baselineObservers + 1);
     await transport.window.emit(
-      const StudioTimelineUpdateItem(
+      StudioTimelineUpdateItem(
         itemId: 'turn-item',
         expectedRevision: 2,
         revision: 2,
@@ -796,6 +821,69 @@ void main() {
     );
     expect(operation.state.value.durable, isTrue);
     expect(client.budget.used(ResourceKind.observer), baselineObservers);
+    await _close(client, transport);
+  });
+
+  test('a receipt later than the saved baseline advances durable from the registered current value', () async {
+    final transport = _DraftTransport();
+    final client = _client(transport);
+    final session = client.session('thread');
+    session.applySnapshot(_workspace());
+    session.start();
+    await session.timeline.ready;
+    final owner = client.composer('thread');
+    owner.updateDraft('late receipt');
+    final submission = owner.submit();
+    final input = await transport.promptEntered.future;
+
+    // 内容先于回执交付带 saved 的终态 Turn：观察登记时它已是当前内容事实。
+    final saved = ThreadItemView(
+      id: 'turn-item',
+      threadId: 'thread',
+      turnId: 'turn',
+      ordinal: 1,
+      revision: 2,
+      createdAt: DateTime.utc(2026),
+      updatedAt: DateTime.utc(2026),
+      saved: true,
+      executionTerminal: true,
+      state: ThreadTurnItemStateView(
+        const CompletedStudioTurnState(
+          startedAt: 1,
+          completedAt: 2,
+          completion: StudioTurnCompletion.normal,
+        ),
+        inputId: input.inputId,
+      ),
+    );
+    await transport.window.emit(
+      StudioTimelineAdd(
+        StudioTimelineItem(
+          item: saved,
+          saved: true,
+          lifecycle: StudioTimelineLifecycle.terminal,
+          omittedBytes: 0,
+          details: const [],
+        ),
+      ),
+    );
+    await session.timeline.state.waitFor(
+      (state) => state.snapshot is StudioTimelinePatchFrame,
+    );
+
+    transport.promptReply.complete(
+      SubmitPromptReceipt(
+        threadId: 'thread',
+        inputId: input.inputId,
+        cursor: 7,
+      ),
+    );
+    await submission;
+    final operation = client.mutations.lookup(OperationId(input.inputId))!;
+    expect(operation.state.value.observed, isTrue);
+    expect(operation.state.value.effective, isTrue);
+    // 同一同步登记边界消费返回的当前内容值：不需要等待未来一帧。
+    expect(operation.state.value.durable, isTrue);
     await _close(client, transport);
   });
 
@@ -843,7 +931,7 @@ void main() {
     final client = _client(transport);
     final session = client.session('thread');
     session.applySnapshot(_workspace());
-    const blockerInput = StudioPromptInput(
+    final blockerInput = StudioPromptInput(
       inputId: 'earlier-input',
       text: 'earlier command',
       attachmentDraftIds: [],

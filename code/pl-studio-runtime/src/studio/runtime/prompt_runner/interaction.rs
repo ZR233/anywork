@@ -3,6 +3,8 @@
 use anyhow::{Context, Result};
 
 use crate::{InteractionRequest, InteractionResolution, InteractionStatus};
+use crate::studio::storage::history::HistoryReadFailure;
+use pl_protocol::studio::{StudioError, StudioErrorCode};
 
 use super::super::{StudioResolveInteractionResponse, StudioRuntime};
 
@@ -11,6 +13,7 @@ impl StudioRuntime {
         &self,
         operation_id: String,
         interaction_id: String,
+        expected_interaction_revision: u64,
         resolution: InteractionResolution,
     ) -> Result<StudioResolveInteractionResponse> {
         Self::validate_operation_id(&operation_id)?;
@@ -20,15 +23,43 @@ impl StudioRuntime {
             // repeat from the durable receipt instead of reporting "not found", minting a new
             // revision or granting a new execution permission.
             return self
-                .durable_interaction_receipt(operation_id, &interaction_id, &resolution)
+                .durable_interaction_receipt(
+                    operation_id,
+                    &interaction_id,
+                    expected_interaction_revision,
+                    &resolution,
+                )
                 .await;
         };
+        crate::thread_assembler::validate_interaction_response(
+            &current,
+            expected_interaction_revision,
+            &resolution,
+        )?;
         if current.status() != InteractionStatus::Pending {
-            anyhow::ensure!(
-                current.resolution().as_ref() == Some(&resolution),
-                "interaction already has a different terminal resolution"
-            );
-            return Ok(self.interaction_command_reply(operation_id, current, false, false));
+            let (thread_id, local_id) = crate::thread_assembler::decode_interaction_key(&interaction_id)?;
+            let kind = match current.kind() {
+                pl_protocol::InteractionKind::UserInput => "interaction",
+                pl_protocol::InteractionKind::ToolApproval => "permission",
+            };
+            let durable = self.store.history(thread_id).await?
+                .fact_receipt_at(
+                    &crate::studio::thread_projection::order::receipt_id(kind, local_id),
+                    current.revision,
+                ).await?;
+            let durable = match durable {
+                Some(receipt) => {
+                    anyhow::ensure!(receipt.kind == kind, StudioError::new(StudioErrorCode::Protocol,
+                        "Durable interaction receipt kind is inconsistent", false));
+                    let saved = Self::project_interaction_receipt(thread_id, local_id, receipt)
+                        .context(HistoryReadFailure::Protocol)?;
+                    anyhow::ensure!(saved == current, StudioError::new(StudioErrorCode::Protocol,
+                        "Durable interaction receipt contradicts the current fact", false));
+                    true
+                }
+                None => false,
+            };
+            return Ok(self.interaction_command_reply(operation_id, current, false, durable));
         }
         self.ensure_thread_owner(&current.scope.thread_id).await?;
         // 到达这里的决议一定来自 Pending 交互，真实受理路径只有 UserInput 决议：
@@ -37,7 +68,11 @@ impl StudioRuntime {
         let user_answered = matches!(resolution, InteractionResolution::UserInput(_));
         let interaction = self
             .threads
-            .resolve_product_interaction(&interaction_id, resolution)
+            .resolve_product_interaction(
+                &interaction_id,
+                expected_interaction_revision,
+                resolution,
+            )
             .await?;
         if user_answered {
             self.agent_facility
@@ -82,6 +117,7 @@ impl StudioRuntime {
         &self,
         operation_id: String,
         interaction_id: &str,
+        expected_revision: u64,
         resolution: &InteractionResolution,
     ) -> Result<StudioResolveInteractionResponse> {
         let (thread_id, local_id) =
@@ -96,30 +132,41 @@ impl StudioRuntime {
             else {
                 continue;
             };
-            let mut state = pl_core::thread::ThreadSnapshot::default();
-            match receipt.kind.as_str() {
-                "interaction" => {
-                    state
-                        .interactions
-                        .insert(local_id.to_owned(), serde_json::from_str(&receipt.payload)?);
-                }
-                "permission" => {
-                    state
-                        .permissions
-                        .insert(local_id.to_owned(), serde_json::from_str(&receipt.payload)?);
-                }
-                _ => continue,
-            }
-            let projected =
-                crate::thread_assembler::project_thread_interaction(thread_id, local_id, &state)?
-                    .context("durable interaction receipt cannot be projected")?;
-            anyhow::ensure!(
-                projected.resolution().as_ref() == Some(resolution),
-                "interaction already has a different terminal resolution"
-            );
+            anyhow::ensure!(receipt.kind == kind, StudioError::new(StudioErrorCode::Protocol,
+                "Durable interaction receipt kind is inconsistent", false));
+            let projected = Self::project_interaction_receipt(thread_id, local_id, receipt)
+                .context(HistoryReadFailure::Protocol)?;
+            crate::thread_assembler::validate_interaction_response(
+                &projected,
+                expected_revision,
+                resolution,
+            )?;
             return Ok(self.interaction_command_reply(operation_id, projected, false, true));
         }
         anyhow::bail!("interaction not found")
+    }
+
+    fn project_interaction_receipt(
+        thread_id: &str,
+        local_id: &str,
+        receipt: crate::studio::storage::history::FactReceipt,
+    ) -> Result<InteractionRequest> {
+        let mut state = pl_core::thread::ThreadSnapshot::default();
+        match receipt.kind.as_str() {
+            "interaction" => {
+                state.interactions.insert(local_id.to_owned(), serde_json::from_str(&receipt.payload)?);
+            }
+            "permission" => {
+                state.permissions.insert(local_id.to_owned(), serde_json::from_str(&receipt.payload)?);
+            }
+            _ => anyhow::bail!("durable interaction receipt has an incompatible kind"),
+        }
+        let projected = crate::thread_assembler::project_thread_interaction(thread_id, local_id, &state)?
+            .context("durable interaction receipt cannot be projected")?;
+        let (owner, local) = crate::thread_assembler::decode_interaction_key(&projected.interaction_id)?;
+        anyhow::ensure!(owner == thread_id && local == local_id && projected.revision == receipt.revision,
+            "durable interaction receipt has contradictory identity or revision");
+        Ok(projected)
     }
 
     /// 内存优先读取交互：pending 交互必须来自驻留 actor 的权威快照；

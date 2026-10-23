@@ -5,16 +5,20 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
-import 'package:anywork/main.dart' as studio;
+import 'package:anywork/src/app/bootstrap/launch_application.dart' as studio;
+import 'package:anywork/src/app/composition/application_container.dart';
 import 'package:anywork_client/studio_client.dart';
 import 'package:anywork/src/app/app_graph.dart';
+import 'package:anywork/src/app/app_bindings.dart';
 import 'package:anywork/src/app/studio_host_lifecycle.dart';
 import 'package:anywork/src/app/studio_shutdown.dart';
 import 'package:anywork/src/infrastructure/frb/studio_api.dart';
 import 'package:anywork/src/l10n/studio_l10n.dart';
 
 import 'package:anywork/src/platform/error_log.dart';
-import 'package:anywork/src/shared/studio_driver_key_values.dart';
+import 'package:anywork/src/platform/desktop_tray_host.dart';
+import 'package:anywork/src/diagnostics/studio_driver_key_values.dart';
+import 'package:anywork/src/diagnostics/conversation_status_diagnostics.dart';
 import 'package:anywork/src/shared/studio_driver_projection.dart';
 import 'package:anywork/src/shared/studio_driver_state.dart';
 import 'package:flutter/gestures.dart';
@@ -41,14 +45,18 @@ void main() {
   if (const bool.fromEnvironment('dart.vm.product')) {
     throw StateError('Flutter Driver mode is unavailable in product builds');
   }
+  // Top-level Dart finals are lazy: construct explicitly before graph assembly,
+  // not on the first Driver start command. No Session is borrowed here.
+  _runtimeEvidence = RuntimeEventEvidenceRecorder();
   enableFlutterDriverExtension(
     handler: _handleDriverData,
     commands: <CommandExtension>[
       RawTapCommandExtension(),
       PointerHoverCommandExtension(),
       PageSwitchCommandExtension(
-        client: () => _client,
-        owner: () => _container.read(appGraphProvider).timeline,
+        workspace: () => _container.read(workspaceRepositoryProvider),
+        conversations: () => _container.read(conversationRepositoryProvider),
+        owner: () => _container.read(timelineCoordinatorProvider),
       ),
       PointerScrollCommandExtension(),
       PointerDragCommandExtension(),
@@ -61,33 +69,12 @@ void main() {
   final graph = const bool.fromEnvironment('ANYWORK_DEMO')
       ? AppGraph.demo(driver: true)
       : AppGraph.production();
-  _container = ProviderContainer(
-    overrides: [appGraphProvider.overrideWithValue(graph)],
-  );
+  _container = createApplicationContainer(graph);
   // Driver 只借用当前 AppGraph 的 Client 与展示 owner；绑定不建立内容订阅。
   bindStudioDriver(graph.client, timeline: graph.timeline);
   _applyShutdownFaultOverride();
-  studio.bootstrapStudio(container: _container);
-  // 与托盘退出共用同一退出协调器：native -> Dart 的 requestExit 也进入该协调器。
-  StudioExitCoordinator.install(
-    StudioExitCoordinator(
-      graph.client.transport,
-      _container.read(studioShutdownProgressStateProvider.notifier).update,
-      readyUpdateVersion: () =>
-          graph.client.updates.state is ReadyUpdaterStateSnapshot
-          ? graph.client.updates.state.update?.version
-          : null,
-      onBeginExit: _container
-          .read(studioShutdownProgressStateProvider.notifier)
-          .beginExit,
-      // 退出（含失败取消）在 `graph.close` 之前取消 runtime 取证观察：共享 Session／
-      // Client 仍由既有 owner 关闭，记录器不改变任何业务 demand。
-      closeClient: (deadline) {
-        _runtimeEvidence?.cancelForShutdown();
-        return graph.close(deadline: deadline);
-      },
-    ),
-  );
+  studio.bootstrapStudio(graph: graph, container: _container,
+    desktopHostBuilder: (context, child) => DesktopTrayHost(enabled: true, child: child));
 }
 
 /// Driver-only 初始化故障注入：`ANYWORK_DRIVER_SHUTDOWN_FAULT` 取值
@@ -113,9 +100,9 @@ AnyworkClient get _client => _container.read(appGraphProvider).client;
 Future<StudioShutdownReport>? _shutdownTask;
 Future<void>? _driverFixtureClipboardImageTask;
 
-/// Driver-only runtime 发布取证记录器：借用当前 Client 已存在的 Session 观察公开
-/// runtime read-model 发布，不创建 Session、不建立 transport 订阅、不改变 demand。
-RuntimeEventEvidenceRecorder? _runtimeEvidence;
+/// Constructed before graph assembly; start borrows this graph's real Session.
+/// It creates no Session, transport subscription or business demand.
+late final RuntimeEventEvidenceRecorder _runtimeEvidence;
 bool _recordingFrames = false;
 int _frameCount = 0;
 int _slowFrames = 0;
@@ -550,22 +537,15 @@ Future<String> _handleJsonDriverCommand(String raw) async {
           'error': 'targetMustBeStrings',
         });
       }
-      _runtimeEvidence ??= RuntimeEventEvidenceRecorder(_client);
       return jsonEncode(
-        _runtimeEvidence!.start(threadId: threadId, turnId: turnId),
+        await _runtimeEvidence.start(
+          conversations: _container.read(conversationRepositoryProvider),
+          threadId: threadId, turnId: turnId),
       );
     case 'runtime-evidence-stop':
-      // 同步取消本记录器自己的观察并返回不可变结果；未开始或重复停止明确失败。
-      final recorder = _runtimeEvidence;
-      if (recorder == null) {
-        return jsonEncode(<String, Object?>{
-          'ok': false,
-          'cmd': 'runtime-evidence-stop',
-          'source': RuntimeEventEvidenceRecorder.source,
-          'error': 'notStarted',
-        });
-      }
-      return jsonEncode(recorder.stop());
+      // Await real accepted reads and scope close, not just observation cancel.
+      return jsonEncode(await _runtimeEvidence.stop(
+        deadline: DateTime.now().add(const Duration(seconds: 15))));
     default:
       return jsonEncode(<String, Object?>{
         'ok': false,
@@ -1060,89 +1040,14 @@ String _driverSnapshotJson() {
 
 Map<String, Object?> _driverDiagnostics({StudioDriverFacts? observed}) {
   final facts = observed ?? StudioDriverState.readFacts();
-  final workspace = facts.workspace;
-  final runtime = workspace?.runtime;
-  final liveUsage = runtime?.liveUsage;
-  final observedUsage =
-      liveUsage != null &&
-          liveUsage.turnId.isNotEmpty &&
-          liveUsage.attemptId.isNotEmpty &&
-          liveUsage.observationSequence >= 0
-      ? liveUsage
-      : null;
-  final usageState = observedUsage?.state.name ?? 'unknown';
-  final metricsAvailable =
-      observedUsage != null &&
-      (usageState == 'live' || usageState == 'authoritative');
-
-  // ThreadRuntimeView stores these counters as non-nullable ints, while its
-  // default constructor and FRB's unavailable context window both use zero.
-  // That schema cannot distinguish an explicit zero from the default, so a
-  // zero from those fields is conservatively unknown/null. The nullable live
-  // usage fields do carry presence provenance; their explicit zero is kept.
-  int? defaultProneCount(int? value) =>
-      !metricsAvailable || value == null || value <= 0 ? null : value;
-  int? explicitUsageCount(int? value) => metricsAvailable ? value : null;
-  final contextTokens =
-      explicitUsageCount(observedUsage?.latestContextTokens) ??
-      defaultProneCount(runtime?.contextTokens);
-  final contextWindow = defaultProneCount(runtime?.contextWindow);
-  final totalTokens = defaultProneCount(runtime?.totalTokens);
-  final inputTokens = defaultProneCount(runtime?.promptTokens);
-  final outputTokens = defaultProneCount(runtime?.completionTokens);
-  final reasoningTokens = defaultProneCount(runtime?.reasoningTokens);
-  final liveOutputTokens = explicitUsageCount(observedUsage?.completionTokens);
-  final liveResponseMillis = explicitUsageCount(observedUsage?.responseMillis);
-  final throughputSource = runtime == null
-      ? null
-      : ModelRouteQueries.throughputSource(runtime);
-  // Preserve source counters for diagnostics, but only derive throughput from
-  // a complete output/response pair chosen by the canonical Client query.
-  final turnOutputTokens = throughputSource?.outputTokens;
-  final responseMillis = throughputSource?.responseMillis;
-  final tokensPerSecond = throughputSource?.tokensPerSecond;
+  final selected = _container.read(workspaceRepositoryProvider).state.value.selection.threadId;
+  final session = _container.read(conversationRepositoryProvider).active.value;
+  // Each facet carries its own stamp. A selection handoff must not expose an
+  // old Session under the new target, nor create a same-ID replacement owner.
+  final status = conversationStatusDiagnostics(session?.threadId == selected ? session : null);
   return <String, Object?>{
-    'schemaVersion': 1,
-    'runtime': <String, Object?>{
-      'availability': workspace == null ? 'unavailable' : 'available',
-      // Null is an unknown/unavailable value. It is never replaced with a
-      // zero-valued ThreadRuntimeView default merely to make the JSON shape
-      // convenient. A usage state without a complete identity is downgraded
-      // to unknown and all usage counters remain null.
-      'usageState': usageState,
-      'turnId': metricsAvailable ? observedUsage.turnId : null,
-      'attemptId': metricsAvailable ? observedUsage.attemptId : null,
-      'observationSequence': metricsAvailable
-          ? observedUsage.observationSequence
-          : null,
-      // 当前展示代次已经应用的内容版本（design/26 §26.9）；没有展示时为 null，
-      // 不用 0 或旧 workspace revision 冒充。
-      'revision': facts.timeline?.appliedVersion,
-      'contextTokens': contextTokens,
-      'contextWindow': contextWindow,
-      'totalTokens': totalTokens,
-      'inputTokens': inputTokens,
-      'outputTokens': outputTokens,
-      'reasoningTokens': reasoningTokens,
-      'liveOutputTokens': liveOutputTokens,
-      'liveResponseMillis': liveResponseMillis,
-      'turnOutputTokens': turnOutputTokens,
-      'responseMillis': responseMillis,
-      'tokensPerSecond': tokensPerSecond,
-      // 当前 Thread runtime 快照声明的技能激活列表：直接读 Client runtime
-      // read-model 的 typed 字段，不另建 Driver 状态，也不从历史 Skill 条目推断。
-      // 没有选中 Thread 的 workspace 时为 null，与其它 runtime 事实一致。
-      'activeSkills': runtime?.activeSkills,
-      // Keep throughput as an explicit typed group only when both source
-      // counters are known; an unknown group is represented by null.
-      'throughput': tokensPerSecond == null
-          ? null
-          : <String, Object?>{
-              'outputTokens': turnOutputTokens,
-              'responseMillis': responseMillis,
-              'tokensPerSecond': tokensPerSecond,
-            },
-    },
+    'schemaVersion': 2,
+    ...status,
     'skills': _driverSkillsDiagnostics(),
     'composer': <String, Object?>{
       'newThread': _driverComposerDiagnostics(facts.newThreadComposer),

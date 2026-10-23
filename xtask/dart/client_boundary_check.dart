@@ -7,6 +7,9 @@ import 'package:analyzer/dart/analysis/utilities.dart';
 import 'package:analyzer/dart/ast/ast.dart';
 import 'package:analyzer/dart/ast/visitor.dart';
 
+import 'feature_boundary_rules.dart';
+import 'json_boundary_rules.dart';
+
 void main(List<String> arguments) {
   if (arguments.length != 1) {
     stderr.writeln('usage: client_boundary_check.dart <workspace-root>');
@@ -99,6 +102,8 @@ List<ClientBoundaryDiagnostic> checkClientSource({
       isClient: path.startsWith('code/anywork_client/lib/'),
     ),
   );
+  checkFeatureBoundaries(unit: parsed.unit, path: path, report: report);
+  checkJsonBoundaries(unit: parsed.unit, path: path, report: report);
   return List.unmodifiable(diagnostics);
 }
 
@@ -128,7 +133,8 @@ bool _isHandwrittenDart(String path) {
       !path.endsWith('.g.dart') &&
       !path.endsWith('.freezed.dart') &&
       !path.contains('/lib/src/rust/') &&
-      !path.contains('/lib/l10n/app_localizations');
+      !path.contains('/lib/l10n/app_localizations') &&
+      !path.contains('/lib/src/l10n/app_localizations');
 }
 
 typedef _Report = void Function(int offset, String rule, String message);
@@ -149,10 +155,8 @@ final class _BoundaryVisitor extends RecursiveAstVisitor<void> {
 
   bool get isFeature => path.startsWith('code/anywork/lib/src/features/');
   bool get isProvider =>
-      path.startsWith('code/anywork/lib/src/presentation/providers/');
-  bool get isCommand =>
-      path.contains('/commands/') || path.endsWith('_commands.dart');
-
+      path.startsWith('code/anywork/lib/src/presentation/providers/') ||
+      isFeature && path.contains('/view_models/');
   @override
   void visitImportDirective(ImportDirective node) {
     _checkUri(node.uri);
@@ -177,11 +181,12 @@ final class _BoundaryVisitor extends RecursiveAstVisitor<void> {
     final resolved = Uri(path: path).resolve(uri).toString();
     if (isClient &&
         uri.startsWith('package:') &&
-        !uri.startsWith('package:anywork_client/')) {
+        !uri.startsWith('package:anywork_client/') &&
+        uri != 'package:freezed_annotation/freezed_annotation.dart') {
       report(
         literal.offset,
         'OWN-01',
-        'Client may only import Dart SDK or itself: $uri',
+        'Client may only import Dart SDK, itself or the public Freezed annotation entrypoint: $uri',
       );
     }
     if (!isClient && uri.contains('package:anywork_client/src/')) {
@@ -197,8 +202,7 @@ final class _BoundaryVisitor extends RecursiveAstVisitor<void> {
             resolved.contains('/infrastructure/') ||
             resolved.contains('/src/rust/') ||
             uri.startsWith('package:flutter_rust_bridge/') ||
-            uri.endsWith('/transport_ports.dart') ||
-            uri.endsWith('/studio_ports.dart'))) {
+            uri.endsWith('_ports.dart'))) {
       report(
         literal.offset,
         'OWN-01',
@@ -279,11 +283,15 @@ final class _BoundaryVisitor extends RecursiveAstVisitor<void> {
             'StudioClient',
             'AnyworkClient',
             'AppGraph',
-          }.contains(constructor)) {
+          }.contains(constructor) ||
+          typeName.endsWith('Repository') ||
+          typeName.endsWith('Registry') ||
+          (constructor?.endsWith('Repository') ?? false) ||
+          (constructor?.endsWith('Registry') ?? false)) {
         report(
           variable.offset,
           'LIFE-01',
-          'Construct Client/AppGraph at the app composition root, not as a singleton',
+          'Construct repositories/registries at the app composition root, not as a singleton',
         );
       }
     }
@@ -313,8 +321,7 @@ final class _BoundaryVisitor extends RecursiveAstVisitor<void> {
         'Provider observation cannot admit a Client owner; observe existing owners created by logical demand',
       );
     }
-    if (isCommand &&
-        const {'readStudioState', '_reloadProduct'}.contains(name)) {
+    if (const {'readStudioState', '_reloadProduct'}.contains(name)) {
       report(
         node.offset,
         'CMD-02',

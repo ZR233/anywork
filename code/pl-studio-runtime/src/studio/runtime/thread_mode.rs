@@ -266,6 +266,11 @@ impl StudioRuntime {
                 tools: registrations,
             })
             .await?;
+        let binding_revision = committed
+            .extensions
+            .get("studio.mode")
+            .context("committed mode reconfiguration has no mode binding")?
+            .revision;
         self.thread_factory
             .commit_refreshed_binding(thread_id, binding)?;
         let mut directory = pl_protocol::Thread::from(record);
@@ -287,8 +292,8 @@ impl StudioRuntime {
                 true,
                 vec![
                     self.resource_stamp(
-                        format!("thread-state:{thread_id}"),
-                        committed.commit_sequence,
+                        format!("thread-mode:{thread_id}"),
+                        binding_revision,
                     ),
                     self.thread_directory_stamp(&directory_commit)?,
                 ],

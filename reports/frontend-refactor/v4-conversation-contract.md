@@ -14,6 +14,8 @@ Session、观察当前选择或VM rebuild本身不admit native资源。公共能
 ```text
 ConversationRepository
   active:ReadonlyLatestValue<ConversationSession?>
+  activationFailure:ReadonlyLatestValue<ConversationActivationFailure?>
+  retryActivation({required String threadId,required int selectionGeneration})->void
   existingSession(String threadId)->ConversationSession?
   session(String threadId)->ConversationSession
   seal()->void
@@ -44,6 +46,20 @@ needsOpen=true不启动；更换需求先撤回active，再退役原attempt，�
 同ID句柄充数。五域有独立连接/ready/错误/重同步，retry某域不刷新Timeline或重放命令。
 retired planner child按Thread合同cold规则，不把所有child当retired。资源不足如实发布错误，
 不回收尚在途owner；同Thread的live域共享原native assembler/incarnation，不重建五个执行者。
+
+`ConversationActivationFailure {threadId:String,selectionGeneration:int,error:StudioFailure}`
+是Freezed失败值，不含Session、Future或permit。它仅记录已选需求尚未得到Session时的准入
+失败，唯一writer仍为该ConversationRepository；active仍借具体Session，不改成值对象。
+选择替换、needsOpen或seal使旧失败失效；同步通知重入后必须重新核原选择才能发布后续结果。
+创建失败保原typed诊断和私有cause，不留下未登记的局部资源；已创建的Session内部连接/上下文
+失败仍由原五域/Timeline状态表达，不复制到activationFailure。
+
+`retryActivation`只重试当前同threadId/generation、needsOpen=false且尚无Session的失败准入；
+封闭时Cancelled，目标或代次已过时为Superseded，同目标已激活则幂等无操作。重试不制造
+新的selectionGeneration，不触发Workspace.open/ensure，不重连已有Session的五域。
+直接`session(threadId)`的非选择借用失败仍返回原typed错误，不改变当前选择的失败槽。
+装配只转交Workspace唯一选择需求；Workspace VM同步观察这个只读失败值，并按当前选择身份
+呈现/重试，不自建错误owner或通过页面重建掩盖准入失败。
 
 每个`Thread<Facet>State`是Freezed值，共同字段为`stamp:ThreadFacetStamp?`、
 `sync:FacetSyncState`与本域`value`；初始stamp/value均null。具体value类型固定为：

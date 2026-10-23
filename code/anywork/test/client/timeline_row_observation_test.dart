@@ -12,7 +12,8 @@ import 'package:anywork/src/domain/models/timeline_presentation.dart';
 import 'package:anywork/src/features/timeline/timeline_view.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
 import 'package:anywork/src/presentation/view_models/timeline_session_owner.dart';
-import 'package:anywork/src/shared/studio_driver_keys.dart';
+import 'package:anywork/src/diagnostics/studio_driver_keys.dart';
+import 'package:anywork_client/conversation.dart';
 import 'package:anywork_client/studio_client.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_chat_core/flutter_chat_core.dart';
@@ -220,7 +221,7 @@ void main() {
       );
       final next = applyTimelineItemUpdate(
         current,
-        const StudioTimelineUpdateItem(
+        StudioTimelineUpdateItem(
           itemId: 'live',
           expectedRevision: 1,
           revision: 2,
@@ -250,7 +251,7 @@ void main() {
       final current = timelineMessageFor(textItem('live', revision: 2));
       final next = applyTimelineItemUpdate(
         current,
-        const StudioTimelineUpdateItem(
+        StudioTimelineUpdateItem(
           itemId: 'live',
           expectedRevision: 1,
           revision: 3,
@@ -288,7 +289,7 @@ void main() {
       );
       final next = applyTimelineItemUpdate(
         current,
-        const StudioTimelineUpdateItem(
+        StudioTimelineUpdateItem(
           itemId: 'accounting',
           expectedRevision: 1,
           revision: 1,
@@ -453,7 +454,7 @@ void main() {
 
       // 同身份原位更新（工具参数替换）：不重插消息，也不收起用户已展开的回执。
       final applied = lease.applyPatch(
-        const StudioTimelinePatch(
+        StudioTimelinePatch(
           subscriptionId: 'test',
           from: 0,
           to: 1,

@@ -1,13 +1,14 @@
 import 'dart:async';
 
 import 'package:anywork/src/app/app_graph.dart';
+import 'package:anywork_client/conversation.dart';
 import 'package:anywork_client/studio_client.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'support/recording_demo_transport.dart';
 
 /// 内容连接的 readiness 信号：首帧未到之前，观察者不能看到候选基线；
-/// 首帧到达后同一 attempt 只交付一次基线，唯一内容泵才继续取帧。
+/// 首帧到达后同一 attempt 只交付一次基线，唯一消费路径才继续接收推送。
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
@@ -63,8 +64,9 @@ void main() {
       expect(
         transport.timelines.single.nextCalls,
         1,
-        reason: 'reduce 完首帧才取下一帧，同一时刻只有一个 next',
+        reason: '基线处理完成并确认一次；后续帧须等待本次消费结束',
       );
+      expect(transport.timelines.single.acks.single, 1);
     },
   );
 }
@@ -75,16 +77,15 @@ class _HeldInitialConnection extends RecordingTimelineConnection {
     required super.inner,
     required this.entered,
     required this.release,
-  });
+  }) {
+    initialGate = Completer<void>();
+    onFirstFrameHeld = (gate) {
+      if (!entered.isCompleted) entered.complete();
+      release.future.whenComplete(gate.complete);
+    };
+  }
   final Completer<void> entered;
   final Completer<void> release;
-
-  @override
-  Future<StudioTimelineBaseline> initial() async {
-    entered.complete();
-    await release.future;
-    return super.initial();
-  }
 }
 
 DateTime _deadline() => DateTime.now().add(const Duration(seconds: 5));

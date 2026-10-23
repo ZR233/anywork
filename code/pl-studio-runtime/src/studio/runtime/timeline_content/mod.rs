@@ -15,17 +15,16 @@ use pl_core::chat::{
     Session, TailChange,
 };
 use pl_protocol::{
-    TimelineChange, TimelineDetailChunk, TimelineDetailQuery, TimelineFieldChange,
+    ThreadContentField, TimelineChange, TimelineDetailChunk, TimelineDetailQuery, TimelineFieldChange,
     TimelineFieldUpdate, TimelineLifecycle, TimelinePage, TimelinePageQuery, TimelinePriority,
     TimelineResyncReason, TimelineTailBaseline, TimelineTailUpdate,
 };
 
 use super::StudioRuntime;
-use super::chat_item::item_shell;
 use field::{
     core_field, detail_cursor, encode_detail_cursor, encode_page_cursor, page_cursor, wire_field,
 };
-use preview::timeline_item;
+use preview::{timeline_item, update_shell};
 
 /// 一个 Thread 的内容句柄：捕获同一共享 `Session` 与 Thread 身份。
 ///
@@ -216,17 +215,38 @@ impl TimelineTailStream {
                 item_id,
                 expected_revision,
                 revision,
+                preview,
                 omitted_bytes,
                 saved,
                 lifecycle,
                 meta,
                 fields,
             } => {
+                if preview.item_id != item_id || preview.revision != revision
+                    || preview.omitted_bytes() != omitted_bytes || preview.saved != saved
+                    || preview.lifecycle != lifecycle
+                    || meta.as_deref().is_some_and(|bytes| bytes != preview.meta.as_ref()) {
+                    return self.protocol_gap("timeline update disagrees with its captured preview");
+                }
+                let mut needs_shell = meta.is_some();
                 let mut converted = Vec::with_capacity(fields.len());
                 for update in fields {
                     let Some(field) = wire_field(&update.field) else {
-                        return self.protocol_gap();
+                        return self.protocol_gap("timeline tail delivered a content field this product cannot address");
                     };
+                    let removed = matches!(&update.change, FieldChange::Remove);
+                    let matches_capture = match preview.fields.get(&update.field) {
+                        Some(captured) => !removed && update.total_bytes == captured.total_bytes
+                            && update.preview_bytes == captured.block.len() as u64,
+                        None => removed && update.total_bytes == 0 && update.preview_bytes == 0,
+                    };
+                    if !matches_capture {
+                        return self.protocol_gap("timeline field lengths disagree with the captured preview");
+                    }
+                    // Opaque structured values cannot be reconstructed from an Append suffix or
+                    // a truncated JSON block. Even Unchanged may accompany a new total/revision.
+                    needs_shell |= !removed && matches!(field,
+                        ThreadContentField::ToolOutputArtifacts | ThreadContentField::RawPayload { .. });
                     converted.push(TimelineFieldUpdate {
                         field,
                         change: field_change(update.change),
@@ -234,6 +254,9 @@ impl TimelineTailStream {
                         preview_bytes: update.preview_bytes,
                     });
                 }
+                let item_shell = if needs_shell {
+                    Some(Box::new(update_shell(&self.thread_id, &preview)?))
+                } else { None };
                 TimelineChange::UpdateItem {
                     item_id,
                     expected_revision,
@@ -241,21 +264,18 @@ impl TimelineTailStream {
                     omitted_bytes,
                     saved,
                     lifecycle: lifecycle_of(lifecycle),
-                    item_shell: meta
-                        .as_deref()
-                        .map(|bytes| item_shell(bytes, revision).map(Box::new))
-                        .transpose()?,
+                    item_shell,
                     fields: converted,
                 }
             }
         })
     }
 
-    /// 内容字段没有产品域：这是一次无法映射的权威变化，绝不静默丢弃结构化数据。
-    fn protocol_gap<T>(&self) -> Result<T> {
+    /// 无法证明权威变化的身份／材料或字段映射时明确拒绝，绝不补最新值或静默丢弃。
+    fn protocol_gap<T>(&self, message: &'static str) -> Result<T> {
         Err(anyhow::anyhow!(pl_protocol::studio::StudioError::new(
             pl_protocol::studio::StudioErrorCode::Protocol,
-            "timeline tail delivered a content field this product cannot address",
+            message,
             false,
         )))
     }

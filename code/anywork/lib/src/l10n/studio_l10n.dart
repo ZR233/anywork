@@ -1,7 +1,11 @@
+import 'package:anywork_client/conversation.dart' show InteractionKind;
+import 'package:anywork_client/drafts.dart' show AttachmentModality;
+import 'package:anywork_client/models.dart' show ModelModality;
+import 'package:anywork_client/modes.dart' show ThreadModeId;
+import 'package:anywork_client/workspace.dart' show ThreadStatus;
 import 'package:flutter/material.dart';
 
-import 'package:anywork_client/models.dart';
-
+import '../ui/formatters/throughput_format.dart';
 import 'app_localizations.dart';
 
 extension StudioLocalizationsX on BuildContext {
@@ -83,52 +87,6 @@ extension StudioLocalizationsX on BuildContext {
     };
   }
 
-  /// 固定活动条的准确阶段标签。
-  ///
-  /// 与 Timeline 的推理/工具组标签彼此独立：那里描述“历史上发生过什么”，这里只描述
-  /// “此刻在做什么”。等待 API 与已开始 reasoning 都显示“思考中”；保存被明确阻塞时
-  /// 显示准确原因，而不是回落到“思考中”。存储状态按 typed `canResume` 区分“已恢复
-  /// 待继续”“等待保存恢复”与“具体故障”，绝不解析错误文本来判定。
-  String conversationActivityLabel(ConversationActivityView view) {
-    final storage = view.storage;
-    return switch (view.kind) {
-      ConversationActivityKind.preparing => l10n.conversationActivityPreparing,
-      ConversationActivityKind.thinking => l10n.timelineReasoningActive,
-      ConversationActivityKind.responding => l10n.statusTurnResponding,
-      ConversationActivityKind.planning => l10n.statusTurnPlanning,
-      ConversationActivityKind.runningTool =>
-        view.wait == null
-            ? l10n.conversationActivityRunningTool
-            : switch (view.wait!.intent) {
-                ThreadWaitEventsIntentView(:final targets) =>
-                  targets.isEmpty
-                      ? l10n.conversationActivityWaitingMessages
-                      : l10n.conversationActivityWaitingTools,
-                ThreadWaitTimerIntentView() =>
-                  l10n.conversationActivityWaitingTimer,
-              },
-      ConversationActivityKind.awaitingApproval =>
-        l10n.statusInteractionToolApproval,
-      ConversationActivityKind.awaitingInput => l10n.statusInteractionUserInput,
-      ConversationActivityKind.stopping => l10n.conversationActivityStopping,
-      ConversationActivityKind.storageBlocked =>
-        storage == null
-            ? l10n.conversationActivitySaveFailed
-            // 已核验可继续（`canResume`）表示保存已恢复、水位核验通过；core 的故障闩在
-            // 显式继续前可能仍保留上一次的错误文本，此时不能显示“保存故障”，而应明确
-            // “已保存，等待继续执行”。
-            : storage.resumeRequired && storage.canResume
-            ? l10n.conversationActivityResumeReady
-            : storage.hasFault
-            ? l10n.conversationActivitySaveFailed
-            : storage.pressurePaused
-            ? l10n.conversationActivityStoragePressure
-            : storage.resumeRequired
-            ? l10n.conversationActivityResumeRequired
-            : l10n.conversationActivitySavePaused,
-    };
-  }
-
   String interactionKindLabel(InteractionKind kind) {
     return switch (kind) {
       InteractionKind.toolApproval => l10n.statusInteractionToolApproval,
@@ -137,22 +95,22 @@ extension StudioLocalizationsX on BuildContext {
   }
 
   /// Maps a model modality to its localized display name.
-  String modalityLabel(ModelModalityView modality) {
+  String modalityLabel(ModelModality modality) {
     return switch (modality) {
-      ModelModalityView.text => l10n.modalityText,
-      ModelModalityView.image => l10n.modalityImage,
-      ModelModalityView.audio => l10n.modalityAudio,
-      ModelModalityView.video => l10n.modalityVideo,
-      ModelModalityView.file => l10n.modalityFile,
+      ModelModality.text => l10n.modalityText,
+      ModelModality.image => l10n.modalityImage,
+      ModelModality.audio => l10n.modalityAudio,
+      ModelModality.video => l10n.modalityVideo,
+      ModelModality.file => l10n.modalityFile,
     };
   }
 
   /// Maps an attachment modality to its localized display name.
-  String attachmentModalityLabel(AttachmentModalityView modality) {
+  String attachmentModalityLabel(AttachmentModality modality) {
     return switch (modality) {
-      AttachmentModalityView.image => l10n.modalityImage,
-      AttachmentModalityView.video => l10n.modalityVideo,
-      AttachmentModalityView.file => l10n.modalityFile,
+      AttachmentModality.image => l10n.modalityImage,
+      AttachmentModality.video => l10n.modalityVideo,
+      AttachmentModality.file => l10n.modalityFile,
     };
   }
 
@@ -194,17 +152,17 @@ extension StudioLocalizationsX on BuildContext {
   ///
   /// The header agent switcher and the status bar share this single mapping so
   /// the same canonical status always renders the same localized text.
-  String threadStatusLabel(ThreadStatusView status) {
+  String threadStatusLabel(ThreadStatus status) {
     return switch (status) {
-      ThreadStatusView.idle => l10n.threadStatusIdle,
-      ThreadStatusView.queued => l10n.agentDetailStatusQueued,
-      ThreadStatusView.running => l10n.agentDetailStatusRunning,
-      ThreadStatusView.waitingTool => l10n.statusTurnWaitingForApproval,
-      ThreadStatusView.waitingInteraction => l10n.statusTurnWaitingForUserInput,
-      ThreadStatusView.cancelling => l10n.threadStatusCancelling,
-      ThreadStatusView.closing => l10n.agentDetailStatusClosing,
-      ThreadStatusView.closed => l10n.threadStatusClosed,
-      ThreadStatusView.faulted => l10n.agentDetailStatusErrored,
+      ThreadStatus.idle => l10n.threadStatusIdle,
+      ThreadStatus.queued => l10n.agentDetailStatusQueued,
+      ThreadStatus.running => l10n.agentDetailStatusRunning,
+      ThreadStatus.waitingTool => l10n.statusTurnWaitingForApproval,
+      ThreadStatus.waitingInteraction => l10n.statusTurnWaitingForUserInput,
+      ThreadStatus.cancelling => l10n.threadStatusCancelling,
+      ThreadStatus.closing => l10n.agentDetailStatusClosing,
+      ThreadStatus.closed => l10n.threadStatusClosed,
+      ThreadStatus.faulted => l10n.agentDetailStatusErrored,
     };
   }
 
@@ -279,21 +237,4 @@ extension StudioLocalizationsX on BuildContext {
       _ => state,
     };
   }
-}
-
-extension ConversationActivityKindX on ConversationActivityKind {
-  IconData get icon => switch (this) {
-    ConversationActivityKind.preparing => Icons.menu_book_outlined,
-    ConversationActivityKind.thinking => Icons.psychology_alt_outlined,
-    ConversationActivityKind.responding => Icons.edit_note_outlined,
-    ConversationActivityKind.planning => Icons.route_outlined,
-    ConversationActivityKind.runningTool => Icons.build_outlined,
-    ConversationActivityKind.awaitingApproval => Icons.verified_outlined,
-    ConversationActivityKind.awaitingInput => Icons.help_outline,
-    ConversationActivityKind.stopping => Icons.stop_circle_outlined,
-    ConversationActivityKind.storageBlocked => Icons.error_outline,
-  };
-
-  /// 保存故障使用错误色，其余状态跟随中性/强调色。
-  bool get isIssue => this == ConversationActivityKind.storageBlocked;
 }

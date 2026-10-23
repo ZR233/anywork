@@ -7,16 +7,19 @@
 // timeline_session_owner_test.dart 承担，不在这里重复。
 import 'dart:async';
 
+import 'package:anywork_client/conversation.dart';
+import 'package:anywork_client/conversation_ports.dart';
+import 'package:anywork_client/resources.dart';
 import 'package:anywork_client/studio_client.dart';
 import 'package:anywork/src/app/theme/material3_theme.dart';
 import 'package:anywork/src/presentation/providers/client_provider.dart';
-import 'package:anywork/src/shared/studio_driver_key_values.dart';
+import 'package:anywork/src/diagnostics/studio_driver_key_values.dart';
 import 'package:anywork/src/domain/models/timeline_commands.dart';
 import 'package:anywork/src/features/timeline/timeline_activity_row.dart';
 import 'package:anywork/src/features/timeline/timeline_view.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
 import 'package:anywork/src/presentation/view_models/timeline_session_owner.dart';
-import 'package:anywork/src/shared/studio_driver_keys.dart';
+import 'package:anywork/src/diagnostics/studio_driver_keys.dart';
 import 'package:anywork/src/shared/studio_chrome.dart';
 import 'package:anywork/src/shared/studio_driver_projection.dart';
 import 'package:anywork/src/shared/studio_driver_state.dart';
@@ -2584,7 +2587,7 @@ final class _DetailConnection implements StudioTimelineConnection {
 
   final StudioTimelineBaseline baseline;
 
-  /// 非空时首帧保持挂起：连接已登记、initial 未完成（旧 lease 仍活跃）。
+  /// 非空时首帧保持挂起：连接已登记、订阅已开始但基线未交付（旧 lease 仍活跃）。
   final Completer<StudioTimelineBaseline>? initialGate;
   final List<
     ({
@@ -2593,24 +2596,50 @@ final class _DetailConnection implements StudioTimelineConnection {
     })
   >
   detailCalls = [];
-  final Completer<StudioTimelineUpdate?> _pending = Completer();
+  final StreamController<StudioTimelineFeedFrame> _frames =
+      StreamController<StudioTimelineFeedFrame>();
   int initialCalls = 0;
   int closeCalls = 0;
   bool closed = false;
+  bool _claimed = false;
 
   @override
-  Future<StudioTimelineBaseline> initial() {
+  Stream<StudioTimelineFeedFrame> get events {
+    if (_claimed) {
+      throw const StudioFailure(
+        code: StudioFailureCode.conflict,
+        message: 'The detail feed stream was already claimed',
+        retryable: false,
+        correlationId: 'detail-stream-conflict',
+      );
+    }
+    _claimed = true;
     initialCalls++;
     final gate = initialGate;
-    return gate == null ? Future.value(baseline) : gate.future;
+    if (gate == null) {
+      _emitBaseline(baseline);
+    } else {
+      gate.future.then(_emitBaseline);
+    }
+    return _frames.stream;
+  }
+
+  void _emitBaseline(StudioTimelineBaseline value) {
+    if (_frames.isClosed) return;
+    _frames.add(
+      StudioTimelineFeedFrame.data(
+        deliverySequence: 1,
+        event: StudioTimelineFeedEvent.baseline(baseline: value),
+      ),
+    );
   }
 
   @override
-  Future<StudioTimelineUpdate?> next() => _pending.future;
+  Future<void> ackThrough(int deliverySequence) async {}
 
   @override
   Future<StudioTimelinePage> page({String? before, int? limit}) async =>
-      const StudioTimelinePage(items: [], before: null, hasOlder: false);
+      StudioTimelinePage(items: [], before: null, hasOlder: false);
 
   @override
   Future<StudioTimelineDetailChunk> readDetail({
@@ -2624,14 +2653,19 @@ final class _DetailConnection implements StudioTimelineConnection {
 
   @override
   void requestClose() {
+    if (closed) return;
     closed = true;
-    if (!_pending.isCompleted) _pending.complete(null);
+    if (!_frames.isClosed) scheduleMicrotask(_frames.close);
   }
 
   @override
-  Future<void> close() async {
+  Future<StudioFeedCloseReport> close() async {
     closeCalls++;
     requestClose();
+    return StudioFeedCloseReport(
+      feedId: baseline.subscriptionId,
+      outcome: const StudioFeedCloseOutcome.clean(),
+    );
   }
 }
 

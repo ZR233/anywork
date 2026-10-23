@@ -10,7 +10,7 @@ import 'package:anywork/src/features/timeline/timeline_view.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
 import 'package:anywork/src/presentation/providers/client_provider.dart';
 import 'package:anywork/src/presentation/view_models/timeline_session_owner.dart';
-import 'package:anywork/src/shared/studio_driver_keys.dart';
+import 'package:anywork/src/diagnostics/studio_driver_keys.dart';
 import 'package:anywork_client/studio_client.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';

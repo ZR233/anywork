@@ -79,6 +79,7 @@ pub struct InterruptTurnRequest {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ResolveInteractionRequest {
     pub operation_id: String,
+    pub expected_interaction_revision: u64,
     pub resolution: crate::InteractionResolution,
 }
 

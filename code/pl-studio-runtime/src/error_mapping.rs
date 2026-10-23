@@ -1,5 +1,5 @@
 use pl_protocol::PureError;
-use pl_protocol::studio::{StudioError, StudioErrorCode};
+use pl_protocol::studio::{StartupFailureKind, StudioError, StudioErrorCode, StudioErrorDetails};
 
 use crate::ConfigRuntimeError;
 use crate::{StudioDatabaseError, StudioUpdateError, StudioUpdateErrorCode};
@@ -32,9 +32,10 @@ fn studio_error_from_ref(error: &anyhow::Error) -> StudioError {
                 format!("工作模式配置加载失败，原文件已保留：{cause:#}"),
                 false,
             )
-            .with_details(
-                serde_json::json!({"startupStep": startup.step, "startupKind": "ModeDefinitions"}),
-            );
+            .with_details(StudioErrorDetails::Startup {
+                step: startup.step.to_owned(),
+                kind: StartupFailureKind::ModeDefinitions,
+            });
         }
         if startup.kind == crate::StudioStartupErrorKind::Migration {
             return StudioError::new(
@@ -42,9 +43,10 @@ fn studio_error_from_ref(error: &anyhow::Error) -> StudioError {
                 "配置迁移失败，原文件已保留。请检查模型标识与配置声明后重新启动。",
                 false,
             )
-            .with_details(
-                serde_json::json!({"startupStep": startup.step, "startupKind": "Migration"}),
-            );
+            .with_details(StudioErrorDetails::Startup {
+                step: startup.step.to_owned(),
+                kind: StartupFailureKind::Migration,
+            });
         }
         if let Some(original) = error
             .chain()
@@ -59,8 +61,23 @@ fn studio_error_from_ref(error: &anyhow::Error) -> StudioError {
             crate::StudioStartupErrorKind::Internal => (StudioErrorCode::Internal, false),
             crate::StudioStartupErrorKind::Migration => (StudioErrorCode::InvalidArgument, false),
         };
+        let kind = match startup.kind {
+            crate::StudioStartupErrorKind::PersistentData => StartupFailureKind::PersistentData,
+            crate::StudioStartupErrorKind::Environment => StartupFailureKind::Environment,
+            crate::StudioStartupErrorKind::Cancelled => StartupFailureKind::Cancelled,
+            crate::StudioStartupErrorKind::Internal => StartupFailureKind::Internal,
+            crate::StudioStartupErrorKind::Migration => StartupFailureKind::Migration,
+        };
         return StudioError::new(code, format!("应用初始化失败（{}，{:?}）", startup.step, startup.kind), retryable)
-            .with_details(serde_json::json!({"startupStep": startup.step, "startupKind": format!("{:?}", startup.kind)}));
+            .with_details(StudioErrorDetails::Startup { step: startup.step.to_owned(), kind });
+    }
+    if let Some(failure) = error.downcast_ref::<crate::studio::HistoryReadFailure>() {
+        return match failure {
+            crate::studio::HistoryReadFailure::Storage => StudioError::storage(),
+            crate::studio::HistoryReadFailure::Protocol => StudioError::new(
+                StudioErrorCode::Protocol, "Studio history contains incompatible protocol data", false,
+            ),
+        };
     }
     if error.downcast_ref::<StudioDatabaseError>().is_some()
         || error.downcast_ref::<std::io::Error>().is_some()
@@ -77,10 +94,7 @@ fn studio_error_from_ref(error: &anyhow::Error) -> StudioError {
                 "Studio data changed; reload and try again",
                 true,
             )
-            .with_details(serde_json::json!({
-                "expectedRevision": expected,
-                "actualRevision": actual,
-            })),
+            .with_details(StudioErrorDetails::Revision { expected: *expected, actual: *actual }),
             ConfigRuntimeError::Core(error) => pure_error(error),
             ConfigRuntimeError::ModeDefinitions(error) => StudioError::new(
                 StudioErrorCode::InvalidArgument,
@@ -109,6 +123,11 @@ fn studio_error_from_ref(error: &anyhow::Error) -> StudioError {
     {
         return studio_error;
     }
+    if let Some(crate::thread_assembler::StudioInteractionError::Response(error)) =
+        error.downcast_ref::<crate::thread_assembler::StudioInteractionError>()
+    {
+        return error.clone();
+    }
     if let Some(error) = error.downcast_ref::<pl_tool::remote::RemoteClientError>() {
         return remote_client_error(error);
     }
@@ -132,18 +151,14 @@ fn remote_client_error(error: &pl_tool::remote::RemoteClientError) -> StudioErro
 
     match error {
         RemoteClientError::AuthenticationFailed(failure) => {
-            let mut details = serde_json::json!({
-                "sshErrorKind": "authenticationFailed",
-            });
-            if let Some(offered) = failure.password_offered() {
-                details["sshPasswordOffered"] = serde_json::Value::Bool(offered);
-            }
             StudioError::new(
                 StudioErrorCode::PermissionDenied,
                 format!("SSH authentication required or failed: {failure}"),
                 true,
             )
-            .with_details(details)
+            .with_details(StudioErrorDetails::SshAuthentication {
+                password_offered: failure.password_offered(),
+            })
         }
         RemoteClientError::Disconnected
         | RemoteClientError::Cancelled
@@ -173,13 +188,13 @@ fn chat_error(error: &pl_core::chat::ChatError) -> StudioError {
             "Studio received an invalid timeline request",
             false,
         )
-        .with_details(serde_json::json!({ "reason": reason })),
+        .with_details(StudioErrorDetails::Reason { reason: reason.clone() }),
         Chat::NotFound(identity) => StudioError::new(
             StudioErrorCode::NotFound,
             "The requested timeline content is not available",
             false,
         )
-        .with_details(serde_json::json!({ "identity": identity })),
+        .with_details(StudioErrorDetails::Identity { identity: identity.clone() }),
         Chat::StaleRevision {
             item_id,
             field,
@@ -189,11 +204,11 @@ fn chat_error(error: &pl_core::chat::ChatError) -> StudioError {
             "Timeline content changed; reload the item before reading it again",
             true,
         )
-        .with_details(serde_json::json!({
-            "itemId": item_id,
-            "field": field.to_string(),
-            "revision": revision,
-        })),
+        .with_details(StudioErrorDetails::TimelineRevision {
+            item_id: item_id.clone(),
+            field: field.to_string(),
+            revision: *revision,
+        }),
         Chat::Cancelled => StudioError::new(
             StudioErrorCode::Cancelled,
             "The timeline content observation is closed",
@@ -204,7 +219,7 @@ fn chat_error(error: &pl_core::chat::ChatError) -> StudioError {
             "Timeline content exceeds the display budget",
             false,
         )
-        .with_details(serde_json::json!({ "reason": reason })),
+        .with_details(StudioErrorDetails::Reason { reason: reason.clone() }),
         Chat::ReadInvalidated => StudioError::new(
             StudioErrorCode::Busy,
             "The timeline range is not fully readable yet; retry the read",
@@ -215,7 +230,7 @@ fn chat_error(error: &pl_core::chat::ChatError) -> StudioError {
             "Timeline content conflicts with the fact this Thread already holds",
             false,
         )
-        .with_details(serde_json::json!({ "identity": identity })),
+        .with_details(StudioErrorDetails::Identity { identity: identity.clone() }),
         Chat::History(_) => StudioError::storage(),
         Chat::OrderExhausted | Chat::OrderNotInitialized => StudioError::internal(),
     }

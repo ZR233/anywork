@@ -60,23 +60,26 @@ impl ProductEventBus {
         limit: usize,
     ) -> Result<StudioThreadDirectoryPage> {
         let limit = limit.clamp(1, THREAD_DIRECTORY_PAGE_LIMIT);
-        let decoded = cursor.and_then(ThreadDirectoryCursor::decode);
+        let decoded = cursor.map(|value| ThreadDirectoryCursor::decode(value)
+            .ok_or_else(|| pl_protocol::studio::StudioError::invalid_argument("invalid directory cursor")))
+            .transpose()?;
         let cursor_key = decoded
             .as_ref()
             .map(|cursor| (cursor.sort_time, cursor.id.clone()));
+        // Freeze the hot overlay and its actual source clock before the cold read. Taking a
+        // newer clock afterwards would incorrectly label mixed-time rows as a current baseline.
+        let (hot, revision, updated_at) = {
+            let index = self.thread_index.lock().expect("thread index lock poisoned");
+            let (revision, updated_at) = self.revision(&self.revisions.thread);
+            let hot = index.values().filter(|thread| thread.parent_thread_id.is_none())
+                .cloned().collect::<Vec<_>>();
+            (hot, revision, updated_at)
+        };
         let cold = self
             .store
             .list_thread_directory_page(decoded.as_ref(), limit.saturating_add(1))
             .await?;
         let has_more = cold.len() > limit;
-        let hot = self
-            .thread_index
-            .lock()
-            .expect("thread index lock poisoned")
-            .values()
-            .filter(|thread| thread.parent_thread_id.is_none())
-            .cloned()
-            .collect::<Vec<_>>();
         let mut merged = merge_page_desc(hot, cold, cursor_key.as_ref());
         let has_more = has_more || merged.len() > limit;
         merged.retain(|thread| !thread.archived);
@@ -90,9 +93,17 @@ impl ProductEventBus {
             })
             .flatten()
             .map(|cursor| cursor.encode());
+        if self.revision(&self.revisions.thread).0 != revision {
+            return Err(pl_protocol::studio::StudioError::new(
+                pl_protocol::studio::StudioErrorCode::StaleRevision,
+                "Directory changed during the page read; retry the query",
+                true,
+            ).into());
+        }
         Ok(StudioThreadDirectoryPage {
-            state: self.resource(
-                &self.revisions.thread,
+            state: pl_protocol::ObservedResource::ready(
+                revision,
+                updated_at,
                 StudioThreadDirectoryPageData {
                     threads: merged,
                     next_cursor,
@@ -116,7 +127,10 @@ impl ProductEventBus {
             })
             .transpose()?;
         let key = decoded.as_ref().map(|c| (c.sort_time, c.id.clone()));
-        let projects = self.project_snapshot().await;
+        let (projects, project_revision) = {
+            let projects = self.project_snapshot.lock().await;
+            (projects.clone(), self.revision(&self.revisions.project).0)
+        };
         let matching_projects = projects
             .iter()
             .filter(|project| {
@@ -192,7 +206,8 @@ impl ProductEventBus {
                 })
             })
             .flatten();
-        if self.revision(&self.revisions.thread).0 != revision {
+        if self.revision(&self.revisions.thread).0 != revision
+            || (query.search.is_some() && self.revision(&self.revisions.project).0 != project_revision) {
             return Err(pl_protocol::studio::StudioError::new(
                 pl_protocol::studio::StudioErrorCode::StaleRevision,
                 "Directory changed during search; retry the query",
@@ -227,7 +242,7 @@ impl ProductEventBus {
         removed: Vec<String>,
         archived: Vec<Thread>,
     ) -> Result<StudioProductEventEnvelope> {
-        {
+        let (revision, updated_at) = {
             let mut index = self
                 .thread_index
                 .lock()
@@ -249,9 +264,9 @@ impl ProductEventBus {
                 index.insert(thread.id.clone(), thread);
             }
             self.bump(&self.revisions.thread);
-        }
+            self.revision(&self.revisions.thread)
+        };
         // State and tombstones are visible before observers receive removal.
-        let (revision, updated_at) = self.revision(&self.revisions.thread);
         Ok(self.emit(StudioProductEventKind::ThreadDirectoryChanged(
             StudioThreadDirectoryDelta {
                 revision,
@@ -270,7 +285,7 @@ impl ProductEventBus {
         status: pl_protocol::ThreadStatus,
         committed_at: i64,
     ) -> Option<Thread> {
-        let thread = {
+        let (thread, revision, updated_at) = {
             let mut index = self
                 .thread_index
                 .lock()
@@ -281,7 +296,10 @@ impl ProductEventBus {
             }
             thread.status = status;
             thread.updated_at = thread.updated_at.max(committed_at);
-            thread.clone()
+            let thread = thread.clone();
+            self.bump(&self.revisions.thread);
+            let (revision, updated_at) = self.revision(&self.revisions.thread);
+            (thread, revision, updated_at)
         };
         // 状态观察是目录事实：只把有界摘要并入 write-behind 目录队列，不在观察热路径做文件 I/O。
         // 同 Thread 的连续 delta 由队列合并；write-behind 批次经 `apply_directory_delta` 把摘要
@@ -291,8 +309,6 @@ impl ProductEventBus {
             thread_upserts: vec![thread.clone()],
             ..Default::default()
         });
-        self.bump(&self.revisions.thread);
-        let (revision, updated_at) = self.revision(&self.revisions.thread);
         self.emit(StudioProductEventKind::ThreadDirectoryChanged(
             StudioThreadDirectoryDelta {
                 revision,
@@ -311,7 +327,7 @@ impl ProductEventBus {
     /// or archived entry is not reinserted. Persistence rides the same write-behind directory
     /// queue as runtime patches; a later model/storage failure cannot undo the recorded fact.
     pub(in crate::studio) fn record_user_message(&self, thread_id: &str, accepted_at: i64) {
-        let thread = {
+        let (thread, revision, updated_at) = {
             let mut index = self
                 .thread_index
                 .lock()
@@ -328,14 +344,15 @@ impl ProductEventBus {
                     .map_or(accepted_at, |existing| existing.max(accepted_at)),
             );
             thread.updated_at = thread.updated_at.max(accepted_at);
-            thread.clone()
+            let thread = thread.clone();
+            self.bump(&self.revisions.thread);
+            let (revision, updated_at) = self.revision(&self.revisions.thread);
+            (thread, revision, updated_at)
         };
         self.writer.record_directory(DirectoryDelta {
             thread_upserts: vec![thread.clone()],
             ..Default::default()
         });
-        self.bump(&self.revisions.thread);
-        let (revision, updated_at) = self.revision(&self.revisions.thread);
         self.emit(StudioProductEventKind::ThreadDirectoryChanged(
             StudioThreadDirectoryDelta {
                 revision,

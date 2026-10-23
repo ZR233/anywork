@@ -1,5 +1,8 @@
+import 'dart:async';
+
 import 'package:anywork/src/domain/models/timeline_presentation.dart';
 import 'package:anywork/src/presentation/view_models/timeline_session_owner.dart';
+import 'package:anywork_client/conversation.dart';
 import 'package:anywork_client/studio_client.dart';
 import 'package:flutter_chat_core/flutter_chat_core.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -48,6 +51,76 @@ void main() {
   List<String> messageIds(TimelineDisplayLease value) => [
     for (final message in value.controller.messages) message.id,
   ];
+
+  // ---- controller 写入屏障（flushWrites）----------------------------------
+  //
+  // 真实 TimelinePresentationController + 官方 InMemoryChatController 合法子类
+  // 提供完成/失败 gate：证明本批全部写入真实结束后 flush 才结算、首个错误在全批
+  // 结束后传播、批次不被跨帧排队（design/26 v3 §7）。
+
+  test('flushWrites 等待本批全部 controller 写入真实结束', () async {
+    final gate = _GatedChatController();
+    final presentation = TimelinePresentationController(gate, generation: 9);
+    addTearDown(presentation.dispose);
+    addTearDown(gate.dispose);
+
+    presentation.add(TimelineMessagePayload.fromItem(item('a', 1)));
+    presentation.add(TimelineMessagePayload.fromItem(item('b', 2)));
+    expect(gate.pending, hasLength(2));
+
+    var settled = false;
+    final flushed = presentation.flushWrites().then((_) => settled = true);
+    await pumpEventQueue();
+    expect(settled, isFalse, reason: 'gate 未放行时 flush 不得结算');
+
+    gate.releaseAt(0);
+    await pumpEventQueue();
+    expect(settled, isFalse, reason: '还有一笔回执未结束');
+
+    gate.releaseAt(1);
+    await flushed;
+    expect(settled, isTrue);
+    expect(gate.pending, isEmpty);
+    // 本批已认领：再次 flush 是新的空批次，不跨帧排 future 链。
+    await presentation.flushWrites();
+  });
+
+  test('flushWrites 的失败在全部写入结束后传播，不提前以首错结算', () async {
+    final gate = _GatedChatController();
+    final presentation = TimelinePresentationController(gate, generation: 10);
+    addTearDown(presentation.dispose);
+    addTearDown(gate.dispose);
+    final failure = StateError('controller write rejected');
+
+    presentation.add(TimelineMessagePayload.fromItem(item('a', 1)));
+    presentation.add(TimelineMessagePayload.fromItem(item('b', 2)));
+
+    var failed = false;
+    final flushed = presentation.flushWrites().then<void>(
+      (_) {
+        fail('flush must not complete successfully');
+      },
+      onError: (Object error, StackTrace _) {
+        failed = true;
+        expect(error, same(failure));
+      },
+    );
+    await pumpEventQueue();
+    expect(failed, isFalse, reason: '另一笔更慢的写入尚未结束');
+
+    gate.failAt(0, failure);
+    await pumpEventQueue();
+    expect(failed, isFalse, reason: '首错不等于全部写入已结束');
+
+    gate.releaseAt(1);
+    await flushed;
+    expect(failed, isTrue);
+    expect(gate.pending, isEmpty);
+    // 失败批次后的下一批不受影响。
+    presentation.add(TimelineMessagePayload.fromItem(item('c', 3)));
+    gate.releaseLast();
+    await presentation.flushWrites();
+  });
 
   test('baseline becomes the唯一 loaded message collection', () {
     final display = lease();
@@ -1676,4 +1749,57 @@ void main() {
       expect(groups.last!.memberIds, ['image-c']);
     },
   );
+}
+
+/// 官方 [InMemoryChatController] 的合法子类：只为既有写入方法提供完成/失败 gate，
+/// 不另造 controller 框架、不改行为。
+final class _GatedChatController extends InMemoryChatController {
+  final List<Completer<void>> _gates = [];
+
+  List<int> get pending => [
+    for (var index = 0; index < _gates.length; index++)
+      if (!_gates[index].isCompleted) index,
+  ];
+
+  void releaseAt(int index) {
+    _gates[index].complete();
+  }
+
+  void failAt(int index, Object error) {
+    _gates[index].completeError(error);
+  }
+
+  /// 放行最近一笔尚未完成的写入。
+  void releaseLast() {
+    final index = _gates.lastIndexWhere((gate) => !gate.isCompleted);
+    _gates[index].complete();
+  }
+
+  @override
+  Future<void> insertMessage(
+    Message message, {
+    int? index,
+    bool animated = false,
+  }) {
+    final gate = Completer<void>();
+    gate.future.ignore();
+    _gates.add(gate);
+    return gate.future;
+  }
+
+  @override
+  Future<void> removeMessage(Message message, {bool animated = false}) {
+    final gate = Completer<void>();
+    gate.future.ignore();
+    _gates.add(gate);
+    return gate.future;
+  }
+
+  @override
+  Future<void> updateMessage(Message oldMessage, Message newMessage) {
+    final gate = Completer<void>();
+    gate.future.ignore();
+    _gates.add(gate);
+    return gate.future;
+  }
 }

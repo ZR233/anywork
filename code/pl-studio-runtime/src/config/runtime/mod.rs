@@ -1,6 +1,8 @@
 mod catalog;
 mod mode_definitions;
+mod model_projection;
 pub(crate) use mode_definitions::ModeDefinitionCommandOutcome;
+pub(crate) use model_projection::{ModelCaptureFailure, ModelCatalogMaterial, ModelCatalogSource, ModelsSnapshot};
 
 use std::sync::{Arc, Mutex, RwLock};
 
@@ -24,6 +26,7 @@ pub struct ConfigRuntime {
     command_lock: Arc<Mutex<()>>,
     state: Arc<RwLock<RuntimeState>>,
     catalog_updates: tokio::sync::broadcast::Sender<CatalogChange>,
+    projection_updates: tokio::sync::watch::Sender<pl_protocol::studio::ConfigProjectionStamp>,
     /// 配置 owner 持有的 canonical Agent Profiles 资源；命令路径扫描，查询只读缓存。
     profiles: AgentProfilesResource,
     /// 配置 owner 独占的 Mode 注册表；StudioRuntime 只持有同一 manager 的克隆。
@@ -37,6 +40,7 @@ struct RuntimeState {
     snapshot: ConfigRuntimeSnapshot,
     catalog: ModelCatalogRuntimeSnapshot,
     observations: BTreeMap<AccountId, Observation>,
+    models_sources: BTreeMap<String, std::sync::Weak<ModelCatalogSource>>,
     closing: bool,
 }
 
@@ -78,6 +82,27 @@ pub struct ModelCatalogRuntimeSnapshot {
     pub revision: u64,
     pub updated_at: i64,
     pub catalogs: BTreeMap<AccountId, StudioModelCatalogStatus>,
+}
+
+/// Registration and its compatible baseline are taken under the same canonical state guard.
+pub(crate) struct ConfigProjectionObservation {
+    pub current: (ConfigRuntimeSnapshot, ModelCatalogRuntimeSnapshot),
+    pub stamp: pl_protocol::studio::ConfigProjectionStamp,
+    pub updates: tokio::sync::watch::Receiver<pl_protocol::studio::ConfigProjectionStamp>,
+}
+
+/// Captured before releasing the original command/adopt-scan boundary.
+pub struct ConfigProfileCommandResult {
+    pub configuration: ConfigRuntimeSnapshot,
+    pub catalog: ModelCatalogRuntimeSnapshot,
+    pub profiles: AgentProfilesSnapshot,
+    pub changed: bool,
+}
+
+pub struct ConfigReloadResult {
+    pub configuration: ConfigRuntimeSnapshot,
+    pub catalog: ModelCatalogRuntimeSnapshot,
+    pub profiles: AgentProfilesSnapshot,
 }
 
 /// Parameters resolved from one configuration revision for a newly created product Agent.
@@ -142,10 +167,18 @@ impl ConfigRuntime {
         let (modes, mode_documents) = mode_definitions::initialize(store.paths())
             .map_err(ConfigRuntimeError::ModeDefinitions)?;
         let (catalog_updates, _) = tokio::sync::broadcast::channel(64);
+        let (projection_updates, _) = tokio::sync::watch::channel(
+            pl_protocol::studio::ConfigProjectionStamp {
+                settings_revision: 1,
+                model_catalog_revision: 1,
+                closing: false,
+            },
+        );
         Ok(Self {
             store,
             command_lock: Arc::new(Mutex::new(())),
             catalog_updates,
+            projection_updates,
             state: Arc::new(RwLock::new(RuntimeState {
                 desired: desired.clone(),
                 closing: false,
@@ -168,6 +201,7 @@ impl ConfigRuntime {
                     catalogs: statuses(&observations),
                 },
                 observations,
+                models_sources: BTreeMap::new(),
             })),
             profiles,
             modes,
@@ -189,6 +223,27 @@ impl ConfigRuntime {
     ) -> ConfigRuntimeResult<(ConfigRuntimeSnapshot, ModelCatalogRuntimeSnapshot)> {
         let state = self.state.read().map_err(|_| config_runtime_poisoned())?;
         Ok((state.snapshot.clone(), state.catalog.clone()))
+    }
+
+    pub(crate) fn observe_projection_sources(&self) -> ConfigRuntimeResult<ConfigProjectionObservation> {
+        let state = self.state.read().map_err(|_| config_runtime_poisoned())?;
+        Ok(ConfigProjectionObservation {
+            current: (state.snapshot.clone(), state.catalog.clone()),
+            stamp: projection_stamp(&state),
+            updates: self.projection_updates.subscribe(),
+        })
+    }
+
+    fn publish_projection_locked(&self, state: &mut RuntimeState) {
+        self.publish_models_locked(state);
+        self.projection_updates.send_if_modified(|published| {
+            let next = projection_stamp(state);
+            if *published == next {
+                return false;
+            }
+            *published = next;
+            true
+        });
     }
 
     /// Commits an in-memory observation at the same boundary as input invalidation.
@@ -284,14 +339,16 @@ impl ConfigRuntime {
         expected_revision: u64,
         profile_id: &str,
         profile: &super::UserAgentProfile,
-    ) -> ConfigRuntimeResult<(ConfigRuntimeSnapshot, bool)> {
+    ) -> ConfigRuntimeResult<ConfigProfileCommandResult> {
         let _command = self
             .command_lock
             .lock()
             .map_err(|_| config_runtime_poisoned())?;
         let current = self.read()?;
         ensure_revision(expected_revision, current.revision)?;
-        let mut state = self.state.write().map_err(|_| config_runtime_poisoned())?;
+        if self.state.read().map_err(|_| config_runtime_poisoned())?.closing {
+            return Err(PureError::ConfigError("settings owner is closing".into()).into());
+        }
         let changed = super::save_user_agent_profile(
             self.store.paths(),
             profile_id,
@@ -305,12 +362,20 @@ impl ConfigRuntime {
             canonical_config: current.canonical_config,
             usage_query_revisions: current.usage_query_revisions,
         };
+        let mut state = self.state.write().map_err(|_| config_runtime_poisoned())?;
         state.snapshot = next.clone();
+        self.publish_projection_locked(&mut state);
+        let catalog = state.catalog.clone();
         drop(state);
         // 配置命令采用一次新的目录扫描；资源未变化时不提升 revision、不通知观察者。
         // scan 不持有 state 写锁（与 `update` / `reload_from_disk` 一致）。
         self.profiles.adopt_scan(self.store.paths(), &next.config);
-        Ok((next, changed))
+        Ok(ConfigProfileCommandResult {
+            configuration: next,
+            catalog,
+            profiles: self.profiles.read(),
+            changed,
+        })
     }
 
     /// 使用 expected revision 原子保存完整 desired config。
@@ -343,6 +408,14 @@ impl ConfigRuntime {
             .command_lock
             .lock()
             .map_err(|_| config_runtime_poisoned())?;
+        self.update_with_effective_locked(expected_revision, edit)
+    }
+
+    fn update_with_effective_locked(
+        &self,
+        expected_revision: u64,
+        edit: impl FnOnce(&StudioConfig, &StudioConfig) -> Result<StudioConfig>,
+    ) -> ConfigRuntimeResult<ConfigRuntimeSnapshot> {
         let (current, current_catalog) = self.read_with_catalog()?;
         ensure_revision(expected_revision, current.revision)?;
         let (desired, observations) = {
@@ -387,6 +460,7 @@ impl ConfigRuntime {
         state.observations = next_observations;
         state.snapshot = next.clone();
         state.catalog = catalog;
+        self.publish_projection_locked(&mut state);
         drop(state);
         // 配置命令采用一次新的目录扫描；资源未变化时不提升 revision、不通知观察者。
         self.profiles.adopt_scan(self.store.paths(), &next.config);
@@ -397,13 +471,16 @@ impl ConfigRuntime {
     pub fn reload_from_disk(
         &self,
         expected_revision: u64,
-    ) -> ConfigRuntimeResult<ConfigRuntimeSnapshot> {
+    ) -> ConfigRuntimeResult<ConfigReloadResult> {
         let _command = self
             .command_lock
             .lock()
             .map_err(|_| config_runtime_poisoned())?;
         let (current, current_catalog) = self.read_with_catalog()?;
         ensure_revision(expected_revision, current.revision)?;
+        if self.state.read().map_err(|_| config_runtime_poisoned())?.closing {
+            return Err(PureError::ConfigError("settings owner is closing".into()).into());
+        }
         let desired = self.store.load_or_default()?;
         let observations = self
             .state
@@ -434,10 +511,52 @@ impl ConfigRuntime {
         state.observations = next_observations;
         state.snapshot = next.clone();
         state.catalog = catalog;
+        self.publish_projection_locked(&mut state);
+        let catalog = state.catalog.clone();
         drop(state);
         // 显式重扫；目录未变化时不提升 revision。
         self.profiles.adopt_scan(self.store.paths(), &next.config);
-        Ok(next)
+        Ok(ConfigReloadResult {
+            configuration: next,
+            catalog,
+            profiles: self.profiles.read(),
+        })
+    }
+
+    pub(crate) fn set_system_agent_enabled(
+        &self,
+        expected_revision: u64,
+        profile_id: &str,
+        enabled: bool,
+    ) -> ConfigRuntimeResult<ConfigProfileCommandResult> {
+        if !super::is_system_profile_id(profile_id) {
+            return Err(PureError::ConfigError("not a system Agent Profile".into()).into());
+}
+        let _command = self.command_lock.lock().map_err(|_| config_runtime_poisoned())?;
+        let mut changed = false;
+        let configuration = self.update_with_effective_locked(expected_revision, |desired, _| {
+            let mut next = desired.clone();
+            changed = if enabled {
+                next.disabled_system_agents.remove(profile_id)
+            } else {
+                next.disabled_system_agents.insert(profile_id.to_owned())
+            };
+            Ok(next)
+        })?;
+        Ok(ConfigProfileCommandResult {
+            configuration,
+            catalog: self.read_catalog()?,
+            profiles: self.profiles.read(),
+            changed,
+        })
+    }
+}
+
+fn projection_stamp(state: &RuntimeState) -> pl_protocol::studio::ConfigProjectionStamp {
+    pl_protocol::studio::ConfigProjectionStamp {
+        settings_revision: state.snapshot.revision,
+        model_catalog_revision: state.catalog.revision,
+        closing: state.closing,
     }
 }
 

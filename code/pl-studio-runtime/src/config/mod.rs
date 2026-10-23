@@ -47,8 +47,10 @@ pub use profiles_resource::{AgentProfilesResource, AgentProfilesSnapshot};
 
 pub use pl_model::config::{AccountId, AgentRoleId, ModelRouteConfig, ReasoningEffort};
 pub(crate) use runtime::ModeDefinitionCommandOutcome;
+pub(crate) use runtime::ConfigProjectionObservation;
+pub(crate) use runtime::{ModelCaptureFailure, ModelCatalogMaterial, ModelCatalogSource, ModelsSnapshot};
 pub use runtime::{
-    ConfigRuntime, ConfigRuntimeError, ConfigRuntimeSnapshot, ModelCatalogRuntimeSnapshot,
+    ConfigProfileCommandResult, ConfigReloadResult, ConfigRuntime, ConfigRuntimeError, ConfigRuntimeSnapshot, ModelCatalogRuntimeSnapshot,
     ResolvedAgentProfile,
 };
 pub use store::{ConfigPaths, ConfigStore};

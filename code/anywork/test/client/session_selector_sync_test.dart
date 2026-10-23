@@ -14,7 +14,7 @@ import 'package:anywork/src/features/interaction/composer_view.dart';
 import 'package:anywork/src/presentation/providers/start_session_controller.dart';
 import 'package:anywork/src/features/status/session_selectors.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
-import 'package:anywork/src/shared/studio_driver_keys.dart';
+import 'package:anywork/src/diagnostics/studio_driver_keys.dart';
 
 import 'support/pump_client_future.dart';
 

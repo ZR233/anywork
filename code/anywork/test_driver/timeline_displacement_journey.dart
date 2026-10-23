@@ -14,7 +14,7 @@
 import 'dart:convert';
 import 'dart:io';
 
-import 'package:anywork/src/shared/studio_driver_key_values.dart';
+import 'package:anywork/src/diagnostics/studio_driver_key_values.dart';
 import 'package:flutter_driver/flutter_driver.dart';
 
 import 'cold_start_navigation.dart';

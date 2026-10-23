@@ -1,6 +1,9 @@
 import 'dart:async';
 
+import 'package:anywork_client/conversation.dart';
+import 'package:anywork_client/conversation_ports.dart';
 import 'package:anywork_client/studio_client.dart';
+import 'package:anywork_client/resources.dart';
 import 'package:test/test.dart';
 
 final class _ModeCall {
@@ -219,29 +222,46 @@ final class _RouteConflictTransport extends _Transport {
 }
 
 final class _RouteConflictConnection implements StudioTimelineConnection {
-  Completer<StudioTimelineUpdate?>? _pending;
+  final StreamController<StudioTimelineFeedFrame> _frames =
+      StreamController<StudioTimelineFeedFrame>();
   bool _closed = false;
+  bool _claimed = false;
   int requestCloseCalls = 0;
 
   @override
-  Future<StudioTimelineBaseline> initial() async =>
-      const StudioTimelineBaseline(
-        subscriptionId: 'route-conflict',
-        version: 300,
-        items: [],
-        before: null,
-        hasOlder: false,
+  Stream<StudioTimelineFeedFrame> get events {
+    if (_claimed) {
+      throw const StudioFailure(
+        code: StudioFailureCode.conflict,
+        message: 'The route test feed stream was already claimed',
+        retryable: false,
+        correlationId: 'route-test-stream-conflict',
       );
-
-  @override
-  Future<StudioTimelineUpdate?> next() {
-    if (_closed) return Future.value(null);
-    return (_pending ??= Completer<StudioTimelineUpdate?>()).future;
+    }
+    _claimed = true;
+    _frames.add(
+      StudioTimelineFeedFrame.data(
+        deliverySequence: 1,
+        event: const StudioTimelineFeedEvent.baseline(
+          baseline: StudioTimelineBaseline(
+            subscriptionId: 'route-conflict',
+            version: 300,
+            items: [],
+            before: null,
+            hasOlder: false,
+          ),
+        ),
+      ),
+    );
+    return _frames.stream;
   }
 
   @override
+  Future<void> ackThrough(int deliverySequence) async {}
+
+  @override
   Future<StudioTimelinePage> page({String? before, int? limit}) => Future.value(
-    const StudioTimelinePage(items: [], before: null, hasOlder: false),
+    StudioTimelinePage(items: [], before: null, hasOlder: false),
   );
 
   @override
@@ -253,14 +273,19 @@ final class _RouteConflictConnection implements StudioTimelineConnection {
   @override
   void requestClose() {
     requestCloseCalls++;
+    if (_closed) return;
     _closed = true;
-    if (_pending case final pending? when !pending.isCompleted) {
-      pending.complete(null);
-    }
+    unawaited(_frames.close());
   }
 
   @override
-  Future<void> close() async => requestClose();
+  Future<StudioFeedCloseReport> close() async {
+    requestClose();
+    return const StudioFeedCloseReport(
+      feedId: 'route-conflict',
+      outcome: StudioFeedCloseOutcome.clean(),
+    );
+  }
 }
 
 const _epoch = 'native-runtime-one';
@@ -340,7 +365,7 @@ PendingInteraction _interaction([String id = 'interaction']) =>
       body: 'Choose an answer',
     );
 
-const _resolution = UserInputResolutionCommand(
+final _resolution = UserInputResolutionCommand(
   answers: [
     UserInputAnswerCommand(questionId: 'question', answers: ['Continue']),
   ],

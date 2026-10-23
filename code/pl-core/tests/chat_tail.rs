@@ -87,15 +87,21 @@ async fn an_append_to_a_delivered_identity_arrives_as_a_typed_field_append() {
     let patch = next_patch(tail.next().await.unwrap().unwrap());
     assert!(matches!(&patch.changes[..], [TailChange::Add { .. }]));
 
-    session.publish(appended(&first, 2, " world")).unwrap();
+    let second = appended(&first, 2, " world");
+    session.publish(second.clone()).unwrap();
     let patch = next_patch(tail.next().await.unwrap().unwrap());
     assert_eq!(patch.priority, ChatUpdatePriority::Coalesced);
+    // A delivered preview belongs to that capture, not a later Session lookup or the tail cache.
+    session.publish(appended(&second, 3, "!")).unwrap();
+    tail.close();
     match &patch.changes[..] {
         [
             TailChange::UpdateItem {
                 item_id,
                 expected_revision,
                 revision,
+                preview,
+                meta,
                 fields,
                 ..
             },
@@ -103,6 +109,9 @@ async fn an_append_to_a_delivered_identity_arrives_as_a_typed_field_append() {
             assert_eq!(item_id, "item-1");
             assert_eq!(*expected_revision, 1);
             assert_eq!(*revision, 2);
+            assert!(meta.is_none(), "body-only updates need no static metadata change");
+            pretty_assertions::assert_eq!(preview, &second);
+            assert!(Arc::ptr_eq(preview.body().unwrap(), second.body().unwrap()));
             assert_eq!(
                 fields,
                 &[pl_core::chat::FieldUpdate {
@@ -390,6 +399,7 @@ async fn a_capped_preview_still_reports_the_growing_original_and_its_own_save_st
                 expected_revision,
                 revision,
                 omitted_bytes,
+                preview,
                 saved,
                 fields,
                 ..
@@ -399,6 +409,12 @@ async fn a_capped_preview_still_reports_the_growing_original_and_its_own_save_st
             assert_eq!(*revision, 2);
             assert!(!saved);
             assert_eq!(*omitted_bytes, 29);
+            assert_eq!(preview.item_id, "item-1");
+            assert_eq!(preview.revision, 2);
+            assert!(!preview.saved);
+            assert_eq!(preview.body().unwrap().text(), "0123456789abcdef");
+            assert_eq!(preview.field_total_bytes(&ChatField::Body), Some(45));
+            assert_eq!(preview.omitted_bytes(), 29);
             assert_eq!(
                 fields,
                 &[pl_core::chat::FieldUpdate {
@@ -421,6 +437,7 @@ async fn a_capped_preview_still_reports_the_growing_original_and_its_own_save_st
             TailChange::UpdateItem {
                 expected_revision,
                 revision,
+                preview,
                 saved,
                 fields,
                 ..
@@ -429,6 +446,11 @@ async fn a_capped_preview_still_reports_the_growing_original_and_its_own_save_st
             assert_eq!(expected_revision, revision);
             assert_eq!(*revision, 2);
             assert!(saved);
+            assert_eq!(preview.revision, 2);
+            assert!(preview.saved);
+            assert_eq!(preview.body().unwrap().text(), "0123456789abcdef");
+            assert_eq!(preview.field_total_bytes(&ChatField::Body), Some(45));
+            assert_eq!(preview.omitted_bytes(), 29);
             assert_eq!(fields[0].total_bytes, 45);
             assert_eq!(fields[0].preview_bytes, 16);
             assert_eq!(fields[0].change, FieldChange::Unchanged);

@@ -141,6 +141,7 @@ pub enum StudioModelCatalogCacheWarning {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RemoveAccountModelRequest {
+    pub operation_id: String,
     pub expected_revision: u64,
     pub account_id: String,
     pub model_id: String,

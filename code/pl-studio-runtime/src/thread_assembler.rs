@@ -10,6 +10,7 @@ pub use user_input::{UserInteractionError, project_user_input};
 mod interaction_router;
 pub use interaction_key::{InteractionKeyError, decode_interaction_key};
 pub use interaction_router::{StudioInteractionError, project_thread_interaction};
+pub(crate) use interaction_router::validate_interaction_response;
 mod approval;
 mod permission_projection;
 mod plan_confirmation;

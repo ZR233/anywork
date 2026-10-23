@@ -3,16 +3,21 @@ import 'dart:convert';
 
 import 'package:anywork/src/app/app_graph.dart';
 import 'package:anywork/src/domain/models/agent_workspace_view.dart';
+import 'package:anywork/src/domain/models/timeline_commands.dart';
 import 'package:anywork/src/features/interaction/composer_view.dart';
 import 'package:anywork/src/features/shell/shell_view.dart';
 import 'package:anywork/src/features/status/status_view.dart';
 import 'package:anywork/src/presentation/view_models/timeline_session_owner.dart';
 import 'package:anywork/src/shared/studio_driver_projection.dart';
 import 'package:anywork/src/shared/studio_driver_state.dart';
+import 'package:anywork_client/conversation.dart';
+import 'package:anywork_client/conversation_ports.dart';
+import 'package:anywork_client/resources.dart';
 import 'package:anywork_client/studio_client.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import '../../test_driver/timeline_observation.dart';
 import 'support/recording_demo_transport.dart';
 
 final class _UnusedTransport implements StudioTransport {
@@ -46,6 +51,9 @@ void main() {
     await session.timeline.state.waitFor(
       (state) => state.snapshot is StudioTimelineBaselineFrame,
     );
+    // 正文经唯一 consumer 的可等待回调交付：领域 baseline 就绪先于展示代次发布，
+    // Driver 快照要等 owner 真实 adopt 完成后再读。
+    await graph.timeline.source.waitFor((state) => state?.generation != 0);
     final initial = session.state.workspace!;
     // A runtime baseline may predate the directory's terminal/title/mode frame.
     session.applySnapshot(
@@ -520,6 +528,228 @@ void main() {
     expect(crossAccount['modelAccount'], isNull);
     expect(crossAccount['modelCapabilities'], isEmpty);
   });
+
+  test('初始连接失败保留安全 typed 诊断，不需要展示 lease', () async {
+    final transport = _ScriptedTimelineTransport(
+      failure: const StudioFailure(
+        code: StudioFailureCode.unavailable,
+        message: 'sentinel-message-must-not-leak',
+        retryable: false,
+        correlationId: 'corr-a1',
+        detailsJson: '{"sentinel":"details-must-not-leak"}',
+      ),
+    );
+    final client = AnyworkClient(
+      transport: transport,
+      clientId: 'connection-failure',
+    );
+    addTearDown(
+      () => client.close(
+        deadline: DateTime.now().add(const Duration(seconds: 5)),
+      ),
+    );
+    client.selection.markOpened();
+    client.threadDirectory.applyBaseline(
+      ThreadDirectoryPage(threads: [_factsThread()], revision: 1),
+      revision: 1,
+    );
+    final timeline = TimelineSessionOwner(client: client);
+    addTearDown(
+      () => timeline.close(
+        deadline: DateTime.now().add(const Duration(seconds: 5)),
+      ),
+    );
+    client.workspace.selectThread('thread', projectId: 'project');
+    // 首基线前的真实失败：连接 failed、代次 0、没有展示 lease、没有条目。
+    final failed = await timeline.source.waitFor(
+      (state) => state?.connection == TimelineConnectionPhase.failed,
+    );
+    expect(failed!.generation, 0);
+    expect(failed.connectionError, isNotNull);
+    expect(timeline.lease('thread'), isNull);
+
+    bindStudioDriver(client, timeline: timeline);
+    final opens = transport.opens;
+    final json =
+        jsonDecode(StudioDriverState.snapshotJson()) as Map<String, dynamic>;
+    final plain = json['timeline'] as Map<String, dynamic>;
+    // 四个键在 timeline 对象存在时始终存在，缺键不是合法 null。
+    for (final key in _connectionErrorKeys) {
+      expect(plain.containsKey(key), isTrue, reason: '$key 必须在 timeline 中始终存在');
+    }
+    expect(plain['connection'], 'failed');
+    expect(plain['generation'], 0);
+    expect(plain['ready'], isFalse);
+    expect(plain['itemCount'], 0);
+    expect(plain['connectionErrorType'], 'StudioFailure');
+    expect(plain['connectionErrorCode'], 'unavailable');
+    expect(plain['connectionErrorRetryable'], isFalse);
+    expect(plain['connectionErrorCorrelationId'], 'corr-a1');
+    // 隐私边界：message 与 detailsJson 不进入诊断。
+    final encoded = jsonEncode(plain);
+    expect(encoded.contains('sentinel-message-must-not-leak'), isFalse);
+    expect(encoded.contains('details-must-not-leak'), isFalse);
+    // 同一份真实快照进入严格 Driver parser，不另建 facts 回读。
+    final observation = TimelineObservation.parse(json);
+    expect(observation.ready, isFalse);
+    expect(observation.connection, 'failed');
+    expect(observation.generation, 0);
+    expect(observation.itemCount, 0);
+    // typed 身份原样来自当前 error：false 不降级为 null，correlation 不重新发明。
+    expect(observation.connectionErrorType, 'StudioFailure');
+    expect(observation.connectionErrorCode, 'unavailable');
+    expect(observation.connectionErrorRetryable, isFalse);
+    expect(observation.connectionErrorCorrelationId, 'corr-a1');
+
+    // 读诊断不制造 transport demand 或会话。
+    StudioDriverState.readFacts();
+    expect(transport.opens, opens);
+
+    // 选择离开当前 Thread 后诊断不残留上一次失败。
+    client.selection.beginNewThread();
+    final cleared =
+        jsonDecode(StudioDriverState.snapshotJson()) as Map<String, dynamic>;
+    expect(cleared['timeline'], isNull);
+  });
+
+  test('未知连接异常只保留运行时类型，不调用其 toString 或替身 typed 身份', () async {
+    final transport = _ScriptedTimelineTransport(
+      failure: _UnprintableTimelineFailure(),
+    );
+    final client = AnyworkClient(
+      transport: transport,
+      clientId: 'connection-unknown',
+    );
+    addTearDown(
+      () => client.close(
+        deadline: DateTime.now().add(const Duration(seconds: 5)),
+      ),
+    );
+    client.selection.markOpened();
+    client.threadDirectory.applyBaseline(
+      ThreadDirectoryPage(threads: [_factsThread()], revision: 1),
+      revision: 1,
+    );
+    final timeline = TimelineSessionOwner(client: client);
+    addTearDown(
+      () => timeline.close(
+        deadline: DateTime.now().add(const Duration(seconds: 5)),
+      ),
+    );
+    client.workspace.selectThread('thread', projectId: 'project');
+    // 未知异常不是 typed 失败：通道按可重试收束，最终仍以同一对象 failed。
+    final failed = await timeline.source.waitFor(
+      (state) => state?.connection == TimelineConnectionPhase.failed,
+    );
+    expect(failed!.connectionError, isA<_UnprintableTimelineFailure>());
+    expect(timeline.lease('thread'), isNull);
+
+    bindStudioDriver(client, timeline: timeline);
+    final json =
+        jsonDecode(StudioDriverState.snapshotJson()) as Map<String, dynamic>;
+    final plain = json['timeline'] as Map<String, dynamic>;
+    // 运行时类型名来自 Dart 类型元数据；异常自身的 toString 必须不被调用。
+    expect(plain['connectionErrorType'], '_UnprintableTimelineFailure');
+    expect(plain['connectionErrorCode'], isNull);
+    expect(plain['connectionErrorRetryable'], isNull);
+    expect(plain['connectionErrorCorrelationId'], isNull);
+    final observation = TimelineObservation.parse(json);
+    expect(observation.connection, 'failed');
+    expect(observation.connectionErrorType, '_UnprintableTimelineFailure');
+    expect(observation.connectionErrorCode, isNull);
+    expect(observation.connectionErrorRetryable, isNull);
+    expect(observation.connectionErrorCorrelationId, isNull);
+  });
+
+  test('无连接错误时四项为 null，parser 拒绝缺键与类型错误并接受 null', () async {
+    final transport = _ScriptedTimelineTransport();
+    final client = AnyworkClient(transport: transport, clientId: 'no-error');
+    addTearDown(
+      () => client.close(
+        deadline: DateTime.now().add(const Duration(seconds: 5)),
+      ),
+    );
+    client.selection.markOpened();
+    client.threadDirectory.applyBaseline(
+      ThreadDirectoryPage(threads: [_factsThread()], revision: 1),
+      revision: 1,
+    );
+    final timeline = TimelineSessionOwner(client: client);
+    addTearDown(
+      () => timeline.close(
+        deadline: DateTime.now().add(const Duration(seconds: 5)),
+      ),
+    );
+    client.workspace.selectThread('thread', projectId: 'project');
+    await timeline.source.waitFor((state) => state?.generation != 0);
+
+    bindStudioDriver(client, timeline: timeline);
+    final opens = transport.opens;
+    final json =
+        jsonDecode(StudioDriverState.snapshotJson()) as Map<String, dynamic>;
+    final plain = json['timeline'] as Map<String, dynamic>;
+    for (final key in _connectionErrorKeys) {
+      expect(plain.containsKey(key), isTrue, reason: '$key 必须在 timeline 中始终存在');
+      expect(plain[key], isNull, reason: '无错误时 $key 是未知，不是 internal');
+    }
+
+    // 同一份真实快照的负向矩阵：缺键与错误类型都是观测失败。
+    final missing = Map<String, dynamic>.from(plain)
+      ..remove('connectionErrorCode');
+    expect(
+      () => TimelineObservation.parse(_withTimeline(json, missing)),
+      throwsStateError,
+      reason: '缺键不能静默当作 null',
+    );
+    final mismatched = <String, Object?>{
+      'connectionErrorType': 7,
+      'connectionErrorCode': 5,
+      'connectionErrorRetryable': 'false',
+      'connectionErrorCorrelationId': 1.5,
+    };
+    for (final entry in mismatched.entries) {
+      final mutated = Map<String, dynamic>.from(plain)
+        ..[entry.key] = entry.value;
+      expect(
+        () => TimelineObservation.parse(_withTimeline(json, mutated)),
+        throwsStateError,
+        reason: '${entry.key} 的类型不符必须拒绝',
+      );
+    }
+    // 合法 null 被接受：未知或无错误不等于缺键。
+    final nulled = Map<String, dynamic>.from(plain)
+      ..['connectionErrorType'] = null
+      ..['connectionErrorCode'] = null
+      ..['connectionErrorRetryable'] = null
+      ..['connectionErrorCorrelationId'] = null;
+    final parsed = TimelineObservation.parse(_withTimeline(json, nulled));
+    expect(parsed.connection, 'ready');
+    expect(parsed.ready, isTrue);
+    expect(parsed.connectionErrorType, isNull);
+    expect(parsed.connectionErrorCode, isNull);
+    expect(parsed.connectionErrorRetryable, isNull);
+    expect(parsed.connectionErrorCorrelationId, isNull);
+    expect(transport.opens, opens);
+  });
+}
+
+const _connectionErrorKeys = <String>[
+  'connectionErrorType',
+  'connectionErrorCode',
+  'connectionErrorRetryable',
+  'connectionErrorCorrelationId',
+];
+
+/// 替换诊断快照里的 `timeline` 对象，用于严格 parser 的负向矩阵。
+Map<String, dynamic> _withTimeline(
+  Map<String, dynamic> snapshot,
+  Map<String, dynamic> timeline,
+) => Map<String, dynamic>.from(snapshot)..['timeline'] = timeline;
+
+/// 非 typed 连接异常：任何对它的 `toString()` 都是正文泄漏或额外推断。
+final class _UnprintableTimelineFailure implements Exception {
+  @override
+  String toString() => throw StateError('sentinel-message-must-not-be-read');
 }
 
 StudioThread _factsThread() => StudioThread(
@@ -629,19 +859,41 @@ final class _FactsConnection implements StudioTimelineConnection {
   _FactsConnection(this._baseline);
 
   final StudioTimelineBaseline Function() _baseline;
-  final Completer<StudioTimelineUpdate?> _pending = Completer();
+  final StreamController<StudioTimelineFeedFrame> _frames =
+      StreamController<StudioTimelineFeedFrame>();
   int closeCalls = 0;
   bool closed = false;
+  bool _claimed = false;
+  String _deliveredSubscriptionId = '';
 
   @override
-  Future<StudioTimelineBaseline> initial() async => _baseline();
+  Stream<StudioTimelineFeedFrame> get events {
+    if (_claimed) {
+      throw const StudioFailure(
+        code: StudioFailureCode.conflict,
+        message: 'The facts feed stream was already claimed',
+        retryable: false,
+        correlationId: 'facts-stream-conflict',
+      );
+    }
+    _claimed = true;
+    final baseline = _baseline();
+    _deliveredSubscriptionId = baseline.subscriptionId;
+    _frames.add(
+      StudioTimelineFeedFrame.data(
+        deliverySequence: 1,
+        event: StudioTimelineFeedEvent.baseline(baseline: baseline),
+      ),
+    );
+    return _frames.stream;
+  }
 
   @override
-  Future<StudioTimelineUpdate?> next() => _pending.future;
+  Future<void> ackThrough(int deliverySequence) async {}
 
   @override
   Future<StudioTimelinePage> page({String? before, int? limit}) async =>
-      const StudioTimelinePage(items: [], before: null, hasOlder: false);
+      StudioTimelinePage(items: [], before: null, hasOlder: false);
 
   @override
   Future<StudioTimelineDetailChunk> readDetail({
@@ -658,27 +910,39 @@ final class _FactsConnection implements StudioTimelineConnection {
 
   @override
   void requestClose() {
+    if (closed) return;
     closed = true;
-    if (!_pending.isCompleted) _pending.complete(null);
+    if (!_frames.isClosed) scheduleMicrotask(_frames.close);
   }
 
   @override
-  Future<void> close() async {
+  Future<StudioFeedCloseReport> close() async {
     closeCalls++;
     requestClose();
+    return StudioFeedCloseReport(
+      feedId: _deliveredSubscriptionId,
+      outcome: const StudioFeedCloseOutcome.clean(),
+    );
   }
 }
 
 final class _ScriptedTimelineTransport implements StudioTransport {
-  _ScriptedTimelineTransport({StudioTimelineBaseline Function()? baseline})
-    : _baseline = baseline ?? _factsBaseline;
+  _ScriptedTimelineTransport({
+    StudioTimelineBaseline Function()? baseline,
+    this.failure,
+  }) : _baseline = baseline ?? _factsBaseline;
 
   final StudioTimelineBaseline Function() _baseline;
+
+  /// 打开连接的失败输入；为 null 时交付一份首帧基线。
+  final Object? failure;
   int opens = 0;
 
   @override
   Future<StudioTimelineConnection> openTimeline(String threadId) async {
     opens++;
+    final configured = failure;
+    if (configured != null) throw configured;
     return _FactsConnection(_baseline);
   }
 

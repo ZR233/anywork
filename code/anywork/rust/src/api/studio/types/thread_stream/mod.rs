@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 
 // 活动/存储 DTO 定义在兄弟模块 `thread_activity`，由 `types` 重导出；这里显式引入，不复制定义，
 // 也不做 `pub use` 以免与 `thread_activity::*` 产生同名 glob 歧义。
-use super::{BridgeThreadActivity, BridgeThreadStorageState};
+use super::{BridgeProviderFailureKind, BridgeRetryDisposition, BridgeThreadActivity, BridgeThreadStorageState, BridgeTurnFailureCategory};
 
 pub mod item;
 
@@ -135,13 +135,12 @@ pub struct BridgeTurn {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BridgeTurnFailureDto {
-    pub category: String,
-    pub provider_kind: Option<String>,
+    pub category: BridgeTurnFailureCategory,
+    pub provider_kind: Option<BridgeProviderFailureKind>,
     pub code: Option<String>,
     pub http_status: Option<u16>,
     pub message: String,
-    pub retryable: bool,
-    pub retry_after_ms: Option<u64>,
+    pub retry: BridgeRetryDisposition,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

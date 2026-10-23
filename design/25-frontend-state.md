@@ -8,6 +8,9 @@ Smart Connector 绑定意图；Dumb View 只渲染数据。本篇是 Dart 层次
 
 本文描述已批准的目标架构，迁移是否完成以生成一致性、契约测试与原生验收为准。
 
+迁移采用旧实现保全后移除、按领域并行重建的方式，不以兼容facade维持中间可编译状态。
+尚未确定的共享接口由架构owner统一裁决；局部实现不能自行引入第二事实源或改变业务语义。
+
 ## 25.1 分层与应用实例
 
 ```mermaid
@@ -28,6 +31,8 @@ flowchart LR
 不可变领域值使用 Freezed；必要的纯 Dart annotation 与代码生成依赖不破坏无 Flutter 边界。
 运行时对象、资源 permit、任务与连接不是 Freezed value。FRB 生成 DTO、native handle 与
 生成异常只存在于 adapter，进入 Repository 前转换为 typed 领域模型或错误。
+Timeline与Thread域的已知失败分类和retry disposition复用同一typed枚举；不在FRB另一条
+路径保留bool与可空延迟的平行表示。字段变化不改变原可重试语义或缺省值含义。
 
 数据包按配置、目录、模型、额度、会话、草稿、模式、资源和更新等真实领域组织 Repository。
 每个 Repository 封装本领域 reducer、查询与写入，不通过一个巨型 Client 暴露全部 transport、
@@ -98,6 +103,11 @@ undo/redo同属一个编辑VM；图形Controller只管理UI坐标/交互并提�
 listener 和预算，取消它不能关闭底层会话。latest-value 只用于可覆盖的状态；可靠事件不能
 套用 pause 后只保留最新一条的语义。
 
+共享 resources 层负责 ReadText 的连续 UTF-8 分块与产品来源状态的机械物化，各域复用同一
+typed 读取规则。此能力无状态，不开关 scope、不另建任务/预算/缓存，也不取得新的当前来源；
+调用始终处于原领域已登记工作与捕获的 immutable scope 内。各域的成员顺序、delta、窗口、
+空引用策略和 canonical reducer 不并入通用读取框架。
+
 Timeline 的状态观察与正文交接是两种能力。只读状态观察用于连接状态、诊断与可覆盖的领域
 镜像，不承担展示正文的可靠交付。内容服务同步登记唯一的可等待正文消费者，返回只拥有自身
 登记与在途回调的 lease；登记返回前不重入回调，重复登记明确拒绝。消费者重新接入已有需求
@@ -109,6 +119,14 @@ Timeline 的状态观察与正文交接是两种能力。只读状态观察用�
 
 Session 可用性、资源不足与恢复通过同一真实 owner 的 typed 状态发布。ViewModel 登记时立即
 消费返回的当前值，不等待下一帧，不用页面跳转、菜单重开或局部 refresh 补漏。
+尚未创建出 Session 的选择准入失败由 ConversationRepository 发布只读 activationFailure，
+携原 threadId、selectionGeneration 与 typed 错误；它是失败证据，不是第二个可写选择来源。
+Workspace 呈现只接受与唯一当前选择身份匹配的失败，不能把 active=null 一律显示为加载中。
+显式重试仍由原 Repository 核验同一选择及其失败后重新准入，不重选目标、不调用 ensure，
+也不重放业务命令；已存在 Session 的域连接错误继续由各域状态负责。
+同一Session的各域共享projection incarnation：新incarnation出现后旧域失去新帧准入，
+旧值只作为last-known保留，不能跨incarnation混为当前ready。Repository封闭时结束其
+选择/激活失败publisher的观察准入，但未决原Session的资源与清理责任持续保留至真实收束。
 
 业务 demand 由 Workspace／Session coordinator 与领域资源服务管理。进入 Settings、切标签、
 Widget 暂停不改变当前会话内容 demand，不清新会话或 Thread 草稿。显式切 Thread、归档项目、
@@ -142,6 +160,13 @@ Repository 完成 typed 转换与领域归并后确认 delivery prefix；需要�
 retire 先封闭发布与新查询，再广播取消和 requestClose，随后等待 producer、sink、查询、
 open 与 handle 的真实 ACK。失败或超时保留 unresolved owner 和 permit，不清容器伪装完成。
 关闭内容 feed 不关闭 Rust Session、Turn 或 writer。容量不足只在真实释放后恢复准入，不轮询。
+提交操作通过组合专用 demand 能力保留原具体 Session 的 execution 观察，不借路由选择
+维持其寿命。已有 Thread 提交只借 ready 且原 incarnation 匹配的源；新建收到真实成功
+receipt 后可在原 Session 建立 execution-only 基线，选择已改变也不需临时激活该 Thread
+或打开 Timeline。借用释放只归还原需求，不能代表 Session／native 查询已完成关闭。
+新建后的持续观察由原创建任务提供非激活源能力，固定原执行 owner／projection；它不是
+普通 live 模式或 cold checkpoint 的别名。真实首基线提供来源身份，receipt 不补造它未携带
+的版本字段；源已失效就保留已确认结果与读取失败，不按相同 ID 重建或换到 latest。
 取消 native、等待 stream 结束、查询退出与正文回调收束可以并行推进；不能先等回调结束才发
 native 取消。typed close 报告必须属于原连接；只有 native Clean 且 Dart 已登记工作全部结束后
 才 dispose opaque 和释放 permit。Unresolved 保留完整 typed issues、原 handle 与资源 owner。
@@ -151,6 +176,28 @@ native 取消。typed close 报告必须属于原连接；只有 native Clean �
 原始错误的 retryable 与清理动作能否恢复不是同一事实：关闭报告保留原始 typed 诊断，并
 分别表达继续等待原工作、显式重试原清理调用或不可恢复终态。不能因为原异常标为可重试，
 就假定第三方 stream 的取消操作具有重试能力；也不能因此丢弃原始错误分类。
+
+Rust Thread 与产品读取 scope 共用一个 runtime 生命周期内核和同一组 64 个在途读取责任，
+但保留各自 typed wire identity 与材料。scope 计费按真实 Thread 或产品资源／原业务 scope
+分组，跨 incarnation 共用原 8 个额度，不能把新 ref／代次当作新配额。Thread 的 Cold lease
+与驻留 pin、产品的不可变材料 pin 都在真实查询 join 后释放；公共内核不解码业务载荷。
+runtime 关闭独立封闭并监督这组 scope，不以 Thread framework 关闭成功为执行前提，
+所有未决问题仍进入原 finalizer 之前的同一次报告，不新增关闭协调器。
+
+归档在首次异步边界和写 lane 等待之前捕获全部实际拥有的原对象，而非 Sidebar 窗口。
+捕获能力只用于组合层：项目与 Thread 分型，准备原归属、接受真实归档结果与异步释放
+准备责任分开；Unknown 保留原捕获，不重发。确认后的 UI 清理绑定原具体 Session 与选择
+需求代次，不能关闭较新的 UI 需求或操作证据。草稿清理还核原 owner、stamp 与附件代次，
+晚编辑完整保留；只释放原草稿一侧引用，不减少已冻结操作或 Unknown 的附件引用。
+
+Conversation 的组合 context 以具名 ThreadMetadata 借用返回原目录读取能力，而非仅返回
+值 Future；值就绪与读取资源真正收束独立。Session 在进入 Recovery 检查前可保留原纯
+metadata 结果，但不能因此放开 UI、执行或恢复准入。UI 与归档准备借用同一实际工作时，
+共享其原结果和真实关闭责任；关闭超时保原读取 owner，不由一个值返回推断 Clean。
+单实体 metadata 的成功基线必须恰含目标实体；lookup／物化失败通过原目标的 typed
+读取错误公开，即使还没有实体引用，也不能伪造引用或发布健康空值。
+跨领域捕获由同 AppGraph 的具名 typed 能力组合，所有绑定完成后才开放动作；不使用
+当前 ID 回查、空 capture、另一个资源池或关闭协调器来绕过未完成的草稿与附件 owner。
 
 ## 25.6 ViewModel、Smart 与 Dumb
 
@@ -169,11 +216,28 @@ Freezed ViewState 表达可渲染数据、编辑意图、校验及按 target／o
 展开意图不成为第二份正文缓存。正文归并、消息集合及显示预算以 [26](./26-timeline-content.md)
 为准，不恢复旧 Client 的正文副本。
 
+设置页显式重试依据当前来源同步状态和真实读取需求，不以保留了旧 header 证明来源健康。
+源失败后仍展示 last-known 时，恢复入口必须进入该领域已有的纯读取／订阅恢复路径；不能
+只重试已满足的可见字段，也不能调用业务 reload／保存来代替恢复。重试保原 VM 会话与资源
+责任，在途请求合并，恢复失败继续显示真实错误，不由源通知自动重复业务动作。
+
 编辑 VM 在数据更新时只推进该目标的 canonical 基线，保留未提交输入；不能每次 invalidate
 重新初始化而丢 dirty draft。提交在同步阶段冻结 payload／目标／revision，旧完成不能清新字段。
+交互答案编辑同样遵守此规则：相同编辑目标重建观察不构成显式 discard，原答案、fallback、
+reason 和 feedback 不得被空初始值覆盖；不同完整目标不自动迁移这些输入。关闭确认绑定
+具体编辑生命周期、完整目标、editRevision 与最新意图，不能仅比较 Notifier 对象或一个
+可能跨重建复用的 revision；清草稿和关闭面板前分别核对原身份，旧确认不作用于新会话。
 keepAlive、family key、保留与丢弃规则按编辑会话明确；不把永久缓存作为“防止丢状态”的方案。
 模式 JSON 与图共享同一 Freezed 编辑状态和最多 64 次撤销／重做历史；解析、校验或保存失败
 保留输入，graph controller 只拥有坐标及交互投影，不成为另一业务 owner。
+
+Settings 的局部 tab 与整页离开共用同一导航请求所有权和 Mode dirty 确认入口。Smart 在
+等待确认前捕获原导航请求、具体 Mode VM、编辑会话代次、目标、editRevision 和 latestIntent；
+确认返回后必须在任何保存／丢弃动作之前核对这些身份及请求仍有效，失效仅拒绝本次离开，
+不得处置新草稿。同一个 Notifier 实例重新 build 不代表原编辑会话仍存活，须核对真实代次。
+已准入的保存继续结算原操作，导航 owner 在其完成后再次核对原请求，才交接编辑生产者并
+隐藏／切换页面；Widget dispose 不自动保存或丢弃。跨功能入口由 Settings 的 curated
+presentation API 提供，app 只将它注入唯一 router，不另建导航或退出 owner。
 
 Smart Screen／Connector 用静态 ref.watch／select 观察 VM，用 ref.listen 或 typed action result
 执行导航、对话框和提示；不直连 transport 或可写 store。Dumb View 只接收 immutable props、
@@ -209,6 +273,11 @@ readStudioState 或聚合 reload。错误保留 typed code／correlation 与原�
 账号原子保存；领域层在串行 lane 内从最新 canonical account 构造变更，CAS 重试也重构。
 其它模型覆盖，包括在线目录撤下的成员，必须保留。离开前把已产生的有效意图交给领域层，
 已提交／排队操作参与应用退出 join；旧响应不覆盖新输入或清新 pending/error。
+自定义模型改名迁移原压缩阈值覆盖，并清除旧 ID 的连接覆盖；wire API 改变也清除该连接
+覆盖，删除则清除该模型的两类覆盖。切换模板重建表单是显式的模型配置重建意图，才可清除
+原手动声明与全部连接/阈值覆盖；即使切回原模板也不能把已发生的重建误判为普通字段编辑。
+这些意图仍由 ConfigurationRepository 在最新 canonical 账号上合并，不由 VM 回写旧全表；
+最终容量、连接支持、重复 ID 与阈值有效性仍由 Rust 校验和解析。
 
 原始阈值覆盖由配置 revision 所有，最终上下文解析策略由 catalog revision 所有；Rust 配置
 owner 在同一锁内读取两者，影响策略的配置与目录更新推进目录水位。Repository 独立合并
@@ -266,6 +335,13 @@ bootstrap 由应用生命周期明确发起，成功／失败由唯一启动状�
 到达前的失败包含 typed code 与 correlation，不困在 Widget 的局部等待标志；显式 retry 不
 创建第二套初始化。启动后局部目录失败保留可用 shell 和最后有效数据。
 
+Updates 仓储构造不打开 native feed，也不初始化库；原 RuntimeReady 后的显式读取需求才
+开始订阅。自动更新 gate 同步登记观察后，等待与当前 header 的 origin／ref 匹配的完整
+canonical value，不能只见 header ready 就派发自动任务。调用动作前再次核同一准入条件；
+只读 gate 失败可以在显式启动重试时恢复，不自动轮询或重放业务。runtime 已 Ready 而领域
+attach 失败时，保留原 Ready 结果，显式重试只恢复未完成 attach，不重启 native 或把提前
+标记 attached 当成功；已受理自动任务始终复用原 ticket，包括失败与未知结果。
+
 手动更新的操作与准备任务归更新领域服务，请求同步发布 pending，ViewModel 只编排并呈现，
 页面不持有准备任务。已有后台下载时复用同一次准备；准备操作与进度流真实完成后，才把更新后
 重启意图交给同一退出协调器。首次退出固定普通退出或更新后重启意图及绝对期限，应用 close
@@ -275,6 +351,11 @@ bootstrap 由应用生命周期明确发起，成功／失败由唯一启动状�
 close 完成后才解绑。独立 session、feed、update 和附件任务并发取消，在首次期限内等待真实
 完成及展示 lease 的释放确认，随后才销毁 UI 控制器。尚未解决的任务与资源出现在 CloseReport，
 不能释放未确认的 permit；provider container 与 opaque dispose 位于真实异步收束之后。
+
+有真实阶段依赖的领域仍保持关闭顺序：Updates 先取消并 join 已受理任务，再收束其 feed／
+read scopes。共享资源生命周期提供无副作用的当前责任报告快照，供前一阶段期限耗尽时
+合并尚未收束的后一阶段；读取快照不封准入、不取消、不启动清理或释放资源。快照只说明
+当时已登记的责任，不证明整个领域已关闭，也不替代原 future 的真实 join。
 
 退出结果分别承载关停报告与安装交接结果；安装器启动失败不能改写可靠保存的结论，也不能
 被关停 Clean 隐藏。更新退出先在原期限内恢复既有主窗口，确保托盘隐藏时提示仍实际可见。
@@ -316,6 +397,35 @@ lockfile，允许同步缺失缓存，不重新选择版本或改写 lockfile，
 目录发布完整成员与后端计算的类型资格。所有会话、Mode、系统角色与 Agent 使用同一公共
 模型查询；GUI 不另算能力、预算或默认值，不满足资格的既有选择保留并显示原因，不自动换模型。
 目录与配置 revision 独立，账号参数变化只更新受影响路由，旧响应不能回滚新目录。
+编辑时的effort建议和新Profile的首个文本模型建议由原immutable目录scope中的Rust纯查询
+提供，不从Dart部分页选全局first或重写模型策略；建议结果携原查询目标，由原编辑意图
+核验后消费。它们不读取最新配置，也不改变配置保存的严格effort校验或空值省略语义。
+
+系统角色的配置存在性与缺省建议由 Configuration 的专用不可变配对读取提供。Rust 在
+同一配置 owner 捕获配置／完整模型目录及真实双水位，并发布可按需读取的配对引用；
+任一来源改变都使配对目标更新，不要求普通配置字段随目录变化重新读取。旧 scope 只读
+原配对材料，不在读取时偷偷改用 latest 目录。原 role key 存在即返回原 route，包括空或
+不可解析的 effort；只有该 key 确实缺失才建议完整目录中的首个文本模型，真实无候选与
+未知／失败分开。UI 不从部分目录页推断全局 first，也不把 role 展示查询当最终 Start 解析。
+
+Models 的不可变材料与成员身份连续性在原配置 owner 的发布边界同步捕获和推进，再由
+产品观察消费；latest watch 只能通知，不负责从最终值重建遗漏的删除／重建历史。即使
+观察者未及时 poll，同 ID 删除后重建也必须取得新成员身份。材料寿命只由当前发布、原
+未 ACK 窗口和已 pin 的读取 scope 承担，不建立无界日志或第二份配置事实源；查询不能
+用 current 配置补旧引用。Models 捕获不携带账号密钥或整份 Settings 的序列化副本。
+
+模型目录的全资源来源状态表示原配置 owner 中已校验目录的可用性，不表示所有账号的
+联网探测均成功。该状态由同一 ConfigRuntime 持有并在原发布边界推进；transport 不在
+查询或订阅时临时构造 Ready，不借配置／目录业务 revision 充当来源状态 revision。
+初始化成功才有 Ready，原 owner 关闭产生 Stopped；成功发布更新原观察时间。初始化
+失败不发布假空目录。逐账号 probing、缓存来源、检查时间和错误完整保留在账号目录中，
+不聚合成没有真实操作 owner 的 Loading／Refreshing／Degraded，也不制造全局探测 ID。
+八态类型保持穷尽运输，但不要求一个只有同步目录发布的来源人为经历所有八态。
+
+来源元数据、业务材料和投影交付的身份及水位相互独立，并在同次发布中相容捕获。
+来源状态按需读取只读原不可变元数据，不发起联网探测或配置 reload。投影捕获失败、
+预算耗尽与运输失败沿各自真实错误路径报告，不能冒充账号探测失败，也不能因来源仍
+可用就发布缺损业务材料；恢复仍遵守失败后的成员身份失效与原引用寿命。
 
 模型 key 使用 account ID＋model ID；显示名不是身份。统计先按该 key 接收 canonical 汇总，
 effort 是组内细分，发送／返回模型仅是冻结诊断；未知历史身份不能由当前目录补写。
@@ -332,3 +442,38 @@ Repository关闭先封闭查询、等待已接纳请求交接，再并行关闭�
 owner与恢复能力，不以页面销毁报告远端清理成功。游标、连接与关闭任务是运行时资源，
 不放入Freezed ViewState；展示层不创建SSH连接。以上继承远端HTTP/2 v9能力与清理语义，
 不恢复旧RemoteActions或巨型Client。
+
+跨功能的SSH编辑、密码和远程目录弹窗通过Settings具名Smart入口复用同一呈现owner的
+身份分配与结束登记；Workspace不导私有VM或自建弹窗ID来源。添加远程项目的名称编辑在
+原确认意图中冻结，与目录一起进入真实open→rename→activate批次，不在打开后补写名称；
+成功返回只说明该原批次与本次查询借用已经完成，不触发第二次打开或第二个选择来源。
+
+## 25.13 开放工具产物的呈现边界
+
+ThreadItem及其已知字段仍使用封闭typed值；只有原工具`output_artifacts`是有意开放的JSON
+值序列。Rust保留原值，传输逐项编码，Dart领域用具名不可变opaque文本值表达，不在Repository
+或reducer还原成动态协议对象。该边界不允许已知DTO退回JSON聚合，也不扩大Timeline常驻或
+详情读取预算。
+
+网页卡片仅在专用呈现适配中使用标准JSON解码器，从已交付的开放产物提取原有最多六个
+去重链接；保持原遍历顺序和http(s)前缀选择语义，不新增URL过滤或自动读取完整大产物。
+解码对象只是临时呈现材料，不进入canonical镜像、ViewState、Driver或另一个正文缓存。
+原tool arguments与Raw payload content保留各自opaque文本语义，不被此边界自动解析。
+
+## 25.14 附件二进制读取
+
+附件读取是独立只读资源，不是事件 feed、业务提交或另一份附件账本。Rust 在原 draft
+登记、Thread 附件目录或工具 delivery 授权边界取得具体文件，并持有同一文件句柄与
+真实长度；后续块不按路径重开、不按 ID 查询 latest，也不先读取整块再伪装分块。
+工具资源保留原长度与摘要校验，校验和读取使用同一文件对象。删除与新打开在原 owner
+边界裁决；已打开对象的寿命与路径是否仍存在分开，文件错误不能伪装为正常空内容。
+
+二进制 scope 使用独立的真实读取身份，不捏造 Thread facet revision。Thread 读取与其
+原详情共享八个 scope 配额，draft 读取由同一 AttachmentDraftRuntime 共用八个，而非
+每个附件各八个；opening 与块查询共用 runtime 的六十四个在途读取配额。封闭先拒绝
+新请求，真实等待打开、完整性检查、块读取与底层工作结束后才释放文件及许可。
+
+每块默认 64 KiB，允许 1 B 至 256 KiB，按原始二进制字节计量，与 JSON 详情预算是
+不同合同。UI 所需完整字节只沿这个原 scope 组装，结果由调用方独占，不进入领域值、
+ViewState、Driver 或常驻第二缓存。该读取合同不改变模型附件准入、上传限额、提交
+引用转移或草稿／操作双归属；这些仍由原业务 owner 与唯一 ledger 负责。

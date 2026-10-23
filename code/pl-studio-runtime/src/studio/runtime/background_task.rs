@@ -1,6 +1,7 @@
 //! Retained completion for host background tasks, independent of shutdown waiters.
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use futures::FutureExt;
@@ -17,15 +18,52 @@ const CANCEL_SIGNAL_LOCK_LIMIT: Duration = Duration::from_millis(100);
 
 pub(super) struct BackgroundTask {
     abort: AbortHandle,
-    completion: Shared<BoxFuture<'static, Result<(), Arc<JoinError>>>>,
+    completion: Shared<BoxFuture<'static, Result<(), Arc<BackgroundTaskFailure>>>>,
+    succeeded: Arc<AtomicBool>,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub(super) enum BackgroundTaskFailure {
+    #[error("background task did not end successfully")]
+    Join(#[source] JoinError),
+    #[error("background task completion was not published")]
+    MissingCompletion,
+}
+
+impl BackgroundTaskFailure {
+    fn is_cancelled(&self) -> bool {
+        matches!(self, Self::Join(error) if error.is_cancelled())
+    }
 }
 
 impl BackgroundTask {
     pub(super) fn new(task: JoinHandle<()>) -> Arc<Self> {
+        let abort = task.abort_handle();
+        let succeeded = Arc::new(AtomicBool::new(false));
+        let published = succeeded.clone();
+        let (result, completion) = tokio::sync::oneshot::channel();
+        tokio::spawn(async move {
+            let outcome = task.await.map_err(|error| Arc::new(BackgroundTaskFailure::Join(error)));
+            published.store(outcome.is_ok(), Ordering::Release);
+            let _ = result.send(outcome);
+        });
         Arc::new(Self {
-            abort: task.abort_handle(),
-            completion: async move { task.await.map_err(Arc::new) }.boxed().shared(),
+            abort,
+            succeeded,
+            completion: async move {
+                completion.await.unwrap_or_else(|_| {
+                    Err(Arc::new(BackgroundTaskFailure::MissingCompletion))
+                })
+            }.boxed().shared(),
         })
+    }
+
+    pub(super) fn succeeded(&self) -> bool {
+        self.succeeded.load(Ordering::Acquire)
+    }
+
+    pub(super) async fn join(&self) -> Result<(), Arc<BackgroundTaskFailure>> {
+        self.completion.clone().await
     }
 
     pub(super) fn is_finished(&self) -> bool {
@@ -44,7 +82,7 @@ impl Drop for BackgroundTask {
     }
 }
 
-pub(super) async fn stop(slot: &BackgroundTaskSlot) -> Result<(), Arc<JoinError>> {
+pub(super) async fn stop(slot: &BackgroundTaskSlot) -> Result<(), Arc<BackgroundTaskFailure>> {
     let task = slot.lock().await.clone();
     let Some(task) = task else {
         return Ok(());
@@ -79,7 +117,7 @@ pub(super) async fn signal(slot: &BackgroundTaskSlot) {
 }
 
 /// Joins a cooperatively stopped task without aborting an in-flight resource transfer.
-pub(super) async fn finish(slot: &BackgroundTaskSlot) -> Result<(), Arc<JoinError>> {
+pub(super) async fn finish(slot: &BackgroundTaskSlot) -> Result<(), Arc<BackgroundTaskFailure>> {
     let task = slot.lock().await.clone();
     match task {
         Some(task) => task.completion.clone().await,

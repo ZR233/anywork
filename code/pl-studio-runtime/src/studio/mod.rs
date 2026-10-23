@@ -35,6 +35,7 @@ pub use runtime::*;
 pub use runtime_lock::{StudioHostKind, StudioRuntimeOptions};
 pub use runtime_state::*;
 pub use startup::{StudioStartupError, StudioStartupErrorKind, StudioStartupRecovery};
+pub(crate) use storage::history::HistoryReadFailure;
 pub use store::{StudioDatabaseError, StudioStore};
 
 pub(crate) use thread_factory::StudioThreadFactory;

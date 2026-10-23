@@ -204,7 +204,7 @@ impl StudioUpdateRuntime {
             return Ok(());
         }
         *self.prepared.lock().await = PreparedUpdate::None;
-        let (events, mut receiver) = tokio::sync::mpsc::unbounded_channel();
+        let (events, mut receiver) = tokio::sync::mpsc::channel(64);
         let owner = self.clone();
         let target = update.clone();
         let projection_cancellation = cancellation.clone();

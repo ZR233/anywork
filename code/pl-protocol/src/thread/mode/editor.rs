@@ -52,7 +52,7 @@ pub struct ThreadModeDefinitionSnapshot {
     pub read_only: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ThreadModeValidationIssue {
     pub code: String,

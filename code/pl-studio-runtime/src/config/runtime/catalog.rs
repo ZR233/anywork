@@ -218,6 +218,7 @@ impl ConfigRuntime {
         state.catalog.revision = state.catalog.revision.saturating_add(1);
         state.catalog.updated_at = unix_seconds();
         state.catalog.catalogs = statuses(&state.observations);
+        self.publish_projection_locked(state);
         let _ = self.catalog_updates.send(CatalogChange { affected });
     }
 
@@ -228,7 +229,11 @@ impl ConfigRuntime {
             .lock()
             .map_err(|_| config_runtime_poisoned())?;
         let mut state = self.state.write().map_err(|_| config_runtime_poisoned())?;
+        if state.closing {
+            return Ok(());
+        }
         state.closing = true;
+        let previous = state.catalog.catalogs.clone();
         for observation in state.observations.values_mut() {
             observation.cancellation.cancel();
             if observation.status.probing {
@@ -237,6 +242,11 @@ impl ConfigRuntime {
             }
         }
         state.catalog.catalogs = statuses(&state.observations);
+        if previous != state.catalog.catalogs {
+            state.catalog.revision = state.catalog.revision.saturating_add(1);
+            state.catalog.updated_at = unix_seconds();
+        }
+        self.publish_projection_locked(&mut state);
         Ok(())
     }
 }

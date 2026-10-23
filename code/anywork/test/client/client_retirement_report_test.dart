@@ -1,5 +1,7 @@
 import 'dart:async';
 
+import 'package:anywork_client/conversation.dart';
+import 'package:anywork_client/resources.dart';
 import 'package:anywork_client/studio_client.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -90,7 +92,7 @@ void main() {
     // This public join shares the retired pump tasks with the earlier A1
     // retirement. Its completion is a lifecycle barrier, not a timer flush.
     await owner.retire();
-    expect(first.initialCalls, 0);
+    expect(first.wasSubscribed, isFalse);
     expect(client.budget.used(ResourceKind.chatHandle), 1);
     expect(
       client.unresolvedResources.any(
@@ -159,7 +161,7 @@ final class _FailingCloseConnection extends RecordingTimelineConnection {
   final closeFailed = Completer<void>();
 
   @override
-  Future<void> close() async {
+  Future<StudioFeedCloseReport> close() async {
     final error = failure;
     if (error == null) return super.close();
     closeCalls++;

@@ -1,10 +1,12 @@
 //! Loopback HTTP/OpenAPI/SSE adapter for [`pl_studio_runtime::StudioRuntime`].
 
 mod error;
+mod exit;
 mod routes;
 mod security;
 mod skills_schema;
 mod sse;
+mod templates;
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -13,6 +15,7 @@ use std::sync::Arc;
 use anyhow::Context;
 use axum::Router;
 use axum::extract::{DefaultBodyLimit, Request, State};
+use axum::extract::MatchedPath;
 use axum::middleware;
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
@@ -22,11 +25,19 @@ use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
 use utoipa::openapi::OpenApi;
 use utoipa_swagger_ui::SwaggerUi;
+use futures::FutureExt;
 
 pub const DEFAULT_LISTEN: &str = "127.0.0.1:1421";
 pub const MAX_JSON_BODY_BYTES: usize = 4 * 1024 * 1024;
 const MAX_REQUESTS: usize = 64;
 const MAX_STREAMS: usize = 64;
+const MAX_CONTROLS: usize = 64;
+
+#[derive(Default)]
+struct LegacyStreams {
+    active: Vec<tokio::task::JoinHandle<()>>,
+    failures: Vec<tokio::task::JoinError>,
+}
 
 #[derive(Debug, Clone)]
 pub struct ServerOptions {
@@ -39,6 +50,9 @@ pub(crate) struct AppState {
     runtime: StudioRuntime,
     normal_requests: Arc<Semaphore>,
     streams: Arc<Semaphore>,
+    controls: Arc<Semaphore>,
+    templates: Arc<templates::TemplatesTransports>,
+    legacy_streams: Arc<std::sync::Mutex<LegacyStreams>>,
     shutdown: CancellationToken,
 }
 
@@ -48,8 +62,25 @@ impl AppState {
             runtime,
             normal_requests: Arc::new(Semaphore::new(MAX_REQUESTS)),
             streams: Arc::new(Semaphore::new(MAX_STREAMS)),
+            controls: Arc::new(Semaphore::new(MAX_CONTROLS)),
+            templates: Arc::default(),
+            legacy_streams: Arc::default(),
             shutdown,
         }
+    }
+
+    /// Retain the pre-existing pumps too, so adding one supervised domain cannot let the shared
+    /// server finalizer run past an unobserved legacy JoinHandle. Their wire semantics stay intact.
+    fn track_legacy_stream(&self, task: tokio::task::JoinHandle<()>) {
+        let mut streams = self.legacy_streams.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        for mut old in std::mem::take(&mut streams.active) {
+            match (&mut old).now_or_never() {
+                Some(Ok(())) => {}
+                Some(Err(error)) => streams.failures.push(error),
+                None => streams.active.push(old),
+            }
+        }
+        streams.active.push(task);
     }
 }
 
@@ -70,18 +101,9 @@ pub async fn serve(options: ServerOptions) -> anyhow::Result<()> {
         .await
         .map_err(anyhow::Error::new)?;
     let shutdown = CancellationToken::new();
-    let app = router(AppState::new(runtime.clone(), shutdown.clone()));
-    let signal = shutdown_signal(shutdown.clone());
-
-    let result = axum::serve(listener, app)
-        .with_graceful_shutdown(signal)
-        .await
-        .context("Studio HTTP server failed");
-    shutdown.cancel();
-    let shutdown_result = runtime.shutdown_runtime().await;
-    result?;
-    shutdown_result?;
-    Ok(())
+    let state = AppState::new(runtime, shutdown);
+    let app = router(state.clone());
+    exit::run(listener, app, state).await
 }
 
 fn router(state: AppState) -> Router {
@@ -102,6 +124,24 @@ async fn limit_normal_requests(
     request: Request,
     next: Next,
 ) -> Response {
+    if state.shutdown.is_cancelled() {
+        return error::ApiError(pl_protocol::studio::StudioError::new(
+            pl_protocol::studio::StudioErrorCode::Cancelled, "Studio HTTP admission is closed", false)).into_response();
+    }
+    let class = request.extensions().get::<MatchedPath>()
+        .map(|path| templates::request_class(path.as_str())).unwrap_or(templates::RequestClass::Normal);
+    match class {
+        templates::RequestClass::Stream => return next.run(request).await,
+        templates::RequestClass::Control => {
+            let Ok(_permit) = state.controls.clone().try_acquire_owned() else {
+                return error::ApiError::overloaded().into_response();
+            };
+            return next.run(request).await;
+        }
+        templates::RequestClass::Normal => {}
+    }
+    // Only the existing GET streams still use their legacy routing form. Every new Templates
+    // POST above is explicitly classified by its exact registered MatchedPath.
     let path = request.uri().path();
     if path == "/api/v1/events/product"
         || (path.starts_with("/api/v1/threads/") && path.ends_with("/events"))
@@ -112,15 +152,6 @@ async fn limit_normal_requests(
         return error::ApiError::overloaded().into_response();
     };
     next.run(request).await
-}
-
-async fn shutdown_signal(shutdown: CancellationToken) {
-    wait_for_signal().await;
-    shutdown.cancel();
-    tokio::spawn(async {
-        wait_for_signal().await;
-        std::process::exit(130);
-    });
 }
 
 async fn wait_for_signal() {

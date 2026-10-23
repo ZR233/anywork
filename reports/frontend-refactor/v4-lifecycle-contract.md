@@ -117,6 +117,15 @@ drop 掉清理责任。复用已存在的 owned-completion 机制；Shared 完�
 native join completion、当前报告及原始错误 cause。close 同步登记两条错误/完成路径，
 并行等待 native join 与 stream cancellation，不先 await 一条再迟挂另一条错误处理。
 
+这里的stream cancellation指实际native forwarding subscription的取消，不是把同一连接
+close结果重新包装成output StreamController的独立失败。output的onCancel仍同步封准入、
+发起并观察原连接关闭责任；已有Unresolved报告或已经由该原owner明确保留的同次typed关闭
+调用错误，不再合成另一个Protocol异常。output cancel完成只证明该输出观察已解绑，不证明
+native Clean；native/forwarding取消/查询/permit仍以原连接close/retryClose报告为权威。
+真正的forwarding cancel Future错误继续保terminal，不可再次cancel或因后续native Clean
+清掉。不能为此吞掉任意异常：仅已核实归原同次关闭责任并保全诊断/恢复能力的派生结果可
+由该owner消化；未归属的真实output取消故障仍上报。fake/demo遵守同一责任划分。
+
 - native Clean 且 Dart 原生取消已真实成功，且没有其他已登记本地工作，才 dispose 一次。
 - native Unresolved 的每项 diagnostic/recovery 原样保留；本地失败追加自己的 issue，不盖掉
   native issues。取消错误保留原source元数据，但其恢复能力根据实际组件契约判断。

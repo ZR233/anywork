@@ -87,7 +87,7 @@ pub(crate) enum StudioApiErrors {
     Internal(StudioError),
 }
 
-struct ApiJson<T>(T);
+pub(crate) struct ApiJson<T>(pub(crate) T);
 
 impl<S, T> FromRequest<S> for ApiJson<T>
 where
@@ -110,6 +110,22 @@ fn json_rejection(rejection: JsonRejection) -> ApiError {
 }
 
 pub(crate) struct ApiQuery<T>(pub(crate) T);
+
+/// Keep path decoding failures in the same typed error boundary as JSON/query failures.
+pub(crate) struct ApiPath<T>(pub(crate) T);
+
+impl<S, T> FromRequestParts<S> for ApiPath<T>
+where
+    S: Send + Sync,
+    T: serde::de::DeserializeOwned + Send,
+{
+    type Rejection = ApiError;
+
+    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
+        Path::<T>::from_request_parts(parts, state).await.map(|Path(value)| Self(value))
+            .map_err(|_| ApiError(StudioError::invalid_argument("invalid path parameters")))
+    }
+}
 
 impl<S, T> FromRequestParts<S> for ApiQuery<T>
 where
@@ -244,7 +260,6 @@ pub(crate) fn api_router() -> OpenApiRouter<AppState> {
         .routes(routes!(read_attachment_draft))
         .routes(routes!(read_thread_attachment))
         .routes(routes!(resolve_interaction))
-        .routes(routes!(account_catalog))
         .routes(routes!(read_settings))
         .routes(routes!(reload_settings))
         .routes(routes!(remove_account_model))
@@ -274,6 +289,7 @@ pub(crate) fn api_router() -> OpenApiRouter<AppState> {
         .routes(routes!(sse::product_events))
         .routes(routes!(sse::thread_events))
         .routes(routes!(sse::thread_timeline_events))
+        .merge(crate::templates::router())
         .merge(attachment_upload)
 }
 
@@ -894,19 +910,15 @@ async fn resolve_interaction(
     Ok(Json(
         state
             .runtime
-            .resolve_interaction(request.operation_id, interaction_id, request.resolution)
+            .resolve_interaction(
+                request.operation_id,
+                interaction_id,
+                request.expected_interaction_revision,
+                request.resolution,
+            )
             .await
             .map_err(ApiError::from)?,
     ))
-}
-
-#[utoipa::path(get, path = "/api/v1/settings/account-catalog", operation_id = "settings.loadAccountCatalog", responses(StudioApiErrors, (status = 200)))]
-async fn account_catalog(State(state): State<AppState>) -> Result<impl IntoResponse, ApiError> {
-    let snapshot = state
-        .runtime
-        .load_account_catalog()
-        .map_err(ApiError::from)?;
-    Ok(Json(snapshot))
 }
 
 #[utoipa::path(get, path = "/api/v1/settings", operation_id = "settings.read", responses(StudioApiErrors, (status = 200, body = SettingsStateResponse)))]

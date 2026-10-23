@@ -27,8 +27,13 @@ mod mode_definitions;
 mod model_catalog;
 mod model_performance;
 mod model_refresh;
+pub mod models;
+mod observation_ids;
 mod product_subscription;
 mod prompt_runner;
+mod read_calls;
+mod read_budget;
+mod read_scopes;
 mod rejected_tools;
 mod residency;
 mod settings_api;
@@ -37,6 +42,8 @@ mod skill_catalog;
 mod ssh;
 mod state_query;
 mod thread_mode;
+mod thread_metrics;
+mod thread_metrics_read;
 mod thread_service;
 mod thread_stream;
 pub(in crate::studio) mod timeline;
@@ -44,8 +51,11 @@ pub(crate) mod timeline_content;
 mod tool_refresh;
 pub use product_subscription::StudioProductTopicSubscription;
 pub use thread_stream::StudioThreadSubscription;
+pub use thread_metrics::{StudioMetricsSample, StudioMetricsSourceEvent, StudioThreadMetricsSource};
+pub use thread_metrics_read::StudioMetricsIdentityRead;
 pub use timeline_content::{TimelineContentReader, TimelineTailStream};
 mod thread_observation;
+mod thread_reads;
 mod thread_title;
 mod updater;
 
@@ -99,6 +109,7 @@ pub struct StudioSubmitPromptResponse {
     pub thread_id: String,
     pub input_id: String,
     pub cursor: u64,
+    pub request_digest: String,
 }
 
 /// Result of creating a root Thread and accepting its first Turn.
@@ -170,6 +181,10 @@ pub(in crate::studio::runtime) const ARCHIVE_TREE_SETTLE_TIMEOUT: std::time::Dur
 #[derive(Clone)]
 pub struct StudioRuntime {
     owner_epoch: String,
+    read_calls: read_calls::ReadCalls,
+    read_scopes: read_scopes::ReadScopeRegistry,
+    models_source: std::sync::Arc<crate::config::ModelCatalogSource>,
+    templates_source: std::sync::Arc<models::TemplatesSource>,
     startup_recovery: Option<crate::StudioStartupRecovery>,
     persistence_observer: background_task::BackgroundTaskSlot,
     thread_observations: thread_observation::ThreadObservations,
@@ -277,18 +292,20 @@ impl StudioRuntime {
         profile: &crate::config::UserAgentProfile,
     ) -> Result<pl_protocol::studio::SettingsCommandReply> {
         Self::validate_operation_id(&operation_id)?;
-        let (state, changed) = self.config_runtime.save_user_agent_profile(
+        let committed = self.config_runtime.save_user_agent_profile(
             expected_settings_revision,
             profile_id,
             profile,
         )?;
         self.publish_settings_state()?;
-        self.settings_command_reply(
+        let mut reply = self.settings_command_reply(
             operation_id,
-            &state,
-            changed,
+            &committed.configuration,
+            committed.changed,
             pl_protocol::studio::CommandEffectPoint::FutureSession,
-        )
+        )?;
+        reply.receipt.targets.push(self.resource_stamp("agent-profiles", committed.profiles.revision));
+        Ok(reply)
     }
 
     /// 启用或禁用不可编辑、不可删除的系统 Agent Profile。
@@ -303,26 +320,18 @@ impl StudioRuntime {
         if !crate::config::is_system_profile_id(profile_id) {
             anyhow::bail!("`{profile_id}` is not a system Agent Profile");
         }
-        let profile_id = profile_id.to_string();
-        let mut changed = false;
-        let state = self
-            .config_runtime
-            .update(expected_settings_revision, |config| {
-                let mut config = config.clone();
-                if enabled {
-                    changed = config.disabled_system_agents.remove(&profile_id);
-                } else {
-                    changed = config.disabled_system_agents.insert(profile_id.clone());
-                }
-                Ok(config)
-            })?;
+        let committed = self.config_runtime.set_system_agent_enabled(
+            expected_settings_revision, profile_id, enabled,
+        )?;
         self.publish_settings_state()?;
-        self.settings_command_reply(
+        let mut reply = self.settings_command_reply(
             operation_id,
-            &state,
-            changed,
+            &committed.configuration,
+            committed.changed,
             pl_protocol::studio::CommandEffectPoint::FutureSession,
-        )
+        )?;
+        reply.receipt.targets.push(self.resource_stamp("agent-profiles", committed.profiles.revision));
+        Ok(reply)
     }
 
     /// 立即重试待落库事实；查询和停止路径不需要调用本命令。

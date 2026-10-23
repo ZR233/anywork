@@ -835,7 +835,7 @@ impl StudioRuntime {
                         "The session could not be ended before archiving",
                         true,
                     )
-                    .with_details(serde_json::json!({ "threadId": thread_id })),
+                    .with_details(pl_protocol::studio::StudioErrorDetails::Thread { thread_id }),
                 ));
             }
             tokio::time::sleep(ARCHIVE_TREE_SETTLE_POLL_INTERVAL).await;

@@ -1,6 +1,7 @@
 //! Studio 订阅句柄与任务注册表：按订阅种类拆分到同目录子模块。
 //!
 //! - `thread`：Thread 状态流（Turn/活动/交互/运行时；内容走 Timeline 内容源）。
+//! - `timeline`：Timeline 内容 feed 的 registry owner 与真实 completion 接缝。
 //! - `product_topic`：typed 产品 topic 订阅（首帧基线 + 该领域事件）。
 //! - `shutdown`：关机进度广播。
 //! - `startup`：pre-active 启动进度 watch，独立于 installed bridge。
@@ -13,6 +14,8 @@ pub(crate) mod product_topic;
 pub(crate) mod shutdown;
 pub(crate) mod startup;
 pub(crate) mod thread;
+pub(crate) mod timeline;
+pub(crate) mod typed_feed;
 
 pub use product_topic::create_product_topic_subscription;
 pub use shutdown::subscribe_shutdown_progress;
@@ -31,12 +34,14 @@ use tokio::sync::{Mutex, mpsc};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
-use crate::api::studio::bridge_runtime::current_bridge;
+use crate::api::studio::bridge_runtime::{current_bridge, exit_latch_armed};
 use crate::api::studio::handlers::StartupFrame;
 use crate::api::studio::types::{
     BridgeError, BridgeProductTopicStreamEnvelope, BridgeShutdownIssue,
     BridgeThreadSubscriptionUpdate,
 };
+
+use self::timeline::TimelineFeedOwner;
 use pl_studio_runtime::StudioShutdownProgress;
 
 /// Thread 状态流的交付信封。
@@ -345,12 +350,18 @@ pub(crate) struct BridgeTaskRegistry {
     /// a confirmed clean stop, and never form an `Arc` cycle because the owned tasks capture only
     /// tokens/receivers, not this inner.
     subscriptions: Mutex<HashMap<u64, Arc<BridgeSubscriptionInner>>>,
+    /// Timeline feeds registered from opening, including before stream starts.
+    timelines: Mutex<HashMap<u64, Arc<TimelineFeedOwner>>>,
+    /// Synchronous registration for new typed opening tasks, before their first business await.
+    typed: std::sync::Mutex<HashMap<u64, typed_feed::TypedFeedRegistration>>,
 }
 
 /// Live bridge-owned content subscriptions captured by the broadcast phase and joined later within
 /// the same shared deadline.
 pub(crate) struct PendingSubscriptionCancellation {
     owners: Vec<Arc<BridgeSubscriptionInner>>,
+    timelines: Vec<Arc<TimelineFeedOwner>>,
+    typed: Vec<Arc<typed_feed::TypedFeedTask>>,
     issues: Vec<BridgeShutdownIssue>,
 }
 
@@ -359,7 +370,32 @@ impl BridgeTaskRegistry {
         Self {
             next_id: AtomicU64::new(1),
             subscriptions: Mutex::new(HashMap::new()),
+            timelines: Mutex::new(HashMap::new()),
+            typed: std::sync::Mutex::new(HashMap::new()),
         }
+    }
+
+    pub(crate) fn register_typed<T: typed_feed::TypedFeedResource + 'static>(
+        &self, task: &Arc<typed_feed::TypedFeedTask>, resource: &Arc<T>,
+    ) -> Result<(), BridgeError> {
+        let mut tasks = self.typed.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if exit_latch_armed() { return Err(typed_feed::closed()); }
+        let settled: Vec<_> = tasks.iter().filter(|(_, registration)| registration.task.is_settled())
+            .map(|(id, _)| *id).collect();
+        let retired: Vec<_> = settled.into_iter().filter_map(|id| tasks.remove(&id)).collect();
+        tasks.insert(task.id, typed_feed::TypedFeedRegistration { task: task.clone(), resource: resource.clone() });
+        drop(tasks);
+        for registration in retired { registration.resource.release_after_join(); }
+        Ok(())
+    }
+
+    pub(crate) fn unregister_typed(&self, id: u64) {
+        let mut tasks = self.typed.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let retired = if tasks.get(&id).is_some_and(|registration| registration.task.is_settled()) {
+            tasks.remove(&id)
+        } else { None };
+        drop(tasks);
+        if let Some(registration) = retired { registration.resource.release_after_join(); }
     }
 
     pub(crate) async fn register(&self, inner: &Arc<BridgeSubscriptionInner>) {
@@ -368,6 +404,31 @@ impl BridgeTaskRegistry {
         // pruned here so a normal cancelled subscription never pins residency across resubscribes.
         subscriptions.retain(|_, subscription| !subscription.is_settled());
         subscriptions.insert(inner.id, Arc::clone(inner));
+    }
+
+    /// Registers a Timeline owner under the current shutdown latch. Returns a runtime-stopped
+    /// error when exit has already begun, so opening cannot race past `active_bridge`.
+    pub(crate) async fn register_timeline(
+        &self,
+        owner: &Arc<TimelineFeedOwner>,
+    ) -> Result<(), BridgeError> {
+        if exit_latch_armed() {
+            return Err(BridgeError::runtime_stopped());
+        }
+        let mut timelines = self.timelines.lock().await;
+        if exit_latch_armed() {
+            return Err(BridgeError::runtime_stopped());
+        }
+        timelines.retain(|_, timeline| !timeline.is_settled());
+        timelines.insert(owner.id, Arc::clone(owner));
+        Ok(())
+    }
+
+    pub(crate) async fn unregister_timeline(&self, id: u64) {
+        let mut timelines = self.timelines.lock().await;
+        if timelines.get(&id).is_some_and(|inner| inner.is_settled()) {
+            timelines.remove(&id);
+        }
     }
 
     /// Drops the strong owner of one subscription once it really stopped.
@@ -403,6 +464,13 @@ impl BridgeTaskRegistry {
         deadline: Instant,
     ) -> PendingSubscriptionCancellation {
         let mut issues = Vec::new();
+        // New typed owners have synchronous admission. Signal them before waiting for either
+        // legacy async registry, so a contended old lock cannot consume their cancellation budget.
+        let typed = {
+            let tasks = self.typed.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            tasks.values().map(|registration| registration.task.clone()).collect::<Vec<_>>()
+        };
+        for task in &typed { task.signal_cancel(); }
         // Bound the registry lock by the shared exit deadline; a lock timeout must not stall exit.
         let subscriptions = {
             let remaining = deadline.saturating_duration_since(Instant::now());
@@ -423,11 +491,33 @@ impl BridgeTaskRegistry {
                 }
             }
         };
+        let timelines = {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            match tokio::time::timeout(remaining, self.timelines.lock()).await {
+                Ok(mut registry) => {
+                    registry.retain(|_, timeline| !timeline.is_settled());
+                    registry.values().cloned().collect::<Vec<_>>()
+                }
+                Err(_) => {
+                    issues.push(shutdown_issue(
+                        "subscriptions",
+                        "timeout",
+                        "the Studio timeline registry lock was not acquired within the exit budget",
+                    ));
+                    Vec::new()
+                }
+            }
+        };
         for subscription in &subscriptions {
             subscription.signal_cancel();
         }
+        for timeline in &timelines {
+            timeline.request_close();
+        }
         PendingSubscriptionCancellation {
             owners: subscriptions,
+            timelines,
+            typed,
             issues,
         }
     }
@@ -441,22 +531,24 @@ impl BridgeTaskRegistry {
         pending: PendingSubscriptionCancellation,
         deadline: Instant,
     ) -> Vec<BridgeShutdownIssue> {
-        let PendingSubscriptionCancellation { owners, mut issues } = pending;
+        let PendingSubscriptionCancellation {
+            owners,
+            timelines,
+            typed,
+            mut issues,
+        } = pending;
         // Wait on every owner **concurrently** within the same first deadline: a slow owner must not
         // consume the budget before the remaining owners are observed. Each owner keeps its strong
         // registry entry until it really stops, so a timeout only abandons that wait.
-        let outcomes = futures::future::join_all(owners.iter().map(|subscription| async move {
-            let remaining = deadline.saturating_duration_since(Instant::now());
-            if remaining.is_zero() {
-                return SubscriptionStop::TimedOut;
-            }
-            match tokio::time::timeout(remaining, subscription.wait_stopped()).await {
-                Ok(Ok(())) => SubscriptionStop::Stopped,
-                Ok(Err(error)) => SubscriptionStop::Failed(error),
-                Err(_) => SubscriptionStop::TimedOut,
-            }
-        }))
-        .await;
+        let ordinary_joins = futures::future::join_all(owners.iter().map(|subscription|
+            wait_subscription_stop(subscription.wait_stopped(), deadline)));
+        let timeline_joins = futures::future::join_all(timelines.iter().map(|timeline|
+            wait_subscription_stop(timeline.wait_stopped(), deadline)));
+        let typed_joins = futures::future::join_all(typed.iter().map(|task|
+            wait_subscription_stop(task.wait_stopped(), deadline)));
+        // Start both kinds' actual completion observers together. In particular, Timeline.close
+        // must run while ordinary subscriptions are still draining, not after their deadline.
+        let (outcomes, timeline_outcomes, typed_outcomes) = futures::join!(ordinary_joins, timeline_joins, typed_joins);
 
         let mut joined: Vec<u64> = Vec::new();
         for (subscription, outcome) in owners.iter().zip(outcomes) {
@@ -476,14 +568,60 @@ impl BridgeTaskRegistry {
                 )),
             }
         }
+        let mut joined_timelines: Vec<u64> = Vec::new();
+        for (timeline, outcome) in timelines.iter().zip(timeline_outcomes) {
+            match outcome {
+                SubscriptionStop::Stopped => joined_timelines.push(timeline.id),
+                SubscriptionStop::Failed(error) => issues.push(BridgeShutdownIssue {
+                    stage: "subscriptions".to_string(),
+                    code: "joinError".to_string(),
+                    message: format!("a Studio timeline feed failed to stop: {error}"),
+                    retryable: false,
+                    correlation_id: pl_protocol::studio::StudioError::internal().correlation_id,
+                }),
+                SubscriptionStop::TimedOut => issues.push(shutdown_issue(
+                    "subscriptions",
+                    "timeout",
+                    "a Studio timeline feed was not cancelled within the exit budget; its owner is retained",
+                )),
+            }
+        }
+        let mut joined_typed = Vec::new();
+        for (task, outcome) in typed.iter().zip(typed_outcomes) {
+            match outcome {
+                SubscriptionStop::Stopped => joined_typed.push(task.id),
+                SubscriptionStop::Failed(_) => issues.extend(task.issues()),
+                SubscriptionStop::TimedOut => issues.push(shutdown_issue("typedFeed", "timeout",
+                    "a typed feed did not join within the exit budget; its owner is retained")),
+            }
+        }
+        if !joined_typed.is_empty() {
+            for id in joined_typed { self.unregister_typed(id); }
+        }
         // Drop the strong owner of every subscription that really stopped; a timed-out or failed
         // one is retained so a later pass can still observe it.
         if !joined.is_empty() {
-            let remaining = deadline.saturating_duration_since(Instant::now());
-            if let Ok(mut registry) =
-                tokio::time::timeout(remaining, self.subscriptions.lock()).await
-            {
+            let registry = match self.subscriptions.try_lock() {
+                Ok(registry) => Some(registry),
+                Err(_) => tokio::time::timeout_at(
+                    tokio::time::Instant::from_std(deadline), self.subscriptions.lock(),
+                ).await.ok(),
+            };
+            if let Some(mut registry) = registry {
                 for id in joined {
+                    registry.remove(&id);
+                }
+            }
+        }
+        if !joined_timelines.is_empty() {
+            let registry = match self.timelines.try_lock() {
+                Ok(registry) => Some(registry),
+                Err(_) => tokio::time::timeout_at(
+                    tokio::time::Instant::from_std(deadline), self.timelines.lock(),
+                ).await.ok(),
+            };
+            if let Some(mut registry) = registry {
+                for id in joined_timelines {
                     registry.remove(&id);
                 }
             }
@@ -491,7 +629,7 @@ impl BridgeTaskRegistry {
         issues
     }
 
-    fn next_id(&self) -> u64 {
+    pub(crate) fn next_id(&self) -> u64 {
         self.next_id.fetch_add(1, Ordering::Relaxed)
     }
 }
@@ -501,4 +639,31 @@ enum SubscriptionStop {
     Stopped,
     Failed(Arc<String>),
     TimedOut,
+}
+
+/// Poll the retained real completion before checking an expired budget. A ready Timeline close
+/// still has to perform its join/release bookkeeping; elapsed time alone is not a pending fact.
+/// Timing out drops only this waiter. The registry and owner keep the original completion.
+async fn wait_subscription_stop(
+    completion: impl std::future::Future<Output = Result<(), Arc<String>>> + Send,
+    deadline: Instant,
+) -> SubscriptionStop {
+    tokio::pin!(completion);
+    let stopped = match completion.as_mut().now_or_never() {
+        Some(stopped) => stopped,
+        None => {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return SubscriptionStop::TimedOut;
+            }
+            match tokio::time::timeout_at(tokio::time::Instant::from_std(deadline), completion).await {
+                Ok(stopped) => stopped,
+                Err(_) => return SubscriptionStop::TimedOut,
+            }
+        }
+    };
+    match stopped {
+        Ok(()) => SubscriptionStop::Stopped,
+        Err(error) => SubscriptionStop::Failed(error),
+    }
 }

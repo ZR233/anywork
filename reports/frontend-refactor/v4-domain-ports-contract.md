@@ -168,6 +168,7 @@ AccountEdit {
  accountId:String,create:bool,
  templateId:FieldEdit<String?>,protocol:FieldEdit<String>,name:FieldEdit<String>,
  baseUrl:FieldEdit<String>,secret:AccountSecretUpdate,pricingEnabled:FieldEdit<bool>,
+ rebuildModelConfiguration:bool,
  customModels:List<CustomModelChange>,connections:List<ModelConnectionChange>,
  autoCompactLimits:List<ModelLimitChange>
 }
@@ -187,6 +188,18 @@ AccountSettingsUpdate。保留未改变的custom model/connection/limit成员，
 未显示的成员。已知StaleRevision最多两次恢复后重新构造，不重发UnknownOutcome。
 account identity创建后不能重命名；custom model改ID是明确移除original并添加新ID，不按
 displayName认领。创建和编辑UI的dirty字段必须映成相应intent，不能把旧整页snapshot回写。
+
+`rebuildModelConfiguration`是必填的显式表单意图；普通编辑/创建为false，用户切换模板而
+重建整组模型表单时为true，且该意图必须同时明确set模板。即使用户随后切回原模板，此位
+仍保留至该次保存成功，不能按dispatch时模板ID相等推断没有重建。true仅清空作为本次合并
+基底的手动模型声明、连接覆盖和阈值覆盖，再应用本次明确编辑；不清凭据、账号ID或其它域。
+
+普通CustomModelChange在最新完整canonical基底上按原序应用：remove删除该手动声明及
+同ID两类覆盖；upsert改ID时把原ID的显式阈值覆盖移至新ID、清原ID连接覆盖，原无显式阈值
+则新ID也不产生阈值覆盖。ID不变而wireApi变化同样清该ID连接覆盖；只改其它字段保覆盖。
+阈值只是原始用户覆盖，不由Dart重算容量/最终阈值。随后应用本次明确connections/limits意图，
+不能因清理旧覆盖而丢掉用户后续为新目标设置的值。未被这些显式意图触及的成员继续保留，
+重复ID/不支持协议或连接等仍交原native验证，不静默删冲突、猜默认或借目录过滤覆盖表。
 
 `AgentProfileEdit`完整字段：profileId/displayName/description/whenToUse/systemInstructions/
 accountId/modelId:String、effort:String?、enabled:bool、workspaceMode:AgentWorkspaceMode。

@@ -84,6 +84,12 @@ pub enum TailChange {
         item_id: String,
         expected_revision: u64,
         revision: u64,
+        /// Bounded target material captured with these deltas, at `revision`.
+        ///
+        /// Its metadata and content blocks share the existing immutable preview storage. A host
+        /// can materialize an authoritative typed shell without rereading a newer item after this
+        /// patch is delivered. This is not a complete-body snapshot or a second retained cache.
+        preview: ChatItem,
         /// 条目级省略量：所有字段完整长度与本次预览字节数之差的合计。
         omitted_bytes: u64,
         /// Save watermark of the item after this change, independent of `revision` and `lifecycle`.
@@ -600,6 +606,7 @@ fn update_item(previous: &ChatItem, next: &ChatItem) -> Option<(TailChange, bool
         item_id: next.item_id.clone(),
         expected_revision: previous.revision,
         revision: next.revision,
+        preview: next.clone(),
         omitted_bytes: next.omitted_bytes(),
         saved: next.saved,
         lifecycle: next.lifecycle,
