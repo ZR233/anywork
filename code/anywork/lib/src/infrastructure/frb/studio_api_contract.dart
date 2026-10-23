@@ -1113,6 +1113,15 @@ class FrbStudioTransport implements StudioTransport, PersistenceQueueReader {
   }
 
   @override
+  Future<StudioThread> readThread(String threadId) async {
+    await _ensureReady();
+    final snapshot = await _bridgeCall(
+      () => frb.readThread(threadId: threadId),
+    );
+    return _threadFromFrb(snapshot.thread);
+  }
+
+  @override
   Future<StudioProject> renameProject(String projectId, String name) async {
     await _ensureReady();
     return _projectFromFrb(
@@ -1287,6 +1296,8 @@ class FrbStudioTransport implements StudioTransport, PersistenceQueueReader {
     StudioPromptInput input,
     ThreadModeId mode, {
     required ModeModelRouteView route,
+    required DelegationMode delegationMode,
+    required DelegationPreference delegationPreference,
     String? workspaceMode,
   }) async* {
     await _ensureReady();
@@ -1300,6 +1311,10 @@ class FrbStudioTransport implements StudioTransport, PersistenceQueueReader {
           modelId: route.modelId,
           effort: route.effort.isEmpty ? null : route.effort,
           workspaceMode: workspaceMode,
+          delegationMode: _delegationModeToFrb(delegationMode),
+          delegationPreference: _delegationPreferenceToFrb(
+            delegationPreference,
+          ),
         ),
       )) {
         yield _newThreadStartEventFromFrb(event);
@@ -2123,15 +2138,92 @@ class FrbStudioTransport implements StudioTransport, PersistenceQueueReader {
   Future<SettingsCommandReply> removeAccountModel(
     int expectedSettingsRevision,
     String accountId,
-    String modelId,
-  ) async {
+    String modelId, {
+    required OperationId operationId,
+  }) async {
     await _ensureReady();
     return _settingsCommandReplyFromFrb(
       await _bridgeCall(
         () => frb.removeAccountModel(
+          operationId: operationId.value,
           expectedSettingsRevision: BigInt.from(expectedSettingsRevision),
           accountId: accountId,
           modelId: modelId,
+        ),
+      ),
+    );
+  }
+
+  @override
+  Future<SettingsCommandReply> setAccountModelEnabled(
+    int expectedSettingsRevision,
+    String accountId,
+    String modelId,
+    bool enabled, {
+    required OperationId operationId,
+  }) async {
+    await _ensureReady();
+    return _settingsCommandReplyFromFrb(
+      await _bridgeCall(
+        () => frb.setAccountModelEnabled(
+          operationId: operationId.value,
+          expectedSettingsRevision: BigInt.from(expectedSettingsRevision),
+          accountId: accountId,
+          modelId: modelId,
+          enabled: enabled,
+        ),
+      ),
+    );
+  }
+
+  @override
+  Future<SettingsCommandReply> setAccountBillingKind(
+    int expectedSettingsRevision,
+    String accountId,
+    BillingKind? billingKind, {
+    required OperationId operationId,
+  }) async {
+    await _ensureReady();
+    return _settingsCommandReplyFromFrb(
+      await _bridgeCall(
+        () => frb.setAccountBillingKind(
+          operationId: operationId.value,
+          expectedSettingsRevision: BigInt.from(expectedSettingsRevision),
+          accountId: accountId,
+          billingKind: billingKind == null
+              ? null
+              : _billingKindToFrb(billingKind),
+        ),
+      ),
+    );
+  }
+
+  @override
+  Future<DelegationModelList> listDelegationModels(
+    ListDelegationModelsRequest request,
+  ) async {
+    await _ensureReady();
+    return _delegationListFromFrb(
+      await _bridgeCall(
+        () => frb.listDelegationModels(
+          request: _delegationListRequestToFrb(request),
+        ),
+      ),
+    );
+  }
+
+  @override
+  Future<DelegationModelDetail> getDelegationModel(
+    DelegationModelKey key,
+  ) async {
+    await _ensureReady();
+    return delegationModelDetailFromFrb(
+      await _bridgeCall(
+        () => frb.getDelegationModel(
+          request: frb.BridgeGetDelegationModelRequest(
+            accountId: key.accountId,
+            modelId: key.modelId,
+          ),
         ),
       ),
     );

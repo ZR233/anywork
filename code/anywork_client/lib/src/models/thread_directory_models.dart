@@ -1,4 +1,5 @@
 import 'studio_enums.dart';
+import 'delegation_models.dart';
 
 enum ThreadStatusView {
   idle,
@@ -41,6 +42,9 @@ class StudioThread {
     required this.projectId,
     required this.title,
     required this.mode,
+    required this.delegationMode,
+    required this.delegationPreference,
+    this.frozenModel,
     required this.updatedAt,
     this.createdAt,
     this.lastUserMessageAt,
@@ -58,6 +62,9 @@ class StudioThread {
   final String projectId;
   final String title;
   final ThreadModeId mode;
+  final DelegationMode delegationMode;
+  final DelegationPreference delegationPreference;
+  final NewThreadModelRoute? frozenModel;
   final DateTime? createdAt;
   final DateTime updatedAt;
 
@@ -121,6 +128,9 @@ class StudioThread {
       projectId: projectId,
       title: title ?? this.title,
       mode: mode ?? this.mode,
+      delegationMode: delegationMode,
+      delegationPreference: delegationPreference,
+      frozenModel: frozenModel,
       createdAt: createdAt ?? this.createdAt,
       lastUserMessageAt: lastUserMessageAt ?? this.lastUserMessageAt,
       updatedAt: updatedAt ?? this.updatedAt,

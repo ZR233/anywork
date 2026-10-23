@@ -215,9 +215,21 @@ impl ConfigRuntime {
             .map_err(|_| config_runtime_poisoned())
     }
 
+    /// Scalar qualification waterline for hot projections; never clones catalog/config payloads.
+    pub(crate) fn model_catalog_revision(&self) -> ConfigRuntimeResult<u64> {
+        self.state
+            .read()
+            .map(|state| state.catalog.revision)
+            .map_err(|_| config_runtime_poisoned())
+    }
+
     /// 从已发布缓存取得启用 Profile 的执行视图；不扫描文件。
     pub fn agent_profiles(&self) -> ConfigRuntimeResult<super::AgentProfileCatalog> {
-        Ok(self.profiles.read().catalog.executable()?)
+        Ok(self
+            .profiles
+            .read()
+            .catalog
+            .executable(pl_protocol::DelegationMode::Profile)?)
     }
 
     /// 读取已发布的 Agent Profiles 资源快照（完整配置与诊断）；纯缓存读取。
@@ -257,6 +269,22 @@ impl ConfigRuntime {
         &self,
         profile_id: &str,
     ) -> ConfigRuntimeResult<ResolvedAgentProfile> {
+        self.resolve_delegated_profile(profile_id, pl_protocol::DelegationMode::Profile, None)
+    }
+
+    /// Resolves role and model together, before allocating workspaces or provider resources.
+    pub fn resolve_delegated_profile(
+        &self,
+        profile_id: &str,
+        mode: pl_protocol::DelegationMode,
+        selection: Option<pl_protocol::studio::NewThreadModelRoute>,
+    ) -> ConfigRuntimeResult<ResolvedAgentProfile> {
+        // Configuration commands also adopt the Profile cache before releasing this lock.
+        // This pure resolution cannot combine a new config with the previous role catalog.
+        let _command = self
+            .command_lock
+            .lock()
+            .map_err(|_| config_runtime_poisoned())?;
         if profile_id == super::StudioRole::Planner.key() {
             return Err(PureError::ConfigError(
                 "planner is reserved for the main agent; this child role is retired and cannot resume".into(),
@@ -270,8 +298,10 @@ impl ConfigRuntime {
             .into());
         }
         let snapshot = self.read()?;
-        let catalog = self.profiles.read().catalog.executable()?;
-        let profile = catalog
+        // Resolve the actual frozen/selected route below rather than replacing its diagnostic
+        // with a generic "missing Profile" from the model-visible availability filter.
+        let catalog = self.profiles.read().catalog.enabled_for_dispatch()?;
+        let mut profile = catalog
             .profiles
             .into_iter()
             .find(|profile| profile.profile_id == profile_id && profile.enabled)
@@ -280,7 +310,32 @@ impl ConfigRuntime {
                     "Agent Profile is missing or disabled: {profile_id}"
                 ))
             })?;
-        let route = super::resolve_profile_route(&snapshot.config, &profile)?;
+        match (mode, selection) {
+            (pl_protocol::DelegationMode::Profile, None) => {}
+            (pl_protocol::DelegationMode::Profile, Some(_)) => {
+                return Err(PureError::ConfigError(
+                    "fixed Profile delegation forbids modelSelection".into(),
+                )
+                .into());
+            }
+            (pl_protocol::DelegationMode::Automatic, None) => {
+                return Err(PureError::ConfigError(
+                    "automatic delegation requires modelSelection".into(),
+                )
+                .into());
+            }
+            (pl_protocol::DelegationMode::Automatic, Some(selection)) => {
+                profile.account_id = selection.account_id;
+                profile.model_id = selection.model_id;
+                profile.effort = selection.effort;
+                let mut identity = profile.clone();
+                identity.content_hash.clear();
+                profile.content_hash = crate::canonical_content_hash(
+                    &serde_json::to_vec(&identity).map_err(PureError::from)?,
+                );
+            }
+        }
+        let route = crate::studio::delegation::resolve_child_route(&snapshot.config, &profile)?;
         Ok(ResolvedAgentProfile {
             config: snapshot.config,
             revision: snapshot.revision,

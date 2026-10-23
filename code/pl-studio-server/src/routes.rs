@@ -12,11 +12,16 @@ use pl_protocol::studio::{
     AdmitAttachmentDraftsRequest, AdmitAttachmentDraftsResponse, CreateThreadRequest,
     ExpectedRevisionRequest, HealthResponse, LspResetRequest, McpResetRequest, OpenProjectRequest,
     RemoveAccountModelRequest, RemoveAccountRequest, RenameThreadRequest,
-    ResolveInteractionRequest, SearchSkillsRequest, SetDefaultAccountRequest, SetThreadModeRequest,
+    ResolveInteractionRequest, SearchSkillsRequest, SetAccountBillingKindRequest,
+    SetAccountModelEnabledRequest, SetDefaultAccountRequest, SetThreadModeRequest,
     SetThreadModelRouteRequest, SettingsCommandReply, SettingsStateResponse,
     StudioAttachmentAdmissionContext, StudioAttachmentDraftSource, StudioCommandRequest,
     StudioError, SubmitPromptRequest, ThreadModelRouteCommandReply, ThreadPageQuery,
     UpdateAccountRequest, UpdatePermissionSettingsRequest, UpdateSettingsFieldRequest,
+};
+use pl_protocol::{
+    DelegationModelDetail, DelegationModelList, GetDelegationModelRequest,
+    ListDelegationModelsRequest,
 };
 use pl_protocol::{ThreadModeDocument, ThreadModeId, WorkflowPreviewRequest};
 use pl_protocol::{TimelineDetailQuery, TimelinePageQuery};
@@ -246,9 +251,13 @@ pub(crate) fn api_router() -> OpenApiRouter<AppState> {
         .routes(routes!(read_thread_attachment))
         .routes(routes!(resolve_interaction))
         .routes(routes!(account_catalog))
+        .routes(routes!(list_delegation_models))
+        .routes(routes!(get_delegation_model))
         .routes(routes!(read_settings))
         .routes(routes!(reload_settings))
         .routes(routes!(remove_account_model))
+        .routes(routes!(set_account_model_enabled))
+        .routes(routes!(set_account_billing_kind))
         .routes(routes!(save_permission_settings))
         .routes(routes!(save_account))
         .routes(routes!(set_default_account))
@@ -902,6 +911,34 @@ async fn resolve_interaction(
     ))
 }
 
+#[utoipa::path(post, path = "/api/v1/delegation/models/query", operation_id = "delegation.listModels", request_body = ListDelegationModelsRequest, responses(StudioApiErrors, (status = 200, body = DelegationModelList)))]
+async fn list_delegation_models(
+    State(state): State<AppState>,
+    ApiJson(request): ApiJson<ListDelegationModelsRequest>,
+) -> Result<Json<DelegationModelList>, ApiError> {
+    Ok(Json(
+        state
+            .runtime
+            .list_delegation_models(request)
+            .await
+            .map_err(ApiError::from)?,
+    ))
+}
+
+#[utoipa::path(post, path = "/api/v1/delegation/models/detail", operation_id = "delegation.getModel", request_body = GetDelegationModelRequest, responses(StudioApiErrors, (status = 200, body = DelegationModelDetail)))]
+async fn get_delegation_model(
+    State(state): State<AppState>,
+    ApiJson(request): ApiJson<GetDelegationModelRequest>,
+) -> Result<Json<DelegationModelDetail>, ApiError> {
+    Ok(Json(
+        state
+            .runtime
+            .get_delegation_model(request)
+            .await
+            .map_err(ApiError::from)?,
+    ))
+}
+
 #[utoipa::path(get, path = "/api/v1/settings/account-catalog", operation_id = "settings.loadAccountCatalog", responses(StudioApiErrors, (status = 200)))]
 async fn account_catalog(State(state): State<AppState>) -> Result<impl IntoResponse, ApiError> {
     let snapshot = state
@@ -954,6 +991,32 @@ async fn save_permission_settings(
         state
             .runtime
             .save_permission_settings(request)
+            .map_err(ApiError::from)?,
+    ))
+}
+
+#[utoipa::path(put, path = "/api/v1/settings/account-model-enabled", operation_id = "settings.setAccountModelEnabled", request_body = SetAccountModelEnabledRequest, responses(StudioApiErrors, (status = 200, body = SettingsCommandReply)))]
+async fn set_account_model_enabled(
+    State(state): State<AppState>,
+    ApiJson(request): ApiJson<SetAccountModelEnabledRequest>,
+) -> Result<impl IntoResponse, ApiError> {
+    Ok(Json(
+        state
+            .runtime
+            .set_account_model_enabled(request)
+            .map_err(ApiError::from)?,
+    ))
+}
+
+#[utoipa::path(put, path = "/api/v1/settings/account-billing-kind", operation_id = "settings.setAccountBillingKind", request_body = SetAccountBillingKindRequest, responses(StudioApiErrors, (status = 200, body = SettingsCommandReply)))]
+async fn set_account_billing_kind(
+    State(state): State<AppState>,
+    ApiJson(request): ApiJson<SetAccountBillingKindRequest>,
+) -> Result<impl IntoResponse, ApiError> {
+    Ok(Json(
+        state
+            .runtime
+            .set_account_billing_kind(request)
             .map_err(ApiError::from)?,
     ))
 }

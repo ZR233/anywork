@@ -6,6 +6,7 @@
 import '../../../frb_generated.dart';
 import '../types/attachment.dart';
 import '../types/command.dart';
+import '../types/delegation.dart';
 import '../types/error.dart';
 import '../types/response.dart';
 import '../types/settings.dart';

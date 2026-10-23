@@ -244,7 +244,9 @@ impl StudioRuntime {
         let controls = (|| -> Result<()> {
             if exposure == crate::thread_assembler::AgentControlExposure::Enabled {
                 let profiles = self.config_runtime.agent_profiles_snapshot()?;
-                registrations.extend(self.threads.agent_control_tools(&profiles)?);
+                let selection = crate::studio::delegation::saved(&state)?
+                    .context("Thread has no frozen delegation selection")?;
+                registrations.extend(self.threads.agent_control_tools(&profiles, selection)?);
                 if self.config_runtime.agent_profiles_snapshot()?.revision != profiles.revision {
                     return Err(pl_core::thread::ThreadError::Cancelled.into());
                 }

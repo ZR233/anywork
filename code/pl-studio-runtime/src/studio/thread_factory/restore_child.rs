@@ -24,15 +24,14 @@ impl StudioThreadFactory {
         {
             return Err(ThreadAssemblyError::Identity(id.clone()));
         }
+        if thread.visibility != crate::studio::ThreadVisibility::Active {
+            return Err(ThreadAssemblyError::Closed);
+        }
         if thread.role == crate::config::StudioRole::Planner.key() {
             return Err(ThreadAssemblyError::Identity(
                 "child role is retired: planner".into(),
             ));
         }
-        let mut project = self.project_record(&thread.project_id).await?;
-        let bot_root = self
-            .bind_bot_project(id, &thread.root_thread_id, &mut project)
-            .await?;
         let protocol_thread: pl_protocol::Thread = thread.clone().into();
         let checkpoint =
             super::recovery::load_checkpoint_for_recovery(&self.services.store, &protocol_thread)
@@ -41,6 +40,19 @@ impl StudioThreadFactory {
                 .ok_or_else(|| {
                     ThreadAssemblyError::Identity(format!("child {id} has no saved checkpoint"))
                 })?;
+        // Core Closed belongs to the previous owner (including graceful host shutdown).
+        // Only Studio's durable explicit-close intent prohibits a new execution incarnation.
+        if crate::studio::agent_close::is_explicitly_closed(&checkpoint.state)
+            .map_err(|error| resource_error("read child close intent", error))?
+        {
+            self.project_child_close(&protocol_thread, &checkpoint.state)
+                .await?;
+            return Err(ThreadAssemblyError::Closed);
+        }
+        let mut project = self.project_record(&thread.project_id).await?;
+        let bot_root = self
+            .bind_bot_project(id, &thread.root_thread_id, &mut project)
+            .await?;
         let restored = checkpoint.state.clone();
         let saved = restored
             .extensions
@@ -85,14 +97,17 @@ impl StudioThreadFactory {
         let restored = checkpoint.state.clone();
         let route_selector = crate::studio::model_route::profile_route(&profile)
             .map_err(|error| resource_error("read saved child model route", error))?;
-        let resolved = config.models.resolve_route(role.clone(), &route_selector);
+        let resolved = crate::studio::delegation::resolve_child_route(&config, &profile);
         let (route, model_available) = match resolved {
             Ok(route) => (route, true),
             Err(error) => {
                 tracing::warn!(thread_id = id, %error, "saved child model route is unavailable");
-                let fallback = config
-                    .models
-                    .resolve_route(role, config.mode_model_route(&thread.mode)?)?;
+                let fallback = crate::studio::model_route::unavailable_placeholder(
+                    &config,
+                    role,
+                    &route_selector,
+                )
+                .map_err(|error| resource_error("restore unavailable child placeholder", error))?;
                 (fallback, false)
             }
         };

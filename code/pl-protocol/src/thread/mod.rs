@@ -8,7 +8,7 @@ use crate::{
     TodoListSnapshot, Turn,
 };
 
-pub const THREAD_SCHEMA_VERSION: u32 = 14;
+pub const THREAD_SCHEMA_VERSION: u32 = 15;
 
 /// Timeline 游标 token 的版本号。
 ///
@@ -64,6 +64,18 @@ pub struct Thread {
     /// 会话工作区模式；缺失的旧编码按默认 `local` 解码。
     #[serde(default)]
     pub workspace_mode: ThreadWorkspaceMode,
+    /// 创建时确定的子智能体分发模式；缺失的旧编码按固定 Profile 解码。
+    #[serde(default)]
+    pub delegation_mode: crate::DelegationMode,
+    /// 创建时确定的自动选模偏好；固定模式保留但不生效。
+    #[serde(default)]
+    pub delegation_preference: crate::DelegationPreference,
+    /// child 创建时冻结的最终模型身份摘要。
+    ///
+    /// 值只取创建时冻结的绑定，供智能体列表直接展示；root 或无法证明的历史条目保持
+    /// `None`，不从当前 Profile、默认设置或别名补造。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub frozen_model: Option<crate::studio::NewThreadModelRoute>,
     /// 会话对外唯一 canonical 工作区地址；缺失的旧编码按空串解码。
     #[serde(default)]
     pub workspace_path: String,
@@ -95,6 +107,9 @@ impl Thread {
             title: String::new(),
             mode: ThreadModeId::simple(),
             workspace_mode: ThreadWorkspaceMode::Local,
+            delegation_mode: Default::default(),
+            delegation_preference: Default::default(),
+            frozen_model: None,
             workspace_path: String::new(),
             root_thread_id: id.clone(),
             parent_thread_id: None,

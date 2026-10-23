@@ -5,6 +5,7 @@
 
 import '../../../frb_generated.dart';
 import '../types/agent_profile.dart';
+import '../types/delegation.dart';
 import '../types/error.dart';
 import '../types/response.dart';
 import '../types/runtime.dart';

@@ -1,7 +1,12 @@
 //! One assembly and resource-owner registry for root, child and restored Threads.
 mod activation;
+mod admission;
+mod agent_close;
+mod agent_evaluation;
+mod agent_operations;
 mod agent_services;
 mod agents;
+mod delegation_models;
 pub(crate) mod observation;
 pub use activation::{StudioActivationFactory, ThreadActivation, ThreadPreparation};
 mod interaction_key;
@@ -44,6 +49,7 @@ use pl_model::{
     config::ResolvedModelRoute,
     runtime::{ModelRuntime, ThreadModel},
 };
+pub use pl_protocol::DelegationSettings;
 
 /// Product-selected collaboration exposure, independent from core tool scheduling.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -78,6 +84,26 @@ pub struct StudioThreadSpec {
     pub resources: ResourceAccess,
     pub capacity: ContextCapacity,
     pub cold_store: Option<ColdStoreHandle>,
+}
+
+impl StudioThreadSpec {
+    fn frozen_delegation(&self) -> Result<pl_protocol::DelegationSettings, ThreadAssemblyError> {
+        let selection = match &self.checkpoint {
+            Some(checkpoint) => crate::studio::delegation::saved(&checkpoint.state),
+            None => self
+                .initial_extensions
+                .get(crate::studio::delegation::EXTENSION)
+                .map(crate::studio::delegation::decode)
+                .transpose(),
+        }
+        .map_err(|source| ThreadAssemblyError::Resource {
+            operation: "decode frozen root delegation selection",
+            source: source.into(),
+        })?;
+        selection.ok_or_else(|| {
+            ThreadAssemblyError::Identity("root has no frozen delegation selection".into())
+        })
+    }
 }
 
 /// Synchronous ownership transfer for preparation that has not entered the owner registry.
@@ -185,7 +211,11 @@ pub enum ThreadAssemblyError {
 
 #[derive(Debug)]
 struct Entry {
+    /// A close-only cold owner retains its sink until attachment actually succeeds.
+    close_storage: Option<ColdStoreHandle>,
     published_resources_closed: bool,
+    // Studio publishes Some only after the explicit-close marker is durable. Normal retirement
+    // keeps None and consumes the default Preserve without freezing an explicit parent's policy.
     workspace_disposition: Option<pl_tool::collaboration::thread::AgentWorkspaceDisposition>,
     cleanup: Arc<child_resources::CleanupGate>,
     execution: pl_core::thread::input::InputDriverOptions,
@@ -205,6 +235,8 @@ struct Preparation {
 
 #[derive(Debug, Default)]
 struct State {
+    operation_gates: BTreeMap<String, std::sync::Weak<tokio::sync::Mutex<()>>>,
+    sealed_agents: BTreeMap<String, usize>,
     agent_services: Option<agent_services::AgentServices>,
     observation: Option<observation::AssemblyObservation>,
     child_factory: Option<children::ChildFactory>,
@@ -245,6 +277,54 @@ impl Drop for Reservation {
 }
 
 impl StudioThreadAssembler {
+    /// Shared admission order for evaluation, cold activation, user/agent input and close.
+    /// Never acquire a lifecycle lock while holding this permit. No model Turn is awaited here.
+    pub(crate) async fn agent_operation(&self, id: &str) -> tokio::sync::OwnedMutexGuard<()> {
+        let gate = {
+            let mut state = self.0.state();
+            match state
+                .operation_gates
+                .get(id)
+                .and_then(std::sync::Weak::upgrade)
+            {
+                Some(gate) => gate,
+                None => {
+                    state
+                        .operation_gates
+                        .retain(|_, gate| gate.strong_count() > 0);
+                    let gate = Arc::new(tokio::sync::Mutex::new(()));
+                    state
+                        .operation_gates
+                        .insert(id.to_owned(), Arc::downgrade(&gate));
+                    gate
+                }
+            }
+        };
+        gate.lock_owned().await
+    }
+
+    pub(crate) fn ensure_agent_admission_open(&self, id: &str) -> Result<(), ThreadAssemblyError> {
+        let state = self.0.state();
+        if let Some(entry) = state.entries.get(id)
+            && crate::studio::agent_close::is_explicitly_closed(&entry.thread.snapshot()).map_err(
+                |source| ThreadAssemblyError::Resource {
+                    operation: "read child close intent",
+                    source: source.into(),
+                },
+            )?
+        {
+            return Err(ThreadAssemblyError::Closed);
+        }
+        if state.closing
+            || state.sealed_agents.contains_key(id)
+            || !state.entries.get(id).is_some_and(|entry| {
+                entry.ready && entry.thread.snapshot().lifecycle == ThreadLifecycle::Open
+            })
+        {
+            return Err(ThreadAssemblyError::Closed);
+        }
+        Ok(())
+    }
     /// Installs the product factory before publishing any Thread that can create descendants.
     ///
     /// # Errors
@@ -320,6 +400,7 @@ impl StudioThreadAssembler {
         self.0.state().entries.insert(
             spec.id.clone(),
             Entry {
+                close_storage: None,
                 published_resources_closed: false,
                 workspace_disposition: None,
                 cleanup: Arc::new(child_resources::CleanupGate::default()),
@@ -499,6 +580,7 @@ impl StudioThreadAssembler {
         input: pl_core::thread::input::ThreadInput,
         options: pl_core::thread::input::InputDriverOptions,
     ) -> Result<pl_core::thread::input::InputRecord, ThreadAssemblyError> {
+        let _operation = self.agent_operation(id).await;
         let thread = {
             let mut state = self.0.state();
             if state.closing {
@@ -514,6 +596,7 @@ impl StudioThreadAssembler {
             entry.execution = options;
             entry.thread.clone()
         };
+        self.prepare_input_admission(id, &thread).await?;
         Ok(thread.submit_input_and_run(input, options).await?)
     }
 
@@ -551,6 +634,16 @@ impl StudioThreadAssembler {
             .filter(|entry| {
                 entry.ready && entry.thread.snapshot().lifecycle == ThreadLifecycle::Open
             })
+            .map(|entry| entry.thread.clone())
+    }
+
+    /// A resident owner's real state, including an unpublished or retryable closing owner.
+    /// Reading this never activates a cold Thread or opens its history.
+    pub(crate) fn observed_thread(&self, id: &str) -> Option<ThreadHandle> {
+        self.0
+            .state()
+            .entries
+            .get(id)
             .map(|entry| entry.thread.clone())
     }
 
@@ -622,8 +715,9 @@ impl StudioThreadAssembler {
     /// # Errors
     /// Propagates resource cleanup or concurrent preparation failures without removing the owner.
     pub async fn close_tree(&self, root: &str) -> Result<(), ThreadAssemblyError> {
+        let root_operation = self.agent_operation(root).await;
         let mut targets = {
-            let mut state = self.0.state();
+            let state = self.0.state();
             let mut targets = Vec::new();
             for id in state.entries.keys() {
                 let mut cursor = Some(id.as_str());
@@ -643,14 +737,16 @@ impl StudioThreadAssembler {
                         .and_then(|entry| entry.parent_id.as_deref());
                 }
             }
-            // Seal the entire known tree before awaiting any child, preventing new descendant spawns.
-            for (_, id) in &targets {
-                if let Some(entry) = state.entries.get_mut(id) {
-                    entry.ready = false;
-                }
-            }
             targets
         };
+        let ids = targets
+            .iter()
+            .filter(|(_, id)| id != root)
+            .map(|(_, id)| id.clone())
+            .collect::<Vec<_>>();
+        let _child_seals = self.seal_agent_operations(&ids).await;
+        let _root_seal = self.seal_agent_operation(root);
+        drop(root_operation);
         targets.sort_by(|left, right| right.0.cmp(&left.0).then_with(|| left.1.cmp(&right.1)));
         // Broadcast cancellation to the entire tree before the first dependent wait.
         // Each close below awaits the same retained cleanup barrier.
@@ -680,6 +776,19 @@ impl StudioThreadAssembler {
     /// # Errors
     /// Returns in-progress assembly or the actual Thread shutdown failure.
     pub async fn close(&self, id: &str) -> Result<(), ThreadAssemblyError> {
+        let _operation = self.agent_operation(id).await;
+        self.close_with_permit(id).await
+    }
+
+    /// The caller retains this identity's operation permit, including cold close restoration.
+    async fn close_with_permit(&self, id: &str) -> Result<(), ThreadAssemblyError> {
+        let _seal = self.seal_agent_operation(id);
+        self.join_root_operations(id)
+            .await
+            .map_err(|source| ThreadAssemblyError::Resource {
+                operation: "join root collaboration operations",
+                source: source.into(),
+            })?;
         let preparation = {
             self.0
                 .state()
@@ -699,11 +808,6 @@ impl StudioThreadAssembler {
     }
 
     async fn close_thread(&self, id: &str) -> Result<(), ThreadAssemblyError> {
-        if let Some(entry) = self.0.state().entries.get_mut(id) {
-            entry
-                .workspace_disposition
-                .get_or_insert(Default::default());
-        }
         loop {
             let changed = self.0.changed.notified();
             tokio::pin!(changed);
@@ -769,6 +873,7 @@ impl StudioThreadAssembler {
         let Some((incarnation, thread)) = thread else {
             return Ok(());
         };
+        self.attach_close_storage(id).await?;
         self.prepare_close(id, &thread).await?;
         if thread.snapshot().lifecycle != ThreadLifecycle::Closed {
             let closed = thread.close().await;
@@ -793,6 +898,26 @@ impl StudioThreadAssembler {
             }
         };
         drop(removed);
+        Ok(())
+    }
+
+    /// Called with this identity's operation permit before a close-only owner receives writes.
+    async fn attach_close_storage(&self, id: &str) -> Result<(), ThreadAssemblyError> {
+        let storage = self.0.state().entries.get(id).and_then(|entry| {
+            entry
+                .close_storage
+                .clone()
+                .map(|storage| (entry.incarnation.clone(), entry.thread.clone(), storage))
+        });
+        if let Some((incarnation, thread, storage)) = storage {
+            // Keep the same sink in the entry across cancellation or a failed attachment.
+            thread.attach_storage(storage).await?;
+            if let Some(entry) = self.0.state().entries.get_mut(id)
+                && Arc::ptr_eq(&entry.incarnation, &incarnation)
+            {
+                entry.close_storage = None;
+            }
+        }
         Ok(())
     }
 
@@ -828,8 +953,19 @@ impl StudioThreadAssembler {
             cancellation.cancel();
         }
 
+        let evaluation_failure = self.close_agent_operations().await.err();
+
         let mut covered: BTreeSet<String> = BTreeSet::new();
         let mut failures = Vec::new();
+        if let Some(error) = evaluation_failure {
+            failures.push((
+                "agent-operations".into(),
+                ThreadAssemblyError::Resource {
+                    operation: "join collaboration operations",
+                    source: error.into(),
+                },
+            ));
+        }
 
         // 第一轮：独立森林/orphan 关闭与「全部已准入 creating/preparing 真实排空」的全局最终 ACK
         // 并发推进——独立资源先开始自身 close，不被全局 ACK 前置阻塞；全局 ACK 又保证最终成功前

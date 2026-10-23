@@ -16,8 +16,40 @@ jobs:
         with:
           toolchain: 1.99.1
           targets: aarch64-unknown-linux-musl,x86_64-unknown-linux-musl
+
+      # Rust Cache hashes every installed rustup toolchain into its environment key, and
+      # the hosted image's preinstalled `stable` moves independently of the toolchain pinned
+      # in rust-toolchain.toml. Only that unused preinstalled `stable` toolchain is removed
+      # on this temporary runner, so the cache identity follows the compiler this job uses.
+      - name: Remove unused preinstalled stable Rust toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          active_listing="$(rustup show active-toolchain)"
+          toolchains="$(rustup toolchain list)"
+          active="${active_listing%%[[:space:]]*}"
+          if [ -z "$active" ]; then
+            echo 'rustup did not report an active toolchain' >&2
+            exit 1
+          fi
+          while IFS= read -r listing; do
+            name="${listing%%[[:space:]]*}"
+            case "$name" in
+              stable-*) ;;
+              *) continue ;;
+            esac
+            if [ "$name" = "$active" ]; then
+              continue
+            fi
+            echo "Removing unused preinstalled toolchain $name"
+            rustup toolchain uninstall "$name"
+          done <<< "$toolchains"
+
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
+          # Same helper build as the stable publisher; the pinned Zig toolchain versions
+          # are part of the key because they are not Cargo inputs.
+          shared-key: helper-linux-zig-0.16.0-zigbuild-0.23.4
           workspaces: |
             . -> target
             . -> target/xtask
@@ -76,8 +108,39 @@ jobs:
       - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
         with:
           toolchain: 1.99.1
+
+      # Rust Cache hashes every installed rustup toolchain into its environment key, and
+      # the hosted image's preinstalled `stable` moves independently of the toolchain pinned
+      # in rust-toolchain.toml. Only that unused preinstalled `stable` toolchain is removed
+      # on this temporary runner, so the cache identity follows the compiler this job uses.
+      - name: Remove unused preinstalled stable Rust toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          active_listing="$(rustup show active-toolchain)"
+          toolchains="$(rustup toolchain list)"
+          active="${active_listing%%[[:space:]]*}"
+          if [ -z "$active" ]; then
+            echo 'rustup did not report an active toolchain' >&2
+            exit 1
+          fi
+          while IFS= read -r listing; do
+            name="${listing%%[[:space:]]*}"
+            case "$name" in
+              stable-*) ;;
+              *) continue ;;
+            esac
+            if [ "$name" = "$active" ]; then
+              continue
+            fi
+            echo "Removing unused preinstalled toolchain $name"
+            rustup toolchain uninstall "$name"
+          done <<< "$toolchains"
+
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
+          # Same Windows GUI product set as the stable publisher build.
+          shared-key: gui-windows
           workspaces: |
             . -> target
             . -> target/xtask

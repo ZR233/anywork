@@ -266,6 +266,13 @@ StudioAgentView _agentDirectoryEntryFromFrb(
     path: agent.path,
     parentPath: agent.parentPath,
     role: agent.role,
+    delegationMode: _delegationModeFromFrb(agent.delegationMode),
+    delegationPreference: _delegationPreferenceFromFrb(
+      agent.delegationPreference,
+    ),
+    frozenModel: agent.frozenModel == null
+        ? null
+        : _savedRouteFromFrb(agent.frozenModel!),
     task: agent.task,
     summary: agent.summary,
     depth: agent.depth,

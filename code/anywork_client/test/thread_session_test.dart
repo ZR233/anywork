@@ -122,6 +122,8 @@ ThreadWorkspace _workspace({int revision = 1, ThreadRuntimeView? runtime}) {
     projectId: 'project',
     title: 'Thread',
     mode: ThreadModeId.simple,
+    delegationMode: DelegationMode.profile,
+    delegationPreference: DelegationPreference.balanced,
     updatedAt: DateTime.utc(2026),
     workspacePath: '/tmp/thread',
   );

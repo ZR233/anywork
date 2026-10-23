@@ -197,6 +197,7 @@ enum LegacySourceKind {
     ProfileBaseOverride,
     /// The mixed Mode/child-Profile role source that the current structure splits apart.
     ExecutionProfile,
+    DelegationPreference,
     Platform,
     ConfigDeveloper,
     ProfileDeveloper,
@@ -217,6 +218,7 @@ impl LegacySourceKind {
     fn current(self) -> Option<InstructionSourceKind> {
         Some(match self {
             Self::ExecutionProfile => return None,
+            Self::DelegationPreference => InstructionSourceKind::DelegationPreference,
             Self::BuiltInBase => InstructionSourceKind::BuiltInBase,
             Self::ModelBase => InstructionSourceKind::ModelBase,
             Self::ConfigBaseOverride => InstructionSourceKind::ConfigBaseOverride,

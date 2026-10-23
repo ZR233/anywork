@@ -6,7 +6,8 @@ use pl_core::{
         opaque::{CallContext, Registration, RegistryError, Tool, ToolError},
     },
 };
-pub use pl_protocol::{AgentWorkspaceMode, ToolSpec};
+pub use pl_protocol::studio::NewThreadModelRoute;
+pub use pl_protocol::{AgentWorkspaceMode, DelegationMode, ToolSpec};
 pub use serde_json::Error as SchemaEncodingError;
 use std::sync::Arc;
 
@@ -41,6 +42,9 @@ pub struct AgentMessage {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AgentSpawn {
     pub profile_id: String,
+    /// Required only in automatic delegation; fixed Profile mode rejects overrides.
+    #[serde(default)]
+    pub model_selection: Option<NewThreadModelRoute>,
     /// Brief task description shown in the child list; required, nonempty, at most 80 Unicode characters.
     pub task_summary: AgentTaskSummary,
     /// Full self-contained task: goals, approved contract, facts, interfaces, steps, ownership and verification. No application length limit; include pseudocode when useful.
@@ -176,7 +180,8 @@ struct SendInput {
 }
 
 impl AgentControlKind {
-    /// Builds a declaration using the product's executable Profile view. An empty view omits spawn.
+    /// Uses the product's same-generation executable Profile view and frozen delegation mode.
+    /// Automatic mode requires model selection; fixed mode omits it. An empty view omits spawn.
     /// Other controls never include current agents, statuses or execution identities.
     ///
     /// # Errors
@@ -184,9 +189,10 @@ impl AgentControlKind {
     pub fn declaration(
         self,
         profiles: &[AgentSpawnProfile],
+        mode: DelegationMode,
     ) -> Result<Option<ToolSpec>, AgentSpawnSchemaError> {
         Ok(Some(match self {
-            Self::Spawn => return super::spawn_schema::declaration(profiles),
+            Self::Spawn => return super::spawn_schema::declaration(profiles, mode),
             Self::Send => pl_protocol::ToolSpec::function(
                 "send_message",
                 "Send a prompt to a direct child. Interrupt its active turn and continue with this message after tool cleanup; start it if idle. The receipt confirms acceptance, not completion.",

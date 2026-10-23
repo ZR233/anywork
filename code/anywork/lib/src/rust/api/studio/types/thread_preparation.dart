@@ -5,6 +5,7 @@
 
 import '../../../frb_generated.dart';
 import 'attachment.dart';
+import 'delegation.dart';
 import 'error.dart';
 
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
@@ -38,6 +39,8 @@ class BridgeStartNewThreadRequest {
   final String modelId;
   final String? effort;
   final String? workspaceMode;
+  final BridgeDelegationMode delegationMode;
+  final BridgeDelegationPreference delegationPreference;
 
   const BridgeStartNewThreadRequest({
     required this.projectId,
@@ -47,6 +50,8 @@ class BridgeStartNewThreadRequest {
     required this.modelId,
     this.effort,
     this.workspaceMode,
+    required this.delegationMode,
+    required this.delegationPreference,
   });
 
   @override
@@ -57,7 +62,9 @@ class BridgeStartNewThreadRequest {
       accountId.hashCode ^
       modelId.hashCode ^
       effort.hashCode ^
-      workspaceMode.hashCode;
+      workspaceMode.hashCode ^
+      delegationMode.hashCode ^
+      delegationPreference.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -70,7 +77,9 @@ class BridgeStartNewThreadRequest {
           accountId == other.accountId &&
           modelId == other.modelId &&
           effort == other.effort &&
-          workspaceMode == other.workspaceMode;
+          workspaceMode == other.workspaceMode &&
+          delegationMode == other.delegationMode &&
+          delegationPreference == other.delegationPreference;
 }
 
 class BridgeThreadPreparationProgress {

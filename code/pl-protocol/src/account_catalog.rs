@@ -8,7 +8,41 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 /// Account/模型目录跨产品传输协议版本。
-pub const ACCOUNT_CATALOG_SCHEMA_VERSION: u32 = 16;
+pub const ACCOUNT_CATALOG_SCHEMA_VERSION: u32 = 17;
+
+/// 账号计费类别；与 [`crate::PricingMode`]（是否按金额统计）相互独立。
+///
+/// `subscription` 只表示账号走订阅计量，不证明订阅有效、额度充足或实际零费用；
+/// 未知价格也不能被解释为免费。
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    Default,
+    Serialize,
+    Deserialize,
+    PartialEq,
+    Eq,
+    schemars::JsonSchema,
+    utoipa::ToSchema,
+)]
+#[serde(rename_all = "camelCase")]
+pub enum BillingKind {
+    Metered,
+    Subscription,
+    #[default]
+    Unknown,
+}
+
+crate::impl_labeled_enum!(
+    BillingKind,
+    "BillingKind",
+    [
+        BillingKind::Metered => "metered",
+        BillingKind::Subscription => "subscription",
+        BillingKind::Unknown => "unknown",
+    ]
+);
 
 /// 无敏感信息、可供 Web 与桌面端直接渲染的账号模板目录快照。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, utoipa::ToSchema)]
@@ -72,7 +106,9 @@ pub struct WebSearchResolutionDescriptor {
 }
 
 /// UI 可直接渲染的模型连接模式选项。
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
+#[derive(
+    schemars::JsonSchema, Debug, Clone, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema,
+)]
 #[serde(rename_all = "camelCase")]
 pub struct ConnectionModeDescriptor {
     pub id: String,
@@ -96,7 +132,17 @@ pub struct ModelCatalogDescriptor {
 }
 
 /// 有效目录成员的来源，供 GUI 区分内置、在线与手动模型。
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
+#[derive(
+    schemars::JsonSchema,
+    Debug,
+    Clone,
+    Copy,
+    Serialize,
+    Deserialize,
+    PartialEq,
+    Eq,
+    utoipa::ToSchema,
+)]
 #[serde(rename_all = "camelCase")]
 pub enum ModelOriginDto {
     Bundled,
@@ -105,13 +151,33 @@ pub enum ModelOriginDto {
 }
 
 /// Optional classification for final catalog queries.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
+#[derive(
+    schemars::JsonSchema,
+    Debug,
+    Clone,
+    Copy,
+    Serialize,
+    Deserialize,
+    PartialEq,
+    Eq,
+    utoipa::ToSchema,
+)]
 #[serde(rename_all = "camelCase")]
 pub enum ModelType {
     Text,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
+#[derive(
+    schemars::JsonSchema,
+    Debug,
+    Clone,
+    Copy,
+    Serialize,
+    Deserialize,
+    PartialEq,
+    Eq,
+    utoipa::ToSchema,
+)]
 #[serde(rename_all = "camelCase")]
 pub enum ModelTypeExclusion {
     TextInputUnsupported,
@@ -122,7 +188,9 @@ pub enum ModelTypeExclusion {
 }
 
 /// Final model-owned context policy, frozen after catalog and account configuration merge.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
+#[derive(
+    schemars::JsonSchema, Debug, Clone, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema,
+)]
 #[serde(rename_all = "camelCase")]
 pub struct ModelContextResolution {
     pub unavailable: Option<ModelContextUnavailable>,
@@ -132,7 +200,17 @@ pub struct ModelContextResolution {
     pub adjustment: Option<ModelContextAdjustment>,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
+#[derive(
+    schemars::JsonSchema,
+    Debug,
+    Clone,
+    Copy,
+    Serialize,
+    Deserialize,
+    PartialEq,
+    Eq,
+    utoipa::ToSchema,
+)]
 #[serde(rename_all = "camelCase")]
 pub enum ModelContextUnavailable {
     WindowUnknown,
@@ -140,13 +218,25 @@ pub enum ModelContextUnavailable {
     InputBudgetExhausted,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
+#[derive(
+    schemars::JsonSchema,
+    Debug,
+    Clone,
+    Copy,
+    Serialize,
+    Deserialize,
+    PartialEq,
+    Eq,
+    utoipa::ToSchema,
+)]
 #[serde(rename_all = "camelCase")]
 pub enum ModelContextAdjustment {
     SafetyLimit,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
+#[derive(
+    schemars::JsonSchema, Debug, Clone, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema,
+)]
 #[serde(rename_all = "camelCase")]
 pub struct ModelTypeSupport {
     pub model_type: ModelType,
@@ -154,13 +244,18 @@ pub struct ModelTypeSupport {
 }
 
 /// UI 和外部宿主需要的模型元数据投影。
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, utoipa::ToSchema)]
+#[derive(
+    schemars::JsonSchema, Debug, Clone, Serialize, Deserialize, PartialEq, utoipa::ToSchema,
+)]
 #[serde(rename_all = "camelCase")]
 pub struct ModelDescriptor {
     pub model_id: String,
     #[serde(rename = "typeSupport")]
     pub type_support: Vec<ModelTypeSupport>,
     pub origin: ModelOriginDto,
+    /// 用户启用意图；禁用成员仍保留在目录中，选择入口必须排除它。
+    #[serde(default = "enabled_by_default")]
+    pub enabled: bool,
     pub display_name: String,
     pub description: Option<String>,
     pub context_window: Option<u64>,
@@ -173,8 +268,83 @@ pub struct ModelDescriptor {
     pub pricing: Option<ModelPricingDto>,
 }
 
+const fn enabled_by_default() -> bool {
+    true
+}
+
+/// 模型选模资料的只读投影：有界短简介、适配任务、局限与可追溯来源。
+///
+/// 它是参考元数据，不是能力声明、不是模型指令，也不在查询时联网或调用模型生成。
+#[derive(
+    Debug, Clone, Serialize, Deserialize, PartialEq, schemars::JsonSchema, utoipa::ToSchema,
+)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ModelSelectionGuideDto {
+    /// 短简介，最多 240 个 Unicode 字符。
+    pub summary: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub task_suitability: Vec<crate::AgentTaskCategory>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub limitations: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sources: Vec<ModelSelectionSourceDto>,
+}
+
+/// 一条可追溯来源；测量条件不完整时必须如实标注，不能合成网络总分。
+#[derive(
+    Debug, Clone, Serialize, Deserialize, PartialEq, schemars::JsonSchema, utoipa::ToSchema,
+)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ModelSelectionSourceDto {
+    pub kind: ModelSelectionSourceKindDto,
+    pub url: String,
+    /// 核验日期（Unix 秒）。
+    pub verified_at: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub measurement: Option<ModelSelectionMeasurementDto>,
+}
+
+/// 来源类型：官方说明、独立基准或社区反馈。
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    Serialize,
+    Deserialize,
+    PartialEq,
+    Eq,
+    schemars::JsonSchema,
+    utoipa::ToSchema,
+)]
+#[serde(rename_all = "camelCase")]
+pub enum ModelSelectionSourceKindDto {
+    Official,
+    Benchmark,
+    Community,
+}
+
+/// 基准测量条件：被测型号、effort、指标与分数必须成组出现。
+#[derive(
+    Debug, Clone, Serialize, Deserialize, PartialEq, schemars::JsonSchema, utoipa::ToSchema,
+)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ModelSelectionMeasurementDto {
+    /// 被测量的精确型号或版本，不能用别名冒充。
+    pub model: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort: Option<String>,
+    pub metric: String,
+    /// 指标版本；给出分数时必须明确，否则分数不可比。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metric_version: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub score: Option<f64>,
+}
+
 /// UI 可直接渲染的模型 API 协议与连接策略。
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
+#[derive(
+    schemars::JsonSchema, Debug, Clone, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema,
+)]
 #[serde(rename_all = "camelCase")]
 pub struct ModelTransportDescriptor {
     pub protocol: String,
@@ -183,7 +353,9 @@ pub struct ModelTransportDescriptor {
 }
 
 /// UI 可直接判断的模型能力摘要。
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
+#[derive(
+    schemars::JsonSchema, Debug, Clone, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema,
+)]
 #[serde(rename_all = "camelCase")]
 pub struct ModelCapabilitiesDto {
     pub input: Vec<ModelInputCapabilityDto>,
@@ -202,7 +374,17 @@ pub struct ModelCapabilitiesDto {
     pub native_context_family: Option<String>,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
+#[derive(
+    schemars::JsonSchema,
+    Debug,
+    Clone,
+    Copy,
+    Serialize,
+    Deserialize,
+    PartialEq,
+    Eq,
+    utoipa::ToSchema,
+)]
 #[serde(rename_all = "camelCase")]
 pub enum ModelModalityDto {
     Text,
@@ -212,14 +394,26 @@ pub enum ModelModalityDto {
     File,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
+#[derive(
+    schemars::JsonSchema,
+    Debug,
+    Clone,
+    Copy,
+    Serialize,
+    Deserialize,
+    PartialEq,
+    Eq,
+    utoipa::ToSchema,
+)]
 #[serde(rename_all = "camelCase")]
 pub enum ModelInputSourceDto {
     Local,
     RemoteUrl,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
+#[derive(
+    schemars::JsonSchema, Debug, Clone, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema,
+)]
 #[serde(rename_all = "camelCase")]
 pub struct ModelInputCapabilityDto {
     pub modality: ModelModalityDto,
@@ -233,7 +427,9 @@ pub struct ModelInputCapabilityDto {
 }
 
 /// reasoning/effort 下拉的完整动态描述。
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
+#[derive(
+    schemars::JsonSchema, Debug, Clone, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema,
+)]
 #[serde(rename_all = "camelCase")]
 pub struct ModelReasoningDescriptor {
     pub parameter: String,
@@ -243,7 +439,9 @@ pub struct ModelReasoningDescriptor {
 }
 
 /// Display projection of all applicable catalog price bands, per million tokens.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, utoipa::ToSchema)]
+#[derive(
+    schemars::JsonSchema, Debug, Clone, Serialize, Deserialize, PartialEq, utoipa::ToSchema,
+)]
 #[serde(rename_all = "camelCase")]
 pub struct ModelPricingDto {
     pub currency: String,
@@ -253,7 +451,9 @@ pub struct ModelPricingDto {
 }
 
 /// A complete display row; clients format these rates without calculating multipliers.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, utoipa::ToSchema)]
+#[derive(
+    schemars::JsonSchema, Debug, Clone, Serialize, Deserialize, PartialEq, utoipa::ToSchema,
+)]
 #[serde(rename_all = "camelCase")]
 pub struct ModelPriceTierDto {
     pub label: String,

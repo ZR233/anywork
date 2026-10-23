@@ -6,7 +6,10 @@ use serde::{Deserialize, Serialize};
 
 // 活动/存储 DTO 定义在兄弟模块 `thread_activity`，由 `types` 重导出；这里显式引入，不复制定义，
 // 也不做 `pub use` 以免与 `thread_activity::*` 产生同名 glob 歧义。
-use super::{BridgeThreadActivity, BridgeThreadStorageState};
+use super::{
+    BridgeDelegationMode, BridgeDelegationPreference, BridgeNewThreadModelRoute,
+    BridgeThreadActivity, BridgeThreadStorageState,
+};
 
 pub mod item;
 
@@ -93,6 +96,9 @@ pub struct BridgeThread {
     pub title: String,
     /// 完整 Thread Mode ID，例如 `mode.simple` 或 `mode.release`。
     pub mode: String,
+    pub delegation_mode: BridgeDelegationMode,
+    pub delegation_preference: BridgeDelegationPreference,
+    pub frozen_model: Option<BridgeNewThreadModelRoute>,
     /// Canonical 会话工作区模式：`local` 或 `worktree`。
     pub workspace_mode: String,
     /// Canonical 会话工作区地址；`local` 为 Project 目录，`worktree` 为工作树路径。

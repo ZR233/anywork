@@ -6,10 +6,11 @@ use sea_orm::{ConnectionTrait, DatabaseConnection};
 
 use crate::studio::entity;
 
-pub(super) const STUDIO_DATABASE_SCHEMA_VERSION: i64 = 23;
+pub(super) const STUDIO_DATABASE_SCHEMA_VERSION: i64 = 25;
 
 pub(super) async fn initialize_studio_schema(db: &DatabaseConnection) -> Result<()> {
     create_thread_lifecycle_tables(db).await?;
+    create_agent_evaluations(db).await?;
     db.get_schema_builder()
         .register(entity::app_setting::Entity)
         .register(entity::project::Entity)
@@ -56,12 +57,47 @@ async fn create_thread_lifecycle_tables(db: &DatabaseConnection) -> Result<()> {
             workspace_mode TEXT NOT NULL DEFAULT 'local',
             workspace_path TEXT NOT NULL DEFAULT '',
             last_user_message_at INTEGER,
+            delegation_mode TEXT NOT NULL DEFAULT 'profile',
+            delegation_preference TEXT NOT NULL DEFAULT 'balanced',
+            frozen_model_json TEXT,
+            explicitly_closed INTEGER NOT NULL DEFAULT 0 CHECK(explicitly_closed IN (0,1)),
             FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
         );
 
         "#,
     )
     .await?;
+    Ok(())
+}
+
+/// Independent typed product domain, deliberately not a generic object or call-statistics row.
+pub(in crate::studio) async fn create_agent_evaluations(db: &impl ConnectionTrait) -> Result<()> {
+    db.execute_unprepared(r#"
+        CREATE TABLE agent_evaluations (
+            agent_id TEXT PRIMARY KEY NOT NULL,
+            parent_agent_id TEXT NOT NULL,
+            account_id TEXT NOT NULL,
+            model_id TEXT NOT NULL,
+            effort TEXT,
+            profile_id TEXT NOT NULL,
+            mode TEXT NOT NULL CHECK(mode IN ('profile','automatic')),
+            preference TEXT NOT NULL CHECK(preference IN ('economy','balanced','fast')),
+            turn_id TEXT NOT NULL,
+            revision INTEGER NOT NULL CHECK(revision > 0),
+            task_category TEXT NOT NULL,
+            outcome TEXT NOT NULL CHECK(outcome IN ('passed','failed','notRated')),
+            quality INTEGER,
+            instruction_following INTEGER,
+            comment TEXT NOT NULL CHECK(length(trim(comment)) > 0 AND length(comment) <= 300),
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL,
+            CHECK ((outcome = 'notRated' AND quality IS NULL AND instruction_following IS NULL)
+                OR (outcome IN ('passed','failed') AND quality IS NOT NULL AND instruction_following IS NOT NULL AND quality BETWEEN 1 AND 5
+                    AND instruction_following BETWEEN 1 AND 5))
+        );
+        CREATE INDEX idx_agent_evaluations_model_updated ON agent_evaluations
+            (account_id, model_id, updated_at DESC, agent_id DESC);
+    "#).await?;
     Ok(())
 }
 

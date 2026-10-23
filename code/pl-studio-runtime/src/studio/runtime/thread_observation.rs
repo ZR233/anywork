@@ -210,6 +210,7 @@ impl Drop for Observation {
 }
 #[derive(Clone)]
 pub(super) struct ObservationServices {
+    pub(super) config: crate::config::ConfigRuntime,
     pub(super) recovery: crate::studio::StudioRecoveryRegistry,
     pub(super) store: StudioStore,
     pub(super) events: ProductEventBus,
@@ -601,6 +602,8 @@ impl StudioRuntime {
 /// batch is handed to the Thread's reliable admission channel, so the history writer commits the
 /// content this owner published instead of projecting the effect a second time.
 struct LiveOwner {
+    config: crate::config::ConfigRuntime,
+    qualification_revision: u64,
     projection: LiveProjection,
     /// The Thread's only activity projection: the same owner derives it from the snapshot it just
     /// published, so activity never becomes a second fact source and never reads SQL.
@@ -654,14 +657,19 @@ impl LiveOwner {
         // Seed the runtime baseline from the same snapshot and cumulative usage that the first
         // stream pass will project. This prevents owner activation itself from emitting a duplicate
         // runtime frame; subsequent frames still advance only when the typed projection changes.
-        let runtime_published = Some(crate::studio::thread_projection::project_runtime(
+        let mut runtime = crate::studio::thread_projection::project_runtime(
             id,
             snapshot,
             thread.updated_at,
             &usage,
-        )?);
+        )?;
+        let (config, catalog) = projector.config.read_with_catalog()?;
+        crate::studio::model_route::annotate_availability(&mut runtime, &thread, &config.config)?;
+        let runtime_published = Some(runtime);
         feed.publish_storage(storage_published.clone());
         let owner = Self {
+            config: projector.config.clone(),
+            qualification_revision: catalog.revision,
             projection,
             activity,
             activity_published,
@@ -861,7 +869,7 @@ impl LiveOwner {
         Ok(())
     }
 
-    /// Model availability is live-only: transfer checkpoints deliberately clear it.
+    /// Execution residency is live-only; next-admission availability also consumes current config.
     /// Derive runtime from the latest owner snapshot after folding all admitted usage,
     /// never from an effect's storage checkpoint. Stable timestamps allow deduplication.
     fn observe_runtime(&mut self, snapshot: &ThreadSnapshot) -> Result<()> {
@@ -875,6 +883,40 @@ impl LiveOwner {
             at,
             &self.usage,
         )?;
+        let same_identity = match (
+            self.runtime_published
+                .as_ref()
+                .and_then(|runtime| runtime.model_route.as_ref()),
+            runtime.model_route.as_ref(),
+        ) {
+            (Some(previous), Some(current)) => {
+                previous.account_id == current.account_id
+                    && previous.model_id == current.model_id
+                    && previous.effort == current.effort
+                    && previous.revision == current.revision
+            }
+            (None, None) => true,
+            _ => false,
+        };
+        if self.config.model_catalog_revision()? == self.qualification_revision && same_identity {
+            if let (Some(previous), Some(current)) = (
+                self.runtime_published
+                    .as_ref()
+                    .and_then(|runtime| runtime.model_route.as_ref()),
+                runtime.model_route.as_mut(),
+            ) {
+                current.available = previous.available;
+                current.unavailable_reason = previous.unavailable_reason.clone();
+            }
+        } else {
+            let (config, catalog) = self.config.read_with_catalog()?;
+            crate::studio::model_route::annotate_availability(
+                &mut runtime,
+                &self.thread,
+                &config.config,
+            )?;
+            self.qualification_revision = catalog.revision;
+        }
         if self.runtime_published.as_ref() == Some(&runtime) {
             return Ok(());
         }

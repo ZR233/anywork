@@ -73,9 +73,8 @@ class _ProjectTile extends ConsumerWidget {
                     final commands = ref
                         .read(anyworkClientProvider)
                         .directoryCommands;
-                    await commands.selectProject(project.id);
+                    await commands.beginNewThread(projectId: project.id);
                     if (!context.mounted) return;
-                    await commands.beginNewThread();
                     onNavigate?.call();
                   }
                 : null,

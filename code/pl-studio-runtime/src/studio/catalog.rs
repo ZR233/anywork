@@ -18,17 +18,24 @@ use pl_protocol::{Thread, ThreadModeId, ThreadStatus, ThreadWorkspaceMode};
 
 use super::toml_store::{self, RevisionedDocument};
 
-pub(in crate::studio) const CATALOG_SCHEMA_VERSION: u32 = 2;
+pub(in crate::studio) const CATALOG_SCHEMA_VERSION: u32 = 4;
 
 /// 一个会话的轻量目录摘要。
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(in crate::studio) struct CatalogEntry {
+    /// Derived only after the canonical checkpoint close intent is durable; false is not proof
+    /// of open admission. Every execution recovery still validates its checkpoint.
+    pub(in crate::studio) explicitly_closed: bool,
     pub(in crate::studio) id: String,
     pub(in crate::studio) project_id: String,
     pub(in crate::studio) title: String,
     pub(in crate::studio) mode: ThreadModeId,
     pub(in crate::studio) workspace_mode: ThreadWorkspaceMode,
+    pub(in crate::studio) delegation_mode: pl_protocol::DelegationMode,
+    pub(in crate::studio) delegation_preference: pl_protocol::DelegationPreference,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(in crate::studio) frozen_model: Option<pl_protocol::studio::NewThreadModelRoute>,
     pub(in crate::studio) workspace_path: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(in crate::studio) parent_thread_id: Option<String>,
@@ -52,11 +59,15 @@ impl CatalogEntry {
 
     pub(in crate::studio) fn from_thread(thread: &Thread) -> Self {
         Self {
+            explicitly_closed: false,
             id: thread.id.clone(),
             project_id: thread.project_id.clone(),
             title: thread.title.clone(),
             mode: thread.mode.clone(),
             workspace_mode: thread.workspace_mode,
+            delegation_mode: thread.delegation_mode,
+            delegation_preference: thread.delegation_preference,
+            frozen_model: thread.frozen_model.clone(),
             workspace_path: thread.workspace_path.clone(),
             parent_thread_id: thread.parent_thread_id.clone(),
             root_thread_id: thread.root_thread_id.clone(),
@@ -77,16 +88,27 @@ impl CatalogEntry {
             title: self.title.clone(),
             mode: self.mode.clone(),
             workspace_mode: self.workspace_mode,
+            delegation_mode: self.delegation_mode,
+            delegation_preference: self.delegation_preference,
+            frozen_model: self.frozen_model.clone(),
             workspace_path: self.workspace_path.clone(),
             root_thread_id: self.root_thread_id.clone(),
             parent_thread_id: self.parent_thread_id.clone(),
             role: self.role.clone(),
             agent_path: self.agent_path.clone(),
-            status: self.status,
+            status: self.projected_status(),
             created_at: self.created_at,
             updated_at: self.updated_at,
             last_user_message_at: self.last_user_message_at,
             archived: self.archived,
+        }
+    }
+
+    pub(in crate::studio) fn projected_status(&self) -> ThreadStatus {
+        if self.parent_thread_id.is_some() {
+            super::agent_close::directory_status(self.status, self.explicitly_closed)
+        } else {
+            self.status
         }
     }
 }
@@ -122,7 +144,19 @@ impl CatalogStore {
     /// 从磁盘加载（缺失时为带 revision 1 的空目录）。
     pub(in crate::studio) async fn load(path: PathBuf) -> Result<Self> {
         let document = match tokio::fs::read_to_string(&path).await {
-            Ok(content) => decode(&path, &content).map_err(crate::studio::startup::data_error)?,
+            Ok(content) => {
+                let (document, migrate) =
+                    decode(&path, &content).map_err(crate::studio::startup::data_error)?;
+                if migrate {
+                    let bytes = toml::to_string_pretty(&document)?;
+                    let path = path.clone();
+                    tokio::task::spawn_blocking(move || {
+                        pl_tool::workspace::write_file_atomically(&path, bytes.as_bytes())
+                    })
+                    .await??;
+                }
+                document
+            }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => CatalogDocument {
                 schema_version: CATALOG_SCHEMA_VERSION,
                 revision: 1,
@@ -201,7 +235,7 @@ impl CatalogStore {
     ///
     /// 迟到快照不得使最近用户消息时间回退：写回时与既有条目取较新值，其余目录列
     /// 以命令顺序为准（design/17 §17.1）。
-    pub(in crate::studio) async fn upsert(&self, entry: CatalogEntry) -> Result<()> {
+    pub(in crate::studio) async fn upsert(&self, mut entry: CatalogEntry) -> Result<()> {
         self.mutate(move |document| {
             match document
                 .entries
@@ -210,6 +244,15 @@ impl CatalogStore {
             {
                 Some(existing) if *existing == entry => false,
                 Some(existing) => {
+                    // DTO observations do not carry closure intent. A late owner/metadata
+                    // projection cannot erase the checkpoint-derived, monotonic seal.
+                    entry.explicitly_closed |= existing.explicitly_closed;
+                    if existing.explicitly_closed && existing.status == ThreadStatus::Closed {
+                        entry.status = ThreadStatus::Closed;
+                    }
+                    if *existing == entry {
+                        return false;
+                    }
                     let last_user_message_at = existing
                         .last_user_message_at
                         .max(entry.last_user_message_at);
@@ -222,6 +265,29 @@ impl CatalogStore {
                     true
                 }
             }
+        })
+        .await
+    }
+
+    pub(in crate::studio) async fn project_explicit_close(&self, id: &str) -> Result<()> {
+        ensure!(
+            self.get(id)
+                .is_some_and(|entry| entry.parent_thread_id.is_some()),
+            "explicit close projection requires a saved child"
+        );
+        let id = id.to_owned();
+        self.mutate(move |document| {
+            let Some(entry) = document.entries.iter_mut().find(|entry| entry.id == id) else {
+                return false;
+            };
+            if entry.explicitly_closed {
+                return false;
+            }
+            entry.explicitly_closed = true;
+            // An old normal-shutdown Closed status says nothing about this close's progress.
+            // The current owner publishes Closed only after its real shutdown is confirmed.
+            entry.status = ThreadStatus::Closing;
+            true
         })
         .await
     }
@@ -292,11 +358,42 @@ impl CatalogStore {
     }
 }
 
-fn decode(path: &Path, content: &str) -> Result<CatalogDocument> {
-    let mut document: CatalogDocument = toml::from_str(content)
+fn decode(path: &Path, content: &str) -> Result<(CatalogDocument, bool)> {
+    let mut legacy: toml::Value = toml::from_str(content)?;
+    let version = legacy
+        .get("schemaVersion")
+        .and_then(toml::Value::as_integer)
+        .context("Studio catalog schema version is missing")?;
+    if (1..3).contains(&version)
+        && let Some(entries) = legacy
+            .get_mut("entries")
+            .and_then(toml::Value::as_array_mut)
+    {
+        for entry in entries {
+            let entry = entry.as_table_mut().context("invalid catalog entry")?;
+            entry.insert("delegationMode".into(), "profile".into());
+            entry.insert("delegationPreference".into(), "balanced".into());
+        }
+    }
+    if (1..4).contains(&version)
+        && let Some(entries) = legacy
+            .get_mut("entries")
+            .and_then(toml::Value::as_array_mut)
+    {
+        for entry in entries {
+            let entry = entry.as_table_mut().context("invalid catalog entry")?;
+            ensure!(
+                !entry.contains_key("explicitlyClosed"),
+                "old catalog contains unversioned close intent"
+            );
+            entry.insert("explicitlyClosed".into(), false.into());
+        }
+    }
+    let mut document: CatalogDocument = legacy
+        .try_into()
         .with_context(|| format!("invalid Studio catalog {}", path.display()))?;
-    // v1 目录缺少最近用户消息时间：按缺失值读取并保留全部数据，内存归一为当前
-    // 版本，下一次写入即持久化为 v2（design/17 §17.1）。
+    // v1 lacks the last accepted user timestamp; v2 lacks frozen delegation provenance.
+    // Normalize only at this version boundary; opening commits the representation atomically.
     ensure!(
         (1..=CATALOG_SCHEMA_VERSION).contains(&document.schema_version),
         "unsupported Studio catalog schema in {}",
@@ -329,7 +426,7 @@ fn decode(path: &Path, content: &str) -> Result<CatalogDocument> {
     if document.entries.is_empty() && document.revision > 1 {
         bail!("Studio catalog lost all entries without a fresh install");
     }
-    Ok(document)
+    Ok((document, version < i64::from(CATALOG_SCHEMA_VERSION)))
 }
 
 fn page_threads(

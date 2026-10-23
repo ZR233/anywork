@@ -6,7 +6,7 @@
 //! 表是 write-behind 镜像，冷分页/搜索/归档范围只从 `catalog.toml` 读取。
 
 use anyhow::{Result, bail};
-use pl_protocol::{Thread, ThreadModeId, ThreadWorkspaceMode};
+use pl_protocol::{LabeledEnum, Thread, ThreadModeId, ThreadWorkspaceMode};
 use sea_orm::{ActiveModelTrait, ActiveValue::Set, EntityTrait};
 
 use crate::studio::entity as entities;
@@ -63,6 +63,9 @@ impl DirectoryDelta {
             title: non_empty_title(title),
             mode: mode.clone(),
             workspace_mode,
+            delegation_mode: Default::default(),
+            delegation_preference: Default::default(),
+            frozen_model: None,
             workspace_path,
             parent_thread_id: None,
             role: crate::config::StudioRole::Planner.key().to_string(),
@@ -92,6 +95,9 @@ impl DirectoryDelta {
                 title: non_empty_title(&spec.title),
                 mode: spec.mode,
                 workspace_mode: spec.workspace_mode,
+                delegation_mode: spec.delegation.mode,
+                delegation_preference: spec.delegation.preference,
+                frozen_model: spec.frozen_model,
                 workspace_path: spec.workspace_path,
                 root_thread_id: spec.root_thread_id,
                 parent_thread_id: Some(spec.parent_thread_id),
@@ -128,6 +134,8 @@ impl DirectoryDelta {
 /// child Thread 注册事实；父 Thread 的目录事实由调用方（agent host）提供。
 #[derive(Debug, Clone)]
 pub(in crate::studio) struct RegisteredChildThread {
+    pub(in crate::studio) delegation: pl_protocol::DelegationSettings,
+    pub(in crate::studio) frozen_model: Option<pl_protocol::studio::NewThreadModelRoute>,
     pub(in crate::studio) id: String,
     pub(in crate::studio) parent_thread_id: String,
     pub(in crate::studio) agent_path: String,
@@ -224,6 +232,10 @@ async fn upsert_thread_directory_row(
     thread: &Thread,
 ) -> Result<()> {
     use entities::thread;
+    let explicitly_closed = store
+        .catalog()
+        .get(&thread.id)
+        .is_some_and(|entry| entry.explicitly_closed);
     anyhow::ensure!(
         thread.agent_path == thread.id,
         "Thread {} directory identity must match its runtime identity",
@@ -290,7 +302,15 @@ async fn upsert_thread_directory_row(
             created_at: Set(thread.created_at),
             updated_at: Set(thread.updated_at),
             last_user_message_at: Set(thread.last_user_message_at),
+            delegation_mode: Set(thread.delegation_mode.label().into()),
+            delegation_preference: Set(thread.delegation_preference.label().into()),
+            frozen_model_json: Set(thread
+                .frozen_model
+                .as_ref()
+                .map(serde_json::to_string)
+                .transpose()?),
             archived: Set(i32::from(thread.archived)),
+            explicitly_closed: Set(i32::from(explicitly_closed)),
             ..Default::default()
         };
         model.insert(tx).await?;
@@ -327,13 +347,22 @@ async fn upsert_thread_directory_row(
     let last_user_message_at = existing
         .last_user_message_at
         .max(thread.last_user_message_at);
+    let explicitly_closed = explicitly_closed || existing.explicitly_closed != 0;
     let mut active: thread::ActiveModel = existing.into();
+    active.explicitly_closed = Set(i32::from(explicitly_closed));
     active.title = Set(thread.title.clone());
     active.mode = Set(thread.mode.label().to_string());
     active.role = Set(thread.role.clone());
     active.updated_at = Set(thread.updated_at);
     active.last_user_message_at = Set(last_user_message_at);
     active.archived = Set(i32::from(thread.archived));
+    active.delegation_mode = Set(thread.delegation_mode.label().into());
+    active.delegation_preference = Set(thread.delegation_preference.label().into());
+    active.frozen_model_json = Set(thread
+        .frozen_model
+        .as_ref()
+        .map(serde_json::to_string)
+        .transpose()?);
     active.update(tx).await?;
     Ok(())
 }

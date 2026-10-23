@@ -72,7 +72,8 @@ final class RoleRouteQuery {
   final AccountModelView? descriptor;
   final bool hasConfiguredRoute;
 
-  bool get unavailable => hasConfiguredRoute && descriptor == null;
+  bool get unavailable =>
+      hasConfiguredRoute && (descriptor == null || !descriptor!.enabled);
 }
 
 final class ThreadStatusQuery {
@@ -197,8 +198,15 @@ abstract final class ModelRouteQueries {
       effort: pending ? target!.effort ?? canonical?.effort : canonical?.effort,
       pending: pending,
       available: pending
-          ? model(accounts, accountId, modelId) != null
-          : canonical!.available,
+          ? model(accounts, accountId, modelId)?.enabled == true &&
+                model(
+                      accounts,
+                      accountId,
+                      modelId,
+                    )?.matchesType(ModelType.text) ==
+                    true
+          : canonical!.available &&
+                model(accounts, accountId, modelId)?.enabled != false,
       unavailableReason: pending ? null : canonical?.unavailableReason,
     );
   }

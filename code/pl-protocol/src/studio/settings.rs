@@ -3,6 +3,8 @@
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
+use crate::BillingKind;
+
 /// Secret-free canonical configuration snapshot.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, ToSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -48,6 +50,9 @@ pub struct StudioSettings {
     pub accounts: Vec<StudioAccountSettings>,
     pub mode_model_routes: Vec<StudioModeModelSettings>,
     pub roles: Vec<StudioRoleSettings>,
+    /// 新会话默认分发模式与偏好；已有会话保留自己的 canonical 选择。
+    #[serde(default)]
+    pub delegation: crate::DelegationSettings,
     pub permission_mode: String,
     pub instructions: StudioInstructionsSettings,
     pub skills: StudioSkillsSettings,
@@ -61,6 +66,15 @@ pub struct StudioSettings {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct StudioAccountSettings {
     pub pricing_enabled: bool,
+    /// 计费类别；与 `pricing_enabled` 独立，不证明订阅有效或额度充足。
+    #[serde(default)]
+    pub billing_kind: crate::BillingKind,
+    /// 计费类别的显式覆盖原意图；`None` 表示未显式配置、由模板与 canonical endpoint 推导。
+    ///
+    /// `Some(BillingKind::Unknown)` 与 `None` 语义不同：前者是用户显式选择「未知」，后者是
+    /// 跟随推导。完整账号编辑必须原样保留该覆盖，不把生效值写回。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub billing_kind_override: Option<crate::BillingKind>,
     pub account_id: String,
     /// 可选的内置账号模板引用；完全自定义账号为 `None`。
     pub template_id: Option<String>,
@@ -83,6 +97,9 @@ pub struct StudioAccountSettings {
     pub custom_models: Vec<StudioCustomModelSettings>,
     pub model_connection_modes: Vec<StudioModelConnectionSettings>,
     pub model_auto_compact_limits: Vec<StudioModelAutoCompactSettings>,
+    /// 精确 model_id 的禁用集合（按 model_id 字典序）；空表示全部启用，撤下的成员仍保留覆盖。
+    #[serde(default)]
+    pub disabled_models: Vec<String>,
     pub catalog_id: Option<String>,
 }
 
@@ -141,9 +158,105 @@ pub enum StudioModelCatalogCacheWarning {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RemoveAccountModelRequest {
+    /// 调用方操作身份；回执原样携带同一个 ID，不能由服务端生成或替换。
+    pub operation_id: String,
     pub expected_revision: u64,
     pub account_id: String,
     pub model_id: String,
+}
+
+/// 账号模型启用状态命令。
+///
+/// 它是独立字段意图：只改变该 `(accountId, modelId)` 的启用状态，保留凭据、其他模型、
+/// 连接与压缩覆盖，也不把在线成员转成手工成员。切换即保存，不进入账号编辑页草稿。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SetAccountModelEnabledRequest {
+    /// 调用方操作身份；回执原样携带同一个 ID，不能由服务端生成或替换。
+    pub operation_id: String,
+    pub expected_revision: u64,
+    pub account_id: String,
+    pub model_id: String,
+    pub enabled: bool,
+}
+
+/// 账号计费类别的显式写入意图。
+///
+/// wire 上就是 `billingKind` 字段：`null` 明确清除显式覆盖并恢复模板/canonical endpoint
+/// 推导，具体类别（含 `unknown`）表示显式覆盖。字段缺失是非法请求，不会因为 serde 的
+/// 缺省行为被悄悄当成「清除」，因此这里不使用裸 `Option`。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(transparent)]
+pub struct BillingKindIntent(Option<BillingKind>);
+
+impl BillingKindIntent {
+    /// 显式覆盖为具体类别；`unknown` 也是显式选择。
+    pub fn set(kind: BillingKind) -> Self {
+        Self(Some(kind))
+    }
+
+    /// 清除显式覆盖，恢复推导。
+    pub fn clear() -> Self {
+        Self(None)
+    }
+
+    /// 返回原意图；`None` 表示恢复推导。
+    pub fn value(self) -> Option<BillingKind> {
+        self.0
+    }
+}
+
+impl<'de> Deserialize<'de> for BillingKindIntent {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        struct IntentVisitor;
+
+        impl serde::de::Visitor<'_> for IntentVisitor {
+            type Value = BillingKindIntent;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+                formatter.write_str("an explicit billing kind or null to clear the override")
+            }
+
+            /// `null` 是明确的清除意图。
+            fn visit_unit<E>(self) -> Result<Self::Value, E> {
+                Ok(BillingKindIntent(None))
+            }
+
+            fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                use crate::labeled::LabeledEnum;
+                BillingKind::from_label(value)
+                    .map(BillingKindIntent::set)
+                    .map_err(|error| E::custom(error.to_string()))
+            }
+        }
+
+        // 用 `deserialize_any`：serde 的 missing-field 路径会直接报错，而
+        // `deserialize_option` 会把缺失字段当成 `None`，从而把「缺失」误判成「清除」。
+        deserializer.deserialize_any(IntentVisitor)
+    }
+}
+
+/// 独立账号级计费类别命令。
+///
+/// 只改该 account 的显式覆盖：`billingKind: null` 清除并恢复推导，具体类别写入覆盖。
+/// 它不携带价格统计开关、模型、凭据或连接，普通账号编辑也不复用同一个写入口。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SetAccountBillingKindRequest {
+    /// 调用方操作身份；回执原样携带同一个 ID，不能由服务端生成或替换。
+    pub operation_id: String,
+    pub expected_revision: u64,
+    pub account_id: String,
+    /// 字段必须出现：`null` 表示清除覆盖并恢复推导，具体类别表示显式覆盖；缺失字段是
+    /// 非法请求。schema 因此把它列为 `required` 并允许 `null` 值。
+    #[schema(value_type = BillingKind, nullable = true)]
+    pub billing_kind: BillingKindIntent,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, ToSchema)]

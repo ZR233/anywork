@@ -27,6 +27,7 @@ use tokio_util::sync::CancellationToken;
 
 pub mod agent_definitions;
 mod context_replay_recovery;
+pub mod delegation;
 mod model_catalog;
 mod provider_usage;
 mod question_history;
@@ -136,7 +137,7 @@ pub fn gui_markdown_answer() -> String {
 /// The coordinator's ready-file check, the fixture CLI parser and the script
 /// selection all read this single list, so a scenario can no longer be accepted
 /// by one of them and rejected by another.
-pub const GUI_SCENARIOS: [&str; 24] = [
+pub const GUI_SCENARIOS: [&str; 29] = [
     "gui",
     "markdown-layout",
     "single-instance",
@@ -161,6 +162,11 @@ pub const GUI_SCENARIOS: [&str; 24] = [
     "provider-usage",
     "timeline-history",
     "wait-events",
+    "delegation-routing",
+    "delegation-lifecycle",
+    "delegation-window",
+    "delegation-enablement",
+    "delegation-recovery",
 ];
 
 /// Root prompts consumed by the native Mode editor acceptance, in order.
@@ -1685,6 +1691,7 @@ struct AppState {
     model_catalog: Option<Arc<model_catalog::ModelCatalogControl>>,
     model_catalog_hits: model_catalog::ModelCatalogHits,
     agent_definitions: Option<agent_definitions::AgentDefinitionControl>,
+    delegation: delegation::Environment,
 }
 
 /// Optional fixture behaviours layered on top of the strict step script.
@@ -1705,6 +1712,8 @@ pub struct FixtureOptions {
     pub wait_events: bool,
     /// Finite Agent identity/Mode/dispatch-schema observation, never a generic fallback.
     pub agent_definitions: Option<agent_definitions::AgentDefinitionControl>,
+    /// Dedicated scripted-provider journey; never changes product routing.
+    pub delegation: Option<delegation::Scenario>,
 }
 
 /// A listening fixture. Drop aborts the listener; `finish` additionally verifies the script.
@@ -1726,6 +1735,7 @@ impl FixtureServer {
             && (options.web_search.is_some()
                 || options.wait_events
                 || options.provider_usage
+                || options.delegation.is_some()
                 || !steps.is_empty())
         {
             bail!(
@@ -1758,9 +1768,12 @@ impl FixtureServer {
             model_catalog: options.model_catalog.map(Arc::new),
             model_catalog_hits: model_catalog::ModelCatalogHits::default(),
             agent_definitions: options.agent_definitions,
+            delegation: delegation::Environment::new(options.delegation),
         };
         let responses_route = if agent_definitions_enabled {
             post(agent_definitions::responses)
+        } else if options.delegation.is_some() {
+            post(delegation::responses)
         } else if web_search_enabled {
             post(web_search::responses)
         } else if options.wait_events {
@@ -1895,6 +1908,11 @@ impl FixtureServer {
                 "/v1/mimo/chat/completions",
                 post(handle).fallback(unexpected_route),
             )
+        } else {
+            app
+        };
+        let app = if options.delegation.is_some() {
+            delegation::routes(app)
         } else {
             app
         };

@@ -1,4 +1,8 @@
 use serde::{Deserialize, Serialize};
+
+use super::{
+    BridgeBillingKind, BridgeDelegationMode, BridgeDelegationPreference, BridgeDelegationSettings,
+};
 // ── Input types ──
 
 #[derive(Debug, Clone, Deserialize)]
@@ -202,6 +206,12 @@ pub enum SettingsFieldInput {
         role: String,
         effort: Option<String>,
     },
+    DelegationMode {
+        value: BridgeDelegationMode,
+    },
+    DelegationPreference {
+        value: BridgeDelegationPreference,
+    },
 }
 
 impl From<SettingsFieldInput> for pl_protocol::studio::SettingsFieldUpdate {
@@ -300,6 +310,12 @@ impl From<SettingsFieldInput> for pl_protocol::studio::SettingsFieldUpdate {
             SettingsFieldInput::RoleReasoningEffort { role, effort } => {
                 Update::RoleReasoningEffort { role, effort }
             }
+            SettingsFieldInput::DelegationMode { value } => Update::DelegationMode {
+                value: value.into(),
+            },
+            SettingsFieldInput::DelegationPreference { value } => Update::DelegationPreference {
+                value: value.into(),
+            },
         }
     }
 }
@@ -346,6 +362,7 @@ pub struct BridgeStudioSettingsDto {
     pub skills: BridgeSkillsSettingsDto,
     pub mcp_servers: Vec<BridgeMcpServerSettingsDto>,
     pub general: BridgeGeneralSettingsDto,
+    pub delegation: BridgeDelegationSettings,
     pub web_search: BridgeWebSearchSettingsDto,
     pub deepseek_web_search: BridgeDeepSeekWebSearchSettingsDto,
 }
@@ -365,6 +382,9 @@ pub struct BridgeModeModelSettingsDto {
 #[serde(rename_all = "camelCase")]
 pub struct BridgeAccountSettingsDto {
     pub pricing_enabled: bool,
+    pub billing_kind: BridgeBillingKind,
+    pub billing_kind_override: Option<BridgeBillingKind>,
+    pub disabled_models: Vec<String>,
     pub account_id: String,
     /// 可选的内置账号模板引用；完全自定义账号为 `None`。
     pub template_id: Option<String>,
@@ -688,6 +708,7 @@ pub struct BridgeModelCatalogDescriptor {
 #[serde(rename_all = "camelCase")]
 pub struct BridgeModelDescriptor {
     pub model_id: String,
+    pub enabled: bool,
     pub type_support: Vec<BridgeModelTypeSupport>,
     pub origin: BridgeModelOrigin,
     pub display_name: String,
@@ -878,6 +899,7 @@ impl From<pl_protocol::ModelDescriptor> for BridgeModelDescriptor {
     fn from(model: pl_protocol::ModelDescriptor) -> Self {
         Self {
             model_id: model.model_id,
+            enabled: model.enabled,
             type_support: model
                 .type_support
                 .into_iter()
@@ -948,30 +970,7 @@ impl From<pl_protocol::ModelDescriptor> for BridgeModelDescriptor {
                     .collect(),
                 default_connection_mode: model.transport.default_connection_mode,
             },
-            capabilities: BridgeModelCapabilities {
-                input: model
-                    .capabilities
-                    .input
-                    .into_iter()
-                    .map(Into::into)
-                    .collect(),
-                output: model
-                    .capabilities
-                    .output
-                    .into_iter()
-                    .map(bridge_modality)
-                    .collect(),
-                streaming: model.capabilities.streaming,
-                temperature: model.capabilities.temperature,
-                reasoning: model.capabilities.reasoning,
-                web_search: model.capabilities.web_search,
-                function_calling: model.capabilities.function_calling,
-                parallel_tool_calls: model.capabilities.parallel_tool_calls,
-                custom_tools: model.capabilities.custom_tools,
-                freeform_tools: model.capabilities.freeform_tools,
-                instruction_snapshot_overrides: model.capabilities.instruction_snapshot_overrides,
-                native_context_family: model.capabilities.native_context_family,
-            },
+            capabilities: model.capabilities.into(),
             reasoning: model
                 .reasoning
                 .map(|reasoning| BridgeModelReasoningDescriptor {
@@ -980,22 +979,47 @@ impl From<pl_protocol::ModelDescriptor> for BridgeModelDescriptor {
                     default_candidate: reasoning.default,
                     candidates: reasoning.candidates,
                 }),
-            pricing: model.pricing.map(|pricing| BridgeModelPricing {
-                currency: pricing.currency,
-                source: pricing.source,
-                verified_at: pricing.verified_at,
-                tiers: pricing
-                    .tiers
-                    .into_iter()
-                    .map(|tier| BridgeModelPriceTier {
-                        label: tier.label,
-                        input_per_mtok: tier.input_per_mtok,
-                        output_per_mtok: tier.output_per_mtok,
-                        cache_read_per_mtok: tier.cache_read_per_mtok,
-                        cache_write_per_mtok: tier.cache_write_per_mtok,
-                    })
-                    .collect(),
-            }),
+            pricing: model.pricing.map(Into::into),
+        }
+    }
+}
+
+impl From<pl_protocol::ModelCapabilitiesDto> for BridgeModelCapabilities {
+    fn from(value: pl_protocol::ModelCapabilitiesDto) -> Self {
+        Self {
+            input: value.input.into_iter().map(Into::into).collect(),
+            output: value.output.into_iter().map(bridge_modality).collect(),
+            streaming: value.streaming,
+            temperature: value.temperature,
+            reasoning: value.reasoning,
+            web_search: value.web_search,
+            function_calling: value.function_calling,
+            parallel_tool_calls: value.parallel_tool_calls,
+            custom_tools: value.custom_tools,
+            freeform_tools: value.freeform_tools,
+            instruction_snapshot_overrides: value.instruction_snapshot_overrides,
+            native_context_family: value.native_context_family,
+        }
+    }
+}
+
+impl From<pl_protocol::ModelPricingDto> for BridgeModelPricing {
+    fn from(value: pl_protocol::ModelPricingDto) -> Self {
+        Self {
+            currency: value.currency,
+            source: value.source,
+            verified_at: value.verified_at,
+            tiers: value
+                .tiers
+                .into_iter()
+                .map(|tier| BridgeModelPriceTier {
+                    label: tier.label,
+                    input_per_mtok: tier.input_per_mtok,
+                    output_per_mtok: tier.output_per_mtok,
+                    cache_read_per_mtok: tier.cache_read_per_mtok,
+                    cache_write_per_mtok: tier.cache_write_per_mtok,
+                })
+                .collect(),
         }
     }
 }

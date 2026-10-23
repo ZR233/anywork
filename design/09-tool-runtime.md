@@ -4,6 +4,11 @@
 [11](./11-thread-mode.md)，协作工具（spawn_agent 等）的参数与工作区语义见
 [12](./12-collaboration.md)，会话后台任务交付见 [14](./14-runtime-host.md)。
 
+自动分发的 `list_delegation_models`、`get_delegation_model` 与最终评价 `evaluate_agent`
+属于 Studio 产品协作工具，仅装配到主智能体；前两者是有界只读查询，后者为独占写入。
+固定/自动模式的 spawn 声明、选模资格和评价授权归 [12](./12-collaboration.md) §12.7。
+目录只暴露当前模式允许的参数，准备预览与正式调用使用同一声明及独占身份集合。
+
 机器人会话工具沿用相同不透明 Tool 与宿主端口装配，不共享可变工具实例。其项目授权、
 会话查询与外部发送语义归 [27](./27-bots.md)；发送不取得只读 programmatic 资格。
 

@@ -4,6 +4,7 @@ use super::{
     background_task::{self, BackgroundTask},
 };
 use crate::protocol::StudioProductEventKind;
+use anyhow::Context;
 use pl_core::thread::{ThreadHandle, ThreadLifecycle, ToolOutcome};
 use std::collections::BTreeMap;
 
@@ -462,7 +463,9 @@ impl StudioRuntime {
                     if sources.0.get("agent-profiles") != Some(&expected) {
                         return Err(pl_core::thread::ThreadError::Cancelled.into());
                     }
-                    registrations.extend(self.threads.agent_control_tools(&profiles)?);
+                    let selection = crate::studio::delegation::saved(snapshot)?
+                        .context("Thread has no frozen delegation selection")?;
+                    registrations.extend(self.threads.agent_control_tools(&profiles, selection)?);
                     Some(profiles.revision)
                 }
                 crate::thread_assembler::AgentControlExposure::Disabled => None,

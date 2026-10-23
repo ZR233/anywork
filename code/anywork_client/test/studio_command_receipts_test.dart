@@ -275,6 +275,8 @@ StudioThread _thread({ThreadModeId mode = ThreadModeId.simple}) => StudioThread(
   projectId: 'project',
   title: 'Thread',
   mode: mode,
+  delegationMode: DelegationMode.profile,
+  delegationPreference: DelegationPreference.balanced,
   updatedAt: DateTime.utc(2026),
   workspacePath: '/project',
 );

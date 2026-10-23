@@ -69,20 +69,28 @@ impl AgentProfileCatalog {
         self
     }
 
-    /// Derives dispatch availability from this published scan, not a newer configuration read.
-    pub(crate) fn executable(&self) -> Result<Self> {
+    /// Enabled role declarations for host admission; model qualification is checked separately.
+    pub(crate) fn enabled_for_dispatch(&self) -> Result<Self> {
         if let Some(error) = &self.directory_error {
             return Err(PureError::ConfigError(error.clone()));
         }
-        let mut catalog = self.clone().enabled_only();
-        catalog
-            .profiles
-            .retain(|profile| !self.unavailable_profiles.contains(&profile.profile_id));
+        Ok(self.clone().enabled_only())
+    }
+
+    /// Derives the model-visible view from this scan, never a newer configuration read.
+    /// Automatic mode needs enabled roles, not the availability of their fixed model routes.
+    pub(crate) fn executable(&self, mode: pl_protocol::DelegationMode) -> Result<Self> {
+        let mut catalog = self.enabled_for_dispatch()?;
+        if mode == pl_protocol::DelegationMode::Profile {
+            catalog
+                .profiles
+                .retain(|profile| !self.unavailable_profiles.contains(&profile.profile_id));
+        }
         Ok(catalog)
     }
 
     fn push_profile(&mut self, profile: AgentProfileSnapshot, config: &StudioConfig) {
-        if let Err(error) = resolve_profile_route(config, &profile) {
+        if let Err(error) = crate::studio::delegation::resolve_child_route(config, &profile) {
             self.unavailable_profiles.insert(profile.profile_id.clone());
             self.diagnostics.push(AgentProfileDiagnostic {
                 path: PathBuf::from(&profile.source),

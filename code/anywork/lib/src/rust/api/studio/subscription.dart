@@ -10,6 +10,7 @@ import 'package:freezed_annotation/freezed_annotation.dart' hide protected;
 
 import 'types/agent_profile.dart';
 import 'types/bots.dart';
+import 'types/delegation.dart';
 import 'types/error.dart';
 import 'types/event.dart';
 import 'types/product_topic.dart';

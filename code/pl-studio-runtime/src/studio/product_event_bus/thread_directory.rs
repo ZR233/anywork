@@ -233,6 +233,15 @@ impl ProductEventBus {
                 .lock()
                 .expect("thread index lock poisoned");
             for thread in &mut upserted {
+                if let Some(saved) = self.store.catalog().get(&thread.id)
+                    && saved.explicitly_closed
+                {
+                    thread.status = if saved.status == pl_protocol::ThreadStatus::Closed {
+                        saved.status
+                    } else {
+                        crate::studio::agent_close::directory_status(thread.status, true)
+                    };
+                }
                 // 迟到快照不得使最近用户消息时间回退：目录命令携带的完整 Thread 可能
                 // 早于一次已受理的用户输入，进入热集合前保留较新值。
                 if let Some(existing) = index.get(&thread.id) {
@@ -269,17 +278,42 @@ impl ProductEventBus {
         thread_id: &str,
         status: pl_protocol::ThreadStatus,
         committed_at: i64,
-    ) -> Option<Thread> {
+        snapshot: &pl_core::thread::ThreadSnapshot,
+    ) -> Result<Option<Thread>> {
+        let delegation = crate::studio::delegation::saved(snapshot)?;
+        let frozen_profile = crate::studio::model_route::saved_profile(snapshot)?;
         let thread = {
             let mut index = self
                 .thread_index
                 .lock()
                 .expect("thread index lock poisoned");
-            let thread = index.get_mut(thread_id)?;
+            let Some(thread) = index.get_mut(thread_id) else {
+                return Ok(None);
+            };
             if thread.archived {
-                return None;
+                return Ok(None);
             }
-            thread.status = status;
+            if let Some(delegation) = delegation {
+                thread.delegation_mode = delegation.mode;
+                thread.delegation_preference = delegation.preference;
+            }
+            if let Some((profile, _)) = frozen_profile {
+                anyhow::ensure!(
+                    thread.parent_thread_id.is_some() && profile.profile_id == thread.role,
+                    "frozen Profile conflicts with directory identity"
+                );
+                thread.frozen_model = Some(crate::studio::delegation::profile_model(&profile));
+            }
+            thread.status = match self.store.catalog().get(thread_id) {
+                Some(saved) if saved.explicitly_closed => {
+                    if saved.status == pl_protocol::ThreadStatus::Closed {
+                        saved.status
+                    } else {
+                        crate::studio::agent_close::directory_status(status, true)
+                    }
+                }
+                _ => status,
+            };
             thread.updated_at = thread.updated_at.max(committed_at);
             thread.clone()
         };
@@ -301,7 +335,7 @@ impl ProductEventBus {
                 removed: Vec::new(),
             },
         ));
-        Some(thread)
+        Ok(Some(thread))
     }
 
     /// Records the acceptance of a user message as a directory fact.

@@ -37,6 +37,8 @@ impl Observation<'_> {
                         model_id: ROOT_MODEL.into(),
                         effort: None,
                     },
+                    delegation_mode: Some(pl_protocol::DelegationMode::Profile),
+                    delegation_preference: Some(pl_protocol::DelegationPreference::Balanced),
                     workspace_mode: pl_protocol::ThreadWorkspaceMode::Local,
                 },
             )

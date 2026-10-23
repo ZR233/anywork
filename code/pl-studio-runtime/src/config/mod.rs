@@ -63,7 +63,7 @@ pub use runtime::{
 };
 pub use store::{ConfigPaths, ConfigStore};
 
-pub const STUDIO_CONFIG_SCHEMA_VERSION: u32 = 23;
+pub const STUDIO_CONFIG_SCHEMA_VERSION: u32 = 24;
 pub const STUDIO_CONFIG_DIR_NAME: &str = ".anywork";
 pub const STUDIO_CONFIG_FILE_NAME: &str = "config.toml";
 
@@ -225,6 +225,8 @@ pub struct StudioConfig {
     pub schema_version: u32,
     pub models: AgentModelConfig,
     #[serde(default)]
+    pub delegation: pl_protocol::DelegationSettings,
+    #[serde(default)]
     pub mode_model_routes: BTreeMap<ThreadModeId, ModelRouteConfig>,
     /// Rust 内置 Agent 只能在这里禁用；其余字段不可覆盖，也不存在删除语义。
     #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
@@ -274,6 +276,7 @@ impl StudioConfig {
 
         Ok(Self {
             schema_version: STUDIO_CONFIG_SCHEMA_VERSION,
+            delegation: pl_protocol::DelegationSettings::default(),
             models: AgentModelConfig {
                 accounts: BTreeMap::from([(account_id, account)]),
                 routes,

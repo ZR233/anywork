@@ -9,6 +9,41 @@ use pl_core::{
 use sea_orm::{ConnectionTrait, TransactionTrait};
 
 impl HistoryStore {
+    /// Reads canonical recovery facts and the latest admitted Turn in one strictly read-only
+    /// snapshot, even if a timeline observer still retains this owner's initialized writer.
+    pub(crate) async fn read_only_checkpoint_with_latest_turn(
+        &self,
+    ) -> Result<Option<(ThreadCheckpoint, Option<pl_protocol::Turn>)>> {
+        let connection = {
+            let _initializing = self.state.init.read().await;
+            self.read_only_connection().await?
+        };
+        let Some(connection) = connection else {
+            return Ok(None);
+        };
+        let tx = connection.db.begin().await?;
+        // A shared read-only connection can predate an explicit writer upgrade. Validate the
+        // current transaction's identity/schema, not a cached version or the writer fast path.
+        let (database_id, schema_version) =
+            super::validate_existing(&tx, &self.state.thread_id).await?;
+        ensure!(
+            database_id == connection.database_id,
+            "canonical history identity changed"
+        );
+        let result = if schema_version < 5 {
+            None
+        } else if let Some(checkpoint) = read(&tx, &self.state.thread_id).await? {
+            let turn =
+                super::read_latest_turn_at(&tx, &self.state.thread_id, checkpoint.history_fence)
+                    .await?;
+            Some((checkpoint, turn))
+        } else {
+            None
+        };
+        tx.commit().await?;
+        Ok(result)
+    }
+
     /// Reads one consistent checkpoint/context/history generation without creating a database.
     pub(crate) async fn checkpoint(&self) -> Result<Option<ThreadCheckpoint>> {
         let Some(connection) = self.reader().await? else {

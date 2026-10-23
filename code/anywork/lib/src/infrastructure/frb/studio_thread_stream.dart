@@ -289,6 +289,13 @@ StudioThread _threadFromFrb(frb.BridgeThread value) {
     projectId: value.projectId,
     title: value.title,
     mode: ThreadModeId.fromId(value.mode),
+    delegationMode: _delegationModeFromFrb(value.delegationMode),
+    delegationPreference: _delegationPreferenceFromFrb(
+      value.delegationPreference,
+    ),
+    frozenModel: value.frozenModel == null
+        ? null
+        : _savedRouteFromFrb(value.frozenModel!),
     workspaceMode: ThreadWorkspaceMode.fromId(value.workspaceMode),
     workspacePath: value.workspacePath,
     createdAt: _dateFromUnix(value.createdAt),

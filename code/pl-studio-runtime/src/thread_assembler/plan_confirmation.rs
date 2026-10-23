@@ -23,6 +23,8 @@ use std::{collections::BTreeMap, sync::Arc};
 pub enum PlanInteractionError {
     #[error(transparent)]
     Key(#[from] super::InteractionKeyError),
+    #[error("Plan continuation model is unavailable")]
+    Admission(#[from] super::ThreadAssemblyError),
     #[error("unsupported Plan interaction payload {format} version {version}")]
     Unsupported { format: String, version: u32 },
     #[error("Plan interaction payload is invalid")]
@@ -268,6 +270,7 @@ impl StudioThreadAssembler {
             return Err(PlanInteractionError::Identity);
         }
         resolution.interaction_id = local_id.to_owned();
+        let _operation = self.agent_operation(thread_id).await;
         let (thread, execution) = {
             self.0
                 .state()
@@ -294,6 +297,7 @@ impl StudioThreadAssembler {
             .get(PLAN_EXTENSION)
             .ok_or(PlanInteractionError::Identity)?;
         let prepared = prepare_resolution(thread_id, current, saved_plan, &resolution)?;
+        self.prepare_input_admission(thread_id, &thread).await?;
         let committed = thread.resolve_interaction(prepared).await?;
         thread.resume_inputs(execution).await?;
         project_plan_confirmation(thread_id, &committed)

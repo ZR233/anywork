@@ -146,6 +146,43 @@ pub(crate) fn profile_route(
     })
 }
 
+/// Structural placeholder for history-only restoration. It is never installed as an executable
+/// model and is never a directory/query identity; saved selectors/Profile remain authoritative.
+/// In particular, withdrawal must not re-import an identically named bundled model.
+pub(crate) fn unavailable_placeholder(
+    config: &crate::StudioConfig,
+    role: pl_model::config::AgentRoleId,
+    selector: &ModelRouteConfig,
+) -> Result<pl_model::config::ResolvedModelRoute> {
+    let account = config
+        .models
+        .accounts
+        .get(&selector.account_id)
+        .context("saved route account is missing")?;
+    let entry = account
+        .effective_catalog(None)?
+        .into_iter()
+        .find(|entry| entry.model.model_id == selector.model_id);
+    let (model, context) = match entry {
+        Some(entry) => (entry.model, entry.context),
+        None => {
+            let model = pl_model::model::ModelInfo::compatible(&selector.model_id);
+            let context = model.resolve_context(None);
+            (model, context)
+        }
+    };
+    let effort = model.default_effort().map(ReasoningEffort::new);
+    Ok(pl_model::config::ResolvedModelRoute {
+        pricing_mode: account.pricing_mode,
+        role,
+        account_id: selector.account_id.clone(),
+        endpoint: account.to_endpoint()?,
+        model,
+        context,
+        effort,
+    })
+}
+
 pub(crate) fn route_record(
     state: &ThreadSnapshot,
     child: bool,
@@ -163,6 +200,49 @@ pub(crate) fn route_record(
         };
         Ok(Some((record, decode(&record.payload)?)))
     }
+}
+
+/// Availability describes next admission, not whether an old in-flight session is still resident.
+/// This never changes the saved selector or tears down a running model.
+pub(crate) fn annotate_availability(
+    runtime: &mut pl_protocol::ThreadRuntimeSnapshot,
+    thread: &pl_protocol::Thread,
+    config: &crate::StudioConfig,
+) -> Result<()> {
+    let Some(route) = runtime.model_route.as_mut() else {
+        return Ok(());
+    };
+    let selector = ModelRouteConfig {
+        account_id: AccountId::new(route.account_id.clone())?,
+        model_id: route.model_id.clone(),
+        effort: route.effort.clone().map(ReasoningEffort::new),
+    };
+    let resolved = if thread.parent_thread_id.is_some() {
+        crate::studio::delegation::resolve_child_selection(
+            config,
+            pl_model::config::AgentRoleId::new(thread.role.clone())?,
+            &selector,
+        )
+    } else {
+        config
+            .models
+            .resolve_route(crate::StudioRole::Planner.id(), &selector)
+            .and_then(|route| {
+                crate::studio::delegation::validate_credential(&route)?;
+                Ok(route)
+            })
+    };
+    match resolved {
+        Ok(_) => {
+            route.available = true;
+            route.unavailable_reason = None;
+        }
+        Err(error) => {
+            route.available = false;
+            route.unavailable_reason = Some(error.to_string());
+        }
+    }
+    Ok(())
 }
 
 /// 把模型接入相关的旧版本扩展表示升级为当前编码版本。

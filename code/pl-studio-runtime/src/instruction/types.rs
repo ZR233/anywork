@@ -36,6 +36,7 @@ pub struct InstructionAssemblyRequest<'a> {
     pub workspace_documents: Option<&'a WorkspaceInstructions>,
     pub workspace_instructions: Option<&'a str>,
     pub subagent_constraint: Option<&'a str>,
+    pub delegation_preference: Option<&'a str>,
     pub skill_suggestions: Option<SkillSuggestionRequest<'a>>,
     /// Runtime facts for the command execution target. When absent, the local
     /// resolver is used; no login-shell environment variable is consulted.
@@ -99,6 +100,7 @@ pub enum InstructionSourceKind {
     AgentDefinition,
     /// 由当前 Mode 提供的执行方式指令。
     ModeDefinition,
+    DelegationPreference,
     Platform,
     ConfigDeveloper,
     /// 历史快照中的 Profile 上下文档来源；当前没有生产者。

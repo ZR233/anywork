@@ -41,6 +41,10 @@ pub mod thread {
         pub workspace_path: String,
         /// 服务端最近一次成功受理用户消息的时间；NULL 表示尚未有已受理用户消息。
         pub last_user_message_at: Option<i64>,
+        pub delegation_mode: String,
+        pub delegation_preference: String,
+        pub frozen_model_json: Option<String>,
+        pub explicitly_closed: i32,
     }
 
     #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

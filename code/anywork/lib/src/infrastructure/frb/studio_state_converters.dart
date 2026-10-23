@@ -100,6 +100,7 @@ SettingsStateSnapshot _settingsStateFromFrb(
     instructions: data.instructions,
     skills: data.skills,
     general: data.general,
+    delegation: data.delegation,
     webSearch: data.webSearch,
     deepSeekWebSearch: data.deepSeekWebSearch,
     permissionMode: data.permissionMode,
@@ -130,6 +131,10 @@ SettingsStateData _settingsDataFromFrb(
     instructions: _instructionsSettingsFromFrb(settings.instructions),
     skills: _skillsSettingsFromFrb(settings.skills),
     general: _generalSettingsFromFrb(settings.general),
+    delegation: DelegationSettingsView(
+      mode: _delegationModeFromFrb(settings.delegation.mode),
+      preference: _delegationPreferenceFromFrb(settings.delegation.preference),
+    ),
     webSearch: _webSearchFromFrb(settings.webSearch),
     deepSeekWebSearch: _deepSeekWebSearchFromFrb(settings.deepseekWebSearch),
     permissionMode: _permissionMode(settings.permissionMode),
