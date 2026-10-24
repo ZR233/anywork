@@ -1075,6 +1075,48 @@ class FrbStudioTransport implements StudioTransport, PersistenceQueueReader {
   }
 
   @override
+  Future<AcpInstallSnapshotView> readAcpInstallState() async {
+    await _ensureReady();
+    return _acpInstallSnapshotFromFrb(
+      await _bridgeCall(frb.readAcpInstallState),
+    );
+  }
+
+  @override
+  Future<AcpInstallCommandReply> startAcpInstall({
+    required OperationId operationId,
+    required AcpProviderView provider,
+  }) async {
+    await _ensureReady();
+    return _acpInstallReplyFromFrb(
+      await _bridgeCall(
+        () => frb.startAcpInstall(
+          operationId: operationId.value,
+          provider: _acpProviderToFrb(provider),
+        ),
+      ),
+    );
+  }
+
+  @override
+  Future<AcpInstallCommandReply> cancelAcpInstall({
+    required OperationId operationId,
+    required AcpProviderView provider,
+    required OperationId targetOperationId,
+  }) async {
+    await _ensureReady();
+    return _acpInstallReplyFromFrb(
+      await _bridgeCall(
+        () => frb.cancelAcpInstall(
+          operationId: operationId.value,
+          provider: _acpProviderToFrb(provider),
+          targetOperationId: targetOperationId.value,
+        ),
+      ),
+    );
+  }
+
+  @override
   Future<AgentProfilesStateView> readAgentProfilesState() async {
     await _ensureReady();
     return _agentProfilesStateFromFrb(

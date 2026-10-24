@@ -3090,16 +3090,22 @@ dependencies = [
  "flate2",
  "futures",
  "hex",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
  "prost",
  "reqwest",
+ "rustls",
  "serde",
  "serde_json",
  "sha2 0.11.1",
  "tempfile",
  "tokio",
+ "tokio-rustls",
  "tokio-tungstenite 0.30.0",
  "tokio-util",
  "url",
+ "zip",
 ]
 
 [[package]]
@@ -3207,6 +3213,7 @@ dependencies = [
  "pl-trace",
  "process-wrap",
  "prost",
+ "rawzip",
  "reqwest",
  "rust-embed",
  "schemars 1.2.3",
@@ -3689,6 +3696,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "rawzip"
+version = "0.5.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ac9999039f74cd73c03158cddfe4362991703c74efe5ce5c8073026f80a5e48c"
+
+[[package]]
 name = "redox_syscall"
 version = "0.5.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3755,6 +3768,7 @@ dependencies = [
  "base64 0.23.1",
  "bytes",
  "encoding_rs",
+ "futures-channel",
  "futures-core",
  "futures-util",
  "h2",

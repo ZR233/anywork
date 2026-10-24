@@ -145,6 +145,24 @@ abstract class StudioTransport
     required OperationId targetOperationId,
   });
 
+  /// 读取 `acpInstall` 领域当前 canonical 观察；不联网、不扫描、不启动下载。
+  Future<AcpInstallSnapshotView> readAcpInstallState();
+
+  /// 受理一次官方 server 准备；快速返回操作身份与 canonical 快照，不是完成。
+  ///
+  /// 同一 provider 同时最多一个操作；重复受理被拒绝，不创建第二个任务。
+  Future<AcpInstallCommandReply> startAcpInstall({
+    required OperationId operationId,
+    required AcpProviderView provider,
+  });
+
+  /// 取消当前准备操作；必须命中 canonical 观察给出的 operation 身份。
+  Future<AcpInstallCommandReply> cancelAcpInstall({
+    required OperationId operationId,
+    required AcpProviderView provider,
+    required OperationId targetOperationId,
+  });
+
   /// 配置级 Agent Profiles 的 canonical 资源快照（含 revision 与逐文件诊断）。
   Future<AgentProfilesStateView> readAgentProfilesState();
 

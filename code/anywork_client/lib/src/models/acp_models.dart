@@ -9,6 +9,7 @@ import 'command_receipts.dart';
 import 'collection_equality.dart';
 import 'collection_extensions.dart';
 import 'failure_models.dart';
+import 'acp_install_models.dart';
 
 /// 当前阶段支持的 ACP 接入协议。
 ///
@@ -31,15 +32,17 @@ enum AcpProviderView {
   }
 }
 
-/// 后端目录声明的接入模板（显示名、默认 argv、官方安装说明地址）。
+/// 后端目录声明的接入模板（显示名、固定受管版本、官方安装说明地址）。
 class AcpAccountTemplateView {
   const AcpAccountTemplateView({
     required this.provider,
     required this.displayName,
     this.description = '',
     this.iconKey = '',
-    this.defaultArgs = const [],
+    this.supportedVersion = '',
     this.installUrl = '',
+    this.termsUrl = '',
+    this.automaticInstall = const AcpInstallUnsupportedPlatformView(),
   });
 
   final AcpProviderView provider;
@@ -47,11 +50,24 @@ class AcpAccountTemplateView {
   final String description;
   final String iconKey;
 
-  /// 模板默认 argv；保存时随草稿一起提交，不会被 shell 解析。
-  final List<String> defaultArgs;
+  /// 产品固定的受管服务器版本（当前 1.4.1），由后端模板给出。
+  ///
+  /// 客户端不硬编码版本，也不允许用户选择：界面只展示这个权威值。
+  final String supportedVersion;
 
   /// 官方安装说明地址；只展示，不从进程输出推导。
   final String installUrl;
+
+  /// 官方服务条款地址；为空表示后端没有提供，界面因此不展示入口。
+  final String termsUrl;
+
+  /// 后端声明的自动准备资格与目标平台。
+  ///
+  /// 缺省是不支持：模板没声明时不能默认替用户启动下载。
+  final AcpInstallAvailabilityView automaticInstall;
+
+  /// 模板是否声明了自动准备资格。
+  bool get prefersAutomaticInstall => automaticInstall.isAvailable;
 
   @override
   bool operator ==(Object other) =>
@@ -61,8 +77,10 @@ class AcpAccountTemplateView {
           displayName == other.displayName &&
           description == other.description &&
           iconKey == other.iconKey &&
+          supportedVersion == other.supportedVersion &&
           installUrl == other.installUrl &&
-          listEquals(defaultArgs, other.defaultArgs);
+          termsUrl == other.termsUrl &&
+          automaticInstall == other.automaticInstall;
 
   @override
   int get hashCode => Object.hash(
@@ -70,8 +88,10 @@ class AcpAccountTemplateView {
     displayName,
     description,
     iconKey,
+    supportedVersion,
     installUrl,
-    Object.hashAll(defaultArgs),
+    termsUrl,
+    automaticInstall,
   );
 }
 
@@ -99,38 +119,31 @@ class AcpAccountCatalogView {
 
 /// 已保存的 ACP 接入配置。
 ///
-/// [connectionRevision] 是运行期拥有的连接身份（provider/program/args 的实际取值），
-/// 不是设置总修订；只有显示名变化不必让已观察结果失效。
+/// 只保存接入身份与显示名：受管服务器的 program/argv 由产品固定发行决定，不是
+/// 用户或客户端可编辑的配置。[connectionRevision] 是运行期拥有的连接身份，不是
+/// 设置总修订；name 变化不改它。
 class AcpAccountSettingsView {
   const AcpAccountSettingsView({
     required this.accountId,
     required this.name,
     required this.provider,
-    required this.program,
-    this.args = const [],
     this.connectionRevision = 0,
   });
 
   final String accountId;
   final String name;
   final AcpProviderView provider;
-  final String program;
-  final List<String> args;
   final int connectionRevision;
 
   AcpAccountSettingsView copyWith({
     String? name,
     AcpProviderView? provider,
-    String? program,
-    List<String>? args,
     int? connectionRevision,
   }) {
     return AcpAccountSettingsView(
       accountId: accountId,
       name: name ?? this.name,
       provider: provider ?? this.provider,
-      program: program ?? this.program,
-      args: args ?? this.args,
       connectionRevision: connectionRevision ?? this.connectionRevision,
     );
   }
@@ -142,36 +155,24 @@ class AcpAccountSettingsView {
           accountId == other.accountId &&
           name == other.name &&
           provider == other.provider &&
-          program == other.program &&
-          connectionRevision == other.connectionRevision &&
-          listEquals(args, other.args);
+          connectionRevision == other.connectionRevision;
 
   @override
-  int get hashCode => Object.hash(
-    accountId,
-    name,
-    provider,
-    program,
-    connectionRevision,
-    Object.hashAll(args),
-  );
+  int get hashCode =>
+      Object.hash(accountId, name, provider, connectionRevision);
 }
 
-/// 一次接入配置写入的完整意图（保存后由后端解析 connectionRevision）。
+/// 一次接入配置写入的意图（保存后由后端解析 connectionRevision）。
 class AcpAccountUpdateView {
   const AcpAccountUpdateView({
     required this.accountId,
     required this.name,
     required this.provider,
-    required this.program,
-    this.args = const [],
   });
 
   final String accountId;
   final String name;
   final AcpProviderView provider;
-  final String program;
-  final List<String> args;
 
   @override
   bool operator ==(Object other) =>
@@ -179,13 +180,10 @@ class AcpAccountUpdateView {
       other is AcpAccountUpdateView &&
           accountId == other.accountId &&
           name == other.name &&
-          provider == other.provider &&
-          program == other.program &&
-          listEquals(args, other.args);
+          provider == other.provider;
 
   @override
-  int get hashCode =>
-      Object.hash(accountId, name, provider, program, Object.hashAll(args));
+  int get hashCode => Object.hash(accountId, name, provider);
 }
 
 /// 服务端实际宣告的认证方法类别。
@@ -257,6 +255,17 @@ class AcpServerInfoView {
 
 /// 失败类别；恢复动作按类型决定，不解析原始字符串。
 enum AcpAuthFailureCodeView {
+  /// 本机没有可用的固定版本受管安装：需要用户显式执行准备。
+  preparationRequired,
+
+  /// 已存在的受管安装损坏或与固定描述符不一致。
+  installationInvalid,
+
+  /// 当前宿主平台没有官方受管发行。
+  unsupportedPlatform,
+
+  /// 受管服务器自报版本不是产品固定版本。
+  serverVersionMismatch,
   startup,
   missingExecutable,
   io,
@@ -277,6 +286,8 @@ enum AcpAuthFailureCodeView {
 
 /// 失败发生的阶段。
 enum AcpAuthStageView {
+  /// 后台安装验证（固定受管安装的存在性与一致性）。
+  prepare,
   initialize,
   authenticate,
   probe,
@@ -529,15 +540,15 @@ class AcpAuthAccountView {
 
   final String accountId;
 
-  /// 观察所属的连接身份（provider/program/args 的实际取值）。
+  /// 观察所属的连接代次：账号身份 + 产品固定受管发行共同决定，name 变化不改它。
   final int connectionRevision;
 
   final AcpAuthStateView state;
 
   /// 只有账号身份 **和** 连接身份同时匹配时才可用。
   ///
-  /// 只按 accountId 匹配会让旧 program/args（甚至删除后重建的同 ID 账号）套用旧
-  /// 观察结果；跨 topic 乱序时这会把已失效的 Verified 当成当前事实。
+  /// 只按 accountId 匹配会让删除后重建的同 ID 账号套用旧观察结果；跨 topic 乱序时
+  /// 这会把已失效的 Verified 当成当前事实。
   bool matches(String accountId, int connectionRevision) =>
       this.accountId == accountId &&
       this.connectionRevision == connectionRevision;

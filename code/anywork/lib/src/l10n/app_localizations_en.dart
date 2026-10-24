@@ -4425,39 +4425,6 @@ class AppLocalizationsEn extends AppLocalizations {
       'No API key needed — the official program handles sign-in.';
 
   @override
-  String get acpAccountProgramLabel => 'Server program';
-
-  @override
-  String get acpAccountProgramHint =>
-      'Absolute path to the official ACP server executable.';
-
-  @override
-  String get acpAccountProgramBrowse => 'Browse…';
-
-  @override
-  String get acpAccountProgramRequired =>
-      'Choose the official ACP server program first.';
-
-  @override
-  String get acpAccountProgramBrowseFailed => 'Could not open the file picker.';
-
-  @override
-  String get acpAccountArgsTitle => 'Advanced arguments';
-
-  @override
-  String get acpAccountArgsHelp =>
-      'Each entry is passed to the server as one argv item.';
-
-  @override
-  String get acpAccountArgsAdd => 'Add argument';
-
-  @override
-  String get acpAccountArgsEmpty => 'No extra arguments.';
-
-  @override
-  String get acpAccountArgsRemove => 'Remove argument';
-
-  @override
   String get acpAccountSaveAndConnect => 'Save and connect';
 
   @override
@@ -4624,9 +4591,6 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get acpAuthRowFailed => 'Connection failed';
-
-  @override
-  String get acpAuthPendingCommand => 'Sending…';
 
   @override
   String get acpAccountDetailsSummary =>
@@ -4814,4 +4778,228 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get settingsSshNextPage => 'Next page';
+
+  @override
+  String acpInstallUnsupportedPlatform(String version) {
+    return 'No official managed build of $version exists for this platform.';
+  }
+
+  @override
+  String get acpFailureStagePrepare => 'Preparing the managed server';
+
+  @override
+  String get acpFailureCodePreparationRequired =>
+      'The managed server is not prepared yet';
+
+  @override
+  String get acpFailureCodeInstallationInvalid =>
+      'The prepared server is incomplete or damaged';
+
+  @override
+  String get acpFailureCodeUnsupportedPlatform =>
+      'No official managed build for this platform';
+
+  @override
+  String get acpFailureCodeServerVersionMismatch =>
+      'The server version is not the supported one';
+
+  @override
+  String get acpInstallFactVersion => 'Version';
+
+  @override
+  String get acpInstallFactTarget => 'Platform';
+
+  @override
+  String get acpInstallFactStage => 'Stage';
+
+  @override
+  String get acpInstallFactRetries => 'Automatic retries';
+
+  @override
+  String acpInstallRetryValue(int count) {
+    String _temp0 = intl.Intl.pluralLogic(
+      count,
+      locale: localeName,
+      other: '$count times',
+      zero: 'None',
+    );
+    return '$_temp0';
+  }
+
+  @override
+  String acpInstallProgressDownloaded(String done, String total) {
+    return '$done of $total downloaded';
+  }
+
+  @override
+  String acpInstallProgressUnknown(String done) {
+    return '$done downloaded, total unknown';
+  }
+
+  @override
+  String acpInstallProgressVerified(String done, String total) {
+    return '$done of $total verified';
+  }
+
+  @override
+  String acpInstallProgressVerifiedUnknown(String done) {
+    return '$done verified, total unknown';
+  }
+
+  @override
+  String acpInstallProgressExtracted(String done, String total) {
+    return '$done of $total extracted';
+  }
+
+  @override
+  String acpInstallProgressExtractedUnknown(String done) {
+    return '$done extracted, total unknown';
+  }
+
+  @override
+  String acpInstallProgressProcessed(String done, String total) {
+    return '$done of $total processed';
+  }
+
+  @override
+  String acpInstallProgressProcessedUnknown(String done) {
+    return '$done processed, total unknown';
+  }
+
+  @override
+  String acpInstallProgressPercent(int percent) {
+    return '$percent%';
+  }
+
+  @override
+  String acpInstallSpeed(String speed) {
+    return '$speed/s';
+  }
+
+  @override
+  String get acpInstallStageResolve => 'Reading the official manifest';
+
+  @override
+  String get acpInstallStageWaitForLock => 'Waiting for the install lock';
+
+  @override
+  String get acpInstallStageDownload => 'Downloading package';
+
+  @override
+  String get acpInstallStageVerify => 'Verifying package';
+
+  @override
+  String get acpInstallStageExtract => 'Extracting files';
+
+  @override
+  String get acpInstallStagePublish => 'Publishing installation';
+
+  @override
+  String get acpInstallStageClose => 'Closing download';
+
+  @override
+  String get acpInstallStart => 'Download and prepare';
+
+  @override
+  String get acpInstallRestart => 'Prepare again';
+
+  @override
+  String get acpInstallCancel => 'Cancel download';
+
+  @override
+  String get acpInstallCancelling => 'Cancelling…';
+
+  @override
+  String get acpInstallCancelSharedHint =>
+      'Preparing is shared: cancelling stops this preparation and leaves saved accounts untouched.';
+
+  @override
+  String get acpInstallUsePrepared => 'Use prepared server';
+
+  @override
+  String acpInstallUsePreparedHint(String version, String target) {
+    return 'An existing prepared $version ($target) can be claimed for this account.';
+  }
+
+  @override
+  String get acpInstallReadyTitle => 'Server ready';
+
+  @override
+  String get acpInstallReadyBody =>
+      'Preparing never saves an account or signs in.';
+
+  @override
+  String get acpInstallReusedBadge => 'Reused existing installation';
+
+  @override
+  String get acpInstallFailureRetry => 'Retry preparation';
+
+  @override
+  String get acpInstallTrustOfficialHttps =>
+      'Trust boundary: official HTTPS source, no publisher checksum provided.';
+
+  @override
+  String get acpInstallPendingAdmission => 'Accepting the preparation request…';
+
+  @override
+  String acpInstallCommandFailed(String reason) {
+    return 'The request was not accepted. $reason';
+  }
+
+  @override
+  String acpInstallFailureSummary(String reason, String stage) {
+    return '$reason ($stage)';
+  }
+
+  @override
+  String get acpInstallFailureCodeUnsupportedPlatform =>
+      'This platform is not supported';
+
+  @override
+  String get acpInstallFailureCodeSourceRejected => 'Source rejected';
+
+  @override
+  String get acpInstallFailureCodeNetwork => 'Network error';
+
+  @override
+  String get acpInstallFailureCodeTimeout => 'Timed out';
+
+  @override
+  String get acpInstallFailureCodeTooLarge => 'Package exceeds the limit';
+
+  @override
+  String get acpInstallFailureCodeChecksumMismatch => 'Checksum mismatch';
+
+  @override
+  String get acpInstallFailureCodeInvalidArchive => 'Invalid package';
+
+  @override
+  String get acpInstallFailureCodeMissingExecutable =>
+      'Server program missing in package';
+
+  @override
+  String get acpInstallFailureCodeCacheCorrupt =>
+      'Existing installation is corrupt';
+
+  @override
+  String get acpInstallFailureCodeIo => 'File system error';
+
+  @override
+  String get acpInstallFailureCodeBusy => 'Another preparation is running';
+
+  @override
+  String get acpInstallFailureCodeStaleOperation =>
+      'Preparation was superseded';
+
+  @override
+  String get acpInstallFailureCodeCancelled => 'Cancelled';
+
+  @override
+  String get acpInstallFailureCodeResourceClose => 'Cleanup failed';
+
+  @override
+  String get acpAccountTermsOpen => 'Terms of service';
+
+  @override
+  String get acpAccountTermsTitle => 'Official terms';
 }

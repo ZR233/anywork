@@ -134,6 +134,7 @@ StudioDriverFacts queryStudioDriverFacts(
     project: project,
     workspace: workspace,
     bots: _botsFacts(client),
+    acpInstall: _acpInstallFacts(client),
   );
 }
 
@@ -582,5 +583,61 @@ StudioDriverBotsFacts? _botsFacts(AnyworkClient client) {
       _ => null,
     },
     completedBotId: snapshot?.registration?.completedBotId,
+  );
+}
+
+/// `acpInstall` 的只读取证：阶段 token 由 typed 状态映射，不做字符串解析。
+///
+/// 未加载时返回 null（不能把空快照当成“未准备”的事实）；loaded 但 revision 0
+/// 仍然如实给出事实，Driver 需要的正是 rev0 也提交观察的证据。
+StudioDriverAcpInstallFacts? _acpInstallFacts(AnyworkClient client) {
+  final clock = client.acpInstall.state;
+  final snapshot = clock.value;
+  if (!clock.loaded && snapshot == null) return null;
+  String phase(AcpInstallStateView state) => switch (state) {
+    AcpInstallIdleState() => 'idle',
+    AcpResolvingState() => 'resolving',
+    AcpWaitingForAssetState() => 'waiting',
+    AcpDownloadingState() => 'downloading',
+    AcpInstallVerifyingState() => 'verifying',
+    AcpExtractingState() => 'extracting',
+    AcpPublishingState() => 'publishing',
+    AcpInstallClosingState() => 'closing',
+    AcpInstallReadyState() => 'ready',
+    AcpInstallCancellingState() => 'cancelling',
+    AcpInstallCancelledState() => 'cancelled',
+    AcpInstallFailedState() => 'failed',
+  };
+  String stage(AcpInstallStageView value) => value.name;
+  // 显式给出空集合的元素类型：`?? const []` 会把循环变量退化成 dynamic，
+  // 随后 `code.name` 这类 extension 成员会在运行期抛 NoSuchMethodError。
+  final installations =
+      snapshot?.installations ?? const <AcpInstallEntryView>[];
+  return StudioDriverAcpInstallFacts(
+    loaded: clock.loaded,
+    revision: snapshot?.revision ?? clock.revision,
+    installations: [
+      for (final entry in installations)
+        StudioDriverAcpInstallEntryFacts(
+          provider: entry.provider.wire,
+          phase: phase(entry.state),
+          operationId: entry.state.operationId,
+          stage: entry.state.stage == null ? null : stage(entry.state.stage!),
+          completedBytes: entry.state.progress?.completedBytes ?? 0,
+          totalBytes: entry.state.progress?.totalBytes,
+          bytesPerSecond: entry.state.progress?.effectiveBytesPerSecond,
+          retryCount: entry.state.retryCount,
+          version: entry.state.release?.version,
+          target: entry.state.release?.target,
+          archiveUrl: entry.state.release?.archiveUrl,
+          sha256: entry.state.release?.sha256,
+          hasPublisherChecksum:
+              entry.state.release?.hasPublisherChecksum ?? false,
+          program: entry.state.server?.program,
+          reused: entry.state.server?.reused ?? false,
+          failureCode: entry.state.failure?.code.name,
+          failureRetryable: entry.state.failure?.retryable,
+        ),
+    ],
   );
 }

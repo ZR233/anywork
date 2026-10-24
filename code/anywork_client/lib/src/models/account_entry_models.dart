@@ -27,9 +27,6 @@ sealed class AccountTemplateChoice {
 
   /// ACP 模板的协议身份；Native 模板不适用时为 null。
   AcpProviderView? get acpProvider;
-
-  /// ACP 模板默认 argv；Native 模板为空。
-  List<String> get defaultArgs;
 }
 
 /// Native 模型账号模板（HTTP 协议、模型目录、凭据语义）。
@@ -54,9 +51,6 @@ final class NativeAccountTemplateChoice extends AccountTemplateChoice {
 
   @override
   AcpProviderView? get acpProvider => null;
-
-  @override
-  List<String> get defaultArgs => const [];
 
   @override
   bool operator ==(Object other) =>
@@ -87,9 +81,6 @@ final class AcpAccountTemplateChoice extends AccountTemplateChoice {
 
   @override
   AcpProviderView get acpProvider => template.provider;
-
-  @override
-  List<String> get defaultArgs => template.defaultArgs;
 
   @override
   bool operator ==(Object other) =>
@@ -195,7 +186,8 @@ class AccountDirectoryView {
         for (final account in acpAccounts)
           AcpAccountEntryView(
             account: account,
-            // 认证观察只在连接身份也匹配时套用；旧 program/args 的结果视为未检查。
+            // 认证观察只在连接身份（accountId + connectionRevision）匹配时套用；
+            // 受管启动配置由产品固定发行决定，不是账号配置的一部分。
             auth: auth.stateOf(
               account.accountId,
               connectionRevision: account.connectionRevision,

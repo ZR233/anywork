@@ -1,4 +1,5 @@
 pub mod acp;
+pub mod acp_install;
 pub mod agent_profile;
 pub mod attachment;
 pub mod bots;
@@ -19,6 +20,7 @@ pub mod thread_stream;
 pub mod updater;
 
 pub use acp::*;
+pub use acp_install::*;
 pub use agent_profile::*;
 pub use attachment::*;
 pub use bots::*;

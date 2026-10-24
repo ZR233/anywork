@@ -188,6 +188,7 @@ fn topic_token(topic: &pl_studio_runtime::StudioProductTopic) -> &'static str {
         StudioProductTopic::ThreadModeCatalog => "threadModeCatalog",
         StudioProductTopic::AccountUsage => "accountUsage",
         StudioProductTopic::AcpAuth => "acpAuth",
+        StudioProductTopic::AcpInstall => "acpInstall",
         StudioProductTopic::ModelPerformance => "modelPerformance",
         StudioProductTopic::SessionCosts { .. } => "sessionCosts",
         StudioProductTopic::Updater => "updater",

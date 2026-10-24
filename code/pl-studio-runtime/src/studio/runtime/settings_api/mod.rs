@@ -16,6 +16,7 @@ use super::StudioRuntime;
 
 mod account_edit;
 mod acp;
+mod acp_install;
 mod view;
 
 use account_edit::invalid_settings_argument;

@@ -121,8 +121,6 @@ StudioBootstrap _bootstrap(_AcpTransport transport) => StudioBootstrap(
           accountId: accountId,
           name: accountId,
           provider: AcpProviderView.antigravity,
-          program: '/opt/antigravity/bin/server',
-          args: const ['--acp-stdio'],
           connectionRevision: transport.connectionRevision,
         ),
     ],

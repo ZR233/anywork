@@ -1,9 +1,9 @@
 use serde::{Deserialize, Serialize};
 
 use super::{
-    BridgeAccountUsageStateSnapshot, BridgeAcpAuthSnapshot, BridgeAgentDirectoryState,
-    BridgeBotsStateSnapshot, BridgeLspStateSnapshot, BridgeMcpStateSnapshot,
-    BridgeModelCatalogStateSnapshot, BridgeModelPerformanceSnapshot,
+    BridgeAccountUsageStateSnapshot, BridgeAcpAuthSnapshot, BridgeAcpInstallSnapshot,
+    BridgeAgentDirectoryState, BridgeBotsStateSnapshot, BridgeLspStateSnapshot,
+    BridgeMcpStateSnapshot, BridgeModelCatalogStateSnapshot, BridgeModelPerformanceSnapshot,
     BridgePersistenceStateSnapshot, BridgeProjectDirectoryState, BridgeRecoveryStateSnapshot,
     BridgeSettingsConfigStateSnapshot, BridgeSkillsStateSnapshot, BridgeThread,
     BridgeThreadModeCatalogSnapshot, BridgeUpdaterStateSnapshot,
@@ -37,6 +37,7 @@ pub enum BridgeProductEventPayload {
     ThreadModeCatalogChanged(BridgeThreadModeCatalogSnapshot),
     AccountUsageStateChanged(BridgeAccountUsageStateSnapshot),
     AcpAuthStateChanged(Box<BridgeAcpAuthSnapshot>),
+    AcpInstallStateChanged(Box<BridgeAcpInstallSnapshot>),
     ModelPerformanceStateChanged(BridgeModelPerformanceSnapshot),
     SessionCostsChanged(Box<super::response::BridgeSessionCostsState>),
     UpdaterStateChanged(BridgeUpdaterStateSnapshot),

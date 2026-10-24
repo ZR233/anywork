@@ -16,10 +16,16 @@ sha2 = { workspace = true }
 hex = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true }
-tokio-util = { workspace = true, features = ["compat"] }
+tokio-util = { workspace = true, features = ["compat", "rt"] }
 prost = { workspace = true }
 flate2 = { workspace = true }
 base64 = { workspace = true }
 url = { workspace = true }
 reqwest = { workspace = true }
+hyper = { workspace = true, features = ["server", "http1"] }
+hyper-util = { workspace = true }
+http-body-util = { workspace = true }
+rustls = { workspace = true }
+tokio-rustls = { workspace = true }
+zip = { workspace = true }
 tokio-tungstenite = { workspace = true }

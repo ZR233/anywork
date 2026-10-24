@@ -366,18 +366,6 @@ class AcpAccountListRow extends StatelessWidget {
                         ),
                       ],
                     ),
-                    const SizedBox(height: 4),
-                    Tooltip(
-                      message: account.program,
-                      child: Text(
-                        account.program,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: context.text.bodySmall?.copyWith(
-                          color: context.colors.onSurfaceVariant,
-                        ),
-                      ),
-                    ),
                     if (notice case final notice?) ...[
                       const SizedBox(height: 6),
                       Row(

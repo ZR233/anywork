@@ -4197,36 +4197,6 @@ class AppLocalizationsZh extends AppLocalizations {
   String get acpAccountNoApiKeyHint => '无需 API key，登录由官方程序完成。';
 
   @override
-  String get acpAccountProgramLabel => 'Server 程序';
-
-  @override
-  String get acpAccountProgramHint => '官方 ACP server 可执行文件的绝对路径。';
-
-  @override
-  String get acpAccountProgramBrowse => '选择…';
-
-  @override
-  String get acpAccountProgramRequired => '请先选择官方 ACP server 程序。';
-
-  @override
-  String get acpAccountProgramBrowseFailed => '无法打开文件选择器。';
-
-  @override
-  String get acpAccountArgsTitle => '高级参数';
-
-  @override
-  String get acpAccountArgsHelp => '每一项作为单个 argv 参数传给 server。';
-
-  @override
-  String get acpAccountArgsAdd => '添加参数';
-
-  @override
-  String get acpAccountArgsEmpty => '没有额外参数。';
-
-  @override
-  String get acpAccountArgsRemove => '移除参数';
-
-  @override
   String get acpAccountSaveAndConnect => '保存并连接';
 
   @override
@@ -4385,9 +4355,6 @@ class AppLocalizationsZh extends AppLocalizations {
 
   @override
   String get acpAuthRowFailed => '连接失败';
-
-  @override
-  String get acpAuthPendingCommand => '正在提交…';
 
   @override
   String get acpAccountDetailsSummary => '官方 ACP 接入，无需 API Key。';
@@ -4569,4 +4536,217 @@ class AppLocalizationsZh extends AppLocalizations {
 
   @override
   String get settingsSshNextPage => '下一页';
+
+  @override
+  String acpInstallUnsupportedPlatform(String version) {
+    return '此平台没有 $version 的官方受管发行。';
+  }
+
+  @override
+  String get acpFailureStagePrepare => '准备受管服务器';
+
+  @override
+  String get acpFailureCodePreparationRequired => '受管服务器尚未准备';
+
+  @override
+  String get acpFailureCodeInstallationInvalid => '已准备的服务器不完整或已损坏';
+
+  @override
+  String get acpFailureCodeUnsupportedPlatform => '此平台没有官方受管发行';
+
+  @override
+  String get acpFailureCodeServerVersionMismatch => '服务器版本不是受支持的版本';
+
+  @override
+  String get acpInstallFactVersion => '版本';
+
+  @override
+  String get acpInstallFactTarget => '平台';
+
+  @override
+  String get acpInstallFactStage => '阶段';
+
+  @override
+  String get acpInstallFactRetries => '自动重试';
+
+  @override
+  String acpInstallRetryValue(int count) {
+    String _temp0 = intl.Intl.pluralLogic(
+      count,
+      locale: localeName,
+      other: '已重试 $count 次',
+      zero: '没有重试',
+    );
+    return '$_temp0';
+  }
+
+  @override
+  String acpInstallProgressDownloaded(String done, String total) {
+    return '已下载 $done / $total';
+  }
+
+  @override
+  String acpInstallProgressUnknown(String done) {
+    return '已下载 $done，总量未知';
+  }
+
+  @override
+  String acpInstallProgressVerified(String done, String total) {
+    return '已校验 $done / $total';
+  }
+
+  @override
+  String acpInstallProgressVerifiedUnknown(String done) {
+    return '已校验 $done，总量未知';
+  }
+
+  @override
+  String acpInstallProgressExtracted(String done, String total) {
+    return '已解压 $done / $total';
+  }
+
+  @override
+  String acpInstallProgressExtractedUnknown(String done) {
+    return '已解压 $done，总量未知';
+  }
+
+  @override
+  String acpInstallProgressProcessed(String done, String total) {
+    return '已处理 $done / $total';
+  }
+
+  @override
+  String acpInstallProgressProcessedUnknown(String done) {
+    return '已处理 $done，总量未知';
+  }
+
+  @override
+  String acpInstallProgressPercent(int percent) {
+    return '$percent%';
+  }
+
+  @override
+  String acpInstallSpeed(String speed) {
+    return '$speed/秒';
+  }
+
+  @override
+  String get acpInstallStageResolve => '读取官方清单';
+
+  @override
+  String get acpInstallStageWaitForLock => '等待安装锁';
+
+  @override
+  String get acpInstallStageDownload => '下载安装包';
+
+  @override
+  String get acpInstallStageVerify => '校验安装包';
+
+  @override
+  String get acpInstallStageExtract => '解压文件';
+
+  @override
+  String get acpInstallStagePublish => '写入安装目录';
+
+  @override
+  String get acpInstallStageClose => '收束下载';
+
+  @override
+  String get acpInstallStart => '下载并准备';
+
+  @override
+  String get acpInstallRestart => '重新准备';
+
+  @override
+  String get acpInstallCancel => '取消下载';
+
+  @override
+  String get acpInstallCancelling => '正在取消…';
+
+  @override
+  String get acpInstallCancelSharedHint => '准备是共享操作：取消只中止当前准备，不影响已保存的账号。';
+
+  @override
+  String get acpInstallUsePrepared => '使用已准备的服务器';
+
+  @override
+  String acpInstallUsePreparedHint(String version, String target) {
+    return '可显式认领已准备好的 $version（$target）。';
+  }
+
+  @override
+  String get acpInstallReadyTitle => '服务器已就绪';
+
+  @override
+  String get acpInstallReadyBody => '准备不会保存账号，也不会登录。';
+
+  @override
+  String get acpInstallReusedBadge => '复用已安装版本';
+
+  @override
+  String get acpInstallFailureRetry => '重试准备';
+
+  @override
+  String get acpInstallTrustOfficialHttps => '信任边界：官方 HTTPS 来源，未提供发行方摘要。';
+
+  @override
+  String get acpInstallPendingAdmission => '正在受理准备请求…';
+
+  @override
+  String acpInstallCommandFailed(String reason) {
+    return '请求未被接受。$reason';
+  }
+
+  @override
+  String acpInstallFailureSummary(String reason, String stage) {
+    return '$reason（$stage）';
+  }
+
+  @override
+  String get acpInstallFailureCodeUnsupportedPlatform => '当前平台不受支持';
+
+  @override
+  String get acpInstallFailureCodeSourceRejected => '来源被拒绝';
+
+  @override
+  String get acpInstallFailureCodeNetwork => '网络错误';
+
+  @override
+  String get acpInstallFailureCodeTimeout => '超时';
+
+  @override
+  String get acpInstallFailureCodeTooLarge => '安装包超出上限';
+
+  @override
+  String get acpInstallFailureCodeChecksumMismatch => '摘要不一致';
+
+  @override
+  String get acpInstallFailureCodeInvalidArchive => '安装包无效';
+
+  @override
+  String get acpInstallFailureCodeMissingExecutable => '包内缺少 server 程序';
+
+  @override
+  String get acpInstallFailureCodeCacheCorrupt => '现有安装已损坏';
+
+  @override
+  String get acpInstallFailureCodeIo => '文件系统错误';
+
+  @override
+  String get acpInstallFailureCodeBusy => '另有准备操作正在进行';
+
+  @override
+  String get acpInstallFailureCodeStaleOperation => '准备操作已被取代';
+
+  @override
+  String get acpInstallFailureCodeCancelled => '已取消';
+
+  @override
+  String get acpInstallFailureCodeResourceClose => '清理失败';
+
+  @override
+  String get acpAccountTermsOpen => '服务条款';
+
+  @override
+  String get acpAccountTermsTitle => '官方条款';
 }

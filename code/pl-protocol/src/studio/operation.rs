@@ -46,6 +46,9 @@ pub enum StudioOperation {
     ReadAcpAuth,
     StartAcpAuth,
     CancelAcpAuth,
+    ReadAcpInstall,
+    StartAcpInstall,
+    CancelAcpInstall,
     ReadSkills,
     DiscoverSkills,
     SearchSkills,
@@ -78,7 +81,7 @@ pub enum StudioOperation {
 }
 
 impl StudioOperation {
-    pub const ALL: [Self; 68] = [
+    pub const ALL: [Self; 71] = [
         Self::ReadState,
         Self::OpenProject,
         Self::RenameProject,
@@ -118,6 +121,9 @@ impl StudioOperation {
         Self::ReadAcpAuth,
         Self::StartAcpAuth,
         Self::CancelAcpAuth,
+        Self::ReadAcpInstall,
+        Self::StartAcpInstall,
+        Self::CancelAcpInstall,
         Self::ReadSkills,
         Self::DiscoverSkills,
         Self::SearchSkills,
@@ -190,6 +196,9 @@ impl StudioOperation {
             Self::ReadAcpAuth => "acpAuth.read",
             Self::StartAcpAuth => "acpAuth.start",
             Self::CancelAcpAuth => "acpAuth.cancel",
+            Self::ReadAcpInstall => "acpInstall.read",
+            Self::StartAcpInstall => "acpInstall.start",
+            Self::CancelAcpInstall => "acpInstall.cancel",
             Self::ReadSkills => "skills.read",
             Self::DiscoverSkills => "skills.discover",
             Self::SearchSkills => "skills.search",

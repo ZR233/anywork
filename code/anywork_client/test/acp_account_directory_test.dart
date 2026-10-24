@@ -33,7 +33,7 @@ const _acpTemplate = AcpAccountTemplateView(
   displayName: 'Antigravity',
   description: 'Google Antigravity official ACP server',
   iconKey: 'antigravity',
-  defaultArgs: ['--acp'],
+  supportedVersion: '1.4.1',
   installUrl: 'https://example.invalid/antigravity',
 );
 
@@ -56,8 +56,6 @@ AcpAccountSettingsView _acpAccount(
   accountId: id,
   name: 'Antigravity',
   provider: provider,
-  program: '/opt/antigravity/bin/server',
-  args: const ['--acp'],
   connectionRevision: connectionRevision,
 );
 
@@ -97,7 +95,8 @@ void main() {
     expect(directory.templates.last.isAcp, isTrue);
     // ACP 模板的协议身份来自 backend catalog，不从显示名推断。
     expect(directory.templates.last.acpProvider, AcpProviderView.antigravity);
-    expect(directory.templates.last.defaultArgs, ['--acp']);
+    // 固定受管版本来自后端模板，不是客户端可编辑/可选择的字段。
+    expect(directory.acpEntries.single.template?.supportedVersion, '1.4.1');
     expect(directory.acpEntries.single.template, _acpTemplate);
     expect(directory.acpEntries.single.auth, isA<AcpVerifiedState>());
     expect(directory.nativeEntries.single.account.id, 'native-1');
@@ -136,7 +135,7 @@ void main() {
   });
 
   test('an observation from an older connection identity is not reused', () {
-    // 旧 program/args（甚至删除后重建的同 ID 账号）的观察不得套用到新配置。
+    // 旧 connectionRevision（甚至删除后重建的同 ID 账号）的观察不得套用到新配置。
     final auth = _auth(
       accounts: [
         const AcpAuthAccountView(

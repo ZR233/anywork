@@ -10,6 +10,14 @@ String acpAuthFailureCodeText(
   AppLocalizations l10n,
   AcpAuthFailureCodeView code,
 ) => switch (code) {
+  AcpAuthFailureCodeView.preparationRequired =>
+    l10n.acpFailureCodePreparationRequired,
+  AcpAuthFailureCodeView.installationInvalid =>
+    l10n.acpFailureCodeInstallationInvalid,
+  AcpAuthFailureCodeView.unsupportedPlatform =>
+    l10n.acpFailureCodeUnsupportedPlatform,
+  AcpAuthFailureCodeView.serverVersionMismatch =>
+    l10n.acpFailureCodeServerVersionMismatch,
   AcpAuthFailureCodeView.startup => l10n.acpFailureCodeStartup,
   AcpAuthFailureCodeView.missingExecutable =>
     l10n.acpFailureCodeMissingExecutable,
@@ -34,6 +42,7 @@ String acpAuthFailureCodeText(
 /// 认证阶段 → 本地化短语（用于拼进失败摘要）。
 String acpAuthFailureStageText(AppLocalizations l10n, AcpAuthStageView stage) =>
     switch (stage) {
+      AcpAuthStageView.prepare => l10n.acpFailureStagePrepare,
       AcpAuthStageView.process => l10n.acpFailureStageProcess,
       AcpAuthStageView.config => l10n.acpFailureStageConfig,
       AcpAuthStageView.initialize => l10n.acpFailureStageInitialize,
@@ -67,3 +76,53 @@ String studioFailureCodeText(
   StudioFailureCode.update => l10n.studioFailureCodeUpdate,
   StudioFailureCode.internal => l10n.studioFailureCodeInternal,
 };
+
+/// 准备阶段 → 本地化短语。下载 100% 仍然不是就绪，阶段名必须各自可读。
+String acpInstallStageText(AppLocalizations l10n, AcpInstallStageView stage) =>
+    switch (stage) {
+      AcpInstallStageView.resolve => l10n.acpInstallStageResolve,
+      AcpInstallStageView.waitForLock => l10n.acpInstallStageWaitForLock,
+      AcpInstallStageView.download => l10n.acpInstallStageDownload,
+      AcpInstallStageView.verify => l10n.acpInstallStageVerify,
+      AcpInstallStageView.extract => l10n.acpInstallStageExtract,
+      AcpInstallStageView.publish => l10n.acpInstallStagePublish,
+      AcpInstallStageView.close => l10n.acpInstallStageClose,
+    };
+
+/// 准备失败类别 → 本地化原因；不展示后端原始 message 以外的库错误。
+String acpInstallFailureCodeText(
+  AppLocalizations l10n,
+  AcpInstallFailureCodeView code,
+) => switch (code) {
+  AcpInstallFailureCodeView.unsupportedPlatform =>
+    l10n.acpInstallFailureCodeUnsupportedPlatform,
+  AcpInstallFailureCodeView.sourceRejected =>
+    l10n.acpInstallFailureCodeSourceRejected,
+  AcpInstallFailureCodeView.network => l10n.acpInstallFailureCodeNetwork,
+  AcpInstallFailureCodeView.timeout => l10n.acpInstallFailureCodeTimeout,
+  AcpInstallFailureCodeView.tooLarge => l10n.acpInstallFailureCodeTooLarge,
+  AcpInstallFailureCodeView.checksumMismatch =>
+    l10n.acpInstallFailureCodeChecksumMismatch,
+  AcpInstallFailureCodeView.invalidArchive =>
+    l10n.acpInstallFailureCodeInvalidArchive,
+  AcpInstallFailureCodeView.missingExecutable =>
+    l10n.acpInstallFailureCodeMissingExecutable,
+  AcpInstallFailureCodeView.cacheCorrupt =>
+    l10n.acpInstallFailureCodeCacheCorrupt,
+  AcpInstallFailureCodeView.io => l10n.acpInstallFailureCodeIo,
+  AcpInstallFailureCodeView.busy => l10n.acpInstallFailureCodeBusy,
+  AcpInstallFailureCodeView.staleOperation =>
+    l10n.acpInstallFailureCodeStaleOperation,
+  AcpInstallFailureCodeView.cancelled => l10n.acpInstallFailureCodeCancelled,
+  AcpInstallFailureCodeView.resourceClose =>
+    l10n.acpInstallFailureCodeResourceClose,
+};
+
+/// 准备失败的就地摘要：原因 + 阶段。
+String acpInstallFailureSummary(
+  AppLocalizations l10n,
+  AcpInstallFailureView failure,
+) => l10n.acpInstallFailureSummary(
+  acpInstallFailureCodeText(l10n, failure.code),
+  acpInstallStageText(l10n, failure.stage),
+);

@@ -138,6 +138,9 @@ impl StudioRuntime {
             StudioProductTopic::AcpAuth => {
                 StudioProductBaselineState::AcpAuth(Box::new(self.acp_auth.read_state()))
             }
+            StudioProductTopic::AcpInstall => {
+                StudioProductBaselineState::AcpInstall(Box::new(self.acp_install.read_state()))
+            }
             StudioProductTopic::ModelPerformance => StudioProductBaselineState::ModelPerformance(
                 Box::new(self.model_performance.snapshot().await),
             ),

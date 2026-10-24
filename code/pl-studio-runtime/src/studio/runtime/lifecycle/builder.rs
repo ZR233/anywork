@@ -71,6 +71,11 @@ impl StudioRuntime {
         // 安装 Settings 提交观察者并立即观察当前 canonical 快照；安装、首次观察与后续提交共用
         // 同一 Settings command 锁，因此不会有提交落在两者之间。
         acp_auth.install_settings_observer(&config_runtime)?;
+        // 官方 server 准备 owner 只持有独立快照与操作槽位；构造期不读取 registry、不写文件。
+        let acp_install = super::super::acp_install::AcpInstallRuntime::new(
+            store.clone(),
+            product_events.clone(),
+        );
         let updater = StudioUpdateRuntime::new(product_events.clone())?;
         let mcp_state = McpStateRuntime::new();
         let lsp_state = LspStateRuntime::new(product_events.clone());
@@ -172,6 +177,7 @@ impl StudioRuntime {
             thread_modes,
             account_usage,
             acp_auth,
+            acp_install,
             model_performance,
             updater,
             activation: Default::default(),

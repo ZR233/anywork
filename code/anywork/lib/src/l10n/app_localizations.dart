@@ -7932,66 +7932,6 @@ abstract class AppLocalizations {
   /// **'No API key needed — the official program handles sign-in.'**
   String get acpAccountNoApiKeyHint;
 
-  /// No description provided for @acpAccountProgramLabel.
-  ///
-  /// In en, this message translates to:
-  /// **'Server program'**
-  String get acpAccountProgramLabel;
-
-  /// No description provided for @acpAccountProgramHint.
-  ///
-  /// In en, this message translates to:
-  /// **'Absolute path to the official ACP server executable.'**
-  String get acpAccountProgramHint;
-
-  /// No description provided for @acpAccountProgramBrowse.
-  ///
-  /// In en, this message translates to:
-  /// **'Browse…'**
-  String get acpAccountProgramBrowse;
-
-  /// No description provided for @acpAccountProgramRequired.
-  ///
-  /// In en, this message translates to:
-  /// **'Choose the official ACP server program first.'**
-  String get acpAccountProgramRequired;
-
-  /// No description provided for @acpAccountProgramBrowseFailed.
-  ///
-  /// In en, this message translates to:
-  /// **'Could not open the file picker.'**
-  String get acpAccountProgramBrowseFailed;
-
-  /// No description provided for @acpAccountArgsTitle.
-  ///
-  /// In en, this message translates to:
-  /// **'Advanced arguments'**
-  String get acpAccountArgsTitle;
-
-  /// No description provided for @acpAccountArgsHelp.
-  ///
-  /// In en, this message translates to:
-  /// **'Each entry is passed to the server as one argv item.'**
-  String get acpAccountArgsHelp;
-
-  /// No description provided for @acpAccountArgsAdd.
-  ///
-  /// In en, this message translates to:
-  /// **'Add argument'**
-  String get acpAccountArgsAdd;
-
-  /// No description provided for @acpAccountArgsEmpty.
-  ///
-  /// In en, this message translates to:
-  /// **'No extra arguments.'**
-  String get acpAccountArgsEmpty;
-
-  /// No description provided for @acpAccountArgsRemove.
-  ///
-  /// In en, this message translates to:
-  /// **'Remove argument'**
-  String get acpAccountArgsRemove;
-
   /// No description provided for @acpAccountSaveAndConnect.
   ///
   /// In en, this message translates to:
@@ -8291,12 +8231,6 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Connection failed'**
   String get acpAuthRowFailed;
-
-  /// No description provided for @acpAuthPendingCommand.
-  ///
-  /// In en, this message translates to:
-  /// **'Sending…'**
-  String get acpAuthPendingCommand;
 
   /// No description provided for @acpAccountDetailsSummary.
   ///
@@ -8651,6 +8585,360 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Next page'**
   String get settingsSshNextPage;
+
+  /// No description provided for @acpInstallUnsupportedPlatform.
+  ///
+  /// In en, this message translates to:
+  /// **'No official managed build of {version} exists for this platform.'**
+  String acpInstallUnsupportedPlatform(String version);
+
+  /// No description provided for @acpFailureStagePrepare.
+  ///
+  /// In en, this message translates to:
+  /// **'Preparing the managed server'**
+  String get acpFailureStagePrepare;
+
+  /// No description provided for @acpFailureCodePreparationRequired.
+  ///
+  /// In en, this message translates to:
+  /// **'The managed server is not prepared yet'**
+  String get acpFailureCodePreparationRequired;
+
+  /// No description provided for @acpFailureCodeInstallationInvalid.
+  ///
+  /// In en, this message translates to:
+  /// **'The prepared server is incomplete or damaged'**
+  String get acpFailureCodeInstallationInvalid;
+
+  /// No description provided for @acpFailureCodeUnsupportedPlatform.
+  ///
+  /// In en, this message translates to:
+  /// **'No official managed build for this platform'**
+  String get acpFailureCodeUnsupportedPlatform;
+
+  /// No description provided for @acpFailureCodeServerVersionMismatch.
+  ///
+  /// In en, this message translates to:
+  /// **'The server version is not the supported one'**
+  String get acpFailureCodeServerVersionMismatch;
+
+  /// No description provided for @acpInstallFactVersion.
+  ///
+  /// In en, this message translates to:
+  /// **'Version'**
+  String get acpInstallFactVersion;
+
+  /// No description provided for @acpInstallFactTarget.
+  ///
+  /// In en, this message translates to:
+  /// **'Platform'**
+  String get acpInstallFactTarget;
+
+  /// No description provided for @acpInstallFactStage.
+  ///
+  /// In en, this message translates to:
+  /// **'Stage'**
+  String get acpInstallFactStage;
+
+  /// No description provided for @acpInstallFactRetries.
+  ///
+  /// In en, this message translates to:
+  /// **'Automatic retries'**
+  String get acpInstallFactRetries;
+
+  /// No description provided for @acpInstallRetryValue.
+  ///
+  /// In en, this message translates to:
+  /// **'{count, plural, =0{None} other{{count} times}}'**
+  String acpInstallRetryValue(int count);
+
+  /// No description provided for @acpInstallProgressDownloaded.
+  ///
+  /// In en, this message translates to:
+  /// **'{done} of {total} downloaded'**
+  String acpInstallProgressDownloaded(String done, String total);
+
+  /// No description provided for @acpInstallProgressUnknown.
+  ///
+  /// In en, this message translates to:
+  /// **'{done} downloaded, total unknown'**
+  String acpInstallProgressUnknown(String done);
+
+  /// No description provided for @acpInstallProgressVerified.
+  ///
+  /// In en, this message translates to:
+  /// **'{done} of {total} verified'**
+  String acpInstallProgressVerified(String done, String total);
+
+  /// No description provided for @acpInstallProgressVerifiedUnknown.
+  ///
+  /// In en, this message translates to:
+  /// **'{done} verified, total unknown'**
+  String acpInstallProgressVerifiedUnknown(String done);
+
+  /// No description provided for @acpInstallProgressExtracted.
+  ///
+  /// In en, this message translates to:
+  /// **'{done} of {total} extracted'**
+  String acpInstallProgressExtracted(String done, String total);
+
+  /// No description provided for @acpInstallProgressExtractedUnknown.
+  ///
+  /// In en, this message translates to:
+  /// **'{done} extracted, total unknown'**
+  String acpInstallProgressExtractedUnknown(String done);
+
+  /// No description provided for @acpInstallProgressProcessed.
+  ///
+  /// In en, this message translates to:
+  /// **'{done} of {total} processed'**
+  String acpInstallProgressProcessed(String done, String total);
+
+  /// No description provided for @acpInstallProgressProcessedUnknown.
+  ///
+  /// In en, this message translates to:
+  /// **'{done} processed, total unknown'**
+  String acpInstallProgressProcessedUnknown(String done);
+
+  /// No description provided for @acpInstallProgressPercent.
+  ///
+  /// In en, this message translates to:
+  /// **'{percent}%'**
+  String acpInstallProgressPercent(int percent);
+
+  /// No description provided for @acpInstallSpeed.
+  ///
+  /// In en, this message translates to:
+  /// **'{speed}/s'**
+  String acpInstallSpeed(String speed);
+
+  /// No description provided for @acpInstallStageResolve.
+  ///
+  /// In en, this message translates to:
+  /// **'Reading the official manifest'**
+  String get acpInstallStageResolve;
+
+  /// No description provided for @acpInstallStageWaitForLock.
+  ///
+  /// In en, this message translates to:
+  /// **'Waiting for the install lock'**
+  String get acpInstallStageWaitForLock;
+
+  /// No description provided for @acpInstallStageDownload.
+  ///
+  /// In en, this message translates to:
+  /// **'Downloading package'**
+  String get acpInstallStageDownload;
+
+  /// No description provided for @acpInstallStageVerify.
+  ///
+  /// In en, this message translates to:
+  /// **'Verifying package'**
+  String get acpInstallStageVerify;
+
+  /// No description provided for @acpInstallStageExtract.
+  ///
+  /// In en, this message translates to:
+  /// **'Extracting files'**
+  String get acpInstallStageExtract;
+
+  /// No description provided for @acpInstallStagePublish.
+  ///
+  /// In en, this message translates to:
+  /// **'Publishing installation'**
+  String get acpInstallStagePublish;
+
+  /// No description provided for @acpInstallStageClose.
+  ///
+  /// In en, this message translates to:
+  /// **'Closing download'**
+  String get acpInstallStageClose;
+
+  /// No description provided for @acpInstallStart.
+  ///
+  /// In en, this message translates to:
+  /// **'Download and prepare'**
+  String get acpInstallStart;
+
+  /// No description provided for @acpInstallRestart.
+  ///
+  /// In en, this message translates to:
+  /// **'Prepare again'**
+  String get acpInstallRestart;
+
+  /// No description provided for @acpInstallCancel.
+  ///
+  /// In en, this message translates to:
+  /// **'Cancel download'**
+  String get acpInstallCancel;
+
+  /// No description provided for @acpInstallCancelling.
+  ///
+  /// In en, this message translates to:
+  /// **'Cancelling…'**
+  String get acpInstallCancelling;
+
+  /// No description provided for @acpInstallCancelSharedHint.
+  ///
+  /// In en, this message translates to:
+  /// **'Preparing is shared: cancelling stops this preparation and leaves saved accounts untouched.'**
+  String get acpInstallCancelSharedHint;
+
+  /// No description provided for @acpInstallUsePrepared.
+  ///
+  /// In en, this message translates to:
+  /// **'Use prepared server'**
+  String get acpInstallUsePrepared;
+
+  /// No description provided for @acpInstallUsePreparedHint.
+  ///
+  /// In en, this message translates to:
+  /// **'An existing prepared {version} ({target}) can be claimed for this account.'**
+  String acpInstallUsePreparedHint(String version, String target);
+
+  /// No description provided for @acpInstallReadyTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Server ready'**
+  String get acpInstallReadyTitle;
+
+  /// No description provided for @acpInstallReadyBody.
+  ///
+  /// In en, this message translates to:
+  /// **'Preparing never saves an account or signs in.'**
+  String get acpInstallReadyBody;
+
+  /// No description provided for @acpInstallReusedBadge.
+  ///
+  /// In en, this message translates to:
+  /// **'Reused existing installation'**
+  String get acpInstallReusedBadge;
+
+  /// No description provided for @acpInstallFailureRetry.
+  ///
+  /// In en, this message translates to:
+  /// **'Retry preparation'**
+  String get acpInstallFailureRetry;
+
+  /// No description provided for @acpInstallTrustOfficialHttps.
+  ///
+  /// In en, this message translates to:
+  /// **'Trust boundary: official HTTPS source, no publisher checksum provided.'**
+  String get acpInstallTrustOfficialHttps;
+
+  /// No description provided for @acpInstallPendingAdmission.
+  ///
+  /// In en, this message translates to:
+  /// **'Accepting the preparation request…'**
+  String get acpInstallPendingAdmission;
+
+  /// No description provided for @acpInstallCommandFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'The request was not accepted. {reason}'**
+  String acpInstallCommandFailed(String reason);
+
+  /// No description provided for @acpInstallFailureSummary.
+  ///
+  /// In en, this message translates to:
+  /// **'{reason} ({stage})'**
+  String acpInstallFailureSummary(String reason, String stage);
+
+  /// No description provided for @acpInstallFailureCodeUnsupportedPlatform.
+  ///
+  /// In en, this message translates to:
+  /// **'This platform is not supported'**
+  String get acpInstallFailureCodeUnsupportedPlatform;
+
+  /// No description provided for @acpInstallFailureCodeSourceRejected.
+  ///
+  /// In en, this message translates to:
+  /// **'Source rejected'**
+  String get acpInstallFailureCodeSourceRejected;
+
+  /// No description provided for @acpInstallFailureCodeNetwork.
+  ///
+  /// In en, this message translates to:
+  /// **'Network error'**
+  String get acpInstallFailureCodeNetwork;
+
+  /// No description provided for @acpInstallFailureCodeTimeout.
+  ///
+  /// In en, this message translates to:
+  /// **'Timed out'**
+  String get acpInstallFailureCodeTimeout;
+
+  /// No description provided for @acpInstallFailureCodeTooLarge.
+  ///
+  /// In en, this message translates to:
+  /// **'Package exceeds the limit'**
+  String get acpInstallFailureCodeTooLarge;
+
+  /// No description provided for @acpInstallFailureCodeChecksumMismatch.
+  ///
+  /// In en, this message translates to:
+  /// **'Checksum mismatch'**
+  String get acpInstallFailureCodeChecksumMismatch;
+
+  /// No description provided for @acpInstallFailureCodeInvalidArchive.
+  ///
+  /// In en, this message translates to:
+  /// **'Invalid package'**
+  String get acpInstallFailureCodeInvalidArchive;
+
+  /// No description provided for @acpInstallFailureCodeMissingExecutable.
+  ///
+  /// In en, this message translates to:
+  /// **'Server program missing in package'**
+  String get acpInstallFailureCodeMissingExecutable;
+
+  /// No description provided for @acpInstallFailureCodeCacheCorrupt.
+  ///
+  /// In en, this message translates to:
+  /// **'Existing installation is corrupt'**
+  String get acpInstallFailureCodeCacheCorrupt;
+
+  /// No description provided for @acpInstallFailureCodeIo.
+  ///
+  /// In en, this message translates to:
+  /// **'File system error'**
+  String get acpInstallFailureCodeIo;
+
+  /// No description provided for @acpInstallFailureCodeBusy.
+  ///
+  /// In en, this message translates to:
+  /// **'Another preparation is running'**
+  String get acpInstallFailureCodeBusy;
+
+  /// No description provided for @acpInstallFailureCodeStaleOperation.
+  ///
+  /// In en, this message translates to:
+  /// **'Preparation was superseded'**
+  String get acpInstallFailureCodeStaleOperation;
+
+  /// No description provided for @acpInstallFailureCodeCancelled.
+  ///
+  /// In en, this message translates to:
+  /// **'Cancelled'**
+  String get acpInstallFailureCodeCancelled;
+
+  /// No description provided for @acpInstallFailureCodeResourceClose.
+  ///
+  /// In en, this message translates to:
+  /// **'Cleanup failed'**
+  String get acpInstallFailureCodeResourceClose;
+
+  /// No description provided for @acpAccountTermsOpen.
+  ///
+  /// In en, this message translates to:
+  /// **'Terms of service'**
+  String get acpAccountTermsOpen;
+
+  /// No description provided for @acpAccountTermsTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Official terms'**
+  String get acpAccountTermsTitle;
 }
 
 class _AppLocalizationsDelegate

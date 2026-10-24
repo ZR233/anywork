@@ -423,7 +423,8 @@ pub(super) fn rewrite_profile_document(text: &str) -> Result<String> {
         .map_err(|error| PureError::ConfigError(format!("could not encode Agent Profile: {error}")))
 }
 
-/// 主配置 22→23 的账号接入改写。
+/// 主配置迁移边界的账号接入改写：22→23 的 Provider/Preset → Account/Template 改写，以及
+/// 24→25 退役旧 ACP 接入的执行字段。
 pub(super) fn rewrite_account_document(
     text: &str,
     inline_tokens: &mut BTreeMap<String, String>,
@@ -502,9 +503,35 @@ pub(super) fn rewrite_account_document(
     {
         rewrite_route_table(mode_routes)?;
     }
+    retire_acp_execution_fields(&mut value)?;
     toml::to_string(&value).map_err(|error| {
         PureError::ConfigError(format!("could not encode migrated config: {error}"))
     })
+}
+
+/// 24→25：退役 ACP 接入的自定义执行字段。
+///
+/// 旧版本把 `program`/`args` 存在 `[acp.accounts.<id>]` 里；当前结构不再有这两个键，且
+/// `deny_unknown_fields`，因此必须在迁移边界显式丢弃，不能让它们静默留在现役配置里，也不能让
+/// 它们重新获得执行语义。只读取稳定 ID、`name` 与 `provider`，其余 ACP 之外的设置、Native 账号、
+/// 路由、Profile 与凭据关联全部原样保留；不删除安装目录，也不触发下载或认证。
+fn retire_acp_execution_fields(value: &mut toml::Value) -> Result<()> {
+    let Some(acp) = value.get_mut("acp").and_then(toml::Value::as_table_mut) else {
+        return Ok(());
+    };
+    let Some(accounts) = acp.get_mut("accounts").and_then(toml::Value::as_table_mut) else {
+        return Ok(());
+    };
+    for (account_id, account) in accounts.iter_mut() {
+        let Some(account) = account.as_table_mut() else {
+            return Err(PureError::ConfigError(format!(
+                "ACP account {account_id} is not a table; existing files preserved"
+            )));
+        };
+        account.remove("program");
+        account.remove("args");
+    }
+    Ok(())
 }
 
 fn rewrite_route_table(routes: &mut toml::Table) -> Result<()> {
@@ -709,8 +736,12 @@ effort = "high"
         }
     }
 
-    /// 与启动路径一致的候选准备：22→23 的账号接入改写。
-    fn migrate_fixture(fixture: &Fixture, write: ResourceWriter<'_>) -> Result<StudioConfig> {
+    /// 与启动路径一致的候选准备：先做迁移边界的文档改写，再走可恢复提交。
+    fn migrate_fixture_from(
+        fixture: &Fixture,
+        source_version: u32,
+        write: ResourceWriter<'_>,
+    ) -> Result<StudioConfig> {
         let original = fs::read(fixture.paths.config_file())?;
         let text = std::str::from_utf8(&original).unwrap();
         let mut inline_tokens = BTreeMap::new();
@@ -723,12 +754,16 @@ effort = "high"
             &fixture.credentials,
             MigrationSource {
                 original: &original,
-                source_version: LEGACY_ACCOUNT_SCHEMA,
+                source_version,
                 candidate: candidate.into_bytes(),
                 inline_tokens,
             },
             write,
         )
+    }
+
+    fn migrate_fixture(fixture: &Fixture, write: ResourceWriter<'_>) -> Result<StudioConfig> {
+        migrate_fixture_from(fixture, LEGACY_ACCOUNT_SCHEMA, write)
     }
 
     #[test]
@@ -800,8 +835,205 @@ effort = "high"
         // 操作目录在确认完成后清理；迁移备份与原字节仍在。
         assert!(!operation_dir(&fixture.paths).exists());
         let persisted = fs::read_to_string(fixture.paths.config_file()).unwrap();
-        assert!(persisted.contains("schema_version = 24"));
+        assert!(persisted.contains("schema_version = 25"));
         assert!(!persisted.contains("models.providers"));
+    }
+
+    /// schema 24 的 ACP 账号带旧 `program`/`args`；25 只保留 ID、名称与 provider。
+    /// schema 24 里被退役的 ACP 执行字段（旧版本原样写进配置）。
+    const LEGACY_ACP_BLOCK: &str = "\n[acp.accounts.antigravity-1]\n\
+             name = \"Antigravity 主账号\"\n\
+             provider = \"antigravity\"\n\
+             program = \"/opt/legacy/agy_acp_server.par\"\n\
+         args = [\"--uid=\"]\n";
+
+    /// 24→25 的公共基线：真实 22→25 迁移结果回标成 schema 24（两个版本只差 ACP 执行字段），
+    /// 复用既有 fixture/迁移工具，不另造框架。
+    struct Schema24Bases {
+        /// 保存临时目录，避免基线文件被提前删除。
+        _legacy: Fixture,
+        baseline: StudioConfig,
+        document: String,
+        profile: String,
+    }
+
+    fn schema_24_bases() -> Schema24Bases {
+        let legacy = make_fixture(LEGACY_CONFIG, Some(LEGACY_PROFILE));
+        let baseline = migrate_fixture(&legacy, &atomic_write).expect("schema 22 migrates");
+        let profile = fs::read(legacy.paths.agents_dir().join("verify.toml")).unwrap();
+        let persisted = fs::read_to_string(legacy.paths.config_file()).unwrap();
+        let current = format!("schema_version = {STUDIO_CONFIG_SCHEMA_VERSION}");
+        assert!(
+            persisted.contains(&current),
+            "migrated config carries the current schema version"
+        );
+        Schema24Bases {
+            _legacy: legacy,
+            baseline,
+            document: persisted.replace(&current, "schema_version = 24"),
+            profile: String::from_utf8(profile).expect("profile stays UTF-8"),
+        }
+    }
+
+    #[test]
+    fn schema_24_retires_acp_execution_fields_and_preserves_native_config() {
+        let bases = schema_24_bases();
+        // 同字节输入，只有是否带旧 ACP 执行字段的差别。
+        let plain = make_fixture(&bases.document, Some(bases.profile.as_str()));
+        let migrated_plain =
+            migrate_fixture_from(&plain, 24, &atomic_write).expect("schema 24 migrates");
+        let with_acp = make_fixture(
+            &format!("{}{LEGACY_ACP_BLOCK}", bases.document),
+            Some(bases.profile.as_str()),
+        );
+        with_acp
+            .credentials
+            .seed_legacy_provider("deepseek", "native-secret");
+        let migrated_acp =
+            migrate_fixture_from(&with_acp, 24, &atomic_write).expect("schema 24 migrates");
+
+        // ACP 接入保留稳定 ID、名称与 provider；执行字段退出当前结构。
+        assert_eq!(migrated_acp.acp.accounts.len(), 1);
+        let account = migrated_acp
+            .acp
+            .accounts
+            .get("antigravity-1")
+            .expect("ACP account keeps its id");
+        assert_eq!(account.name, "Antigravity 主账号");
+        assert_eq!(account.provider, crate::config::AcpProvider::Antigravity);
+        assert!(migrated_plain.acp.accounts.is_empty());
+
+        // 全部其它事实逐项相同：Native 账号（含 endpoint/模板/覆盖）、全部路由、模式路由、MCP/LSP/
+        // Skills/UI 等设置；退役 ACP 执行字段不改变其中任何一项。
+        let mut without_acp = migrated_acp.clone();
+        without_acp.acp = Default::default();
+        assert_eq!(without_acp, migrated_plain);
+        assert_eq!(migrated_acp.models, bases.baseline.models);
+        assert_eq!(
+            migrated_acp.mode_model_routes,
+            bases.baseline.mode_model_routes
+        );
+        assert_eq!(migrated_acp.skills, bases.baseline.skills);
+        assert_eq!(migrated_acp.mcp, bases.baseline.mcp);
+        assert_eq!(migrated_acp.lsp, bases.baseline.lsp);
+        assert_eq!(migrated_acp.ui, bases.baseline.ui);
+
+        // 显式列出账号/路由/模式路由集合，避免只靠整体相等掩盖"某类整体消失"。
+        let accounts: Vec<&str> = migrated_acp
+            .models
+            .accounts
+            .keys()
+            .map(pl_model::config::AccountId::as_str)
+            .collect();
+        assert_eq!(accounts, vec!["deepseek", "second"]);
+        let routes: Vec<&str> = migrated_acp
+            .models
+            .routes
+            .keys()
+            .map(pl_model::config::AgentRoleId::as_str)
+            .collect();
+        assert_eq!(
+            routes,
+            vec!["executor", "explorer", "reviewer", "worktree_executor"]
+        );
+        assert!(
+            migrated_acp
+                .mode_model_routes
+                .contains_key(&pl_protocol::ThreadModeId::simple())
+        );
+        assert!(
+            migrated_acp
+                .mode_model_routes
+                .contains_key(&pl_protocol::ThreadModeId::task())
+        );
+
+        // 凭据关联按原命名空间复制，旧项保持。
+        assert_eq!(
+            with_acp.credentials.load("deepseek").unwrap().as_deref(),
+            Some("native-secret")
+        );
+        assert_eq!(
+            with_acp.credentials.legacy_provider_secret("deepseek"),
+            Some("native-secret".to_string())
+        );
+
+        // Profile 在 24→25 不重排：字节完全保留。
+        assert_eq!(
+            fs::read(with_acp.paths.agents_dir().join("verify.toml")).unwrap(),
+            bases.profile.as_bytes()
+        );
+
+        let persisted = fs::read_to_string(with_acp.paths.config_file()).unwrap();
+        assert!(persisted.contains("schema_version = 25"));
+        assert!(persisted.contains("[acp.accounts.antigravity-1]"));
+        assert!(!persisted.contains("program ="));
+        assert!(!persisted.contains("--uid="));
+        assert!(!operation_dir(&with_acp.paths).exists());
+    }
+
+    #[test]
+    fn schema_24_startup_migration_keeps_original_backup_and_profile_bytes() {
+        let bases = schema_24_bases();
+        let original = format!("{}{LEGACY_ACP_BLOCK}", bases.document);
+        let fixture = make_fixture(&original, Some(bases.profile.as_str()));
+        // 真实启动路径：版本分派 → 数据保全迁移 → 原件备份 → 候选校验 → 逐个原子提交。
+        let migrated = crate::config::ConfigStore::new(fixture.paths.clone())
+            .load_for_startup()
+            .expect("schema 24 startup migration succeeds");
+
+        assert_eq!(migrated.schema_version, STUDIO_CONFIG_SCHEMA_VERSION);
+        // 全部 Native 账号/路由/模式路由保持。
+        assert_eq!(migrated.models, bases.baseline.models);
+        assert_eq!(migrated.mode_model_routes, bases.baseline.mode_model_routes);
+        // ACP 接入保留 ID/名称/provider，执行字段退役。
+        let account = migrated
+            .acp
+            .accounts
+            .get("antigravity-1")
+            .expect("ACP account keeps its id");
+        assert_eq!(account.name, "Antigravity 主账号");
+        assert_eq!(account.provider, crate::config::AcpProvider::Antigravity);
+        // Profile 原字节保留。
+        assert_eq!(
+            fs::read(fixture.paths.agents_dir().join("verify.toml")).unwrap(),
+            bases.profile.as_bytes()
+        );
+        // 备份保存的是**迁移前原件**，其中仍含已退役的 program/args。
+        let mut backups: Vec<std::path::PathBuf> = fs::read_dir(fixture.paths.config_dir())
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| {
+                        name.starts_with("config.toml.migrated.") && name.ends_with(".bak")
+                    })
+            })
+            .collect();
+        backups.sort();
+        assert_eq!(backups.len(), 1, "exactly one migration backup");
+        assert_eq!(fs::read(&backups[0]).unwrap(), original.as_bytes());
+        // 现役配置不再含旧执行字段。
+        let persisted = fs::read_to_string(fixture.paths.config_file()).unwrap();
+        assert!(persisted.contains("schema_version = 25"));
+        assert!(!persisted.contains("program ="));
+        assert!(!persisted.contains("--uid="));
+        assert!(!operation_dir(&fixture.paths).exists());
+    }
+
+    #[test]
+    fn current_schema_rejects_retired_acp_execution_fields() {
+        let bases = schema_24_bases();
+        let document = format!(
+            "{}{LEGACY_ACP_BLOCK}",
+            bases
+                .document
+                .replace("schema_version = 24", "schema_version = 25")
+        );
+        assert!(
+            crate::config::store::parse_migrated_config(document.as_bytes()).is_err(),
+            "current schema must not silently accept program/args"
+        );
     }
 
     #[test]

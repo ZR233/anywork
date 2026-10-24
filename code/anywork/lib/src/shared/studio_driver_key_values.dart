@@ -101,29 +101,14 @@ abstract final class StudioDriverKeyValues {
   ///
   /// 表单主操作沿用通用 `account-save`（同一“添加账号”入口的保存语义），取消沿用
   /// `account-cancel`；这里只登记 ACP 专有字段与按阶段的操作入口。
-  static const acpAccountProgram = 'acp-account-program';
-
-  /// 程序路径输入框本体（`SettingsTextEdit` 内部的 `TextFormField`）。
-  ///
-  /// 外层键用于点击/定位卡片字段；文本读取必须落在真实输入控件上，Driver 才能用
-  /// `getText` 核对实际文本，而不是等待光标动画停止。
-  static const acpAccountProgramInput = 'acp-account-program-input';
   static const acpAccountName = 'acp-account-name';
   static const acpAccountBack = 'acp-account-back';
   static const acpAccountRemove = 'acp-account-remove';
-  static const acpAccountProgramBrowse = 'acp-account-program-browse';
-  static const acpAccountArgs = 'acp-account-args';
 
-  /// 高级 argv 区域的**真实标题行**键，以及**仅供诊断**的内容体键。
-  ///
-  /// 展开态的唯一事实源是官方 `ExpansionTile` 公开的
-  /// `Expansible.controller.isExpanded`（既有 ToolProbe `observe` 读取）；
-  /// `acp-account-args-body` 只用于失败取证时的元素存在性，不能当作展开判据。
-  /// 点击只用标题行，不点整块区域（展开后中心会落到输入框或空白上）。
-  static const acpAccountArgsHeader = 'acp-account-args-header';
-  static const acpAccountArgsBody = 'acp-account-args-body';
-  static const acpAccountArgsAdd = 'acp-account-args-add';
   static const acpAccountInstallOpen = 'acp-account-install-open';
+
+  /// 官方服务条款入口；后端未提供 terms_url 时界面不渲染该键。
+  static const acpAccountTermsOpen = 'acp-account-terms-open';
   static const acpAccountAuthState = 'acp-account-auth-state';
 
   /// 详情页里默认折叠的「连接信息」（官方 `ExpansionTile`）稳定键。
@@ -133,10 +118,6 @@ abstract final class StudioDriverKeyValues {
   static const acpAccountLoginMethod = 'acp-account-login-method';
   static const acpAccountCancelAuth = 'acp-account-cancel-auth';
   static const acpAccountDone = 'acp-account-done';
-  static String acpAccountArg(int index) => 'acp-account-arg-$index';
-  static String acpAccountArgInput(int index) => 'acp-account-arg-$index-input';
-  static String acpAccountArgRemove(int index) =>
-      'acp-account-arg-remove-$index';
   static String acpAccountRow(String accountId) => 'acp-account-row-$accountId';
 
   /// 列表行内的命令失败摘要（按目标接入），与详情页的通知同一 typed 来源。
@@ -153,4 +134,24 @@ abstract final class StudioDriverKeyValues {
   /// `verifying`/`verified`/`cancelling`/`cancelled`/`failed`。
   static String acpAccountAuthPhase(String phase) =>
       'acp-account-auth-state-$phase';
+
+  /// ACP 官方 server 准备面板的稳定键。
+  ///
+  /// 主操作沿用 `acp-install-prepare`：空闲时是“下载并准备”，可重试失败后是
+  /// “重试准备”，Driver 只按当前 typed 阶段判断这一次点击的语义。
+  static const acpInstallPanel = 'acp-install-panel';
+  static const acpInstallPrepare = 'acp-install-prepare';
+  static const acpInstallCancel = 'acp-install-cancel';
+  static const acpInstallUsePrepared = 'acp-install-use-prepared';
+  static const acpInstallStage = 'acp-install-stage';
+  static const acpInstallProgress = 'acp-install-progress';
+  static const acpInstallProgressText = 'acp-install-progress-text';
+  static const acpInstallPercent = 'acp-install-percent';
+  static const acpInstallSpeed = 'acp-install-speed';
+  static const acpInstallRetryCount = 'acp-install-retry-count';
+  static const acpInstallVersion = 'acp-install-version';
+  static const acpInstallTarget = 'acp-install-target';
+  static const acpInstallFailure = 'acp-install-failure';
+  static const acpInstallReadyBadge = 'acp-install-ready';
+  static const acpInstallReusedBadge = 'acp-install-reused';
 }

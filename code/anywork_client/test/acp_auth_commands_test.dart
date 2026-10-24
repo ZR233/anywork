@@ -88,8 +88,6 @@ final class _AcpTransport implements StudioTransport {
         accountId: account.accountId,
         name: account.name,
         provider: account.provider,
-        program: account.program,
-        args: account.args,
         connectionRevision: 7,
       ),
     ];
@@ -212,8 +210,6 @@ const _update = AcpAccountUpdateView(
   accountId: 'acp-1',
   name: 'Antigravity',
   provider: AcpProviderView.antigravity,
-  program: '/opt/antigravity/bin/server',
-  args: ['--acp-stdio'],
 );
 
 void main() {
@@ -356,8 +352,9 @@ void main() {
       final client = _client(transport);
       await client.acpCommands.saveAndConnect(_update);
 
-      expect(transport.lastSaved?.program, '/opt/antigravity/bin/server');
-      expect(transport.lastSaved?.args, ['--acp-stdio']);
+      // 保存意图只带身份与显示名：受管 program/argv 由产品固定发行决定。
+      expect(transport.lastSaved?.accountId, 'acp-1');
+      expect(transport.lastSaved?.name, 'Antigravity');
       expect(transport.lastConnectionRevision, 7);
       expect(transport.lastAction, isA<AcpCheckActionView>());
       expect(
@@ -597,14 +594,12 @@ void main() {
               accountId: 'acp-1',
               name: 'A',
               provider: AcpProviderView.antigravity,
-              program: '/opt/antigravity/bin/server',
               connectionRevision: 5,
             ),
             AcpAccountSettingsView(
               accountId: 'acp-2',
               name: 'B',
               provider: AcpProviderView.antigravity,
-              program: '/opt/antigravity/bin/server',
               connectionRevision: 9,
             ),
           ],

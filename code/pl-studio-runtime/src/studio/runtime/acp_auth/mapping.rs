@@ -11,6 +11,7 @@ use pl_protocol::studio::{
     AcpAuthStage, AcpAuthState, AcpServerInfo, StudioError, StudioErrorCode,
 };
 
+use super::super::acp_install::PrepareFailure;
 use super::registry::AcpAuthInner;
 
 /// 类型化阶段失败（与 wire 形态一一对应）。
@@ -53,10 +54,16 @@ pub(super) fn acp_error(code: StudioErrorCode, message: &str, retryable: bool) -
 
 /// 认证失败类别到 Studio 错误码的穷尽映射。
 ///
-/// 命令阶段（例如程序路径不合法）需要立即失败时使用这里；运行期失败本身作为 typed 认证状态
+/// 命令阶段（例如认证方法 ID 为空）需要立即失败时使用这里；运行期失败本身作为 typed 认证状态
 /// 发布，不会被吞成 `Unchecked` 或成功。
 pub(crate) fn acp_failure_studio_error_code(code: AcpAuthFailureCode) -> StudioErrorCode {
     match code {
+        // 前置安装问题与宿主不支持都是需要先解决的本地前置条件，不是运行时故障。
+        AcpAuthFailureCode::PreparationRequired
+        | AcpAuthFailureCode::InstallationInvalid
+        | AcpAuthFailureCode::UnsupportedPlatform => StudioErrorCode::Conflict,
+        // server 回报的版本不是产品支持的发行版本，属于明确的协议前置不匹配。
+        AcpAuthFailureCode::ServerVersionMismatch => StudioErrorCode::Protocol,
         // 命令阶段被拒绝的两类输入是调用方参数问题；运行期同一类别仍以 typed 状态发布。
         AcpAuthFailureCode::MissingExecutable | AcpAuthFailureCode::UnsupportedMethod => {
             StudioErrorCode::InvalidArgument
@@ -75,6 +82,39 @@ pub(crate) fn acp_failure_studio_error_code(code: AcpAuthFailureCode) -> StudioE
         | AcpAuthFailureCode::ConfigChanged
         | AcpAuthFailureCode::Cleanup => StudioErrorCode::Conflict,
         AcpAuthFailureCode::Internal => StudioErrorCode::Internal,
+    }
+}
+
+/// 前置安装验证失败到类型化认证失败的映射（阶段固定为 `Prepare`）。
+///
+/// 这些类别只在后台 Prepare 阶段发布，不会把任意错误吞成 `Unchecked` 或成功。
+pub(super) fn prepare_failure(failure: PrepareFailure) -> AcpFailure {
+    match failure {
+        PrepareFailure::PreparationRequired => AcpFailure {
+            code: AcpAuthFailureCode::PreparationRequired,
+            stage: AcpAuthStage::Prepare,
+            retryable: true,
+        },
+        PrepareFailure::InstallationInvalid => AcpFailure {
+            code: AcpAuthFailureCode::InstallationInvalid,
+            stage: AcpAuthStage::Prepare,
+            retryable: true,
+        },
+        PrepareFailure::UnsupportedPlatform => AcpFailure {
+            code: AcpAuthFailureCode::UnsupportedPlatform,
+            stage: AcpAuthStage::Prepare,
+            retryable: false,
+        },
+        PrepareFailure::Io => AcpFailure {
+            code: AcpAuthFailureCode::Io,
+            stage: AcpAuthStage::Prepare,
+            retryable: true,
+        },
+        PrepareFailure::Cancelled => AcpFailure {
+            code: AcpAuthFailureCode::Cancelled,
+            stage: AcpAuthStage::Prepare,
+            retryable: true,
+        },
     }
 }
 
@@ -165,6 +205,10 @@ pub(super) fn map_auth_error(error: &pl_acp::auth::AuthError) -> AcpFailure {
         pl_acp::auth::AuthFailureKind::Transport => AcpAuthFailureCode::Transport,
         pl_acp::auth::AuthFailureKind::Protocol => AcpAuthFailureCode::Protocol,
         pl_acp::auth::AuthFailureKind::UnsupportedVersion => AcpAuthFailureCode::UnsupportedVersion,
+        // 产品固定发行版本核对失败：由协议客户端在 initialize 之后、任何探测会话与登录之前产生。
+        pl_acp::auth::AuthFailureKind::ServerVersionMismatch => {
+            AcpAuthFailureCode::ServerVersionMismatch
+        }
         pl_acp::auth::AuthFailureKind::UnsupportedMethod => AcpAuthFailureCode::UnsupportedMethod,
         pl_acp::auth::AuthFailureKind::Authentication => AcpAuthFailureCode::Authentication,
         pl_acp::auth::AuthFailureKind::Probe => AcpAuthFailureCode::Probe,
@@ -201,6 +245,10 @@ pub(super) fn map_auth_error(error: &pl_acp::auth::AuthError) -> AcpFailure {
 pub(super) fn canonical_failure_message(code: AcpAuthFailureCode, stage: AcpAuthStage) -> String {
     // 远端探测会话关闭失败与本地进程/管道收尾失败必须区分，不能互相冒充。
     let reason = match (code, stage) {
+        (AcpAuthFailureCode::PreparationRequired, _) => "官方 ACP server 尚未准备",
+        (AcpAuthFailureCode::InstallationInvalid, _) => "受管官方 ACP server 安装不合格",
+        (AcpAuthFailureCode::UnsupportedPlatform, _) => "当前平台没有产品支持的官方 ACP server",
+        (AcpAuthFailureCode::ServerVersionMismatch, _) => "server 版本与产品支持版本不一致",
         (AcpAuthFailureCode::Cleanup, AcpAuthStage::Close) => "无法确认远端探测会话关闭",
         (AcpAuthFailureCode::Cleanup, _) => "本地进程或管道未确认退出",
         (AcpAuthFailureCode::Startup, _) => "无法启动官方 ACP server",
@@ -220,6 +268,7 @@ pub(super) fn canonical_failure_message(code: AcpAuthFailureCode, stage: AcpAuth
         (AcpAuthFailureCode::Internal, _) => "内部状态不一致",
     };
     let step = match stage {
+        AcpAuthStage::Prepare => "安装验证",
         AcpAuthStage::Process => "启动",
         AcpAuthStage::Config => "配置",
         AcpAuthStage::Initialize => "连接协商",

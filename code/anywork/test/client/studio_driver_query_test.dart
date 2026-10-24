@@ -196,6 +196,106 @@ void main() {
     },
   );
 
+  test(
+    'Driver facts map typed acp install failures without dynamic dispatch',
+    () async {
+      final transport = _UnusedTransport();
+      final client = AnyworkClient(
+        transport: transport,
+        clientId: 'acp-install-facts',
+      );
+      addTearDown(
+        () => client.close(
+          deadline: DateTime.now().add(const Duration(seconds: 5)),
+        ),
+      );
+      final timeline = TimelineSessionOwner(client: client);
+      addTearDown(
+        () => timeline.close(
+          deadline: DateTime.now().add(const Duration(seconds: 5)),
+        ),
+      );
+
+      // Failed 是终态：状态层没有阶段，阶段事实由失败类别自己携带。
+      client.acpInstall.apply(
+        const AcpInstallSnapshotView(
+          revision: 7,
+          updatedAt: 1760000000,
+          installations: [
+            AcpInstallEntryView(
+              provider: AcpProviderView.antigravity,
+              state: AcpInstallFailedState(
+                operationId: 'op-failed',
+                failure: AcpInstallFailureView(
+                  code: AcpInstallFailureCodeView.checksumMismatch,
+                  stage: AcpInstallStageView.verify,
+                  message: 'checksum mismatch',
+                  retryable: true,
+                ),
+              ),
+            ),
+          ],
+        ),
+      );
+      final failed = queryStudioDriverFacts(client, timeline: timeline);
+      final failedInstall = failed.acpInstall!;
+      expect(failedInstall.loaded, isTrue);
+      expect(failedInstall.revision, 7);
+      final failedEntry = failedInstall.installations.single;
+      expect(failedEntry.provider, 'antigravity');
+      expect(failedEntry.phase, 'failed');
+      expect(failedEntry.operationId, 'op-failed');
+      expect(failedEntry.stage, isNull);
+      // 失败类别是 typed enum：投影必须静态解析，不能靠 dynamic 调扩展成员。
+      expect(failedEntry.failureCode, 'checksumMismatch');
+      expect(failedEntry.failureRetryable, isTrue);
+
+      // Closing 是收束阶段：带 cancelled 失败，阶段为 close，不能被 Ready 吞掉。
+      client.acpInstall.apply(
+        const AcpInstallSnapshotView(
+          revision: 8,
+          updatedAt: 1760000010,
+          installations: [
+            AcpInstallEntryView(
+              provider: AcpProviderView.antigravity,
+              state: AcpInstallClosingState(
+                operationId: 'op-closing',
+                failure: AcpInstallFailureView(
+                  code: AcpInstallFailureCodeView.cancelled,
+                  stage: AcpInstallStageView.download,
+                  message: 'cancelled by user',
+                  retryable: true,
+                ),
+              ),
+            ),
+          ],
+        ),
+      );
+      final closing = queryStudioDriverFacts(client, timeline: timeline);
+      final closingInstall = closing.acpInstall!;
+      expect(closingInstall.revision, 8);
+      final closingEntry = closingInstall.installations.single;
+      expect(closingEntry.phase, 'closing');
+      expect(closingEntry.stage, 'close');
+      expect(closingEntry.operationId, 'op-closing');
+      expect(closingEntry.failureCode, 'cancelled');
+      expect(closingEntry.failureRetryable, isTrue);
+
+      // 序列化后再核对一次：Driver 消费的是 JSON 里的真实 failure 事实。
+      final json =
+          jsonDecode(StudioDriverState.snapshotJson(observed: closing)) as Map;
+      final install = (json['settings'] as Map)['acpInstall'] as Map;
+      expect(install['loaded'], isTrue);
+      expect(install['revision'], 8);
+      final entry = (install['installations'] as List).single as Map;
+      expect(entry['phase'], 'closing');
+      expect(entry['stage'], 'close');
+      expect((entry['failure'] as Map)['code'], 'cancelled');
+      expect((entry['failure'] as Map)['retryable'], isTrue);
+      expect(transport.calls, 0, reason: '投影只读现有镜像，不建立业务 demand');
+    },
+  );
+
   test('timeline facts expose authoritative text channel and plan-confirmation bool', () async {
     final transport = _ScriptedTimelineTransport();
     final client = AnyworkClient(transport: transport, clientId: 'facts');

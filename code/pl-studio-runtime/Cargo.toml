@@ -32,6 +32,7 @@ toml = { workspace = true }
 futures = { workspace = true }
 reqwest = { workspace = true }
 downlowd = { workspace = true }
+rawzip = { workspace = true }
 base64 = { workspace = true }
 image = { workspace = true }
 thiserror = { workspace = true }

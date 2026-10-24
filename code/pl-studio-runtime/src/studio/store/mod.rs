@@ -161,6 +161,11 @@ impl StudioStore {
         self.paths.acp_probe_dir(account_id)
     }
 
+    /// 官方 ACP server 安装根；下载/staging/已发布安装共用同一产品路径入口。
+    pub(crate) fn acp_servers_root(&self) -> PathBuf {
+        self.paths.acp_servers_root()
+    }
+
     /// 每会话资源（工具持久化媒体等）根目录；与附件 blob 根同属一个会话目录。
     pub(crate) fn session_resources_dir(&self, thread_id: &str) -> anyhow::Result<PathBuf> {
         Ok(self.thread_storage_dir(thread_id)?.join("thread-resources"))

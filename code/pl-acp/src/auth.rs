@@ -67,8 +67,8 @@ pub struct AuthMethod {
 
 /// `initialize` 协商出的服务端身份。
 ///
-/// ACP v1 允许对端省略 `agentInfo`；此时认证终态里的 `server` 就是 `None`，`ServerInfo`
-/// 自身字段始终是真实观察值，本模块不用空串哨兵，也不用账号名冒充服务端身份。
+/// ACP v1 允许对端省略 `agentInfo`，但本认证入口会因无法核对宿主要求的版本而拒绝该响应。
+/// 字段始终是真实观察值，本模块不用空串哨兵，也不用账号名冒充服务端身份。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ServerInfo {
     /// 程序化名称。
@@ -94,8 +94,8 @@ pub enum AuthProgress {
 
 /// 一次认证命令的终态。
 ///
-/// `server` 是 `initialize` 实际观察到的身份：对端省略 `agentInfo`（ACP v1 允许）时为 `None`，
-/// 不使用空字符串哨兵，也不以接入配置中的账号名代替服务端身份。
+/// `server` 是 `initialize` 实际观察到且通过宿主要求的精确版本核对的身份，不使用空字符串
+/// 哨兵，也不以接入配置中的账号名代替。缺失 `agentInfo` 或版本不符时不会返回认证终态。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AuthOutcome {
     /// 服务端要求登录，附带其实际声明的方法。
@@ -115,6 +115,10 @@ pub enum AuthOutcome {
 /// 一次认证命令的输入。
 #[derive(Debug)]
 pub struct AuthRequest {
+    /// 宿主要求的服务端版本；在 `initialize` 后、任何认证或探测请求前按原字符串精确核对。
+    /// 缺失服务端身份或版本不相等都返回 [`AuthFailureKind::ServerVersionMismatch`]，不做
+    /// trim、语义化版本解析或显示名回退。
+    pub expected_server_version: String,
     /// 探测会话使用的绝对工作目录，由宿主提供接入专属空目录。
     pub probe_cwd: String,
     /// 要执行的命令。
@@ -134,6 +138,8 @@ pub enum AuthFailureKind {
     Protocol,
     /// 对端协商出本客户端不支持的协议版本。
     UnsupportedVersion,
+    /// 服务端身份缺失，或其版本与宿主要求的原字符串不相等；阶段固定为 [`AuthStage::Initialize`]。
+    ServerVersionMismatch,
     /// 请求的认证方法不存在、类型不符或本阶段未实现。
     UnsupportedMethod,
     /// 登录流程本身失败。
@@ -156,6 +162,7 @@ impl fmt::Display for AuthFailureKind {
             Self::Transport => "Transport",
             Self::Protocol => "Protocol",
             Self::UnsupportedVersion => "UnsupportedVersion",
+            Self::ServerVersionMismatch => "ServerVersionMismatch",
             Self::UnsupportedMethod => "UnsupportedMethod",
             Self::Authentication => "Authentication",
             Self::Probe => "Probe",
@@ -250,6 +257,14 @@ impl AuthError {
     /// 对端协商出本客户端尚未实现的协议版本。
     fn unsupported_version() -> Self {
         Self::new(AuthFailureKind::UnsupportedVersion, AuthStage::Initialize)
+    }
+
+    /// 服务端身份缺失或版本不符；不保留或展示对端提供的不可信版本文本。
+    fn server_version_mismatch() -> Self {
+        Self::new(
+            AuthFailureKind::ServerVersionMismatch,
+            AuthStage::Initialize,
+        )
     }
 
     /// 请求的方法不存在、类型不符或本阶段未实现；该失败在发送登录请求之前产生。
@@ -386,6 +401,9 @@ impl std::error::Error for RedactedRpcFailure {
 ///
 /// # Errors
 /// 返回 [`AuthError`]；类别与阶段分别由 [`AuthError::kind`] 与 [`AuthError::stage`] 表达。
+/// 服务端身份缺失或版本与 [`AuthRequest::expected_server_version`] 不精确相等时，前台协议
+/// 结果为 [`AuthFailureKind::ServerVersionMismatch`]@[`AuthStage::Initialize`]，不会发送
+/// `authenticate` 或 `session/new`；该失败仍须经过上述 SDK 收束。
 pub async fn run_authentication<W, R>(
     outgoing: W,
     incoming: R,

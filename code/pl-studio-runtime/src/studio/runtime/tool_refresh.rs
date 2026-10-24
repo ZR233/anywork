@@ -90,6 +90,7 @@ impl CatalogSources {
             | StudioProductEventKind::PersistenceQueueStateChanged(_)
             | StudioProductEventKind::AgentProfilesStateChanged(_)
             | StudioProductEventKind::AcpAuthStateChanged(_)
+            | StudioProductEventKind::AcpInstallStateChanged(_)
             | StudioProductEventKind::BotsStateChanged(_) => None,
         };
         if let Some((key, value)) = entry {

@@ -47,6 +47,24 @@ pub const ACP_AUTH_STARTED_MARKER: &str = "auth-started";
 /// 解除 `authentication: "wait"` 的控制标记。
 pub const ACP_AUTH_RELEASE_MARKER: &str = "auth-release";
 
+/// 成功握手时报出的 server 版本。
+///
+/// 产品要求实际 server 精确为固定 1.4.1；fixture 的默认身份必须与官方一致，
+/// 否则“成功”本身就成了产品策略的反例。
+pub const ACP_SERVER_VERSION: &str = crate::acp_install::fixed::SERVER_VERSION;
+
+/// 合成 server 身份。
+///
+/// 缺失 `serverInfo` 表示产品要求的固定 1.4.1 身份；显式给出空 `version` 表示
+/// 省略 agent 信息，用于“版本缺失”负例，不给产品增加任何开关。
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AcpFixtureServerInfo {
+    /// 报出的版本；`None` 表示 initialize 不带 agent 信息。
+    #[serde(default)]
+    pub version: Option<String>,
+}
+
 /// 单次运行最多追加的证据记录数，避免证据文件无界增长。
 const MAX_EVENT_RECORDS: usize = 512;
 /// 等待释放标记的轮询间隔；这是测试环境的控制点，不用于证明生产同步关系。
@@ -95,6 +113,9 @@ pub struct AcpFixtureBehavior {
     /// 是否模拟对端断线。
     #[serde(default)]
     pub disconnect: bool,
+    /// 合成 server 身份；缺失表示固定 1.4.1。
+    #[serde(default)]
+    pub server_info: Option<AcpFixtureServerInfo>,
 }
 
 /// 有界协议证据记录；只含方法名与 PID，不含用户内容或凭据。
@@ -273,20 +294,27 @@ pub async fn run_acp_stdio(options: AcpStdioOptions) -> Result<()> {
                         .map_err(|error| state_failure("failed to read behavior", error))?;
                     abort_if_disconnected(&state, &behavior, responder.method())?;
                     // 只协商 v1，并声明一个 agent 方法与会话关闭能力。
-                    responder.respond(
-                        InitializeResponse::new(ProtocolVersion::V1)
+                    let mut response = InitializeResponse::new(ProtocolVersion::V1)
                             .agent_capabilities(AgentCapabilities::new().session_capabilities(
                                 SessionCapabilities::new().close(SessionCloseCapabilities::new()),
                             ))
                             .auth_methods(vec![AuthMethod::Agent(
                                 AuthMethodAgent::new(ACP_AUTH_METHOD_ID, "Fixture login")
                                     .description("Synthetic Antigravity login flow"),
-                            )])
-                            .agent_info(
-                                Implementation::new("antigravity-fixture", env!("CARGO_PKG_VERSION"))
+                        )]);
+                    // 产品要求 server 版本精确为 1.4.1：默认报固定版本，显式负例
+                    // 可报别的版本或干脆省略 agent 信息。
+                    let version = match behavior.server_info.as_ref() {
+                        None => Some(ACP_SERVER_VERSION),
+                        Some(info) => info.version.as_deref(),
+                    };
+                    if let Some(version) = version {
+                        response = response.agent_info(
+                            Implementation::new("antigravity-fixture", version)
                                     .title("Antigravity fixture"),
-                            ),
-                    )
+                        );
+                    }
+                    responder.respond(response)
                 }
             },
             agent_client_protocol::on_receive_request!(),
@@ -456,4 +484,97 @@ fn fixture_failure(message: &'static str) -> RpcError {
 fn state_failure(context: &'static str, error: io::Error) -> RpcError {
     eprintln!("anywork ACP fixture: {context}: {error}");
     fixture_failure(context)
+}
+
+/// 包内合成控制的成员名：与 peer 打包时写入的成员是同一个名字。
+pub const ACP_PACKAGED_CONTROL_MEMBER: &str = crate::acp_install::fixed::AGENT_CONTROL_MEMBER;
+
+/// packaged 模式下读取的合成控制。
+///
+/// 只携带一条事实：安装树之外的合成 state 目录。行为、标记与证据都由该目录里的
+/// 文件控制，所以同一份安装字节可以反复用于不同负例，不需要重装。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AcpPackagedControl {
+    /// 绝对合成 state 目录。
+    pub state_dir: PathBuf,
+}
+
+/// 当前平台的官方包内入口名。
+pub fn official_program_name() -> &'static str {
+    if cfg!(windows) {
+        crate::acp_install::fixed::WINDOWS_PROGRAM_NAME
+    } else {
+        crate::acp_install::fixed::LINUX_PROGRAM_NAME
+    }
+}
+
+/// `name` 是否是当前平台的官方包内入口。
+///
+/// Windows 的文件名不区分大小写，Unix 区分：比较语义跟随平台，而不是统一放宽。
+pub fn is_official_program_name(name: &str) -> bool {
+    if cfg!(windows) {
+        name.eq_ignore_ascii_case(official_program_name())
+    } else {
+        name == official_program_name()
+    }
+}
+
+/// 校验 packaged 模式的 argv 正好是固定官方 argv。
+///
+/// 官方 1.4.1 清单写的是 `["--uid="]`：Linux 只接受这一个**空值**参数，`--uid=<id>`
+/// 这种带值形式也拒绝；Windows 不接受任何参数。其它参数组合（包括 `--version` 与
+/// fixture 自有 flag）一律失败，不提供“看见 fixture flags 就切换模式”的旁路。
+fn ensure_fixed_argv(argv: &[String]) -> Result<()> {
+    if cfg!(windows) {
+        ensure!(
+            argv.is_empty(),
+            "the packaged ACP agent accepts no arguments, got {argv:?}"
+        );
+        return Ok(());
+    }
+    ensure!(
+        argv.len() == 1 && argv[0] == "--uid=",
+        "the packaged ACP agent accepts exactly the fixed official argv `--uid=`, got {argv:?}"
+    );
+    Ok(())
+}
+
+/// 检测当前进程是否被产品以官方包内入口启动，并解析合成控制。
+///
+/// 返回 `None` 表示这是普通 fixture CLI：basename 不是官方入口时完全不改变原有命令
+/// 集合。识别为 packaged 后，argv 必须是固定官方 argv，否则直接失败。
+pub fn packaged_agent() -> Result<Option<AcpStdioOptions>> {
+    let exe = std::env::current_exe().context("failed to resolve the running program")?;
+    let name = exe
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or_default()
+        .to_owned();
+    if !is_official_program_name(&name) {
+        return Ok(None);
+    }
+    let argv: Vec<String> = std::env::args().skip(1).collect();
+    ensure_fixed_argv(&argv)?;
+    let control_path = exe.with_file_name(ACP_PACKAGED_CONTROL_MEMBER);
+    let bytes = fs::read(&control_path).with_context(|| {
+        format!(
+            "the packaged ACP agent carries no synthetic control member: {}",
+            control_path.display()
+        )
+    })?;
+    let control: AcpPackagedControl = serde_json::from_slice(&bytes).with_context(|| {
+        format!(
+            "invalid synthetic control member in the packaged agent: {}",
+            control_path.display()
+        )
+    })?;
+    ensure!(
+        control.state_dir.is_absolute(),
+        "the synthetic agent state directory must be absolute: {}",
+        control.state_dir.display()
+    );
+    Ok(Some(AcpStdioOptions {
+        state_dir: control.state_dir,
+    }))
 }

@@ -130,14 +130,22 @@ canonical account 构造目标模型的覆盖变更，保留其余模型、连�
 ### ACP 接入配置
 
 账号设置入口以 Native/Acp 类型化分支汇集两类接入。Native 的 `models.accounts`、路由与
-凭据合同不变；Studio 独立拥有 `acp.accounts`，每个稳定 ID 保存名称、接入类型、可执行
-程序路径和 argv 列表，不使用空 base URL 或空模型目录伪装 Native 账号。模板提供本平台的
-默认启动参数，保存参数不进行 shell 拼接。ACP 不进入 Native 默认账号或模型路由候选。
+凭据合同不变；Studio 独立拥有 `acp.accounts`，每个稳定 ID 只保存名称、接入类型，
+不使用空 base URL 或空模型目录伪装 Native 账号。Antigravity 仅运行产品固定的 1.4.1
+受管安装，program/argv 由安装与认证边界产生，不属于用户配置或保存请求。
+ACP 不进入 Native 默认账号或模型路由候选。
 
-配置版本转换显式为既有配置增加空 ACP 集合，保留账号 ID、路由、Profile、所有用户设置与
-凭据关联；沿用本章的备份、校验和原子提交，不通过默认配置重建绕过迁移。
+配置 schema 25 的转换链为更早配置保留或增加 ACP 集合；24→25 显式移除旧 ACP program/args，
+保留账号 ID、provider、名称、路由、Profile、所有无关设置与凭据关联。旧执行字段只在迁移
+边界解码，现役 schema 和 API 不保留兼容执行入口；沿用本章的备份、校验和原子提交，不
+通过默认配置重建绕过迁移，不删除旧安装或官方凭据。
 ACP 保存/删除使用 Settings revision CAS，成功返回 canonical 设置，且不等待进程启动或
 认证。认证是独立显式操作，不推进 Settings 或模型目录水位，详见 [28](./28-acp.md)。
+
+自动下载是显式的服务器准备意图，准备完成后再显式保存账号。固定发行清单和安装回执
+拥有启动命令、版本与完整性事实，账号不存第二份来源或版本选择，不通过路径前缀或名称
+推断资格。迁移或改名不下载、不启动认证；旧自定义路径不再执行，缺少固定受管安装时
+保留账号并明确提示准备。下载失败不保存，保存失败不删除安装；连接仍须验证实际安装。
 
 Google 凭据继续由官方程序管理，不经过 Native API-key 凭据接口，不复制到 anywork 的
 TOML、数据库或 keyring。删除 ACP 配置只移除本地接入并取消所属操作，不注销 Google 或
@@ -220,7 +228,7 @@ catalog，被禁用的用户 Profile 仍可编辑并重新启用。
 本地 TOML 使用 `snake_case`，不同于 API wire 格式。精简示例：
 
 ```toml
-schema_version = 24
+schema_version = 25
 
 disabled_system_agents = []
 

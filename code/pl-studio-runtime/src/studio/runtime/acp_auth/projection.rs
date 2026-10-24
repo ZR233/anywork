@@ -18,9 +18,9 @@ use crate::config::{AcpProvider, StudioConfig};
 
 /// 本阶段的接入模板；只读默认值，不启动程序。
 ///
-/// 默认参数与安装地址来自官方 ACP registry 清单（commit
-/// `91d65c2075d644eb1ccc88f7cf6fd0f8507be2fb`，version 1.4.1）：Linux 默认 `--uid=`，其他平台
-/// 没有默认参数。这里不做普通 CLI 检测、不自动安装，也不提供平台回退。
+/// `supported_version` 与内部启动资格消费同一份产品固定清单（当前 1.4.1），因此客户端不需要、
+/// 也不允许硬编码第二份版本选择表；模板里既没有默认 argv，也没有本地程序路径。这里不做普通 CLI
+/// 检测、不自动安装，也不提供平台或版本回退（design/28 §28.5）。
 pub(crate) fn acp_account_catalog() -> AcpAccountCatalog {
     AcpAccountCatalog {
         templates: vec![AcpAccountTemplate {
@@ -28,17 +28,11 @@ pub(crate) fn acp_account_catalog() -> AcpAccountCatalog {
             display_name: "Antigravity".to_string(),
             description: "通过官方 ACP server 连接 Antigravity，并使用其自身登录凭据。".to_string(),
             icon_key: "antigravity".to_string(),
-            default_args: default_acp_args(),
+            supported_version: super::super::acp_install::SERVER_VERSION.to_string(),
             install_url: "https://antigravity.google/docs/ide/extensions".to_string(),
+            terms_url: "https://antigravity.google/terms".to_string(),
+            automatic_install: super::super::acp_install::automatic_install_availability(),
         }],
-    }
-}
-
-fn default_acp_args() -> Vec<String> {
-    if cfg!(target_os = "linux") {
-        vec!["--uid=".to_string()]
-    } else {
-        Vec::new()
     }
 }
 
@@ -69,8 +63,6 @@ impl AcpAuthRuntime {
                 account_id: account_id.clone(),
                 name: account.name.clone(),
                 provider: provider_dto(account.provider),
-                program: account.program.clone(),
-                args: account.args.clone(),
                 connection_revision: slot.revision,
             });
         }

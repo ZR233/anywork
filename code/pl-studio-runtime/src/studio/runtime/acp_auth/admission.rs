@@ -280,12 +280,6 @@ impl AcpAuthInner {
                 false,
             ));
         };
-        if !std::path::Path::new(account.program.trim()).is_absolute() {
-            return Err(acp_failure_error(
-                AcpAuthFailureCode::MissingExecutable,
-                "ACP server 程序必须是绝对路径",
-            ));
-        }
         if let pl_protocol::studio::AcpAuthAction::Authenticate { method_id } = &request.action
             && method_id.trim().is_empty()
         {
@@ -301,8 +295,7 @@ impl AcpAuthInner {
         };
         let identity = ConnectionIdentity::of(&account);
         let plan = OperationPlan {
-            program: account.program,
-            args: account.args,
+            provider: account.provider,
             action: request.action.clone(),
         };
 

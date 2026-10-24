@@ -13,8 +13,7 @@ use pl_protocol::studio::{
 
 use crate::config::AcpProvider as ConfigAcpProvider;
 use crate::config::acp::{
-    AcpAccountConfig, normalize_acp_account, validate_acp_account_id, validate_acp_args,
-    validate_acp_name, validate_acp_program,
+    AcpAccountConfig, normalize_acp_account, validate_acp_account_id, validate_acp_name,
 };
 
 use super::StudioRuntime;
@@ -28,8 +27,9 @@ impl StudioRuntime {
 
     /// 保存（新增或更新）一条 ACP 接入。
     ///
-    /// 只写这份接入资源；默认账号、模式/角色路由与 Native 账号都不被重放。程序可用性不在保存
-    /// 阶段伪造：不可用的安装可以被保留，连接时会给出类型化失败。
+    /// 只写这份接入资源；默认账号、模式/角色路由与 Native 账号都不被重放。这里既不验证也不等待
+    /// 受管安装：保存成功不是安装就绪或认证通过的证明，检查时会在 `prepare` 阶段给出类型化失败。
+    /// 接入不携带 program/argv，因此保存路径没有恢复自定义执行入口的可能。
     pub fn save_acp_account(
         &self,
         request: UpdateAcpAccountRequest,
@@ -40,15 +40,9 @@ impl StudioRuntime {
             .map_err(|_| invalid_settings_argument("ACP account id is invalid"))?;
         validate_acp_name(&request.account.name)
             .map_err(|_| invalid_settings_argument("ACP account name is invalid"))?;
-        validate_acp_program(&request.account.program)
-            .map_err(|_| invalid_settings_argument("ACP server program path is invalid"))?;
-        validate_acp_args(&request.account.args)
-            .map_err(|_| invalid_settings_argument("ACP server arguments are invalid"))?;
         let account = normalize_acp_account(AcpAccountConfig {
             name: request.account.name,
             provider: config_provider(request.account.provider),
-            program: request.account.program,
-            args: request.account.args,
         });
         let mut changed = false;
         let state = self

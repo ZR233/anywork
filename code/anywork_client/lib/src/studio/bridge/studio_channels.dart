@@ -161,6 +161,7 @@ class StudioChannels {
         _client.persistence.state.queueRevision,
       ),
       AcpAuthTopic() => _clock(_client.acpAuth.state),
+      AcpInstallTopic() => _clock(_client.acpInstall.state),
       BotsTopic() => _clock(_client.bots.state),
     };
   }
@@ -216,6 +217,8 @@ class StudioChannels {
         _client.settings.applyAgentProfiles(state);
       case AcpAuthBaseline(:final state):
         _client.acpAuth.apply(state);
+      case AcpInstallBaseline(:final state):
+        _client.acpInstall.apply(state);
       case BotsBaseline(:final state):
         _client.bots.apply(state);
     }
@@ -272,6 +275,8 @@ class StudioChannels {
         _client.settings.applyAgentProfiles(state);
       case AcpAuthStateChangedPayload(:final state):
         _client.acpAuth.apply(state);
+      case AcpInstallStateChangedPayload(:final state):
+        _client.acpInstall.apply(state);
       case BotsStateChangedPayload(:final state):
         _client.bots.apply(state);
     }
@@ -315,6 +320,8 @@ class StudioChannels {
         _client.persistence.applyQueueTransport(sync);
       case AcpAuthTopic():
         _client.acpAuth.applyTransport(sync);
+      case AcpInstallTopic():
+        _client.acpInstall.applyTransport(sync);
       case BotsTopic():
         _client.bots.applyTransport(sync);
     }
@@ -374,6 +381,7 @@ int? _incomingRevision(ProductTopicFrame frame) {
         PersistenceQueueBaseline(:final state) => state.revision,
         AgentProfilesBaseline(:final state) => state.revision,
         AcpAuthBaseline(:final state) => state.revision,
+        AcpInstallBaseline(:final state) => state.revision,
         BotsBaseline(:final state) => state.revision,
       },
     ProductTopicDataFrame(:final event) => switch (event.payload) {
@@ -396,6 +404,7 @@ int? _incomingRevision(ProductTopicFrame frame) {
       PersistenceQueueStateChangedPayload(:final state) => state.revision,
       AgentProfilesStateChangedPayload(:final state) => state.revision,
       AcpAuthStateChangedPayload(:final state) => state.revision,
+      AcpInstallStateChangedPayload(:final state) => state.revision,
       BotsStateChangedPayload(:final state) => state.revision,
     },
     ProductTopicLaggedFrame() || ProductTopicFailureFrame() => null,

@@ -19,7 +19,6 @@ void main() {
         accountId: id,
         name: id.toUpperCase(),
         provider: AcpProviderView.antigravity,
-        program: '/opt/antigravity/bin/server',
         connectionRevision: connectionRevision,
       ),
     ],

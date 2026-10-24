@@ -9,9 +9,12 @@ const demoAcpAccountCatalogFixture = AcpAccountCatalogView(
       displayName: 'Antigravity',
       description: '通过官方 ACP server 连接 Antigravity，并使用其自身登录凭据。',
       iconKey: 'antigravity',
-      // 官方默认 argv 由后端按平台给出；demo 不伪造任何平台参数。
-      defaultArgs: [],
+      // 产品固定的受管版本由后端模板给出；demo 只镜像这一权威值。
+      supportedVersion: '1.4.1',
       installUrl: 'https://antigravity.google/docs/ide/extensions',
+      termsUrl: 'https://antigravity.google/terms',
+      // demo 预览固定声明一个可用目标；真实目标只由后端按宿主平台给出。
+      automaticInstall: AcpInstallAvailableView(target: 'linux-x86_64'),
     ),
   ],
 );

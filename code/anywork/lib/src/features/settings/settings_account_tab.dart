@@ -5,11 +5,11 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../presentation/providers/client_provider.dart';
 import '../../presentation/providers/account_usage_queries.dart';
+import '../../presentation/providers/acp_install_store.dart';
 
 import 'package:anywork_client/studio_client.dart';
 
 import '../../l10n/studio_l10n.dart';
-import '../../platform/local_file_dialogs.dart';
 import '../../shared/studio_driver_keys.dart';
 import 'settings_account_details.dart';
 import 'settings_account_draft_save.dart';
@@ -59,12 +59,32 @@ class _AccountsTabState extends ConsumerState<AccountsTab> {
 
   /// 正在取消的接入（按 accountId）：宽窗切换账号时只让对应详情忙，不误锁其它账号。
   final Set<String> _cancelPending = <String>{};
+
+  /// 准备命令在途：只挡新的 start，不挡取消（取消走独立 lane）。
+  bool _preparePending = false;
+
+  /// 当前 ACP 草稿（非 ACP 编辑态时为 null）。
+  AcpAccountDraft? get _acpDraftOrNull {
+    final editor = _draft;
+    return editor is AcpAccountEditorDraft ? editor.draft : null;
+  }
+
+  /// 准备取消在途：只锁当前准备面板的取消按钮。
+
   final AccountDraftSaveSession _saveSession = AccountDraftSaveSession();
+
+  /// 取消的本地观察：按表单/operation 记账，旧回执不污染新草稿。
+  final AccountDraftCancelSession _installCancelSession =
+      AccountDraftCancelSession();
   final AccountUsageAutoDemand _usageDemand = AccountUsageAutoDemand();
   ProviderSubscription<bool>? _visibilitySubscription;
   ProviderSubscription<AccountUsageQueryIdentitySnapshot>?
   _identitySubscription;
   late final AnyworkClient _client;
+
+  /// 准备协调器：拥有尝试序号、在途门控与回填判断，直接调用 Client 动作。
+  late final AcpPreparationCoordinator _preparation;
+
   final Map<(String, String), _AutoCompactIntent> _compactIntents = {};
   bool _disposing = false;
 
@@ -76,6 +96,9 @@ class _AccountsTabState extends ConsumerState<AccountsTab> {
   void initState() {
     super.initState();
     _client = ref.read(anyworkClientProvider);
+    _preparation = AcpPreparationCoordinator(
+      commands: _client.acpInstallCommands,
+    );
     _visibilitySubscription = ref.listenManual<bool>(
       settingsVisibleTabProvider.select((index) => index == widget.tabIndex),
       (previous, next) {
@@ -262,16 +285,54 @@ class _AccountsTabState extends ConsumerState<AccountsTab> {
       );
     }
     if (draft is AcpAccountEditorDraft) {
+      // 准备状态只读 canonical `acpInstall`：本草稿只承认自己认领的 operation。
+      final installSnapshot = ref.watch(acpInstallStateProvider).value;
+      final provider = draft.draft.template.provider;
+      final installState =
+          installSnapshot?.stateOf(provider) ?? const AcpInstallIdleState();
+      final prepared = draft.draft.intent.resolve(
+        installState,
+        provider: provider,
+      );
+      final availableElsewhere = draft.draft.intent.availableElsewhere(
+        installState,
+        provider: provider,
+      );
+      // 已有账号缺安装时也要有**显式准备动作**：只认 typed 失败码，不按文案猜。
+      final needsPreparation =
+          !draft.draft.isCreate &&
+          switch (_acpEntryOf(directory, draft.draft.accountId)?.auth) {
+            final AcpFailedState failed =>
+              failed.failure.code ==
+                      AcpAuthFailureCodeView.preparationRequired ||
+                  failed.failure.code ==
+                      AcpAuthFailureCodeView.installationInvalid,
+            _ => false,
+          };
       return Padding(
         padding: const EdgeInsets.all(20),
         child: Center(
           child: ConstrainedBox(
-            constraints: const BoxConstraints(maxWidth: 780),
+            constraints: const BoxConstraints(maxWidth: 820),
             child: AcpAccountEditor(
-              key: ValueKey(('acp', draft.draft.accountId)),
+              key: ValueKey(('acp', draft.draft.accountId, draft.draft.formId)),
               formKey: _draftFormKey,
               draft: draft.draft,
+              installState: installState,
+              prepared: prepared,
+              availableElsewhere: availableElsewhere,
+              needsPreparation: needsPreparation,
               saving: _saveSession.isSaving,
+              preparePending: _preparePending,
+              admissionPending:
+                  _preparePending && installState.operationId == null,
+              cancelPending:
+                  installState.operationId != null &&
+                  _installCancelSession.isPending(
+                    formId: draft.draft.formId,
+                    provider: provider,
+                    operationId: installState.operationId!,
+                  ),
               error: _draftError,
               onCancel: () => setState(() {
                 _saveSession.abandon();
@@ -279,8 +340,10 @@ class _AccountsTabState extends ConsumerState<AccountsTab> {
                 _draftError = null;
               }),
               onSave: _saveAcpDraft,
+              onPrepare: _prepareAcpDraft,
+              onCancelPrepare: _cancelAcpInstall,
+              onUsePrepared: () => _usePreparedAcp(installState),
               onUpdate: _updateAcpDraft,
-              onPickProgram: _pickAcpProgram,
             ),
           ),
         ),
@@ -459,9 +522,7 @@ class _AccountsTabState extends ConsumerState<AccountsTab> {
       final haystack = [
         entry.name,
         entry.id,
-        entry.account.program,
         entry.account.provider.wire,
-        ...entry.account.args,
       ].join(' ').toLowerCase();
       return haystack.contains(query);
     }).toList();
@@ -488,23 +549,112 @@ class _AccountsTabState extends ConsumerState<AccountsTab> {
     setState(() => _draft = AcpAccountEditorDraft(update(editor.draft)));
   }
 
-  /// 原生文件选择只写回草稿；失败就地说明，不静默丢弃。
-  Future<void> _pickAcpProgram() async {
+  /// 显式认领同 provider 已准备好的结果（来自另一个操作）。
+  ///
+  /// 只有用户按下“使用已准备结果”才绑定该 operation：同名品牌或相似路径都不是
+  /// 认领依据。
+  void _usePreparedAcp(AcpInstallStateView state) {
     final editor = _draft;
     if (editor is! AcpAccountEditorDraft) return;
-    final l10n = context.l10n;
-    try {
-      final path = await pickLocalExecutablePath();
-      if (path == null || !mounted) return;
-      setState(
-        () => _draft = AcpAccountEditorDraft(
-          editor.draft.copyWith(program: path),
-        ),
-      );
-    } catch (_) {
-      if (!mounted) return;
-      setState(() => _draftError = l10n.acpAccountProgramBrowseFailed);
+    final operationId = state.operationId;
+    if (operationId == null || state.server == null) return;
+    // 与测试走同一生产入口：准备请求在途时认领被拒绝，迟到的 start 不能覆盖它。
+    final claimed = _preparation.claim(
+      draft: editor.draft,
+      currentDraft: () => _acpDraftOrNull,
+      operationId: operationId,
+    );
+    if (claimed == null) return;
+    setState(() {
+      _draft = AcpAccountEditorDraft(claimed);
+      _draftError = null;
+    });
+  }
+
+  /// “下载并准备”：只受理共享操作并把 operation 绑定到本草稿。
+  ///
+  /// 不保存账号、不检查连接；终态与进度全部由 `acpInstall` topic 推进。
+  Future<void> _prepareAcpDraft() async {
+    final editor = _draft;
+    if (editor is! AcpAccountEditorDraft) return;
+    if (_preparation.isPending) return;
+    setState(() {
+      _preparePending = true;
+      _draftError = null;
+    });
+    // 协调器在内部冻结尝试身份并调用 Client；这里只应用结论。
+    final outcome = await _preparation.prepare(
+      draft: editor.draft,
+      currentDraft: () => _acpDraftOrNull,
+    );
+    if (!mounted) return;
+    setState(() => _preparePending = _preparation.isPending);
+    if (outcome == null || outcome.stale) return;
+    final claimed = outcome.claimed;
+    if (claimed != null) {
+      setState(() => _draft = AcpAccountEditorDraft(claimed));
     }
+    final error = outcome.error;
+    if (error != null) {
+      setState(() => _draftError = _installFailureSummary(error));
+    }
+  }
+
+  /// 取消当前共享准备；命中 canonical operation 身份，独立于 start 的在途标志。
+  Future<void> _cancelAcpInstall() async {
+    final editor = _draft;
+    if (editor is! AcpAccountEditorDraft) return;
+    final provider = editor.draft.template.provider;
+    final target = ref
+        .read(anyworkClientProvider)
+        .acpInstall
+        .stateOf(provider)
+        .operationId;
+    // 没有 canonical 目标就没有可取消身份：不发无目标取消。
+    if (target == null) return;
+    // await 之前冻结身份：表单实例 + provider + 目标 operation + 唯一序号。
+    final attempt = _installCancelSession.begin(
+      formId: editor.draft.formId,
+      provider: provider,
+      operationId: target,
+    );
+    if (attempt == null) return;
+    setState(() => _draftError = null);
+    try {
+      // 命令后仍由 Client 拥有：离开表单只释放本地观察，不取消已发出的请求。
+      await ref.read(anyworkClientProvider).acpInstallCommands.cancel(provider);
+    } catch (error) {
+      if (!mounted) return;
+      final current = _draft;
+      final accepted = _installCancelSession.accepts(
+        attempt,
+        currentFormId: current is AcpAccountEditorDraft
+            ? current.draft.formId
+            : null,
+        currentProvider: provider,
+        currentOperationId: ref
+            .read(anyworkClientProvider)
+            .acpInstall
+            .stateOf(provider)
+            .operationId,
+      );
+      // 旧取消的失败只属于旧草稿/旧 operation：不写进当前表单的错误位。
+      if (!accepted) return;
+      setState(() => _draftError = _installFailureSummary(error));
+    } finally {
+      final released = _installCancelSession.finish(attempt);
+      if (released && mounted) setState(() {});
+    }
+  }
+
+  /// 准备命令的 typed 就地说明：只显示安全码值，不展示原始库错误。
+  String _installFailureSummary(Object error) {
+    final l10n = context.l10n;
+    return l10n.acpInstallCommandFailed(
+      error is StudioFailure
+          ? studioFailureCodeText(l10n, error.code)
+          : l10n.acpAuthCommandUnavailable,
+    );
   }
 
   /// “保存并连接”：先确认 canonical 保存，再提交检查。
@@ -514,19 +664,36 @@ class _AccountsTabState extends ConsumerState<AccountsTab> {
   Future<void> _saveAcpDraft() async {
     final editor = _draft;
     if (editor is! AcpAccountEditorDraft || _saveSession.isSaving) return;
-    final l10n = context.l10n;
     if (_draftFormKey.currentState?.validate() == false) return;
-    if (editor.draft.program.trim().isEmpty) {
-      setState(() => _draftError = l10n.acpAccountProgramRequired);
-      return;
-    }
+    // 受管 program/argv 由产品固定发行与安装事实决定，保存意图只有身份与显示名。
+    // 新建必须先准备到 Ready（界面已按 prepared 门控保存入口）；编辑只改名字，
+    // 因此保存后不发起连接检查、也不改 connectionRevision。
+    final provider = editor.draft.template.provider;
+    final installState = ref
+        .read(anyworkClientProvider)
+        .acpInstall
+        .stateOf(provider);
+    final ready = editor.draft.intent.resolve(installState, provider: provider);
+    if (editor.draft.isCreate && ready == null) return;
+    final update = editor.draft.toUpdate();
     final epoch = _saveSession.begin();
     setState(() => _draftError = null);
     try {
-      final result = await ref
-          .read(anyworkClientProvider)
-          .acpCommands
-          .saveAndConnect(editor.draft.toUpdate());
+      final commands = ref.read(anyworkClientProvider).acpCommands;
+      if (!editor.draft.isCreate) {
+        final renamed = await commands.saveAccount(update);
+        if (!_saveSession.owns(epoch)) return;
+        _saveSession.succeed(epoch);
+        if (!mounted) return;
+        setState(() {
+          _selectedAcpId = renamed.accountId;
+          _selectedAccountId = null;
+          _showDetails = true;
+          _draft = null;
+        });
+        return;
+      }
+      final result = await commands.saveAndConnect(update);
       if (!_saveSession.owns(epoch)) return;
       _saveSession.succeed(epoch);
       if (!mounted) return;
@@ -1114,3 +1281,7 @@ class _AutoCompactIntent {
   bool submitted = false;
   bool failed = false;
 }
+
+/// 在目录投影里按 accountId 取 ACP 条目；找不到返回 null（不猜身份）。
+AcpAccountEntryView? _acpEntryOf(AccountDirectoryView directory, String id) =>
+    directory.acpEntries.where((entry) => entry.id == id).firstOrNull;

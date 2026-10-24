@@ -9,16 +9,17 @@ use axum::http::{StatusCode, header};
 use axum::response::IntoResponse;
 use pl_protocol::ThreadActivityDetailQuery;
 use pl_protocol::studio::{
-    AcpAccountCatalog, AcpAuthCommandReply, AcpAuthSnapshot, AdmitAttachmentDraftsRequest,
-    AdmitAttachmentDraftsResponse, CancelAcpAuthRequest, CreateThreadRequest,
-    ExpectedRevisionRequest, HealthResponse, LspResetRequest, McpResetRequest, OpenProjectRequest,
+    AcpAccountCatalog, AcpAuthCommandReply, AcpAuthSnapshot, AcpInstallCommandReply,
+    AcpInstallSnapshot, AdmitAttachmentDraftsRequest, AdmitAttachmentDraftsResponse,
+    CancelAcpAuthRequest, CancelAcpInstallRequest, CreateThreadRequest, ExpectedRevisionRequest,
+    HealthResponse, LspResetRequest, McpResetRequest, OpenProjectRequest,
     RemoveAccountModelRequest, RemoveAccountRequest, RemoveAcpAccountRequest, RenameThreadRequest,
     ResolveInteractionRequest, SearchSkillsRequest, SetDefaultAccountRequest, SetThreadModeRequest,
     SetThreadModelRouteRequest, SettingsCommandReply, SettingsStateResponse, StartAcpAuthRequest,
-    StudioAttachmentAdmissionContext, StudioAttachmentDraftSource, StudioCommandRequest,
-    StudioError, SubmitPromptRequest, ThreadModelRouteCommandReply, ThreadPageQuery,
-    UpdateAccountRequest, UpdateAcpAccountRequest, UpdatePermissionSettingsRequest,
-    UpdateSettingsFieldRequest,
+    StartAcpInstallRequest, StudioAttachmentAdmissionContext, StudioAttachmentDraftSource,
+    StudioCommandRequest, StudioError, SubmitPromptRequest, ThreadModelRouteCommandReply,
+    ThreadPageQuery, UpdateAccountRequest, UpdateAcpAccountRequest,
+    UpdatePermissionSettingsRequest, UpdateSettingsFieldRequest,
 };
 use pl_protocol::{ThreadModeDocument, ThreadModeId, WorkflowPreviewRequest};
 use pl_protocol::{TimelineDetailQuery, TimelinePageQuery};
@@ -171,6 +172,7 @@ pub(crate) fn parse_product_topic(
         "threadModeCatalog" => StudioProductTopic::ThreadModeCatalog,
         "accountUsage" => StudioProductTopic::AccountUsage,
         "acpAuth" => StudioProductTopic::AcpAuth,
+        "acpInstall" => StudioProductTopic::AcpInstall,
         "modelPerformance" => StudioProductTopic::ModelPerformance,
         "sessionCosts" => StudioProductTopic::SessionCosts {
             root_thread_id: query.root_thread_id.clone().unwrap_or_default(),
@@ -265,6 +267,9 @@ pub(crate) fn api_router() -> OpenApiRouter<AppState> {
         .routes(routes!(read_acp_auth))
         .routes(routes!(start_acp_auth))
         .routes(routes!(cancel_acp_auth))
+        .routes(routes!(read_acp_install))
+        .routes(routes!(start_acp_install))
+        .routes(routes!(cancel_acp_install))
         .routes(routes!(read_recovery, retry_recovery))
         .routes(routes!(retry_persistence))
         .routes(routes!(retry_thread_history))
@@ -1082,6 +1087,39 @@ async fn cancel_acp_auth(
         state
             .runtime
             .cancel_acp_auth(request)
+            .map_err(ApiError::from)?,
+    ))
+}
+
+#[utoipa::path(get, path = "/api/v1/runtime/acp-install", operation_id = "acpInstall.read", responses(StudioApiErrors, (status = 200, body = AcpInstallSnapshot)))]
+async fn read_acp_install(
+    State(state): State<AppState>,
+) -> Result<Json<AcpInstallSnapshot>, ApiError> {
+    Ok(Json(state.runtime.read_acp_install_state()))
+}
+
+#[utoipa::path(post, path = "/api/v1/runtime/acp-install/start", operation_id = "acpInstall.start", request_body = StartAcpInstallRequest, responses(StudioApiErrors, (status = 200, body = AcpInstallCommandReply)))]
+async fn start_acp_install(
+    State(state): State<AppState>,
+    ApiJson(request): ApiJson<StartAcpInstallRequest>,
+) -> Result<Json<AcpInstallCommandReply>, ApiError> {
+    Ok(Json(
+        state
+            .runtime
+            .start_acp_install(request)
+            .map_err(ApiError::from)?,
+    ))
+}
+
+#[utoipa::path(post, path = "/api/v1/runtime/acp-install/cancel", operation_id = "acpInstall.cancel", request_body = CancelAcpInstallRequest, responses(StudioApiErrors, (status = 200, body = AcpInstallCommandReply)))]
+async fn cancel_acp_install(
+    State(state): State<AppState>,
+    ApiJson(request): ApiJson<CancelAcpInstallRequest>,
+) -> Result<Json<AcpInstallCommandReply>, ApiError> {
+    Ok(Json(
+        state
+            .runtime
+            .cancel_acp_install(request)
             .map_err(ApiError::from)?,
     ))
 }

@@ -4,6 +4,10 @@
 //! Settings 快照，认证进展是独立版本域的资源快照。ACP 不是 HTTP 模型协议，因此这里既不复用
 //! Native account 的 endpoint/secret 结构，也不携带任何凭据、token、原始进程输出或 SDK 内部
 //! 类型；官方程序自行管理登录凭据（见 design/28）。
+//!
+//! 本阶段只支持产品内置的官方 server 发行（Antigravity 1.4.1）。因此这里**不存在** program 或
+//! argv 字段：启动命令只来自产品固定清单与经完整验证的受管安装，客户端、HTTP 与配置文件都不能
+//! 提交或恢复任意执行路径（design/28 §28.1、§28.8）。
 
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
@@ -33,20 +37,21 @@ impl AcpProvider {
 
 /// canonical 设置中的一条 ACP 接入（不含 secret）。
 ///
-/// `connection_revision` 是 runtime 拥有的**非密钥**连接身份：只有 provider/程序/参数真正变化
-/// 才改变，名称编辑不改变它。它既不是 Settings revision，也不是认证 topic 的 revision。
+/// `connection_revision` 是 runtime 拥有的**非密钥**连接身份：只有 provider 或产品固定发行身份
+/// 真正变化才改变，名称编辑不改变它。它既不是 Settings revision，也不是认证 topic 的 revision。
+///
+/// 这里刻意不携带 program/argv：账号只持久化稳定 ID、接入类型与名称，官方 server 属于固定发行的
+/// 共享资产事实（design/28 §28.8）。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AcpAccountSettings {
     pub account_id: String,
     pub name: String,
     pub provider: AcpProvider,
-    pub program: String,
-    pub args: Vec<String>,
     pub connection_revision: u64,
 }
 
-/// 一种接入类型的模板：默认启动参数、图标与官方安装说明。
+/// 一种接入类型的模板：固定的官方发行版本、图标与官方安装说明。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AcpAccountTemplate {
@@ -54,9 +59,14 @@ pub struct AcpAccountTemplate {
     pub display_name: String,
     pub description: String,
     pub icon_key: String,
-    pub default_args: Vec<String>,
+    /// 产品固定支持的官方 server 版本；与内部启动资格消费同一清单，客户端不持有第二份选择表。
+    pub supported_version: String,
     /// 官方安装/下载说明；空字符串表示本平台没有可确认的官方说明，UI 不展示链接。
     pub install_url: String,
+    /// 官方条款/隐私说明；空字符串表示不展示。客户端不硬编码品牌链接。
+    pub terms_url: String,
+    /// 当前宿主平台能否由产品自动准备官方 server；读取模板本身不联网。
+    pub automatic_install: super::AcpInstallAvailability,
 }
 
 /// ACP 模板目录；只读默认值，不启动任何程序。
@@ -73,8 +83,6 @@ pub struct AcpAccountUpdate {
     pub account_id: String,
     pub name: String,
     pub provider: AcpProvider,
-    pub program: String,
-    pub args: Vec<String>,
 }
 
 /// 保存/新增一条 ACP 接入。
@@ -139,9 +147,17 @@ pub struct AcpServerInfo {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub enum AcpAuthFailureCode {
+    /// 固定发行的受管安装尚未准备：必须显式准备，命令不会隐式下载或修复。
+    PreparationRequired,
+    /// 受管安装存在但回执、完整成员或权限与冻结描述符不一致。
+    InstallationInvalid,
+    /// 当前宿主平台没有产品支持的官方发行。
+    UnsupportedPlatform,
+    /// 协商出的 server 版本缺失或不是产品固定支持的版本。
+    ServerVersionMismatch,
     /// 无法启动官方程序或所需监督资源。
     Startup,
-    /// 配置的程序路径不存在或不可执行。
+    /// 已验证安装的入口程序缺失或不可执行。
     MissingExecutable,
     /// 文件系统、管道或其它本地 IO 失败。
     Io,
@@ -177,9 +193,11 @@ pub enum AcpAuthFailureCode {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub enum AcpAuthStage {
+    /// 启动前验证受管安装（只读，不下载、不修复）。
+    Prepare,
     /// 官方程序启动。
     Process,
-    /// 读取或准备接入配置/探测目录。
+    /// 准备接入专属探测目录。
     Config,
     Initialize,
     Authenticate,

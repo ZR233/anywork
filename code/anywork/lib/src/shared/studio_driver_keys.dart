@@ -275,12 +275,6 @@ abstract final class StudioDriverKeys {
   static const accountTemplateList = ValueKey<String>(
     StudioDriverKeyValues.accountTemplateList,
   );
-  static const acpAccountProgram = ValueKey<String>(
-    StudioDriverKeyValues.acpAccountProgram,
-  );
-  static const acpAccountProgramInput = ValueKey<String>(
-    StudioDriverKeyValues.acpAccountProgramInput,
-  );
   static const acpAccountName = ValueKey<String>(
     StudioDriverKeyValues.acpAccountName,
   );
@@ -290,23 +284,11 @@ abstract final class StudioDriverKeys {
   static const acpAccountRemove = ValueKey<String>(
     StudioDriverKeyValues.acpAccountRemove,
   );
-  static const acpAccountProgramBrowse = ValueKey<String>(
-    StudioDriverKeyValues.acpAccountProgramBrowse,
-  );
-  static const acpAccountArgs = ValueKey<String>(
-    StudioDriverKeyValues.acpAccountArgs,
-  );
-  static const acpAccountArgsHeader = ValueKey<String>(
-    StudioDriverKeyValues.acpAccountArgsHeader,
-  );
-  static const acpAccountArgsBody = ValueKey<String>(
-    StudioDriverKeyValues.acpAccountArgsBody,
-  );
-  static const acpAccountArgsAdd = ValueKey<String>(
-    StudioDriverKeyValues.acpAccountArgsAdd,
-  );
   static const acpAccountInstallOpen = ValueKey<String>(
     StudioDriverKeyValues.acpAccountInstallOpen,
+  );
+  static const acpAccountTermsOpen = ValueKey<String>(
+    StudioDriverKeyValues.acpAccountTermsOpen,
   );
   static const acpAccountAuthState = ValueKey<String>(
     StudioDriverKeyValues.acpAccountAuthState,
@@ -329,12 +311,6 @@ abstract final class StudioDriverKeys {
   static const acpAccountDone = ValueKey<String>(
     StudioDriverKeyValues.acpAccountDone,
   );
-  static ValueKey<String> acpAccountArg(int index) =>
-      ValueKey<String>(StudioDriverKeyValues.acpAccountArg(index));
-  static ValueKey<String> acpAccountArgInput(int index) =>
-      ValueKey<String>(StudioDriverKeyValues.acpAccountArgInput(index));
-  static ValueKey<String> acpAccountArgRemove(int index) =>
-      ValueKey<String>(StudioDriverKeyValues.acpAccountArgRemove(index));
   static ValueKey<String> acpAccountRow(String accountId) =>
       ValueKey<String>(StudioDriverKeyValues.acpAccountRow(accountId));
   static ValueKey<String> acpAccountNotice(String accountId) =>
@@ -346,6 +322,53 @@ abstract final class StudioDriverKeys {
       ValueKey<String>(StudioDriverKeyValues.acpAccountDetail(accountId));
   static ValueKey<String> acpAccountAuthPhase(String phase) =>
       ValueKey<String>(StudioDriverKeyValues.acpAccountAuthPhase(phase));
+
+  /// ACP 官方 server 准备面板：来源、阶段、真实进度与阶段主操作。
+  static const acpInstallPanel = ValueKey<String>(
+    StudioDriverKeyValues.acpInstallPanel,
+  );
+  static const acpInstallPrepare = ValueKey<String>(
+    StudioDriverKeyValues.acpInstallPrepare,
+  );
+  static const acpInstallCancel = ValueKey<String>(
+    StudioDriverKeyValues.acpInstallCancel,
+  );
+  static const acpInstallUsePrepared = ValueKey<String>(
+    StudioDriverKeyValues.acpInstallUsePrepared,
+  );
+  static const acpInstallStage = ValueKey<String>(
+    StudioDriverKeyValues.acpInstallStage,
+  );
+  static const acpInstallProgress = ValueKey<String>(
+    StudioDriverKeyValues.acpInstallProgress,
+  );
+  static const acpInstallProgressText = ValueKey<String>(
+    StudioDriverKeyValues.acpInstallProgressText,
+  );
+  static const acpInstallPercent = ValueKey<String>(
+    StudioDriverKeyValues.acpInstallPercent,
+  );
+  static const acpInstallSpeed = ValueKey<String>(
+    StudioDriverKeyValues.acpInstallSpeed,
+  );
+  static const acpInstallRetryCount = ValueKey<String>(
+    StudioDriverKeyValues.acpInstallRetryCount,
+  );
+  static const acpInstallVersion = ValueKey<String>(
+    StudioDriverKeyValues.acpInstallVersion,
+  );
+  static const acpInstallTarget = ValueKey<String>(
+    StudioDriverKeyValues.acpInstallTarget,
+  );
+  static const acpInstallFailure = ValueKey<String>(
+    StudioDriverKeyValues.acpInstallFailure,
+  );
+  static const acpInstallReadyBadge = ValueKey<String>(
+    StudioDriverKeyValues.acpInstallReadyBadge,
+  );
+  static const acpInstallReusedBadge = ValueKey<String>(
+    StudioDriverKeyValues.acpInstallReusedBadge,
+  );
   static const toolApprove = ValueKey<String>('tool-approve');
   static const toolDeny = ValueKey<String>('tool-deny');
   static const userInputSubmit = ValueKey<String>('user-input-submit');

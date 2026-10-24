@@ -66,8 +66,8 @@ List<ProductTopic> bridgeSettingsScopeTopics(
     case BridgeSettingsScopeKind.usage:
       return const [AccountUsageTopic()];
     case BridgeSettingsScopeKind.acp:
-      // Accounts 页可见时只租用认证观察；进入页面不启动检查。
-      return const [AcpAuthTopic()];
+      // Accounts 页可见时只租用认证与准备观察；进入页面不启动检查、不联网。
+      return const [AcpAuthTopic(), AcpInstallTopic()];
     case BridgeSettingsScopeKind.bots:
       return const [BotsTopic()];
   }
@@ -588,5 +588,6 @@ String describeBridgeProductTopic(ProductTopic topic) {
     AgentProfilesTopic() => 'agentProfiles',
     AcpAuthTopic() => 'acpAuth',
     BotsTopic() => 'bots',
+    AcpInstallTopic() => 'acpInstall',
   };
 }

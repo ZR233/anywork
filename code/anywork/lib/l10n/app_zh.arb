@@ -1707,16 +1707,6 @@
   "acpAccountPickerNativeGroup": "模型 API 账号",
   "acpAccountPickerAcpGroup": "Agent 接入（ACP）",
   "acpAccountNoApiKeyHint": "无需 API key，登录由官方程序完成。",
-  "acpAccountProgramLabel": "Server 程序",
-  "acpAccountProgramHint": "官方 ACP server 可执行文件的绝对路径。",
-  "acpAccountProgramBrowse": "选择…",
-  "acpAccountProgramRequired": "请先选择官方 ACP server 程序。",
-  "acpAccountProgramBrowseFailed": "无法打开文件选择器。",
-  "acpAccountArgsTitle": "高级参数",
-  "acpAccountArgsHelp": "每一项作为单个 argv 参数传给 server。",
-  "acpAccountArgsAdd": "添加参数",
-  "acpAccountArgsEmpty": "没有额外参数。",
-  "acpAccountArgsRemove": "移除参数",
   "acpAccountSaveAndConnect": "保存并连接",
   "acpAccountSavedConnectIncomplete": "账号已保存，连接未完成：{reason}",
   "acpAccountSaveFailed": "无法保存该接入：{reason}",
@@ -1767,7 +1757,6 @@
   "acpAuthRowCancelling": "取消中",
   "acpAuthRowCancelled": "已取消",
   "acpAuthRowFailed": "连接失败",
-  "acpAuthPendingCommand": "正在提交…",
   "acpAccountDetailsSummary": "官方 ACP 接入，无需 API Key。",
   "acpAccountConnectionInfoTitle": "连接信息",
   "acpAccountProviderLabel": "提供方",
@@ -1826,5 +1815,109 @@
   "botsWorkspace": "专用工作目录",
   "botsPlatformTools": "飞书消息与测试发送",
   "botsManagedModel": "由机器人统一设置",
-  "settingsSshNextPage": "下一页"
+  "settingsSshNextPage": "下一页",
+  "acpInstallUnsupportedPlatform": "此平台没有 {version} 的官方受管发行。",
+  "@acpInstallUnsupportedPlatform": {
+    "placeholders": {"version": {"type": "String"}}
+  },
+  "acpFailureStagePrepare": "准备受管服务器",
+  "acpFailureCodePreparationRequired": "受管服务器尚未准备",
+  "acpFailureCodeInstallationInvalid": "已准备的服务器不完整或已损坏",
+  "acpFailureCodeUnsupportedPlatform": "此平台没有官方受管发行",
+  "acpFailureCodeServerVersionMismatch": "服务器版本不是受支持的版本",
+  "acpInstallFactVersion": "版本",
+  "acpInstallFactTarget": "平台",
+  "acpInstallFactStage": "阶段",
+  "acpInstallFactRetries": "自动重试",
+  "acpInstallRetryValue": "{count, plural, =0{没有重试} other{已重试 {count} 次}}",
+  "@acpInstallRetryValue": {
+    "placeholders": {"count": {"type": "int"}}
+  },
+  "acpInstallProgressDownloaded": "已下载 {done} / {total}",
+  "@acpInstallProgressDownloaded": {
+    "placeholders": {"done": {"type": "String"}, "total": {"type": "String"}}
+  },
+  "acpInstallProgressUnknown": "已下载 {done}，总量未知",
+  "@acpInstallProgressUnknown": {
+    "placeholders": {"done": {"type": "String"}}
+  },
+  "acpInstallProgressVerified": "已校验 {done} / {total}",
+  "@acpInstallProgressVerified": {
+    "placeholders": {"done": {"type": "String"}, "total": {"type": "String"}}
+  },
+  "acpInstallProgressVerifiedUnknown": "已校验 {done}，总量未知",
+  "@acpInstallProgressVerifiedUnknown": {
+    "placeholders": {"done": {"type": "String"}}
+  },
+  "acpInstallProgressExtracted": "已解压 {done} / {total}",
+  "@acpInstallProgressExtracted": {
+    "placeholders": {"done": {"type": "String"}, "total": {"type": "String"}}
+  },
+  "acpInstallProgressExtractedUnknown": "已解压 {done}，总量未知",
+  "@acpInstallProgressExtractedUnknown": {
+    "placeholders": {"done": {"type": "String"}}
+  },
+  "acpInstallProgressProcessed": "已处理 {done} / {total}",
+  "@acpInstallProgressProcessed": {
+    "placeholders": {"done": {"type": "String"}, "total": {"type": "String"}}
+  },
+  "acpInstallProgressProcessedUnknown": "已处理 {done}，总量未知",
+  "@acpInstallProgressProcessedUnknown": {
+    "placeholders": {"done": {"type": "String"}}
+  },
+  "acpInstallProgressPercent": "{percent}%",
+  "@acpInstallProgressPercent": {
+    "placeholders": {"percent": {"type": "int"}}
+  },
+  "acpInstallSpeed": "{speed}/秒",
+  "@acpInstallSpeed": {
+    "placeholders": {"speed": {"type": "String"}}
+  },
+  "acpInstallStageResolve": "读取官方清单",
+  "acpInstallStageWaitForLock": "等待安装锁",
+  "acpInstallStageDownload": "下载安装包",
+  "acpInstallStageVerify": "校验安装包",
+  "acpInstallStageExtract": "解压文件",
+  "acpInstallStagePublish": "写入安装目录",
+  "acpInstallStageClose": "收束下载",
+  "acpInstallStart": "下载并准备",
+  "acpInstallRestart": "重新准备",
+  "acpInstallCancel": "取消下载",
+  "acpInstallCancelling": "正在取消…",
+  "acpInstallCancelSharedHint": "准备是共享操作：取消只中止当前准备，不影响已保存的账号。",
+  "acpInstallUsePrepared": "使用已准备的服务器",
+  "acpInstallUsePreparedHint": "可显式认领已准备好的 {version}（{target}）。",
+  "@acpInstallUsePreparedHint": {
+    "placeholders": {"version": {"type": "String"}, "target": {"type": "String"}}
+  },
+  "acpInstallReadyTitle": "服务器已就绪",
+  "acpInstallReadyBody": "准备不会保存账号，也不会登录。",
+  "acpInstallReusedBadge": "复用已安装版本",
+  "acpInstallFailureRetry": "重试准备",
+  "acpInstallTrustOfficialHttps": "信任边界：官方 HTTPS 来源，未提供发行方摘要。",
+  "acpInstallPendingAdmission": "正在受理准备请求…",
+  "acpInstallCommandFailed": "请求未被接受。{reason}",
+  "@acpInstallCommandFailed": {
+    "placeholders": {"reason": {"type": "String"}}
+  },
+  "acpInstallFailureSummary": "{reason}（{stage}）",
+  "@acpInstallFailureSummary": {
+    "placeholders": {"reason": {"type": "String"}, "stage": {"type": "String"}}
+  },
+  "acpInstallFailureCodeUnsupportedPlatform": "当前平台不受支持",
+  "acpInstallFailureCodeSourceRejected": "来源被拒绝",
+  "acpInstallFailureCodeNetwork": "网络错误",
+  "acpInstallFailureCodeTimeout": "超时",
+  "acpInstallFailureCodeTooLarge": "安装包超出上限",
+  "acpInstallFailureCodeChecksumMismatch": "摘要不一致",
+  "acpInstallFailureCodeInvalidArchive": "安装包无效",
+  "acpInstallFailureCodeMissingExecutable": "包内缺少 server 程序",
+  "acpInstallFailureCodeBusy": "另有准备操作正在进行",
+  "acpInstallFailureCodeStaleOperation": "准备操作已被取代",
+  "acpInstallFailureCodeCancelled": "已取消",
+  "acpInstallFailureCodeResourceClose": "清理失败",
+  "acpAccountTermsOpen": "服务条款",
+  "acpAccountTermsTitle": "官方条款",
+  "acpInstallFailureCodeCacheCorrupt": "现有安装已损坏",
+  "acpInstallFailureCodeIo": "文件系统错误"
 }

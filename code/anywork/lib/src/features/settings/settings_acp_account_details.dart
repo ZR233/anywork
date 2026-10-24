@@ -279,24 +279,6 @@ class _ConnectionInfo extends StatelessWidget {
               style: secondary,
             ),
           ),
-          const SizedBox(height: 6),
-          Align(
-            alignment: Alignment.centerLeft,
-            child: SelectableText(
-              '${l10n.acpAccountProgramLabel}: ${account.program}',
-              style: secondary,
-            ),
-          ),
-          if (account.args.isNotEmpty) ...[
-            const SizedBox(height: 6),
-            Align(
-              alignment: Alignment.centerLeft,
-              child: SelectableText(
-                '${l10n.acpAccountArgsTitle}: ${account.args.join(' ')}',
-                style: secondary,
-              ),
-            ),
-          ],
         ],
       ),
     );

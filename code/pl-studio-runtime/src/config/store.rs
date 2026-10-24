@@ -150,7 +150,7 @@ impl ConfigStore {
     ///
     /// 只有 `config.toml` 缺失时才采用内存默认配置。其余任何未知/未来版本、不可解析、
     /// 当前 schema 校验失败或含内联凭据的输入都保留原字节并返回错误，不重写文件、
-    /// 也不替换为默认配置；已知 18/19/20/21 版本走数据保全式迁移路径。
+    /// 也不替换为默认配置；`18..=24` 已知版本走数据保全式迁移路径。
     pub(crate) fn load_for_startup(
         &self,
     ) -> std::result::Result<StudioConfig, super::ConfigRuntimeError> {
@@ -243,7 +243,8 @@ impl ConfigStore {
         let rewritten = rewrite_legacy_deepseek_standalone_dialect(text)?;
         let rewritten = migrate_model_identifiers(&rewritten)?;
         // 18..22 先完成各自的既有转换，再统一执行 Provider/Preset → Account/AccountTemplate；
-        // 23 只需前进版本并补出空 ACP 集合，账号、路由、Profile 与凭据关联全部原样保留。
+        // 23 只需前进版本并补出空 ACP 集合；24→25 只退役 ACP 旧 `program`/`args`。三种情况都不
+        // 改动账号、路由、Profile 与凭据关联。
         let mut inline_tokens = std::collections::BTreeMap::new();
         let rewritten =
             super::schema_migration::rewrite_account_document(&rewritten, &mut inline_tokens)?;
@@ -256,7 +257,7 @@ impl ConfigStore {
             }
             19 => migrate_legacy_planner_route(&mut config, source_version)?,
             20..=super::schema_migration::LEGACY_ACCOUNT_SCHEMA => {}
-            23 => {}
+            23 | 24 => {}
             other => {
                 return Err(PureError::ConfigError(format!(
                     "unsupported Studio config schema version: {other}"
@@ -978,7 +979,10 @@ mod tests {
         );
         // 持久化文档是当前结构：无 providers/preset/adapter/preset_defaults。
         let persisted = fs::read_to_string(path).unwrap();
-        assert!(persisted.contains("schema_version = 24"));
+        assert!(persisted.contains(&format!(
+            "schema_version = {}",
+            crate::STUDIO_CONFIG_SCHEMA_VERSION
+        )));
         assert!(persisted.contains("template_defaults"));
         assert!(!persisted.contains("models.providers"));
         assert!(!persisted.contains("preset_defaults"));
@@ -1031,7 +1035,10 @@ mod tests {
             Some("legacy-secret")
         );
         let persisted = fs::read_to_string(path).unwrap();
-        assert!(persisted.contains("schema_version = 24"));
+        assert!(persisted.contains(&format!(
+            "schema_version = {}",
+            crate::STUDIO_CONFIG_SCHEMA_VERSION
+        )));
         assert!(!persisted.contains("models.providers"));
         assert_eq!(store.load_for_startup().unwrap(), expected);
         assert_eq!(migrated_backups(path).len(), 1);
@@ -1250,7 +1257,6 @@ mod tests {
             loaded.schema_version,
             super::super::STUDIO_CONFIG_SCHEMA_VERSION
         );
-        assert_eq!(loaded.schema_version, 24);
         assert_eq!(
             capabilities.web_search.standalone,
             Some(StandaloneWebSearchDialect::DeepSeekToolsApi)
@@ -1317,7 +1323,10 @@ mod tests {
         let loaded = store
             .load_for_startup()
             .expect("schema 20 without dialect token migrates");
-        assert_eq!(loaded.schema_version, 24);
+        assert_eq!(
+            loaded.schema_version,
+            super::super::STUDIO_CONFIG_SCHEMA_VERSION
+        );
         assert_eq!(loaded.mode_model_routes, config.mode_model_routes);
         assert_eq!(loaded.models.routes, config.models.routes);
         assert_eq!(
@@ -1331,7 +1340,7 @@ mod tests {
         assert!(loaded.deepseek_web_search.fetch_enabled);
     }
 
-    /// 23→24：只前进版本并补出空 ACP 集合，Native 账号、路由、搜索设置与用户 Profile 原样保留。
+    /// 23→当前 schema：前进版本并补出空 ACP 集合，Native 账号、路由、搜索设置与用户 Profile 原样保留。
     #[test]
     fn schema_23_gains_empty_acp_and_preserves_native_config_and_profiles() {
         let (_directory, store) = isolated_store();
@@ -1374,7 +1383,7 @@ mod tests {
         assert_eq!(
             fs::read(agents.join("verify.toml")).expect("reread profile"),
             profile.as_bytes(),
-            "user Agent Profile is preserved across 23→24"
+            "user Agent Profile is preserved across the schema upgrade"
         );
         assert_eq!(
             fs::read(migrated_backups(path).pop().expect("migration backup")).expect("read backup"),
@@ -1389,7 +1398,11 @@ mod tests {
         store.save(&config).expect("save current schema");
         let path = store.paths.config_file();
         let mut table = read_table(path);
-        table.insert("schema_version".into(), toml::Value::Integer(25));
+        // 真正的"未来版本"：始终比当前 schema 高一级，不随版本提升失效。
+        table.insert(
+            "schema_version".into(),
+            toml::Value::Integer(i64::from(crate::STUDIO_CONFIG_SCHEMA_VERSION) + 1),
+        );
         write_table(path, &table);
         let original = fs::read(path).expect("original future-schema bytes");
 

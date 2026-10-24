@@ -1,5 +1,6 @@
 pub mod accounts;
 pub mod acp;
+pub mod acp_install;
 pub mod agent_profiles;
 pub mod attachment;
 pub mod bots;
@@ -18,6 +19,7 @@ pub mod updater;
 
 pub use accounts::*;
 pub use acp::*;
+pub use acp_install::*;
 pub use agent_profiles::*;
 pub use attachment::*;
 pub use bots::*;

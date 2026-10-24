@@ -1,8 +1,9 @@
 //! 认证命令的协议步骤编排。
 //!
-//! 每个步骤都在连接前台 future 中顺序执行：`initialize` 协商 v1 能力，随后按命令探测
-//! `session/new` 或在核验方法后登录再探测，最后按已协商能力释放探测会话。这里不发送 prompt、
-//! 不调用模型、不安装工具，也不等待需要同连接消息才能完成的回调。
+//! 每个步骤都在连接前台 future 中顺序执行：`initialize` 协商 v1 能力并核对宿主要求的
+//! 服务端版本，随后按命令探测 `session/new` 或在核验方法后登录再探测，最后按已协商能力
+//! 释放探测会话。这里不发送 prompt、不调用模型、不安装工具，也不等待需要同连接消息才能
+//! 完成的回调。
 
 use std::time::Duration;
 
@@ -29,6 +30,7 @@ pub(super) async fn negotiate(
     stream: StreamGuard,
 ) -> Result<AuthOutcome, AuthError> {
     let AuthRequest {
+        expected_server_version,
         probe_cwd,
         action,
         cancellation,
@@ -53,6 +55,14 @@ pub(super) async fn negotiate(
 
     if initialize.protocol_version != ProtocolVersion::V1 {
         return Err(AuthError::unsupported_version());
+    }
+    if initialize
+        .agent_info
+        .as_ref()
+        .map(|info| info.version.as_str())
+        != Some(expected_server_version.as_str())
+    {
+        return Err(AuthError::server_version_mismatch());
     }
 
     let server = server_info(initialize.agent_info.as_ref());

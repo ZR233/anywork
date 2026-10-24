@@ -13,8 +13,8 @@ use pl_protocol::studio::{AcpAuthAction, AcpAuthFailureCode, AcpAuthStage, AcpAu
 use tokio::sync::watch;
 
 use super::mapping::{
-    AcpFailure, map_auth_error, map_auth_methods, map_auth_server, map_progress, prepare_probe_dir,
-    protocol_action,
+    AcpFailure, map_auth_error, map_auth_methods, map_auth_server, map_progress, prepare_failure,
+    prepare_probe_dir, protocol_action,
 };
 use super::registry::{AcpAuthInner, Operation};
 use super::worker::{AcpSpawnError, AcpSpawnRequest, AcpWorker, Reclaim};
@@ -24,8 +24,8 @@ const CLEANUP_RETRY_INTERVAL: Duration = Duration::from_secs(1);
 
 /// 一次操作的启动意图；全部字段来自受理时的 canonical 配置快照与请求本身。
 pub(super) struct OperationPlan {
-    pub program: String,
-    pub args: Vec<String>,
+    /// 已受理接入的 provider；固定发行身份由产品清单决定，配置与客户端都不能提交。
+    pub provider: crate::config::AcpProvider,
     pub action: AcpAuthAction,
 }
 
@@ -52,9 +52,42 @@ pub(super) async fn run(inner: Arc<AcpAuthInner>, operation: Arc<Operation>, pla
         return;
     }
 
-    // 1. 探测目录与官方进程：都从 canonical 配置派生，不使用用户项目路径；spawn 自身在
-    //    异步解析受监督 worker 之后、真正启动之前再次检查取消。
-    let spawned = spawn_process(&inner, &account_id, &plan, &operation).await;
+    // 1. 前置：只读验证产品固定发行的受管安装。缺失/损坏/不支持的平台都在这里给出 typed 失败，
+    //    绝不隐式下载或修复；验证本身不派生进程，因此失败路径没有额外的物理收尾责任。
+    let verified = match super::super::acp_install::verified_install(
+        &inner.store,
+        plan.provider,
+        &operation.cancel,
+    )
+    .await
+    {
+        Ok(verified) => verified,
+        Err(failure) => {
+            let state = if operation.cancel.is_cancelled() {
+                AcpAuthState::Cancelled
+            } else {
+                prepare_failure(failure).into_state()
+            };
+            inner.complete_operation(
+                &account_id,
+                operation.generation,
+                operation.connection_revision,
+                state,
+            );
+            return;
+        }
+    };
+    // 只记录非密钥的安装事实，便于诊断"本次认证用的是哪一个受管安装"。
+    tracing::debug!(
+        installation = %verified.installation_id,
+        version = %verified.release.version,
+        target = %verified.release.target,
+        "ACP auth uses a verified managed installation"
+    );
+
+    // 2. 探测目录与官方进程：探测目录在接入专属空目录内，进程只用已验证的冻结启动资格；
+    //    spawn 自身在异步解析受监督 worker 之后、真正启动之前再次检查取消。
+    let spawned = spawn_process(&inner, &account_id, &verified, &operation).await;
     let (mut worker, probe_dir) = match spawned {
         Ok(value) => value,
         Err(failure) => {
@@ -101,7 +134,7 @@ pub(super) async fn run(inner: Arc<AcpAuthInner>, operation: Arc<Operation>, pla
         return;
     };
 
-    // 2. 把已协商的 IO、取消与进展通道交给协议客户端；它不启动进程、不读配置。
+    // 3. 把已协商的 IO、取消与进展通道交给协议客户端；它不启动进程、不读配置。
     let (progress_sender, mut progress_receiver) =
         watch::channel(pl_acp::auth::AuthProgress::Initializing);
     let request = pl_acp::auth::AuthRequest {
@@ -109,6 +142,9 @@ pub(super) async fn run(inner: Arc<AcpAuthInner>, operation: Arc<Operation>, pla
         action: protocol_action(&plan.action),
         cancellation: operation.cancel.clone(),
         progress: progress_sender,
+        // 产品固定发行版本：由协议客户端在 initialize 之后、任何 Session/check/authenticate 之前
+        // 与原字符串精确比较，版本不符时不会发出 `session/new` 或 `authenticate`。
+        expected_server_version: super::super::acp_install::SERVER_VERSION.to_string(),
     };
     let mut authentication = Box::pin(pl_acp::auth::run_authentication(writer, reader, request));
     let mut progress_open = true;
@@ -144,7 +180,7 @@ pub(super) async fn run(inner: Arc<AcpAuthInner>, operation: Arc<Operation>, pla
     drop(authentication);
     drop(progress_receiver);
 
-    // 3. 物理收尾：进入 Closing（busy 非终态），确认资源停止后才发布终态。
+    // 4. 物理收尾：进入 Closing（busy 非终态），确认资源停止后才发布终态。
     inner.publish_closing(
         &account_id,
         operation.generation,
@@ -221,6 +257,10 @@ async fn reclaim_worker(
 }
 
 /// 协议结果到终态；取消优先于其它失败类别，其余按类型化失败呈现。
+///
+/// 版本闸门由协议客户端在 `initialize` 之后、任何探测会话与登录请求之前执行（它持有
+/// `expected_server_version`）：版本不符时这里只会收到类型化失败，因此不再有第二套迟到比较
+/// （design/28 §28.3）。
 fn terminal_state(
     protocol: Option<Result<pl_acp::auth::AuthOutcome, pl_acp::auth::AuthError>>,
     operation: &Operation,
@@ -254,11 +294,11 @@ fn terminal_state(
     }
 }
 
-/// 准备探测目录并启动官方进程；失败时映射为类型化阶段错误。
+/// 准备探测目录并启动已验证的官方程序；失败时映射为类型化阶段错误。
 async fn spawn_process(
     inner: &Arc<AcpAuthInner>,
     account_id: &str,
-    plan: &OperationPlan,
+    verified: &super::super::acp_install::VerifiedInstall,
     operation: &Operation,
 ) -> Result<(AcpWorker, PathBuf), AcpFailure> {
     let probe_dir = prepare_probe_dir(inner, account_id)
@@ -269,8 +309,8 @@ async fn spawn_process(
             retryable: true,
         })?;
     let request = AcpSpawnRequest {
-        program: PathBuf::from(plan.program.trim()),
-        args: plan.args.clone(),
+        program: verified.program.clone(),
+        args: verified.args.clone(),
         cwd: probe_dir.clone(),
     };
     match AcpWorker::spawn(request, &inner.workers, &operation.cancel).await {

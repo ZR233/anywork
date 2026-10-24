@@ -23,8 +23,6 @@ pub(crate) fn bridge_acp_account_settings(
         account_id: account.account_id,
         name: account.name,
         provider: bridge_acp_provider(account.provider),
-        program: account.program,
-        args: account.args,
         connection_revision: account.connection_revision,
     }
 }
@@ -41,8 +39,12 @@ pub(crate) fn bridge_acp_account_catalog(
                 display_name: template.display_name,
                 description: template.description,
                 icon_key: template.icon_key,
-                default_args: template.default_args,
+                supported_version: template.supported_version,
                 install_url: template.install_url,
+                terms_url: template.terms_url,
+                automatic_install: super::acp_install::bridge_acp_install_availability(
+                    template.automatic_install,
+                ),
             })
             .collect(),
     }
@@ -61,8 +63,6 @@ pub(crate) fn update_acp_account_request(
             account_id: account.account_id,
             name: account.name,
             provider: protocol_provider(account.provider),
-            program: account.program,
-            args: account.args,
         },
     }
 }
@@ -186,6 +186,18 @@ fn bridge_acp_failure_code(
     code: pl_protocol::studio::AcpAuthFailureCode,
 ) -> BridgeAcpAuthFailureCode {
     match code {
+        pl_protocol::studio::AcpAuthFailureCode::PreparationRequired => {
+            BridgeAcpAuthFailureCode::PreparationRequired
+        }
+        pl_protocol::studio::AcpAuthFailureCode::InstallationInvalid => {
+            BridgeAcpAuthFailureCode::InstallationInvalid
+        }
+        pl_protocol::studio::AcpAuthFailureCode::UnsupportedPlatform => {
+            BridgeAcpAuthFailureCode::UnsupportedPlatform
+        }
+        pl_protocol::studio::AcpAuthFailureCode::ServerVersionMismatch => {
+            BridgeAcpAuthFailureCode::ServerVersionMismatch
+        }
         pl_protocol::studio::AcpAuthFailureCode::Startup => BridgeAcpAuthFailureCode::Startup,
         pl_protocol::studio::AcpAuthFailureCode::MissingExecutable => {
             BridgeAcpAuthFailureCode::MissingExecutable
@@ -221,6 +233,7 @@ fn bridge_acp_failure_code(
 
 fn bridge_acp_failure_stage(stage: pl_protocol::studio::AcpAuthStage) -> BridgeAcpAuthStage {
     match stage {
+        pl_protocol::studio::AcpAuthStage::Prepare => BridgeAcpAuthStage::Prepare,
         pl_protocol::studio::AcpAuthStage::Process => BridgeAcpAuthStage::Process,
         pl_protocol::studio::AcpAuthStage::Config => BridgeAcpAuthStage::Config,
         pl_protocol::studio::AcpAuthStage::Initialize => BridgeAcpAuthStage::Initialize,

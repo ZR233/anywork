@@ -4,6 +4,7 @@
 // ignore_for_file: invalid_use_of_internal_member, unused_import, unnecessary_import
 
 import '../../../frb_generated.dart';
+import 'acp_install.dart';
 import 'command.dart';
 
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
@@ -33,8 +34,6 @@ class BridgeAcpAccountSettings {
   final String accountId;
   final String name;
   final BridgeAcpProvider provider;
-  final String program;
-  final List<String> args;
 
   /// runtime 拥有的非密钥连接身份；名称编辑不改变它。
   final BigInt connectionRevision;
@@ -43,8 +42,6 @@ class BridgeAcpAccountSettings {
     required this.accountId,
     required this.name,
     required this.provider,
-    required this.program,
-    required this.args,
     required this.connectionRevision,
   });
 
@@ -53,8 +50,6 @@ class BridgeAcpAccountSettings {
       accountId.hashCode ^
       name.hashCode ^
       provider.hashCode ^
-      program.hashCode ^
-      args.hashCode ^
       connectionRevision.hashCode;
 
   @override
@@ -65,27 +60,35 @@ class BridgeAcpAccountSettings {
           accountId == other.accountId &&
           name == other.name &&
           provider == other.provider &&
-          program == other.program &&
-          args == other.args &&
           connectionRevision == other.connectionRevision;
 }
 
-/// 一种接入类型的模板：默认参数、图标与官方安装说明。
+/// 一种接入类型的模板：固定的官方发行版本、图标与官方安装说明。
 class BridgeAcpAccountTemplate {
   final BridgeAcpProvider provider;
   final String displayName;
   final String description;
   final String iconKey;
-  final List<String> defaultArgs;
+
+  /// 产品固定支持的官方 server 版本；客户端不硬编码第二份选择表。
+  final String supportedVersion;
   final String installUrl;
+
+  /// 官方条款/隐私说明；空字符串表示不展示。
+  final String termsUrl;
+
+  /// 当前宿主平台能否由产品自动准备官方 server。
+  final BridgeAcpInstallAvailability automaticInstall;
 
   const BridgeAcpAccountTemplate({
     required this.provider,
     required this.displayName,
     required this.description,
     required this.iconKey,
-    required this.defaultArgs,
+    required this.supportedVersion,
     required this.installUrl,
+    required this.termsUrl,
+    required this.automaticInstall,
   });
 
   @override
@@ -94,8 +97,10 @@ class BridgeAcpAccountTemplate {
       displayName.hashCode ^
       description.hashCode ^
       iconKey.hashCode ^
-      defaultArgs.hashCode ^
-      installUrl.hashCode;
+      supportedVersion.hashCode ^
+      installUrl.hashCode ^
+      termsUrl.hashCode ^
+      automaticInstall.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -106,8 +111,10 @@ class BridgeAcpAccountTemplate {
           displayName == other.displayName &&
           description == other.description &&
           iconKey == other.iconKey &&
-          defaultArgs == other.defaultArgs &&
-          installUrl == other.installUrl;
+          supportedVersion == other.supportedVersion &&
+          installUrl == other.installUrl &&
+          termsUrl == other.termsUrl &&
+          automaticInstall == other.automaticInstall;
 }
 
 /// 保存一条接入的唯一意图。
@@ -115,24 +122,15 @@ class BridgeAcpAccountUpdate {
   final String accountId;
   final String name;
   final BridgeAcpProvider provider;
-  final String program;
-  final List<String> args;
 
   const BridgeAcpAccountUpdate({
     required this.accountId,
     required this.name,
     required this.provider,
-    required this.program,
-    required this.args,
   });
 
   @override
-  int get hashCode =>
-      accountId.hashCode ^
-      name.hashCode ^
-      provider.hashCode ^
-      program.hashCode ^
-      args.hashCode;
+  int get hashCode => accountId.hashCode ^ name.hashCode ^ provider.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -141,9 +139,7 @@ class BridgeAcpAccountUpdate {
           runtimeType == other.runtimeType &&
           accountId == other.accountId &&
           name == other.name &&
-          provider == other.provider &&
-          program == other.program &&
-          args == other.args;
+          provider == other.provider;
 }
 
 class BridgeAcpAuthAccount {
@@ -231,6 +227,17 @@ class BridgeAcpAuthFailure {
 }
 
 enum BridgeAcpAuthFailureCode {
+  /// 固定发行的受管安装尚未准备：必须显式准备，不隐式下载或修复。
+  preparationRequired,
+
+  /// 受管安装存在但与冻结描述符不一致。
+  installationInvalid,
+
+  /// 当前宿主平台没有产品支持的官方发行。
+  unsupportedPlatform,
+
+  /// 协商出的 server 版本缺失或不是产品固定支持的版本。
+  serverVersionMismatch,
   startup,
   missingExecutable,
   io,
@@ -312,6 +319,8 @@ class BridgeAcpAuthSnapshot {
 }
 
 enum BridgeAcpAuthStage {
+  /// 启动前验证受管安装（只读）。
+  prepare,
   process,
   config,
   initialize,
