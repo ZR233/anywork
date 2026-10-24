@@ -111,7 +111,6 @@ fn settings_view(
                 billing_kind: account.billing_kind()?,
                 billing_kind_override: account.billing_kind,
                 disabled_models: account.disabled_models().iter().cloned().collect(),
-                pricing_enabled: account.pricing_mode == pl_protocol::PricingMode::Catalog,
                 account_id: id.to_string(),
                 template_id: account.template_id().map(ToString::to_string),
                 protocol: account.protocol.as_str().to_string(),

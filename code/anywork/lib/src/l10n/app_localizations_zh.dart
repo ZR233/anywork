@@ -2926,10 +2926,11 @@ class AppLocalizationsZh extends AppLocalizations {
   String get roleEmpty => '智能体';
 
   @override
-  String get settingsPricingEnabled => '估算词元费用';
+  String get settingsNoCharge => '不计费';
 
   @override
-  String get settingsPricingHelp => '仅控制应用内费用估算，词元与缓存统计照常。费用估算默认关闭。';
+  String get settingsNoChargeHelp =>
+      '开启：声明此账号之后的模型调用不计费。关闭：清除计费类别覆盖，恢复自动推导。词元、缓存、性能统计和模型参考价格仍保留；其他类别在价格和用量可用时估算费用。';
 
   @override
   String get settingsModelAdvanced => '模型可选设置';
@@ -4847,7 +4848,8 @@ class AppLocalizationsZh extends AppLocalizations {
   String get settingsBillingOverride => '显式覆盖';
 
   @override
-  String get settingsBillingHint => '与金额统计独立；计费类别不代表订阅仍有效或额度充足。';
+  String get settingsBillingHint =>
+      '不计费仅影响之后的调用；其他类别按可用价格和用量估算。订阅不代表套餐仍有效、额度充足或零费用；模型参考价格始终保留。';
 
   @override
   String get settingsModelDetails => '模型详情';

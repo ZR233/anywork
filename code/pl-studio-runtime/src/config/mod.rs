@@ -66,7 +66,7 @@ pub use runtime::{
 };
 pub use store::{ConfigPaths, ConfigStore};
 
-pub const STUDIO_CONFIG_SCHEMA_VERSION: u32 = 25;
+pub const STUDIO_CONFIG_SCHEMA_VERSION: u32 = 26;
 pub const STUDIO_CONFIG_DIR_NAME: &str = ".anywork";
 pub const STUDIO_CONFIG_FILE_NAME: &str = "config.toml";
 

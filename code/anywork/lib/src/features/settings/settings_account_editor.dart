@@ -7,6 +7,7 @@ import '../../shared/studio_driver_keys.dart';
 import 'settings_common.dart';
 import 'settings_account_drafts.dart';
 import 'settings_account_model_readout.dart';
+import 'settings_account_selection.dart';
 
 class AccountEditor extends StatelessWidget {
   const AccountEditor({
@@ -164,17 +165,30 @@ class AccountEditor extends StatelessWidget {
                   ],
                 ),
                 const SizedBox(height: 12),
-                SwitchListTile(
-                  key: StudioDriverKeys.accountPricing,
-                  title: Text(context.l10n.settingsPricingEnabled),
-                  subtitle: Text(context.l10n.settingsPricingHelp),
-                  value: account.pricingEnabled,
-                  onChanged: saving
-                      ? null
-                      : (enabled) => onUpdate(
-                          (item) => item.copyWith(pricingEnabled: enabled),
-                        ),
-                ),
+                if (draft.mode == AccountDraftMode.create)
+                  SwitchListTile(
+                    key: StudioDriverKeys.accountNoCharge,
+                    title: Text(context.l10n.settingsNoCharge),
+                    subtitle: Text(context.l10n.settingsNoChargeHelp),
+                    value: account.billingKind == BillingKind.noCharge,
+                    onChanged: saving
+                        ? null
+                        : (enabled) => onUpdate(
+                            (item) => item.copyWith(
+                              billingKind: enabled
+                                  ? BillingKind.noCharge
+                                  : BillingKind.unknown,
+                              billingKindOverride: enabled
+                                  ? BillingKind.noCharge
+                                  : null,
+                            ),
+                          ),
+                  )
+                else
+                  AccountNoChargeControl(
+                    accountId: account.id,
+                    enabled: !saving,
+                  ),
                 const SizedBox(height: 12),
                 SettingsSectionPanel(
                   title: context.l10n.settingsAccountOnlineModelsTitle,

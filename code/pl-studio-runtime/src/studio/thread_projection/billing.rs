@@ -10,6 +10,19 @@ pub(crate) struct AuxiliaryBillingReceipt {
     pub succeeded: bool,
 }
 
+impl AuxiliaryBillingReceipt {
+    /// v3 adds explicit no-charge accounting, without reinterpreting older Disabled records.
+    const VERSION: u32 = 3;
+
+    pub(crate) fn into_payload(self) -> Result<pl_core::context::OpaquePayload> {
+        Ok(pl_core::context::OpaquePayload::new(
+            "pl.studio.auxiliary-billing",
+            Self::VERSION,
+            serde_json::to_string(&self)?,
+        )?)
+    }
+}
+
 pub(in crate::studio) struct BillingFact {
     pub status: super::super::storage::calls::CallStatus,
     pub record: InferenceBillingRecord,
@@ -112,7 +125,7 @@ pub(super) fn decode_auxiliary_receipt_for_projection(
 
 fn decode_auxiliary_receipt(version: u32, content: &str) -> Result<AuxiliaryBillingReceipt> {
     anyhow::ensure!(
-        (1..=2).contains(&version),
+        (1..=AuxiliaryBillingReceipt::VERSION).contains(&version),
         "unsupported auxiliary billing version"
     );
     let mut value: serde_json::Value = serde_json::from_str(content)?;
@@ -142,7 +155,13 @@ fn decode_auxiliary_receipt(version: u32, content: &str) -> Result<AuxiliaryBill
             *reason = serde_json::Value::String("accountChanged".into());
         }
     }
-    serde_json::from_value(value).map_err(anyhow::Error::from)
+    let receipt: AuxiliaryBillingReceipt = serde_json::from_value(value)?;
+    anyhow::ensure!(
+        version == AuxiliaryBillingReceipt::VERSION
+            || receipt.billing.accounting.pricing != pl_protocol::PricingOutcome::NoCharge,
+        "no-charge accounting requires auxiliary billing version 3"
+    );
+    Ok(receipt)
 }
 
 #[cfg(test)]

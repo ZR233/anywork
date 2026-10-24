@@ -206,6 +206,10 @@ owner epoch 和资源域合并。
 本次意图，不能回传陈旧账号快照覆盖凭据、目录或其他覆盖。pending/failure 由 mutation
 owner 持有，canonical enabled 仅由 Settings/目录响应和事件更新；旧完成不能覆盖新意图。
 页面退出只取消观察，已受理操作参与 Client 关闭 join，失败和未知结果沿用上述语义。
+账号“不计费”开关与类别选择消费同一 canonical `billingKind`/`billingKindOverride`，不另存
+免费布尔设置。已有账号开启写入 `noCharge`，关闭清除覆盖；普通连接/凭据草稿保存不能覆盖
+该窄意图。新账号初始类别随创建提交；失败不伪造开关成功，重开与其他观察者消费同一设置事实。
+
 启用、计费类别和手动模型删除的窄请求均显式传递本次 OperationId；Runtime 回执原样返回，
 Client 不改写不匹配的回执来强行关联。基于明确 CAS 拒绝的重试仍属于同一业务意图，
 不因刷新 revision 丢失操作身份；未知结果不自动重放。

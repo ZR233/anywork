@@ -1,8 +1,10 @@
 //! Synthetic account inventory only; selection is left to production queries.
 
 use super::super::*;
-use pl_model::model::{ModelParameter, ModelPricing, ParameterWire, WireAssignment};
-use pl_protocol::{DelegationSettings, PricingMode};
+use pl_model::model::{
+    ModelParameter, ModelPricing, ParameterWire, TokenPriceTier, WireAssignment,
+};
+use pl_protocol::{BillingKind, DelegationSettings};
 use pl_provider_fixture::delegation::{OTHER_MODEL, SHARED_MODEL};
 use pl_studio_runtime::config::UserAgentProfile;
 
@@ -36,7 +38,7 @@ pub(super) fn write(home: &Path, ready: &FixtureReady) -> Result<()> {
         ),
         a_models,
     );
-    a.pricing_mode = PricingMode::Disabled;
+    a.billing_kind = Some(BillingKind::Subscription);
     a.set_model_enabled("delegation-disabled", false)?;
     let mut b = AccountConfig::from_explicit_models(
         ProtocolEndpoint::compatible(
@@ -45,8 +47,7 @@ pub(super) fn write(home: &Path, ready: &FixtureReady) -> Result<()> {
         ),
         vec![model(SHARED_MODEL)],
     );
-    b.pricing_mode = PricingMode::Disabled;
-    b.billing_kind = Some(pl_protocol::BillingKind::Unknown);
+    b.billing_kind = Some(BillingKind::NoCharge);
     // Official-protocol account without a key is deliberately not admitted.
     // It is loopback-only and must never reach a completion endpoint.
     let mut no_credentials = AccountConfig::from_explicit_models(
@@ -119,10 +120,21 @@ fn model(id: &str) -> ModelInfo {
     model.context_window = Some(1_000_000);
     model.max_context_window = Some(1_000_000);
     model.pricing = ModelPricing::Unknown;
+    if matches!(id, SHARED_MODEL | OTHER_MODEL) {
+        // Synthetic reference prices, never an inferred quota or real supplier tariff.
+        model.pricing = ModelPricing::published_at(
+            "USD",
+            vec![TokenPriceTier::flat(2.0, 8.0, Some(0.5), Some(3.0))],
+            "https://example.invalid/synthetic-reference-prices",
+            1,
+        );
+    }
     model
         .binding
         .set_transport(ModelTransportProfile::responses_http());
     if id == OTHER_MODEL {
+        model.context_window = None;
+        model.auto_compact_token_limit = Some(700_000);
         model.capabilities.reasoning = true;
         model.parameters.push(ModelParameter {
             name: "effort".into(),

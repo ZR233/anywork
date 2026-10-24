@@ -66,7 +66,7 @@ async fn main() -> Result<()> {
             };
     }
     let runtime = ModelRuntime::new_with_account_id(&id, endpoint, model)?
-        .with_pricing_mode(account.pricing_mode);
+        .with_pricing_mode(account.billing_kind()?.into());
     let factory = ThreadModel::new(
         runtime,
         Some(ReasoningConfig {

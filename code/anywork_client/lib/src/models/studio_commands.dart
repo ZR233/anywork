@@ -66,7 +66,7 @@ class AccountCommand {
     required this.name,
     required this.baseUrl,
     required this.secret,
-    required this.pricingEnabled,
+    this.initialBillingKind,
     required this.customModels,
     required this.modelConnectionModes,
     required this.modelAutoCompactLimits,
@@ -82,7 +82,9 @@ class AccountCommand {
   final String name;
   final String baseUrl;
   final AccountSecretCommand secret;
-  final bool pricingEnabled;
+
+  /// Creation-only override. Ordinary edits never replay a billing snapshot.
+  final BillingKind? initialBillingKind;
   final List<AccountModelCommand> customModels;
   final List<AccountModelConnectionCommand> modelConnectionModes;
   final List<AccountModelAutoCompactCommand> modelAutoCompactLimits;
@@ -95,6 +97,7 @@ abstract final class AccountCommandBuilder {
   static AccountCommand buildAccount(
     AccountSettingsView value, {
     AccountSecretCommand? secret,
+    BillingKind? initialBillingKind,
   }) {
     final account = normalizeAccount(value);
     return AccountCommand(
@@ -110,7 +113,7 @@ abstract final class AccountCommandBuilder {
               : account.hasBearerToken
               ? const AccountSecretCommand.preserve()
               : const AccountSecretCommand.clear()),
-      pricingEnabled: account.pricingEnabled,
+      initialBillingKind: initialBillingKind,
       customModels: [
         for (final model in account.customModels)
           AccountModelCommand(

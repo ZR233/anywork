@@ -127,9 +127,25 @@ Future<void> main(List<String> args) async {
       'editor-without-threshold-entry',
       await recorder.readSnapshot(),
     );
+    final noCharge = find.byValueKey('account-no-charge');
+    await driver.scrollUntilVisible(
+      find.byValueKey('account-editor-scroll'),
+      noCharge,
+      dyScroll: -180,
+    );
+    await driver.tap(noCharge);
+    await recorder.capture(
+      'no-charge-canonical',
+      await recorder.waitBilling(id, 'noCharge', 'noCharge'),
+    );
     await driver.tap(find.byValueKey('account-save'));
     await driver.waitForAbsent(find.byValueKey('account-save'));
     final afterAccountSave = await recorder.waitOverride(id, model, 21000);
+    if (_account(afterAccountSave, id)['billingKind'] != 'noCharge') {
+      throw StateError(
+        'ordinary connection save replayed stale billing intent',
+      );
+    }
     if (_limit(afterAccountSave, id, unknown)['override'] != null) {
       throw StateError(
         'account field save restored a cleared sibling override',
@@ -140,10 +156,23 @@ Future<void> main(List<String> args) async {
       afterAccountSave,
     );
     await recorder.openDetails(id);
+    await driver.tap(find.byValueKey('account-edit'));
+    await driver.scrollUntilVisible(
+      find.byValueKey('account-editor-scroll'),
+      noCharge,
+      dyScroll: -180,
+    );
+    await driver.tap(noCharge);
+    await recorder.capture(
+      'no-charge-off-restores-auto',
+      await recorder.waitBilling(id, '${fixture['billingKind']}', null),
+    );
+    await driver.tap(find.byValueKey('account-cancel'));
+    await recorder.openDetails(id);
     await recorder.tapCompactReset(id, model);
     await recorder.waitOverride(id, model, null);
     await File('${output.path}/account-journey-summary.json').writeAsString(
-      '${const JsonEncoder.withIndent('  ').convert({'fixtureAccountId': id, 'model': model, 'unknownModel': unknown, 'inlineAutoSave': true, 'backendPolicy': true, 'restoreDefault': true, 'invalidNotPersisted': true, 'aboveSafeClamped': true, 'latestIntent': true, 'siblingsUnchanged': true, 'secondEditorEntryAbsent': true, 'humanVerdict': 'pending'})}\n',
+      '${const JsonEncoder.withIndent('  ').convert({'fixtureAccountId': id, 'model': model, 'unknownModel': unknown, 'inlineAutoSave': true, 'backendPolicy': true, 'restoreDefault': true, 'invalidNotPersisted': true, 'aboveSafeClamped': true, 'latestIntent': true, 'siblingsUnchanged': true, 'secondEditorEntryAbsent': true, 'noChargeCanonical': true, 'connectionEditPreservesBilling': true, 'noChargeOffClearsOverride': true, 'humanVerdict': 'pending'})}\n',
     );
     stdout.writeln('Account journey captured; human verdict pending.');
   } finally {
@@ -175,6 +204,26 @@ class _Recorder {
     String model,
     int? value,
   ) => waitLimit(id, model, (limit) => limit['override'] == value);
+
+  Future<Map<String, dynamic>> waitBilling(
+    String id,
+    String kind,
+    String? override,
+  ) async {
+    final deadline = DateTime.now().add(const Duration(seconds: 30));
+    while (DateTime.now().isBefore(deadline)) {
+      final snapshot = await readSnapshot();
+      final account = _account(snapshot, id);
+      if (account['billingKind'] == kind &&
+          account['billingKindOverride'] == override) {
+        return snapshot;
+      }
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+    }
+    throw StateError(
+      'canonical billing kind did not settle: $id/$kind/$override',
+    );
+  }
 
   Future<Map<String, dynamic>> waitLimit(
     String id,

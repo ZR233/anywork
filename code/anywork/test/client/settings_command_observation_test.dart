@@ -33,6 +33,80 @@ class _SettingsTransport extends RecordingDemoTransport {
 }
 
 void main() {
+  test('created no-charge account clears to automatic without replaying an override', () async {
+    final client = AnyworkClient(
+      transport: RecordingDemoTransport(),
+      clientId: 'created-billing',
+    );
+    addTearDown(client.close);
+    await client.bootstrap();
+    const id = 'created-no-charge';
+    final catalog = client.settings.state.accountCatalog;
+    final template = catalog.templates.first;
+    final draft = template.createAccount(
+      id,
+      catalog.modelsFor(template.modelCatalogId),
+    );
+    await client.settingsCommands.saveAccount(
+      AccountCommandBuilder.buildAccount(
+        draft,
+        initialBillingKind: BillingKind.noCharge,
+      ),
+    );
+    AccountSettingsView current() => client.settings.state.canonical!.accounts
+        .singleWhere((account) => account.id == id);
+    expect(current().billingKind, BillingKind.noCharge);
+    expect(current().billingKindOverride, BillingKind.noCharge);
+    // An ordinary endpoint edit preserves the explicit initial intent.
+    await client.settingsCommands.saveAccount(
+      AccountCommandBuilder.buildAccount(
+        draft.copyWith(
+          name: 'Edited connection',
+          baseUrl: 'https://changed.example/v1',
+        ),
+      ),
+    );
+    expect(current().billingKind, BillingKind.noCharge);
+    expect(current().billingKindOverride, BillingKind.noCharge);
+    await client.settingsCommands.setAccountBillingKind(id, null);
+    // Demo templates are synthetic and supply no canonical native billing facts.
+    expect(current().billingKind, BillingKind.unknown);
+    expect(current().billingKindOverride, isNull);
+    // Stale connection drafts cannot restore the cleared no-charge override.
+    await client.settingsCommands.saveAccount(
+      AccountCommandBuilder.buildAccount(
+        draft.copyWith(
+          billingKind: BillingKind.noCharge,
+          billingKindOverride: BillingKind.noCharge,
+        ),
+      ),
+    );
+    expect(current().billingKind, BillingKind.unknown);
+    expect(current().billingKindOverride, isNull);
+    await client.settingsCommands.setAccountBillingKind(
+      id,
+      BillingKind.subscription,
+    );
+    await client.settingsCommands.saveAccount(
+      AccountCommandBuilder.buildAccount(draft),
+    );
+    expect(current().billingKind, BillingKind.subscription);
+    expect(current().billingKindOverride, BillingKind.subscription);
+    await client.settingsCommands.removeAccount(id);
+    // Reusing an ID is a new resource, not an old inferred-category cache hit.
+    await client.settingsCommands.saveAccount(
+      AccountCommandBuilder.buildAccount(draft),
+    );
+    expect(current().billingKind, BillingKind.unknown);
+    expect(current().billingKindOverride, isNull);
+    await client.settingsCommands.setAccountBillingKind(
+      id,
+      BillingKind.noCharge,
+    );
+    await client.settingsCommands.setAccountBillingKind(id, null);
+    expect(current().billingKind, BillingKind.unknown);
+  });
+
   test('model enabled command accepts its own canonical receipt', () async {
     final transport = RecordingDemoTransport();
     final client = AnyworkClient(
@@ -57,11 +131,15 @@ void main() {
     expect(client.settings.state.commands[key]?.error, isNull);
     await client.settingsCommands.setAccountBillingKind(
       account.id,
-      BillingKind.unknown,
+      BillingKind.noCharge,
     );
     expect(
       client.settings.state.canonical!.accounts.first.billingKindOverride,
-      BillingKind.unknown,
+      BillingKind.noCharge,
+    );
+    expect(
+      client.settings.state.canonical!.accounts.first.billingKind,
+      BillingKind.noCharge,
     );
     await client.settingsCommands.setAccountBillingKind(account.id, null);
     expect(

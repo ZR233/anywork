@@ -15,7 +15,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 const FRAME_FORMAT: &str = "pl.model.assistant";
 /// Current frozen assistant-frame version.
-pub const FRAME_VERSION: u32 = 3;
+pub const FRAME_VERSION: u32 = 4;
+/// Frame encoding before explicit no-charge accounting was introduced.
+const LEGACY_FRAME_VERSION_V3: u32 = 3;
 /// Frame version written before the account model-binding field migration.
 const LEGACY_FRAME_VERSION_V2: u32 = 2;
 
@@ -96,9 +98,11 @@ struct LegacyAssistantFrameV2 {
 /// binding field names.
 fn decode_frame(payload: &OpaquePayload) -> Result<AssistantFrame, ModelError> {
     let unsupported = || invalid("unsupported or repeated model response receipt");
-    match payload.version() {
-        FRAME_VERSION => serde_json::from_str(payload.content())
-            .map_err(|source| failure(ModelFailureKind::UnsupportedContent, source)),
+    let frame = match payload.version() {
+        FRAME_VERSION | LEGACY_FRAME_VERSION_V3 => {
+            serde_json::from_str::<AssistantFrame>(payload.content())
+                .map_err(|source| failure(ModelFailureKind::UnsupportedContent, source))
+        }
         LEGACY_FRAME_VERSION_V2 => {
             let legacy: LegacyAssistantFrameV2 = serde_json::from_str(payload.content())
                 .map_err(|source| failure(ModelFailureKind::UnsupportedContent, source))?;
@@ -109,7 +113,17 @@ fn decode_frame(payload: &OpaquePayload) -> Result<AssistantFrame, ModelError> {
             })
         }
         _ => Err(unsupported()),
+    }?;
+    // v3 has the same field layout, but its Disabled outcome remains historical "not estimated".
+    // A new no-charge declaration must never be smuggled into an older producer version.
+    if payload.version() < FRAME_VERSION
+        && frame.receipt.response.accounting.pricing == pl_protocol::PricingOutcome::NoCharge
+    {
+        return Err(invalid(
+            "no-charge accounting requires model response receipt version 4",
+        ));
     }
+    Ok(frame)
 }
 
 pub(super) fn receipt(

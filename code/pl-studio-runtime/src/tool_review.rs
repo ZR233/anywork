@@ -108,11 +108,7 @@ async fn review(binding: ReviewBinding, request: ToolReviewRequest) -> ToolAppro
         succeeded: result.is_ok(),
     };
     let saved = async {
-        let payload = pl_core::context::OpaquePayload::new(
-            "pl.studio.auxiliary-billing",
-            2,
-            serde_json::to_string(&receipt)?,
-        )?;
+        let payload = receipt.into_payload()?;
         request.task.record_observation(payload).await?;
         Ok::<_, anyhow::Error>(())
     }

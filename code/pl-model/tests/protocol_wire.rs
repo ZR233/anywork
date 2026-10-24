@@ -945,7 +945,8 @@ async fn tool_replay_survives_checkpoint_without_reexecuting_tools_or_failed_out
             ProtocolEndpoint::compatible("fixture", fixture.base_url()),
             fixture_model,
         )
-        .unwrap();
+        .unwrap()
+        .with_pricing_mode(pl_protocol::PricingMode::NoCharge);
         let factory = ModelFactory::new(pl_model::runtime::ThreadModel::new(runtime, None));
         let count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let thread =
@@ -976,6 +977,11 @@ async fn tool_replay_survives_checkpoint_without_reexecuting_tools_or_failed_out
             .flat_map(|record| record.content.iter())
             .filter_map(|content| match content {
                 ContextContent::Opaque { payload } if payload.format() == "pl.model.assistant" => {
+                    assert_eq!(
+                        payload.version(),
+                        4,
+                        "NoCharge requires the new frame version"
+                    );
                     let frame: Value = serde_json::from_str(payload.content()).unwrap();
                     Some(
                         serde_json::from_value::<pl_model::completion::CompletionResponse>(
@@ -987,6 +993,12 @@ async fn tool_replay_survives_checkpoint_without_reexecuting_tools_or_failed_out
                 _ => None,
             })
             .collect::<Vec<_>>();
+        assert!(!responses.is_empty());
+        assert!(
+            responses
+                .iter()
+                .all(|response| response.accounting.pricing == PricingOutcome::NoCharge)
+        );
         assert!(
             responses.iter().any(|response| {
                 response.presentation_items.iter().any(|item| {
@@ -4015,7 +4027,8 @@ async fn provider_context_overflow_is_typed_and_keeps_the_original_receipt() {
             ProtocolEndpoint::compatible("fixture", fixture.base_url()),
             model("capacity-model", transport),
         )
-        .unwrap();
+        .unwrap()
+        .with_pricing_mode(pl_protocol::PricingMode::NoCharge);
         let session = ModelFactory::new(pl_model::runtime::ThreadModel::new(runtime, None))
             .open_session()
             .await
@@ -4029,9 +4042,15 @@ async fn provider_context_overflow_is_typed_and_keeps_the_original_receipt() {
             panic!("expected model error");
         };
         assert_eq!(error.kind, pl_core::model::ModelFailureKind::ContextLimit);
+        assert_eq!(
+            error.details.as_ref().unwrap().version(),
+            4,
+            "NoCharge requires the new failure receipt version"
+        );
         let receipt = pl_model::runtime::model_failure_receipt(&error)
             .unwrap()
             .unwrap();
+        assert_eq!(receipt.accounting.pricing, PricingOutcome::NoCharge);
         let failure = receipt.provider_failure.unwrap();
         assert_eq!(failure.code.as_deref(), Some("context_length_exceeded"));
         assert_eq!(failure.http_status, Some(400));

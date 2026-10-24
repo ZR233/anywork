@@ -836,13 +836,24 @@ pub(crate) struct CompactionReceipt {
     pub implementation: Option<String>,
     pub error: Option<String>,
 }
+
+impl CompactionReceipt {
+    /// v3 adds explicit no-charge accounting; native context-only checkpoints are unchanged.
+    const VERSION: u32 = 3;
+
+    pub(crate) fn into_payload(
+        self,
+    ) -> Result<pl_core::context::OpaquePayload, pl_core::model::ModelError> {
+        let payload = serde_json::to_string(&self).map_err(receipt_error)?;
+        pl_core::context::OpaquePayload::new("pl.studio.compaction", Self::VERSION, payload)
+            .map_err(receipt_error)
+    }
+}
 fn receipt_mutation(
     expected_revision: Option<u64>,
     receipt: CompactionReceipt,
 ) -> Result<ExtensionMutation, pl_core::model::ModelError> {
-    let payload = serde_json::to_string(&receipt).map_err(receipt_error)?;
-    let payload = pl_core::context::OpaquePayload::new("pl.studio.compaction", 2, payload)
-        .map_err(receipt_error)?;
+    let payload = receipt.into_payload()?;
     Ok(ExtensionMutation::Put {
         id: LATEST_RECEIPT.into(),
         expected_revision,
@@ -869,7 +880,7 @@ fn receipt_error(
 /// 用量等冻结事实原样保留，不改写 opaque 正文。
 pub(crate) fn decode_receipt(version: u32, content: &str) -> anyhow::Result<CompactionReceipt> {
     anyhow::ensure!(
-        (1..=2).contains(&version),
+        (1..=CompactionReceipt::VERSION).contains(&version),
         "unsupported auxiliary accounting receipt"
     );
     let mut value: serde_json::Value = serde_json::from_str(content)?;
@@ -899,7 +910,13 @@ pub(crate) fn decode_receipt(version: u32, content: &str) -> anyhow::Result<Comp
             }
         }
     }
-    serde_json::from_value(value).map_err(anyhow::Error::from)
+    let receipt: CompactionReceipt = serde_json::from_value(value)?;
+    anyhow::ensure!(
+        version == CompactionReceipt::VERSION
+            || receipt.accounting.pricing != pl_protocol::PricingOutcome::NoCharge,
+        "no-charge accounting requires compaction receipt version 3"
+    );
+    Ok(receipt)
 }
 
 /// Producer payload conversion is confined to the persisted checkpoint migration boundary.

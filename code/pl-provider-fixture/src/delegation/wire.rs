@@ -340,9 +340,10 @@ pub(super) struct ModelList {
 pub(super) struct Model {
     pub account_id: String,
     pub model_id: String,
+    pub context_window: Option<u64>,
     #[serde(default)]
     pub reasoning_efforts: Vec<String>,
-    pub pricing: Option<Value>,
+    pub pricing: Option<ReferencePricing>,
     pub billing_kind: String,
     pub performance: Performance,
 }
@@ -400,9 +401,30 @@ pub(super) struct Detail {
     pub unavailable_reason: Option<String>,
     pub guide: Option<Value>,
     pub billing_kind: String,
+    pub descriptor: ModelReference,
     pub performance: Performance,
     pub recent_evaluations: Vec<Evaluation>,
     pub evaluations: EvaluationSummary,
+}
+
+#[derive(Debug, Deserialize)]
+pub(super) struct ModelReference {
+    pub pricing: Option<ReferencePricing>,
+}
+
+#[derive(Debug, Deserialize, PartialEq)]
+pub(super) struct ReferencePricing {
+    pub currency: String,
+    pub tiers: Vec<ReferencePriceTier>,
+}
+
+#[derive(Debug, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct ReferencePriceTier {
+    pub input_per_mtok: f64,
+    pub output_per_mtok: f64,
+    pub cache_read_per_mtok: Option<f64>,
+    pub cache_write_per_mtok: Option<f64>,
 }
 
 #[derive(Debug, Deserialize)]

@@ -554,7 +554,9 @@ int _modeRouteHash(ModeModelRouteView route) =>
     Object.hash(route.modeId, route.accountId, route.modelId, route.effort);
 
 bool _accountEquals(AccountSettingsView left, AccountSettingsView right) {
-  return left.pricingEnabled == right.pricingEnabled &&
+  return left.billingKind == right.billingKind &&
+      left.billingKindOverride == right.billingKindOverride &&
+      listEquals(left.disabledModels, right.disabledModels) &&
       _catalogStatusEquals(left.modelCatalog, right.modelCatalog) &&
       left.id == right.id &&
       left.templateId == right.templateId &&
@@ -587,7 +589,9 @@ bool _accountEquals(AccountSettingsView left, AccountSettingsView right) {
 }
 
 int _accountHash(AccountSettingsView account) => Object.hashAll([
-  account.pricingEnabled,
+  account.billingKind,
+  account.billingKindOverride,
+  Object.hashAll(account.disabledModels),
   _catalogStatusHash(account.modelCatalog),
   account.id,
   account.templateId,

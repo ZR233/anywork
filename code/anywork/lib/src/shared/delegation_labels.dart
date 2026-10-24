@@ -24,6 +24,7 @@ extension DelegationLabels on BuildContext {
     null => l10n.settingsBillingAutomatic,
     BillingKind.metered => l10n.settingsBillingMetered,
     BillingKind.subscription => l10n.settingsBillingSubscription,
+    BillingKind.noCharge => l10n.settingsNoCharge,
     BillingKind.unknown => l10n.settingsBillingUnknown,
   };
   String delegationSummary(DelegationSettingsView value) =>

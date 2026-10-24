@@ -3940,7 +3940,8 @@ mod storage_fault_tests {
     async fn legacy_auxiliary_costs_are_imported_once_without_summing_overlapping_totals()
     -> Result<()> {
         let directory = tempfile::tempdir()?;
-        let history = HistoryStore::open(&directory.path().join("history.sqlite"), "costs").await?;
+        let path = directory.path().join("history.sqlite");
+        let history = HistoryStore::open(&path, "costs").await?;
         let mut state = pl_core::thread::ThreadSnapshot::default();
         state
             .usage_summary
@@ -3949,6 +3950,104 @@ mod storage_fault_tests {
                 currency: "USD".into(),
                 amount: 2.0,
             });
+        for (id, pricing) in [
+            ("historical-disabled", pl_protocol::PricingOutcome::Disabled),
+            ("no-charge", pl_protocol::PricingOutcome::NoCharge),
+        ] {
+            let receipt = crate::studio::thread_projection::AuxiliaryBillingReceipt {
+                succeeded: true,
+                billing: pl_protocol::InferenceBillingRecord {
+                    inference_id: id.into(),
+                    purpose: Some("title".into()),
+                    account_id: "frozen-account".into(),
+                    account_display_name: None,
+                    model_id: Some("frozen-model".into()),
+                    model_observation: None,
+                    effort: None,
+                    context_window: Some(64_000),
+                    accounting: pl_protocol::InferenceAccounting {
+                        usage: pl_protocol::UsageReport {
+                            input_tokens: Some(100),
+                            output_tokens: Some(10),
+                            cache_read_tokens: Some(40),
+                            cache_write_tokens: Some(20),
+                            reasoning_tokens: Some(5),
+                            total_tokens: Some(110),
+                        },
+                        pricing,
+                        price_snapshot: None,
+                        request_started_at: Some(1),
+                    },
+                    prompt_generation: None,
+                    prompt_cache_policy: None,
+                    prefix_changed_reason: None,
+                    orchestration: Default::default(),
+                    timing: None,
+                    recorded_at: 2,
+                },
+            };
+            let compaction = crate::compaction::CompactionReceipt {
+                inference_id: format!("compaction-{id}"),
+                binding: pl_model::runtime::ModelCallBinding {
+                    account_id: "frozen-account".into(),
+                    model_id: "frozen-model".into(),
+                    protocol: pl_model::protocol::ProtocolKind::OpenAiCompatible,
+                    wire_api: pl_model::protocol::WireApi::Responses,
+                    isolation: "frozen-namespace".into(),
+                    purpose: "compaction".into(),
+                    context_window: Some(64_000),
+                    max_context_window: Some(64_000),
+                    auto_compact_limit: None,
+                },
+                reasoning_effort: None,
+                context_window: Some(64_000),
+                turn_id: "frozen-turn".into(),
+                accounting: receipt.billing.accounting.clone(),
+                model_observation: None,
+                implementation: Some("textSummary".into()),
+                error: None,
+            };
+            state.extension_sequence += 1;
+            let compaction_payload = if id == "historical-disabled" {
+                pl_core::context::OpaquePayload::new(
+                    "pl.studio.compaction",
+                    2,
+                    serde_json::to_string(&compaction)?,
+                )?
+            } else {
+                let payload = compaction.into_payload()?;
+                assert_eq!(payload.version(), 3);
+                payload
+            };
+            state.extensions.insert(
+                format!("compaction-{id}"),
+                pl_core::thread::extensions::ExtensionRecord {
+                    revision: state.extension_sequence,
+                    payload: compaction_payload,
+                },
+            );
+            let payload = if id == "historical-disabled" {
+                // Real historical v2 can still express Disabled, never NoCharge.
+                pl_core::context::OpaquePayload::new(
+                    "pl.studio.auxiliary-billing",
+                    2,
+                    serde_json::to_string(&receipt)?,
+                )?
+            } else {
+                let payload = receipt.into_payload()?;
+                assert_eq!(payload.version(), 3);
+                payload
+            };
+            state.extension_sequence += 1;
+            state.extensions.insert(
+                id.into(),
+                pl_core::thread::extensions::ExtensionRecord {
+                    revision: state.extension_sequence,
+                    payload,
+                },
+            );
+        }
+        let frozen_billing = state.extensions.clone();
         let checkpoint = pl_core::thread::ThreadCheckpoint::capture("costs".into(), 0, state);
         let purposes = [("main", 2.0), ("title", 3.0), ("review", 4.0)]
             .into_iter()
@@ -3964,7 +4063,58 @@ mod storage_fault_tests {
             .collect::<Vec<_>>();
         history.import_checkpoint(&checkpoint, &purposes).await?;
         history.import_checkpoint(&checkpoint, &purposes).await?;
+        drop(history);
+        let history = HistoryStore::open(&path, "costs").await?;
+        history.prepare_activation().await?;
         let restored = history.checkpoint().await?.unwrap();
+        assert_eq!(restored.state.extensions, frozen_billing);
+        let batch = pl_core::thread::ThreadEffectBatch {
+            committed_at: 42,
+            extensions: restored
+                .state
+                .extensions
+                .iter()
+                .map(
+                    |(id, record)| pl_core::thread::extensions::ExtensionChange::Put {
+                        id: id.clone(),
+                        record: record.clone(),
+                    },
+                )
+                .collect(),
+            ..Default::default()
+        };
+        let facts = crate::studio::thread_projection::billing_facts(&batch)?;
+        assert_eq!(facts.len(), 4);
+        for fact in facts {
+            let expected = if fact.record.inference_id.ends_with("historical-disabled") {
+                pl_protocol::PricingOutcome::Disabled
+            } else {
+                pl_protocol::PricingOutcome::NoCharge
+            };
+            assert_eq!(fact.record.accounting.pricing, expected);
+            assert_eq!(fact.record.accounting.usage.total_tokens, Some(110));
+            assert!(fact.record.accounting.estimated_costs().is_empty());
+        }
+        for id in ["no-charge", "compaction-no-charge"] {
+            let payload = &restored.state.extensions[id].payload;
+            let wrong_version =
+                pl_core::context::OpaquePayload::new(payload.format(), 2, payload.content())?;
+            let wrong_batch = pl_core::thread::ThreadEffectBatch {
+                extensions: vec![pl_core::thread::extensions::ExtensionChange::Put {
+                    id: id.into(),
+                    record: pl_core::thread::extensions::ExtensionRecord {
+                        revision: 1,
+                        payload: wrong_version,
+                    },
+                }]
+                .into(),
+                ..Default::default()
+            };
+            assert!(
+                crate::studio::thread_projection::billing_facts(&wrong_batch).is_err(),
+                "NoCharge is not valid in a historical v2 billing/compaction payload"
+            );
+        }
         assert_eq!(restored.state.usage_summary.estimated_costs[0].amount, 9.0);
         let saved = history.accounting().await?.unwrap().purpose_costs;
         assert_eq!(

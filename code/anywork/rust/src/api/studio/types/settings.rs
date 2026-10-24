@@ -30,7 +30,8 @@ pub struct AccountInput {
     pub name: String,
     pub base_url: String,
     pub secret: AccountSecretInput,
-    pub pricing_enabled: bool,
+    /// Initial override for account creation only; existing accounts use the narrow command.
+    pub initial_billing_kind: Option<BridgeBillingKind>,
     pub custom_models: Vec<AccountModelInput>,
     pub model_connection_modes: Vec<AccountModelConnectionInput>,
     pub model_auto_compact_limits: Vec<AccountModelAutoCompactInput>,
@@ -383,7 +384,6 @@ pub struct BridgeModeModelSettingsDto {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct BridgeAccountSettingsDto {
-    pub pricing_enabled: bool,
     pub billing_kind: BridgeBillingKind,
     pub billing_kind_override: Option<BridgeBillingKind>,
     pub disabled_models: Vec<String>,
@@ -656,7 +656,6 @@ pub struct BridgeAccountCatalogSnapshot {
 
 #[derive(Debug, Clone)]
 pub struct BridgeAccountTemplateDescriptor {
-    pub pricing_enabled: bool,
     pub id: String,
     pub display_name: String,
     pub description: Option<String>,
@@ -854,7 +853,6 @@ impl From<pl_protocol::AccountCatalogSnapshot> for BridgeAccountCatalogSnapshot 
                 .templates
                 .into_iter()
                 .map(|preset| BridgeAccountTemplateDescriptor {
-                    pricing_enabled: preset.pricing_enabled,
                     id: preset.id,
                     display_name: preset.display_name,
                     description: preset.description,

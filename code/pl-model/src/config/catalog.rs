@@ -419,7 +419,6 @@ fn account_template_descriptor(template: &AccountTemplate) -> AccountTemplateDes
         protocol: template.account.protocol.as_str().to_string(),
         suggested_model_id: template.suggested_model_id.clone(),
         icon_key: template.icon_key.clone(),
-        pricing_enabled: template.account.pricing_mode == pl_protocol::PricingMode::Catalog,
         service_capabilities: account_service_capabilities_descriptor(
             &template.service_capabilities,
         ),
