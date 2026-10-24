@@ -1,6 +1,8 @@
 //! Live collection only. A human/agent reads the evidence; no marker or automated acceptance verdict.
 use anyhow::{Context, Result};
-use pl_studio_runtime::{ConfigStore, StudioHostKind, StudioRuntime, StudioRuntimeOptions};
+use pl_studio_runtime::{
+    ConfigStore, STUDIO_CONFIG_SCHEMA_VERSION, StudioHostKind, StudioRuntime, StudioRuntimeOptions,
+};
 use std::{
     collections::BTreeSet,
     io::Write,
@@ -10,6 +12,20 @@ use std::{
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    let selected_route = ObservationRoute::from_env()?;
+    let installed = ConfigStore::default_app()?;
+    let config_content = std::fs::read_to_string(installed.paths().config_file())?;
+    #[derive(serde::Deserialize)]
+    struct ConfigVersion {
+        schema_version: u32,
+    }
+    let version: ConfigVersion = toml::from_str(&config_content)?;
+    // Earlier migrations may import inline credentials or copy the legacy provider namespace.
+    anyhow::ensure!(
+        (23..=STUDIO_CONFIG_SCHEMA_VERSION).contains(&version.schema_version),
+        "observation requires config schema 23..={STUDIO_CONFIG_SCHEMA_VERSION} without credential migration; found {}",
+        version.schema_version
+    );
     let artifacts = match std::env::var_os("ANYWORK_WORKFLOW_ARTIFACT_DIR") {
         Some(path) => PathBuf::from(path),
         None => tempfile::Builder::new()
@@ -19,6 +35,8 @@ async fn main() -> Result<()> {
     };
     std::fs::create_dir_all(&artifacts)?;
     let home = artifacts.join("studio-home");
+    // Never resume an older observation's pending credential migration.
+    std::fs::create_dir(&home).context("observation requires a new isolated Studio home")?;
     let workspace = tempfile::Builder::new()
         .prefix("anywork-observation-workspace-")
         .tempdir()?
@@ -27,7 +45,6 @@ async fn main() -> Result<()> {
         artifacts.join("workspace-path.txt"),
         workspace.to_string_lossy().as_bytes(),
     )?;
-    std::fs::create_dir_all(&home)?;
     std::fs::create_dir_all(&workspace)?;
     let workspace_mode = match std::env::var("ANYWORK_OBSERVATION_WORKSPACE_MODE").as_deref() {
         Ok("worktree") => pl_protocol::ThreadWorkspaceMode::Worktree,
@@ -39,28 +56,28 @@ async fn main() -> Result<()> {
     if workspace_mode == pl_protocol::ThreadWorkspaceMode::Worktree {
         initialize_repository(&workspace)?;
     }
-    let installed = ConfigStore::default_app()?;
-    // Copy bytes, never save a hydrated config: the credential store belongs to the user.
-    std::fs::copy(installed.paths().config_file(), home.join("config.toml"))?;
-    if let Ok(account_id) = std::env::var("ANYWORK_OBSERVATION_ACCOUNT") {
-        let model_id = std::env::var("ANYWORK_OBSERVATION_MODEL")
-            .context("selected observation account requires ANYWORK_OBSERVATION_MODEL")?;
-        let mut config: toml::Value =
-            toml::from_str(&std::fs::read_to_string(home.join("config.toml"))?)?;
+    // Copy the validated bytes, never save a hydrated config: credentials belong to the user.
+    std::fs::write(home.join("config.toml"), &config_content)?;
+    if let Some(ObservationRoute {
+        account_id,
+        model_id,
+    }) = &selected_route
+    {
+        let mut config: toml::Value = toml::from_str(&config_content)?;
         let accounts = config
             .get_mut("models")
             .and_then(|v| v.get_mut("accounts"))
             .and_then(toml::Value::as_table_mut)
             .context("account table is missing")?;
         let selected = accounts
-            .get(&account_id)
+            .get(account_id)
             .context("observation account is not configured")?
             .clone();
         let account: pl_model::config::AccountConfig = selected.clone().try_into()?;
         let model = account
             .effective_models(None)?
             .into_iter()
-            .find(|m| m.model_id == model_id)
+            .find(|m| m.model_id == *model_id)
             .context("observation model is not configured")?;
         let effort = model
             .parameters
@@ -100,8 +117,8 @@ async fn main() -> Result<()> {
         }
         std::fs::write(home.join("config.toml"), toml::to_string(&config)?)?;
     }
-    // Fail explicitly before runtime initialization can apply configuration recovery defaults.
-    ConfigStore::for_studio_home(home.clone()).load()?;
+    // The isolated copy uses the production startup migration, rather than strict current-schema
+    // loading. Collection rejects any reset-to-defaults recovery before submitting a model task.
     let prompt = match std::env::var_os("ANYWORK_OBSERVATION_PROMPT") {
         Some(path) => std::fs::read_to_string(path)?,
         None => "请派两个 fresh-context explorer 分别解释文件所有权和 Turn 生命周期。详细、自包含地派发。一个自然 final，另一个 finish_turn。等待完整报告，阅读后总结；不修改文件，不提交计划，不询问用户。".into(),
@@ -127,6 +144,7 @@ async fn main() -> Result<()> {
             prompt,
             workspace_mode,
             seconds,
+            selected_route,
         },
     )
     .await;
@@ -151,6 +169,40 @@ struct Observation<'a> {
     prompt: String,
     workspace_mode: pl_protocol::ThreadWorkspaceMode,
     seconds: u64,
+    selected_route: Option<ObservationRoute>,
+}
+
+struct ObservationRoute {
+    account_id: String,
+    model_id: String,
+}
+
+impl ObservationRoute {
+    fn from_env() -> Result<Option<Self>> {
+        use std::env::VarError;
+        match (
+            std::env::var("ANYWORK_OBSERVATION_ACCOUNT"),
+            std::env::var("ANYWORK_OBSERVATION_MODEL"),
+        ) {
+            (Err(VarError::NotPresent), Err(VarError::NotPresent)) => Ok(None),
+            (Ok(account_id), Ok(model_id)) => {
+                anyhow::ensure!(
+                    !account_id.trim().is_empty() && !model_id.trim().is_empty(),
+                    "observation account and model must both be nonempty"
+                );
+                Ok(Some(Self {
+                    account_id,
+                    model_id,
+                }))
+            }
+            (Err(VarError::NotUnicode(_)), _) | (_, Err(VarError::NotUnicode(_))) => {
+                anyhow::bail!("observation account and model must both be valid Unicode")
+            }
+            _ => anyhow::bail!(
+                "ANYWORK_OBSERVATION_ACCOUNT and ANYWORK_OBSERVATION_MODEL must be set together"
+            ),
+        }
+    }
 }
 
 async fn collect(
@@ -164,7 +216,12 @@ async fn collect(
         prompt,
         workspace_mode,
         seconds,
+        selected_route,
     } = observation;
+    anyhow::ensure!(
+        runtime.runtime_snapshot().await?.startup_recovery.is_none(),
+        "isolated Studio startup reset configuration; refusing to observe a default account"
+    );
     let project = runtime.open_project(workspace).await?;
     let route = runtime
         .read_settings()?
@@ -174,6 +231,16 @@ async fn collect(
         .into_iter()
         .find(|route| route.mode_id == "mode.simple")
         .context("simple mode route is unavailable")?;
+    if let Some(ObservationRoute {
+        account_id,
+        model_id,
+    }) = selected_route
+    {
+        anyhow::ensure!(
+            route.account_id == account_id && route.model_id == model_id,
+            "isolated Studio route differs from the requested observation account/model"
+        );
+    }
     let created = runtime
         .create_thread_command(
             project.id,

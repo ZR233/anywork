@@ -295,9 +295,25 @@ wire 诊断身份（`sessionId`、`turnId`、`inferenceId`）。这些身份只�
 account body，也不要求安装第二套 trace event sink。辅助标题调用没有 Thread 执行身份，
 保持未绑定；验收可据此关联主、子代理的真实请求。
 
-完成请求中的 system 角色表示本轮临时前置指令或开发者上下文：Responses endpoint 序列化为
-input message role `developer`，避免发送不被部分 Responses 兼容服务接受的 `system` role；
-Chat Completions 仍序列化为 `system`。
+完成请求通过类型化 `SystemPrompt` 表达供应商无关的受信指令正文，调用方不选择 wire role。
+Studio 先完成基础、Agent 角色与其它受信来源的组合，core 仅冻结通用指令记录；pl-model 的
+厂商协议适配统一决定前置消息及历史指令更新的发送角色。OpenAI Responses 使用 `developer`，
+DeepSeek Responses 使用 `system`；其它现有 Responses 适配保持 `developer`，Chat Completions
+保持 `system`。角色取自明确的厂商协议与 wire API，不从模型名称或 endpoint 字符串猜测。
+HTTP 与 WebSocket、主调用与辅助调用使用同一分发契约；基础指令不再通过独立的顶层
+`instructions` 通道与历史受信消息各自编码，也不同时重复发送两份正文。原生压缩仍遵守
+其 endpoint 的输入契约，并消费相同的有效指令。
+
+规范上下文中的 system 消息同样表达受信指令，由该分发入口选择实际 role；用户、助手、工具
+结果及不透明回放不因此提升权限或改写角色。工具调度约束属于模型适配生成的受信规则，和宿主
+指令按稳定顺序进入相同分发路径，不改变工具声明本身。公开 completion 消费方改用
+`SystemPrompt` 接口，旧的裸 `instructions` 请求入口不保留转发别名。
+模型固定 body、参数 wire 与原生扩展也不得重新注入顶层 `instructions` 绕过该接口；冲突在
+请求准备阶段明确拒绝并保留原配置，不静默删掉用户配置、合并两份权威或继续双发。
+
+协议依据：[OpenAI Responses](https://developers.openai.com/api/reference/resources/responses/methods/create)
+与 [DeepSeek Responses](https://api-docs.deepseek.com/guides/responses_api/)；后者明确将
+`developer` 视为 `user`，因此 Responses wire 相同不代表指令角色相同。
 
 完成请求的工具列表使用 pl-protocol 的 ToolSpec——provider-neutral 的唯一 wire 事实。每个
 model step 携带当前工具计划的完整可见工具列表；adapter 只把冻结规格转为 Responses/Chat typed
@@ -593,9 +609,10 @@ response、replay、工具绑定和未知厂商材料保持不变。相同账号
 
 ## 6.10 Prompt 缓存
 
-固定 instructions 与 prelude 包含模型基础指令、平台与全局配置、模式与角色、稳定 Skill 目录和
-Workspace/项目文档。每轮 Skill 调用与推荐写入该轮 canonical transcript，不进入旧历史之前的固定
-前缀。工具定义由每步冻结的工具计划提供；相同模型可见定义保持确定性编码。
+稳定指令前缀由统一组合的基础、Agent 角色、Mode、平台与全局受信规则及稳定 Skill 目录组成；
+Workspace/项目文档保持捕获时的 user/runtime-fact 归属，不因参与前缀复用提升为受信指令。
+每轮 Skill 调用与推荐写入该轮 canonical transcript，不进入旧历史之前的固定前缀。工具定义由
+每步冻结的工具计划提供；相同模型可见定义保持确定性编码。
 
 模型可见 working context 在内容变化时以隐藏的 user-role 运行事实完整快照追加到 transcript；
 相同内容不追加，清空时明确声明旧快照失效。快照使用稳定 section ID 排序，不提升为 system 权限；
@@ -618,8 +635,10 @@ replace transcript，再把当前 working context 注入新窗口一次；accoun
 Chat Completions 时，估算与准备都以 IncompatibleContext 拒绝并保留原始原因，不得改判为内容
 不支持。
 
-每个指令层分别计算内容 hash；基础、模式角色、Skill、可见工具组说明、Workspace、wire 工具
-前缀、account、model 或 compaction 变化都给出类型化的前缀变化原因并提升 generation。工具与
+诊断依据统一组合后的实际稳定指令与上下文计算 hash，而不是重新拼接来源或解析提示词标题。
+基础、模式角色、Skill、可见工具组说明导致稳定指令改变时记录前缀变化；只在历史中追加完整
+指令快照或 user 事实时记录上下文变化，不把它误报为固定前缀变化。account、model、wire 工具
+前缀或 compaction 变化仍有独立类型化原因；诊断 generation 不决定厂商缓存键。工具与
 缓存的关系只由工具计划的 wire fingerprint 表达：它是实际发送的完整工具规格列表的 canonical
 哈希——工具按模型可见名称排序，JSON Schema 递归使用确定性字段顺序；registry revision、group
 identity、注册顺序和 executor generation 不参与 wire。计划只在单次 model step/retry 内冻结，
@@ -807,7 +826,20 @@ Studio、Flutter 仅归属、累计和展示，不再次解释账号 usage 或�
 
 压缩结果同时保留本轮最近一次完整工具批次及其结果、当前用户任务和显式派发输入。模型可直接使用刚获得的执行证据，不需要为了核实摘要再次执行查询；工具批次必须整体保留，不能拆分调用与结果。旧批次由摘要承接，当前受管事实在候选提交时按最新状态恢复。
 
-有效指令更新由模型的快照覆盖语义与端点接受的历史指令角色共同决定。未知能力采用替换前缀；明确支持时追加带修订、内容散列与替代关系的完整快照。模型切换、能力变化和压缩只归并当前有效指令，不重新拼接废止版本。
+有效指令的发送角色与更新能力是两个维度，由同一已解析分发策略提供。只有模型明确声明完整
+快照覆盖语义、且端点接受当前 wire API 的实际发送角色时才追加；未知能力采用替换前缀。
+追加携带修订、内容散列与替代关系的完整快照，相同内容不重复提交，既有历史前缀逐字节保持
+不变；替换时只留下当前有效指令，不为了缓存继续发送失效的权限、角色或模式规则。
+模型切换、能力变化和压缩只归并当前有效指令，不重新拼接废止版本。空指令代表清除当前值，
+不能解释为继续使用旧值；非法修订、散列或替代关系在请求准备时明确拒绝。
+
+DeepSeek Harness 的历史内 system 更新以 Messages API 的 `in-history` 为条件，见
+[DeepSeek 模型能力](https://api-docs.deepseek.com/api/list-models/)。该声明归属
+`api_capabilities.anthropic_messages`，不能继承到 Responses/Chat。当前 DeepSeek 绑定仍使用
+Responses/HTTP，默认不声明历史覆盖能力，指令变化安全替换前缀；普通多轮历史与动态 user
+事实保持追加。后续支持新协议或新能力必须按其明确契约单独启用，不能只凭一次响应成功推断。
+[DeepSeek 缓存](https://api-docs.deepseek.com/guides/kv_cache/)按服务端已保存的共同前缀尽力复用，
+不保证每次命中；真实 cache usage 与本地前缀稳定性是不同的验收证据。
 
 宿主将最后投影的路由身份及有效指令更新策略保存为会话扩展，与指令修复、上下文及当前事实
 在同一候选中提交。首次恢复旧快照、路由或策略变化时归并历史指令；同一路由与策略继续追加。

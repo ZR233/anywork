@@ -54,7 +54,9 @@ async fn review(binding: ReviewBinding, request: ToolReviewRequest) -> ToolAppro
         metadata: Default::default(),
     };
     let completion = CompletionRequest::builder()
-        .instructions(include_str!("prompts/permission_review.md"))
+        .system_prompt(pl_model::completion::SystemPrompt::new(include_str!(
+            "prompts/permission_review.md"
+        )))
         .messages(vec![message])
         .tool_choice("none")
         .temperature(Some(0.0))

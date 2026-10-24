@@ -61,7 +61,17 @@ Feishu bots live in `<home>/v2/bots/<bot-id>/` with versioned `config.toml` and 
 - `[ui]` — `follow_active_turn`, `compact_timeline`. Studio always uses its fixed light theme. The obsolete `follow_system_theme` key is ignored when reading current-schema files and omitted on the next normal save; no configuration reset is needed.
 - `[web_search]` — OpenAI standalone `/alpha/search` configuration: mode, context size, allowed domains, location.
 - `[deepseek_web_search]` — Two independent switches for the DeepSeek Search & Fetch tools: `enabled` (web search) and `fetch_enabled` (page fetch), both defaulting to `true`. The section, a missing key, and a missing section all mean enabled. It defines no result count, content toggle, OpenAI-specific mode, domain, location, or context option; those request details are fixed deployment constants in code.
-- `[instructions]` — base override, developer/user instructions, project doc limits.
+- `[instructions]` — base override, trusted developer-source rules, user context, and project doc limits. `developer` names a configuration source, not the API role sent to every provider.
+
+System-prompt composition belongs to Studio: it combines the selected base, frozen Agent role,
+Mode, and other trusted sources in a stable order. `base_override` replaces the model base; an
+absent model base uses the builtin prompt. Project documents and dynamic runtime facts keep their
+user-context boundary. The model protocol layer maps the combined prompt to OpenAI Responses
+`developer`, DeepSeek Responses `system`, or the selected adapter's supported role. Do not change
+account settings to force a role or enable history updates merely because a model answered a probe.
+Append-only prompt updates require an explicit capability for the actual wire API; DeepSeek's
+Messages `in-history` declaration does not establish Responses support. Unsupported updates replace
+the effective instruction prefix while ordinary conversation history remains append-only.
 
 A few sections are omitted when left at defaults (`runtime`, `instructions`, `lsp`, `ui`); a default Studio save still writes `[skills]` with `project_dir = ".agents/skills"` and `user_dir = "~/.anywork/skills"`, `[web_search]` with `mode = "cached"`, and `[deepseek_web_search]` with `enabled = true` and `fetch_enabled = true`, so do not delete them assuming they are unused.
 

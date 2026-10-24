@@ -433,21 +433,26 @@ Settings revision 提交。别家成功不得使本家 stale；用户更换地�
 
 ## 20.6 提示词配置
 
-`[instructions]` 保存 Codex 风格提示词分层的用户可配置部分，缺失整个表或字段时使用默认
+`[instructions]` 保存供应商无关提示词来源的用户可配置部分，缺失整个表或字段时使用默认
 值：
 
 - `base_override`：完整替换当前模型的 `base_instructions`。仅用于需要完全接管系统提示词的
   高级场景；普通长期偏好不应写在这里。
-- `developer`：追加到 developer 层，适合本地运行约束、协作偏好和稳定行为规则。
+- `developer`：追加受信规则，适合本地运行约束、协作偏好和稳定行为规则。该配置名称不指定
+  API role；实际发送方式由模型协议分发契约决定。
 - `user`：追加到 user context 层，适合用户背景、项目上下文和非强制偏好。
 - `project_doc_max_bytes`：AGENTS 项目文档总读取上限，默认 `65536`，设为 `0` 表示禁用项目
   文档注入。
 - `project_doc_fallback_filenames`：除 `AGENTS.override.md`、`AGENTS.md`、`Agents.md` 外
   额外尝试的项目文档文件名。
 
-运行时会在 Thread 首轮固定 base/system、developer blocks、user context blocks 与 AGENTS
-source paths；已有 Thread 后续不会因配置或项目文档变化自动改变提示词，新 Thread 才使用
-新配置。
+运行时会在 Thread 首轮固定基础、受信规则、user context blocks 与 AGENTS source paths；
+已有 Thread 后续不会因配置或项目文档变化自动改变提示词，新 Thread 才使用新配置。
+基础来源优先使用显式 `base_override`，其次模型基础提示词，缺失时使用产品内置基础提示词。
+统一组合按基础、Agent、Mode、分发偏好、平台、配置规则、Skills 与其它约束的固定来源顺序
+渲染，创建、Mode 更新、请求准备和压缩恢复共享正文与分隔规则，不在不同入口重复拼接。
+结果以类型化系统提示词交给模型层，具体 `developer`/`system` role 及缓存更新策略见
+[06](./06-model.md)。项目文档、用户背景与动态事实继续使用 user/runtime-fact 路径。
 
 instruction snapshot 同时保存 Agent 定义身份、适用范围与修订，以及独立的 Agent、Mode
 指令来源（职责见 [12](./12-collaboration.md)）。普通 root、飞书 root 和 child 统一消费此

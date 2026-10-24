@@ -457,14 +457,27 @@ async fn legacy_root_instruction_source_becomes_the_mode_source_and_survives_a_r
             ),
         ]
     );
-    assert!(snapshot.context_records("migration").iter().any(|record| {
-        record.source == ContextSource::Instruction
-            && record.content
-                == vec![ContextContent::Text {
-                    text: "# 历史自动分发偏好 (/legacy/delegation.md)\n  保存的经济偏好正文\n不从当前配置重建  "
-                        .into(),
-                }]
-    }));
+    let instruction_records = snapshot
+        .context_records("migration")
+        .into_iter()
+        .filter(|record| record.source == ContextSource::Instruction)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        instruction_records.len(),
+        1,
+        "受信正文应折叠为单条 Instruction record"
+    );
+    let trusted = snapshot.trusted_text();
+    assert_eq!(
+        instruction_records[0].content,
+        vec![ContextContent::Text {
+            text: trusted.clone().into(),
+        }]
+    );
+    assert!(
+        trusted.contains("保存的经济偏好正文"),
+        "历史自动分发偏好正文不得在折叠受信正文时丢失"
+    );
     assert_eq!(
         snapshot.user,
         vec![
@@ -554,6 +567,561 @@ async fn legacy_root_instruction_source_becomes_the_mode_source_and_survives_a_r
     );
     assert_eq!(durable.state.context, original.context);
     assert_eq!(durable_snapshot.developer, snapshot.developer);
+    Ok(())
+}
+
+/// A v2 checkpoint written before trusted instructions were folded into one record must be
+/// normalized by the production ContextPreparer, then remain unchanged on the next preparation.
+#[tokio::test]
+async fn restored_v2_multi_record_instructions_are_normalized_once() -> Result<()> {
+    use crate::instruction::{InstructionSnapshot, InstructionSourceKind};
+    use pl_core::{
+        model::ModelFactory,
+        thread::{StepInput, ThreadHandle},
+    };
+    use pl_model::{
+        completion::OpenAiCompactionMode,
+        config::{AccountId, ResolvedModelRoute},
+        model::ModelInfo,
+        protocol::ProtocolEndpoint,
+        runtime::{ModelRuntime, ThreadModel},
+    };
+    use std::sync::Arc;
+
+    let manager = ThreadModeManager::default();
+    let registry = crate::studio::thread::register_builtins(&manager)?;
+    let mode = registry
+        .mode(&pl_protocol::ThreadModeId::simple())
+        .context("built-in simple Mode")?;
+    let mut model_info = ModelInfo::compatible("migration-model");
+    model_info.base_instructions = "frozen migration base".into();
+    let endpoint = ProtocolEndpoint::compatible("migration fixture", "http://127.0.0.1:0");
+    let route = ResolvedModelRoute {
+        pricing_mode: Default::default(),
+        role: crate::StudioRole::Planner.id(),
+        account_id: AccountId::new("migration-account")?,
+        endpoint,
+        context: model_info.resolve_context(None),
+        model: model_info,
+        effort: None,
+    };
+    let model = ThreadModel::new(ModelRuntime::from_route(&route)?, None);
+    let snapshot = InstructionSnapshot {
+        agent: agent_identity(
+            "root:main",
+            AgentDefinitionScope::Root,
+            "1",
+            AgentDefinitionOrigin::Builtin,
+        ),
+        base: expected_block(
+            InstructionSourceKind::ModelBase,
+            "model base",
+            None,
+            "frozen migration base",
+        ),
+        developer: vec![
+            expected_block(
+                InstructionSourceKind::ModeDefinition,
+                &mode.descriptor().display_name,
+                None,
+                mode.prompt(),
+            ),
+            expected_block(
+                InstructionSourceKind::Platform,
+                "platform: migration-test",
+                None,
+                "Preserve this frozen platform instruction.",
+            ),
+        ],
+        user: vec![expected_block(
+            InstructionSourceKind::ConfigUser,
+            "config user",
+            None,
+            "Preserve this user instruction fact.",
+        )],
+    };
+    let instruction_payload = snapshot_payload(&snapshot)?;
+    let mode_payload =
+        crate::mode::encode_mode_snapshot(&crate::mode::SavedThreadMode::capture(&mode, None))?;
+    let binding_payload = OpaquePayload::new(
+        "pl.studio.instruction-binding",
+        1,
+        serde_json::to_string(&serde_json::json!({
+            "routeIdentity": model.route_identity(),
+            "appendSnapshots": false,
+        }))?,
+    )?;
+    let format_block = |block: &crate::instruction::InstructionBlock| {
+        format!("# {}\n{}", block.source.label, block.content)
+    };
+    let mut records = std::iter::once(&snapshot.base)
+        .chain(snapshot.developer.iter())
+        .enumerate()
+        .map(|(index, block)| ContextRecord {
+            id: format!("instruction:migration:{index}"),
+            turn_id: None,
+            source: ContextSource::Instruction,
+            content: vec![ContextContent::Text {
+                text: Arc::from(format_block(block)),
+            }],
+            tool_calls: Vec::new(),
+        })
+        .collect::<Vec<_>>();
+    // The record shape matches the original v2 projection: base and each developer source were
+    // independent Instruction records, while user/runtime facts had separate stable identities.
+    records.extend([
+        ContextRecord {
+            id: "preserved-user-history".into(),
+            turn_id: None,
+            source: ContextSource::User,
+            content: vec![ContextContent::Text {
+                text: "Keep this historical user fact.".into(),
+            }],
+            tool_calls: Vec::new(),
+        },
+        ContextRecord {
+            id: "instruction:migration:3".into(),
+            turn_id: None,
+            source: ContextSource::RuntimeFact {
+                source_id: "studio.instructions:3".into(),
+            },
+            content: vec![ContextContent::Text {
+                text: Arc::from(format_block(&snapshot.user[0])),
+            }],
+            tool_calls: Vec::new(),
+        },
+        ContextRecord {
+            id: "preserved-runtime-fact".into(),
+            turn_id: None,
+            source: ContextSource::RuntimeFact {
+                source_id: "fixture.runtime".into(),
+            },
+            content: vec![ContextContent::Text {
+                text: "Keep this runtime fact.".into(),
+            }],
+            tool_calls: Vec::new(),
+        },
+    ]);
+    let original = ThreadSnapshot {
+        commit_sequence: 1,
+        extension_sequence: 3,
+        extensions: BTreeMap::from([
+            (
+                "studio.mode".into(),
+                ExtensionRecord {
+                    revision: 1,
+                    payload: mode_payload,
+                },
+            ),
+            (
+                "studio.instructions".into(),
+                ExtensionRecord {
+                    revision: 2,
+                    payload: instruction_payload,
+                },
+            ),
+            (
+                "studio.instructions.binding".into(),
+                ExtensionRecord {
+                    revision: 3,
+                    payload: binding_payload,
+                },
+            ),
+        ]),
+        context: ContextSnapshot {
+            revision: 1,
+            records: records.into(),
+        },
+        runtime_facts: vec![pl_core::thread::RuntimeFact {
+            source_id: "fixture.runtime".into(),
+            content: vec![ContextContent::Text {
+                text: "Keep this runtime fact.".into(),
+            }],
+        }]
+        .into(),
+        ..Default::default()
+    };
+    let original_instruction_text = original
+        .context
+        .records
+        .iter()
+        .filter(|record| record.source == ContextSource::Instruction)
+        .flat_map(|record| &record.content)
+        .filter_map(|content| match content {
+            ContextContent::Text { text } => Some(text.as_ref()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert_eq!(original_instruction_text, snapshot.trusted_text());
+
+    let directory = tempfile::tempdir()?;
+    let history_path = directory.path().join("history.sqlite");
+    let store = HistoryStore::open(&history_path, "migration").await?;
+    persist(&store, original, true).await?;
+    let checkpoint = store
+        .checkpoint()
+        .await?
+        .context("v2 multi-record checkpoint")?;
+    let thread = ThreadHandle::resume(
+        "migration".into(),
+        ModelFactory::new(model.clone()).open_session().await?,
+        Some(checkpoint),
+    )?;
+    thread
+        .set_context_preparation(crate::compaction::preparer(
+            &route,
+            model,
+            OpenAiCompactionMode::Local,
+            manager,
+        )?)
+        .await?;
+
+    let step = |attempt: &str| StepInput {
+        turn_id: "restore-instructions".into(),
+        attempt_id: attempt.into(),
+        content: Vec::new(),
+        cancellation: Default::default(),
+    };
+    assert!(thread.step(step("normalize-once")).await.is_err());
+    let normalized = thread.snapshot().context;
+    let instruction_records = normalized
+        .records
+        .iter()
+        .filter(|record| {
+            matches!(
+                record.source,
+                ContextSource::Instruction | ContextSource::InstructionSnapshot { .. }
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(instruction_records.len(), 1);
+    assert!(matches!(
+        instruction_records[0].source,
+        ContextSource::InstructionSnapshot { .. }
+    ));
+    assert_eq!(
+        instruction_records[0].content,
+        vec![ContextContent::Text {
+            text: Arc::from(snapshot.trusted_text()),
+        }]
+    );
+    if let ContextSource::InstructionSnapshot { content_hash, .. } = &instruction_records[0].source
+    {
+        assert_eq!(
+            content_hash,
+            &pl_core::context::content_hash(snapshot.trusted_text().as_bytes())
+        );
+    }
+    assert!(normalized.records.iter().any(|record| {
+        record.id == "preserved-user-history"
+            && record.source == ContextSource::User
+            && record.content.iter().any(|content| {
+                matches!(content, ContextContent::Text { text } if text.as_ref() == "Keep this historical user fact.")
+            })
+    }));
+    assert!(normalized.records.iter().any(|record| {
+        record.id == "instruction:migration:3"
+            && record.source
+                == (ContextSource::RuntimeFact {
+                    source_id: "studio.instructions:3".into(),
+                })
+            && record.content.iter().any(|content| {
+                matches!(content, ContextContent::Text { text } if text.as_ref() == format_block(&snapshot.user[0]))
+            })
+    }));
+    assert!(normalized.records.iter().any(|record| {
+        record.id == "preserved-runtime-fact"
+            && record.source
+                == (ContextSource::RuntimeFact {
+                    source_id: "fixture.runtime".into(),
+                })
+    }));
+
+    assert!(thread.step(step("prepare-again")).await.is_err());
+    assert_eq!(thread.snapshot().context, normalized);
+    thread.close().await?;
+    Ok(())
+}
+
+/// Mode reconfiguration treats a missing route binding as unknown: canonical initial context may
+/// only bind without an instruction revision, while a restored snapshot must be replaced.
+#[tokio::test]
+async fn mode_binding_recovery_replaces_unknown_snapshot_and_keeps_initial_context_noop()
+-> Result<()> {
+    use crate::config::{ConfigPaths, ConfigStore, StudioConfig};
+    use crate::studio::paths::StudioPaths;
+    use crate::{StudioHostKind, StudioRuntimeOptions};
+    use pl_model::{
+        config::{AccountConfig, AccountId, ModelRouteConfig},
+        model::{ModelInfo, ModelTransportProfile},
+        protocol::{HistoryInstructionRole, ProtocolEndpoint},
+    };
+
+    let temp = tempfile::tempdir()?;
+    let home = temp.path().join("home");
+    let workspace = temp.path().join("workspace");
+    tokio::fs::create_dir_all(&workspace).await?;
+
+    let account_id = AccountId::new("mode-migration")?;
+    let route = ModelRouteConfig {
+        account_id: account_id.clone(),
+        model_id: "mode-migration-model".into(),
+        effort: None,
+    };
+    let mut model = ModelInfo::compatible(&route.model_id);
+    model
+        .binding
+        .set_transport(ModelTransportProfile::responses_http());
+    model.capabilities.instruction_snapshot_overrides = true;
+    model.base_instructions = "frozen mode migration base".into();
+    let mut endpoint = ProtocolEndpoint::compatible("mode migration", "http://127.0.0.1:0");
+    endpoint.service_capabilities.history_instruction_role = HistoryInstructionRole::Developer;
+    let mut config = StudioConfig::default_config()?;
+    config.models.accounts.clear();
+    config.models.accounts.insert(
+        account_id,
+        AccountConfig::from_explicit_models(endpoint, vec![model]),
+    );
+    for selected in config
+        .models
+        .routes
+        .values_mut()
+        .chain(config.mode_model_routes.values_mut())
+    {
+        *selected = route.clone();
+    }
+    ConfigStore::new(ConfigPaths::from_config_dir(&home)).save(&config)?;
+    let options = || StudioRuntimeOptions {
+        studio_home: Some(home.clone()),
+        host: StudioHostKind::Test,
+        ..StudioRuntimeOptions::desktop()
+    };
+    let runtime = crate::StudioRuntime::initialize(options()).await?;
+    let project = runtime.open_project(&workspace).await?;
+    let thread = runtime
+        .create_thread(&project.id, "Mode binding recovery")
+        .await?;
+    runtime.shutdown_runtime().await?;
+
+    let paths = StudioPaths::resolve(Some(home.clone()))?;
+    let history_path = paths
+        .session_paths(&project.id, &thread.id)?
+        .history_database();
+    let history = HistoryStore::open(&history_path, &thread.id).await?;
+    let initial = history.checkpoint().await?.context("initial checkpoint")?;
+    assert_eq!(
+        initial
+            .state
+            .context
+            .records
+            .iter()
+            .filter(|record| record.source == ContextSource::Instruction)
+            .count(),
+        1
+    );
+    assert!(
+        initial
+            .state
+            .context
+            .records
+            .iter()
+            .all(|record| { !matches!(record.source, ContextSource::InstructionSnapshot { .. }) })
+    );
+    assert!(
+        !initial
+            .state
+            .extensions
+            .contains_key("studio.instructions.binding")
+    );
+    let initial_instructions = initial.state.extensions["studio.instructions"].clone();
+    let initial_instruction_records = initial
+        .state
+        .context
+        .records
+        .iter()
+        .filter(|record| {
+            matches!(
+                record.source,
+                ContextSource::Instruction | ContextSource::InstructionSnapshot { .. }
+            )
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    drop(history);
+
+    let runtime = crate::StudioRuntime::initialize(options()).await?;
+    runtime
+        .set_thread_mode(
+            "same-mode-without-binding".into(),
+            &thread.id,
+            pl_protocol::ThreadModeId::simple(),
+        )
+        .await?;
+    runtime.shutdown_runtime().await?;
+    let history = HistoryStore::open(&history_path, &thread.id).await?;
+    let same_mode = history
+        .checkpoint()
+        .await?
+        .context("same-Mode checkpoint")?;
+    assert_eq!(
+        same_mode.state.extensions["studio.instructions"], initial_instructions,
+        "binding a canonical initial prompt must not advance its instruction revision"
+    );
+    let same_mode_instruction_records = same_mode
+        .state
+        .context
+        .records
+        .iter()
+        .filter(|record| {
+            matches!(
+                record.source,
+                ContextSource::Instruction | ContextSource::InstructionSnapshot { .. }
+            )
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    assert_eq!(same_mode_instruction_records, initial_instruction_records);
+    let saved_binding = crate::compaction::decode_instruction_binding(
+        &same_mode.state.extensions["studio.instructions.binding"],
+    )?;
+    assert!(saved_binding.append_snapshots);
+    drop(history);
+
+    let history = HistoryStore::open(&history_path, &thread.id).await?;
+    let checkpoint = history
+        .checkpoint()
+        .await?
+        .context("checkpoint before restoring the old snapshot")?;
+    let instruction_record = checkpoint.state.extensions["studio.instructions"].clone();
+    let instructions = crate::instruction::decode_snapshot(&instruction_record.payload)?;
+    let text = instructions.trusted_text();
+    let restored_snapshot = ContextRecord {
+        id: format!("instruction:{}:restored-v2", thread.id),
+        turn_id: None,
+        source: ContextSource::InstructionSnapshot {
+            revision: instruction_record.revision,
+            content_hash: pl_core::context::content_hash(text.as_bytes()),
+            replaces: None,
+        },
+        content: vec![ContextContent::Text { text: text.into() }],
+        tool_calls: Vec::new(),
+    };
+    let context_revision = checkpoint
+        .state
+        .context
+        .revision
+        .checked_add(1)
+        .context("context revision exhausted")?;
+    let extension_revision = checkpoint
+        .state
+        .extension_sequence
+        .checked_add(1)
+        .context("extension revision exhausted")?;
+    let sequence = checkpoint
+        .state
+        .commit_sequence
+        .checked_add(1)
+        .context("Thread commit sequence exhausted")?;
+    anyhow::ensure!(
+        checkpoint
+            .state
+            .extensions
+            .contains_key("studio.instructions.binding"),
+        "binding to remove from restored checkpoint"
+    );
+    let extension_change = ExtensionChange::Delete {
+        id: "studio.instructions.binding".into(),
+        revision: extension_revision,
+    };
+    let mut state = checkpoint.state.clone();
+    state.extensions.remove("studio.instructions.binding");
+    state.extension_sequence = extension_revision;
+    let mut extension_changes = state.extension_changes.to_vec();
+    extension_changes.push(extension_change.clone());
+    state.extension_changes = extension_changes.into();
+    state.commit_sequence = sequence;
+    let mut records = state.context.records.to_vec();
+    records.push(restored_snapshot.clone());
+    state.context = ContextSnapshot {
+        revision: context_revision,
+        records: records.into(),
+    };
+    let effect = ThreadEffectBatch {
+        thread_id: thread.id.clone(),
+        sequence,
+        context: Some(ContextChange::Append {
+            revision: context_revision,
+            records: vec![restored_snapshot].into(),
+        }),
+        extensions: vec![extension_change].into(),
+        ..Default::default()
+    };
+    let checkpoint = ThreadCheckpoint::capture(thread.id.clone(), sequence, state);
+    let empty = BTreeSet::new();
+    history
+        .commit_checkpoint_effect(
+            &checkpoint,
+            &effect,
+            EffectCommit {
+                items: &[],
+                rolled_back_turns: &empty,
+                identities: &[],
+                messages: &[],
+                receipts: &[],
+                tasks: &[],
+                deliveries: &[],
+                delivery_repairs: &[],
+                attempt: None,
+            },
+        )
+        .await?;
+    drop(history);
+
+    let runtime = crate::StudioRuntime::initialize(options()).await?;
+    runtime
+        .set_thread_mode(
+            "changed-mode-with-unknown-binding".into(),
+            &thread.id,
+            pl_protocol::ThreadModeId::task(),
+        )
+        .await?;
+    runtime.shutdown_runtime().await?;
+
+    let history = HistoryStore::open(&history_path, &thread.id).await?;
+    let changed = history
+        .checkpoint()
+        .await?
+        .context("changed-Mode checkpoint")?;
+    let current_instruction_records = changed
+        .state
+        .context
+        .records
+        .iter()
+        .filter(|record| {
+            matches!(
+                record.source,
+                ContextSource::Instruction | ContextSource::InstructionSnapshot { .. }
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(current_instruction_records.len(), 1);
+    assert!(matches!(
+        current_instruction_records[0].source,
+        ContextSource::InstructionSnapshot { .. }
+    ));
+    let instructions = crate::instruction::decode_snapshot(
+        &changed.state.extensions["studio.instructions"].payload,
+    )?;
+    assert_eq!(
+        current_instruction_records[0].content,
+        vec![ContextContent::Text {
+            text: instructions.trusted_text().into(),
+        }]
+    );
+    crate::compaction::decode_instruction_binding(
+        &changed.state.extensions["studio.instructions.binding"],
+    )?;
     Ok(())
 }
 

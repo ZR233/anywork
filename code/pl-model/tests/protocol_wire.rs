@@ -1153,7 +1153,9 @@ async fn auxiliary_requests_keep_frozen_replay_and_mutated_input_is_rejected() {
             .await
             .unwrap();
         let mut prefix = request("question");
-        prefix.instructions = Some("Original authoritative instructions".into());
+        prefix.system_prompt = Some(pl_model::completion::SystemPrompt::new(
+            "Original authoritative instructions",
+        ));
         prefix.append_response(&first).unwrap();
         if protocol == Protocol::Chat {
             assert!(pl_model::completion::estimate_text_input_tokens(&prefix).unwrap() >= 1024);
@@ -1194,7 +1196,13 @@ async fn auxiliary_requests_keep_frozen_replay_and_mutated_input_is_rejected() {
                 "Original authoritative instructions"
             );
         } else {
-            assert_eq!(body["instructions"], "Original authoritative instructions");
+            let leading = &body["input"].as_array().unwrap()[0];
+            assert_eq!(leading["role"], "developer");
+            assert!(
+                leading
+                    .to_string()
+                    .contains("Original authoritative instructions")
+            );
         }
         assert!(body.to_string().contains("Summarize recorded facts"));
         if protocol == Protocol::ResponsesHttp {
@@ -1212,8 +1220,8 @@ async fn auxiliary_requests_keep_frozen_replay_and_mutated_input_is_rejected() {
         if protocol == Protocol::Chat {
             assert_eq!(requests[1].body["messages"][2]["content"], raw);
         } else {
-            assert_eq!(requests[1].body["input"].as_array().unwrap()[1..3], output);
-            assert_eq!(requests[2].body["input"].as_array().unwrap()[1..3], output);
+            assert_eq!(requests[1].body["input"].as_array().unwrap()[2..4], output);
+            assert_eq!(requests[2].body["input"].as_array().unwrap()[2..4], output);
         }
     }
 }
@@ -3595,6 +3603,11 @@ async fn instruction_snapshots_use_only_jointly_declared_endpoint_and_model_sema
         .await
         .unwrap();
         let thread = ThreadHandle::start("snapshot-thread".into(), session).unwrap();
+        let tool_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        thread
+            .register_tools(vec![replay_registration(&tool_count).foreground()])
+            .await
+            .unwrap();
         let base = ContextRecord {
             id: "initial-instructions".into(),
             turn_id: None,
@@ -3653,36 +3666,440 @@ async fn instruction_snapshots_use_only_jointly_declared_endpoint_and_model_sema
         }
         thread.close().await.unwrap();
         let records = fixture.finish().await.unwrap();
-        let body = &records[1].body;
+        let first_input = records[0].body["input"].as_array().unwrap();
+        let input = records[1].body["input"].as_array().unwrap();
+        let leading = &input[0];
+        assert_eq!(first_input[0]["role"], "developer");
+        assert_eq!(leading["role"], "developer");
+        assert!(
+            records[1].body["tools"]
+                .to_string()
+                .contains("This tool must be the only tool call in its model response")
+        );
         if append {
-            assert!(
-                body["instructions"]
-                    .as_str()
-                    .unwrap()
-                    .contains("initial authority")
+            assert_eq!(
+                first_input[0], input[0],
+                "the complete leading developer item must remain byte-for-byte stable"
             );
             assert!(
-                body["input"]
-                    .as_array()
-                    .unwrap()
+                first_input[0]
+                    .to_string()
+                    .contains("Call at most one tool in each model response")
+            );
+            assert!(input[..first_input.len()].starts_with(first_input));
+            assert!(
+                first_input
                     .iter()
-                    .any(|item| item["role"] == "developer"
-                        && item.to_string().contains("new complete authority"))
+                    .all(|item| !item.to_string().contains("new complete authority"))
+            );
+            let appended = input[first_input.len()..]
+                .iter()
+                .find(|item| {
+                    item["role"] == "developer"
+                        && item.to_string().contains("new complete authority")
+                })
+                .expect("new authority must be in the appended full snapshot");
+            assert!(
+                appended
+                    .to_string()
+                    .contains("Call at most one tool in each model response")
             );
         } else {
-            assert!(
-                body["instructions"]
-                    .as_str()
-                    .unwrap()
-                    .contains("new complete authority")
-            );
-            assert!(
-                !body["instructions"]
-                    .as_str()
-                    .unwrap()
-                    .contains("initial authority")
-            );
+            assert!(leading.to_string().contains("new complete authority"));
+            assert!(!leading.to_string().contains("initial authority"));
         }
+    }
+}
+
+#[tokio::test]
+async fn instruction_snapshot_revision_and_hash_are_validated_before_admission() {
+    use pl_core::{
+        context::{ContextRecord, ContextSnapshot},
+        model::{ModelRequest, ToolCallMode},
+    };
+    use pl_model::runtime::ThreadModel;
+    let factory = ModelFactory::new(ThreadModel::new(
+        ModelRuntime::new_with_account_id(
+            "fixture",
+            ProtocolEndpoint::compatible("fixture", "http://127.0.0.1:1"),
+            model("snapshot-model", ModelTransportProfile::responses_http()),
+        )
+        .unwrap(),
+        None,
+    ));
+    let mut session = factory.open_session().await.unwrap();
+    let snapshot = |revision: u64, content_hash: String, replaces: Option<String>| ContextRecord {
+        id: format!("snapshot-{revision}"),
+        turn_id: None,
+        source: ContextSource::InstructionSnapshot {
+            revision,
+            content_hash,
+            replaces,
+        },
+        content: vec![ContextContent::Text {
+            text: "current authority".into(),
+        }],
+        tool_calls: vec![],
+    };
+    let hash = pl_core::context::content_hash(b"current authority");
+    let request = |records: Vec<ContextRecord>| ModelRequest {
+        thread_id: "snapshot-thread".into(),
+        turn_id: "turn".into(),
+        attempt_id: "attempt".into(),
+        context: ContextSnapshot {
+            revision: 1,
+            records: records.into(),
+        },
+        tools: Default::default(),
+        tool_call_mode: ToolCallMode::Sequential,
+        solo_tool_ids: Default::default(),
+        committed_private_context: None,
+        resources: None,
+        cancellation: Default::default(),
+        progress: None,
+    };
+    for (label, records) in [
+        (
+            "hash mismatch",
+            vec![snapshot(1, "not-the-body-hash".into(), None)],
+        ),
+        ("revision zero", vec![snapshot(0, hash.clone(), None)]),
+        (
+            "predecessor mismatch",
+            vec![
+                snapshot(1, hash.clone(), None),
+                snapshot(2, hash.clone(), Some("not-the-first-hash".into())),
+            ],
+        ),
+    ] {
+        assert!(session.prepare(request(records)).await.is_err(), "{label}");
+    }
+    session.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn appended_full_snapshot_keeps_tool_scheduling_rules_and_stable_prefix() {
+    use pl_core::{
+        context::{ContextRecord, ContextSnapshot},
+        model::{ModelRequest, ToolCallMode},
+    };
+    use pl_model::protocol::HistoryInstructionRole;
+    use pl_model::runtime::ThreadModel;
+    let fixture = FixtureServer::start(vec![Step::prompt(
+        Protocol::ResponsesHttp,
+        "probe",
+        0,
+        Reply::Sse(responses_text("done", "answer", "snapshot-model")),
+    )])
+    .await
+    .unwrap();
+    let mut endpoint = ProtocolEndpoint::compatible("fixture", fixture.base_url());
+    endpoint.service_capabilities.history_instruction_role = HistoryInstructionRole::Developer;
+    let mut info = model("snapshot-model", ModelTransportProfile::responses_http());
+    info.capabilities.instruction_snapshot_overrides = true;
+    let factory = ModelFactory::new(ThreadModel::new(
+        ModelRuntime::new_with_account_id("fixture", endpoint, info).unwrap(),
+        None,
+    ));
+    let mut session = factory.open_session().await.unwrap();
+    let initial = "initial authority";
+    let updated = "new complete authority";
+    let call = session
+        .prepare(ModelRequest {
+            thread_id: "snapshot-thread".into(),
+            turn_id: "turn".into(),
+            attempt_id: "attempt".into(),
+            context: ContextSnapshot {
+                revision: 1,
+                records: vec![
+                    ContextRecord {
+                        id: "instruction".into(),
+                        turn_id: None,
+                        source: ContextSource::Instruction,
+                        content: vec![ContextContent::Text {
+                            text: initial.into(),
+                        }],
+                        tool_calls: vec![],
+                    },
+                    ContextRecord {
+                        id: "input".into(),
+                        turn_id: Some("turn".into()),
+                        source: ContextSource::User,
+                        content: vec![ContextContent::Text {
+                            text: "probe".into(),
+                        }],
+                        tool_calls: vec![],
+                    },
+                    ContextRecord {
+                        id: "snapshot".into(),
+                        turn_id: None,
+                        source: ContextSource::InstructionSnapshot {
+                            revision: 1,
+                            content_hash: pl_core::context::content_hash(updated.as_bytes()),
+                            replaces: None,
+                        },
+                        content: vec![ContextContent::Text {
+                            text: updated.into(),
+                        }],
+                        tool_calls: vec![],
+                    },
+                ]
+                .into(),
+            },
+            tools: Default::default(),
+            tool_call_mode: ToolCallMode::Sequential,
+            solo_tool_ids: Default::default(),
+            committed_private_context: None,
+            resources: None,
+            cancellation: Default::default(),
+            progress: None,
+        })
+        .await
+        .unwrap();
+    call.execute().await.unwrap();
+    session.close().await.unwrap();
+    let records = fixture.finish().await.unwrap();
+    let input = records[0].body["input"].as_array().unwrap();
+    // The stable leading prefix keeps the original authority and the current tool rule.
+    assert!(input[0].to_string().contains(initial));
+    assert!(input[0].to_string().contains("Call at most one tool"));
+    // The appended full snapshot carries the new authority and the same tool rule, so a full
+    // replacement cannot silently drop the sequential/solo scheduling constraint.
+    let appended = input
+        .iter()
+        .find(|item| item.to_string().contains(updated))
+        .expect("appended full snapshot missing");
+    assert!(appended.to_string().contains("Call at most one tool"));
+    assert!(appended.to_string().contains(updated));
+}
+
+#[tokio::test]
+async fn deepseek_responses_replaces_instruction_prefix_instead_of_appending() {
+    use pl_core::{
+        context::{ContextRecord, ContextSnapshot},
+        model::{ModelRequest, ToolCallMode},
+    };
+    use pl_model::runtime::ThreadModel;
+    let fixture = FixtureServer::start(vec![Step::prompt(
+        Protocol::ResponsesHttp,
+        "probe",
+        0,
+        Reply::Sse(responses_text("done", "answer", "deepseek-flash")),
+    )])
+    .await
+    .unwrap();
+    let factory = ModelFactory::new(ThreadModel::new(
+        ModelRuntime::new_with_account_id(
+            "fixture",
+            ProtocolEndpoint::deepseek(Some(fixture.base_url())),
+            bundled("deepseek-flash"),
+        )
+        .unwrap(),
+        None,
+    ));
+    let mut session = factory.open_session().await.unwrap();
+    let updated = "new complete authority";
+    let call = session
+        .prepare(ModelRequest {
+            thread_id: "deepseek-thread".into(),
+            turn_id: "turn".into(),
+            attempt_id: "attempt".into(),
+            context: ContextSnapshot {
+                revision: 1,
+                records: vec![
+                    ContextRecord {
+                        id: "instruction".into(),
+                        turn_id: None,
+                        source: ContextSource::Instruction,
+                        content: vec![ContextContent::Text {
+                            text: "initial authority".into(),
+                        }],
+                        tool_calls: vec![],
+                    },
+                    ContextRecord {
+                        id: "input".into(),
+                        turn_id: Some("turn".into()),
+                        source: ContextSource::User,
+                        content: vec![ContextContent::Text {
+                            text: "probe".into(),
+                        }],
+                        tool_calls: vec![],
+                    },
+                    ContextRecord {
+                        id: "snapshot".into(),
+                        turn_id: None,
+                        source: ContextSource::InstructionSnapshot {
+                            revision: 1,
+                            content_hash: pl_core::context::content_hash(updated.as_bytes()),
+                            replaces: None,
+                        },
+                        content: vec![ContextContent::Text {
+                            text: updated.into(),
+                        }],
+                        tool_calls: vec![],
+                    },
+                ]
+                .into(),
+            },
+            tools: Default::default(),
+            tool_call_mode: ToolCallMode::Parallel,
+            solo_tool_ids: Default::default(),
+            committed_private_context: None,
+            resources: None,
+            cancellation: Default::default(),
+            progress: None,
+        })
+        .await
+        .unwrap();
+    call.execute().await.unwrap();
+    session.close().await.unwrap();
+    let records = fixture.finish().await.unwrap();
+    let input = records[0].body["input"].as_array().unwrap();
+    // Safe ReplacePrefix keeps only the latest authority in the leading system message.
+    assert!(input[0].to_string().contains(updated));
+    assert!(!input[0].to_string().contains("initial authority"));
+    // No appended full snapshot: exactly one system-role instruction message is sent.
+    assert_eq!(
+        input.iter().filter(|item| item["role"] == "system").count(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn reserved_top_level_instructions_channel_is_rejected_before_network() {
+    use pl_model::completion::SystemPrompt;
+    for with_system_prompt in [true, false] {
+        let fixture = FixtureServer::start(vec![]).await.unwrap();
+        let mut info = model("role-model", ModelTransportProfile::responses_http());
+        info.binding
+            .request
+            .body
+            .insert("instructions".into(), json!("sneaky"));
+        let runtime = ModelRuntime::new_with_account_id(
+            "fixture",
+            ProtocolEndpoint::compatible("fixture", fixture.base_url()),
+            info,
+        )
+        .unwrap();
+        let builder = CompletionRequest::builder().messages(vec![user("probe")]);
+        let builder = if with_system_prompt {
+            builder.system_prompt(SystemPrompt::new("host authority"))
+        } else {
+            builder
+        };
+        let result = runtime
+            .complete(builder.build(), ModelInvocationContext::default())
+            .await;
+        assert!(
+            result.is_err(),
+            "reserved top-level `instructions` injection must be rejected (system prompt: {with_system_prompt})"
+        );
+        // The conflict is surfaced before any network I/O, so no request reaches the fixture.
+        let records = fixture.finish().await.unwrap();
+        assert!(records.is_empty());
+    }
+}
+
+#[tokio::test]
+async fn trusted_instructions_use_the_protocol_dispatch_role_not_the_model_name() {
+    use pl_model::completion::SystemPrompt;
+    // OpenAI-compatible and the actual OpenAI adapter both send Responses `developer`.
+    for openai in [false, true] {
+        let fixture = FixtureServer::start(vec![Step::prompt(
+            Protocol::ResponsesHttp,
+            "role-probe",
+            0,
+            Reply::Sse(responses_text("done", "role-answer", "role-model")),
+        )])
+        .await
+        .unwrap();
+        let endpoint = if openai {
+            ProtocolEndpoint::openai(Some(fixture.base_url()))
+        } else {
+            ProtocolEndpoint::compatible("fixture", fixture.base_url())
+        };
+        let runtime = ModelRuntime::new_with_account_id(
+            "fixture",
+            endpoint,
+            model("role-model", ModelTransportProfile::responses_http()),
+        )
+        .unwrap();
+        let result = runtime
+            .complete(
+                CompletionRequest::builder()
+                    .system_prompt(SystemPrompt::new("host authority"))
+                    .messages(vec![user("role-probe")])
+                    .build(),
+                ModelInvocationContext::default(),
+            )
+            .await;
+        result.unwrap();
+        let records = fixture.finish().await.unwrap();
+        let input = records[0].body["input"].as_array().unwrap();
+        assert_eq!(input[0]["role"], "developer");
+        assert!(input[0].to_string().contains("host authority"));
+    }
+    // DeepSeek Responses sends `system`.
+    {
+        let fixture = FixtureServer::start(vec![Step::prompt(
+            Protocol::ResponsesHttp,
+            "role-probe",
+            0,
+            Reply::Sse(responses_text("done", "role-answer", "role-model")),
+        )])
+        .await
+        .unwrap();
+        let runtime = ModelRuntime::new_with_account_id(
+            "fixture",
+            ProtocolEndpoint::deepseek(Some(fixture.base_url())),
+            model("role-model", ModelTransportProfile::responses_http()),
+        )
+        .unwrap();
+        runtime
+            .complete(
+                CompletionRequest::builder()
+                    .system_prompt(SystemPrompt::new("host authority"))
+                    .messages(vec![user("role-probe")])
+                    .build(),
+                ModelInvocationContext::default(),
+            )
+            .await
+            .unwrap();
+        let records = fixture.finish().await.unwrap();
+        let input = records[0].body["input"].as_array().unwrap();
+        assert_eq!(input[0]["role"], "system");
+        assert!(input[0].to_string().contains("host authority"));
+    }
+    // Chat Completions sends a leading `system` message.
+    {
+        let fixture = FixtureServer::start(vec![Step::prompt(
+            Protocol::Chat,
+            "role-probe",
+            0,
+            Reply::Sse(chat_events("done", "role-model")),
+        )])
+        .await
+        .unwrap();
+        let runtime = ModelRuntime::new_with_account_id(
+            "fixture",
+            ProtocolEndpoint::compatible("fixture", fixture.base_url()),
+            model("role-model", ModelTransportProfile::chat_completions_http()),
+        )
+        .unwrap();
+        runtime
+            .complete(
+                CompletionRequest::builder()
+                    .system_prompt(SystemPrompt::new("host authority"))
+                    .messages(vec![user("role-probe")])
+                    .build(),
+                ModelInvocationContext::default(),
+            )
+            .await
+            .unwrap();
+        let records = fixture.finish().await.unwrap();
+        let messages = records[0].body["messages"].as_array().unwrap();
+        assert_eq!(messages[0]["role"], "system");
+        assert_eq!(messages[0]["content"], "host authority");
     }
 }
 

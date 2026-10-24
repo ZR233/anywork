@@ -1,7 +1,7 @@
 use crate::completion::stream::{CompletionEventStream, OpenAiRawEventStream};
 use crate::completion::{CompletionRequest, CompletionTraceContext};
 use crate::model::info::ModelInfo;
-use crate::protocol::WireApi;
+use crate::protocol::{InstructionWireRole, WireApi};
 use pl_protocol::Result;
 
 mod identity;
@@ -54,11 +54,18 @@ impl OpenAiBase {
     pub(crate) fn build_request(
         &self,
         api: WireApi,
+        instruction_role: InstructionWireRole,
         request: &CompletionRequest,
         model: &ModelInfo,
         prompt_cache_key: Option<&str>,
     ) -> Result<OpenAiRequestBody> {
-        build_openai_request_body(OpenAiEndpoint::of(api), request, model, prompt_cache_key)
+        build_openai_request_body(
+            OpenAiEndpoint::of(api),
+            instruction_role,
+            request,
+            model,
+            prompt_cache_key,
+        )
     }
 
     /// 每次调用创建独立的解码状态；解码器不跨调用共享可变状态。

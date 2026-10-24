@@ -41,7 +41,7 @@ async fn main() -> Result<()> {
     })
     .await??;
     account.bearer_token = stored.or(account.bearer_token);
-    let mut model = account
+    let model = account
         .effective_models(None)?
         .into_iter()
         .find(|m| m.model_id == model_id)
@@ -52,19 +52,9 @@ async fn main() -> Result<()> {
         .find(|p| p.name == "effort")
         .and_then(|p| p.candidates.first())
         .cloned();
-    let mut endpoint = account.to_endpoint()?;
-    if instruction_history {
-        model.capabilities.instruction_snapshot_overrides = true;
-        endpoint.service_capabilities.history_instruction_role =
-            match model.binding.transport.protocol {
-                pl_model::protocol::WireApi::Responses => {
-                    pl_model::protocol::HistoryInstructionRole::Developer
-                }
-                pl_model::protocol::WireApi::ChatCompletions => {
-                    pl_model::protocol::HistoryInstructionRole::System
-                }
-            };
-    }
+    let endpoint = account.to_endpoint()?;
+    // 消费真实冻结分发策略，不靠开关捏造 append 能力：未知绑定按 safe replace 走。
+    let instruction_update_strategy = endpoint.instruction_update_strategy(&model);
     let runtime = ModelRuntime::new_with_account_id(&id, endpoint, model)?
         .with_pricing_mode(account.pricing_mode);
     let factory = ThreadModel::new(
@@ -127,7 +117,7 @@ async fn main() -> Result<()> {
         anyhow::Ok(())
     }.await;
     let close = thread.close().await;
-    tokio::fs::write(artifacts.join("report.json"), serde_json::to_vec_pretty(&serde_json::json!({"account":id,"model":model_id,"effort":effort,"execution":execution.as_ref().err().map(ToString::to_string),"close":format!("{close:?}"),"manualReview":"pending"}))?).await?;
+    tokio::fs::write(artifacts.join("report.json"), serde_json::to_vec_pretty(&serde_json::json!({"account":id,"model":model_id,"effort":effort,"instructionHistory":instruction_history,"instructionUpdateStrategy":format!("{instruction_update_strategy:?}"),"execution":execution.as_ref().err().map(ToString::to_string),"close":format!("{close:?}"),"manualReview":"pending"}))?).await?;
     execution?;
     close?;
     Ok(())

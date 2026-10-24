@@ -14,7 +14,7 @@ use pl_protocol::ToolSpec;
 /// 模型由 [`ModelTurnClient`] 绑定，请求只描述本次 invocation 的 canonical 输入。
 #[derive(Debug, Clone)]
 pub struct ModelTurnRequest {
-    instructions: Option<String>,
+    system_prompt: Option<crate::completion::SystemPrompt>,
     tools: Vec<ToolSpec>,
     tool_choice: String,
     parallel_tool_calls: bool,
@@ -25,7 +25,7 @@ pub struct ModelTurnRequest {
 impl Default for ModelTurnRequest {
     fn default() -> Self {
         Self {
-            instructions: None,
+            system_prompt: None,
             tools: Vec::new(),
             tool_choice: "auto".to_string(),
             parallel_tool_calls: false,
@@ -49,8 +49,8 @@ impl ModelTurnRequest {
             .with_reasoning(reasoning)
     }
 
-    pub fn with_instructions(mut self, instructions: impl Into<String>) -> Self {
-        self.instructions = Some(instructions.into());
+    pub fn with_system_prompt(mut self, system_prompt: crate::completion::SystemPrompt) -> Self {
+        self.system_prompt = Some(system_prompt);
         self
     }
 
@@ -165,7 +165,7 @@ impl ModelTurnClient {
         options: ModelTurnOptions,
     ) -> std::result::Result<CompletionResponse, crate::completion::CompletionFailure> {
         let request = CompletionRequest::builder()
-            .maybe_instructions(request.instructions)
+            .maybe_system_prompt(request.system_prompt)
             .input(input.to_vec())
             .tools(request.tools)
             .tool_choice(request.tool_choice)

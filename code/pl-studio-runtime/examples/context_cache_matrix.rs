@@ -76,13 +76,8 @@ async fn main() -> Result<()> {
         })
         .cloned();
     let endpoint = account.to_endpoint()?;
-    let capabilities = serde_json::to_value(&model.capabilities)?;
-    let endpoint_capabilities = serde_json::to_value(&endpoint.service_capabilities)?;
-    let append = capabilities["instructionSnapshotOverrides"] == true
-        && matches!(
-            endpoint_capabilities["historyInstructionRole"].as_str(),
-            Some("system" | "developer")
-        );
+    let append = endpoint.instruction_update_strategy(&model)
+        == pl_model::protocol::InstructionUpdateStrategy::AppendFullSnapshot;
     let protocol = model.binding.transport.clone();
     let factory = ThreadModel::new(
         ModelRuntime::new_with_account_id(&account_id, endpoint, model)?

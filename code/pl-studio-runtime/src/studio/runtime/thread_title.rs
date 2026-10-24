@@ -327,7 +327,7 @@ async fn generate_title(
         },
     )];
     let request = ModelTurnRequest::new()
-        .with_instructions(TITLE_INSTRUCTIONS)
+        .with_system_prompt(pl_model::completion::SystemPrompt::new(TITLE_INSTRUCTIONS))
         .with_tools(Vec::new())
         .with_tool_choice("none")
         .with_parallel_tool_calls(false)
