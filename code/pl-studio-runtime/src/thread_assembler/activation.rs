@@ -11,14 +11,25 @@ pub struct ThreadActivation {
 }
 
 /// Preparation cancellation belongs to the assembler, independently of individual waiting clients.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct ThreadPreparation {
     pub identity: ThreadActivation,
     pub cancellation: tokio_util::sync::CancellationToken,
+    /// Preflighted collaboration registrations; no physical tool allocation has started yet.
+    pub agent_controls: Vec<Registration>,
+    /// Root-only strategy read from canonical saved/newly admitted facts before tool preflight.
+    pub delegation: Option<pl_protocol::DelegationSettings>,
 }
 
 /// Resolves an existing product task into fresh model/tool resources and saved facts.
 pub trait StudioActivationFactory: std::fmt::Debug + Send + Sync + 'static {
+    /// Resolves a root's frozen strategy before allocating physical tools or workspace resources.
+    /// Must not inherit current global defaults for an existing Thread.
+    fn root_delegation(
+        &self,
+        identity: &ThreadActivation,
+    ) -> impl Future<Output = Result<pl_protocol::DelegationSettings, ThreadAssemblyError>> + Send;
+
     /// Owns cleanup of allocations when preparation fails before returning a spec.
     /// Must honor cancellation and must not execute restored model calls or tool effects.
     fn prepare(
@@ -100,14 +111,39 @@ impl StudioThreadAssembler {
             let owner = self.clone();
             tokio::spawn(async move {
                 let operation = std::panic::AssertUnwindSafe(async {
+                    let _operation = owner.agent_operation(&identity.id).await;
+                    if owner.0.state().sealed_agents.contains_key(&identity.id) {
+                        return Err(ThreadAssemblyError::Closed);
+                    }
+                    let delegation = if identity.parent_id.is_none() {
+                        Some(factory.root_delegation(&identity).await?)
+                    } else {
+                        None
+                    };
+                    let agent_controls = match delegation {
+                        Some(selection) => {
+                            let profiles = owner.agent_profiles_snapshot()?;
+                            owner.agent_control_tools(&profiles, selection)?
+                        }
+                        None => Vec::new(),
+                    };
                     let spec = factory
                         .prepare(ThreadPreparation {
                             identity: identity.clone(),
                             cancellation: cancellation.clone(),
+                            agent_controls,
+                            delegation,
                         })
                         .await?;
                     if spec.id != identity.id || spec.parent_id != identity.parent_id {
                         return Err(ThreadAssemblyError::Identity(spec.id));
+                    }
+                    if let Some(selection) = delegation
+                        && spec.frozen_delegation()? != selection
+                    {
+                        return Err(ThreadAssemblyError::Identity(
+                            "prepared root delegation differs from its preflight".into(),
+                        ));
                     }
                     if cancellation.is_cancelled() {
                         return Err(ThreadAssemblyError::Closed);

@@ -7,8 +7,8 @@ use pl_tool::workspace::WorkspaceInstructions;
 use pl_tool::workspace::load_workspace_instruction_documents;
 
 use super::{
-    InstructionAssemblyRequest, InstructionBlock, InstructionProfile, InstructionSnapshot,
-    InstructionSource, InstructionSourceKind,
+    InstructionAssemblyRequest, InstructionBlock, InstructionSnapshot, InstructionSource,
+    InstructionSourceKind,
 };
 
 const DEFAULT_BASE_INSTRUCTIONS: &str = include_str!("../prompts/system.md");
@@ -19,32 +19,37 @@ const PLATFORM_WINDOWS_INSTRUCTIONS: &str = include_str!("../prompts/platform/wi
 pub struct InstructionAssembler;
 
 impl InstructionAssembler {
+    /// Captures the complete instruction sources for one Thread.
+    ///
+    /// The Agent definition and the optional Mode profile are the only role inputs; they are
+    /// recorded as separate sources so later Mode updates cannot rewrite identity.
     pub fn assemble(request: InstructionAssemblyRequest<'_>) -> Result<InstructionSnapshot> {
-        Self::assemble_inner(request, None)
-    }
-
-    pub fn assemble_with_profile(
-        request: InstructionAssemblyRequest<'_>,
-        profile: &InstructionProfile,
-    ) -> Result<InstructionSnapshot> {
-        Self::assemble_inner(request, Some(profile))
-    }
-
-    fn assemble_inner(
-        request: InstructionAssemblyRequest<'_>,
-        profile: Option<&InstructionProfile>,
-    ) -> Result<InstructionSnapshot> {
         let config_instructions = request.instructions;
+        let agent = request.agent;
         let mut snapshot = InstructionSnapshot {
-            base: base_block(profile, config_instructions, request.model),
+            agent: agent.identity().clone(),
+            base: base_block(config_instructions, request.model),
             developer: Vec::new(),
             user: Vec::new(),
         };
 
-        if let Some(execution) = request.execution_profile {
+        snapshot.push_developer(
+            InstructionSource::new(InstructionSourceKind::AgentDefinition, agent.label()),
+            agent.instructions(),
+        );
+        if let Some(mode) = request.mode {
             snapshot.push_developer(
-                InstructionSource::new(InstructionSourceKind::ExecutionProfile, execution.label),
-                execution.instructions,
+                InstructionSource::new(InstructionSourceKind::ModeDefinition, mode.label),
+                mode.instructions,
+            );
+        }
+        if let Some(preference) = request.delegation_preference {
+            snapshot.push_developer(
+                InstructionSource::new(
+                    InstructionSourceKind::DelegationPreference,
+                    "delegation preference",
+                ),
+                preference,
             );
         }
         let environment = request
@@ -63,11 +68,6 @@ impl InstructionAssembler {
                 InstructionSource::new(InstructionSourceKind::ConfigDeveloper, "config developer"),
                 &config.developer,
             );
-        }
-        if let Some(profile) = profile {
-            for block in &profile.developer_blocks {
-                snapshot.push_developer(block.source.clone(), &block.content);
-            }
         }
         if let Some(skills) = request.skills.filter(|skills| skills.enabled) {
             let prompt = request
@@ -119,11 +119,6 @@ impl InstructionAssembler {
                 instructions,
             );
         }
-        if let Some(profile) = profile {
-            for block in &profile.user_context_blocks {
-                snapshot.push_user(block.source.clone(), &block.content);
-            }
-        }
         if let (Some(catalog), Some(suggestions)) =
             (request.skill_catalog, request.skill_suggestions)
             && let Some(prompt) = pl_tool::skill::build_skill_suggestions_from_catalog(
@@ -145,24 +140,7 @@ impl InstructionAssembler {
     }
 }
 
-fn base_block(
-    profile: Option<&InstructionProfile>,
-    config: Option<&InstructionsConfig>,
-    model: &ModelInfo,
-) -> InstructionBlock {
-    if let Some(base_override) = profile
-        .and_then(|profile| profile.base_system_prompt.as_deref())
-        .map(str::trim)
-        .filter(|content| !content.is_empty())
-    {
-        return InstructionBlock {
-            source: InstructionSource::new(
-                InstructionSourceKind::ProfileBaseOverride,
-                "profile base override",
-            ),
-            content: base_override.to_string(),
-        };
-    }
+fn base_block(config: Option<&InstructionsConfig>, model: &ModelInfo) -> InstructionBlock {
     if let Some(base_override) = config
         .map(|config| config.base_override.trim())
         .filter(|content| !content.is_empty())

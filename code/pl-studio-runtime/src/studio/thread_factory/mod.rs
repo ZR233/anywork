@@ -1,5 +1,6 @@
 //! Product configuration and shared service leases used to construct core Threads.
 mod child_resources;
+mod close_child;
 mod errors;
 pub(crate) mod recovery;
 mod restore_child;
@@ -43,7 +44,7 @@ pub(crate) struct StudioThreadFactory {
 }
 impl StudioThreadFactory {
     /// Fresh allowance for each child Turn, including explicit continuation after a step limit.
-    pub(in crate::studio) const CHILD_MODEL_STEP_LIMIT: pl_core::thread::ModelStepLimit =
+    pub(crate) const CHILD_MODEL_STEP_LIMIT: pl_core::thread::ModelStepLimit =
         pl_core::thread::ModelStepLimit::Limited(
             std::num::NonZeroU32::new(256).expect("positive child step limit"),
         );
@@ -91,6 +92,13 @@ impl std::fmt::Debug for StudioThreadFactory {
 }
 
 impl crate::thread_assembler::StudioActivationFactory for StudioThreadFactory {
+    async fn root_delegation(
+        &self,
+        identity: &crate::thread_assembler::ThreadActivation,
+    ) -> Result<pl_protocol::DelegationSettings, crate::thread_assembler::ThreadAssemblyError> {
+        self.resolve_root_delegation(identity).await
+    }
+
     async fn prepare(
         &self,
         request: crate::thread_assembler::ThreadPreparation,
@@ -101,8 +109,7 @@ impl crate::thread_assembler::StudioActivationFactory for StudioThreadFactory {
         if request.identity.parent_id.is_some() {
             self.prepare_restored_child(request).await
         } else {
-            self.prepare_root_thread(&request.identity.id, request.cancellation)
-                .await
+            self.prepare_root_thread(request).await
         }
     }
 }

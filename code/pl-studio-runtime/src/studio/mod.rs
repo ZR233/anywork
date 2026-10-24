@@ -1,9 +1,12 @@
+pub(crate) mod agent_close;
 mod agent_host;
 pub(crate) mod catalog;
+pub(crate) mod delegation;
 pub(crate) mod entity;
 mod ids;
 mod instance;
 mod merged_page;
+pub(crate) mod model_binding;
 pub(crate) mod model_route;
 pub(crate) mod paths;
 pub(crate) mod payload_alias;

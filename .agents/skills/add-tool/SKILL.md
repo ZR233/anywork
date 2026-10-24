@@ -20,6 +20,8 @@ description: Use when implementing, registering, or testing a 糊来帮 tool thr
   每 Thread 独占工具实例和命令管理器；共用物理服务捕获隔离租约，不共享可变工具状态。
 - 动态注册更新同一 Thread 目录；工具稳定 ID、声明内容身份与 executor 代次分开。重连但声明未变
   保持 deferred reveal，删除/声明变更清除旧状态；已冻结调用保留旧租约但仍接受权限撤销检查。
+- 同一来源能力的常规重装配必须保持授权身份稳定；不要把每次构造、内容刷新或宽泛失效代次
+  当成权限变化。身份应覆盖完整来源及信任根，实质权限变化仍须使旧冻结调用失效。
 
 ## 结果与可信控制
 
@@ -50,5 +52,9 @@ MCP executor 固定 server 租约、raw name 与声明；媒体先归档精确�
 
 按实际风险验证真实工具行为、参数错误、授权、原文保留、取消及物理资源释放；通用执行/注册/CAS/
 冷重放机制由 core 契约测试验证，产品装配在 Studio 验证，不复制旧静态 adapter 测试。
+直接调用 `Tool::execute` 不能证明注册替换后的冻结授权正确；此类变更须经过真实 Thread 的
+注册、请求冻结、重装配和调用交接，并断言实际 ToolOutcome，而非只看 Turn 完成。
+人工 fixture 必须区分快速结果与后台 accepted 回执；后者按精确任务身份等待终态及实际正文，
+不能靠固定延时、把受理视为成功或强制生产工具前台化来通过验收。
 公共接口迁移在同批更新消费者、文档和生成输入。检查与交付遵循根 AGENTS.md，独立 core
 配置还需无默认 feature 与显式 sqlite 两种组合；live provider 仅显式 opt-in。

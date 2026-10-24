@@ -6,14 +6,36 @@ use super::{
     thread_tools::ThreadToolAssembly,
 };
 use crate::{
+    agent::definition::{AgentChannel, ResolvedAgentDefinition, VerifiedAgentIdentity},
+    instruction::ModeInstructionProfile,
     resource_store::FileResourceStore,
-    thread_assembler::{StudioThreadSpec, ThreadAssemblyError},
+    thread_assembler::{StudioThreadSpec, ThreadAssemblyError, ThreadPreparation},
 };
 use pl_core::context::{OpaquePayload, ResourceAccess};
 use pl_tool::workspace::{AgentWorkspace, ToolWorkspace};
 use std::collections::BTreeMap;
 
 impl StudioThreadFactory {
+    pub(super) async fn resolve_root_delegation(
+        &self,
+        identity: &crate::thread_assembler::ThreadActivation,
+    ) -> Result<pl_protocol::DelegationSettings, ThreadAssemblyError> {
+        let thread = self.thread_record(&identity.id).await?;
+        if identity.parent_id.is_some() || thread.parent_thread_id.is_some() {
+            return Err(ThreadAssemblyError::Identity(identity.id.clone()));
+        }
+        let checkpoint = super::recovery::load_checkpoint_for_recovery(
+            &self.services.store,
+            &thread.clone().into(),
+        )
+        .await
+        .map_err(|error| resource_error("load root delegation checkpoint", error))?;
+        root_delegation(
+            &thread,
+            checkpoint.as_ref().map(|checkpoint| &checkpoint.state),
+        )
+    }
+
     pub(super) async fn bind_bot_project(
         &self,
         thread_id: &str,
@@ -43,11 +65,17 @@ impl StudioThreadFactory {
 
     pub(in crate::studio) async fn prepare_root_thread(
         &self,
-        id: &str,
-        cancellation: tokio_util::sync::CancellationToken,
+        request: ThreadPreparation,
     ) -> Result<StudioThreadSpec, ThreadAssemblyError> {
+        let ThreadPreparation {
+            identity,
+            cancellation,
+            agent_controls,
+            delegation: preflight_delegation,
+        } = request;
+        let id = identity.id.as_str();
         let thread = self.thread_record(id).await?;
-        if thread.parent_thread_id.is_some() {
+        if identity.parent_id.is_some() || thread.parent_thread_id.is_some() {
             return Err(ThreadAssemblyError::Identity(id.into()));
         }
         let mut project = self.project_record(&thread.project_id).await?;
@@ -57,22 +85,31 @@ impl StudioThreadFactory {
             .config_for_thread(id)
             .await
             .map_err(|error| resource_error("resolve bot ownership", error))?;
-        if let Some(bot) = &bot {
-            let root = self
-                .services
-                .bots
-                .prepare_workspace(bot, id, &project.path)
-                .await
-                .map_err(|error| resource_error("prepare bot workspace", error))?;
-            project.path = root.to_string_lossy().into_owned();
-            project.ssh_alias = None;
-        }
         let config = self.services.config_runtime.read()?.config;
         let protocol_thread: pl_protocol::Thread = thread.clone().into();
         let mut checkpoint =
             super::recovery::load_checkpoint_for_recovery(&self.services.store, &protocol_thread)
                 .await
                 .map_err(|error| resource_error("load Thread checkpoint", error))?;
+        // Only decoded, validated ownership selects the bot definition: the live binding and the
+        // fact frozen in this session must agree when both exist. Titles, user text, paths and
+        // arbitrary metadata never decide the Agent role.
+        let bot_owner = crate::studio::model_route::verified_bot_owner(
+            bot.as_ref().map(|bot| bot.id.as_str()),
+            checkpoint.as_ref().map(|checkpoint| &checkpoint.state),
+        )
+        .map_err(|error| resource_error("verify bot ownership", error))?;
+        let agent = ResolvedAgentDefinition::root(if bot_owner.is_some() {
+            AgentChannel::Bot
+        } else {
+            AgentChannel::Studio
+        });
+        // 旧快照的身份由已核实事实决定：有 bot 归属证明时沿用飞书渠道，否则是明确渠道未指定
+        // 的 legacy-root；两者都不会伪装成当前内置的普通根定义。
+        let saved_identity = match bot_owner {
+            Some(_) => VerifiedAgentIdentity::BotRoot,
+            None => VerifiedAgentIdentity::GenericRoot,
+        };
         if let Some(checkpoint) = &mut checkpoint {
             let history = self
                 .services
@@ -83,10 +120,20 @@ impl StudioThreadFactory {
             *checkpoint = history
                 .migrate_recovery_checkpoint(checkpoint, |state| {
                     crate::mode::migrate_mode_snapshot(state, &self.services.thread_modes)?;
+                    // A root's saved Mode identity is required evidence: without it neither the
+                    // Mode nor the legacy Agent role can be attributed, so the original
+                    // checkpoint stays as it is.
+                    anyhow::ensure!(
+                        state.extensions.contains_key("studio.mode"),
+                        "root Thread has no saved Mode identity; original checkpoint preserved"
+                    );
+                    // Mode recovery reads the saved role text before this migration rewrites the
+                    // snapshot structure; the Agent identity is the verified one above.
+                    crate::instruction::migrate_saved_representation(state, &saved_identity)?;
                     Ok(())
                 })
                 .await
-                .map_err(|error| resource_error("migrate saved Mode", error))?;
+                .map_err(|error| resource_error("migrate saved Mode and instructions", error))?;
         }
         let saved = checkpoint
             .as_ref()
@@ -94,6 +141,25 @@ impl StudioThreadFactory {
                 checkpoint.state.clone()
             });
         let is_new = checkpoint.is_none();
+        let delegation = root_delegation(
+            &thread,
+            checkpoint.as_ref().map(|checkpoint| &checkpoint.state),
+        )?;
+        if preflight_delegation != Some(delegation) {
+            return Err(ThreadAssemblyError::Identity(
+                "root delegation differs from its preflight".into(),
+            ));
+        }
+        if let Some(bot) = &bot {
+            let root = self
+                .services
+                .bots
+                .prepare_workspace(bot, id, &project.path)
+                .await
+                .map_err(|error| resource_error("prepare bot workspace", error))?;
+            project.path = root.to_string_lossy().into_owned();
+            project.ssh_alias = None;
+        }
         let selected_mode = crate::studio::thread_projection::saved_mode(&saved)
             .map_err(|error| resource_error("read saved Mode", error))?
             .unwrap_or_else(|| thread.mode.clone());
@@ -121,12 +187,21 @@ impl StudioThreadFactory {
         };
         let resolved_route = config
             .models
-            .resolve_route(crate::config::StudioRole::Planner.id(), &route_selector);
+            .resolve_route(crate::config::StudioRole::Planner.id(), &route_selector)
+            .and_then(|route| {
+                crate::studio::delegation::validate_credential(&route)?;
+                Ok(route)
+            });
         let (route, model_available) = match resolved_route {
             Ok(route) => (route, true),
             Err(error) if has_saved_route => {
                 tracing::warn!(thread_id = id, %error, "saved Thread model route is unavailable");
-                let fallback = config.resolve_mode_model_route(&selected_mode)?;
+                let fallback = crate::studio::model_route::unavailable_placeholder(
+                    &config,
+                    crate::config::StudioRole::Planner.id(),
+                    &route_selector,
+                )
+                .map_err(|error| resource_error("restore unavailable root placeholder", error))?;
 
                 (fallback, false)
             }
@@ -193,6 +268,13 @@ impl StudioThreadFactory {
             .with_tools(crate::workflow_tool::workflow_registrations()?);
         let mut initial_context = Vec::new();
         let mut initial_extensions = BTreeMap::new();
+        if is_new {
+            initial_extensions.insert(
+                crate::studio::delegation::EXTENSION.into(),
+                crate::studio::delegation::encode(delegation)
+                    .map_err(|error| resource_error("freeze delegation selection", error))?,
+            );
+        }
         if let Some(bot) = &bot
             && !saved
                 .extensions
@@ -226,8 +308,12 @@ impl StudioThreadFactory {
                 config: &config,
                 model: &route.model,
                 root: &root,
-                label: &mode.descriptor().display_name,
-                instructions: mode.prompt(),
+                agent: &agent,
+                mode: Some(ModeInstructionProfile {
+                    label: mode.descriptor().display_name.as_str(),
+                    instructions: mode.prompt(),
+                }),
+                delegation: Some(delegation),
                 resources: &prepared,
             })
             .await?;
@@ -285,7 +371,7 @@ impl StudioThreadFactory {
                 config.runtime.openai_compaction_mode,
                 self.services.thread_modes.clone(),
             )?,
-            agent_controls: crate::thread_assembler::AgentControlExposure::Enabled,
+            agent_controls,
             execution: pl_core::thread::input::InputDriverOptions {
                 max_model_steps: pl_core::thread::ModelStepLimit::Unlimited,
             },
@@ -306,5 +392,22 @@ impl StudioThreadFactory {
             cold_store: Some(pl_core::thread::cold::ColdStoreHandle::new(persistence)),
         };
         Ok(prepared.tools.install(spec))
+    }
+}
+
+fn root_delegation(
+    thread: &crate::studio::ThreadRecord,
+    saved: Option<&pl_core::thread::ThreadSnapshot>,
+) -> Result<pl_protocol::DelegationSettings, ThreadAssemblyError> {
+    match saved {
+        Some(saved) => crate::studio::delegation::saved(saved)
+            .map_err(|error| resource_error("read saved delegation", error))?
+            .ok_or_else(|| {
+                ThreadAssemblyError::Identity("saved root has no delegation selection".into())
+            }),
+        None => Ok(pl_protocol::DelegationSettings {
+            mode: thread.delegation_mode,
+            preference: thread.delegation_preference,
+        }),
     }
 }

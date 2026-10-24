@@ -5,6 +5,7 @@ mod agent;
 mod agent_profile;
 pub mod agent_session;
 mod billing;
+mod delegation;
 mod error;
 mod event;
 mod id;
@@ -29,12 +30,13 @@ mod workflow;
 
 pub use account_catalog::{
     ACCOUNT_CATALOG_SCHEMA_VERSION, AccountCatalogSnapshot, AccountServiceCapabilitiesDescriptor,
-    AccountTemplateDescriptor, ConnectionModeDescriptor, CredentialDescriptorDto,
+    AccountTemplateDescriptor, BillingKind, ConnectionModeDescriptor, CredentialDescriptorDto,
     ModelCapabilitiesDto, ModelCatalogDescriptor, ModelContextAdjustment, ModelContextResolution,
     ModelContextUnavailable, ModelDescriptor, ModelInputCapabilityDto, ModelInputSourceDto,
     ModelModalityDto, ModelOriginDto, ModelPriceTierDto, ModelPricingDto, ModelReasoningDescriptor,
-    ModelTransportDescriptor, ModelType, ModelTypeExclusion, ModelTypeSupport,
-    WebSearchResolutionDescriptor, WebSearchServiceCapabilitiesDescriptor,
+    ModelSelectionGuideDto, ModelSelectionMeasurementDto, ModelSelectionSourceDto,
+    ModelSelectionSourceKindDto, ModelTransportDescriptor, ModelType, ModelTypeExclusion,
+    ModelTypeSupport, WebSearchResolutionDescriptor, WebSearchServiceCapabilitiesDescriptor,
 };
 pub use accounting::{
     InferenceAccounting, PricingMode, PricingOutcome, UnpricedReason, UsageReport, UsageStatus,
@@ -61,6 +63,15 @@ pub use billing::{
     InferenceBillingAppend, InferenceBillingRecord, InferenceModelObservation,
     InferenceOrchestrationMetrics, InferenceTiming, InferenceTokenUsage, ModelMatchState,
     ModelPricingSnapshot, TurnBillingRecord,
+};
+pub use delegation::{
+    AGENT_EVALUATION_COMMENT_MAX_CHARS, AGENT_EVALUATION_WINDOW, AgentEvaluation,
+    AgentEvaluationOutcome, AgentEvaluationSummary, AgentEvaluationWrite, AgentTaskCategory,
+    DELEGATION_MODEL_CURSOR_VERSION, DELEGATION_MODEL_PAGE_DEFAULT, DELEGATION_MODEL_PAGE_MAX,
+    DelegationMode, DelegationModelCapability, DelegationModelCursor, DelegationModelDetail,
+    DelegationModelFilter, DelegationModelKey, DelegationModelList, DelegationModelListItem,
+    DelegationPreference, DelegationSettings, EvaluateAgentReceipt, EvaluateAgentRequest,
+    GetDelegationModelRequest, ListDelegationModelsRequest, LocalModelPerformanceSummary,
 };
 pub use error::{PureError, Result};
 pub use event::{

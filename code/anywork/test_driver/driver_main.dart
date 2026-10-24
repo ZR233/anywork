@@ -1103,7 +1103,158 @@ String _driverSnapshotJson() {
   }
   final snapshot = decoded.cast<String, dynamic>();
   snapshot['driverDiagnostics'] = _driverDiagnostics(observed: facts);
+  snapshot['delegation'] = _delegationSnapshot(facts);
   return jsonEncode(snapshot);
+}
+
+/// Read-only Client facts for delegation acceptance; no hidden UI-bypassing writes.
+Map<String, Object?> _delegationSnapshot(StudioDriverFacts facts) {
+  final store = _client.settings.state;
+  final defaults = store.configLoaded ? store.canonical?.delegation : null;
+  final drafts = _client.startDraft.state;
+  final directory = _client.threadDirectory.state;
+  final threads = <String, StudioThread>{
+    for (final thread in [
+      ...directory.window.threads,
+      ...directory.overlayThreads,
+    ])
+      thread.id: thread,
+    for (final workspace in facts.workspacesByThread.values)
+      workspace.thread.id: workspace.thread,
+  };
+  Map<String, Object?>? route(NewThreadModelRoute? value) => value == null
+      ? null
+      : {
+          'accountId': value.accountId,
+          'modelId': value.modelId,
+          'effort': value.effort,
+        };
+  return {
+    'defaults': defaults == null
+        ? null
+        : {'mode': defaults.mode.name, 'preference': defaults.preference.name},
+    'settingsRevision': store.settingsRevision,
+    'catalogRevision': store.modelCatalogRevision,
+    'accountModels': [
+      for (final account
+          in store.canonical?.accounts ?? const <AccountSettingsView>[])
+        for (final model in account.models)
+          {
+            'accountId': account.id,
+            'modelId': model.modelId,
+            'enabled': model.enabled,
+            'textEligible': model.matchesType(ModelType.text),
+            'pending':
+                store
+                    .commands[accountModelEnabledMutationKey(
+                      account.id,
+                      model.modelId,
+                    )]
+                    ?.isPending ==
+                true,
+            'pendingEnabled':
+                store
+                        .commands[accountModelEnabledMutationKey(
+                          account.id,
+                          model.modelId,
+                        )]
+                        ?.isPending ==
+                    true
+                ? store
+                      .commands[accountModelEnabledMutationKey(
+                        account.id,
+                        model.modelId,
+                      )]
+                      ?.target
+                      .enabled
+                : null,
+            'error': store
+                .commands[accountModelEnabledMutationKey(
+                  account.id,
+                  model.modelId,
+                )]
+                ?.error
+                ?.message,
+            'billingKind': account.billingKind.name,
+            'billingKindOverride': account.billingKindOverride?.name,
+          },
+    ],
+    'drafts': [
+      for (final id in {
+        ...drafts.projects.keys,
+        if (facts.selectedProjectId != null) facts.selectedProjectId!,
+      })
+        {
+          'projectId': id,
+          'modeOverride': drafts.forProject(id).delegationModeOverride?.name,
+          'preferenceOverride': drafts
+              .forProject(id)
+              .delegationPreferenceOverride
+              ?.name,
+          'effectiveMode': defaults == null
+              ? null
+              : drafts.forProject(id).resolveDelegation(defaults).mode.name,
+          'effectivePreference': defaults == null
+              ? null
+              : drafts
+                    .forProject(id)
+                    .resolveDelegation(defaults)
+                    .preference
+                    .name,
+          'workspaceMode': drafts.forProject(id).workspaceMode.id,
+          'submitting': drafts.submitting,
+        },
+    ],
+    'threads': [
+      for (final thread in threads.values)
+        {
+          'threadId': thread.id,
+          'mode': thread.delegationMode.name,
+          'preference': thread.delegationPreference.name,
+          'frozenModel': route(thread.frozenModel),
+        },
+    ],
+    'agents': [
+      for (final agent
+          in _client.project.state.agents?.values ?? const <StudioAgentView>[])
+        {
+          'threadId': agent.threadId,
+          'taskSummary': agent.task,
+          'role': agent.role,
+          'state': agent.status,
+          'mode': agent.delegationMode.name,
+          'preference': agent.delegationPreference.name,
+          'frozenModel': route(agent.frozenModel),
+        },
+    ],
+    // Only open, explicitly queried details. Never copy evaluations into the directory.
+    'modelDetails': [
+      for (final entry in _client.modelDetailQueries.state.entries)
+        {
+          'accountId': entry.key.accountId,
+          'modelId': entry.key.modelId,
+          'loading': entry.value.loading,
+          'error': entry.value.error?.message,
+          'errorCode': entry.value.error?.code.name,
+          'available': entry.value.value?.available,
+          'evaluationCount': entry.value.value?.recentEvaluations.length,
+          'evaluations': [
+            for (final evaluation
+                in entry.value.value?.recentEvaluations ??
+                    const <AgentEvaluation>[])
+              {
+                'agentId': evaluation.agentId,
+                'turnId': evaluation.turnId,
+                'revision': evaluation.revision,
+                'model': route(evaluation.model),
+                'outcome': evaluation.outcome.name,
+                'comment': evaluation.comment,
+                'updatedAt': evaluation.updatedAt,
+              },
+          ],
+        },
+    ],
+  };
 }
 
 Map<String, Object?> _driverDiagnostics({StudioDriverFacts? observed}) {

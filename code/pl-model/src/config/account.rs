@@ -64,6 +64,10 @@ pub struct AccountModelEntry {
     pub model: ModelInfo,
     pub origin: AccountModelOrigin,
     pub context: pl_protocol::ModelContextResolution,
+    /// 用户启用意图的投影；禁用成员仍留在目录里，只是不能被选为执行模型。
+    ///
+    /// 它不改写 [`Self::type_support`]：类型资格与启用意图是两个独立事实。
+    pub enabled: bool,
 }
 
 /// 一个 account 当前可用的图像生成服务。
@@ -83,6 +87,7 @@ impl AccountModelEntry {
             context: model.resolve_context(None),
             model,
             origin,
+            enabled: true,
         }
     }
 
@@ -139,6 +144,13 @@ pub struct AccountConfig {
     pub protocol: crate::protocol::ProtocolKind,
     #[serde(default)]
     pub pricing_mode: pl_protocol::PricingMode,
+    /// 显式设置的计费类别；`None` 表示未显式配置，由 [`Self::billing_kind`] 按明确模板与
+    /// canonical endpoint 推导。
+    ///
+    /// 分开保存「用户显式意图」与「模板推导」：修改 endpoint 时只有推导值会变化，用户显式
+    /// 选择的类别必须保留。`subscription` 不证明订阅有效、额度充足或实际零费用。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub billing_kind: Option<pl_protocol::BillingKind>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub template: Option<AccountTemplateId>,
     pub name: String,
@@ -160,6 +172,9 @@ pub struct AccountConfig {
     /// Successful endpoint observation, never persisted as desired user configuration.
     #[serde(skip)]
     model_catalog_overlay: Option<Vec<ModelInfo>>,
+    /// 精确 model_id 的禁用覆盖；空表示全部启用，撤下的成员保留覆盖以便重新出现时继续生效。
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    disabled_models: BTreeSet<String>,
     #[serde(skip)]
     resolved_catalog: Option<Vec<AccountModelEntry>>,
 }
@@ -212,6 +227,7 @@ impl AccountConfig {
             protocol: info.protocol,
             template: None,
             pricing_mode: pl_protocol::PricingMode::Catalog,
+            billing_kind: None,
             name: info.name,
             base_url: info.base_url,
             bearer_token: info.bearer_token,
@@ -222,11 +238,16 @@ impl AccountConfig {
             capabilities: AccountCapabilitySelection::Explicit(service_capabilities),
             catalog,
             model_catalog_overlay: None,
+            disabled_models: BTreeSet::new(),
             resolved_catalog: None,
         }
     }
 
     /// 记录创建该实例所使用的内置 template。
+    ///
+    /// 模板本身不写入计费类别：推导只在读取时按 canonical endpoint 判定（见
+    /// [`Self::billing_kind`]），因此用同一个模板配非 canonical 地址不会被记成订阅或按量
+    /// 计价。类别与「是否按金额统计」是两条独立事实。
     pub fn with_template(mut self, template: AccountTemplateId) -> Self {
         self.pricing_mode = match template.as_str() {
             "zhipu-coding-plan" | "mimo-token-plan" | "openai-compatible" => {
@@ -289,8 +310,8 @@ impl AccountConfig {
 
     /// 返回该 account 的图像生成服务及其可用模型；未声明能力时返回 `None`。
     ///
-    /// 候选只来自当前有效目录中命中声明前缀的模型，来源不限；目录为空时返回空名单，
-    /// 由调用方按不可用处理，不能凭模型名或配置补造名单。
+    /// 候选只来自当前选择资格目录（类型合格且启用）中命中声明前缀的模型，来源不限；
+    /// 目录为空时返回空名单，由调用方按不可用处理，不能凭模型名或配置补造名单。
     ///
     /// # Errors
     /// 服务能力或目录声明不一致时返回配置定义错误。
@@ -299,7 +320,7 @@ impl AccountConfig {
             return Ok(None);
         };
         let models = self
-            .effective_catalog(None)?
+            .selectable_catalog(None)?
             .into_iter()
             .map(|entry| entry.model.model_id)
             .filter(|slug| {
@@ -336,8 +357,10 @@ impl AccountConfig {
             .collect())
     }
 
-    /// 有效目录查询；每条成员携带来源，不从默认定义补回在线名单缺失的模型。
-    /// 类型筛选消费已合并的定义，不用于发现阶段或改变供应商成员。
+    /// 有效目录查询；每条成员携带来源与启用投影，不从默认定义补回在线名单缺失的模型。
+    ///
+    /// 类型筛选消费已合并的定义，不用于发现阶段或改变供应商成员。启用意图在每次读取时
+    /// 从 desired 配置投影，因此已解析目录缓存不会把禁用成员漏成可用。
     pub fn effective_catalog(
         &self,
         model_type: Option<crate::model::ModelType>,
@@ -364,10 +387,132 @@ impl AccountConfig {
         };
         Ok(catalog
             .into_iter()
+            .map(|mut entry| {
+                entry.enabled = !self.disabled_models.contains(&entry.model.model_id);
+                entry
+            })
             .filter(|entry| {
                 model_type.is_none_or(|kind| entry.type_support(kind).exclusions.is_empty())
             })
             .collect())
+    }
+
+    /// 会话、固定 Profile 与自动子代理共用的选择资格入口。
+    ///
+    /// 先应用模型自身的类型资格（文本输入输出、上下文与预算），再排除用户禁用的成员；
+    /// 启用、价格或评价不能绕过类型资格。管理页仍用 [`Self::effective_catalog`] 读取完整
+    /// 目录，自动分发的凭据、连接与任务能力追加过滤由调用方完成。
+    pub fn selectable_catalog(
+        &self,
+        model_type: Option<crate::model::ModelType>,
+    ) -> Result<Vec<AccountModelEntry>> {
+        Ok(self
+            .effective_catalog(model_type)?
+            .into_iter()
+            .filter(|entry| entry.enabled)
+            .collect())
+    }
+
+    /// 切换一个目录成员的启用状态。
+    ///
+    /// 这是模型启用的唯一 mutation：只改该精确 `model_id` 的禁用意图，保留成员来源、
+    /// 连接覆盖、压缩阈值覆盖、凭据与其他模型；把在线成员切换为启用不会把它转成手工成员。
+    /// 已禁用的成员被目录撤下后覆盖仍保留，重新出现时继续生效。
+    ///
+    /// # Errors
+    /// `model_id` 不是当前有效目录成员时返回类型化配置错误，且状态零修改。
+    pub fn set_model_enabled(&mut self, model_id: &str, enabled: bool) -> Result<()> {
+        if !self
+            .effective_catalog(None)?
+            .iter()
+            .any(|entry| entry.model.model_id == model_id)
+        {
+            return Err(PureError::ConfigError(format!("unknown model: {model_id}")));
+        }
+        if enabled {
+            self.disabled_models.remove(model_id);
+        } else {
+            self.disabled_models.insert(model_id.to_string());
+        }
+        Ok(())
+    }
+
+    /// 返回当前保存的禁用覆盖；空集合表示全部启用。
+    ///
+    /// 调用方据此投影管理页开关与配置保存，不需要第二份自动分发白名单。
+    pub fn disabled_models(&self) -> &BTreeSet<String> {
+        &self.disabled_models
+    }
+
+    /// 由明确模板与 canonical endpoint 推导的计费类别。
+    ///
+    /// 只有模板自身的 canonical endpoint 才预置类别；改过地址、未知模板或自定义账号返回
+    /// [`pl_protocol::BillingKind::Unknown`]。推导只描述计量方式，不证明订阅有效或额度充足。
+    /// 显式设置值不参与推导，见 [`Self::billing_kind`]。
+    ///
+    /// # Errors
+    /// 引用未知模板时返回配置定义错误。
+    pub fn inferred_billing_kind(&self) -> Result<pl_protocol::BillingKind> {
+        let Some(template_id) = self.template_id() else {
+            return Ok(pl_protocol::BillingKind::Unknown);
+        };
+        let template = super::builtin_account_catalog()?
+            .templates
+            .into_iter()
+            .find(|template| &template.id == template_id)
+            .ok_or_else(|| {
+                PureError::ConfigError(format!("unknown account template: {template_id}"))
+            })?;
+        if self.base_url.trim_end_matches('/') != template.account.base_url.trim_end_matches('/') {
+            return Ok(pl_protocol::BillingKind::Unknown);
+        }
+        Ok(template_billing_kind(template_id))
+    }
+
+    /// 生效的计费类别：显式设置优先，否则按明确模板与 canonical endpoint 推导。
+    ///
+    /// 这是唯一供投影与查询消费的取值入口。显式值与推导值不一致不是错误：它表示用户选择了
+    /// 与模板默认不同的计量方式（例如自建代理），修改 endpoint 时不得静默覆盖显式值。
+    ///
+    /// # Errors
+    /// 引用未知模板时返回配置定义错误。
+    pub fn billing_kind(&self) -> Result<pl_protocol::BillingKind> {
+        match self.billing_kind {
+            Some(kind) => Ok(kind),
+            None => self.inferred_billing_kind(),
+        }
+    }
+
+    /// 按本账号绑定的精确内置目录查找只读选模资料。
+    ///
+    /// 资料只按「目录 + model_id」精确命中，并要求该 model_id 仍是当前有效目录成员：显式
+    /// （自定义）目录没有内置资料，手工覆盖同 ID 的成员由用户定义语义而不附内置资料，
+    /// 在线撤下的成员也不会从系统目录补回。资料不是能力声明，也不进入 runtime 载荷。
+    ///
+    /// # Errors
+    /// 读取当前有效目录失败时返回配置错误，不把失败伪装成「没有资料」。
+    pub fn model_selection_guide(
+        &self,
+        model_id: &str,
+    ) -> Result<Option<&'static crate::model::ModelSelectionGuide>> {
+        let catalog = match &self.catalog {
+            AccountModelCatalogConfig::Bundled { catalog, .. } => catalog,
+            AccountModelCatalogConfig::Explicit { .. } => return Ok(None),
+        };
+        let Some(entry) = self
+            .effective_catalog(None)?
+            .into_iter()
+            .find(|entry| entry.model.model_id == model_id)
+        else {
+            return Ok(None);
+        };
+        if entry.origin == AccountModelOrigin::Manual {
+            return Ok(None);
+        }
+        Ok(crate::model::bundled_selection_guide(
+            catalog.as_str(),
+            model_id,
+        ))
     }
 
     fn catalog_membership(&self) -> Result<Vec<AccountModelEntry>> {
@@ -592,6 +737,8 @@ impl AccountConfig {
                 auto_compact_overrides.remove(model_id);
             }
         }
+        // 手工成员被删除后，其禁用覆盖不再有可恢复的成员来源。
+        self.disabled_models.remove(model_id);
         Ok(())
     }
 
@@ -831,6 +978,21 @@ impl AccountConfig {
                 )));
             }
         }
+        for model_id in &self.disabled_models {
+            if model_id.trim().is_empty() {
+                return Err(PureError::ConfigError(format!(
+                    "account {account_id} contains an empty disabled model"
+                )));
+            }
+            // 在线目录撤下的成员保留禁用覆盖属于合法 desired 状态，不视为配置损坏。
+            if !model_ids.contains(model_id.as_str())
+                && (strict_availability || self.discovery_profile()?.is_none())
+            {
+                return Err(PureError::ConfigError(format!(
+                    "account {account_id} disabled model references unknown model: {model_id}"
+                )));
+            }
+        }
         Ok(())
     }
 
@@ -929,6 +1091,18 @@ fn apply_connection_overrides(
         entry.model.binding.transport.default_connection_mode = *mode;
     }
     Ok(entries)
+}
+
+/// 模板默认计费类别。
+///
+/// 只有订阅制模板预置 `subscription`，品牌 API 模板是 `metered`，自定义兼容入口保持未知。
+/// 金额统计开关（`pricing_mode`）与类别独立：`Disabled` 只关闭金额估算，不代表订阅或免费。
+fn template_billing_kind(template: &AccountTemplateId) -> pl_protocol::BillingKind {
+    match template.as_str() {
+        "zhipu-coding-plan" | "mimo-token-plan" => pl_protocol::BillingKind::Subscription,
+        "openai-compatible" => pl_protocol::BillingKind::Unknown,
+        _ => pl_protocol::BillingKind::Metered,
+    }
 }
 
 /// 校验图像生成能力声明。

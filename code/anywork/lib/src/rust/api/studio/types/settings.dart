@@ -5,13 +5,14 @@
 
 import '../../../frb_generated.dart';
 import 'acp.dart';
+import 'delegation.dart';
 
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 import 'package:freezed_annotation/freezed_annotation.dart' hide protected;
 part 'settings.freezed.dart';
 
 // These functions are ignored because they are not marked as `pub`: `bridge_input_source`, `bridge_modality`
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `from`, `from`, `from`, `from`, `from`, `from`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`
 
 class AccountInput {
   final String accountId;
@@ -208,6 +209,9 @@ class BridgeAccountCatalogSnapshot {
 /// 不含 secret 的 Account canonical 设置视图。
 class BridgeAccountSettingsDto {
   final bool pricingEnabled;
+  final BridgeBillingKind billingKind;
+  final BridgeBillingKind? billingKindOverride;
+  final List<String> disabledModels;
   final String accountId;
 
   /// 可选的内置账号模板引用；完全自定义账号为 `None`。
@@ -236,6 +240,9 @@ class BridgeAccountSettingsDto {
 
   const BridgeAccountSettingsDto({
     required this.pricingEnabled,
+    required this.billingKind,
+    this.billingKindOverride,
+    required this.disabledModels,
     required this.accountId,
     this.templateId,
     required this.protocol,
@@ -260,6 +267,9 @@ class BridgeAccountSettingsDto {
   @override
   int get hashCode =>
       pricingEnabled.hashCode ^
+      billingKind.hashCode ^
+      billingKindOverride.hashCode ^
+      disabledModels.hashCode ^
       accountId.hashCode ^
       templateId.hashCode ^
       protocol.hashCode ^
@@ -286,6 +296,9 @@ class BridgeAccountSettingsDto {
       other is BridgeAccountSettingsDto &&
           runtimeType == other.runtimeType &&
           pricingEnabled == other.pricingEnabled &&
+          billingKind == other.billingKind &&
+          billingKindOverride == other.billingKindOverride &&
+          disabledModels == other.disabledModels &&
           accountId == other.accountId &&
           templateId == other.templateId &&
           protocol == other.protocol &&
@@ -908,6 +921,7 @@ enum BridgeModelContextUnavailable {
 
 class BridgeModelDescriptor {
   final String modelId;
+  final bool enabled;
   final List<BridgeModelTypeSupport> typeSupport;
   final BridgeModelOrigin origin;
   final String displayName;
@@ -923,6 +937,7 @@ class BridgeModelDescriptor {
 
   const BridgeModelDescriptor({
     required this.modelId,
+    required this.enabled,
     required this.typeSupport,
     required this.origin,
     required this.displayName,
@@ -940,6 +955,7 @@ class BridgeModelDescriptor {
   @override
   int get hashCode =>
       modelId.hashCode ^
+      enabled.hashCode ^
       typeSupport.hashCode ^
       origin.hashCode ^
       displayName.hashCode ^
@@ -959,6 +975,7 @@ class BridgeModelDescriptor {
       other is BridgeModelDescriptor &&
           runtimeType == other.runtimeType &&
           modelId == other.modelId &&
+          enabled == other.enabled &&
           typeSupport == other.typeSupport &&
           origin == other.origin &&
           displayName == other.displayName &&
@@ -1301,6 +1318,7 @@ class BridgeStudioSettingsDto {
   final BridgeSkillsSettingsDto skills;
   final List<BridgeMcpServerSettingsDto> mcpServers;
   final BridgeGeneralSettingsDto general;
+  final BridgeDelegationSettings delegation;
   final BridgeWebSearchSettingsDto webSearch;
   final BridgeDeepSeekWebSearchSettingsDto deepseekWebSearch;
 
@@ -1315,6 +1333,7 @@ class BridgeStudioSettingsDto {
     required this.skills,
     required this.mcpServers,
     required this.general,
+    required this.delegation,
     required this.webSearch,
     required this.deepseekWebSearch,
   });
@@ -1331,6 +1350,7 @@ class BridgeStudioSettingsDto {
       skills.hashCode ^
       mcpServers.hashCode ^
       general.hashCode ^
+      delegation.hashCode ^
       webSearch.hashCode ^
       deepseekWebSearch.hashCode;
 
@@ -1349,6 +1369,7 @@ class BridgeStudioSettingsDto {
           skills == other.skills &&
           mcpServers == other.mcpServers &&
           general == other.general &&
+          delegation == other.delegation &&
           webSearch == other.webSearch &&
           deepseekWebSearch == other.deepseekWebSearch;
 }
@@ -1577,4 +1598,10 @@ sealed class SettingsFieldInput with _$SettingsFieldInput {
     required String role,
     String? effort,
   }) = SettingsFieldInput_RoleReasoningEffort;
+  const factory SettingsFieldInput.delegationMode({
+    required BridgeDelegationMode value,
+  }) = SettingsFieldInput_DelegationMode;
+  const factory SettingsFieldInput.delegationPreference({
+    required BridgeDelegationPreference value,
+  }) = SettingsFieldInput_DelegationPreference;
 }

@@ -118,6 +118,7 @@ impl StudioRuntime {
             store.clone(),
             product_events.clone(),
             thread_factory.clone(),
+            model_performance.clone(),
         )?;
         threads.set_child_factory(crate::thread_assembler::ConfiguredChildFactory::new(
             config_runtime.clone(),
@@ -126,6 +127,7 @@ impl StudioRuntime {
         let recovery = crate::studio::StudioRecoveryRegistry::new();
         let thread_observations = super::super::thread_observation::ThreadObservations::new(
             super::super::thread_observation::ObservationServices {
+                config: config_runtime.clone(),
                 store: store.clone(),
                 events: product_events.clone(),
                 performance: model_performance.clone(),
@@ -184,6 +186,7 @@ impl StudioRuntime {
             attachment_drafts,
             ssh_manager,
             service_stops: Default::default(),
+            archive_task: Default::default(),
             lifecycle_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
             shutdown_latch: Default::default(),
             shutdown_run: Default::default(),

@@ -80,9 +80,8 @@ struct HistoryStoreState {
     /// half-initialized database and fail closed on a store that is merely still being created. The
     /// writer therefore holds the write side for its whole connect+initialize, while every cold open
     /// takes the read side first: a reader runs either before the file exists (an empty history) or
-    /// after the database is fully initialized. Once the writer connection is published both paths
-    /// return through the `writer.get()` fast path above it, so the lock is only ever contended
-    /// during that first initialization.
+    /// after the database is fully initialized. Ordinary readers may reuse a published writer;
+    /// strict canonical reads keep the same coordination but always use the read-only connection.
     init: tokio::sync::RwLock<()>,
     /// Test-only gate that parks the first writer after `connect(mode=rwc)` created the file and
     /// before `initialize` commits schema/identity. Production never installs a waiter.
@@ -277,6 +276,12 @@ impl HistoryStore {
         if let Some(writer) = self.state.writer.get() {
             return Ok(Some(writer));
         }
+        self.read_only_connection().await
+    }
+
+    /// Caller holds the initialization read guard. Never returns the writer, even when another
+    /// observer keeps it alive; a missing file remains missing instead of reading an unlinked DB.
+    async fn read_only_connection(&self) -> Result<Option<&HistoryConnection>> {
         if !tokio::fs::try_exists(&self.state.path).await? {
             return Ok(None);
         }
@@ -294,6 +299,12 @@ impl HistoryStore {
                 })
             })
             .await?;
+        if let Some(writer) = self.state.writer.get() {
+            ensure!(
+                reader.database_id == writer.database_id,
+                "read-only history does not match the shared writer identity"
+            );
+        }
         Ok(Some(reader))
     }
 
@@ -1211,6 +1222,24 @@ impl HistoryStore {
         Ok(Some(history.turn))
     }
 
+    /// Reads the latest admitted Turn at exactly the caller's proven durable fence, without bodies.
+    /// Unlike the retained-terminal seed, this query must not skip a newer unfinished Turn. The
+    /// existing `(kind, ordinal)` item index orders admissions, not later items of an older Turn;
+    /// its matching typed Turn and the watermark are read in the same SQLite snapshot.
+    pub(crate) async fn latest_turn_at(
+        &self,
+        history_fence: u64,
+    ) -> Result<Option<pl_protocol::Turn>> {
+        let Some(connection) = self.reader().await? else {
+            ensure!(history_fence == 0, "child durable history is missing");
+            return Ok(None);
+        };
+        let tx = connection.db.begin().await?;
+        let turn = read_latest_turn_at(&tx, &self.state.thread_id, history_fence).await?;
+        tx.commit().await?;
+        Ok(turn)
+    }
+
     /// Reads one bounded Turn page, newest Turn first, without activating a Thread owner.
     ///
     /// The page is a keyset over `history_turns.last_ordinal` (index-backed, no offset, no full
@@ -1539,6 +1568,49 @@ fn chat_history_error(error: anyhow::Error) -> ChatError {
     ChatError::History(error.into_boxed_dyn_error())
 }
 
+/// One query implementation for hot fixed-fence reads and strict read-only checkpoint snapshots.
+async fn read_latest_turn_at(
+    tx: &impl ConnectionTrait,
+    thread_id: &str,
+    history_fence: u64,
+) -> Result<Option<pl_protocol::Turn>> {
+    let fence = integer(history_fence)?;
+    ensure!(
+        applied_write_seq(tx).await? == fence,
+        "child history changed or does not cover the evaluation fence"
+    );
+    let latest = tx
+        .query_one_raw(statement(
+            "SELECT turn_id,last_write_seq FROM history_items WHERE kind='turn'
+             ORDER BY ordinal DESC LIMIT 1",
+            vec![],
+        ))
+        .await?;
+    let Some(latest) = latest else {
+        return Ok(None);
+    };
+    let turn_id: String = latest.try_get("", "turn_id")?;
+    let item_sequence: i64 = latest.try_get("", "last_write_seq")?;
+    let row = tx
+        .query_one_raw(statement(
+            "SELECT payload,last_write_seq FROM history_turns WHERE turn_id=?",
+            vec![turn_id.clone().into()],
+        ))
+        .await?
+        .context("latest Turn item has no committed Turn record")?;
+    let payload: String = row.try_get("", "payload")?;
+    let history: TimelineTurn = serde_json::from_str(&payload)?;
+    ensure!(
+        history.turn.id == turn_id
+            && history.turn.thread_id == thread_id
+            && integer(history.turn.revision)? == item_sequence
+            && item_sequence <= row.try_get::<i64>("", "last_write_seq")?
+            && row.try_get::<i64>("", "last_write_seq")? <= fence,
+        "latest Turn record does not match its committed identity or fence"
+    );
+    Ok(Some(history.turn))
+}
+
 async fn connect(path: &Path) -> Result<DatabaseConnection> {
     let mut options = crate::studio::paths::sqlite_file_options(
         path,
@@ -1648,7 +1720,7 @@ async fn connect_read_only(path: &Path) -> Result<DatabaseConnection> {
 ///
 /// A missing identity row, an unsupported schema version, a foreign Thread or an empty database id
 /// fails closed so a cold read reports the damage instead of adopting or rebuilding the store.
-async fn validate_existing(db: &DatabaseConnection, thread_id: &str) -> Result<(String, i64)> {
+async fn validate_existing(db: &impl ConnectionTrait, thread_id: &str) -> Result<(String, i64)> {
     let row = db
         .query_one_raw(statement(
             "SELECT schema_version,database_id,thread_id FROM history_meta WHERE id=1",
@@ -3609,6 +3681,36 @@ mod storage_fault_tests {
             "storage long-task: calls=137 records=139 new_context_serialized_bytes={serialized_new_bytes} sqlite_row_mutations={} database_bytes={database_bytes} wal_bytes={wal_bytes}",
             after - before
         );
+
+        // A timeline owns its HistoryStore independently of an execution owner. Preserve that
+        // actual shared writer holder, then require the canonical read to initialize a different,
+        // truly read-only connection instead of returning the writer's fast path.
+        let _timeline = pl_core::chat::Session::new(store.clone());
+        let share = store.shared();
+        drop(store);
+        let retained = HistoryStore::from_share(&share).context("timeline retained history")?;
+        assert!(retained.state.writer.get().is_some());
+        assert!(retained.state.reader.get().is_none());
+        let (checkpoint, latest) = retained
+            .read_only_checkpoint_with_latest_turn()
+            .await?
+            .context("canonical state through retained history")?;
+        assert_eq!(checkpoint.state.commit_sequence, 139);
+        assert_eq!(checkpoint.state.context, state.context);
+        assert!(latest.is_none());
+        let reader = retained
+            .state
+            .reader
+            .get()
+            .context("strict read must use the read-only connection")?;
+        let writer = retained.state.writer.get().context("retained writer")?;
+        assert!(!std::ptr::eq(reader, writer));
+        let write = "UPDATE history_meta SET applied_write_seq=applied_write_seq WHERE id=1";
+        // The exact same statement is valid on the still-live writer, but SQLite must refuse it
+        // on the connection the canonical read just used; no query-name convention is evidence.
+        writer.db.execute_unprepared(write).await?;
+        assert!(reader.db.execute_unprepared(write).await.is_err());
+        assert_eq!(retained.watermark().await?, 139);
         Ok(())
     }
 

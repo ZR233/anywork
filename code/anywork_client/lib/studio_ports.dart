@@ -195,6 +195,10 @@ abstract class StudioTransport
     int limit = 50,
   });
   Future<StudioThread> restoreThread(String threadId);
+
+  /// Reads saved/live metadata for one explicitly selected member without
+  /// activating its execution owner or subscribing other child histories.
+  Future<StudioThread> readThread(String threadId);
   Future<void> activateProject(String projectId);
   Future<StudioProject> openProject(String path);
   Future<StudioProject> renameProject(String projectId, String name);
@@ -221,6 +225,8 @@ abstract class StudioTransport
     StudioPromptInput input,
     ThreadModeId mode, {
     required ModeModelRouteView route,
+    required DelegationMode delegationMode,
+    required DelegationPreference delegationPreference,
     String? workspaceMode,
   });
   Future<RenameThreadCommandReply> renameThread(
@@ -357,8 +363,27 @@ abstract class StudioTransport
   Future<SettingsCommandReply> removeAccountModel(
     int expectedSettingsRevision,
     String accountId,
+    String modelId, {
+    required OperationId operationId,
+  });
+  Future<SettingsCommandReply> setAccountModelEnabled(
+    int expectedSettingsRevision,
+    String accountId,
     String modelId,
+    bool enabled, {
+    required OperationId operationId,
+  });
+  Future<SettingsCommandReply> setAccountBillingKind(
+    int expectedSettingsRevision,
+    String accountId,
+    BillingKind? billingKind, {
+    required OperationId operationId,
+  });
+
+  Future<DelegationModelList> listDelegationModels(
+    ListDelegationModelsRequest request,
   );
+  Future<DelegationModelDetail> getDelegationModel(DelegationModelKey key);
   Future<SettingsCommandReply> applySettingsField(
     int expectedSettingsRevision,
     SettingsFieldCommand command, {

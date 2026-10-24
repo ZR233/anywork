@@ -319,6 +319,7 @@ async fn main() -> Result<()> {
             "the acp-auto-install scenario runs the fixed 1.4.1 distribution peer \
              (--acp-install-fixture), not the HTTP fixture"
         ),
+        name if pl_provider_fixture::delegation::Scenario::parse(name).is_some() => Vec::new(),
         value => bail!("unknown fixture scenario: {value}"),
     };
     let fault = match args.fault.as_deref() {
@@ -334,6 +335,8 @@ async fn main() -> Result<()> {
         model_catalog,
         bind_port: args.bind_port,
         wait_events: scenario == "wait-events",
+        agent_definitions: None,
+        delegation: pl_provider_fixture::delegation::Scenario::parse(scenario),
     };
     let fixture = Arc::new(FixtureServer::start_with_options(steps, options).await?);
     // The status watcher is a plain reader of the same script state the strict
@@ -413,6 +416,21 @@ async fn main() -> Result<()> {
     // rejected request and the step it expected, and it has to stay the
     // outermost reason the coordinator records.
     report.verify()?;
+    if let Some(scenario) = pl_provider_fixture::delegation::Scenario::parse(scenario) {
+        let result = pl_provider_fixture::delegation::verify_requests(scenario, &report.requests);
+        println!(
+            "fixture_delegation_status={}",
+            if result.is_ok() {
+                "complete"
+            } else {
+                "incomplete"
+            }
+        );
+        if let Err(error) = &result {
+            println!("fixture_failure={}", one_line(error));
+        }
+        result?;
+    }
     Ok(())
 }
 

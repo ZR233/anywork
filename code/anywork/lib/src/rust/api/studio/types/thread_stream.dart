@@ -4,6 +4,7 @@
 // ignore_for_file: invalid_use_of_internal_member, unused_import, unnecessary_import
 
 import '../../../frb_generated.dart';
+import 'delegation.dart';
 
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 import 'package:freezed_annotation/freezed_annotation.dart' hide protected;
@@ -260,6 +261,9 @@ class BridgeThread {
 
   /// 完整 Thread Mode ID，例如 `mode.simple` 或 `mode.release`。
   final String mode;
+  final BridgeDelegationMode delegationMode;
+  final BridgeDelegationPreference delegationPreference;
+  final BridgeNewThreadModelRoute? frozenModel;
 
   /// Canonical 会话工作区模式：`local` 或 `worktree`。
   final String workspaceMode;
@@ -283,6 +287,9 @@ class BridgeThread {
     required this.projectId,
     required this.title,
     required this.mode,
+    required this.delegationMode,
+    required this.delegationPreference,
+    this.frozenModel,
     required this.workspaceMode,
     required this.workspacePath,
     required this.rootThreadId,
@@ -302,6 +309,9 @@ class BridgeThread {
       projectId.hashCode ^
       title.hashCode ^
       mode.hashCode ^
+      delegationMode.hashCode ^
+      delegationPreference.hashCode ^
+      frozenModel.hashCode ^
       workspaceMode.hashCode ^
       workspacePath.hashCode ^
       rootThreadId.hashCode ^
@@ -323,6 +333,9 @@ class BridgeThread {
           projectId == other.projectId &&
           title == other.title &&
           mode == other.mode &&
+          delegationMode == other.delegationMode &&
+          delegationPreference == other.delegationPreference &&
+          frozenModel == other.frozenModel &&
           workspaceMode == other.workspaceMode &&
           workspacePath == other.workspacePath &&
           rootThreadId == other.rootThreadId &&

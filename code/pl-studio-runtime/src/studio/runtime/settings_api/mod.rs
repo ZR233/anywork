@@ -3,7 +3,8 @@
 use anyhow::{Context, Result, bail};
 use pl_protocol::ThreadModeId;
 use pl_protocol::studio::{
-    CommandEffectPoint, RemoveAccountModelRequest, RemoveAccountRequest, SetDefaultAccountRequest,
+    CommandEffectPoint, RemoveAccountModelRequest, RemoveAccountRequest,
+    SetAccountBillingKindRequest, SetAccountModelEnabledRequest, SetDefaultAccountRequest,
     SetThreadModelRouteRequest, SettingsCommandReply, SettingsFieldUpdate, SettingsStateResponse,
     ThreadModelRouteCommandReply, UpdateAccountRequest, UpdatePermissionSettingsRequest,
     UpdateSettingsFieldRequest,
@@ -114,6 +115,12 @@ impl StudioRuntime {
                     &config
                 };
                 match update {
+                    SettingsFieldUpdate::DelegationMode { value } => {
+                        config.delegation.mode = value;
+                    }
+                    SettingsFieldUpdate::DelegationPreference { value } => {
+                        config.delegation.preference = value;
+                    }
                     SettingsFieldUpdate::InstructionBaseOverride { value } => {
                         config.instructions.base_override = value;
                     }
@@ -418,6 +425,78 @@ impl StudioRuntime {
         )
     }
 
+    /// Applies only the target model's enablement intent against the latest account.
+    pub fn set_account_model_enabled(
+        &self,
+        request: SetAccountModelEnabledRequest,
+    ) -> Result<SettingsCommandReply> {
+        Self::validate_operation_id(&request.operation_id)?;
+        let account_id = AccountId::new(request.account_id.clone())?;
+        let mut changed = false;
+        let state = self.config_runtime.update_with_effective(
+            request.expected_revision,
+            |desired, effective| {
+                let mut next = desired.clone();
+                // The effective account validates online membership. The config owner removes
+                // its non-persistent overlay before saving, without promoting discovered models.
+                let mut account = effective
+                    .models
+                    .accounts
+                    .get(&account_id)
+                    .cloned()
+                    .ok_or_else(|| {
+                        pl_protocol::PureError::ConfigError(format!(
+                            "unknown account: {account_id}"
+                        ))
+                    })?;
+                account.set_model_enabled(&request.model_id, request.enabled)?;
+                changed = desired
+                    .models
+                    .accounts
+                    .get(&account_id)
+                    .is_some_and(|old| old.disabled_models() != account.disabled_models());
+                next.models.accounts.insert(account_id.clone(), account);
+                Ok(next)
+            },
+        )?;
+        self.publish_settings_state()?;
+        self.settings_command_reply(
+            request.operation_id,
+            &state,
+            changed,
+            CommandEffectPoint::FutureSession,
+        )
+    }
+
+    /// `None` clears the override; explicit `Unknown` remains a distinct persisted intent.
+    pub fn set_account_billing_kind(
+        &self,
+        request: SetAccountBillingKindRequest,
+    ) -> Result<SettingsCommandReply> {
+        Self::validate_operation_id(&request.operation_id)?;
+        let account_id = AccountId::new(request.account_id.clone())?;
+        let mut changed = false;
+        let state = self
+            .config_runtime
+            .update(request.expected_revision, |desired| {
+                let mut next = desired.clone();
+                let account = next.models.accounts.get_mut(&account_id).ok_or_else(|| {
+                    pl_protocol::PureError::ConfigError(format!("unknown account: {account_id}"))
+                })?;
+                let value = request.billing_kind.value();
+                changed = account.billing_kind != value;
+                account.billing_kind = value;
+                Ok(next)
+            })?;
+        self.publish_settings_state()?;
+        self.settings_command_reply(
+            request.operation_id,
+            &state,
+            changed,
+            CommandEffectPoint::FutureSession,
+        )
+    }
+
     pub fn set_default_account(
         &self,
         request: SetDefaultAccountRequest,
@@ -431,7 +510,11 @@ impl StudioRuntime {
             .accounts
             .get(&account_id)
             .ok_or_else(|| invalid_settings_argument("Default account does not exist"))?;
-        let models = account.effective_models(None)?;
+        let models = account
+            .selectable_catalog(Some(pl_model::model::ModelType::Text))?
+            .into_iter()
+            .map(|entry| entry.model)
+            .collect::<Vec<_>>();
         let current_route = current
             .config
             .mode_model_routes
@@ -480,6 +563,7 @@ impl StudioRuntime {
         &self,
         request: RemoveAccountModelRequest,
     ) -> Result<SettingsCommandReply> {
+        Self::validate_operation_id(&request.operation_id)?;
         let account_id = AccountId::new(request.account_id.trim())?;
         let model_id = request.model_id.trim();
         if model_id.is_empty() {
@@ -505,7 +589,7 @@ impl StudioRuntime {
         )?;
         self.publish_settings_state()?;
         self.settings_command_reply(
-            format!("remove-account-model:{account_id}:{model_id}"),
+            request.operation_id,
             &state,
             changed,
             CommandEffectPoint::FutureSession,

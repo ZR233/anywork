@@ -8,6 +8,7 @@ import 'bridge/studio_channels.dart';
 import 'bridge/product_topic_registry.dart';
 import 'commands/directory_commands.dart';
 import 'commands/account_usage_queries.dart';
+import 'commands/model_detail_queries.dart';
 import 'commands/bots_commands.dart';
 import 'commands/bots_queries.dart';
 import 'commands/settings_commands.dart';
@@ -19,6 +20,7 @@ import 'drafts/attachment_drafts.dart';
 import 'drafts/composer_draft_owner.dart';
 import 'drafts/start_session_draft_owner.dart';
 import 'mode_editor_owner.dart';
+import 'agent_directory_queries.dart';
 import 'thread_session.dart';
 import 'thread_session_state.dart';
 import 'stores/project_store.dart';
@@ -59,6 +61,7 @@ class AnyworkClient {
     channels = StudioChannels(this, transport);
     directoryCommands = DirectoryCommands(this);
     accountUsageQueries = AccountUsageQueries(this);
+    modelDetailQueries = ModelDetailQueries(this);
     settingsCommands = SettingsCommands(this);
     acpCommands = AcpCommands(this);
     acpInstallCommands = AcpInstallCommands(this);
@@ -139,6 +142,7 @@ class AnyworkClient {
   late final ModeEditorOwner modeEditor;
   late final DirectoryCommands directoryCommands;
   late final AccountUsageQueries accountUsageQueries;
+  late final ModelDetailQueries modelDetailQueries;
   late final SettingsCommands settingsCommands;
   late final AcpCommands acpCommands;
   late final AcpInstallCommands acpInstallCommands;
@@ -526,8 +530,14 @@ class AnyworkClient {
   void _selectionChanged(SelectionStoreState next) {
     if (_closed) return;
     final projectId = next.selectedProjectId;
-    final rootId = findThread(next.selectedThreadId ?? '')
-        ?.effectiveRootThreadId;
+    final rootId = AgentDirectoryQueries.rootThreadId(
+      threadId: next.selectedThreadId,
+      agents: project.state.agents?.values ?? const [],
+      threads: [
+        ...threadDirectory.state.window.threads,
+        ...threadDirectory.state.overlayThreads,
+      ],
+    );
     final topicKey = '$projectId/$rootId';
     if (_selectionTopicKey != topicKey) {
       final previous = _selectionTopics;
@@ -689,6 +699,7 @@ class AnyworkClient {
       ),
       _joinOwner('acp-commands', acpCommands.close(), deadline),
       _joinOwner('acp-install-commands', acpInstallCommands.close(), deadline),
+      _joinOwner('model-detail-queries', modelDetailQueries.close(), deadline),
       _joinOwner('bots-commands', botsCommands.close(), deadline),
       _joinOwner('bots-queries', botsQueries.close(), deadline),
       _joinOwner('thread-commands', threadCommands.close(), deadline),

@@ -38,6 +38,42 @@ class SettingsCommands {
     );
   }
 
+  /// Narrow CAS intent; never serializes an account draft or sibling settings.
+  Future<SettingsStateSnapshot> setAccountModelEnabled(
+    String accountId,
+    String modelId,
+    bool enabled,
+  ) => _run(
+    accountModelEnabledMutationKey(accountId, modelId),
+    target: CommandTarget(
+      accountId: accountId,
+      modelId: modelId,
+      enabled: enabled,
+    ),
+    (revision, operationId) => _api.setAccountModelEnabled(
+      revision,
+      accountId,
+      modelId,
+      enabled,
+      operationId: operationId,
+    ),
+  );
+
+  /// Null explicitly restores inference; Unknown is a separate explicit override.
+  Future<SettingsStateSnapshot> setAccountBillingKind(
+    String accountId,
+    BillingKind? billingKind,
+  ) => _run(
+    'account-billing-kind:$accountId',
+    target: CommandTarget(accountId: accountId, label: billingKind?.name),
+    (revision, operationId) => _api.setAccountBillingKind(
+      revision,
+      accountId,
+      billingKind,
+      operationId: operationId,
+    ),
+  );
+
   /// 只持有目标模型意图；在串行 lane 内、每次 CAS 重试时都基于最新 canonical 重建。
   /// 其它模型覆盖、目录、endpoint 和凭据不会被发起输入时的旧快照覆盖。
   Future<SettingsStateSnapshot> setModelAutoCompactLimit(
@@ -87,7 +123,12 @@ class SettingsCommands {
     return _run(
       'account-model:${accountId.length}:$accountId:$modelId',
       target: CommandTarget(accountId: accountId, modelId: modelId),
-      (revision, _) => _api.removeAccountModel(revision, accountId, modelId),
+      (revision, operationId) => _api.removeAccountModel(
+        revision,
+        accountId,
+        modelId,
+        operationId: operationId,
+      ),
     );
   }
 
@@ -263,6 +304,14 @@ class SettingsCommands {
           final revision = await _expectedSettingsRevision();
           return request(revision, operation.id);
         }, refresh: () async => await refreshCanonical() != null);
+        if (reply.receipt.operationId != operation.id) {
+          throw const StudioFailure(
+            code: StudioFailureCode.protocol,
+            message: 'Settings receipt does not belong to this operation',
+            retryable: false,
+            correlationId: 'client-settings-receipt',
+          );
+        }
         if (!_client.isClosed) store.merge(reply.snapshot);
         operation.accept(reply.receipt.toCommitReceipt());
         _confirm(key, operation);
@@ -342,6 +391,8 @@ const StudioFailure _settingsNotReady = StudioFailure(
 
 String settingsFieldMutationKey(SettingsFieldCommand command) =>
     switch (command) {
+      DelegationModeCommand() => 'delegation:mode',
+      DelegationPreferenceCommand() => 'delegation:preference',
       InstructionBaseOverrideCommand() => 'instructions:base-override',
       InstructionDeveloperCommand() => 'instructions:developer',
       InstructionUserCommand() => 'instructions:user',
@@ -379,6 +430,9 @@ String settingsFieldMutationKey(SettingsFieldCommand command) =>
       RoleModelCommand(:final role) => 'agent-role:model:$role',
       RoleReasoningEffortCommand(:final role) => 'agent-role:effort:$role',
     };
+
+String accountModelEnabledMutationKey(String accountId, String modelId) =>
+    'account-model-enabled:${accountId.length}:$accountId:$modelId';
 
 CommandTarget settingsFieldTarget(
   SettingsFieldCommand command,

@@ -373,6 +373,9 @@ List<AccountSettingsView> _providersFromCommands(
       credentialLabel: template.credentialLabel,
       credentialEnv: template.credentialEnv,
       pricingEnabled: account.pricingEnabled,
+      billingKind: previousAccount?.billingKind ?? BillingKind.unknown,
+      billingKindOverride: previousAccount?.billingKindOverride,
+      disabledModels: previousAccount?.disabledModels ?? const [],
       capabilitySource: 'template_defaults',
       hostedWebSearch:
           previousAccount?.hostedWebSearch ?? template.hostedWebSearch,

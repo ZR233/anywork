@@ -1,10 +1,59 @@
 import 'dart:convert';
 
+import 'package:anywork_client/models.dart';
+
 import 'package:flutter/foundation.dart';
 
 import 'studio_driver_key_values.dart';
 
 abstract final class StudioDriverKeys {
+  static const sessionSettings = ValueKey(
+    StudioDriverKeyValues.sessionSettings,
+  );
+  static const defaultDelegationMode = ValueKey(
+    StudioDriverKeyValues.defaultDelegationMode,
+  );
+  static const defaultDelegationPreference = ValueKey(
+    StudioDriverKeyValues.defaultDelegationPreference,
+  );
+  static const draftDelegationMode = ValueKey(
+    StudioDriverKeyValues.draftDelegationMode,
+  );
+  static const draftDelegationPreference = ValueKey(
+    StudioDriverKeyValues.draftDelegationPreference,
+  );
+  static ValueKey<String> delegationModeOption(
+    String scope,
+    DelegationMode? mode,
+  ) => ValueKey(StudioDriverKeyValues.delegationModeOption(scope, mode));
+  static ValueKey<String> delegationPreferenceOption(
+    String scope,
+    DelegationPreference? preference,
+  ) => ValueKey(
+    StudioDriverKeyValues.delegationPreferenceOption(scope, preference),
+  );
+  static ValueKey<String> modelEnabled(String accountId, String modelId) =>
+      ValueKey(StudioDriverKeyValues.modelEnabled(accountId, modelId));
+  static ValueKey<String> modelDetails(String accountId, String modelId) =>
+      ValueKey(StudioDriverKeyValues.modelDetails(accountId, modelId));
+  static ValueKey<String> accountBillingKind(String accountId) =>
+      ValueKey(StudioDriverKeyValues.accountBillingKind(accountId));
+  static ValueKey<String> billingKindOption(BillingKind? kind) =>
+      ValueKey(StudioDriverKeyValues.billingKindOption(kind));
+  static const modelDetailDialog = ValueKey(
+    StudioDriverKeyValues.modelDetailDialog,
+  );
+  static const modelDetailClose = ValueKey(
+    StudioDriverKeyValues.modelDetailClose,
+  );
+  static const modelDetailReload = ValueKey(
+    StudioDriverKeyValues.modelDetailReload,
+  );
+  static const modelDetailEvaluations = ValueKey(
+    StudioDriverKeyValues.modelDetailEvaluations,
+  );
+  static ValueKey<String> agentModel(String threadId) =>
+      ValueKey(StudioDriverKeyValues.agentModel(threadId));
   static const shell = ValueKey<String>(StudioDriverKeyValues.shell);
   static const startPage = ValueKey<String>(StudioDriverKeyValues.startPage);
   static const threadPreparation = ValueKey<String>(

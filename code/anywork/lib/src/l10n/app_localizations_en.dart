@@ -507,7 +507,7 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get settingsBotsPermissions =>
-      'Requested scopes (preset=false): im:message:send_as_bot, im:message.p2p_msg:readonly, im:message.group_at_msg:readonly, im:chat:readonly, im:message:readonly. Event: im.message.receive_v1. Declaring them does not mean an admin has approved or published the app.';
+      'Requested scopes (preset=false): im:message:send_as_bot, im:message.p2p_msg:readonly, im:message.group_at_msg:readonly, im:chat:readonly, im:message:readonly, im:resource, cardkit:card:write. Event: im.message.receive_v1. Image and file reception is retained; streaming cards add creation and update access. Existing apps need an administrator to grant card access and publish the app. Declaring permissions does not mean they are approved.';
 
   @override
   String get settingsBotsName => 'Name';
@@ -5002,4 +5002,252 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get acpAccountTermsTitle => 'Official terms';
+
+  @override
+  String get delegationSettingsTitle => 'Subagent delegation';
+
+  @override
+  String get delegationDefaultMode => 'Default delegation mode';
+
+  @override
+  String get delegationDefaultPreference => 'Default automatic preference';
+
+  @override
+  String get delegationModeLabel => 'Delegation mode';
+
+  @override
+  String get delegationPreferenceLabel => 'Automatic preference';
+
+  @override
+  String get delegationProfile => 'Fixed Profile';
+
+  @override
+  String get delegationAutomatic => 'Automatic model selection';
+
+  @override
+  String get delegationEconomy => 'Economy';
+
+  @override
+  String get delegationBalanced => 'Balanced';
+
+  @override
+  String get delegationFast => 'Fast';
+
+  @override
+  String get delegationOnlyAutomatic =>
+      'Only applies to automatic model selection. The value is kept in fixed Profile mode.';
+
+  @override
+  String get delegationEconomyHint =>
+      'Prefer lower expected total cost while meeting task capability and quality needs. Unknown prices are not free.';
+
+  @override
+  String get delegationBalancedHint =>
+      'Balance task fit, recent evaluations, cost, and completion time without lowering quality requirements.';
+
+  @override
+  String get delegationFastHint =>
+      'Prefer shorter overall completion time while meeting capability, quality, and review requirements.';
+
+  @override
+  String get delegationFollowDefault => 'Follow default';
+
+  @override
+  String get delegationSessionSettings => 'Session settings';
+
+  @override
+  String get delegationInherited =>
+      'Following the latest default until submission';
+
+  @override
+  String get delegationOverride => 'Only this draft';
+
+  @override
+  String get delegationFrozen => 'Saved at session creation · read-only';
+
+  @override
+  String get delegationModelNotRecorded => 'Model not recorded';
+
+  @override
+  String get settingsModelEnabled => 'Enabled';
+
+  @override
+  String get settingsModelEnabledHint =>
+      'Applies to all new model selections and subagent delegation. Running calls are not interrupted.';
+
+  @override
+  String get settingsModelDisabled => 'Disabled for new selections';
+
+  @override
+  String get settingsModelSaving => 'Saving…';
+
+  @override
+  String get settingsModelSaveFailed =>
+      'Not saved. The switch shows the last confirmed value. Toggle again to retry.';
+
+  @override
+  String get settingsBillingKind => 'Billing category';
+
+  @override
+  String get settingsBillingAutomatic => 'Automatic · no explicit override';
+
+  @override
+  String get settingsBillingMetered => 'Metered';
+
+  @override
+  String get settingsBillingSubscription => 'Subscription / plan';
+
+  @override
+  String get settingsBillingUnknown => 'Unknown';
+
+  @override
+  String get settingsBillingEffective => 'Effective category';
+
+  @override
+  String get settingsBillingOverride => 'Explicit override';
+
+  @override
+  String get settingsBillingHint =>
+      'Independent of cost estimates. A category does not confirm an active subscription or remaining quota.';
+
+  @override
+  String get settingsModelDetails => 'Model details';
+
+  @override
+  String get modelDetailLoading => 'Loading model details…';
+
+  @override
+  String get modelDetailUnknown => 'Unknown / not verified';
+
+  @override
+  String get modelDetailAvailable => 'Locally eligible for new selections';
+
+  @override
+  String get modelDetailAvailabilityHint =>
+      'Local eligibility does not guarantee provider health, subscription validity, or remaining quota.';
+
+  @override
+  String get modelDetailSummary => 'Description and task fit';
+
+  @override
+  String get modelDetailLimitations => 'Limitations';
+
+  @override
+  String get modelDetailCapabilities => 'Capabilities and limits';
+
+  @override
+  String get modelDetailEfforts => 'Allowed reasoning efforts';
+
+  @override
+  String get modelDetailNoEffort => 'No reasoning effort parameter';
+
+  @override
+  String get modelDetailPricing => 'Prices per million tokens';
+
+  @override
+  String get modelDetailPriceInput => 'Input';
+
+  @override
+  String get modelDetailPriceOutput => 'Output';
+
+  @override
+  String get modelDetailPriceCacheRead => 'Cache read';
+
+  @override
+  String get modelDetailPriceCacheWrite => 'Cache write';
+
+  @override
+  String get modelDetailSources => 'Sources and verification';
+
+  @override
+  String get modelDetailOfficial => 'Official documentation';
+
+  @override
+  String get modelDetailBenchmark => 'Independent benchmark';
+
+  @override
+  String get modelDetailCommunity => 'Community feedback';
+
+  @override
+  String get modelDetailVerifiedAt => 'Verified';
+
+  @override
+  String get modelDetailMeasurement => 'Measurement conditions';
+
+  @override
+  String get modelDetailPerformance => 'Local call performance';
+
+  @override
+  String get modelDetailThroughput => 'Tokens/s (including first-token wait)';
+
+  @override
+  String get modelDetailTtft => 'Average time to first token (ms)';
+
+  @override
+  String get modelDetailSamples => 'Call samples';
+
+  @override
+  String get modelDetailTtftSamples => 'First-token samples';
+
+  @override
+  String get modelDetailUpdatedAt => 'Updated';
+
+  @override
+  String get modelDetailPerformanceHint =>
+      'Observed locally; account, network, effort, and task affect these samples. This is not a provider guarantee or a task evaluation.';
+
+  @override
+  String get modelDetailEvaluations =>
+      'Recent final task evaluations (up to 10)';
+
+  @override
+  String get modelDetailEvaluationsEmpty =>
+      'No final task evaluations for this exact account and model yet.';
+
+  @override
+  String get modelDetailEvaluationsHint =>
+      'Each child has one effective final evaluation. Small samples are not statistically conclusive; unrateable outcomes are not low scores.';
+
+  @override
+  String get modelDetailEvaluationPassed => 'Passed';
+
+  @override
+  String get modelDetailEvaluationFailed => 'Failed';
+
+  @override
+  String get modelDetailEvaluationNotRated => 'Unable to assess';
+
+  @override
+  String get modelDetailQuality => 'Quality';
+
+  @override
+  String get modelDetailInstructionFollowing => 'Instruction following';
+
+  @override
+  String get modelDetailTaskReasoning => 'Reasoning';
+
+  @override
+  String get modelDetailTaskCoding => 'Coding';
+
+  @override
+  String get modelDetailTaskTooling => 'Tool use and orchestration';
+
+  @override
+  String get modelDetailTaskLongContext => 'Long context';
+
+  @override
+  String get modelDetailTaskMultimodal => 'Multimodal';
+
+  @override
+  String get modelDetailTaskGeneral => 'General';
+
+  @override
+  String get modelDetailRetry => 'Reload details';
+
+  @override
+  String get modelDetailClose => 'Close';
+
+  @override
+  String get modelDetailStale =>
+      'This model\'s canonical identity changed. Reload its details.';
 }

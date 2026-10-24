@@ -23,6 +23,7 @@ mod bots_api;
 mod bots_recovery;
 pub(crate) mod chat_item;
 mod command_receipts;
+mod delegation_models;
 mod history;
 mod lifecycle;
 mod lsp_state;
@@ -82,6 +83,8 @@ pub struct StudioStartNewThreadRequest {
     pub input: StudioPromptInput,
     pub mode: pl_protocol::ThreadModeId,
     pub route: pl_protocol::studio::NewThreadModelRoute,
+    pub delegation_mode: Option<pl_protocol::DelegationMode>,
+    pub delegation_preference: Option<pl_protocol::DelegationPreference>,
     pub workspace_mode: pl_protocol::ThreadWorkspaceMode,
     pub options: StudioSubmitPromptOptions,
     pub preparation_observer: Option<ThreadPreparationObserver>,
@@ -216,6 +219,9 @@ pub struct StudioRuntime {
     helper_source: crate::worker_assets::RemoteHelperSource,
     /// 外部服务（MCP/LSP/SSH）关闭 job 的常驻槽位；跨阶段与跨重试保留，超时不丢句柄。
     service_stops: lifecycle::shutdown::ServiceStopSlots,
+    /// One archive owns lifecycle admission through close and directory commit, even if its
+    /// caller disconnects. The bounded slot retains its actual completion for retry/shutdown.
+    archive_task: background_task::BackgroundTaskSlot,
     lifecycle_lock: std::sync::Arc<tokio::sync::Mutex<()>>,
     /// 单向关闭终止闩：commit 后拒绝迟到安装。
     shutdown_latch: lifecycle::shutdown::ShutdownLatch,

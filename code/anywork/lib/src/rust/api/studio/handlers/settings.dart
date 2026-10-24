@@ -6,6 +6,7 @@
 import '../../../frb_generated.dart';
 import '../types/acp.dart';
 import '../types/command.dart';
+import '../types/delegation.dart';
 import '../types/error.dart';
 import '../types/response.dart';
 import '../types/settings.dart';
@@ -38,13 +39,43 @@ Future<BridgeSettingsStateResponse> readSettingsState() =>
     RustLib.instance.api.crateApiStudioHandlersSettingsReadSettingsState();
 
 Future<BridgeSettingsCommandReply> removeAccountModel({
+  required String operationId,
   required BigInt expectedSettingsRevision,
   required String accountId,
   required String modelId,
 }) => RustLib.instance.api.crateApiStudioHandlersSettingsRemoveAccountModel(
+  operationId: operationId,
   expectedSettingsRevision: expectedSettingsRevision,
   accountId: accountId,
   modelId: modelId,
+);
+
+/// Changes only the unified enabled field of one exact catalog member.
+Future<BridgeSettingsCommandReply> setAccountModelEnabled({
+  required String operationId,
+  required BigInt expectedSettingsRevision,
+  required String accountId,
+  required String modelId,
+  required bool enabled,
+}) => RustLib.instance.api.crateApiStudioHandlersSettingsSetAccountModelEnabled(
+  operationId: operationId,
+  expectedSettingsRevision: expectedSettingsRevision,
+  accountId: accountId,
+  modelId: modelId,
+  enabled: enabled,
+);
+
+/// `None` explicitly clears the override; explicit Unknown is a distinct intent.
+Future<BridgeSettingsCommandReply> setAccountBillingKind({
+  required String operationId,
+  required BigInt expectedSettingsRevision,
+  required String accountId,
+  BridgeBillingKind? billingKind,
+}) => RustLib.instance.api.crateApiStudioHandlersSettingsSetAccountBillingKind(
+  operationId: operationId,
+  expectedSettingsRevision: expectedSettingsRevision,
+  accountId: accountId,
+  billingKind: billingKind,
 );
 
 Future<BridgeSettingsStateResponse> reloadSettingsFromDisk({

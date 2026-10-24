@@ -5,13 +5,7 @@ import 'package:flutter_chat_core/flutter_chat_core.dart';
 
 import '../domain/models/agent_workspace_view.dart';
 import '../domain/models/timeline_presentation.dart';
-import '../features/shell/shell_view.dart'
-    show
-        agentsForThreads,
-        primaryInteraction,
-        threadsForRoot,
-        projectById,
-        rootThread;
+import '../features/shell/shell_view.dart' show primaryInteraction, projectById;
 import '../presentation/view_models/timeline_session_owner.dart';
 import 'studio_driver_key_values.dart';
 import 'studio_driver_state.dart';
@@ -37,7 +31,7 @@ StudioDriverFacts queryStudioDriverFacts(
 }) {
   final selection = client.selection.state;
   final directory = client.threadDirectory.state;
-  final threads = directory.window.threads;
+  final threads = [...directory.window.threads, ...directory.overlayThreads];
   final settings = client.settings.state;
   final canonical = settings.canonical;
   final accounts = accountsWithCatalogMetadata(
@@ -55,7 +49,15 @@ StudioDriverFacts queryStudioDriverFacts(
       ? null
       : client.sessionState(selectedThreadId);
   final thread = client.findThread(selectedThreadId ?? '');
-  final root = thread == null ? null : rootThread(threads, thread) ?? thread;
+  final agents = projects.agents?.values ?? const <StudioAgentView>[];
+  final rootId = AgentDirectoryQueries.rootThreadId(
+    threadId: selectedThreadId,
+    agents: agents,
+    threads: threads,
+  );
+  final root = threads
+      .where((thread) => thread.id == rootId && thread.isRoot)
+      .firstOrNull;
   final threadComposer = selectedThreadId == null
       ? const ComposerThreadState.idle()
       : client.composerState(selectedThreadId) ??
@@ -66,7 +68,6 @@ StudioDriverFacts queryStudioDriverFacts(
   );
   AgentWorkspaceView? workspace;
   if (thread != null && root != null) {
-    final agents = projects.agents?.values ?? const <StudioAgentView>[];
     workspace = AgentWorkspaceView(
       thread: thread,
       rootThread: root,
@@ -88,7 +89,11 @@ StudioDriverFacts queryStudioDriverFacts(
       accounts: accounts,
       modeModelRoutes: canonical?.modeModelRoutes ?? const [],
       roles: canonical?.roles ?? const [],
-      agents: agentsForThreads(threadsForRoot(threads, root), agents),
+      agents: AgentDirectoryQueries.forRoot(
+        rootThreadId: rootId,
+        agents: agents,
+        threads: threads,
+      ),
     );
   }
 

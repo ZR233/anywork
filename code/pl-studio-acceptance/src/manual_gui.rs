@@ -3,6 +3,7 @@ mod acp_auto_install;
 mod acp_support;
 mod bots_fixture;
 mod context_replay_recovery;
+mod delegation;
 mod mode_editor;
 mod model_catalog;
 mod shutdown;
@@ -120,6 +121,11 @@ pub(crate) struct ManualGuiOptions {
     /// group. Only valid with `--scenario acp-auto-install`.
     #[arg(long, value_name = "PHASE", value_parser = ["first", "cancel"])]
     pub(crate) acp_install_from: Option<String>,
+    /// Optional session-owned Dart Driver for the dedicated delegation scenes.
+    /// Arguments: VM URL, project, phase evidence directory, environment, phase,
+    /// fixture origin. It must not shut down the application; the harness does.
+    #[arg(long, value_name = "PATH")]
+    pub(crate) delegation_driver: Option<PathBuf>,
 }
 
 #[derive(Deserialize)]
@@ -774,6 +780,7 @@ fn cleanup_bots_gui_start(
 }
 
 pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
+    delegation::validate(&options)?;
     ensure!(
         !options.retain_environment
             || matches!(
@@ -785,9 +792,14 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
                     | "stress-body-large"
                     | "wait-events"
                     | "acp-auto-install"
+                    | "delegation-routing"
+                    | "delegation-lifecycle"
+                    | "delegation-window"
+                    | "delegation-enablement"
+                    | "delegation-recovery"
             ),
         "--retain-environment is supported by --scenario gui, single-instance, tool-scroll, \
-         timeline-history, stress-body-large, wait-events and acp-auto-install"
+         timeline-history, stress-body-large, wait-events, acp-auto-install and the delegation scenes"
     );
     ensure!(
         !options.timeline_displacement || options.scenario == "timeline-history",
@@ -882,6 +894,7 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
             | "acp-auto-install"
     ) && !options.model_catalog_restart
         && !options.model_catalog_restart_check
+        && options.delegation_driver.is_none()
     {
         ensure!(
             io::stdin().is_terminal(),
@@ -1132,6 +1145,30 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
     }
     if let Some(fault) = &options.startup_fault {
         seed_startup_fault(&home, fault)?;
+    }
+
+    if let Some(scenario) = pl_provider_fixture::delegation::Scenario::parse(&options.scenario) {
+        let project = working.path().join("delegation-project");
+        let result = delegation::run(
+            &delegation::ScenarioContext {
+                workspace: &workspace,
+                app_dir: &app_dir,
+                home: &home,
+                working: working.path(),
+                output: &output,
+                fixture_log: &fixture_log_path,
+                requests_file: &requests_file,
+                interrupt: &interrupt_rx,
+                driver: options.delegation_driver.as_deref(),
+                scenario,
+            },
+            fixture,
+            &ready,
+        );
+        if result.is_ok() && options.retain_environment {
+            keep_isolated_environment(working, &home, &output, Some(&project))?;
+        }
+        return result;
     }
 
     if options.model_catalog_restart_check {
@@ -3061,6 +3098,9 @@ fn validate_ready(ready: &FixtureReady) -> Result<()> {
 /// `shutdown` module) uses; the `web_search_fault` selector is only meaningful
 /// for the `web-search` scenario, so the other callers pass `None`.
 fn write_config(home: &Path, ready: &FixtureReady, web_search_fault: Option<&str>) -> Result<()> {
+    if pl_provider_fixture::delegation::Scenario::parse(&ready.scenario).is_some() {
+        return delegation::write_config(home, ready);
+    }
     if ready.scenario == "provider-usage" {
         return account_usage::write_config(home, ready);
     }
@@ -6534,7 +6574,7 @@ fn sanitize_requests(source: &Path, destination: &Path) -> Result<()> {
     let safe: Vec<_> = requests.iter().map(|request| {
         serde_json::json!({
             "method": request.get("method").and_then(|v| v.as_str()).filter(|m| *m == "POST"),
-            "path": request.get("path").and_then(|v| v.as_str()).filter(|p| matches!(*p, "/v1/responses" | "/v1/chat/completions")),
+            "path": request.get("path").and_then(|v| v.as_str()).filter(|p| matches!(*p, "/v1/responses" | "/v1/chat/completions" | "/v1/delegation-a/responses" | "/v1/delegation-b/responses")),
             "accepted": request.get("accepted").and_then(|v| v.as_bool()),
             "body": "[redacted]",
             // Strict-match facts for a rejected step: scenario-owned prompt only,

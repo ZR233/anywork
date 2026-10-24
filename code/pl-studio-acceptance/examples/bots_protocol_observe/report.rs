@@ -133,8 +133,10 @@ impl RunSummary {
             gaps.push(GAP_REGISTRATION_FULL);
             gaps.push(GAP_REGISTRATION_CANCEL);
         }
-        if !passed(CASE_REPLY_INTERACTION_RESTART) {
+        if !passed(CASE_REPLY_INTERACTION_RESTART) && !passed(CASE_AGENT_DEFINITIONS) {
             gaps.push(GAP_SAME_HOME_RESTART);
+        }
+        if !passed(CASE_REPLY_INTERACTION_RESTART) {
             gaps.push(GAP_LOCAL_CONTINUATION);
         }
         if !passed(CASE_REPLY_SEND_OUTCOMES) {
@@ -153,6 +155,7 @@ const CASE_REGISTRATION_LIFECYCLE: &str = "registration-lifecycle";
 const CASE_REPLY_INTERACTION_RESTART: &str = "reply-interaction-restart";
 const CASE_REPLY_SEND_OUTCOMES: &str = "reply-send-outcomes-restart";
 const CASE_OWNER_BINDING: &str = "owner-binding-occupancy";
+const CASE_AGENT_DEFINITIONS: &str = "agent-definitions-mode-recovery";
 
 // Ranges no current observe case can prove; always reported.
 const GAP_TIMELINE_WINDOW: &str =

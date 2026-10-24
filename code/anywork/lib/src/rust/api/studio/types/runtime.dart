@@ -4,6 +4,7 @@
 // ignore_for_file: invalid_use_of_internal_member, unused_import, unnecessary_import
 
 import '../../../frb_generated.dart';
+import 'delegation.dart';
 
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 import 'package:freezed_annotation/freezed_annotation.dart' hide protected;
@@ -36,6 +37,9 @@ class BridgeAgentDirectoryEntryDto {
   final String path;
   final String? parentPath;
   final String role;
+  final BridgeDelegationMode delegationMode;
+  final BridgeDelegationPreference delegationPreference;
+  final BridgeNewThreadModelRoute? frozenModel;
   final String task;
   final String? summary;
   final int depth;
@@ -49,6 +53,9 @@ class BridgeAgentDirectoryEntryDto {
     required this.path,
     this.parentPath,
     required this.role,
+    required this.delegationMode,
+    required this.delegationPreference,
+    this.frozenModel,
     required this.task,
     this.summary,
     required this.depth,
@@ -64,6 +71,9 @@ class BridgeAgentDirectoryEntryDto {
       path.hashCode ^
       parentPath.hashCode ^
       role.hashCode ^
+      delegationMode.hashCode ^
+      delegationPreference.hashCode ^
+      frozenModel.hashCode ^
       task.hashCode ^
       summary.hashCode ^
       depth.hashCode ^
@@ -81,6 +91,9 @@ class BridgeAgentDirectoryEntryDto {
           path == other.path &&
           parentPath == other.parentPath &&
           role == other.role &&
+          delegationMode == other.delegationMode &&
+          delegationPreference == other.delegationPreference &&
+          frozenModel == other.frozenModel &&
           task == other.task &&
           summary == other.summary &&
           depth == other.depth &&

@@ -39,10 +39,12 @@ pub(crate) async fn load_checkpoint_for_recovery(
         return Ok(None);
     };
     let migrated = history
-        .migrate_recovery_checkpoint(
-            &checkpoint,
-            crate::studio::model_route::migrate_saved_representation,
-        )
+        .migrate_recovery_checkpoint(&checkpoint, |state| {
+            // Absence in old v2 data stays absent: never manufacture closure from core lifecycle.
+            crate::studio::agent_close::is_explicitly_closed(state)?;
+            crate::studio::model_route::migrate_saved_representation(state)?;
+            crate::studio::delegation::migrate(state)
+        })
         .await?;
     Ok(Some(migrated))
 }

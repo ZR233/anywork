@@ -59,10 +59,11 @@ SettingsStateSnapshot _snapshot(
 );
 
 class _RemoveCall {
-  _RemoveCall(this.revision, this.accountId, this.modelId);
+  _RemoveCall(this.revision, this.accountId, this.modelId, this.operationId);
   final int revision;
   final String accountId;
   final String modelId;
+  final OperationId operationId;
   final reply = Completer<SettingsCommandReply>();
 }
 
@@ -85,9 +86,10 @@ class _Transport implements StudioTransport {
   Future<SettingsCommandReply> removeAccountModel(
     int revision,
     String accountId,
-    String modelId,
-  ) {
-    final call = _RemoveCall(revision, accountId, modelId);
+    String modelId, {
+    required OperationId operationId,
+  }) {
+    final call = _RemoveCall(revision, accountId, modelId, operationId);
     calls.add(call);
     return call.reply.future;
   }
@@ -163,6 +165,12 @@ void main() {
       expect(call.revision, 7);
       expect(call.accountId, 'fixture');
       expect(call.modelId, 'manual-model');
+      expect(
+        call.operationId,
+        client.mutations
+            .latest('settings:account-model:7:fixture:manual-model')!
+            .id,
+      );
       final remaining = _account(
         models: const [_online, _bundled],
         connections: const {},
@@ -174,9 +182,7 @@ void main() {
         SettingsCommandReply(
           snapshot: _snapshot(8, remaining, modelCatalogRevision: 2),
           receipt: StudioCommandReceipt(
-            operationId: client.mutations
-                .latest('settings:account-model:7:fixture:manual-model')!
-                .id,
+            operationId: call.operationId,
             disposition: CommitDisposition.applied,
             targets: [
               ResourceStamp(

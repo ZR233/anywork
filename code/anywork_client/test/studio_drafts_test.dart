@@ -20,6 +20,8 @@ final class _DraftTransport implements StudioTransport {
       StudioPromptInput input,
       ModeModelRouteView route,
       ThreadModeId mode,
+      DelegationMode delegationMode,
+      DelegationPreference delegationPreference,
       String? workspaceMode,
     })
   >
@@ -75,6 +77,8 @@ final class _DraftTransport implements StudioTransport {
     StudioPromptInput input,
     ThreadModeId mode, {
     required ModeModelRouteView route,
+    required DelegationMode delegationMode,
+    required DelegationPreference delegationPreference,
     String? workspaceMode,
   }) {
     startCalls += 1;
@@ -82,6 +86,8 @@ final class _DraftTransport implements StudioTransport {
       input: input,
       route: route,
       mode: mode,
+      delegationMode: delegationMode,
+      delegationPreference: delegationPreference,
       workspaceMode: workspaceMode,
     ));
     unawaited(
@@ -218,6 +224,8 @@ StudioThread _thread([String id = 'thread']) => StudioThread(
   projectId: _project.id,
   title: 'Thread',
   mode: ThreadModeId.simple,
+  delegationMode: DelegationMode.profile,
+  delegationPreference: DelegationPreference.balanced,
   updatedAt: DateTime.utc(2026),
   workspacePath: _project.path,
 );
@@ -281,12 +289,14 @@ AnyworkClient _client(
             AccountModelView(
               modelId: 'alpha',
               displayName: 'Alpha',
+              typeSupport: [ModelTypeSupportView(modelType: ModelType.text)],
               reasoningEfforts: ['medium'],
               defaultReasoningEffort: 'medium',
             ),
             AccountModelView(
               modelId: 'beta',
               displayName: 'Beta',
+              typeSupport: [ModelTypeSupportView(modelType: ModelType.text)],
               reasoningEfforts: ['high'],
               defaultReasoningEffort: 'high',
             ),
@@ -402,14 +412,42 @@ void main() {
     final transport = _DraftTransport();
     final client = _client(transport);
     final owner = client.startDraft;
+    void defaults(
+      int revision,
+      DelegationMode mode,
+      DelegationPreference preference,
+    ) {
+      final canonical = client.settings.state.canonical!;
+      client.settings.merge(
+        SettingsStateSnapshot(
+          revision: revision,
+          modelCatalogRevision: canonical.modelCatalogRevision,
+          accounts: canonical.accounts,
+          modeModelRoutes: canonical.modeModelRoutes,
+          delegation: DelegationSettingsView(
+            mode: mode,
+            preference: preference,
+          ),
+        ),
+      );
+    }
+
     owner.updateDraft(_project.id, 'first request');
     owner.setWorkspaceMode(_project.id, ThreadWorkspaceMode.worktree);
+    owner.setDelegationPreferenceOverride(
+      _project.id,
+      DelegationPreference.fast,
+    );
+    owner.updateDraft('other-project', 'independent draft');
+    owner.setDelegationModeOverride('other-project', DelegationMode.profile);
+    defaults(2, DelegationMode.automatic, DelegationPreference.economy);
     await client.attachments.admitNewThread(
       projectId: _project.id,
       mode: ThreadModeId.simple,
       sources: [const AttachmentDraftSource.localFile('/one.bin')],
     );
     final submission = owner.submit(_project.id);
+    defaults(3, DelegationMode.profile, DelegationPreference.balanced);
     final request = await transport.startEntered.future;
     final revision = owner.state.revision;
     final progressObserved = owner.source.waitFor(
@@ -442,6 +480,8 @@ void main() {
     owner.setModelIntent(ThreadModeId.simple, 'account', 'beta');
     owner.setEffortIntent(ThreadModeId.simple, 'high');
     owner.setWorkspaceMode(_project.id, ThreadWorkspaceMode.local);
+    owner.setDelegationModeOverride(_project.id, DelegationMode.profile);
+    owner.setDelegationPreferenceOverride(_project.id, null);
     expect(
       owner.state.preparations[_project.id]?.workspaceMode,
       ThreadWorkspaceMode.worktree,
@@ -468,6 +508,11 @@ void main() {
     expect(request.input.text, 'first request');
     expect(request.input.attachmentDraftIds, ['attachment-1-0']);
     expect(
+      (request.delegationMode, request.delegationPreference),
+      (DelegationMode.automatic, DelegationPreference.fast),
+      reason: 'Submission freezes latest inherited mode plus independent explicit preference synchronously',
+    );
+    expect(
       (request.route.accountId, request.route.modelId, request.route.effort),
       ('account', 'alpha', 'medium'),
     );
@@ -475,6 +520,39 @@ void main() {
     expect(owner.state.forProject(_project.id).text, 'second request');
     expect(owner.state.modelIntentFor(ThreadModeId.simple)?.modelId, 'beta');
     expect(owner.state.effortIntentFor(ThreadModeId.simple), 'high');
+    expect(
+      owner.state
+          .forProject(_project.id)
+          .resolveDelegation(client.settings.state.canonical!.delegation),
+      const DelegationSettingsView(
+        mode: DelegationMode.profile,
+        preference: DelegationPreference.balanced,
+      ),
+    );
+    expect(owner.state.forProject('other-project').text, 'independent draft');
+    expect(
+      owner.state.forProject('other-project').delegationModeOverride,
+      DelegationMode.profile,
+    );
+    expect(
+      owner.state.forProject('other-project').delegationPreferenceOverride,
+      isNull,
+    );
+    defaults(4, DelegationMode.automatic, DelegationPreference.economy);
+    expect(
+      owner.state
+          .forProject(_project.id)
+          .resolveDelegation(client.settings.state.canonical!.delegation),
+      const DelegationSettingsView(
+        mode: DelegationMode.profile,
+        preference: DelegationPreference.economy,
+      ),
+      reason: 'Cleared preference inherits independently while fixed mode retains the chosen value',
+    );
+    expect(
+      client.settings.state.canonical!.delegation.mode,
+      DelegationMode.automatic,
+    );
     expect(
       client.attachments.state
           .newThread(_project.id)

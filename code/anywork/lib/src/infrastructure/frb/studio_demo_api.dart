@@ -129,6 +129,8 @@ class DemoStudioTransport extends StudioTransport
   InstructionsSettingsView _instructions = const InstructionsSettingsView();
   SkillsSettingsView _skills = const SkillsSettingsView();
   GeneralSettingsView _general = const GeneralSettingsView();
+  DelegationSettingsView _delegation = const DelegationSettingsView();
+  final Map<String, BillingKind> _demoInferredBilling = {};
   WebSearchSettingsView _webSearch = const WebSearchSettingsView(
     effectiveMode: 'disabled',
     availability: 'available',
@@ -511,6 +513,7 @@ class DemoStudioTransport extends StudioTransport
           instructions: _instructions,
           skills: _skills,
           general: _general,
+          delegation: _delegation,
           webSearch: _webSearch,
           deepSeekWebSearch: _deepSeekWebSearch,
           permissionMode: _permissionMode,
@@ -691,6 +694,8 @@ class DemoStudioTransport extends StudioTransport
       projectId: project.id,
       title: 'Flutter + FRB 重构',
       mode: rootMode,
+      delegationMode: DelegationMode.profile,
+      delegationPreference: DelegationPreference.balanced,
       role: 'planner',
       createdAt: now.subtract(const Duration(minutes: 10)),
       updatedAt: now,
@@ -703,6 +708,8 @@ class DemoStudioTransport extends StudioTransport
       projectId: project.id,
       title: 'Driver reviewer',
       mode: reviewerMode,
+      delegationMode: DelegationMode.profile,
+      delegationPreference: DelegationPreference.balanced,
       createdAt: now.subtract(const Duration(minutes: 7)),
       updatedAt: now.subtract(const Duration(minutes: 7)),
       parentThreadId: root.id,
@@ -717,6 +724,8 @@ class DemoStudioTransport extends StudioTransport
       projectId: project.id,
       title: 'Riverpod selector audit',
       mode: alternateMode,
+      delegationMode: DelegationMode.profile,
+      delegationPreference: DelegationPreference.balanced,
       role: 'planner',
       createdAt: now.subtract(const Duration(minutes: 3)),
       updatedAt: now.subtract(const Duration(minutes: 3)),
@@ -787,6 +796,8 @@ class DemoStudioTransport extends StudioTransport
         projectId: projectId,
         title: '历史会话 ${index + 1}',
         mode: ThreadModeId.simple,
+        delegationMode: DelegationMode.profile,
+        delegationPreference: DelegationPreference.balanced,
         role: 'planner',
         createdAt: updated,
         updatedAt: updated,
@@ -1614,6 +1625,8 @@ class DemoStudioTransport extends StudioTransport
     StudioPromptInput input,
     ThreadModeId mode, {
     required ModeModelRouteView route,
+    required DelegationMode delegationMode,
+    required DelegationPreference delegationPreference,
     String? workspaceMode,
   }) async* {
     try {
@@ -1658,6 +1671,8 @@ class DemoStudioTransport extends StudioTransport
         projectId: projectId,
         title: provisionalTitle,
         mode: mode,
+        delegationMode: delegationMode,
+        delegationPreference: delegationPreference,
         role: 'planner',
         createdAt: now,
         updatedAt: now,
@@ -1882,6 +1897,8 @@ class DemoStudioTransport extends StudioTransport
   // This is a value comparison of the one demo owner, not a second state store.
   List<Object?> _demoSettingsFacts(SettingsStateSnapshot s) => [
     s.defaultAccountId,
+    s.delegation.mode,
+    s.delegation.preference,
     s.permissionMode,
     {
       for (final account in s.acpAccounts)
@@ -1902,6 +1919,9 @@ class DemoStudioTransport extends StudioTransport
           p.hasBearerToken,
           p.defaultModelId,
           p.pricingEnabled,
+          p.billingKind,
+          p.billingKindOverride,
+          p.disabledModels,
           [
             for (final m in p.customModels)
               [
@@ -2216,6 +2236,16 @@ class DemoStudioTransport extends StudioTransport
     switch (command) {
       case InstructionBaseOverrideCommand(:final value):
         _instructions = _instructions.copyWith(baseOverride: value);
+      case DelegationModeCommand(:final value):
+        _delegation = DelegationSettingsView(
+          mode: value,
+          preference: _delegation.preference,
+        );
+      case DelegationPreferenceCommand(:final value):
+        _delegation = DelegationSettingsView(
+          mode: _delegation.mode,
+          preference: value,
+        );
       case InstructionDeveloperCommand(:final value):
         _instructions = _instructions.copyWith(developer: value);
       case InstructionUserCommand(:final value):
@@ -3153,6 +3183,10 @@ class DemoStudioTransport extends StudioTransport
     return controller.stream;
   }
 
+  @override
+  Future<StudioThread> readThread(String threadId) async =>
+      _demoWorkspace(threadId).thread;
+
   /// Thread 首帧只暴露当前状态：正文由内容连接的分页/尾部交付。
   ThreadWorkspace _snapshotOf(ThreadWorkspace workspace) {
     return workspace.copyWith(latestTurn: null);
@@ -3922,8 +3956,9 @@ class DemoStudioTransport extends StudioTransport
   Future<SettingsCommandReply> removeAccountModel(
     int expectedSettingsRevision,
     String accountId,
-    String modelId,
-  ) async {
+    String modelId, {
+    required OperationId operationId,
+  }) async {
     final before = _demoSettingsState();
     _checkSettingsRevision(expectedSettingsRevision);
     if (modelId.trim().isEmpty) {
@@ -3941,9 +3976,105 @@ class DemoStudioTransport extends StudioTransport
     }
     _accounts = accounts;
     _settingsRevision += 1;
-    return _demoSettingsReply(
-      OperationId('remove-account-modelId:$accountId:$modelId'),
-      before,
+    return _demoSettingsReply(operationId, before);
+  }
+
+  @override
+  Future<SettingsCommandReply> setAccountModelEnabled(
+    int expectedSettingsRevision,
+    String accountId,
+    String modelId,
+    bool enabled, {
+    required OperationId operationId,
+  }) async {
+    final before = _demoSettingsState();
+    _checkSettingsRevision(expectedSettingsRevision);
+    final account = before.accounts.where((a) => a.id == accountId).firstOrNull;
+    if (account == null || !account.models.any((m) => m.modelId == modelId)) {
+      throw const StudioFailure(
+        code: StudioFailureCode.notFound,
+        message: 'Account model not found',
+        retryable: false,
+        correlationId: 'demo-model-enabled',
+      );
+    }
+    _accounts = [
+      for (final a in before.accounts)
+        if (a.id != accountId)
+          a
+        else
+          a.copyWith(
+            disabledModels: enabled
+                ? ([...a.disabledModels]..remove(modelId))
+                : {...a.disabledModels, modelId}.toList(),
+            models: [
+              for (final m in a.models)
+                if (m.modelId == modelId) m.copyWith(enabled: enabled) else m,
+            ],
+          ),
+    ];
+    _settingsRevision += 1;
+    return _demoSettingsReply(operationId, before);
+  }
+
+  @override
+  Future<SettingsCommandReply> setAccountBillingKind(
+    int expectedSettingsRevision,
+    String accountId,
+    BillingKind? billingKind, {
+    required OperationId operationId,
+  }) async {
+    final before = _demoSettingsState();
+    _checkSettingsRevision(expectedSettingsRevision);
+    final account = before.accounts.firstWhere((a) => a.id == accountId);
+    _demoInferredBilling.putIfAbsent(accountId, () => account.billingKind);
+    _accounts = [
+      for (final a in before.accounts)
+        if (a.id != accountId)
+          a
+        else
+          a.copyWith(
+            billingKindOverride: billingKind,
+            billingKind: billingKind ?? _demoInferredBilling[accountId],
+          ),
+    ];
+    _settingsRevision += 1;
+    return _demoSettingsReply(operationId, before);
+  }
+
+  @override
+  Future<DelegationModelList> listDelegationModels(
+    ListDelegationModelsRequest request,
+  ) => Future.error(
+    UnsupportedError('Qualified delegation lists require the native Runtime'),
+  );
+
+  @override
+  Future<DelegationModelDetail> getDelegationModel(
+    DelegationModelKey key,
+  ) async {
+    final account = _demoSettingsState().accounts.firstWhere(
+      (a) => a.id == key.accountId,
+    );
+    final model = account.models.firstWhere((m) => m.modelId == key.modelId);
+    return DelegationModelDetail(
+      key: key,
+      accountName: account.name,
+      descriptor: model,
+      available: model.enabled && model.matchesType(ModelType.text),
+      billingKind: account.billingKind,
+      performance: const LocalModelPerformanceSummary(
+        sampleCount: 0,
+        ttftSampleCount: 0,
+      ),
+      evaluations: const AgentEvaluationSummary(
+        window: 10,
+        ratedSamples: 0,
+        passed: 0,
+        failed: 0,
+        notRated: 0,
+      ),
+      recentEvaluations: const [],
     );
   }
 

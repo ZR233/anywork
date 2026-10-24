@@ -4,9 +4,13 @@
 //! adapters must not import these types, and this module does not import
 //! runtime/protocol/tool/server crates.
 
+mod card;
+mod cardkit;
 mod control;
+mod guard;
 mod http;
 mod observe;
+mod observe_cards;
 mod state;
 mod types;
 mod wire;
@@ -15,14 +19,14 @@ mod ws;
 pub use control::FeishuControl;
 pub use observe::{FeishuObserveOptions, run_feishu_observe};
 pub use types::{
-    APP_ID_PREFIX, AckObservation, BOT_OPEN_ID, CallBound, CallKind, ChatType, ClientConfig,
-    DEFAULT_APP_ID, DEFAULT_APP_SECRET, DIRECT_CHAT_ID, EventBody, FeishuLiveStatus,
-    FeishuPeerOptions, FeishuReadyFile, FeishuReport, GROUP_CHAT_ID, GroupChat, HistoryMessage,
-    Mention, MentionId, OTHER_BOT_OPEN_ID, OutboundWs, PAIRING_DIRECT_CHAT_ID, PollObservation,
-    REGISTERED_APP_ID, REGISTERED_APP_SECRET, RecordedCall, RegistrationBeginOptions,
-    RegistrationPollScript, RegistrationTenantBrand, SendDisposition, SenderKind, SyntheticEvent,
-    TENANT_ACCESS_TOKEN, TRUSTED_USER_OPEN_ID, TokenScript, UNKNOWN_USER_OPEN_ID,
-    WsDiscoveryScript, WsUpgradeScript,
+    APP_ID_PREFIX, AckObservation, BOT_OPEN_ID, CallBound, CallKind, CardDisposition,
+    CardEntityReport, CardObservation, CardOperation, ChatType, ClientConfig, DEFAULT_APP_ID,
+    DEFAULT_APP_SECRET, DIRECT_CHAT_ID, EventBody, FeishuLiveStatus, FeishuPeerOptions,
+    FeishuReadyFile, FeishuReport, GROUP_CHAT_ID, GroupChat, HistoryMessage, Mention, MentionId,
+    OTHER_BOT_OPEN_ID, OutboundWs, PAIRING_DIRECT_CHAT_ID, PollObservation, REGISTERED_APP_ID,
+    REGISTERED_APP_SECRET, RecordedCall, RegistrationBeginOptions, RegistrationPollScript,
+    RegistrationTenantBrand, SendDisposition, SenderKind, SyntheticEvent, TENANT_ACCESS_TOKEN,
+    TRUSTED_USER_OPEN_ID, TokenScript, UNKNOWN_USER_OPEN_ID, WsDiscoveryScript, WsUpgradeScript,
 };
 pub use wire::{
     FRAME_TYPE_CONTROL, FRAME_TYPE_DATA, HEADER_BIZ_RT, HEADER_HANDSHAKE_AUTHERRCODE,
@@ -119,6 +123,15 @@ impl FeishuPeer {
             .route(
                 "/open-apis/im/v1/messages",
                 get(http::message_list).post(http::message_send),
+            )
+            .route("/open-apis/cardkit/v1/cards", post(cardkit::card_create))
+            .route(
+                "/open-apis/cardkit/v1/cards/{card_id}/elements/{element_id}/content",
+                axum::routing::put(cardkit::card_element_content),
+            )
+            .route(
+                "/open-apis/cardkit/v1/cards/{card_id}/settings",
+                axum::routing::patch(cardkit::card_settings),
             )
             .fallback(http::unexpected)
             .with_state(http);

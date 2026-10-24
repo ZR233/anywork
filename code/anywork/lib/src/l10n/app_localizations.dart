@@ -965,7 +965,7 @@ abstract class AppLocalizations {
   /// No description provided for @settingsBotsPermissions.
   ///
   /// In en, this message translates to:
-  /// **'Requested scopes (preset=false): im:message:send_as_bot, im:message.p2p_msg:readonly, im:message.group_at_msg:readonly, im:chat:readonly, im:message:readonly. Event: im.message.receive_v1. Declaring them does not mean an admin has approved or published the app.'**
+  /// **'Requested scopes (preset=false): im:message:send_as_bot, im:message.p2p_msg:readonly, im:message.group_at_msg:readonly, im:chat:readonly, im:message:readonly, im:resource, cardkit:card:write. Event: im.message.receive_v1. Image and file reception is retained; streaming cards add creation and update access. Existing apps need an administrator to grant card access and publish the app. Declaring permissions does not mean they are approved.'**
   String get settingsBotsPermissions;
 
   /// No description provided for @settingsBotsName.
@@ -8939,6 +8939,474 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Official terms'**
   String get acpAccountTermsTitle;
+
+  /// No description provided for @delegationSettingsTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Subagent delegation'**
+  String get delegationSettingsTitle;
+
+  /// No description provided for @delegationDefaultMode.
+  ///
+  /// In en, this message translates to:
+  /// **'Default delegation mode'**
+  String get delegationDefaultMode;
+
+  /// No description provided for @delegationDefaultPreference.
+  ///
+  /// In en, this message translates to:
+  /// **'Default automatic preference'**
+  String get delegationDefaultPreference;
+
+  /// No description provided for @delegationModeLabel.
+  ///
+  /// In en, this message translates to:
+  /// **'Delegation mode'**
+  String get delegationModeLabel;
+
+  /// No description provided for @delegationPreferenceLabel.
+  ///
+  /// In en, this message translates to:
+  /// **'Automatic preference'**
+  String get delegationPreferenceLabel;
+
+  /// No description provided for @delegationProfile.
+  ///
+  /// In en, this message translates to:
+  /// **'Fixed Profile'**
+  String get delegationProfile;
+
+  /// No description provided for @delegationAutomatic.
+  ///
+  /// In en, this message translates to:
+  /// **'Automatic model selection'**
+  String get delegationAutomatic;
+
+  /// No description provided for @delegationEconomy.
+  ///
+  /// In en, this message translates to:
+  /// **'Economy'**
+  String get delegationEconomy;
+
+  /// No description provided for @delegationBalanced.
+  ///
+  /// In en, this message translates to:
+  /// **'Balanced'**
+  String get delegationBalanced;
+
+  /// No description provided for @delegationFast.
+  ///
+  /// In en, this message translates to:
+  /// **'Fast'**
+  String get delegationFast;
+
+  /// No description provided for @delegationOnlyAutomatic.
+  ///
+  /// In en, this message translates to:
+  /// **'Only applies to automatic model selection. The value is kept in fixed Profile mode.'**
+  String get delegationOnlyAutomatic;
+
+  /// No description provided for @delegationEconomyHint.
+  ///
+  /// In en, this message translates to:
+  /// **'Prefer lower expected total cost while meeting task capability and quality needs. Unknown prices are not free.'**
+  String get delegationEconomyHint;
+
+  /// No description provided for @delegationBalancedHint.
+  ///
+  /// In en, this message translates to:
+  /// **'Balance task fit, recent evaluations, cost, and completion time without lowering quality requirements.'**
+  String get delegationBalancedHint;
+
+  /// No description provided for @delegationFastHint.
+  ///
+  /// In en, this message translates to:
+  /// **'Prefer shorter overall completion time while meeting capability, quality, and review requirements.'**
+  String get delegationFastHint;
+
+  /// No description provided for @delegationFollowDefault.
+  ///
+  /// In en, this message translates to:
+  /// **'Follow default'**
+  String get delegationFollowDefault;
+
+  /// No description provided for @delegationSessionSettings.
+  ///
+  /// In en, this message translates to:
+  /// **'Session settings'**
+  String get delegationSessionSettings;
+
+  /// No description provided for @delegationInherited.
+  ///
+  /// In en, this message translates to:
+  /// **'Following the latest default until submission'**
+  String get delegationInherited;
+
+  /// No description provided for @delegationOverride.
+  ///
+  /// In en, this message translates to:
+  /// **'Only this draft'**
+  String get delegationOverride;
+
+  /// No description provided for @delegationFrozen.
+  ///
+  /// In en, this message translates to:
+  /// **'Saved at session creation · read-only'**
+  String get delegationFrozen;
+
+  /// No description provided for @delegationModelNotRecorded.
+  ///
+  /// In en, this message translates to:
+  /// **'Model not recorded'**
+  String get delegationModelNotRecorded;
+
+  /// No description provided for @settingsModelEnabled.
+  ///
+  /// In en, this message translates to:
+  /// **'Enabled'**
+  String get settingsModelEnabled;
+
+  /// No description provided for @settingsModelEnabledHint.
+  ///
+  /// In en, this message translates to:
+  /// **'Applies to all new model selections and subagent delegation. Running calls are not interrupted.'**
+  String get settingsModelEnabledHint;
+
+  /// No description provided for @settingsModelDisabled.
+  ///
+  /// In en, this message translates to:
+  /// **'Disabled for new selections'**
+  String get settingsModelDisabled;
+
+  /// No description provided for @settingsModelSaving.
+  ///
+  /// In en, this message translates to:
+  /// **'Saving…'**
+  String get settingsModelSaving;
+
+  /// No description provided for @settingsModelSaveFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Not saved. The switch shows the last confirmed value. Toggle again to retry.'**
+  String get settingsModelSaveFailed;
+
+  /// No description provided for @settingsBillingKind.
+  ///
+  /// In en, this message translates to:
+  /// **'Billing category'**
+  String get settingsBillingKind;
+
+  /// No description provided for @settingsBillingAutomatic.
+  ///
+  /// In en, this message translates to:
+  /// **'Automatic · no explicit override'**
+  String get settingsBillingAutomatic;
+
+  /// No description provided for @settingsBillingMetered.
+  ///
+  /// In en, this message translates to:
+  /// **'Metered'**
+  String get settingsBillingMetered;
+
+  /// No description provided for @settingsBillingSubscription.
+  ///
+  /// In en, this message translates to:
+  /// **'Subscription / plan'**
+  String get settingsBillingSubscription;
+
+  /// No description provided for @settingsBillingUnknown.
+  ///
+  /// In en, this message translates to:
+  /// **'Unknown'**
+  String get settingsBillingUnknown;
+
+  /// No description provided for @settingsBillingEffective.
+  ///
+  /// In en, this message translates to:
+  /// **'Effective category'**
+  String get settingsBillingEffective;
+
+  /// No description provided for @settingsBillingOverride.
+  ///
+  /// In en, this message translates to:
+  /// **'Explicit override'**
+  String get settingsBillingOverride;
+
+  /// No description provided for @settingsBillingHint.
+  ///
+  /// In en, this message translates to:
+  /// **'Independent of cost estimates. A category does not confirm an active subscription or remaining quota.'**
+  String get settingsBillingHint;
+
+  /// No description provided for @settingsModelDetails.
+  ///
+  /// In en, this message translates to:
+  /// **'Model details'**
+  String get settingsModelDetails;
+
+  /// No description provided for @modelDetailLoading.
+  ///
+  /// In en, this message translates to:
+  /// **'Loading model details…'**
+  String get modelDetailLoading;
+
+  /// No description provided for @modelDetailUnknown.
+  ///
+  /// In en, this message translates to:
+  /// **'Unknown / not verified'**
+  String get modelDetailUnknown;
+
+  /// No description provided for @modelDetailAvailable.
+  ///
+  /// In en, this message translates to:
+  /// **'Locally eligible for new selections'**
+  String get modelDetailAvailable;
+
+  /// No description provided for @modelDetailAvailabilityHint.
+  ///
+  /// In en, this message translates to:
+  /// **'Local eligibility does not guarantee provider health, subscription validity, or remaining quota.'**
+  String get modelDetailAvailabilityHint;
+
+  /// No description provided for @modelDetailSummary.
+  ///
+  /// In en, this message translates to:
+  /// **'Description and task fit'**
+  String get modelDetailSummary;
+
+  /// No description provided for @modelDetailLimitations.
+  ///
+  /// In en, this message translates to:
+  /// **'Limitations'**
+  String get modelDetailLimitations;
+
+  /// No description provided for @modelDetailCapabilities.
+  ///
+  /// In en, this message translates to:
+  /// **'Capabilities and limits'**
+  String get modelDetailCapabilities;
+
+  /// No description provided for @modelDetailEfforts.
+  ///
+  /// In en, this message translates to:
+  /// **'Allowed reasoning efforts'**
+  String get modelDetailEfforts;
+
+  /// No description provided for @modelDetailNoEffort.
+  ///
+  /// In en, this message translates to:
+  /// **'No reasoning effort parameter'**
+  String get modelDetailNoEffort;
+
+  /// No description provided for @modelDetailPricing.
+  ///
+  /// In en, this message translates to:
+  /// **'Prices per million tokens'**
+  String get modelDetailPricing;
+
+  /// No description provided for @modelDetailPriceInput.
+  ///
+  /// In en, this message translates to:
+  /// **'Input'**
+  String get modelDetailPriceInput;
+
+  /// No description provided for @modelDetailPriceOutput.
+  ///
+  /// In en, this message translates to:
+  /// **'Output'**
+  String get modelDetailPriceOutput;
+
+  /// No description provided for @modelDetailPriceCacheRead.
+  ///
+  /// In en, this message translates to:
+  /// **'Cache read'**
+  String get modelDetailPriceCacheRead;
+
+  /// No description provided for @modelDetailPriceCacheWrite.
+  ///
+  /// In en, this message translates to:
+  /// **'Cache write'**
+  String get modelDetailPriceCacheWrite;
+
+  /// No description provided for @modelDetailSources.
+  ///
+  /// In en, this message translates to:
+  /// **'Sources and verification'**
+  String get modelDetailSources;
+
+  /// No description provided for @modelDetailOfficial.
+  ///
+  /// In en, this message translates to:
+  /// **'Official documentation'**
+  String get modelDetailOfficial;
+
+  /// No description provided for @modelDetailBenchmark.
+  ///
+  /// In en, this message translates to:
+  /// **'Independent benchmark'**
+  String get modelDetailBenchmark;
+
+  /// No description provided for @modelDetailCommunity.
+  ///
+  /// In en, this message translates to:
+  /// **'Community feedback'**
+  String get modelDetailCommunity;
+
+  /// No description provided for @modelDetailVerifiedAt.
+  ///
+  /// In en, this message translates to:
+  /// **'Verified'**
+  String get modelDetailVerifiedAt;
+
+  /// No description provided for @modelDetailMeasurement.
+  ///
+  /// In en, this message translates to:
+  /// **'Measurement conditions'**
+  String get modelDetailMeasurement;
+
+  /// No description provided for @modelDetailPerformance.
+  ///
+  /// In en, this message translates to:
+  /// **'Local call performance'**
+  String get modelDetailPerformance;
+
+  /// No description provided for @modelDetailThroughput.
+  ///
+  /// In en, this message translates to:
+  /// **'Tokens/s (including first-token wait)'**
+  String get modelDetailThroughput;
+
+  /// No description provided for @modelDetailTtft.
+  ///
+  /// In en, this message translates to:
+  /// **'Average time to first token (ms)'**
+  String get modelDetailTtft;
+
+  /// No description provided for @modelDetailSamples.
+  ///
+  /// In en, this message translates to:
+  /// **'Call samples'**
+  String get modelDetailSamples;
+
+  /// No description provided for @modelDetailTtftSamples.
+  ///
+  /// In en, this message translates to:
+  /// **'First-token samples'**
+  String get modelDetailTtftSamples;
+
+  /// No description provided for @modelDetailUpdatedAt.
+  ///
+  /// In en, this message translates to:
+  /// **'Updated'**
+  String get modelDetailUpdatedAt;
+
+  /// No description provided for @modelDetailPerformanceHint.
+  ///
+  /// In en, this message translates to:
+  /// **'Observed locally; account, network, effort, and task affect these samples. This is not a provider guarantee or a task evaluation.'**
+  String get modelDetailPerformanceHint;
+
+  /// No description provided for @modelDetailEvaluations.
+  ///
+  /// In en, this message translates to:
+  /// **'Recent final task evaluations (up to 10)'**
+  String get modelDetailEvaluations;
+
+  /// No description provided for @modelDetailEvaluationsEmpty.
+  ///
+  /// In en, this message translates to:
+  /// **'No final task evaluations for this exact account and model yet.'**
+  String get modelDetailEvaluationsEmpty;
+
+  /// No description provided for @modelDetailEvaluationsHint.
+  ///
+  /// In en, this message translates to:
+  /// **'Each child has one effective final evaluation. Small samples are not statistically conclusive; unrateable outcomes are not low scores.'**
+  String get modelDetailEvaluationsHint;
+
+  /// No description provided for @modelDetailEvaluationPassed.
+  ///
+  /// In en, this message translates to:
+  /// **'Passed'**
+  String get modelDetailEvaluationPassed;
+
+  /// No description provided for @modelDetailEvaluationFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Failed'**
+  String get modelDetailEvaluationFailed;
+
+  /// No description provided for @modelDetailEvaluationNotRated.
+  ///
+  /// In en, this message translates to:
+  /// **'Unable to assess'**
+  String get modelDetailEvaluationNotRated;
+
+  /// No description provided for @modelDetailQuality.
+  ///
+  /// In en, this message translates to:
+  /// **'Quality'**
+  String get modelDetailQuality;
+
+  /// No description provided for @modelDetailInstructionFollowing.
+  ///
+  /// In en, this message translates to:
+  /// **'Instruction following'**
+  String get modelDetailInstructionFollowing;
+
+  /// No description provided for @modelDetailTaskReasoning.
+  ///
+  /// In en, this message translates to:
+  /// **'Reasoning'**
+  String get modelDetailTaskReasoning;
+
+  /// No description provided for @modelDetailTaskCoding.
+  ///
+  /// In en, this message translates to:
+  /// **'Coding'**
+  String get modelDetailTaskCoding;
+
+  /// No description provided for @modelDetailTaskTooling.
+  ///
+  /// In en, this message translates to:
+  /// **'Tool use and orchestration'**
+  String get modelDetailTaskTooling;
+
+  /// No description provided for @modelDetailTaskLongContext.
+  ///
+  /// In en, this message translates to:
+  /// **'Long context'**
+  String get modelDetailTaskLongContext;
+
+  /// No description provided for @modelDetailTaskMultimodal.
+  ///
+  /// In en, this message translates to:
+  /// **'Multimodal'**
+  String get modelDetailTaskMultimodal;
+
+  /// No description provided for @modelDetailTaskGeneral.
+  ///
+  /// In en, this message translates to:
+  /// **'General'**
+  String get modelDetailTaskGeneral;
+
+  /// No description provided for @modelDetailRetry.
+  ///
+  /// In en, this message translates to:
+  /// **'Reload details'**
+  String get modelDetailRetry;
+
+  /// No description provided for @modelDetailClose.
+  ///
+  /// In en, this message translates to:
+  /// **'Close'**
+  String get modelDetailClose;
+
+  /// No description provided for @modelDetailStale.
+  ///
+  /// In en, this message translates to:
+  /// **'This model\'s canonical identity changed. Reload its details.'**
+  String get modelDetailStale;
 }
 
 class _AppLocalizationsDelegate

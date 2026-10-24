@@ -9,6 +9,7 @@ pub(crate) mod observation;
 mod parameter;
 mod pricing;
 mod profile_error;
+mod selection;
 
 pub use capabilities::{
     ModelCapabilities, ModelInputCapability, ModelInputLimits, ModelInputSource, ModelModality,
@@ -39,6 +40,12 @@ pub use pricing::{
     DailyPriceWindow, ModelPricing, PricingError, TokenPriceTier, WeeklyPriceAdjustment,
 };
 pub use profile_error::ModelProfileError;
+pub use selection::{
+    BundledSelectionGuide, ModelSelectionGuide, ModelSelectionGuideError,
+    ModelSelectionMeasurement, ModelSelectionSource, ModelSelectionSourceKind,
+    SELECTION_SOURCE_MAX, SELECTION_SUMMARY_MAX_CHARS, bundled_selection_guide,
+    bundled_selection_guides,
+};
 
 pub use pl_protocol::{
     InferenceAccounting, ModelPriceTierDto, ModelPricingDto, ModelType, ModelTypeExclusion,

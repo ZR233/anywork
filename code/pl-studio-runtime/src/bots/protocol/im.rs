@@ -107,6 +107,55 @@ struct SendBody<'a> {
     uuid: &'a str,
 }
 
+#[derive(Serialize)]
+struct MarkdownPost<'a> {
+    zh_cn: MarkdownLocale<'a>,
+}
+
+#[derive(Serialize)]
+struct MarkdownLocale<'a> {
+    content: [[MarkdownNode<'a>; 1]; 1],
+}
+
+#[derive(Serialize)]
+struct MarkdownNode<'a> {
+    tag: &'static str,
+    text: &'a str,
+}
+
+#[derive(Serialize)]
+struct CardReference<'a> {
+    r#type: &'static str,
+    data: CardReferenceData<'a>,
+}
+
+#[derive(Serialize)]
+struct CardReferenceData<'a> {
+    card_id: &'a str,
+}
+
+fn markdown_body<'a>(chat_id: &'a str, text: &str, uuid: &'a str) -> SendBody<'a> {
+    // These structures contain only strings, whose JSON serialization is infallible.
+    let content = serde_json::to_string(&MarkdownPost {
+        zh_cn: MarkdownLocale {
+            content: [[MarkdownNode { tag: "md", text }]],
+        },
+    })
+    .expect("Markdown post strings serialize");
+    SendBody {
+        receive_id: chat_id,
+        msg_type: "post",
+        content,
+        uuid,
+    }
+}
+
+pub(in crate::bots) fn markdown_request_bytes(chat_id: &str, text: &str, uuid: &str) -> usize {
+    serde_json::to_vec(&markdown_body(chat_id, text, uuid))
+        .expect("IM request strings serialize")
+        .len()
+}
+
 impl FeishuIm {
     pub fn new(http: FeishuHttp) -> Self {
         Self { http }
@@ -231,7 +280,7 @@ impl FeishuIm {
         ))
     }
 
-    pub async fn send_text(
+    pub async fn send_markdown(
         &self,
         token: &str,
         chat_id: &str,
@@ -246,13 +295,57 @@ impl FeishuIm {
                 None,
             ));
         }
-        let content = serde_json::json!({ "text": text }).to_string();
+        let body = markdown_body(chat_id, text, uuid);
+        if markdown_request_bytes(chat_id, text, uuid) > super::TEXT_SEGMENT_LIMIT_BYTES {
+            return Err(FeishuError::new(
+                FeishuErrorKind::Rejected,
+                "serialized Markdown message exceeds 30000 UTF-8 bytes",
+                false,
+                None,
+            ));
+        }
+        self.send_body(token, &body).await
+    }
+
+    pub async fn send_card(
+        &self,
+        token: &str,
+        chat_id: &str,
+        card_id: &str,
+        uuid: &str,
+    ) -> Result<SendMessageOutcome, FeishuError> {
+        let content = serde_json::to_string(&CardReference {
+            r#type: "card",
+            data: CardReferenceData { card_id },
+        })
+        .expect("card reference strings serialize");
         let body = SendBody {
             receive_id: chat_id,
-            msg_type: "text",
+            msg_type: "interactive",
             content,
             uuid,
         };
+        if uuid.len() > 50
+            || serde_json::to_vec(&body)
+                .expect("IM request strings serialize")
+                .len()
+                > super::TEXT_SEGMENT_LIMIT_BYTES
+        {
+            return Err(FeishuError::new(
+                FeishuErrorKind::Rejected,
+                "serialized card message exceeds the IM request bound",
+                false,
+                None,
+            ));
+        }
+        self.send_body(token, &body).await
+    }
+
+    async fn send_body(
+        &self,
+        token: &str,
+        body: &SendBody<'_>,
+    ) -> Result<SendMessageOutcome, FeishuError> {
         let data: MessageCreateData = self
             .http
             .open_json(
@@ -260,7 +353,7 @@ impl FeishuIm {
                 IM_MESSAGES_PATH,
                 Some(token),
                 &[("receive_id_type", "chat_id")],
-                Some(&body),
+                Some(body),
             )
             .await?;
         let message_id = data

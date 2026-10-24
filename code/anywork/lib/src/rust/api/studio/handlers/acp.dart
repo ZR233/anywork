@@ -7,6 +7,7 @@ import '../../../frb_generated.dart';
 import '../types/acp.dart';
 import '../types/acp_install.dart';
 import '../types/command.dart';
+import '../types/delegation.dart';
 import '../types/error.dart';
 import '../types/response.dart';
 import '../types/settings.dart';

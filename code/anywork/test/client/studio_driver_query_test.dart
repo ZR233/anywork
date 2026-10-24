@@ -27,8 +27,361 @@ final class _UnusedTransport implements StudioTransport {
   }
 }
 
+final class _ColdDirectoryTransport extends _UnusedTransport {
+  // Restoring navigation may observe product topics, but must not open a child.
+  @override
+  Stream<ProductTopicFrame> subscribeProductTopic(ProductTopic topic) =>
+      const Stream.empty();
+}
+
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
+
+  test('canonical cold and closed members survive a root-only Thread page and cold selection', () async {
+    final transport = _ColdDirectoryTransport();
+    final graph = AppGraph(
+      transport: transport,
+      clientId: 'canonical-agent-members',
+    );
+    addTearDown(
+      () =>
+          graph.close(deadline: DateTime.now().add(const Duration(seconds: 5))),
+    );
+    final client = graph.client;
+    final root = _factsThread();
+    final other = StudioThread(
+      id: 'other-root',
+      projectId: 'other-project',
+      title: 'Other project',
+      mode: ThreadModeId.simple,
+      delegationMode: DelegationMode.profile,
+      delegationPreference: DelegationPreference.balanced,
+      workspacePath: '/other',
+      updatedAt: root.updatedAt,
+    );
+    StudioAgentView agent(
+      String id, {
+      String? rootId,
+      String? parent,
+      StudioAgentState state = const IdleStudioAgent(),
+      int depth = 0,
+    }) => StudioAgentView(
+      id: id,
+      threadId: id,
+      path: 'path-$id',
+      parentPath: parent,
+      rootThreadId: rootId,
+      depth: depth,
+      role: parent == null ? 'planner' : 'reviewer',
+      task: 'Task $id',
+      state: state,
+      updatedAt: root.updatedAt,
+      delegationMode: DelegationMode.automatic,
+      delegationPreference: DelegationPreference.economy,
+      frozenModel: parent == null
+          ? null
+          : const NewThreadModelRoute(
+              accountId: 'saved-account',
+              modelId: 'saved-model',
+              effort: 'high',
+            ),
+    );
+    final members = [
+      agent(root.id, rootId: root.id),
+      agent(
+        'cold-executor',
+        rootId: root.id,
+        parent: 'path-${root.id}',
+        depth: 1,
+        state: const RunningStudioAgent('executor-turn'),
+      ),
+      agent(
+        'cold-closed',
+        rootId: root.id,
+        parent: 'path-${root.id}',
+        depth: 1,
+        state: const ClosedStudioAgent(),
+      ),
+      // The exact parent link resolves this member, not a parsed path prefix.
+      agent(
+        'nested',
+        parent: 'path-cold-closed',
+        depth: 2,
+        state: const RunningStudioAgent('nested-turn'),
+      ),
+      agent(
+        'faulted',
+        rootId: root.id,
+        parent: 'path-${root.id}',
+        depth: 1,
+        state: const FaultedStudioAgent(
+          failure: AgentStateError(
+            code: 'saved-failure',
+            message: 'Saved failure',
+            retryable: false,
+          ),
+        ),
+      ),
+      agent(
+        'cold-closed',
+        rootId: root.id,
+        parent: 'path-${root.id}',
+        depth: 1,
+        state: const ClosedStudioAgent(),
+      ),
+      agent(other.id, rootId: other.id),
+      agent(
+        'other-child',
+        rootId: other.id,
+        parent: 'path-${other.id}',
+        depth: 1,
+      ),
+    ];
+    client.project.applyProjectDirectory(
+      ProjectDirectoryState(
+        revision: 1,
+        values: const [
+          StudioProject(id: 'project', name: 'Project', path: '/project'),
+          StudioProject(id: 'other-project', name: 'Other', path: '/other'),
+        ],
+      ),
+    );
+    client.project.applyAgentDirectory(
+      AgentDirectoryState(revision: 1, values: members),
+    );
+    client.threadDirectory.applyWindow(
+      ThreadDirectoryWindow(threads: [root, other], revision: 1),
+    );
+    client.selection.restoreStartup(
+      projectId: root.projectId,
+      threadId: root.id,
+      needsOpen: true,
+    );
+    final container = ProviderContainer(
+      overrides: [appGraphProvider.overrideWithValue(graph)],
+    );
+    addTearDown(container.dispose);
+    final header = container.listen(headerViewProvider, (_, _) {});
+    final sidebar = container.listen(sidebarViewProvider, (_, _) {});
+    addTearDown(sidebar.close);
+    expect(header.read().agents.map((a) => a.threadId), [
+      root.id,
+      'cold-executor',
+      'cold-closed',
+      'nested',
+      'faulted',
+    ]);
+    expect(header.read().workspaceThreads.map((thread) => thread.id), [
+      root.id,
+    ], reason: 'Member enumeration never fabricates missing Thread metadata');
+    expect(header.read().agents.first.frozenModel, isNull);
+    expect(header.read().agents[1].frozenModel?.modelId, 'saved-model');
+    expect(
+      AgentDirectoryQueries.menuOrder(header.read().agents)
+          .map((a) => a.threadId),
+      ['cold-executor', 'nested', 'faulted', root.id, 'cold-closed'],
+      reason: 'Status grouping keeps stable canonical order inside each group',
+    );
+    final timeline = TimelineSessionOwner(client: client);
+    addTearDown(timeline.close);
+    expect(
+      queryStudioDriverFacts(
+        client,
+        timeline: timeline,
+      ).workspace?.agents.map((a) => a.threadId),
+      [root.id, 'cold-executor', 'cold-closed', 'nested', 'faulted'],
+    );
+    client.selection.restoreStartup(
+      projectId: root.projectId,
+      threadId: 'cold-closed',
+      needsOpen: true,
+    );
+    expect(
+      header.read().selectedRootThread?.id,
+      root.id,
+      reason: 'Typed agent root identity is sufficient even before child Thread metadata arrives',
+    );
+    expect(header.read().selectedThreadId, 'cold-closed');
+    expect(sidebar.read().selectedRootThreadId, root.id);
+    expect(header.read().agents.map((a) => a.threadId), [
+      root.id,
+      'cold-executor',
+      'cold-closed',
+      'nested',
+      'faulted',
+    ]);
+    expect(client.sessionStates, isEmpty);
+    expect(
+      transport.calls,
+      0,
+      reason:
+          'Enumeration and cold navigation restore cannot load child sessions',
+    );
+    client.selection.restoreStartup(
+      projectId: other.projectId,
+      threadId: other.id,
+      needsOpen: true,
+    );
+    expect(header.read().agents.map((a) => a.threadId), [
+      other.id,
+      'other-child',
+    ]);
+    client.selection.restoreStartup(
+      projectId: root.projectId,
+      threadId: 'cold-closed',
+      needsOpen: true,
+    );
+    client.threadDirectory.applyDelta(
+      revision: 2,
+      upserted: const [],
+      removed: [root.id],
+    );
+    expect(header.read().selectedRootThread, isNull);
+    expect(header.read().workspaceThreads, isEmpty);
+    expect(header.read().agents.map((a) => a.threadId), [
+      root.id,
+      'cold-executor',
+      'cold-closed',
+      'nested',
+      'faulted',
+    ], reason: 'Even root metadata availability is not a membership condition');
+    expect(sidebar.read().selectedRootThreadId, root.id);
+    expect(client.sessionStates, isEmpty);
+    expect(transport.calls, 0);
+    header.close();
+  });
+
+  test(
+    'canonical saved agent routes retain selection without activating children',
+    () async {
+      final transport = _ColdDirectoryTransport();
+      final client = AnyworkClient(
+        transport: transport,
+        clientId: 'cold-frozen',
+      );
+      addTearDown(client.close);
+      const frozen = NewThreadModelRoute(
+        accountId: 'account-b',
+        modelId: 'shared',
+        effort: 'high',
+      );
+      final root = _factsThread();
+      final child = StudioThread(
+        id: 'child',
+        projectId: 'project',
+        title: 'Review final changes',
+        mode: ThreadModeId.task,
+        delegationMode: DelegationMode.automatic,
+        delegationPreference: DelegationPreference.economy,
+        frozenModel: frozen,
+        parentThreadId: root.id,
+        rootThreadId: root.id,
+        role: 'reviewer',
+        workspacePath: '/project',
+        updatedAt: DateTime.utc(2026),
+      );
+      client.threadDirectory.applyWindow(
+        ThreadDirectoryWindow(threads: [root, child], revision: 1),
+      );
+      StudioAgentView saved(StudioAgentState state) => StudioAgentView(
+        id: child.id,
+        threadId: child.id,
+        path: child.id,
+        parentPath: root.id,
+        rootThreadId: root.id,
+        role: child.role,
+        task: child.title,
+        depth: 1,
+        delegationMode: child.delegationMode,
+        delegationPreference: child.delegationPreference,
+        frozenModel: frozen,
+        state: state,
+        updatedAt: child.updatedAt,
+      );
+      final savedRoot = StudioAgentView(
+        id: root.id,
+        threadId: root.id,
+        path: root.id,
+        rootThreadId: root.id,
+        role: root.role,
+        task: root.title,
+        delegationMode: root.delegationMode,
+        delegationPreference: root.delegationPreference,
+        state: const IdleStudioAgent(),
+        updatedAt: root.updatedAt,
+      );
+      client.project.applyAgentDirectory(
+        AgentDirectoryState(
+          revision: 1,
+          values: [savedRoot, saved(const IdleStudioAgent())],
+        ),
+      );
+      client.selection.restoreStartup(
+        projectId: 'project',
+        threadId: child.id,
+        needsOpen: true,
+      );
+      final timeline = TimelineSessionOwner(client: client);
+      addTearDown(timeline.close);
+      final facts = queryStudioDriverFacts(client, timeline: timeline);
+      expect(
+        facts.workspace?.agents
+            .where((a) => a.threadId == child.id)
+            .single
+            .frozenModel,
+        frozen,
+      );
+      expect(client.existingSession(child.id), isNull);
+      final cold = AgentDirectoryQueries.forRoot(
+        rootThreadId: root.id,
+        agents: [saved(const IdleStudioAgent())],
+      ).single;
+      final active = StudioAgentView(
+        id: child.id,
+        threadId: child.id,
+        path: child.id,
+        parentPath: root.id,
+        rootThreadId: root.id,
+        depth: 1,
+        role: child.role,
+        task: child.title,
+        delegationMode: child.delegationMode,
+        delegationPreference: child.delegationPreference,
+        frozenModel: frozen,
+        state: const RunningStudioAgent('turn'),
+        updatedAt: child.updatedAt,
+      );
+      expect(
+        AgentDirectoryQueries.forRoot(
+          rootThreadId: root.id,
+          agents: [active],
+          threads: [child],
+        ).single.frozenModel,
+        frozen,
+      );
+      final closed = AgentDirectoryQueries.forRoot(
+        rootThreadId: root.id,
+        agents: [saved(const ClosedStudioAgent())],
+      ).single;
+      expect(cold.frozenModel, frozen);
+      expect(closed.frozenModel, frozen);
+      expect(closed.delegationPreference, DelegationPreference.economy);
+      expect(client.selection.state.selectedThreadId, child.id);
+      expect(
+        transport.calls,
+        0,
+        reason: 'Fallback/Driver reads cannot fetch or activate a cold child',
+      );
+      expect(
+        AgentDirectoryQueries.forRoot(
+          rootThreadId: root.id,
+          agents: [savedRoot],
+        ).single.frozenModel,
+        isNull,
+        reason: 'No saved model remains genuinely unknown, never filled from a current Profile',
+      );
+    },
+  );
 
   test('workspace and Driver join current directory identity after a Turn', () async {
     final graph = AppGraph(
@@ -142,6 +495,8 @@ void main() {
         projectId: 'project',
         title: 'Original title',
         mode: ThreadModeId.simple,
+        delegationMode: DelegationMode.profile,
+        delegationPreference: DelegationPreference.balanced,
         updatedAt: DateTime.utc(2026),
         workspacePath: '/tmp/thread',
       );
@@ -628,6 +983,8 @@ StudioThread _factsThread() => StudioThread(
   projectId: 'project',
   title: 'Thread',
   mode: ThreadModeId.simple,
+  delegationMode: DelegationMode.profile,
+  delegationPreference: DelegationPreference.balanced,
   updatedAt: DateTime.utc(2026),
   workspacePath: '/tmp/thread',
 );

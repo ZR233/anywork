@@ -29,6 +29,8 @@ impl StudioRuntime {
         project_id: &str,
         title: &str,
     ) -> Result<ThreadRecord> {
+        let _lifecycle_guard = self.thread_lifecycle_admission().await?;
+        self.ensure_project_thread_admission_open(project_id)?;
         let thread_id = thread_id.into();
         if let Some(existing) = self.find_owned_thread(&thread_id).await? {
             anyhow::ensure!(
@@ -49,7 +51,7 @@ impl StudioRuntime {
             .into_iter()
             .find(|project| project.id == project_id)
             .context("selected Project not found")?;
-        let (delta, thread) = DirectoryDelta::register_root_thread(
+        let (mut delta, mut thread) = DirectoryDelta::register_root_thread(
             thread_id,
             project_id,
             title,
@@ -57,6 +59,10 @@ impl StudioRuntime {
             pl_protocol::ThreadWorkspaceMode::Local,
             project.path,
         );
+        let delegation = self.config_runtime.read()?.config.delegation;
+        thread.delegation_mode = delegation.mode;
+        thread.delegation_preference = delegation.preference;
+        delta.thread_upserts = vec![thread.clone()];
         self.agent_facility
             .product_events
             .commit_directory(delta)
@@ -91,7 +97,7 @@ impl StudioRuntime {
             .clone()
             .unwrap_or_else(|| provisional_title(&request.input.text));
         let title_prompt = request.input.text.clone();
-        let _lifecycle_guard = self.lifecycle_lock.lock().await;
+        let _lifecycle_guard = self.thread_lifecycle_admission().await?;
         report(ThreadPreparationStage::CheckingProject, None, None);
         self.ensure_prompt_runtime_ready().await?;
         let drafts = self
@@ -110,6 +116,7 @@ impl StudioRuntime {
             .config
             .models
             .resolve_route(crate::config::StudioRole::Planner.id(), &selector)?;
+        crate::studio::delegation::validate_credential(&route)?;
         self.thread_modes
             .snapshot()
             .mode(&request.mode)
@@ -124,6 +131,7 @@ impl StudioRuntime {
             .find(|project| project.id == request.project_id)
             .cloned()
             .context("selected Project not found")?;
+        self.ensure_project_thread_admission_open(&request.project_id)?;
         self.ensure_mode_available(&request.mode)?;
 
         // D4：会话工作区在发布 Thread 之前就已确定。`worktree` 先做前置校验与物理创建，
@@ -185,7 +193,7 @@ impl StudioRuntime {
             Some(&workspace_path),
             workspace_branch.as_deref(),
         );
-        let (delta, thread) = DirectoryDelta::register_root_thread(
+        let (mut delta, mut thread) = DirectoryDelta::register_root_thread(
             thread_id,
             &request.project_id,
             &provisional,
@@ -193,6 +201,13 @@ impl StudioRuntime {
             request.workspace_mode,
             workspace_path,
         );
+        thread.delegation_mode = request
+            .delegation_mode
+            .unwrap_or(config.config.delegation.mode);
+        thread.delegation_preference = request
+            .delegation_preference
+            .unwrap_or(config.config.delegation.preference);
+        delta.thread_upserts = vec![thread.clone()];
         // Stage before publication: a directory observer may concurrently
         // activate this identity, and must use this exact request route.
         self.thread_factory
@@ -369,9 +384,18 @@ impl StudioRuntime {
         thread_id: String,
     ) -> Result<Option<ArchiveThreadCommandReply>> {
         Self::validate_operation_id(&operation_id)?;
-        let _lifecycle_guard = self.lifecycle_lock.lock().await;
-        let Some((thread, roots, thread_tree)) =
-            self.activate_thread_archive_scope(&thread_id).await?
+        let runtime = self.clone();
+        self.run_archive(async move { runtime.archive_thread_owned(operation_id, thread_id).await })
+            .await
+    }
+
+    async fn archive_thread_owned(
+        &self,
+        operation_id: String,
+        thread_id: String,
+    ) -> Result<Option<ArchiveThreadCommandReply>> {
+        let root_operation = self.threads.agent_operation(&thread_id).await;
+        let Some((thread, roots, thread_tree)) = self.load_thread_archive_scope(&thread_id).await?
         else {
             return Ok(None);
         };
@@ -391,6 +415,18 @@ impl StudioRuntime {
             .map(|candidate| candidate.id.clone())
             .chain(std::iter::once(thread.id.clone()))
             .collect::<Vec<_>>();
+        let _child_seals = self
+            .threads
+            .seal_agent_operations(
+                &removed_thread_ids
+                    .iter()
+                    .filter(|id| **id != thread_id)
+                    .cloned()
+                    .collect::<Vec<_>>(),
+            )
+            .await;
+        let _root_seal = self.threads.seal_agent_operation(&thread_id);
+        drop(root_operation);
         // 归档先结束整棵树的活动工作（design/01 §1.4）：中断当前 Turn、丢弃未消费输入，
         // 再有界等待收束；无法结束时返回类型化失败并保留会话现场。
         self.end_thread_tree_work(&removed_thread_ids).await?;
@@ -724,7 +760,7 @@ impl StudioRuntime {
         Ok(())
     }
 
-    async fn activate_thread_archive_scope(
+    async fn load_thread_archive_scope(
         &self,
         root_thread_id: &str,
     ) -> Result<Option<(ThreadRecord, Vec<ThreadRecord>, Vec<ThreadRecord>)>> {
@@ -798,7 +834,10 @@ impl StudioRuntime {
     /// 未驻留即不 busy：钉住集合恢复保证有 pending 工作的 Thread 会被恢复，
     /// LRU 只淘汰空闲且已耐久化的 actor（design/17 §17.5）。
     pub(in crate::studio::runtime) async fn thread_is_busy(&self, thread_id: &str) -> Result<bool> {
-        let snapshot = self.read_thread_state(thread_id).await?;
+        let Some(thread) = self.threads.observed_thread(thread_id) else {
+            return Ok(false);
+        };
+        let snapshot = thread.snapshot();
         Ok(snapshot
             .turns
             .iter()
@@ -825,7 +864,7 @@ impl StudioRuntime {
     /// 下进入 owner mailbox，因此归档期间不会有并发新输入落入这棵树。
     async fn end_thread_tree_work(&self, thread_ids: &[String]) -> Result<()> {
         for thread_id in thread_ids {
-            let Some(thread) = self.threads.thread(thread_id) else {
+            let Some(thread) = self.threads.observed_thread(thread_id) else {
                 // Cold history has no active work and must not be activated for archiving.
                 continue;
             };
@@ -839,7 +878,7 @@ impl StudioRuntime {
         loop {
             let mut still_busy = None;
             for thread_id in thread_ids {
-                if self.threads.thread(thread_id).is_none() {
+                if self.threads.observed_thread(thread_id).is_none() {
                     continue;
                 }
                 self.discard_pending_inputs(thread_id).await?;
@@ -866,10 +905,10 @@ impl StudioRuntime {
 
     /// 丢弃该 Thread 当前 canonical 快照里仍未消费的输入，不改写已消费/已丢弃的记录。
     async fn discard_pending_inputs(&self, thread_id: &str) -> Result<()> {
-        let Some(thread) = self.threads.thread(thread_id) else {
+        let Some(thread) = self.threads.observed_thread(thread_id) else {
             return Ok(());
         };
-        let snapshot = self.read_thread_state(thread_id).await?;
+        let snapshot = thread.snapshot();
         let pending = snapshot
             .inputs
             .iter()

@@ -31,6 +31,8 @@ pub enum UserInteractionError {
     Payload(#[from] pl_core::context::PayloadError),
     #[error("Thread rejected user answer")]
     Thread(#[from] pl_core::thread::ThreadError),
+    #[error("user answer continuation model is unavailable")]
+    Admission(#[from] super::ThreadAssemblyError),
 }
 fn decode<T: serde::de::DeserializeOwned>(
     payload: &OpaquePayload,
@@ -166,6 +168,7 @@ impl StudioThreadAssembler {
         let (thread_id, local_id) = super::decode_interaction_key(&resolution.interaction_id)?;
         let thread_id = thread_id.to_owned();
         resolution.interaction_id = local_id.to_owned();
+        let _operation = self.agent_operation(&thread_id).await;
         let (thread, execution) = {
             self.0
                 .state()
@@ -188,6 +191,7 @@ impl StudioThreadAssembler {
             }
             return Err(UserInteractionError::Identity);
         }
+        self.prepare_input_admission(&thread_id, &thread).await?;
         let committed = thread
             .resolve_interaction(prepare_resolution(&thread_id, current, resolution)?)
             .await?;

@@ -228,6 +228,8 @@ pub struct StudioConfig {
     pub schema_version: u32,
     pub models: AgentModelConfig,
     #[serde(default)]
+    pub delegation: pl_protocol::DelegationSettings,
+    #[serde(default)]
     pub mode_model_routes: BTreeMap<ThreadModeId, ModelRouteConfig>,
     /// Rust 内置 Agent 只能在这里禁用；其余字段不可覆盖，也不存在删除语义。
     #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
@@ -280,6 +282,7 @@ impl StudioConfig {
 
         Ok(Self {
             schema_version: STUDIO_CONFIG_SCHEMA_VERSION,
+            delegation: pl_protocol::DelegationSettings::default(),
             models: AgentModelConfig {
                 accounts: BTreeMap::from([(account_id, account)]),
                 routes,

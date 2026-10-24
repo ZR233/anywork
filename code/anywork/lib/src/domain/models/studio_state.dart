@@ -1,4 +1,5 @@
 import 'package:anywork_client/models.dart';
+import 'package:anywork_client/studio_client.dart' show AgentDirectoryQueries;
 
 import 'agent_workspace_view.dart';
 
@@ -208,9 +209,11 @@ class StudioState {
   }
 
   StudioThread? get selectedRootThread {
-    final selected = selectedThread;
-    if (selected == null) return null;
-    final rootId = selected.effectiveRootThreadId;
+    final rootId = AgentDirectoryQueries.rootThreadId(
+      threadId: selectedThreadId,
+      agents: agentDirectory.values,
+      threads: threads,
+    );
     return threads
         .where((thread) => thread.id == rootId && thread.isRoot)
         .firstOrNull;
@@ -269,24 +272,15 @@ class StudioState {
   }
 
   List<StudioAgentView> get selectedAgents {
-    return threadsForSelectedRoot
-        .map(
-          (thread) =>
-              agentsByThread[thread.id] ??
-              StudioAgentView(
-                id: thread.id,
-                threadId: thread.id,
-                path: thread.agentPath.isEmpty ? thread.id : thread.agentPath,
-                parentPath: thread.parentThreadId,
-                role: thread.role,
-                task: thread.title,
-                state: const IdleStudioAgent(),
-                summary: null,
-                depth: thread.isRoot ? 0 : 1,
-                updatedAt: thread.updatedAt,
-              ),
-        )
-        .toList();
+    return AgentDirectoryQueries.forRoot(
+      rootThreadId: AgentDirectoryQueries.rootThreadId(
+        threadId: selectedThreadId,
+        agents: agentDirectory.values,
+        threads: threads,
+      ),
+      agents: agentDirectory.values,
+      threads: threads,
+    );
   }
 
   AgentWorkspaceView? get selectedAgentWorkspace {

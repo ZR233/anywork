@@ -1,4 +1,5 @@
 import 'model_catalog.dart';
+import 'delegation_models.dart';
 
 enum ModelModalityView { text, image, audio, video, file }
 
@@ -107,6 +108,7 @@ class AccountModelView {
     required this.modelId,
     required this.displayName,
     required this.reasoningEfforts,
+    this.enabled = true,
     this.typeSupport = const [],
     this.description = '',
     this.contextWindow,
@@ -120,6 +122,7 @@ class AccountModelView {
     this.defaultReasoningEffort = '',
     this.currency = '',
     this.priceSource = '',
+    this.priceVerifiedAt,
     this.priceTiers = const [],
     this.baseInstructions = '',
     this.wireApi = 'chat_completions',
@@ -130,6 +133,7 @@ class AccountModelView {
   });
 
   final String modelId;
+  final bool enabled;
   final List<ModelTypeSupportView> typeSupport;
 
   ModelTypeSupportView? supportFor(ModelType type) =>
@@ -153,6 +157,7 @@ class AccountModelView {
   final String defaultReasoningEffort;
   final String currency;
   final String priceSource;
+  final int? priceVerifiedAt;
   final List<ModelPriceTierView> priceTiers;
   final String baseInstructions;
   final String wireApi;
@@ -163,6 +168,7 @@ class AccountModelView {
 
   AccountModelView copyWith({
     String? modelId,
+    bool? enabled,
     String? displayName,
     List<String>? reasoningEfforts,
     List<ModelTypeSupportView>? typeSupport,
@@ -178,6 +184,7 @@ class AccountModelView {
     String? defaultReasoningEffort,
     String? currency,
     String? priceSource,
+    int? priceVerifiedAt,
     List<ModelPriceTierView>? priceTiers,
     String? baseInstructions,
     String? wireApi,
@@ -188,6 +195,7 @@ class AccountModelView {
   }) {
     return AccountModelView(
       modelId: modelId ?? this.modelId,
+      enabled: enabled ?? this.enabled,
       displayName: displayName ?? this.displayName,
       reasoningEfforts: reasoningEfforts ?? this.reasoningEfforts,
       typeSupport: typeSupport ?? this.typeSupport,
@@ -204,6 +212,7 @@ class AccountModelView {
           defaultReasoningEffort ?? this.defaultReasoningEffort,
       currency: currency ?? this.currency,
       priceSource: priceSource ?? this.priceSource,
+      priceVerifiedAt: priceVerifiedAt ?? this.priceVerifiedAt,
       priceTiers: priceTiers ?? this.priceTiers,
       baseInstructions: baseInstructions ?? this.baseInstructions,
       wireApi: wireApi ?? this.wireApi,
@@ -233,6 +242,9 @@ class AccountModelAutoCompactView {
 class AccountSettingsView {
   const AccountSettingsView({
     this.pricingEnabled = false,
+    this.billingKind = BillingKind.unknown,
+    this.billingKindOverride,
+    this.disabledModels = const [],
     this.modelCatalog = const ModelCatalogStatusView(),
     required this.id,
     this.templateId,
@@ -265,6 +277,9 @@ class AccountSettingsView {
   });
 
   final bool pricingEnabled;
+  final BillingKind billingKind;
+  final BillingKind? billingKindOverride;
+  final List<String> disabledModels;
   final ModelCatalogStatusView modelCatalog;
   final String id;
 
@@ -288,7 +303,9 @@ class AccountSettingsView {
   /// Queries the canonical model-layer classification; omitted type returns the full catalog.
   List<AccountModelView> modelsFor({ModelType? type}) => type == null
       ? models
-      : models.where((model) => model.matchesType(type)).toList();
+      : models
+            .where((model) => model.matchesType(type) && model.enabled)
+            .toList();
   final Map<String, String> modelConnectionModes;
   final Map<String, AccountModelAutoCompactView> autoCompactLimits;
   final String status;
@@ -346,6 +363,9 @@ class AccountSettingsView {
   AccountSettingsView copyWith({
     ModelCatalogStatusView? modelCatalog,
     bool? pricingEnabled,
+    BillingKind? billingKind,
+    Object? billingKindOverride = _accountSettingsUnset,
+    List<String>? disabledModels,
     String? id,
     Object? templateId = _accountTemplateUnset,
     String? protocol,
@@ -378,6 +398,11 @@ class AccountSettingsView {
     return AccountSettingsView(
       modelCatalog: modelCatalog ?? this.modelCatalog,
       pricingEnabled: pricingEnabled ?? this.pricingEnabled,
+      billingKind: billingKind ?? this.billingKind,
+      billingKindOverride: identical(billingKindOverride, _accountSettingsUnset)
+          ? this.billingKindOverride
+          : billingKindOverride as BillingKind?,
+      disabledModels: disabledModels ?? this.disabledModels,
       id: id ?? this.id,
       templateId: identical(templateId, _accountTemplateUnset)
           ? this.templateId

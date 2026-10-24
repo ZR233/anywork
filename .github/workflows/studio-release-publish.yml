@@ -157,9 +157,40 @@ jobs:
           toolchain: 1.99.1
           targets: aarch64-unknown-linux-musl,x86_64-unknown-linux-musl
 
+      # Rust Cache hashes every installed rustup toolchain into its environment key, and
+      # the hosted image's preinstalled `stable` moves independently of the toolchain pinned
+      # in rust-toolchain.toml. Only that unused preinstalled `stable` toolchain is removed
+      # on this temporary runner, so the cache identity follows the compiler this job uses.
+      - name: Remove unused preinstalled stable Rust toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          active_listing="$(rustup show active-toolchain)"
+          toolchains="$(rustup toolchain list)"
+          active="${active_listing%%[[:space:]]*}"
+          if [ -z "$active" ]; then
+            echo 'rustup did not report an active toolchain' >&2
+            exit 1
+          fi
+          while IFS= read -r listing; do
+            name="${listing%%[[:space:]]*}"
+            case "$name" in
+              stable-*) ;;
+              *) continue ;;
+            esac
+            if [ "$name" = "$active" ]; then
+              continue
+            fi
+            echo "Removing unused preinstalled toolchain $name"
+            rustup toolchain uninstall "$name"
+          done <<< "$toolchains"
+
       - name: Cache Rust build
         uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
+          # Same helper build as the RC workflow; the pinned Zig toolchain versions are
+          # part of the key because they are not Cargo inputs.
+          shared-key: helper-linux-zig-0.16.0-zigbuild-0.23.4
           workspaces: |
             . -> target
             . -> target/xtask
@@ -211,6 +242,10 @@ jobs:
       contents: read
       id-token: write
       attestations: write
+    outputs:
+      # Identity of the verification tool handed to the publisher job in this run.
+      toolSha256: ${{ steps.tool.outputs.sha256 }}
+      toolWorkspace: ${{ steps.tool.outputs.workspace }}
     env:
       RELEASE_VERSION: ${{ needs.resolve.outputs.version }}
       PURE_REMOTE_HELPER_PREBUILT_DIR: ${{ github.workspace }}/dist/remote-helper
@@ -240,9 +275,39 @@ jobs:
           toolchain: 1.99.1
           components: rustfmt, clippy
 
+      # Rust Cache hashes every installed rustup toolchain into its environment key, and
+      # the hosted image's preinstalled `stable` moves independently of the toolchain pinned
+      # in rust-toolchain.toml. Only that unused preinstalled `stable` toolchain is removed
+      # on this temporary runner, so the cache identity follows the compiler this job uses.
+      - name: Remove unused preinstalled stable Rust toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          active_listing="$(rustup show active-toolchain)"
+          toolchains="$(rustup toolchain list)"
+          active="${active_listing%%[[:space:]]*}"
+          if [ -z "$active" ]; then
+            echo 'rustup did not report an active toolchain' >&2
+            exit 1
+          fi
+          while IFS= read -r listing; do
+            name="${listing%%[[:space:]]*}"
+            case "$name" in
+              stable-*) ;;
+              *) continue ;;
+            esac
+            if [ "$name" = "$active" ]; then
+              continue
+            fi
+            echo "Removing unused preinstalled toolchain $name"
+            rustup toolchain uninstall "$name"
+          done <<< "$toolchains"
+
       - name: Cache Rust build
         uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
+          # Same Windows GUI product set as the RC workflow.
+          shared-key: gui-windows
           workspaces: |
             . -> target
             . -> target/xtask
@@ -273,9 +338,6 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: cargo binstall --no-confirm --force --disable-strategies compile flutter_rust_bridge_codegen@2.13.0 cargo-expand@1.0.127
-
-      - name: Verify Flutter application
-        run: cargo xtask verify-gui
 
       - name: Install release tools
         shell: pwsh
@@ -341,6 +403,19 @@ jobs:
         env:
           WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.AUTHENTICODE_CERTIFICATE_PASSWORD }}
         run: cargo xtask release-gui stage --version $env:RELEASE_VERSION
+
+      # `release-gui stage` already runs the canonical generation check with
+      # check_generated enabled, so that check is not repeated here. Rust formatting,
+      # Dart formatting and Flutter static analysis must still pass on the immutable tag
+      # before any release asset is preserved, attested or published.
+      - name: Verify Rust formatting for release
+        run: cargo fmt --all --check
+
+      - name: Verify Dart formatting for release
+        run: cargo dart format --output=none --set-exit-if-changed lib test_driver
+
+      - name: Analyze Flutter application for release
+        run: cargo flutter analyze --no-pub
 
       - name: Package matching Windows symbols
         shell: pwsh
@@ -474,6 +549,39 @@ jobs:
           compression-level: 0
           retention-days: 30
 
+      # The publisher job reuses this tag's verification tool instead of compiling it
+      # again. The tool embeds the absolute workspace root it was built in, so the
+      # identity below is handed to the consumer through job outputs and checked there
+      # before the tool runs. The upload is last, so the consumer only ever sees a tool
+      # from a build whose checks and packaging steps all succeeded.
+      - name: Identify verification tool
+        id: tool
+        shell: pwsh
+        run: |
+          $tool = Join-Path $env:GITHUB_WORKSPACE 'target/xtask/debug/pl-xtask.exe'
+          if (-not (Test-Path -LiteralPath $tool -PathType Leaf)) {
+            throw "Verification tool was not built from this commit: $tool"
+          }
+          $sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $tool).Hash.ToLowerInvariant()
+          if ($sha256 -notmatch '^[0-9a-f]{64}$') {
+            throw "Verification tool has an invalid SHA-256: $sha256"
+          }
+          $workspace = [IO.Path]::GetFullPath($env:GITHUB_WORKSPACE).TrimEnd([char[]]@('\', '/'))
+          if ([string]::IsNullOrWhiteSpace($workspace)) {
+            throw 'Verification tool has no build workspace identity'
+          }
+          "sha256=$sha256" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "workspace=$workspace" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+
+      - name: Preserve release verification tool
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: studio-release-tool-${{ needs.resolve.outputs.releaseId }}-${{ needs.resolve.outputs.sha }}
+          path: target/xtask/debug/pl-xtask.exe
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
+
   publish:
     name: Reconcile assets and publish draft
     needs:
@@ -499,6 +607,43 @@ jobs:
         with:
           toolchain: 1.99.1
 
+      - name: Download release verification tool
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: studio-release-tool-${{ needs.resolve.outputs.releaseId }}-${{ needs.resolve.outputs.sha }}
+          path: ${{ runner.temp }}/studio-release-tool
+
+      # The download action only reports its own digest as a warning, so the identity
+      # published by the build job is enforced here: no empty values, same build
+      # workspace, present file and an identical SHA-256. This run compiles the tool once
+      # from the tag commit; there is no fallback that would recompile or fall back to
+      # another run, pull request or commit.
+      - name: Verify release verification tool
+        shell: pwsh
+        env:
+          TOOL_SHA256: ${{ needs.build.outputs.toolSha256 }}
+          TOOL_WORKSPACE: ${{ needs.build.outputs.toolWorkspace }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:TOOL_SHA256) -or [string]::IsNullOrWhiteSpace($env:TOOL_WORKSPACE)) {
+            throw 'The build job did not publish the verification tool identity'
+          }
+          if ($env:TOOL_SHA256 -cnotmatch '^[0-9a-f]{64}$') {
+            throw "Verification tool identity has an invalid SHA-256: $env:TOOL_SHA256"
+          }
+          $workspace = [IO.Path]::GetFullPath($env:GITHUB_WORKSPACE).TrimEnd([char[]]@('\', '/'))
+          if (-not [string]::Equals($env:TOOL_WORKSPACE, $workspace, [StringComparison]::OrdinalIgnoreCase)) {
+            throw "Verification tool was built in $env:TOOL_WORKSPACE but this job checks out $workspace"
+          }
+          $tool = Join-Path $env:RUNNER_TEMP 'studio-release-tool/pl-xtask.exe'
+          if (-not (Test-Path -LiteralPath $tool -PathType Leaf)) {
+            throw "Downloaded verification tool is missing: $tool"
+          }
+          $sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $tool).Hash.ToLowerInvariant()
+          if ($sha256 -cne $env:TOOL_SHA256) {
+            throw "Downloaded verification tool SHA-256 $sha256 does not match $env:TOOL_SHA256"
+          }
+          "STUDIO_RELEASE_TOOL=$tool" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
       - name: Download immutable release assets
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
@@ -506,7 +651,12 @@ jobs:
           path: dist/studio-release/${{ needs.resolve.outputs.version }}
 
       - name: Verify downloaded artifact
-        run: cargo xtask release-gui verify --version $env:RELEASE_VERSION
+        shell: pwsh
+        run: |
+          & $env:STUDIO_RELEASE_TOOL release-gui verify --version $env:RELEASE_VERSION
+          if ($LASTEXITCODE -ne 0) {
+            throw "Release verification tool exited with $LASTEXITCODE"
+          }
 
       - name: Upload only missing identical assets
         shell: pwsh
@@ -624,6 +774,44 @@ jobs:
         uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
         with:
           toolchain: 1.99.1
+
+      # Rust Cache hashes every installed rustup toolchain into its environment key, and
+      # the hosted image's preinstalled `stable` moves independently of the toolchain pinned
+      # in rust-toolchain.toml. Only that unused preinstalled `stable` toolchain is removed
+      # on this temporary runner, so the cache identity follows the compiler this job uses.
+      - name: Remove unused preinstalled stable Rust toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          active_listing="$(rustup show active-toolchain)"
+          toolchains="$(rustup toolchain list)"
+          active="${active_listing%%[[:space:]]*}"
+          if [ -z "$active" ]; then
+            echo 'rustup did not report an active toolchain' >&2
+            exit 1
+          fi
+          while IFS= read -r listing; do
+            name="${listing%%[[:space:]]*}"
+            case "$name" in
+              stable-*) ;;
+              *) continue ;;
+            esac
+            if [ "$name" = "$active" ]; then
+              continue
+            fi
+            echo "Removing unused preinstalled toolchain $name"
+            rustup toolchain uninstall "$name"
+          done <<< "$toolchains"
+
+      # Verifying an already published Release has no upstream build in this run, so the
+      # tool is built from the resolved immutable source. The cache stays limited to the
+      # xtask target directory instead of restoring a whole GUI build tree, and keeps its
+      # own cache domain because this job produces a different artifact set.
+      - name: Cache verification tool build
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          workspaces: |
+            . -> target/xtask
 
       - name: Download and verify published assets
         shell: pwsh

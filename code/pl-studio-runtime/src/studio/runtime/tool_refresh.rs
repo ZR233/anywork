@@ -4,6 +4,7 @@ use super::{
     background_task::{self, BackgroundTask},
 };
 use crate::protocol::StudioProductEventKind;
+use anyhow::Context;
 use pl_core::thread::{ThreadHandle, ThreadLifecycle, ToolOutcome};
 use std::collections::BTreeMap;
 
@@ -143,6 +144,7 @@ impl StudioRuntime {
         }
         let stopping = self.rejected_tools.start();
         let mut settings = self.settings_updates.subscribe();
+        let mut profiles = self.config_runtime.subscribe_agent_profiles();
         let mut mcp = self.external_runtimes.mcp.subscribe();
         let mut events = self.agent_facility.product_events.subscribe_internal();
         let mut ssh_ready = self.ssh_manager.subscribe_ready();
@@ -172,6 +174,14 @@ impl StudioRuntime {
                     "settings".into(),
                     settings.borrow_and_update().revision.to_string(),
                 );
+                profiles.borrow_and_update();
+                let profile_generation = match runtime.config_runtime.agent_profiles_snapshot() {
+                    Ok(snapshot) => snapshot.revision.to_string(),
+                    Err(error) => format!("unavailable:{error}"),
+                };
+                sources
+                    .0
+                    .insert("agent-profiles".into(), profile_generation);
                 for (server, revision) in ssh_ready.borrow_and_update().iter() {
                     sources
                         .0
@@ -244,6 +254,7 @@ impl StudioRuntime {
                         sources.0.insert("refresh".into(), revision.to_string());
                     },
                     changed = settings.changed() => if changed.is_err() { break; },
+                    changed = profiles.changed() => if changed.is_err() { break; },
                     changed = ssh_ready.changed() => if changed.is_err() { break; },
                     changed = mcp.recv() => {
                         if matches!(changed, Err(tokio::sync::broadcast::error::RecvError::Closed)) { break; }
@@ -446,15 +457,39 @@ impl StudioRuntime {
             }
         };
         let mut registrations = tools.into_registrations();
-        if cancellation.is_cancelled() || sources.0 != latest.borrow().0 {
-            thread.retire_tools(registrations).await?;
-            return Err(pl_core::thread::ThreadError::Cancelled.into());
-        }
-        match exposure {
-            crate::thread_assembler::AgentControlExposure::Enabled => {
-                registrations.extend(self.threads.agent_control_tools()?);
+        let controls = (|| -> anyhow::Result<_> {
+            let profile_revision = match exposure {
+                crate::thread_assembler::AgentControlExposure::Enabled => {
+                    let profiles = self.config_runtime.agent_profiles_snapshot()?;
+                    let expected = profiles.revision.to_string();
+                    if sources.0.get("agent-profiles") != Some(&expected) {
+                        return Err(pl_core::thread::ThreadError::Cancelled.into());
+                    }
+                    let selection = crate::studio::delegation::saved(snapshot)?
+                        .context("Thread has no frozen delegation selection")?;
+                    registrations.extend(self.threads.agent_control_tools(&profiles, selection)?);
+                    Some(profiles.revision)
+                }
+                crate::thread_assembler::AgentControlExposure::Disabled => None,
+            };
+            // A configuration publication may beat the source watch forwarder. Check the
+            // canonical generation too, before transferring this candidate to the Thread.
+            let stale_profiles = match profile_revision {
+                Some(revision) => {
+                    self.config_runtime.agent_profiles_snapshot()?.revision != revision
+                }
+                None => false,
+            };
+            if cancellation.is_cancelled() || sources.0 != latest.borrow().0 || stale_profiles {
+                return Err(pl_core::thread::ThreadError::Cancelled.into());
             }
-            crate::thread_assembler::AgentControlExposure::Disabled => {}
+            Ok(())
+        })();
+        if let Err(error) = controls {
+            // This includes catalog/schema errors: the complete physical candidate must enter
+            // the existing retirement owner rather than being dropped on an early `?`.
+            thread.retire_tools(registrations).await?;
+            return Err(error);
         }
         thread
             .register_tools_if_extensions(snapshot.extension_sequence, registrations)

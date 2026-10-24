@@ -218,7 +218,7 @@ impl ProductEventBus {
         upserted: Vec<Thread>,
         removed: Vec<String>,
     ) -> Result<StudioProductEventEnvelope> {
-        self.publish_thread_delta(upserted, removed, Vec::new())
+        Ok(self.publish_thread_delta(upserted, removed, Vec::new()))
     }
 
     fn publish_thread_delta(
@@ -226,13 +226,22 @@ impl ProductEventBus {
         mut upserted: Vec<Thread>,
         removed: Vec<String>,
         archived: Vec<Thread>,
-    ) -> Result<StudioProductEventEnvelope> {
+    ) -> StudioProductEventEnvelope {
         {
             let mut index = self
                 .thread_index
                 .lock()
                 .expect("thread index lock poisoned");
             for thread in &mut upserted {
+                if let Some(saved) = self.store.catalog().get(&thread.id)
+                    && saved.explicitly_closed
+                {
+                    thread.status = if saved.status == pl_protocol::ThreadStatus::Closed {
+                        saved.status
+                    } else {
+                        crate::studio::agent_close::directory_status(thread.status, true)
+                    };
+                }
                 // 迟到快照不得使最近用户消息时间回退：目录命令携带的完整 Thread 可能
                 // 早于一次已受理的用户输入，进入热集合前保留较新值。
                 if let Some(existing) = index.get(&thread.id) {
@@ -252,14 +261,14 @@ impl ProductEventBus {
         }
         // State and tombstones are visible before observers receive removal.
         let (revision, updated_at) = self.revision(&self.revisions.thread);
-        Ok(self.emit(StudioProductEventKind::ThreadDirectoryChanged(
+        self.emit(StudioProductEventKind::ThreadDirectoryChanged(
             StudioThreadDirectoryDelta {
                 revision,
                 updated_at,
                 upserted,
                 removed,
             },
-        )))
+        ))
     }
 
     /// Applies only runtime-owned fields to the current hot directory entry.
@@ -269,17 +278,42 @@ impl ProductEventBus {
         thread_id: &str,
         status: pl_protocol::ThreadStatus,
         committed_at: i64,
-    ) -> Option<Thread> {
+        snapshot: &pl_core::thread::ThreadSnapshot,
+    ) -> Result<Option<Thread>> {
+        let delegation = crate::studio::delegation::saved(snapshot)?;
+        let frozen_profile = crate::studio::model_route::saved_profile(snapshot)?;
         let thread = {
             let mut index = self
                 .thread_index
                 .lock()
                 .expect("thread index lock poisoned");
-            let thread = index.get_mut(thread_id)?;
+            let Some(thread) = index.get_mut(thread_id) else {
+                return Ok(None);
+            };
             if thread.archived {
-                return None;
+                return Ok(None);
             }
-            thread.status = status;
+            if let Some(delegation) = delegation {
+                thread.delegation_mode = delegation.mode;
+                thread.delegation_preference = delegation.preference;
+            }
+            if let Some((profile, _)) = frozen_profile {
+                anyhow::ensure!(
+                    thread.parent_thread_id.is_some() && profile.profile_id == thread.role,
+                    "frozen Profile conflicts with directory identity"
+                );
+                thread.frozen_model = Some(crate::studio::delegation::profile_model(&profile));
+            }
+            thread.status = match self.store.catalog().get(thread_id) {
+                Some(saved) if saved.explicitly_closed => {
+                    if saved.status == pl_protocol::ThreadStatus::Closed {
+                        saved.status
+                    } else {
+                        crate::studio::agent_close::directory_status(status, true)
+                    }
+                }
+                _ => status,
+            };
             thread.updated_at = thread.updated_at.max(committed_at);
             thread.clone()
         };
@@ -301,7 +335,7 @@ impl ProductEventBus {
                 removed: Vec::new(),
             },
         ));
-        Some(thread)
+        Ok(Some(thread))
     }
 
     /// Records the acceptance of a user message as a directory fact.
@@ -361,6 +395,23 @@ impl ProductEventBus {
         for thread in entries {
             index.entry(thread.id.clone()).or_insert(thread);
         }
+    }
+
+    /// Records a Thread fact already committed by core before waiting for its persistence.
+    /// A failed/cancelled wait cannot reject that fact: write-behind retains the exact delta and
+    /// exposes its normal PersistenceState/retry path. No core operation is replayed on retry.
+    pub(in crate::studio) async fn commit_observed_thread(
+        &self,
+        thread: Thread,
+    ) -> Result<StudioProductEventEnvelope> {
+        self.writer.record_directory(DirectoryDelta {
+            thread_upserts: vec![thread.clone()],
+            ..Default::default()
+        });
+        let ticket = self.writer.admitted_ticket();
+        let event = self.publish_thread_delta(vec![thread], Vec::new(), Vec::new());
+        self.writer.flush_through(ticket).await?;
+        Ok(event)
     }
 
     /// 提交一次目录事实：在内存登记事实、更新热集合并广播。
@@ -427,8 +478,7 @@ impl ProductEventBus {
         );
         let mut envelope = None;
         if !thread_upserts.is_empty() || !thread_removals.is_empty() {
-            envelope =
-                Some(self.publish_thread_delta(thread_upserts, thread_removals, archived)?);
+            envelope = Some(self.publish_thread_delta(thread_upserts, thread_removals, archived));
         }
         let project_upserts = delta
             .project_upserts

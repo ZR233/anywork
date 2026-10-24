@@ -12,7 +12,7 @@ use pl_model::config::{AccountConfig, AccountId, AgentModelConfig, ResolvedModel
 use pl_model::protocol::{ProtocolEndpoint, StandaloneWebSearchDialect, WireApi};
 use pl_protocol::HostedWebSearchDialect;
 use pl_protocol::search::{WebSearchConfig, WebSearchMode};
-use pl_protocol::{PureError, Result, WebSearchResolutionDescriptor};
+use pl_protocol::{Result, WebSearchResolutionDescriptor};
 
 /// 本仓库 OpenAI 独立搜索默认使用的服务模型。
 const OPENAI_SEARCH_MODEL: &str = "gpt-6-sol";
@@ -257,8 +257,10 @@ fn plan_openai_service(
             backend,
         ));
     }
-    let availability = if selection.any_declared {
+    let availability = if selection.missing_credential {
         WebSearchAvailability::MissingCredential
+    } else if selection.any_declared {
+        WebSearchAvailability::ModelUnsupported
     } else {
         WebSearchAvailability::AccountUnsupported
     };
@@ -293,8 +295,10 @@ fn plan_deepseek_service(
             backend,
         ));
     }
-    let availability = if selection.any_declared {
+    let availability = if selection.missing_credential {
         WebSearchAvailability::MissingCredential
+    } else if selection.any_declared {
+        WebSearchAvailability::ModelUnsupported
     } else {
         WebSearchAvailability::AccountUnsupported
     };
@@ -305,6 +309,7 @@ fn plan_deepseek_service(
 struct StandaloneSelection {
     backend: Option<WebSearchBackend>,
     any_declared: bool,
+    missing_credential: bool,
 }
 
 /// 选择首个声明该方言且有非空 key 的 account。
@@ -324,9 +329,12 @@ fn standalone_backend(
         }
         selection.any_declared = true;
         if account.resolved_bearer_token().is_none() {
+            selection.missing_credential = true;
             continue;
         }
-        let (model, max_output_tokens) = search_service_model(account_id, account, dialect)?;
+        let Some((model, max_output_tokens)) = search_service_model(account, dialect)? else {
+            continue;
+        };
         selection.backend = Some(WebSearchBackend {
             account_id: account_id.clone(),
             endpoint: account.to_endpoint()?,
@@ -361,25 +369,29 @@ fn candidate_order<'a>(
 
 /// 从 account 自身目录选择确定性、与会话模型无关的搜索服务模型。
 fn search_service_model(
-    account_id: &AccountId,
     account: &AccountConfig,
     dialect: StandaloneWebSearchDialect,
-) -> Result<(Option<String>, Option<u64>)> {
+) -> Result<Option<(Option<String>, Option<u64>)>> {
     match dialect {
         StandaloneWebSearchDialect::OpenAiSearchApi => {
-            let models = account.effective_models(None)?;
-            let model = models
+            let models = account
+                .selectable_catalog(Some(pl_model::model::ModelType::Text))?
+                .into_iter()
+                .map(|entry| entry.model)
+                .collect::<Vec<_>>();
+            let Some(model) = models
                 .iter()
                 .find(|model| model.model_id == OPENAI_SEARCH_MODEL)
                 .or_else(|| models.first())
-                .ok_or_else(|| {
-                    PureError::ConfigError(format!(
-                        "account {account_id} has no models for standalone web search"
-                    ))
-                })?;
-            Ok((Some(model.model_id.clone()), model.max_output_tokens))
+            else {
+                return Ok(None);
+            };
+            Ok(Some((
+                Some(model.model_id.clone()),
+                model.max_output_tokens,
+            )))
         }
-        StandaloneWebSearchDialect::DeepSeekToolsApi => Ok((None, None)),
+        StandaloneWebSearchDialect::DeepSeekToolsApi => Ok(Some((None, None))),
     }
 }
 

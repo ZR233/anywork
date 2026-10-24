@@ -1,6 +1,7 @@
 import 'agent_models.dart';
 import 'account_models.dart';
 import 'acp_models.dart';
+import 'delegation_models.dart';
 import 'recovery_models.dart';
 import 'settings_models.dart';
 import 'studio_enums.dart';
@@ -181,6 +182,7 @@ class SettingsStateData {
     this.instructions = const InstructionsSettingsView(),
     this.skills = const SkillsSettingsView(),
     this.general = const GeneralSettingsView(),
+    this.delegation = const DelegationSettingsView(),
     this.webSearch = const WebSearchSettingsView(),
     this.deepSeekWebSearch = const DeepSeekWebSearchSettingsView(),
     this.permissionMode = PermissionMode.requestApproval,
@@ -197,6 +199,7 @@ class SettingsStateData {
   final InstructionsSettingsView instructions;
   final SkillsSettingsView skills;
   final GeneralSettingsView general;
+  final DelegationSettingsView delegation;
   final WebSearchSettingsView webSearch;
   final DeepSeekWebSearchSettingsView deepSeekWebSearch;
   final PermissionMode permissionMode;
@@ -245,6 +248,7 @@ class SettingsStateSnapshot extends ObservedStateSnapshot<SettingsStateData> {
     InstructionsSettingsView instructions = const InstructionsSettingsView(),
     SkillsSettingsView skills = const SkillsSettingsView(),
     GeneralSettingsView general = const GeneralSettingsView(),
+    DelegationSettingsView delegation = const DelegationSettingsView(),
     WebSearchSettingsView webSearch = const WebSearchSettingsView(),
     DeepSeekWebSearchSettingsView deepSeekWebSearch =
         const DeepSeekWebSearchSettingsView(),
@@ -266,6 +270,7 @@ class SettingsStateSnapshot extends ObservedStateSnapshot<SettingsStateData> {
            instructions: instructions,
            skills: skills,
            general: general,
+           delegation: delegation,
            webSearch: webSearch,
            deepSeekWebSearch: deepSeekWebSearch,
            permissionMode: permissionMode,
@@ -287,6 +292,7 @@ class SettingsStateSnapshot extends ObservedStateSnapshot<SettingsStateData> {
   InstructionsSettingsView get instructions => _data.instructions;
   SkillsSettingsView get skills => _data.skills;
   GeneralSettingsView get general => _data.general;
+  DelegationSettingsView get delegation => _data.delegation;
   WebSearchSettingsView get webSearch => _data.webSearch;
   DeepSeekWebSearchSettingsView get deepSeekWebSearch =>
       _data.deepSeekWebSearch;

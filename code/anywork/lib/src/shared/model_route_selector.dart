@@ -52,7 +52,10 @@ class ModelSelectionOption {
 
 /// Localize backend-owned exclusions without evaluating capabilities or budgets again.
 String? modelTextFilterMessage(BuildContext context, AccountModelView? model) {
-  if (model == null || model.matchesType(ModelType.text)) return null;
+  if (model == null) return null;
+  if (model.matchesType(ModelType.text)) {
+    return model.enabled ? null : context.l10n.settingsModelDisabled;
+  }
   final exclusions = model.supportFor(ModelType.text)?.exclusions;
   final reasons = exclusions == null
       ? context.l10n.settingsModelParametersUnknown

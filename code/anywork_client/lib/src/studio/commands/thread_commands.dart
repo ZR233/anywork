@@ -11,6 +11,7 @@ import '../../../anywork_client.dart'
         ResourceKind,
         ResourcePermit;
 import '../anywork_client.dart';
+import '../agent_directory_queries.dart';
 import '../stores/domain_sync.dart';
 import '../thread_session_state.dart';
 import 'command_lane.dart';
@@ -253,10 +254,13 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard> {
     required StudioPromptInput input,
     required ThreadModeId mode,
     required ModeModelRouteView route,
+    required DelegationMode delegationMode,
+    required DelegationPreference delegationPreference,
     String? workspaceMode,
     required void Function(ThreadPreparationProgress) onProgress,
   }) {
     _ensureOpen();
+    final navigation = _client.selection.beginNavigation();
     final selection = _client.selection.state;
     return _lane.enqueue(() async {
       if (input.text.trim().isEmpty && input.attachmentDraftIds.isEmpty) {
@@ -271,6 +275,8 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard> {
           input,
           mode,
           route: route,
+          delegationMode: delegationMode,
+          delegationPreference: delegationPreference,
           workspaceMode: workspaceMode,
         )) {
           switch (event) {
@@ -291,6 +297,7 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard> {
                 throw StateError('New Thread submission receipt did not match');
               }
               if (!_client.isClosed &&
+                  _client.selection.isCurrentNavigation(navigation) &&
                   identical(_client.selection.state, selection)) {
                 // 目录条目由 owner 的目录增量交付（commit_directory 已在命令内发布）；
                 // 命令成功后不重读聚合状态（design/25 §25.5）。
@@ -397,6 +404,17 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard> {
 
   Future<void> archiveThread(String threadId) {
     _ensureOpen();
+    if (AgentDirectoryQueries.rootThreadId(
+          threadId: _client.selection.state.selectedThreadId,
+          agents: _client.project.state.agents?.values ?? const [],
+          threads: [
+            ..._client.threadDirectory.state.window.threads,
+            ..._client.threadDirectory.state.overlayThreads,
+          ],
+        ) ==
+        threadId) {
+      _client.selection.beginNavigation();
+    }
     final key = 'archive:$threadId';
     final operation = _client.mutations.begin(target: key);
     _begin(key, label: threadId);

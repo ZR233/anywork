@@ -778,8 +778,42 @@ async fn thread_checkpoint_is_durable_with_its_effect_and_reopens() {
         .attach_storage(ColdStoreHandle::new(reopened.clone()))
         .await
         .unwrap();
-    assert!(resumed.snapshot().persistence.admitted_sequence >= recovered.history_fence);
-    assert!(resumed.snapshot().persistence.durable_sequence >= recovered.history_fence);
+    // Closed -> Open is a new committed fact. Restoring the old durable fence does not save it.
+    let restored = resumed.snapshot();
+    assert!(restored.commit_sequence > recovered.state_revision);
+    assert_eq!(
+        restored.persistence.admitted_sequence,
+        restored.commit_sequence
+    );
+    assert_eq!(
+        restored.persistence.durable_sequence,
+        recovered.history_fence,
+    );
+    // This first barrier includes real disk IO, just like the pre-recovery flush above.
+    resumed.flush().await.unwrap();
+    assert_eq!(
+        resumed.snapshot().persistence.durable_sequence,
+        restored.commit_sequence
+    );
+    let saved = reopened
+        .read_thread_checkpoint("checkpoint-thread")
+        .await
+        .unwrap()
+        .expect("flush saves the recovery lifecycle change");
+    assert_eq!(saved.state_revision, restored.commit_sequence);
+    assert_eq!(saved.history_fence, restored.commit_sequence);
+    assert_eq!(
+        saved.state.lifecycle,
+        pl_core::thread::ThreadLifecycle::Open
+    );
+    assert!(
+        reopened
+            .read_thread_effect("checkpoint-thread", saved.history_fence)
+            .await
+            .unwrap()
+            .is_some()
+    );
+    // Only now is the actual flush target already durable, with no new write to wait for.
     tokio::time::timeout(std::time::Duration::from_secs(3), resumed.flush())
         .await
         .expect("a restored Thread must not wait on already durable history")

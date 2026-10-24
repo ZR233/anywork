@@ -97,6 +97,18 @@ impl ConfigStore {
         Self { paths, credentials }
     }
 
+    /// 测试专用：用调用方持有的内存凭据库构造 store。
+    ///
+    /// 迁移专项测试需要观察"接续路径是否复制了旧 `provider:<id>` 关联"，因此必须与 fixture 共享
+    /// 同一个凭据库；这不是生产构造入口，也不改变任何运行时行为。
+    #[cfg(test)]
+    pub(super) fn with_shared_credentials(
+        paths: ConfigPaths,
+        credentials: Arc<super::credential::MemoryCredentialStore>,
+    ) -> Self {
+        Self { paths, credentials }
+    }
+
     pub fn paths(&self) -> &ConfigPaths {
         &self.paths
     }
@@ -160,14 +172,14 @@ impl ConfigStore {
             return Ok(config);
         }
         // 中断的迁移必须先接续同一操作，不能先按当前结构解析后发布新旧混合状态。
-        if let Some(config) =
+        if let Some(resumed) =
             super::schema_migration::resume(&self.paths, self.credentials.as_ref()).map_err(
                 |error| super::ConfigRuntimeError::Migration(self.config_path_error(error)),
             )?
         {
-            let mut config = config;
-            self.hydrate_credentials(&mut config)?;
-            return Ok(config);
+            // 旧目标（23/24）的待续操作已按其原候选、摘要与提交步骤完成；这里从该**已提交版本**
+            // 继续升级到当前 schema，不改写旧目标、不伪造摘要，也不发布中间配置。
+            return self.continue_resumed_migration(resumed);
         }
         let content = fs::read(self.paths.config_file())
             .map_err(|error| self.config_path_error(error.into()))?;
@@ -200,6 +212,29 @@ impl ConfigStore {
             parse_startup_config(&content).map_err(|error| self.config_path_error(error))?;
         self.hydrate_credentials(&mut config)?;
         Ok(config)
+    }
+
+    /// 接续一个已完成的中断迁移操作。
+    ///
+    /// 目标就是当前 schema 时只补凭据、不重做迁移；旧目标（23/24）表示该操作已按它自己的候选、
+    /// 摘要与步骤提交完成，此时从盘上的**已提交版本**继续升级到当前 schema——复用既有版本分派、
+    /// 备份、候选校验与原子提交，不改写旧日志目标、不伪造摘要，也不返回中间版本。
+    fn continue_resumed_migration(
+        &self,
+        resumed: super::schema_migration::ResumedOperation,
+    ) -> std::result::Result<StudioConfig, super::ConfigRuntimeError> {
+        match resumed.config {
+            Some(mut config) => {
+                // 已经是当前 schema：只补凭据，不重做任何迁移（错误类别保持 `Core`）。
+                self.hydrate_credentials(&mut config)?;
+                Ok(config)
+            }
+            None => {
+                let content = fs::read(self.paths.config_file()).map_err(PureError::from)?;
+                self.migrate_legacy_config_for_startup(&content, resumed.target_version)
+                    .map_err(super::ConfigRuntimeError::Migration)
+            }
+        }
     }
 
     /// 为配置文件错误附上 `config.toml` 路径以便定位。保持 `Io` 类别不变，只消化
@@ -240,14 +275,19 @@ impl ConfigStore {
         let text = std::str::from_utf8(original).map_err(|error| {
             PureError::ConfigError(format!("invalid schema {source_version} UTF-8: {error}"))
         })?;
-        let rewritten = rewrite_legacy_deepseek_standalone_dialect(text)?;
-        let rewritten = migrate_model_identifiers(&rewritten)?;
         // 18..22 先完成各自的既有转换，再统一执行 Provider/Preset → Account/AccountTemplate；
         // 23 只需前进版本并补出空 ACP 集合；24→25 只退役 ACP 旧 `program`/`args`。三种情况都不
         // 改动账号、路由、Profile 与凭据关联。
         let mut inline_tokens = std::collections::BTreeMap::new();
-        let rewritten =
-            super::schema_migration::rewrite_account_document(&rewritten, &mut inline_tokens)?;
+        let rewritten = if source_version <= super::schema_migration::LEGACY_ACCOUNT_SCHEMA {
+            let rewritten = rewrite_legacy_deepseek_standalone_dialect(text)?;
+            let rewritten = migrate_model_identifiers(&rewritten)?;
+            super::schema_migration::rewrite_account_document(&rewritten, &mut inline_tokens)?
+        } else {
+            // 23+：不再改写账号/路由/Profile 键，也不访问旧 `provider:<id>` 凭据命名空间；唯一
+            // 需要的结构变化是 24→25 退役 ACP 旧 `program`/`args`（旧执行字段只在迁移边界解码）。
+            super::schema_migration::retire_acp_execution_document(text)?
+        };
         let mut config = parse_typed_config(&rewritten)?;
         reject_inline_credentials(&config)?;
         match source_version {
@@ -265,6 +305,10 @@ impl ConfigStore {
             }
         }
         config.schema_version = super::STUDIO_CONFIG_SCHEMA_VERSION;
+        // 23 及更早没有 delegation / 模型启用 / 计费类别意图：这些字段全部是 serde(default) 的可选
+        // 字段，缺失时按当前缺省解码（profile/balanced、空禁用集合、无计费覆盖）。这里**不能**
+        // 无条件写回 `DelegationSettings::default()`：那会把 24 及以上配置里显式保存的
+        // mode/preference（以及未来可选字段）覆盖成默认值，属于字段级缺省替换显式意图。
         config.validate_declarations()?;
         let persisted = serialize_persisted_config(&config)?;
         let backup = write_config_backup(self.paths.config_file(), original, "migrated")?;
@@ -574,12 +618,23 @@ fn parse_typed_config(content: &str) -> Result<StudioConfig> {
 
 /// 迁移候选的 typed 校验：结构、禁用内联凭据与期望声明完整性。
 pub(super) fn parse_migrated_config(content: &[u8]) -> Result<StudioConfig> {
+    parse_migration_candidate(content, super::STUDIO_CONFIG_SCHEMA_VERSION)
+}
+
+pub(super) fn parse_migration_candidate(content: &[u8], target: u32) -> Result<StudioConfig> {
     let text = std::str::from_utf8(content).map_err(|error| {
         PureError::ConfigError(format!("migrated Studio config is not UTF-8: {error}"))
     })?;
     let config = parse_typed_config(text)?;
     reject_inline_credentials(&config)?;
-    config.validate_declarations()?;
+    if config.schema_version != target {
+        return Err(PureError::ConfigError(
+            "migration candidate schema does not match its journal".into(),
+        ));
+    }
+    let mut validation = config.clone();
+    validation.schema_version = super::STUDIO_CONFIG_SCHEMA_VERSION;
+    validation.validate_declarations()?;
     Ok(config)
 }
 
@@ -896,7 +951,75 @@ mod tests {
         assert_eq!(migrated_backups(path).len(), 1);
     }
 
-    /// 使用真实凭据存储边界（私有构造）验证 22→24 的启动路径。
+    #[test]
+    fn schema_23_upgrade_preserves_choices_and_credentials_after_commit_failure() {
+        let (_directory, store) = isolated_store();
+        let mut config = StudioConfig::default_config().unwrap();
+        config.instructions.user = "保留用户约定".into();
+        config
+            .models
+            .accounts
+            .get_mut(&AccountId::new("deepseek").unwrap())
+            .unwrap()
+            .bearer_token = Some("schema-23-account-secret".into());
+        store.save(&config).unwrap();
+        // HEAD 767771084f6c's persisted schema 23 differs here only by the absent
+        // delegation/enablement/billing fields; account IDs/routes already use current casing.
+        let path = store.paths.config_file();
+        let mut table = read_table(path);
+        table["schema_version"] = 23.into();
+        table.remove("delegation");
+        let accounts = table["models"]["accounts"].as_table_mut().unwrap();
+        for (_, account) in accounts.iter_mut() {
+            let account = account.as_table_mut().unwrap();
+            account.remove("disabled_models");
+            account.remove("billing_kind");
+        }
+        write_table(path, &table);
+        let original = fs::read(path).unwrap();
+        let failure = store
+            .migrate_legacy_config_for_startup_with(&original, 23, |_, _| {
+                Err(PureError::Io(std::io::Error::other(
+                    "injected config replacement failure",
+                )))
+            })
+            .unwrap_err();
+        assert!(
+            failure
+                .to_string()
+                .contains("injected config replacement failure")
+        );
+        assert_eq!(fs::read(path).unwrap(), original);
+        let loaded = store.load_for_startup().unwrap();
+        assert_eq!(loaded, config);
+        assert_eq!(
+            loaded.delegation,
+            pl_protocol::DelegationSettings::default()
+        );
+        assert!(
+            loaded
+                .models
+                .accounts
+                .values()
+                .all(|account| account.disabled_models().is_empty()
+                    && account.billing_kind.is_none())
+        );
+        assert_eq!(
+            store.credentials.load("deepseek").unwrap().as_deref(),
+            Some("schema-23-account-secret")
+        );
+        assert_eq!(
+            fs::read(migrated_backups(path).pop().unwrap()).unwrap(),
+            original
+        );
+        assert_eq!(
+            store.load_for_startup().unwrap(),
+            config,
+            "reopen is current and idempotent"
+        );
+    }
+
+    /// 使用真实凭据存储边界（私有构造）验证 22→当前 schema 的启动路径。
     fn store_with_credentials(
         directory: &tempfile::TempDir,
         credentials: super::super::credential::MemoryCredentialStore,

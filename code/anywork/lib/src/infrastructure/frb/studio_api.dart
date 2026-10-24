@@ -45,6 +45,7 @@ part 'studio_state_converters.dart';
 part 'studio_settings_converters.dart';
 part 'studio_account_catalog_converters.dart';
 part 'studio_acp_converters.dart';
+part 'studio_delegation_converters.dart';
 part 'studio_bots_converters.dart';
 part 'studio_demo_api.dart';
 part 'studio_demo_settings.dart';
