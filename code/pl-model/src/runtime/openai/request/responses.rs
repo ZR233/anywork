@@ -6,6 +6,7 @@ use serde::Serialize;
 
 use crate::completion::{CompletionRequest, ReasoningConfig, ReasoningSummary};
 use crate::model::info::MediaWireFormat;
+use crate::protocol::InstructionWireRole;
 
 use super::body::ToolFormatBody;
 use super::content::{
@@ -43,8 +44,6 @@ fn replay_native_item(value: serde_json::Value) -> serde_json::Value {
 #[derive(Debug, Clone, Serialize)]
 pub(super) struct ResponsesRequestBody {
     model: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    instructions: Option<String>,
     input: Vec<ResponsesInputItem>,
     stream: bool,
     tool_choice: String,
@@ -65,8 +64,19 @@ impl ResponsesRequestBody {
         request: &CompletionRequest,
         model: &crate::model::ModelInfo,
         prompt_cache_key: Option<&str>,
+        instruction_role: InstructionWireRole,
     ) -> Result<Self> {
         let mut input = Vec::new();
+        if let Some(system_prompt) = &request.system_prompt
+            && !system_prompt.content().is_empty()
+        {
+            input.push(ResponsesInputItem::message(
+                responses_role(MessageRole::System, instruction_role),
+                vec![ResponsesContent::InputText {
+                    text: system_prompt.content().to_owned(),
+                }],
+            ));
+        }
         let media_plan = MediaRepresentationPlan::for_request(request, model)?;
         let history = request
             .input
@@ -170,7 +180,7 @@ impl ResponsesRequestBody {
                 }
                 MessageRole::System | MessageRole::User | MessageRole::Assistant => {
                     input.push(ResponsesInputItem::message(
-                        ResponsesRole::from(msg.role),
+                        responses_role(msg.role, instruction_role),
                         responses_content_for_message(
                             &msg.content,
                             msg.role,
@@ -192,7 +202,6 @@ impl ResponsesRequestBody {
                 .api_model
                 .clone()
                 .unwrap_or_else(|| model.model_id.clone()),
-            instructions: request.instructions.clone(),
             input,
             stream: true,
             tool_choice: request.tool_choice.clone(),
@@ -295,19 +304,21 @@ impl From<&ToolCallRecord> for ResponsesInputItem {
 #[serde(rename_all = "lowercase")]
 enum ResponsesRole {
     Developer,
+    System,
     User,
     Assistant,
     Tool,
 }
 
-impl From<MessageRole> for ResponsesRole {
-    fn from(role: MessageRole) -> Self {
-        match role {
-            MessageRole::System => Self::Developer,
-            MessageRole::User => Self::User,
-            MessageRole::Assistant => Self::Assistant,
-            MessageRole::Tool => Self::Tool,
-        }
+fn responses_role(role: MessageRole, instruction_role: InstructionWireRole) -> ResponsesRole {
+    match role {
+        MessageRole::System => match instruction_role {
+            InstructionWireRole::Developer => ResponsesRole::Developer,
+            InstructionWireRole::System => ResponsesRole::System,
+        },
+        MessageRole::User => ResponsesRole::User,
+        MessageRole::Assistant => ResponsesRole::Assistant,
+        MessageRole::Tool => ResponsesRole::Tool,
     }
 }
 

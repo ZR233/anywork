@@ -42,11 +42,7 @@ pub(crate) fn preparer(
     mode: OpenAiCompactionMode,
     modes: crate::mode::ThreadModeManager,
 ) -> Result<Option<ContextPreparer>, pl_model::PureError> {
-    let instruction_binding = InstructionBinding {
-        route_identity: model.route_identity(),
-        append_snapshots: route.endpoint.instruction_update_strategy(&route.model)
-            == pl_model::protocol::InstructionUpdateStrategy::AppendFullSnapshot,
-    };
+    let instruction_binding = instruction_binding(route, &model);
     Ok(Some(ContextPreparer::new(StudioCompaction {
         model,
         modes,
@@ -364,9 +360,37 @@ struct InstructionRepair {
 }
 #[derive(Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct InstructionBinding {
-    route_identity: String,
-    append_snapshots: bool,
+pub(crate) struct InstructionBinding {
+    pub(crate) route_identity: String,
+    pub(crate) append_snapshots: bool,
+}
+
+pub(crate) fn instruction_binding(
+    route: &ResolvedModelRoute,
+    model: &ThreadModel,
+) -> InstructionBinding {
+    InstructionBinding {
+        route_identity: model.route_identity(),
+        append_snapshots: route.endpoint.instruction_update_strategy(&route.model)
+            == pl_model::protocol::InstructionUpdateStrategy::AppendFullSnapshot,
+    }
+}
+
+pub(crate) fn decode_instruction_binding(
+    record: &ExtensionRecord,
+) -> std::io::Result<InstructionBinding> {
+    if record.payload.format() != "pl.studio.instruction-binding"
+        || record.payload.version() != 1
+        || record.revision == 0
+    {
+        return Err(std::io::Error::other("invalid instruction route binding"));
+    }
+    let binding: InstructionBinding =
+        serde_json::from_str(record.payload.content()).map_err(std::io::Error::other)?;
+    if binding.route_identity.is_empty() {
+        return Err(std::io::Error::other("empty instruction route binding"));
+    }
+    Ok(binding)
 }
 fn restore_current_instructions(
     request: &mut ContextPreparationRequest,
@@ -395,27 +419,11 @@ fn restore_current_instructions(
         None => false,
     };
     let previous_binding = request.extensions.get("studio.instructions.binding");
-    let binding_changed = match previous_binding {
-        Some(record) => {
-            if record.payload.format() != "pl.studio.instruction-binding"
-                || record.payload.version() != 1
-                || record.revision == 0
-            {
-                return Err(receipt_error(std::io::Error::other(
-                    "invalid instruction route binding",
-                )));
-            }
-            let previous: InstructionBinding =
-                serde_json::from_str(record.payload.content()).map_err(receipt_error)?;
-            if previous.route_identity.is_empty() {
-                return Err(receipt_error(std::io::Error::other(
-                    "empty instruction route binding",
-                )));
-            }
-            previous != *binding
-        }
-        None => true,
-    };
+    let binding_changed = previous_binding
+        .map(decode_instruction_binding)
+        .transpose()
+        .map_err(receipt_error)?
+        .is_none_or(|previous| previous != *binding);
     if binding_changed {
         mutations.push(ExtensionMutation::Put {
             id: "studio.instructions.binding".into(),
@@ -446,49 +454,12 @@ fn restore_current_instructions(
         std::sync::Arc::make_mut(&mut request.extensions)
             .insert("studio.instructions".into(), record.clone());
     }
-    let rendered = snapshot.context_records(&request.model.thread_id);
-    let complete = rendered
-        .iter()
-        .filter(|record| record.source == ContextSource::Instruction)
-        .flat_map(|record| &record.content)
-        .filter_map(|content| match content {
-            ContextContent::Text { text } => Some(text.as_ref()),
-            _ => None,
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
-    let hash = pl_core::context::content_hash(complete.as_bytes());
-    let latest = request
-        .committed_context
-        .records
-        .iter()
-        .rev()
-        .find(|record| matches!(record.source, ContextSource::InstructionSnapshot { .. }));
-    let current = if let Some(record) = latest {
-        record
-            .content
-            .iter()
-            .filter_map(|content| match content {
-                ContextContent::Text { text } => Some(text.as_ref()),
-                _ => None,
-            })
-            .collect::<Vec<_>>()
-            .join("\n")
-    } else {
-        request
-            .committed_context
-            .records
-            .iter()
-            .filter(|record| record.source == ContextSource::Instruction)
-            .flat_map(|record| &record.content)
-            .filter_map(|content| match content {
-                ContextContent::Text { text } => Some(text.as_ref()),
-                _ => None,
-            })
-            .collect::<Vec<_>>()
-            .join("\n")
-    };
-    if current == complete && (!binding_changed || latest.is_none()) {
+    let complete = snapshot.trusted_text();
+    let hash = snapshot.trusted_content_hash();
+    let current =
+        crate::instruction::current_instruction_context(&request.committed_context.records);
+    let latest = current.latest_snapshot();
+    if current.is_canonical_for(&complete) && (!binding_changed || latest.is_none()) {
         return Ok(InstructionRepair {
             replacement: None,
             mutations,
@@ -500,7 +471,7 @@ fn restore_current_instructions(
             replaces,
             ..
         } => {
-            if current == complete {
+            if current.body() == complete {
                 replaces.clone()
             } else {
                 Some(content_hash.clone())

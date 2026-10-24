@@ -5,6 +5,7 @@ use serde_json::{Map, Value};
 use super::OpenAiEndpoint;
 use crate::completion::CompletionRequest;
 use crate::model::info::{ModelInfo, ResponsesMaxTokensField};
+use crate::protocol::InstructionWireRole;
 
 mod body;
 mod chat;
@@ -46,6 +47,24 @@ impl OpenAiRequestBody {
             Self::Responses(body) | Self::Chat(body) => body::merge_base_body(body, options),
         }
     }
+
+    /// Rejects any attempt to re-open the removed top-level `instructions` channel.
+    ///
+    /// The trusted instruction body now travels exclusively through the typed `SystemPrompt`
+    /// interface; model fixed bodies, parameter wire and native options must not inject the
+    /// reserved `instructions` field back into the wire body. The caller's configuration is kept
+    /// and the conflict is surfaced as a protocol error before any network I/O.
+    pub(crate) fn reject_reserved_instruction_channel(&self) -> Result<()> {
+        let body = match self {
+            Self::Responses(body) | Self::Chat(body) => body,
+        };
+        if body.contains_key("instructions") {
+            return Err(protocol_error(
+                "model body, parameter wire or native options must not inject the reserved top-level `instructions` field; use the typed SystemPrompt interface",
+            ));
+        }
+        Ok(())
+    }
 }
 
 pub(crate) fn sent_model_from_wire_body(body: &Map<String, Value>) -> Result<String> {
@@ -59,6 +78,7 @@ pub(crate) fn sent_model_from_wire_body(body: &Map<String, Value>) -> Result<Str
 
 pub(crate) fn build_openai_request_body(
     endpoint: OpenAiEndpoint,
+    instruction_role: InstructionWireRole,
     request: &CompletionRequest,
     model: &ModelInfo,
     prompt_cache_key: Option<&str>,
@@ -79,6 +99,7 @@ pub(crate) fn build_openai_request_body(
                 request,
                 model,
                 prompt_cache_key,
+                instruction_role,
             )?)?;
             apply_responses_max_tokens_field(
                 &mut body,
@@ -89,7 +110,11 @@ pub(crate) fn build_openai_request_body(
             Ok(OpenAiRequestBody::Responses(body))
         }
         OpenAiEndpoint::ChatCompletions => {
-            let mut body = to_object_map(&ChatRequestBody::from_request(request, model)?)?;
+            let mut body = to_object_map(&ChatRequestBody::from_request(
+                request,
+                model,
+                instruction_role,
+            )?)?;
             finalize_body(&mut body, model, &request.reasoning);
             Ok(OpenAiRequestBody::Chat(body))
         }

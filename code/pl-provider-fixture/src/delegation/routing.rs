@@ -18,7 +18,7 @@ pub(super) fn run(flow: &Flow<'_>, prompt: &str) -> Progress<Decision> {
     for label in ["经济", "平衡", "快速"] {
         let count = flow
             .request
-            .instructions
+            .system_instructions()
             .matches(&format!("自动分发偏好：{label}。"))
             .count();
         require(
@@ -29,11 +29,11 @@ pub(super) fn run(flow: &Flow<'_>, prompt: &str) -> Progress<Decision> {
     require(
         !flow
             .request
-            .instructions
+            .system_instructions()
             .contains("DELEGATION_INVENTORY_ONLY")
             && !flow
                 .request
-                .instructions
+                .system_instructions()
                 .contains("DELEGATION_EVALUATION_ONLY"),
         "full inventory/evaluation comments leaked into root system instructions",
     )?;

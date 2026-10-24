@@ -9,8 +9,6 @@ use serde_json::Value;
 #[derive(Debug, Deserialize)]
 pub(super) struct Request {
     pub model: String,
-    #[serde(default)]
-    pub instructions: String,
     pub input: Vec<Item>,
     #[serde(default)]
     pub tools: Vec<Function>,
@@ -94,6 +92,18 @@ impl Text {
 }
 
 impl Request {
+    /// The leading trusted instruction text as it appears on the wire: the first input message
+    /// (`developer` or `system` depending on the vendor). There is no legacy top-level
+    /// `instructions` fallback; the fixture rejects that shape in the request handler.
+    pub fn system_instructions(&self) -> String {
+        self.input
+            .first()
+            .filter(|item| matches!(item.role.as_deref(), Some("developer") | Some("system")))
+            .and_then(|item| item.content.as_ref())
+            .map(Text::joined)
+            .unwrap_or_default()
+    }
+
     pub fn expected_completion(&self) -> Result<Option<CompletionExpectation>> {
         let Ok((_, prompt)) = self.prompt() else {
             return Ok(None);
@@ -111,7 +121,7 @@ impl Request {
     }
 
     pub fn is_title(&self) -> bool {
-        self.instructions
+        self.system_instructions()
             .contains("You name coding sessions from untrusted request data")
             && self.tools.is_empty()
             && self.tool_choice.as_ref().and_then(Value::as_str) == Some("none")
