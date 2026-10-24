@@ -6,6 +6,12 @@ use crate::{InteractionRequest, InteractionResolution, InteractionStatus};
 
 use super::super::{StudioResolveInteractionResponse, StudioRuntime};
 
+/// Keeps the source's durability when the same projected facts are used for validation and replies.
+pub(in crate::studio::runtime) struct InteractionForResolve {
+    pub(in crate::studio::runtime) interaction: InteractionRequest,
+    durable: bool,
+}
+
 impl StudioRuntime {
     pub async fn resolve_interaction(
         &self,
@@ -15,22 +21,27 @@ impl StudioRuntime {
     ) -> Result<StudioResolveInteractionResponse> {
         Self::validate_operation_id(&operation_id)?;
         let _lifecycle_guard = self.lifecycle_lock.lock().await;
-        let Some(current) = self.read_interaction_for_resolve(&interaction_id).await? else {
-            // The owner and the checkpoint no longer retain this terminal record: adjudicate the
-            // repeat from the durable receipt instead of reporting "not found", minting a new
-            // revision or granting a new execution permission.
-            return self
-                .durable_interaction_receipt(operation_id, &interaction_id, &resolution)
-                .await;
-        };
-        if current.status() != InteractionStatus::Pending {
+        let current = self
+            .read_interaction_for_resolve(&interaction_id)
+            .await?
+            .context("interaction not found")?;
+        let interaction = current.interaction;
+        // A durable receipt can only acknowledge a terminal decision, never admit new work from
+        // an old pending revision that has already left the owner and its checkpoint.
+        if current.durable || interaction.status() != InteractionStatus::Pending {
             anyhow::ensure!(
-                current.resolution().as_ref() == Some(&resolution),
+                interaction.resolution().as_ref() == Some(&resolution),
                 "interaction already has a different terminal resolution"
             );
-            return Ok(self.interaction_command_reply(operation_id, current, false, false));
+            return Ok(self.interaction_command_reply(
+                operation_id,
+                interaction,
+                false,
+                current.durable,
+            ));
         }
-        self.ensure_thread_owner(&current.scope.thread_id).await?;
+        self.ensure_thread_owner(&interaction.scope.thread_id)
+            .await?;
         // 到达这里的决议一定来自 Pending 交互，真实受理路径只有 UserInput 决议：
         // 权限决议（ToolApproval）不是用户消息，重复决议在上方已终结短路或持久回执
         // 路径返回，不产生新的受理事实（design/17 §17.1）。
@@ -72,20 +83,15 @@ impl StudioRuntime {
         }
     }
 
-    /// Answers a repeated terminal interaction command from its durable receipt.
+    /// Reads the original interaction and decision from the exact committed core receipt.
     ///
-    /// The receipt payload is the exact committed core record, so a matching request returns the
-    /// original receipt while a different resolution for the same identity is an explicit conflict.
-    /// Nothing is re-executed, no permission is granted and no Turn is started: the durable record
-    /// is read, projected through the same product mapping and compared only.
-    async fn durable_interaction_receipt(
+    /// The same product projection supplies the original questions/request to callers and the
+    /// terminal resolution to the canonical decision boundary, without activating an owner.
+    async fn read_durable_interaction_for_resolve(
         &self,
-        operation_id: String,
-        interaction_id: &str,
-        resolution: &InteractionResolution,
-    ) -> Result<StudioResolveInteractionResponse> {
-        let (thread_id, local_id) =
-            crate::thread_assembler::decode_interaction_key(interaction_id)?;
+        thread_id: &str,
+        local_id: &str,
+    ) -> Result<Option<InteractionForResolve>> {
         let history = self.store.history(thread_id).await?;
         for kind in ["interaction", "permission"] {
             let Some(receipt) = history
@@ -113,36 +119,43 @@ impl StudioRuntime {
             let projected =
                 crate::thread_assembler::project_thread_interaction(thread_id, local_id, &state)?
                     .context("durable interaction receipt cannot be projected")?;
-            anyhow::ensure!(
-                projected.resolution().as_ref() == Some(resolution),
-                "interaction already has a different terminal resolution"
-            );
-            return Ok(self.interaction_command_reply(operation_id, projected, false, true));
+            return Ok(Some(InteractionForResolve {
+                interaction: projected,
+                durable: true,
+            }));
         }
-        anyhow::bail!("interaction not found")
+        Ok(None)
     }
 
     /// 内存优先读取交互：pending 交互必须来自驻留 actor 的权威快照；
-    /// 已离开快照的历史交互（非 pending）回 SQLite 冷源。
-    pub(in crate::studio) async fn read_interaction_for_resolve(
+    /// 冷 checkpoint 也已不再保留时，读取 durable 原始交互与决定供终态重放核对。
+    pub(in crate::studio::runtime) async fn read_interaction_for_resolve(
         &self,
         interaction_id: &str,
-    ) -> Result<Option<InteractionRequest>> {
+    ) -> Result<Option<InteractionForResolve>> {
         if let Some(interaction) = self.threads.read_product_interaction(interaction_id)? {
-            return Ok(Some(interaction));
+            return Ok(Some(InteractionForResolve {
+                interaction,
+                durable: false,
+            }));
         }
         let (thread_id, local_id) =
             crate::thread_assembler::decode_interaction_key(interaction_id)?;
         let thread = self.read_protocol_thread(thread_id).await?;
-        let Some(checkpoint) =
+        if let Some(checkpoint) =
             crate::studio::thread_factory::recovery::load_checkpoint(&self.store, &thread).await?
-        else {
-            return Ok(None);
-        };
-        Ok(crate::thread_assembler::project_thread_interaction(
-            thread_id,
-            local_id,
-            &checkpoint.state,
-        )?)
+            && let Some(interaction) = crate::thread_assembler::project_thread_interaction(
+                thread_id,
+                local_id,
+                &checkpoint.state,
+            )?
+        {
+            return Ok(Some(InteractionForResolve {
+                interaction,
+                durable: false,
+            }));
+        }
+        self.read_durable_interaction_for_resolve(thread_id, local_id)
+            .await
     }
 }

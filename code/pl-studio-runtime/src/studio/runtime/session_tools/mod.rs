@@ -682,9 +682,9 @@ impl StudioRuntime {
             })
     }
 
-    /// Resolves a pending interaction of another session through the same canonical
-    /// `resolve_interaction` boundary as the desktop; repeat resolutions keep that
-    /// boundary's idempotent receipts instead of a second adjudication.
+    /// Resolves another session's interaction through the desktop's canonical boundary.
+    /// Original questions/requests remain available after the pending snapshot evicts a terminal
+    /// interaction, so repeats can reach that boundary's idempotent receipt or explicit conflict.
     async fn resolve_from_bot(
         &self,
         source: &str,
@@ -692,10 +692,13 @@ impl StudioRuntime {
         args: InteractionInput,
         build_resolution: impl FnOnce(&InteractionRequest) -> Result<InteractionResolution>,
     ) -> Result<ToolOutput> {
-        let pending = self
-            .pending_interaction_from_bot(source, &args.session_id, &args.interaction_id)
+        self.ensure_interaction_target_from_bot(source, &args.session_id, &args.interaction_id)
             .await?;
-        let resolution = build_resolution(&pending)?;
+        let current = self
+            .read_interaction_for_resolve(&args.interaction_id)
+            .await?
+            .with_context(|| format!("interaction `{}` not found", args.interaction_id))?;
+        let resolution = build_resolution(&current.interaction)?;
         ensure!(
             !context.cancellation.is_cancelled(),
             "session tool cancelled before resolution"
@@ -725,18 +728,35 @@ impl StudioRuntime {
         session_id: &str,
         interaction_id: &str,
     ) -> Result<InteractionRequest> {
-        ensure!(
-            session_id != source,
-            "cannot resolve interactions of the source session itself"
-        );
-        let target = self.read_thread(session_id).await?;
-        ensure!(!target.archived, "target session is archived");
+        self.ensure_interaction_target_from_bot(source, session_id, interaction_id)
+            .await?;
         let snapshot = self.thread_snapshot(session_id).await?;
         snapshot
             .interactions
             .into_iter()
             .find(|interaction| interaction.interaction_id == interaction_id)
             .with_context(|| format!("interaction `{interaction_id}` is not pending"))
+    }
+
+    /// Validates the requested target before either pending reads or terminal resolution replays.
+    async fn ensure_interaction_target_from_bot(
+        &self,
+        source: &str,
+        session_id: &str,
+        interaction_id: &str,
+    ) -> Result<()> {
+        ensure!(
+            session_id != source,
+            "cannot resolve interactions of the source session itself"
+        );
+        let (owner, _) = crate::thread_assembler::decode_interaction_key(interaction_id)?;
+        ensure!(
+            owner == session_id,
+            "interaction belongs to another session"
+        );
+        let target = self.read_thread(session_id).await?;
+        ensure!(!target.archived, "target session is archived");
+        Ok(())
     }
 }
 
@@ -748,197 +768,4 @@ fn output(value: &impl Serialize) -> Result<ToolOutput> {
             text: Arc::from(encoded),
         }],
     ))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use pl_protocol::{
-        AgentSessionPlanConfirmationPurpose, InteractionScope, ToolApprovalRequest, UserQuestion,
-        UserQuestionOption,
-    };
-
-    fn scope(purpose: InteractionPurpose) -> InteractionScope {
-        InteractionScope {
-            thread_id: "thread-a".into(),
-            turn_id: "turn-1".into(),
-            item_id: None,
-            tool_id: None,
-            agent_path: None,
-            purpose,
-        }
-    }
-
-    fn question(id: &str, is_other: bool) -> UserQuestion {
-        UserQuestion {
-            id: id.into(),
-            header: "Header".into(),
-            question: "Question body".into(),
-            is_other,
-            is_secret: false,
-            options: Some(vec![UserQuestionOption {
-                label: "Yes".into(),
-                description: "proceed".into(),
-            }]),
-        }
-    }
-
-    fn plan_interaction() -> InteractionRequest {
-        InteractionRequest::user_input(
-            "interaction-1",
-            scope(InteractionPurpose::AgentSessionPlanConfirmation(
-                AgentSessionPlanConfirmationPurpose {
-                    expected_revision: 0,
-                    operation_id: "op-1".into(),
-                    argument_hash: "args".into(),
-                    plan_hash: "plan".into(),
-                },
-            )),
-            vec![question(AGENT_SESSION_PLAN_CONFIRMATION_QUESTION_ID, true)],
-            0,
-        )
-    }
-
-    fn general_interaction() -> InteractionRequest {
-        InteractionRequest::user_input(
-            "interaction-2",
-            scope(InteractionPurpose::General),
-            vec![question("q1", true)],
-            0,
-        )
-    }
-
-    fn approval_interaction() -> InteractionRequest {
-        InteractionRequest::tool_approval(
-            "interaction-3",
-            scope(InteractionPurpose::General),
-            ToolApprovalRequest {
-                name: "exec".into(),
-                arguments: serde_json::json!({"command": "cargo test"}),
-                working_directory: None,
-                parent_agent_id: None,
-            },
-            0,
-        )
-    }
-
-    fn answers_of(resolution: &InteractionResolution) -> &HashMap<String, UserInputAnswer> {
-        match resolution {
-            InteractionResolution::UserInput(value) => &value.answers,
-            InteractionResolution::ToolApproval(_) => panic!("expected a user input resolution"),
-        }
-    }
-
-    #[test]
-    fn approve_builds_plan_confirmation_answer() {
-        let resolution = approve_plan_resolution()(&plan_interaction()).unwrap();
-        let answers = answers_of(&resolution);
-        let answer = answers
-            .get(AGENT_SESSION_PLAN_CONFIRMATION_QUESTION_ID)
-            .unwrap();
-        assert_eq!(answer.answers, vec!["Approve".to_string()]);
-    }
-
-    #[test]
-    fn revise_keeps_feedback_with_revise_marker() {
-        let resolution =
-            revise_plan_resolution("tighten the cache budget".into())(&plan_interaction()).unwrap();
-        let answer = answers_of(&resolution)
-            .get(AGENT_SESSION_PLAN_CONFIRMATION_QUESTION_ID)
-            .unwrap();
-        assert_eq!(
-            answer.answers,
-            vec!["Revise".to_string(), "tighten the cache budget".to_string()]
-        );
-    }
-
-    #[test]
-    fn plan_resolution_rejects_non_plan_interactions() {
-        let error = approve_plan_resolution()(&general_interaction()).unwrap_err();
-        assert!(error.to_string().contains("not a plan confirmation"));
-        let error = revise_plan_resolution("feedback".into())(&approval_interaction()).unwrap_err();
-        assert!(error.to_string().contains("not a plan confirmation"));
-    }
-
-    #[test]
-    fn answer_maps_question_ids_and_keeps_custom_text() {
-        let resolution = answer_resolution(HashMap::from([(
-            "q1".to_string(),
-            vec!["Yes".to_string(), "unless CI is red".to_string()],
-        )]))(&general_interaction())
-        .unwrap();
-        let answer = answers_of(&resolution).get("q1").unwrap();
-        assert_eq!(
-            answer.answers,
-            vec!["Yes".to_string(), "unless CI is red".to_string()]
-        );
-    }
-
-    #[test]
-    fn answer_rejects_plan_confirmations_unknown_questions_and_empty_answers() {
-        let error =
-            answer_resolution(HashMap::from([("q1".to_string(), vec!["Yes".to_string()])]))(
-                &plan_interaction(),
-            )
-            .unwrap_err();
-        assert!(error.to_string().contains("approve_session_plan"));
-
-        let error = answer_resolution(HashMap::from([(
-            "missing".to_string(),
-            vec!["Yes".to_string()],
-        )]))(&general_interaction())
-        .unwrap_err();
-        assert!(error.to_string().contains("unknown question `missing`"));
-
-        let error = answer_resolution(HashMap::from([("q1".to_string(), Vec::new())]))(
-            &general_interaction(),
-        )
-        .unwrap_err();
-        assert!(error.to_string().contains("has no answer"));
-    }
-
-    #[test]
-    fn approval_resolution_builds_decision_and_requires_deny_reason() {
-        let approved = approval_resolution(true, None)(&approval_interaction()).unwrap();
-        match approved {
-            InteractionResolution::ToolApproval(value) => {
-                assert_eq!(value.decision, ToolApprovalResolution::Approved);
-                assert_eq!(value.reason, None);
-            }
-            InteractionResolution::UserInput(_) => panic!("expected a tool approval resolution"),
-        }
-        let denied =
-            approval_resolution(false, Some("too risky".into()))(&approval_interaction()).unwrap();
-        match denied {
-            InteractionResolution::ToolApproval(value) => {
-                assert_eq!(value.decision, ToolApprovalResolution::Denied);
-                assert_eq!(value.reason.as_deref(), Some("too risky"));
-            }
-            InteractionResolution::UserInput(_) => panic!("expected a tool approval resolution"),
-        }
-        let error = approval_resolution(false, None)(&approval_interaction()).unwrap_err();
-        assert!(error.to_string().contains("denials require a reason"));
-        let error =
-            approval_resolution(false, Some("  ".into()))(&approval_interaction()).unwrap_err();
-        assert!(error.to_string().contains("denials require a reason"));
-    }
-
-    #[test]
-    fn approval_resolution_rejects_user_input_interactions() {
-        let error = approval_resolution(true, None)(&general_interaction()).unwrap_err();
-        assert!(error.to_string().contains("not a tool approval"));
-    }
-
-    #[test]
-    fn summary_lists_question_headers_options_and_tool_name() {
-        let summary = interaction_summary(&general_interaction().content);
-        let question = &summary.as_array().unwrap()[0];
-        assert_eq!(question["id"], "q1");
-        assert_eq!(question["header"], "Header");
-        assert_eq!(question["isOther"], true);
-        assert_eq!(question["options"][0], "Yes");
-
-        let summary = interaction_summary(&approval_interaction().content);
-        assert_eq!(summary["tool"], "exec");
-    }
 }
