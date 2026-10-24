@@ -130,7 +130,6 @@ class DemoStudioTransport extends StudioTransport
   SkillsSettingsView _skills = const SkillsSettingsView();
   GeneralSettingsView _general = const GeneralSettingsView();
   DelegationSettingsView _delegation = const DelegationSettingsView();
-  final Map<String, BillingKind> _demoInferredBilling = {};
   WebSearchSettingsView _webSearch = const WebSearchSettingsView(
     effectiveMode: 'disabled',
     availability: 'available',
@@ -1918,7 +1917,6 @@ class DemoStudioTransport extends StudioTransport
           p.bearerToken,
           p.hasBearerToken,
           p.defaultModelId,
-          p.pricingEnabled,
           p.billingKind,
           p.billingKindOverride,
           p.disabledModels,
@@ -4027,15 +4025,14 @@ class DemoStudioTransport extends StudioTransport
     final before = _demoSettingsState();
     _checkSettingsRevision(expectedSettingsRevision);
     final account = before.accounts.firstWhere((a) => a.id == accountId);
-    _demoInferredBilling.putIfAbsent(accountId, () => account.billingKind);
     _accounts = [
       for (final a in before.accounts)
-        if (a.id != accountId)
+        if (a.id != account.id)
           a
         else
           a.copyWith(
             billingKindOverride: billingKind,
-            billingKind: billingKind ?? _demoInferredBilling[accountId],
+            billingKind: billingKind ?? BillingKind.unknown,
           ),
     ];
     _settingsRevision += 1;

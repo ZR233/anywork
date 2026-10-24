@@ -157,7 +157,7 @@ pub(super) fn account_update(base_url: &str, update: ChildAccountUpdate) -> Acco
         name: "Agent observation child".into(),
         base_url: child_base_url(base_url),
         secret,
-        pricing_enabled: false,
+        initial_billing_kind: None,
         model_connection_modes: models
             .iter()
             .map(|model| AccountModelConnectionUpdate {

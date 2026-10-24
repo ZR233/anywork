@@ -86,7 +86,7 @@ async fn main() -> Result<()> {
     let protocol = model.binding.transport.clone();
     let factory = ThreadModel::new(
         ModelRuntime::new_with_account_id(&account_id, endpoint, model)?
-            .with_pricing_mode(account.pricing_mode),
+            .with_pricing_mode(account.billing_kind()?.into()),
         Some(ReasoningConfig {
             effort: effort.clone(),
             summary: None,

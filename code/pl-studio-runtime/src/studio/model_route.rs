@@ -173,7 +173,7 @@ pub(crate) fn unavailable_placeholder(
     };
     let effort = model.default_effort().map(ReasoningEffort::new);
     Ok(pl_model::config::ResolvedModelRoute {
-        pricing_mode: account.pricing_mode,
+        pricing_mode: account.billing_kind()?.into(),
         role,
         account_id: selector.account_id.clone(),
         endpoint: account.to_endpoint()?,

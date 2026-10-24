@@ -304,8 +304,8 @@ impl ModelPricing {
             request_started_at: Some(request_started_at),
             ..Default::default()
         };
-        if mode == PricingMode::Disabled {
-            accounting.pricing = PricingOutcome::Disabled;
+        if mode == PricingMode::NoCharge {
+            accounting.pricing = PricingOutcome::NoCharge;
             return accounting;
         }
         let result = self.estimate(&accounting.usage, request_started_at);

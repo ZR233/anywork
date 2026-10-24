@@ -180,7 +180,6 @@ AccountSettingsView _accountSettingsFromFrb(
     modelCatalog: catalog == null
         ? const ModelCatalogStatusView()
         : _modelCatalogStatusFromFrb(catalog.modelCatalog),
-    pricingEnabled: value.pricingEnabled,
     billingKind: _billingKindFromFrb(value.billingKind),
     billingKindOverride: value.billingKindOverride == null
         ? null

@@ -396,16 +396,11 @@ async fn generate_title(
         .mutate_extensions(vec![pl_core::thread::extensions::ExtensionMutation::Put {
             id: key.into(),
             expected_revision: previous,
-            payload: pl_core::context::OpaquePayload::new(
-                "pl.studio.auxiliary-billing",
-                2,
-                serde_json::to_string(
-                    &crate::studio::thread_projection::AuxiliaryBillingReceipt {
-                        billing,
-                        succeeded: result.is_ok(),
-                    },
-                )?,
-            )?,
+            payload: crate::studio::thread_projection::AuxiliaryBillingReceipt {
+                billing,
+                succeeded: result.is_ok(),
+            }
+            .into_payload()?,
         }])
         .await?;
     let response = result?;

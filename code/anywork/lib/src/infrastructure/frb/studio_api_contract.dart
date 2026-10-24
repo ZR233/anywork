@@ -195,7 +195,9 @@ frb.AccountInput _accountInputFromCommand(AccountCommand account) {
       ),
       AccountSecretAction.clear => const frb.AccountSecretInput.clear(),
     },
-    pricingEnabled: account.pricingEnabled,
+    initialBillingKind: account.initialBillingKind == null
+        ? null
+        : _billingKindToFrb(account.initialBillingKind!),
     customModels: [
       for (final model in account.customModels)
         frb.AccountModelInput(

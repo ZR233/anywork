@@ -5508,17 +5508,17 @@ abstract class AppLocalizations {
   /// **'Agent'**
   String get roleEmpty;
 
-  /// No description provided for @settingsPricingEnabled.
+  /// No description provided for @settingsNoCharge.
   ///
   /// In en, this message translates to:
-  /// **'Estimate token cost'**
-  String get settingsPricingEnabled;
+  /// **'No charge'**
+  String get settingsNoCharge;
 
-  /// No description provided for @settingsPricingHelp.
+  /// No description provided for @settingsNoChargeHelp.
   ///
   /// In en, this message translates to:
-  /// **'Controls in-app cost estimates; token and cache statistics remain available. Plans default to off.'**
-  String get settingsPricingHelp;
+  /// **'On: declare future model calls on this account as not charged. Off: clear the billing override and restore automatic classification. Token, cache and performance statistics and model reference prices are preserved. Other categories estimate costs when prices and usage are available.'**
+  String get settingsNoChargeHelp;
 
   /// No description provided for @settingsModelAdvanced.
   ///
@@ -9135,7 +9135,7 @@ abstract class AppLocalizations {
   /// No description provided for @settingsBillingHint.
   ///
   /// In en, this message translates to:
-  /// **'Independent of cost estimates. A category does not confirm an active subscription or remaining quota.'**
+  /// **'No charge applies only to future calls; other categories estimate costs from available prices and usage. Subscription does not confirm an active plan, remaining quota or zero cost. Model reference prices are preserved.'**
   String get settingsBillingHint;
 
   /// No description provided for @settingsModelDetails.

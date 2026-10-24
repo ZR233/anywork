@@ -233,6 +233,38 @@ fn legacy_assistant_frame_migrates_its_binding() {
     assert_eq!(receipt.binding.wire_api, WireApi::Responses);
     assert_eq!(receipt.binding.isolation, "binding:stable-namespace");
     assert_eq!(receipt.response.model, "deepseek-v4-pro");
+    assert_eq!(
+        receipt.response.accounting.pricing,
+        pl_protocol::PricingOutcome::Disabled
+    );
+    let mut frame = json!({"receipt": &receipt, "bindings": [], "compatibilityFamily": null});
+    for version in [3, 4] {
+        let mut historical = output.clone();
+        historical.content = vec![pl_core::context::ContextContent::Opaque {
+            payload: OpaquePayload::new("pl.model.assistant", version, frame.to_string()).unwrap(),
+        }];
+        let decoded = model_response_receipt(&historical).unwrap().unwrap();
+        assert_eq!(decoded.response.accounting, receipt.response.accounting);
+    }
+    frame["receipt"]["response"]["accounting"]["pricing"] = json!({"kind":"noCharge"});
+    for version in [3, 4] {
+        let mut current = output.clone();
+        current.content = vec![pl_core::context::ContextContent::Opaque {
+            payload: OpaquePayload::new("pl.model.assistant", version, frame.to_string()).unwrap(),
+        }];
+        let decoded = model_response_receipt(&current);
+        if version == 3 {
+            assert!(
+                decoded.is_err(),
+                "NoCharge is not valid in a historical frame"
+            );
+        } else {
+            assert_eq!(
+                decoded.unwrap().unwrap().response.accounting.pricing,
+                pl_protocol::PricingOutcome::NoCharge
+            );
+        }
+    }
 }
 
 #[test]
@@ -285,6 +317,51 @@ fn legacy_failure_receipts_migrate_and_unknown_versions_fail_closed() {
     assert_eq!(receipt.binding.model_id, "deepseek-v4-pro");
     assert_eq!(receipt.binding.isolation, "binding:stable-namespace");
     assert_eq!(receipt.message, "transport failed");
+    assert_eq!(
+        receipt.accounting.pricing,
+        pl_protocol::PricingOutcome::Disabled
+    );
+    let mut current = serde_json::to_value(&receipt).unwrap();
+    for version in [3, 4] {
+        let historical = pl_core::model::ModelError {
+            details: Some(Box::new(
+                OpaquePayload::new("pl.model.failure", version, current.to_string()).unwrap(),
+            )),
+            kind: pl_core::model::ModelFailureKind::Unavailable,
+            usage: Box::default(),
+            source: None,
+        };
+        assert_eq!(
+            model_failure_receipt(&historical)
+                .unwrap()
+                .unwrap()
+                .accounting,
+            receipt.accounting
+        );
+    }
+    current["accounting"]["pricing"] = json!({"kind":"noCharge"});
+    for version in [3, 4] {
+        let frozen = pl_core::model::ModelError {
+            details: Some(Box::new(
+                OpaquePayload::new("pl.model.failure", version, current.to_string()).unwrap(),
+            )),
+            kind: pl_core::model::ModelFailureKind::Unavailable,
+            usage: Box::default(),
+            source: None,
+        };
+        let decoded = model_failure_receipt(&frozen);
+        if version == 3 {
+            assert!(
+                decoded.is_err(),
+                "NoCharge is not valid in a historical failure receipt"
+            );
+        } else {
+            assert_eq!(
+                decoded.unwrap().unwrap().accounting.pricing,
+                pl_protocol::PricingOutcome::NoCharge
+            );
+        }
+    }
 
     let unknown = pl_core::context::OpaquePayload::new(
         "pl.model.failure",

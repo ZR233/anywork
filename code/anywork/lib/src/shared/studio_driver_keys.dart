@@ -290,7 +290,7 @@ abstract final class StudioDriverKeys {
   static const accountEditor = ValueKey<String>('account-editor');
   static const accountEdit = ValueKey<String>('account-edit');
   static const accountSave = ValueKey<String>('account-save');
-  static const accountPricing = ValueKey<String>('account-pricing');
+  static const accountNoCharge = ValueKey<String>('account-no-charge');
   static const accountEditorScroll = ValueKey<String>('account-editor-scroll');
   static const accountAdd = ValueKey<String>('account-add');
   static const accountTemplate = ValueKey<String>('account-template');

@@ -28,7 +28,6 @@ void main() {
         modelCatalogId: 'openai-compatible',
         protocol: 'open_ai_compatible',
         suggestedModelId: '',
-        pricingEnabled: false,
       ),
     ],
     modelCatalogs: {
@@ -65,7 +64,7 @@ void main() {
         .createAccount('account-2', catalog.modelsFor('openai-compatible'));
     expect(account.templateId, 'openai-compatible');
     expect(account.protocol, 'open_ai_compatible');
-    expect(account.pricingEnabled, isFalse);
+    expect(account.billingKindOverride, isNull);
     expect(account.models, isEmpty);
     expect(account.defaultModelId, isEmpty);
   });
@@ -74,7 +73,12 @@ void main() {
     final account = catalog
         .template('open-ai')!
         .createAccount('account-1', catalog.modelsFor('open-ai'));
-    final renamed = account.copyWith(name: '工作账号', hasBearerToken: true);
+    final renamed = account.copyWith(
+      name: '工作账号',
+      hasBearerToken: true,
+      billingKind: BillingKind.noCharge,
+      billingKindOverride: BillingKind.noCharge,
+    );
     final command = AccountCommandBuilder.buildAccount(renamed);
     expect(command.id, 'account-1');
     expect(command.name, '工作账号');
@@ -82,6 +86,16 @@ void main() {
     expect(command.protocol, 'open_ai');
     expect(command.secret.action, AccountSecretAction.preserve);
     expect(command.customModels, isEmpty);
+    expect(
+      command.initialBillingKind,
+      isNull,
+      reason: 'An ordinary connection edit must not replay billing intent',
+    );
+    final create = AccountCommandBuilder.buildAccount(
+      renamed,
+      initialBillingKind: renamed.billingKindOverride,
+    );
+    expect(create.initialBillingKind, BillingKind.noCharge);
   });
 
   test('非空 secret 输入产生 replace，未配置凭据的新账号保存为 clear', () {

@@ -5213,7 +5213,9 @@ impl SseDecode for crate::api::studio::types::settings::AccountInput {
         let mut var_baseUrl = <String>::sse_decode(deserializer);
         let mut var_secret =
             <crate::api::studio::types::settings::AccountSecretInput>::sse_decode(deserializer);
-        let mut var_pricingEnabled = <bool>::sse_decode(deserializer);
+        let mut var_initialBillingKind = <Option<
+            crate::api::studio::types::delegation::BridgeBillingKind,
+        >>::sse_decode(deserializer);
         let mut var_customModels =
             <Vec<crate::api::studio::types::settings::AccountModelInput>>::sse_decode(deserializer);
         let mut var_modelConnectionModes = <Vec<
@@ -5229,7 +5231,7 @@ impl SseDecode for crate::api::studio::types::settings::AccountInput {
             name: var_name,
             base_url: var_baseUrl,
             secret: var_secret,
-            pricing_enabled: var_pricingEnabled,
+            initial_billing_kind: var_initialBillingKind,
             custom_models: var_customModels,
             model_connection_modes: var_modelConnectionModes,
             model_auto_compact_limits: var_modelAutoCompactLimits,
@@ -5620,7 +5622,6 @@ impl SseDecode for crate::api::studio::types::settings::BridgeAccountCatalogSnap
 impl SseDecode for crate::api::studio::types::settings::BridgeAccountSettingsDto {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
-        let mut var_pricingEnabled = <bool>::sse_decode(deserializer);
         let mut var_billingKind =
             <crate::api::studio::types::delegation::BridgeBillingKind>::sse_decode(deserializer);
         let mut var_billingKindOverride = <Option<
@@ -5653,7 +5654,6 @@ impl SseDecode for crate::api::studio::types::settings::BridgeAccountSettingsDto
         >>::sse_decode(deserializer);
         let mut var_catalogId = <Option<String>>::sse_decode(deserializer);
         return crate::api::studio::types::settings::BridgeAccountSettingsDto {
-            pricing_enabled: var_pricingEnabled,
             billing_kind: var_billingKind,
             billing_kind_override: var_billingKindOverride,
             disabled_models: var_disabledModels,
@@ -5683,7 +5683,6 @@ impl SseDecode for crate::api::studio::types::settings::BridgeAccountSettingsDto
 impl SseDecode for crate::api::studio::types::settings::BridgeAccountTemplateDescriptor {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
-        let mut var_pricingEnabled = <bool>::sse_decode(deserializer);
         let mut var_id = <String>::sse_decode(deserializer);
         let mut var_displayName = <String>::sse_decode(deserializer);
         let mut var_description = <Option<String>>::sse_decode(deserializer);
@@ -5699,7 +5698,6 @@ impl SseDecode for crate::api::studio::types::settings::BridgeAccountTemplateDes
                 deserializer,
             );
         return crate::api::studio::types::settings::BridgeAccountTemplateDescriptor {
-            pricing_enabled: var_pricingEnabled,
             id: var_id,
             display_name: var_displayName,
             description: var_description,
@@ -7207,7 +7205,8 @@ impl SseDecode for crate::api::studio::types::delegation::BridgeBillingKind {
         return match inner {
             0 => crate::api::studio::types::delegation::BridgeBillingKind::Metered,
             1 => crate::api::studio::types::delegation::BridgeBillingKind::Subscription,
-            2 => crate::api::studio::types::delegation::BridgeBillingKind::Unknown,
+            2 => crate::api::studio::types::delegation::BridgeBillingKind::NoCharge,
+            3 => crate::api::studio::types::delegation::BridgeBillingKind::Unknown,
             _ => unreachable!("Invalid variant for BridgeBillingKind: {}", inner),
         };
     }
@@ -18520,7 +18519,7 @@ impl flutter_rust_bridge::IntoDart for crate::api::studio::types::settings::Acco
             self.name.into_into_dart().into_dart(),
             self.base_url.into_into_dart().into_dart(),
             self.secret.into_into_dart().into_dart(),
-            self.pricing_enabled.into_into_dart().into_dart(),
+            self.initial_billing_kind.into_into_dart().into_dart(),
             self.custom_models.into_into_dart().into_dart(),
             self.model_connection_modes.into_into_dart().into_dart(),
             self.model_auto_compact_limits.into_into_dart().into_dart(),
@@ -18762,7 +18761,6 @@ impl flutter_rust_bridge::IntoDart
 {
     fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
         [
-            self.pricing_enabled.into_into_dart().into_dart(),
             self.billing_kind.into_into_dart().into_dart(),
             self.billing_kind_override.into_into_dart().into_dart(),
             self.disabled_models.into_into_dart().into_dart(),
@@ -18809,7 +18807,6 @@ impl flutter_rust_bridge::IntoDart
 {
     fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
         [
-            self.pricing_enabled.into_into_dart().into_dart(),
             self.id.into_into_dart().into_dart(),
             self.display_name.into_into_dart().into_dart(),
             self.description.into_into_dart().into_dart(),
@@ -20527,7 +20524,8 @@ impl flutter_rust_bridge::IntoDart for crate::api::studio::types::delegation::Br
         match self {
             Self::Metered => 0.into_dart(),
             Self::Subscription => 1.into_dart(),
-            Self::Unknown => 2.into_dart(),
+            Self::NoCharge => 2.into_dart(),
+            Self::Unknown => 3.into_dart(),
             _ => unreachable!(),
         }
     }
@@ -31263,7 +31261,10 @@ impl SseEncode for crate::api::studio::types::settings::AccountInput {
             self.secret,
             serializer,
         );
-        <bool>::sse_encode(self.pricing_enabled, serializer);
+        <Option<crate::api::studio::types::delegation::BridgeBillingKind>>::sse_encode(
+            self.initial_billing_kind,
+            serializer,
+        );
         <Vec<crate::api::studio::types::settings::AccountModelInput>>::sse_encode(
             self.custom_models,
             serializer,
@@ -31585,7 +31586,6 @@ impl SseEncode for crate::api::studio::types::settings::BridgeAccountCatalogSnap
 impl SseEncode for crate::api::studio::types::settings::BridgeAccountSettingsDto {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
-        <bool>::sse_encode(self.pricing_enabled, serializer);
         <crate::api::studio::types::delegation::BridgeBillingKind>::sse_encode(
             self.billing_kind,
             serializer,
@@ -31629,7 +31629,6 @@ impl SseEncode for crate::api::studio::types::settings::BridgeAccountSettingsDto
 impl SseEncode for crate::api::studio::types::settings::BridgeAccountTemplateDescriptor {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
-        <bool>::sse_encode(self.pricing_enabled, serializer);
         <String>::sse_encode(self.id, serializer);
         <String>::sse_encode(self.display_name, serializer);
         <Option<String>>::sse_encode(self.description, serializer);
@@ -32891,7 +32890,8 @@ impl SseEncode for crate::api::studio::types::delegation::BridgeBillingKind {
             match self {
                 crate::api::studio::types::delegation::BridgeBillingKind::Metered => 0,
                 crate::api::studio::types::delegation::BridgeBillingKind::Subscription => 1,
-                crate::api::studio::types::delegation::BridgeBillingKind::Unknown => 2,
+                crate::api::studio::types::delegation::BridgeBillingKind::NoCharge => 2,
+                crate::api::studio::types::delegation::BridgeBillingKind::Unknown => 3,
                 _ => {
                     unimplemented!("");
                 }

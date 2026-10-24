@@ -99,7 +99,7 @@ fn atomic_write(path: &Path, content: &[u8]) -> Result<()> {
 
 /// 一个已接续完成的迁移操作。
 ///
-/// 旧版本的待续操作可能以更早的 schema（23/24）为目标：这类操作必须先按它自己的候选、摘要与
+/// 旧版本的待续操作可能以更早的 schema（23–25）为目标：这类操作必须先按它自己的候选、摘要与
 /// 提交步骤完成，再由调用方从该**已提交版本**继续升级到当前 schema，不能改写旧目标或伪造摘要。
 #[derive(Debug)]
 pub(super) struct ResumedOperation {
@@ -309,8 +309,8 @@ fn commit_with_tokens(
     };
     let candidate = &config_resource.candidate;
     // 盘上写入的始终是日志记录的原始候选字节；这里只解码一份**只读**的当前形状视图，供候选
-    // 校验与凭据复制使用。旧目标（23/24）候选可能带当前 schema 已退役的字段（例如 ACP 的
-    // `program`/`args`），视图会先退役它们；这不改变写入内容，也不冒充当前 schema 的候选。
+    // 校验与凭据复制使用。旧目标（23–25）候选可能带当前 schema 已退役的字段（ACP 的
+    // `program`/`args` 或账号 `pricing_mode`），视图先退役它们，不改变原候选写入内容。
     let target_is_current = journal.target_version == STUDIO_CONFIG_SCHEMA_VERSION;
     let candidate_view = if target_is_current {
         candidate.clone()
@@ -318,7 +318,7 @@ fn commit_with_tokens(
         let text = std::str::from_utf8(candidate).map_err(|error| {
             PureError::ConfigError(format!("migrated Studio config is not UTF-8: {error}"))
         })?;
-        retire_acp_execution_document(text)?.into_bytes()
+        retire_legacy_config_fields_document(text)?.into_bytes()
     };
     let candidate_config =
         super::store::parse_migration_candidate(&candidate_view, journal.target_version)?;
@@ -758,15 +758,31 @@ pub(super) fn rewrite_account_document(
     })
 }
 
-/// 23+ 迁移的文档级入口：只退役 ACP 旧执行字段。
+/// 迁移边界的文档级入口：退役 ACP 旧执行字段与账号旧估算开关。
 ///
 /// 23 及以上的规范化配置不再改写账号/路由/Profile 键，也不读旧 `provider:<id>` 凭据命名空间；
-/// 唯一需要的结构变化是 24→25 移除 ACP 的 `program`/`args`。文档没有 ACP 表（或没有旧字段）时
+/// 24→25 移除 ACP 的 `program`/`args`，25→26 移除账号 `pricing_mode`。没有旧字段时
 /// 原字节返回，避免对同一内容做额外重编码；有旧字段时才按候选重写。
-pub(super) fn retire_acp_execution_document(text: &str) -> Result<String> {
+pub(super) fn retire_legacy_config_fields_document(text: &str) -> Result<String> {
     let mut value: toml::Value = toml::from_str(text)
         .map_err(|error| PureError::ConfigError(format!("invalid legacy config TOML: {error}")))?;
-    if !retire_acp_execution_fields(&mut value)? {
+    let retired_acp = retire_acp_execution_fields(&mut value)?;
+    // 旧估算开关不表达计费意图。只在版本迁移边界删除，绝不推导 NoCharge，
+    // 也不触碰 billing_kind、目录参考价格、凭据及其他账号字段。
+    let mut retired_pricing = false;
+    if let Some(accounts) = value
+        .get_mut("models")
+        .and_then(|models| models.get_mut("accounts"))
+        .and_then(toml::Value::as_table_mut)
+    {
+        for account in accounts
+            .iter_mut()
+            .filter_map(|(_, account)| account.as_table_mut())
+        {
+            retired_pricing |= account.remove("pricing_mode").is_some();
+        }
+    }
+    if !retired_acp && !retired_pricing {
         return Ok(text.to_string());
     }
     toml::to_string(&value).map_err(|error| {
@@ -1098,7 +1114,7 @@ effort = "high"
         // 操作目录在确认完成后清理；迁移备份与原字节仍在。
         assert!(!operation_dir(&fixture.paths).exists());
         let persisted = fs::read_to_string(fixture.paths.config_file()).unwrap();
-        assert!(persisted.contains("schema_version = 25"));
+        assert!(persisted.contains(&format!("schema_version = {STUDIO_CONFIG_SCHEMA_VERSION}")));
         assert!(!persisted.contains("models.providers"));
     }
 
@@ -1224,7 +1240,7 @@ effort = "high"
         );
 
         let persisted = fs::read_to_string(with_acp.paths.config_file()).unwrap();
-        assert!(persisted.contains("schema_version = 25"));
+        assert!(persisted.contains(&format!("schema_version = {STUDIO_CONFIG_SCHEMA_VERSION}")));
         assert!(persisted.contains("[acp.accounts.antigravity-1]"));
         assert!(!persisted.contains("program ="));
         assert!(!persisted.contains("--uid="));
@@ -1275,7 +1291,7 @@ effort = "high"
         assert_eq!(fs::read(&backups[0]).unwrap(), original.as_bytes());
         // 现役配置不再含旧执行字段。
         let persisted = fs::read_to_string(fixture.paths.config_file()).unwrap();
-        assert!(persisted.contains("schema_version = 25"));
+        assert!(persisted.contains(&format!("schema_version = {STUDIO_CONFIG_SCHEMA_VERSION}")));
         assert!(!persisted.contains("program ="));
         assert!(!persisted.contains("--uid="));
         assert!(!operation_dir(&fixture.paths).exists());
@@ -1286,9 +1302,10 @@ effort = "high"
         let bases = schema_24_bases();
         let document = format!(
             "{}{LEGACY_ACP_BLOCK}",
-            bases
-                .document
-                .replace("schema_version = 24", "schema_version = 25")
+            bases.document.replace(
+                "schema_version = 24",
+                &format!("schema_version = {STUDIO_CONFIG_SCHEMA_VERSION}")
+            )
         );
         assert!(
             crate::config::store::parse_migrated_config(document.as_bytes()).is_err(),
@@ -1889,6 +1906,123 @@ catalog = "deepseek"
         );
     }
 
+    fn schema_25_with_disabled_estimation() -> String {
+        let mut document: toml::Value = toml::from_str(&schema_24_main_document(false)).unwrap();
+        document["schema_version"] = 25.into();
+        let accounts = document["models"]["accounts"].as_table_mut().unwrap();
+        accounts["deepseek"]
+            .as_table_mut()
+            .unwrap()
+            .insert("pricing_mode".into(), "disabled".into());
+        let mut custom = accounts["deepseek"].as_table().unwrap().clone();
+        custom.remove("template");
+        custom.remove("billing_kind");
+        custom.insert("base_url".into(), "https://example.test/v1".into());
+        accounts.insert("legacy-disabled".into(), toml::Value::Table(custom));
+        toml::to_string(&document).unwrap()
+    }
+
+    #[test]
+    fn schema_25_retires_estimation_without_inventing_no_charge() {
+        let original = schema_25_with_disabled_estimation();
+        let profile = canonical_profile_on_disk();
+        let fixture = make_fixture(&original, Some(&profile));
+        let credentials = std::sync::Arc::new(MemoryCredentialStore::default());
+        credentials
+            .save("deepseek", "current-account-secret")
+            .unwrap();
+        let store = crate::config::ConfigStore::with_shared_credentials(
+            fixture.paths.clone(),
+            std::sync::Arc::clone(&credentials),
+        );
+        let migrated = store.load_for_startup().expect("schema 25 migrates");
+        assert_main_fields_preserved(&migrated);
+        let custom = &migrated.models.accounts
+            [&pl_model::config::AccountId::new("legacy-disabled").unwrap()];
+        assert_eq!(custom.billing_kind, None);
+        assert_eq!(
+            custom.billing_kind().unwrap(),
+            pl_protocol::BillingKind::Unknown
+        );
+        assert_eq!(
+            pl_protocol::PricingMode::from(custom.billing_kind().unwrap()),
+            pl_protocol::PricingMode::Catalog
+        );
+        assert_eq!(
+            credentials.load("deepseek").unwrap().as_deref(),
+            Some("current-account-secret")
+        );
+        let persisted = fs::read_to_string(fixture.paths.config_file()).unwrap();
+        assert!(!persisted.contains("pricing_mode"));
+        let mut expected: toml::Value = toml::from_str(&original).unwrap();
+        expected["schema_version"] = i64::from(STUDIO_CONFIG_SCHEMA_VERSION).into();
+        for (_, account) in expected["models"]["accounts"]
+            .as_table_mut()
+            .unwrap()
+            .iter_mut()
+        {
+            account.as_table_mut().unwrap().remove("pricing_mode");
+        }
+        assert_eq!(toml::from_str::<toml::Value>(&persisted).unwrap(), expected);
+        assert_eq!(
+            fs::read_to_string(fixture.paths.agents_dir().join("verify.toml")).unwrap(),
+            profile
+        );
+        assert_eq!(
+            fs::read(config_backups(&fixture.paths).pop().unwrap()).unwrap(),
+            original.as_bytes()
+        );
+        assert!(!operation_dir(&fixture.paths).exists());
+        store.load_for_startup().expect("upgraded config reloads");
+        assert_eq!(config_backups(&fixture.paths).len(), 1);
+    }
+
+    #[test]
+    fn pending_schema_25_commits_original_candidate_before_retiring_estimation() {
+        let original = schema_24_main_document(false);
+        let candidate = schema_25_with_disabled_estimation();
+        let profile = canonical_profile_on_disk();
+        let fixture = make_fixture(&original, Some(&profile));
+        write_pending_operation(
+            &fixture.paths,
+            24,
+            25,
+            &[PendingResource {
+                relative_path: super::super::STUDIO_CONFIG_FILE_NAME.into(),
+                original: original.into_bytes(),
+                candidate: candidate.as_bytes().to_vec(),
+            }],
+        );
+        let resumed = resume(&fixture.paths, &fixture.credentials)
+            .unwrap()
+            .unwrap();
+        assert_eq!(resumed.target_version, 25);
+        assert!(resumed.config.is_none());
+        // The old journal's bytes/digests, not a current-shape reserialization, were committed.
+        assert_eq!(
+            fs::read(fixture.paths.config_file()).unwrap(),
+            candidate.as_bytes()
+        );
+        let credentials = std::sync::Arc::new(MemoryCredentialStore::default());
+        let migrated =
+            crate::config::ConfigStore::with_shared_credentials(fixture.paths.clone(), credentials)
+                .load_for_startup()
+                .unwrap();
+        assert_eq!(migrated.schema_version, STUDIO_CONFIG_SCHEMA_VERSION);
+        assert_main_fields_preserved(&migrated);
+        let persisted = fs::read_to_string(fixture.paths.config_file()).unwrap();
+        assert!(!persisted.contains("pricing_mode"));
+        assert_eq!(
+            fs::read(config_backups(&fixture.paths).pop().unwrap()).unwrap(),
+            candidate.as_bytes()
+        );
+        assert_eq!(
+            fs::read_to_string(fixture.paths.agents_dir().join("verify.toml")).unwrap(),
+            profile
+        );
+        assert!(!operation_dir(&fixture.paths).exists());
+    }
+
     #[test]
     fn schema_24_main_fields_survive_the_upgrade_to_current() {
         let fixture = make_fixture(&schema_24_main_document(false), None);
@@ -2280,7 +2414,9 @@ catalog = "deepseek"
             assert_eq!(fs::read(&backups[0]).unwrap(), candidate);
             assert!(!operation_dir(&fixture.paths).exists());
             let persisted = fs::read_to_string(fixture.paths.config_file()).unwrap();
-            assert!(persisted.contains("schema_version = 25"));
+            assert!(
+                persisted.contains(&format!("schema_version = {STUDIO_CONFIG_SCHEMA_VERSION}"))
+            );
             assert!(!persisted.contains("models.providers"));
             if with_profile {
                 let profile = fs::read(fixture.paths.agents_dir().join("verify.toml")).unwrap();

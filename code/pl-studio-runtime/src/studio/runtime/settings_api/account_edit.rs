@@ -54,11 +54,7 @@ pub(super) fn account_edit(
         name: input.name,
         base_url: Some(input.base_url),
         bearer_token,
-        pricing_mode: if input.pricing_enabled {
-            pl_protocol::PricingMode::Catalog
-        } else {
-            pl_protocol::PricingMode::Disabled
-        },
+        initial_billing_kind: input.initial_billing_kind,
         custom_models: input
             .custom_models
             .into_iter()

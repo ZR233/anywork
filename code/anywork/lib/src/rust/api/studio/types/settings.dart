@@ -21,7 +21,9 @@ class AccountInput {
   final String name;
   final String baseUrl;
   final AccountSecretInput secret;
-  final bool pricingEnabled;
+
+  /// Initial override for account creation only; existing accounts use the narrow command.
+  final BridgeBillingKind? initialBillingKind;
   final List<AccountModelInput> customModels;
   final List<AccountModelConnectionInput> modelConnectionModes;
   final List<AccountModelAutoCompactInput> modelAutoCompactLimits;
@@ -33,7 +35,7 @@ class AccountInput {
     required this.name,
     required this.baseUrl,
     required this.secret,
-    required this.pricingEnabled,
+    this.initialBillingKind,
     required this.customModels,
     required this.modelConnectionModes,
     required this.modelAutoCompactLimits,
@@ -47,7 +49,7 @@ class AccountInput {
       name.hashCode ^
       baseUrl.hashCode ^
       secret.hashCode ^
-      pricingEnabled.hashCode ^
+      initialBillingKind.hashCode ^
       customModels.hashCode ^
       modelConnectionModes.hashCode ^
       modelAutoCompactLimits.hashCode;
@@ -63,7 +65,7 @@ class AccountInput {
           name == other.name &&
           baseUrl == other.baseUrl &&
           secret == other.secret &&
-          pricingEnabled == other.pricingEnabled &&
+          initialBillingKind == other.initialBillingKind &&
           customModels == other.customModels &&
           modelConnectionModes == other.modelConnectionModes &&
           modelAutoCompactLimits == other.modelAutoCompactLimits;
@@ -208,7 +210,6 @@ class BridgeAccountCatalogSnapshot {
 
 /// 不含 secret 的 Account canonical 设置视图。
 class BridgeAccountSettingsDto {
-  final bool pricingEnabled;
   final BridgeBillingKind billingKind;
   final BridgeBillingKind? billingKindOverride;
   final List<String> disabledModels;
@@ -239,7 +240,6 @@ class BridgeAccountSettingsDto {
   final String? catalogId;
 
   const BridgeAccountSettingsDto({
-    required this.pricingEnabled,
     required this.billingKind,
     this.billingKindOverride,
     required this.disabledModels,
@@ -266,7 +266,6 @@ class BridgeAccountSettingsDto {
 
   @override
   int get hashCode =>
-      pricingEnabled.hashCode ^
       billingKind.hashCode ^
       billingKindOverride.hashCode ^
       disabledModels.hashCode ^
@@ -295,7 +294,6 @@ class BridgeAccountSettingsDto {
       identical(this, other) ||
       other is BridgeAccountSettingsDto &&
           runtimeType == other.runtimeType &&
-          pricingEnabled == other.pricingEnabled &&
           billingKind == other.billingKind &&
           billingKindOverride == other.billingKindOverride &&
           disabledModels == other.disabledModels &&
@@ -322,7 +320,6 @@ class BridgeAccountSettingsDto {
 }
 
 class BridgeAccountTemplateDescriptor {
-  final bool pricingEnabled;
   final String id;
   final String displayName;
   final String? description;
@@ -338,7 +335,6 @@ class BridgeAccountTemplateDescriptor {
   final BridgeServiceCapabilitiesDescriptor serviceCapabilities;
 
   const BridgeAccountTemplateDescriptor({
-    required this.pricingEnabled,
     required this.id,
     required this.displayName,
     this.description,
@@ -354,7 +350,6 @@ class BridgeAccountTemplateDescriptor {
 
   @override
   int get hashCode =>
-      pricingEnabled.hashCode ^
       id.hashCode ^
       displayName.hashCode ^
       description.hashCode ^
@@ -372,7 +367,6 @@ class BridgeAccountTemplateDescriptor {
       identical(this, other) ||
       other is BridgeAccountTemplateDescriptor &&
           runtimeType == other.runtimeType &&
-          pricingEnabled == other.pricingEnabled &&
           id == other.id &&
           displayName == other.displayName &&
           description == other.description &&

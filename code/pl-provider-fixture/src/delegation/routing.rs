@@ -105,6 +105,58 @@ pub(super) fn run(flow: &Flow<'_>, prompt: &str) -> Progress<Decision> {
         let a = select(&models, "-a", SHARED_MODEL)?;
         let other = select(&models, "-a", OTHER_MODEL)?;
         let b = select(&models, "-b", SHARED_MODEL)?;
+        // These are real filtered production queries, not an inventory-side selector.
+        for (label, billing, expected) in [
+            ("no-charge", "noCharge", &b),
+            ("subscription", "subscription", &a),
+        ] {
+            let filtered: ModelList = flow.read(
+                &format!("billing-{label}"),
+                "list_delegation_models",
+                json!({"billingKind":billing,"minContextWindow":900000}),
+            )?;
+            require(
+                !filtered.models.is_empty()
+                    && filtered
+                        .models
+                        .iter()
+                        .all(|model| model.billing_kind == billing),
+                "billing query lost or mixed its canonical category",
+            )?;
+            if billing == "noCharge" {
+                require(
+                    select(&filtered.models, "-b", SHARED_MODEL)? == *expected,
+                    "first stable page concealed the no-charge account",
+                )?;
+            }
+        }
+        let max_only: ModelList = flow.read(
+            "max-only-context", "list_delegation_models",
+            json!({"accountId":a.account_id,"billingKind":"subscription","minContextWindow":900000,"limit":10}),
+        )?;
+        // Fetch this exact model separately: the account has more than ten stable members.
+        let max_only_route = models
+            .iter()
+            .find(|item| item.account_id == other.account_id && item.model_id == OTHER_MODEL)
+            .context("max-only model missing")?;
+        require(
+            max_only_route.context_window == Some(1_000_000),
+            "max-only context did not project the model owner's effective capacity",
+        )?;
+        let mut context_models = max_only.models;
+        let mut cursor = max_only.next_cursor;
+        while let Some(next) = cursor {
+            let page: ModelList = flow.read(
+                &format!("max-only-context-{}", context_models.len()), "list_delegation_models",
+                json!({"accountId":a.account_id,"billingKind":"subscription","minContextWindow":900000,"limit":10,"cursor":next}),
+            )?;
+            context_models.extend(page.models);
+            cursor = page.next_cursor;
+        }
+        require(
+            select(&context_models, "-a", OTHER_MODEL)? == other,
+            "minimum context rejected max-only capacity or substituted the compaction threshold",
+        )?;
         for (label, route) in [("a", &other), ("b", &b)] {
             let detail: Detail = flow.read(
                 &format!("detail-{label}"),
@@ -124,8 +176,13 @@ pub(super) fn run(flow: &Flow<'_>, prompt: &str) -> Progress<Decision> {
                 )?;
             }
             require(
-                detail.billing_kind == "unknown",
-                "pricing-disabled custom account was mislabeled as subscription",
+                detail.billing_kind
+                    == if label == "b" {
+                        "noCharge"
+                    } else {
+                        "subscription"
+                    },
+                "detail lost the canonical billing category",
             )?;
             let item = models
                 .iter()
@@ -134,10 +191,17 @@ pub(super) fn run(flow: &Flow<'_>, prompt: &str) -> Progress<Decision> {
                 })
                 .context("detail model missing from query")?;
             require(
-                item.pricing.is_none()
-                    && item.billing_kind == "unknown"
+                item.pricing.as_ref().is_some_and(|price| {
+                    price.currency == "USD"
+                        && price.tiers.len() == 1
+                        && price.tiers[0].input_per_mtok == 2.0
+                        && price.tiers[0].output_per_mtok == 8.0
+                        && price.tiers[0].cache_read_per_mtok == Some(0.5)
+                        && price.tiers[0].cache_write_per_mtok == Some(3.0)
+                }) && item.pricing == detail.descriptor.pricing
+                    && item.billing_kind == detail.billing_kind
                     && item.performance.ttft_sample_count <= item.performance.sample_count,
-                "list invented unknown price/billing/performance",
+                "list/detail erased reference pricing or invented billing/performance",
             )?;
         }
         for model_id in [

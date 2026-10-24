@@ -1174,7 +1174,14 @@ class _AccountsTabState extends ConsumerState<AccountsTab> {
       final saved = await ref
           .read(anyworkClientProvider)
           .settingsCommands
-          .saveAccount(AccountCommandBuilder.buildAccount(account));
+          .saveAccount(
+            AccountCommandBuilder.buildAccount(
+              account,
+              initialBillingKind: current.mode == AccountDraftMode.create
+                  ? account.billingKindOverride
+                  : null,
+            ),
+          );
       if (!saved.accounts.any((candidate) => candidate.id == account.id)) {
         throw StateError(
           'Account save returned a canonical snapshot without ${account.id}.',

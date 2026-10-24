@@ -9,7 +9,6 @@ AccountCatalogView accountCatalogFromFrb(
     templates: [
       for (final template in snapshot.templates)
         AccountTemplateView(
-          pricingEnabled: template.pricingEnabled,
           id: template.id,
           displayName: template.displayName,
           description: template.description ?? '',

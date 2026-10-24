@@ -1445,8 +1445,9 @@ class _Journey {
             'id',
             'templateId',
             'protocol',
+            'billingKind',
+            'billingKindOverride',
             'defaultModelId',
-            'pricingEnabled',
             'hasBearerToken',
           ])
             field: entry[field],

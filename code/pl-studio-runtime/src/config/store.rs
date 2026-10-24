@@ -162,7 +162,7 @@ impl ConfigStore {
     ///
     /// 只有 `config.toml` 缺失时才采用内存默认配置。其余任何未知/未来版本、不可解析、
     /// 当前 schema 校验失败或含内联凭据的输入都保留原字节并返回错误，不重写文件、
-    /// 也不替换为默认配置；`18..=24` 已知版本走数据保全式迁移路径。
+    /// 也不替换为默认配置；已知旧版本走数据保全式迁移路径。
     pub(crate) fn load_for_startup(
         &self,
     ) -> std::result::Result<StudioConfig, super::ConfigRuntimeError> {
@@ -177,7 +177,7 @@ impl ConfigStore {
                 |error| super::ConfigRuntimeError::Migration(self.config_path_error(error)),
             )?
         {
-            // 旧目标（23/24）的待续操作已按其原候选、摘要与提交步骤完成；这里从该**已提交版本**
+            // 旧目标（23–25）的待续操作已按其原候选、摘要与提交步骤完成；这里从该**已提交版本**
             // 继续升级到当前 schema，不改写旧目标、不伪造摘要，也不发布中间配置。
             return self.continue_resumed_migration(resumed);
         }
@@ -216,7 +216,7 @@ impl ConfigStore {
 
     /// 接续一个已完成的中断迁移操作。
     ///
-    /// 目标就是当前 schema 时只补凭据、不重做迁移；旧目标（23/24）表示该操作已按它自己的候选、
+    /// 目标就是当前 schema 时只补凭据、不重做迁移；旧目标（23–25）表示该操作已按它自己的候选、
     /// 摘要与步骤提交完成，此时从盘上的**已提交版本**继续升级到当前 schema——复用既有版本分派、
     /// 备份、候选校验与原子提交，不改写旧日志目标、不伪造摘要，也不返回中间版本。
     fn continue_resumed_migration(
@@ -276,18 +276,17 @@ impl ConfigStore {
             PureError::ConfigError(format!("invalid schema {source_version} UTF-8: {error}"))
         })?;
         // 18..22 先完成各自的既有转换，再统一执行 Provider/Preset → Account/AccountTemplate；
-        // 23 只需前进版本并补出空 ACP 集合；24→25 只退役 ACP 旧 `program`/`args`。三种情况都不
-        // 改动账号、路由、Profile 与凭据关联。
+        // 23 补出空 ACP 集合，24→25 退役 ACP 旧执行字段；25→26 退役账号估算开关。
+        // 所有路径保留计费覆盖、路由、Profile 与凭据关联，不把旧 disabled 解释成不计费。
         let mut inline_tokens = std::collections::BTreeMap::new();
         let rewritten = if source_version <= super::schema_migration::LEGACY_ACCOUNT_SCHEMA {
             let rewritten = rewrite_legacy_deepseek_standalone_dialect(text)?;
             let rewritten = migrate_model_identifiers(&rewritten)?;
             super::schema_migration::rewrite_account_document(&rewritten, &mut inline_tokens)?
         } else {
-            // 23+：不再改写账号/路由/Profile 键，也不访问旧 `provider:<id>` 凭据命名空间；唯一
-            // 需要的结构变化是 24→25 退役 ACP 旧 `program`/`args`（旧执行字段只在迁移边界解码）。
-            super::schema_migration::retire_acp_execution_document(text)?
+            text.to_string()
         };
+        let rewritten = super::schema_migration::retire_legacy_config_fields_document(&rewritten)?;
         let mut config = parse_typed_config(&rewritten)?;
         reject_inline_credentials(&config)?;
         match source_version {
@@ -297,7 +296,7 @@ impl ConfigStore {
             }
             19 => migrate_legacy_planner_route(&mut config, source_version)?,
             20..=super::schema_migration::LEGACY_ACCOUNT_SCHEMA => {}
-            23 | 24 => {}
+            23..=super::schema_migration::PREVIOUS_CONFIG_SCHEMA => {}
             other => {
                 return Err(PureError::ConfigError(format!(
                     "unsupported Studio config schema version: {other}"
