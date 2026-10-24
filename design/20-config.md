@@ -27,7 +27,7 @@ schema 和 `configRevision`，不在主配置里新增 Node/MCP/provider 伪配�
 任一失败只写该实例状态；设置查询不触发额外联网，运行期也没有第二次自动同步。首屏先使用成功
 缓存或默认模型定义，不等待所有网络结果；模型观察不写回 config.toml。完整语义见 20.5。
 普通设置项在用户修改后即时写入配置；独立新增/编辑页面保留本地草稿，必须点击页面内保存
-按钮才写入，取消则丢弃草稿。模型压缩阈值从账号详情卡的模型列表即时修改，不属于账号
+按钮才写入，取消则丢弃草稿。模型启用与压缩阈值从账号详情卡的模型列表即时修改，不属于账号
 编辑页草稿；交互与失败反馈见 [19](./19-studio-ui.md)。
 
 配置版本演进必须满足以下迁移契约；会话和产品数据的隔离与布局演进另见
@@ -139,6 +139,19 @@ ACP 不进入 Native 默认账号或模型路由候选。
 保留账号 ID、provider、名称、路由、Profile、所有无关设置与凭据关联。旧执行字段只在迁移
 边界解码，现役 schema 和 API 不保留兼容执行入口；沿用本章的备份、校验和原子提交，不
 通过默认配置重建绕过迁移，不删除旧安装或官方凭据。
+
+同为 schema 24 的历史配置可能已有 ACP 接入，也可能已有模型启用、计费类别与分发设置；
+迁移不能按版本号选择其中一组字段覆盖另一组。统一的 schema 25 保留两组显式值：ACP
+集合缺失时为空；分发模式与偏好缺失时分别为 `profile`、`balanced`；模型禁用集合缺失时
+为空；计费类别覆盖缺失时保持未指定，由当前规则推导。字段级缺省不替换显式值，不从金额
+统计开关推导计费意图。已经使用 schema 25 的配置同样接受这些可选字段的当前缺省表示，
+不回退版本或重做历史转换；当前 ACP 结构仍拒绝 `program`/`args`，缺省语义不是旧执行入口。
+
+18 至 22 的账号、路由与 Profile 键转换沿原版本边界执行；23 及以上的规范化 Profile 保留
+原字节，不重复访问旧 provider 凭据命名空间。中断的迁移若以 schema 23 或 24 为目标，先按
+原日志的候选、摘要与提交步骤完成该操作，再从已提交版本继续到 25；不得改写旧候选摘要、
+伪改日志目标或发布中间配置。每段升级保留对应原件和恢复责任，失败不转成默认初始化。
+
 ACP 保存/删除使用 Settings revision CAS，成功返回 canonical 设置，且不等待进程启动或
 认证。认证是独立显式操作，不推进 Settings 或模型目录水位，详见 [28](./28-acp.md)。
 
@@ -181,6 +194,46 @@ Account 编辑提交只发送既有或用户显式修改的连接覆盖，不把
 属于持久化设置。未知 UI 字段按既有规则忽略，正常保存后不再输出；启动不因未知字段重写
 配置、触发恢复或提升 schema。
 
+### 20.2.1 模型启用、计费类别与分发默认
+
+账号的 `disabled_models` 是精确 model_id 的禁用集合，缺省为空；可选 `billing_kind` 是
+`metered | subscription | unknown` 的显式覆盖，与金额统计开关独立。省略时只按明确
+模板与 canonical endpoint 推导生效类别，不匹配则未知；显式值优先且不被地址修改
+静默替换，推导结果不写回为显式意图。它们属于 desired 配置，不是
+在线观察。新增模型默认启用，目录撤回保留禁用覆盖，恢复同一模型后继续应用；管理页仍
+读取完整目录。普通选模、固定 Profile 和自动分发的统一资格与准入见 [06](./06-model.md)。
+
+模型启用使用独立 typed mutation，携带 `operationId`、`expectedSettingsRevision`、`accountId`、
+`modelId`、`enabled`。配置 owner 在最新账号上应用单一字段意图，保留凭据、其他模型、
+连接和压缩覆盖；在线成员不转成手工成员。提交推进设置水位，并在同一发布边界更新目录
+资格水位；失败不发布候选。禁用导致已有路由不可用不是配置损坏，不自动改写选择。
+管理页切换立即保存，Client 的串行与失败规则见 [25](./25-frontend-state.md)。
+
+计费类别使用独立账号级 typed mutation，携带 `operationId`、expected revision、`accountId` 和可空
+`billingKind`：非空为显式类别（包括显式 `unknown`），空值清除覆盖并恢复模板推导。
+canonical Settings 同时投影生效 `billingKind` 与可空 `billingKindOverride`，前者
+用于展示和过滤，后者表达用户意图；不能将推导值回写为覆盖。普通账号编辑保留未修改
+的覆盖，新建账号没有显式选择时保持缺省，地址变化只影响未覆盖时的推导结果。
+这些窄命令沿用设置命令的操作身份约定：请求必须提供有效 `operationId`，owner 在修改
+配置前验证，并在 Applied/NoChange 回执中原样返回；不能用目标字段的固定描述替代一次
+提交身份。HTTP 与 FRB 使用同一契约，不为缺失身份请求生成兼容 ID。
+
+`[delegation]` 保存 `mode = profile | automatic` 和
+`preference = economy | balanced | fast`，默认 `profile` 与 `balanced`。两个字段各自
+使用 typed 设置命令，只改变未来会话默认；偏好在固定模式中保存但不生效。新建会话请求
+携带草稿同步解析后的 `delegationMode` 和 `delegationPreference`，已有会话不回读默认。
+提示词、工具与冻结边界见 [12](./12-collaboration.md) §12.7。
+
+外部创建 API 的这两个字段允许分别省略，表示在本次创建准入时继承对应全局默认，
+而不是将缺字段解码为显式固定/平衡。GUI 已同步冻结有效值，因此始终显式传入；
+持久化的会话与目录事实保存解析后的非空枚举，重开不重新解释省略或全局默认。
+
+引入这些字段时执行明确配置版本升级：旧模型全部启用、旧默认固定/平衡，旧账号没有
+显式计费类别覆盖，生效类别由上述 canonical 推导给出，不把旧金额统计开关转换为类别。
+保持账号、路由、
+Profile、凭据关联及其他覆盖原值；先备份、校验、原子提交，失败保留现场。新增字段不在
+运行期借旧结构或重建默认配置补齐。当前 v2 会话的对应升级归 [17](./17-studio-storage.md)。
+
 ## 20.3 根路由与系统 Profile
 
 配置不使用 `active_account`。root Agent 的 desired route 属于各自 Thread；主配置以
@@ -207,8 +260,9 @@ Account 编辑提交只发送既有或用户显式修改的连接覆盖，不把
 不可编辑、不可删除，可通过主配置 `disabled_system_agents` 禁用。主智能体在会话起始页与
 会话状态栏选择模型，不在 Agents 页配置；系统 child route 在子代理区域配置。用户 Profile
 的文件名 stem 是 Agent ID。
-`list_agent_profiles` 只返回启用且路由可解析的 Profile；`spawn_agent` 创建 child 时冻结
-系统指令、account、model 与 effort，此后文件变化不改变既有 child；设置页另读完整
+`list_agent_profiles` 在固定模式只返回启用且路由可解析的 Profile；自动模式返回启用的
+角色声明，不以其固定路由判定资格（见 [12](./12-collaboration.md) §12.7）。`spawn_agent` 创建 child 时冻结
+系统指令、最终 account、model 与 effort，此后文件变化不改变既有 child；设置页另读完整
 catalog，被禁用的用户 Profile 仍可编辑并重新启用。
 
 每个角色必须配置 `account_id`、`model_id` 和可选 `effort`。`effort` 使用字符串，校验对象是
@@ -372,7 +426,8 @@ Settings revision 提交。别家成功不得使本家 stale；用户更换地�
 有效目录的每条成员携带来源：`online`（本次或同身份最后成功的在线名单）、`bundled`（尚无成功
 观察时的内置默认定义）、`manual`（用户手动添加）。来源由后端解析并随 descriptor 发布，界面
 据此分组与标注，不按配置差集或 template 自行推导。删除手动模型使用独立命令
-（`removeAccountModel`，携带 expected revision 与 account_id/model_id）：只接受手动条目，删除后同步
+（`removeAccountModel`，携带 `operationId`、expected revision 与 account_id/model_id，回执原样
+返回该操作身份）：只接受手动条目，删除后同步
 清除该 model_id 的连接覆盖与压缩阈值覆盖；若它是该实例的默认模型，保留字段并沿用“选择以不可用
 保留”的语义。目录观察、模型来源与手动模型增删都不改变 desired route 的其他字段。
 
@@ -393,6 +448,28 @@ Settings revision 提交。别家成功不得使本家 stale；用户更换地�
 运行时会在 Thread 首轮固定 base/system、developer blocks、user context blocks 与 AGENTS
 source paths；已有 Thread 后续不会因配置或项目文档变化自动改变提示词，新 Thread 才使用
 新配置。
+
+instruction snapshot 同时保存 Agent 定义身份、适用范围与修订，以及独立的 Agent、Mode
+指令来源（职责见 [12](./12-collaboration.md)）。普通 root、飞书 root 和 child 统一消费此
+快照，不额外维护一份可变角色提示词；root 路由与 child Profile 的原有配置所有权不变。
+Mode 的合法更新只变更 Mode 来源，模型基础指令重绑定只变更模型来源；恢复、压缩和工具
+刷新不能以当前 catalog 重建 Agent 指令。
+自动分发偏好作为独立的指令来源随同一快照保存，与 Agent、Mode 来源并列；它来自会话
+已冻结的分发策略，不因 Mode 切换、压缩、模型重绑或恢复重新继承全局默认。旧快照迁移
+保留已有偏好正文及来源，不将其误归入 Agent 或 Mode，也不向固定模式补入自动偏好。
+
+旧版混用的 execution-profile 来源在显式快照版本迁移中区分：root 依据保存的 Mode 转为
+Mode 来源，child 依据冻结 Profile 转为 Agent 来源。迁移保留原角色/模式正文、其他指令块
+和历史请求，不为旧飞书会话补入新专用指令。新定义的身份与迁移后保留的旧指令版本必须
+可区分，不伪称旧快照已经采用最新角色；缺失或冲突身份明确失败，不清空快照或恢复默认。
+迁移与当前结构的读写共用现有保存边界，重启可核实并继续，不在每次模型请求里兼容旧格式。
+旧根会话尚无独立 Agent 定义时，目录中的 root 身份与保存的 Mode/指令可证明原来的通用
+根角色；若没有可验证的渠道归属，只能保存明确的迁移来源、渠道未指定的 legacy-root
+定义身份，不能据“没有 bot owner”宣称它原本是普通渠道，也不能为此阻断全部旧普通会话。
+此身份只由迁移产生，不是可新建或派发的预设。已存在的 bot owner 必须解码并验证，不能
+仅凭同名扩展存在判定归属；缺失必要的 root/child、Mode/Profile 或指令事实仍须失败。
+当前快照恢复校验冻结定义 ID、scope 与来源/修订的合法组合；迁移身份可以保留旧版本，
+不要求与最新内置提示词版本相等，也不能借保留旧版本接受另一个 Profile 的身份。
 
 上述冻结规则不冻结宿主运行事实：Platform、工作区绑定及 `studio.session-files` 在当前安全
 边界由实际服务提供，恢复/刷新后按同 source 更新，压缩保留最新值。会话文件路径、权限与

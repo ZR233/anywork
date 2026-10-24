@@ -4,6 +4,11 @@
 [11](./11-thread-mode.md)，协作工具（spawn_agent 等）的参数与工作区语义见
 [12](./12-collaboration.md)，会话后台任务交付见 [14](./14-runtime-host.md)。
 
+自动分发的 `list_delegation_models`、`get_delegation_model` 与最终评价 `evaluate_agent`
+属于 Studio 产品协作工具，仅装配到主智能体；前两者是有界只读查询，后者为独占写入。
+固定/自动模式的 spawn 声明、选模资格和评价授权归 [12](./12-collaboration.md) §12.7。
+目录只暴露当前模式允许的参数，准备预览与正式调用使用同一声明及独占身份集合。
+
 机器人会话工具沿用相同不透明 Tool 与宿主端口装配，不共享可变工具实例。其项目授权、
 会话查询与外部发送语义归 [27](./27-bots.md)；发送不取得只读 programmatic 资格。
 
@@ -42,6 +47,10 @@ Studio，不进入 core。
 的执行器继续持有原租约，已撤销权限按新目录拒绝后续准入。一个 Thread 的命令管理器跨目录刷新
 复用，缓存只持弱引用；同 ID 的新 owner 不继承旧 owner 的物理资源。已冻结的 workspace/SSH
 目标发生变化时清空不可再授权的目录并报告必须重新激活，不能偷偷改为访问新路径。
+
+Agent Profile 的已发布目录代次同样触发 root 工具刷新；`spawn_agent` 的分支声明与
+`list_agent_profiles` 的执行视图共同消费该代快照，具体分支、空目录与冻结约定见
+[12](./12-collaboration.md)。刷新不会给 child 增加派发能力，也不修改已有 child 的身份。
 
 SSH 配置或凭据变更单独通知目录刷新并撤销旧物理绑定；日志和信号不携带 secret。候选准备或
 扩展版本冲突不清空仍有效的已安装目录；物理目标、凭据或权限失效则撤销不可再授权的能力。

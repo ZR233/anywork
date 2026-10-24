@@ -55,15 +55,26 @@ workflow，也不接受模型输入；模型没有定义、编译、patch 或 su
 
 ## 11.3 Turn 快照与 run 生命周期
 
+Agent 定义表达“谁在执行”，Mode 表达“如何执行”，两者的指令来源独立，Agent 契约见
+[12](./12-collaboration.md)。普通与飞书 root 使用同一 Mode 机制；切换、注册更新及压缩只
+替换 Mode 所有的指令，不覆盖已冻结 Agent 定义。不能再用同一个角色来源同时表示 Mode
+和 child Profile，也不能靠把飞书提示词拼入 Mode 正文维持角色。
+
 root Turn 在调用 provider 前捕获一个 Mode 快照；本 Turn 的 Prompt、工具、图和状态校验全部
 使用该快照，注册更新从下一个 root Turn 生效。child Thread 使用冻结的 Agent Profile，不创建、
 继承或推进 root workflow。模式切换要求 root idle 且没有 pending interaction，runtime 负责归档
 旧活动 run。切换同时从配置中的目标 Mode 默认 selector 解析模型，将 `studio.mode`、
 `studio.model-route`、instructions、workflow、context、tools 与下一 Turn 的 pending model update
-作为一次 idle reconfiguration 提交；失败时保持原 Mode 与原路由。切换提交后，新的 Mode 作为
+作为一次 idle reconfiguration 提交；core 拒绝提交时保持原 Mode 与原路由。切换提交后，新的 Mode 作为
 目录事实发布（目录行 upsert 并推进目录水位），同时该会话自身的状态流快照也携带同一 Mode；
 GUI 侧按 [18.11.1](./18-studio-state.md#18111-thread-身份的单一来源) 以目录自身水位合并身份，
 会话快照不反写目录；selector 的文案与选中态不依赖页面跳转或重订阅即可收敛。
+
+切换的受管操作同时承担 core 移交、工具绑定和目录持久投影的收束责任；调用者取消等待
+仅放弃回执，不能遗失 core 已提交后的必需后续。候选未获接管时保留可重试关闭 owner；
+core 已提交后的绑定或投影失败则保留已生效事实，并分别交给现有工具目录恢复及持久化
+队列处理。错误明确区分提交前拒绝与提交后待修复，不回滚已提交 Mode，也不靠重演 core
+切换重试目录保存；正常成功回执须等待必需后续完成。
 
 带工作流的 Mode 要求当前 root route 支持 function calling；Turn 准备阶段在 provider 请求前
 显式拒绝不具备该能力的模型，不能为了迁就 hosted Web Search 的 exclusive 路径而静默卸载

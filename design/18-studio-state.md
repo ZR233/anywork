@@ -68,6 +68,17 @@ Settings snapshot 以 `modeModelRoutes` 暴露全局 Mode 默认 selector，并�
 系统子代理 route；Thread runtime snapshot 另行暴露当前 Thread 的 typed `modelRoute`、revision
 与 available 状态。两者职责不同，GUI 不用 Mode 默认值覆盖已有 Thread 的 route。
 
+Settings 另行暴露新会话分发模式/偏好默认值，Thread 目录与 runtime 投影保存的实际
+`delegationMode`、`delegationPreference`，不跟随全局默认回写。Agent 目录包含可空的
+typed 模型身份摘要（accountId/modelId/effort），child 值只取创建时冻结绑定；冷目录
+同样消费已保存摘要，未知不从当前 Profile 推断。该字段贯通 HTTP、FRB 与 Client，
+用于智能体列表展示，不携带上下文或额外模型调用。存储与迁移见 [17](./17-studio-storage.md)。
+
+模型查询基于账号有效目录、统一资格与启用状态，计费类别和性能读取各自 canonical
+领域；本地评价通过按账号模型的有界详情查询返回，不注入全局 bootstrap 或 Settings。
+查询不刷新网络、不写配置、不生成评价。写评价使用 [12](./12-collaboration.md) 的
+父子授权和最终 Turn/revision 校验，提交成功后返回权威结果；旧查询不能回滚较新记录。
+
 Thread runtime snapshot 同时派生只读 Plan 投影：当前状态、revision、当前计划文档（含内容
 hash）与更新时间，取自 canonical `studio.plan` Thread 扩展；扩展缺失即无计划投影，不物化
 默认状态、不写状态。该投影只供 GUI 只读展示已批准计划与状态栏计划入口，不新增 Plan 协议
@@ -107,6 +118,10 @@ ThreadDirectoryChanged、AgentDirectoryChanged、ModeCatalogChanged、ThreadRunt
 的内存索引属于 owner 准备步骤，不单独形成产品事实或广播。归档只装载目录，不读取冷历史
 或激活冷 owner；最终业务 mutation 才通过
 directory command 发布 canonical delta。
+项目归档与新建根会话共用准入边界，最终树范围须包含归档获准前已完成准备的 child，
+不能在枚举后遗漏并发创建的根或子会话。只检查驻留 owner 的活动工作；冷目录不因归档
+而恢复执行。资源关闭和目录提交之间失败时，以 canonical 目录及真实关闭事实保留可重试
+路径，不能把未归档项目永久封死，也不能为回滚而重新执行已经关闭的会话。
 
 全量 snapshot resync 按领域 revision 合并模型统计与根会话费用，与增量事件使用同一 canonical
 状态；本地已有快照不能遮蔽服务端更新，旧全量快照也不能覆盖已收到的新事件。
@@ -245,6 +260,11 @@ canonical snapshot，并发布已更新的 Profiles 资源，Flutter 原子采�
 桌面退出入口，停止运行中的会话，不等待自然空闲；只有关停报告为真实 Clean 才交接安装器。
 进程内服务关闭要求真实 Clean 才成功；桌面退出接受 Clean 或 Degraded，并按退出期限终止。
 退出结果在关停报告之外独立承载安装交接结果，不把安装器启动失败改写为关停失败或隐藏它。
+
+宿主关停只结束当次 owner 与资源，不把仍可续修的 child 标记为显式关闭。重新启动后，
+新的显式输入可按既有冻结身份恢复未封口的 child；已显式关闭的 child 则拒绝执行。
+持久意图、目录投影和旧记录语义统一遵循 [12](./12-collaboration.md) 与
+[17](./17-studio-storage.md)，不根据 Core `Closed` 或工作区回收结果推测关闭意图。
 
 按领域拆分的产品、启动与 Thread 订阅继续加入同一 bridge 订阅 owner 与取消收束，
 不引入另一套退出流程。原有总期限、外部取消 issue、typed 报告和严格调用方的 Clean
