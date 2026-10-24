@@ -57,6 +57,11 @@ impl SessionFiles {
         self.root().join("commands")
     }
 
+    /// Request-local copies of reliable user originals in this Thread's execution world.
+    pub fn uploads(&self) -> PathBuf {
+        self.root().join("uploads")
+    }
+
     /// Model-readable command capture path for one call.
     ///
     /// `call_id` is the opaque call physical key (`task-` plus SHA-256) or any call

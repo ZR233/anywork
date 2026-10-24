@@ -1,6 +1,7 @@
 use super::config::BotConfigFile;
+use super::protocol::content::receive_content;
 use super::protocol::error::FeishuError;
-use super::protocol::im::{content_hash, extract_post_text, extract_text};
+use super::protocol::im::content_hash;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -25,22 +26,30 @@ pub enum InboundDecision {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", tag = "kind", deny_unknown_fields)]
+#[serde(
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    tag = "kind",
+    deny_unknown_fields
+)]
 pub enum InboundAttachment {
     Image { key: String },
     File { key: String, filename: String },
+    Unsupported { message_type: String },
 }
 
 impl InboundAttachment {
-    pub fn key(&self) -> &str {
+    pub fn key(&self) -> Option<&str> {
         match self {
-            Self::Image { key } | Self::File { key, .. } => key,
+            Self::Image { key } | Self::File { key, .. } => Some(key),
+            Self::Unsupported { .. } => None,
         }
     }
     pub fn frozen_bytes(&self) -> usize {
         match self {
             Self::Image { key } => key.len() + 64,
             Self::File { key, filename } => key.len() + filename.len() + 96,
+            Self::Unsupported { message_type } => message_type.len() + 64,
         }
     }
 }
@@ -176,12 +185,16 @@ pub fn classify_event(
         Some(_) => return InboundDecision::Ignore,
     };
     let content = message.content.as_deref().unwrap_or("");
-    let text = match message.message_type.as_deref().unwrap_or("text") {
-        "text" => extract_text(content).unwrap_or_default(),
-        "post" => extract_post_text(content),
-        _ => String::new(),
+    let message_type = message.message_type.as_deref().unwrap_or("text");
+    let (text, attachments) = match receive_content(message_type, content) {
+        Ok(decoded) => (decoded.text, decoded.attachments),
+        Err(_) => (
+            String::new(),
+            vec![InboundAttachment::Unsupported {
+                message_type: message_type.chars().take(64).collect(),
+            }],
+        ),
     };
-    let attachments = message_attachments(message.message_type.as_deref(), content);
     let hash = content_hash(&message_id, &chat_id, content);
     if chat_kind == ChatKind::Group {
         if !config.feishu().trusted_chat_ids.contains(&chat_id) {
@@ -223,36 +236,6 @@ pub fn classify_event(
         content_hash: hash,
         chat_kind,
     }
-}
-
-fn message_attachments(kind: Option<&str>, content: &str) -> Vec<InboundAttachment> {
-    #[derive(Deserialize)]
-    struct ImageContent {
-        image_key: String,
-    }
-    #[derive(Deserialize)]
-    struct FileContent {
-        file_key: String,
-        file_name: String,
-    }
-    let attachment = match kind {
-        Some("image") => serde_json::from_str::<ImageContent>(content)
-            .ok()
-            .map(|image| InboundAttachment::Image {
-                key: image.image_key,
-            }),
-        Some("file") => serde_json::from_str::<FileContent>(content)
-            .ok()
-            .map(|file| InboundAttachment::File {
-                key: file.file_key,
-                filename: file.file_name,
-            }),
-        _ => None,
-    };
-    attachment
-        .filter(|item| !item.key().is_empty() && item.frozen_bytes() <= 4096)
-        .into_iter()
-        .collect()
 }
 
 fn mentions_current_bot(mentions: &[EventMention], bot_open_id: Option<&str>) -> bool {

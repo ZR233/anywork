@@ -97,8 +97,29 @@ impl StudioRuntime {
         // its full close/commit continuation concluded. Join the retained task before storage stops.
         let archive = background_task::finish(&self.archive_task).await;
         self.archive_task.lock().await.take();
-        archive.context("failed to join archive operation")?;
-        let thread_failures = self.threads.close_all().await;
+        let mut thread_failures = self.threads.close_all().await;
+        if let Err(source) = archive {
+            thread_failures.push((
+                "archive-operation".into(),
+                crate::thread_assembler::ThreadAssemblyError::Resource {
+                    operation: "join archive operation",
+                    source: source.into(),
+                },
+            ));
+        }
+        thread_failures.extend(self.thread_factory.drain_pending_file_operations().await);
+        // The pool service exists before any Thread. Attempt its drain even when another
+        // close failed; the owned agentFramework stage retains intermediate outcomes and
+        // the same service owner across cancellation of a shutdown waiter.
+        if let Err(error) = self.agent_facility.worktrees.close_pool_io().await {
+            thread_failures.push((
+                "worktree-pool-io".into(),
+                crate::thread_assembler::ThreadAssemblyError::Resource {
+                    operation: "drain shared worktree-pool root IO",
+                    source: error.into_boxed_dyn_error(),
+                },
+            ));
+        }
         if !thread_failures.is_empty() {
             return Err(ThreadCloseFailures(thread_failures).into());
         }

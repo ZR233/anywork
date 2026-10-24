@@ -179,6 +179,8 @@ pub(crate) struct BotOperationOwner {
     /// 已确认清理失败、仍待同一信任值重提完成的配对请求身份。
     pairing_cleanup: Mutex<BTreeSet<String>>,
     submitting: AtomicBool,
+    /// One physical resource producer boundary survives every published configuration version.
+    pub(super) send_resources: Arc<Mutex<super::send_resources::SendResources>>,
 }
 
 /// 已完成操作的结果保留位置：`current` 是最近受理的操作，`previous` 是上一操作。
@@ -588,6 +590,19 @@ impl BotRuntime {
                 },
             )
             .await?;
+        // Resource recovery has its own bounded cursor/failure, not a credential decision.
+        // The producer gate starts dirty even if this caller leaves before registering upkeep.
+        if let Err(error) = self.maintain_send_resources(bot_id).await {
+            if let Some(managed) = owner.published().await {
+                let mut diagnostic = error.diagnostic();
+                diagnostic.code = "sendResourceCleanup".into();
+                let mut slot = managed.diagnostic.lock().await;
+                if slot.is_none() {
+                    *slot = Some(diagnostic);
+                }
+            }
+            self.request_publish();
+        }
         Ok(())
     }
 
@@ -622,9 +637,10 @@ impl BotRuntime {
                 return Err(FeishuError::new(
                     FeishuErrorKind::Unavailable,
                     format!("bot operation close failed: {error}"),
-                    true,
+                    error.retryable(),
                     None,
-                ));
+                )
+                .with_source(error));
             }
         }
         Ok(())
@@ -862,6 +878,12 @@ impl BotRuntime {
 
 impl BotOperationOwner {
     fn new(runtime: BotRuntime, bot_id: String) -> Self {
+        let send_resources = Arc::new(Mutex::new(super::send_resources::SendResources::new(
+            crate::resource_store::FileResourceStore::beneath(
+                runtime.inner.paths.home().to_owned(),
+                runtime.inner.paths.bot_dir(&bot_id).join("send-resources"),
+            ),
+        )));
         Self {
             bot_id,
             runtime,
@@ -872,6 +894,7 @@ impl BotOperationOwner {
             completions: Mutex::new(CompletionSlot::new()),
             pairing_cleanup: Mutex::new(BTreeSet::new()),
             submitting: AtomicBool::new(false),
+            send_resources,
         }
     }
 
@@ -2569,7 +2592,42 @@ impl BotOperationOwner {
         self.join_slot(&mut blocking).await?;
         drop(blocking);
         let mut inspect = self.inspect.lock().await;
-        self.join_slot(&mut inspect).await
+        self.join_slot(&mut inspect).await?;
+        drop(inspect);
+        // Normal occupancy is sealed/drained by BotRuntime before this point. Reuse this
+        // existing task slot for shutdown-only bounded maintenance; cancellation never takes it.
+        let mut task = self.task.lock().await;
+        self.join_slot(&mut task).await?;
+        if self.send_resources.lock().await.needs_maintenance() {
+            let budget = self
+                .runtime
+                .inner
+                .occupancy
+                .maintenance_budget(super::send_resources::MAINTENANCE_TEXT_BYTES)?;
+            let resources = self.send_resources.clone();
+            let ledger = self
+                .published()
+                .await
+                .map(|managed| managed.store.clone())
+                .unwrap_or_else(|| {
+                    BotStateStore::new(
+                        self.runtime
+                            .inner
+                            .paths
+                            .bot_dir(&self.bot_id)
+                            .join("state.sqlite"),
+                    )
+                });
+            *task = Some(tokio::spawn(async move {
+                let _budget = budget;
+                let _ = resources.lock().await.maintain(&ledger).await;
+            }));
+            self.join_slot(&mut task).await?;
+        }
+        match self.send_resources.lock().await.failure() {
+            Some(error) => Err(error),
+            None => Ok(()),
+        }
     }
 }
 

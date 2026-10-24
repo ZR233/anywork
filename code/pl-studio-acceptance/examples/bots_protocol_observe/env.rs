@@ -144,6 +144,61 @@ pub(crate) fn write_model_config(home: &Path, model_base_url: &str) -> Result<()
         .with_context(|| format!("failed to write isolated config under {}", home.display()))
 }
 
+/// Two explicit routes to the same independent capture peer. Only the vision
+/// route accepts native inline images; the text route must materialize originals.
+pub(crate) fn write_media_model_config(home: &Path, model_base_url: &str) -> Result<()> {
+    use pl_model::model::{
+        MediaRepresentation, MediaWireFormat, ModelInputCapability, ModelInputSource,
+        ModelMediaInputProfile, ModelModality,
+    };
+    write_model_config(home, model_base_url)?;
+    let path = home.join("config.toml");
+    let mut config: StudioConfig = toml::from_str(&fs::read_to_string(&path)?)?;
+    let account = config
+        .models
+        .accounts
+        .values_mut()
+        .next()
+        .context("missing fixture account")?;
+    let mut text = ModelInfo::compatible("fixture-model");
+    text.binding
+        .set_transport(ModelTransportProfile::responses_http());
+    text.auto_compact_token_limit = Some(500_000);
+    let mut vision = text.clone();
+    vision.model_id = "fixture-vision".into();
+    let mut capability =
+        ModelInputCapability::media(ModelModality::Image, vec![ModelInputSource::Local]);
+    capability.limits.max_width = Some(64);
+    capability.limits.max_height = Some(64);
+    capability.limits.max_count = Some(16);
+    capability.limits.media_types = vec!["image/png".into()];
+    vision.capabilities.input.push(capability);
+    vision.binding.request.media.push(ModelMediaInputProfile {
+        modality: ModelModality::Image,
+        wire: MediaWireFormat::ResponsesInputImage,
+        first_send: vec![MediaRepresentation::DataUrl],
+        replay: vec![MediaRepresentation::DataUrl],
+    });
+    *account = AccountConfig::from_explicit_models(
+        ProtocolEndpoint::compatible("Bots media fixture", model_base_url),
+        vec![text, vision],
+    );
+    config.validate()?;
+    fs::write(path, toml::to_string_pretty(&config)?)?;
+    Ok(())
+}
+
+pub(crate) fn model_account_id(home: &Path) -> Result<String> {
+    let config: StudioConfig = toml::from_str(&fs::read_to_string(home.join("config.toml"))?)?;
+    config
+        .models
+        .accounts
+        .keys()
+        .next()
+        .map(ToString::to_string)
+        .context("fixture model account missing")
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct FixtureManifest {
@@ -258,6 +313,25 @@ pub(crate) fn observer_identity(workspace: &Path) -> Result<crate::report::Obser
     const FILES: &[&str] = &[
         "code/pl-studio-acceptance/examples/bots_protocol_observe/main.rs",
         "code/pl-studio-acceptance/examples/bots_protocol_observe/cases.rs",
+        "code/pl-studio-acceptance/examples/bots_protocol_observe/cases/owner_binding.rs",
+        "code/pl-studio-acceptance/examples/bots_protocol_observe/cases/files/mod.rs",
+        "code/pl-studio-acceptance/examples/bots_protocol_observe/cases/files/requests.rs",
+        "code/pl-studio-acceptance/examples/bots_protocol_observe/cases/files/uploads.rs",
+        "code/pl-studio-acceptance/examples/bots_protocol_observe/cases/files/notice.rs",
+        "code/pl-studio-acceptance/examples/bots_protocol_observe/cases/files/delivery.rs",
+        "code/pl-studio-acceptance/examples/bots_protocol_observe/cases/files/isolation.rs",
+        "code/pl-studio-acceptance/examples/bots_protocol_observe/cases/files/ingress.rs",
+        "code/pl-studio-acceptance/examples/bots_protocol_observe/cases/files/source.rs",
+        "code/pl-studio-acceptance/examples/bots_protocol_observe/cases/files/markdown.rs",
+        "code/pl-studio-acceptance/examples/bots_protocol_observe/cases/files/outcomes.rs",
+        "code/pl-studio-acceptance/examples/bots_protocol_observe/cases/files/compaction.rs",
+        "code/pl-studio-acceptance/examples/bots_protocol_observe/cases/files/compaction_owner.rs",
+        "code/pl-studio-acceptance/examples/bots_protocol_observe/cases/files/compaction_timeout.rs",
+        "code/pl-studio-acceptance/examples/bots_protocol_observe/cases/files/admission_limits.rs",
+        "code/pl-studio-acceptance/examples/bots_protocol_observe/cases/files/ingress/samples.rs",
+        "code/pl-studio-acceptance/examples/bots_protocol_observe/cases/files/ingress/posts.rs",
+        "code/pl-provider-fixture/src/bots_observe.rs",
+        "code/pl-provider-fixture/src/lib.rs",
         "code/pl-studio-acceptance/examples/bots_protocol_observe/cases/registration/mod.rs",
         "code/pl-studio-acceptance/examples/bots_protocol_observe/cases/registration/lifecycle.rs",
         "code/pl-studio-acceptance/examples/bots_protocol_observe/cases/registration/no_user.rs",

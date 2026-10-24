@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:typed_data';
 
 import '../../../anywork_client.dart';
 import '../../../models.dart';
@@ -50,31 +49,14 @@ class ComposerDraftOwner extends ReadModel<ComposerThreadState> {
   void updateDraft(String value) => apply(state.updateDraft(value));
   void reportFailure(Object error) => apply(state.reportFailure(error));
 
-  Future<void> addLocalAttachments(List<String> paths) =>
-      _client.attachments.admitThread(
-        threadId: threadId,
-        binding: binding,
-        projectId: _projectId,
-        sources: [
-          for (final path in paths) AttachmentDraftSource.localFile(path),
-        ],
-      );
-
-  Future<void> addRemoteAttachment(String url) =>
-      _client.attachments.admitThread(
-        threadId: threadId,
-        binding: binding,
-        projectId: _projectId,
-        sources: [AttachmentDraftSource.remoteUrl(url.trim())],
-      );
-
-  Future<void> addClipboardImage(Uint8List pngBytes) =>
-      _client.attachments.addThreadClipboard(
-        threadId: threadId,
-        binding: binding,
-        projectId: _projectId,
-        pngBytes: pngBytes,
-      );
+  Future<void> prepareAttachments(
+    Future<void> Function(AttachmentDraftInput input) prepare,
+  ) => _client.attachments.prepareThread(
+    threadId: threadId,
+    binding: binding,
+    projectId: _projectId,
+    prepare: prepare,
+  );
 
   Future<void> removeAttachment(String draftId) =>
       _client.attachments.removeThreadDraft(
@@ -315,7 +297,9 @@ class ComposerDraftOwner extends ReadModel<ComposerThreadState> {
 
   Future<void> _close() async {
     _closed = true;
+    _client.attachments.cancelDraftInputs(stamp.draftId);
     await _pending;
+    await _client.attachments.joinDraftInputs(stamp.draftId);
     for (final observation in _observations) {
       observation.cancel();
     }

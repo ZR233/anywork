@@ -1497,7 +1497,7 @@ Future<String> _startDriverFixtureClipboardImage() async {
       'reason': 'composer-not-ready',
     });
   }
-  final bytes = await fixture.readAsBytes();
+  final imageFile = fixture;
   final threadId = selection.selectedThreadId;
   final Future<void> task;
   if (threadId != null) {
@@ -1510,13 +1510,19 @@ Future<String> _startDriverFixtureClipboardImage() async {
         'reason': 'composer-not-ready',
       });
     }
-    task = _client.composer(threadId).addClipboardImage(bytes);
+    task = _client
+        .composer(threadId)
+        .prepareAttachments(
+          (input) async =>
+              input.addClipboardImage(await imageFile.readAsBytes()),
+        );
   } else {
     final mode = _client.startDraft.state.forProject(projectId).mode;
-    task = _client.attachments.addNewThreadClipboard(
+    task = _client.attachments.prepareNewThread(
       projectId: projectId,
       mode: mode,
-      pngBytes: bytes,
+      prepare: (input) async =>
+          input.addClipboardImage(await imageFile.readAsBytes()),
     );
   }
   _driverFixtureClipboardImageTask = task;

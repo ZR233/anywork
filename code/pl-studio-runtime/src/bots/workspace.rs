@@ -4,6 +4,7 @@ use super::{
     config::BotConfigFile,
     protocol::error::{FeishuError, FeishuErrorKind},
 };
+use pl_tool::workspace_file::LocalWorkspaceRoot;
 
 impl BotRuntime {
     pub(crate) async fn ensure_workspace_project(
@@ -11,20 +12,41 @@ impl BotRuntime {
         bot_id: &str,
         name: &str,
     ) -> Result<String, FeishuError> {
-        let root = self.inner.paths.bot_dir(bot_id).join("workspace");
-        tokio::fs::create_dir_all(&root)
-            .await
-            .map_err(workspace_error)?;
+        let root = self.managed_workspace_root(bot_id).await?;
         let host = self
             .studio_host()
             .ok_or_else(|| workspace_error("Studio runtime is closed"))?;
-        let project = host.open_project(root).await.map_err(workspace_error)?;
+        let project = host
+            .open_project(root.path().to_owned())
+            .await
+            .map_err(workspace_error)?;
         if project.name != name {
             host.rename_project(&project.id, name)
                 .await
                 .map_err(workspace_error)?;
         }
         Ok(project.id)
+    }
+
+    /// The host home is the ambient grant; every managed descendant (including workspace itself)
+    /// is opened/created no-follow. Never canonicalize an unvalidated bot/workspace descendant.
+    async fn managed_workspace_root(
+        &self,
+        bot_id: &str,
+    ) -> Result<LocalWorkspaceRoot, FeishuError> {
+        super::config::validate_bot_id(bot_id)?;
+        let parent = self.inner.paths.home().to_owned();
+        let relative = self
+            .inner
+            .paths
+            .bot_dir(bot_id)
+            .join("workspace")
+            .strip_prefix(&parent)
+            .map_err(workspace_error)?
+            .to_owned();
+        LocalWorkspaceRoot::ensure_beneath(self.inner.workspace_io.clone(), parent, relative)
+            .await
+            .map_err(workspace_error)
     }
 
     pub(crate) fn model_selector(
@@ -51,19 +73,33 @@ impl BotRuntime {
         thread_id: &str,
         old_root: &str,
     ) -> Result<std::path::PathBuf, FeishuError> {
-        let root = self.inner.paths.bot_dir(&config.id).join("workspace");
+        let root = self.managed_workspace_root(&config.id).await?;
+        let root_path = root.path().to_owned();
         let files = pl_tool::workspace::SessionFiles::new(thread_id);
         let source = std::path::Path::new(old_root).join(files.root());
-        let target = root.join(files.root());
-        let root_copy = root.clone();
-        tokio::task::spawn_blocking(move || {
-            migrate_owned_directory(&source, &target)?;
-            std::fs::create_dir_all(target.join("uploads"))?;
-            std::fs::canonicalize(root_copy)
+        let target = root_path.join(files.root());
+        // Reuse the existing long-lived operation owner for the legacy copy's blocking join.
+        // Cancellation of root activation does not abandon an in-progress owned-directory copy.
+        let bytes = super::occupancy::counted_extra_bytes(
+            0,
+            [
+                (source.as_os_str().len(), 2),
+                (target.as_os_str().len(), 2),
+                (root_path.as_os_str().len(), 2),
+            ],
+        )?;
+        self.submit_occupancy(bytes, move |_budget| async move {
+            tokio::task::spawn_blocking(move || {
+                let _root_lease = root;
+                migrate_owned_directory(&source, &target)?;
+                std::fs::create_dir_all(target.join("uploads"))?;
+                Ok::<_, std::io::Error>(root_path)
+            })
+            .await
+            .map_err(workspace_error)?
+            .map_err(workspace_error)
         })
         .await
-        .map_err(workspace_error)?
-        .map_err(workspace_error)
     }
 }
 

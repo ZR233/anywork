@@ -1,11 +1,34 @@
 //! Physical, resumable file handles. Transfer policy and retries belong to the host.
 use super::*;
 use crate::budget::{ByteLease, ResourceBudget};
+use crate::file_create::CreateFile;
+use crate::workspace_dir::WorkspaceDir;
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashMap};
 use std::os::unix::fs::MetadataExt;
 use std::path::PathBuf;
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
+
+mod admission;
+mod cleanup;
+use cleanup::{ClosingFile, StagingCleanup, cleanup_stage};
+
+type CreateOwner = Arc<std::sync::Mutex<CreateFile>>;
+
+#[derive(Debug)]
+enum WriteStage {
+    Create(CreateOwner),
+    Replace(tempfile::TempPath),
+}
+
+impl WriteStage {
+    fn into_cleanup(self) -> StagingCleanup {
+        match self {
+            Self::Create(owner) => StagingCleanup::Create(owner),
+            Self::Replace(path) => StagingCleanup::replace_stage(path),
+        }
+    }
+}
 
 #[derive(Debug)]
 enum FileState {
@@ -17,7 +40,7 @@ enum FileState {
     },
     Write {
         file: tokio::fs::File,
-        temporary: tempfile::TempPath,
+        temporary: WriteStage,
         target: PathBuf,
         mode: RemoteWriteMode,
         offset: u64,
@@ -27,12 +50,13 @@ enum FileState {
     Committed {
         length: u64,
         digest: String,
+        cleanup: Option<StagingCleanup>,
     },
     Failed {
         error: RemoteError,
-        cleanup: PathBuf,
+        cleanup: StagingCleanup,
     },
-    Cleanup(PathBuf),
+    Cleanup(Arc<ClosingFile>),
     Closing,
 }
 #[derive(Debug)]
@@ -49,6 +73,7 @@ pub(super) struct Transfers {
     next: std::sync::atomic::AtomicU64,
     instance: String,
     commits: Mutex<HashMap<PathBuf, std::sync::Weak<Mutex<()>>>>,
+    admission: admission::Admission,
 }
 impl Transfers {
     pub(super) fn new(instance: String) -> Self {
@@ -57,7 +82,24 @@ impl Transfers {
             next: std::sync::atomic::AtomicU64::new(0),
             instance,
             commits: Default::default(),
+            admission: Default::default(),
         }
+    }
+    pub(super) fn admit(&self, workspace: &str) -> Result<admission::OpeningLease, RemoteError> {
+        self.admission.enter(workspace)
+    }
+    pub(super) fn forget_closed_workspace(&self, workspace: &str) {
+        self.admission.forget_closed_workspace(workspace);
+    }
+    fn ensure_transfer_open(&self, entry: &Transfer) -> Result<(), RemoteError> {
+        ensure_open(entry)?;
+        if !self.admission.is_open(&entry.workspace) {
+            return Err(remote_error(
+                RemoteErrorCode::InvalidRequest,
+                "transfer is closing",
+            ));
+        }
+        Ok(())
     }
     async fn insert(
         &self,
@@ -155,31 +197,45 @@ impl Transfers {
         mode: RemoteWriteMode,
         length: u64,
         budget: &ResourceBudget,
+        create: Option<(WorkspaceDir, PathBuf)>,
     ) -> Result<RemoteTransferStatus, RemoteError> {
         let lease = budget
             .try_reserve(std::mem::size_of::<Transfer>() + target.as_os_str().len())
             .ok_or_else(exhausted)?;
-        let parent = target
-            .parent()
-            .ok_or_else(|| {
-                remote_error(
-                    RemoteErrorCode::InvalidRequest,
-                    "write target has no parent",
-                )
-            })?
-            .to_owned();
-        tokio::fs::create_dir_all(&parent)
+        let (file, temporary) = if let Some((root, relative)) = create {
+            let (file, owner) = tokio::task::spawn_blocking(move || {
+                let mut owner = root.begin(&relative)?;
+                let file = owner.file_mut()?.try_clone()?;
+                Ok::<_, io::Error>((file, Arc::new(std::sync::Mutex::new(owner))))
+            })
             .await
-            .map_err(|e| io_error("create transfer directory", e))?;
-        let temporary = tokio::task::spawn_blocking(move || {
-            tempfile::Builder::new()
-                .prefix(".anywork-transfer-")
-                .tempfile_in(parent)
-        })
-        .await
-        .map_err(|e| io_error("create transfer task", io::Error::other(e)))?
-        .map_err(|e| io_error("create transfer staging", e))?;
-        let (file, temporary) = temporary.into_parts();
+            .map_err(|e| io_error("create capability stage task", io::Error::other(e)))?
+            .map_err(|e| io_error("create capability stage", e))?;
+            (file, WriteStage::Create(owner))
+        } else {
+            let parent = target
+                .parent()
+                .ok_or_else(|| {
+                    remote_error(
+                        RemoteErrorCode::InvalidRequest,
+                        "write target has no parent",
+                    )
+                })?
+                .to_owned();
+            tokio::fs::create_dir_all(&parent)
+                .await
+                .map_err(|e| io_error("create transfer directory", e))?;
+            let temporary = tokio::task::spawn_blocking(move || {
+                tempfile::Builder::new()
+                    .prefix(".anywork-transfer-")
+                    .tempfile_in(parent)
+            })
+            .await
+            .map_err(|e| io_error("create transfer task", io::Error::other(e)))?
+            .map_err(|e| io_error("create transfer staging", e))?;
+            let (file, temporary) = temporary.into_parts();
+            (file, WriteStage::Replace(temporary))
+        };
         self.insert(
             workspace,
             FileState::Write {
@@ -202,8 +258,10 @@ impl Transfers {
         max_bytes: usize,
     ) -> Result<(RemoteResponse, Vec<u8>), RemoteError> {
         let transfer = self.get(id).await?;
+        // A sealed transfer rejects new IO without waiting behind a blocked finalizer.
+        self.ensure_transfer_open(&transfer)?;
         let mut file_state = transfer.file.lock().await;
-        ensure_open(&transfer)?;
+        self.ensure_transfer_open(&transfer)?;
         let FileState::Read {
             file,
             revision,
@@ -255,11 +313,11 @@ impl Transfers {
             ));
         }
         let entry = self.get(id).await?;
+        self.ensure_transfer_open(&entry)?;
         let mut file_state = entry.file.lock().await;
-        ensure_open(&entry)?;
+        self.ensure_transfer_open(&entry)?;
         let FileState::Write {
             file,
-            temporary,
             offset: confirmed,
             length,
             ranges,
@@ -298,7 +356,15 @@ impl Transfers {
         .await;
         if let Err(error) = write {
             let failure = io_error("write transfer chunk", error);
-            let cleanup = temporary.to_path_buf();
+            let previous = std::mem::replace(&mut *file_state, FileState::Closing);
+            let FileState::Write {
+                file, temporary, ..
+            } = previous
+            else {
+                unreachable!()
+            };
+            drop(file);
+            let cleanup = temporary.into_cleanup();
             *file_state = FileState::Failed {
                 error: failure.clone(),
                 cleanup,
@@ -323,8 +389,9 @@ impl Transfers {
         quantum: usize,
     ) -> Result<RemoteTransferStatus, RemoteError> {
         let entry = self.get(id).await?;
+        self.ensure_transfer_open(&entry)?;
         let mut file_state = entry.file.lock().await;
-        ensure_open(&entry)?;
+        self.ensure_transfer_open(&entry)?;
         if !matches!(*file_state, FileState::Write { .. }) {
             return status(id, &file_state);
         }
@@ -345,7 +412,10 @@ impl Transfers {
         else {
             unreachable!()
         };
-        let cleanup = temporary.to_path_buf();
+        let cleanup = match &temporary {
+            WriteStage::Create(owner) => StagingCleanup::Create(owner.clone()),
+            WriteStage::Replace(path) => StagingCleanup::Replace(path.to_path_buf()),
+        };
         let mut actual = String::new();
         let result = async {
             if offset != length || declared != length || !ranges.is_empty() {
@@ -383,6 +453,25 @@ impl Transfers {
                 .await
                 .map_err(|e| io_error("sync transfer", e))?;
             drop(file);
+            if let WriteStage::Create(owner) = temporary {
+                return tokio::task::spawn_blocking(move || {
+                    owner
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .publish()
+                })
+                .await
+                .map_err(|e| {
+                    remote_error(
+                        RemoteErrorCode::OutcomeUnknown,
+                        format!("Create publication task did not return: {e}"),
+                    )
+                })?
+                .map_err(|e| io_error("publish Create transfer", e));
+            }
+            let WriteStage::Replace(temporary) = temporary else {
+                unreachable!()
+            };
             tokio::task::spawn_blocking(move || -> io::Result<()> {
                 let parent = target
                     .parent()
@@ -400,7 +489,7 @@ impl Transfers {
                 }
                 match mode {
                     RemoteWriteMode::Create => {
-                        temporary.persist_noclobber(&target).map_err(|e| e.error)?;
+                        return Err(io::Error::other("Create transfer lost its directory owner"));
                     }
                     RemoteWriteMode::Overwrite => {
                         if let Ok(metadata) = std::fs::metadata(&target) {
@@ -421,10 +510,39 @@ impl Transfers {
             Ok::<_, RemoteError>(())
         }
         .await;
+        if let StagingCleanup::Create(owner) = &cleanup {
+            let published = owner
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .receipt()
+                .published;
+            if published {
+                let finalized = cleanup_stage(&cleanup).await;
+                *file_state = FileState::Committed {
+                    length,
+                    digest: actual,
+                    cleanup: finalized.as_ref().err().map(|_| cleanup),
+                };
+                // Status/replayed Commit report the immutable publication fact; close retries
+                // finalization. Never turn an already-visible Create into a failed/unstarted one.
+                if let Err(error) = finalized {
+                    return Err(remote_error(
+                        RemoteErrorCode::OutcomeUnknown,
+                        format!(
+                            "Create is published; staging/durability cleanup pending: {}",
+                            error.message
+                        ),
+                    ));
+                }
+                result?;
+                return status(id, &file_state);
+            }
+        }
         *file_state = match result {
             Ok(()) => FileState::Committed {
                 length,
                 digest: actual,
+                cleanup: None,
             },
             Err(error) => FileState::Failed { error, cleanup },
         };
@@ -445,28 +563,43 @@ impl Transfers {
         entry
             .closing
             .store(true, std::sync::atomic::Ordering::Release);
-        let mut state = entry.file.lock().await;
-        let previous = std::mem::replace(&mut *state, FileState::Closing);
-        let cleanup =
-            match previous {
-                FileState::Write {
-                    file, temporary, ..
-                } => {
-                    drop(file);
-                    Some(temporary.keep().map_err(|error| {
-                        io_error("retain staging cleanup ownership", error.error)
-                    })?)
-                }
-                FileState::Cleanup(path) | FileState::Failed { cleanup: path, .. } => Some(path),
-                _ => None,
+        let closing = {
+            let mut state = entry.file.lock().await;
+            if matches!(*state, FileState::Closing) {
+                return Err(remote_error(
+                    RemoteErrorCode::OutcomeUnknown,
+                    "transfer commit outcome is unresolved",
+                ));
+            }
+            if !matches!(*state, FileState::Cleanup(_)) {
+                let previous = std::mem::replace(&mut *state, FileState::Closing);
+                let (cleanup, publication) = match previous {
+                    FileState::Write {
+                        file, temporary, ..
+                    } => {
+                        drop(file);
+                        (Some(temporary.into_cleanup()), None)
+                    }
+                    FileState::Failed { cleanup, .. } => (Some(cleanup), None),
+                    FileState::Committed {
+                        length,
+                        digest,
+                        cleanup,
+                    } => (cleanup, Some((length, digest))),
+                    FileState::Read { .. } => (None, None),
+                    FileState::Cleanup(_) | FileState::Closing => unreachable!(),
+                };
+                // Install the complete owner/receipt before the first await after taking state.
+                *state = FileState::Cleanup(Arc::new(ClosingFile::new(cleanup, publication)));
+            }
+            let FileState::Cleanup(closing) = &*state else {
+                unreachable!()
             };
-        if let Some(path) = cleanup
-            && let Err(error) = tokio::fs::remove_file(&path).await
-            && error.kind() != io::ErrorKind::NotFound
-        {
-            *state = FileState::Cleanup(path);
-            return Err(io_error("remove transfer staging", error));
-        }
+            closing.clone()
+        };
+        // The immutable publication stays in this same state-owned Arc. Only the finalizer's
+        // inner mutex serializes cleanup waits, so status never waits behind physical cleanup.
+        closing.finish().await?;
         {
             let mut entries = self.entries.lock().await;
             entries.remove(id);
@@ -475,7 +608,6 @@ impl Transfers {
             }
         }
         let mut commits = self.commits.lock().await;
-        drop(state);
         drop(entry);
         commits.retain(|_, lock| lock.strong_count() > 0);
         if commits.is_empty() {
@@ -484,6 +616,7 @@ impl Transfers {
         Ok(())
     }
     pub(super) async fn close_workspace(&self, workspace: &str) -> Result<(), RemoteError> {
+        self.admission.seal_workspace(workspace).await;
         let ids = self
             .entries
             .lock()
@@ -498,6 +631,7 @@ impl Transfers {
         self.entries.lock().await.len()
     }
     pub(super) async fn close_all(&self) -> Result<(), RemoteError> {
+        self.admission.seal_all().await;
         let ids = self.entries.lock().await.keys().cloned().collect();
         self.close_ids(ids).await
     }
@@ -535,14 +669,21 @@ fn status(id: &str, value: &FileState) -> Result<RemoteTransferStatus, RemoteErr
             false,
         ),
         FileState::Write { offset, length, .. } => (*offset, Some(*length), None, None, false),
-        FileState::Committed { length, digest } => {
+        FileState::Committed { length, digest, .. } => {
             (*length, Some(*length), None, Some(digest.clone()), true)
         }
         FileState::Failed { error, .. } => return Err(error.clone()),
+        FileState::Cleanup(closing) if closing.publication.is_some() => {
+            let (length, digest) = closing
+                .publication
+                .as_ref()
+                .expect("publication checked above");
+            (*length, Some(*length), None, Some(digest.clone()), true)
+        }
         FileState::Closing | FileState::Cleanup(_) => {
             return Err(remote_error(
                 RemoteErrorCode::OutcomeUnknown,
-                "transfer is committing",
+                "transfer is committing or awaiting cleanup",
             ));
         }
     };

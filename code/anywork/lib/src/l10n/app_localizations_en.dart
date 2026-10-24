@@ -507,7 +507,7 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get settingsBotsPermissions =>
-      'Requested scopes (preset=false): im:message:send_as_bot, im:message.p2p_msg:readonly, im:message.group_at_msg:readonly, im:chat:readonly, im:message:readonly. Event: im.message.receive_v1. Declaring them does not mean an admin has approved or published the app.';
+      'Requested scopes (preset=false): im:message:send_as_bot, im:message.p2p_msg:readonly, im:message.group_at_msg:readonly, im:chat:readonly, im:message:readonly, im:resource:upload. Event: im.message.receive_v1. Declaring them does not mean an admin has approved or published the app.';
 
   @override
   String get settingsBotsName => 'Name';
@@ -856,10 +856,31 @@ class AppLocalizationsEn extends AppLocalizations {
   String get settingsBotsSendPartial => 'Partially delivered';
 
   @override
-  String get settingsBotsSendRejected => 'Rejected';
+  String get settingsBotsSendRejected => 'Not delivered';
 
   @override
   String get settingsBotsSendUnknown => 'Outcome unknown';
+
+  @override
+  String get settingsBotsUploadStage => 'Upload';
+
+  @override
+  String get settingsBotsMessageStage => 'Message';
+
+  @override
+  String get settingsBotsStageNotStarted => 'Not started';
+
+  @override
+  String get settingsBotsStageAccepted => 'Platform accepted';
+
+  @override
+  String get settingsBotsStageRejected => 'Platform rejected';
+
+  @override
+  String get settingsBotsStopCancelled => 'Cancelled locally';
+
+  @override
+  String get settingsBotsStopLocalFailure => 'Local failure';
 
   @override
   String get settingsSshTitle => 'Remote development';
@@ -2855,22 +2876,14 @@ class AppLocalizationsEn extends AppLocalizations {
   String get composerAttachmentAddTooltip => 'Add attachment';
 
   @override
-  String get composerAttachmentUnsupportedTooltip =>
-      'The current model does not support attachments';
+  String get composerAttachmentHandlingHint =>
+      'Handled directly when supported by the model, otherwise as workspace files';
 
   @override
   String get composerAttachmentPickLocal => 'Choose local files';
 
   @override
   String get composerAttachmentRemoveTooltip => 'Remove';
-
-  @override
-  String get composerClipboardImageUnsupported =>
-      'The current model does not support pasted images.';
-
-  @override
-  String get composerClipboardReadFailed =>
-      'Unable to read the clipboard image.';
 
   @override
   String settingsModelOutputCapabilities(String capabilities) {

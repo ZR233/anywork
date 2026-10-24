@@ -2,7 +2,9 @@
 
 pub mod budget;
 pub mod capture;
+pub mod file_create;
 pub mod transport;
+pub mod workspace_dir;
 
 pub use pl_protocol::remote::RemoteError;
 

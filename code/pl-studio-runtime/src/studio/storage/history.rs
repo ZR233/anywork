@@ -669,6 +669,46 @@ impl HistoryStore {
         }
     }
 
+    /// Latest actually consumed input for a specific Turn at a tool's durable fence. This includes
+    /// steering inputs and survives model-context compaction; the Turn's first input alone would
+    /// incorrectly lend bot authority to an ordinary later local input.
+    pub(crate) async fn consumed_input_at(
+        &self,
+        turn_id: &str,
+        history_fence: u64,
+    ) -> Result<Option<pl_core::thread::input::InputIdentity>> {
+        let Some(connection) = self.reader().await? else {
+            return Ok(None);
+        };
+        // Decode before filtering: a damaged newer identity must not be skipped in favour of
+        // an older bot input. json_extract also masks malformed JSON as a generic query failure.
+        // Keyset pages bound memory without loading the whole identity history.
+        let mut before: Option<i64> = None;
+        loop {
+            let rows = connection
+                .db
+                .query_all_raw(statement(
+                    "SELECT ordinal,payload FROM history_input_identities
+                     WHERE last_write_seq<=? AND (? IS NULL OR ordinal<?)
+                     ORDER BY ordinal DESC LIMIT 64",
+                    vec![integer(history_fence)?.into(), before.into(), before.into()],
+                ))
+                .await?;
+            if rows.is_empty() {
+                return Ok(None);
+            }
+            for row in rows {
+                before = Some(row.try_get("", "ordinal")?);
+                let input: pl_core::thread::input::InputIdentity =
+                    serde_json::from_str(&row.try_get::<String>("", "payload")?)?;
+                if matches!(&input.state, pl_core::thread::input::InputState::Consumed { turn_id: consumed_turn, .. } if consumed_turn == turn_id)
+                {
+                    return Ok(Some(input));
+                }
+            }
+        }
+    }
+
     /// Upgrades existing history before an active owner seeds its canonical projection.
     pub(crate) async fn prepare_activation(&self) -> Result<()> {
         if self
@@ -2879,6 +2919,81 @@ fn kind_label(kind: ThreadItemKind) -> &'static str {
 mod storage_fault_tests {
     use super::*;
     use crate::studio::thread_projection::order;
+
+    /// Malformed durable input must remain a persistent-data failure, not a retryable SQLite
+    /// query error or an absent source proof. The external diagnostic must not expose the row.
+    #[tokio::test]
+    async fn bot_source_input_corruption_is_nonretryable_without_exposing_payload() -> Result<()> {
+        use crate::bots::FeishuError;
+        use pl_core::thread::input::{InputIdentity, InputState};
+        let directory = tempfile::tempdir()?;
+        let store =
+            HistoryStore::open(&directory.path().join("history.sqlite"), "bot-source").await?;
+        let connection = store.writer().await?;
+        let db = &connection.db;
+        for (id, ordinal, sequence) in [("original", 1, 8), ("steering", 2, 10), ("future", 3, 12)]
+        {
+            write_input_identity(
+                db,
+                sequence,
+                &InputIdentityWrite {
+                    entry: crate::studio::storage::state::InputIdentityEntry::new(
+                        InputIdentity {
+                            id: id.into(),
+                            ordinal,
+                            revision: 1,
+                            digest: format!("{id}-digest"),
+                            delivery: Default::default(),
+                            state: InputState::Consumed {
+                                turn_id: "bot-turn".into(),
+                                attempt_id: "attempt".into(),
+                            },
+                        },
+                        1,
+                    ),
+                    request_digest: None,
+                    presentation: pl_protocol::MessagePresentation::Visible,
+                },
+            )
+            .await?;
+        }
+        assert_eq!(
+            store
+                .consumed_input_at("bot-turn", 10)
+                .await?
+                .map(|entry| entry.id),
+            Some("steering".into())
+        );
+        assert!(store.consumed_input_at("other-turn", 10).await?.is_none());
+        let private_marker = "private-corrupt-row-marker";
+        db.execute_raw(statement(
+            "UPDATE history_input_identities SET payload=? WHERE item_id='steering'",
+            vec![
+                serde_json::json!({"private": private_marker})
+                    .to_string()
+                    .into(),
+            ],
+        ))
+        .await?;
+        let cause = store
+            .consumed_input_at("bot-turn", 10)
+            .await
+            .expect_err("corrupt source must fail closed");
+        let error = FeishuError::history_read("read current bot tool input", cause);
+        assert_eq!(error.diagnostic().code, "unavailable");
+        assert!(
+            !error.retryable(),
+            "persistent JSON corruption must require local recovery"
+        );
+        assert!(
+            std::error::Error::source(&error).is_some(),
+            "the original cause must remain available internally"
+        );
+        let external = serde_json::to_string(&error.diagnostic())?;
+        assert!(!external.contains(private_marker));
+        assert!(external.contains("local recovery required"));
+        Ok(())
+    }
 
     /// A durable terminal Turn is readable by its own Turn identity, and a later revision of the
     /// same Turn identity is rejected instead of silently rewriting committed history.

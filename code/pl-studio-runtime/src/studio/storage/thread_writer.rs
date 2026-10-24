@@ -3644,7 +3644,6 @@ mod storage_fault_tests {
             content_sha256: hex::encode(sha2::Sha256::digest(bytes)),
             width: None,
             height: None,
-            initial_remote_url: None,
         };
         let attachment = store
             .promote_attachment_drafts("blob-fence", &[draft])

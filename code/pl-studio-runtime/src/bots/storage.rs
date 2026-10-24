@@ -1,4 +1,5 @@
 use super::protocol::error::{FeishuError, FeishuErrorKind};
+use super::send::{SendContent, SendIdentity, SendSource};
 use crate::studio::paths::{SqliteFileMode, sqlite_file_options};
 use crate::studio::unix_seconds;
 use sea_orm::sqlx::sqlite::{SqliteJournalMode, SqliteSynchronous};
@@ -7,10 +8,12 @@ use sea_orm::{
     TransactionTrait, Value,
 };
 use serde::{Deserialize, Serialize};
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::time::Duration;
 
-const BOT_STATE_SCHEMA_VERSION: i64 = 5;
+const BOT_STATE_SCHEMA_VERSION: i64 = 7;
 const PAIRING_LIMIT: i64 = 32;
 const PAIRING_TTL_SECONDS: i64 = 7 * 24 * 60 * 60;
 const INBOUND_CLAIM_TTL_SECONDS: i64 = 60;
@@ -23,7 +26,33 @@ const INBOUND_PENDING_BYTES: i64 = 512 * 1024;
 #[derive(Clone)]
 pub struct BotStateStore {
     path: PathBuf,
-    writer: tokio::sync::OnceCell<DatabaseConnection>,
+    writer: Arc<tokio::sync::OnceCell<DatabaseConnection>>,
+}
+
+/// Only serializes first connect/schema work for the same physical parent + database filename.
+/// Entries are weak and pruned; this is neither a task owner nor a persistent reference ledger.
+type InitializationLocks = BTreeMap<PathBuf, Weak<tokio::sync::Mutex<()>>>;
+static INITIALIZATION_LOCKS: OnceLock<Mutex<InitializationLocks>> = OnceLock::new();
+
+enum DatabaseOrigin {
+    Created,
+    Existing,
+}
+
+/// One strict keyset page. The producer gate owns the accumulated candidate set/cursor;
+/// neither this projection nor its progress is a second persistent reference index.
+pub(super) struct SendResourceReferences {
+    pub(super) referenced: BTreeSet<String>,
+    pub(super) continuation: Option<SendResourceReferenceCursor>,
+    pub(super) query_work: usize,
+}
+
+/// Only progress through the existing table, never a copy of reference facts. The producer gate
+/// excludes new file claims; later rows can only be resource-free posts and need not extend it.
+#[derive(Clone, Copy)]
+pub(super) struct SendResourceReferenceCursor {
+    after: Option<i64>,
+    through: i64,
 }
 
 #[derive(Debug, Clone)]
@@ -79,15 +108,55 @@ pub struct SendRecord {
     pub platform_message_ids: Vec<String>,
     pub segments: Vec<SendSegmentFact>,
     pub facts_complete: bool,
+    pub identity: SendIdentity,
+    pub source: Option<SendSource>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SendSegmentFact {
     pub index: u32,
     pub uuid: String,
     pub status: SendRecordStatus,
     pub platform_message_id: Option<String>,
     pub diagnostic: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content: Option<SendContent>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub upload: Option<UploadFact>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message_stage: Option<MessageStage>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub platform_diagnostic: Option<pl_protocol::studio::BotDiagnostic>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stop_reason: Option<pl_protocol::studio::BotSendStopReason>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    tag = "kind"
+)]
+pub enum UploadFact {
+    NotStarted,
+    /// Persisted before the non-idempotent POST. A replay treats this as unknown, never resends.
+    InFlight,
+    Accepted {
+        file_key: String,
+    },
+    Rejected,
+    Unknown,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum MessageStage {
+    NotStarted,
+    InFlight,
+    Accepted,
+    Rejected,
+    Unknown,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -200,7 +269,7 @@ impl BotStateStore {
     pub fn new(path: PathBuf) -> Self {
         Self {
             path,
-            writer: tokio::sync::OnceCell::new(),
+            writer: Arc::new(tokio::sync::OnceCell::new()),
         }
     }
 
@@ -1428,7 +1497,7 @@ impl BotStateStore {
         let db = self.db().await?;
         let row = db
             .query_one_raw(statement(
-                "SELECT operation_id, bot_id, chat_id, content_hash, status, platform_message_ids, segment_facts
+                "SELECT operation_id, bot_id, chat_id, content_hash, status, platform_message_ids, segment_facts, send_identity, send_source
                  FROM send_operations WHERE operation_id=?",
                 vec![operation_id.to_string().into()],
             ))
@@ -1458,7 +1527,7 @@ impl BotStateStore {
         let tx = db.begin().await.map_err(storage)?;
         let existing = tx
             .query_one_raw(statement(
-                "SELECT operation_id, bot_id, chat_id, content_hash, status, platform_message_ids, segment_facts
+                "SELECT operation_id, bot_id, chat_id, content_hash, status, platform_message_ids, segment_facts, send_identity, send_source
                  FROM send_operations WHERE operation_id=?",
                 vec![record.operation_id.clone().into()],
             ))
@@ -1472,8 +1541,8 @@ impl BotStateStore {
         }
         let inserted = tx
             .execute_raw(statement(
-                "INSERT OR IGNORE INTO send_operations(operation_id, bot_id, chat_id, content_hash, status, platform_message_ids, segment_facts, updated_at)
-                 VALUES(?,?,?,?,?,?,?,?)",
+                "INSERT OR IGNORE INTO send_operations(operation_id, bot_id, chat_id, content_hash, status, platform_message_ids, segment_facts, updated_at, send_identity, send_source)
+                 VALUES(?,?,?,?,?,?,?,?,?,?)",
                 vec![
                     record.operation_id.clone().into(),
                     record.bot_id.clone().into(),
@@ -1483,6 +1552,8 @@ impl BotStateStore {
                     record.platform_message_ids.join(",").into(),
                     encode_segment_facts(&record.segments)?.into(),
                     unix_seconds().into(),
+                    encode_send_identity(&record.identity)?.into(),
+                    encode_send_source(&record.source)?.into(),
                 ],
             ))
             .await
@@ -1493,7 +1564,7 @@ impl BotStateStore {
         }
         let Some(row) = tx
             .query_one_raw(statement(
-                "SELECT operation_id, bot_id, chat_id, content_hash, status, platform_message_ids, segment_facts
+                "SELECT operation_id, bot_id, chat_id, content_hash, status, platform_message_ids, segment_facts, send_identity, send_source
                  FROM send_operations WHERE operation_id=?",
                 vec![record.operation_id.clone().into()],
             ))
@@ -1520,8 +1591,8 @@ impl BotStateStore {
         }
         let db = self.db().await?;
         db.execute_raw(statement(
-            "INSERT INTO send_operations(operation_id, bot_id, chat_id, content_hash, status, platform_message_ids, segment_facts, updated_at)
-             VALUES(?,?,?,?,?,?,?,?)
+            "INSERT INTO send_operations(operation_id, bot_id, chat_id, content_hash, status, platform_message_ids, segment_facts, updated_at, send_identity, send_source)
+             VALUES(?,?,?,?,?,?,?,?,?,?)
              ON CONFLICT(operation_id) DO UPDATE SET
                status=excluded.status,
                platform_message_ids=excluded.platform_message_ids,
@@ -1536,11 +1607,189 @@ impl BotStateStore {
                 record.platform_message_ids.join(",").into(),
                 encode_segment_facts(&record.segments)?.into(),
                 unix_seconds().into(),
+                encode_send_identity(&record.identity)?.into(),
+                encode_send_source(&record.source)?.into(),
             ],
         ))
         .await
         .map_err(storage)?;
         Ok(())
+    }
+
+    /// Resolve the exact canonical input first, including completed work for a legitimate same-call
+    /// replay. Only a not-yet-recorded continuation needs the bounded active-work candidate set.
+    pub(crate) async fn inbound_sources(
+        &self,
+        thread_id: &str,
+        input_id: &str,
+    ) -> Result<Vec<SendSource>, FeishuError> {
+        let db = self.db().await?;
+        let mut rows = db.query_all_raw(statement(
+            "SELECT bot_id, chat_id, message_id, open_id, chat_kind, app_id, project_id, creation_id, binding_revision
+             FROM inbound_work WHERE creation_id=?
+               AND (('bot:' || bot_id || ':' || chat_id || ':' || message_id)=? OR watch_input=?) LIMIT 65",
+            vec![thread_id.to_owned().into(), input_id.to_owned().into(), input_id.to_owned().into()],
+        )).await.map_err(storage)?;
+        if rows.is_empty() {
+            rows = db.query_all_raw(statement(
+            "SELECT bot_id, chat_id, message_id, open_id, chat_kind, app_id, project_id, creation_id, binding_revision
+             FROM inbound_work WHERE creation_id=? AND status IN ('pending','claimed','failed') LIMIT 65",
+            vec![thread_id.to_owned().into()],
+            )).await.map_err(storage)?;
+        }
+        if rows.len() > 64 {
+            return Err(FeishuError::new(
+                FeishuErrorKind::Unavailable,
+                "source proof exceeds the inbound work bound; local recovery required",
+                false,
+                None,
+            ));
+        }
+        rows.into_iter()
+            .map(|row| {
+                let bot_id = strict_text(&row, "bot_id")?;
+                let chat_id = strict_text(&row, "chat_id")?;
+                let message_id = strict_text(&row, "message_id")?;
+                let original_input_id = format!("bot:{bot_id}:{chat_id}:{message_id}");
+                Ok(SendSource {
+                    bot_id,
+                    chat_id,
+                    message_id,
+                    app_id: strict_text(&row, "app_id")?,
+                    project_id: strict_text(&row, "project_id")?,
+                    open_id: strict_text(&row, "open_id")?,
+                    chat_kind: strict_text(&row, "chat_kind")?,
+                    creation_id: strict_text(&row, "creation_id")?,
+                    binding_revision: strict_watermark(&row, "binding_revision")?,
+                    thread_id: thread_id.to_owned(),
+                    input_id: original_input_id.clone(),
+                    original_input_id,
+                })
+            })
+            .collect()
+    }
+
+    pub(crate) async fn has_source_thread(&self, thread_id: &str) -> Result<bool, FeishuError> {
+        self.db()
+            .await?
+            .query_one_raw(statement(
+                "SELECT 1 AS present FROM inbound_work WHERE creation_id=? LIMIT 1",
+                vec![thread_id.to_owned().into()],
+            ))
+            .await
+            .map(|row| row.is_some())
+            .map_err(storage)
+    }
+
+    /// Reads one bounded page, retaining every status and failing closed on all stored facts.
+    /// One row per page bounds decoded metadata at the same existing send-freeze ceiling;
+    /// the maintenance owner separately bounds page count and retains the keyset continuation.
+    pub(super) async fn referenced_send_resources(
+        &self,
+        candidate_ids: &[String],
+        continuation: Option<SendResourceReferenceCursor>,
+    ) -> Result<SendResourceReferences, FeishuError> {
+        if candidate_ids.len() > 128 {
+            return Err(corrupt_send());
+        }
+        if self.writer.get().is_none() {
+            match tokio::fs::metadata(&self.path).await {
+                Ok(metadata) if metadata.is_file() => {}
+                Ok(_) => return Err(corrupt_send()),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    return Err(FeishuError::new(
+                        FeishuErrorKind::Unavailable,
+                        "send ledger is missing while resource objects exist; local recovery required",
+                        false,
+                        None,
+                    ));
+                }
+                Err(error) => return Err(state_failure(error)),
+            }
+        }
+        let db = self.db().await?;
+        let mut page = SendResourceReferences {
+            referenced: BTreeSet::new(),
+            continuation: None,
+            query_work: 0,
+        };
+        let cursor = match continuation {
+            Some(cursor) => cursor,
+            None => {
+                let upper = db
+                    .query_one_raw(statement(
+                        "SELECT MAX(rowid) AS maximum FROM send_operations",
+                        vec![],
+                    ))
+                    .await
+                    .map_err(state_failure)?
+                    .ok_or_else(corrupt_send)?;
+                page.query_work += 1;
+                let Some(through) = upper
+                    .try_get::<Option<i64>>("", "maximum")
+                    .map_err(|error| corrupt_send().with_source(error))?
+                else {
+                    return Ok(page);
+                };
+                SendResourceReferenceCursor {
+                    after: None,
+                    through,
+                }
+            }
+        };
+        let rows = db.query_all_raw(statement(
+            "SELECT rowid AS resource_cursor,operation_id,bot_id,chat_id,content_hash,status,platform_message_ids,segment_facts,send_identity,send_source
+             FROM send_operations WHERE (?1 IS NULL OR rowid>?1) AND rowid<=?2 ORDER BY rowid LIMIT 1",
+            vec![cursor.after.into(), cursor.through.into()],
+        )).await.map_err(state_failure)?;
+        page.query_work += 1;
+        for row in rows {
+            let after = row
+                .try_get::<i64>("", "resource_cursor")
+                .map_err(|error| corrupt_send().with_source(error))?;
+            let record = send_record_from_row(row)?;
+            if record.identity != SendIdentity::LegacyText && !record.facts_complete {
+                return Err(corrupt_send());
+            }
+            match &record.identity {
+                SendIdentity::File { .. }
+                    if record.segments.len() != 1
+                        || !matches!(
+                            record.segments[0].content,
+                            Some(SendContent::File { .. })
+                        ) =>
+                {
+                    return Err(corrupt_send());
+                }
+                SendIdentity::Markdown { .. }
+                    if record.segments.is_empty()
+                        || record
+                            .segments
+                            .iter()
+                            .any(|segment| segment.content.is_none()) =>
+                {
+                    return Err(corrupt_send());
+                }
+                _ => {}
+            }
+            page.continuation = Some(SendResourceReferenceCursor {
+                after: Some(after),
+                through: cursor.through,
+            });
+            for segment in record.segments {
+                if let Some(SendContent::File { resource, .. }) = segment.content {
+                    crate::resource_store::FileResourceStore::validate_owned_reference(&resource)
+                        .map_err(|error| corrupt_send().with_source(error))?;
+                    if candidate_ids
+                        .iter()
+                        .any(|candidate| candidate == resource.id())
+                    {
+                        page.referenced.insert(resource.id().to_owned());
+                    }
+                }
+            }
+        }
+        Ok(page)
     }
 }
 
@@ -1594,6 +1843,25 @@ fn encode_segment_facts(segments: &[SendSegmentFact]) -> Result<String, FeishuEr
     })
 }
 
+fn encode_send_identity(identity: &SendIdentity) -> Result<String, FeishuError> {
+    serde_json::to_string(identity).map_err(storage)
+}
+
+fn encode_send_source(source: &Option<SendSource>) -> Result<String, FeishuError> {
+    serde_json::to_string(source).map_err(storage)
+}
+
+/// Metadata only; resource bytes are held in the shared immutable resource store, not this budget.
+pub(crate) fn send_metadata_bytes(record: &SendRecord) -> Result<usize, FeishuError> {
+    let bytes = encode_send_identity(&record.identity)?
+        .len()
+        .checked_add(encode_send_source(&record.source)?.len())
+        .ok_or_else(super::occupancy::freeze_budget_error)?;
+    bytes
+        .checked_mul(3)
+        .ok_or_else(super::occupancy::freeze_budget_error)
+}
+
 /// 分段事实 JSON 参数的 UTF-8 长度（与持久化编码同一实现），供占用冻结计权使用。
 pub(crate) fn segment_facts_bytes(segments: &[SendSegmentFact]) -> Result<usize, FeishuError> {
     Ok(encode_segment_facts(segments)?.len())
@@ -1611,10 +1879,11 @@ fn decode_segment_facts(
     let facts: Vec<SendSegmentFact> = serde_json::from_str(raw).map_err(|error| {
         FeishuError::new(
             FeishuErrorKind::Unavailable,
-            format!("stored send segment facts are unreadable: {error}"),
+            "stored send segment facts are unreadable; local recovery required",
             false,
             None,
         )
+        .with_source(error)
     })?;
     Ok((facts, true))
 }
@@ -1633,6 +1902,11 @@ fn legacy_segment_facts(ids: &[String], overall: SendRecordStatus) -> (Vec<SendS
             },
             platform_message_id: Some(id.clone()),
             diagnostic: diagnostic.clone(),
+            content: None,
+            upload: None,
+            message_stage: None,
+            platform_diagnostic: None,
+            stop_reason: None,
         })
         .collect::<Vec<_>>();
     (facts, false)
@@ -1658,6 +1932,10 @@ fn send_record_from_row(row: sea_orm::QueryResult) -> Result<SendRecord, FeishuE
         platform_message_ids: ids,
         segments,
         facts_complete,
+        identity: serde_json::from_str(&stored_text(&row, "send_identity")?)
+            .map_err(|error| corrupt_send().with_source(error))?,
+        source: serde_json::from_str(&stored_text(&row, "send_source")?)
+            .map_err(|error| corrupt_send().with_source(error))?,
     })
 }
 
@@ -1672,7 +1950,24 @@ fn conflict_or_existing(
         &record.chat_id,
         &record.content_hash,
     )?;
+    if existing.identity != record.identity || existing.source != record.source {
+        return Err(FeishuError::new(
+            FeishuErrorKind::Conflict,
+            "operationId already used by a different send type or source",
+            false,
+            None,
+        ));
+    }
     Ok(existing)
+}
+
+fn corrupt_send() -> FeishuError {
+    FeishuError::new(
+        FeishuErrorKind::Unavailable,
+        "stored send provenance is unreadable; local recovery required",
+        false,
+        None,
+    )
 }
 
 /// 已持久发送记录与本次请求的严格身份核验：相同 operationId 只能是同一机器人、
@@ -1706,6 +2001,10 @@ fn storage(error: impl std::fmt::Display) -> FeishuError {
         true,
         None,
     )
+}
+
+fn state_failure(error: impl Into<anyhow::Error>) -> FeishuError {
+    FeishuError::history_read("access bot ledger", error.into())
 }
 
 fn statement(sql: &str, values: Vec<Value>) -> Statement {
@@ -1856,30 +2155,143 @@ async fn count_rows(db: &DatabaseConnection, sql: &str) -> Result<i64, FeishuErr
 
 async fn open_bot_state(path: &Path) -> Result<DatabaseConnection, FeishuError> {
     if let Some(parent) = path.parent() {
-        tokio::fs::create_dir_all(parent).await.map_err(storage)?;
+        tokio::fs::create_dir_all(parent)
+            .await
+            .map_err(state_failure)?;
     }
-    let mut options = sqlite_file_options(path, SqliteFileMode::Create, |options| {
+    let parent = path.parent().ok_or_else(|| {
+        state_failure(crate::studio::startup::data_error(anyhow::anyhow!(
+            "bot database has no parent"
+        )))
+    })?;
+    let filename = path.file_name().ok_or_else(|| {
+        state_failure(crate::studio::startup::data_error(anyhow::anyhow!(
+            "bot database has no filename"
+        )))
+    })?;
+    let path = tokio::fs::canonicalize(parent)
+        .await
+        .map_err(state_failure)?
+        .join(filename);
+    let initialization = {
+        let mut locks = INITIALIZATION_LOCKS
+            .get_or_init(Mutex::default)
+            .lock()
+            .map_err(|_| {
+                state_failure(crate::studio::startup::data_error(anyhow::anyhow!(
+                    "bot database initialization lock failed"
+                )))
+            })?;
+        locks.retain(|_, lock| lock.strong_count() > 0);
+        match locks.get(&path).and_then(Weak::upgrade) {
+            Some(lock) => lock,
+            None => {
+                let lock = Arc::new(tokio::sync::Mutex::new(()));
+                locks.insert(path.clone(), Arc::downgrade(&lock));
+                lock
+            }
+        }
+    };
+    let _initialization = initialization.lock().await;
+    // Exclusive file creation, not an empty-schema heuristic, establishes new ownership. An
+    // interrupted attempt leaves its file for local recovery; a later open cannot claim it anew.
+    let origin = match tokio::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&path)
+        .await
+    {
+        Ok(_) => DatabaseOrigin::Created,
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => DatabaseOrigin::Existing,
+        Err(error) => return Err(state_failure(error)),
+    };
+    let mut options = sqlite_file_options(&path, SqliteFileMode::Create, |options| {
         options
+            // The file is already owned or existing. Never silently recreate a disappeared DB.
+            .create_if_missing(false)
             .journal_mode(SqliteJournalMode::Wal)
             .synchronous(SqliteSynchronous::Full)
             .busy_timeout(Duration::from_secs(5))
             .foreign_keys(true)
     })
     .await
-    .map_err(storage)?;
+    .map_err(state_failure)?;
     options
         .max_connections(1)
         .min_connections(1)
         .connect_timeout(Duration::from_secs(8))
         .acquire_timeout(Duration::from_secs(8))
         .sqlx_logging(false);
-    let db = Database::connect(options).await.map_err(storage)?;
-    initialize(&db).await.map_err(storage)?;
+    let db = Database::connect(options).await.map_err(state_failure)?;
+    initialize(&db, origin).await.map_err(state_failure)?;
     Ok(db)
 }
 
-async fn initialize(db: &DatabaseConnection) -> anyhow::Result<()> {
+async fn initialize(db: &DatabaseConnection, origin: DatabaseOrigin) -> anyhow::Result<()> {
     let tx = db.begin().await?;
+    // A previously committed bot database must not silently rebuild an empty reference ledger.
+    // All established schema versions own both tables. Even an entirely empty existing schema
+    // is not evidence that we created this file; inspect before any CREATE/MIGRATE statement.
+    let version = if matches!(origin, DatabaseOrigin::Existing) {
+        let tables = tx
+        .query_one_raw(statement(
+                "SELECT COUNT(*) AS required FROM sqlite_master WHERE type='table' AND name IN ('bot_meta','send_operations')",
+                vec![],
+            ))
+            .await?
+            .ok_or_else(|| crate::studio::startup::data_error(anyhow::anyhow!("bot schema identity is unreadable")))?;
+        if tables.try_get::<i64>("", "required")? != 2 {
+            return Err(crate::studio::startup::data_error(anyhow::anyhow!(
+                "persisted bot database lacks its established metadata or send ledger; local recovery required"
+            )));
+        }
+        let metadata_columns = table_columns(&tx, "bot_meta").await?;
+        if !["id", "schema_version"]
+            .iter()
+            .all(|column| metadata_columns.contains(*column))
+        {
+            return Err(crate::studio::startup::data_error(anyhow::anyhow!(
+                "persisted bot metadata schema is incomplete; local recovery required"
+            )));
+        }
+        let metadata = tx
+            .query_one_raw(statement(
+                "SELECT schema_version FROM bot_meta WHERE id=1",
+                vec![],
+            ))
+            .await?
+            .ok_or_else(|| {
+                crate::studio::startup::data_error(anyhow::anyhow!(
+                    "persisted bot database lacks its schema version; local recovery required"
+                ))
+            })?;
+        let version = metadata
+            .try_get::<i64>("", "schema_version")
+            .map_err(crate::studio::startup::data_error)?;
+        if !(1..=BOT_STATE_SCHEMA_VERSION).contains(&version) {
+            return Err(crate::studio::startup::data_error(anyhow::anyhow!(
+                "persisted bot schema version is invalid or unsupported; local recovery required"
+            )));
+        }
+        if version >= 6 {
+            validate_file_ledger_schema(&tx).await?;
+            if version < 7 {
+                // v6 already owns file identities and references. Only stage semantics change;
+                // never repair missing file facts with defaults or re-run the text migration.
+                migrate_send_stages(&tx).await?;
+                tx.execute_raw(statement(
+                    "UPDATE bot_meta SET schema_version=? WHERE id=1",
+                    vec![BOT_STATE_SCHEMA_VERSION.into()],
+                ))
+                .await?;
+            }
+            tx.commit().await?;
+            return Ok(());
+        }
+        version
+    } else {
+        0 // Only this call's exclusive file creation authorizes a genuinely new schema.
+    };
     tx.execute_unprepared(
         "CREATE TABLE IF NOT EXISTS bot_meta (
             id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -1979,12 +2391,129 @@ async fn initialize(db: &DatabaseConnection) -> anyhow::Result<()> {
         )",
     )
     .await?;
-    migrate(&tx).await?;
+    migrate(&tx, version).await?;
     tx.commit().await?;
     Ok(())
 }
 
-async fn migrate<C: ConnectionTrait>(db: &C) -> anyhow::Result<()> {
+/// v6 and v7 share these complete file-aware tables/columns; v7 changes JSON stages only.
+/// Earlier text schemas deliberately keep their existing transactional migration boundary.
+async fn validate_file_ledger_schema<C: ConnectionTrait>(db: &C) -> anyhow::Result<()> {
+    let required: &[(&str, &[&str])] = &[
+        ("bot_meta", &["id", "schema_version"]),
+        (
+            "inbound_identities",
+            &[
+                "identity",
+                "bot_id",
+                "message_id",
+                "chat_id",
+                "content_hash",
+                "admitted_at",
+            ],
+        ),
+        (
+            "inbound_work",
+            &[
+                "identity",
+                "bot_id",
+                "chat_id",
+                "message_id",
+                "content_hash",
+                "text",
+                "open_id",
+                "chat_kind",
+                "generation",
+                "app_id",
+                "project_id",
+                "creation_id",
+                "binding_revision",
+                "status",
+                "diagnostic",
+                "claimed_by",
+                "claimed_at",
+                "updated_at",
+                "attachments",
+                "watch_input",
+                "attempt_count",
+                "next_attempt_at",
+            ],
+        ),
+        (
+            "thread_bindings",
+            &[
+                "chat_id",
+                "thread_id",
+                "status",
+                "creation_id",
+                "project_id",
+                "revision",
+                "generation",
+                "diagnostic",
+                "created_at",
+                "updated_at",
+            ],
+        ),
+        (
+            "observed_directs",
+            &["chat_id", "open_id", "name", "last_observed_at"],
+        ),
+        (
+            "pairing_requests",
+            &["request_id", "open_id", "display_name", "created_at"],
+        ),
+        (
+            "send_operations",
+            &[
+                "operation_id",
+                "bot_id",
+                "chat_id",
+                "content_hash",
+                "status",
+                "platform_message_ids",
+                "updated_at",
+                "segment_facts",
+                "send_identity",
+                "send_source",
+            ],
+        ),
+        (
+            "binding_operations",
+            &[
+                "operation_id",
+                "bot_id",
+                "chat_id",
+                "content_hash",
+                "expected_revision",
+                "creation_id",
+                "thread_id",
+                "updated_at",
+            ],
+        ),
+    ];
+    for (table, required_columns) in required {
+        let present = db
+            .query_one_raw(statement(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
+                vec![(*table).into()],
+            ))
+            .await?
+            .is_some();
+        let columns = table_columns(db, table).await?;
+        if !present
+            || required_columns
+                .iter()
+                .any(|column| !columns.contains(*column))
+        {
+            return Err(crate::studio::startup::data_error(anyhow::anyhow!(
+                "persisted file-aware bot schema is incomplete in {table}; local recovery required"
+            )));
+        }
+    }
+    Ok(())
+}
+
+async fn migrate<C: ConnectionTrait>(db: &C, version: i64) -> anyhow::Result<()> {
     db.execute_unprepared(
         "CREATE UNIQUE INDEX IF NOT EXISTS pairing_open_id ON pairing_requests(open_id)",
     )
@@ -2125,6 +2654,30 @@ async fn migrate<C: ConnectionTrait>(db: &C) -> anyhow::Result<()> {
         "TEXT NOT NULL DEFAULT ''",
     )
     .await?;
+    ensure_column(
+        db,
+        "send_operations",
+        "send_identity",
+        "TEXT NOT NULL DEFAULT '{\"kind\":\"legacyText\"}'",
+    )
+    .await?;
+    ensure_column(
+        db,
+        "send_operations",
+        "send_source",
+        "TEXT NOT NULL DEFAULT 'null'",
+    )
+    .await?;
+    db.execute_unprepared(
+        "CREATE INDEX IF NOT EXISTS inbound_source_creation ON inbound_work(creation_id, status)",
+    )
+    .await?;
+    if version < 6 {
+        migrate_text_send_facts(db).await?;
+    }
+    if version < 7 {
+        migrate_send_stages(db).await?;
+    }
     // 旧 pending 与“creating 但缺创建身份”的行一律规范为 needs_attention：
     // 不从 thread_id 反推创建身份，运行时也不再重新兼容这两种值。
     db.execute_unprepared(
@@ -2156,28 +2709,573 @@ async fn migrate<C: ConnectionTrait>(db: &C) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// v1..v5 stored snake_case segment fields and only text sends. Preserve their exact hashes,
+/// outcome/provenance and UUIDs; only the JSON schema is rewritten inside this transaction.
+async fn migrate_text_send_facts<C: ConnectionTrait>(db: &C) -> anyhow::Result<()> {
+    #[derive(Deserialize)]
+    struct OldSegment {
+        index: u32,
+        uuid: String,
+        status: SendRecordStatus,
+        platform_message_id: Option<String>,
+        diagnostic: Option<String>,
+    }
+    let mut after = String::new();
+    loop {
+        let rows = db.query_all_raw(statement(
+            "SELECT operation_id, segment_facts FROM send_operations WHERE operation_id>? ORDER BY operation_id LIMIT 64",
+            vec![after.clone().into()],
+        )).await?;
+        if rows.is_empty() {
+            break;
+        }
+        for row in rows {
+            let operation: String = row.try_get("", "operation_id")?;
+            let raw: String = row.try_get("", "segment_facts")?;
+            if !raw.is_empty() {
+                let old: Vec<OldSegment> = serde_json::from_str(&raw)?;
+                let facts = old
+                    .into_iter()
+                    .map(|old| SendSegmentFact {
+                        index: old.index,
+                        uuid: old.uuid,
+                        status: old.status,
+                        platform_message_id: old.platform_message_id,
+                        diagnostic: old.diagnostic,
+                        content: None,
+                        upload: None,
+                        message_stage: None,
+                        platform_diagnostic: None,
+                        stop_reason: None,
+                    })
+                    .collect::<Vec<_>>();
+                db.execute_raw(statement(
+                    "UPDATE send_operations SET segment_facts=? WHERE operation_id=?",
+                    vec![
+                        serde_json::to_string(&facts)?.into(),
+                        operation.clone().into(),
+                    ],
+                ))
+                .await?;
+            }
+            after = operation;
+        }
+    }
+    Ok(())
+}
+
+/// v6 mixed application failure with platform rejection. Correct only proven old local paths;
+/// missing historical evidence becomes Unknown, never invented NotStarted.
+async fn migrate_send_stages<C: ConnectionTrait>(db: &C) -> anyhow::Result<()> {
+    let mut after = String::new();
+    loop {
+        let rows = db.query_all_raw(statement(
+            "SELECT operation_id, segment_facts, send_identity, platform_message_ids FROM send_operations WHERE operation_id>? ORDER BY operation_id LIMIT 64",
+            vec![after.clone().into()],
+        )).await?;
+        if rows.is_empty() {
+            break;
+        }
+        for row in rows {
+            let operation: String = row.try_get("", "operation_id")?;
+            let raw: String = row.try_get("", "segment_facts")?;
+            if !raw.is_empty() {
+                let identity: SendIdentity =
+                    serde_json::from_str(&row.try_get::<String>("", "send_identity")?)?;
+                let mut facts: Vec<SendSegmentFact> = serde_json::from_str(&raw)?;
+                let mut repaired_stop = false;
+                for fact in &mut facts {
+                    repaired_stop |=
+                        migrate_stage_fact(fact, matches!(identity, SendIdentity::File { .. }));
+                }
+                let new_status = if repaired_stop {
+                    Some(
+                        if facts.iter().any(|fact| {
+                            matches!(
+                                fact.upload,
+                                Some(UploadFact::Unknown | UploadFact::InFlight)
+                            ) || matches!(
+                                fact.message_stage,
+                                Some(MessageStage::Unknown | MessageStage::InFlight)
+                            )
+                        }) {
+                            "unknown"
+                        } else if row
+                            .try_get::<String>("", "platform_message_ids")?
+                            .is_empty()
+                        {
+                            "rejected"
+                        } else {
+                            "partial"
+                        },
+                    )
+                } else {
+                    None
+                };
+                db.execute_raw(statement(
+                    "UPDATE send_operations SET segment_facts=?, status=COALESCE(?,status) WHERE operation_id=?",
+                    vec![serde_json::to_string(&facts)?.into(), new_status.map(str::to_owned).into(), operation.clone().into()],
+                )).await?;
+            }
+            after = operation;
+        }
+    }
+    Ok(())
+}
+
+fn migrate_stage_fact(fact: &mut SendSegmentFact, file_operation: bool) -> bool {
+    use pl_protocol::studio::BotSendStopReason;
+    let file = file_operation
+        || fact.upload.is_some()
+        || matches!(fact.content, Some(SendContent::File { .. }));
+    if file && fact.upload.is_none() {
+        fact.upload = Some(UploadFact::Unknown);
+    }
+    if fact.message_stage.is_none() {
+        fact.message_stage = Some(
+            if fact
+                .platform_message_id
+                .as_ref()
+                .is_some_and(|id| !id.is_empty())
+            {
+                MessageStage::Accepted
+            } else {
+                MessageStage::Unknown
+            },
+        );
+    }
+    let diagnostic = fact.diagnostic.as_deref().unwrap_or_default();
+    let cancelled = diagnostic
+        == "send cancelled before the next network write; earlier stages retain their recorded result";
+    let local = matches!(
+        diagnostic,
+        "retained send resource is unavailable or invalid"
+            | "outgoing file byte budget is full"
+            | "invalid upload media type"
+            | "file upload requires 1..=30,000,000 bytes"
+            | "complete message HTTP JSON exceeds 30,000 UTF-8 bytes"
+            | "post content exceeds 30,000 UTF-8 bytes"
+            | "send uuid exceeds 50 characters"
+    );
+    if cancelled || local {
+        if matches!(
+            fact.upload,
+            Some(UploadFact::Rejected | UploadFact::Unknown)
+        ) {
+            fact.upload = Some(UploadFact::NotStarted);
+        }
+        if fact.message_stage == Some(MessageStage::Rejected) {
+            fact.message_stage = Some(MessageStage::NotStarted);
+        }
+        fact.stop_reason = Some(if cancelled {
+            BotSendStopReason::Cancelled
+        } else {
+            BotSendStopReason::LocalFailure
+        });
+        fact.platform_diagnostic = None;
+        fact.status = SendRecordStatus::Rejected;
+        return true;
+    }
+    if matches!(
+        diagnostic,
+        "消息资源超过单文件或批次字节预算"
+            | "Feishu HTTP service is unavailable"
+            | "Feishu HTTP request failed"
+    ) {
+        if fact.upload == Some(UploadFact::Rejected) {
+            fact.upload = Some(UploadFact::Unknown);
+        }
+        if fact.message_stage == Some(MessageStage::Rejected) {
+            fact.message_stage = Some(MessageStage::Unknown);
+        }
+        if diagnostic == "消息资源超过单文件或批次字节预算" {
+            fact.platform_diagnostic = None;
+            fact.diagnostic = Some(
+                "legacy POST response exceeded the local body budget; result is unknown".into(),
+            );
+        }
+        fact.status = SendRecordStatus::Unknown;
+        return true;
+    }
+    // A v6 Rejected without a platform code has no proof that a POST was rejected remotely.
+    if fact
+        .platform_diagnostic
+        .as_ref()
+        .and_then(|d| d.platform_code.as_ref())
+        .is_none()
+    {
+        let mut changed = false;
+        if fact.upload == Some(UploadFact::Rejected) {
+            fact.upload = Some(UploadFact::Unknown);
+            changed = true;
+        }
+        if fact.message_stage == Some(MessageStage::Rejected) {
+            fact.message_stage = Some(MessageStage::Unknown);
+            changed = true;
+        }
+        if changed {
+            fact.status = SendRecordStatus::Unknown;
+        }
+        return changed;
+    }
+    false
+}
+
 async fn ensure_column<C: ConnectionTrait>(
     db: &C,
     table: &str,
     column: &str,
     decl: &str,
 ) -> anyhow::Result<()> {
-    let columns = db
-        .query_all_raw(statement(&format!("PRAGMA table_info({table})"), vec![]))
-        .await?;
-    let present = columns
-        .iter()
-        .any(|row| row.try_get::<String>("", "name").ok().as_deref() == Some(column));
-    if !present {
+    if !table_columns(db, table).await?.contains(column) {
         db.execute_unprepared(&format!("ALTER TABLE {table} ADD COLUMN {column} {decl}"))
             .await?;
     }
     Ok(())
 }
 
+async fn table_columns<C: ConnectionTrait>(
+    db: &C,
+    table: &str,
+) -> anyhow::Result<BTreeSet<String>> {
+    db.query_all_raw(statement(&format!("PRAGMA table_info({table})"), vec![]))
+        .await?
+        .into_iter()
+        .map(|row| row.try_get::<String>("", "name"))
+        .collect::<Result<BTreeSet<_>, _>>()
+        .map_err(crate::studio::startup::data_error)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    fn resource_claim(
+        operation: &str,
+        resource: pl_core::context::ResourceReference,
+    ) -> SendRecord {
+        SendRecord {
+            operation_id: operation.into(),
+            bot_id: "recovery-bot".into(),
+            chat_id: "chat".into(),
+            content_hash: format!("claim-{operation}"),
+            status: SendRecordStatus::Unknown,
+            platform_message_ids: Vec::new(),
+            facts_complete: true,
+            identity: SendIdentity::File {
+                request_hash: operation.into(),
+            },
+            source: None,
+            segments: vec![SendSegmentFact {
+                index: 0,
+                uuid: "persisted-before-crash".into(),
+                status: SendRecordStatus::Unknown,
+                platform_message_id: None,
+                diagnostic: None,
+                content: Some(SendContent::File {
+                    filename: "original.bin".into(),
+                    upload_filename: "original.bin".into(),
+                    resource,
+                }),
+                upload: Some(UploadFact::NotStarted),
+                message_stage: Some(MessageStage::NotStarted),
+                platform_diagnostic: None,
+                stop_reason: None,
+            }],
+        }
+    }
+
+    /// A real schema-loss fault must not turn an existing database into an empty reference proof.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn existing_schema_loss_preserves_resources_instead_of_reinitializing_the_ledger()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use crate::resource_store::FileResourceStore;
+        use pl_core::context::ResourceReader;
+        use std::sync::Arc;
+
+        for version in [6, 7] {
+            for (name, fault) in [
+                (
+                    "file-facts-and-identity",
+                    "ALTER TABLE send_operations DROP COLUMN segment_facts;
+                 ALTER TABLE send_operations DROP COLUMN send_identity",
+                ),
+                (
+                    "file-facts",
+                    "ALTER TABLE send_operations DROP COLUMN segment_facts",
+                ),
+                (
+                    "file-identity",
+                    "ALTER TABLE send_operations DROP COLUMN send_identity",
+                ),
+                (
+                    "file-source",
+                    "ALTER TABLE send_operations DROP COLUMN send_source",
+                ),
+                (
+                    "send-base",
+                    "ALTER TABLE send_operations DROP COLUMN chat_id",
+                ),
+                (
+                    "inbound-attachments",
+                    "ALTER TABLE inbound_work DROP COLUMN attachments",
+                ),
+                ("other-required-table", "DROP TABLE observed_directs"),
+                (
+                    "metadata-version-column",
+                    "ALTER TABLE bot_meta DROP COLUMN schema_version",
+                ),
+                ("metadata-version-row", "DELETE FROM bot_meta WHERE id=1"),
+                (
+                    "invalid-version",
+                    "UPDATE bot_meta SET schema_version=-1 WHERE id=1",
+                ),
+                ("both", "DROP TABLE bot_meta; DROP TABLE send_operations"),
+                ("metadata", "DROP TABLE bot_meta"),
+                ("ledger", "DROP TABLE send_operations"),
+            ] {
+                let directory = tempfile::tempdir()?;
+                let path = directory.path().join("state.sqlite");
+                let first = BotStateStore::new(path.clone());
+                first.db().await?;
+                let resources = FileResourceStore::new(directory.path().join("send-resources"));
+                let reference = resources
+                    .retain_bytes(
+                        Arc::from(b"committed original".as_slice()),
+                        "application/octet-stream",
+                    )
+                    .await?;
+                first
+                    .claim_send(&resource_claim("original", reference.clone()))
+                    .await?;
+                let db = first.db().await?;
+                db.execute_raw(statement(
+                    "UPDATE bot_meta SET schema_version=? WHERE id=1",
+                    vec![version.into()],
+                ))
+                .await?;
+                db.execute_unprepared(fault).await?;
+                let schema_before = db
+                    .query_all_raw(statement(
+                        "SELECT name,sql FROM sqlite_master WHERE type='table' ORDER BY name",
+                        vec![],
+                    ))
+                    .await?
+                    .into_iter()
+                    .map(|row| -> Result<_, sea_orm::DbErr> {
+                        Ok((
+                            row.try_get::<String>("", "name")?,
+                            row.try_get::<String>("", "sql")?,
+                        ))
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                assert!(
+                    schema_before
+                        .iter()
+                        .any(|(name, _)| name == "thread_bindings")
+                );
+                let mut recovery =
+                    super::super::send_resources::SendResources::new(resources.clone());
+                let reopened = BotStateStore::new(path);
+                let error = recovery
+                    .maintain(&reopened)
+                    .await
+                    .expect_err(&format!("v{version}/{name}"));
+                assert!(!error.retryable(), "schema loss requires local recovery");
+                assert!(recovery.needs_maintenance());
+                assert_eq!(
+                    resources
+                        .read(reference, Default::default())
+                        .await?
+                        .as_ref(),
+                    b"committed original"
+                );
+                let schema_after = db
+                    .query_all_raw(statement(
+                        "SELECT name,sql FROM sqlite_master WHERE type='table' ORDER BY name",
+                        vec![],
+                    ))
+                    .await?
+                    .into_iter()
+                    .map(|row| -> Result<_, sea_orm::DbErr> {
+                        Ok((
+                            row.try_get::<String>("", "name")?,
+                            row.try_get::<String>("", "sql")?,
+                        ))
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                assert_eq!(
+                    schema_before, schema_after,
+                    "recovery must not recreate tables or synthesize missing columns"
+                );
+            }
+        }
+
+        // An interrupted/unknown empty file is existing state, not proof of fresh ownership.
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("state.sqlite");
+        std::fs::write(&path, [])?;
+        assert!(
+            !BotStateStore::new(path)
+                .db()
+                .await
+                .err()
+                .ok_or("existing empty DB was recreated")?
+                .retryable()
+        );
+        let concurrent_path = directory.path().join("concurrent-new.sqlite");
+        let first = BotStateStore::new(concurrent_path.clone());
+        let concurrent = BotStateStore::new(concurrent_path);
+        let (a, b) = tokio::join!(first.db(), concurrent.db());
+        a?;
+        b?;
+        Ok(())
+    }
+
+    /// Real persisted claims survive process reconstruction; corrupt ledger facts prevent unlink,
+    /// and bounded recovery advances past >1024 referenced entries rather than rescanning a prefix.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn send_resource_recovery_preserves_shared_claims_and_resumes_bounded_work()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use crate::resource_store::FileResourceStore;
+        use pl_core::context::ResourceReader;
+        use std::collections::BTreeMap;
+        use std::sync::Arc;
+        let directory = tempfile::tempdir()?;
+        let home = directory.path().join("physical-home");
+        let alias = directory.path().join("home-alias");
+        std::fs::create_dir(&home)?;
+        std::os::unix::fs::symlink(&home, &alias)?;
+        let root = alias.join("send-resources");
+        let resources = FileResourceStore::beneath(alias.clone(), root.clone());
+        let mut retained = BTreeMap::new();
+        for index in 0_u32..1040 {
+            let reference = resources
+                .retain_bytes(
+                    Arc::from(index.to_le_bytes().to_vec()),
+                    "application/octet-stream",
+                )
+                .await?;
+            retained.insert(reference.id().to_owned(), reference);
+        }
+        let mut scan = None;
+        let mut order = Vec::new();
+        loop {
+            let batch = resources.owned_batch(scan, 128).await?;
+            order.extend(
+                batch
+                    .objects
+                    .iter()
+                    .filter_map(|object| object.resource_id().map(str::to_owned)),
+            );
+            scan = batch.continuation;
+            if scan.is_none() {
+                break;
+            }
+        }
+        assert_eq!(order.len(), 1040);
+        let path = alias.join("state.sqlite");
+        let ledger = BotStateStore::new(path.clone());
+        let mut original = None;
+        for (index, id) in order.iter().take(1024).enumerate() {
+            let record = resource_claim(&format!("op-{index:04}"), retained[id].clone());
+            assert!(ledger.claim_send(&record).await?.is_none());
+            if index == 0 {
+                original = Some(record);
+            }
+        }
+        let original = original.ok_or("missing initial claim")?;
+        let shared = resource_claim("shared-second-operation", retained[&order[0]].clone());
+        assert!(ledger.claim_send(&shared).await?.is_none());
+        // A failed/cancelled unclaimed retain with identical bytes has no extra ref row.
+        let same = resources
+            .retain_bytes(
+                Arc::from(
+                    resources
+                        .read(retained[&order[0]].clone(), Default::default())
+                        .await?
+                        .as_ref(),
+                ),
+                "application/octet-stream",
+            )
+            .await?;
+        assert_eq!(same.id(), order[0]);
+        ledger
+            .db()
+            .await?
+            .execute_raw(statement(
+                "UPDATE send_operations SET segment_facts='{}' WHERE operation_id=?",
+                vec![original.operation_id.clone().into()],
+            ))
+            .await?;
+        let mut recovery = super::super::send_resources::SendResources::new(
+            FileResourceStore::beneath(alias, root),
+        );
+        let failure = recovery
+            .maintain(&ledger)
+            .await
+            .expect_err("bad ledger must not prove absence of references");
+        assert!(!failure.retryable());
+        assert!(
+            resources
+                .read(retained[&order[1039]].clone(), Default::default())
+                .await
+                .is_ok(),
+            "dirty ledger must leave orphan bytes untouched"
+        );
+        // Explicitly repair only the injected bytes from the previously frozen real record;
+        // normal save_send intentionally refuses to overwrite an unreadable persisted row.
+        ledger
+            .db()
+            .await?
+            .execute_raw(statement(
+                "UPDATE send_operations SET segment_facts=? WHERE operation_id=?",
+                vec![
+                    serde_json::to_string(&original.segments)?.into(),
+                    original.operation_id.clone().into(),
+                ],
+            ))
+            .await?;
+        drop(ledger);
+        let reopened = BotStateStore::new(path);
+        let mut jobs = 0;
+        loop {
+            jobs += 1;
+            match recovery.maintain(&reopened).await {
+                Ok(()) => break,
+                Err(error) if error.kind() == FeishuErrorKind::Busy && jobs < 600 => {}
+                Err(error) => return Err(error.into()),
+            }
+        }
+        assert!(
+            jobs > 2,
+            "fixture must cross maintenance scan/query budgets"
+        );
+        for id in order.iter().take(1024) {
+            assert!(
+                resources
+                    .read(retained[id].clone(), Default::default())
+                    .await
+                    .is_ok(),
+                "referenced bytes must remain"
+            );
+        }
+        for id in order.iter().skip(1024) {
+            assert!(
+                resources
+                    .read(retained[id].clone(), Default::default())
+                    .await
+                    .is_err(),
+                "unclaimed crash residue must be removed"
+            );
+        }
+        assert!(reopened.load_send(&original.operation_id).await?.is_some());
+        assert!(reopened.load_send(&shared.operation_id).await?.is_some());
+        Ok(())
+    }
 
     /// 直接以 v3 形态建库并塞入真实业务行：一条远古过期 claimed 的 work、
     /// 一个 bound 绑定与一条发送事实，用于验证 v4 迁移的真实保全与 lease 语义。
@@ -2259,26 +3357,217 @@ mod tests {
         )
     }
 
-    /// 真实 v3 输入迁移到当前 schema，保全映射、收发账本及附件工作。
-    /// 并覆盖过期旧 claim 拒绝与后继新 worker 竞争接管的 lease 语义。
+    /// Real v6 stage repairs must preserve complete file identities/references through recovery.
+    #[tokio::test]
+    async fn v6_send_stage_migration_separates_local_stops_and_unknown_responses()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use pl_protocol::studio::{BotSendStage as Stage, BotSendStopReason as Stop};
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("v6-stages.sqlite");
+        let store = BotStateStore::new(path.clone());
+        let db = store.db().await?;
+        let resources =
+            crate::resource_store::FileResourceStore::new(directory.path().join("resources"));
+        let original: std::sync::Arc<[u8]> =
+            std::sync::Arc::from(b"v6 exact retained original".as_slice());
+        let reference = resources
+            .retain_bytes(original.clone(), "application/octet-stream")
+            .await?;
+        let content = SendContent::File {
+            filename: "v6.bin".into(),
+            upload_filename: "v6.bin".into(),
+            resource: reference.clone(),
+        };
+        let cancelled = "send cancelled before the next network write; earlier stages retain their recorded result";
+        let cases = [
+            (
+                "cancel-before-upload",
+                serde_json::json!({"kind":"rejected"}),
+                Some("notStarted"),
+                cancelled,
+                None,
+                Stage::NotStarted,
+                Stage::NotStarted,
+                Some(Stop::Cancelled),
+            ),
+            (
+                "cancel-after-upload",
+                serde_json::json!({"kind":"accepted","fileKey":"v6-key"}),
+                Some("rejected"),
+                cancelled,
+                None,
+                Stage::Accepted,
+                Stage::NotStarted,
+                Some(Stop::Cancelled),
+            ),
+            (
+                "response-budget",
+                serde_json::json!({"kind":"rejected"}),
+                Some("notStarted"),
+                "消息资源超过单文件或批次字节预算",
+                None,
+                Stage::Unknown,
+                Stage::NotStarted,
+                None,
+            ),
+            (
+                "local-read",
+                serde_json::json!({"kind":"unknown"}),
+                Some("notStarted"),
+                "retained send resource is unavailable or invalid",
+                None,
+                Stage::NotStarted,
+                Stage::NotStarted,
+                Some(Stop::LocalFailure),
+            ),
+            (
+                "platform-rejection",
+                serde_json::json!({"kind":"rejected"}),
+                Some("notStarted"),
+                "Feishu permission was denied",
+                Some("230027"),
+                Stage::Rejected,
+                Stage::NotStarted,
+                None,
+            ),
+            (
+                "unproven-history",
+                serde_json::Value::Null,
+                None,
+                "unknown historical result",
+                None,
+                Stage::Unknown,
+                Stage::Unknown,
+                None,
+            ),
+            (
+                "http-server-error",
+                serde_json::json!({"kind":"rejected"}),
+                Some("notStarted"),
+                "Feishu HTTP service is unavailable",
+                Some("503"),
+                Stage::Unknown,
+                Stage::NotStarted,
+                None,
+            ),
+        ];
+        for (id, upload, message, diagnostic, code, ..) in &cases {
+            let facts = serde_json::json!([{
+                "index":0,"uuid":"v6-uuid","status":"rejected","platformMessageId":null,
+                "diagnostic":diagnostic,"upload":upload,"messageStage":message,"content":content,
+                "platformDiagnostic":{"code":"rejected","message":diagnostic,"retryable":false,"platformCode":code,"guidance":null}
+            }]);
+            db.execute_raw(statement(
+                "INSERT INTO send_operations(operation_id,bot_id,chat_id,content_hash,status,platform_message_ids,segment_facts,updated_at,send_identity,send_source)
+                 VALUES(?,'bot','chat','unchanged-v6-hash','rejected','',?,1,'{\"kind\":\"file\",\"requestHash\":\"original-request\"}','null')",
+                vec![id.to_string().into(), facts.to_string().into()],
+            )).await?;
+        }
+        db.execute_unprepared("UPDATE bot_meta SET schema_version=6 WHERE id=1")
+            .await?;
+        drop(store);
+        let reopened = BotStateStore::new(path);
+        for (id, _, _, _, _, upload, message, stop) in cases {
+            let record = reopened
+                .load_send(id)
+                .await?
+                .ok_or("migrated record missing")?;
+            assert_eq!(record.content_hash, "unchanged-v6-hash");
+            assert_eq!(record.segments[0].uuid, "v6-uuid");
+            assert_eq!(
+                record.identity,
+                SendIdentity::File {
+                    request_hash: "original-request".into()
+                }
+            );
+            assert_eq!(
+                record.segments[0].content.as_ref(),
+                Some(&content),
+                "stage migration must not rewrite file references"
+            );
+            let retry = reopened
+                .claim_send(&record)
+                .await?
+                .ok_or("retry lost original record")?;
+            let result = super::super::delivery::replay_send(retry);
+            assert_eq!(result.segments[0].upload_stage, Some(upload), "{id}");
+            assert_eq!(result.segments[0].message_stage, message, "{id}");
+            assert_eq!(result.segments[0].stop_reason, stop, "{id}");
+            if id == "cancel-after-upload" {
+                assert_eq!(
+                    record.segments[0].upload,
+                    Some(UploadFact::Accepted {
+                        file_key: "v6-key".into()
+                    })
+                );
+            }
+            if id == "response-budget" {
+                assert_eq!(result.status, pl_protocol::studio::BotSendStatus::Unknown);
+            }
+            if id == "unproven-history" {
+                assert_eq!(result.status, pl_protocol::studio::BotSendStatus::Rejected);
+            }
+            if id == "http-server-error" {
+                assert_eq!(
+                    result.segments[0]
+                        .diagnostic
+                        .as_ref()
+                        .and_then(|diagnostic| diagnostic.platform_code.as_deref()),
+                    Some("503")
+                );
+            }
+        }
+        let mut recovery = super::super::send_resources::SendResources::new(resources.clone());
+        recovery.maintain(&reopened).await?;
+        assert!(!recovery.needs_maintenance());
+        assert_eq!(
+            pl_core::context::ResourceAccess::new(resources)
+                .read(&reference, tokio_util::sync::CancellationToken::new())
+                .await?
+                .as_ref(),
+            original.as_ref()
+        );
+        Ok(())
+    }
+
     #[tokio::test]
     async fn legacy_ledger_upgrade_preserves_work_and_reopens_media_without_duplicate_admission()
     -> Result<(), Box<dyn std::error::Error>> {
-        let directory = tempfile::tempdir()?;
-        let path = directory.path().join("bot-state.sqlite");
-        let legacy = v3_database(&path).await;
-        drop(legacy);
+        for version in [3, 5] {
+            let directory = tempfile::tempdir()?;
+            let path = directory.path().join("bot-state.sqlite");
+            let legacy = v3_database(&path).await;
+            // A later text-only ledger stored real per-segment snake_case JSON. Both the oldest
+            // no-facts row and this known partial result must survive the v6 typed-send migration.
+            legacy.execute_unprepared(
+            "ALTER TABLE send_operations ADD COLUMN segment_facts TEXT NOT NULL DEFAULT '';
+             INSERT INTO send_operations(operation_id, bot_id, chat_id, content_hash, status, platform_message_ids, updated_at, segment_facts)
+             VALUES('op-with-facts', 'legacy', 'chat', 'old-text-hash', 'partial', 'pm-known', 1,
+               '[{\"index\":0,\"uuid\":\"old-uuid\",\"status\":\"succeeded\",\"platform_message_id\":\"pm-known\",\"diagnostic\":null},{\"index\":1,\"uuid\":\"old-uuid-2\",\"status\":\"rejected\",\"platform_message_id\":null,\"diagnostic\":\"known rejection\"}]');"
+        ).await?;
+            if version == 5 {
+                // These are the remaining columns in HEAD's schema5 initialize+migrate result.
+                // Do not invent earlier per-column introduction versions or reject pre6 schemas.
+                legacy.execute_unprepared(
+                "ALTER TABLE inbound_work ADD COLUMN attachments TEXT NOT NULL DEFAULT '[]';
+                 ALTER TABLE inbound_work ADD COLUMN watch_input TEXT NOT NULL DEFAULT '';
+                 ALTER TABLE inbound_work ADD COLUMN attempt_count INTEGER NOT NULL DEFAULT 0;
+                 ALTER TABLE inbound_work ADD COLUMN next_attempt_at INTEGER NOT NULL DEFAULT 0;
+                 UPDATE bot_meta SET schema_version=5 WHERE id=1;",
+            ).await?;
+            }
+            drop(legacy);
 
-        let store = BotStateStore::new(path.clone());
-        // 旧 claimed 行与绑定、发送事实仍在，schema 升到当前版本。
-        let due = store.list_due_inbound("legacy").await?;
-        assert_eq!(due.len(), 1);
-        assert_eq!(due[0].message_id, "m1");
-        assert_eq!(due[0].text, "question");
-        assert!(due[0].attachments.is_empty());
-        assert_eq!(due[0].watch_input, "");
-        let db = store.db().await?;
-        assert!(
+            let store = BotStateStore::new(path.clone());
+            // 旧 claimed 行与绑定、发送事实仍在，schema 升到当前版本。
+            let due = store.list_due_inbound("legacy").await?;
+            assert_eq!(due.len(), 1);
+            assert_eq!(due[0].message_id, "m1");
+            assert_eq!(due[0].text, "question");
+            assert!(due[0].attachments.is_empty());
+            assert_eq!(due[0].watch_input, "");
+            let db = store.db().await?;
+            assert!(
             db.query_one_raw(statement(
                 "SELECT thread_id FROM thread_bindings WHERE chat_id='chat' AND thread_id='thread-1'",
                 vec![],
@@ -2287,7 +3576,7 @@ mod tests {
             .is_some(),
             "migrated binding survives"
         );
-        assert!(
+            assert!(
             db.query_one_raw(statement(
                 "SELECT status FROM send_operations WHERE operation_id='op-1' AND status='succeeded'",
                 vec![],
@@ -2296,89 +3585,188 @@ mod tests {
             .is_some(),
             "migrated send fact survives"
         );
-        let version: i64 = db
-            .query_one_raw(statement(
-                "SELECT schema_version FROM bot_meta WHERE id=1",
-                vec![],
-            ))
-            .await?
-            .unwrap()
-            .try_get("", "schema_version")?;
-        assert_eq!(version, BOT_STATE_SCHEMA_VERSION);
+            let version: i64 = db
+                .query_one_raw(statement(
+                    "SELECT schema_version FROM bot_meta WHERE id=1",
+                    vec![],
+                ))
+                .await?
+                .unwrap()
+                .try_get("", "schema_version")?;
+            assert_eq!(version, BOT_STATE_SCHEMA_VERSION);
+            let old = store.load_send("op-1").await?.ok_or("old send missing")?;
+            assert_eq!(old.identity, SendIdentity::LegacyText);
+            assert_eq!(old.content_hash, "hash");
+            assert!(!old.facts_complete);
+            assert_eq!(old.platform_message_ids, ["pm-1"]);
+            let known = store
+                .load_send("op-with-facts")
+                .await?
+                .ok_or("known text send missing")?;
+            assert_eq!(known.identity, SendIdentity::LegacyText);
+            assert_eq!(known.content_hash, "old-text-hash");
+            assert_eq!(known.status, SendRecordStatus::Partial);
+            assert!(known.facts_complete);
+            assert_eq!(known.segments[0].uuid, "old-uuid");
+            assert_eq!(
+                known.segments[0].platform_message_id.as_deref(),
+                Some("pm-known")
+            );
+            assert_eq!(known.segments[1].status, SendRecordStatus::Rejected);
+            assert_eq!(
+                known.segments[1].diagnostic.as_deref(),
+                Some("known rejection")
+            );
+            // A file cannot borrow a migrated text operation even with its old hash copied verbatim.
+            let mut conflicting_file = old.clone();
+            conflicting_file.identity = SendIdentity::File {
+                request_hash: "file-request".into(),
+            };
+            assert_eq!(
+                store
+                    .claim_send(&conflicting_file)
+                    .await
+                    .unwrap_err()
+                    .kind(),
+                FeishuErrorKind::Conflict
+            );
+            assert!(store.claim_send(&old).await?.is_some());
 
-        // 过期旧身份不得自认续权：迁移前 crash 的 worker 的租约已过期，
-        // renew/finish 都被有效 lease 条件拒绝，行不被旧持有者改写。
-        assert_eq!(
-            store
-                .renew_inbound_claim("legacy", "chat", "m1", "crashed-worker")
-                .await?,
-            ClaimLease::LostClaim
-        );
-        assert_eq!(
-            store
-                .finish_inbound_work(
-                    "legacy",
-                    "chat",
-                    "m1",
-                    "crashed-worker",
-                    WorkFinish::Completed
-                )
-                .await?,
-            MarkOutcome::LostClaim
-        );
-        let (status, claimed_by) = work_status(&store, "legacy:chat:m1").await;
-        assert_eq!(status, "claimed");
-        assert_eq!(claimed_by, "crashed-worker");
+            // 过期旧身份不得自认续权：迁移前 crash 的 worker 的租约已过期，
+            // renew/finish 都被有效 lease 条件拒绝，行不被旧持有者改写。
+            assert_eq!(
+                store
+                    .renew_inbound_claim("legacy", "chat", "m1", "crashed-worker")
+                    .await?,
+                ClaimLease::LostClaim
+            );
+            assert_eq!(
+                store
+                    .finish_inbound_work(
+                        "legacy",
+                        "chat",
+                        "m1",
+                        "crashed-worker",
+                        WorkFinish::Completed
+                    )
+                    .await?,
+                MarkOutcome::LostClaim
+            );
+            let (status, claimed_by) = work_status(&store, "legacy:chat:m1").await;
+            assert_eq!(status, "claimed");
+            assert_eq!(claimed_by, "crashed-worker");
 
-        // 后继新 worker 对到期槽竞争接管成功，且在有效租约内可续约与收束。
-        assert_eq!(
-            store
-                .claim_inbound_work("legacy", "chat", "m1", "w1")
-                .await?,
-            InboundClaim::Claimed
-        );
-        assert_eq!(
-            store
-                .renew_inbound_claim("legacy", "chat", "m1", "w1")
-                .await?,
-            ClaimLease::Renewed
-        );
-        assert_eq!(
-            store
-                .finish_inbound_work("legacy", "chat", "m1", "w1", WorkFinish::Completed)
-                .await?,
-            MarkOutcome::Applied
-        );
-        let (status, claimed_by) = work_status(&store, "legacy:chat:m1").await;
-        assert_eq!(status, "completed");
-        assert_eq!(claimed_by, "");
+            // 后继新 worker 对到期槽竞争接管成功，且在有效租约内可续约与收束。
+            assert_eq!(
+                store
+                    .claim_inbound_work("legacy", "chat", "m1", "w1")
+                    .await?,
+                InboundClaim::Claimed
+            );
+            assert_eq!(
+                store
+                    .renew_inbound_claim("legacy", "chat", "m1", "w1")
+                    .await?,
+                ClaimLease::Renewed
+            );
+            assert_eq!(
+                store
+                    .finish_inbound_work("legacy", "chat", "m1", "w1", WorkFinish::Completed)
+                    .await?,
+                MarkOutcome::Applied
+            );
+            let (status, claimed_by) = work_status(&store, "legacy:chat:m1").await;
+            assert_eq!(status, "completed");
+            assert_eq!(claimed_by, "");
 
-        // New media work must survive a process boundary alongside the migrated text row.
-        let mut media = due[0].clone();
-        media.message_id = "media-after-migration".into();
-        media.content_hash = "media-content".into();
-        media.attachments = vec![
-            super::super::inbound::InboundAttachment::File {
-                key: "file-key".into(),
-                filename: "中文证据.txt".into(),
-            },
-            super::super::inbound::InboundAttachment::Image {
-                key: "image-key".into(),
-            },
-        ];
-        assert!(matches!(
-            store.admit_inbound(media.clone()).await?,
-            InboundAdmit::Fresh(_)
-        ));
-        drop(store);
-        let reopened = BotStateStore::new(path);
-        let restored = reopened.list_due_inbound("legacy").await?;
-        assert_eq!(restored, vec![media.clone()]);
-        assert_eq!(
-            reopened.admit_inbound(media.clone()).await?,
-            InboundAdmit::DuplicateResume(media)
-        );
-        assert_eq!(reopened.list_due_inbound("legacy").await?.len(), 1);
+            // New media work must survive a process boundary alongside the migrated text row.
+            let mut media = due[0].clone();
+            media.message_id = "media-after-migration".into();
+            media.content_hash = "media-content".into();
+            media.attachments = vec![
+                super::super::inbound::InboundAttachment::File {
+                    key: "file-key".into(),
+                    filename: "中文证据.txt".into(),
+                },
+                super::super::inbound::InboundAttachment::Image {
+                    key: "image-key".into(),
+                },
+            ];
+            assert!(matches!(
+                store.admit_inbound(media.clone()).await?,
+                InboundAdmit::Fresh(_)
+            ));
+            // A claimed upload interrupted at restart must retain the exact original object and
+            // unknown stage alongside old text records. A changed working file is never reread.
+            let resources =
+                crate::resource_store::FileResourceStore::new(directory.path().join("resources"));
+            let original: std::sync::Arc<[u8]> =
+                std::sync::Arc::from(b"exact original\0bytes".as_slice());
+            let resource = resources
+                .retain_bytes(original.clone(), "application/octet-stream")
+                .await?;
+            let file = SendRecord {
+                operation_id: "interrupted-file".into(),
+                bot_id: "legacy".into(),
+                chat_id: "chat".into(),
+                content_hash: "frozen-file-identity".into(),
+                identity: SendIdentity::File {
+                    request_hash: "request".into(),
+                },
+                source: None,
+                status: SendRecordStatus::Unknown,
+                platform_message_ids: vec![],
+                facts_complete: true,
+                segments: vec![SendSegmentFact {
+                    index: 0,
+                    uuid: "file-uuid".into(),
+                    status: SendRecordStatus::Unknown,
+                    platform_message_id: None,
+                    diagnostic: None,
+                    platform_diagnostic: None,
+                    stop_reason: None,
+                    content: Some(SendContent::File {
+                        filename: "no-extension".into(),
+                        upload_filename: "no-extension.bin".into(),
+                        resource: resource.clone(),
+                    }),
+                    upload: Some(UploadFact::InFlight),
+                    message_stage: Some(MessageStage::NotStarted),
+                }],
+            };
+            assert!(store.claim_send(&file).await?.is_none());
+            drop(store);
+            let reopened = BotStateStore::new(path);
+            let restored = reopened.list_due_inbound("legacy").await?;
+            assert_eq!(restored, vec![media.clone()]);
+            assert_eq!(
+                reopened.admit_inbound(media.clone()).await?,
+                InboundAdmit::DuplicateResume(media)
+            );
+            assert_eq!(reopened.list_due_inbound("legacy").await?.len(), 1);
+            let frozen = reopened
+                .claim_send(&file)
+                .await?
+                .ok_or("claimed file lost on restart")?;
+            assert_eq!(frozen.identity, file.identity);
+            assert_eq!(frozen.segments[0].upload, Some(UploadFact::InFlight));
+            let replay = super::super::delivery::replay_send(frozen);
+            assert_eq!(replay.status, pl_protocol::studio::BotSendStatus::Unknown);
+            assert!(replay.segments[0].diagnostic.is_some());
+            assert_eq!(
+                pl_core::context::ResourceAccess::new(resources)
+                    .read(&resource, tokio_util::sync::CancellationToken::new())
+                    .await?
+                    .as_ref(),
+                original.as_ref()
+            );
+            let old_again = reopened
+                .load_send("op-with-facts")
+                .await?
+                .ok_or("known migrated text lost")?;
+            assert_eq!(old_again.content_hash, "old-text-hash");
+            assert_eq!(old_again.segments, known.segments);
+        }
         Ok(())
     }
 }

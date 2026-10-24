@@ -6,6 +6,7 @@
 //! 本模块只适配所需接口，不复制整个 SDK。
 
 pub(crate) mod addons;
+pub(crate) mod content;
 pub(crate) mod endpoint;
 pub(crate) mod error;
 pub(crate) mod frame;
@@ -22,10 +23,13 @@ pub const WS_ENDPOINT_PATH: &str = "/callback/ws/endpoint";
 pub const TENANT_TOKEN_PATH: &str = "/oauth/v3/token";
 pub const IM_CHATS_PATH: &str = "/open-apis/im/v1/chats";
 pub const IM_MESSAGES_PATH: &str = "/open-apis/im/v1/messages";
+pub const IM_FILES_PATH: &str = "/open-apis/im/v1/files";
 pub const BOT_INFO_PATH: &str = "/open-apis/bot/v3/info";
 
-/// 文本段按序列化后的 JSON 正文上限计算，避免贴边超限。
-pub const TEXT_SEGMENT_LIMIT_BYTES: usize = 30_000;
+/// 完整消息 HTTP JSON（包含嵌套 content 的转义和目标/UUID）的保守 UTF-8 预算。
+pub const POST_CONTENT_LIMIT_BYTES: usize = 30_000;
+/// 通用 stream 文件上传的保守 30 MB 上限；平台不接受空文件。
+pub const FILE_UPLOAD_LIMIT_BYTES: usize = 30_000_000;
 /// 分包缓存过期（毫秒），对照官方 DataCache 的 10s。
 pub const FRAGMENT_TTL_MS: u64 = 10_000;
 /// 单事件最大分包数。

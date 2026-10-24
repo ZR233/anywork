@@ -129,6 +129,15 @@ server 作为远端可观察进程运行。workspace instructions 由远端 file
 文档集合交给指令组装器，保留远端来源路径；远程路径不得再次交给本地文件系统做目录或
 文件检查。
 
+用户上传文件的可靠原件仍在 Studio 会话存储；不能原生提供给模型时，通过现有远端
+二进制原子写能力物化到该 Thread 远端 `uploads/`，随后提供 workspace-relative POSIX
+路径。远端文件以长度和内容身份验证，取消或断线不发布半文件；重新准备从可靠原件
+恢复，而不是把宿主附件目录、本地临时路径或另一 Thread 的路径交给远端工具。
+会话文件布局与资源预算归 [17](./17-studio-storage.md)，能力分流归 [06](./06-model.md)。
+用户文件的 Create 传输保留准入时取得的目录 capability 至提交/清理终态，分片传输后
+不重新按绝对父路径发布。该物理能力与本地原子创建共用，继续保留不覆盖、校验、重连
+查询及取消语义；不据此改变其他写模式的契约，也不承诺限制宿主同权限进程移动目录。
+
 SSH 项目与本地项目一样提供会话工作区模式：`local` 使用远端 canonical Project 目录，
 `worktree` 在远端仓库按创建时解析的 `HEAD` 创建
 `<repo>/.anywork/worktrees/<root-thread-id>/session`，lease 记录 `ssh_alias`，激活时按

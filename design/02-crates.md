@@ -35,7 +35,7 @@ endpoint、模型目录和凭据解析同源，并由 `pl-model` 公开入口的
 | pl-trace | core effect 与调用记录的只读诊断和用量投影 |
 | pl-lsp | 语言服务连接、探测和协议 |
 | pl-output / pl-patch / pl-skill-core | 输出算法、patch 规则、Skill 元数据与路径规则 |
-| pl-remote-helper | 复用的进程监督、流读写、capture 写入和资源计费组件；Linux helper 只拥有物理句柄、偏移回执、未确认输出及实例租约 |
+| pl-remote-helper | 复用的进程监督、流读写、capture 写入、目录能力下的物理文件发布和资源计费组件；Linux helper 只拥有物理句柄、偏移回执、未确认输出及实例租约 |
 | pl-studio-runtime | TOML/SQLite 持久化及 core 时间线存储适配、产品条目投影、项目、Profile、Mode/workflow/Plan、子代理协调、机器人原生接入与会话映射、资源租约与 root/child/恢复的唯一 Thread 装配 |
 | pl-studio-bridge / pl-studio-server | 同一 Studio 运行时的 FRB / HTTP 适配 |
 | pl-xtask | 轻量工程命令编排；按需通过子进程调用独立验收工具，不链接 Studio 运行时、模型或数据库 |

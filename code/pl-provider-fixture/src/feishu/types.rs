@@ -88,7 +88,10 @@ pub enum CallKind {
     ChatGet,
     ChatMembers,
     MessageList,
+    MessageRead,
     MessageSend,
+    FileUpload,
+    ResourceDownload,
 }
 
 /// Count bounds for a required or forbidden kind. Independent of other kinds.
@@ -297,14 +300,109 @@ pub struct Mention {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum EventBody {
     Text(String),
-    Post(serde_json::Value),
-    Unsupported {
+    /// Received post content has no locale wrapper, unlike a send request.
+    Post(ReceivedPost),
+    Image {
+        image_key: String,
+    },
+    File {
+        file_key: String,
+        file_name: String,
+    },
+    Audio {
+        file_key: String,
+        duration: u64,
+    },
+    Media {
+        file_key: String,
+        image_key: String,
+        file_name: String,
+        duration: u64,
+    },
+    /// Explicit raw official wire stimulus for message kinds not modeled here.
+    /// This name makes no claim about product support or admission.
+    Raw {
         message_type: String,
         content: String,
     },
+}
+
+/// Official send-post locale wrapper. The peer models the zh_cn sample, not
+/// Markdown rendering or the full rich-text platform grammar.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PostContent {
+    pub zh_cn: PostLocale,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PostLocale {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    pub content: Vec<Vec<PostElement>>,
+}
+
+/// Official received-post object, without a send-side language wrapper.
+/// Native Markdown is carried in `content_v2`, never a legacy `md` tag.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReceivedPost {
+    pub title: String,
+    pub content: Vec<Vec<PostElement>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content_v2: Option<Vec<Vec<PostElement>>>,
+}
+
+/// A small independent official wire sample; md text stays verbatim. Resource
+/// elements also construct inbound posts without product classification logic.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "tag", deny_unknown_fields)]
+pub enum PostElement {
+    #[serde(rename = "md")]
+    Markdown { text: String },
+    #[serde(rename = "text")]
+    Text { text: String },
+    #[serde(rename = "img")]
+    Image { image_key: String },
+    #[serde(rename = "media")]
+    Media { file_key: String, image_key: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum MessageContentObservation {
+    Text { text: String },
+    Post(PostContent),
+    File(super::media::ResourceSummary),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum MessageSendOutcome {
+    Waiting,
+    Rejected,
+    Stored,
+    StoredResponseDropped,
+    Cancelled,
+}
+
+/// Only platform facts. A stored message or prepared response does not decide
+/// the product's Succeeded/Partial/Unknown result.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MessageSendObservation {
+    pub call_index: usize,
+    pub request_body_bytes: usize,
+    pub receive_id: String,
+    pub uuid: Option<String>,
+    pub message_id: String,
+    pub content: MessageContentObservation,
+    pub disposition: SendDisposition,
+    pub outcome: MessageSendOutcome,
 }
 
 /// Platform event the peer will push. It never writes product SQLite or trust lists.
@@ -423,6 +521,11 @@ pub struct FeishuReport {
     pub calls: Vec<RecordedCall>,
     pub polls: Vec<PollObservation>,
     pub acks: Vec<AckObservation>,
+    pub uploads: Vec<super::media::UploadObservation>,
+    pub resource_downloads: Vec<super::media::ResourceDownloadObservation>,
+    pub message_sends: Vec<MessageSendObservation>,
+    pub resources: Vec<super::media::ResourceSummary>,
+    pub media_status: super::media::MediaStatus,
     pub violations: Vec<String>,
     pub unconsumed: Vec<String>,
     pub token_calls: usize,

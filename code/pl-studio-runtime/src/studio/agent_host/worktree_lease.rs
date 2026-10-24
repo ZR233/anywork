@@ -156,6 +156,9 @@ pub(in crate::studio) struct WorktreeLeaseOwner {
     /// 之后清除；标记存续期间该 lease 既不进入 Recovery，也不可被显式清理，即使 owner
     /// Thread 记录尚未发布。
     creating: std::sync::Arc<std::sync::Mutex<std::collections::BTreeSet<String>>>,
+    // Pool root acquisition can outlive a cancelled start/restore caller. The service,
+    // not a creation guard or an as-yet unpublished Thread, retains its real IO work.
+    pool_io: pl_tool::workspace_file::LocalFileIoOwner,
     writer: super::ThreadWriteBehindWriter,
 }
 
@@ -164,8 +167,20 @@ impl WorktreeLeaseOwner {
         Self {
             entries: Default::default(),
             creating: Default::default(),
+            pool_io: Default::default(),
             writer,
         }
+    }
+
+    pub(super) fn pool_io(&self) -> pl_tool::workspace_file::LocalFileIoOwner {
+        self.pool_io.clone()
+    }
+
+    /// Seals only shared pool root IO, without changing leases or Git/worktree ownership.
+    /// A cancelled waiter leaves this same service owner available for a close retry.
+    pub(in crate::studio) async fn close_pool_io(&self) -> Result<()> {
+        self.pool_io.close().await?;
+        Ok(())
     }
 
     /// Marks a lease as still being created in this process.

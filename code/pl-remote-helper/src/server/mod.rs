@@ -138,12 +138,12 @@ async fn open_workspace(
     state: &Arc<Mutex<ServerState>>,
     path: &str,
 ) -> Result<(RemoteResponse, Vec<u8>), RemoteError> {
-    let canonical_path = WorkspaceRegistry::resolve_workspace_root(path).await?;
+    let (canonical_path, create_root) = WorkspaceRegistry::resolve_workspace_root(path).await?;
     let (workspace_id, canonical_path) = state
         .lock()
         .await
         .workspaces
-        .open_resolved(canonical_path)?;
+        .open_resolved(canonical_path, create_root)?;
     Ok((
         RemoteResponse::WorkspaceOpened(RemoteWorkspaceOpened {
             workspace_id,

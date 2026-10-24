@@ -481,7 +481,7 @@ class AppLocalizationsZh extends AppLocalizations {
 
   @override
   String get settingsBotsPermissions =>
-      '申请范围（preset=false）：im:message:send_as_bot、im:message.p2p_msg:readonly、im:message.group_at_msg:readonly、im:chat:readonly、im:message:readonly。事件：im.message.receive_v1。声明权限不等于管理员已批准或应用已发布。';
+      '申请范围（preset=false）：im:message:send_as_bot、im:message.p2p_msg:readonly、im:message.group_at_msg:readonly、im:chat:readonly、im:message:readonly、im:resource:upload。事件：im.message.receive_v1。声明权限不等于管理员已批准或应用已发布。';
 
   @override
   String get settingsBotsName => '名称';
@@ -812,10 +812,31 @@ class AppLocalizationsZh extends AppLocalizations {
   String get settingsBotsSendPartial => '部分送达';
 
   @override
-  String get settingsBotsSendRejected => '明确拒绝';
+  String get settingsBotsSendRejected => '未送达';
 
   @override
   String get settingsBotsSendUnknown => '结果未知';
+
+  @override
+  String get settingsBotsUploadStage => '上传';
+
+  @override
+  String get settingsBotsMessageStage => '消息';
+
+  @override
+  String get settingsBotsStageNotStarted => '尚未发起';
+
+  @override
+  String get settingsBotsStageAccepted => '平台已接受';
+
+  @override
+  String get settingsBotsStageRejected => '平台明确拒绝';
+
+  @override
+  String get settingsBotsStopCancelled => '本地已取消';
+
+  @override
+  String get settingsBotsStopLocalFailure => '本地失败';
 
   @override
   String get settingsSshTitle => '远程开发';
@@ -2722,19 +2743,13 @@ class AppLocalizationsZh extends AppLocalizations {
   String get composerAttachmentAddTooltip => '添加附件';
 
   @override
-  String get composerAttachmentUnsupportedTooltip => '当前模型不支持附件';
+  String get composerAttachmentHandlingHint => '按模型能力直接识别或以工作区文件处理';
 
   @override
   String get composerAttachmentPickLocal => '选择本地文件';
 
   @override
   String get composerAttachmentRemoveTooltip => '移除';
-
-  @override
-  String get composerClipboardImageUnsupported => '当前模型不支持粘贴图片。';
-
-  @override
-  String get composerClipboardReadFailed => '无法读取剪贴板图片。';
 
   @override
   String settingsModelOutputCapabilities(String capabilities) {

@@ -16,6 +16,8 @@ use std::sync::Arc;
 #[derive(Debug)]
 pub enum StudioCommandBinding {
     Local {
+        file_root: pl_tool::workspace_file::LocalWorkspaceRoot,
+        file_creates: pl_tool::workspace_file::LocalFileCreateOwner,
         workspace: pl_tool::workspace::ToolWorkspace,
         environment: pl_tool::environment::ExecutionEnvironment,
         child_environment: std::collections::BTreeMap<String, String>,
@@ -142,6 +144,8 @@ impl StudioThreadTools {
         let mut registrations = Vec::new();
         match binding {
             StudioCommandBinding::Local {
+                file_root,
+                file_creates,
                 workspace,
                 environment,
                 child_environment,
@@ -185,10 +189,12 @@ impl StudioThreadTools {
                 }
                 if capabilities.workspace_files {
                     let files = Arc::new(
-                        pl_tool::workspace_file::LocalWorkspaceFileBackend::confined(
+                        pl_tool::workspace_file::LocalWorkspaceFileBackend::confined_root(
                             workspace.clone(),
+                            file_root,
                         )
-                        .await?,
+                        .await?
+                        .with_create_owner(file_creates),
                     );
                     registrations.extend(local_mutation_tools(workspace.clone())?);
                     registrations.extend(file_tools(

@@ -2,7 +2,6 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 use base64::Engine;
-use image::GenericImageView;
 use pl_protocol::{AttachmentModality, ThreadAttachment};
 
 use crate::studio::ids::{new_id, unix_seconds};
@@ -400,83 +399,6 @@ pub(crate) struct AttachmentDraftObject {
     pub content_sha256: String,
     pub width: Option<u32>,
     pub height: Option<u32>,
-    pub initial_remote_url: Option<String>,
-}
-
-pub(super) const MAX_IMAGE_SIDE: u32 = 2000;
-pub(super) const MAX_BASE64_IMAGE_BYTES: usize = 5 * 1024 * 1024;
-const JPEG_COMPRESSION_QUALITIES: [u8; 6] = [85, 75, 65, 55, 45, 35];
-const JPEG_COMPRESSION_MAX_SIDES: [u32; 6] = [2000, 1600, 1280, 1024, 768, 512];
-
-pub(in crate::studio) struct NormalizedImageAttachment {
-    pub(in crate::studio) media_type: &'static str,
-    pub(in crate::studio) bytes: Vec<u8>,
-    pub(in crate::studio) dimensions: (u32, u32),
-}
-
-pub(in crate::studio) fn normalize_image_attachment(
-    media_type: &'static str,
-    bytes: Vec<u8>,
-    decoded_image: image::DynamicImage,
-) -> Result<NormalizedImageAttachment> {
-    let dimensions = decoded_image.dimensions();
-    if image_within_limits(&bytes, dimensions) {
-        return Ok(NormalizedImageAttachment {
-            media_type,
-            bytes,
-            dimensions,
-        });
-    }
-
-    let (compressed, dimensions) = compress_image_attachment(&decoded_image)?;
-    Ok(NormalizedImageAttachment {
-        media_type: "image/jpeg",
-        bytes: compressed,
-        dimensions,
-    })
-}
-
-fn image_within_limits(bytes: &[u8], dimensions: (u32, u32)) -> bool {
-    dimensions.0 <= MAX_IMAGE_SIDE
-        && dimensions.1 <= MAX_IMAGE_SIDE
-        && base64_encoded_len(bytes.len()) <= MAX_BASE64_IMAGE_BYTES
-}
-
-pub(super) fn base64_encoded_len(byte_len: usize) -> usize {
-    byte_len.div_ceil(3) * 4
-}
-
-fn compress_image_attachment(decoded_image: &image::DynamicImage) -> Result<(Vec<u8>, (u32, u32))> {
-    for max_side in JPEG_COMPRESSION_MAX_SIDES {
-        let candidate = if decoded_image.width() > max_side || decoded_image.height() > max_side {
-            decoded_image.thumbnail(max_side, max_side)
-        } else {
-            decoded_image.clone()
-        };
-        let dimensions = candidate.dimensions();
-        for quality in JPEG_COMPRESSION_QUALITIES {
-            let bytes = encode_jpeg(&candidate, quality)?;
-            if image_within_limits(&bytes, dimensions) {
-                return Ok((bytes, dimensions));
-            }
-        }
-    }
-    bail!("image attachment is too large after compression")
-}
-
-fn encode_jpeg(image: &image::DynamicImage, quality: u8) -> Result<Vec<u8>> {
-    let rgb = image.to_rgb8();
-    let mut bytes = Vec::new();
-    let mut encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut bytes, quality);
-    encoder
-        .encode(
-            rgb.as_raw(),
-            rgb.width(),
-            rgb.height(),
-            image::ExtendedColorType::Rgb8,
-        )
-        .with_context(|| "failed to compress image attachment")?;
-    Ok(bytes)
 }
 
 pub(crate) fn thread_attachment(record: &AttachmentRecord) -> ThreadAttachment {

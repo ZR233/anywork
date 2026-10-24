@@ -9,6 +9,7 @@ use axum::http::{StatusCode, header};
 use axum::response::IntoResponse;
 use pl_protocol::ThreadActivityDetailQuery;
 use pl_protocol::studio::{
+    ATTACHMENT_MAX_BATCH_BYTES, ATTACHMENT_MAX_BATCH_FILES, ATTACHMENT_MAX_FILE_BYTES,
     AdmitAttachmentDraftsRequest, AdmitAttachmentDraftsResponse, CreateThreadRequest,
     ExpectedRevisionRequest, HealthResponse, LspResetRequest, McpResetRequest, OpenProjectRequest,
     RemoveAccountModelRequest, RemoveAccountRequest, RenameThreadRequest,
@@ -45,8 +46,6 @@ use crate::sse;
 struct StudioApi;
 
 const MAX_MULTIPART_BODY_BYTES: usize = 200 * 1024 * 1024;
-const MAX_MULTIPART_FILE_BYTES: usize = 50 * 1024 * 1024;
-const MAX_MULTIPART_FILES: usize = 16;
 
 #[derive(Debug, serde::Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -740,6 +739,7 @@ async fn upload_attachment_drafts(
         .map_err(ApiError::from)?;
     let mut context = None;
     let mut sources = Vec::new();
+    let mut total_bytes = 0_u64;
 
     while let Some(mut field) = multipart
         .next_field()
@@ -759,7 +759,7 @@ async fn upload_attachment_drafts(
             }
             Some("file") => {
                 let admission_context = context.clone().ok_or_else(invalid_multipart)?;
-                if sources.len() >= MAX_MULTIPART_FILES {
+                if sources.len() >= ATTACHMENT_MAX_BATCH_FILES {
                     return Err(ApiError(StudioError::invalid_argument(
                         "multipart attachment file count exceeds the server limit",
                     )));
@@ -768,9 +768,8 @@ async fn upload_attachment_drafts(
                     .file_name()
                     .and_then(safe_upload_filename)
                     .ok_or_else(invalid_multipart)?;
-                let path = upload_dir
-                    .path()
-                    .join(format!("{:02}-{filename}", sources.len()));
+                let item_dir = upload_dir.path().join(format!("{:02}", sources.len()));
+                let path = item_dir.join(filename);
                 let source = StudioAttachmentDraftSource::LocalFile {
                     path: path.to_string_lossy().to_string(),
                 };
@@ -785,16 +784,26 @@ async fn upload_attachment_drafts(
                     .await
                     .map_err(ApiError::from)?;
 
+                tokio::fs::create_dir(&item_dir)
+                    .await
+                    .map_err(anyhow::Error::from)
+                    .map_err(ApiError::from)?;
                 let mut file = tokio::fs::File::create(&path)
                     .await
                     .map_err(anyhow::Error::from)
                     .map_err(ApiError::from)?;
-                let mut written = 0_usize;
+                let mut written = 0_u64;
                 while let Some(chunk) = field.chunk().await.map_err(|_| invalid_multipart())? {
-                    written = written.saturating_add(chunk.len());
-                    if written > MAX_MULTIPART_FILE_BYTES {
+                    written = written.saturating_add(chunk.len() as u64);
+                    total_bytes = total_bytes.saturating_add(chunk.len() as u64);
+                    if written > ATTACHMENT_MAX_FILE_BYTES {
                         return Err(ApiError(StudioError::invalid_argument(
                             "multipart attachment file exceeds the server limit",
+                        )));
+                    }
+                    if total_bytes > ATTACHMENT_MAX_BATCH_BYTES {
+                        return Err(ApiError(StudioError::invalid_argument(
+                            "multipart attachment batch exceeds the 128 MiB source limit",
                         )));
                     }
                     file.write_all(&chunk)

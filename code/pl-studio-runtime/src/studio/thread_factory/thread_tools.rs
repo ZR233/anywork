@@ -12,6 +12,7 @@ use std::sync::Arc;
 
 pub(super) struct ThreadToolAssembly<'a> {
     pub thread_id: &'a str,
+    pub lifetime: Arc<super::tool_bindings::ThreadToolLifetime>,
     pub cancellation: &'a tokio_util::sync::CancellationToken,
     pub config: &'a crate::config::StudioConfig,
     pub route: &'a pl_model::config::ResolvedModelRoute,
@@ -23,7 +24,6 @@ pub(super) struct ThreadToolAssembly<'a> {
 }
 
 pub(super) struct PreparedThreadTools {
-    pub binding_guard: Option<crate::thread_assembler::ThreadPreparationGuard>,
     pub catalog: Option<Arc<pl_tool::skill::FrozenSkillCatalog>>,
     pub tools: StudioThreadTools,
     pub hosted: Vec<pl_model::runtime::HostedTool>,
@@ -53,8 +53,9 @@ impl StudioThreadFactory {
         assembly.workspace =
             super::session_files::bind_thread_session_files(assembly.workspace, assembly.thread_id);
         let binding = super::tool_bindings::ToolBinding {
-            lifetime: Default::default(),
-            incarnation: std::sync::Arc::new(()),
+            lifetime: assembly.lifetime.clone(),
+            catalog_generation: Default::default(),
+            file_execution: Default::default(),
             target_invalidated: false,
             permission_mode: assembly.config.runtime.permission_mode,
             initial_skill_prompt: String::new(),
@@ -78,7 +79,7 @@ impl StudioThreadFactory {
             },
         };
         let id = assembly.thread_id.to_owned();
-        let mut tools = self
+        let tools = self
             .prepare_thread_tools_with(assembly, CatalogPreparation::Initial)
             .await?;
         let binding = super::tool_bindings::ToolBinding {
@@ -97,18 +98,10 @@ impl StudioThreadFactory {
                 .map(|commands| commands.downgrade()),
             ..binding
         };
-        let factory = self.clone();
-        let identity = binding.lifetime.clone();
-        let guard_id = id.clone();
-        tools.binding_guard = Some(crate::thread_assembler::ThreadPreparationGuard::new(
-            move || {
-                factory.forget_tool_binding_if_current(&guard_id, &identity);
-            },
-        ));
         self.bindings
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(id, binding);
+            .publish(&id, binding)?;
         Ok(tools)
     }
 
@@ -119,6 +112,7 @@ impl StudioThreadFactory {
     ) -> Result<PreparedThreadTools, ThreadAssemblyError> {
         let ThreadToolAssembly {
             thread_id,
+            lifetime,
             cancellation,
             config,
             route,
@@ -169,7 +163,8 @@ impl StudioThreadFactory {
         if cancellation.is_cancelled() {
             return Err(pl_core::thread::ThreadError::Cancelled.into());
         }
-        super::session_files::prepare_bound_session_files(&workspace, remote.as_ref()).await?;
+        super::session_files::prepare_bound_session_files(&workspace, remote.as_ref(), &lifetime)
+            .await?;
         let environment = remote
             .as_ref()
             .map(|host| host.execution_environment.clone())
@@ -198,6 +193,14 @@ impl StudioThreadFactory {
                 workspace: workspace.clone(),
             },
             None => StudioCommandBinding::Local {
+                file_root: pl_tool::workspace_file::LocalWorkspaceRoot::open_beneath(
+                    lifetime.file_io.clone(),
+                    workspace.root().to_owned(),
+                    Default::default(),
+                )
+                .await
+                .map_err(|error| resource_error("pin authorized Thread workspace", error))?,
+                file_creates: lifetime.file_creates.clone(),
                 workspace: workspace.clone(),
                 environment: environment.clone(),
                 child_environment,
@@ -359,18 +362,37 @@ impl StudioThreadFactory {
         }
         if thread_id == root_thread_id {
             tools = tools.with_bot_tools(self.services.bots.clone(), project.id.clone())?;
-            if self
+            let bot_bound = self
                 .services
                 .bots
                 .config_for_thread(thread_id)
                 .await
                 .map_err(|error| resource_error("resolve bot session", error))?
-                .is_some()
-            {
+                .is_some();
+            if bot_bound {
                 tools = tools.with_tools(crate::studio::runtime::session_tools::registrations(
                     self.services.bots.clone(),
                     thread_id,
                 )?);
+            }
+            if bot_bound
+                || self
+                    .services
+                    .bots
+                    .has_source_thread(thread_id)
+                    .await
+                    .map_err(|error| resource_error("resolve durable bot source", error))?
+            {
+                if remote.is_some() {
+                    return Err(ThreadAssemblyError::Identity(
+                        "bot file submission requires its managed local workspace".into(),
+                    ));
+                }
+                tools = tools.with_tools(vec![crate::bots::file_tool::registration(
+                    self.services.bots.clone(),
+                    thread_id,
+                    workspace.clone(),
+                )?]);
             }
         }
         let policies = match &preparation {
@@ -386,7 +408,6 @@ impl StudioThreadFactory {
             tools = tools.with_image_generation(backend, media)?;
         }
         Ok(PreparedThreadTools {
-            binding_guard: None,
             catalog: skill_catalog,
             tools: tools.with_approval(approval, &policies),
             hosted: search.hosted,

@@ -8,6 +8,7 @@ use pl_protocol::studio::{
     StartBotRegistrationRequest, StudioError,
 };
 use pl_studio_runtime::ProjectRecord;
+use pl_studio_runtime::StudioStartNewThreadResponse;
 use pl_studio_runtime::StudioThreadDirectoryPage;
 use reqwest::StatusCode;
 use reqwest::redirect::Policy as RedirectPolicy;
@@ -26,6 +27,20 @@ pub(crate) struct StudioHttp {
     send_client: reqwest::Client,
     command_client: reqwest::Client,
     base: String,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct InterruptReply {
+    pub turn_id: String,
+    pub interrupted: bool,
+}
+
+#[derive(Clone)]
+pub(crate) struct PatternUpload {
+    pub filename: String,
+    pub byte_len: u64,
+    pub byte: u8,
 }
 
 impl StudioHttp {
@@ -93,6 +108,243 @@ impl StudioHttp {
 
     pub async fn read_bots(&self) -> Result<BotsStateSnapshot> {
         self.get_json("/api/v1/bots").await
+    }
+
+    pub async fn thread(&self, thread_id: &str) -> Result<pl_protocol::ThreadSnapshot> {
+        self.get_json(&format!("/api/v1/threads/{thread_id}")).await
+    }
+
+    pub async fn timeline(&self, thread_id: &str) -> Result<Vec<pl_protocol::TimelineItem>> {
+        let mut items = Vec::new();
+        let mut before = None;
+        for _ in 0..16 {
+            let mut url = reqwest::Url::parse(&format!(
+                "{}/api/v1/threads/{thread_id}/timeline",
+                self.base
+            ))?;
+            url.query_pairs_mut().append_pair("limit", "100");
+            if let Some(before) = before.as_deref() {
+                url.query_pairs_mut().append_pair("before", before);
+            }
+            let path = format!("{}?{}", url.path(), url.query().unwrap_or_default());
+            let page: pl_protocol::TimelinePage = self.get_json(&path).await?;
+            ensure!(
+                page.thread_id == thread_id,
+                "timeline belongs to another Thread"
+            );
+            items.extend(page.items);
+            if !page.has_older {
+                return Ok(items);
+            }
+            let next = page.before.context("older timeline has no cursor")?;
+            ensure!(
+                before.as_ref() != Some(&next),
+                "timeline cursor did not advance"
+            );
+            before = Some(next);
+        }
+        bail!("timeline exceeded the observer's 1600-item budget")
+    }
+
+    pub async fn attachment_bytes(&self, thread_id: &str, attachment_id: &str) -> Result<Vec<u8>> {
+        let path = format!("/api/v1/threads/{thread_id}/attachments/{attachment_id}");
+        let response = self
+            .client
+            .get(format!("{}{path}", self.base))
+            .send()
+            .await?;
+        ensure!(
+            response.status().is_success(),
+            "reliable attachment {attachment_id}: {}",
+            response.status()
+        );
+        let bytes = response.bytes().await?;
+        ensure!(
+            bytes.len() <= 50 * 1024 * 1024,
+            "attachment response exceeded 50MiB"
+        );
+        Ok(bytes.to_vec())
+    }
+
+    pub async fn upload_files(
+        &self,
+        context: &pl_protocol::studio::StudioAttachmentAdmissionContext,
+        files: &[(String, Vec<u8>)],
+    ) -> Result<pl_protocol::studio::AdmitAttachmentDraftsResponse> {
+        let mut form =
+            reqwest::multipart::Form::new().text("context", serde_json::to_string(context)?);
+        for (name, bytes) in files {
+            form = form.part(
+                "file",
+                reqwest::multipart::Part::bytes(bytes.clone()).file_name(name.clone()),
+            );
+        }
+        let path = "/api/v1/attachments/drafts/upload";
+        let response = self
+            .command_client
+            .post(format!("{}{path}", self.base))
+            .multipart(form)
+            .send()
+            .await?;
+        let status = response.status();
+        let body = response.text().await?;
+        decode_json(status, &body, path)
+    }
+
+    /// Streams real original bytes through the ordinary multipart endpoint.
+    /// Large ceiling probes retain only one 64KiB producer chunk at a time.
+    pub async fn upload_patterns_result(
+        &self,
+        context: &pl_protocol::studio::StudioAttachmentAdmissionContext,
+        files: &[PatternUpload],
+    ) -> Result<std::result::Result<pl_protocol::studio::AdmitAttachmentDraftsResponse, StudioError>>
+    {
+        let mut form =
+            reqwest::multipart::Form::new().text("context", serde_json::to_string(context)?);
+        for file in files {
+            let byte = file.byte;
+            let stream = futures::stream::unfold(file.byte_len, move |remaining| async move {
+                if remaining == 0 {
+                    return None;
+                }
+                let size = remaining.min(64 * 1024) as usize;
+                Some((
+                    Ok::<_, std::io::Error>(vec![byte; size]),
+                    remaining - size as u64,
+                ))
+            });
+            let body = reqwest::Body::wrap_stream(stream);
+            form = form.part(
+                "file",
+                reqwest::multipart::Part::stream_with_length(body, file.byte_len)
+                    .file_name(file.filename.clone()),
+            );
+        }
+        let path = "/api/v1/attachments/drafts/upload";
+        let response = self
+            .command_client
+            .post(format!("{}{path}", self.base))
+            .multipart(form)
+            .send()
+            .await?;
+        let status = response.status();
+        let body = response.text().await?;
+        if status.is_success() {
+            Ok(Ok(
+                serde_json::from_str(&body).context("invalid successful admission result")?
+            ))
+        } else {
+            Ok(Err(serde_json::from_str(&body).with_context(|| {
+                format!(
+                    "untyped multipart rejection {status}: {}",
+                    crate::env::redact(&body)
+                )
+            })?))
+        }
+    }
+
+    pub async fn draft_bytes(&self, draft_id: &str) -> Result<Vec<u8>> {
+        let response = self
+            .command_client
+            .get(format!(
+                "{}/api/v1/attachments/drafts/{draft_id}",
+                self.base
+            ))
+            .send()
+            .await?;
+        ensure!(
+            response.status().is_success(),
+            "draft GET {draft_id}: {}",
+            response.status()
+        );
+        ensure!(
+            response
+                .content_length()
+                .is_none_or(|size| size <= 50 * 1024 * 1024),
+            "draft response exceeds original ceiling"
+        );
+        let bytes = response.bytes().await?;
+        ensure!(
+            bytes.len() <= 50 * 1024 * 1024,
+            "draft response exceeds 50MiB"
+        );
+        Ok(bytes.to_vec())
+    }
+
+    pub async fn remove_draft(&self, draft_id: &str) -> Result<()> {
+        let response = self
+            .command_client
+            .delete(format!(
+                "{}/api/v1/attachments/drafts/{draft_id}",
+                self.base
+            ))
+            .send()
+            .await?;
+        ensure!(
+            response.status() == StatusCode::NO_CONTENT,
+            "draft removal {draft_id}: {}",
+            response.status()
+        );
+        Ok(())
+    }
+
+    pub async fn create_thread(
+        &self,
+        project_id: &str,
+        request: &pl_protocol::studio::CreateThreadRequest,
+    ) -> Result<StudioStartNewThreadResponse> {
+        self.post_json(&format!("/api/v1/projects/{project_id}/threads"), request)
+            .await
+    }
+
+    pub async fn submit(
+        &self,
+        thread_id: &str,
+        input: pl_protocol::studio::StudioPromptInput,
+    ) -> Result<u64> {
+        #[derive(serde::Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Receipt {
+            thread_id: String,
+            input_id: String,
+            cursor: u64,
+        }
+        let input_id = input.input_id.clone();
+        let snapshot = self.thread(thread_id).await?;
+        let revision = snapshot
+            .runtime
+            .as_ref()
+            .and_then(|runtime| runtime.model_route.as_ref())
+            .context("Thread has no canonical model route")?
+            .revision;
+        let reply: Receipt = self
+            .post_json(
+                &format!("/api/v1/threads/{thread_id}/prompts"),
+                &pl_protocol::studio::SubmitPromptRequest {
+                    input,
+                    expected_model_route_revision: revision,
+                },
+            )
+            .await?;
+        ensure!(
+            reply.thread_id == thread_id && reply.input_id == input_id,
+            "prompt admission returned another input's identity"
+        );
+        Ok(reply.cursor)
+    }
+
+    pub async fn interrupt(&self, thread_id: &str, turn_id: &str) -> Result<InterruptReply> {
+        let path = format!("/api/v1/threads/{thread_id}/turns/{turn_id}");
+        let response = self
+            .command_client
+            .delete(format!("{}{path}", self.base))
+            .json(&pl_protocol::studio::StudioCommandRequest {
+                operation_id: format!("observe-interrupt-{turn_id}"),
+            })
+            .send()
+            .await?;
+        let status = response.status();
+        decode_json(status, &response.text().await?, &path)
     }
 
     pub async fn list_threads_page(

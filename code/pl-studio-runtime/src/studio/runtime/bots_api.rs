@@ -13,23 +13,6 @@ fn bot_err(error: crate::bots::FeishuError) -> anyhow::Error {
 }
 
 impl StudioRuntime {
-    pub(crate) async fn prepare_bot_attachment_drafts(
-        &self,
-        thread_id: &str,
-        sources: Vec<pl_protocol::studio::StudioAttachmentDraftSource>,
-    ) -> Result<pl_protocol::studio::AdmitAttachmentDraftsResponse> {
-        let _guard = self.lifecycle_lock.lock().await;
-        let thread = self.ensure_thread_owner(thread_id).await?;
-        self.reconcile_bot_model(thread_id, &thread).await?;
-        self.admit_attachment_drafts(pl_protocol::studio::AdmitAttachmentDraftsRequest {
-            context: pl_protocol::studio::StudioAttachmentAdmissionContext::ExistingThread {
-                thread_id: thread_id.into(),
-            },
-            sources,
-        })
-        .await
-    }
-
     /// Called under the existing lifecycle admission lock before a new user input is accepted.
     pub(super) async fn reconcile_bot_model(
         &self,

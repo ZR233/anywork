@@ -11,6 +11,7 @@ use pl_core::{
 };
 
 const FORMAT: &str = "pl.model.compaction";
+mod retention;
 const NATIVE_CHECKPOINT_VERSION: u32 = 3;
 const LEGACY_NATIVE_CHECKPOINT_VERSION: u32 = 2;
 
@@ -174,6 +175,7 @@ impl ThreadModel {
         request: ModelRequest,
         options: ThreadCompactionOptions,
     ) -> Result<ThreadCompaction, ModelError> {
+        let retained = retention::prepare(&request)?;
         let mut encoded = self.encode_request(&request).await?;
         // Reduction has its own output policy; ordinary request capacity is resolved separately.
         encoded.max_tokens = None;
@@ -297,24 +299,7 @@ impl ThreadModel {
                 text: format!("{}\n{}", options.summary_prefix, text.unwrap_or_default()).into(),
             }]
         };
-        // Compression canonicalizes instruction revisions to the current complete snapshot.
-        let snapshot = request
-            .context
-            .records
-            .iter()
-            .rev()
-            .find(|record| matches!(record.source, ContextSource::InstructionSnapshot { .. }));
-        let mut records = if let Some(record) = snapshot {
-            vec![record.clone()]
-        } else {
-            request
-                .context
-                .records
-                .iter()
-                .filter(|record| record.source == ContextSource::Instruction)
-                .cloned()
-                .collect::<Vec<_>>()
-        };
+        let mut records = retained.instructions;
         records.push(ContextRecord {
             id: format!("compaction:{}", request.attempt_id),
             turn_id: None,
@@ -324,32 +309,10 @@ impl ThreadModel {
             content,
             tool_calls: Vec::new(),
         });
-        // The last complete tool batch is immediate execution evidence. Reducing it to prose
-        // alone makes an aggressively compacted agent repeatedly verify the same operation.
-        let latest_batch = request.context.records.iter().rposition(|record| {
-            record.source == ContextSource::Assistant
-                && record.turn_id.as_deref() == Some(request.turn_id.as_str())
-                && !record.tool_calls.is_empty()
-        });
-        // Delegated inputs and the active task survive independently of summarizer quality.
-        records.extend(
-            request
-                .context
-                .records
-                .iter()
-                .enumerate()
-                .filter(|(index, record)| {
-                    (record.source == ContextSource::User
-                        && record.turn_id.as_deref() == Some(request.turn_id.as_str()))
-                        || matches!(&record.source, ContextSource::AgentMessage { purpose, .. } if *purpose != pl_core::context::AgentMessageKind::Report)
-                        || (latest_batch.is_some_and(|start| *index >= start)
-                            && !matches!(record.source, ContextSource::Instruction
-                                | ContextSource::InstructionSnapshot { .. }
-                                | ContextSource::RuntimeFact { .. }))
-                })
-                .map(|(_, record)| record)
-                .cloned(),
-        );
+        // Provider prose/opaque content cannot be the only owner of a user's original.
+        // Both compaction routes commit the same typed, path-free inventory alongside it.
+        records.extend(retained.inventory);
+        records.extend(retained.active);
         Ok(ThreadCompaction {
             binding,
             replacement: ReplaceContext {

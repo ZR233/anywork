@@ -1,4 +1,5 @@
 //! Product configuration and shared service leases used to construct core Threads.
+mod attachment_files;
 mod child_resources;
 mod close_child;
 mod errors;
@@ -35,7 +36,7 @@ pub(in crate::studio) struct StudioThreadServices {
 #[derive(Clone)]
 pub(crate) struct StudioThreadFactory {
     services: StudioThreadServices,
-    bindings: Arc<std::sync::Mutex<std::collections::BTreeMap<String, tool_bindings::ToolBinding>>>,
+    bindings: Arc<std::sync::Mutex<tool_bindings::ToolBindings>>,
     // Immutable assembly inputs admitted before a new directory identity is
     // published. Every concurrent activation sees the same frozen selector.
     initial_routes: Arc<

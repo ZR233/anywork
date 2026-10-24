@@ -188,6 +188,7 @@ pub(super) fn declarations(
 pub(super) fn request(
     request: &ModelRequest,
     runtime: &super::ModelRuntime,
+    media: &super::media::PreparedMedia,
 ) -> Result<CompletionRequest, ModelError> {
     request
         .context
@@ -424,14 +425,15 @@ pub(super) fn request(
                 text: format!("[当前宿主事实：{source_id}]\n最新快照优先于历史摘要中的旧状态。\n"),
             });
         }
-        for content in &record.content {
+        for (index, content) in record.content.iter().enumerate() {
             match content {
                 ContextContent::Text { text } => parts.push(pl_protocol::ContentPart::Text {
                     text: text.to_string(),
                 }),
                 ContextContent::Opaque { payload } => {
-                    let attachment = super::media::decode(payload)?;
-                    let reference = attachment.reference;
+                    let attachment = super::attachment::decode(payload, Some(&record.source))?;
+                    let reference = attachment.reference();
+                    let part = media.part(&record.id, index)?;
                     match &record.source {
                         ContextSource::ToolResult { call_id, .. } => {
                             tool_media.push(pl_protocol::ToolMediaContext {
@@ -439,7 +441,7 @@ pub(super) fn request(
                                 label: reference.id().to_owned(),
                                 attachment: pl_protocol::ThreadAttachment {
                                     id: reference.id().to_owned(),
-                                    modality: attachment.modality,
+                                    modality: attachment.modality(),
                                     media_type: reference.media_type().to_owned(),
                                     filename: None,
                                     width: None,
@@ -451,14 +453,7 @@ pub(super) fn request(
                         ContextSource::User
                         | ContextSource::Runtime { .. }
                         | ContextSource::RuntimeFact { .. }
-                        | ContextSource::AgentMessage { .. } => {
-                            parts.push(pl_protocol::ContentPart::Attachment {
-                                attachment_id: reference.id().to_owned(),
-                                modality: attachment.modality,
-                                media_type: reference.media_type().to_owned(),
-                                filename: None,
-                            })
-                        }
+                        | ContextSource::AgentMessage { .. } => parts.push(part),
                         ContextSource::Instruction
                         | ContextSource::InstructionSnapshot { .. }
                         | ContextSource::Assistant => {

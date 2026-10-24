@@ -3,16 +3,14 @@ part of 'composer_dock.dart';
 class _AttachmentMenu extends StatefulWidget {
   const _AttachmentMenu({
     required this.enabled,
-    required this.localCapabilities,
     required this.remoteCapabilities,
     required this.onPickLocal,
     required this.onAddUrl,
   });
 
   final bool enabled;
-  final List<ModelInputCapabilityView> localCapabilities;
   final List<ModelInputCapabilityView> remoteCapabilities;
-  final Future<void> Function(List<ModelInputCapabilityView>) onPickLocal;
+  final Future<void> Function() onPickLocal;
   final Future<void> Function() onAddUrl;
 
   @override
@@ -24,34 +22,29 @@ class _AttachmentMenuState extends State<_AttachmentMenu> {
 
   @override
   Widget build(BuildContext context) {
-    final hasAny =
-        widget.localCapabilities.isNotEmpty ||
-        widget.remoteCapabilities.isNotEmpty;
-    final enabled = widget.enabled && hasAny;
     return MenuAnchor(
       key: StudioDriverKeys.attachmentEntry,
       controller: _controller,
       alignmentOffset: const Offset(6, 6),
       menuChildren: [
-        if (widget.localCapabilities.isNotEmpty)
-          MenuItemButton(
-            key: StudioDriverKeys.attachmentLocal,
-            overflowAxis: Axis.vertical,
-            onPressed: () {
-              unawaited(widget.onPickLocal(widget.localCapabilities));
-            },
-            child: ListTile(
-              leading: const Icon(Icons.folder_open_outlined),
-              title: Text(context.l10n.composerAttachmentPickLocal),
-            ),
+        MenuItemButton(
+          key: StudioDriverKeys.attachmentLocal,
+          overflowAxis: Axis.vertical,
+          onPressed: widget.enabled
+              ? () => unawaited(widget.onPickLocal())
+              : null,
+          child: ListTile(
+            leading: const Icon(Icons.folder_open_outlined),
+            title: Text(context.l10n.composerAttachmentPickLocal),
           ),
+        ),
         if (widget.remoteCapabilities.isNotEmpty)
           MenuItemButton(
             key: StudioDriverKeys.attachmentUrl,
             overflowAxis: Axis.vertical,
-            onPressed: () {
-              unawaited(widget.onAddUrl());
-            },
+            onPressed: widget.enabled
+                ? () => unawaited(widget.onAddUrl())
+                : null,
             child: ListTile(
               leading: const Icon(Icons.link),
               title: Text(context.l10n.composerAddUrlTitle),
@@ -59,10 +52,8 @@ class _AttachmentMenuState extends State<_AttachmentMenu> {
           ),
       ],
       child: IconButton(
-        tooltip: hasAny
-            ? context.l10n.composerAttachmentAddTooltip
-            : context.l10n.composerAttachmentUnsupportedTooltip,
-        onPressed: enabled
+        tooltip: context.l10n.composerAttachmentAddTooltip,
+        onPressed: widget.enabled
             ? () {
                 if (_controller.isOpen) {
                   _controller.close();
@@ -119,6 +110,8 @@ class _AttachmentDraftRail extends StatelessWidget {
                           child: Image.memory(
                             attachment.previewBytes!,
                             fit: BoxFit.cover,
+                            errorBuilder: (_, _, _) =>
+                                Icon(_attachmentIcon(attachment.modality)),
                           ),
                         )
                       : Icon(_attachmentIcon(attachment.modality)),
@@ -138,6 +131,8 @@ class _AttachmentDraftRail extends StatelessWidget {
                         '${context.attachmentModalityLabel(attachment.modality)} · ${_formatBytes(attachment.byteSize)}',
                         key: StudioDriverKeys.attachmentModality(attachment.id),
                         style: Theme.of(context).textTheme.labelSmall,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
                       ),
                     ],
                   ),

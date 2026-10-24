@@ -3,23 +3,23 @@
 //!
 //! Two authorized inbound messages each drive one real model Final. The first
 //! reply hits a real HTTP uncertainty (accepted then dropped) and must land in
-//! the durable ledger as `unknown`; the second is a complete multi-segment
-//! Final whose first segment succeeds and second is rejected, landing as
-//! `partial` with the remaining segment never sent. After both outcomes are
+//! the durable ledger as `unknown`; the second delivers a complete `.md` file
+//! before its short notice is rejected, landing as `partial`. After both outcomes are
 //! determined the server restarts over the same home and peer; no model
 //! execution, no send call, and no durable send fact may change or replay.
 
 use super::super::Session;
+use super::super::files::delivery;
 use super::{CASE_BUDGET, ensure_bound_row, optional_title_step};
 use crate::http;
 use crate::report::{self, CaseResult};
 use anyhow::{Context, Result, ensure};
+use pl_protocol::studio::{BotSendStage, BotSendStatus, SendBotMessageRequest};
 use pl_provider_fixture::feishu::{
-    CallKind, ChatType, DIRECT_CHAT_ID, SendDisposition, SenderKind, TRUSTED_USER_OPEN_ID,
-    text_event,
+    CallKind, ChatType, DIRECT_CHAT_ID, MessageContentObservation, SendDisposition, SenderKind,
+    TRUSTED_USER_OPEN_ID, text_event,
 };
 use pl_provider_fixture::{Protocol, Reply, Step, responses_text};
-use serde::Deserialize;
 use std::time::Duration;
 
 pub(super) const CASE: &str = "reply-send-outcomes-restart";
@@ -137,6 +137,76 @@ async fn send_outcomes_inner(
         .context("no durable partial send row")?;
     assert_unknown_ledger(unknown_detail, &before.send_uuids)?;
     assert_partial_ledger(partial_detail, &before.send_uuids)?;
+    let platform = session.control()?.snapshot_report().await;
+    let file_send = platform
+        .message_sends
+        .iter()
+        .find(|send| matches!(&send.content, MessageContentObservation::File(_)))
+        .context("partial operation never sent a real .md file")?;
+    delivery::file_roundtrip(
+        session,
+        file_send,
+        partial_final_text().as_bytes(),
+        evidence,
+    )
+    .await?;
+    ensure!(
+        platform.uploads.len() == 1,
+        "partial .md must upload exactly once"
+    );
+    let partial_facts = delivery::segments(partial_detail)?;
+    let notice = platform
+        .message_sends
+        .iter()
+        .find(|send| send.uuid.as_deref() == Some(&partial_facts[1].uuid))
+        .context("partial notice was not observed on the official wire")?;
+    delivery::markdown_notice(notice, file_send)?;
+    let partial_public = session
+        .http()?
+        .send_message(&SendBotMessageRequest {
+            operation_id: partial_detail.operation_id.clone(),
+            bot_id: bot_id.clone(),
+            chat_id: DIRECT_CHAT_ID.into(),
+            text: partial_final_text(),
+        })
+        .await?;
+    ensure!(
+        partial_public.status == BotSendStatus::Partial && partial_public.segments.len() == 2,
+        "partial public replay changed frozen file/notice plan"
+    );
+    delivery::public_segment(
+        &partial_public,
+        0,
+        BotSendStatus::Succeeded,
+        Some(BotSendStage::Accepted),
+        BotSendStage::Accepted,
+        None,
+    )?;
+    delivery::public_segment(
+        &partial_public,
+        1,
+        BotSendStatus::Rejected,
+        None,
+        BotSendStage::Rejected,
+        None,
+    )?;
+    let unknown_public = session
+        .http()?
+        .send_message(&SendBotMessageRequest {
+            operation_id: unknown_detail.operation_id.clone(),
+            bot_id: bot_id.clone(),
+            chat_id: DIRECT_CHAT_ID.into(),
+            text: UNKNOWN_FINAL.into(),
+        })
+        .await?;
+    delivery::public_segment(
+        &unknown_public,
+        0,
+        BotSendStatus::Unknown,
+        None,
+        BotSendStage::Unknown,
+        None,
+    )?;
     ensure!(
         before.send_details.len() == 2,
         "the durable send ledger must hold exactly the two automatic replies, got {}",
@@ -184,6 +254,10 @@ async fn send_outcomes_inner(
         after.send_details == before.send_details,
         "the durable send ledger must keep the unknown/partial facts unchanged"
     );
+    ensure!(
+        session.control()?.snapshot_report().await.uploads.len() == 1,
+        "partial .md upload replayed after restart"
+    );
     let unknown_after = after
         .send_details
         .iter()
@@ -223,8 +297,8 @@ async fn send_outcomes_inner(
             .into(),
     );
     result.evidence.push(format!(
-        "third planned segment keeps its initial planned-fact state and its stable uuid stays \
-         absent from the peer send-call set ({} uuids observed after the restart)",
+        "complete original .md file plus rejected notice retained their stable identities \
+         ({} send uuids observed after the restart)",
         after.send_uuids.len()
     ));
     Ok(result)
@@ -266,7 +340,7 @@ async fn restart_baseline(session: &Session, bot_id: &str) -> Result<RestartBase
             .unwrap_or_default();
         if body.contains(UNKNOWN_MARKER) {
             unknown_calls += 1;
-        } else if body.contains(PARTIAL_UNIT) {
+        } else {
             partial_calls += 1;
         }
         if let Some(uuid) = &call.uuid
@@ -309,8 +383,8 @@ fn assert_unknown_ledger(row: &crate::sqlite::SendDetailRow, peer_uuids: &[Strin
 fn assert_partial_ledger(row: &crate::sqlite::SendDetailRow, peer_uuids: &[String]) -> Result<()> {
     let facts = decode_segment_facts(row)?;
     ensure!(
-        facts.len() == 3,
-        "the partial reply must keep its full planned segment set, got {}",
+        facts.len() == 2,
+        "the partial reply must keep the complete .md file and short notice plan, got {}",
         facts.len()
     );
     for (position, fact) in facts.iter().enumerate() {
@@ -336,21 +410,23 @@ fn assert_partial_ledger(row: &crate::sqlite::SendDetailRow, peer_uuids: &[Strin
         peer_uuids.contains(&facts[1].uuid),
         "the second segment's stable uuid must appear in the peer send-call set"
     );
-    // The durable ledger has no "unattempted" status: a planned segment that
-    // never ran keeps its initial planned-fact state (unknown, no platform
-    // message id). Its never-attempted proof is the stable uuid staying absent
-    // from the peer send-call set, not an invented status string.
+    let Some(delivery::Content::File { resource, .. }) = &facts[0].content else {
+        anyhow::bail!("partial first segment is not a retained file");
+    };
+    let original = partial_final_text();
     ensure!(
-        facts[2].status == "unknown" && facts[2].platform_message_id.is_none(),
-        "the third planned segment must keep its initial planned-fact state (unknown, no \
-         platform message id), got status={} platform_message_id={:?}",
-        facts[2].status,
-        facts[2].platform_message_id
+        resource.byte_len() == original.len() as u64
+            && resource.content_digest()
+                == format!(
+                    "sha256:{}",
+                    pl_provider_fixture::bots_observe::sha256(original.as_bytes())
+                ),
+        "partial .md ledger does not identify complete original bytes"
     );
     ensure!(
-        !peer_uuids.contains(&facts[2].uuid),
-        "the third segment's stable uuid must stay absent from the peer send-call set; a \
-         replay or late attempt would add it"
+        matches!(&facts[0].upload, Some(delivery::Upload::Accepted { .. }))
+            && facts[1].message_stage.as_deref() == Some("rejected"),
+        "partial upload/notice phases were not retained"
     );
     let delivered = row
         .platform_message_ids
@@ -364,16 +440,8 @@ fn assert_partial_ledger(row: &crate::sqlite::SendDetailRow, peer_uuids: &[Strin
     Ok(())
 }
 
-#[derive(Debug, Deserialize)]
-struct SegmentFact {
-    index: u32,
-    uuid: String,
-    status: String,
-    platform_message_id: Option<String>,
-}
-
-fn decode_segment_facts(row: &crate::sqlite::SendDetailRow) -> Result<Vec<SegmentFact>> {
-    serde_json::from_str(&row.segment_facts).with_context(|| {
+fn decode_segment_facts(row: &crate::sqlite::SendDetailRow) -> Result<Vec<delivery::Segment>> {
+    delivery::segments(row).with_context(|| {
         format!(
             "durable segment facts for {} failed to decode; refusing to guess the outcome",
             row.operation_id

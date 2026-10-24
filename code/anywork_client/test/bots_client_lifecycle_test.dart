@@ -202,7 +202,18 @@ final class _BotsTransport implements StudioTransport {
       botId: request.botId,
       chatId: request.chatId,
       status: sendStatus,
-      segments: [BotSendSegment(index: 0, status: sendStatus)],
+      segments: [
+        BotSendSegment(
+          index: 0,
+          status: sendStatus,
+          messageStage: switch (sendStatus) {
+            BotSendStatus.succeeded => BotSendStage.accepted,
+            BotSendStatus.rejected => BotSendStage.rejected,
+            BotSendStatus.partial => BotSendStage.unknown,
+            BotSendStatus.unknown => BotSendStage.unknown,
+          },
+        ),
+      ],
       receipt: StudioCommandReceipt(
         operationId: OperationId(request.operationId),
         disposition: CommitDisposition.applied,
@@ -430,7 +441,12 @@ void main() {
         chatId: 'chat-1',
         status: BotSendStatus.unknown,
         segments: const [
-          BotSendSegment(index: 0, status: BotSendStatus.unknown),
+          BotSendSegment(
+            index: 0,
+            status: BotSendStatus.unknown,
+            uploadStage: BotSendStage.accepted,
+            messageStage: BotSendStage.unknown,
+          ),
         ],
         receipt: StudioCommandReceipt(
           operationId: client.mutations.latest('bots:send:bot-1:chat-1')!.id,
@@ -444,6 +460,10 @@ void main() {
     );
     final result = await pending;
     expect(result.status, BotSendStatus.unknown);
+    final retained = client.botsSends.latestFor('bot-1', 'chat-1')!;
+    expect(retained.segments.single.uploadStage, BotSendStage.accepted);
+    expect(retained.segments.single.messageStage, BotSendStage.unknown);
+    expect(retained.segments.single.stopReason, isNull);
     expect(
       client.botsSends.latestFor('bot-1', 'chat-1')?.status,
       BotSendStatus.unknown,

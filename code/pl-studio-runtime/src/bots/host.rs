@@ -96,9 +96,18 @@ impl BotSessionHost for StudioBotSessionHost {
                     project_id: project_id.to_string(),
                 },
             )
-            .await
-            .map_err(ToolError::new)?;
-        output(&result)
+            .await;
+        match result {
+            Ok(result) => output(&result),
+            Err(error) => {
+                let observed = error.observed_send().map(output).transpose()?;
+                let error = ToolError::new(error);
+                Err(match observed {
+                    Some(output) => error.with_output(output),
+                    None => error,
+                })
+            }
+        }
     }
 }
 

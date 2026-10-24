@@ -592,6 +592,24 @@ pub enum BotSendStatus {
     Unknown,
 }
 
+/// 平台动作事实，与应用级交付结果分开。未能确认的在途操作投影为 Unknown。
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum BotSendStage {
+    NotStarted,
+    Accepted,
+    Rejected,
+    Unknown,
+}
+
+/// 本地中止原因，不构成平台已拒绝上传或消息的证据。
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum BotSendStopReason {
+    Cancelled,
+    LocalFailure,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SendBotMessageRequest {
@@ -606,6 +624,11 @@ pub struct SendBotMessageRequest {
 pub struct BotSendSegment {
     pub index: u32,
     pub status: BotSendStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub upload_stage: Option<BotSendStage>,
+    pub message_stage: BotSendStage,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stop_reason: Option<BotSendStopReason>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub platform_message_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

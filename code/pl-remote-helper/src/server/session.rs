@@ -767,6 +767,7 @@ impl Owner {
                         Err(error) if error.code == RemoteErrorCode::WorkspaceNotFound => {}
                         Err(error) => return Err(error),
                     }
+                    self.transfers.forget_closed_workspace(&workspace_id);
                     Ok(ack())
                 }
                 RemoteRequest::CloseDirectory { cursor } => {
@@ -869,6 +870,7 @@ impl Owner {
                 Vec::new(),
             )),
             RemoteRequest::OpenRead(target) => {
+                let _opening = self.transfers.admit(&target.workspace_id)?;
                 let workspaces = self.state.lock().await.workspaces.clone();
                 let path = workspaces
                     .resolve_existing(&target.workspace_id, &target.path)
@@ -883,10 +885,19 @@ impl Owner {
                 ))
             }
             RemoteRequest::BeginWrite(request) => {
+                let _opening = self.transfers.admit(&request.target.workspace_id)?;
                 let workspaces = self.state.lock().await.workspaces.clone();
                 let path = workspaces
                     .resolve_for_write(&request.target.workspace_id, &request.target.path)
                     .await?;
+                let create = if request.mode == RemoteWriteMode::Create {
+                    Some((
+                        workspaces.create_root(&request.target.workspace_id)?,
+                        PathBuf::from(&request.target.path),
+                    ))
+                } else {
+                    None
+                };
                 Ok((
                     RemoteResponse::Transfer(
                         self.transfers
@@ -896,6 +907,7 @@ impl Owner {
                                 request.mode,
                                 request.total_len,
                                 &self.budget,
+                                create,
                             )
                             .await?,
                     ),

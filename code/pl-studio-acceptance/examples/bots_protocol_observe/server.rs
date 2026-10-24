@@ -21,9 +21,11 @@ keyring=$!
 trap 'kill "$keyring" 2>/dev/null || true; wait "$keyring" 2>/dev/null || true' EXIT
 gdbus wait --session --timeout 10 org.freedesktop.secrets
 printf 'acceptance_keyring_pid=%s\n' "$keyring"
-printf 'acceptance_server_pid=%s\n' "$$"
+"$@" &
+server=$!
+printf 'acceptance_server_pid=%s\n' "$server"
 status=0
-"$@" || status=$?
+wait "$server" || status=$?
 kill "$keyring" 2>/dev/null || true
 wait "$keyring" 2>/dev/null || true
 exit "$status"
@@ -191,9 +193,13 @@ impl StudioServer {
             self.server_pid = parse_server_pid(&self.log);
         }
         if let Some(pid) = self.server_pid {
+            // The shell waits for this actual server and then its keyring.
+            // Signalling dbus/the whole group here can reap the wrapper before
+            // the runtime releases its home lock during graceful shutdown.
             signal_pid("INT", &pid.to_string());
+        } else {
+            signal_group("INT", self.child.id());
         }
-        signal_group("INT", self.child.id());
         let deadline = Instant::now() + Duration::from_secs(8);
         loop {
             if self.child.try_wait()?.is_some() {

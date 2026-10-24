@@ -850,6 +850,7 @@ mod stage_order {
     pub(super) const SSH: usize = 15;
     pub(super) const AGENT_PROFILES: usize = 16;
     pub(super) const BOTS: usize = 17;
+    pub(super) const ATTACHMENT_INSPECTION: usize = 18;
 }
 
 /// 在常驻槽位上只启动一次真正的 stop 工作；已存在则返回同一共享句柄。
@@ -1219,6 +1220,7 @@ impl StudioRuntime {
     /// 服务 join，保证所有独立资源先收到取消。
     async fn broadcast_cancel(&self) {
         use super::super::background_task;
+        self.attachment_drafts.signal_close();
         background_task::signal(&self.settings_refresh).await;
         background_task::signal(&self.recovery_task).await;
         background_task::signal(&self.external_runtimes.mcp_config_watcher).await;
@@ -1298,6 +1300,13 @@ impl StudioRuntime {
         // issue、不会伪报 Clean）。这些阶段彼此独立，因此并发发起、并发等待（不会用前一个的等待
         // 耗尽后续阶段预算）。
         let mut producers: FuturesUnordered<StageBranch> = FuturesUnordered::new();
+        producers.push(self.stage_branch(
+            budget,
+            stage_order::ATTACHMENT_INSPECTION,
+            "attachmentInspection",
+            None,
+            |runtime| async move { runtime.attachment_drafts.close().await },
+        ));
         producers.push(self.stage_branch(
             budget,
             stage_order::MODEL_CATALOG,

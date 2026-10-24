@@ -4255,7 +4255,13 @@ class DemoStudioTransport extends StudioTransport
       botId: request.botId,
       chatId: request.chatId,
       status: BotSendStatus.succeeded,
-      segments: [BotSendSegment(index: 0, status: BotSendStatus.succeeded)],
+      segments: [
+        BotSendSegment(
+          index: 0,
+          status: BotSendStatus.succeeded,
+          messageStage: BotSendStage.accepted,
+        ),
+      ],
       receipt: _demoReceipt(
         OperationId(request.operationId),
         changed: true,

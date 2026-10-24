@@ -62,6 +62,13 @@ pub(crate) struct BotRuntimeInner {
     pub(crate) reply_slots: Arc<Semaphore>,
     pub(crate) reply_cancel: CancellationToken,
     pub(crate) occupancy: OccupancyTasks,
+    /// Byte permits for our outgoing source/archive/upload copies, not a second send queue.
+    pub(crate) send_bytes: Arc<Semaphore>,
+    /// At most one raw inbound batch (128 MiB) plus its admission copy is held by this owner.
+    /// This permit is backpressure only, not an alternate work or attachment queue.
+    pub(crate) download_batch: Arc<Semaphore>,
+    /// Present before any managed-root factory is awaited; shutdown owns cancellation-safe join.
+    pub(crate) workspace_io: pl_tool::workspace_file::LocalFileIoOwner,
     pub(crate) sealed: AtomicU64,
     pub(crate) recovery: Mutex<Option<JoinHandle<()>>>,
     /// 回复任务集里已观察到的真实异常终态：由 owner 保留，排空后消费一次。
@@ -124,6 +131,9 @@ impl BotRuntime {
                 reply_slots: Arc::new(Semaphore::new(32)),
                 reply_cancel: CancellationToken::new(),
                 occupancy: OccupancyTasks::new(),
+                send_bytes: Arc::new(Semaphore::new(128 * 1024 * 1024)),
+                download_batch: Arc::new(Semaphore::new(1)),
+                workspace_io: Default::default(),
                 sealed: AtomicU64::new(0),
                 recovery: Mutex::new(None),
                 reply_fault: AtomicBool::new(false),
@@ -307,7 +317,9 @@ impl BotRuntime {
             .filter_map(|record| record.published.clone())
             .collect();
         for bot in bots {
-            if bot.store.owns_thread(thread_id).await? {
+            if bot.store.owns_thread(thread_id).await?
+                || bot.store.has_source_thread(thread_id).await?
+            {
                 return Ok(Some(bot.config.lock().await.clone()));
             }
         }

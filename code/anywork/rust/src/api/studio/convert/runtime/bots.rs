@@ -8,11 +8,11 @@ use pl_protocol::studio::{
     BotConversationThreadState, BotCredentialAvailability, BotCredentialOperation, BotDiagnostic,
     BotMessage, BotMessageBody, BotMessagePage, BotPairingRequest, BotPendingCredentialOperation,
     BotPlatform, BotRegistrationAttempt, BotRegistrationStatus, BotSecretUpdate, BotSendResult,
-    BotSendSegment, BotSendStatus, BotSnapshot, BotsCommandReply, BotsStateSnapshot,
-    CancelBotRegistrationRequest, CreateBotConversationThreadRequest, ListBotConversationsRequest,
-    ReadBotMessagesRequest, RetryBotConnectionRequest, SaveBotRequest, SendBotMessageRequest,
-    SetBotEnabledRequest, SetBotTrustedChatRequest, SetBotTrustedUserRequest,
-    StartBotRegistrationRequest,
+    BotSendSegment, BotSendStage, BotSendStatus, BotSendStopReason, BotSnapshot, BotsCommandReply,
+    BotsStateSnapshot, CancelBotRegistrationRequest, CreateBotConversationThreadRequest,
+    ListBotConversationsRequest, ReadBotMessagesRequest, RetryBotConnectionRequest, SaveBotRequest,
+    SendBotMessageRequest, SetBotEnabledRequest, SetBotTrustedChatRequest,
+    SetBotTrustedUserRequest, StartBotRegistrationRequest,
 };
 
 pub(crate) fn bridge_bots_state(value: BotsStateSnapshot) -> BridgeBotsStateSnapshot {
@@ -458,7 +458,22 @@ fn bridge_send_segment(value: BotSendSegment) -> BridgeBotSendSegment {
         index: value.index,
         status: bridge_send_status(value.status),
         platform_message_id: value.platform_message_id,
+        upload_stage: value.upload_stage.map(bridge_send_stage),
+        message_stage: bridge_send_stage(value.message_stage),
+        stop_reason: value.stop_reason.map(|reason| match reason {
+            BotSendStopReason::Cancelled => BridgeBotSendStopReason::Cancelled,
+            BotSendStopReason::LocalFailure => BridgeBotSendStopReason::LocalFailure,
+        }),
         diagnostic: value.diagnostic.map(bridge_diagnostic),
+    }
+}
+
+fn bridge_send_stage(value: BotSendStage) -> BridgeBotSendStage {
+    match value {
+        BotSendStage::NotStarted => BridgeBotSendStage::NotStarted,
+        BotSendStage::Accepted => BridgeBotSendStage::Accepted,
+        BotSendStage::Rejected => BridgeBotSendStage::Rejected,
+        BotSendStage::Unknown => BridgeBotSendStage::Unknown,
     }
 }
 

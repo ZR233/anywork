@@ -183,13 +183,14 @@ class _StartPageComposerBodyState
               maxWidth: StudioLayout.conversationWidth,
             ),
             child: _PromptComposerPanel(
+              draftId: 'start:$projectId',
               composer: composer,
               textController: _draft,
               targetDiagnostic: target,
               additionalDiagnostics: additional,
               enabled: projection.canSubmit,
               isBusy: false,
-              clipboard: ref.read(clipboardImageReaderProvider),
+              clipboard: ref.read(clipboardReaderProvider),
               selectorBar: Wrap(
                 key: StudioDriverKeys.startPageSelectors,
                 spacing: 6,
@@ -237,10 +238,7 @@ class _StartPageComposerBodyState
               onChanged: _updateDraft,
               onSubmit: () => unawaited(_submit()),
               inputCapabilities: model?.inputCapabilities ?? const [],
-              onPasteImage: _pasteImage,
-              onReportFailure: _reportFailure,
-              onAddLocal: _addLocal,
-              onAddUrl: _addUrl,
+              onPrepareAttachments: _prepareAttachments,
               onRemoveAttachment: _removeAttachment,
             ),
           ),
@@ -288,50 +286,15 @@ class _StartPageComposerBodyState
     return ref.read(startSessionControllerProvider).forProject(projectId).mode;
   }
 
-  Future<void> _pasteImage(Uint8List bytes) {
+  Future<void> _prepareAttachments(
+    Future<void> Function(AttachmentDraftInput input) prepare,
+  ) {
     final projectId = _projectId;
     if (projectId == null) return Future<void>.value();
     return ref
         .read(anyworkClientProvider)
         .attachments
-        .addNewThreadClipboard(
-          projectId: projectId,
-          mode: _mode,
-          pngBytes: bytes,
-        );
-  }
-
-  void _reportFailure(Object error) {
-    final projectId = _projectId;
-    if (projectId == null) return;
-    ref
-        .read(anyworkClientProvider)
-        .attachments
-        .reportNewThreadFailure(projectId, error);
-  }
-
-  Future<void> _addLocal(List<String> paths) {
-    final projectId = _projectId;
-    if (projectId == null || paths.isEmpty) return Future<void>.value();
-    return ref
-        .read(anyworkClientProvider)
-        .attachments
-        .admitNewThread(
-          projectId: projectId,
-          mode: _mode,
-          sources: [
-            for (final path in paths) AttachmentDraftSource.localFile(path),
-          ],
-        );
-  }
-
-  Future<void> _addUrl(String url) {
-    final projectId = _projectId;
-    if (projectId == null) return Future<void>.value();
-    return ref
-        .read(anyworkClientProvider)
-        .attachments
-        .addNewThreadRemote(projectId: projectId, mode: _mode, url: url);
+        .prepareNewThread(projectId: projectId, mode: _mode, prepare: prepare);
   }
 
   Future<void> _removeAttachment(String draftId) {
@@ -483,12 +446,14 @@ class _PromptComposerState extends ConsumerState<_PromptComposer> {
             ),
           ),
         _PromptComposerPanel(
+          key: ValueKey(draftController.stamp.draftId),
+          draftId: draftController.stamp.draftId,
           composer: view.composer,
           targetDiagnostic: view.targetDiagnostic,
           enabled: widget.enabled,
           isBusy: view.isBusy,
           compact: widget.compact,
-          clipboard: ref.read(clipboardImageReaderProvider),
+          clipboard: ref.read(clipboardReaderProvider),
           selectorBar: thread.isRoot
               ? Wrap(
                   crossAxisAlignment: WrapCrossAlignment.center,
@@ -593,10 +558,7 @@ class _PromptComposerState extends ConsumerState<_PromptComposer> {
             ref.read(anyworkClientProvider).threadCommands.stop(thread.id),
           ),
           inputCapabilities: model?.inputCapabilities ?? const [],
-          onPasteImage: draftController.addClipboardImage,
-          onReportFailure: draftController.reportFailure,
-          onAddLocal: draftController.addLocalAttachments,
-          onAddUrl: draftController.addRemoteAttachment,
+          onPrepareAttachments: draftController.prepareAttachments,
           onRemoveAttachment: draftController.removeAttachment,
         ),
       ],
@@ -606,6 +568,7 @@ class _PromptComposerState extends ConsumerState<_PromptComposer> {
 
 class _PromptComposerPanel extends StatefulWidget {
   const _PromptComposerPanel({
+    required this.draftId,
     required this.composer,
     this.targetDiagnostic,
     this.additionalDiagnostics = const [],
@@ -615,10 +578,7 @@ class _PromptComposerPanel extends StatefulWidget {
     required this.onChanged,
     required this.onSubmit,
     required this.inputCapabilities,
-    required this.onPasteImage,
-    required this.onReportFailure,
-    required this.onAddLocal,
-    required this.onAddUrl,
+    required this.onPrepareAttachments,
     required this.onRemoveAttachment,
     this.onStop,
     this.selectorBar,
@@ -627,21 +587,23 @@ class _PromptComposerPanel extends StatefulWidget {
     this.compact = false,
     this.submissionLocked = false,
     this.showSubmissionError = true,
+    super.key,
   });
 
+  final String draftId;
   final ComposerThreadState composer;
   final ComposerTargetDiagnostic? targetDiagnostic;
   final List<ComposerTargetDiagnostic> additionalDiagnostics;
   final bool enabled;
   final bool isBusy;
-  final ClipboardImageReader clipboard;
+  final ComposerClipboardReader clipboard;
   final ValueChanged<String> onChanged;
   final VoidCallback onSubmit;
   final List<ModelInputCapabilityView> inputCapabilities;
-  final Future<void> Function(Uint8List pngBytes) onPasteImage;
-  final ValueChanged<Object> onReportFailure;
-  final Future<void> Function(List<String> paths) onAddLocal;
-  final Future<void> Function(String url) onAddUrl;
+  final Future<void> Function(
+    Future<void> Function(AttachmentDraftInput input) prepare,
+  )
+  onPrepareAttachments;
   final Future<void> Function(String draftId) onRemoveAttachment;
   final VoidCallback? onStop;
   final Widget? selectorBar;
@@ -783,42 +745,34 @@ class _PromptComposerPanelState extends State<_PromptComposerPanel> {
     widget.onSubmit();
   }
 
-  bool get _supportsPastedImages => widget.inputCapabilities.any(
-    (capability) =>
-        capability.modality == ModelModalityView.image &&
-        capability.supportsSource(ModelInputSourceView.local),
-  );
-
   Future<void> _pasteClipboard() async {
     _pasteInFlight = true;
+    final draftId = widget.draftId;
+    final controller = _controller;
+    final clipboard = widget.clipboard;
+    final onChanged = widget.onChanged;
+    final prepare = widget.onPrepareAttachments;
     try {
-      final image = await widget.clipboard.readImage();
-      if (!mounted) return;
-      if (image != null) {
-        if (!_supportsPastedImages) {
-          widget.onReportFailure(
-            StateError(context.l10n.composerClipboardImageUnsupported),
-          );
-          return;
-        }
-        await widget.onPasteImage(image);
-        return;
-      }
-      final text = await widget.clipboard.readText();
-      if (!mounted || text == null || text.isEmpty) return;
-      _pasteText(text);
-    } catch (_) {
-      if (mounted) {
-        widget.onReportFailure(
-          StateError(context.l10n.composerClipboardReadFailed),
-        );
-      }
+      await prepare(
+        (input) => input.paste(
+          clipboard,
+          onText: (text) {
+            if (!mounted ||
+                widget.draftId != draftId ||
+                !identical(_controller, controller) ||
+                !widget.enabled) {
+              return;
+            }
+            _pasteText(text, onChanged);
+          },
+        ),
+      );
     } finally {
       _pasteInFlight = false;
     }
   }
 
-  void _pasteText(String text) {
+  void _pasteText(String text, ValueChanged<String> onChanged) {
     final value = _controller.value;
     final selection = value.selection;
     if (!selection.isValid) return;
@@ -827,7 +781,7 @@ class _PromptComposerPanelState extends State<_PromptComposerPanel> {
       composing: TextRange.empty,
     );
     _controller.value = collapsed.replaced(selection, text);
-    widget.onChanged(_controller.text);
+    onChanged(_controller.text);
   }
 
   @override
@@ -835,13 +789,6 @@ class _PromptComposerPanelState extends State<_PromptComposerPanel> {
     final colors = Theme.of(context).colorScheme;
     final composer = widget.composer;
     final showStop = widget.isBusy && !_hasContent && !_submissionPending;
-    final localCapabilities = widget.inputCapabilities
-        .where(
-          (capability) =>
-              capability.modality != ModelModalityView.text &&
-              capability.supportsSource(ModelInputSourceView.local),
-        )
-        .toList();
     final remoteCapabilities = widget.inputCapabilities
         .where(
           (capability) =>
@@ -863,12 +810,24 @@ class _PromptComposerPanelState extends State<_PromptComposerPanel> {
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          if (composer.attachments.isNotEmpty)
+          if (composer.attachments.isNotEmpty) ...[
             _AttachmentDraftRail(
               attachments: composer.attachments,
               enabled: attachmentEnabled,
               onRemove: (id) => unawaited(widget.onRemoveAttachment(id)),
             ),
+            Align(
+              alignment: Alignment.centerLeft,
+              child: Padding(
+                padding: const EdgeInsets.only(top: 4),
+                child: Text(
+                  context.l10n.composerAttachmentHandlingHint,
+                  style: Theme.of(context).textTheme.labelSmall
+                      ?.copyWith(color: colors.onSurfaceVariant),
+                ),
+              ),
+            ),
+          ],
           Shortcuts(
             shortcuts: const {
               SingleActivator(LogicalKeyboardKey.paste): _PasteComposerIntent(),
@@ -951,7 +910,6 @@ class _PromptComposerPanelState extends State<_PromptComposerPanel> {
             children: [
               _AttachmentMenu(
                 enabled: attachmentEnabled,
-                localCapabilities: localCapabilities,
                 remoteCapabilities: remoteCapabilities,
                 onPickLocal: _pickLocalAttachments,
                 onAddUrl: _showUrlDialog,
@@ -1016,7 +974,7 @@ class _PromptComposerPanelState extends State<_PromptComposerPanel> {
       ),
     );
     return DropTarget(
-      enabled: attachmentEnabled && localCapabilities.isNotEmpty,
+      enabled: attachmentEnabled,
       acceptedKinds: const {DropItemKind.file},
       onEnter: (_) => setState(() => _dragging = true),
       onLeave: () {
@@ -1028,88 +986,58 @@ class _PromptComposerPanelState extends State<_PromptComposerPanel> {
   }
 
   Future<void> _dropAttachments(DropDetails details) async {
-    final admit = widget.onAddLocal;
-    final reportFailure = widget.onReportFailure;
-    try {
-      await admitDroppedAttachments(
-        details.items.whereType<DropFileItem>(),
-        admit,
-      );
-    } catch (error) {
-      reportFailure(error);
-    }
+    final files = details.items.whereType<DropFileItem>().toList();
+    await widget.onPrepareAttachments(
+      (input) => admitDroppedAttachments(files, input),
+    );
   }
 
-  Future<void> _pickLocalAttachments(
-    List<ModelInputCapabilityView> capabilities,
-  ) async {
-    final admit = widget.onAddLocal;
-    final reportFailure = widget.onReportFailure;
-    try {
+  Future<void> _pickLocalAttachments() {
+    return widget.onPrepareAttachments((input) async {
       const driverFixture = String.fromEnvironment(
         'ANYWORK_DRIVER_ATTACHMENT_PATH',
       );
       if (const bool.fromEnvironment('ANYWORK_DRIVER') &&
           driverFixture.isNotEmpty) {
-        await admit([driverFixture]);
+        await input.addLocalFiles([driverFixture]);
         return;
       }
-      final modalities = capabilities
-          .map((capability) => capability.modality)
-          .toSet();
-      final acceptsFiles = modalities.contains(ModelModalityView.file);
-      final paths = await pickLocalAttachmentPaths(
-        extensions: acceptsFiles
-            ? const []
-            : [
-                if (modalities.contains(ModelModalityView.image)) ...[
-                  'png',
-                  'jpg',
-                  'jpeg',
-                  'gif',
-                  'webp',
-                ],
-                if (modalities.contains(ModelModalityView.video)) ...[
-                  'mp4',
-                  'mov',
-                  'webm',
-                  'mkv',
-                ],
-              ],
-      );
-      if (paths.isNotEmpty) await admit(paths);
-    } catch (error) {
-      reportFailure(error);
-    }
+      final paths = await pickLocalAttachmentPaths();
+      await input.addLocalFiles(paths);
+    });
   }
 
-  Future<void> _showUrlDialog() async {
-    var draft = '';
-    final url = await showDialog<String>(
-      context: context,
-      builder: (context) => AlertDialog(
-        key: StudioDriverKeys.attachmentUrlDialog,
-        title: Text(context.l10n.composerAddUrlTitle),
-        content: TextField(
-          key: StudioDriverKeys.attachmentUrlInput,
-          autofocus: true,
-          onChanged: (value) => draft = value,
-          decoration: const InputDecoration(hintText: 'https://…'),
+  Future<void> _showUrlDialog() {
+    return widget.onPrepareAttachments((input) async {
+      var draft = '';
+      final url = await showDialog<String>(
+        context: context,
+        builder: (context) => AlertDialog(
+          key: StudioDriverKeys.attachmentUrlDialog,
+          title: Text(context.l10n.composerAddUrlTitle),
+          content: TextField(
+            key: StudioDriverKeys.attachmentUrlInput,
+            autofocus: true,
+            onChanged: (value) => draft = value,
+            decoration: const InputDecoration(hintText: 'https://…'),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: Text(context.l10n.commonCancel),
+            ),
+            FilledButton(
+              key: StudioDriverKeys.attachmentUrlSubmit,
+              onPressed: () => Navigator.pop(context, draft.trim()),
+              child: Text(context.l10n.composerAddUrlConfirm),
+            ),
+          ],
         ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: Text(context.l10n.commonCancel),
-          ),
-          FilledButton(
-            key: StudioDriverKeys.attachmentUrlSubmit,
-            onPressed: () => Navigator.pop(context, draft.trim()),
-            child: Text(context.l10n.composerAddUrlConfirm),
-          ),
-        ],
-      ),
-    );
-    if (url != null && url.isNotEmpty) await widget.onAddUrl(url);
+      );
+      if (url != null && url.isNotEmpty) {
+        await input.admit([AttachmentDraftSource.remoteUrl(url)]);
+      }
+    });
   }
 }
 

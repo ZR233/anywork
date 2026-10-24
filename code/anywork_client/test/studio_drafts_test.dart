@@ -36,6 +36,11 @@ final class _DraftTransport implements StudioTransport {
   int? canonicalRouteRevision;
   final List<int> submittedRouteRevisions = [];
   int admissionCalls = 0;
+  final List<
+    ({AttachmentAdmissionContext context, List<AttachmentDraftSource> sources})
+  >
+  admissions = [];
+  Object? admissionFailure;
   int settingsWrites = 0;
   bool removeSucceeds = true;
   final window = _DraftConnection();
@@ -111,6 +116,9 @@ final class _DraftTransport implements StudioTransport {
     List<AttachmentDraftSource> sources,
   ) async {
     admissionCalls += 1;
+    admissions.add((context: context, sources: List.of(sources)));
+    final failure = admissionFailure;
+    if (failure != null) throw failure;
     return [
       for (var index = 0; index < sources.length; index += 1)
         AttachmentDraftView(
@@ -143,6 +151,34 @@ final class _DraftTransport implements StudioTransport {
   dynamic noSuchMethod(Invocation invocation) => throw UnsupportedError(
     'Unused fake transport capability: ${invocation.memberName}',
   );
+}
+
+/// Supplies only platform values and completion barriers, never input policy.
+final class _Clipboard implements ComposerClipboardReader {
+  _Clipboard({this.files, this.image, this.text});
+  final Future<List<String>> Function()? files;
+  final Future<Uint8List?> Function()? image;
+  final Future<String?> Function()? text;
+  final List<String> reads = [];
+
+  @override
+  Future<List<String>> readFiles() async {
+    reads.add('files');
+    final read = files;
+    return read == null ? const [] : await read();
+  }
+
+  @override
+  Future<Uint8List?> readImage() async {
+    reads.add('image');
+    return image?.call();
+  }
+
+  @override
+  Future<String?> readText() async {
+    reads.add('text');
+    return text?.call();
+  }
 }
 
 /// A controlled content source driven through the production timeline channel.
@@ -333,12 +369,16 @@ void main() {
     session.applySnapshot(_workspace());
     final owner = client.composer('thread');
     owner.updateDraft('submitted text');
-    await owner.addLocalAttachments(['/first.bin']);
+    await owner.prepareAttachments(
+      (input) => input.addLocalFiles(['/first.bin']),
+    );
     final submitted = owner.submit();
     final input = await transport.promptEntered.future;
 
     owner.updateDraft('new text typed during submission');
-    await owner.addLocalAttachments(['/second.bin']);
+    await owner.prepareAttachments(
+      (input) => input.addLocalFiles(['/second.bin']),
+    );
     final queued = StudioTurnView(
       inputId: input.inputId,
       turnId: 'turn',
@@ -441,10 +481,10 @@ void main() {
     owner.updateDraft('other-project', 'independent draft');
     owner.setDelegationModeOverride('other-project', DelegationMode.profile);
     defaults(2, DelegationMode.automatic, DelegationPreference.economy);
-    await client.attachments.admitNewThread(
+    await client.attachments.prepareNewThread(
       projectId: _project.id,
       mode: ThreadModeId.simple,
-      sources: [const AttachmentDraftSource.localFile('/one.bin')],
+      prepare: (input) => input.addLocalFiles(['/one.bin']),
     );
     final submission = owner.submit(_project.id);
     defaults(3, DelegationMode.profile, DelegationPreference.balanced);
@@ -486,10 +526,10 @@ void main() {
       owner.state.preparations[_project.id]?.workspaceMode,
       ThreadWorkspaceMode.worktree,
     );
-    await client.attachments.admitNewThread(
+    await client.attachments.prepareNewThread(
       projectId: _project.id,
       mode: ThreadModeId.simple,
-      sources: [const AttachmentDraftSource.localFile('/two.bin')],
+      prepare: (input) => input.addLocalFiles(['/two.bin']),
     );
     final thread = _thread('new-thread');
     transport.startReply.complete(
@@ -604,10 +644,10 @@ void main() {
     final client = _client(transport);
     final owner = client.startDraft;
     owner.updateDraft(_project.id, 'first request');
-    await client.attachments.admitNewThread(
+    await client.attachments.prepareNewThread(
       projectId: _project.id,
       mode: ThreadModeId.simple,
-      sources: [const AttachmentDraftSource.localFile('/one.bin')],
+      prepare: (input) => input.addLocalFiles(['/one.bin']),
     );
     final submitted = owner.submit(_project.id);
     final request = await transport.startEntered.future;
@@ -889,7 +929,9 @@ void main() {
     client.session('thread').applySnapshot(_workspace());
     final owner = client.composer('thread');
     owner.updateDraft('keep after local sync failure');
-    await owner.addLocalAttachments(['/payload.bin']);
+    await owner.prepareAttachments(
+      (input) => input.addLocalFiles(['/payload.bin']),
+    );
     final submission = owner.submit();
     final input = await transport.promptEntered.future;
     transport.promptReply.complete(
@@ -935,7 +977,9 @@ void main() {
 
     final owner = client.composer('thread');
     owner.updateDraft('draft frozen on route one');
-    await owner.addLocalAttachments(['/payload.bin']);
+    await owner.prepareAttachments(
+      (input) => input.addLocalFiles(['/payload.bin']),
+    );
     final queued = owner.submit();
     final changed = _workspace(revision: 2);
     session.applySnapshot(
@@ -982,7 +1026,9 @@ void main() {
       client.session('thread').applySnapshot(_workspace());
       final owner = client.composer('thread');
       owner.updateDraft('prepare before sending');
-      await owner.addLocalAttachments(['/payload.bin']);
+      await owner.prepareAttachments(
+        (input) => input.addLocalFiles(['/payload.bin']),
+      );
 
       var hookCalls = 0;
       String? frozenTarget;
@@ -1017,7 +1063,9 @@ void main() {
     client.session('thread').applySnapshot(_workspace());
     final owner = client.composer('thread');
     owner.updateDraft('send after display preparation');
-    await owner.addLocalAttachments(['/payload.bin']);
+    await owner.prepareAttachments(
+      (input) => input.addLocalFiles(['/payload.bin']),
+    );
     const failure = StudioFailure(
       code: StudioFailureCode.storage,
       message: 'display preparation failed',
@@ -1060,7 +1108,9 @@ void main() {
     client.session('thread').applySnapshot(_workspace());
     final owner = client.composer('thread');
     owner.updateDraft('request with uncertain reply');
-    await owner.addLocalAttachments(['/payload.bin']);
+    await owner.prepareAttachments(
+      (input) => input.addLocalFiles(['/payload.bin']),
+    );
     final submission = owner.submit();
     await transport.promptEntered.future;
     transport.promptReply.completeError(StateError('reply transport closed'));
@@ -1083,12 +1133,306 @@ void main() {
     await _close(client, transport);
   });
 
+  test('clipboard file lists keep their frozen target and never stage or delete originals', () async {
+    final transport = _DraftTransport();
+    final staged = <Uint8List>[];
+    final cleaned = <String>[];
+    final client = _client(
+      transport,
+      stage: (bytes) async {
+        staged.add(bytes);
+        return '/owned.png';
+      },
+      cleanup: (path) async => cleaned.add(path),
+    );
+    addTearDown(() => _close(client, transport));
+    final filesEntered = Completer<void>();
+    final files = Completer<List<String>>();
+    final clipboard = _Clipboard(
+      files: () {
+        filesEntered.complete();
+        return files.future;
+      },
+      image: () async => Uint8List.fromList([1, 2, 3]),
+      text: () async => '/not-an-attachment',
+    );
+    final paste = client.attachments.prepareNewThread(
+      projectId: _project.id,
+      mode: ThreadModeId.simple,
+      prepare: (input) => input.paste(
+        clipboard,
+        onText: (_) => fail('File lists must not be pasted as text'),
+      ),
+    );
+    addTearDown(() async {
+      if (!files.isCompleted) files.complete(const []);
+      await paste;
+      await client.attachments.discardProject(_project.id);
+    });
+    await filesEntered.future;
+    client.selection.selectThread(
+      projectId: _project.id,
+      threadId: 'thread',
+      needsOpen: true,
+    );
+    client.startDraft.setMode(_project.id, ThreadModeId.task);
+    files.complete(['/original/photo.jpg', '/original/voice.unknown']);
+    await paste;
+
+    expect(clipboard.reads, ['files']);
+    expect(staged, isEmpty);
+    expect(cleaned, isEmpty);
+    expect(transport.admissions, hasLength(1));
+    final admission = transport.admissions.single;
+    expect(
+      (admission.context as NewThreadAttachmentAdmissionContext).mode,
+      ThreadModeId.simple,
+    );
+    expect(
+      admission.sources.map(
+        (source) => (source as LocalFileAttachmentDraftSource).path,
+      ),
+      ['/original/photo.jpg', '/original/voice.unknown'],
+    );
+    expect(
+      client.attachments.state
+          .newThread(_project.id)
+          .attachments
+          .map((item) => item.id),
+      ['attachment-1-0', 'attachment-1-1'],
+    );
+    expect(client.composer('thread').state.attachments, isEmpty);
+    expect(client.attachments.state.newThread(_project.id).error, isNull);
+    await client.attachments.discardProject(_project.id);
+    expect(
+      cleaned,
+      isEmpty,
+      reason: 'Only native draft IDs, never user paths, are released',
+    );
+  });
+
+  test(
+    'clipboard pixels use owned staging while ordinary text paths remain text',
+    () async {
+      final transport = _DraftTransport();
+      final stagedBytes = <Uint8List>[];
+      final cleaned = <String>[];
+      final client = _client(
+        transport,
+        stage: (bytes) async {
+          stagedBytes.add(bytes);
+          return '/owned-clipboard.png';
+        },
+        cleanup: (path) async => cleaned.add(path),
+      );
+      client.session('thread').applySnapshot(_workspace());
+      final owner = client.composer('thread');
+      addTearDown(() async {
+        await owner.discard();
+        await _close(client, transport);
+      });
+      owner.updateDraft('keep this text');
+      final image = _Clipboard(
+        image: () async => Uint8List.fromList([1, 2, 3]),
+      );
+      await owner.prepareAttachments(
+        (input) => input.paste(image, onText: owner.updateDraft),
+      );
+      expect(image.reads, ['files', 'image']);
+      expect(stagedBytes, [
+        Uint8List.fromList([1, 2, 3]),
+      ]);
+      expect(cleaned, ['/owned-clipboard.png']);
+      expect(owner.state.draft, 'keep this text');
+      expect(owner.state.attachments.map((item) => item.id), [
+        'attachment-1-0',
+      ]);
+
+      final text = _Clipboard(
+        image: () async => Uint8List(0),
+        text: () async => '/existing/user-document.txt',
+      );
+      await owner.prepareAttachments(
+        (input) => input.paste(text, onText: owner.updateDraft),
+      );
+      expect(text.reads, ['files', 'image', 'text']);
+      expect(owner.state.draft, '/existing/user-document.txt');
+      expect(transport.admissionCalls, 1);
+      expect(
+        (transport.admissions.single.sources.single
+                as LocalFileAttachmentDraftSource)
+            .path,
+        '/owned-clipboard.png',
+      );
+      expect(cleaned, ['/owned-clipboard.png']);
+      expect(owner.state.attachments, hasLength(1));
+    },
+  );
+
+  test('clipboard read and admission failures retain the draft without lower-priority fallback', () async {
+    final transport = _DraftTransport();
+    final cleaned = <String>[];
+    final client = _client(
+      transport,
+      cleanup: (path) async => cleaned.add(path),
+    );
+    client.session('thread').applySnapshot(_workspace());
+    final owner = client.composer('thread');
+    addTearDown(() async {
+      await owner.discard();
+      await _close(client, transport);
+    });
+    owner.updateDraft('preserved text');
+    await owner.prepareAttachments(
+      (input) => input.addLocalFiles(['/kept.bin']),
+    );
+    final before = owner.state.attachments;
+    final unreadable = _Clipboard(
+      files: () async => throw StateError('clipboard unavailable'),
+    );
+    await owner.prepareAttachments(
+      (input) => input.paste(unreadable, onText: owner.updateDraft),
+    );
+    expect(unreadable.reads, ['files']);
+    expect(owner.state.error, contains('clipboard unavailable'));
+    expect(owner.state.attachments, before);
+    expect(owner.state.draft, 'preserved text');
+    transport.admissionFailure = const StudioFailure(
+      code: StudioFailureCode.invalidArgument,
+      message: 'not a regular file',
+      retryable: false,
+      correlationId: 'rejected-file-list',
+    );
+    final rejected = _Clipboard(
+      files: () async => ['/a-directory'],
+      image: () async => Uint8List.fromList([1, 2, 3]),
+      text: () async => 'do not replace the draft',
+    );
+    await owner.prepareAttachments(
+      (input) => input.paste(rejected, onText: owner.updateDraft),
+    );
+    expect(rejected.reads, ['files']);
+    expect(owner.state.error, contains('not a regular file'));
+    expect(owner.state.attachments, before);
+    expect(owner.state.draft, 'preserved text');
+    expect(transport.admissionCalls, 2);
+    expect(cleaned, isEmpty);
+  });
+
+  test('discarding the draft suppresses late text and Client close joins pending input reads', () async {
+    final transport = _DraftTransport();
+    final client = _client(transport);
+    client.session('thread').applySnapshot(_workspace());
+    final owner = client.composer('thread');
+    final textEntered = Completer<void>();
+    final text = Completer<String?>();
+    final clipboard = _Clipboard(
+      text: () {
+        textEntered.complete();
+        return text.future;
+      },
+    );
+    final paste = owner.prepareAttachments(
+      (input) => input.paste(clipboard, onText: owner.updateDraft),
+    );
+    addTearDown(() async {
+      if (!text.isCompleted) text.complete('stale text');
+      await paste;
+      await _close(client, transport);
+      await client.retryCleanup();
+    });
+    await textEntered.future;
+    await owner.discard();
+    owner.updateDraft('replacement text');
+    text.complete('stale text');
+    await paste;
+    expect(owner.state.draft, 'replacement text');
+
+    final pickerEntered = Completer<void>();
+    final selected = Completer<List<String>>();
+    final picking = owner.prepareAttachments((input) async {
+      pickerEntered.complete();
+      await input.addLocalFiles(await selected.future);
+    });
+    addTearDown(() async {
+      if (!selected.isCompleted) selected.complete(['/late-file.bin']);
+      await picking;
+    });
+    await pickerEntered.future;
+    final report = await client.close(
+      deadline: DateTime.fromMillisecondsSinceEpoch(0, isUtc: true),
+    );
+    expect(report.complete, isFalse);
+    expect(
+      report.unresolved.map((entry) => entry.owner),
+      contains('attachments'),
+    );
+    selected.complete(['/late-file.bin']);
+    await picking;
+    expect(transport.admissionCalls, 0);
+    expect(owner.state.attachments, isEmpty);
+    expect(owner.state.draft, 'replacement text');
+    expect((await client.retryCleanup()).complete, isTrue);
+  });
+
+  test('transfer staging cleanup failure remains owned and retries its own cleanup port', () async {
+    final transport = _DraftTransport();
+    final clipboardCleanup = <String>[];
+    final transferCleanup = <String>[];
+    var cleanupSucceeds = false;
+    final client = _client(
+      transport,
+      cleanup: (path) async => clipboardCleanup.add(path),
+    );
+    addTearDown(() async {
+      cleanupSucceeds = true;
+      // Client.close joins every remaining owner and reports the attachment
+      // owner's original failed close. Retry cleanup settles that report; it
+      // must not call the cached failed attachment close Future as a helper.
+      await client.close();
+      expect((await client.retryCleanup()).complete, isTrue);
+      expect(client.unresolvedResources, isEmpty);
+      expect(client.budget.usage, isEmpty);
+    });
+    await client.attachments.prepareNewThread(
+      projectId: _project.id,
+      mode: ThreadModeId.simple,
+      prepare: (input) => input.withLocalStaging(
+        create: () async => '/owned-transfer',
+        use: (_) async => throw StateError('transfer was interrupted'),
+        cleanup: (path) async {
+          transferCleanup.add(path);
+          if (!cleanupSucceeds) throw StateError('transfer cleanup failed');
+        },
+      ),
+    );
+    expect(transport.admissionCalls, 0);
+    expect(
+      client.attachments.state.newThread(_project.id).error,
+      contains('transfer cleanup failed'),
+    );
+    expect(client.attachments.unresolvedStagingPaths, ['/owned-transfer']);
+    expect(client.budget.used(ResourceKind.attachment), 1);
+    await expectLater(
+      client.attachments.close(),
+      throwsA(isA<AttachmentCleanupUnresolved>()),
+    );
+    cleanupSucceeds = true;
+    await client.attachments.retryCleanup();
+    expect(transferCleanup, ['/owned-transfer', '/owned-transfer']);
+    expect(clipboardCleanup, isEmpty);
+    expect(client.attachments.unresolvedStagingPaths, isEmpty);
+    expect(client.budget.used(ResourceKind.attachment), 0);
+  });
+
   test('actual attachment cleanup failure retains budget until explicit successful retry', () async {
     final transport = _DraftTransport();
     final client = _client(transport);
     client.session('thread').applySnapshot(_workspace());
     final owner = client.composer('thread');
-    await owner.addLocalAttachments(['/payload.bin']);
+    await owner.prepareAttachments(
+      (input) => input.addLocalFiles(['/payload.bin']),
+    );
     transport.removeSucceeds = false;
     await owner.discard();
     expect(client.attachments.unresolvedAttachmentIds, ['attachment-1-0']);
@@ -1112,7 +1456,9 @@ void main() {
     );
     client.session('thread').applySnapshot(_workspace());
     final owner = client.composer('thread');
-    await owner.addLocalAttachments(['/payload.bin']);
+    await owner.prepareAttachments(
+      (input) => input.addLocalFiles(['/payload.bin']),
+    );
     transport.removeSucceeds = false;
     await owner.discard();
     final closing = client.attachments.close();
@@ -1124,8 +1470,12 @@ void main() {
     await client.attachments.retryCleanup();
     expect(client.attachments.unresolvedAttachmentIds, isEmpty);
     expect(client.budget.used(ResourceKind.attachment), 0);
-    await owner.addLocalAttachments(['/forbidden.bin']);
-    await owner.addClipboardImage(Uint8List.fromList([1, 2, 3]));
+    await owner.prepareAttachments(
+      (input) => input.addLocalFiles(['/forbidden.bin']),
+    );
+    await owner.prepareAttachments(
+      (input) => input.addClipboardImage(Uint8List.fromList([1, 2, 3])),
+    );
     expect(transport.admissionCalls, 1);
     expect(staged, 0);
     expect(
@@ -1152,12 +1502,18 @@ void main() {
       session.applySnapshot(_workspace());
       final owner = client.composer('thread');
       owner.updateDraft('accepted during exit');
-      await owner.addLocalAttachments(['/payload.bin']);
+      await owner.prepareAttachments(
+        (input) => input.addLocalFiles(['/payload.bin']),
+      );
       final submission = owner.submit();
       final input = await transport.promptEntered.future;
       client.attachments.sealAdmissions();
-      await owner.addLocalAttachments(['/forbidden.bin']);
-      await owner.addClipboardImage(Uint8List.fromList([1, 2, 3]));
+      await owner.prepareAttachments(
+        (input) => input.addLocalFiles(['/forbidden.bin']),
+      );
+      await owner.prepareAttachments(
+        (input) => input.addClipboardImage(Uint8List.fromList([1, 2, 3])),
+      );
       expect(transport.admissionCalls, 1);
       expect(staged, 0);
       expect(
@@ -1216,10 +1572,11 @@ void main() {
         return cleaned.future;
       },
     );
-    final admission = client.attachments.addNewThreadClipboard(
+    final admission = client.attachments.prepareNewThread(
       projectId: _project.id,
       mode: ThreadModeId.simple,
-      pngBytes: Uint8List.fromList([1, 2, 3]),
+      prepare: (input) =>
+          input.addClipboardImage(Uint8List.fromList([1, 2, 3])),
     );
     addTearDown(() async {
       client.attachments.sealAdmissions();
@@ -1293,45 +1650,59 @@ void main() {
     );
   });
 
-  test(
-    'actual attachment close joins late clipboard staging and its file cleanup',
-    () async {
-      final transport = _DraftTransport();
-      final staged = Completer<String?>();
-      final cleanupStarted = Completer<String>();
-      final cleaned = Completer<void>();
-      final client = _client(
-        transport,
-        stage: (_) => staged.future,
-        cleanup: (path) {
-          cleanupStarted.complete(path);
-          return cleaned.future;
-        },
-      );
-      final admission = client.attachments.addNewThreadClipboard(
-        projectId: _project.id,
-        mode: ThreadModeId.simple,
-        pngBytes: Uint8List.fromList([1, 2, 3]),
-      );
-      var closed = false;
-      final closing = client.attachments.close().then((_) {
-        closed = true;
-      });
-      expect(closed, isFalse);
-      staged.complete('/clipboard-staging.png');
-      expect(await cleanupStarted.future, '/clipboard-staging.png');
-      expect(
-        closed,
-        isFalse,
-        reason: 'Native clipboard staging cleanup is still in flight',
-      );
-      cleaned.complete();
+  test('abandoning a draft rejects late clipboard staging and close still joins its cleanup', () async {
+    final transport = _DraftTransport();
+    final stageEntered = Completer<void>();
+    final staged = Completer<String?>();
+    final cleanupStarted = Completer<String>();
+    final cleaned = Completer<void>();
+    final client = _client(
+      transport,
+      stage: (_) {
+        stageEntered.complete();
+        return staged.future;
+      },
+      cleanup: (path) {
+        cleanupStarted.complete(path);
+        return cleaned.future;
+      },
+    );
+    client.session('thread').applySnapshot(_workspace());
+    final owner = client.composer('thread');
+    owner.updateDraft('abandoned draft');
+    final admission = owner.prepareAttachments(
+      (input) => input.addClipboardImage(Uint8List.fromList([1, 2, 3])),
+    );
+    addTearDown(() async {
+      if (!staged.isCompleted) staged.complete('/clipboard-staging.png');
+      if (!cleaned.isCompleted) cleaned.complete();
       await admission;
-      await closing;
-      expect(transport.admissionCalls, 0);
+      await owner.discard();
       await _close(client, transport);
-    },
-  );
+    });
+    await stageEntered.future;
+    await owner.discard();
+    owner.updateDraft('replacement draft');
+    staged.complete('/clipboard-staging.png');
+    expect(await cleanupStarted.future, '/clipboard-staging.png');
+
+    var closed = false;
+    final closing = client.attachments.close().then((_) {
+      closed = true;
+    });
+    expect(
+      closed,
+      isFalse,
+      reason: 'Native clipboard staging cleanup is still in flight',
+    );
+    cleaned.complete();
+    await admission;
+    await closing;
+    expect(transport.admissionCalls, 0);
+    expect(owner.state.draft, 'replacement draft');
+    expect(owner.state.attachments, isEmpty);
+    expect(client.budget.used(ResourceKind.attachment), 0);
+  });
 
   test('clipboard staging cleanup failure remains owned through close and explicit retry', () async {
     final transport = _DraftTransport();
@@ -1343,10 +1714,11 @@ void main() {
         if (!cleanupSucceeds) throw StateError('staging file is still in use');
       },
     );
-    await client.attachments.addNewThreadClipboard(
+    await client.attachments.prepareNewThread(
       projectId: _project.id,
       mode: ThreadModeId.simple,
-      pngBytes: Uint8List.fromList([1, 2, 3]),
+      prepare: (input) =>
+          input.addClipboardImage(Uint8List.fromList([1, 2, 3])),
     );
     expect(client.attachments.unresolvedStagingPaths, [
       '/clipboard-staging.png',

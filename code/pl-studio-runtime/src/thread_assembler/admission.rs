@@ -31,15 +31,26 @@ impl AgentServices {
             .context
             .records
             .iter()
-            .flat_map(|record| &record.content)
+            .flat_map(|record| {
+                record
+                    .content
+                    .iter()
+                    .map(move |content| (&record.source, content))
+            })
             .chain(
                 snapshot
                     .inputs
                     .iter()
                     .filter(|record| record.state == pl_core::thread::input::InputState::Pending)
-                    .flat_map(|record| &record.input.context),
+                    .flat_map(|record| {
+                        record
+                            .input
+                            .context
+                            .iter()
+                            .map(|content| (&pl_core::context::ContextSource::User, content))
+                    }),
             );
-        pl_model::runtime::validate_attachment_content(content, &route.model)?;
+        pl_model::runtime::validate_attachment_content_with_files(content, &route.model)?;
         pl_model::runtime::ThreadModel::new(
             pl_model::runtime::ModelRuntime::from_route(&route)?,
             route.reasoning_config(),
@@ -51,6 +62,7 @@ impl AgentServices {
                     &route,
                     &config,
                     self.config.thread_mode_manager(),
+                    self.factory.clone(),
                 )?,
                 DeferredModelUpdatePrecondition::extension(
                     extension,

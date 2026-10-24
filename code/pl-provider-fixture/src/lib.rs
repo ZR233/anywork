@@ -25,6 +25,8 @@ use sha2::{Digest, Sha256};
 use tokio::{net::TcpListener, sync::oneshot, task::JoinHandle};
 use tokio_util::sync::CancellationToken;
 
+/// Deterministic model stimuli for the explicit Studio bot/file observer.
+pub mod bots_observe;
 mod context_replay_recovery;
 pub mod delegation;
 mod model_catalog;

@@ -965,7 +965,7 @@ abstract class AppLocalizations {
   /// No description provided for @settingsBotsPermissions.
   ///
   /// In en, this message translates to:
-  /// **'Requested scopes (preset=false): im:message:send_as_bot, im:message.p2p_msg:readonly, im:message.group_at_msg:readonly, im:chat:readonly, im:message:readonly. Event: im.message.receive_v1. Declaring them does not mean an admin has approved or published the app.'**
+  /// **'Requested scopes (preset=false): im:message:send_as_bot, im:message.p2p_msg:readonly, im:message.group_at_msg:readonly, im:chat:readonly, im:message:readonly, im:resource:upload. Event: im.message.receive_v1. Declaring them does not mean an admin has approved or published the app.'**
   String get settingsBotsPermissions;
 
   /// No description provided for @settingsBotsName.
@@ -1595,7 +1595,7 @@ abstract class AppLocalizations {
   /// No description provided for @settingsBotsSendRejected.
   ///
   /// In en, this message translates to:
-  /// **'Rejected'**
+  /// **'Not delivered'**
   String get settingsBotsSendRejected;
 
   /// No description provided for @settingsBotsSendUnknown.
@@ -1603,6 +1603,48 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Outcome unknown'**
   String get settingsBotsSendUnknown;
+
+  /// No description provided for @settingsBotsUploadStage.
+  ///
+  /// In en, this message translates to:
+  /// **'Upload'**
+  String get settingsBotsUploadStage;
+
+  /// No description provided for @settingsBotsMessageStage.
+  ///
+  /// In en, this message translates to:
+  /// **'Message'**
+  String get settingsBotsMessageStage;
+
+  /// No description provided for @settingsBotsStageNotStarted.
+  ///
+  /// In en, this message translates to:
+  /// **'Not started'**
+  String get settingsBotsStageNotStarted;
+
+  /// No description provided for @settingsBotsStageAccepted.
+  ///
+  /// In en, this message translates to:
+  /// **'Platform accepted'**
+  String get settingsBotsStageAccepted;
+
+  /// No description provided for @settingsBotsStageRejected.
+  ///
+  /// In en, this message translates to:
+  /// **'Platform rejected'**
+  String get settingsBotsStageRejected;
+
+  /// No description provided for @settingsBotsStopCancelled.
+  ///
+  /// In en, this message translates to:
+  /// **'Cancelled locally'**
+  String get settingsBotsStopCancelled;
+
+  /// No description provided for @settingsBotsStopLocalFailure.
+  ///
+  /// In en, this message translates to:
+  /// **'Local failure'**
+  String get settingsBotsStopLocalFailure;
 
   /// No description provided for @settingsSshTitle.
   ///
@@ -5124,11 +5166,11 @@ abstract class AppLocalizations {
   /// **'Add attachment'**
   String get composerAttachmentAddTooltip;
 
-  /// No description provided for @composerAttachmentUnsupportedTooltip.
+  /// No description provided for @composerAttachmentHandlingHint.
   ///
   /// In en, this message translates to:
-  /// **'The current model does not support attachments'**
-  String get composerAttachmentUnsupportedTooltip;
+  /// **'Handled directly when supported by the model, otherwise as workspace files'**
+  String get composerAttachmentHandlingHint;
 
   /// No description provided for @composerAttachmentPickLocal.
   ///
@@ -5141,18 +5183,6 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Remove'**
   String get composerAttachmentRemoveTooltip;
-
-  /// No description provided for @composerClipboardImageUnsupported.
-  ///
-  /// In en, this message translates to:
-  /// **'The current model does not support pasted images.'**
-  String get composerClipboardImageUnsupported;
-
-  /// No description provided for @composerClipboardReadFailed.
-  ///
-  /// In en, this message translates to:
-  /// **'Unable to read the clipboard image.'**
-  String get composerClipboardReadFailed;
 
   /// No description provided for @settingsModelOutputCapabilities.
   ///

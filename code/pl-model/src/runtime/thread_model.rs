@@ -21,12 +21,16 @@ pub use compaction::{
     ThreadCompaction, ThreadCompactionDecision, ThreadCompactionOptions, ThreadCompactionStrategy,
     migrate_legacy_compaction,
 };
+mod attachment;
 mod codec;
 mod media;
 pub(crate) mod progress;
 mod receipt;
+pub use attachment::{
+    ToolAttachment, attachment_content, decode_attachment, user_attachment_content,
+};
 pub use media::{
-    ToolAttachment, attachment_content, decode_attachment, validate_attachment_content,
+    ModelPreparationOwner, validate_attachment_content, validate_attachment_content_with_files,
 };
 pub use receipt::{
     ModelCallBinding, ModelFailureReceipt, ModelRequestReceipt, ModelResponseReceipt,
@@ -34,12 +38,19 @@ pub use receipt::{
 };
 
 /// Model factory sharing clients while creating a private physical session for each Thread.
+///
+/// Standalone estimates/compactions share this factory's image preparation lifetime. After
+/// cancelling such a future, retain the factory (or an injected [`ModelPreparationOwner`]) and
+/// call [`Self::close_preparation`] before releasing its last host owner. Session close instead
+/// drains that session's independent preparation owner.
 #[derive(Debug, Clone)]
 pub struct ThreadModel {
     runtime: ModelRuntime,
     reasoning: Option<ReasoningConfig>,
     purpose: String,
     hosted_tools: Arc<[super::HostedTool]>,
+    user_files: Option<super::UserFileAccess>,
+    preparation: ModelPreparationOwner,
 }
 
 impl ThreadModel {
@@ -50,6 +61,8 @@ impl ThreadModel {
             reasoning,
             purpose: "turn".into(),
             hosted_tools: Vec::new().into(),
+            user_files: None,
+            preparation: Default::default(),
         }
     }
     /// Stable route provenance, independent of instruction, tool and execution revisions.
@@ -63,6 +76,27 @@ impl ThreadModel {
         self
     }
 
+    /// Installs host workspace-file projection for user originals only, shared by every encoding.
+    pub fn with_user_files(mut self, files: super::UserFileAccess) -> Self {
+        self.user_files = Some(files);
+        self
+    }
+
+    /// Shares standalone image preparation with an owner retained by the host before cancellable
+    /// estimates/compactions start. Physical sessions always create independent owners.
+    pub fn with_preparation_owner(mut self, owner: ModelPreparationOwner) -> Self {
+        self.preparation = owner;
+        self
+    }
+
+    /// Seals and drains this factory's standalone image work, not its independent model sessions.
+    ///
+    /// # Errors
+    /// Reports abandoned worker/resource failures; a cancelled close can be awaited again.
+    pub async fn close_preparation(&self) -> Result<(), ModelError> {
+        self.preparation.close().await
+    }
+
     /// Sets a diagnostic purpose for this independent session factory; it grants no execution permissions.
     pub fn with_purpose(mut self, purpose: impl Into<String>) -> Self {
         self.purpose = purpose.into();
@@ -73,8 +107,20 @@ impl ThreadModel {
         &self,
         request: &ModelRequest,
     ) -> Result<crate::completion::CompletionRequest, ModelError> {
+        request
+            .context
+            .validate_complete()
+            .map_err(|error| failure(ModelFailureKind::IncompatibleContext, error))?;
         self.validate_context_origin(&request.context)?;
-        let mut encoded = codec::request(request, &self.runtime)?;
+        let media = media::prepare(
+            request,
+            &self.runtime,
+            self.user_files.as_ref(),
+            &self.preparation,
+        )
+        .await?;
+        let mut encoded = codec::request(request, &self.runtime, &media)?;
+        encoded.attachments = media.attachments;
         encoded.reasoning = self.reasoning.clone();
         encoded.max_tokens = self.runtime.model().max_output_tokens;
         encoded.parallel_tool_calls = request.tool_call_mode
@@ -112,7 +158,6 @@ impl ThreadModel {
             }
             encoded.tools.push(declaration);
         }
-        media::prepare(request, &mut encoded, self.runtime.model()).await?;
         encoded = self
             .runtime
             .prepare_request(encoded)
@@ -130,6 +175,9 @@ impl Model for ThreadModel {
             reasoning: self.reasoning.clone(),
             purpose: self.purpose.clone(),
             hosted_tools: self.hosted_tools.clone(),
+            user_files: self.user_files.clone(),
+            preparation: ModelPreparationOwner::default(),
+            closing: None,
             physical: ModelSession::default(),
             observed: Arc::new(Mutex::new(None)),
             prompt: super::ThreadPromptMetadata::default(),
@@ -144,6 +192,9 @@ struct ThreadModelSession {
     reasoning: Option<ReasoningConfig>,
     purpose: String,
     hosted_tools: Arc<[super::HostedTool]>,
+    user_files: Option<super::UserFileAccess>,
+    preparation: ModelPreparationOwner,
+    closing: Option<futures::future::BoxFuture<'static, Result<(), ModelError>>>,
     physical: ModelSession,
     observed: Arc<Mutex<Option<OpaquePayload>>>,
     prompt: super::ThreadPromptMetadata,
@@ -157,6 +208,8 @@ impl CoreModelSession for ThreadModelSession {
             reasoning: self.reasoning.clone(),
             purpose: self.purpose.clone(),
             hosted_tools: self.hosted_tools.clone(),
+            user_files: self.user_files.clone(),
+            preparation: self.preparation.clone(),
         };
         let encoded = configuration.encode_request(&request).await?;
         let observed = self
@@ -321,11 +374,34 @@ impl CoreModelSession for ThreadModelSession {
     }
 
     async fn close(&mut self) -> Result<(), ModelError> {
-        self.physical
-            .close()
-            .await
-            .map_err(|error| failure(ModelFailureKind::Unavailable, error))
+        let closing = self.closing.get_or_insert_with(|| {
+            let preparation = self.preparation.clone();
+            let physical = self.physical.clone();
+            Box::pin(async move {
+                let (images, physical) = futures::join!(preparation.close(), physical.close());
+                match (images, physical) {
+                    (Ok(()), Ok(())) => Ok(()),
+                    (Err(error), Ok(())) => Err(error),
+                    (Ok(()), Err(error)) => Err(failure(ModelFailureKind::Unavailable, error)),
+                    (Err(images), Err(physical)) => Err(failure(
+                        ModelFailureKind::Unavailable,
+                        SessionCloseError { images, physical },
+                    )),
+                }
+            })
+        });
+        let result = closing.await;
+        self.closing = None;
+        result
     }
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("image preparation close failed: {images}; physical session close also failed: {physical}")]
+struct SessionCloseError {
+    #[source]
+    images: ModelError,
+    physical: pl_protocol::PureError,
 }
 
 /// Encodes a stable tool declaration for the Thread adapter without exposing its schema to core.

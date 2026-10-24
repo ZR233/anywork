@@ -10,11 +10,15 @@ use crate::{
 };
 use pl_core::thread::ThreadSnapshot;
 use pl_tool::workspace::ToolWorkspace;
+mod preparation;
+mod state;
+pub(super) use state::ToolBindings;
 
 #[derive(Clone)]
 pub(super) struct ToolBinding {
     pub lifetime: std::sync::Arc<ThreadToolLifetime>,
-    pub incarnation: std::sync::Arc<()>,
+    pub catalog_generation: CatalogGeneration,
+    pub file_execution: FileExecutionIdentity,
     pub target_invalidated: bool,
     pub catalog: Option<std::sync::Arc<pl_tool::skill::FrozenSkillCatalog>>,
     pub initial_skill_prompt: String,
@@ -29,15 +33,66 @@ pub(super) struct ToolBinding {
     pub ssh_profile: Option<pl_tool::remote::SshServerProfile>,
 }
 
+/// Every catalog candidate has a distinct installation baseline, even on one execution lease.
+#[derive(Clone, Default)]
+pub(super) struct CatalogGeneration(std::sync::Arc<()>);
+
+impl CatalogGeneration {
+    fn matches(&self, other: &Self) -> bool {
+        std::sync::Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+/// Stable only while the Thread's physical workspace and file authorization remain unchanged.
+#[derive(Clone, Default)]
+pub(super) struct FileExecutionIdentity(std::sync::Arc<()>);
+
+impl FileExecutionIdentity {
+    pub(super) fn matches(&self, other: &Self) -> bool {
+        std::sync::Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
 #[derive(Default)]
 pub(super) struct ThreadToolLifetime {
-    gate: std::sync::Arc<tokio::sync::Mutex<()>>,
-    cancellation: tokio_util::sync::CancellationToken,
+    pub(super) gate: std::sync::Arc<tokio::sync::Mutex<()>>,
+    // Model encoding can run while the installation gate awaits a core command
+    // (explicit compaction or tool refresh). Upload serialization must never
+    // reacquire that gate; binding publication is checked under the binding map.
+    pub(super) uploads: tokio::sync::Mutex<()>,
+    pub(super) file_io: pl_tool::workspace_file::LocalFileIoOwner,
+    pub(super) file_creates: pl_tool::workspace_file::LocalFileCreateOwner,
+    pub(super) preparation: pl_model::runtime::ModelPreparationOwner,
+    file_close: tokio::sync::Mutex<Option<FileOperationsClose>>,
+    pub(super) cancellation: tokio_util::sync::CancellationToken,
+}
+
+type FileOperationsClose =
+    futures::future::BoxFuture<'static, Result<(), FileOperationsCloseError>>;
+
+#[derive(Debug, thiserror::Error)]
+#[error(
+    "Thread preparation/file close failed: {primary}; additional close failures: {additional:?}"
+)]
+struct FileOperationsCloseError {
+    #[source]
+    primary: OwnerCloseFailure,
+    additional: Vec<OwnerCloseFailure>,
+}
+
+#[derive(Debug, thiserror::Error)]
+enum OwnerCloseFailure {
+    #[error("image preparation: {0}")]
+    Preparation(#[source] pl_core::model::ModelError),
+    #[error("local file IO: {0}")]
+    Io(#[source] pl_protocol::PureError),
+    #[error("local file Create: {0}")]
+    Creates(#[source] pl_protocol::PureError),
 }
 
 /// Candidate metadata is published only after the Thread accepts its registrations.
 pub(in crate::studio) struct RefreshedToolBinding {
-    previous: std::sync::Arc<()>,
+    previous: CatalogGeneration,
     binding: ToolBinding,
 }
 
@@ -102,7 +157,9 @@ impl StudioThreadFactory {
         let current = bindings
             .get_mut(id)
             .ok_or(pl_core::thread::ThreadError::Closed)?;
-        if !std::sync::Arc::ptr_eq(&current.incarnation, &candidate.previous) {
+        if current.lifetime.cancellation.is_cancelled()
+            || !current.catalog_generation.matches(&candidate.previous)
+        {
             return Err(pl_core::thread::ThreadError::Closed.into());
         }
         if current.target_invalidated {
@@ -185,32 +242,53 @@ impl StudioThreadFactory {
             }
         }
     }
-    pub(in crate::studio) fn forget_tool_binding(&self, id: &str) {
-        if let Some(binding) = self
+    pub(in crate::studio) async fn drain_file_operations(
+        &self,
+        id: &str,
+    ) -> Result<(), ThreadAssemblyError> {
+        let lifetime = self
             .bindings
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .remove(id)
-        {
-            binding.lifetime.cancellation.cancel();
+            .lifetime(id);
+        if let Some(lifetime) = lifetime {
+            close_file_operations(&lifetime).await?;
         }
+        Ok(())
     }
-    pub(super) fn forget_tool_binding_if_current(
+
+    pub(in crate::studio) async fn forget_tool_binding(
         &self,
         id: &str,
-        lifetime: &std::sync::Arc<ThreadToolLifetime>,
-    ) {
+    ) -> Result<(), ThreadAssemblyError> {
+        let lifetime = self
+            .bindings
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .lifetime(id);
+        let Some(lifetime) = lifetime else {
+            return Ok(());
+        };
+        // The map retains the owner across failure or cancellation of this waiter.
+        // Only a confirmed drain permits removing the same execution lifetime.
+        close_file_operations(&lifetime).await?;
         let mut bindings = self
             .bindings
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if bindings
-            .get(id)
-            .is_some_and(|binding| std::sync::Arc::ptr_eq(&binding.lifetime, lifetime))
-            && let Some(binding) = bindings.remove(id)
-        {
-            binding.lifetime.cancellation.cancel();
-        }
+        bindings.remove_drained(id, &lifetime)
+    }
+    pub(super) fn abandon_tool_binding_if_current(
+        &self,
+        id: &str,
+        lifetime: &std::sync::Arc<ThreadToolLifetime>,
+    ) {
+        // Drop can signal abandonment, not certify that root/read workers were joined.
+        // The same map retains the lifetime until an asynchronous drain succeeds.
+        self.bindings
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .abandon(id, lifetime);
     }
 
     pub(in crate::studio) fn stop_tool_operation(
@@ -221,19 +299,15 @@ impl StudioThreadFactory {
             .bindings
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let binding = bindings.get(id)?;
-        binding.lifetime.cancellation.cancel();
-        Some(binding.lifetime.gate.clone())
+        let lifetime = bindings.lifetime(id)?;
+        lifetime.cancellation.cancel();
+        Some(lifetime.gate.clone())
     }
     pub(in crate::studio) fn stop_all_tool_operations(&self) {
-        for binding in self
-            .bindings
+        self.bindings
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .values()
-        {
-            binding.lifetime.cancellation.cancel();
-        }
+            .seal();
     }
 
     pub(in crate::studio) async fn refresh_thread_tools(
@@ -386,12 +460,13 @@ impl StudioThreadFactory {
         } else {
             None
         };
-        let policy_changed =
-            binding.policy_key != super::thread_tools::approval_policy_key(&config, &route);
+        let policy_key = super::thread_tools::approval_policy_key(&config, &route);
+        let policy_changed = binding.policy_key != policy_key;
         let mut prepared = self
             .prepare_thread_tools_with(
                 ThreadToolAssembly {
                     thread_id: id,
+                    lifetime: binding.lifetime.clone(),
                     cancellation: &cancellation,
                     config: &config,
                     route: &route,
@@ -439,14 +514,26 @@ impl StudioThreadFactory {
             .as_ref()
             .map(|commands| commands.downgrade())
             .or(previous_commands);
+        // This assembly inherits the same lifetime explicitly and the candidate below keeps it.
+        // Catalog installation is a new generation, not a new physical/file authority lease.
+        let file_execution = if same_connection
+            && !policy_changed
+            && binding.permission_mode == config.runtime.permission_mode
+            && binding.workspace.workspace() == prepared.workspace.workspace()
+        {
+            binding.file_execution.clone()
+        } else {
+            FileExecutionIdentity::default()
+        };
         let candidate = RefreshedToolBinding {
-            previous: binding.incarnation.clone(),
+            previous: binding.catalog_generation.clone(),
             binding: ToolBinding {
-                incarnation: std::sync::Arc::new(()),
+                catalog_generation: CatalogGeneration::default(),
+                file_execution,
                 commands,
                 remote: prepared.remote.clone(),
                 catalog: prepared.catalog.clone(),
-                policy_key: super::thread_tools::approval_policy_key(&config, &route),
+                policy_key,
                 permission_mode: config.runtime.permission_mode,
                 policies: prepared.tools.approval_policies.clone(),
                 ..binding
@@ -454,6 +541,46 @@ impl StudioThreadFactory {
         };
         Ok((prepared.tools, exposure, candidate))
     }
+}
+
+async fn close_file_operations(lifetime: &ThreadToolLifetime) -> Result<(), ThreadAssemblyError> {
+    lifetime.cancellation.cancel();
+    // Keep the entire close future in the lifetime, not just local owner clones. If a
+    // waiter is cancelled after one owner reports failure, that failure remains inside
+    // this future until both owners were attempted and the aggregate can be reported.
+    let mut pending = lifetime.file_close.lock().await;
+    let close = pending.get_or_insert_with(|| {
+        let io = lifetime.file_io.clone();
+        let creates = lifetime.file_creates.clone();
+        let preparation = lifetime.preparation.clone();
+        Box::pin(async move {
+            // All admission seals are polled together. In-flight Create owns its directory
+            // capability independently of root/read IO; all results remain in this future.
+            let (images, io, creates) =
+                futures::join!(preparation.close(), io.close(), creates.close());
+            let mut failures = Vec::new();
+            if let Err(error) = images {
+                failures.push(OwnerCloseFailure::Preparation(error));
+            }
+            if let Err(error) = io {
+                failures.push(OwnerCloseFailure::Io(error));
+            }
+            if let Err(error) = creates {
+                failures.push(OwnerCloseFailure::Creates(error));
+            }
+            let mut failures = failures.into_iter();
+            match failures.next() {
+                None => Ok(()),
+                Some(primary) => Err(FileOperationsCloseError {
+                    primary,
+                    additional: failures.collect(),
+                }),
+            }
+        })
+    });
+    let result = close.await;
+    *pending = None;
+    result.map_err(|error| resource_error("drain Thread file operations", error))
 }
 
 fn catalog_fact(

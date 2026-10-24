@@ -19,11 +19,13 @@ pub(crate) struct ThreadBindingRow {
     pub creation_id: String,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct InboundRow {
     pub message_id: String,
     pub status: String,
     pub diagnostic: String,
+    pub content_hash: String,
 }
 
 #[derive(Debug, Clone)]
@@ -91,12 +93,13 @@ pub(crate) async fn thread_bindings(home: &Path, bot_id: &str) -> Result<Vec<Thr
 pub(crate) async fn inbound(home: &Path, bot_id: &str) -> Result<Vec<InboundRow>> {
     query_rows(
         &bot_state_db(home, bot_id),
-        "SELECT message_id, status, diagnostic FROM inbound_work",
+        "SELECT message_id, status, diagnostic, content_hash FROM inbound_work",
         |row| {
             Ok(InboundRow {
                 message_id: row.try_get::<String, _>(0)?,
                 status: row.try_get::<String, _>(1)?,
                 diagnostic: row.try_get::<String, _>(2).unwrap_or_default(),
+                content_hash: row.try_get::<String, _>(3)?,
             })
         },
     )

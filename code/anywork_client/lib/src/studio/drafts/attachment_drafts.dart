@@ -5,6 +5,7 @@ import 'dart:typed_data';
 import '../../../anywork_client.dart'
     show
         ReadModel,
+        Observation,
         AttachmentDraftStore,
         OperationId,
         DraftStamp,
@@ -15,6 +16,8 @@ import '../../../models.dart';
 import '../../../studio_ports.dart';
 import '../anywork_client.dart';
 import '../commands/command_lane.dart';
+
+part 'attachment_input.dart';
 
 /// 附件 admission 的读写绑定。调用方持有草稿，本控制器不复制第二份正文。
 class ComposerDraftBinding {
@@ -61,7 +64,8 @@ class AttachmentDraftsOwner extends ReadModel<AttachmentDraftBoard> {
   final Map<String, _CleanupFailure> _unresolvedCleanup = {};
   final Map<String, Object> _unresolvedAdmissions = {};
   final Map<String, _StagingCleanupFailure> _unresolvedStaging = {};
-  final Set<Future<void>> _tasks = {};
+  final Map<Future<void>, String?> _tasks = {};
+  final Set<AttachmentDraftInput> _inputs = {};
   Future<void>? _closing;
   Future<void>? _cleanupRetry;
   int _admissionSequence = 0;
@@ -73,29 +77,35 @@ class AttachmentDraftsOwner extends ReadModel<AttachmentDraftBoard> {
   /// frozen ownership until they finish, and explicit cleanup remains legal.
   void sealAdmissions() {
     _admissionsSealed = true;
+    for (final input in _inputs.toList()) {
+      input._invalidate();
+    }
+  }
+
+  void cancelDraftInputs(String draftId) {
+    for (final input in _inputs.toList()) {
+      if (input._binding.draftId == draftId) input._invalidate();
+    }
   }
 
   Future<T> runLocked<T>(String targetKey, Future<T> Function() action) {
     return _lane(targetKey).enqueue(action);
   }
 
-  Future<void> admitThread({
+  Future<void> prepareThread({
     required String threadId,
     required ComposerDraftBinding binding,
-    required List<AttachmentDraftSource> sources,
+    required Future<void> Function(AttachmentDraftInput input) prepare,
     required String? projectId,
   }) {
-    if (_admissionsSealed) return Future<void>.value();
-    return _track(
-      () => _admit(
-        targetKey: attachmentLaneKeyForThread(threadId),
-        context: AttachmentAdmissionContext.existingThread(threadId),
-        sources: sources,
-        binding: binding,
-        projectId: projectId,
-        threadId: threadId,
-        targetCurrent: () => _threadTargetCurrent(threadId),
-      ),
+    return _prepare(
+      targetKey: attachmentLaneKeyForThread(threadId),
+      context: AttachmentAdmissionContext.existingThread(threadId),
+      binding: binding,
+      projectId: projectId,
+      threadId: threadId,
+      targetCurrent: () => _threadTargetCurrent(threadId),
+      prepare: prepare,
     );
   }
 
@@ -112,26 +122,6 @@ class AttachmentDraftsOwner extends ReadModel<AttachmentDraftBoard> {
         binding: binding,
         projectId: projectId,
         threadId: threadId,
-      ),
-    );
-  }
-
-  Future<void> addThreadClipboard({
-    required String threadId,
-    required Uint8List pngBytes,
-    required ComposerDraftBinding binding,
-    required String? projectId,
-  }) {
-    if (_admissionsSealed) return Future<void>.value();
-    return _track(
-      () => _addClipboard(
-        targetKey: attachmentLaneKeyForThread(threadId),
-        pngBytes: pngBytes,
-        context: AttachmentAdmissionContext.existingThread(threadId),
-        binding: binding,
-        projectId: projectId,
-        threadId: threadId,
-        targetCurrent: () => _threadTargetCurrent(threadId),
       ),
     );
   }
@@ -170,22 +160,19 @@ class AttachmentDraftsOwner extends ReadModel<AttachmentDraftBoard> {
     }
   }
 
-  Future<void> admitNewThread({
+  Future<void> prepareNewThread({
     required String projectId,
     required ThreadModeId mode,
-    required List<AttachmentDraftSource> sources,
+    required Future<void> Function(AttachmentDraftInput input) prepare,
   }) {
-    if (_admissionsSealed) return Future<void>.value();
-    return _track(
-      () => _admit(
-        targetKey: attachmentLaneKeyForNewThread(projectId),
-        context: AttachmentAdmissionContext.newThread(mode),
-        sources: sources,
-        binding: _newThreadBinding(projectId),
-        projectId: projectId,
-        threadId: null,
-        targetCurrent: () => _newThreadCurrent(projectId),
-      ),
+    return _prepare(
+      targetKey: attachmentLaneKeyForNewThread(projectId),
+      context: AttachmentAdmissionContext.newThread(mode),
+      binding: _newThreadBinding(projectId),
+      projectId: projectId,
+      threadId: null,
+      targetCurrent: () => _newThreadCurrent(projectId),
+      prepare: prepare,
     );
   }
 
@@ -201,42 +188,48 @@ class AttachmentDraftsOwner extends ReadModel<AttachmentDraftBoard> {
     );
   }
 
-  Future<void> addNewThreadRemote({
-    required String projectId,
-    required ThreadModeId mode,
-    required String url,
-  }) {
-    return admitNewThread(
-      projectId: projectId,
-      mode: mode,
-      sources: [AttachmentDraftSource.remoteUrl(url.trim())],
-    );
-  }
-
-  Future<void> addNewThreadClipboard({
-    required String projectId,
-    required ThreadModeId mode,
-    required Uint8List pngBytes,
-  }) {
-    if (_admissionsSealed) return Future<void>.value();
-    return _track(
-      () => _addClipboard(
-        targetKey: attachmentLaneKeyForNewThread(projectId),
-        pngBytes: pngBytes,
-        context: AttachmentAdmissionContext.newThread(mode),
-        binding: _newThreadBinding(projectId),
-        projectId: projectId,
-        threadId: null,
-        targetCurrent: () => _newThreadCurrent(projectId),
-      ),
-    );
-  }
-
   void reportNewThreadFailure(String projectId, Object error) {
     final binding = _newThreadBinding(projectId);
     if (!binding.mounted()) return;
     final current = binding.read();
     binding.write(current.reportFailure(error));
+  }
+
+  /// Freeze before platform I/O and keep preparation, admission and owned
+  /// staging in the same task set that close joins. A retired input cannot be
+  /// reused by callbacks after their preparation has returned.
+  Future<void> _prepare({
+    required String targetKey,
+    required AttachmentAdmissionContext context,
+    required ComposerDraftBinding binding,
+    required String? projectId,
+    required String? threadId,
+    required bool Function() targetCurrent,
+    required Future<void> Function(AttachmentDraftInput input) prepare,
+  }) {
+    final input = AttachmentDraftInput._(
+      this,
+      targetKey: targetKey,
+      context: context,
+      binding: binding,
+      projectId: projectId,
+      threadId: threadId,
+      targetCurrent: targetCurrent,
+      generation: binding.generation(),
+    );
+    if (!input.isCurrent) return Future<void>.value();
+    _inputs.add(input);
+    input._watchTarget();
+    return _track(() async {
+      try {
+        if (input.isCurrent) await prepare(input);
+      } catch (error) {
+        await input._reportFailure(error);
+      } finally {
+        _inputs.remove(input);
+        input._finish();
+      }
+    }, draftId: binding.draftId);
   }
 
   Future<void> _admit({
@@ -470,57 +463,31 @@ class AttachmentDraftsOwner extends ReadModel<AttachmentDraftBoard> {
     });
   }
 
-  Future<void> _addClipboard({
-    required String targetKey,
-    required Uint8List pngBytes,
-    required AttachmentAdmissionContext context,
-    required ComposerDraftBinding binding,
-    required String? projectId,
-    required String? threadId,
-    required bool Function() targetCurrent,
+  Future<void> _withStaging({
+    required Future<String?> Function() create,
+    required Future<void> Function(String path) cleanup,
+    required Future<void> Function(String path) use,
+    required Future<void> Function(Object error) reportFailure,
   }) async {
-    if (_closed || _admissionsSealed || !binding.mounted() || !targetCurrent())
-      return;
-    if (pngBytes.isEmpty) {
-      await _lane(targetKey).enqueue(() async {
-        if (!binding.mounted() || !targetCurrent()) return;
-        final current = binding.read();
-        binding.write(
-          current.reportFailure(StateError('Clipboard image is empty.')),
-        );
-      });
-      return;
-    }
     String? path;
     ResourcePermit? stagingPermit;
     var stagingDispatched = false;
     var stagingReturned = false;
-    final stagingOwner = 'clipboard-staging:${++_admissionSequence}';
+    final stagingOwner = 'input-staging:${++_admissionSequence}';
     try {
-      final stage = clipboardImageStager;
-      if (stage == null)
-        throw StateError('Clipboard image staging is unavailable.');
       stagingPermit = _client.budget.acquire(
         ResourceKind.attachment,
         owner: stagingOwner,
         phase: ResourcePhase.opening,
       );
       stagingDispatched = true;
-      path = await stage(Uint8List.fromList(pngBytes));
+      path = await create();
       stagingReturned = true;
       if (path == null || path.isEmpty) {
-        throw StateError('Clipboard image staging did not return a file.');
+        throw StateError('Attachment staging did not return a path.');
       }
       stagingPermit.mark(ResourcePhase.active);
-      await _admit(
-        targetKey: targetKey,
-        context: context,
-        sources: [AttachmentDraftSource.localFile(path)],
-        binding: binding,
-        projectId: projectId,
-        threadId: threadId,
-        targetCurrent: targetCurrent,
-      );
+      await use(path);
     } catch (error) {
       if (stagingDispatched && !stagingReturned && stagingPermit != null) {
         // The callback did not return an identity, so a created staging file
@@ -529,16 +496,10 @@ class AttachmentDraftsOwner extends ReadModel<AttachmentDraftBoard> {
         _unresolvedAdmissions[stagingOwner] = error;
         stagingPermit = null;
       }
-      await _lane(targetKey).enqueue(() async {
-        if (!binding.mounted() || !targetCurrent()) return;
-        binding.write(binding.read().reportAttachmentFailure(error));
-      });
+      await reportFailure(error);
     } finally {
       if (path != null && path.isNotEmpty) {
         try {
-          final cleanup = clipboardImageCleanup;
-          if (cleanup == null)
-            throw StateError('Clipboard staging cleanup is unavailable.');
           await cleanup(path);
           stagingPermit?.release();
         } catch (error, stack) {
@@ -549,13 +510,15 @@ class AttachmentDraftsOwner extends ReadModel<AttachmentDraftBoard> {
               path,
               permit,
               error,
+              cleanup,
             );
           }
           log(
-            'clipboard staging cleanup failed',
+            'attachment input staging cleanup failed',
             error: error,
             stackTrace: stack,
           );
+          await reportFailure(error);
         }
       } else {
         stagingPermit?.release();
@@ -748,6 +711,7 @@ class AttachmentDraftsOwner extends ReadModel<AttachmentDraftBoard> {
     required String? projectId,
     required String? threadId,
   }) async {
+    cancelDraftInputs(binding.draftId);
     final released = _ownership.discardDraft(binding.draftId);
     binding.write(const ComposerThreadState.idle());
     await _cleanupOrphans(released, projectId: projectId, threadId: threadId);
@@ -784,10 +748,7 @@ class AttachmentDraftsOwner extends ReadModel<AttachmentDraftBoard> {
   Future<void> _retryCleanup() async {
     for (final entry in List.of(_unresolvedStaging.entries)) {
       try {
-        final cleanup = clipboardImageCleanup;
-        if (cleanup == null)
-          throw StateError('Clipboard staging cleanup is unavailable.');
-        await cleanup(entry.value.path);
+        await entry.value.cleanup(entry.value.path);
         _unresolvedStaging.remove(entry.key);
         entry.value.permit.release();
       } catch (error) {
@@ -795,6 +756,7 @@ class AttachmentDraftsOwner extends ReadModel<AttachmentDraftBoard> {
           entry.value.path,
           entry.value.permit,
           error,
+          entry.value.cleanup,
         );
       }
     }
@@ -848,14 +810,28 @@ class AttachmentDraftsOwner extends ReadModel<AttachmentDraftBoard> {
   Future<void> _track(
     Future<void> Function() action, {
     bool cleanupOnly = false,
+    String? draftId,
   }) {
     if (_closed && !cleanupOnly) return Future<void>.value();
     late final Future<void> task;
     task = Future<void>.sync(action).whenComplete(() {
       _tasks.remove(task);
     });
-    _tasks.add(task);
+    _tasks[task] = draftId;
     return task;
+  }
+
+  /// A logical draft can retire independently; its input still belongs to this
+  /// owner's task set until platform I/O and owned staging have really ended.
+  Future<void> joinDraftInputs(String draftId) async {
+    while (true) {
+      final pending = [
+        for (final entry in _tasks.entries)
+          if (entry.value == draftId) entry.key,
+      ];
+      if (pending.isEmpty) return;
+      await Future.wait(pending);
+    }
   }
 
   Future<void> close() => _closing ??= _close();
@@ -865,7 +841,7 @@ class AttachmentDraftsOwner extends ReadModel<AttachmentDraftBoard> {
     _closed = true;
     // Includes clipboard staging and preview reads, not only lane tails.
     while (_tasks.isNotEmpty) {
-      await Future.wait(List.of(_tasks));
+      await Future.wait(List.of(_tasks.keys));
     }
     if (_unresolvedCleanup.isNotEmpty ||
         _unresolvedAdmissions.isNotEmpty ||
@@ -903,10 +879,16 @@ final class AttachmentCleanupUnresolved implements Exception {
 }
 
 final class _StagingCleanupFailure {
-  const _StagingCleanupFailure(this.path, this.permit, this.error);
+  const _StagingCleanupFailure(
+    this.path,
+    this.permit,
+    this.error,
+    this.cleanup,
+  );
   final String path;
   final ResourcePermit permit;
   final Object error;
+  final Future<void> Function(String path) cleanup;
 }
 
 final class _CleanupFailure {

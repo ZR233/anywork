@@ -20,25 +20,33 @@ impl StudioRuntime {
         model: &pl_model::model::ModelInfo,
         additional: &[pl_core::context::ContextContent],
     ) -> Result<()> {
-        let history = state
-            .context
-            .records
-            .iter()
-            .flat_map(|record| &record.content);
+        let history = state.context.records.iter().flat_map(|record| {
+            record
+                .content
+                .iter()
+                .map(move |content| (&record.source, content))
+        });
         let pending = state
             .inputs
             .iter()
             .filter(|record| record.state == pl_core::thread::input::InputState::Pending)
-            .flat_map(|record| &record.input.context);
-        pl_model::runtime::validate_attachment_content(
-            history.chain(pending).chain(additional),
+            .flat_map(|record| {
+                record
+                    .input
+                    .context
+                    .iter()
+                    .map(|content| (&pl_core::context::ContextSource::User, content))
+            });
+        pl_model::runtime::validate_attachment_content_with_files(
+            history.chain(pending).chain(
+                additional
+                    .iter()
+                    .map(|content| (&pl_core::context::ContextSource::User, content)),
+            ),
             model,
         )
         .map_err(|error| {
-            pl_protocol::PureError::ConfigError(format!(
-                "所选模型无法读取当前会话的附件，请选择支持这些附件的模型：{error}"
-            ))
-            .into()
+            pl_protocol::PureError::ConfigError(format!("当前会话附件校验失败：{error}")).into()
         })
     }
 
@@ -119,7 +127,12 @@ impl StudioRuntime {
         route: &ResolvedModelRoute,
         config: &crate::config::StudioConfig,
     ) -> Result<DeferredModelUpdate> {
-        crate::studio::model_binding::deferred_update(route, config, self.thread_modes.clone())
+        crate::studio::model_binding::deferred_update(
+            route,
+            config,
+            self.thread_modes.clone(),
+            self.thread_factory.clone(),
+        )
     }
 
     pub(in crate::studio::runtime) async fn start_model_refresh(&self) {

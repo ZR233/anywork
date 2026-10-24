@@ -79,6 +79,7 @@ pub(crate) struct RunSummary {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub retained_home: Option<String>,
     pub fixture_mode: &'static str,
+    pub human_verdict: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub observer: Option<ObserverIdentity>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -102,6 +103,7 @@ impl RunSummary {
             cleanup_error: None,
             retained_home: None,
             fixture_mode: "debug loopback Feishu peer + model FixtureServer",
+            human_verdict: "pending; automated local evidence is not a real-tenant, SSH or GUI verdict",
             observer: None,
             server: None,
         }
@@ -143,6 +145,7 @@ impl RunSummary {
         if !passed(CASE_OWNER_BINDING) {
             gaps.push(GAP_OWNER_BINDING);
         }
+        append_file_gaps(&mut gaps, &passed);
         self.gaps = gaps;
     }
 }
@@ -173,13 +176,61 @@ const GAP_REGISTRATION_CANCEL_CLAIM_WINDOW: &str = "registration cancel precise 
 const GAP_SAME_HOME_RESTART: &str = "same-home restart recovery";
 const GAP_LOCAL_CONTINUATION: &str =
     "interaction desktop resolution along canonical continuation_id";
-const GAP_SEGMENTED_OUTCOMES: &str = "segmented automatic formal-reply send Partial/Unknown facts";
+const GAP_SEGMENTED_OUTCOMES: &str =
+    "automatic formal-reply .md-file/notice Partial and post Unknown facts across restart";
 const GAP_OWNER_BINDING: &str = "explicit local conversation-Thread creation: stale-creation rejection before the first write, \
      first-occupancy publication and same-operation replay";
 
+const GAP_CHAT_ISOLATION: &str =
+    "bot+chat identity isolation and complete actual model-request context exclusion";
+const GAP_MEDIA_INGRESS: &str = "raw media/file admission, actual native blocks, execution bytes and native-to-text cold recovery";
+const GAP_FILE_SOURCE: &str = "current/canonical-continuation file source authorization and public revocation/local-input rejection";
+const GAP_MARKDOWN: &str =
+    "verbatim Markdown post, complete long .md download and full-JSON encoding limit";
+const GAP_UPLOAD_OUTCOMES: &str =
+    "real upload Reject/AcceptThenDrop/Hang-cancel and cold no-replay ledger evidence";
+const GAP_FILE_SEND_OUTCOMES: &str = "real file-message Reject/AcceptThenDrop/Hang-cancel after accepted upload and cold no-replay evidence";
+const GAP_FILE_COMPACTION: &str = "real Studio manual compact of pure text with old-Turn files, replacement/cold rebuild and shutdown cancellation";
+const GAP_COMPACT_OUTER_TIMEOUT: &str = "outer case timeout drops its future while a real public Studio compact is held; Session must close/join before peer cleanup";
+const GAP_SAME_TURN_STEERING: &str = "same-Turn steering file-source rejection: public HTTP prompt interrupts into a fresh Turn, so this is not proved by running-turn local-input evidence";
+const GAP_FILE_TOOL_REPLAY: &str = "same submit_bot_file call identity with altered file intent is not publicly replayable through ordinary model tool calls";
+const GAP_REAL_MEDIA_BOUNDARIES: &str = "real Feishu tenant/client rendering, native GUI and remote SSH file boundaries require separate human review";
+const GAP_FILE_SOURCE_CHILD_PROJECT: &str = "child file-tool exclusion and separate project/cross-chat tool permissions require independent public-boundary evidence";
+const GAP_ADMISSION_CEILINGS: &str =
+    "ordinary public multipart 50MiB/32-file/128MiB admission ceilings and exact original readback";
+const GAP_OUTGOING_CEILINGS: &str =
+    "nonempty/30,000,000-byte outgoing file boundaries are not all exercised by these journeys";
+const GAP_PRE_MESSAGE_CANCEL: &str = "uploadAccepted + messageNotStarted + stopReasonCancelled requires a deterministic public pre-message cancellation boundary; on-wire Hang cancellation is not that evidence";
+
+fn append_file_gaps(gaps: &mut Vec<&'static str>, passed: &impl Fn(&str) -> bool) {
+    for (case, gap) in [
+        ("chat-isolation", GAP_CHAT_ISOLATION),
+        ("chat-media-ingress", GAP_MEDIA_INGRESS),
+        ("bot-file-source", GAP_FILE_SOURCE),
+        ("bot-markdown-transfer", GAP_MARKDOWN),
+        ("bot-upload-outcomes", GAP_UPLOAD_OUTCOMES),
+        ("bot-file-send-outcomes", GAP_FILE_SEND_OUTCOMES),
+        ("user-file-compaction", GAP_FILE_COMPACTION),
+        ("user-file-compaction-timeout", GAP_COMPACT_OUTER_TIMEOUT),
+        ("user-file-admission-limits", GAP_ADMISSION_CEILINGS),
+    ] {
+        if !passed(case) {
+            gaps.push(gap);
+        }
+    }
+    gaps.extend([
+        GAP_SAME_TURN_STEERING,
+        GAP_FILE_TOOL_REPLAY,
+        GAP_REAL_MEDIA_BOUNDARIES,
+        GAP_FILE_SOURCE_CHILD_PROJECT,
+        GAP_OUTGOING_CEILINGS,
+        GAP_PRE_MESSAGE_CANCEL,
+    ]);
+}
+
 /// Every gap range in its unproven wording; the pre-finalize default.
 fn conservative_gaps() -> Vec<&'static str> {
-    vec![
+    let mut gaps = vec![
         GAP_TIMELINE_WINDOW,
         GAP_CONFIG_SECRET_FAULT,
         GAP_LAGGED_REPLAY,
@@ -191,7 +242,9 @@ fn conservative_gaps() -> Vec<&'static str> {
         GAP_LOCAL_CONTINUATION,
         GAP_SEGMENTED_OUTCOMES,
         GAP_OWNER_BINDING,
-    ]
+    ];
+    append_file_gaps(&mut gaps, &|_| false);
+    gaps
 }
 
 pub(crate) fn copy_redacted_log(paths: &ObservePaths) -> Result<()> {

@@ -161,6 +161,7 @@ pub(in crate::studio) async fn prepare_workspace(
                 base_commit: base_commit.clone(),
             };
             prepare_repository_worktree_pool(
+                worktrees,
                 ssh_manager,
                 request.project.ssh_alias.as_deref(),
                 &repository_root,
@@ -325,8 +326,13 @@ where
         branch,
         base_commit: base_commit.clone(),
     };
-    prepare_repository_worktree_pool(ssh_manager, project.ssh_alias.as_deref(), &repository_root)
-        .await?;
+    prepare_repository_worktree_pool(
+        worktrees,
+        ssh_manager,
+        project.ssh_alias.as_deref(),
+        &repository_root,
+    )
+    .await?;
     worktrees
         .record(durable.clone())
         .map_err(|error| lifecycle_error(error.to_string()))?;
@@ -445,8 +451,13 @@ pub(in crate::studio) async fn recreate_child_worktree(
         branch: branch.clone(),
         base_commit: receipt.base_commit.clone(),
     };
-    prepare_repository_worktree_pool(ssh_manager, project.ssh_alias.as_deref(), &repository_root)
-        .await?;
+    prepare_repository_worktree_pool(
+        worktrees,
+        ssh_manager,
+        project.ssh_alias.as_deref(),
+        &repository_root,
+    )
+    .await?;
     worktrees
         .record(durable.clone())
         .map_err(|error| lifecycle_error(error.to_string()))?;
@@ -550,6 +561,7 @@ async fn settle_failed_create(
 }
 
 async fn prepare_repository_worktree_pool(
+    worktrees: &WorktreeLeaseOwner,
     ssh_manager: &Arc<pl_tool::remote::SshManager>,
     ssh_alias: Option<&str>,
     repository_root: &Path,
@@ -565,9 +577,10 @@ async fn prepare_repository_worktree_pool(
                 .map_err(|error| lifecycle_error(error.to_string()))
         }
         None => {
-            let backend = pl_tool::workspace_file::LocalWorkspaceFileBackend::new(
+            let backend = pl_tool::workspace_file::LocalWorkspaceFileBackend::new_with_io_owner(
                 repository_root.to_path_buf(),
                 false,
+                worktrees.pool_io(),
             )
             .await
             .map_err(|error| lifecycle_error(error.to_string()))?;
@@ -578,6 +591,8 @@ async fn prepare_repository_worktree_pool(
     }
 }
 
+/// Resolves the canonical Project directory, never an enclosing repository.
+/// Repository discovery belongs to `repository_manager`, not the execution root.
 pub(in crate::studio) fn resolved_project_root(project: &ProjectRecord) -> Result<PathBuf> {
     if project.ssh_alias.is_some() {
         let value = pl_tool::remote::normalize_remote_absolute_path(project.path.trim())
@@ -590,8 +605,25 @@ pub(in crate::studio) fn resolved_project_root(project: &ProjectRecord) -> Resul
         }
         Ok(PathBuf::from(value))
     } else {
-        pl_tool::workspace::resolve_workspace_root(&PathBuf::from(&project.path))
-            .map_err(|error| lifecycle_error(error.to_string()))
+        let root = dunce::canonicalize(&project.path).map_err(|error| {
+            lifecycle_error(format!(
+                "failed to resolve Project directory {}: {error}",
+                project.path
+            ))
+        })?;
+        let metadata = std::fs::metadata(&root).map_err(|error| {
+            lifecycle_error(format!(
+                "failed to inspect Project directory {}: {error}",
+                root.display()
+            ))
+        })?;
+        if !metadata.is_dir() {
+            return Err(lifecycle_error(format!(
+                "Project path is not a directory: {}",
+                root.display()
+            )));
+        }
+        Ok(root)
     }
 }
 

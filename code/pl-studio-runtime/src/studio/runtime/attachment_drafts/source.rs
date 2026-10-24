@@ -10,12 +10,16 @@ use reqwest::header::LOCATION;
 use tokio::io::AsyncReadExt;
 use url::Url;
 
-pub(super) const MAX_IMAGE_SOURCE_BYTES: u64 = 20 * 1024 * 1024;
-pub(super) const MAX_GENERIC_SOURCE_BYTES: u64 = 50 * 1024 * 1024;
 const MAX_REDIRECTS: usize = 3;
 const REMOTE_FETCH_TOTAL_TIMEOUT: Duration = Duration::from_secs(45);
 
 pub(super) async fn read_local_file(path: &Path, max_bytes: u64) -> Result<Vec<u8>> {
+    // Refuse directories/devices/FIFOs before opening; recheck the opened handle below.
+    let metadata = tokio::fs::metadata(path)
+        .await
+        .context("failed to inspect attachment file")?;
+    ensure!(metadata.is_file(), "attachment source is not a file");
+    ensure!(metadata.len() <= max_bytes, "attachment file is too large");
     let file = tokio::fs::File::open(path)
         .await
         .context("failed to open attachment file")?;
@@ -39,7 +43,6 @@ pub(super) async fn read_local_file(path: &Path, max_bytes: u64) -> Result<Vec<u
 
 pub(super) struct LoadedSource {
     pub(super) bytes: Vec<u8>,
-    pub(super) initial_remote_url: Option<String>,
 }
 
 pub(super) async fn fetch_remote_snapshot(raw_url: &str, max_bytes: u64) -> Result<LoadedSource> {
@@ -56,7 +59,6 @@ async fn fetch_remote_snapshot_with_redirects(
     max_bytes: u64,
 ) -> Result<LoadedSource> {
     let mut url = validate_remote_url(Url::parse(raw_url).context("invalid attachment URL")?)?;
-    let original = url.as_str().to_string();
     for redirect in 0..=MAX_REDIRECTS {
         let host = url
             .host_str()
@@ -119,10 +121,7 @@ async fn fetch_remote_snapshot_with_redirects(
             );
             bytes.extend_from_slice(&chunk);
         }
-        return Ok(LoadedSource {
-            bytes,
-            initial_remote_url: Some(original),
-        });
+        return Ok(LoadedSource { bytes });
     }
     bail!("attachment URL redirect handling failed")
 }

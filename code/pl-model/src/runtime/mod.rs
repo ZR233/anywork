@@ -1,5 +1,8 @@
 //! A single completion facade backed by concrete, accessible provider clients.
-pub use pl_core::{context::ContextContent, model::ModelError};
+pub use pl_core::{
+    context::{ContextContent, ContextSource},
+    model::ModelError,
+};
 
 mod client;
 mod clock;
@@ -9,6 +12,11 @@ mod host_call;
 mod hosted;
 pub use hosted::{HostedTool, HostedWebSearchOptions};
 mod attachments;
+mod user_files;
+pub use user_files::{
+    MaterializedUserFile, ResourceError, ResourceReference, UserFileAccess, UserFileError,
+    UserFileMaterializer, UserFileRequest,
+};
 mod billing;
 mod invocation;
 pub(crate) mod openai;
@@ -44,9 +52,10 @@ pub use pl_protocol::{PromptPrefixChangedReason, ThreadPromptMetadata, ThreadPro
 
 mod thread_model;
 pub use thread_model::{
-    ModelCallBinding, ModelFailureReceipt, ModelRequestReceipt, ModelResponseReceipt,
-    ThreadCompaction, ThreadCompactionDecision, ThreadCompactionOptions, ThreadCompactionStrategy,
-    ThreadModel, ToolAttachment, attachment_content, decode_attachment, migrate_legacy_compaction,
-    model_failure_receipt, model_request_receipt, model_response_receipt, thread_tool_declaration,
-    validate_attachment_content,
+    ModelCallBinding, ModelFailureReceipt, ModelPreparationOwner, ModelRequestReceipt,
+    ModelResponseReceipt, ThreadCompaction, ThreadCompactionDecision, ThreadCompactionOptions,
+    ThreadCompactionStrategy, ThreadModel, ToolAttachment, attachment_content, decode_attachment,
+    migrate_legacy_compaction, model_failure_receipt, model_request_receipt,
+    model_response_receipt, thread_tool_declaration, user_attachment_content,
+    validate_attachment_content, validate_attachment_content_with_files,
 };

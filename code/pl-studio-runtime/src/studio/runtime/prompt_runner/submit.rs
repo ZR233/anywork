@@ -161,8 +161,7 @@ impl StudioRuntime {
             .await?;
         let (binding_precondition, binding) = self.model_binding(&thread_id, &thread).await;
         let (route, config) = binding?;
-        self.attachment_drafts
-            .validate_for_model(&route.model, &drafts)?;
+        self.attachment_drafts.validate_batch(&drafts)?;
         let attachments = self
             .store
             .promote_attachment_drafts(&thread_id, &drafts)
@@ -175,11 +174,6 @@ impl StudioRuntime {
         }
         for attachment in &attachments {
             let reference = self.store.retain_attachment_resource(attachment).await?;
-            if let Some(filename) = &attachment.filename {
-                context.push(pl_core::context::ContextContent::Text {
-                    text: format!("Attachment: {filename}").into(),
-                });
-            }
             let modality = match attachment.modality {
                 pl_protocol::studio::StudioAttachmentModality::Image => {
                     pl_protocol::AttachmentModality::Image
@@ -191,7 +185,14 @@ impl StudioRuntime {
                     pl_protocol::AttachmentModality::File
                 }
             };
-            context.push(pl_model::runtime::attachment_content(reference, modality)?);
+            context.push(pl_model::runtime::user_attachment_content(
+                reference,
+                modality,
+                attachment
+                    .filename
+                    .clone()
+                    .unwrap_or_else(|| "attachment".into()),
+            )?);
         }
         #[derive(serde::Serialize)]
         #[serde(rename_all = "camelCase")]

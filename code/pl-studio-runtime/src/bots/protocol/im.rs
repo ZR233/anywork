@@ -1,5 +1,6 @@
+use super::content::{TextContent, markdown_content, receive_content};
 use super::error::{FeishuError, FeishuErrorKind};
-use super::http::FeishuHttp;
+use super::http::{FeishuHttp, PostFailure, PreparedPost};
 use super::{BOT_INFO_PATH, IM_CHATS_PATH, IM_MESSAGES_PATH};
 use pl_protocol::studio::{BotConversationKind, BotMessage, BotMessageBody};
 use reqwest::Method;
@@ -105,6 +106,33 @@ struct SendBody<'a> {
     msg_type: &'a str,
     content: String,
     uuid: &'a str,
+}
+
+pub enum MessageContent<'a> {
+    Markdown(&'a str),
+    File { file_key: &'a str },
+}
+
+pub fn markdown_request_len(chat_id: &str, text: &str, uuid: &str) -> Result<usize, FeishuError> {
+    encoded_send_len(&SendBody {
+        receive_id: chat_id,
+        msg_type: "post",
+        content: markdown_content(text)?,
+        uuid,
+    })
+}
+
+fn encoded_send_len(body: &SendBody<'_>) -> Result<usize, FeishuError> {
+    serde_json::to_vec(body)
+        .map(|bytes| bytes.len())
+        .map_err(|_| {
+            FeishuError::new(
+                FeishuErrorKind::Protocol,
+                "could not encode message body",
+                false,
+                None,
+            )
+        })
 }
 
 impl FeishuIm {
@@ -231,13 +259,13 @@ impl FeishuIm {
         ))
     }
 
-    pub async fn send_text(
+    pub fn prepare_content(
         &self,
         token: &str,
         chat_id: &str,
-        text: &str,
+        content: MessageContent<'_>,
         uuid: &str,
-    ) -> Result<SendMessageOutcome, FeishuError> {
+    ) -> Result<PreparedPost, FeishuError> {
         if uuid.chars().count() > 50 {
             return Err(FeishuError::new(
                 FeishuErrorKind::Rejected,
@@ -246,33 +274,72 @@ impl FeishuIm {
                 None,
             ));
         }
-        let content = serde_json::json!({ "text": text }).to_string();
+        #[derive(Serialize)]
+        struct FileContent<'a> {
+            file_key: &'a str,
+        }
+        let (msg_type, content) = match content {
+            MessageContent::Markdown(text) => {
+                let content = markdown_content(text)?;
+                if content.len() > super::POST_CONTENT_LIMIT_BYTES {
+                    return Err(FeishuError::new(
+                        FeishuErrorKind::Rejected,
+                        "post content exceeds 30,000 UTF-8 bytes",
+                        false,
+                        None,
+                    ));
+                }
+                ("post", content)
+            }
+            MessageContent::File { file_key } => (
+                "file",
+                serde_json::to_string(&FileContent { file_key }).map_err(|_| {
+                    FeishuError::new(
+                        FeishuErrorKind::Protocol,
+                        "could not encode file content",
+                        false,
+                        None,
+                    )
+                })?,
+            ),
+        };
         let body = SendBody {
             receive_id: chat_id,
-            msg_type: "text",
+            msg_type,
             content,
             uuid,
         };
-        let data: MessageCreateData = self
-            .http
-            .open_json(
-                Method::POST,
-                IM_MESSAGES_PATH,
-                Some(token),
-                &[("receive_id_type", "chat_id")],
-                Some(&body),
-            )
-            .await?;
+        if encoded_send_len(&body)? > super::POST_CONTENT_LIMIT_BYTES {
+            return Err(FeishuError::new(
+                FeishuErrorKind::Rejected,
+                "complete message HTTP JSON exceeds 30,000 UTF-8 bytes",
+                false,
+                None,
+            ));
+        }
+        self.http.prepare_json_post(
+            IM_MESSAGES_PATH,
+            token,
+            &[("receive_id_type", "chat_id")],
+            &body,
+        )
+    }
+
+    pub async fn send_prepared(
+        &self,
+        prepared: PreparedPost,
+    ) -> Result<SendMessageOutcome, PostFailure> {
+        let data: MessageCreateData = self.http.execute_post(prepared).await?;
         let message_id = data
             .message_id
             .filter(|value| !value.is_empty())
             .ok_or_else(|| {
-                FeishuError::new(
+                PostFailure::Unknown(FeishuError::new(
                     FeishuErrorKind::Protocol,
                     "send response missing message_id",
                     true,
                     None,
-                )
+                ))
             })?;
         Ok(SendMessageOutcome { message_id })
     }
@@ -341,53 +408,15 @@ fn decode_body(msg_type: &str, content: &str) -> BotMessageBody {
 }
 
 pub fn extract_text(content: &str) -> Option<String> {
-    let value: serde_json::Value = serde_json::from_str(content).ok()?;
-    value
-        .get("text")
-        .and_then(serde_json::Value::as_str)
-        .map(str::to_string)
+    serde_json::from_str::<TextContent>(content)
+        .ok()
+        .map(|content| content.text)
 }
 
 pub fn extract_post_text(content: &str) -> String {
-    let Ok(value) = serde_json::from_str::<PostContent>(content) else {
-        return String::new();
-    };
-    let language = value
-        .language
-        .as_deref()
-        .filter(|item| !item.is_empty())
-        .or_else(|| value.content.keys().next().map(String::as_str))
-        .unwrap_or("zh_cn");
-    let Some(blocks) = value
-        .content
-        .get(language)
-        .or_else(|| value.content.values().next())
-    else {
-        return String::new();
-    };
-    let mut parts = Vec::new();
-    for paragraph in blocks {
-        for node in paragraph {
-            if let Some(text) = node.text.as_deref().filter(|item| !item.is_empty()) {
-                parts.push(text.to_string());
-            }
-        }
-    }
-    parts.join("")
-}
-
-#[derive(Deserialize)]
-struct PostContent {
-    #[serde(default)]
-    language: Option<String>,
-    #[serde(default)]
-    content: std::collections::BTreeMap<String, Vec<Vec<PostNode>>>,
-}
-
-#[derive(Deserialize)]
-struct PostNode {
-    #[serde(default)]
-    text: Option<String>,
+    receive_content("post", content)
+        .map(|content| content.text)
+        .unwrap_or_default()
 }
 
 fn parse_create_time_millis(value: &str) -> Result<i64, FeishuError> {

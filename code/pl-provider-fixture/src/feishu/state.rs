@@ -15,9 +15,9 @@ use tokio_util::sync::CancellationToken;
 use super::types::{
     AckObservation, BOT_OPEN_ID, CallBound, CallKind, ClientConfig, DIRECT_CHAT_ID,
     FeishuLiveStatus, FeishuPeerOptions, FeishuReport, GROUP_CHAT_ID, GroupChat, HistoryMessage,
-    OutboundWs, PAIRING_DIRECT_CHAT_ID, PollObservation, RecordedCall, RegistrationBeginOptions,
-    RegistrationPollScript, RegistrationTenantBrand, SendDisposition, TRUSTED_USER_OPEN_ID,
-    TokenScript, WsDiscoveryScript, WsUpgradeScript,
+    MessageSendObservation, OutboundWs, PAIRING_DIRECT_CHAT_ID, PollObservation, RecordedCall,
+    RegistrationBeginOptions, RegistrationPollScript, RegistrationTenantBrand, SendDisposition,
+    TRUSTED_USER_OPEN_ID, TokenScript, WsDiscoveryScript, WsUpgradeScript,
 };
 use super::wire::Pbbp2Frame;
 
@@ -66,6 +66,7 @@ impl<T> JoinSlot<T> {
 }
 
 pub(crate) struct Inner {
+    pub closing: bool,
     pub options: FeishuPeerOptions,
     pub origin: String,
     pub ws_origin: String,
@@ -79,6 +80,7 @@ pub(crate) struct Inner {
     pub token: TokenState,
     pub ws: WsRuntime,
     pub im: ImState,
+    pub media: super::media::state::MediaState,
 }
 
 pub(crate) struct RegistrationState {
@@ -118,6 +120,8 @@ pub(crate) struct ImState {
     pub history: Vec<HistoryMessage>,
     pub send: VecDeque<SendDisposition>,
     pub send_seq: u64,
+    pub sends: Vec<MessageSendObservation>,
+    pub request_count: usize,
     pub hang: HangGate,
     /// Directory response timing only. Independent from the send and token
     /// gates, so suspending the catalog cannot stall token or message paths.
@@ -249,6 +253,7 @@ impl Drop for InFlightGuard {
 impl Inner {
     pub fn new(options: FeishuPeerOptions, origin: String, ws_origin: String) -> Self {
         Self {
+            closing: false,
             options,
             origin,
             ws_origin,
@@ -258,6 +263,7 @@ impl Inner {
             violations: Vec::new(),
             bounds: Vec::new(),
             forbidden: HashSet::new(),
+            media: super::media::state::MediaState::new(),
             registration: RegistrationState {
                 generation: 0,
                 cancelled: HashSet::new(),
@@ -308,6 +314,8 @@ impl Inner {
                 }],
                 send: VecDeque::from([SendDisposition::Succeed]),
                 send_seq: 0,
+                sends: Vec::new(),
+                request_count: 0,
                 hang: HangGate::new(),
                 chat_list_hang: HangGate::new(),
             },
@@ -393,6 +401,20 @@ impl Inner {
             calls: self.calls.clone(),
             polls: self.polls.clone(),
             acks: self.acks.clone(),
+            uploads: self.media.uploads.clone(),
+            resource_downloads: self.media.downloads.clone(),
+            message_sends: self.im.sends.clone(),
+            resources: {
+                let mut resources: Vec<_> = self
+                    .media
+                    .resources
+                    .values()
+                    .map(|resource| resource.summary.clone())
+                    .collect();
+                resources.sort_by(|a, b| a.file_key.cmp(&b.file_key));
+                resources
+            },
+            media_status: self.media.status(),
             violations,
             unconsumed,
             token_calls: self.token.calls,
@@ -496,7 +518,7 @@ pub(crate) async fn record_ack(shared: &Shared, frame: &Pbbp2Frame) {
     let code = serde_json::from_slice::<serde_json::Value>(payload)
         .ok()
         .and_then(|value| value.get("code").and_then(|code| code.as_i64()))
-        .map(|code| code as i32);
+        .and_then(|code| i32::try_from(code).ok());
     let mut inner = shared.lock().await;
     inner.acks.push(AckObservation {
         message_id: frame

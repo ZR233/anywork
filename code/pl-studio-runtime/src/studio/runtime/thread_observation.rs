@@ -278,7 +278,7 @@ impl ThreadObservations {
                                 source: source.into_boxed_dyn_error(),
                             }
                         })?;
-                    thread_factory.forget_tool_binding(&id);
+                    thread_factory.forget_tool_binding(&id).await?;
                     observations.drain(&id);
                     Ok(())
                 })
@@ -329,9 +329,11 @@ impl ThreadObservations {
             move |id, thread| {
                 // Cancellation is synchronous, so no new preparation can pass the gate.
                 let gate = closing_factory.stop_tool_operation(&id);
+                let closing_factory = closing_factory.clone();
                 let rejected = rejected_tools.clone();
                 Box::pin(async move {
                     let _guard = match gate { Some(gate) => Some(gate.lock_owned().await), None => None };
+                    closing_factory.drain_file_operations(&id).await?;
                     rejected.retry(Some(&thread)).await.map_err(|source| crate::thread_assembler::ThreadAssemblyError::Resource {
                         operation: "drain Thread tool candidates", source: source.into_boxed_dyn_error(),
                     })

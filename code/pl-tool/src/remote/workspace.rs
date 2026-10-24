@@ -142,20 +142,47 @@ impl RemoteWorkspaceFileBackend {
         expect_ack(reply).map_err(remote_file_error)
     }
 
-    /// 原子写入远端 workspace 中的原始字节。
+    /// 原子替换远端 workspace 中的原始字节。
     pub async fn write_bytes_atomic(
         &self,
         path: String,
         cwd: Option<String>,
         body: &[u8],
     ) -> Result<()> {
-        let target = self.path_request(path, cwd)?;
-        self.upload_bytes(
-            target,
-            pl_protocol::remote::RemoteWriteMode::Overwrite,
+        self.write_bytes_atomic_mode(
+            path,
+            cwd,
             body,
+            pl_protocol::remote::RemoteWriteMode::Overwrite,
         )
         .await
+    }
+
+    /// 原子创建远端原始字节；与替换写共享同一传输和提交管线，但永不覆盖已有目标。
+    pub async fn create_bytes_atomic(
+        &self,
+        path: String,
+        cwd: Option<String>,
+        body: &[u8],
+    ) -> Result<()> {
+        self.write_bytes_atomic_mode(
+            path,
+            cwd,
+            body,
+            pl_protocol::remote::RemoteWriteMode::Create,
+        )
+        .await
+    }
+
+    async fn write_bytes_atomic_mode(
+        &self,
+        path: String,
+        cwd: Option<String>,
+        body: &[u8],
+        mode: pl_protocol::remote::RemoteWriteMode,
+    ) -> Result<()> {
+        let target = self.path_request(path, cwd)?;
+        self.upload_bytes(target, mode, body).await
     }
 
     /// 删除 workspace 内文件或目录，不跟随越界链接。

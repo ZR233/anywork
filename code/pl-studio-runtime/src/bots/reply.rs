@@ -175,8 +175,27 @@ impl BotRuntime {
             Err(error) => return attention(format!("bot runtime lost before reply: {error}")),
         };
         let config = managed.config.lock().await.clone();
-        if config.project_id != inbound.project_id {
-            return attention("frozen inbound project no longer matches bot config");
+        if config.project_id != inbound.project_id || config.feishu().app_id != inbound.app_id {
+            return attention("frozen inbound app or project no longer matches bot config");
+        }
+        if inbound
+            .attachments
+            .iter()
+            .all(|item| matches!(item, super::inbound::InboundAttachment::Unsupported { .. }))
+            && !inbound.attachments.is_empty()
+            && inbound.text.trim().is_empty()
+        {
+            let operation = format!(
+                "botunsupported:{}:{}:{}",
+                inbound.bot_id, inbound.chat_id, inbound.message_id
+            );
+            return match self.send_message_as(operation, inbound.bot_id, inbound.chat_id,
+                "此消息类型或富文本元素暂不支持原件接收。可接收文字、富文本、图片、文件及可下载音视频；贴纸和云文档分享没有对应原件下载接口，请直接发送原文件。".into(),
+                "auto-reply", super::SendAuthority::AutoReply).await {
+                Ok(result) if result.status == pl_protocol::studio::BotSendStatus::Succeeded => InboundWorkOutcome::Completed,
+                Ok(_) => attention("unsupported-message notice was not fully delivered; will not replay the network write"),
+                Err(error) => classify_send_error(error),
+            };
         }
         // 冻结路由：入站受理时的 App/project/creation/binding 归属不因新配置改派。
         let thread_id = match self
@@ -489,7 +508,9 @@ impl BotRuntime {
         }
         // 快照不再保留该 Turn 的交互（例如重启窗口内已收束）：从 timeline 的
         // tool.user_input 投影发现 local 身份，仍只读统一内容源。
-        discover_timeline_interactions(runtime, &run.thread_id, turn_id, cancel).await
+        discover_timeline_interactions(runtime, &run.thread_id, turn_id, cancel)
+            .await
+            .map_err(classify_send_error)
     }
 
     /// Turn 执行期与终态等待中的 pending 交互逐个提示；每个交互独立稳定键。
@@ -546,6 +567,9 @@ impl BotRuntime {
             Ok(_) => {
                 run.hinted.insert(key);
                 Step::Wait
+            }
+            Err(error) if error.kind() == FeishuErrorKind::Cancelled => {
+                Step::Done(InboundWorkOutcome::Interrupted)
             }
             Err(error) if error.retryable() => Step::Wait,
             Err(_) => {
@@ -631,6 +655,9 @@ impl BotRuntime {
                 // Unknown/Partial/Rejected 遵循原操作事实，不借恢复再次发送。
                 _ => attention("auto-reply send did not fully succeed and will not be retried"),
             }),
+            Err(error) if error.kind() == FeishuErrorKind::Cancelled => {
+                Step::Done(InboundWorkOutcome::Interrupted)
+            }
             Err(error) if error.retryable() => Step::Done(recoverable(format!(
                 "auto-reply send failed before the ledger recorded a result: {error}"
             ))),
@@ -1015,12 +1042,12 @@ fn account_body_bytes(text: &str, body_bytes: &mut usize) -> Result<(), FinalErr
 }
 
 /// timeline 兜底：快照不再保留该 Turn 的交互时，从 tool.user_input 投影发现 local 身份。
-async fn discover_timeline_interactions(
+pub(super) async fn discover_timeline_interactions(
     runtime: &StudioRuntime,
     thread_id: &str,
     turn_id: &str,
     cancel: &CancellationToken,
-) -> Result<BTreeSet<String>, InboundWorkOutcome> {
+) -> Result<BTreeSet<String>, FeishuError> {
     let mut locals = BTreeSet::new();
     let mut before = None;
     let mut previous_before = None;
@@ -1032,15 +1059,18 @@ async fn discover_timeline_interactions(
         };
         let page = tokio::select! {
             _ = cancel.cancelled() => {
-                return Err(InboundWorkOutcome::Interrupted);
+                return Err(FeishuError::cancelled());
             }
             page = runtime.timeline_page(thread_id, &query) => page.map_err(|error| {
-                recoverable(format!("canonical timeline page failed: {error:#}"))
+                FeishuError::history_read("read canonical bot interaction timeline", error)
             })?,
         };
+        if cancel.is_cancelled() {
+            return Err(FeishuError::cancelled());
+        }
         inspected = inspected.saturating_add(page.items.len());
         if inspected > MAX_TURN_CONTENT_ITEMS {
-            return Err(attention(
+            return Err(proof_invalid(
                 "canonical interaction discovery exceeded 16384 content items",
             ));
         }
@@ -1061,12 +1091,12 @@ async fn discover_timeline_interactions(
             break;
         }
         let Some(next) = page.before.filter(|token| !token.is_empty()) else {
-            return Err(attention(
+            return Err(proof_invalid(
                 "canonical timeline reported older content without a before cursor",
             ));
         };
         if previous_before.as_ref() == Some(&next) {
-            return Err(attention(
+            return Err(proof_invalid(
                 "canonical timeline before cursor did not advance",
             ));
         }
@@ -1101,11 +1131,17 @@ fn attention(diagnostic: impl Into<String>) -> InboundWorkOutcome {
 }
 
 fn classify_send_error(error: FeishuError) -> InboundWorkOutcome {
-    if error.retryable() {
+    if error.kind() == FeishuErrorKind::Cancelled {
+        InboundWorkOutcome::Interrupted
+    } else if error.retryable() {
         recoverable(error.to_string())
     } else {
         attention(error.to_string())
     }
+}
+
+fn proof_invalid(message: &str) -> FeishuError {
+    FeishuError::new(FeishuErrorKind::Permission, message, false, None)
 }
 
 /// 绑定链路的存储读写错误映射：保持错误自身 retryable 语义。
@@ -1113,7 +1149,9 @@ fn classify_send_error(error: FeishuError) -> InboundWorkOutcome {
 /// 不可恢复的坏行、归属冲突与坏记录转需处理，不再借 5s→300s 退避预算反复重试；
 /// 真实暂时故障仍是可恢复重试。诊断只带安全类别，不带坏行原值。
 fn binding_failure(context: &str, error: FeishuError) -> InboundWorkOutcome {
-    if error.retryable() {
+    if error.kind() == FeishuErrorKind::Cancelled {
+        InboundWorkOutcome::Interrupted
+    } else if error.retryable() {
         recoverable(format!("{context}: {error}"))
     } else {
         attention(format!("{context}: {error}"))

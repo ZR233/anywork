@@ -1,6 +1,11 @@
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
+/// Product admission ceilings for original user files, independent of model-native limits.
+pub const ATTACHMENT_MAX_FILE_BYTES: u64 = 50 * 1024 * 1024;
+pub const ATTACHMENT_MAX_BATCH_FILES: usize = 32;
+pub const ATTACHMENT_MAX_BATCH_BYTES: u64 = 128 * 1024 * 1024;
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub enum StudioAttachmentModality {

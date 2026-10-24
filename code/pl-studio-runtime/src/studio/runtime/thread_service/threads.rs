@@ -122,8 +122,7 @@ impl StudioRuntime {
             .mode(&request.mode)
             .context("requested Thread Mode is unavailable")?;
 
-        self.attachment_drafts
-            .validate_for_model(&route.model, &drafts)?;
+        self.attachment_drafts.validate_batch(&drafts)?;
         // 校验走内存目录 owner：open_project 的落库是异步跟随的。
         let projects = self.agent_facility.product_events.project_snapshot().await;
         let project = projects

@@ -18,11 +18,28 @@ pub struct FeishuHttp {
 
 #[derive(Debug, Deserialize)]
 struct OpenApiEnvelope<T> {
-    #[serde(default)]
     code: i64,
     #[serde(default)]
     msg: Option<String>,
     data: Option<T>,
+}
+
+/// Fully built request: all local serialization, MIME and input checks precede stage admission.
+pub struct PreparedPost(reqwest::Request);
+
+/// Only the HTTP boundary can distinguish an explicit rejection from a lost/unreadable response.
+pub enum PostFailure {
+    Rejected(FeishuError),
+    Unknown(FeishuError),
+}
+
+impl PostFailure {
+    fn map_error(self, map: impl FnOnce(FeishuError) -> FeishuError) -> Self {
+        match self {
+            Self::Rejected(error) => Self::Rejected(map(error)),
+            Self::Unknown(error) => Self::Unknown(map(error)),
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -65,17 +82,24 @@ impl FeishuHttp {
         &self.policy
     }
 
-    /// Streams a message-owned resource to an atomically published file. Credentials stay in
-    /// the Authorization header; path segments cannot change the configured API origin.
+    /// Reads a message-owned original under the caller's remaining batch budget. The resource
+    /// identity is bound to one message; no sender-provided URL is followed.
     pub async fn download_message_resource(
         &self,
         token: &str,
         message_id: &str,
         key: &str,
         kind: &str,
-        destination: &std::path::Path,
-    ) -> Result<(), FeishuError> {
-        use tokio::io::AsyncWriteExt;
+        remaining_bytes: u64,
+    ) -> Result<Vec<u8>, FeishuError> {
+        if !matches!(kind, "image" | "file") {
+            return Err(FeishuError::new(
+                FeishuErrorKind::Rejected,
+                "unsupported message resource type",
+                false,
+                None,
+            ));
+        }
         let mut url = self.open_api().clone();
         url.path_segments_mut()
             .map_err(|_| {
@@ -105,50 +129,194 @@ impl FeishuHttp {
             .await
             .map_err(transport)?;
         if !response.status().is_success() {
-            return Err(classify_http_status(response.status()));
+            let status = response.status();
+            // Error bodies are not user resources. Their budget/transfer failure cannot hide a
+            // known 429/5xx (or a definite HTTP rejection) behind a local attachment-limit error.
+            return Err(match bounded_response(&mut response, 64 * 1024).await {
+                Ok(bytes) => open_api_failure(status, &bytes),
+                Err(_) => classify_http_status(status),
+            });
         }
-        let limit = if kind == "image" {
-            20 * 1024 * 1024
-        } else {
-            50 * 1024 * 1024
-        };
-        if response
-            .content_length()
-            .is_some_and(|length| length > limit)
-        {
+        let limit = remaining_bytes.min(pl_protocol::studio::ATTACHMENT_MAX_FILE_BYTES);
+        let declared = response.content_length();
+        if declared.is_some_and(|length| length > limit) {
             return Err(resource_too_large());
         }
-        let parent = destination
-            .parent()
-            .ok_or_else(|| resource_io("resource parent missing"))?
-            .to_owned();
-        tokio::fs::create_dir_all(&parent)
-            .await
-            .map_err(resource_io)?;
-        let temporary =
-            tokio::task::spawn_blocking(move || tempfile::NamedTempFile::new_in(parent))
-                .await
-                .map_err(resource_io)?
-                .map_err(resource_io)?;
-        let mut file = tokio::fs::File::from_std(temporary.reopen().map_err(resource_io)?);
-        let mut total = 0u64;
-        while let Some(bytes) = response.chunk().await.map_err(transport)? {
-            total = total
-                .checked_add(bytes.len() as u64)
-                .ok_or_else(resource_too_large)?;
-            if total > limit {
-                return Err(resource_too_large());
-            }
-            file.write_all(&bytes).await.map_err(resource_io)?;
+        let bytes = bounded_response(
+            &mut response,
+            usize::try_from(limit).map_err(|_| resource_too_large())?,
+        )
+        .await?;
+        if declared.is_some_and(|length| length != bytes.len() as u64) {
+            return Err(FeishuError::new(
+                FeishuErrorKind::Transport,
+                "message resource transfer was incomplete",
+                true,
+                None,
+            ));
         }
-        file.sync_all().await.map_err(resource_io)?;
-        drop(file);
-        let destination = destination.to_owned();
-        tokio::task::spawn_blocking(move || temporary.persist(destination))
+        Ok(bytes)
+    }
+
+    pub fn prepare_file_upload(
+        &self,
+        token: &str,
+        filename: &str,
+        mime: &str,
+        bytes: std::sync::Arc<[u8]>,
+    ) -> Result<PreparedPost, FeishuError> {
+        use reqwest::multipart::{Form, Part};
+        if bytes.is_empty() || bytes.len() > super::FILE_UPLOAD_LIMIT_BYTES {
+            return Err(FeishuError::new(
+                FeishuErrorKind::Rejected,
+                "file upload requires 1..=30,000,000 bytes",
+                false,
+                None,
+            ));
+        }
+        // The caller reserves the retained read plus this multipart-owned copy. reqwest owns
+        // framing/streaming; there is no hand-written multipart codec or temporary upload file.
+        let file = Part::bytes(bytes.to_vec())
+            .file_name(filename.to_owned())
+            .mime_str(mime)
+            .map_err(|_| {
+                FeishuError::new(
+                    FeishuErrorKind::Rejected,
+                    "invalid upload media type",
+                    false,
+                    None,
+                )
+            })?;
+        let form = Form::new()
+            .text("file_type", "stream")
+            .text("file_name", filename.to_owned())
+            .part("file", file);
+        let url = self
+            .open_api()
+            .join(super::IM_FILES_PATH.trim_start_matches('/'))
+            .map_err(|_| {
+                FeishuError::new(
+                    FeishuErrorKind::Protocol,
+                    "invalid file API path",
+                    false,
+                    None,
+                )
+            })?;
+        self.client
+            .post(url)
+            .bearer_auth(token)
+            .multipart(form)
+            .build()
+            .map(PreparedPost)
+            .map_err(transport)
+    }
+
+    pub fn prepare_json_post<B: Serialize>(
+        &self,
+        path: &str,
+        token: &str,
+        query: &[(&str, &str)],
+        body: &B,
+    ) -> Result<PreparedPost, FeishuError> {
+        let mut url = self
+            .open_api()
+            .join(path.trim_start_matches('/'))
+            .map_err(|_| {
+                FeishuError::new(
+                    FeishuErrorKind::Protocol,
+                    "invalid message API path",
+                    false,
+                    None,
+                )
+            })?;
+        url.query_pairs_mut().extend_pairs(query.iter().copied());
+        self.client
+            .post(url)
+            .bearer_auth(token)
+            .json(body)
+            .build()
+            .map(PreparedPost)
+            .map_err(transport)
+    }
+
+    pub async fn upload_file(&self, prepared: PreparedPost) -> Result<String, PostFailure> {
+        #[derive(Deserialize)]
+        struct UploadedFile {
+            file_key: String,
+        }
+        let file: UploadedFile = self
+            .execute_post(prepared)
             .await
-            .map_err(resource_io)?
-            .map_err(resource_io)?;
-        Ok(())
+            .map_err(|error| error.map_error(upload_permission))?;
+        if file.file_key.is_empty() {
+            return Err(PostFailure::Unknown(FeishuError::new(
+                FeishuErrorKind::Protocol,
+                "file upload response missing file_key",
+                false,
+                None,
+            )));
+        }
+        Ok(file.file_key)
+    }
+
+    pub async fn execute_post<T: DeserializeOwned>(
+        &self,
+        prepared: PreparedPost,
+    ) -> Result<T, PostFailure> {
+        let mut response = self
+            .client
+            .execute(prepared.0)
+            .await
+            .map_err(|error| PostFailure::Unknown(transport(error)))?;
+        let status = response.status();
+        // A local response budget after POST cannot establish that the remote side rejected it.
+        let bytes = bounded_response(&mut response, 64 * 1024)
+            .await
+            .map_err(|error| {
+                PostFailure::Unknown(if error.kind() == FeishuErrorKind::Rejected {
+                    FeishuError::new(
+                        FeishuErrorKind::Protocol,
+                        "Feishu POST response exceeds the local body budget; result is unconfirmed",
+                        false,
+                        None,
+                    )
+                } else {
+                    error
+                })
+            })?;
+        if !status.is_success() {
+            #[derive(Deserialize)]
+            struct Failure {
+                code: i64,
+            }
+            if let Ok(failure) = serde_json::from_slice::<Failure>(&bytes)
+                && failure.code != 0
+            {
+                return Err(PostFailure::Rejected(classify_open_api(failure.code, None)));
+            }
+            let error = classify_http_status(status);
+            return Err(if status.is_client_error() {
+                PostFailure::Rejected(error)
+            } else {
+                PostFailure::Unknown(error)
+            });
+        }
+        let envelope: OpenApiEnvelope<T> =
+            parse_json(&bytes, status).map_err(PostFailure::Unknown)?;
+        if envelope.code != 0 {
+            return Err(PostFailure::Rejected(classify_open_api(
+                envelope.code,
+                None,
+            )));
+        }
+        envelope.data.ok_or_else(|| {
+            PostFailure::Unknown(FeishuError::new(
+                FeishuErrorKind::Protocol,
+                "Feishu POST response missing data; result is unconfirmed",
+                false,
+                None,
+            ))
+        })
     }
 
     pub async fn post_form<T: DeserializeOwned>(
@@ -365,22 +533,57 @@ fn classify_oauth(code: i64, status: reqwest::StatusCode) -> FeishuError {
     FeishuError::new(kind, message, retryable, Some(code.to_string()))
 }
 
-fn resource_io(error: impl std::fmt::Display) -> FeishuError {
+fn resource_too_large() -> FeishuError {
     FeishuError::new(
-        FeishuErrorKind::Unavailable,
-        format!("message resource storage: {error}"),
-        true,
+        FeishuErrorKind::Rejected,
+        "消息资源超过单文件或批次字节预算",
+        false,
         None,
     )
 }
 
-fn resource_too_large() -> FeishuError {
-    FeishuError::new(
-        FeishuErrorKind::Rejected,
-        "消息附件超过支持的大小（图片 20 MiB，文件 50 MiB）",
-        false,
-        None,
-    )
+async fn bounded_response(
+    response: &mut reqwest::Response,
+    limit: usize,
+) -> Result<Vec<u8>, FeishuError> {
+    let mut result = Vec::new();
+    while let Some(chunk) = response.chunk().await.map_err(transport)? {
+        if result
+            .len()
+            .checked_add(chunk.len())
+            .is_none_or(|len| len > limit)
+        {
+            return Err(resource_too_large());
+        }
+        result.extend_from_slice(&chunk);
+    }
+    Ok(result)
+}
+
+fn open_api_failure(status: reqwest::StatusCode, bytes: &[u8]) -> FeishuError {
+    #[derive(Deserialize)]
+    struct Failure {
+        code: i64,
+    }
+    if let Ok(failure) = serde_json::from_slice::<Failure>(bytes)
+        && failure.code != 0
+    {
+        return classify_open_api(failure.code, None);
+    }
+    classify_http_status(status)
+}
+
+fn upload_permission(error: FeishuError) -> FeishuError {
+    if error.kind() == FeishuErrorKind::Permission {
+        FeishuError::new(
+            error.kind(),
+            "飞书文件上传被拒绝；请应用管理员开通应用身份 im:resource:upload 权限，完成审批并发布应用；不会切换用户身份",
+            false,
+            error.platform_code().map(str::to_owned),
+        )
+    } else {
+        error
+    }
 }
 
 fn transport(error: reqwest::Error) -> FeishuError {

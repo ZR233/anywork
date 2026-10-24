@@ -22,7 +22,7 @@ pub(super) fn bind_thread_session_files(
     .with_lsp_runtime(lsp)
 }
 
-/// Creates this Thread's scratch/artifacts/commands through the physical backend.
+/// Creates this Thread's scratch/artifacts/commands/uploads through the physical backend.
 ///
 /// ReadOnly workspaces keep the bound layout but do not create directories.
 /// Infrastructure preparation uses a confined backend so directory write policy
@@ -30,6 +30,7 @@ pub(super) fn bind_thread_session_files(
 pub(super) async fn prepare_bound_session_files(
     workspace: &ToolWorkspace,
     remote: Option<&pl_tool::remote::RemoteWorkspaceHost>,
+    lifetime: &super::tool_bindings::ThreadToolLifetime,
 ) -> Result<(), ThreadAssemblyError> {
     let files = workspace
         .workspace()
@@ -49,12 +50,14 @@ pub(super) async fn prepare_bound_session_files(
             .await
             .map_err(|error| resource_error("prepare remote Thread session files", error)),
         None => {
-            let backend = pl_tool::workspace_file::LocalWorkspaceFileBackend::new(
+            let backend = pl_tool::workspace_file::LocalWorkspaceFileBackend::new_with_io_owner(
                 workspace.root().to_path_buf(),
                 false,
+                lifetime.file_io.clone(),
             )
             .await
-            .map_err(|error| resource_error("open confined session-file backend", error))?;
+            .map_err(|error| resource_error("open confined session-file backend", error))?
+            .with_create_owner(lifetime.file_creates.clone());
             pl_tool::workspace::prepare_session_files(&backend, &files)
                 .await
                 .map_err(|error| resource_error("prepare local Thread session files", error))
@@ -83,7 +86,7 @@ pub(super) fn session_files_fact(
         posix(files.scratch()),
         posix(files.artifacts()),
         posix(files.commands()),
-        posix(files.root().join("uploads")),
+        posix(files.uploads()),
         posix(files.root().join(".venv")),
     );
     Some(pl_core::thread::RuntimeFact {

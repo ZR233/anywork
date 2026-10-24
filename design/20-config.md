@@ -340,8 +340,10 @@ default_temperature、max_output_tokens、pricing、parameters、binding（trans
 适用 request 配置）、capabilities、truncation_policy 与 base_instructions。capabilities
 是结构化能力矩阵（见 [06](./06-model.md)）：每个 input capability 显式声明 modality、
 允许来源和限制；两者不完整或无法把持久快照重新编码时该 modality 校验失败；未知模型
-默认 text-only；非视觉模型即使 account wire API 接受图片字段，也会在任何附件 IO 和
-凭据读取前被拒绝；PDF 使用 file modality。
+默认 text-only；非视觉模型即使 account wire API 接受图片字段，也不得进入原生图片路线，
+在该路线的附件 IO 和凭据读取前拒绝。Studio 用户文件仍可依
+[06.6](./06-model.md#66-多模态消息与用户文件)提供执行侧文件路径，此能力不改变模型
+声明，也不放宽显式原生工具媒体的校验；PDF 使用 file modality。
 Settings 的自定义模型快照必须携带同源的 typed input capabilities（modality、来源和限制），
 经 FRB 投影到 Flutter，与内置 catalog 共用转换逻辑。附件入口不能因自定义模型元数据
 在展示链路中丢失而退化为 text-only；本地和 SSH 项目使用同一能力判断。

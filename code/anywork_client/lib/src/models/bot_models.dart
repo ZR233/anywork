@@ -1111,6 +1111,10 @@ class BotMessagePage {
 
 enum BotSendStatus { succeeded, partial, rejected, unknown }
 
+enum BotSendStage { notStarted, accepted, rejected, unknown }
+
+enum BotSendStopReason { cancelled, localFailure }
+
 class SendBotMessageRequest {
   const SendBotMessageRequest({
     required this.operationId,
@@ -1129,12 +1133,18 @@ class BotSendSegment {
   const BotSendSegment({
     required this.index,
     required this.status,
+    required this.messageStage,
+    this.uploadStage,
+    this.stopReason,
     this.platformMessageId,
     this.diagnostic,
   });
 
   final int index;
   final BotSendStatus status;
+  final BotSendStage? uploadStage;
+  final BotSendStage messageStage;
+  final BotSendStopReason? stopReason;
   final String? platformMessageId;
   final BotDiagnostic? diagnostic;
 
@@ -1144,11 +1154,22 @@ class BotSendSegment {
       other is BotSendSegment &&
           index == other.index &&
           status == other.status &&
+          uploadStage == other.uploadStage &&
+          messageStage == other.messageStage &&
+          stopReason == other.stopReason &&
           platformMessageId == other.platformMessageId &&
           diagnostic == other.diagnostic;
 
   @override
-  int get hashCode => Object.hash(index, status, platformMessageId, diagnostic);
+  int get hashCode => Object.hash(
+    index,
+    status,
+    uploadStage,
+    messageStage,
+    stopReason,
+    platformMessageId,
+    diagnostic,
+  );
 }
 
 class BotSendResult {

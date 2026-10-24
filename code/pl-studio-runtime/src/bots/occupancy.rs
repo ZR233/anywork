@@ -85,6 +85,32 @@ impl OccupancyTasks {
         }
     }
 
+    /// Shutdown has already sealed/drained normal registration. Its existing operation task slot
+    /// still needs the same global metadata/slot backpressure while joining resource maintenance.
+    /// This allocates permits only; it does not add another task registry or allow production.
+    pub(super) fn maintenance_budget(&self, bytes: usize) -> Result<OccupancyBudget, FeishuError> {
+        let amount = u32::try_from(bytes).map_err(|_| freeze_budget_error())?;
+        if bytes > OCCUPANCY_TEXT_BYTES {
+            return Err(freeze_budget_error());
+        }
+        let slot = self
+            .slots
+            .clone()
+            .try_acquire_owned()
+            .map_err(|_| capacity_error())?;
+        let text_permit = self
+            .text
+            .clone()
+            .try_acquire_many_owned(amount)
+            .map_err(|_| capacity_error())?;
+        Ok(OccupancyBudget {
+            text: self.text.clone(),
+            _slot: Some(slot),
+            text_permit: Some(text_permit),
+            held: bytes,
+        })
+    }
+
     /// 在 registry 短锁内登记任务：预算在等锁之前取得，封口在等锁之前快拒、持锁后再核，
     /// 与 [`Self::drain`] 共用同一封口边界。返回的接收端由调用方在锁外等待。
     ///

@@ -471,7 +471,7 @@ class _BotDetail extends StatelessWidget {
                   Text(context.l10n.settingsBotsNoReplay),
                 for (final segment in send.segments)
                   Text(
-                    '${segment.index + 1}: ${_sendStatus(context, segment.status)}${segment.diagnostic == null ? '' : ' · ${segment.diagnostic!.message}'}',
+                    '${segment.index + 1}: ${_sendStatus(context, segment.status)} · ${_sendStages(context, segment)}${segment.diagnostic == null ? '' : ' · ${segment.diagnostic!.message}'}',
                   ),
               ],
             ],
@@ -487,6 +487,28 @@ class _BotDetail extends StatelessWidget {
         BotSendStatus.partial => context.l10n.settingsBotsSendPartial,
         BotSendStatus.rejected => context.l10n.settingsBotsSendRejected,
         BotSendStatus.unknown => context.l10n.settingsBotsSendUnknown,
+      };
+
+  String _sendStages(BuildContext context, BotSendSegment segment) {
+    final l10n = context.l10n;
+    return [
+      if (segment.uploadStage case final stage?)
+        '${l10n.settingsBotsUploadStage}: ${_sendStage(context, stage)}',
+      '${l10n.settingsBotsMessageStage}: ${_sendStage(context, segment.messageStage)}',
+      if (segment.stopReason case final reason?)
+        switch (reason) {
+          BotSendStopReason.cancelled => l10n.settingsBotsStopCancelled,
+          BotSendStopReason.localFailure => l10n.settingsBotsStopLocalFailure,
+        },
+    ].join(' · ');
+  }
+
+  String _sendStage(BuildContext context, BotSendStage stage) =>
+      switch (stage) {
+        BotSendStage.notStarted => context.l10n.settingsBotsStageNotStarted,
+        BotSendStage.accepted => context.l10n.settingsBotsStageAccepted,
+        BotSendStage.rejected => context.l10n.settingsBotsStageRejected,
+        BotSendStage.unknown => context.l10n.settingsBotsSendUnknown,
       };
 
   String _sourceLabel(BuildContext context, BotConversation conversation) {

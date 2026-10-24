@@ -202,11 +202,22 @@ async fn observe(options: Options) -> Result<report::RunSummary> {
     let mut summary = match cases::Session::start(&paths, &selected, server_binary.as_deref()).await
     {
         Ok(mut session) => {
-            let mut summary = session.run(&selected).await?;
+            let mut summary = match session.run(&selected).await {
+                Ok(summary) => summary,
+                Err(error) => {
+                    let mut summary = report::RunSummary::for_paths(&paths.output, &paths.home);
+                    summary.cleanup_error =
+                        Some(report::one_line(&format!("observe run failed: {error:#}")));
+                    summary
+                }
+            };
             match session.shutdown().await {
                 Ok(collected) => markers = collected,
                 Err(error) => {
-                    summary.cleanup_error = Some(report::one_line(&error.to_string()));
+                    let previous = summary.cleanup_error.take().unwrap_or_default();
+                    summary.cleanup_error = Some(report::one_line(&format!(
+                        "{previous}; shutdown: {error:#}"
+                    )));
                 }
             }
             summary

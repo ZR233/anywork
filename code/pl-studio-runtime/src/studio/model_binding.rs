@@ -10,6 +10,7 @@ pub(crate) fn deferred_update(
     route: &ResolvedModelRoute,
     config: &crate::StudioConfig,
     modes: crate::mode::ThreadModeManager,
+    factory: crate::studio::StudioThreadFactory,
 ) -> Result<DeferredModelUpdate> {
     let search = pl_tool::search::plan_web_searches(
         &config.models,
@@ -33,10 +34,17 @@ pub(crate) fn deferred_update(
         }).collect::<Vec<_>>(),
     }));
     let model = ThreadModel::new(ModelRuntime::from_route(route)?, route.reasoning_config())
-        .with_hosted_tools(hosted);
+        .with_hosted_tools(hosted)
+        .with_user_files(factory.user_file_access());
     Ok(DeferredModelUpdate::new(
         key,
         ModelFactory::new(model.clone()),
-        crate::compaction::preparer(route, model, config.runtime.openai_compaction_mode, modes)?,
+        crate::compaction::preparer(
+            route,
+            model,
+            config.runtime.openai_compaction_mode,
+            modes,
+            factory,
+        )?,
     ))
 }

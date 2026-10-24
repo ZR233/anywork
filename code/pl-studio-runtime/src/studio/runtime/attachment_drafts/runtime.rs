@@ -5,29 +5,26 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::{Context, Result, ensure};
-use pl_model::model::ModelInfo;
 use pl_protocol::studio::{
     AdmitAttachmentDraftsResponse, StudioAttachmentDraft, StudioAttachmentDraftSource,
-    StudioAttachmentModality,
 };
 use sha2::{Digest, Sha256};
 
 use crate::studio::store::attachment::AttachmentDraftObject;
 
-use super::normalize::normalize_loaded_source;
-use super::source::{
-    LoadedSource, MAX_GENERIC_SOURCE_BYTES, MAX_IMAGE_SOURCE_BYTES, fetch_remote_snapshot,
-    read_local_file,
-};
+use super::inspection::InspectionOwner;
+use super::normalize::InspectionCancelled;
+use super::source::{LoadedSource, fetch_remote_snapshot, read_local_file};
 use super::validate::{
-    admission_rejection, model_modality, preflight_sources, validate_actual_limits,
-    validate_draft_batch, validate_model_source,
+    MAX_BATCH_BYTES, MAX_BATCH_FILES, MAX_FILE_BYTES, admission_rejection, preflight_sources,
+    validate_draft_batch,
 };
 
 #[derive(Clone)]
 pub(in crate::studio::runtime) struct AttachmentDraftRuntime {
     root: Arc<PathBuf>,
     entries: Arc<tokio::sync::Mutex<BTreeMap<String, AttachmentDraftObject>>>,
+    inspections: Arc<InspectionOwner>,
 }
 
 impl AttachmentDraftRuntime {
@@ -39,37 +36,29 @@ impl AttachmentDraftRuntime {
         Ok(Self {
             root: Arc::new(root),
             entries: Arc::new(tokio::sync::Mutex::new(BTreeMap::new())),
+            inspections: Default::default(),
         })
     }
 
     pub(super) async fn admit(
         &self,
         sources: Vec<StudioAttachmentDraftSource>,
-        model: &ModelInfo,
     ) -> Result<AdmitAttachmentDraftsResponse> {
-        let predicted = preflight_sources(&sources, model).map_err(admission_rejection)?;
+        if self.inspections.is_closed() {
+            return Err(InspectionCancelled.into());
+        }
+        let filenames = preflight_sources(&sources).map_err(admission_rejection)?;
 
         let mut admitted = Vec::with_capacity(sources.len());
-        for (source, (filename, predicted_modality, source_kind)) in
-            sources.into_iter().zip(predicted)
-        {
-            let max_bytes = model
-                .capabilities
-                .input_capability(model_modality(predicted_modality))
-                .and_then(|capability| capability.limits.max_bytes)
-                .unwrap_or(match predicted_modality {
-                    StudioAttachmentModality::Image => MAX_IMAGE_SOURCE_BYTES,
-                    StudioAttachmentModality::Video | StudioAttachmentModality::File => {
-                        MAX_GENERIC_SOURCE_BYTES
-                    }
-                });
+        let mut total = 0_u64;
+        for (source, filename) in sources.into_iter().zip(filenames) {
+            let max_bytes = MAX_FILE_BYTES.min(MAX_BATCH_BYTES - total);
             let result = async {
                 let loaded = match source {
                     StudioAttachmentDraftSource::LocalFile { path } => LoadedSource {
                         bytes: read_local_file(Path::new(&path), max_bytes)
                             .await
                             .map_err(admission_rejection)?,
-                        initial_remote_url: None,
                     },
                     StudioAttachmentDraftSource::RemoteUrl { url, .. } => {
                         fetch_remote_snapshot(&url, max_bytes)
@@ -77,31 +66,7 @@ impl AttachmentDraftRuntime {
                             .map_err(admission_rejection)?
                     }
                 };
-                let normalized = normalize_loaded_source(&filename, loaded.bytes)
-                    .map_err(admission_rejection)?;
-                if normalized.modality != predicted_modality {
-                    return Err(admission_rejection(anyhow::anyhow!(
-                        "attachment content does not match its filename type"
-                    )));
-                }
-                validate_model_source(model, normalized.modality, source_kind)
-                    .map_err(admission_rejection)?;
-                validate_actual_limits(model, &normalized).map_err(admission_rejection)?;
-                let draft_id = crate::studio::ids::new_id("attachment-draft");
-                let storage_path = self.root.join(&draft_id);
-                tokio::fs::write(&storage_path, &normalized.bytes).await?;
-                Ok::<_, anyhow::Error>(AttachmentDraftObject {
-                    draft_id,
-                    modality: normalized.modality,
-                    media_type: normalized.media_type,
-                    filename,
-                    storage_path,
-                    byte_size: normalized.bytes.len() as u64,
-                    content_sha256: hex::encode(Sha256::digest(&normalized.bytes)),
-                    width: normalized.width,
-                    height: normalized.height,
-                    initial_remote_url: loaded.initial_remote_url,
-                })
+                self.stage(filename, loaded).await
             }
             .await;
             let draft = match result {
@@ -111,10 +76,91 @@ impl AttachmentDraftRuntime {
                     return Err(error);
                 }
             };
+            total += draft.byte_size;
             admitted.push(draft);
         }
 
-        if let Err(error) = validate_draft_batch(model, &admitted).map_err(admission_rejection) {
+        self.publish(admitted).await
+    }
+
+    pub(super) async fn admit_bytes(
+        &self,
+        files: Vec<(String, Vec<u8>)>,
+    ) -> Result<AdmitAttachmentDraftsResponse> {
+        if self.inspections.is_closed() {
+            return Err(InspectionCancelled.into());
+        }
+        ensure!(
+            !files.is_empty() && files.len() <= MAX_BATCH_FILES,
+            "attachment batch must contain 1 to 32 files"
+        );
+        let mut total = 0_u64;
+        for (_, bytes) in &files {
+            ensure!(
+                bytes.len() as u64 <= MAX_FILE_BYTES,
+                "attachment exceeds 50 MiB"
+            );
+            total = total
+                .checked_add(bytes.len() as u64)
+                .context("attachment batch size overflow")?;
+            ensure!(total <= MAX_BATCH_BYTES, "attachment batch exceeds 128 MiB");
+        }
+        let mut admitted = Vec::with_capacity(files.len());
+        for (filename, bytes) in files {
+            let filename = super::normalize::sanitize_filename(&filename);
+            let filename = if filename.is_empty() {
+                "attachment".into()
+            } else {
+                filename
+            };
+            match self.stage(filename, LoadedSource { bytes }).await {
+                Ok(draft) => admitted.push(draft),
+                Err(error) => {
+                    cleanup_drafts(&admitted).await;
+                    return Err(error);
+                }
+            }
+        }
+        self.publish(admitted).await
+    }
+
+    async fn stage(&self, filename: String, loaded: LoadedSource) -> Result<AttachmentDraftObject> {
+        let normalized = self.inspections.inspect(loaded.bytes).await?;
+        let draft_id = crate::studio::ids::new_id("attachment-draft");
+        let storage_path = self.root.join(&draft_id);
+        tokio::fs::write(&storage_path, &normalized.bytes).await?;
+        if self.inspections.is_closed() {
+            tokio::fs::remove_file(&storage_path)
+                .await
+                .context("remove cancelled attachment staging")?;
+            return Err(InspectionCancelled.into());
+        }
+        Ok(AttachmentDraftObject {
+            draft_id,
+            modality: normalized.modality,
+            media_type: normalized.media_type,
+            filename,
+            storage_path,
+            byte_size: normalized.bytes.len() as u64,
+            content_sha256: hex::encode(Sha256::digest(&normalized.bytes)),
+            width: normalized.width,
+            height: normalized.height,
+        })
+    }
+
+    pub(in crate::studio::runtime) fn signal_close(&self) {
+        self.inspections.signal_close();
+    }
+
+    pub(in crate::studio::runtime) async fn close(&self) -> Result<()> {
+        self.inspections.close().await
+    }
+
+    async fn publish(
+        &self,
+        admitted: Vec<AttachmentDraftObject>,
+    ) -> Result<AdmitAttachmentDraftsResponse> {
+        if let Err(error) = validate_draft_batch(&admitted).map_err(admission_rejection) {
             cleanup_drafts(&admitted).await;
             return Err(error);
         }
@@ -122,18 +168,22 @@ impl AttachmentDraftRuntime {
             drafts: admitted.iter().map(public_draft).collect(),
         };
         let mut entries = self.entries.lock().await;
+        if self.inspections.is_closed() {
+            drop(entries);
+            cleanup_drafts(&admitted).await;
+            return Err(InspectionCancelled.into());
+        }
         for draft in admitted {
             entries.insert(draft.draft_id.clone(), draft);
         }
         Ok(response)
     }
 
-    pub(in crate::studio::runtime) fn validate_for_model(
+    pub(in crate::studio::runtime) fn validate_batch(
         &self,
-        model: &ModelInfo,
         drafts: &[AttachmentDraftObject],
     ) -> Result<()> {
-        validate_draft_batch(model, drafts)
+        validate_draft_batch(drafts)
     }
 
     pub(in crate::studio::runtime) async fn resolve(

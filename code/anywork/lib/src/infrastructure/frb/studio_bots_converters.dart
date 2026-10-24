@@ -386,6 +386,17 @@ BotSendSegment _sendSegmentFromFrb(frb_bots_types.BridgeBotSendSegment value) {
   return BotSendSegment(
     index: value.index,
     status: _sendStatusFromFrb(value.status),
+    uploadStage: value.uploadStage == null
+        ? null
+        : _sendStageFromFrb(value.uploadStage!),
+    messageStage: _sendStageFromFrb(value.messageStage),
+    stopReason: switch (value.stopReason) {
+      null => null,
+      frb_bots_types.BridgeBotSendStopReason.cancelled =>
+        BotSendStopReason.cancelled,
+      frb_bots_types.BridgeBotSendStopReason.localFailure =>
+        BotSendStopReason.localFailure,
+    },
     platformMessageId: value.platformMessageId,
     diagnostic: value.diagnostic == null
         ? null
@@ -399,5 +410,14 @@ BotSendStatus _sendStatusFromFrb(frb_bots_types.BridgeBotSendStatus value) {
     frb_bots_types.BridgeBotSendStatus.partial => BotSendStatus.partial,
     frb_bots_types.BridgeBotSendStatus.rejected => BotSendStatus.rejected,
     frb_bots_types.BridgeBotSendStatus.unknown => BotSendStatus.unknown,
+  };
+}
+
+BotSendStage _sendStageFromFrb(frb_bots_types.BridgeBotSendStage value) {
+  return switch (value) {
+    frb_bots_types.BridgeBotSendStage.notStarted => BotSendStage.notStarted,
+    frb_bots_types.BridgeBotSendStage.accepted => BotSendStage.accepted,
+    frb_bots_types.BridgeBotSendStage.rejected => BotSendStage.rejected,
+    frb_bots_types.BridgeBotSendStage.unknown => BotSendStage.unknown,
   };
 }

@@ -21,12 +21,13 @@ use super::types::{
     ChatType, EventBody, Mention, SenderKind, SyntheticEvent, TRUSTED_USER_OPEN_ID,
 };
 
-pub const REQUIRED_TENANT_SCOPES: [&str; 5] = [
+pub const REQUIRED_TENANT_SCOPES: [&str; 6] = [
     "im:message:send_as_bot",
     "im:message.p2p_msg:readonly",
     "im:message.group_at_msg:readonly",
     "im:chat:readonly",
     "im:message:readonly",
+    "im:resource:upload",
 ];
 pub const REQUIRED_TENANT_EVENTS: [&str; 1] = ["im.message.receive_v1"];
 
@@ -358,8 +359,12 @@ pub fn parse_form(body: &[u8]) -> std::collections::HashMap<String, String> {
 pub fn event_payload(event: &SyntheticEvent, app_id: &str, bot_open_id: &str) -> serde_json::Value {
     let (message_type, content) = match &event.body {
         EventBody::Text(text) => ("text", serde_json::json!({"text": text}).to_string()),
-        EventBody::Post(value) => ("post", value.to_string()),
-        EventBody::Unsupported {
+        EventBody::Post(value) => ("post", serde_json::json!(value).to_string()),
+        EventBody::Image { image_key } => ("image", serde_json::json!({"image_key": image_key}).to_string()),
+        EventBody::File { file_key, file_name } => ("file", serde_json::json!({"file_key": file_key, "file_name": file_name}).to_string()),
+        EventBody::Audio { file_key, duration } => ("audio", serde_json::json!({"file_key": file_key, "duration": duration}).to_string()),
+        EventBody::Media { file_key, image_key, file_name, duration } => ("media", serde_json::json!({"file_key": file_key, "image_key": image_key, "file_name": file_name, "duration": duration}).to_string()),
+        EventBody::Raw {
             message_type,
             content,
         } => (message_type.as_str(), content.clone()),

@@ -23,6 +23,7 @@ use super::server::{ServerLaunch, StudioServer};
 use super::sqlite;
 use super::topic::{BotsTopicWatch, redact_connection};
 
+mod files;
 mod owner_binding;
 mod registration;
 mod replies;
@@ -59,6 +60,15 @@ const OPTIONAL_CASES: &[&str] = &[
     owner_binding::CASE,
     registration::CASE_LIFECYCLE,
     registration::CASE_NO_USER,
+    files::CASE_ISOLATION,
+    files::CASE_INGRESS,
+    files::CASE_SOURCE,
+    files::CASE_MARKDOWN,
+    files::CASE_UPLOAD_OUTCOMES,
+    files::CASE_SEND_OUTCOMES,
+    files::CASE_COMPACTION,
+    files::CASE_COMPACTION_TIMEOUT,
+    files::CASE_ADMISSION_LIMITS,
 ];
 
 /// Cases that own the whole Session (fresh home, private peer wiring, model
@@ -68,6 +78,7 @@ fn is_session_exclusive(name: &str) -> bool {
         || name == replies::CASE_INTERACTION_RESTART
         || name == replies::CASE_SEND_OUTCOMES
         || name == owner_binding::CASE
+        || files::CASES.contains(&name)
 }
 
 pub(crate) fn selected(requested: &[String]) -> Result<Vec<&'static str>> {
@@ -122,6 +133,8 @@ pub(crate) struct Session {
     http: Option<StudioHttp>,
     sensitive_markers: Vec<String>,
     restart_count: u32,
+    file_observe: bool,
+    compaction_owner: files::CompactionOwner,
 }
 
 impl Session {
@@ -146,6 +159,8 @@ impl Session {
             http: None,
             sensitive_markers: Vec::new(),
             restart_count: 0,
+            file_observe: cases.iter().any(|name| files::CASES.contains(name)),
+            compaction_owner: files::CompactionOwner::default(),
         };
         if let Err(error) = session.start_inner(paths, cases, server_binary).await {
             return match session.abort().await {
@@ -168,8 +183,13 @@ impl Session {
         let model = FixtureServer::start(steps)
             .await
             .context("failed to start model fixture")?;
-        env::write_model_config(&paths.home, &model.base_url())?;
+        let model_base_url = model.base_url();
         self.model = Some(model);
+        if self.file_observe {
+            env::write_media_model_config(&paths.home, &model_base_url)?;
+        } else {
+            env::write_model_config(&paths.home, &model_base_url)?;
+        }
         let peer = FeishuPeer::start()
             .await
             .context("failed to start Feishu peer")?;
@@ -211,6 +231,7 @@ impl Session {
                     owner_binding::owner_binding_occupancy(self).await
                 }
                 name if registration::is_exclusive(name) => registration::run(self, name).await,
+                name if files::CASES.contains(&name) => files::run(self, name).await,
                 other => Ok(report::failed(other, "unknown case")),
             };
             match result {
@@ -272,6 +293,11 @@ impl Session {
 
     async fn release(mut self, verify_fixtures: bool) -> Result<()> {
         let mut errors = Vec::new();
+        if let Err(error) = self.compaction_owner.close().await {
+            errors.push(format!(
+                "Session compact owner cleanup before server/peers: {error:#}"
+            ));
+        }
         if let Some(mut server) = self.server.take()
             && let Err(error) = server.stop()
         {
@@ -283,17 +309,36 @@ impl Session {
             errors.push(format!("registration marker audit: {error:#}"));
         }
         if let Some(model) = self.model.take() {
-            if verify_fixtures {
-                if let Err(error) = model.finish().await {
-                    errors.push(format!("model fixture: {error:#}"));
+            match model.shutdown().await {
+                Ok(report) => {
+                    if self.file_observe
+                        && let Err(error) = files::write_json(
+                            &self,
+                            "model-closed.json",
+                            &serde_json::json!({
+                                "consumedSteps":report.consumed_steps, "expectedSteps":report.expected_steps,
+                                "remainingOptional":report.remaining_optional, "requests":report.requests,
+                                "listenerJoined":true,
+                            }),
+                        )
+                    {
+                        errors.push(format!("model final evidence: {error:#}"));
+                    }
+                    if verify_fixtures && let Err(error) = report.verify() {
+                        errors.push(format!("model fixture: {error:#}"));
+                    }
                 }
-            } else if let Err(error) = model.shutdown().await {
-                errors.push(format!("model shutdown: {error:#}"));
+                Err(error) => errors.push(format!("model shutdown: {error:#}")),
             }
         }
         if let Some(mut peer) = self.peer.take() {
             match peer.shutdown().await {
                 Ok(report) => {
+                    if self.file_observe
+                        && let Err(error) = files::write_json(&self, "feishu-closed.json", &report)
+                    {
+                        errors.push(format!("feishu final evidence: {error:#}"));
+                    }
                     if verify_fixtures && let Err(error) = report.verify() {
                         errors.push(format!("feishu fixture: {error:#}"));
                     }
@@ -1699,6 +1744,9 @@ fn scan_regular_file(
 }
 
 fn model_steps(cases: &[&'static str]) -> Vec<Step> {
+    if let Some(name) = cases.iter().find(|name| files::CASES.contains(name)) {
+        return files::model_steps(name);
+    }
     if cases.contains(&replies::CASE_INTERACTION_RESTART) {
         return replies::interaction_restart_model_steps();
     }

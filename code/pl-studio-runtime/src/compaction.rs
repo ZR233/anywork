@@ -41,6 +41,7 @@ pub(crate) fn preparer(
     model: ThreadModel,
     mode: OpenAiCompactionMode,
     modes: crate::mode::ThreadModeManager,
+    factory: crate::studio::StudioThreadFactory,
 ) -> Result<Option<ContextPreparer>, pl_model::PureError> {
     let instruction_binding = InstructionBinding {
         route_identity: model.route_identity(),
@@ -49,6 +50,7 @@ pub(crate) fn preparer(
     };
     Ok(Some(ContextPreparer::new(StudioCompaction {
         model,
+        factory,
         modes,
         reasoning_effort: route
             .effort
@@ -65,6 +67,7 @@ pub(crate) fn preparer(
 #[derive(Debug)]
 struct StudioCompaction {
     model: ThreadModel,
+    factory: crate::studio::StudioThreadFactory,
     modes: crate::mode::ThreadModeManager,
     reasoning_effort: Option<String>,
     context_window: Option<u64>,
@@ -212,8 +215,19 @@ impl ContextPreparationHook for StudioCompaction {
             }
         }
         preview.context.records = records.into();
-        let estimate = match self
-            .model
+        // The frozen route is immutable, but its standalone image work belongs to this
+        // Thread's live host lifetime, including deferred factories with no Thread ID yet.
+        let owner = match self.factory.preparation_owner(&request.model.thread_id) {
+            Ok(owner) => owner,
+            Err(error) => {
+                return ContextPreparation::Failed {
+                    error: receipt_error(error),
+                    mutations: vec![],
+                };
+            }
+        };
+        let model = self.model.clone().with_preparation_owner(owner);
+        let estimate = match model
             .compaction_decision(
                 &preview,
                 request.previous_usage.as_ref(),
@@ -255,11 +269,7 @@ impl ContextPreparationHook for StudioCompaction {
         let mut model_request = request.model;
         model_request.context = request.committed_context;
         model_request.attempt_id = id.clone();
-        match self
-            .model
-            .compact(model_request, self.options.clone())
-            .await
-        {
+        match model.compact(model_request, self.options.clone()).await {
             Ok(result) => {
                 let receipt = CompactionReceipt {
                     inference_id: id.clone(),

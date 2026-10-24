@@ -142,7 +142,7 @@ impl BotToolKind {
             ),
             Self::SendMessage => pl_protocol::ToolSpec::function(
                 self.name(),
-                "Send a text message through a project-authorized bot. This is an external write and is not a readonly or programmatic tool.",
+                "Send Markdown through a project-authorized bot. Oversized content is delivered as a complete Markdown file with a short notice. This is an external write and is not a readonly or programmatic tool.",
                 typed_tool_input_schema::<SendMessageInput>(),
             ),
         }

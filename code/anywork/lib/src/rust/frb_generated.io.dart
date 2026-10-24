@@ -267,6 +267,14 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   dco_decode_box_autoadd_bridge_bot_registration_attempt(dynamic raw);
 
   @protected
+  BridgeBotSendStage dco_decode_box_autoadd_bridge_bot_send_stage(dynamic raw);
+
+  @protected
+  BridgeBotSendStopReason dco_decode_box_autoadd_bridge_bot_send_stop_reason(
+    dynamic raw,
+  );
+
+  @protected
   BridgeCancelBotRegistrationRequest
   dco_decode_box_autoadd_bridge_cancel_bot_registration_request(dynamic raw);
 
@@ -1140,7 +1148,13 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   BridgeBotSendSegment dco_decode_bridge_bot_send_segment(dynamic raw);
 
   @protected
+  BridgeBotSendStage dco_decode_bridge_bot_send_stage(dynamic raw);
+
+  @protected
   BridgeBotSendStatus dco_decode_bridge_bot_send_status(dynamic raw);
+
+  @protected
+  BridgeBotSendStopReason dco_decode_bridge_bot_send_stop_reason(dynamic raw);
 
   @protected
   BridgeBotSnapshot dco_decode_bridge_bot_snapshot(dynamic raw);
@@ -2762,6 +2776,15 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   dco_decode_opt_box_autoadd_bridge_bot_registration_attempt(dynamic raw);
 
   @protected
+  BridgeBotSendStage? dco_decode_opt_box_autoadd_bridge_bot_send_stage(
+    dynamic raw,
+  );
+
+  @protected
+  BridgeBotSendStopReason?
+  dco_decode_opt_box_autoadd_bridge_bot_send_stop_reason(dynamic raw);
+
+  @protected
   BridgeHistoryFault? dco_decode_opt_box_autoadd_bridge_history_fault(
     dynamic raw,
   );
@@ -3273,6 +3296,16 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   BridgeBotRegistrationAttempt
   sse_decode_box_autoadd_bridge_bot_registration_attempt(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeBotSendStage sse_decode_box_autoadd_bridge_bot_send_stage(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeBotSendStopReason sse_decode_box_autoadd_bridge_bot_send_stop_reason(
     SseDeserializer deserializer,
   );
 
@@ -4402,7 +4435,17 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  BridgeBotSendStage sse_decode_bridge_bot_send_stage(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   BridgeBotSendStatus sse_decode_bridge_bot_send_status(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeBotSendStopReason sse_decode_bridge_bot_send_stop_reason(
     SseDeserializer deserializer,
   );
 
@@ -6406,6 +6449,17 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  BridgeBotSendStage? sse_decode_opt_box_autoadd_bridge_bot_send_stage(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeBotSendStopReason?
+  sse_decode_opt_box_autoadd_bridge_bot_send_stop_reason(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   BridgeHistoryFault? sse_decode_opt_box_autoadd_bridge_history_fault(
     SseDeserializer deserializer,
   );
@@ -7034,6 +7088,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_box_autoadd_bridge_bot_registration_attempt(
     BridgeBotRegistrationAttempt self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_bridge_bot_send_stage(
+    BridgeBotSendStage self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_bridge_bot_send_stop_reason(
+    BridgeBotSendStopReason self,
     SseSerializer serializer,
   );
 
@@ -8322,8 +8388,20 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_bridge_bot_send_stage(
+    BridgeBotSendStage self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_bridge_bot_send_status(
     BridgeBotSendStatus self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_bot_send_stop_reason(
+    BridgeBotSendStopReason self,
     SseSerializer serializer,
   );
 
@@ -10736,6 +10814,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_opt_box_autoadd_bridge_bot_registration_attempt(
     BridgeBotRegistrationAttempt? self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_opt_box_autoadd_bridge_bot_send_stage(
+    BridgeBotSendStage? self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_opt_box_autoadd_bridge_bot_send_stop_reason(
+    BridgeBotSendStopReason? self,
     SseSerializer serializer,
   );
 

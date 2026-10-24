@@ -6,6 +6,28 @@ import 'studio_enums.dart';
 
 enum AttachmentModalityView { image, video, file }
 
+/// Fixed product safety limits from design/17-studio-storage.md. Platform
+/// transfer staging uses these to bound its own I/O; native admission remains
+/// canonical and revalidates the complete batch, including borrowed files.
+abstract final class AttachmentInputLimits {
+  static const maxFiles = 32;
+  static const maxFileBytes = 50 * 1024 * 1024;
+  static const maxBatchBytes = 128 * 1024 * 1024;
+}
+
+/// Platform clipboard data, not paths inferred from ordinary clipboard text.
+abstract interface class ComposerClipboardReader {
+  /// Real native file-list paths. Sources are borrowed, not owned staging.
+  Future<List<String>> readFiles();
+
+  /// Clipboard pixels encoded as PNG, or null when no image is available.
+  /// File-list images are not decoded or re-encoded through this method.
+  Future<Uint8List?> readImage();
+
+  /// Plain text, including path-looking strings which remain ordinary text.
+  Future<String?> readText();
+}
+
 sealed class AttachmentAdmissionContext {
   const AttachmentAdmissionContext();
 

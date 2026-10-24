@@ -6685,6 +6685,14 @@ impl SseDecode for crate::api::studio::types::bots::BridgeBotSendSegment {
         let mut var_index = <u32>::sse_decode(deserializer);
         let mut var_status =
             <crate::api::studio::types::bots::BridgeBotSendStatus>::sse_decode(deserializer);
+        let mut var_uploadStage =
+            <Option<crate::api::studio::types::bots::BridgeBotSendStage>>::sse_decode(deserializer);
+        let mut var_messageStage =
+            <crate::api::studio::types::bots::BridgeBotSendStage>::sse_decode(deserializer);
+        let mut var_stopReason =
+            <Option<crate::api::studio::types::bots::BridgeBotSendStopReason>>::sse_decode(
+                deserializer,
+            );
         let mut var_platformMessageId = <Option<String>>::sse_decode(deserializer);
         let mut var_diagnostic =
             <Option<crate::api::studio::types::bots::BridgeBotDiagnostic>>::sse_decode(
@@ -6693,8 +6701,25 @@ impl SseDecode for crate::api::studio::types::bots::BridgeBotSendSegment {
         return crate::api::studio::types::bots::BridgeBotSendSegment {
             index: var_index,
             status: var_status,
+            upload_stage: var_uploadStage,
+            message_stage: var_messageStage,
+            stop_reason: var_stopReason,
             platform_message_id: var_platformMessageId,
             diagnostic: var_diagnostic,
+        };
+    }
+}
+
+impl SseDecode for crate::api::studio::types::bots::BridgeBotSendStage {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut inner = <i32>::sse_decode(deserializer);
+        return match inner {
+            0 => crate::api::studio::types::bots::BridgeBotSendStage::NotStarted,
+            1 => crate::api::studio::types::bots::BridgeBotSendStage::Accepted,
+            2 => crate::api::studio::types::bots::BridgeBotSendStage::Rejected,
+            3 => crate::api::studio::types::bots::BridgeBotSendStage::Unknown,
+            _ => unreachable!("Invalid variant for BridgeBotSendStage: {}", inner),
         };
     }
 }
@@ -6709,6 +6734,18 @@ impl SseDecode for crate::api::studio::types::bots::BridgeBotSendStatus {
             2 => crate::api::studio::types::bots::BridgeBotSendStatus::Rejected,
             3 => crate::api::studio::types::bots::BridgeBotSendStatus::Unknown,
             _ => unreachable!("Invalid variant for BridgeBotSendStatus: {}", inner),
+        };
+    }
+}
+
+impl SseDecode for crate::api::studio::types::bots::BridgeBotSendStopReason {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut inner = <i32>::sse_decode(deserializer);
+        return match inner {
+            0 => crate::api::studio::types::bots::BridgeBotSendStopReason::Cancelled,
+            1 => crate::api::studio::types::bots::BridgeBotSendStopReason::LocalFailure,
+            _ => unreachable!("Invalid variant for BridgeBotSendStopReason: {}", inner),
         };
     }
 }
@@ -15791,6 +15828,34 @@ impl SseDecode for Option<crate::api::studio::types::bots::BridgeBotRegistration
     }
 }
 
+impl SseDecode for Option<crate::api::studio::types::bots::BridgeBotSendStage> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        if (<bool>::sse_decode(deserializer)) {
+            return Some(
+                <crate::api::studio::types::bots::BridgeBotSendStage>::sse_decode(deserializer),
+            );
+        } else {
+            return None;
+        }
+    }
+}
+
+impl SseDecode for Option<crate::api::studio::types::bots::BridgeBotSendStopReason> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        if (<bool>::sse_decode(deserializer)) {
+            return Some(
+                <crate::api::studio::types::bots::BridgeBotSendStopReason>::sse_decode(
+                    deserializer,
+                ),
+            );
+        } else {
+            return None;
+        }
+    }
+}
+
 impl SseDecode for Option<crate::api::studio::types::thread_activity::BridgeHistoryFault> {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
@@ -19173,6 +19238,9 @@ impl flutter_rust_bridge::IntoDart for crate::api::studio::types::bots::BridgeBo
         [
             self.index.into_into_dart().into_dart(),
             self.status.into_into_dart().into_dart(),
+            self.upload_stage.into_into_dart().into_dart(),
+            self.message_stage.into_into_dart().into_dart(),
+            self.stop_reason.into_into_dart().into_dart(),
             self.platform_message_id.into_into_dart().into_dart(),
             self.diagnostic.into_into_dart().into_dart(),
         ]
@@ -19187,6 +19255,29 @@ impl flutter_rust_bridge::IntoIntoDart<crate::api::studio::types::bots::BridgeBo
     for crate::api::studio::types::bots::BridgeBotSendSegment
 {
     fn into_into_dart(self) -> crate::api::studio::types::bots::BridgeBotSendSegment {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::api::studio::types::bots::BridgeBotSendStage {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        match self {
+            Self::NotStarted => 0.into_dart(),
+            Self::Accepted => 1.into_dart(),
+            Self::Rejected => 2.into_dart(),
+            Self::Unknown => 3.into_dart(),
+            _ => unreachable!(),
+        }
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::api::studio::types::bots::BridgeBotSendStage
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::api::studio::types::bots::BridgeBotSendStage>
+    for crate::api::studio::types::bots::BridgeBotSendStage
+{
+    fn into_into_dart(self) -> crate::api::studio::types::bots::BridgeBotSendStage {
         self
     }
 }
@@ -19210,6 +19301,27 @@ impl flutter_rust_bridge::IntoIntoDart<crate::api::studio::types::bots::BridgeBo
     for crate::api::studio::types::bots::BridgeBotSendStatus
 {
     fn into_into_dart(self) -> crate::api::studio::types::bots::BridgeBotSendStatus {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::api::studio::types::bots::BridgeBotSendStopReason {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        match self {
+            Self::Cancelled => 0.into_dart(),
+            Self::LocalFailure => 1.into_dart(),
+            _ => unreachable!(),
+        }
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::api::studio::types::bots::BridgeBotSendStopReason
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::api::studio::types::bots::BridgeBotSendStopReason>
+    for crate::api::studio::types::bots::BridgeBotSendStopReason
+{
+    fn into_into_dart(self) -> crate::api::studio::types::bots::BridgeBotSendStopReason {
         self
     }
 }
@@ -30729,9 +30841,39 @@ impl SseEncode for crate::api::studio::types::bots::BridgeBotSendSegment {
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
         <u32>::sse_encode(self.index, serializer);
         <crate::api::studio::types::bots::BridgeBotSendStatus>::sse_encode(self.status, serializer);
+        <Option<crate::api::studio::types::bots::BridgeBotSendStage>>::sse_encode(
+            self.upload_stage,
+            serializer,
+        );
+        <crate::api::studio::types::bots::BridgeBotSendStage>::sse_encode(
+            self.message_stage,
+            serializer,
+        );
+        <Option<crate::api::studio::types::bots::BridgeBotSendStopReason>>::sse_encode(
+            self.stop_reason,
+            serializer,
+        );
         <Option<String>>::sse_encode(self.platform_message_id, serializer);
         <Option<crate::api::studio::types::bots::BridgeBotDiagnostic>>::sse_encode(
             self.diagnostic,
+            serializer,
+        );
+    }
+}
+
+impl SseEncode for crate::api::studio::types::bots::BridgeBotSendStage {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <i32>::sse_encode(
+            match self {
+                crate::api::studio::types::bots::BridgeBotSendStage::NotStarted => 0,
+                crate::api::studio::types::bots::BridgeBotSendStage::Accepted => 1,
+                crate::api::studio::types::bots::BridgeBotSendStage::Rejected => 2,
+                crate::api::studio::types::bots::BridgeBotSendStage::Unknown => 3,
+                _ => {
+                    unimplemented!("");
+                }
+            },
             serializer,
         );
     }
@@ -30746,6 +30888,22 @@ impl SseEncode for crate::api::studio::types::bots::BridgeBotSendStatus {
                 crate::api::studio::types::bots::BridgeBotSendStatus::Partial => 1,
                 crate::api::studio::types::bots::BridgeBotSendStatus::Rejected => 2,
                 crate::api::studio::types::bots::BridgeBotSendStatus::Unknown => 3,
+                _ => {
+                    unimplemented!("");
+                }
+            },
+            serializer,
+        );
+    }
+}
+
+impl SseEncode for crate::api::studio::types::bots::BridgeBotSendStopReason {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <i32>::sse_encode(
+            match self {
+                crate::api::studio::types::bots::BridgeBotSendStopReason::Cancelled => 0,
+                crate::api::studio::types::bots::BridgeBotSendStopReason::LocalFailure => 1,
                 _ => {
                     unimplemented!("");
                 }
@@ -37630,6 +37788,28 @@ impl SseEncode for Option<crate::api::studio::types::bots::BridgeBotRegistration
         <bool>::sse_encode(self.is_some(), serializer);
         if let Some(value) = self {
             <crate::api::studio::types::bots::BridgeBotRegistrationAttempt>::sse_encode(
+                value, serializer,
+            );
+        }
+    }
+}
+
+impl SseEncode for Option<crate::api::studio::types::bots::BridgeBotSendStage> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <bool>::sse_encode(self.is_some(), serializer);
+        if let Some(value) = self {
+            <crate::api::studio::types::bots::BridgeBotSendStage>::sse_encode(value, serializer);
+        }
+    }
+}
+
+impl SseEncode for Option<crate::api::studio::types::bots::BridgeBotSendStopReason> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <bool>::sse_encode(self.is_some(), serializer);
+        if let Some(value) = self {
+            <crate::api::studio::types::bots::BridgeBotSendStopReason>::sse_encode(
                 value, serializer,
             );
         }

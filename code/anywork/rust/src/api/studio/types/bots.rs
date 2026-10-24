@@ -468,6 +468,20 @@ pub enum BridgeBotSendStatus {
     Unknown,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BridgeBotSendStage {
+    NotStarted,
+    Accepted,
+    Rejected,
+    Unknown,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BridgeBotSendStopReason {
+    Cancelled,
+    LocalFailure,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BridgeSendBotMessageRequest {
     pub operation_id: String,
@@ -480,6 +494,9 @@ pub struct BridgeSendBotMessageRequest {
 pub struct BridgeBotSendSegment {
     pub index: u32,
     pub status: BridgeBotSendStatus,
+    pub upload_stage: Option<BridgeBotSendStage>,
+    pub message_stage: BridgeBotSendStage,
+    pub stop_reason: Option<BridgeBotSendStopReason>,
     pub platform_message_id: Option<String>,
     pub diagnostic: Option<BridgeBotDiagnostic>,
 }

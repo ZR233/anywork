@@ -7,6 +7,7 @@ use pl_protocol::remote::{RemoteError, RemoteErrorCode};
 #[derive(Debug)]
 struct WorkspaceRoot {
     path: PathBuf,
+    create_root: crate::workspace_dir::WorkspaceDir,
     _memory: crate::budget::ByteLease,
 }
 #[derive(Debug)]
@@ -25,7 +26,9 @@ impl WorkspaceRegistry {
             budget,
         }))
     }
-    pub(crate) async fn resolve_workspace_root(path: &str) -> Result<PathBuf, RemoteError> {
+    pub(crate) async fn resolve_workspace_root(
+        path: &str,
+    ) -> Result<(PathBuf, crate::workspace_dir::WorkspaceDir), RemoteError> {
         let canonical = tokio::fs::canonicalize(path)
             .await
             .map_err(|error| io_error("failed to open workspace", error))?;
@@ -38,12 +41,20 @@ impl WorkspaceRegistry {
                 "workspace path is not a directory",
             ));
         }
-        Ok(canonical)
+        let root_path = canonical.clone();
+        let create_root = tokio::task::spawn_blocking(move || {
+            crate::workspace_dir::WorkspaceDir::open(&root_path)
+        })
+        .await
+        .map_err(|error| io_error("open workspace capability task", io::Error::other(error)))?
+        .map_err(|error| io_error("open workspace capability", error))?;
+        Ok((canonical, create_root))
     }
 
     pub(crate) fn open_resolved(
         &self,
         canonical: PathBuf,
+        create_root: crate::workspace_dir::WorkspaceDir,
     ) -> Result<(String, PathBuf), RemoteError> {
         let memory = self
             .0
@@ -78,6 +89,7 @@ impl WorkspaceRegistry {
                 id.clone(),
                 WorkspaceRoot {
                     path: canonical.clone(),
+                    create_root,
                     _memory: memory,
                 },
             );
@@ -138,6 +150,23 @@ impl WorkspaceRegistry {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .get(workspace_id)
             .map(|root| root.path.clone())
+            .ok_or_else(|| {
+                remote_error(
+                    RemoteErrorCode::WorkspaceNotFound,
+                    "workspace handle is closed",
+                )
+            })
+    }
+    pub(crate) fn create_root(
+        &self,
+        workspace_id: &str,
+    ) -> Result<crate::workspace_dir::WorkspaceDir, RemoteError> {
+        self.0
+            .roots
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(workspace_id)
+            .map(|root| root.create_root.clone())
             .ok_or_else(|| {
                 remote_error(
                     RemoteErrorCode::WorkspaceNotFound,

@@ -1,16 +1,12 @@
 //! 会话查询、发送与入站执行。扫码注册由 `registration` owner 持有。
 use super::SendAuthority;
 use super::config::BotConfigFile;
-use super::connect::{ClaimedSend, replay_send, send_text};
 use super::inbound::{ChatKind, InboundDecision, InboundHost};
 use super::occupancy::OccupancyBudget;
 use super::owner::{BotRuntime, ManagedBot, RuntimeInboundHost};
 use super::protocol::error::{FeishuError, FeishuErrorKind};
 use super::protocol::im::{FeishuIm, to_product_message};
-use super::send::plan_text;
-use super::storage::{
-    FrozenInbound, InboundAdmit, InboundClaim, SendRecord, SendRecordStatus, SendSegmentFact,
-};
+use super::storage::{FrozenInbound, InboundAdmit, InboundClaim, SendRecord};
 use crate::studio::new_id;
 use pl_protocol::studio::*;
 use std::sync::Arc;
@@ -89,15 +85,16 @@ impl FrozenBinding {
 }
 
 /// 发送认领占用区冻结的材料：只含身份/授权与记录本身，不含整份配置或 secret。
-struct FrozenSendClaim {
-    managed: Arc<ManagedBot>,
-    record: SendRecord,
-    membership: ChatMembership,
-    authority: SendAuthority,
-    app_id: String,
-    project_id: String,
+pub(super) struct FrozenSendClaim {
+    pub(super) managed: Arc<ManagedBot>,
+    pub(super) record: SendRecord,
+    pub(super) membership: ChatMembership,
+    pub(super) authority: SendAuthority,
+    pub(super) app_id: String,
+    pub(super) project_id: String,
     /// 调用方观测到的配置 revision：仅供首次认领复核，不参与回执填充。
-    expected_config_revision: u64,
+    pub(super) expected_config_revision: u64,
+    pub(super) cancel: tokio_util::sync::CancellationToken,
 }
 
 /// `crate::studio::new_id` 形态 `前缀-微秒hex-序号hex` 的 UTF-8 上界：
@@ -241,18 +238,14 @@ fn resume_payload_bytes(payload: &FrozenInbound) -> Result<usize, FeishuError> {
     )
 }
 
-/// 首次发送认领的冻结文本上界：caller 仍持有 operationId/bot/chat/正文指纹原值，记录
-/// 本身与 `load_send`/`claim_send` 的 SQL 参数各再带一份，因此峰值 3 份；逐段 uuid 同时
-/// 存在于 `plan.uuids`、`planned` 与记录，编码出的 `segment_facts` JSON 再按真实编码
-/// 长度计一次（含每段编码开销）。`body_bytes` 是本次 plan 的正文分段总长：`plan` 会
-/// 跨越占用等待并交给统一发送 owner；raw 正文在指纹/分段确定后立即释放，不在这里重复计。
-fn send_claim_freeze_bytes(
+/// First-claim metadata peak: caller and occupancy records plus DB parameters/readback. File
+/// bodies are immutable references here; their separate transfer permits cover the real bytes.
+pub(super) fn send_claim_freeze_bytes(
     record: &SendRecord,
     authority: &SendAuthority,
     app_id: &str,
     project_id: &str,
     facts_bytes: usize,
-    body_bytes: usize,
 ) -> Result<usize, FeishuError> {
     let mut fields = vec![
         (record.operation_id.as_str(), 3),
@@ -266,17 +259,32 @@ fn send_claim_freeze_bytes(
     if let SendAuthority::Tool { project_id } = authority {
         fields.push((project_id.as_str(), 1));
     }
+    let source_bytes = match authority {
+        SendAuthority::Source(source) => serde_json::to_string(source)
+            .map_err(|_| super::occupancy::freeze_budget_error())?
+            .len()
+            .checked_mul(3)
+            .ok_or_else(super::occupancy::freeze_budget_error)?,
+        _ => 0,
+    };
     for segment in &record.segments {
         fields.push((segment.uuid.as_str(), 3));
     }
     let base = super::occupancy::counted_text_bytes(fields)?;
-    base.checked_add(facts_bytes)
-        .and_then(|total| total.checked_add(body_bytes))
+    // Frozen source/identity and all known JSON copies (caller record, occupancy record,
+    // SQL parameters and returned existing facts) count before the first persistent write.
+    base.checked_add(super::storage::send_metadata_bytes(record)?)
+        .and_then(|total| {
+            facts_bytes
+                .checked_mul(4)
+                .and_then(|facts| total.checked_add(facts))
+        })
+        .and_then(|total| total.checked_add(source_bytes))
         .ok_or_else(super::occupancy::freeze_budget_error)
 }
 
 impl BotRuntime {
-    fn reject_closed_admission(&self, managed: &ManagedBot) -> Result<(), FeishuError> {
+    pub(super) fn reject_closed_admission(&self, managed: &ManagedBot) -> Result<(), FeishuError> {
         if managed.admission_closed.load(Ordering::Acquire)
             || managed.submitting.load(Ordering::Acquire)
             || self.inner.sealed.load(Ordering::SeqCst) != 0
@@ -410,7 +418,9 @@ impl BotRuntime {
     ) -> Result<BotMessagePage, FeishuError> {
         let managed = self.managed(bot_id).await?;
         let config = managed.config.lock().await.clone();
-        let membership = self.prepare_chat_access(&managed, &config, chat_id).await?;
+        let membership = self
+            .prepare_chat_access(&managed, &config, chat_id, &self.inner.reply_cancel)
+            .await?;
         self.authorize_chat(&config, chat_id, SendAuthority::Owner, &membership)?;
         let token = self.token(&managed, &config).await?;
         let page_token = decode_history_cursor(cursor, bot_id, chat_id, start_time, end_time)?;
@@ -433,151 +443,14 @@ impl BotRuntime {
         })
     }
 
-    pub async fn send_message(
-        &self,
-        operation_id: String,
-        bot_id: String,
-        chat_id: String,
-        text: String,
-        owner_epoch: &str,
-    ) -> Result<BotSendResult, FeishuError> {
-        self.send_message_as(
-            operation_id,
-            bot_id,
-            chat_id,
-            text,
-            owner_epoch,
-            SendAuthority::Owner,
-        )
-        .await
-    }
-
-    pub(crate) async fn send_message_as(
-        &self,
-        operation_id: String,
-        bot_id: String,
-        chat_id: String,
-        text: String,
-        owner_epoch: &str,
-        authority: SendAuthority,
-    ) -> Result<BotSendResult, FeishuError> {
-        let managed = self.managed(&bot_id).await?;
-        // 已持久同操作的本地回读：只核对持久指纹与当前来源权限，不联网、不刷新 token、
-        // 不读 keyring；不同正文或会话命中同一 operationId 必须显式拒绝。
-        if let Some(existing) = managed.store.load_send(&operation_id).await? {
-            let content_hash = super::protocol::im::content_hash(&operation_id, &chat_id, &text);
-            super::storage::verify_send_identity(
-                &existing,
-                &operation_id,
-                &bot_id,
-                &chat_id,
-                &content_hash,
-            )?;
-            self.authorize_replay_source(&managed, &authority).await?;
-            let revision = managed.config.lock().await.config_revision;
-            let mut result = replay_send(existing, &operation_id, &bot_id, &chat_id);
-            result.receipt.targets = vec![ResourceStamp {
-                resource_key: format!("bot:{bot_id}"),
-                owner_epoch: owner_epoch.to_string(),
-                revision,
-            }];
-            return Ok(result);
-        }
-        // 首次意图：真实来源授权、目标实时可见性与 token 准备都在此完成。
-        let config = managed.config.lock().await.clone();
-        let membership = self
-            .prepare_chat_access(&managed, &config, &chat_id)
-            .await?;
-        let token = self.token(&managed, &config).await?;
-        let plan = plan_text(&operation_id, &bot_id, &chat_id, &text)?;
-        // 指纹与分段已由 plan 固定：raw 正文不再保留，避免与 plan 分段同时跨占用等待。
-        drop(text);
-        let planned = plan
-            .uuids
-            .iter()
-            .enumerate()
-            .map(|(index, uuid)| SendSegmentFact {
-                index: index as u32,
-                uuid: uuid.clone(),
-                status: SendRecordStatus::Unknown,
-                platform_message_id: None,
-                diagnostic: None,
-            })
-            .collect::<Vec<_>>();
-        let initial = SendRecord {
-            operation_id: operation_id.clone(),
-            bot_id: bot_id.clone(),
-            chat_id: chat_id.clone(),
-            content_hash: plan.content_hash.clone(),
-            status: SendRecordStatus::Unknown,
-            platform_message_ids: Vec::new(),
-            segments: planned.clone(),
-            facts_complete: true,
-        };
-        // 首次发送认领是持久占用写入：交给受管占用任务持有到真实终态并主动重建。
-        // 联网/逐段发送仍在统一发送服务中，由调用方持有，不搬入不可取消队列。
-        let app_id = config.feishu().app_id.clone();
-        let project_id = config.project_id;
-        let expected_config_revision = config.config_revision;
-        // 首次认领会把分段事实编码成 SQL 参数：按与持久化同一实现的真实长度计权。
-        let facts_bytes = super::storage::segment_facts_bytes(&initial.segments)?;
-        // plan 分段会跨占用等待并交给统一发送 owner：按实际 UTF-8 段总长计入首次预算。
-        let body_bytes = plan.segments.iter().map(String::len).sum::<usize>();
-        let text_bytes = send_claim_freeze_bytes(
-            &initial,
-            &authority,
-            &app_id,
-            &project_id,
-            facts_bytes,
-            body_bytes,
-        )?;
-        let worker = self.clone();
-        // 任务持有一份 Arc；调用方仍需要 store 继续统一发送服务。
-        let frozen = FrozenSendClaim {
-            managed: managed.clone(),
-            record: initial,
-            membership,
-            authority,
-            app_id,
-            project_id,
-            expected_config_revision,
-        };
-        let (claimed, config_revision) = self
-            .submit_occupancy(text_bytes, move |budget| async move {
-                worker.claim_send_owned(frozen, budget).await
-            })
-            .await?;
-        let mut result = if let Some(existing) = claimed {
-            replay_send(existing, &operation_id, &bot_id, &chat_id)
-        } else {
-            send_text(ClaimedSend {
-                http: &self.inner.http,
-                token: &token,
-                bot_id: &bot_id,
-                chat_id: &chat_id,
-                operation_id: &operation_id,
-                store: &managed.store,
-                plan,
-                facts: planned,
-            })
-            .await?
-        };
-        result.receipt.targets = vec![ResourceStamp {
-            resource_key: format!("bot:{bot_id}"),
-            owner_epoch: owner_epoch.to_string(),
-            revision: config_revision,
-        }];
-        Ok(result)
-    }
-
     /// 发送认领的受管占用区：只在占用任务内运行。
     ///
     /// 首次认领把发送事实写成 AppIdentity 占用；调用方取消只是不再等待回执，
     /// 提交结果、通知与失败收束都由本任务完成。联网与逐段发送不在这里。
-    async fn claim_send_owned(
+    pub(super) async fn claim_send_owned(
         &self,
         frozen: FrozenSendClaim,
-        _budget: OccupancyBudget,
+        _budget: &mut OccupancyBudget,
     ) -> Result<(Option<SendRecord>, u64), FeishuError> {
         let FrozenSendClaim {
             managed,
@@ -587,8 +460,10 @@ impl BotRuntime {
             app_id,
             project_id,
             expected_config_revision,
+            cancel,
         } = frozen;
         let _admission = managed.admission.lock().await;
+        self.check_send_active(&cancel)?;
         self.reject_closed_admission(&managed)?;
         // 短锁内核对身份与授权后立即释放，不克隆整份配置、不跨 DB await 持有 guard。
         let config_revision = {
@@ -608,6 +483,7 @@ impl BotRuntime {
         // 真正首次认领才要求预期 revision 等于当前权威值，且在任何写入之前判定。
         // 只查存在性：不在此处解码整条已存事实，避免其长材料跨后续等待。
         let persisted = managed.store.send_exists(&record.operation_id).await?;
+        self.check_send_active(&cancel)?;
         if !persisted && config_revision != expected_config_revision {
             return Err(FeishuError::new(
                 FeishuErrorKind::Conflict,
@@ -707,7 +583,7 @@ impl BotRuntime {
                 ));
             }
             let membership = self
-                .prepare_chat_access(&managed, &config, &chat_id)
+                .prepare_chat_access(&managed, &config, &chat_id, &self.inner.reply_cancel)
                 .await?;
             self.authorize_chat(&config, &chat_id, SendAuthority::Owner, &membership)?;
             (
@@ -1103,6 +979,14 @@ impl BotRuntime {
                 ));
             }
         }
+        self.inner.workspace_io.close().await.map_err(|_| {
+            FeishuError::new(
+                FeishuErrorKind::Unavailable,
+                "bot workspace IO close failed",
+                true,
+                None,
+            )
+        })?;
         self.publish().await;
         self.release_runtime_records().await;
         self.clear_host();
@@ -1225,31 +1109,14 @@ impl BotRuntime {
         managed.token.access_token().await
     }
 
-    fn authorize_chat(
+    pub(super) fn authorize_chat(
         &self,
         config: &BotConfigFile,
         chat_id: &str,
         authority: SendAuthority,
         membership: &ChatMembership,
     ) -> Result<(), FeishuError> {
-        if matches!(authority, SendAuthority::Tool { .. }) && !config.tools_enabled {
-            return Err(FeishuError::new(
-                FeishuErrorKind::Permission,
-                "project tools are not enabled for this bot",
-                false,
-                None,
-            ));
-        }
-        if let SendAuthority::Tool { project_id } = &authority
-            && config.project_id != *project_id
-        {
-            return Err(FeishuError::new(
-                FeishuErrorKind::Permission,
-                "bot is not authorized for this project",
-                false,
-                None,
-            ));
-        }
+        self.authorize_send_source(config, chat_id, &authority)?;
         if membership.covers(chat_id) {
             Ok(())
         } else {
@@ -1262,17 +1129,64 @@ impl BotRuntime {
         }
     }
 
-    /// 回读既有结果的本地来源授权：只读当前机器人的工具授权标量，不联网、不读 keyring。
-    /// Tool 来源不得因重放绕过撤销的项目工具授权；Owner 与已受理入站回复维持其原来源语义。
-    async fn authorize_replay_source(
+    pub(super) fn authorize_send_source(
+        &self,
+        config: &BotConfigFile,
+        chat_id: &str,
+        authority: &SendAuthority,
+    ) -> Result<(), FeishuError> {
+        if matches!(authority, SendAuthority::Tool { .. }) && !config.tools_enabled {
+            return Err(FeishuError::new(
+                FeishuErrorKind::Permission,
+                "project tools are not enabled for this bot",
+                false,
+                None,
+            ));
+        }
+        if let SendAuthority::Tool { project_id } = authority
+            && config.project_id != *project_id
+        {
+            return Err(FeishuError::new(
+                FeishuErrorKind::Permission,
+                "bot is not authorized for this project",
+                false,
+                None,
+            ));
+        }
+        if let SendAuthority::Source(source) = authority {
+            super::source::authorize_source(config, chat_id, source)?;
+        }
+        Ok(())
+    }
+
+    /// Existing owner/project/auto-reply receipts remain local and credential-independent.
+    /// The narrower current-source file capability also rechecks its explicit live target
+    /// visibility, then rechecks current trust after that read; it never repeats an upload/send.
+    pub(super) async fn authorize_replay_source(
         &self,
         managed: &ManagedBot,
         authority: &SendAuthority,
+        cancel: &tokio_util::sync::CancellationToken,
     ) -> Result<(), FeishuError> {
+        self.check_send_active(cancel)?;
+        if let SendAuthority::Source(source) = authority {
+            let current = managed.config.lock().await.clone();
+            self.check_send_active(cancel)?;
+            super::source::authorize_source(&current, &source.chat_id, source)?;
+            let membership = self
+                .prepare_chat_access(managed, &current, &source.chat_id, cancel)
+                .await?;
+            // Membership reads may cross a trust/config change; their old config is not the
+            // replay authorization point. Recheck the live source after the last network await.
+            let current = managed.config.lock().await;
+            self.check_send_active(cancel)?;
+            return self.authorize_chat(&current, &source.chat_id, authority.clone(), &membership);
+        }
         let SendAuthority::Tool { project_id } = authority else {
             return Ok(());
         };
         let current = managed.config.lock().await;
+        self.check_send_active(cancel)?;
         if !current.tools_enabled {
             return Err(FeishuError::new(
                 FeishuErrorKind::Permission,
@@ -1292,24 +1206,33 @@ impl BotRuntime {
         Ok(())
     }
 
-    async fn prepare_chat_access(
+    pub(super) async fn prepare_chat_access(
         &self,
         managed: &ManagedBot,
         config: &BotConfigFile,
         chat_id: &str,
+        cancel: &tokio_util::sync::CancellationToken,
     ) -> Result<ChatMembership, FeishuError> {
-        let directs = managed.store.list_observed_directs().await?;
+        self.check_send_active(cancel)?;
+        let directs = managed.store.list_observed_directs().await;
+        self.check_send_active(cancel)?;
+        let directs = directs?;
         if directs.iter().any(|row| row.chat_id == chat_id) {
             return Ok(ChatMembership {
                 observed_direct: true,
                 remote_group: false,
             });
         }
-        let token = self.token(managed, config).await?;
+        let token = self.token(managed, config).await;
+        self.check_send_active(cancel)?;
+        let token = token?;
         let im = FeishuIm::new(self.inner.http.clone());
         let mut page_token = None;
         loop {
-            let page = im.list_chats(&token, page_token.as_deref(), 50).await?;
+            self.check_send_active(cancel)?;
+            let page = im.list_chats(&token, page_token.as_deref(), 50).await;
+            self.check_send_active(cancel)?;
+            let page = page?;
             if page.chats.iter().any(|chat| chat.chat_id == chat_id) {
                 return Ok(ChatMembership {
                     observed_direct: false,
@@ -1806,7 +1729,7 @@ impl BotRuntime {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-struct ChatMembership {
+pub(super) struct ChatMembership {
     observed_direct: bool,
     remote_group: bool,
 }

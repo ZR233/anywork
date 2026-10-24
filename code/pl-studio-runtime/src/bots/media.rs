@@ -5,39 +5,51 @@ use super::{
     protocol::error::{FeishuError, FeishuErrorKind},
 };
 use crate::studio::StudioRuntime;
-use sha2::{Digest, Sha256};
 
 impl BotRuntime {
     pub(crate) async fn prepare_inbound_attachments(
         &self,
         runtime: &StudioRuntime,
         bot_id: &str,
-        thread_id: &str,
+        _thread_id: &str,
         message_id: &str,
         attachments: &[InboundAttachment],
         cancel: &tokio_util::sync::CancellationToken,
     ) -> Result<Vec<String>, FeishuError> {
-        if attachments.is_empty() {
+        let resource_count = attachments
+            .iter()
+            .filter(|item| item.key().is_some())
+            .count();
+        if resource_count == 0 {
             return Ok(Vec::new());
         }
+        if resource_count > pl_protocol::studio::ATTACHMENT_MAX_BATCH_FILES {
+            return Err(media_error("消息附件超过批次文件数预算"));
+        }
         let managed = self.managed(bot_id).await?;
+        let _download_budget = self
+            .inner
+            .download_batch
+            .clone()
+            .try_acquire_owned()
+            .map_err(|_| {
+                FeishuError::new(
+                    FeishuErrorKind::Busy,
+                    "inbound resource batch byte budget is full",
+                    true,
+                    None,
+                )
+            })?;
         let config = managed.config.lock().await.clone();
         let token = self.token(&managed, &config).await?;
-        let uploads = self
-            .inner
-            .paths
-            .bot_dir(bot_id)
-            .join("workspace")
-            .join(pl_tool::workspace::SessionFiles::new(thread_id).root())
-            .join("uploads")
-            .join(hex::encode(Sha256::digest(message_id.as_bytes())));
-        let mut sources = Vec::new();
+        let mut files = Vec::with_capacity(resource_count);
+        let mut remaining = pl_protocol::studio::ATTACHMENT_MAX_BATCH_BYTES;
         for attachment in attachments {
             if cancel.is_cancelled() {
                 return Err(media_error("附件下载已取消"));
             }
             let (kind, filename) = match attachment {
-                InboundAttachment::Image { .. } => ("image", "image.png".to_owned()),
+                InboundAttachment::Image { .. } => ("image", "image".to_owned()),
                 InboundAttachment::File { filename, .. } => {
                     let name = std::path::Path::new(filename)
                         .file_name()
@@ -54,29 +66,26 @@ impl BotRuntime {
                             }
                         })
                         .collect();
-                    ("file", format!("file-{safe}"))
+                    ("file", safe)
                 }
+                // Unknown post elements already have explicit inline notices. They never stand
+                // in for a file and must not discard the other real resources in this batch.
+                InboundAttachment::Unsupported { .. } => continue,
             };
-            let path = uploads
-                .join(hex::encode(Sha256::digest(attachment.key().as_bytes())))
-                .join(filename);
-            if !path.is_file() {
-                tokio::select! {
+            let key = attachment
+                .key()
+                .ok_or_else(|| media_error("资源不支持下载"))?;
+            let bytes = tokio::select! {
                     _ = cancel.cancelled() => return Err(media_error("附件下载已取消")),
-                    result = self.inner
-                    .http
-                    .download_message_resource(&token, message_id, attachment.key(), kind, &path)
-                    => result?,
-                }
-            }
-            sources.push(
-                pl_protocol::studio::StudioAttachmentDraftSource::LocalFile {
-                    path: path.to_string_lossy().into_owned(),
-                },
-            );
+                result = self.inner.http.download_message_resource(&token, message_id, key, kind, remaining) => result?,
+            };
+            remaining = remaining
+                .checked_sub(bytes.len() as u64)
+                .ok_or_else(|| media_error("消息附件超过批次字节预算"))?;
+            files.push((filename, bytes));
         }
         let drafts = runtime
-            .prepare_bot_attachment_drafts(thread_id, sources)
+            .admit_attachment_bytes(files)
             .await
             .map_err(|error| media_error(error.to_string()))?;
         Ok(drafts

@@ -46,6 +46,8 @@ impl StudioThreadFactory {
         id: &str,
         cancellation: tokio_util::sync::CancellationToken,
     ) -> Result<StudioThreadSpec, ThreadAssemblyError> {
+        let preparation_cancellation = cancellation.clone();
+        self.with_prepared_lifetime(id, &preparation_cancellation, |lifetime| async move {
         let thread = self.thread_record(id).await?;
         if thread.parent_thread_id.is_some() {
             return Err(ThreadAssemblyError::Identity(id.into()));
@@ -187,6 +189,7 @@ impl StudioThreadFactory {
         let mut prepared = self
             .prepare_thread_tools(ThreadToolAssembly {
                 thread_id: id,
+                lifetime: lifetime.clone(),
                 cancellation: &cancellation,
                 config: &config,
                 route: &route,
@@ -299,14 +302,17 @@ impl StudioThreadFactory {
             pl_model::runtime::ModelRuntime::from_route(&route)?,
             route.reasoning_config(),
         )
-        .with_hosted_tools(prepared.hosted);
+        .with_hosted_tools(prepared.hosted)
+        .with_preparation_owner(lifetime.preparation.clone())
+        .with_user_files(self.user_file_access());
         let spec = StudioThreadSpec {
-            preparation_guard: prepared.binding_guard.take(),
+            preparation_guard: None,
             context_preparation: crate::compaction::preparer(
                 &route,
                 model.clone(),
                 config.runtime.openai_compaction_mode,
                 self.services.thread_modes.clone(),
+                self.clone(),
             )?,
             agent_controls: crate::thread_assembler::AgentControlExposure::Enabled,
             execution: pl_core::thread::input::InputDriverOptions {
@@ -329,5 +335,6 @@ impl StudioThreadFactory {
             cold_store: Some(pl_core::thread::cold::ColdStoreHandle::new(persistence)),
         };
         Ok(prepared.tools.install(spec))
+        }).await
     }
 }

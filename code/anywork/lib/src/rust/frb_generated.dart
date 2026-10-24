@@ -5683,6 +5683,20 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  BridgeBotSendStage dco_decode_box_autoadd_bridge_bot_send_stage(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return dco_decode_bridge_bot_send_stage(raw);
+  }
+
+  @protected
+  BridgeBotSendStopReason dco_decode_box_autoadd_bridge_bot_send_stop_reason(
+    dynamic raw,
+  ) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return dco_decode_bridge_bot_send_stop_reason(raw);
+  }
+
+  @protected
   BridgeCancelBotRegistrationRequest
   dco_decode_box_autoadd_bridge_cancel_bot_registration_request(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
@@ -7822,20 +7836,37 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   BridgeBotSendSegment dco_decode_bridge_bot_send_segment(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 4)
-      throw Exception('unexpected arr length: expect 4 but see ${arr.length}');
+    if (arr.length != 7)
+      throw Exception('unexpected arr length: expect 7 but see ${arr.length}');
     return BridgeBotSendSegment(
       index: dco_decode_u_32(arr[0]),
       status: dco_decode_bridge_bot_send_status(arr[1]),
-      platformMessageId: dco_decode_opt_String(arr[2]),
-      diagnostic: dco_decode_opt_box_autoadd_bridge_bot_diagnostic(arr[3]),
+      uploadStage: dco_decode_opt_box_autoadd_bridge_bot_send_stage(arr[2]),
+      messageStage: dco_decode_bridge_bot_send_stage(arr[3]),
+      stopReason: dco_decode_opt_box_autoadd_bridge_bot_send_stop_reason(
+        arr[4],
+      ),
+      platformMessageId: dco_decode_opt_String(arr[5]),
+      diagnostic: dco_decode_opt_box_autoadd_bridge_bot_diagnostic(arr[6]),
     );
+  }
+
+  @protected
+  BridgeBotSendStage dco_decode_bridge_bot_send_stage(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return BridgeBotSendStage.values[raw as int];
   }
 
   @protected
   BridgeBotSendStatus dco_decode_bridge_bot_send_status(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return BridgeBotSendStatus.values[raw as int];
+  }
+
+  @protected
+  BridgeBotSendStopReason dco_decode_bridge_bot_send_stop_reason(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return BridgeBotSendStopReason.values[raw as int];
   }
 
   @protected
@@ -14069,6 +14100,25 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  BridgeBotSendStage? dco_decode_opt_box_autoadd_bridge_bot_send_stage(
+    dynamic raw,
+  ) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return raw == null
+        ? null
+        : dco_decode_box_autoadd_bridge_bot_send_stage(raw);
+  }
+
+  @protected
+  BridgeBotSendStopReason?
+  dco_decode_opt_box_autoadd_bridge_bot_send_stop_reason(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return raw == null
+        ? null
+        : dco_decode_box_autoadd_bridge_bot_send_stop_reason(raw);
+  }
+
+  @protected
   BridgeHistoryFault? dco_decode_opt_box_autoadd_bridge_history_fault(
     dynamic raw,
   ) {
@@ -15427,6 +15477,22 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   ) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     return (sse_decode_bridge_bot_registration_attempt(deserializer));
+  }
+
+  @protected
+  BridgeBotSendStage sse_decode_box_autoadd_bridge_bot_send_stage(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    return (sse_decode_bridge_bot_send_stage(deserializer));
+  }
+
+  @protected
+  BridgeBotSendStopReason sse_decode_box_autoadd_bridge_bot_send_stop_reason(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    return (sse_decode_bridge_bot_send_stop_reason(deserializer));
   }
 
   @protected
@@ -18077,6 +18143,13 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     // Codec=Sse (Serialization based), see doc to use other codecs
     var var_index = sse_decode_u_32(deserializer);
     var var_status = sse_decode_bridge_bot_send_status(deserializer);
+    var var_uploadStage = sse_decode_opt_box_autoadd_bridge_bot_send_stage(
+      deserializer,
+    );
+    var var_messageStage = sse_decode_bridge_bot_send_stage(deserializer);
+    var var_stopReason = sse_decode_opt_box_autoadd_bridge_bot_send_stop_reason(
+      deserializer,
+    );
     var var_platformMessageId = sse_decode_opt_String(deserializer);
     var var_diagnostic = sse_decode_opt_box_autoadd_bridge_bot_diagnostic(
       deserializer,
@@ -18084,9 +18157,21 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     return BridgeBotSendSegment(
       index: var_index,
       status: var_status,
+      uploadStage: var_uploadStage,
+      messageStage: var_messageStage,
+      stopReason: var_stopReason,
       platformMessageId: var_platformMessageId,
       diagnostic: var_diagnostic,
     );
+  }
+
+  @protected
+  BridgeBotSendStage sse_decode_bridge_bot_send_stage(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var inner = sse_decode_i_32(deserializer);
+    return BridgeBotSendStage.values[inner];
   }
 
   @protected
@@ -18096,6 +18181,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     // Codec=Sse (Serialization based), see doc to use other codecs
     var inner = sse_decode_i_32(deserializer);
     return BridgeBotSendStatus.values[inner];
+  }
+
+  @protected
+  BridgeBotSendStopReason sse_decode_bridge_bot_send_stop_reason(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var inner = sse_decode_i_32(deserializer);
+    return BridgeBotSendStopReason.values[inner];
   }
 
   @protected
@@ -26338,6 +26432,33 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  BridgeBotSendStage? sse_decode_opt_box_autoadd_bridge_bot_send_stage(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    if (sse_decode_bool(deserializer)) {
+      return (sse_decode_box_autoadd_bridge_bot_send_stage(deserializer));
+    } else {
+      return null;
+    }
+  }
+
+  @protected
+  BridgeBotSendStopReason?
+  sse_decode_opt_box_autoadd_bridge_bot_send_stop_reason(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    if (sse_decode_bool(deserializer)) {
+      return (sse_decode_box_autoadd_bridge_bot_send_stop_reason(deserializer));
+    } else {
+      return null;
+    }
+  }
+
+  @protected
   BridgeHistoryFault? sse_decode_opt_box_autoadd_bridge_history_fault(
     SseDeserializer deserializer,
   ) {
@@ -28068,6 +28189,24 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   ) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_bridge_bot_registration_attempt(self, serializer);
+  }
+
+  @protected
+  void sse_encode_box_autoadd_bridge_bot_send_stage(
+    BridgeBotSendStage self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_bridge_bot_send_stage(self, serializer);
+  }
+
+  @protected
+  void sse_encode_box_autoadd_bridge_bot_send_stop_reason(
+    BridgeBotSendStopReason self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_bridge_bot_send_stop_reason(self, serializer);
   }
 
   @protected
@@ -30532,6 +30671,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_u_32(self.index, serializer);
     sse_encode_bridge_bot_send_status(self.status, serializer);
+    sse_encode_opt_box_autoadd_bridge_bot_send_stage(
+      self.uploadStage,
+      serializer,
+    );
+    sse_encode_bridge_bot_send_stage(self.messageStage, serializer);
+    sse_encode_opt_box_autoadd_bridge_bot_send_stop_reason(
+      self.stopReason,
+      serializer,
+    );
     sse_encode_opt_String(self.platformMessageId, serializer);
     sse_encode_opt_box_autoadd_bridge_bot_diagnostic(
       self.diagnostic,
@@ -30540,8 +30688,26 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_bridge_bot_send_stage(
+    BridgeBotSendStage self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_i_32(self.index, serializer);
+  }
+
+  @protected
   void sse_encode_bridge_bot_send_status(
     BridgeBotSendStatus self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_i_32(self.index, serializer);
+  }
+
+  @protected
+  void sse_encode_bridge_bot_send_stop_reason(
+    BridgeBotSendStopReason self,
     SseSerializer serializer,
   ) {
     // Codec=Sse (Serialization based), see doc to use other codecs
@@ -37053,6 +37219,32 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_bool(self != null, serializer);
     if (self != null) {
       sse_encode_box_autoadd_bridge_bot_registration_attempt(self, serializer);
+    }
+  }
+
+  @protected
+  void sse_encode_opt_box_autoadd_bridge_bot_send_stage(
+    BridgeBotSendStage? self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    sse_encode_bool(self != null, serializer);
+    if (self != null) {
+      sse_encode_box_autoadd_bridge_bot_send_stage(self, serializer);
+    }
+  }
+
+  @protected
+  void sse_encode_opt_box_autoadd_bridge_bot_send_stop_reason(
+    BridgeBotSendStopReason? self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    sse_encode_bool(self != null, serializer);
+    if (self != null) {
+      sse_encode_box_autoadd_bridge_bot_send_stop_reason(self, serializer);
     }
   }
 

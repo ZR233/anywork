@@ -31,6 +31,7 @@ pub use children::{
 mod mcp;
 pub(crate) mod media;
 mod tools;
+pub use pl_tool::workspace_file::{LocalFileCreateOwner, LocalWorkspaceRoot};
 use std::{
     collections::{BTreeMap, BTreeSet},
     sync::{Arc, Mutex},
@@ -123,7 +124,9 @@ impl std::fmt::Debug for StudioThreadSpec {
 
 #[derive(Debug, thiserror::Error)]
 pub enum ThreadAssemblyError {
-    #[error("Thread activation failed")]
+    // Coalesced activation retains the source; its recovery instruction must also
+    // reach tool/API callers that display this outer error rather than its chain.
+    #[error("Thread activation failed: {0}")]
     ActivationFailed(#[source] Arc<ThreadAssemblyError>),
     #[error("Thread resource preparation panicked")]
     ActivationPanicked,
@@ -422,14 +425,19 @@ impl StudioThreadAssembler {
                 thread.attach_storage(store).await?;
             }
             if !spec.initial_extensions.is_empty() {
+                // Restore migrations may replace a saved payload, not just bootstrap an
+                // absent extension. This unpublished owner still uses the exact resumed CAS.
+                let resumed = thread.snapshot();
                 thread
                     .mutate_extensions(
                         spec.initial_extensions
                             .into_iter()
                             .map(|(id, payload)| {
+                                let expected_revision =
+                                    resumed.extensions.get(&id).map(|record| record.revision);
                                 pl_core::thread::extensions::ExtensionMutation::Put {
                                     id,
-                                    expected_revision: None,
+                                    expected_revision,
                                     payload,
                                 }
                             })
@@ -611,8 +619,12 @@ impl StudioThreadAssembler {
         let thread = self
             .thread(id)
             .ok_or_else(|| ThreadAssemblyError::Identity(id.to_owned()))?;
-        let model = ThreadModel::new(ModelRuntime::from_route(route)?, route.reasoning_config())
-            .with_hosted_tools(hosted_tools);
+        let mut model =
+            ThreadModel::new(ModelRuntime::from_route(route)?, route.reasoning_config())
+                .with_hosted_tools(hosted_tools);
+        if let Some(services) = &self.0.state().agent_services {
+            model = model.with_user_files(services.factory.user_file_access());
+        }
         thread
             .replace_model_with_preparation(ModelFactory::new(model), preparation)
             .await?;
@@ -868,7 +880,9 @@ impl StudioThreadAssembler {
             })
         };
         let Some((incarnation, thread)) = thread else {
-            return Ok(());
+            // A failed/cancelled factory may have retained host IO before publishing a core
+            // entry. Reuse the host drain callback even when there is no actor to close.
+            return self.drain_observation(id).await;
         };
         self.attach_close_storage(id).await?;
         self.prepare_close(id, &thread).await?;

@@ -7,6 +7,8 @@ mod commands;
 mod config;
 mod connect;
 mod credentials;
+mod delivery;
+pub(crate) mod file_tool;
 mod host;
 mod inbound;
 mod media;
@@ -17,6 +19,9 @@ mod protocol;
 mod registration;
 mod reply;
 mod send;
+mod send_resources;
+mod send_service;
+mod source;
 mod storage;
 mod workspace;
 
@@ -79,6 +84,7 @@ pub(crate) enum SendAuthority {
     Owner,
     AutoReply,
     Tool { project_id: String },
+    Source(Box<send::SendSource>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
