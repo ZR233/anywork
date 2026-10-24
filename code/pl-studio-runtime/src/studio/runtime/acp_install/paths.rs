@@ -26,10 +26,11 @@ use pl_tool::workspace::path_safety;
 use super::mapping::failure;
 
 /// 产品自建目录权限：仅属主可读写执行（显式设置，不依赖 umask）。
+///
+/// 只有 Unix 有目录权限位；Windows 的私有性由真实 owner + DACL 承载（见 `private_acl`），
+/// 因此不提供非 Unix 占位常量。
 #[cfg(unix)]
 pub(super) const DIRECTORY_MODE: u32 = 0o700;
-#[cfg(not(unix))]
-pub(super) const DIRECTORY_MODE: u32 = 0;
 
 /// 一个已确认是真实目录的安装根。
 #[derive(Debug, Clone)]
@@ -310,7 +311,11 @@ fn require_private_directory(path: &Path, stage: AcpInstallStage) -> Result<(), 
 ///
 /// 创建权限仍会被进程 umask 收紧，因此调用方随后必须显式设置最终权限。
 fn create_private_directory(path: &Path) -> Result<(), AcpInstallFailure> {
+    // 只有 Unix 通过 `DirBuilderExt::mode` 在创建调用上限制权限，因此可变绑定只在那里存在。
+    #[cfg(unix)]
     let mut builder = std::fs::DirBuilder::new();
+    #[cfg(not(unix))]
+    let builder = std::fs::DirBuilder::new();
     #[cfg(unix)]
     {
         use std::os::unix::fs::DirBuilderExt;

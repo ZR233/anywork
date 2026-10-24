@@ -30,7 +30,9 @@ use sha2::{Digest, Sha256};
 use tokio_util::sync::CancellationToken;
 
 use super::mapping::{failure, failure_with_message};
-use super::paths::{self, ManagedRoot};
+#[cfg(unix)]
+use super::paths;
+use super::paths::ManagedRoot;
 
 /// 成员数量上限。
 pub(super) const MAX_MEMBERS: usize = 512;
@@ -1102,7 +1104,11 @@ fn create_private_directory(
     mode: u32,
     stage: AcpInstallStage,
 ) -> Result<(), AcpInstallFailure> {
+    // 只有 Unix 通过 `DirBuilderExt::mode` 在创建调用上限制权限，因此可变绑定只在那里存在。
+    #[cfg(unix)]
     let mut builder = std::fs::DirBuilder::new();
+    #[cfg(not(unix))]
+    let builder = std::fs::DirBuilder::new();
     #[cfg(unix)]
     {
         use std::os::unix::fs::DirBuilderExt;
