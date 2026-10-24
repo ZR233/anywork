@@ -15,7 +15,7 @@ pub(crate) use migration::{migrate_saved_representation, saved_mode_instruction}
 pub(crate) use snapshot::{decode_snapshot, encode_snapshot};
 pub(crate) use types::current_instruction_context;
 pub use types::{
-    InstructionAssemblyRequest, InstructionBlock, InstructionSnapshot, InstructionSource,
-    InstructionSourceKind, ModeInstructionProfile,
+    AgentInstructionShape, InstructionAssemblyRequest, InstructionBlock, InstructionSnapshot,
+    InstructionSource, InstructionSourceKind, ModeInstructionProfile,
 };
 pub(crate) use types::{SNAPSHOT_FORMAT, SNAPSHOT_VERSION};

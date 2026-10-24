@@ -205,7 +205,7 @@ fn admission(
         .or_else(|| entry.model.supported_efforts().first().cloned());
     crate::studio::delegation::resolve_child_selection(
         config,
-        crate::StudioRole::Executor.id(),
+        crate::AgentRoleId::new("executor".to_string())?,
         &ModelRouteConfig {
             account_id: account_id.clone(),
             model_id: entry.model.model_id.clone(),

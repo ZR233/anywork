@@ -16,7 +16,9 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 
 use super::credential::{CredentialStore, LegacyCredentialCopy};
-use super::{ConfigPaths, STUDIO_CONFIG_SCHEMA_VERSION, StudioConfig, StudioRole};
+use super::{
+    ConfigPaths, STUDIO_CONFIG_SCHEMA_VERSION, StudioConfig, validate_user_agent_profile_id,
+};
 use crate::{PureError, Result};
 
 /// 迁移前最后一个使用 Provider/Preset 模型接入语义的配置版本。
@@ -480,12 +482,8 @@ fn validate_profile_resource_path(relative_path: &str) -> Result<()> {
     if profile_id.is_empty() || profile_id.contains('/') || profile_id.contains('\\') {
         return Err(rejected());
     }
-    super::agent_profile::validate_profile_id(profile_id)?;
-    // 保留角色由产品内置定义，不是用户 Profile：迁移恢复不经过 Profile 加载路径，必须在任何
-    // 读取、凭据复制、写入与清理之前按同一份角色表拒绝，不能等事后加载时才报错。
-    if StudioRole::from_key(profile_id).is_some() {
-        return Err(rejected());
-    }
+    // Reserved identities and builtin child declarations are rejected before any resource IO.
+    validate_user_agent_profile_id(profile_id).map_err(|_| rejected())?;
     Ok(())
 }
 

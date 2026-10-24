@@ -18,8 +18,6 @@ use tokio::sync::{Mutex, oneshot};
 use tokio::task::JoinHandle;
 use tokio::time::timeout;
 
-use crate::config::StudioRole;
-
 use super::StudioRuntime;
 
 pub(super) const PROVISIONAL_TITLE_MAX_CHARS: usize = 80;
@@ -295,7 +293,8 @@ async fn generate_title(
 ) -> Result<String> {
     let owner = runtime.ensure_thread_owner(thread_id).await?;
     let config = runtime.config_runtime.read()?;
-    let mut route = config.config.resolve_role(StudioRole::Explorer)?;
+    let explorer = crate::config::system_agent_profile(&config.config, "explorer")?;
+    let mut route = crate::config::resolve_profile_route(&config.config, &explorer)?;
     if let pl_model::model::ModelProtocolOptions::Responses(options) =
         &mut route.model.binding.request.protocol
     {

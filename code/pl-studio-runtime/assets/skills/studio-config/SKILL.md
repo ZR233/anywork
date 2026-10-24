@@ -39,7 +39,7 @@ Feishu bots live in `<home>/v2/bots/<bot-id>/` with versioned `config.toml` and 
 
 ## Format Rules
 
-- TOML with snake_case keys; the current runtime accepts `schema_version = 23`. Changing the version number alone does not migrate a configuration.
+- TOML with snake_case keys; the current runtime accepts `schema_version = 26`. Changing the version number alone does not migrate a configuration.
 - A missing file means in-memory defaults shown in Settings; nothing is written until you save.
 - Known version upgrades preserve user settings and credential associations through migration. Startup migrates schema 18 to 19 by removing only `planner` from `disabled_system_agents`, then migrates 19 to 20 by copying the old `planner` route to `mode.simple` and `mode.task` before deleting it from child routes. Migration runs before recovery; a reset is never a substitute for a supported migration.
 - Schema 21 to 22 migrates model declarations from `slug` to `model_id`. Schema 22 to 23 migrates `models.providers` to `models.accounts`, `preset`/`adapter` to `template`/`protocol`, and route/Profile `provider`/`model` to `account_id`/`model_id`. Account and template ID values, endpoint, headers, model overrides and user choices are preserved. Older supported versions continue through these steps; changing only the version number is invalid.
@@ -53,7 +53,7 @@ Feishu bots live in `<home>/v2/bots/<bot-id>/` with versioned `config.toml` and 
 
 - `[models.accounts.<id>]` — account endpoint, template, credential reference, model catalog.
 - `[mode_model_routes."<mode-id>"]` — new/root Thread default route per full Mode ID. `mode.simple` and `mode.task` are required; custom Modes inherit `mode.simple` until explicitly saved.
-- `[models.routes.<role>]` — child model route per role: `explorer`, `executor`, `worktree_executor`, `reviewer`. All four must resolve. Root Threads keep their route in the Thread state checkpoint instead of a global `planner` route.
+- `[models.routes.<system-agent-id>]` — optional explicit model override for a declared system child. Omitted entries inherit the complete `mode.simple` route; existing explicit entries remain authoritative and must resolve. Unknown IDs and root identities are rejected. Root Threads keep their route in the Thread state checkpoint instead of a global `planner` route.
 - `[runtime]` — `permission_mode` (`request-approval` | `auto-review` | `full-access`), tool capabilities, active skills and MCP servers.
 - `[skills]` — enable/disable, auto-learn, project/user/external skill directories, disabled skills. The default writable project directory is `.agents/skills`; explicit `project_dir` values remain unchanged. In addition to configured `user_dir`, 糊来帮 always discovers the read-only user compatibility directory at `$HOME/.agents/skills` on Linux and `%USERPROFILE%\.agents\skills` on Windows.
 - `[mcp]` — custom servers under `[mcp.servers.<id>]` plus builtin server states.
@@ -72,6 +72,21 @@ account settings to force a role or enable history updates merely because a mode
 Append-only prompt updates require an explicit capability for the actual wire API; DeepSeek's
 Messages `in-history` declaration does not establish Responses support. Unsupported updates replace
 the effective instruction prefix while ordinary conversation history remains append-only.
+
+## Agent definitions and child Profiles
+
+Every root and child Agent uses the same declaration, instruction assembly, and frozen-snapshot model.
+Builtin declarations and Markdown instructions are packaged under `assets/agents/`; product entry
+points bind a trusted root identity. The root is not a configurable child Profile and has no global
+`planner` route or user-facing role selector. `list_agent_profiles` and the Agents settings page expose
+only eligible child declarations; user TOML files also define children only.
+
+Builtin child IDs come from the embedded declaration catalog, not a fixed list in this guide. A system
+child may omit `[models.routes.<agent-id>]`; when absent, its effective account, model, and effort inherit
+`mode.simple` without being written back to TOML. An explicit child route takes precedence, and an
+unavailable explicit route does not fall back. User child Profiles keep their explicit route in their
+own TOML file. Only child Profiles can be enabled/disabled or dispatched; root identity, metadata, and
+instruction text cannot grant child or root privileges.
 
 A few sections are omitted when left at defaults (`runtime`, `instructions`, `lsp`, `ui`); a default Studio save still writes `[skills]` with `project_dir = ".agents/skills"` and `user_dir = "~/.anywork/skills"`, `[web_search]` with `mode = "cached"`, and `[deepseek_web_search]` with `enabled = true` and `fetch_enabled = true`, so do not delete them assuming they are unused.
 
@@ -169,10 +184,12 @@ The Accounts tab reads the catalog snapshot produced by that startup synchroniza
 
 ## Minimal Working Example
 
-Every account needs `name`, `base_url`, and a `catalog` section; every role needs a route. `effort` is optional and must match the model's supported effort candidates.
+Every account needs `name`, `base_url`, and a `catalog` section. The two root Mode routes are required;
+a system child route is optional and, when present, is an explicit override. `effort` is optional and
+must match the model's supported effort candidates.
 
 ```toml
-schema_version = 23
+schema_version = 26
 
 [deepseek_web_search]
 enabled = true
@@ -204,27 +221,13 @@ account_id = "deepseek"
 model_id = "deepseek-flash"
 effort = "high"
 
-[models.routes.executor]
-account_id = "deepseek"
-model_id = "deepseek-flash"
-effort = "high"
-
-[models.routes.worktree_executor]
-account_id = "deepseek"
-model_id = "deepseek-flash"
-effort = "high"
-
-[models.routes.reviewer]
-account_id = "deepseek"
-model_id = "deepseek-flash"
-effort = "high"
 ```
 
 ## Safe Editing Workflow
 
 1. Prefer the Settings page; it validates and persists correctly.
 2. For manual edits, copy `config.toml` aside first.
-3. Keep `schema_version`, both built-in Mode routes, and all four child role routes valid.
+3. Keep `schema_version` and both built-in Mode routes valid. Any explicit system-child route must reference a currently declared child ID and remain valid; omitted entries inherit without being persisted.
 4. Reference tokens via `bearer_token_env`; never paste raw tokens.
 5. Add accounts from Settings or a template (`deepseek`, `openai`, `zhipu`, ...) rather than hand-writing catalog metadata.
 6. After external edits, use explicit reload and confirm the canonical settings reflect the change. If validation fails, preserve the original settings and report the error; do not restart as a repair step.

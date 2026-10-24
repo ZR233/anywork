@@ -1,0 +1,7 @@
+id = "executor"
+scope = "child"
+display_name = "执行者"
+description = "实施明确、边界清楚的工程任务。"
+when_to_use = "已有目标和范围，需要修改与验证代码时。"
+instructions = "prompts/executor.md"
+workspace_mode = "directory"

@@ -1,0 +1,7 @@
+id = "root:feishu"
+scope = "root"
+entry = "bot"
+display_name = "飞书主智能体"
+description = "通过已验证飞书入口处理用户请求并在原会话回复。"
+when_to_use = "可信飞书机器人归属的根会话。"
+instructions = "prompts/feishu.md"

@@ -6,6 +6,7 @@ use std::collections::BTreeMap;
 
 pub const ROOT_MODEL: &str = "agent-root";
 pub const COMPACT_MODEL: &str = "agent-root-compact";
+pub const FUTURE_MODEL: &str = "agent-root-future";
 pub const CHILD_MODEL: &str = "agent-system-child";
 pub const USER_MODEL_OLD: &str = "agent-user-old";
 pub const USER_MODEL_NEW: &str = "agent-user-new";
@@ -20,6 +21,7 @@ pub enum AgentPhase {
     MainFirst,
     FeishuFirst,
     CatalogFrozen,
+    CatalogArmed,
     CatalogEmpty,
     CatalogRestored,
     RefuseMain,
@@ -32,8 +34,10 @@ pub enum AgentPhase {
     CompactFeishu,
     SpawnSystem,
     SpawnUser,
+    SpawnDefaultSystem,
     ChildSystem,
     ChildUser,
+    ChildDefaultSystem,
     ColdCatalog,
     ColdFeishu,
     ResumeSystem,
@@ -47,6 +51,7 @@ impl AgentPhase {
         Self::MainFirst,
         Self::FeishuFirst,
         Self::CatalogFrozen,
+        Self::CatalogArmed,
         Self::CatalogEmpty,
         Self::CatalogRestored,
         Self::RefuseMain,
@@ -59,8 +64,10 @@ impl AgentPhase {
         Self::CompactFeishu,
         Self::SpawnSystem,
         Self::SpawnUser,
+        Self::SpawnDefaultSystem,
         Self::ChildSystem,
         Self::ChildUser,
+        Self::ChildDefaultSystem,
         Self::ColdCatalog,
         Self::ColdFeishu,
         Self::ResumeSystem,
@@ -74,6 +81,7 @@ impl AgentPhase {
             Self::MainFirst => "[[agent_main_first]]",
             Self::FeishuFirst => "[[agent_feishu_first]]",
             Self::CatalogFrozen => "[[agent_catalog_frozen]]",
+            Self::CatalogArmed => "[[agent_catalog_armed]]",
             Self::CatalogEmpty => "[[agent_catalog_empty]]",
             Self::CatalogRestored => "[[agent_catalog_restored]]",
             Self::RefuseMain => "[[agent_refuse_main]]",
@@ -86,8 +94,10 @@ impl AgentPhase {
             Self::CompactFeishu => "agent-summary-feishu",
             Self::SpawnSystem => "[[agent_spawn_system]]",
             Self::SpawnUser => "[[agent_spawn_user]]",
+            Self::SpawnDefaultSystem => "[[agent_spawn_default_system]]",
             Self::ChildSystem => "[[agent_child_system]]",
             Self::ChildUser => "[[agent_child_user]]",
+            Self::ChildDefaultSystem => "[[agent_child_default_system]]",
             Self::ColdCatalog => "[[agent_cold_catalog]]",
             Self::ColdFeishu => "[[agent_cold_feishu]]",
             Self::ResumeSystem => "[[agent_resume_system]]",
@@ -100,6 +110,7 @@ impl AgentPhase {
     pub const fn expected_attempts(self) -> usize {
         match self {
             Self::CatalogFrozen
+            | Self::CatalogArmed
             | Self::CatalogEmpty
             | Self::CatalogRestored
             | Self::ColdCatalog
@@ -107,7 +118,11 @@ impl AgentPhase {
             | Self::RefuseFeishu
             | Self::RefuseWritable
             | Self::RefuseReview => 2,
-            Self::SpawnSystem | Self::SpawnUser | Self::ResumeSystem | Self::ResumeUser => 3,
+            Self::SpawnSystem
+            | Self::SpawnUser
+            | Self::SpawnDefaultSystem
+            | Self::ResumeSystem
+            | Self::ResumeUser => 3,
             _ => 1,
         }
     }
@@ -120,6 +135,7 @@ impl AgentPhase {
                 | Self::CompactFeishu
                 | Self::ChildSystem
                 | Self::ChildUser
+                | Self::ChildDefaultSystem
                 | Self::ChildSystemResumed
                 | Self::ChildUserResumed
         )
@@ -137,6 +153,7 @@ impl AgentPhase {
         match self {
             Self::SpawnSystem => Some(Self::ChildSystem),
             Self::SpawnUser => Some(Self::ChildUser),
+            Self::SpawnDefaultSystem => Some(Self::ChildDefaultSystem),
             Self::ResumeSystem => Some(Self::ChildSystemResumed),
             Self::ResumeUser => Some(Self::ChildUserResumed),
             _ => None,
@@ -149,6 +166,7 @@ impl AgentPhase {
             | Self::ResumeSystem
             | Self::ChildSystem
             | Self::ChildSystemResumed => Some("explorer"),
+            Self::SpawnDefaultSystem | Self::ChildDefaultSystem => Some("executor"),
             Self::SpawnUser | Self::ResumeUser | Self::ChildUser | Self::ChildUserResumed => {
                 Some(USER_PROFILE)
             }
@@ -175,7 +193,7 @@ pub(super) fn reply(
         .context("model missing")?;
     if ordinal == 0 {
         return match phase {
-            CatalogFrozen | CatalogEmpty | CatalogRestored | ColdCatalog => {
+            CatalogFrozen | CatalogArmed | CatalogEmpty | CatalogRestored | ColdCatalog => {
                 call(phase, "list_agent_profiles", json!({}), model)
             }
             RefuseMain | RefuseFeishu | RefuseWritable | RefuseReview => {
@@ -191,7 +209,7 @@ pub(super) fn reply(
                 }
                 call(phase, "spawn_agent", args, model)
             }
-            SpawnSystem | SpawnUser => {
+            SpawnSystem | SpawnUser | SpawnDefaultSystem => {
                 let child = phase.child_phase().context("spawn child phase missing")?;
                 let mut args = json!({
                     "profileId": phase.profile().context("spawn Profile missing")?,
@@ -220,7 +238,8 @@ pub(super) fn reply(
                     model,
                 )
             }
-            ChildSystem | ChildUser | ChildSystemResumed | ChildUserResumed => {
+            ChildSystem | ChildUser | ChildDefaultSystem | ChildSystemResumed
+            | ChildUserResumed => {
                 ensure!(
                     !wire::declared(body, "spawn_agent"),
                     "child has spawn capability"
@@ -250,7 +269,7 @@ pub(super) fn reply(
     if let Some(child) = phase.child_phase() {
         let profile = phase.profile().context("delegated Profile missing")?;
         if ordinal == 1 {
-            if matches!(phase, SpawnSystem | SpawnUser) {
+            if matches!(phase, SpawnSystem | SpawnUser | SpawnDefaultSystem) {
                 #[derive(serde::Deserialize)]
                 #[serde(rename_all = "camelCase")]
                 struct Receipt {

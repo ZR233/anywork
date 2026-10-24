@@ -5,7 +5,6 @@ use crate::{PureError, Result};
 
 use crate::config::{
     AccountId, ModelRouteConfig, ReasoningEffort, STUDIO_CONFIG_SCHEMA_VERSION, StudioConfig,
-    StudioRole,
 };
 use pl_model::config::{
     AccountConfig, AccountModelCatalogConfig, AccountTemplateId, AgentModelConfig,
@@ -281,10 +280,7 @@ impl FirstRunConfigDraft {
             delegation: Default::default(),
             models: AgentModelConfig {
                 accounts,
-                routes: StudioRole::child_roles()
-                    .into_iter()
-                    .map(|role| (role.id(), route.clone()))
-                    .collect(),
+                routes: BTreeMap::new(),
             },
             mode_model_routes: BTreeMap::from([
                 (ThreadModeId::simple(), route.clone()),

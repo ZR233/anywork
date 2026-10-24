@@ -318,7 +318,7 @@ impl StudioRuntime {
         enabled: bool,
     ) -> Result<pl_protocol::studio::SettingsCommandReply> {
         Self::validate_operation_id(&operation_id)?;
-        if !crate::config::is_system_profile_id(profile_id) {
+        if !crate::config::is_system_profile_id(profile_id)? {
             anyhow::bail!("`{profile_id}` is not a system Agent Profile");
         }
         let profile_id = profile_id.to_string();

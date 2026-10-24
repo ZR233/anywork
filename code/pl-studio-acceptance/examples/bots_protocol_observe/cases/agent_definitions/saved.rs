@@ -15,22 +15,57 @@ use std::{
     process::{Command, Stdio},
 };
 
+const CURRENT_INSTRUCTION_SNAPSHOT_VERSION: u32 = 3;
+const CURRENT_COMPACTION_RECEIPT_VERSION: u32 = 3;
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(super) struct AgentIdentity {
     pub id: String,
     pub scope: String,
+    pub usage_binding: AgentUsageBinding,
     pub revision: String,
     pub origin: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(
+    tag = "kind",
+    content = "entry",
+    rename_all = "camelCase",
+    deny_unknown_fields
+)]
+pub(super) enum AgentUsageBinding {
+    RootEntry(RootEntry),
+    Child,
+    LegacyUnspecifiedRoot { source_version: u32 },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(super) enum RootEntry {
+    Studio,
+    Bot,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(super) struct Instructions {
     pub agent: AgentIdentity,
+    pub agent_shape: AgentInstructionShape,
     pub base: Block,
     pub developer: Vec<Block>,
     pub user: Vec<Block>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "camelCase", deny_unknown_fields)]
+pub(super) enum AgentInstructionShape {
+    Absent,
+    Present {
+        #[serde(rename = "contentHash")]
+        content_hash: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -148,6 +183,12 @@ impl Instructions {
             self.agent.id == id
                 && self.agent.scope == "root"
                 && self.agent.origin == "builtin"
+                && self.agent.usage_binding
+                    == AgentUsageBinding::RootEntry(if id == "root:feishu" {
+                        RootEntry::Bot
+                    } else {
+                        RootEntry::Studio
+                    })
                 && !self.agent.revision.is_empty(),
             "wrong root Agent identity: {:?}",
             self.agent
@@ -156,9 +197,14 @@ impl Instructions {
             self.blocks("modeDefinition").len() == 1,
             "root has no independent Mode source"
         );
+        let roles = self.blocks("agentDefinition");
+        let AgentInstructionShape::Present { content_hash } = &self.agent_shape else {
+            bail!("new root has no frozen Agent source shape");
+        };
+        ensure!(roles.len() == 1, "root must own exactly one Agent source");
         ensure!(
-            self.blocks("agentDefinition").len() == usize::from(id == "root:feishu"),
-            "wrong root Agent source count"
+            !content_hash.is_empty() && *content_hash == digest(roles[0].content.as_bytes())?,
+            "root Agent source differs from its frozen content identity"
         );
         ensure!(
             !self.base.content.is_empty() && !self.blocks("platform").is_empty(),
@@ -170,29 +216,54 @@ impl Instructions {
     pub fn assert_agent_frozen(&self, previous: &Self) -> Result<()> {
         ensure!(
             self.agent == previous.agent
+                && self.agent_shape == previous.agent_shape
                 && self.blocks("agentDefinition") == previous.blocks("agentDefinition"),
             "frozen Agent identity or role changed"
         );
         Ok(())
     }
 
-    pub fn assert_only_mode_changed(&self, previous: &Self) -> Result<()> {
+    pub fn assert_mode_update_preserves_agent_and_non_model_sources(
+        &self,
+        previous: &Self,
+    ) -> Result<()> {
         self.assert_agent_frozen(previous)?;
         ensure!(
             self.blocks("modeDefinition") != previous.blocks("modeDefinition"),
             "Mode source did not change"
         );
         let without_mode = |value: &Self| {
-            let mut value = value.clone();
             value
                 .developer
-                .retain(|block| block.source.kind != "modeDefinition");
-            value
+                .iter()
+                .filter(|block| block.source.kind != "modeDefinition")
+                .cloned()
+                .collect::<Vec<_>>()
         };
         ensure!(
             without_mode(self) == without_mode(previous),
-            "Mode update changed an unrelated instruction source"
+            "Mode update changed Agent or another non-Mode developer source"
         );
+        ensure!(
+            self.user == previous.user,
+            "Mode update changed an unrelated user-context source"
+        );
+        if self.base != previous.base {
+            let model_owned = |block: &Block| {
+                matches!(block.source.kind.as_str(), "modelBase" | "builtInBase")
+                    && block.source.path.is_none()
+                    && block.source.label
+                        == if block.source.kind == "modelBase" {
+                            "model base"
+                        } else {
+                            "built-in base"
+                        }
+            };
+            ensure!(
+                model_owned(&self.base) && model_owned(&previous.base),
+                "Mode update changed an explicit/config-owned base source"
+            );
+        }
         Ok(())
     }
 }
@@ -203,10 +274,16 @@ impl SavedEvidence {
             self.profile.as_ref() == Some(parent_profile),
             "child did not freeze the real catalog Profile"
         );
+        let expected_origin = if parent_profile.system {
+            "builtin"
+        } else {
+            "profile"
+        };
         ensure!(
             self.instructions.agent.id == parent_profile.profile_id
                 && self.instructions.agent.scope == "child"
-                && self.instructions.agent.origin == "profile"
+                && self.instructions.agent.origin == expected_origin
+                && self.instructions.agent.usage_binding == AgentUsageBinding::Child
                 && self.instructions.agent.revision == parent_profile.revision,
             "child Agent identity differs from frozen Profile"
         );
@@ -214,6 +291,13 @@ impl SavedEvidence {
         ensure!(
             roles.len() == 1 && roles[0].content == parent_profile.system_instructions.trim(),
             "child role differs from frozen Profile body"
+        );
+        let AgentInstructionShape::Present { content_hash } = &self.instructions.agent_shape else {
+            bail!("child has no frozen Agent source shape");
+        };
+        ensure!(
+            !content_hash.is_empty() && *content_hash == digest(roles[0].content.as_bytes())?,
+            "child Agent source differs from its frozen content identity"
         );
         ensure!(
             self.instructions.blocks("modeDefinition").is_empty(),
@@ -442,7 +526,7 @@ pub(super) async fn load(home: &Path, thread_id: &str) -> Result<Option<SavedEvi
                 extensions,
                 "studio.instructions",
                 "pl.studio.instructions",
-                2,
+                CURRENT_INSTRUCTION_SNAPSHOT_VERSION,
             )?,
             profile: optional(
                 extensions,
@@ -455,7 +539,7 @@ pub(super) async fn load(home: &Path, thread_id: &str) -> Result<Option<SavedEvi
                 extensions,
                 "studio.compaction.latest",
                 "pl.studio.compaction",
-                2,
+                CURRENT_COMPACTION_RECEIPT_VERSION,
             )?,
             context,
         });

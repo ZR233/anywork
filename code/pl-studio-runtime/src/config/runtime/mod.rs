@@ -119,6 +119,10 @@ impl std::fmt::Debug for ResolvedAgentProfile {
 /// Stable Settings owner failures used by transport adapters.
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigRuntimeError {
+    #[error(
+        "bundled Agent product resources are invalid; startup must stop without data recovery: {0:#}"
+    )]
+    BundledAgentCatalog(#[source] anyhow::Error),
     #[error("configuration migration failed; original file preserved: {0}")]
     Migration(#[source] PureError),
     #[error("work mode configuration requires repair; original files preserved: {0:#}")]
@@ -135,6 +139,9 @@ impl From<ConfigRuntimeError> for PureError {
     fn from(error: ConfigRuntimeError) -> Self {
         match error {
             ConfigRuntimeError::Core(error) | ConfigRuntimeError::Migration(error) => error,
+            ConfigRuntimeError::BundledAgentCatalog(error) => {
+                PureError::ConfigError(format!("bundled Agent resources are invalid: {error:#}"))
+            }
             ConfigRuntimeError::ModeDefinitions(error) => PureError::ConfigError(format!(
                 "work mode configuration requires repair: {error:#}"
             )),
@@ -148,6 +155,8 @@ impl From<ConfigRuntimeError> for PureError {
 impl ConfigRuntime {
     /// 从磁盘加载并校验初始 desired config。
     pub fn initialize(store: ConfigStore) -> ConfigRuntimeResult<Self> {
+        crate::agent::catalog::validate_startup_entries()
+            .map_err(|error| ConfigRuntimeError::BundledAgentCatalog(anyhow::Error::new(error)))?;
         let desired = store.load_for_startup()?;
         let observations = model_catalog::reconcile(store.paths(), &desired, &BTreeMap::new())?;
         let config = effective_runtime_config(&desired, &observations)?;
@@ -370,7 +379,7 @@ impl ConfigRuntime {
             .command_lock
             .lock()
             .map_err(|_| config_runtime_poisoned())?;
-        if profile_id == super::StudioRole::Planner.key() {
+        if profile_id == super::ROOT_AGENT_ROUTE_KEY {
             return Err(PureError::ConfigError(
                 "planner is reserved for the main agent; this child role is retired and cannot resume".into(),
             ).into());
@@ -672,7 +681,7 @@ fn validate_changed_selections(old: &StudioConfig, next: &StudioConfig) -> Resul
     for (mode, route) in &next.mode_model_routes {
         if old.mode_model_routes.get(mode) != Some(route) {
             next.models
-                .resolve_route(super::StudioRole::Planner.id(), route)?;
+                .resolve_route(super::root_agent_route_id(), route)?;
         }
     }
     for (id, account) in &next.models.accounts {

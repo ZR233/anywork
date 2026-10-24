@@ -668,7 +668,8 @@ impl StudioRuntime {
                     && handle.snapshot().lifecycle != pl_core::thread::ThreadLifecycle::Closed
             });
         let source = if thread.parent_thread_id.is_some()
-            && (thread.role == "planner" || (explicitly_closed && closing_owner.is_none()))
+            && (thread.role == crate::config::ROOT_AGENT_ROUTE_KEY
+                || (explicitly_closed && closing_owner.is_none()))
         {
             // Explicitly opening retired history still prepares its persisted schema, but never
             // installs an execution owner. Regular snapshot and paging queries do not prepare

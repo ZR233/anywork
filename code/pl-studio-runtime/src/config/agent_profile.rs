@@ -7,10 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{PureError, Result};
 
-use super::{AccountId, ConfigPaths, ModelRouteConfig, ReasoningEffort, StudioConfig, StudioRole};
-
-const SYSTEM_PROFILE_REVISION: &str = "studio-system-agent-v2";
-const SYSTEM_PROFILE_IDS: [&str; 4] = ["explorer", "executor", "worktree_executor", "reviewer"];
+use super::{AccountId, AgentRoleId, ConfigPaths, ModelRouteConfig, ReasoningEffort, StudioConfig};
 
 /// 单个用户 Agent TOML 的 canonical 格式。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -197,12 +194,7 @@ pub fn save_user_agent_profile(
     profile: &UserAgentProfile,
     config: &StudioConfig,
 ) -> Result<bool> {
-    validate_profile_id(profile_id)?;
-    if StudioRole::from_key(profile_id).is_some() {
-        return Err(PureError::ConfigError(format!(
-            "system Agent Profile `{profile_id}` is immutable"
-        )));
-    }
+    validate_user_agent_profile_id(profile_id)?;
     validate_user_profile(profile_id, profile, config)?;
     let content = toml::to_string_pretty(profile).map_err(|error| {
         PureError::ConfigError(format!(
@@ -223,24 +215,46 @@ pub fn save_user_agent_profile(
     Ok(changed)
 }
 
-pub fn is_system_profile_id(profile_id: &str) -> bool {
-    SYSTEM_PROFILE_IDS.contains(&profile_id)
+pub fn is_system_profile_id(profile_id: &str) -> Result<bool> {
+    Ok(system_profile_ids()?.contains(profile_id))
 }
 
 fn system_profiles(config: &StudioConfig, include_disabled: bool) -> AgentProfileCatalog {
     let mut catalog = AgentProfileCatalog::default();
-    for role in StudioRole::all()
-        .into_iter()
-        .filter(|role| is_system_profile_id(role.key()))
-        .filter(|role| include_disabled || !config.disabled_system_agents.contains(role.key()))
+    let definitions = match crate::agent::catalog::definitions() {
+        Ok(definitions) => definitions,
+        Err(error) => {
+            let message = format!("bundled Agent catalog is unavailable: {error}");
+            catalog.directory_error = Some(message.clone());
+            catalog.diagnostics.push(AgentProfileDiagnostic {
+                path: PathBuf::from("studio-builtin"),
+                message,
+            });
+            return catalog;
+        }
+    };
+    for definition in definitions
+        .iter()
+        .filter(|definition| {
+            definition.identity.scope == crate::agent::definition::AgentDefinitionScope::Child
+        })
+        .filter(|definition| {
+            include_disabled
+                || !config
+                    .disabled_system_agents
+                    .contains(&definition.identity.id)
+        })
     {
-        match system_profile(role, config) {
+        match system_profile(definition, config) {
             Ok(profile) => catalog.push_profile(profile, config),
             Err(error) => {
-                tracing::warn!(profile_id = role.key(), %error, "system Agent Profile is unavailable");
+                tracing::warn!(profile_id = %definition.identity.id, %error, "system Agent Profile is unavailable");
                 catalog.diagnostics.push(AgentProfileDiagnostic {
-                    path: PathBuf::from(format!("studio-builtin:{}", role.key())),
-                    message: format!("Agent Profile `{}` is unavailable: {error}", role.key()),
+                    path: PathBuf::from(format!("studio-builtin:{}", definition.identity.id)),
+                    message: format!(
+                        "Agent Profile `{}` is unavailable: {error}",
+                        definition.identity.id
+                    ),
                 });
             }
         }
@@ -248,45 +262,18 @@ fn system_profiles(config: &StudioConfig, include_disabled: bool) -> AgentProfil
     catalog
 }
 
-fn system_profile(role: StudioRole, config: &StudioConfig) -> Result<AgentProfileSnapshot> {
-    let (description, when_to_use, instructions) = match role {
-        StudioRole::Explorer => (
-            "只读探索代码、文档和现场事实。",
-            "需要快速定位边界、依赖、实现入口或验证事实时。",
-            include_str!("../prompts/explorer.md"),
-        ),
-        StudioRole::Planner => {
-            return Err(PureError::ConfigError(
-                "planner is the main agent route, not a child Profile".into(),
-            ));
-        }
-        StudioRole::Executor => (
-            "实施明确、边界清楚的工程任务。",
-            "已有目标和范围，需要修改与验证代码时。",
-            include_str!("../prompts/executor.md"),
-        ),
-        StudioRole::WorktreeExecutor => (
-            "在独立 Git worktree 中实施明确任务。",
-            "需要物理隔离修改，并由主代理审查、整合和清理时。",
-            include_str!("../prompts/worktree_executor.md"),
-        ),
-        StudioRole::Reviewer => (
-            "检查实现、测试、错误路径和需求一致性。",
-            "需要独立复核已完成工作并报告具体问题时。",
-            include_str!("../prompts/reviewer.md"),
-        ),
-    };
-    let route = config
-        .models
-        .routes
-        .get(&role.id())
-        .ok_or_else(|| PureError::ConfigError("system Profile route is missing".into()))?;
+fn system_profile(
+    definition: &crate::agent::catalog::BuiltinAgentDefinition,
+    config: &StudioConfig,
+) -> Result<AgentProfileSnapshot> {
+    let route = effective_system_profile_route(config, &definition.identity.id)?;
+    let agent = crate::agent::definition::ResolvedAgentDefinition::from_builtin(definition);
     let snapshot = AgentProfileSnapshot {
-        profile_id: role.key().to_string(),
-        display_name: role.display_name().to_string(),
-        description: description.to_string(),
-        when_to_use: when_to_use.to_string(),
-        system_instructions: instructions.to_string(),
+        profile_id: agent.identity().id.clone(),
+        display_name: agent.display_name().to_owned(),
+        description: agent.description().to_owned(),
+        when_to_use: agent.when_to_use().to_owned(),
+        system_instructions: agent.instructions().to_owned(),
         account_id: route.account_id.as_str().to_string(),
         model_id: route.model_id.clone(),
         effort: route
@@ -294,18 +281,63 @@ fn system_profile(role: StudioRole, config: &StudioConfig) -> Result<AgentProfil
             .as_ref()
             .map(|effort| effort.as_str().to_string()),
         source: "studio-builtin".to_string(),
-        revision: SYSTEM_PROFILE_REVISION.to_string(),
+        revision: agent.identity().revision.clone(),
         content_hash: String::new(),
         system: true,
-        enabled: !config.disabled_system_agents.contains(role.key()),
-        workspace_mode: match role {
-            StudioRole::Explorer | StudioRole::Planner => AgentWorkspaceMode::Unrestricted,
-            StudioRole::Reviewer => AgentWorkspaceMode::Review,
-            StudioRole::Executor => AgentWorkspaceMode::Directory,
-            StudioRole::WorktreeExecutor => AgentWorkspaceMode::Worktree,
-        },
+        enabled: !config.disabled_system_agents.contains(&agent.identity().id),
+        workspace_mode: agent.workspace_mode().ok_or_else(|| {
+            PureError::ConfigError(format!(
+                "child Agent `{}` has no workspace mode",
+                definition.identity.id
+            ))
+        })?,
     };
     Ok(with_content_hash(snapshot))
+}
+
+pub(crate) fn system_agent_profile(
+    config: &StudioConfig,
+    profile_id: &str,
+) -> Result<AgentProfileSnapshot> {
+    let definition = crate::agent::catalog::definition(profile_id)?
+        .ok_or_else(|| PureError::ConfigError(format!("unknown bundled Agent `{profile_id}`")))?;
+    if definition.identity.scope != crate::agent::definition::AgentDefinitionScope::Child {
+        return Err(PureError::ConfigError(format!(
+            "root Agent `{profile_id}` is not a configurable child Profile"
+        )));
+    }
+    system_profile(definition, config)
+}
+
+pub(crate) fn system_agent_profiles(config: &StudioConfig) -> Result<Vec<AgentProfileSnapshot>> {
+    crate::agent::catalog::definitions()?
+        .iter()
+        .filter(|definition| {
+            definition.identity.scope == crate::agent::definition::AgentDefinitionScope::Child
+        })
+        .map(|definition| system_profile(definition, config))
+        .collect()
+}
+
+/// Resolves a builtin child selector without persisting an inherited value. An explicit invalid
+/// selector remains authoritative; only an absent key inherits the current simple Mode route.
+pub(crate) fn effective_system_profile_route(
+    config: &StudioConfig,
+    profile_id: &str,
+) -> Result<ModelRouteConfig> {
+    let definition = crate::agent::catalog::definition(profile_id)?
+        .ok_or_else(|| PureError::ConfigError(format!("unknown bundled Agent `{profile_id}`")))?;
+    if definition.identity.scope != crate::agent::definition::AgentDefinitionScope::Child {
+        return Err(PureError::ConfigError(format!(
+            "root Agent `{profile_id}` has no child model route"
+        )));
+    }
+    let role = AgentRoleId::new(profile_id.to_owned())?;
+    Ok(config.models.routes.get(&role).cloned().unwrap_or(
+        config
+            .mode_model_route(&pl_protocol::ThreadModeId::simple())?
+            .clone(),
+    ))
 }
 
 fn load_user_profile(path: &Path, include_disabled: bool) -> Result<Option<AgentProfileSnapshot>> {
@@ -313,12 +345,7 @@ fn load_user_profile(path: &Path, include_disabled: bool) -> Result<Option<Agent
         .file_stem()
         .and_then(|value| value.to_str())
         .ok_or_else(|| PureError::ConfigError("Agent Profile filename is not UTF-8".to_string()))?;
-    validate_profile_id(profile_id)?;
-    if StudioRole::from_key(profile_id).is_some() {
-        return Err(PureError::ConfigError(format!(
-            "user Agent Profile cannot replace immutable system profile `{profile_id}`"
-        )));
-    }
+    validate_user_agent_profile_id(profile_id)?;
     let content = fs::read_to_string(path)?;
     // Existing, structurally valid files remain editable even if their account/model was removed.
     // The canonical scan records route failures separately when it builds the executable view.
@@ -361,12 +388,7 @@ pub(super) fn validate_profile_content(
 }
 
 fn parse_profile_content(profile_id: &str, content: &str) -> Result<UserAgentProfile> {
-    validate_profile_id(profile_id)?;
-    if StudioRole::from_key(profile_id).is_some() {
-        return Err(PureError::ConfigError(format!(
-            "user Agent Profile cannot replace immutable system profile `{profile_id}`"
-        )));
-    }
+    validate_user_agent_profile_id(profile_id)?;
     let profile: UserAgentProfile = toml::from_str(content)
         .map_err(|_| PureError::ConfigError(format!("invalid Agent Profile TOML: {profile_id}")))?;
     validate_user_profile_fields(profile_id, &profile)?;
@@ -440,7 +462,20 @@ const fn default_true() -> bool {
     true
 }
 
-/// 返回内置 Profile 的稳定集合，供配置校验和 UI 使用。
-pub fn system_profile_ids() -> BTreeSet<String> {
-    SYSTEM_PROFILE_IDS.into_iter().map(str::to_string).collect()
+/// Returns the child-only view of the validated builtin declaration catalog.
+pub fn system_profile_ids() -> Result<BTreeSet<String>> {
+    crate::agent::catalog::child_ids()
+}
+
+pub(crate) fn validate_user_agent_profile_id(profile_id: &str) -> Result<()> {
+    validate_profile_id(profile_id)?;
+    if profile_id == super::ROOT_AGENT_ROUTE_KEY
+        || crate::agent::definition::is_root_definition_id(profile_id)
+        || is_system_profile_id(profile_id)?
+    {
+        return Err(PureError::ConfigError(format!(
+            "Agent Profile id `{profile_id}` is reserved"
+        )));
+    }
+    Ok(())
 }
