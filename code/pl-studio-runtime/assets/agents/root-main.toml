@@ -1,0 +1,7 @@
+id = "root:main"
+scope = "root"
+entry = "studio"
+display_name = "主智能体"
+description = "接收用户请求并对整体任务负责。"
+when_to_use = "普通 Studio 会话的用户入口。"
+instructions = "prompts/main.md"

@@ -1,7 +1,7 @@
 //! Only canonical configuration under the Session-owned synthetic home.
 use anyhow::{Context, Result, ensure};
 use pl_model::{
-    config::{AccountConfig, AccountId, ModelRouteConfig},
+    config::{AccountConfig, AccountId, AgentRoleId, ModelRouteConfig},
     model::{ModelInfo, ModelTransportProfile},
     protocol::ProtocolEndpoint,
 };
@@ -10,7 +10,7 @@ use pl_protocol::studio::{
 };
 use pl_protocol::{AgentWorkspaceMode, ThreadModeId};
 use pl_provider_fixture::agent_definitions::{
-    CHILD_MODEL, COMPACT_MODEL, DISABLED_PROFILE, ROOT_MODEL, UNAVAILABLE_MODEL,
+    CHILD_MODEL, COMPACT_MODEL, DISABLED_PROFILE, FUTURE_MODEL, ROOT_MODEL, UNAVAILABLE_MODEL,
     UNAVAILABLE_PROFILE, USER_MODEL_NEW, USER_MODEL_OLD, USER_PROFILE,
 };
 use pl_studio_runtime::config::{
@@ -20,6 +20,7 @@ use std::{fs, path::Path};
 
 pub(super) const ROOT_ACCOUNT: &str = "agent-observe-root";
 pub(super) const CHILD_ACCOUNT: &str = "agent-observe-child";
+pub(super) const EXPLICIT_SYSTEM_AGENT: &str = "reviewer";
 const SPARE_MODEL: &str = "agent-unreferenced-anchor";
 pub(super) const OLD_ROLE: &str = "Synthetic frozen user Agent role: USER_ROLE_BEFORE_RESTART.";
 pub(super) const NEW_ROLE: &str = "Synthetic future user Agent role: USER_ROLE_AFTER_RESTART.";
@@ -37,12 +38,16 @@ pub(crate) fn prepare(home: &Path, base_url: &str) -> Result<()> {
     let child = AccountId::new(CHILD_ACCOUNT)?;
     let mut compact = model(COMPACT_MODEL);
     compact.auto_compact_token_limit = Some(1);
+    let future = model(FUTURE_MODEL);
     config.models.accounts.clear();
+    let mut root_model = model(ROOT_MODEL);
+    root_model.base_instructions =
+        "Synthetic model-owned base: MODEL_BASE_MUST_NOT_REPLACE_AGENT.".into();
     config.models.accounts.insert(
         root.clone(),
         AccountConfig::from_explicit_models(
             ProtocolEndpoint::compatible("Agent observation root", base_url),
-            vec![model(ROOT_MODEL), compact],
+            vec![root_model, compact, future],
         ),
     );
     let mut child_config = pl_model::config::builtin_account_catalog()?
@@ -62,13 +67,16 @@ pub(crate) fn prepare(home: &Path, base_url: &str) -> Result<()> {
         _ => anyhow::bail!("built-in discovery account is not bundled"),
     }
     config.models.accounts.insert(child.clone(), child_config);
-    for route in config.models.routes.values_mut() {
-        *route = ModelRouteConfig {
+    // Leave other system child routes absent to exercise inheritance from mode.simple. Keep one
+    // explicit role route so withdrawing its model proves an invalid override never falls back.
+    config.models.routes.insert(
+        AgentRoleId::new(EXPLICIT_SYSTEM_AGENT.to_string())?,
+        ModelRouteConfig {
             account_id: child.clone(),
             model_id: CHILD_MODEL.into(),
             effort: None,
-        };
-    }
+        },
+    );
     for (mode, route) in &mut config.mode_model_routes {
         *route = ModelRouteConfig {
             account_id: root.clone(),
@@ -119,6 +127,17 @@ pub(crate) fn prepare(home: &Path, base_url: &str) -> Result<()> {
 pub(crate) fn change_future_profiles(home: &Path) -> Result<()> {
     let mut config = read(home)?;
     config.disabled_system_agents.insert("explorer".into());
+    for role in ["explorer", "executor", "worktree_executor"] {
+        config
+            .models
+            .routes
+            .remove(&AgentRoleId::new(role.to_owned())?);
+    }
+    let simple = config
+        .mode_model_routes
+        .get_mut(&ThreadModeId::simple())
+        .context("mode.simple route missing during future default update")?;
+    simple.model_id = FUTURE_MODEL.into();
     config.validate_declarations()?;
     write(home, &config)?;
     let changed = save_user_agent_profile(
@@ -129,6 +148,12 @@ pub(crate) fn change_future_profiles(home: &Path) -> Result<()> {
     )?;
     ensure!(changed, "future user Profile did not change");
     Ok(())
+}
+
+pub(super) fn has_explicit_system_route(home: &Path, profile_id: &str) -> Result<bool> {
+    let config = read(home)?;
+    let role = AgentRoleId::new(profile_id.to_string())?;
+    Ok(config.models.routes.contains_key(&role))
 }
 
 /// Edits the real child account through the public account command. The
@@ -185,6 +210,7 @@ fn child_base_url(base_url: &str) -> String {
 
 fn model(id: &str) -> ModelInfo {
     let mut model = ModelInfo::compatible(id);
+    model.capabilities.tools.function_calling = true;
     model.context_window = Some(256_000);
     model.max_context_window = Some(256_000);
     // The real list_agent_profiles result includes full system role bodies.

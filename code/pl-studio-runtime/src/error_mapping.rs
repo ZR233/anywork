@@ -82,6 +82,7 @@ fn studio_error_from_ref(error: &anyhow::Error) -> StudioError {
                 "actualRevision": actual,
             })),
             ConfigRuntimeError::Core(error) => pure_error(error),
+            ConfigRuntimeError::BundledAgentCatalog(_) => StudioError::internal(),
             ConfigRuntimeError::ModeDefinitions(error) => StudioError::new(
                 StudioErrorCode::InvalidArgument,
                 format!("工作模式配置无效，原文件已保留：{error:#}"),

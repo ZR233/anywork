@@ -13,7 +13,7 @@ use pl_protocol::studio::{
     StudioRoleSettings, StudioSettings, StudioSkillsSettings, StudioWebSearchSettings,
 };
 
-use crate::{ConfigRuntimeSnapshot, ModelCatalogRuntimeSnapshot, StudioRole};
+use crate::{ConfigRuntimeSnapshot, ModelCatalogRuntimeSnapshot};
 use pl_model::config::{AccountCapabilitySelection, AccountModelCatalogConfig};
 use pl_tool::search::{WebSearchAvailability, WebSearchDeepSeekOptions};
 
@@ -185,26 +185,15 @@ fn settings_view(
                 .unwrap_or_default(),
         })
         .collect();
-    let roles = StudioRole::child_roles()
+    let roles = crate::config::system_agent_profiles(config)?
         .into_iter()
-        .map(|role| {
-            let route = config
-                .models
-                .routes
-                .get(&role.id())
-                .with_context(|| format!("missing Studio role route: {}", role.key()))?;
-            Ok(StudioRoleSettings {
-                key: role.key().to_string(),
-                account_id: route.account_id.to_string(),
-                model_id: route.model_id.clone(),
-                effort: route
-                    .effort
-                    .as_ref()
-                    .map(|effort| effort.as_str().to_string())
-                    .unwrap_or_default(),
-            })
+        .map(|profile| StudioRoleSettings {
+            key: profile.profile_id,
+            account_id: profile.account_id,
+            model_id: profile.model_id,
+            effort: profile.effort.unwrap_or_default(),
         })
-        .collect::<Result<Vec<_>>>()?;
+        .collect();
     let mcp_servers = crate::config::effective_mcp_servers(config)
         .into_values()
         .map(|server| StudioMcpServerSettings {

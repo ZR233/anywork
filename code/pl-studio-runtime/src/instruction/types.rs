@@ -11,7 +11,7 @@ use pl_tool::workspace::WorkspaceInstructions;
 
 /// 当前 instruction snapshot 的载荷格式与版本。
 pub(crate) const SNAPSHOT_FORMAT: &str = "pl.studio.instructions";
-pub(crate) const SNAPSHOT_VERSION: u32 = 2;
+pub(crate) const SNAPSHOT_VERSION: u32 = 3;
 
 /// 统一指令装配的输入。
 ///
@@ -65,11 +65,45 @@ pub struct ModeInstructionProfile<'a> {
 #[serde(rename_all = "camelCase")]
 pub struct InstructionSnapshot {
     pub agent: AgentDefinitionIdentity,
+    /// Frozen presence and content identity of the unique Agent-owned instruction block.
+    pub agent_shape: AgentInstructionShape,
     pub base: InstructionBlock,
     #[serde(default)]
     pub developer: Vec<InstructionBlock>,
     #[serde(default)]
     pub user: Vec<InstructionBlock>,
+}
+
+/// Agent block shape is frozen independently of its body, which remains owned only by `developer`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "state", rename_all = "camelCase", deny_unknown_fields)]
+pub enum AgentInstructionShape {
+    Absent,
+    Present {
+        #[serde(rename = "contentHash")]
+        content_hash: String,
+    },
+}
+
+impl AgentInstructionShape {
+    pub(crate) fn from_agent_blocks(
+        developer: &[InstructionBlock],
+    ) -> Result<Self, pl_protocol::PureError> {
+        let mut blocks = developer
+            .iter()
+            .filter(|block| block.source.kind == InstructionSourceKind::AgentDefinition);
+        let Some(block) = blocks.next() else {
+            return Ok(Self::Absent);
+        };
+        if blocks.next().is_some() {
+            return Err(pl_protocol::PureError::ConfigError(
+                "instruction snapshot has multiple Agent sources".into(),
+            ));
+        }
+        Ok(Self::Present {
+            content_hash: pl_core::context::content_hash(block.content.as_bytes()),
+        })
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

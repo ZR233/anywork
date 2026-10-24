@@ -54,7 +54,7 @@ impl StudioRuntime {
         let route = settings
             .config
             .models
-            .resolve_route(crate::config::StudioRole::Planner.id(), &selector)?;
+            .resolve_route(crate::config::root_agent_route_id(), &selector)?;
         Self::validate_model_media(&state, &route.model, &[])?;
         let mut mutations = vec![pl_core::thread::extensions::ExtensionMutation::Put {
             id: crate::studio::model_route::MODEL_ROUTE_EXTENSION.into(),

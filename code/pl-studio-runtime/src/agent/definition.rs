@@ -5,32 +5,48 @@
 //! 工具权限，也不进入可派发的 Profile 目录。已解析定义随 instruction snapshot 冻结，Mode
 //! 执行方式由独立的指令来源更新。
 
-use pl_protocol::{AgentProfileSnapshot, PureError};
+use pl_protocol::{AgentProfileSnapshot, AgentWorkspaceMode, PureError};
 use serde::{Deserialize, Serialize};
 
-/// 产品内置的普通根会话定义身份。
+use super::catalog::{self, BuiltinAgentDefinition};
+
+/// 旧快照迁移边界上的普通根身份；正常恢复不依赖这些 ID。
 pub(crate) const STUDIO_ROOT_ID: &str = "root:main";
-/// 产品内置的飞书根会话定义身份。
+/// 旧快照迁移边界上的机器人根身份；正常恢复不依赖这些 ID。
 pub(crate) const FEISHU_ROOT_ID: &str = "root:feishu";
 /// 迁移专用的渠道未指定根身份。
 ///
 /// 旧通用根会话没有可验证的渠道归属时使用：它保留原正文，明确表示渠道未指定，既不能用于
 /// 新建，也不能被派发，更不是正常运行的后备身份。
 pub(crate) const LEGACY_ROOT_ID: &str = "root:legacy";
-/// 内置定义的修订；角色指令内容变化时才提高。
-const BUILTIN_REVISION: &str = "1";
 /// 旧版混用来源迁移后的修订：明确区别于任何当前内置或 Profile 修订。
 const MIGRATED_REVISION: &str = "legacy";
 /// 根定义占用保留命名空间，因此不能与用户 Agent Profile 名称冲突，也不能被派发。
 const ROOT_ID_PREFIX: &str = "root:";
 
-const FEISHU_INSTRUCTIONS: &str = include_str!("../prompts/feishu.md");
-
-/// 拥有根会话的渠道。只用于选择内置定义，不代表执行循环或 Thread 所有权。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum AgentChannel {
+/// Trusted product entry that may bind a root Agent definition.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum AgentRootEntry {
     Studio,
     Bot,
+}
+
+/// Frozen usage binding, independent from definition source and allowed scope.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(
+    tag = "kind",
+    content = "entry",
+    rename_all = "camelCase",
+    deny_unknown_fields
+)]
+pub(crate) enum AgentUsageBinding {
+    RootEntry(AgentRootEntry),
+    Child,
+    /// Set only after validating a historical snapshot whose root channel was not provable.
+    LegacyUnspecifiedRoot {
+        source_version: u32,
+    },
 }
 
 /// 定义适用的会话范围；root 定义不可派发为 child。
@@ -56,6 +72,7 @@ pub(crate) enum AgentDefinitionOrigin {
 pub(crate) struct AgentDefinitionIdentity {
     pub id: String,
     pub scope: AgentDefinitionScope,
+    pub usage_binding: AgentUsageBinding,
     pub revision: String,
     pub origin: AgentDefinitionOrigin,
 }
@@ -64,31 +81,33 @@ pub(crate) struct AgentDefinitionIdentity {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ResolvedAgentDefinition {
     identity: AgentDefinitionIdentity,
-    label: String,
+    display_name: String,
+    description: String,
+    when_to_use: String,
     instructions: String,
+    workspace_mode: Option<AgentWorkspaceMode>,
 }
 
 impl ResolvedAgentDefinition {
-    fn new(identity: AgentDefinitionIdentity, label: &str, instructions: &str) -> Self {
-        Self {
-            identity,
-            label: label.to_owned(),
-            instructions: instructions.trim().to_owned(),
+    /// Resolves a trusted product-entry binding to its common embedded Agent declaration.
+    pub(crate) fn root(entry: AgentRootEntry) -> Result<Self, PureError> {
+        let declaration = catalog::root_definition(entry)?;
+        if declaration.identity.scope != AgentDefinitionScope::Root {
+            return Err(PureError::ConfigError(format!(
+                "trusted product entry `{entry:?}` does not resolve to a root Agent"
+            )));
         }
+        Ok(Self::from_builtin(declaration))
     }
 
-    /// 根会话的内置定义。
-    ///
-    /// 普通根会话只冻结身份与范围：它的角色正文仍由统一 base 装配提供，本定义不追加额外
-    /// 角色提示词。飞书根会话追加固定的渠道内容指令，不提供逐机器人编辑入口。
-    pub(crate) fn root(channel: AgentChannel) -> Self {
-        match channel {
-            AgentChannel::Studio => Self::new(builtin_identity(STUDIO_ROOT_ID), "root agent", ""),
-            AgentChannel::Bot => Self::new(
-                builtin_identity(FEISHU_ROOT_ID),
-                "feishu root agent",
-                FEISHU_INSTRUCTIONS,
-            ),
+    pub(crate) fn from_builtin(definition: &BuiltinAgentDefinition) -> Self {
+        Self {
+            identity: definition.identity.clone(),
+            display_name: definition.display_name.clone(),
+            description: definition.description.clone(),
+            when_to_use: definition.when_to_use.clone(),
+            instructions: definition.instructions.trim().to_owned(),
+            workspace_mode: definition.workspace_mode,
         }
     }
 
@@ -107,16 +126,25 @@ impl ResolvedAgentDefinition {
                 profile.profile_id
             )));
         }
-        Ok(Self::new(
-            AgentDefinitionIdentity {
+        let origin = if profile.system {
+            AgentDefinitionOrigin::Builtin
+        } else {
+            AgentDefinitionOrigin::Profile
+        };
+        Ok(Self {
+            identity: AgentDefinitionIdentity {
                 id: profile.profile_id.clone(),
                 scope: AgentDefinitionScope::Child,
+                usage_binding: AgentUsageBinding::Child,
                 revision: profile.revision.clone(),
-                origin: AgentDefinitionOrigin::Profile,
+                origin,
             },
-            &profile.display_name,
-            &profile.system_instructions,
-        ))
+            display_name: profile.display_name.clone(),
+            description: profile.description.clone(),
+            when_to_use: profile.when_to_use.clone(),
+            instructions: profile.system_instructions.trim().to_owned(),
+            workspace_mode: Some(profile.workspace_mode),
+        })
     }
 
     pub(crate) fn identity(&self) -> &AgentDefinitionIdentity {
@@ -125,21 +153,28 @@ impl ResolvedAgentDefinition {
 
     /// 指令块标签；与 Mode 标签相互独立。
     pub(crate) fn label(&self) -> &str {
-        &self.label
+        &self.display_name
+    }
+
+    pub(crate) fn display_name(&self) -> &str {
+        &self.display_name
+    }
+
+    pub(crate) fn description(&self) -> &str {
+        &self.description
+    }
+
+    pub(crate) fn when_to_use(&self) -> &str {
+        &self.when_to_use
     }
 
     /// 角色正文；空正文表示该定义不追加角色提示词。
     pub(crate) fn instructions(&self) -> &str {
         &self.instructions
     }
-}
 
-fn builtin_identity(id: &str) -> AgentDefinitionIdentity {
-    AgentDefinitionIdentity {
-        id: id.to_owned(),
-        scope: AgentDefinitionScope::Root,
-        revision: BUILTIN_REVISION.to_owned(),
-        origin: AgentDefinitionOrigin::Builtin,
+    pub(crate) fn workspace_mode(&self) -> Option<AgentWorkspaceMode> {
+        self.workspace_mode
     }
 }
 
@@ -154,7 +189,11 @@ pub(crate) enum VerifiedAgentIdentity {
     /// 保存事实可证明根角色，但没有可验证渠道的旧通用根会话。
     GenericRoot,
     /// child 已冻结的 Profile 身份。
-    Child { id: String, revision: String },
+    Child {
+        id: String,
+        revision: String,
+        origin: AgentDefinitionOrigin,
+    },
 }
 
 impl VerifiedAgentIdentity {
@@ -164,6 +203,7 @@ impl VerifiedAgentIdentity {
         Ok(Self::Child {
             id: definition.identity.id.clone(),
             revision: definition.identity.revision.clone(),
+            origin: definition.identity.origin,
         })
     }
 
@@ -177,11 +217,18 @@ impl VerifiedAgentIdentity {
     /// 旧版快照迁移后要冻结的身份：保留原正文，来源与修订明确标为迁移。
     pub(crate) fn migrated_identity(&self) -> AgentDefinitionIdentity {
         match self {
-            Self::BotRoot => migrated_root_identity(FEISHU_ROOT_ID),
-            Self::GenericRoot => migrated_root_identity(LEGACY_ROOT_ID),
+            Self::BotRoot => migrated_root_identity(
+                FEISHU_ROOT_ID,
+                AgentUsageBinding::RootEntry(AgentRootEntry::Bot),
+            ),
+            Self::GenericRoot => migrated_root_identity(
+                LEGACY_ROOT_ID,
+                AgentUsageBinding::LegacyUnspecifiedRoot { source_version: 1 },
+            ),
             Self::Child { id, .. } => AgentDefinitionIdentity {
                 id: id.clone(),
                 scope: AgentDefinitionScope::Child,
+                usage_binding: AgentUsageBinding::Child,
                 revision: MIGRATED_REVISION.to_owned(),
                 origin: AgentDefinitionOrigin::Migrated,
             },
@@ -209,8 +256,62 @@ impl VerifiedAgentIdentity {
                 saved,
             ));
         }
+        if !usage_binding_matches_scope(saved) {
+            return Err(identity_conflict(
+                "saved Agent identity has a usage binding incompatible with its scope",
+                saved,
+            ));
+        }
         match self {
-            Self::Child { id, revision } => {
+            Self::Child {
+                id,
+                revision,
+                origin,
+            } => {
+                if &saved.id != id {
+                    return Err(identity_conflict(
+                        "saved Agent identity does not belong to the frozen Profile",
+                        saved,
+                    ));
+                }
+                if saved.usage_binding != AgentUsageBinding::Child {
+                    return Err(identity_conflict(
+                        "saved child Agent has a conflicting usage binding",
+                        saved,
+                    ));
+                }
+                match saved.origin {
+                    saved_origin if saved_origin == *origin && &saved.revision == revision => {
+                        Ok(())
+                    }
+                    AgentDefinitionOrigin::Migrated if saved.revision == MIGRATED_REVISION => {
+                        Ok(())
+                    }
+                    _ => Err(identity_conflict(
+                        "saved Agent identity has an invalid origin or revision",
+                        saved,
+                    )),
+                }
+            }
+            Self::BotRoot | Self::GenericRoot => validate_current_root(self, saved),
+        }
+    }
+
+    /// Validates the version-2 identity contract before its Agent block shape is upgraded.
+    pub(crate) fn validate_v2(&self, saved: &AgentDefinitionIdentity) -> Result<(), PureError> {
+        if saved.id.trim().is_empty()
+            || saved.id.trim() != saved.id
+            || saved.revision.trim().is_empty()
+            || saved.revision.trim() != saved.revision
+            || saved.scope != self.scope()
+        {
+            return Err(identity_conflict(
+                "saved version-2 Agent identity is incomplete or conflicting",
+                saved,
+            ));
+        }
+        match self {
+            Self::Child { id, revision, .. } => {
                 if &saved.id != id {
                     return Err(identity_conflict(
                         "saved Agent identity does not belong to the frozen Profile",
@@ -223,39 +324,101 @@ impl VerifiedAgentIdentity {
                         Ok(())
                     }
                     _ => Err(identity_conflict(
-                        "saved Agent identity has an invalid origin or revision",
+                        "saved version-2 child identity has an invalid origin or revision",
                         saved,
                     )),
                 }
             }
-            Self::BotRoot | Self::GenericRoot => match (saved.origin, saved.id.as_str()) {
-                (AgentDefinitionOrigin::Builtin, STUDIO_ROOT_ID | FEISHU_ROOT_ID) => {
-                    if matches!(self, Self::BotRoot) && saved.id != FEISHU_ROOT_ID {
-                        return Err(identity_conflict(
-                            "saved Agent identity contradicts the verified bot ownership",
-                            saved,
-                        ));
+            Self::BotRoot | Self::GenericRoot => {
+                let accepted = match (self, saved.origin) {
+                    (Self::BotRoot, AgentDefinitionOrigin::Builtin) => saved.id == FEISHU_ROOT_ID,
+                    (Self::GenericRoot, AgentDefinitionOrigin::Builtin) => {
+                        matches!(saved.id.as_str(), STUDIO_ROOT_ID | FEISHU_ROOT_ID)
                     }
-                    Ok(())
+                    (Self::BotRoot | Self::GenericRoot, AgentDefinitionOrigin::Migrated) => {
+                        saved.revision == MIGRATED_REVISION
+                            && matches!(saved.id.as_str(), FEISHU_ROOT_ID | LEGACY_ROOT_ID)
+                    }
+                    (Self::BotRoot | Self::GenericRoot, AgentDefinitionOrigin::Profile) => false,
+                    (Self::Child { .. }, _) => false,
+                };
+                if !accepted {
+                    return Err(identity_conflict(
+                        "saved version-2 root identity contradicts the verified root facts",
+                        saved,
+                    ));
                 }
-                (AgentDefinitionOrigin::Migrated, FEISHU_ROOT_ID | LEGACY_ROOT_ID)
-                    if saved.revision == MIGRATED_REVISION =>
-                {
-                    Ok(())
-                }
-                _ => Err(identity_conflict(
-                    "saved Agent identity has an invalid origin or revision",
-                    saved,
-                )),
-            },
+                Ok(())
+            }
         }
     }
 }
 
-fn migrated_root_identity(id: &str) -> AgentDefinitionIdentity {
+fn validate_current_root(
+    verified: &VerifiedAgentIdentity,
+    saved: &AgentDefinitionIdentity,
+) -> Result<(), PureError> {
+    let valid_id = saved
+        .id
+        .strip_prefix(ROOT_ID_PREFIX)
+        .is_some_and(valid_agent_id);
+    let valid_origin = match saved.origin {
+        AgentDefinitionOrigin::Builtin => true,
+        AgentDefinitionOrigin::Migrated => saved.revision == MIGRATED_REVISION,
+        AgentDefinitionOrigin::Profile => false,
+    };
+    let valid_binding = match verified {
+        VerifiedAgentIdentity::BotRoot => {
+            saved.usage_binding == AgentUsageBinding::RootEntry(AgentRootEntry::Bot)
+        }
+        VerifiedAgentIdentity::GenericRoot => matches!(
+            &saved.usage_binding,
+            AgentUsageBinding::RootEntry(AgentRootEntry::Studio)
+                | AgentUsageBinding::LegacyUnspecifiedRoot {
+                    source_version: 1 | 2
+                }
+        ),
+        VerifiedAgentIdentity::Child { .. } => false,
+    };
+    if valid_id && valid_origin && valid_binding {
+        Ok(())
+    } else {
+        Err(identity_conflict(
+            "saved root identity contradicts its frozen usage binding or verified host ownership",
+            saved,
+        ))
+    }
+}
+
+pub(crate) fn usage_binding_matches_scope(identity: &AgentDefinitionIdentity) -> bool {
+    matches!(
+        (&identity.scope, &identity.usage_binding),
+        (
+            AgentDefinitionScope::Root,
+            AgentUsageBinding::RootEntry(_)
+                | AgentUsageBinding::LegacyUnspecifiedRoot {
+                    source_version: 1 | 2
+                }
+        ) | (AgentDefinitionScope::Child, AgentUsageBinding::Child)
+    )
+}
+
+fn valid_agent_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 64
+        && id.bytes().all(|byte| {
+            byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'-' | b'_')
+        })
+}
+
+pub(crate) fn migrated_root_identity(
+    id: &str,
+    usage_binding: AgentUsageBinding,
+) -> AgentDefinitionIdentity {
     AgentDefinitionIdentity {
         id: id.to_owned(),
         scope: AgentDefinitionScope::Root,
+        usage_binding,
         revision: MIGRATED_REVISION.to_owned(),
         origin: AgentDefinitionOrigin::Migrated,
     }

@@ -559,7 +559,7 @@ impl StudioThreadAssembler {
                 source: Box::new(source),
             })?;
         catalog.profiles.retain(|profile| {
-            profile.profile_id != crate::config::StudioRole::Planner.key()
+            profile.profile_id != crate::config::ROOT_AGENT_ROUTE_KEY
                 && !crate::agent::definition::is_root_definition_id(&profile.profile_id)
         });
         let profiles = catalog

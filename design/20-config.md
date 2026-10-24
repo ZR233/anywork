@@ -252,7 +252,9 @@ Profile、凭据关联及其他覆盖原值；先备份、校验、原子提交�
 必须存在并独立保存 account_id/model_id/effort；合法自定义 Mode ID 可以持久化，尚无条目时继承
 `mode.simple`，首次显式选择后形成自己的条目。Mode 默认值不反向修改其他现有 Thread。
 
-`models.routes` 只保存系统及用户子代理 Profile 的路由；四条内置系统 route 为：
+`models.routes` 保存系统子代理 Profile 的显式路由覆盖；用户 Profile 的路由直接保存在
+各自 TOML 中，不再写入该表。现有内置预设的配置 key 如下，实际集合由统一 Agent 声明
+的 child 视图决定，不是框架的固定枚举：
 
 | 配置 key | 中文角色 | 用途 |
 | --- | --- | --- |
@@ -267,7 +269,8 @@ Profile、凭据关联及其他覆盖原值；先备份、校验、原子提交�
 探索者返回结论、可追溯证据和不确定项，由主代理综合判断，减少原始检索材料占用主上下文。
 该建议不扩大阶段或工具权限，不授权修改文件、Git 或外部状态，也不要求所有任务强制并行。
 
-系统子代理 Profile 由内置结构体启动注册，不生成 TOML；身份、用途、指令和工作区模式
+所有内置 Agent 由随包声明与提示词资源装载，不生成或修改用户 Profile 文件；共同定义与
+可配置范围见 [12](./12-collaboration.md)。系统 child 的身份、用途、指令和工作区模式
 不可编辑、不可删除，可通过主配置 `disabled_system_agents` 禁用。主智能体在会话起始页与
 会话状态栏选择模型，不在 Agents 页配置；系统 child route 在子代理区域配置。用户 Profile
 的文件名 stem 是 Agent ID。
@@ -276,7 +279,15 @@ Profile、凭据关联及其他覆盖原值；先备份、校验、原子提交�
 系统指令、最终 account、model 与 effort，此后文件变化不改变既有 child；设置页另读完整
 catalog，被禁用的用户 Profile 仍可编辑并重新启用。
 
-每个角色必须配置 `account_id`、`model_id` 和可选 `effort`。`effort` 使用字符串，校验对象是
+系统 child 缺少专属路由时，整体继承 `mode.simple` 的 `account_id`、`model_id` 与 `effort`；
+显式覆盖优先，覆盖失效不回退。继承由同一解析边界供 catalog、设置、固定派发及辅助消费者
+使用，不因查询、启动、刷新或普通保存补写成持久覆盖。新增随包角色因此不要求升级主配置
+或补齐路由；未知或 root 身份的 child route key 仍拒绝。用户 Profile 继续要求明确路由，
+自动派发的显式选模规则不变。创建前冻结最终选择，默认值变化不改写已有 child。
+
+显式设置系统 child 的模型或 effort 时，只保存该角色的完整覆盖，不改变其他角色或默认
+选择；只改 effort 时以当前有效路由为基础。已有显式覆盖及禁用选择原样保留。每个实际
+模型绑定都包含 `account_id`、`model_id` 和可选 `effort`。`effort` 使用字符串，校验对象是
 对应模型 parameters 中 `name = "effort"` 参数的候选值：模型声明非空候选时，角色必须选择
 一个合法候选；模型没有声明该参数时，角色必须省略 `effort`。候选、默认值和 wire 规则只
 来自模型目录（见 [06](./06-model.md)），角色配置不保存第二份候选或默认值。account 不
@@ -285,7 +296,7 @@ catalog，被禁用的用户 Profile 仍可编辑并重新启用。
 保存 account 字段时，未改动的 Mode 与 child route 原样提交，包括暂不可用的模型和 effort。
 只有显式选择默认 account 或删除路由所属 account 才重新选择相应模型与默认 effort；实例
 显示名变更不改变 ID、凭据和引用；账号 ID 不提供编辑重命名入口。编辑命令的空 effort 表示省略该选择，不从当前目录补入默认候选。
-完整 child route 提交不构造备用路由；只有缺失角色需要补齐时才解析明确的默认 account。
+完整 child route 提交不构造备用路由，也不补写未配置角色的继承结果。
 未承担新路由的在线实例允许其展示默认模型为空，不能让其合法空目录阻塞其他实例保存。
 
 ## 20.4 TOML 示例
@@ -465,9 +476,11 @@ Settings revision 提交。别家成功不得使本家 stale；用户更换地�
 结果以类型化系统提示词交给模型层，具体 `developer`/`system` role 及缓存更新策略见
 [06](./06-model.md)。项目文档、用户背景与动态事实继续使用 user/runtime-fact 路径。
 
-instruction snapshot 同时保存 Agent 定义身份、适用范围与修订，以及独立的 Agent、Mode
-指令来源（职责见 [12](./12-collaboration.md)）。普通 root、飞书 root 和 child 统一消费此
-快照，不额外维护一份可变角色提示词；root 路由与 child Profile 的原有配置所有权不变。
+instruction snapshot 同时保存共同 Agent 定义身份、适用范围、来源与修订，以及角色指令
+形状和内容身份、独立的 Agent/Mode 指令来源（职责见 [12](./12-collaboration.md)）。普通
+root、飞书 root 和 child 统一消费此快照，角色正文只由 Agent 来源拥有，不额外维护一份
+可变提示词。新建普通 root 同样有明确的 Agent 正文；base override 或模型 base 不覆盖
+该来源。root 路由与 child Profile 的原有配置所有权不变。
 Mode 的合法更新只变更 Mode 来源，模型基础指令重绑定只变更模型来源；恢复、压缩和工具
 刷新不能以当前 catalog 重建 Agent 指令。
 自动分发偏好作为独立的指令来源随同一快照保存，与 Agent、Mode 来源并列；它来自会话
@@ -486,6 +499,14 @@ Mode 来源，child 依据冻结 Profile 转为 Agent 来源。迁移保留原�
 仅凭同名扩展存在判定归属；缺失必要的 root/child、Mode/Profile 或指令事实仍须失败。
 当前快照恢复校验冻结定义 ID、scope 与来源/修订的合法组合；迁移身份可以保留旧版本，
 不要求与最新内置提示词版本相等，也不能借保留旧版本接受另一个 Profile 的身份。
+
+包含具体 root 角色形状规则的旧表示在明确版本边界升级：先按旧规则校验，再从保存的
+Agent 块推导当前形状与内容身份。旧普通 root 的无 Agent 块状态保留，不补入新角色正文；
+已存在的定义修订不因补充形状字段改写为通用 legacy 修订。旧格式已允许且没有相反归属
+证据的身份仍可恢复，不能从缺少机器人归属推定它必然属于普通渠道。迁移前后有效正文、
+顺序、标签和 user source IDs 保持一致。正常结构校验只消费已冻结的
+形状、内容身份与作用域，不再按具体角色 ID 或当前声明推断。迁移的事务与失败保全见
+[17.7](./17-studio-storage.md#177-大版本隔离与配置迁移)。
 
 上述冻结规则不冻结宿主运行事实：Platform、工作区绑定及 `studio.session-files` 在当前安全
 边界由实际服务提供，恢复/刷新后按同 source 更新，压缩保留最新值。会话文件路径、权限与

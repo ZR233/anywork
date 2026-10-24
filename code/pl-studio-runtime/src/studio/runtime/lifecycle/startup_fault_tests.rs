@@ -21,6 +21,16 @@ fn cold_session(paths: &StudioPaths) -> Result<crate::studio::paths::SessionPath
     paths.session_paths("project-cold", "cold")
 }
 
+#[test]
+fn bundled_agent_resource_errors_are_internal_and_never_data_recovery_inputs() {
+    let config_error = crate::ConfigRuntimeError::BundledAgentCatalog(anyhow::Error::new(
+        crate::agent::catalog::AgentCatalogError::invalid("invalid embedded declaration"),
+    ));
+    let input = crate::studio::startup::input_error(config_error);
+    let startup = crate::studio::startup::StudioStartupError::input("prepare_configuration", input);
+    assert_eq!(startup.kind, StudioStartupErrorKind::Internal);
+}
+
 #[tokio::test]
 async fn canonical_project_without_sqlite_mirror_accepts_and_restores_new_thread() -> Result<()> {
     use crate::config::{ConfigPaths, ConfigStore, StudioConfig};

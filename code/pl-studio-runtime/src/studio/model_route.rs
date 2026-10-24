@@ -226,7 +226,7 @@ pub(crate) fn annotate_availability(
     } else {
         config
             .models
-            .resolve_route(crate::StudioRole::Planner.id(), &selector)
+            .resolve_route(crate::config::root_agent_route_id(), &selector)
             .and_then(|route| {
                 crate::studio::delegation::validate_credential(&route)?;
                 Ok(route)
