@@ -37,6 +37,7 @@ enum BridgeSettingsScopeKind {
   lsp,
   skills,
   usage,
+  acp,
   bots,
 }
 
@@ -64,6 +65,9 @@ List<ProductTopic> bridgeSettingsScopeTopics(
           : [SkillsTopic(projectId: projectId)];
     case BridgeSettingsScopeKind.usage:
       return const [AccountUsageTopic()];
+    case BridgeSettingsScopeKind.acp:
+      // Accounts 页可见时只租用认证与准备观察；进入页面不启动检查、不联网。
+      return const [AcpAuthTopic(), AcpInstallTopic()];
     case BridgeSettingsScopeKind.bots:
       return const [BotsTopic()];
   }
@@ -582,6 +586,8 @@ String describeBridgeProductTopic(ProductTopic topic) {
     PersistenceTopic() => 'persistence',
     PersistenceQueueTopic() => 'persistenceQueue',
     AgentProfilesTopic() => 'agentProfiles',
+    AcpAuthTopic() => 'acpAuth',
     BotsTopic() => 'bots',
+    AcpInstallTopic() => 'acpInstall',
   };
 }

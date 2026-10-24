@@ -107,4 +107,77 @@ abstract final class StudioDriverKeyValues {
         ThreadUserInputOptionDescriptionFieldPartView(:final optionIndex) =>
           'option-description-$optionIndex',
       };
+
+  /// 统一“添加账号”入口的模板选择器与选项。
+  ///
+  /// ACP 与 Native 共用这一个入口：选项身份来自 typed 模板（Native 模板 id 或 ACP
+  /// provider wire 值），不按显示名生成；`account-add` 仍是入口按钮的稳定键。
+  static const accountTemplatePicker = 'account-template-picker';
+  static String accountTemplateOption(String token) =>
+      'account-template-option-$token';
+
+  /// 模板选择器里**有界滚动列表**的稳定键：Driver 用官方滚动能力把目标选项真正
+  /// 滚入视口后再拍摄/点击，不靠坐标或“元素存在”冒充可见。
+  static const accountTemplateList = 'account-template-list';
+
+  /// Native 账号 Base URL 输入控件本体：宽窄变化后要读真实文本验证草稿保留。
+  static const accountBaseUrlInput = 'account-base-url-input';
+
+  /// ACP 接入表单与认证状态的稳定键。
+  ///
+  /// 表单主操作沿用通用 `account-save`（同一“添加账号”入口的保存语义），取消沿用
+  /// `account-cancel`；这里只登记 ACP 专有字段与按阶段的操作入口。
+  static const acpAccountName = 'acp-account-name';
+  static const acpAccountBack = 'acp-account-back';
+  static const acpAccountRemove = 'acp-account-remove';
+
+  static const acpAccountInstallOpen = 'acp-account-install-open';
+
+  /// 官方服务条款入口；后端未提供 terms_url 时界面不渲染该键。
+  static const acpAccountTermsOpen = 'acp-account-terms-open';
+  static const acpAccountAuthState = 'acp-account-auth-state';
+
+  /// 详情页里默认折叠的「连接信息」（官方 `ExpansionTile`）稳定键。
+  static const acpAccountConnectionInfo = 'acp-account-connection-info';
+  static const acpAccountCheck = 'acp-account-check';
+  static const acpAccountLogin = 'acp-account-login';
+  static const acpAccountLoginMethod = 'acp-account-login-method';
+  static const acpAccountCancelAuth = 'acp-account-cancel-auth';
+  static const acpAccountDone = 'acp-account-done';
+  static String acpAccountRow(String accountId) => 'acp-account-row-$accountId';
+
+  /// 列表行内的命令失败摘要（按目标接入），与详情页的通知同一 typed 来源。
+  static String acpAccountNotice(String accountId) =>
+      'acp-account-notice-$accountId';
+
+  /// 详情页里默认折叠的通知技术详情（后端安全原文）。
+  static const acpAccountNoticeDetail = 'acp-account-notice-detail';
+
+  static String acpAccountDetail(String accountId) =>
+      'acp-account-detail-$accountId';
+
+  /// 认证状态区域的阶段 token：`unchecked`/`checking`/`required`/`authenticating`/
+  /// `verifying`/`verified`/`cancelling`/`cancelled`/`failed`。
+  static String acpAccountAuthPhase(String phase) =>
+      'acp-account-auth-state-$phase';
+
+  /// ACP 官方 server 准备面板的稳定键。
+  ///
+  /// 主操作沿用 `acp-install-prepare`：空闲时是“下载并准备”，可重试失败后是
+  /// “重试准备”，Driver 只按当前 typed 阶段判断这一次点击的语义。
+  static const acpInstallPanel = 'acp-install-panel';
+  static const acpInstallPrepare = 'acp-install-prepare';
+  static const acpInstallCancel = 'acp-install-cancel';
+  static const acpInstallUsePrepared = 'acp-install-use-prepared';
+  static const acpInstallStage = 'acp-install-stage';
+  static const acpInstallProgress = 'acp-install-progress';
+  static const acpInstallProgressText = 'acp-install-progress-text';
+  static const acpInstallPercent = 'acp-install-percent';
+  static const acpInstallSpeed = 'acp-install-speed';
+  static const acpInstallRetryCount = 'acp-install-retry-count';
+  static const acpInstallVersion = 'acp-install-version';
+  static const acpInstallTarget = 'acp-install-target';
+  static const acpInstallFailure = 'acp-install-failure';
+  static const acpInstallReadyBadge = 'acp-install-ready';
+  static const acpInstallReusedBadge = 'acp-install-reused';
 }

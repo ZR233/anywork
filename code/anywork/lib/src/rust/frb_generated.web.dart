@@ -7,6 +7,8 @@
 // ignore_for_file: argument_type_not_assignable
 
 import 'api/studio/handlers/accounts.dart';
+import 'api/studio/handlers/acp.dart';
+import 'api/studio/handlers/acp_install.dart';
 import 'api/studio/handlers/agent_profiles.dart';
 import 'api/studio/handlers/attachment.dart';
 import 'api/studio/handlers/bots.dart';
@@ -28,6 +30,8 @@ import 'api/studio/subscription/product_topic.dart';
 import 'api/studio/subscription/shutdown.dart';
 import 'api/studio/subscription/startup.dart';
 import 'api/studio/subscription/thread.dart';
+import 'api/studio/types/acp.dart';
+import 'api/studio/types/acp_install.dart';
 import 'api/studio/types/agent_profile.dart';
 import 'api/studio/types/attachment.dart';
 import 'api/studio/types/bots.dart';
@@ -220,6 +224,46 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   BridgeAccountUsageStateSnapshot
   dco_decode_box_autoadd_bridge_account_usage_state_snapshot(dynamic raw);
+
+  @protected
+  BridgeAcpAccountUpdate dco_decode_box_autoadd_bridge_acp_account_update(
+    dynamic raw,
+  );
+
+  @protected
+  BridgeAcpAuthAction dco_decode_box_autoadd_bridge_acp_auth_action(
+    dynamic raw,
+  );
+
+  @protected
+  BridgeAcpAuthFailure dco_decode_box_autoadd_bridge_acp_auth_failure(
+    dynamic raw,
+  );
+
+  @protected
+  BridgeAcpInstallFailure dco_decode_box_autoadd_bridge_acp_install_failure(
+    dynamic raw,
+  );
+
+  @protected
+  BridgeAcpInstallProgress dco_decode_box_autoadd_bridge_acp_install_progress(
+    dynamic raw,
+  );
+
+  @protected
+  BridgeAcpInstallRelease dco_decode_box_autoadd_bridge_acp_install_release(
+    dynamic raw,
+  );
+
+  @protected
+  BridgeAcpInstalledServer dco_decode_box_autoadd_bridge_acp_installed_server(
+    dynamic raw,
+  );
+
+  @protected
+  BridgeAcpServerInfo dco_decode_box_autoadd_bridge_acp_server_info(
+    dynamic raw,
+  );
 
   @protected
   BridgeAgentDirectoryData dco_decode_box_autoadd_bridge_agent_directory_data(
@@ -864,6 +908,14 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  BridgeAcpAuthSnapshot dco_decode_box_bridge_acp_auth_snapshot(dynamic raw);
+
+  @protected
+  BridgeAcpInstallSnapshot dco_decode_box_bridge_acp_install_snapshot(
+    dynamic raw,
+  );
+
+  @protected
   BridgeAgentProfilesStateSnapshot
   dco_decode_box_bridge_agent_profiles_state_snapshot(dynamic raw);
 
@@ -970,6 +1022,95 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   BridgeAccountUsageStateSnapshot
   dco_decode_bridge_account_usage_state_snapshot(dynamic raw);
+
+  @protected
+  BridgeAcpAccountCatalog dco_decode_bridge_acp_account_catalog(dynamic raw);
+
+  @protected
+  BridgeAcpAccountSettings dco_decode_bridge_acp_account_settings(dynamic raw);
+
+  @protected
+  BridgeAcpAccountTemplate dco_decode_bridge_acp_account_template(dynamic raw);
+
+  @protected
+  BridgeAcpAccountUpdate dco_decode_bridge_acp_account_update(dynamic raw);
+
+  @protected
+  BridgeAcpAuthAccount dco_decode_bridge_acp_auth_account(dynamic raw);
+
+  @protected
+  BridgeAcpAuthAction dco_decode_bridge_acp_auth_action(dynamic raw);
+
+  @protected
+  BridgeAcpAuthCommandReply dco_decode_bridge_acp_auth_command_reply(
+    dynamic raw,
+  );
+
+  @protected
+  BridgeAcpAuthFailure dco_decode_bridge_acp_auth_failure(dynamic raw);
+
+  @protected
+  BridgeAcpAuthFailureCode dco_decode_bridge_acp_auth_failure_code(dynamic raw);
+
+  @protected
+  BridgeAcpAuthMethod dco_decode_bridge_acp_auth_method(dynamic raw);
+
+  @protected
+  BridgeAcpAuthMethodKind dco_decode_bridge_acp_auth_method_kind(dynamic raw);
+
+  @protected
+  BridgeAcpAuthSnapshot dco_decode_bridge_acp_auth_snapshot(dynamic raw);
+
+  @protected
+  BridgeAcpAuthStage dco_decode_bridge_acp_auth_stage(dynamic raw);
+
+  @protected
+  BridgeAcpAuthState dco_decode_bridge_acp_auth_state(dynamic raw);
+
+  @protected
+  BridgeAcpInstallAvailability dco_decode_bridge_acp_install_availability(
+    dynamic raw,
+  );
+
+  @protected
+  BridgeAcpInstallCommandReply dco_decode_bridge_acp_install_command_reply(
+    dynamic raw,
+  );
+
+  @protected
+  BridgeAcpInstallEntry dco_decode_bridge_acp_install_entry(dynamic raw);
+
+  @protected
+  BridgeAcpInstallFailure dco_decode_bridge_acp_install_failure(dynamic raw);
+
+  @protected
+  BridgeAcpInstallFailureCode dco_decode_bridge_acp_install_failure_code(
+    dynamic raw,
+  );
+
+  @protected
+  BridgeAcpInstallProgress dco_decode_bridge_acp_install_progress(dynamic raw);
+
+  @protected
+  BridgeAcpInstallRelease dco_decode_bridge_acp_install_release(dynamic raw);
+
+  @protected
+  BridgeAcpInstallSnapshot dco_decode_bridge_acp_install_snapshot(dynamic raw);
+
+  @protected
+  BridgeAcpInstallStage dco_decode_bridge_acp_install_stage(dynamic raw);
+
+  @protected
+  BridgeAcpInstallState dco_decode_bridge_acp_install_state(dynamic raw);
+
+  @protected
+  BridgeAcpInstalledServer dco_decode_bridge_acp_installed_server(dynamic raw);
+
+  @protected
+  BridgeAcpProvider dco_decode_bridge_acp_provider(dynamic raw);
+
+  @protected
+  BridgeAcpServerInfo dco_decode_bridge_acp_server_info(dynamic raw);
 
   @protected
   BridgeActiveTurn dco_decode_bridge_active_turn(dynamic raw);
@@ -2392,6 +2533,29 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   dco_decode_list_bridge_account_template_descriptor(dynamic raw);
 
   @protected
+  List<BridgeAcpAccountSettings> dco_decode_list_bridge_acp_account_settings(
+    dynamic raw,
+  );
+
+  @protected
+  List<BridgeAcpAccountTemplate> dco_decode_list_bridge_acp_account_template(
+    dynamic raw,
+  );
+
+  @protected
+  List<BridgeAcpAuthAccount> dco_decode_list_bridge_acp_auth_account(
+    dynamic raw,
+  );
+
+  @protected
+  List<BridgeAcpAuthMethod> dco_decode_list_bridge_acp_auth_method(dynamic raw);
+
+  @protected
+  List<BridgeAcpInstallEntry> dco_decode_list_bridge_acp_install_entry(
+    dynamic raw,
+  );
+
+  @protected
   List<BridgeActiveTurn> dco_decode_list_bridge_active_turn(dynamic raw);
 
   @protected
@@ -2733,6 +2897,20 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   bool? dco_decode_opt_box_autoadd_bool(dynamic raw);
+
+  @protected
+  BridgeAcpAuthFailure? dco_decode_opt_box_autoadd_bridge_acp_auth_failure(
+    dynamic raw,
+  );
+
+  @protected
+  BridgeAcpInstallFailure?
+  dco_decode_opt_box_autoadd_bridge_acp_install_failure(dynamic raw);
+
+  @protected
+  BridgeAcpServerInfo? dco_decode_opt_box_autoadd_bridge_acp_server_info(
+    dynamic raw,
+  );
 
   @protected
   BridgeAgentTaskCategory?
@@ -3216,6 +3394,46 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   BridgeAccountUsageStateSnapshot
   sse_decode_box_autoadd_bridge_account_usage_state_snapshot(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeAcpAccountUpdate sse_decode_box_autoadd_bridge_acp_account_update(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeAcpAuthAction sse_decode_box_autoadd_bridge_acp_auth_action(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeAcpAuthFailure sse_decode_box_autoadd_bridge_acp_auth_failure(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeAcpInstallFailure sse_decode_box_autoadd_bridge_acp_install_failure(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeAcpInstallProgress sse_decode_box_autoadd_bridge_acp_install_progress(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeAcpInstallRelease sse_decode_box_autoadd_bridge_acp_install_release(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeAcpInstalledServer sse_decode_box_autoadd_bridge_acp_installed_server(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeAcpServerInfo sse_decode_box_autoadd_bridge_acp_server_info(
     SseDeserializer deserializer,
   );
 
@@ -4050,6 +4268,16 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  BridgeAcpAuthSnapshot sse_decode_box_bridge_acp_auth_snapshot(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeAcpInstallSnapshot sse_decode_box_bridge_acp_install_snapshot(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   BridgeAgentProfilesStateSnapshot
   sse_decode_box_bridge_agent_profiles_state_snapshot(
     SseDeserializer deserializer,
@@ -4186,6 +4414,141 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   BridgeAccountUsageStateSnapshot
   sse_decode_bridge_account_usage_state_snapshot(SseDeserializer deserializer);
+
+  @protected
+  BridgeAcpAccountCatalog sse_decode_bridge_acp_account_catalog(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeAcpAccountSettings sse_decode_bridge_acp_account_settings(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeAcpAccountTemplate sse_decode_bridge_acp_account_template(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeAcpAccountUpdate sse_decode_bridge_acp_account_update(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeAcpAuthAccount sse_decode_bridge_acp_auth_account(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeAcpAuthAction sse_decode_bridge_acp_auth_action(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeAcpAuthCommandReply sse_decode_bridge_acp_auth_command_reply(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeAcpAuthFailure sse_decode_bridge_acp_auth_failure(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeAcpAuthFailureCode sse_decode_bridge_acp_auth_failure_code(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeAcpAuthMethod sse_decode_bridge_acp_auth_method(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeAcpAuthMethodKind sse_decode_bridge_acp_auth_method_kind(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeAcpAuthSnapshot sse_decode_bridge_acp_auth_snapshot(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeAcpAuthStage sse_decode_bridge_acp_auth_stage(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeAcpAuthState sse_decode_bridge_acp_auth_state(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeAcpInstallAvailability sse_decode_bridge_acp_install_availability(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeAcpInstallCommandReply sse_decode_bridge_acp_install_command_reply(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeAcpInstallEntry sse_decode_bridge_acp_install_entry(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeAcpInstallFailure sse_decode_bridge_acp_install_failure(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeAcpInstallFailureCode sse_decode_bridge_acp_install_failure_code(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeAcpInstallProgress sse_decode_bridge_acp_install_progress(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeAcpInstallRelease sse_decode_bridge_acp_install_release(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeAcpInstallSnapshot sse_decode_bridge_acp_install_snapshot(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeAcpInstallStage sse_decode_bridge_acp_install_stage(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeAcpInstallState sse_decode_bridge_acp_install_state(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeAcpInstalledServer sse_decode_bridge_acp_installed_server(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeAcpProvider sse_decode_bridge_acp_provider(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeAcpServerInfo sse_decode_bridge_acp_server_info(
+    SseDeserializer deserializer,
+  );
 
   @protected
   BridgeActiveTurn sse_decode_bridge_active_turn(SseDeserializer deserializer);
@@ -5960,6 +6323,31 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  List<BridgeAcpAccountSettings> sse_decode_list_bridge_acp_account_settings(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  List<BridgeAcpAccountTemplate> sse_decode_list_bridge_acp_account_template(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  List<BridgeAcpAuthAccount> sse_decode_list_bridge_acp_auth_account(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  List<BridgeAcpAuthMethod> sse_decode_list_bridge_acp_auth_method(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  List<BridgeAcpInstallEntry> sse_decode_list_bridge_acp_install_entry(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   List<BridgeActiveTurn> sse_decode_list_bridge_active_turn(
     SseDeserializer deserializer,
   );
@@ -6373,6 +6761,22 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   bool? sse_decode_opt_box_autoadd_bool(SseDeserializer deserializer);
+
+  @protected
+  BridgeAcpAuthFailure? sse_decode_opt_box_autoadd_bridge_acp_auth_failure(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeAcpInstallFailure?
+  sse_decode_opt_box_autoadd_bridge_acp_install_failure(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeAcpServerInfo? sse_decode_opt_box_autoadd_bridge_acp_server_info(
+    SseDeserializer deserializer,
+  );
 
   @protected
   BridgeAgentTaskCategory?
@@ -6970,6 +7374,54 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_box_autoadd_bridge_account_usage_state_snapshot(
     BridgeAccountUsageStateSnapshot self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_bridge_acp_account_update(
+    BridgeAcpAccountUpdate self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_bridge_acp_auth_action(
+    BridgeAcpAuthAction self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_bridge_acp_auth_failure(
+    BridgeAcpAuthFailure self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_bridge_acp_install_failure(
+    BridgeAcpInstallFailure self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_bridge_acp_install_progress(
+    BridgeAcpInstallProgress self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_bridge_acp_install_release(
+    BridgeAcpInstallRelease self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_bridge_acp_installed_server(
+    BridgeAcpInstalledServer self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_bridge_acp_server_info(
+    BridgeAcpServerInfo self,
     SseSerializer serializer,
   );
 
@@ -7895,6 +8347,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_box_bridge_acp_auth_snapshot(
+    BridgeAcpAuthSnapshot self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_bridge_acp_install_snapshot(
+    BridgeAcpInstallSnapshot self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_box_bridge_agent_profiles_state_snapshot(
     BridgeAgentProfilesStateSnapshot self,
     SseSerializer serializer,
@@ -8050,6 +8514,168 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_bridge_account_usage_state_snapshot(
     BridgeAccountUsageStateSnapshot self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_acp_account_catalog(
+    BridgeAcpAccountCatalog self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_acp_account_settings(
+    BridgeAcpAccountSettings self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_acp_account_template(
+    BridgeAcpAccountTemplate self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_acp_account_update(
+    BridgeAcpAccountUpdate self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_acp_auth_account(
+    BridgeAcpAuthAccount self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_acp_auth_action(
+    BridgeAcpAuthAction self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_acp_auth_command_reply(
+    BridgeAcpAuthCommandReply self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_acp_auth_failure(
+    BridgeAcpAuthFailure self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_acp_auth_failure_code(
+    BridgeAcpAuthFailureCode self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_acp_auth_method(
+    BridgeAcpAuthMethod self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_acp_auth_method_kind(
+    BridgeAcpAuthMethodKind self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_acp_auth_snapshot(
+    BridgeAcpAuthSnapshot self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_acp_auth_stage(
+    BridgeAcpAuthStage self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_acp_auth_state(
+    BridgeAcpAuthState self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_acp_install_availability(
+    BridgeAcpInstallAvailability self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_acp_install_command_reply(
+    BridgeAcpInstallCommandReply self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_acp_install_entry(
+    BridgeAcpInstallEntry self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_acp_install_failure(
+    BridgeAcpInstallFailure self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_acp_install_failure_code(
+    BridgeAcpInstallFailureCode self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_acp_install_progress(
+    BridgeAcpInstallProgress self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_acp_install_release(
+    BridgeAcpInstallRelease self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_acp_install_snapshot(
+    BridgeAcpInstallSnapshot self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_acp_install_stage(
+    BridgeAcpInstallStage self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_acp_install_state(
+    BridgeAcpInstallState self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_acp_installed_server(
+    BridgeAcpInstalledServer self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_acp_provider(
+    BridgeAcpProvider self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_acp_server_info(
+    BridgeAcpServerInfo self,
     SseSerializer serializer,
   );
 
@@ -10214,6 +10840,36 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_list_bridge_acp_account_settings(
+    List<BridgeAcpAccountSettings> self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_list_bridge_acp_account_template(
+    List<BridgeAcpAccountTemplate> self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_list_bridge_acp_auth_account(
+    List<BridgeAcpAuthAccount> self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_list_bridge_acp_auth_method(
+    List<BridgeAcpAuthMethod> self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_list_bridge_acp_install_entry(
+    List<BridgeAcpInstallEntry> self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_list_bridge_active_turn(
     List<BridgeActiveTurn> self,
     SseSerializer serializer,
@@ -10704,6 +11360,24 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_encode_opt_box_autoadd_bool(bool? self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_opt_box_autoadd_bridge_acp_auth_failure(
+    BridgeAcpAuthFailure? self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_opt_box_autoadd_bridge_acp_install_failure(
+    BridgeAcpInstallFailure? self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_opt_box_autoadd_bridge_acp_server_info(
+    BridgeAcpServerInfo? self,
+    SseSerializer serializer,
+  );
 
   @protected
   void sse_encode_opt_box_autoadd_bridge_agent_task_category(

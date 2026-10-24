@@ -9,15 +9,18 @@ use axum::http::{StatusCode, header};
 use axum::response::IntoResponse;
 use pl_protocol::ThreadActivityDetailQuery;
 use pl_protocol::studio::{
-    AdmitAttachmentDraftsRequest, AdmitAttachmentDraftsResponse, CreateThreadRequest,
-    ExpectedRevisionRequest, HealthResponse, LspResetRequest, McpResetRequest, OpenProjectRequest,
-    RemoveAccountModelRequest, RemoveAccountRequest, RenameThreadRequest,
+    AcpAccountCatalog, AcpAuthCommandReply, AcpAuthSnapshot, AcpInstallCommandReply,
+    AcpInstallSnapshot, AdmitAttachmentDraftsRequest, AdmitAttachmentDraftsResponse,
+    CancelAcpAuthRequest, CancelAcpInstallRequest, CreateThreadRequest, ExpectedRevisionRequest,
+    HealthResponse, LspResetRequest, McpResetRequest, OpenProjectRequest,
+    RemoveAccountModelRequest, RemoveAccountRequest, RemoveAcpAccountRequest, RenameThreadRequest,
     ResolveInteractionRequest, SearchSkillsRequest, SetAccountBillingKindRequest,
     SetAccountModelEnabledRequest, SetDefaultAccountRequest, SetThreadModeRequest,
-    SetThreadModelRouteRequest, SettingsCommandReply, SettingsStateResponse,
-    StudioAttachmentAdmissionContext, StudioAttachmentDraftSource, StudioCommandRequest,
-    StudioError, SubmitPromptRequest, ThreadModelRouteCommandReply, ThreadPageQuery,
-    UpdateAccountRequest, UpdatePermissionSettingsRequest, UpdateSettingsFieldRequest,
+    SetThreadModelRouteRequest, SettingsCommandReply, SettingsStateResponse, StartAcpAuthRequest,
+    StartAcpInstallRequest, StudioAttachmentAdmissionContext, StudioAttachmentDraftSource,
+    StudioCommandRequest, StudioError, SubmitPromptRequest, ThreadModelRouteCommandReply,
+    ThreadPageQuery, UpdateAccountRequest, UpdateAcpAccountRequest,
+    UpdatePermissionSettingsRequest, UpdateSettingsFieldRequest,
 };
 use pl_protocol::{
     DelegationModelDetail, DelegationModelList, GetDelegationModelRequest,
@@ -173,6 +176,8 @@ pub(crate) fn parse_product_topic(
         },
         "threadModeCatalog" => StudioProductTopic::ThreadModeCatalog,
         "accountUsage" => StudioProductTopic::AccountUsage,
+        "acpAuth" => StudioProductTopic::AcpAuth,
+        "acpInstall" => StudioProductTopic::AcpInstall,
         "modelPerformance" => StudioProductTopic::ModelPerformance,
         "sessionCosts" => StudioProductTopic::SessionCosts {
             root_thread_id: query.root_thread_id.clone().unwrap_or_default(),
@@ -263,8 +268,17 @@ pub(crate) fn api_router() -> OpenApiRouter<AppState> {
         .routes(routes!(set_default_account))
         .routes(routes!(remove_account))
         .routes(routes!(apply_settings_field))
+        .routes(routes!(acp_account_catalog))
+        .routes(routes!(save_acp_account))
+        .routes(routes!(remove_acp_account))
         .routes(routes!(read_account_usage))
         .routes(routes!(check_account_usage))
+        .routes(routes!(read_acp_auth))
+        .routes(routes!(start_acp_auth))
+        .routes(routes!(cancel_acp_auth))
+        .routes(routes!(read_acp_install))
+        .routes(routes!(start_acp_install))
+        .routes(routes!(cancel_acp_install))
         .routes(routes!(read_recovery, retry_recovery))
         .routes(routes!(retry_persistence))
         .routes(routes!(retry_thread_history))
@@ -1072,6 +1086,103 @@ async fn apply_settings_field(
             .runtime
             .apply_settings_field(request)
             .await
+            .map_err(ApiError::from)?,
+    ))
+}
+
+#[utoipa::path(get, path = "/api/v1/acp-account-catalog", operation_id = "settings.loadAcpAccountCatalog", responses(StudioApiErrors, (status = 200, body = AcpAccountCatalog)))]
+async fn acp_account_catalog(
+    State(state): State<AppState>,
+) -> Result<Json<AcpAccountCatalog>, ApiError> {
+    Ok(Json(state.runtime.load_acp_account_catalog()))
+}
+
+#[utoipa::path(put, path = "/api/v1/settings/acp-account", operation_id = "settings.saveAcpAccount", request_body = UpdateAcpAccountRequest, responses(StudioApiErrors, (status = 200, body = SettingsCommandReply)))]
+async fn save_acp_account(
+    State(state): State<AppState>,
+    ApiJson(request): ApiJson<UpdateAcpAccountRequest>,
+) -> Result<Json<SettingsCommandReply>, ApiError> {
+    Ok(Json(
+        state
+            .runtime
+            .save_acp_account(request)
+            .map_err(ApiError::from)?,
+    ))
+}
+
+#[utoipa::path(delete, path = "/api/v1/settings/acp-account", operation_id = "settings.removeAcpAccount", request_body = RemoveAcpAccountRequest, responses(StudioApiErrors, (status = 200, body = SettingsCommandReply)))]
+async fn remove_acp_account(
+    State(state): State<AppState>,
+    ApiJson(request): ApiJson<RemoveAcpAccountRequest>,
+) -> Result<Json<SettingsCommandReply>, ApiError> {
+    Ok(Json(
+        state
+            .runtime
+            .remove_acp_account(request)
+            .map_err(ApiError::from)?,
+    ))
+}
+
+#[utoipa::path(get, path = "/api/v1/runtime/acp-auth", operation_id = "acpAuth.read", responses(StudioApiErrors, (status = 200, body = AcpAuthSnapshot)))]
+async fn read_acp_auth(State(state): State<AppState>) -> Result<Json<AcpAuthSnapshot>, ApiError> {
+    Ok(Json(state.runtime.read_acp_auth_state()))
+}
+
+#[utoipa::path(post, path = "/api/v1/runtime/acp-auth/start", operation_id = "acpAuth.start", request_body = StartAcpAuthRequest, responses(StudioApiErrors, (status = 200, body = AcpAuthCommandReply)))]
+async fn start_acp_auth(
+    State(state): State<AppState>,
+    ApiJson(request): ApiJson<StartAcpAuthRequest>,
+) -> Result<Json<AcpAuthCommandReply>, ApiError> {
+    Ok(Json(
+        state
+            .runtime
+            .start_acp_auth(request)
+            .map_err(ApiError::from)?,
+    ))
+}
+
+#[utoipa::path(post, path = "/api/v1/runtime/acp-auth/cancel", operation_id = "acpAuth.cancel", request_body = CancelAcpAuthRequest, responses(StudioApiErrors, (status = 200, body = AcpAuthCommandReply)))]
+async fn cancel_acp_auth(
+    State(state): State<AppState>,
+    ApiJson(request): ApiJson<CancelAcpAuthRequest>,
+) -> Result<Json<AcpAuthCommandReply>, ApiError> {
+    Ok(Json(
+        state
+            .runtime
+            .cancel_acp_auth(request)
+            .map_err(ApiError::from)?,
+    ))
+}
+
+#[utoipa::path(get, path = "/api/v1/runtime/acp-install", operation_id = "acpInstall.read", responses(StudioApiErrors, (status = 200, body = AcpInstallSnapshot)))]
+async fn read_acp_install(
+    State(state): State<AppState>,
+) -> Result<Json<AcpInstallSnapshot>, ApiError> {
+    Ok(Json(state.runtime.read_acp_install_state()))
+}
+
+#[utoipa::path(post, path = "/api/v1/runtime/acp-install/start", operation_id = "acpInstall.start", request_body = StartAcpInstallRequest, responses(StudioApiErrors, (status = 200, body = AcpInstallCommandReply)))]
+async fn start_acp_install(
+    State(state): State<AppState>,
+    ApiJson(request): ApiJson<StartAcpInstallRequest>,
+) -> Result<Json<AcpInstallCommandReply>, ApiError> {
+    Ok(Json(
+        state
+            .runtime
+            .start_acp_install(request)
+            .map_err(ApiError::from)?,
+    ))
+}
+
+#[utoipa::path(post, path = "/api/v1/runtime/acp-install/cancel", operation_id = "acpInstall.cancel", request_body = CancelAcpInstallRequest, responses(StudioApiErrors, (status = 200, body = AcpInstallCommandReply)))]
+async fn cancel_acp_install(
+    State(state): State<AppState>,
+    ApiJson(request): ApiJson<CancelAcpInstallRequest>,
+) -> Result<Json<AcpInstallCommandReply>, ApiError> {
+    Ok(Json(
+        state
+            .runtime
+            .cancel_acp_install(request)
             .map_err(ApiError::from)?,
     ))
 }

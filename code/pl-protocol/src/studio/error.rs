@@ -66,9 +66,10 @@ pub struct StudioError {
     pub message: String,
     pub retryable: bool,
     pub correlation_id: String,
+    /// 动态详情；装箱后错误返回值保持窄小，JSON 形状不变（见 design/18 §18.2）。
     #[schema(value_type = Object)]
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub details: Option<Value>,
+    pub details: Option<Box<Value>>,
 }
 
 impl StudioError {
@@ -83,7 +84,7 @@ impl StudioError {
     }
 
     pub fn with_details(mut self, details: Value) -> Self {
-        self.details = Some(details);
+        self.details = Some(Box::new(details));
         self
     }
 

@@ -4185,6 +4185,326 @@ class AppLocalizationsZh extends AppLocalizations {
   String get settingsModelAutoCompactCustom => '自定义';
 
   @override
+  String get acpAccountPickerTitle => '添加账号';
+
+  @override
+  String get acpAccountPickerNativeGroup => '模型 API 账号';
+
+  @override
+  String get acpAccountPickerAcpGroup => 'Agent 接入（ACP）';
+
+  @override
+  String get acpAccountNoApiKeyHint => '无需 API key，登录由官方程序完成。';
+
+  @override
+  String get acpAccountSaveAndConnect => '保存并连接';
+
+  @override
+  String acpAccountSavedConnectIncomplete(String reason) {
+    return '账号已保存，连接未完成：$reason';
+  }
+
+  @override
+  String acpAccountSaveFailed(String reason) {
+    return '无法保存该接入：$reason';
+  }
+
+  @override
+  String get acpAccountProviderChip => 'ACP';
+
+  @override
+  String get acpAccountScopeNotice => '本版本仅支持账号配置与登录；ACP 聊天与模型选择尚未接入。';
+
+  @override
+  String get acpAccountRemoveNotLogout => '删除接入不等于注销官方程序。';
+
+  @override
+  String get acpAccountRemoveFailed => '无法删除该接入。';
+
+  @override
+  String get acpAuthUnchecked => '尚未检查连接。';
+
+  @override
+  String get acpAuthChecking => '正在检查连接…';
+
+  @override
+  String get acpAuthRequiredTitle => '需要登录';
+
+  @override
+  String get acpAuthRequiredBody => '官方程序报告了以下登录方式。';
+
+  @override
+  String get acpAuthMethodLabel => '登录方式';
+
+  @override
+  String get acpAuthLogin => '登录';
+
+  @override
+  String get acpAuthAuthenticatingTitle => '等待登录';
+
+  @override
+  String get acpAuthAuthenticatingBody => '请在官方登录窗口中完成登录；本页会继续跟随同一次登录。';
+
+  @override
+  String get acpAuthVerifyingTitle => '正在验证登录…';
+
+  @override
+  String get acpAuthVerifiedTitle => '已连接';
+
+  @override
+  String acpAuthVerifiedAt(String time) {
+    return '验证于 $time';
+  }
+
+  @override
+  String get acpAuthRecheck => '重新检查';
+
+  @override
+  String get acpAuthCheck => '检查连接';
+
+  @override
+  String get acpAuthCancel => '取消登录';
+
+  @override
+  String get acpAuthCancelCheck => '取消检查';
+
+  @override
+  String get acpAuthCancelling => '正在取消…';
+
+  @override
+  String get acpAuthCancelled => '已取消。';
+
+  @override
+  String get acpAuthFailedTitle => '连接失败';
+
+  @override
+  String get acpAuthTerminalOnly => '该 server 只提供终端登录方式，本版本不支持。';
+
+  @override
+  String get acpAuthUnsupportedOnly => '该 server 只提供本版本尚未实现的登录方式。';
+
+  @override
+  String get acpAuthClosingTitle => '正在收束';
+
+  @override
+  String get acpAuthClosingBody => '协议交互已结束，进程与管道仍在收尾；收束完成前不会开始新的尝试。';
+
+  @override
+  String get acpAuthServerUnknown => '服务端未提供身份信息。';
+
+  @override
+  String get acpAuthMethodSelectHint => '选择登录方式';
+
+  @override
+  String get acpAuthMethodRequired => '请先选择登录方式。';
+
+  @override
+  String get acpAuthRowClosing => '收束中';
+
+  @override
+  String get acpAccountInstallOpen => '打开官方说明';
+
+  @override
+  String get acpAuthNoMethods => '服务端没有提供可用的登录方式。';
+
+  @override
+  String get acpAuthRetry => '重试';
+
+  @override
+  String get acpAuthEditConfig => '编辑配置';
+
+  @override
+  String get acpAuthDone => '完成';
+
+  @override
+  String get acpAuthDiagnostics => '技术细节';
+
+  @override
+  String acpAuthStageLabel(String stage) {
+    return '阶段：$stage';
+  }
+
+  @override
+  String acpAuthCodeLabel(String code) {
+    return '原因：$code';
+  }
+
+  @override
+  String get acpAuthRowUnchecked => '未检查';
+
+  @override
+  String get acpAuthRowChecking => '检查中';
+
+  @override
+  String get acpAuthRowRequired => '需要登录';
+
+  @override
+  String get acpAuthRowAuthenticating => '登录中';
+
+  @override
+  String get acpAuthRowVerifying => '验证中';
+
+  @override
+  String get acpAuthRowVerified => '已连接';
+
+  @override
+  String get acpAuthRowCancelling => '取消中';
+
+  @override
+  String get acpAuthRowCancelled => '已取消';
+
+  @override
+  String get acpAuthRowFailed => '连接失败';
+
+  @override
+  String get acpAccountDetailsSummary => '官方 ACP 接入，无需 API Key。';
+
+  @override
+  String get acpAccountConnectionInfoTitle => '连接信息';
+
+  @override
+  String get acpAccountProviderLabel => '提供方';
+
+  @override
+  String acpAuthFailureSummary(String reason, String stage) {
+    return '$reason（$stage）';
+  }
+
+  @override
+  String get acpFailureCodeStartup => '进程启动失败';
+
+  @override
+  String get acpFailureCodeMissingExecutable => '未找到 server 程序';
+
+  @override
+  String get acpFailureCodeIo => '读写错误';
+
+  @override
+  String get acpFailureCodeUnsupportedVersion => '协议版本不受支持';
+
+  @override
+  String get acpFailureCodeUnsupportedMethod => '登录方式不受支持';
+
+  @override
+  String get acpFailureCodeAuthentication => '登录失败';
+
+  @override
+  String get acpFailureCodeProbe => '连接检查失败';
+
+  @override
+  String get acpFailureCodeProtocol => '协议错误';
+
+  @override
+  String get acpFailureCodeTransport => '传输错误';
+
+  @override
+  String get acpFailureCodeTimeout => '超时';
+
+  @override
+  String get acpFailureCodeResourceLimit => '资源预算已用尽';
+
+  @override
+  String get acpFailureCodeCancelled => '已取消';
+
+  @override
+  String get acpFailureCodeStaleOperation => '操作已被取代';
+
+  @override
+  String get acpFailureCodeConfigChanged => '配置已变更';
+
+  @override
+  String get acpFailureCodeCleanup => '清理失败';
+
+  @override
+  String get acpFailureCodeInternal => '内部错误';
+
+  @override
+  String get acpFailureStageProcess => '进程启动阶段';
+
+  @override
+  String get acpFailureStageConfig => '读取配置阶段';
+
+  @override
+  String get acpFailureStageInitialize => '初始化阶段';
+
+  @override
+  String get acpFailureStageAuthenticate => '登录阶段';
+
+  @override
+  String get acpFailureStageProbe => '连接检查阶段';
+
+  @override
+  String get acpFailureStageClose => '关闭会话阶段';
+
+  @override
+  String get acpFailureStageCleanup => '清理阶段';
+
+  @override
+  String get studioFailureCodeNotInitialized => '尚未初始化';
+
+  @override
+  String get studioFailureCodeRuntimeStopped => '运行时已停止';
+
+  @override
+  String get studioFailureCodeInstanceBusy => '另有操作正在进行';
+
+  @override
+  String get studioFailureCodeInvalidArgument => '请求参数无效';
+
+  @override
+  String get studioFailureCodeNotFound => '未找到';
+
+  @override
+  String get studioFailureCodeBusy => '忙';
+
+  @override
+  String get studioFailureCodeConflict => '冲突';
+
+  @override
+  String get studioFailureCodeStaleRevision => '版本已过期';
+
+  @override
+  String get studioFailureCodePermissionDenied => '权限不足';
+
+  @override
+  String get studioFailureCodeCancelled => '已取消';
+
+  @override
+  String get studioFailureCodeCancellationTooLate => '取消已过晚';
+
+  @override
+  String get studioFailureCodeOverloaded => '负载过高';
+
+  @override
+  String get studioFailureCodeUnavailable => '不可用';
+
+  @override
+  String get studioFailureCodeProtocol => '协议错误';
+
+  @override
+  String get studioFailureCodeStorage => '存储错误';
+
+  @override
+  String get studioFailureCodeUpdate => '更新错误';
+
+  @override
+  String get studioFailureCodeInternal => '内部错误';
+
+  @override
+  String get acpAuthCancellingBody => '正在等待官方登录窗口与其进程结束。';
+
+  @override
+  String get acpAuthCancelledBody => '当前没有进行中的尝试，可重新检查或登录。';
+
+  @override
+  String acpAuthCommandFailure(String reason) {
+    return '请求未被接受。$reason';
+  }
+
+  @override
+  String get acpAuthCommandUnavailable => '请求未能完成。';
+
+  @override
   String get botsOverviewHint => '把会话带到飞书，随时查询、协作与传递文件。';
 
   @override
@@ -4216,6 +4536,219 @@ class AppLocalizationsZh extends AppLocalizations {
 
   @override
   String get settingsSshNextPage => '下一页';
+
+  @override
+  String acpInstallUnsupportedPlatform(String version) {
+    return '此平台没有 $version 的官方受管发行。';
+  }
+
+  @override
+  String get acpFailureStagePrepare => '准备受管服务器';
+
+  @override
+  String get acpFailureCodePreparationRequired => '受管服务器尚未准备';
+
+  @override
+  String get acpFailureCodeInstallationInvalid => '已准备的服务器不完整或已损坏';
+
+  @override
+  String get acpFailureCodeUnsupportedPlatform => '此平台没有官方受管发行';
+
+  @override
+  String get acpFailureCodeServerVersionMismatch => '服务器版本不是受支持的版本';
+
+  @override
+  String get acpInstallFactVersion => '版本';
+
+  @override
+  String get acpInstallFactTarget => '平台';
+
+  @override
+  String get acpInstallFactStage => '阶段';
+
+  @override
+  String get acpInstallFactRetries => '自动重试';
+
+  @override
+  String acpInstallRetryValue(int count) {
+    String _temp0 = intl.Intl.pluralLogic(
+      count,
+      locale: localeName,
+      other: '已重试 $count 次',
+      zero: '没有重试',
+    );
+    return '$_temp0';
+  }
+
+  @override
+  String acpInstallProgressDownloaded(String done, String total) {
+    return '已下载 $done / $total';
+  }
+
+  @override
+  String acpInstallProgressUnknown(String done) {
+    return '已下载 $done，总量未知';
+  }
+
+  @override
+  String acpInstallProgressVerified(String done, String total) {
+    return '已校验 $done / $total';
+  }
+
+  @override
+  String acpInstallProgressVerifiedUnknown(String done) {
+    return '已校验 $done，总量未知';
+  }
+
+  @override
+  String acpInstallProgressExtracted(String done, String total) {
+    return '已解压 $done / $total';
+  }
+
+  @override
+  String acpInstallProgressExtractedUnknown(String done) {
+    return '已解压 $done，总量未知';
+  }
+
+  @override
+  String acpInstallProgressProcessed(String done, String total) {
+    return '已处理 $done / $total';
+  }
+
+  @override
+  String acpInstallProgressProcessedUnknown(String done) {
+    return '已处理 $done，总量未知';
+  }
+
+  @override
+  String acpInstallProgressPercent(int percent) {
+    return '$percent%';
+  }
+
+  @override
+  String acpInstallSpeed(String speed) {
+    return '$speed/秒';
+  }
+
+  @override
+  String get acpInstallStageResolve => '读取官方清单';
+
+  @override
+  String get acpInstallStageWaitForLock => '等待安装锁';
+
+  @override
+  String get acpInstallStageDownload => '下载安装包';
+
+  @override
+  String get acpInstallStageVerify => '校验安装包';
+
+  @override
+  String get acpInstallStageExtract => '解压文件';
+
+  @override
+  String get acpInstallStagePublish => '写入安装目录';
+
+  @override
+  String get acpInstallStageClose => '收束下载';
+
+  @override
+  String get acpInstallStart => '下载并准备';
+
+  @override
+  String get acpInstallRestart => '重新准备';
+
+  @override
+  String get acpInstallCancel => '取消下载';
+
+  @override
+  String get acpInstallCancelling => '正在取消…';
+
+  @override
+  String get acpInstallCancelSharedHint => '准备是共享操作：取消只中止当前准备，不影响已保存的账号。';
+
+  @override
+  String get acpInstallUsePrepared => '使用已准备的服务器';
+
+  @override
+  String acpInstallUsePreparedHint(String version, String target) {
+    return '可显式认领已准备好的 $version（$target）。';
+  }
+
+  @override
+  String get acpInstallReadyTitle => '服务器已就绪';
+
+  @override
+  String get acpInstallReadyBody => '准备不会保存账号，也不会登录。';
+
+  @override
+  String get acpInstallReusedBadge => '复用已安装版本';
+
+  @override
+  String get acpInstallFailureRetry => '重试准备';
+
+  @override
+  String get acpInstallTrustOfficialHttps => '信任边界：官方 HTTPS 来源，未提供发行方摘要。';
+
+  @override
+  String get acpInstallPendingAdmission => '正在受理准备请求…';
+
+  @override
+  String acpInstallCommandFailed(String reason) {
+    return '请求未被接受。$reason';
+  }
+
+  @override
+  String acpInstallFailureSummary(String reason, String stage) {
+    return '$reason（$stage）';
+  }
+
+  @override
+  String get acpInstallFailureCodeUnsupportedPlatform => '当前平台不受支持';
+
+  @override
+  String get acpInstallFailureCodeSourceRejected => '来源被拒绝';
+
+  @override
+  String get acpInstallFailureCodeNetwork => '网络错误';
+
+  @override
+  String get acpInstallFailureCodeTimeout => '超时';
+
+  @override
+  String get acpInstallFailureCodeTooLarge => '安装包超出上限';
+
+  @override
+  String get acpInstallFailureCodeChecksumMismatch => '摘要不一致';
+
+  @override
+  String get acpInstallFailureCodeInvalidArchive => '安装包无效';
+
+  @override
+  String get acpInstallFailureCodeMissingExecutable => '包内缺少 server 程序';
+
+  @override
+  String get acpInstallFailureCodeCacheCorrupt => '现有安装已损坏';
+
+  @override
+  String get acpInstallFailureCodeIo => '文件系统错误';
+
+  @override
+  String get acpInstallFailureCodeBusy => '另有准备操作正在进行';
+
+  @override
+  String get acpInstallFailureCodeStaleOperation => '准备操作已被取代';
+
+  @override
+  String get acpInstallFailureCodeCancelled => '已取消';
+
+  @override
+  String get acpInstallFailureCodeResourceClose => '清理失败';
+
+  @override
+  String get acpAccountTermsOpen => '服务条款';
+
+  @override
+  String get acpAccountTermsTitle => '官方条款';
 
   @override
   String get delegationSettingsTitle => '子智能体分发';

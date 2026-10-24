@@ -153,6 +153,11 @@ class DemoStudioTransport extends StudioTransport
   int _skillsRevision = 1;
   int _accountUsageRevision = 1;
   final Map<String, AccountUsageView> _accountUsages = {};
+  List<AcpAccountSettingsView> _acpAccounts = const [];
+  final DemoAcpAuth _demoAcpAuth = DemoAcpAuth();
+  int _acpInstallRevision = 0;
+  final Map<AcpProviderView, AcpInstallStateView> _acpInstalls = {};
+  final Map<AcpProviderView, Timer> _acpInstallTimers = {};
   int _mcpRevision = 0;
   int _lspRevision = 0;
   int? _lspActivityPercentage = 40;
@@ -501,6 +506,7 @@ class DemoStudioTransport extends StudioTransport
         _settingsRevision,
         SettingsStateData(
           accounts: accounts,
+          acpAccounts: _acpAccounts,
           defaultAccountId: _defaultAccountId ?? accounts.firstOrNull?.id,
           modeModelRoutes: modeRoutes,
           roles: roles,
@@ -1053,6 +1059,314 @@ class DemoStudioTransport extends StudioTransport
   Future<AccountCatalogView> loadAccountCatalog() async => _accountCatalog;
 
   @override
+  Future<AcpAccountCatalogView> loadAcpAccountCatalog() async =>
+      demoAcpAccountCatalogFixture;
+
+  AcpAccountSettingsView _demoAcpAccount(String accountId) {
+    final account = _acpAccounts
+        .where((candidate) => candidate.accountId == accountId)
+        .firstOrNull;
+    if (account == null) {
+      throw StudioFailure(
+        code: StudioFailureCode.notFound,
+        message: 'ACP account is unavailable: $accountId',
+        retryable: false,
+        correlationId: 'demo-acp',
+      );
+    }
+    return account;
+  }
+
+  AcpAuthCommandReply _demoAcpReply(
+    OperationId operationId,
+    AcpAuthSnapshotView snapshot, {
+    CommitDisposition disposition = CommitDisposition.applied,
+  }) {
+    _publishProductPayload(AcpAuthStateChangedPayload(snapshot));
+    return AcpAuthCommandReply(
+      receipt: _demoReceipt(
+        operationId,
+        changed: disposition == CommitDisposition.applied,
+        targets: [_demoStamp('acp-auth', snapshot.revision)],
+        effect: EffectPoint.immediate,
+      ),
+      snapshot: snapshot,
+    );
+  }
+
+  @override
+  Future<SettingsCommandReply> saveAcpAccount(
+    int expectedSettingsRevision,
+    AcpAccountUpdateView account, {
+    required OperationId operationId,
+  }) async {
+    final before = _demoSettingsState();
+    _checkSettingsRevision(expectedSettingsRevision);
+    if (account.accountId.trim().isEmpty || account.name.trim().isEmpty) {
+      throw StudioFailure(
+        code: StudioFailureCode.invalidArgument,
+        message: 'ACP account requires an id and a name',
+        retryable: false,
+        correlationId: 'demo-acp',
+      );
+    }
+    final previous = _acpAccounts
+        .where((candidate) => candidate.accountId == account.accountId)
+        .firstOrNull;
+    final identityChanged =
+        previous == null || previous.provider != account.provider;
+    final saved = AcpAccountSettingsView(
+      accountId: account.accountId,
+      name: account.name,
+      provider: account.provider,
+      connectionRevision: identityChanged
+          ? (previous?.connectionRevision ?? 0) + 1
+          : previous.connectionRevision,
+    );
+    _acpAccounts = [
+      for (final candidate in _acpAccounts)
+        if (candidate.accountId != saved.accountId) candidate,
+      saved,
+    ];
+    _demoAcpAuth.retain(saved);
+    _settingsRevision += 1;
+    return _demoSettingsReply(operationId, before);
+  }
+
+  @override
+  Future<SettingsCommandReply> removeAcpAccount(
+    int expectedSettingsRevision,
+    String accountId, {
+    required OperationId operationId,
+  }) async {
+    final before = _demoSettingsState();
+    _checkSettingsRevision(expectedSettingsRevision);
+    _acpAccounts = [
+      for (final account in _acpAccounts)
+        if (account.accountId != accountId) account,
+    ];
+    _demoAcpAuth.forget(accountId);
+    _settingsRevision += 1;
+    return _demoSettingsReply(operationId, before);
+  }
+
+  @override
+  Future<AcpAuthSnapshotView> readAcpAuthState() async => _demoAcpAuth.snapshot;
+
+  @override
+  Future<AcpAuthCommandReply> startAcpAuth({
+    required OperationId operationId,
+    required String accountId,
+    required int expectedConnectionRevision,
+    required AcpAuthActionView action,
+  }) async {
+    final account = _demoAcpAccount(accountId);
+    if (account.connectionRevision != expectedConnectionRevision) {
+      throw StudioFailure(
+        code: StudioFailureCode.staleRevision,
+        message: 'ACP connection identity changed for $accountId',
+        retryable: false,
+        correlationId: 'demo-acp',
+      );
+    }
+    final snapshot = switch (action) {
+      AcpCheckActionView() => _demoAcpAuth.check(account),
+      AcpAuthenticateActionView(:final methodId) => _demoAcpAuth.authenticate(
+        account,
+        methodId,
+      ),
+    };
+    return _demoAcpReply(operationId, snapshot);
+  }
+
+  @override
+  Future<AcpAuthCommandReply> cancelAcpAuth({
+    required OperationId operationId,
+    required String accountId,
+    required OperationId targetOperationId,
+  }) async {
+    final account = _demoAcpAccount(accountId);
+    final snapshot = _demoAcpAuth.cancel(account, targetOperationId.value);
+    return _demoAcpReply(operationId, snapshot);
+  }
+
+  // -------------------------------------------------------------------------
+  // `acpInstall` demo：只模拟后端发布的阶段与真实形状的进度，不联网、不写盘。
+  // -------------------------------------------------------------------------
+
+  AcpInstallSnapshotView _demoInstallSnapshot() => AcpInstallSnapshotView(
+    revision: _acpInstallRevision,
+    updatedAt: _fixtureTime.millisecondsSinceEpoch ~/ 1000,
+    installations: [
+      for (final entry in _acpInstalls.entries)
+        AcpInstallEntryView(provider: entry.key, state: entry.value),
+    ],
+  );
+
+  void _publishInstall(AcpProviderView provider, AcpInstallStateView state) {
+    _acpInstalls[provider] = state;
+    _acpInstallRevision += 1;
+    _publishProductPayload(
+      AcpInstallStateChangedPayload(_demoInstallSnapshot()),
+    );
+  }
+
+  AcpInstallCommandReply _demoInstallReply(
+    OperationId operationId,
+    AcpProviderView provider,
+  ) => AcpInstallCommandReply(
+    receipt: _demoReceipt(
+      operationId,
+      changed: true,
+      targets: [_demoStamp('acp-install', _acpInstallRevision)],
+      effect: EffectPoint.immediate,
+    ),
+    snapshot: _demoInstallSnapshot(),
+  );
+
+  AcpInstallReleaseView _demoInstallRelease() => const AcpInstallReleaseView(
+    version: '1.4.1',
+    target: 'linux-x86_64',
+    archiveUrl: 'https://dl.google.com/agy-extensions/releases/antigravity-acp-linux-x86_64.zip',
+  );
+
+  static const int _demoInstallTotalBytes = 12582912;
+  static const int _demoInstallStepBytes = 1572864;
+
+  @override
+  Future<AcpInstallSnapshotView> readAcpInstallState() async =>
+      _demoInstallSnapshot();
+
+  @override
+  Future<AcpInstallCommandReply> startAcpInstall({
+    required OperationId operationId,
+    required AcpProviderView provider,
+  }) async {
+    final current = _acpInstalls[provider] ?? const AcpInstallIdleState();
+    if (current.isBusy) {
+      throw StudioFailure(
+        code: StudioFailureCode.busy,
+        message: 'An ACP server preparation is already active',
+        retryable: false,
+        correlationId: 'demo-acp-install',
+      );
+    }
+    final release = _demoInstallRelease();
+    final op = operationId.value;
+    _publishInstall(provider, AcpResolvingState(operationId: op));
+    var step = 0;
+    var completed = 0;
+    _acpInstallTimers[provider]?.cancel();
+    _acpInstallTimers[provider] = Timer.periodic(
+      const Duration(milliseconds: 260),
+      (timer) {
+        step += 1;
+        if (step == 1) {
+          _publishInstall(
+            provider,
+            AcpWaitingForAssetState(operationId: op, release: release),
+          );
+          return;
+        }
+        if (step <= 8) {
+          completed += _demoInstallStepBytes;
+          if (completed > _demoInstallTotalBytes) {
+            completed = _demoInstallTotalBytes;
+          }
+          _publishInstall(
+            provider,
+            AcpDownloadingState(
+              operationId: op,
+              release: release,
+              progress: AcpInstallProgressView(
+                completedBytes: completed,
+                totalBytes: _demoInstallTotalBytes,
+                bytesPerSecond: _demoInstallStepBytes * 4,
+              ),
+              retryCount: step == 4 ? 1 : 0,
+            ),
+          );
+          return;
+        }
+        switch (step) {
+          case 9:
+            _publishInstall(
+              provider,
+              AcpInstallVerifyingState(
+                operationId: op,
+                release: release,
+                progress: const AcpInstallProgressView(
+                  completedBytes: _demoInstallTotalBytes,
+                  totalBytes: _demoInstallTotalBytes,
+                ),
+              ),
+            );
+          case 10:
+            _publishInstall(
+              provider,
+              AcpExtractingState(
+                operationId: op,
+                release: release,
+                progress: const AcpInstallProgressView(
+                  completedBytes: _demoInstallTotalBytes,
+                  totalBytes: _demoInstallTotalBytes,
+                ),
+              ),
+            );
+          case 11:
+            _publishInstall(
+              provider,
+              AcpPublishingState(operationId: op, release: release),
+            );
+          default:
+            timer.cancel();
+            _acpInstallTimers.remove(provider);
+            _publishInstall(
+              provider,
+              AcpInstallReadyState(
+                operationId: op,
+                server: AcpInstalledServerView(
+                  installationId: 'demo-installation-$op',
+                  release: release,
+                  program: '/home/studio/acp-servers/antigravity/1.4.1/program',
+                  readyAt: _fixtureTime.millisecondsSinceEpoch ~/ 1000,
+                ),
+              ),
+            );
+        }
+      },
+    );
+    return _demoInstallReply(operationId, provider);
+  }
+
+  @override
+  Future<AcpInstallCommandReply> cancelAcpInstall({
+    required OperationId operationId,
+    required AcpProviderView provider,
+    required OperationId targetOperationId,
+  }) async {
+    final current = _acpInstalls[provider] ?? const AcpInstallIdleState();
+    if (current.operationId != targetOperationId.value) {
+      throw StudioFailure(
+        code: StudioFailureCode.conflict,
+        message: 'ACP server preparation identity changed',
+        retryable: false,
+        correlationId: 'demo-acp-install',
+      );
+    }
+    _acpInstallTimers.remove(provider)?.cancel();
+    _publishInstall(
+      provider,
+      AcpInstallCancellingState(operationId: targetOperationId.value),
+    );
+    _publishInstall(
+      provider,
+      AcpInstallCancelledState(operationId: targetOperationId.value),
+    );
+    return _demoInstallReply(operationId, provider);
+  }
+
+  @override
   Future<AgentProfilesStateView> readAgentProfilesState() async =>
       readAgentProfilesStateSync();
 
@@ -1586,6 +1900,14 @@ class DemoStudioTransport extends StudioTransport
     s.delegation.mode,
     s.delegation.preference,
     s.permissionMode,
+    {
+      for (final account in s.acpAccounts)
+        account.accountId: [
+          account.name,
+          account.provider.wire,
+          account.connectionRevision,
+        ],
+    },
     {
       for (final p in s.accounts)
         p.id: [
@@ -2780,6 +3102,8 @@ class DemoStudioTransport extends StudioTransport
       AgentProfilesTopic() => AgentProfilesBaseline(
         readAgentProfilesStateSync(),
       ),
+      AcpAuthTopic() => AcpAuthBaseline(_demoAcpAuth.snapshot),
+      AcpInstallTopic() => AcpInstallBaseline(_demoInstallSnapshot()),
       BotsTopic() => BotsBaseline(_demoBotsState()),
     };
     final revision = switch (baseline) {
@@ -2800,6 +3124,8 @@ class DemoStudioTransport extends StudioTransport
       PersistenceBaseline(:final state) => state.revision,
       PersistenceQueueBaseline(:final state) => state.revision,
       AgentProfilesBaseline(:final state) => state.revision,
+      AcpAuthBaseline(:final state) => state.revision,
+      AcpInstallBaseline(:final state) => state.revision,
       BotsBaseline(:final state) => state.revision,
     };
     return ProductTopicBaselineFrame(
@@ -6622,3 +6948,5 @@ SkillsStateSnapshot _demoSkillsState(
     ),
   );
 }
+
+/// demo 内的 argv 值比较：顺序与内容都要一致，才可沿用旧连接身份。

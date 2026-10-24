@@ -229,6 +229,11 @@ final class StudioDriverFacts {
     List<ModeModelRouteView> modeModelRoutes = const [],
     List<RoleSettingsView> roles = const [],
     List<AccountSettingsView> accounts = const [],
+    List<AcpAccountSettingsView> acpAccounts = const [],
+    List<String> accountTemplates = const [],
+    this.acpAuth = const AcpAuthSnapshotView.empty(),
+    required this.acpAuthLoaded,
+    this.acpInstall,
     List<CommandStatus> commands = const [],
     this.settingsReady = false,
     this.persistence = const PersistenceStateSnapshot.ready(),
@@ -241,6 +246,8 @@ final class StudioDriverFacts {
        modeModelRoutes = List.unmodifiable(modeModelRoutes),
        roles = List.unmodifiable(roles),
        accounts = List.unmodifiable(accounts),
+       acpAccounts = List.unmodifiable(acpAccounts),
+       accountTemplates = List.unmodifiable(accountTemplates),
        commands = List.unmodifiable(commands),
        recoveryIssues = List.unmodifiable(recoveryIssues);
 
@@ -267,6 +274,22 @@ final class StudioDriverFacts {
   final List<ModeModelRouteView> modeModelRoutes;
   final List<RoleSettingsView> roles;
   final List<AccountSettingsView> accounts;
+
+  /// ACP 接入配置与认证观察：与 Native 账号并列的独立事实源。
+  final List<AcpAccountSettingsView> acpAccounts;
+  final List<String> accountTemplates;
+  final AcpAuthSnapshotView acpAuth;
+
+  /// `acpAuth` 是否来自**已加载**的 canonical 观察。
+  ///
+  /// 未加载时 [acpAuth] 只是空占位（revision 0 也是合法已加载水位），因此必须用
+  /// 独立事实区分；证据不得由占位快照或缺失条目推断成"未检查"。
+  final bool acpAuthLoaded;
+
+  /// `acpInstall` 的准备观察快照（含 loaded/revision 与各 provider 阶段）。
+  ///
+  /// 与 `acpAuth` 分开：准备事实不能替代认证事实，下载完成也不是已保存。
+  final StudioDriverAcpInstallFacts? acpInstall;
   final List<CommandStatus> commands;
   final bool settingsReady;
   final PersistenceStateSnapshot persistence;
@@ -274,6 +297,73 @@ final class StudioDriverFacts {
   final StudioProject? project;
   final AgentWorkspaceView? workspace;
   final StudioDriverBotsFacts? bots;
+}
+
+/// `acpInstall` 的只读取证事实。
+///
+/// 阶段、进度与失败类别全部来自 typed 状态；[phase] 只是稳定 token，供 Driver
+/// 与验收编排等待真实可见状态，不做业务判定。
+final class StudioDriverAcpInstallFacts {
+  StudioDriverAcpInstallFacts({
+    required this.loaded,
+    required this.revision,
+    required List<StudioDriverAcpInstallEntryFacts> installations,
+  }) : installations = List.unmodifiable(installations);
+
+  final bool loaded;
+  final int revision;
+  final List<StudioDriverAcpInstallEntryFacts> installations;
+}
+
+final class StudioDriverAcpInstallEntryFacts {
+  const StudioDriverAcpInstallEntryFacts({
+    required this.provider,
+    required this.phase,
+    this.operationId,
+    this.stage,
+    this.completedBytes = 0,
+    this.totalBytes,
+    this.bytesPerSecond,
+    this.retryCount = 0,
+    this.version,
+    this.target,
+    this.archiveUrl,
+    this.sha256,
+    this.hasPublisherChecksum = false,
+    this.program,
+    this.reused = false,
+    this.failureCode,
+    this.failureRetryable,
+  });
+
+  final String provider;
+
+  /// 稳定阶段 token：`idle`/`resolving`/`waiting`/`downloading`/`verifying`/
+  /// `extracting`/`publishing`/`closing`/`ready`/`cancelling`/`cancelled`/`failed`。
+  final String phase;
+
+  final String? operationId;
+  final String? stage;
+  final int completedBytes;
+  final int? totalBytes;
+  final int? bytesPerSecond;
+  final int retryCount;
+  final String? version;
+  final String? target;
+
+  /// 冻结的分发地址：官方 canonical 值，不含 userinfo/临时凭据。
+  final String? archiveUrl;
+
+  /// 发行方摘要（可空）；retry/resume 用它核对同一冻结描述符，不以布尔替代身份。
+  final String? sha256;
+
+  final bool hasPublisherChecksum;
+
+  /// 安装后的只读诊断路径；受管启动 argv 由产品固定发行决定，不再对外投影。
+  final String? program;
+  final bool reused;
+  final String? failureCode;
+  final bool? failureRetryable;
 }
 
 final class StudioDriverBotsFacts {
@@ -360,7 +450,9 @@ abstract final class StudioDriverState {
     _query = query;
   }
 
-  static StudioDriverFacts readFacts() => _query?.call() ?? StudioDriverFacts();
+  /// 没有装配 query 时没有任何 canonical 观察：明确标记未加载。
+  static StudioDriverFacts readFacts() =>
+      _query?.call() ?? StudioDriverFacts(acpAuthLoaded: false);
 
   static void publishConversationActivity(ConversationActivityView? view) {
     _conversationActivity = view;
@@ -596,6 +688,33 @@ abstract final class StudioDriverState {
               ],
             },
         ],
+        // 同一“添加账号”入口的 typed 模板 token：Native 用模板 id，ACP 用 provider wire。
+        'nativeTemplates': [
+          for (final template in facts.accountTemplates) template,
+        ],
+        'acpAccounts': [
+          for (final account in facts.acpAccounts)
+            {
+              'accountId': account.accountId,
+              'name': account.name,
+              'provider': account.provider.wire,
+              'connectionRevision': account.connectionRevision,
+            },
+        ],
+        'acpAuth': {
+          'loaded': facts.acpAuthLoaded,
+          'revision': facts.acpAuth.revision,
+          'updatedAt': facts.acpAuth.updatedAt,
+          'accounts': [
+            for (final account in facts.acpAuth.accounts)
+              {
+                'accountId': account.accountId,
+                'connectionRevision': account.connectionRevision,
+                'state': _acpAuthStateJson(account.state),
+              },
+          ],
+        },
+        'acpInstall': _acpInstallFactsJson(facts.acpInstall),
         'roles': [
           for (final role in facts.roles)
             {
@@ -1083,5 +1202,118 @@ final class TimelineScrollDiagnostic {
     'extentAfter': extentAfter,
     'atLiveEdge': atLiveEdge,
     'isScrolling': isScrolling,
+  };
+}
+
+/// ACP 认证状态的只读投影：`kind` 与界面阶段 token 一致，便于 Driver 断言。
+Map<String, Object?> _acpAuthStateJson(AcpAuthStateView state) =>
+    switch (state) {
+      AcpUncheckedState() => {'kind': 'unchecked'},
+      AcpCheckingState(:final operationId) => {
+        'kind': 'checking',
+        'operationId': operationId,
+      },
+      AcpRequiredState(:final server, :final methods) => {
+        'kind': 'required',
+        'server': server == null ? null : _acpServerJson(server),
+        'methods': [
+          for (final method in methods)
+            {
+              'id': method.id,
+              'name': method.name,
+              'kind': method.kind.name,
+              'description': method.description,
+            },
+        ],
+      },
+      AcpAuthenticatingState(:final operationId, :final methodId) => {
+        'kind': 'authenticating',
+        'operationId': operationId,
+        'methodId': methodId,
+      },
+      AcpVerifyingState(:final operationId) => {
+        'kind': 'verifying',
+        'operationId': operationId,
+      },
+      AcpVerifiedState(:final checkedAt, :final server) => {
+        'kind': 'verified',
+        'checkedAt': checkedAt,
+        'server': server == null ? null : _acpServerJson(server),
+      },
+      AcpClosingState(:final operationId, :final failure) => {
+        'kind': 'closing',
+        'operationId': operationId,
+        'failure': failure == null
+            ? null
+            : {
+                'code': failure.code.name,
+                'stage': failure.stage.name,
+                'message': failure.message,
+                'retryable': failure.retryable,
+              },
+      },
+      AcpCancellingState(:final operationId) => {
+        'kind': 'cancelling',
+        'operationId': operationId,
+      },
+      AcpCancelledState() => {'kind': 'cancelled'},
+      AcpFailedState(:final failure) => {
+        'kind': 'failed',
+        'failure': {
+          'code': failure.code.name,
+          'stage': failure.stage.name,
+          'message': failure.message,
+          'retryable': failure.retryable,
+        },
+      },
+    };
+
+Map<String, Object?> _acpServerJson(AcpServerInfoView server) => {
+  'name': server.name,
+  'title': server.title,
+  'version': server.version,
+};
+
+/// ACP 服务器准备事实的只读投影。
+///
+/// [StudioDriverAcpInstallFacts.loaded] 与 `revision` 是 Driver 判断“是否已加载”
+/// 的唯一依据；revision 0 也是合法已加载水位，不能当成缺失。
+Map<String, Object?>? _acpInstallFactsJson(StudioDriverAcpInstallFacts? facts) {
+  if (facts == null) return null;
+  return {
+    'loaded': facts.loaded,
+    'revision': facts.revision,
+    'installations': [
+      for (final entry in facts.installations)
+        {
+          'provider': entry.provider,
+          'phase': entry.phase,
+          'operationId': entry.operationId,
+          'stage': entry.stage,
+          'progress': {
+            'completedBytes': entry.completedBytes,
+            'totalBytes': entry.totalBytes,
+            'bytesPerSecond': entry.bytesPerSecond,
+          },
+          'retryCount': entry.retryCount,
+          'release': entry.version == null
+              ? null
+              : {
+                  'version': entry.version,
+                  'target': entry.target,
+                  'archiveUrl': entry.archiveUrl,
+                  'sha256': entry.sha256,
+                  'hasPublisherChecksum': entry.hasPublisherChecksum,
+                },
+          'program': entry.program,
+          'reused': entry.reused,
+          'failure': entry.failureCode == null
+              ? null
+              : {
+                  'code': entry.failureCode,
+                  'retryable': entry.failureRetryable,
+                },
+        },
+    ],
   };
 }

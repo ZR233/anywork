@@ -1,5 +1,7 @@
 import 'collection_equality.dart';
 
+import 'acp_models.dart';
+import 'acp_install_models.dart';
 import 'agent_profile_models.dart';
 import 'bot_models.dart';
 import 'persistence_models.dart';
@@ -191,6 +193,19 @@ final class AgentProfilesTopic extends ProductTopic {
   int get hashCode => 0x0116;
 }
 
+/// ACP 认证观察：独立版本域，与配置修订和目录修订互不替代。
+///
+/// 只读查询、订阅与页面进入都不启动外部程序；检查、登录与取消是显式命令。
+final class AcpAuthTopic extends ProductTopic {
+  const AcpAuthTopic();
+
+  @override
+  bool operator ==(Object other) => other is AcpAuthTopic;
+
+  @override
+  int get hashCode => 0x0118;
+}
+
 final class BotsTopic extends ProductTopic {
   const BotsTopic();
 
@@ -198,7 +213,20 @@ final class BotsTopic extends ProductTopic {
   bool operator ==(Object other) => other is BotsTopic;
 
   @override
-  int get hashCode => 0x0118;
+  int get hashCode => 0x0119;
+}
+
+/// ACP 官方 server 准备观察：独立版本域，与认证、配置和目录修订互不替代。
+///
+/// 只读查询与订阅都不联网；开始、取消是显式命令。
+final class AcpInstallTopic extends ProductTopic {
+  const AcpInstallTopic();
+
+  @override
+  bool operator ==(Object other) => other is AcpInstallTopic;
+
+  @override
+  int get hashCode => 0x011a;
 }
 
 /// 订阅首帧携带的 canonical 基线 payload；每个 topic 只有自己的领域状态。
@@ -310,10 +338,22 @@ final class AgentProfilesBaseline extends ProductTopicBaselineState {
   final AgentProfilesStateView state;
 }
 
+final class AcpAuthBaseline extends ProductTopicBaselineState {
+  const AcpAuthBaseline(this.state);
+
+  final AcpAuthSnapshotView state;
+}
+
 final class BotsBaseline extends ProductTopicBaselineState {
   const BotsBaseline(this.state);
 
   final BotsStateSnapshot state;
+}
+
+final class AcpInstallBaseline extends ProductTopicBaselineState {
+  const AcpInstallBaseline(this.state);
+
+  final AcpInstallSnapshotView state;
 }
 
 /// 单个 topic 订阅交付的帧。
@@ -441,7 +481,9 @@ sealed class ProductTopicEventPayload {
     PersistenceStateChangedPayload() => const PersistenceTopic(),
     PersistenceQueueStateChangedPayload() => const PersistenceQueueTopic(),
     AgentProfilesStateChangedPayload() => const AgentProfilesTopic(),
+    AcpAuthStateChangedPayload() => const AcpAuthTopic(),
     BotsStateChangedPayload() => const BotsTopic(),
+    AcpInstallStateChangedPayload() => const AcpInstallTopic(),
   };
 }
 
@@ -558,10 +600,22 @@ final class AgentProfilesStateChangedPayload extends ProductTopicEventPayload {
   final AgentProfilesStateView state;
 }
 
+final class AcpAuthStateChangedPayload extends ProductTopicEventPayload {
+  const AcpAuthStateChangedPayload(this.state);
+
+  final AcpAuthSnapshotView state;
+}
+
 final class BotsStateChangedPayload extends ProductTopicEventPayload {
   const BotsStateChangedPayload(this.state);
 
   final BotsStateSnapshot state;
+}
+
+final class AcpInstallStateChangedPayload extends ProductTopicEventPayload {
+  const AcpInstallStateChangedPayload(this.state);
+
+  final AcpInstallSnapshotView state;
 }
 
 /// 单个 root 会话的作用域费用状态。

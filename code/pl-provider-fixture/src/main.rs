@@ -63,6 +63,37 @@ struct Args {
     /// can prove the product reclaims its own tool subtree.
     #[arg(long)]
     tool_peer: bool,
+    /// Run the scenario-owned fake ACP agent instead of the HTTP fixture.
+    ///
+    /// The product starts this as the configured Antigravity program and speaks
+    /// the real ACP handshake over stdin/stdout. Authentication, probe and
+    /// disconnect behaviour come from `--acp-state-dir`, which never touches
+    /// user configuration or credentials.
+    #[arg(long)]
+    acp_stdio: bool,
+    /// Absolute state directory for the ACP fake (behaviour, markers, evidence).
+    #[arg(long, value_name = "ABS_DIR", requires = "acp_stdio")]
+    acp_state_dir: Option<PathBuf>,
+    /// Fixed official Linux argv for the packaged 1.4.1 server (`--uid=<id>`).
+    ///
+    /// The product derives this argv from its own frozen release descriptor, not
+    /// from any registry document. Only the packaged fake ACP agent accepts it, so
+    /// the program starts exactly as the fixed descriptor describes; no other mode
+    /// silently swallows unknown flags and no argv is ever shell-joined.
+    #[arg(long = "uid", value_name = "UID", requires = "acp_stdio")]
+    _uid: Option<String>,
+    /// Serve the controlled fixed 1.4.1 distribution environment for the ACP
+    /// auto-install acceptance instead of the model fixture.
+    ///
+    /// The product reaches it through the standard HTTPS proxy contract; this
+    /// mode imitates only the fixed Google archive response (real ZIP, redirects,
+    /// transfer faults) and the TLS/trust boundary. There is no registry document
+    /// to serve, and no product install logic is re-implemented here.
+    #[arg(long)]
+    acp_install_fixture: bool,
+    /// Absolute state directory for the ACP install peer (control, evidence, TLS).
+    #[arg(long, value_name = "ABS_DIR", requires = "acp_install_fixture")]
+    acp_install_dir: Option<PathBuf>,
     /// Coordination file the stdio peer records its pids into.
     #[arg(long, value_name = "PATH")]
     coord_file: Option<PathBuf>,
@@ -97,14 +128,43 @@ struct Args {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // The product starts the installed package entry with its own fixed argv
+    // (`agy_acp_server.par --uid=` on Linux, `agy_acp_server.exe` on Windows).
+    // This check must come before *every* other argv shortcut: under the official
+    // basename no argv (including `--version` or a fixture flag) may bypass the
+    // fixed-argv judgement and fall back to the ordinary CLI.
+    if let Some(packaged) = pl_provider_fixture::packaged_agent()? {
+        return pl_provider_fixture::run_acp_stdio(packaged).await;
+    }
     // The catalog probe runs exactly `<program> --version`; answer it before clap
     // (which would reject the unknown flag) so the configured server is marked
-    // available and a real language-service query can start it.
+    // available and a real language-service query can start it. This only applies
+    // to the ordinary fixture CLI: the packaged agent never reaches it.
     if std::env::args().skip(1).any(|arg| arg == "--version") {
         println!("anywork-shutdown-lsp {}", env!("CARGO_PKG_VERSION"));
         return Ok(());
     }
     let args = Args::parse();
+    if args.acp_stdio {
+        let state_dir = args
+            .acp_state_dir
+            .clone()
+            .context("--acp-state-dir is required with --acp-stdio")?;
+        return pl_provider_fixture::run_acp_stdio(pl_provider_fixture::AcpStdioOptions {
+            state_dir,
+        })
+        .await;
+    }
+    if args.acp_install_fixture {
+        let state_dir = args
+            .acp_install_dir
+            .clone()
+            .context("--acp-install-dir is required with --acp-install-fixture")?;
+        return pl_provider_fixture::run_acp_install_fixture(
+            pl_provider_fixture::AcpInstallFixtureOptions { state_dir },
+        )
+        .await;
+    }
     if args.mcp_stdio {
         let coord_file = args
             .coord_file
@@ -195,10 +255,10 @@ async fn main() -> Result<()> {
         }
         return Ok(());
     }
-    let scenario = args
-        .scenario
-        .as_deref()
-        .context("--scenario is required without --mcp-stdio/--lsp-stdio/--tool-peer/--feishu")?;
+    let scenario = args.scenario.as_deref().context(
+        "--scenario is required without \
+         --acp-stdio/--acp-install-fixture/--mcp-stdio/--lsp-stdio/--tool-peer/--feishu",
+    )?;
     ensure!(
         GUI_SCENARIOS.contains(&scenario),
         "unknown fixture scenario: {scenario}"
@@ -253,6 +313,12 @@ async fn main() -> Result<()> {
         "shutdown" => gui_shutdown_script(),
         "provider-usage" => gui_script(),
         "wait-events" => gui_wait_events_script(),
+        // The 1.4.1 journey drives the fixed distribution peer
+        // (`--acp-install-fixture`) and never expects model HTTP traffic here.
+        "acp-auto-install" => bail!(
+            "the acp-auto-install scenario runs the fixed 1.4.1 distribution peer \
+             (--acp-install-fixture), not the HTTP fixture"
+        ),
         name if pl_provider_fixture::delegation::Scenario::parse(name).is_some() => Vec::new(),
         value => bail!("unknown fixture scenario: {value}"),
     };

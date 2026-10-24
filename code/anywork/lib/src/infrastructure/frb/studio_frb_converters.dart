@@ -44,6 +44,10 @@ ProductTopicEventPayload _productPayloadFromFrb(
       ),
     frb.BridgeProductEventPayload_AgentProfilesStateChanged(:final field0) =>
       AgentProfilesStateChangedPayload(_agentProfilesStateFromFrb(field0)),
+    frb.BridgeProductEventPayload_AcpAuthStateChanged(:final field0) =>
+      AcpAuthStateChangedPayload(_acpAuthSnapshotFromFrb(field0)),
+    frb.BridgeProductEventPayload_AcpInstallStateChanged(:final field0) =>
+      AcpInstallStateChangedPayload(_acpInstallSnapshotFromFrb(field0)),
     frb.BridgeProductEventPayload_BotsStateChanged(:final field0) =>
       BotsStateChangedPayload(_botsStateFromFrb(field0)),
   };
@@ -128,6 +132,8 @@ ProductTopic _productTopicFromBridge(frb_topic_types.BridgeProductTopic topic) {
       const PersistenceQueueTopic(),
     frb_topic_types.BridgeProductTopic_AgentProfiles() =>
       const AgentProfilesTopic(),
+    frb_topic_types.BridgeProductTopic_AcpAuth() => const AcpAuthTopic(),
+    frb_topic_types.BridgeProductTopic_AcpInstall() => const AcpInstallTopic(),
     frb_topic_types.BridgeProductTopic_Bots() => const BotsTopic(),
   };
 }
@@ -167,6 +173,9 @@ ProductTopic _productPayloadTopicFromBridge(
       const PersistenceQueueTopic(),
     frb.BridgeProductEventPayload_AgentProfilesStateChanged() =>
       const AgentProfilesTopic(),
+    frb.BridgeProductEventPayload_AcpAuthStateChanged() => const AcpAuthTopic(),
+    frb.BridgeProductEventPayload_AcpInstallStateChanged() =>
+      const AcpInstallTopic(),
     frb.BridgeProductEventPayload_BotsStateChanged() => const BotsTopic(),
   };
 }
@@ -206,6 +215,8 @@ frb_topic_types.BridgeProductTopic bridgeProductTopic(ProductTopic topic) {
       const frb_topic_types.BridgeProductTopic.persistenceQueue(),
     AgentProfilesTopic() =>
       const frb_topic_types.BridgeProductTopic.agentProfiles(),
+    AcpAuthTopic() => const frb_topic_types.BridgeProductTopic.acpAuth(),
+    AcpInstallTopic() => const frb_topic_types.BridgeProductTopic.acpInstall(),
     BotsTopic() => const frb_topic_types.BridgeProductTopic.bots(),
   };
 }
@@ -250,6 +261,10 @@ ProductTopicBaselineState _productBaselineFromFrb(
       PersistenceQueueBaseline(_persistenceQueueStateFromFrb(field0)),
     frb_topic_types.BridgeProductBaseline_AgentProfiles(:final field0) =>
       AgentProfilesBaseline(_agentProfilesStateFromFrb(field0)),
+    frb_topic_types.BridgeProductBaseline_AcpAuth(:final field0) =>
+      AcpAuthBaseline(_acpAuthSnapshotFromFrb(field0)),
+    frb_topic_types.BridgeProductBaseline_AcpInstall(:final field0) =>
+      AcpInstallBaseline(_acpInstallSnapshotFromFrb(field0)),
     frb_topic_types.BridgeProductBaseline_Bots(:final field0) => BotsBaseline(
       _botsStateFromFrb(field0),
     ),

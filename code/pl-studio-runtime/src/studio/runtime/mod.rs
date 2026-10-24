@@ -15,6 +15,8 @@ pub type ThreadPreparationObserver =
     std::sync::Arc<dyn Fn(ThreadPreparationProgress) + Send + Sync>;
 
 mod account_usage;
+mod acp_auth;
+mod acp_install;
 mod attachment_drafts;
 mod background_task;
 mod bots_api;
@@ -201,6 +203,10 @@ pub struct StudioRuntime {
     skills: SkillCatalogRuntime,
     thread_modes: crate::mode::ThreadModeManager,
     account_usage: AccountUsageRuntime,
+    /// ACP 接入与认证 owner：连接身份、操作代次、探测资源与独立 `acpAuth` topic。
+    acp_auth: acp_auth::AcpAuthRuntime,
+    /// 官方 server 准备 owner：与认证、Settings 相互独立的共享资产 owner。
+    acp_install: acp_install::AcpInstallRuntime,
     model_performance: ModelPerformanceOwner,
     updater: StudioUpdateRuntime,
     activation: ProjectActivationRuntime,

@@ -6,7 +6,7 @@
 
 ```text
 pl-studio-bridge / pl-studio-server → pl-studio-runtime
-pl-studio-runtime → pl-core / pl-model / pl-tool / pl-protocol / pl-trace
+pl-studio-runtime → pl-core / pl-model / pl-acp / pl-tool / pl-protocol / pl-trace
 pl-model → pl-core
 pl-tool → pl-core / pl-model
 pl-trace → pl-core
@@ -21,6 +21,13 @@ Cargo.toml 为准；Flutter 应用目录本身不是 workspace 成员，其 Rust
 endpoint、模型目录和凭据解析同源，并由 `pl-model` 公开入口的集成测试覆盖；工具层只做参数
 校验、结果编排与媒体归档，不复制第二份协议或凭据事实。
 
+ACP 是外部 Agent 协议，不属于 Native 模型的 HTTP 协议族。pl-acp 消费宿主提供的受监督
+字节流，拥有 ACP 协商、认证请求与类型化结果；它不依赖 Studio、pl-model 或 pl-tool，不读取
+产品配置与凭据，也不创建进程。Studio 装配现有进程监督并拥有受管接入配置、固定 1.4.1
+官方服务器准备、启动资格与认证操作；固定厂商版本政策不下沉到通用 ACP 协议库，
+协议库只执行宿主显式传入的期望 server 版本校验，并在不匹配时阻止后续认证/会话请求，
+协议和生命周期见 [28](./28-acp.md)。
+
 ## 2.2 稳定职责
 
 库 crate 统一使用 `pl-` 前缀；Flutter 应用的 package 名是 `anywork`。
@@ -29,6 +36,7 @@ endpoint、模型目录和凭据解析同源，并由 `pl-model` 公开入口的
 | --- | --- |
 | pl-core | context/model/tool/thread 通用契约、内存 owner、当前状态 checkpoint、不可变 effect，以及产品无关的 Session 内容分页、尾部订阅与详情读取 |
 | pl-model | 账号配置与厂商协议/transport、模型目录、配置值对象、路由、provider 图像 API、媒体编码、缓存、usage 与核心模型会话适配 |
+| pl-acp | 外部 Agent 的 ACP 协商与认证协议、类型化请求结果及错误；不拥有产品状态或物理进程 |
 | pl-provider-fixture | 独立的 loopback 模型与外部平台协议 peer、严格请求校验、场景控制与环境证据，不实现被测产品业务 |
 | pl-tool | 文件、命令、SSH、Git、LSP、MCP、Skill、搜索、图像生成与图像展示、交互、笔记、todo、完成、协作与机器人会话工具 |
 | pl-protocol | Studio 与外围 adapter 使用的产品 wire、DTO、错误和业务状态类型 |

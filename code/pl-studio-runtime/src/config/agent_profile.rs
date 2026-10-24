@@ -409,7 +409,10 @@ fn validate_user_profile_fields(profile_id: &str, profile: &UserAgentProfile) ->
     Ok(())
 }
 
-fn validate_profile_id(profile_id: &str) -> Result<()> {
+/// 校验 Agent Profile 稳定 ID：1..=64 个小写 ASCII 字母/数字/`-`/`_`。
+///
+/// 该函数由配置校验与配置迁移共用同一规则；不复制第二套命名约束，也不放宽到其它字符。
+pub(super) fn validate_profile_id(profile_id: &str) -> Result<()> {
     let valid = !profile_id.is_empty()
         && profile_id.len() <= 64
         && profile_id.bytes().all(|byte| {

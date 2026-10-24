@@ -133,6 +133,7 @@ class AccountEditor extends StatelessWidget {
                     const SizedBox(height: 12),
                     SettingsTextEdit(
                       key: StudioDriverKeys.accountBaseUrl,
+                      inputKey: StudioDriverKeys.accountBaseUrlInput,
                       label: context.l10n.settingsBaseUrl,
                       value: account.baseUrl,
                       enabled: !saving,

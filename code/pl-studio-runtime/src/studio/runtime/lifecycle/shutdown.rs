@@ -849,7 +849,9 @@ mod stage_order {
     pub(super) const PERSISTENCE_OBSERVER: usize = 14;
     pub(super) const SSH: usize = 15;
     pub(super) const AGENT_PROFILES: usize = 16;
-    pub(super) const BOTS: usize = 17;
+    pub(super) const ACP_AUTH: usize = 17;
+    pub(super) const BOTS: usize = 18;
+    pub(super) const ACP_INSTALL: usize = 19;
 }
 
 /// 在常驻槽位上只启动一次真正的 stop 工作；已存在则返回同一共享句柄。
@@ -1227,6 +1229,12 @@ impl StudioRuntime {
         background_task::signal(&self.persistence_observer).await;
         background_task::signal(&self.profiles_forwarder).await;
         self.title_tasks.signal_cancel().await;
+        // ACP 认证操作只接收取消信号：真正的 protocol/进程收束与终态由该 owner 自己的
+        // supervisor 完成，随后在独立阶段有界 join，避免提前释放仍存活的进程。
+        self.acp_auth.signal_cancel();
+        // 官方 server 准备同样只接收取消信号：下载库、校验/解压阻塞任务与发布提交的收束与终态
+        // 由该 owner 自己的 supervisor 完成，随后在独立阶段有界 join。
+        self.acp_install.signal_cancel();
         // 活动 Turn / 模型 / 工具：通过既有的纯取消入口取消每个驻留 Thread 当前执行代次。
         // 这里只发信号，不 join、也不 close——真正的收束仍由后续唯一 `agentFramework` 阶段完成，
         // 因此不会重复 close，也绝不提前释放 writer 或实例锁。先前已封闭准入，取消只是加速在途
@@ -1364,6 +1372,24 @@ impl StudioRuntime {
             "toolRefresh",
             Some(SERVICE_STAGE_LIMIT),
             |runtime| async move { runtime.stop_tool_refresh().await },
+        ));
+        // ACP 认证操作持有官方 server 进程与管道；取消已广播，这里是有界 join。超时保留 owner
+        // 与 join 句柄，令 `Clean` 不可达并可重试，绝不伪报已回收。
+        remote_dependents.push(self.stage_branch(
+            budget,
+            stage_order::ACP_AUTH,
+            "acpAuth",
+            Some(SERVICE_STAGE_LIMIT),
+            |runtime| async move { runtime.acp_auth.cancel_and_join().await },
+        ));
+        // ACP server 准备持有下载、校验/解压阻塞任务、文件锁与发布提交；取消已广播，这里是有界
+        // join。超时保留 owner 与 join 句柄，令 `Clean` 不可达并可重试。
+        remote_dependents.push(self.stage_branch(
+            budget,
+            stage_order::ACP_INSTALL,
+            "acpInstall",
+            Some(SERVICE_STAGE_LIMIT),
+            |runtime| async move { runtime.acp_install.cancel_and_join().await },
         ));
 
         // MCP/LSP 只 join `ensure_service_stops` 已启动的那一次关闭，消费真实 typed 结果；

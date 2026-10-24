@@ -205,6 +205,9 @@ capture 或通用会话临时目录；换位置时同时按本地真实目录调
   覆盖待确认计划重开后的批准、修改和已回答计划不再弹出；Linux 无显示环境时配合 Xvfb。
 - 起始页的 Thread 在提交 prompt 后才创建，不能先等待 Thread ID 再提交。Turn 已 completed
   也可能仍在 flushing；成功等待须包含持久化就绪，不能把 completed 当作等待失败条件。
+- 打开项目后，composer 存在不代表项目选择已完成：它可能仍属于旧页面或尚未绑定项目的
+  起始页。首次业务操作前等待 canonical `selectedProjectId` 非空，且与当前 `project.id`
+  及本次选择的 `project.path` 一致；不要靠重复创建或提交补偿尚未确认的导航状态。
 - 点击命令超时不证明动作未发生。对已有明确前置状态和可验证后置状态的动作，可在只读重连
   后有界确认结果并记录证据；不得重放批准、提交等副作用，也不得吞掉未达成后置状态的错误。
 - 跨进程阶段使用独立不可覆盖的阶段事实或显式握手，不依赖 latest-stage 的短暂值。用于
@@ -222,10 +225,22 @@ capture 或通用会话临时目录；换位置时同时按本地真实目录调
 - 先确认构建模式。profile/AOT 会裁去 Flutter 的诊断属性，不能依靠 render tree 或
   `getWidgetDiagnostics` 必然读到 `textScaler`、减少动画等值；需要只读 VM evaluate 时使用
   独立 debug 原生窗口，沿用完整保留的合成环境，不修改生产入口或 SDK。
+  debug 构建也不保证附带表达式编译服务；`--native-launch` 下若 evaluate 报没有 compilation
+  service，优先用官方 Driver 的 `getRenderObjectDiagnostics` / `GetDiagnosticsTree` 读取
+  真实 `RenderParagraph.textScaler`，不要为诊断修改 SDK 或向生产注入缩放值。
 - Linux 先核对当前 Flutter engine 的设置来源；写 GTK/GSettings 不自动证明 Flutter 收到了
   `disableAnimations`。需要 Portal 时复用系统官方 backend，在启动私有 D-Bus **之前**设置
   独立 XDG/Portal 环境，按已安装版本的正式选择机制启用 backend，再用 Settings.Read 核实。
   不自造 Portal 服务、不修改用户会话偏好。
+- 不把“没有 Portal 服务”当作必然回退到 GNOME GSettings：当前 engine 的 Portal proxy
+  可以创建成功，而逐项 `Read` 失败仍被视为 backend 启动成功，文字缩放因此保持默认值。
+  仅验证缩放时，可按本机 `portals.conf(5)` 在自有 XDG 配置中设置 `default=none`，只为
+  `org.freedesktop.impl.portal.Settings` 选择已安装的官方 backend。使用没有 service
+  directories/includes 的私有 bus，显式启动并持有 backend 与 Portal 进程，避免自动激活
+  无关 Documents/VFS 服务；缺少的业务依赖（例如凭据读取需要 Secret Service）仍须独立
+  隔离提供，不能连接用户服务兜底。先核 Settings.Read 的实际类型和值，再核真实渲染对象与
+  截图；GNOME backend 可在不兼容的显示服务下仅公开 Settings，但须以本机实际日志和
+  返回值确认。更大字号可能切换 shell 到抽屉导航，Driver 应观察真实入口而非继续等隐藏键。
 - 临时目录的所有者必须覆盖整个私有 D-Bus 生命周期：先停止并等待自有服务，再退出 bus，
   最后确认自有挂载已释放并清理目录，避免自动激活的文档/VFS 服务仍持有目录。进程核对使用
   本次 PID 及启动身份，不按名称全局清理。
