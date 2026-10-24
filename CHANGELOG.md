@@ -5,6 +5,32 @@ anywork release notes are generated from Conventional Commits by Release Please.
 以下已发布记录保留当时的名称与行为，不作为当前工程规范；当前架构演进规则见
 [AGENTS.md](AGENTS.md)，数据迁移契约及实现缺口见[存储设计](design/17-studio-storage.md)。
 
+## [6.27.0](https://github.com/ZR233/anywork/compare/v6.26.0...v6.27.0) (2026-10-24)
+
+
+### ⚠ BREAKING CHANGES
+
+* **model:** CompletionRequest.instructions 和 builder instructions/maybe_instructions 已移除，改用 Option<SystemPrompt> 与 system_prompt/maybe_system_prompt。ModelTurnRequest::with_instructions 改为 with_system_prompt(SystemPrompt)。请求固定 body、参数 wire、native options 不再接受顶层 instructions；调用方须使用类型化入口，不提供旧接口别名。
+* **studio:** 移除账号 pricing_mode/pricingEnabled 估算开关，以 billingKind=noCharge 声明不计费；schema 26 保全升级且不将旧关闭估算解释为免费。创建账号使用 initialBillingKind，已有账号使用计费类别窄命令。历史费用不重算，新增不计费账单使用升级后的持久化载荷版本。
+* **studio:** ACP 现役配置与保存 API 移除 program/args，仅执行固定版本的完整受管安装；旧 schema 经备份迁移保留账号身份及无关数据，不执行旧自定义路径。
+* **skills:** SkillProvider 实现须提供 discovery_identity；ThreadSkillTool::new 与 StudioThreadTools::with_skills 改为接收 SkillDiscoverySources，可通过 catalog.discovery_sources() 获取。移除无来源的 FrozenSkillCatalog::empty。工具 wire schema 和持久化格式不变。
+* **studio:** instruction 模块收为内部并删除旧 ExecutionInstructionProfile、InstructionProfile、InstructionBundle 旁路。AgentControlKind::declaration 现在接受 &[AgentSpawnProfile] 并返回 Result<Option<ToolSpec>, AgentSpawnSchemaError>；StudioThreadAssembler::agent_control_tools 接受 &AgentProfilesSnapshot。StudioThreadSpec.agent_controls 改为 owned Vec<Registration>，ThreadPreparation 不再 Clone；AgentProfileCatalog 私有扫描事实不再允许旧外部 struct literal。启用协作控制但缺 Profile service 时显式报错，不再回退通用 schema。仓库内调用方已迁移，GUI/HTTP 请求形状保持不变。
+* **studio:** RemoveAccountModelRequest/removeAccountModel 现在要求稳定且非空的 operationId；模型启用及计费窄命令同样要求该字段。外部调用方须传入操作身份并校验原样回执，明确 CAS 拒绝后的同意图重试保持该 ID，Unknown 结果不得自动重放。创建会话的分发 mode/preference 仍可分别省略并继承默认。
+
+### Features
+
+* **studio:** 支持固定 Antigravity 1.4.1 受管安装与登录 ([#143](https://github.com/ZR233/anywork/issues/143)) ([6da843d](https://github.com/ZR233/anywork/commit/6da843d0c6827c83222b0e558f4576e1f40c0d21))
+* **studio:** 支持子代理自动选模与最终任务评价 ([#146](https://github.com/ZR233/anywork/issues/146)) ([0226f80](https://github.com/ZR233/anywork/commit/0226f8060a6af8a778ac8685633707b497c8c8a2))
+* **studio:** 机器人会话工具支持跨会话交互决议 ([#152](https://github.com/ZR233/anywork/issues/152)) ([891aa67](https://github.com/ZR233/anywork/commit/891aa67449feff81c74deffe37dded9614fc6dbd))
+* **studio:** 统一 Agent 定义与飞书 Markdown 流式卡片 ([#145](https://github.com/ZR233/anywork/issues/145)) ([809ed17](https://github.com/ZR233/anywork/commit/809ed172e0b570bd912a1a177e4e85950a288b7d))
+
+
+### Bug Fixes
+
+* **model:** 统一系统提示词分发与缓存安全更新 ([#154](https://github.com/ZR233/anywork/issues/154)) ([96f5c95](https://github.com/ZR233/anywork/commit/96f5c95d947285ea4c12ef67650fe28714f56436))
+* **skills:** 按调用刷新技能目录并保持来源授权稳定 ([#149](https://github.com/ZR233/anywork/issues/149)) ([ba703ab](https://github.com/ZR233/anywork/commit/ba703abb9e99055737c0ebe082c44e9cfed5da0a))
+* **studio:** 统一不计费账号语义并优化自动分发经济策略 ([#153](https://github.com/ZR233/anywork/issues/153)) ([e8805af](https://github.com/ZR233/anywork/commit/e8805afd77b0d4a6d1ef94346946266cfc005de0))
+
 ## [6.26.0](https://github.com/ZR233/anywork/compare/v6.25.0...v6.26.0) (2026-10-22)
 
 
