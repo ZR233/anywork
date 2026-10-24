@@ -3,7 +3,7 @@
 ## 10.1 目标与所有权
 
 Skills 是可复用的任务知识文档，供 agent 在需要时按需读取。pl-tool 的 skill 模块提供与来源
-无关的 Provider、注册表、发现观测和 Turn 级冻结 catalog；Studio 只拥有进程级 Provider 注册
+无关的 Provider、注册表、固定来源的发现能力和不可变 catalog；Studio 只拥有进程级 Provider 注册
 表、项目 catalog 投影与系统资源目录。系统默认只把自学习产物写入当前项目，避免把项目经验
 污染到用户全局配置。当前不实现在线 Hub、安装市场、文件 watcher、平铺 `<name>.md` 或用户级
 自动写入。
@@ -12,12 +12,13 @@ Skills 是可复用的任务知识文档，供 agent 在需要时按需读取。
 支持文件；通过工具创建、修补和删除项目级 skill；每轮结束后由后台 reviewer 自动沉淀可复用
 经验。
 
-来源注册、冻结 catalog 构造和 Skill 工具安装是公共产品宿主能力，不是 Studio 私有实现细节。
+来源注册、发现能力与 catalog 构造和 Skill 工具安装是公共产品宿主能力，不是 Studio 私有实现细节。
 产品可能从容器 sidecar、只读 Review revision、产品缓存或其他 durable 资源得到 Skill 根；
 这些资源的准备和生命周期属于产品，但 SKILL.md 解析、winner 选择、冻结 generation、正文与
 支持文件读取、激活事实和模型工具语义必须由 PL 统一拥有。任意工具宿主必须能够注册产品拥有的
-Skill source、在一次 Turn 前冻结唯一 catalog，并把同一 catalog 同时用于用户显式调用、模型
-索引和普通 Skill 工具；Provider 的 locator 与读取责任不得被强制收回 Studio，也不得要求产品
+Skill source、在一次 Turn 前冻结发现来源和准备期 catalog，并把准备期 catalog 用于用户显式
+调用与模型索引；普通 Skill 工具在相同来源内按调用重新发现。Provider 的 locator 与读取责任
+不得被强制收回 Studio，也不得要求产品
 通过 JSON 或兼容适配层重建 PL Skill。`Project` 是 winner 排序与产品语义，不代表该 Skill 一定
 位于默认项目目录，也不授权 PL 向默认目录写入另一个 Provider 的状态；产品提供的 Review
 revision、容器卷或缓存快照可以标记为 Project，但仍保持只读；成功激活后的使用统计若存在，
@@ -107,10 +108,10 @@ model_invocable / user_invocable。调用策略字段类型无效时整个 skill
 
 默认工具集包含：
 
-- `skills_list(category?, query?, limit?)`：列出启用且允许模型调用的 skill 简短索引；无
+- `skills_list(category?, query?, limit?)`：重新发现后列出启用且允许模型调用的 skill 简短索引；无
   query 时返回完整、按名称排序的 model-invocable catalog，有 query 时 category 先过滤，再
   使用统一召回器返回正分结果和截断状态。
-- `skill_view(name, filePath?)`：通过冻结 candidate 的 Provider 读取完整 `SKILL.md` 或支持
+- `skill_view(name, filePath?)`：重新发现后，通过本次调用冻结的 winner Provider 读取完整 `SKILL.md` 或支持
   文件。省略 `filePath`、传空字符串、`.` 或 `SKILL.md` 都表示读取主文档；只有真正的支持文件
   路径才必须位于四个支持目录下。始终保持精确名称语义，不接受模糊名称；项目 Skill 的使用
   统计与 Thread Mode 无关，Thread Mode 不属于 Skill，也不能由该工具按需调用。
@@ -120,12 +121,21 @@ model_invocable / user_invocable。调用策略字段类型无效时整个 skill
   只允许把看起来像 JSON string fragment 的模型输出解码一层，再按同一匹配数量规则替换，避免
   JSON/Markdown 二次转义噪声导致可恢复 patch 失败；不维护额外的手写转义替换表。
 
-`skill_view` 永不进入通用只读工具缓存：每次调用都重新通过 Provider 加载正文，并重新校验
-名称和模型调用策略；candidate 的身份或权限已经变化时拒绝陈旧结果并使 Provider 失效。主文档
+`skills_list` 与 `skill_view` 每次调用都在工具装配时固定的来源内重新扫描，不以旧 catalog
+或通用只读工具缓存代替发现。完整的新观测立即反映技能新增、删除、格式失效、平台适用性与
+同名覆盖变化；确认缺失的目录是有效空结果，存在但类型错误的来源根不是空目录。单项格式
+错误保留 warning 并跳过，不阻断其他有效技能；I/O、Provider 故障或持续代次变化导致的
+不完整观测则使本次调用失败，不返回部分
+列表，也不回退到上次 winner。取消必须收束本次来源扫描，不能遗留无 owner 的后台扫描或
+让其结果影响下一次调用。删除仅影响当前目录，不删除用户文件或历史激活事实。
+
+一次 `skill_view` 在发现完成后固定 candidate，主文档、支持文件与使用记录共用同一个
+Provider。每次都重新加载正文，并重新校验名称和模型调用策略；candidate 的身份或权限在
+发现后变化时拒绝陈旧结果并使 Provider 失效。主文档
 响应只返回资源基底和按需读取说明，不递归枚举资源；支持文件由胜出 Provider 的资源读取实现，
 成功读取后的 Provider 专属 view 记录也委托给同一个冻结 Provider。默认文件系统 Provider 只为
 自己按标准 workspace 配置发现的可写 Project Skill 更新 `.usage.json`；宿主显式注册的目录
-视为只读快照，即使来源为 Project 也不写统计。必须保留"冻结 candidate 的 Provider 拥有
+视为只读快照，即使来源为 Project 也不写统计。必须保留"本次调用冻结 candidate 的 Provider 拥有
 副作用和信任根"这一功能语义。本合同不限制主文档或支持文件大小。
 
 ## 10.5 Prompt 注入与召回
@@ -199,12 +209,23 @@ Studio 设置页的 Skills 标签页展示已发布的完整项目 catalog，包
 代次变化时重试一次，再次变化则发布不完整观测。已有完整 catalog 时不完整结果保留 last-good
 并发布 Degraded；首次发现失败时该 Turn 不注入目录、不注册 Skill 工具，但普通任务仍可执行。
 
-每个新代理 Turn 在扫描后冻结 winner、Provider locator 和 revision。Skill catalog 的系统来源
-必须由 Studio 显式传入，不得从 `[skills].user_dir` 推导，非 Studio 调用不传系统目录。
-`skills_list` 与 `skill_view` 只使用冻结 catalog，不在同一 Turn 的模型工具迭代中重新
-discover；`skill_manage` 也以冻结 catalog 校验目标，写入成功后使注册表失效，新结果只在
-下一 Turn 生效。system Skills 只在 Studio 运行时启动时全量刷新，不在项目 discover 时刷新，
-也不设置隐式 filesystem watcher。
+每个新代理 Turn 在扫描后冻结准备期 winner、Provider locator 和 revision，用于提示索引、
+候选建议与用户显式加载。工具装配同时保留固定的 workspace、SkillsConfig、系统目录及完整
+Provider 来源集合，包括本次没有候选的来源。Skill catalog 的系统来源必须由 Studio 显式传入，
+不得从 `[skills].user_dir` 推导，非 Studio 调用不传系统目录。
+
+`skills_list` 与 `skill_view` 按 §10.4 在该固定来源集合内重新发现，每次使用调用自己的取消
+信号。来源能力与发现结果分离：文件增删不会引入后来注册的 Provider、新目录配置或其他
+workspace；远端发现继续持有原远端执行边界。Provider 必须声明进程内非秘密的完整来源能力
+身份，覆盖其实现、信任根与连接边界；不能只用名称或当前候选清单代替。工具授权身份由完整
+有序来源能力与固定配置决定，同源重装配保持稳定，不因内容扫描、取消或失效代次变化而撤销
+已冻结调用。来源或配置权限实质改变仍通过工具重新装配与现有撤销机制生效。每次查看按新
+candidate 重新校验调用策略，不能以旧列表结果授权读取旧 locator。
+
+工具调用的扫描结果不隐式发布 Settings revision、不重写准备期提示或历史工具输出。
+`skill_manage` 仍以准备期 catalog 校验目标并遵守 workspace 写权限，写入成功后使注册表失效，
+结果在同一 Turn 的下一次 list/view 即可见。system Skills 只在 Studio 运行时启动时全量刷新，
+不在项目 discover 时刷新，也不设置隐式 filesystem watcher。
 
 ## 10.7 自学习
 

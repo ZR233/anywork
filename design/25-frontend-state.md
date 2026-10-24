@@ -6,6 +6,12 @@ Rust 持有业务事实；应用实例持有纯 Dart Client；Riverpod 适配只
 [18](./18-studio-state.md)，呈现与阅读位置见 [19](./19-studio-ui.md)，验证边界见
 [24](./24-testing.md)。规范不把源码实现或纯 Dart 测试等同于真实 native 与平台验收。
 
+外部前端的受众授权与公开产物归 [29](./29-conversation-publication.md)。Rust 状态快照
+提供 typed 绑定/投递摘要，正文和产物仍走同一 Timeline；Client 不增加另一份全文或发送
+队列。绑定 revision、输出授权代次、内容 revision 和渠道操作状态分别归并，不能从
+Thread idle 或文本保存成功推导飞书已送达。GUI 只提交显式暂停/恢复/关闭同步意图，
+以 canonical 回执更新，不本地切布尔值冒充撤权。观察 lease 的释放不停止外部前端 owner。
+
 ## 25.1 分层与应用实例
 
 ```mermaid
@@ -73,6 +79,38 @@ typed code 与 correlation，不能困在 Widget 的局部等待标志里。显�
 
 配置与 catalog 的 revision 独立；Thread model route revision 是 route extension 的 CAS，
 不是 Thread 通知序号。`saved` 与执行终态独立。页查询不推进订阅基线，不存在用窗口版本猜测分页回执的语义。owner 更换后必须接受新 baseline，旧 epoch 的回执不能由新 epoch 满足。
+
+ACP 账号配置与认证观察也属于独立资源。Client 的“保存并连接”先消费 canonical 配置回执，
+再提交认证检查；后一步失败不得撤销前一步成功或清空草稿。认证帧与命令响应进入同一 reducer，
+按 owner/revision 与 operation 身份收敛，不靠 Widget 的 loading 布尔值推断已登录。认证观察
+投影到账号时还须匹配其 connection revision；跨资源帧乱序期间，不能把旧连接的成功用于新配置。
+Client 必须实际持有相应 topic 订阅，不能以只观察本地 store 代替订阅建立。Accounts
+可见需求拥有 `acpAuth` 观察租约；离页、重建或返回不取消登录、不重启检查，重新观察读取
+当前基线。交互呈现见 [19](./19-studio-ui.md)，认证语义见 [28](./28-acp.md)。
+认证事件可先于 start 命令响应到达；一旦 canonical 状态提供当前 operation 身份，取消必须
+可独立提交，不能被 start 的本地 busy 标志或命令队列阻塞。命令回执仍经同一 reducer 收敛。
+已加载认证快照的水位同时参与 MutationBoard 的 `acp-auth` 资源观察，使用当前 runtime owner
+epoch；topic 名 `acpAuth` 与回执资源名不混用。命令响应与先到事件都通过同一 canonical
+观察满足回执，不能只更新画面而把已确认命令永久留在 awaiting-observation，也不能在退出时
+直接丢弃 pending 操作或用人工成功标志伪造观察完成。
+
+ACP 安装有独立 typed domain、命令与 `acpInstall` 观察租约，回执资源为 `acp-install`。
+已加载快照含 revision 0 也必须按当前 owner epoch 提交 MutationBoard 观察。开始受理与
+安装终态分开，取消走独立 lane；页面不等待长任务 future 推测状态，不拥有下载关闭权。
+取消去重以 provider 与目标 operation 为键：同一目标的在途重复请求拒绝；若 canonical 已
+推进到新操作，旧操作尚未返回的取消回执不得阻止取消新操作。每个在途命令仍由 Client
+拥有并在关闭时 join，旧回执不能清除新目标的 pending 或回退 canonical 状态。
+离页只移除自己的订阅，返回消费 baseline；runtime 关闭才收束安装。进度不是 Settings、
+认证或草稿事实，不能通过频繁推进设置版本模拟刷新。
+
+准备结果按 provider、operation 和草稿意图绑定，终态保留 operation 身份。仅匹配当前
+意图才能取得保存资格；草稿不持有可编辑 program/argv、来源或版本选择，取消表单或另建
+草稿后的迟到结果不得回写。另一草稿可
+通过明确的使用准备结果动作绑定当前已就绪安装，不因同品牌或路径相似自动认领。准备不
+自动保存账号；保存与连接继续沿用既有动作与独立成功事实。UI 不补造未知总量、速度、阶段
+或来源资格；固定版本来自模板 supportedVersion，不以客户端常量决定启动。已有账号的
+安装缺失/损坏与认证错误分别表达，改名不改变连接代次、不自动准备。Client/adapter 必须
+完整消费 typed 状态与错误，不靠文本解析或 raw JSON 兼容。
 
 ## 25.4 观察与导航
 

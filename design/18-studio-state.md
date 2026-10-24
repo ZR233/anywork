@@ -14,6 +14,29 @@ owner。进程运行期间 Project、Thread、Agent、Workflow、Recovery 和服
 
 ## 18.2 公共 snapshot
 
+外部前端受众及投递摘要是 Studio 产品状态，见 [29](./29-conversation-publication.md)。
+Thread 级快照携带当前绑定的 typed 安全摘要，正文/公开产物仍由 Timeline 提供，不能
+把完整正文放入状态流。绑定、内容保存、执行状态和平台送达各有水位及生命周期，不从
+Thread idle 推导渠道成功；读取快照不发消息，恢复/暂停/撤权仅由显式命令改变受众。
+
+通用 `StudioError` 保持稳定的 code、message、retryable、correlationId 与可选 details JSON
+错误体。Rust 的动态详情字段为 `Option<Box<serde_json::Value>>`，避免协议 SDK 的 JSON feature
+合并放大每条错误返回值；这不改变 JSON 形状、空值省略规则或 FRB 的脱敏详情契约。
+
+ACP 认证使用独立 `acpAuth` topic、canonical baseline 与 revision；只读查询不启动程序，
+不检查凭据。保存/删除属于 Settings 命令，检查连接、登录与取消属于认证操作命令，返回
+稳定 operation 身份并由状态流确认进展。认证后台先验证产品固定 1.4.1 安装，再派生进程；
+该前置验证不下载、不进入 Settings 提交锁，缺失/损坏/平台不支持均 typed 失败。一个接入同时一个操作，相关配置变更、删除或退出
+撤销旧代次，迟到结果不能回写。认证 owner 纳入统一早期取消与 shutdown/join，页面观察
+不拥有其关闭权；状态、成功判定及失败保存合同见 [28](./28-acp.md)。
+
+ACP server 准备使用独立 `acpInstall` topic、canonical baseline 与 revision；读取不联网、
+不扫描或修复安装。显式开始/取消命令由安装 owner 持有，同 provider/宿主目标同一时刻
+一个操作，所有已受理状态包括终态保留 operation 身份。准备不保存账号、不启动认证，
+页面仅拥有观察租约；退出必须封闭准入并收束下载、阻塞文件任务及锁，纳入统一关闭报告。
+版本和来源只由内置清单确定，命令不接受用户 program/args 或版本。阶段、来源和发布成功条件
+见 [28](./28-acp.md)，文件保留边界见 [17](./17-studio-storage.md)。
+
 账号用量刷新按 account 发布独立的成功、失败、缺少凭据或不支持状态。单个账号
 查询失败仍是本次观察的有效结果，不丢弃其他账号的新结果，也不升级成所有卡片共享的
 命令错误；只有观察协调或持久化失败才使整个刷新命令失败。
@@ -122,7 +145,7 @@ revision 在空状态缓存淘汰、重新订阅及恢复之间也不得回退�
 
 产品订阅以 typed topic 表达领域，项目 Skills 携带 `projectId`，会话费用携带
 `rootThreadId`；不提供无作用域的 GUI 全事件订阅。全局目录、Settings、Recovery、
-MCP、LSP、Mode catalog、Account usage、模型统计、Updater、持久化状态与队列、
+MCP、LSP、Mode catalog、Account usage、ACP auth/install、模型统计、Updater、持久化状态与队列、
 配置级 Agent Profiles 各自是独立职责。无关领域不进入订阅者的有效缓冲，不因无关更新
 让该订阅 lag。通道只分发 owner 已发布的事实，不持有另一套业务投影。
 

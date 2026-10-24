@@ -14,6 +14,12 @@ Session 只提供无状态 keyset 页、最新端订阅与按身份详情，不�
 不再有 ChatView 几何窗口、Latest/Around 聚焦、双向对端裁剪、窗口下标 Splice、全文展开
 意图或等待窗口落位的操作回执。缓存退出不构成事实删除。
 
+Studio 公开产物沿 [29](./29-conversation-publication.md) 的受信发布回执进入 typed
+ThreadItem，与文本共用身份、顺序、revision、saved 和 history，不从普通工具归档猜产物。
+GUI 使用可靠资源引用读取原件，不解析工作区路径。飞书等外部前端消费授权投影与有界
+详情，另持投递游标；tail 基线不是可靠外发队列或全历史授权。外部显示 Full/Truncated
+不改变本 Timeline 正文、省略声明、保存水位或 GUI 可读取的完整内容。
+
 SDK-only Client 拥有内容连接、版本基线、查询取消与重连；当前展示 lease 将 typed 内容
 投影为库的 Message，唯一已加载消息集合由 InMemoryChatController 持有。不额外保留完整
 rows/window/body 集合后逐帧做整表差异。库的内部消费列表不成为应用可写事实源。

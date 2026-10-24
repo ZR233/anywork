@@ -5,6 +5,9 @@
 Pure-Lang 是自然语言编译器：接收自然语言需求，将其编译为可执行的计划、代码生成意图与后续动作建议。
 anywork 桌面应用的唯一业务核心是 pl-studio-runtime 内的 Studio 运行时；Flutter/FRB 桌面端与独立
 HTTP server 只是两个 transport，共享同一 runtime，不拥有第二套业务状态。
+飞书适配器是同一 Studio 会话的外部前端：入站使用普通会话命令，出站消费明确受众的
+公开文本和产物投影；不让正常回复依赖模型发送工具，不新增执行循环或完整聊天历史。
+公开输出契约见 [29](./29-conversation-publication.md)，平台投递见 [27](./27-bots.md)。
 
 ## 1.2 运行路径
 
@@ -23,6 +26,8 @@ HTTP → pl-studio-server ───┘                                  ↓
 ## 1.3 核心概念与事实源
 
 - Thread 是通用执行 owner：每个 Thread 独占模型会话、工具注册表和工具实例。
+- 普通 root、飞书 root 与 child 均由 Studio 的 Agent 定义进入统一指令装配；Agent 角色与
+  Mode 执行方式正交，渠道不拥有执行循环。定义、冻结与可派发边界见 [12](./12-collaboration.md)。
 - Turn 是一次输入驱动的有界执行；model attempt 与工具 task 保存独立生命周期。
 - 通用上下文条目包含角色、来源、文本、资源引用、不透明内容及工具调用关联。
 - Item、Agent Profile、Mode、workflow 和 Plan 是产品概念，由 Studio 从保存的事实投影。
