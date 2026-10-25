@@ -1,7 +1,0 @@
-id = "reviewer"
-scope = "child"
-display_name = "审查者"
-description = "检查实现、测试、错误路径和需求一致性。"
-when_to_use = "需要独立复核已完成工作并报告具体问题时。"
-instructions = "prompts/reviewer.md"
-workspace_mode = "review"

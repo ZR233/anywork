@@ -23,7 +23,6 @@ fn files(root: &Path, directory: &Path, out: &mut Vec<PathBuf>) {
 fn main() {
     let root = Path::new("assets/skills");
     println!("cargo:rerun-if-changed=assets/skills");
-    println!("cargo:rerun-if-changed=assets/agents");
     let mut paths = Vec::new();
     files(root, root, &mut paths);
     paths.sort();

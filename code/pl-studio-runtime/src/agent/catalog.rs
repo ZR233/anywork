@@ -1,28 +1,85 @@
-//! Embedded declarations shared by root Agent selection and the child Profile view.
+//! Built-in declarations shared by root Agent selection and the child Profile view.
 
-use std::collections::{BTreeMap, BTreeSet};
-use std::path::{Component, Path};
+use std::collections::BTreeSet;
 use std::sync::OnceLock;
 
 use pl_protocol::{AgentWorkspaceMode, PureError};
-use rust_embed::Embed;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 
 use super::definition::{
     AgentDefinitionIdentity, AgentDefinitionOrigin, AgentDefinitionScope, AgentRootEntry,
     AgentUsageBinding,
 };
 
-#[derive(Embed)]
-#[folder = "assets/agents/"]
-struct BundledAgents;
-
 static CATALOG: OnceLock<std::result::Result<Vec<BuiltinAgentDefinition>, AgentCatalogError>> =
     OnceLock::new();
 
-/// Typed product-resource failure; startup must not treat this as damaged user data.
+const DECLARATIONS: [Declaration; 6] = [
+    Declaration {
+        id: "executor",
+        scope: DeclarationScope::Child,
+        entry: None,
+        display_name: "执行者",
+        description: "实施明确、边界清楚的工程任务。",
+        when_to_use: "已有目标和范围，需要修改与验证代码时。",
+        instructions: include_str!("prompts/executor.md"),
+        workspace_mode: Some(AgentWorkspaceMode::Directory),
+    },
+    Declaration {
+        id: "explorer",
+        scope: DeclarationScope::Child,
+        entry: None,
+        display_name: "探索者",
+        description: "只读探索代码、文档和现场事实。",
+        when_to_use: "需要快速定位边界、依赖、实现入口或验证事实时。",
+        instructions: include_str!("prompts/explorer.md"),
+        workspace_mode: Some(AgentWorkspaceMode::Unrestricted),
+    },
+    Declaration {
+        id: "reviewer",
+        scope: DeclarationScope::Child,
+        entry: None,
+        display_name: "审查者",
+        description: "检查实现、测试、错误路径和需求一致性。",
+        when_to_use: "需要独立复核已完成工作并报告具体问题时。",
+        instructions: include_str!("prompts/reviewer.md"),
+        workspace_mode: Some(AgentWorkspaceMode::Review),
+    },
+    Declaration {
+        id: "root:feishu",
+        scope: DeclarationScope::Root,
+        entry: Some(AgentRootEntry::Bot),
+        display_name: "飞书主智能体",
+        description: "通过已验证飞书入口处理用户请求并在原会话回复。",
+        when_to_use: "可信飞书机器人归属的根会话。",
+        instructions: include_str!("prompts/feishu.md"),
+        workspace_mode: None,
+    },
+    Declaration {
+        id: "root:main",
+        scope: DeclarationScope::Root,
+        entry: Some(AgentRootEntry::Studio),
+        display_name: "主智能体",
+        description: "接收用户请求并对整体任务负责。",
+        when_to_use: "普通 Studio 会话的用户入口。",
+        instructions: include_str!("prompts/main.md"),
+        workspace_mode: None,
+    },
+    Declaration {
+        id: "worktree_executor",
+        scope: DeclarationScope::Child,
+        entry: None,
+        display_name: "Worktree 执行者",
+        description: "在独立 Git worktree 中实施明确任务。",
+        when_to_use: "需要物理隔离修改，并由主代理审查、整合和清理时。",
+        instructions: include_str!("prompts/worktree_executor.md"),
+        workspace_mode: Some(AgentWorkspaceMode::Worktree),
+    },
+];
+
+/// Typed built-in catalog failure; startup must not treat this as damaged user data.
 #[derive(Debug, Clone, thiserror::Error)]
-#[error("invalid bundled Agent declarations: {message}")]
+#[error("invalid built-in Agent declarations: {message}")]
 pub(crate) struct AgentCatalogError {
     message: String,
 }
@@ -46,29 +103,27 @@ pub(crate) struct BuiltinAgentDefinition {
     pub workspace_mode: Option<AgentWorkspaceMode>,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(rename_all = "snake_case", deny_unknown_fields)]
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(rename_all = "snake_case")]
 struct Declaration {
-    id: String,
+    id: &'static str,
     scope: DeclarationScope,
-    #[serde(default)]
     entry: Option<AgentRootEntry>,
-    display_name: String,
-    description: String,
-    when_to_use: String,
-    instructions: String,
-    #[serde(default)]
+    display_name: &'static str,
+    description: &'static str,
+    when_to_use: &'static str,
+    instructions: &'static str,
     workspace_mode: Option<AgentWorkspaceMode>,
 }
 
-#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 enum DeclarationScope {
     Root,
     Child,
 }
 
-/// Returns the validated embedded catalog. The first caller publishes either the complete
+/// Returns the validated built-in catalog. The first caller publishes either the complete
 /// immutable catalog or its error; no caller can observe a partially loaded declaration set.
 pub(crate) fn definitions() -> Result<&'static [BuiltinAgentDefinition], PureError> {
     definitions_typed().map_err(|error| PureError::ConfigError(error.to_string()))
@@ -88,23 +143,9 @@ pub(crate) fn child_ids() -> Result<BTreeSet<String>, PureError> {
         .collect())
 }
 
-/// Validates product-required root entries before configuration recovery or publication starts.
+/// Validates the complete built-in catalog before configuration recovery or publication starts.
 pub(crate) fn validate_startup_entries() -> Result<(), AgentCatalogError> {
-    let definitions = definitions_typed()?;
-    for entry in [AgentRootEntry::Studio, AgentRootEntry::Bot] {
-        let count = definitions
-            .iter()
-            .filter(|definition| {
-                definition.identity.usage_binding == AgentUsageBinding::RootEntry(entry)
-            })
-            .count();
-        if count != 1 {
-            return Err(AgentCatalogError::invalid(format!(
-                "trusted product entry `{entry:?}` resolves to {count} root declarations; expected exactly one"
-            )));
-        }
-    }
-    Ok(())
+    definitions_typed().map(|_| ())
 }
 
 pub(crate) fn root_definition(
@@ -115,7 +156,7 @@ pub(crate) fn root_definition(
         .find(|definition| definition.identity.usage_binding == AgentUsageBinding::RootEntry(entry))
         .ok_or_else(|| {
             PureError::ConfigError(format!(
-                "trusted product entry `{entry:?}` has no bundled root Agent declaration"
+                "trusted product entry `{entry:?}` has no built-in root Agent declaration"
             ))
         })
 }
@@ -130,57 +171,22 @@ fn definitions_typed() -> Result<&'static [BuiltinAgentDefinition], AgentCatalog
 }
 
 fn load() -> anyhow::Result<Vec<BuiltinAgentDefinition>> {
-    let mut resources = BTreeMap::new();
-    let mut paths = BundledAgents::iter().collect::<Vec<_>>();
-    paths.sort_unstable();
-    for path in paths {
-        let asset = BundledAgents::get(&path)
-            .ok_or_else(|| anyhow::anyhow!("embedded Agent resource disappeared: {path}"))?;
-        let contents = asset.data.into_owned();
-        match Path::new(path.as_ref())
-            .extension()
-            .and_then(|value| value.to_str())
-        {
-            Some("toml" | "md") => {
-                resources.insert(path.to_string(), contents);
-            }
-            _ => anyhow::bail!("unsupported embedded Agent resource: {path}"),
-        }
-    }
-
-    let mut definitions = Vec::new();
+    let mut definitions = Vec::with_capacity(DECLARATIONS.len());
     let mut ids = BTreeSet::new();
-    for (path, bytes) in resources.iter().filter(|(path, _)| path.ends_with(".toml")) {
-        let text = std::str::from_utf8(bytes)
-            .map_err(|_| anyhow::anyhow!("Agent declaration is not UTF-8: {path}"))?;
-        let declaration: Declaration = toml::from_str(text)
-            .map_err(|error| anyhow::anyhow!("invalid Agent declaration {path}: {error}"))?;
-        validate_declaration(&declaration, path)?;
-        if !ids.insert(declaration.id.clone()) {
-            anyhow::bail!("duplicate bundled Agent id `{}`", declaration.id);
+    for declaration in &DECLARATIONS {
+        validate_declaration(declaration)?;
+        if !ids.insert(declaration.id) {
+            anyhow::bail!("duplicate built-in Agent id `{}`", declaration.id);
         }
-        let instruction_path = validate_instruction_path(&declaration.instructions)?;
-        let instruction_bytes = resources.get(instruction_path).ok_or_else(|| {
-            anyhow::anyhow!(
-                "Agent `{}` references missing instruction resource `{instruction_path}`",
-                declaration.id
-            )
-        })?;
-        let instructions = std::str::from_utf8(instruction_bytes)
-            .map_err(|_| anyhow::anyhow!("Agent instructions are not UTF-8: {instruction_path}"))?
-            .trim()
-            .to_owned();
-        if instructions.is_empty() {
-            anyhow::bail!("Agent `{}` has empty instructions", declaration.id);
-        }
-        let revision = content_revision(&declaration, &instructions)?;
+        let instructions = declaration.instructions.trim();
+        let revision = content_revision(declaration, instructions)?;
         let usage_binding = match (declaration.scope, declaration.entry) {
             (DeclarationScope::Root, Some(entry)) => AgentUsageBinding::RootEntry(entry),
             (DeclarationScope::Child, None) => AgentUsageBinding::Child,
-            _ => anyhow::bail!("invalid Agent usage binding in {path}"),
+            _ => anyhow::bail!("invalid usage binding for Agent `{}`", declaration.id),
         };
         let identity = AgentDefinitionIdentity {
-            id: declaration.id,
+            id: declaration.id.to_owned(),
             scope: declaration.scope.into(),
             usage_binding,
             revision,
@@ -188,77 +194,88 @@ fn load() -> anyhow::Result<Vec<BuiltinAgentDefinition>> {
         };
         definitions.push(BuiltinAgentDefinition {
             identity,
-            display_name: declaration.display_name,
-            description: declaration.description,
-            when_to_use: declaration.when_to_use,
-            instructions,
+            display_name: declaration.display_name.to_owned(),
+            description: declaration.description.to_owned(),
+            when_to_use: declaration.when_to_use.to_owned(),
+            instructions: instructions.to_owned(),
             workspace_mode: declaration.workspace_mode,
         });
     }
     if definitions.is_empty() {
-        anyhow::bail!("embedded Agent declaration catalog is empty");
+        anyhow::bail!("built-in Agent declaration catalog is empty");
+    }
+    for entry in [AgentRootEntry::Studio, AgentRootEntry::Bot] {
+        let count = DECLARATIONS
+            .iter()
+            .filter(|declaration| {
+                declaration.scope == DeclarationScope::Root && declaration.entry == Some(entry)
+            })
+            .count();
+        anyhow::ensure!(
+            count == 1,
+            "trusted product entry `{entry:?}` has {count} root declarations; expected exactly one"
+        );
     }
     definitions.sort_by(|left, right| left.identity.id.cmp(&right.identity.id));
     Ok(definitions)
 }
 
-fn validate_declaration(declaration: &Declaration, path: &str) -> anyhow::Result<()> {
+fn validate_declaration(declaration: &Declaration) -> anyhow::Result<()> {
     let id_valid = match declaration.scope {
         DeclarationScope::Root => declaration
             .id
             .strip_prefix("root:")
             .is_some_and(valid_agent_id),
         DeclarationScope::Child => {
-            declaration.id != crate::config::ROOT_AGENT_ROUTE_KEY && valid_agent_id(&declaration.id)
+            declaration.id != crate::config::ROOT_AGENT_ROUTE_KEY && valid_agent_id(declaration.id)
         }
     };
     if !id_valid {
-        anyhow::bail!("Agent declaration {path} has an invalid id for its scope");
+        anyhow::bail!(
+            "Agent declaration `{}` has an invalid id for its scope",
+            declaration.id
+        );
     }
     match (declaration.scope, declaration.entry) {
         (DeclarationScope::Root, Some(_)) | (DeclarationScope::Child, None) => {}
         (DeclarationScope::Root, None) => {
-            anyhow::bail!("root Agent declaration {path} must bind one trusted product entry")
+            anyhow::bail!(
+                "root Agent declaration `{}` must bind one trusted product entry",
+                declaration.id
+            )
         }
         (DeclarationScope::Child, Some(_)) => {
-            anyhow::bail!("child Agent declaration {path} cannot bind a root product entry")
+            anyhow::bail!(
+                "child Agent declaration `{}` cannot bind a root product entry",
+                declaration.id
+            )
         }
     }
     for (field, value) in [
-        ("display_name", declaration.display_name.as_str()),
-        ("description", declaration.description.as_str()),
-        ("when_to_use", declaration.when_to_use.as_str()),
+        ("display_name", declaration.display_name),
+        ("description", declaration.description),
+        ("when_to_use", declaration.when_to_use),
     ] {
         if value.trim().is_empty() {
-            anyhow::bail!("Agent declaration {path} has empty {field}");
+            anyhow::bail!("Agent declaration `{}` has empty {field}", declaration.id);
         }
     }
-    match (declaration.scope, declaration.workspace_mode) {
-        (DeclarationScope::Root, None) | (DeclarationScope::Child, Some(_)) => Ok(()),
-        (DeclarationScope::Root, Some(_)) => {
-            anyhow::bail!("root Agent declaration {path} cannot define a child workspace mode")
-        }
-        (DeclarationScope::Child, None) => {
-            anyhow::bail!("child Agent declaration {path} must define a workspace mode")
-        }
-    }
-}
-
-fn validate_instruction_path(path: &str) -> anyhow::Result<&str> {
-    if path.is_empty() || path.contains('\\') || path.contains(':') || Path::new(path).is_absolute()
-    {
-        anyhow::bail!("Agent instruction path is not a normalized relative path");
-    }
-    if Path::new(path)
-        .components()
-        .any(|component| !matches!(component, Component::Normal(_)))
-    {
-        anyhow::bail!("Agent instruction path is not a normalized relative path");
-    }
-    if !path.starts_with("prompts/") || !path.ends_with(".md") {
-        anyhow::bail!("Agent instructions must reference a Markdown file below prompts/");
-    }
-    Ok(path)
+    anyhow::ensure!(
+        !declaration.instructions.trim().is_empty(),
+        "Agent declaration `{}` has empty instructions",
+        declaration.id
+    );
+    anyhow::ensure!(
+        declaration.scope != DeclarationScope::Root || declaration.workspace_mode.is_none(),
+        "root Agent declaration `{}` cannot define a child workspace mode",
+        declaration.id
+    );
+    anyhow::ensure!(
+        declaration.scope != DeclarationScope::Child || declaration.workspace_mode.is_some(),
+        "child Agent declaration `{}` must define a workspace mode",
+        declaration.id
+    );
+    Ok(())
 }
 
 fn valid_agent_id(id: &str) -> bool {
@@ -283,12 +300,12 @@ fn content_revision(declaration: &Declaration, instructions: &str) -> anyhow::Re
         workspace_mode: Option<AgentWorkspaceMode>,
     }
     let revision = Revision {
-        id: &declaration.id,
+        id: declaration.id,
         scope: declaration.scope,
         entry: declaration.entry,
-        display_name: &declaration.display_name,
-        description: &declaration.description,
-        when_to_use: &declaration.when_to_use,
+        display_name: declaration.display_name,
+        description: declaration.description,
+        when_to_use: declaration.when_to_use,
         instructions,
         workspace_mode: declaration.workspace_mode,
     };

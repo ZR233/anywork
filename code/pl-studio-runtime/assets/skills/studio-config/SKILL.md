@@ -76,10 +76,12 @@ the effective instruction prefix while ordinary conversation history remains app
 ## Agent definitions and child Profiles
 
 Every root and child Agent uses the same declaration, instruction assembly, and frozen-snapshot model.
-Builtin declarations and Markdown instructions are packaged under `assets/agents/`; product entry
-points bind a trusted root identity. The root is not a configurable child Profile and has no global
-`planner` route or user-facing role selector. `list_agent_profiles` and the Agents settings page expose
-only eligible child declarations; user TOML files also define children only.
+Built-in declarations are typed entries in `src/agent/catalog.rs`; each instruction is Markdown under
+`src/agent/prompts/*.md` and compiled into the binary with `include_str!`, so runtime does not read an
+Agent resource directory. Add a declaration entry and its prompt file together. Product entry points
+bind a trusted root identity. The root is not a configurable child Profile and has no global `planner`
+route or user-facing role selector. `list_agent_profiles` and the Agents settings page expose only
+eligible child declarations; user TOML files also define children only.
 
 Builtin child IDs come from the embedded declaration catalog, not a fixed list in this guide. A system
 child may omit `[models.routes.<agent-id>]`; when absent, its effective account, model, and effort inherit

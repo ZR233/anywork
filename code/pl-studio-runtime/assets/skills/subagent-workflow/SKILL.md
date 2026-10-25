@@ -10,7 +10,7 @@ category: agents
 
 主代理、机器人主代理、系统 child 与用户 child 使用同一种 Agent 定义和指令冻结模型；
 `list_agent_profiles` 是该模型的 child 可配置/可派发视图，不是另一套 Agent 实现。
-内置 child ID 来自本轮声明目录，不能假定闭合名单或按固定 ID 推断能力。root 定义不进入
+内置 child ID 来自本轮代码声明表，不能假定闭合名单或按固定 ID 推断能力。root 定义不进入
 该目录、Agents 设置或 spawn schema；用户 TOML 只能定义 child，不能创建 root 或注入任意 root prompt。
 
 ## 选择 Profile
@@ -40,7 +40,9 @@ Profile 接受 `writablePaths`，unrestricted 和 worktree Profile 不接受。�
 拒绝记为 `expected_rejection`，不得重试或通过 shell、Git、MCP 绕过。
 
 随包内置声明的 child 身份、名称、用途、指令和 workspace mode 不可修改，可以禁用；其集合由
-统一 Agent 声明的 child 视图决定。`planner` 只保留为 root 的运行/历史标识，不是可派发 Profile，
+统一 Agent 声明的 child 视图决定。新增内置声明时，在 `src/agent/catalog.rs` 添加类型化声明项，
+并在 `src/agent/prompts/*.md` 添加对应提示词；提示词通过 `include_str!` 编入二进制，运行期不读取
+Agent 资源目录。`planner` 只保留为 root 的运行/历史标识，不是可派发 Profile，
 不能派发或禁用，也不是全局模型路由；
 历史 planner 子代理仅可读取，不可续跑。用户 Profile 按每个 Profile 一个 TOML 文件加载。
 按能力选择 Profile，不能假定某个工作流阶段必然对应某个 Profile。

@@ -22,9 +22,9 @@ fn cold_session(paths: &StudioPaths) -> Result<crate::studio::paths::SessionPath
 }
 
 #[test]
-fn bundled_agent_resource_errors_are_internal_and_never_data_recovery_inputs() {
+fn agent_declaration_invariant_errors_are_internal_and_never_data_recovery_inputs() {
     let config_error = crate::ConfigRuntimeError::BundledAgentCatalog(anyhow::Error::new(
-        crate::agent::catalog::AgentCatalogError::invalid("invalid embedded declaration"),
+        crate::agent::catalog::AgentCatalogError::invalid("declaration invariant failure"),
     ));
     let input = crate::studio::startup::input_error(config_error);
     let startup = crate::studio::startup::StudioStartupError::input("prepare_configuration", input);
