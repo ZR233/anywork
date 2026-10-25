@@ -198,10 +198,10 @@ impl ThreadTitleTasks {
         }
     }
 
-    pub(super) async fn cancel_and_wait(&self) {
+    pub(super) async fn cancel_and_wait(&self) -> Result<()> {
         let mut handles = {
             let mut handles = self.handles.lock().await;
-            handles.drain().map(|(_, task)| task).collect::<Vec<_>>()
+            handles.drain().collect::<Vec<_>>()
         };
         tracing::debug!(
             task_count = handles.len(),
@@ -209,10 +209,42 @@ impl ThreadTitleTasks {
         );
         // Signal every task first (one-shot cancel, no wait), then join them **concurrently**: a
         // single stalled title request must not hold up settling the remaining tasks.
-        for task in handles.iter_mut() {
+        for (_, task) in handles.iter_mut() {
             task.signal();
         }
-        futures::future::join_all(handles.into_iter().map(|task| task.handle)).await;
+        let joined = futures::future::join_all(
+            handles
+                .into_iter()
+                .map(|(id, task)| async move { (id, task.handle.await) }),
+        )
+        .await;
+        let failures = joined
+            .into_iter()
+            .filter_map(|(id, result)| result.err().map(|error| (id, anyhow::Error::new(error))))
+            .collect::<Vec<_>>();
+        if failures.is_empty() {
+            Ok(())
+        } else {
+            Err(TitleStopFailure { failures }.into())
+        }
+    }
+}
+
+/// All original title joins, retained by the shutdown stage even after the table was drained.
+#[derive(Debug)]
+pub(in crate::studio::runtime) struct TitleStopFailure {
+    pub(in crate::studio::runtime) failures: Vec<(String, anyhow::Error)>,
+}
+
+impl std::fmt::Display for TitleStopFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("automatic Thread title task(s) did not join successfully")
+    }
+}
+
+impl std::error::Error for TitleStopFailure {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.failures.first().map(|(_, error)| error.as_ref())
     }
 }
 

@@ -1,6 +1,18 @@
 mod catalog;
+mod configuration_projection;
 mod mode_definitions;
+mod model_projection;
+mod profile_commands;
+pub(crate) use configuration_projection::{
+    ConfigurationCaptureFailure, ConfigurationMaterial, ConfigurationPair, ConfigurationSnapshot,
+    ConfigurationSource, ConfigurationStatusMaterial,
+};
 pub(crate) use mode_definitions::ModeDefinitionCommandOutcome;
+pub(crate) use model_projection::{
+    ModelCaptureFailure, ModelCatalogMaterial, ModelCatalogSource, ModelSourceStatusFailure,
+    ModelSourceStatusMaterial, ModelsSnapshot,
+};
+pub(crate) use profile_commands::ProfileMutationFailure;
 
 use std::sync::{Arc, Mutex, RwLock};
 
@@ -8,6 +20,7 @@ use crate::studio::unix_seconds;
 use crate::{PureError, Result};
 
 use super::model_catalog::{self, Observation};
+use super::{AgentProfilesEvidence, AgentProfilesPublication, ProfilesSource};
 use super::{AgentProfilesResource, AgentProfilesSnapshot, ConfigStore, StudioConfig};
 use crate::mode::ThreadModeManager;
 use pl_model::config::AccountId;
@@ -24,6 +37,7 @@ pub struct ConfigRuntime {
     command_lock: Arc<Mutex<()>>,
     state: Arc<RwLock<RuntimeState>>,
     catalog_updates: tokio::sync::broadcast::Sender<CatalogChange>,
+    projection_updates: tokio::sync::watch::Sender<pl_protocol::studio::ConfigProjectionStamp>,
     /// 配置 owner 持有的 canonical Agent Profiles 资源；命令路径扫描，查询只读缓存。
     profiles: AgentProfilesResource,
     /// 配置 owner 独占的 Mode 注册表；StudioRuntime 只持有同一 manager 的克隆。
@@ -36,13 +50,31 @@ struct RuntimeState {
     desired: StudioConfig,
     snapshot: ConfigRuntimeSnapshot,
     catalog: ModelCatalogRuntimeSnapshot,
+    models_status: model_projection::ModelSourceMetadata,
     observations: BTreeMap<AccountId, Observation>,
+    models_sources: BTreeMap<String, std::sync::Weak<ModelCatalogSource>>,
+    configuration_sources: BTreeMap<String, std::sync::Weak<ConfigurationSource>>,
+    configuration_status: configuration_projection::ConfigurationMetadata,
     closing: bool,
 }
 
 #[derive(Clone)]
 pub(crate) struct CatalogChange {
     pub affected: Vec<AccountId>,
+}
+
+/// Only notification responsibility escapes the canonical guard, never mutable source inputs.
+struct ProjectionPublication {
+    stamp: pl_protocol::studio::ConfigProjectionStamp,
+    models: Vec<Arc<ModelCatalogSource>>,
+    configuration: Vec<Arc<ConfigurationSource>>,
+    configuration_captures: BTreeMap<
+        String,
+        std::result::Result<Arc<ConfigurationSnapshot>, pl_protocol::studio::StudioError>,
+    >,
+    catalog: ModelCatalogRuntimeSnapshot,
+    catalog_change: Option<CatalogChange>,
+    profiles: Option<AgentProfilesPublication>,
 }
 
 /// 已校验 Studio 配置及其单调 revision。
@@ -78,6 +110,64 @@ pub struct ModelCatalogRuntimeSnapshot {
     pub revision: u64,
     pub updated_at: i64,
     pub catalogs: BTreeMap<AccountId, StudioModelCatalogStatus>,
+}
+
+/// Registration and its compatible baseline are taken under the same canonical state guard.
+pub(crate) struct ConfigProjectionObservation {
+    pub current: (ConfigRuntimeSnapshot, ModelCatalogRuntimeSnapshot),
+    pub stamp: pl_protocol::studio::ConfigProjectionStamp,
+    pub updates: tokio::sync::watch::Receiver<pl_protocol::studio::ConfigProjectionStamp>,
+}
+
+/// Captured before releasing the original command/adopt-scan boundary.
+pub struct ConfigProfileCommandResult {
+    pub configuration: ConfigRuntimeSnapshot,
+    pub catalog: ModelCatalogRuntimeSnapshot,
+    pub profiles: AgentProfilesSnapshot,
+    pub changed: bool,
+    pub(crate) _evidence: ConfigMutationEvidence,
+}
+
+pub struct ConfigReloadResult {
+    pub configuration: ConfigRuntimeSnapshot,
+    pub catalog: ModelCatalogRuntimeSnapshot,
+    pub profiles: AgentProfilesSnapshot,
+    pub(crate) evidence: ConfigMutationEvidence,
+}
+
+/// Exact command publication, captured before releasing the original commit guard. Capturing
+/// can fail after a successful durable save; that failure never changes the commit into rejection.
+pub(crate) struct ConfigMutationEvidence {
+    pub(crate) configuration: ConfigRuntimeSnapshot,
+    pub(crate) catalog: ModelCatalogRuntimeSnapshot,
+    pub(crate) captures: BTreeMap<
+        String,
+        std::result::Result<Arc<ConfigurationSnapshot>, pl_protocol::studio::StudioError>,
+    >,
+    pub(crate) profiles: AgentProfilesEvidence,
+}
+
+/// Private save-stage evidence: Profile calls can distinguish a confirmed save lacking a usable
+/// receipt. The original eight command outcomes conservatively keep their existing Unknown
+/// classification for both durable-error cases; legacy callers receive the original error.
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum ConfigMutationFailure {
+    #[error("Configuration command was rejected before commit")]
+    Preflight(#[source] ConfigRuntimeError),
+    #[error("Configuration command durable outcome is unknown")]
+    Commit(#[source] ConfigRuntimeError),
+    #[error("Configuration save succeeded but no usable state receipt was captured")]
+    Confirmed(#[source] ConfigRuntimeError),
+}
+
+impl From<ConfigMutationFailure> for ConfigRuntimeError {
+    fn from(failure: ConfigMutationFailure) -> Self {
+        match failure {
+            ConfigMutationFailure::Preflight(error)
+            | ConfigMutationFailure::Commit(error)
+            | ConfigMutationFailure::Confirmed(error) => error,
+        }
+    }
 }
 
 /// Parameters resolved from one configuration revision for a newly created product Agent.
@@ -130,6 +220,43 @@ impl From<ConfigRuntimeError> for PureError {
 }
 
 impl ConfigRuntime {
+    /// Builder-only registration using a separately issued Profiles incarnation.
+    pub(crate) fn attach_profiles_source(
+        &self,
+        origin: pl_protocol::products::identity::ProductReadOrigin,
+    ) -> anyhow::Result<Arc<ProfilesSource>> {
+        let _command = self
+            .command_lock
+            .lock()
+            .map_err(|_| config_runtime_poisoned())?;
+        let state = self.state.read().map_err(|_| config_runtime_poisoned())?;
+        if state.closing {
+            return Err(pl_protocol::studio::StudioError::new(
+                pl_protocol::studio::StudioErrorCode::Cancelled,
+                "Configuration owner is closing",
+                false,
+            )
+            .into());
+        }
+        if state
+            .configuration_sources
+            .values()
+            .filter_map(std::sync::Weak::upgrade)
+            .any(|source| source.origin() == &origin)
+            || state
+                .models_sources
+                .values()
+                .filter_map(std::sync::Weak::upgrade)
+                .any(|source| source.origin() == &origin)
+        {
+            return Err(pl_protocol::studio::StudioError::invalid_argument(
+                "Profiles requires its own native-issued incarnation",
+            )
+            .into());
+        }
+        Ok(self.profiles.attach_source(origin)?)
+    }
+
     /// 从磁盘加载并校验初始 desired config。
     pub fn initialize(store: ConfigStore) -> ConfigRuntimeResult<Self> {
         let desired = store.load_for_startup()?;
@@ -141,17 +268,25 @@ impl ConfigRuntime {
         let profiles = AgentProfilesResource::new(store.paths(), &config);
         let (modes, mode_documents) = mode_definitions::initialize(store.paths())
             .map_err(ConfigRuntimeError::ModeDefinitions)?;
+        let initialized_at = unix_seconds();
         let (catalog_updates, _) = tokio::sync::broadcast::channel(64);
+        let (projection_updates, _) =
+            tokio::sync::watch::channel(pl_protocol::studio::ConfigProjectionStamp {
+                settings_revision: 1,
+                model_catalog_revision: 1,
+                closing: false,
+            });
         Ok(Self {
             store,
             command_lock: Arc::new(Mutex::new(())),
             catalog_updates,
+            projection_updates,
             state: Arc::new(RwLock::new(RuntimeState {
                 desired: desired.clone(),
                 closing: false,
                 snapshot: ConfigRuntimeSnapshot {
                     revision: 1,
-                    updated_at: unix_seconds(),
+                    updated_at: initialized_at,
                     config: config.clone(),
                     usage_query_revisions: config
                         .models
@@ -164,10 +299,24 @@ impl ConfigRuntime {
                 },
                 catalog: ModelCatalogRuntimeSnapshot {
                     revision: 1,
-                    updated_at: unix_seconds(),
+                    updated_at: initialized_at,
                     catalogs: statuses(&observations),
                 },
+                // Successful validated initialization is the sole initial Ready publication.
+                // This counter is not borrowed from either business snapshot's waterline.
+                models_status: Ok(Arc::new(pl_protocol::ObservedResource::ready(
+                    1,
+                    initialized_at,
+                    (),
+                ))),
                 observations,
+                models_sources: BTreeMap::new(),
+                configuration_sources: BTreeMap::new(),
+                configuration_status: Ok(Arc::new(pl_protocol::ObservedResource::ready(
+                    1,
+                    initialized_at,
+                    (),
+                ))),
             })),
             profiles,
             modes,
@@ -189,6 +338,65 @@ impl ConfigRuntime {
     ) -> ConfigRuntimeResult<(ConfigRuntimeSnapshot, ModelCatalogRuntimeSnapshot)> {
         let state = self.state.read().map_err(|_| config_runtime_poisoned())?;
         Ok((state.snapshot.clone(), state.catalog.clone()))
+    }
+
+    pub(crate) fn observe_projection_sources(
+        &self,
+    ) -> ConfigRuntimeResult<ConfigProjectionObservation> {
+        let state = self.state.read().map_err(|_| config_runtime_poisoned())?;
+        Ok(ConfigProjectionObservation {
+            current: (state.snapshot.clone(), state.catalog.clone()),
+            stamp: projection_stamp(&state),
+            updates: self.projection_updates.subscribe(),
+        })
+    }
+
+    fn publish_projection_locked(&self, state: &mut RuntimeState) -> ProjectionPublication {
+        let models = self.publish_models_locked(state);
+        let configuration = self.publish_configuration_locked(state);
+        let configuration_captures = configuration
+            .iter()
+            .map(|source| (source.origin().owner_epoch.clone(), source.current()))
+            .collect();
+        ProjectionPublication {
+            models,
+            configuration,
+            configuration_captures,
+            catalog: state.catalog.clone(),
+            stamp: projection_stamp(state),
+            catalog_change: None,
+            profiles: None,
+        }
+    }
+
+    /// Wakers may re-enter this owner; call only after releasing state and command guards.
+    fn notify_projection(&self, publication: ProjectionPublication) {
+        self.projection_updates.send_if_modified(|published| {
+            let next = &publication.stamp;
+            // Another command can publish and notify after our locks are released. A delayed
+            // notification must not roll the retained compatible stamp back to an older pair.
+            if published.settings_revision > next.settings_revision
+                || published.model_catalog_revision > next.model_catalog_revision
+                || (published.closing && !next.closing)
+                || *published == *next
+            {
+                return false;
+            }
+            *published = *next;
+            true
+        });
+        for source in publication.models {
+            source.notify();
+        }
+        for source in publication.configuration {
+            source.notify();
+        }
+        if let Some(profiles) = publication.profiles {
+            profiles.notify();
+        }
+        if let Some(change) = publication.catalog_change {
+            let _ = self.catalog_updates.send(change);
+        }
     }
 
     /// Commits an in-memory observation at the same boundary as input invalidation.
@@ -215,6 +423,8 @@ impl ConfigRuntime {
             .map_err(|_| config_runtime_poisoned())
     }
 
+    #[allow(dead_code)]
+    // 保留：关闭/停机诊断事实，报告投影的读取方尚未接回；删除会丢失去噪证据。
     /// Scalar qualification waterline for hot projections; never clones catalog/config payloads.
     pub(crate) fn model_catalog_revision(&self) -> ConfigRuntimeResult<u64> {
         self.state
@@ -337,33 +547,9 @@ impl ConfigRuntime {
         expected_revision: u64,
         profile_id: &str,
         profile: &super::UserAgentProfile,
-    ) -> ConfigRuntimeResult<(ConfigRuntimeSnapshot, bool)> {
-        let _command = self
-            .command_lock
-            .lock()
-            .map_err(|_| config_runtime_poisoned())?;
-        let current = self.read()?;
-        ensure_revision(expected_revision, current.revision)?;
-        let mut state = self.state.write().map_err(|_| config_runtime_poisoned())?;
-        let changed = super::save_user_agent_profile(
-            self.store.paths(),
-            profile_id,
-            profile,
-            &current.config,
-        )?;
-        let next = ConfigRuntimeSnapshot {
-            revision: current.revision.saturating_add(1),
-            updated_at: unix_seconds(),
-            config: current.config,
-            canonical_config: current.canonical_config,
-            usage_query_revisions: current.usage_query_revisions,
-        };
-        state.snapshot = next.clone();
-        drop(state);
-        // 配置命令采用一次新的目录扫描；资源未变化时不提升 revision、不通知观察者。
-        // scan 不持有 state 写锁（与 `update` / `reload_from_disk` 一致）。
-        self.profiles.adopt_scan(self.store.paths(), &next.config);
-        Ok((next, changed))
+    ) -> ConfigRuntimeResult<ConfigProfileCommandResult> {
+        self.save_user_agent_profile_phased(expected_revision, profile_id, profile)
+            .map_err(ConfigRuntimeError::from)
     }
 
     /// 使用 expected revision 原子保存完整 desired config。
@@ -392,31 +578,110 @@ impl ConfigRuntime {
         expected_revision: u64,
         edit: impl FnOnce(&StudioConfig, &StudioConfig) -> Result<StudioConfig>,
     ) -> ConfigRuntimeResult<ConfigRuntimeSnapshot> {
-        let _command = self
+        let command = self
             .command_lock
             .lock()
             .map_err(|_| config_runtime_poisoned())?;
-        let (current, current_catalog) = self.read_with_catalog()?;
-        ensure_revision(expected_revision, current.revision)?;
-        let (desired, observations) = {
-            let state = self.state.read().map_err(|_| config_runtime_poisoned())?;
-            if state.closing {
-                return Err(PureError::ConfigError("settings owner is closing".into()).into());
-            }
-            (state.desired.clone(), state.observations.clone())
+        let (snapshot, publication, _) =
+            self.update_with_effective_locked(expected_revision, edit)?;
+        drop(command);
+        self.notify_projection(publication);
+        Ok(snapshot)
+    }
+
+    pub(crate) fn update_evidence(
+        &self,
+        expected_revision: u64,
+        edit: impl FnOnce(&StudioConfig) -> Result<StudioConfig>,
+    ) -> anyhow::Result<ConfigMutationEvidence> {
+        self.update_with_effective_evidence(expected_revision, |desired, _| edit(desired))
+    }
+
+    pub(crate) fn replace_evidence(
+        &self,
+        expected_revision: u64,
+        config: StudioConfig,
+    ) -> anyhow::Result<ConfigMutationEvidence> {
+        self.update_evidence(expected_revision, |_| Ok(config))
+    }
+
+    pub(crate) fn update_with_effective_evidence(
+        &self,
+        expected_revision: u64,
+        edit: impl FnOnce(&StudioConfig, &StudioConfig) -> Result<StudioConfig>,
+    ) -> anyhow::Result<ConfigMutationEvidence> {
+        let _command = self
+            .command_lock
+            .lock()
+            .map_err(|_| ConfigMutationFailure::Preflight(config_runtime_poisoned()))?;
+        let (snapshot, publication, profiles) =
+            self.update_with_effective_locked(expected_revision, edit)?;
+        let evidence = ConfigMutationEvidence {
+            configuration: snapshot,
+            catalog: publication.catalog.clone(),
+            captures: publication.configuration_captures.clone(),
+            profiles,
         };
-        let mut next_config = edit(&desired, &current.config)?;
-        for account in next_config.models.accounts.values_mut() {
-            account.clear_model_catalog_overlay();
-        }
-        let next_observations =
-            model_catalog::reconcile(self.store.paths(), &next_config, &observations)?;
-        let effective = effective_runtime_config(&next_config, &next_observations)?;
-        effective.validate_declarations()?;
-        validate_changed_selections(&desired, &effective)?;
+        drop(_command);
+        self.notify_projection(publication);
+        Ok(evidence)
+    }
+
+    fn update_with_effective_locked(
+        &self,
+        expected_revision: u64,
+        edit: impl FnOnce(&StudioConfig, &StudioConfig) -> Result<StudioConfig>,
+    ) -> std::result::Result<
+        (
+            ConfigRuntimeSnapshot,
+            ProjectionPublication,
+            AgentProfilesEvidence,
+        ),
+        ConfigMutationFailure,
+    > {
+        let prepared = (|| -> ConfigRuntimeResult<_> {
+            let (current, current_catalog) = self.read_with_catalog()?;
+            ensure_revision(expected_revision, current.revision)?;
+            let (desired, observations) = {
+                let state = self.state.read().map_err(|_| config_runtime_poisoned())?;
+                if state.closing {
+                    return Err(PureError::ConfigError("settings owner is closing".into()).into());
+                }
+                (state.desired.clone(), state.observations.clone())
+            };
+            let mut next_config = edit(&desired, &current.config)?;
+            for account in next_config.models.accounts.values_mut() {
+                account.clear_model_catalog_overlay();
+            }
+            let next_observations =
+                model_catalog::reconcile(self.store.paths(), &next_config, &observations)?;
+            let effective = effective_runtime_config(&next_config, &next_observations)?;
+            effective.validate_declarations()?;
+            validate_changed_selections(&desired, &effective)?;
+            Ok((
+                current,
+                current_catalog,
+                desired,
+                observations,
+                next_config,
+                next_observations,
+                effective,
+            ))
+        })();
+        let (
+            current,
+            current_catalog,
+            desired,
+            observations,
+            next_config,
+            next_observations,
+            effective,
+        ) = prepared.map_err(ConfigMutationFailure::Preflight)?;
 
         // 文件和 credential IO 不持有 state lock；command lock 只负责串行化 Settings 命令。
-        self.store.save(&next_config)?;
+        self.store
+            .save(&next_config)
+            .map_err(|error| ConfigMutationFailure::Commit(error.into()))?;
 
         let next = ConfigRuntimeSnapshot {
             revision: current.revision.saturating_add(1),
@@ -427,6 +692,10 @@ impl ConfigRuntime {
         };
         let catalog_changed = statuses(&next_observations) != current_catalog.catalogs
             || effective.models.accounts != current.config.models.accounts;
+        let models_inputs_changed = catalog_changed
+            || next_config.models != desired.models
+            || next_config.web_search != desired.web_search
+            || next_config.deepseek_web_search != desired.deepseek_web_search;
         let catalog = ModelCatalogRuntimeSnapshot {
             revision: current_catalog
                 .revision
@@ -435,28 +704,58 @@ impl ConfigRuntime {
             catalogs: statuses(&next_observations),
         };
         invalidate_observations(&observations, &next_observations);
-        let mut state = self.state.write().map_err(|_| config_runtime_poisoned())?;
+        let mut state = self
+            .state
+            .write()
+            .map_err(|_| ConfigMutationFailure::Confirmed(config_runtime_poisoned()))?;
         state.desired = next_config;
         state.observations = next_observations;
         state.snapshot = next.clone();
         state.catalog = catalog;
+        if models_inputs_changed {
+            let observed_at = state.catalog.updated_at;
+            model_projection::observe_source(&mut state.models_status, observed_at);
+        }
+        let publication = self.publish_projection_locked(&mut state);
         drop(state);
-        // 配置命令采用一次新的目录扫描；资源未变化时不提升 revision、不通知观察者。
-        self.profiles.adopt_scan(self.store.paths(), &next.config);
-        Ok(next)
+        // Capture the original adoption, not a later read/watch. Notify after command unlock.
+        let adopted = self
+            .profiles
+            .adopt_scan_captured(self.store.paths(), &next.config);
+        let evidence = adopted.evidence.clone();
+        let mut publication = publication;
+        publication.profiles = Some(adopted);
+        Ok((next, publication, evidence))
     }
 
     /// 显式从磁盘重新加载配置；普通 read 永不调用此方法。
     pub fn reload_from_disk(
         &self,
         expected_revision: u64,
-    ) -> ConfigRuntimeResult<ConfigRuntimeSnapshot> {
+    ) -> ConfigRuntimeResult<ConfigReloadResult> {
         let _command = self
             .command_lock
             .lock()
             .map_err(|_| config_runtime_poisoned())?;
         let (current, current_catalog) = self.read_with_catalog()?;
         ensure_revision(expected_revision, current.revision)?;
+        if self
+            .state
+            .read()
+            .map_err(|_| config_runtime_poisoned())?
+            .closing
+        {
+            return Err(PureError::ConfigError("settings owner is closing".into()).into());
+        }
+        // Explicit reload must not adopt using a saturated, reused business watermark.
+        let settings_revision = current
+            .revision
+            .checked_add(1)
+            .ok_or_else(|| PureError::ConfigError("settings revision is exhausted".into()))?;
+        let catalog_revision = current_catalog
+            .revision
+            .checked_add(1)
+            .ok_or_else(|| PureError::ConfigError("model catalog revision is exhausted".into()))?;
         let desired = self.store.load_or_default()?;
         let observations = self
             .state
@@ -470,14 +769,14 @@ impl ConfigRuntime {
         config.validate_declarations()?;
         super::AgentProfileCatalog::validate_for_startup(self.store.paths(), &config)?;
         let next = ConfigRuntimeSnapshot {
-            revision: current.revision.saturating_add(1),
+            revision: settings_revision,
             updated_at: unix_seconds(),
             config: config.clone(),
             canonical_config: desired.clone(),
             usage_query_revisions: next_usage_query_revisions(&current, &config),
         };
         let catalog = ModelCatalogRuntimeSnapshot {
-            revision: current_catalog.revision.saturating_add(1),
+            revision: catalog_revision,
             updated_at: unix_seconds(),
             catalogs: statuses(&next_observations),
         };
@@ -487,10 +786,48 @@ impl ConfigRuntime {
         state.observations = next_observations;
         state.snapshot = next.clone();
         state.catalog = catalog;
+        let observed_at = state.catalog.updated_at;
+        model_projection::observe_source(&mut state.models_status, observed_at);
+        let publication = self.publish_projection_locked(&mut state);
+        let catalog = state.catalog.clone();
         drop(state);
         // 显式重扫；目录未变化时不提升 revision。
-        self.profiles.adopt_scan(self.store.paths(), &next.config);
-        Ok(next)
+        let adopted = self
+            .profiles
+            .adopt_scan_captured(self.store.paths(), &next.config);
+        let result = ConfigReloadResult {
+            evidence: ConfigMutationEvidence {
+                configuration: next.clone(),
+                catalog: catalog.clone(),
+                captures: publication.configuration_captures.clone(),
+                profiles: adopted.evidence.clone(),
+            },
+            configuration: next,
+            catalog,
+            profiles: adopted.evidence.snapshot.clone(),
+        };
+        drop(_command);
+        adopted.notify();
+        self.notify_projection(publication);
+        Ok(result)
+    }
+
+    pub(crate) fn set_system_agent_enabled(
+        &self,
+        expected_revision: u64,
+        profile_id: &str,
+        enabled: bool,
+    ) -> ConfigRuntimeResult<ConfigProfileCommandResult> {
+        self.set_system_agent_enabled_phased(expected_revision, profile_id, enabled)
+            .map_err(ConfigRuntimeError::from)
+    }
+}
+
+fn projection_stamp(state: &RuntimeState) -> pl_protocol::studio::ConfigProjectionStamp {
+    pl_protocol::studio::ConfigProjectionStamp {
+        settings_revision: state.snapshot.revision,
+        model_catalog_revision: state.catalog.revision,
+        closing: state.closing,
     }
 }
 

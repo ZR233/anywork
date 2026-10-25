@@ -1,51 +1,29 @@
-import 'dart:async';
-
 import 'package:anywork/src/app/anywork_app.dart';
-import 'package:anywork/src/app/app_graph.dart';
-import 'package:anywork/src/app/studio_host_lifecycle.dart';
+import 'package:anywork_client/conversation.dart';
+import 'package:anywork_client/workspace.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
 import 'package:anywork/src/platform/host_app_icons.dart';
-import 'package:anywork/src/shared/studio_driver_keys.dart';
-import 'package:anywork_client/studio_client.dart';
+import 'package:anywork/src/diagnostics/studio_driver_keys.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-import 'support/recording_demo_transport.dart';
+import '../../../anywork_client/test/support/timeline_transport.dart';
+import 'support/application_environment.dart';
+import 'support/selector_conversation_port.dart';
 import 'support/pump_client_future.dart';
 
 void main() {
   testWidgets(
     'Settings retains drafts and observes a Turn completed while hidden',
     (tester) async {
-      final transport = _RouteTurnTransport();
-      final graph = AppGraph(
-        transport: transport,
-        clientId: 'route-draft-owner',
-      );
-      final exitFinished = Completer<void>();
-      final exitCodes = <int>[];
+      final environment = ApplicationTestEnvironment()..installHost();
+      final graph = environment.graph;
+      final domains = environment.domains;
+      final exitFinished = environment.hostFinished;
+      final exitCodes = environment.exitCodes;
       final messenger =
           TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
-      messenger.setMockMethodCallHandler(StudioHostLifecycle.channel, (
-        call,
-      ) async {
-        switch (call.method) {
-          case 'beginExit':
-            return 30000;
-          case 'finishExit':
-            exitCodes.add(
-              (call.arguments as Map<Object?, Object?>)['exitCode']! as int,
-            );
-            if (!exitFinished.isCompleted) exitFinished.complete();
-            return null;
-          case 'updateExitDiagnostics':
-          case 'configureDiagnostics':
-            return null;
-          default:
-            throw StateError('Unexpected host lifecycle call: ${call.method}');
-        }
-      });
       messenger.setMockMethodCallHandler(hostAppsChannel, (_) async => null);
       tester.view.physicalSize = const Size(1280, 900);
       tester.view.devicePixelRatio = 1;
@@ -54,50 +32,63 @@ void main() {
       addTearDown(() async {
         // Keep host mocks installed while an early assertion failure unmounts
         // the real lifecycle coordinator and joins its shared exit operation.
+        environment.releaseNativeReads();
         await tester.pumpWidget(const SizedBox.shrink());
         await tester.pumpAndSettle();
-        final exiting = StudioExitCoordinator.requestExit();
+        final exiting = graph.exitCoordinator.requestHostExit(ExitIntent.exit);
         await pumpClientFuture(tester, exiting, 'teardown exit');
         await pumpClientFuture(
           tester,
-          graph.close(deadline: _deadline()),
+          environment.close(),
           'teardown graph close',
         );
-        messenger.setMockMethodCallHandler(StudioHostLifecycle.channel, null);
         messenger.setMockMethodCallHandler(hostAppsChannel, null);
       });
 
+      await pumpClientFuture(
+        tester,
+        domains.establish(catalog: false),
+        'domain baselines',
+      );
+      await pumpClientFuture(
+        tester,
+        domains.selectStart(),
+        'Start preparation',
+      );
       await tester.pumpWidget(
-        ProviderScope(
-          overrides: [appGraphProvider.overrideWithValue(graph)],
-          child: const AnyworkApp(),
+        UncontrolledProviderScope(
+          container: environment.container,
+          child: AnyworkApp(
+            graph: graph,
+            desktopHostBuilder: (_, child) => child,
+          ),
         ),
       );
       // Await the production bootstrap owner, not a timer guessed from frame count.
-      await pumpClientFuture(tester, graph.client.bootstrap(), 'bootstrap');
+      await pumpClientFuture(tester, graph.bootstrap.start(), 'bootstrap');
       await tester.pumpAndSettle();
       expect(find.byKey(StudioDriverKeys.startPage), findsOneWidget);
-      expect(transport.bootstrapCalls, 1);
-      final projectId = graph.client.selection.state.selectedProjectId!;
-      final startOwner = graph.client.startDraft;
+      expect(environment.startupPort.initializeCalls, 1);
+      final projectId = graph.workspace.state.value.selection.projectId!;
+      final startOwner = graph.drafts.start(projectId);
       await tester.enterText(
         find.byKey(StudioDriverKeys.composerInput),
         'start draft entered before Settings',
       );
       await tester.pump();
-      final startRevision = startOwner.state.revision;
+      final startRevision = startOwner.state.value.stamp;
 
       await _settingsRoundTrip(tester);
 
-      expect(graph.client.startDraft, same(startOwner));
-      expect(startOwner.state.revision, startRevision);
+      expect(graph.drafts.start(projectId), same(startOwner));
+      expect(startOwner.state.value.stamp, startRevision);
       expect(
-        startOwner.state.forProject(projectId).text,
+        startOwner.state.value.text,
         'start draft entered before Settings',
       );
       expect(_composerText(tester), 'start draft entered before Settings');
       expect(
-        transport.timelines,
+        domains.timeline.requests,
         isEmpty,
         reason: 'Settings navigation does not create a Thread',
       );
@@ -106,28 +97,43 @@ void main() {
       await pumpClientUntil(
         tester,
         () =>
-            graph.client
-                .existingSession('thread-main')
-                ?.timeline
-                .lastDeliveredFrame !=
-            null,
+            graph.conversation.existingSession('thread-main') != null &&
+            domains.timeline.requests.isNotEmpty,
         'selected Thread timeline baseline',
       );
+      final connection = TestTimelineConnection(
+        initial: baseline(1, items: [timelineItem(1, threadId: 'thread-main')]),
+      );
+      domains.timeline.requests.single.result.complete(connection);
+      final session = graph.conversation.existingSession('thread-main')!;
+      await pumpClientFuture(
+        tester,
+        session.timeline.ready,
+        'Thread timeline baseline',
+      );
       await tester.pumpAndSettle();
-      final session = graph.client.existingSession('thread-main')!;
-      final attemptId = session.timeline.currentAttemptId?.value;
-      final connection = transport.timelines.single;
-      final composer = graph.client.composer('thread-main');
+      final attemptId = session.timeline.state.value.attemptId;
+      final composer = graph.drafts.composer('thread-main');
       final startedAt = DateTime.now().millisecondsSinceEpoch ~/ 1000;
-      final running = transport.emitTurn(
-        RunningStudioTurnState(
+      final running = TurnBrief(
+        reference: const TurnReadRef(entry: 40, revision: 1),
+        revision: 1,
+        updatedAt: startedAt,
+        state: TurnBriefState.running(
           startedAt: startedAt,
-          activity: StudioTurnActivity.responding,
+          phase: TurnPhase.responding,
         ),
+      );
+      await pumpClientFuture(
+        tester,
+        domains.conversationPort.publishExecution(
+          selectorExecution(status: ThreadStatus.running, active: running),
+        ),
+        'running Turn publication',
       );
       await pumpClientUntil(
         tester,
-        () => session.state.activeTurn == running,
+        () => session.execution.value.value?.activeTurn == running,
         'running Turn before Settings',
       );
       await tester.pump();
@@ -137,7 +143,7 @@ void main() {
         'Thread draft entered before Settings',
       );
       await tester.pump();
-      final composerStamp = composer.stamp;
+      final composerStamp = composer.state.value.stamp;
 
       await _settingsRoundTrip(
         tester,
@@ -146,41 +152,64 @@ void main() {
           // business observers hidden by the real Settings route.
           expect(find.byKey(StudioDriverKeys.composerInput), findsNothing);
           expect(find.byKey(StudioDriverKeys.timeline), findsNothing);
-          expect(session.state.activeTurn, running);
-          expect(transport.runtimeSubscriptions, 1);
-          expect(transport.runtimeCancellations, 0);
-          final completed = transport.emitTurn(
-            CompletedStudioTurnState(
+          expect(session.execution.value.value?.activeTurn, running);
+          expect(domains.conversationPort.facets.execution, hasLength(1));
+          expect(
+            domains
+                .conversationPort
+                .facets
+                .execution
+                .single
+                .feed
+                .requestCloseCalls,
+            0,
+          );
+          final completed = running.copyWith(
+            reference: const TurnReadRef(entry: 40, revision: 2),
+            revision: 2,
+            updatedAt: startedAt + 1,
+            state: TurnBriefState.completed(
               startedAt: startedAt,
               completedAt: startedAt + 1,
-              completion: StudioTurnCompletion.normal,
+              completion: TurnCompletion.normal,
             ),
+          );
+          await pumpClientFuture(
+            tester,
+            domains.conversationPort.publishExecution(
+              selectorExecution(terminal: completed),
+            ),
+            'terminal Turn publication while Settings is visible',
           );
           await pumpClientUntil(
             tester,
             () =>
-                session.state.workspace?.latestTurn == completed &&
-                session.state.activeTurn == null,
+                session.execution.value.value?.recentTerminalTurn ==
+                    completed &&
+                session.execution.value.value?.activeTurn == null,
             'completed Turn while Settings hides the workspace',
           );
           expect(find.byKey(StudioDriverKeys.settingsPage), findsOneWidget);
           expect(find.byKey(StudioDriverKeys.composerInput), findsNothing);
           expect(find.byKey(StudioDriverKeys.timeline), findsNothing);
-          expect(graph.client.existingSession('thread-main'), same(session));
-          expect(session.timeline.currentAttemptId?.value, attemptId);
+          expect(
+            graph.conversation.existingSession('thread-main'),
+            same(session),
+          );
+          expect(session.timeline.state.value.attemptId, attemptId);
           expect(connection.requestCloseCalls, 0);
           expect(connection.closeCalls, 0);
         },
       );
 
-      expect(graph.client.composer('thread-main'), same(composer));
-      expect(composer.stamp, composerStamp);
-      expect(composer.state.draft, 'Thread draft entered before Settings');
+      expect(graph.drafts.composer('thread-main'), same(composer));
+      expect(composer.state.value.stamp, composerStamp);
+      expect(composer.state.value.text, 'Thread draft entered before Settings');
       expect(_composerText(tester), 'Thread draft entered before Settings');
-      expect(session.state.activeTurn, isNull);
+      expect(session.execution.value.value?.activeTurn, isNull);
       expect(
-        session.state.workspace?.latestTurn?.state,
-        isA<CompletedStudioTurnState>(),
+        session.execution.value.value?.recentTerminalTurn?.state,
+        isA<CompletedTurnBrief>(),
       );
       expect(find.byKey(StudioDriverKeys.composerStop), findsNothing);
       final submit = find.byKey(StudioDriverKeys.composerSubmit);
@@ -191,20 +220,24 @@ void main() {
         reason: 'the visible composer must no longer display send-and-continue',
       );
       expect(
-        startOwner.state.forProject(projectId).text,
+        startOwner.state.value.text,
         'start draft entered before Settings',
       );
-      expect(session.timeline.currentAttemptId?.value, attemptId);
-      expect(session.timeline.lastDeliveredFrame != null, isTrue);
-      expect(transport.timelines, hasLength(1));
+      expect(session.timeline.state.value.attemptId, attemptId);
+      expect(session.timeline.state.value.lastStamp != null, isTrue);
+      expect(domains.timeline.requests, hasLength(1));
       expect(connection.requestCloseCalls, 0);
       expect(connection.closeCalls, 0);
-      expect(transport.bootstrapCalls, 1);
-      expect(transport.runtimeSubscriptions, 1);
-      expect(transport.runtimeCancellations, 0);
+      expect(environment.startupPort.initializeCalls, 1);
+      expect(domains.conversationPort.facets.execution, hasLength(1));
+      expect(
+        domains.conversationPort.facets.execution.single.feed.requestCloseCalls,
+        0,
+      );
 
       // Unmount through the real lifecycle coordinator. Only the host channel is
       // mocked, so the test cannot ask the native runner to exit this test process.
+      environment.releaseNativeReads();
       await tester.pumpWidget(const SizedBox.shrink());
       await tester.pumpAndSettle();
       await pumpClientUntil(
@@ -214,19 +247,20 @@ void main() {
       );
       await pumpClientFuture(
         tester,
-        StudioExitCoordinator.requestExit(),
+        graph.exitCoordinator.requestHostExit(ExitIntent.exit),
         'repeat exit',
       );
       expect(exitCodes, [0]);
       expect(
         (await pumpClientFuture(
-          tester,
-          graph.close(deadline: _deadline()),
-          'repeat graph close',
-        )).complete,
+              tester,
+              graph.exitCoordinator.exit(ExitIntent.exit),
+              'repeat graph close',
+            )).shutdown.outcome ==
+            ShutdownOutcome.clean,
         isTrue,
       );
-      expect(connection.joined.isCompleted, isTrue);
+      expect(connection.closeCompleted.isCompleted, isTrue);
       expect(tester.takeException(), isNull);
     },
   );
@@ -256,72 +290,3 @@ String _composerText(WidgetTester tester) => tester
     .widget<TextField>(find.byKey(StudioDriverKeys.composerInput))
     .controller!
     .text;
-
-DateTime _deadline() => DateTime.now().add(const Duration(seconds: 5));
-
-/// The fixture wraps the production Demo state subscription, adding only a
-/// controllable producer of typed Turn notifications. It adds no UI observer,
-/// does not call a Client setter, and never claims to exercise native FRB.
-final class _RouteTurnTransport extends RecordingDemoTransport {
-  MultiStreamController<ThreadStreamFrame>? _runtime;
-  int? _revision;
-  int _turnUpdates = 0;
-  int runtimeSubscriptions = 0;
-  int runtimeCancellations = 0;
-
-  @override
-  Stream<ThreadStreamFrame> subscribeThread(String threadId) {
-    if (threadId != 'thread-main') return super.subscribeThread(threadId);
-    return Stream<ThreadStreamFrame>.multi((controller) {
-      runtimeSubscriptions++;
-      _runtime = controller;
-      final owner = super
-          .subscribeThread(threadId)
-          .listen(
-            (frame) {
-              _revision = switch (frame) {
-                ThreadSnapshotFrame(:final workspace) => workspace.revision,
-                ThreadNotificationFrame(:final revision) => revision,
-                ThreadResyncRequiredFrame() => _revision,
-              };
-              controller.addSync(frame);
-            },
-            onError: controller.addErrorSync,
-            onDone: controller.closeSync,
-          );
-      controller.onPause = owner.pause;
-      controller.onResume = owner.resume;
-      controller.onCancel = () async {
-        runtimeCancellations++;
-        if (identical(_runtime, controller)) _runtime = null;
-        await owner.cancel();
-      };
-    });
-  }
-
-  StudioTurnView emitTurn(StudioTurnState state) {
-    final runtime = _runtime;
-    final base = _revision;
-    if (runtime == null || base == null) {
-      throw StateError('The selected Thread must own its state subscription');
-    }
-    final revision = base + 1;
-    _revision = revision;
-    final turn = StudioTurnView(
-      turnId: 'settings-route-turn',
-      threadId: 'thread-main',
-      revision: revision,
-      state: state,
-      updatedAt: DateTime.now().add(Duration(seconds: ++_turnUpdates)),
-    );
-    runtime.addSync(
-      ThreadNotificationFrame(
-        threadId: 'thread-main',
-        baseRevision: base,
-        revision: revision,
-        update: ThreadTurnUpdate(turn),
-      ),
-    );
-    return turn;
-  }
-}

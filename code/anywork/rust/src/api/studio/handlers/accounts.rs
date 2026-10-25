@@ -42,7 +42,7 @@ fn owned_skills_state(
 pub async fn discover_skills(project_id: String) -> Result<BridgeSkillsStateSnapshot, BridgeError> {
     let bridge = active_bridge().await?;
     Ok(skills_state(
-        bridge.studio.discover_skills(&project_id).await?,
+        bridge.studio.discover_skills(&project_id).await?.into(),
     ))
 }
 

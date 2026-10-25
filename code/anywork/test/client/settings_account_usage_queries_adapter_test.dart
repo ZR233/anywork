@@ -1,239 +1,102 @@
 import 'dart:async';
 
-import 'package:anywork/src/features/settings/settings_account_usage_demand.dart';
-import 'package:anywork/src/features/settings/settings_views.dart';
-import 'package:anywork/src/presentation/providers/client_provider.dart';
-import 'package:anywork/src/presentation/providers/account_usage_queries.dart';
-import 'package:anywork_client/studio_client.dart';
-import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:anywork/src/features/settings/accounts/view_models/account_usage_checks.dart';
+import 'package:anywork_client/account_usage.dart';
+import 'package:anywork_client/operations_ports.dart';
 import 'package:flutter_test/flutter_test.dart';
+
+import 'support/settings_usage_fixture.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
-  test('production auto demand swallows query errors without uncaught zone failures', () async {
-    final transport = _UsageTransport();
-    final client = AnyworkClient(
-      transport: transport,
-      clientId: 'usage-demand',
-    );
-    addTearDown(client.close);
-    client.settings.merge(
-      SettingsStateSnapshot(
-        revision: 1,
-        accounts: [
-          _account('a', usageQueryRevision: 1),
-          _account('b', usageQueryRevision: 1),
-        ],
-      ),
-    );
-    final demand = AccountUsageAutoDemand();
-    final queries = client.accountUsageQueries;
+  test('production auto demand exposes query errors without uncaught zone failures', () async {
+    final fixture = await settingsUsageFixture({'a': 1, 'b': 1});
+    final queries = fixture.usage;
+    final presentation = AccountUsageChecks(fixture.configuration, queries, (_) {});
+    addTearDown(presentation.dispose);
+    presentation.visibleAccounts({'a', 'b'});
     final uncaught = <Object>[];
     await runZonedGuarded(() async {
-      demand.apply(
-        visible: true,
-        accounts: const [
-          AccountUsageQueryIdentity(id: 'a', usageQueryRevision: 1),
-          AccountUsageQueryIdentity(id: 'b', usageQueryRevision: 1),
-        ],
-        refresh: (id) => ignoreAccountUsageQueryErrors(queries.refresh(id)),
-      );
-      await transport.started('a').future;
-      await transport.started('b').future;
-      expect(transport.startedIds, ['a', 'b']);
-      expect(queries.state.loadingAccountIds, containsAll(['a', 'b']));
-      transport.release('a').complete(_usage('a'));
-      await queries.source.waitFor(
-        (state) => !state.loadingAccountIds.contains('a'),
-      );
-      expect(queries.state.loadingAccountIds.contains('b'), isTrue);
-      expect(queries.state.errorsByAccountId.containsKey('a'), isFalse);
-      transport.release('b').completeError(StateError('b failed'));
-      await queries.source.waitFor(
-        (state) =>
-            !state.loadingAccountIds.contains('b') &&
-            state.errorsByAccountId.containsKey('b'),
-      );
-      expect(queries.state.errorsByAccountId['b'], isNotNull);
-      expect(queries.state.errorsByAccountId.containsKey('a'), isFalse);
-      demand.apply(
-        visible: true,
-        accounts: const [
-          AccountUsageQueryIdentity(id: 'a', usageQueryRevision: 1),
-          AccountUsageQueryIdentity(id: 'b', usageQueryRevision: 1),
-        ],
-        refresh: (id) => ignoreAccountUsageQueryErrors(queries.refresh(id)),
-      );
-      expect(transport.startedIds, ['a', 'b']);
+      queries.setVisibleAccounts({'a', 'b'});
+      final a = await fixture.usagePort.called(0);
+      final b = await fixture.usagePort.called(1);
+      expect(fixture.usagePort.calls.map((call) => call.accountId), ['a', 'b']);
+      expect(presentation.snapshot.entries.where((entry) => entry.value.operation.isPending)
+        .map((entry) => entry.key), containsAll(['a', 'b']));
+      expect(presentation.snapshot.map((id, check) => MapEntry(id, check.identity)), {
+        'a': AccountUsageQueryIdentity(accountId: 'a', usageQueryRevision: 1,
+          ownerEpoch: usageFixtureOrigin.ownerEpoch),
+        'b': AccountUsageQueryIdentity(accountId: 'b', usageQueryRevision: 1,
+          ownerEpoch: usageFixtureOrigin.ownerEpoch),
+      });
+      final aTicket = queries.checks.value['a']!.ticket;
+      final bTicket = queries.checks.value['b']!.ticket;
+      fixture.declareUsage(1, {'a': usageRecord('a', 1)});
+      a.succeed(1);
+      await fixture.publishUsage(1);
+      expect(await aTicket.result, isA<AcknowledgedCommandResult<AccountUsageRecord>>());
+      expect(presentation.snapshot['b']!.operation.isPending, isTrue);
+      expect(presentation.snapshot['a']!.operation.error, isNull);
+      b.reply.completeError(const CommandDispatchFailure.rejected(failure: settingsUsageFailure));
+      await bTicket.result;
+      expect(presentation.snapshot['b']!.operation.isPending, isFalse);
+      expect(presentation.snapshot['b']!.operation.error, settingsUsageFailure);
+      expect(presentation.snapshot['a']!.operation.error, isNull);
+      queries.setVisibleAccounts({'a', 'b'});
+      expect(fixture.usagePort.calls.map((call) => call.accountId), ['a', 'b']);
     }, (error, _) => uncaught.add(error));
     expect(uncaught, isEmpty);
   });
 
-  test(
-    'readonly query adapter observes query state and identity selector',
-    () async {
-      final transport = _UsageTransport();
-      final client = AnyworkClient(
-        transport: transport,
-        clientId: 'usage-observe',
-      );
-      addTearDown(client.close);
-      client.settings.merge(
-        SettingsStateSnapshot(
-          revision: 1,
-          accounts: [
-            _account('a', name: 'Alpha', usageQueryRevision: 1),
-            _account('b', name: 'Beta', usageQueryRevision: 1),
-          ],
-        ),
-      );
-      final container = ProviderContainer(
-        overrides: [anyworkClientProvider.overrideWith((ref) => client)],
-      );
-      addTearDown(container.dispose);
-      final querySub = container.listen(
-        accountUsageQueriesProvider,
-        (_, _) {},
-        fireImmediately: true,
-      );
-      addTearDown(querySub.close);
-      final identityNotifications = <AccountUsageQueryIdentitySnapshot>[];
-      final identitySub = container.listen(
-        settingsAccountUsageQueryIdentitiesProvider,
-        (_, next) => identityNotifications.add(next),
-        fireImmediately: true,
-      );
-      addTearDown(identitySub.close);
+  test('readonly check adapter observes progress and exact canonical query identity without scheduling', () async {
+    final fixture = await settingsUsageFixture({'a': 1, 'b': 1});
+    final queries = fixture.usage;
+    final presentation = AccountUsageChecks(fixture.configuration, queries, (_) {});
+    addTearDown(presentation.dispose);
+    presentation.visibleAccounts({'a', 'b'});
+    expect(presentation.snapshot, isEmpty);
+    expect(fixture.usagePort.calls, isEmpty);
+    final ticket = queries.check('a');
+    final call = await fixture.usagePort.called(0);
+    final identity = AccountUsageQueryIdentity(accountId: 'a', usageQueryRevision: 1,
+      ownerEpoch: usageFixtureOrigin.ownerEpoch);
+    expect(presentation.snapshot['a']!.identity, identity);
+    expect(presentation.snapshot['a']!.operation.isPending, isTrue);
+    fixture.declareUsage(1, {'a': usageRecord('a', 1)});
+    call.succeed(1);
+    await fixture.publishUsage(1);
+    await ticket.result;
+    expect(presentation.snapshot['a']!.operation.isPending, isFalse);
+    expect(presentation.snapshot['a']!.operation.error, isNull);
+    expect(fixture.usagePort.calls.map((call) => call.accountId), ['a']);
 
-      expect(querySub.read().loadingAccountIds, isEmpty);
-      expect(transport.startedIds, isEmpty);
-      expect(identitySub.read().identities, const [
-        AccountUsageQueryIdentity(id: 'a', usageQueryRevision: 1),
-        AccountUsageQueryIdentity(id: 'b', usageQueryRevision: 1),
-      ]);
-      identityNotifications.clear();
+    // The fixture changes account display names on every configuration version.
+    // An unrelated rename is not a new usage identity or a network demand.
+    queries.setVisibleAccounts({'a'});
+    await fixture.configurationChanged({'a': 1, 'b': 1});
+    await queries.checks.waitFor((checks) => checks['a']?.identity == identity)
+      .timeout(const Duration(seconds: 3));
+    presentation.refresh();
+    expect(presentation.snapshot['a']!.identity, identity);
+    expect(presentation.snapshot['a']!.operation.id, ticket.id);
+    expect(fixture.usagePort.calls.map((call) => call.accountId), ['a']);
 
-      ignoreAccountUsageQueryErrors(client.accountUsageQueries.refresh('a'));
-      await transport.started('a').future;
-      await client.accountUsageQueries.source.waitFor(
-        (state) => state.loadingAccountIds.contains('a'),
-      );
-      expect(querySub.read().loadingAccountIds, contains('a'));
-      transport.release('a').complete(_usage('a'));
-      await client.accountUsageQueries.source.waitFor(
-        (state) => state.loadingAccountIds.isEmpty,
-      );
-      expect(querySub.read().loadingAccountIds, isEmpty);
-      expect(querySub.read().errorsByAccountId, isEmpty);
-      expect(transport.startedIds, ['a']);
-
-      client.settings.merge(
-        SettingsStateSnapshot(
-          revision: 2,
-          accounts: [
-            _account('a', name: 'Alpha renamed', usageQueryRevision: 1),
-            _account('b', name: 'Beta', usageQueryRevision: 1),
-          ],
-        ),
-      );
-      await Future<void>.delayed(Duration.zero);
-      expect(identityNotifications, isEmpty);
-      expect(transport.startedIds, ['a']);
-
-      client.settings.merge(
-        SettingsStateSnapshot(
-          revision: 3,
-          accounts: [
-            _account('a', name: 'Alpha renamed', usageQueryRevision: 2),
-            _account('b', name: 'Beta', usageQueryRevision: 1),
-          ],
-        ),
-      );
-      await Future<void>.delayed(Duration.zero);
-      expect(identityNotifications, [
-        AccountUsageQueryIdentitySnapshot(const [
-          AccountUsageQueryIdentity(id: 'a', usageQueryRevision: 2),
-          AccountUsageQueryIdentity(id: 'b', usageQueryRevision: 1),
-        ]),
-      ]);
-      expect(transport.startedIds, ['a']);
-
-      client.settings.merge(
-        SettingsStateSnapshot(
-          revision: 4,
-          accounts: [
-            _account('a', name: 'Alpha renamed', usageQueryRevision: 2),
-          ],
-        ),
-      );
-      await Future<void>.delayed(Duration.zero);
-      expect(
-        identityNotifications.last,
-        const AccountUsageQueryIdentitySnapshot([
-          AccountUsageQueryIdentity(id: 'a', usageQueryRevision: 2),
-        ]),
-      );
-      expect(transport.startedIds, ['a']);
-    },
-  );
-}
-
-AccountSettingsView _account(
-  String id, {
-  String? name,
-  int usageQueryRevision = 1,
-}) {
-  return AccountSettingsView(
-    id: id,
-    name: name ?? id,
-    baseUrl: 'http://local.invalid',
-    defaultModelId: 'model',
-    models: const [
-      AccountModelView(
-        modelId: 'model',
-        displayName: 'Model',
-        reasoningEfforts: ['medium'],
-      ),
-    ],
-    status: 'ready',
-    usageLabel: '',
-    usageQueryRevision: usageQueryRevision,
-  );
-}
-
-AccountUsageStateSnapshot _usage(String accountId) {
-  return AccountUsageStateSnapshot(
-    revision: 1,
-    usages: [
-      AccountUsageView(
-        accountId: accountId,
-        updatedAt: 1,
-        state: const UnsupportedAccountUsageView(),
-      ),
-    ],
-  );
-}
-
-class _UsageTransport implements StudioTransport {
-  final startedGates = <String, Completer<void>>{};
-  final releaseGates = <String, Completer<AccountUsageStateSnapshot>>{};
-  final startedIds = <String>[];
-
-  Completer<void> started(String accountId) =>
-      startedGates.putIfAbsent(accountId, Completer<void>.new);
-
-  Completer<AccountUsageStateSnapshot> release(String accountId) => releaseGates
-      .putIfAbsent(accountId, Completer<AccountUsageStateSnapshot>.new);
-
-  @override
-  Future<AccountUsageStateSnapshot> checkAccountUsage(String accountId) async {
-    startedIds.add(accountId);
-    started(accountId).complete();
-    return release(accountId).future;
-  }
-
-  @override
-  dynamic noSuchMethod(Invocation invocation) =>
-      throw UnsupportedError('Unused transport: ${invocation.memberName}');
+    queries.setVisibleAccounts({});
+    await fixture.configurationChanged({'a': 2, 'b': 1});
+    presentation.refresh();
+    expect(presentation.snapshot.containsKey('a'), isFalse,
+      reason: 'The old revision cannot remain current or trigger a replacement read by observation alone');
+    expect(fixture.usagePort.calls.map((call) => call.accountId), ['a']);
+    final current = queries.check('a');
+    final next = await fixture.usagePort.called(1);
+    expect(presentation.snapshot['a']!.identity, AccountUsageQueryIdentity(
+      accountId: 'a', usageQueryRevision: 2, ownerEpoch: usageFixtureOrigin.ownerEpoch));
+    next.reply.completeError(const CommandDispatchFailure.rejected(failure: settingsUsageFailure));
+    await current.result;
+    await fixture.configurationChanged({'b': 1});
+    presentation.refresh();
+    expect(presentation.snapshot.containsKey('a'), isFalse);
+    expect(fixture.usagePort.calls.map((call) => call.accountId), ['a', 'a']);
+  });
 }

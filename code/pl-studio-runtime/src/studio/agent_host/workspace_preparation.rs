@@ -1,4 +1,5 @@
 //! Product workspace allocation independent of Agent execution and model sessions.
+mod close;
 use super::worktree_lease::{
     WorktreeLease, WorktreeLeaseOwner, WorktreeLeaseOwnerKind, WorktreeLeaseState,
 };
@@ -8,6 +9,7 @@ use crate::agent::worktree::{
 };
 use crate::studio::records::ProjectRecord;
 use crate::{PureError, Result};
+pub(in crate::studio) use close::{WorkspaceCloseFailure, close_workspace};
 use pl_protocol::{AgentWorkspaceAssignmentSnapshot, AgentWorkspaceMode, AgentWorktreeSnapshot};
 use std::{
     path::{Path, PathBuf},
@@ -358,46 +360,6 @@ where
         return Err(settle_identity_mismatch(worktrees, durable).into());
     }
     Ok(durable)
-}
-
-/// 收束一个 durable worktree lease：`validate_identity → preview_existing →
-/// cleanupRequested → discard → cleaned`，任一步失败回落 `preserved` 并返回错误。
-///
-/// 这是 child 关闭路径与归档清理共用的唯一实现；`disposition == Preserve` 时只把 lease
-/// 收束为 `preserved` 而不删除物理资源，`Cleanup` 才删除 Pure-owned 工作树与分支。
-pub(in crate::studio) async fn close_workspace(
-    leases: &WorktreeLeaseOwner,
-    manager: &WorktreeManager,
-    mut lease: WorktreeLease,
-    disposition: pl_tool::collaboration::thread::AgentWorkspaceDisposition,
-) -> anyhow::Result<()> {
-    use pl_tool::collaboration::thread::AgentWorkspaceDisposition;
-    if lease.state == WorktreeLeaseState::Cleaned {
-        return Ok(());
-    }
-    lease.transition(WorktreeLeaseState::Preserved);
-    leases.record(lease.clone())?;
-    match disposition {
-        AgentWorkspaceDisposition::Preserve => return Ok(()),
-        AgentWorkspaceDisposition::Cleanup => {}
-    }
-    lease.validate_identity()?;
-    let handle = WorktreeHandle {
-        path: PathBuf::from(&lease.path),
-        branch: lease.branch.clone(),
-        base_commit: lease.base_commit.clone(),
-    };
-    manager.preview_existing(&handle).await?;
-    lease.transition(WorktreeLeaseState::CleanupRequested);
-    leases.record(lease.clone())?;
-    if let Err(error) = manager.discard(&handle).await {
-        lease.transition(WorktreeLeaseState::Preserved);
-        leases.record(lease)?;
-        return Err(error.into());
-    }
-    lease.transition(WorktreeLeaseState::Cleaned);
-    leases.record(lease)?;
-    Ok(())
 }
 
 /// 冷激活时在同一确定性路径重建一个 child worktree，并记录 renewed 的 `prepared` lease。

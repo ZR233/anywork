@@ -181,6 +181,14 @@ canonical Settings 同时投影生效 `billingKind` 与可空 `billingKindOverri
 配置前验证，并在 Applied/NoChange 回执中原样返回；不能用目标字段的固定描述替代一次
 提交身份。HTTP 与 FRB 使用同一契约，不为缺失身份请求生成兼容 ID。
 
+配置 mutation 的业务 OperationId 与一次传输调用资源的 callId 分离。原调用 owner
+保留期间，同 OperationId、同冻结请求只能加入原调用，异请求为 Conflict；已知 CAS
+拒绝的同意图重试保持 OperationId，但须真实关闭上一调用后取得新的 callId。旧 callId
+的迟到查询／关闭不能命中新调用。客户端不得将 OperationId 用于另一业务意图。
+这不是跨显式资源释放或 runtime 重启的永久去重承诺：find 缺失、Clean close 或超时均
+不能证明原命令未提交，不能据此自动重发 Unknown。未知及未观察的原结果由客户端原
+operation owner 保留和结算，不能用有界历史淘汰伪称永久防重放。
+
 `[delegation]` 保存 `mode = profile | automatic` 和
 `preference = economy | balanced | fast`，默认 `profile` 与 `balanced`。两个字段各自
 使用 typed 设置命令，只改变未来会话默认；偏好在固定模式中保存但不生效。新建会话请求
@@ -227,6 +235,17 @@ Profile、凭据关联及其他覆盖原值；先备份、校验、原子提交�
 角色声明，不以其固定路由判定资格（见 [12](./12-collaboration.md) §12.7）。`spawn_agent` 创建 child 时冻结
 系统指令、最终 account、model 与 effort，此后文件变化不改变既有 child；设置页另读完整
 catalog，被禁用的用户 Profile 仍可编辑并重新启用。
+
+用户 Profile 保存、系统 Profile 启停和显式 reload 都由具名调用资源持有原操作与结果，
+复用配置域的调用身份、任务监督和清理边界。它们的结果类型不与普通两目标配置 mutation
+混合：Profile 命令交付真实回执及 Configuration／Models／Profiles 原目标；reload 交付
+本次采用的三个原目标，没有 CommitReceipt。reload 的 OperationId 只关联原调用与恢复，
+不将读取外部配置改称磁盘事务；公开 Repository 的 reload 意图不变。
+
+Profile 文件保存按原验证与原子文件写入路径执行。进入可能替换目标的原子写入之前，
+明确校验或准备拒绝可报告未提交；原子写入返回的普通错误不保证回滚，应保守为 Unknown，
+不能因错误为 I/O 或发生在响应之前就自动重试。已确认保存／采用之后的捕获、曝光或跟随
+更新失败独立表达为已生效但未观察，并保原证据；不查 latest 补回执或构造不存在的 receipt。
 
 每个角色必须配置 `account_id`、`model_id` 和可选 `effort`。`effort` 使用字符串，校验对象是
 对应模型 parameters 中 `name = "effort"` 参数的候选值：模型声明非空候选时，角色必须选择
@@ -632,6 +651,11 @@ Mode、role 的旧快照带入提交。
 状态和有效模型描述。它不会修改 desired route，也不会阻塞配置 command。route 指向被撤下的
 模型时保留 desired 值并返回 unavailable；用户显式选择的新 route 仍需按当前有效目录校验。
 删除手动模型的命令走配置 lane（canonical-CAS 与联合校验），与目录观察互不代替。
+
+目录采用将状态捕获、持久化与状态提交分阶段；观察序列文件的 I/O 不持有配置 state
+guard。相容输入由原 owner 同次捕获，同一物理文件的写入顺序、身份复核与失败保全仍由
+原提交责任保护，不能仅因解除状态锁而允许 stale 写入或回滚覆盖后继。不同目录账号
+共享的观察顺序不能退化为每账号各自编号；快照/通知也不构成另一份 canonical 配置。
 
 ## 20.15 模型标识与账号目录
 

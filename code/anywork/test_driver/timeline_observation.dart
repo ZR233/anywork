@@ -59,6 +59,10 @@ final class TimelineObservation {
     required this.ready,
     required this.mode,
     required this.connection,
+    required this.connectionErrorType,
+    required this.connectionErrorCode,
+    required this.connectionErrorRetryable,
+    required this.connectionErrorCorrelationId,
     required this.appliedVersion,
     required this.itemCount,
     required this.itemIds,
@@ -124,6 +128,26 @@ final class TimelineObservation {
       ready: _bool(map, 'ready', 'timeline'),
       mode: _string(map, 'mode', 'timeline'),
       connection: _string(map, 'connection', 'timeline'),
+      connectionErrorType: _nullableString(
+        map,
+        'connectionErrorType',
+        'timeline',
+      ),
+      connectionErrorCode: _nullableString(
+        map,
+        'connectionErrorCode',
+        'timeline',
+      ),
+      connectionErrorRetryable: _nullableBool(
+        map,
+        'connectionErrorRetryable',
+        'timeline',
+      ),
+      connectionErrorCorrelationId: _nullableString(
+        map,
+        'connectionErrorCorrelationId',
+        'timeline',
+      ),
       appliedVersion: _intOrNull(map, 'appliedVersion', 'timeline'),
       itemCount: _int(map, 'itemCount', 'timeline'),
       itemIds: List.unmodifiable(itemIds),
@@ -153,6 +177,12 @@ final class TimelineObservation {
   /// `live` 或 `history`；这是内容发布策略，不是滚动 owner。
   final String mode;
   final String connection;
+
+  /// 连接失败的安全只读元数据；无错误或未知异常的后三项为 null。
+  final String? connectionErrorType;
+  final String? connectionErrorCode;
+  final bool? connectionErrorRetryable;
+  final String? connectionErrorCorrelationId;
   final int? appliedVersion;
   final int itemCount;
   final List<String> itemIds;
@@ -1003,6 +1033,24 @@ int? _intOrNull(Map<String, dynamic> map, String key, String owner) {
 
 bool _bool(Map<String, dynamic> map, String key, String owner) {
   final value = map[key];
+  if (value is! bool) throw StateError('$owner.$key is not a bool: $value');
+  return value;
+}
+
+/// 契约要求这些键始终存在：缺键是观测失败，合法 null 才表示未知或无错误。
+String? _nullableString(Map<String, dynamic> map, String key, String owner) {
+  if (!map.containsKey(key)) {
+    throw StateError('$owner.$key is missing');
+  }
+  return _stringOrNull(map, key, owner);
+}
+
+bool? _nullableBool(Map<String, dynamic> map, String key, String owner) {
+  if (!map.containsKey(key)) {
+    throw StateError('$owner.$key is missing');
+  }
+  final value = map[key];
+  if (value == null) return null;
   if (value is! bool) throw StateError('$owner.$key is not a bool: $value');
   return value;
 }

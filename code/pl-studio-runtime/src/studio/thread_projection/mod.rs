@@ -28,7 +28,7 @@ mod snapshot;
 pub(in crate::studio) use snapshot::{project_snapshot, saved_mode, status, storage_state};
 pub(in crate::studio) mod order;
 mod tool_media;
-pub(crate) use tool_media::{delivery_attachments, read_persisted_media};
+pub(crate) use tool_media::{delivery_attachments, persisted_reference};
 mod inputs;
 mod responses;
 mod tools;

@@ -145,6 +145,7 @@ async fn interaction_restart_inner(
             &q1.interaction_id,
             &ResolveInteractionRequest {
                 operation_id: "op-bots-restart-q1".into(),
+                expected_interaction_revision: rebuilt_q1.revision,
                 resolution: InteractionResolution::UserInput(UserInputResolution {
                     answers: HashMap::from([(
                         Q1_ID.to_string(),
@@ -184,6 +185,7 @@ async fn interaction_restart_inner(
             &plan.interaction_id,
             &ResolveInteractionRequest {
                 operation_id: "op-bots-restart-plan".into(),
+                expected_interaction_revision: plan.revision,
                 resolution: InteractionResolution::UserInput(UserInputResolution {
                     answers: HashMap::from([(
                         AGENT_SESSION_PLAN_CONFIRMATION_QUESTION_ID.to_string(),

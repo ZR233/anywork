@@ -1,7 +1,6 @@
 import 'dart:convert';
 import 'dart:math' as math;
 
-import 'package:anywork/src/shared/studio_driver_state.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/scheduler.dart';
@@ -10,6 +9,7 @@ import 'package:flutter_driver/flutter_driver.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'pointer_drag.dart';
+import 'driver_binding.dart';
 
 class PointerDragCommandExtension extends CommandExtension {
   @override
@@ -61,9 +61,7 @@ class PointerDragCommandExtension extends CommandExtension {
     void sample(String phase) {
       samples.add({
         'phase': phase,
-        'scroll': jsonDecode(
-          StudioDriverState.snapshotJson(),
-        )['timelineScroll'],
+        'scroll': jsonDecode(captureDriverJson())['timelineScroll'],
       });
     }
 

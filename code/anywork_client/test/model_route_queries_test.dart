@@ -1,332 +1,107 @@
-import 'package:anywork_client/studio_client.dart';
+import 'package:anywork_client/models_ports.dart';
+import 'package:anywork_client/resources_ports.dart';
 import 'package:test/test.dart';
 
-void main() {
-  test(
-    'typed model queries preserve full catalogs and configured excluded routes',
-    () {
-      final eligible = _account.models.single;
-      final unknown = eligible.copyWith(
-        modelId: 'unknown-budget',
-        typeSupport: const [
-          ModelTypeSupportView(
-            modelType: ModelType.text,
-            exclusions: [ModelTypeExclusion.contextWindowUnknown],
-          ),
-        ],
-      );
-      final mixed = _account.copyWith(models: [unknown, eligible]);
-      expect(mixed.modelsFor().map((model) => model.modelId), [
-        'unknown-budget',
-        'observed-model',
-      ]);
-      expect(
-        mixed.modelsFor(type: ModelType.text).map((model) => model.modelId),
-        ['observed-model'],
-      );
-      final role = ModelRouteQueries.roleRoute(
-        accounts: [mixed],
-        roles: const [
-          RoleSettingsView(
-            key: 'worker',
-            accountId: 'account',
-            modelId: 'unknown-budget',
-            effort: 'high',
-          ),
-        ],
-        role: 'worker',
-      );
-      expect(role.modelId, 'unknown-budget');
-      expect(role.descriptor, same(unknown));
-      expect(
-        role.unavailable,
-        isFalse,
-        reason: 'list qualification is independent of execution availability',
-      );
-      expect(
-        ModelRouteQueries.roleRoute(
-          accounts: [
-            mixed.copyWith(
-              models: [unknown.copyWith(enabled: false), eligible],
-            ),
-          ],
-          roles: const [
-            RoleSettingsView(
-              key: 'worker',
-              accountId: 'account',
-              modelId: 'unknown-budget',
-              effort: 'high',
-            ),
-          ],
-          role: 'worker',
-        ).unavailable,
-        isTrue,
-        reason: 'Explicit unified disablement still blocks a configured route',
-      );
-      expect(
-        ModelRouteQueries.newAgentProfileRoute([mixed]).modelId,
-        'observed-model',
-      );
-      expect(
-        ModelRouteQueries.newAgentProfileRoute([
-          mixed.copyWith(models: [unknown]),
-        ]).modelId,
-        isEmpty,
-      );
-    },
-  );
-  test('pending model intent cannot fabricate an observed route revision', () {
-    const canonical = ThreadModelRouteView(
-      accountId: 'account',
-      modelId: 'observed-model',
-      effort: 'medium',
-      revision: 19,
-      available: true,
-    );
-    const pending = CommandStatus(
-      key: 'thread-route',
-      phase: CommandPhase.pending,
-      target: CommandTarget(
-        accountId: 'account',
-        modelId: 'removed-model',
-        effort: 'high',
-      ),
-    );
+import 'support/profile_editor_fixture.dart';
 
-    final display = ModelRouteQueries.threadRoute(
-      canonical: canonical,
-      command: pending,
-      accounts: [_account],
-    )!;
-    expect(display.modelId, 'removed-model');
-    expect(display.effort, 'high');
-    expect(display.pending, isTrue);
-    expect(display.available, isFalse);
-    expect(canonical.modelId, 'observed-model');
-    expect(canonical.revision, 19);
+/// 模型/路由选择现在是原生查询，不是客户端算法：
+/// - effort 候选、目录资格（`typeSupport`/exclusions）与默认值都由 Rust 决定，
+///   客户端只转发 candidate 并采用原样答复；
+/// - 已配置但不可用的角色路由由 `RoleRouteRead.configured/missing` 表达；
+/// - Turn 吞吐只在 feature 层按“完整同源采样”格式化（
+///   `code/anywork/lib/src/features/conversation/state/thread_metrics_state.dart`）。
+/// 本文件锁定客户端仍拥有的那一段：原样转发、只在 pending 期间合并、不缓存。
+const _catalog = ModelCatalogReadTarget(
+  origin: ProductReadOrigin(ownerEpoch: 'profile-native', incarnation: 1),
+  reference: ModelCatalogReadRef(entry: 1, revision: 1),
+);
 
-    final observed = ModelRouteQueries.threadRoute(
-      canonical: canonical,
-      command: null,
-      accounts: const [],
-    )!;
-    expect(observed.modelId, 'observed-model');
-    expect(observed.pending, isFalse);
-    expect(
-      observed.available,
-      isTrue,
-      reason: 'canonical availability comes from its owner frame',
+const _model = AccountModelKey(accountId: 'account-0', modelId: 'model-0');
+
+Future<ProfileEditorFixture> _fixture() async {
+  final fixture = ProfileEditorFixture();
+  await fixture.establish();
+  addTearDown(() async {
+    final report = await fixture.close(
+      deadline: DateTime.now().add(const Duration(seconds: 3)),
     );
+    expect(report.unresolved, isEmpty);
+    expect(fixture.budget.usage, isEmpty);
   });
-
-  test('mode inheritance preserves configured unavailable Agent routes', () {
-    const simple = ModeModelRouteView(
-      modeId: ThreadModeId.simple,
-      accountId: 'account',
-      modelId: 'observed-model',
-      effort: 'medium',
-    );
-    final route = ModelRouteQueries.startRoute(
-      routes: [simple],
-      commands: const {},
-      draft: const StartSessionDraft(),
-      mode: ThreadModeId.task,
-    );
-    expect(route.canonical, same(simple));
-    expect(route.display!.accountId, 'account');
-    expect(route.display!.modelId, 'observed-model');
-    expect(route.pending, isFalse);
-
-    final configured = ModelRouteQueries.roleRoute(
-      accounts: [_account],
-      roles: const [
-        RoleSettingsView(
-          key: 'reviewer',
-          accountId: 'removed-account',
-          modelId: 'removed-model',
-          effort: 'high',
-        ),
-      ],
-      role: 'reviewer',
-    );
-    expect(configured.accountId, 'removed-account');
-    expect(configured.modelId, 'removed-model');
-    expect(configured.unavailable, isTrue);
-    expect(configured.hasConfiguredRoute, isTrue);
-    final unconfigured = ModelRouteQueries.roleRoute(
-      accounts: [_account],
-      roles: const [],
-      role: 'new-agent',
-    );
-    expect(unconfigured.modelId, 'observed-model');
-    expect(unconfigured.effort, 'medium');
-    expect(unconfigured.hasConfiguredRoute, isFalse);
-    final configuredDefault = ModelRouteQueries.roleRoute(
-      accounts: [_account],
-      roles: const [
-        RoleSettingsView(
-          key: 'worker',
-          accountId: 'account',
-          modelId: 'observed-model',
-          effort: '',
-        ),
-      ],
-      role: 'worker',
-    );
-    expect(configuredDefault.effort, 'medium');
-    expect(configuredDefault.hasConfiguredRoute, isTrue);
-  });
-
-  test('throughput uses only a complete sample from the current Turn', () {
-    const runtime = ThreadRuntimeView(
-      modelId: 'observed-model',
-      contextTokens: 0,
-      contextWindow: 0,
-      totalTokens: 0,
-      costLabel: '',
-      activeSkills: [],
-      activeMcpServers: [],
-      activeLspServers: [],
-      turnCompletionTokens: 1000,
-      turnResponseMillis: 1000,
-    );
-    expect(ModelRouteQueries.throughput(runtime), 1000);
-    expect(
-      ModelRouteQueries.throughput(runtime.copyWith(turnCompletionTokens: 0)),
-      isNull,
-    );
-    for (final sample in [
-      (tokens: 20, millis: null),
-      (tokens: null, millis: 500),
-      (tokens: 0, millis: 500),
-      (tokens: 20, millis: 0),
-    ]) {
-      final partial = runtime.copyWith(
-        liveUsage: ThreadRuntimeLiveUsageView(
-          turnId: 'next-turn',
-          attemptId: 'next-attempt',
-          completionTokens: sample.tokens,
-          responseMillis: sample.millis,
-          state: ThreadRuntimeUsageState.live,
-          observationSequence: 1,
-        ),
-      );
-      expect(
-        ModelRouteQueries.throughput(partial),
-        1000,
-        reason:
-            'incomplete live sample $sample must keep the confirmed Turn pair',
-      );
-    }
-    final complete = runtime.copyWith(
-      liveUsage: const ThreadRuntimeLiveUsageView(
-        turnId: 'next-turn',
-        attemptId: 'next-attempt',
-        completionTokens: 20,
-        responseMillis: 500,
-        state: ThreadRuntimeUsageState.live,
-        observationSequence: 2,
-      ),
-    );
-    expect(ModelRouteQueries.throughput(complete), 40);
-    expect(ModelRouteQueries.throughputSource(complete)?.outputTokens, 20);
-    expect(ModelRouteQueries.throughputSource(complete)?.responseMillis, 500);
-    expect(
-      ModelRouteQueries.throughputSource(
-        runtime.copyWith(
-          liveUsage: const ThreadRuntimeLiveUsageView(
-            turnId: 'next-turn',
-            attemptId: 'next-attempt',
-            completionTokens: 20,
-            state: ThreadRuntimeUsageState.live,
-            observationSequence: 1,
-          ),
-        ),
-      )?.outputTokens,
-      1000,
-    );
-    expect(
-      ModelRouteQueries.throughput(
-        runtime.copyWith(turnCompletionTokens: 0, turnResponseMillis: 0),
-      ),
-      isNull,
-    );
-    expect(
-      ModelRouteQueries.throughput(runtime.copyWith(turnResponseMillis: 0)),
-      isNull,
-      reason: 'positive tokens without decode duration stay unknown',
-    );
-  });
-
-  test('model selection keeps a supported effort then a declared candidate default', () {
-    const model = AccountModelView(
-      modelId: 'observed-model',
-      typeSupport: [ModelTypeSupportView(modelType: ModelType.text)],
-      displayName: 'Observed model',
-      reasoningEfforts: ['low', 'medium', 'high'],
-      defaultReasoningEffort: 'medium',
-    );
-    expect(ModelRouteQueries.effortAfterModelSelection(model, 'high'), 'high');
-    expect(ModelRouteQueries.effortAfterModelSelection(model, null), 'medium');
-
-    const emptyDefault = AccountModelView(
-      modelId: 'observed-model',
-      displayName: 'Observed model',
-      reasoningEfforts: ['low', 'high'],
-    );
-    expect(
-      ModelRouteQueries.effortAfterModelSelection(emptyDefault, null),
-      'low',
-    );
-
-    const mismatchedDefault = AccountModelView(
-      modelId: 'observed-model',
-      displayName: 'Observed model',
-      reasoningEfforts: ['low', 'high'],
-      defaultReasoningEffort: 'medium',
-    );
-    expect(
-      ModelRouteQueries.effortAfterModelSelection(mismatchedDefault, null),
-      'low',
-    );
-    expect(
-      ModelRouteQueries.effortAfterModelSelection(mismatchedDefault, 'medium'),
-      'low',
-      reason: 'undeclared candidate values must not be admitted',
-    );
-
-    const emptyCatalog = AccountModelView(
-      modelId: 'observed-model',
-      displayName: 'Observed model',
-      reasoningEfforts: [],
-      defaultReasoningEffort: 'medium',
-    );
-    expect(
-      ModelRouteQueries.effortAfterModelSelection(emptyCatalog, 'medium'),
-      isNull,
-    );
-    expect(
-      ModelRouteQueries.effortAfterModelSelection(emptyCatalog, null),
-      isNull,
-    );
-    expect(ModelRouteQueries.effortAfterModelSelection(null, 'high'), isNull);
-  });
+  return fixture;
 }
 
-const _account = AccountSettingsView(
-  id: 'account',
-  name: 'Provider',
-  baseUrl: '',
-  defaultModelId: 'observed-model',
-  models: [
-    AccountModelView(
-      modelId: 'observed-model',
-      displayName: 'Observed model',
-      reasoningEfforts: ['medium', 'high'],
-      typeSupport: [ModelTypeSupportView(modelType: ModelType.text)],
-      defaultReasoningEffort: 'medium',
-    ),
-  ],
-  status: '',
-  usageLabel: '',
-);
+void main() {
+  test('effort selection forwards the candidate verbatim and adopts the native answer', () async {
+    final fixture = await _fixture();
+    final supported = fixture.models.effortAfterModelSelection(
+      catalog: _catalog,
+      model: _model,
+      candidate: 'high',
+    );
+    final call = await fixture.modelPort.effortCalled(0);
+    expect(call.catalog, _catalog);
+    expect(call.model, _model);
+    expect(call.candidate, 'high');
+    call.reply.complete('high');
+    expect(await supported, 'high');
+
+    // An undeclared candidate is not filtered locally: native decides.
+    final undeclared = fixture.models.effortAfterModelSelection(
+      catalog: _catalog,
+      model: _model,
+      candidate: 'medium',
+    );
+    final undeclaredCall = await fixture.modelPort.effortCalled(1);
+    expect(undeclaredCall.candidate, 'medium');
+    undeclaredCall.reply.complete(null);
+    expect(await undeclared, isNull);
+
+    // No candidate means the native default, not a client-side first entry.
+    final defaulted = fixture.models.effortAfterModelSelection(
+      catalog: _catalog,
+      model: _model,
+      candidate: null,
+    );
+    final defaultedCall = await fixture.modelPort.effortCalled(2);
+    expect(defaultedCall.candidate, isNull);
+    defaultedCall.reply.complete('medium');
+    expect(await defaulted, 'medium');
+    expect(fixture.modelPort.effortCalls, hasLength(3));
+  });
+
+  test(
+    'only a still-pending effort query is joined and nothing is cached',
+    () async {
+      final fixture = await _fixture();
+      final first = fixture.models.effortAfterModelSelection(
+        catalog: _catalog,
+        model: _model,
+        candidate: 'low',
+      );
+      final joined = fixture.models.effortAfterModelSelection(
+        catalog: _catalog,
+        model: _model,
+        candidate: 'low',
+      );
+      expect(identical(first, joined), isTrue);
+      final call = await fixture.modelPort.effortCalled(0);
+      call.reply.complete('low');
+      expect(await first, 'low');
+      expect(await joined, 'low');
+
+      // A settled selection is not a cache: the next query asks the original
+      // catalog version again instead of reusing the earlier answer.
+      final again = fixture.models.effortAfterModelSelection(
+        catalog: _catalog,
+        model: _model,
+        candidate: 'low',
+      );
+      expect(identical(again, first), isFalse);
+      final second = await fixture.modelPort.effortCalled(1);
+      second.reply.complete('low');
+      expect(await again, 'low');
+      expect(fixture.modelPort.effortCalls, hasLength(2));
+    },
+  );
+}

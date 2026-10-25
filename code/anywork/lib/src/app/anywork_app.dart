@@ -1,204 +1,112 @@
 import 'dart:async';
-import 'dart:ui' show AppExitResponse;
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
-import 'package:anywork_client/studio_client.dart';
-
-import '../features/settings/settings.dart';
-import '../features/settings/mode_editor/mode_editor_dialogs.dart';
-import '../features/shell/studio_shell.dart';
-import '../platform/desktop_tray_host.dart';
-import '../presentation/providers/studio_update_controller.dart';
+import '../features/settings/presentation_api.dart' as settings;
 import '../l10n/app_localizations.dart';
 import '../l10n/studio_l10n.dart';
 import '../platform/error_log.dart';
-import 'studio_host_lifecycle.dart';
 import 'app_graph.dart';
-import 'studio_shutdown.dart';
+import 'bootstrap/startup_boundary.dart';
+import 'bootstrap/startup_view_model.dart';
+import 'lifecycle/application_lifecycle_boundary.dart';
+import 'lifecycle/shutdown_overlay.dart';
+import 'routing/application_router.dart';
 import 'theme/material3_theme.dart';
 
+/// A concrete graph is injected before any feature VM is built. This root owns
+/// the only router and injects Settings' real public Screen/guard in its scope.
+/// The desktop host builder supplies the real platform-owned tray host; this
+/// widget neither constructs the tray controller nor owns any native exit state.
 class AnyworkApp extends ConsumerStatefulWidget {
-  const AnyworkApp({super.key, this.enableDesktopTray = false});
-
-  /// Release, demo and Driver entrypoints enable the Windows tray; widget tests
-  /// keep it off because they do not run the native host.
-  final bool enableDesktopTray;
+  const AnyworkApp({
+    required this.graph,
+    required this.desktopHostBuilder,
+    super.key,
+  });
+  final AppGraph graph;
+  final Widget Function(BuildContext context, Widget child) desktopHostBuilder;
 
   @override
   ConsumerState<AnyworkApp> createState() => _AnyworkAppState();
 }
 
 class _AnyworkAppState extends ConsumerState<AnyworkApp> {
+  late final _graph = widget.graph;
   late final GoRouter _router;
 
   @override
   void initState() {
     super.initState();
-    unawaited(ref.read(appGraphProvider).initialize());
-    _router = GoRouter(
-      restorationScopeId: 'anywork-router',
-      routes: [
-        GoRoute(
-          path: '/',
-          name: 'studio',
-          builder: (context, state) => const StudioShell(),
-          routes: [
-            GoRoute(
-              path: 'settings',
-              name: 'settings',
-              onExit: (context, state) => confirmLeaveModeEditor(context, ref),
-              pageBuilder: (context, state) => const MaterialPage<void>(
-                restorationId: 'settings-page',
-                child: SettingsPage(),
-              ),
-            ),
-          ],
-        ),
-      ],
+    // Construct one router after this Graph's ProviderContainer is installed.
+    // U1 alone owns the complete leave request/Mode lifetime/save guard; the
+    // app forwards its original Future without another confirmation or writer.
+    _router = createApplicationRouter(
+      exitCoordinator: _graph.exitCoordinator,
+      settingsScreen: (_) => const settings.SettingsScreen(),
+      confirmLeaveSettings: (context) =>
+          settings.confirmLeaveSettings(context, ref),
     );
+    // Explicit lifecycle action, never VM build or a Provider getter. The VM
+    // presents typed bootstrap/admission errors without restarting on rebuild.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      unawaited(
+        Future<void>.sync(
+          () => ref.read(startupViewModelProvider.notifier).retry(),
+        ).catchError((Object error, StackTrace stack) {
+          recordDartError(error, stack, stage: 'application-bootstrap');
+        }),
+      );
+    });
+  }
+
+  @override
+  void didUpdateWidget(AnyworkApp oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (!identical(widget.graph, _graph)) {
+      throw StateError(
+        'Replacing an application owner requires unmounting its original app.',
+      );
+    }
   }
 
   @override
   void dispose() {
     _router.dispose();
+    // Repository/Container cleanup belongs to the same exit coordinator. UI
+    // disposal is not native join or permission to clear drafts and permits.
     super.dispose();
   }
 
   @override
-  Widget build(BuildContext context) {
-    return StudioLifecycleCoordinator(
-      child: _EagerInitialization(
-        child: MaterialApp.router(
-          onGenerateTitle: (context) => context.l10n.appTitle,
-          debugShowCheckedModeBanner: false,
-          theme: pureStudioTheme(),
-          themeMode: ThemeMode.light,
-          localizationsDelegates: AppLocalizations.localizationsDelegates,
-          supportedLocales: AppLocalizations.supportedLocales,
-          routerConfig: _router,
-          restorationScopeId: 'anywork-app',
-          // The builder observes Flutter's resolved locale, including system
-          // language changes, rather than resolving a second locale for fonts.
-          builder: (context, child) => Theme(
-            data: pureStudioTheme(locale: Localizations.localeOf(context)),
-            child: DesktopTrayHost(
-              enabled: widget.enableDesktopTray,
-              child: StudioShutdownOverlay(child: child ?? const SizedBox()),
+  Widget build(BuildContext context) => ApplicationLifecycleBoundary(
+    host: _graph.host,
+    coordinator: _graph.exitCoordinator,
+    child: MaterialApp.router(
+      onGenerateTitle: (context) => context.l10n.appTitle,
+      debugShowCheckedModeBanner: false,
+      theme: pureStudioTheme(),
+      themeMode: ThemeMode.light,
+      localizationsDelegates: AppLocalizations.localizationsDelegates,
+      supportedLocales: AppLocalizations.supportedLocales,
+      routerConfig: _router,
+      restorationScopeId: 'anywork-app',
+      builder: (context, child) => Theme(
+        data: pureStudioTheme(locale: Localizations.localeOf(context)),
+        child: widget.desktopHostBuilder(
+          context,
+          // Replace the entire Router, not a visual cover over Settings. This
+          // really unmounts paused/offstage routes before display close joins.
+          ApplicationShutdownBoundary(
+            child: ApplicationStartupBoundary(
+              child: child ?? const SizedBox.shrink(),
             ),
           ),
         ),
       ),
-    );
-  }
-}
-
-class StudioLifecycleCoordinator extends ConsumerStatefulWidget {
-  const StudioLifecycleCoordinator({
-    required this.child,
-    this.shutdown,
-    super.key,
-  });
-
-  final Widget child;
-  final Future<void> Function()? shutdown;
-
-  @override
-  ConsumerState<StudioLifecycleCoordinator> createState() =>
-      _StudioLifecycleCoordinatorState();
-}
-
-class _StudioLifecycleCoordinatorState
-    extends ConsumerState<StudioLifecycleCoordinator>
-    with WidgetsBindingObserver {
-  late final StudioTransport _api;
-  late final StudioShutdownProgressState _shutdownProgress;
-  late final StudioExitCoordinator _coordinator;
-
-  @override
-  void initState() {
-    super.initState();
-    WidgetsBinding.instance.addObserver(this);
-    // dispose 后 ConsumerState.ref 不可再用，关机依赖必须在挂载期间取得。
-    _api = ref.read(appGraphProvider).client.transport;
-    _shutdownProgress = ref.read(studioShutdownProgressStateProvider.notifier);
-    final graph = ref.read(appGraphProvider);
-    _coordinator = StudioExitCoordinator(
-      _api,
-      // dispose 之后 overlay 与 account container 均已销毁：不再向已销毁的
-      // progress notifier 写状态。
-      (progress) {
-        if (mounted) _shutdownProgress.update(progress);
-      },
-      onFailure: (error) {
-        if (mounted) _shutdownProgress.fail(error);
-      },
-      readyUpdateVersion: () =>
-          graph.client.updates.state is ReadyUpdaterStateSnapshot
-          ? graph.client.updates.state.update?.version
-          : null,
-      onBeginExit: (version, restart) {
-        if (mounted) _shutdownProgress.beginExit(version, restart);
-      },
-      shutdownOverride: widget.shutdown,
-      closeClient: (deadline) => graph.close(deadline: deadline),
-    );
-    // 安装 native -> Dart 退出回调，并提前把 canonical 日志目录交给 native。
-    StudioExitCoordinator.install(_coordinator);
-  }
-
-  @override
-  void didChangeAppLifecycleState(AppLifecycleState state) {
-    // 隐藏到托盘会进入 hidden/inactive，而不是 detached：只有真实 engine
-    // detach 才进入退出协调器，隐藏不会取消正在运行的 Turn、工具或保存。
-    if (state == AppLifecycleState.detached) {
-      unawaited(StudioExitCoordinator.requestExit().catchError(_logExitError));
-    }
-  }
-
-  @override
-  Future<AppExitResponse> didRequestAppExit() async {
-    // 与托盘退出同一协调器：arm native deadline，执行有界清理并结束本实例。
-    await StudioExitCoordinator.requestExit().catchError(_logExitError);
-    return AppExitResponse.exit;
-  }
-
-  @override
-  void dispose() {
-    WidgetsBinding.instance.removeObserver(this);
-    // 卸载兜底：此时 overlay 与 account container 均已销毁，只执行关机；协调器
-    // 通过共享 future 复用同一次收束，且不会再向已销毁的 progress notifier 写状态。
-    unawaited(StudioExitCoordinator.requestExit().catchError(_logExitError));
-    super.dispose();
-  }
-
-  void _logExitError(Object error, StackTrace stackTrace) {
-    // 退出路径的异常不静默丢弃：cause/stack 经 canonical 诊断日志（含 system temp /
-    // stderr 兜底）记录，并带 stage 与 correlation；只记录允许的诊断字段，绝不把
-    // 任意正文当作 wire 安全消息。native 硬期限仍会兜底结束本进程。
-    debugPrint('studio_exit_unhandled=$error\n$stackTrace');
-    recordDartError(
-      error,
-      stackTrace,
-      stage: 'exit-unhandled',
-      correlationId: newStudioCorrelationId(),
-    );
-  }
-
-  @override
-  Widget build(BuildContext context) => widget.child;
-}
-
-class _EagerInitialization extends ConsumerWidget {
-  const _EagerInitialization({required this.child});
-
-  final Widget child;
-
-  @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    ref.watch(studioUpdateControllerProvider);
-    return child;
-  }
+    ),
+  );
 }

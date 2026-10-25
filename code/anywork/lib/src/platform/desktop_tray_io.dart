@@ -4,7 +4,7 @@ import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:tray_manager/tray_manager.dart';
 
-import '../app/studio_host_lifecycle.dart';
+import '../app/lifecycle/native_exit_host.dart';
 import 'error_log.dart';
 
 /// Bundled application artwork used as the Windows notification-area icon.
@@ -12,15 +12,18 @@ const String _trayIconAsset = 'assets/branding/anywork-app-icon.png';
 
 /// Owns the Windows system-tray icon and menu.
 ///
-/// Hiding the main window is a visibility operation only: this controller never
-/// cancels sessions, closes the AppGraph or starts the exit coordinator. It is
-/// also the reserved cross-platform interface: Linux keeps this class as a
-/// no-op implementation and continues to exit through its existing native
+/// Hiding the main window is a visibility operation only: it never cancels
+/// sessions, closes the AppGraph or starts the exit coordinator. Explicit exit
+/// requests use the application owner's injected callback. Each application
+/// injects its own host; no process-global controller owns these dependencies.
+/// This is also the reserved cross-platform interface: Linux keeps this class
+/// as a no-op implementation and continues to exit through its existing native
 /// `delete-event` hook.
 final class DesktopTrayController {
-  DesktopTrayController._();
+  DesktopTrayController({required this._host, required this._requestExit});
 
-  static final DesktopTrayController instance = DesktopTrayController._();
+  final NativeExitHost _host;
+  final Future<void> Function() _requestExit;
 
   TrayIcon? _trayIcon;
   Menu? _menu;
@@ -32,15 +35,14 @@ final class DesktopTrayController {
   ListenerId? _exitListener;
   bool _started = false;
   bool _disposed = false;
-  bool _exiting = false;
   Future<void>? _starting;
   Future<void>? _disposing;
-  bool _exitHookInstalled = false;
+  Future<void>? _exiting;
 
   /// Only Windows implements the notification-area host for now.
   bool get supported => Platform.isWindows;
 
-  bool get isActive => _started && _trayIcon != null;
+  bool get isActive => !_disposed && _started && _trayIcon != null;
 
   /// Creates the tray icon and menu after the first Flutter frame.
   ///
@@ -53,40 +55,53 @@ final class DesktopTrayController {
   }) {
     if (!supported || _started || _disposed) return Future<void>.value();
     if (_starting case final starting?) return starting;
-    final attempt = _start(
-      tooltip: tooltip,
-      showLabel: showLabel,
-      exitLabel: exitLabel,
-    );
+    late final Future<void> attempt;
+    attempt =
+        _start(
+          tooltip: tooltip,
+          showLabel: showLabel,
+          exitLabel: exitLabel,
+        ).whenComplete(() {
+          if (identical(_starting, attempt)) _starting = null;
+        });
     _starting = attempt;
-    return attempt.whenComplete(() {
-      if (identical(_starting, attempt)) _starting = null;
-    });
+    return attempt;
   }
 
   Future<void> showWindow() async {
     if (!supported) return;
     // The native host restores the existing window; it never reinitializes the
     // AppGraph or resumes/cancels any session work.
-    await StudioHostLifecycle.showMainWindow();
+    await _host.showMainWindow();
   }
 
-  Future<void> exit() async {
-    if (_exiting) return;
-    _exiting = true;
-    // Remove the icon before termination so Explorer does not keep a ghost.
-    await dispose(notifyNative: true);
-    await StudioExitCoordinator.requestExit();
+  Future<void> exit() {
+    if (!supported) return Future<void>.value();
+    return _exiting ??= _exit();
   }
 
-  /// Releases the tray icon. Safe to call repeatedly and from the exit hook.
-  Future<void> dispose({bool notifyNative = true}) {
+  Future<void> _exit() async {
+    try {
+      // Remove the icon before termination so Explorer does not keep a ghost.
+      await dispose();
+    } finally {
+      // A shell failure must not prevent the real coordinator from arming the
+      // native deadline. Repeated requests join this same attempt, not a retry.
+      await _requestExit();
+    }
+  }
+
+  /// Releases the tray icon, including an in-flight start attempt.
+  ///
+  /// The application owner also injects this action as its desktop-shell
+  /// release callback. Repeated calls share the original result, even on error.
+  Future<void> dispose() {
+    if (!supported) return Future<void>.value();
     if (_disposing case final disposing?) return disposing;
-    final future = _dispose(notifyNative: notifyNative);
+    _disposed = true;
+    final future = _dispose();
     _disposing = future;
-    return future.whenComplete(() {
-      if (identical(_disposing, future)) _disposing = null;
-    });
+    return future;
   }
 
   Future<void> _start({
@@ -132,14 +147,14 @@ final class DesktopTrayController {
       }
       showListener = showItem.addListener((event) {
         if (event is MenuItemClickedEvent) {
-          unawaited(showWindow());
+          _observeAction(showWindow, stage: 'desktop-tray-show-window');
         }
       });
       exitListener = exitItem.addListener((event) {
         if (event is! MenuItemClickedEvent) return;
         // Run after the native menu has finished closing; disposing the tray
         // from inside its own click callback is not safe.
-        Timer.run(() => unawaited(exit()));
+        Timer.run(() => _observeAction(exit, stage: 'desktop-tray-exit'));
       });
       menu
         ..addItem(showItem)
@@ -151,7 +166,7 @@ final class DesktopTrayController {
       trayListener = trayIcon.addListener((event) {
         if (event is TrayIconClickedEvent ||
             event is TrayIconDoubleClickedEvent) {
-          unawaited(showWindow());
+          _observeAction(showWindow, stage: 'desktop-tray-show-window');
         }
       });
       if (!trayIcon.setVisible(true)) {
@@ -160,22 +175,10 @@ final class DesktopTrayController {
 
       // Only after the icon is really visible may native WM_CLOSE hide instead
       // of entering the exit coordinator.
-      await StudioHostLifecycle.setTrayAvailable(true);
-      if (_disposed) {
-        await StudioHostLifecycle.setTrayAvailable(false);
-        _disposeNative(
-          trayIcon: trayIcon,
-          menu: menu,
-          showItem: showItem,
-          exitItem: exitItem,
-          image: image,
-          trayListener: trayListener,
-          showListener: showListener,
-          exitListener: exitListener,
-        );
-        return;
-      }
+      await _setTrayAvailable(true);
 
+      // Disposal joins this start before releasing its resources, even if it
+      // was requested while native was acknowledging tray availability.
       _trayIcon = trayIcon;
       _menu = menu;
       _showItem = showItem;
@@ -186,8 +189,6 @@ final class DesktopTrayController {
       _exitListener = exitListener;
       _started = true;
 
-      StudioExitCoordinator.beforeExit = _disposeForExit;
-      _exitHookInstalled = true;
       debugPrint('desktop_tray_started');
     } on Object catch (error, stackTrace) {
       debugPrint('desktop_tray_start_failed=$error\n$stackTrace');
@@ -197,51 +198,93 @@ final class DesktopTrayController {
         stage: 'desktop-tray-start',
         correlationId: newStudioCorrelationId(),
       );
-      await StudioHostLifecycle.setTrayAvailable(false);
-      _disposeNative(
-        trayIcon: trayIcon,
-        menu: menu,
-        showItem: showItem,
-        exitItem: exitItem,
-        image: image,
-        trayListener: trayListener,
-        showListener: showListener,
-        exitListener: exitListener,
-      );
+      try {
+        // A failed or timed-out enable may still have reached native. Restore
+        // close-to-exit before releasing the icon, and surface rollback errors.
+        await _setTrayAvailable(false);
+      } finally {
+        _disposeNative(
+          trayIcon: trayIcon,
+          menu: menu,
+          showItem: showItem,
+          exitItem: exitItem,
+          image: image,
+          trayListener: trayListener,
+          showListener: showListener,
+          exitListener: exitListener,
+        );
+      }
+      rethrow;
     }
   }
 
-  Future<void> _disposeForExit() => dispose(notifyNative: false);
+  Future<void> _dispose() async {
+    try {
+      final starting = _starting;
+      if (starting != null) await starting;
+      if (!_started) return;
+      try {
+        await _setTrayAvailable(false);
+      } finally {
+        _disposeNative(
+          trayIcon: _trayIcon,
+          menu: _menu,
+          showItem: _showItem,
+          exitItem: _exitItem,
+          image: _image,
+          trayListener: _trayListener,
+          showListener: _showListener,
+          exitListener: _exitListener,
+        );
+        _trayIcon = null;
+        _menu = null;
+        _showItem = null;
+        _exitItem = null;
+        _image = null;
+        _trayListener = null;
+        _showListener = null;
+        _exitListener = null;
+        _started = false;
+        debugPrint('desktop_tray_disposed');
+      }
+    } on Object catch (error, stackTrace) {
+      recordDartError(
+        error,
+        stackTrace,
+        stage: 'desktop-tray-dispose',
+        correlationId: newStudioCorrelationId(),
+      );
+      rethrow;
+    }
+  }
 
-  Future<void> _dispose({required bool notifyNative}) async {
-    _disposed = true;
-    if (_exitHookInstalled) {
-      _exitHookInstalled = false;
-      StudioExitCoordinator.beforeExit = null;
+  Future<void> _setTrayAvailable(bool available) async {
+    try {
+      await _host.setTrayAvailable(available);
+    } on Object catch (error, stackTrace) {
+      // Log before native resource cleanup can itself fail and replace the
+      // propagated error. Neither timeout nor channel failure proves fallback.
+      recordDartError(
+        error,
+        stackTrace,
+        stage: available ? 'desktop-tray-enable' : 'desktop-tray-disable',
+        correlationId: newStudioCorrelationId(),
+      );
+      rethrow;
     }
-    if (notifyNative && _started) {
-      await StudioHostLifecycle.setTrayAvailable(false);
-    }
-    _disposeNative(
-      trayIcon: _trayIcon,
-      menu: _menu,
-      showItem: _showItem,
-      exitItem: _exitItem,
-      image: _image,
-      trayListener: _trayListener,
-      showListener: _showListener,
-      exitListener: _exitListener,
+  }
+
+  void _observeAction(Future<void> Function() action, {required String stage}) {
+    unawaited(
+      Future<void>.sync(action).catchError((Object error, StackTrace stack) {
+        recordDartError(
+          error,
+          stack,
+          stage: stage,
+          correlationId: newStudioCorrelationId(),
+        );
+      }),
     );
-    _trayIcon = null;
-    _menu = null;
-    _showItem = null;
-    _exitItem = null;
-    _image = null;
-    _trayListener = null;
-    _showListener = null;
-    _exitListener = null;
-    _started = false;
-    debugPrint('desktop_tray_disposed');
   }
 
   void _disposeNative({

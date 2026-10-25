@@ -9,6 +9,7 @@ use std::sync::{
 pub(super) struct CleanupGate {
     busy: AtomicBool,
     changed: tokio::sync::Notify,
+    pub(super) close: std::sync::Mutex<Option<Arc<super::close_failure::ThreadCloseRun>>>,
 }
 
 pub(super) struct CleanupPermit(Arc<CleanupGate>);
@@ -84,17 +85,24 @@ impl super::StudioThreadAssembler {
         &self,
         id: &str,
     ) -> Result<(), ThreadAssemblyError> {
+        let _operation = self.close_operation_gate(id).lock_owned().await;
+        self.discard_child_resources_with_permit(id).await
+    }
+
+    /// close_with_permit uses this entry instead of reacquiring its own operation gate.
+    pub(super) async fn discard_child_resources_with_permit(
+        &self,
+        id: &str,
+    ) -> Result<(), ThreadAssemblyError> {
+        if self.0.state().preparing_children.contains_key(id)
+            || self.0.state().creating.contains_key(id)
+        {
+            return Err(ThreadAssemblyError::Preparing(id.to_owned()));
+        }
         let pending = { self.0.state().unpublished_children.get(id).cloned() };
         let Some(pending) = pending else {
             return Ok(());
         };
-        let _cleanup = pending.cleanup.acquire().await;
-        if !self.0.state().unpublished_children.contains_key(id) {
-            return Ok(());
-        }
-        self.close_thread(id).await?;
-        pending.factory.discard_unpublished(id).await?;
-        self.0.state().unpublished_children.remove(id);
-        Ok(())
+        self.close_unpublished_original(id, pending).await
     }
 }

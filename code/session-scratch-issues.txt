@@ -1,0 +1,51 @@
+WARNING|STATIC_WARNING|UNUSED_IMPORT|lib/src/features/workspace/views/persistence_panel_view.dart|3|8|39|Unused import: 'package:anywork_client/resources.dart'.
+INFO|LINT|USE_NULL_AWARE_ELEMENTS|lib/src/features/shell/sidebar_entries.dart|27|12|2|Use the null-aware marker '?' rather than a null check via an 'if'.
+INFO|LINT|CURLY_BRACES_IN_FLOW_CONTROL_STRUCTURES|lib/src/features/shell/studio_shell.dart|69|31|30|Statements in an if should be enclosed in a block.
+INFO|LINT|USE_NULL_AWARE_ELEMENTS|lib/src/features/shell/studio_shell_chrome.dart|74|9|2|Use the null-aware marker '?' rather than a null check via an 'if'.
+INFO|LINT|USE_NULL_AWARE_ELEMENTS|lib/src/features/shell/view_models/shell_chrome_view_model.dart|259|7|2|Use the null-aware marker '?' rather than a null check via an 'if'.
+INFO|LINT|USE_NULL_AWARE_ELEMENTS|lib/src/features/shell/view_models/shell_chrome_view_model.dart|260|7|2|Use the null-aware marker '?' rather than a null check via an 'if'.
+INFO|LINT|USE_NULL_AWARE_ELEMENTS|lib/src/features/shell/view_models/shell_chrome_view_model.dart|261|7|2|Use the null-aware marker '?' rather than a null check via an 'if'.
+INFO|LINT|USE_NULL_AWARE_ELEMENTS|lib/src/features/shell/view_models/shell_chrome_view_model.dart|262|7|2|Use the null-aware marker '?' rather than a null check via an 'if'.
+INFO|LINT|USE_NULL_AWARE_ELEMENTS|lib/src/features/shell/view_models/shell_chrome_view_model.dart|264|7|2|Use the null-aware marker '?' rather than a null check via an 'if'.
+INFO|LINT|USE_NULL_AWARE_ELEMENTS|lib/src/features/shell/view_models/shell_chrome_view_model.dart|266|7|2|Use the null-aware marker '?' rather than a null check via an 'if'.
+INFO|LINT|USE_NULL_AWARE_ELEMENTS|lib/src/features/shell/view_models/shell_chrome_view_model.dart|267|7|2|Use the null-aware marker '?' rather than a null check via an 'if'.
+INFO|LINT|CURLY_BRACES_IN_FLOW_CONTROL_STRUCTURES|lib/src/features/shell/view_models/shell_chrome_view_model.dart|302|65|7|Statements in an if should be enclosed in a block.
+INFO|LINT|CURLY_BRACES_IN_FLOW_CONTROL_STRUCTURES|lib/src/features/shell/view_models/shell_chrome_view_model.dart|332|37|7|Statements in an if should be enclosed in a block.
+INFO|LINT|USE_BUILD_CONTEXT_SYNCHRONOUSLY|lib/src/features/workspace/connectors/add_project_dialog.dart|68|55|7|Don't use 'BuildContext's across async gaps.
+INFO|LINT|USE_BUILD_CONTEXT_SYNCHRONOUSLY|lib/src/features/workspace/connectors/add_project_dialog.dart|78|50|7|Don't use 'BuildContext's across async gaps.
+INFO|LINT|CURLY_BRACES_IN_FLOW_CONTROL_STRUCTURES|lib/src/features/workspace/connectors/workspace_header_connector.dart|34|25|147|Statements in an if should be enclosed in a block.
+INFO|LINT|CURLY_BRACES_IN_FLOW_CONTROL_STRUCTURES|lib/src/features/workspace/connectors/workspace_header_connector.dart|62|62|28|Statements in an if should be enclosed in a block.
+INFO|LINT|USE_NULL_AWARE_ELEMENTS|lib/src/features/workspace/connectors/workspace_header_connector.dart|84|7|2|Use the null-aware marker '?' rather than a null check via an 'if'.
+INFO|LINT|USE_NULL_AWARE_ELEMENTS|lib/src/features/workspace/connectors/workspace_header_connector.dart|86|7|2|Use the null-aware marker '?' rather than a null check via an 'if'.
+INFO|LINT|CURLY_BRACES_IN_FLOW_CONTROL_STRUCTURES|lib/src/features/workspace/connectors/workspace_host_actions.dart|69|26|109|Statements in an if should be enclosed in a block.
+INFO|LINT|USE_NULL_AWARE_ELEMENTS|lib/src/features/workspace/state/collection_presentation.dart|22|7|2|Use the null-aware marker '?' rather than a null check via an 'if'.
+INFO|LINT|CURLY_BRACES_IN_FLOW_CONTROL_STRUCTURES|lib/src/features/workspace/view_models/add_project_view_model.dart|121|71|7|Statements in an if should be enclosed in a block.
+INFO|LINT|CURLY_BRACES_IN_FLOW_CONTROL_STRUCTURES|lib/src/features/workspace/view_models/add_project_view_model.dart|162|67|7|Statements in an if should be enclosed in a block.
+INFO|LINT|CURLY_BRACES_IN_FLOW_CONTROL_STRUCTURES|lib/src/features/workspace/view_models/add_project_view_model.dart|184|51|7|Statements in an if should be enclosed in a block.
+INFO|LINT|CURLY_BRACES_IN_FLOW_CONTROL_STRUCTURES|lib/src/features/workspace/view_models/add_project_view_model.dart|243|26|123|Statements in an if should be enclosed in a block.
+INFO|LINT|CURLY_BRACES_IN_FLOW_CONTROL_STRUCTURES|lib/src/features/workspace/view_models/add_project_view_model.dart|254|24|128|Statements in an if should be enclosed in a block.
+INFO|LINT|CURLY_BRACES_IN_FLOW_CONTROL_STRUCTURES|lib/src/features/workspace/view_models/add_project_view_model.dart|258|22|420|Statements in an if should be enclosed in a block.
+INFO|LINT|CURLY_BRACES_IN_FLOW_CONTROL_STRUCTURES|lib/src/features/workspace/view_models/add_project_view_model.dart|267|22|155|Statements in an if should be enclosed in a block.
+INFO|LINT|CURLY_BRACES_IN_FLOW_CONTROL_STRUCTURES|lib/src/features/workspace/view_models/sidebar_view_model.dart|88|37|102|Statements in an if should be enclosed in a block.
+INFO|LINT|CURLY_BRACES_IN_FLOW_CONTROL_STRUCTURES|lib/src/features/workspace/view_models/sidebar_view_model.dart|193|64|126|Statements in an if should be enclosed in a block.
+INFO|LINT|CURLY_BRACES_IN_FLOW_CONTROL_STRUCTURES|lib/src/features/workspace/view_models/sidebar_view_model.dart|483|24|117|Statements in an if should be enclosed in a block.
+INFO|LINT|CURLY_BRACES_IN_FLOW_CONTROL_STRUCTURES|lib/src/features/workspace/view_models/workspace_diagnostics_view_model.dart|200|62|28|Statements in an if should be enclosed in a block.
+INFO|LINT|CURLY_BRACES_IN_FLOW_CONTROL_STRUCTURES|lib/src/features/workspace/view_models/workspace_diagnostics_view_model.dart|220|47|7|Statements in an if should be enclosed in a block.
+INFO|LINT|CURLY_BRACES_IN_FLOW_CONTROL_STRUCTURES|lib/src/features/workspace/view_models/workspace_diagnostics_view_model.dart|273|55|124|Statements in an if should be enclosed in a block.
+INFO|LINT|CURLY_BRACES_IN_FLOW_CONTROL_STRUCTURES|lib/src/features/workspace/view_models/workspace_diagnostics_view_model.dart|303|24|124|Statements in an if should be enclosed in a block.
+INFO|LINT|CURLY_BRACES_IN_FLOW_CONTROL_STRUCTURES|lib/src/features/workspace/view_models/workspace_header_view_model.dart|139|22|124|Statements in an if should be enclosed in a block.
+INFO|LINT|CURLY_BRACES_IN_FLOW_CONTROL_STRUCTURES|lib/src/features/workspace/view_models/workspace_header_view_model.dart|158|40|120|Statements in an if should be enclosed in a block.
+INFO|LINT|CURLY_BRACES_IN_FLOW_CONTROL_STRUCTURES|lib/src/features/workspace/view_models/workspace_view_model.dart|230|22|113|Statements in an if should be enclosed in a block.
+INFO|LINT|CURLY_BRACES_IN_FLOW_CONTROL_STRUCTURES|lib/src/features/workspace/view_models/workspace_view_model.dart|234|22|112|Statements in an if should be enclosed in a block.
+INFO|LINT|CURLY_BRACES_IN_FLOW_CONTROL_STRUCTURES|lib/src/features/workspace/view_models/workspace_view_model.dart|314|44|107|Statements in an if should be enclosed in a block.
+INFO|LINT|CURLY_BRACES_IN_FLOW_CONTROL_STRUCTURES|lib/src/features/workspace/view_models/workspace_view_model.dart|348|42|125|Statements in an if should be enclosed in a block.
+INFO|LINT|USE_NULL_AWARE_ELEMENTS|lib/src/features/workspace/views/persistence_panel_view.dart|45|7|2|Use the null-aware marker '?' rather than a null check via an 'if'.
+INFO|LINT|USE_NULL_AWARE_ELEMENTS|lib/src/features/workspace/views/persistence_panel_view.dart|46|7|2|Use the null-aware marker '?' rather than a null check via an 'if'.
+INFO|LINT|CURLY_BRACES_IN_FLOW_CONTROL_STRUCTURES|lib/src/features/workspace/views/sidebar_view.dart|194|94|12|Statements in an if should be enclosed in a block.
+INFO|LINT|USE_NULL_AWARE_ELEMENTS|lib/src/features/workspace/views/workspace_header_view.dart|87|35|2|Use the null-aware marker '?' rather than a null check via an 'if'.
+INFO|LINT|USE_NULL_AWARE_ELEMENTS|lib/src/features/workspace/views/workspace_header_view.dart|104|13|2|Use the null-aware marker '?' rather than a null check via an 'if'.
+INFO|LINT|USE_NULL_AWARE_ELEMENTS|lib/src/features/workspace/views/workspace_start_view.dart|44|15|2|Use the null-aware marker '?' rather than a null check via an 'if'.
+INFO|LINT|USE_NULL_AWARE_ELEMENTS|lib/src/features/workspace/workspace_screen.dart|67|11|2|Use the null-aware marker '?' rather than a null check via an 'if'.
+INFO|LINT|USE_NULL_AWARE_ELEMENTS|lib/src/features/workspace/workspace_screen.dart|69|11|2|Use the null-aware marker '?' rather than a null check via an 'if'.
+INFO|LINT|USE_NULL_AWARE_ELEMENTS|lib/src/features/workspace/workspace_screen.dart|70|11|2|Use the null-aware marker '?' rather than a null check via an 'if'.
+INFO|LINT|CURLY_BRACES_IN_FLOW_CONTROL_STRUCTURES|lib/src/features/workspace/workspace_screen.dart|79|77|7|Statements in an if should be enclosed in a block.

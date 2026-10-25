@@ -1,9 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use super::{
-    BridgeDelegationMode, BridgeDelegationPreference, BridgeError, BridgeStudioPromptInput,
-    StartNewThreadResponse,
-};
+use super::{BridgeDelegationMode, BridgeDelegationPreference, BridgeStudioPromptInput};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BridgeStartNewThreadRequest {
@@ -37,14 +34,6 @@ pub struct BridgeThreadPreparationProgress {
     pub stage: BridgeThreadPreparationStage,
     pub workspace_path: Option<String>,
     pub branch: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase", tag = "kind", content = "value")]
-pub enum BridgeNewThreadStartEvent {
-    Progress(BridgeThreadPreparationProgress),
-    Succeeded(Box<StartNewThreadResponse>),
-    Failed(BridgeError),
 }
 
 impl From<pl_protocol::studio::ThreadPreparationProgress> for BridgeThreadPreparationProgress {

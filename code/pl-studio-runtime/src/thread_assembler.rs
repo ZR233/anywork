@@ -14,6 +14,7 @@ mod user_input;
 pub use user_input::{UserInteractionError, project_user_input};
 mod interaction_router;
 pub use interaction_key::{InteractionKeyError, decode_interaction_key};
+pub(crate) use interaction_router::validate_interaction_response;
 pub use interaction_router::{StudioInteractionError, project_thread_interaction};
 mod approval;
 mod permission_projection;
@@ -23,7 +24,10 @@ pub use permission_projection::{PermissionProjectionError, project_execution_per
 pub use plan_confirmation::{PlanInteractionError, project_plan_confirmation};
 mod child_resources;
 mod children;
+mod close_failure;
+pub(crate) use close_failure::ThreadCloseFailure;
 mod published_resources;
+pub(crate) use published_resources::AgentOperationSeal;
 mod spawn_schema;
 pub use children::{
     ChildThreadRequest, ConfiguredChildFactory, StudioChildFactory, StudioChildResources,
@@ -33,7 +37,7 @@ pub(crate) mod media;
 mod tools;
 use std::{
     collections::{BTreeMap, BTreeSet},
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, Weak},
 };
 pub use tools::{StudioCommandBinding, StudioGitBinding, StudioThreadTools, StudioWorkspaceTools};
 
@@ -244,6 +248,23 @@ impl Registry {
 #[derive(Debug, Clone, Default)]
 pub struct StudioThreadAssembler(Arc<Registry>);
 
+/// Original assembler identity without retaining its registry or cleanup owners.
+#[derive(Debug, Clone)]
+pub(crate) struct WeakStudioThreadAssembler(Weak<Registry>);
+
+impl WeakStudioThreadAssembler {
+    /// Upgrades the original assembler while it still exists; never creates a replacement.
+    ///
+    /// # Errors
+    /// Returns `ThreadAssemblyError::Closed` when the original registry was released.
+    pub(crate) fn upgrade(&self) -> Result<StudioThreadAssembler, ThreadAssemblyError> {
+        self.0
+            .upgrade()
+            .map(StudioThreadAssembler)
+            .ok_or(ThreadAssemblyError::Closed)
+    }
+}
+
 pub(crate) struct Reservation {
     registry: Arc<Registry>,
     id: String,
@@ -256,30 +277,14 @@ impl Drop for Reservation {
 }
 
 impl StudioThreadAssembler {
+    pub(crate) fn downgrade(&self) -> WeakStudioThreadAssembler {
+        WeakStudioThreadAssembler(Arc::downgrade(&self.0))
+    }
+
     /// Shared admission order for evaluation, cold activation, user/agent input and close.
     /// Never acquire a lifecycle lock while holding this permit. No model Turn is awaited here.
     pub(crate) async fn agent_operation(&self, id: &str) -> tokio::sync::OwnedMutexGuard<()> {
-        let gate = {
-            let mut state = self.0.state();
-            match state
-                .operation_gates
-                .get(id)
-                .and_then(std::sync::Weak::upgrade)
-            {
-                Some(gate) => gate,
-                None => {
-                    state
-                        .operation_gates
-                        .retain(|_, gate| gate.strong_count() > 0);
-                    let gate = Arc::new(tokio::sync::Mutex::new(()));
-                    state
-                        .operation_gates
-                        .insert(id.to_owned(), Arc::downgrade(&gate));
-                    gate
-                }
-            }
-        };
-        gate.lock_owned().await
+        self.close_operation_gate(id).lock_owned().await
     }
 
     pub(crate) fn ensure_agent_admission_open(&self, id: &str) -> Result<(), ThreadAssemblyError> {
@@ -800,102 +805,19 @@ impl StudioThreadAssembler {
         if self.0.state().preparing_children.contains_key(id) {
             return Err(ThreadAssemblyError::Preparing(id.into()));
         }
-        self.close_thread(id).await?;
-        self.discard_unpublished_child(id).await
+        if self.0.state().unpublished_children.contains_key(id) {
+            self.discard_child_resources_with_permit(id).await
+        } else {
+            self.close_thread(id).await
+        }
     }
 
     async fn close_thread(&self, id: &str) -> Result<(), ThreadAssemblyError> {
-        loop {
-            let changed = self.0.changed.notified();
-            tokio::pin!(changed);
-            changed.as_mut().enable();
-            let preparing = {
-                let mut state = self.0.state();
-                if let Some(entry) = state.entries.get_mut(id) {
-                    entry.ready = false;
-                }
-                state
-                    .preparing_children
-                    .values()
-                    .filter(|child| child.parent == id)
-                    .map(|child| child.cancellation.clone())
-                    .collect::<Vec<_>>()
-            };
-            if preparing.is_empty() {
-                break;
-            }
-            for cancellation in preparing {
-                cancellation.cancel();
-            }
-            changed.await;
-        }
-        let thread = {
-            let mut state = self.0.state();
-            if let Some((child, _)) = state
-                .unpublished_children
-                .iter()
-                .find(|(_, child)| child.parent == id)
-            {
-                return Err(ThreadAssemblyError::Preparing(child.clone()));
-            }
-            if state.creating.contains_key(id) {
-                return Err(ThreadAssemblyError::Preparing(id.to_owned()));
-            }
-            if let Some((child, _)) = state
-                .preparing_children
-                .iter()
-                .find(|(_, preparing)| preparing.parent == id)
-            {
-                return Err(ThreadAssemblyError::Preparing(child.clone()));
-            }
-            if let Some((child, _)) = state
-                .entries
-                .iter()
-                .find(|(_, entry)| entry.parent_id.as_deref() == Some(id))
-            {
-                return Err(ThreadAssemblyError::Descendant(child.clone()));
-            }
-            if let Some((child, _)) = state
-                .creating
-                .iter()
-                .find(|(_, preparation)| preparation.parent_id.as_deref() == Some(id))
-            {
-                return Err(ThreadAssemblyError::Preparing(child.clone()));
-            }
-            state.entries.get_mut(id).map(|entry| {
-                entry.ready = false;
-                (entry.incarnation.clone(), entry.thread.clone())
-            })
-        };
-        let Some((incarnation, thread)) = thread else {
+        let Some((incarnation, thread, cleanup)) = self.prepare_entry_close(id).await? else {
             return Ok(());
         };
-        self.attach_close_storage(id).await?;
-        self.prepare_close(id, &thread).await?;
-        if thread.snapshot().lifecycle != ThreadLifecycle::Closed {
-            let closed = thread.close().await;
-            if let Err(error) = closed
-                && thread.snapshot().lifecycle != ThreadLifecycle::Closed
-            {
-                return Err(error.into());
-            }
-        }
-        self.drain_observation(id).await?;
-        self.close_published_resources(id, &incarnation).await?;
-        let removed = {
-            let mut state = self.0.state();
-            if state
-                .entries
-                .get(id)
-                .is_some_and(|entry| Arc::ptr_eq(&entry.incarnation, &incarnation))
-            {
-                state.entries.remove(id)
-            } else {
-                None
-            }
-        };
-        drop(removed);
-        Ok(())
+        self.close_entry_original(id, incarnation, thread, cleanup)
+            .await
     }
 
     /// Called with this identity's operation permit before a close-only owner receives writes.

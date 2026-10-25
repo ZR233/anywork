@@ -109,7 +109,7 @@ pub async fn subscribe_thread(thread_id: String) -> Result<BridgeEventSubscripti
         thread_receiver: tokio::sync::Mutex::new(Some(receiver)),
         product_topic_receiver: tokio::sync::Mutex::new(None),
         shutdown_receiver: tokio::sync::Mutex::new(None),
-        startup_receiver: tokio::sync::Mutex::new(None),
+
         facts,
     });
     bridge.subscriptions.register(&inner).await;

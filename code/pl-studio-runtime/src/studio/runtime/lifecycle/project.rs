@@ -5,9 +5,9 @@ use anyhow::{Context, Result};
 
 use pl_tool::workspace::resolve_workspace_root;
 
+use super::super::SkillSearchResult;
 use super::super::StudioRuntime;
 use super::super::lsp_state::health;
-use super::super::{SkillSearchResult, SkillsStateSnapshot};
 
 impl StudioRuntime {
     pub async fn activate_project(&self, project_id: &str) -> Result<()> {
@@ -154,7 +154,10 @@ impl StudioRuntime {
         Ok(())
     }
 
-    pub async fn discover_skills(&self, project_id: &str) -> Result<SkillsStateSnapshot> {
+    pub async fn discover_skills(
+        &self,
+        project_id: &str,
+    ) -> Result<super::super::skills::SkillsDiscovery> {
         let project = self.project_record(project_id).await?;
         if let Some(server_id) = &project.ssh_alias {
             let host = self
@@ -165,7 +168,7 @@ impl StudioRuntime {
             let settings = self.config_runtime.read()?;
             return self
                 .skills
-                .discover_remote(
+                .discover_remote_product(
                     project_id,
                     &workspace_root,
                     &settings.config.skills,
@@ -177,7 +180,7 @@ impl StudioRuntime {
         let workspace_root = resolve_workspace_root(Path::new(&project.path))?;
         let settings = self.config_runtime.read()?;
         self.skills
-            .discover(project_id, &workspace_root, &settings.config.skills)
+            .discover_product(project_id, &workspace_root, &settings.config.skills)
             .await
     }
 
@@ -191,7 +194,10 @@ impl StudioRuntime {
         self.skills.search(project_id, query, limit).await
     }
 
-    pub async fn probe_lsp_server(&self, project_id: &str) -> Result<()> {
+    pub async fn probe_lsp_server(
+        &self,
+        project_id: &str,
+    ) -> Result<std::sync::Arc<super::super::lsp::LspSnapshot>> {
         let workspace_root = self.project_workspace_root(project_id).await?;
         let _command = self.external_runtimes.lsp_state.command().await;
         self.external_runtimes
@@ -203,11 +209,14 @@ impl StudioRuntime {
             .probe_lsp_server(workspace_root)
             .await;
         let health = health(&self.external_runtimes.lsp).await;
-        self.external_runtimes.lsp_state.ready(health, true).await?;
-        Ok(())
+        self.external_runtimes.lsp_state.ready(health, true).await
     }
 
-    pub async fn repair_lsp_server(&self, project_id: &str, server_id: &str) -> Result<()> {
+    pub async fn repair_lsp_server(
+        &self,
+        project_id: &str,
+        server_id: &str,
+    ) -> Result<std::sync::Arc<super::super::lsp::LspSnapshot>> {
         let workspace_root = self.project_workspace_root(project_id).await?;
         let _command = self.external_runtimes.lsp_state.command().await;
         self.external_runtimes
@@ -223,8 +232,7 @@ impl StudioRuntime {
         match result {
             Ok(()) => {
                 let health = health(&self.external_runtimes.lsp).await;
-                self.external_runtimes.lsp_state.ready(health, true).await?;
-                Ok(())
+                self.external_runtimes.lsp_state.ready(health, true).await
             }
             Err(error) => {
                 self.external_runtimes.lsp_state.failed(&error).await?;
@@ -233,7 +241,10 @@ impl StudioRuntime {
         }
     }
 
-    pub async fn reset_lsp(&self, scope: pl_lsp::runtime::LspScope) -> Result<()> {
+    pub async fn reset_lsp(
+        &self,
+        scope: pl_lsp::runtime::LspScope,
+    ) -> Result<std::sync::Arc<super::super::lsp::LspSnapshot>> {
         let _command = self.external_runtimes.lsp_state.command().await;
         self.external_runtimes
             .lsp_state
@@ -248,11 +259,7 @@ impl StudioRuntime {
         match result {
             Ok(()) => {
                 let health = health(&self.external_runtimes.lsp).await;
-                self.external_runtimes
-                    .lsp_state
-                    .ready(health, false)
-                    .await?;
-                Ok(())
+                self.external_runtimes.lsp_state.ready(health, false).await
             }
             Err(error) => {
                 self.external_runtimes.lsp_state.failed(&error).await?;
@@ -265,7 +272,7 @@ impl StudioRuntime {
     pub async fn reset_lsp_request(
         &self,
         request: pl_protocol::studio::LspResetRequest,
-    ) -> Result<()> {
+    ) -> Result<std::sync::Arc<super::super::lsp::LspSnapshot>> {
         let scope = match request {
             pl_protocol::studio::LspResetRequest::Server {
                 project_id,
@@ -293,7 +300,7 @@ impl StudioRuntime {
         }
     }
 
-    async fn project_record(&self, project_id: &str) -> Result<crate::ProjectRecord> {
+    pub(crate) async fn project_record(&self, project_id: &str) -> Result<crate::ProjectRecord> {
         self.agent_facility
             .product_events
             .project_snapshot()

@@ -16,6 +16,7 @@ pub mod ssh;
 pub mod thread_activity;
 pub mod thread_preparation;
 pub mod thread_stream;
+pub mod turn_failure;
 pub mod updater;
 
 pub use agent_profile::*;
@@ -36,4 +37,5 @@ pub use ssh::*;
 pub use thread_activity::*;
 pub use thread_preparation::*;
 pub use thread_stream::*;
+pub use turn_failure::*;
 pub use updater::*;

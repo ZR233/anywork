@@ -9,6 +9,72 @@ use super::super::{
 };
 
 impl StudioRuntime {
+    /// Pure read of the original durable input identity. Does not activate or prepare storage.
+    pub fn read_input_acceptance(
+        &self,
+        thread_id: String,
+        input_id: String,
+    ) -> impl std::future::Future<
+        Output = Result<Option<pl_protocol::studio::InputAcceptanceEvidence>>,
+    > + Send
+    + 'static {
+        let store = self.store.clone();
+        let closing = self.shutdown_committed();
+        self.read_calls.run(async move {
+            use pl_core::thread::input::InputState;
+            use pl_protocol::studio::{
+                InputAcceptanceEvidence, PersistedInputDisposition, StudioError, StudioErrorCode,
+            };
+            if closing {
+                return Err(StudioError::new(
+                    StudioErrorCode::Cancelled,
+                    "Studio runtime is closing",
+                    false,
+                )
+                .into());
+            }
+            if thread_id.trim().is_empty() || input_id.trim().is_empty() {
+                return Err(StudioError::invalid_argument(
+                    "Thread and input identities are required",
+                )
+                .into());
+            }
+            let Some(receipt) = store
+                .history(&thread_id)
+                .await?
+                .input_identity(&input_id)
+                .await?
+            else {
+                return Ok(None);
+            };
+            if receipt.entry.id != input_id {
+                return Err(StudioError::new(
+                    StudioErrorCode::Protocol,
+                    "Durable input identity does not match its key",
+                    false,
+                )
+                .into());
+            }
+            let disposition = match receipt.entry.state {
+                InputState::Consumed { .. } => PersistedInputDisposition::Consumed,
+                InputState::Discarded => PersistedInputDisposition::Discarded,
+                InputState::Pending => {
+                    return Err(StudioError::new(
+                        StudioErrorCode::Protocol,
+                        "A pending input cannot prove durable acceptance",
+                        false,
+                    )
+                    .into());
+                }
+            };
+            Ok(Some(InputAcceptanceEvidence {
+                accepted_sequence: receipt.entry.accepted_sequence,
+                request_digest: receipt.request_digest,
+                disposition,
+            }))
+        })
+    }
+
     /// Atomically starts or interrupts and continues the canonical Thread.
     pub async fn submit_prompt_command(
         &self,
@@ -41,7 +107,7 @@ impl StudioRuntime {
         request: StudioSubmitPromptRequest,
     ) -> Result<StudioSubmitPromptResponse> {
         let thread_record = self.read_owned_thread(&request.thread_id).await?;
-        self.submit_prompt_for_owned_thread_with_lifecycle_lock(request, thread_record)
+        self.submit_prompt_for_owned_thread_with_lifecycle_lock(request, thread_record, None)
             .await
     }
 
@@ -49,6 +115,7 @@ impl StudioRuntime {
         &self,
         request: StudioSubmitPromptRequest,
         thread_record: ThreadRecord,
+        creation: Option<&super::super::draft_commands::CreationEvidence>,
     ) -> Result<StudioSubmitPromptResponse> {
         let StudioSubmitPromptRequest {
             thread_id,
@@ -56,11 +123,16 @@ impl StudioRuntime {
             options,
         } = request;
         validate_prompt_content(&input)?;
+        let request_digest =
+            crate::studio::thread_projection::prompt_request_digest(&input, options.presentation);
         anyhow::ensure!(
             thread_record.visibility == crate::studio::ThreadVisibility::Active,
             "archived Thread cannot accept input"
         );
         let thread = self.ensure_thread_owner(&thread_id).await?;
+        if let Some(creation) = creation {
+            creation.capture(self, &thread);
+        }
         let _agent_operation = self.threads.agent_operation(&thread_id).await;
         self.threads.ensure_agent_admission_open(&thread_id)?;
         // Look up the canonical receipt before resolving drafts, which admission may already have consumed.
@@ -80,11 +152,16 @@ impl StudioRuntime {
                 accepted.request == input && accepted.presentation == options.presentation,
                 "input identity conflicts with an accepted prompt"
             );
-            return Ok(StudioSubmitPromptResponse {
+            let receipt = StudioSubmitPromptResponse {
                 thread_id,
                 input_id: previous.input.id.clone(),
                 cursor: previous.accepted_sequence,
-            });
+                request_digest,
+            };
+            if let Some(creation) = creation {
+                creation.accepted(&receipt);
+            }
+            return Ok(receipt);
         }
         // 跨重启幂等：终态输入已经离开 core 的有界驻留窗口，改由 history.sqlite 的轻量身份
         // 索引回答重复提交；只读取最小身份记录，不把历史实体搬回 core，也不重放 effect。
@@ -94,27 +171,37 @@ impl StudioRuntime {
             Ok(history) => history.input_identity(&input.input_id).await?,
             // 历史尚未追平 checkpoint fence 时退回普通受理：驻留队列仍然覆盖本 incarnation
             // 的重复提交，不能因为一次只读索引未就绪而拒绝新输入。
-            Err(_) => None,
+            Err(error)
+                if error
+                    .downcast_ref::<pl_protocol::studio::StudioError>()
+                    .is_some_and(|error| {
+                        error.code == pl_protocol::studio::StudioErrorCode::Busy
+                    }) =>
+            {
+                None
+            }
+            Err(error) => return Err(error),
         };
         if let Some(previous) = durable_receipt {
-            let expected = crate::studio::thread_projection::prompt_request_digest(
-                &input,
-                options.presentation,
-            );
             match previous.request_digest.as_deref() {
                 Some(stored) => anyhow::ensure!(
-                    stored == expected,
+                    stored == request_digest,
                     "input identity conflicts with an accepted prompt"
                 ),
                 None => bail!(
                     "input identity was already accepted with an unverifiable body; use a new inputId"
                 ),
             }
-            return Ok(StudioSubmitPromptResponse {
+            let receipt = StudioSubmitPromptResponse {
                 thread_id,
                 input_id: input.input_id,
                 cursor: previous.entry.accepted_sequence,
-            });
+                request_digest,
+            };
+            if let Some(creation) = creation {
+                creation.accepted(&receipt);
+            }
+            return Ok(receipt);
         }
         // The caller's frozen route is a CAS against its canonical extension,
         // not a Thread revision or the current mode default. Both route writes
@@ -227,6 +314,9 @@ impl StudioRuntime {
             .product_events
             .record_attachments(attachments.clone())
             .await?;
+        if let Some(creation) = creation {
+            creation.dispatching();
+        }
         let accepted = thread
             .submit_input_and_continue(
                 pl_core::thread::input::ThreadInput {
@@ -243,6 +333,15 @@ impl StudioRuntime {
                 },
             )
             .await?;
+        let receipt = StudioSubmitPromptResponse {
+            thread_id: thread_id.clone(),
+            input_id: accepted.input.id,
+            cursor: accepted.accepted_sequence,
+            request_digest,
+        };
+        if let Some(creation) = creation {
+            creation.accepted(&receipt);
+        }
         // 用户消息已成功受理（含排队输入）：目录立即记录最近用户消息时间；后续模型、
         // 工具或保存失败都不回退该事实，拒绝的提交在上方 `?` 处直接返回、不记录。
         self.agent_facility
@@ -252,11 +351,7 @@ impl StudioRuntime {
         // immutable and reusable while a newer Client draft still references
         // these ids; only an explicit last-owner release removes staging.
         self.residency.touch(&thread_id).await;
-        Ok(StudioSubmitPromptResponse {
-            thread_id,
-            input_id: accepted.input.id,
-            cursor: accepted.accepted_sequence,
-        })
+        Ok(receipt)
     }
 
     pub(in crate::studio::runtime) async fn ensure_prompt_runtime_ready(&self) -> Result<()> {

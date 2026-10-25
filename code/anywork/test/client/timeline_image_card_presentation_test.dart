@@ -4,27 +4,41 @@
 // 以及没有图片附件时的错误态。像素、解码与布局细节由 Driver 人工证据覆盖
 // （design/24 §24.1、design/19 §19.9、design/25 §25.6）。
 import 'package:anywork/src/app/theme/material3_theme.dart';
-import 'package:anywork/src/domain/models/timeline_commands.dart';
-import 'package:anywork/src/domain/models/timeline_presentation.dart';
-import 'package:anywork/src/features/timeline/timeline_view.dart';
+import 'package:anywork/src/features/conversation/state/timeline_view_state.dart';
+import 'package:anywork/src/features/conversation/timeline/presentation_item.dart';
+import 'package:anywork/src/features/conversation/views/timeline_view.dart';
+import 'package:anywork/src/features/conversation/connectors/timeline_row_connector.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
-import 'package:anywork/src/presentation/providers/client_provider.dart';
-import 'package:anywork/src/presentation/view_models/timeline_session_owner.dart';
-import 'package:anywork/src/shared/studio_driver_keys.dart';
-import 'package:anywork_client/studio_client.dart';
+import 'package:anywork/src/app/app_bindings.dart';
+import 'package:anywork/src/features/conversation/timeline/display_lease.dart';
+import 'package:anywork/src/diagnostics/studio_driver_keys.dart';
+import 'package:anywork_client/drafts.dart';
+import 'package:anywork_client/conversation.dart';
+import 'package:anywork_client/resources.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-import 'support/recording_demo_transport.dart';
+import 'support/timeline_drafts_environment.dart';
+
+import 'support/timeline_environment.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
-  final timestamp = DateTime.utc(2026, 1, 2, 3, 4, 5);
+  late TimelineTestEnvironment environment;
+  setUp(() {
+    environment = TimelineTestEnvironment(
+      timeline: const UnscriptedTimelineTransport(),
+    );
+  });
+  tearDown(() => environment.close());
+  TestWidgetsFlutterBinding.ensureInitialized();
+  final timestamp =
+      (DateTime.utc(2026, 1, 2, 3, 4, 5).millisecondsSinceEpoch ~/ 1000);
 
   const cardImage = ThreadAttachmentView(
     id: 'card-image',
-    modality: AttachmentModalityView.image,
+    modality: AttachmentModality.image,
     mediaType: 'image/png',
     byteSize: 1024,
     filename: 'terrace.png',
@@ -56,7 +70,7 @@ void main() {
         ),
         lifecycle: SucceededThreadToolView(
           timestamp,
-          ThreadToolOutputView(
+          ThreadToolOutput(
             result: 'ok',
             attachments: attachments,
             outputArtifacts: const [],
@@ -86,11 +100,10 @@ void main() {
 
   TimelineDisplayLease leaseWith(List<StudioTimelineItem> items) {
     final lease = TimelineDisplayLease(
-      threadId: 'thread',
+      session: environment.conversations.session('thread'),
       generation: 1,
-      openQueries: (_) => null,
     );
-    lease.adoptBaseline(
+    lease.content.adoptBaseline(
       StudioTimelineBaseline(
         subscriptionId: 'test',
         version: 0,
@@ -102,24 +115,24 @@ void main() {
     return lease;
   }
 
-  TimelineSessionViewState viewState() => TimelineSessionViewState(
+  TimelineViewState viewState() => TimelineViewState(
     threadId: 'thread',
     generation: 1,
-    mode: TimelineDisplayMode.live,
-    connection: TimelineConnectionPhase.ready,
+    displayMode: TimelineDisplayMode.live,
+    connectionPhase: TimelineConnectionPhase.ready,
     connectionError: null,
     olderCursor: null,
     hasOlder: false,
-    isLoadingOlder: false,
+    olderLoading: false,
     olderError: null,
     hasNewOutput: false,
-    isPreparingLive: false,
+    preparingLive: false,
   );
 
   Future<void> pumpTimeline(
     WidgetTester tester,
     TimelineDisplayLease lease, {
-    AnyworkClient? client,
+    TimelineDraftsEnvironment? client,
     Size size = const Size(900, 700),
   }) async {
     await tester.binding.setSurfaceSize(size);
@@ -127,7 +140,8 @@ void main() {
     await tester.pumpWidget(
       ProviderScope(
         overrides: [
-          if (client != null) anyworkClientProvider.overrideWithValue(client),
+          if (client != null)
+            draftsRepositoryProvider.overrideWithValue(client.repository),
         ],
         child: MaterialApp(
           theme: pureStudioTheme(),
@@ -136,8 +150,12 @@ void main() {
           home: Scaffold(
             body: TimelineView(
               threadId: 'thread',
-              view: viewState(),
-              lease: lease,
+              state: viewState(),
+              binding: lease.canvas,
+              messageBuilder: (context, message) => TimelineRowConnector(
+                message: message,
+                display: lease.binding,
+              ),
               onLoadOlder: () async {},
               onRetryOlder: () async {},
               onReturnLive: () async {},
@@ -153,30 +171,30 @@ void main() {
     await tester.pump(const Duration(milliseconds: 50));
   }
 
-  AnyworkClient openClient() {
-    final client = AnyworkClient(
-      transport: RecordingDemoTransport(),
-      clientId: 'image-card',
-    );
-    // close 会等待命令 owner 收束：这些等待需要真实事件循环，因此在 runAsync 内收尾。
-    addTearDown(
-      () => client.close(
-        deadline: DateTime.now().add(const Duration(seconds: 1)),
-      ),
-    );
-    client.selection.markOpened();
-    return client;
-  }
+  TimelineDraftsEnvironment openClient() =>
+      TimelineDraftsEnvironment(clientId: 'image-card');
 
   /// 在真实事件循环内收尾展示客户端：命令 owner 的收束依赖真实异步，不能挤在
   /// fake-async 的帧预算里等待。
-  Future<void> closeClient(WidgetTester tester, AnyworkClient client) async {
-    final report = await tester.runAsync(
-      () => client.close(
-        deadline: DateTime.now().add(const Duration(seconds: 5)),
-      ),
-    );
-    expect(report!.complete, isTrue, reason: '展示客户端在用例内可完整收束');
+  Future<void> closeClient(
+    WidgetTester tester,
+    TimelineDraftsEnvironment client,
+  ) async {
+    // A requested image is still Unknown until its original binary source
+    // replies. Settle that exact opening, then let the real repository join it.
+    for (final opening in client.binary.opens.values) {
+      if (!opening.reply.isCompleted) {
+        opening.reply.completeError(
+          const StudioFailure(
+            code: StudioFailureCode.cancelled,
+            message: 'Test image source closed',
+            retryable: false,
+            correlationId: 'image-card-test-close',
+          ),
+        );
+      }
+    }
+    await tester.runAsync(client.close);
   }
 
   group('展示工具的呈现分类', () {
@@ -189,20 +207,20 @@ void main() {
       ]);
 
       expect(
-        lease.presentationFor('call-before')!.kind,
+        lease.content.presentationFor('call-before')!.kind,
         TimelinePresentationKind.activity,
       );
-      final card = lease.presentationFor('card')!;
+      final card = lease.content.presentationFor('card')!;
       expect(card, isA<TimelineImageCardGroup>());
       expect(card.kind, TimelinePresentationKind.imageCard);
       expect(card.memberIds, ['card']);
       // 后续同一 Turn 的普通工具仍按既有规则成组，且不含卡片成员。
-      final after = lease.presentationFor('call-after')!;
+      final after = lease.content.presentationFor('call-after')!;
       expect(after.kind, TimelinePresentationKind.activity);
       expect(after.memberIds, ['call-after']);
       // 读取图片的工具仍走既有图集，不与展示卡片共用呈现项。
       expect(
-        lease.presentationFor('read-image')!.kind,
+        lease.content.presentationFor('read-image')!.kind,
         TimelinePresentationKind.images,
       );
     });
@@ -212,8 +230,8 @@ void main() {
         cardItem('card-a', ordinal: 1),
         cardItem('card-b', ordinal: 2, arguments: '{"caption":"第二张"}'),
       ]);
-      final first = lease.presentationFor('card-a')!;
-      final second = lease.presentationFor('card-b')!;
+      final first = lease.content.presentationFor('card-a')!;
+      final second = lease.content.presentationFor('card-b')!;
       expect(first, isA<TimelineImageCardGroup>());
       expect(second, isA<TimelineImageCardGroup>());
       expect(identical(first, second), isFalse);
@@ -226,14 +244,16 @@ void main() {
         cardItem('card-empty', ordinal: 1, attachments: const []),
       ]);
       expect(
-        lease.presentationFor('card-empty')!.kind,
+        lease.content.presentationFor('card-empty')!.kind,
         TimelinePresentationKind.imageCard,
       );
     });
   });
 
   group('展示工具的图片卡片', () {
-    testWidgets('带 typed 图片附件与 caption 时渲染卡片', (tester) async {
+    testWidgets('typed 图片附件渲染独立卡片，未发布的 caption 和 previewReady 保持 Unknown', (
+      tester,
+    ) async {
       final client = openClient();
       final lease = leaseWith([cardItem('card', ordinal: 1)]);
       final entryId = StudioDriverKeys.toolImageEntryId(
@@ -247,12 +267,26 @@ void main() {
         findsOneWidget,
         reason: '卡片身份由 owning 调用与附件身份合成',
       );
-      expect(find.text('雨后的天台'), findsOneWidget);
+      expect(
+        find.text('雨后的天台'),
+        findsNothing,
+        reason: 'opaque arguments 不是 typed caption，禁止解析补造',
+      );
+      expect(
+        find.text('This image is unavailable'),
+        findsNothing,
+        reason: '在途读取不是已知空图片',
+      );
+      expect(
+        find.byType(CircularProgressIndicator),
+        findsOneWidget,
+        reason: '原 source 尚未发布结果，不能伪造 previewReady',
+      );
       expect(find.text('Image card'), findsOneWidget);
       expect(tester.takeException(), isNull);
       await tester.pumpWidget(const SizedBox.shrink());
       await tester.pump();
-      await lease.retire();
+      await lease.close();
       await closeClient(tester, client);
     });
 
@@ -272,7 +306,7 @@ void main() {
       expect(tester.takeException(), isNull);
       await tester.pumpWidget(const SizedBox.shrink());
       await tester.pump();
-      await lease.retire();
+      await lease.close();
       await closeClient(tester, client);
     });
 
@@ -292,7 +326,7 @@ void main() {
       expect(tester.takeException(), isNull);
       await tester.pumpWidget(const SizedBox.shrink());
       await tester.pump();
-      await lease.retire();
+      await lease.close();
       await closeClient(tester, client);
     });
   });

@@ -52,6 +52,7 @@ pub(crate) struct ModelPerformanceOwner {
     state: Arc<Mutex<ModelPerformanceState>>,
     store: StudioStore,
     product_events: ProductEventBus,
+    source: Arc<super::statistics::StatisticsSource>,
     /// 已有刷新任务在跑；避免每次推理都重复整库聚合。
     refreshing: Arc<AtomicBool>,
     /// 已受理的最高调用库计费 ticket；刷新与快照只等待这个固定目标。
@@ -69,6 +70,7 @@ pub(crate) struct ModelPerformanceOwner {
 /// 当前已发布的展示投影；查询路径只 clone，不推进。
 struct PublishedProjection {
     global: StudioModelPerformanceSnapshot,
+    history_sources: Arc<[PerformanceSampleSource]>,
     /// 费用发布水位独立于全局统计；跨缓存淘汰仍给每个 root 单调的展示版本。
     scoped_revision: u64,
     scoped_updated_at: i64,
@@ -79,7 +81,15 @@ struct PublishedProjection {
 /// 一次调用库投影读取得到的完整事实：全局性能与各 root 会话费用。
 struct PerformanceProjection {
     global: StudioModelPerformanceSnapshot,
+    history_sources: Arc<[PerformanceSampleSource]>,
     session_costs: Vec<StudioSessionCostSnapshot>,
+}
+
+/// Canonical log identity, deliberately separate from the public presentation fields.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub(super) struct PerformanceSampleSource {
+    pub(super) thread_id: String,
+    pub(super) call_id: String,
 }
 
 /// 单个 root 的作用域费用发布状态。
@@ -229,11 +239,16 @@ enum BillingRetention {
 }
 
 impl ModelPerformanceOwner {
-    pub(in crate::studio) fn new(store: StudioStore, product_events: ProductEventBus) -> Self {
+    pub(in crate::studio::runtime) fn new(
+        store: StudioStore,
+        product_events: ProductEventBus,
+        source: Arc<super::statistics::StatisticsSource>,
+    ) -> Self {
         Self {
             state: Arc::new(Mutex::new(ModelPerformanceState::default())),
             store,
             product_events,
+            source,
             refreshing: Arc::new(AtomicBool::new(false)),
             billing_ticket: Arc::new(AtomicU64::new(0)),
             persisted_revision: Arc::new(AtomicU64::new(0)),
@@ -241,6 +256,7 @@ impl ModelPerformanceOwner {
             project_lock: Arc::new(tokio::sync::Mutex::new(())),
             published: Arc::new(tokio::sync::Mutex::new(PublishedProjection {
                 global: StudioModelPerformanceSnapshot::default(),
+                history_sources: Arc::from([]),
                 scoped_revision: 0,
                 scoped_updated_at: 0,
                 scoped: BTreeMap::new(),
@@ -325,6 +341,18 @@ impl ModelPerformanceOwner {
             .map(|summary| (published.global.updated_at, summary))
     }
 
+    /// Captures log keys and their values at the same publication boundary. A timestamp/model
+    /// combination is never used as a sample identity; equal-valued calls remain distinct.
+    pub(super) async fn history_source_snapshot(
+        &self,
+    ) -> (
+        StudioModelPerformanceSnapshot,
+        Arc<[PerformanceSampleSource]>,
+    ) {
+        let published = self.published.lock().await;
+        (published.global.clone(), published.history_sources.clone())
+    }
+
     /// 单个 root 会话的作用域费用基线；纯读已发布缓存。
     ///
     /// 未缓存 root 返回当前费用水位的空基线，不落缓存、不扫描调用库；即使清除条目
@@ -356,6 +384,7 @@ impl ModelPerformanceOwner {
     async fn commit_projection(
         &self,
         mut global: StudioModelPerformanceSnapshot,
+        history_sources: Arc<[PerformanceSampleSource]>,
         fresh: Vec<StudioSessionCostSnapshot>,
         flags: (bool, bool),
     ) -> (StudioModelPerformanceSnapshot, Vec<StudioSessionCostsState>) {
@@ -370,6 +399,13 @@ impl ModelPerformanceOwner {
             let scoped_revision = published.scoped_revision.saturating_add(1);
             global.revision = published.global.revision.saturating_add(1);
             published.global = global.clone();
+            published.history_sources = history_sources;
+            if let Err(error) = self
+                .source
+                .publish_global(published.global.clone(), published.history_sources.clone())
+            {
+                tracing::warn!(%error, "performance product capture failed");
+            }
             let scoped = &mut published.scoped;
             let mut seen = std::collections::BTreeSet::new();
             for cost in fresh {
@@ -412,6 +448,11 @@ impl ModelPerformanceOwner {
                 published.scoped_updated_at = unix_seconds();
             }
         }
+        for event in &events {
+            if let Err(error) = self.source.publish_observed_costs(event.clone()) {
+                tracing::warn!(%error, "session costs product capture failed");
+            }
+        }
         (global, events)
     }
 
@@ -435,6 +476,12 @@ impl ModelPerformanceOwner {
             published.global.statistics_pending = pending;
             published.global.statistics_gap = gap;
             published.global.read_failed = true;
+            if let Err(error) = self
+                .source
+                .publish_global(published.global.clone(), published.history_sources.clone())
+            {
+                tracing::warn!(%error, "performance failure projection capture failed");
+            }
             for (root, entry) in published.scoped.iter_mut() {
                 if entry.differs(pending, gap, true, &entry.cost.clone()) {
                     entry.revision = scoped_revision;
@@ -451,6 +498,11 @@ impl ModelPerformanceOwner {
             }
             published.global.clone()
         };
+        for event in &events {
+            if let Err(error) = self.source.publish_observed_costs(event.clone()) {
+                tracing::warn!(%error, "session costs product capture failed");
+            }
+        }
         (global, events)
     }
 
@@ -600,6 +652,13 @@ impl ModelPerformanceOwner {
         // 归档/删除会话后不再对产品暴露其会话级统计；模型级汇总仍是全局用量事实。
         let archived = self.archived_roots();
         Ok(PerformanceProjection {
+            history_sources: samples
+                .iter()
+                .map(|sample| PerformanceSampleSource {
+                    thread_id: sample.thread_id.clone(),
+                    call_id: sample.call_id.clone(),
+                })
+                .collect(),
             global: StudioModelPerformanceSnapshot {
                 revision,
                 updated_at,
@@ -742,7 +801,12 @@ impl ModelPerformanceOwner {
                     projection.global.statistics_gap,
                 );
                 let (global, scoped_events) = self
-                    .commit_projection(projection.global, projection.session_costs, flags)
+                    .commit_projection(
+                        projection.global,
+                        projection.history_sources,
+                        projection.session_costs,
+                        flags,
+                    )
                     .await;
                 let _ = self.product_events.emit_model_performance_state(global);
                 for state in scoped_events {

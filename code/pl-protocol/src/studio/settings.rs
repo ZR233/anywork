@@ -83,6 +83,9 @@ pub struct StudioAccountSettings {
     pub name: String,
     pub base_url: String,
     pub has_bearer_token: bool,
+    /// 凭据来源环境变量名（非凭据值）；`None` 表示该账号不使用环境变量凭据。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bearer_token_env: Option<String>,
     /// Owner-local, non-secret identity of this instance's usage query inputs.
     pub usage_query_revision: u64,
     pub credential_required: bool,

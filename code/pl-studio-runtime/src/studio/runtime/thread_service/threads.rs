@@ -72,9 +72,10 @@ impl StudioRuntime {
         Ok(thread)
     }
 
-    pub async fn start_new_thread(
+    pub(in crate::studio::runtime) async fn run_new_thread_creation(
         &self,
         request: StudioStartNewThreadRequest,
+        evidence: &super::super::draft_commands::CreationEvidence,
     ) -> Result<StudioStartNewThreadResponse> {
         let project_id = request.project_id.clone();
         let input_id = request.input.input_id.clone();
@@ -165,17 +166,23 @@ impl StudioRuntime {
                         Some("the session worktree could not be created"),
                     )
                     .await;
+                    if let Some(lease) = self.agent_facility.worktrees.get(&thread_id)
+                        && lease.state == crate::studio::agent_host::worktree_lease::WorktreeLeaseState::Prepared {
+                        evidence.preserve(self, Some(lease), Some("the session worktree create did not settle")).await;
+                    }
                     return Err(error);
                 }
             };
             lease.transition(crate::studio::agent_host::worktree_lease::WorktreeLeaseState::Active);
             if let Err(error) = self.agent_facility.worktrees.record(lease.clone()) {
                 self.agent_facility.worktrees.clear_creating(&thread_id);
-                self.preserve_session_worktree(
-                    Some(lease),
-                    Some("the session worktree lease could not be activated"),
-                )
-                .await;
+                evidence
+                    .preserve(
+                        self,
+                        Some(lease),
+                        Some("the session worktree lease could not be activated"),
+                    )
+                    .await;
                 return Err(error);
             }
             session_lease = Some(lease);
@@ -222,26 +229,39 @@ impl StudioRuntime {
         {
             self.thread_factory.clear_initial_route(&thread.id);
             self.clear_creating_session_worktree(&session_lease);
-            self.preserve_session_worktree(
-                session_lease.take(),
-                Some("the new session Thread was not published"),
-            )
-            .await;
+            evidence
+                .preserve(
+                    self,
+                    session_lease.take(),
+                    Some("the new session Thread was not published"),
+                )
+                .await;
+            // A catalog write can fail after changing its durable summary. The input is still
+            // known unaccepted, but the original Thread allocation must not lose compensation.
+            if let Err(cleanup_error) = evidence.compensate(self, &thread.id).await {
+                return Err(error.context(format!(
+                    "failed to compensate new Thread {}: {cleanup_error:#}",
+                    thread.id
+                )));
+            }
             return Err(error);
         }
         // 目录事实已提交：owner Thread 行已存在，创建窗口收束。
         self.clear_creating_session_worktree(&session_lease);
         let thread = ThreadRecord::from_directory_thread(thread);
+        evidence.thread(thread.clone());
         if let Err(error) = self.register_new_thread(thread.clone()).await {
             self.thread_factory.clear_initial_route(&thread.id);
             // 目录事实已发布：必须先按未启动会话补偿（关闭并归档），不能留下无法激活的
             // 已发布会话；会话自身 worktree 仍按 D6 只收束为 `preserved`。
-            self.preserve_session_worktree(
-                session_lease.take(),
-                Some("the new session Thread could not be activated"),
-            )
-            .await;
-            if let Err(cleanup_error) = self.compensate_unstarted_thread(&thread.id).await {
+            evidence
+                .preserve(
+                    self,
+                    session_lease.take(),
+                    Some("the new session Thread could not be activated"),
+                )
+                .await;
+            if let Err(cleanup_error) = evidence.compensate(self, &thread.id).await {
                 return Err(error.context(format!(
                     "failed to compensate new Thread {}: {cleanup_error:#}",
                     thread.id
@@ -263,18 +283,26 @@ impl StudioRuntime {
                     options: request.options,
                 },
                 thread.clone(),
+                Some(evidence),
             )
             .await;
         let submission = match submission {
             Ok(submission) => submission,
             Err(error) => {
+                // A mailbox request with no usable reply may already have accepted this input.
+                // Never archive that possibly-running Thread or reinterpret it as Rejected.
+                if evidence.dispatched() {
+                    return Err(error);
+                }
                 // 已发布 Thread 的补偿归档后，会话自身 worktree 仍按 D6 保留现场等待显式清理。
-                self.preserve_session_worktree(
-                    session_lease.take(),
-                    Some("the first prompt of the new session was rejected"),
-                )
-                .await;
-                if let Err(cleanup_error) = self.compensate_unstarted_thread(&thread.id).await {
+                evidence
+                    .preserve(
+                        self,
+                        session_lease.take(),
+                        Some("the first prompt of the new session was rejected"),
+                    )
+                    .await;
+                if let Err(cleanup_error) = evidence.compensate(self, &thread.id).await {
                     return Err(error.context(format!(
                         "failed to compensate new Thread {}: {cleanup_error:#}",
                         thread.id
@@ -610,13 +638,22 @@ impl StudioRuntime {
         Ok(ThreadRecord::from_directory_thread(restored))
     }
 
-    async fn compensate_unstarted_thread(&self, thread_id: &str) -> Result<()> {
+    pub(in crate::studio::runtime) async fn compensate_unstarted_thread(
+        &self,
+        thread_id: &str,
+    ) -> Result<()> {
         self.threads.close(thread_id).await?;
         self.residency.remove(thread_id).await;
-        self.agent_facility
-            .product_events
-            .commit_directory(DirectoryDelta::archive_threads(vec![thread_id.to_string()]))
-            .await?;
+        if self
+            .find_owned_thread(thread_id)
+            .await?
+            .is_some_and(|thread| thread.visibility == crate::studio::ThreadVisibility::Active)
+        {
+            self.agent_facility
+                .product_events
+                .commit_directory(DirectoryDelta::archive_threads(vec![thread_id.to_string()]))
+                .await?;
+        }
         self.title_tasks
             .cancel(
                 thread_id,
@@ -637,21 +674,52 @@ impl StudioRuntime {
         lease: Option<crate::studio::agent_host::worktree_lease::WorktreeLease>,
         reason: Option<&str>,
     ) {
-        use crate::studio::agent_host::worktree_lease::WorktreeLeaseState;
-        let Some(mut lease) = lease else {
+        let Some(lease) = lease else {
             return;
         };
-        if lease.state != WorktreeLeaseState::Preserved {
-            lease.transition(WorktreeLeaseState::Preserved);
-            if let Err(error) = self.agent_facility.worktrees.record(lease.clone()) {
-                tracing::error!(
-                    error = %error,
-                    "failed to preserve the session worktree lease after a failed creation"
-                );
-                return;
+        if let Err(error) = self.preserve_creation_worktree(lease, reason).await {
+            tracing::error!(%error, "failed to preserve the session worktree lease after a failed creation");
+        }
+    }
+
+    pub(in crate::studio::runtime) async fn preserve_creation_worktree(
+        &self,
+        original: crate::studio::agent_host::worktree_lease::WorktreeLease,
+        reason: Option<&str>,
+    ) -> Result<()> {
+        use crate::studio::agent_host::worktree_lease::WorktreeLeaseState;
+        let mut lease = self
+            .agent_facility
+            .worktrees
+            .get(&original.owner_thread_id)
+            .context("the original creation worktree lease is unavailable")?;
+        // Activation itself may have failed to record its next revision. Retry the original
+        // allocation against its actual current lease, never a captured stale revision or a
+        // different allocation that happens to reuse the same owner ID.
+        let mut expected = original;
+        expected.revision = lease.revision;
+        expected.state = lease.state;
+        anyhow::ensure!(
+            lease == expected,
+            "the original creation worktree identity changed"
+        );
+        match lease.state {
+            WorktreeLeaseState::Cleaned => return Ok(()),
+            WorktreeLeaseState::CleanupRequested => {
+                bail!("the original worktree cleanup has not joined")
+            }
+            WorktreeLeaseState::Preserved => {}
+            WorktreeLeaseState::Prepared | WorktreeLeaseState::Active => {
+                lease.revision = lease
+                    .revision
+                    .checked_add(1)
+                    .context("worktree lease revision exhausted")?;
+                lease.state = WorktreeLeaseState::Preserved;
+                self.agent_facility.worktrees.record(lease.clone())?;
             }
         }
         self.publish_worktree_recovery(reason, &lease).await;
+        Ok(())
     }
 
     /// 创建阶段失败的统一收束出口：清除创建中标记，并在现场被保留为 `preserved` 时立即
@@ -860,7 +928,7 @@ impl StudioRuntime {
     /// 不得在仍 busy 时继续归档。
     ///
     /// 并发契约：`archive_thread` 与所有输入提交入口（`prompt_runner/submit.rs` 的
-    /// `submit_prompt*`、`threads.rs` 的 `start_new_thread`）都在同一把 `lifecycle_lock`
+    /// `submit_prompt*`、`threads.rs` 的 `run_new_thread_creation`）都在同一把 `lifecycle_lock`
     /// 下进入 owner mailbox，因此归档期间不会有并发新输入落入这棵树。
     async fn end_thread_tree_work(&self, thread_ids: &[String]) -> Result<()> {
         for thread_id in thread_ids {
@@ -896,7 +964,7 @@ impl StudioRuntime {
                         "The session could not be ended before archiving",
                         true,
                     )
-                    .with_details(serde_json::json!({ "threadId": thread_id })),
+                    .with_details(pl_protocol::studio::StudioErrorDetails::Thread { thread_id }),
                 ));
             }
             tokio::time::sleep(ARCHIVE_TREE_SETTLE_POLL_INTERVAL).await;

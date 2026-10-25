@@ -1,5 +1,6 @@
 //! Product configuration and shared service leases used to construct core Threads.
 mod child_resources;
+pub(crate) use child_resources::FactoryCloseFailure;
 mod close_child;
 mod errors;
 pub(crate) mod recovery;

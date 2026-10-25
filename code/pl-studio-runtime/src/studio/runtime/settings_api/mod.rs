@@ -5,7 +5,7 @@ use pl_protocol::ThreadModeId;
 use pl_protocol::studio::{
     CommandEffectPoint, RemoveAccountModelRequest, RemoveAccountRequest,
     SetAccountBillingKindRequest, SetAccountModelEnabledRequest, SetDefaultAccountRequest,
-    SetThreadModelRouteRequest, SettingsCommandReply, SettingsFieldUpdate, SettingsStateResponse,
+    SetThreadModelRouteRequest, SettingsFieldUpdate, SettingsStateResponse,
     ThreadModelRouteCommandReply, UpdateAccountRequest, UpdatePermissionSettingsRequest,
     UpdateSettingsFieldRequest,
 };
@@ -16,9 +16,11 @@ use crate::{PermissionMode, StudioRole};
 use super::StudioRuntime;
 
 mod account_edit;
+mod commands;
 mod view;
 
 use account_edit::invalid_settings_argument;
+pub(super) use commands::SettingsCommit;
 pub(crate) use view::{model_catalog_snapshot, settings_config_snapshot, settings_state_response};
 use view::{normalized_optional, normalized_string_list};
 
@@ -44,10 +46,10 @@ impl StudioRuntime {
     /// so a command never carries an old sibling field back into the store.
     /// Route model and effort updates deliberately have separate variants; the
     /// unchanged half is resolved from the current canonical route.
-    pub async fn apply_settings_field(
+    pub(super) fn commit_settings_field(
         &self,
         request: UpdateSettingsFieldRequest,
-    ) -> Result<SettingsCommandReply> {
+    ) -> Result<commands::SettingsCommit> {
         Self::validate_operation_id(&request.operation_id)?;
         let mark_skills_stale = matches!(
             &request.update,
@@ -70,7 +72,7 @@ impl StudioRuntime {
         };
         let mut changed = false;
         let update = request.update;
-        let state = self.config_runtime.update_with_effective(
+        let state = self.config_runtime.update_with_effective_evidence(
             request.expected_revision,
             |desired, effective| {
                 let mut config = desired.clone();
@@ -335,76 +337,80 @@ impl StudioRuntime {
                 Ok(config)
             },
         )?;
-        self.publish_settings_state()?;
-        if mark_skills_stale {
-            self.skills.mark_all_stale().await;
-        }
-        self.settings_command_reply(request.operation_id, &state, changed, effect)
+        Ok(commands::SettingsCommit {
+            evidence: state,
+            operation_id: request.operation_id,
+            changed,
+            effect,
+            followup: if mark_skills_stale {
+                commands::Followup::Skills
+            } else {
+                commands::Followup::None
+            },
+        })
     }
 
-    pub fn save_permission_settings(
+    pub(super) fn commit_permission_settings(
         &self,
         request: UpdatePermissionSettingsRequest,
-    ) -> Result<SettingsCommandReply> {
+    ) -> Result<commands::SettingsCommit> {
         Self::validate_operation_id(&request.operation_id)?;
         let mode = PermissionMode::from_label(&request.mode)
             .ok_or_else(|| invalid_settings_argument("Unsupported permission mode"))?;
         let mut changed = false;
         let state = self
             .config_runtime
-            .update(request.expected_revision, |config| {
+            .update_evidence(request.expected_revision, |config| {
                 let mut config = config.clone();
                 changed = config.runtime.permission_mode != mode;
                 config.runtime.permission_mode = mode;
                 Ok(config)
             })?;
-        self.publish_settings_state()?;
-        self.settings_command_reply(
-            request.operation_id,
-            &state,
+        Ok(commands::SettingsCommit {
+            evidence: state,
+            operation_id: request.operation_id,
             changed,
-            CommandEffectPoint::FutureSession,
-        )
+            effect: CommandEffectPoint::FutureSession,
+            followup: commands::Followup::None,
+        })
     }
 
     pub async fn reload_settings(&self, expected_revision: u64) -> Result<SettingsStateResponse> {
-        self.config_runtime.reload_from_disk(expected_revision)?;
-        self.publish_settings_state()?;
-        self.skills.mark_all_stale().await;
-        let _ = self.apply_account_config().await?;
-        self.read_settings_response()
+        let reloaded = self.config_runtime.reload_from_disk(expected_revision)?;
+        self.configuration_reload_followup().await?;
+        settings_state_response(&reloaded.evidence.configuration, &reloaded.evidence.catalog)
     }
 
-    pub async fn save_account(
+    pub(super) fn commit_account(
         &self,
         request: UpdateAccountRequest,
-    ) -> Result<SettingsCommandReply> {
+    ) -> Result<commands::SettingsCommit> {
         Self::validate_operation_id(&request.operation_id)?;
         let current = self.config_runtime.read()?;
         let account = account_edit::account_edit(request.account, &current.config)?;
         let next = account.to_single_config(&current.config)?;
         let state = self
             .config_runtime
-            .replace(request.expected_revision, next)?;
-        self.publish_settings_state()?;
-        let _ = self.apply_account_config().await?;
-        self.settings_command_reply(
-            request.operation_id,
-            &state,
-            current.canonical_config() != state.canonical_config(),
-            CommandEffectPoint::FutureSession,
-        )
+            .replace_evidence(request.expected_revision, next)?;
+        let changed = current.canonical_config() != state.configuration.canonical_config();
+        Ok(commands::SettingsCommit {
+            evidence: state,
+            operation_id: request.operation_id,
+            changed,
+            effect: CommandEffectPoint::FutureSession,
+            followup: commands::Followup::Accounts,
+        })
     }
 
     /// Applies only the target model's enablement intent against the latest account.
-    pub fn set_account_model_enabled(
+    pub(super) fn commit_account_model_enabled(
         &self,
         request: SetAccountModelEnabledRequest,
-    ) -> Result<SettingsCommandReply> {
+    ) -> Result<commands::SettingsCommit> {
         Self::validate_operation_id(&request.operation_id)?;
         let account_id = AccountId::new(request.account_id.clone())?;
         let mut changed = false;
-        let state = self.config_runtime.update_with_effective(
+        let state = self.config_runtime.update_with_effective_evidence(
             request.expected_revision,
             |desired, effective| {
                 let mut next = desired.clone();
@@ -430,26 +436,26 @@ impl StudioRuntime {
                 Ok(next)
             },
         )?;
-        self.publish_settings_state()?;
-        self.settings_command_reply(
-            request.operation_id,
-            &state,
+        Ok(commands::SettingsCommit {
+            evidence: state,
+            operation_id: request.operation_id,
             changed,
-            CommandEffectPoint::FutureSession,
-        )
+            effect: CommandEffectPoint::FutureSession,
+            followup: commands::Followup::None,
+        })
     }
 
     /// `None` clears the override; explicit `Unknown` remains a distinct persisted intent.
-    pub fn set_account_billing_kind(
+    pub(super) fn commit_account_billing_kind(
         &self,
         request: SetAccountBillingKindRequest,
-    ) -> Result<SettingsCommandReply> {
+    ) -> Result<commands::SettingsCommit> {
         Self::validate_operation_id(&request.operation_id)?;
         let account_id = AccountId::new(request.account_id.clone())?;
         let mut changed = false;
         let state = self
             .config_runtime
-            .update(request.expected_revision, |desired| {
+            .update_evidence(request.expected_revision, |desired| {
                 let mut next = desired.clone();
                 let account = next.models.accounts.get_mut(&account_id).ok_or_else(|| {
                     pl_protocol::PureError::ConfigError(format!("unknown account: {account_id}"))
@@ -459,19 +465,19 @@ impl StudioRuntime {
                 account.billing_kind = value;
                 Ok(next)
             })?;
-        self.publish_settings_state()?;
-        self.settings_command_reply(
-            request.operation_id,
-            &state,
+        Ok(commands::SettingsCommit {
+            evidence: state,
+            operation_id: request.operation_id,
             changed,
-            CommandEffectPoint::FutureSession,
-        )
+            effect: CommandEffectPoint::FutureSession,
+            followup: commands::Followup::None,
+        })
     }
 
-    pub fn set_default_account(
+    pub(super) fn commit_default_account(
         &self,
         request: SetDefaultAccountRequest,
-    ) -> Result<SettingsCommandReply> {
+    ) -> Result<commands::SettingsCommit> {
         Self::validate_operation_id(&request.operation_id)?;
         let current = self.config_runtime.read()?;
         let account_id = AccountId::new(request.account_id.trim())?;
@@ -520,20 +526,21 @@ impl StudioRuntime {
         next.mode_model_routes.insert(ThreadModeId::simple(), route);
         let state = self
             .config_runtime
-            .replace(request.expected_revision, next)?;
-        self.publish_settings_state()?;
-        self.settings_command_reply(
-            request.operation_id,
-            &state,
-            current.canonical_config() != state.canonical_config(),
-            CommandEffectPoint::FutureSession,
-        )
+            .replace_evidence(request.expected_revision, next)?;
+        let changed = current.canonical_config() != state.configuration.canonical_config();
+        Ok(commands::SettingsCommit {
+            evidence: state,
+            operation_id: request.operation_id,
+            changed,
+            effect: CommandEffectPoint::FutureSession,
+            followup: commands::Followup::None,
+        })
     }
 
-    pub fn remove_account_model(
+    pub(super) fn commit_remove_account_model(
         &self,
         request: RemoveAccountModelRequest,
-    ) -> Result<SettingsCommandReply> {
+    ) -> Result<commands::SettingsCommit> {
         Self::validate_operation_id(&request.operation_id)?;
         let account_id = AccountId::new(request.account_id.trim())?;
         let model_id = request.model_id.trim();
@@ -543,7 +550,7 @@ impl StudioRuntime {
             ));
         }
         let mut changed = false;
-        let state = self.config_runtime.update_with_effective(
+        let state = self.config_runtime.update_with_effective_evidence(
             request.expected_revision,
             |desired, _effective| {
                 let mut next = desired.clone();
@@ -558,19 +565,19 @@ impl StudioRuntime {
                 Ok(next)
             },
         )?;
-        self.publish_settings_state()?;
-        self.settings_command_reply(
-            request.operation_id,
-            &state,
+        Ok(commands::SettingsCommit {
+            evidence: state,
+            operation_id: request.operation_id,
             changed,
-            CommandEffectPoint::FutureSession,
-        )
+            effect: CommandEffectPoint::FutureSession,
+            followup: commands::Followup::None,
+        })
     }
 
-    pub async fn remove_account(
+    pub(super) fn commit_remove_account(
         &self,
         request: RemoveAccountRequest,
-    ) -> Result<SettingsCommandReply> {
+    ) -> Result<commands::SettingsCommit> {
         Self::validate_operation_id(&request.operation_id)?;
         let current = self.config_runtime.read()?;
         let next = crate::config_editor::remove_account(
@@ -580,15 +587,15 @@ impl StudioRuntime {
         )?;
         let state = self
             .config_runtime
-            .replace(request.expected_revision, next)?;
-        self.publish_settings_state()?;
-        self.apply_account_config().await?;
-        self.settings_command_reply(
-            request.operation_id,
-            &state,
-            current.canonical_config() != state.canonical_config(),
-            CommandEffectPoint::FutureSession,
-        )
+            .replace_evidence(request.expected_revision, next)?;
+        let changed = current.canonical_config() != state.configuration.canonical_config();
+        Ok(commands::SettingsCommit {
+            evidence: state,
+            operation_id: request.operation_id,
+            changed,
+            effect: CommandEffectPoint::FutureSession,
+            followup: commands::Followup::Accounts,
+        })
     }
 
     pub async fn save_thread_model_route(

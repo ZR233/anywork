@@ -15,6 +15,7 @@ use crate::{
 };
 
 use super::ProductEventBus;
+use crate::studio::agent_host::WriterHealth;
 
 impl ProductEventBus {
     pub async fn read_agent_directory(&self) -> StudioAgentDirectoryState {
@@ -196,11 +197,15 @@ impl ProductEventBus {
 
     pub(in crate::studio) fn observe_persistence(
         &self,
-        mut state: watch::Receiver<PersistenceStateSnapshot>,
+        mut state: watch::Receiver<WriterHealth>,
     ) -> tokio::task::JoinHandle<()> {
         let bus = self.clone();
         let mut threads = bus.store.thread_persistence().subscribe();
-        bus.update_persistence(state.borrow().clone(), threads.borrow().clone());
+        let public = state.borrow().snapshot.clone();
+        let thread_state = threads.borrow().clone();
+        bus.update_persistence(public, thread_state);
+        // Even unchanged initial Ready is the original writer's observed publication, not a getter fallback.
+        bus.persistence_source.publish(bus.persistence_state());
         bus.update_persistence_queue();
         // 任务由 runtime 持有并在 shutdown 收束；它自身持有 bus（含 writer），不能依赖
         // sender 关闭退出。
@@ -210,10 +215,9 @@ impl ProductEventBus {
                     result = state.changed() => if result.is_err() { break; },
                     result = threads.changed() => if result.is_err() { break; },
                 }
-                bus.update_persistence(
-                    state.borrow_and_update().clone(),
-                    threads.borrow_and_update().clone(),
-                );
+                let public = state.borrow_and_update().snapshot.clone();
+                let thread_state = threads.borrow_and_update().clone();
+                bus.update_persistence(public, thread_state);
                 bus.update_persistence_queue();
             }
         })
@@ -253,6 +257,7 @@ impl ProductEventBus {
             queue,
         };
         let snapshot = current.snapshot.clone();
+        self.persistence_queue_source.publish(snapshot.clone());
         drop(current);
         self.emit(StudioProductEventKind::PersistenceQueueStateChanged(
             snapshot,
@@ -304,6 +309,7 @@ impl ProductEventBus {
         }
         state.revision = current.revision.saturating_add(1);
         *current = state.clone();
+        self.persistence_source.publish(state.clone());
         drop(current);
         self.emit(StudioProductEventKind::PersistenceStateChanged(state));
     }

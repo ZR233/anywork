@@ -42,10 +42,11 @@ impl AttachmentDraftRuntime {
         })
     }
 
-    pub(super) async fn admit(
+    pub(in crate::studio::runtime) async fn admit(
         &self,
         sources: Vec<StudioAttachmentDraftSource>,
         model: &ModelInfo,
+        files: &super::super::draft_commands::AdmissionFiles,
     ) -> Result<AdmitAttachmentDraftsResponse> {
         let predicted = preflight_sources(&sources, model).map_err(admission_rejection)?;
 
@@ -89,6 +90,8 @@ impl AttachmentDraftRuntime {
                 validate_actual_limits(model, &normalized).map_err(admission_rejection)?;
                 let draft_id = crate::studio::ids::new_id("attachment-draft");
                 let storage_path = self.root.join(&draft_id);
+                // Register before write: a partial file still belongs to this accepted job.
+                files.register(storage_path.clone());
                 tokio::fs::write(&storage_path, &normalized.bytes).await?;
                 Ok::<_, anyhow::Error>(AttachmentDraftObject {
                     draft_id,
@@ -104,20 +107,11 @@ impl AttachmentDraftRuntime {
                 })
             }
             .await;
-            let draft = match result {
-                Ok(draft) => draft,
-                Err(error) => {
-                    cleanup_drafts(&admitted).await;
-                    return Err(error);
-                }
-            };
+            let draft = result?;
             admitted.push(draft);
         }
 
-        if let Err(error) = validate_draft_batch(model, &admitted).map_err(admission_rejection) {
-            cleanup_drafts(&admitted).await;
-            return Err(error);
-        }
+        validate_draft_batch(model, &admitted).map_err(admission_rejection)?;
         let response = AdmitAttachmentDraftsResponse {
             drafts: admitted.iter().map(public_draft).collect(),
         };
@@ -125,6 +119,7 @@ impl AttachmentDraftRuntime {
         for draft in admitted {
             entries.insert(draft.draft_id.clone(), draft);
         }
+        files.published();
         Ok(response)
     }
 
@@ -167,15 +162,21 @@ impl AttachmentDraftRuntime {
         Ok(true)
     }
 
-    pub(in crate::studio::runtime) async fn read(&self, draft_id: &str) -> Result<Vec<u8>> {
-        let path = self
-            .entries
-            .lock()
-            .await
+    /// Open and remove share entries until the actual OS open has finished. The async entries
+    /// guard is deliberately retained across that bounded operation, never across hashing/reads.
+    pub(in crate::studio::runtime) async fn open_binary(
+        &self,
+        draft_id: &str,
+    ) -> Result<(std::fs::File, u64)> {
+        let entries = self.entries.lock().await;
+        let draft = entries
             .get(draft_id)
-            .map(|draft| draft.storage_path.clone())
-            .with_context(|| format!("attachment draft {draft_id} is unavailable"))?;
-        Ok(tokio::fs::read(path).await?)
+            .ok_or_else(|| pl_protocol::studio::StudioError::not_found("AttachmentDraft"))?;
+        let path = draft.storage_path.clone();
+        let expected_length = draft.byte_size;
+        let file = tokio::task::spawn_blocking(move || std::fs::File::open(path)).await??;
+        drop(entries);
+        Ok((file, expected_length))
     }
 }
 
@@ -188,11 +189,5 @@ fn public_draft(draft: &AttachmentDraftObject) -> StudioAttachmentDraft {
         byte_size: draft.byte_size,
         width: draft.width,
         height: draft.height,
-    }
-}
-
-async fn cleanup_drafts(drafts: &[AttachmentDraftObject]) {
-    for draft in drafts {
-        let _ = tokio::fs::remove_file(&draft.storage_path).await;
     }
 }

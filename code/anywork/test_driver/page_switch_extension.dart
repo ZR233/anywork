@@ -1,5 +1,7 @@
-import 'package:anywork/src/presentation/view_models/timeline_session_owner.dart';
-import 'package:anywork_client/studio_client.dart';
+import 'package:anywork/src/features/conversation/presentation_api.dart';
+import 'package:anywork_client/conversation.dart';
+import 'package:anywork_client/resources.dart';
+import 'package:anywork_client/workspace.dart';
 import 'package:flutter_driver/driver_extension.dart';
 import 'package:flutter_driver/flutter_driver.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -9,9 +11,14 @@ import 'raw_tap_extension.dart';
 
 /// Reuses normal tap hit testing and event routing. No backend delay or fake loading.
 class PageSwitchCommandExtension extends CommandExtension {
-  PageSwitchCommandExtension({required this.client, required this.owner});
-  final AnyworkClient Function() client;
-  final TimelineSessionOwner Function() owner;
+  PageSwitchCommandExtension({
+    required this.workspace,
+    required this.conversations,
+    required this.owner,
+  });
+  final WorkspaceRepository Function() workspace;
+  final ConversationRepository Function() conversations;
+  final TimelineCoordinator Function() owner;
 
   @override
   String get commandKind => 'PageSwitch';
@@ -31,17 +38,20 @@ class PageSwitchCommandExtension extends CommandExtension {
     CommandHandlerFactory handlerFactory,
   ) async {
     final request = command as PageSwitch;
+    final deadline = DateTime.now().add(
+      request.timeout ?? const Duration(seconds: 30),
+    );
     final display = owner();
-    final lease = display.lease(request.threadId);
-    if (lease == null ||
-        lease.generation != request.generation ||
-        !lease.hasOlder) {
+    final original = display.display(request.threadId);
+    final selection = workspace();
+    final repository = conversations();
+    if (original == null ||
+        original.generation != request.generation ||
+        display.value?.hasOlder != true) {
       throw StateError(
         'PageSwitch requires the current display and an older page',
       );
     }
-    final scope = lease.queries;
-    if (scope == null) throw StateError('PageSwitch has no active query scope');
     Future<void>? page;
     Observation? observation;
     var pageCompleted = false;
@@ -50,7 +60,8 @@ class PageSwitchCommandExtension extends CommandExtension {
     var pendingAtTap = 0;
     var pendingAtSwitch = 0;
     String? destination;
-    StudioThreadSession? opening;
+    ConversationSession? opening;
+    TimelineLifecycleRead? openingLifecycle;
     int? openingAttempt;
     var openingAtReturn = false;
     var openingReleased = false;
@@ -60,39 +71,47 @@ class PageSwitchCommandExtension extends CommandExtension {
             ? ByValueKey('thread-row-${request.threadId}')
             : null,
         onBeforeFollowingTap: () {
-          opening = client().activeSession;
+          // Freeze the actual B Session and read-only lifecycle before the
+          // second real input. An opening phase is not a native Future probe.
+          opening = repository.active.value;
           final timeline = opening?.timeline;
-          openingAttempt = timeline?.currentAttemptId?.value;
+          final state = timeline?.state.value;
+          openingLifecycle = timeline?.lifecycle;
+          openingAttempt = state?.attemptId?.value;
           openingAtReturn =
               opening?.threadId == request.destinationThreadId &&
-              timeline?.state.value is ChatOpening<StudioTimelineFrame> &&
+              state?.phase == TimelineConnectionPhase.opening &&
               openingAttempt != null &&
-              timeline!.ownedAttemptCount > 0;
+              openingLifecycle!.ownedAttemptCount > 0;
           if (!openingAtReturn) {
             throw StateError('Rapid return did not overlap the real open');
           }
         },
         onBeforeTap: () {
-          if (client().selection.state.selectedThreadId != request.threadId ||
-              display.lease(request.threadId)?.generation !=
-                  request.generation) {
+          if (selection.state.value.selection.threadId != request.threadId ||
+              !identical(display.display(request.threadId), original) ||
+              original.generation != request.generation) {
             throw StateError('PageSwitch target changed before input');
           }
           page = display
-              .loadOlder(request.threadId, generation: request.generation)
+              .loadOlder(request.threadId, request.generation)
               .whenComplete(() => pageCompleted = true);
-          loadingAtTap = display.source.value?.isLoadingOlder == true;
-          pendingAtTap = scope.pendingQueries;
+          // Observe immediately, but keep the original Future for its true
+          // result/join below. A page failure must not escape through the Zone.
+          page!.ignore();
+          loadingAtTap = display.value?.olderLoading == true;
+          pendingAtTap = original.pendingQueries;
           if (!loadingAtTap || pendingAtTap == 0) {
             throw StateError('PageSwitch page was not accepted');
           }
-          observation = client().selection.source.watch((selection) {
-            if (selection.selectedThreadId == request.threadId) {
+          observation = selection.state.watch((state) {
+            if (state.selection.threadId == request.threadId ||
+                destination != null) {
               return;
             }
-            destination = selection.selectedThreadId;
+            destination = state.selection.threadId;
             switchedWhilePending = !pageCompleted;
-            pendingAtSwitch = scope.pendingQueries;
+            pendingAtSwitch = original.pendingQueries;
           });
         },
       );
@@ -104,14 +123,21 @@ class PageSwitchCommandExtension extends CommandExtension {
           destination != request.destinationThreadId) {
         throw StateError('Sidebar selection did not overlap the accepted page');
       }
-      await lease.released;
+      final displayReport = await original.observeRelease(deadline: deadline);
+      if (!displayReport.complete || !original.isReleased) {
+        throw StateError(
+          'The original display has unresolved release responsibility',
+        );
+      }
       if (request.bounceBack) {
-        if (client().selection.state.selectedThreadId != request.threadId) {
+        if (selection.state.value.selection.threadId != request.threadId) {
           throw StateError('Rapid return did not select the original thread');
         }
-        final retired = await opening!.timeline.joinRetired();
+        final retired = await openingLifecycle!.observeRetired(
+          deadline: deadline,
+        );
         openingReleased =
-            retired.complete && opening!.timeline.ownedAttemptCount == 0;
+            retired.complete && openingLifecycle!.ownedAttemptCount == 0;
         if (!openingReleased) {
           throw StateError('The abandoned opening attempt did not release');
         }
@@ -124,7 +150,8 @@ class PageSwitchCommandExtension extends CommandExtension {
         'switchedWhilePending': switchedWhilePending,
         'pendingQueriesAtTap': pendingAtTap,
         'pendingQueriesAtSwitch': pendingAtSwitch,
-        'oldDisplayReleased': lease.isReleased,
+        // This is only the original display, not all candidates/consumers.
+        'oldDisplayReleased': original.isReleased,
         if (request.bounceBack) ...{
           'openingAtReturn': openingAtReturn,
           'openingAttemptId': openingAttempt,

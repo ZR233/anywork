@@ -12,6 +12,7 @@ pub enum BridgeErrorCode {
     Busy,
     Conflict,
     StaleRevision,
+    Superseded,
     PermissionDenied,
     Cancelled,
     CancellationTooLate,
@@ -32,7 +33,138 @@ pub struct BridgeError {
     pub message: String,
     pub retryable: bool,
     pub correlation_id: String,
-    pub details_json: Option<String>,
+    pub details: Option<BridgeErrorDetails>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(
+    tag = "kind",
+    content = "data",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum BridgeErrorDetails {
+    Startup {
+        step: String,
+        kind: BridgeStartupFailureKind,
+    },
+    Revision {
+        expected: u64,
+        actual: u64,
+    },
+    SshAuthentication {
+        password_offered: Option<bool>,
+    },
+    Reason {
+        reason: String,
+    },
+    Identity {
+        identity: String,
+    },
+    TimelineRevision {
+        item_id: String,
+        field: String,
+        revision: u64,
+    },
+    Validation {
+        issues: Vec<BridgeValidationIssue>,
+    },
+    Thread {
+        thread_id: String,
+    },
+    ResourceLimit {
+        resource: String,
+        capacity: u64,
+    },
+    Bot {
+        code: String,
+        platform_code: Option<String>,
+        guidance: Option<String>,
+    },
+    CatalogRevision {
+        revision: u64,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct BridgeValidationIssue {
+    pub code: String,
+    pub path: String,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum BridgeStartupFailureKind {
+    ModeDefinitions,
+    Migration,
+    PersistentData,
+    Environment,
+    Cancelled,
+    Internal,
+}
+
+impl From<pl_protocol::studio::StudioErrorDetails> for BridgeErrorDetails {
+    fn from(details: pl_protocol::studio::StudioErrorDetails) -> Self {
+        use pl_protocol::studio::{StartupFailureKind, StudioErrorDetails};
+        match details {
+            StudioErrorDetails::Startup { step, kind } => Self::Startup {
+                step,
+                kind: match kind {
+                    StartupFailureKind::ModeDefinitions => {
+                        BridgeStartupFailureKind::ModeDefinitions
+                    }
+                    StartupFailureKind::Migration => BridgeStartupFailureKind::Migration,
+                    StartupFailureKind::PersistentData => BridgeStartupFailureKind::PersistentData,
+                    StartupFailureKind::Environment => BridgeStartupFailureKind::Environment,
+                    StartupFailureKind::Cancelled => BridgeStartupFailureKind::Cancelled,
+                    StartupFailureKind::Internal => BridgeStartupFailureKind::Internal,
+                },
+            },
+            StudioErrorDetails::Revision { expected, actual } => {
+                Self::Revision { expected, actual }
+            }
+            StudioErrorDetails::SshAuthentication { password_offered } => {
+                Self::SshAuthentication { password_offered }
+            }
+            StudioErrorDetails::Reason { reason } => Self::Reason { reason },
+            StudioErrorDetails::Identity { identity } => Self::Identity { identity },
+            StudioErrorDetails::TimelineRevision {
+                item_id,
+                field,
+                revision,
+            } => Self::TimelineRevision {
+                item_id,
+                field,
+                revision,
+            },
+            StudioErrorDetails::Validation { issues } => Self::Validation {
+                issues: issues
+                    .into_iter()
+                    .map(|issue| BridgeValidationIssue {
+                        code: issue.code,
+                        path: issue.path,
+                        message: issue.message,
+                    })
+                    .collect(),
+            },
+            StudioErrorDetails::Thread { thread_id } => Self::Thread { thread_id },
+            StudioErrorDetails::ResourceLimit { resource, capacity } => {
+                Self::ResourceLimit { resource, capacity }
+            }
+            StudioErrorDetails::Bot {
+                code,
+                platform_code,
+                guidance,
+            } => Self::Bot {
+                code,
+                platform_code,
+                guidance,
+            },
+            StudioErrorDetails::CatalogRevision { revision } => Self::CatalogRevision { revision },
+        }
+    }
 }
 
 impl BridgeError {
@@ -66,7 +198,7 @@ impl From<pl_protocol::studio::StudioError> for BridgeError {
             message: error.message,
             retryable: error.retryable,
             correlation_id: error.correlation_id,
-            details_json: error.details.map(|details| details.to_string()),
+            details: error.details.map(|details| (*details).into()),
         }
     }
 }
@@ -84,6 +216,7 @@ impl From<pl_protocol::studio::StudioErrorCode> for BridgeErrorCode {
             StudioErrorCode::Busy => Self::Busy,
             StudioErrorCode::Conflict => Self::Conflict,
             StudioErrorCode::StaleRevision => Self::StaleRevision,
+            StudioErrorCode::Superseded => Self::Superseded,
             StudioErrorCode::PermissionDenied => Self::PermissionDenied,
             StudioErrorCode::Cancelled => Self::Cancelled,
             StudioErrorCode::CancellationTooLate => Self::CancellationTooLate,

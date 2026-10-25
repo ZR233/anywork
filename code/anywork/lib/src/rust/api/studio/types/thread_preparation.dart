@@ -6,30 +6,10 @@
 import '../../../frb_generated.dart';
 import 'attachment.dart';
 import 'delegation.dart';
-import 'error.dart';
 
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
-import 'package:freezed_annotation/freezed_annotation.dart' hide protected;
 
-import 'response.dart';
-import 'thread_stream.dart';
-part 'thread_preparation.freezed.dart';
-
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `from`
-
-@freezed
-sealed class BridgeNewThreadStartEvent with _$BridgeNewThreadStartEvent {
-  const BridgeNewThreadStartEvent._();
-
-  const factory BridgeNewThreadStartEvent.progress(
-    BridgeThreadPreparationProgress field0,
-  ) = BridgeNewThreadStartEvent_Progress;
-  const factory BridgeNewThreadStartEvent.succeeded(
-    StartNewThreadResponse field0,
-  ) = BridgeNewThreadStartEvent_Succeeded;
-  const factory BridgeNewThreadStartEvent.failed(BridgeError field0) =
-      BridgeNewThreadStartEvent_Failed;
-}
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `from`
 
 class BridgeStartNewThreadRequest {
   final String projectId;

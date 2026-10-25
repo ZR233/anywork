@@ -5,7 +5,7 @@ mod threads;
 
 use anyhow::{Context, Result};
 
-use super::{StudioRuntime, StudioStartNewThreadRequest, StudioStartNewThreadResponse};
+use super::StudioRuntime;
 
 impl StudioRuntime {
     async fn thread_lifecycle_admission(&self) -> Result<tokio::sync::OwnedMutexGuard<()>> {
@@ -44,32 +44,5 @@ impl StudioRuntime {
         result
             .await
             .context("archive worker stopped without a conclusion")?
-    }
-
-    /// Creates a root Thread and accepts its first Turn from the shared API request.
-    pub async fn create_thread_command(
-        &self,
-        project_id: String,
-        request: pl_protocol::studio::CreateThreadRequest,
-        preparation_observer: Option<super::ThreadPreparationObserver>,
-    ) -> Result<StudioStartNewThreadResponse> {
-        let mode = pl_protocol::ThreadModeId::from_label(request.mode.trim()).map_err(|_| {
-            anyhow::Error::new(pl_protocol::studio::StudioError::invalid_argument(
-                "mode must be an available mode.* id",
-            ))
-        })?;
-        self.start_new_thread(StudioStartNewThreadRequest {
-            project_id,
-            title: request.title,
-            input: request.input,
-            mode,
-            route: request.route,
-            delegation_mode: request.delegation_mode,
-            delegation_preference: request.delegation_preference,
-            workspace_mode: request.workspace_mode,
-            options: super::StudioSubmitPromptOptions::default(),
-            preparation_observer,
-        })
-        .await
     }
 }

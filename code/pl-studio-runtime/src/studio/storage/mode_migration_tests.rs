@@ -1057,10 +1057,15 @@ async fn shared_history_checkpoint_waits_for_identity_and_keeps_cold_reads_empty
         .await
         .expect_err("损坏 identity 必须失败闭锁");
     assert!(
-        error
-            .to_string()
-            .contains("history database identity row is missing"),
-        "{error}"
+        matches!(
+            error.downcast_ref::<crate::studio::HistoryReadFailure>(),
+            Some(crate::studio::HistoryReadFailure::Protocol)
+        ),
+        "{error:#}"
+    );
+    assert!(
+        format!("{error:#}").contains("history database identity row is missing"),
+        "{error:#}"
     );
     Ok(())
 }

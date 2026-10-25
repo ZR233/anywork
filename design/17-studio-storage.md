@@ -433,6 +433,25 @@ writer 复用同一数据库身份与初始化状态；新库 schema/meta 尚未
 关闭和 shutdown 等待相关 Thread 的固定可靠水位，不能将未保存事实报告为成功。对外水位取所有
 owner 的最小值（全局确认要求每个 owner 都推进到该值），不用单个 owner 的最大值冒充全局确认。
 
+可靠 drain 的失败保留每个 writer incarnation 的义务、故障代次及原诊断；恢复资格由原
+存储 owner 的实际准备、运行或结束状态提供，不从公开最新行、错误文本或是否仍有记录推断。
+准备被取消同样结束该 incarnation 的责任登记；只有仍运行的原 writer 明确支持的 history
+恢复才允许关闭阶段在用户显式恢复后重新观察。准备尚未完成时，不得把其暂时未报告的
+欠账当作已排空，也不提前缓存该准备的终态失败结论。已结束 writer 的未保存义务不因一次新的保存
+而消失；只有原存储流程确认后继接管同一保留队列及其 checkpoint/history fence，才按既有
+交接语义转移责任。这种接管不等于关闭阶段可以自行重建 writer，也不自动清除故障代次。
+
+产品 write-behind 的固定 ticket 屏障由原队列 owner 返回类型化失败，区分 Blocked、
+缺少执行者、正在停止、未达目标即结束及观察通道关闭，并保留已有原始原因。已满足
+本次 ticket 的事实不因更晚故障反向失效。Blocked 的业务诊断不等于 supervisor 已终止；
+内层 worker 故障只按原 supervisor 算法恢复，supervisor 自身终态错误必须真实 join 并
+保留，不能在新的 flush 或空句柄 shutdown 中洗掉。原显式恢复不得和在途 shutdown
+竞争启动第二 writer；新尝试继续同一保留队列，但不撤销旧终态失败的诊断责任。
+原失败的重新观察由同一 write-behind owner 在其生命周期边界重核身份与资格，并固定
+该原任务后再锁外等待。纯资格查询不是可移交给后来任务的许可；不能先查询资格、再从
+当前槽重新选任务。异主失败不借本 owner 水位结算；同主原 ticket 已满足时仍先成功，
+否则身份或资格变化保原失败，不跟随替换任务、不触发恢复或新的 writer。
+
 关闭的持久化收束以 writer ack 为准：writer 确认之前保留 owner 与句柄；只要仍有运行中的
 writer，就不得关闭数据库，也不得释放实例锁。关闭按有向顺序推进写入链——后台任务 / Turn /
 Agent / title 等生产者的停止 ACK 先于可靠保存 drain 与 writer 停止，writer 真实 ack 先于关闭

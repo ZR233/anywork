@@ -216,12 +216,52 @@ struct PreparedThreadMode {
     workflow: Option<Arc<CompiledWorkflowDefinition>>,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 struct ThreadModeManagerState {
     revision: u64,
     next_graph_revision: u64,
+    updates: tokio::sync::watch::Sender<u64>,
     sources: BTreeMap<ThreadModeSourceId, SourceRegistration>,
     snapshot: Arc<ThreadModeRegistrySnapshot>,
+}
+
+impl Default for ThreadModeManagerState {
+    fn default() -> Self {
+        let (updates, _) = tokio::sync::watch::channel(0);
+        Self {
+            revision: 0,
+            next_graph_revision: 0,
+            sources: BTreeMap::new(),
+            snapshot: Default::default(),
+            updates,
+        }
+    }
+}
+
+pub(crate) struct ModeRegistryObservation {
+    pub current: Arc<ThreadModeRegistrySnapshot>,
+    pub updates: tokio::sync::watch::Receiver<u64>,
+}
+
+/// Retained invalidation for one committed snapshot; notify only after all outer guards end.
+#[must_use = "notify after completing the owning transaction and releasing its guards"]
+pub(crate) struct ModeRegistryPublication {
+    updates: tokio::sync::watch::Sender<u64>,
+    revision: u64,
+}
+
+impl ModeRegistryPublication {
+    pub(crate) fn notify(self) {
+        let Self { updates, revision } = self;
+        updates.send_if_modified(|published| {
+            if *published > revision {
+                return false;
+            }
+            // Preserve invalidation at equal revisions, including the existing saturation case.
+            *published = revision;
+            true
+        });
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -237,6 +277,17 @@ pub struct ThreadModeManager {
 }
 
 impl ThreadModeManager {
+    /// Registers retained revision notification and its immutable baseline atomically.
+    pub(crate) fn observe_registry(&self) -> ModeRegistryObservation {
+        let state = self
+            .state
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        ModeRegistryObservation {
+            current: state.snapshot.clone(),
+            updates: state.updates.subscribe(),
+        }
+    }
     /// 原子替换某一来源的全部 Mode。
     ///
     /// 所有定义先在锁外校验和编译；任一失败时，已发布快照不发生变化。
@@ -245,6 +296,18 @@ impl ThreadModeManager {
         source: ThreadModeSource,
         registrations: impl IntoIterator<Item = ThreadModeDefinition>,
     ) -> Result<Arc<ThreadModeRegistrySnapshot>, ThreadModeManagerError> {
+        let (snapshot, publication) = self.replace_source_deferred(source, registrations)?;
+        publication.notify();
+        Ok(snapshot)
+    }
+
+    /// Commits the same registry change, leaving notification to the outer transaction owner.
+    pub(crate) fn replace_source_deferred(
+        &self,
+        source: ThreadModeSource,
+        registrations: impl IntoIterator<Item = ThreadModeDefinition>,
+    ) -> Result<(Arc<ThreadModeRegistrySnapshot>, ModeRegistryPublication), ThreadModeManagerError>
+    {
         let prepared = prepare_batch(&source, registrations)?;
         let mut state = self
             .state
@@ -288,20 +351,36 @@ impl ThreadModeManager {
                 modes: registered,
             },
         );
-        publish(&mut state);
-        Ok(state.snapshot.clone())
+        let publication = publish(&mut state);
+        Ok((state.snapshot.clone(), publication))
     }
 
     /// 移除某一来源的整批 Mode；未知来源保持当前快照。
     pub fn remove_source(&self, source_id: &ThreadModeSourceId) -> Arc<ThreadModeRegistrySnapshot> {
+        let (snapshot, publication) = self.remove_source_deferred(source_id);
+        if let Some(publication) = publication {
+            publication.notify();
+        }
+        snapshot
+    }
+
+    pub(crate) fn remove_source_deferred(
+        &self,
+        source_id: &ThreadModeSourceId,
+    ) -> (
+        Arc<ThreadModeRegistrySnapshot>,
+        Option<ModeRegistryPublication>,
+    ) {
         let mut state = self
             .state
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if state.sources.remove(source_id).is_some() {
-            publish(&mut state);
-        }
-        state.snapshot.clone()
+        let publication = if state.sources.remove(source_id).is_some() {
+            Some(publish(&mut state))
+        } else {
+            None
+        };
+        (state.snapshot.clone(), publication)
     }
 
     /// 无锁外借地取得当前不可变快照。
@@ -412,7 +491,7 @@ fn validate_source_conflicts(
     Ok(())
 }
 
-fn publish(state: &mut ThreadModeManagerState) {
+fn publish(state: &mut ThreadModeManagerState) -> ModeRegistryPublication {
     state.revision = state.revision.saturating_add(1);
     let mut modes = BTreeMap::new();
     for registration in state.sources.values() {
@@ -444,4 +523,8 @@ fn publish(state: &mut ThreadModeManagerState) {
             modes: descriptors,
         },
     });
+    ModeRegistryPublication {
+        updates: state.updates.clone(),
+        revision: state.revision,
+    }
 }

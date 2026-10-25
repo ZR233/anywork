@@ -9,7 +9,7 @@ use std::error::Error;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::mpsc::UnboundedSender;
+use tokio::sync::mpsc::Sender;
 use url::Url;
 
 const MAX_REDIRECTS: usize = 5;
@@ -89,7 +89,7 @@ impl StudioUpdater {
     pub async fn download(
         &self,
         update: StudioUpdate,
-        progress: UnboundedSender<StudioUpdateEvent>,
+        progress: Sender<StudioUpdateEvent>,
         cancellation: StudioUpdateCancellation,
     ) -> Result<PreparedStudioUpdate, StudioUpdateError> {
         install::download(self, update, progress, cancellation).await

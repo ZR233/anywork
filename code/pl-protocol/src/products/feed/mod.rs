@@ -1,0 +1,20 @@
+//! Each resource owns a distinct event and frame type with no aggregate payload discriminator.
+pub mod account_templates;
+pub mod account_usage;
+pub mod agent_directory;
+pub mod agent_profiles;
+pub mod configuration;
+pub mod lsp;
+pub mod mcp;
+pub mod mode_catalog;
+pub mod model_catalog;
+pub mod performance_history;
+pub mod performance_summaries;
+pub mod persistence;
+pub mod persistence_queue;
+pub mod project_directory;
+pub mod recovery;
+pub mod session_costs;
+pub mod skills;
+pub mod thread_directory;
+pub mod updates;

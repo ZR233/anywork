@@ -43,14 +43,84 @@ impl StudioRuntime {
         // 进程级共享 writer 先于所有 owner 构造：ProductEventBus 与
         // ThreadRepository 共用同一 write-behind 队列。
         let writer = ThreadWriteBehindWriter::new(store.clone());
-        let product_events = ProductEventBus::new(store.clone(), writer.clone());
+        let owner_epoch = crate::studio::ids::new_id("runtime");
+        let observation_ids =
+            super::super::observation_ids::ObservationIds::new(owner_epoch.clone());
+        let startup_source = super::super::startup::StartupSource::new(
+            pl_protocol::products::identity::ProductReadOrigin {
+                owner_epoch: owner_epoch.clone(),
+                incarnation: observation_ids.next()?,
+            },
+        );
+        let recovery_source = super::super::recovery::RecoverySource::new(
+            pl_protocol::products::identity::ProductReadOrigin {
+                owner_epoch: owner_epoch.clone(),
+                incarnation: observation_ids.next()?,
+            },
+        );
+        let persistence_source = super::super::persistence::PersistenceSource::new(
+            pl_protocol::products::identity::ProductReadOrigin {
+                owner_epoch: owner_epoch.clone(),
+                incarnation: observation_ids.next()?,
+            },
+        );
+        let persistence_queue_source = super::super::persistence::PersistenceQueueSource::new(
+            pl_protocol::products::identity::ProductReadOrigin {
+                owner_epoch: owner_epoch.clone(),
+                incarnation: observation_ids.next()?,
+            },
+        );
+        let remote_directory_source = super::super::remote_directory::RemoteDirectorySource::new(
+            pl_protocol::products::identity::ProductReadOrigin {
+                owner_epoch: owner_epoch.clone(),
+                incarnation: observation_ids.next()?,
+            },
+        );
+        let modes_source = super::super::modes::ModesSource::new(
+            pl_protocol::products::identity::ProductReadOrigin {
+                owner_epoch: owner_epoch.clone(),
+                incarnation: observation_ids.next()?,
+            },
+        );
+        let usage_source = super::super::account_usage::UsageSource::new(
+            pl_protocol::products::identity::ProductReadOrigin {
+                owner_epoch: owner_epoch.clone(),
+                incarnation: observation_ids.next()?,
+            },
+        );
+        let statistics_source = super::super::statistics::StatisticsSource::new(
+            pl_protocol::products::identity::ProductReadOrigin {
+                owner_epoch: owner_epoch.clone(),
+                incarnation: observation_ids.next()?,
+            },
+        );
+        let updates_source = super::super::updates::UpdatesSource::new(
+            pl_protocol::products::identity::ProductReadOrigin {
+                owner_epoch: owner_epoch.clone(),
+                incarnation: observation_ids.next()?,
+            },
+        );
+        let product_events = ProductEventBus::new(
+            store.clone(),
+            writer.clone(),
+            persistence_source.clone(),
+            persistence_queue_source.clone(),
+        );
         let bots = crate::bots::BotRuntime::new(
             store.paths().clone(),
             config_runtime.clone(),
             product_events.clone(),
         )?;
 
-        let model_performance = ModelPerformanceOwner::new(store.clone(), product_events.clone());
+        modes_source.publish(config_runtime.read_thread_mode_catalog())?;
+        let model_performance = ModelPerformanceOwner::new(
+            store.clone(),
+            product_events.clone(),
+            statistics_source.clone(),
+        );
+        let (initial_performance, initial_sample_keys) =
+            model_performance.history_source_snapshot().await;
+        statistics_source.publish_global(initial_performance, initial_sample_keys)?;
         let ssh_manager = std::sync::Arc::new(crate::worker_assets::ssh_manager(&helper_source));
         let worktrees =
             crate::studio::agent_host::worktree_lease::WorktreeLeaseOwner::new(writer.clone());
@@ -59,10 +129,27 @@ impl StudioRuntime {
             store.clone(),
             config_runtime.clone(),
             product_events.clone(),
+            usage_source.clone(),
         );
-        let updater = StudioUpdateRuntime::new(product_events.clone())?;
-        let mcp_state = McpStateRuntime::new();
-        let lsp_state = LspStateRuntime::new(product_events.clone());
+        usage_source.publish(account_usage.read().await)?;
+        let updater = StudioUpdateRuntime::new(product_events.clone(), updates_source.clone())?;
+        updates_source.publish(updater.read().await)?;
+        let mcp_source = super::super::mcp::source::McpSource::new(
+            pl_protocol::products::identity::ProductReadOrigin {
+                owner_epoch: owner_epoch.clone(),
+                incarnation: observation_ids.next()?,
+            },
+        );
+        let lsp_source = super::super::lsp::source::LspSource::new(
+            pl_protocol::products::identity::ProductReadOrigin {
+                owner_epoch: owner_epoch.clone(),
+                incarnation: observation_ids.next()?,
+            },
+        );
+        let skills_source =
+            super::super::skills::sources::SkillsSources::new(observation_ids.clone());
+        let mcp_state = McpStateRuntime::new(mcp_source.clone())?;
+        let lsp_state = LspStateRuntime::new(product_events.clone(), lsp_source.clone())?;
         let attachment_drafts = AttachmentDraftRuntime::new(store.attachment_drafts_dir())?;
         // The configuration owner established and loaded the one canonical Mode manager.
         let thread_modes = config_runtime.thread_mode_manager();
@@ -80,7 +167,11 @@ impl StudioRuntime {
         #[cfg(not(target_os = "linux"))]
         let mcp = McpRuntime::new(McpConnector::default()).handle();
         let lsp = pl_lsp::runtime::LspRuntimeRegistry::new();
-        let skills = SkillCatalogRuntime::new(product_events.clone(), system_skills_dir);
+        let skills = SkillCatalogRuntime::new(
+            product_events.clone(),
+            system_skills_dir,
+            skills_source.clone(),
+        );
         let thread_factory = crate::studio::thread_factory::StudioThreadFactory::new(
             crate::studio::thread_factory::StudioThreadServices {
                 store: store.clone(),
@@ -109,22 +200,87 @@ impl StudioRuntime {
             thread_factory.clone(),
         ))?;
         let recovery = crate::studio::StudioRecoveryRegistry::new();
+        recovery.attach_source(recovery_source.clone());
+        let models_source = config_runtime.attach_models_source(
+            pl_protocol::products::identity::ProductReadOrigin {
+                owner_epoch: owner_epoch.clone(),
+                incarnation: observation_ids.next()?,
+            },
+        )?;
+        let configuration_source = config_runtime.attach_configuration_source(
+            pl_protocol::products::identity::ProductReadOrigin {
+                owner_epoch: owner_epoch.clone(),
+                incarnation: observation_ids.next()?,
+            },
+            models_source.clone(),
+        )?;
+        let profiles_source = config_runtime.attach_profiles_source(
+            pl_protocol::products::identity::ProductReadOrigin {
+                owner_epoch: owner_epoch.clone(),
+                incarnation: observation_ids.next()?,
+            },
+        )?;
+        let templates_source = super::super::models::TemplatesSource::new(
+            pl_protocol::products::identity::ProductReadOrigin {
+                owner_epoch: owner_epoch.clone(),
+                incarnation: observation_ids.next()?,
+            },
+            pl_model::config::builtin_account_catalog()?.snapshot()?,
+        )?;
+        let bots_source = super::super::bots::BotsSource::new(
+            pl_protocol::products::identity::ProductReadOrigin {
+                owner_epoch: owner_epoch.clone(),
+                incarnation: observation_ids.next()?,
+            },
+        );
+        let workspace_source = super::super::workspace::WorkspaceProductSource::new(
+            pl_protocol::products::identity::ProductReadOrigin {
+                owner_epoch: owner_epoch.clone(),
+                incarnation: observation_ids.next()?,
+            },
+        );
+        let read_scopes = super::super::read_scopes::ReadScopeRegistry::default();
         let thread_observations = super::super::thread_observation::ThreadObservations::new(
             super::super::thread_observation::ObservationServices {
                 config: config_runtime.clone(),
+                thread_modes: thread_modes.clone(),
+                observation_ids: observation_ids.clone(),
                 store: store.clone(),
                 events: product_events.clone(),
                 performance: model_performance.clone(),
-                threads: threads.clone(),
+                threads: threads.downgrade(),
+                thread_factory: thread_factory.clone(),
                 writer: persistence.clone(),
                 recovery: recovery.clone(),
             },
+            read_scopes.clone(),
         );
         let rejected_tools = super::super::rejected_tools::RejectedToolOwners::default();
-        thread_observations.install(thread_factory.clone(), rejected_tools.clone())?;
+        thread_observations.install(rejected_tools.clone())?;
         // 持久化观察在 runtime 装配完成后由 `start_persistence_observer` 启动并持有。
         let mut runtime = Self {
-            owner_epoch: crate::studio::ids::new_id("runtime"),
+            owner_epoch,
+            read_calls: Default::default(),
+            read_scopes,
+            observation_ids,
+            models_source,
+            configuration_source,
+            mcp_source,
+            lsp_source,
+            skills_source,
+            profiles_source,
+            templates_source,
+            modes_source,
+            usage_source,
+            statistics_source,
+            updates_source,
+            bots_source,
+            workspace_source,
+            startup_source,
+            recovery_source,
+            persistence_source,
+            persistence_queue_source,
+            remote_directory_source,
             startup_recovery: None,
             persistence_observer: Default::default(),
             thread_observations,
@@ -166,8 +322,8 @@ impl StudioRuntime {
             updater,
             activation: Default::default(),
             attachment_drafts,
+            draft_commands: Default::default(),
             ssh_manager,
-            service_stops: Default::default(),
             archive_task: Default::default(),
             lifecycle_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
             shutdown_latch: Default::default(),

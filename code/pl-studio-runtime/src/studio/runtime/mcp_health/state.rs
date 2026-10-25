@@ -19,6 +19,7 @@ use super::health::mcp_server_checked_at;
 pub(in crate::studio::runtime) struct McpStateRuntime {
     pub(super) command_lock: Arc<Mutex<()>>,
     state: Arc<RwLock<StudioMcpStateSnapshot>>,
+    source: Arc<super::super::mcp::source::McpSource>,
     desired_effective_fingerprint: Arc<RwLock<Option<String>>>,
     pub(super) applied_effective_fingerprint: Arc<RwLock<Option<String>>>,
 }
@@ -31,23 +32,34 @@ pub(super) struct McpReconcilePlan {
 }
 
 impl McpStateRuntime {
-    pub(in crate::studio::runtime) fn new() -> Self {
-        Self {
+    pub(in crate::studio::runtime) fn new(
+        source: Arc<super::super::mcp::source::McpSource>,
+    ) -> Result<Self> {
+        let initial = StudioMcpStateSnapshot {
+            state: ObservedResource::uninitialized(unix_seconds()),
+        };
+        source.publish(&initial.state)?;
+        Ok(Self {
             command_lock: Arc::new(Mutex::new(())),
-            state: Arc::new(RwLock::new(StudioMcpStateSnapshot {
-                state: ObservedResource::uninitialized(unix_seconds()),
-            })),
+            state: Arc::new(RwLock::new(initial)),
+            source,
             desired_effective_fingerprint: Arc::new(RwLock::new(None)),
             applied_effective_fingerprint: Arc::new(RwLock::new(None)),
-        }
+        })
     }
 
     pub(super) async fn read(&self) -> StudioMcpStateSnapshot {
         self.state.read().await.clone()
     }
 
-    async fn publish(&self, snapshot: StudioMcpStateSnapshot) {
-        *self.state.write().await = snapshot;
+    async fn publish(
+        &self,
+        snapshot: StudioMcpStateSnapshot,
+    ) -> Result<Arc<super::super::mcp::McpSnapshot>> {
+        let mut state = self.state.write().await;
+        *state = snapshot;
+        // Original native publication and product capture share this one writer guard.
+        Ok(self.source.publish(&state.state)?)
     }
 }
 
@@ -63,7 +75,7 @@ impl StudioRuntime {
                 })?
                 .next_state,
         };
-        self.publish_mcp(snapshot).await;
+        self.publish_mcp(snapshot).await?;
         Ok(())
     }
 
@@ -123,11 +135,14 @@ impl StudioRuntime {
                 })?
                 .next_state,
         };
-        self.publish_mcp(snapshot).await;
+        self.publish_mcp(snapshot).await?;
         Ok(())
     }
 
-    pub(super) async fn publish_mcp_ready(&self, applied_config_fingerprint: String) -> Result<()> {
+    pub(super) async fn publish_mcp_ready(
+        &self,
+        applied_config_fingerprint: String,
+    ) -> Result<Arc<super::super::mcp::McpSnapshot>> {
         let previous = self.external_runtimes.mcp_state.read().await;
         let health = self.collect_mcp_health().await?;
         let last_checked_at = health
@@ -150,8 +165,7 @@ impl StudioRuntime {
                 })?
                 .next_state,
         };
-        self.publish_mcp(snapshot).await;
-        Ok(())
+        self.publish_mcp(snapshot).await
     }
 
     pub(super) async fn publish_mcp_failed(&self, error: &impl std::fmt::Display) -> Result<()> {
@@ -170,16 +184,21 @@ impl StudioRuntime {
                 })?
                 .next_state,
         };
-        self.publish_mcp(snapshot).await;
+        self.publish_mcp(snapshot).await?;
         Ok(())
     }
 
-    pub(super) async fn publish_mcp(&self, snapshot: StudioMcpStateSnapshot) {
-        self.external_runtimes
+    pub(super) async fn publish_mcp(
+        &self,
+        snapshot: StudioMcpStateSnapshot,
+    ) -> Result<Arc<super::super::mcp::McpSnapshot>> {
+        let captured = self
+            .external_runtimes
             .mcp_state
             .publish(snapshot.clone())
             .await;
         self.agent_facility.product_events.emit_mcp_state(snapshot);
+        captured
     }
 }
 

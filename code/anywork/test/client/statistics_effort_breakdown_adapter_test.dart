@@ -1,13 +1,18 @@
+import 'package:anywork/src/app/app_bindings.dart';
 import 'package:anywork/src/app/theme/material3_theme.dart';
-import 'package:anywork/src/features/settings/settings_scope.dart';
-import 'package:anywork/src/features/settings/settings_statistics_tab.dart';
+import 'package:anywork/src/features/settings/state/settings_navigation_state.dart';
+import 'package:anywork/src/features/settings/statistics/connectors/statistics_connector.dart';
+import 'package:anywork/src/features/settings/view_models/settings_navigation_view_model.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
-import 'package:anywork/src/presentation/providers/client_provider.dart';
-import 'package:anywork/src/shared/studio_driver_keys.dart';
-import 'package:anywork_client/studio_client.dart';
+import 'package:anywork/src/diagnostics/studio_driver_keys.dart';
+import 'package:anywork_client/account_usage_ports.dart';
+import 'package:anywork_client/resources_ports.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+
+import 'support/pump_client_future.dart';
+import 'support/statistics_environment.dart';
 
 /// 统计页的顶层身份是 (accountId, 配置 modelId)，effort 是组内细分筛选。
 ///
@@ -139,121 +144,48 @@ void main() {
   });
 }
 
-/// 真实 Client + 生产主题装配统计页；`logicalSize` 为空时使用测试默认视口。
+/// 真实 Repository + VM + Connector + 生产主题；native 只提供不可变读取材料。
 Future<void> _pumpStatistics(WidgetTester tester, {Size? logicalSize}) async {
   if (logicalSize != null) {
     tester.view.devicePixelRatio = 1.0;
     tester.view.physicalSize = logicalSize;
     addTearDown(tester.view.reset);
   }
-  final client = (await tester.runAsync(
-    () async => AnyworkClient(
-      transport: _UnusedTransport(),
-      clientId: 'statistics-effort',
-    ),
-  ))!;
-  addTearDown(() async {
-    await tester.runAsync(
-      () => client.close(
-        deadline: DateTime.now().add(const Duration(seconds: 3)),
-      ),
-    );
-  });
-  final now = DateTime.utc(2026, 2, 1);
-  client.modelPerformance.apply(
-    ModelPerformanceSnapshotView(
-      revision: 1,
-      updatedAt: now,
-      summaries: [
-        ModelPerformanceSummaryView(
-          accountId: 'account-a',
-          accountDisplayName: 'Alpha',
-          modelId: 'shared-model',
-          sampleCount: 2,
-          completionTokens: 200,
-          totalTtftMillis: 600,
-          ttftSampleCount: 2,
-          totalResponseMillis: 2600,
-          tokensPerSecond: 100,
-          averageTtftMillis: 300,
-          averageResponseMillis: 1300,
-          effortBreakdowns: [
-            ModelPerformanceEffortSummaryView(
-              effort: 'high',
-              sampleCount: 1,
-              completionTokens: 100,
-              totalTtftMillis: 300,
-              ttftSampleCount: 1,
-              totalResponseMillis: 1300,
-              tokensPerSecond: 100,
-              averageTtftMillis: 300,
-              averageResponseMillis: 1300,
-            ),
-            ModelPerformanceEffortSummaryView(
-              effort: null,
-              sampleCount: 1,
-              completionTokens: 100,
-              totalTtftMillis: 300,
-              ttftSampleCount: 1,
-              totalResponseMillis: 1300,
-              tokensPerSecond: 100,
-              averageTtftMillis: 300,
-              averageResponseMillis: 1300,
-            ),
-          ],
-        ),
-      ],
-      history: [
-        ModelPerformanceSampleView(
-          completedAt: now,
-          accountId: 'account-a',
-          accountDisplayName: 'Alpha',
-          modelId: 'shared-model',
-          sentModel: 'shared-model',
-          modelMatchState: ModelMatchState.matched,
-          effort: 'high',
-          completionTokens: 100,
-          ttftMillis: 300,
-          decodeMillis: 1000,
-          totalResponseMillis: 1300,
-          tokensPerSecond: 100,
-        ),
-        ModelPerformanceSampleView(
-          completedAt: now.subtract(const Duration(minutes: 1)),
-          accountId: 'account-a',
-          accountDisplayName: 'Alpha',
-          modelId: 'shared-model',
-          sentModel: 'shared-model',
-          modelMatchState: ModelMatchState.matched,
-          effort: null,
-          completionTokens: 100,
-          ttftMillis: 300,
-          decodeMillis: 1000,
-          totalResponseMillis: 1300,
-          tokensPerSecond: 100,
-        ),
-        // 旧记录没有配置模型证据：独立为“历史身份未知”，不并入上面的组。
-        ModelPerformanceSampleView(
-          completedAt: now.subtract(const Duration(minutes: 2)),
-          accountId: 'account-a',
-          accountDisplayName: 'Alpha',
-          sentModel: 'legacy-alias',
-          modelMatchState: ModelMatchState.legacyUnknown,
-          completionTokens: 10,
-          ttftMillis: null,
-          decodeMillis: null,
-          totalResponseMillis: null,
-          tokensPerSecond: null,
-        ),
-      ],
-    ),
-  );
-
+  final port = StatisticsTestPort();
+  final budget = ResourceBudget();
+  final repository = createStatisticsRepository(port: port, budget: budget);
   final container = ProviderContainer(
-    overrides: [anyworkClientProvider.overrideWith((ref) => client)],
+    overrides: [statisticsRepositoryProvider.overrideWithValue(repository)],
   );
-  addTearDown(container.dispose);
-  container.read(settingsVisibleTabProvider.notifier).select(3);
+  addTearDown(() async {
+    await tester.pumpWidget(const SizedBox.shrink());
+    container.dispose();
+    final report = await pumpClientFuture(
+      tester,
+      repository.close(),
+      'statistics close',
+    );
+    expect(report.complete, isTrue);
+    expect(budget.usage, isEmpty);
+  });
+  await pumpClientFuture(
+    tester,
+    container.read(settingsNavigationViewModelProvider.future),
+    'statistics navigation',
+  );
+  container
+      .read(settingsNavigationViewModelProvider.notifier)
+      .enter(SettingsTab.statistics);
+  final reads = Future.wait([
+    repository.loadSummariesPage(),
+    repository.loadHistoryPage(),
+  ]);
+  await pumpClientFuture(
+    tester,
+    port.establish(),
+    'statistics native baselines',
+  );
+  await pumpClientFuture(tester, reads, 'statistics materialization');
 
   await tester.pumpWidget(
     UncontrolledProviderScope(
@@ -264,15 +196,9 @@ Future<void> _pumpStatistics(WidgetTester tester, {Size? logicalSize}) async {
         theme: pureStudioTheme(),
         localizationsDelegates: AppLocalizations.localizationsDelegates,
         supportedLocales: AppLocalizations.supportedLocales,
-        home: const Scaffold(body: StatisticsTab(tabIndex: 3)),
+        home: const Scaffold(body: StatisticsConnector()),
       ),
     ),
   );
-  await tester.pump(const Duration(milliseconds: 50));
-}
-
-class _UnusedTransport implements StudioTransport {
-  @override
-  dynamic noSuchMethod(Invocation invocation) =>
-      throw UnsupportedError('Unused transport: ${invocation.memberName}');
+  await tester.pumpAndSettle();
 }

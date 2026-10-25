@@ -314,14 +314,15 @@ impl StudioRuntime {
                 .join(filename);
             tokio::fs::create_dir_all(destination.parent().context("attachment parent missing")?)
                 .await?;
-            let bytes = self
-                .read_thread_attachment(source.into(), record.id)
-                .await?;
-            let output = destination.clone();
-            tokio::task::spawn_blocking(move || {
-                pl_tool::workspace::write_file_atomically(&output, &bytes)
-            })
-            .await??;
+            let read = self.open_thread_binary(source.into(), record.id).await?;
+            let copied = read.copy_to(destination.clone()).await;
+            let closed = read.close().await;
+            if let pl_protocol::studio::FeedCloseOutcome::Unresolved { issues } = closed.outcome {
+                anyhow::bail!(
+                    "attachment forwarding retained unresolved read ownership: {issues:?}"
+                );
+            }
+            copied?;
             sources.push(
                 pl_protocol::studio::StudioAttachmentDraftSource::LocalFile {
                     path: destination.to_string_lossy().into_owned(),
@@ -331,14 +332,34 @@ impl StudioRuntime {
         let drafts = if sources.is_empty() {
             Vec::new()
         } else {
-            self.admit_attachment_drafts(pl_protocol::studio::AdmitAttachmentDraftsRequest {
-                context: pl_protocol::studio::StudioAttachmentAdmissionContext::ExistingThread {
-                    thread_id: args.session_id.clone(),
+            let job = self.begin_attachment_admission(
+                crate::studio::new_id("session-attachment-admission"),
+                pl_protocol::studio::AdmitAttachmentDraftsRequest {
+                    context:
+                        pl_protocol::studio::StudioAttachmentAdmissionContext::ExistingThread {
+                            thread_id: args.session_id.clone(),
+                        },
+                    sources,
                 },
-                sources,
-            })
-            .await?
-            .drafts
+            )?;
+            let outcome = job.result().await;
+            let closed = job.close().await;
+            match outcome {
+                pl_protocol::studio::AttachmentAdmissionOutcome::Returned { value } => value.drafts,
+                pl_protocol::studio::AttachmentAdmissionOutcome::Rejected { error }
+                | pl_protocol::studio::AttachmentAdmissionOutcome::UnknownOutcome { error } => {
+                    return match closed.outcome {
+                        pl_protocol::studio::FeedCloseOutcome::Clean => Err(error.into()),
+                        pl_protocol::studio::FeedCloseOutcome::Unresolved { issues } => {
+                            Err(super::super::draft_commands::DraftCommandsCloseFailure {
+                                issues,
+                                source: Some(error.into()),
+                            }
+                            .into())
+                        }
+                    };
+                }
+            }
         };
         let draft_ids: Vec<_> = drafts.into_iter().map(|draft| draft.draft_id).collect();
         let submitted = if context.cancellation.is_cancelled() {

@@ -416,6 +416,10 @@ impl AccountUsageRecord {
         &self.state
     }
 
+    pub fn last_operation_id(&self) -> &str {
+        &self.last_operation_id
+    }
+
     pub fn decide(
         &self,
         command: AccountUsageCommand,

@@ -97,10 +97,21 @@ impl AgentProfileCatalog {
                 return catalog;
             }
         };
-        let mut paths = entries
-            .filter_map(|entry| entry.ok().map(|entry| entry.path()))
-            .filter(|path| path.extension().and_then(|value| value.to_str()) == Some("toml"))
-            .collect::<Vec<_>>();
+        let mut paths = Vec::new();
+        for entry in entries {
+            match entry {
+                Ok(entry) => {
+                    let path = entry.path();
+                    if path.extension().and_then(|value| value.to_str()) == Some("toml") {
+                        paths.push(path);
+                    }
+                }
+                Err(error) => catalog.diagnostics.push(AgentProfileDiagnostic {
+                    path: agents_dir.clone(),
+                    message: format!("failed to read Agent Profile directory entry: {error}"),
+                }),
+            }
+        }
         paths.sort();
         for path in paths {
             match load_user_profile(&path, config, include_disabled) {
@@ -147,6 +158,16 @@ pub fn save_user_agent_profile(
     profile: &UserAgentProfile,
     config: &StudioConfig,
 ) -> Result<bool> {
+    prepare_user_agent_profile(paths, profile_id, profile, config)?.write()
+}
+
+/// All validation, TOML encoding and preparation precede the possibly replacing writer.
+pub(in crate::config) fn prepare_user_agent_profile(
+    paths: &ConfigPaths,
+    profile_id: &str,
+    profile: &UserAgentProfile,
+    config: &StudioConfig,
+) -> Result<PreparedUserAgentProfile> {
     validate_profile_id(profile_id)?;
     if StudioRole::from_key(profile_id).is_some() {
         return Err(PureError::ConfigError(format!(
@@ -169,8 +190,24 @@ pub fn save_user_agent_profile(
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => true,
         Err(error) => return Err(error.into()),
     };
-    pl_tool::workspace::write_file_atomically(&path, content.as_bytes())?;
-    Ok(changed)
+    Ok(PreparedUserAgentProfile {
+        path,
+        content,
+        changed,
+    })
+}
+
+pub(in crate::config) struct PreparedUserAgentProfile {
+    path: PathBuf,
+    content: String,
+    changed: bool,
+}
+impl PreparedUserAgentProfile {
+    /// Any error after entering this call may follow replacement or parent directory sync.
+    pub(in crate::config) fn write(self) -> Result<bool> {
+        pl_tool::workspace::write_file_atomically(&self.path, self.content.as_bytes())?;
+        Ok(self.changed)
+    }
 }
 
 pub fn is_system_profile_id(profile_id: &str) -> bool {

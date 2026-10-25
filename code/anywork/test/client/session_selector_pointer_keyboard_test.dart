@@ -1,14 +1,14 @@
 import 'dart:ui' show PointerDeviceKind;
 
-import 'package:anywork/src/features/status/session_selectors.dart';
-import 'package:anywork/src/features/status/status_view.dart';
+import 'package:anywork/src/diagnostics/studio_driver_keys.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
-import 'package:anywork/src/shared/studio_driver_keys.dart';
-import 'package:anywork_client/studio_client.dart';
+import 'package:anywork/src/ui/selectors/mode_selector.dart';
+import 'package:anywork_client/modes.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+
+import 'support/selector_values.dart';
 
 void main() {
   for (final backwards in [false, true]) {
@@ -23,13 +23,7 @@ void main() {
         addTearDown(text.dispose);
         final selected = <ThreadModeId>[];
         await tester.pumpWidget(
-          ProviderScope(
-            overrides: [
-              statusModeCatalogProvider.overrideWithValue(
-                const <ThreadModeDescriptorView>[],
-              ),
-            ],
-            child: MaterialApp(
+          MaterialApp(
               theme: ThemeData(platform: TargetPlatform.linux),
               locale: const Locale('en'),
               localizationsDelegates: AppLocalizations.localizationsDelegates,
@@ -42,8 +36,9 @@ void main() {
                       controller: text,
                       focusNode: inputFocus,
                     ),
-                    SessionModeSelector(
-                      mode: ThreadModeId.simple,
+                    ModeSelector(
+                      modes: selectorModes,
+                      selected: ThreadModeId.simple,
                       onSelected: selected.add,
                     ),
                     TextButton(
@@ -55,7 +50,6 @@ void main() {
                 ),
               ),
             ),
-          ),
         );
         final mouse = await tester.createGesture(kind: PointerDeviceKind.mouse);
         addTearDown(mouse.removePointer);

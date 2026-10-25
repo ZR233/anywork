@@ -382,6 +382,15 @@
   "composerHint": "描述你的需求…",
   "composerSend": "发送",
   "composerStop": "停止",
+  "conversationStopRequesting": "正在请求停止…",
+  "conversationStopAwaitingObservation": "停止请求已受理，正在等待原轮次停止。",
+  "conversationStopObserved": "已观察到原轮次停止。",
+  "conversationStopEffective": "停止已生效。",
+  "conversationStopUnknown": "停止结果尚未确认，不会自动重发。",
+  "conversationStopError": "停止：{message}",
+  "@conversationStopError": {
+    "placeholders": {"message": {"type": "String"}}
+  },
   "compileModeSimple": "简洁",
   "compileModeTask": "任务",
   "statusCost": "费用",
@@ -1791,5 +1800,12 @@
   "modelDetailTaskGeneral": "通用",
   "modelDetailRetry": "重新读取详情",
   "modelDetailClose": "关闭",
-  "modelDetailStale": "该模型的 canonical 身份已变化，请重新读取详情。"
+  "modelDetailStale": "该模型的 canonical 身份已变化，请重新读取详情。",
+  "resourceSourceUninitialized": "未初始化",
+  "resourceSourceLoading": "正在加载…",
+  "resourceSourceRefreshing": "正在刷新…",
+  "resourceSourceStale": "已过时",
+  "resourceSourceDegraded": "已降级",
+  "resourceSourceLastKnown": "上次已知状态",
+  "interactionDiscardAnswersBody": "丢弃答案并关闭此编辑器？这不会回答或取消该交互。"
 }

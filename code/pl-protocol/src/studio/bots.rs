@@ -429,10 +429,16 @@ pub struct SetBotTrustedChatRequest {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct BotsCommandReply {
-    pub snapshot: BotsStateSnapshot,
     pub receipt: StudioCommandReceipt,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stamp: Option<ResourceStamp>,
+    /// The exact bot this command created or changed, captured by that command.
+    /// It is not a later `current` lookup and not a request echo.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bot: Option<BotSnapshot>,
+    /// The exact registration attempt this command started or cancelled.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub registration: Option<BotRegistrationAttempt>,
 }
 
 /// 会话列表来源。

@@ -4,6 +4,7 @@
 // ignore_for_file: invalid_use_of_internal_member, unused_import, unnecessary_import
 
 import '../../../frb_generated.dart';
+import '../products/read/startup.dart';
 import '../types/error.dart';
 import '../types/response.dart';
 import '../types/runtime.dart';
@@ -11,8 +12,8 @@ import '../types/shutdown.dart';
 
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-// These functions are ignored because they are not marked as `pub`: `attempt_active`, `begin_shutdown`, `begin_start`, `bridge_early_issues_slot`, `bridge_issue`, `bridge_startup_stage`, `disarm`, `fail_start`, `finish_start`, `handoff_failure`, `lock`, `new`, `new`, `prepare`, `publish_stage`, `publish_startup_stage`, `record_bridge_early_issues`, `record_shutdown_report`, `remaining_ms_u32`, `startup_attempt_active`, `subscribe_startup_attempt`, `subscribe`, `take_bridge_early_issues`
-// These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `StartClaim`, `StartupDemote`, `StartupFrame`, `StartupOwner`, `StartupPhase`
+// These functions are ignored because they are not marked as `pub`: `attempt_active`, `begin_shutdown`, `begin_start`, `bridge_early_issues_slot`, `bridge_issue`, `disarm`, `fail_start_with`, `fail_start`, `finish_start`, `handoff_failure`, `lock`, `new`, `new`, `prepare`, `progress_source`, `publish_stage`, `publish_startup_stage`, `record_bridge_early_issues`, `record_shutdown_report`, `remaining_ms_u32`, `startup_progress_source`, `take_bridge_early_issues`
+// These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `StartClaim`, `StartupDemote`, `StartupOwner`, `StartupPhase`
 // These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `drop`
 
 /// 发放一次新的启动尝试令牌；可在 bridge 安装前（pre-installed）调用。
@@ -31,10 +32,10 @@ Future<BigInt> prepareStartupAttempt() =>
 /// 明确失败而不是虚报快照；不重开 runtime、不虚发 `OpeningStorage`，进度流保持
 /// `Ready` 终态。start 在途的失败与任务取消都把本尝试落为 `Failed` 终态，不会永久
 /// 卡在 in-progress。
-Future<RuntimeSnapshot> startStudioRuntime({required BigInt attempt}) => RustLib
-    .instance
-    .api
-    .crateApiStudioHandlersLifecycleStartStudioRuntime(attempt: attempt);
+Future<BridgeRuntimeReady> startStudioRuntime({required BigInt attempt}) =>
+    RustLib.instance.api.crateApiStudioHandlersLifecycleStartStudioRuntime(
+      attempt: attempt,
+    );
 
 /// Early application-exit entry: seal the one-way exit latch and fence the installed runtime
 /// **before** the caller performs its own bounded cancellations.
@@ -124,9 +125,3 @@ Future<ProjectDto> renameProject({
   projectId: projectId,
   name: name,
 );
-
-Future<BridgeRecoveryStateSnapshot> readRecoveryState() =>
-    RustLib.instance.api.crateApiStudioHandlersLifecycleReadRecoveryState();
-
-Future<BridgeRecoveryStateSnapshot> retryRecovery() =>
-    RustLib.instance.api.crateApiStudioHandlersLifecycleRetryRecovery();

@@ -1,0 +1,233 @@
+{
+  "schemaVersion": 2,
+  "baseline": "80a51e78b9e37ba90e4206c30a5afaf7af54013c",
+  "tree": "committed",
+  "sourceContentHash": "sha256:8bf9455a097da74863fda1bbfb35c22d3ea3b9f26f12f02d47804c598e0702a8",
+  "classification": {
+    "dartProduction": "lib/**/*.dart excluding generated sources",
+    "dartGenerated": ".g.dart/.freezed.dart, app lib/src/rust/, app_localizations*",
+    "appTest": "all app test/**/*.dart, including support and non-gated tests",
+    "appDriver": "test_driver/**/*.dart; separate from automated app tests",
+    "rustSourceRoots": [
+      "code/pl-protocol/src/",
+      "code/pl-studio-runtime/src/",
+      "code/pl-studio-server/src/",
+      "code/anywork/rust/src/"
+    ],
+    "rustHandwritten": "src/**/*.rs including embedded cfg(test) code; not pure production LOC",
+    "rustGenerated": "frb_generated.rs",
+    "parts": "direct handwritten part directives; generated parts excluded",
+    "counting": "UTF-8 splitlines; blank = whitespace-only; >500 is strict",
+    "untracked": "included only with --worktree; ignored build/data files excluded"
+  },
+  "totals": {
+    "app.driver": {
+      "files": 66,
+      "physicalLines": 35273,
+      "nonBlankLines": 33406
+    },
+    "app.generated": {
+      "files": 85,
+      "physicalLines": 118583,
+      "nonBlankLines": 96319
+    },
+    "app.production": {
+      "files": 206,
+      "physicalLines": 61768,
+      "nonBlankLines": 57907
+    },
+    "app.test": {
+      "files": 32,
+      "physicalLines": 16493,
+      "nonBlankLines": 15641
+    },
+    "client.production": {
+      "files": 87,
+      "physicalLines": 23327,
+      "nonBlankLines": 20974
+    },
+    "client.test": {
+      "files": 22,
+      "physicalLines": 9053,
+      "nonBlankLines": 8559
+    },
+    "rust.generated": {
+      "files": 1,
+      "physicalLines": 33361,
+      "nonBlankLines": 32319
+    },
+    "rust.handwritten_source": {
+      "files": 474,
+      "physicalLines": 112296,
+      "nonBlankLines": 105541
+    }
+  },
+  "handwrittenFilesOver500": {
+    "app.production": 43,
+    "client.production": 14,
+    "rust.handwritten_source": 50
+  },
+  "largestHandwrittenFiles": [
+    {
+      "path": "code/anywork/lib/src/infrastructure/frb/studio_demo_api.dart",
+      "lines": 6071
+    },
+    {
+      "path": "code/pl-studio-runtime/src/studio/storage/history.rs",
+      "lines": 5265
+    },
+    {
+      "path": "code/pl-studio-runtime/src/studio/storage/thread_writer.rs",
+      "lines": 4909
+    },
+    {
+      "path": "code/pl-studio-runtime/src/studio/thread_projection/live.rs",
+      "lines": 2422
+    },
+    {
+      "path": "code/anywork/lib/src/infrastructure/frb/studio_api_contract.dart",
+      "lines": 2340
+    },
+    {
+      "path": "code/anywork_client/lib/src/models/thread_models.dart",
+      "lines": 2338
+    },
+    {
+      "path": "code/pl-studio-runtime/src/studio/runtime/thread_observation.rs",
+      "lines": 1907
+    },
+    {
+      "path": "code/pl-studio-runtime/src/studio/runtime/lifecycle/shutdown.rs",
+      "lines": 1767
+    },
+    {
+      "path": "code/pl-studio-runtime/src/studio/store/session_layout.rs",
+      "lines": 1685
+    },
+    {
+      "path": "code/anywork/lib/src/infrastructure/frb/studio_frb_converters.dart",
+      "lines": 1476
+    },
+    {
+      "path": "code/pl-studio-runtime/src/studio/storage/calls.rs",
+      "lines": 1459
+    },
+    {
+      "path": "code/anywork/lib/src/features/settings/mode_editor/mode_editor_page.dart",
+      "lines": 1440
+    },
+    {
+      "path": "code/pl-studio-runtime/src/config/store.rs",
+      "lines": 1389
+    },
+    {
+      "path": "code/anywork/lib/src/features/interaction/composer_dock.dart",
+      "lines": 1289
+    },
+    {
+      "path": "code/pl-studio-server/src/routes.rs",
+      "lines": 1247
+    },
+    {
+      "path": "code/anywork/lib/src/domain/models/studio_reactive_projections.dart",
+      "lines": 1208
+    },
+    {
+      "path": "code/pl-studio-runtime/src/studio/thread_projection/activity.rs",
+      "lines": 1191
+    },
+    {
+      "path": "code/pl-studio-runtime/src/config/schema_migration.rs",
+      "lines": 1168
+    },
+    {
+      "path": "code/pl-studio-runtime/src/studio/storage/calls/schema.rs",
+      "lines": 1140
+    },
+    {
+      "path": "code/pl-studio-runtime/src/thread_assembler.rs",
+      "lines": 1086
+    }
+  ],
+  "handwrittenLibraries": [
+    {
+      "entry": "code/anywork/lib/src/infrastructure/frb/studio_api.dart",
+      "handwrittenParts": 10,
+      "physicalLines": 12482,
+      "parts": [
+        "code/anywork/lib/src/infrastructure/frb/studio_account_catalog_converters.dart",
+        "code/anywork/lib/src/infrastructure/frb/studio_api_contract.dart",
+        "code/anywork/lib/src/infrastructure/frb/studio_demo_api.dart",
+        "code/anywork/lib/src/infrastructure/frb/studio_demo_settings.dart",
+        "code/anywork/lib/src/infrastructure/frb/studio_frb_converters.dart",
+        "code/anywork/lib/src/infrastructure/frb/studio_settings_converters.dart",
+        "code/anywork/lib/src/infrastructure/frb/studio_state_converters.dart",
+        "code/anywork/lib/src/infrastructure/frb/studio_thread_preparation.dart",
+        "code/anywork/lib/src/infrastructure/frb/studio_thread_stream.dart",
+        "code/anywork/lib/src/infrastructure/frb/studio_timeline.dart"
+      ]
+    },
+    {
+      "entry": "code/anywork/lib/src/features/timeline/timeline_view.dart",
+      "handwrittenParts": 12,
+      "physicalLines": 6757,
+      "parts": [
+        "code/anywork/lib/src/features/timeline/timeline_agent_blocks.dart",
+        "code/anywork/lib/src/features/timeline/timeline_detail_viewer.dart",
+        "code/anywork/lib/src/features/timeline/timeline_group_blocks.dart",
+        "code/anywork/lib/src/features/timeline/timeline_image_blocks.dart",
+        "code/anywork/lib/src/features/timeline/timeline_image_card.dart",
+        "code/anywork/lib/src/features/timeline/timeline_markdown_blocks.dart",
+        "code/anywork/lib/src/features/timeline/timeline_message_blocks.dart",
+        "code/anywork/lib/src/features/timeline/timeline_plan_blocks.dart",
+        "code/anywork/lib/src/features/timeline/timeline_preview_host.dart",
+        "code/anywork/lib/src/features/timeline/timeline_remote_image_blocks.dart",
+        "code/anywork/lib/src/features/timeline/timeline_tool_blocks.dart",
+        "code/anywork/lib/src/features/timeline/timeline_user_input_blocks.dart"
+      ]
+    },
+    {
+      "entry": "code/anywork/lib/src/features/shell/studio_shell.dart",
+      "handwrittenParts": 12,
+      "physicalLines": 5968,
+      "parts": [
+        "code/anywork/lib/src/features/shell/add_project_dialog.dart",
+        "code/anywork/lib/src/features/shell/agent_workspace_pane.dart",
+        "code/anywork/lib/src/features/shell/agent_workspace_preview.dart",
+        "code/anywork/lib/src/features/shell/runtime_banners.dart",
+        "code/anywork/lib/src/features/shell/sidebar_actions.dart",
+        "code/anywork/lib/src/features/shell/sidebar_detail_overlay.dart",
+        "code/anywork/lib/src/features/shell/sidebar_entries.dart",
+        "code/anywork/lib/src/features/shell/sidebar_thread_status.dart",
+        "code/anywork/lib/src/features/shell/sidebar_tiles.dart",
+        "code/anywork/lib/src/features/shell/studio_shell_chrome.dart",
+        "code/anywork/lib/src/features/shell/studio_sidebar.dart",
+        "code/anywork/lib/src/features/shell/studio_startup.dart"
+      ]
+    },
+    {
+      "entry": "code/anywork/lib/src/features/interaction/composer_dock.dart",
+      "handwrittenParts": 1,
+      "physicalLines": 1460,
+      "parts": [
+        "code/anywork/lib/src/features/interaction/composer_attachments.dart"
+      ]
+    },
+    {
+      "entry": "code/anywork/lib/src/domain/models/timeline_presentation.dart",
+      "handwrittenParts": 1,
+      "physicalLines": 941,
+      "parts": [
+        "code/anywork/lib/src/domain/models/timeline_presentation_controller.dart"
+      ]
+    },
+    {
+      "entry": "code/anywork_client/lib/src/models/timeline_models.dart",
+      "handwrittenParts": 1,
+      "physicalLines": 215,
+      "parts": [
+        "code/anywork_client/lib/src/models/timeline_todo.dart"
+      ]
+    }
+  ]
+}

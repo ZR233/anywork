@@ -21,6 +21,23 @@ use crate::api::studio::types::{
     BridgeTimelineUpdate,
 };
 
+/// Counts standard JSON bytes of a product Timeline payload without retaining the encoding.
+pub(crate) fn encoded_payload_bytes(value: &impl serde::Serialize) -> Result<u64, BridgeError> {
+    struct Counter(u64);
+    impl std::io::Write for Counter {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0 = self.0.saturating_add(bytes.len() as u64);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut counter = Counter(0);
+    serde_json::to_writer(&mut counter, value).map_err(BridgeError::from)?;
+    Ok(counter.0)
+}
+
 pub(crate) fn page(value: TimelinePage) -> Result<BridgeTimelinePage, BridgeError> {
     Ok(BridgeTimelinePage {
         items: value

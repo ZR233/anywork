@@ -1,181 +1,206 @@
 import 'dart:async';
 
-import 'package:anywork/src/app/app_graph.dart';
-import 'package:anywork/src/presentation/providers/thread_session_store.dart';
-import 'package:anywork/src/presentation/providers/composer_draft_controller.dart';
-import 'package:anywork/src/presentation/providers/start_session_controller.dart';
-import 'package:anywork/src/presentation/providers/skills_store.dart';
-import 'package:anywork/src/presentation/providers/session_costs_store.dart';
-import 'package:anywork/src/infrastructure/frb/studio_api.dart';
-import 'package:anywork_client/studio_client.dart'
-    show DomainSyncPhase, FailedComposerThreadState, ResourceKind;
-import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:anywork/src/app/composition/application_container.dart';
+import 'package:anywork/src/features/conversation/state/editor_keys.dart';
+import 'package:anywork/src/features/conversation/view_models/composer_view_model.dart';
+import 'package:anywork/src/features/conversation/view_models/thread_context_view_model.dart';
+import 'package:anywork/src/features/conversation/view_models/thread_status_view_model.dart';
+import 'package:anywork/src/features/settings/skills/view_models/skills_view_model.dart';
+import 'package:anywork_client/resources_ports.dart';
+import 'package:anywork_client/workspace.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import '../../../anywork_client/test/support/timeline_transport.dart';
+import 'support/application_environment.dart';
 import 'support/recording_demo_transport.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
-  test('observing missing resources never admits a Client owner', () async {
-    final transport = RecordingDemoTransport();
-    final graph = AppGraph(transport: transport, clientId: 'missing-owner');
-    addTearDown(() => graph.close(deadline: _deadline()));
-    final client = graph.client;
-    final readModels = client.budget.used(ResourceKind.readModel);
-    final drafts = client.budget.used(ResourceKind.draft);
-    final observers = client.budget.used(ResourceKind.observer);
-    final container = _container(graph);
+  test('observing missing resources never admits an application owner', () async {
+    final environment = ApplicationTestEnvironment()..installHost();
+    addTearDown(environment.close);
+    final graph = environment.graph;
+    final readModels = graph.budget.used(ResourceKind.readModel);
+    final drafts = graph.budget.used(ResourceKind.draft);
+    final observers = graph.budget.used(ResourceKind.observer);
+    final container = createApplicationContainer(graph);
     final session = container.listen(
-      threadSessionStoreProvider('unselected-thread'),
+      threadStatusViewModelProvider('unselected-thread'),
       (_, _) {},
     );
     final composer = container.listen(
-      composerDraftControllerProvider('unselected-thread'),
+      composerViewModelProvider(
+        const ComposerKey.thread(threadId: 'unselected-thread'),
+      ),
       (_, _) {},
     );
     final skills = container.listen(
-      skillsStoreProvider('unselected-project'),
+      skillsViewModelProvider('unselected-project'),
       (_, _) {},
     );
     final costs = container.listen(
-      sessionCostsStoreProvider('unselected-thread'),
+      threadContextViewModelProvider('unselected-thread'),
       (_, _) {},
     );
     try {
-      expect(client.existingSession('unselected-thread'), isNull);
-      expect(client.existingComposer('unselected-thread'), isNull);
-      expect(client.existingSkills('unselected-project'), isNull);
-      expect(client.existingSessionCosts('unselected-thread'), isNull);
-      expect(session.read().hasSnapshot, isFalse);
-      expect(session.read().sync.phase, DomainSyncPhase.idle);
-      expect(composer.read(), isA<FailedComposerThreadState>());
-      expect(skills.read().loaded, isFalse);
-      expect(costs.read().loaded, isFalse);
-      expect(client.budget.used(ResourceKind.readModel), readModels);
-      expect(client.budget.used(ResourceKind.draft), drafts);
-      expect(client.budget.used(ResourceKind.observer), observers + 8);
-      expect(client.channels.activeTopicRefCountViews(), isEmpty);
-      expect(transport.timelines, isEmpty);
+      await container.pump();
+      expect(graph.conversation.existingSession('unselected-thread'), isNull);
+      expect(
+        graph.budget.used(ResourceKind.draft),
+        drafts,
+        reason: 'a missing composer cannot admit a Drafts owner',
+      );
+      expect(
+        environment.skillsPort.openedProjects,
+        isEmpty,
+        reason:
+            'hidden, unselected Skills observation cannot open a native feed',
+      );
+      expect(costs.read().requireValue.source, isNull);
+      expect(session.read().requireValue.execution?.value, isNull);
+      expect(session.read().requireValue.execution, isNull);
+      expect(
+        composer.read().error,
+        isA<StudioFailure>().having(
+          (error) => error.code,
+          'code',
+          StudioFailureCode.unavailable,
+        ),
+      );
+      expect(
+        skills.read().value?.source.projection.sync.phase ==
+            ResourceSyncPhase.ready,
+        isFalse,
+      );
+      expect(costs.read().requireValue.header, isNull);
+      expect(graph.budget.used(ResourceKind.readModel), readModels);
+      expect(graph.budget.used(ResourceKind.draft), drafts);
+      // The generated VMs observe 3 status facets, the composer active source,
+      // and 2 Context sources. The retired store->store bridges no longer exist.
+      expect(graph.budget.used(ResourceKind.observer), observers + 6);
+      expect(environment.domains.conversationPort.facets.execution, isEmpty);
+      expect(environment.domains.timeline.requests, isEmpty);
     } finally {
       session.close();
       composer.close();
       skills.close();
       costs.close();
+      await container.pump();
       container.dispose();
     }
-    expect(client.budget.used(ResourceKind.observer), observers);
+    expect(graph.budget.used(ResourceKind.observer), observers);
   });
 
   test(
     'account cancellation, disposal and rebuilding preserve app resources',
     () async {
-      final transport = RecordingDemoTransport();
-      final graph = AppGraph(transport: transport, clientId: 'observer-owner');
-      addTearDown(() => graph.close(deadline: _deadline()));
-      await graph.client.bootstrap();
-      await graph.client.directoryCommands.selectThread('thread-main');
-      final session = graph.client.existingSession('thread-main')!;
-      await session.timeline.state.waitFor(
-        (state) => state.snapshot is StudioTimelineBaselineFrame,
-      );
-      final connection = transport.timelines.single;
+      final environment = await _openApplication();
+      addTearDown(environment.close);
+      final graph = environment.graph;
+      final domains = environment.domains;
+      final connection = await _select(environment, 'thread-main');
+      final session = graph.conversation.existingSession('thread-main')!;
       await connection.nextEntered.future;
-      final attemptId = session.timeline.currentAttemptId?.value;
-      final projectId = graph.client.selection.state.selectedProjectId!;
-      final startOwner = graph.client.startDraft;
-      final composerOwner = graph.client.existingComposer('thread-main')!;
-      expect(graph.client.existingSkills(projectId), isNotNull);
-      expect(graph.client.existingSessionCosts('thread-main'), isNotNull);
-      final observerBudgetBefore = graph.client.budget.used(
-        ResourceKind.observer,
-      );
-
-      final first = _container(graph);
+      final attemptId = session.timeline.state.value.attemptId;
+      const projectId = 'project';
+      final startOwner = graph.drafts.start(projectId);
+      final composerOwner = graph.drafts.composer('thread-main');
+      // Skills/costs are domain read demands now, not eagerly admitted Client
+      // owners. Opening a Session alone must not create unrelated native reads.
+      expect(environment.skillsPort.openedProjects, isEmpty);
+      expect(session.context.value, isNotNull);
+      final observerBudgetBefore = graph.budget.used(ResourceKind.observer);
+      final first = createApplicationContainer(graph);
       final sessionObserver = first.listen(
-        threadSessionStoreProvider('thread-main'),
+        threadStatusViewModelProvider('thread-main'),
         (_, _) {},
       );
       final startObserver = first.listen(
-        startSessionControllerProvider,
+        composerViewModelProvider(
+          const ComposerKey.start(projectId: projectId),
+        ),
         (_, _) {},
       );
       final composerObserver = first.listen(
-        composerDraftControllerProvider('thread-main'),
+        composerViewModelProvider(
+          const ComposerKey.thread(threadId: 'thread-main'),
+        ),
         (_, _) {},
       );
-      final timelineObserver = graph.timeline.source.watch((_) {});
-      graph.client.startDraft.updateDraft(
-        projectId,
-        'new session survives Settings',
-      );
-      graph.client
-          .composer('thread-main')
-          .updateDraft('existing session survives observation disposal');
+      final timelineObserver = graph.timeline.changes.listen((_) {});
+      await first.pump();
+      startOwner.setText('new session survives Settings');
+      composerOwner.setText('existing session survives observation disposal');
 
       sessionObserver.close();
       startObserver.close();
       composerObserver.close();
-      timelineObserver.cancel();
+      await timelineObserver.cancel();
       await first.pump();
       first.dispose();
-
       expect(
-        graph.client.budget.used(ResourceKind.observer),
+        graph.budget.used(ResourceKind.observer),
         observerBudgetBefore,
         reason:
             'a disposed ProviderScope must release all its observer permits',
       );
       expect(connection.requestCloseCalls, 0);
       expect(connection.closeCalls, 0);
-      expect(session.timeline.currentAttemptId?.value, attemptId);
-      expect(session.timeline.lastDeliveredFrame, isNotNull);
-      expect(graph.client.startDraft, same(startOwner));
-      expect(graph.client.composer('thread-main'), same(composerOwner));
+      expect(session.timeline.state.value.attemptId, attemptId);
+      expect(session.timeline.state.value.lastStamp, isNotNull);
+      expect(graph.drafts.start(projectId), same(startOwner));
+      expect(graph.drafts.composer('thread-main'), same(composerOwner));
+      expect(startOwner.state.value.text, 'new session survives Settings');
       expect(
-        startOwner.state.forProject(projectId).text,
-        'new session survives Settings',
-      );
-      expect(
-        composerOwner.state.draft,
+        composerOwner.state.value.text,
         'existing session survives observation disposal',
       );
 
-      final rebuilt = _container(graph);
-      addTearDown(rebuilt.dispose);
+      final rebuilt = createApplicationContainer(graph);
       final rebuiltSession = rebuilt.listen(
-        threadSessionStoreProvider('thread-main'),
+        threadStatusViewModelProvider('thread-main'),
         (_, _) {},
       );
       final rebuiltStart = rebuilt.listen(
-        startSessionControllerProvider,
+        composerViewModelProvider(
+          const ComposerKey.start(projectId: projectId),
+        ),
         (_, _) {},
       );
       final rebuiltComposer = rebuilt.listen(
-        composerDraftControllerProvider('thread-main'),
+        composerViewModelProvider(
+          const ComposerKey.thread(threadId: 'thread-main'),
+        ),
         (_, _) {},
       );
-      addTearDown(rebuiltSession.close);
-      addTearDown(rebuiltStart.close);
-      addTearDown(rebuiltComposer.close);
-
+      await rebuilt.pump();
       expect(
-        graph.client.session('thread-main').timeline.currentAttemptId?.value,
+        graph.conversation
+            .existingSession('thread-main')!
+            .timeline
+            .state
+            .value
+            .attemptId,
         attemptId,
       );
       expect(
-        rebuilt.read(startSessionControllerProvider).forProject(projectId).text,
+        rebuiltStart.read().requireValue.startDraft!.text,
         'new session survives Settings',
       );
       expect(
-        rebuilt.read(composerDraftControllerProvider('thread-main')).draft,
+        rebuiltComposer.read().requireValue.draft!.text,
         'existing session survives observation disposal',
       );
-      expect(transport.timelines, hasLength(1));
+      expect(domains.timeline.requests, hasLength(1));
       expect(connection.initialCalls, 1);
-
-      final report = await graph.close(deadline: _deadline());
-      expect(report.unresolved, isEmpty);
+      rebuiltSession.close();
+      rebuiltStart.close();
+      rebuiltComposer.close();
+      await rebuilt.pump();
+      rebuilt.dispose();
+      final report = await graph.exitCoordinator.exit(ExitIntent.exit);
+      expect(report.shutdown.issues, isEmpty);
       expect(connection.requestCloseCalls, greaterThanOrEqualTo(1));
       expect(connection.closeCalls, 1);
       expect(connection.joined.isCompleted, isTrue);
@@ -183,150 +208,144 @@ void main() {
   );
 
   test('two injected AppGraphs have independent sessions and drafts', () async {
-    final firstTransport = RecordingDemoTransport();
-    final secondTransport = RecordingDemoTransport();
-    final first = AppGraph(transport: firstTransport, clientId: 'first-app');
-    final second = AppGraph(transport: secondTransport, clientId: 'second-app');
-    addTearDown(() => first.close(deadline: _deadline()));
-    addTearDown(() => second.close(deadline: _deadline()));
-    await Future.wait([first.client.bootstrap(), second.client.bootstrap()]);
-    await Future.wait([
-      first.client.directoryCommands.selectThread('thread-main'),
-      second.client.directoryCommands.selectThread('thread-main'),
-    ]);
-    await Future.wait([
-      first.client
-          .session('thread-main')
-          .timeline
-          .state
-          .waitFor((state) => state.snapshot is StudioTimelineBaselineFrame),
-      second.client
-          .session('thread-main')
-          .timeline
-          .state
-          .waitFor((state) => state.snapshot is StudioTimelineBaselineFrame),
-    ]);
-    final firstContainer = _container(first);
-    final secondContainer = _container(second);
+    final first = await _openApplication();
+    final second = await _openApplication();
+    addTearDown(first.close);
+    addTearDown(second.close);
+    final firstConnection = await _select(first, 'thread-main');
+    final secondConnection = await _select(second, 'thread-main');
+    final firstContainer = createApplicationContainer(first.graph);
+    final secondContainer = createApplicationContainer(second.graph);
     addTearDown(firstContainer.dispose);
     addTearDown(secondContainer.dispose);
+    const target = ComposerKey.thread(threadId: 'thread-main');
     final firstObserver = firstContainer.listen(
-      composerDraftControllerProvider('thread-main'),
+      composerViewModelProvider(target),
       (_, _) {},
     );
     final secondObserver = secondContainer.listen(
-      composerDraftControllerProvider('thread-main'),
+      composerViewModelProvider(target),
       (_, _) {},
     );
     addTearDown(firstObserver.close);
     addTearDown(secondObserver.close);
-    first.client.composer('thread-main').updateDraft('first app');
-    second.client.composer('thread-main').updateDraft('second app');
-    final projectId = first.client.selection.state.selectedProjectId!;
-    first.client.startDraft.updateDraft(projectId, 'first start draft');
-
+    first.graph.drafts.composer('thread-main').setText('first app');
+    second.graph.drafts.composer('thread-main').setText('second app');
+    first.graph.drafts.start('project').setText('first start draft');
+    await Future.wait([firstContainer.pump(), secondContainer.pump()]);
     expect(
-      first.client.session('thread-main'),
-      isNot(same(second.client.session('thread-main'))),
+      first.graph.conversation.existingSession('thread-main'),
+      isNot(same(second.graph.conversation.existingSession('thread-main'))),
     );
+    expect(firstConnection, isNot(same(secondConnection)));
+    expect(first.graph.timeline, isNot(same(second.graph.timeline)));
+    expect(second.graph.drafts.start('project').state.value.text, isEmpty);
+    expect(firstObserver.read().requireValue.draft!.text, 'first app');
+    expect(secondObserver.read().requireValue.draft!.text, 'second app');
     expect(
-      firstTransport.timelines.single,
-      isNot(same(secondTransport.timelines.single)),
+      (await first.graph.exitCoordinator.exit(ExitIntent.exit))
+          .shutdown
+          .outcome,
+      ShutdownOutcome.clean,
     );
-    expect(first.timeline, isNot(same(second.timeline)));
-    expect(second.client.startDraft.state.forProject(projectId).text, isEmpty);
+    expect(firstConnection.joined.isCompleted, isTrue);
+    expect(secondConnection.requestCloseCalls, 0);
+    expect(second.graph.workspace.state.value.sealed, isFalse);
     expect(
-      firstContainer.read(composerDraftControllerProvider('thread-main')).draft,
-      'first app',
-    );
-    expect(
-      secondContainer
-          .read(composerDraftControllerProvider('thread-main'))
-          .draft,
-      'second app',
-    );
-
-    expect((await first.close(deadline: _deadline())).complete, isTrue);
-    expect(firstTransport.timelines.single.joined.isCompleted, isTrue);
-    expect(secondTransport.timelines.single.requestCloseCalls, 0);
-    expect(second.client.isClosed, isFalse);
-    expect(
-      second.client.session('thread-main').timeline.lastDeliveredFrame,
+      second.graph.conversation
+          .existingSession('thread-main')!
+          .timeline
+          .state
+          .value
+          .lastStamp,
       isNotNull,
     );
-    expect(
-      secondContainer
-          .read(composerDraftControllerProvider('thread-main'))
-          .draft,
-      'second app',
-    );
+    expect(secondObserver.read().requireValue.draft!.text, 'second app');
   });
 
   test(
     'late open after selecting B is reclaimed without clearing current B',
     () async {
-      final transport = DemoStudioTransport(lspActivityLoop: false);
-      final firstOpen = Completer<RecordingTimelineConnection>();
-      final releaseFirst = Completer<void>();
-      var mainOpens = 0;
-      final connections = <RecordingTimelineConnection>[];
-      transport.timelineFactory = (threadId, inner) async {
-        final window = RecordingTimelineConnection(
-          threadId: threadId,
-          inner: inner,
-        );
-        connections.add(window);
-        if (threadId == 'thread-main' && ++mainOpens == 1) {
-          firstOpen.complete(window);
-          await releaseFirst.future;
-        }
-        return window;
-      };
-      final graph = AppGraph(
-        transport: transport,
-        clientId: 'late-demo-attempt',
+      final environment = await _openApplication();
+      addTearDown(environment.close);
+      final domains = environment.domains;
+      await domains.selectThread('thread-main', bind: false);
+      final pending = await domains.timeline.opened(0);
+      final late = RecordingTimelineConnection(
+        threadId: 'thread-main',
+        inner: TestTimelineConnection(
+          initial: baseline(
+            1,
+            items: [timelineItem(1, threadId: 'thread-main')],
+          ),
+        ),
       );
-      addTearDown(() async {
-        if (!releaseFirst.isCompleted) releaseFirst.complete();
-        await graph.close(deadline: _deadline());
-      });
-      await graph.client.bootstrap();
-      await graph.client.directoryCommands.selectThread('thread-main');
-      final late = await firstOpen.future;
-      await graph.client.directoryCommands.selectThread('thread-alt');
-      await graph.client
-          .session('thread-alt')
-          .timeline
-          .state
-          .waitFor((state) => state.snapshot is StudioTimelineBaselineFrame);
-      final selected = graph.client.session('thread-alt');
-      final currentAttempt = selected.timeline.currentAttemptId?.value;
-      final current = connections.lastWhere(
-        (value) => value.threadId == 'thread-alt',
-      );
+      final current = await _select(environment, 'thread-alt');
+      final selected = environment.graph.conversation.existingSession(
+        'thread-alt',
+      )!;
+      final currentAttempt = selected.timeline.state.value.attemptId;
       expect(current, isNot(same(late)));
-
-      releaseFirst.complete();
+      pending.result.complete(late);
       await late.joined.future;
-
       expect(
-        late.initialCalls,
-        0,
+        late.wasSubscribed,
+        isFalse,
         reason: 'retired open never becomes a baseline',
       );
       expect(late.requestCloseCalls, greaterThanOrEqualTo(1));
       expect(late.closeCalls, 1);
       expect(current.requestCloseCalls, 0);
-      expect(selected.timeline.currentAttemptId?.value, currentAttempt);
-      expect(selected.timeline.lastDeliveredFrame, isNotNull);
-      final display = graph.timeline.lease('thread-alt')!;
-      expect(display.controller.messages, isNotEmpty);
-      // This is the Client attempt contract over Demo connections, not native FRB.
+      expect(selected.timeline.state.value.attemptId, currentAttempt);
+      expect(selected.timeline.state.value.lastStamp, isNotNull);
+      final display = environment.graph.timeline.display('thread-alt')!;
+      expect(display.canvas.chatController.messages, isNotEmpty);
     },
   );
 }
 
-ProviderContainer _container(AppGraph graph) =>
-    ProviderContainer(overrides: [appGraphProvider.overrideWithValue(graph)]);
+Future<ApplicationTestEnvironment> _openApplication() async {
+  final environment = ApplicationTestEnvironment()..installHost();
+  await environment.domains.establish(catalog: false);
+  await environment.graph.bootstrap.start();
+  return environment;
+}
 
-DateTime _deadline() => DateTime.now().add(const Duration(seconds: 5));
+Future<RecordingTimelineConnection> _select(
+  ApplicationTestEnvironment environment,
+  String id,
+) async {
+  final domains = environment.domains;
+  final index = domains.timeline.requests.length;
+  await domains.selectThread(id, bind: false);
+  final opening = await domains.timeline.opened(index);
+  final connection = RecordingTimelineConnection(
+    threadId: id,
+    inner: TestTimelineConnection(
+      initial: baseline(1, items: [timelineItem(1, threadId: id)]),
+    ),
+  );
+  opening.result.complete(connection);
+  await environment.graph.conversation.existingSession(id)!.timeline.ready;
+  await waitLatestTimeline(
+    environment,
+    () => environment.graph.timeline.value?.ready == true,
+  );
+  return connection;
+}
+
+Future<void> waitLatestTimeline(
+  ApplicationTestEnvironment environment,
+  bool Function() matches,
+) async {
+  if (matches()) return;
+  final ready = Completer<void>();
+  final watch = environment.graph.timeline.changes.listen((_) {
+    if (!ready.isCompleted && matches()) ready.complete();
+  });
+  try {
+    if (!matches()) await ready.future;
+  } finally {
+    await watch.cancel();
+  }
+}

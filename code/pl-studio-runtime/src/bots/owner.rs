@@ -333,15 +333,20 @@ impl BotRuntime {
     }
 
     pub(crate) async fn publish(&self) {
+        let _ = self.publish_returning().await;
+    }
+
+    /// 返回本次实际发布的 owned snapshot；资源已释放或水位耗尽时不发布。
+    pub(crate) async fn publish_returning(&self) -> Option<BotsStateSnapshot> {
         if self.runtime_released() {
-            return;
+            return None;
         }
         let _gate = self.inner.publish_gate.lock().await;
         if self.runtime_released() {
-            return;
+            return None;
         }
         if self.inner.publish_exhausted.load(Ordering::SeqCst) {
-            return;
+            return None;
         }
         // 读取上一次已发布的 canonical：配对列表读取失败时保留该 bot 的已发布列表。
         let previous = self.inner.canonical.lock().await.clone();
@@ -363,7 +368,7 @@ impl BotRuntime {
                     "bot canonical revision is exhausted; further state frames are not published"
                 );
             }
-            return;
+            return None;
         };
         let snapshot = BotsStateSnapshot {
             revision,
@@ -376,7 +381,10 @@ impl BotRuntime {
         drop(canonical);
         self.inner
             .events
-            .emit(crate::StudioProductEventKind::BotsStateChanged(snapshot));
+            .emit(crate::StudioProductEventKind::BotsStateChanged(
+                snapshot.clone(),
+            ));
+        Some(snapshot)
     }
 
     pub(crate) async fn list_snapshots(&self, previous: &BotsStateSnapshot) -> Vec<BotSnapshot> {

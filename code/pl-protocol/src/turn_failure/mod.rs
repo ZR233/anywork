@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 /// Provider 失败的稳定语义类别；控制流不得从 message 或 provider code 反向推断。
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
+#[derive(utoipa::ToSchema)]
 pub enum ProviderFailureKind {
     Authentication,
     Authorization,
@@ -16,6 +17,7 @@ pub enum ProviderFailureKind {
 /// Turn 失败所属的稳定领域类别。
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
+#[derive(utoipa::ToSchema)]
 pub enum TurnFailureCategory {
     Provider,
     ProviderCapacity,
@@ -28,6 +30,7 @@ pub enum TurnFailureCategory {
 /// 宿主调度器应如何处理一次 turn 失败。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", tag = "kind")]
+#[derive(utoipa::ToSchema)]
 pub enum RetryDisposition {
     Retryable {
         #[serde(default, skip_serializing_if = "Option::is_none")]

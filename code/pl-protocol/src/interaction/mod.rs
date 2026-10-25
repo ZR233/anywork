@@ -16,6 +16,7 @@ use crate::labeled::LabeledEnum;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
+#[derive(utoipa::ToSchema)]
 pub enum InteractionKind {
     UserInput,
     ToolApproval,
@@ -30,6 +31,7 @@ impl InteractionKind {
 /// Interaction lifecycle 的只读投影；不作为可写状态保存。
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
+#[derive(utoipa::ToSchema)]
 pub enum InteractionStatus {
     Pending,
     Resolved,

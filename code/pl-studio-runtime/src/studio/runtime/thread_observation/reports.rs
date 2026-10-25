@@ -57,6 +57,7 @@ pub(super) async fn publish_terminal(
     );
     services
         .threads
+        .upgrade()?
         .notify_parent(
             parent,
             pl_core::thread::inbox::ThreadMessage {

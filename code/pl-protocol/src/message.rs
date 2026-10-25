@@ -15,7 +15,7 @@ pub enum MessageRole {
 /// 一条模型消息是否应投影到产品 GUI。
 ///
 /// `Hidden` 只影响产品展示；消息仍属于 canonical AgentSession，必须照常持久化并发送给 provider。
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub enum MessagePresentation {
     #[default]

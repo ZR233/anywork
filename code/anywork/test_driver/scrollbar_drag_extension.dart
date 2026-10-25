@@ -1,6 +1,5 @@
 import 'dart:convert';
 
-import 'package:anywork/src/shared/studio_driver_state.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/scheduler.dart';
 import 'package:flutter/widgets.dart';
@@ -9,6 +8,7 @@ import 'package:flutter_driver/flutter_driver.dart' hide find;
 import 'package:flutter_test/flutter_test.dart';
 
 import 'scrollbar_drag.dart';
+import 'driver_binding.dart';
 
 class ScrollbarDragCommandExtension extends CommandExtension {
   @override
@@ -66,9 +66,7 @@ class ScrollbarDragCommandExtension extends CommandExtension {
     final start = hits[hits.length ~/ 2];
     final samples = <Object?>[];
     void sample() {
-      samples.add(
-        jsonDecode(StudioDriverState.snapshotJson())['timelineScroll'],
-      );
+      samples.add(jsonDecode(captureDriverJson())['timelineScroll']);
     }
 
     sample();

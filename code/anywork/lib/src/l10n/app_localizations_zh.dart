@@ -1001,6 +1001,26 @@ class AppLocalizationsZh extends AppLocalizations {
   String get composerStop => '停止';
 
   @override
+  String get conversationStopRequesting => '正在请求停止…';
+
+  @override
+  String get conversationStopAwaitingObservation => '停止请求已受理，正在等待原轮次停止。';
+
+  @override
+  String get conversationStopObserved => '已观察到原轮次停止。';
+
+  @override
+  String get conversationStopEffective => '停止已生效。';
+
+  @override
+  String get conversationStopUnknown => '停止结果尚未确认，不会自动重发。';
+
+  @override
+  String conversationStopError(String message) {
+    return '停止：$message';
+  }
+
+  @override
   String get compileModeSimple => '简洁';
 
   @override
@@ -4452,4 +4472,25 @@ class AppLocalizationsZh extends AppLocalizations {
 
   @override
   String get modelDetailStale => '该模型的 canonical 身份已变化，请重新读取详情。';
+
+  @override
+  String get resourceSourceUninitialized => '未初始化';
+
+  @override
+  String get resourceSourceLoading => '正在加载…';
+
+  @override
+  String get resourceSourceRefreshing => '正在刷新…';
+
+  @override
+  String get resourceSourceStale => '已过时';
+
+  @override
+  String get resourceSourceDegraded => '已降级';
+
+  @override
+  String get resourceSourceLastKnown => '上次已知状态';
+
+  @override
+  String get interactionDiscardAnswersBody => '丢弃答案并关闭此编辑器？这不会回答或取消该交互。';
 }

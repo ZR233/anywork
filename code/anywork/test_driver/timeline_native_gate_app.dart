@@ -32,7 +32,7 @@ const int gateTailLimit = 32;
 /// 单次几何诊断最多查询的行数。
 const int gateGeometryRowLimit = 64;
 
-/// 复用现有 native 退出协议（不 import StudioHostLifecycle 以免引入 AppGraph/FRB）。
+/// 复用现有 native 退出协议；独立布局门禁不装配 AppGraph/FRB。
 ///
 /// - `beginExit`：武装 native 硬期限并返回剩余毫秒（重复调用不刷新）。
 /// - `finishExit`：以真实退出码结束本实例；native 只接受 0/1。

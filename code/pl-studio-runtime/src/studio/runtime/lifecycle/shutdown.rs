@@ -9,18 +9,13 @@
 //! 再做有界 join；等待超时只放弃等待，从不 drop 在途的存储 / writer / JoinHandle。
 
 use std::future::Future;
-use std::panic::AssertUnwindSafe;
 use std::sync::Arc;
-use std::sync::OnceLock;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use futures::FutureExt;
 use futures::future::BoxFuture;
 use futures::stream::{FuturesUnordered, StreamExt};
-use tokio::sync::watch;
-use tokio::task::JoinHandle;
 
 use crate::studio::{
     StudioRuntime, StudioRuntimeCommand, StudioRuntimeSnapshot, StudioRuntimeStateKind,
@@ -28,6 +23,15 @@ use crate::studio::{
 };
 use crate::{
     StudioPendingPersistence, StudioShutdownIssue, StudioShutdownOutcome, StudioShutdownReport,
+};
+
+mod recovery;
+mod supervision;
+
+pub(crate) use supervision::ShutdownRun;
+use supervision::{
+    AdmissionDenied, CleanCommit, CleanCommitError, ExitBlock, FailureCause, RetrySnapshot,
+    StageFailure, StageId, StageJob,
 };
 
 /// 应用退出的清理预算上限；Dart 传入的 native 剩余时间超过它时按它裁剪。
@@ -62,119 +66,6 @@ impl ShutdownLatch {
     }
 }
 
-/// 同一次退出关闭运行的共享完成句柄。
-///
-/// `report` 是一个共享的 `watch` 完成状态，不引用 runtime，因此不会与持有它的
-/// `StudioRuntime` 形成 `Arc` 环。编排本身运行在 owned spawned task 上：重复退出只 join
-/// 同一个任务、不重复执行阶段，也不因新的调用延长已经固定的期限；等待方超时返回后任务
-/// 仍被运行时继续 poll 到结束。
-#[derive(Clone)]
-pub(crate) struct ShutdownRun {
-    report: Arc<watch::Sender<Option<StudioShutdownReport>>>,
-    started: Arc<AtomicBool>,
-    deadline: Arc<OnceLock<Instant>>,
-}
-
-impl Default for ShutdownRun {
-    fn default() -> Self {
-        let (report, _receiver) = watch::channel::<Option<StudioShutdownReport>>(None);
-        Self {
-            report: Arc::new(report),
-            started: Arc::new(AtomicBool::new(false)),
-            deadline: Arc::new(OnceLock::new()),
-        }
-    }
-}
-
-impl ShutdownRun {
-    /// 首次退出固定绝对期限；重复退出只复用，不延长。
-    fn fixed_deadline(&self, requested: Duration) -> Instant {
-        *self
-            .deadline
-            .get_or_init(|| Instant::now() + requested.min(EXIT_CLEANUP_BUDGET))
-    }
-
-    /// 启动唯一一次 owned 关闭编排任务；已启动则直接返回。
-    ///
-    /// 首个调用者的 `external_issues` 与预算一起被固定进这次唯一编排；后续重复退出只 join
-    /// 同一任务，不重复执行阶段，也不延长已经固定的期限。
-    fn spawn_once(
-        &self,
-        runtime: &StudioRuntime,
-        budget: ShutdownBudget,
-        external_issues: Vec<StudioShutdownIssue>,
-    ) {
-        if self.started.swap(true, Ordering::SeqCst) {
-            return;
-        }
-        let runtime = runtime.clone();
-        let report = Arc::clone(&self.report);
-        tokio::spawn(async move {
-            // 严格关闭与退出关闭经同一 lifecycle_lock 串行，不并行竞跑第二套编排；该等待也
-            // 受同一绝对期限约束，不能在锁上无界阻塞。
-            let guard = match budget.deadline() {
-                Some(deadline) => {
-                    let remaining = deadline.saturating_duration_since(Instant::now());
-                    tokio::time::timeout(remaining, runtime.lifecycle_lock.lock())
-                        .await
-                        .ok()
-                }
-                None => Some(runtime.lifecycle_lock.lock().await),
-            };
-            let Some(_lifecycle_guard) = guard else {
-                let _ = report.send_replace(Some(StudioShutdownReport::deadline_exceeded(
-                    "lifecycleLock",
-                    pl_protocol::studio::StudioError::internal().correlation_id,
-                )));
-                return;
-            };
-            let outcome = AssertUnwindSafe(runtime.execute_shutdown(budget, external_issues))
-                .catch_unwind()
-                .await;
-            let value = match outcome {
-                Ok(report) => report,
-                Err(payload) => {
-                    tracing::error!(
-                        pid = std::process::id(),
-                        panic = %panic_text(&payload),
-                        "Studio shutdown orchestration task panicked; reporting Degraded"
-                    );
-                    StudioShutdownReport::panicked()
-                }
-            };
-            let _ = report.send_replace(Some(value));
-        });
-    }
-
-    /// 等到编排写入完成报告，或到达共享期限。
-    async fn wait(&self, deadline: Option<Instant>) -> Option<StudioShutdownReport> {
-        let mut receiver = self.report.subscribe();
-        loop {
-            let current: Option<StudioShutdownReport> = (*receiver.borrow()).clone();
-            if let Some(report) = current {
-                return Some(report);
-            }
-            match deadline {
-                None => {
-                    if receiver.changed().await.is_err() {
-                        return None;
-                    }
-                }
-                Some(deadline) => {
-                    let remaining = deadline.saturating_duration_since(Instant::now());
-                    if remaining.is_zero() {
-                        return None;
-                    }
-                    match tokio::time::timeout(remaining, receiver.changed()).await {
-                        Ok(Ok(())) => {}
-                        Ok(Err(_)) | Err(_) => return None,
-                    }
-                }
-            }
-        }
-    }
-}
-
 fn panic_text(payload: &(dyn std::any::Any + Send)) -> String {
     if let Some(message) = payload.downcast_ref::<&str>() {
         (*message).to_string()
@@ -203,10 +94,6 @@ impl ShutdownBudget {
     /// 严格路径不设墙钟上限：失败保留 owner 并允许显式重试。
     pub(super) fn unbounded() -> Self {
         Self { deadline: None }
-    }
-
-    pub(super) fn deadline(&self) -> Option<Instant> {
-        self.deadline
     }
 
     pub(super) fn remaining(&self) -> Option<Duration> {
@@ -359,7 +246,9 @@ impl ShutdownCollector {
     }
 
     fn push(&mut self, issue: StudioShutdownIssue) {
-        self.issues.push(issue);
+        if !self.issues.contains(&issue) {
+            self.issues.push(issue);
+        }
     }
 
     /// 播种调用方在进入编排前已经确定的失败（桥端 / Dart 侧订阅、更新取消未确认）。
@@ -388,7 +277,56 @@ impl ShutdownCollector {
     /// `stage_elapsed_ms` 是该阶段自身的耗时（非阶段调用点传总耗时），与总 `elapsed_ms` 一并输出，
     /// 便于从日志确认独立阶段确实并发收束而不是被逐个串行等待。
     fn record_error(&mut self, stage: &str, stage_elapsed_ms: u128, error: &anyhow::Error) {
-        let mapped = crate::error_mapping::studio_error_from_anyhow_ref(error);
+        // These concrete helpers retain every child error, not just Error::source's first cause.
+        if let Some(titles) = error.downcast_ref::<super::super::thread_title::TitleStopFailure>() {
+            for (_, error) in &titles.failures {
+                self.record_error(stage, stage_elapsed_ms, error);
+            }
+            return;
+        }
+        if let Some(catalog) =
+            error.downcast_ref::<super::super::model_catalog::CatalogStopFailure>()
+        {
+            if let Some(error) = &catalog.close {
+                self.record_error(stage, stage_elapsed_ms, error);
+            }
+            for (_, error) in &catalog.probes {
+                self.record_error(stage, stage_elapsed_ms, error);
+            }
+            return;
+        }
+        if let Some(framework) = error.downcast_ref::<super::framework::FrameworkShutdownFailure>()
+        {
+            if let Some(error) = &framework.archive {
+                self.record_error(stage, stage_elapsed_ms, error);
+            }
+            for (_, error) in &framework.threads {
+                self.record_error(stage, stage_elapsed_ms, error);
+            }
+            if let Some(error) = &framework.observation {
+                self.record_error(stage, stage_elapsed_ms, error);
+            }
+            return;
+        }
+        if let Some(persistence) =
+            error.downcast_ref::<super::framework::PersistenceShutdownFailure>()
+        {
+            use super::framework::PersistenceShutdownFailure;
+            let (PersistenceShutdownFailure::Drain(error)
+            | PersistenceShutdownFailure::Flush(error)
+            | PersistenceShutdownFailure::Shutdown(error)) = persistence;
+            self.record_error(stage, stage_elapsed_ms, error);
+            return;
+        }
+        if let Some(join) = error.downcast_ref::<tokio::task::JoinError>() {
+            self.record_join_error(stage, stage_elapsed_ms, join);
+            return;
+        }
+        let mapped = if let Some(bot) = error.downcast_ref::<crate::bots::FeishuError>() {
+            bot.studio_error()
+        } else {
+            crate::error_mapping::studio_error_from_anyhow_ref(error)
+        };
         // Diagnostics keep only redacted, structure-level facts: the shared `StudioError` message,
         // `std::io` kind/OS code and the database failure category/code. The raw source chain can
         // embed prompt bodies or credentials, so its message bodies are never written verbatim;
@@ -415,6 +353,34 @@ impl ShutdownCollector {
             detail = %mapped.message,
             "Studio shutdown stage failed"
         );
+        if let Some(reads) =
+            error.downcast_ref::<super::super::read_scopes::ReadScopesCloseFailure>()
+        {
+            // The shared scope owner retains every typed issue. Include each original diagnostic
+            // before finalization instead of replacing multiple unresolved queries with one label.
+            for issue in &reads.scope_issues {
+                self.push(issue.diagnostic.clone());
+            }
+            for failure in &reads.call_failures {
+                self.push(StudioShutdownIssue {
+                    stage: stage.to_string(),
+                    code: "joinError".into(),
+                    message: format!("Detail read {} did not join successfully", failure.id),
+                    retryable: false,
+                    correlation_id: pl_protocol::studio::StudioError::internal().correlation_id,
+                });
+            }
+        }
+        if let Some(commands) =
+            error.downcast_ref::<super::super::draft_commands::DraftCommandsCloseFailure>()
+        {
+            for issue in &commands.issues {
+                self.push(issue.diagnostic.clone());
+            }
+            if let Some(source) = &commands.source {
+                self.record_error(stage, stage_elapsed_ms, source);
+            }
+        }
         self.push(StudioShutdownIssue {
             stage: stage.to_string(),
             code: mapped.code.label().to_string(),
@@ -439,17 +405,49 @@ impl ShutdownCollector {
     }
 
     /// 记录外部服务关闭任务的真实失败，保留底层原因链（不吞错、不伪成功）。
-    fn record_service_failure(
+    fn record_stage_failure(
         &mut self,
         stage: &str,
         stage_elapsed_ms: u128,
-        failure: &ServiceStopFailure,
+        failure: &StageFailure,
     ) {
-        match failure {
-            ServiceStopFailure::Failed(error) => self.record_error(stage, stage_elapsed_ms, error),
-            ServiceStopFailure::Panicked(join) => {
-                self.record_join_error(stage, stage_elapsed_ms, join)
+        let diagnostics = failure.diagnostics.get_or_init(|| {
+            // Cache the failure's complete diagnostics independently of issues already present
+            // in this collector (e.g. the same scope issue observed through another owner).
+            let existing = std::mem::take(&mut self.issues);
+            match &failure.cause {
+                FailureCause::Failed(error) => self.record_error(stage, stage_elapsed_ms, error),
+                FailureCause::Panicked(join) => {
+                    self.record_join_error(stage, stage_elapsed_ms, join)
+                }
             }
+            std::mem::replace(&mut self.issues, existing)
+        });
+        for diagnostic in diagnostics {
+            self.push(diagnostic.clone());
+        }
+    }
+
+    fn record_exit_block(&mut self, stage: &str, stage_elapsed_ms: u128, block: ExitBlock) {
+        self.seed_external_issues(block.issues);
+        if block.expired {
+            self.record_skipped(stage, stage_elapsed_ms);
+        }
+    }
+
+    fn record_admission_denied(&mut self, stage: &str, elapsed: u128, denied: AdmissionDenied) {
+        match denied {
+            AdmissionDenied::Exit(block) => self.record_exit_block(stage, elapsed, block),
+            AdmissionDenied::Finalized => self.record_error(
+                stage,
+                elapsed,
+                &pl_protocol::studio::StudioError::new(
+                    pl_protocol::studio::StudioErrorCode::Cancelled,
+                    "Studio shutdown was already finalized",
+                    false,
+                )
+                .into(),
+            ),
         }
     }
 
@@ -514,11 +512,11 @@ impl ShutdownCollector {
     /// 可以真正并发发起与并发等待，而不会被共享的 `ShutdownCollector` 串行化，报告顺序仍稳定。
     fn record_stage(&mut self, outcome: StageOutcome) {
         let StageOutcome {
-            stage,
+            id,
             status,
             elapsed,
-            ..
         } = outcome;
+        let stage = id.label();
         let stage_elapsed_ms = elapsed.as_millis();
         match status {
             StageStatus::Done => {
@@ -531,16 +529,13 @@ impl ShutdownCollector {
                     "Studio shutdown stage completed"
                 );
             }
-            StageStatus::Failed(error) => {
-                self.record_error(stage, stage_elapsed_ms, &error);
-            }
-            StageStatus::Panicked(join) => {
-                self.record_join_error(stage, stage_elapsed_ms, &join);
+            StageStatus::Failed(failure) => {
+                self.record_stage_failure(stage, stage_elapsed_ms, &failure);
             }
             StageStatus::TimedOut => self.record_timeout(stage, stage_elapsed_ms),
             StageStatus::Skipped => self.record_skipped(stage, stage_elapsed_ms),
-            StageStatus::ServiceFailure(failure) => {
-                self.record_service_failure(stage, stage_elapsed_ms, &failure);
+            StageStatus::NotAdmitted(denied) => {
+                self.record_admission_denied(stage, stage_elapsed_ms, denied);
             }
         }
     }
@@ -614,71 +609,14 @@ fn db_error_summary(error: &sea_orm::DbErr) -> String {
     }
 }
 
-/// 一次外部服务关闭任务真实结果；可多次观测，不因等待超时丢失。
-pub(crate) enum ServiceStopFailure {
-    /// 服务自身确认失败（含 worker 明确拒绝）。
-    Failed(anyhow::Error),
-    /// owned 关闭任务 panic / 被取消。
-    Panicked(tokio::task::JoinError),
-}
-
-/// 外部服务关闭的共享完成句柄。
-///
-/// 关闭任务在 runtime 中只启动一次并常驻于 `ServiceStopSlot`；重复严格关闭 / 重试只再次观测
-/// 同一个共享 completion，不重启 stop，也不因等待超时而丢失 owner 或句柄。底层 owned task 与
-/// completion 都由 slot 常驻持有，运行时会持续 poll 到结束。
-type ServiceStopCompletion = futures::future::Shared<
-    futures::future::BoxFuture<'static, Result<(), Arc<ServiceStopFailure>>>,
->;
-
-#[derive(Clone)]
-pub(crate) struct ServiceStopJob {
-    completion: ServiceStopCompletion,
-}
-
-impl ServiceStopJob {
-    pub(crate) fn spawn<Fut>(future: Fut) -> Self
-    where
-        Fut: std::future::Future<Output = anyhow::Result<()>> + Send + 'static,
-    {
-        let handle = tokio::spawn(future);
-        let completion = async move {
-            match handle.await {
-                Ok(Ok(())) => Ok(()),
-                Ok(Err(error)) => Err(Arc::new(ServiceStopFailure::Failed(error))),
-                Err(join) => Err(Arc::new(ServiceStopFailure::Panicked(join))),
-            }
-        }
-        .boxed()
-        .shared();
-        Self { completion }
-    }
-
-    /// 观测关闭结果；多个调用者共享同一 completion，超时只放弃等待。
-    pub(crate) async fn join(&self) -> Result<(), Arc<ServiceStopFailure>> {
-        self.completion.clone().await
-    }
-}
-
-/// 单个服务关闭任务的常驻槽位；被 runtime 持有，跨阶段与跨重试保留。
-pub(crate) type ServiceStopSlot = Arc<tokio::sync::Mutex<Option<ServiceStopJob>>>;
-
-/// runtime 常驻的三个外部服务关闭槽位。
-#[derive(Clone, Default)]
-pub(crate) struct ServiceStopSlots {
-    pub(crate) mcp: ServiceStopSlot,
-    pub(crate) lsp: ServiceStopSlot,
-    pub(crate) ssh: ServiceStopSlot,
-}
-
 /// 本次编排要 join 的服务关闭共享句柄（按需从常驻槽位 ensure）。
 ///
 /// 只含与 SSH transport 无依赖的远端服务：MCP 与 LSP 的 stop 可并发发起。SSH transport 承载
 /// 远端 MCP/LSP/工具的通信，必须在这些依赖收束之后才请求回收，因此不在本结构内，而在
-/// `run_shutdown_stages` 的依赖闸门之后单独从 `service_stops.ssh` 槽位 ensure。
+/// `run_shutdown_stages` 的依赖闸门之后从同一 ShutdownRun 阶段槽 ensure。
 struct ServiceStops {
-    mcp: ServiceStopJob,
-    lsp: ServiceStopJob,
+    mcp: Result<StageJob, AdmissionDenied>,
+    lsp: Result<StageJob, AdmissionDenied>,
 }
 
 /// 一个并发阶段的真实结果。
@@ -687,8 +625,7 @@ struct ServiceStops {
 /// `ShutdownCollector`，因此多个独立阶段可以真正并发发起与并发等待，而不是被一把共享锁串行化。
 /// `elapsed` 是该阶段自身的收束耗时，用于日志确认独立阶段确实并发完成。
 struct StageOutcome {
-    order: usize,
-    stage: &'static str,
+    id: StageId,
     status: StageStatus,
     elapsed: Duration,
 }
@@ -704,12 +641,10 @@ impl StageOutcome {
 enum StageStatus {
     /// 阶段真实完成并确认收束。
     Done,
-    /// 阶段自身返回错误。
-    Failed(anyhow::Error),
-    /// 阶段的 owned task panic / 被取消。
-    Panicked(tokio::task::JoinError),
-    /// 外部服务关闭任务确认失败。
-    ServiceFailure(Arc<ServiceStopFailure>),
+    /// 原业务错误或 JoinError，共享同一次真实完成。
+    Failed(Arc<StageFailure>),
+    /// 阶段准入被拒绝，factory 尚未执行。
+    NotAdmitted(AdmissionDenied),
     /// 阶段未在上限内收束；只放弃等待，owner/handle 仍被保留。
     TimedOut,
     /// 共享预算已耗尽，取消已广播但未 join。
@@ -750,120 +685,80 @@ async fn drain_stage_branches(branches: &mut FuturesUnordered<StageBranch>) -> V
 async fn run_stage_owned<Fut>(
     runtime: StudioRuntime,
     budget: ShutdownBudget,
-    order: usize,
-    stage: &'static str,
+    id: StageId,
     limit: Option<Duration>,
+    retries: RetrySnapshot,
     // factory 被持有在 async fn 状态里跨 await，必须 `Send`，否则整个 owned 阶段 future 不是
     // `Send`，无法放进要求跨线程的 `BoxFuture`（`StageBranch`）与 `tokio::spawn`。
-    make: impl FnOnce(StudioRuntime) -> Fut + Send,
+    make: impl FnOnce(StudioRuntime) -> Fut + Send + 'static,
 ) -> StageOutcome
 where
     Fut: Future<Output = Result<()>> + Send + 'static,
 {
-    tracing::info!(
-        pid = std::process::id(),
-        stage,
-        resource = "runtime",
-        "Studio shutdown stage started"
-    );
-    let started = Instant::now();
-    let mut task: JoinHandle<Result<()>> = tokio::spawn(make(runtime));
-    let status = match budget.stage_policy(limit) {
-        StagePolicy::Skipped => StageStatus::Skipped,
-        StagePolicy::Bounded(wait) => match tokio::time::timeout(wait, &mut task).await {
-            Ok(Ok(Ok(()))) => StageStatus::Done,
-            Ok(Ok(Err(error))) => StageStatus::Failed(error),
-            Ok(Err(join)) => StageStatus::Panicked(join),
-            Err(_) => StageStatus::TimedOut,
-        },
-        StagePolicy::Unbounded => match task.await {
-            Ok(Ok(())) => StageStatus::Done,
-            Ok(Err(error)) => StageStatus::Failed(error),
-            Err(join) => StageStatus::Panicked(join),
-        },
-    };
-    StageOutcome {
-        order,
-        stage,
-        status,
-        elapsed: started.elapsed(),
-    }
+    let coordinator = runtime.shutdown_run.clone();
+    let job = coordinator.ensure_stage(id, &retries, move || make(runtime));
+    observe_stage(budget, id, job, limit).await
 }
 
-/// 并发观测 `ensure_service_stops` 启动的常驻关闭 job；消费真实 typed 结果。
+/// 并发观测原协调器持有的阶段 job；消费同一次真实 typed 结果。
 ///
 /// 多个服务的 join 由调用方用 `FuturesUnordered` 并发 poll，因此它们的等待共享同一首次绝对期限
 /// 的剩余预算，一个服务的挂起不占用其他服务的收束预算。超时 / 预算耗尽只放弃等待：共享 completion
-/// 与 owned task 由 runtime 槽位常驻持有，后续严格重试可再次观测同一结果，不重启 stop。
-async fn join_service_outcome(
+/// 与 owned task 由原协调器常驻持有，后续严格重试只按入场资格决定是否重试已确认失败。
+async fn observe_stage(
     budget: ShutdownBudget,
-    order: usize,
-    stage: &'static str,
-    job: ServiceStopJob,
+    id: StageId,
+    job: Result<StageJob, AdmissionDenied>,
     limit: Option<Duration>,
 ) -> StageOutcome {
     tracing::info!(
         pid = std::process::id(),
-        stage,
-        resource = "service",
+        stage = id.label(),
+        resource = match id {
+            StageId::McpStop | StageId::LspStop | StageId::Ssh => "service",
+            _ => "runtime",
+        },
         "Studio shutdown stage started"
     );
     let started = Instant::now();
-    let wait = job.join();
-    let status = match budget.stage_policy(limit) {
-        StagePolicy::Skipped => StageStatus::Skipped,
-        StagePolicy::Bounded(limit) => match tokio::time::timeout(limit, wait).await {
-            Ok(Ok(())) => StageStatus::Done,
-            Ok(Err(failure)) => StageStatus::ServiceFailure(failure),
-            Err(_) => StageStatus::TimedOut,
-        },
-        StagePolicy::Unbounded => match wait.await {
-            Ok(()) => StageStatus::Done,
-            Err(failure) => StageStatus::ServiceFailure(failure),
-        },
+    let status = match job {
+        Err(denied) => StageStatus::NotAdmitted(denied),
+        Ok(job) => {
+            if let Some(result) = job.observed_result() {
+                match result {
+                    Ok(()) => StageStatus::Done,
+                    Err(failure) => StageStatus::Failed(failure),
+                }
+            } else {
+                match budget.stage_policy(limit) {
+                    StagePolicy::Skipped => StageStatus::Skipped,
+                    StagePolicy::Bounded(limit) => {
+                        match tokio::time::timeout(limit, job.join()).await {
+                            Ok(Ok(())) => StageStatus::Done,
+                            Ok(Err(failure)) => StageStatus::Failed(failure),
+                            Err(_) => StageStatus::TimedOut,
+                        }
+                    }
+                    StagePolicy::Unbounded => match job.join().await {
+                        Ok(()) => StageStatus::Done,
+                        Err(failure) => StageStatus::Failed(failure),
+                    },
+                }
+            }
+        }
     };
     StageOutcome {
-        order,
-        stage,
+        id,
         status,
         elapsed: started.elapsed(),
     }
 }
 
-/// 报告内阶段的稳定排序权重；与完成先后无关，保证并发收束下报告顺序可复现。
-mod stage_order {
-    pub(super) const AGENT_FRAMEWORK: usize = 0;
-    pub(super) const PERSISTENCE: usize = 1;
-    pub(super) const MODEL_CATALOG: usize = 2;
-    pub(super) const RECOVERY: usize = 3;
-    pub(super) const MODEL_REFRESH: usize = 4;
-    pub(super) const TITLE: usize = 5;
-    pub(super) const MCP_STARTUP_RECONCILE: usize = 6;
-    pub(super) const MCP_HEALTH: usize = 7;
-    pub(super) const MCP_STOP: usize = 8;
-    pub(super) const MCP_STOPPED: usize = 9;
-    pub(super) const LSP_STATE: usize = 10;
-    pub(super) const LSP_STOP: usize = 11;
-    pub(super) const LSP_STOPPED: usize = 12;
-    pub(super) const TOOL_REFRESH: usize = 13;
-    pub(super) const PERSISTENCE_OBSERVER: usize = 14;
-    pub(super) const SSH: usize = 15;
-    pub(super) const AGENT_PROFILES: usize = 16;
-    pub(super) const BOTS: usize = 17;
-}
-
-/// 在常驻槽位上只启动一次真正的 stop 工作；已存在则返回同一共享句柄。
-async fn ensure_service_stop(
-    slot: &ServiceStopSlot,
-    start: impl FnOnce() -> ServiceStopJob,
-) -> ServiceStopJob {
-    let mut guard = slot.lock().await;
-    if let Some(job) = guard.as_ref() {
-        return job.clone();
+fn archive_stage_failure(id: StageId, failure: &StageFailure) {
+    if failure.diagnostics.get().is_none() {
+        let mut collector = ShutdownCollector::new(ShutdownBudget::unbounded());
+        collector.record_stage_failure(id.label(), 0, failure);
     }
-    let job = start();
-    *guard = Some(job.clone());
-    job
 }
 
 impl StudioRuntime {
@@ -888,8 +783,9 @@ impl StudioRuntime {
     pub(in crate::studio::runtime) async fn execute_strict_shutdown(
         &self,
     ) -> Result<StudioShutdownReport> {
+        let retries = self.shutdown_run.retry_snapshot();
         let report = self
-            .execute_shutdown(ShutdownBudget::unbounded(), Vec::new())
+            .execute_shutdown(ShutdownBudget::unbounded(), retries)
             .await;
         if report.is_clean() {
             Ok(report)
@@ -913,16 +809,34 @@ impl StudioRuntime {
     ) -> StudioShutdownReport {
         // 同步封闭 runtime 准入闩：先于任何 await 与锁等待，退出期间拒绝迟到安装与新 mutation。
         self.shutdown_latch.arm();
+        self.models_source.seal();
+        self.configuration_source.seal();
+        self.mcp_source.seal();
+        self.lsp_source.seal();
+        self.skills_source.seal();
+        self.profiles_source.seal();
+        self.templates_source.seal();
+        self.modes_source.seal();
+        self.usage_source.seal();
+        self.statistics_source.seal();
+        self.updates_source.seal();
+        self.startup_source.seal();
+        self.recovery_source.seal();
+        self.persistence_source.seal();
+        self.persistence_queue_source.seal();
+        self.remote_directory_source.seal();
+        self.bots_source.seal();
+        self.workspace_source.seal();
+        self.read_scopes.seal();
+        self.read_calls.seal();
+        self.draft_commands.seal();
         let requested = Duration::from_millis(u64::from(remaining_ms));
-        let deadline = self.shutdown_run.fixed_deadline(requested);
-        let budget = ShutdownBudget::at_deadline(deadline);
-        self.shutdown_run.spawn_once(self, budget, external_issues);
+        let deadline = self
+            .shutdown_run
+            .start_exit(self, requested, external_issues);
         match self.shutdown_run.wait(Some(deadline)).await {
             Some(report) => report,
-            None => StudioShutdownReport::deadline_exceeded(
-                "deadline",
-                pl_protocol::studio::StudioError::internal().correlation_id,
-            ),
+            None => self.shutdown_run.deadline_report("deadline"),
         }
     }
 
@@ -944,6 +858,27 @@ impl StudioRuntime {
     /// 推进只持有无 await 的短临界区，绝不在任何锁上无界等待。
     pub async fn fence_exit_admission(&self) -> Vec<StudioShutdownIssue> {
         self.shutdown_latch.arm();
+        self.models_source.seal();
+        self.configuration_source.seal();
+        self.mcp_source.seal();
+        self.lsp_source.seal();
+        self.skills_source.seal();
+        self.profiles_source.seal();
+        self.templates_source.seal();
+        self.modes_source.seal();
+        self.usage_source.seal();
+        self.statistics_source.seal();
+        self.updates_source.seal();
+        self.startup_source.seal();
+        self.recovery_source.seal();
+        self.persistence_source.seal();
+        self.persistence_queue_source.seal();
+        self.remote_directory_source.seal();
+        self.bots_source.seal();
+        self.workspace_source.seal();
+        self.read_scopes.seal();
+        self.read_calls.seal();
+        self.draft_commands.seal();
         let mut issues = Vec::new();
         let snapshot = self.runtime_state.snapshot();
         // 只对可关闭状态推进为 `ShuttingDown`；未安装 / 初始化中 / 已进入关闭或终态既不触发
@@ -1002,7 +937,7 @@ impl StudioRuntime {
     async fn execute_shutdown(
         &self,
         budget: ShutdownBudget,
-        external_issues: Vec<StudioShutdownIssue>,
+        retries: RetrySnapshot,
     ) -> StudioShutdownReport {
         let mut collector = ShutdownCollector::new(budget);
 
@@ -1012,7 +947,7 @@ impl StudioRuntime {
 
         // 播种调用方（Dart / bridge）在进入编排前已经确定的失败，作为这次关闭的成功前置条件；
         // 放在事实观测之后，使诊断带上真实 owner 与保存水位。
-        collector.seed_external_issues(external_issues);
+        collector.seed_external_issues(self.shutdown_run.exit_issues());
         // native 首次 close 的早期封闭（准入封闭 + 独立取消广播）遗留的诊断同样作为这次关闭的
         // 成功前置条件播种：早期 arm 未被误认为最终终态，早期错误也不被吞掉。
         collector.seed_external_issues(self.take_early_exit_issues());
@@ -1045,6 +980,27 @@ impl StudioRuntime {
         // 单向终止闩：先于任何阶段武装，拒绝迟到安装；快照不可用时也照样封闭，绝不因只读观测
         // 失败而漏掉独立取消（准入封闭与取消不依赖 runtime 快照）。
         self.shutdown_latch.arm();
+        self.models_source.seal();
+        self.configuration_source.seal();
+        self.mcp_source.seal();
+        self.lsp_source.seal();
+        self.skills_source.seal();
+        self.profiles_source.seal();
+        self.templates_source.seal();
+        self.modes_source.seal();
+        self.usage_source.seal();
+        self.statistics_source.seal();
+        self.updates_source.seal();
+        self.startup_source.seal();
+        self.recovery_source.seal();
+        self.persistence_source.seal();
+        self.persistence_queue_source.seal();
+        self.remote_directory_source.seal();
+        self.bots_source.seal();
+        self.workspace_source.seal();
+        self.read_scopes.seal();
+        self.read_calls.seal();
+        self.draft_commands.seal();
 
         if let Some(current) = current.as_ref()
             && matches!(current.state.kind(), StudioRuntimeStateKind::Initializing)
@@ -1094,10 +1050,10 @@ impl StudioRuntime {
         // 提交准入后**先**向所有独立 owner 广播取消，并启动/常驻保留 MCP/LSP/SSH 的 owned 关闭
         // job。真正的阶段 join 与 finalize 仍在后续同一编排内、复用同一批 job。
         self.broadcast_cancel().await;
-        let services = self.ensure_service_stops().await;
+        let services = self.ensure_service_stops();
 
         let stages = self
-            .run_shutdown_stages(budget, collector.pending_hint, &services)
+            .run_shutdown_stages(budget, collector.pending_hint, &services, retries)
             .await;
         collector.writer_reclaimed = stages.writer_reclaimed;
         collector.persistence = stages.persistence;
@@ -1242,8 +1198,7 @@ impl StudioRuntime {
     /// 每个服务只调用一次 `shutdown`（MCP worker 的首个 `Shutdown` 即退出）；job 与 completion
     /// 常驻于 runtime 槽位，阶段只 join 同一共享完成句柄。预算耗尽或超时只放弃等待，owner 与
     /// 句柄仍被 runtime 保留；严格重试再次 join 同一 job，不重启 stop。
-    async fn ensure_service_stops(&self) -> ServiceStops {
-        let slots = &self.service_stops;
+    fn ensure_service_stops(&self) -> ServiceStops {
         // MCP 与 LSP 是彼此独立的远端服务，stop 并发发起：各自的 owned 关闭 job 在同一时刻
         // spawn，而不是等前一个服务的 stop 启动后才轮到下一个。每个服务仍只启动一次（常驻槽位
         // 保证幂等）。SSH transport 不是与它们独立的资源：它承载远端 MCP/LSP/工具的通信，必须在
@@ -1251,17 +1206,15 @@ impl StudioRuntime {
         // `run_shutdown_stages`）。
         let mcp = self.external_runtimes.mcp.clone();
         let lsp = self.external_runtimes.lsp.clone();
-        let (mcp, lsp) = futures::join!(
-            ensure_service_stop(&slots.mcp, move || {
-                ServiceStopJob::spawn(
-                    async move { mcp.shutdown().await.map_err(anyhow::Error::from) },
-                )
-            }),
-            ensure_service_stop(&slots.lsp, move || {
-                ServiceStopJob::spawn(
-                    async move { lsp.shutdown().await.map_err(anyhow::Error::from) },
-                )
-            }),
+        let mcp = self.shutdown_run.ensure_stage(
+            StageId::McpStop,
+            &RetrySnapshot::default(),
+            move || async move { mcp.shutdown().await.map_err(anyhow::Error::from) },
+        );
+        let lsp = self.shutdown_run.ensure_stage(
+            StageId::LspStop,
+            &RetrySnapshot::default(),
+            move || async move { lsp.shutdown().await.map_err(anyhow::Error::from) },
         );
         ServiceStops { mcp, lsp }
     }
@@ -1271,6 +1224,7 @@ impl StudioRuntime {
         budget: ShutdownBudget,
         pending_before: Option<usize>,
         services: &ServiceStops,
+        retries: RetrySnapshot,
     ) -> StageReport {
         let progress = self.shutdown_progress.clone();
 
@@ -1293,48 +1247,51 @@ impl StudioRuntime {
             Default::default(),
         ));
 
-        // 写入生产者：它们是可靠保存的前提，其停止必须先于持久化 drain 与 writer 停止——编排在
-        // 生产者收束观测结束后才推进持久化（有界退出路径下个别生产者超时也继续，但缺 ACK 会成为
-        // issue、不会伪报 Clean）。这些阶段彼此独立，因此并发发起、并发等待（不会用前一个的等待
-        // 耗尽后续阶段预算）。
+        // 写入生产者：它们是可靠保存的前提，只有全部真实停止 ACK 后才可 drain 并停止 writer。
+        // 失败或有界超时保留原生产者及 writer，独立资源仍继续安全清理。生产者阶段彼此独立，
+        // 因此并发发起、并发等待，不会用前一个的等待耗尽后续阶段预算。
         let mut producers: FuturesUnordered<StageBranch> = FuturesUnordered::new();
         producers.push(self.stage_branch(
             budget,
-            stage_order::MODEL_CATALOG,
-            "modelCatalog",
+            StageId::DetailReads,
+            None,
+            retries.clone(),
+            |runtime| async move { runtime.close_detail_reads().await },
+        ));
+        producers.push(self.stage_branch(
+            budget,
+            StageId::ModelCatalog,
             Some(SERVICE_STAGE_LIMIT),
+            retries.clone(),
             |runtime| async move { runtime.stop_model_catalog_probes().await },
         ));
         producers.push(self.stage_branch(
             budget,
-            stage_order::RECOVERY,
-            "recovery",
+            StageId::Recovery,
             Some(SERVICE_STAGE_LIMIT),
+            retries.clone(),
             |runtime| async move { runtime.stop_recovery_scan().await },
         ));
         producers.push(self.stage_branch(
             budget,
-            stage_order::MODEL_REFRESH,
-            "modelRefresh",
+            StageId::ModelRefresh,
             Some(SERVICE_STAGE_LIMIT),
+            retries.clone(),
             |runtime| async move { runtime.stop_model_refresh().await },
         ));
         producers.push(self.stage_branch(
             budget,
-            stage_order::TITLE,
-            "title",
+            StageId::Title,
             Some(SERVICE_STAGE_LIMIT),
-            |runtime| async move {
-                runtime.title_tasks.cancel_and_wait().await;
-                Ok::<(), anyhow::Error>(())
-            },
+            retries.clone(),
+            |runtime| async move { runtime.title_tasks.cancel_and_wait().await },
         ));
         // Thread/审计收束是可靠的保存前提：严格路径真实等待，退出路径仍受同一期限裁剪。
         producers.push(self.stage_branch(
             budget,
-            stage_order::AGENT_FRAMEWORK,
-            "agentFramework",
+            StageId::AgentFramework,
             None,
+            retries.clone(),
             |runtime| async move { runtime.shutdown_agent_framework().await },
         ));
 
@@ -1346,23 +1303,23 @@ impl StudioRuntime {
         let mut remote_dependents: FuturesUnordered<StageBranch> = FuturesUnordered::new();
         remote_dependents.push(self.stage_branch(
             budget,
-            stage_order::MCP_STARTUP_RECONCILE,
-            "mcpStartupReconcile",
+            StageId::McpStartupReconcile,
             Some(SERVICE_STAGE_LIMIT),
+            retries.clone(),
             |runtime| async move { runtime.stop_mcp_config_watcher().await },
         ));
         remote_dependents.push(self.stage_branch(
             budget,
-            stage_order::MCP_HEALTH,
-            "mcpHealth",
+            StageId::McpHealth,
             Some(SERVICE_STAGE_LIMIT),
+            retries.clone(),
             |runtime| async move { runtime.stop_mcp_health_watcher().await },
         ));
         remote_dependents.push(self.stage_branch(
             budget,
-            stage_order::TOOL_REFRESH,
-            "toolRefresh",
+            StageId::ToolRefresh,
             Some(SERVICE_STAGE_LIMIT),
+            retries.clone(),
             |runtime| async move { runtime.stop_tool_refresh().await },
         ));
 
@@ -1371,16 +1328,12 @@ impl StudioRuntime {
         // stop 与随后的 `stopped` 发布是同一服务内的有向顺序，整体仍与其他独立资源并发。
         let mcp_job = services.mcp.clone();
         let mcp_runtime = self.clone();
+        let mcp_retries = retries.clone();
         remote_dependents.push(
             async move {
-                let stop = join_service_outcome(
-                    budget,
-                    stage_order::MCP_STOP,
-                    "mcpStop",
-                    mcp_job,
-                    Some(SERVICE_STAGE_LIMIT),
-                )
-                .await;
+                let stop =
+                    observe_stage(budget, StageId::McpStop, mcp_job, Some(SERVICE_STAGE_LIMIT))
+                        .await;
                 let acked = stop.is_done();
                 let mut outcomes = vec![stop];
                 if acked {
@@ -1388,9 +1341,9 @@ impl StudioRuntime {
                         run_stage_owned(
                             mcp_runtime,
                             budget,
-                            stage_order::MCP_STOPPED,
-                            "mcpStopped",
+                            StageId::McpStopped,
                             Some(SERVICE_STAGE_LIMIT),
+                            mcp_retries,
                             |runtime| async move { runtime.publish_mcp_stopped().await },
                         )
                         .await,
@@ -1402,12 +1355,12 @@ impl StudioRuntime {
         );
         let lsp_job = services.lsp.clone();
         let lsp_runtime = self.clone();
+        let lsp_retries = retries.clone();
         remote_dependents.push(
             async move {
-                let stop = join_service_outcome(
+                let stop = observe_stage(
                     budget,
-                    stage_order::LSP_STOP,
-                    "lspStop",
+                    StageId::LspStop,
                     lsp_job,
                     Some(SERVICE_STAGE_LIMIT),
                 )
@@ -1419,9 +1372,9 @@ impl StudioRuntime {
                         run_stage_owned(
                             lsp_runtime,
                             budget,
-                            stage_order::LSP_STOPPED,
-                            "lspStopped",
+                            StageId::LspStopped,
                             Some(SERVICE_STAGE_LIMIT),
+                            lsp_retries,
                             |runtime| async move { runtime.external_runtimes.lsp_state.stopped().await },
                         )
                         .await,
@@ -1438,20 +1391,20 @@ impl StudioRuntime {
         let mut independent: FuturesUnordered<StageBranch> = FuturesUnordered::new();
         independent.push(self.stage_branch(
             budget,
-            stage_order::LSP_STATE,
-            "lspState",
+            StageId::LspState,
             Some(SERVICE_STAGE_LIMIT),
+            retries.clone(),
             |runtime| async move { runtime.stop_lsp_state_watcher().await },
         ));
         independent.push(self.stage_branch(
             budget,
-            stage_order::PERSISTENCE_OBSERVER,
-            "persistenceObserver",
+            StageId::PersistenceObserver,
             Some(SERVICE_STAGE_LIMIT),
+            retries.clone(),
             |runtime| async move {
                 super::super::background_task::stop(&runtime.persistence_observer)
                     .await
-                    .map_err(|error| anyhow::anyhow!(error.to_string()))
+                    .map_err(anyhow::Error::new)
             },
         ));
         // Agent Profiles 配置 watch 转发同样由 runtime 拥有：正常退出与失败路径都必须在同一首次
@@ -1459,27 +1412,21 @@ impl StudioRuntime {
         // 不可达并保留 owner（常驻槽位超时不丢句柄），不得只靠 `dispose_startup` 或 slot Drop 收束。
         independent.push(self.stage_branch(
             budget,
-            stage_order::AGENT_PROFILES,
-            "agentProfiles",
+            StageId::AgentProfiles,
             Some(SERVICE_STAGE_LIMIT),
+            retries.clone(),
             |runtime| async move { runtime.stop_agent_profiles_forwarder().await },
         ));
 
         independent.push(self.stage_branch(
             budget,
-            stage_order::BOTS,
-            "bots",
+            StageId::Bots,
             Some(SERVICE_STAGE_LIMIT),
-            |runtime| async move {
-                runtime
-                    .bots
-                    .shutdown()
-                    .await
-                    .map_err(|error| anyhow::Error::from(error.studio_error()))
-            },
+            retries.clone(),
+            |runtime| async move { runtime.bots.shutdown().await.map_err(anyhow::Error::new) },
         ));
 
-        // 写入生产者依赖的共享完成信号：写入链在生产者收束观测结束后继续持久化；SSH 依赖同一份
+        // 写入生产者依赖的共享完成信号：写入链只有在生产者真实停止 ACK 后继续持久化；SSH 依赖同一份
         // 生产者事实——远端工具由 Turn / Agent 等生产者驱动，它们未收束时不得先切断 SSH 通信——
         // 但 SSH 只等这条依赖边，不等与它无关的持久化 / 数据库提交。信号载荷刻意区分两件事实：
         // 收到信号 = 依赖已结束观测（含失败 / 有界超时 / 预算耗尽），载荷 `bool` = 实际是否全部
@@ -1490,9 +1437,9 @@ impl StudioRuntime {
         // SSH transport 关闭的依赖闸门：并发等待全部远端依赖（MCP/LSP stop 链、工具刷新、
         // MCP watcher）的停止请求与结果处理，以及写入生产者的收束观测，之后才在常驻槽位请求
         // SSH 回收；仍只 join 已启动的那一次 owned task，真实结果不被 `let _ =` 吞掉。依赖等待与
-        // 真正的 SSH stop 分别计时：依赖等待只做闸门，SSH stop 的耗时由 `join_service_outcome` 的
+        // 真正的 SSH stop 分别计时：依赖等待只做闸门，SSH stop 的耗时由 `observe_stage` 的
         // `elapsed` 单独给出。依赖超时 / 失败 / 预算耗尽都不拦下回收请求（有界降级）：
-        // `ensure_service_stop` 照常调用，只是 `join_service_outcome` 可能在预算耗尽时返回
+        // 原协调器 ensure 照常调用，只是 `observe_stage` 可能在预算耗尽时返回
         // `Skipped`，owner 仍由常驻槽位保留、可重试。闸门只记录事实，不据此伪报成功。
         let ssh_runtime = self.clone();
         let ssh_branch = async move {
@@ -1516,67 +1463,75 @@ impl StudioRuntime {
                 producers_acked,
                 "Studio shutdown SSH dependency gate released; requesting transport recycle"
             );
-            let ssh_job = ensure_service_stop(&ssh_runtime.service_stops.ssh, {
-                let ssh = ssh_runtime.ssh_manager.clone();
-                move || {
-                    ServiceStopJob::spawn(async move {
-                        ssh.shutdown().await.map_err(anyhow::Error::from)
-                    })
-                }
-            })
-            .await;
+            let ssh = ssh_runtime.ssh_manager.clone();
+            let remote_runtime = ssh_runtime.clone();
+            let ssh_job = ssh_runtime.shutdown_run.ensure_stage(
+                StageId::Ssh,
+                &RetrySnapshot::default(),
+                move || async move {
+                    // DetailReads has been observed before this dependency gate. Accepted late
+                    // browses registered their original cursors before returning/being discarded.
+                    let cursors = remote_runtime
+                        .remote_directory_source
+                        .finish_close(&remote_runtime)
+                        .await;
+                    let transport = ssh.shutdown().await.map_err(anyhow::Error::from);
+                    match (cursors, transport) {
+                        (Ok(()), Ok(())) => Ok(()),
+                        (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
+                        (Err(cursors), Err(transport)) => {
+                            Err(anyhow::anyhow!("{cursors:#}; {transport:#}"))
+                        }
+                    }
+                },
+            );
             outcomes.push(
-                join_service_outcome(
-                    budget,
-                    stage_order::SSH,
-                    "ssh",
-                    ssh_job,
-                    Some(SERVICE_STAGE_LIMIT),
-                )
-                .await,
+                observe_stage(budget, StageId::Ssh, ssh_job, Some(SERVICE_STAGE_LIMIT)).await,
             );
             outcomes
         };
 
-        // 写入收束链：生产者停止观测先于可靠持久化 drain/writer 停止（有向顺序，不可颠倒）；
-        // 真正的停止 ACK 由各生产者 outcome 决定并在收尾判定，缺 ACK 不会伪报 Clean。整条链与上面
+        // 写入收束链：生产者真实停止 ACK 先于可靠持久化 drain/writer 停止（有向顺序，不可颠倒）。
+        // 缺 ACK 不启动 persistence job，原 owner 重试收束后才允许最终停止 writer。整条链与上面
         // 的独立资源并发进行——独立服务不会被持久化 drain 的等待拖后。
         let write_chain = {
             let progress = progress.clone();
             let runtime = self.clone();
+            let retries = retries.clone();
             async move {
-                // 先并发收束全部写入生产者；无论成功、失败还是有界超时，都在它们的收束观测结束后才
-                // 推进持久化 drain/writer——持久化不早于生产者停止观测，但也不会因个别生产者不可用而
-                // 永久阻塞其余安全清理（缺 ACK 会作为 issue 阻止最终 Clean，不在此处伪成功）。
+                // 观测结束不等于生产者已停止。只有原阶段全部真实 Done 才能关闭其 writer 依赖；
+                // 失败、超时与预算耗尽的 outcome 仍原样交给 collector，不能用最终 Degraded 补救早关。
                 let mut outcomes = drain_stage_branches(&mut producers).await;
                 // 放行 SSH 依赖闸门并如实携带「实际是否全部成功 ACK」：写入链仍是 outcome 唯一记录方，
                 // 这里只传事实、不复制诊断。成功与有界失败都照样请求 SSH 回收。
-                let producers_acked = outcomes.iter().all(StageOutcome::is_done);
-                let _ = producers_settled_tx.send(producers_acked);
-                let agent_ok = outcomes
-                    .iter()
-                    .any(|outcome| outcome.stage == "agentFramework" && outcome.is_done());
-                // 只在真实已知时发布 pending count；未知不伪造 0。
-                if let Some(pending_before) = pending_before {
-                    progress.emit(crate::StudioShutdownProgress::FlushingPersistence(
-                        crate::FlushingPersistenceProgress::new(pending_before as u64),
-                    ));
-                }
-                // 可靠保存在严格路径真实等待（大量历史 drain 不是失败）；退出路径共享同一期限。
-                let persistence = run_stage_owned(
-                    runtime.clone(),
-                    budget,
-                    stage_order::PERSISTENCE,
-                    "persistence",
-                    None,
-                    |runtime| async move { runtime.flush_persistence().await },
-                )
-                .await;
-                let flush_ok = persistence.is_done();
-                outcomes.push(persistence);
+                let producers_settled = outcomes.iter().all(StageOutcome::is_done);
+                let _ = producers_settled_tx.send(producers_settled);
+                let writer_reclaimed = if producers_settled {
+                    // 只在真实已知时发布 pending count；未知不伪造 0。
+                    if let Some(pending_before) = pending_before {
+                        progress.emit(crate::StudioShutdownProgress::FlushingPersistence(
+                            crate::FlushingPersistenceProgress::new(pending_before as u64),
+                        ));
+                    }
+                    // 可靠保存在严格路径真实等待（大量历史 drain 不是失败）；退出路径共享同一期限。
+                    let persistence = run_stage_owned(
+                        runtime.clone(),
+                        budget,
+                        StageId::Persistence,
+                        None,
+                        retries,
+                        |runtime| async move { runtime.shutdown_persistence().await },
+                    )
+                    .await;
+                    let reclaimed = persistence.is_done();
+                    outcomes.push(persistence);
+                    reclaimed
+                } else {
+                    false
+                };
                 // 观测真实剩余待保存事实；有界只读，未知即 Unknown，绝不用 0 冒充。
                 let pending_after = runtime.observe_pending(budget).await;
-                (outcomes, agent_ok, flush_ok, pending_after)
+                (outcomes, producers_settled, writer_reclaimed, pending_after)
             }
         };
 
@@ -1586,7 +1541,7 @@ impl StudioRuntime {
         // 各自及时收束。
         let independent_branch = async move { drain_stage_branches(&mut independent).await };
         let (
-            (write_outcomes, agent_ok, flush_ok, pending_after),
+            (write_outcomes, producers_settled, writer_reclaimed, pending_after),
             mut independent_outcomes,
             mut ssh_outcomes,
         ) = futures::join!(write_chain, independent_branch, ssh_branch);
@@ -1595,9 +1550,9 @@ impl StudioRuntime {
         let mut outcomes = write_outcomes;
         outcomes.append(&mut independent_outcomes);
         outcomes.append(&mut ssh_outcomes);
-        outcomes.sort_by_key(|outcome| outcome.order);
+        outcomes.sort_by_key(|outcome| outcome.id.order());
 
-        let persistence = match (agent_ok, flush_ok, pending_after) {
+        let persistence = match (producers_settled, writer_reclaimed, pending_after) {
             (true, true, Some(0)) => {
                 progress.emit(crate::StudioShutdownProgress::FlushingPersistence(
                     crate::FlushingPersistenceProgress::new(0),
@@ -1612,7 +1567,7 @@ impl StudioRuntime {
 
         StageReport {
             outcomes,
-            writer_reclaimed: flush_ok,
+            writer_reclaimed,
             persistence,
         }
     }
@@ -1625,6 +1580,7 @@ impl StudioRuntime {
     }
 
     async fn finalize_shutdown(&self, collector: &mut ShutdownCollector) {
+        collector.seed_external_issues(self.shutdown_run.exit_issues());
         // 仍有运行中的 writer 时不得关闭数据库，也不得释放实例锁。
         let writer_retained = self
             .agent_facility
@@ -1646,63 +1602,64 @@ impl StudioRuntime {
             && collector.writer_reclaimed
             && !writer_retained
             && !collector.expired();
-        if can_close {
-            // store.close 是 owned 操作：作为独立 task 运行，超时只放弃等待，绝不 drop 在途关闭。
+        let store_job = if let Some(job) = self.shutdown_run.existing_store() {
+            // An earlier caller may have left while Store IO was in flight. Rejoining does not
+            // start new IO, and is still required when the new collector already has issues.
+            Some(Ok(job))
+        } else if can_close {
+            // Store admission checks first-exit D0/E under the same slot-installation boundary.
+            // Once admitted, IO continues even if a later exit blocks final Clean publication.
             let store = self.store.clone();
-            let mut task = tokio::spawn(async move { store.close().await });
-            match collector.budget.stage_policy(None) {
-                StagePolicy::Bounded(wait) => match tokio::time::timeout(wait, &mut task).await {
-                    Ok(Ok(Ok(()))) => collector.store_closed = true,
-                    Ok(Ok(Err(error))) => {
-                        let stage_elapsed_ms = collector.elapsed_ms();
-                        collector.record_error("store", stage_elapsed_ms, &error);
-                    }
-                    Ok(Err(join_error)) => {
-                        let stage_elapsed_ms = collector.elapsed_ms();
-                        collector.record_join_error("store", stage_elapsed_ms, &join_error);
-                    }
-                    Err(_) => {
-                        let stage_elapsed_ms = collector.elapsed_ms();
-                        collector.record_timeout("store", stage_elapsed_ms);
-                    }
-                },
-                StagePolicy::Unbounded => match task.await {
-                    Ok(Ok(())) => collector.store_closed = true,
-                    Ok(Err(error)) => {
-                        let stage_elapsed_ms = collector.elapsed_ms();
-                        collector.record_error("store", stage_elapsed_ms, &error);
-                    }
-                    Err(join_error) => {
-                        let stage_elapsed_ms = collector.elapsed_ms();
-                        collector.record_join_error("store", stage_elapsed_ms, &join_error);
-                    }
-                },
-                StagePolicy::Skipped => {
-                    let stage_elapsed_ms = collector.elapsed_ms();
-                    collector.record_skipped("store", stage_elapsed_ms);
-                }
-            }
+            Some(self.shutdown_run.ensure_stage(
+                StageId::Store,
+                &RetrySnapshot::default(),
+                move || async move { store.close().await },
+            ))
+        } else {
+            None
+        };
+        if let Some(job) = store_job {
+            let outcome = observe_stage(collector.budget, StageId::Store, job, None).await;
+            collector.store_closed = outcome.is_done();
+            collector.record_stage(outcome);
+        } else if collector.expired() {
+            let elapsed = collector.elapsed_ms();
+            collector.record_skipped(StageId::Store.label(), elapsed);
         }
 
         let clean = !collector.has_issues()
             && matches!(collector.persistence, StudioPendingPersistence::Drained)
             && collector.store_closed;
         if clean {
-            if let Err(error) = self
-                .runtime_state
-                .apply(StudioRuntimeCommand::FinishShutdown {
-                    expected_revision: self.runtime_state.snapshot().revision,
-                    at: unix_seconds(),
-                })
-            {
-                // FinishShutdown 失败不可吞：退回 Degraded，不发布 Stopped、不释放锁。
-                let stage_elapsed_ms = collector.elapsed_ms();
-                collector.record_error("finishShutdown", stage_elapsed_ms, &error.into());
-            } else {
-                self.shutdown_progress
-                    .emit(crate::StudioShutdownProgress::Stopped(Default::default()));
-                self.instance_lock.release();
-                return;
+            match self.shutdown_run.commit_clean(&self.runtime_state) {
+                Ok(CleanCommit::First) => {
+                    // The coordinator guard is gone: publication and actual resource/file-lock
+                    // release cannot call back while holding the finalization admission lock.
+                    self.configuration_source.finish_close();
+                    self.mcp_source.finish_close();
+                    self.lsp_source.finish_close();
+                    self.skills_source.finish_close();
+                    self.profiles_source.finish_close();
+                    self.startup_source.finish_close();
+                    self.recovery_source.finish_close();
+                    self.persistence_source.finish_close();
+                    self.persistence_queue_source.finish_close();
+                    self.bots_source.finish_close();
+                    self.workspace_source.finish_close();
+                    self.shutdown_progress
+                        .emit(crate::StudioShutdownProgress::Stopped(Default::default()));
+                    self.instance_lock.release();
+                    return;
+                }
+                Ok(CleanCommit::AlreadyCommitted) => return,
+                Err(CleanCommitError::Exit(block)) => {
+                    let elapsed = collector.elapsed_ms();
+                    collector.record_exit_block("finishShutdown", elapsed, block);
+                }
+                Err(CleanCommitError::Runtime(error)) => {
+                    let elapsed = collector.elapsed_ms();
+                    collector.record_error("finishShutdown", elapsed, &error.into());
+                }
             }
         }
 
@@ -1737,9 +1694,9 @@ impl StudioRuntime {
     fn stage_branch<Fut>(
         &self,
         budget: ShutdownBudget,
-        order: usize,
-        stage: &'static str,
+        id: StageId,
         limit: Option<Duration>,
+        retries: RetrySnapshot,
         // 同 `run_stage_owned`：factory 跨 await 持有，需 `Send` 才能让返回的 `BoxFuture` 满足其
         // 跨线程 `Send` 不变量；不做 `unsafe`/`allow`/本地 boxed 规避。
         make: impl FnOnce(StudioRuntime) -> Fut + Send + 'static,
@@ -1747,7 +1704,7 @@ impl StudioRuntime {
     where
         Fut: Future<Output = Result<()>> + Send + 'static,
     {
-        run_stage_owned(self.clone(), budget, order, stage, limit, make)
+        run_stage_owned(self.clone(), budget, id, limit, retries, make)
             .map(|outcome| vec![outcome])
             .boxed()
     }
@@ -1783,4 +1740,222 @@ fn shutdown_report_error(report: &StudioShutdownReport) -> anyhow::Error {
             )
         });
     anyhow::anyhow!(message)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::{ConfigPaths, ConfigStore, StudioConfig};
+    use crate::studio::agent_host::ThreadWriteBehindWriter;
+    use crate::studio::store::directory::{DirectoryDelta, ProjectDirectoryRecord};
+    use pl_core::context::OpaquePayload;
+    use pl_core::tool::{
+        ToolOutput,
+        opaque::{CallContext, Registration, Tool, ToolError},
+    };
+    use pl_model::config::{AccountConfig, AccountId, ModelRouteConfig};
+    use pl_model::model::ModelInfo;
+    use pl_model::protocol::ProtocolEndpoint;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use tokio::sync::Notify;
+
+    #[derive(Debug, Default)]
+    struct CloseFault {
+        recover: AtomicBool,
+        attempts: AtomicUsize,
+        retry_written: Notify,
+        close_ack: Notify,
+    }
+
+    struct CloseFaultTool {
+        fault: Arc<CloseFault>,
+        writer: ThreadWriteBehindWriter,
+        final_write: DirectoryDelta,
+    }
+
+    impl std::fmt::Debug for CloseFaultTool {
+        fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            formatter
+                .debug_struct("CloseFaultTool")
+                .finish_non_exhaustive()
+        }
+    }
+
+    impl Tool for CloseFaultTool {
+        async fn execute(
+            &self,
+            input: OpaquePayload,
+            _context: CallContext,
+        ) -> Result<ToolOutput, ToolError> {
+            Ok(ToolOutput::new(input, Vec::new()))
+        }
+
+        async fn close(&self) -> Result<(), ToolError> {
+            self.fault.attempts.fetch_add(1, Ordering::SeqCst);
+            if !self.fault.recover.load(Ordering::SeqCst) {
+                return Err(ToolError::new(std::io::Error::other(
+                    "injected original producer close failure",
+                )));
+            }
+            // This is the same producer and writer retained by the failed close, not a new
+            // writer or a recovery shim. Its final write must become durable before close ACK.
+            self.writer.record_directory(self.final_write.clone());
+            self.writer.flush().await.map_err(ToolError::new)?;
+            self.fault.retry_written.notify_one();
+            self.fault.close_ack.notified().await;
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn failed_producer_close_retains_writer_until_original_retry_acks() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let home = temp.path().join("home");
+        let workspace = temp.path().join("workspace");
+        tokio::fs::create_dir_all(&workspace).await?;
+        let endpoint = std::net::TcpListener::bind("127.0.0.1:0")?;
+        let account_id = AccountId::new("shutdown-fixture")?;
+        let route = ModelRouteConfig {
+            account_id: account_id.clone(),
+            model_id: "shutdown-model".into(),
+            effort: None,
+        };
+        let mut config = StudioConfig::default_config()?;
+        config.models.accounts.clear();
+        config.models.accounts.insert(
+            account_id,
+            AccountConfig::from_explicit_models(
+                ProtocolEndpoint::compatible(
+                    "Shutdown fixture",
+                    format!("http://{}", endpoint.local_addr()?),
+                ),
+                vec![ModelInfo::compatible(&route.model_id)],
+            ),
+        );
+        for selected in config
+            .models
+            .routes
+            .values_mut()
+            .chain(config.mode_model_routes.values_mut())
+        {
+            *selected = route.clone();
+        }
+        ConfigStore::new(ConfigPaths::from_config_dir(&home)).save(&config)?;
+        let runtime = StudioRuntime::initialize(crate::StudioRuntimeOptions {
+            studio_home: Some(home),
+            host: crate::StudioHostKind::Test,
+            ..crate::StudioRuntimeOptions::desktop()
+        })
+        .await?;
+        let project = runtime.open_project(&workspace).await?;
+        let thread = runtime.create_thread(&project.id, "close failure").await?;
+        let original = runtime.threads.thread(&thread.id).expect("original Thread");
+        let writer = runtime
+            .agent_facility
+            .persistence
+            .lock()
+            .await
+            .clone()
+            .expect("original writer");
+        let fault = Arc::new(CloseFault::default());
+        original
+            .register_tools(vec![Registration::new(
+                "close-fault".into(),
+                OpaquePayload::text("Close fault fixture"),
+                CloseFaultTool {
+                    fault: fault.clone(),
+                    writer: writer.clone(),
+                    final_write: DirectoryDelta::upsert_project(ProjectDirectoryRecord {
+                        id: project.id.clone(),
+                        name: "written by original producer after close failure".into(),
+                        path: project.path.clone(),
+                        ssh_alias: None,
+                        created_at: 1,
+                        updated_at: 2,
+                        last_opened_at: None,
+                        closed: false,
+                    }),
+                },
+            )?])
+            .await?;
+        runtime.flush_persistence().await?;
+
+        // Use the actual orchestration and final collector without a wall-clock exit deadline.
+        let report = runtime
+            .execute_shutdown(ShutdownBudget::unbounded(), RetrySnapshot::default())
+            .await;
+        assert_eq!(report.outcome, StudioShutdownOutcome::Degraded);
+        let original_issue = report
+            .issues
+            .iter()
+            .find(|issue| issue.stage == StageId::AgentFramework.label())
+            .expect("original close failure is reported")
+            .clone();
+        assert!(!matches!(
+            report.persistence,
+            StudioPendingPersistence::Drained
+        ));
+        assert!(
+            runtime.agent_facility.persistence.lock().await.is_some(),
+            "failed producer close must retain the original persistence writer"
+        );
+        assert!(
+            runtime
+                .threads
+                .observed_thread(&thread.id)
+                .is_some_and(|retained| retained.same_instance(&original))
+        );
+        let calls_effect = pl_core::thread::ThreadEffectBatch {
+            thread_id: thread.id.clone(),
+            ..Default::default()
+        };
+        assert!(runtime.store.calls().try_admit_effect(&calls_effect));
+        let failed_attempts = fault.attempts.load(Ordering::SeqCst);
+        assert!(
+            failed_attempts > 0,
+            "the original Tool close actually failed"
+        );
+
+        // Another observer does not replay a failed owner or erase its original diagnostic.
+        let repeated = runtime
+            .execute_shutdown(ShutdownBudget::unbounded(), RetrySnapshot::default())
+            .await;
+        assert_eq!(repeated.outcome, StudioShutdownOutcome::Degraded);
+        assert!(repeated.issues.contains(&original_issue));
+        assert_eq!(fault.attempts.load(Ordering::SeqCst), failed_attempts);
+
+        fault.recover.store(true, Ordering::SeqCst);
+        let retry_runtime = runtime.clone();
+        let retry = tokio::spawn(async move { retry_runtime.shutdown_runtime().await });
+        tokio::time::timeout(Duration::from_secs(5), fault.retry_written.notified()).await?;
+        assert_eq!(
+            runtime
+                .store
+                .read_project(&project.id)
+                .await?
+                .expect("durable project")
+                .name,
+            "written by original producer after close failure"
+        );
+        assert!(runtime.agent_facility.persistence.lock().await.is_some());
+        assert!(
+            !retry.is_finished(),
+            "writer release must wait for the actual close ACK"
+        );
+        fault.close_ack.notify_one();
+        let stopped = tokio::time::timeout(Duration::from_secs(5), retry).await???;
+        assert!(stopped.state.is_stopped());
+        assert!(runtime.agent_facility.persistence.lock().await.is_none());
+        assert!(runtime.threads.observed_thread(&thread.id).is_none());
+        assert!(!runtime.store.calls().try_admit_effect(&calls_effect));
+        let closed_attempts = fault.attempts.load(Ordering::SeqCst);
+        assert!(closed_attempts > failed_attempts);
+        assert!(runtime.shutdown_runtime().await?.state.is_stopped());
+        assert_eq!(fault.attempts.load(Ordering::SeqCst), closed_attempts);
+        endpoint.set_nonblocking(true)?;
+        assert!(
+            matches!(endpoint.accept(), Err(error) if error.kind() == std::io::ErrorKind::WouldBlock)
+        );
+        Ok(())
+    }
 }

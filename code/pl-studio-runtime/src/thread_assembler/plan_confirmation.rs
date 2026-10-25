@@ -228,7 +228,7 @@ fn prepare_resolution(
     )?;
     Ok(CoreResolution {
         id: current.request.id.clone(),
-        expected_revision: current.revision,
+        expected_revision: resolution.expected_revision,
         response: InteractionResponse {
             context: vec![
                 ContextContent::Text {
@@ -285,7 +285,8 @@ impl StudioThreadAssembler {
             .get(&resolution.interaction_id)
             .ok_or(PlanInteractionError::Identity)?;
         if let InteractionState::Resolved(existing) = &current.state {
-            if resolution.expected_revision.checked_add(1) == Some(current.revision)
+            if (resolution.expected_revision == current.revision
+                || resolution.expected_revision.checked_add(1) == Some(current.revision))
                 && existing.payload == answer_payload(&resolution)?
             {
                 return project_plan_confirmation(thread_id, current);

@@ -11,6 +11,7 @@ use pl_protocol::{ObservedResourceCommand, ObservedResourceKind, StateError, Sta
 use pl_tool::skill::SkillsConfig;
 use pl_tool::skill::{SkillCatalog, SkillProviderRequest};
 
+use super::super::skills::SkillsDiscovery;
 use super::remote;
 use super::{SkillCatalogRuntime, SkillsStateData, SkillsStateSnapshot};
 
@@ -57,6 +58,7 @@ impl SkillCatalogRuntime {
             DiscoverySource::Remote(remote_backend),
         )
         .await
+        .map(|capture| capture.snapshot)
     }
 
     pub async fn discover_with_cancellation(
@@ -74,6 +76,41 @@ impl SkillCatalogRuntime {
             DiscoverySource::Local,
         )
         .await
+        .map(|capture| capture.snapshot)
+    }
+
+    pub(in crate::studio::runtime) async fn discover_product(
+        &self,
+        project_id: &str,
+        workspace_root: &Path,
+        config: &SkillsConfig,
+    ) -> Result<SkillsDiscovery> {
+        self.discover_from_source(
+            project_id,
+            workspace_root,
+            config,
+            tokio_util::sync::CancellationToken::new(),
+            DiscoverySource::Local,
+        )
+        .await
+    }
+
+    pub(in crate::studio::runtime) async fn discover_remote_product(
+        &self,
+        project_id: &str,
+        workspace_root: &Path,
+        config: &SkillsConfig,
+        cancellation: tokio_util::sync::CancellationToken,
+        remote_backend: Arc<pl_tool::remote::RemoteWorkspaceFileBackend>,
+    ) -> Result<SkillsDiscovery> {
+        self.discover_from_source(
+            project_id,
+            workspace_root,
+            config,
+            cancellation,
+            DiscoverySource::Remote(remote_backend),
+        )
+        .await
     }
 
     async fn discover_from_source(
@@ -83,7 +120,7 @@ impl SkillCatalogRuntime {
         config: &SkillsConfig,
         cancellation: tokio_util::sync::CancellationToken,
         source: DiscoverySource,
-    ) -> Result<SkillsStateSnapshot> {
+    ) -> Result<SkillsDiscovery> {
         let _command = tokio::select! {
             biased;
             () = cancellation.cancelled() => anyhow::bail!("Skill discovery cancelled"),
@@ -106,7 +143,7 @@ impl SkillCatalogRuntime {
                 .map_err(|error| anyhow::anyhow!(error.to_string()))?
                 .next_state,
         };
-        self.publish(project_id, running.clone()).await;
+        self.publish(project_id, running.clone()).await?;
 
         let workspace_root = workspace_root.to_path_buf();
         let config = config.clone();
@@ -167,7 +204,7 @@ impl SkillCatalogRuntime {
                         .map_err(|transition| anyhow::anyhow!(transition.to_string()))?
                         .next_state,
                 };
-                self.publish(project_id, failed).await;
+                self.publish(project_id, failed).await?;
                 return Err(error);
             }
         };
@@ -189,8 +226,11 @@ impl SkillCatalogRuntime {
                     .map_err(|transition| anyhow::anyhow!(transition.to_string()))?
                     .next_state,
             };
-            self.publish(project_id, failed.clone()).await;
-            return Ok(failed);
+            let publication = self.publish(project_id, failed.clone()).await?;
+            return Ok(SkillsDiscovery {
+                snapshot: failed,
+                publication,
+            });
         }
         let catalog_revision = previous.state.value().map_or(1, |data| {
             if catalog_content_eq(data.catalog.snapshot(), catalog.snapshot()) {
@@ -216,8 +256,11 @@ impl SkillCatalogRuntime {
                 .map_err(|error| anyhow::anyhow!(error.to_string()))?
                 .next_state,
         };
-        self.publish(project_id, snapshot.clone()).await;
-        Ok(snapshot)
+        let publication = self.publish(project_id, snapshot.clone()).await?;
+        Ok(SkillsDiscovery {
+            snapshot,
+            publication,
+        })
     }
 
     /// Settings 变化只标记旧 payload stale，不执行扫描。
@@ -237,6 +280,10 @@ impl SkillCatalogRuntime {
                 });
                 if let Ok(decision) = decision {
                     state.state = decision.next_state;
+                    if let Some(source) = &self.product_source {
+                        // publish retains capture failures in the original product owner/feed.
+                        let _capture_result = source.publish(state);
+                    }
                     changed.push(state.clone());
                 }
             }
@@ -249,14 +296,23 @@ impl SkillCatalogRuntime {
         }
     }
 
-    async fn publish(&self, project_id: &str, snapshot: SkillsStateSnapshot) {
-        self.states
-            .write()
-            .await
-            .insert(project_id.to_string(), snapshot.clone());
+    async fn publish(
+        &self,
+        project_id: &str,
+        snapshot: SkillsStateSnapshot,
+    ) -> Result<Option<Arc<super::super::skills::SkillsSnapshot>>> {
+        let captured = {
+            let mut states = self.states.write().await;
+            states.insert(project_id.to_string(), snapshot.clone());
+            self.product_source
+                .as_ref()
+                .map(|source| source.publish(&snapshot))
+                .transpose()
+        };
         if let Some(events) = &self.events {
             events.emit_skills_state(snapshot);
         }
+        Ok(captured?)
     }
 }
 

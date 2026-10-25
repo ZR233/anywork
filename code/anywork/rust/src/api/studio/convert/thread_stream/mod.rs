@@ -234,15 +234,12 @@ fn turn_budget_limit(value: BudgetLimitSnapshot) -> BridgeTurnBudgetLimit {
 
 fn bridge_turn_failure(value: pl_protocol::TurnFailure) -> BridgeTurnFailureDto {
     BridgeTurnFailureDto {
-        category: format!("{:?}", value.category).to_ascii_lowercase(),
-        provider_kind: value
-            .provider_kind
-            .map(|kind| format!("{kind:?}").to_ascii_lowercase()),
+        category: value.category.into(),
+        provider_kind: value.provider_kind.map(Into::into),
         code: value.code,
         http_status: value.http_status,
         message: value.message,
-        retryable: value.retry.is_retryable(),
-        retry_after_ms: value.retry.retry_after_ms(),
+        retry: value.retry.into(),
     }
 }
 

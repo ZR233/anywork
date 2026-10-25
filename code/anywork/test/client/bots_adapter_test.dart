@@ -1,15 +1,18 @@
 import 'dart:convert';
 
-import 'package:anywork/src/app/app_graph.dart';
+import 'package:anywork/src/features/settings/bots/view_models/bots_settings_view_model.dart';
+import 'package:anywork/src/features/settings/state/settings_navigation_state.dart';
+import 'package:anywork/src/features/settings/view_models/settings_navigation_view_model.dart';
 import 'package:anywork/src/platform/feishu_app_links.dart';
-import 'package:anywork/src/presentation/view_models/timeline_session_owner.dart';
-import 'package:anywork/src/shared/studio_driver_projection.dart';
-import 'package:anywork/src/shared/studio_driver_state.dart';
-import 'package:anywork_client/studio_client.dart';
-import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:anywork/src/shared/driver_bots_projection.dart';
+import 'package:anywork/src/shared/driver_projection.dart';
+import 'package:anywork/src/shared/driver_snapshot_json.dart';
+import 'package:anywork_client/bots.dart';
+import 'package:anywork_client/operations.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-import 'support/recording_demo_transport.dart';
+import 'support/application_environment.dart';
+import 'support/bots_environment.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -61,39 +64,79 @@ void main() {
   );
 
   test(
-    'demo adapter maps bot save, registration start and cancel states',
+    'repository maps bot save, registration start and cancel states',
     () async {
-      final transport = RecordingDemoTransport();
-      final client = AnyworkClient(
-        transport: transport,
-        clientId: 'bots-adapter',
+      final port = BotsTestPort();
+      final env = ApplicationTestEnvironment(botsPort: port)..installHost();
+      addTearDown(env.close);
+      final repository = env.graph.bots;
+      final sync = repository.synchronize();
+      await port.publish(botsSnapshot(1));
+      await sync;
+      final saving = repository.saveBot(
+        const BotEdit(
+          botId: null,
+          expectedConfigRevision: 0,
+          name: 'Feishu China',
+          projectId: 'project-local',
+          appId: 'cli_demo',
+          secret: BotSecretReplace(value: 'memory-only'),
+          enabled: true,
+          toolsEnabled: true,
+          modelRoute: null,
+        ),
       );
-      addTearDown(client.close);
-      await client.bootstrap();
-      final saved = await client.botsCommands.saveBot(
-        expectedConfigRevision: 0,
-        name: 'Feishu China',
-        projectId: 'project-local',
-        appId: 'cli_demo',
-        secret: BotSecretReplace('memory-only'),
-      );
+      final save = await port.saved.future;
+      expect(save.secret, const BotSecretReplace(value: 'memory-only'));
+      port.saveReply.complete(botsReply(save.operationId, 2, bot: savedBot));
+      await port.publish(botsSnapshot(2, bots: [savedBot]));
+      expect(await saving.result, isA<CommittedCommandResult<BotSnapshot>>());
+      final saved = repository.state.value.snapshot!.value;
       expect(saved.bots, isNotEmpty);
       expect(saved.bots.single.credential, BotCredentialAvailability.stored);
       expect(jsonEncode(saved.toString()), isNot(contains('memory-only')));
-      final started = await client.botsCommands.startRegistration(
+      final starting = repository.startRegistration(
         name: 'Feishu China',
         projectId: 'project-local',
       );
+      final start = await port.started.future;
+      final registration = waitingRegistration('Feishu China');
+      port.startReply.complete(
+        botsReply(start.operationId, 3, registration: registration),
+      );
+      await port.publish(
+        botsSnapshot(3, bots: [savedBot], registration: registration),
+      );
+      expect(
+        await starting.result,
+        isA<CommittedCommandResult<BotRegistrationAttempt>>(),
+      );
+      final started = repository.state.value.snapshot!.value;
       expect(started.registration?.status, isA<BotRegistrationWaiting>());
       expect(
         started.registration.toString(),
         isNot(contains('https://accounts.feishu.cn')),
       );
-      await client.botsCommands.cancelRegistration(
+      final cancelling = repository.cancelRegistration(
         attemptId: started.registration!.attemptId,
       );
+      final cancel = await port.cancelled.future;
+      expect(cancel.attemptId, registration.attemptId);
+      final cancelled = registration.copyWith(
+        status: BotRegistrationCancelled(attemptId: registration.attemptId),
+      );
+      port.cancelReply.complete(
+        botsReply(cancel.operationId, 4, registration: cancelled),
+      );
+      await port.publish(
+        botsSnapshot(4, bots: [savedBot], registration: cancelled),
+      );
       expect(
-        client.bots.state.value?.registration?.status,
+        await cancelling.result,
+        isA<CommittedCommandResult<BotRegistrationAttempt>>(),
+      );
+      expect(
+        repository.state.value.snapshot!.value.registration?.status,
         isA<BotRegistrationCancelled>(),
       );
     },
@@ -102,24 +145,34 @@ void main() {
   test(
     'Driver bots projection excludes secrets and verification URLs',
     () async {
-      final transport = RecordingDemoTransport();
-      final client = AnyworkClient(
-        transport: transport,
-        clientId: 'bots-driver',
-      );
-      addTearDown(client.close);
-      await client.bootstrap();
-      await client.botsCommands.startRegistration(
+      final port = BotsTestPort();
+      final env = ApplicationTestEnvironment(botsPort: port)..installHost();
+      addTearDown(env.close);
+      final repository = env.graph.bots;
+      final sync = repository.synchronize();
+      await port.publish(botsSnapshot(1));
+      await sync;
+      final starting = repository.startRegistration(
         name: 'Scan bot',
         projectId: 'project-local',
       );
-      final timeline = TimelineSessionOwner(client: client);
-      addTearDown(timeline.close);
-      bindStudioDriver(client, timeline: timeline);
-      final facts = queryStudioDriverFacts(client, timeline: timeline);
-      final json = jsonDecode(
-        StudioDriverState.snapshotJson(observed: facts),
-      ) as Map<String, dynamic>;
+      final start = await port.started.future;
+      final registration = waitingRegistration('Scan bot');
+      port.startReply.complete(
+        botsReply(start.operationId, 2, registration: registration),
+      );
+      await port.publish(botsSnapshot(2, registration: registration));
+      expect(
+        await starting.result,
+        isA<CommittedCommandResult<BotRegistrationAttempt>>(),
+      );
+      final facts = captureDriverSnapshot(
+        env.graph,
+        visible: const DriverViewFacts(),
+        bots: projectBotsState(repository.state.value),
+      );
+      final json =
+          jsonDecode(jsonEncode(facts.toJson())) as Map<String, dynamic>;
       final encoded = jsonEncode(json);
       expect(encoded, isNot(contains('accounts.feishu.cn')));
       expect(encoded, isNot(contains('verificationUrl')));
@@ -133,28 +186,32 @@ void main() {
   test(
     'settings navigation to bots does not close the active session',
     () async {
-      final graph = AppGraph(
-        transport: RecordingDemoTransport(),
-        clientId: 'bots-session',
+      final port = BotsTestPort();
+      final env = ApplicationTestEnvironment(botsPort: port)..installHost();
+      addTearDown(env.close);
+      await env.domains.establish();
+      await env.domains.selectThread('thread-main');
+      final session = env.graph.conversation.active.value;
+      expect(session, isNotNull);
+      final container = env.container;
+      await container.read(settingsNavigationViewModelProvider.future);
+      container
+          .read(settingsNavigationViewModelProvider.notifier)
+          .enter(SettingsTab.bots);
+      final visible = container.listen(
+        botsSettingsViewModelProvider,
+        (_, _) {},
       );
-      addTearDown(
-        () => graph.close(
-          deadline: DateTime.now().add(const Duration(seconds: 5)),
-        ),
+      addTearDown(visible.close);
+      final sync = env.graph.bots.synchronize();
+      await port.publish(botsSnapshot(1));
+      await sync;
+      await container.read(botsSettingsViewModelProvider.future);
+      expect(env.graph.conversation.active.value, same(session));
+      expect(
+        env.graph.conversation.existingSession('thread-main'),
+        same(session),
       );
-      await graph.client.bootstrap();
-      await graph.client.directoryCommands.selectThread('thread-main');
-      expect(graph.client.activeSession, isNotNull);
-      final container = ProviderContainer(
-        overrides: [appGraphProvider.overrideWithValue(graph)],
-      );
-      addTearDown(container.dispose);
-      graph.client.channels.acquireSettingsScope(
-        BridgeSettingsScopeKind.bots,
-        null,
-      );
-      expect(graph.client.activeSession, isNotNull);
-      expect(graph.client.sessionState('thread-main'), isNotNull);
     },
   );
 }

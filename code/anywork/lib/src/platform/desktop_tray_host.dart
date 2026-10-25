@@ -4,18 +4,22 @@ import 'package:flutter/widgets.dart';
 
 import '../l10n/studio_l10n.dart';
 import 'desktop_tray.dart';
+import 'error_log.dart';
 
 /// Hosts the desktop tray lifecycle inside the localized MaterialApp tree.
 ///
 /// Widget tests construct `AnyworkApp` with [enabled] false and never touch the
 /// native tray; release, demo and Driver entrypoints enable it.
+/// The application owner injects the same [controller] used by shell release.
 class DesktopTrayHost extends StatefulWidget {
   const DesktopTrayHost({
+    required this.controller,
     required this.child,
     required this.enabled,
     super.key,
   });
 
+  final DesktopTrayController controller;
   final Widget child;
   final bool enabled;
 
@@ -24,8 +28,9 @@ class DesktopTrayHost extends StatefulWidget {
 }
 
 class _DesktopTrayHostState extends State<DesktopTrayHost> {
-  bool get _shouldStart =>
-      widget.enabled && DesktopTrayController.instance.supported;
+  late final _controller = widget.controller;
+
+  bool get _shouldStart => widget.enabled && _controller.supported;
 
   @override
   void initState() {
@@ -35,19 +40,45 @@ class _DesktopTrayHostState extends State<DesktopTrayHost> {
       if (!mounted) return;
       final l10n = context.l10n;
       unawaited(
-        DesktopTrayController.instance.start(
-          tooltip: l10n.appTitle,
-          showLabel: l10n.trayShowWindow,
-          exitLabel: l10n.trayExit,
-        ),
+        _controller
+            .start(
+              tooltip: l10n.appTitle,
+              showLabel: l10n.trayShowWindow,
+              exitLabel: l10n.trayExit,
+            )
+            .catchError((Object error, StackTrace stackTrace) {
+              recordDartError(
+                error,
+                stackTrace,
+                stage: 'desktop-tray-host-start',
+                correlationId: newStudioCorrelationId(),
+              );
+            }),
       );
     });
   }
 
   @override
+  void didUpdateWidget(DesktopTrayHost oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (!identical(widget.controller, _controller)) {
+      throw StateError('A mounted tray host cannot change its controller.');
+    }
+  }
+
+  @override
   void dispose() {
     if (_shouldStart) {
-      unawaited(DesktopTrayController.instance.dispose());
+      unawaited(
+        _controller.dispose().catchError((Object error, StackTrace stackTrace) {
+          recordDartError(
+            error,
+            stackTrace,
+            stage: 'desktop-tray-host-dispose',
+            correlationId: newStudioCorrelationId(),
+          );
+        }),
+      );
     }
     super.dispose();
   }

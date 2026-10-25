@@ -1,57 +1,102 @@
-// Driver-only subscription-fault entrypoint for the shutdown acceptance.
-//
-// It reuses the frozen [driver_main] entrypoint (same Driver requests, same real
-// bridge bootstrap) and, after the first frame is mounted, re-installs the very
-// same [StudioExitCoordinator] implementation over a [FrbStudioTransport] subclass that
-// overrides *only* `subscribeShutdownProgress`. Every other bridge member is
-// inherited unchanged, so the real runtime is still shut down; only the progress
-// subscription fails (and its cancel hangs), which must surface as a typed
-// Degraded report and a non-zero exit rather than a fabricated `Stopped`.
-//
-// This is a Driver-only entrypoint; product and release builds use lib/main.dart.
-// ignore_for_file: invalid_use_of_visible_for_testing_member
-
 import 'dart:async';
 
-import 'package:anywork/src/app/studio_host_lifecycle.dart';
-import 'package:anywork/src/infrastructure/frb/studio_api.dart';
-import 'package:anywork/src/domain/models/studio_models.dart';
-import 'package:flutter/scheduler.dart';
+import 'package:anywork/src/app/lifecycle/exit_participant.dart';
+import 'package:anywork_client/resources.dart';
 
-import 'driver_main.dart' as base;
+import 'driver_main.dart' as driver;
 
-void main() {
-  base.main();
-  // Install the fault coordinator after the app is actually mounted, so it owns
-  // the window-close request path as well as the Driver exit request.
-  SchedulerBinding.instance.addPostFrameCallback((_) {
-    StudioExitCoordinator.install(
-      StudioExitCoordinator(_FaultSubscriptionApi(), (_) {}),
-    );
-  });
+/// Inject one actually faulty Driver resource into the original application
+/// coordinator. The real native lifecycle port is never replaced, and these
+/// external issues must reach shutdownRuntime before its sole finalizer.
+Future<void> main() {
+  final fault = DriverSubscriptionFault();
+  return driver.runDriver(additionalParticipants: [fault.participant]);
 }
 
-/// A real `FrbStudioTransport` whose shutdown-progress subscription is faulty.
-///
-/// `shutdownRuntime` and every other member are inherited from the real bridge,
-/// so the observable difference is exactly the broken progress channel: the
-/// subscription emits an error (a typed `progress` issue) and never completes
-/// its cancel (a typed `timeout` issue on the bounded cancel).
-class _FaultSubscriptionApi extends FrbStudioTransport {
-  @override
-  Stream<StudioShutdownProgress> subscribeShutdownProgress() {
-    late final StreamController<StudioShutdownProgress> controller;
-    controller = StreamController<StudioShutdownProgress>(
-      onListen: () {
-        controller.addError(
-          StateError('driver-injected shutdown progress subscription failure'),
-          StackTrace.current,
-        );
-      },
-      // A hung cancel: the coordinator's bounded cancel must record a typed
-      // timeout issue instead of swallowing it or faking a clean shutdown.
+final class DriverSubscriptionFault {
+  StreamController<void>? _controller;
+  StreamSubscription<void>? _subscription;
+  Future<void>? _cancellation;
+  Future<CloseReport>? _closing;
+  Object? _streamError;
+  StackTrace? _streamStack;
+
+  ApplicationCloseParticipant get participant => ApplicationCloseParticipant(
+    name: 'driver-subscription-fault',
+    seal: seal,
+    close: close,
+    retryCleanup: retryCleanup,
+  );
+
+  void seal() {
+    if (_controller != null) return;
+    final controller = _controller = StreamController<void>(
       onCancel: () => Completer<void>().future,
     );
-    return controller.stream;
+    _subscription = controller.stream.listen(
+      null,
+      onError: (Object error, StackTrace stack) {
+        _streamError = error;
+        _streamStack = stack;
+      },
+    );
+    controller.addError(
+      StateError('driver-injected subscription failure'),
+      StackTrace.current,
+    );
   }
+
+  Future<CloseReport> close({DateTime? deadline}) =>
+      _closing ??= _close(deadline);
+
+  Future<CloseReport> _close(DateTime? deadline) async {
+    seal();
+    // Deliver the real stream error before cancellation enters the actual hang.
+    await Future<void>.delayed(Duration.zero);
+    _cancellation ??= _subscription!.cancel();
+    final available = deadline?.difference(DateTime.now());
+    final limit = available == null || available > const Duration(seconds: 2)
+        ? const Duration(seconds: 2)
+        : available;
+    try {
+      await _cancellation!.timeout(
+        limit < Duration.zero ? Duration.zero : limit,
+      );
+      throw StateError('The injected cancellation unexpectedly completed');
+    } on TimeoutException {
+      return CloseReport(
+        unresolved: [
+          UnresolvedResource(
+            owner: 'driver-subscription-fault',
+            attemptId: const AttemptId(1),
+            issues: [
+              if (_streamError != null && _streamStack != null)
+                const FeedCloseIssue(
+                  diagnostic: StudioShutdownIssue(
+                    stage: 'progress',
+                    code: 'progress',
+                    message: 'Driver subscription failed',
+                    retryable: false,
+                    correlationId: 'driver-subscription-fault',
+                  ),
+                  recovery: CleanupRecovery.terminal,
+                ),
+              const FeedCloseIssue(
+                diagnostic: StudioShutdownIssue(
+                  stage: 'subscriptions',
+                  code: 'timeout',
+                  message: 'Driver cancellation has not joined',
+                  retryable: true,
+                  correlationId: 'driver-subscription-fault',
+                ),
+                recovery: CleanupRecovery.awaitCompletion,
+              ),
+            ],
+          ),
+        ],
+      );
+    }
+  }
+
+  Future<CloseReport> retryCleanup({DateTime? deadline}) => _close(deadline);
 }

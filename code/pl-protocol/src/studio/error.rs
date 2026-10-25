@@ -4,7 +4,6 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use utoipa::ToSchema;
 
 static NEXT_CORRELATION_ID: AtomicU64 = AtomicU64::new(1);
@@ -21,6 +20,7 @@ pub enum StudioErrorCode {
     Busy,
     Conflict,
     StaleRevision,
+    Superseded,
     PermissionDenied,
     Cancelled,
     CancellationTooLate,
@@ -44,6 +44,7 @@ impl StudioErrorCode {
             Self::Busy => "busy",
             Self::Conflict => "conflict",
             Self::StaleRevision => "staleRevision",
+            Self::Superseded => "superseded",
             Self::PermissionDenied => "permissionDenied",
             Self::Cancelled => "cancelled",
             Self::CancellationTooLate => "cancellationTooLate",
@@ -66,9 +67,74 @@ pub struct StudioError {
     pub message: String,
     pub retryable: bool,
     pub correlation_id: String,
-    #[schema(value_type = Object)]
+    /// 装箱避免错误类型本身过大（`clippy::result_large_err`）；`serde` 表示不变。
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub details: Option<Value>,
+    pub details: Option<Box<StudioErrorDetails>>,
+}
+
+/// Stable diagnostic fields. Arbitrary JSON is not part of the error contract.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
+#[serde(
+    tag = "kind",
+    content = "data",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum StudioErrorDetails {
+    Startup {
+        step: String,
+        kind: StartupFailureKind,
+    },
+    Revision {
+        expected: u64,
+        actual: u64,
+    },
+    SshAuthentication {
+        password_offered: Option<bool>,
+    },
+    Reason {
+        reason: String,
+    },
+    Identity {
+        identity: String,
+    },
+    TimelineRevision {
+        item_id: String,
+        field: String,
+        revision: u64,
+    },
+    Validation {
+        issues: Vec<crate::ThreadModeValidationIssue>,
+    },
+    Thread {
+        thread_id: String,
+    },
+    ResourceLimit {
+        resource: String,
+        capacity: u64,
+    },
+    /// Bot provider diagnostic: only stable published fields, never arbitrary JSON.
+    Bot {
+        code: String,
+        platform_code: Option<String>,
+        guidance: Option<String>,
+    },
+    /// A stale delegation/statistics cursor bound to the catalog revision it was issued for.
+    CatalogRevision {
+        revision: u64,
+    },
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum StartupFailureKind {
+    ModeDefinitions,
+    Migration,
+    PersistentData,
+    Environment,
+    Cancelled,
+    Internal,
 }
 
 impl StudioError {
@@ -82,8 +148,8 @@ impl StudioError {
         }
     }
 
-    pub fn with_details(mut self, details: Value) -> Self {
-        self.details = Some(details);
+    pub fn with_details(mut self, details: StudioErrorDetails) -> Self {
+        self.details = Some(Box::new(details));
         self
     }
 

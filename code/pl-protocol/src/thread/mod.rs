@@ -54,12 +54,13 @@ impl ThreadWorkspaceMode {
 }
 
 /// 一个 agent 独占的对话和执行队列。
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct Thread {
     pub id: String,
     pub project_id: String,
     pub title: String,
+    #[schema(value_type = String)]
     pub mode: ThreadModeId,
     /// 会话工作区模式；缺失的旧编码按默认 `local` 解码。
     #[serde(default)]
@@ -134,6 +135,7 @@ impl Thread {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
+#[derive(utoipa::ToSchema)]
 pub enum ThreadStatus {
     Idle,
     Queued,

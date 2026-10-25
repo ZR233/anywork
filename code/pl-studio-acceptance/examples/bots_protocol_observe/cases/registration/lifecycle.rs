@@ -6,9 +6,9 @@ use super::observe::{
     LIFECYCLE_BUDGET, POSITIVE_NONCE, POSITIVE_PATH, SLOWDOWN_EARLY, addons_encoding,
     assert_no_bot, assert_no_side_effects, assert_positive_url, begin_count, begin_options,
     cancel_ok, cancel_result, classify_command, current_status, ensure_attempt,
-    ensure_committing_then_completed, ensure_registered_app, ensure_usable_credential,
-    loopback_port, poll_deltas, poll_observations, remaining, start_ok, start_result,
-    status_interval, wait_connected_event, wait_status, wait_until, waiting_url,
+    ensure_committing_then_completed, ensure_registered_app, ensure_reply_attempt,
+    ensure_usable_credential, loopback_port, poll_deltas, poll_observations, remaining, start_ok,
+    start_result, status_interval, wait_connected_event, wait_status, wait_until, waiting_url,
 };
 use crate::http;
 use crate::report::{self, CaseResult};
@@ -120,7 +120,6 @@ async fn stage_reuse_and_replace(
     ensure!(!reused.receipt.durable);
     ensure!(
         reused
-            .snapshot
             .registration
             .as_ref()
             .is_some_and(|attempt| attempt.attempt_id == first_attempt),
@@ -199,9 +198,9 @@ async fn stage_reuse_and_replace(
                 reply.receipt.disposition == CommandDisposition::NoChange,
                 "stale cancel of a replaced attempt must be NoChange if accepted"
             );
-            ensure_attempt(
-                &reply.snapshot,
-                &second_attempt,
+            ensure_reply_attempt(
+                reply.registration.as_ref(),
+                &first_attempt,
                 |attempt| {
                     matches!(
                         attempt.status,
@@ -209,8 +208,12 @@ async fn stage_reuse_and_replace(
                             | BotRegistrationStatus::Waiting { .. }
                     )
                 },
-                "stale cancel must not retire the replacement",
+                "stale cancel must target the original attempt, not retire the replacement",
             )?;
+            ensure!(
+                reply.bot.is_none(),
+                "stale cancel must not publish a configured bot"
+            );
         }
         Err(error) if error.code == StudioErrorCode::NotFound => {}
         other => bail!(
@@ -946,8 +949,8 @@ async fn stage_success_with_user(
     match after_complete {
         Ok(reply) => {
             ensure!(reply.receipt.disposition == CommandDisposition::NoChange);
-            ensure_attempt(
-                &reply.snapshot,
+            ensure_reply_attempt(
+                reply.registration.as_ref(),
                 &completed.attempt_id,
                 |attempt| matches!(attempt.status, BotRegistrationStatus::Completed { .. }),
                 "cancel after Completed must stay Completed",

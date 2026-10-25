@@ -7,20 +7,46 @@
 // 作者来自条目自身、typed 载荷的保存/终态/省略账目与逐字段详情引用，以及原位更新的身份
 // 稳定性；另外验证公开展示状态确实只携带元数据。
 import 'package:anywork/src/app/theme/material3_theme.dart';
-import 'package:anywork/src/domain/models/timeline_commands.dart';
-import 'package:anywork/src/domain/models/timeline_presentation.dart';
-import 'package:anywork/src/features/timeline/timeline_view.dart';
+import 'package:anywork/src/features/conversation/state/timeline_view_state.dart';
+import 'package:anywork/src/features/conversation/timeline/presentation_item.dart';
+import 'package:anywork/src/features/conversation/timeline/presentation_controller.dart';
+import 'package:anywork/src/features/conversation/views/timeline_view.dart';
+import 'package:anywork/src/features/conversation/connectors/timeline_row_connector.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
-import 'package:anywork/src/presentation/view_models/timeline_session_owner.dart';
-import 'package:anywork/src/shared/studio_driver_keys.dart';
-import 'package:anywork_client/studio_client.dart';
+import 'package:anywork/src/features/conversation/timeline/display_lease.dart';
+import 'package:anywork/src/diagnostics/studio_driver_keys.dart';
+import 'package:anywork_client/conversation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_chat_core/flutter_chat_core.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+
+import 'support/timeline_environment.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
-  final timestamp = DateTime.utc(2026, 1, 2, 3, 4, 5);
+  late TimelineTestEnvironment environment;
+  setUp(() {
+    environment = TimelineTestEnvironment(
+      timeline: const UnscriptedTimelineTransport(),
+    );
+  });
+  tearDown(() => environment.close());
+  final timestamp =
+      (DateTime.utc(2026, 1, 2, 3, 4, 5).millisecondsSinceEpoch ~/ 1000);
+
+  Message project(StudioTimelineItem item) {
+    final controller = InMemoryChatController();
+    final presentation = TimelinePresentationController(
+      controller,
+      generation: 1,
+    );
+    addTearDown(controller.dispose);
+    addTearDown(presentation.dispose);
+    presentation.add(TimelineMessagePayload.fromItem(item));
+    addTearDown(presentation.flushWrites);
+    return controller.messages.single;
+  }
 
   StudioTimelineItem textItem(
     String id, {
@@ -33,7 +59,7 @@ void main() {
     int omitted = 0,
     List<StudioTimelineDetailRef> details = const [],
     String? turnId = 'turn',
-    DateTime? updatedAt,
+    int? updatedAt,
   }) => StudioTimelineItem(
     item: ThreadItemView(
       id: id,
@@ -87,7 +113,7 @@ void main() {
         ),
         lifecycle: SucceededThreadToolView(
           timestamp,
-          ThreadToolOutputView(
+          ThreadToolOutput(
             result: result,
             attachments: const [],
             outputArtifacts: const [],
@@ -103,13 +129,16 @@ void main() {
 
   group('canonical item → 唯一 typed Message', () {
     test('每条条目恰好一条 Message，身份来自条目而不是索引', () {
-      final first = timelineMessageFor(textItem('item-a', ordinal: 1));
-      final second = timelineMessageFor(textItem('item-b', ordinal: 2));
+      final first = project(textItem('item-a', ordinal: 1));
+      final second = project(textItem('item-b', ordinal: 2));
       expect([first.id, second.id], ['item-a', 'item-b']);
       expect(first, isA<CustomMessage>());
-      expect(first.createdAt, timestamp);
+      expect(
+        first.createdAt,
+        DateTime.fromMillisecondsSinceEpoch(timestamp * 1000, isUtc: true),
+      );
       // 同一条目重复转换不改变身份：稳定身份不要求同一个实例。
-      final again = timelineMessageFor(textItem('item-a', ordinal: 1));
+      final again = project(textItem('item-a', ordinal: 1));
       expect(again.id, first.id);
       expect(timelinePayloadOf(again)!.revision, 1);
     });
@@ -136,16 +165,14 @@ void main() {
 
     test('保存与终态互相独立，省略账目来自条目本身', () {
       final payload = timelinePayloadOf(
-        timelineMessageFor(
-          textItem('saved-but-streaming', saved: true, terminal: false),
-        ),
+        project(textItem('saved-but-streaming', saved: true, terminal: false)),
       )!;
       expect(payload.saved, isTrue);
       expect(payload.terminal, isFalse);
       expect(payload.hasOmittedBody, isFalse);
 
       final streamingButSavedLater = timelinePayloadOf(
-        timelineMessageFor(textItem('terminal', terminal: true, saved: false)),
+        project(textItem('terminal', terminal: true, saved: false)),
       )!;
       expect(streamingButSavedLater.terminal, isTrue);
       expect(streamingButSavedLater.saved, isFalse);
@@ -153,7 +180,7 @@ void main() {
 
     test('逐字段详情引用按值语义查找，不依赖对象实例', () {
       final payload = timelinePayloadOf(
-        timelineMessageFor(
+        project(
           textItem(
             'detail',
             omitted: 8,
@@ -190,7 +217,7 @@ void main() {
           ),
         ],
       );
-      final message = timelineMessageFor(item);
+      final message = project(item);
       expect((message as CustomMessage).metadata, isNotEmpty);
       final payload = timelinePayloadOf(message)!;
       expect(payload.omittedBytes, 100);
@@ -200,9 +227,7 @@ void main() {
     });
 
     test('工具条目的 typed 事实来自条目自身，不解析摘要字符串', () {
-      final payload = timelinePayloadOf(
-        timelineMessageFor(toolItem('tool-1')),
-      )!;
+      final payload = timelinePayloadOf(project(toolItem('tool-1')))!;
       final tool = payload.item.tool;
       expect(tool, isNotNull);
       expect(tool!.name, 'exec_command');
@@ -215,12 +240,9 @@ void main() {
 
   group('原位更新保持身份', () {
     test('同身份、更高 revision 的字段提交原地生效并前进保存/终态', () {
-      final current = timelineMessageFor(
-        textItem('live', body: '前半', terminal: false),
-      );
-      final next = applyTimelineItemUpdate(
-        current,
-        const StudioTimelineUpdateItem(
+      final current = project(textItem('live', body: '前半', terminal: false));
+      final next = timelinePayloadOf(current)!.applyUpdate(
+        StudioTimelineUpdateItem(
           itemId: 'live',
           expectedRevision: 1,
           revision: 2,
@@ -231,15 +253,15 @@ void main() {
             StudioFieldUpdateView(
               field: ThreadTextFieldView(),
               change: AppendThreadFieldChangeView(' 后半'),
-              totalBytes: 7,
-              previewBytes: 7,
+              totalBytes: 13,
+              previewBytes: 13,
             ),
           ],
         ),
       );
       expect(next, isNotNull);
       expect(next!.id, current.id, reason: '身份必须保持，不移除后重插');
-      final payload = timelinePayloadOf(next)!;
+      final payload = next;
       expect(payload.revision, 2);
       expect(payload.saved, isTrue);
       expect(payload.terminal, isTrue);
@@ -247,10 +269,9 @@ void main() {
     });
 
     test('revision 不连续的更新被拒绝，交给显式重同步', () {
-      final current = timelineMessageFor(textItem('live', revision: 2));
-      final next = applyTimelineItemUpdate(
-        current,
-        const StudioTimelineUpdateItem(
+      final current = project(textItem('live', revision: 2));
+      final next = timelinePayloadOf(current)!.applyUpdate(
+        StudioTimelineUpdateItem(
           itemId: 'live',
           expectedRevision: 1,
           revision: 3,
@@ -271,7 +292,7 @@ void main() {
     });
 
     test('声明的整体省略量与逐字段账目矛盾时拒绝该帧', () {
-      final current = timelineMessageFor(
+      final current = project(
         textItem(
           'accounting',
           body: 'ab',
@@ -286,9 +307,8 @@ void main() {
           ],
         ),
       );
-      final next = applyTimelineItemUpdate(
-        current,
-        const StudioTimelineUpdateItem(
+      final next = timelinePayloadOf(current)!.applyUpdate(
+        StudioTimelineUpdateItem(
           itemId: 'accounting',
           expectedRevision: 1,
           revision: 1,
@@ -361,11 +381,10 @@ void main() {
 
   TimelineDisplayLease leaseWith(StudioTimelineItem item) {
     final lease = TimelineDisplayLease(
-      threadId: 'thread',
+      session: environment.conversations.session('thread'),
       generation: 1,
-      openQueries: (_) => null,
     );
-    lease.adoptBaseline(
+    lease.content.adoptBaseline(
       StudioTimelineBaseline(
         subscriptionId: 'test',
         version: 0,
@@ -385,32 +404,38 @@ void main() {
     await tester.binding.setSurfaceSize(size);
     addTearDown(() => tester.binding.setSurfaceSize(null));
     await tester.pumpWidget(
-      MaterialApp(
-        theme: pureStudioTheme(),
-        localizationsDelegates: AppLocalizations.localizationsDelegates,
-        supportedLocales: AppLocalizations.supportedLocales,
-        home: Scaffold(
-          body: TimelineView(
-            threadId: 'thread',
-            view: TimelineSessionViewState(
+      ProviderScope(
+        child: MaterialApp(
+          theme: pureStudioTheme(),
+          localizationsDelegates: AppLocalizations.localizationsDelegates,
+          supportedLocales: AppLocalizations.supportedLocales,
+          home: Scaffold(
+            body: TimelineView(
               threadId: 'thread',
-              generation: lease.generation,
-              mode: TimelineDisplayMode.live,
-              connection: TimelineConnectionPhase.ready,
-              connectionError: null,
-              olderCursor: null,
-              hasOlder: false,
-              isLoadingOlder: false,
-              olderError: null,
-              hasNewOutput: false,
-              isPreparingLive: false,
+              state: TimelineViewState(
+                threadId: 'thread',
+                generation: lease.generation,
+                displayMode: TimelineDisplayMode.live,
+                connectionPhase: TimelineConnectionPhase.ready,
+                connectionError: null,
+                olderCursor: null,
+                hasOlder: false,
+                olderLoading: false,
+                olderError: null,
+                hasNewOutput: false,
+                preparingLive: false,
+              ),
+              binding: lease.canvas,
+              messageBuilder: (context, message) => TimelineRowConnector(
+                message: message,
+                display: lease.binding,
+              ),
+              onLoadOlder: () async {},
+              onRetryOlder: () async {},
+              onReturnLive: () async {},
+              onEnterHistory: () {},
+              onRetryConnection: () async {},
             ),
-            lease: lease,
-            onLoadOlder: () async {},
-            onRetryOlder: () async {},
-            onReturnLive: () async {},
-            onEnterHistory: () {},
-            onRetryConnection: () async {},
           ),
         ),
       ),
@@ -423,7 +448,7 @@ void main() {
       final history = ThreadToolUserInputView(
         interactionId: 'interaction-1',
         questions: [question()],
-        state: const ResolvedThreadToolUserInputView([
+        state: ResolvedThreadToolUserInputView([
           ThreadUserInputAnswerView(questionId: 'q1', answers: ['A']),
         ]),
       );
@@ -452,8 +477,8 @@ void main() {
       );
 
       // 同身份原位更新（工具参数替换）：不重插消息，也不收起用户已展开的回执。
-      final applied = lease.applyPatch(
-        const StudioTimelinePatch(
+      final applied = lease.content.applyPatch(
+        StudioTimelinePatch(
           subscriptionId: 'test',
           from: 0,
           to: 1,
@@ -485,7 +510,7 @@ void main() {
         findsOneWidget,
         reason: '原位更新不得收起用户主动展开的回执',
       );
-      expect(lease.payloadOf('qa')!.revision, 2);
+      expect(lease.content.payloadOf('qa')!.revision, 2);
     });
   });
 
@@ -522,7 +547,7 @@ void main() {
       final lease = leaseWith(
         toolItemWithInput(
           planHistory(
-            const ResolvedThreadToolUserInputView([
+            ResolvedThreadToolUserInputView([
               ThreadUserInputAnswerView(
                 questionId: agentSessionPlanConfirmationQuestionId,
                 answers: [agentSessionPlanReviseAnswer, '请补充回滚步骤'],
@@ -549,7 +574,7 @@ void main() {
             text: 'Which option should the agent use for this long question?',
           ),
         ],
-        state: const ResolvedThreadToolUserInputView([
+        state: ResolvedThreadToolUserInputView([
           ThreadUserInputAnswerView(questionId: 'q1', answers: ['A']),
         ]),
       );

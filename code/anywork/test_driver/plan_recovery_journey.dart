@@ -82,7 +82,7 @@ const _quietRestartMarker = 'plan-recovery-quiet-restart';
 const _quietRecheckMarker = 'plan-recovery-quiet-recheck';
 
 /// 会话阅读区域的可定位句柄：`StudioDriverKeys.timeline` 的真实值
-/// （`lib/src/shared/studio_driver_keys.dart` → `ValueKey('timeline-scrollable')`）。
+/// （`lib/src/diagnostics/studio_driver_keys.dart` → `ValueKey('timeline-scrollable')`）。
 ///
 /// Host Driver 脚本在 `dart run` 下运行，不能 import 含 Flutter `ValueKey` 的 app 侧
 /// key 文件，因此这里保留与源码一一对应的 pure-Dart 字符串。

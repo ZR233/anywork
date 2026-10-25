@@ -221,6 +221,9 @@ class BridgeAccountSettingsDto {
   final String name;
   final String baseUrl;
   final bool hasBearerToken;
+
+  /// 凭据来源环境变量名（非凭据值）；`None` 表示该账号不使用环境变量凭据。
+  final String? bearerTokenEnv;
   final BigInt usageQueryRevision;
   final bool credentialRequired;
   final String capabilitySource;
@@ -248,6 +251,7 @@ class BridgeAccountSettingsDto {
     required this.name,
     required this.baseUrl,
     required this.hasBearerToken,
+    this.bearerTokenEnv,
     required this.usageQueryRevision,
     required this.credentialRequired,
     required this.capabilitySource,
@@ -275,6 +279,7 @@ class BridgeAccountSettingsDto {
       name.hashCode ^
       baseUrl.hashCode ^
       hasBearerToken.hashCode ^
+      bearerTokenEnv.hashCode ^
       usageQueryRevision.hashCode ^
       credentialRequired.hashCode ^
       capabilitySource.hashCode ^
@@ -304,6 +309,7 @@ class BridgeAccountSettingsDto {
           name == other.name &&
           baseUrl == other.baseUrl &&
           hasBearerToken == other.hasBearerToken &&
+          bearerTokenEnv == other.bearerTokenEnv &&
           usageQueryRevision == other.usageQueryRevision &&
           credentialRequired == other.credentialRequired &&
           capabilitySource == other.capabilitySource &&

@@ -6,32 +6,13 @@ use super::super::{
 use anyhow::Result;
 
 impl StudioRuntime {
-    /// Starts or retries diagnostics; concurrent requests share the current scan.
-    pub async fn retry_recovery(&self) -> Result<crate::StudioRecoveryStateSnapshot> {
-        let _lifecycle = self.lifecycle_lock.lock().await;
-        anyhow::ensure!(
-            self.runtime_state.snapshot().state.is_ready(),
-            "runtime is not ready"
-        );
-        self.start_recovery_scan().await;
-        for (_, thread) in self.threads.observed_threads() {
-            if !thread.snapshot().tool_cleanup.failures.is_empty() {
-                thread.retry_tool_cleanup().await?;
-            }
-        }
-        // A diagnostic scan cannot repair a failed catalog. Advance the refresh
-        // generation even when configuration fingerprints have not changed.
-        self.tool_catalog_updates.notify_one();
-        Ok(self.read_recovery_state())
-    }
-
     pub fn read_recovery_state(&self) -> crate::StudioRecoveryStateSnapshot {
         crate::StudioRecoveryStateSnapshot {
             state: self.recovery.state(),
         }
     }
 
-    pub(super) async fn start_recovery_scan(&self) {
+    pub(in crate::studio::runtime) async fn start_recovery_scan(&self) {
         let mut slot = self.recovery_task.lock().await;
         if slot.as_ref().is_some_and(|task| !task.is_finished()) {
             return;

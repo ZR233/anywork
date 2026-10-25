@@ -6,9 +6,11 @@
 import '../../../frb_generated.dart';
 
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
+import 'package:freezed_annotation/freezed_annotation.dart' hide protected;
+part 'error.freezed.dart';
 
 // These functions are ignored because they are not marked as `pub`: `invalid_argument`, `not_initialized`, `runtime_stopped`
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `from`, `from`, `from`, `from`, `from`, `from`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `from`, `from`, `from`, `from`, `from`, `from`, `from`
 
 /// FRB-only wire representation of [`pl_protocol::studio::StudioError`].
 class BridgeError implements FrbException {
@@ -16,14 +18,14 @@ class BridgeError implements FrbException {
   final String message;
   final bool retryable;
   final String correlationId;
-  final String? detailsJson;
+  final BridgeErrorDetails? details;
 
   const BridgeError({
     required this.code,
     required this.message,
     required this.retryable,
     required this.correlationId,
-    this.detailsJson,
+    this.details,
   });
 
   @override
@@ -32,7 +34,7 @@ class BridgeError implements FrbException {
       message.hashCode ^
       retryable.hashCode ^
       correlationId.hashCode ^
-      detailsJson.hashCode;
+      details.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -43,7 +45,7 @@ class BridgeError implements FrbException {
           message == other.message &&
           retryable == other.retryable &&
           correlationId == other.correlationId &&
-          detailsJson == other.detailsJson;
+          details == other.details;
 }
 
 /// FRB wire projection of the transport-neutral Studio error code.
@@ -56,6 +58,7 @@ enum BridgeErrorCode {
   busy,
   conflict,
   staleRevision,
+  superseded,
   permissionDenied,
   cancelled,
   cancellationTooLate,
@@ -65,4 +68,78 @@ enum BridgeErrorCode {
   storage,
   update,
   internal,
+}
+
+@freezed
+sealed class BridgeErrorDetails with _$BridgeErrorDetails {
+  const BridgeErrorDetails._();
+
+  const factory BridgeErrorDetails.startup({
+    required String step,
+    required BridgeStartupFailureKind kind,
+  }) = BridgeErrorDetails_Startup;
+  const factory BridgeErrorDetails.revision({
+    required BigInt expected,
+    required BigInt actual,
+  }) = BridgeErrorDetails_Revision;
+  const factory BridgeErrorDetails.sshAuthentication({bool? passwordOffered}) =
+      BridgeErrorDetails_SshAuthentication;
+  const factory BridgeErrorDetails.reason({required String reason}) =
+      BridgeErrorDetails_Reason;
+  const factory BridgeErrorDetails.identity({required String identity}) =
+      BridgeErrorDetails_Identity;
+  const factory BridgeErrorDetails.timelineRevision({
+    required String itemId,
+    required String field,
+    required BigInt revision,
+  }) = BridgeErrorDetails_TimelineRevision;
+  const factory BridgeErrorDetails.validation({
+    required List<BridgeValidationIssue> issues,
+  }) = BridgeErrorDetails_Validation;
+  const factory BridgeErrorDetails.thread({required String threadId}) =
+      BridgeErrorDetails_Thread;
+  const factory BridgeErrorDetails.resourceLimit({
+    required String resource,
+    required BigInt capacity,
+  }) = BridgeErrorDetails_ResourceLimit;
+  const factory BridgeErrorDetails.bot({
+    required String code,
+    String? platformCode,
+    String? guidance,
+  }) = BridgeErrorDetails_Bot;
+  const factory BridgeErrorDetails.catalogRevision({required BigInt revision}) =
+      BridgeErrorDetails_CatalogRevision;
+}
+
+enum BridgeStartupFailureKind {
+  modeDefinitions,
+  migration,
+  persistentData,
+  environment,
+  cancelled,
+  internal,
+}
+
+class BridgeValidationIssue {
+  final String code;
+  final String path;
+  final String message;
+
+  const BridgeValidationIssue({
+    required this.code,
+    required this.path,
+    required this.message,
+  });
+
+  @override
+  int get hashCode => code.hashCode ^ path.hashCode ^ message.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is BridgeValidationIssue &&
+          runtimeType == other.runtimeType &&
+          code == other.code &&
+          path == other.path &&
+          message == other.message;
 }

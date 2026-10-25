@@ -719,10 +719,9 @@ async fn save_disabled_bot(session: &Session, deadline: &Deadline) -> Result<(St
         reply.receipt.disposition
     );
     let bot = reply
-        .snapshot
-        .bots
-        .iter()
-        .find(|bot| bot.app_id == DEFAULT_APP_ID)
+        .bot
+        .as_ref()
+        .filter(|bot| bot.app_id == DEFAULT_APP_ID)
         .context("saveBot did not publish the synthetic bot")?;
     ensure!(
         !bot.enabled && matches!(bot.connection, BotConnectionState::Disabled),
@@ -789,10 +788,9 @@ fn saved_bot<'a>(
     phase: &str,
 ) -> Result<&'a BotSnapshot> {
     reply
-        .snapshot
-        .bots
-        .iter()
-        .find(|bot| bot.id == bot_id)
+        .bot
+        .as_ref()
+        .filter(|bot| bot.id == bot_id)
         .with_context(|| format!("{phase}: bot {bot_id} missing from the reply snapshot"))
 }
 

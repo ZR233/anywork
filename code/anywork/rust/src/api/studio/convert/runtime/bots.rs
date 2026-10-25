@@ -8,11 +8,10 @@ use pl_protocol::studio::{
     BotConversationThreadState, BotCredentialAvailability, BotCredentialOperation, BotDiagnostic,
     BotMessage, BotMessageBody, BotMessagePage, BotPairingRequest, BotPendingCredentialOperation,
     BotPlatform, BotRegistrationAttempt, BotRegistrationStatus, BotSecretUpdate, BotSendResult,
-    BotSendSegment, BotSendStatus, BotSnapshot, BotsCommandReply, BotsStateSnapshot,
-    CancelBotRegistrationRequest, CreateBotConversationThreadRequest, ListBotConversationsRequest,
-    ReadBotMessagesRequest, RetryBotConnectionRequest, SaveBotRequest, SendBotMessageRequest,
-    SetBotEnabledRequest, SetBotTrustedChatRequest, SetBotTrustedUserRequest,
-    StartBotRegistrationRequest,
+    BotSendSegment, BotSendStatus, BotSnapshot, BotsStateSnapshot, CancelBotRegistrationRequest,
+    CreateBotConversationThreadRequest, ListBotConversationsRequest, ReadBotMessagesRequest,
+    RetryBotConnectionRequest, SaveBotRequest, SendBotMessageRequest, SetBotEnabledRequest,
+    SetBotTrustedChatRequest, SetBotTrustedUserRequest, StartBotRegistrationRequest,
 };
 
 pub(crate) fn bridge_bots_state(value: BotsStateSnapshot) -> BridgeBotsStateSnapshot {
@@ -29,7 +28,7 @@ pub(crate) fn bridge_bots_state(value: BotsStateSnapshot) -> BridgeBotsStateSnap
     }
 }
 
-fn bridge_bot_snapshot(value: BotSnapshot) -> BridgeBotSnapshot {
+pub(crate) fn bridge_bot_snapshot(value: BotSnapshot) -> BridgeBotSnapshot {
     BridgeBotSnapshot {
         last_activity_at: value.last_activity_at,
         model_route: value.model_route.map(|route| BridgeBotModelRoute {
@@ -132,7 +131,9 @@ fn bridge_diagnostic(value: BotDiagnostic) -> BridgeBotDiagnostic {
     }
 }
 
-fn bridge_registration_attempt(value: BotRegistrationAttempt) -> BridgeBotRegistrationAttempt {
+pub(crate) fn bridge_registration_attempt(
+    value: BotRegistrationAttempt,
+) -> BridgeBotRegistrationAttempt {
     BridgeBotRegistrationAttempt {
         attempt_id: value.attempt_id,
         name: value.name,
@@ -340,18 +341,6 @@ pub(crate) fn protocol_create_thread(
         chat_id: value.chat_id,
         expected_config_revision: value.expected_config_revision,
         expected_binding_revision: value.expected_binding_revision,
-    }
-}
-
-pub(crate) fn bridge_bots_command_reply(value: BotsCommandReply) -> BridgeBotsCommandReply {
-    BridgeBotsCommandReply {
-        snapshot: bridge_bots_state(value.snapshot),
-        receipt: command_receipt(value.receipt),
-        stamp: value.stamp.map(|stamp| BridgeResourceStamp {
-            resource_key: stamp.resource_key,
-            owner_epoch: stamp.owner_epoch,
-            revision: stamp.revision,
-        }),
     }
 }
 

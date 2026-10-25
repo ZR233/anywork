@@ -795,6 +795,13 @@ impl ThreadStorageSink {
             channel: channel.clone(),
             call_observer_stop,
         });
+        // Claim precedes asynchronous accounting initialization. Keep its original detach guard
+        // here so cancelling preparation cannot leave a runnable-looking orphan incarnation.
+        let detach = DetachGuard {
+            store: inner.store.clone(),
+            thread_id: inner.thread.id.clone(),
+            owner,
+        };
         // Bind this incarnation before it reports anything: a superseded writer must never clear or
         // fail the watermarks of the writer that replaced it, and this one must be freed from the
         // queue its predecessor left behind.
@@ -835,11 +842,6 @@ impl ThreadStorageSink {
                 }
             }
         });
-        let detach = DetachGuard {
-            store: inner.store.clone(),
-            thread_id: inner.thread.id.clone(),
-            owner,
-        };
         let worker = inner.clone();
         let watchdog = Arc::downgrade(&inner);
         tokio::spawn(async move {
@@ -849,6 +851,11 @@ impl ThreadStorageSink {
                 tokio::time::sleep(Duration::from_secs(10)).await;
             }
         });
+        // No await separates this handoff from spawning the worker that owns `detach`.
+        inner
+            .store
+            .thread_persistence()
+            .start_writer(&inner.thread.id, owner);
         tokio::spawn(async move {
             let inner = worker;
             let _detach = detach;

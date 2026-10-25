@@ -9,7 +9,7 @@ pub use resource::{
 };
 
 /// 可以改变或重新观察领域状态的明确命令。
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub enum StateOperation {
     Initialize,

@@ -108,7 +108,7 @@ pub async fn create_product_topic_subscription(
         thread_receiver: tokio::sync::Mutex::new(None),
         product_topic_receiver: tokio::sync::Mutex::new(Some(receiver)),
         shutdown_receiver: tokio::sync::Mutex::new(None),
-        startup_receiver: tokio::sync::Mutex::new(None),
+
         facts,
     });
     bridge.subscriptions.register(&inner).await;

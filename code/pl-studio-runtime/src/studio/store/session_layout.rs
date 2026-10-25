@@ -1064,7 +1064,7 @@ mod layout_migration_tests {
         let attachments = store.list_thread_attachments("thread-a").await?;
         assert_eq!(attachments.len(), 1);
         assert_eq!(
-            store.read_attachment_bytes("thread-a", "att-1").await?,
+            tokio::fs::read(store.attachment_host_path(&attachments[0])?).await?,
             b"blob-bytes"
         );
         let persisted = tokio::fs::read_to_string(session.attachments_catalog()).await?;

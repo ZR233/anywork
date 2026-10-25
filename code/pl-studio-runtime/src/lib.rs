@@ -3,6 +3,12 @@
 //! 本 crate 负责 Studio 配置、SQLite projection、project/thread 编排与 bridge DTO；
 //! 通用模型循环、agent actor、工具和协议基础类型由 `pl-core` 提供。
 
+// 共享协议错误 `StudioError` 已通过装箱 `details` 收敛体积；本 crate 内部 shutdown/close
+// 失败结构刻意保留全部同时成立的事实（见 `write_behind/failure.rs`、`thread_observation/close.rs`
+// 的注释），其体积超过 clippy 默认阈值，且这些结构不跨 FFI 边界。这里只针对该内部诊断形态
+// 放宽误用同一阈值的告警，不覆盖协议侧错误类型。
+#![allow(clippy::result_large_err)]
+
 pub(crate) use pl_core::context::content_hash as canonical_content_hash;
 pub(crate) use pl_protocol::*;
 // Public Studio timeline signatures use the core content types; adapters need no direct
@@ -44,6 +50,7 @@ pub use config::{
 };
 pub use config_editor::{AccountEdit, AccountModelEdit, account_template_kind};
 pub use error_mapping::studio_error_from_anyhow;
+pub(crate) use error_mapping::studio_error_from_anyhow_ref;
 pub use first_run::{
     AccountTemplateKind, FirstRunAccountDraft, FirstRunConfigDraft, FirstRunModelDraft,
 };
@@ -73,23 +80,55 @@ pub use account_usage::{
     UnsupportedAccountUsage, ZhipuCodingPlanUsage, ZhipuQuotaLimit, ZhipuQuotaWindow,
     ZhipuToolUsageDetail, zhipu_limit_by_window,
 };
+pub use pl_protocol::studio::{
+    FeedCloseReport, InputAcceptanceEvidence, PersistedInputDisposition, StudioError, TextChunk,
+};
+pub use pl_protocol::thread_facets::identity::{
+    FeedClosedReason, MetricsIdentityRef, ReadScopeIdentity, ThreadFacet, ThreadFacetStamp,
+    ThreadFeedIdentity, ThreadObservationMode,
+};
+pub use pl_protocol::thread_facets::metrics::MetricsValue;
+pub use pl_protocol::thread_facets::read::values::MetricsIdentityReadHeader;
 pub use protocol::{
     StudioAgentProfileDiagnostic, StudioAgentProfilesData, StudioAgentProfilesStateSnapshot,
-    StudioPersistenceQueueStateSnapshot,
+    StudioPersistenceQueueStateSnapshot, StudioSkillsStateData,
 };
+pub use studio::account_usage::*;
+pub use studio::attachment_binary;
+pub use studio::bots::{StudioBotConversationsRead, StudioBotsFeed, StudioBotsSourceStatusRead};
+pub use studio::configuration;
+pub use studio::draft_commands;
+pub use studio::models;
+pub use studio::thread_authoring;
+pub use studio::thread_authoring_read;
+pub use studio::thread_configuration;
+pub use studio::thread_configuration_read;
+pub use studio::thread_context;
+pub use studio::thread_context_read;
+pub use studio::thread_execution;
+pub use studio::thread_execution_read;
+pub use studio::workspace;
+pub use studio::{lsp, mcp, skills};
+pub use studio::{modes, statistics, updates};
+pub use studio::{
+    persistence_products as persistence, recovery, remote_directory, startup_products as startup,
+};
+pub use tokio::sync::mpsc::Sender;
+
 pub use studio::{
     AccountUsageStateData, AccountUsageStateSnapshot, AttachmentRecord, PersistenceState,
     PersistenceStateSnapshot, ProductEventBus, ProjectRecord, SkillSearchResult,
     SkillsStateSnapshot, SshPasswordUpdate, SshServerRuntimeEntry, StudioDatabaseError,
-    StudioHostKind, StudioInstance, StudioInstanceLease, StudioProductTopicSubscription,
+    StudioHostKind, StudioInstance, StudioInstanceLease, StudioMetricsIdentityRead,
+    StudioMetricsSample, StudioMetricsSourceEvent, StudioProductTopicSubscription,
     StudioRecoveryIssue, StudioRecoveryIssueAction, StudioRecoveryIssueCategory,
     StudioRecoveryIssueScope, StudioRecoveryWorktreeOwner, StudioRuntime,
     StudioRuntimeLifecycleState, StudioRuntimeOptions, StudioRuntimeSnapshot,
     StudioRuntimeStateKind, StudioStartNewThreadResponse, StudioStartupError,
-    StudioStartupErrorKind, StudioStartupRecovery, StudioStore, StudioThreadSubscription,
-    StudioUpdateStateSnapshot, StudioWorktreeRecoveryPreview, ThreadPreparationObserver,
-    ThreadPreparationProgress, ThreadPreparationStage, ThreadRecord, TimelineContentReader,
-    TimelineTailStream,
+    StudioStartupErrorKind, StudioStartupRecovery, StudioStore, StudioThreadMetricsSource,
+    StudioThreadSubscription, StudioUpdateStateSnapshot, StudioWorktreeRecoveryPreview,
+    ThreadPreparationObserver, ThreadPreparationProgress, ThreadPreparationStage, ThreadRecord,
+    TimelineContentReader, TimelineTailStream,
 };
 pub use updater::{
     PreparedStudioUpdate, StudioUpdate, StudioUpdateAsset, StudioUpdateCancellation,

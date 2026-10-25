@@ -1,14 +1,14 @@
 import 'package:test/test.dart';
 
-import 'package:anywork_client/studio_client.dart';
+import 'package:anywork_client/conversation.dart';
 
 /// Typed wait presentation must survive Client projection, preview merge and
 /// field updates without Flutter parsing wait JSON.
 void main() {
-  final created = DateTime.fromMillisecondsSinceEpoch(1000);
+  const created = 1; // Unix seconds, not a millisecond timestamp.
 
   ThreadWaitPresentationView events({
-    required ThreadWaitStateView state,
+    required ThreadWaitState state,
     bool? messagesReady,
     List<ThreadWaitTargetView>? targets,
   }) {
@@ -22,7 +22,7 @@ void main() {
                 toolName: 'exec',
                 summary: 'cargo test',
                 summaryTruncated: true,
-                status: ThreadWaitTargetStatusView.running,
+                status: ThreadWaitTargetStatus.running,
               ),
             ],
         timeoutMs: 60000,
@@ -60,10 +60,10 @@ void main() {
 
   test('事件等待投影不把消息唤醒当成全部任务完成', () {
     final part = toolItem(
-      wait: events(state: ThreadWaitStateView.ready, messagesReady: true),
+      wait: events(state: ThreadWaitState.ready, messagesReady: true),
       lifecycle: SucceededThreadToolView(
         created,
-        const ThreadToolOutputView(
+        ThreadToolOutput(
           result: '{"tasks":[],"messagesReady":true,"timedOut":false}',
           attachments: [],
           outputArtifacts: [],
@@ -72,28 +72,28 @@ void main() {
     ).tool;
 
     expect(part?.wait, isNotNull);
-    expect(part!.wait!.state, ThreadWaitStateView.ready);
+    expect(part!.wait!.state, ThreadWaitState.ready);
     expect(part.wait!.messagesReady, isTrue);
     final intent = part.wait!.intent as ThreadWaitEventsIntentView;
     expect(intent.targets.single.taskId, 'task:exec-1');
-    expect(intent.targets.single.status, ThreadWaitTargetStatusView.running);
+    expect(intent.targets.single.status, ThreadWaitTargetStatus.running);
   });
 
   test('权威条目修订保留轻量 wait DTO，不因参数预览裁剪丢失', () {
     final current = toolItem(
-      wait: events(state: ThreadWaitStateView.waiting),
+      wait: events(state: ThreadWaitState.waiting),
       arguments: '',
     );
     final incoming = toolItem(
       wait: events(
-        state: ThreadWaitStateView.timedOut,
+        state: ThreadWaitState.timedOut,
         targets: const [
           ThreadWaitTargetView(
             taskId: 'task:exec-1',
             toolName: 'exec',
             summary: 'cargo test',
             summaryTruncated: true,
-            status: ThreadWaitTargetStatusView.running,
+            status: ThreadWaitTargetStatus.running,
           ),
         ],
       ),
@@ -101,7 +101,7 @@ void main() {
       arguments: '{"taskIds":["task:exec-1"],"timeoutMs":60000}',
       lifecycle: SucceededThreadToolView(
         created,
-        const ThreadToolOutputView(
+        ThreadToolOutput(
           result: '{"tasks":[],"messagesReady":false,"timedOut":true}',
           attachments: [],
           outputArtifacts: [],
@@ -111,7 +111,7 @@ void main() {
 
     final merged = current.convergeWith(incoming, omittedBytes: 0);
     expect(merged, isNotNull);
-    expect(merged!.tool?.wait?.state, ThreadWaitStateView.timedOut);
+    expect(merged!.tool?.wait?.state, ThreadWaitState.timedOut);
     final intent = merged.tool!.wait!.intent as ThreadWaitEventsIntentView;
     expect(intent.timeoutMs, 60000);
     expect(intent.targets.single.summaryTruncated, isTrue);
@@ -119,7 +119,7 @@ void main() {
 
   test('字段更新只改参数正文，不丢 wait 身份', () {
     final current = toolItem(
-      wait: events(state: ThreadWaitStateView.waiting),
+      wait: events(state: ThreadWaitState.waiting),
       arguments: '',
     );
     final next = current.applyFieldUpdates(
@@ -139,7 +139,7 @@ void main() {
     );
 
     expect(next, isNotNull);
-    expect(next!.tool?.wait?.state, ThreadWaitStateView.waiting);
+    expect(next!.tool?.wait?.state, ThreadWaitState.waiting);
     expect(next.tool?.arguments, contains('task:exec-1'));
   });
 }

@@ -21,18 +21,25 @@ use crate::{
 pub(super) struct LspStateRuntime {
     command_lock: Arc<Mutex<()>>,
     state: Arc<RwLock<StudioLspStateSnapshot>>,
+    source: Arc<super::lsp::source::LspSource>,
     events: ProductEventBus,
 }
 
 impl LspStateRuntime {
-    pub(super) fn new(events: ProductEventBus) -> Self {
-        Self {
+    pub(super) fn new(
+        events: ProductEventBus,
+        source: Arc<super::lsp::source::LspSource>,
+    ) -> anyhow::Result<Self> {
+        let initial = StudioLspStateSnapshot {
+            state: ObservedResource::uninitialized(unix_seconds()),
+        };
+        source.publish(&initial.state)?;
+        Ok(Self {
             command_lock: Arc::new(Mutex::new(())),
-            state: Arc::new(RwLock::new(StudioLspStateSnapshot {
-                state: ObservedResource::uninitialized(unix_seconds()),
-            })),
+            state: Arc::new(RwLock::new(initial)),
+            source,
             events,
-        }
+        })
     }
 
     pub(super) async fn command(&self) -> tokio::sync::MutexGuard<'_, ()> {
@@ -61,11 +68,15 @@ impl LspStateRuntime {
                 })?
                 .next_state,
         })
-        .await;
+        .await?;
         Ok(())
     }
 
-    pub(super) async fn ready(&self, health: StudioLspHealth, checked: bool) -> anyhow::Result<()> {
+    pub(super) async fn ready(
+        &self,
+        health: StudioLspHealth,
+        checked: bool,
+    ) -> anyhow::Result<Arc<super::lsp::LspSnapshot>> {
         let previous = self.read().await;
         let now = unix_seconds();
         self.publish(StudioLspStateSnapshot {
@@ -83,8 +94,7 @@ impl LspStateRuntime {
                 })?
                 .next_state,
         })
-        .await;
-        Ok(())
+        .await
     }
 
     pub(super) async fn failed(&self, error: &Error) -> anyhow::Result<()> {
@@ -103,7 +113,7 @@ impl LspStateRuntime {
                 })?
                 .next_state,
         })
-        .await;
+        .await?;
         Ok(())
     }
 
@@ -132,7 +142,7 @@ impl LspStateRuntime {
                 })?
                 .next_state,
         })
-        .await;
+        .await?;
         Ok(())
     }
 
@@ -147,13 +157,21 @@ impl LspStateRuntime {
                 })?
                 .next_state,
         })
-        .await;
+        .await?;
         Ok(())
     }
 
-    async fn publish(&self, snapshot: StudioLspStateSnapshot) {
-        *self.state.write().await = snapshot.clone();
+    async fn publish(
+        &self,
+        snapshot: StudioLspStateSnapshot,
+    ) -> anyhow::Result<Arc<super::lsp::LspSnapshot>> {
+        let captured = {
+            let mut state = self.state.write().await;
+            *state = snapshot.clone();
+            self.source.publish(&snapshot.state)
+        };
         self.events.emit_lsp_state(snapshot);
+        Ok(captured?)
     }
 }
 

@@ -91,6 +91,28 @@ pub(crate) fn resolve_child_selection(
     Ok(route)
 }
 
+/// Catalog queries and immutable Models capture use the same original candidate admission.
+/// A captured catalog retains only its qualification outcome, never this resolved route.
+pub(crate) fn resolve_catalog_selection(
+    config: &crate::StudioConfig,
+    account_id: &pl_model::config::AccountId,
+    entry: &pl_model::config::AccountModelEntry,
+) -> crate::Result<pl_model::config::ResolvedModelRoute> {
+    let effort = entry
+        .model
+        .default_effort()
+        .or_else(|| entry.model.supported_efforts().first().cloned());
+    resolve_child_selection(
+        config,
+        crate::StudioRole::Executor.id(),
+        &pl_model::config::ModelRouteConfig {
+            account_id: account_id.clone(),
+            model_id: entry.model.model_id.clone(),
+            effort: effort.map(pl_model::config::ReasoningEffort::new),
+        },
+    )
+}
+
 pub(crate) fn validate_credential(
     route: &pl_model::config::ResolvedModelRoute,
 ) -> crate::Result<()> {

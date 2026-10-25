@@ -3,14 +3,498 @@ use super::StudioThreadFactory;
 use super::errors::resource_error;
 use crate::resource_store::FileResourceStore;
 use crate::studio::ThreadRecord;
+use crate::studio::agent_host::workspace_preparation::WorkspaceCloseFailure;
 use crate::thread_assembler::{
     ChildThreadRequest, StudioChildResources, StudioThreadSpec, ThreadAssemblyError,
 };
+use futures::FutureExt;
+use futures::future::{BoxFuture, Shared};
 use pl_core::context::{
     ContextContent, ContextRecord, ContextSource, OpaquePayload, ResourceAccess,
 };
 use pl_tool::workspace::{AgentWorkspace, ToolWorkspace};
-use std::{collections::BTreeMap, path::PathBuf, sync::Arc};
+use std::{
+    collections::BTreeMap,
+    path::PathBuf,
+    sync::{Arc, Mutex},
+};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::studio) enum FactoryClosePhase {
+    Manager,
+    AbandonedIdentity,
+    AbandonedProjection,
+}
+
+#[derive(Debug, Clone)]
+pub(in crate::studio) enum FactoryCloseIssue {
+    Workspace(WorkspaceCloseFailure),
+    #[allow(dead_code)] // 保留：关闭/停机诊断事实，报告投影的读取方尚未接回；删除会丢失去噪证据。
+    Failed {
+        phase: FactoryClosePhase,
+        cause: Arc<anyhow::Error>,
+    },
+}
+#[allow(dead_code)] // 保留：关闭/停机诊断事实，报告投影的读取方尚未接回；删除会丢失去噪证据。
+impl FactoryCloseIssue {
+    pub(in crate::studio) fn workspace_failure(&self) -> Option<&WorkspaceCloseFailure> {
+        match self {
+            Self::Workspace(failure) => Some(failure),
+            Self::Failed { .. } => None,
+        }
+    }
+    pub(in crate::studio) fn raw_cause(&self) -> Option<&Arc<anyhow::Error>> {
+        match self {
+            Self::Failed { cause, .. } => Some(cause),
+            Self::Workspace(_) => None,
+        }
+    }
+    pub(in crate::studio) fn phase_label(&self) -> &'static str {
+        match self {
+            Self::Workspace(_) => "workspace",
+            Self::Failed {
+                phase: FactoryClosePhase::Manager,
+                ..
+            } => "manager",
+            Self::Failed {
+                phase: FactoryClosePhase::AbandonedIdentity,
+                ..
+            } => "abandonedIdentity",
+            Self::Failed {
+                phase: FactoryClosePhase::AbandonedProjection,
+                ..
+            } => "abandonedProjection",
+        }
+    }
+}
+
+#[derive(Clone)]
+pub(crate) struct FactoryCloseFailure {
+    run: Arc<FactoryClose>,
+    pub(in crate::studio) issues: Vec<FactoryCloseIssue>,
+}
+impl std::fmt::Debug for FactoryCloseFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FactoryCloseFailure")
+            .field("issues", &self.issues)
+            .finish_non_exhaustive()
+    }
+}
+impl std::fmt::Display for FactoryCloseFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("original child factory resources remain unresolved")
+    }
+}
+impl std::error::Error for FactoryCloseFailure {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.issues.first().map(|issue| match issue {
+            FactoryCloseIssue::Workspace(failure) => failure as _,
+            FactoryCloseIssue::Failed { cause, .. } => cause.as_ref().as_ref(),
+        })
+    }
+}
+impl FactoryCloseFailure {
+    pub(crate) fn original_is_complete(&self) -> bool {
+        let progress = self
+            .run
+            .progress
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        matches!(progress.workspace, WorkspaceStep::Complete)
+            && matches!(progress.directory, DirectoryStep::Complete)
+    }
+    pub(crate) fn can_resume_original(&self) -> bool {
+        let progress = self
+            .run
+            .progress
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let workspace = match &progress.workspace {
+            WorkspaceStep::Unattempted => true,
+            WorkspaceStep::Wait(wait) => match wait.peek() {
+                None | Some(Ok(())) => true,
+                Some(Err(failure)) => {
+                    failure.can_resume_original() || failure.original_is_complete()
+                }
+            },
+            WorkspaceStep::Complete | WorkspaceStep::Manager(_) => false,
+        };
+        let directory = self.run.directory_identity_matches()
+            && match &progress.directory {
+                DirectoryStep::Unattempted => true,
+                DirectoryStep::Wait(wait) => match wait.peek() {
+                    None | Some(Ok(())) => true,
+                    Some(Err(error)) => directory_retryable(error),
+                },
+                DirectoryStep::Complete | DirectoryStep::Identity(_) => false,
+            };
+        workspace || directory
+    }
+    /// Caller retains the original assembler operation/cleanup boundary. This continuation never
+    /// calls the product factory again and freezes only already failed eligible leaf outcomes.
+    pub(crate) async fn resume_original(&self) -> Result<(), Self> {
+        if self.original_is_complete() {
+            return Ok(());
+        }
+        if !self.can_resume_original() {
+            return Err(self.clone());
+        }
+        self.run.drive(self.run.grant()).await
+    }
+}
+
+type WorkspaceWait = Shared<BoxFuture<'static, Result<(), Arc<WorkspaceCloseFailure>>>>;
+type DirectoryWait = Shared<BoxFuture<'static, Result<(), Arc<anyhow::Error>>>>;
+enum WorkspaceStep {
+    Unattempted,
+    Wait(WorkspaceWait),
+    Manager(Arc<anyhow::Error>),
+    Complete,
+}
+enum DirectoryStep {
+    Unattempted,
+    Wait(DirectoryWait),
+    Identity(Arc<anyhow::Error>),
+    Complete,
+}
+struct FactoryProgress {
+    workspace: WorkspaceStep,
+    directory: DirectoryStep,
+}
+#[derive(Default)]
+struct FactoryGrant {
+    workspace: Option<Arc<WorkspaceCloseFailure>>,
+    directory: Option<Arc<anyhow::Error>>,
+}
+struct FactoryClose {
+    worktrees: crate::studio::agent_host::worktree_lease::WorktreeLeaseOwner,
+    ssh_manager: Arc<pl_tool::remote::SshManager>,
+    events: crate::studio::ProductEventBus,
+    id: String,
+    lease: Option<crate::studio::agent_host::worktree_lease::WorktreeLease>,
+    disposition: pl_tool::collaboration::thread::AgentWorkspaceDisposition,
+    product: Option<pl_protocol::Thread>,
+    progress: Mutex<FactoryProgress>,
+}
+
+impl FactoryClose {
+    fn directory_identity_matches(&self) -> bool {
+        let Some(original) = &self.product else {
+            return true;
+        };
+        self.events
+            .thread_snapshot(&self.id)
+            .is_some_and(|current| {
+                current.id == original.id
+                    && current.root_thread_id == original.root_thread_id
+                    && current.project_id == original.project_id
+                    && current.parent_thread_id == original.parent_thread_id
+                    && current.created_at == original.created_at
+            })
+    }
+
+    fn directory_wait(&self) -> DirectoryWait {
+        let events = self.events.clone();
+        let id = self.id.clone();
+        async move {
+            events
+                .fault_unregistered_child(&id, "child preparation was not published")
+                .await
+                .map_err(Arc::new)
+        }
+        .boxed()
+        .shared()
+    }
+
+    fn grant(&self) -> FactoryGrant {
+        let progress = self
+            .progress
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let workspace = match &progress.workspace {
+            WorkspaceStep::Wait(wait) => wait
+                .peek()
+                .and_then(|result| result.as_ref().err())
+                .filter(|failure| failure.can_resume_original() || failure.original_is_complete())
+                .cloned(),
+            _ => None,
+        };
+        let directory = match &progress.directory {
+            DirectoryStep::Wait(wait) => wait
+                .peek()
+                .and_then(|result| result.as_ref().err())
+                .filter(|error| self.directory_identity_matches() && directory_retryable(error))
+                .cloned(),
+            _ => None,
+        };
+        FactoryGrant {
+            workspace,
+            directory,
+        }
+    }
+
+    async fn workspace(
+        &self,
+        grant: Option<&Arc<WorkspaceCloseFailure>>,
+    ) -> Result<(), FactoryCloseIssue> {
+        let unattempted = matches!(
+            self.progress
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .workspace,
+            WorkspaceStep::Unattempted
+        );
+        if unattempted {
+            use crate::studio::agent_host::worktree_lease::{
+                WorktreeLeaseOwnerKind, WorktreeLeaseState,
+            };
+            let candidate = match self.lease.as_ref().filter(|lease| {
+                lease.owner_kind == WorktreeLeaseOwnerKind::Child
+                    && lease.state != WorktreeLeaseState::Cleaned
+            }) {
+                None => WorkspaceStep::Complete,
+                Some(lease) => {
+                    match crate::studio::agent_host::workspace_preparation::manager_from_lease(
+                        &self.ssh_manager,
+                        lease,
+                    ) {
+                        Err(error) => WorkspaceStep::Manager(Arc::new(anyhow::Error::new(error))),
+                        Ok(manager) => {
+                            let leases = self.worktrees.clone();
+                            let lease = lease.clone();
+                            let disposition = self.disposition;
+                            WorkspaceStep::Wait(async move {
+                            crate::studio::agent_host::workspace_preparation::close_workspace(&leases, &manager, lease, disposition)
+                                .await.map_err(Arc::new)
+                        }.boxed().shared())
+                        }
+                    }
+                }
+            };
+            let retired = {
+                let mut progress = self
+                    .progress
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                if matches!(progress.workspace, WorkspaceStep::Unattempted) {
+                    Some(std::mem::replace(&mut progress.workspace, candidate))
+                } else {
+                    Some(candidate)
+                }
+            };
+            drop(retired);
+        }
+        let (wait, retired) = {
+            let mut progress = self
+                .progress
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            match &mut progress.workspace {
+                WorkspaceStep::Complete => return Ok(()),
+                WorkspaceStep::Manager(cause) => {
+                    return Err(FactoryCloseIssue::Failed {
+                        phase: FactoryClosePhase::Manager,
+                        cause: cause.clone(),
+                    });
+                }
+                WorkspaceStep::Wait(wait) => {
+                    let failed = wait
+                        .peek()
+                        .and_then(|result| result.as_ref().err())
+                        .cloned();
+                    let retired = if let Some(failed) = failed
+                        && grant.is_some_and(|original| Arc::ptr_eq(original, &failed))
+                        && (failed.can_resume_original() || failed.original_is_complete())
+                    {
+                        Some(std::mem::replace(
+                            wait,
+                            async move { failed.resume_original().await.map_err(Arc::new) }
+                                .boxed()
+                                .shared(),
+                        ))
+                    } else {
+                        None
+                    };
+                    (wait.clone(), retired)
+                }
+                WorkspaceStep::Unattempted => unreachable!("workspace step installed"),
+            }
+        };
+        drop(retired);
+        match wait.await {
+            Ok(()) => {
+                let retired = std::mem::replace(
+                    &mut self
+                        .progress
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .workspace,
+                    WorkspaceStep::Complete,
+                );
+                drop(retired);
+                Ok(())
+            }
+            Err(failure) => Err(FactoryCloseIssue::Workspace(failure.as_ref().clone())),
+        }
+    }
+
+    async fn directory(&self, grant: Option<&Arc<anyhow::Error>>) -> Result<(), FactoryCloseIssue> {
+        let unattempted = matches!(
+            self.progress
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .directory,
+            DirectoryStep::Unattempted
+        );
+        if unattempted {
+            let candidate = if self.product.is_some() {
+                if !self.directory_identity_matches() {
+                    DirectoryStep::Identity(Arc::new(anyhow::anyhow!(
+                        "original abandoned child directory identity changed"
+                    )))
+                } else {
+                    DirectoryStep::Wait(self.directory_wait())
+                }
+            } else {
+                DirectoryStep::Complete
+            };
+            let retired = {
+                let mut progress = self
+                    .progress
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                if matches!(progress.directory, DirectoryStep::Unattempted) {
+                    Some(std::mem::replace(&mut progress.directory, candidate))
+                } else {
+                    Some(candidate)
+                }
+            };
+            drop(retired);
+        }
+        let (wait, retired) = {
+            let mut progress = self
+                .progress
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            match &mut progress.directory {
+                DirectoryStep::Complete => return Ok(()),
+                DirectoryStep::Identity(cause) => {
+                    return Err(FactoryCloseIssue::Failed {
+                        phase: FactoryClosePhase::AbandonedIdentity,
+                        cause: cause.clone(),
+                    });
+                }
+                DirectoryStep::Wait(wait) => {
+                    // Only this failed projection may be retried. The original operation permit
+                    // still protects the factory identity; the existing helper owns its DTO rules.
+                    let failed = wait
+                        .peek()
+                        .and_then(|result| result.as_ref().err())
+                        .cloned();
+                    let retired = if let Some(failed) = failed
+                        && grant.is_some_and(|original| Arc::ptr_eq(original, &failed))
+                        && self.directory_identity_matches()
+                        && directory_retryable(&failed)
+                    {
+                        Some(std::mem::replace(wait, self.directory_wait()))
+                    } else {
+                        None
+                    };
+                    (wait.clone(), retired)
+                }
+                DirectoryStep::Unattempted => unreachable!("directory step installed"),
+            }
+        };
+        drop(retired);
+        match wait.await {
+            Ok(()) => {
+                let retired = std::mem::replace(
+                    &mut self
+                        .progress
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .directory,
+                    DirectoryStep::Complete,
+                );
+                drop(retired);
+                Ok(())
+            }
+            Err(cause) => Err(FactoryCloseIssue::Failed {
+                phase: FactoryClosePhase::AbandonedProjection,
+                cause,
+            }),
+        }
+    }
+
+    async fn drive(self: &Arc<Self>, grant: FactoryGrant) -> Result<(), FactoryCloseFailure> {
+        let (workspace, directory) = futures::join!(
+            self.workspace(grant.workspace.as_ref()),
+            self.directory(grant.directory.as_ref())
+        );
+        let issues: Vec<_> = [workspace.err(), directory.err()]
+            .into_iter()
+            .flatten()
+            .collect();
+        if issues.is_empty() {
+            Ok(())
+        } else {
+            Err(FactoryCloseFailure {
+                run: self.clone(),
+                issues,
+            })
+        }
+    }
+}
+
+fn directory_retryable(error: &anyhow::Error) -> bool {
+    !error
+        .chain()
+        .any(|source| source.is::<tokio::task::JoinError>())
+        && error.chain().any(|source| source.is::<std::io::Error>())
+}
+
+impl StudioThreadFactory {
+    async fn close_factory_resources(
+        &self,
+        id: &str,
+        kind: FactoryCloseKind,
+    ) -> Result<(), FactoryCloseFailure> {
+        let product = if matches!(kind, FactoryCloseKind::Unpublished) {
+            self.services.product_events.thread_snapshot(id)
+        } else {
+            None
+        };
+        let disposition = match kind {
+            FactoryCloseKind::Published(disposition) => disposition,
+            FactoryCloseKind::Unpublished => {
+                pl_tool::collaboration::thread::AgentWorkspaceDisposition::Cleanup
+            }
+        };
+        let run = Arc::new(FactoryClose {
+            worktrees: self.services.worktrees.clone(),
+            ssh_manager: self.services.ssh_manager.clone(),
+            events: self.services.product_events.clone(),
+            id: id.to_owned(),
+            lease: self.services.worktrees.get(id),
+            disposition,
+            progress: Mutex::new(FactoryProgress {
+                workspace: WorkspaceStep::Unattempted,
+                directory: if product.is_some() {
+                    DirectoryStep::Unattempted
+                } else {
+                    DirectoryStep::Complete
+                },
+            }),
+            product,
+        });
+        run.drive(FactoryGrant::default()).await
+    }
+}
+
+enum FactoryCloseKind {
+    Published(pl_tool::collaboration::thread::AgentWorkspaceDisposition),
+    Unpublished,
+}
 
 impl StudioChildResources for StudioThreadFactory {
     async fn prepare(
@@ -239,70 +723,15 @@ impl StudioChildResources for StudioThreadFactory {
         id: &str,
         disposition: pl_tool::collaboration::thread::AgentWorkspaceDisposition,
     ) -> Result<(), ThreadAssemblyError> {
-        let Some(lease) = self.services.worktrees.get(id) else {
-            return Ok(());
-        };
-        // 会话自身 worktree 只由显式 Recovery 清理，不随 Thread 关闭删除。
-        if lease.owner_kind
-            != crate::studio::agent_host::worktree_lease::WorktreeLeaseOwnerKind::Child
-        {
-            return Ok(());
-        }
-        let manager = crate::studio::agent_host::workspace_preparation::manager_from_lease(
-            &self.services.ssh_manager,
-            &lease,
-        )
-        .map_err(|error| resource_error("open published workspace manager", error))?;
-        crate::studio::agent_host::workspace_preparation::close_workspace(
-            &self.services.worktrees,
-            &manager,
-            lease,
-            disposition,
-        )
-        .await
-        .map_err(|error| resource_error("close published workspace", error))
+        self.close_factory_resources(id, FactoryCloseKind::Published(disposition))
+            .await
+            .map_err(|failure| resource_error("close original published workspace", failure))
     }
 
     async fn discard_unpublished(&self, id: &str) -> Result<(), ThreadAssemblyError> {
-        if let Some(mut lease) = self.services.worktrees.get(id) {
-            use crate::studio::agent_host::worktree_lease::WorktreeLeaseState;
-            let unpublished_child = lease.owner_kind
-                == crate::studio::agent_host::worktree_lease::WorktreeLeaseOwnerKind::Child;
-            if unpublished_child && lease.state != WorktreeLeaseState::Cleaned {
-                let manager = crate::studio::agent_host::workspace_preparation::manager_from_lease(
-                    &self.services.ssh_manager,
-                    &lease,
-                )
-                .map_err(|error| resource_error("open unpublished workspace manager", error))?;
-                let handle = crate::agent::worktree::WorktreeHandle {
-                    path: PathBuf::from(&lease.path),
-                    branch: lease.branch.clone(),
-                    base_commit: lease.base_commit.clone(),
-                };
-                match manager.discard(&handle).await {
-                    Ok(()) => lease.transition(WorktreeLeaseState::Cleaned),
-                    Err(error) => {
-                        lease.transition(WorktreeLeaseState::Preserved);
-                        self.services.worktrees.record(lease).map_err(|failure| {
-                            resource_error("retain failed workspace cleanup", failure)
-                        })?;
-                        return Err(resource_error("discard unpublished workspace", error));
-                    }
-                }
-                self.services
-                    .worktrees
-                    .record(lease)
-                    .map_err(|error| resource_error("record workspace cleanup", error))?;
-            }
-        }
-        if self.services.product_events.thread_snapshot(id).is_some() {
-            self.services
-                .product_events
-                .fault_unregistered_child(id, "child preparation was not published")
-                .await
-                .map_err(|error| resource_error("record abandoned child", error))?;
-        }
-        Ok(())
+        self.close_factory_resources(id, FactoryCloseKind::Unpublished)
+            .await
+            .map_err(|failure| resource_error("close original unpublished resources", failure))
     }
 }
 

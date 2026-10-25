@@ -1,12 +1,25 @@
-import 'package:anywork/src/domain/models/timeline_presentation.dart';
-import 'package:anywork/src/presentation/view_models/timeline_session_owner.dart';
-import 'package:anywork_client/studio_client.dart';
+import 'dart:async';
+
+import 'package:anywork/src/features/conversation/timeline/presentation_item.dart';
+import 'package:anywork/src/features/conversation/timeline/presentation_controller.dart';
+import 'package:anywork/src/features/conversation/timeline/display_lease.dart';
+import 'package:anywork_client/conversation.dart';
 import 'package:flutter_chat_core/flutter_chat_core.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 /// 展示 lease 的缺陷敏感度：唯一 loadedMessage 集合、身份稳定、真实删除、重叠页去重、
 /// History 冻结与真实卸载释放（design/26 §26.3、§26.8）。
+import 'support/timeline_environment.dart';
+
 void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
+  late TimelineTestEnvironment environment;
+  setUp(() {
+    environment = TimelineTestEnvironment(
+      timeline: const UnscriptedTimelineTransport(),
+    );
+  });
+  tearDown(() => environment.close());
   StudioTimelineItem item(
     String id,
     int revision, {
@@ -21,14 +34,16 @@ void main() {
       turnId: turnId,
       ordinal: revision,
       revision: revision,
-      createdAt: DateTime.utc(2026),
-      updatedAt: DateTime.utc(2026),
+      createdAt: (DateTime.utc(2026).millisecondsSinceEpoch ~/ 1000),
+      updatedAt: (DateTime.utc(2026).millisecondsSinceEpoch ~/ 1000),
       state: ThreadTextItemStateView(
         channel: ThreadTextChannel.finalAnswer,
         text: body,
         attachments: const [],
         lifecycle: lifecycle == StudioTimelineLifecycle.terminal
-            ? CompletedThreadContentView(DateTime.utc(2026))
+            ? CompletedThreadContentView(
+                (DateTime.utc(2026).millisecondsSinceEpoch ~/ 1000),
+              )
             : const StreamingThreadContentView(),
       ),
       saved: saved,
@@ -40,18 +55,87 @@ void main() {
   );
 
   TimelineDisplayLease lease() => TimelineDisplayLease(
-    threadId: 'thread',
+    session: environment.conversations.session('thread'),
     generation: 1,
-    openQueries: (_) => null,
   );
 
   List<String> messageIds(TimelineDisplayLease value) => [
     for (final message in value.controller.messages) message.id,
   ];
 
+  // ---- controller 写入屏障（flushWrites）----------------------------------
+  //
+  // 真实 TimelinePresentationController + 官方 InMemoryChatController 合法子类
+  // 提供完成/失败 gate：证明本批全部写入真实结束后 flush 才结算、首个错误在全批
+  // 结束后传播、批次不被跨帧排队（design/26 v3 §7）。
+
+  test('flushWrites 等待本批全部 controller 写入真实结束', () async {
+    final gate = _GatedChatController();
+    final presentation = TimelinePresentationController(gate, generation: 9);
+    addTearDown(presentation.dispose);
+    addTearDown(gate.dispose);
+
+    presentation.add(TimelineMessagePayload.fromItem(item('a', 1)));
+    presentation.add(TimelineMessagePayload.fromItem(item('b', 2)));
+    expect(gate.pending, hasLength(2));
+
+    var settled = false;
+    final flushed = presentation.flushWrites().then((_) => settled = true);
+    await pumpEventQueue();
+    expect(settled, isFalse, reason: 'gate 未放行时 flush 不得结算');
+
+    gate.releaseAt(0);
+    await pumpEventQueue();
+    expect(settled, isFalse, reason: '还有一笔回执未结束');
+
+    gate.releaseAt(1);
+    await flushed;
+    expect(settled, isTrue);
+    expect(gate.pending, isEmpty);
+    // 本批已认领：再次 flush 是新的空批次，不跨帧排 future 链。
+    await presentation.flushWrites();
+  });
+
+  test('flushWrites 的失败在全部写入结束后传播，不提前以首错结算', () async {
+    final gate = _GatedChatController();
+    final presentation = TimelinePresentationController(gate, generation: 10);
+    addTearDown(presentation.dispose);
+    addTearDown(gate.dispose);
+    final failure = StateError('controller write rejected');
+
+    presentation.add(TimelineMessagePayload.fromItem(item('a', 1)));
+    presentation.add(TimelineMessagePayload.fromItem(item('b', 2)));
+
+    var failed = false;
+    final flushed = presentation.flushWrites().then<void>(
+      (_) {
+        fail('flush must not complete successfully');
+      },
+      onError: (Object error, StackTrace _) {
+        failed = true;
+        expect(error, same(failure));
+      },
+    );
+    await pumpEventQueue();
+    expect(failed, isFalse, reason: '另一笔更慢的写入尚未结束');
+
+    gate.failAt(0, failure);
+    await pumpEventQueue();
+    expect(failed, isFalse, reason: '首错不等于全部写入已结束');
+
+    gate.releaseAt(1);
+    await flushed;
+    expect(failed, isTrue);
+    expect(gate.pending, isEmpty);
+    // 失败批次后的下一批不受影响。
+    presentation.add(TimelineMessagePayload.fromItem(item('c', 3)));
+    gate.releaseLast();
+    await presentation.flushWrites();
+  });
+
   test('baseline becomes the唯一 loaded message collection', () {
     final display = lease();
-    display.adoptBaseline(
+    display.content.adoptBaseline(
       StudioTimelineBaseline(
         subscriptionId: 'sub',
         version: 4,
@@ -61,15 +145,15 @@ void main() {
       ),
     );
     expect(messageIds(display), ['a', 'b']);
-    expect(display.appliedVersion, 4);
-    expect(display.olderCursor, 'tlp1.before');
-    expect(display.hasOlder, isTrue);
-    expect(display.loadedCount, 2);
+    expect(display.content.appliedVersion, 4);
+    expect(display.content.olderCursor, 'tlp1.before');
+    expect(display.content.hasOlder, isTrue);
+    expect(display.content.loadedCount, 2);
   });
 
   test('add/update/remove keep canonical identity and never re-create it', () {
     final display = lease();
-    display.adoptBaseline(
+    display.content.adoptBaseline(
       StudioTimelineBaseline(
         subscriptionId: 'sub',
         version: 1,
@@ -82,7 +166,7 @@ void main() {
 
     // 重复交付已加载身份：不 remove/reinsert、不改 ID；稳定身份不要求同一 Dart 实例。
     expect(
-      display.applyPatch(
+      display.content.applyPatch(
         StudioTimelinePatch(
           subscriptionId: 'sub',
           from: 1,
@@ -101,7 +185,7 @@ void main() {
 
     // 原位更新：同一身份、新正文。
     expect(
-      display.applyPatch(
+      display.content.applyPatch(
         StudioTimelinePatch(
           subscriptionId: 'sub',
           from: 2,
@@ -139,7 +223,7 @@ void main() {
 
     // 真实删除：即使该身份不在 SDK 有界尾部里也必须交付给展示。
     expect(
-      display.applyPatch(
+      display.content.applyPatch(
         StudioTimelinePatch(
           subscriptionId: 'sub',
           from: 3,
@@ -151,12 +235,12 @@ void main() {
       isTrue,
     );
     expect(display.controller.messages, isEmpty);
-    expect(display.loadedCount, 0);
+    expect(display.content.loadedCount, 0);
   });
 
   test('a revision the display cannot continue asks for a new baseline', () {
     final display = lease();
-    display.adoptBaseline(
+    display.content.adoptBaseline(
       StudioTimelineBaseline(
         subscriptionId: 'sub',
         version: 1,
@@ -166,7 +250,7 @@ void main() {
       ),
     );
     expect(
-      display.applyPatch(
+      display.content.applyPatch(
         StudioTimelinePatch(
           subscriptionId: 'sub',
           from: 7,
@@ -182,7 +266,7 @@ void main() {
 
   test('older pages prepend without duplicating loaded identities', () {
     final display = lease();
-    display.adoptBaseline(
+    display.content.adoptBaseline(
       StudioTimelineBaseline(
         subscriptionId: 'sub',
         version: 9,
@@ -191,7 +275,7 @@ void main() {
         hasOlder: true,
       ),
     );
-    final inserted = display.prependOlder(
+    final inserted = display.content.prependOlder(
       StudioTimelinePage(
         items: [item('a', 1), item('b', 2), item('c', 3)],
         before: 'tlp1.a',
@@ -200,14 +284,14 @@ void main() {
     );
     expect(inserted, 2, reason: 'overlapping identity is not inserted twice');
     expect(messageIds(display), ['a', 'b', 'c']);
-    expect(display.olderCursor, 'tlp1.a');
+    expect(display.content.olderCursor, 'tlp1.a');
     // 分页不抬高冻结展示的内容水位。
-    expect(display.appliedVersion, 9);
+    expect(display.content.appliedVersion, 9);
   });
 
   test('History freezes content, structure and saved facts', () {
     final display = lease();
-    display.adoptBaseline(
+    display.content.adoptBaseline(
       StudioTimelineBaseline(
         subscriptionId: 'sub',
         version: 1,
@@ -217,9 +301,9 @@ void main() {
       ),
     );
     final frozen = display.controller.messages.single;
-    display.enterHistory();
+    display.content.enterHistory();
     expect(
-      display.applyPatch(
+      display.content.applyPatch(
         StudioTimelinePatch(
           subscriptionId: 'sub',
           from: 1,
@@ -242,7 +326,11 @@ void main() {
       isTrue,
     );
     expect(display.controller.messages.single, same(frozen));
-    expect(display.appliedVersion, 1, reason: 'frozen display watermark stays');
+    expect(
+      display.content.appliedVersion,
+      1,
+      reason: 'frozen display watermark stays',
+    );
     expect(
       timelinePayloadOf(frozen)!.saved,
       isFalse,
@@ -254,18 +342,18 @@ void main() {
     'an unmounted lease releases directly; a mounted one waits for unmount',
     () async {
       final idle = lease();
-      await idle.retire();
+      await idle.close();
       expect(idle.isReleased, isTrue);
 
       final mounted = lease();
-      mounted.bind();
-      final retiring = mounted.retire();
+      final mount = mounted.canvas.mount();
+      final retiring = mounted.close();
       expect(
         mounted.isReleased,
         isFalse,
         reason: 'the real subtree still borrows the controller',
       );
-      await mounted.unbind();
+      mount.unmount();
       await retiring;
       expect(mounted.isReleased, isTrue);
     },
@@ -273,16 +361,14 @@ void main() {
 
   test('chat key changes with the generation and scroll keeps no offset', () {
     final first = TimelineDisplayLease(
-      threadId: 'thread',
+      session: environment.conversations.session('thread'),
       generation: 1,
-      openQueries: (_) => null,
     );
     final second = TimelineDisplayLease(
-      threadId: 'thread',
+      session: environment.conversations.session('thread'),
       generation: 2,
-      openQueries: (_) => null,
     );
-    expect(first.chatKey, isNot(second.chatKey));
+    expect(first.canvas.chatKey, isNot(second.canvas.chatKey));
     expect(first.scrollController.keepScrollOffset, isFalse);
     expect(first.controller, isA<InMemoryChatController>());
   });
@@ -291,7 +377,7 @@ void main() {
     String id,
     int order, {
     String turnId = 'turn',
-    ThreadWaitStateView state = ThreadWaitStateView.waiting,
+    ThreadWaitState state = ThreadWaitState.waiting,
     ThreadToolLifecycleView? lifecycle,
     StudioTimelineLifecycle itemLifecycle = StudioTimelineLifecycle.streaming,
   }) => StudioTimelineItem(
@@ -301,8 +387,8 @@ void main() {
       turnId: turnId,
       ordinal: order,
       revision: 1,
-      createdAt: DateTime.utc(2026),
-      updatedAt: DateTime.utc(2026),
+      createdAt: (DateTime.utc(2026).millisecondsSinceEpoch ~/ 1000),
+      updatedAt: (DateTime.utc(2026).millisecondsSinceEpoch ~/ 1000),
       state: ThreadToolItemStateView(
         invocation: ThreadToolInvocationView(
           toolCallId: id,
@@ -317,7 +403,7 @@ void main() {
                 taskId: 'task:exec-1',
                 toolName: 'exec',
                 summary: 'cargo test',
-                status: ThreadWaitTargetStatusView.running,
+                status: ThreadWaitTargetStatus.running,
               ),
             ],
             timeoutMs: 60000,
@@ -343,8 +429,8 @@ void main() {
       turnId: turnId,
       ordinal: order,
       revision: 1,
-      createdAt: DateTime.utc(2026),
-      updatedAt: DateTime.utc(2026),
+      createdAt: (DateTime.utc(2026).millisecondsSinceEpoch ~/ 1000),
+      updatedAt: (DateTime.utc(2026).millisecondsSinceEpoch ~/ 1000),
       state: ThreadToolItemStateView(
         invocation: ThreadToolInvocationView(
           toolCallId: id,
@@ -354,7 +440,7 @@ void main() {
         lifecycle: const RunningThreadToolView(''),
         wait: const ThreadWaitPresentationView(
           intent: ThreadWaitTimerIntentView(durationMs: 3000),
-          state: ThreadWaitStateView.waiting,
+          state: ThreadWaitState.waiting,
         ),
       ),
     ),
@@ -377,10 +463,10 @@ void main() {
       turnId: turnId,
       ordinal: order,
       revision: revision,
-      createdAt: DateTime.utc(2026),
-      updatedAt: DateTime.utc(2026),
+      createdAt: (DateTime.utc(2026).millisecondsSinceEpoch ~/ 1000),
+      updatedAt: (DateTime.utc(2026).millisecondsSinceEpoch ~/ 1000),
       state: toolName == null
-          ? const ThreadThinkingItemStateView(
+          ? ThreadThinkingItemStateView(
               summary: ['Investigating'],
               content: [],
               lifecycle: StreamingThreadContentView(),
@@ -407,8 +493,8 @@ void main() {
       turnId: 'turn',
       ordinal: order,
       revision: 1,
-      createdAt: DateTime.utc(2026),
-      updatedAt: DateTime.utc(2026),
+      createdAt: (DateTime.utc(2026).millisecondsSinceEpoch ~/ 1000),
+      updatedAt: (DateTime.utc(2026).millisecondsSinceEpoch ~/ 1000),
       state: ThreadToolItemStateView(
         invocation: ThreadToolInvocationView(
           toolCallId: id,
@@ -418,7 +504,7 @@ void main() {
         lifecycle: const RunningThreadToolView(''),
         userInput: ThreadToolUserInputView(
           interactionId: 'ask-$id',
-          questions: const [
+          questions: [
             UserQuestionView(
               id: 'q1',
               header: 'Pick one',
@@ -448,8 +534,8 @@ void main() {
           turnId: 'turn',
           ordinal: order,
           revision: 1,
-          createdAt: DateTime.utc(2026),
-          updatedAt: DateTime.utc(2026),
+          createdAt: (DateTime.utc(2026).millisecondsSinceEpoch ~/ 1000),
+          updatedAt: (DateTime.utc(2026).millisecondsSinceEpoch ~/ 1000),
           state: ThreadToolItemStateView(
             invocation: ThreadToolInvocationView(
               toolCallId: id,
@@ -459,7 +545,7 @@ void main() {
             lifecycle: const RunningThreadToolView(''),
             userInput: ThreadToolUserInputView(
               interactionId: 'plan-$id',
-              questions: const [
+              questions: [
                 UserQuestionView(
                   id: agentSessionPlanConfirmationQuestionId,
                   header: 'Plan',
@@ -497,8 +583,8 @@ void main() {
       turnId: turnId,
       ordinal: order,
       revision: revision,
-      createdAt: DateTime.utc(2026),
-      updatedAt: DateTime.utc(2026),
+      createdAt: (DateTime.utc(2026).millisecondsSinceEpoch ~/ 1000),
+      updatedAt: (DateTime.utc(2026).millisecondsSinceEpoch ~/ 1000),
       state: ThreadToolItemStateView(
         invocation: ThreadToolInvocationView(
           toolCallId: id,
@@ -509,8 +595,8 @@ void main() {
             lifecycle ??
             (succeeded
                 ? SucceededThreadToolView(
-                    DateTime.utc(2026),
-                    ThreadToolOutputView(
+                    (DateTime.utc(2026).millisecondsSinceEpoch ~/ 1000),
+                    ThreadToolOutput(
                       result: result,
                       attachments: const [],
                       outputArtifacts: const [],
@@ -548,8 +634,8 @@ void main() {
       turnId: turnId,
       ordinal: order,
       revision: revision,
-      createdAt: DateTime.utc(2026),
-      updatedAt: DateTime.utc(2026),
+      createdAt: (DateTime.utc(2026).millisecondsSinceEpoch ~/ 1000),
+      updatedAt: (DateTime.utc(2026).millisecondsSinceEpoch ~/ 1000),
       state: ThreadSkillItemStateView(
         name: name,
         source: source,
@@ -564,7 +650,7 @@ void main() {
                 SkillActivationCauseKind.tool,
                 toolCallId,
               ),
-        activatedAt: DateTime.utc(2026),
+        activatedAt: (DateTime.utc(2026).millisecondsSinceEpoch ~/ 1000),
       ),
     ),
     saved: true,
@@ -577,7 +663,7 @@ void main() {
     'consecutive thoughts/tools and image reads become separate custom items',
     () {
       final display = lease();
-      display.adoptBaseline(
+      display.content.adoptBaseline(
         StudioTimelineBaseline(
           subscriptionId: 'sub',
           version: 1,
@@ -593,7 +679,7 @@ void main() {
         ),
       );
       expect(
-        display.loadedCount,
+        display.content.loadedCount,
         5,
         reason: 'original calls remain individually addressable',
       );
@@ -607,8 +693,8 @@ void main() {
 
   test('typed wait/sleep join the adjacent thought/tool activity group', () {
     final display = lease();
-    addTearDown(display.retire);
-    display.adoptBaseline(
+    addTearDown(display.close);
+    display.content.adoptBaseline(
       StudioTimelineBaseline(
         subscriptionId: 'sub',
         version: 1,
@@ -642,14 +728,14 @@ void main() {
     expect(group.id, isNot('sleep-1'));
     expect(group.id, startsWith('presentation:'));
     final wait = group.payload('wait-1')!.item.tool!.wait!;
-    expect(wait.state, ThreadWaitStateView.waiting);
+    expect(wait.state, ThreadWaitState.waiting);
     expect(wait.intent, isA<ThreadWaitEventsIntentView>());
     final waitIntent = wait.intent as ThreadWaitEventsIntentView;
     expect(waitIntent.targets.single.taskId, 'task:exec-1');
     expect(waitIntent.targets.single.toolName, 'exec');
     expect(waitIntent.timeoutMs, 60000);
     final sleep = group.payload('sleep-1')!.item.tool!.wait!;
-    expect(sleep.state, ThreadWaitStateView.waiting);
+    expect(sleep.state, ThreadWaitState.waiting);
     expect(sleep.intent, isA<ThreadWaitTimerIntentView>());
     expect((sleep.intent as ThreadWaitTimerIntentView).durationMs, 3000);
   });
@@ -658,8 +744,8 @@ void main() {
     'a successful skill read joins the same-turn thought/tool activity group',
     () {
       final display = lease();
-      addTearDown(display.retire);
-      display.adoptBaseline(
+      addTearDown(display.close);
+      display.content.adoptBaseline(
         StudioTimelineBaseline(
           subscriptionId: 'sub',
           version: 1,
@@ -685,9 +771,13 @@ void main() {
         'skill-1',
         'command',
       ]);
-      expect(display.loadedCount, 4, reason: '配对只是一条可见行，两份 canonical 成员都仍可寻址');
-      expect(display.presentationFor('skill-1'), same(group));
-      expect(display.presentationFor('skill-view-1'), same(group));
+      expect(
+        display.content.loadedCount,
+        4,
+        reason: '配对只是一条可见行，两份 canonical 成员都仍可寻址',
+      );
+      expect(display.content.presentationFor('skill-1'), same(group));
+      expect(display.content.presentationFor('skill-view-1'), same(group));
       expect(group.memberIds, [
         'thinking',
         'skill-view-1',
@@ -705,8 +795,8 @@ void main() {
 
   test('a later page converges the skill row with its own original call', () {
     final display = lease();
-    addTearDown(display.retire);
-    display.adoptBaseline(
+    addTearDown(display.close);
+    display.content.adoptBaseline(
       StudioTimelineBaseline(
         subscriptionId: 'sub',
         version: 1,
@@ -719,7 +809,7 @@ void main() {
       ),
     );
     expect(
-      display.prependOlder(
+      display.content.prependOlder(
         StudioTimelinePage(
           items: [skillCall('skill-view-1', 10)],
           before: null,
@@ -741,8 +831,8 @@ void main() {
 
   test('repeated loads of one skill stay separate by call identity', () {
     final display = lease();
-    addTearDown(display.retire);
-    display.adoptBaseline(
+    addTearDown(display.close);
+    display.content.adoptBaseline(
       StudioTimelineBaseline(
         subscriptionId: 'sub',
         version: 1,
@@ -778,8 +868,8 @@ void main() {
     'a half pair keeps the loaded side readable and converges when filled',
     () {
       final display = lease();
-      addTearDown(display.retire);
-      display.adoptBaseline(
+      addTearDown(display.close);
+      display.content.adoptBaseline(
         StudioTimelineBaseline(
           subscriptionId: 'sub',
           version: 1,
@@ -791,13 +881,13 @@ void main() {
           ],
         ),
       );
-      final group = display.presentationFor('skill-1')!;
+      final group = display.content.presentationFor('skill-1')!;
       expect(group.visibleMemberIds, ['thinking', 'skill-1']);
       expect(group.pairedToolId('skill-1'), isNull);
       expect(group.skillCount, 1);
       expect(group.toolCount, 0);
       expect(
-        display.applyPatch(
+        display.content.applyPatch(
           StudioTimelinePatch(
             subscriptionId: 'sub',
             from: 1,
@@ -808,7 +898,7 @@ void main() {
         ),
         isTrue,
       );
-      expect(display.presentationFor('skill-view-1'), same(group));
+      expect(display.content.presentationFor('skill-view-1'), same(group));
       expect(group.memberIds, ['thinking', 'skill-1', 'skill-view-1']);
       expect(group.visibleMemberIds, ['thinking', 'skill-1']);
       expect(group.pairedToolId('skill-1'), 'skill-view-1');
@@ -819,8 +909,8 @@ void main() {
 
   test('a loaded tool stays its own row until the activation side arrives', () {
     final display = lease();
-    addTearDown(display.retire);
-    display.adoptBaseline(
+    addTearDown(display.close);
+    display.content.adoptBaseline(
       StudioTimelineBaseline(
         subscriptionId: 'sub',
         version: 1,
@@ -829,13 +919,13 @@ void main() {
         items: [skillCall('skill-view-1', 1)],
       ),
     );
-    final group = display.presentationFor('skill-view-1')!;
+    final group = display.content.presentationFor('skill-view-1')!;
     expect(group.visibleMemberIds, ['skill-view-1']);
     expect(group.pairedToolId('skill-view-1'), isNull);
     expect(group.skillCount, 0);
     expect(group.toolCount, 1);
     expect(
-      display.applyPatch(
+      display.content.applyPatch(
         StudioTimelinePatch(
           subscriptionId: 'sub',
           from: 1,
@@ -858,8 +948,8 @@ void main() {
 
   test('only a successful skill_view call of the same turn is paired', () {
     final display = lease();
-    addTearDown(display.retire);
-    display.adoptBaseline(
+    addTearDown(display.close);
+    display.content.adoptBaseline(
       StudioTimelineBaseline(
         subscriptionId: 'sub',
         version: 1,
@@ -915,8 +1005,8 @@ void main() {
 
   test('removing the activation side restores the real tool row', () {
     final display = lease();
-    addTearDown(display.retire);
-    display.adoptBaseline(
+    addTearDown(display.close);
+    display.content.adoptBaseline(
       StudioTimelineBaseline(
         subscriptionId: 'sub',
         version: 1,
@@ -929,11 +1019,11 @@ void main() {
         ],
       ),
     );
-    final group = display.presentationFor('skill-1')!;
+    final group = display.content.presentationFor('skill-1')!;
     final groupId = group.id;
     expect(group.visibleMemberIds, ['thinking', 'skill-1']);
     expect(
-      display.applyPatch(
+      display.content.applyPatch(
         StudioTimelinePatch(
           subscriptionId: 'sub',
           from: 1,
@@ -944,7 +1034,7 @@ void main() {
       ),
       isTrue,
     );
-    expect(display.presentationFor('skill-view-1'), same(group));
+    expect(display.content.presentationFor('skill-view-1'), same(group));
     expect(group.id, groupId);
     expect(group.visibleMemberIds, ['thinking', 'skill-view-1']);
     expect(group.skillCount, 0);
@@ -953,8 +1043,8 @@ void main() {
 
   test('a body split leaves a half pair readable on both sides', () {
     final display = lease();
-    addTearDown(display.retire);
-    display.adoptBaseline(
+    addTearDown(display.close);
+    display.content.adoptBaseline(
       StudioTimelineBaseline(
         subscriptionId: 'sub',
         version: 1,
@@ -967,13 +1057,13 @@ void main() {
         ],
       ),
     );
-    expect(display.presentationFor('skill-1')!.visibleMemberIds, [
+    expect(display.content.presentationFor('skill-1')!.visibleMemberIds, [
       'thinking',
       'skill-1',
     ]);
     // 正文划分活动边界：技能与其调用分到两组的半对仍各自可读。
     expect(
-      display.applyPatch(
+      display.content.applyPatch(
         StudioTimelinePatch(
           subscriptionId: 'sub',
           from: 1,
@@ -1003,8 +1093,8 @@ void main() {
 
   test('a running skill read joins the skill line only after commit', () {
     final display = lease();
-    addTearDown(display.retire);
-    display.adoptBaseline(
+    addTearDown(display.close);
+    display.content.adoptBaseline(
       StudioTimelineBaseline(
         subscriptionId: 'sub',
         version: 1,
@@ -1017,7 +1107,7 @@ void main() {
         ],
       ),
     );
-    final group = display.presentationFor('skill-1')!;
+    final group = display.content.presentationFor('skill-1')!;
     expect(group.visibleMemberIds, ['thinking', 'skill-1', 'skill-view-1']);
     expect(group.pairedToolId('skill-1'), isNull);
     expect(group.toolCount, 1);
@@ -1035,14 +1125,14 @@ void main() {
           'tools=${group.toolCount}',
           'running=${group.runningToolCount}',
           'skills=${group.skillCount}',
-          identical(display.presentationFor('skill-view-1'), group)
+          identical(display.content.presentationFor('skill-view-1'), group)
               ? 'same-owner'
               : 'other-owner',
         ].join(','),
       );
     });
     expect(
-      display.applyPatch(
+      display.content.applyPatch(
         StudioTimelinePatch(
           subscriptionId: 'sub',
           from: 1,
@@ -1064,8 +1154,8 @@ void main() {
 
   test('a failed original call releases its skill line before commit', () {
     final display = lease();
-    addTearDown(display.retire);
-    display.adoptBaseline(
+    addTearDown(display.close);
+    display.content.adoptBaseline(
       StudioTimelineBaseline(
         subscriptionId: 'sub',
         version: 1,
@@ -1078,7 +1168,7 @@ void main() {
         ],
       ),
     );
-    final group = display.presentationFor('skill-1')!;
+    final group = display.content.presentationFor('skill-1')!;
     expect(group.visibleMemberIds, ['thinking', 'skill-1']);
     expect(group.pairedToolId('skill-1'), 'skill-view-1');
     final member = group.member('skill-view-1');
@@ -1092,14 +1182,14 @@ void main() {
           group.pairedToolId('skill-1') ?? 'unpaired',
           'tools=${group.toolCount}',
           'skills=${group.skillCount}',
-          identical(display.presentationFor('skill-1'), group)
+          identical(display.content.presentationFor('skill-1'), group)
               ? 'same-owner'
               : 'other-owner',
         ].join(','),
       );
     });
     expect(
-      display.applyPatch(
+      display.content.applyPatch(
         StudioTimelinePatch(
           subscriptionId: 'sub',
           from: 1,
@@ -1112,7 +1202,7 @@ void main() {
                 2,
                 revision: 2,
                 lifecycle: FailedThreadToolView(
-                  DateTime.utc(2026),
+                  (DateTime.utc(2026).millisecondsSinceEpoch ~/ 1000),
                   const ThreadToolFailureView(
                     kind: ThreadToolFailureKindView.execution,
                     message: 'skill load failed',
@@ -1135,8 +1225,8 @@ void main() {
 
   test('a skill whose cause stops naming its call releases its own pair', () {
     final display = lease();
-    addTearDown(display.retire);
-    display.adoptBaseline(
+    addTearDown(display.close);
+    display.content.adoptBaseline(
       StudioTimelineBaseline(
         subscriptionId: 'sub',
         version: 1,
@@ -1149,7 +1239,7 @@ void main() {
         ],
       ),
     );
-    final group = display.presentationFor('skill-1')!;
+    final group = display.content.presentationFor('skill-1')!;
     expect(group.visibleMemberIds, ['thinking', 'skill-1']);
     expect(group.pairedToolId('skill-1'), 'skill-view-1');
     final member = group.member('skill-1');
@@ -1163,16 +1253,16 @@ void main() {
           group.pairedToolId('skill-1') ?? 'unpaired',
           'tools=${group.toolCount}',
           'skills=${group.skillCount}',
-          identical(display.presentationFor('skill-1'), group)
+          identical(display.content.presentationFor('skill-1'), group)
               ? 'same-owner'
               : 'other-owner',
         ].join(','),
       );
     });
     void replaceCause(StudioTimelineItem item) {
-      final from = display.appliedVersion!;
+      final from = display.content.appliedVersion!;
       expect(
-        display.applyPatch(
+        display.content.applyPatch(
           StudioTimelinePatch(
             subscriptionId: 'sub',
             from: from,
@@ -1210,8 +1300,8 @@ void main() {
     'a lone wait still uses an activity container rather than a single card',
     () {
       final display = lease();
-      addTearDown(display.retire);
-      display.adoptBaseline(
+      addTearDown(display.close);
+      display.content.adoptBaseline(
         StudioTimelineBaseline(
           subscriptionId: 'sub',
           version: 1,
@@ -1230,8 +1320,8 @@ void main() {
 
   test('paging joins an older wait into the live activity group without resetting expansion', () {
     final display = lease();
-    addTearDown(display.retire);
-    display.adoptBaseline(
+    addTearDown(display.close);
+    display.content.adoptBaseline(
       StudioTimelineBaseline(
         subscriptionId: 'sub',
         version: 1,
@@ -1245,7 +1335,7 @@ void main() {
     )!;
     original.setExpanded(true);
     expect(
-      display.prependOlder(
+      display.content.prependOlder(
         StudioTimelinePage(
           items: [activity('thinking', 10), waitCall('wait-older', 20)],
           before: null,
@@ -1261,7 +1351,7 @@ void main() {
     expect(original.expanded, isTrue);
     expect(
       original.payload('wait-older')!.item.tool!.wait!.state,
-      ThreadWaitStateView.waiting,
+      ThreadWaitState.waiting,
     );
   });
 
@@ -1269,8 +1359,8 @@ void main() {
     'wait terminal updates keep group identity, expansion and typed wait facts',
     () {
       final display = lease();
-      addTearDown(display.retire);
-      display.adoptBaseline(
+      addTearDown(display.close);
+      display.content.adoptBaseline(
         StudioTimelineBaseline(
           subscriptionId: 'sub',
           version: 1,
@@ -1287,7 +1377,7 @@ void main() {
       group.setExpanded(true);
       final groupId = group.id;
       expect(
-        display.applyPatch(
+        display.content.applyPatch(
           StudioTimelinePatch(
             subscriptionId: 'sub',
             from: 1,
@@ -1298,10 +1388,10 @@ void main() {
                 waitCall(
                   'wait-1',
                   2,
-                  state: ThreadWaitStateView.ready,
+                  state: ThreadWaitState.ready,
                   lifecycle: SucceededThreadToolView(
-                    DateTime.utc(2026),
-                    const ThreadToolOutputView(
+                    (DateTime.utc(2026).millisecondsSinceEpoch ~/ 1000),
+                    ThreadToolOutput(
                       result: '{"tasks":[{"taskId":"task:exec-1","status":"succeeded"}],"timedOut":false}',
                       attachments: [],
                       outputArtifacts: [],
@@ -1316,12 +1406,12 @@ void main() {
         isTrue,
       );
       expect(display.controller.messages, hasLength(1));
-      expect(display.presentationFor('wait-1'), same(group));
+      expect(display.content.presentationFor('wait-1'), same(group));
       expect(group.id, groupId);
       expect(group.expanded, isTrue);
       expect(group.memberIds, ['thinking', 'wait-1', 'command']);
       final wait = group.payload('wait-1')!.item.tool!.wait!;
-      expect(wait.state, ThreadWaitStateView.ready);
+      expect(wait.state, ThreadWaitState.ready);
       expect(group.payload('wait-1')!.terminal, isTrue);
       expect(
         group.payload('wait-1')!.item.tool!.result,
@@ -1332,8 +1422,8 @@ void main() {
 
   test('bodies, userInput, plan receipts and real different turns still split wait groups', () {
     final display = lease();
-    addTearDown(display.retire);
-    display.adoptBaseline(
+    addTearDown(display.close);
+    display.content.adoptBaseline(
       StudioTimelineBaseline(
         subscriptionId: 'sub',
         version: 1,
@@ -1401,7 +1491,7 @@ void main() {
       details: const [],
     );
     final display = lease();
-    display.adoptBaseline(
+    display.content.adoptBaseline(
       StudioTimelineBaseline(
         subscriptionId: 'sub',
         version: 1,
@@ -1414,7 +1504,7 @@ void main() {
         ],
       ),
     );
-    expect(display.loadedCount, 3);
+    expect(display.content.loadedCount, 3);
     expect(
       display.controller.messages.length,
       1,
@@ -1426,8 +1516,8 @@ void main() {
     'paging preserves group identity; late body splits and removal rejoins it',
     () {
       final display = lease();
-      addTearDown(display.retire);
-      display.adoptBaseline(
+      addTearDown(display.close);
+      display.content.adoptBaseline(
         StudioTimelineBaseline(
           subscriptionId: 'sub',
           version: 1,
@@ -1441,7 +1531,7 @@ void main() {
       )!;
       original.setExpanded(true);
       expect(
-        display.prependOlder(
+        display.content.prependOlder(
           StudioTimelinePage(
             items: [activity('a', 10), activity('b', 20)],
             before: null,
@@ -1454,7 +1544,7 @@ void main() {
       expect(original.memberIds, ['a', 'b', 'c', 'd']);
       expect(original.expanded, isTrue);
       expect(
-        display.applyPatch(
+        display.content.applyPatch(
           StudioTimelinePatch(
             priority: StudioTimelinePriority.immediate,
             subscriptionId: 'sub',
@@ -1475,7 +1565,7 @@ void main() {
       expect(prefix.memberIds, ['a', 'b']);
       expect(prefix.expanded, isTrue);
       expect(
-        display.applyPatch(
+        display.content.applyPatch(
           StudioTimelinePatch(
             priority: StudioTimelinePriority.immediate,
             subscriptionId: 'sub',
@@ -1488,14 +1578,17 @@ void main() {
       );
       expect(display.controller.messages.single.id, original.id);
       expect(original.memberIds, ['a', 'b', 'c', 'd']);
-      expect(display.payloads.map((p) => p.id), ['a', 'b', 'c', 'd']);
+      expect(
+        display.controller.messages.expand(timelinePayloadsOf).map((p) => p.id),
+        ['a', 'b', 'c', 'd'],
+      );
     },
   );
 
   test('streaming updates only its member and summary; History freezes the whole group', () {
     final display = lease();
-    addTearDown(display.retire);
-    display.adoptBaseline(
+    addTearDown(display.close);
+    display.content.adoptBaseline(
       StudioTimelineBaseline(
         subscriptionId: 'sub',
         version: 1,
@@ -1512,7 +1605,7 @@ void main() {
     group.member('b').addListener(() => unaffected++);
     group.structure.addListener(() => structural++);
     expect(
-      display.applyPatch(
+      display.content.applyPatch(
         StudioTimelinePatch(
           priority: StudioTimelinePriority.immediate,
           subscriptionId: 'sub',
@@ -1528,9 +1621,9 @@ void main() {
     expect(unaffected, 0);
     expect(structural, 0);
     expect(display.controller.messages.single.id, group.id);
-    display.enterHistory();
+    display.content.enterHistory();
     expect(
-      display.applyPatch(
+      display.content.applyPatch(
         StudioTimelinePatch(
           priority: StudioTimelinePriority.immediate,
           subscriptionId: 'sub',
@@ -1551,8 +1644,8 @@ void main() {
 
   test('structural listeners observe committed member ownership', () {
     final display = lease();
-    addTearDown(display.retire);
-    display.adoptBaseline(
+    addTearDown(display.close);
+    display.content.adoptBaseline(
       StudioTimelineBaseline(
         subscriptionId: 'sub',
         version: 1,
@@ -1561,14 +1654,14 @@ void main() {
         hasOlder: false,
       ),
     );
-    final group = display.presentationFor('a')!;
+    final group = display.content.presentationFor('a')!;
     group.structure.addListener(() {
       for (final id in group.memberIds) {
-        expect(display.presentationFor(id), same(group));
-        expect(display.payloadOf(id), same(group.member(id).value));
+        expect(display.content.presentationFor(id), same(group));
+        expect(display.content.payloadOf(id), same(group.member(id).value));
       }
     });
-    display.applyPatch(
+    display.content.applyPatch(
       StudioTimelinePatch(
         subscriptionId: 'sub',
         from: 1,
@@ -1579,10 +1672,10 @@ void main() {
     );
     final member = group.member('a');
     member.addListener(() {
-      expect(display.payloadOf('a'), same(member.value));
-      expect(display.presentationFor('a')!.member('a'), same(member));
+      expect(display.content.payloadOf('a'), same(member.value));
+      expect(display.content.presentationFor('a')!.member('a'), same(member));
     });
-    display.applyPatch(
+    display.content.applyPatch(
       StudioTimelinePatch(
         subscriptionId: 'sub',
         from: 2,
@@ -1601,15 +1694,15 @@ void main() {
         ],
       ),
     );
-    expect(display.presentationFor('a')!.id, group.id);
+    expect(display.content.presentationFor('a')!.id, group.id);
   });
 
   test(
     'deleting an anchor keeps its display ID and correct later insertion order',
     () {
       final display = lease();
-      addTearDown(display.retire);
-      display.adoptBaseline(
+      addTearDown(display.close);
+      display.content.adoptBaseline(
         StudioTimelineBaseline(
           subscriptionId: 'sub',
           version: 1,
@@ -1618,8 +1711,8 @@ void main() {
           hasOlder: false,
         ),
       );
-      final group = display.presentationFor('a')!..setExpanded(true);
-      display.applyPatch(
+      final group = display.content.presentationFor('a')!..setExpanded(true);
+      display.content.applyPatch(
         StudioTimelinePatch(
           subscriptionId: 'sub',
           from: 1,
@@ -1631,7 +1724,7 @@ void main() {
           ],
         ),
       );
-      expect(display.presentationFor('b'), same(group));
+      expect(display.content.presentationFor('b'), same(group));
       expect(group.expanded, isTrue);
       expect(
         display.controller.messages.map(
@@ -1649,8 +1742,8 @@ void main() {
     'another visible activity ends an image run and different turns never join',
     () {
       final display = lease();
-      addTearDown(display.retire);
-      display.adoptBaseline(
+      addTearDown(display.close);
+      display.content.adoptBaseline(
         StudioTimelineBaseline(
           subscriptionId: 'sub',
           version: 1,
@@ -1676,4 +1769,57 @@ void main() {
       expect(groups.last!.memberIds, ['image-c']);
     },
   );
+}
+
+/// 官方 [InMemoryChatController] 的合法子类：只为既有写入方法提供完成/失败 gate，
+/// 不另造 controller 框架、不改行为。
+final class _GatedChatController extends InMemoryChatController {
+  final List<Completer<void>> _gates = [];
+
+  List<int> get pending => [
+    for (var index = 0; index < _gates.length; index++)
+      if (!_gates[index].isCompleted) index,
+  ];
+
+  void releaseAt(int index) {
+    _gates[index].complete();
+  }
+
+  void failAt(int index, Object error) {
+    _gates[index].completeError(error);
+  }
+
+  /// 放行最近一笔尚未完成的写入。
+  void releaseLast() {
+    final index = _gates.lastIndexWhere((gate) => !gate.isCompleted);
+    _gates[index].complete();
+  }
+
+  @override
+  Future<void> insertMessage(
+    Message message, {
+    int? index,
+    bool animated = false,
+  }) {
+    final gate = Completer<void>();
+    gate.future.ignore();
+    _gates.add(gate);
+    return gate.future;
+  }
+
+  @override
+  Future<void> removeMessage(Message message, {bool animated = false}) {
+    final gate = Completer<void>();
+    gate.future.ignore();
+    _gates.add(gate);
+    return gate.future;
+  }
+
+  @override
+  Future<void> updateMessage(Message oldMessage, Message newMessage) {
+    final gate = Completer<void>();
+    gate.future.ignore();
+    _gates.add(gate);
+    return gate.future;
+  }
 }

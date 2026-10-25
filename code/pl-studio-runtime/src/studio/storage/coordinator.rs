@@ -1,5 +1,7 @@
 //! Process-wide observation and retry coordination for per-Thread persistence sinks.
 
+pub(crate) mod drain;
+
 use std::{
     collections::BTreeMap,
     sync::{Arc, Mutex, atomic::AtomicU64},
@@ -84,6 +86,7 @@ pub(crate) struct CallsQueueMetrics {
 /// Watermarks reported by one per-Thread writer incarnation.
 #[derive(Debug, Clone, Default)]
 struct IncarnationStatus {
+    writer: WriterState,
     /// Admitted effects this incarnation still owes an ordered history/calls write.
     pending: BTreeMap<u64, ()>,
     /// Whether this incarnation still owes the publication of a retained checkpoint.
@@ -93,11 +96,17 @@ struct IncarnationStatus {
     metrics: ThreadPersistenceMetrics,
     /// Terminal fact: this incarnation's writer task ended while it still owed commits.
     ///
-    /// The incarnations that follow start from the published checkpoint, which does not contain
-    /// these commits, so a later successful save cannot recover them and must not clear this
-    /// diagnostic. Its obligations stay counted, which is what makes the process-wide drain fail
-    /// with the real reason instead of hanging or reporting a synthetic success.
+    /// Kept until the existing claim/detach path transfers the same retained channel queue to
+    /// another writer. An unrelated successful save is not evidence that these facts are durable.
     released_dirty: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+enum WriterState {
+    #[default]
+    Preparing,
+    Running,
+    Stopped,
 }
 
 impl IncarnationStatus {
@@ -117,12 +126,10 @@ impl IncarnationStatus {
         self.owed() == 0 && self.failure().is_none()
     }
 
-    /// Whether this incarnation's writer task is still running.
-    ///
-    /// Only a stopped incarnation carries `released_dirty`, and a stopped one that owed nothing is
-    /// dropped, so any incarnation still tracked without that diagnostic is live.
+    /// Whether preparation or its accepted worker still owns this incarnation.
+    /// A stopped row may retain an error even when it has no outstanding commits.
     fn is_live(&self) -> bool {
-        self.released_dirty.is_none()
+        self.writer != WriterState::Stopped
     }
 }
 
@@ -135,7 +142,7 @@ impl IncarnationStatus {
 /// when its writer is superseded, and a replaced writer that stops dirty keeps failing the drain
 /// explicitly with its own error.
 ///
-/// The map stays bounded because a stopped incarnation is removed as soon as it owes nothing.
+/// A clean stopped incarnation is removed; retained failures are not runnable writers.
 #[derive(Debug, Default)]
 struct ThreadStatus {
     incarnations: BTreeMap<usize, IncarnationStatus>,
@@ -368,6 +375,26 @@ impl ThreadPersistenceCoordinator {
         self.refresh();
     }
 
+    /// Transfers preparation to its worker immediately before spawn, with no intervening await.
+    /// The original detach guard covers both preparation cancellation and worker completion.
+    pub(crate) fn start_writer(&self, thread_id: &str, owner: usize) {
+        {
+            let mut threads = self
+                .0
+                .threads
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if let Some(incarnation) = threads
+                .get_mut(thread_id)
+                .and_then(|status| status.incarnations.get_mut(&owner))
+                && incarnation.writer == WriterState::Preparing
+            {
+                incarnation.writer = WriterState::Running;
+            }
+        }
+        self.refresh();
+    }
+
     /// Releases one Thread's watermarks when its per-Thread writer stops.
     ///
     /// A stopped writer can never report again. If it owed nothing its row is removed, because
@@ -383,6 +410,9 @@ impl ThreadPersistenceCoordinator {
         let mut empty = false;
         let mut unavailable = false;
         if let Some(status) = threads.get_mut(thread_id) {
+            if let Some(incarnation) = status.incarnations.get_mut(&owner) {
+                incarnation.writer = WriterState::Stopped;
+            }
             // Decide before mutating: `record_released_commits` deliberately keeps the row alive
             // when it owes commits, so the removal decision must come from the pre-release state.
             let mut release = false;
@@ -560,38 +590,6 @@ impl ThreadPersistenceCoordinator {
         self.0.retry.notified().await;
     }
 
-    pub(crate) async fn wait_for_drain(&self) -> Result<()> {
-        let mut progress = self.subscribe();
-        loop {
-            // Clone out of the watch borrow before re-reading the same channel, so the two read
-            // borrows of the shared watch state never overlap.
-            let snapshot = progress.borrow_and_update().clone();
-            if let Some(error) = snapshot.error.clone() {
-                bail!("Thread persistence is blocked: {error}");
-            }
-            if snapshot.pending_commits == 0 {
-                return Ok(());
-            }
-            let queue = self.queue_snapshot();
-            tracing::debug!(
-                calls_admitted = snapshot.calls_admitted_sequence,
-                calls_durable = snapshot.calls_durable_sequence,
-                calls_oldest_pending_age_millis = ?snapshot.calls_oldest_pending_age_millis,
-                pending_operations = queue.pending_operations,
-                pending_bytes = queue.pending_bytes,
-                in_flight_bytes = queue.in_flight_bytes,
-                oldest_pending_age_millis = ?queue.oldest_pending_age_millis,
-                pressure_paused = queue.pressure_paused,
-                threads = queue.threads.len(),
-                "waiting for Thread persistence to drain"
-            );
-            progress
-                .changed()
-                .await
-                .map_err(|_| anyhow::anyhow!("Thread persistence progress channel closed"))?;
-        }
-    }
-
     /// Re-aggregates the process-wide observation from the per-Thread status and recovery map.
     fn refresh(&self) {
         let snapshot = {
@@ -614,10 +612,9 @@ impl ThreadPersistenceCoordinator {
 /// Records the terminal fact that one writer incarnation stopped while it still owed commits.
 ///
 /// Called under the Threads lock from `detach`, the one place that knows a writer task has actually
-/// ended. A stopped writer can never make these facts durable, so the diagnostic is what turns an
-/// undrainable queue into an explicit shutdown failure instead of an unbounded wait. It stays
-/// visible for the life of the process: the following incarnations start from the published
-/// checkpoint, which does not contain these commits.
+/// ended (or preparation was cancelled). That incarnation can no longer make these facts durable.
+/// The diagnostic prevents synthetic success until the existing claim/detach path transfers the
+/// same retained queue to another owner; a new published checkpoint alone is not such a transfer.
 ///
 /// Its `pending` bookkeeping is deliberately kept: the obligation is still owned by this
 /// incarnation, so the process-wide drain keeps counting it and fails with this error instead of

@@ -1,11 +1,11 @@
 import 'package:test/test.dart';
 
-import 'package:anywork_client/studio_client.dart';
+import 'package:anywork_client/conversation.dart';
 
 /// 普通问答历史必须在 Client 契约层就是 typed 的：问题按原顺序、只有权威 resolved 才算已回答、
 /// 敏感回答不携带原值，而且一次工具条目更新后仍能按字段身份拿到完整正文。
 void main() {
-  final created = DateTime.fromMillisecondsSinceEpoch(1000);
+  const created = 1; // Unix seconds.
 
   ThreadItemView toolItem({
     required ThreadToolUserInputView? userInput,
@@ -261,7 +261,7 @@ void main() {
   test('敏感回答只暴露已回答/已隐藏状态', () {
     final projected = toolItem(
       userInput: userInput(
-        state: const ResolvedThreadToolUserInputView([
+        state: ResolvedThreadToolUserInputView([
           ThreadUserInputAnswerView(
             questionId: 'account',
             answers: ['anthropic'],
@@ -332,7 +332,7 @@ void main() {
 
       // 同一条目身份刷新为权威 resolved：身份不变，决定随答案改变。
       final resolved = planInput(
-        state: const ResolvedThreadToolUserInputView([
+        state: ResolvedThreadToolUserInputView([
           ThreadUserInputAnswerView(
             questionId: 'plan_confirmation',
             answers: [agentSessionPlanApproveAnswer],
@@ -348,7 +348,7 @@ void main() {
 
     test('请求修改保留原始完整反馈，内部决定标记不进入正文', () {
       final receipt = planInput(
-        state: const ResolvedThreadToolUserInputView([
+        state: ResolvedThreadToolUserInputView([
           ThreadUserInputAnswerView(
             questionId: 'plan_confirmation',
             answers: [
@@ -373,7 +373,7 @@ void main() {
       expect(cancelled.feedback, isEmpty);
 
       final unknown = planInput(
-        state: const ResolvedThreadToolUserInputView([
+        state: ResolvedThreadToolUserInputView([
           ThreadUserInputAnswerView(
             questionId: 'plan_confirmation',
             answers: ['Unrecognized'],
@@ -388,7 +388,7 @@ void main() {
       expect(
         toolItem(
           userInput: userInput(
-            state: const ResolvedThreadToolUserInputView([
+            state: ResolvedThreadToolUserInputView([
               ThreadUserInputAnswerView(questionId: 'account', answers: ['a']),
             ]),
           ),
@@ -400,7 +400,7 @@ void main() {
           interactionId: 'tool-interaction:call-1',
           questions: [
             planQuestion('# Only Plan'),
-            const UserQuestionView(
+            UserQuestionView(
               id: 'extra',
               header: 'Extra',
               question: 'An extra question',

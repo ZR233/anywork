@@ -1056,6 +1056,28 @@ class AppLocalizationsEn extends AppLocalizations {
   String get composerStop => 'Stop';
 
   @override
+  String get conversationStopRequesting => 'Requesting stop…';
+
+  @override
+  String get conversationStopAwaitingObservation =>
+      'Stop request accepted. Waiting for the original turn to stop.';
+
+  @override
+  String get conversationStopObserved => 'The original turn has stopped.';
+
+  @override
+  String get conversationStopEffective => 'Stop took effect.';
+
+  @override
+  String get conversationStopUnknown =>
+      'The stop outcome is unconfirmed. It will not be resent automatically.';
+
+  @override
+  String conversationStopError(String message) {
+    return 'Stop: $message';
+  }
+
+  @override
   String get compileModeSimple => 'Simple';
 
   @override
@@ -4694,4 +4716,26 @@ class AppLocalizationsEn extends AppLocalizations {
   @override
   String get modelDetailStale =>
       'This model\'s canonical identity changed. Reload its details.';
+
+  @override
+  String get resourceSourceUninitialized => 'Not initialized';
+
+  @override
+  String get resourceSourceLoading => 'Loading…';
+
+  @override
+  String get resourceSourceRefreshing => 'Refreshing…';
+
+  @override
+  String get resourceSourceStale => 'Out of date';
+
+  @override
+  String get resourceSourceDegraded => 'Degraded';
+
+  @override
+  String get resourceSourceLastKnown => 'Last-known state';
+
+  @override
+  String get interactionDiscardAnswersBody =>
+      'Discard the answers and close this editor? This does not answer or cancel the interaction.';
 }

@@ -10,6 +10,8 @@ import '../types/error.dart';
 
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
+// These functions are ignored because they are not marked as `pub`: `bridge_bots_command_reply`
+
 Future<BridgeBotsStateSnapshot> readBots() =>
     RustLib.instance.api.crateApiStudioHandlersBotsReadBots();
 

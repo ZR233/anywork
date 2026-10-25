@@ -1,250 +1,127 @@
 import 'dart:async';
 import 'dart:typed_data';
 
-import 'package:anywork_client/studio_client.dart';
+import 'package:anywork_client/drafts.dart';
+import 'package:anywork_client/drafts_ports.dart';
+import 'package:anywork_client/resources_ports.dart';
 import 'package:test/test.dart';
 
-final class _QueryTransport implements StudioTransport {
-  final entered = Completer<void>();
-  final reply = Completer<Uint8List>();
-  int calls = 0;
-  void Function()? onRead;
+import 'support/drafts_fixture.dart';
+import 'support/drafts_native_fixture.dart';
 
-  @override
-  Future<Uint8List> readThreadAttachment(String threadId, String attachmentId) {
-    calls++;
-    entered.complete();
-    onRead?.call();
-    return reply.future;
-  }
+DraftBinaryPin _pin({int length = 1}) => DraftBinaryPin(
+  originalScopeId: 'query-original-binary',
+  length: length,
+  descriptor: const AttachmentBinaryIdentity(
+    scopeId: 'query-original-binary',
+    runtimeEpoch: draftRuntime,
+    incarnation: 1,
+    target: AttachmentBinaryTarget.thread(
+      threadId: 'thread',
+      attachmentId: 'attachment',
+    ),
+  ),
+);
 
-  final List<SaveSshServerCommand> savedServers = [];
-  final List<AuthenticateSshServerCommand> authCommands = [];
-
-  @override
-  Future<SshServer> saveSshServer(SaveSshServerCommand command) async {
-    savedServers.add(command);
-    return SshServer(
-      alias: command.alias,
-      hostName: command.hostName,
-      port: command.port,
-      username: command.username,
-      identityFile: command.identityFile,
-      managed: true,
-      hasPassword: command.password.action == SshPasswordAction.replace,
-    );
-  }
-
-  @override
-  Future<SshConnectionView> authenticateSshServer(
-    AuthenticateSshServerCommand command,
-  ) async {
-    authCommands.add(command);
-    return SshConnectionView(
-      alias: command.alias,
-      state: 'ready',
-      helperVersion: '0.1.0',
-      architecture: 'x86_64',
-    );
-  }
-
-  @override
-  dynamic noSuchMethod(Invocation invocation) => throw UnsupportedError(
-    'Unused query capability: ${invocation.memberName}',
-  );
-}
-
-StudioFailure _sshStudioFailure({
-  required String message,
-  String? detailsJson,
-}) {
-  return StudioFailure(
-    code: StudioFailureCode.permissionDenied,
-    message: message,
-    retryable: false,
-    correlationId: 'ssh-auth',
-    detailsJson: detailsJson,
+Future<void> _release(DraftBinaryPin pin) async {
+  final call = await pin.closes.at(0);
+  call.reply.complete(
+    FeedCloseReport(
+      feedId: pin.originalScopeId,
+      outcome: const FeedCloseOutcome.clean(),
+    ),
   );
 }
 
 void main() {
   test(
-    'remote actions forward SSH password updates and session authentication',
-    () async {
-      final transport = _QueryTransport();
-      final client = AnyworkClient(
-        transport: transport,
-        clientId: 'remote-ssh',
-      );
-      addTearDown(() => client.close());
-
-      final saved = await client.remote.saveSshServer(
-        const SaveSshServerCommand(
-          alias: 'lab-node',
-          hostName: '192.168.100.12',
-          port: 22,
-          username: 'tester',
-          password: SshPasswordUpdate.replace('secret-pass'),
-        ),
-      );
-      expect(saved.hasPassword, isTrue);
-      expect(
-        transport.savedServers.single.password.action,
-        SshPasswordAction.replace,
-      );
-      expect(transport.savedServers.single.password.value, 'secret-pass');
-
-      final connection = await client.remote.authenticateSshServer(
-        const AuthenticateSshServerCommand(
-          alias: 'lab-node',
-          password: 'session-pass',
-          rememberPassword: false,
-        ),
-      );
-      expect(connection.state, 'ready');
-      expect(transport.authCommands.single.alias, 'lab-node');
-      expect(transport.authCommands.single.password, 'session-pass');
-      expect(transport.authCommands.single.rememberPassword, isFalse);
-
-      expect(
-        isSshAuthenticationError(
-          StateError(
-            'SSH authentication required or failed: Permission denied',
-          ),
-        ),
-        isTrue,
-      );
-      expect(
-        isSshAuthenticationError(StateError('network unreachable')),
-        isFalse,
-      );
-    },
-  );
-
-  test(
-    'SSH detailsJson is authoritative for auth kind and password prompt',
-    () {
-      expect(
-        sshPasswordAuthenticationOffered(
-          _sshStudioFailure(
-            message: 'remote host rejected credentials',
-            detailsJson: '{"sshPasswordOffered": false}',
-          ),
-        ),
-        isFalse,
-      );
-      expect(
-        sshPasswordAuthenticationOffered(
-          _sshStudioFailure(
-            message: 'remote host rejected credentials',
-            detailsJson: '{"sshPasswordOffered": true}',
-          ),
-        ),
-        isTrue,
-      );
-      expect(
-        sshPasswordAuthenticationOffered(
-          _sshStudioFailure(
-            message: 'remote host rejected credentials',
-            detailsJson: '{"sshErrorKind": "authenticationFailed"}',
-          ),
-        ),
-        isTrue,
-      );
-      expect(
-        sshPasswordAuthenticationOffered(
-          _sshStudioFailure(
-            message: 'remote host rejected credentials',
-            detailsJson: '{not-json',
-          ),
-        ),
-        isTrue,
-      );
-      expect(
-        sshPasswordAuthenticationOffered(StateError('network unreachable')),
-        isTrue,
-      );
-      expect(
-        sshPasswordAuthenticationOffered(
-          _sshStudioFailure(message: 'remote host rejected credentials'),
-        ),
-        isTrue,
-      );
-      expect(
-        sshPasswordAuthenticationOffered(
-          _sshStudioFailure(
-            message: 'remote host rejected credentials',
-            detailsJson: '{"sshPasswordOffered": "false"}',
-          ),
-        ),
-        isTrue,
-      );
-
-      expect(
-        isSshAuthenticationError(StateError('network unreachable')),
-        isFalse,
-      );
-      expect(
-        isSshAuthenticationError(
-          _sshStudioFailure(
-            message: 'remote host rejected credentials',
-            detailsJson: '{"sshErrorKind":"authenticationFailed"}',
-          ),
-        ),
-        isTrue,
-      );
-    },
-  );
-
-  test(
     'synchronous transport reentry cannot escape the query close join',
     () async {
-      final transport = _QueryTransport();
-      final client = AnyworkClient(
-        transport: transport,
-        clientId: 'query-reentry',
-      );
+      final fixture = await draftsFixture(clientId: 'query-reentry');
       late Future<CloseReport> closing;
-      transport.onRead = () {
-        closing = client.close(deadline: DateTime.utc(2000));
+      fixture.binary.onOpen = () {
+        closing = fixture.repository.close(deadline: DateTime.utc(2000));
       };
-      final reading = client.readAttachmentBytes('thread', 'attachment');
+      final reading = fixture.repository.readThreadAttachment(
+        'thread',
+        'attachment',
+      );
+      final opening = await fixture.binary.opens.at(0);
       final report = await closing;
-      expect(report.unresolved.any((item) => item.owner == 'queries'), isTrue);
-      transport.reply.complete(Uint8List(0));
-      await reading;
-      expect((await client.retryCleanup()).complete, isTrue);
+      expect(
+        report.unresolved.any(
+          (item) => item.owner == 'attachment-binary:thread',
+        ),
+        isTrue,
+      );
+      final pin = _pin(length: 0);
+      opening.reply.complete(pin);
+      final terminal = await pin.reads.at(0);
+      terminal.reply.complete(
+        AttachmentBinaryChunk(offset: 0, bytes: Uint8List(0), nextOffset: null),
+      );
+      expect(await reading, isEmpty);
+      await _release(pin);
+      expect((await fixture.repository.retryCleanup()).complete, isTrue);
+      expect(fixture.binary.opens.values, hasLength(1));
     },
   );
 
   test(
     'close retains admitted query and rejects new queries until actual reply',
     () async {
-      final transport = _QueryTransport();
-      final client = AnyworkClient(
-        transport: transport,
-        clientId: 'query-close',
+      final fixture = await draftsFixture(clientId: 'query-close');
+      final reading = fixture.repository.readThreadAttachment(
+        'thread',
+        'attachment',
       );
-      final reading = client.readAttachmentBytes('thread', 'attachment');
-      await transport.entered.future;
-      expect(client.budget.used(ResourceKind.pendingOperation), 1);
-      final closing = client.close(deadline: DateTime.utc(2000));
+      final opening = await fixture.binary.opens.at(0);
+      final pin = _pin();
+      opening.reply.complete(pin);
+      final entered = await pin.reads.at(0);
+      expect(fixture.budget.used(ResourceKind.pendingOperation), 1);
+      final closing = fixture.repository.close(deadline: DateTime.utc(2000));
+      final repeated = fixture.repository.close(deadline: DateTime.utc(2100));
+      final sameClose = identical(closing, repeated);
+      final report = await closing;
       expect(
-        identical(closing, client.close(deadline: DateTime.utc(2100))),
+        report.unresolved.any(
+          (item) => item.owner == 'attachment-binary:thread',
+        ),
         isTrue,
       );
-      final report = await closing;
-      expect(report.unresolved.any((item) => item.owner == 'queries'), isTrue);
-      expect(client.budget.used(ResourceKind.pendingOperation), 1);
+      expect(fixture.budget.used(ResourceKind.pendingOperation), 1);
       await expectLater(
-        client.readAttachmentBytes('thread', 'late'),
-        throwsStateError,
+        Future<Uint8List>.sync(
+          () => fixture.repository.readThreadAttachment('thread', 'late'),
+        ),
+        throwsA(
+          isA<StudioFailure>().having(
+            (error) => error.code,
+            'sealed admission',
+            StudioFailureCode.cancelled,
+          ),
+        ),
       );
-      expect(transport.calls, 1);
-      transport.reply.complete(Uint8List.fromList([7]));
+      expect(fixture.binary.opens.values, hasLength(1));
+      entered.reply.complete(
+        AttachmentBinaryChunk(
+          offset: 0,
+          bytes: Uint8List.fromList([7]),
+          nextOffset: null,
+        ),
+      );
       expect(await reading, [7]);
-      expect((await client.retryCleanup()).complete, isTrue);
-      expect(client.budget.usage, isEmpty);
+      await _release(pin);
+      expect((await fixture.repository.retryCleanup()).complete, isTrue);
+      // Peer Repositories own their established feeds until their own close.
+      await fixture.close();
+      expect(fixture.budget.usage, isEmpty);
+      expect(
+        sameClose,
+        isTrue,
+        reason: 'Repeated close must share the original close Future, not just its work',
+      );
     },
   );
 }

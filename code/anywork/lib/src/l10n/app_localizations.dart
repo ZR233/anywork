@@ -1952,6 +1952,42 @@ abstract class AppLocalizations {
   /// **'Stop'**
   String get composerStop;
 
+  /// No description provided for @conversationStopRequesting.
+  ///
+  /// In en, this message translates to:
+  /// **'Requesting stop…'**
+  String get conversationStopRequesting;
+
+  /// No description provided for @conversationStopAwaitingObservation.
+  ///
+  /// In en, this message translates to:
+  /// **'Stop request accepted. Waiting for the original turn to stop.'**
+  String get conversationStopAwaitingObservation;
+
+  /// No description provided for @conversationStopObserved.
+  ///
+  /// In en, this message translates to:
+  /// **'The original turn has stopped.'**
+  String get conversationStopObserved;
+
+  /// No description provided for @conversationStopEffective.
+  ///
+  /// In en, this message translates to:
+  /// **'Stop took effect.'**
+  String get conversationStopEffective;
+
+  /// No description provided for @conversationStopUnknown.
+  ///
+  /// In en, this message translates to:
+  /// **'The stop outcome is unconfirmed. It will not be resent automatically.'**
+  String get conversationStopUnknown;
+
+  /// No description provided for @conversationStopError.
+  ///
+  /// In en, this message translates to:
+  /// **'Stop: {message}'**
+  String conversationStopError(String message);
+
   /// No description provided for @compileModeSimple.
   ///
   /// In en, this message translates to:
@@ -8441,6 +8477,48 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'This model\'s canonical identity changed. Reload its details.'**
   String get modelDetailStale;
+
+  /// No description provided for @resourceSourceUninitialized.
+  ///
+  /// In en, this message translates to:
+  /// **'Not initialized'**
+  String get resourceSourceUninitialized;
+
+  /// No description provided for @resourceSourceLoading.
+  ///
+  /// In en, this message translates to:
+  /// **'Loading…'**
+  String get resourceSourceLoading;
+
+  /// No description provided for @resourceSourceRefreshing.
+  ///
+  /// In en, this message translates to:
+  /// **'Refreshing…'**
+  String get resourceSourceRefreshing;
+
+  /// No description provided for @resourceSourceStale.
+  ///
+  /// In en, this message translates to:
+  /// **'Out of date'**
+  String get resourceSourceStale;
+
+  /// No description provided for @resourceSourceDegraded.
+  ///
+  /// In en, this message translates to:
+  /// **'Degraded'**
+  String get resourceSourceDegraded;
+
+  /// No description provided for @resourceSourceLastKnown.
+  ///
+  /// In en, this message translates to:
+  /// **'Last-known state'**
+  String get resourceSourceLastKnown;
+
+  /// No description provided for @interactionDiscardAnswersBody.
+  ///
+  /// In en, this message translates to:
+  /// **'Discard the answers and close this editor? This does not answer or cancel the interaction.'**
+  String get interactionDiscardAnswersBody;
 }
 
 class _AppLocalizationsDelegate

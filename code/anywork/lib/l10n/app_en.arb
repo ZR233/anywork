@@ -463,6 +463,15 @@
   "composerHint": "Describe what you need...",
   "composerSend": "Send",
   "composerStop": "Stop",
+  "conversationStopRequesting": "Requesting stop…",
+  "conversationStopAwaitingObservation": "Stop request accepted. Waiting for the original turn to stop.",
+  "conversationStopObserved": "The original turn has stopped.",
+  "conversationStopEffective": "Stop took effect.",
+  "conversationStopUnknown": "The stop outcome is unconfirmed. It will not be resent automatically.",
+  "conversationStopError": "Stop: {message}",
+  "@conversationStopError": {
+    "placeholders": {"message": {"type": "String"}}
+  },
   "compileModeSimple": "Simple",
   "compileModeTask": "Task",
   "statusCost": "Cost",
@@ -2241,5 +2250,12 @@
   "modelDetailTaskGeneral": "General",
   "modelDetailRetry": "Reload details",
   "modelDetailClose": "Close",
-  "modelDetailStale": "This model's canonical identity changed. Reload its details."
+  "modelDetailStale": "This model's canonical identity changed. Reload its details.",
+  "resourceSourceUninitialized": "Not initialized",
+  "resourceSourceLoading": "Loading…",
+  "resourceSourceRefreshing": "Refreshing…",
+  "resourceSourceStale": "Out of date",
+  "resourceSourceDegraded": "Degraded",
+  "resourceSourceLastKnown": "Last-known state",
+  "interactionDiscardAnswersBody": "Discard the answers and close this editor? This does not answer or cancel the interaction."
 }

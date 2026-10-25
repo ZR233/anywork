@@ -40,15 +40,18 @@ class RemoteDirectoryEntryDto {
   final String name;
   final String path;
   final bool isDirectory;
+  final bool isSymlink;
 
   const RemoteDirectoryEntryDto({
     required this.name,
     required this.path,
     required this.isDirectory,
+    required this.isSymlink,
   });
 
   @override
-  int get hashCode => name.hashCode ^ path.hashCode ^ isDirectory.hashCode;
+  int get hashCode =>
+      name.hashCode ^ path.hashCode ^ isDirectory.hashCode ^ isSymlink.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -57,7 +60,8 @@ class RemoteDirectoryEntryDto {
           runtimeType == other.runtimeType &&
           name == other.name &&
           path == other.path &&
-          isDirectory == other.isDirectory;
+          isDirectory == other.isDirectory &&
+          isSymlink == other.isSymlink;
 }
 
 class RemoteDirectoryListingDto {

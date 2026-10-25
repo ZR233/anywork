@@ -134,6 +134,8 @@ pub(crate) struct PurposeCostRollup {
 /// 一条成功调用；未测得的时延不能伪装成零时延。
 #[derive(Debug, Clone)]
 pub(crate) struct PerformanceSampleRow {
+    pub(crate) thread_id: String,
+    pub(crate) call_id: String,
     pub(crate) completed_at: i64,
     pub(crate) account_id: String,
     pub(crate) account_display_name: String,
@@ -745,6 +747,8 @@ impl CallsStore {
             }
             let has_throughput_sample = record.throughput_sample().is_some();
             samples.push(PerformanceSampleRow {
+                thread_id: record.thread_id,
+                call_id: record.call_id,
                 completed_at: record.recorded_at,
                 account_id: record.account_id.unwrap_or_default(),
                 account_display_name: record.account_display_name.unwrap_or_default(),

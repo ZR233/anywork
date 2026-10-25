@@ -96,6 +96,7 @@ pub struct TodoListSnapshot {
 /// Kind of runtime budget that stopped a turn or agent.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
+#[derive(utoipa::ToSchema)]
 pub enum BudgetLimitKind {
     ModelStep,
     ToolCall,
@@ -123,6 +124,7 @@ impl BudgetLimitKind {
 /// Snapshot of consumed turn budgets.
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
+#[derive(utoipa::ToSchema)]
 pub struct BudgetUsage {
     pub model_steps: u32,
     pub tool_calls: u32,
@@ -133,6 +135,7 @@ pub struct BudgetUsage {
 /// 一次 budget 终止的类型化用量快照。
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
+#[derive(utoipa::ToSchema)]
 pub struct BudgetLimitSnapshot {
     pub kind: BudgetLimitKind,
     pub usage: BudgetUsage,

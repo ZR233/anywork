@@ -19,6 +19,16 @@ impl AgentServices {
         caller: &str,
         request: EvaluateAgentRequest,
     ) -> Result<EvaluateAgentReceipt> {
+        // Resolve ancestry inside the retained job before a closing root's permit can be awaited.
+        // These facts are only a precheck; read them again under the target permit below.
+        {
+            let record = self.record(&request.target).await?;
+            ensure!(
+                record.parent_thread_id.as_deref() == Some(caller)
+                    && record.root_thread_id == caller,
+                "evaluate_agent target must be the caller's direct child"
+            );
+        }
         let _operation = owner.agent_operation(&request.target).await;
         // The same gate is held through flush, terminal validation and the full SQL transaction.
         let (resident, sealed) = {
