@@ -6,20 +6,37 @@
 
 ## 12.1 边界与工作区模式
 
-Studio 的所有会话均经 Agent 定义、指令装配与 Thread 执行边界。Agent 定义表达稳定身份、
-适用的 root/child 范围、角色指令及修订；普通 root 与飞书 root 使用产品内置定义，child
-从系统或用户 Profile 解析定义。已解析定义实际驱动统一指令装配，不是与旧角色字段并存的
-第二套来源。Thread 仍是唯一执行 owner，渠道只适配输入输出，不建立另一套 Agent runtime。
+Studio 的普通 root、机器人 root、系统 child 与用户 child 使用同一种 Agent 定义、冻结和
+指令装配模型。定义表达稳定身份、名称、描述、适用任务、角色指令、来源、内容修订与允许
+的使用范围。内置或用户来源与 root/child 范围正交，不能用来源类别推断父子关系或权限。
+Thread 仍是唯一执行 owner，渠道只适配输入输出，不建立另一套 Agent runtime。
+
+普通 root、飞书 root 和系统 child 来自同一随包声明集合；用户 Profile 在配置边界转换为
+同一种定义。Profile 是该模型面向 child 的配置与派发视图，不是另一种 Agent 实现。模型
+路由、Mode、物理工作区与父子关系各自拥有绑定，不为统一定义给 root 伪造 child 路由或
+工作区收据。已有使用场景新增角色主要增加声明与提示词资源，必要时登记产品入口绑定；
+新的渠道、工作区或工具能力仍需真实实现，不能用声明绕过能力与权限校验。
+
+声明集合统一驱动定义查找、保留身份、系统 child 目录和配置校验，不维护固定角色枚举或
+重复 ID 清单。非法或重复身份、用途不匹配、非法模式及缺失提示词资源在发布前明确失败，
+不能伪造空目录或回落到另一份硬编码定义。资源随产品构建发布，不在运行期扫描源码目录。
+随包声明或资源损坏属于产品构建/内部错误，而非用户持久数据损坏；启动必须保留现场并
+拒绝发布，不能因此触发用户配置与会话的备份重置流程。
 
 Agent 角色与 Mode 正交：Agent 指令和 Mode 指令分别拥有独立来源。根会话可以切换执行方式，
 但不能因此失去其 Agent 角色；child 没有 root Mode/workflow。模型基础指令、项目指令、
 平台事实与技能仍经现有统一装配和更新边界，不能被角色定义旁路覆盖。
 
-root-only 定义不是可派发 Profile，不进入 child catalog、动态 spawn schema 或 Agents
-设置项；直接派发同样拒绝。飞书专用定义的选择来自已核实的机器人会话归属，不根据标题、
-用户正文或任意 metadata 猜测。其行为契约见 [27](./27-bots.md)。
+只有 child 开放用户配置与派发；root-only 定义不进入 child catalog、动态 spawn schema 或
+Agents 设置项，直接派发同样拒绝。普通 root 入口和已核实的机器人归属只绑定声明身份，
+不拥有另一条提示词构造路径。不增加主会话角色选择器或逐机器人角色编辑入口，也不根据
+标题、用户正文或任意 metadata 猜测角色。飞书行为契约见 [27](./27-bots.md)。
 
-定义身份、修订与指令来源随已有 instruction snapshot 冻结；正常运行只消费当前结构。
+定义身份、修订与指令来源随已有 instruction snapshot 冻结；普通 root 也显式提供 Agent
+角色正文，而非以空角色依赖基础提示词。快照的角色块形状和内容身份由已冻结声明决定，
+不按某个具体角色 ID 或最新目录推断；正常运行只消费当前结构。
+可信入口绑定与 Agent 角色身份分离：恢复核对已保存的使用绑定和宿主归属，不维护另一份
+root 角色 ID 白名单，也不因当前入口改绑新定义而使既有会话身份失效。
 旧结构只在版本迁移边界依据已保存的 root/child、Mode 和 Profile 身份解释，保留原正文，
 不使用当前定义重写历史或替换已冻结指令。新建会话采用新定义，恢复不重新选择角色；
 迁移不能证明归属时明确失败并保留数据。具体持久化约定见 [20](./20-config.md#206-提示词配置)。
@@ -68,37 +85,38 @@ child Profile 的工作区有四种模式，其中的 root 指该 child 所属�
 
 用户 Profile 位于 Studio home 的 `agents/` 目录，默认路径是
 `~/.anywork/agents/<agent-id>.toml`。目录只扫描第一层普通 `.toml` 文件，文件名 stem 是稳定
-id，不递归读取临时、隐藏或备份文件。单个文件完整表达一个 Agent：
+id，不递归读取临时、隐藏或备份文件。单个文件表达一个 child 的定义和配置绑定：
 
 ```toml
-schema_version = 1
 enabled = true
 display_name = "Rust 执行者"
 description = "实现和重构 Rust 模块"
-suitable_tasks = ["Rust 实现", "测试修复"]
+when_to_use = "需要实施 Rust 模块或修复测试时"
 workspace_mode = "directory"
 system_instructions = """
 遵循项目规范完成实现，并验证相关测试。
 """
 
-[model]
-account = "deepseek"
-model = "deepseek-flash"
+account_id = "deepseek"
+model_id = "deepseek-flash"
 effort = "high"
 ```
 
 用户 Profile 可选择四种模式，`review` 与系统 reviewer 语义一致（spawn 必须提供
 `reviewTargetAgentId`）。旧文件缺少 `workspace_mode` 时按 `directory` 解释，下一次保存
-写回 canonical 字段。文件分别解析、校验和原子保存；无效文件保留原字节、从有效目录排除，
-并以脱敏 warning 暴露。合法但 account_id/model_id 当前不可解析的 Profile 保留在 Settings 中并
-标记 unavailable。
+写回 canonical 字段。文件分别解析、校验和原子保存；目录扫描对无效文件保留原字节、
+排除对应条目并发布脱敏诊断。启动前的完整结构校验仍可拒绝无效文件，本轮不改变其恢复
+策略。合法但 account_id/model_id 当前不可解析的 Profile 保留在 Settings 中并标记
+unavailable。用户 ID 为 1–64 个小写 ASCII 字母、数字、`-` 或 `_`，不能占用内置身份。
 
 主智能体（Main agent）是 root，负责理解需求、制定计划、协调子代理、整合与验证结果。
 `planner` 只保留为 root 的身份标识；root 的模型 selector 属于各自 Thread，并以当前 Mode 的
 保存值作为新建或切换默认值。主智能体不是可派发 Profile，也不在 Agents 设置页提供独立配置。
-Studio 注册四个系统子代理 Profile：`explorer` 固定为 unrestricted，`reviewer` 固定为
-review，`executor` 固定为 directory，`worktree_executor` 固定为 worktree。系统 id、名称、用途、指令
-和模式不可编辑；Agents 设置页可以配置其启用状态、account_id/model_id 和模型声明的 effort。
+系统子代理来自统一声明集合的 child 视图；现有预设包括 `explorer`（unrestricted）、
+`reviewer`（review）、`executor`（directory）与 `worktree_executor`（worktree），并非框架
+支持的封闭角色集合。系统 id、名称、用途、指令和模式不可编辑；Agents 设置页可以配置
+启用状态和模型绑定。缺少专属路由时的默认继承及覆盖规则由 [20.3](./20-config.md#203-根路由与系统-profile)
+定义，新增声明不要求同时修改用户配置。
 `planner` 是保留标识，用户 Profile 不可占用；目录查询和 spawn 均不接受它。
 历史 planner child 保留身份、消息和执行记录，仅供查看；恢复或续跑在资源创建前拒绝，
 界面显示“该子代理角色已停用”。历史订阅直接重放日志并发布只读快照，不装配运行资源；
@@ -198,7 +216,7 @@ full-access 而关闭。读取不受 `writablePaths` 限制，项目外路径仍
 ### 任务消息与依赖
 
 Task root 先建立依赖图、文件所有权与验证边界。跨目录检索、历史核验和相互独立的事实收集
-优先拆成多个 `explorer` 并行执行；主智能体综合事实、比较方案并决定计划。探索 child 默认使用
+优先按目录声明选择适合只读探索的 Profile 并行执行；主智能体综合事实、比较方案并决定计划。探索 child 默认使用
 fresh context，父消息必须自包含，explorer 返回 `file:line`、符号名、必要原文和不确定项；
 root 负责综合结论和亲自维护 `design/**`，child 不替代 root 编译或转换 workflow。
 
@@ -209,11 +227,11 @@ root 负责综合结论和亲自维护 `design/**`，child 不替代 root 编译
 顺序；只有极少操作的微任务、重复目标、需要共享未稳定上下文或真实前后依赖的工作不得为
 增加 agent 数量而拆分。
 
-- 单个边界清晰的实现，或多个写集合完全互斥的并行实现，使用 `executor`；并行时为每个
+- 单个边界清晰的实现，或多个写集合完全互斥的并行实现，选择适合实施的 directory Profile；并行时为每个
   child 传入最窄且互不重叠的 `writablePaths`，禁止 child 借 shell、Git 或 MCP 越界修改、
   stage、commit 或 reset。
-- 会触及共同接口、manifest、lockfile、生成文件或高风险 Git 状态的任务使用
-  `worktree_executor`。每个 child 在独立 worktree 提交，经局部审查通过后由 root 串行合入当前工作空间；worktree 不能
+- 会触及共同接口、manifest、lockfile、生成文件或高风险 Git 状态的任务选择适合实施的
+  worktree Profile。每个 child 在独立 worktree 提交，经局部审查通过后由 root 串行合入当前工作空间；worktree 不能
   替代真实前后依赖的顺序执行。对于任务要求创建的新文件，child 必须先用文件工具创建并以
   只读工具确认精确路径和内容，之后才能执行引用该路径的 `git add` 或 `git commit`，不得用
   试探性暂存验证文件是否存在。状态检查、文件创建、内容确认、测试、暂存、提交和提交复核
@@ -452,7 +470,7 @@ worktree 清理尊重 Git 锁与注册身份拒绝：注销失败且目录仍存
 ## 12.6 GUI
 
 Agents 是 canonical Agent 配置中心，不保留重复 Roles 设置页。系统卡片显示固定模式徽标、
-启用开关、account_id/model_id/effort 控件，用户编辑器额外显示三模式选择。所有设置 mutation
+启用开关、account_id/model_id/effort 控件，用户编辑器额外显示四种工作区模式选择。所有设置 mutation
 携带 `expectedSettingsRevision`，成功后以返回的完整 canonical settings snapshot 原子刷新
 UI（设置页整体契约见 [19](./19-studio-ui.md)）。
 

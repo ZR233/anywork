@@ -69,7 +69,7 @@ impl StudioRuntime {
         let route_selector = config.mode_model_route(&mode_id)?.clone();
         let route = config
             .models
-            .resolve_route(crate::config::StudioRole::Planner.id(), &route_selector)?;
+            .resolve_route(crate::config::root_agent_route_id(), &route_selector)?;
 
         let thread = self.ensure_thread_owner(thread_id).await?;
         let (gate, cancellation) = self.thread_factory.tool_operation(thread_id)?;

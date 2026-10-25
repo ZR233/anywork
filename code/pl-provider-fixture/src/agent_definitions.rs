@@ -14,7 +14,8 @@ use anyhow::ensure;
 use std::collections::BTreeMap;
 
 pub use plan::{
-    AgentPhase, CHILD_MODEL, COMPACT_MODEL, ROOT_MODEL, USER_MODEL_NEW, USER_MODEL_OLD,
+    AgentPhase, CHILD_MODEL, COMPACT_MODEL, FUTURE_MODEL, ROOT_MODEL, USER_MODEL_NEW,
+    USER_MODEL_OLD,
 };
 pub use plan::{DISABLED_PROFILE, UNAVAILABLE_MODEL, UNAVAILABLE_PROFILE, USER_PROFILE};
 
@@ -130,8 +131,8 @@ impl AgentDefinitionControl {
             }
         }
         ensure!(
-            state.child_ids.len() == 2,
-            "expected two real child identities"
+            state.child_ids.len() == 3,
+            "expected three real child identities"
         );
         Ok(())
     }

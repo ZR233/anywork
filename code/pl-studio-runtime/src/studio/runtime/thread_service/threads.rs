@@ -115,7 +115,7 @@ impl StudioRuntime {
         let route = config
             .config
             .models
-            .resolve_route(crate::config::StudioRole::Planner.id(), &selector)?;
+            .resolve_route(crate::config::root_agent_route_id(), &selector)?;
         crate::studio::delegation::validate_credential(&route)?;
         self.thread_modes
             .snapshot()

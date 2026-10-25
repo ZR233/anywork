@@ -7,8 +7,8 @@ use pl_tool::workspace::WorkspaceInstructions;
 use pl_tool::workspace::load_workspace_instruction_documents;
 
 use super::{
-    InstructionAssemblyRequest, InstructionBlock, InstructionSnapshot, InstructionSource,
-    InstructionSourceKind,
+    AgentInstructionShape, InstructionAssemblyRequest, InstructionBlock, InstructionSnapshot,
+    InstructionSource, InstructionSourceKind,
 };
 
 const DEFAULT_BASE_INSTRUCTIONS: &str = include_str!("../prompts/system.md");
@@ -28,6 +28,7 @@ impl InstructionAssembler {
         let agent = request.agent;
         let mut snapshot = InstructionSnapshot {
             agent: agent.identity().clone(),
+            agent_shape: AgentInstructionShape::Absent,
             base: base_block(config_instructions, request.model),
             developer: Vec::new(),
             user: Vec::new(),
@@ -37,6 +38,7 @@ impl InstructionAssembler {
             InstructionSource::new(InstructionSourceKind::AgentDefinition, agent.label()),
             agent.instructions(),
         );
+        snapshot.agent_shape = AgentInstructionShape::from_agent_blocks(&snapshot.developer)?;
         if let Some(mode) = request.mode {
             snapshot.push_developer(
                 InstructionSource::new(InstructionSourceKind::ModeDefinition, mode.label),

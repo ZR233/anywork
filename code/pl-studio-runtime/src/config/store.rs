@@ -9,7 +9,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use crate::{PureError, Result};
 
 use super::credential::{CredentialStore, MemoryCredentialStore, SystemCredentialStore};
-use super::{STUDIO_CONFIG_DIR_NAME, STUDIO_CONFIG_FILE_NAME, StudioConfig, StudioRole};
+use super::{
+    ROOT_AGENT_ROUTE_KEY, STUDIO_CONFIG_DIR_NAME, STUDIO_CONFIG_FILE_NAME, StudioConfig,
+    root_agent_route_id,
+};
 use pl_protocol::ThreadModeId;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -291,7 +294,7 @@ impl ConfigStore {
         reject_inline_credentials(&config)?;
         match source_version {
             18 => {
-                config.disabled_system_agents.remove("planner");
+                config.disabled_system_agents.remove(ROOT_AGENT_ROUTE_KEY);
                 migrate_legacy_planner_route(&mut config, source_version)?;
             }
             19 => migrate_legacy_planner_route(&mut config, source_version)?,
@@ -505,7 +508,7 @@ fn migrate_legacy_planner_route(config: &mut StudioConfig, source_version: u32) 
     let planner_route = config
         .models
         .routes
-        .remove(&StudioRole::Planner.id())
+        .remove(&root_agent_route_id())
         .ok_or_else(|| {
             PureError::ConfigError(format!(
                 "schema {source_version} config is missing planner model route"
@@ -1035,18 +1038,19 @@ mod tests {
         let credentials = crate::config::credential::MemoryCredentialStore::default();
         credentials.seed_legacy_provider("deepseek", "legacy-secret");
         let mut config = StudioConfig::default_config().unwrap();
+        let reviewer = crate::config::AgentRoleId::new("reviewer").unwrap();
+        config.models.routes.insert(
+            reviewer.clone(),
+            config.mode_model_routes[&ThreadModeId::simple()].clone(),
+        );
         let second_id = AccountId::new("second").unwrap();
         let mut second = config.models.accounts[&AccountId::new("deepseek").unwrap()].clone();
         second.name = "Second".into();
         second.bearer_token_env = Some("SECOND_API_KEY".into());
         config.models.accounts.insert(second_id.clone(), second);
-        let mut route =
-            config.models.routes[&crate::config::AgentRoleId::new("reviewer").unwrap()].clone();
+        let mut route = config.models.routes[&reviewer].clone();
         route.account_id = second_id.clone();
-        config
-            .models
-            .routes
-            .insert(crate::config::AgentRoleId::new("reviewer").unwrap(), route);
+        config.models.routes.insert(reviewer.clone(), route);
         let store = store_with_credentials(&directory, credentials);
         store.save(&config).unwrap();
         // 原始配置文档：真实 22 结构（providers/preset/adapter/路由 provider,model）。
@@ -1082,10 +1086,7 @@ mod tests {
             deepseek.capabilities,
             pl_model::config::AccountCapabilitySelection::TemplateDefaults
         );
-        assert_eq!(
-            loaded.models.routes[&crate::config::AgentRoleId::new("reviewer").unwrap()].account_id,
-            second_id
-        );
+        assert_eq!(loaded.models.routes[&reviewer].account_id, second_id);
         // 旧凭据项保留；内联值与旧项均已转写到 `account:` 命名空间。
         assert_eq!(
             store.credentials.load("deepseek").unwrap().as_deref(),
@@ -1435,7 +1436,12 @@ mod tests {
     #[test]
     fn schema_20_without_legacy_token_preserves_routes() {
         let (_directory, store) = isolated_store();
-        let config = StudioConfig::default_config().expect("bundled defaults");
+        let mut config = StudioConfig::default_config().expect("bundled defaults");
+        let explorer = crate::config::AgentRoleId::new("explorer").unwrap();
+        config.models.routes.insert(
+            explorer,
+            config.mode_model_routes[&ThreadModeId::simple()].clone(),
+        );
         store.save(&config).expect("save current schema");
         let path = store.paths.config_file();
         let mut table = read_table(path);
@@ -1451,10 +1457,11 @@ mod tests {
         );
         assert_eq!(loaded.mode_model_routes, config.mode_model_routes);
         assert_eq!(loaded.models.routes, config.models.routes);
-        assert_eq!(
-            loaded.models.routes.len(),
-            4,
-            "four child-agent routes remain"
+        assert!(
+            loaded
+                .models
+                .routes
+                .contains_key(&crate::config::AgentRoleId::new("explorer").unwrap())
         );
         assert_eq!(loaded.models.accounts, config.models.accounts);
         assert_eq!(loaded.web_search, config.web_search);
@@ -1548,7 +1555,12 @@ mod tests {
     #[test]
     fn schema_20_migration_failure_does_not_persist() {
         let (_directory, store) = isolated_store();
-        let config = StudioConfig::default_config().expect("bundled defaults");
+        let mut config = StudioConfig::default_config().expect("bundled defaults");
+        let explorer = crate::config::AgentRoleId::new("explorer").unwrap();
+        config.models.routes.insert(
+            explorer,
+            config.mode_model_routes[&ThreadModeId::simple()].clone(),
+        );
         store.save(&config).expect("save current schema");
         let path = store.paths.config_file();
         let mut table = read_table(path);

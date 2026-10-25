@@ -36,6 +36,8 @@ impl StudioStartupError {
         let source = source.into();
         let kind = if has_environment_error(&source) {
             StudioStartupErrorKind::Environment
+        } else if is_bundled_agent_error(&source) {
+            StudioStartupErrorKind::Internal
         } else if source.chain().any(|cause| {
             matches!(
                 cause.downcast_ref::<crate::ConfigRuntimeError>(),
@@ -77,11 +79,22 @@ pub(crate) fn cleanup_error(error: impl Into<anyhow::Error>) -> anyhow::Error {
 /// Mark errors originating in a decoder/validator, while preserving access failures.
 pub(crate) fn input_error(error: impl Into<anyhow::Error>) -> anyhow::Error {
     let error = error.into();
-    if is_session_layout_migration(&error) || has_environment_error(&error) {
+    if is_bundled_agent_error(&error)
+        || is_session_layout_migration(&error)
+        || has_environment_error(&error)
+    {
         error
     } else {
         data_error(error)
     }
+}
+
+fn is_bundled_agent_error(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| {
+        cause
+            .downcast_ref::<crate::ConfigRuntimeError>()
+            .is_some_and(|error| matches!(error, crate::ConfigRuntimeError::BundledAgentCatalog(_)))
+    })
 }
 
 fn is_session_layout_migration(error: &anyhow::Error) -> bool {

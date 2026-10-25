@@ -14,6 +14,18 @@ import 'settings_scope.dart';
 import 'settings_views.dart';
 import 'settings_worktree_recovery.dart';
 
+String _systemAgentName(BuildContext context, AgentProfileView profile) {
+  final localized = context.roleLabel(profile.id);
+  return localized == profile.id ? profile.displayName : localized;
+}
+
+String _systemAgentDescription(BuildContext context, AgentProfileView profile) {
+  final localized = context.roleDescription(profile.id);
+  return localized == context.l10n.settingsRoleFallbackDescription
+      ? profile.description
+      : localized;
+}
+
 /// Agent Profile 设置页。系统 Profile 只读；用户 Profile 由各自 TOML 文件管理。
 class AgentsTab extends ConsumerStatefulWidget {
   const AgentsTab({super.key, required this.tabIndex});
@@ -73,9 +85,8 @@ class _AgentsTabState extends ConsumerState<AgentsTab> {
             .toList(growable: false) ??
         const <StudioRecoveryIssue>[];
     final filtered = profiles.where((profile) {
-      if (profile.id == 'planner') return false;
       final name = profile.system
-          ? context.roleLabel(profile.id)
+          ? _systemAgentName(context, profile)
           : profile.displayName;
       return '$name ${profile.id} ${profile.description}'
           .toLowerCase()
@@ -144,10 +155,10 @@ class _AgentsTabState extends ConsumerState<AgentsTab> {
                         ? Icons.lock_outline
                         : Icons.person_outline,
                     title: profile.system
-                        ? context.roleLabel(profile.id)
+                        ? _systemAgentName(context, profile)
                         : profile.displayName,
                     subtitle:
-                        '${profile.id} · ${profile.system ? context.roleDescription(profile.id) : profile.description}',
+                        '${profile.id} · ${profile.system ? _systemAgentDescription(context, profile) : profile.description}',
                     status: Text(
                       agentWorkspaceModeLabel(context, profile.workspaceMode),
                       key: profile.system

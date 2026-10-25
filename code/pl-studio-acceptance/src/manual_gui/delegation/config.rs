@@ -1,6 +1,7 @@
 //! Synthetic account inventory only; selection is left to production queries.
 
 use super::super::*;
+use pl_model::config::{AgentRoleId, ModelRouteConfig};
 use pl_model::model::{
     ModelParameter, ModelPricing, ParameterWire, TokenPriceTier, WireAssignment,
 };
@@ -62,24 +63,22 @@ pub(super) fn write(home: &Path, ready: &FixtureReady) -> Result<()> {
         .models
         .accounts
         .insert(AccountId::new(format!("{prefix}-missing"))?, no_credentials);
-    for (role, route) in &mut config.models.routes {
-        route.account_id = if role.as_str() == "reviewer" {
-            b_id.clone()
-        } else {
-            a_id.clone()
-        };
-        route.model_id = if role.as_str() == "explorer" {
-            OTHER_MODEL
-        } else {
-            SHARED_MODEL
-        }
-        .into();
-        route.effort = if role.as_str() == "explorer" {
-            Some(pl_model::config::ReasoningEffort::new("high"))
-        } else {
-            None
-        };
-    }
+    config.models.routes.insert(
+        AgentRoleId::new("explorer")?,
+        ModelRouteConfig {
+            account_id: a_id.clone(),
+            model_id: OTHER_MODEL.into(),
+            effort: Some(pl_model::config::ReasoningEffort::new("high")),
+        },
+    );
+    config.models.routes.insert(
+        AgentRoleId::new("reviewer")?,
+        ModelRouteConfig {
+            account_id: b_id,
+            model_id: SHARED_MODEL.into(),
+            effort: None,
+        },
+    );
     for route in config.mode_model_routes.values_mut() {
         route.account_id = a_id.clone();
         route.model_id = SHARED_MODEL.into();

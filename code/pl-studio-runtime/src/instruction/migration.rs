@@ -12,13 +12,18 @@ use pl_core::context::OpaquePayload;
 use pl_core::thread::ThreadSnapshot;
 use serde::Deserialize;
 
-use crate::agent::definition::{AgentDefinitionScope, VerifiedAgentIdentity};
-
-use super::{
-    InstructionBlock, InstructionSnapshot, InstructionSource, InstructionSourceKind,
-    SNAPSHOT_FORMAT, SNAPSHOT_VERSION,
+use crate::agent::definition::{
+    AgentDefinitionIdentity, AgentDefinitionOrigin, AgentDefinitionScope, AgentRootEntry,
+    AgentUsageBinding, VerifiedAgentIdentity,
 };
 
+use super::{
+    AgentInstructionShape, InstructionBlock, InstructionSnapshot, InstructionSource,
+    InstructionSourceKind, SNAPSHOT_FORMAT, SNAPSHOT_VERSION, structure,
+};
+
+/// Previous generic identity version; its root Agent block count depended on a hard-coded ID.
+const PREVIOUS_SNAPSHOT_VERSION: u32 = 2;
 /// Instruction snapshot version that mixed Mode and child Profile role text.
 const LEGACY_SNAPSHOT_VERSION: u32 = 1;
 
@@ -48,6 +53,11 @@ pub(crate) fn migrate_saved_representation(
             identity.validate(&snapshot.agent)?;
             Ok(())
         }
+        PREVIOUS_SNAPSHOT_VERSION => {
+            let snapshot = upgrade_previous_snapshot(&record.payload, identity)?;
+            record.payload = super::encode_snapshot(&snapshot)?;
+            Ok(())
+        }
         LEGACY_SNAPSHOT_VERSION => {
             let snapshot = upgrade_legacy_snapshot(&record.payload, identity)?;
             record.payload = super::encode_snapshot(&snapshot)?;
@@ -57,7 +67,7 @@ pub(crate) fn migrate_saved_representation(
     }
 }
 
-/// Returns the saved Mode instruction text of a v1 or current snapshot.
+/// Returns the saved Mode instruction text of a v1, v2 or current snapshot.
 ///
 /// This is the only place where Mode recovery reads a payload predating the current structure;
 /// the ordinary decoders reject obsolete versions. A payload without a Mode source returns
@@ -72,6 +82,15 @@ pub(crate) fn saved_mode_instruction(payload: &OpaquePayload) -> Result<Option<(
     match payload.version() {
         SNAPSHOT_VERSION => {
             let snapshot = super::decode_snapshot(payload)?;
+            Ok(snapshot
+                .developer
+                .iter()
+                .find(|block| block.source.kind == InstructionSourceKind::ModeDefinition)
+                .map(|block| (block.source.label.clone(), block.content.clone())))
+        }
+        PREVIOUS_SNAPSHOT_VERSION => {
+            let snapshot = decode_previous(payload)?;
+            structure::validate_v2(&snapshot)?;
             Ok(snapshot
                 .developer
                 .iter()
@@ -138,11 +157,67 @@ fn upgrade_legacy_snapshot(
             Ok(into_block(block, kind))
         })
         .collect::<Result<Vec<_>>>()?;
-    Ok(InstructionSnapshot {
+    let mut snapshot = InstructionSnapshot {
         agent: identity.migrated_identity(),
+        agent_shape: AgentInstructionShape::Absent,
         base,
         developer,
         user,
+    };
+    snapshot.agent_shape = AgentInstructionShape::from_agent_blocks(&snapshot.developer)?;
+    structure::validate(&snapshot)?;
+    Ok(snapshot)
+}
+
+fn upgrade_previous_snapshot(
+    payload: &OpaquePayload,
+    identity: &VerifiedAgentIdentity,
+) -> Result<InstructionSnapshot> {
+    let mut snapshot = decode_previous(payload)?;
+    structure::validate_v2(&snapshot)?;
+    identity.validate_v2(&snapshot.agent)?;
+
+    snapshot.agent.usage_binding = match identity {
+        VerifiedAgentIdentity::BotRoot => AgentUsageBinding::RootEntry(AgentRootEntry::Bot),
+        VerifiedAgentIdentity::GenericRoot => {
+            AgentUsageBinding::LegacyUnspecifiedRoot { source_version: 2 }
+        }
+        VerifiedAgentIdentity::Child { .. } => AgentUsageBinding::Child,
+    };
+    if let VerifiedAgentIdentity::Child { origin, .. } = identity
+        && snapshot.agent.origin == AgentDefinitionOrigin::Profile
+        && *origin == AgentDefinitionOrigin::Builtin
+    {
+        // Version 2 represented system and user child definitions with the same Profile origin.
+        // The frozen Profile snapshot distinguishes them without consulting the current catalog.
+        snapshot.agent.origin = AgentDefinitionOrigin::Builtin;
+    }
+
+    snapshot.agent_shape = AgentInstructionShape::from_agent_blocks(&snapshot.developer)?;
+    structure::validate(&snapshot)?;
+    Ok(snapshot)
+}
+
+fn decode_previous(payload: &OpaquePayload) -> Result<InstructionSnapshot> {
+    let previous: PreviousInstructionSnapshot =
+        serde_json::from_str(payload.content()).context("decode version-2 instruction snapshot")?;
+    Ok(InstructionSnapshot {
+        agent: AgentDefinitionIdentity {
+            id: previous.agent.id,
+            scope: previous.agent.scope,
+            usage_binding: match previous.agent.scope {
+                AgentDefinitionScope::Root => {
+                    AgentUsageBinding::LegacyUnspecifiedRoot { source_version: 2 }
+                }
+                AgentDefinitionScope::Child => AgentUsageBinding::Child,
+            },
+            revision: previous.agent.revision,
+            origin: previous.agent.origin,
+        },
+        agent_shape: AgentInstructionShape::Absent,
+        base: previous.base,
+        developer: previous.developer,
+        user: previous.user,
     })
 }
 
@@ -170,6 +245,28 @@ struct LegacySnapshot {
     developer: Vec<LegacyBlock>,
     #[serde(default)]
     user: Vec<LegacyBlock>,
+}
+
+/// Version 2 had the current block encoding but no frozen generic Agent shape.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct PreviousInstructionSnapshot {
+    agent: PreviousAgentDefinitionIdentity,
+    base: InstructionBlock,
+    #[serde(default)]
+    developer: Vec<InstructionBlock>,
+    #[serde(default)]
+    user: Vec<InstructionBlock>,
+}
+
+/// Version-2 identity payload; it predates the frozen usage binding.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct PreviousAgentDefinitionIdentity {
+    id: String,
+    scope: AgentDefinitionScope,
+    revision: String,
+    origin: AgentDefinitionOrigin,
 }
 
 #[derive(Debug, Deserialize)]

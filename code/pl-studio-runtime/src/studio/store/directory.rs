@@ -68,7 +68,7 @@ impl DirectoryDelta {
             frozen_model: None,
             workspace_path,
             parent_thread_id: None,
-            role: crate::config::StudioRole::Planner.key().to_string(),
+            role: crate::config::ROOT_AGENT_ROUTE_KEY.to_string(),
             status: pl_protocol::ThreadStatus::Idle,
             created_at: now,
             updated_at: now,

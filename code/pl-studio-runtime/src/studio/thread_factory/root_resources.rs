@@ -6,7 +6,7 @@ use super::{
     thread_tools::ThreadToolAssembly,
 };
 use crate::{
-    agent::definition::{AgentChannel, ResolvedAgentDefinition, VerifiedAgentIdentity},
+    agent::definition::{AgentRootEntry, ResolvedAgentDefinition, VerifiedAgentIdentity},
     instruction::ModeInstructionProfile,
     resource_store::FileResourceStore,
     thread_assembler::{StudioThreadSpec, ThreadAssemblyError, ThreadPreparation},
@@ -100,10 +100,10 @@ impl StudioThreadFactory {
         )
         .map_err(|error| resource_error("verify bot ownership", error))?;
         let agent = ResolvedAgentDefinition::root(if bot_owner.is_some() {
-            AgentChannel::Bot
+            AgentRootEntry::Bot
         } else {
-            AgentChannel::Studio
-        });
+            AgentRootEntry::Studio
+        })?;
         // 旧快照的身份由已核实事实决定：有 bot 归属证明时沿用飞书渠道，否则是明确渠道未指定
         // 的 legacy-root；两者都不会伪装成当前内置的普通根定义。
         let saved_identity = match bot_owner {
@@ -187,7 +187,7 @@ impl StudioThreadFactory {
         };
         let resolved_route = config
             .models
-            .resolve_route(crate::config::StudioRole::Planner.id(), &route_selector)
+            .resolve_route(crate::config::root_agent_route_id(), &route_selector)
             .and_then(|route| {
                 crate::studio::delegation::validate_credential(&route)?;
                 Ok(route)
@@ -198,7 +198,7 @@ impl StudioThreadFactory {
                 tracing::warn!(thread_id = id, %error, "saved Thread model route is unavailable");
                 let fallback = crate::studio::model_route::unavailable_placeholder(
                     &config,
-                    crate::config::StudioRole::Planner.id(),
+                    crate::config::root_agent_route_id(),
                     &route_selector,
                 )
                 .map_err(|error| resource_error("restore unavailable root placeholder", error))?;

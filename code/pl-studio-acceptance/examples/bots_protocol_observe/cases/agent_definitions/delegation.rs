@@ -4,7 +4,7 @@
 use super::{Observation, config, http, saved, wire};
 use anyhow::{Context, Result, ensure};
 use pl_protocol::{AgentProfileSnapshot, AgentWorkspaceMode, ThreadStatus, ThreadWaitState};
-use pl_provider_fixture::agent_definitions::{AgentPhase, USER_PROFILE};
+use pl_provider_fixture::agent_definitions::{AgentPhase, FUTURE_MODEL, ROOT_MODEL, USER_PROFILE};
 use std::time::Instant;
 
 impl Observation<'_> {
@@ -20,6 +20,25 @@ impl Observation<'_> {
             .iter()
             .find(|profile| profile.profile_id == profile_id)
             .context("delegation Profile not in real catalog")?;
+        match phase {
+            AgentPhase::SpawnSystem => ensure!(
+                profile.system
+                    && profile.profile_id == "explorer"
+                    && profile.account_id == config::ROOT_ACCOUNT
+                    && profile.model_id == ROOT_MODEL
+                    && !config::has_explicit_system_route(&self.session.home, &profile.profile_id)?,
+                "explorer catalog entry did not inherit the actual mode.simple route"
+            ),
+            AgentPhase::SpawnDefaultSystem => ensure!(
+                profile.system
+                    && profile.profile_id == "executor"
+                    && profile.account_id == config::ROOT_ACCOUNT
+                    && profile.model_id == FUTURE_MODEL
+                    && !config::has_explicit_system_route(&self.session.home, &profile.profile_id)?,
+                "executor catalog entry did not inherit the updated mode.simple route"
+            ),
+            _ => {}
+        }
         let before = self.directory().await?;
         self.submit(parent, phase).await?;
         let child_phase = phase
@@ -55,8 +74,7 @@ impl Observation<'_> {
             );
         } else {
             ensure!(
-                workspace.mode == AgentWorkspaceMode::Unrestricted
-                    && workspace.writable_paths.is_none(),
+                workspace.mode == profile.workspace_mode && workspace.writable_paths.is_none(),
                 "system child workspace changed"
             );
         }
