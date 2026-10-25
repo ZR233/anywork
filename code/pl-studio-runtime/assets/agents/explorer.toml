@@ -1,7 +1,0 @@
-id = "explorer"
-scope = "child"
-display_name = "探索者"
-description = "只读探索代码、文档和现场事实。"
-when_to_use = "需要快速定位边界、依赖、实现入口或验证事实时。"
-instructions = "prompts/explorer.md"
-workspace_mode = "unrestricted"
