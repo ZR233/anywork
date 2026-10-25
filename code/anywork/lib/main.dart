@@ -6,6 +6,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'src/app/anywork_app.dart';
 import 'src/app/app_graph.dart';
+import 'src/features/settings/statistics/view_models/statistics_repository_provider.dart';
 import 'src/platform/error_log.dart';
 
 void main() {
@@ -43,7 +44,12 @@ void bootstrapStudio({ProviderContainer? container, AppGraph? graph}) {
     }
     runApp(
       ProviderScope(
-        overrides: [appGraphProvider.overrideWithValue(application)],
+        overrides: [
+          appGraphProvider.overrideWithValue(application),
+          statisticsRepositoryProvider.overrideWithValue(
+            application.statisticsRepository,
+          ),
+        ],
         child: const AnyworkApp(enableDesktopTray: true),
       ),
     );

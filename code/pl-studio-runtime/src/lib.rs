@@ -24,6 +24,7 @@ mod first_run;
 mod instruction;
 mod protocol;
 pub mod resource_store;
+pub mod statistics;
 mod studio;
 pub mod thread_assembler;
 mod updater;
@@ -54,15 +55,13 @@ pub use protocol::{
     StudioAgentDirectoryState, StudioLspHealth, StudioLspServer, StudioLspServerState,
     StudioLspStateSnapshot, StudioMcpHealth, StudioMcpServer, StudioMcpServerState,
     StudioMcpStateData, StudioMcpStateSnapshot, StudioModelCatalogStateSnapshot,
-    StudioModelPerformanceEffortSummary, StudioModelPerformanceSample,
-    StudioModelPerformanceSnapshot, StudioModelPerformanceSummary, StudioPendingPersistence,
-    StudioProductBaseline, StudioProductBaselineState, StudioProductEventEnvelope,
-    StudioProductEventKind, StudioProductFrame, StudioProductTopic, StudioProductTopicScopeError,
-    StudioProjectDirectoryData, StudioProjectDirectoryState, StudioPurposeCostSnapshot,
-    StudioRecoveryStateSnapshot, StudioSessionCostSnapshot, StudioSessionCostsState,
-    StudioSettingsConfigStateSnapshot, StudioShutdownIssue, StudioShutdownOutcome,
-    StudioShutdownProgress, StudioShutdownReport, StudioSkillsStateSnapshot, StudioStartupStage,
-    StudioStateSnapshot, StudioThreadDirectoryData, StudioThreadDirectoryDelta,
+    StudioPendingPersistence, StudioProductBaseline, StudioProductBaselineState,
+    StudioProductEventEnvelope, StudioProductEventKind, StudioProductFrame, StudioProductTopic,
+    StudioProductTopicScopeError, StudioProjectDirectoryData, StudioProjectDirectoryState,
+    StudioPurposeCostSnapshot, StudioRecoveryStateSnapshot, StudioSessionCostSnapshot,
+    StudioSessionCostsState, StudioSettingsConfigStateSnapshot, StudioShutdownIssue,
+    StudioShutdownOutcome, StudioShutdownProgress, StudioShutdownReport, StudioSkillsStateSnapshot,
+    StudioStartupStage, StudioStateSnapshot, StudioThreadDirectoryData, StudioThreadDirectoryDelta,
     StudioThreadDirectoryPage, StudioThreadDirectoryPageData, StudioThreadDirectoryState,
 };
 

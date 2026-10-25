@@ -2,6 +2,7 @@
 mod bridge_runtime;
 mod convert;
 pub mod handlers;
+pub mod statistics;
 pub mod subscription;
 pub mod types;
 

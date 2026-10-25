@@ -297,7 +297,6 @@ class DemoStudioTransport extends StudioTransport
       },
       threadModeCatalog: _demoThreadModeCatalog(),
       accountUsageState: _demoAccountUsageState(),
-      modelPerformance: _demoModelPerformance(_fixtureTime),
       updaterState: _demoUpdaterState(),
       persistenceState: _demoPersistenceState(),
       persistenceQueueState: _demoPersistenceQueueState(),
@@ -544,136 +543,6 @@ class DemoStudioTransport extends StudioTransport
       effort: model.defaultReasoningEffort.isNotEmpty
           ? model.defaultReasoningEffort
           : model.reasoningEfforts.firstOrNull ?? '',
-    );
-  }
-
-  ModelPerformanceSnapshotView _demoModelPerformance(DateTime now) {
-    // 顶层身份是 (accountId, 配置 modelId)；同一账号模型的强度细分留在组内。
-    const deepseek = ModelPerformanceSummaryView(
-      accountId: 'deepseek-primary',
-      accountDisplayName: 'DeepSeek',
-      modelId: 'deepseek-flash',
-      sampleCount: 2,
-      completionTokens: 300,
-      totalTtftMillis: 760,
-      ttftSampleCount: 2,
-      totalResponseMillis: 2760,
-      tokensPerSecond: 300 * 1000 / 2760,
-      averageTtftMillis: 380,
-      averageResponseMillis: 1380,
-      effortBreakdowns: [
-        ModelPerformanceEffortSummaryView(
-          effort: 'high',
-          sampleCount: 1,
-          completionTokens: 150,
-          totalTtftMillis: 410,
-          ttftSampleCount: 1,
-          totalResponseMillis: 1410,
-          tokensPerSecond: 150 * 1000 / 1410,
-          averageTtftMillis: 410,
-          averageResponseMillis: 1410,
-        ),
-        ModelPerformanceEffortSummaryView(
-          effort: 'none',
-          sampleCount: 1,
-          completionTokens: 150,
-          totalTtftMillis: 350,
-          ttftSampleCount: 1,
-          totalResponseMillis: 1350,
-          tokensPerSecond: 150 * 1000 / 1350,
-          averageTtftMillis: 350,
-          averageResponseMillis: 1350,
-        ),
-      ],
-    );
-    const openai = ModelPerformanceSummaryView(
-      accountId: 'openai-work',
-      accountDisplayName: 'OpenAI Work',
-      modelId: 'gpt-5.6-codex',
-      sampleCount: 1,
-      completionTokens: 216,
-      totalTtftMillis: 620,
-      ttftSampleCount: 1,
-      totalResponseMillis: 3120,
-      tokensPerSecond: 216 * 1000 / 3120,
-      averageTtftMillis: 620,
-      averageResponseMillis: 3120,
-      effortBreakdowns: [
-        ModelPerformanceEffortSummaryView(
-          effort: null,
-          sampleCount: 1,
-          completionTokens: 216,
-          totalTtftMillis: 620,
-          ttftSampleCount: 1,
-          totalResponseMillis: 3120,
-          tokensPerSecond: 216 * 1000 / 3120,
-          averageTtftMillis: 620,
-          averageResponseMillis: 3120,
-        ),
-      ],
-    );
-    return ModelPerformanceSnapshotView(
-      revision: 3,
-      updatedAt: now,
-      summaries: const [deepseek, openai],
-      history: [
-        ModelPerformanceSampleView(
-          completedAt: now.subtract(const Duration(seconds: 12)),
-          accountId: openai.accountId,
-          accountDisplayName: openai.accountDisplayName,
-          modelId: openai.modelId,
-          sentModel: openai.modelId,
-          reportedModel: openai.modelId,
-          modelMatchState: ModelMatchState.matched,
-          completionTokens: 216,
-          ttftMillis: 620,
-          decodeMillis: 2500,
-          totalResponseMillis: 3120,
-          tokensPerSecond: 216 * 1000 / 3120,
-        ),
-        ModelPerformanceSampleView(
-          completedAt: now.subtract(const Duration(seconds: 34)),
-          accountId: deepseek.accountId,
-          accountDisplayName: deepseek.accountDisplayName,
-          modelId: deepseek.modelId,
-          sentModel: 'deepseek-flash-0724',
-          reportedModel: 'deepseek-flash',
-          modelMatchState: ModelMatchState.mismatched,
-          effort: 'high',
-          completionTokens: 150,
-          ttftMillis: 410,
-          decodeMillis: 1000,
-          totalResponseMillis: 1410,
-          tokensPerSecond: 150 * 1000 / 1410,
-        ),
-        ModelPerformanceSampleView(
-          completedAt: now.subtract(const Duration(minutes: 2)),
-          accountId: deepseek.accountId,
-          accountDisplayName: deepseek.accountDisplayName,
-          modelId: deepseek.modelId,
-          sentModel: deepseek.modelId,
-          modelMatchState: ModelMatchState.unreported,
-          effort: 'none',
-          completionTokens: 150,
-          ttftMillis: 350,
-          decodeMillis: 1000,
-          totalResponseMillis: 1350,
-          tokensPerSecond: 150 * 1000 / 1350,
-        ),
-        // 旧记录没有配置模型证据：保持历史身份未知，不从当前目录补写。
-        ModelPerformanceSampleView(
-          completedAt: now.subtract(const Duration(minutes: 8)),
-          accountId: 'legacy-account',
-          accountDisplayName: 'Legacy account',
-          sentModel: 'legacy-alias-model',
-          modelMatchState: ModelMatchState.legacyUnknown,
-          completionTokens: 90,
-          ttftMillis: 500,
-          decodeMillis: 900,
-          totalResponseMillis: 1400,
-          tokensPerSecond: 90 * 1000 / 1400,
-        ),
-      ],
     );
   }
 
@@ -3086,9 +2955,6 @@ class DemoStudioTransport extends StudioTransport
         _demoThreadModeCatalog(),
       ),
       AccountUsageTopic() => AccountUsageBaseline(_demoAccountUsageState()),
-      ModelPerformanceTopic() => ModelPerformanceBaseline(
-        _demoModelPerformance(_fixtureTime),
-      ),
       SessionCostsTopic(:final rootThreadId) => SessionCostsBaseline(
         _demoSessionCosts(rootThreadId),
       ),
@@ -3116,7 +2982,6 @@ class DemoStudioTransport extends StudioTransport
       SkillsBaseline(:final state) => state.revision,
       ThreadModeCatalogBaseline(:final state) => state.revision,
       AccountUsageBaseline(:final state) => state.revision,
-      ModelPerformanceBaseline(:final state) => state.revision,
       SessionCostsBaseline(:final state) => state.revision,
       UpdaterBaseline(:final state) => state.revision,
       PersistenceBaseline(:final state) => state.revision,

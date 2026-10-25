@@ -540,7 +540,8 @@ GUI 的上下文与词元数量共用十进制紧凑显示：小于 1,000 为整
 ### 页面与实时订阅生命周期
 
 产品流按 [18](./18-studio-state.md) §18.2.1 的 typed topic/作用域组合，由 Client 的领域 owner
-管理订阅与 reducer，组件不解析 raw JSON。Shell 观察导航目录、配置及诊断摘要，设置壳只观察
+管理订阅与 reducer；统计使用同篇 §18.2.2 的独立 Repository/feed，不经过 Client topic
+分发。组件不解析 raw JSON。Shell 观察导航目录、配置及诊断摘要，设置壳只观察
 导航/公共配置；当前标签页通过 Connector 表达统计、Profiles、服务、技能或用量的可见需求。
 这些可见需求可在隐藏时释放，保留隐藏标签的 UI 状态不要求持续处理无关数据。
 
@@ -1025,7 +1026,9 @@ UI 的 canonical 镜像由 Client 各领域 read model 更新（[25](./25-fronte
 只观察职责内不可变、值相等的 projection，Connector 再交给 View。状态栏、上下文和 throughput 只消费
 runtime/context/throughput projection；
 composer 只消费 composer projection；timeline、interaction、activity、storage、settings、
-usage、statistics 与 costs 分别消费对应 projection。高频 runtime 更新不得使完整
+usage 与 costs 分别消费对应 projection；statistics 由独立 Repository、ViewModel 和
+纯 View 消费统计领域状态，边界见 [25](./25-frontend-state.md#2513-独立统计领域与呈现模块)。
+高频 runtime 更新不得使完整
 `AgentWorkspaceView` 驱动 timeline、composer、表单或滚动状态重建；弹层打开期间也必须随
 canonical 更新，隐藏页面释放自己的观察订阅，重新进入原子取得当前镜像；它不关闭跨路由资源。
 
@@ -1048,6 +1051,13 @@ canonical 更新，隐藏页面释放自己的观察订阅，重新进入原子�
 model_id、模型胶囊或 `+N` 清单；模型详情保留在详情、编辑和模型选择器。所有用户可见实时值都应
 能沿 owner→event/snapshot→reducer→watermark→projection→visible lease 链路追踪，不能靠切页
 或重进掩盖 stale 状态。
+
+统计模块的层次拆分不改变界面：保留既有汇总/历史布局、宽窄屏切换、筛选、文案与诊断
+身份，不显示内部读取页或来源元数据。pending 继续不占用可见状态行，gap/readFailed
+仍在既有轻量区域显示；刷新保留最近有效内容与滚动，不因分批物化暂时展示空集合。
+模型、effort 和 mismatch 筛选由统计呈现 owner 管理，纯组件仅接受 props 与回调；设置
+壳只传可见性，不掌握统计快照、过滤规则或 native 资源。共用视觉基础组件不夹带其他
+设置领域的状态依赖。
 
 ## 19.16 工作模式编辑器
 

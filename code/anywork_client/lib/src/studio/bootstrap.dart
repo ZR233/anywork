@@ -28,7 +28,6 @@ class StudioBootstrap {
     required this.skillsByProject,
     required this.threadModeCatalog,
     required this.accountUsageState,
-    required this.modelPerformance,
     required this.updaterState,
     required this.persistenceState,
     this.persistenceQueueState,
@@ -48,7 +47,6 @@ class StudioBootstrap {
   final Map<String, SkillsStateSnapshot> skillsByProject;
   final ThreadModeCatalogView threadModeCatalog;
   final AccountUsageStateSnapshot accountUsageState;
-  final ModelPerformanceSnapshotView modelPerformance;
   final UpdaterStateSnapshot updaterState;
   final PersistenceStateSnapshot persistenceState;
   final PersistenceQueueStateView? persistenceQueueState;

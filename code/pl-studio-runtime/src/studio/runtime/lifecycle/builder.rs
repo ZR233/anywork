@@ -23,6 +23,7 @@ impl StudioRuntime {
         system_skills_dir: std::path::PathBuf,
         helper_source: crate::worker_assets::RemoteHelperSource,
     ) -> Result<Self> {
+        let owner_epoch = crate::studio::ids::new_id("runtime");
         let (settings_updates, _) = tokio::sync::watch::channel(config_runtime.read()?);
         // Resolve the supervised local worker *before* creating any store-derived owner, so a
         // helper resolution failure can never leave partially-constructed owners (writer, updater,
@@ -50,7 +51,8 @@ impl StudioRuntime {
             product_events.clone(),
         )?;
 
-        let model_performance = ModelPerformanceOwner::new(store.clone(), product_events.clone());
+        let model_performance =
+            ModelPerformanceOwner::new(store.clone(), product_events.clone(), owner_epoch.clone());
         let ssh_manager = std::sync::Arc::new(crate::worker_assets::ssh_manager(&helper_source));
         let worktrees =
             crate::studio::agent_host::worktree_lease::WorktreeLeaseOwner::new(writer.clone());
@@ -140,7 +142,7 @@ impl StudioRuntime {
         thread_observations.install(thread_factory.clone(), rejected_tools.clone())?;
         // 持久化观察在 runtime 装配完成后由 `start_persistence_observer` 启动并持有。
         let mut runtime = Self {
-            owner_epoch: crate::studio::ids::new_id("runtime"),
+            owner_epoch,
             startup_recovery: None,
             persistence_observer: Default::default(),
             thread_observations,

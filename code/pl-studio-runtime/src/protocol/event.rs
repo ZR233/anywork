@@ -1,6 +1,7 @@
 use pl_protocol::{ObservedResource, Thread, ThreadModeCatalogSnapshot};
 use serde::{Deserialize, Serialize};
 
+use crate::statistics::StudioModelPerformanceSnapshot;
 use crate::{
     AccountUsageStateSnapshot, PersistenceStateSnapshot, ProjectRecord, SkillsStateSnapshot,
     StudioAgentDirectoryEntry, StudioLspHealth, StudioMcpHealth, StudioRecoveryIssue,
@@ -122,25 +123,6 @@ pub struct StudioModelCatalogStateSnapshot {
     pub state: ObservedResource<pl_protocol::studio::ModelCatalogSnapshot>,
 }
 
-/// 全局模型性能快照：按模型汇总与最近历史窗口，不含按 root 会话费用。
-///
-/// 会话费用由 [`StudioSessionCostsState`] 按 root 作用域单独交付；两者由同一计费
-/// owner 投影生成，不同 scope 数据互不覆盖。
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct StudioModelPerformanceSnapshot {
-    pub revision: u64,
-    pub updated_at: i64,
-    #[serde(default)]
-    pub statistics_pending: bool,
-    #[serde(default)]
-    pub statistics_gap: bool,
-    #[serde(default)]
-    pub read_failed: bool,
-    pub summaries: Vec<StudioModelPerformanceSummary>,
-    pub history: Vec<StudioModelPerformanceSample>,
-}
-
 /// 一个根会话的作用域费用事实；revision 按 root 独立单调。
 ///
 /// `cost == None` 是显式清除（例如该 root 已归档），不是零费用；清除断言该 root
@@ -211,75 +193,6 @@ pub struct StudioPurposeCostSnapshot {
     pub purpose: Option<String>,
     pub estimated_costs: Vec<pl_protocol::RuntimeCostAmount>,
     pub has_unpriced_usage: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-/// 一个 (account_id, model_id) 组的顶层性能汇总。
-///
-/// 身份只来自冻结账单的账号与目录配置模型；显示名变化不拆分统计，`sent_model` /
-/// `reported_model` 只作诊断。`effort_breakdowns` 是该组内的二级细分，不重复另一组
-/// 账号模型身份。
-pub struct StudioModelPerformanceSummary {
-    pub account_id: String,
-    pub account_display_name: String,
-    pub model_id: String,
-    pub sample_count: u64,
-    pub completion_tokens: u64,
-    /// 已测得首字样本的首字耗时累计；分母是 `ttft_sample_count`，不是 `sample_count`。
-    pub total_ttft_millis: u64,
-    pub ttft_sample_count: u64,
-    /// 含首字等待的总响应耗时；输出吞吐的分母。
-    pub total_response_millis: u64,
-    pub tokens_per_second: f64,
-    /// 没有已知首字样本时保持未知，不用全部速度样本数稀释。
-    pub average_ttft_millis: Option<f64>,
-    pub average_response_millis: f64,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub effort_breakdowns: Vec<StudioModelPerformanceEffortSummary>,
-}
-
-/// 顶层汇总组内的推理强度细分；指标口径与顶层一致。
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct StudioModelPerformanceEffortSummary {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub effort: Option<String>,
-    pub sample_count: u64,
-    pub completion_tokens: u64,
-    pub total_ttft_millis: u64,
-    pub ttft_sample_count: u64,
-    pub total_response_millis: u64,
-    pub tokens_per_second: f64,
-    pub average_ttft_millis: Option<f64>,
-    pub average_response_millis: f64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-/// 最近历史窗口中的一条成功调用样本。
-///
-/// `model_id` 是冻结的目录配置模型，旧记录无法证明时保持 `None`；冻结的发送/返回模型
-/// 与匹配状态只作诊断，不用来做统计身份。
-pub struct StudioModelPerformanceSample {
-    pub completed_at: i64,
-    pub account_id: String,
-    pub account_display_name: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub model_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub sent_model: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub reported_model: Option<String>,
-    #[serde(default)]
-    pub model_match_state: pl_protocol::ModelMatchState,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub effort: Option<String>,
-    pub completion_tokens: u64,
-    pub ttft_millis: Option<u64>,
-    pub decode_millis: Option<u64>,
-    pub total_response_millis: Option<u64>,
-    pub tokens_per_second: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -354,7 +267,6 @@ pub struct StudioStateSnapshot {
     pub skills_by_project: Vec<StudioSkillsStateSnapshot>,
     pub thread_mode_catalog: ThreadModeCatalogSnapshot,
     pub account_usage: AccountUsageStateSnapshot,
-    pub model_performance: StudioModelPerformanceSnapshot,
     pub session_costs: Vec<StudioSessionCostsState>,
     pub updater: StudioUpdateStateSnapshot,
     pub persistence: PersistenceStateSnapshot,

@@ -86,7 +86,6 @@ final class _ContractTransport implements StudioTransport {
     skillsByProject: const {},
     threadModeCatalog: const ThreadModeCatalogView(),
     accountUsageState: AccountUsageStateSnapshot(revision: 1),
-    modelPerformance: const ModelPerformanceSnapshotView(),
     updaterState: DisabledUpdaterStateSnapshot(
       revision: 1,
       updatedAt: DateTime.utc(2026),

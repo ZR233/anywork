@@ -273,6 +273,11 @@ struct ProjectActivation {
 }
 
 impl StudioRuntime {
+    /// Opens a native latest-value statistics feed from this runtime's existing statistics owner.
+    pub fn open_statistics_feed(&self) -> crate::statistics::StatisticsFeed {
+        self.model_performance.subscribe_statistics()
+    }
+
     /// 归档前结束会话树活动工作的有界等待上界。
     fn archive_settle_timeout(&self) -> std::time::Duration {
         ARCHIVE_TREE_SETTLE_TIMEOUT
