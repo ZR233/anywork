@@ -1,3 +1,5 @@
+import 'support/test_statistics_feed.dart';
+
 import 'dart:async';
 
 import 'package:anywork/src/app/app_graph.dart';
@@ -42,7 +44,11 @@ void main() {
       tester.view.resetDevicePixelRatio();
     });
     final transport = _PlanFeedbackTransport();
-    final graph = AppGraph(transport: transport, clientId: 'plan-feedback');
+    final graph = AppGraph(
+      statisticsFeed: const TestStatisticsFeedPort(),
+      transport: transport,
+      clientId: 'plan-feedback',
+    );
     await graph.client.bootstrap();
     await graph.client.directoryCommands.selectThread(threadId);
     await graph.client.session(threadId).source.waitFor((s) => s.hasSnapshot);
@@ -251,6 +257,7 @@ void main() {
     });
     final transport = _PlanFeedbackTransport();
     final graph = AppGraph(
+      statisticsFeed: const TestStatisticsFeedPort(),
       transport: transport,
       clientId: 'plan-actions-layout',
     );

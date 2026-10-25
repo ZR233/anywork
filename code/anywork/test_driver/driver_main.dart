@@ -7,9 +7,11 @@ import 'dart:io';
 
 import 'package:anywork/main.dart' as studio;
 import 'package:anywork_client/studio_client.dart';
+import 'package:anywork_client/statistics.dart';
 import 'package:anywork/src/app/app_graph.dart';
 import 'package:anywork/src/app/studio_host_lifecycle.dart';
 import 'package:anywork/src/app/studio_shutdown.dart';
+import 'package:anywork/src/features/settings/statistics/view_models/statistics_repository_provider.dart';
 import 'package:anywork/src/infrastructure/frb/studio_api.dart';
 import 'package:anywork/src/l10n/studio_l10n.dart';
 
@@ -62,7 +64,12 @@ void main() {
       ? AppGraph.demo(driver: true)
       : AppGraph.production();
   _container = ProviderContainer(
-    overrides: [appGraphProvider.overrideWithValue(graph)],
+    overrides: [
+      appGraphProvider.overrideWithValue(graph),
+      statisticsRepositoryProvider.overrideWithValue(
+        graph.statisticsRepository,
+      ),
+    ],
   );
   // Driver 只借用当前 AppGraph 的 Client 与展示 owner；绑定不建立内容订阅。
   bindStudioDriver(graph.client, timeline: graph.timeline);
@@ -129,6 +136,46 @@ void _applyShutdownFaultOverride() {
 late final ProviderContainer _container;
 AnyworkClient get _client => _container.read(appGraphProvider).client;
 Future<StudioShutdownReport>? _shutdownTask;
+
+Future<StatisticsSnapshot> _awaitStatisticsSnapshot() async {
+  final repository = _container.read(appGraphProvider).statisticsRepository;
+  final demand = repository.acquireVisibleDemand();
+  try {
+    final current = repository.state;
+    if (current.snapshot != null &&
+        current.connection.phase == StatisticsConnectionPhase.ready) {
+      return current.snapshot!;
+    }
+
+    final ready = Completer<StatisticsSnapshot>();
+    void consider(StatisticsRepositoryState state) {
+      final snapshot = state.snapshot;
+      if (snapshot != null &&
+          state.connection.phase == StatisticsConnectionPhase.ready) {
+        if (!ready.isCompleted) ready.complete(snapshot);
+      } else if (snapshot == null &&
+          state.connection.phase == StatisticsConnectionPhase.failed) {
+        if (!ready.isCompleted) {
+          ready.completeError(
+            StateError(
+              'statistics repository failed before a complete owner snapshot',
+            ),
+          );
+        }
+      }
+    }
+
+    final observation = repository.observe(consider);
+    consider(observation.initialState);
+    try {
+      return await ready.future.timeout(const Duration(seconds: 30));
+    } finally {
+      observation.cancel();
+    }
+  } finally {
+    demand.release();
+  }
+}
 
 /// Driver-only 只读证据：既有 `graph.close` 报告是否真的观察到，及其 unresolved
 /// 资源投影。未观察时 `clientCloseObserved=false` 且资源为 `null`（**不**用空集合
@@ -268,17 +315,18 @@ Future<String> _handleDriverData(String? message) async {
       // stays inside the Driver-only entrypoint.
       return jsonEncode({'pid': pid});
     case 'statistics':
-      // Driver 是显式观察者；产品会话不会因一次请求偷偷常驻全局统计租约。
-      final performance = _client.modelPerformance.state.value;
+      final performance = await _awaitStatisticsSnapshot();
       return jsonEncode({
-        'revision': performance?.revision,
-        'statisticsPending': performance?.statisticsPending,
-        'statisticsGap': performance?.statisticsGap,
-        'readFailed': performance?.readFailed,
+        'ownerEpoch': performance.ownerEpoch,
+        'feedId': performance.feedId,
+        'revision': performance.publicationRevision,
+        'summariesRevision': performance.summariesRevision,
+        'historyRevision': performance.historyRevision,
+        'statisticsPending': performance.statisticsPending,
+        'statisticsGap': performance.statisticsGap,
+        'readFailed': performance.readFailed,
         'summaries': [
-          for (final summary
-              in performance?.summaries ??
-                  const <ModelPerformanceSummaryView>[])
+          for (final summary in performance.summaries)
             {
               'accountId': summary.accountId,
               'accountDisplayName': summary.accountDisplayName,
@@ -302,8 +350,7 @@ Future<String> _handleDriverData(String? message) async {
             },
         ],
         'history': [
-          for (final sample
-              in performance?.history ?? const <ModelPerformanceSampleView>[])
+          for (final sample in performance.history)
             {
               'accountId': sample.accountId,
               'accountDisplayName': sample.accountDisplayName,

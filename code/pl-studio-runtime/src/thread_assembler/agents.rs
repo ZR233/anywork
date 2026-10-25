@@ -77,6 +77,28 @@ fn descendant(state: &State, caller: &str, target: &str) -> Result<(), ToolError
     Ok(())
 }
 
+/// Lists one in-flight tree member that holds capacity but has no published Thread snapshot.
+/// The row carries identity plus the explicit preparing lifecycle; no model or run-state facts
+/// are invented. Members whose parent is outside the tree are skipped.
+fn push_preparing_row(
+    state: &State,
+    root: &str,
+    rows: &mut std::collections::BTreeMap<String, serde_json::Value>,
+    id: &str,
+    parent: Option<&str>,
+) -> Result<(), ToolError> {
+    let Some(parent) = parent else {
+        return Ok(());
+    };
+    if ancestry(state, parent)?.last().is_some_and(|id| id == root) {
+        rows.insert(
+            id.to_owned(),
+            serde_json::json!({"id":id, "parentId":parent, "lifecycle":{"kind":"preparing"}}),
+        );
+    }
+    Ok(())
+}
+
 fn output(value: impl serde::Serialize) -> Result<ToolOutput, ToolError> {
     let encoded = serde_json::to_string(&value).map_err(ToolError::new)?;
     Ok(ToolOutput::new(
@@ -415,21 +437,47 @@ impl AgentControlHost for AgentHost {
             let root = path
                 .last()
                 .ok_or_else(|| ToolError::new(ControlError::Ancestry))?;
-            let mut rows = Vec::new();
+            // A complete listing also covers in-flight members: reserved spawns and cold
+            // activations that already hold tree capacity but are not published yet. They carry
+            // no Thread snapshot, so only identity and the explicit preparing fact are projected.
+            let mut rows = std::collections::BTreeMap::new();
+            for (id, child) in &state.unpublished_children {
+                push_preparing_row(&state, root, &mut rows, id, Some(child.parent.as_str()))?;
+            }
+            for (id, preparation) in &state.creating {
+                push_preparing_row(
+                    &state,
+                    root,
+                    &mut rows,
+                    id,
+                    preparation.parent_id.as_deref(),
+                )?;
+            }
             for (id, entry) in &state.entries {
                 let snapshot = entry.thread.snapshot();
-                if (!entry.ready && snapshot.lifecycle == ThreadLifecycle::Open)
-                    || ancestry(&state, id)?.last() != Some(root)
-                {
+                if ancestry(&state, id)?.last() != Some(root) {
                     continue;
                 }
-                rows.push(
+                if !entry.ready && snapshot.lifecycle == ThreadLifecycle::Open {
+                    if !rows.contains_key(id) {
+                        push_preparing_row(
+                            &state,
+                            root,
+                            &mut rows,
+                            id,
+                            entry.parent_id.as_deref(),
+                        )?;
+                    }
+                    continue;
+                }
+                rows.insert(
+                    id.clone(),
                     agent_row(id, entry.parent_id.as_deref(), &snapshot).map_err(|error| {
                         ToolError::new(super::agent_services::ServiceError(error))
                     })?,
                 );
             }
-            rows
+            rows.into_values().collect::<Vec<_>>()
         };
         let services = owner.0.state().agent_services.clone();
         if let Some(services) = services {
@@ -559,7 +607,7 @@ impl StudioThreadAssembler {
                 source: Box::new(source),
             })?;
         catalog.profiles.retain(|profile| {
-            profile.profile_id != crate::config::StudioRole::Planner.key()
+            profile.profile_id != crate::config::ROOT_AGENT_ROUTE_KEY
                 && !crate::agent::definition::is_root_definition_id(&profile.profile_id)
         });
         let profiles = catalog

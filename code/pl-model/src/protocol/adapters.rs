@@ -26,6 +26,14 @@ pub(crate) trait ProtocolAdaptation {
     /// 组合复用的 OpenAI base。
     fn base(&self) -> OpenAiBase;
 
+    /// 本适配对应的封闭厂商协议。
+    fn kind(&self) -> ProtocolKind;
+
+    /// 本厂商协议发送受信指令正文时使用的 wire role。
+    fn instruction_wire_role(&self, api: WireApi) -> super::InstructionWireRole {
+        self.kind().instruction_wire_role(api)
+    }
+
     /// 准备本次 wire 请求体（base body 与 parameter wire 由共享请求组装完成）。
     fn build_request(
         &self,
@@ -34,8 +42,13 @@ pub(crate) trait ProtocolAdaptation {
         model: &ModelInfo,
         prompt_cache_key: Option<&str>,
     ) -> Result<OpenAiRequestBody> {
-        self.base()
-            .build_request(api, request, model, prompt_cache_key)
+        self.base().build_request(
+            api,
+            self.instruction_wire_role(api),
+            request,
+            model,
+            prompt_cache_key,
+        )
     }
 
     /// 为一次调用创建独立解码器；解码状态不跨调用共享。
@@ -59,7 +72,7 @@ pub(crate) trait ProtocolAdaptation {
 }
 
 macro_rules! vendor_adapter {
-    ($adapter:ident, $dialect:ident) => {
+    ($adapter:ident, $dialect:ident, $kind:expr) => {
         #[derive(Debug, Clone, Copy, Default)]
         pub(crate) struct $adapter {
             base: OpenAiBase,
@@ -68,6 +81,10 @@ macro_rules! vendor_adapter {
         impl ProtocolAdaptation for $adapter {
             fn base(&self) -> OpenAiBase {
                 self.base
+            }
+
+            fn kind(&self) -> ProtocolKind {
+                $kind
             }
 
             fn decode_catalog(
@@ -89,12 +106,12 @@ macro_rules! vendor_adapter {
     };
 }
 
-vendor_adapter!(OpenAiAdapter, OpenAi);
-vendor_adapter!(DeepSeekAdapter, DeepSeek);
-vendor_adapter!(ZhipuAdapter, Generic);
-vendor_adapter!(XaiAdapter, Xai);
-vendor_adapter!(MiMoAdapter, Generic);
-vendor_adapter!(CompatibleAdapter, Generic);
+vendor_adapter!(OpenAiAdapter, OpenAi, ProtocolKind::OpenAi);
+vendor_adapter!(DeepSeekAdapter, DeepSeek, ProtocolKind::DeepSeek);
+vendor_adapter!(ZhipuAdapter, Generic, ProtocolKind::Zhipu);
+vendor_adapter!(XaiAdapter, Xai, ProtocolKind::Xai);
+vendor_adapter!(MiMoAdapter, Generic, ProtocolKind::MiMo);
+vendor_adapter!(CompatibleAdapter, Generic, ProtocolKind::OpenAiCompatible);
 
 /// 封闭的厂商协议选择；每个适配组合同一个 OpenAI base，但保留自己的解释边界。
 #[derive(Debug, Clone, Copy)]

@@ -10,8 +10,8 @@ use pl_protocol::studio::{
     UpdateSettingsFieldRequest,
 };
 
+use crate::PermissionMode;
 use crate::config::{AccountId, ModelRouteConfig, ReasoningEffort};
-use crate::{PermissionMode, StudioRole};
 
 use super::StudioRuntime;
 
@@ -294,69 +294,50 @@ impl StudioRuntime {
                         account_id,
                         model_id,
                     } => {
-                        let role = StudioRole::from_key(role.trim()).ok_or_else(|| {
-                            pl_protocol::PureError::ConfigError(
-                                "Unsupported model role".to_string(),
-                            )
-                        })?;
-                        if role == StudioRole::Planner {
+                        let role_key = role.trim();
+                        if role_key == crate::config::ROOT_AGENT_ROUTE_KEY {
                             return Err(pl_protocol::PureError::ConfigError(
                                 "planner is a root identity, not a configurable child model role"
                                     .to_string(),
                             ));
                         }
-                        let effort = config
-                            .models
-                            .routes
-                            .get(&role.id())
-                            .filter(|route| {
-                                route.account_id.as_str() == account_id.trim()
-                                    && route.model_id == model_id.trim()
-                            })
-                            .and_then(|route| route.effort.as_ref().map(|value| value.as_str()));
+                        let role_id = crate::AgentRoleId::new(role_key.to_string())?;
+                        let current =
+                            crate::config::effective_system_profile_route(&config, role_key)?;
+                        let effort = (current.account_id.as_str() == account_id.trim()
+                            && current.model_id == model_id.trim())
+                        .then(|| current.effort.as_ref().map(|value| value.as_str()))
+                        .flatten();
                         let route = validated_route(
                             route_validation_config,
-                            &format!("role {}", role.key()),
+                            &format!("role {role_key}"),
                             &account_id,
                             &model_id,
                             effort,
                         )
                         .map_err(|error| pl_protocol::PureError::ConfigError(error.to_string()))?;
-                        config.models.routes.insert(role.id(), route);
+                        config.models.routes.insert(role_id, route);
                     }
                     SettingsFieldUpdate::RoleReasoningEffort { role, effort } => {
-                        let role = StudioRole::from_key(role.trim()).ok_or_else(|| {
-                            pl_protocol::PureError::ConfigError(
-                                "Unsupported model role".to_string(),
-                            )
-                        })?;
-                        if role == StudioRole::Planner {
+                        let role_key = role.trim();
+                        if role_key == crate::config::ROOT_AGENT_ROUTE_KEY {
                             return Err(pl_protocol::PureError::ConfigError(
                                 "planner is a root identity, not a configurable child model role"
                                     .to_string(),
                             ));
                         }
+                        let role_id = crate::AgentRoleId::new(role_key.to_string())?;
                         let current =
-                            config
-                                .models
-                                .routes
-                                .get(&role.id())
-                                .cloned()
-                                .ok_or_else(|| {
-                                    pl_protocol::PureError::ConfigError(format!(
-                                        "role {} has no model route",
-                                        role.key()
-                                    ))
-                                })?;
+                            crate::config::effective_system_profile_route(&config, role_key)?;
                         let route = validated_route(
                             route_validation_config,
-                            &format!("role {}", role.key()),
+                            &format!("role {role_key}"),
                             current.account_id.as_str(),
                             &current.model_id,
                             effort.as_deref(),
                         )
                         .map_err(|error| pl_protocol::PureError::ConfigError(error.to_string()))?;
-                        config.models.routes.insert(role.id(), route);
+                        config.models.routes.insert(role_id, route);
                     }
                 }
                 config.validate_declarations()?;
@@ -673,7 +654,7 @@ impl StudioRuntime {
         let route = settings
             .config
             .models
-            .resolve_route(StudioRole::Planner.id(), &selector)?;
+            .resolve_route(crate::config::root_agent_route_id(), &selector)?;
 
         Self::validate_model_media(&state, &route.model, &[])?;
         pl_model::runtime::ThreadModel::new(

@@ -11,7 +11,7 @@ use pl_tool::workspace::WorkspaceInstructions;
 
 /// 当前 instruction snapshot 的载荷格式与版本。
 pub(crate) const SNAPSHOT_FORMAT: &str = "pl.studio.instructions";
-pub(crate) const SNAPSHOT_VERSION: u32 = 2;
+pub(crate) const SNAPSHOT_VERSION: u32 = 3;
 
 /// 统一指令装配的输入。
 ///
@@ -65,6 +65,8 @@ pub struct ModeInstructionProfile<'a> {
 #[serde(rename_all = "camelCase")]
 pub struct InstructionSnapshot {
     pub agent: AgentDefinitionIdentity,
+    /// Frozen presence and content identity of the unique Agent-owned instruction block.
+    pub agent_shape: AgentInstructionShape,
     pub base: InstructionBlock,
     #[serde(default)]
     pub developer: Vec<InstructionBlock>,
@@ -72,11 +74,126 @@ pub struct InstructionSnapshot {
     pub user: Vec<InstructionBlock>,
 }
 
+/// Agent block shape is frozen independently of its body, which remains owned only by `developer`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "state", rename_all = "camelCase", deny_unknown_fields)]
+pub enum AgentInstructionShape {
+    Absent,
+    Present {
+        #[serde(rename = "contentHash")]
+        content_hash: String,
+    },
+}
+
+impl AgentInstructionShape {
+    pub(crate) fn from_agent_blocks(
+        developer: &[InstructionBlock],
+    ) -> Result<Self, pl_protocol::PureError> {
+        let mut blocks = developer
+            .iter()
+            .filter(|block| block.source.kind == InstructionSourceKind::AgentDefinition);
+        let Some(block) = blocks.next() else {
+            return Ok(Self::Absent);
+        };
+        if blocks.next().is_some() {
+            return Err(pl_protocol::PureError::ConfigError(
+                "instruction snapshot has multiple Agent sources".into(),
+            ));
+        }
+        Ok(Self::Present {
+            content_hash: pl_core::context::content_hash(block.content.as_bytes()),
+        })
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct InstructionBlock {
     pub source: InstructionSource,
     pub content: String,
+}
+
+/// Effective instruction material recovered from the current generic context records.
+pub(crate) struct CurrentInstructionContext<'a> {
+    body: String,
+    canonical: bool,
+    latest_snapshot: Option<&'a pl_core::context::ContextRecord>,
+}
+
+impl CurrentInstructionContext<'_> {
+    pub(crate) fn body(&self) -> &str {
+        &self.body
+    }
+
+    pub(crate) fn latest_snapshot(&self) -> Option<&pl_core::context::ContextRecord> {
+        self.latest_snapshot
+    }
+
+    /// Matches the current authority only when both its effective bytes and record shape are
+    /// canonical. A joined legacy body is not canonical merely because its text happens to match.
+    pub(crate) fn is_canonical_for(&self, expected: &str) -> bool {
+        self.canonical && self.body == expected
+    }
+}
+
+/// Projects the current instruction authority from generic context without interpreting its
+/// producer payload. This shared comparison keeps restoration and Mode no-op decisions aligned.
+pub(crate) fn current_instruction_context(
+    records: &[pl_core::context::ContextRecord],
+) -> CurrentInstructionContext<'_> {
+    use pl_core::context::{ContextContent, ContextSource};
+
+    let latest_snapshot = records
+        .iter()
+        .rev()
+        .find(|record| matches!(record.source, ContextSource::InstructionSnapshot { .. }));
+    let current_records = if let Some(latest) = latest_snapshot {
+        vec![latest]
+    } else {
+        records
+            .iter()
+            .filter(|record| record.source == ContextSource::Instruction)
+            .collect::<Vec<_>>()
+    };
+    let body = current_records
+        .iter()
+        .flat_map(|record| &record.content)
+        .filter_map(|content| match content {
+            ContextContent::Text { text } => Some(text.as_ref()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let canonical = match latest_snapshot {
+        Some(record) => {
+            let valid_hash = matches!(
+                &record.source,
+                ContextSource::InstructionSnapshot { content_hash, .. }
+                    if *content_hash == pl_core::context::content_hash(body.as_bytes())
+            );
+            record.turn_id.is_none()
+                && record.tool_calls.is_empty()
+                && matches!(
+                    record.content.as_slice(),
+                    [ContextContent::Text { text }] if text.as_ref() == body
+                )
+                && valid_hash
+        }
+        None => {
+            current_records.len() == 1
+                && current_records[0].turn_id.is_none()
+                && current_records[0].tool_calls.is_empty()
+                && matches!(
+                    current_records[0].content.as_slice(),
+                    [ContextContent::Text { text }] if text.as_ref() == body
+                )
+        }
+    };
+    CurrentInstructionContext {
+        body,
+        canonical,
+        latest_snapshot,
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -119,6 +236,24 @@ pub enum InstructionSourceKind {
 }
 
 impl InstructionSnapshot {
+    /// Renders the complete trusted instruction body with one canonical separator.
+    ///
+    /// Creation, Mode switching, request preparation and compaction recovery all use this
+    /// single entry, so the persisted `InstructionSnapshot` record, its content hash and the
+    /// model-visible prefix never diverge on block ordering or separators.
+    pub(crate) fn trusted_text(&self) -> String {
+        std::iter::once(&self.base)
+            .chain(self.developer.iter())
+            .map(format_block)
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// Content hash of the canonical trusted body rendered by [`Self::trusted_text`].
+    pub(crate) fn trusted_content_hash(&self) -> String {
+        pl_core::context::content_hash(self.trusted_text().as_bytes())
+    }
+
     /// Rebinds model-owned defaults while preserving explicit host/config overrides.
     pub(crate) fn rebind_model_base(&mut self, instructions: &str) -> bool {
         if !matches!(
@@ -175,28 +310,30 @@ impl InstructionSnapshot {
     pub(crate) fn context_records(&self, thread_id: &str) -> Vec<pl_core::context::ContextRecord> {
         use pl_core::context::{ContextContent, ContextRecord, ContextSource};
         use std::sync::Arc;
-        let mut records = Vec::new();
-        for (index, (block, instruction)) in std::iter::once((&self.base, true))
-            .chain(self.developer.iter().map(|block| (block, true)))
-            .chain(self.user.iter().map(|block| (block, false)))
-            .enumerate()
-        {
-            let text = match &block.source.path {
-                Some(path) => format!("# {} ({path})\n{}", block.source.label, block.content),
-                None => format!("# {}\n{}", block.source.label, block.content),
-            };
+        // 受信正文只有一个 Instruction record，内容就是 `trusted_text()`，保证首轮与持久化
+        // InstructionSnapshot 正文逐字节一致。user/runtime fact 继续用稳定 source id：以旧
+        // base+developer 数量为 offset，避免只把系统块折叠成一条导致 user fact id 漂移。
+        let trusted_blocks = 1 + self.developer.len();
+        let mut records = Vec::with_capacity(1 + self.user.len());
+        records.push(ContextRecord {
+            id: format!("instruction:{thread_id}:0"),
+            turn_id: None,
+            source: ContextSource::Instruction,
+            content: vec![ContextContent::Text {
+                text: Arc::from(self.trusted_text()),
+            }],
+            tool_calls: Vec::new(),
+        });
+        for (offset, block) in self.user.iter().enumerate() {
+            let index = trusted_blocks + offset;
             records.push(ContextRecord {
-                id: format!("instruction:{}:{index}", thread_id),
+                id: format!("instruction:{thread_id}:{index}"),
                 turn_id: None,
-                source: if instruction {
-                    ContextSource::Instruction
-                } else {
-                    ContextSource::RuntimeFact {
-                        source_id: format!("studio.instructions:{index}"),
-                    }
+                source: ContextSource::RuntimeFact {
+                    source_id: format!("studio.instructions:{index}"),
                 },
                 content: vec![ContextContent::Text {
-                    text: Arc::from(text),
+                    text: Arc::from(format_block(block)),
                 }],
                 tool_calls: Vec::new(),
             });
@@ -210,6 +347,13 @@ impl InstructionSnapshot {
 
     pub(super) fn push_user(&mut self, source: InstructionSource, content: &str) {
         push_non_empty(&mut self.user, source, content);
+    }
+}
+
+fn format_block(block: &InstructionBlock) -> String {
+    match &block.source.path {
+        Some(path) => format!("# {} ({path})\n{}", block.source.label, block.content),
+        None => format!("# {}\n{}", block.source.label, block.content),
     }
 }
 

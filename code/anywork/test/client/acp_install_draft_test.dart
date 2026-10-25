@@ -103,7 +103,6 @@ final class _StartTransport implements StudioTransport {
     skillsByProject: const {},
     threadModeCatalog: const ThreadModeCatalogView(),
     accountUsageState: AccountUsageStateSnapshot(revision: 1),
-    modelPerformance: const ModelPerformanceSnapshotView(),
     updaterState: DisabledUpdaterStateSnapshot(
       revision: 1,
       updatedAt: DateTime.utc(2026),
@@ -191,7 +190,6 @@ final class _CancelTransport implements StudioTransport {
     skillsByProject: const {},
     threadModeCatalog: const ThreadModeCatalogView(),
     accountUsageState: AccountUsageStateSnapshot(revision: 1),
-    modelPerformance: const ModelPerformanceSnapshotView(),
     updaterState: DisabledUpdaterStateSnapshot(
       revision: 1,
       updatedAt: DateTime.utc(2026),

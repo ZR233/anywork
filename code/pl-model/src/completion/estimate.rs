@@ -11,9 +11,9 @@ pub fn estimate_text_input_tokens(request: &CompletionRequest) -> Option<u64> {
         return None;
     }
     let mut characters = request
-        .instructions
-        .as_deref()
-        .map_or(0, |text| text.chars().count());
+        .system_prompt
+        .as_ref()
+        .map_or(0, |prompt| prompt.content().chars().count());
     for item in &request.input {
         let message = match item {
             ModelContextItem::Message { message }

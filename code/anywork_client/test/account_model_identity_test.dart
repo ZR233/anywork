@@ -1,4 +1,4 @@
-import 'package:anywork_client/models.dart';
+import 'package:anywork_client/statistics.dart';
 import 'package:test/test.dart';
 
 /// 顶层性能身份是 (accountId, 配置 modelId)；effort 只是组内细分。
@@ -8,7 +8,7 @@ import 'package:test/test.dart';
 /// 2. 同一账号模型只有一个顶层汇总，组内 effort（含 `null` 与显式 `none`）独立；
 /// 3. 旧记录没有配置模型证据时保持历史身份未知，不并入看似同名的新账号模型。
 void main() {
-  const alpha = ModelPerformanceSummaryView(
+  final alpha = StatisticsSummary(
     accountId: 'account-a',
     accountDisplayName: 'Alpha',
     modelId: 'shared-model',
@@ -21,7 +21,7 @@ void main() {
     averageTtftMillis: 300,
     averageResponseMillis: 1300,
   );
-  const beta = ModelPerformanceSummaryView(
+  final beta = StatisticsSummary(
     accountId: 'account-b',
     accountDisplayName: 'Beta',
     modelId: 'shared-model',
@@ -44,7 +44,7 @@ void main() {
   });
 
   test('组内 effort 细分区分 null 与显式 none', () {
-    const unspecified = ModelPerformanceEffortSummaryView(
+    const unspecified = StatisticsEffortSummary(
       effort: null,
       sampleCount: 1,
       completionTokens: 100,
@@ -55,7 +55,7 @@ void main() {
       averageTtftMillis: 300,
       averageResponseMillis: 1300,
     );
-    const explicitNone = ModelPerformanceEffortSummaryView(
+    const explicitNone = StatisticsEffortSummary(
       effort: 'none',
       sampleCount: 2,
       completionTokens: 200,
@@ -71,7 +71,7 @@ void main() {
     expect(unspecified.effortKey, '[null]');
     expect(explicitNone.effortKey, '["none"]');
 
-    const withBreakdowns = ModelPerformanceSummaryView(
+    final withBreakdowns = StatisticsSummary(
       accountId: 'account-a',
       accountDisplayName: 'Alpha',
       modelId: 'shared-model',
@@ -94,14 +94,14 @@ void main() {
   });
 
   test('历史样本按同一复合身份筛选并保留冻结诊断', () {
-    final matched = ModelPerformanceSampleView(
+    final matched = StatisticsSample(
       completedAt: DateTime.utc(2026, 1, 1),
       accountId: 'account-a',
       accountDisplayName: 'Alpha',
       modelId: 'shared-model',
       sentModel: 'shared-model-0724',
       reportedModel: 'shared-model',
-      modelMatchState: ModelMatchState.mismatched,
+      modelMatchState: StatisticsModelMatchState.mismatched,
       effort: 'high',
       completionTokens: 10,
       ttftMillis: 100,
@@ -117,12 +117,15 @@ void main() {
   });
 
   test('没有配置模型证据的旧记录保持未知身份，不并入新账号模型', () {
-    final legacy = ModelPerformanceSampleView(
+    final legacy = StatisticsSample(
       completedAt: DateTime.utc(2026, 1, 1),
       accountId: 'account-a',
       accountDisplayName: 'Alpha',
+      modelId: null,
       sentModel: 'legacy-alias',
-      modelMatchState: ModelMatchState.legacyUnknown,
+      reportedModel: null,
+      effort: null,
+      modelMatchState: StatisticsModelMatchState.legacyUnknown,
       completionTokens: 10,
       ttftMillis: null,
       decodeMillis: null,
@@ -133,7 +136,7 @@ void main() {
     expect(legacy.filterKey, isNot(alpha.filterKey));
     expect(legacy.filterKey, '["account-a",null]');
     expect(legacy.displayModel, 'legacy-alias');
-    expect(legacy.modelMatchState, ModelMatchState.legacyUnknown);
+    expect(legacy.modelMatchState, StatisticsModelMatchState.legacyUnknown);
     expect(legacy.effortKey, '[null]');
   });
 }

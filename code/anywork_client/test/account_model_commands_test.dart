@@ -26,7 +26,6 @@ const _account = AccountSettingsView(
   status: 'ready',
   usageLabel: '',
   billingKind: BillingKind.subscription,
-  pricingEnabled: false,
 );
 
 SettingsStateSnapshot _snapshot(int revision, AccountSettingsView account) =>
@@ -174,7 +173,6 @@ AnyworkClient _client(_Transport transport) {
       lspState: LspStateSnapshot(revision: 1),
       skillsByProject: const {},
       threadModeCatalog: const ThreadModeCatalogView(),
-      modelPerformance: const ModelPerformanceSnapshotView(),
       accountUsageState: AccountUsageStateSnapshot(revision: 1),
       updaterState: DisabledUpdaterStateSnapshot(
         revision: 1,
@@ -274,7 +272,6 @@ void main() {
     expect(canonical.modelConnectionModes, concurrent.modelConnectionModes);
     expect(canonical.autoCompactLimits['online']?.overrideLimit, 777);
     expect(canonical.billingKind, BillingKind.subscription);
-    expect(canonical.pricingEnabled, isFalse);
     expect(canonical.models.first.origin, ModelOrigin.online);
     expect(client.settings.state.commands[key], isNull);
     expect(
@@ -289,10 +286,15 @@ void main() {
     var entered = transport.calls.stream.first;
     var pending = client.settingsCommands.setAccountBillingKind(
       'account',
-      BillingKind.unknown,
+      BillingKind.noCharge,
     );
     var call = await entered;
-    expect(call.billingKind, BillingKind.unknown);
+    expect(call.billingKind, BillingKind.noCharge);
+    expect(
+      client.settings.state.canonical!.accounts.single.billingKind,
+      BillingKind.subscription,
+      reason: 'No optimistic billing success',
+    );
     expect(
       call.operationId,
       client.mutations.latest('settings:account-billing-kind:account')!.id,
@@ -301,22 +303,50 @@ void main() {
       _snapshot(
         2,
         _account.copyWith(
-          billingKind: BillingKind.unknown,
-          billingKindOverride: BillingKind.unknown,
+          billingKind: BillingKind.noCharge,
+          billingKindOverride: BillingKind.noCharge,
         ),
       ),
     );
     await pending;
+    expect(
+      client.settings.state.canonical!.accounts.single.billingKind,
+      BillingKind.noCharge,
+    );
     entered = transport.calls.stream.first;
     pending = client.settingsCommands.setAccountBillingKind('account', null);
     call = await entered;
     expect(
       call.billingKind,
       isNull,
-      reason: 'Clearing override must not replay effective Unknown',
+      reason: 'Turning no charge off must clear, not replay the effective kind',
     );
     call.complete(_snapshot(3, _account));
     await pending;
+    expect(
+      client.settings.state.canonical!.accounts.single.billingKind,
+      BillingKind.subscription,
+    );
+    expect(
+      client.settings.state.canonical!.accounts.single.billingKindOverride,
+      isNull,
+    );
+    entered = transport.calls.stream.first;
+    pending = client.settingsCommands.setAccountBillingKind(
+      'account',
+      BillingKind.noCharge,
+    );
+    final billingFailure = expectLater(pending, throwsA(isA<StudioFailure>()));
+    call = await entered;
+    call.reply.completeError(
+      const StudioFailure(
+        code: StudioFailureCode.storage,
+        message: 'Billing write failed',
+        retryable: false,
+        correlationId: 'billing-write-failure',
+      ),
+    );
+    await billingFailure;
     expect(
       client.settings.state.canonical!.accounts.single.billingKind,
       BillingKind.subscription,

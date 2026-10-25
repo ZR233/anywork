@@ -127,7 +127,6 @@ AnyworkClient _client(_Transport transport) {
       skillsByProject: const {},
       threadModeCatalog: const ThreadModeCatalogView(),
       accountUsageState: AccountUsageStateSnapshot(revision: 1),
-      modelPerformance: const ModelPerformanceSnapshotView(),
       updaterState: DisabledUpdaterStateSnapshot(
         revision: 1,
         updatedAt: DateTime.utc(2026),
@@ -345,7 +344,8 @@ void main() {
         .copyWith(
           name: 'External name',
           baseUrl: 'http://changed.invalid',
-          pricingEnabled: true,
+          billingKind: BillingKind.noCharge,
+          billingKindOverride: BillingKind.noCharge,
         )
         .withAutoCompactLimit(
           AccountModelAutoCompactView(
@@ -368,7 +368,7 @@ void main() {
     expect(retried.revision, 2);
     expect(retried.command.name, 'External name');
     expect(retried.command.baseUrl, 'http://changed.invalid');
-    expect(retried.command.pricingEnabled, isTrue);
+    expect(retried.command.initialBillingKind, isNull);
     expect(_limits(retried.command), {
       'alpha': 100,
       'beta': 400,

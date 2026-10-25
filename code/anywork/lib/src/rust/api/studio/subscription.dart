@@ -26,7 +26,7 @@ import 'types/thread_stream/item.dart';
 import 'types/updater.dart';
 part 'subscription.freezed.dart';
 
-// These functions are ignored because they are not marked as `pub`: `broadcast_cancel`, `cancel_and_wait`, `is_settled`, `is_settled`, `join_cancelled`, `new`, `next_id`, `owned_completion`, `register`, `send_or_cancel`, `shutdown_issue`, `signal_cancel`, `unregister`, `wait_stopped`
+// These functions are ignored because they are not marked as `pub`: `broadcast_cancel`, `cancel_and_wait`, `is_settled`, `is_settled`, `join_cancelled`, `join_subscription_cancellations`, `new`, `next_id`, `owned_completion`, `register_statistics_feed`, `register`, `send_or_cancel`, `shutdown_issue`, `signal_cancel`, `unregister_statistics_feed`, `unregister`, `wait_stopped`
 // These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `BridgeSubscriptionInner`, `BridgeSubscriptionKind`, `BridgeTaskRegistry`, `PendingSubscriptionCancellation`, `SubscriptionCompletionFacts`, `SubscriptionOwner`, `SubscriptionStop`
 // These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `clone`, `clone`, `clone`, `drop`, `fmt`, `fmt`, `fmt`
 // These functions are ignored (category: IgnoreBecauseOwnerTyShouldIgnore): `default`

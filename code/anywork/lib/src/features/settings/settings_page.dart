@@ -21,7 +21,7 @@ import 'settings_scope.dart';
 import 'settings_security_tab.dart';
 import 'settings_skills_tab.dart';
 import 'settings_ssh_tab.dart';
-import 'settings_statistics_tab.dart';
+import 'statistics/statistics.dart';
 import 'settings_views.dart';
 import 'settings_bots_tab.dart';
 
@@ -240,11 +240,12 @@ enum _SettingsTab {
   bots,
 }
 
-class _SettingsScaffold extends StatelessWidget {
+class _SettingsScaffold extends ConsumerWidget {
   const _SettingsScaffold();
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
+    final visibleTab = ref.watch(settingsVisibleTabProvider);
     final views = [
       const _ProvidersSettingsTab(),
       const _InstructionsSettingsTab(),
@@ -254,7 +255,7 @@ class _SettingsScaffold extends StatelessWidget {
       McpTab(tabIndex: _SettingsTab.mcp.index),
       LspTab(tabIndex: _SettingsTab.lsp.index),
       const SshTab(),
-      StatisticsTab(tabIndex: _SettingsTab.statistics.index),
+      StatisticsConnector(visible: visibleTab == _SettingsTab.statistics.index),
       const SecurityTab(),
       const _GeneralSettingsTab(),
       BotsTab(tabIndex: _SettingsTab.bots.index),

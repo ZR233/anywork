@@ -9,7 +9,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use crate::{PureError, Result};
 
 use super::credential::{CredentialStore, MemoryCredentialStore, SystemCredentialStore};
-use super::{STUDIO_CONFIG_DIR_NAME, STUDIO_CONFIG_FILE_NAME, StudioConfig, StudioRole};
+use super::{
+    ROOT_AGENT_ROUTE_KEY, STUDIO_CONFIG_DIR_NAME, STUDIO_CONFIG_FILE_NAME, StudioConfig,
+    root_agent_route_id,
+};
 use pl_protocol::ThreadModeId;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -162,7 +165,7 @@ impl ConfigStore {
     ///
     /// 只有 `config.toml` 缺失时才采用内存默认配置。其余任何未知/未来版本、不可解析、
     /// 当前 schema 校验失败或含内联凭据的输入都保留原字节并返回错误，不重写文件、
-    /// 也不替换为默认配置；`18..=24` 已知版本走数据保全式迁移路径。
+    /// 也不替换为默认配置；已知旧版本走数据保全式迁移路径。
     pub(crate) fn load_for_startup(
         &self,
     ) -> std::result::Result<StudioConfig, super::ConfigRuntimeError> {
@@ -177,7 +180,7 @@ impl ConfigStore {
                 |error| super::ConfigRuntimeError::Migration(self.config_path_error(error)),
             )?
         {
-            // 旧目标（23/24）的待续操作已按其原候选、摘要与提交步骤完成；这里从该**已提交版本**
+            // 旧目标（23–25）的待续操作已按其原候选、摘要与提交步骤完成；这里从该**已提交版本**
             // 继续升级到当前 schema，不改写旧目标、不伪造摘要，也不发布中间配置。
             return self.continue_resumed_migration(resumed);
         }
@@ -216,7 +219,7 @@ impl ConfigStore {
 
     /// 接续一个已完成的中断迁移操作。
     ///
-    /// 目标就是当前 schema 时只补凭据、不重做迁移；旧目标（23/24）表示该操作已按它自己的候选、
+    /// 目标就是当前 schema 时只补凭据、不重做迁移；旧目标（23–25）表示该操作已按它自己的候选、
     /// 摘要与步骤提交完成，此时从盘上的**已提交版本**继续升级到当前 schema——复用既有版本分派、
     /// 备份、候选校验与原子提交，不改写旧日志目标、不伪造摘要，也不返回中间版本。
     fn continue_resumed_migration(
@@ -276,28 +279,27 @@ impl ConfigStore {
             PureError::ConfigError(format!("invalid schema {source_version} UTF-8: {error}"))
         })?;
         // 18..22 先完成各自的既有转换，再统一执行 Provider/Preset → Account/AccountTemplate；
-        // 23 只需前进版本并补出空 ACP 集合；24→25 只退役 ACP 旧 `program`/`args`。三种情况都不
-        // 改动账号、路由、Profile 与凭据关联。
+        // 23 补出空 ACP 集合，24→25 退役 ACP 旧执行字段；25→26 退役账号估算开关。
+        // 所有路径保留计费覆盖、路由、Profile 与凭据关联，不把旧 disabled 解释成不计费。
         let mut inline_tokens = std::collections::BTreeMap::new();
         let rewritten = if source_version <= super::schema_migration::LEGACY_ACCOUNT_SCHEMA {
             let rewritten = rewrite_legacy_deepseek_standalone_dialect(text)?;
             let rewritten = migrate_model_identifiers(&rewritten)?;
             super::schema_migration::rewrite_account_document(&rewritten, &mut inline_tokens)?
         } else {
-            // 23+：不再改写账号/路由/Profile 键，也不访问旧 `provider:<id>` 凭据命名空间；唯一
-            // 需要的结构变化是 24→25 退役 ACP 旧 `program`/`args`（旧执行字段只在迁移边界解码）。
-            super::schema_migration::retire_acp_execution_document(text)?
+            text.to_string()
         };
+        let rewritten = super::schema_migration::retire_legacy_config_fields_document(&rewritten)?;
         let mut config = parse_typed_config(&rewritten)?;
         reject_inline_credentials(&config)?;
         match source_version {
             18 => {
-                config.disabled_system_agents.remove("planner");
+                config.disabled_system_agents.remove(ROOT_AGENT_ROUTE_KEY);
                 migrate_legacy_planner_route(&mut config, source_version)?;
             }
             19 => migrate_legacy_planner_route(&mut config, source_version)?,
             20..=super::schema_migration::LEGACY_ACCOUNT_SCHEMA => {}
-            23 | 24 => {}
+            23..=super::schema_migration::PREVIOUS_CONFIG_SCHEMA => {}
             other => {
                 return Err(PureError::ConfigError(format!(
                     "unsupported Studio config schema version: {other}"
@@ -506,7 +508,7 @@ fn migrate_legacy_planner_route(config: &mut StudioConfig, source_version: u32) 
     let planner_route = config
         .models
         .routes
-        .remove(&StudioRole::Planner.id())
+        .remove(&root_agent_route_id())
         .ok_or_else(|| {
             PureError::ConfigError(format!(
                 "schema {source_version} config is missing planner model route"
@@ -1036,18 +1038,19 @@ mod tests {
         let credentials = crate::config::credential::MemoryCredentialStore::default();
         credentials.seed_legacy_provider("deepseek", "legacy-secret");
         let mut config = StudioConfig::default_config().unwrap();
+        let reviewer = crate::config::AgentRoleId::new("reviewer").unwrap();
+        config.models.routes.insert(
+            reviewer.clone(),
+            config.mode_model_routes[&ThreadModeId::simple()].clone(),
+        );
         let second_id = AccountId::new("second").unwrap();
         let mut second = config.models.accounts[&AccountId::new("deepseek").unwrap()].clone();
         second.name = "Second".into();
         second.bearer_token_env = Some("SECOND_API_KEY".into());
         config.models.accounts.insert(second_id.clone(), second);
-        let mut route =
-            config.models.routes[&crate::config::AgentRoleId::new("reviewer").unwrap()].clone();
+        let mut route = config.models.routes[&reviewer].clone();
         route.account_id = second_id.clone();
-        config
-            .models
-            .routes
-            .insert(crate::config::AgentRoleId::new("reviewer").unwrap(), route);
+        config.models.routes.insert(reviewer.clone(), route);
         let store = store_with_credentials(&directory, credentials);
         store.save(&config).unwrap();
         // 原始配置文档：真实 22 结构（providers/preset/adapter/路由 provider,model）。
@@ -1083,10 +1086,7 @@ mod tests {
             deepseek.capabilities,
             pl_model::config::AccountCapabilitySelection::TemplateDefaults
         );
-        assert_eq!(
-            loaded.models.routes[&crate::config::AgentRoleId::new("reviewer").unwrap()].account_id,
-            second_id
-        );
+        assert_eq!(loaded.models.routes[&reviewer].account_id, second_id);
         // 旧凭据项保留；内联值与旧项均已转写到 `account:` 命名空间。
         assert_eq!(
             store.credentials.load("deepseek").unwrap().as_deref(),
@@ -1436,7 +1436,12 @@ mod tests {
     #[test]
     fn schema_20_without_legacy_token_preserves_routes() {
         let (_directory, store) = isolated_store();
-        let config = StudioConfig::default_config().expect("bundled defaults");
+        let mut config = StudioConfig::default_config().expect("bundled defaults");
+        let explorer = crate::config::AgentRoleId::new("explorer").unwrap();
+        config.models.routes.insert(
+            explorer,
+            config.mode_model_routes[&ThreadModeId::simple()].clone(),
+        );
         store.save(&config).expect("save current schema");
         let path = store.paths.config_file();
         let mut table = read_table(path);
@@ -1452,10 +1457,11 @@ mod tests {
         );
         assert_eq!(loaded.mode_model_routes, config.mode_model_routes);
         assert_eq!(loaded.models.routes, config.models.routes);
-        assert_eq!(
-            loaded.models.routes.len(),
-            4,
-            "four child-agent routes remain"
+        assert!(
+            loaded
+                .models
+                .routes
+                .contains_key(&crate::config::AgentRoleId::new("explorer").unwrap())
         );
         assert_eq!(loaded.models.accounts, config.models.accounts);
         assert_eq!(loaded.web_search, config.web_search);
@@ -1549,7 +1555,12 @@ mod tests {
     #[test]
     fn schema_20_migration_failure_does_not_persist() {
         let (_directory, store) = isolated_store();
-        let config = StudioConfig::default_config().expect("bundled defaults");
+        let mut config = StudioConfig::default_config().expect("bundled defaults");
+        let explorer = crate::config::AgentRoleId::new("explorer").unwrap();
+        config.models.routes.insert(
+            explorer,
+            config.mode_model_routes[&ThreadModeId::simple()].clone(),
+        );
         store.save(&config).expect("save current schema");
         let path = store.paths.config_file();
         let mut table = read_table(path);

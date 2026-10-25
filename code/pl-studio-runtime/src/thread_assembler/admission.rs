@@ -23,7 +23,7 @@ impl AgentServices {
                 .route;
             let route = config
                 .models
-                .resolve_route(crate::StudioRole::Planner.id(), &selector)?;
+                .resolve_route(crate::config::root_agent_route_id(), &selector)?;
             crate::studio::delegation::validate_credential(&route)?;
             (crate::studio::model_route::MODEL_ROUTE_EXTENSION, route)
         };

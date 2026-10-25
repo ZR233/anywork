@@ -109,7 +109,7 @@ pub struct DelegationModelFilter {
     /// 已排序去重的硬能力条件。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub capabilities: Vec<DelegationModelCapability>,
-    /// 参考标注，不是能力过滤；缺少标注不等于不支持。
+    /// 任务参考上下文，不改变资格或排序；缺少标注不等于不支持。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub task_category: Option<AgentTaskCategory>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -147,7 +147,7 @@ pub struct ListDelegationModelsRequest {
     /// 必须同时成立的声明能力条件。
     #[serde(default)]
     pub capabilities: Vec<DelegationModelCapability>,
-    /// 任务类别标注，只用于展示与参考排序。
+    /// 任务参考上下文，不改变候选资格或稳定排序。
     #[serde(default)]
     pub task_category: Option<AgentTaskCategory>,
     #[serde(default)]

@@ -224,7 +224,9 @@ pub struct AccountSettingsUpdate {
     pub name: String,
     pub base_url: String,
     pub secret: AccountSecretUpdate,
-    pub pricing_enabled: bool,
+    /// 仅创建时的初始计费覆盖；已有账号必须使用窄计费类别命令。
+    #[serde(default)]
+    pub initial_billing_kind: Option<crate::BillingKind>,
     // 账号不保存第二份默认模型：模型选择只由 Mode/角色/Thread route 决定。
     pub custom_models: Vec<AccountModelUpdate>,
     pub model_connection_modes: Vec<AccountModelConnectionUpdate>,

@@ -140,7 +140,7 @@ enum BridgeAgentTaskCategory {
   general,
 }
 
-enum BridgeBillingKind { metered, subscription, unknown }
+enum BridgeBillingKind { metered, subscription, noCharge, unknown }
 
 enum BridgeDelegationMode { profile, automatic }
 

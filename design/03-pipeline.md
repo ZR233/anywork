@@ -1,84 +1,62 @@
-# 03 - Thread / Turn / Item 流程
+# 03 - 会话线程、轮次与条目流程
 
-本文定义输入到 Turn 的通用流程、模型循环与 Interaction 模型。Plan、协作编排与 workflow 状态机
-分别在 [13](./13-plan.md)、[12](./12-collaboration.md) 与 [11](./11-thread-mode.md) 单独定义，
-本文只保留流程视角的摘要。
+本文定义从输入受理到执行轮次（`Turn`）的通用流转过程、模型推理循环与交互（`Interaction`）模型。计划状态机、多智能体协作编排与工作流状态机分别在 [13](./13-plan.md)、[12](./12-collaboration.md) 与 [11](./11-thread-mode.md) 中详细定义，本文仅从执行流水线视角阐述其协作关系。
 
-## 3.1 输入与 Turn
+## 3.1 输入受理与执行轮次
 
-Studio 用户输入统一提交：空闲时启动，运行时先受理输入，再取消当前执行并在清理完成后启动新 Turn。
-父 Agent 的补充消息复用同一执行控制。Core 仍提供独立的普通 steer 与排队能力；稳定输入 ID 保证
-重复提交只返回原收据，不重复打断或启动。受理提交保存当前输入并发布 effect；产品从 canonical
-effect 投影 user Item 并写入历史库，实际 Turn 和模型上下文在执行准入时关联。只有 presentation 为 visible 的
-输入生成 user Item，受理不表示模型已开始执行。
+### 提交与打断控制
 
-Thread 可安装产品无关的 Turn 准入 gate（见 [16](./16-core-contracts.md) §16.9）：它在输入受理与
-驱动暂停之外独立决定下一条 Turn 能否开始。gate 关闭时，已受理的输入保持 pending，在下一条 Turn
-开始前停在准入点，既不消费输入也不创建 Turn 记录；已准入 Turn 持有 permit 直到结束，不受新 hold
-影响，只有下一条 Turn 等待。
+Studio 的用户输入采用统一提交语义：会话空闲时直接启动新轮次；会话正在运行时先持久化受理输入，再取消当前轮次，待清理收束后启动新轮次。父智能体向子智能体发送的补充消息复用同一执行控制链路。
 
-MessagePresentation（visible / hidden）是所有消息共用的协议属性，不属于 Plan、Interaction 或
-mailbox 特例：visible 是省省略时的默认值；hidden 消息仍是 canonical Thread 上下文，必须持久化并
-完整发送给 provider，但产品 projector 不为它产生 GUI Item 或 notification。presentation 在输入
-创建点冻结、随 mailbox 持久化，并原样进入 Turn 请求与消息事实，宿主和 GUI 不得重新推导。上下文
-压缩生成的摘要、压缩指令与 synthetic user input 使用 hidden；未来其他内部输入也在创建点选择
-取值。可见输入的来源（user / parent agent）独立记录：在 runtime 创建输入时冻结并随 mailbox
-持久化；产品 projector 将 parent agent 来源投影为独立文本通道，Studio 不根据 Thread 层级、消息
-正文或工具名猜测来源；旧记录缺失时按 user 恢复。
+`pl-core` 底层同时提供独立的运行中引导（steer）与排队能力。每次提交绑定稳定的输入 ID，重复提交同一 ID 仅返回原受理回执，不会重复打断当前执行或启动额外轮次。输入受理后立即保存并发布核心效果（effect），产品层据此投影为用户时间线条目（`Item`）并写入历史库；实际的轮次绑定与模型上下文拼装在通过执行准入时完成。输入被受理仅代表已进入可靠队列，不代表模型已开始推理。
 
-Turn 从同一 Thread 事实装配：统一 root 指令、项目 AGENTS.md、当前 Thread Mode 快照、可选的
-workflow 投影、普通 Skill、工具快照与 provider route。每个 root Thread 通过版本化
-`studio.model-route` 扩展保存独立的 provider、model 与 effort selector；正在执行的 Turn 冻结
-当前绑定，路由更新从下一 Turn 生效。Mode 不改变模型循环，但为新建 Thread 与 Mode 切换提供
-各自保存的默认 selector，不能用其他 Thread 的选择或全局 `planner` 路由覆盖既有 Thread。
+### 轮次准入门控
+
+会话线程可挂载与产品语义无关的轮次准入门控（gate，详见 [16](./16-core-contracts.md) §16.9），在输入受理与驱动暂停机制之外独立控制下一轮次能否启动：
+- 当门控关闭时，已受理输入保持待处理（`pending`）状态并停留在准入边界前，既不消费输入也不创建轮次记录。
+- 已通过准入的轮次持有准入许可（permit）直至本轮结束，中途新增的阻塞保留（hold）不影响当前轮次，仅阻塞下一轮次。
+
+### 消息呈现属性与输入来源
+
+`MessagePresentation`（取值为 `visible` 或 `hidden`）是所有消息共用的基础协议属性，独立于计划、交互或邮箱特例：
+- **`visible`（默认值）**：正常生成界面时间线条目与事件通知。
+- **`hidden`**：仍属于规范的线程上下文，必须完整持久化并发送给模型供应商，但产品投影器不为它生成界面条目或通知。上下文压缩摘要、压缩指令及系统合成的用户输入均使用 `hidden`。
+
+呈现属性在输入创建时冻结，随邮箱（mailbox）持久化并原样进入轮次请求与消息事实，宿主与前端界面均不得在运行期重新推导。
+
+可见输入的来源（用户 `user` 或父智能体 `parentAgent`）同样在创建输入时冻结并随邮箱持久化。产品投影器将父智能体输入映射为独立的文本通道，Studio 不根据线程层级、消息正文或工具名称猜测输入来源；历史记录缺失该字段时按普通用户输入恢复。
+
+### 轮次上下文装配与模型路由
+
+每个轮次从同一份线程事实装配完整请求：根智能体基础指令、项目 `AGENTS.md`、当前工作模式（`Mode`）快照、可选的工作流阶段投影、普通技能（`Skill`）、工具快照以及模型路由。
+
+每个根线程通过版本化的 `studio.model-route` 扩展独立保存自身的账号、模型与推理强度选择；正在执行的轮次使用启动时冻结的路由绑定，运行期间的路由修改从下一轮次起生效。工作模式不改变底层模型循环，但为新建线程与模式切换提供各自保存的默认路由选择；不得使用其他线程的选择或全局规划器（`planner`）路由覆盖既有线程的独立路由。
+
+内置通用基础指令将交流语言定义为跟随用户输入的动态规则，而非绑定固定语种：默认采用用户最近一次输入的自然语言，当用户切换语言时自动跟随切换，用户显式指定回复语言时则以指定语言为准。单次输出内部保持单一自然语言；代码、标识符、命令、文件路径、引用原文及既有英文文档按原样保留，既不计为语言混用，也不对其进行机械翻译。若当前输入无法判定语种且未显式指定，则沿用本会话已使用的交流语言。项目级指令与工作模式（`Mode`）仅补充领域约定，不得以固定默认语种覆盖该规则。
 
 ## 3.2 模型循环与工具批处理
 
-provider response 依次形成 assistant Item、tool call、tool result 与下一轮输入。普通工具可以并批；
-workflow 变更类工具声明 Solo——同一 response 中若还有任何其他调用则整批拒绝且无副作用；workflow
-查询工具为 Coexist。工作流状态调用在 working-state 克隆上计算；成功调用的 assistant tool call、
-tool result 与新 working state 必须由一个 Thread checkpoint 原子提交，失败时三者共同回滚。工具
-结果在同一 Turn 立即返回新阶段约束，下一 Turn 与 context compaction 后由最新 workflow 投影继续
-约束。当前 workflow 状态进入 checkpoint；历史工具 Item 由 effect 直接写入历史库，不从完整运行态
-重建。完整工具契约见 [09](./09-tool-runtime.md) 与 [11](./11-thread-mode.md)。
+模型流式响应依次生成助手条目、工具调用请求、工具执行结果以及下一步模型输入：
+- **并发与独占批处理**：普通工具支持同批并发执行（`Coexist`）；工作流状态转换工具声明为独占执行（`Solo`）——若同一模型响应中还包含任何其他工具调用，整批调用将被直接拒绝且不产生任何副作用；工作流查询工具仍为 `Coexist`。
+- **工作流状态原子提交**：工作流变更调用在工作状态的克隆副本上计算；调用成功时，助手工具调用、工具结果与新的工作流状态必须通过同一个线程检查点原子提交，任一环节失败则三者共同回滚。成功后的工具结果在同一轮次内立即返回新阶段约束，后续轮次及上下文压缩后则由最新的工作流投影继续提供约束。当前工作流状态保存在检查点中，历史工具条目由核心效果直接写入历史库，不从完整运行态反向重建（详见 [09](./09-tool-runtime.md) 与 [11](./11-thread-mode.md)）。
+- **前台文件与终端工具的顺序执行**：普通的 `write_file`、`apply_patch` 与 `write_stdin` 可在同一批次内共存，线程按模型给出的调用顺序依次等待前一个前台调用完成后再启动下一个。此机制仅保证线程内的调用顺序，不赋予工具结束轮次或修改扩展状态的控制权，也不构成跨进程的操作系统文件事务。
 
-普通 `write_file`、`apply_patch` 与 `write_stdin` 可同批共存：Thread 按模型给出的调用顺序等待每个
-前台调用完成再执行下一个；它们不因此获得结束 Turn 或扩展变更等控制权限，真正 Solo 的工具仍禁止
-混批。该顺序不是外部文件系统事务，不承诺阻止已有后台任务或外部进程访问文件。
+## 3.3 交互模型（Interaction）
 
-## 3.3 Interaction
-
-Interaction 只有通用 UserInput 与 ToolApproval 两种。计划生命周期由 Task root 使用独立的
-`plan_*` 工具状态机管理：`plan_submit` 提交以一级 Markdown 标题开头的完整计划并请求批准或修订；
-缺失信息、澄清与普通选项输入使用 `request_user_input`，它不得询问是否实施、继续或批准完整计划，
-计划完整时必须直接提交计划。两者都生成同一种通用 UserInput Interaction，Plan 只以 typed purpose
-绑定状态机，不增加专门的 Interaction 种类；Plan confirmation 是唯一的实施授权入口。完整合同见
-[13](./13-plan.md)。
-
-Interaction 请求可携带通用的不可变 continuation 预设：声明决议后用户消息的内容来源与
-MessagePresentation，并参与 request identity 与持久化。Studio 对 Plan 确认问题的特判只影响
-pending UI 形态，不得用来推导 continuation 内容或可见性；没有预设的 UserInput 不得猜测
-continuation。pending Interaction 随 Thread 恢复，响应必须匹配 interaction identity 与 Plan
-revision，且只能决议一次。
+核心交互仅包含**通用用户输入（`UserInput`）**与**工具执行审批（`ToolApproval`）**两类：
+- **计划提交与普通提问的边界**：计划生命周期由任务模式下的根智能体通过独立的 `plan_*` 工具状态机管理。`plan_submit` 用于提交以一级 Markdown 标题开头的完整计划并请求用户批准或要求修订；`request_user_input` 用于收集缺失信息、需求澄清与普通多选问答，禁止用于询问“是否开始实施、是否继续或是否批准完整计划”——当计划已完整时必须直接调用 `plan_submit`。两者底层均生成通用的 `UserInput` 交互，计划仅通过类型化用途（purpose）绑定计划状态机，不新增第三种交互类型；计划确认是任务模式下唯一的实施授权入口（详见 [13](./13-plan.md)）。
+- **交互续接（Continuation）与幂等决议**：交互请求可携带不可变的续接预设，声明交互决议后生成的用户消息来源与 `MessagePresentation` 属性，并纳入请求身份与持久化记录。Studio 对计划确认界面的特殊排版仅影响待决态的视觉呈现，不得用于反推续接消息的内容或可见性；未声明续接预设的 `UserInput` 不会隐式合成续接输入。待决交互随线程冷恢复保留，决议请求必须严格匹配交互身份与计划修订号（revision），且每个交互只能决议一次。
 
 ## 3.4 工作流生命周期（摘要）
 
-带图 Mode 的首个根用户输入在 provider 前自动生成 lineage 与 run。`workflow_transition` 以
-run/revision/当前状态三重 CAS 完成当前阶段并沿直接边进入下一阶段；进入终态后 run 立即终止，但
-Turn 可继续交付。图 hash 变化由下一个 Turn 自动归档旧 run 并创建同 lineage 的 replacement；正常
-终态后的新任务自动创建新 lineage。root 与 child 均可自然 final 或调用 `finish_turn({message})` 结束当前 Turn；业务完成由 root 核对目标与证据。
+配置了状态图的工作模式在首次收到根用户输入、发起模型请求前，自动创建工作流谱系（lineage）与运行实例（run）：
+- **状态转换**：`workflow_transition` 通过运行实例 ID、修订号与当前阶段三重 CAS 校验完成当前阶段，并沿有向边进入下一阶段；到达终态阶段后该运行实例立即结束，但当前执行轮次仍可继续输出最终总结。
+- **状态图演进与轮次收束**：若模式的状态图散列值发生变化，下一轮次会自动归档旧运行实例并在同一谱系下创建替代实例；正常到达终态后的新任务则自动开启新谱系。根智能体与子智能体均可通过自然生成最终回答或调用 `finish_turn({message})` 结束当前轮次；任务整体是否达成由根智能体核对业务目标与验证证据后决定。
+- **职责解耦**：工作流状态机不持有代码、文件、Git 或智能体实例；任何工作流阶段均可调用普通工具，状态图仅约束进度记录与阶段提示词。工作模式提示词可在不裁剪工具目录的前提下声明合作式角色边界（例如要求任务模式的根智能体将常规代码实现委派给子智能体），该约束属于冻结的模式指令，而非运行时效果白名单或操作系统沙箱（详见 [11](./11-thread-mode.md)）。
 
-Workflow 不拥有代码、文件、Git 或 Agent；任何阶段都可使用普通工具，图只约束状态记录和后续提示。
-Mode Prompt 可以在不裁剪工具的前提下声明合作式角色边界（例如要求 Task root 把普通实现交给
-child），该约束属于冻结 Mode 指令，不是 runtime effect 白名单或 OS 沙箱。状态机协议、工具契约
-与持久化上限见 [11](./11-thread-mode.md)。
+## 3.5 多智能体协作（摘要）
 
-## 3.5 协作（摘要）
-
-root 通过 `list_agent_profiles` 选择 Profile，以 `spawn_agent` 创建 child；生成时冻结 Profile
-指令、模型路由与 workspace assignment。child 使用普通 Thread/Turn/Tool，但不拥有 root 的
-workflow 工具。Task root 维护成本感知的任务依赖 DAG，按 ready frontier 派发 child，收齐 durable
-delivery 后释放下一前沿；最终 wave 的只读 reviewer 必须提交 durable approval，任一阻塞 finding
-都回到实现阶段返工。不存在隐式 merge 或 delivery gate。派生消息与后续消息都作为
-visible + parent-agent 输入进入 child 的 canonical transcript 与 Timeline。完整编排合同见
-[12](./12-collaboration.md)。
+根智能体通过 `list_agent_profiles` 查询可用的智能体预设（`Profile`），并调用 `spawn_agent` 派生子智能体（`child`）：
+- **创建期冻结**：派生时立即冻结子智能体的预设指令、模型路由与工作区分配策略（workspace assignment）。子智能体拥有标准会话线程、执行轮次与工具集，但不挂载根智能体专属的工作流工具。
+- **依赖图调度与审查闭环**：任务模式下的根智能体维护成本感知的任务依赖有向无环图（DAG），按就绪前沿（ready frontier）并行派发子智能体，收集齐可靠的交付回执（durable delivery）后再释放下一批前沿任务。最终批次的只读审查智能体（`reviewer`）必须提交可靠的审查批准；一旦出现任何阻塞性问题（finding），工作流即退回实现阶段返工，不存在隐式代码合并或绕过审查的交付通道。
+- **消息可见性**：首次派发任务与后续补充指令均以 `visible` 且来源为 `parentAgent` 的输入写入子智能体的规范上下文与时间线。完整协作契约见 [12](./12-collaboration.md)。

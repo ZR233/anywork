@@ -172,6 +172,13 @@ impl StudioHttp {
         self.put_json("/api/v1/settings/account", request).await
     }
 
+    pub async fn update_settings_field(
+        &self,
+        request: &pl_protocol::studio::UpdateSettingsFieldRequest,
+    ) -> Result<pl_protocol::studio::SettingsCommandReply> {
+        self.put_json("/api/v1/settings/field", request).await
+    }
+
     async fn put_json<T: DeserializeOwned, B: Serialize>(&self, path: &str, body: &B) -> Result<T> {
         let response = self
             .command_client

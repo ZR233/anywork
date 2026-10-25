@@ -117,8 +117,13 @@ fn build_compaction_body(
         .clone()
         .provider_compatible(custom_tool_projection);
     completion.validate_against(&model_info.model_id, &effective_capabilities)?;
+    let instruction_role = provider
+        .endpoint()
+        .protocol
+        .instruction_wire_role(WireApi::Responses);
     let OpenAiRequestBody::Responses(mut body) = OpenAiBase.build_request(
         WireApi::Responses,
+        instruction_role,
         &completion,
         &model_info,
         request.prompt_cache_key.as_deref(),

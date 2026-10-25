@@ -2,11 +2,15 @@ use super::{Observation, config, http, saved, sqlite, wire};
 use anyhow::{Context, Result, bail, ensure};
 use pl_protocol::studio::{
     BotModelRoute, BotSecretUpdate, CreateThreadRequest, NewThreadModelRoute, SaveBotRequest,
-    SetThreadModeRequest, StudioPromptInput, SubmitPromptRequest, UpdateAccountRequest,
+    SetThreadModeRequest, SettingsFieldUpdate, StudioPromptInput, SubmitPromptRequest,
+    UpdateAccountRequest, UpdateSettingsFieldRequest,
 };
 use pl_protocol::{ThreadItemState, ThreadStatus, TurnState};
 use pl_provider_fixture::{
-    agent_definitions::{AgentPhase, COMPACT_MODEL, ROOT_MODEL, USER_MODEL_NEW, USER_PROFILE},
+    agent_definitions::{
+        AgentPhase, CHILD_MODEL, COMPACT_MODEL, FUTURE_MODEL, ROOT_MODEL, USER_MODEL_NEW,
+        USER_PROFILE,
+    },
     feishu::{ChatType, DIRECT_CHAT_ID, SenderKind, TRUSTED_USER_OPEN_ID, text_event},
 };
 use std::time::Instant;
@@ -16,6 +20,11 @@ impl Observation<'_> {
         self.update_child_models(
             config::ChildAccountUpdate::InitializeCredential,
             "initialize-child-credential",
+        )
+        .await?;
+        self.update_child_models(
+            config::ChildAccountUpdate::ExecutableCatalog,
+            "withdraw-unavailable-before-root-freeze",
         )
         .await?;
         let project = self
@@ -45,6 +54,10 @@ impl Observation<'_> {
             .await?;
         let main = created.thread.id;
         self.wait_complete(&main, AgentPhase::MainFirst).await?;
+        self.set_base_override(
+            "Synthetic config base override: CONFIG_BASE_MUST_NOT_REPLACE_AGENT.",
+        )
+        .await?;
         let (bot, bot_project) = self.session.ensure_trusted_direct().await?;
         ensure!(
             bot_project == project.id,
@@ -64,6 +77,29 @@ impl Observation<'_> {
         let feishu_first = self.saved(&feishu, "feishu-first").await?;
         main_first.instructions.assert_root("root:main")?;
         feishu_first.instructions.assert_root("root:feishu")?;
+        ensure!(
+            main_first.instructions.base.source.kind == "modelBase"
+                && main_first
+                    .instructions
+                    .base
+                    .content
+                    .contains("MODEL_BASE_MUST_NOT_REPLACE_AGENT"),
+            "ordinary root did not retain its model-owned base source"
+        );
+        ensure!(
+            feishu_first.instructions.base.source.kind == "configBaseOverride"
+                && feishu_first
+                    .instructions
+                    .base
+                    .content
+                    .contains("CONFIG_BASE_MUST_NOT_REPLACE_AGENT"),
+            "bot root did not retain the explicit configuration base override"
+        );
+        ensure!(
+            main_first.instructions.blocks("agentDefinition")
+                != feishu_first.instructions.blocks("agentDefinition"),
+            "distinct trusted root declarations produced identical Agent sources"
+        );
         self.assert_phase_sources(AgentPhase::MainFirst, &main_first)?;
         self.assert_phase_sources(AgentPhase::FeishuFirst, &feishu_first)?;
         self.evidence.push(format!(
@@ -71,13 +107,9 @@ impl Observation<'_> {
             direct[0].creation_id
         ));
 
-        // Withdraw one otherwise valid user Profile's model before observing
-        // the executable catalog, then prove an in-flight query remains frozen.
-        self.update_child_models(
-            config::ChildAccountUpdate::ExecutableCatalog,
-            "withdraw-unavailable",
-        )
-        .await?;
+        // The executable model directory was fixed before root snapshot creation. Mutate it only
+        // after the CatalogFrozen provider request is parked, proving that its schema/result keeps
+        // the same generation while later requests observe the new catalog.
         self.submit(&main, AgentPhase::CatalogFrozen).await?;
         let stage = self.gate(AgentPhase::CatalogFrozen).await?;
         self.update_child_models(
@@ -93,26 +125,46 @@ impl Observation<'_> {
             !catalog.diagnostics.is_empty(),
             "unavailable Profile had no real diagnostic"
         );
-        self.submit_complete(&main, AgentPhase::CatalogEmpty)
-            .await?;
+        let inherited = catalog
+            .profiles
+            .iter()
+            .find(|profile| profile.profile_id == "explorer")
+            .context("system child without an explicit route is missing")?;
         ensure!(
-            self.catalog(AgentPhase::CatalogEmpty)?.profiles.is_empty(),
-            "empty generation still lists executable Profiles"
+            inherited.account_id == config::ROOT_ACCOUNT
+                && inherited.model_id == ROOT_MODEL
+                && inherited.effort.is_none()
+                && !config::has_explicit_system_route(&self.session.home, "explorer")?,
+            "missing system child route did not inherit mode.simple without persisting"
         );
+        let explicit = catalog
+            .profiles
+            .iter()
+            .find(|profile| profile.profile_id == config::EXPLICIT_SYSTEM_AGENT)
+            .context("explicit system child route is missing before withdrawal")?;
+        ensure!(
+            explicit.account_id == config::CHILD_ACCOUNT
+                && explicit.model_id == CHILD_MODEL
+                && config::has_explicit_system_route(
+                    &self.session.home,
+                    config::EXPLICIT_SYSTEM_AGENT
+                )?,
+            "explicit system child route did not take precedence"
+        );
+
+        // First restore the public model catalog so Settings can bind every current system role
+        // to the soon-to-be-withdrawn child model. The product's real route resolver, not this
+        // fixture, then makes the executable catalog empty when that account model disappears.
         self.update_child_models(
             config::ChildAccountUpdate::ExecutableCatalog,
-            "restore-executable-catalog",
+            "restore-before-empty-route-arming",
         )
         .await?;
-        self.submit_complete(&main, AgentPhase::CatalogRestored)
+        // Restore the same route/catalog generation, then execute a real spawn from the inherited
+        // explorer route before applying the withdrawal controls.
+        let system = self
+            .delegate(&main, AgentPhase::SpawnSystem, &catalog)
             .await?;
-        let restored_catalog = self.catalog(AgentPhase::CatalogRestored)?;
-        ensure!(
-            restored_catalog.profiles == catalog.profiles,
-            "restored executable catalog changed frozen Profiles"
-        );
-        self.write("agent-definition-catalog.json", &restored_catalog)?;
-        self.evidence.push("held request schema/catalog kept the old generation; later requests hid spawn for an empty executable catalog and reintroduced its oneOf after public account restore".into());
 
         let roots_before = self.directory().await?;
         for phase in [
@@ -149,10 +201,10 @@ impl Observation<'_> {
         let feishu_task = self.saved(&feishu, "feishu-task-compacted").await?;
         main_task
             .instructions
-            .assert_only_mode_changed(&main_first.instructions)?;
+            .assert_mode_update_preserves_agent_and_non_model_sources(&main_first.instructions)?;
         feishu_task
             .instructions
-            .assert_only_mode_changed(&feishu_first.instructions)?;
+            .assert_mode_update_preserves_agent_and_non_model_sources(&feishu_first.instructions)?;
         main_task.assert_compacted(&main_first, AgentPhase::CompactMain.marker())?;
         feishu_task.assert_compacted(&feishu_first, AgentPhase::CompactFeishu.marker())?;
         self.assert_phase_sources(AgentPhase::MainTask, &main_task)?;
@@ -168,9 +220,72 @@ impl Observation<'_> {
         self.mode(&main, "mode.simple").await?;
         self.mode(&feishu, "mode.simple").await?;
 
-        let system = self
-            .delegate(&main, AgentPhase::SpawnSystem, &restored_catalog)
+        // Now verify a real empty executable catalog without changing the root's instruction
+        // sources before its Mode/compaction proof above. Role bindings and account withdrawal
+        // are public product mutations; restoring the account must recover the exact catalog/schema.
+        let routed_roles = self.route_system_profiles_to_withdrawable_model().await?;
+        self.submit_complete(&main, AgentPhase::CatalogArmed)
             .await?;
+        let armed_catalog = self.catalog(AgentPhase::CatalogArmed)?;
+        wire::assert_all_modes(&armed_catalog)?;
+        ensure!(
+            armed_catalog
+                .profiles
+                .iter()
+                .filter(|profile| profile.system)
+                .all(|profile| {
+                    profile.account_id == config::CHILD_ACCOUNT && profile.model_id == CHILD_MODEL
+                }),
+            "public Settings route controls did not bind all executable system Profiles"
+        );
+        self.evidence.push(format!(
+            "public Settings RoleModel mutations bound {} canonical system Profiles to the withdrawable account selector",
+            routed_roles.len()
+        ));
+
+        self.update_child_models(
+            config::ChildAccountUpdate::EmptyCatalog,
+            "withdraw-all-executable-routes",
+        )
+        .await?;
+        self.submit_complete(&main, AgentPhase::CatalogEmpty)
+            .await?;
+        let empty_catalog = self.catalog(AgentPhase::CatalogEmpty)?;
+        ensure!(
+            empty_catalog.profiles.is_empty(),
+            "public route/account withdrawal did not produce a genuinely empty executable catalog"
+        );
+        ensure!(
+            wire::tool(
+                &self.phase_requests(AgentPhase::CatalogEmpty)?[0],
+                "spawn_agent"
+            )?
+            .is_none(),
+            "genuinely empty catalog retained the spawn tool"
+        );
+
+        self.update_child_models(
+            config::ChildAccountUpdate::ExecutableCatalog,
+            "restore-executable-catalog",
+        )
+        .await?;
+        self.submit_complete(&main, AgentPhase::CatalogRestored)
+            .await?;
+        let restored_catalog = self.catalog(AgentPhase::CatalogRestored)?;
+        ensure!(
+            restored_catalog.profiles == armed_catalog.profiles,
+            "restored executable catalog differs from the armed same-generation Profiles"
+        );
+        let armed_request = self.phase_requests(AgentPhase::CatalogArmed)?;
+        let restored_request = self.phase_requests(AgentPhase::CatalogRestored)?;
+        ensure!(
+            wire::tool(&armed_request[0], "spawn_agent")?
+                == wire::tool(&restored_request[0], "spawn_agent")?,
+            "restored same-generation spawn schema differs from the armed schema"
+        );
+        self.write("agent-definition-catalog.json", &restored_catalog)?;
+        self.evidence.push("public route bindings plus account withdrawal produced a real empty executable catalog with no spawn tool; public account restore recovered the exact armed catalog/schema".into());
+
         let user = self
             .delegate(&main, AgentPhase::SpawnUser, &restored_catalog)
             .await?;
@@ -240,6 +355,30 @@ impl Observation<'_> {
                 && new_user.system_instructions == config::NEW_ROLE,
             "future Profile mutation was not adopted"
         );
+        let default_system = future_catalog
+            .profiles
+            .iter()
+            .find(|profile| profile.profile_id == "executor")
+            .context("future inherited system Agent missing")?;
+        ensure!(
+            default_system.system
+                && default_system.account_id == config::ROOT_ACCOUNT
+                && default_system.model_id == FUTURE_MODEL
+                && !config::has_explicit_system_route(&self.session.home, "executor")?,
+            "new system child did not inherit the changed mode.simple selector"
+        );
+        let future_system = self
+            .delegate(&main, AgentPhase::SpawnDefaultSystem, &future_catalog)
+            .await?;
+        ensure!(
+            future_system.profile.as_ref().is_some_and(|profile| {
+                profile.profile_id == "executor"
+                    && profile.model_id == FUTURE_MODEL
+                    && profile.account_id == config::ROOT_ACCOUNT
+            }),
+            "new child did not freeze the changed default route"
+        );
+        self.evidence.push("after mode.simple changed, a new real executor spawn and provider request used the inherited new selector while the earlier explorer child remained frozen on its original route".into());
         let cold_input = format!(
             "bot:{bot}:{DIRECT_CHAT_ID}:{}",
             message_id(AgentPhase::ColdFeishu)
@@ -453,6 +592,81 @@ impl Observation<'_> {
         Ok(())
     }
 
+    async fn route_system_profiles_to_withdrawable_model(&self) -> Result<Vec<String>> {
+        let mut current = self.session.http()?.read_settings().await?;
+        let mut roles = current
+            .config
+            .settings
+            .roles
+            .iter()
+            .map(|role| role.key.clone())
+            .collect::<Vec<_>>();
+        roles.sort();
+        ensure!(!roles.is_empty(), "Settings exposed no system child roles");
+
+        for role in &roles {
+            let bound = current
+                .config
+                .settings
+                .roles
+                .iter()
+                .find(|setting| setting.key == *role)
+                .context("canonical system role disappeared from Settings")?;
+            if bound.account_id == config::CHILD_ACCOUNT && bound.model_id == CHILD_MODEL {
+                continue;
+            }
+            let reply = self
+                .session
+                .http()?
+                .update_settings_field(&UpdateSettingsFieldRequest {
+                    operation_id: format!("agent-empty-route-{role}"),
+                    expected_revision: current.config.revision,
+                    update: SettingsFieldUpdate::RoleModel {
+                        role: role.clone(),
+                        account_id: config::CHILD_ACCOUNT.into(),
+                        model_id: CHILD_MODEL.into(),
+                    },
+                })
+                .await?;
+            ensure!(
+                reply.receipt.durable,
+                "public RoleModel mutation for {role} was not durable"
+            );
+            current = reply.snapshot;
+        }
+        ensure!(
+            roles
+                .iter()
+                .all(|role| current.config.settings.roles.iter().any(|setting| {
+                    setting.key == *role
+                        && setting.account_id == config::CHILD_ACCOUNT
+                        && setting.model_id == CHILD_MODEL
+                })),
+            "canonical Settings did not publish the complete withdrawable route set"
+        );
+        Ok(roles)
+    }
+
+    async fn set_base_override(&self, value: &str) -> Result<()> {
+        let current = self.session.http()?.read_settings().await?;
+        let reply = self
+            .session
+            .http()?
+            .update_settings_field(&UpdateSettingsFieldRequest {
+                operation_id: "agent-base-override".into(),
+                expected_revision: current.config.revision,
+                update: SettingsFieldUpdate::InstructionBaseOverride {
+                    value: value.into(),
+                },
+            })
+            .await?;
+        ensure!(
+            reply.receipt.durable && reply.snapshot.config.revision > current.config.revision,
+            "base override was not durably acknowledged"
+        );
+        Ok(())
+    }
+
     async fn mode(&self, id: &str, mode: &str) -> Result<()> {
         let previous = saved::load(&self.session.home, id)
             .await?
@@ -506,7 +720,7 @@ impl Observation<'_> {
         };
         committed
             .instructions
-            .assert_only_mode_changed(&previous.instructions)?;
+            .assert_mode_update_preserves_agent_and_non_model_sources(&previous.instructions)?;
         let snapshot = self.session.http()?.read_thread(id).await?;
         ensure!(
             snapshot.thread.mode.as_str() == mode,

@@ -58,7 +58,7 @@ impl AgentServices {
                 }
                 if filter.min_context_window.is_some_and(|minimum| {
                     entry
-                        .model
+                        .context
                         .context_window
                         .is_none_or(|value| value < minimum)
                 }) {
@@ -124,7 +124,7 @@ impl AgentServices {
                 task_suitability: guide
                     .map(|value| value.task_suitability.to_vec())
                     .unwrap_or_default(),
-                context_window: descriptor.context_window,
+                context_window: entry.context.context_window,
                 capabilities: descriptor.capabilities,
                 reasoning_efforts: entry.model.supported_efforts(),
                 pricing: descriptor.pricing,
@@ -205,7 +205,7 @@ fn admission(
         .or_else(|| entry.model.supported_efforts().first().cloned());
     crate::studio::delegation::resolve_child_selection(
         config,
-        crate::StudioRole::Executor.id(),
+        crate::AgentRoleId::new("executor".to_string())?,
         &ModelRouteConfig {
             account_id: account_id.clone(),
             model_id: entry.model.model_id.clone(),

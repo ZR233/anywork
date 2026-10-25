@@ -265,11 +265,17 @@ impl CoreModelSession for ThreadModelSession {
         let context_hash = pl_core::context::content_hash(&context_bytes);
         let prefix_hash = pl_core::context::content_hash(
             encoded
-                .instructions
-                .as_deref()
+                .system_prompt
+                .as_ref()
+                .map(|prompt| prompt.content())
                 .unwrap_or_default()
                 .as_bytes(),
         );
+        let instruction_text = encoded
+            .system_prompt
+            .as_ref()
+            .map(|prompt| prompt.content())
+            .unwrap_or_default();
         let prompt = super::prompt_diagnostics(
             &self.prompt,
             super::PromptCacheInput {
@@ -277,7 +283,7 @@ impl CoreModelSession for ThreadModelSession {
                 account_id: runtime.account_id(),
                 account: runtime.endpoint(),
                 model: &runtime.model().model_id,
-                instructions: encoded.instructions.as_deref().unwrap_or_default(),
+                instructions: instruction_text,
                 prelude_messages: &[],
                 context_hash: &context_hash,
                 fixed_prefix_section_hashes: BTreeMap::from([("instructions".into(), prefix_hash)]),

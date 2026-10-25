@@ -1,171 +1,76 @@
-# 13 - Thread Plan 状态机
+# 13 - 计划（Thread Plan）状态机
 
-本文是 Plan 聚合、`plan_*` 工具合同与确认 UI 边界的唯一权威源；Task Mode 图见
-[11](./11-thread-mode.md)，通用 Interaction 模型见 [03](./03-pipeline.md)。
+本文是会话计划（`Plan`）聚合模型、`plan_*` 工具契约与确认界面边界的唯一权威源；任务模式（`Task Mode`）工作流状态图见 [11](./11-thread-mode.md)，通用交互（`Interaction`）模型见 [03](./03-pipeline.md)。
 
 ## 13.1 领域边界
 
-Plan 是 Thread 内独立于 Mode workflow 的计划确认聚合。Mode 状态图描述一项任务的阶段；
-Plan 状态机只描述当前 Thread 的一份计划从起草、请求确认、要求修订到批准的生命周期。
-Mode 图不能定义、编译、覆盖或直接推进 Plan 状态，Plan 工具也不能提交外部图。
+计划状态机（`Plan`）是会话线程（`Thread`）内独立于工作模式状态图（Mode workflow）的专项聚合：工作模式状态图描述整项任务从规划、文档、实现、集成到验收的宏观阶段，而计划状态机专门管理当前根线程的一份实施计划从起草、提交待审、要求修订到正式批准的完整生命周期。工作模式状态图不能定义、覆盖或直接推进计划状态，计划工具亦不接受外部状态图输入。
 
-Plan 内核是唯一的会话计划状态机对象：协议类型只保存状态和审计事实，工具、Interaction、
-Prompt 与产品宿主都必须把命令交给该对象决定和应用，不能各自复制状态判断。状态机采用
-SCXML/XState 的显式初态、合法事件和 guard 原则，但它是代码内置的封闭机器，不使用
-WorkflowDefinition、运行时图解释器或注册表。
+计划内核是唯一的会话计划状态机实现：协议层类型仅保存状态快照与审计事实，所有工具调用、用户交互决议、提示词投影与宿主恢复逻辑均必须将命令交由该纯状态机裁决并应用，严禁在各适配层复制平行的状态判断逻辑。
 
-## 13.2 固定状态与转换
+## 13.2 固定状态与合法转换
 
-Plan 使用以下穷尽状态：
+计划状态机包含以下 4 个穷尽状态及固定转换边：
 
 ```text
-drafting -> awaitingConfirmation             plan_submit
-revisionRequested -> awaitingConfirmation    plan_submit
-awaitingConfirmation -> approved             用户 Approve
-awaitingConfirmation -> revisionRequested    用户 Revise 或补充修改意见
-approved -> drafting                         plan_restart
-revisionRequested -> drafting                plan_restart
+drafting -> awaitingConfirmation             plan_submit（提交初稿）
+revisionRequested -> awaitingConfirmation    plan_submit（提交修订稿）
+awaitingConfirmation -> approved             用户批准（Approve）
+awaitingConfirmation -> revisionRequested    用户要求修订（Revise 并附修改意见）
+approved -> drafting                         plan_restart（开启新计划谱系）
+revisionRequested -> drafting                plan_restart（清空旧计划重新起草）
 ```
 
-`drafting` 是初态；`approved` 表示当前文档已批准，但可用 `plan_restart` 显式开始新的计划
-lineage。`awaitingConfirmation` 期间不能 restart 或再次 submit，以免遗留可回答但已失去
-owner 的 pending Interaction。`revisionRequested` 可以直接提交完整修订版，也可先 restart
-清空旧文档。每条转换的 source、target、命令、条件和恢复动作由状态机的固定规则表提供；
-状态不是开放字符串，所有 match 必须穷尽。新增状态或转换必须同时修改状态机、协议测试、
-Prompt 和真实验收，不能只修改提示词。
+状态转换规则如下：
+- **`drafting`（起草中，初始状态）**：智能体在此状态下收集信息并调用 `plan_submit` 提交完整计划文档，进入 `awaitingConfirmation`。
+- **`awaitingConfirmation`（等待用户确认）**：此状态下严禁调用 `plan_restart` 或再次调用 `plan_submit`，防止遗留失去归属的悬空待决交互（pending `Interaction`）。
+- **`revisionRequested`（已要求修订）**：用户拒绝原计划并给出修改意见后进入该状态；智能体可直接调用 `plan_submit` 提交完整修订版，或先调用 `plan_restart` 清空旧文档。
+- **`approved`（已批准）**：表示当前计划文档已获用户正式实施授权；若后续需求发生根本变化需推倒重来，须显式调用 `plan_restart` 回到 `drafting`。
 
-## 13.3 状态、CAS 与幂等
+## 13.3 持久化扩展、CAS 校验与冷恢复
 
-每个 Thread 的 `studio.plan` Thread 扩展保存有界 Plan 状态：状态 revision、当前状态、计划
-文档及内容 hash、文档 version、pending Interaction ID、最近修订意见、转换历史和最近
-operation receipts。缺失 Plan 字段等价于 revision 0 的 `drafting`，查询不会为了物化默认值
-而写状态。Plan 不跨 Thread 共享；仅根 Thread 装配 Plan 工具和用户确认入口，child 通过 Turn 报告提出方案与问题。
+### 线程扩展与父子会话隔离
 
-工具读取当前调用的不透明扩展快照，解码为产品 Plan 状态后由同一纯状态机计算候选，返回
-扩展 CAS；core 与工具完整结果及实际上下文一次提交。工具不持有可写状态机或第二份会话
-working set，提交失败不会留下私有状态更新。child Agent 使用独立 session 与独立上下文，
-不继承 parent 的 Plan 内核、Plan working state、revision 或工具句柄；child 若需要执行父
-计划，父 Agent 必须把相关已批准基线明确写进 `spawn_agent.message`，不得通过跨 session
-查询、共享句柄、root registry 或 SQLite 旁路读取。
+每个根线程通过 `studio.plan` 线程扩展保存有界的计划状态：状态修订号（`revision`）、当前生命周期状态、计划 Markdown 正文及其内容散列值、文档版本号、待决交互 ID、最近一次用户修改意见、有界转换历史以及最近的操作回执（operation receipts）。未初始化 `studio.plan` 扩展的线程等价于处于 `revision = 0` 的 `drafting` 状态（只读查询不会为物化默认值而产生写操作）。
 
-每个 mutation 使用当前 plan revision 做 CAS。模型工具 operation identity 来自
-`sessionId/turnId/callId`，并与 canonical argument hash 一起写入 receipt；Interaction
-resolution 使用 interaction ID、Plan revision 和 resolution hash。相同 identity 与相同参数
-重放返回 `alreadyApplied`，相同 identity 携带不同参数返回 `operationIdentityConflict`。
-历史和 receipts 都使用有界尾部与滚动摘要，整个 Plan working state 有固定大小上限。
+计划状态严格限制在根线程内部，绝不跨线程共享：仅根线程挂载 `plan_*` 工具与用户确认界面；子智能体（`child`）拥有独立上下文，不继承父线程的计划状态机或句柄，父智能体必须将子智能体执行所需的已批准计划基线显式写入 `spawn_agent.message`。
 
-`plan_submit` 在同一工具提交中保存 awaitingConfirmation 状态、实际结果和不透明确认问题；
-问题身份由 core 的调用关联生成。Studio 回答入口核对问题、计划 revision、内容 hash 与
-pending ID，由产品状态机解释 Approve/Revise，然后原子提交交互回答、Plan 扩展、实际上下文
-与 continuation 输入。冲突仍保持 Pending；重复回答只返回原回执，不再次推进或入队。
+### 比较并交换（CAS）与原子确认决议
 
-关闭 GUI 或释放 Thread 运行资源不是计划拒绝或交互取消。尚待确认的 Plan 扩展与同一
-Pending Interaction 必须一起保存，正常退出等待相应保存屏障；重新打开会话时恢复原计划
-正文、revision、内容 hash 和 pending ID，并从 canonical snapshot 恢复可回答的确认入口。
-冷恢复本身不调用模型、不重新执行 `plan_submit`、不生成新问题，也不自动批准或入队
-continuation。恢复后用户批准或提出修改仍走上述同一原子回答入口及幂等规则；已经回答的
-计划不得重新弹出。不能从历史文本猜测授权或重新构造已经取消的交互。
+所有计划状态写操作均以当前计划修订号执行 CAS 校验：
+- **工具调用幂等**：模型工具的操作身份由 `(sessionId, turnId, callId)` 与规范参数散列值共同构成；交互决议操作身份由 `(interactionId, planRevision, resolutionHash)` 构成。完全相同的重放直接返回 `alreadyApplied`，同一操作身份携带不同参数则返回 `operationIdentityConflict`。
+- **提交与决议原子性**：`plan_submit` 在单次工具提交事务中同时写入 `awaitingConfirmation` 状态、工具执行结果以及绑定调用关联的待决确认交互。当用户在界面点击“批准”或“提交修改”时，Studio 核对交互 ID、计划修订号与文档内容散列值，由计划状态机解释 `Approve` 或 `Revise` 决议，并将「交互回答、更新后的 `studio.plan` 扩展、模型上下文快照以及续接输入（continuation input）」在一次事务中原子提交。
+- **隐藏续接消息（Hidden Continuation）**：计划确认交互在工具注册时预设批准/修订后的续接输入使用 `MessagePresentation = hidden`（模型参数无法覆盖该预设）。因此，确认决议后完整的 Markdown 计划问题与用户决定会作为规范的用户消息写入线程上下文并发送给模型供应商，同时结合固定注入的 `pl.plan` 上下文片段让模型精确读取已批准正文或修改意见，但不会在 GUI 时间线中重复渲染第二张用户可见的计划大卡片。
+- **冷恢复保真**：关闭桌面界面或释放线程内存资源不视为拒绝计划或取消交互。处于 `awaitingConfirmation` 的计划扩展与对应的待决交互随保存屏障一同落盘；重新打开会话时，系统直接从规范快照恢复原计划正文、修订号与待决交互入口（冷恢复过程不调用模型、不重跑 `plan_submit`、也不自动批准）。
 
-confirmation continuation mail 以完整、原样的 Markdown Plan question 作为用户输入内容。
-宿主注册 session Plan 工具时预设批准后输入的 MessagePresentation，默认及内置 Task Mode
-使用 hidden；模型工具参数不能覆盖该值。两种 presentation 都向 provider 产生同一条 user
-message，区别只在 GUI Timeline 是否投影。Approve/Revise 的 typed 结果仍由 Plan 状态和
-pinned `pl.plan` context 表达，因此模型既能读到被确认的完整计划，也能读到修改意见。这样
-计划进入同一 Thread transcript，同时默认不制造第二张用户可见计划卡片；Plan 正文仍可由
-`plan_current` 查询。
+## 13.4 `plan_*` 工具契约
 
-## 13.4 Plan 工具合同
+根线程成套挂载以下 5 个计划工具，统一读取当前线程的 `studio.plan` 扩展快照：
 
-Plan 工具作为一组安装，读取当前 Thread 的同一扩展快照：
+- **`plan_current`（只读共存 `Read + Coexist`）**：读取当前修订号、状态、完整计划文档、待决交互、最近修改意见与当前允许的操作；在实施阶段仍可随时调用以查阅已批准的计划全文。
+- **`plan_next`（只读共存 `Read + Coexist`）**：读取当前状态下的合法直接转换边、触发主体（模型工具或用户动作）及前置条件。
+- **`plan_history`（只读共存 `Read + Coexist`）**：读取有界的状态转换历史与归档摘要。
+- **`plan_submit`（控制独占 `AgentControl + Solo`）**：携带 `expectedRevision` 与以一级 Markdown 标题（`# `）开头的完整计划文档提交审批。这是请求用户批准实施完整计划的**唯一合法工具**——严禁使用 `request_user_input` 或普通回复文本询问“是否开始实施 / 是否批准计划”。
+- **`plan_restart`（控制独占 `AgentControl + Solo`）**：携带 `expectedRevision` 与非空原因（`reason`），从允许状态清空旧计划并重置回 `drafting`。
 
-- `plan_current`：读取 revision、当前状态、完整计划文档、pending Interaction、最近修改意见
-  和允许操作；同一 session 的实施期可继续读取已批准计划。
-- `plan_next`：读取当前状态的固定直接转换、触发方、条件和准确工具/用户动作。
-- `plan_history`：读取有界转换历史与归档摘要。
-- `plan_submit`：以 `expectedRevision` 和完整一级标题 Markdown 提交当前或修订计划，并作为
-  请求用户批准实施该完整计划的唯一工具；不得先用 `request_user_input` 或普通文本重复询问
-  是否实施、继续或批准。
-- `plan_restart`：以 `expectedRevision` 和非空 reason 从允许状态清空旧计划并回到 drafting。
+当状态、CAS 修订号或幂等身份校验被拒绝时，工具返回结构化的 `accepted: false` 响应，完整包含稳定错误码、尝试执行的操作、当前状态与修订号、最新规范快照、当前允许的全部转换及可直接执行的恢复指引（例如修订号过期时明确指示先调用 `plan_current`；处于 `awaitingConfirmation` 时重复提交则指明当前正在等待哪个交互 ID；处于 `approved` 时提交则指明须先调用 `plan_restart`）。
 
-前三个查询工具为 Read + Coexist；两个 mutation 为 AgentControl + Solo。不存在
-`submit_plan`、`plan_transition`、`plan_exit` 或兼容别名，也不存在 definition、compile、
-patch、supersede 输入。Approve/Revise 不是模型工具，而是 pending Interaction 的用户决定。
-五个工具实现核心不透明 Tool 并注册到各自 Thread；查询读取只读快照，mutation 显式授予
-扩展和交互控制权限并独占批次。child 只能操作自己的扩展，不能共享 parent 的计划状态。
+## 13.5 与任务模式、提示词及桌面界面的协作边界
 
-状态、CAS 或 identity 拒绝使用结构化 `accepted: false` 响应，不把关键诊断压缩成一句错误。
-响应必须包含稳定 code、尝试的 operation、当前 state/revision、canonical snapshot、当前
-允许的全部转换及条件、失败条件和可直接执行的 recovery actions——例如 stale revision 必须
-明确要求先调用 `plan_current`，awaiting 状态的重复 submit 必须指出等待哪个 Interaction，
-而 approved 状态必须指出先调用 `plan_restart`。schema/Markdown/大小等输入错误仍使用
-typed tool validation error，且不得改变状态。
+### 任务模式规划阶段门控
 
-## 13.5 与 Task Mode、Prompt 和 GUI 的边界
+在任务模式（`mode.task`）的 `planning` 阶段，根智能体可进行多轮需求澄清、计划提交与根据反馈修订，期间工作流阶段始终保持为 `planning`（状态栏同样持续显示 `planning`）。仅当 `plan_current` 的状态已变为 `approved` 后，根智能体才可将任务工作流从 `planning` 转换至 `editing_documents`。
 
-Task Mode 的 workflow planning 阶段可以发生多轮澄清、计划提交和修订；这些行为不产生
-workflow transition。只有 `plan_current` 已返回 `approved` 后，root 才能把 Task workflow
-从 `planning` 转换到 `editing_documents`。因此 Task 预设图不包含 `awaiting_confirmation`，
-Mode 状态栏在整个计划确认期间持续显示 `planning`。`request_user_input` 只收集会实质影响
-计划的缺失事实或偏好；它不能承担完整计划批准或实施授权。完整计划形成后 root 必须直接
-调用 `plan_submit`，不得以普通问题或 final 文本把是否实施交回用户。
+### 桌面界面展示与专用反馈栏
 
-Turn 模型上下文从当前 Thread Plan state 派生只读 `pl.plan` section，提供当前
-state/revision、文档 hash、修改意见和允许动作；完整计划正文独立按文档版本去重，压缩后重新补入当前版本。批准回复与完整正文也保留在 canonical tool/Interaction 状态。
+桌面界面不维护独立的计划状态机或本地正文缓存，其只读展示严格取自两个互斥的数据源：待确认期间取自待决 `UserInput` 中稳定 ID 为 `plan_confirmation` 的交互问题；批准后取自线程运行时快照（runtime snapshot）中的计划投影（当前状态、修订号与计划正文）：
 
-GUI 不新增 Plan 协议状态、持久化实体或第二套 reducer，也不在本地缓存或复制计划正文。只读
-展示有两个互斥来源：pending 期间取 pending `UserInput` 中稳定 ID 为 `plan_confirmation`
-的唯一问题；批准后取 Thread runtime snapshot 的计划投影（当前状态、revision 与当前文档）。
-Timeline 尾部显示一张紧凑摘要卡，点击后在右侧打开完整 Markdown Plan，详情面板与 Timeline
-分别保存滚动位置；宽窗口使用可拖动分栏，窄窗口使用占满会话阅读区域的计划视图；展开状态只属于当前 Thread 的
-临时 UI 状态，不写入 runtime 或 store；Plan 详情打开时优先于 Todo 侧栏，关闭后 Todo 仍按
-自己的 UI 状态恢复。
+- **并排详情分栏与全宽切换**：待确认期间，时间线尾部展示一张紧凑的计划摘要卡，点击后在右侧展开完整的 Markdown 计划阅读面板（默认宽度 `720px`，并排模式下至少为计划面板保留 `360px`、为左侧对话区保留 `400px`；支持鼠标拖拽分隔条、方向键微调及 `Home` 键/双击恢复默认宽度；窄窗口下自动切换为全宽阅读模式）。计划面板打开时优先于待办（Todo）侧栏，关闭后恢复原待办侧栏状态。当计划获批后，用户仍可随时通过聊天状态栏「更多」菜单中的计划入口以只读方式重新打开该详情面板查阅全文。
+- **待决期专用反馈栏替换**：当存在待确认的计划交互时，底部常规的消息输入区（Composer）被**计划专用反馈栏**替换，避免“发送普通聊天消息”与“提交计划修订意见”产生语义混淆。反馈栏直接提供「修改意见输入框」「提交修改（映射为 `Revise` + 非空反馈）」与「批准计划（映射为 `Approve`）」三项控件（右侧详情面板仅负责阅读，不重复放置确认按钮）。在反馈输入框内按 `Enter` 提交修改、`Shift+Enter` 换行（输入法组词期间 `Enter` 仅确认候选词）。一旦交互决议完成，摘要卡与专用反馈栏立即消失，恢复常规消息输入区。
+- **历史回执展示**：每次计划确认的历史回执由原 `plan_submit` 工具条目携带的类型化 `userInput` 投影呈现（已完成决议显示“计划已批准”或“已请求修改计划”及计划标题，默认紧凑折叠，展开后可查看并复制完整的用户修改意见）。
 
-计划投影为已批准且含当前文档时，聊天状态栏的「更多」菜单提供批准后唯一的只读入口；点击在
-同一右侧详情面板展示当前计划全文。该入口是显式打开动作，批准后不自动重开面板，也不提供
-第二份输入、确认或修改控件；未批准、无文档或 restart 清空后不显示该入口。摘要卡与 Plan
-专用反馈栏仍随 Interaction resolved 消失，普通 composer 恢复；批准后的计划阅读由该入口
-承担，不依赖 pending Interaction 或 GUI 本地副本。
+## 13.6 压缩与恢复中的实施授权
 
-详情面板默认宽度为 720px，并排布局至少为计划保留 360px、为对话与操作保留 400px；
-能否并排由实际可用宽度与分隔条尺寸决定，不依据设备类型。阅读者可以拖动分隔条，也可以
-聚焦分隔条后用方向键逐级调整、Home 恢复默认宽度；双击分隔条同样恢复默认。计划可宽于
-对话，不设占可用宽度一半的比例上限或固定像素硬上限。拖动、尺寸分配和边界求解由成熟
-分栏组件负责，上层不再维护另一套拖动增量及重复收敛。
+根会话在每个模型步骤直接从当前 `studio.plan` 扩展投影计划状态、已批准版本号及完整计划正文（正文按文档版本号去重，上下文压缩后自动重新注入当前已批准版本，且该投影不依赖于是否开启自动压缩开关）。
 
-计划头部提供「展开阅读」与「恢复并排」：展开时使用整个会话阅读区域，保留独立滚动及
-关闭入口；底部反馈与状态操作仍可达。窄窗口直接采用全宽阅读，不把文档挤进狭小侧栏，
-也不提供无意义的分隔条。切换阅读布局不改变计划正文、决定或阅读位置；宽度和阅读模式只
-保存在当前 GUI 的临时视图中，不因普通刷新重置，不使正文、反馈输入或按钮溢出窗口。
-
-Plan confirmation pending 期间，普通 prompt composer 必须被 Plan 专用反馈栏替换，避免同时
-存在"普通消息"和"计划修改"两个输入语义。反馈栏始终直接提供修改意见输入、提交修改与确认
-计划三个能力，不先进入 Approve/Revise 二级选择；提交修改映射为同一 `plan_confirmation`
-answer 的 Revise 加非空反馈，确认映射为 Approve。右侧详情面板只负责阅读，不包含第二份
-输入或确认控件。Interaction resolved 后摘要卡与反馈栏一起消失，普通 composer 恢复；已批准
-计划仍可由状态栏「更多」菜单的计划入口按需打开同一只读详情。
-以上均响应同一个 durable Interaction，不能复制 Plan 正文、resolution 或生命周期状态。
-
-反馈输入沿用 Flutter 标准文本编辑动作：Enter 提交修改，Shift+Enter 换行；IME 组词期间
-Enter 只用于确认候选，不提前回答计划。按钮与键盘共享非空校验、同一提交入口与在途状态，
-在途禁用重复决定，失败保留原输入并显示真实错误；不以全局键盘监听、焦点回抢或延时补丁
-替代组件行为。
-
-反馈操作区沿输入框的内容边界排布：快捷键提示靠左，修改与批准按钮作为一组靠右；
-按钮采用一致的高度、内边距与间隔，批准为主要操作、修改为清晰的次要操作。窄窗不足以
-同排时提示与按钮分行，按钮组在受限宽度内按需折行，仍沿同一右边界对齐，不因语言或
-文字放大溢出，也不在尾部留下无意义空白。计划头部的
-阅读模式与关闭操作同样组成靠右、垂直居中的操作组，避免与标题、状态产生零散错位。
-计划操作在桌面保留至少 40px 的视觉高度与 48px 的标准命中区域，不因全局紧凑密度而缩减。
-
-每次计划确认的历史回执由原 `plan_submit` 工具条目携带的 typed `userInput` 投影提供，
-来源仍是同一个 canonical Interaction，不改变默认 hidden continuation，也不保留已解决
-交互于 pending 队列。待确认期间只显示上述唯一摘要入口；回答后显示「计划已批准」或
-「已请求修改计划」及计划标题，取消则按真实取消状态表达。回执默认紧凑折叠，展开可读取、
-选择复制完整的用户修改意见或本地化批准回复，不把 `Approve` / `Revise` 内部标记当作正文。
-历史决定只依据该交互的权威答案，不从当前 Plan 状态、工具成功或后续修订反推。当前计划
-阅读与历史决定互不替代；分页、重订阅与重开均由同一内容窗口恢复历史回执，投影与迁移契约
-见 [18](./18-studio-state.md) §18.8 和 [17](./17-studio-storage.md) §17.4。
-
-## 压缩与恢复中的实施授权
-
-根会话每步从当前扩展投影计划状态、批准版本及完整正文，正文按版本去重，压缩后补入一次。投影不依赖自动压缩开关。批准、修订、模式切换和恢复刷新同一事实源。最新宿主状态优先于历史摘要；压缩、重启和常规实现调整不撤销批准。代理在既有授权范围内继续实施，仅目标、范围或关键决策改变才请求用户决策；只有状态缺失或并发冲突才通过查询工具恢复。
+最新的宿主计划状态始终优先于历史压缩摘要：上下文压缩、进程重启或实施过程中的常规技术调整均**不会撤销已获得的计划批准授权**。智能体在既有批准范围内连续推进实施，仅当任务目标、交付范围或核心架构决策发生实质改变时才需要重新请求用户确认；日常推进中无需每步调用查询工具，仅在投影状态缺失或遇到并发冲突时才通过 `plan_current` 恢复同步。

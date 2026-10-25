@@ -418,7 +418,7 @@ impl StudioThreadFactory {
         let role = if child {
             pl_protocol::AgentRoleId::new(thread.role.clone())?
         } else {
-            crate::config::StudioRole::Planner.id()
+            crate::config::root_agent_route_id()
         };
         let route = config.models.resolve_route(role, &selector)?;
         let resources = self

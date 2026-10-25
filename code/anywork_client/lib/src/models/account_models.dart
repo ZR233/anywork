@@ -241,7 +241,6 @@ class AccountModelAutoCompactView {
 
 class AccountSettingsView {
   const AccountSettingsView({
-    this.pricingEnabled = false,
     this.billingKind = BillingKind.unknown,
     this.billingKindOverride,
     this.disabledModels = const [],
@@ -276,7 +275,6 @@ class AccountSettingsView {
     this.iconKey,
   });
 
-  final bool pricingEnabled;
   final BillingKind billingKind;
   final BillingKind? billingKindOverride;
   final List<String> disabledModels;
@@ -362,7 +360,6 @@ class AccountSettingsView {
 
   AccountSettingsView copyWith({
     ModelCatalogStatusView? modelCatalog,
-    bool? pricingEnabled,
     BillingKind? billingKind,
     Object? billingKindOverride = _accountSettingsUnset,
     List<String>? disabledModels,
@@ -397,7 +394,6 @@ class AccountSettingsView {
   }) {
     return AccountSettingsView(
       modelCatalog: modelCatalog ?? this.modelCatalog,
-      pricingEnabled: pricingEnabled ?? this.pricingEnabled,
       billingKind: billingKind ?? this.billingKind,
       billingKindOverride: identical(billingKindOverride, _accountSettingsUnset)
           ? this.billingKindOverride
@@ -481,7 +477,6 @@ class AccountCatalogView {
 
 class AccountTemplateView {
   const AccountTemplateView({
-    this.pricingEnabled = true,
     required this.id,
     required this.displayName,
     required this.description,
@@ -499,7 +494,6 @@ class AccountTemplateView {
     this.iconKey,
   });
 
-  final bool pricingEnabled;
   final String id;
   final String displayName;
   final String description;
@@ -526,7 +520,6 @@ class AccountTemplateView {
     List<AccountModelView> models,
   ) {
     return AccountSettingsView(
-      pricingEnabled: pricingEnabled,
       id: accountId,
       templateId: id,
       protocol: protocol,

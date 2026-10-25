@@ -4,7 +4,6 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../presentation/providers/acp_auth_store.dart';
 import '../../presentation/providers/lsp_store.dart';
 import '../../presentation/providers/mcp_store.dart';
-import '../../presentation/providers/model_performance_store.dart';
 import '../../presentation/providers/provider_usage_store.dart';
 import '../../presentation/providers/recovery_store.dart';
 import '../../presentation/providers/selection_store.dart';
@@ -574,44 +573,6 @@ final settingsUsageViewProvider = Provider.autoDispose<SettingsUsageView>((
     sync: store.sync,
   );
 }, name: 'settingsUsageViewProvider');
-
-class SettingsStatisticsView {
-  const SettingsStatisticsView({
-    required this.snapshot,
-    required this.revision,
-    required this.loaded,
-    required this.sync,
-  });
-
-  final ModelPerformanceSnapshotView? snapshot;
-  final int revision;
-  final bool loaded;
-  final DomainSyncStatus sync;
-
-  @override
-  bool operator ==(Object other) =>
-      identical(this, other) ||
-      other is SettingsStatisticsView &&
-          revision == other.revision &&
-          loaded == other.loaded &&
-          sync == other.sync &&
-          identical(snapshot, other.snapshot);
-
-  @override
-  int get hashCode =>
-      Object.hash(revision, loaded, sync, identityHashCode(snapshot));
-}
-
-final settingsStatisticsViewProvider =
-    Provider.autoDispose<SettingsStatisticsView>((ref) {
-      final store = ref.watch(modelPerformanceStoreProvider);
-      return SettingsStatisticsView(
-        snapshot: store.value,
-        revision: store.revision,
-        loaded: store.loaded,
-        sync: store.sync,
-      );
-    }, name: 'settingsStatisticsViewProvider');
 
 class SettingsBotsView {
   const SettingsBotsView({

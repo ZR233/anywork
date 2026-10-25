@@ -297,10 +297,7 @@ fn query_args(call_id: &str) -> Value {
 }
 
 fn is_auxiliary_title_request(body: &Value) -> bool {
-    let instructions = body
-        .get("instructions")
-        .and_then(Value::as_str)
-        .unwrap_or_default();
+    let instructions = leading_instruction(body);
     let tools_absent = body
         .get("tools")
         .and_then(Value::as_array)
@@ -308,6 +305,31 @@ fn is_auxiliary_title_request(body: &Value) -> bool {
     body.get("tool_choice").and_then(Value::as_str) == Some("none")
         && tools_absent
         && instructions.contains(AUXILIARY_TITLE_INSTRUCTION)
+}
+
+fn leading_instruction(body: &Value) -> String {
+    let Some(first) = body
+        .get("input")
+        .and_then(Value::as_array)
+        .and_then(|items| items.first())
+    else {
+        return String::new();
+    };
+    if !matches!(
+        first.get("role").and_then(Value::as_str),
+        Some("developer") | Some("system")
+    ) {
+        return String::new();
+    }
+    match first.get("content") {
+        Some(Value::String(text)) => text.clone(),
+        Some(Value::Array(parts)) => parts
+            .iter()
+            .filter_map(|part| part.get("text").and_then(Value::as_str))
+            .collect::<Vec<_>>()
+            .join("\n"),
+        _ => String::new(),
+    }
 }
 
 fn record(
@@ -369,6 +391,17 @@ pub(super) async fn responses(
         );
         return StatusCode::BAD_REQUEST.into_response();
     };
+    if body.get("instructions").is_some() {
+        record(
+            &state,
+            "POST",
+            "/v1/responses",
+            body,
+            false,
+            Some("wait_events_reserved_instructions"),
+        );
+        return StatusCode::BAD_REQUEST.into_response();
+    }
     if is_auxiliary_title_request(&body) {
         record(
             &state,

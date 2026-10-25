@@ -48,7 +48,11 @@ home 导致工作区绝对路径失效。重开仍需原 fixture 端口；结束
 `delegation-shared`，分别指向
 `/v1/delegation-a/responses`、`/v1/delegation-b/responses`；A 另有
 `delegation-other`、十个合法分页样例和四个不可选边界。第三个官方协议账号没有凭据。
-模型元数据和价格未知，不借全局内置目录补齐。普通选择器不应显示已禁用、不支持文本或
+资料与基准保持未知，不借全局内置目录补齐。A 显式订阅，B 显式不计费；两者共享型号和
+`delegation-other` 带明确标注的合成 USD 参考价，其他分页样例价格未知，不能当作零价。
+`delegation-other` 仅声明 `max_context_window=1000000`，另有 700000 的压缩阈值，生产
+候选列表与 `minContextWindow=900000` 筛选都必须消费 1000000 的 canonical 容量。
+普通选择器不应显示已禁用、不支持文本或
 未知上下文；`delegation-no-tools` 仍可能是普通文本候选，但必须被子代理候选过滤。
 
 这些预置账号无 bearer token、无环境凭据，compatible loopback 允许无凭据连接。
@@ -384,8 +388,9 @@ CAS 冲突/快速开关必须由 UI canonical 观察或允许的真实 settings 
 - `modelEnabled(accountId, modelId)` / `modelDetails(accountId, modelId)` 的身份由
   KeyValues 内的 `jsonEncode([accountId,modelId])` 唯一构造。详情只显式打开/关闭/
   reload，不让快照为了采样自动查全目录。
-- `accountBillingKind` / `billingKindOption(null|unknown|metered|subscription)` 区分清除
-  override 与显式 unknown；不能拿关闭价格统计当 subscription。
+- `accountBillingKind` / `billingKindOption(null|unknown|metered|subscription|noCharge)` 区分清除
+  override、显式 unknown 与不计费；已有账号编辑器 `account-no-charge` 开启经窄命令设置
+  `noCharge`、关闭清除覆盖，普通连接保存不能覆盖类别。不得把历史关闭估算当不计费。
 - 现有 `agentSwitcher` / `agentRow` 与 `agentModel(threadId)` 查看真实冻结路由。
 
 `snapshot.delegation` 只读域：defaults、settingsRevision/catalogRevision、
@@ -427,3 +432,21 @@ Authorization、完整系统提示词或操作者正文。最终 fixture 原请�
 - <https://serde.rs/enum-representations.html>
 
 本模块不引入新依赖、router 框架、评价 store、model 目录或过滤器。
+
+## 不计费与上下文回归的定向操作
+
+沿上面的 `delegation-routing` 入口，依次创建 fixed/economy/balanced/fast 四个 root 并发送
+既有 `[[delegation:routing:<偏好>]]` 提示。自动 root 的合成供应商会消费真实
+`billing-no-charge`、`billing-subscription`、`max-only-context` 查询回执：不计费账号虽被
+默认稳定首五条遮蔽，仍可由单独类别查询找到；max-only 型号必须通过 900000 的最低窗口筛选。
+列表/详情都必须保留同一非零参考价；这些断言只观察产品查询，不在 fixture 中重做资格算法、
+经济排序或套餐换算。供应商为确定性脚本，不能证明真实模型会遵循选模偏好；偏好内容仍须审查。
+
+账号开关的真实 GUI 旅程复用 `cargo xtask manual-gui --scenario gui`，在隔离环境应用启动后
+运行 `cargo dart test_driver/account_settings_journey.dart <VM_URL> <当前会话 artifacts>/account`。
+旅程增加 `no-charge-canonical`、`account-save-preserved-overrides`、
+`no-charge-off-restores-auto` 快照：开启得到 canonical `noCharge`；保存开启之前已建立的
+连接草稿不回滚类别；再次编辑关闭清除覆盖，取消连接草稿也不撤销已提交的窄意图。
+`account-journey-summary.json` 记录检查事实，人工仍核对中英文文案、截图、价表、账单与进程回收。
+新账号通过 typed `initialBillingKind` 随创建提交；普通编辑不填写该字段，已有账号携带该字段
+会被拒绝而非覆盖类别。创建原子性与失败场景应在隔离账号中核对，不录入真实凭据。

@@ -24,6 +24,7 @@ mod first_run;
 mod instruction;
 mod protocol;
 pub mod resource_store;
+pub mod statistics;
 mod studio;
 pub mod thread_assembler;
 mod updater;
@@ -39,8 +40,8 @@ pub use pl_tool::skill::{SkillCatalog, SkillMetadata, SkillResourceBase, SkillSo
 pub use config::{
     AccountId, ConfigPaths, ConfigRuntimeError, ConfigRuntimeSnapshot, ConfigStore,
     DeepSeekWebSearchConfig, ModelCatalogRuntimeSnapshot, ReasoningEffort,
-    STUDIO_CONFIG_SCHEMA_VERSION, StudioConfig, StudioMcpConfig, StudioRole, StudioUiConfig,
-    UserAgentProfile, WebSearchContextSize, WebSearchLocation, WebSearchMode,
+    STUDIO_CONFIG_SCHEMA_VERSION, StudioConfig, StudioMcpConfig, StudioUiConfig, UserAgentProfile,
+    WebSearchContextSize, WebSearchLocation, WebSearchMode,
 };
 pub use config_editor::{AccountEdit, AccountModelEdit, account_template_kind};
 pub use error_mapping::studio_error_from_anyhow;
@@ -54,15 +55,13 @@ pub use protocol::{
     StudioAgentDirectoryState, StudioLspHealth, StudioLspServer, StudioLspServerState,
     StudioLspStateSnapshot, StudioMcpHealth, StudioMcpServer, StudioMcpServerState,
     StudioMcpStateData, StudioMcpStateSnapshot, StudioModelCatalogStateSnapshot,
-    StudioModelPerformanceEffortSummary, StudioModelPerformanceSample,
-    StudioModelPerformanceSnapshot, StudioModelPerformanceSummary, StudioPendingPersistence,
-    StudioProductBaseline, StudioProductBaselineState, StudioProductEventEnvelope,
-    StudioProductEventKind, StudioProductFrame, StudioProductTopic, StudioProductTopicScopeError,
-    StudioProjectDirectoryData, StudioProjectDirectoryState, StudioPurposeCostSnapshot,
-    StudioRecoveryStateSnapshot, StudioSessionCostSnapshot, StudioSessionCostsState,
-    StudioSettingsConfigStateSnapshot, StudioShutdownIssue, StudioShutdownOutcome,
-    StudioShutdownProgress, StudioShutdownReport, StudioSkillsStateSnapshot, StudioStartupStage,
-    StudioStateSnapshot, StudioThreadDirectoryData, StudioThreadDirectoryDelta,
+    StudioPendingPersistence, StudioProductBaseline, StudioProductBaselineState,
+    StudioProductEventEnvelope, StudioProductEventKind, StudioProductFrame, StudioProductTopic,
+    StudioProductTopicScopeError, StudioProjectDirectoryData, StudioProjectDirectoryState,
+    StudioPurposeCostSnapshot, StudioRecoveryStateSnapshot, StudioSessionCostSnapshot,
+    StudioSessionCostsState, StudioSettingsConfigStateSnapshot, StudioShutdownIssue,
+    StudioShutdownOutcome, StudioShutdownProgress, StudioShutdownReport, StudioSkillsStateSnapshot,
+    StudioStartupStage, StudioStateSnapshot, StudioThreadDirectoryData, StudioThreadDirectoryDelta,
     StudioThreadDirectoryPage, StudioThreadDirectoryPageData, StudioThreadDirectoryState,
 };
 

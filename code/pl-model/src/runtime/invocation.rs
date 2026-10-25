@@ -840,6 +840,7 @@ impl InvocationRunner {
             prompt_cache_key,
         )?;
         body.apply_native_options(&self.native_body);
+        body.reject_reserved_instruction_channel()?;
         if self.purpose == InvocationPurpose::RemoteCompaction {
             body.prepare_compaction();
         }

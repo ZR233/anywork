@@ -12,6 +12,57 @@ import '../../shared/model_route_selector.dart';
 import '../../shared/studio_driver_keys.dart';
 import 'settings_common.dart';
 import 'settings_model_details.dart';
+import 'settings_views.dart';
+
+/// Projects the canonical category, never the connection editor's stale snapshot.
+class AccountNoChargeControl extends ConsumerWidget {
+  const AccountNoChargeControl({
+    super.key,
+    required this.accountId,
+    this.enabled = true,
+  });
+  final String accountId;
+  final bool enabled;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final account = ref
+        .watch(settingsAccountsViewProvider)
+        .accounts
+        .where((account) => account.id == accountId)
+        .firstOrNull;
+    if (account == null) return const SizedBox.shrink();
+    final command = ref
+        .watch(settingsStoreProvider)
+        .commands['account-billing-kind:$accountId'];
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        SwitchListTile(
+          key: StudioDriverKeys.accountNoCharge,
+          title: Text(context.l10n.settingsNoCharge),
+          subtitle: Text(context.l10n.settingsNoChargeHelp),
+          value: account.billingKind == BillingKind.noCharge,
+          onChanged: !enabled || command?.isPending == true
+              ? null
+              : (noCharge) => unawaited(
+                  ref
+                      .read(anyworkClientProvider)
+                      .settingsCommands
+                      .setAccountBillingKind(
+                        accountId,
+                        noCharge ? BillingKind.noCharge : null,
+                      )
+                      .then<void>((_) {}, onError: (Object _, StackTrace _) {}),
+                ),
+        ),
+        if (command?.isPending == true) Text(context.l10n.settingsModelSaving),
+        if (command?.error case final failure?)
+          SettingsInlineError(message: failure.message),
+      ],
+    );
+  }
+}
 
 class AccountModelSelectionControl extends ConsumerWidget {
   const AccountModelSelectionControl({

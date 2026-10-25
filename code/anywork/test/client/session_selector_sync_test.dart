@@ -1,3 +1,5 @@
+import 'support/test_statistics_feed.dart';
+
 import 'package:anywork/src/presentation/providers/client_provider.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -48,7 +50,11 @@ void main() {
 
   setUp(() async {
     final api = DemoStudioTransport(lspActivityLoop: false);
-    graph = AppGraph(transport: api, clientId: 'selector-test');
+    graph = AppGraph(
+      statisticsFeed: const TestStatisticsFeedPort(),
+      transport: api,
+      clientId: 'selector-test',
+    );
     container = ProviderContainer(
       overrides: [appGraphProvider.overrideWithValue(graph)],
     );
@@ -411,7 +417,11 @@ void main() {
       ThreadStatusView status = ThreadStatusView.idle,
     }) async {
       transport = _WorkflowScenarioTransport(threadStatus: status);
-      graph = AppGraph(transport: transport, clientId: 'workflow-route-test');
+      graph = AppGraph(
+        statisticsFeed: const TestStatisticsFeedPort(),
+        transport: transport,
+        clientId: 'workflow-route-test',
+      );
       workflowContainer = ProviderContainer(
         overrides: [appGraphProvider.overrideWithValue(graph)],
       );
@@ -791,7 +801,6 @@ class _WorkflowScenarioTransport extends DemoStudioTransport {
       skillsByProject: snapshot.skillsByProject,
       threadModeCatalog: snapshot.threadModeCatalog,
       accountUsageState: snapshot.accountUsageState,
-      modelPerformance: snapshot.modelPerformance,
       updaterState: snapshot.updaterState,
       persistenceState: snapshot.persistenceState,
       persistenceQueueState: snapshot.persistenceQueueState,

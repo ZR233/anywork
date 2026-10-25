@@ -3076,11 +3076,11 @@ class AppLocalizationsEn extends AppLocalizations {
   String get roleEmpty => 'Agent';
 
   @override
-  String get settingsPricingEnabled => 'Estimate token cost';
+  String get settingsNoCharge => 'No charge';
 
   @override
-  String get settingsPricingHelp =>
-      'Controls in-app cost estimates; token and cache statistics remain available. Plans default to off.';
+  String get settingsNoChargeHelp =>
+      'On: declare future model calls on this account as not charged. Off: clear the billing override and restore automatic classification. Token, cache and performance statistics and model reference prices are preserved. Other categories estimate costs when prices and usage are available.';
 
   @override
   String get settingsModelAdvanced => 'Optional model settings';
@@ -5121,7 +5121,7 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get settingsBillingHint =>
-      'Independent of cost estimates. A category does not confirm an active subscription or remaining quota.';
+      'No charge applies only to future calls; other categories estimate costs from available prices and usage. Subscription does not confirm an active plan, remaining quota or zero cost. Model reference prices are preserved.';
 
   @override
   String get settingsModelDetails => 'Model details';

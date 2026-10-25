@@ -34,7 +34,12 @@ review 默认 pending，由观察者阅读过程、结果和产物后另行记�
 `ANYWORK_WORKFLOW_ARTIFACT_DIR` 为新的证据目录，
 `ANYWORK_OBSERVATION_SECONDS` 为观察时长。使用隔离 Studio 数据和工作目录，
 读取用户配置并通过系统凭据库鉴权，过程结束回收 runtime。
-设置 `ANYWORK_OBSERVATION_PROVIDER` 与 `ANYWORK_OBSERVATION_MODEL` 可在隔离副本中选择所有角色的模型；未选中的供应商不参与此次配置校验，原配置保持不变。
+`ANYWORK_OBSERVATION_ACCOUNT` 与 `ANYWORK_OBSERVATION_MODEL` 必须同时不设置，或同时设置为有效非空 Unicode；仅设置一个或值无效时在初始化前报错，不静默回退默认路由。
+同时不设置时沿用已配置路由；显式选择时在隔离副本中选择所有角色的模型，未选中的账号不参与此次配置校验，原配置保持不变。
+仅接受不需要凭据迁移的 schema 23 至当前版本配置，更旧、未知或未来版本在初始化前拒绝。
+新的隔离 Studio home 通过正常启动迁移配置副本，不复用已有 home，也不能仅手改 schema 版本号。
+观察入口在提交任何任务前核对没有发生配置重置，且 canonical 根路由仍是指定账号与模型；
+迁移、配置校验或路由核对失败保留证据并返回错误，不将默认配置的运行算作原账号验证。
 可用真实任务观察 patch、LSP、跨轮历史、压缩与协作，不再维护固定通过标记。
 
 设置 `ANYWORK_OBSERVATION_WORKSPACE_MODE=worktree` 可创建临时 Git 仓库并通过正常 Studio

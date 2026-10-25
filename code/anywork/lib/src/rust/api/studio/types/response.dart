@@ -18,7 +18,7 @@ import 'updater.dart';
 part 'response.freezed.dart';
 
 // These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `AccountUsagesResponse`, `SkillsResponse`
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`
 
 class AccountUsageDto {
   final String accountId;
@@ -541,240 +541,6 @@ sealed class BridgeModelCatalogStateSnapshot
   const factory BridgeModelCatalogStateSnapshot.stopped(
     BridgeStoppedResource field0,
   ) = BridgeModelCatalogStateSnapshot_Stopped;
-}
-
-enum BridgeModelMatchState { matched, mismatched, unreported, legacyUnknown }
-
-/// 顶层汇总组内的推理强度细分；指标口径与顶层一致。
-class BridgeModelPerformanceEffortSummary {
-  final String? effort;
-  final BigInt sampleCount;
-  final BigInt completionTokens;
-  final BigInt totalTtftMillis;
-  final BigInt ttftSampleCount;
-  final BigInt totalResponseMillis;
-  final double tokensPerSecond;
-  final double? averageTtftMillis;
-  final double averageResponseMillis;
-
-  const BridgeModelPerformanceEffortSummary({
-    this.effort,
-    required this.sampleCount,
-    required this.completionTokens,
-    required this.totalTtftMillis,
-    required this.ttftSampleCount,
-    required this.totalResponseMillis,
-    required this.tokensPerSecond,
-    this.averageTtftMillis,
-    required this.averageResponseMillis,
-  });
-
-  @override
-  int get hashCode =>
-      effort.hashCode ^
-      sampleCount.hashCode ^
-      completionTokens.hashCode ^
-      totalTtftMillis.hashCode ^
-      ttftSampleCount.hashCode ^
-      totalResponseMillis.hashCode ^
-      tokensPerSecond.hashCode ^
-      averageTtftMillis.hashCode ^
-      averageResponseMillis.hashCode;
-
-  @override
-  bool operator ==(Object other) =>
-      identical(this, other) ||
-      other is BridgeModelPerformanceEffortSummary &&
-          runtimeType == other.runtimeType &&
-          effort == other.effort &&
-          sampleCount == other.sampleCount &&
-          completionTokens == other.completionTokens &&
-          totalTtftMillis == other.totalTtftMillis &&
-          ttftSampleCount == other.ttftSampleCount &&
-          totalResponseMillis == other.totalResponseMillis &&
-          tokensPerSecond == other.tokensPerSecond &&
-          averageTtftMillis == other.averageTtftMillis &&
-          averageResponseMillis == other.averageResponseMillis;
-}
-
-class BridgeModelPerformanceSample {
-  final PlatformInt64 completedAt;
-  final String accountId;
-  final String accountDisplayName;
-
-  /// 冻结的目录配置模型；旧记录无法证明时保持 `None`。
-  final String? modelId;
-  final String? sentModel;
-  final String? reportedModel;
-  final BridgeModelMatchState modelMatchState;
-  final String? effort;
-  final BigInt completionTokens;
-  final BigInt? ttftMillis;
-  final BigInt? decodeMillis;
-  final BigInt? totalResponseMillis;
-  final double? tokensPerSecond;
-
-  const BridgeModelPerformanceSample({
-    required this.completedAt,
-    required this.accountId,
-    required this.accountDisplayName,
-    this.modelId,
-    this.sentModel,
-    this.reportedModel,
-    required this.modelMatchState,
-    this.effort,
-    required this.completionTokens,
-    this.ttftMillis,
-    this.decodeMillis,
-    this.totalResponseMillis,
-    this.tokensPerSecond,
-  });
-
-  @override
-  int get hashCode =>
-      completedAt.hashCode ^
-      accountId.hashCode ^
-      accountDisplayName.hashCode ^
-      modelId.hashCode ^
-      sentModel.hashCode ^
-      reportedModel.hashCode ^
-      modelMatchState.hashCode ^
-      effort.hashCode ^
-      completionTokens.hashCode ^
-      ttftMillis.hashCode ^
-      decodeMillis.hashCode ^
-      totalResponseMillis.hashCode ^
-      tokensPerSecond.hashCode;
-
-  @override
-  bool operator ==(Object other) =>
-      identical(this, other) ||
-      other is BridgeModelPerformanceSample &&
-          runtimeType == other.runtimeType &&
-          completedAt == other.completedAt &&
-          accountId == other.accountId &&
-          accountDisplayName == other.accountDisplayName &&
-          modelId == other.modelId &&
-          sentModel == other.sentModel &&
-          reportedModel == other.reportedModel &&
-          modelMatchState == other.modelMatchState &&
-          effort == other.effort &&
-          completionTokens == other.completionTokens &&
-          ttftMillis == other.ttftMillis &&
-          decodeMillis == other.decodeMillis &&
-          totalResponseMillis == other.totalResponseMillis &&
-          tokensPerSecond == other.tokensPerSecond;
-}
-
-/// 全局模型性能快照：按模型汇总与最近历史窗口，不含按 root 会话费用。
-class BridgeModelPerformanceSnapshot {
-  final BigInt revision;
-  final PlatformInt64 updatedAt;
-  final bool statisticsPending;
-  final bool statisticsGap;
-  final bool readFailed;
-  final List<BridgeModelPerformanceSummary> summaries;
-  final List<BridgeModelPerformanceSample> history;
-
-  const BridgeModelPerformanceSnapshot({
-    required this.revision,
-    required this.updatedAt,
-    required this.statisticsPending,
-    required this.statisticsGap,
-    required this.readFailed,
-    required this.summaries,
-    required this.history,
-  });
-
-  @override
-  int get hashCode =>
-      revision.hashCode ^
-      updatedAt.hashCode ^
-      statisticsPending.hashCode ^
-      statisticsGap.hashCode ^
-      readFailed.hashCode ^
-      summaries.hashCode ^
-      history.hashCode;
-
-  @override
-  bool operator ==(Object other) =>
-      identical(this, other) ||
-      other is BridgeModelPerformanceSnapshot &&
-          runtimeType == other.runtimeType &&
-          revision == other.revision &&
-          updatedAt == other.updatedAt &&
-          statisticsPending == other.statisticsPending &&
-          statisticsGap == other.statisticsGap &&
-          readFailed == other.readFailed &&
-          summaries == other.summaries &&
-          history == other.history;
-}
-
-class BridgeModelPerformanceSummary {
-  final String accountId;
-  final String accountDisplayName;
-  final String modelId;
-  final BigInt sampleCount;
-  final BigInt completionTokens;
-  final BigInt totalTtftMillis;
-  final BigInt ttftSampleCount;
-  final BigInt totalResponseMillis;
-  final double tokensPerSecond;
-
-  /// 没有已知首字样本时保持未知。
-  final double? averageTtftMillis;
-  final double averageResponseMillis;
-
-  /// 该 (accountId, modelId) 组内的推理强度二级细分。
-  final List<BridgeModelPerformanceEffortSummary> effortBreakdowns;
-
-  const BridgeModelPerformanceSummary({
-    required this.accountId,
-    required this.accountDisplayName,
-    required this.modelId,
-    required this.sampleCount,
-    required this.completionTokens,
-    required this.totalTtftMillis,
-    required this.ttftSampleCount,
-    required this.totalResponseMillis,
-    required this.tokensPerSecond,
-    this.averageTtftMillis,
-    required this.averageResponseMillis,
-    required this.effortBreakdowns,
-  });
-
-  @override
-  int get hashCode =>
-      accountId.hashCode ^
-      accountDisplayName.hashCode ^
-      modelId.hashCode ^
-      sampleCount.hashCode ^
-      completionTokens.hashCode ^
-      totalTtftMillis.hashCode ^
-      ttftSampleCount.hashCode ^
-      totalResponseMillis.hashCode ^
-      tokensPerSecond.hashCode ^
-      averageTtftMillis.hashCode ^
-      averageResponseMillis.hashCode ^
-      effortBreakdowns.hashCode;
-
-  @override
-  bool operator ==(Object other) =>
-      identical(this, other) ||
-      other is BridgeModelPerformanceSummary &&
-          runtimeType == other.runtimeType &&
-          accountId == other.accountId &&
-          accountDisplayName == other.accountDisplayName &&
-          modelId == other.modelId &&
-          sampleCount == other.sampleCount &&
-          completionTokens == other.completionTokens &&
-          totalTtftMillis == other.totalTtftMillis &&
-          ttftSampleCount == other.ttftSampleCount &&
-          totalResponseMillis == other.totalResponseMillis &&
-          tokensPerSecond == other.tokensPerSecond &&
-          averageTtftMillis == other.averageTtftMillis &&
-          averageResponseMillis == other.averageResponseMillis &&
-          effortBreakdowns == other.effortBreakdowns;
 }
 
 /// 进程级持久化队列压力与逐 Thread 水位。
@@ -1342,7 +1108,6 @@ class BridgeStudioStateSnapshot {
   final List<BridgeSkillsStateSnapshot> skillsByProject;
   final BridgeThreadModeCatalogSnapshot threadModeCatalog;
   final BridgeAccountUsageStateSnapshot accountUsage;
-  final BridgeModelPerformanceSnapshot modelPerformance;
   final List<BridgeSessionCostsState> sessionCosts;
   final BridgeUpdaterStateSnapshot updater;
   final BridgePersistenceStateSnapshot persistence;
@@ -1363,7 +1128,6 @@ class BridgeStudioStateSnapshot {
     required this.skillsByProject,
     required this.threadModeCatalog,
     required this.accountUsage,
-    required this.modelPerformance,
     required this.sessionCosts,
     required this.updater,
     required this.persistence,
@@ -1386,7 +1150,6 @@ class BridgeStudioStateSnapshot {
       skillsByProject.hashCode ^
       threadModeCatalog.hashCode ^
       accountUsage.hashCode ^
-      modelPerformance.hashCode ^
       sessionCosts.hashCode ^
       updater.hashCode ^
       persistence.hashCode ^
@@ -1411,7 +1174,6 @@ class BridgeStudioStateSnapshot {
           skillsByProject == other.skillsByProject &&
           threadModeCatalog == other.threadModeCatalog &&
           accountUsage == other.accountUsage &&
-          modelPerformance == other.modelPerformance &&
           sessionCosts == other.sessionCosts &&
           updater == other.updater &&
           persistence == other.persistence &&

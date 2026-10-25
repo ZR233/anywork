@@ -173,7 +173,7 @@ pub(crate) fn unavailable_placeholder(
     };
     let effort = model.default_effort().map(ReasoningEffort::new);
     Ok(pl_model::config::ResolvedModelRoute {
-        pricing_mode: account.pricing_mode,
+        pricing_mode: account.billing_kind()?.into(),
         role,
         account_id: selector.account_id.clone(),
         endpoint: account.to_endpoint()?,
@@ -226,7 +226,7 @@ pub(crate) fn annotate_availability(
     } else {
         config
             .models
-            .resolve_route(crate::StudioRole::Planner.id(), &selector)
+            .resolve_route(crate::config::root_agent_route_id(), &selector)
             .and_then(|route| {
                 crate::studio::delegation::validate_credential(&route)?;
                 Ok(route)

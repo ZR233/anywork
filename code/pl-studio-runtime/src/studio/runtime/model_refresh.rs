@@ -83,7 +83,7 @@ impl StudioRuntime {
             let role = if is_child {
                 pl_protocol::AgentRoleId::new(record.role)?
             } else {
-                crate::config::StudioRole::Planner.id()
+                crate::config::root_agent_route_id()
             };
             let route = config.models.resolve_route(role, &selector)?;
             crate::studio::delegation::validate_credential(&route)?;

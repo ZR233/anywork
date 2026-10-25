@@ -1,3 +1,5 @@
+import 'support/test_statistics_feed.dart';
+
 import 'dart:async';
 
 import 'package:anywork/src/app/app_graph.dart';
@@ -522,6 +524,7 @@ Future<_ColdFixture> _fixture() async {
   final other = saved[2];
   transport.child = child;
   final graph = AppGraph(
+    statisticsFeed: const TestStatisticsFeedPort(),
     transport: transport,
     clientId: 'cold-agent-selection',
   );

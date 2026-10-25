@@ -29,7 +29,7 @@ impl StudioThreadFactory {
         if thread.visibility != crate::studio::ThreadVisibility::Active {
             return Err(ThreadAssemblyError::Closed);
         }
-        if thread.role == crate::config::StudioRole::Planner.key() {
+        if thread.role == crate::config::ROOT_AGENT_ROUTE_KEY {
             return Err(ThreadAssemblyError::Identity(
                 "child role is retired: planner".into(),
             ));

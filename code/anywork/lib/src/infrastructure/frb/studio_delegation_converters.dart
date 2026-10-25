@@ -31,12 +31,14 @@ frb.BridgeDelegationPreference _delegationPreferenceToFrb(
 BillingKind _billingKindFromFrb(frb.BridgeBillingKind value) => switch (value) {
   frb.BridgeBillingKind.metered => BillingKind.metered,
   frb.BridgeBillingKind.subscription => BillingKind.subscription,
+  frb.BridgeBillingKind.noCharge => BillingKind.noCharge,
   frb.BridgeBillingKind.unknown => BillingKind.unknown,
 };
 
 frb.BridgeBillingKind _billingKindToFrb(BillingKind value) => switch (value) {
   BillingKind.metered => frb.BridgeBillingKind.metered,
   BillingKind.subscription => frb.BridgeBillingKind.subscription,
+  BillingKind.noCharge => frb.BridgeBillingKind.noCharge,
   BillingKind.unknown => frb.BridgeBillingKind.unknown,
 };
 

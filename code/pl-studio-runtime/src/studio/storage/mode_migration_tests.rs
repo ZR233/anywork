@@ -417,7 +417,7 @@ async fn legacy_root_instruction_source_becomes_the_mode_source_and_survives_a_r
         })
         .await?;
     let payload = &migrated.state.extensions["studio.instructions"].payload;
-    assert_eq!(payload.version(), 2);
+    assert_eq!(payload.version(), 3);
     let snapshot = crate::instruction::decode_snapshot(payload)?;
     assert_eq!(snapshot.agent.id, "root:legacy");
     assert_ne!(snapshot.agent.id, "root:main");
@@ -457,14 +457,27 @@ async fn legacy_root_instruction_source_becomes_the_mode_source_and_survives_a_r
             ),
         ]
     );
-    assert!(snapshot.context_records("migration").iter().any(|record| {
-        record.source == ContextSource::Instruction
-            && record.content
-                == vec![ContextContent::Text {
-                    text: "# 历史自动分发偏好 (/legacy/delegation.md)\n  保存的经济偏好正文\n不从当前配置重建  "
-                        .into(),
-                }]
-    }));
+    let instruction_records = snapshot
+        .context_records("migration")
+        .into_iter()
+        .filter(|record| record.source == ContextSource::Instruction)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        instruction_records.len(),
+        1,
+        "受信正文应折叠为单条 Instruction record"
+    );
+    let trusted = snapshot.trusted_text();
+    assert_eq!(
+        instruction_records[0].content,
+        vec![ContextContent::Text {
+            text: trusted.clone().into(),
+        }]
+    );
+    assert!(
+        trusted.contains("保存的经济偏好正文"),
+        "历史自动分发偏好正文不得在折叠受信正文时丢失"
+    );
     assert_eq!(
         snapshot.user,
         vec![
@@ -554,6 +567,991 @@ async fn legacy_root_instruction_source_becomes_the_mode_source_and_survives_a_r
     );
     assert_eq!(durable.state.context, original.context);
     assert_eq!(durable_snapshot.developer, snapshot.developer);
+    Ok(())
+}
+
+/// Version 2 is validated with its old root-ID shape, then migrated using only frozen blocks.
+/// The real SQLite recovery writer preserves the legacy root's missing Agent source and stable
+/// user fact IDs across a process-style reopen.
+#[tokio::test]
+async fn v2_generic_root_migration_preserves_shape_content_and_user_source_ids() -> Result<()> {
+    let directory = tempfile::tempdir()?;
+    let path = directory.path().join("history.sqlite");
+    let store = HistoryStore::open(&path, "migration").await?;
+    let previous = crate::instruction::InstructionSnapshot {
+        agent: agent_identity(
+            "root:main",
+            AgentDefinitionScope::Root,
+            "root-revision-before-shape-freeze",
+            AgentDefinitionOrigin::Builtin,
+        ),
+        agent_shape: crate::instruction::AgentInstructionShape::Absent,
+        base: expected_block(
+            crate::instruction::InstructionSourceKind::ConfigBaseOverride,
+            "legacy explicit base",
+            Some("/frozen/base.md"),
+            "  preserved v2 base  ",
+        ),
+        developer: vec![
+            expected_block(
+                crate::instruction::InstructionSourceKind::ModeDefinition,
+                "Frozen Task Mode",
+                None,
+                "Do the saved task, not the current catalog task.",
+            ),
+            expected_block(
+                crate::instruction::InstructionSourceKind::DelegationPreference,
+                "saved dispatch policy",
+                Some("/frozen/dispatch.md"),
+                "preserve the saved preference",
+            ),
+            expected_block(
+                crate::instruction::InstructionSourceKind::Platform,
+                "platform: frozen-v2",
+                None,
+                "Preserve this platform instruction.",
+            ),
+        ],
+        user: vec![expected_block(
+            crate::instruction::InstructionSourceKind::ProjectDoc,
+            "AGENTS.md",
+            Some("/frozen/AGENTS.md"),
+            "Preserve the original project document.",
+        )],
+    };
+    let previous_payload = previous_snapshot_payload(&previous)?;
+    let original = instruction_state(previous_payload.clone());
+    persist(&store, original.clone(), true).await?;
+    let checkpoint = store.checkpoint().await?.context("v2 root checkpoint")?;
+    let prior_user_records = previous
+        .context_records("migration")
+        .into_iter()
+        .filter(|record| matches!(record.source, ContextSource::RuntimeFact { .. }))
+        .collect::<Vec<_>>();
+    assert_eq!(prior_user_records.len(), 1);
+
+    let migrated = store
+        .migrate_recovery_checkpoint(&checkpoint, |state| {
+            crate::instruction::migrate_saved_representation(
+                state,
+                &VerifiedAgentIdentity::GenericRoot,
+            )
+        })
+        .await?;
+    let record = &migrated.state.extensions["studio.instructions"];
+    assert_eq!(
+        record.revision,
+        checkpoint.state.extensions["studio.instructions"].revision
+    );
+    assert_eq!(record.payload.version(), 3);
+    let current = crate::instruction::decode_snapshot(&record.payload)?;
+    assert_eq!(
+        current.agent,
+        agent_identity(
+            "root:main",
+            AgentDefinitionScope::Root,
+            "root-revision-before-shape-freeze",
+            AgentDefinitionOrigin::Builtin,
+        )
+    );
+    assert_eq!(
+        current.agent_shape,
+        crate::instruction::AgentInstructionShape::Absent
+    );
+    assert!(current.developer.iter().all(|block| {
+        block.source.kind != crate::instruction::InstructionSourceKind::AgentDefinition
+    }));
+    assert_eq!(current.base, previous.base);
+    assert_eq!(current.developer, previous.developer);
+    assert_eq!(current.user, previous.user);
+    assert_eq!(current.trusted_text(), previous.trusted_text());
+    let current_user_records = current
+        .context_records("migration")
+        .into_iter()
+        .filter(|record| matches!(record.source, ContextSource::RuntimeFact { .. }))
+        .collect::<Vec<_>>();
+    assert_eq!(current_user_records, prior_user_records);
+    assert_eq!(migrated.state.context, original.context);
+
+    let mut frozen_system_profile = migration_child_profile();
+    frozen_system_profile.system = true;
+    let frozen_child = VerifiedAgentIdentity::child(&frozen_system_profile)?;
+    let previous_child = crate::instruction::InstructionSnapshot {
+        agent: agent_identity(
+            &frozen_system_profile.profile_id,
+            AgentDefinitionScope::Child,
+            &frozen_system_profile.revision,
+            AgentDefinitionOrigin::Profile,
+        ),
+        agent_shape: crate::instruction::AgentInstructionShape::Absent,
+        base: base_block(),
+        developer: vec![expected_block(
+            crate::instruction::InstructionSourceKind::AgentDefinition,
+            &frozen_system_profile.display_name,
+            None,
+            &frozen_system_profile.system_instructions,
+        )],
+        user: Vec::new(),
+    };
+    let mut child_state = instruction_state(previous_snapshot_payload(&previous_child)?);
+    crate::instruction::migrate_saved_representation(&mut child_state, &frozen_child)?;
+    let child_snapshot = crate::instruction::decode_snapshot(
+        &child_state.extensions["studio.instructions"].payload,
+    )?;
+    assert_eq!(child_snapshot.agent.id, frozen_system_profile.profile_id);
+    assert_eq!(child_snapshot.agent.scope, AgentDefinitionScope::Child);
+    assert_eq!(child_snapshot.agent.origin, AgentDefinitionOrigin::Builtin);
+    assert_eq!(
+        child_snapshot.agent.revision,
+        frozen_system_profile.revision
+    );
+    assert_eq!(child_snapshot.developer, previous_child.developer);
+    assert_eq!(
+        child_snapshot.agent_shape,
+        crate::instruction::AgentInstructionShape::Present {
+            content_hash: pl_core::context::content_hash(
+                frozen_system_profile.system_instructions.as_bytes()
+            ),
+        }
+    );
+
+    drop(store);
+    let reopened = HistoryStore::open(&path, "migration").await?;
+    let durable = reopened
+        .checkpoint()
+        .await?
+        .context("reopened v3 root checkpoint")?;
+    assert_eq!(durable.state.extensions["studio.instructions"], *record);
+    let durable_snapshot = crate::instruction::decode_snapshot(
+        &durable.state.extensions["studio.instructions"].payload,
+    )?;
+    assert_eq!(
+        durable_snapshot.agent_shape,
+        crate::instruction::AgentInstructionShape::Absent
+    );
+    assert_eq!(durable_snapshot.trusted_text(), previous.trusted_text());
+    assert_eq!(durable.state.context, original.context);
+    Ok(())
+}
+
+/// Historically legal v2 identities survive real SQLite migration with their frozen origin and
+/// revision intact; the new usage binding records independently verified host facts.
+#[tokio::test]
+async fn v2_root_identity_contract_round_trips_without_reselecting_current_entry() -> Result<()> {
+    let cases = [
+        (
+            "generic-main",
+            "root:main",
+            "root-revision-9",
+            AgentDefinitionOrigin::Builtin,
+            false,
+            false,
+        ),
+        (
+            "generic-feishu",
+            "root:feishu",
+            "old-feishu-revision",
+            AgentDefinitionOrigin::Builtin,
+            true,
+            false,
+        ),
+        (
+            "generic-migrated-feishu",
+            "root:feishu",
+            "legacy",
+            AgentDefinitionOrigin::Migrated,
+            false,
+            false,
+        ),
+        (
+            "generic-migrated-legacy",
+            "root:legacy",
+            "legacy",
+            AgentDefinitionOrigin::Migrated,
+            false,
+            false,
+        ),
+        (
+            "bot-feishu",
+            "root:feishu",
+            "old-bot-revision",
+            AgentDefinitionOrigin::Builtin,
+            true,
+            true,
+        ),
+        (
+            "bot-migrated-feishu",
+            "root:feishu",
+            "legacy",
+            AgentDefinitionOrigin::Migrated,
+            false,
+            true,
+        ),
+        (
+            "bot-migrated-legacy",
+            "root:legacy",
+            "legacy",
+            AgentDefinitionOrigin::Migrated,
+            false,
+            true,
+        ),
+    ];
+    for (case, id, revision, origin, has_agent, is_bot) in cases {
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("history.sqlite");
+        let store = HistoryStore::open(&path, "migration").await?;
+        let mut developer = Vec::new();
+        if has_agent {
+            developer.push(instruction_block(
+                crate::instruction::InstructionSourceKind::AgentDefinition,
+                "Frozen legacy Agent",
+                "Keep this saved role body exactly.",
+            ));
+        }
+        developer.push(instruction_block(
+            crate::instruction::InstructionSourceKind::ModeDefinition,
+            "Saved Mode",
+            "Keep this saved Mode body exactly.",
+        ));
+        let previous = crate::instruction::InstructionSnapshot {
+            agent: agent_identity(id, AgentDefinitionScope::Root, revision, origin),
+            agent_shape: crate::instruction::AgentInstructionShape::Absent,
+            base: base_block(),
+            developer,
+            user: vec![instruction_block(
+                crate::instruction::InstructionSourceKind::ProjectDoc,
+                "AGENTS.md",
+                "Frozen user context.",
+            )],
+        };
+        let original = instruction_state(previous_snapshot_payload(&previous)?);
+        persist(&store, original.clone(), true).await?;
+        let checkpoint = store.checkpoint().await?.context("v2 root checkpoint")?;
+        let verified = if is_bot {
+            VerifiedAgentIdentity::BotRoot
+        } else {
+            VerifiedAgentIdentity::GenericRoot
+        };
+        let migrated = store
+            .migrate_recovery_checkpoint(&checkpoint, |state| {
+                crate::instruction::migrate_saved_representation(state, &verified)
+            })
+            .await?;
+        let payload = &migrated.state.extensions["studio.instructions"].payload;
+        assert_eq!(payload.version(), 3, "{case}");
+        let snapshot = crate::instruction::decode_snapshot(payload)?;
+        let usage_binding = if is_bot {
+            crate::agent::definition::AgentUsageBinding::RootEntry(
+                crate::agent::definition::AgentRootEntry::Bot,
+            )
+        } else {
+            crate::agent::definition::AgentUsageBinding::LegacyUnspecifiedRoot { source_version: 2 }
+        };
+        assert_eq!(
+            snapshot.agent,
+            agent_identity_with_binding(
+                id,
+                AgentDefinitionScope::Root,
+                revision,
+                origin,
+                usage_binding,
+            ),
+            "{case}: migration must preserve the complete frozen identity"
+        );
+        assert_eq!(snapshot.developer, previous.developer, "{case}");
+        assert_eq!(snapshot.base, previous.base, "{case}");
+        assert_eq!(snapshot.user, previous.user, "{case}");
+        assert_eq!(snapshot.trusted_text(), previous.trusted_text(), "{case}");
+        assert_eq!(migrated.state.context, original.context, "{case}");
+
+        drop(store);
+        let reopened = HistoryStore::open(&path, "migration").await?;
+        let durable = reopened
+            .checkpoint()
+            .await?
+            .context("reopened v3 root checkpoint")?;
+        let durable_snapshot = crate::instruction::decode_snapshot(
+            &durable.state.extensions["studio.instructions"].payload,
+        )?;
+        assert_eq!(durable_snapshot.agent, snapshot.agent, "{case}");
+        assert_eq!(durable_snapshot.developer, previous.developer, "{case}");
+        assert_eq!(durable.state.context, original.context, "{case}");
+    }
+    Ok(())
+}
+
+/// The v2 decoder must reject the old malformed shape and identity before replacing durable bytes.
+#[tokio::test]
+async fn v2_bad_shape_or_untrusted_root_identity_preserves_sqlite_checkpoint() -> Result<()> {
+    let malformed_shape = crate::instruction::InstructionSnapshot {
+        agent: agent_identity(
+            "root:main",
+            AgentDefinitionScope::Root,
+            "old-root-revision",
+            AgentDefinitionOrigin::Builtin,
+        ),
+        agent_shape: crate::instruction::AgentInstructionShape::Absent,
+        base: base_block(),
+        developer: vec![
+            instruction_block(
+                crate::instruction::InstructionSourceKind::AgentDefinition,
+                "Injected Agent",
+                "not allowed in this v2 root shape",
+            ),
+            instruction_block(
+                crate::instruction::InstructionSourceKind::ModeDefinition,
+                "Saved Mode",
+                "saved Mode body",
+            ),
+        ],
+        user: Vec::new(),
+    };
+    let untrusted_root = crate::instruction::InstructionSnapshot {
+        agent: agent_identity(
+            "root:other",
+            AgentDefinitionScope::Root,
+            "old-root-revision",
+            AgentDefinitionOrigin::Builtin,
+        ),
+        agent_shape: crate::instruction::AgentInstructionShape::Absent,
+        base: base_block(),
+        developer: vec![instruction_block(
+            crate::instruction::InstructionSourceKind::ModeDefinition,
+            "Saved Mode",
+            "saved Mode body",
+        )],
+        user: Vec::new(),
+    };
+    let bot_owner_conflict = crate::instruction::InstructionSnapshot {
+        agent: agent_identity(
+            "root:main",
+            AgentDefinitionScope::Root,
+            "old-root-revision",
+            AgentDefinitionOrigin::Builtin,
+        ),
+        agent_shape: crate::instruction::AgentInstructionShape::Absent,
+        base: base_block(),
+        developer: vec![instruction_block(
+            crate::instruction::InstructionSourceKind::ModeDefinition,
+            "Saved Mode",
+            "saved Mode body",
+        )],
+        user: Vec::new(),
+    };
+
+    for (case, previous, is_bot) in [
+        ("malformed-root-shape", malformed_shape, false),
+        ("unsupported-root-id", untrusted_root, false),
+        ("bot-owner-root-conflict", bot_owner_conflict, true),
+    ] {
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("history.sqlite");
+        let store = HistoryStore::open(&path, "migration").await?;
+        let original = instruction_state(previous_snapshot_payload(&previous)?);
+        persist(&store, original.clone(), true).await?;
+        let checkpoint = store.checkpoint().await?.context("v2 checkpoint")?;
+        let before = serde_json::to_vec(&checkpoint)?;
+        let verified = if is_bot {
+            VerifiedAgentIdentity::BotRoot
+        } else {
+            VerifiedAgentIdentity::GenericRoot
+        };
+        assert!(
+            store
+                .migrate_recovery_checkpoint(&checkpoint, |state| {
+                    crate::instruction::migrate_saved_representation(state, &verified)
+                })
+                .await
+                .is_err(),
+            "{case} must be rejected"
+        );
+        assert_eq!(
+            serde_json::to_vec(
+                &store
+                    .checkpoint()
+                    .await?
+                    .context("retained v2 checkpoint")?
+            )?,
+            before,
+            "{case} must leave the original checkpoint intact"
+        );
+        drop(store);
+        let reopened = HistoryStore::open(&path, "migration").await?;
+        let durable = reopened
+            .checkpoint()
+            .await?
+            .context("reopened v2 checkpoint")?;
+        assert_eq!(durable.state.context, original.context);
+        assert_eq!(
+            durable.state.extensions["studio.instructions"].payload,
+            original.extensions["studio.instructions"].payload,
+            "{case} must remain v2 after reopen"
+        );
+    }
+    Ok(())
+}
+
+/// A v2 checkpoint written before trusted instructions were folded into one record must be
+/// normalized by the production ContextPreparer, then remain unchanged on the next preparation.
+#[tokio::test]
+async fn restored_v2_multi_record_instructions_are_normalized_once() -> Result<()> {
+    use crate::instruction::{InstructionSnapshot, InstructionSourceKind};
+    use pl_core::{
+        model::ModelFactory,
+        thread::{StepInput, ThreadHandle},
+    };
+    use pl_model::{
+        completion::OpenAiCompactionMode,
+        config::{AccountId, ResolvedModelRoute},
+        model::ModelInfo,
+        protocol::ProtocolEndpoint,
+        runtime::{ModelRuntime, ThreadModel},
+    };
+    use std::sync::Arc;
+
+    let manager = ThreadModeManager::default();
+    let registry = crate::studio::thread::register_builtins(&manager)?;
+    let mode = registry
+        .mode(&pl_protocol::ThreadModeId::simple())
+        .context("built-in simple Mode")?;
+    let mut model_info = ModelInfo::compatible("migration-model");
+    model_info.base_instructions = "frozen migration base".into();
+    let endpoint = ProtocolEndpoint::compatible("migration fixture", "http://127.0.0.1:0");
+    let route = ResolvedModelRoute {
+        pricing_mode: Default::default(),
+        role: crate::config::root_agent_route_id(),
+        account_id: AccountId::new("migration-account")?,
+        endpoint,
+        context: model_info.resolve_context(None),
+        model: model_info,
+        effort: None,
+    };
+    let model = ThreadModel::new(ModelRuntime::from_route(&route)?, None);
+    let snapshot = InstructionSnapshot {
+        agent: agent_identity(
+            "root:main",
+            AgentDefinitionScope::Root,
+            "1",
+            AgentDefinitionOrigin::Builtin,
+        ),
+        agent_shape: crate::instruction::AgentInstructionShape::Present {
+            content_hash: pl_core::context::content_hash("主智能体职责".as_bytes()),
+        },
+        base: expected_block(
+            InstructionSourceKind::ModelBase,
+            "model base",
+            None,
+            "frozen migration base",
+        ),
+        developer: vec![
+            expected_block(
+                InstructionSourceKind::AgentDefinition,
+                "主智能体",
+                None,
+                "主智能体职责",
+            ),
+            expected_block(
+                InstructionSourceKind::ModeDefinition,
+                &mode.descriptor().display_name,
+                None,
+                mode.prompt(),
+            ),
+            expected_block(
+                InstructionSourceKind::Platform,
+                "platform: migration-test",
+                None,
+                "Preserve this frozen platform instruction.",
+            ),
+        ],
+        user: vec![expected_block(
+            InstructionSourceKind::ConfigUser,
+            "config user",
+            None,
+            "Preserve this user instruction fact.",
+        )],
+    };
+    let instruction_payload = snapshot_payload(&snapshot)?;
+    let mode_payload =
+        crate::mode::encode_mode_snapshot(&crate::mode::SavedThreadMode::capture(&mode, None))?;
+    let binding_payload = OpaquePayload::new(
+        "pl.studio.instruction-binding",
+        1,
+        serde_json::to_string(&serde_json::json!({
+            "routeIdentity": model.route_identity(),
+            "appendSnapshots": false,
+        }))?,
+    )?;
+    let format_block = |block: &crate::instruction::InstructionBlock| {
+        format!("# {}\n{}", block.source.label, block.content)
+    };
+    let mut records = std::iter::once(&snapshot.base)
+        .chain(snapshot.developer.iter())
+        .enumerate()
+        .map(|(index, block)| ContextRecord {
+            id: format!("instruction:migration:{index}"),
+            turn_id: None,
+            source: ContextSource::Instruction,
+            content: vec![ContextContent::Text {
+                text: Arc::from(format_block(block)),
+            }],
+            tool_calls: Vec::new(),
+        })
+        .collect::<Vec<_>>();
+    // The record shape matches the original v2 projection: base and each developer source were
+    // independent Instruction records, while user/runtime facts had separate stable identities.
+    records.extend([
+        ContextRecord {
+            id: "preserved-user-history".into(),
+            turn_id: None,
+            source: ContextSource::User,
+            content: vec![ContextContent::Text {
+                text: "Keep this historical user fact.".into(),
+            }],
+            tool_calls: Vec::new(),
+        },
+        ContextRecord {
+            id: "instruction:migration:4".into(),
+            turn_id: None,
+            source: ContextSource::RuntimeFact {
+                source_id: "studio.instructions:4".into(),
+            },
+            content: vec![ContextContent::Text {
+                text: Arc::from(format_block(&snapshot.user[0])),
+            }],
+            tool_calls: Vec::new(),
+        },
+        ContextRecord {
+            id: "preserved-runtime-fact".into(),
+            turn_id: None,
+            source: ContextSource::RuntimeFact {
+                source_id: "fixture.runtime".into(),
+            },
+            content: vec![ContextContent::Text {
+                text: "Keep this runtime fact.".into(),
+            }],
+            tool_calls: Vec::new(),
+        },
+    ]);
+    let original = ThreadSnapshot {
+        commit_sequence: 1,
+        extension_sequence: 3,
+        extensions: BTreeMap::from([
+            (
+                "studio.mode".into(),
+                ExtensionRecord {
+                    revision: 1,
+                    payload: mode_payload,
+                },
+            ),
+            (
+                "studio.instructions".into(),
+                ExtensionRecord {
+                    revision: 2,
+                    payload: instruction_payload,
+                },
+            ),
+            (
+                "studio.instructions.binding".into(),
+                ExtensionRecord {
+                    revision: 3,
+                    payload: binding_payload,
+                },
+            ),
+        ]),
+        context: ContextSnapshot {
+            revision: 1,
+            records: records.into(),
+        },
+        runtime_facts: vec![pl_core::thread::RuntimeFact {
+            source_id: "fixture.runtime".into(),
+            content: vec![ContextContent::Text {
+                text: "Keep this runtime fact.".into(),
+            }],
+        }]
+        .into(),
+        ..Default::default()
+    };
+    let original_instruction_text = original
+        .context
+        .records
+        .iter()
+        .filter(|record| record.source == ContextSource::Instruction)
+        .flat_map(|record| &record.content)
+        .filter_map(|content| match content {
+            ContextContent::Text { text } => Some(text.as_ref()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert_eq!(original_instruction_text, snapshot.trusted_text());
+
+    let directory = tempfile::tempdir()?;
+    let history_path = directory.path().join("history.sqlite");
+    let store = HistoryStore::open(&history_path, "migration").await?;
+    persist(&store, original, true).await?;
+    let checkpoint = store
+        .checkpoint()
+        .await?
+        .context("v2 multi-record checkpoint")?;
+    let thread = ThreadHandle::resume(
+        "migration".into(),
+        ModelFactory::new(model.clone()).open_session().await?,
+        Some(checkpoint),
+    )?;
+    thread
+        .set_context_preparation(crate::compaction::preparer(
+            &route,
+            model,
+            OpenAiCompactionMode::Local,
+            manager,
+        )?)
+        .await?;
+
+    let step = |attempt: &str| StepInput {
+        turn_id: "restore-instructions".into(),
+        attempt_id: attempt.into(),
+        content: Vec::new(),
+        cancellation: Default::default(),
+    };
+    assert!(thread.step(step("normalize-once")).await.is_err());
+    let normalized = thread.snapshot().context;
+    let instruction_records = normalized
+        .records
+        .iter()
+        .filter(|record| {
+            matches!(
+                record.source,
+                ContextSource::Instruction | ContextSource::InstructionSnapshot { .. }
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(instruction_records.len(), 1);
+    assert!(matches!(
+        instruction_records[0].source,
+        ContextSource::InstructionSnapshot { .. }
+    ));
+    assert_eq!(
+        instruction_records[0].content,
+        vec![ContextContent::Text {
+            text: Arc::from(snapshot.trusted_text()),
+        }]
+    );
+    if let ContextSource::InstructionSnapshot { content_hash, .. } = &instruction_records[0].source
+    {
+        assert_eq!(
+            content_hash,
+            &pl_core::context::content_hash(snapshot.trusted_text().as_bytes())
+        );
+    }
+    assert!(normalized.records.iter().any(|record| {
+        record.id == "preserved-user-history"
+            && record.source == ContextSource::User
+            && record.content.iter().any(|content| {
+                matches!(content, ContextContent::Text { text } if text.as_ref() == "Keep this historical user fact.")
+            })
+    }));
+    assert!(normalized.records.iter().any(|record| {
+        record.id == "instruction:migration:4"
+            && record.source
+                == (ContextSource::RuntimeFact {
+                    source_id: "studio.instructions:4".into(),
+                })
+            && record.content.iter().any(|content| {
+                matches!(content, ContextContent::Text { text } if text.as_ref() == format_block(&snapshot.user[0]))
+            })
+    }));
+    assert!(normalized.records.iter().any(|record| {
+        record.id == "preserved-runtime-fact"
+            && record.source
+                == (ContextSource::RuntimeFact {
+                    source_id: "fixture.runtime".into(),
+                })
+    }));
+
+    assert!(thread.step(step("prepare-again")).await.is_err());
+    assert_eq!(thread.snapshot().context, normalized);
+    thread.close().await?;
+    Ok(())
+}
+
+/// Mode reconfiguration treats a missing route binding as unknown: canonical initial context may
+/// only bind without an instruction revision, while a restored snapshot must be replaced.
+#[tokio::test]
+async fn mode_binding_recovery_replaces_unknown_snapshot_and_keeps_initial_context_noop()
+-> Result<()> {
+    use crate::config::{ConfigPaths, ConfigStore, StudioConfig};
+    use crate::studio::paths::StudioPaths;
+    use crate::{StudioHostKind, StudioRuntimeOptions};
+    use pl_model::{
+        config::{AccountConfig, AccountId, ModelRouteConfig},
+        model::{ModelInfo, ModelTransportProfile},
+        protocol::{HistoryInstructionRole, ProtocolEndpoint},
+    };
+
+    let temp = tempfile::tempdir()?;
+    let home = temp.path().join("home");
+    let workspace = temp.path().join("workspace");
+    tokio::fs::create_dir_all(&workspace).await?;
+
+    let account_id = AccountId::new("mode-migration")?;
+    let route = ModelRouteConfig {
+        account_id: account_id.clone(),
+        model_id: "mode-migration-model".into(),
+        effort: None,
+    };
+    let mut model = ModelInfo::compatible(&route.model_id);
+    model
+        .binding
+        .set_transport(ModelTransportProfile::responses_http());
+    model.capabilities.instruction_snapshot_overrides = true;
+    model.base_instructions = "frozen mode migration base".into();
+    let mut endpoint = ProtocolEndpoint::compatible("mode migration", "http://127.0.0.1:0");
+    endpoint.service_capabilities.history_instruction_role = HistoryInstructionRole::Developer;
+    let mut config = StudioConfig::default_config()?;
+    config.models.accounts.clear();
+    config.models.accounts.insert(
+        account_id,
+        AccountConfig::from_explicit_models(endpoint, vec![model]),
+    );
+    for selected in config
+        .models
+        .routes
+        .values_mut()
+        .chain(config.mode_model_routes.values_mut())
+    {
+        *selected = route.clone();
+    }
+    ConfigStore::new(ConfigPaths::from_config_dir(&home)).save(&config)?;
+    let options = || StudioRuntimeOptions {
+        studio_home: Some(home.clone()),
+        host: StudioHostKind::Test,
+        ..StudioRuntimeOptions::desktop()
+    };
+    let runtime = crate::StudioRuntime::initialize(options()).await?;
+    let project = runtime.open_project(&workspace).await?;
+    let thread = runtime
+        .create_thread(&project.id, "Mode binding recovery")
+        .await?;
+    runtime.shutdown_runtime().await?;
+
+    let paths = StudioPaths::resolve(Some(home.clone()))?;
+    let history_path = paths
+        .session_paths(&project.id, &thread.id)?
+        .history_database();
+    let history = HistoryStore::open(&history_path, &thread.id).await?;
+    let initial = history.checkpoint().await?.context("initial checkpoint")?;
+    assert_eq!(
+        initial
+            .state
+            .context
+            .records
+            .iter()
+            .filter(|record| record.source == ContextSource::Instruction)
+            .count(),
+        1
+    );
+    assert!(
+        initial
+            .state
+            .context
+            .records
+            .iter()
+            .all(|record| { !matches!(record.source, ContextSource::InstructionSnapshot { .. }) })
+    );
+    assert!(
+        !initial
+            .state
+            .extensions
+            .contains_key("studio.instructions.binding")
+    );
+    let initial_instructions = initial.state.extensions["studio.instructions"].clone();
+    let initial_instruction_records = initial
+        .state
+        .context
+        .records
+        .iter()
+        .filter(|record| {
+            matches!(
+                record.source,
+                ContextSource::Instruction | ContextSource::InstructionSnapshot { .. }
+            )
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    drop(history);
+
+    let runtime = crate::StudioRuntime::initialize(options()).await?;
+    runtime
+        .set_thread_mode(
+            "same-mode-without-binding".into(),
+            &thread.id,
+            pl_protocol::ThreadModeId::simple(),
+        )
+        .await?;
+    runtime.shutdown_runtime().await?;
+    let history = HistoryStore::open(&history_path, &thread.id).await?;
+    let same_mode = history
+        .checkpoint()
+        .await?
+        .context("same-Mode checkpoint")?;
+    assert_eq!(
+        same_mode.state.extensions["studio.instructions"], initial_instructions,
+        "binding a canonical initial prompt must not advance its instruction revision"
+    );
+    let same_mode_instruction_records = same_mode
+        .state
+        .context
+        .records
+        .iter()
+        .filter(|record| {
+            matches!(
+                record.source,
+                ContextSource::Instruction | ContextSource::InstructionSnapshot { .. }
+            )
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    assert_eq!(same_mode_instruction_records, initial_instruction_records);
+    let saved_binding = crate::compaction::decode_instruction_binding(
+        &same_mode.state.extensions["studio.instructions.binding"],
+    )?;
+    assert!(saved_binding.append_snapshots);
+    drop(history);
+
+    let history = HistoryStore::open(&history_path, &thread.id).await?;
+    let checkpoint = history
+        .checkpoint()
+        .await?
+        .context("checkpoint before restoring the old snapshot")?;
+    let instruction_record = checkpoint.state.extensions["studio.instructions"].clone();
+    let instructions = crate::instruction::decode_snapshot(&instruction_record.payload)?;
+    let text = instructions.trusted_text();
+    let restored_snapshot = ContextRecord {
+        id: format!("instruction:{}:restored-v2", thread.id),
+        turn_id: None,
+        source: ContextSource::InstructionSnapshot {
+            revision: instruction_record.revision,
+            content_hash: pl_core::context::content_hash(text.as_bytes()),
+            replaces: None,
+        },
+        content: vec![ContextContent::Text { text: text.into() }],
+        tool_calls: Vec::new(),
+    };
+    let context_revision = checkpoint
+        .state
+        .context
+        .revision
+        .checked_add(1)
+        .context("context revision exhausted")?;
+    let extension_revision = checkpoint
+        .state
+        .extension_sequence
+        .checked_add(1)
+        .context("extension revision exhausted")?;
+    let sequence = checkpoint
+        .state
+        .commit_sequence
+        .checked_add(1)
+        .context("Thread commit sequence exhausted")?;
+    anyhow::ensure!(
+        checkpoint
+            .state
+            .extensions
+            .contains_key("studio.instructions.binding"),
+        "binding to remove from restored checkpoint"
+    );
+    let extension_change = ExtensionChange::Delete {
+        id: "studio.instructions.binding".into(),
+        revision: extension_revision,
+    };
+    let mut state = checkpoint.state.clone();
+    state.extensions.remove("studio.instructions.binding");
+    state.extension_sequence = extension_revision;
+    let mut extension_changes = state.extension_changes.to_vec();
+    extension_changes.push(extension_change.clone());
+    state.extension_changes = extension_changes.into();
+    state.commit_sequence = sequence;
+    let mut records = state.context.records.to_vec();
+    records.push(restored_snapshot.clone());
+    state.context = ContextSnapshot {
+        revision: context_revision,
+        records: records.into(),
+    };
+    let effect = ThreadEffectBatch {
+        thread_id: thread.id.clone(),
+        sequence,
+        context: Some(ContextChange::Append {
+            revision: context_revision,
+            records: vec![restored_snapshot].into(),
+        }),
+        extensions: vec![extension_change].into(),
+        ..Default::default()
+    };
+    let checkpoint = ThreadCheckpoint::capture(thread.id.clone(), sequence, state);
+    let empty = BTreeSet::new();
+    history
+        .commit_checkpoint_effect(
+            &checkpoint,
+            &effect,
+            EffectCommit {
+                items: &[],
+                rolled_back_turns: &empty,
+                identities: &[],
+                messages: &[],
+                receipts: &[],
+                tasks: &[],
+                deliveries: &[],
+                delivery_repairs: &[],
+                attempt: None,
+            },
+        )
+        .await?;
+    drop(history);
+
+    let runtime = crate::StudioRuntime::initialize(options()).await?;
+    runtime
+        .set_thread_mode(
+            "changed-mode-with-unknown-binding".into(),
+            &thread.id,
+            pl_protocol::ThreadModeId::task(),
+        )
+        .await?;
+    runtime.shutdown_runtime().await?;
+
+    let history = HistoryStore::open(&history_path, &thread.id).await?;
+    let changed = history
+        .checkpoint()
+        .await?
+        .context("changed-Mode checkpoint")?;
+    let current_instruction_records = changed
+        .state
+        .context
+        .records
+        .iter()
+        .filter(|record| {
+            matches!(
+                record.source,
+                ContextSource::Instruction | ContextSource::InstructionSnapshot { .. }
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(current_instruction_records.len(), 1);
+    assert!(matches!(
+        current_instruction_records[0].source,
+        ContextSource::InstructionSnapshot { .. }
+    ));
+    let instructions = crate::instruction::decode_snapshot(
+        &changed.state.extensions["studio.instructions"].payload,
+    )?;
+    assert_eq!(
+        current_instruction_records[0].content,
+        vec![ContextContent::Text {
+            text: instructions.trusted_text().into(),
+        }]
+    );
+    crate::compaction::decode_instruction_binding(
+        &changed.state.extensions["studio.instructions.binding"],
+    )?;
     Ok(())
 }
 
@@ -722,9 +1720,26 @@ fn agent_identity(
     revision: &str,
     origin: AgentDefinitionOrigin,
 ) -> crate::agent::definition::AgentDefinitionIdentity {
+    let usage_binding = match scope {
+        AgentDefinitionScope::Root => {
+            crate::agent::definition::AgentUsageBinding::LegacyUnspecifiedRoot { source_version: 2 }
+        }
+        AgentDefinitionScope::Child => crate::agent::definition::AgentUsageBinding::Child,
+    };
+    agent_identity_with_binding(id, scope, revision, origin, usage_binding)
+}
+
+fn agent_identity_with_binding(
+    id: &str,
+    scope: AgentDefinitionScope,
+    revision: &str,
+    origin: AgentDefinitionOrigin,
+    usage_binding: crate::agent::definition::AgentUsageBinding,
+) -> crate::agent::definition::AgentDefinitionIdentity {
     crate::agent::definition::AgentDefinitionIdentity {
         id: id.into(),
         scope,
+        usage_binding,
         revision: revision.into(),
         origin,
     }
@@ -761,7 +1776,7 @@ fn base_block() -> crate::instruction::InstructionBlock {
     )
 }
 
-/// 与冻结身份相符的合法结构：root 恰好一个 Mode，飞书内置另有一个 Agent；child 恰好一个 Agent。
+/// Current roots and children all carry one builtin/Profile Agent source; migrated Agent-less roots are the sole absence case.
 fn compliant_role_blocks(
     agent: &crate::agent::definition::AgentDefinitionIdentity,
 ) -> Vec<crate::instruction::InstructionBlock> {
@@ -769,11 +1784,11 @@ fn compliant_role_blocks(
     match agent.scope {
         AgentDefinitionScope::Root => {
             let mut blocks = Vec::new();
-            if agent.origin == AgentDefinitionOrigin::Builtin && agent.id == "root:feishu" {
+            if agent.origin == AgentDefinitionOrigin::Builtin {
                 blocks.push(instruction_block(
                     InstructionSourceKind::AgentDefinition,
-                    "feishu root agent",
-                    "飞书渠道指令",
+                    "root agent",
+                    "root Agent instructions",
                 ));
             }
             blocks.push(instruction_block(
@@ -795,8 +1810,11 @@ fn compliant_snapshot(
     agent: crate::agent::definition::AgentDefinitionIdentity,
 ) -> crate::instruction::InstructionSnapshot {
     let developer = compliant_role_blocks(&agent);
+    let agent_shape = crate::instruction::AgentInstructionShape::from_agent_blocks(&developer)
+        .expect("compliant role blocks have a unique Agent source");
     crate::instruction::InstructionSnapshot {
         agent,
+        agent_shape,
         base: base_block(),
         developer,
         user: Vec::new(),
@@ -805,6 +1823,29 @@ fn compliant_snapshot(
 
 fn snapshot_payload(snapshot: &crate::instruction::InstructionSnapshot) -> Result<OpaquePayload> {
     Ok(crate::instruction::encode_snapshot(snapshot)?)
+}
+
+fn previous_snapshot_payload(
+    snapshot: &crate::instruction::InstructionSnapshot,
+) -> Result<OpaquePayload> {
+    let mut value = serde_json::to_value(snapshot)?;
+    let object = value
+        .as_object_mut()
+        .context("serialized instruction snapshot is not an object")?;
+    object
+        .remove("agentShape")
+        .context("current instruction snapshot omitted agentShape")?;
+    object
+        .get_mut("agent")
+        .and_then(serde_json::Value::as_object_mut)
+        .context("current instruction snapshot omitted its Agent identity")?
+        .remove("usageBinding")
+        .context("current instruction snapshot omitted its usage binding")?;
+    Ok(OpaquePayload::new(
+        crate::instruction::SNAPSHOT_FORMAT,
+        2,
+        serde_json::to_string(&value)?,
+    )?)
 }
 
 /// 共享结构校验必须同时约束编码与解码，而不是只在某个调用点检查。
@@ -818,7 +1859,7 @@ fn assert_structure_rejected(
     );
     let payload = OpaquePayload::new(
         "pl.studio.instructions",
-        2,
+        crate::instruction::SNAPSHOT_VERSION,
         serde_json::to_string(&snapshot)?,
     )?;
     assert!(
@@ -828,7 +1869,7 @@ fn assert_structure_rejected(
     Ok(())
 }
 
-/// 当前快照按 ID、范围与来源/修订组合校验；内置身份保留旧版本，迁移身份只接受 legacy 组合。
+/// 当前快照按冻结使用绑定、scope 与来源/修订组合校验；不按 root ID 逐个分支。
 #[test]
 fn current_instruction_identity_is_validated_against_verified_facts() -> Result<()> {
     let generic = VerifiedAgentIdentity::GenericRoot;
@@ -843,19 +1884,13 @@ fn current_instruction_identity_is_validated_against_verified_facts() -> Result<
         ),
         // 旧内置修订必须继续可恢复，不能要求等于当前定义版本。
         (
-            "root:feishu",
+            "root:main",
             AgentDefinitionScope::Root,
             "0",
             AgentDefinitionOrigin::Builtin,
         ),
         (
             "root:legacy",
-            AgentDefinitionScope::Root,
-            "legacy",
-            AgentDefinitionOrigin::Migrated,
-        ),
-        (
-            "root:feishu",
             AgentDefinitionScope::Root,
             "legacy",
             AgentDefinitionOrigin::Migrated,
@@ -871,17 +1906,23 @@ fn current_instruction_identity_is_validated_against_verified_facts() -> Result<
     }
     // 已核实 bot 渠道接受飞书内置身份（含旧内置版本）与飞书迁移身份。
     for saved in [
-        agent_identity(
+        agent_identity_with_binding(
             "root:feishu",
             AgentDefinitionScope::Root,
             "0",
             AgentDefinitionOrigin::Builtin,
+            crate::agent::definition::AgentUsageBinding::RootEntry(
+                crate::agent::definition::AgentRootEntry::Bot,
+            ),
         ),
-        agent_identity(
+        agent_identity_with_binding(
             "root:feishu",
             AgentDefinitionScope::Root,
             "legacy",
             AgentDefinitionOrigin::Migrated,
+            crate::agent::definition::AgentUsageBinding::RootEntry(
+                crate::agent::definition::AgentRootEntry::Bot,
+            ),
         ),
     ] {
         let mut state = current_instruction_state(saved)?;
@@ -891,7 +1932,7 @@ fn current_instruction_identity_is_validated_against_verified_facts() -> Result<
         "reviewer",
         AgentDefinitionScope::Child,
         "7",
-        AgentDefinitionOrigin::Profile,
+        AgentDefinitionOrigin::Builtin,
     ))?;
     crate::instruction::migrate_saved_representation(&mut accepted, &child)?;
     let mut accepted = current_instruction_state(agent_identity(
@@ -920,7 +1961,7 @@ fn current_instruction_identity_is_validated_against_verified_facts() -> Result<
             "reviewer",
             AgentDefinitionScope::Child,
             "7",
-            AgentDefinitionOrigin::Builtin,
+            AgentDefinitionOrigin::Profile,
         ),
         agent_identity(
             "reviewer",
@@ -928,18 +1969,15 @@ fn current_instruction_identity_is_validated_against_verified_facts() -> Result<
             "",
             AgentDefinitionOrigin::Profile,
         ),
-        // root 身份不允许迁移形式的普通根，也不允许当前内置形式占用 legacy 身份。
-        agent_identity(
-            "root:main",
-            AgentDefinitionScope::Root,
-            "legacy",
-            AgentDefinitionOrigin::Migrated,
-        ),
-        agent_identity(
+        // root 身份不允许未绑定的 ID 或错误的来源修订组合。
+        agent_identity_with_binding(
             "root:legacy",
             AgentDefinitionScope::Root,
             "1",
             AgentDefinitionOrigin::Builtin,
+            crate::agent::definition::AgentUsageBinding::RootEntry(
+                crate::agent::definition::AgentRootEntry::Bot,
+            ),
         ),
         agent_identity(
             "root:main",
@@ -947,11 +1985,14 @@ fn current_instruction_identity_is_validated_against_verified_facts() -> Result<
             "",
             AgentDefinitionOrigin::Builtin,
         ),
-        agent_identity(
-            "root:other",
+        agent_identity_with_binding(
+            "not-a-root-id",
             AgentDefinitionScope::Root,
             "1",
             AgentDefinitionOrigin::Builtin,
+            crate::agent::definition::AgentUsageBinding::RootEntry(
+                crate::agent::definition::AgentRootEntry::Studio,
+            ),
         ),
     ] {
         let mut state = current_instruction_state(saved)?;
@@ -963,13 +2004,26 @@ fn current_instruction_identity_is_validated_against_verified_facts() -> Result<
         assert_eq!(serde_json::to_vec(&state)?, before);
     }
     // 已核实 bot 渠道与内置普通根身份矛盾，必须失败而不是沿用。
-    let mut contradicting = current_instruction_state(agent_identity(
+    let mut contradicting = current_instruction_state(agent_identity_with_binding(
         "root:main",
         AgentDefinitionScope::Root,
         "1",
         AgentDefinitionOrigin::Builtin,
+        crate::agent::definition::AgentUsageBinding::RootEntry(
+            crate::agent::definition::AgentRootEntry::Studio,
+        ),
     ))?;
     assert!(crate::instruction::migrate_saved_representation(&mut contradicting, &bot).is_err());
+    let mut future_root = current_instruction_state(agent_identity_with_binding(
+        "root:future-product-agent",
+        AgentDefinitionScope::Root,
+        "future-revision",
+        AgentDefinitionOrigin::Builtin,
+        crate::agent::definition::AgentUsageBinding::RootEntry(
+            crate::agent::definition::AgentRootEntry::Studio,
+        ),
+    ))?;
+    crate::instruction::migrate_saved_representation(&mut future_root, &generic)?;
     // child 快照不能作为根会话身份，反之亦然。
     let mut child_as_root = current_instruction_state(agent_identity(
         "reviewer",
@@ -1027,7 +2081,9 @@ fn instruction_snapshot_structure_is_validated_by_the_shared_codec() -> Result<(
     assert_structure_rejected(duplicate_mode, "duplicate Mode source")?;
 
     let mut missing_mode = compliant_snapshot(main.clone());
-    missing_mode.developer.clear();
+    missing_mode
+        .developer
+        .retain(|block| block.source.kind != Kind::ModeDefinition);
     assert_structure_rejected(missing_mode, "missing Mode source")?;
 
     let mut unexpected_agent = compliant_snapshot(main.clone());
@@ -1035,7 +2091,7 @@ fn instruction_snapshot_structure_is_validated_by_the_shared_codec() -> Result<(
         0,
         instruction_block(Kind::AgentDefinition, "root agent", "额外角色正文"),
     );
-    assert_structure_rejected(unexpected_agent, "Agent source on the generic root")?;
+    assert_structure_rejected(unexpected_agent, "duplicate root Agent source")?;
 
     let mut missing_feishu_agent = compliant_snapshot(feishu);
     missing_feishu_agent
@@ -1078,6 +2134,10 @@ fn instruction_snapshot_structure_is_validated_by_the_shared_codec() -> Result<(
     let mut empty_agent = compliant_snapshot(child);
     empty_agent.developer[0].content = "  ".into();
     assert_structure_rejected(empty_agent, "empty Agent body")?;
+
+    let mut stale_agent_hash = compliant_snapshot(main.clone());
+    stale_agent_hash.developer[0].content = "different non-empty Agent source".into();
+    assert_structure_rejected(stale_agent_hash, "Agent content hash mismatch")?;
 
     let mut base_role = compliant_snapshot(main.clone());
     base_role.base = instruction_block(Kind::ModeDefinition, "simple", "Mode 正文");

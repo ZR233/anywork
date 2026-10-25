@@ -18,8 +18,6 @@ use tokio::sync::{Mutex, oneshot};
 use tokio::task::JoinHandle;
 use tokio::time::timeout;
 
-use crate::config::StudioRole;
-
 use super::StudioRuntime;
 
 pub(super) const PROVISIONAL_TITLE_MAX_CHARS: usize = 80;
@@ -295,7 +293,8 @@ async fn generate_title(
 ) -> Result<String> {
     let owner = runtime.ensure_thread_owner(thread_id).await?;
     let config = runtime.config_runtime.read()?;
-    let mut route = config.config.resolve_role(StudioRole::Explorer)?;
+    let explorer = crate::config::system_agent_profile(&config.config, "explorer")?;
+    let mut route = crate::config::resolve_profile_route(&config.config, &explorer)?;
     if let pl_model::model::ModelProtocolOptions::Responses(options) =
         &mut route.model.binding.request.protocol
     {
@@ -327,7 +326,7 @@ async fn generate_title(
         },
     )];
     let request = ModelTurnRequest::new()
-        .with_instructions(TITLE_INSTRUCTIONS)
+        .with_system_prompt(pl_model::completion::SystemPrompt::new(TITLE_INSTRUCTIONS))
         .with_tools(Vec::new())
         .with_tool_choice("none")
         .with_parallel_tool_calls(false)
@@ -396,16 +395,11 @@ async fn generate_title(
         .mutate_extensions(vec![pl_core::thread::extensions::ExtensionMutation::Put {
             id: key.into(),
             expected_revision: previous,
-            payload: pl_core::context::OpaquePayload::new(
-                "pl.studio.auxiliary-billing",
-                2,
-                serde_json::to_string(
-                    &crate::studio::thread_projection::AuxiliaryBillingReceipt {
-                        billing,
-                        succeeded: result.is_ok(),
-                    },
-                )?,
-            )?,
+            payload: crate::studio::thread_projection::AuxiliaryBillingReceipt {
+                billing,
+                succeeded: result.is_ok(),
+            }
+            .into_payload()?,
         }])
         .await?;
     let response = result?;

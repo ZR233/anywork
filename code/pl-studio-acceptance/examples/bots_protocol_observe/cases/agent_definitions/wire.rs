@@ -66,17 +66,15 @@ pub(super) fn requests(all: &[RecordedRequest], wanted: AgentPhase) -> Result<Ve
             request.diagnostic
         );
         let actual_phase = phase(&request.body)?;
-        let child = matches!(
-            actual_phase,
+        let path = match actual_phase {
+            // The actual child route, not child ownership itself, selects the adapter endpoint.
+            // System children inherit the root account in this observation; the user Profile
+            // uses the separate OpenAI account. Both are real child Threads.
+            AgentPhase::ChildUser | AgentPhase::ChildUserResumed => "/v1/openai/responses",
             AgentPhase::ChildSystem
-                | AgentPhase::ChildUser
-                | AgentPhase::ChildSystemResumed
-                | AgentPhase::ChildUserResumed
-        );
-        let path = if child {
-            "/v1/openai/responses"
-        } else {
-            "/v1/responses"
+            | AgentPhase::ChildDefaultSystem
+            | AgentPhase::ChildSystemResumed => "/v1/responses",
+            _ => "/v1/responses",
         };
         ensure!(
             request.method == "POST" && request.path == path,

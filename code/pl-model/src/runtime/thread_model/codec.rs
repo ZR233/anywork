@@ -15,7 +15,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 const FRAME_FORMAT: &str = "pl.model.assistant";
 /// Current frozen assistant-frame version.
-pub const FRAME_VERSION: u32 = 3;
+pub const FRAME_VERSION: u32 = 4;
+/// Frame encoding before explicit no-charge accounting was introduced.
+const LEGACY_FRAME_VERSION_V3: u32 = 3;
 /// Frame version written before the account model-binding field migration.
 const LEGACY_FRAME_VERSION_V2: u32 = 2;
 
@@ -96,9 +98,11 @@ struct LegacyAssistantFrameV2 {
 /// binding field names.
 fn decode_frame(payload: &OpaquePayload) -> Result<AssistantFrame, ModelError> {
     let unsupported = || invalid("unsupported or repeated model response receipt");
-    match payload.version() {
-        FRAME_VERSION => serde_json::from_str(payload.content())
-            .map_err(|source| failure(ModelFailureKind::UnsupportedContent, source)),
+    let frame = match payload.version() {
+        FRAME_VERSION | LEGACY_FRAME_VERSION_V3 => {
+            serde_json::from_str::<AssistantFrame>(payload.content())
+                .map_err(|source| failure(ModelFailureKind::UnsupportedContent, source))
+        }
         LEGACY_FRAME_VERSION_V2 => {
             let legacy: LegacyAssistantFrameV2 = serde_json::from_str(payload.content())
                 .map_err(|source| failure(ModelFailureKind::UnsupportedContent, source))?;
@@ -109,7 +113,17 @@ fn decode_frame(payload: &OpaquePayload) -> Result<AssistantFrame, ModelError> {
             })
         }
         _ => Err(unsupported()),
+    }?;
+    // v3 has the same field layout, but its Disabled outcome remains historical "not estimated".
+    // A new no-charge declaration must never be smuggled into an older producer version.
+    if payload.version() < FRAME_VERSION
+        && frame.receipt.response.accounting.pricing == pl_protocol::PricingOutcome::NoCharge
+    {
+        return Err(invalid(
+            "no-charge accounting requires model response receipt version 4",
+        ));
     }
+    Ok(frame)
 }
 
 pub(super) fn receipt(
@@ -185,18 +199,15 @@ pub(super) fn declarations(
         .collect()
 }
 
-pub(super) fn request(
-    request: &ModelRequest,
-    runtime: &super::ModelRuntime,
-    media: &super::media::PreparedMedia,
-) -> Result<CompletionRequest, ModelError> {
-    request
-        .context
-        .validate_complete()
-        .map_err(|error| failure(ModelFailureKind::IncompatibleContext, error))?;
-    let mut instructions = Vec::new();
+/// The deterministic tool-scheduling rules generated for one frozen tool plan.
+///
+/// These are model-adapter-authored trusted rules, not host instruction text: they are always
+/// part of the effective trusted prefix and of every appended full snapshot, so a full
+/// replacement can never silently drop the current sequential/solo constraints.
+fn tool_scheduling_rules(request: &ModelRequest) -> Result<Vec<String>, ModelError> {
+    let mut rules = Vec::new();
     if request.tool_call_mode == pl_core::model::ToolCallMode::Sequential {
-        instructions.push("Call at most one tool in each model response. Wait for its result before making another tool call.".to_owned());
+        rules.push("Call at most one tool in each model response. Wait for its result before making another tool call.".to_owned());
     }
     if !request.solo_tool_ids.is_empty()
         && request.tool_call_mode == pl_core::model::ToolCallMode::Parallel
@@ -213,8 +224,22 @@ pub(super) fn request(
                     .ok_or_else(|| invalid("solo tool identity is absent from the frozen catalog"))
             })
             .collect::<Result<Vec<_>, _>>()?;
-        instructions.push(format!("These tools must each be called alone in a model response: {}. Never combine one of these with any other tool call. Other independent tools may be called together in parallel.", names.join(", ")));
+        rules.push(format!("These tools must each be called alone in a model response: {}. Never combine one of these with any other tool call. Other independent tools may be called together in parallel.", names.join(", ")));
     }
+    Ok(rules)
+}
+
+pub(super) fn request(
+    request: &ModelRequest,
+    runtime: &super::ModelRuntime,
+    media: &super::media::PreparedMedia,
+) -> Result<CompletionRequest, ModelError> {
+    request
+        .context
+        .validate_complete()
+        .map_err(|error| failure(ModelFailureKind::IncompatibleContext, error))?;
+    let tool_rules = tool_scheduling_rules(request)?;
+    let mut instructions = tool_rules.clone();
     let mut input = Vec::new();
     let mut replay_spans = Vec::new();
     let mut calls = BTreeMap::new();
@@ -288,10 +313,13 @@ pub(super) fn request(
                 ));
             }
             if snapshot && append && !input.is_empty() {
+                let mut complete = tool_rules.clone();
+                complete.push(text);
+                let complete = complete.join("\n\n");
                 input.push(ModelContextItem::from(Message {
                     presentation: pl_protocol::MessagePresentation::Hidden,
                     role: MessageRole::System,
-                    content: MessageContent::text(format!("Current complete host instruction snapshot. This supersedes every earlier host instruction snapshot.\n{text}")),
+                    content: MessageContent::text(format!("Current complete host instruction snapshot. This supersedes every earlier host instruction snapshot.\n{complete}")),
                     reasoning_content: None, tool_calls: None, tool_result: None, metadata: Default::default(),
                 }));
                 continue;
@@ -531,8 +559,11 @@ pub(super) fn request(
     if !pending_calls.is_empty() {
         return Err(invalid("incomplete tool result batch"));
     }
+    let joined = instructions.join("\n\n");
     let mut encoded = CompletionRequest::builder()
-        .instructions(instructions.join("\n\n"))
+        .maybe_system_prompt(
+            (!joined.is_empty()).then(|| crate::completion::SystemPrompt::new(joined)),
+        )
         .input(input)
         .build();
     encoded.replay_spans = replay_spans;

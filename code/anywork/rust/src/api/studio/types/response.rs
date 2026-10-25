@@ -27,25 +27,11 @@ pub struct BridgeStudioStateSnapshot {
     pub skills_by_project: Vec<BridgeSkillsStateSnapshot>,
     pub thread_mode_catalog: BridgeThreadModeCatalogSnapshot,
     pub account_usage: BridgeAccountUsageStateSnapshot,
-    pub model_performance: BridgeModelPerformanceSnapshot,
     pub session_costs: Vec<BridgeSessionCostsState>,
     pub updater: BridgeUpdaterStateSnapshot,
     pub persistence: BridgePersistenceStateSnapshot,
     pub persistence_queue: BridgePersistenceQueueStateSnapshot,
     pub agent_profiles: BridgeAgentProfilesStateSnapshot,
-}
-
-/// 全局模型性能快照：按模型汇总与最近历史窗口，不含按 root 会话费用。
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct BridgeModelPerformanceSnapshot {
-    pub revision: u64,
-    pub updated_at: i64,
-    pub statistics_pending: bool,
-    pub statistics_gap: bool,
-    pub read_failed: bool,
-    pub summaries: Vec<BridgeModelPerformanceSummary>,
-    pub history: Vec<BridgeModelPerformanceSample>,
 }
 
 /// 一个根会话的作用域费用事实；`cost == null` 是显式清除，不是零费用。
@@ -76,68 +62,6 @@ pub struct BridgePurposeCostSnapshot {
     pub purpose: Option<String>,
     pub estimated_costs: Vec<BridgeRuntimeCostAmount>,
     pub has_unpriced_usage: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct BridgeModelPerformanceSummary {
-    pub account_id: String,
-    pub account_display_name: String,
-    pub model_id: String,
-    pub sample_count: u64,
-    pub completion_tokens: u64,
-    pub total_ttft_millis: u64,
-    pub ttft_sample_count: u64,
-    pub total_response_millis: u64,
-    pub tokens_per_second: f64,
-    /// 没有已知首字样本时保持未知。
-    pub average_ttft_millis: Option<f64>,
-    pub average_response_millis: f64,
-    /// 该 (accountId, modelId) 组内的推理强度二级细分。
-    pub effort_breakdowns: Vec<BridgeModelPerformanceEffortSummary>,
-}
-
-/// 顶层汇总组内的推理强度细分；指标口径与顶层一致。
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct BridgeModelPerformanceEffortSummary {
-    pub effort: Option<String>,
-    pub sample_count: u64,
-    pub completion_tokens: u64,
-    pub total_ttft_millis: u64,
-    pub ttft_sample_count: u64,
-    pub total_response_millis: u64,
-    pub tokens_per_second: f64,
-    pub average_ttft_millis: Option<f64>,
-    pub average_response_millis: f64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct BridgeModelPerformanceSample {
-    pub completed_at: i64,
-    pub account_id: String,
-    pub account_display_name: String,
-    /// 冻结的目录配置模型；旧记录无法证明时保持 `None`。
-    pub model_id: Option<String>,
-    pub sent_model: Option<String>,
-    pub reported_model: Option<String>,
-    pub model_match_state: BridgeModelMatchState,
-    pub effort: Option<String>,
-    pub completion_tokens: u64,
-    pub ttft_millis: Option<u64>,
-    pub decode_millis: Option<u64>,
-    pub total_response_millis: Option<u64>,
-    pub tokens_per_second: Option<f64>,
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub enum BridgeModelMatchState {
-    Matched,
-    Mismatched,
-    Unreported,
-    LegacyUnknown,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

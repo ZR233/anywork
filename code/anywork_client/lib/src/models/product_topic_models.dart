@@ -130,16 +130,6 @@ final class AccountUsageTopic extends ProductTopic {
   int get hashCode => 0x0110;
 }
 
-final class ModelPerformanceTopic extends ProductTopic {
-  const ModelPerformanceTopic();
-
-  @override
-  bool operator ==(Object other) => other is ModelPerformanceTopic;
-
-  @override
-  int get hashCode => 0x0111;
-}
-
 final class SessionCostsTopic extends ProductTopic {
   const SessionCostsTopic({required this.rootThreadId});
 
@@ -300,12 +290,6 @@ final class AccountUsageBaseline extends ProductTopicBaselineState {
   const AccountUsageBaseline(this.state);
 
   final AccountUsageStateSnapshot state;
-}
-
-final class ModelPerformanceBaseline extends ProductTopicBaselineState {
-  const ModelPerformanceBaseline(this.state);
-
-  final ModelPerformanceSnapshotView state;
 }
 
 final class SessionCostsBaseline extends ProductTopicBaselineState {
@@ -473,7 +457,6 @@ sealed class ProductTopicEventPayload {
     ),
     ThreadModeCatalogChangedPayload() => const ThreadModeCatalogTopic(),
     AccountUsageStateChangedPayload() => const AccountUsageTopic(),
-    ModelPerformanceStateChangedPayload() => const ModelPerformanceTopic(),
     SessionCostsChangedPayload(:final state) => SessionCostsTopic(
       rootThreadId: state.rootThreadId,
     ),
@@ -559,13 +542,6 @@ final class AccountUsageStateChangedPayload extends ProductTopicEventPayload {
   const AccountUsageStateChangedPayload(this.state);
 
   final AccountUsageStateSnapshot state;
-}
-
-final class ModelPerformanceStateChangedPayload
-    extends ProductTopicEventPayload {
-  const ModelPerformanceStateChangedPayload(this.state);
-
-  final ModelPerformanceSnapshotView state;
 }
 
 /// 单个 root 会话的作用域费用事实；`cost == null` 是显式清除，不是零费用。

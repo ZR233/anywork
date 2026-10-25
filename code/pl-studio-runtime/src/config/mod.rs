@@ -34,6 +34,10 @@ pub use agent_profile::{
     AgentProfileCatalog, AgentProfileDiagnostic, UserAgentProfile, is_system_profile_id,
     resolve_profile_route, save_user_agent_profile, system_profile_ids,
 };
+pub(crate) use agent_profile::{
+    effective_system_profile_route, system_agent_profile, system_agent_profiles,
+    validate_user_agent_profile_id,
+};
 pub use mcp::{
     BuiltinMcpServerState as StudioBuiltinMcpServerState, builtin_mcp_server_ids,
     is_builtin_mcp_server_id, zhipu_coding_plan_token,
@@ -66,78 +70,17 @@ pub use runtime::{
 };
 pub use store::{ConfigPaths, ConfigStore};
 
-pub const STUDIO_CONFIG_SCHEMA_VERSION: u32 = 25;
+pub const STUDIO_CONFIG_SCHEMA_VERSION: u32 = 26;
 pub const STUDIO_CONFIG_DIR_NAME: &str = ".anywork";
 pub const STUDIO_CONFIG_FILE_NAME: &str = "config.toml";
 
 const DEFAULT_ACCOUNT_ID: &str = "deepseek";
 const STUDIO_USER_SKILLS_DIR: &str = "~/.anywork/skills";
-const STUDIO_CHILD_ROLES: [&str; 4] = ["explorer", "executor", "worktree_executor", "reviewer"];
+/// Historical root route identity; unlike Agent declarations it is not a child Profile.
+pub(crate) const ROOT_AGENT_ROUTE_KEY: &str = "planner";
 
-/// Studio 产品定义的固定角色；框架层仍通过动态 `AgentRoleId` 接收它们。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub enum StudioRole {
-    Explorer,
-    Planner,
-    Executor,
-    WorktreeExecutor,
-    Reviewer,
-}
-
-impl StudioRole {
-    pub const fn all() -> [Self; 5] {
-        [
-            Self::Explorer,
-            Self::Planner,
-            Self::Executor,
-            Self::WorktreeExecutor,
-            Self::Reviewer,
-        ]
-    }
-
-    pub const fn child_roles() -> [Self; 4] {
-        [
-            Self::Explorer,
-            Self::Executor,
-            Self::WorktreeExecutor,
-            Self::Reviewer,
-        ]
-    }
-
-    pub const fn key(self) -> &'static str {
-        match self {
-            Self::Explorer => "explorer",
-            Self::Planner => "planner",
-            Self::Executor => "executor",
-            Self::WorktreeExecutor => "worktree_executor",
-            Self::Reviewer => "reviewer",
-        }
-    }
-
-    pub fn from_key(value: &str) -> Option<Self> {
-        match value {
-            "explorer" => Some(Self::Explorer),
-            "planner" => Some(Self::Planner),
-            "executor" => Some(Self::Executor),
-            "worktree_executor" => Some(Self::WorktreeExecutor),
-            "reviewer" => Some(Self::Reviewer),
-            _ => None,
-        }
-    }
-
-    pub const fn display_name(self) -> &'static str {
-        match self {
-            Self::Explorer => "探索者",
-            Self::Planner => "主智能体",
-            Self::Executor => "执行者",
-            Self::WorktreeExecutor => "Worktree 执行者",
-            Self::Reviewer => "审查者",
-        }
-    }
-
-    pub fn id(self) -> AgentRoleId {
-        AgentRoleId::new(self.key()).expect("Studio 内置角色 id 必须有效")
-    }
+pub(crate) fn root_agent_route_id() -> AgentRoleId {
+    AgentRoleId::new(ROOT_AGENT_ROUTE_KEY).expect("reserved root Agent route id must be valid")
 }
 
 pub use pl_protocol::WebSearchContextSize;
@@ -266,15 +209,6 @@ impl StudioConfig {
             model_id: definition.suggested_model,
             effort: definition.suggested_effort.map(ReasoningEffort::new),
         };
-        let routes = STUDIO_CHILD_ROLES
-            .into_iter()
-            .map(|role| {
-                (
-                    AgentRoleId::new(role).expect("Studio 内置角色 id 必须有效"),
-                    route.clone(),
-                )
-            })
-            .collect();
         let skills = SkillsConfig {
             user_dir: STUDIO_USER_SKILLS_DIR.to_string(),
             ..SkillsConfig::default()
@@ -285,7 +219,7 @@ impl StudioConfig {
             delegation: pl_protocol::DelegationSettings::default(),
             models: AgentModelConfig {
                 accounts: BTreeMap::from([(account_id, account)]),
-                routes,
+                routes: BTreeMap::new(),
             },
             mode_model_routes: BTreeMap::from([
                 (ThreadModeId::simple(), route.clone()),
@@ -308,7 +242,7 @@ impl StudioConfig {
         self.validate_declarations()?;
         self.models.validate()?;
         for route in self.mode_model_routes.values() {
-            self.models.resolve_route(StudioRole::Planner.id(), route)?;
+            self.models.resolve_route(root_agent_route_id(), route)?;
         }
         Ok(())
     }
@@ -322,30 +256,23 @@ impl StudioConfig {
             )));
         }
         self.models.validate_declarations()?;
+        let system_profile_ids = agent_profile::system_profile_ids()?;
         if let Some(profile_id) = self
             .disabled_system_agents
             .iter()
-            .find(|profile_id| !agent_profile::is_system_profile_id(profile_id))
+            .find(|profile_id| !system_profile_ids.contains(*profile_id))
         {
             return Err(PureError::ConfigError(format!(
                 "disabled_system_agents contains unknown system Agent `{profile_id}`"
             )));
         }
-        for role in STUDIO_CHILD_ROLES {
-            let role = AgentRoleId::new(role)?;
-            let route = self.models.routes.get(&role).ok_or_else(|| {
-                PureError::ConfigError(format!("missing model route for role: {role}"))
-            })?;
+        for (role, route) in &self.models.routes {
+            if !system_profile_ids.contains(role.as_str()) {
+                return Err(PureError::ConfigError(format!(
+                    "models.routes contains unsupported child role: {role}"
+                )));
+            }
             self.models.route_availability(route)?;
-        }
-        if let Some(role) = self.models.routes.keys().find(|role| {
-            !STUDIO_CHILD_ROLES
-                .iter()
-                .any(|candidate| candidate == &role.as_str())
-        }) {
-            return Err(PureError::ConfigError(format!(
-                "models.routes contains unsupported child role: {role}"
-            )));
         }
         if !self.mode_model_routes.contains_key(&ThreadModeId::simple())
             || !self.mode_model_routes.contains_key(&ThreadModeId::task())
@@ -365,10 +292,6 @@ impl StudioConfig {
         Ok(())
     }
 
-    pub fn resolve_role(&self, role: StudioRole) -> Result<pl_model::config::ResolvedModelRoute> {
-        self.models.resolve(&role.id())
-    }
-
     pub fn mode_model_route(&self, mode: &ThreadModeId) -> Result<&ModelRouteConfig> {
         self.mode_model_routes
             .get(mode)
@@ -383,7 +306,7 @@ impl StudioConfig {
         mode: &ThreadModeId,
     ) -> Result<pl_model::config::ResolvedModelRoute> {
         self.models
-            .resolve_route(StudioRole::Planner.id(), self.mode_model_route(mode)?)
+            .resolve_route(root_agent_route_id(), self.mode_model_route(mode)?)
     }
 }
 

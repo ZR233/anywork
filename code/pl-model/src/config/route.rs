@@ -402,7 +402,7 @@ impl AgentModelConfig {
             _ => {}
         }
         Ok(ResolvedModelRoute {
-            pricing_mode: account.pricing_mode,
+            pricing_mode: account.billing_kind()?.into(),
             role,
             account_id: route.account_id.clone(),
             endpoint: account.to_endpoint()?,

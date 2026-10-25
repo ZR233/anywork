@@ -301,7 +301,8 @@ pub struct TurnBillingRecord {
 }
 
 impl TurnBillingRecord {
-    pub const VERSION: u32 = 6;
+    /// Version 7 adds the explicit NoCharge pricing outcome; historical Disabled is unchanged.
+    pub const VERSION: u32 = 7;
 
     pub fn new() -> Self {
         Self {

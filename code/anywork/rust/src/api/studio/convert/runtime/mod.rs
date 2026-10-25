@@ -4,18 +4,18 @@
 
 mod bots;
 mod health;
-mod model_performance;
 mod observed;
 mod persistence;
 mod recovery;
+mod session_costs;
 mod snapshot;
 mod updater;
 
 pub(crate) use bots::*;
 pub(crate) use health::*;
-pub(crate) use model_performance::*;
 pub(crate) use observed::*;
 pub(crate) use persistence::*;
 pub(crate) use recovery::*;
+pub(crate) use session_costs::*;
 pub(crate) use snapshot::*;
 pub(crate) use updater::*;

@@ -1,3 +1,5 @@
+import 'support/test_statistics_feed.dart';
+
 import 'package:anywork/src/presentation/providers/client_provider.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -31,7 +33,11 @@ void main() {
 
   setUp(() async {
     final api = DemoStudioTransport(lspActivityLoop: false);
-    graph = AppGraph(transport: api, clientId: 'canonical-convergence');
+    graph = AppGraph(
+      statisticsFeed: const TestStatisticsFeedPort(),
+      transport: api,
+      clientId: 'canonical-convergence',
+    );
     container = ProviderContainer(
       overrides: [appGraphProvider.overrideWithValue(graph)],
     );

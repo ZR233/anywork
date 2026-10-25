@@ -40,6 +40,7 @@ pub struct BridgeNewThreadModelRoute {
 pub enum BridgeBillingKind {
     Metered,
     Subscription,
+    NoCharge,
     Unknown,
 }
 

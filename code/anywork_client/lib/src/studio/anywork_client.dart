@@ -32,7 +32,6 @@ import 'stores/thread_directory_store.dart';
 import 'stores/mcp_store.dart';
 import 'stores/lsp_store.dart';
 import 'stores/mode_catalog_store.dart';
-import 'stores/model_performance_store.dart';
 import 'stores/account_usage_store.dart';
 import 'stores/acp_auth_store.dart';
 import 'stores/acp_install_store.dart';
@@ -166,7 +165,6 @@ class AnyworkClient {
   final mcp = McpStore();
   final lsp = LspStore();
   final modeCatalog = ModeCatalogStore();
-  final modelPerformance = ModelPerformanceStore();
   final accountUsage = AccountUsageStore();
   final acpAuth = AcpAuthStore();
   final acpInstall = AcpInstallStore();
@@ -467,7 +465,6 @@ class AnyworkClient {
       const AcpInstallTopic(),
       const McpTopic(),
       const LspTopic(),
-      const ModelPerformanceTopic(),
       const AccountUsageTopic(),
       const PersistenceQueueTopic(),
       const BotsTopic(),
@@ -487,7 +484,6 @@ class AnyworkClient {
     lsp.apply(snapshot.lspState);
     modeCatalog.apply(snapshot.threadModeCatalog);
     accountUsage.apply(snapshot.accountUsageState);
-    modelPerformance.apply(snapshot.modelPerformance);
     updater.apply(snapshot.updaterState);
     persistence.applyState(snapshot.persistenceState);
     final queue = snapshot.persistenceQueueState;

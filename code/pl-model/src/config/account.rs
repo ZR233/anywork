@@ -142,8 +142,6 @@ impl AccountModelEntry {
 pub struct AccountConfig {
     #[serde(default)]
     pub protocol: crate::protocol::ProtocolKind,
-    #[serde(default)]
-    pub pricing_mode: pl_protocol::PricingMode,
     /// 显式设置的计费类别；`None` 表示未显式配置，由 [`Self::billing_kind`] 按明确模板与
     /// canonical endpoint 推导。
     ///
@@ -226,7 +224,6 @@ impl AccountConfig {
         Self {
             protocol: info.protocol,
             template: None,
-            pricing_mode: pl_protocol::PricingMode::Catalog,
             billing_kind: None,
             name: info.name,
             base_url: info.base_url,
@@ -247,14 +244,8 @@ impl AccountConfig {
     ///
     /// 模板本身不写入计费类别：推导只在读取时按 canonical endpoint 判定（见
     /// [`Self::billing_kind`]），因此用同一个模板配非 canonical 地址不会被记成订阅或按量
-    /// 计价。类别与「是否按金额统计」是两条独立事实。
+    /// 计价。
     pub fn with_template(mut self, template: AccountTemplateId) -> Self {
-        self.pricing_mode = match template.as_str() {
-            "zhipu-coding-plan" | "mimo-token-plan" | "openai-compatible" => {
-                pl_protocol::PricingMode::Disabled
-            }
-            _ => pl_protocol::PricingMode::Catalog,
-        };
         self.template = Some(template);
         self.capabilities = AccountCapabilitySelection::TemplateDefaults;
         self
@@ -1096,7 +1087,6 @@ fn apply_connection_overrides(
 /// 模板默认计费类别。
 ///
 /// 只有订阅制模板预置 `subscription`，品牌 API 模板是 `metered`，自定义兼容入口保持未知。
-/// 金额统计开关（`pricing_mode`）与类别独立：`Disabled` 只关闭金额估算，不代表订阅或免费。
 fn template_billing_kind(template: &AccountTemplateId) -> pl_protocol::BillingKind {
     match template.as_str() {
         "zhipu-coding-plan" | "mimo-token-plan" => pl_protocol::BillingKind::Subscription,

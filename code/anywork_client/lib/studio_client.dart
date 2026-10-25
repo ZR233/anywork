@@ -8,7 +8,6 @@ export 'src/studio/stores/updater_store.dart';
 export 'src/studio/stores/settings_store.dart';
 export 'src/studio/stores/thread_directory_store.dart';
 export 'src/studio/stores/selection_store.dart';
-export 'src/studio/stores/model_performance_store.dart';
 export 'src/studio/stores/session_costs_store.dart';
 export 'src/studio/stores/mode_catalog_store.dart';
 export 'src/studio/stores/skills_store.dart';

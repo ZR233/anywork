@@ -167,6 +167,29 @@ pub enum HistoryInstructionRole {
     Developer,
 }
 
+impl HistoryInstructionRole {
+    /// Whether this declared history role actually accepts the wire role the
+    /// concrete protocol sends. `None` is never a supported update authority.
+    pub(crate) fn accepts(self, role: InstructionWireRole) -> bool {
+        matches!(
+            (self, role),
+            (Self::System, InstructionWireRole::System)
+                | (Self::Developer, InstructionWireRole::Developer)
+        )
+    }
+}
+
+/// The wire role a concrete protocol + wire API uses for trusted instruction messages.
+///
+/// Chat Completions only has `system`; Responses defaults to `developer` except DeepSeek,
+/// whose official Responses surface treats `developer` as `user` and therefore must send
+/// trusted instructions as `system`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum InstructionWireRole {
+    System,
+    Developer,
+}
+
 /// Effective behavior requires both endpoint syntax and model override semantics.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InstructionUpdateStrategy {
@@ -305,6 +328,19 @@ impl ProtocolKind {
             Self::OpenAiCompatible => "open_ai_compatible",
         }
     }
+
+    /// The wire role this protocol uses for trusted instruction messages.
+    ///
+    /// This is the single dispatch fact: Chat Completions always uses `system`, Responses
+    /// uses `developer` except DeepSeek whose Responses contract sends `system`. Neither the
+    /// model name nor the endpoint URL participates.
+    pub(crate) const fn instruction_wire_role(self, api: WireApi) -> InstructionWireRole {
+        match (self, api) {
+            (Self::DeepSeek, WireApi::Responses) => InstructionWireRole::System,
+            (_, WireApi::Responses) => InstructionWireRole::Developer,
+            (_, WireApi::ChatCompletions) => InstructionWireRole::System,
+        }
+    }
 }
 
 impl std::str::FromStr for ProtocolKind {
@@ -426,14 +462,13 @@ impl ProtocolEndpoint {
         &self,
         model: &crate::model::ModelInfo,
     ) -> InstructionUpdateStrategy {
-        let accepts = matches!(
-            (
-                model.binding.transport.protocol,
-                self.service_capabilities.history_instruction_role
-            ),
-            (WireApi::ChatCompletions, HistoryInstructionRole::System)
-                | (WireApi::Responses, HistoryInstructionRole::Developer)
-        );
+        let role = self
+            .protocol
+            .instruction_wire_role(model.binding.transport.protocol);
+        let accepts = self
+            .service_capabilities
+            .history_instruction_role
+            .accepts(role);
         if accepts && model.capabilities.instruction_snapshot_overrides {
             InstructionUpdateStrategy::AppendFullSnapshot
         } else {
@@ -502,11 +537,9 @@ impl ProtocolEndpoint {
             tool_wire_policy: ToolWirePolicy::FunctionFallback,
             apply_patch_tool_type: None,
             service_capabilities: ProtocolServiceCapabilities {
-                history_instruction_role: if canonical {
-                    HistoryInstructionRole::Developer
-                } else {
-                    HistoryInstructionRole::None
-                },
+                // DeepSeek 的 in-history/leading-only 更新能力只在 Messages API 下声明，
+                // Responses 不可证明；这里不声明历史指令覆盖能力，安全走 ReplacePrefix。
+                history_instruction_role: HistoryInstructionRole::None,
                 files: if canonical {
                     FileUploadCapability::DeepSeek
                 } else {

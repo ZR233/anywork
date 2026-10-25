@@ -1,148 +1,52 @@
 # 23 - anywork 发布与应用内升级
 
-本文定义 anywork 稳定版的唯一发布渠道、Windows 打包格式和应用内更新信任边界。首版只
-支持 Windows x64；RC 构建只作为 CI artifact，不进入稳定更新源。SSH remote helper 不建立
-独立发布合同：helper 以压缩资源随应用 bundle 分发（见 [22](./22-ssh-remote.md)），安装
-目录包含随包资源，但 GitHub Release 不提供单独 helper 下载项，也不在用户数据目录安装副本。
+本文定义 `anywork` 稳定版的唯一发布渠道、Windows 打包格式与应用内更新信任边界。首版仅支持 Windows `x64`；候选发布（RC）构建仅作为 CI 构件（artifact），不进入稳定更新源。SSH 远端辅助进程（`pl-remote-helper`）不设独立发布契约，而是以压缩资源随应用发行包（bundle）一并分发（见 [22](./22-ssh-remote.md)）：安装目录包含随包资源，GitHub Release 不提供单独的辅助进程下载项，也不在用户数据目录安装副本。
 
 ## 23.1 版本与发布流
 
-Studio 使用 Release Please 的单一根组件管理版本：根版本文件、release manifest 与带版本
-注解的 Flutter pubspec 由同一个 Release PR 同步更新；Flutter 版本只允许规范的稳定
-`x.y.z`，不使用 `+build`。版本从整个仓库的 Conventional Commits 收集，自动计算采用
-`always-bump-minor`：可发布的产品修改统一递增 minor 并将 patch 归零，`fix:` 也不自动
-递增 patch；带 `!` 或 `BREAKING CHANGE:` 的提交不自动递增 major。破坏性变更标记与
-发行说明仍须保留；此处采用产品发布节奏，不以 minor 表示不存在破坏性变更。普通 `docs:`
-与 `chore:` 分类隐藏，不进入发行说明，仅含这些提交（含两者混合）的批次不生成 Release PR；
-普通 `ci:` 等未列入发行说明的非产品修改也不单独触发版本。上述过滤不丢弃真实破坏性变更
-说明或显式 `Release-As` 人工版本决定；这些提交仍按破坏性变更或人工指定版本处理。
+### Release Please 版本计算与人工审批
 
-major 升级必须由维护者明确决定，在进入主分支的提交正文中使用 `Release-As: x.y.z`
-指定目标稳定版本，再人工审查并合并生成的 Release PR；不能仅凭破坏性变更标记决定升级。
-显式指定只影响相应发布，之后仍采用自动 minor 策略，不保留长期固定的版本覆盖配置。
-所有版本仍以人工审查并合并 Release PR 为发版批准，不新增自动合并，也不从 Actions 输入
-或另行推算版本。策略只影响后续版本计算，不改写已生成的历史版本或既有 draft。
+Studio 使用 Release Please 的单一根组件管理版本：根版本文件、发布清单（release manifest）与带版本注解的 Flutter `pubspec.yaml` 由同一个 Release PR 同步更新；Flutter 版本仅允许规范的稳定语义化版本 `x.y.z`，不使用 `+build` 后缀。版本变更从整个仓库的约定式提交（Conventional Commits）收集，自动版本计算采用 `always-bump-minor` 策略：
+- **次版本统一递增**：可发布的产品修改统一递增次版本号（minor）并将修订号（patch）归零，`fix:` 提交也不自动递增 patch；携带 `!` 或 `BREAKING CHANGE:` 的提交不自动递增主版本号（major），但必须保留真实的破坏性变更标记与发行说明。
+- **非产品提交隐藏**：普通 `docs:`、`chore:` 与 `ci:` 提交隐藏，不进入发行说明，仅包含此类提交的批次不生成 Release PR；但包含真实破坏性变更说明或显式 `Release-As` 人工版本指定的提交不受此过滤影响。
+- **主版本人工决策**：主版本号（major）升级必须由维护者明确决定，在合入主分支的提交正文中使用 `Release-As: x.y.z` 指定目标稳定版本，再人工审查并合并生成的 Release PR；显式指定仅作用于当次发布，后续恢复自动递增次版本策略，不在配置文件中长期保留 `release-as` 覆盖。所有版本均以人工审查并合并 Release PR 作为发版批准。
 
-PR Quality Gate 对 PR head 分支运行 Release Please dry run，验证该分支的发布配置；
-仅在 GitHub GraphQL 返回已识别的瞬时错误时有限重试，其他错误直接失败。
+PR 质量门禁（PR Quality Gate）对 PR 头部分支运行 Release Please 演练（dry run）以验证发布配置；仅在 GitHub GraphQL API 返回已知瞬时错误时执行有限重试，其余错误直接判定失败。
 
-发布 workflow 按 Release Please 官方模式运行，并使用仓库专属 fine-grained PAT 创建或
-更新 Release PR，使 PR 自身及其合并提交能触发正常 Actions；workflow 必须先确认 PAT
-属于仓库所有者，不得以默认 token 代替。Release PR 维护根 CHANGELOG；合并后，同一次
-workflow 从 Release Please 的输出解析不可变 `v{x.y.z}` tag、draft Release 和精确数字
-ID，并同步调用可复用的 publisher；调用方必须等待 publisher 完成，构建或发布失败直接使
-Release 失败，不通过新的 GitHub 事件或 API dispatch 串联。publisher 再从 GitHub API 和
-tag 独立解析仓库、稳定 SemVer、提交 SHA 与三个版本文件，拒绝人工提供的版本或 SHA。
-回滚只允许发布更高版本的 forward fix，不覆盖 tag 或既有 Release。
+### 三阶段发布器（Publisher）与权限分离
 
-publisher 分为 helper、GUI 构建与发布三阶段。Linux helper job 从 tag 的精确提交交叉编译
-两种 musl 架构并生成 SHA-256，只作为同一 workflow run 的内部 artifact；Windows job 消费
-这组 helper 并作为压缩资源打入应用 bundle，再执行 Rust/Flutter 检查、GUI 构建、签名、安装烟测、
-独立 verify 和 provenance；helper 不作为独立正式 Release 资产发布。publish job 下载最终
-artifact 并按 Release ID 对账：draft 可为空或只含部分资产，但任何已有资产的名称、长度
-与 SHA-256 digest 必须和本地文件完全一致；只允许补传缺失资产，不得覆盖不同字节。全部
-资产一致后才能取消 draft 并标记 latest。failed job 重跑复用原 artifact 继续补传；完整
-draft 与已发布 Release 重跑均幂等成功。若存在尚未完成且未被取代的稳定 draft，发布
-workflow 优先恢复该 publisher，而不创建下一版 Release PR；publisher 保留带精确
-Release ID 的手动入口，仅用于故障恢复。
+发布工作流按 Release Please 官方模式运行，并使用仓库专属的细粒度个人访问令牌（fine-grained PAT，工作流须先校验其归属仓库所有者）创建或更新 Release PR，确保该 PR 及其合并提交能正常触发后续 GitHub Actions。Release PR 合并后，同一工作流运行实例从 Release Please 输出中解析不可变的 `v{x.y.z}` 标签、草稿发布（draft Release）与精确数字 ID，并同步调用可复用的发布器（publisher）；发布器再通过 GitHub API 与 Git 标签独立核验仓库身份、稳定版本号、提交 SHA 与三个版本文件，拒绝任何人工传入的版本号或 SHA 参数。版本回滚仅允许通过发布更高版本的正向修复（forward fix）完成，严禁覆盖既有 Git 标签或已发布的 Release。
 
-同一不可变源码的发布构建由 stage 唯一负责 canonical 生成与一致性检查，不在构建前重复
-整套生成；Rust 与 Dart 格式、Flutter 静态分析仍须全部通过后才能交付发布资产。发布前的
-独立 verify 不以构建 job 的成功状态代替，但可以复用该 job 从同一 tag 提交编译的验证工具。
-工具仅作为同一 workflow run 的内部 artifact 传递，消费前核对摘要与编译工作区身份；不匹配
-必须终止，不从 PR、RC、其他 run 或不同提交获取可执行工具。没有上游构建的已发布版本验证
-仍从解析出的不可变源码构建工具，只复用其依赖缓存。工具 artifact 与安装器公开资产分离，
-不改变安装器签名、provenance 或 Release 资产集合。
+发布器分为三个阶段：
+1. **Linux 辅助进程交叉构建作业**：从标签对应的精确提交交叉编译两种 `musl` 架构的 `pl-remote-helper` 并生成 SHA-256 摘要，仅作为当次工作流运行实例的内部构件传递。
+2. **Windows GUI 构建与验证作业**：消费上述辅助进程构件并打入应用发行包，依次执行 Rust 与 Flutter 静态检查、GUI 确定性构建、代码签名、临时目录静默安装冒烟测试、独立产物核验（verify）与构建溯源证明（provenance attestation）。同一不可变源码的发布构建仅在准备阶段（stage）执行一次权威代码生成与一致性检查；独立核验步骤可复用同一标签提交编译出的核验工具内部构件（消费前核对摘要与编译工作区身份）。
+3. **正式发布对账作业（Publish）**：下载最终构件并按精确 Release ID 对账——草稿 Release 可为空或仅含部分资产，但任何已存在资产的文件名、字节长度与 SHA-256 摘要必须与本地文件完全一致，仅允许补传缺失资产而严禁覆盖不同字节；全部资产核对一致后取消草稿状态并标记为 `latest`。失败重跑可复用原构件继续补传，幂等收敛。
 
-若 draft 的不可变源码存在只能通过后续提交修复的缺陷，可在主线维护明确的取代记录，
-以稳定 tag、精确提交 SHA 和原因标识该次未完成发布。记录必须与真实 tag 一致且属于
-主线历史，否则发现与发布均失败。被取代的 draft 保留原有 Release、资产和 tag，但不再
-阻止 Release Please 准备下一版 Release PR，也不能通过手动 publisher 发布。取代记录
-不影响已公开 Release 的验证，不自动决定版本、合并 Release PR 或发布后续版本。
+若某个未完成发布的草稿 Release 因源码缺陷必须由后续提交修复，维护者可在主分支记录明确的取代（supersede）声明（绑定稳定标签、精确提交 SHA 与原因），使该草稿不再阻塞下一版 Release PR 的生成，同时禁止手动发布该被取代的草稿。构建与发布遵循严格的权限分离：发现与解析草稿的作业虽需仓库写权限（因 GitHub 草稿 Release 仅对具备推送权限的身份可见）但仅执行只读查询；构建作业保持只读权限；唯有最终发布作业执行资产上传与 Release 状态切换。
 
-权限分离：draft Release 只对具备仓库 push 权限的身份可见，因此负责发现和解析 draft 的
-job 使用写权限但只执行读取；构建 job 保持只读，只有最终 publish job 执行资产上传和
-Release 状态修改。解析 draft 时，其页面必须是同仓库生成的 untagged URL；取消 draft 后
-必须严格切换为对应 tag URL。
+稳定版 Release 固定包含四项公开资产：Windows 单用户（per-user）安装器、安装器的 `.minisig` 签名文件、`latest.json` 更新清单与 `SHA256SUMS.txt` 校验和文件（不提供便携版压缩包，也不执行 Cargo crate 发布）。
 
-稳定 Release 固定包含：Windows per-user 安装器、其 `.minisig` 签名、`latest.json` 更新清单与
-`SHA256SUMS.txt`；anywork 只分发安装器，不提供便携分发包。发布不执行 crate 发布，GitHub
-Release 是唯一正式分发渠道。资产名称集合由当前发布合同固定，合同变更前发布的 Release 保留
-其既有资产，不属于当前 publisher 的名称对账范围。
-Flutter 版本由 workflow 固定；Rust toolchain 由仓库统一固定，本地构建、质量检查、RC 与正式
-发布使用同一版本，Flutter 检查中的 Rust 生成工具也遵循该约束。第三方 Action 固定到完整
-commit SHA，并使用最小 token 权限、单实例 concurrency 与 build provenance attestation。
+### 工具链固定、构建缓存与 MSVC 环境排障
 
-CI 的第三方 Rust 命令行工具通过固定版本的 `cargo-binstall` 安装预编译包，并显式禁止源码
-编译回退；使用 `--force` 重新安装固定版本，避免 Cargo 缓存仅恢复安装元数据、缺少实际
-可执行文件时被误判为已安装。FRB 生成器及其 `cargo-expand` 依赖在生成前一并安装，
-避免生成过程中隐式安装。
-优先使用工具上游 Release；未发布二进制的 `cargo-expand` 使用 cargo-bins 的 quickinstall
-产物。工具版本在工作流中固定，产物缺失或安装失败直接使 job 失败。项目自身的 xtask、bridge
-与 helper 仍从当前提交构建，Cargo 与 Flutter 的依赖快照约束保持不变。
+Flutter 版本与 Rust 工具链版本在仓库中统一固定（以 `rust-toolchain.toml` 为唯一事实源，同时声明 `rustfmt`、`clippy`、`rust-analyzer` 组件以及 `aarch64-unknown-linux-musl`、`x86_64-unknown-linux-musl` 交叉编译目标）。`cargo xtask` 在触发任何 Rust 命令前先于仓库根目录执行 `rustc --version` 以完成固定工具链同步预检。CI 中的第三方生成工具（如 FRB 生成器与 `cargo-expand`）通过固定版本的 `cargo-binstall --force` 安装预编译二进制包，禁止回退至源码编译。构建缓存按宿主平台、实际工具链与产物集合隔离。
 
-构建缓存按宿主平台、实际工具链及产物集合隔离，兼容的 RC 与稳定发布构建共享缓存域。
-不同产物集合的并行 job 不竞争同一不可变缓存条目，避免先写入的不完整集合阻止后续补齐。
-托管临时 runner 不让未使用的预装 `stable` 工具链改变缓存身份；Cargo 的编译器、依赖、feature、profile
-与环境失效检查继续生效。缓存未命中只增加构建成本，不能跳过任何当前源码的检查，也不能
-扩大 GitHub 的分支信任边界；PR 检查结果不替代稳定 tag 的发布检查。
+Windows 本机编译第三方 C 依赖（如 `zstd-sys`）若遇到 MSVC `D8050` 错误（`cannot execute 'c1xx.dll': failed to get command line into debug records`），属于本机 MSVC 临时目录权限、路径长度或杀毒软件拦截等环境问题，而非代码缺陷。排查时可开启 `CC_ENABLE_DEBUG_OUTPUT` 获取完整编译器输出并修复 `%TMP%`/`%TEMP%` 环境；仅在本机环境短期无法修复时，才可在不入库的 `.cargo/config.local.toml` 中配置 `[profile.dev.package.zstd-sys] debug = 0` 作为个人本地临时绕过。
 
-固定 channel 声明的工具链组件同时包含 `rustfmt`、`clippy` 与 `rust-analyzer`：编辑器语言服务
-与命令行构建共享同一工具链，不把 LSP 交给另一套 toolchain，也不要求开发者额外安装服务器。
-同一文件声明的目标列表包含 remote helper 交叉构建所需的 `aarch64-unknown-linux-musl` 与
-`x86_64-unknown-linux-musl` 标准库，rustup 在同步固定工具链时一并安装，本地构建、RC 与发布
-都不执行单独的 `rustup target add`，也不为目标架构引入第二套工具链；目标链接器或 Zig 仍由
-构建环境提供。
-xtask 在触发 Rust 工作的命令前先以仓库根为目录执行 `rustc --version`，由 rustup 完成固定
-工具链的同步与安装；该步骤失败时 xtask 保留 rustc/rustup 的原始输出并立即终止。版本与组件
-以 `rust-toolchain.toml` 为唯一事实源，xtask 不解析版本号、不比较 channel、不自行安装组件，
-也不提供绕过该预检的路径。
+## 23.2 Windows 安装包与签名信任根
 
-Windows 上第三方 C 依赖由 `cc` 构建时触发的 D8050（`cannot execute 'c1xx.dll': failed to get
-command line into debug records`）属于本机 MSVC 环境故障，不是依赖或压缩实现自身的缺陷：
-`cc` 对 MSVC 的非零 debug 级别固定传 `/Z7`，调试记录写入失败即报该错误。仓库不携带按依赖
-关闭调试信息的 profile 补丁，修复方向是本机环境——`%TMP%`/`%TEMP%` 可写且为短 ASCII 路径、
-磁盘余量、目录 ACL 与完整性级别（低完整性楼层下 build script 无法写临时目录）、管理员权限与
-杀毒软件排除、`vcvars` 环境与 MSVC 工具集版本。定位时用 `CC_ENABLE_DEBUG_OUTPUT` 取回被 `cc`
-隐藏的编译器输出，并手工重跑失败的命令行。只有本机环境短期无法修复时，才把
-`[profile.dev.package.zstd-sys] debug = 0` 写进 `.cargo/config.toml` 已 include 的
-`config.local.toml` 作为个人绕过；该文件不入库，仓库配置不再保留该覆盖。
+正式打包入口命令（`stage`、`finalize`、`verify`，参数为规范 `x.y.z` 版本号）要求传入版本与 `pubspec.yaml` 完全一致。`stage` 阶段复用 GUI 构建产物生成单用户 Inno Setup 安装器（使用稳定 `AppId`，默认安装至 `LocalAppData`，声明 `CloseApplications` 与 `RestartApplications`，支持英语与随源码固定的简体中文界面，并将 `code/pl-studio-runtime/THIRD_PARTY_NOTICES.md` 与 `LICENSE` 打入发行包根目录）。
 
-## 23.2 Windows 包边界
+发布的安装器不包含调试符号文件（PDB）；Windows 构建会额外生成独立的符号构件（包含与发布版本、提交 SHA 及会话协议版本映射的启动器与 Rust 桥接库 PDB），专门用于崩溃转储分析。升级后的用户数据与配置遵循 [17](./17-studio-storage.md) 与 [20](./20-config.md) 的迁移契约（迁移边界见 [17.7](./17-studio-storage.md#177-大版本隔离与配置迁移)）。
 
-正式打包入口命令（stage / finalize / verify，参数为规范 `x.y.z`）严格要求版本与 pubspec
-完全一致，不接受带 `v`、prerelease 或 build metadata 的形式。stage 复用 GUI 构建生成
-per-user Inno Setup 安装器；安装器使用稳定 AppId，默认安装到 LocalAppData，
-声明 CloseApplications/RestartApplications。打包输入排除 PDB，包含 LICENSE 与第三方声明。
-打包的第三方声明读取 `code/pl-studio-runtime/THIRD_PARTY_NOTICES.md` 并放入 bundle 根目录；
-该源码文件与预置技能一起维护，不要求仓库根目录存在第二份声明。
-安装器的标准安装向导、错误提示与卸载界面支持英语和简体中文；首次安装根据系统界面语言
-选择默认语言，用户可以手动切换，后续安装沿用已保存的语言选择。简体中文资源随源码固定，
-本地与发布构建使用同一份翻译，不依赖编译器安装目录是否附带中文资源。
+签名信任机制分为两层：
+- **Minisign / Ed25519（强制信任根）**：生产环境公钥直接编译进运行时二进制文件，私钥与口令仅保存在 CI 机密存储（secrets）中；轮换私钥时必须先通过仍受旧密钥信任的应用版本发布包含新公钥的客户端。
+- **Authenticode（可选系统增强）**：当代码签名证书存在时，依次对主可执行文件、自有动态库与最终安装器进行签名；证书缺失时不阻塞发布。
 
-快捷方式、WER 配置和卸载清理仅管理 anywork；更新资产以 anywork 为前缀，版本序列、
-签名信任根与更新清单共同约束发布身份。升级后的用户数据和配置分别遵循
-[17](./17-studio-storage.md) 与 [20](./20-config.md) 的版本迁移契约；迁移能力的实现状态
-见 [17.7](./17-studio-storage.md#177-迁移实现状态与剩余边界)，安装成功不代表数据迁移已通过验收。
+`finalize` 阶段仅对最终定稿字节生成 SHA-256、Minisign 签名、校验和文件与更新清单；`verify` 阶段独立复核文件集合、版本号、字节长度、哈希摘要、签名与清单一致性。
 
-发布的安装器不包含 PDB；Windows 构建必须同时产生独立、带 release version、commit SHA
-与 session protocol version 映射的 symbols artifact，收集 runner 和 Rust bridge 的匹配
-PDB。symbols artifact 只用于崩溃分析，不作为公开更新资产，也不能被安装器加载。
+## 23.3 更新清单（`latest.json`）
 
-Authenticode 是可选增强：证书存在时先签主 EXE/自有 DLL，再签最终安装器；缺少证书不
-阻塞发布。Minisign/Ed25519 是强制信任根：生产公钥编译进 runtime，私钥与密码只存在于
-CI secrets；私钥轮换必须先通过仍受旧密钥信任的应用版本发布新的公钥集合。finalize 只
-对最终字节生成 SHA-256、Minisign 签名、校验和文件与更新清单；verify 必须独立复核
-文件集、版本、长度、哈希、签名和清单。tag 与 draft Release 由 Release Please 先创建，
-但 CI 只有在安装器临时目录静默安装烟测及再次 verify 全部通过后才公开 Release。
-
-## 23.3 更新清单
-
-publisher 按当前 GitHub 仓库名 `ZR233/anywork` 校验发布身份；更新 URL 维持已发布客户端
-信任的 `ZR233/pure-lang` 路径，由 GitHub 仓库更名重定向解析到同一发布仓库。仓库更名
-不隐含变更客户端的 URL 信任契约。
-
-稳定检查地址固定为仓库 Releases 的 `latest.json`。清单是 camelCase typed JSON：
+发布器按当前 GitHub 仓库名 `ZR233/anywork` 校验发布身份；客户端更新检查 URL 维持已发布版本信任的 `ZR233/pure-lang` 路径（由 GitHub 仓库重命名重定向机制解析至同一发布仓库）。稳定版更新清单固定为 `latest.json`（采用 `camelCase` 类型化 JSON）：
 
 ```json
 {
@@ -161,109 +65,19 @@ publisher 按当前 GitHub 仓库名 `ZR233/anywork` 校验发布身份；更新
 }
 ```
 
-时间戳是 Unix 秒 `i64`。客户端拒绝未知 schema、非稳定 SemVer、同版或降级、非 HTTPS、
-非本仓库资源、异常 port/userinfo/query，以及 tag、version、文件名不一致的 URL。清单与
-签名下载最多跟随五次重定向，重定向目标仅允许 GitHub Release/CDN HTTPS 主机。
+其中 `publishedAt` 为 Unix 秒级时间戳（`i64`）。客户端严格拒绝未知 `schemaVersion`、非稳定语义化版本、同版本或降级版本、非 HTTPS 协议、非本仓库资源、异常端口或查询参数，以及标签、版本号与文件名不一致的下载链接。清单与签名下载最多跟随 **5 次**重定向，且重定向目标主机仅限 GitHub Release 与官方 CDN 的 HTTPS 域名。
 
-## 23.4 更新状态机与安装
+## 23.4 更新状态机与安装交接
 
-Studio 运行时的 updater owner 在内存中维护 canonical UpdaterState：Disabled、Idle、Checking、
-UpToDate、Available、Downloading、Verifying、Ready、InstallerLaunched、CheckFailed、
-InstallFailed；每个状态由独立 payload 承载，update、下载进度和类型化错误不作为平行
-可选字段存在。
+Studio 运行时的更新器所有者（updater owner）在内存中维护权威状态枚举 `UpdaterState`：`Disabled`、`Idle`、`Checking`、`UpToDate`、`Available`、`Downloading`、`Verifying`、`Ready`、`InstallerLaunched`、`CheckFailed` 与 `InstallFailed`（每个状态由独立载荷承载，不设平行的可选字段）：
 
-- `readUpdateState()` 只读本进程 owner，不访问网络。更新状态、下载进度与安装资格不写入
-  `settings.toml`；下载库拥有缓存分片及续传元数据，不另建应用进度数据库或检查点格式。
-- `checkStudioUpdate()` 使用编译时当前版本并返回 UpToDate 或 Available，Flutter 不传
-  currentVersion；本进程已进入 Ready 时返回该已验证状态，保留退出安装资格。
-- 桌面启动完成后，每个进程只在后台检查一次；发现更新后自动下载并验证，成功进入 Ready。
-  后台操作由桥端强持有并纳入既有退出取消与完成观察，界面只消费 canonical 状态；不阻塞
-  启动，不要求运行时空闲，不在页面重建或打开设置时重新检查，失败保留明确状态供手动重试。
-  手动检查、后台准备和手动安装共用登记后放行的所有权协议，退出必须取消并等待每个已登记操作。
-- Ready 表示完整安装包已经验证并由本进程持有只读文件租约。重启从 Idle 开始重新检查清单，
-  按新清单选择分片并重新校验，不能从旧状态恢复安装资格；旧 settings 中的派生更新缓存不再
-  消费。下载中退出只取消下载，不在退出期间补下载或延长退出期限。
-  正常退出只有统一关停报告为 Clean 才交接已准备的更新；Degraded、未知保存状态或强制退出
-  均不安装。安装器脱离应用进程树并等待旧进程真正结束后才开始写入，显示安装进度，完成保持关闭。
-- `prepareStudioUpdate(expectedRevision, version)` 返回拥有进度流与完成确认的准备操作，流式下载
-  安装器与签名，校验声明长度和 512 MiB 上限、SHA-256 与内置 Minisign 公钥，不关闭运行时。
-  同一版本正在后台准备时加入其真实完成结果，不重复下载；Ready 直接复用已验证的文件租约。
+- **只读查询与后台单次检查**：`readUpdateState()` 仅读取本进程内存所有者而不访问网络，更新状态与下载进度不写入 `config.toml`。桌面应用启动完成后，每个进程仅在后台执行一次 `checkStudioUpdate()`（使用编译进二进制的产品版本）；发现新版本后自动流式下载并校验，验证通过后进入 `Ready` 状态并持有安装包的只读文件租约。
+- **断点续传与多重校验**：安装包下载采用 Rust 原生 `reqwest`/`rustls` 与 `downlowd` 库管理 HTTP 断点续传、`ETag`/`Last-Modified` 校验、有界重试及 `.part`/`.downloadinfo` 分片写入（同一版本缓存受操作系统文件锁保护，拒绝跨进程并发下载）。超时与重试限额固定为：更新检查连接超时 **15 秒**、读取停滞超时 **30 秒**、总预算 **60 秒**；安装包下载单文件上限 **512 MiB**、连接与读取停滞超时 **5 秒**、总预算 **15 分钟**、最多 **4 次**传输尝试（重试间隔不超过 2 秒），中间进度合并发布频率上限为每秒 **4 次**。下载完成后必须完整校验字节长度、SHA-256 摘要与内置 Minisign 公钥签名，任一校验不通过立即删除损坏分片并终止，绝不启动未验证的二进制程序。
+- **退出协调与安装器交接**：手动点击更新不要求当前会话空闲，下载期间可正常使用应用。当安装包准备完成且进入应用退出流程时，统一走宿主退出协调器（见 [18](./18-studio-state.md) §18.5）：唯有运行时、桥接层与 Dart 外部所有者全部确认收束且关停报告为真实 `Clean` 时，才启动安装器交接；若关停报告为 `Degraded`、保存状态未知或超时，则跳过本次安装并保留已验证缓存供下次启动重试。Windows 安装器通过支持显式脱离（breakaway）的进程交接工厂启动，脱离原应用作业对象（Job Object），禁用 Windows Restart Manager 的自动关闭与重启，等待旧进程真正退出后才开始写入文件，并在手动更新完成后负责拉起新版本应用。
 
-安装包传输采用 Rust 原生 reqwest/rustls，由 downlowd 完整管理 HTTP 续传、ETag/Last-Modified
-检查、有限重试与分片写入。应用只提供可信资源与按清单 SHA-256 隔离的缓存目标；库维护
-`.part` 和 `.downloadinfo`，网络中断、取消和进程重启保留它们。服务端不支持续传或远端内容
-变化时由库重下，不拼接完整响应。完整分片不再请求网络，仍须重新验证全部
-长度、SHA-256 和 Minisign 签名；校验失败或超限的分片删除，不能反复续传损坏内容。重试有界，
-退出取消必须等待传输和文件写入完成。reqwest 负责重定向，跟随每一跳前仍校验
-既有 HTTPS 主机限制；应用不实现第二套 Range 协议。
+## 23.5 生产诊断日志与后台进程窗口约束
 
-成功校验后原子重命名；已验证且与清单完全一致的缓存可复用。同一版本缓存用文件锁保护，
-跨进程并发下载也必须拒绝。中间下载进度合并发布，最多每秒四次，并始终发布恢复起点和最终进度；
-状态机直接发布内存状态，不因下载而反复替换设置文件。
-
-手动更新不要求会话空闲。Client 同步发布请求 pending，后台下载期间仍允许正常使用；已有
-后台下载时可选择完成后安装并重启。准备操作、文件租约及进度投影真实完成后才进入与普通退出
-相同的宿主协调器，封闭新工作、停止活动 turn/task、保存并回收全部资源。首次退出固定普通退出
-或更新后重启意图与总期限，重复请求只加入；准备操作不在退出中等待自身。
-只有 runtime 与 bridge、Dart 外部 owner 均确认，完整关停报告为 `Clean` 才交接安装器。
-`Degraded`、保存未知或超时均跳过安装，保留缓存与诊断，按正常退出期限结束。
-退出回执分别承载关停报告与安装交接结果，派生失败明确上报，不改写已完成的关停事实。
-安装器使用原生 silent 进度窗口与可见错误，不弹安装向导；手动更新成功后启动新版，普通退出
-更新完成保持关闭。禁用 Restart Manager 的自动关闭与应用重启，等待旧进程真正退出后才写入。
-安装器已启动不等于安装完成，不自行实现第二套安装界面。
-
-检查使用编译进应用的产品版本，与发行版本文件一致，不使用内部 crate 版本。检查连接超时为
-15 秒，读取连续停滞超时为 30 秒，检查总预算为 60 秒。下载连接与读取连续停滞超时为 5 秒，
-总预算为 15 分钟，最多四次传输尝试，重试等待不超过 2 秒；下载等待数据时通过有界网络等待
-和库的进度、重试取消回调响应退出，必须等待库关闭文件。检查失败返回完整 canonical CheckFailed，保留底层连接、
-证书或响应错误供显示和诊断，不由 GUI 编造状态与 revision。
-
-InstallFailed 可对同一已验证更新重新下载。检查与安装命令
-由同一 owner 串行受理，状态事件不能导致 GUI 释放正在运行的安装操作。
-
-Ready 之前必须确认文件租约与校验阶段的 canonical 状态投影；投影失败取消下载并禁止安装交接。
-派生失败保留文件租约，只有操作系统确认派生成功才记录内存交接事实。
-真实投影所有者错误仍保留在本进程的退出报告中；业务重试不能抹去该错误，本次退出不安装，
-下次启动重新恢复并校验后才允许自动安装。
-操作流在传递状态后继续传递命令或投影错误，不以正常结束吞掉失败。下载或校验失败保留当前
-应用供重试；进入保存退出后失败则显示原因、保留缓存并按首次期限结束，下次打开后重试。
-更新只读入口在安全关停后仍可读取 owner 状态。安装器实际派生成功的事实独立于状态投影，
-重复交接不得再次派生，也不能因投影失败重新启动旧程序。
-Windows 安装器使用专用进程交接工厂脱离开发入口的任务对象；开发
-任务对象只允许显式 breakaway，普通子进程仍按 kill-on-close 回收。更新启动参数禁用
-Restart Manager 的应用重启，安装器的更新启动项是成功安装后启动新版的唯一责任方。
-
-页面打开只显示 canonical
-last-known state，不自动检查。FRB 只公开 typed DTO、后台启停命令和状态事件；安装事件
-直接携带完整 canonical updater state；Dart 不接收或解析 raw manifest JSON，也不维护
-第二套 install phase。Client 只单独持有命令 pending / 取消状态，不伪造 canonical revision。
-
-更新失败不得启动任何二进制：未签名、错误签名、内容篡改、超限、长度不符、URL 越界或
-清单降级均属于终止错误；应用保留当前版本并允许用户重试检查或下载。
-
-## 23.5 生产诊断与后台进程
-
-Studio 在用户数据目录的 `anywork/logs` 写入滚动 Rust 与 Dart error 日志，panic
-marker 和 native dump 写入 `anywork/crashes`。默认 Rust filter 为 `warn`，CLI
-`--log-level` 优先于 `RUST_LOG`；启动、每小时与正常关闭清理最后修改时间超过 48 小时的
-自有日志和 crash 文件。Rust 主日志与同步 error 日志使用 `rolling-file` 按日或达到 16 MiB
-轮转，每类保留当前文件和最多 7 个归档，写入队列继续复用 `tracing-appender`。旧日期格式
-及 Dart 兜底日志除时间清理外，总量超过 64 MiB 时从最旧文件开始清理；清理不跟随符号链接，
-不删除当前打开的编号轮转主文件。完整 prompt、context 和工具结果不进入 tracing；日志只记录
-root/agent/session 身份、cursor、运行阶段、条目规模、耗时和 outcome（完整合同见
-[17](./17-studio-storage.md)）。panic 与 error 使用同步兜底持久化，正常关闭显式 flush。
-shutdown 错误聚合通过同步 error 日志、临时应急文件与 stderr 兜底（Windows 另有 debug 输出
-兜底）落盘，记录 `code`、`correlation_id`、待保存事实与保存 fence，不含凭据或正文；写入
-不得延误退出期限，日志不可用也必须立即继续退出。诊断收尾独立于 runtime 初始化状态并可单独
-调用（见 [18](./18-studio-state.md) §18.5），使正常关闭之外的强制退出也保留可读诊断。
-应急记录在首选诊断主目录不可写时回退到进程临时目录，两者都失败才退回 stderr/Windows debug，
-并保留 PID、阶段 elapsed、真实或未知的 owner ID 与保存水位；同步 error 日志另带脱敏后的错误
-来源链摘要（typed 分类的脱敏消息、`std::io` 的错误 kind 与 OS 错误码、数据库失败分类与可公开
-的 SQL 错误码，未知类型只留规模）与堆栈；不写正文或凭据。缺失即为未知，绝不用零或 `None`
-伪造已完成。
-Windows 构建为当前 exe 配置 WER LocalDumps，并保留 in-process unhandled exception
-minidump 兜底；特定栈溢出签名在没有匹配 dump/PDB 时只能报告现象，不能宣称唯一根因。
-
-所有由 GUI 发起的后台 Git、Docker、MCP/LSP、Agent 与终止辅助命令在 Windows 使用
-CREATE_NO_WINDOW；其他平台保持既有后台语义（见 [05](./05-conventions.md)）。只有用户
-显式打开交互终端或安装器等外部 UI 时允许正常显示窗口。
+Studio 在用户数据目录的 `anywork/logs` 下写入滚动的 Rust 日志与 Dart 错误日志，崩溃标记（panic marker）与原生转储（minidump）写入 `anywork/crashes`：
+- **滚动策略与过期清理**：默认日志级别为 `warn`（命令行 `--log-level` 优先于环境变量 `RUST_LOG`）。Rust 主日志与同步错误日志按日或单文件达到 **16 MiB** 轮转，每类保留当前文件及最多 **7 个**历史归档；启动、每小时定时期与正常关闭时自动清理最后修改时间超过 **48 小时**的自有日志与崩溃文件（旧格式及 Dart 兜底日志总体积超过 **64 MiB** 时从最旧文件开始淘汰）。
+- **隐私脱敏与多路退出兜底**：完整提示词、对话上下文、敏感凭据与工具输出正文严禁写入诊断日志（日志仅记录根会话、智能体、会话身份、游标、阶段、条目规模、耗时与结果分类，见 [17](./17-studio-storage.md)）。关停错误通过同步错误日志、临时目录应急文件与标准错误流（`stderr`，Windows 另含调试输出）多路兜底落盘，且日志写入绝不延误 30 秒应用退出硬期限。Windows 构建同时为当前可执行文件配置 WER `LocalDumps` 与进程内未捕获异常小型转储（minidump）兜底。
+- **后台子进程无窗口约束**：所有由 GUI 发起的后台 Git、Docker、MCP、LSP、智能体与终止辅助命令在 Windows 上统一使用 `CREATE_NO_WINDOW` 标志启动（见 [05](./05-conventions.md) §5.5）；仅当用户显式点击打开外部交互式终端、编辑器或更新安装器时才显示外部窗口。

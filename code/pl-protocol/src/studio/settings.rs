@@ -68,8 +68,7 @@ pub struct StudioSettings {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, ToSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct StudioAccountSettings {
-    pub pricing_enabled: bool,
-    /// 计费类别；与 `pricing_enabled` 独立，不证明订阅有效或额度充足。
+    /// 生效计费类别；订阅不证明订阅有效或额度充足。
     #[serde(default)]
     pub billing_kind: crate::BillingKind,
     /// 计费类别的显式覆盖原意图；`None` 表示未显式配置、由模板与 canonical endpoint 推导。

@@ -101,9 +101,6 @@ sealed class BridgeProductEventPayload with _$BridgeProductEventPayload {
   const factory BridgeProductEventPayload.acpInstallStateChanged(
     BridgeAcpInstallSnapshot field0,
   ) = BridgeProductEventPayload_AcpInstallStateChanged;
-  const factory BridgeProductEventPayload.modelPerformanceStateChanged(
-    BridgeModelPerformanceSnapshot field0,
-  ) = BridgeProductEventPayload_ModelPerformanceStateChanged;
   const factory BridgeProductEventPayload.sessionCostsChanged(
     BridgeSessionCostsState field0,
   ) = BridgeProductEventPayload_SessionCostsChanged;

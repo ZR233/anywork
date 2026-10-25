@@ -4,14 +4,14 @@
 
 use tokio::sync::watch;
 
+use crate::statistics::StudioModelPerformanceSnapshot;
 use crate::{
     AccountUsageStateSnapshot, PersistenceStateSnapshot, SkillsStateSnapshot,
     StudioAgentDirectoryData, StudioAgentDirectoryEntry, StudioAgentDirectoryState,
     StudioAgentProfilesStateSnapshot, StudioLspStateSnapshot, StudioMcpStateSnapshot,
-    StudioModelCatalogStateSnapshot, StudioModelPerformanceSnapshot,
-    StudioPersistenceQueueStateSnapshot, StudioProductEventEnvelope, StudioProductEventKind,
-    StudioRecoveryStateSnapshot, StudioSessionCostsState, StudioSettingsConfigStateSnapshot,
-    StudioUpdateStateSnapshot,
+    StudioModelCatalogStateSnapshot, StudioPersistenceQueueStateSnapshot,
+    StudioProductEventEnvelope, StudioProductEventKind, StudioRecoveryStateSnapshot,
+    StudioSessionCostsState, StudioSettingsConfigStateSnapshot, StudioUpdateStateSnapshot,
 };
 
 use super::ProductEventBus;

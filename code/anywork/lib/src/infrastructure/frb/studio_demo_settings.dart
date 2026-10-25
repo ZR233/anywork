@@ -176,7 +176,6 @@ const demoAccountCatalogFixture = AccountCatalogView(
       modelCatalogId: 'openai-compatible',
       protocol: 'open_ai_compatible',
       suggestedModelId: '',
-      pricingEnabled: false,
     ),
   ],
   modelCatalogs: {
@@ -319,6 +318,18 @@ List<AccountSettingsView> _providersFromCommands(
     final previousAccount = previous
         .where((item) => item.id == account.id)
         .firstOrNull;
+    if (previousAccount != null && account.initialBillingKind != null) {
+      throw const StudioFailure(
+        code: StudioFailureCode.invalidArgument,
+        message:
+            'Existing account billing kind requires its dedicated command.',
+        retryable: false,
+        correlationId: 'demo-account-billing-kind',
+      );
+    }
+    final billingOverride = previousAccount == null
+        ? account.initialBillingKind
+        : previousAccount.billingKindOverride;
     final observed = [
       for (final model in previousAccount?.models ?? const <AccountModelView>[])
         if (model.origin != ModelOrigin.manual) model,
@@ -372,9 +383,10 @@ List<AccountSettingsView> _providersFromCommands(
       catalogId: template.modelCatalogId,
       credentialLabel: template.credentialLabel,
       credentialEnv: template.credentialEnv,
-      pricingEnabled: account.pricingEnabled,
-      billingKind: previousAccount?.billingKind ?? BillingKind.unknown,
-      billingKindOverride: previousAccount?.billingKindOverride,
+      // Synthetic Demo templates supply no native canonical billing classification.
+      // Automatic is Unknown, never a memo of the current effective override.
+      billingKind: billingOverride ?? BillingKind.unknown,
+      billingKindOverride: billingOverride,
       disabledModels: previousAccount?.disabledModels ?? const [],
       capabilitySource: 'template_defaults',
       hostedWebSearch:

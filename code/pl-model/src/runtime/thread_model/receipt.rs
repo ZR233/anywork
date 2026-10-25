@@ -20,8 +20,12 @@ use std::sync::Arc;
 /// encoding boundary. Version 1 kept the previous full-text preview shape; it is upgraded to the
 /// current structure only at the persistence decode boundary in [`model_failure_receipt`], so a
 /// receipt written by an earlier incarnation of this same data version still recovers every byte of
-/// partial text it had already received. The running producer and live path handle version 2 only.
-pub const FAILURE_RECEIPT_VERSION: u32 = 3;
+/// partial text it had already received. Version 3 renamed the account binding; version 4 adds
+/// explicit no-charge accounting. The live producer only writes the current version.
+pub const FAILURE_RECEIPT_VERSION: u32 = 4;
+
+/// Failure receipt before explicit no-charge accounting, with the same field layout.
+const LEGACY_FAILURE_RECEIPT_VERSION_V3: u32 = 3;
 
 /// Failure receipt encoding from before the account model-binding field migration.
 const LEGACY_FAILURE_RECEIPT_VERSION_V2: u32 = 2;
@@ -422,25 +426,35 @@ pub fn model_failure_receipt(
             std::io::Error::other("unsupported model failure receipt"),
         ));
     }
-    match payload.version() {
-        FAILURE_RECEIPT_VERSION => serde_json::from_str(payload.content())
-            .map(Some)
-            .map_err(|source| super::failure(ModelFailureKind::UnsupportedContent, source)),
+    let receipt = match payload.version() {
+        FAILURE_RECEIPT_VERSION | LEGACY_FAILURE_RECEIPT_VERSION_V3 => {
+            serde_json::from_str::<ModelFailureReceipt>(payload.content())
+                .map_err(|source| super::failure(ModelFailureKind::UnsupportedContent, source))
+        }
         LEGACY_FAILURE_RECEIPT_VERSION_V2 => {
             let legacy: FailureReceiptV2 = serde_json::from_str(payload.content())
                 .map_err(|source| super::failure(ModelFailureKind::UnsupportedContent, source))?;
-            Ok(Some(legacy.migrate()))
+            Ok(legacy.migrate())
         }
         LEGACY_FAILURE_RECEIPT_VERSION => {
             let legacy: FailureReceiptV1 = serde_json::from_str(payload.content())
                 .map_err(|source| super::failure(ModelFailureKind::UnsupportedContent, source))?;
-            Ok(Some(legacy.migrate()?))
+            legacy.migrate()
         }
         _ => Err(super::failure(
             ModelFailureKind::UnsupportedContent,
             std::io::Error::other("unsupported model failure receipt"),
         )),
+    }?;
+    if payload.version() < FAILURE_RECEIPT_VERSION
+        && receipt.accounting.pricing == pl_protocol::PricingOutcome::NoCharge
+    {
+        return Err(super::failure(
+            ModelFailureKind::UnsupportedContent,
+            std::io::Error::other("no-charge accounting requires model failure receipt version 4"),
+        ));
     }
+    Ok(Some(receipt))
 }
 
 /// Version 1 failure receipt, decoded only to upgrade it into the current structure.

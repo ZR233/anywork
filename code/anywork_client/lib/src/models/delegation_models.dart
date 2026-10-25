@@ -4,7 +4,7 @@ enum DelegationMode { profile, automatic }
 
 enum DelegationPreference { economy, balanced, fast }
 
-enum BillingKind { metered, subscription, unknown }
+enum BillingKind { metered, subscription, noCharge, unknown }
 
 class DelegationSettingsView {
   const DelegationSettingsView({

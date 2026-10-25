@@ -34,7 +34,6 @@ class StudioState {
     required this.skillsByProject,
     this.threadModeCatalog = const ThreadModeCatalogView(),
     required this.accountUsageState,
-    this.modelPerformance = const ModelPerformanceSnapshotView(),
     required this.updaterState,
     this.persistenceState = const PersistenceStateSnapshot.ready(),
     this.persistenceQueueState,
@@ -83,7 +82,6 @@ class StudioState {
   final Map<String, SkillsStateSnapshot> skillsByProject;
   final ThreadModeCatalogView threadModeCatalog;
   final AccountUsageStateSnapshot accountUsageState;
-  final ModelPerformanceSnapshotView modelPerformance;
   final UpdaterStateSnapshot updaterState;
   final PersistenceStateSnapshot persistenceState;
 
@@ -356,7 +354,6 @@ class StudioState {
     Map<String, SkillsStateSnapshot>? skillsByProject,
     ThreadModeCatalogView? threadModeCatalog,
     AccountUsageStateSnapshot? accountUsageState,
-    ModelPerformanceSnapshotView? modelPerformance,
     UpdaterStateSnapshot? updaterState,
     PersistenceStateSnapshot? persistenceState,
     Object? persistenceQueueState = _studioStateUnset,
@@ -394,7 +391,6 @@ class StudioState {
       skillsByProject: skillsByProject ?? this.skillsByProject,
       threadModeCatalog: threadModeCatalog ?? this.threadModeCatalog,
       accountUsageState: accountUsageState ?? this.accountUsageState,
-      modelPerformance: modelPerformance ?? this.modelPerformance,
       updaterState: updaterState ?? this.updaterState,
       persistenceState: persistenceState ?? this.persistenceState,
       persistenceQueueState: identical(persistenceQueueState, _studioStateUnset)
