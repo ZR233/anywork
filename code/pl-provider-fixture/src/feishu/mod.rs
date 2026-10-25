@@ -4,12 +4,16 @@
 //! adapters must not import these types, and this module does not import
 //! runtime/protocol/tool/server crates.
 
+mod card;
+mod cardkit;
 mod cli;
 mod control;
+mod guard;
 mod http;
 pub mod media;
 mod messages;
 mod observe;
+mod observe_cards;
 mod peer;
 mod state;
 mod types;
@@ -21,15 +25,16 @@ pub use control::FeishuControl;
 pub use observe::{FeishuObserveOptions, run_feishu_observe};
 pub use peer::FeishuPeer;
 pub use types::{
-    APP_ID_PREFIX, AckObservation, BOT_OPEN_ID, CallBound, CallKind, ChatType, ClientConfig,
-    DEFAULT_APP_ID, DEFAULT_APP_SECRET, DIRECT_CHAT_ID, EventBody, FeishuLiveStatus,
-    FeishuPeerOptions, FeishuReadyFile, FeishuReport, GROUP_CHAT_ID, GroupChat, HistoryMessage,
-    Mention, MentionId, MessageContentObservation, MessageSendObservation, MessageSendOutcome,
-    OTHER_BOT_OPEN_ID, OutboundWs, PAIRING_DIRECT_CHAT_ID, PollObservation, PostContent,
-    PostElement, PostLocale, REGISTERED_APP_ID, REGISTERED_APP_SECRET, ReceivedPost, RecordedCall,
-    RegistrationBeginOptions, RegistrationPollScript, RegistrationTenantBrand, SendDisposition,
-    SenderKind, SyntheticEvent, TENANT_ACCESS_TOKEN, TRUSTED_USER_OPEN_ID, TokenScript,
-    UNKNOWN_USER_OPEN_ID, WsDiscoveryScript, WsUpgradeScript,
+    APP_ID_PREFIX, AckObservation, BOT_OPEN_ID, CallBound, CallKind, CardDisposition,
+    CardEntityReport, CardObservation, CardOperation, ChatType, ClientConfig, DEFAULT_APP_ID,
+    DEFAULT_APP_SECRET, DIRECT_CHAT_ID, EventBody, FeishuLiveStatus, FeishuPeerOptions,
+    FeishuReadyFile, FeishuReport, GROUP_CHAT_ID, GroupChat, HistoryMessage, Mention, MentionId,
+    MessageContentObservation, MessageSendObservation, MessageSendOutcome, OTHER_BOT_OPEN_ID,
+    OutboundWs, PAIRING_DIRECT_CHAT_ID, PollObservation, PostContent, PostElement, PostLocale,
+    REGISTERED_APP_ID, REGISTERED_APP_SECRET, ReceivedPost, RecordedCall, RegistrationBeginOptions,
+    RegistrationPollScript, RegistrationTenantBrand, SendDisposition, SenderKind, SyntheticEvent,
+    TENANT_ACCESS_TOKEN, TRUSTED_USER_OPEN_ID, TokenScript, UNKNOWN_USER_OPEN_ID,
+    WsDiscoveryScript, WsUpgradeScript,
 };
 pub use wire::{
     FRAME_TYPE_CONTROL, FRAME_TYPE_DATA, HEADER_BIZ_RT, HEADER_HANDSHAKE_AUTHERRCODE,

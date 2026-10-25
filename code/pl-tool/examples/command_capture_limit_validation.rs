@@ -44,6 +44,7 @@ use pl_tool::command::{
     command_output_model_path,
 };
 use pl_tool::exec::{CommandAccess, CommandOutputArchive, ExecFailure, ExecInput, ThreadExecTool};
+use pl_tool::media::ToolResourceOrigin;
 use pl_tool::workspace_file::{
     WorkspaceFileBackend, WorkspaceFileListRequest, WorkspaceFileListResult,
     WorkspaceFileReadBytesRequest, WorkspaceFileReadRequest, WorkspaceFileRemoveRequest,
@@ -1153,7 +1154,7 @@ impl std::fmt::Debug for FixedArchive {
 impl CommandOutputArchive for FixedArchive {
     async fn retain(
         &self,
-        _thread_id: &str,
+        _origin: &ToolResourceOrigin,
         snapshot: &CommandOutputSnapshot,
     ) -> Result<ResourceReference, ToolError> {
         self.calls.fetch_add(1, Ordering::SeqCst);

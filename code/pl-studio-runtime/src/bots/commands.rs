@@ -45,6 +45,15 @@ struct FrozenBinding {
     owner_epoch: String,
     expected_config_revision: u64,
     expected_binding_revision: u64,
+    /// 创建意图的目标来源：首次受理来自本次核验，接续受理只接受已持久证明。
+    target: CreationTarget,
+}
+
+/// 首次受理在联网核验后冻结目标种类；接续受理不联网，因此只能沿用已持久化的完整
+/// 证明，绝不在这里重造一个种类。
+enum CreationTarget {
+    Verified(super::storage::target::TargetKind),
+    Persisted,
 }
 
 impl FrozenBinding {
@@ -74,13 +83,45 @@ impl FrozenBinding {
             (self.owner_epoch.as_str(), 1),
             (self.title.as_str(), 1),
         ])?;
-        super::occupancy::counted_extra_bytes(
+        let base = super::occupancy::counted_extra_bytes(
             base,
             [
                 (self.creation_id.len(), 1),
                 (studio_title_bytes(&self.title), 3),
             ],
-        )
+        )?;
+        // 目标证明在首次持久写（`begin/adopt_binding_operation`）之前就已冻结，必须在此
+        // 计入：直聊对端身份同时有冻结种类、`TargetClaim` 与冻结证明 3 份本人副本，
+        // 编码后的证明另有 1 份作为 SQL 参数。接续路径的证明来自持久读取，按读到的
+        // 实际长度在准入内另计（见 `create_binding_thread`）。
+        let (peer_bytes, proof_bytes) = match &self.target {
+            CreationTarget::Verified(kind) => {
+                let revision = self
+                    .expected_binding_revision
+                    .checked_add(1)
+                    .ok_or_else(super::storage::binding_needs_recovery)?;
+                let proof_bytes = super::storage::target::TargetClaim::from_operation(
+                    &self.bot_id,
+                    &self.app_id,
+                    &self.project_id,
+                    &self.chat_id,
+                    &self.creation_id,
+                    &self.operation_id,
+                    kind.clone(),
+                )
+                .freeze(revision)
+                .encoded_len()?;
+                let peer_bytes = match kind {
+                    super::storage::target::TargetKind::Direct { open_id } => {
+                        super::occupancy::counted_text_bytes([(open_id.as_str(), 3)])?
+                    }
+                    super::storage::target::TargetKind::Group => 0,
+                };
+                (peer_bytes, proof_bytes)
+            }
+            CreationTarget::Persisted => (0, 0),
+        };
+        super::occupancy::counted_extra_bytes(base, [(peer_bytes, 1), (proof_bytes, 1)])
     }
 }
 
@@ -260,11 +301,7 @@ pub(super) fn send_claim_freeze_bytes(
         fields.push((project_id.as_str(), 1));
     }
     let source_bytes = match authority {
-        SendAuthority::Source(source) => serde_json::to_string(source)
-            .map_err(|_| super::occupancy::freeze_budget_error())?
-            .len()
-            .checked_mul(3)
-            .ok_or_else(super::occupancy::freeze_budget_error)?,
+        SendAuthority::InboundReply(reply) => reply.freeze_bytes(4)?,
         _ => 0,
     };
     for segment in &record.segments {
@@ -476,7 +513,7 @@ impl BotRuntime {
                     None,
                 ));
             }
-            self.authorize_chat(&current, &record.chat_id, authority, &membership)?;
+            self.authorize_chat(&current, &record.chat_id, authority.clone(), &membership)?;
             current.config_revision
         };
         // 已持久同操作允许非身份配置变化后原样重放（不重发、不抹旧结果）；
@@ -492,7 +529,12 @@ impl BotRuntime {
                 None,
             ));
         }
-        let claimed = managed.store.claim_send(&record).await?;
+        let claimed = match &authority {
+            SendAuthority::InboundReply(reply) => {
+                managed.store.claim_reply_send(&record, reply).await?
+            }
+            _ => managed.store.claim_send(&record).await?,
+        };
         // 首次认领已提交：主动重建能力投影（业务 Err/异常终止另由 owner 终态通知覆盖）。
         self.request_publish();
         Ok((claimed, config_revision))
@@ -565,12 +607,13 @@ impl BotRuntime {
         };
         // 首次受理才做联网可见性核验与过期 revision 快速拒绝；最终裁决仍在准入内。
         // 接续路径只读取所需标量，不搬运整份配置与可信集合。
-        let (name, app_id, project_id) = if accepted {
+        let (name, app_id, project_id, target) = if accepted {
             let current = managed.config.lock().await;
             (
                 current.name.clone(),
                 current.feishu().app_id.clone(),
                 current.project_id.clone(),
+                CreationTarget::Persisted,
             )
         } else {
             let config = managed.config.lock().await.clone();
@@ -586,10 +629,41 @@ impl BotRuntime {
                 .prepare_chat_access(&managed, &config, &chat_id, &self.inner.reply_cancel)
                 .await?;
             self.authorize_chat(&config, &chat_id, SendAuthority::Owner, &membership)?;
+            // 首次受理的可见性核验同时确定目标种类：直聊只接受已记录的对端身份，
+            // 官方群列表精确命中才是 Group；其余不得据此猜成任一目标。
+            let target = if membership.observed_direct {
+                match managed.store.observed_direct_open_id(&chat_id).await? {
+                    Some(open_id) if !open_id.is_empty() => {
+                        super::storage::target::ensure_peer(&open_id).map_err(|_| {
+                            FeishuError::new(
+                                FeishuErrorKind::Unavailable,
+                                "bot direct peer identity exceeds the supported bound",
+                                false,
+                                None,
+                            )
+                        })?;
+                        Some(super::storage::target::TargetKind::Direct { open_id })
+                    }
+                    _ => None,
+                }
+            } else if membership.remote_group {
+                Some(super::storage::target::TargetKind::Group)
+            } else {
+                None
+            };
+            let Some(target) = target else {
+                return Err(FeishuError::new(
+                    FeishuErrorKind::Unavailable,
+                    "bot chat target kind is unproven; local recovery required",
+                    false,
+                    None,
+                ));
+            };
             (
                 config.name.clone(),
                 config.feishu().app_id.clone(),
                 config.project_id.clone(),
+                CreationTarget::Verified(target),
             )
         };
         // 标题与操作字段都在此预生成并计入冻结预算：首次持久写前就能判定是否放得下。
@@ -620,6 +694,7 @@ impl BotRuntime {
             owner_epoch: owner_epoch.to_string(),
             expected_config_revision,
             expected_binding_revision,
+            target,
         };
         let text_bytes = frozen.text_bytes()?;
         self.submit_occupancy(text_bytes, move |budget| async move {
@@ -648,8 +723,9 @@ impl BotRuntime {
             owner_epoch,
             expected_config_revision,
             expected_binding_revision,
+            target,
         } = frozen;
-        let frozen_creation = {
+        let (frozen_creation, continuation_target) = {
             let _admission = managed.admission.lock().await;
             self.reject_closed_admission(&managed)?;
             // 身份判据在权威准入内重新核对：占用前的快速检查与联网核验都不能代替它。
@@ -686,13 +762,27 @@ impl BotRuntime {
                         None,
                     ));
                 }
+                // 已冻结的创建意图只能与原证明同源一致：首次受理必须与本次核验相同，
+                // 接续受理只接受已持久化的证明，种类不同或无证明都保留现场。
+                match (&target, existing.target.kind()) {
+                    (CreationTarget::Verified(kind), Some(stored)) if stored == kind => {}
+                    (CreationTarget::Persisted, Some(_)) => {}
+                    _ => return Err(super::storage::binding_needs_recovery()),
+                }
                 // 身份核验后只保留真正需要的已存字段，其余读出的 owned 值随解构释放，
                 // 并在下一个 await 之前按实际保留长度计权。
                 let super::storage::BindingOperation {
                     creation_id: existing_creation,
                     thread_id: existing_thread,
+                    target: persisted_target,
                     ..
                 } = existing;
+                // 持久证明随接续路径跨 await 存活：按真实编码长度先计权。
+                let encoded_persisted = persisted_target.encode()?;
+                budget.reserve_more(super::occupancy::counted_text_bytes([(
+                    encoded_persisted.as_str(),
+                    1,
+                )])?)?;
                 if let Some(existing_thread) = existing_thread {
                     // 已完成操作：只保留 A 的创建身份与 Thread 身份，各按 1 份跨读取等待。
                     budget.reserve_more(super::occupancy::counted_text_bytes([
@@ -747,7 +837,7 @@ impl BotRuntime {
                     0,
                     [(existing_creation.len(), CREATE_CALL_CREATION_COPIES - 1)],
                 )?)?;
-                existing_creation
+                (existing_creation, Some(persisted_target))
             } else {
                 // 首次受理：预期配置 revision 必须等于当前权威值。
                 if current_revision != expected_config_revision {
@@ -779,6 +869,25 @@ impl BotRuntime {
                 )])?)?;
                 // 绑定投影行在随后的 adopt/begin 期间仍存活：按其读取到的实际字段计权。
                 budget.reserve_more(projection_freeze_bytes(&projection, 1)?)?;
+                // 首次受理在此冻结目标证明：与操作记录同批首写，覆盖 creating 重启，
+                // 也让离线重启后仍能证明这是 Direct 还是 Group。
+                // 新创建意图只接受本次联网核验得到的种类：没有它就保留现场等本机处理。
+                let CreationTarget::Verified(target_kind) = &target else {
+                    return Err(super::storage::binding_needs_recovery());
+                };
+                let bound_revision = expected_binding_revision
+                    .checked_add(1)
+                    .ok_or_else(super::storage::binding_needs_recovery)?;
+                let target_proof = super::storage::target::TargetClaim::from_operation(
+                    &bot_id,
+                    &app_id,
+                    &project_id,
+                    &chat_id,
+                    &creation_id,
+                    &operation_id,
+                    target_kind.clone(),
+                )
+                .freeze(bound_revision);
                 let operation = super::storage::BindingOperation {
                     operation_id: operation_id.clone(),
                     bot_id: bot_id.clone(),
@@ -787,6 +896,7 @@ impl BotRuntime {
                     expected_revision: expected_binding_revision,
                     creation_id: creation_id.clone(),
                     thread_id: None,
+                    target: target_proof,
                 };
                 // 操作记录字段与标题已在 FrozenBinding 的冻结预算中覆盖，
                 // 因此这里不会在写入之后才发现单项放不下。
@@ -802,6 +912,7 @@ impl BotRuntime {
                             &operation,
                         )
                         .await?;
+                    managed.audience_changed();
                     self.request_publish();
                 } else {
                     if projection.status == "creating"
@@ -825,9 +936,10 @@ impl BotRuntime {
                         )
                         .await?;
                     // 首次真实占用已提交：在任何后继保存 await 之前主动重建。
+                    managed.audience_changed();
                     self.request_publish();
                 }
-                creation_id
+                (creation_id, None)
             }
         };
         // 创建身份与预生成标题都已在首写前计入预算：这里不再追加、也不再临时派生。
@@ -859,28 +971,43 @@ impl BotRuntime {
                     None,
                 ));
             }
-            let stored = managed.store.load_binding_operation(&operation_id).await?;
-            if stored
-                .filter(|item| {
-                    item.creation_id == frozen_creation
-                        && item.bot_id == bot_id
-                        && item.chat_id == chat_id
-                        && item.content_hash == content_hash
-                        && item.expected_revision == expected_binding_revision
-                })
-                .is_none()
-            {
-                return Err(FeishuError::new(
-                    FeishuErrorKind::Conflict,
-                    "conversation Thread creation is no longer owned by this operation",
-                    true,
-                    None,
-                ));
-            }
+            // 只接受仍由本操作拥有的记录，并且其已冻结的目标证明必须与本次意图一致：
+            // 证明只能来自持久值，不能在这里按联网结果改写。
+            let stored_target = match continuation_target {
+                // 接续路径在同一准入内已按 operation 身份核对过归属，直接沿用其持久证明。
+                Some(target) => target,
+                None => managed
+                    .store
+                    .load_binding_operation(&operation_id)
+                    .await?
+                    .filter(|item| {
+                        item.creation_id == frozen_creation
+                            && item.bot_id == bot_id
+                            && item.chat_id == chat_id
+                            && item.content_hash == content_hash
+                            && item.expected_revision == expected_binding_revision
+                    })
+                    .map(|item| item.target)
+                    .ok_or_else(|| {
+                        FeishuError::new(
+                            FeishuErrorKind::Conflict,
+                            "conversation Thread creation is no longer owned by this operation",
+                            true,
+                            None,
+                        )
+                    })?,
+            };
+            // 证明随写入留存到绑定完成：按真实长度先计权，再写入。
+            let encoded_target = stored_target.encode()?;
+            budget.reserve_more(super::occupancy::counted_text_bytes([(
+                encoded_target.as_str(),
+                2,
+            )])?)?;
             managed
                 .store
                 .bind_thread(&chat_id, &created.id, &frozen_creation, &project_id)
                 .await?;
+            managed.audience_changed();
             managed
                 .store
                 .save_binding_operation(&super::storage::BindingOperation {
@@ -891,6 +1018,7 @@ impl BotRuntime {
                     expected_revision: expected_binding_revision,
                     creation_id: frozen_creation,
                     thread_id: Some(created.id.clone()),
+                    target: stored_target,
                 })
                 .await?;
         }
@@ -916,6 +1044,9 @@ impl BotRuntime {
         if previous == super::owner::BOTS_RUNTIME_RELEASED {
             return Ok(());
         }
+        // A core cut may be queued behind a running Turn. Stop only our wait, retaining its
+        // durable intent, before joining occupancy or waiting for outer Thread shutdown.
+        self.inner.audience_prepares.stop_and_drain().await?;
         // 占用任务必须在取消发布器之前收束：reply_cancel.cancel() 会让 publisher
         // 自行退出，之后再等待就无法保证任务终态通知被真实发布。收束后先经既有
         // publish_gate 做一次真实重建，再冻结并关闭发布器与其余任务。
@@ -1153,15 +1284,14 @@ impl BotRuntime {
                 None,
             ));
         }
-        if let SendAuthority::Source(source) = authority {
-            super::source::authorize_source(config, chat_id, source)?;
+        if let SendAuthority::InboundReply(reply) = authority {
+            super::source::authorize_source_identity(config, chat_id, &reply.source)?;
         }
         Ok(())
     }
 
-    /// Existing owner/project/auto-reply receipts remain local and credential-independent.
-    /// The narrower current-source file capability also rechecks its explicit live target
-    /// visibility, then rechecks current trust after that read; it never repeats an upload/send.
+    /// Existing owner/project/inbound receipts remain local and credential-independent.
+    /// Replaying a receipt never repeats an upload/send or grants new external-write authority.
     pub(super) async fn authorize_replay_source(
         &self,
         managed: &ManagedBot,
@@ -1169,18 +1299,12 @@ impl BotRuntime {
         cancel: &tokio_util::sync::CancellationToken,
     ) -> Result<(), FeishuError> {
         self.check_send_active(cancel)?;
-        if let SendAuthority::Source(source) = authority {
-            let current = managed.config.lock().await.clone();
-            self.check_send_active(cancel)?;
-            super::source::authorize_source(&current, &source.chat_id, source)?;
-            let membership = self
-                .prepare_chat_access(managed, &current, &source.chat_id, cancel)
-                .await?;
-            // Membership reads may cross a trust/config change; their old config is not the
-            // replay authorization point. Recheck the live source after the last network await.
+        if let SendAuthority::InboundReply(reply) = authority {
+            let _admission = managed.admission.lock().await;
             let current = managed.config.lock().await;
-            self.check_send_active(cancel)?;
-            return self.authorize_chat(&current, &source.chat_id, authority.clone(), &membership);
+            self.authorize_send_source(&current, &reply.source.chat_id, authority)?;
+            drop(current);
+            return managed.store.verify_reply(reply).await;
         }
         let SendAuthority::Tool { project_id } = authority else {
             return Ok(());
@@ -1413,36 +1537,93 @@ impl BotRuntime {
                         (creation_id.as_str(), 2),
                         ("creating", 1),
                     ])?)?;
-                    let claim = managed
-                        .store
-                        .claim_thread_binding(&chat_id, &creation_id, &project_id)
-                        .await?;
-                    // claim 落盘即把该 chat 的会话绑定写入 thread_bindings，
-                    // 身份占用由空变为非空，正是 canChangeProject 的真实来源。
-                    // notify_one 既不取锁也不挂起，可在受理临界区内直接把该事实交给
-                    // 既有合并发布链；之后的失败、partial 写入或 ACK 前取消
-                    // 都不会让 canonical 能力投影停留在旧值。
-                    self.request_publish();
-                    if let super::storage::ThreadBindingClaim::NeedsAttention { diagnostic } =
-                        &claim
-                    {
-                        return Err(FeishuError::new(
-                            FeishuErrorKind::Unavailable,
-                            diagnostic.clone(),
-                            false,
-                            None,
-                        ));
+                    let notice_only = super::inbound::unsupported_only(&text, &attachments);
+                    if !notice_only {
+                        // 首次受理同时冻结目标种类证明：直聊只接受平台给出的真实对端
+                        // 身份，群聊来自本次入站自身的 typed chat_kind，不伪造入站行。
+                        let target = if chat_kind == ChatKind::Direct {
+                            super::storage::target::ensure_peer(&open_id).map_err(|_| {
+                                FeishuError::new(
+                                    FeishuErrorKind::Unavailable,
+                                    "bot direct peer identity exceeds the supported bound",
+                                    false,
+                                    None,
+                                )
+                            })?;
+                            (!open_id.is_empty()).then(|| {
+                                super::storage::target::TargetKind::Direct {
+                                    open_id: open_id.clone(),
+                                }
+                            })
+                        } else {
+                            Some(super::storage::target::TargetKind::Group)
+                        };
+                        let Some(target) = target else {
+                            return Err(FeishuError::new(
+                                FeishuErrorKind::Unavailable,
+                                "bot inbound chat target kind is unproven; local recovery required",
+                                false,
+                                None,
+                            ));
+                        };
+                        // 目标证明草稿随 claim 的 DB await 存活：按 1 份计入本次受理。
+                        let draft_bytes = super::occupancy::counted_text_bytes([
+                            (bot_id, 1),
+                            (app_id.as_str(), 1),
+                            (project_id.as_str(), 1),
+                            (chat_id.as_str(), 1),
+                            (creation_id.as_str(), 1),
+                            (message_id.as_str(), 1),
+                            // 直聊对端身份还有草稿与被冻结证明两份本人副本（原值已由
+                            // `inbound_freeze_bytes` 计过），逐份计入而不是依赖上界余量。
+                            (open_id.as_str(), 2),
+                        ])?;
+                        let draft = super::storage::target::TargetClaim::from_inbound(
+                            bot_id,
+                            &app_id,
+                            &project_id,
+                            &chat_id,
+                            &creation_id,
+                            &message_id,
+                            target,
+                        );
+                        // claim 会序列化证明作为 SQL 参数，既有行分支还会读出并解码一份：
+                        // 两条拷贝按精确编码长度计权，写库前就判定放不下。
+                        let proof_bytes = draft.freeze(1).encoded_len()?;
+                        budget.reserve_more(super::occupancy::counted_extra_bytes(
+                            draft_bytes,
+                            [(proof_bytes, 2)],
+                        )?)?;
+                        let claim = managed.store.claim_thread_binding(&draft).await?;
+                        // claim 落盘即把该 chat 的会话绑定写入 thread_bindings，
+                        // 身份占用由空变为非空，正是 canChangeProject 的真实来源。
+                        // notify_one 既不取锁也不挂起，可在受理临界区内直接把该事实交给
+                        // 既有合并发布链；之后的失败、partial 写入或 ACK 前取消
+                        // 都不会让 canonical 能力投影停留在旧值。
+                        self.request_publish();
+                        if let super::storage::ThreadBindingClaim::NeedsAttention { diagnostic } =
+                            &claim
+                        {
+                            return Err(FeishuError::new(
+                                FeishuErrorKind::Unavailable,
+                                diagnostic.clone(),
+                                false,
+                                None,
+                            ));
+                        }
+                        // claim 自带的身份副本在读取持久投影前释放：后续只按投影事实计权，
+                        // 不把两份读出的身份同时留到 admit。
+                        drop(claim);
                     }
-                    // claim 自带的身份副本在读取持久投影前释放：后续只按投影事实计权，
-                    // 不把两份读出的身份同时留到 admit。
-                    drop(claim);
                     // 冻结真实绑定身份与版本：以持久投影为准，不用本次临时派生
                     // 或常数水位替代既有本地上下文。
                     let projection = managed
                         .store
                         .binding_for_chat(&chat_id, bot_id, &project_id)
                         .await?;
-                    if projection.creation_id.is_empty() {
+                    if projection.creation_id.is_empty()
+                        && !(notice_only && projection.status == "absent")
+                    {
                         return Err(super::storage::binding_needs_recovery());
                     }
                     if projection.project_id != project_id {
@@ -1586,7 +1767,24 @@ impl BotRuntime {
         // 交接给回复 owner 的两份材料：派发按值移动、收束用 finisher。不再克隆第三份，
         // 使峰值与冻结预算表一致。
         let finisher = inbound.clone();
-        self.inner.replies.lock().await.spawn(async move {
+        let mut replies = self.inner.replies.lock().await;
+        // Registration and shutdown's final join share this boundary. An enqueue
+        // that waited for its claim cannot register after shutdown drained owners.
+        if self.inner.sealed.load(Ordering::SeqCst) != 0 {
+            drop(replies);
+            managed
+                .store
+                .finish_inbound_work(
+                    &inbound.bot_id,
+                    &inbound.chat_id,
+                    &inbound.message_id,
+                    &worker_id,
+                    super::storage::WorkFinish::Interrupted,
+                )
+                .await?;
+            return Ok(());
+        }
+        replies.spawn(async move {
             let outcome = runtime.dispatch_prompt(inbound, &worker_id, cancel).await;
             if let Ok(managed) = runtime.managed(&finisher.bot_id).await {
                 let finish = match &outcome {
@@ -1686,6 +1884,7 @@ impl BotRuntime {
             loop {
                 tokio::select! {
                     _ = cancel.cancelled() => return,
+                    _ = runtime.inner.audience_prepare_notify.notified() => {},
                     _ = tokio::time::sleep(std::time::Duration::from_secs(5)) => {}
                 }
                 if runtime.inner.sealed.load(Ordering::SeqCst) != 0 {
@@ -1700,6 +1899,9 @@ impl BotRuntime {
                     .filter_map(|(id, record)| record.published.as_ref().map(|_| id.clone()))
                     .collect::<Vec<_>>();
                 for bot_id in bots {
+                    if let Err(error) = runtime.recover_audience_prepares(&bot_id).await {
+                        tracing::warn!(bot_id,kind=?error.kind(),"audience preparation recovery failed");
+                    }
                     if let Err(error) = runtime.restore_unfinished_inbound(&bot_id).await {
                         tracing::warn!(bot_id, %error, "inbound recovery sweep failed");
                     }
@@ -1735,7 +1937,7 @@ pub(super) struct ChatMembership {
 }
 
 impl ChatMembership {
-    fn covers(self, _chat_id: &str) -> bool {
+    pub(super) fn covers(self, _chat_id: &str) -> bool {
         self.observed_direct || self.remote_group
     }
 }

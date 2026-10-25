@@ -299,6 +299,7 @@ impl FirstRunConfigDraft {
             mcp: Default::default(),
             lsp: Default::default(),
             ui: Default::default(),
+            acp: Default::default(),
         };
         config.validate()?;
         Ok(config)

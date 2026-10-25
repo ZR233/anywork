@@ -148,6 +148,29 @@ class SettingsCommands {
     );
   }
 
+  /// 保存（或更新）一个 ACP 接入配置。
+  ///
+  /// 与 Native 账号写入共用同一 settings CAS lane：两种账号类型不会交叉覆盖配置
+  /// revision，冲突按同一规则刷新 canonical 后重试。
+  Future<SettingsStateSnapshot> saveAcpAccount(AcpAccountUpdateView account) {
+    return _run(
+      'acp-account:${account.accountId}',
+      target: CommandTarget(accountId: account.accountId, label: account.name),
+      (revision, operationId) =>
+          _api.saveAcpAccount(revision, account, operationId: operationId),
+    );
+  }
+
+  /// 删除一个 ACP 接入配置；删除不注销官方程序持有的凭据。
+  Future<SettingsStateSnapshot> removeAcpAccount(String accountId) {
+    return _run(
+      'acp-account:$accountId',
+      target: CommandTarget(accountId: accountId),
+      (revision, operationId) =>
+          _api.removeAcpAccount(revision, accountId, operationId: operationId),
+    );
+  }
+
   Future<void> setModeModelField({
     ThreadModeId? mode,
     required String accountId,

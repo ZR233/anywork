@@ -65,6 +65,27 @@ pub(in crate::cases) fn segments(row: &sqlite::SendDetailRow) -> Result<Vec<Segm
     serde_json::from_str(&row.segment_facts).context("durable typed segment facts are unreadable")
 }
 
+/// A rejected/waiting attempt has no platform identity. A dropped response may
+/// still have stored a message; its product outcome remains independently Unknown.
+pub(in crate::cases) fn stored_message_id(send: &MessageSendObservation) -> Result<&str> {
+    ensure!(
+        matches!(
+            send.outcome,
+            MessageSendOutcome::Stored | MessageSendOutcome::StoredResponseDropped
+        ),
+        "message attempt was not stored: {:?}",
+        send.outcome
+    );
+    let Some(message_id) = send.message_id.as_deref() else {
+        anyhow::bail!("stored message has no platform message identity");
+    };
+    ensure!(
+        !message_id.is_empty(),
+        "stored platform message identity is empty"
+    );
+    Ok(message_id)
+}
+
 pub(in crate::cases) async fn file_roundtrip(
     session: &Session,
     send: &MessageSendObservation,
@@ -74,10 +95,9 @@ pub(in crate::cases) async fn file_roundtrip(
     let MessageContentObservation::File(resource) = &send.content else {
         anyhow::bail!("expected an actual platform file message");
     };
+    let message_id = stored_message_id(send)?;
     ensure!(
-        send.outcome == MessageSendOutcome::Stored
-            && send.receive_id == DIRECT_CHAT_ID
-            && !send.message_id.is_empty(),
+        send.receive_id == DIRECT_CHAT_ID,
         "file message did not target the original source chat or was not stored"
     );
     ensure!(
@@ -131,10 +151,7 @@ pub(in crate::cases) async fn file_roundtrip(
         file_key: String,
     }
     let read: ReadReply = client
-        .get(format!(
-            "{origin}/open-apis/im/v1/messages/{}",
-            send.message_id
-        ))
+        .get(format!("{origin}/open-apis/im/v1/messages/{message_id}"))
         .bearer_auth(TENANT_ACCESS_TOKEN)
         .send()
         .await?
@@ -148,16 +165,17 @@ pub(in crate::cases) async fn file_roundtrip(
     let message = &read.data.items[0];
     let content: FileContent = serde_json::from_str(&message.body.content)?;
     ensure!(
-        message.message_id == send.message_id
+        message.message_id == message_id
             && message.chat_id == DIRECT_CHAT_ID
             && message.msg_type == "file"
-            && content.file_key == resource.file_key,
-        "file message GET changed identity or uploaded key"
+            && !content.file_key.is_empty()
+            && content.file_key != resource.file_key,
+        "file message GET changed identity or did not expose its distinct message-scoped download key"
     );
     let bytes = client
         .get(format!(
             "{origin}/open-apis/im/v1/messages/{}/resources/{}?type=file",
-            send.message_id, resource.file_key
+            message_id, content.file_key
         ))
         .bearer_auth(TENANT_ACCESS_TOKEN)
         .send()
@@ -169,7 +187,7 @@ pub(in crate::cases) async fn file_roundtrip(
         bytes.as_ref() == expected && model::sha256(&bytes) == resource.sha256,
         "independent resource GET bytes do not equal the original"
     );
-    evidence.push(format!("upload call={} -> file send call={} uuid={:?} message={} key={} -> independent GET {} bytes sha256={}", upload.call_index, send.call_index, send.uuid, send.message_id, resource.file_key, bytes.len(), resource.sha256));
+    evidence.push(format!("upload call={} -> file send call={} uuid={:?} message={} uploadKey={} downloadKey={} -> independent GET {} bytes sha256={}", upload.call_index, send.call_index, send.uuid, message_id, resource.file_key, content.file_key, bytes.len(), resource.sha256));
     Ok(())
 }
 
@@ -178,10 +196,11 @@ pub(super) fn verify_file_ledger(
     send: &MessageSendObservation,
     expected: &[u8],
 ) -> Result<()> {
+    let message_id = stored_message_id(send)?;
     let facts = segments(row)?;
     let fact = facts
         .iter()
-        .find(|fact| fact.platform_message_id.as_deref() == Some(&send.message_id))
+        .find(|fact| fact.platform_message_id.as_deref() == Some(message_id))
         .context("delivered message missing from typed segment ledger")?;
     let Content::File {
         filename,
@@ -206,7 +225,7 @@ pub(super) fn verify_file_ledger(
         row.status == "succeeded"
             && fact.status == "succeeded"
             && fact.message_stage.as_deref() == Some("accepted")
-            && ids.contains(&send.message_id.as_str()),
+            && ids.contains(&message_id),
         "durable file operation is not succeeded with its real message identity"
     );
     ensure!(

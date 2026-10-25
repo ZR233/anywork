@@ -1,7 +1,7 @@
 //! Skill discovery and actual read snapshots at the opaque Thread boundary.
 use super::{
-    FrozenSkillCatalog, SKILL_FILE_NAME, SkillLoadInvocation, SkillViewInput, SkillViewOutput,
-    SkillsListInput, is_main_skill_path, list_snapshot,
+    FrozenSkillCatalog, SKILL_FILE_NAME, SkillDiscoverySources, SkillLoadInvocation,
+    SkillViewInput, SkillViewOutput, SkillsListInput, is_main_skill_path, list_snapshot,
 };
 use pl_core::{
     context::{ContextContent, OpaquePayload},
@@ -39,17 +39,17 @@ impl ThreadSkillKind {
     }
 }
 
-/// An instance owns its catalog lease; replacing a directory does not rerender earlier results.
+/// An instance owns fixed discovery sources; each invocation freezes its own result.
 #[derive(Debug)]
 pub struct ThreadSkillTool {
-    catalog: Arc<FrozenSkillCatalog>,
+    sources: SkillDiscoverySources,
     kind: ThreadSkillKind,
 }
 
 impl ThreadSkillTool {
-    /// Binds this tool to a frozen provider directory.
-    pub fn new(catalog: Arc<FrozenSkillCatalog>, kind: ThreadSkillKind) -> Self {
-        Self { catalog, kind }
+    /// Binds this tool to an immutable workspace/configuration and complete Provider set.
+    pub fn new(sources: SkillDiscoverySources, kind: ThreadSkillKind) -> Self {
+        Self { sources, kind }
     }
 
     /// Transfers an instance, granting state updates only to the tool that saves read snapshots.
@@ -62,33 +62,7 @@ impl ThreadSkillTool {
             ThreadSkillKind::List => "skills_list",
             ThreadSkillKind::View => "skill_view",
         };
-        let mut policies = self
-            .catalog
-            .snapshot()
-            .skills
-            .iter()
-            .map(|skill| {
-                format!(
-                    "{:?}",
-                    (
-                        skill.name.to_ascii_lowercase(),
-                        skill.provider_id.as_str(),
-                        skill.invocation,
-                        &skill.resource_base
-                    )
-                )
-            })
-            .collect::<Vec<_>>();
-        policies.sort();
-        let mut digest = Sha256::new();
-        for policy in policies {
-            digest.update((policy.len() as u64).to_le_bytes());
-            digest.update(policy.as_bytes());
-        }
-        let authorization = pl_core::tool::opaque::ToolAuthorization::new(format!(
-            "pl.skills:{}",
-            hex::encode(digest.finalize())
-        ));
+        let authorization = self.sources.authorization();
         let registration =
             Registration::new(name.into(), declaration, self)?.with_authorization(authorization);
         Ok(match kind {
@@ -114,7 +88,12 @@ impl Tool for ThreadSkillTool {
             ThreadSkillKind::List => {
                 let input: SkillsListInput =
                     serde_json::from_str(input.content()).map_err(ToolError::new)?;
-                let value = list_snapshot(&self.catalog, input).map_err(ToolError::new)?;
+                let catalog = self
+                    .sources
+                    .discover(context.cancellation)
+                    .await
+                    .map_err(ToolError::new)?;
+                let value = list_snapshot(&catalog, input).map_err(ToolError::new)?;
                 let encoded = serde_json::to_string(&value).map_err(ToolError::new)?;
                 Ok(ToolOutput::new(
                     OpaquePayload::new("pl.tool.skill-list", 1, encoded.clone())
@@ -127,8 +106,12 @@ impl Tool for ThreadSkillTool {
             ThreadSkillKind::View => {
                 let input: SkillViewInput =
                     serde_json::from_str(input.content()).map_err(ToolError::new)?;
-                let definition = self
-                    .catalog
+                let catalog = self
+                    .sources
+                    .discover(context.cancellation.clone())
+                    .await
+                    .map_err(ToolError::new)?;
+                let definition = catalog
                     .load(
                         &input.target.name,
                         SkillLoadInvocation::Model,
@@ -144,7 +127,7 @@ impl Tool for ThreadSkillTool {
                 let (file_path, content) = match resource {
                     Some(path) => (
                         path.to_owned(),
-                        self.catalog
+                        catalog
                             .read_resource(
                                 &input.target.name,
                                 path,
@@ -177,8 +160,7 @@ impl Tool for ThreadSkillTool {
                 )
                 .map_err(ToolError::new)?;
                 let output = ToolOutput::new(payload.clone(), visible);
-                if let Err(source) = self
-                    .catalog
+                if let Err(source) = catalog
                     .record_model_view(&input.target.name, context.cancellation)
                     .await
                 {

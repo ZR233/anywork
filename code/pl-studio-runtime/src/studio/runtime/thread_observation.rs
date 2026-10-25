@@ -644,6 +644,7 @@ impl LiveOwner {
         // this owner existed. Everything the commit and preview paths resolve afterwards comes from
         // these tables, so a re-activated Thread never waits on a history reader mid-Turn.
         let mut projection = LiveProjection::new();
+        projection.bind_resources(projector.store.thread_resources(id).await?);
         let retained = handle.effects().await?;
         let (seed_items, hidden) =
             cold_seed(&projector.store, &thread, snapshot, &channel, &retained).await?;

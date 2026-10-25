@@ -3,6 +3,25 @@ pub use pl_core::context::{ContextContent, ResourceReference};
 use pl_core::{context::OpaquePayload, tool::opaque::ToolError};
 use std::sync::Arc;
 
+/// The real tool operation that produced reliable bytes, never supplied by model arguments.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ToolResourceOrigin {
+    pub thread_id: String,
+    pub turn_id: String,
+    pub call_id: String,
+}
+
+impl ToolResourceOrigin {
+    pub fn from_call(context: &pl_core::tool::opaque::CallContext) -> Self {
+        Self {
+            thread_id: context.thread_id.clone(),
+            turn_id: context.turn_id.clone(),
+            call_id: context.call_id.clone(),
+        }
+    }
+}
+
 /// Media semantics supplied by tools, without provider protocols or message authority.
 #[derive(Debug, Clone, Copy)]
 pub enum ToolMediaKind {
@@ -39,6 +58,7 @@ pub trait ToolMediaHost: Send + Sync + std::fmt::Debug + 'static {
     /// Returns only after bytes are retained. Failure must not imply a remote call was undone.
     fn retain(
         &self,
+        origin: ToolResourceOrigin,
         media: ToolMedia,
     ) -> impl std::future::Future<Output = Result<RetainedToolMedia, ToolError>> + Send;
 }

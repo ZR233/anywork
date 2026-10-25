@@ -45,6 +45,7 @@ void main() {
 
   /// 一条可发送 Thread 的最小 workspace 快照：展示准备与冻结发送只依赖 route 与 thread。
   ThreadWorkspace workspaceFor(String threadId) => ThreadWorkspace(
+    audience: const ThreadAudienceUnbound(),
     thread: _thread(threadId),
     revision: 1,
     interactions: const [],

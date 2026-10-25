@@ -186,7 +186,7 @@ String usageUpdatedLabel(BuildContext context, int? seconds) {
   if (seconds == null || seconds <= 0) {
     return context.l10n.settingsUsageNotChecked;
   }
-  return context.l10n.settingsUsageUpdated(_formatUnixShort(seconds));
+  return context.l10n.settingsUsageUpdated(formatUnixShort(seconds));
 }
 
 ZhipuQuotaLimitView? findQuotaLimit(
@@ -252,7 +252,7 @@ String quotaResetLabel(BuildContext context, int? seconds) {
   if (seconds == null || seconds <= 0) {
     return '';
   }
-  return context.l10n.settingsUsageReset(_formatUnixShort(seconds));
+  return context.l10n.settingsUsageReset(formatUnixShort(seconds));
 }
 
 String formatToolUsage(ZhipuToolUsageDetailView detail) {
@@ -270,7 +270,8 @@ String formatToolUsage(ZhipuToolUsageDetailView detail) {
   return '';
 }
 
-String _formatUnixShort(int seconds) {
+/// Unix 秒的紧凑本地时间（`M/d HH:mm`），供设置页只读时间戳复用。
+String formatUnixShort(int seconds) {
   final date = DateTime.fromMillisecondsSinceEpoch(seconds * 1000);
   final hour = date.hour.toString().padLeft(2, '0');
   final minute = date.minute.toString().padLeft(2, '0');

@@ -389,38 +389,20 @@ fn restore_current_instructions(
     let Some(mut record) = request.extensions.get("studio.instructions").cloned() else {
         return Ok(InstructionRepair::default());
     };
-    if record.payload.format() != "pl.studio.instructions"
-        || record.payload.version() != 1
-        || record.revision == 0
-    {
+    if record.revision == 0 {
         return Err(receipt_error(std::io::Error::other(
             "invalid current instruction snapshot authority",
         )));
     }
-    let mut snapshot: crate::instruction::InstructionSnapshot =
-        serde_json::from_str(record.payload.content()).map_err(receipt_error)?;
-    let profile_changed = if let Some(mode) = mode {
-        let profile = snapshot
-            .developer
-            .iter_mut()
-            .find(|block| {
-                block.source.kind == crate::instruction::InstructionSourceKind::ExecutionProfile
-            })
-            .ok_or_else(|| {
-                receipt_error(std::io::Error::other(
-                    "saved instructions contain no Mode profile",
-                ))
-            })?;
-        let changed = profile.content != mode.prompt()
-            || profile.source.label != mode.descriptor().display_name;
-        profile.content = mode.prompt().to_owned();
-        profile
-            .source
-            .label
-            .clone_from(&mode.descriptor().display_name);
-        changed
-    } else {
-        false
+    // Only the Mode-owned instruction source is refreshed here. The frozen Agent definition and
+    // its identity stay untouched, so context preparation can never rewrite the session's role.
+    let mut snapshot =
+        crate::instruction::decode_snapshot(&record.payload).map_err(receipt_error)?;
+    let profile_changed = match mode {
+        Some(mode) => snapshot
+            .set_mode_instruction(&mode.descriptor().display_name, mode.prompt())
+            .map_err(receipt_error)?,
+        None => false,
     };
     let previous_binding = request.extensions.get("studio.instructions.binding");
     let binding_changed = match previous_binding {
@@ -465,12 +447,7 @@ fn restore_current_instructions(
             .ok_or_else(|| {
                 receipt_error(std::io::Error::other("instruction revision exhausted"))
             })?;
-        record.payload = pl_core::context::OpaquePayload::new(
-            "pl.studio.instructions",
-            1,
-            serde_json::to_string(&snapshot).map_err(receipt_error)?,
-        )
-        .map_err(receipt_error)?;
+        record.payload = crate::instruction::encode_snapshot(&snapshot).map_err(receipt_error)?;
         mutations.push(ExtensionMutation::Put {
             id: "studio.instructions".into(),
             expected_revision: Some(expected_revision),
@@ -837,8 +814,8 @@ fn current_facts(
         );
     }
     if let Some(record) = request.extensions.get("studio.instructions") {
-        let snapshot: crate::instruction::InstructionSnapshot =
-            serde_json::from_str(record.payload.content()).map_err(receipt_error)?;
+        let snapshot =
+            crate::instruction::decode_snapshot(&record.payload).map_err(receipt_error)?;
         for record in snapshot.context_records(&request.model.thread_id) {
             if let pl_core::context::ContextSource::RuntimeFact { source_id } = record.source {
                 facts.insert(

@@ -128,6 +128,7 @@ ThreadWorkspace _workspace({int revision = 1, ThreadRuntimeView? runtime}) {
     workspacePath: '/tmp/thread',
   );
   return ThreadWorkspace(
+    audience: const ThreadAudienceUnbound(),
     thread: thread,
     revision: revision,
     interactions: const [],

@@ -60,6 +60,28 @@ pub struct ImageGenerationReceipt {
     pub model_height: Option<u32>,
 }
 
+/// Decodes the producer's exact archived original, including histories whose native variant was
+/// different. Display names and model derivatives never replace this reliable reference.
+pub fn saved_image_generation_receipt(
+    payload: &OpaquePayload,
+) -> Result<Option<ImageGenerationReceipt>, ToolError> {
+    if payload.format() != IMAGE_GENERATION_RECEIPT_FORMAT {
+        return Ok(None);
+    }
+    if payload.version() != IMAGE_GENERATION_RECEIPT_VERSION {
+        return Err(failure("unsupported image generation receipt version"));
+    }
+    let receipt: ImageGenerationReceipt =
+        serde_json::from_str(payload.content()).map_err(ToolError::new)?;
+    receipt.original.validate().map_err(ToolError::new)?;
+    if receipt.media_type != receipt.original.media_type() {
+        return Err(failure(
+            "generated image receipt conflicts with its original",
+        ));
+    }
+    Ok(Some(receipt))
+}
+
 /// A Thread-local generator sharing only its immutable HTTP client configuration.
 #[derive(Debug)]
 pub struct ThreadImageGenerationTool<H> {
@@ -177,12 +199,15 @@ impl<H: ToolMediaHost> Tool for ThreadImageGenerationTool<H> {
         };
         let retained = self
             .media
-            .retain(ToolMedia {
-                kind: ToolMediaKind::Image,
-                bytes: bytes.clone(),
-                media_type: generated.media_type.into(),
-                model_image,
-            })
+            .retain(
+                crate::media::ToolResourceOrigin::from_call(&context),
+                ToolMedia {
+                    kind: ToolMediaKind::Image,
+                    bytes: bytes.clone(),
+                    media_type: generated.media_type.into(),
+                    model_image,
+                },
+            )
             .await?;
         retained.reference.verify(&bytes).map_err(ToolError::new)?;
         let payload = OpaquePayload::new(

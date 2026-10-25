@@ -4,7 +4,7 @@ use super::protocol::error::{FeishuError, FeishuErrorKind};
 use super::protocol::http::{PostFailure, PreparedPost};
 use super::protocol::im::{FeishuIm, MessageContent};
 use super::send::{SendContent, SendIdentity};
-use super::storage::{BotStateStore, MessageStage, SendRecord, SendRecordStatus, UploadFact};
+use super::storage::{MessageStage, SendRecord, SendRecordStatus, UploadFact};
 use crate::resource_store::FileResourceStore;
 use pl_core::context::{ResourceReader, ResourceReference};
 use pl_protocol::studio::*;
@@ -44,14 +44,16 @@ impl BotRuntime {
     pub(super) async fn deliver_claimed(
         &self,
         token: &str,
-        store: &BotStateStore,
+        managed: &super::owner::ManagedBot,
         record: SendRecord,
+        inbound_reply: Option<&super::storage::reply::InboundReply>,
         cancel: &CancellationToken,
     ) -> Result<BotSendResult, FeishuError> {
         Delivery {
             runtime: self,
             token,
-            store,
+            managed,
+            inbound_reply,
             record,
             cancel,
         }
@@ -63,7 +65,8 @@ impl BotRuntime {
 struct Delivery<'a> {
     runtime: &'a BotRuntime,
     token: &'a str,
-    store: &'a BotStateStore,
+    managed: &'a super::owner::ManagedBot,
+    inbound_reply: Option<&'a super::storage::reply::InboundReply>,
     record: SendRecord,
     cancel: &'a CancellationToken,
 }
@@ -271,6 +274,21 @@ impl Delivery<'_> {
     }
 
     async fn begin(&mut self, index: usize, action: Action) -> Result<bool, FeishuError> {
+        let rate = &self.managed.send_rate;
+        let permit = tokio::select! {
+            _ = self.cancel.cancelled() => None,
+            _ = self.runtime.inner.reply_cancel.cancelled() => None,
+            permit = rate.acquire() => Some(permit),
+        };
+        let Some(permit) = permit else {
+            self.local_stop(
+                index,
+                BotSendStopReason::Cancelled,
+                "send cancelled before the next network request",
+            );
+            self.persist().await?;
+            return Ok(false);
+        };
         if self.runtime.check_send_active(self.cancel).is_err() {
             self.local_stop(
                 index,
@@ -286,7 +304,33 @@ impl Delivery<'_> {
                 self.record.segments[index].message_stage = Some(MessageStage::InFlight)
             }
         }
-        if let Err(error) = self.persist().await {
+        let admission = if self.inbound_reply.is_some() {
+            Some(self.managed.admission.lock().await)
+        } else {
+            None
+        };
+        let accepted = if let Some(reply) = self.inbound_reply {
+            async {
+                self.runtime.check_send_active(self.cancel)?;
+                self.runtime.reject_closed_admission(self.managed)?;
+                let config = self.managed.config.lock().await;
+                super::source::authorize_source_identity(
+                    &config,
+                    &self.record.chat_id,
+                    &reply.source,
+                )?;
+                drop(config);
+                self.managed
+                    .store
+                    .save_reply_send_intent(&self.record, reply)
+                    .await
+            }
+            .await
+        } else {
+            self.persist().await
+        };
+        drop(admission);
+        if let Err(error) = accepted {
             self.set_not_started(index, action);
             self.local_stop(
                 index,
@@ -306,6 +350,7 @@ impl Delivery<'_> {
             self.persist().await?;
             return Ok(false);
         }
+        permit.start();
         Ok(true)
     }
 
@@ -383,7 +428,8 @@ impl Delivery<'_> {
     }
 
     async fn persist(&self) -> Result<(), FeishuError> {
-        self.store
+        self.managed
+            .store
             .save_send(&self.record)
             .await
             .map_err(|error| error.with_observed_send(replay_send(self.record.clone())))

@@ -9,20 +9,15 @@ use axum::response::{IntoResponse, Response};
 use axum::{Form, Json};
 use serde::Deserialize;
 use serde_json::{Value, json};
-use tokio_util::sync::CancellationToken;
 
-use super::state::{InFlightGuard, Shared, app_id_ok, bearer_ok, credentials_match, unix_millis};
+use super::state::{InFlightGuard, app_id_ok, credentials_match, unix_millis};
 use super::types::{
     CallKind, RegistrationBeginOptions, RegistrationPollScript, TENANT_ACCESS_TOKEN,
     TRUSTED_USER_OPEN_ID, TokenScript, WsDiscoveryScript,
 };
 use super::wire::{decode_addons, parse_form, validate_required_addons};
 
-#[derive(Clone)]
-pub(crate) struct HttpState {
-    pub shared: Shared,
-    pub cancel: CancellationToken,
-}
+use super::guard::{HttpState, auth_ok, kind_blocked, record_reject};
 
 pub(crate) async fn unexpected(
     State(state): State<HttpState>,
@@ -782,27 +777,6 @@ pub(crate) async fn chat_members(
         }
     }))
     .into_response()
-}
-
-pub(crate) async fn auth_ok(shared: &Shared, header: Option<&axum::http::HeaderValue>) -> bool {
-    let inner = shared.lock().await;
-    bearer_ok(&inner, header.and_then(|value| value.to_str().ok()))
-}
-
-pub(crate) async fn kind_blocked(shared: &Shared, kind: CallKind) -> Option<String> {
-    let inner = shared.lock().await;
-    inner.kind_forbidden_or_excess(kind)
-}
-
-pub(crate) async fn record_reject(
-    shared: &Shared,
-    method: &str,
-    path: &str,
-    kind: Option<CallKind>,
-    diagnostic: String,
-) {
-    let mut inner = shared.lock().await;
-    inner.record(method, path, kind, false, Some(diagnostic));
 }
 
 fn json_error(status: StatusCode, error: &str, description: &str) -> Response {

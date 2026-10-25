@@ -268,6 +268,7 @@ StudioThread _thread([String id = 'thread']) => StudioThread(
 
 ThreadWorkspace _workspace({int revision = 1, StudioTurnView? turn}) =>
     ThreadWorkspace(
+      audience: const ThreadAudienceUnbound(),
       thread: _thread(),
       revision: revision,
       interactions: const [],

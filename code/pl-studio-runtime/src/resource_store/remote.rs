@@ -37,7 +37,7 @@ impl FileResourceStore {
 impl CommandOutputArchive for RemoteCommandOutputArchive {
     async fn retain(
         &self,
-        _: &str,
+        _: &pl_tool::media::ToolResourceOrigin,
         snapshot: &pl_tool::command::CommandOutputSnapshot,
     ) -> Result<ResourceReference, ToolError> {
         let path = snapshot

@@ -284,7 +284,14 @@ pub(super) async fn run(
         facts.message_sends.len(),
         session.model_executions(),
     );
-    evidence.push(session.restart_studio_server().await?);
+    let restart = session.restart_studio_server().await?;
+    ensure!(
+        restart.stopped_sigints == 1
+            && restart.stopped_graceful
+            && restart.stopped_exit_code == Some(0),
+        "file-outcome restart did not prove a single graceful stop: {restart}"
+    );
+    evidence.push(restart.to_string());
     session.wait_connected(&bot_id).await?;
     // Recovery has no public sweep-completed marker. Assert the invariant at
     // every sample of this explicitly reported finite quiet interval, rather

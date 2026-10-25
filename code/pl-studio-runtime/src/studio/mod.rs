@@ -19,6 +19,7 @@ mod runtime_lock;
 mod runtime_state;
 pub(crate) mod startup;
 mod storage;
+pub(crate) use storage::history::{HistoryStore, context_resources};
 pub(crate) mod store;
 mod store_support;
 pub(crate) mod thread;

@@ -13,7 +13,12 @@ impl StudioThreadTools {
         if !self.capabilities.mcp {
             return Ok(self);
         }
-        let media = Arc::new(MediaHost(self.store.clone()));
+        let archive = self.archive.clone().ok_or_else(|| {
+            ThreadAssemblyError::Identity(
+                "MCP media requires the Thread's shared reliable resource owner".into(),
+            )
+        })?;
+        let media = Arc::new(MediaHost(archive));
         for descriptor in lease.tools() {
             let tool = ThreadMcpTool::new(lease.clone(), &descriptor.exposed_name, media.clone())
                 .map_err(|error| pl_core::thread::ThreadError::Tool(Arc::new(error)))?;

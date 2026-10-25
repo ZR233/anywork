@@ -1070,6 +1070,11 @@ impl BotOperationOwner {
         } else if expected_config_revision != 0 {
             return Err(stale_revision_error());
         }
+        if let (Some(previous), Some(managed)) = (&previous, &published) {
+            self.runtime
+                .prune_audience_authorizations(managed, previous)
+                .await?;
+        }
         // 未收束的清理/停连义务先拒绝，不进入占用查询、候选准备或任何外部 IO。
         self.runtime.reject_unsettled_obligation(&bot_id).await?;
         if let Some(previous) = &previous
@@ -1195,6 +1200,9 @@ impl BotOperationOwner {
         if previous.config_revision != expected_config_revision {
             return Err(stale_revision_error());
         }
+        self.runtime
+            .prune_audience_authorizations(&managed, &previous)
+            .await?;
         let mut candidate = previous.clone();
         mutate(&mut candidate);
         candidate.bump();
@@ -1821,6 +1829,16 @@ impl BotOperationOwner {
                 .await;
         }
         self.write_commit_facts(&managed, commit, previous).await;
+        let audience_error = self
+            .runtime
+            .prune_audience_authorizations(&managed, &commit.config)
+            .await
+            .err();
+        if let Some(error) = &audience_error {
+            managed.admission_closed.store(true, Ordering::Release);
+            self.merge_managed_diagnostic(&managed, error.diagnostic())
+                .await;
+        }
         self.clear_pending_if_published(&commit.operation, commit.diagnostic.clone())
             .await;
         if commit.decision == CredentialDecision::Applied
@@ -1828,13 +1846,13 @@ impl BotOperationOwner {
         {
             self.clear_pairing_after_commit(&open_id).await;
         }
-        let can_open = claim_ok && stop_error.is_none();
+        let can_open = claim_ok && stop_error.is_none() && audience_error.is_none();
         if can_open {
             self.open_admission(&managed).await;
         }
         let start_new = options.start_connection
             && (commit.decision == CredentialDecision::Applied || options.coordinate_connection);
-        let mut connection_error = stop_error;
+        let mut connection_error = stop_error.or(audience_error);
         if can_open && start_new {
             connection_error = self.start_determined_connection(&managed, commit).await;
         } else if can_open && !commit.config.enabled {
@@ -2091,7 +2109,11 @@ impl BotOperationOwner {
         previous: Option<&BotConfigFile>,
     ) {
         let invalidate = commit.invalidate || auth_invalidate(previous, &commit.config);
+        let label_changed = managed.config.lock().await.name != commit.config.name;
         *managed.config.lock().await = commit.config.clone();
+        if label_changed {
+            managed.audience_changed();
+        }
         *managed.credential.lock().await = commit.availability;
         *managed.credential_operation.lock().await = commit.operation.clone();
         {
@@ -2178,10 +2200,15 @@ impl BotOperationOwner {
                 String::new(),
             ),
             bot_open_id: Mutex::new(None),
+            send_rate: super::send::SendRate::new(),
             admission: Mutex::new(()),
             admission_closed: AtomicBool::new(false),
             submitting: AtomicBool::new(false),
+            audience_changes: super::audience::watch_channel(),
+            audience_recovery_cursor: Mutex::new(Default::default()),
         });
+        // Startup owns schema preparation. Cold audience queries must never migrate a database.
+        managed.store.identity_occupancy().await?;
         {
             let mut records = self.runtime.inner.bots.lock().await;
             if let Some(record) = records.get_mut(&self.bot_id) {
@@ -2603,7 +2630,7 @@ impl BotOperationOwner {
                 .runtime
                 .inner
                 .occupancy
-                .maintenance_budget(super::send_resources::MAINTENANCE_TEXT_BYTES)?;
+                .task_budget(super::send_resources::MAINTENANCE_TEXT_BYTES)?;
             let resources = self.send_resources.clone();
             let ledger = self
                 .published()

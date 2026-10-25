@@ -246,6 +246,7 @@ pub(in crate::studio) struct PreparedEffect {
     pub(in crate::studio) sequence: u64,
     /// The canonical items the effect committed, in the order the durable rows are written.
     pub(in crate::studio) items: Vec<ThreadItem>,
+    pub(in crate::studio) archive: Option<crate::resource_store::ArchiveHandoff>,
 }
 
 /// Cheap retained-memory estimate of one prepared batch.
@@ -295,6 +296,16 @@ fn item_body_bytes(item: &ThreadItem) -> u64 {
         ThreadItemState::File(file) => {
             (file.path().len() as u64).saturating_add(optional_bytes(file.media_type()))
         }
+        ThreadItemState::PublicArtifact(artifact) => [
+            artifact.publication_id.as_str(),
+            artifact.tool_call_id.as_str(),
+            artifact.display_name.as_str(),
+            artifact.resource.id.as_str(),
+            artifact.resource.content_digest.as_str(),
+            artifact.resource.media_type.as_str(),
+        ]
+        .into_iter()
+        .fold(0_u64, |bytes, text| bytes.saturating_add(text.len() as u64)),
         ThreadItemState::ContextCompaction(_) => 0,
     }
 }
@@ -694,6 +705,7 @@ impl Fact {
 
 /// Folds admitted writes into the live product facts and yields the changes each one made.
 pub(in crate::studio) struct LiveProjection {
+    resources: Option<crate::resource_store::ThreadResourceStore>,
     /// Canonical payloads of identities that can still change.
     ///
     /// A non-terminal item is updated by a later effect, and the newest Turn's tool items are
@@ -775,6 +787,7 @@ impl LiveProjection {
     /// observation, once, before any commit is projected.
     pub(in crate::studio) fn new() -> Self {
         Self {
+            resources: None,
             items: BTreeMap::new(),
             facts: BTreeMap::new(),
             results: BTreeMap::new(),
@@ -791,6 +804,13 @@ impl LiveProjection {
             previews_bytes: 0,
             revisions_bytes: 0,
         }
+    }
+
+    pub(in crate::studio) fn bind_resources(
+        &mut self,
+        resources: crate::resource_store::ThreadResourceStore,
+    ) {
+        self.resources = Some(resources);
     }
 
     /// Installs the durable facts of work that started before this projection existed.
@@ -968,6 +988,40 @@ impl LiveProjection {
         effect: &ThreadEffectBatch,
         state: &ThreadSnapshot,
     ) -> Result<Arc<PreparedEffect>, ProjectionError> {
+        let archive = self
+            .resources
+            .as_ref()
+            .map(|resources| resources.prepare_effect(effect, state))
+            .transpose()
+            .map_err(|error| ProjectionError::History(format!("archive preparation: {error:#}")))?;
+        let public_items = archive
+            .as_ref()
+            .into_iter()
+            .flat_map(|handoff| &handoff.publications)
+            .map(|receipt| {
+                ThreadItem::new(
+                    super::order::artifact_id(&receipt.publication_id),
+                    thread.id.clone(),
+                    receipt.origin.turn_id.clone(),
+                    0,
+                    0,
+                    effect.committed_at,
+                    effect.committed_at,
+                    ThreadItemState::PublicArtifact(pl_protocol::ThreadPublicArtifactItem {
+                        publication_id: receipt.publication_id.clone(),
+                        tool_call_id: receipt.origin.call_id.clone(),
+                        display_name: receipt.display_name.clone(),
+                        resource: pl_protocol::ThreadArtifactResource {
+                            id: receipt.resource.id().to_owned(),
+                            content_digest: receipt.resource.content_digest().to_owned(),
+                            byte_len: receipt.resource.byte_len(),
+                            media_type: receipt.resource.media_type().to_owned(),
+                        },
+                        published_at: effect.committed_at,
+                    }),
+                )
+            })
+            .collect::<Vec<_>>();
         self.turn_failures
             .retain(|turn, _| state.turns.iter().any(|record| &record.turn_id == turn));
         if let Some(attempt) = &effect.attempt {
@@ -1001,6 +1055,7 @@ impl LiveProjection {
             .iter()
             .map(|item| item.id.clone())
             .collect::<Vec<_>>();
+        ids.extend(public_items.iter().map(|item| item.id.clone()));
         ids.extend(provisional.unresolved_inputs.iter().cloned());
         ids.extend(provisional.unresolved_calls.iter().cloned());
         // Only a channel this projection already started may be finalized by this effect. A channel
@@ -1059,6 +1114,19 @@ impl LiveProjection {
         // 实时帧同样不允许带着无法补全的 identity 继续：投影失败由调用方转成报告并 fail-closed。
         projected.ensure_complete()?;
         let mut items = projected.items;
+        for mut item in public_items {
+            if let Some(previous) = existing.get(&item.id) {
+                item.ordinal = previous.ordinal;
+                item.created_at = previous.created_at;
+            } else {
+                item.ordinal = reserved
+                    .get(&item.id)
+                    .copied()
+                    .ok_or_else(|| ProjectionError::ItemOrder(item.id.clone()))?;
+            }
+            items.push(item);
+        }
+        items.sort_by_key(|item| item.ordinal);
         for item in &mut items {
             if let pl_protocol::ThreadItemState::Turn(turn) = item.state()
                 && let pl_protocol::TurnState::Failed(failed) = turn.state()
@@ -1123,6 +1191,7 @@ impl LiveProjection {
         Ok(Arc::new(PreparedEffect {
             sequence: effect.sequence,
             items,
+            archive,
         }))
     }
 

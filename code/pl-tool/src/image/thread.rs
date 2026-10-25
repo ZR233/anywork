@@ -163,15 +163,18 @@ impl<B: WorkspaceFileBackend + 'static, H: ToolMediaHost> Tool for ThreadViewIma
         let dimensions = (normalized.width, normalized.height);
         let retained = self
             .media
-            .retain(ToolMedia {
-                kind: ToolMediaKind::Image,
-                bytes: bytes.clone(),
-                media_type: source_type.into(),
-                model_image: Some(PreparedToolImage {
-                    bytes: normalized.bytes.into(),
-                    media_type: normalized.media_type,
-                }),
-            })
+            .retain(
+                crate::media::ToolResourceOrigin::from_call(&context),
+                ToolMedia {
+                    kind: ToolMediaKind::Image,
+                    bytes: bytes.clone(),
+                    media_type: source_type.into(),
+                    model_image: Some(PreparedToolImage {
+                        bytes: normalized.bytes.into(),
+                        media_type: normalized.media_type,
+                    }),
+                },
+            )
             .await?;
         retained.reference.verify(&bytes).map_err(ToolError::new)?;
         let payload = OpaquePayload::new(

@@ -46,6 +46,17 @@ class SettingsStore extends ReadModel<SettingsStoreState> {
     state = state.copyWith(configSync: sync);
   }
 
+  /// ACP 目录是只读默认值；空目录不覆盖已加载事实。
+  void applyAcpAccountCatalog(AcpAccountCatalogView next) {
+    if (!next.isUsable) return;
+    if (state.acpCatalogLoaded &&
+        state.acpCatalog.templates.length == next.templates.length &&
+        state.acpCatalog == next) {
+      return;
+    }
+    state = state.copyWith(acpCatalog: next, acpCatalogLoaded: true);
+  }
+
   void applyCatalogTransport(DomainSyncStatus sync) {
     if (sync == state.catalogSync) return;
     state = state.copyWith(catalogSync: sync);
@@ -103,6 +114,8 @@ class SettingsStoreState {
     this.accountCatalog = const AccountCatalogView.empty(),
     this.accountCatalogLoaded = false,
     this.accountCatalogRevision = '',
+    this.acpCatalog = const AcpAccountCatalogView.empty(),
+    this.acpCatalogLoaded = false,
     this.commands = const {},
   });
 
@@ -120,6 +133,10 @@ class SettingsStoreState {
   final AccountCatalogView accountCatalog;
   final bool accountCatalogLoaded;
   final String accountCatalogRevision;
+
+  /// ACP 接入目录（只读默认值，不依赖连接）。
+  final AcpAccountCatalogView acpCatalog;
+  final bool acpCatalogLoaded;
   final Map<String, CommandStatus> commands;
 
   bool get loaded => canonical != null;
@@ -139,6 +156,8 @@ class SettingsStoreState {
     AccountCatalogView? accountCatalog,
     bool? accountCatalogLoaded,
     String? accountCatalogRevision,
+    AcpAccountCatalogView? acpCatalog,
+    bool? acpCatalogLoaded,
     Map<String, CommandStatus>? commands,
   }) {
     return SettingsStoreState(
@@ -158,6 +177,8 @@ class SettingsStoreState {
       accountCatalogLoaded: accountCatalogLoaded ?? this.accountCatalogLoaded,
       accountCatalogRevision:
           accountCatalogRevision ?? this.accountCatalogRevision,
+      acpCatalog: acpCatalog ?? this.acpCatalog,
+      acpCatalogLoaded: acpCatalogLoaded ?? this.acpCatalogLoaded,
       commands: commands ?? this.commands,
     );
   }
@@ -177,9 +198,11 @@ class SettingsStoreState {
           agentProfilesSync == other.agentProfilesSync &&
           accountCatalogLoaded == other.accountCatalogLoaded &&
           accountCatalogRevision == other.accountCatalogRevision &&
+          acpCatalogLoaded == other.acpCatalogLoaded &&
           identical(canonical, other.canonical) &&
           identical(agentProfiles, other.agentProfiles) &&
           identical(accountCatalog, other.accountCatalog) &&
+          acpCatalog == other.acpCatalog &&
           commandMapsEqual(commands, other.commands);
 
   @override
@@ -195,6 +218,8 @@ class SettingsStoreState {
     agentProfilesSync,
     accountCatalogLoaded,
     accountCatalogRevision,
+    acpCatalogLoaded,
+    acpCatalog,
     identityHashCode(canonical),
     identityHashCode(agentProfiles),
     identityHashCode(accountCatalog),

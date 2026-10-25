@@ -4,6 +4,7 @@
 // ignore_for_file: invalid_use_of_internal_member, unused_import, unnecessary_import
 
 import '../../../frb_generated.dart';
+import 'acp.dart';
 import 'delegation.dart';
 
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
@@ -1307,6 +1308,9 @@ class BridgeSkillsSettingsDto {
 class BridgeStudioSettingsDto {
   final String? defaultAccountId;
   final List<BridgeAccountSettingsDto> accounts;
+
+  /// ACP 接入的 desired 配置；与 Native `accounts` 是两套语义。
+  final List<BridgeAcpAccountSettings> acpAccounts;
   final List<BridgeModeModelSettingsDto> modeModelRoutes;
   final List<BridgeRoleSettingsDto> roles;
   final String permissionMode;
@@ -1321,6 +1325,7 @@ class BridgeStudioSettingsDto {
   const BridgeStudioSettingsDto({
     this.defaultAccountId,
     required this.accounts,
+    required this.acpAccounts,
     required this.modeModelRoutes,
     required this.roles,
     required this.permissionMode,
@@ -1337,6 +1342,7 @@ class BridgeStudioSettingsDto {
   int get hashCode =>
       defaultAccountId.hashCode ^
       accounts.hashCode ^
+      acpAccounts.hashCode ^
       modeModelRoutes.hashCode ^
       roles.hashCode ^
       permissionMode.hashCode ^
@@ -1355,6 +1361,7 @@ class BridgeStudioSettingsDto {
           runtimeType == other.runtimeType &&
           defaultAccountId == other.defaultAccountId &&
           accounts == other.accounts &&
+          acpAccounts == other.acpAccounts &&
           modeModelRoutes == other.modeModelRoutes &&
           roles == other.roles &&
           permissionMode == other.permissionMode &&

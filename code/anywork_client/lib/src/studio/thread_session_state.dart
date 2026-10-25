@@ -37,6 +37,11 @@ class ThreadSessionState {
       workspace?.interactions ?? const [];
   ThreadActivityView? get activity => workspace?.activity;
   ThreadStorageStateView? get storage => workspace?.storage;
+  ThreadAudience get audience =>
+      workspace?.audience ??
+      const ThreadAudienceUnavailable(
+        reason: ThreadAudienceUnavailableReason.ownershipUnproven,
+      );
 
   ThreadStreamWatermark get watermark => ThreadStreamWatermark(
     hasSnapshot: hasSnapshot,
@@ -110,6 +115,7 @@ ThreadSessionState applyThreadSnapshotState(
     activeTurn: snapshot.activeTurn,
     interactions: snapshot.interactions,
     runtime: snapshot.runtime,
+    audience: snapshot.audience,
     todo: snapshot.todo,
     activity: snapshot.activity,
     storage: snapshot.storage,
@@ -136,6 +142,10 @@ ThreadSessionState applyThreadNotificationState(
   final workspace = current.workspace;
   if (workspace == null) return current;
   final updated = switch (frame.update) {
+    ThreadAudienceUpdate(:final audience) => workspace.copyWith(
+      revision: frame.revision,
+      audience: audience,
+    ),
     ThreadTurnUpdate(:final turn) => _applyTurn(
       workspace,
       frame.revision,

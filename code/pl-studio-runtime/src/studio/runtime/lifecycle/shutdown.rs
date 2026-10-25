@@ -663,12 +663,13 @@ impl ServiceStopJob {
 /// 单个服务关闭任务的常驻槽位；被 runtime 持有，跨阶段与跨重试保留。
 pub(crate) type ServiceStopSlot = Arc<tokio::sync::Mutex<Option<ServiceStopJob>>>;
 
-/// runtime 常驻的三个外部服务关闭槽位。
+/// runtime 常驻的外部服务与附件准备资源关闭槽位。
 #[derive(Clone, Default)]
 pub(crate) struct ServiceStopSlots {
     pub(crate) mcp: ServiceStopSlot,
     pub(crate) lsp: ServiceStopSlot,
     pub(crate) ssh: ServiceStopSlot,
+    pub(crate) attachment_inspection: ServiceStopSlot,
 }
 
 /// 本次编排要 join 的服务关闭共享句柄（按需从常驻槽位 ensure）。
@@ -849,8 +850,10 @@ mod stage_order {
     pub(super) const PERSISTENCE_OBSERVER: usize = 14;
     pub(super) const SSH: usize = 15;
     pub(super) const AGENT_PROFILES: usize = 16;
-    pub(super) const BOTS: usize = 17;
-    pub(super) const ATTACHMENT_INSPECTION: usize = 18;
+    pub(super) const ACP_AUTH: usize = 17;
+    pub(super) const BOTS: usize = 18;
+    pub(super) const ACP_INSTALL: usize = 19;
+    pub(super) const ATTACHMENT_INSPECTION: usize = 20;
 }
 
 /// 在常驻槽位上只启动一次真正的 stop 工作；已存在则返回同一共享句柄。
@@ -1229,6 +1232,12 @@ impl StudioRuntime {
         background_task::signal(&self.persistence_observer).await;
         background_task::signal(&self.profiles_forwarder).await;
         self.title_tasks.signal_cancel().await;
+        // ACP 认证操作只接收取消信号：真正的 protocol/进程收束与终态由该 owner 自己的
+        // supervisor 完成，随后在独立阶段有界 join，避免提前释放仍存活的进程。
+        self.acp_auth.signal_cancel();
+        // 官方 server 准备同样只接收取消信号：下载库、校验/解压阻塞任务与发布提交的收束与终态
+        // 由该 owner 自己的 supervisor 完成，随后在独立阶段有界 join。
+        self.acp_install.signal_cancel();
         // 活动 Turn / 模型 / 工具：通过既有的纯取消入口取消每个驻留 Thread 当前执行代次。
         // 这里只发信号，不 join、也不 close——真正的收束仍由后续唯一 `agentFramework` 阶段完成，
         // 因此不会重复 close，也绝不提前释放 writer 或实例锁。先前已封闭准入，取消只是加速在途
@@ -1300,13 +1309,29 @@ impl StudioRuntime {
         // issue、不会伪报 Clean）。这些阶段彼此独立，因此并发发起、并发等待（不会用前一个的等待
         // 耗尽后续阶段预算）。
         let mut producers: FuturesUnordered<StageBranch> = FuturesUnordered::new();
-        producers.push(self.stage_branch(
-            budget,
-            stage_order::ATTACHMENT_INSPECTION,
-            "attachmentInspection",
-            None,
-            |runtime| async move { runtime.attachment_drafts.close().await },
-        ));
+        // 附件检查是独立准备资源，严格关闭也只做有界等待。关闭 job 常驻保留，超时后重试只
+        // join 同一结果（包括错误 / panic），不重复 close；只捕获草稿 owner，避免引用 runtime 成环。
+        let inspection_slot = Arc::clone(&self.service_stops.attachment_inspection);
+        let attachment_drafts = self.attachment_drafts.clone();
+        producers.push(
+            async move {
+                let job = ensure_service_stop(&inspection_slot, move || {
+                    ServiceStopJob::spawn(async move { attachment_drafts.close().await })
+                })
+                .await;
+                vec![
+                    join_service_outcome(
+                        budget,
+                        stage_order::ATTACHMENT_INSPECTION,
+                        "attachmentInspection",
+                        job,
+                        Some(SERVICE_STAGE_LIMIT),
+                    )
+                    .await,
+                ]
+            }
+            .boxed(),
+        );
         producers.push(self.stage_branch(
             budget,
             stage_order::MODEL_CATALOG,
@@ -1373,6 +1398,24 @@ impl StudioRuntime {
             "toolRefresh",
             Some(SERVICE_STAGE_LIMIT),
             |runtime| async move { runtime.stop_tool_refresh().await },
+        ));
+        // ACP 认证操作持有官方 server 进程与管道；取消已广播，这里是有界 join。超时保留 owner
+        // 与 join 句柄，令 `Clean` 不可达并可重试，绝不伪报已回收。
+        remote_dependents.push(self.stage_branch(
+            budget,
+            stage_order::ACP_AUTH,
+            "acpAuth",
+            Some(SERVICE_STAGE_LIMIT),
+            |runtime| async move { runtime.acp_auth.cancel_and_join().await },
+        ));
+        // ACP server 准备持有下载、校验/解压阻塞任务、文件锁与发布提交；取消已广播，这里是有界
+        // join。超时保留 owner 与 join 句柄，令 `Clean` 不可达并可重试。
+        remote_dependents.push(self.stage_branch(
+            budget,
+            stage_order::ACP_INSTALL,
+            "acpInstall",
+            Some(SERVICE_STAGE_LIMIT),
+            |runtime| async move { runtime.acp_install.cancel_and_join().await },
         ));
 
         // MCP/LSP 只 join `ensure_service_stops` 已启动的那一次关闭，消费真实 typed 结果；

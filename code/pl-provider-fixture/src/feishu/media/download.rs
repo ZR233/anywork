@@ -13,7 +13,7 @@ use super::{
     ResourceDownloadDisposition, ResourceDownloadObservation, ResourceDownloadOutcome,
     ResourceDownloadType,
 };
-use crate::feishu::http::HttpState;
+use crate::feishu::guard::HttpState;
 use crate::feishu::types::CallKind;
 
 #[derive(Deserialize)]
@@ -44,14 +44,18 @@ pub(crate) async fn download(
     let resource_type = query.ok().map(|Query(q)| q.resource_type);
     let (observation, bytes, summary, disposition, waiter) = {
         let mut inner = state.shared.lock().await;
+        let mapped_key = inner
+            .media
+            .message_keys
+            .get(&(message_id.clone(), file_key.clone()));
         let resource = inner
             .media
             .resources
-            .get(&file_key)
+            .get(mapped_key.unwrap_or(&file_key))
             .filter(|resource| {
                 valid_identity(&message_id)
                     && valid_identity(&file_key)
-                    && resource.messages.contains(&message_id)
+                    && (mapped_key.is_some() || resource.messages.contains(&message_id))
                     && resource_type == Some(resource.summary.kind.download_type())
             })
             .map(|resource| (resource.bytes.clone(), resource.summary.clone()));

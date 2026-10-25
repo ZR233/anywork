@@ -76,6 +76,12 @@ impl StudioStore {
         thread_id: &str,
     ) -> anyhow::Result<HistoryStore> {
         if let Some(shared) = self.thread_persistence.shared_history(thread_id) {
+            shared.bind_resources(
+                self.session_resources_dir_for(project_id, thread_id)?,
+                self.paths.home().to_owned(),
+                self.session_paths(project_id, thread_id)?
+                    .attachments_catalog(),
+            )?;
             return Ok(shared);
         }
         let opened = HistoryStore::open(
@@ -85,9 +91,41 @@ impl StudioStore {
             thread_id,
         )
         .await?;
-        Ok(self
+        let shared = self
             .thread_persistence
-            .install_shared_history(thread_id, &opened))
+            .install_shared_history(thread_id, &opened);
+        shared.bind_resources(
+            self.session_resources_dir_for(project_id, thread_id)?,
+            self.paths.home().to_owned(),
+            self.session_paths(project_id, thread_id)?
+                .attachments_catalog(),
+        )?;
+        Ok(shared)
+    }
+
+    pub(crate) async fn thread_resources_for(
+        &self,
+        project_id: &str,
+        thread_id: &str,
+    ) -> anyhow::Result<crate::resource_store::ThreadResourceStore> {
+        self.history_for(project_id, thread_id)
+            .await?
+            .resources()
+            .ok_or_else(|| anyhow::anyhow!("Thread reliable resource owner is unavailable"))
+    }
+
+    pub(crate) async fn thread_resources(
+        &self,
+        thread_id: &str,
+    ) -> anyhow::Result<crate::resource_store::ThreadResourceStore> {
+        // Revalidate the registered session layout against the shared owner. Child preparation
+        // uses the explicit Project+Thread variant above until its catalog entry is published.
+        self.history(thread_id).await?.bind_resources(
+            self.session_resources_dir(thread_id)?,
+            self.paths.home().to_owned(),
+            self.registered_session_paths(thread_id)?
+                .attachments_catalog(),
+        )
     }
 
     /// One session per live Thread, shared by the writer and every content reader.
@@ -155,6 +193,16 @@ impl StudioStore {
     /// Temporary attachment-draft root derived from the canonical Studio layout.
     pub(crate) fn attachment_drafts_dir(&self) -> PathBuf {
         self.paths.attachment_drafts_dir()
+    }
+
+    /// 一条 ACP 接入专属的空探测工作目录；只由稳定接入 ID 派生，不使用用户项目。
+    pub(crate) fn acp_probe_dir(&self, account_id: &str) -> anyhow::Result<PathBuf> {
+        self.paths.acp_probe_dir(account_id)
+    }
+
+    /// 官方 ACP server 安装根；下载/staging/已发布安装共用同一产品路径入口。
+    pub(crate) fn acp_servers_root(&self) -> PathBuf {
+        self.paths.acp_servers_root()
     }
 
     /// 每会话资源（工具持久化媒体等）根目录；与附件 blob 根同属一个会话目录。

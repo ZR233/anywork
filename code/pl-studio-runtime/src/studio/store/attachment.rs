@@ -80,11 +80,25 @@ impl StudioStore {
     pub(in crate::studio) async fn retain_attachment_resource(
         &self,
         record: &AttachmentRecord,
+        preparation: &crate::resource_store::InputPreparation,
     ) -> Result<pl_core::context::ResourceReference> {
         let session = self.registered_session_paths(&record.thread_id)?;
         let source = resolve_attachment_host_path(&session, &record.blob_relative_path)?;
-        let resources = crate::resource_store::FileResourceStore::new(session.resources_dir());
-        let reference = resources.retain_file(&source, &record.media_type).await?;
+        let resources = self.thread_resources(&record.thread_id).await?;
+        let media_type = record.media_type.clone();
+        let (_, reference) = resources
+            .perform(
+                preparation.origin(),
+                record.byte_size,
+                move |store| async move {
+                    let reference = store
+                        .retain_file(&source, &media_type)
+                        .await
+                        .map_err(pl_core::tool::opaque::ToolError::new)?;
+                    Ok((reference.clone(), vec![reference]))
+                },
+            )
+            .await?;
         anyhow::ensure!(
             reference.byte_len() == record.byte_size
                 && reference.content_digest() == format!("sha256:{}", record.content_sha256),

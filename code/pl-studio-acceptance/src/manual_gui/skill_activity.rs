@@ -2,7 +2,9 @@
 //!
 //! Two owned GUI lifecycles share one isolated home. The first loads real
 //! synthetic skills, forces one failing and one succeeding manual compaction and
-//! reloads a skill; the second reopens the same home with a one-token automatic
+//! reloads a skill. An additional same-Turn journey mutates project Skill files
+//! through real product tools and observes dynamic discovery. The second
+//! reopens the same home with a one-token automatic
 //! threshold, proves that an automatic compaction really commits and clears the
 //! restored activation, and finally cancels the last Turn while its post-load
 //! compaction is streaming. Nothing is submitted after that stop.
@@ -65,7 +67,6 @@ pub(super) fn run(context: &SkillActivityScenario<'_>, mut fixture: OwnedProcess
         status_file,
         interrupt,
     } = context;
-    let project = working.join("skill-activity-project");
     let stage = working.join("skill-activity-stage");
     let first_log = working.join("skill-activity-first-gui.log");
     let reopen_log = working.join("skill-activity-reopen-gui.log");
@@ -84,6 +85,10 @@ pub(super) fn run(context: &SkillActivityScenario<'_>, mut fixture: OwnedProcess
         .tempdir()
         .context("failed to create the synthetic skill seed directory")?;
     let skills_dir = seeds.path().join("skills");
+    // Project discovery must not inherit the evidence directory's ignored
+    // `target/` ancestor either. This same guard owns both synthetic roots and
+    // outlives both GUI lifecycles; only product file tools mutate project Skills.
+    let project = seeds.path().join("project");
     let journey = (|| -> Result<()> {
         seed_skills(&skills_dir)?;
         point_user_skills_dir(home, &skills_dir)?;
@@ -117,6 +122,7 @@ pub(super) fn run(context: &SkillActivityScenario<'_>, mut fixture: OwnedProcess
             driver_exits.insert("first", Some(exit));
         }
         ensure_summary(output, "first")?;
+        verify_dynamic_mutations(&project)?;
         let observed: serde_json::Value = serde_json::from_slice(
             &fs::read(working.join("skill-activity-observed.json"))
                 .context("the first lifecycle did not record its observations")?,
@@ -163,6 +169,7 @@ pub(super) fn run(context: &SkillActivityScenario<'_>, mut fixture: OwnedProcess
         (workspace.to_string_lossy().into_owned(), "<workspace>"),
         (home.to_string_lossy().into_owned(), "<home>"),
         (working.to_string_lossy().into_owned(), "<coord>"),
+        (seeds.path().to_string_lossy().into_owned(), "<synthetic>"),
     ];
     for phase in ["first", "reopen"] {
         write_realtime_driver_evidence(
@@ -292,6 +299,29 @@ fn seed_skills(skills_dir: &Path) -> Result<()> {
             )?;
         }
     }
+    Ok(())
+}
+
+/// Confirms that the real product mutations persisted, without synthesizing a
+/// discovery result or removing the invalid Skill on the product's behalf.
+fn verify_dynamic_mutations(project: &Path) -> Result<()> {
+    let root = project.join(".agents/skills");
+    ensure!(
+        !root
+            .join(pl_provider_fixture::SKILL_ACTIVITY_DYNAMIC_DELETED)
+            .exists(),
+        "the same-Turn file tools did not delete the synthetic Skill directory"
+    );
+    let invalid = fs::read_to_string(
+        root.join(pl_provider_fixture::SKILL_ACTIVITY_DYNAMIC_INVALID)
+            .join("SKILL.md"),
+    )
+    .context("the invalid synthetic Skill must remain on disk")?;
+    ensure!(
+        invalid.contains(pl_provider_fixture::SKILL_ACTIVITY_DYNAMIC_INVALID_MARKER)
+            && invalid.contains("disable-model-invocation: not-a-boolean"),
+        "the same-Turn file tools did not persist the invalid Skill document"
+    );
     Ok(())
 }
 
@@ -449,6 +479,22 @@ fn ensure_summary(output: &Path, phase: &str) -> Result<()> {
             value == &serde_json::Value::Bool(true),
             "skill-activity {phase} check {name} did not pass"
         );
+    }
+    if phase == "first" {
+        for name in [
+            "dynamicSameTurnCallIdentities",
+            "dynamicWaitHandoffsTerminal",
+            "dynamicViewDiscoversBeforeList",
+            "dynamicListDiscoversNewSkill",
+            "dynamicDeletionAndInvalidityVisible",
+            "dynamicDeletedActivationRetained",
+            "dynamicCanonicalDetailsReadable",
+        ] {
+            ensure!(
+                checks.get(name) == Some(&serde_json::Value::Bool(true)),
+                "skill-activity first summary omitted required dynamic check {name}"
+            );
+        }
     }
     Ok(())
 }

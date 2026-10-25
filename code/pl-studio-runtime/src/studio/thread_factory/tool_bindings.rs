@@ -63,6 +63,7 @@ pub(super) struct ThreadToolLifetime {
     pub(super) file_io: pl_tool::workspace_file::LocalFileIoOwner,
     pub(super) file_creates: pl_tool::workspace_file::LocalFileCreateOwner,
     pub(super) preparation: pl_model::runtime::ModelPreparationOwner,
+    pub(super) resources: std::sync::Mutex<Option<crate::resource_store::ThreadResourceStore>>,
     file_close: tokio::sync::Mutex<Option<FileOperationsClose>>,
     pub(super) cancellation: tokio_util::sync::CancellationToken,
 }
@@ -88,6 +89,8 @@ enum OwnerCloseFailure {
     Io(#[source] pl_protocol::PureError),
     #[error("local file Create: {0}")]
     Creates(#[source] pl_protocol::PureError),
+    #[error("reliable Thread archive: {0}")]
+    Resources(#[source] anyhow::Error),
 }
 
 /// Candidate metadata is published only after the Thread accepts its registrations.
@@ -272,6 +275,7 @@ impl StudioThreadFactory {
         // The map retains the owner across failure or cancellation of this waiter.
         // Only a confirmed drain permits removing the same execution lifetime.
         close_file_operations(&lifetime).await?;
+        close_archive(&lifetime).await?;
         let mut bindings = self
             .bindings
             .lock()
@@ -417,12 +421,12 @@ impl StudioThreadFactory {
             crate::config::StudioRole::Planner.id()
         };
         let route = config.models.resolve_route(role, &selector)?;
-        let resources = crate::resource_store::FileResourceStore::new(
-            self.services
-                .store
-                .session_resources_dir_for(&thread.project_id, &thread.id)
-                .map_err(|error| resource_error("resolve refreshed session resources", error))?,
-        );
+        let resources = self
+            .services
+            .store
+            .thread_resources_for(&thread.project_id, &thread.id)
+            .await
+            .map_err(|error| resource_error("resolve refreshed session resource owner", error))?;
         let remote = match &project.ssh_alias {
             Some(server) => {
                 // 身份比较在同一 POSIX 表示上进行：`canonical_path` 由远端 helper 返回
@@ -553,11 +557,26 @@ async fn close_file_operations(lifetime: &ThreadToolLifetime) -> Result<(), Thre
         let io = lifetime.file_io.clone();
         let creates = lifetime.file_creates.clone();
         let preparation = lifetime.preparation.clone();
+        let resources = lifetime
+            .resources
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
         Box::pin(async move {
             // All admission seals are polled together. In-flight Create owns its directory
             // capability independently of root/read IO; all results remain in this future.
-            let (images, io, creates) =
-                futures::join!(preparation.close(), io.close(), creates.close());
+            let archive_close = async {
+                match resources {
+                    Some(resources) => resources.drain().await,
+                    None => Ok(()),
+                }
+            };
+            let (images, io, creates, resources) = futures::join!(
+                preparation.close(),
+                io.close(),
+                creates.close(),
+                archive_close
+            );
             let mut failures = Vec::new();
             if let Err(error) = images {
                 failures.push(OwnerCloseFailure::Preparation(error));
@@ -567,6 +586,9 @@ async fn close_file_operations(lifetime: &ThreadToolLifetime) -> Result<(), Thre
             }
             if let Err(error) = creates {
                 failures.push(OwnerCloseFailure::Creates(error));
+            }
+            if let Err(error) = resources {
+                failures.push(OwnerCloseFailure::Resources(error));
             }
             let mut failures = failures.into_iter();
             match failures.next() {
@@ -581,6 +603,21 @@ async fn close_file_operations(lifetime: &ThreadToolLifetime) -> Result<(), Thre
     let result = close.await;
     *pending = None;
     result.map_err(|error| resource_error("drain Thread file operations", error))
+}
+
+async fn close_archive(lifetime: &ThreadToolLifetime) -> Result<(), ThreadAssemblyError> {
+    let resources = lifetime
+        .resources
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone();
+    if let Some(resources) = resources {
+        resources
+            .close()
+            .await
+            .map_err(|error| resource_error("finalize Thread archive", error))?;
+    }
+    Ok(())
 }
 
 fn catalog_fact(

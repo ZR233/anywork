@@ -153,6 +153,11 @@ class DemoStudioTransport extends StudioTransport
   int _skillsRevision = 1;
   int _accountUsageRevision = 1;
   final Map<String, AccountUsageView> _accountUsages = {};
+  List<AcpAccountSettingsView> _acpAccounts = const [];
+  final DemoAcpAuth _demoAcpAuth = DemoAcpAuth();
+  int _acpInstallRevision = 0;
+  final Map<AcpProviderView, AcpInstallStateView> _acpInstalls = {};
+  final Map<AcpProviderView, Timer> _acpInstallTimers = {};
   int _mcpRevision = 0;
   int _lspRevision = 0;
   int? _lspActivityPercentage = 40;
@@ -170,6 +175,9 @@ class DemoStudioTransport extends StudioTransport
   final Map<String, List<BotConversation>> _botConversations = {};
   final Map<String, List<BotMessage>> _botMessages = {};
   final Map<String, BotConversationThreadBinding> _botBindings = {};
+  final Map<String, (ChangeBotThreadSyncRequest, ChangeBotThreadSyncReply)>
+  _syncReplies = {};
+  final Map<String, List<BotClosedAuthorization>> _closedAuthorizations = {};
 
   Duration get promptStartDelay => const Duration(milliseconds: 120);
 
@@ -501,6 +509,7 @@ class DemoStudioTransport extends StudioTransport
         _settingsRevision,
         SettingsStateData(
           accounts: accounts,
+          acpAccounts: _acpAccounts,
           defaultAccountId: _defaultAccountId ?? accounts.firstOrNull?.id,
           modeModelRoutes: modeRoutes,
           roles: roles,
@@ -763,6 +772,7 @@ class DemoStudioTransport extends StudioTransport
       _workspaces.putIfAbsent(
         thread.id,
         () => ThreadWorkspace(
+          audience: const ThreadAudienceUnbound(),
           thread: thread,
           revision: 0,
           interactions: const [],
@@ -802,6 +812,7 @@ class DemoStudioTransport extends StudioTransport
       _workspaces.putIfAbsent(
         thread.id,
         () => ThreadWorkspace(
+          audience: const ThreadAudienceUnbound(),
           thread: thread,
           revision: 0,
           interactions: const [],
@@ -960,6 +971,7 @@ class DemoStudioTransport extends StudioTransport
       ),
     ]);
     return ThreadWorkspace(
+      audience: const ThreadAudienceUnbound(),
       thread: thread,
       revision: 1,
       interactions: const [],
@@ -1022,6 +1034,7 @@ class DemoStudioTransport extends StudioTransport
       ),
     ]);
     return ThreadWorkspace(
+      audience: const ThreadAudienceUnbound(),
       thread: thread,
       revision: 1,
       interactions: const [],
@@ -1051,6 +1064,314 @@ class DemoStudioTransport extends StudioTransport
 
   @override
   Future<AccountCatalogView> loadAccountCatalog() async => _accountCatalog;
+
+  @override
+  Future<AcpAccountCatalogView> loadAcpAccountCatalog() async =>
+      demoAcpAccountCatalogFixture;
+
+  AcpAccountSettingsView _demoAcpAccount(String accountId) {
+    final account = _acpAccounts
+        .where((candidate) => candidate.accountId == accountId)
+        .firstOrNull;
+    if (account == null) {
+      throw StudioFailure(
+        code: StudioFailureCode.notFound,
+        message: 'ACP account is unavailable: $accountId',
+        retryable: false,
+        correlationId: 'demo-acp',
+      );
+    }
+    return account;
+  }
+
+  AcpAuthCommandReply _demoAcpReply(
+    OperationId operationId,
+    AcpAuthSnapshotView snapshot, {
+    CommitDisposition disposition = CommitDisposition.applied,
+  }) {
+    _publishProductPayload(AcpAuthStateChangedPayload(snapshot));
+    return AcpAuthCommandReply(
+      receipt: _demoReceipt(
+        operationId,
+        changed: disposition == CommitDisposition.applied,
+        targets: [_demoStamp('acp-auth', snapshot.revision)],
+        effect: EffectPoint.immediate,
+      ),
+      snapshot: snapshot,
+    );
+  }
+
+  @override
+  Future<SettingsCommandReply> saveAcpAccount(
+    int expectedSettingsRevision,
+    AcpAccountUpdateView account, {
+    required OperationId operationId,
+  }) async {
+    final before = _demoSettingsState();
+    _checkSettingsRevision(expectedSettingsRevision);
+    if (account.accountId.trim().isEmpty || account.name.trim().isEmpty) {
+      throw StudioFailure(
+        code: StudioFailureCode.invalidArgument,
+        message: 'ACP account requires an id and a name',
+        retryable: false,
+        correlationId: 'demo-acp',
+      );
+    }
+    final previous = _acpAccounts
+        .where((candidate) => candidate.accountId == account.accountId)
+        .firstOrNull;
+    final identityChanged =
+        previous == null || previous.provider != account.provider;
+    final saved = AcpAccountSettingsView(
+      accountId: account.accountId,
+      name: account.name,
+      provider: account.provider,
+      connectionRevision: identityChanged
+          ? (previous?.connectionRevision ?? 0) + 1
+          : previous.connectionRevision,
+    );
+    _acpAccounts = [
+      for (final candidate in _acpAccounts)
+        if (candidate.accountId != saved.accountId) candidate,
+      saved,
+    ];
+    _demoAcpAuth.retain(saved);
+    _settingsRevision += 1;
+    return _demoSettingsReply(operationId, before);
+  }
+
+  @override
+  Future<SettingsCommandReply> removeAcpAccount(
+    int expectedSettingsRevision,
+    String accountId, {
+    required OperationId operationId,
+  }) async {
+    final before = _demoSettingsState();
+    _checkSettingsRevision(expectedSettingsRevision);
+    _acpAccounts = [
+      for (final account in _acpAccounts)
+        if (account.accountId != accountId) account,
+    ];
+    _demoAcpAuth.forget(accountId);
+    _settingsRevision += 1;
+    return _demoSettingsReply(operationId, before);
+  }
+
+  @override
+  Future<AcpAuthSnapshotView> readAcpAuthState() async => _demoAcpAuth.snapshot;
+
+  @override
+  Future<AcpAuthCommandReply> startAcpAuth({
+    required OperationId operationId,
+    required String accountId,
+    required int expectedConnectionRevision,
+    required AcpAuthActionView action,
+  }) async {
+    final account = _demoAcpAccount(accountId);
+    if (account.connectionRevision != expectedConnectionRevision) {
+      throw StudioFailure(
+        code: StudioFailureCode.staleRevision,
+        message: 'ACP connection identity changed for $accountId',
+        retryable: false,
+        correlationId: 'demo-acp',
+      );
+    }
+    final snapshot = switch (action) {
+      AcpCheckActionView() => _demoAcpAuth.check(account),
+      AcpAuthenticateActionView(:final methodId) => _demoAcpAuth.authenticate(
+        account,
+        methodId,
+      ),
+    };
+    return _demoAcpReply(operationId, snapshot);
+  }
+
+  @override
+  Future<AcpAuthCommandReply> cancelAcpAuth({
+    required OperationId operationId,
+    required String accountId,
+    required OperationId targetOperationId,
+  }) async {
+    final account = _demoAcpAccount(accountId);
+    final snapshot = _demoAcpAuth.cancel(account, targetOperationId.value);
+    return _demoAcpReply(operationId, snapshot);
+  }
+
+  // -------------------------------------------------------------------------
+  // `acpInstall` demo：只模拟后端发布的阶段与真实形状的进度，不联网、不写盘。
+  // -------------------------------------------------------------------------
+
+  AcpInstallSnapshotView _demoInstallSnapshot() => AcpInstallSnapshotView(
+    revision: _acpInstallRevision,
+    updatedAt: _fixtureTime.millisecondsSinceEpoch ~/ 1000,
+    installations: [
+      for (final entry in _acpInstalls.entries)
+        AcpInstallEntryView(provider: entry.key, state: entry.value),
+    ],
+  );
+
+  void _publishInstall(AcpProviderView provider, AcpInstallStateView state) {
+    _acpInstalls[provider] = state;
+    _acpInstallRevision += 1;
+    _publishProductPayload(
+      AcpInstallStateChangedPayload(_demoInstallSnapshot()),
+    );
+  }
+
+  AcpInstallCommandReply _demoInstallReply(
+    OperationId operationId,
+    AcpProviderView provider,
+  ) => AcpInstallCommandReply(
+    receipt: _demoReceipt(
+      operationId,
+      changed: true,
+      targets: [_demoStamp('acp-install', _acpInstallRevision)],
+      effect: EffectPoint.immediate,
+    ),
+    snapshot: _demoInstallSnapshot(),
+  );
+
+  AcpInstallReleaseView _demoInstallRelease() => const AcpInstallReleaseView(
+    version: '1.4.1',
+    target: 'linux-x86_64',
+    archiveUrl: 'https://dl.google.com/agy-extensions/releases/antigravity-acp-linux-x86_64.zip',
+  );
+
+  static const int _demoInstallTotalBytes = 12582912;
+  static const int _demoInstallStepBytes = 1572864;
+
+  @override
+  Future<AcpInstallSnapshotView> readAcpInstallState() async =>
+      _demoInstallSnapshot();
+
+  @override
+  Future<AcpInstallCommandReply> startAcpInstall({
+    required OperationId operationId,
+    required AcpProviderView provider,
+  }) async {
+    final current = _acpInstalls[provider] ?? const AcpInstallIdleState();
+    if (current.isBusy) {
+      throw StudioFailure(
+        code: StudioFailureCode.busy,
+        message: 'An ACP server preparation is already active',
+        retryable: false,
+        correlationId: 'demo-acp-install',
+      );
+    }
+    final release = _demoInstallRelease();
+    final op = operationId.value;
+    _publishInstall(provider, AcpResolvingState(operationId: op));
+    var step = 0;
+    var completed = 0;
+    _acpInstallTimers[provider]?.cancel();
+    _acpInstallTimers[provider] = Timer.periodic(
+      const Duration(milliseconds: 260),
+      (timer) {
+        step += 1;
+        if (step == 1) {
+          _publishInstall(
+            provider,
+            AcpWaitingForAssetState(operationId: op, release: release),
+          );
+          return;
+        }
+        if (step <= 8) {
+          completed += _demoInstallStepBytes;
+          if (completed > _demoInstallTotalBytes) {
+            completed = _demoInstallTotalBytes;
+          }
+          _publishInstall(
+            provider,
+            AcpDownloadingState(
+              operationId: op,
+              release: release,
+              progress: AcpInstallProgressView(
+                completedBytes: completed,
+                totalBytes: _demoInstallTotalBytes,
+                bytesPerSecond: _demoInstallStepBytes * 4,
+              ),
+              retryCount: step == 4 ? 1 : 0,
+            ),
+          );
+          return;
+        }
+        switch (step) {
+          case 9:
+            _publishInstall(
+              provider,
+              AcpInstallVerifyingState(
+                operationId: op,
+                release: release,
+                progress: const AcpInstallProgressView(
+                  completedBytes: _demoInstallTotalBytes,
+                  totalBytes: _demoInstallTotalBytes,
+                ),
+              ),
+            );
+          case 10:
+            _publishInstall(
+              provider,
+              AcpExtractingState(
+                operationId: op,
+                release: release,
+                progress: const AcpInstallProgressView(
+                  completedBytes: _demoInstallTotalBytes,
+                  totalBytes: _demoInstallTotalBytes,
+                ),
+              ),
+            );
+          case 11:
+            _publishInstall(
+              provider,
+              AcpPublishingState(operationId: op, release: release),
+            );
+          default:
+            timer.cancel();
+            _acpInstallTimers.remove(provider);
+            _publishInstall(
+              provider,
+              AcpInstallReadyState(
+                operationId: op,
+                server: AcpInstalledServerView(
+                  installationId: 'demo-installation-$op',
+                  release: release,
+                  program: '/home/studio/acp-servers/antigravity/1.4.1/program',
+                  readyAt: _fixtureTime.millisecondsSinceEpoch ~/ 1000,
+                ),
+              ),
+            );
+        }
+      },
+    );
+    return _demoInstallReply(operationId, provider);
+  }
+
+  @override
+  Future<AcpInstallCommandReply> cancelAcpInstall({
+    required OperationId operationId,
+    required AcpProviderView provider,
+    required OperationId targetOperationId,
+  }) async {
+    final current = _acpInstalls[provider] ?? const AcpInstallIdleState();
+    if (current.operationId != targetOperationId.value) {
+      throw StudioFailure(
+        code: StudioFailureCode.conflict,
+        message: 'ACP server preparation identity changed',
+        retryable: false,
+        correlationId: 'demo-acp-install',
+      );
+    }
+    _acpInstallTimers.remove(provider)?.cancel();
+    _publishInstall(
+      provider,
+      AcpInstallCancellingState(operationId: targetOperationId.value),
+    );
+    _publishInstall(
+      provider,
+      AcpInstallCancelledState(operationId: targetOperationId.value),
+    );
+    return _demoInstallReply(operationId, provider);
+  }
 
   @override
   Future<AgentProfilesStateView> readAgentProfilesState() async =>
@@ -1586,6 +1907,14 @@ class DemoStudioTransport extends StudioTransport
     s.delegation.mode,
     s.delegation.preference,
     s.permissionMode,
+    {
+      for (final account in s.acpAccounts)
+        account.accountId: [
+          account.name,
+          account.provider.wire,
+          account.connectionRevision,
+        ],
+    },
     {
       for (final p in s.accounts)
         p.id: [
@@ -2780,6 +3109,8 @@ class DemoStudioTransport extends StudioTransport
       AgentProfilesTopic() => AgentProfilesBaseline(
         readAgentProfilesStateSync(),
       ),
+      AcpAuthTopic() => AcpAuthBaseline(_demoAcpAuth.snapshot),
+      AcpInstallTopic() => AcpInstallBaseline(_demoInstallSnapshot()),
       BotsTopic() => BotsBaseline(_demoBotsState()),
     };
     final revision = switch (baseline) {
@@ -2800,6 +3131,8 @@ class DemoStudioTransport extends StudioTransport
       PersistenceBaseline(:final state) => state.revision,
       PersistenceQueueBaseline(:final state) => state.revision,
       AgentProfilesBaseline(:final state) => state.revision,
+      AcpAuthBaseline(:final state) => state.revision,
+      AcpInstallBaseline(:final state) => state.revision,
       BotsBaseline(:final state) => state.revision,
     };
     return ProductTopicBaselineFrame(
@@ -4277,8 +4610,21 @@ class DemoStudioTransport extends StudioTransport
   ) async {
     final key = '${request.botId}/${request.chatId}';
     final existing = _botBindings[key];
-    if (existing != null &&
-        existing.revision != request.expectedBindingRevision) {
+    final bot = _findBot(request.botId);
+    final conversations =
+        (_botConversations[request.botId] ?? const <BotConversation>[]).where(
+          (conversation) => conversation.chatId == request.chatId,
+        );
+    if (bot == null || conversations.isEmpty) {
+      throw StudioFailure(
+        code: StudioFailureCode.notFound,
+        message: 'Demo conversation ownership is not available',
+        retryable: false,
+        correlationId: request.operationId,
+      );
+    }
+    if ((existing?.revision ?? 0) != request.expectedBindingRevision ||
+        bot.configRevision != request.expectedConfigRevision) {
       throw StudioFailure(
         code: StudioFailureCode.staleRevision,
         message: 'Bot binding revision conflict',
@@ -4289,21 +4635,428 @@ class DemoStudioTransport extends StudioTransport
     final binding = BotConversationThreadBinding(
       botId: request.botId,
       chatId: request.chatId,
-      projectId: _findBot(request.botId)?.projectId ?? '',
-      threadId: existing?.threadId ?? 'thread-bot-${request.chatId}',
+      projectId: bot.projectId,
+      threadId: 'thread-bot-${++_threadSequence}',
       revision: (existing?.revision ?? 0) + 1,
       state: BotConversationThreadState.bound,
     );
+    final oldAudience = _workspaces[existing?.threadId]?.audience;
+    final prior = oldAudience?.queryAuthorization;
+    final initial = BotAuthorizationRef(
+      id: BotAuthorizationId(
+        botId: request.botId,
+        chatId: request.chatId,
+        generation: (prior?.id.generation ?? 0) + 1,
+      ),
+      revision: 1,
+    );
+    final previous = oldAudience?.known;
+    if (previous != null && existing?.threadId != null) {
+      var closed = previous.latestClosed;
+      if (prior != null && closed?.authorization.id != prior.id) {
+        final start = switch (previous.binding) {
+          BotThreadBindingPositionCurrent(
+            sync: BotCurrentSyncActive(:final authorization) ||
+                BotCurrentSyncPaused(:final authorization),
+          ) =>
+            BotClosedStartSaved(start: authorization.start),
+          _ => const BotClosedStartNeverActivated(),
+        };
+        closed = BotClosedAuthorization(
+          authorization: BotAuthorizationRef(
+            id: prior.id,
+            revision: prior.revision + 1,
+          ),
+          bindingRevision: existing!.revision,
+          start: start,
+          reason: BotAudienceCloseReason.bindingReplaced,
+          closedAt: DateTime.now().millisecondsSinceEpoch ~/ 1000,
+        );
+        (_closedAuthorizations[existing.threadId!] ??= []).add(closed);
+      }
+      _emitThreadUpdate(
+        existing!.threadId!,
+        ThreadAudienceUpdate(
+          ThreadAudienceKnown(
+            audience: BotThreadAudience(
+              target: previous.target,
+              binding: BotThreadBindingPositionReplaced(
+                lastBindingRevision: existing.revision,
+                currentBindingRevision: binding.revision,
+              ),
+              latestClosed: closed,
+              hasOlderClosed:
+                  (_closedAuthorizations[existing.threadId]?.length ?? 0) > 1,
+              delivery: previous.delivery,
+              legacyFinal: previous.legacyFinal,
+            ),
+          ),
+        ),
+      );
+    }
     _botBindings[key] = binding;
+    final now = DateTime.now();
+    final project = _ensureWorkspaceFixture().project;
+    final thread = StudioThread(
+      id: binding.threadId!,
+      projectId: project.id,
+      title: 'Feishu · ${request.chatId}',
+      mode: ThreadModeId.simple,
+      delegationMode: DelegationMode.profile,
+      delegationPreference: DelegationPreference.balanced,
+      role: 'planner',
+      createdAt: now,
+      updatedAt: now,
+      workspacePath: project.path,
+    );
+    _createdRootThreads.add(thread);
+    _threadItems[thread.id] = const [];
+    _workspaces[thread.id] = ThreadWorkspace(
+      thread: thread,
+      revision: 0,
+      audience: ThreadAudienceKnown(
+        audience: BotThreadAudience(
+          target: BotAudienceTarget(
+            botId: request.botId,
+            botName: bot.name,
+            chatId: request.chatId,
+            chatName: conversations.single.name,
+            kind: conversations.single.kind,
+          ),
+          binding: BotThreadBindingPositionCurrent(
+            cas: BotSyncCas(
+              bindingRevision: binding.revision,
+              authorizationHead: BotAuthorizationHeadPresent(
+                authorization: initial,
+              ),
+            ),
+            sync: BotCurrentSyncActive(
+              authorization: BotStartedAuthorization(
+                authorization: initial,
+                bindingRevision: binding.revision,
+                start: const BotAudienceStart(commitSequence: 0),
+              ),
+            ),
+          ),
+          hasOlderClosed: false,
+          delivery: const BotDeliverySummary(
+            version: 0,
+            pendingItems: 0,
+            unknownOperations: 0,
+            incompleteItems: 0,
+            countsCapped: false,
+          ),
+          legacyFinal: const BotLegacyFinalSummary(
+            unfinishedChains: 0,
+            unknownOperations: 0,
+            needsAttention: false,
+            countsCapped: false,
+          ),
+        ),
+      ),
+      interactions: const [],
+      runtime: _emptyRuntimeView(),
+    );
+    _emitThreadDirectoryUpdate(thread);
     return BotConversationThreadReply(
       binding: binding,
       receipt: _demoReceipt(
         OperationId(request.operationId),
         changed: true,
-        targets: const [],
+        targets: [
+          _demoStamp(
+            'bot:${request.botId}:chat:${request.chatId}',
+            binding.revision,
+          ),
+        ],
         effect: EffectPoint.immediate,
       ),
     );
+  }
+
+  @override
+  Future<ReadThreadClosedAuthorizationsReply> readThreadClosedAuthorizations(
+    ReadThreadClosedAuthorizationsRequest request,
+  ) async {
+    final limit = request.limit ?? 16;
+    if (limit < 1 || limit > 32) {
+      throw ArgumentError('History limit must be 1..32');
+    }
+    final audience = _demoWorkspace(request.threadId).audience;
+    final result = switch (audience) {
+      ThreadAudienceUnbound() => const ThreadClosedAuthorizationsReadUnbound(),
+      ThreadAudienceUnavailable(:final reason) =>
+        ThreadClosedAuthorizationsReadUnavailable(reason: reason),
+      ThreadAudienceKnown(:final audience) => _demoClosedPage(
+        request,
+        audience,
+        limit,
+      ),
+    };
+    return ReadThreadClosedAuthorizationsReply(
+      threadId: request.threadId,
+      result: result,
+    );
+  }
+
+  ThreadClosedAuthorizationsRead _demoClosedPage(
+    ReadThreadClosedAuthorizationsRequest request,
+    BotThreadAudience audience,
+    int limit,
+  ) {
+    final scope = base64Url.encode(
+      utf8.encode(
+        '${request.threadId}/${audience.target.botId}/${audience.target.chatId}',
+      ),
+    );
+    final all =
+        _closedAuthorizations[request.threadId] ??
+        const <BotClosedAuthorization>[];
+    final prefix = 'dah1.$scope.';
+    if (request.cursor != null && !request.cursor!.startsWith(prefix)) {
+      throw ArgumentError('History cursor scope mismatch');
+    }
+    final before = request.cursor == null
+        ? null
+        : int.tryParse(request.cursor!.substring(prefix.length));
+    if (request.cursor != null && before == null) {
+      throw ArgumentError('Invalid history cursor');
+    }
+    final matches =
+        all
+            .where(
+              (a) => before == null || a.authorization.id.generation < before,
+            )
+            .toList()
+          ..sort(
+            (a, b) => b.authorization.id.generation.compareTo(
+              a.authorization.id.generation,
+            ),
+          );
+    final page = matches.take(limit).toList();
+    return ThreadClosedAuthorizationsReadPage(
+      page: ThreadClosedAuthorizationPage(
+        target: audience.target,
+        authorizations: page,
+        nextCursor: matches.length > limit
+            ? '$prefix${page.last.authorization.id.generation}'
+            : null,
+      ),
+    );
+  }
+
+  @override
+  Future<ReadThreadAudienceItemsReply> readThreadAudienceItems(
+    ReadThreadAudienceItemsRequest request,
+  ) async {
+    if (request.itemIds.isEmpty ||
+        request.itemIds.length > 100 ||
+        request.itemIds.toSet().length != request.itemIds.length ||
+        request.itemIds.any((id) => id.isEmpty)) {
+      throw ArgumentError('Invalid audience item IDs');
+    }
+    final audience = _demoWorkspace(request.threadId).audience;
+    final ref = audience.queryAuthorization;
+    if (ref?.id != request.authorization) {
+      return ReadThreadAudienceItemsReply(
+        threadId: request.threadId,
+        authorization: request.authorization,
+        result: const BotAudienceItemsReadUnavailable(
+          reason: BotAudienceItemsUnavailableReason.scopeChanged,
+        ),
+      );
+    }
+    final current = audience.known!.binding;
+    final phase = switch (current) {
+      BotThreadBindingPositionCurrent(sync: BotCurrentSyncActive()) =>
+        BotAuthorizationPhase.active,
+      BotThreadBindingPositionCurrent(sync: BotCurrentSyncPaused()) =>
+        BotAuthorizationPhase.paused,
+      BotThreadBindingPositionCurrent(sync: BotCurrentSyncPendingStart()) =>
+        BotAuthorizationPhase.pendingStart,
+      BotThreadBindingPositionCurrent() ||
+      BotThreadBindingPositionReplaced() => BotAuthorizationPhase.closed,
+    };
+    return ReadThreadAudienceItemsReply(
+      threadId: request.threadId,
+      authorization: request.authorization,
+      result: BotAudienceItemsReadItems(
+        authorization: ref!,
+        phase: phase,
+        summaryVersion: audience.known!.delivery.version,
+        deliveryVersion: 0,
+        items: [
+          for (final id in request.itemIds)
+            BotAudienceItemStatus(
+              itemId: id,
+              canonical: _demoAudienceCanonical(request.threadId, id, phase),
+              delivery: const BotItemDeliveryNotProjected(),
+            ),
+        ],
+      ),
+    );
+  }
+
+  BotAudienceCanonicalItem _demoAudienceCanonical(
+    String threadId,
+    String id,
+    BotAuthorizationPhase phase,
+  ) {
+    final items = _itemsOf(threadId).where((item) => item.id == id);
+    if (items.isEmpty) {
+      return const BotAudienceCanonicalItemUnavailable(
+        reason: BotCanonicalUnavailableReason.missing,
+      );
+    }
+    final item = items.single;
+    final eligibility = phase == BotAuthorizationPhase.closed
+        ? const BotItemEligibilityNotAuthorized(
+            reason: BotItemExclusion.outsideAuthorization,
+          )
+        : switch (item.state) {
+            ThreadTextItemStateView(channel: ThreadTextChannel.commentary) =>
+              const BotItemEligibilityText(
+                channel: BotPublicTextChannel.commentary,
+              ),
+            ThreadTextItemStateView(channel: ThreadTextChannel.finalAnswer) =>
+              const BotItemEligibilityText(
+                channel: BotPublicTextChannel.finalAnswer,
+              ),
+            ThreadPublicArtifactItemStateView() =>
+              const BotItemEligibilityPublicArtifact(),
+            _ => const BotItemEligibilityNotAuthorized(
+              reason: BotItemExclusion.nonPublicContent,
+            ),
+          };
+    return BotAudienceCanonicalItemPresent(
+      revision: item.revision,
+      saved: item.saved,
+      eligibility: eligibility,
+    );
+  }
+
+  @override
+  Future<ChangeBotThreadSyncReply> changeBotThreadSync(
+    ChangeBotThreadSyncRequest request,
+  ) async {
+    final prior = _syncReplies[request.operationId];
+    if (prior != null) {
+      if (prior.$1 != request) {
+        throw const StudioFailure(
+          code: StudioFailureCode.conflict,
+          message: 'Operation input changed',
+          retryable: false,
+          correlationId: 'demo-sync',
+        );
+      }
+      return prior.$2;
+    }
+    final audience = _demoWorkspace(request.threadId).audience.known;
+    final binding = audience?.binding;
+    if (audience == null ||
+        binding is! BotThreadBindingPositionCurrent ||
+        binding.cas != request.expected) {
+      throw const StudioFailure(
+        code: StudioFailureCode.staleRevision,
+        message: 'Audience CAS mismatch',
+        retryable: true,
+        correlationId: 'demo-sync',
+      );
+    }
+    final old = switch (binding.cas.authorizationHead) {
+      BotAuthorizationHeadPresent(:final authorization) => authorization,
+      BotAuthorizationHeadNone() => null,
+    };
+    final valid = switch ((request.action, binding.sync)) {
+      (BotThreadSyncAction.enable, BotCurrentSyncClosed()) ||
+      (BotThreadSyncAction.pause, BotCurrentSyncActive()) ||
+      (BotThreadSyncAction.resume, BotCurrentSyncPaused()) ||
+      (
+        BotThreadSyncAction.close,
+        BotCurrentSyncActive() ||
+            BotCurrentSyncPaused() ||
+            BotCurrentSyncPendingStart(),
+      ) => true,
+      _ => false,
+    };
+    if (!valid) throw ArgumentError('Invalid demo sync action');
+    final ref = BotAuthorizationRef(
+      id: BotAuthorizationId(
+        botId: audience.target.botId,
+        chatId: audience.target.chatId,
+        generation: request.action == BotThreadSyncAction.enable
+            ? (old?.id.generation ?? 0) + 1
+            : old!.id.generation,
+      ),
+      revision: request.action == BotThreadSyncAction.enable
+          ? 1
+          : old!.revision + 1,
+    );
+    final started = BotStartedAuthorization(
+      authorization: ref,
+      bindingRevision: binding.cas.bindingRevision,
+      start: switch (binding.sync) {
+        BotCurrentSyncActive(:final authorization) ||
+        BotCurrentSyncPaused(:final authorization) => authorization.start,
+        _ => BotAudienceStart(
+          commitSequence: _demoWorkspace(request.threadId).revision,
+        ),
+      },
+    );
+    BotClosedAuthorization? closed = audience.latestClosed;
+    if (request.action == BotThreadSyncAction.close) {
+      closed = BotClosedAuthorization(
+        authorization: ref,
+        bindingRevision: binding.cas.bindingRevision,
+        start: BotClosedStartSaved(start: started.start),
+        reason: BotAudienceCloseReason.localClose,
+        closedAt: DateTime.now().millisecondsSinceEpoch ~/ 1000,
+      );
+      (_closedAuthorizations[request.threadId] ??= []).add(closed);
+    }
+    final next = ThreadAudienceKnown(
+      audience: BotThreadAudience(
+        target: audience.target,
+        binding: BotThreadBindingPositionCurrent(
+          cas: BotSyncCas(
+            bindingRevision: binding.cas.bindingRevision,
+            authorizationHead: BotAuthorizationHeadPresent(authorization: ref),
+          ),
+          sync: switch (request.action) {
+            BotThreadSyncAction.pause => BotCurrentSyncPaused(
+              authorization: started,
+            ),
+            BotThreadSyncAction.resume || BotThreadSyncAction.enable =>
+              BotCurrentSyncActive(authorization: started),
+            BotThreadSyncAction.close => const BotCurrentSyncClosed(),
+          },
+        ),
+        latestClosed: closed,
+        hasOlderClosed:
+            (_closedAuthorizations[request.threadId]?.length ?? 0) > 1,
+        delivery: audience.delivery,
+        legacyFinal: audience.legacyFinal,
+      ),
+    );
+    _emitThreadUpdate(request.threadId, ThreadAudienceUpdate(next));
+    final reply = ChangeBotThreadSyncReply(
+      threadId: request.threadId,
+      audience: next,
+      state: const BotThreadSyncCommandStateSettled(),
+      receipt: _demoReceipt(
+        OperationId(request.operationId),
+        changed: true,
+        targets: [
+          _demoStamp(
+            'bot-audience:${request.threadId}:${ref.id.generation}',
+            ref.revision,
+          ),
+        ],
+        effect: EffectPoint.immediate,
+      ),
+    );
+    _syncReplies[request.operationId] = (request, reply);
+    return reply;
   }
 
   McpStateSnapshot _mcpWriteResult() {
@@ -4453,6 +5206,10 @@ class DemoStudioTransport extends StudioTransport
       );
     }
     final ThreadWorkspace updated = switch (update) {
+      ThreadAudienceUpdate(:final audience) => workspace.copyWith(
+        revision: revision,
+        audience: audience,
+      ),
       ThreadTurnUpdate(:final turn) => workspace.copyWith(
         revision: revision,
         activeTurn: turn.state.isBusy ? turn : null,
@@ -5207,6 +5964,19 @@ class _DemoTimelineConnection implements StudioTimelineConnection {
       case ThreadFileItemStateView(:final path, :final mediaType):
         total += _stringBytes(path);
         total += _stringBytes(mediaType);
+      case ThreadPublicArtifactItemStateView(
+        :final publicationId,
+        :final toolCallId,
+        :final displayName,
+        :final resource,
+      ):
+        total +=
+            _stringBytes(publicationId) +
+            _stringBytes(toolCallId) +
+            _stringBytes(displayName) +
+            _stringBytes(resource.id) +
+            _stringBytes(resource.contentDigest) +
+            _stringBytes(resource.mediaType);
       case ThreadContextCompactionItemStateView():
         break;
     }
@@ -6151,6 +6921,7 @@ ThreadItemView _messageItem({
       ThreadItemKind.inference ||
       ThreadItemKind.skill ||
       ThreadItemKind.file ||
+      ThreadItemKind.publicArtifact ||
       ThreadItemKind.raw ||
       ThreadItemKind.contextCompaction => throw ArgumentError.value(
         kind,
@@ -6628,3 +7399,5 @@ SkillsStateSnapshot _demoSkillsState(
     ),
   );
 }
+
+/// demo 内的 argv 值比较：顺序与内容都要一致，才可沿用旧连接身份。

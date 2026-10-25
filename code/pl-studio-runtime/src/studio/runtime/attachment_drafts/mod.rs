@@ -1,7 +1,7 @@
 //! 附件草稿对外 API：校验产品准入上下文，并共享与模型能力无关的草稿 owner。
 
 mod inspection;
-mod normalize;
+pub(in crate::studio) mod normalize;
 mod runtime;
 mod source;
 mod validate;
@@ -13,7 +13,7 @@ use pl_protocol::studio::{
     AdmitAttachmentDraftsRequest, AdmitAttachmentDraftsResponse, StudioAttachmentAdmissionContext,
 };
 
-use crate::resource_store::{FileResourceStore, RESOURCE_ID_PREFIX};
+use crate::resource_store::RESOURCE_ID_PREFIX;
 
 use super::StudioRuntime;
 use validate::{admission_rejection, preflight_sources};
@@ -81,6 +81,31 @@ impl StudioRuntime {
     ) -> Result<Vec<u8>> {
         self.read_owned_thread(&thread_id).await?;
         if attachment_id.starts_with(RESOURCE_ID_PREFIX) {
+            // Pending first, then durable: dequeue is allowed only after the exact typed item is saved.
+            let pending = self
+                .store
+                .thread_persistence()
+                .history_channel(&thread_id)
+                .pending_public_artifact(&attachment_id)?;
+            let history = self.store.history(&thread_id).await?;
+            let durable = history.public_artifact_reference(&attachment_id).await?;
+            anyhow::ensure!(
+                pending
+                    .as_ref()
+                    .zip(durable.as_ref())
+                    .is_none_or(|(pending, durable)| pending == durable),
+                "conflicting canonical public artifact metadata"
+            );
+            if let Some(reference) = pending.or(durable) {
+                use pl_core::context::ResourceReader;
+                let bytes = self
+                    .store
+                    .thread_resources(&thread_id)
+                    .await?
+                    .read(reference, tokio_util::sync::CancellationToken::new())
+                    .await?;
+                return Ok(bytes.to_vec());
+            }
             let facts = self.read_thread_state(&thread_id).await?;
             let mut deliveries = facts.deliveries.to_vec();
             // A completed delivery leaves the resident snapshot. Read pending effects first:
@@ -103,7 +128,7 @@ impl StudioRuntime {
                     .tool_media_deliveries(&attachment_id)
                     .await?,
             );
-            let store = FileResourceStore::new(self.store.session_resources_dir(&thread_id)?);
+            let store = self.store.thread_resources(&thread_id).await?.reader();
             return crate::studio::thread_projection::read_persisted_media(
                 &store,
                 &deliveries,

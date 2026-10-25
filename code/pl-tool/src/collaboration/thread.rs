@@ -7,7 +7,27 @@ use pl_core::{
     },
 };
 pub use pl_protocol::studio::NewThreadModelRoute;
+pub use pl_protocol::{AgentWorkspaceMode, DelegationMode, ToolSpec};
+pub use serde_json::Error as SchemaEncodingError;
 use std::sync::Arc;
+
+/// One executable Profile selected by the product from a single published catalog generation.
+#[derive(Debug, Clone)]
+pub struct AgentSpawnProfile {
+    pub profile_id: String,
+    pub workspace_mode: AgentWorkspaceMode,
+}
+
+/// A malformed declaration is a catalog failure, never permission to expose a generic schema.
+#[derive(Debug, thiserror::Error)]
+pub enum AgentSpawnSchemaError {
+    #[error("invalid generated spawn schema: {0}")]
+    Shape(&'static str),
+    #[error("duplicate spawn Profile identity: {0}")]
+    DuplicateProfile(String),
+    #[error("failed to encode spawn schema")]
+    Encoding(#[from] SchemaEncodingError),
+}
 
 /// A message whose id is assigned from the trusted core call identity, never supplied by model arguments.
 #[derive(Debug)]
@@ -160,14 +180,19 @@ struct SendInput {
 }
 
 impl AgentControlKind {
-    /// Stable declaration without current agents, statuses or execution identities.
-    pub fn declaration(self) -> pl_protocol::ToolSpec {
-        match self {
-            Self::Spawn => pl_protocol::ToolSpec::function(
-                "spawn_agent",
-                "Create a child with an independent context using an authorized profile. Provide taskSummary: a brief task description (1–80 Unicode characters) shown in the child list, and message: the complete self-contained instructions. writablePaths is accepted only by directory Profiles; reviewTargetAgentId (the reviewed child's agentId) is required by review Profiles and gives the reviewer that agent's workspace. The host validates permissions and limits.",
-                schemars::schema_for!(AgentSpawn).to_value(),
-            ),
+    /// Uses the product's same-generation executable Profile view and frozen delegation mode.
+    /// Automatic mode requires model selection; fixed mode omits it. An empty view omits spawn.
+    /// Other controls never include current agents, statuses or execution identities.
+    ///
+    /// # Errors
+    /// Returns schema construction failures or duplicate Profile identities; no fallback is emitted.
+    pub fn declaration(
+        self,
+        profiles: &[AgentSpawnProfile],
+        mode: DelegationMode,
+    ) -> Result<Option<ToolSpec>, AgentSpawnSchemaError> {
+        Ok(Some(match self {
+            Self::Spawn => return super::spawn_schema::declaration(profiles, mode),
             Self::Send => pl_protocol::ToolSpec::function(
                 "send_message",
                 "Send a prompt to a direct child. Interrupt its active turn and continue with this message after tool cleanup; start it if idle. The receipt confirms acceptance, not completion.",
@@ -188,7 +213,7 @@ impl AgentControlKind {
                 "Close a descendant agent and its descendants. Preserve workspaces by default; request cleanup only after integration. Failed resource closures remain retryable.",
                 schemars::schema_for!(CloseInput).to_value(),
             ),
-        }
+        }))
     }
 }
 

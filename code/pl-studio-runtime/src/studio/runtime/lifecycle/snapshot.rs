@@ -6,10 +6,26 @@ use super::super::StudioRuntime;
 
 impl StudioRuntime {
     pub(crate) fn publish_settings_state(&self) -> Result<()> {
-        let (settings, catalog_state) = self.config_runtime.read_with_catalog()?;
-        let config = super::super::settings_api::settings_config_snapshot(&settings)?;
-        let catalog =
-            super::super::settings_api::model_catalog_snapshot(&settings, &catalog_state)?;
+        // 同一个 Settings command 边界内投影：身份撤代已随提交完成，这里只读取一致快照。
+        let published =
+            self.config_runtime
+                .with_consistent_snapshot(|settings, catalog_state| {
+                    let acp_accounts = self
+                        .acp_auth
+                        .settings_view(settings.revision, settings.canonical_config())?;
+                    Ok::<_, anyhow::Error>((
+                        settings.clone(),
+                        super::super::settings_api::settings_config_snapshot(
+                            settings,
+                            acp_accounts,
+                        )?,
+                        super::super::settings_api::model_catalog_snapshot(
+                            settings,
+                            catalog_state,
+                        )?,
+                    ))
+                })?;
+        let (settings, config, catalog) = published?;
         self.settings_updates.send_replace(settings);
         self.agent_facility
             .product_events

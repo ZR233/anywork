@@ -138,28 +138,6 @@ pub(super) async fn send_result(
     })
 }
 
-pub(super) async fn wait_prompt(session: &Session, prompt: &str) -> Result<()> {
-    http::wait_until(http::PREDICATE_TIMEOUT, || async {
-        ensure!(
-            session
-                .model
-                .as_ref()
-                .context("model missing")?
-                .live_status()
-                .rejected
-                == 0,
-            "strict model rejected input before {prompt}"
-        );
-        for request in execution_requests(session) {
-            if user_texts(&request)?.iter().any(|text| text == prompt) {
-                return Ok(true);
-            }
-        }
-        Ok(false)
-    })
-    .await
-}
-
 pub(super) fn user_texts(request: &RecordedRequest) -> Result<Vec<String>> {
     let request: Request = serde_json::from_value(request.body.clone())?;
     let mut texts = Vec::new();

@@ -24,6 +24,11 @@ pub struct ConfigRuntime {
     command_lock: Arc<Mutex<()>>,
     state: Arc<RwLock<RuntimeState>>,
     catalog_updates: tokio::sync::broadcast::Sender<CatalogChange>,
+    /// canonical Settings 提交的同步观察者（当前由 ACP 身份 owner 使用）。
+    ///
+    /// 配置 owner 强持有该观察者，观察者自身只以 `Weak` 引用运行时 owner，因此不会形成
+    /// ConfigRuntime ↔ 运行时 owner 的 `Arc` 环。
+    settings_observer: Arc<Mutex<Option<Arc<dyn SettingsCommitObserver>>>>,
     /// 配置 owner 持有的 canonical Agent Profiles 资源；命令路径扫描，查询只读缓存。
     profiles: AgentProfilesResource,
     /// 配置 owner 独占的 Mode 注册表；StudioRuntime 只持有同一 manager 的克隆。
@@ -38,6 +43,17 @@ struct RuntimeState {
     catalog: ModelCatalogRuntimeSnapshot,
     observations: BTreeMap<AccountId, Observation>,
     closing: bool,
+}
+
+/// canonical Settings 提交的同步观察者。
+///
+/// 在 Settings command 锁内、状态发布之后被调用：实现必须是同步、非阻塞的，不得等待 IO、
+/// 用户输入或进程退出，也不得重入配置 owner。它把"已提交的 canonical revision"交给需要与该
+/// revision 严格对齐的 owner（例如 ACP 接入身份），因此同一 revision 的读取与准入不会与提交
+/// 交错。
+pub(crate) trait SettingsCommitObserver: Send + Sync {
+    /// 已提交的 canonical 设置 revision 与其内容。
+    fn settings_committed(&self, revision: u64, config: &StudioConfig);
 }
 
 #[derive(Clone)]
@@ -136,7 +152,7 @@ impl ConfigRuntime {
         let observations = model_catalog::reconcile(store.paths(), &desired, &BTreeMap::new())?;
         let config = effective_runtime_config(&desired, &observations)?;
         config.validate_declarations()?;
-        super::AgentProfileCatalog::validate_for_startup(store.paths(), &config)?;
+        super::AgentProfileCatalog::validate_for_startup(store.paths())?;
         // canonical Agent Profiles 资源：启动卸载一次扫描，之后查询/订阅只读缓存。
         let profiles = AgentProfilesResource::new(store.paths(), &config);
         let (modes, mode_documents) = mode_definitions::initialize(store.paths())
@@ -146,6 +162,7 @@ impl ConfigRuntime {
             store,
             command_lock: Arc::new(Mutex::new(())),
             catalog_updates,
+            settings_observer: Arc::new(Mutex::new(None)),
             state: Arc::new(RwLock::new(RuntimeState {
                 desired: desired.clone(),
                 closing: false,
@@ -191,6 +208,74 @@ impl ConfigRuntime {
         Ok((state.snapshot.clone(), state.catalog.clone()))
     }
 
+    /// 安装 Settings 提交观察者，并在同一 command 边界内立即观察当前 canonical 快照。
+    ///
+    /// 安装与首次观察都在 command 锁内完成，因此不会出现"提交已发生但观察者还没装上"的缺口。
+    pub(crate) fn install_settings_observer(
+        &self,
+        observer: Arc<dyn SettingsCommitObserver>,
+    ) -> ConfigRuntimeResult<()> {
+        let _command = self
+            .command_lock
+            .lock()
+            .map_err(|_| config_runtime_poisoned())?;
+        let (revision, desired) = {
+            let state = self.state.read().map_err(|_| config_runtime_poisoned())?;
+            (state.snapshot.revision, state.desired.clone())
+        };
+        *self
+            .settings_observer
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Arc::clone(&observer));
+        observer.settings_committed(revision, &desired);
+        Ok(())
+    }
+
+    /// 在 Settings command 串行边界内取得 canonical 快照并执行同步 closure。
+    ///
+    /// closure 内可以安全地把该 revision 与其它 owner 的准入/身份绑定：其间没有其它配置提交能
+    /// 插入。closure 不得 await、做 IO，也不得再次进入本配置 owner。
+    pub(crate) fn with_canonical_snapshot<T>(
+        &self,
+        run: impl FnOnce(u64, &StudioConfig) -> T,
+    ) -> ConfigRuntimeResult<T> {
+        let _command = self
+            .command_lock
+            .lock()
+            .map_err(|_| config_runtime_poisoned())?;
+        let (revision, desired) = {
+            let state = self.state.read().map_err(|_| config_runtime_poisoned())?;
+            (state.snapshot.revision, state.desired.clone())
+        };
+        Ok(run(revision, &desired))
+    }
+
+    /// 同一 command 边界内取得一致的 Settings 与目录快照；供只读投影使用。
+    pub(crate) fn with_consistent_snapshot<T>(
+        &self,
+        run: impl FnOnce(&ConfigRuntimeSnapshot, &ModelCatalogRuntimeSnapshot) -> T,
+    ) -> ConfigRuntimeResult<T> {
+        let _command = self
+            .command_lock
+            .lock()
+            .map_err(|_| config_runtime_poisoned())?;
+        let (snapshot, catalog) = self.read_with_catalog()?;
+        Ok(run(&snapshot, &catalog))
+    }
+
+    /// 在 command 锁内同步通知已提交的 canonical revision。
+    fn notify_settings_committed(&self, snapshot: &ConfigRuntimeSnapshot) {
+        let observer = self
+            .settings_observer
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .cloned();
+        if let Some(observer) = observer {
+            observer.settings_committed(snapshot.revision, snapshot.canonical_config());
+        }
+    }
+
     /// Commits an in-memory observation at the same boundary as input invalidation.
     /// The callback must not await, perform IO, or re-enter this config owner.
     pub(crate) fn if_usage_query_current(
@@ -225,7 +310,11 @@ impl ConfigRuntime {
 
     /// 从已发布缓存取得启用 Profile 的执行视图；不扫描文件。
     pub fn agent_profiles(&self) -> ConfigRuntimeResult<super::AgentProfileCatalog> {
-        Ok(self.profiles.read().catalog.enabled_only())
+        Ok(self
+            .profiles
+            .read()
+            .catalog
+            .executable(pl_protocol::DelegationMode::Profile)?)
     }
 
     /// 读取已发布的 Agent Profiles 资源快照（完整配置与诊断）；纯缓存读取。
@@ -286,8 +375,17 @@ impl ConfigRuntime {
                 "planner is reserved for the main agent; this child role is retired and cannot resume".into(),
             ).into());
         }
+        // Root Agent definitions are product built-in roles, not dispatchable child Profiles.
+        if crate::agent::definition::is_root_definition_id(profile_id) {
+            return Err(PureError::ConfigError(format!(
+                "root Agent definition `{profile_id}` cannot be dispatched as a child agent"
+            ))
+            .into());
+        }
         let snapshot = self.read()?;
-        let catalog = self.profiles.read().catalog.enabled_only();
+        // Resolve the actual frozen/selected route below rather than replacing its diagnostic
+        // with a generic "missing Profile" from the model-visible availability filter.
+        let catalog = self.profiles.read().catalog.enabled_for_dispatch()?;
         let mut profile = catalog
             .profiles
             .into_iter()
@@ -363,6 +461,8 @@ impl ConfigRuntime {
         // 配置命令采用一次新的目录扫描；资源未变化时不提升 revision、不通知观察者。
         // scan 不持有 state 写锁（与 `update` / `reload_from_disk` 一致）。
         self.profiles.adopt_scan(self.store.paths(), &next.config);
+        // 同一 command 边界内同步通知身份 owner，随后才释放 command 锁。
+        self.notify_settings_committed(&next);
         Ok((next, changed))
     }
 
@@ -443,6 +543,8 @@ impl ConfigRuntime {
         drop(state);
         // 配置命令采用一次新的目录扫描；资源未变化时不提升 revision、不通知观察者。
         self.profiles.adopt_scan(self.store.paths(), &next.config);
+        // 同一 command 边界内同步通知身份 owner，随后才释放 command 锁。
+        self.notify_settings_committed(&next);
         Ok(next)
     }
 
@@ -468,7 +570,7 @@ impl ConfigRuntime {
             model_catalog::reconcile(self.store.paths(), &desired, &observations)?;
         let config = effective_runtime_config(&desired, &next_observations)?;
         config.validate_declarations()?;
-        super::AgentProfileCatalog::validate_for_startup(self.store.paths(), &config)?;
+        super::AgentProfileCatalog::validate_for_startup(self.store.paths())?;
         let next = ConfigRuntimeSnapshot {
             revision: current.revision.saturating_add(1),
             updated_at: unix_seconds(),
@@ -490,6 +592,8 @@ impl ConfigRuntime {
         drop(state);
         // 显式重扫；目录未变化时不提升 revision。
         self.profiles.adopt_scan(self.store.paths(), &next.config);
+        // 同一 command 边界内同步通知身份 owner，随后才释放 command 锁。
+        self.notify_settings_committed(&next);
         Ok(next)
     }
 }

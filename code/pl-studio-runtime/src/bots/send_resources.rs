@@ -4,7 +4,7 @@ use super::BotRuntime;
 use super::commands::{FrozenSendClaim, send_claim_freeze_bytes};
 use super::occupancy::OccupancyBudget;
 use super::protocol::error::{FeishuError, FeishuErrorKind};
-use super::send::{SendPlan, SendSource, markdown_fits, plan_file, plan_markdown};
+use super::send::{SendPlan, SendSource, plan_file, plan_markdown};
 use super::send_service::{SendAdmission, SendRequest, into_record};
 use super::storage::{BotStateStore, SendRecord, SendResourceReferenceCursor};
 use crate::resource_store::{
@@ -32,11 +32,8 @@ pub(super) enum SendInput {
 }
 
 impl SendInput {
-    fn needs_archive(&self, operation: &str, bot: &str, chat: &str) -> Result<bool, FeishuError> {
-        match self {
-            Self::Markdown(text) => markdown_fits(operation, bot, chat, text).map(|fits| !fits),
-            Self::File { .. } => Ok(true),
-        }
+    fn needs_archive(&self) -> bool {
+        matches!(self, Self::File { .. })
     }
 
     async fn plan(
@@ -47,7 +44,7 @@ impl SendInput {
         chat: &str,
     ) -> Result<SendPlan, FeishuError> {
         match self {
-            Self::Markdown(text) => plan_markdown(store, operation, bot, chat, text).await,
+            Self::Markdown(text) => plan_markdown(operation, bot, chat, text),
             Self::File {
                 request_hash,
                 source,
@@ -273,11 +270,7 @@ impl BotRuntime {
     ) -> Result<ClaimedSend, FeishuError> {
         FileResourceStore::preflight_directory_sync().map_err(FeishuError::send_resource)?;
         let owner = self.ensure_record(&request.bot_id).await?;
-        let archive = request.input.needs_archive(
-            &request.operation_id,
-            &request.bot_id,
-            &request.chat_id,
-        )?;
+        let archive = request.input.needs_archive();
         let SendRequest {
             operation_id,
             bot_id,

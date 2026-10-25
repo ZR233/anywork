@@ -267,6 +267,8 @@ class FrbStudioTransport implements StudioTransport, PersistenceQueueReader {
   static bool _closing = false;
   AccountCatalogView? _accountCatalogCache;
   Future<AccountCatalogView>? _accountCatalogFuture;
+  AcpAccountCatalogView? _acpCatalogCache;
+  Future<AcpAccountCatalogView>? _acpCatalogFuture;
 
   static Future<void> ensureReady() => _ensureReady();
 
@@ -962,6 +964,156 @@ class FrbStudioTransport implements StudioTransport, PersistenceQueueReader {
       _accountCatalogCache = catalog;
     }
     return catalog;
+  }
+
+  @override
+  Future<AcpAccountCatalogView> loadAcpAccountCatalog() async {
+    final cached = _acpCatalogCache;
+    if (cached != null) return cached;
+    final inFlight = _acpCatalogFuture;
+    if (inFlight != null) return inFlight;
+    final future = _loadAcpAccountCatalog();
+    _acpCatalogFuture = future;
+    try {
+      return await future;
+    } finally {
+      if (identical(_acpCatalogFuture, future)) {
+        _acpCatalogFuture = null;
+      }
+    }
+  }
+
+  Future<AcpAccountCatalogView> _loadAcpAccountCatalog() async {
+    await _ensureReady();
+    final catalog = _acpCatalogFromFrb(
+      await _bridgeCall(frb.loadAcpAccountCatalog),
+    );
+    if (catalog.isUsable) {
+      _acpCatalogCache = catalog;
+    }
+    return catalog;
+  }
+
+  @override
+  Future<SettingsCommandReply> saveAcpAccount(
+    int expectedSettingsRevision,
+    AcpAccountUpdateView account, {
+    required OperationId operationId,
+  }) async {
+    await _ensureReady();
+    return _settingsCommandReplyFromFrb(
+      await _bridgeCall(
+        () => frb.saveAcpAccount(
+          operationId: operationId.value,
+          expectedSettingsRevision: BigInt.from(expectedSettingsRevision),
+          account: _acpAccountUpdateToFrb(account),
+        ),
+      ),
+    );
+  }
+
+  @override
+  Future<SettingsCommandReply> removeAcpAccount(
+    int expectedSettingsRevision,
+    String accountId, {
+    required OperationId operationId,
+  }) async {
+    await _ensureReady();
+    return _settingsCommandReplyFromFrb(
+      await _bridgeCall(
+        () => frb.removeAcpAccount(
+          operationId: operationId.value,
+          expectedSettingsRevision: BigInt.from(expectedSettingsRevision),
+          accountId: accountId,
+        ),
+      ),
+    );
+  }
+
+  @override
+  Future<AcpAuthSnapshotView> readAcpAuthState() async {
+    await _ensureReady();
+    return _acpAuthSnapshotFromFrb(await _bridgeCall(frb.readAcpAuthState));
+  }
+
+  @override
+  Future<AcpAuthCommandReply> startAcpAuth({
+    required OperationId operationId,
+    required String accountId,
+    required int expectedConnectionRevision,
+    required AcpAuthActionView action,
+  }) async {
+    await _ensureReady();
+    return _acpAuthReplyFromFrb(
+      await _bridgeCall(
+        () => frb.startAcpAuth(
+          operationId: operationId.value,
+          accountId: accountId,
+          expectedConnectionRevision: BigInt.from(expectedConnectionRevision),
+          action: _acpAuthActionToFrb(action),
+        ),
+      ),
+    );
+  }
+
+  @override
+  Future<AcpAuthCommandReply> cancelAcpAuth({
+    required OperationId operationId,
+    required String accountId,
+    required OperationId targetOperationId,
+  }) async {
+    await _ensureReady();
+    return _acpAuthReplyFromFrb(
+      await _bridgeCall(
+        () => frb.cancelAcpAuth(
+          operationId: operationId.value,
+          accountId: accountId,
+          targetOperationId: targetOperationId.value,
+        ),
+      ),
+    );
+  }
+
+  @override
+  Future<AcpInstallSnapshotView> readAcpInstallState() async {
+    await _ensureReady();
+    return _acpInstallSnapshotFromFrb(
+      await _bridgeCall(frb.readAcpInstallState),
+    );
+  }
+
+  @override
+  Future<AcpInstallCommandReply> startAcpInstall({
+    required OperationId operationId,
+    required AcpProviderView provider,
+  }) async {
+    await _ensureReady();
+    return _acpInstallReplyFromFrb(
+      await _bridgeCall(
+        () => frb.startAcpInstall(
+          operationId: operationId.value,
+          provider: _acpProviderToFrb(provider),
+        ),
+      ),
+    );
+  }
+
+  @override
+  Future<AcpInstallCommandReply> cancelAcpInstall({
+    required OperationId operationId,
+    required AcpProviderView provider,
+    required OperationId targetOperationId,
+  }) async {
+    await _ensureReady();
+    return _acpInstallReplyFromFrb(
+      await _bridgeCall(
+        () => frb.cancelAcpInstall(
+          operationId: operationId.value,
+          provider: _acpProviderToFrb(provider),
+          targetOperationId: targetOperationId.value,
+        ),
+      ),
+    );
   }
 
   @override
@@ -2597,7 +2749,92 @@ class FrbStudioTransport implements StudioTransport, PersistenceQueueReader {
       ),
     );
   }
+
+  @override
+  Future<ReadThreadClosedAuthorizationsReply> readThreadClosedAuthorizations(
+    ReadThreadClosedAuthorizationsRequest request,
+  ) async {
+    await _ensureReady();
+    return _readThreadClosedAuthorizationsReplyFromFrb(
+      await _bridgeCall(
+        () => frb_bots.readThreadClosedAuthorizations(
+          request: frb_delivery.BridgeReadThreadClosedAuthorizationsRequest(
+            threadId: request.threadId,
+            cursor: request.cursor,
+            limit: request.limit,
+          ),
+        ),
+      ),
+    );
+  }
+
+  @override
+  Future<ReadThreadAudienceItemsReply> readThreadAudienceItems(
+    ReadThreadAudienceItemsRequest request,
+  ) async {
+    await _ensureReady();
+    return _readThreadAudienceItemsReplyFromFrb(
+      await _bridgeCall(
+        () => frb_bots.readThreadAudienceItems(
+          request: frb_delivery.BridgeReadThreadAudienceItemsRequest(
+            threadId: request.threadId,
+            authorization: _authorizationIdToFrb(request.authorization),
+            itemIds: request.itemIds,
+          ),
+        ),
+      ),
+    );
+  }
+
+  @override
+  Future<ChangeBotThreadSyncReply> changeBotThreadSync(
+    ChangeBotThreadSyncRequest request,
+  ) async {
+    await _ensureReady();
+    return _changeBotThreadSyncReplyFromFrb(
+      await _bridgeCall(
+        () => frb_bots.changeBotThreadSync(
+          request: frb_delivery.BridgeChangeBotThreadSyncRequest(
+            operationId: request.operationId,
+            threadId: request.threadId,
+            expected: frb_audience.BridgeBotSyncCas(
+              bindingRevision: BigInt.from(request.expected.bindingRevision),
+              authorizationHead: switch (request.expected.authorizationHead) {
+                BotAuthorizationHeadNone() =>
+                  const frb_audience.BridgeBotAuthorizationHead.none(),
+                BotAuthorizationHeadPresent(:final authorization) =>
+                  frb_audience.BridgeBotAuthorizationHead.present(
+                    authorization: frb_audience.BridgeBotAuthorizationRef(
+                      id: _authorizationIdToFrb(authorization.id),
+                      revision: BigInt.from(authorization.revision),
+                    ),
+                  ),
+              },
+            ),
+            action: switch (request.action) {
+              BotThreadSyncAction.pause =>
+                frb_delivery.BridgeBotThreadSyncAction.pause,
+              BotThreadSyncAction.resume =>
+                frb_delivery.BridgeBotThreadSyncAction.resume,
+              BotThreadSyncAction.close =>
+                frb_delivery.BridgeBotThreadSyncAction.close,
+              BotThreadSyncAction.enable =>
+                frb_delivery.BridgeBotThreadSyncAction.enable,
+            },
+          ),
+        ),
+      ),
+    );
+  }
 }
+
+frb_audience.BridgeBotAuthorizationId _authorizationIdToFrb(
+  BotAuthorizationId id,
+) => frb_audience.BridgeBotAuthorizationId(
+  botId: id.botId,
+  chatId: id.chatId,
+  generation: BigInt.from(id.generation),
+);
 
 /// DTO 到领域的一次转换：数据层消费 typed 报告，界面只读领域形状。
 StudioShutdownReport _shutdownReportFromFrb(

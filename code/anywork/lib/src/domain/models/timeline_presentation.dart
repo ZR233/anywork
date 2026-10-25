@@ -470,6 +470,7 @@ bool _hasIssue(TimelineMessagePayload payload) => const {
 bool timelinePayloadIsVisible(TimelineMessagePayload payload) =>
     switch (payload.item.kind) {
       ThreadItemKind.inference || ThreadItemKind.file => false,
+      ThreadItemKind.publicArtifact => true,
       ThreadItemKind.turn =>
         payload.item.isTerminal && payload.item.error?.isNotEmpty == true,
       _ => true,

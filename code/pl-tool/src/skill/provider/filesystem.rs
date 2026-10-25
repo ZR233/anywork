@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use std::pin::Pin;
 
 use pl_protocol::{PureError, Result};
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tokio_util::sync::CancellationToken;
 
@@ -10,9 +11,10 @@ use super::{
     SkillCandidate, SkillDefinition, SkillProvider, SkillProviderId, SkillProviderObservation,
     SkillProviderRequest, cancelled_error,
 };
-use crate::skill::scanning::{metadata_from_file, scan_skill_files};
+use crate::skill::scanning::{metadata_from_content, scan_skill_files};
 use crate::skill::util::platform_matches;
 use crate::skill::{SkillMetadata, SkillResourceBase, SkillSourceKind, SkillSummary};
+use crate::workspace::path_safety::{metadata_if_real, validate_existing_path};
 
 const FILESYSTEM_PROVIDER_ID: &str = "local-filesystem";
 
@@ -27,6 +29,45 @@ pub struct FileSystemSkillProvider {
 enum FileSystemSkillSources {
     Configured,
     Explicit(Vec<SkillDirectorySource>),
+}
+
+/// Provider-owned trust roots travel with the frozen locator, not a current filesystem lookup.
+#[derive(Debug, Serialize, Deserialize)]
+struct FileSystemSkillLocator {
+    skill_dir: PathBuf,
+    source_root: PathBuf,
+    trusted_root: PathBuf,
+}
+
+impl FileSystemSkillLocator {
+    fn from_candidate(candidate: &SkillCandidate) -> Result<Self> {
+        let locator: Self = serde_json::from_str(&candidate.locator)?;
+        if candidate.summary.resource_base
+            != (SkillResourceBase::Directory {
+                path: locator.skill_dir.clone(),
+            })
+        {
+            return Err(PureError::ConfigError(
+                "filesystem Skill locator does not match its resource base".to_string(),
+            ));
+        }
+        Ok(locator)
+    }
+
+    fn validate(&self, path: &std::path::Path) -> Result<()> {
+        if !metadata_if_real(&self.trusted_root)
+            .map_err(|error| PureError::ConfigError(error.to_string()))?
+            .is_some_and(|metadata| metadata.is_dir())
+        {
+            return Err(PureError::ConfigError(format!(
+                "Skill trust root is missing, linked or not a directory: {}",
+                self.trusted_root.display()
+            )));
+        }
+        validate_existing_path(&self.trusted_root, path)
+            .and_then(|()| validate_existing_path(&self.source_root, path))
+            .map_err(|error| PureError::ConfigError(error.to_string()))
+    }
 }
 
 /// 宿主显式注册的只读 Skill 目录来源。
@@ -81,6 +122,27 @@ impl Default for FileSystemSkillProvider {
 impl SkillProvider for FileSystemSkillProvider {
     fn id(&self) -> &SkillProviderId {
         &self.id
+    }
+
+    fn discovery_identity(&self) -> String {
+        let mut digest = Sha256::new();
+        let mut part = |bytes: &[u8]| {
+            digest.update((bytes.len() as u64).to_le_bytes());
+            digest.update(bytes);
+        };
+        part(b"pl-tool/filesystem-skill-source/v1");
+        part(self.id.as_str().as_bytes());
+        match &self.sources {
+            FileSystemSkillSources::Configured => part(b"configured"),
+            FileSystemSkillSources::Explicit(sources) => {
+                part(b"explicit");
+                for source in sources {
+                    part(super::source_label(source.source).as_bytes());
+                    part(source.root.as_os_str().as_encoded_bytes());
+                }
+            }
+        }
+        format!("filesystem:{}", hex::encode(digest.finalize()))
     }
 
     fn list<'a>(
@@ -153,9 +215,10 @@ impl SkillProvider for FileSystemSkillProvider {
                 if cancellation.is_cancelled() {
                     return Err(cancelled_error());
                 }
+                let locator = FileSystemSkillLocator::from_candidate(&candidate)?;
+                locator.validate(&locator.skill_dir.join(crate::skill::SKILL_FILE_NAME))?;
                 let skill = SkillMetadata::from(candidate.summary);
-                let trusted_skill_dir = skill.path.clone();
-                crate::skill::bump_project_view(&trusted_skill_dir, &skill)
+                crate::skill::bump_project_view(&locator.source_root, &skill)
             })
             .await
             .map_err(|error| {
@@ -172,18 +235,20 @@ fn load_local_skill(
     if cancellation.is_cancelled() {
         return Err(cancelled_error());
     }
-    let skill_path = PathBuf::from(&candidate.locator);
-    let content = std::fs::read_to_string(skill_path.join(crate::skill::SKILL_FILE_NAME)).map_err(
-        |error| {
-            PureError::ConfigError(format!(
-                "failed to load skill {}: {error}",
-                candidate.summary.name
-            ))
-        },
-    )?;
-    let mut metadata = crate::skill::validate_skill_document(&content, None)?;
+    let locator = FileSystemSkillLocator::from_candidate(candidate)?;
+    locator.validate(&locator.skill_dir.join(crate::skill::SKILL_FILE_NAME))?;
+    let skill = SkillMetadata::from(candidate.summary.clone());
+    let content = crate::skill::read_skill_file(&skill, None)?.content;
+    let mut metadata =
+        crate::skill::validate_skill_document(&content, Some(&candidate.summary.name))?;
+    if !platform_matches(&metadata.platforms) {
+        return Err(PureError::ConfigError(format!(
+            "skill is no longer applicable on this platform: {}",
+            metadata.name
+        )));
+    }
     metadata.source = candidate.summary.source;
-    metadata.path = skill_path;
+    metadata.path = locator.skill_dir;
     metadata.provider_id = candidate.summary.provider_id.clone();
     metadata.resource_base = SkillResourceBase::Directory {
         path: metadata.path.clone(),
@@ -204,6 +269,9 @@ fn read_local_resource(
     if cancellation.is_cancelled() {
         return Err(cancelled_error());
     }
+    let locator = FileSystemSkillLocator::from_candidate(candidate)?;
+    let relative = crate::skill::support_file_path(relative_path)?;
+    locator.validate(&locator.skill_dir.join(relative))?;
     let metadata = SkillMetadata::from(candidate.summary.clone());
     crate::skill::read_skill_file(&metadata, Some(relative_path)).map(|read| read.content)
 }
@@ -216,6 +284,7 @@ fn list_local_skills(
     if request.cancellation.is_cancelled() {
         return Err(cancelled_error());
     }
+    let configured_sources = explicit_sources.is_none();
     let sources = if let Some(sources) = explicit_sources {
         sources
             .into_iter()
@@ -254,14 +323,36 @@ fn list_local_skills(
         if request.cancellation.is_cancelled() {
             return Err(cancelled_error());
         }
-        let scan = scan_skill_files(&root);
+        let scan = scan_skill_files(&root, &request.cancellation)?;
         observation.complete &= scan.complete;
         observation.warnings.extend(scan.warnings);
         for skill_file in scan.files {
             if request.cancellation.is_cancelled() {
                 return Err(cancelled_error());
             }
-            match metadata_from_file(&skill_file, &root, source_kind) {
+            let trusted_root = if configured_sources && source_kind == SkillSourceKind::Project {
+                &request.workspace_root
+            } else {
+                &root
+            };
+            let locator = FileSystemSkillLocator {
+                skill_dir: skill_file
+                    .parent()
+                    .ok_or_else(|| {
+                        PureError::ConfigError("Skill document has no parent directory".to_string())
+                    })?
+                    .to_path_buf(),
+                source_root: root.clone(),
+                trusted_root: trusted_root.clone(),
+            };
+            locator.validate(&skill_file)?;
+            let content = std::fs::read_to_string(&skill_file).map_err(|error| {
+                PureError::ConfigError(format!(
+                    "failed to read skill {}: {error}",
+                    skill_file.display()
+                ))
+            })?;
+            match metadata_from_content(&content, &skill_file, &root, source_kind) {
                 Ok(mut metadata) => {
                     if disabled.contains(&metadata.name.to_ascii_lowercase())
                         || !platform_matches(&metadata.platforms)
@@ -272,15 +363,9 @@ fn list_local_skills(
                     metadata.resource_base = SkillResourceBase::Directory {
                         path: metadata.path.clone(),
                     };
-                    let content = std::fs::read_to_string(&skill_file).map_err(|error| {
-                        PureError::ConfigError(format!(
-                            "failed to fingerprint skill {}: {error}",
-                            skill_file.display()
-                        ))
-                    })?;
                     observation.candidates.push(SkillCandidate {
                         summary: SkillSummary::from(metadata.clone()),
-                        locator: metadata.path.to_string_lossy().to_string(),
+                        locator: serde_json::to_string(&locator)?,
                         revision: content_revision(&content),
                         rank,
                         local_order,
@@ -288,11 +373,7 @@ fn list_local_skills(
                     local_order += 1;
                 }
                 Err(error) => {
-                    let warning = error.to_string();
-                    if warning.contains("failed to read skill ") {
-                        observation.complete = false;
-                    }
-                    observation.warnings.push(warning);
+                    observation.warnings.push(error.to_string());
                 }
             }
         }

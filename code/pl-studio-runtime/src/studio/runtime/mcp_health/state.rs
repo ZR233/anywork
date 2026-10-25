@@ -4,7 +4,9 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use anyhow::Result;
-use pl_protocol::{ObservedResource, ObservedResourceCommand, StateError, StateOperation};
+use pl_protocol::{
+    ObservedResource, ObservedResourceCommand, ObservedResourceKind, StateError, StateOperation,
+};
 use tokio::sync::{Mutex, RwLock};
 
 use crate::config::EffectiveMcpServerConfig;
@@ -53,7 +55,13 @@ impl McpStateRuntime {
 
 impl StudioRuntime {
     pub(in crate::studio::runtime) async fn publish_mcp_stopped(&self) -> Result<()> {
+        // Serialize with reconcile/reset/health through publication: retries retain the first
+        // confirmed terminal state, and an older observation cannot overwrite it.
+        let _command = self.external_runtimes.mcp_state.command_lock.lock().await;
         let previous = self.external_runtimes.mcp_state.read().await;
+        if previous.state.kind() == ObservedResourceKind::Stopped {
+            return Ok(());
+        }
         let snapshot = StudioMcpStateSnapshot {
             state: previous
                 .state

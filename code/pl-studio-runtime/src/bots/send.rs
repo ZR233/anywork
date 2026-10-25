@@ -2,11 +2,33 @@
 use super::protocol::error::{FeishuError, FeishuErrorKind};
 use super::protocol::im::markdown_request_len;
 use super::protocol::{FILE_UPLOAD_LIMIT_BYTES, POST_CONTENT_LIMIT_BYTES};
-use crate::resource_store::{DirectorySyncOutcome, FileResourceStore, ResourceRetention};
+use crate::resource_store::{DirectorySyncOutcome, ResourceRetention};
 use pl_core::context::ResourceReference;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::sync::Arc;
+use std::time::Duration;
+use tokio::time::Instant;
+
+/// Same per-bot dispatch gate for CardKit and explicit typed sends; never held across HTTP.
+pub(crate) struct SendRate(tokio::sync::Mutex<Instant>);
+pub(crate) struct SendPermit<'a>(tokio::sync::MutexGuard<'a, Instant>);
+
+impl SendRate {
+    pub(crate) fn new() -> Self {
+        Self(tokio::sync::Mutex::new(Instant::now()))
+    }
+    pub(crate) async fn acquire(&self) -> SendPermit<'_> {
+        let next = self.0.lock().await;
+        tokio::time::sleep_until(*next).await;
+        SendPermit(next)
+    }
+}
+
+impl SendPermit<'_> {
+    pub(crate) fn start(mut self) {
+        *self.0 = Instant::now() + Duration::from_millis(200);
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(
@@ -82,8 +104,7 @@ pub fn markdown_hash(
     fingerprint(&("markdown", operation_id, bot_id, chat_id, text))
 }
 
-pub async fn plan_markdown(
-    resources: &FileResourceStore,
+pub fn plan_markdown(
     operation_id: &str,
     bot_id: &str,
     chat_id: &str,
@@ -92,40 +113,13 @@ pub async fn plan_markdown(
     if text.trim().is_empty() {
         return Err(rejected("message Markdown is required"));
     }
-    if text.len() > FILE_UPLOAD_LIMIT_BYTES {
-        return Err(rejected(
-            "Markdown exceeds the complete-file delivery limit",
-        ));
-    }
     let request_hash = markdown_hash(operation_id, bot_id, chat_id, &text)?;
-    let fits_post = markdown_fits(operation_id, bot_id, chat_id, &text)?;
-    let (segments, retention) = if fits_post {
-        (vec![SendContent::Markdown { text }], None)
-    } else {
-        // No character/AST splitting: fences, links and tables retain their exact UTF-8 source.
-        let (resource, outcome) = resources
-            .retain_bytes_with_receipt(Arc::from(text.into_bytes()), "text/markdown; charset=utf-8")
-            .await
-            .map_err(FeishuError::send_resource)?
-            .into_parts();
-        let filename = "reply.md";
-        (
-            vec![
-                SendContent::File {
-                    filename: filename.into(),
-                    upload_filename: filename.into(),
-                    resource,
-                },
-                // Only an accepted complete file message permits the subsequent delivery notice.
-                SendContent::Markdown {
-                    text: format!(
-                        "正文超过飞书富文本大小限制，完整 Markdown 原文已作为 UTF-8 文件 `{filename}` 交付，可下载查看。"
-                    ),
-                },
-            ],
-            Some(outcome),
-        )
-    };
+    // Explicit proactive posts keep main's bounded text segmentation. Normal replies use
+    // CardKit; neither path silently archives a transcript or exports reply.md.
+    let segments = split_text(chat_id, &text)?
+        .into_iter()
+        .map(|text| SendContent::Markdown { text })
+        .collect::<Vec<_>>();
     let content_hash = fingerprint(&(
         "markdown-plan",
         operation_id,
@@ -134,7 +128,7 @@ pub async fn plan_markdown(
         &request_hash,
         &segments,
     ))?;
-    let mut plan = plan(
+    plan(
         operation_id,
         bot_id,
         chat_id,
@@ -142,20 +136,7 @@ pub async fn plan_markdown(
         SendIdentity::Markdown { request_hash },
         None,
         segments,
-    )?;
-    plan.retention = retention;
-    Ok(plan)
-}
-
-pub(super) fn markdown_fits(
-    operation_id: &str,
-    bot_id: &str,
-    chat_id: &str,
-    text: &str,
-) -> Result<bool, FeishuError> {
-    Ok(text.len() <= POST_CONTENT_LIMIT_BYTES
-        && markdown_request_len(chat_id, text, &send_uuid(operation_id, bot_id, chat_id, 0)?)?
-            <= POST_CONTENT_LIMIT_BYTES)
+    )
 }
 
 pub(super) fn plan_file(
@@ -224,8 +205,53 @@ fn plan(
     })
 }
 
-pub fn file_request_hash(path: &str, filename: Option<&str>) -> Result<String, FeishuError> {
-    fingerprint(&(path, filename))
+const MAX_SEND_SEGMENTS: usize = 32;
+const MAX_SEND_CHARS: usize = 200_000;
+
+fn split_text(chat_id: &str, text: &str) -> Result<Vec<String>, FeishuError> {
+    if text.chars().count() > MAX_SEND_CHARS {
+        return Err(rejected("message text exceeds the send size bound"));
+    }
+    let uuid = "0".repeat(32);
+    let mut segments = Vec::new();
+    let mut rest = text;
+    while !rest.is_empty() {
+        if segments.len() == MAX_SEND_SEGMENTS {
+            return Err(rejected("message requires more segments than allowed"));
+        }
+        let mut lower = 0;
+        let mut upper = rest.len();
+        while lower < upper {
+            let mut end = lower + (upper - lower).div_ceil(2);
+            while !rest.is_char_boundary(end) {
+                end += 1;
+            }
+            if markdown_request_len(chat_id, &rest[..end], &uuid)? <= POST_CONTENT_LIMIT_BYTES {
+                lower = end;
+            } else {
+                upper = end - 1;
+                while !rest.is_char_boundary(upper) {
+                    upper -= 1;
+                }
+            }
+        }
+        if lower == 0 {
+            return Err(rejected("message envelope exceeds the send size bound"));
+        }
+        let end = if lower == rest.len() {
+            lower
+        } else {
+            let prefix = &rest[..lower];
+            prefix
+                .rfind("\n\n")
+                .map(|position| position + 2)
+                .or_else(|| prefix.rfind('\n').map(|position| position + 1))
+                .unwrap_or(lower)
+        };
+        segments.push(rest[..end].to_owned());
+        rest = &rest[end..];
+    }
+    Ok(segments)
 }
 
 fn send_uuid(

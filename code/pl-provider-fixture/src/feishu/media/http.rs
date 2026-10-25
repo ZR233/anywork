@@ -6,7 +6,7 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use tokio::sync::OwnedSemaphorePermit;
 
-use crate::feishu::http::HttpState;
+use crate::feishu::guard::HttpState;
 use crate::feishu::state::bearer_ok;
 use crate::feishu::types::CallKind;
 

@@ -228,6 +228,7 @@ impl<H: ToolMediaHost> Tool for ThreadMcpResourceTool<H> {
                     value,
                     self.media.as_ref(),
                     context.model_projection.as_ref(),
+                    crate::media::ToolResourceOrigin::from_call(&context),
                 )
                 .await
             }
@@ -249,6 +250,7 @@ async fn project_resource(
     mut value: Value,
     host: &impl ToolMediaHost,
     projection: Option<&OpaquePayload>,
+    origin: crate::media::ToolResourceOrigin,
 ) -> std::result::Result<ToolOutput, ToolError> {
     let projected = async {
         let parsed: rmcp::model::ReadResourceResult =
@@ -260,7 +262,7 @@ async fn project_resource(
                 .map(rmcp::model::ContentBlock::resource)
                 .collect(),
         );
-        let (payload, context) = project_content(&result, host, projection).await?;
+        let (payload, context) = project_content(&result, host, projection, origin).await?;
         let projected: Value = serde_json::from_str(payload.content()).map_err(ToolError::new)?;
         let contents = projected
             .get("content")

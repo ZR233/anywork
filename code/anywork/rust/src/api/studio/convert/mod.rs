@@ -1,3 +1,5 @@
+pub(crate) mod acp;
+pub(crate) mod acp_install;
 pub(crate) mod commands;
 pub(crate) mod delegation;
 pub(crate) mod event;

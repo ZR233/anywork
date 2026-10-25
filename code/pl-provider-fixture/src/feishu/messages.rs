@@ -8,7 +8,8 @@ use axum::response::{IntoResponse, Response};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use super::http::{HttpState, auth_ok, kind_blocked, parse_page_token, record_reject};
+use super::guard::{HttpState, auth_ok, headers_authorized, kind_blocked, record_reject};
+use super::http::parse_page_token;
 use super::media::{ResourceOrigin, ResourceSummary};
 use super::state::{Inner, unix_millis};
 use super::types::{
@@ -39,12 +40,7 @@ pub(crate) async fn message_list(
     if !admit_message_request(&state).await {
         return message_limit();
     }
-    if !auth_ok(
-        &state.shared,
-        headers.get(axum::http::header::AUTHORIZATION),
-    )
-    .await
-    {
+    if !headers_authorized(&state, &headers).await {
         record_reject(
             &state.shared,
             "GET",
@@ -302,6 +298,9 @@ pub(crate) async fn message_send(
         .await;
         return Json(json!({"code": 99991672, "msg": reason})).into_response();
     }
+    if body.msg_type == "interactive" {
+        return super::cardkit::send_card_message(&state, &body, bytes.len()).await;
+    }
     let (disposition, assigned, observation, waiter) = {
         let mut inner = state.shared.lock().await;
         if !inner.is_known_chat(&body.receive_id) {
@@ -346,8 +345,24 @@ pub(crate) async fn message_send(
         inner.record("POST", path, Some(CallKind::MessageSend), true, None);
         if let Some(last) = inner.calls.last_mut() {
             last.send_body = Some(raw);
-            last.assigned_message_id = Some(assigned.clone());
             last.uuid = body.uuid.clone();
+            last.request_bytes = bytes.len();
+            last.msg_type = Some(body.msg_type.clone());
+            last.md_text = match &content {
+                MessageContentObservation::Post(post) => Some(
+                    post.zh_cn
+                        .content
+                        .iter()
+                        .flatten()
+                        .filter_map(|node| match node {
+                            PostElement::Markdown { text } => Some(text.as_str()),
+                            _ => None,
+                        })
+                        .collect(),
+                ),
+                MessageContentObservation::RichPost { md_text, .. } => Some(md_text.clone()),
+                _ => None,
+            };
         }
         let observation = inner.im.sends.len();
         inner.im.sends.push(MessageSendObservation {
@@ -355,7 +370,7 @@ pub(crate) async fn message_send(
             request_body_bytes: bytes.len(),
             receive_id: body.receive_id.clone(),
             uuid: body.uuid.clone(),
-            message_id: assigned.clone(),
+            message_id: None,
             content,
             disposition: disposition.clone(),
             outcome: MessageSendOutcome::Waiting,
@@ -369,29 +384,53 @@ pub(crate) async fn message_send(
         let mut inner = state.shared.lock().await;
         if inner.closing || state.cancel.is_cancelled() {
             inner.im.sends[observation].outcome = MessageSendOutcome::Cancelled;
+            let call_index = inner.im.sends[observation].call_index;
+            inner.calls[call_index].assigned_message_id = None;
             return Response::new(Body::empty());
         }
         if let SendDisposition::Reject { code, msg } = &disposition {
             inner.im.sends[observation].outcome = MessageSendOutcome::Rejected;
+            let call_index = inner.im.sends[observation].call_index;
+            inner.calls[call_index].assigned_message_id = None;
             return Json(json!({"code": code, "msg": msg})).into_response();
         }
+        let mut readback_key = None;
         if let MessageContentObservation::File(resource) = &inner.im.sends[observation].content {
             let key = resource.file_key.clone();
-            if let Some(resource) = inner.media.resources.get_mut(&key) {
+            if inner.media.file_message_key_mode == super::media::FileMessageKeyMode::MessageScoped
+            {
+                let alias = format!("file_anywork_fixture_read_{}", inner.im.send_seq);
+                inner
+                    .media
+                    .message_keys
+                    .insert((assigned.clone(), alias.clone()), key);
+                readback_key = Some(alias);
+            } else if let Some(resource) = inner.media.resources.get_mut(&key) {
                 resource.messages.insert(assigned.clone());
             }
+        }
+        let mut received = received_content(&inner.im.sends[observation].content);
+        if let Some(file_key) = readback_key {
+            let mut content: Value =
+                serde_json::from_str(&received).expect("serialized file content");
+            content["file_key"] = Value::String(file_key);
+            received = content.to_string();
         }
         let stored = HistoryMessage {
             message_id: assigned.clone(),
             chat_id: body.receive_id.clone(),
             msg_type: body.msg_type.clone(),
-            content: received_content(&inner.im.sends[observation].content),
+            content: received,
             create_time_ms: unix_millis().to_string(),
             sender_id: REGISTERED_APP_ID.into(),
             sender_type: "app".into(),
             sender_id_type: "app_id".into(),
         };
         inner.im.history.push(stored.clone());
+        let call_index = inner.im.sends[observation].call_index;
+        inner.calls[call_index].unix_millis = unix_millis();
+        inner.calls[call_index].assigned_message_id = Some(assigned.clone());
+        inner.im.sends[observation].message_id = Some(assigned);
         inner.im.sends[observation].outcome =
             if matches!(disposition, SendDisposition::AcceptThenDrop) {
                 MessageSendOutcome::StoredResponseDropped
@@ -447,6 +486,21 @@ fn received_content(content: &MessageContentObservation) -> String {
             })
             .to_string()
         }
+        MessageContentObservation::RichPost { content, .. } => {
+            // The validated official send wrapper is unwrapped for received
+            // post wire, preserving all rich nodes without rendering Markdown.
+            let post: Value = serde_json::from_str(content).expect("validated rich post JSON");
+            let mut locale = post["zh_cn"].clone();
+            locale["content_v2"] = locale["content"].clone();
+            if let Some(rows) = locale["content"].as_array_mut() {
+                for node in rows.iter_mut().filter_map(Value::as_array_mut).flatten() {
+                    if node.get("tag").and_then(Value::as_str) == Some("md") {
+                        node["tag"] = Value::String("text".into());
+                    }
+                }
+            }
+            locale.to_string()
+        }
     }
 }
 
@@ -469,6 +523,21 @@ fn history_json(message: &HistoryMessage) -> Value {
             },
             "body": { "content": message.content }
     })
+}
+
+/// An interactive replay must describe the stored message identity, not a
+/// changed retry body. This uses the same official message envelope as read.
+pub(crate) fn send_ok_fields(
+    message_id: &str,
+    receive_id: &str,
+    msg_type: &str,
+    content: &str,
+) -> Value {
+    json!({"code": 0, "msg": "success", "data": history_json(&HistoryMessage {
+        message_id: message_id.into(), chat_id: receive_id.into(), msg_type: msg_type.into(),
+        content: content.into(), create_time_ms: "1710000001000".into(),
+        sender_id: REGISTERED_APP_ID.into(), sender_type: "app".into(), sender_id_type: "app_id".into(),
+    })})
 }
 
 #[derive(Deserialize)]
@@ -497,24 +566,36 @@ fn validate_content(
             Ok(MessageContentObservation::Text { text: content.text })
         }
         "post" => {
-            let content: PostContent =
-                serde_json::from_str(&body.content).map_err(|_| "invalid post content")?;
+            // Validate the shared wire schema before selecting a typed or
+            // opaque observation. A typed decode failure never grants admission.
+            super::card::validate_post_content(&body.content)
+                .map_err(|_| "invalid post content")?;
+            let content: PostContent = match serde_json::from_str(&body.content) {
+                Ok(content) => content,
+                Err(_) => {
+                    let parsed = super::card::parse_post_content(&body.content)
+                        .map_err(|_| "invalid post content")?;
+                    return Ok(MessageContentObservation::RichPost {
+                        content: body.content.clone(),
+                        md_text: parsed.md_text,
+                    });
+                }
+            };
             if content.zh_cn.content.is_empty() || content.zh_cn.content.iter().any(Vec::is_empty) {
                 return Err("empty post content");
-            }
-            if content.zh_cn.content.iter().any(|row| {
-                row.len() != 1
-                    && row
-                        .iter()
-                        .any(|element| matches!(element, PostElement::Markdown { .. }))
-            }) {
-                return Err("md must occupy its own paragraph");
             }
             for element in content.zh_cn.content.iter().flatten() {
                 match element {
                     PostElement::Markdown { text } | PostElement::Text { text }
                         if !text.is_empty() => {}
-                    _ => return Err("send post sample requires nonempty md/text blocks"),
+                    _ => {
+                        let parsed = super::card::parse_post_content(&body.content)
+                            .map_err(|_| "invalid rich post content")?;
+                        return Ok(MessageContentObservation::RichPost {
+                            content: body.content.clone(),
+                            md_text: parsed.md_text,
+                        });
+                    }
                 }
             }
             Ok(MessageContentObservation::Post(content))

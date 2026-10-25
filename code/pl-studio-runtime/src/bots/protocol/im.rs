@@ -108,6 +108,17 @@ struct SendBody<'a> {
     uuid: &'a str,
 }
 
+#[derive(Serialize)]
+struct CardReference<'a> {
+    r#type: &'static str,
+    data: CardReferenceData<'a>,
+}
+
+#[derive(Serialize)]
+struct CardReferenceData<'a> {
+    card_id: &'a str,
+}
+
 pub enum MessageContent<'a> {
     Markdown(&'a str),
     File { file_key: &'a str },
@@ -323,6 +334,63 @@ impl FeishuIm {
             &[("receive_id_type", "chat_id")],
             &body,
         )
+    }
+
+    pub async fn send_card(
+        &self,
+        token: &str,
+        chat_id: &str,
+        card_id: &str,
+        uuid: &str,
+    ) -> Result<SendMessageOutcome, FeishuError> {
+        let content = serde_json::to_string(&CardReference {
+            r#type: "card",
+            data: CardReferenceData { card_id },
+        })
+        .map_err(|_| {
+            FeishuError::new(
+                FeishuErrorKind::Protocol,
+                "could not encode card reference",
+                false,
+                None,
+            )
+        })?;
+        let body = SendBody {
+            receive_id: chat_id,
+            msg_type: "interactive",
+            content,
+            uuid,
+        };
+        if uuid.len() > 50 || encoded_send_len(&body)? > super::POST_CONTENT_LIMIT_BYTES {
+            return Err(FeishuError::new(
+                FeishuErrorKind::Rejected,
+                "serialized card message exceeds the IM request bound",
+                false,
+                None,
+            ));
+        }
+        let data: MessageCreateData = self
+            .http
+            .open_json(
+                Method::POST,
+                IM_MESSAGES_PATH,
+                Some(token),
+                &[("receive_id_type", "chat_id")],
+                Some(&body),
+            )
+            .await?;
+        let message_id = data
+            .message_id
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| {
+                FeishuError::new(
+                    FeishuErrorKind::Protocol,
+                    "send response missing message_id",
+                    true,
+                    None,
+                )
+            })?;
+        Ok(SendMessageOutcome { message_id })
     }
 
     pub async fn send_prepared(

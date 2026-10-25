@@ -31,10 +31,13 @@ use tokio_util::sync::CancellationToken;
 
 pub(super) const CASE_ISOLATION: &str = "chat-isolation";
 pub(super) const CASE_INGRESS: &str = "chat-media-ingress";
-pub(super) const CASE_SOURCE: &str = "bot-file-source";
-pub(super) const CASE_MARKDOWN: &str = "bot-markdown-transfer";
-pub(super) const CASE_UPLOAD_OUTCOMES: &str = "bot-upload-outcomes";
-pub(super) const CASE_SEND_OUTCOMES: &str = "bot-file-send-outcomes";
+pub(super) const CASE_SOURCE: &str = "public-artifact-source";
+/// Historical policies remain compile-checked but are not runnable cases.
+const STAGE_TWO_PENDING: &[&str] = &[
+    "bot-markdown-transfer",
+    "bot-upload-outcomes",
+    "bot-file-send-outcomes",
+];
 pub(super) const CASE_COMPACTION: &str = "user-file-compaction";
 pub(super) const CASE_COMPACTION_TIMEOUT: &str = "user-file-compaction-timeout";
 pub(super) const CASE_ADMISSION_LIMITS: &str = "user-file-admission-limits";
@@ -42,21 +45,28 @@ pub(super) const CASES: &[&str] = &[
     CASE_ISOLATION,
     CASE_INGRESS,
     CASE_SOURCE,
-    CASE_MARKDOWN,
-    CASE_UPLOAD_OUTCOMES,
-    CASE_SEND_OUTCOMES,
     CASE_COMPACTION,
     CASE_COMPACTION_TIMEOUT,
     CASE_ADMISSION_LIMITS,
 ];
 
+pub(super) fn reject_obsolete_policy(name: &str) -> Result<()> {
+    // References keep the historical implementation and its independent
+    // oracles type-checked. No future is created or polled, and no dispatch
+    // table exposes either entry until its stage-two migration is reviewed.
+    let _pending_implementations = (markdown::run, outcomes::run);
+    ensure!(
+        !STAGE_TWO_PENDING.contains(&name),
+        "observe case {name} is stage-2 pending / obsolete policy; historical automatic Markdown-file/notice and file-tool journeys cannot run or supply current coverage"
+    );
+    Ok(())
+}
+
 pub(super) fn model_steps(name: &str) -> Vec<Step> {
     match name {
         CASE_ISOLATION => model::chat_isolation_script(),
         CASE_INGRESS => model::media_ingress_script(),
-        CASE_SOURCE => model::source_script(),
-        CASE_MARKDOWN => model::markdown_script(),
-        CASE_UPLOAD_OUTCOMES | CASE_SEND_OUTCOMES => model::file_fault_script(),
+        CASE_SOURCE => source::model_steps(),
         CASE_COMPACTION => model::compaction_script(),
         CASE_COMPACTION_TIMEOUT => model::compaction_timeout_script(),
         _ => Vec::new(),
@@ -64,7 +74,14 @@ pub(super) fn model_steps(name: &str) -> Vec<Step> {
 }
 
 pub(super) async fn run(session: &mut Session, name: &'static str) -> Result<CaseResult> {
+    reject_obsolete_policy(name)?;
     let mut evidence = Vec::new();
+    session
+        .control()?
+        .set_file_message_key_mode(
+            pl_provider_fixture::feishu::media::FileMessageKeyMode::MessageScoped,
+        )
+        .await?;
     let probe_ready = CancellationToken::new();
     let deadline = async {
         if name == CASE_COMPACTION_TIMEOUT
@@ -89,9 +106,6 @@ pub(super) async fn run(session: &mut Session, name: &'static str) -> Result<Cas
             CASE_ISOLATION => isolation::run(session, &mut evidence).await,
             CASE_INGRESS => ingress::run(session, &mut evidence).await,
             CASE_SOURCE => source::run(session, &mut evidence).await,
-            CASE_MARKDOWN => markdown::run(session, &mut evidence).await,
-            CASE_UPLOAD_OUTCOMES => outcomes::run(session, true, &mut evidence).await,
-            CASE_SEND_OUTCOMES => outcomes::run(session, false, &mut evidence).await,
             CASE_COMPACTION => compaction::run(session, &mut evidence).await,
             CASE_COMPACTION_TIMEOUT => compaction_timeout::run(session, &mut evidence, &probe_ready).await,
             CASE_ADMISSION_LIMITS => admission_limits::run(session, &mut evidence).await,

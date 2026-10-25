@@ -54,6 +54,14 @@ impl InboundAttachment {
     }
 }
 
+pub(super) fn unsupported_only(text: &str, attachments: &[InboundAttachment]) -> bool {
+    text.trim().is_empty()
+        && !attachments.is_empty()
+        && attachments
+            .iter()
+            .all(|item| matches!(item, InboundAttachment::Unsupported { .. }))
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChatKind {
     Direct,

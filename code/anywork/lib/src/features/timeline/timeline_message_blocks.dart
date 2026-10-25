@@ -195,6 +195,11 @@ class _TimelineMessageBlock extends StatelessWidget {
         compaction: compaction,
       ),
       ThreadTurnItemStateView() => _TurnOutcomeBlock(item: item),
+      final ThreadPublicArtifactItemStateView artifact => _PublicArtifactBlock(
+        item: item,
+        artifact: artifact,
+        lease: lease,
+      ),
       ThreadInferenceItemStateView() ||
       ThreadFileItemStateView() => const SizedBox.shrink(),
     };
@@ -289,6 +294,7 @@ Widget? _payloadDetailNotice(
 /// 不能用带留白的空行把它们变成视觉空洞。
 bool _rendersNoContent(ThreadItemView item) => switch (item.kind) {
   ThreadItemKind.inference || ThreadItemKind.file => true,
+  ThreadItemKind.publicArtifact => false,
   ThreadItemKind.turn =>
     !item.isTerminal || (item.error == null || item.error!.isEmpty),
   _ => false,
@@ -324,6 +330,7 @@ TimelineEntry _entryViewOf(ThreadItemView item) => TimelineEntry(
     ThreadItemKind.turn ||
     ThreadItemKind.inference ||
     ThreadItemKind.file ||
+    ThreadItemKind.publicArtifact ||
     ThreadItemKind.contextCompaction => TimelineEntryType.file,
   },
   order: item.ordinal,

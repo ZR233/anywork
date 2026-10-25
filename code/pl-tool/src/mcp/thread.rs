@@ -115,6 +115,7 @@ impl<H: ToolMediaHost> Tool for ThreadMcpTool<H> {
             result,
             self.media.as_ref(),
             context.model_projection.as_ref(),
+            crate::media::ToolResourceOrigin::from_call(&context),
         )
         .await
     }
@@ -134,8 +135,9 @@ async fn project_result(
     result: CallToolResult,
     host: &impl ToolMediaHost,
     projection: Option<&OpaquePayload>,
+    origin: crate::media::ToolResourceOrigin,
 ) -> Result<ToolOutput, ToolError> {
-    let projected = project_content(&result, host, projection).await;
+    let projected = project_content(&result, host, projection, origin).await;
     let (payload, context) = match projected {
         Ok(projected) => projected,
         Err(source) => {
@@ -165,6 +167,7 @@ pub(super) async fn project_content(
     result: &CallToolResult,
     host: &impl ToolMediaHost,
     projection: Option<&OpaquePayload>,
+    origin: crate::media::ToolResourceOrigin,
 ) -> Result<(OpaquePayload, Vec<ContextContent>), ToolError> {
     let mut value = serde_json::to_value(result).map_err(ToolError::new)?;
     let saved = value
@@ -283,12 +286,15 @@ pub(super) async fn project_content(
                 }
             };
             let retained = host
-                .retain(ToolMedia {
-                    kind,
-                    model_image,
-                    bytes: bytes.clone(),
-                    media_type: media_type.to_owned(),
-                })
+                .retain(
+                    origin.clone(),
+                    ToolMedia {
+                        kind,
+                        model_image,
+                        bytes: bytes.clone(),
+                        media_type: media_type.to_owned(),
+                    },
+                )
                 .await?;
             retained.reference.verify(&bytes).map_err(ToolError::new)?;
             let object = if field == "blob" {
@@ -324,6 +330,70 @@ pub(super) async fn project_content(
     )
     .map_err(ToolError::new)?;
     Ok((payload, context))
+}
+
+/// Reliable originals written by this producer's binary-content rewrite. Only those exact typed
+/// positions count: arbitrary server text/structuredContent, resource URIs and same-named JSON
+/// properties are not resource authority. Old model-native derivatives do not hide the original.
+pub fn saved_mcp_resource_references(
+    payload: &OpaquePayload,
+) -> Result<Vec<pl_core::context::ResourceReference>, ToolError> {
+    let resource_facade = match payload.format() {
+        "pl.tool.mcp-result" => false,
+        "pl.tool.mcp-resources" => true,
+        _ => return Ok(Vec::new()),
+    };
+    if payload.version() != 1 {
+        return Err(error("unsupported MCP resource receipt version"));
+    }
+    let value: Value = serde_json::from_str(payload.content()).map_err(ToolError::new)?;
+    let contents = value
+        .get(if resource_facade {
+            "contents"
+        } else {
+            "content"
+        })
+        .and_then(Value::as_array);
+    if !value.is_object() || (!resource_facade && contents.is_none()) {
+        return Err(error("saved MCP resource receipt has an invalid envelope"));
+    }
+    let mut references = Vec::new();
+    for content in contents.into_iter().flatten() {
+        let binary = if resource_facade {
+            content
+        } else {
+            match content.get("type").and_then(Value::as_str) {
+                Some("image" | "audio") => content,
+                Some("resource") => content
+                    .get("resource")
+                    .ok_or_else(|| error("saved MCP resource envelope is missing"))?,
+                _ => continue,
+            }
+        };
+        let Some(retained) = binary.get("retainedResource") else {
+            continue;
+        };
+        if binary.get("data").is_some()
+            || binary.get("blob").is_some()
+            || binary.get("text").is_some()
+        {
+            return Err(error(
+                "saved MCP binary resource conflicts with unarchived content",
+            ));
+        }
+        let reference: pl_core::context::ResourceReference =
+            serde_json::from_value(retained.clone()).map_err(ToolError::new)?;
+        reference.validate().map_err(ToolError::new)?;
+        if binary
+            .get("mimeType")
+            .and_then(Value::as_str)
+            .is_some_and(|mime| mime != reference.media_type())
+        {
+            return Err(error("saved MCP original media metadata conflicts"));
+        }
+        references.push(reference);
+    }
+    Ok(references)
 }
 
 pub(super) fn bound_text(context: &mut Vec<ContextContent>) {

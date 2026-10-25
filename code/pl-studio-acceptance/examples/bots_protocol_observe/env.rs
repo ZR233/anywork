@@ -309,56 +309,180 @@ pub(crate) fn file_sha256(path: &Path) -> Result<String> {
     Ok(hash.to_ascii_lowercase())
 }
 
+/// Fails explicitly when the launcher's Python cannot signal through a pidfd.
+/// Source path label of the owner program, as it appears in the identity record.
+pub(crate) const OWNER_SOURCE_PATH: &str =
+    "code/pl-studio-acceptance/examples/bots_protocol_observe/server_control.py";
+
+/// The exact bytes executed as the process owner.
+///
+/// They are frozen into the observer binary at build time and run through
+/// `python3 -c`, so the mutable workspace file is never loaded at run time and the
+/// recorded digest describes what actually ran.
+pub(crate) const OWNER_SOURCE: &str = include_str!("server_control.py");
+
+/// Digest of one byte slice, using the same `sha256sum` entry the rest of the
+/// observation uses (on stdin, so no temporary file is created).
+pub(crate) fn bytes_sha256(bytes: &[u8]) -> Result<String> {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+    let mut child = Command::new("sha256sum")
+        .arg("-")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .context("failed to run sha256sum for a byte digest")?;
+    child
+        .stdin
+        .take()
+        .context("sha256sum stdin is unavailable")?
+        .write_all(bytes)
+        .context("failed to write the owner source to sha256sum")?;
+    let output = child
+        .wait_with_output()
+        .context("sha256sum did not finish for a byte digest")?;
+    ensure!(
+        output.status.success(),
+        "sha256sum failed for the owner source: {}",
+        String::from_utf8_lossy(&output.stderr).trim()
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let hash = stdout
+        .split_whitespace()
+        .next()
+        .context("sha256sum produced no hash for the owner source")?;
+    ensure!(
+        hash.len() == 64 && hash.chars().all(|ch| ch.is_ascii_hexdigit()),
+        "sha256sum did not return a 64-character hex digest for the owner source"
+    );
+    Ok(hash.to_ascii_lowercase())
+}
+
+/// Digest of the owner bytes that this binary actually executes.
+pub(crate) fn owner_source_sha256() -> Result<String> {
+    bytes_sha256(OWNER_SOURCE.as_bytes())
+}
+
+/// Fails explicitly when the launcher's Python cannot signal through a pidfd.
+///
+/// The isolated server stop is defined as a kernel-confirmed delivery to a pidfd
+/// the owner opened before any wait. Without `os.pidfd_open` /
+/// `signal.pidfd_send_signal` the run has no truthful way to make that claim, so
+/// it reports an environment failure instead of falling back to bare-pid signals.
+pub(crate) fn python_pidfd_capability() -> Result<()> {
+    const PYTHON: &str = "python3";
+    const PROBE: &str = "import os, signal, sys\n\
+        sys.exit(0 if hasattr(os, 'pidfd_open') and hasattr(signal, 'pidfd_send_signal') else 1)\n";
+    let output = std::process::Command::new(PYTHON)
+        .arg("-c")
+        .arg(PROBE)
+        .output()
+        .with_context(|| format!("failed to run {PYTHON} for the pidfd capability preflight"))?;
+    ensure!(
+        output.status.success(),
+        "{PYTHON} lacks os.pidfd_open/signal.pidfd_send_signal (status {}); this observation \
+         needs pidfd-based signalling and will not fall back to bare-pid signals. stderr: {}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr).trim()
+    );
+    Ok(())
+}
+
 pub(crate) fn observer_identity(workspace: &Path) -> Result<crate::report::ObserverIdentity> {
-    const FILES: &[&str] = &[
-        "code/pl-studio-acceptance/examples/bots_protocol_observe/main.rs",
-        "code/pl-studio-acceptance/examples/bots_protocol_observe/cases.rs",
-        "code/pl-studio-acceptance/examples/bots_protocol_observe/cases/owner_binding.rs",
-        "code/pl-studio-acceptance/examples/bots_protocol_observe/cases/files/mod.rs",
-        "code/pl-studio-acceptance/examples/bots_protocol_observe/cases/files/requests.rs",
-        "code/pl-studio-acceptance/examples/bots_protocol_observe/cases/files/uploads.rs",
-        "code/pl-studio-acceptance/examples/bots_protocol_observe/cases/files/notice.rs",
-        "code/pl-studio-acceptance/examples/bots_protocol_observe/cases/files/delivery.rs",
-        "code/pl-studio-acceptance/examples/bots_protocol_observe/cases/files/isolation.rs",
-        "code/pl-studio-acceptance/examples/bots_protocol_observe/cases/files/ingress.rs",
-        "code/pl-studio-acceptance/examples/bots_protocol_observe/cases/files/source.rs",
-        "code/pl-studio-acceptance/examples/bots_protocol_observe/cases/files/markdown.rs",
-        "code/pl-studio-acceptance/examples/bots_protocol_observe/cases/files/outcomes.rs",
-        "code/pl-studio-acceptance/examples/bots_protocol_observe/cases/files/compaction.rs",
-        "code/pl-studio-acceptance/examples/bots_protocol_observe/cases/files/compaction_owner.rs",
-        "code/pl-studio-acceptance/examples/bots_protocol_observe/cases/files/compaction_timeout.rs",
-        "code/pl-studio-acceptance/examples/bots_protocol_observe/cases/files/admission_limits.rs",
-        "code/pl-studio-acceptance/examples/bots_protocol_observe/cases/files/ingress/samples.rs",
-        "code/pl-studio-acceptance/examples/bots_protocol_observe/cases/files/ingress/posts.rs",
-        "code/pl-provider-fixture/src/bots_observe.rs",
-        "code/pl-provider-fixture/src/lib.rs",
-        "code/pl-studio-acceptance/examples/bots_protocol_observe/cases/registration/mod.rs",
-        "code/pl-studio-acceptance/examples/bots_protocol_observe/cases/registration/lifecycle.rs",
-        "code/pl-studio-acceptance/examples/bots_protocol_observe/cases/registration/no_user.rs",
-        "code/pl-studio-acceptance/examples/bots_protocol_observe/cases/registration/observe.rs",
-        "code/pl-studio-acceptance/examples/bots_protocol_observe/cases/replies/mod.rs",
-        "code/pl-studio-acceptance/examples/bots_protocol_observe/cases/replies/interaction_restart.rs",
-        "code/pl-studio-acceptance/examples/bots_protocol_observe/cases/replies/send_outcomes.rs",
-        "code/pl-studio-acceptance/examples/bots_protocol_observe/env.rs",
-        "code/pl-studio-acceptance/examples/bots_protocol_observe/http.rs",
-        "code/pl-studio-acceptance/examples/bots_protocol_observe/report.rs",
-        "code/pl-studio-acceptance/examples/bots_protocol_observe/server.rs",
-        "code/pl-studio-acceptance/examples/bots_protocol_observe/sqlite.rs",
-        "code/pl-studio-acceptance/examples/bots_protocol_observe/topic.rs",
-        "code/pl-studio-acceptance/examples/bots_protocol_observe/thread_watch.rs",
+    /// Every source root the observation really depends on: the observer example
+    /// itself and the independent provider peer, whose staged SSE and CardKit
+    /// behaviour the scenarios encode. Binding only the example would let the
+    /// peer change without the run recording it.
+    const ROOTS: [&str; 2] = [
+        "code/pl-studio-acceptance/examples/bots_protocol_observe",
+        "code/pl-provider-fixture/src",
     ];
+    /// Bound on the whole source set, so a runaway or generated tree cannot turn
+    /// the identity record into an unbounded hash walk.
+    const MAX_FILES: usize = 256;
+    const MAX_DEPTH: usize = 8;
+    let mut relatives = Vec::new();
+    for root in ROOTS {
+        let path = workspace.join(root);
+        let before = relatives.len();
+        collect_observer_sources(&path, root, 0, MAX_DEPTH, &mut relatives)?;
+        ensure!(
+            relatives.len() > before,
+            "observer source enumeration found no source file under {root}"
+        );
+    }
+    ensure!(
+        relatives.len() <= MAX_FILES,
+        "observer source enumeration found {} source files, above the {MAX_FILES} bound",
+        relatives.len()
+    );
     let mut example_files = Vec::new();
-    for relative in FILES {
-        let path = workspace.join(relative);
+    for relative in relatives {
+        let path = workspace.join(&relative);
         example_files.push(crate::report::FileDigest {
-            path: relative.to_string(),
             sha256: file_sha256(&path)?,
+            path: relative,
         });
     }
+    // The owner program runs from bytes frozen into this binary, so the executed
+    // digest is recorded next to the workspace file: a reviewed file that was not
+    // what ran, or the reverse, is then visible in the summary.
+    example_files.push(crate::report::FileDigest {
+        sha256: owner_source_sha256()?,
+        path: format!("{OWNER_SOURCE_PATH} (executed bytes)"),
+    });
     Ok(crate::report::ObserverIdentity {
         workspace_head: git_head(workspace),
         example_files,
     })
+}
+
+/// Recursively enumerates every `*.rs` and `*.py` file of one observer source root.
+///
+/// The identity record must cover the whole executable example, including files
+/// added later, so a static list can silently stop describing what actually ran.
+/// Traversal stays bounded in depth and count, skips dot entries, and refuses
+/// symlinks instead of following a link out of the source root.
+fn collect_observer_sources(
+    dir: &Path,
+    relative: &str,
+    depth: usize,
+    max_depth: usize,
+    found: &mut Vec<String>,
+) -> Result<()> {
+    ensure!(
+        depth <= max_depth,
+        "observer source enumeration exceeded {max_depth} levels at {relative}"
+    );
+    let mut entries = Vec::new();
+    for entry in fs::read_dir(dir)
+        .with_context(|| format!("failed to read observer source directory {}", dir.display()))?
+    {
+        entries.push(entry?.path());
+    }
+    entries.sort();
+    for path in entries {
+        let name = path
+            .file_name()
+            .map_or_else(String::new, |name| name.to_string_lossy().into_owned());
+        if name.is_empty() || name.starts_with('.') {
+            continue;
+        }
+        let metadata = fs::symlink_metadata(&path)?;
+        ensure!(
+            !metadata.file_type().is_symlink(),
+            "observer source enumeration refuses symlink {}",
+            path.display()
+        );
+        let child = format!("{relative}/{name}");
+        if metadata.is_dir() {
+            collect_observer_sources(&path, &child, depth + 1, max_depth, found)?;
+        } else if metadata.is_file() && (name.ends_with(".rs") || name.ends_with(".py")) {
+            found.push(child);
+        }
+    }
+    Ok(())
 }
 
 fn git_head(workspace: &Path) -> Option<String> {

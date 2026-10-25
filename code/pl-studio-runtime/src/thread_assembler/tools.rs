@@ -79,7 +79,7 @@ pub struct StudioGitBinding<B, P> {
 #[derive(Debug)]
 pub struct StudioWorkspaceTools {
     pub binding: StudioCommandBinding,
-    pub store: FileResourceStore,
+    pub store: crate::resource_store::ThreadResourceStore,
     pub helper_source: crate::worker_assets::RemoteHelperSource,
     /// Host-owned transfer scratch for this Thread. Never exposed as model-writable workspace.
     pub host_scratch: std::path::PathBuf,
@@ -94,6 +94,7 @@ pub struct StudioThreadTools {
     pub(crate) approval_policies:
         std::collections::BTreeMap<String, pl_core::tool::execution_policy::ExecutionPolicyHandle>,
     pub(super) store: FileResourceStore,
+    pub(super) archive: Option<crate::resource_store::ThreadResourceStore>,
     pub(super) capabilities: pl_tool::workspace::ToolCapabilityConfig,
 }
 
@@ -105,6 +106,7 @@ impl StudioThreadTools {
             command_processes: None,
             approval_policies: Default::default(),
             store,
+            archive: None,
             registrations,
             capabilities: pl_tool::workspace::ToolCapabilityConfig {
                 exec: false,
@@ -299,7 +301,8 @@ impl StudioThreadTools {
             command_processes: commands,
             approval_policies: Default::default(),
             registrations,
-            store,
+            store: store.reader(),
+            archive: Some(store),
             capabilities,
         })
     }
@@ -384,13 +387,13 @@ impl StudioThreadTools {
         Ok(self)
     }
 
-    /// Installs skill discovery and read snapshots over a frozen provider directory.
+    /// Installs per-call Skill discovery over fixed workspace/configuration and Providers.
     ///
     /// # Errors
     /// Returns declaration encoding or registry errors.
     pub fn with_skills(
         mut self,
-        catalog: Arc<pl_tool::skill::FrozenSkillCatalog>,
+        sources: pl_tool::skill::SkillDiscoverySources,
     ) -> Result<Self, ThreadAssemblyError> {
         if !self.capabilities.skills {
             return Ok(self);
@@ -400,7 +403,7 @@ impl StudioThreadTools {
             pl_tool::skill::ThreadSkillKind::View,
         ] {
             let declaration = pl_model::runtime::thread_tool_declaration(&kind.declaration())?;
-            let tool = pl_tool::skill::ThreadSkillTool::new(catalog.clone(), kind);
+            let tool = pl_tool::skill::ThreadSkillTool::new(sources.clone(), kind);
             self.registrations.push(tool.registration(declaration)?);
         }
         Ok(self)
@@ -576,9 +579,11 @@ impl super::StudioThreadAssembler {
         tools: StudioWorkspaceTools,
     ) -> Result<pl_core::thread::ThreadHandle, ThreadAssemblyError> {
         spec.agent_controls = if spec.parent_id.is_none() {
-            super::AgentControlExposure::Enabled
+            let selection = spec.frozen_delegation()?;
+            let profiles = self.agent_profiles_snapshot()?;
+            self.agent_control_tools(&profiles, selection)?
         } else {
-            super::AgentControlExposure::Disabled
+            Vec::new()
         };
         let tools = StudioThreadTools::standard(tools).await?;
         self.assemble(tools.install(spec)).await

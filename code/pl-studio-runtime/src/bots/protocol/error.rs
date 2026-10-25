@@ -141,6 +141,21 @@ impl FeishuError {
         }
     }
 
+    /// A side-effecting request without an explicit rejection may already have applied.
+    /// Malformed success responses and HTTP 5xx are not evidence of non-acceptance.
+    pub fn acceptance_unknown(&self) -> bool {
+        match self.kind() {
+            FeishuErrorKind::Timeout | FeishuErrorKind::Transport | FeishuErrorKind::Protocol => {
+                true
+            }
+            FeishuErrorKind::Unavailable => self.platform_code().is_none_or(|code| {
+                code.parse::<u16>()
+                    .is_ok_and(|status| (500..600).contains(&status))
+            }),
+            _ => false,
+        }
+    }
+
     pub fn diagnostic(&self) -> BotDiagnostic {
         match self {
             Self::Protocol {
@@ -158,6 +173,8 @@ impl FeishuError {
                     && platform_code.as_deref() == Some("21001")
                 {
                     Some("checkTenantAccessPolicy".to_string())
+                } else if platform_code.as_deref() == Some("300311") {
+                    Some("grantCardkitCardWrite".to_string())
                 } else {
                     kind.guidance().map(str::to_string)
                 },

@@ -1,4 +1,5 @@
 import 'attachment_models.dart';
+import 'audience_models.dart';
 import 'composer_models.dart';
 import 'interaction_models.dart';
 import 'runtime_models.dart';
@@ -21,6 +22,7 @@ enum ThreadItemKind {
   inference,
   skill,
   file,
+  publicArtifact,
   contextCompaction,
 }
 
@@ -1038,6 +1040,46 @@ final class ThreadFileItemStateView extends ThreadItemStateView {
   final DateTime completedAt;
 }
 
+/// Only a trusted, typed publication grants the public artifact actions.
+/// A File path, input attachment or tool media is deliberately not this type.
+final class ThreadPublicArtifactItemStateView extends ThreadItemStateView {
+  const ThreadPublicArtifactItemStateView({
+    required this.publicationId,
+    required this.toolCallId,
+    required this.displayName,
+    required this.resource,
+    required this.publishedAt,
+  });
+  final String publicationId;
+  final String toolCallId;
+  final String displayName;
+  final ThreadArtifactResource resource;
+  final DateTime publishedAt;
+}
+
+final class ThreadArtifactResource {
+  const ThreadArtifactResource({
+    required this.id,
+    required this.contentDigest,
+    required this.byteLen,
+    required this.mediaType,
+  });
+  final String id;
+  final String contentDigest;
+  final int byteLen;
+  final String mediaType;
+
+  @override
+  bool operator ==(Object other) =>
+      other is ThreadArtifactResource &&
+      id == other.id &&
+      contentDigest == other.contentDigest &&
+      byteLen == other.byteLen &&
+      mediaType == other.mediaType;
+  @override
+  int get hashCode => Object.hash(id, contentDigest, byteLen, mediaType);
+}
+
 final class ThreadContextCompactionItemStateView extends ThreadItemStateView {
   const ThreadContextCompactionItemStateView(
     this.beforeTokens,
@@ -1106,6 +1148,7 @@ class ThreadItemView {
     ThreadSkillItemStateView() => ThreadItemKind.skill,
     ThreadRawItemStateView() => ThreadItemKind.raw,
     ThreadFileItemStateView() => ThreadItemKind.file,
+    ThreadPublicArtifactItemStateView() => ThreadItemKind.publicArtifact,
     ThreadContextCompactionItemStateView() => ThreadItemKind.contextCompaction,
   };
 
@@ -1129,6 +1172,7 @@ class ThreadItemView {
       CancelledThreadInferenceView() => 'cancelled',
     },
     ThreadSkillItemStateView() ||
+    ThreadPublicArtifactItemStateView() ||
     ThreadFileItemStateView() ||
     ThreadRawItemStateView() ||
     ThreadContextCompactionItemStateView() => 'completed',
@@ -1145,6 +1189,7 @@ class ThreadItemView {
     ThreadInferenceItemStateView(:final lifecycle) =>
       lifecycle is! RunningThreadInferenceView,
     ThreadSkillItemStateView() ||
+    ThreadPublicArtifactItemStateView() ||
     ThreadFileItemStateView() ||
     ThreadRawItemStateView() ||
     ThreadContextCompactionItemStateView() => true,
@@ -1191,6 +1236,7 @@ class ThreadItemView {
     ThreadSkillItemStateView(:final activatedAt) => activatedAt,
     ThreadRawItemStateView(:final recordedAt) => recordedAt,
     ThreadFileItemStateView(:final completedAt) => completedAt,
+    ThreadPublicArtifactItemStateView(:final publishedAt) => publishedAt,
     ThreadContextCompactionItemStateView(:final compactedAt) => compactedAt,
   };
 
@@ -1212,6 +1258,7 @@ class ThreadItemView {
       _ => null,
     },
     ThreadSkillItemStateView() ||
+    ThreadPublicArtifactItemStateView() ||
     ThreadFileItemStateView() ||
     ThreadRawItemStateView() ||
     ThreadContextCompactionItemStateView() => null,
@@ -1261,6 +1308,7 @@ class ThreadItemView {
 
   String? get mediaType => switch (state) {
     ThreadFileItemStateView(:final mediaType) => mediaType,
+    ThreadPublicArtifactItemStateView(:final resource) => resource.mediaType,
     _ => null,
   };
 
@@ -1783,6 +1831,17 @@ ThreadItemStateView? _convergeState(
       final notice = _convergeText(a.notice, b.notice);
       if (notice == null) return null;
       return ThreadRawItemStateView(payloads, notice, b.recordedAt);
+    case (
+      ThreadPublicArtifactItemStateView a,
+      ThreadPublicArtifactItemStateView b,
+    ):
+      return a.publicationId == b.publicationId &&
+              a.toolCallId == b.toolCallId &&
+              a.displayName == b.displayName &&
+              a.resource == b.resource &&
+              a.publishedAt == b.publishedAt
+          ? b
+          : null;
     case (ThreadFileItemStateView a, ThreadFileItemStateView b):
       return a.path == b.path ? b : null;
     case (ThreadSkillItemStateView a, ThreadSkillItemStateView b):
@@ -2048,6 +2107,7 @@ class ThreadWorkspace {
     required this.revision,
     required this.interactions,
     required this.runtime,
+    required this.audience,
     this.activeTurn,
     this.latestTurn,
     this.todo,
@@ -2063,6 +2123,7 @@ class ThreadWorkspace {
 
   final List<PendingInteraction> interactions;
   final ThreadRuntimeView runtime;
+  final ThreadAudience audience;
 
   /// 当前执行中的 Turn；Terminal Turn 不留在当前状态里。
   final StudioTurnView? activeTurn;
@@ -2092,6 +2153,7 @@ class ThreadWorkspace {
     int? revision,
     List<PendingInteraction>? interactions,
     ThreadRuntimeView? runtime,
+    ThreadAudience? audience,
     Object? activeTurn = _workspaceUnset,
     Object? latestTurn = _workspaceUnset,
     Object? todo = _workspaceUnset,
@@ -2103,6 +2165,7 @@ class ThreadWorkspace {
       revision: revision ?? this.revision,
       interactions: interactions ?? this.interactions,
       runtime: runtime ?? this.runtime,
+      audience: audience ?? this.audience,
       activeTurn: identical(activeTurn, _workspaceUnset)
           ? this.activeTurn
           : activeTurn as StudioTurnView?,

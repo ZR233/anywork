@@ -5,13 +5,13 @@ use serde::{Deserialize, Serialize};
 use super::error::BridgeError;
 use super::event::BridgeProductEventEnvelope;
 use super::{
-    BridgeAccountUsageStateSnapshot, BridgeAgentDirectoryState, BridgeAgentProfilesStateSnapshot,
-    BridgeBotsStateSnapshot, BridgeLspStateSnapshot, BridgeMcpStateSnapshot,
-    BridgeModelCatalogStateSnapshot, BridgeModelPerformanceSnapshot,
-    BridgePersistenceQueueStateSnapshot, BridgePersistenceStateSnapshot,
-    BridgeProjectDirectoryState, BridgeRecoveryStateSnapshot, BridgeSessionCostsState,
-    BridgeSettingsConfigStateSnapshot, BridgeSkillsStateSnapshot, BridgeThreadDirectoryPage,
-    BridgeThreadModeCatalogSnapshot, BridgeUpdaterStateSnapshot,
+    BridgeAccountUsageStateSnapshot, BridgeAcpAuthSnapshot, BridgeAcpInstallSnapshot,
+    BridgeAgentDirectoryState, BridgeAgentProfilesStateSnapshot, BridgeBotsStateSnapshot,
+    BridgeLspStateSnapshot, BridgeMcpStateSnapshot, BridgeModelCatalogStateSnapshot,
+    BridgeModelPerformanceSnapshot, BridgePersistenceQueueStateSnapshot,
+    BridgePersistenceStateSnapshot, BridgeProjectDirectoryState, BridgeRecoveryStateSnapshot,
+    BridgeSessionCostsState, BridgeSettingsConfigStateSnapshot, BridgeSkillsStateSnapshot,
+    BridgeThreadDirectoryPage, BridgeThreadModeCatalogSnapshot, BridgeUpdaterStateSnapshot,
 };
 
 /// 产品订阅 topic；带 payload 的变体表达作用域，不存在无作用域组合形式。
@@ -29,6 +29,8 @@ pub enum BridgeProductTopic {
     Skills { project_id: String },
     ThreadModeCatalog,
     AccountUsage,
+    AcpAuth,
+    AcpInstall,
     ModelPerformance,
     SessionCosts { root_thread_id: String },
     Updater,
@@ -67,6 +69,8 @@ impl BridgeProductTopic {
             Self::Skills { project_id } => StudioProductTopic::Skills { project_id },
             Self::ThreadModeCatalog => StudioProductTopic::ThreadModeCatalog,
             Self::AccountUsage => StudioProductTopic::AccountUsage,
+            Self::AcpAuth => StudioProductTopic::AcpAuth,
+            Self::AcpInstall => StudioProductTopic::AcpInstall,
             Self::ModelPerformance => StudioProductTopic::ModelPerformance,
             Self::SessionCosts { root_thread_id } => {
                 StudioProductTopic::SessionCosts { root_thread_id }
@@ -95,6 +99,8 @@ pub enum BridgeProductBaseline {
     Skills(BridgeSkillsStateSnapshot),
     ThreadModeCatalog(BridgeThreadModeCatalogSnapshot),
     AccountUsage(BridgeAccountUsageStateSnapshot),
+    AcpAuth(Box<BridgeAcpAuthSnapshot>),
+    AcpInstall(Box<BridgeAcpInstallSnapshot>),
     ModelPerformance(BridgeModelPerformanceSnapshot),
     SessionCosts(Box<BridgeSessionCostsState>),
     Updater(BridgeUpdaterStateSnapshot),

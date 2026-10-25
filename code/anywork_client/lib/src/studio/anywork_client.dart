@@ -11,7 +11,11 @@ import 'commands/account_usage_queries.dart';
 import 'commands/model_detail_queries.dart';
 import 'commands/bots_commands.dart';
 import 'commands/bots_queries.dart';
+import 'commands/bot_thread_sync_commands.dart';
+import 'thread_audience_queries.dart';
 import 'commands/settings_commands.dart';
+import 'commands/acp_commands.dart';
+import 'commands/acp_install_commands.dart';
 import 'commands/thread_commands.dart';
 import 'commands/command_lane.dart';
 import 'drafts/attachment_drafts.dart';
@@ -30,6 +34,8 @@ import 'stores/lsp_store.dart';
 import 'stores/mode_catalog_store.dart';
 import 'stores/model_performance_store.dart';
 import 'stores/account_usage_store.dart';
+import 'stores/acp_auth_store.dart';
+import 'stores/acp_install_store.dart';
 import 'stores/recovery_store.dart';
 import 'stores/session_costs_store.dart';
 import 'stores/skills_store.dart';
@@ -59,8 +65,12 @@ class AnyworkClient {
     accountUsageQueries = AccountUsageQueries(this);
     modelDetailQueries = ModelDetailQueries(this);
     settingsCommands = SettingsCommands(this);
+    acpCommands = AcpCommands(this);
+    acpInstallCommands = AcpInstallCommands(this);
     botsCommands = BotsCommands(this);
     botsQueries = BotsQueries(this);
+    botThreadSync = BotThreadSyncCommands(this);
+    audienceQueries = ThreadAudienceQueries(this);
     threadCommands = ThreadCommands(this);
     remote = RemoteActions(transport);
     attachments = AttachmentDraftsOwner(
@@ -101,6 +111,22 @@ class AnyworkClient {
         if (value.loaded)
           observeResource('thread-mode-catalog', value.revision);
       }),
+      // ACP 认证回执的 targets 是 `acp-auth`：产品 topic 帧与命令响应进入同一
+      // reducer，因此该领域也必须把 canonical 水位登记给 MutationBoard，否则
+      // check/login/cancel 受理后永远停在 awaitingObservation。未加载时没有水位，
+      // 首帧（含 revision 0）才是有效观察。
+      acpAuth.source.watch((value) {
+        final snapshot = value.value;
+        if (value.loaded && snapshot != null)
+          observeResource('acp-auth', snapshot.revision);
+      }),
+      // 安装回执的 targets 是 `acp-install`：与认证同理由同一 reducer 收敛，
+      // 因此该领域也必须把 canonical 水位（含 revision 0）登记给 MutationBoard。
+      acpInstall.source.watch((value) {
+        final snapshot = value.value;
+        if (value.loaded && snapshot != null)
+          observeResource('acp-install', snapshot.revision);
+      }),
       bots.source.watch((value) {
         if (!value.loaded) return;
         observeResource('bots', value.revision);
@@ -122,7 +148,11 @@ class AnyworkClient {
   late final AccountUsageQueries accountUsageQueries;
   late final ModelDetailQueries modelDetailQueries;
   late final SettingsCommands settingsCommands;
+  late final AcpCommands acpCommands;
+  late final AcpInstallCommands acpInstallCommands;
   late final BotsCommands botsCommands;
+  late final BotThreadSyncCommands botThreadSync;
+  late final ThreadAudienceQueries audienceQueries;
   late final BotsQueries botsQueries;
   late final ThreadCommands threadCommands;
   late final RemoteActions remote;
@@ -138,6 +168,8 @@ class AnyworkClient {
   final modeCatalog = ModeCatalogStore();
   final modelPerformance = ModelPerformanceStore();
   final accountUsage = AccountUsageStore();
+  final acpAuth = AcpAuthStore();
+  final acpInstall = AcpInstallStore();
   final recovery = RecoveryStore();
   final updater = UpdaterStore();
   final persistence = PersistenceStore();
@@ -320,6 +352,8 @@ class AnyworkClient {
     );
   }
 
+  bool isCommandOwner(String epoch) => _runtimeOwnerEpoch == epoch;
+
   T _mirror<T>(String owner, T Function() create) {
     _ensureOpen();
     final permit = budget.acquire(ResourceKind.readModel, owner: owner);
@@ -420,9 +454,17 @@ class AnyworkClient {
     final catalog = await transport.loadAccountCatalog();
     if (_closed) return;
     settings.applyAccountCatalog(catalog);
+    // ACP 目录是只读默认值：只登记模板与官方安装说明，不启动外部程序。
+    final acpCatalog = await transport.loadAcpAccountCatalog();
+    if (_closed) return;
+    settings.applyAcpAccountCatalog(acpCatalog);
     _applicationTopics = channels.acquireTopics([
       ...bridgeShellTopics,
       const AgentProfilesTopic(),
+      // ACP 认证观察属于应用级业务 owner：页面只借用快照，不创建/关闭订阅。
+      const AcpAuthTopic(),
+      // 安装进度同样属于应用级共享资产：离页只释放自己的观察，不取消下载。
+      const AcpInstallTopic(),
       const McpTopic(),
       const LspTopic(),
       const ModelPerformanceTopic(),
@@ -464,6 +506,23 @@ class AnyworkClient {
         needsOpen: snapshot.selectedThreadId != null,
       );
     }
+  }
+
+  /// 账号面板的 typed 聚合视图：Native 账号与 ACP 接入按各自事实源合并。
+  ///
+  /// 读取不改变 demand：没有 ACP 目录或认证观察时只是没有对应条目。
+  AccountDirectoryView get accountDirectory {
+    final current = settings.state;
+    return AccountDirectoryView.from(
+      nativeAccounts: accountsWithCatalogMetadata(
+        current.canonical?.accounts ?? const <AccountSettingsView>[],
+        current.accountCatalog,
+      ),
+      acpAccounts: current.canonical?.acpAccounts ?? const [],
+      nativeCatalog: current.accountCatalog,
+      acpCatalog: current.acpCatalog,
+      auth: acpAuth.state.value ?? const AcpAuthSnapshotView.empty(),
+    );
   }
 
   StudioThread? findThread(String id) {
@@ -646,9 +705,13 @@ class AnyworkClient {
         accountUsageQueries.close(),
         deadline,
       ),
+      _joinOwner('acp-commands', acpCommands.close(), deadline),
+      _joinOwner('acp-install-commands', acpInstallCommands.close(), deadline),
       _joinOwner('model-detail-queries', modelDetailQueries.close(), deadline),
       _joinOwner('bots-commands', botsCommands.close(), deadline),
       _joinOwner('bots-queries', botsQueries.close(), deadline),
+      _joinOwner('bot-thread-sync', botThreadSync.close(), deadline),
+      _joinOwner('audience-queries', audienceQueries.close(), deadline),
       _joinOwner('thread-commands', threadCommands.close(), deadline),
       _joinOwner('mode-editor', modeEditor.close(), deadline),
       _joinOwner('remote-commands', remote.close(), deadline),

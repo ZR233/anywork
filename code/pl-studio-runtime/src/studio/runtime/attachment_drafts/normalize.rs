@@ -50,6 +50,30 @@ pub(super) fn normalize_loaded_source(
     })
 }
 
+/// Publication is an exact file original, not a request for a native image/video variant. Byte
+/// signatures may identify its MIME, but must not allocate a decoded image merely to archive a file.
+/// Unknown signatures keep the same conservative file classifier as ordinary original metadata.
+pub(in crate::studio) fn inspect_artifact_source(
+    bytes: Vec<u8>,
+    cancellation: CancellationToken,
+) -> Result<(Vec<u8>, String)> {
+    anyhow::ensure!(
+        bytes.len() as u64 <= ATTACHMENT_MAX_FILE_BYTES,
+        "artifact exceeds 50 MiB"
+    );
+    if cancellation.is_cancelled() {
+        return Err(InspectionCancelled.into());
+    }
+    let media_type = image::guess_format(&bytes)
+        .map(|format| format.to_mime_type())
+        .unwrap_or_else(|_| file_metadata(&bytes).media_type)
+        .to_owned();
+    if cancellation.is_cancelled() {
+        return Err(InspectionCancelled.into());
+    }
+    Ok((bytes, media_type))
+}
+
 fn inspect(bytes: &[u8], reader: &mut ProbeReader<'_>) -> Result<Metadata> {
     if let Ok(format) = image::guess_format(bytes) {
         return match inspect_image(reader, format) {

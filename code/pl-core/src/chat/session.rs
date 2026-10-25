@@ -19,7 +19,10 @@ use std::{
 use tokio::sync::watch;
 
 use crate::chat::{
-    ChatCursor, ChatError, ChatHistory, ChatItem, history::ErasedChatHistory, item::same_content,
+    ChatCursor, ChatError, ChatHistory, ChatItem, ChatItemMetadata, ChatLifecycle,
+    history::ErasedChatHistory,
+    item::same_content,
+    metadata::{item_metadata_fingerprint, metadata_fingerprint},
     read::memory_item,
 };
 use crate::model::ContentBlock;
@@ -32,8 +35,8 @@ pub(crate) const RECENT_BYTES: usize = 8 * 1024 * 1024;
 const TERMINAL_ITEMS: usize = 4096;
 /// 连续性元数据的条目上限。
 ///
-/// 每个条目只记录“这次发布触及了哪个身份”，因此订阅者落后超过该窗口就无法再证明连续，必须显式
-/// 重同步，而不是猜一个补丁。
+/// 每个条目只记录触及的身份与其发布水位，不持有正文或静态结构。订阅者落后超过该窗口就无法再
+/// 证明连续，必须显式重同步，而不是猜一个补丁。
 const CHANGE_LOG_ENTRIES: usize = 512;
 /// 单次发布最多记录的身份数；超出即标记不可证明，订阅者按重同步处理。
 const MAX_LOGGED_IDENTITIES: usize = 256;
@@ -43,13 +46,21 @@ const MAX_LOGGED_IDENTITIES: usize = 256;
 pub(crate) struct ChangedIdentity {
     pub(crate) item_id: Arc<str>,
     pub(crate) removed: bool,
+    published: Option<PublishedRevision>,
 }
 
 impl ChangedIdentity {
-    pub(crate) fn item(item_id: impl Into<Arc<str>>) -> Self {
+    fn item(item: &ChatItem, metadata_fingerprint: Option<[u8; 32]>) -> Self {
         Self {
-            item_id: item_id.into(),
+            item_id: Arc::from(item.item_id.as_str()),
             removed: false,
+            published: Some(PublishedRevision {
+                order: item.order,
+                revision: item.revision,
+                saved: item.saved,
+                lifecycle: item.lifecycle,
+                metadata_fingerprint,
+            }),
         }
     }
 
@@ -57,8 +68,22 @@ impl ChangedIdentity {
         Self {
             item_id: item_id.into(),
             removed: true,
+            published: None,
         }
     }
+}
+
+/// A publication's small progress proof, not a second readable item. Once a newer item leaves the
+/// cache, an older retained effect or cold row cannot answer for it merely because its ID matches.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PublishedRevision {
+    order: u64,
+    revision: u64,
+    saved: bool,
+    lifecycle: ChatLifecycle,
+    /// A shell/index proof, not recoverable metadata. A save acknowledgement has no new shell:
+    /// its retained effect can be older than a same-revision preview already published meanwhile.
+    metadata_fingerprint: Option<[u8; 32]>,
 }
 
 /// 一次发布在连续性元数据里的记录。
@@ -466,6 +491,9 @@ impl Session {
         // timeline lock: a concurrent publication never waits behind codec work, and no database or
         // codec call runs under the lock.
         let visible = self.0.history.bounded(&item)?;
+        // Metadata hashing is bounded structure work, not body hashing, and happens outside the
+        // timeline lock. Same-revision shell/index changes remain legal admission facts.
+        let published = ChangedIdentity::item(&item, Some(item_metadata_fingerprint(&item)));
         let mut state = self.lock_timeline();
         if item.order == 0 || item.order > i64::MAX as u64 {
             return Err(ChatError::Conflict(item.item_id));
@@ -656,9 +684,7 @@ impl Session {
         }
         // A cache eviction is not a deletion: it only releases this session's preview. The reader
         // keeps whatever it was already delivered and never receives a `Remove` for it.
-        let identities = vec![ChangedIdentity::item(Arc::<str>::from(
-            item.item_id.as_str(),
-        ))];
+        let identities = vec![published];
         let progress = bump_version(&mut state, boundary, identities);
         self.0.changed.send_replace(progress);
         Ok(())
@@ -674,16 +700,17 @@ impl Session {
     /// and a streaming item stays streaming after acknowledgement.
     pub fn confirm_saved(&self, item_id: &str, revision: u64) {
         let mut state = self.lock_timeline();
-        let mut changed = false;
+        let mut confirmed = None;
         if state
             .unsaved
             .get(item_id)
             .is_some_and(|item| item.revision == revision)
-            && let Some(item) = state.unsaved.remove(item_id)
+            && let Some(mut item) = state.unsaved.remove(item_id)
         {
             state.unsaved_order.remove(&item.order);
             state.unsaved_previews.remove(item_id);
-            changed = true;
+            item.saved = true;
+            confirmed = Some(ChangedIdentity::item(&item, None));
         }
         if let Some(item) = state
             .recent
@@ -691,15 +718,11 @@ impl Session {
             .find(|item| item.item_id == item_id && item.revision == revision && !item.saved)
         {
             item.saved = true;
-            changed = true;
+            confirmed = Some(ChangedIdentity::item(item, None));
         }
-        if changed {
+        if let Some(confirmed) = confirmed {
             // A save acknowledgement is a frame boundary, not ordinary started text.
-            let progress = bump_version(
-                &mut state,
-                true,
-                vec![ChangedIdentity::item(Arc::<str>::from(item_id))],
-            );
+            let progress = bump_version(&mut state, true, vec![confirmed]);
             self.0.changed.send_replace(progress);
         }
     }
@@ -756,6 +779,99 @@ pub(crate) fn resident_item(state: &TimelineState, item_id: &str) -> Option<Chat
         .get(item_id)
         .or_else(|| state.active_previews.get(item_id))
         .cloned()
+}
+
+/// Borrow candidates from the existing owners without retaining their content blocks. A saved
+/// publication may be newer than an older still-pending reliable effect, so readers reconcile all
+/// owners rather than assuming the first resident copy is the newest one.
+pub(crate) fn memory_items<'a>(
+    state: &'a TimelineState,
+    item_id: &'a str,
+) -> impl Iterator<Item = &'a ChatItem> {
+    state
+        .unsaved
+        .get(item_id)
+        .into_iter()
+        .chain(state.active_previews.get(item_id))
+        .chain(
+            state
+                .recent
+                .iter()
+                .filter(move |item| item.item_id == item_id),
+        )
+}
+
+/// Check a readable candidate against the same bounded progress facts that admission and tail
+/// continuity already own. Reservations without a published preview are not item existence facts;
+/// a historical removal is not a durable tombstone. No missing shell is reconstructed from numbers.
+pub(crate) fn validate_metadata(
+    state: &TimelineState,
+    item_id: &str,
+    metadata: Option<&ChatItemMetadata>,
+) -> Result<(), ChatError> {
+    let preview = state.allocated.get(item_id).and_then(|slot| {
+        slot.preview_revision.map(|revision| PublishedRevision {
+            order: slot.order,
+            revision,
+            saved: false,
+            lifecycle: if slot.preview_terminal {
+                ChatLifecycle::Terminal
+            } else {
+                ChatLifecycle::Streaming
+            },
+            metadata_fingerprint: None,
+        })
+    });
+    let terminal = state
+        .terminal
+        .get(item_id)
+        .map(|&(order, revision)| PublishedRevision {
+            order,
+            revision,
+            saved: false,
+            lifecycle: ChatLifecycle::Terminal,
+            metadata_fingerprint: None,
+        });
+    let published = state
+        .log
+        .iter()
+        .rev()
+        .flat_map(|entry| &entry.identities)
+        .filter(|identity| identity.item_id.as_ref() == item_id)
+        .take_while(|identity| !identity.removed)
+        .filter_map(|identity| identity.published);
+    let mut same_revision = false;
+    let mut latest_shell = None;
+    for fact in preview.into_iter().chain(terminal).chain(published) {
+        if metadata.is_none_or(|item| {
+            item.order != fact.order
+                || item.revision < fact.revision
+                || item.lifecycle < fact.lifecycle
+                || (item.revision == fact.revision && fact.saved && !item.saved)
+        }) {
+            return Err(ChatError::ReadInvalidated);
+        }
+        same_revision |= metadata.is_some_and(|item| item.revision == fact.revision);
+        // Publications are visited newest first. A late save ACK contributes numeric progress,
+        // never an old shell, and earlier same-revision shells must not reject the latest one.
+        if latest_shell.is_none() {
+            latest_shell = fact
+                .metadata_fingerprint
+                .map(|fingerprint| (fact.revision, fingerprint));
+        }
+    }
+    if same_revision
+        && !metadata.is_some_and(|item| {
+            latest_shell.is_some_and(|(revision, fingerprint)| {
+                item.revision == revision && metadata_fingerprint(item) == fingerprint
+            })
+        })
+    {
+        // Numeric markers survive cache eviction, but cannot prove Turn/meta/field facts. Missing
+        // or expired shell proof is unreadable, not permission to reuse a same-revision cold shell.
+        return Err(ChatError::ReadInvalidated);
+    }
+    Ok(())
 }
 
 /// Highest published speculative identity that this read cannot materialize.

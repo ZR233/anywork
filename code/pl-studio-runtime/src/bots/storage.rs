@@ -13,7 +13,21 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::time::Duration;
 
-const BOT_STATE_SCHEMA_VERSION: i64 = 7;
+pub(super) mod audience;
+pub(super) mod card;
+pub(super) mod reply;
+mod schema;
+pub(in crate::bots) mod target;
+
+const BOT_STATE_SCHEMA_VERSION: i64 = 9;
+
+#[derive(Clone, Copy)]
+enum LedgerSource {
+    MainCard6,
+    TaskFile6,
+    TaskFile7,
+    Current8,
+}
 const PAIRING_LIMIT: i64 = 32;
 const PAIRING_TTL_SECONDS: i64 = 7 * 24 * 60 * 60;
 const INBOUND_CLAIM_TTL_SECONDS: i64 = 60;
@@ -248,6 +262,16 @@ pub struct BindingProjection {
     pub diagnostic: Option<String>,
 }
 
+/// Exact route observed before an asynchronous Thread lookup. A late diagnostic may affect only
+/// this binding, not a successor created while the lookup was awaiting its result.
+pub(in crate::bots) struct BoundThreadExpectation {
+    pub chat_id: String,
+    pub thread_id: String,
+    pub creation_id: String,
+    pub project_id: String,
+    pub revision: u64,
+}
+
 #[derive(Debug, Clone)]
 pub struct IdentityOccupancy {
     pub has_thread_or_inbound: bool,
@@ -263,6 +287,7 @@ pub struct BindingOperation {
     pub expected_revision: u64,
     pub creation_id: String,
     pub thread_id: Option<String>,
+    pub(in crate::bots) target: target::TargetProof,
 }
 
 impl BotStateStore {
@@ -868,17 +893,23 @@ impl BotStateStore {
         .map_err(storage)
     }
 
-    pub async fn claim_thread_binding(
+    pub(in crate::bots) async fn claim_thread_binding(
         &self,
-        chat_id: &str,
-        creation_id: &str,
-        project_id: &str,
+        claim: &target::TargetClaim,
     ) -> Result<ThreadBindingClaim, FeishuError> {
+        let chat_id = claim.chat_id.as_str();
+        let creation_id = claim.creation_id.as_str();
+        let project_id = claim.project_id.as_str();
+        if chat_id.is_empty() || creation_id.is_empty() || project_id.is_empty() {
+            return Err(corrupt_binding());
+        }
+        // 首次受理只能冻结已核实的证明：无类型的受理会让离线重启后无法恢复目标种类。
+        let first = claim.freeze(1);
         let db = self.db().await?;
         let tx = db.begin().await.map_err(storage)?;
         let row = match tx
             .query_one_raw(statement(
-                "SELECT chat_id, thread_id, status, creation_id, project_id, revision, generation, diagnostic FROM thread_bindings WHERE chat_id=?",
+                "SELECT chat_id, thread_id, status, creation_id, project_id, revision, generation, diagnostic,target_json FROM thread_bindings WHERE chat_id=?",
                 vec![chat_id.to_string().into()],
             ))
             .await
@@ -888,8 +919,8 @@ impl BotStateStore {
             None => {
             // 真正 NoRow：首次受理在此写入新行，随后才提交。
         tx.execute_raw(statement(
-            "INSERT INTO thread_bindings(chat_id, thread_id, status, creation_id, project_id, revision, generation, diagnostic, created_at, updated_at)
-             VALUES(?,?,?,?,?,?,?,?,?,?)",
+            "INSERT INTO thread_bindings(chat_id, thread_id, status, creation_id, project_id, revision, generation, diagnostic, created_at, updated_at,target_json)
+             VALUES(?,?,?,?,?,?,?,?,?,?,?)",
             vec![
                 chat_id.to_string().into(),
                 "".to_string().into(),
@@ -901,6 +932,7 @@ impl BotStateStore {
                 "".to_string().into(),
                 unix_seconds().into(),
                 unix_seconds().into(),
+                first.encode()?.into(),
             ],
         ))
         .await
@@ -921,8 +953,9 @@ impl BotStateStore {
         let stored_creation = strict_text(&row, "creation_id")?;
         let stored_project = strict_text(&row, "project_id")?;
         let diagnostic = strict_text(&row, "diagnostic")?;
+        let stored_target = target::TargetProof::decode(&row)?;
         // 水位同样严格解码：坏行不能继续被当成可用绑定。
-        let _revision = strict_watermark(&row, "revision")?;
+        let revision = strict_watermark(&row, "revision")?;
         let _generation = strict_watermark(&row, "generation")?;
         if stored_chat != chat_id {
             return Err(corrupt_binding());
@@ -945,10 +978,31 @@ impl BotStateStore {
             }
             // bound 缺少可用 Thread 身份：不可证明归属，保留现场要求本机恢复。
             "bound" => Err(binding_needs_recovery()),
-            // creating 的创建身份已由上面的 needs_proof 判定非空。
-            "creating" => Ok(ThreadBindingClaim::Creating {
-                creation_id: stored_creation,
-            }),
+            // creating 的创建身份已由上面的 needs_proof 判定非空。同一创建意图的
+            // 目标种类只能同源一致：冲突保留现场，不按本次输入覆盖已冻结的证明。
+            "creating" => {
+                if !stored_target.same_intent(&first) {
+                    return Err(binding_needs_recovery());
+                }
+                // 已冻结证明指向的原始事实必须仍可用；只有同一事实的再次投递
+                // 可以重建它。另一条同 kind 的入站不得顶替原来源。
+                if !target::source_present(
+                    db,
+                    &stored_target,
+                    chat_id,
+                    &stored_project,
+                    &stored_creation,
+                    revision,
+                )
+                .await?
+                    && !stored_target.same_source(&first)
+                {
+                    return Err(binding_needs_recovery());
+                }
+                Ok(ThreadBindingClaim::Creating {
+                    creation_id: stored_creation,
+                })
+            }
             "needs_attention" => Ok(ThreadBindingClaim::NeedsAttention {
                 diagnostic: if diagnostic.is_empty() {
                     "conversation Thread binding needs local recovery".to_string()
@@ -971,12 +1025,12 @@ impl BotStateStore {
         let tx = db.begin().await.map_err(storage)?;
         let existing = tx
             .query_one_raw(statement(
-                "SELECT thread_id, status, creation_id, project_id, revision, generation FROM thread_bindings WHERE chat_id=?",
+                "SELECT thread_id, status, creation_id, project_id, revision, generation,target_json FROM thread_bindings WHERE chat_id=?",
                 vec![chat_id.to_string().into()],
             ))
             .await
             .map_err(storage)?;
-        let (revision, generation) = if let Some(row) = existing {
+        let (revision, generation, target) = if let Some(row) = existing {
             // 路由、创建身份与项目归属只接受持久值：解码失败不得默认成 bound 或空创建。
             let status = strict_text(&row, "status")?;
             let bound = strict_text(&row, "thread_id")?;
@@ -1018,9 +1072,41 @@ impl BotStateStore {
                 tx.commit().await.map_err(storage)?;
                 return Err(binding_needs_recovery());
             }
-            (revision, generation)
+            let target = target::TargetProof::decode(&row)?;
+            // 写入的 origin 必须携带本次创建意图已冻结的证明：Created 来自首次受理，
+            // 迁移后的在建意图只能是可核对旧来源给出的 Legacy；Unproven 保留现场等
+            // 本机处理，不在这里补猜目标种类。
+            if target.kind().is_none() {
+                tx.commit().await.map_err(storage)?;
+                return Err(binding_needs_recovery());
+            }
+            // 引用某条原始事实之前必须在同一事务内确认它已经在库：不提交之后必然
+            // 打不开的 origin。缺失时保留 creating，等原事实到达再续接。
+            if !target::source_present(&tx, &target, chat_id, project_id, creation_id, revision)
+                .await?
+            {
+                tx.commit().await.map_err(storage)?;
+                return Err(binding_needs_recovery());
+            }
+            // operation 的最终 Thread 归属与 route/origin 同批提交：分两次提交的窗口
+            // 会让重启后的开库校验看到 origin 已存在而来源 operation 仍未指向它。
+            if target::bind_operation_thread(
+                &tx,
+                &target,
+                chat_id,
+                creation_id,
+                revision,
+                thread_id,
+            )
+            .await
+            .is_err()
+            {
+                tx.commit().await.map_err(storage)?;
+                return Err(binding_needs_recovery());
+            }
+            (revision, generation, target)
         } else {
-            (1u64, 1u64)
+            return Err(binding_needs_recovery());
         };
         tx.execute_raw(statement(
             "INSERT INTO thread_bindings(chat_id, thread_id, status, creation_id, project_id, revision, generation, diagnostic, created_at, updated_at)
@@ -1051,27 +1137,54 @@ impl BotStateStore {
         ))
         .await
         .map_err(storage)?;
+        audience::bind_origin(
+            &tx,
+            thread_id,
+            chat_id,
+            project_id,
+            creation_id,
+            revision,
+            &target,
+        )
+        .await?;
         tx.commit().await.map_err(storage)?;
         Ok(thread_id.to_string())
     }
 
-    pub async fn mark_binding_attention(
+    pub(in crate::bots) async fn mark_binding_attention(
         &self,
-        chat_id: &str,
+        expected: &BoundThreadExpectation,
         diagnostic: &str,
-    ) -> Result<(), FeishuError> {
-        let db = self.db().await?;
-        db.execute_raw(statement(
-            "UPDATE thread_bindings SET status='needs_attention', diagnostic=?, updated_at=? WHERE chat_id=?",
+    ) -> Result<bool, FeishuError> {
+        let tx = self.db().await?.begin().await.map_err(storage)?;
+        let next = expected
+            .revision
+            .checked_add(1)
+            .and_then(|v| i64::try_from(v).ok())
+            .ok_or_else(corrupt_binding)?;
+        let result=tx.execute_raw(statement(
+            "UPDATE thread_bindings SET status='needs_attention', diagnostic=?, updated_at=?, revision=?
+             WHERE chat_id=? AND thread_id=? AND creation_id=? AND project_id=? AND revision=? AND status='bound'",
             vec![
                 diagnostic.to_string().into(),
                 unix_seconds().into(),
-                chat_id.to_string().into(),
+                next.into(),
+                expected.chat_id.clone().into(),
+                expected.thread_id.clone().into(),
+                expected.creation_id.clone().into(),
+                expected.project_id.clone().into(),
+                i64::try_from(expected.revision).map_err(|_|corrupt_binding())?.into(),
             ],
         ))
         .await
         .map_err(storage)?;
-        Ok(())
+        if result.rows_affected() != 1 {
+            tx.rollback().await.map_err(storage)?;
+            return Ok(false);
+        }
+        audience::close_unavailable_binding(&tx, expected).await?;
+        tx.commit().await.map_err(storage)?;
+        Ok(true)
     }
 
     pub async fn binding_for_chat(
@@ -1187,8 +1300,8 @@ impl BotStateStore {
             .checked_add(1)
             .ok_or_else(corrupt_binding)?;
         tx.execute_raw(statement(
-            "INSERT INTO thread_bindings(chat_id, thread_id, status, creation_id, project_id, revision, generation, diagnostic, created_at, updated_at)
-             VALUES(?,?,?,?,?,?,?,?,?,?)
+            "INSERT INTO thread_bindings(chat_id, thread_id, status, creation_id, project_id, revision, generation, diagnostic, created_at, updated_at,target_json)
+             VALUES(?,?,?,?,?,?,?,?,?,?,?)
              ON CONFLICT(chat_id) DO UPDATE SET
                thread_id='',
                status='creating',
@@ -1196,6 +1309,7 @@ impl BotStateStore {
                project_id=excluded.project_id,
                revision=excluded.revision,
                generation=excluded.generation,
+               target_json=excluded.target_json,
                diagnostic='',
                updated_at=excluded.updated_at",
             vec![
@@ -1213,6 +1327,7 @@ impl BotStateStore {
                 "".to_string().into(),
                 unix_seconds().into(),
                 unix_seconds().into(),
+                operation.target.encode()?.into(),
             ],
         ))
         .await
@@ -1221,6 +1336,12 @@ impl BotStateStore {
             // 同一 operationId 已存在不同记录：保留原记录，不覆盖他人操作。
             return Err(binding_needs_recovery());
         }
+        audience::close_chat(
+            &tx,
+            chat_id,
+            pl_protocol::BotAudienceCloseReason::BindingReplaced,
+        )
+        .await?;
         tx.commit().await.map_err(storage)?;
         Ok(())
     }
@@ -1238,7 +1359,7 @@ impl BotStateStore {
         let tx = db.begin().await.map_err(storage)?;
         let row = tx
             .query_one_raw(statement(
-                "SELECT status, thread_id, creation_id, project_id, revision FROM thread_bindings WHERE chat_id=?",
+                "SELECT status, thread_id, creation_id, project_id, revision,target_json FROM thread_bindings WHERE chat_id=?",
                 vec![chat_id.to_string().into()],
             ))
             .await
@@ -1253,6 +1374,7 @@ impl BotStateStore {
         let stored_project = strict_text(&row, "project_id")?;
         let revision = strict_watermark(&row, "revision")?;
         let claimed = status == "creating"
+            && target::TargetProof::decode(&row)? == operation.target
             && thread_id.is_empty()
             && creation_id == operation.creation_id
             && stored_project == project_id
@@ -1279,7 +1401,7 @@ impl BotStateStore {
         let db = self.db().await?;
         let row = db
             .query_one_raw(statement(
-                "SELECT operation_id, bot_id, chat_id, content_hash, expected_revision, creation_id, thread_id
+                "SELECT operation_id, bot_id, chat_id, content_hash, expected_revision, creation_id, thread_id,target_json
                  FROM binding_operations WHERE operation_id=?",
                 vec![operation_id.to_string().into()],
             ))
@@ -1299,6 +1421,7 @@ impl BotStateStore {
                 expected_revision: strict_watermark(&row, "expected_revision")?,
                 creation_id: strict_text(&row, "creation_id")?,
                 thread_id: empty_to_none(strict_text(&row, "thread_id")?),
+                target: target::TargetProof::decode(&row)?,
             })
         })
         .transpose()
@@ -1310,8 +1433,8 @@ impl BotStateStore {
     ) -> Result<(), FeishuError> {
         let db = self.db().await?;
         db.execute_raw(statement(
-            "INSERT INTO binding_operations(operation_id, bot_id, chat_id, content_hash, expected_revision, creation_id, thread_id, updated_at)
-             VALUES(?,?,?,?,?,?,?,?)
+            "INSERT INTO binding_operations(operation_id, bot_id, chat_id, content_hash, expected_revision, creation_id, thread_id, updated_at,target_json)
+             VALUES(?,?,?,?,?,?,?,?,?)
              ON CONFLICT(operation_id) DO UPDATE SET
                thread_id=excluded.thread_id,
                updated_at=excluded.updated_at",
@@ -1326,6 +1449,7 @@ impl BotStateStore {
                 operation.creation_id.clone().into(),
                 operation.thread_id.clone().unwrap_or_default().into(),
                 unix_seconds().into(),
+                operation.target.encode()?.into(),
             ],
         ))
         .await
@@ -1365,6 +1489,22 @@ impl BotStateStore {
             "SELECT MAX(at) AS at FROM (SELECT MAX(admitted_at) AS at FROM inbound_identities UNION ALL SELECT MAX(updated_at) AS at FROM send_operations)", vec![]
         )).await.map_err(storage)?.ok_or_else(|| storage("missing bot activity aggregate"))?;
         row.try_get::<Option<i64>>("", "at").map_err(storage)
+    }
+
+    /// 只读取已记录的直聊对端身份；空值不代表直聊，也不用于猜目标种类。
+    pub(crate) async fn observed_direct_open_id(
+        &self,
+        chat_id: &str,
+    ) -> Result<Option<String>, FeishuError> {
+        let db = self.db().await?;
+        let row = db
+            .query_one_raw(statement(
+                "SELECT open_id FROM observed_directs WHERE chat_id=?",
+                vec![chat_id.to_string().into()],
+            ))
+            .await
+            .map_err(storage)?;
+        row.map(|row| strict_text(&row, "open_id")).transpose()
     }
 
     pub async fn list_observed_directs(&self) -> Result<Vec<ObservedDirect>, FeishuError> {
@@ -1523,6 +1663,22 @@ impl BotStateStore {
     }
 
     pub async fn claim_send(&self, record: &SendRecord) -> Result<Option<SendRecord>, FeishuError> {
+        self.claim_send_fenced(record, None).await
+    }
+
+    pub(super) async fn claim_reply_send(
+        &self,
+        record: &SendRecord,
+        reply: &reply::InboundReply,
+    ) -> Result<Option<SendRecord>, FeishuError> {
+        self.claim_send_fenced(record, Some(reply)).await
+    }
+
+    async fn claim_send_fenced(
+        &self,
+        record: &SendRecord,
+        reply: Option<&reply::InboundReply>,
+    ) -> Result<Option<SendRecord>, FeishuError> {
         let db = self.db().await?;
         let tx = db.begin().await.map_err(storage)?;
         let existing = tx
@@ -1538,6 +1694,12 @@ impl BotStateStore {
             tx.commit().await.map_err(storage)?;
             let existing = send_record_from_row(row)?;
             return conflict_or_existing(record, existing).map(Some);
+        }
+        if let Some(reply) = reply {
+            if record.bot_id != reply.source.bot_id || record.chat_id != reply.source.chat_id {
+                return Err(reply::denied());
+            }
+            reply::check(&tx, reply).await?;
         }
         let inserted = tx
             .execute_raw(statement(
@@ -1616,57 +1778,33 @@ impl BotStateStore {
         Ok(())
     }
 
-    /// Resolve the exact canonical input first, including completed work for a legitimate same-call
-    /// replay. Only a not-yet-recorded continuation needs the bounded active-work candidate set.
-    pub(crate) async fn inbound_sources(
+    /// Each auxiliary IM POST has a durable stage intent under the same live
+    /// inbound/target fence as first claim. Confirmation uses save_send without
+    /// this fence so revocation cannot discard an already-started result.
+    pub(super) async fn save_reply_send_intent(
         &self,
-        thread_id: &str,
-        input_id: &str,
-    ) -> Result<Vec<SendSource>, FeishuError> {
-        let db = self.db().await?;
-        let mut rows = db.query_all_raw(statement(
-            "SELECT bot_id, chat_id, message_id, open_id, chat_kind, app_id, project_id, creation_id, binding_revision
-             FROM inbound_work WHERE creation_id=?
-               AND (('bot:' || bot_id || ':' || chat_id || ':' || message_id)=? OR watch_input=?) LIMIT 65",
-            vec![thread_id.to_owned().into(), input_id.to_owned().into(), input_id.to_owned().into()],
+        record: &SendRecord,
+        reply: &reply::InboundReply,
+    ) -> Result<(), FeishuError> {
+        let tx = self.db().await?.begin().await.map_err(storage)?;
+        reply::check(&tx, reply).await?;
+        let existing = tx.query_one_raw(statement(
+            "SELECT operation_id, bot_id, chat_id, content_hash, status, platform_message_ids, segment_facts, send_identity, send_source FROM send_operations WHERE operation_id=?",
+            vec![record.operation_id.clone().into()],
+        )).await.map_err(storage)?.ok_or_else(reply::denied)?;
+        conflict_or_existing(record, send_record_from_row(existing)?)?;
+        if record.bot_id != reply.source.bot_id || record.chat_id != reply.source.chat_id {
+            return Err(reply::denied());
+        }
+        let updated = tx.execute_raw(statement(
+            "UPDATE send_operations SET status=?,platform_message_ids=?,segment_facts=?,updated_at=? WHERE operation_id=?",
+            vec![record.status.as_str().into(),record.platform_message_ids.join(",").into(),encode_segment_facts(&record.segments)?.into(),unix_seconds().into(),record.operation_id.clone().into()],
         )).await.map_err(storage)?;
-        if rows.is_empty() {
-            rows = db.query_all_raw(statement(
-            "SELECT bot_id, chat_id, message_id, open_id, chat_kind, app_id, project_id, creation_id, binding_revision
-             FROM inbound_work WHERE creation_id=? AND status IN ('pending','claimed','failed') LIMIT 65",
-            vec![thread_id.to_owned().into()],
-            )).await.map_err(storage)?;
+        if updated.rows_affected() != 1 {
+            return Err(reply::denied());
         }
-        if rows.len() > 64 {
-            return Err(FeishuError::new(
-                FeishuErrorKind::Unavailable,
-                "source proof exceeds the inbound work bound; local recovery required",
-                false,
-                None,
-            ));
-        }
-        rows.into_iter()
-            .map(|row| {
-                let bot_id = strict_text(&row, "bot_id")?;
-                let chat_id = strict_text(&row, "chat_id")?;
-                let message_id = strict_text(&row, "message_id")?;
-                let original_input_id = format!("bot:{bot_id}:{chat_id}:{message_id}");
-                Ok(SendSource {
-                    bot_id,
-                    chat_id,
-                    message_id,
-                    app_id: strict_text(&row, "app_id")?,
-                    project_id: strict_text(&row, "project_id")?,
-                    open_id: strict_text(&row, "open_id")?,
-                    chat_kind: strict_text(&row, "chat_kind")?,
-                    creation_id: strict_text(&row, "creation_id")?,
-                    binding_revision: strict_watermark(&row, "binding_revision")?,
-                    thread_id: thread_id.to_owned(),
-                    input_id: original_input_id.clone(),
-                    original_input_id,
-                })
-            })
-            .collect()
+        tx.commit().await.map_err(storage)?;
+        Ok(())
     }
 
     pub(crate) async fn has_source_thread(&self, thread_id: &str) -> Result<bool, FeishuError> {
@@ -2123,8 +2261,8 @@ async fn insert_binding_operation<C: ConnectionTrait>(
         i64::try_from(operation.expected_revision).map_err(|_| corrupt_binding())?;
     let inserted = db
         .execute_raw(statement(
-            "INSERT OR IGNORE INTO binding_operations(operation_id, bot_id, chat_id, content_hash, expected_revision, creation_id, thread_id, updated_at)
-             VALUES(?,?,?,?,?,?,?,?)",
+            "INSERT OR IGNORE INTO binding_operations(operation_id, bot_id, chat_id, content_hash, expected_revision, creation_id, thread_id, updated_at, target_json)
+             VALUES(?,?,?,?,?,?,?,?,?)",
             vec![
                 operation.operation_id.clone().into(),
                 operation.bot_id.clone().into(),
@@ -2134,6 +2272,7 @@ async fn insert_binding_operation<C: ConnectionTrait>(
                 operation.creation_id.clone().into(),
                 operation.thread_id.clone().unwrap_or_default().into(),
                 unix_seconds().into(),
+                operation.target.encode()?.into(),
             ],
         ))
         .await
@@ -2274,30 +2413,75 @@ async fn initialize(db: &DatabaseConnection, origin: DatabaseOrigin) -> anyhow::
             )));
         }
         if version >= 6 {
-            validate_file_ledger_schema(&tx).await?;
-            if version < 7 {
-                // v6 already owns file identities and references. Only stage semantics change;
-                // never repair missing file facts with defaults or re-run the text migration.
-                migrate_send_stages(&tx).await?;
+            let columns = table_columns(&tx, "send_operations").await?;
+            let file_marked = columns.contains("send_identity") || columns.contains("send_source");
+            let source = match version {
+                6 if !file_marked => LedgerSource::MainCard6,
+                6 => LedgerSource::TaskFile6,
+                7 => LedgerSource::TaskFile7,
+                8 | 9 => LedgerSource::Current8,
+                _ => unreachable!("schema version was validated"),
+            };
+            validate_ledger_schema(&tx, source).await?;
+            match source {
+                LedgerSource::MainCard6 => {
+                    // Main's card6 stored only snake_case text sends, not task file6 facts.
+                    ensure_column(
+                        &tx,
+                        "send_operations",
+                        "send_identity",
+                        "TEXT NOT NULL DEFAULT '{\"kind\":\"legacyText\"}'",
+                    )
+                    .await?;
+                    ensure_column(
+                        &tx,
+                        "send_operations",
+                        "send_source",
+                        "TEXT NOT NULL DEFAULT 'null'",
+                    )
+                    .await?;
+                    migrate_text_send_facts(&tx).await?;
+                    migrate_send_stages(&tx).await?;
+                }
+                LedgerSource::TaskFile6 => migrate_send_stages(&tx).await?,
+                LedgerSource::TaskFile7 | LedgerSource::Current8 => {}
+            }
+            if !matches!(source, LedgerSource::Current8) {
+                card::migrate(&tx).await?;
+            }
+            // First prove the complete C1 representation, then establish the distinct v9 boundary.
+            validate_ledger_schema(&tx, LedgerSource::Current8).await?;
+            if version < 9 {
+                audience::migrate(&tx).await?;
                 tx.execute_raw(statement(
                     "UPDATE bot_meta SET schema_version=? WHERE id=1",
                     vec![BOT_STATE_SCHEMA_VERSION.into()],
                 ))
                 .await?;
+            } else {
+                audience::validate_target_structure(&tx).await?;
+                audience::prepare_count_indexes(&tx).await?;
+                audience::validate(&tx).await?;
             }
             tx.commit().await?;
             return Ok(());
         }
+        let columns = table_columns(&tx, "send_operations").await?;
+        if columns.contains("send_identity") || columns.contains("send_source") {
+            return Err(crate::studio::startup::data_error(anyhow::anyhow!(
+                "text ledger declares incompatible file markers; local recovery required"
+            )));
+        }
+        schema::validate(&tx, version).await?;
         version
     } else {
         0 // Only this call's exclusive file creation authorizes a genuinely new schema.
     };
-    tx.execute_unprepared(
-        "CREATE TABLE IF NOT EXISTS bot_meta (
-            id INTEGER PRIMARY KEY CHECK (id = 1),
-            schema_version INTEGER NOT NULL
-        )",
-    )
+    tx.execute_unprepared(&schema::META_TABLE.replacen(
+        "CREATE TABLE",
+        "CREATE TABLE IF NOT EXISTS",
+        1,
+    ))
     .await?;
     tx.execute_unprepared(
         "CREATE TABLE IF NOT EXISTS inbound_identities (
@@ -2392,13 +2576,23 @@ async fn initialize(db: &DatabaseConnection, origin: DatabaseOrigin) -> anyhow::
     )
     .await?;
     migrate(&tx, version).await?;
+    validate_ledger_schema(&tx, LedgerSource::Current8).await?;
+    audience::migrate(&tx).await?;
+    tx.execute_raw(statement(
+        "UPDATE bot_meta SET schema_version=? WHERE id=1",
+        vec![BOT_STATE_SCHEMA_VERSION.into()],
+    ))
+    .await?;
     tx.commit().await?;
     Ok(())
 }
 
-/// v6 and v7 share these complete file-aware tables/columns; v7 changes JSON stages only.
-/// Earlier text schemas deliberately keep their existing transactional migration boundary.
-async fn validate_file_ledger_schema<C: ConnectionTrait>(db: &C) -> anyhow::Result<()> {
+/// Version and complete required structures jointly identify the known divergent schemas.
+/// A partial file marker can never be treated as a main card/text schema.
+async fn validate_ledger_schema<C: ConnectionTrait>(
+    db: &C,
+    source: LedgerSource,
+) -> anyhow::Result<()> {
     let required: &[(&str, &[&str])] = &[
         ("bot_meta", &["id", "schema_version"]),
         (
@@ -2503,6 +2697,10 @@ async fn validate_file_ledger_schema<C: ConnectionTrait>(db: &C) -> anyhow::Resu
         if !present
             || required_columns
                 .iter()
+                .filter(|column| {
+                    !matches!(source, LedgerSource::MainCard6)
+                        || !matches!(**column, "send_identity" | "send_source")
+                })
                 .any(|column| !columns.contains(*column))
         {
             return Err(crate::studio::startup::data_error(anyhow::anyhow!(
@@ -2510,10 +2708,55 @@ async fn validate_file_ledger_schema<C: ConnectionTrait>(db: &C) -> anyhow::Resu
             )));
         }
     }
+    let card_present = db
+        .query_one_raw(statement(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='bot_card_streams'",
+            vec![],
+        ))
+        .await?
+        .is_some();
+    if matches!(source, LedgerSource::MainCard6 | LedgerSource::Current8) {
+        let columns = table_columns(db, "bot_card_streams").await?;
+        if !card_present
+            || [
+                "identity",
+                "bot_id",
+                "chat_id",
+                "message_id",
+                "thread_id",
+                "original_input",
+                "watch_input",
+                "turn_id",
+                "version",
+                "state_json",
+                "updated_at",
+            ]
+            .iter()
+            .any(|column| !columns.contains(*column))
+        {
+            return Err(crate::studio::startup::data_error(anyhow::anyhow!(
+                "card ledger schema is incomplete; local recovery required"
+            )));
+        }
+    } else if card_present {
+        return Err(crate::studio::startup::data_error(anyhow::anyhow!(
+            "bot ledger combines incompatible historical schema markers; local recovery required"
+        )));
+    }
+    schema::validate(
+        db,
+        match source {
+            LedgerSource::MainCard6 | LedgerSource::TaskFile6 => 6,
+            LedgerSource::TaskFile7 => 7,
+            LedgerSource::Current8 => 8,
+        },
+    )
+    .await?;
     Ok(())
 }
 
 async fn migrate<C: ConnectionTrait>(db: &C, version: i64) -> anyhow::Result<()> {
+    card::migrate(db).await?;
     db.execute_unprepared(
         "CREATE UNIQUE INDEX IF NOT EXISTS pairing_open_id ON pairing_requests(open_id)",
     )
@@ -2703,7 +2946,9 @@ async fn migrate<C: ConnectionTrait>(db: &C, version: i64) -> anyhow::Result<()>
     db.execute_raw(statement(
         "INSERT INTO bot_meta(id, schema_version) VALUES(1, ?)
          ON CONFLICT(id) DO UPDATE SET schema_version=excluded.schema_version",
-        vec![BOT_STATE_SCHEMA_VERSION.into()],
+        // This helper establishes the complete C1 representation only. Its caller performs the
+        // distinct audience migration before recording current schema nine in the same transaction.
+        vec![8i64.into()],
     ))
     .await?;
     Ok(())
@@ -2713,6 +2958,7 @@ async fn migrate<C: ConnectionTrait>(db: &C, version: i64) -> anyhow::Result<()>
 /// outcome/provenance and UUIDs; only the JSON schema is rewritten inside this transaction.
 async fn migrate_text_send_facts<C: ConnectionTrait>(db: &C) -> anyhow::Result<()> {
     #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
     struct OldSegment {
         index: u32,
         uuid: String,
@@ -2995,7 +3241,7 @@ mod tests {
         use pl_core::context::ResourceReader;
         use std::sync::Arc;
 
-        for version in [6, 7] {
+        for version in [6, 7, 8] {
             for (name, fault) in [
                 (
                     "file-facts-and-identity",
@@ -3051,6 +3297,9 @@ mod tests {
                     .claim_send(&resource_claim("original", reference.clone()))
                     .await?;
                 let db = first.db().await?;
+                if version < 8 {
+                    db.execute_unprepared("DROP TABLE bot_card_streams").await?;
+                }
                 db.execute_raw(statement(
                     "UPDATE bot_meta SET schema_version=? WHERE id=1",
                     vec![version.into()],
@@ -3131,6 +3380,174 @@ mod tests {
         let (a, b) = tokio::join!(first.db(), concurrent.db());
         a?;
         b?;
+        Ok(())
+    }
+
+    /// A complete column list is not proof of the constraints used by dedup/CAS.
+    /// Rebuild actual SQLite tables (not a mocked metadata helper), then enter
+    /// through a fresh store and prove rejection leaves schema, version and rows intact.
+    #[tokio::test]
+    async fn incompatible_constraints_preserve_the_original_database()
+    -> Result<(), Box<dyn std::error::Error>> {
+        for source in ["main6", "file6", "file7", "current8", "text3", "text5"] {
+            for (table, from, to) in [
+                ("pairing_requests", "unique", "missing"),
+                ("pairing_requests", "unique", "composite"),
+                ("pairing_requests", "unique", "partial"),
+                (
+                    "inbound_identities",
+                    "identity TEXT PRIMARY KEY",
+                    "identity TEXT",
+                ),
+                ("inbound_work", "identity TEXT PRIMARY KEY", "identity TEXT"),
+                (
+                    "thread_bindings",
+                    "chat_id TEXT PRIMARY KEY",
+                    "chat_id TEXT",
+                ),
+                (
+                    "observed_directs",
+                    "chat_id TEXT PRIMARY KEY",
+                    "chat_id TEXT",
+                ),
+                (
+                    "pairing_requests",
+                    "request_id TEXT PRIMARY KEY",
+                    "request_id TEXT",
+                ),
+                (
+                    "send_operations",
+                    "operation_id TEXT PRIMARY KEY",
+                    "operation_id TEXT",
+                ),
+                (
+                    "binding_operations",
+                    "operation_id TEXT PRIMARY KEY",
+                    "operation_id TEXT",
+                ),
+                ("bot_meta", "id INTEGER PRIMARY KEY", "id INTEGER"),
+                ("bot_meta", "CHECK (id = 1)", ""),
+                ("bot_meta", "CHECK (id = 1)", "CHECK(id IN (1,2))"),
+                (
+                    "bot_card_streams",
+                    "identity TEXT PRIMARY KEY",
+                    "identity TEXT",
+                ),
+                (
+                    "bot_card_streams",
+                    "identity TEXT PRIMARY KEY",
+                    "identity TEXT UNIQUE",
+                ),
+                ("bot_card_streams", "CHECK(version>0)", ""),
+                ("bot_card_streams", "CHECK(version>0)", "CHECK(version>=0)"),
+                ("observed_directs", "open_id TEXT NOT NULL", "open_id TEXT"),
+                (
+                    "observed_directs",
+                    "last_observed_at INTEGER NOT NULL",
+                    "last_observed_at TEXT NOT NULL",
+                ),
+            ] {
+                let text_source = source.starts_with("text");
+                // The declared pre6 migration establishes this index/card table;
+                // absent constraints there are not a fabricated current schema.
+                if text_source
+                    && (from == "unique" && to == "missing" || table == "bot_card_streams")
+                    || matches!(source, "file6" | "file7") && table == "bot_card_streams"
+                {
+                    continue;
+                }
+                let directory = tempfile::tempdir()?;
+                let path = directory.path().join("constraints.sqlite");
+                let db = if text_source {
+                    let db = v3_database(&path).await;
+                    if source == "text5" {
+                        db.execute_unprepared("UPDATE bot_meta SET schema_version=5")
+                            .await?;
+                    }
+                    db
+                } else {
+                    let store = BotStateStore::new(path.clone());
+                    let db = store.db().await?.clone();
+                    if matches!(source, "main6" | "file6" | "file7") {
+                        remove_schema9_fixture(&db).await?;
+                    }
+                    match source {
+                        "main6" => {
+                            db.execute_unprepared("ALTER TABLE send_operations DROP COLUMN send_identity; ALTER TABLE send_operations DROP COLUMN send_source; UPDATE bot_meta SET schema_version=6").await?;
+                        }
+                        "file6" | "file7" => {
+                            db.execute_unprepared(&format!("DROP TABLE bot_card_streams; UPDATE bot_meta SET schema_version={}", if source == "file6" { 6 } else { 7 })).await?;
+                        }
+                        _ => {}
+                    }
+                    db
+                };
+                db.execute_unprepared("INSERT INTO observed_directs VALUES('preserved-chat','original-open','original-name',42)").await?;
+                if from == "unique" {
+                    db.execute_unprepared("DROP INDEX IF EXISTS pairing_open_id")
+                        .await?;
+                    match to {
+                        "composite" => {
+                            db.execute_unprepared("CREATE UNIQUE INDEX pairing_open_id ON pairing_requests(open_id,request_id)").await?;
+                        }
+                        "partial" => {
+                            db.execute_unprepared("CREATE UNIQUE INDEX pairing_open_id ON pairing_requests(open_id) WHERE created_at>0").await?;
+                        }
+                        _ => {}
+                    }
+                } else {
+                    let ddl: String = db
+                        .query_one_raw(statement(
+                            "SELECT sql FROM sqlite_master WHERE type='table' AND name=?",
+                            vec![table.into()],
+                        ))
+                        .await?
+                        .unwrap()
+                        .try_get("", "sql")?;
+                    let replaced = ddl.replace(from, to);
+                    assert_ne!(
+                        ddl, replaced,
+                        "fault must change the real declaration: {source}/{table}/{from}"
+                    );
+                    let indices = db.query_all_raw(statement("SELECT sql FROM sqlite_master WHERE type='index' AND tbl_name=? AND sql IS NOT NULL", vec![table.into()])).await?;
+                    db.execute_unprepared(&format!("ALTER TABLE {table} RENAME TO damaged_table; {replaced}; INSERT INTO {table} SELECT * FROM damaged_table; DROP TABLE damaged_table;")).await?;
+                    for row in indices {
+                        db.execute_unprepared(&row.try_get::<String>("", "sql")?)
+                            .await?;
+                    }
+                }
+                let snapshot = |db: DatabaseConnection| async move {
+                    let schema = db.query_all_raw(statement("SELECT name,sql FROM sqlite_master WHERE sql IS NOT NULL ORDER BY name", vec![])).await?.into_iter().map(|row| Ok((row.try_get::<String>("", "name")?, row.try_get::<String>("", "sql")?))).collect::<Result<Vec<_>, sea_orm::DbErr>>()?;
+                    let version: i64 = db
+                        .query_one_raw(statement(
+                            "SELECT schema_version FROM bot_meta WHERE id=1",
+                            vec![],
+                        ))
+                        .await?
+                        .unwrap()
+                        .try_get("", "schema_version")?;
+                    let row = db.query_one_raw(statement("SELECT open_id,name FROM observed_directs WHERE chat_id='preserved-chat'", vec![])).await?.unwrap();
+                    Ok::<_, sea_orm::DbErr>((
+                        schema,
+                        version,
+                        row.try_get::<String>("", "open_id")?,
+                        row.try_get::<String>("", "name")?,
+                    ))
+                };
+                let before = snapshot(db.clone()).await?;
+                let result = BotStateStore::new(path).load_send("absent").await;
+                assert!(
+                    result.is_err(),
+                    "accepted broken constraints: {source}/{table}/{from}/{to}"
+                );
+                assert!(!result.err().unwrap().retryable());
+                assert_eq!(
+                    before,
+                    snapshot(db).await?,
+                    "failed open must preserve the original database"
+                );
+            }
+        }
         Ok(())
     }
 
@@ -3463,10 +3880,13 @@ mod tests {
                 vec![id.to_string().into(), facts.to_string().into()],
             )).await?;
         }
-        db.execute_unprepared("UPDATE bot_meta SET schema_version=6 WHERE id=1")
-            .await?;
+        remove_schema9_fixture(db).await?;
+        db.execute_unprepared(
+            "DROP TABLE bot_card_streams; UPDATE bot_meta SET schema_version=6 WHERE id=1",
+        )
+        .await?;
         drop(store);
-        let reopened = BotStateStore::new(path);
+        let reopened = BotStateStore::new(path.clone());
         for (id, _, _, _, _, upload, message, stop) in cases {
             let record = reopened
                 .load_send(id)
@@ -3520,6 +3940,29 @@ mod tests {
         let mut recovery = super::super::send_resources::SendResources::new(resources.clone());
         recovery.maintain(&reopened).await?;
         assert!(!recovery.needs_maintenance());
+        let mut file7 = reopened.load_send("cancel-after-upload").await?.unwrap();
+        file7.segments[0].upload = Some(UploadFact::Rejected);
+        file7.segments[0].stop_reason = None;
+        reopened.save_send(&file7).await?;
+        remove_schema9_fixture(reopened.db().await?).await?;
+        reopened
+            .db()
+            .await?
+            .execute_unprepared(
+                "DROP TABLE bot_card_streams; UPDATE bot_meta SET schema_version=7 WHERE id=1",
+            )
+            .await?;
+        drop(reopened);
+        let file7_reopened = BotStateStore::new(path);
+        let preserved = file7_reopened
+            .load_send("cancel-after-upload")
+            .await?
+            .unwrap();
+        assert_eq!(
+            preserved.segments, file7.segments,
+            "task file7 must not rerun the file6 diagnostic-based stage repair"
+        );
+        assert_eq!(preserved.identity, file7.identity);
         assert_eq!(
             pl_core::context::ResourceAccess::new(resources)
                 .read(&reference, tokio_util::sync::CancellationToken::new())
@@ -3768,5 +4211,1164 @@ mod tests {
             assert_eq!(old_again.segments, known.segments);
         }
         Ok(())
+    }
+
+    /// New card JSON states survive the real v3 -> current ledger migration and
+    /// reopen. Fixtures start from a known preview; this proves storage/lease
+    /// transitions, not platform HTTP acceptance (covered by the observer).
+    #[tokio::test]
+    async fn migrated_card_progress_preserves_no_final_and_continuation_targets()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("bot-state.sqlite");
+        drop(v3_database(&path).await);
+        let store = BotStateStore::new(path.clone());
+        let seed = store.list_due_inbound("legacy").await?.remove(0);
+        assert_eq!(
+            store
+                .claim_inbound_work("legacy", "chat", "m1", "w1")
+                .await?,
+            InboundClaim::Claimed
+        );
+        let binding = card_test_binding("m1");
+        let mut no_final = card_test_preview(binding.clone());
+        // Even a previously confirmed content hash cannot turn a remaining
+        // preview into the final answer when canonical Final becomes empty.
+        no_final.final_content_hash = Some(no_final.confirmed_content_hash.clone());
+        no_final.reserve(card::CardAction::Settings {
+            streaming: false,
+            lifecycle: card::CardLifecycle::NoFinalReply,
+            recovery: false,
+        })?;
+        assert!(no_final.final_content_hash.is_none());
+        assert_eq!(
+            store.save_card(&mut no_final, "w1").await?,
+            MarkOutcome::Applied
+        );
+        let mut stale_intent = no_final.clone();
+        assert!(stale_intent.reserve(card::CardAction::Send {}).is_err());
+        confirm_card_test_settings(&mut no_final, card::CardLifecycle::NoFinalReply);
+        assert_eq!(
+            store.save_card(&mut no_final, "w1").await?,
+            MarkOutcome::Applied
+        );
+        assert_eq!(
+            store.save_card(&mut stale_intent, "w1").await?,
+            MarkOutcome::LostClaim
+        );
+        assert_eq!(
+            store.save_card(&mut stale_intent, "crashed-worker").await?,
+            MarkOutcome::LostClaim
+        );
+        assert_eq!(
+            store
+                .finish_inbound_work(
+                    "legacy",
+                    "chat",
+                    "m1",
+                    "w1",
+                    WorkFinish::NeedsAttention(card::CardLifecycle::NoFinalReply.summary())
+                )
+                .await?,
+            MarkOutcome::Applied
+        );
+
+        let mut expected = Vec::new();
+        for (message_id, turn_id, lifecycle, unknown) in [
+            (
+                "failed-continuation",
+                Some("canonical-failed-turn"),
+                card::CardLifecycle::Failed,
+                true,
+            ),
+            (
+                "cancelled-continuation",
+                Some("canonical-cancelled-turn"),
+                card::CardLifecycle::Cancelled,
+                false,
+            ),
+            (
+                "discarded-continuation",
+                None,
+                card::CardLifecycle::InteractionEnded,
+                false,
+            ),
+        ] {
+            let mut inbound = seed.clone();
+            inbound.message_id = message_id.to_string();
+            inbound.content_hash = format!("hash:{message_id}");
+            assert!(matches!(
+                store.admit_inbound(inbound).await?,
+                InboundAdmit::Fresh(_)
+            ));
+            assert_eq!(
+                store
+                    .claim_inbound_work("legacy", "chat", message_id, "w1")
+                    .await?,
+                InboundClaim::Claimed
+            );
+            let binding = card_test_binding(message_id);
+            let mut state = card_test_preview(binding.clone());
+            state.reserve(card::CardAction::Settings {
+                streaming: false,
+                lifecycle: card::CardLifecycle::Paused,
+                recovery: false,
+            })?;
+            confirm_card_test_settings(&mut state, card::CardLifecycle::Paused);
+            assert_eq!(
+                store.save_card(&mut state, "w1").await?,
+                MarkOutcome::Applied
+            );
+            let mut previous_target = state.clone();
+            let continuation = format!("canonical-input:{message_id}");
+            assert_eq!(
+                store
+                    .save_inbound_watch_input("legacy", "chat", message_id, "w1", &continuation)
+                    .await?,
+                MarkOutcome::Applied
+            );
+            assert!(state.bind_target(&continuation, turn_id)?);
+            assert_eq!(
+                store.save_card(&mut state, "w1").await?,
+                MarkOutcome::Applied
+            );
+            assert_eq!(
+                store.save_card(&mut previous_target, "w1").await?,
+                MarkOutcome::LostClaim
+            );
+            assert_eq!(
+                store
+                    .save_card(&mut previous_target, "crashed-worker")
+                    .await?,
+                MarkOutcome::LostClaim
+            );
+            state.reserve(card::CardAction::Settings {
+                streaming: false,
+                lifecycle,
+                recovery: false,
+            })?;
+            assert_eq!(
+                store.save_card(&mut state, "w1").await?,
+                MarkOutcome::Applied
+            );
+            if unknown {
+                state.last_operation.as_mut().unwrap().status = card::CardOperationStatus::Unknown;
+                state.lifecycle = card::CardLifecycle::NeedsAttention;
+            } else {
+                confirm_card_test_settings(&mut state, lifecycle);
+            }
+            assert_eq!(
+                store.save_card(&mut state, "w1").await?,
+                MarkOutcome::Applied
+            );
+            expected.push((binding, continuation, turn_id, unknown, lifecycle));
+        }
+        // Reproduce fixed main's actual card6 shape (snake_case/empty text facts and no file
+        // identity/source columns), then prove the entire card JSON/UUID/sequence is untouched.
+        let db = store.db().await?;
+        let before_cards = db
+            .query_all_raw(statement(
+                "SELECT state_json FROM bot_card_streams ORDER BY identity",
+                vec![],
+            ))
+            .await?
+            .into_iter()
+            .map(|row| row.try_get::<String>("", "state_json"))
+            .collect::<Result<Vec<_>, _>>()?;
+        remove_schema9_fixture(db).await?;
+        db.execute_unprepared(
+            "ALTER TABLE send_operations DROP COLUMN send_identity;
+            ALTER TABLE send_operations DROP COLUMN send_source;
+            UPDATE bot_meta SET schema_version=6 WHERE id=1",
+        )
+        .await?;
+        drop(store);
+
+        let reopened = BotStateStore::new(path);
+        let no_final = reopened.load_card(&binding).await?.unwrap();
+        let after_cards = reopened
+            .db()
+            .await?
+            .query_all_raw(statement(
+                "SELECT state_json FROM bot_card_streams ORDER BY identity",
+                vec![],
+            ))
+            .await?
+            .into_iter()
+            .map(|row| row.try_get::<String>("", "state_json"))
+            .collect::<Result<Vec<_>, _>>()?;
+        assert_eq!(
+            before_cards, after_cards,
+            "main card6 migration must preserve card states byte-for-byte"
+        );
+        assert!(matches!(
+            no_final.lifecycle,
+            card::CardLifecycle::NoFinalReply
+        ));
+        assert!(no_final.final_content_hash.is_none());
+        assert_eq!(no_final.confirmed_text, "last verified preview");
+        assert_eq!(no_final.diagnostic.as_ref().unwrap().code, "noFinalReply");
+        assert_eq!(
+            no_final.diagnostic.as_ref().unwrap().message,
+            "未生成最终答复，所示内容仅为未完成预览"
+        );
+        assert!(no_final.lifecycle.terminal());
+        let (status, _) = work_status(&reopened, "legacy:chat:m1").await;
+        assert_eq!(status, "needs_attention");
+        for (binding, continuation, turn_id, unknown, lifecycle) in expected {
+            let mut state = reopened.load_card(&binding).await?.unwrap();
+            assert_eq!(state.watch_input, continuation);
+            assert_eq!(state.turn_id.as_deref(), turn_id);
+            assert_eq!(state.confirmed_text, "last verified preview");
+            assert!(state.final_content_hash.is_none());
+            assert_eq!(state.uncertain(), unknown);
+            if unknown {
+                assert!(matches!(
+                    state.lifecycle,
+                    card::CardLifecycle::NeedsAttention
+                ));
+                assert!(
+                    state
+                        .reserve(card::CardAction::Settings {
+                            streaming: false,
+                            lifecycle: card::CardLifecycle::NoFinalReply,
+                            recovery: false,
+                        })
+                        .is_err()
+                );
+            } else {
+                assert!(state.lifecycle == lifecycle);
+                assert!(state.lifecycle.terminal());
+            }
+        }
+        Ok(())
+    }
+
+    /// Strict current-row decoding must not erase unknown durable facts at any
+    /// nesting level. This exercises the real row load/save boundary.
+    #[tokio::test]
+    async fn current_card_unknown_fields_are_preserved_and_rejected()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("card-json.sqlite");
+        drop(v3_database(&path).await);
+        let store = BotStateStore::new(path);
+        store.list_due_inbound("legacy").await?;
+        assert_eq!(
+            store
+                .claim_inbound_work("legacy", "chat", "m1", "w1")
+                .await?,
+            InboundClaim::Claimed
+        );
+        let binding = card_test_binding("m1");
+        let mut state = card_test_preview(binding.clone());
+        state.reserve(card::CardAction::Settings {
+            streaming: false,
+            lifecycle: card::CardLifecycle::Paused,
+            recovery: false,
+        })?;
+        confirm_card_test_settings(&mut state, card::CardLifecycle::Paused);
+        state.recovery_used = true;
+        state.recovery = Some(card::CardRecovery {
+            action: card::CardAction::Settings {
+                streaming: false,
+                lifecycle: card::CardLifecycle::Paused,
+                recovery: false,
+            },
+            phase: card::CardRecoveryPhase::Close,
+        });
+        state.mark_no_final_reply();
+        state.last_operation.as_mut().unwrap().diagnostic = state.diagnostic.clone();
+        assert_eq!(
+            store.save_card(&mut state, "w1").await?,
+            MarkOutcome::Applied
+        );
+        let db = store.db().await?;
+        let original = serde_json::to_value(&state)?;
+        let mut accepted = Vec::new();
+        for pointer in [
+            "",
+            "/binding",
+            "/lastOperation",
+            "/lastOperation/action",
+            "/lastOperation/diagnostic",
+            "/recovery",
+            "/recovery/action",
+            "/diagnostic",
+        ] {
+            let mut payload = original.clone();
+            payload
+                .pointer_mut(pointer)
+                .unwrap()
+                .as_object_mut()
+                .unwrap()
+                .insert(
+                    "futureDurableFact".into(),
+                    serde_json::json!({"retained":"must not disappear"}),
+                );
+            let raw = serde_json::to_string(&payload)?;
+            db.execute_raw(statement(
+                "UPDATE bot_card_streams SET state_json=?",
+                vec![raw.clone().into()],
+            ))
+            .await?;
+            if store.load_card(&binding).await.is_ok() {
+                accepted.push(pointer.to_string());
+            }
+            let row = db
+                .query_one_raw(statement(
+                    "SELECT state_json,version FROM bot_card_streams",
+                    vec![],
+                ))
+                .await?
+                .unwrap();
+            assert_eq!(row.try_get::<String>("", "state_json")?, raw);
+            assert_eq!(row.try_get::<i64>("", "version")?, state.version);
+        }
+        for action in [
+            card::CardAction::Create {
+                text: "preview".into(),
+            },
+            card::CardAction::Send {},
+            card::CardAction::Content {
+                text: "preview".into(),
+                final_content: false,
+            },
+        ] {
+            let mut variant = state.clone();
+            let operation = variant.last_operation.as_mut().unwrap();
+            operation.action = action;
+            operation.content_hash = card::hash(&serde_json::to_vec(&operation.action)?);
+            let mut payload = serde_json::to_value(variant)?;
+            db.execute_raw(statement(
+                "UPDATE bot_card_streams SET state_json=?",
+                vec![payload.to_string().into()],
+            ))
+            .await?;
+            assert!(
+                store.load_card(&binding).await.is_ok(),
+                "declared action must remain readable"
+            );
+            let tag = payload["lastOperation"]["action"]["kind"]
+                .as_str()
+                .unwrap()
+                .to_string();
+            payload["lastOperation"]["action"]
+                .as_object_mut()
+                .unwrap()
+                .insert("futureDurableFact".into(), true.into());
+            let raw = payload.to_string();
+            db.execute_raw(statement(
+                "UPDATE bot_card_streams SET state_json=?",
+                vec![raw.clone().into()],
+            ))
+            .await?;
+            if store.load_card(&binding).await.is_ok() {
+                accepted.push(tag);
+            }
+            assert_eq!(
+                db.query_one_raw(statement("SELECT state_json FROM bot_card_streams", vec![]))
+                    .await?
+                    .unwrap()
+                    .try_get::<String>("", "state_json")?,
+                raw
+            );
+        }
+        assert!(
+            accepted.is_empty(),
+            "unknown durable fields accepted at: {accepted:?}"
+        );
+        Ok(())
+    }
+
+    /// Faults at the real schema boundary must roll back DDL and retain the exact old card intent.
+    /// This checks migration/storage only; no test claims platform acceptance or authorization.
+    #[tokio::test]
+    async fn schema9_migration_preserves_card_material_and_rolls_back_unprovable_origins()
+    -> Result<(), Box<dyn std::error::Error>> {
+        for fault in [
+            "none",
+            "conflicting-target",
+            "same-chat-creation",
+            "same-chat-project",
+            "same-chat-revision",
+            "same-chat-bot",
+            "same-creation-thread",
+            "missing-project",
+            "missing-revision",
+            "historical-project",
+            "commit-boundary",
+            "nested-card",
+        ] {
+            let directory = tempfile::tempdir()?;
+            let path = directory.path().join("bot-state.sqlite");
+            drop(v3_database(&path).await);
+            let store = BotStateStore::new(path.clone());
+            store.list_due_inbound("legacy").await?;
+            assert_eq!(
+                store
+                    .claim_inbound_work("legacy", "chat", "m1", "worker")
+                    .await?,
+                InboundClaim::Claimed
+            );
+            let binding = card_test_binding("m1");
+            let mut state = card_test_preview(binding.clone());
+            state.reserve(card::CardAction::Content {
+                text: "frozen exact pending body".into(),
+                final_content: false,
+            })?;
+            assert_eq!(
+                store.save_card(&mut state, "worker").await?,
+                MarkOutcome::Applied
+            );
+            let db = store.db().await?.clone();
+            let mut before: String = db
+                .query_one_raw(statement("SELECT state_json FROM bot_card_streams", vec![]))
+                .await?
+                .unwrap()
+                .try_get("", "state_json")?;
+            remove_schema9_fixture(&db).await?;
+            db.execute_unprepared("UPDATE bot_meta SET schema_version=8 WHERE id=1")
+                .await?;
+            match fault {
+                "conflicting-target" => {
+                    db.execute_unprepared("INSERT INTO thread_bindings SELECT 'other-chat',thread_id,status,creation_id,project_id,revision,generation,diagnostic,created_at,updated_at FROM thread_bindings WHERE chat_id='chat'").await?;
+                }
+                "same-chat-creation" => {
+                    db.execute_unprepared("INSERT INTO binding_operations VALUES('conflicting-origin','legacy','chat','old-hash',0,'different-creation','thread-1',1)").await?;
+                }
+                "same-chat-project" => {
+                    db.execute_unprepared("UPDATE inbound_work SET project_id='different-project'")
+                        .await?;
+                }
+                "same-chat-revision" => {
+                    db.execute_unprepared("UPDATE inbound_work SET binding_revision=2")
+                        .await?;
+                }
+                "same-chat-bot" => {
+                    db.execute_unprepared("UPDATE inbound_work SET bot_id='different-bot'")
+                        .await?;
+                }
+                "same-creation-thread" => {
+                    db.execute_unprepared("INSERT INTO binding_operations VALUES('conflicting-thread','legacy','chat','old-hash',0,'botthread:legacy:chat','different-thread',1)").await?;
+                }
+                "missing-project" => {
+                    db.execute_unprepared("UPDATE inbound_work SET project_id=''; UPDATE thread_bindings SET project_id=''").await?;
+                }
+                "missing-revision" => {
+                    db.execute_unprepared("UPDATE inbound_work SET binding_revision=0; UPDATE thread_bindings SET revision=0").await?;
+                }
+                "historical-project" => {
+                    db.execute_unprepared("INSERT INTO binding_operations VALUES('old-origin','legacy','chat','old-hash',0,'old-creation','old-thread',1)").await?;
+                }
+                "commit-boundary" => {
+                    db.execute_unprepared("CREATE TRIGGER stop_schema9 BEFORE UPDATE OF schema_version ON bot_meta WHEN NEW.schema_version=9 BEGIN SELECT RAISE(ABORT,'controlled migration fault'); END").await?;
+                }
+                "nested-card" => {
+                    let mut value: serde_json::Value = serde_json::from_str(&before)?;
+                    value["lastOperation"]["unrecognizedDurableFact"] =
+                        serde_json::json!("must retain exact original");
+                    before = serde_json::to_string(&value)?;
+                    db.execute_raw(statement(
+                        "UPDATE bot_card_streams SET state_json=?",
+                        vec![before.clone().into()],
+                    ))
+                    .await?;
+                }
+                _ => {}
+            }
+            drop(store);
+            let reopened = BotStateStore::new(path);
+            let result = reopened.db().await;
+            if matches!(
+                fault,
+                "none" | "missing-project" | "missing-revision" | "historical-project"
+            ) {
+                result?;
+                if matches!(fault, "missing-project" | "missing-revision") {
+                    assert!(
+                        reopened
+                            .audience_scope("thread-1", "legacy")
+                            .await?
+                            .is_none(),
+                        "{fault} fabricated a trusted origin from missing proof"
+                    );
+                } else {
+                    let scope = reopened
+                        .audience_scope("thread-1", "legacy")
+                        .await?
+                        .ok_or("migration lost Thread origin")?;
+                    assert!(
+                        scope.origin.requires_upgrade,
+                        "old privacy must not gain an active public audience"
+                    );
+                    assert!(
+                        scope.head.is_none(),
+                        "migration fabricated a new authorization"
+                    );
+                }
+                if fault == "historical-project" {
+                    assert!(
+                        reopened
+                            .audience_scope("old-thread", "legacy")
+                            .await?
+                            .is_none(),
+                        "historical origin borrowed the current different Thread's project"
+                    );
+                }
+                assert!(reopened.load_card(&binding).await?.unwrap().uncertain());
+            } else {
+                assert!(result.is_err(), "{fault} failed to reject migration");
+                let version: i64 = db
+                    .query_one_raw(statement(
+                        "SELECT schema_version FROM bot_meta WHERE id=1",
+                        vec![],
+                    ))
+                    .await?
+                    .unwrap()
+                    .try_get("", "schema_version")?;
+                assert_eq!(version, 8, "{fault} committed a partial schema version");
+                assert!(
+                    db.query_one_raw(statement(
+                        "SELECT name FROM sqlite_schema WHERE name='bot_authorizations'",
+                        vec![]
+                    ))
+                    .await?
+                    .is_none(),
+                    "{fault} left partial audience DDL"
+                );
+            }
+            let after: String = db
+                .query_one_raw(statement("SELECT state_json FROM bot_card_streams", vec![]))
+                .await?
+                .unwrap()
+                .try_get("", "state_json")?;
+            assert_eq!(
+                after, before,
+                "{fault} changed UUID/sequence/accepted body or pending operation"
+            );
+        }
+        Ok(())
+    }
+
+    /// A v8 database may only adopt a creation target kind its own sources recorded.
+    /// Missing evidence stays typed Unproven, and a half-baked "current" shape is
+    /// rejected instead of being repaired on ordinary open.
+    #[tokio::test]
+    async fn schema9_creation_target_proof_adopts_only_recorded_sources()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("target-proof.sqlite");
+        let store = BotStateStore::new(path.clone());
+        let db = store.db().await?.clone();
+        remove_schema9_fixture(&db).await?;
+        db.execute_unprepared(
+            "DELETE FROM inbound_work; DELETE FROM thread_bindings; DELETE FROM observed_directs;
+             INSERT INTO inbound_work(identity, bot_id, chat_id, message_id, content_hash, text,
+               open_id, chat_kind, app_id, project_id, creation_id, binding_revision, status,
+               diagnostic, claimed_by, claimed_at, updated_at)
+             VALUES('legacy:group-chat:m2','legacy','group-chat','m2','hash','q','','group','app','project','botthread:legacy:group-chat',1,'completed','','',0,1),
+                   ('legacy:direct-chat:m3','legacy','direct-chat','m3','hash','q','peer','direct','app','project','botthread:legacy:direct-chat',1,'completed','','',0,1),
+                   ('legacy:pending-chat:m4','legacy','pending-chat','m4','hash','q','','group','app','project','botthread:legacy:pending-chat',1,'completed','','',0,1),
+                   ('legacy:peerless-chat:m5','legacy','peerless-chat','m5','hash','q','','direct','app','project','botthread:legacy:peerless-chat',1,'completed','','',0,1),
+                   ('legacy:stranger:m6','legacy','stranger','m6','hash','q','peer','direct','app','project','botthread:legacy:pending-chat',1,'completed','','',0,1);
+             INSERT INTO thread_bindings(chat_id, thread_id, status, creation_id, project_id,
+               revision, generation, diagnostic, created_at, updated_at)
+             VALUES('group-chat','thread-g','bound','botthread:legacy:group-chat','project',1,1,'',1,1),
+                   ('direct-chat','thread-d','bound','botthread:legacy:direct-chat','project',1,1,'',1,1),
+                   ('pending-chat','','creating','botthread:legacy:pending-chat','project',1,1,'',1,1),
+                   ('unknown-chat','','creating','botthread:legacy:unknown-chat','project',1,1,'',1,1),
+                   ('peerless-chat','','creating','botthread:legacy:peerless-chat','project',1,1,'',1,1);
+             INSERT INTO binding_operations(operation_id, bot_id, chat_id, content_hash,
+               expected_revision, creation_id, thread_id, updated_at)
+             VALUES('op-pending','legacy','pending-chat','hash',0,'botthread:legacy:pending-chat','',1),
+                   ('op-unknown','legacy','unknown-chat','hash',0,'botthread:legacy:unknown-chat','',1),
+                   ('op-peerless','legacy','peerless-chat','hash',0,'botthread:legacy:peerless-chat','',1);
+             UPDATE bot_meta SET schema_version=8 WHERE id=1",
+        )
+        .await?;
+        drop(store);
+        let reopened = BotStateStore::new(path.clone());
+        let db = reopened.db().await?.clone();
+        for (chat, proof) in [
+            (
+                "group-chat",
+                target::TargetProof::Legacy {
+                    target: target::TargetKind::Group,
+                },
+            ),
+            (
+                "direct-chat",
+                target::TargetProof::Legacy {
+                    target: target::TargetKind::Direct {
+                        open_id: "peer".into(),
+                    },
+                },
+            ),
+            (
+                "pending-chat",
+                target::TargetProof::Legacy {
+                    target: target::TargetKind::Group,
+                },
+            ),
+            ("unknown-chat", target::TargetProof::Unproven),
+            // A typed direct row without a peer is still "not a group", but it cannot
+            // prove a direct peer and must stay Unproven on its own.
+            ("peerless-chat", target::TargetProof::Unproven),
+        ] {
+            let row = db
+                .query_one_raw(statement(
+                    "SELECT target_json FROM thread_bindings WHERE chat_id=?",
+                    vec![chat.to_string().into()],
+                ))
+                .await?
+                .expect("retained binding row");
+            assert_eq!(
+                row.try_get::<String>("", "target_json")?,
+                proof.encode()?,
+                "{chat} adopted a creation target its own sources did not record"
+            );
+        }
+        // 未完成的 operation 与其 creating route 必须携带同一份证明。
+        for (operation_id, chat) in [
+            ("op-pending", "pending-chat"),
+            ("op-unknown", "unknown-chat"),
+            ("op-peerless", "peerless-chat"),
+        ] {
+            let route = db
+                .query_one_raw(statement(
+                    "SELECT target_json FROM thread_bindings WHERE chat_id=?",
+                    vec![chat.to_string().into()],
+                ))
+                .await?
+                .expect("retained binding row");
+            let operation = db
+                .query_one_raw(statement(
+                    "SELECT target_json FROM binding_operations WHERE operation_id=?",
+                    vec![operation_id.to_string().into()],
+                ))
+                .await?
+                .expect("retained operation row");
+            assert_eq!(
+                route.try_get::<String>("", "target_json")?,
+                operation.try_get::<String>("", "target_json")?,
+                "{chat} left its pending operation without the same creation target"
+            );
+        }
+        // 回填只动证明：创建意图的原有状态/身份/水位逐字保留。
+        for (chat, creation) in [
+            ("pending-chat", "botthread:legacy:pending-chat"),
+            ("unknown-chat", "botthread:legacy:unknown-chat"),
+        ] {
+            let row = db
+                .query_one_raw(statement(
+                    "SELECT status,creation_id,project_id,revision FROM thread_bindings WHERE chat_id=?",
+                    vec![chat.to_string().into()],
+                ))
+                .await?
+                .expect("retained binding row");
+            assert_eq!(row.try_get::<String>("", "status")?, "creating");
+            assert_eq!(row.try_get::<String>("", "creation_id")?, creation);
+            assert_eq!(row.try_get::<String>("", "project_id")?, "project");
+            assert_eq!(row.try_get::<i64>("", "revision")?, 1);
+        }
+        // The proven kind is not a current membership or send grant.
+        assert!(
+            reopened
+                .audience_scope("thread-g", "legacy")
+                .await?
+                .is_some_and(|scope| scope.origin.requires_upgrade && scope.head.is_none()),
+            "adopted legacy evidence must not fabricate a current authorization"
+        );
+        // An unreadable value is a real fault: refuse to open and retain the row.
+        db.execute_unprepared(
+            "UPDATE thread_bindings SET target_json='{\"kind\":\"bogus\"}' WHERE chat_id='group-chat'",
+        )
+        .await?;
+        drop(reopened);
+        assert!(
+            BotStateStore::new(path.clone()).db().await.is_err(),
+            "an unreadable creation target was silently repaired"
+        );
+        let retained = db
+            .query_one_raw(statement(
+                "SELECT target_json FROM thread_bindings WHERE chat_id='group-chat'",
+                vec![],
+            ))
+            .await?
+            .expect("retained binding row");
+        assert_eq!(
+            retained.try_get::<String>("", "target_json")?,
+            "{\"kind\":\"bogus\"}",
+            "rejected creation target was rewritten"
+        );
+        // A same-version database that lost the finite structure is rejected as well.
+        let structure_path = directory.path().join("target-structure.sqlite");
+        let current = BotStateStore::new(structure_path.clone());
+        let structure_db = current.db().await?.clone();
+        structure_db
+            .execute_unprepared("ALTER TABLE binding_operations DROP COLUMN target_json")
+            .await?;
+        drop(current);
+        assert!(
+            BotStateStore::new(structure_path).db().await.is_err(),
+            "a half-baked current schema was patched instead of rejected"
+        );
+        Ok(())
+    }
+
+    /// A recorded group and a recorded direct for one creation are a real conflict: the
+    /// migration must roll back to the exact v8 state instead of adopting either kind.
+    #[tokio::test]
+    async fn schema9_conflicting_creation_sources_roll_back_the_migration()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("target-conflict.sqlite");
+        let store = BotStateStore::new(path.clone());
+        let db = store.db().await?.clone();
+        remove_schema9_fixture(&db).await?;
+        db.execute_unprepared(
+            "DELETE FROM inbound_work; DELETE FROM thread_bindings;
+             INSERT INTO inbound_work(identity, bot_id, chat_id, message_id, content_hash, text,
+               open_id, chat_kind, app_id, project_id, creation_id, binding_revision, status,
+               diagnostic, claimed_by, claimed_at, updated_at)
+             VALUES('legacy:chat:m1','legacy','chat','m1','hash','q','','group','app','project','botthread:legacy:chat',1,'completed','','',0,1),
+                   ('legacy:chat:m2','legacy','chat','m2','hash','q','','direct','app','project','botthread:legacy:chat',1,'completed','','',0,1);
+             INSERT INTO thread_bindings(chat_id, thread_id, status, creation_id, project_id,
+               revision, generation, diagnostic, created_at, updated_at)
+             VALUES('chat','thread-1','bound','botthread:legacy:chat','project',1,1,'',1,1);
+             UPDATE bot_meta SET schema_version=8 WHERE id=1",
+        )
+        .await?;
+        drop(store);
+        assert!(
+            BotStateStore::new(path).db().await.is_err(),
+            "a group/direct creation source conflict was adopted"
+        );
+        let version: i64 = db
+            .query_one_raw(statement(
+                "SELECT schema_version FROM bot_meta WHERE id=1",
+                vec![],
+            ))
+            .await?
+            .expect("retained metadata row")
+            .try_get("", "schema_version")?;
+        assert_eq!(version, 8, "conflicting migration committed a version");
+        assert!(
+            db.query_one_raw(statement(
+                "SELECT name FROM sqlite_schema WHERE name='bot_audience_origins'",
+                vec![]
+            ))
+            .await?
+            .is_none(),
+            "conflicting migration left partial audience DDL"
+        );
+        let rows = db
+            .query_all_raw(statement(
+                "SELECT message_id FROM inbound_work ORDER BY message_id",
+                vec![],
+            ))
+            .await?;
+        assert_eq!(
+            rows.len(),
+            2,
+            "conflicting migration dropped an original row"
+        );
+        Ok(())
+    }
+
+    /// Empty primary keys are part of the finite structure: their payload must be decoded
+    /// too, not skipped by pagination.
+    #[tokio::test]
+    async fn schema9_target_payload_is_decoded_for_empty_keys()
+    -> Result<(), Box<dyn std::error::Error>> {
+        for table in ["thread_bindings", "binding_operations"] {
+            let directory = tempfile::tempdir()?;
+            let path = directory.path().join(format!("empty-key-{table}.sqlite"));
+            let store = BotStateStore::new(path.clone());
+            let db = store.db().await?.clone();
+            let (key, insert) = if table == "thread_bindings" {
+                (
+                    "chat_id",
+                    "INSERT INTO thread_bindings(chat_id,thread_id,status,creation_id,project_id,\
+                     revision,generation,diagnostic,created_at,updated_at,target_json)\
+                     VALUES('','','needs_attention','','project',0,0,'',1,1,'{\"kind\":\"unproven\"}')",
+                )
+            } else {
+                (
+                    "operation_id",
+                    "INSERT INTO binding_operations(operation_id,bot_id,chat_id,content_hash,\
+                     expected_revision,creation_id,thread_id,updated_at,target_json)\
+                     VALUES('','legacy','chat','hash',0,'unused-creation','',1,'{\"kind\":\"unproven\"}')",
+                )
+            };
+            db.execute_unprepared(insert).await?;
+            // Control: the same row with a well-formed payload opens normally.
+            BotStateStore::new(path.clone())
+                .db()
+                .await
+                .unwrap_or_else(|error| panic!("{table} rejected a well-formed payload: {error}"));
+            db.execute_unprepared(&format!(
+                "UPDATE {table} SET target_json='{{\"kind\":\"bogus\"}}' WHERE {key}=''"
+            ))
+            .await?;
+            drop(store);
+            assert!(
+                BotStateStore::new(path.clone()).db().await.is_err(),
+                "{table} skipped the payload of its empty key"
+            );
+            let retained = db
+                .query_one_raw(statement(
+                    &format!("SELECT target_json FROM {table} WHERE {key}=''"),
+                    vec![],
+                ))
+                .await?
+                .expect("retained row");
+            assert_eq!(
+                retained.try_get::<String>("", "target_json")?,
+                "{\"kind\":\"bogus\"}",
+                "{table} repaired the rejected payload"
+            );
+        }
+        Ok(())
+    }
+
+    /// A creation intent may only be committed for a source that already reached storage,
+    /// and a committed intent must be completable from its persisted proof alone.
+    #[tokio::test]
+    async fn creation_binding_requires_and_resumes_its_recorded_source()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("creation-source.sqlite");
+        let store = BotStateStore::new(path.clone());
+        store.db().await?;
+        let first = target::TargetClaim::from_inbound(
+            "legacy",
+            "app",
+            "project",
+            "chat",
+            "botthread:legacy:chat",
+            "m1",
+            target::TargetKind::Group,
+        );
+        let claim = store.claim_thread_binding(&first).await?;
+        assert!(
+            matches!(claim, ThreadBindingClaim::Creating { .. }),
+            "first admission must freeze a creating route"
+        );
+        // 另一条同 kind 的入站不得顶替原来源。
+        let other = target::TargetClaim::from_inbound(
+            "legacy",
+            "app",
+            "project",
+            "chat",
+            "botthread:legacy:chat",
+            "m2",
+            target::TargetKind::Group,
+        );
+        assert!(
+            store.claim_thread_binding(&other).await.is_err(),
+            "a different same-kind message stood in for the frozen source"
+        );
+        // 同一 messageId 但冻结身份不同（此处 app）同样不得顶替原来源。
+        let wrong_identity = target::TargetClaim::from_inbound(
+            "legacy",
+            "other-app",
+            "project",
+            "chat",
+            "botthread:legacy:chat",
+            "m1",
+            target::TargetKind::Group,
+        );
+        assert!(
+            store.claim_thread_binding(&wrong_identity).await.is_err(),
+            "a different frozen app identity stood in for the original source"
+        );
+        // 同一事实的再次投递可以重建它。
+        assert!(
+            matches!(
+                store.claim_thread_binding(&first).await?,
+                ThreadBindingClaim::Creating { .. }
+            ),
+            "re-delivery of the frozen source must remain resumable"
+        );
+        // 来源行缺席时绑定必须被拒，且不写之后必然打不开的 origin。
+        assert!(
+            store
+                .bind_thread("chat", "thread-c", "botthread:legacy:chat", "project")
+                .await
+                .is_err(),
+            "binding referenced a source row that never reached storage"
+        );
+        assert!(store.audience_scope("thread-c", "legacy").await?.is_none());
+        drop(store);
+        BotStateStore::new(path.clone()).db().await?;
+        let store = BotStateStore::new(path.clone());
+        let db = store.db().await?.clone();
+        db.execute_unprepared(
+            "INSERT INTO inbound_work(identity,bot_id,chat_id,message_id,content_hash,text,\
+             open_id,chat_kind,generation,app_id,project_id,creation_id,binding_revision,\
+             status,diagnostic,claimed_by,claimed_at,updated_at)\
+             VALUES('legacy:chat:m1','legacy','chat','m1','hash','q','','group',1,'app',\
+             'project','botthread:legacy:chat',1,'completed','','',0,1)",
+        )
+        .await?;
+        assert_eq!(
+            store
+                .bind_thread("chat", "thread-c", "botthread:legacy:chat", "project")
+                .await?,
+            "thread-c"
+        );
+        let scope = store
+            .audience_scope("thread-c", "legacy")
+            .await?
+            .expect("bound origin");
+        assert!(
+            !scope.origin.requires_upgrade,
+            "a current creation target must not demand an upgrade"
+        );
+        // 显式创建意图：提交后中断，重试只靠持久证明完成同一创建。
+        let draft = target::TargetClaim::from_operation(
+            "legacy",
+            "app",
+            "project",
+            "ui-chat",
+            "botthread:legacy:ui-chat:op1",
+            "op1",
+            target::TargetKind::Group,
+        );
+        let operation = BindingOperation {
+            operation_id: "op1".into(),
+            bot_id: "legacy".into(),
+            chat_id: "ui-chat".into(),
+            content_hash: "hash".into(),
+            expected_revision: 0,
+            creation_id: "botthread:legacy:ui-chat:op1".into(),
+            thread_id: None,
+            target: draft.freeze(1),
+        };
+        store
+            .begin_binding_operation("ui-chat", 0, "project", &operation)
+            .await?;
+        // 中断后的重试只从持久记录读取：完整证明（含具体来源）必须逐字恢复。
+        let persisted = store
+            .load_binding_operation("op1")
+            .await?
+            .expect("persisted creation intent");
+        assert_eq!(
+            persisted.target, operation.target,
+            "continuation lost the persisted creation target"
+        );
+        assert_eq!(
+            store
+                .bind_thread(
+                    "ui-chat",
+                    "thread-u",
+                    "botthread:legacy:ui-chat:op1",
+                    "project"
+                )
+                .await?,
+            "thread-u"
+        );
+        // operation 的最终 Thread 归属与 route/origin 同批提交：此刻不再需要第二次写入。
+        let operation_thread: String = db
+            .query_one_raw(statement(
+                "SELECT thread_id FROM binding_operations WHERE operation_id='op1'",
+                vec![],
+            ))
+            .await?
+            .expect("retained operation row")
+            .try_get("", "thread_id")?;
+        assert_eq!(
+            operation_thread, "thread-u",
+            "the operation still pointed nowhere after the bound route was committed"
+        );
+        drop(store);
+        // 在旧的「两次提交之间」这一刻模拟重启：库必须能打开且 origin 一致。
+        let between_writes = BotStateStore::new(path.clone());
+        between_writes.db().await?;
+        let scope = between_writes
+            .audience_scope("thread-u", "legacy")
+            .await?
+            .expect("origin committed with its operation");
+        assert!(!scope.origin.requires_upgrade);
+        drop(between_writes);
+        // 生产序列紧随其后的保存仍是幂等的。
+        let store = BotStateStore::new(path.clone());
+        store.db().await?;
+        store
+            .save_binding_operation(&BindingOperation {
+                thread_id: Some("thread-u".into()),
+                ..operation
+            })
+            .await?;
+        drop(store);
+        // 开库校验必须接受这次续接的结果。
+        let reopened = BotStateStore::new(path);
+        reopened.db().await?;
+        let scope = reopened
+            .audience_scope("thread-u", "legacy")
+            .await?
+            .expect("resumed origin");
+        assert!(!scope.origin.requires_upgrade);
+        Ok(())
+    }
+
+    /// Evidence for one creating chat/creation may not be split across projects: a foreign
+    /// project must abort the migration instead of being filtered out for the other kind.
+    #[tokio::test]
+    async fn schema9_foreign_project_creation_source_rolls_back()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("foreign-project.sqlite");
+        let store = BotStateStore::new(path.clone());
+        let db = store.db().await?.clone();
+        remove_schema9_fixture(&db).await?;
+        db.execute_unprepared(
+            "DELETE FROM inbound_work; DELETE FROM thread_bindings;
+             INSERT INTO inbound_work(identity, bot_id, chat_id, message_id, content_hash, text,
+               open_id, chat_kind, app_id, project_id, creation_id, binding_revision, status,
+               diagnostic, claimed_by, claimed_at, updated_at)
+             VALUES('legacy:c1:m1','legacy','c1','m1','hash','q','peer','direct','app','project','botthread:legacy:c1',1,'completed','','',0,1),
+                   ('legacy:c1:m2','legacy','c1','m2','hash','q','','group','app','other-project','botthread:legacy:c1',1,'completed','','',0,1);
+             INSERT INTO thread_bindings(chat_id, thread_id, status, creation_id, project_id,
+               revision, generation, diagnostic, created_at, updated_at)
+             VALUES('c1','','creating','botthread:legacy:c1','project',1,1,'',1,1);
+             UPDATE bot_meta SET schema_version=8 WHERE id=1",
+        )
+        .await?;
+        drop(store);
+        assert!(
+            BotStateStore::new(path).db().await.is_err(),
+            "a foreign-project creation source was filtered out instead of conflicting"
+        );
+        let version: i64 = db
+            .query_one_raw(statement(
+                "SELECT schema_version FROM bot_meta WHERE id=1",
+                vec![],
+            ))
+            .await?
+            .expect("retained metadata row")
+            .try_get("", "schema_version")?;
+        assert_eq!(version, 8, "foreign-project migration committed a version");
+        assert!(
+            db.query_one_raw(statement(
+                "SELECT name FROM pragma_table_xinfo('thread_bindings') WHERE name='target_json'",
+                vec![]
+            ))
+            .await?
+            .is_none(),
+            "foreign-project migration left a partially altered route table"
+        );
+        let route = db
+            .query_one_raw(statement(
+                "SELECT chat_id,status,creation_id,project_id,revision FROM thread_bindings",
+                vec![],
+            ))
+            .await?
+            .expect("retained binding row");
+        assert_eq!(route.try_get::<String>("", "chat_id")?, "c1");
+        assert_eq!(route.try_get::<String>("", "status")?, "creating");
+        assert_eq!(
+            route.try_get::<String>("", "creation_id")?,
+            "botthread:legacy:c1"
+        );
+        assert_eq!(route.try_get::<String>("", "project_id")?, "project");
+        assert_eq!(route.try_get::<i64>("", "revision")?, 1);
+        Ok(())
+    }
+
+    /// A direct peer identity above the verified bound is rejected before any write, so no
+    /// unaccounted copy can survive and no partial route is left behind.
+    #[tokio::test]
+    async fn creation_target_rejects_oversized_direct_peer()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("peer-bound.sqlite");
+        let store = BotStateStore::new(path.clone());
+        let db = store.db().await?.clone();
+        let oversized = target::TargetClaim::from_inbound(
+            "legacy",
+            "app",
+            "project",
+            "chat",
+            "botthread:legacy:chat",
+            "m1",
+            target::TargetKind::Direct {
+                open_id: "p".repeat(target::MAX_PEER_BYTES + 1),
+            },
+        );
+        assert!(
+            store.claim_thread_binding(&oversized).await.is_err(),
+            "an unbounded direct peer was frozen as a creation target"
+        );
+        assert!(
+            db.query_one_raw(statement(
+                "SELECT chat_id FROM thread_bindings WHERE chat_id='chat'",
+                vec![]
+            ))
+            .await?
+            .is_none(),
+            "a rejected direct peer still produced a partial binding row"
+        );
+        // 边界值本身仍然可用。
+        let accepted = target::TargetClaim::from_inbound(
+            "legacy",
+            "app",
+            "project",
+            "chat",
+            "botthread:legacy:chat",
+            "m1",
+            target::TargetKind::Direct {
+                open_id: "p".repeat(target::MAX_PEER_BYTES),
+            },
+        );
+        assert!(
+            matches!(
+                store.claim_thread_binding(&accepted).await?,
+                ThreadBindingClaim::Creating { .. }
+            ),
+            "a peer exactly at the supported bound must still be accepted"
+        );
+        Ok(())
+    }
+
+    async fn remove_schema9_fixture(db: &DatabaseConnection) -> Result<(), sea_orm::DbErr> {
+        db.execute_unprepared("DROP TABLE bot_delivery_items; DROP TABLE bot_sync_operations; DROP TABLE bot_authorizations; DROP TABLE bot_audience_origins;
+            DROP INDEX IF EXISTS bot_legacy_unfinished_count; DROP INDEX IF EXISTS bot_legacy_unknown_count; DROP INDEX IF EXISTS bot_legacy_attention_count;
+            DROP INDEX IF EXISTS bot_binding_creation_lookup; DROP INDEX IF EXISTS bot_legacy_work_scope;
+            DROP INDEX IF EXISTS bot_legacy_unreadable_work; DROP INDEX IF EXISTS bot_legacy_identity_scope;
+            DROP INDEX IF EXISTS bot_binding_thread_lookup; DROP INDEX IF EXISTS bot_route_thread_lookup; DROP INDEX IF EXISTS bot_card_thread_lookup;
+            DROP INDEX IF EXISTS bot_route_creation_lookup;
+            ALTER TABLE thread_bindings DROP COLUMN target_json;
+            ALTER TABLE binding_operations DROP COLUMN target_json").await?;
+        Ok(())
+    }
+
+    fn card_test_binding(message_id: &str) -> card::CardBinding {
+        card::CardBinding {
+            bot_id: "legacy".into(),
+            chat_id: "chat".into(),
+            message_id: message_id.into(),
+            thread_id: "thread-1".into(),
+            original_input: format!("bot:legacy:chat:{message_id}"),
+        }
+    }
+
+    fn card_test_preview(binding: card::CardBinding) -> card::CardStream {
+        let original_input = binding.original_input.clone();
+        let mut state = card::CardStream::new(binding, &original_input, "original-turn");
+        state.card_id = Some("known-card".into());
+        state.platform_message_id = Some("known-message".into());
+        state.confirmed_text = "last verified preview".into();
+        state.confirmed_content_hash = card::hash(state.confirmed_text.as_bytes());
+        state.lifecycle = card::CardLifecycle::Streaming;
+        state
+    }
+
+    fn confirm_card_test_settings(state: &mut card::CardStream, lifecycle: card::CardLifecycle) {
+        state.lifecycle = lifecycle;
+        state.confirmed_sequence = state.sequence;
+        state.last_operation.as_mut().unwrap().status = card::CardOperationStatus::Confirmed;
     }
 }

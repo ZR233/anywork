@@ -1,6 +1,7 @@
 //! Command execution through the opaque Thread contract.
 use std::{fmt, future::Future, sync::Arc, time::Duration};
 
+use crate::media::ToolResourceOrigin;
 use pl_core::context::{ContextContent, OpaquePayload, ResourceReference};
 use pl_core::thread::cold::{
     ColdStoreError, OutputRepair, OutputRetryFuture, OutputRetryObligation, OutputRetryOutcome,
@@ -40,7 +41,7 @@ pub trait CommandOutputArchive: fmt::Debug + Send + Sync + 'static {
     /// re-executing the command. Never return a temporary path as a durable resource.
     fn retain(
         &self,
-        thread_id: &str,
+        origin: &ToolResourceOrigin,
         snapshot: &CommandOutputSnapshot,
     ) -> impl Future<Output = Result<ResourceReference, ToolError>> + Send;
 }
@@ -118,8 +119,7 @@ impl<B: CommandBackend, A: CommandOutputArchive> ThreadExecTool<B, A> {
 struct ArchiveRetentionObligation<A: CommandOutputArchive, B: CommandBackend> {
     archive: Arc<A>,
     backend: Arc<B>,
-    thread_id: String,
-    call_id: String,
+    origin: ToolResourceOrigin,
     snapshot: CommandOutputSnapshot,
     kind: StorageFaultKind,
 }
@@ -128,16 +128,14 @@ impl<A: CommandOutputArchive, B: CommandBackend> ArchiveRetentionObligation<A, B
     fn new(
         archive: Arc<A>,
         backend: Arc<B>,
-        thread_id: &str,
-        call_id: &str,
+        origin: &ToolResourceOrigin,
         snapshot: CommandOutputSnapshot,
         kind: StorageFaultKind,
     ) -> Self {
         Self {
             archive,
             backend,
-            thread_id: thread_id.to_owned(),
-            call_id: call_id.to_owned(),
+            origin: origin.clone(),
             snapshot,
             kind,
         }
@@ -159,7 +157,7 @@ impl<A: CommandOutputArchive, B: CommandBackend> OutputRetryObligation
             let reference = super::capture_retention::retain(
                 &*self.backend,
                 &*self.archive,
-                &self.thread_id,
+                &self.origin,
                 &self.snapshot,
             )
             .await
@@ -170,7 +168,7 @@ impl<A: CommandOutputArchive, B: CommandBackend> OutputRetryObligation
             // name that identity so the owner attaches the reference to it instead of leaving an
             // orphan blob the UI and cold recovery can never locate.
             Ok(OutputRetryOutcome::StoredWithRepair(OutputRepair {
-                call_id: self.call_id.clone(),
+                call_id: self.origin.call_id.clone(),
                 reference,
             }))
         })
@@ -344,8 +342,7 @@ impl<B: CommandBackend, A: CommandOutputArchive> Tool for ThreadExecTool<B, A> {
         let reporter = tokio::spawn({
             let processes = self.processes.clone();
             let archive = self.archive.clone();
-            let thread_id = context.thread_id.clone();
-            let call_id = context.call_id.clone();
+            let origin = ToolResourceOrigin::from_call(&context);
             let tasks = context.tasks.clone();
             // The reporter needs its own handle: `task_id` is still borrowed by the running
             // `execution` future below, so it cannot be moved into this task.
@@ -362,8 +359,7 @@ impl<B: CommandBackend, A: CommandOutputArchive> Tool for ThreadExecTool<B, A> {
                         &failure,
                         archive.clone(),
                         processes.backend(),
-                        &thread_id,
-                        &call_id,
+                        &origin,
                         &snapshot,
                     ) {
                         report_output_storage_fault(tasks.as_ref(), &fault).await;
@@ -386,8 +382,7 @@ impl<B: CommandBackend, A: CommandOutputArchive> Tool for ThreadExecTool<B, A> {
                 &failure,
                 self.archive.clone(),
                 self.processes.backend(),
-                &context.thread_id,
-                &context.call_id,
+                &ToolResourceOrigin::from_call(&context),
                 &snapshot,
             )
         });
@@ -397,7 +392,7 @@ impl<B: CommandBackend, A: CommandOutputArchive> Tool for ThreadExecTool<B, A> {
         let retained = super::capture_retention::retain(
             &*self.processes.backend(),
             &*self.archive,
-            &context.thread_id,
+            &ToolResourceOrigin::from_call(&context),
             &snapshot,
         )
         .await;
@@ -410,8 +405,7 @@ impl<B: CommandBackend, A: CommandOutputArchive> Tool for ThreadExecTool<B, A> {
                 error,
                 self.archive.clone(),
                 self.processes.backend(),
-                &context.thread_id,
-                &context.call_id,
+                &ToolResourceOrigin::from_call(&context),
                 &snapshot,
             );
             if let Some(fault) = error
@@ -481,8 +475,7 @@ fn capture_output_fault<A: CommandOutputArchive, B: CommandBackend>(
     failure: &CommandCaptureFailure,
     archive: Arc<A>,
     backend: Arc<B>,
-    thread_id: &str,
-    call_id: &str,
+    origin: &ToolResourceOrigin,
     snapshot: &CommandOutputSnapshot,
 ) -> Option<Arc<OutputStorageFault>> {
     let kind = match failure {
@@ -496,14 +489,7 @@ fn capture_output_fault<A: CommandOutputArchive, B: CommandBackend>(
     };
     let fault = OutputStorageFault::new(kind, Arc::new(source));
     Some(Arc::new(fault.with_obligation(Arc::new(
-        ArchiveRetentionObligation::new(
-            archive,
-            backend,
-            thread_id,
-            call_id,
-            snapshot.clone(),
-            kind,
-        ),
+        ArchiveRetentionObligation::new(archive, backend, origin, snapshot.clone(), kind),
     ))))
 }
 
@@ -516,8 +502,7 @@ fn attach_archive_obligation<A: CommandOutputArchive, B: CommandBackend>(
     error: ToolError,
     archive: Arc<A>,
     backend: Arc<B>,
-    thread_id: &str,
-    call_id: &str,
+    origin: &ToolResourceOrigin,
     snapshot: &CommandOutputSnapshot,
 ) -> ToolError {
     let Some(fault) = error.source.downcast_ref::<OutputStorageFault>() else {
@@ -528,8 +513,7 @@ fn attach_archive_obligation<A: CommandOutputArchive, B: CommandBackend>(
     let obligation: Arc<dyn OutputRetryObligation> = Arc::new(ArchiveRetentionObligation::new(
         archive,
         backend,
-        thread_id,
-        call_id,
+        origin,
         snapshot.clone(),
         kind,
     ));

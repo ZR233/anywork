@@ -307,6 +307,7 @@ ThreadWorkspace _workspace({
   StudioTurnView? activeTurn,
   List<PendingInteraction> interactions = const [],
 }) => ThreadWorkspace(
+  audience: const ThreadAudienceUnbound(),
   thread: _thread(),
   revision: revision,
   interactions: interactions,

@@ -16,9 +16,11 @@ use sea_orm::{
     Statement, TransactionOptions, TransactionTrait, Value,
 };
 
-const HISTORY_SCHEMA_VERSION: i64 = 8;
+const HISTORY_SCHEMA_VERSION: i64 = 9;
 
 mod checkpoint;
+mod resources;
+pub(crate) use resources::context_resources;
 /// 单页返回的总 payload 字节预算；达到预算即停止装入更多条目。
 const PAGE_BYTE_BUDGET: usize = 2 * 1024 * 1024;
 /// 单条预览预算必须小于整页预算，否则一条预览都无法落入一页。
@@ -66,6 +68,7 @@ impl std::fmt::Debug for HistoryStoreShare {
 struct HistoryStoreState {
     path: PathBuf,
     thread_id: String,
+    resources: std::sync::OnceLock<crate::resource_store::thread::ThreadArchive>,
     /// The single writer connection, opened on the first write.
     ///
     /// Effect batches use one connection for short single-writer transactions. The Session owns
@@ -199,6 +202,7 @@ impl HistoryStore {
             state: std::sync::Arc::new(HistoryStoreState {
                 path: path.to_owned(),
                 thread_id: thread_id.to_owned(),
+                resources: std::sync::OnceLock::new(),
                 writer: tokio::sync::OnceCell::new(),
                 reader: tokio::sync::OnceCell::new(),
                 init: tokio::sync::RwLock::new(()),
@@ -217,6 +221,37 @@ impl HistoryStore {
 
     pub(crate) fn thread_id(&self) -> &str {
         &self.state.thread_id
+    }
+
+    /// The physical location is explicitly supplied by StudioStore, never inferred from SQL paths.
+    pub(crate) fn bind_resources(
+        &self,
+        root: PathBuf,
+        trusted_parent: PathBuf,
+        attachments: PathBuf,
+    ) -> Result<crate::resource_store::ThreadResourceStore> {
+        let archive = self.state.resources.get_or_init(|| {
+            crate::resource_store::thread::ThreadArchive::new(
+                root.clone(),
+                trusted_parent,
+                attachments.clone(),
+            )
+        });
+        ensure!(archive.root() == root, "Thread resource root changed");
+        ensure!(
+            archive.attachments() == attachments,
+            "Thread attachment catalog changed"
+        );
+        Ok(crate::resource_store::ThreadResourceStore::new(
+            self.clone(),
+            archive.clone(),
+        ))
+    }
+
+    pub(crate) fn resources(&self) -> Option<crate::resource_store::ThreadResourceStore> {
+        self.state.resources.get().map(|archive| {
+            crate::resource_store::ThreadResourceStore::new(self.clone(), archive.clone())
+        })
     }
 
     /// Parks the next writer initialization after the file exists and before identity is committed.
@@ -2322,6 +2357,8 @@ async fn initialize(db: &DatabaseConnection, thread_id: &str) -> Result<String> 
                 if version < 8 {
                     backfill_tool_user_input(&tx, thread_id).await?;
                 }
+                // Schema 9 admits explicit public-artifact items. Existing payloads and resource
+                // references remain unchanged: archived files are not retroactive publications.
                 tx.execute_raw(statement(
                     "UPDATE history_meta SET schema_version=? WHERE id=1 AND schema_version=?",
                     vec![HISTORY_SCHEMA_VERSION.into(), version.into()],
@@ -2911,6 +2948,7 @@ fn kind_label(kind: ThreadItemKind) -> &'static str {
         ThreadItemKind::Inference => "inference",
         ThreadItemKind::Skill => "skill",
         ThreadItemKind::File => "file",
+        ThreadItemKind::PublicArtifact => "publicArtifact",
         ThreadItemKind::ContextCompaction => "contextCompaction",
     }
 }
@@ -3034,6 +3072,88 @@ mod storage_fault_tests {
         let mut revised = terminal("second", 2);
         revised.revision = 2;
         assert!(store.commit(90, &[revised], &[]).await.is_err());
+        Ok(())
+    }
+
+    /// Enabling explicit publications must not grant publication intent to old path-only files.
+    /// The new typed item survives a cold read without rewriting the pre-upgrade payload.
+    #[tokio::test]
+    async fn publication_upgrade_preserves_old_files_and_new_explicit_items() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("history.sqlite");
+        let thread_id = "publication-migration";
+        let store = HistoryStore::open(&path, thread_id).await?;
+        let old_file = ThreadItem::new(
+            "old-file".into(),
+            thread_id.into(),
+            "turn".into(),
+            1,
+            1,
+            1,
+            1,
+            ThreadItemState::File(pl_protocol::ThreadFileItem::new(
+                "report.md".into(),
+                Some("text/markdown".into()),
+                1,
+            )),
+        );
+        store
+            .commit(1, std::slice::from_ref(&old_file), &[])
+            .await?;
+        store
+            .writer()
+            .await?
+            .db
+            .execute_unprepared("UPDATE history_meta SET schema_version=8")
+            .await?;
+        drop(store);
+
+        let upgraded = HistoryStore::open(&path, thread_id).await?;
+        upgraded.prepare_activation().await?;
+        assert_eq!(
+            upgraded.items_for_turn("turn").await?,
+            vec![old_file.clone()]
+        );
+        assert_eq!(upgraded.watermark().await?, 1);
+        let artifact = ThreadItem::new(
+            "artifact:publication".into(),
+            thread_id.into(),
+            "turn".into(),
+            2,
+            1,
+            2,
+            2,
+            ThreadItemState::PublicArtifact(pl_protocol::ThreadPublicArtifactItem {
+                publication_id: "publication".into(),
+                tool_call_id: "publish-call".into(),
+                display_name: "空文件".into(),
+                resource: pl_protocol::ThreadArtifactResource {
+                    id: "archived-empty-original".into(),
+                    content_digest:
+                        "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+                            .into(),
+                    byte_len: 0,
+                    media_type: "application/octet-stream".into(),
+                },
+                published_at: 2,
+            }),
+        );
+        upgraded
+            .commit(2, std::slice::from_ref(&artifact), &[])
+            .await?;
+        assert_eq!(
+            upgraded
+                .reader()
+                .await?
+                .context("missing upgraded history")?
+                .schema_version,
+            HISTORY_SCHEMA_VERSION
+        );
+        drop(upgraded);
+
+        let cold = HistoryStore::open(&path, thread_id).await?;
+        assert_eq!(cold.items_for_turn("turn").await?, vec![old_file, artifact]);
+        assert_eq!(cold.watermark().await?, 2);
         Ok(())
     }
 

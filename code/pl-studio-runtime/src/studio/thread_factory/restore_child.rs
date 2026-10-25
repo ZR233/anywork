@@ -3,11 +3,11 @@
 //! at the same deterministic path instead of reusing the missing location.
 use super::{StudioThreadFactory, errors::resource_error, thread_tools::ThreadToolAssembly};
 use crate::{
-    resource_store::FileResourceStore,
+    agent::definition::VerifiedAgentIdentity,
     thread_assembler::{StudioThreadSpec, ThreadAssemblyError, ThreadPreparation},
 };
 use pl_core::context::{OpaquePayload, ResourceAccess};
-use pl_model::config::{AgentRoleId, ModelRouteConfig};
+use pl_model::config::AgentRoleId;
 use pl_tool::workspace::ToolWorkspace;
 use std::{collections::BTreeMap, path::PathBuf};
 
@@ -65,45 +65,38 @@ impl StudioThreadFactory {
         let mut assignment: pl_protocol::AgentWorkspaceAssignmentSnapshot =
             crate::studio::workspace_receipt::from_payload(&saved.payload)
                 .map_err(|error| resource_error("decode saved workspace binding", error))?;
-        let saved_profile = crate::studio::model_route::saved_profile(&restored)
-            .map_err(|error| resource_error("decode saved child Agent Profile", error))?;
-        let bootstrap_profile = saved_profile.is_none();
-        let current_profile = if bootstrap_profile {
-            let config = self.services.config_runtime.clone();
-            let profile_id = thread.role.clone();
-            tokio::task::spawn_blocking(move || config.resolve_agent_profile(&profile_id))
-                .await?
-                .ok()
-        } else {
-            None
-        };
-        let config = current_profile.as_ref().map_or_else(
-            || {
-                self.services
-                    .config_runtime
-                    .read()
-                    .map(|snapshot| snapshot.config)
-            },
-            |profile| Ok(profile.config.clone()),
-        )?;
+        let config = self
+            .services
+            .config_runtime
+            .read()
+            .map(|snapshot| snapshot.config)?;
         let role = AgentRoleId::new(thread.role.clone())?;
-        let receipt_route = crate::studio::model_route::saved(&restored)
-            .map_err(|error| resource_error("read migrated child model route", error))?
-            .map(|saved| saved.route);
-        let profile = match saved_profile {
-            Some((profile, _)) => profile,
-            None => migrate_profile(
-                &thread.role,
-                assignment.mode,
-                current_profile.map(|profile| profile.profile),
-                receipt_route,
-            )?,
-        };
+        let profile = crate::studio::model_route::required_saved_profile(&restored, id)
+            .map_err(|error| resource_error("load saved child Agent Profile", error))?;
         if profile.profile_id != thread.role {
             return Err(ThreadAssemblyError::Identity(
                 "saved child Agent Profile identity does not match its directory role".into(),
             ));
         }
+        // The frozen Profile supplies the Agent identity for a legacy instruction snapshot; the
+        // saved role text is preserved and never re-rendered from the current catalog.
+        let saved_identity = VerifiedAgentIdentity::child(&profile).map_err(|error| {
+            ThreadAssemblyError::Identity(format!("invalid child Agent: {error}"))
+        })?;
+        let history = self
+            .services
+            .store
+            .history_for(&thread.project_id, id)
+            .await
+            .map_err(|error| resource_error("open child instruction migration writer", error))?;
+        let checkpoint = history
+            .migrate_recovery_checkpoint(&checkpoint, |state| {
+                crate::instruction::migrate_saved_representation(state, &saved_identity)
+            })
+            .await
+            .map_err(|error| resource_error("migrate saved child instructions", error))?;
+        // 迁移后的快照是后续读取与持久化的唯一来源。
+        let restored = checkpoint.state.clone();
         let route_selector = crate::studio::model_route::profile_route(&profile)
             .map_err(|error| resource_error("read saved child model route", error))?;
         let resolved = crate::studio::delegation::resolve_child_route(&config, &profile);
@@ -237,14 +230,8 @@ impl StudioThreadFactory {
         }
         let workspace = super::child_resources::assigned_workspace(&assignment, workspace_mode);
 
-        let resources = FileResourceStore::new(
-            self.services
-                .store
-                .session_resources_dir_for(&thread.project_id, id)
-                .map_err(|error| {
-                    resource_error("resolve restored child session resources", error)
-                })?,
-        );
+        let resources = self.services.store.thread_resources_for(&thread.project_id, id).await
+            .map_err(|error| resource_error("resolve restored child session resource owner", error))?;
         let prepared = self
             .prepare_thread_tools(ThreadToolAssembly {
                 thread_id: id,
@@ -278,14 +265,6 @@ impl StudioThreadFactory {
                     .map_err(|error| resource_error("normalize saved child Project root", error))?,
             );
         }
-        if bootstrap_profile {
-            initial_extensions.insert(
-                crate::studio::model_route::AGENT_PROFILE_EXTENSION.into(),
-                crate::studio::model_route::encode_profile(&profile).map_err(|error| {
-                    resource_error("freeze migrated child Agent Profile", error)
-                })?,
-            );
-        }
         let model = pl_model::runtime::ThreadModel::new(
             pl_model::runtime::ModelRuntime::from_route(&route)?,
             route.reasoning_config(),
@@ -302,7 +281,7 @@ impl StudioThreadFactory {
                 self.services.thread_modes.clone(),
                 self.clone(),
             )?,
-            agent_controls: crate::thread_assembler::AgentControlExposure::Disabled,
+            agent_controls: Vec::new(),
             execution: pl_core::thread::input::InputDriverOptions {
                 max_model_steps: Self::CHILD_MODEL_STEP_LIMIT,
             },
@@ -576,58 +555,4 @@ fn decode<T: serde::de::DeserializeOwned>(
     }
     serde_json::from_str(payload.content())
         .map_err(|error| resource_error("decode saved workspace binding", error))
-}
-
-fn migrate_profile(
-    profile_id: &str,
-    workspace_mode: pl_protocol::AgentWorkspaceMode,
-    current: Option<pl_protocol::AgentProfileSnapshot>,
-    receipt_route: Option<ModelRouteConfig>,
-) -> Result<pl_protocol::AgentProfileSnapshot, ThreadAssemblyError> {
-    if receipt_route.is_none() {
-        return Err(ThreadAssemblyError::Identity(format!(
-            "child {profile_id} has no provable frozen model receipt; current Profile cannot identify its historical model"
-        )));
-    }
-    let mut profile = match current {
-        Some(profile) => profile,
-        None => {
-            let route = receipt_route.as_ref().ok_or_else(|| {
-                ThreadAssemblyError::Identity(format!(
-                    "child {profile_id} has no saved Agent Profile or valid model receipt"
-                ))
-            })?;
-            pl_protocol::AgentProfileSnapshot {
-                profile_id: profile_id.into(),
-                display_name: profile_id.into(),
-                description: String::new(),
-                when_to_use: String::new(),
-                system_instructions: String::new(),
-                account_id: route.account_id.as_str().into(),
-                model_id: route.model_id.clone(),
-                effort: route
-                    .effort
-                    .as_ref()
-                    .map(|effort| effort.as_str().to_owned()),
-                source: "legacy-journal".into(),
-                revision: "1".into(),
-                content_hash: String::new(),
-                system: crate::config::StudioRole::from_key(profile_id).is_some(),
-                enabled: true,
-                workspace_mode,
-            }
-        }
-    };
-    if let Some(route) = receipt_route {
-        profile.account_id = route.account_id.into_string();
-        profile.model_id = route.model_id;
-        profile.effort = route.effort.map(|effort| effort.as_str().to_owned());
-    }
-    let mut hashable = profile.clone();
-    hashable.content_hash.clear();
-    profile.content_hash = crate::canonical_content_hash(
-        &serde_json::to_vec(&hashable)
-            .map_err(|error| resource_error("encode migrated child Agent Profile", error))?,
-    );
-    Ok(profile)
 }

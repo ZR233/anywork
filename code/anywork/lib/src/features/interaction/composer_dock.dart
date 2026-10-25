@@ -18,6 +18,7 @@ import '../../shared/studio_chrome.dart';
 import '../../shared/studio_driver_keys.dart';
 import '../../shared/studio_menu_label.dart';
 import '../status/session_selectors.dart';
+import '../status/thread_audience_notice.dart';
 import '../settings/settings_bots_tab.dart' show BotDetailsPage;
 import 'composer_view.dart';
 import 'session_settings_menu.dart';
@@ -64,6 +65,7 @@ class ComposerDock extends ConsumerWidget {
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
+                ThreadAudienceNotice(threadId: threadId, controls: true),
                 for (final diagnostic in additionalDiagnostics)
                   _ComposerTargetDiagnosticView(diagnostic: diagnostic),
                 thread.isRetiredAgent

@@ -196,6 +196,9 @@ StudioState _agentWorkspacePreviewState({
         ? const {}
         : {
             selected.id: ThreadWorkspace(
+              audience: const ThreadAudienceUnavailable(
+                reason: ThreadAudienceUnavailableReason.ownershipUnproven,
+              ),
               thread: selected,
               revision: 1,
               interactions: const [],

@@ -7,6 +7,8 @@ import '../infrastructure/frb/studio_update_api.dart';
 import '../platform/clipboard_image_reader.dart';
 import '../platform/studio_platform.dart';
 import '../platform/error_log.dart';
+import '../platform/public_artifact_platform.dart';
+import 'public_artifact_actions.dart';
 import '../presentation/view_models/timeline_session_owner.dart';
 
 /// The application composition root is the only place that knows both the
@@ -17,6 +19,7 @@ class AppGraph {
     String? clientId,
     StudioUpdateApi? updateApi,
     bool updatesEnabled = false,
+    PublicArtifactPlatform? artifactPlatform,
   }) {
     final staged = <String, StagedClipboardImage>{};
     final stager = const SystemClipboardImageStager();
@@ -39,6 +42,10 @@ class AppGraph {
     );
     client.updates.attach();
     timeline = TimelineSessionOwner(client: client);
+    artifacts = PublicArtifactActions(
+      client: client,
+      platform: artifactPlatform ?? const SystemPublicArtifactPlatform(),
+    );
   }
 
   factory AppGraph.production() => AppGraph(
@@ -82,6 +89,7 @@ class AppGraph {
 
   late final AnyworkClient client;
   late final TimelineSessionOwner timeline;
+  late final PublicArtifactActions artifacts;
   Future<CloseReport>? _closing;
 
   Future<CloseReport> close({required DateTime deadline}) =>
@@ -93,9 +101,14 @@ class AppGraph {
   /// 才允许 lease 销毁 controller 并观察 stock stream done。树仍借用 controller 时不会
   /// 提前 ACK，重复 close 得到同一个释放结果（design/26 §26.8）。
   Future<CloseReport> _close(DateTime deadline) async {
+    final artifactClose = artifacts.close(deadline: deadline);
     final timelineClose = timeline.close(deadline: deadline);
     final clientClose = client.close(deadline: deadline);
-    final reports = await Future.wait([timelineClose, clientClose]);
+    final reports = await Future.wait([
+      artifactClose,
+      timelineClose,
+      clientClose,
+    ]);
     return CloseReport(
       unresolved: [for (final report in reports) ...report.unresolved],
     );

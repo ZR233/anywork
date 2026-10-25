@@ -13,8 +13,9 @@ use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
 use super::types::{
-    AckObservation, BOT_OPEN_ID, CallBound, CallKind, ClientConfig, DIRECT_CHAT_ID,
-    FeishuLiveStatus, FeishuPeerOptions, FeishuReport, GROUP_CHAT_ID, GroupChat, HistoryMessage,
+    AckObservation, BOT_OPEN_ID, CallBound, CallKind, CardDisposition, CardEntityReport,
+    CardObservation, CardOperation, ClientConfig, DIRECT_CHAT_ID, FeishuLiveStatus,
+    FeishuPeerOptions, FeishuReport, GROUP_CHAT_ID, GroupChat, HistoryMessage,
     MessageSendObservation, OutboundWs, PAIRING_DIRECT_CHAT_ID, PollObservation, RecordedCall,
     RegistrationBeginOptions, RegistrationPollScript, RegistrationTenantBrand, SendDisposition,
     TRUSTED_USER_OPEN_ID, TokenScript, WsDiscoveryScript, WsUpgradeScript,
@@ -81,6 +82,7 @@ pub(crate) struct Inner {
     pub ws: WsRuntime,
     pub im: ImState,
     pub media: super::media::state::MediaState,
+    pub cards: CardState,
 }
 
 pub(crate) struct RegistrationState {
@@ -126,6 +128,216 @@ pub(crate) struct ImState {
     /// Directory response timing only. Independent from the send and token
     /// gates, so suspending the catalog cannot stall token or message paths.
     pub chat_list_hang: HangGate,
+}
+
+/// Optional stop point between the uuid pre-check and the effect commit.
+///
+/// Acceptance arms it to place two requests on *different* cards at exactly the
+/// same interleaving, so the uuid claim is observable instead of depending on
+/// timing luck. Release is a persistent watch value, so a release that happens
+/// before a request reaches the gate is never lost; the parked counter is RAII so
+/// a cancelled request cannot leave it stuck.
+#[derive(Clone)]
+pub struct CardPrecommitGate {
+    released: tokio::sync::watch::Sender<bool>,
+    waiting: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl Default for CardPrecommitGate {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+struct WaitingGuard(std::sync::Arc<std::sync::atomic::AtomicUsize>);
+
+impl WaitingGuard {
+    fn new(counter: std::sync::Arc<std::sync::atomic::AtomicUsize>) -> Self {
+        counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Self(counter)
+    }
+}
+
+impl Drop for WaitingGuard {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+impl CardPrecommitGate {
+    pub(crate) fn new() -> Self {
+        let (released, _) = tokio::sync::watch::channel(false);
+        Self {
+            released,
+            waiting: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        }
+    }
+
+    pub(crate) fn waiting(&self) -> usize {
+        self.waiting.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    pub(crate) fn released(&self) -> bool {
+        *self.released.borrow()
+    }
+
+    /// Parks until the release value is true; an already released gate never parks.
+    pub(crate) async fn park(&self) {
+        let mut released = self.released.subscribe();
+        let _waiting = WaitingGuard::new(self.waiting.clone());
+        if *released.borrow() {
+            return;
+        }
+        // `wait_for` returns immediately when the current value already matches, so
+        // a release between the check above and this await is not lost.
+        let _ = released.wait_for(|released| *released).await;
+    }
+
+    /// Releases every parked and future waiter (sticky).
+    pub(crate) fn release_all(&self) {
+        let _ = self.released.send_replace(true);
+    }
+
+    /// Polls the parked counter; callers bound the wait with their own timeout.
+    pub(crate) async fn wait_parked(&self, expected: usize) {
+        while self.waiting() < expected {
+            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+        }
+    }
+}
+
+/// Platform-side CardKit state: entities, ordered operations and the scripted
+/// answer queue. It is a network counterpart, not another product ledger.
+pub(crate) struct CardState {
+    pub entities: Vec<CardEntity>,
+    pub operations: Vec<CardObservation>,
+    pub script: VecDeque<CardDisposition>,
+    /// Armed stop point used by acceptance to create a deterministic interleaving.
+    pub precommit_gate: Option<CardPrecommitGate>,
+    /// Synthetic application scope sample. `false` answers the documented
+    /// not-authorized business code instead of applying the operation.
+    pub scope_allowed: bool,
+    pub next_id: u64,
+    pub next_ordinal: usize,
+    pub uuids: Vec<CardUuidRecord>,
+    pub hang: HangGate,
+    /// Per-entity operation locks. A card's read-validate-commit sequence, its
+    /// uuid registration and its single IM send identity all run under this lock,
+    /// so two concurrent requests for the same card can never both observe an
+    /// unsent entity, the same `sequence`, or apply one operation identity twice.
+    /// The lock is per card, never the global shared state, so a hung request
+    /// cannot stall control or shutdown.
+    pub locks: std::collections::HashMap<String, Arc<CardLockEntry>>,
+}
+
+/// One created JSON 2.0 card entity held by the peer.
+pub(crate) struct CardEntity {
+    pub card_id: String,
+    pub element_id: String,
+    pub data: serde_json::Value,
+    pub created_unix_millis: u64,
+    pub entity_bytes: usize,
+    pub sent_message_id: Option<String>,
+    pub sent_uuid: Option<String>,
+    /// The complete identity of the one published message, if any. Replay and
+    /// conflict decisions compare this identity, never the uuid alone.
+    pub sent: Option<CardSendIdentity>,
+    pub last_sequence: i64,
+    pub content: String,
+    pub streaming_closed: bool,
+    pub expired: bool,
+    pub updates: usize,
+    pub settings_updates: usize,
+}
+
+/// One per-card serialization boundary.
+///
+/// The counters are peer-side observation only: an operator can wait until a
+/// request is inside the boundary or queued on it instead of sleeping. They are
+/// independent atomics so a guard can release without awaiting.
+pub(crate) struct CardLockEntry {
+    pub mutex: Arc<Mutex<()>>,
+    waiting: AtomicUsize,
+    holders: AtomicUsize,
+    /// Private cancellation signal for requests queued on this boundary. It is a
+    /// peer-observation mechanism only: the product has no access to it, and a
+    /// client-side abort is never assumed to end the server handler.
+    abort: std::sync::Mutex<CancellationToken>,
+}
+
+impl CardLockEntry {
+    fn new() -> Self {
+        Self {
+            mutex: Arc::new(Mutex::new(())),
+            waiting: AtomicUsize::new(0),
+            holders: AtomicUsize::new(0),
+            abort: std::sync::Mutex::new(CancellationToken::new()),
+        }
+    }
+
+    pub fn begin_wait(&self) {
+        self.waiting.fetch_add(1, Ordering::SeqCst);
+    }
+
+    /// The waiter acquired the mutex: hand its registration to the holder count.
+    pub fn handoff_to_holder(&self) {
+        self.waiting.fetch_sub(1, Ordering::SeqCst);
+        self.holders.fetch_add(1, Ordering::SeqCst);
+    }
+
+    /// The waiter gave up before acquiring the mutex.
+    pub fn cancel_wait(&self) {
+        self.waiting.fetch_sub(1, Ordering::SeqCst);
+    }
+
+    pub fn left(&self) {
+        self.holders.fetch_sub(1, Ordering::SeqCst);
+    }
+
+    pub fn counters(&self) -> (usize, usize) {
+        (
+            self.waiting.load(Ordering::SeqCst),
+            self.holders.load(Ordering::SeqCst),
+        )
+    }
+
+    pub fn abort_token(&self) -> CancellationToken {
+        self.abort
+            .lock()
+            .expect("card abort token poisoned")
+            .clone()
+    }
+
+    /// Cancels requests currently queued on this boundary. A later request
+    /// receives a fresh token, so one cancelled generation cannot poison the
+    /// next one.
+    pub fn cancel_waiters(&self) {
+        let mut slot = self.abort.lock().expect("card abort token poisoned");
+        let previous = std::mem::replace(&mut *slot, CancellationToken::new());
+        previous.cancel();
+    }
+}
+
+/// Complete identity of the single IM message that published a card entity.
+#[derive(Clone, PartialEq, Eq)]
+pub(crate) struct CardSendIdentity {
+    pub message_id: String,
+    pub receive_id: String,
+    pub msg_type: String,
+    pub content: String,
+    pub uuid: String,
+}
+
+/// One already-applied CardKit operation identity.
+///
+/// The platform uses this only to answer a repeated `uuid` with the same
+/// payload idempotently and to reject the same `uuid` carrying another payload.
+pub(crate) struct CardUuidRecord {
+    pub uuid: String,
+    pub card_id: String,
+    pub operation: CardOperation,
+    pub payload: String,
+    pub code: i32,
 }
 
 /// Watch-based hang/release. A generation is released before waiters are
@@ -319,6 +531,18 @@ impl Inner {
                 hang: HangGate::new(),
                 chat_list_hang: HangGate::new(),
             },
+            cards: CardState {
+                entities: Vec::new(),
+                operations: Vec::new(),
+                script: VecDeque::from([CardDisposition::Succeed]),
+                precommit_gate: None,
+                scope_allowed: true,
+                next_id: 0,
+                next_ordinal: 1,
+                uuids: Vec::new(),
+                hang: HangGate::new(),
+                locks: std::collections::HashMap::new(),
+            },
         }
     }
 
@@ -361,6 +585,11 @@ impl Inner {
             assigned_message_id: None,
             uuid: None,
             owned_reject: false,
+            request_bytes: 0,
+            msg_type: None,
+            md_text: None,
+            card_id: None,
+            deduplicated: false,
         };
         self.calls.push(call.clone());
         call
@@ -394,6 +623,43 @@ impl Inner {
                 ));
             }
         }
+        // Documented per-chat limit: at most five accepted sends in one second.
+        // The peer only reports the rule; it never invents pacing for the product.
+        let mut sent: Vec<(&str, u64)> = self
+            .calls
+            .iter()
+            .filter(|call| {
+                call.accepted
+                    && !call.deduplicated
+                    && call.kind == Some(CallKind::MessageSend)
+                    && call
+                        .assigned_message_id
+                        .as_ref()
+                        .is_some_and(|id| !id.is_empty())
+            })
+            .filter_map(|call| {
+                let chat = call
+                    .send_body
+                    .as_ref()
+                    .and_then(|body| body.get("receive_id"))
+                    .and_then(serde_json::Value::as_str)?;
+                Some((chat, call.unix_millis))
+            })
+            .collect();
+        sent.sort_by_key(|(_, millis)| *millis);
+        for (index, (chat, millis)) in sent.iter().enumerate() {
+            let window = sent[index..]
+                .iter()
+                .take_while(|(_, later)| *later < millis.saturating_add(1_000))
+                .filter(|(other, _)| other == chat)
+                .count();
+            if window > 5 {
+                violations.push(format!(
+                    "more than five accepted sends to {chat} within one second at {millis}"
+                ));
+                break;
+            }
+        }
         let complete = unconsumed.is_empty() && violations.is_empty() && join_error.is_none();
         FeishuReport {
             complete,
@@ -415,6 +681,8 @@ impl Inner {
                 resources
             },
             media_status: self.media.status(),
+            cards: self.card_observations(),
+            card_entities: self.card_entity_reports(),
             violations,
             unconsumed,
             token_calls: self.token.calls,
@@ -478,6 +746,84 @@ impl Inner {
         chat_id == DIRECT_CHAT_ID
             || chat_id == PAIRING_DIRECT_CHAT_ID
             || self.group(chat_id).is_some()
+    }
+
+    /// Next scripted answer for one CardKit request.
+    pub fn next_card_disposition(&mut self) -> CardDisposition {
+        self.cards
+            .script
+            .pop_front()
+            .unwrap_or(CardDisposition::Succeed)
+    }
+
+    /// Ordered platform card facts as observed so far.
+    pub fn card_observations(&self) -> Vec<CardObservation> {
+        self.cards.operations.clone()
+    }
+
+    /// Current platform state of every created card entity.
+    pub fn card_entity_reports(&self) -> Vec<CardEntityReport> {
+        self.cards
+            .entities
+            .iter()
+            .map(|entity| CardEntityReport {
+                card_id: entity.card_id.clone(),
+                element_id: entity.element_id.clone(),
+                entity_bytes: entity.entity_bytes,
+                entity_json: serde_json::to_string(&entity.data).unwrap_or_default(),
+                created_unix_millis: entity.created_unix_millis,
+                sent_message_id: entity.sent_message_id.clone(),
+                sent_uuid: entity.sent_uuid.clone(),
+                last_sequence: entity.last_sequence,
+                content: entity.content.clone(),
+                streaming_closed: entity.streaming_closed,
+                expired: entity.expired,
+                updates: entity.updates,
+                settings_updates: entity.settings_updates,
+            })
+            .collect()
+    }
+
+    /// Marks one existing card entity as past its documented 14-day window.
+    pub fn expire_card(&mut self, card_id: &str) -> bool {
+        match self
+            .cards
+            .entities
+            .iter_mut()
+            .find(|entity| entity.card_id == card_id)
+        {
+            Some(entity) => {
+                entity.expired = true;
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Lock identity of one card entity. Callers await this lock outside the
+    /// shared state and release it by dropping the guard.
+    pub fn card_lock(&mut self, card_id: &str) -> Arc<CardLockEntry> {
+        Arc::clone(
+            self.cards
+                .locks
+                .entry(card_id.to_owned())
+                .or_insert_with(|| Arc::new(CardLockEntry::new())),
+        )
+    }
+
+    /// `(waiting, holders)` of one card serialization boundary.
+    pub fn card_lock_counters(&self, card_id: &str) -> (usize, usize) {
+        self.cards
+            .locks
+            .get(card_id)
+            .map_or((0, 0), |entry| entry.counters())
+    }
+
+    /// Cancels every request currently queued on one card boundary.
+    pub fn cancel_card_waiters(&self, card_id: &str) {
+        if let Some(entry) = self.cards.locks.get(card_id) {
+            entry.cancel_waiters();
+        }
     }
 }
 

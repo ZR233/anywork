@@ -2,6 +2,7 @@
 
 mod machine;
 
+pub(crate) use machine::MAX_FEEDBACK_BYTES;
 pub use machine::{
     AgentSessionPlanConfirmationDecision, AgentSessionPlanError, AgentSessionPlanMachine,
     AgentSessionPlanResolveCommand, AgentSessionPlanRestartCommand, AgentSessionPlanSubmitCommand,

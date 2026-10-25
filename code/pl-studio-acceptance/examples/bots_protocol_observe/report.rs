@@ -135,8 +135,10 @@ impl RunSummary {
             gaps.push(GAP_REGISTRATION_FULL);
             gaps.push(GAP_REGISTRATION_CANCEL);
         }
-        if !passed(CASE_REPLY_INTERACTION_RESTART) {
+        if !passed(CASE_REPLY_INTERACTION_RESTART) && !passed(CASE_AGENT_DEFINITIONS) {
             gaps.push(GAP_SAME_HOME_RESTART);
+        }
+        if !passed(CASE_REPLY_INTERACTION_RESTART) {
             gaps.push(GAP_LOCAL_CONTINUATION);
         }
         if !passed(CASE_REPLY_SEND_OUTCOMES) {
@@ -156,6 +158,7 @@ const CASE_REGISTRATION_LIFECYCLE: &str = "registration-lifecycle";
 const CASE_REPLY_INTERACTION_RESTART: &str = "reply-interaction-restart";
 const CASE_REPLY_SEND_OUTCOMES: &str = "reply-send-outcomes-restart";
 const CASE_OWNER_BINDING: &str = "owner-binding-occupancy";
+const CASE_AGENT_DEFINITIONS: &str = "agent-definitions-mode-recovery";
 
 // Ranges no current observe case can prove; always reported.
 const GAP_TIMELINE_WINDOW: &str =
@@ -176,40 +179,34 @@ const GAP_REGISTRATION_CANCEL_CLAIM_WINDOW: &str = "registration cancel precise 
 const GAP_SAME_HOME_RESTART: &str = "same-home restart recovery";
 const GAP_LOCAL_CONTINUATION: &str =
     "interaction desktop resolution along canonical continuation_id";
-const GAP_SEGMENTED_OUTCOMES: &str =
-    "automatic formal-reply .md-file/notice Partial and post Unknown facts across restart";
+const GAP_SEGMENTED_OUTCOMES: &str = "official card-stream Reject/Unknown outcomes, stable operation identities and cold no-replay facts";
 const GAP_OWNER_BINDING: &str = "explicit local conversation-Thread creation: stale-creation rejection before the first write, \
      first-occupancy publication and same-operation replay";
 
 const GAP_CHAT_ISOLATION: &str =
     "bot+chat identity isolation and complete actual model-request context exclusion";
 const GAP_MEDIA_INGRESS: &str = "raw media/file admission, actual native blocks, execution bytes and native-to-text cold recovery";
-const GAP_FILE_SOURCE: &str = "current/canonical-continuation file source authorization and public revocation/local-input rejection";
-const GAP_MARKDOWN: &str =
-    "verbatim Markdown post, complete long .md download and full-JSON encoding limit";
-const GAP_UPLOAD_OUTCOMES: &str =
-    "real upload Reject/AcceptThenDrop/Hang-cancel and cold no-replay ledger evidence";
-const GAP_FILE_SEND_OUTCOMES: &str = "real file-message Reject/AcceptThenDrop/Hang-cancel after accepted upload and cold no-replay evidence";
+const GAP_FILE_SOURCE: &str = "explicit publish_artifact: saved typed originals including 0B/unknown-extension/no-extension/Chinese-space filenames, exact bytes/digest/MIME/name readback without transcoding or suffix changes; directory creates no artifact/platform POST, Thread/resource ownership denial with toolsEnabled=false";
+const GAP_MARKDOWN: &str = "per-item public Commentary/Final cards, 4000 Unicode scalar and serialized 30000-byte bounds, explicit truncation hint and unmodified full local history (stage two)";
+const GAP_UPLOAD_OUTCOMES: &str = "stage two pending: saved-artifact upload Reject/AcceptThenDrop/Hang-cancel and cold no-replay ledger evidence; obsolete file-tool case cannot close this gap";
+const GAP_FILE_SEND_OUTCOMES: &str = "stage two pending: saved-artifact file-message Reject/AcceptThenDrop/Hang-cancel after accepted upload and cold no-replay evidence; obsolete file-tool case cannot close this gap";
 const GAP_FILE_COMPACTION: &str = "real Studio manual compact of pure text with old-Turn files, replacement/cold rebuild and shutdown cancellation";
 const GAP_COMPACT_OUTER_TIMEOUT: &str = "outer case timeout drops its future while a real public Studio compact is held; Session must close/join before peer cleanup";
-const GAP_SAME_TURN_STEERING: &str = "same-Turn steering file-source rejection: public HTTP prompt interrupts into a fresh Turn, so this is not proved by running-turn local-input evidence";
-const GAP_FILE_TOOL_REPLAY: &str = "same submit_bot_file call identity with altered file intent is not publicly replayable through ordinary model tool calls";
+const GAP_FRONTEND_DELIVERY: &str = "stage two: saved PublicArtifact frontend delivery claim/lease/fencing and exact item/revision/saved proof, audience Pause/Close/revocation including card close and aux IM, Unknown/restart, old limited-Final migration and auto-init without seeded bindings or manual Enable";
+const GAP_UNSUPPORTED_FIRST_INPUT: &str = "unsupported-only first inbound must not create a Thread or model execution; existing post presence checks after binding do not prove this boundary";
+const GAP_PUBLICATION_REPLAY: &str = "same publish_artifact invocation/publication identity with altered original or display name needs independent public-boundary conflict evidence";
 const GAP_REAL_MEDIA_BOUNDARIES: &str = "real Feishu tenant/client rendering, native GUI and remote SSH file boundaries require separate human review";
-const GAP_FILE_SOURCE_CHILD_PROJECT: &str = "child file-tool exclusion and separate project/cross-chat tool permissions require independent public-boundary evidence";
+const GAP_FILE_SOURCE_CHILD_PROJECT: &str = "child publications remain in their own Thread; project/cross-chat audience eligibility needs independent frontend-boundary evidence";
 const GAP_ADMISSION_CEILINGS: &str =
     "ordinary public multipart 50MiB/32-file/128MiB admission ceilings and exact original readback";
-const GAP_OUTGOING_CEILINGS: &str =
-    "nonempty/30,000,000-byte outgoing file boundaries are not all exercised by these journeys";
+const GAP_OUTGOING_CEILINGS: &str = "stage two: Feishu rejects empty or over-30,000,000-byte outgoing files while local originals remain valid and channel rejection/non-delivery is explicit";
 const GAP_PRE_MESSAGE_CANCEL: &str = "uploadAccepted + messageNotStarted + stopReasonCancelled requires a deterministic public pre-message cancellation boundary; on-wire Hang cancellation is not that evidence";
 
 fn append_file_gaps(gaps: &mut Vec<&'static str>, passed: &impl Fn(&str) -> bool) {
     for (case, gap) in [
         ("chat-isolation", GAP_CHAT_ISOLATION),
         ("chat-media-ingress", GAP_MEDIA_INGRESS),
-        ("bot-file-source", GAP_FILE_SOURCE),
-        ("bot-markdown-transfer", GAP_MARKDOWN),
-        ("bot-upload-outcomes", GAP_UPLOAD_OUTCOMES),
-        ("bot-file-send-outcomes", GAP_FILE_SEND_OUTCOMES),
+        ("public-artifact-source", GAP_FILE_SOURCE),
         ("user-file-compaction", GAP_FILE_COMPACTION),
         ("user-file-compaction-timeout", GAP_COMPACT_OUTER_TIMEOUT),
         ("user-file-admission-limits", GAP_ADMISSION_CEILINGS),
@@ -219,8 +216,14 @@ fn append_file_gaps(gaps: &mut Vec<&'static str>, passed: &impl Fn(&str) -> bool
         }
     }
     gaps.extend([
-        GAP_SAME_TURN_STEERING,
-        GAP_FILE_TOOL_REPLAY,
+        // Quarantined historical verdicts are never current-policy evidence,
+        // even if a caller supplies an old same-name Passed result.
+        GAP_MARKDOWN,
+        GAP_UPLOAD_OUTCOMES,
+        GAP_FILE_SEND_OUTCOMES,
+        GAP_FRONTEND_DELIVERY,
+        GAP_UNSUPPORTED_FIRST_INPUT,
+        GAP_PUBLICATION_REPLAY,
         GAP_REAL_MEDIA_BOUNDARIES,
         GAP_FILE_SOURCE_CHILD_PROJECT,
         GAP_OUTGOING_CEILINGS,

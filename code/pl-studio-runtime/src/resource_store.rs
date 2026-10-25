@@ -1,6 +1,7 @@
 //! Persistent resource bytes, independent of tool payload formats and session SQL schemas.
 
 mod remote;
+pub(crate) mod thread;
 pub use remote::RemoteCommandOutputArchive;
 use std::{
     fs::File,
@@ -8,6 +9,8 @@ use std::{
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
 };
+pub use thread::ThreadResourceStore;
+pub(crate) use thread::{ArchiveHandoff, ArchiveOrigin, InputPreparation, PublicationEligibility};
 
 use cap_fs_ext::{DirExt, FollowSymlinks, OpenOptionsFollowExt, OpenOptionsSyncExt};
 use cap_std::fs::{Dir, DirEntry, Metadata, OpenOptions, ReadDir};
@@ -464,7 +467,7 @@ pub struct LocalCommandOutputArchive(FileResourceStore);
 impl pl_tool::exec::CommandOutputArchive for LocalCommandOutputArchive {
     async fn retain(
         &self,
-        _: &str,
+        _: &pl_tool::media::ToolResourceOrigin,
         snapshot: &pl_tool::command::CommandOutputSnapshot,
     ) -> Result<ResourceReference, pl_core::tool::opaque::ToolError> {
         self.0

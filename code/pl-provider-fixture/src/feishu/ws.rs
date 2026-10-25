@@ -10,7 +10,7 @@ use serde::Deserialize;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
-use super::http::HttpState;
+use super::guard::HttpState;
 use super::state::{WsConn, note_ping, record_ack, retire_socket};
 use super::types::{
     CallKind, ClientConfig, EventBody, OutboundWs, SyntheticEvent, WsUpgradeScript,

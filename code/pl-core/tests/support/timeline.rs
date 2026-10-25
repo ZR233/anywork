@@ -7,7 +7,7 @@
 use std::{
     collections::BTreeMap,
     sync::{
-        Arc, Mutex, OnceLock,
+        Arc, Mutex, OnceLock, Weak,
         atomic::{AtomicBool, AtomicUsize, Ordering},
     },
 };
@@ -156,6 +156,7 @@ impl ChatHistory for GatedHistory {
 pub struct Counting {
     inner: Stored,
     pub item_reads: Arc<AtomicUsize>,
+    pub page_reads: Arc<AtomicUsize>,
 }
 
 impl Counting {
@@ -163,6 +164,7 @@ impl Counting {
         Self {
             inner,
             item_reads: Arc::new(AtomicUsize::new(0)),
+            page_reads: Arc::new(AtomicUsize::new(0)),
         }
     }
 }
@@ -177,6 +179,7 @@ impl ChatHistory for Counting {
         before: Option<&ChatCursor>,
         limit: usize,
     ) -> Result<ChatHistoryPage, ChatError> {
+        self.page_reads.fetch_add(1, Ordering::Relaxed);
         self.inner.page(before, limit).await
     }
 
@@ -185,6 +188,55 @@ impl ChatHistory for Counting {
         // Yield so two concurrent callers genuinely interleave before either can cache a body.
         tokio::task::yield_now().await;
         self.inner.item(item_id).await
+    }
+}
+
+/// Decodes a fresh large body per point read, remembering only a weak reference to the last body.
+/// A metadata reader retaining full decoded items is detected at the next read, without measuring
+/// allocator/RSS behavior or keeping the fixture's own copies of the large bodies.
+#[derive(Debug)]
+pub struct GeneratedBodies {
+    pub item_reads: Arc<AtomicUsize>,
+    pub last_body: Arc<Mutex<Weak<ContentBlock>>>,
+    body_bytes: usize,
+}
+
+impl GeneratedBodies {
+    pub fn new(body_bytes: usize) -> Self {
+        Self {
+            item_reads: Arc::new(AtomicUsize::new(0)),
+            last_body: Arc::new(Mutex::new(Weak::new())),
+            body_bytes,
+        }
+    }
+}
+
+impl ChatHistory for GeneratedBodies {
+    async fn latest_allocated_order(&self) -> Result<u64, ChatError> {
+        Ok(0)
+    }
+
+    async fn page(
+        &self,
+        _before: Option<&ChatCursor>,
+        _limit: usize,
+    ) -> Result<ChatHistoryPage, ChatError> {
+        Err(ChatError::History(
+            std::io::Error::other("unexpected history page scan").into(),
+        ))
+    }
+
+    async fn item(&self, item_id: &str) -> Result<Option<ChatItem>, ChatError> {
+        let mut last = self.last_body.lock().unwrap();
+        if last.upgrade().is_some() {
+            return Err(ChatError::History(
+                std::io::Error::other("previous decoded body is still retained").into(),
+            ));
+        }
+        let order = self.item_reads.fetch_add(1, Ordering::Relaxed) as u64 + 1;
+        let item = identified(item_id, order, 7, &"x".repeat(self.body_bytes), true);
+        *last = Arc::downgrade(item.body().unwrap());
+        Ok(Some(item))
     }
 }
 

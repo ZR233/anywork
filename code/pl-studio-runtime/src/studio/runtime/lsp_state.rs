@@ -108,6 +108,9 @@ impl LspStateRuntime {
     }
 
     pub(super) async fn refresh(&self, health: StudioLspHealth) -> anyhow::Result<()> {
+        // Share the command boundary with stopped and explicit operations, so a snapshot read
+        // before shutdown cannot later publish over the confirmed terminal state.
+        let _command = self.command().await;
         let previous = self.read().await;
         if matches!(
             previous.state.kind(),
@@ -137,7 +140,12 @@ impl LspStateRuntime {
     }
 
     pub(super) async fn stopped(&self) -> anyhow::Result<()> {
+        let _command = self.command().await;
         let previous = self.read().await;
+        // Reuse the first confirmed terminal revision/time without emitting another event.
+        if previous.state.kind() == ObservedResourceKind::Stopped {
+            return Ok(());
+        }
         self.publish(StudioLspStateSnapshot {
             state: previous
                 .state

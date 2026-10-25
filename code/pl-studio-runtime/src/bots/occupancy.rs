@@ -85,10 +85,10 @@ impl OccupancyTasks {
         }
     }
 
-    /// Shutdown has already sealed/drained normal registration. Its existing operation task slot
-    /// still needs the same global metadata/slot backpressure while joining resource maintenance.
-    /// This allocates permits only; it does not add another task registry or allow production.
-    pub(super) fn maintenance_budget(&self, bytes: usize) -> Result<OccupancyBudget, FeishuError> {
+    /// Budget for a task registered by another bot-owned lifecycle boundary (prepare continuation
+    /// or shutdown resource maintenance). This only allocates the same global permits; that owner
+    /// must register before spawning and recheck its own admission/seal boundary.
+    pub(super) fn task_budget(&self, bytes: usize) -> Result<OccupancyBudget, FeishuError> {
         let amount = u32::try_from(bytes).map_err(|_| freeze_budget_error())?;
         if bytes > OCCUPANCY_TEXT_BYTES {
             return Err(freeze_budget_error());
@@ -209,7 +209,7 @@ fn reap_finished(tasks: &mut JoinSet<()>, abnormal: &AtomicBool) {
     }
 }
 
-struct PublishOnExit(BotRuntime);
+pub(super) struct PublishOnExit(pub(super) BotRuntime);
 
 impl Drop for PublishOnExit {
     fn drop(&mut self) {

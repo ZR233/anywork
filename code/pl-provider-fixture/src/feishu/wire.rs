@@ -21,13 +21,20 @@ use super::types::{
     ChatType, EventBody, Mention, SenderKind, SyntheticEvent, TRUSTED_USER_OPEN_ID,
 };
 
-pub const REQUIRED_TENANT_SCOPES: [&str; 6] = [
+pub const REQUIRED_TENANT_SCOPES: [&str; 8] = [
     "im:message:send_as_bot",
     "im:message.p2p_msg:readonly",
     "im:message.group_at_msg:readonly",
     "im:chat:readonly",
     "im:message:readonly",
     "im:resource:upload",
+    // Current image/file receiving capability. Adding CardKit must not drop an
+    // in-service receiving scope.
+    "im:resource",
+    // Official CardKit entity create/update scope. The fixture rejects the
+    // broad `im:message` scope and any extra scope, so a wider grant cannot be
+    // mistaken for a passing template.
+    "cardkit:card:write",
 ];
 pub const REQUIRED_TENANT_EVENTS: [&str; 1] = ["im.message.receive_v1"];
 

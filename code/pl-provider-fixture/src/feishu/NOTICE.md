@@ -22,8 +22,9 @@ The resource samples independently follow the official [file upload API](https:/
 [send content](https://open.feishu.cn/document/server-docs/im-v1/message-content-description/create_json),
 and [receive content](https://open.feishu.cn/document/server-docs/im-v1/message-content-description/receive_json)
 contracts. `lark-cli` 1.0.98 `schema im.files.create` was also inspected statically:
-its bot upload scope is `im:resource:upload`; the listed `im:resource` is an
-alternative/user scope, not an additional default application requirement.
+its bot upload scope is `im:resource:upload`. The CLI's alternatives do not
+independently dictate the registration template: this peer also retains the
+existing `im:resource` receiving capability and main's `cardkit:card:write`.
 No real platform, CLI account or credential is used by this peer.
 
 - `FeishuControl::register_resource(media::SyntheticResource)` registers one
@@ -42,14 +43,21 @@ No real platform, CLI account or credential is used by this peer.
   inspection or transcoding. Empty, missing, duplicate, unknown and oversized
   fields are rejected. A successful upload stores bytes but sends no message.
 - Message send preserves legacy nonempty `text`, a typed `zh_cn` post sample
-  with `md`/`text` paragraphs, and `file` with only a peer-uploaded `file_key`.
-  The **entire encoded HTTP JSON body** is limited to 30,000 bytes. `md` must
-  occupy its own paragraph. Other rich-text tags are available for inbound
-  image/media samples, not a claim to model the whole outbound rich-text grammar.
-  Send/history/read responses use received content objects. Posts retain original
-  paragraphs in `content_v2`; the legacy sample presents Markdown as plain text
-  without rendering or claiming platform layout equivalence. Accepted sends are
-  observable via history and `GET /open-apis/im/v1/messages/{message_id}`.
+  with `md`/`text` nodes (including a mixed paragraph), the supported opaque
+  RichPost wire, `interactive` CardKit references, and `file` with only a
+  peer-uploaded `file_key`. Both post representations first use the same
+  documented node-field and paragraph validation; choosing the typed sample
+  adds no layout restriction. Paragraphs may mix supported nodes; only `img`
+  and `media` require independent paragraphs. Typed observations preserve node
+  order/text, while broader validated RichPost observations retain original
+  wire without interpretation. This is not a claim to implement every locale,
+  arbitrary opaque posts without `md`, or the whole outbound rich-text grammar.
+  The **entire encoded HTTP JSON body** is limited to 30,000 bytes.
+  Send/history/read responses for ordinary messages use received content
+  objects. Posts retain original paragraphs in `content_v2`; the legacy sample
+  presents Markdown as plain text without rendering or claiming platform layout
+  equivalence. Accepted sends are observable via history and
+  `GET /open-apis/im/v1/messages/{message_id}`.
 - `media::{UploadDisposition, ResourceDownloadDisposition}` scripts are separate
   from `SendDisposition`. A validated upload selects one step, then `Hang` waits
   before storage; explicit release succeeds and shutdown stores nothing.
@@ -77,3 +85,42 @@ platform storage from a successful response. `ResponsePrepared` and
 `preparedBytes` describe planned peer bytes, **not proof of client delivery**.
 These facts never decide product admission, tools, chat-to-thread mapping,
 Succeeded/Partial/Unknown, real tenant compatibility or client rendering.
+
+## Fixed-main integration
+
+The integrated namespace keeps main's CardKit create/element/settings routes,
+per-card serialization, positive-int32 shared sequence, UUID replay/conflict,
+one-time IM publication, expiry, faults and complete `entity_json` observations.
+The same official element route may update any markdown element actually
+registered in that card. No element name carries special host semantics. Element
+ids follow JSON 2.0's ASCII letter-led, letter/digit/underscore, 20-byte rule;
+content UUID identity includes the target element and sequence, and settings
+identity includes its sequence. Equal text on another element or a changed
+sequence cannot masquerade as a replay (including an out-of-int32 sequence).
+The first markdown element remains the
+`CardEntityReport.content` summary; `entity_json` preserves every element.
+
+CardKit's independent platform entity limit remains 30 KiB and content limit
+100,000 characters. Product policy (4,000 scalars, conservative 30,000-byte
+requests, 200 ms pacing, truncation notices and independent host status) is not
+implemented by this peer. Platform facts stay inspectable for D2 to judge.
+No automatic transcript, chunking, filtering, history-save or delivery claim is
+introduced here. Rejected/cancelled ordinary sends have no assigned platform
+message identity and are not counted as successful per-chat QPS effects.
+
+The default independent scope sample has eight scopes: the five granular IM
+capabilities, `im:resource`, `im:resource:upload`, and `cardkit:card:write`; it
+does not add broad `im:message` or `im:message.group_msg`.
+
+`FeishuControl::set_file_message_key_mode(media::FileMessageKeyMode::MessageScoped)`
+makes later accepted file messages expose a distinct message-scoped readback key.
+`PreserveUploadKey` remains the default. Download verifies the exact message/key
+binding and resolves the alias to the same retained original bytes; it does not
+duplicate file storage or change the upload-key identity in safe summaries.
+The aliases are bounded by the existing 512 message-request lifetime budget.
+`MessageContentObservation::RichPost { content, md_text }` preserves main's
+documented rich-post wire outside the small typed md/text sample without
+expanding product DTOs or rendering Markdown.
+
+ACK numeric narrowing uses checked int32 conversion: malformed/out-of-range
+codes remain `None`, and `200 + 2^32` cannot become a successful `Some(200)`.

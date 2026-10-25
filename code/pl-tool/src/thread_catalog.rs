@@ -7,6 +7,7 @@ use pl_protocol::ToolSpec;
 pub enum ThreadBuiltin {
     ViewImage,
     ShowImage,
+    PublishArtifact,
     CreateDirectory,
     DeletePath,
     CopyPath,
@@ -53,6 +54,7 @@ impl ThreadBuiltin {
                 "Open a local or SSH workspace image so you can inspect screenshots and other image files. Pass its path in the current workspace; SSH paths must be workspace-relative POSIX paths. The image is retained for model context and history replay. Requires image input support from the current model.",
             ),
             Self::ShowImage => crate::image_card::ThreadShowImageTool::declaration(),
+            Self::PublishArtifact => crate::artifact::declaration(),
             Self::StatPath => schema::<crate::file::PathInput>(
                 "stat_path",
                 "Return metadata for a workspace path, or exists: false when the path is absent.",

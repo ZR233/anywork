@@ -47,6 +47,11 @@ sealed class ThreadWorkspaceUpdate {
   const ThreadWorkspaceUpdate();
 }
 
+final class ThreadAudienceUpdate extends ThreadWorkspaceUpdate {
+  const ThreadAudienceUpdate(this.audience);
+  final ThreadAudience audience;
+}
+
 final class ThreadTurnUpdate extends ThreadWorkspaceUpdate {
   const ThreadTurnUpdate(this.turn);
 

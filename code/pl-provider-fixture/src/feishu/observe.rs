@@ -44,6 +44,7 @@ pub async fn run_feishu_observe(options: FeishuObserveOptions) -> Result<()> {
         observe_late_completed(&client, &origin, &control).await?;
         observe_token_hang(&client, &origin, &control).await?;
         observe_im(&client, &origin).await?;
+        super::observe_cards::observe_markdown_and_cards(&client, &origin, &control).await?;
         observe_ws_reconnect_and_fragments(&client, &origin, &ws_origin, &control).await?;
         ensure!(
             control.begin_in_flight().await == 0,
@@ -58,6 +59,7 @@ pub async fn run_feishu_observe(options: FeishuObserveOptions) -> Result<()> {
     let drive_result: Result<()> = drive.await;
     let report = peer.shutdown().await;
     observe_strict_negative().await?;
+    super::observe_cards::observe_card_protocol_invariants().await?;
     observe_lifecycle_idempotent().await?;
     observe_status_file_error().await?;
     observe_live_ws_shutdown().await?;
@@ -66,7 +68,7 @@ pub async fn run_feishu_observe(options: FeishuObserveOptions) -> Result<()> {
     finish_observe(drive_result, report)
 }
 
-fn observe_http_client() -> Result<Client> {
+pub(super) fn observe_http_client() -> Result<Client> {
     Client::builder()
         .no_proxy()
         .redirect(Policy::none())
@@ -364,11 +366,17 @@ async fn observe_im(client: &Client, origin: &str) -> Result<()> {
         ))
         .bearer_auth(TENANT_ACCESS_TOKEN)
         .json(&serde_json::json!({
-            "receive_id": GROUP_CHAT_ID,
-            "msg_type": "text",
-            "content": "{\"text\":\"fixture reply\"}",
-            "uuid": "uuid-anywork-fixture-observe-01"
-        }))
+                    "receive_id": GROUP_CHAT_ID,
+                    "msg_type": "post",
+                    "content": serde_json::json!({
+                        "zh_cn": {
+                            "title": "fixture",
+                            "content": [[{ "tag": "md", "text": "**fixture** reply" }]]
+        }
+                    })
+                    .to_string(),
+                    "uuid": "uuid-anywork-fixture-observe-01"
+                }))
         .send()
         .await?;
     let send_json: serde_json::Value = send.json().await?;
@@ -455,6 +463,10 @@ async fn observe_ws_reconnect_and_fragments(
     Ok(())
 }
 
+/// A synthetic card entity whose serialized length is exactly `target` bytes.
+///
+/// Multi-byte padding makes the UTF-8 boundary exact, so the 30 KB check is
+/// proven on the real encoded document rather than on a character count.
 async fn observe_strict_negative() -> Result<()> {
     let mut peer = FeishuPeer::start().await?;
     let drive = async {

@@ -126,6 +126,7 @@ final class TimelineDisplayLease {
     required this.threadId,
     required this.generation,
     required this.openQueries,
+    this.openAudience,
   }) : _controller = InMemoryChatController() {
     _presentation = TimelinePresentationController(
       _controller,
@@ -139,6 +140,55 @@ final class TimelineDisplayLease {
 
   /// 每次 attempt 变化后按需重建查询 scope 的入口（由 owner 提供）。
   final StudioTimelineQueryScope? Function(int generation) openQueries;
+  final ThreadAudienceScope Function()? openAudience;
+  ThreadAudienceScope? _audience;
+  final Map<Object, Set<String>> _audienceDemands = {};
+  bool _audienceDemandScheduled = false;
+
+  ThreadAudienceScope? get audience {
+    if (_retired) return null;
+    final current = _audience;
+    if (current != null) return current;
+    // Keep admission failures with the explicit caller, not an unowned demand
+    // microtask. A retry applies any already registered current-row demand.
+    final scope = openAudience?.call();
+    _audience = scope;
+    if (scope != null) _scheduleAudienceDemand();
+    return scope;
+  }
+
+  /// Demand comes from mounted presentation rows, using their visible
+  /// canonical member IDs, not the display-group ID or every loaded history row.
+  void setAudienceDemand(Object owner, Iterable<String> ids) {
+    if (_retired) return;
+    _audienceDemands[owner] = ids.toSet();
+    _scheduleAudienceDemand();
+  }
+
+  void removeAudienceDemand(Object owner) {
+    _audienceDemands.remove(owner);
+    _scheduleAudienceDemand();
+  }
+
+  void _scheduleAudienceDemand() {
+    if (_retired || _audienceDemandScheduled) return;
+    _audienceDemandScheduled = true;
+    scheduleMicrotask(() {
+      _audienceDemandScheduled = false;
+      if (_retired) return;
+      final revisions = <String, int>{};
+      for (final ids in _audienceDemands.values) {
+        for (final id in ids) {
+          final item = payloadOf(id)?.item;
+          if (item != null) revisions[id] = item.revision;
+        }
+      }
+      if (revisions.isNotEmpty || _audience != null) {
+        _audience?.setVisible(revisions);
+      }
+    });
+  }
+
   final InMemoryChatController _controller;
   final ScrollController _scrollController = ScrollController(
     keepScrollOffset: false,
@@ -248,23 +298,33 @@ final class TimelineDisplayLease {
   Future<void> retire() {
     if (_retired) return _released.future;
     _retired = true;
+    _audienceDemands.clear();
+    final audienceScope = _audience;
+    _audience = null;
+    audienceScope?.retire();
     final scope = _queries;
     _queries = null;
-    if (scope == null) {
+    if (scope == null && audienceScope == null) {
       _queriesSettled = true;
     } else {
       // 先拒绝新工作与迟到发布，再等**已经受理**的真实查询退出；不丢 scope、不假装
       // 成功（design/26 §26.8）。
-      scope.retire();
-      unawaited(_settleQueries(scope));
+      scope?.retire();
+      unawaited(_settleQueries(scope, audienceScope));
     }
     _releaseIfReady();
     return _released.future;
   }
 
-  Future<void> _settleQueries(StudioTimelineQueryScope scope) async {
+  Future<void> _settleQueries(
+    StudioTimelineQueryScope? scope,
+    ThreadAudienceScope? audienceScope,
+  ) async {
     try {
-      await scope.close();
+      await Future.wait<void>([
+        if (scope != null) scope.close(),
+        if (audienceScope != null) audienceScope.close(),
+      ]);
     } finally {
       _queriesSettled = true;
       _releaseIfReady();
@@ -697,11 +757,14 @@ final class TimelineSessionOwner {
 
   void _startGeneration(String threadId, StudioTimelineBaseline baseline) {
     final previous = _current;
+    final generation = ++_generation;
     final lease = TimelineDisplayLease(
       threadId: threadId,
-      generation: ++_generation,
+      generation: generation,
       openQueries: (generation) =>
           _sessionOf(threadId)?.timeline.openScope(generation: generation),
+      openAudience: () =>
+          _client.audienceQueries.openScope(threadId, generation),
     );
     lease.adoptBaseline(baseline);
     _current = lease;

@@ -1,5 +1,6 @@
 //! Explicitly installed tools. Thread execution and lifecycle mechanisms belong to pl-core.
 
+pub mod artifact;
 pub mod image;
 pub mod image_card;
 pub mod image_generation;

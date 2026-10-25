@@ -11,11 +11,18 @@ import '../../shared/studio_driver_keys.dart';
 import 'settings_common.dart';
 import 'settings_account_drafts.dart';
 import 'settings_account_usage.dart';
+import 'settings_acp_account_details.dart';
 
 class AccountList extends StatelessWidget {
   const AccountList({
     super.key,
     required this.accounts,
+    required this.acpEntries,
+    required this.acpNotices,
+    required this.selectedAcpAccountId,
+    required this.onSelectAcp,
+    required this.onEditAcp,
+    required this.onRemoveAcp,
     this.selectedAccountId,
     required this.defaultAccountId,
     required this.filtering,
@@ -33,6 +40,16 @@ class AccountList extends StatelessWidget {
   });
 
   final List<AccountSettingsView> accounts;
+
+  /// ACP 接入条目：与 Native 账号同一列表，但各自按 typed 分支渲染。
+  final List<AcpAccountEntryView> acpEntries;
+
+  /// 按目标接入记账的命令失败通知：只出现在目标行，不跨账号串位。
+  final Map<String, AcpCommandNotice> acpNotices;
+  final String? selectedAcpAccountId;
+  final ValueChanged<AcpAccountEntryView> onSelectAcp;
+  final ValueChanged<AcpAccountEntryView> onEditAcp;
+  final ValueChanged<AcpAccountEntryView>? onRemoveAcp;
   final String? selectedAccountId;
   final String? defaultAccountId;
   final bool filtering;
@@ -82,7 +99,7 @@ class AccountList extends StatelessWidget {
         ),
         const SizedBox(height: 14),
         Expanded(
-          child: accounts.isEmpty
+          child: accounts.isEmpty && acpEntries.isEmpty
               ? Center(
                   child: StudioEmptyState(
                     icon: Icons.cloud_off_outlined,
@@ -114,6 +131,17 @@ class AccountList extends StatelessWidget {
                           onDelete: onDelete == null
                               ? null
                               : () => onDelete!(account),
+                        ),
+                      for (final entry in acpEntries)
+                        AcpAccountListRow(
+                          entry: entry,
+                          selected: entry.id == selectedAcpAccountId,
+                          notice: acpNotices[entry.id],
+                          onOpen: () => onSelectAcp(entry),
+                          onEdit: () => onEditAcp(entry),
+                          onRemove: onRemoveAcp == null
+                              ? null
+                              : () => onRemoveAcp!(entry),
                         ),
                     ],
                   ),
@@ -244,6 +272,217 @@ class AccountListRow extends StatelessWidget {
       ),
     );
   }
+}
+
+/// ACP 接入行：品牌、名称、接入协议与认证状态摘要。
+///
+/// 状态同时用图标与文本表达，不只依赖颜色；长程序路径单行省略并保留 tooltip。
+class AcpAccountListRow extends StatelessWidget {
+  const AcpAccountListRow({
+    super.key,
+    required this.entry,
+    required this.selected,
+    this.notice,
+    required this.onOpen,
+    required this.onEdit,
+    this.onRemove,
+  });
+
+  final AcpAccountEntryView entry;
+  final bool selected;
+
+  /// 该行自己的命令失败摘要（已本地化）；安全原文只在详情页折叠诊断里。
+  final AcpCommandNotice? notice;
+  final VoidCallback onOpen;
+  final VoidCallback onEdit;
+  final VoidCallback? onRemove;
+
+  @override
+  Widget build(BuildContext context) {
+    final l10n = context.l10n;
+    final account = entry.account;
+    final (icon, label, tone) = acpAuthBadge(context, entry.auth);
+    return Material(
+      key: StudioDriverKeys.acpAccountRow(account.accountId),
+      color: selected ? context.colors.surfaceContainer : Colors.transparent,
+      child: InkWell(
+        onTap: onOpen,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              AccountBrandMark(
+                iconKey: entry.template?.iconKey,
+                fallbackName: account.name,
+                active: false,
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Flexible(
+                          child: Text(
+                            account.name,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: Theme.of(context).textTheme.titleSmall
+                                ?.copyWith(
+                                  color: context.colors.onSurface,
+                                  fontWeight: FontWeight.w700,
+                                ),
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        StudioPill(
+                          icon: Icons.hub_outlined,
+                          label: l10n.acpAccountProviderChip,
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 6),
+                    Row(
+                      children: [
+                        Icon(
+                          icon,
+                          size: 14,
+                          color: tone == StudioTone.error
+                              ? context.colors.error
+                              : context.colors.onSurfaceVariant,
+                        ),
+                        const SizedBox(width: 5),
+                        Flexible(
+                          child: Text(
+                            label,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: context.text.bodySmall?.copyWith(
+                              color: context.colors.onSurfaceVariant,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                    if (notice case final notice?) ...[
+                      const SizedBox(height: 6),
+                      Row(
+                        key: StudioDriverKeys.acpAccountNotice(
+                          account.accountId,
+                        ),
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Icon(
+                            Icons.error_outline,
+                            size: 14,
+                            color: context.colors.error,
+                          ),
+                          const SizedBox(width: 5),
+                          Expanded(
+                            child: Text(
+                              notice.summary,
+                              style: context.text.bodySmall?.copyWith(
+                                color: context.colors.error,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+              const SizedBox(width: 8),
+              PopupMenuButton<String>(
+                icon: const Icon(Icons.more_horiz),
+                onSelected: (value) {
+                  switch (value) {
+                    case 'edit':
+                      onEdit();
+                    case 'remove':
+                      onRemove?.call();
+                  }
+                },
+                itemBuilder: (context) => [
+                  PopupMenuItem<String>(
+                    value: 'edit',
+                    child: Text(l10n.settingsEdit),
+                  ),
+                  if (onRemove != null)
+                    PopupMenuItem<String>(
+                      value: 'remove',
+                      child: Text(l10n.settingsDeleteAccount),
+                    ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// 认证状态在列表里的紧凑表达：图标 + 文案 + 语气，状态不只靠颜色。
+(IconData, String, StudioTone) acpAuthBadge(
+  BuildContext context,
+  AcpAuthStateView state,
+) {
+  final l10n = context.l10n;
+  return switch (state) {
+    AcpUncheckedState() => (
+      Icons.link_off,
+      l10n.acpAuthRowUnchecked,
+      StudioTone.neutral,
+    ),
+    AcpCheckingState() => (
+      Icons.sync,
+      l10n.acpAuthRowChecking,
+      StudioTone.brand,
+    ),
+    AcpRequiredState() => (
+      Icons.lock_outline,
+      l10n.acpAuthRowRequired,
+      StudioTone.warning,
+    ),
+    AcpAuthenticatingState() => (
+      Icons.login,
+      l10n.acpAuthRowAuthenticating,
+      StudioTone.brand,
+    ),
+    AcpVerifyingState() => (
+      Icons.verified_outlined,
+      l10n.acpAuthRowVerifying,
+      StudioTone.brand,
+    ),
+    AcpClosingState() => (
+      Icons.hourglass_bottom,
+      l10n.acpAuthRowClosing,
+      StudioTone.brand,
+    ),
+    AcpVerifiedState() => (
+      Icons.check_circle_outline,
+      l10n.acpAuthRowVerified,
+      StudioTone.success,
+    ),
+    AcpCancellingState() => (
+      Icons.stop_circle_outlined,
+      l10n.acpAuthRowCancelling,
+      StudioTone.warning,
+    ),
+    AcpCancelledState() => (
+      Icons.cancel_outlined,
+      l10n.acpAuthRowCancelled,
+      StudioTone.neutral,
+    ),
+    AcpFailedState() => (
+      Icons.error_outline,
+      l10n.acpAuthRowFailed,
+      StudioTone.error,
+    ),
+  };
 }
 
 class _ProviderRowTitle extends StatelessWidget {

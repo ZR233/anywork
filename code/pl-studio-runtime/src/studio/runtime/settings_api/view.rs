@@ -19,11 +19,12 @@ use pl_tool::search::{WebSearchAvailability, WebSearchDeepSeekOptions};
 
 pub(crate) fn settings_config_snapshot(
     state: &ConfigRuntimeSnapshot,
+    acp_accounts: Vec<pl_protocol::studio::AcpAccountSettings>,
 ) -> Result<SettingsConfigSnapshot> {
     Ok(SettingsConfigSnapshot {
         revision: state.revision,
         updated_at: state.updated_at,
-        settings: settings_view(state)?,
+        settings: settings_view(state, acp_accounts)?,
     })
 }
 
@@ -70,14 +71,18 @@ pub(crate) fn model_catalog_snapshot(
 pub(crate) fn settings_state_response(
     state: &ConfigRuntimeSnapshot,
     catalog: &ModelCatalogRuntimeSnapshot,
+    acp_accounts: Vec<pl_protocol::studio::AcpAccountSettings>,
 ) -> Result<SettingsStateResponse> {
     Ok(SettingsStateResponse {
-        config: settings_config_snapshot(state)?,
+        config: settings_config_snapshot(state, acp_accounts)?,
         catalog: model_catalog_snapshot(state, catalog)?,
     })
 }
 
-fn settings_view(state: &ConfigRuntimeSnapshot) -> Result<StudioSettings> {
+fn settings_view(
+    state: &ConfigRuntimeSnapshot,
+    acp_accounts: Vec<pl_protocol::studio::AcpAccountSettings>,
+) -> Result<StudioSettings> {
     let config = state.canonical_config();
     let accounts = config
         .models
@@ -230,6 +235,7 @@ fn settings_view(state: &ConfigRuntimeSnapshot) -> Result<StudioSettings> {
             .get(&pl_protocol::ThreadModeId::simple())
             .map(|route| route.account_id.to_string()),
         accounts,
+        acp_accounts,
         mode_model_routes,
         roles,
         permission_mode: config.runtime.permission_mode.label().to_string(),

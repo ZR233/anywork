@@ -86,6 +86,9 @@ fn main() -> ExitCode {
 #[cfg(target_os = "linux")]
 fn run() -> Result<ExitCode> {
     let options = Options::parse();
+    // Reject quarantined/unknown selectors before output, worker or product
+    // environment creation. The worker keeps its own validation as a guard.
+    cases::selected(&options.cases)?;
     if options.worker {
         return run_worker(options);
     }

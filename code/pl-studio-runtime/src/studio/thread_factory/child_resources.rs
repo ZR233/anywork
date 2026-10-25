@@ -1,7 +1,7 @@
 //! Physical child resources assembled from one resolved product configuration snapshot.
 use super::StudioThreadFactory;
 use super::errors::resource_error;
-use crate::resource_store::FileResourceStore;
+use crate::agent::definition::ResolvedAgentDefinition;
 use crate::studio::ThreadRecord;
 use crate::thread_assembler::{
     ChildThreadRequest, StudioChildResources, StudioThreadSpec, ThreadAssemblyError,
@@ -85,12 +85,12 @@ impl StudioChildResources for StudioThreadFactory {
             let workspace =
                 ToolWorkspace::new(assigned_workspace(&assignment, root_thread.workspace_mode))
                     .with_lsp_runtime(Some(self.services.lsp_runtime.clone()));
-            let store = FileResourceStore::new(
-                self.services
-                    .store
-                    .session_resources_dir_for(&parent.project_id, &request.id)
-                    .map_err(|error| resource_error("resolve child session resources", error))?,
-            );
+            let store = self
+                .services
+                .store
+                .thread_resources_for(&parent.project_id, &request.id)
+                .await
+                .map_err(|error| resource_error("resolve child session resource owner", error))?;
             let prepared_tools = self
                 .prepare_thread_tools(super::thread_tools::ThreadToolAssembly {
                     thread_id: &request.id,
@@ -109,14 +109,18 @@ impl StudioChildResources for StudioThreadFactory {
             let workspace_payload = crate::studio::workspace_receipt::to_payload(&assignment)
                 .map_err(|error| resource_error("encode child workspace receipt", error))?;
             let receipt = workspace_payload.content().to_owned();
+            let agent =
+                ResolvedAgentDefinition::from_profile(&profile.profile).map_err(|error| {
+                    ThreadAssemblyError::Identity(format!("invalid child Agent: {error}"))
+                })?;
             let (mut initial_context, instruction_sources) =
                 super::thread_seed::capture(super::thread_seed::ThreadInstructionSeed {
                     thread_id: &request.id,
                     config: &profile.config,
                     model: &profile.route.model,
                     root: std::path::Path::new(&assignment.root),
-                    label: &profile.profile.display_name,
-                    instructions: &profile.profile.system_instructions,
+                    agent: &agent,
+                    mode: None,
                     delegation: None,
                     resources: &prepared_tools,
                 })
@@ -218,7 +222,7 @@ impl StudioChildResources for StudioThreadFactory {
                     self.services.thread_modes.clone(),
                     self.clone(),
                 )?,
-                agent_controls: crate::thread_assembler::AgentControlExposure::Disabled,
+                agent_controls: Vec::new(),
                 execution: pl_core::thread::input::InputDriverOptions {
                     max_model_steps: Self::CHILD_MODEL_STEP_LIMIT,
                 },

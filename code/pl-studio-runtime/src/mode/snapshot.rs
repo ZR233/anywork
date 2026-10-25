@@ -99,22 +99,14 @@ pub(crate) fn migrate_mode_snapshot(
     let mut saved = SavedThreadMode::capture(&registered, None);
     let mut recovered_prompt = false;
     if let Some(record) = state.extensions.get("studio.instructions") {
-        if record.payload.format() != "pl.studio.instructions" || record.payload.version() != 1 {
-            return Err(PureError::ConfigError(
-                "unsupported saved instructions during Mode recovery".into(),
-            ));
-        }
-        let instructions: crate::instruction::InstructionSnapshot =
-            serde_json::from_str(record.payload.content())?;
-        if let Some(profile) = instructions.developer.iter().find(|block| {
-            block.source.kind == crate::instruction::InstructionSourceKind::ExecutionProfile
-        }) {
+        // Mode recovery reads the saved Mode text through the instruction migration boundary, so
+        // both the legacy mixed source and the current Mode source are understood here.
+        if let Some((label, content)) = crate::instruction::saved_mode_instruction(&record.payload)
+            .map_err(|error| PureError::ConfigError(error.to_string()))?
+        {
             recovered_prompt = true;
-            saved.definition.prompt.clone_from(&profile.content);
-            saved
-                .definition
-                .display_name
-                .clone_from(&profile.source.label);
+            saved.definition.prompt = content;
+            saved.definition.display_name = label;
         }
     }
     if !recovered_prompt {

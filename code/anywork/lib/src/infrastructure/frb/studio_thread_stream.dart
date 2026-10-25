@@ -12,6 +12,13 @@ ThreadStreamFrame _threadStreamFrameFromFrb(
       final epoch = envelope.epoch.toInt();
       final baseRevision = envelope.baseRevision.toInt();
       return envelope.notification.when(
+        audienceChanged: (audience) => ThreadNotificationFrame(
+          threadId: threadId,
+          revision: revision,
+          epoch: epoch,
+          baseRevision: baseRevision,
+          update: ThreadAudienceUpdate(_threadAudienceFromFrb(audience)),
+        ),
         turnStarted: (turn) => ThreadNotificationFrame(
           threadId: threadId,
           revision: revision,
@@ -89,6 +96,7 @@ ThreadWorkspace _threadWorkspaceFromSnapshot(frb.BridgeThreadSnapshot value) {
   return ThreadWorkspace(
     thread: _threadFromFrb(value.thread),
     revision: value.revision.toInt(),
+    audience: _threadAudienceFromFrb(value.audience),
     interactions: value.interactions
         .where(_interactionIsPending)
         .map(_interactionFromFrb)
@@ -428,6 +436,23 @@ ThreadItemStateView _threadItemStateFromFrb(
         ),
     file: (path, mediaType, completedAt) =>
         ThreadFileItemStateView(path, mediaType, _dateFromUnix(completedAt)),
+    publicArtifact:
+        (publicationId, toolCallId, displayName, resource, publishedAt) =>
+            ThreadPublicArtifactItemStateView(
+              publicationId: publicationId,
+              toolCallId: toolCallId,
+              displayName: displayName,
+              resource: ThreadArtifactResource(
+                id: resource.id,
+                contentDigest: resource.contentDigest,
+                byteLen: _exactTimelineInt(
+                  resource.byteLen,
+                  'artifact byte length',
+                ),
+                mediaType: resource.mediaType,
+              ),
+              publishedAt: _dateFromUnix(publishedAt),
+            ),
     raw: (payloads, notice, recordedAt) => ThreadRawItemStateView(
       payloads
           .map(

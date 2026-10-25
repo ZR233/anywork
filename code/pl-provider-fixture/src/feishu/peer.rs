@@ -13,14 +13,14 @@ use tokio::sync::{Mutex, oneshot};
 use tokio_util::sync::CancellationToken;
 
 use super::control::join_sockets;
-use super::http::HttpState;
+use super::guard::HttpState;
 use super::state::JoinSlot;
 use super::state::{self, Inner};
 use super::{
     APP_ID_PREFIX, FeishuControl, FeishuLiveStatus, FeishuPeerOptions, FeishuReadyFile,
     FeishuReport, http, ws,
 };
-use super::{media, messages};
+use super::{cardkit, media, messages};
 
 /// Single owner of the Feishu loopback listener, sockets, and tasks.
 pub struct FeishuPeer {
@@ -104,6 +104,15 @@ impl FeishuPeer {
                 "/open-apis/im/v1/files",
                 post(media::upload::upload)
                     .layer(DefaultBodyLimit::max(media::upload::MAX_MULTIPART_BYTES)),
+            )
+            .route("/open-apis/cardkit/v1/cards", post(cardkit::card_create))
+            .route(
+                "/open-apis/cardkit/v1/cards/{card_id}/elements/{element_id}/content",
+                axum::routing::put(cardkit::card_element_content),
+            )
+            .route(
+                "/open-apis/cardkit/v1/cards/{card_id}/settings",
+                axum::routing::patch(cardkit::card_settings),
             )
             .fallback(http::unexpected)
             .with_state(http);

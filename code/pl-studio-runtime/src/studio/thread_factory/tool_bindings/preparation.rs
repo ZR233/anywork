@@ -1,5 +1,5 @@
 //! Preparation handoff and asynchronous cleanup using the same binding table as active Threads.
-use super::{ThreadToolLifetime, close_file_operations};
+use super::{ThreadToolLifetime, close_archive, close_file_operations};
 use crate::{
     studio::StudioThreadFactory,
     thread_assembler::{StudioThreadSpec, ThreadAssemblyError, ThreadPreparationGuard},
@@ -97,6 +97,8 @@ impl StudioThreadFactory {
         lifetime: &Arc<ThreadToolLifetime>,
     ) -> Result<(), ThreadAssemblyError> {
         close_file_operations(lifetime).await?;
+        // This lifetime never transferred a core owner, so no later result can acquire its pins.
+        close_archive(lifetime).await?;
         self.bindings
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)

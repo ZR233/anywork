@@ -7,11 +7,11 @@
 //! the same platform message (identity `bot/chat/message` plus unchanged
 //! content), never as a new platform input or a same-id content conflict.
 
-use pl_provider_fixture::GUI_PROMPT;
 use pl_provider_fixture::feishu::{
     BOT_OPEN_ID, ChatType, EventBody, GROUP_CHAT_ID, GroupChat, HistoryMessage,
     PAIRING_DIRECT_CHAT_ID, SenderKind, SyntheticEvent, TRUSTED_USER_OPEN_ID, UNKNOWN_USER_OPEN_ID,
 };
+use pl_provider_fixture::{GUI_MARKDOWN_PROMPT, GUI_PROMPT};
 
 /// Stable platform message id for `bots-env message unknown-direct`.
 pub(super) const ENV_UNKNOWN_DIRECT_MESSAGE_ID: &str = "om_anywork_fixture_env_unknown_direct";
@@ -19,12 +19,17 @@ pub(super) const ENV_UNKNOWN_DIRECT_MESSAGE_ID: &str = "om_anywork_fixture_env_u
 /// id from the unknown delivery makes the resend a genuinely new platform
 /// input once the GUI has approved the user.
 pub(super) const ENV_RESEND_DIRECT_MESSAGE_ID: &str = "om_anywork_fixture_env_resend_direct";
+/// Stable platform message id for `bots-env message markdown-direct`. Its body
+/// is the fixed Markdown sample prompt, so the GUI can show local Markdown both
+/// while the reply is being generated and after it completes.
+pub(super) const ENV_MARKDOWN_DIRECT_MESSAGE_ID: &str = "om_anywork_fixture_env_markdown_direct";
 
 /// The product fingerprints inbound text as `sha256(message_id, chat_id,
 /// content)`; `create_time` is not part of it. Fixed times keep every
 /// re-delivery byte-identical.
 const ENV_UNKNOWN_DIRECT_CREATE_TIME_MS: &str = "1710000000000";
 const ENV_RESEND_DIRECT_CREATE_TIME_MS: &str = "1710000100000";
+const ENV_MARKDOWN_DIRECT_CREATE_TIME_MS: &str = "1710000200000";
 
 /// Bounded synthetic paging sample sizes. Both exceed the real product default
 /// page limit (`limit.unwrap_or(20)`) so the GUI has a genuine next page,
@@ -50,6 +55,19 @@ pub(super) fn resend_direct_event() -> SyntheticEvent {
         ENV_RESEND_DIRECT_MESSAGE_ID,
         ENV_RESEND_DIRECT_CREATE_TIME_MS,
     )
+}
+
+pub(super) fn markdown_direct_event() -> SyntheticEvent {
+    SyntheticEvent {
+        message_id: ENV_MARKDOWN_DIRECT_MESSAGE_ID.to_owned(),
+        chat_id: PAIRING_DIRECT_CHAT_ID.to_owned(),
+        chat_type: ChatType::P2p,
+        sender: SenderKind::User,
+        sender_open_id: UNKNOWN_USER_OPEN_ID.to_owned(),
+        mentions: Vec::new(),
+        body: EventBody::Text(GUI_MARKDOWN_PROMPT.to_owned()),
+        create_time_ms: ENV_MARKDOWN_DIRECT_CREATE_TIME_MS.to_owned(),
+    }
 }
 
 fn direct_event(message_id: &str, create_time_ms: &str) -> SyntheticEvent {

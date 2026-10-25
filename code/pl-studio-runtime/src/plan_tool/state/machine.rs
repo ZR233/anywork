@@ -9,7 +9,7 @@ use pl_protocol::{
 use crate::canonical_content_hash;
 
 const MAX_PLAN_BYTES: usize = 64 * 1024;
-const MAX_FEEDBACK_BYTES: usize = 8 * 1024;
+pub(crate) const MAX_FEEDBACK_BYTES: usize = 8 * 1024;
 const MAX_REASON_BYTES: usize = 2 * 1024;
 const MAX_HISTORY: usize = 32;
 const MAX_RECEIPTS: usize = 32;

@@ -12,6 +12,15 @@ use super::{
 use crate::feishu::FeishuControl;
 
 impl FeishuControl {
+    /// Choose whether subsequently accepted file messages expose a distinct
+    /// message-scoped readback key. Existing bindings and upload keys stay fixed.
+    pub async fn set_file_message_key_mode(&self, mode: super::FileMessageKeyMode) -> Result<()> {
+        let mut inner = self.shared.lock().await;
+        ensure!(!inner.closing, "peer is shutting down");
+        inner.media.file_message_key_mode = mode;
+        Ok(())
+    }
+
     /// Register one nonempty resource, without emitting an event. Keys are unique
     /// for the lifetime of this peer; no overwrite or eviction masks references.
     ///

@@ -62,6 +62,9 @@ pub(crate) struct BotRuntimeInner {
     pub(crate) reply_slots: Arc<Semaphore>,
     pub(crate) reply_cancel: CancellationToken,
     pub(crate) occupancy: OccupancyTasks,
+    pub(in crate::bots) audience_prepares: super::audience::AudiencePrepareTasks,
+    /// One coalescing wakeup for durable prepares; not a per-Thread topic or another work queue.
+    pub(in crate::bots) audience_prepare_notify: Notify,
     /// Byte permits for our outgoing source/archive/upload copies, not a second send queue.
     pub(crate) send_bytes: Arc<Semaphore>,
     /// At most one raw inbound batch (128 MiB) plus its admission copy is held by this owner.
@@ -86,10 +89,14 @@ pub(crate) struct ManagedBot {
     pub(crate) diagnostic: Mutex<Option<pl_protocol::studio::BotDiagnostic>>,
     pub(crate) generation: Arc<AtomicU64>,
     pub(crate) token: TokenLease,
+    pub(crate) send_rate: super::send::SendRate,
     pub(crate) bot_open_id: Mutex<Option<(u64, String)>>,
     pub(crate) admission: tokio::sync::Mutex<()>,
     pub(crate) admission_closed: AtomicBool,
     pub(crate) submitting: AtomicBool,
+    pub(crate) audience_changes:
+        tokio::sync::watch::Sender<crate::studio::thread_audience::BotAudienceWatchVersion>,
+    pub(crate) audience_recovery_cursor: Mutex<(String, u64)>,
 }
 
 impl Clone for BotRuntime {
@@ -131,6 +138,8 @@ impl BotRuntime {
                 reply_slots: Arc::new(Semaphore::new(32)),
                 reply_cancel: CancellationToken::new(),
                 occupancy: OccupancyTasks::new(),
+                audience_prepares: super::audience::AudiencePrepareTasks::new(),
+                audience_prepare_notify: Notify::new(),
                 send_bytes: Arc::new(Semaphore::new(128 * 1024 * 1024)),
                 download_batch: Arc::new(Semaphore::new(1)),
                 workspace_io: Default::default(),

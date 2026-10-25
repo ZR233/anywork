@@ -14,4 +14,7 @@ pub const IMAGE_GENERATION_RECEIPT_FORMAT: &str = "pl.tool.image-generation";
 /// Receipt layout version; changes require an explicit decoder update.
 pub const IMAGE_GENERATION_RECEIPT_VERSION: u32 = 1;
 
-pub use thread::{ImageGenerationInput, ImageGenerationReceipt, ThreadImageGenerationTool};
+pub use thread::{
+    ImageGenerationInput, ImageGenerationReceipt, ThreadImageGenerationTool,
+    saved_image_generation_receipt,
+};

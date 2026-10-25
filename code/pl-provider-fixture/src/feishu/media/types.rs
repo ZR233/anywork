@@ -10,6 +10,15 @@ pub const MAX_MEDIA_REQUESTS: usize = 512;
 pub const MAX_MEDIA_IN_FLIGHT: usize = 4;
 pub const MAX_SCRIPT_STEPS: usize = 64;
 
+/// Synthetic platform behavior only: an IM read/download key need not equal
+/// the key returned by upload. Neither mode represents product authorization.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum FileMessageKeyMode {
+    PreserveUploadKey,
+    MessageScoped,
+}
+
 /// Official upload `file_type`. The fixture does not inspect or transcode codecs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]

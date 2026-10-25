@@ -1,5 +1,7 @@
 //! Studio transport-neutral command, response, event, and error protocol.
 
+mod acp;
+mod acp_install;
 mod attachment;
 mod bots;
 mod error;
@@ -12,6 +14,8 @@ mod settings;
 mod settings_update;
 mod thread_preparation;
 
+pub use acp::*;
+pub use acp_install::*;
 pub use attachment::*;
 pub use bots::*;
 pub use error::*;

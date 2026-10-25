@@ -4,6 +4,8 @@
 // ignore_for_file: invalid_use_of_internal_member, unused_import, unnecessary_import
 
 import '../../../frb_generated.dart';
+import 'acp.dart';
+import 'acp_install.dart';
 import 'agent_profile.dart';
 import 'bots.dart';
 import 'delegation.dart';
@@ -93,6 +95,12 @@ sealed class BridgeProductEventPayload with _$BridgeProductEventPayload {
   const factory BridgeProductEventPayload.accountUsageStateChanged(
     BridgeAccountUsageStateSnapshot field0,
   ) = BridgeProductEventPayload_AccountUsageStateChanged;
+  const factory BridgeProductEventPayload.acpAuthStateChanged(
+    BridgeAcpAuthSnapshot field0,
+  ) = BridgeProductEventPayload_AcpAuthStateChanged;
+  const factory BridgeProductEventPayload.acpInstallStateChanged(
+    BridgeAcpInstallSnapshot field0,
+  ) = BridgeProductEventPayload_AcpInstallStateChanged;
   const factory BridgeProductEventPayload.modelPerformanceStateChanged(
     BridgeModelPerformanceSnapshot field0,
   ) = BridgeProductEventPayload_ModelPerformanceStateChanged;

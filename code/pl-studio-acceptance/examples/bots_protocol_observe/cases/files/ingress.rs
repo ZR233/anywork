@@ -221,7 +221,14 @@ pub(super) async fn run(session: &mut Session, evidence: &mut Vec<String>) -> Re
     write_json(session, "resource-attachment-identities.json", &received)?;
 
     route(session, &bot_id, "fixture-model", "media-route-text").await?;
-    evidence.push(session.restart_studio_server().await?);
+    let restart = session.restart_studio_server().await?;
+    ensure!(
+        restart.stopped_sigints == 1
+            && restart.stopped_graceful
+            && restart.stopped_exit_code == Some(0),
+        "media restart did not prove a single graceful stop: {restart}"
+    );
+    evidence.push(restart.to_string());
     session.wait_connected(&bot_id).await?;
     send_text(session, "om_media_cold", model::MEDIA_FOLLOWUP).await?;
     session

@@ -11,9 +11,9 @@ mod types;
 pub(super) mod upload;
 
 pub use types::{
-    FileType, MAX_FILE_BYTES, MAX_MEDIA_IN_FLIGHT, MAX_MEDIA_REQUESTS, MAX_RESOURCE_COUNT,
-    MAX_RETAINED_BYTES, MAX_SCRIPT_STEPS, MediaStatus, ResourceDownloadDisposition,
-    ResourceDownloadObservation, ResourceDownloadOutcome, ResourceDownloadType, ResourceKind,
-    ResourceOrigin, ResourceSummary, SyntheticResource, UploadDisposition, UploadObservation,
-    UploadOutcome,
+    FileMessageKeyMode, FileType, MAX_FILE_BYTES, MAX_MEDIA_IN_FLIGHT, MAX_MEDIA_REQUESTS,
+    MAX_RESOURCE_COUNT, MAX_RETAINED_BYTES, MAX_SCRIPT_STEPS, MediaStatus,
+    ResourceDownloadDisposition, ResourceDownloadObservation, ResourceDownloadOutcome,
+    ResourceDownloadType, ResourceKind, ResourceOrigin, ResourceSummary, SyntheticResource,
+    UploadDisposition, UploadObservation, UploadOutcome,
 };

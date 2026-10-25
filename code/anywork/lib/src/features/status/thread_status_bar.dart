@@ -18,6 +18,7 @@ import 'session_selectors.dart';
 import 'status_bar_item.dart';
 import 'status_detail_panel.dart';
 import 'status_view.dart';
+import 'thread_audience_notice.dart';
 
 /// Reads one stable Thread owner and passes a single frame to the pure View.
 class ThreadStatusConnector extends ConsumerWidget {
@@ -42,21 +43,28 @@ class ThreadStatusConnector extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final status = ref.watch(statusBarViewProvider(threadId));
     if (status == null) return const SizedBox(height: 38);
-    return ThreadStatusBar(
-      threadId: threadId,
-      thread: status.thread,
-      accounts: status.accounts,
-      lspServers: ref.watch(lspStoreProvider).value?.servers ?? const [],
-      modelRoute: status.modelRoute,
-      workflowRun: status.workflowRun,
-      activeSkills: status.activeSkills,
-      activeMcpServers: status.activeMcpServers,
-      activeLspServers: status.activeLspServers,
-      showTodo: showTodo,
-      todoExpanded: todoExpanded,
-      onToggleTodo: onToggleTodo,
-      showPlanEntry: showPlanEntry,
-      onOpenPlan: onOpenPlan,
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        ThreadAudienceNotice(threadId: threadId),
+        ThreadStatusBar(
+          threadId: threadId,
+          thread: status.thread,
+          accounts: status.accounts,
+          lspServers: ref.watch(lspStoreProvider).value?.servers ?? const [],
+          modelRoute: status.modelRoute,
+          workflowRun: status.workflowRun,
+          activeSkills: status.activeSkills,
+          activeMcpServers: status.activeMcpServers,
+          activeLspServers: status.activeLspServers,
+          showTodo: showTodo,
+          todoExpanded: todoExpanded,
+          onToggleTodo: onToggleTodo,
+          showPlanEntry: showPlanEntry,
+          onOpenPlan: onOpenPlan,
+        ),
+      ],
     );
   }
 }

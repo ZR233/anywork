@@ -342,15 +342,12 @@ impl ChatItem {
     /// the wire encoding or the process RSS: they only have to be stable and comparable so a page, the
     /// hot preview cache and a subscription copy all charge the same non-shrinkable cost.
     pub fn preview_structure_bytes(&self) -> usize {
-        let total = ITEM_STRUCTURE_BYTES
-            .saturating_add(self.meta.len())
-            .saturating_add(self.item_id.len())
-            .saturating_add(self.turn_id.len());
-        let mut fields = FIELD_STRUCTURE_BYTES.saturating_mul(self.fields.len());
-        for field in self.fields.keys() {
-            fields = fields.saturating_add(field.key_bytes());
-        }
-        total.saturating_add(fields)
+        item_structure_bytes(
+            &self.item_id,
+            &self.turn_id,
+            self.meta.len(),
+            self.fields.keys(),
+        )
     }
 
     /// Bytes resident for this item: the non-shrinkable structure plus the body UTF-8 it keeps.
@@ -364,6 +361,27 @@ impl ChatItem {
 const ITEM_STRUCTURE_BYTES: usize = 128;
 /// Fixed admission estimate of one content field: key slot, block handle, complete length, detail ref.
 const FIELD_STRUCTURE_BYTES: usize = 128;
+
+/// The same non-shrinkable estimate for previews and body-free metadata reads. A missing identity
+/// uses an empty Turn, meta and field index, but still pays for its record and identity text.
+pub(crate) fn item_structure_bytes<'a>(
+    item_id: &str,
+    turn_id: &str,
+    meta_bytes: usize,
+    fields: impl IntoIterator<Item = &'a ChatField>,
+) -> usize {
+    fields.into_iter().fold(
+        ITEM_STRUCTURE_BYTES
+            .saturating_add(meta_bytes)
+            .saturating_add(item_id.len())
+            .saturating_add(turn_id.len()),
+        |total, field| {
+            total
+                .saturating_add(FIELD_STRUCTURE_BYTES)
+                .saturating_add(field.key_bytes())
+        },
+    )
+}
 
 /// Whether two items carry the same field content.
 pub(crate) fn same_content(left: &ChatItem, right: &ChatItem) -> bool {

@@ -12,7 +12,7 @@ use std::sync::Arc;
 pub(super) async fn retain<B: CommandBackend, A: CommandOutputArchive>(
     backend: &B,
     archive: &A,
-    thread_id: &str,
+    origin: &crate::media::ToolResourceOrigin,
     snapshot: &CommandOutputSnapshot,
 ) -> Result<ResourceReference, ToolError> {
     if snapshot.capture_usage.is_none() {
@@ -45,7 +45,7 @@ pub(super) async fn retain<B: CommandBackend, A: CommandOutputArchive>(
                 })?;
         }
     }
-    let reference = archive.retain(thread_id, snapshot).await?;
+    let reference = archive.retain(origin, snapshot).await?;
     reference.validate().map_err(ToolError::new)?;
     Ok(reference)
 }

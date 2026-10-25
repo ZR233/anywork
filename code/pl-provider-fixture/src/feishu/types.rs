@@ -92,6 +92,9 @@ pub enum CallKind {
     MessageSend,
     FileUpload,
     ResourceDownload,
+    CardCreate,
+    CardUpdate,
+    CardSettings,
 }
 
 /// Count bounds for a required or forbidden kind. Independent of other kinds.
@@ -373,10 +376,18 @@ pub enum PostElement {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum MessageContentObservation {
-    Text { text: String },
+    Text {
+        text: String,
+    },
     Post(PostContent),
+    /// Official rich-post nodes outside the small typed md/text sample remain
+    /// opaque wire. The peer preserves them, rather than imposing product policy.
+    RichPost {
+        content: String,
+        md_text: String,
+    },
     File(super::media::ResourceSummary),
 }
 
@@ -399,7 +410,10 @@ pub struct MessageSendObservation {
     pub request_body_bytes: usize,
     pub receive_id: String,
     pub uuid: Option<String>,
-    pub message_id: String,
+    /// Platform identity exists only after storage, including a lost response.
+    /// Waiting, rejected and cancelled attempts have no assigned message.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message_id: Option<String>,
     pub content: MessageContentObservation,
     pub disposition: SendDisposition,
     pub outcome: MessageSendOutcome,
@@ -466,6 +480,122 @@ pub struct RecordedCall {
     pub assigned_message_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub uuid: Option<String>,
+    /// Exactly the bytes this peer received, before any re-serialization.
+    ///
+    /// The product must budget its requests by the real encoded size; a fixture
+    /// that re-serialized the parsed body would measure a different number.
+    #[serde(default)]
+    pub request_bytes: usize,
+    /// Declared `msg_type` of a message send (`post` / `interactive`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub msg_type: Option<String>,
+    /// Concatenated `md` node text of a `post` send, in row/node order.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub md_text: Option<String>,
+    /// Referenced card entity of an `interactive` send.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub card_id: Option<String>,
+    /// The request repeated an already published message identity and was
+    /// answered with the original result. It produced no new platform message,
+    /// so it does not consume the documented per-target send rate.
+    #[serde(default)]
+    pub deduplicated: bool,
+}
+
+/// One official CardKit surface this peer answers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum CardOperation {
+    Create,
+    Send,
+    Update,
+    /// Settings update that carries only `summary` and keeps the stream mode.
+    Settings,
+    Close,
+    Reopen,
+}
+
+/// How a scripted CardKit request is answered.
+///
+/// The peer never decides the product verdict; `Reject` uses the documented
+/// platform business code the operator chose, and `AcceptThenDrop` mutates the
+/// platform entity exactly once before the response is lost.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum CardDisposition {
+    Succeed,
+    Reject {
+        code: i32,
+        msg: String,
+    },
+    /// The request is applied and assigned a platform result, then the HTTP
+    /// response is never written (client observes timeout / lost response).
+    AcceptThenDrop,
+    Hang,
+}
+
+/// Ordered platform-side fact for one accepted or rejected card operation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CardObservation {
+    /// Monotonic order of card operations on this peer, starting at 1.
+    pub ordinal: usize,
+    pub operation: CardOperation,
+    pub card_id: String,
+    pub unix_millis: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub element_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sequence: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub uuid: Option<String>,
+    /// Full submitted content of an element update (never a delta).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content: Option<String>,
+    /// Requested `streaming_mode` of a settings update.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub streaming_mode: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
+    pub accepted: bool,
+    /// Business code of the answer: 0 on success.
+    pub code: i32,
+    pub request_bytes: usize,
+    /// Same identity and payload were already applied; no new side effect.
+    #[serde(default)]
+    pub idempotent: bool,
+    /// The side effect was applied but the HTTP answer was lost.
+    #[serde(default)]
+    pub response_dropped: bool,
+}
+
+/// Platform-side state of one created card entity.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CardEntityReport {
+    pub card_id: String,
+    pub element_id: String,
+    pub entity_bytes: usize,
+    /// Complete serialized card JSON currently held by the platform.
+    ///
+    /// Reporting the whole document (not only the selected markdown element)
+    /// keeps every visible payload auditable: headers and additional elements
+    /// are exactly where an outbound leak would hide.
+    pub entity_json: String,
+    pub created_unix_millis: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sent_message_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sent_uuid: Option<String>,
+    /// Last accepted `sequence` across content and settings.
+    pub last_sequence: i64,
+    /// Last accepted full content of the first markdown element. Additional
+    /// registered elements remain auditable in entity_json and CardObservation.
+    pub content: String,
+    pub streaming_closed: bool,
+    pub expired: bool,
+    pub updates: usize,
+    pub settings_updates: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -526,6 +656,12 @@ pub struct FeishuReport {
     pub message_sends: Vec<MessageSendObservation>,
     pub resources: Vec<super::media::ResourceSummary>,
     pub media_status: super::media::MediaStatus,
+    /// Ordered CardKit platform facts, including rejected attempts.
+    #[serde(default)]
+    pub cards: Vec<CardObservation>,
+    /// Card entities this peer actually created.
+    #[serde(default)]
+    pub card_entities: Vec<CardEntityReport>,
     pub violations: Vec<String>,
     pub unconsumed: Vec<String>,
     pub token_calls: usize,
@@ -562,6 +698,8 @@ impl FeishuReport {
                 "feishu_fixture_rejected={}",
                 self.calls.iter().filter(|c| !c.accepted).count()
             ),
+            format!("feishu_fixture_cards={}", self.card_entities.len()),
+            format!("feishu_fixture_card_operations={}", self.cards.len()),
             format!("feishu_fixture_token_calls={}", self.token_calls),
             format!(
                 "feishu_fixture_token_max_in_flight={}",

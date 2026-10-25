@@ -15,7 +15,7 @@ anyhow = { workspace = true }
 clap = { workspace = true }
 eventsource-stream = { workspace = true }
 futures = { workspace = true }
-reqwest = { workspace = true }
+reqwest = { workspace = true, features = ["blocking"] }
 sea-orm = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

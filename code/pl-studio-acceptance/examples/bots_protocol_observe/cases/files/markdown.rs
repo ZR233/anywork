@@ -21,6 +21,7 @@ pub(super) async fn run(session: &mut Session, evidence: &mut Vec<String>) -> Re
         "small Markdown must be one post, not a file or split messages"
     );
     let post = &facts.message_sends[0];
+    let post_message_id = delivery::stored_message_id(post)?;
     let MessageContentObservation::Post(content) = &post.content else {
         anyhow::bail!("small Markdown was flattened to text");
     };
@@ -37,7 +38,7 @@ pub(super) async fn run(session: &mut Session, evidence: &mut Vec<String>) -> Re
             && post.uuid.as_ref().is_some_and(|uuid| !uuid.is_empty()),
         "small post full encoded JSON or target/UUID is invalid"
     );
-    evidence.push(format!("small post complete original, full HTTP JSON={} bytes including escape/target/uuid; message={} uuid={:?}", post.request_body_bytes, post.message_id, post.uuid));
+    evidence.push(format!("small post complete original, full HTTP JSON={} bytes including escape/target/uuid; message={} uuid={:?}", post.request_body_bytes, post_message_id, post.uuid));
     let small_ledger = sqlite::send_details(&session.home, &bot_id).await?;
     ensure!(
         small_ledger.len() == 1,
@@ -66,6 +67,7 @@ pub(super) async fn run(session: &mut Session, evidence: &mut Vec<String>) -> Re
         "long Markdown must be one complete .md file plus one short notice, not truncation or arbitrary splits"
     );
     let file = file_sends[0];
+    let file_message_id = delivery::stored_message_id(file)?;
     let MessageContentObservation::File(resource) = &file.content else {
         anyhow::bail!("selected Markdown transfer changed from file content");
     };
@@ -97,7 +99,7 @@ pub(super) async fn run(session: &mut Session, evidence: &mut Vec<String>) -> Re
             delivery::segments(row).is_ok_and(|segments| {
                 segments
                     .iter()
-                    .any(|fact| fact.platform_message_id.as_deref() == Some(&file.message_id))
+                    .any(|fact| fact.platform_message_id.as_deref() == Some(file_message_id))
             })
         })
         .context("long Markdown durable operation missing")?;
@@ -175,13 +177,20 @@ pub(super) async fn run(session: &mut Session, evidence: &mut Vec<String>) -> Re
         .find(|send| matches!(&send.content, MessageContentObservation::File(_)))
         .context("encoded-boundary .md send missing")?;
     delivery::file_roundtrip(session, escaped_send, escaped.as_bytes(), evidence).await?;
+    let escaped_notice_id = first.segments[1]
+        .platform_message_id
+        .as_deref()
+        .filter(|id| !id.is_empty())
+        .context("accepted JSON-overhead notice has no platform identity")?;
     let escaped_notice = before_replay
         .message_sends
         .iter()
-        .find(|send| {
-            first.segments[1].platform_message_id.as_deref() == Some(send.message_id.as_str())
-        })
+        .find(|send| send.message_id.as_deref() == Some(escaped_notice_id))
         .context("JSON-overhead short notice missing from its public message identity")?;
+    ensure!(
+        delivery::stored_message_id(escaped_notice)? == escaped_notice_id,
+        "accepted JSON-overhead notice identity changed"
+    );
     delivery::markdown_notice(escaped_notice, escaped_send)?;
     evidence.push(format!("raw escaped text {} bytes selected full .md transfer; same-operation replay and different-intent rejection added zero upload/send POSTs", escaped.len()));
     partial_restart(session, &bot_id, evidence).await?;
@@ -250,9 +259,11 @@ async fn partial_restart(
         .message_sends
         .iter()
         .find(|send| {
-            send.message_id == file_message_id && send.uuid.as_deref() == Some(&segments[0].uuid)
+            send.message_id.as_deref() == Some(file_message_id)
+                && send.uuid.as_deref() == Some(&segments[0].uuid)
         })
         .context("partial confirmed file identity missing")?;
+    let stored_file_id = delivery::stored_message_id(file)?;
     delivery::file_roundtrip(session, file, model::long_markdown().as_bytes(), evidence).await?;
     ensure!(
         facts
@@ -315,11 +326,11 @@ async fn partial_restart(
         &serde_json::json!({
             "operationId": partial.operation_id, "status": partial.status,
             "platformMessageIds": partial.platform_message_ids, "segmentFacts": partial.segment_facts,
-            "fileMessageId": file.message_id, "fileUuid": segments[0].uuid, "noticeUuid": segments[1].uuid,
+            "fileMessageId": stored_file_id, "fileUuid": segments[0].uuid, "noticeUuid": segments[1].uuid,
             "inboundMessageId": message_id, "inboundStatus": "needs_attention",
         }),
     )?;
-    evidence.push(format!("exact operation={operation_id} reached durable file Accepted + notice Rejected(code230020) and inbound needs_attention; bound file message={} uuid={:?}; aggregate Partial alone was not used as completion", file.message_id, file.uuid));
+    evidence.push(format!("exact operation={operation_id} reached durable file Accepted + notice Rejected(code230020) and inbound needs_attention; bound file message={} uuid={:?}; aggregate Partial alone was not used as completion", stored_file_id, file.uuid));
     let before = (
         facts.uploads.len(),
         facts.message_sends.len(),
@@ -331,7 +342,14 @@ async fn partial_restart(
         "exact terminal partial record changed before restart"
     );
     rows.sort_by(|left, right| left.operation_id.cmp(&right.operation_id));
-    evidence.push(session.restart_studio_server().await?);
+    let restart = session.restart_studio_server().await?;
+    ensure!(
+        restart.stopped_sigints == 1
+            && restart.stopped_graceful
+            && restart.stopped_exit_code == Some(0),
+        "Markdown restart did not prove a single graceful stop: {restart}"
+    );
+    evidence.push(restart.to_string());
     session.wait_connected(bot_id).await?;
     let until = std::time::Instant::now() + std::time::Duration::from_secs(12);
     loop {

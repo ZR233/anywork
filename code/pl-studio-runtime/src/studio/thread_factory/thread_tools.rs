@@ -1,7 +1,7 @@
 //! Shared physical tool assembly for new roots, children and cold restoration.
 use super::StudioThreadFactory;
 use super::errors::resource_error;
-use crate::resource_store::FileResourceStore;
+use crate::resource_store::ThreadResourceStore;
 use crate::studio::ProjectRecord;
 use crate::thread_assembler::{
     StudioCommandBinding, StudioGitBinding, StudioThreadTools, StudioWorkspaceTools,
@@ -19,7 +19,7 @@ pub(super) struct ThreadToolAssembly<'a> {
     pub project: &'a ProjectRecord,
     pub root_thread_id: &'a str,
     pub workspace: ToolWorkspace,
-    pub store: FileResourceStore,
+    pub store: ThreadResourceStore,
     pub helper_source: crate::worker_assets::RemoteHelperSource,
 }
 
@@ -122,6 +122,16 @@ impl StudioThreadFactory {
             store,
             helper_source,
         } = assembly;
+        if cancellation.is_cancelled() || lifetime.cancellation.is_cancelled() {
+            return Err(pl_core::thread::ThreadError::Cancelled.into());
+        }
+        store
+            .activate()
+            .map_err(|error| resource_error("activate Thread archive", error))?;
+        *lifetime
+            .resources
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(store.clone());
         let mut search = pl_tool::search::plan_web_searches(
             &config.models,
             route,
@@ -249,6 +259,7 @@ impl StudioThreadFactory {
             commands,
         )
         .await?;
+        tools = tools.with_tools([self.publication_registration()?]);
         if config.runtime.tool_capabilities.ask_user && thread_id == root_thread_id {
             tools = tools.with_tools(crate::plan_tool::plan_registrations(Default::default())?);
         }
@@ -285,50 +296,35 @@ impl StudioThreadFactory {
         let mut skill_catalog = None;
         if config.runtime.tool_capabilities.skills && config.skills.enabled {
             let catalog = if matches!(preparation, CatalogPreparation::Refresh { .. }) {
-                Some(
-                    self.services
-                        .skills
-                        .freeze_thread_catalog(
-                            &root,
-                            &config.skills,
-                            cancellation.clone(),
-                            remote.as_ref().map(|host| Arc::new(host.files.clone())),
-                        )
-                        .await
-                        .map_err(|error| resource_error("refresh Thread skill catalog", error))?,
-                )
+                let catalog = self
+                    .services
+                    .skills
+                    .freeze_thread_catalog(
+                        &root,
+                        &config.skills,
+                        cancellation.clone(),
+                        remote.as_ref().map(|host| Arc::new(host.files.clone())),
+                    )
+                    .await
+                    .map_err(|error| resource_error("refresh Thread skill catalog", error))?;
+                let sources = catalog.discovery_sources();
+                Some((catalog, sources))
             } else {
-                match &remote {
-                    Some(host) => {
-                        self.services
-                            .skills
-                            .discover_remote(
-                                &project.id,
-                                &root,
-                                &config.skills,
-                                cancellation.clone(),
-                                Arc::new(host.files.clone()),
-                            )
-                            .await
-                    }
-                    None => {
-                        self.services
-                            .skills
-                            .discover_with_cancellation(
-                                &project.id,
-                                &root,
-                                &config.skills,
-                                cancellation.clone(),
-                            )
-                            .await
-                    }
-                }
-                .map_err(|error| resource_error("discover child skills", error))?
-                .catalog_for_turn()
+                self.services
+                    .skills
+                    .prepare_thread_catalog(
+                        &project.id,
+                        &root,
+                        &config.skills,
+                        cancellation.clone(),
+                        remote.as_ref().map(|host| Arc::new(host.files.clone())),
+                    )
+                    .await
+                    .map_err(|error| resource_error("discover child skills", error))?
             };
-            if let Some(catalog) = catalog {
+            if let Some((catalog, sources)) = catalog {
                 skill_catalog = Some(catalog.clone());
-                tools = tools.with_skills(catalog.clone())?;
+                tools = tools.with_skills(sources)?;
                 if remote.is_none() {
                     tools = tools.with_local_skill_management(catalog, workspace.clone())?;
                 }

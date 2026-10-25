@@ -107,7 +107,7 @@ impl BotRuntime {
         .await
     }
 
-    pub(crate) async fn send_message_as(
+    pub(super) async fn send_message_as(
         &self,
         operation_id: String,
         bot_id: String,
@@ -189,6 +189,10 @@ impl BotRuntime {
     ) -> Result<BotSendResult, FeishuError> {
         self.check_send_active(cancel)?;
         let PreparedSend { admission, token } = prepared;
+        let inbound_reply = match &request.authority {
+            SendAuthority::InboundReply(reply) => Some(reply.clone()),
+            _ => None,
+        };
         let managed = admission.managed.clone();
         let text_bytes = production_freeze_bytes(&request, &admission)?;
         let worker = self.clone();
@@ -205,8 +209,14 @@ impl BotRuntime {
         let mut result = if claimed.replay {
             replay_send(claimed.record)
         } else {
-            self.deliver_claimed(&token, &managed.store, claimed.record, cancel)
-                .await?
+            self.deliver_claimed(
+                &token,
+                &managed,
+                claimed.record,
+                inbound_reply.as_deref(),
+                cancel,
+            )
+            .await?
         };
         result.receipt.targets = vec![ResourceStamp {
             resource_key: format!("bot:{}", result.bot_id),
@@ -316,15 +326,12 @@ fn production_freeze_bytes(
     };
     bytes = super::occupancy::counted_extra_bytes(bytes, [(metadata, 1)])?;
     match &request.authority {
-        SendAuthority::Source(source) => {
-            let source_bytes = serde_json::to_vec(source)
-                .map_err(|_| super::occupancy::freeze_budget_error())?
-                .len();
-            super::occupancy::counted_extra_bytes(bytes, [(source_bytes, 3)])
-        }
         SendAuthority::Tool { project_id } => {
             super::occupancy::counted_extra_bytes(bytes, [(project_id.len(), 2)])
         }
-        SendAuthority::Owner | SendAuthority::AutoReply => Ok(bytes),
+        SendAuthority::InboundReply(reply) => {
+            super::occupancy::counted_extra_bytes(bytes, [(reply.freeze_bytes(4)?, 1)])
+        }
+        SendAuthority::Owner => Ok(bytes),
     }
 }

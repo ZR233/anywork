@@ -16,7 +16,7 @@ use super::{
     FileType, MAX_FILE_BYTES, ResourceKind, ResourceOrigin, ResourceSummary, UploadDisposition,
     UploadObservation, UploadOutcome,
 };
-use crate::feishu::http::HttpState;
+use crate::feishu::guard::HttpState;
 use crate::feishu::types::CallKind;
 
 /// Bounded allowance for framing in the total body cap; the file component's

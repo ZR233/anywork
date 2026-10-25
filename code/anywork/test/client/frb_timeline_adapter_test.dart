@@ -10,6 +10,85 @@ import 'package:anywork_client/studio_client.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
+  test('typed publication preserves full identity and never upgrades ordinary File', () async {
+    final resource = item_dto.BridgeThreadArtifactResource(
+      id: 'resource-exact',
+      contentDigest: 'sha256:${'a' * 64}',
+      byteLen: BigInt.zero,
+      mediaType: 'application/unknown',
+    );
+    dto.BridgeTimelineItem item(
+      String id,
+      item_dto.BridgeThreadItemState state,
+    ) => dto.BridgeTimelineItem(
+      source: const dto.BridgeTimelineItemSource.content(),
+      item: item_dto.BridgeThreadItem(
+        id: id,
+        threadId: 'thread-A',
+        turnId: 'turn-7',
+        ordinal: BigInt.from(id == 'publication' ? 1 : 2),
+        revision: BigInt.from(4),
+        createdAt: 1700000000,
+        updatedAt: 1700000001,
+        state: state,
+      ),
+      saved: false,
+      lifecycle: dto.BridgeTimelineLifecycle.terminal,
+      omittedBytes: BigInt.zero,
+      details: const [],
+    );
+    final bridge = _GeneratedTimeline(
+      dto.BridgeTimelineBaseline(
+        subscriptionId: 'sub-publication',
+        version: BigInt.one,
+        items: [
+          item(
+            'publication',
+            item_dto.BridgeThreadItemState.publicArtifact(
+              publicationId: 'publication-not-resource',
+              toolCallId: 'tool-call',
+              displayName: '中文 零字节',
+              resource: resource,
+              publishedAt: 1700000001,
+            ),
+          ),
+          item(
+            'ordinary',
+            const item_dto.BridgeThreadItemState.file(
+              path: '/not/a/publication',
+              completedAt: 1700000001,
+            ),
+          ),
+        ],
+        hasOlder: false,
+      ),
+    );
+    final connection = FrbTimelineConnection(bridge);
+    addTearDown(connection.close);
+    final baseline = await connection.initial();
+    final publication = baseline.items.first.item;
+    final artifact = publication.state as ThreadPublicArtifactItemStateView;
+    expect(publication.id, 'publication');
+    expect(publication.kind, ThreadItemKind.publicArtifact);
+    expect(publication.saved, isFalse);
+    expect(publication.isTerminal, isTrue);
+    expect(artifact.publicationId, 'publication-not-resource');
+    expect(artifact.toolCallId, 'tool-call');
+    expect(artifact.displayName, '中文 零字节');
+    expect(
+      artifact.resource,
+      ThreadArtifactResource(
+        id: resource.id,
+        contentDigest: resource.contentDigest,
+        byteLen: 0,
+        mediaType: resource.mediaType,
+      ),
+    );
+    expect(artifact.publishedAt.millisecondsSinceEpoch ~/ 1000, 1700000001);
+    expect(publication.filePath, isNull);
+    expect(baseline.items.last.item.state, isA<ThreadFileItemStateView>());
+  });
+
   // These tests execute the production FRB adapter with generated DTOs and a
   // controlled opaque interface. No native library or Rust sink is loaded.
   test(

@@ -13,6 +13,10 @@ pub(super) fn skill_id(id: &str) -> String {
     format!("skill:{}:{id}", id.len())
 }
 
+pub(in crate::studio) fn artifact_id(id: &str) -> String {
+    format!("artifact:{}:{id}", id.len())
+}
+
 pub(super) fn completion_id(id: &str) -> String {
     format!("completion:{}:{id}", id.len())
 }

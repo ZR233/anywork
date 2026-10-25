@@ -68,7 +68,19 @@ void main() {
   bindStudioDriver(graph.client, timeline: graph.timeline);
   _applyShutdownFaultOverride();
   studio.bootstrapStudio(container: _container);
-  // 与托盘退出共用同一退出协调器：native -> Dart 的 requestExit 也进入该协调器。
+  // 生产 widget（`_StudioLifecycleCoordinator.initState`）会在**首帧构建时**安装它
+  // 自己的协调器（同一 `graph.close`），覆盖任何更早的安装。Driver 取证必须观察
+  // 实际 active 的那一次收束，因此把同一 graph / 同一预算 / 同一进度接口的 Driver
+  // 绑定放到首帧之后安装一次：不循环抢 active、不改生产入口、不新增 production getter。
+  WidgetsBinding.instance.addPostFrameCallback((_) {
+    _installDriverExitCoordinator(graph);
+  });
+}
+
+/// 只安装一次 Driver 专用的退出协调器绑定（同一 AppGraph、同一 shutdown 进度接口）。
+///
+/// 与托盘退出共用同一条 `StudioExitCoordinator`：native -> Dart 的 requestExit 也进入它。
+void _installDriverExitCoordinator(AppGraph graph) {
   StudioExitCoordinator.install(
     StudioExitCoordinator(
       graph.client.transport,
@@ -81,10 +93,16 @@ void main() {
           .read(studioShutdownProgressStateProvider.notifier)
           .beginExit,
       // 退出（含失败取消）在 `graph.close` 之前取消 runtime 取证观察：共享 Session／
-      // Client 仍由既有 owner 关闭，记录器不改变任何业务 demand。
-      closeClient: (deadline) {
+      // Client 仍由既有 owner 关闭，记录器不改变任何 business demand。
+      closeClient: (deadline) async {
         _runtimeEvidence?.cancelForShutdown();
-        return graph.close(deadline: deadline);
+        // 只**观察**既有 close 的结果：等这一次 memoized close，投影其
+        // CloseReport.unresolved 供验收定位，然后原样返回同一报告。
+        // 不重复 close / 不 retryCleanup / 不改清理与 Degraded 语义。
+        final report = await graph.close(deadline: deadline);
+        _clientCloseObserved = true;
+        _clientCloseResources = _clientCloseResourcesJson(report);
+        return report;
       },
     ),
   );
@@ -111,6 +129,12 @@ void _applyShutdownFaultOverride() {
 late final ProviderContainer _container;
 AnyworkClient get _client => _container.read(appGraphProvider).client;
 Future<StudioShutdownReport>? _shutdownTask;
+
+/// Driver-only 只读证据：既有 `graph.close` 报告是否真的观察到，及其 unresolved
+/// 资源投影。未观察时 `clientCloseObserved=false` 且资源为 `null`（**不**用空集合
+/// 冒充“没有资源”）。
+bool _clientCloseObserved = false;
+List<Map<String, Object?>>? _clientCloseResources;
 Future<void>? _driverFixtureClipboardImageTask;
 
 /// Driver-only runtime 发布取证记录器：借用当前 Client 已存在的 Session 观察公开
@@ -1020,8 +1044,32 @@ Future<StudioShutdownReport> _runShutdown() async {
   return StudioExitCoordinator.cleanupActive();
 }
 
+/// 既有 `CloseReport.unresolved` 的稳定公开投影。
+///
+/// 只保留 owner 名字、attempt 的公开值和安全 reason 分类；不输出
+/// `reason.toString()`、异常消息或任何凭据/路径细节，未知类型只给 runtimeType 名。
+List<Map<String, Object?>> _clientCloseResourcesJson(CloseReport report) => [
+  for (final resource in report.unresolved)
+    {
+      'owner': resource.owner,
+      'attemptId': resource.attemptId.value,
+      'reasonKind': _clientCloseReasonKind(resource.reason),
+    },
+];
+
+String _clientCloseReasonKind(Object reason) => switch (reason) {
+  TimeoutException() => 'timeout',
+  StateError() => 'stateError',
+  StudioFailure(:final code) => 'studioFailure:${code.name}',
+  _ => 'unknown:${reason.runtimeType}',
+};
+
 Map<String, Object?> _shutdownReportJson(StudioShutdownReport report) {
   return {
+    // Driver-only：同一次既有 close 是否观察到，以及其 unresolved 资源
+    // （owner / attempt 公开值 / 安全 reasonKind）。未观察到即 null，不是空集合。
+    'clientCloseObserved': _clientCloseObserved,
+    'clientCloseResources': _clientCloseResources,
     'outcome': report.outcome.name,
     'persistence': switch (report.persistence) {
       UnknownStudioPendingPersistence() => 'unknown',

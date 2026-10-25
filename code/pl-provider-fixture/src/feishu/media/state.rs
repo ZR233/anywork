@@ -23,6 +23,8 @@ pub(crate) struct StoredResource {
 }
 
 pub(crate) struct MediaState {
+    pub file_message_key_mode: super::FileMessageKeyMode,
+    pub message_keys: HashMap<(String, String), String>,
     pub resources: HashMap<String, StoredResource>,
     pub retained_bytes: usize,
     pub requests: usize,
@@ -40,6 +42,8 @@ pub(crate) struct MediaState {
 impl MediaState {
     pub fn new() -> Self {
         Self {
+            file_message_key_mode: super::FileMessageKeyMode::PreserveUploadKey,
+            message_keys: HashMap::new(),
             resources: HashMap::new(),
             retained_bytes: 0,
             requests: 0,

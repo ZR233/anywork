@@ -31,6 +31,33 @@ pub(crate) fn bot_owner(state: &ThreadSnapshot) -> Result<Option<String>> {
         })
         .transpose()
 }
+
+/// 合并运行期绑定与该会话已冻结的 owner 事实。
+///
+/// 两个来源都按当前格式版本解码，并用 bot 模块的 canonical 校验器验证 bot ID；两者同时
+/// 存在时必须指向同一个 bot。读取失败、ID 非法或冲突都返回错误，绝不以“扩展存在”或
+/// “没有绑定”推断渠道。
+pub(crate) fn verified_bot_owner(
+    live: Option<&str>,
+    saved: Option<&ThreadSnapshot>,
+) -> Result<Option<String>> {
+    let frozen = saved.map(bot_owner).transpose()?.flatten();
+    if let Some(bot_id) = &frozen {
+        crate::bots::validate_bot_id(bot_id)
+            .map_err(|error| anyhow::anyhow!("invalid saved bot ownership `{bot_id}`: {error}"))?;
+    }
+    if let Some(bot_id) = live {
+        crate::bots::validate_bot_id(bot_id)
+            .map_err(|error| anyhow::anyhow!("invalid active bot binding `{bot_id}`: {error}"))?;
+    }
+    match (live, frozen) {
+        (Some(live), Some(frozen)) if live != frozen => {
+            bail!("saved bot ownership conflicts with the active bot binding")
+        }
+        (Some(live), _) => Ok(Some(live.to_owned())),
+        (None, frozen) => Ok(frozen),
+    }
+}
 pub(crate) const MODEL_ROUTE_FORMAT: &str = "pl.studio.model-route";
 pub(crate) const AGENT_PROFILE_EXTENSION: &str = "studio.agent-profile";
 pub(crate) const AGENT_PROFILE_FORMAT: &str = "pl.studio.agent-profile";
@@ -89,6 +116,24 @@ pub(crate) fn saved_profile(
             ))
         })
         .transpose()
+}
+
+/// The Profile frozen at creation is the only Agent identity a restored child may consume.
+///
+/// A missing snapshot fails with the original checkpoint preserved: rebuilding it from the
+/// current catalog, an empty instruction body or a synthesized revision would fabricate an
+/// executable Agent that the session never had.
+pub(crate) fn required_saved_profile(
+    state: &ThreadSnapshot,
+    child_id: &str,
+) -> Result<pl_protocol::AgentProfileSnapshot> {
+    saved_profile(state)?
+        .map(|(profile, _)| profile)
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "child {child_id} has no frozen Agent Profile; checkpoint and history preserved"
+            )
+        })
 }
 
 pub(crate) fn profile_route(

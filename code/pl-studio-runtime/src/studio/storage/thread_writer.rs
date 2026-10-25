@@ -35,7 +35,7 @@ use tokio::time::Instant;
 use crate::studio::StudioStore;
 use crate::studio::storage::coordinator::ThreadPersistenceMetrics;
 use crate::studio::storage::history::{
-    EffectCommit, InputIdentityWrite, MessageIdentityWrite, is_retryable_write,
+    EffectCommit, HistoryStore, InputIdentityWrite, MessageIdentityWrite, is_retryable_write,
 };
 use crate::studio::thread_projection::PreparedEffect;
 
@@ -436,6 +436,44 @@ impl HistoryChannel {
             .filter(|queued| queued.prepared.is_none())
             .map(|queued| queued.write.clone())
             .collect()
+    }
+
+    /// Only typed items already accepted by the unique trusted projection, never raw tool output.
+    pub(in crate::studio) fn pending_public_artifact(
+        &self,
+        resource_id: &str,
+    ) -> Result<Option<pl_core::context::ResourceReference>> {
+        let progress = self
+            .progress
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut found = None;
+        for item in progress
+            .effects
+            .iter()
+            .filter_map(|queued| queued.prepared.as_ref())
+            .flat_map(|prepared| &prepared.items)
+        {
+            let pl_protocol::ThreadItemState::PublicArtifact(artifact) = item.state() else {
+                continue;
+            };
+            if artifact.resource.id != resource_id {
+                continue;
+            }
+            let resource = &artifact.resource;
+            let reference = pl_core::context::ResourceReference::new(
+                resource.id.clone(),
+                resource.content_digest.clone(),
+                resource.byte_len,
+                resource.media_type.clone(),
+            )?;
+            ensure!(
+                found.as_ref().is_none_or(|previous| previous == &reference),
+                "conflicting pending public resource metadata"
+            );
+            found = Some(reference);
+        }
+        Ok(found)
     }
 
     /// Publishes the failure of one admitted fact's projection.
@@ -1100,6 +1138,12 @@ async fn persist_effect(
         progress.saving_revision = 0;
     }
     committed?;
+    if let Some(archive) = &projected.archive {
+        archive
+            .durable()
+            .await
+            .map_err(|error| classified(pl_protocol::studio::HistoryFault::BlobFailed, error))?;
+    }
     super::state::clear_checkpoint_recovery(&inner.thread.id);
     publish_accounting(inner, &history).await;
     // The writer confirms exactly the identity and revision this transaction committed, which is the
@@ -1407,6 +1451,9 @@ impl ColdStore for ThreadStorageSink {
                 prepared: None,
                 prepared_bytes: 0,
             });
+            if let Some(resources) = self.0.history.get().and_then(HistoryStore::resources) {
+                resources.admitted(&write.effect);
+            }
             progress.last_progress_at.get_or_insert_with(Instant::now);
         }
         // 首次受理从 checkpoint 继承已折叠的累计摘要，然后只折叠本 incarnation 的新 effect。
@@ -1691,6 +1738,7 @@ mod storage_fault_tests {
     fn ticket_referencing_attachment(
         thread_id: &str,
         attachment: &crate::studio::AttachmentRecord,
+        reference: &pl_core::context::ResourceReference,
     ) -> Result<ThreadWrite> {
         let mut write = ticket(thread_id, 1);
         let input = InputRecord {
@@ -1708,7 +1756,9 @@ mod storage_fault_tests {
                     })
                     .to_string(),
                 )?,
-                context: Vec::new(),
+                context: vec![pl_core::context::ContextContent::Resource {
+                    reference: reference.clone(),
+                }],
             },
             ordinal: 1,
             revision: 1,
@@ -1934,6 +1984,17 @@ mod storage_fault_tests {
         let inner = sink.0.clone();
         tokio::spawn(async move {
             let mut projection = live_projection();
+            // The real observation owner uses the same HistoryStore-owned archive capability.
+            // History fault tests must transfer preparation responsibility through that same path.
+            match inner.store.thread_resources(&inner.thread.id).await {
+                Ok(resources) => projection.bind_resources(resources),
+                Err(error) => {
+                    inner
+                        .channel
+                        .fail_projection(1, format!("test resource owner: {error:#}"));
+                    return;
+                }
+            }
             let mut failed = std::collections::BTreeSet::new();
             // Wake on the channel's own status watch, never on the channel's `Notify`: the history
             // writer is the one task that waits on that `Notify`, and a second waiter would consume
@@ -3650,23 +3711,31 @@ mod storage_fault_tests {
             .await?
             .pop()
             .context("promoted attachment is missing")?;
-        let reference = store.retain_attachment_resource(&attachment).await?;
+        let resources = store.thread_resources("blob-fence").await?;
+        let preparation = resources.prepare_input("attached-input".to_owned());
+        let reference = store
+            .retain_attachment_resource(&attachment, &preparation)
+            .await?;
         let blob = session.root().join(&attachment.blob_relative_path);
         tokio::fs::remove_file(&blob).await?;
-        let resources = crate::resource_store::FileResourceStore::new(session.resources_dir());
         assert_eq!(
             resources
-                .read(reference, tokio_util::sync::CancellationToken::new())
+                .read(
+                    reference.clone(),
+                    tokio_util::sync::CancellationToken::new()
+                )
                 .await?
                 .as_ref(),
             bytes
         );
         store.record_attachments(vec![attachment.clone()]).await?;
         let mut status = sink.0.channel.subscribe();
-        sink.admit(
-            "blob-fence",
-            ticket_referencing_attachment("blob-fence", &attachment)?,
-        )?;
+        let write = ticket_referencing_attachment("blob-fence", &attachment, &reference)?;
+        let [InputChange::Accepted(record)] = write.effect.inputs.as_ref() else {
+            anyhow::bail!("blob fence ticket must contain its real accepted input");
+        };
+        preparation.submitting(&record.input)?;
+        sink.admit("blob-fence", write)?;
         tokio::time::timeout(Duration::from_secs(5), async {
             while status.borrow_and_update().fault.is_none() {
                 status.changed().await?;
