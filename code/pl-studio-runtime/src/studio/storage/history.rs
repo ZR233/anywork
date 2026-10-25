@@ -129,6 +129,14 @@ pub(crate) struct FactReceipt {
     pub payload: String,
 }
 
+/// One durable interaction/permission receipt together with the identity it was stored under.
+pub(crate) struct DecisionReceipt {
+    /// The stable receipt key, i.e. `order::receipt_id(kind, local_id)`.
+    pub item_id: String,
+    pub kind: String,
+    pub payload: String,
+}
+
 /// One receipt write that must land in the same transaction as the effect that produced it.
 pub(crate) struct FactReceiptWrite {
     pub item_id: String,
@@ -644,6 +652,39 @@ impl HistoryStore {
             kind: row.try_get("", "kind")?,
             payload: row.try_get("", "payload")?,
         }))
+    }
+
+    /// The newest durable receipt of every decision identity this Thread ever committed.
+    ///
+    /// Canonical snapshots keep only pending decisions, so a settled question or approval leaves the
+    /// snapshot behind and the receipts become the only read-only source that can still prove it.
+    /// Operation identity reuse, a terminal replay and the hand-over reconciliation all read this one
+    /// source instead of a snapshot that has already dropped the record. A missing store or no
+    /// receipts returns an empty list; a storage fault is propagated.
+    pub(crate) async fn decision_receipts(&self) -> Result<Vec<DecisionReceipt>> {
+        let Some(connection) = self.reader().await? else {
+            return Ok(Vec::new());
+        };
+        let rows = connection
+            .db
+            .query_all_raw(statement(
+                "SELECT newest.item_id, newest.kind, newest.payload FROM history_fact_receipts newest \
+                 JOIN (SELECT item_id, MAX(revision) AS revision FROM history_fact_receipts \
+                       WHERE kind IN ('interaction','permission') GROUP BY item_id) latest \
+                   ON latest.item_id = newest.item_id AND latest.revision = newest.revision \
+                 WHERE newest.kind IN ('interaction','permission') ORDER BY newest.item_id",
+                Vec::new(),
+            ))
+            .await?;
+        rows.into_iter()
+            .map(|row| {
+                Ok(DecisionReceipt {
+                    item_id: row.try_get("", "item_id")?,
+                    kind: row.try_get("", "kind")?,
+                    payload: row.try_get("", "payload")?,
+                })
+            })
+            .collect()
     }
 
     pub(crate) async fn input_identity(
@@ -2631,10 +2672,10 @@ async fn write_input_identity(
     write_seq: i64,
     identity: &InputIdentityWrite,
 ) -> Result<()> {
-    let payload = serde_json::to_string(&identity.entry)?;
     let existing = db
         .query_one_raw(statement(
-            "SELECT digest,presentation FROM history_input_identities WHERE item_id=?",
+            "SELECT digest,presentation,request_digest,payload FROM history_input_identities
+             WHERE item_id=?",
             vec![identity.entry.id.clone().into()],
         ))
         .await?;
@@ -2653,23 +2694,44 @@ async fn write_input_identity(
             "input identity {} conflicts with its durable presentation",
             identity.entry.id
         );
+        // A control operation's request identity is the *first* admission, not whatever the current
+        // commit can recompute. These fields are insert-if-absent: once a row carries them, the newer
+        // commit can neither overwrite nor falsify them, so a later route change, a later consumption
+        // or a later state advance still answers with the original receipt.
+        let mut entry = identity.entry.clone();
+        let mut request_digest = identity.request_digest.clone();
+        if entry.purpose == pl_core::thread::input::InputPurpose::Continuation {
+            let stored_entry: crate::studio::storage::state::InputIdentityEntry =
+                serde_json::from_str(&row.try_get::<String>("", "payload")?)?;
+            entry.expected_model_route_revision = stored_entry
+                .expected_model_route_revision
+                .or(entry.expected_model_route_revision);
+            entry.continuation_admission_revision = stored_entry
+                .continuation_admission_revision
+                .or(entry.continuation_admission_revision);
+            request_digest = row
+                .try_get::<Option<String>>("", "request_digest")?
+                .or(request_digest);
+        }
+        let payload = serde_json::to_string(&entry)?;
         db.execute_raw(statement(
             "UPDATE history_input_identities
              SET ordinal=?,revision=?,request_digest=?,presentation=?,payload=?,last_write_seq=?
              WHERE item_id=?",
             vec![
-                integer(identity.entry.ordinal)?.into(),
-                integer(identity.entry.revision)?.into(),
-                identity.request_digest.clone().into(),
+                integer(entry.ordinal)?.into(),
+                integer(entry.revision)?.into(),
+                request_digest.into(),
                 presentation_label(identity.presentation).into(),
                 payload.into(),
                 write_seq.into(),
-                identity.entry.id.clone().into(),
+                entry.id.clone().into(),
             ],
         ))
         .await?;
         return Ok(());
     }
+    let payload = serde_json::to_string(&identity.entry)?;
     db.execute_raw(statement(
         "INSERT INTO history_input_identities(
             item_id,ordinal,revision,digest,request_digest,presentation,payload,last_write_seq
@@ -2944,9 +3006,11 @@ mod storage_fault_tests {
         interaction.updated_at = 2;
         interaction.continuation_id = Some(id.clone());
         let input = InputRecord {
+            continuation: None,
             accepted_sequence: 1,
             delivery: Default::default(),
             input: ThreadInput {
+                purpose: pl_core::thread::input::InputPurpose::Message,
                 id: id.clone(),
                 payload: OpaquePayload::new(
                     "pl.studio.interaction-continuation",
@@ -3131,6 +3195,8 @@ mod storage_fault_tests {
             &InputIdentityWrite {
                 entry: crate::studio::storage::state::InputIdentityEntry::new(
                     pl_core::thread::input::InputIdentity {
+                        purpose: Default::default(),
+                        continuation: None,
                         id: "consumed".into(),
                         ordinal: 3,
                         revision: 2,
@@ -3900,7 +3966,11 @@ mod storage_fault_tests {
             .checkpoint()
             .await?
             .context("migrated checkpoint")?;
-        assert_eq!(checkpoint.schema_version, 4);
+        // 迁移落点跟随核心当前的 checkpoint schema，而不是在测试里再抄一份版本号。
+        assert_eq!(
+            checkpoint.schema_version,
+            pl_core::thread::ThreadCheckpoint::SCHEMA_VERSION
+        );
         assert!(matches!(
             checkpoint.state.context.records[0].source,
             ContextSource::RuntimeFact { .. }
@@ -4642,11 +4712,12 @@ mod storage_fault_tests {
 
         // live 投影只剩放置元数据占位（真实正文已被回收）时同样报告 identity，绝不静默丢弃权威问答。
         let mut placeholder = question_tool_item("call-qa", &thread.id, 7);
-        placeholder = placeholder.with_state(ThreadItemState::Raw(pl_protocol::ThreadRawItem {
-            payloads: vec![],
-            notice: "This item's body is no longer resident in the live preview cache.".into(),
-            recorded_at: 111,
-        }));
+        placeholder =
+            placeholder.with_state(ThreadItemState::Raw(pl_protocol::ThreadRawItem::stored(
+                vec![],
+                "This item's body is no longer resident in the live preview cache.",
+                111,
+            )));
         let mut resident = std::collections::BTreeMap::new();
         resident.insert(placeholder.id.clone(), placeholder.clone());
         let without_body = crate::studio::thread_projection::project_effect_items(

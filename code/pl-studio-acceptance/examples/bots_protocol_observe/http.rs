@@ -28,15 +28,29 @@ pub(crate) struct StudioHttp {
     base: String,
 }
 
-/// Public reply of one Turn interrupt command.
+/// Public reply of one precise stop command (`POST /api/v1/threads/{id}/stop`).
 #[derive(Debug, Clone, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct InterruptTurnReply {
+pub(crate) struct StopThreadReply {
     pub thread_id: String,
-    pub turn_id: String,
-    /// The owner accepted the interrupt; the Turn still has to stop in its own
-    /// stream before the cancellation is effective.
-    pub interrupted: bool,
+    pub execution_id: String,
+    /// The owner accepted the stop of exactly this execution; the execution still has
+    /// to settle in its own stream before the stop is effective.
+    pub stopped: bool,
+    pub receipt: StopThreadReceipt,
+}
+
+/// The acknowledgement of a precise stop: accepted, but not yet effective.
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct StopThreadReceipt {
+    pub operation_id: String,
+    pub disposition: String,
+    pub targets: Vec<serde_json::Value>,
+    pub effect: String,
+    pub effective: bool,
+    pub durable: bool,
+    pub requires_identity_observation: bool,
 }
 
 /// Public prompt.submit acknowledgement (the response's canonical wire DTO).
@@ -349,25 +363,28 @@ impl StudioHttp {
         Ok(())
     }
 
-    /// Public `DELETE /api/v1/threads/{thread_id}/turns/{turn_id}`.
+    /// Public `POST /api/v1/threads/{thread_id}/stop`.
     ///
-    /// The reply is decoded by a local strict type: the product owns the wire
-    /// contract, and acceptance only asserts the identity and acknowledgement it
-    /// received through this public route.
-    pub async fn interrupt_turn(
+    /// The request names the execution the caller actually observed; a Turn id is
+    /// never substituted for that identity. The reply is decoded by a local strict
+    /// type, and acceptance asserts what this public route really acknowledged.
+    pub async fn stop_thread(
         &self,
         thread_id: &str,
-        turn_id: &str,
+        execution_id: &str,
         operation_id: &str,
-    ) -> Result<InterruptTurnReply> {
-        let path = format!("/api/v1/threads/{thread_id}/turns/{turn_id}");
+    ) -> Result<StopThreadReply> {
+        let path = format!("/api/v1/threads/{thread_id}/stop");
         let response = self
             .command_client
-            .delete(format!("{}{path}", self.base))
-            .json(&serde_json::json!({ "operationId": operation_id }))
+            .post(format!("{}{path}", self.base))
+            .json(&serde_json::json!({
+                "operationId": operation_id,
+                "expectedExecutionId": execution_id,
+            }))
             .send()
             .await
-            .with_context(|| format!("DELETE {path}"))?;
+            .with_context(|| format!("POST {path}"))?;
         let status = response.status();
         let text = response.text().await.unwrap_or_default();
         decode_json(status, &text, &path)

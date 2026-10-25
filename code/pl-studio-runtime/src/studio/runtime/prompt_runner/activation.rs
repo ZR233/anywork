@@ -1,6 +1,6 @@
 //! Thread 对应 agent 的激活、驻留恢复与 canonical owner 读取。
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 
 use crate::studio::{ThreadKind, ThreadRecord, ThreadVisibility};
 
@@ -19,9 +19,14 @@ impl StudioRuntime {
         &self,
         thread_id: &str,
     ) -> Result<ThreadRecord> {
-        self.find_owned_thread(thread_id)
-            .await?
-            .context("selected Thread not found")
+        match self.find_owned_thread(thread_id).await? {
+            Some(record) => Ok(record),
+            // An unknown Thread is an API-visible rejection, not an internal failure: the transports
+            // must be able to answer 404 with a typed reason.
+            None => Err(anyhow::Error::new(
+                pl_protocol::studio::StudioError::not_found("session"),
+            )),
+        }
     }
 
     pub(crate) async fn find_owned_thread(&self, thread_id: &str) -> Result<Option<ThreadRecord>> {

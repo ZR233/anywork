@@ -145,6 +145,59 @@ pub(in crate::studio) fn project_runtime(
     Ok(ThreadRuntimeSnapshot {
         thread_id: thread_id.into(),
         model_route,
+        // The execution identity is a fact of this Thread's own state, so the same per-Thread
+        // projection that publishes usage also publishes what a precise stop would target.
+        execution: state.execution.as_ref().map(|execution| {
+            pl_protocol::AgentExecution::new(
+                execution.id.clone(),
+                match execution.phase {
+                    pl_core::thread::ExecutionPhase::Preparing => {
+                        pl_protocol::AgentExecutionPhase::Preparing
+                    }
+                    pl_core::thread::ExecutionPhase::AwaitingStorage => {
+                        pl_protocol::AgentExecutionPhase::AwaitingStorage
+                    }
+                    pl_core::thread::ExecutionPhase::AwaitingAdmission => {
+                        pl_protocol::AgentExecutionPhase::AwaitingAdmission
+                    }
+                    pl_core::thread::ExecutionPhase::Running => {
+                        pl_protocol::AgentExecutionPhase::Running
+                    }
+                    pl_core::thread::ExecutionPhase::Stopping => {
+                        pl_protocol::AgentExecutionPhase::Stopping
+                    }
+                },
+                execution.turn_id.clone(),
+            )
+        }),
+        // The owed work is part of this Thread's own state: the client's first continue needs this
+        // identity, and only the owner can publish it. It is never derived from history or guessed
+        // locally, and `claimed` separates "can continue" from "continue already accepted".
+        continuation: state.continuation.as_ref().map(|point| {
+            pl_protocol::ContinuationView::new(
+                point.id.clone(),
+                point.source_turn_id.clone(),
+                point.reason.map(|reason| match reason {
+                    pl_core::thread::ContinuationReason::UserStop => {
+                        pl_protocol::ContinuationReason::UserStop
+                    }
+                    pl_core::thread::ContinuationReason::HostShutdown => {
+                        pl_protocol::ContinuationReason::HostShutdown
+                    }
+                    pl_core::thread::ContinuationReason::ProcessInterrupted => {
+                        pl_protocol::ContinuationReason::ProcessInterrupted
+                    }
+                    pl_core::thread::ContinuationReason::StepLimit => {
+                        pl_protocol::ContinuationReason::StepLimit
+                    }
+                    pl_core::thread::ContinuationReason::ExecutionFailed => {
+                        pl_protocol::ContinuationReason::ExecutionFailed
+                    }
+                }),
+                point.created_at,
+                point.claim.is_some(),
+            )
+        }),
         usage,
         live_usage,
         turn_completion_tokens: summary.turn_completion_tokens,

@@ -145,6 +145,9 @@ async fn interaction_restart_inner(
             &q1.interaction_id,
             &ResolveInteractionRequest {
                 operation_id: "op-bots-restart-q1".into(),
+                // 宿主就是重建后观察到的会话本身；版本取重建快照里的当前版本。
+                host_thread_id: rebuilt_q1.scope.thread_id.clone(),
+                expected_revision: rebuilt_q1.revision,
                 resolution: InteractionResolution::UserInput(UserInputResolution {
                     answers: HashMap::from([(
                         Q1_ID.to_string(),
@@ -184,6 +187,9 @@ async fn interaction_restart_inner(
             &plan.interaction_id,
             &ResolveInteractionRequest {
                 operation_id: "op-bots-restart-plan".into(),
+                // 计划确认同样发生在该主会话自身，版本取这张卡片的当前观察值。
+                host_thread_id: plan.scope.thread_id.clone(),
+                expected_revision: plan.revision,
                 resolution: InteractionResolution::UserInput(UserInputResolution {
                     answers: HashMap::from([(
                         AGENT_SESSION_PLAN_CONFIRMATION_QUESTION_ID.to_string(),

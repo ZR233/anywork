@@ -123,7 +123,7 @@ final class ComposerDockViewProvider
   }
 }
 
-String _$composerDockViewHash() => r'c8230c80ae0f2cb78e03945a81328ac62d892eaf';
+String _$composerDockViewHash() => r'e5f666ffb9fffa3a52d06139daefb31ea6946901';
 
 final class ComposerDockViewFamily extends $Family
     with $FunctionalFamilyOverride<ComposerDockView, String> {

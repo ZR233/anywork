@@ -29,7 +29,11 @@ impl StudioRuntime {
         }
         // 冷数据回源：未驻留 Thread 的目录元数据只从 `catalog.toml` 读取。
         let Some(record) = self.store.read_thread(thread_id).await? else {
-            return Err(anyhow::anyhow!("selected Thread not found"));
+            // An unknown Thread is an API-visible rejection: answering it as an internal failure
+            // would hide a deleted or foreign identity behind a redacted 500.
+            return Err(anyhow::Error::new(
+                pl_protocol::studio::StudioError::not_found("session"),
+            ));
         };
         Ok(pl_protocol::Thread::from(record))
     }

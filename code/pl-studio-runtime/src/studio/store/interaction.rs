@@ -14,8 +14,10 @@ impl StudioStore {
             return Ok(None);
         };
         let thread = pl_protocol::Thread::from(record);
+        // Reading one interaction is a projection: it never imports or deletes storage.
         let Some(checkpoint) =
-            crate::studio::thread_factory::recovery::load_checkpoint(self, &thread).await?
+            crate::studio::thread_factory::recovery::load_checkpoint_read_only(self, &thread)
+                .await?
         else {
             return Ok(None);
         };
@@ -34,8 +36,10 @@ impl StudioStore {
             return Ok(Vec::new());
         };
         let thread = pl_protocol::Thread::from(record);
+        // Listing pending interactions is a projection too: no migration, no legacy cleanup.
         let Some(checkpoint) =
-            crate::studio::thread_factory::recovery::load_checkpoint(self, &thread).await?
+            crate::studio::thread_factory::recovery::load_checkpoint_read_only(self, &thread)
+                .await?
         else {
             return Ok(Vec::new());
         };

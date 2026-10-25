@@ -2,6 +2,37 @@
 use super::*;
 
 pub(super) fn settle(mut state: ThreadSnapshot) -> Result<ThreadSnapshot, ThreadError> {
+    // Facts that make the settled state still owe work. They are read before settlement turns them
+    // into terminal records, because afterwards only the formed point can say the work was cut.
+    let running_turn = state
+        .turns
+        .iter()
+        .rev()
+        .find(|turn| turn.state == TurnState::Running)
+        .map(|turn| turn.turn_id.clone());
+    let preparing = state.execution.is_some()
+        || state
+            .attempts
+            .last()
+            .is_some_and(|attempt| attempt.status == AttemptStatus::Running);
+    let owed_input = state
+        .inputs
+        .iter()
+        .any(|record| record.state == input::InputState::Pending);
+    let owed_message = state.wake_messages_through > state.consumed_messages;
+    // A claim names an authorization of the incarnation that is gone, so it can never be reused;
+    // the point itself is not deleted here, because the work it names is still owed.
+    if let Some(point) = state.continuation.as_mut() {
+        point.claim = None;
+    }
+    // Nothing may be resumed automatically: the restored checkpoint was written by an owner that is
+    // gone, so a durable watermark it already met cannot authorize anything by itself.
+    state.required_durable_sequence = None;
+    // The execution that was live when the process died was allocated but could not be committed
+    // before it died, so advancing past it is what keeps a caller that still holds that identity from
+    // addressing the first execution of the restored incarnation.
+    state.execution_sequence = state.execution_sequence.saturating_add(1);
+    state.execution = None;
     let calls = state.context.pending_calls()?;
     if !calls.is_empty() {
         let revision = state
@@ -138,6 +169,29 @@ pub(super) fn settle(mut state: ThreadSnapshot) -> Result<ThreadSnapshot, Thread
     state.private_context = None;
     state.lifecycle = ThreadLifecycle::Open;
     state.persistence = Default::default();
+    // The settled facts are the interruption; only a fact that really is owed work forms the point,
+    // so a Thread that finished normally never becomes continuable. Re-settling the same facts keeps
+    // the identity the point already had instead of renumbering it.
+    let source = running_turn.as_ref().map_or_else(
+        || "interrupted".to_owned(),
+        |turn_id| format!("turn:{turn_id}"),
+    );
+    if running_turn.is_some() || preparing || owed_input || owed_message {
+        let equivalent = state.continuation.as_ref().is_some_and(|point| {
+            point.same_fact(
+                running_turn.as_deref(),
+                Some(ContinuationReason::ProcessInterrupted),
+            )
+        });
+        if !equivalent {
+            state.continuation = Some(ContinuationPoint::new(
+                state.commit_sequence,
+                &source,
+                running_turn.clone(),
+                Some(ContinuationReason::ProcessInterrupted),
+            ));
+        }
+    }
     state.context.validate_complete()?;
     Ok(state)
 }

@@ -90,6 +90,8 @@ class CommandStatus {
     required this.phase,
     this.target = const CommandTarget(),
     this.error,
+    this.accepted = false,
+    this.startedAtMs = 0,
   });
 
   final String key;
@@ -97,7 +99,30 @@ class CommandStatus {
   final CommandTarget target;
   final StudioFailure? error;
 
+  /// 该命令已收到**需要身份观察的受理回执**。
+  ///
+  /// 这是「回执已到」这一事实，不是猜测：为 `true` 时请求已受理，正在等待 canonical
+  /// 状态收敛（`phase` 仍可能是 `pending`）；界面据此区分「请求在途、尚未受理」与
+  /// 「已受理、等待收敛」，不得把它当作已生效。命令结算或清除时该条状态消失。
+  final bool accepted;
+
+  /// 该命令被登记时的 Unix 毫秒时间戳；`0` 表示未记录。
+  ///
+  /// 命令登记时写入一次；之后「已受理」「失败」的状态重建都保留它。界面可以用自己的
+  /// 墙钟计算 elapsed，而不必把计时器放进会被重建的 widget 本地状态。
+  final int startedAtMs;
+
   bool get isPending => phase == CommandPhase.pending;
+
+  /// 保留本次命令的身份与错误，只标记「已受理」。
+  CommandStatus withAccepted() => CommandStatus(
+    key: key,
+    phase: phase,
+    target: target,
+    error: error,
+    accepted: true,
+    startedAtMs: startedAtMs,
+  );
 
   @override
   bool operator ==(Object other) =>
@@ -106,10 +131,13 @@ class CommandStatus {
           key == other.key &&
           phase == other.phase &&
           target == other.target &&
-          error == other.error;
+          error == other.error &&
+          accepted == other.accepted &&
+          startedAtMs == other.startedAtMs;
 
   @override
-  int get hashCode => Object.hash(key, phase, target, error);
+  int get hashCode =>
+      Object.hash(key, phase, target, error, accepted, startedAtMs);
 }
 
 bool commandMapsEqual(

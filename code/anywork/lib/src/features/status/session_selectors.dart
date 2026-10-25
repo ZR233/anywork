@@ -159,6 +159,21 @@ class _QuietSelectorMenuState<T> extends State<_QuietSelectorMenu<T>> {
   }
 }
 
+/// 选择器被锁定时向用户说明原因：优先交给宿主提示区，否则就地弹一次 SnackBar。
+void _explainSelection(
+  BuildContext context,
+  ValueChanged<String>? onExplain,
+  String message,
+) {
+  if (onExplain case final callback?) {
+    callback(message);
+    return;
+  }
+  final messenger = ScaffoldMessenger.of(context);
+  messenger.hideCurrentSnackBar();
+  messenger.showSnackBar(SnackBar(content: Text(message), showCloseIcon: true));
+}
+
 /// 根会话的模式选择器；起始页传新会话草稿，状态栏传当前 Thread 的 mode。
 class SessionModeSelector extends ConsumerWidget {
   const SessionModeSelector({
@@ -167,6 +182,8 @@ class SessionModeSelector extends ConsumerWidget {
     this.enabled = true,
     this.snapshotDisplayName,
     this.usesSnapshot = false,
+    this.lockedHint,
+    this.onExplain,
     super.key,
   });
 
@@ -175,6 +192,12 @@ class SessionModeSelector extends ConsumerWidget {
   final bool enabled;
   final String? snapshotDisplayName;
   final bool usesSnapshot;
+
+  /// 禁用原因；缺省按“运行或工作流活动期间无法切换”解释。
+  final String? lockedHint;
+
+  /// 宿主提示区；缺省就地弹一次可关闭提示。
+  final ValueChanged<String>? onExplain;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -198,8 +221,16 @@ class SessionModeSelector extends ConsumerWidget {
                 : context.l10n.modeDeletedChooseAnother)
           : enabled
           ? context.l10n.statusSessionMode
-          : context.l10n.statusSessionModeLocked,
+          : lockedHint ?? context.l10n.statusSessionModeLocked,
       enabled: enabled,
+      // 与模型、强度选择器同一规则：锁定必须解释，不能静默吞掉点击。
+      onBlockedTap: enabled
+          ? null
+          : () => _explainSelection(
+              context,
+              onExplain,
+              lockedHint ?? context.l10n.statusSessionModeLocked,
+            ),
       onSelected: onSelected,
       items: [
         for (final option in options)
@@ -285,20 +316,14 @@ class ModelRoleSelector extends StatelessWidget {
     final current = modelForRoute(accounts, accountId, modelId);
     final filterMessage = modelTextFilterMessage(context, current?.descriptor);
     final warning = !available || current == null || filterMessage != null;
+    // 禁用必须先给出原因：未就绪/提交进行中优先，其次才是空模型目录的筛选说明，
+    // 否则点击会被静默吞掉。
     final selectionBlockedReason =
         blockedReason ??
+        (!enabled ? context.l10n.statusSelectorsNotReady : null) ??
         (options.isEmpty ? context.l10n.modelTextFilterEmpty : null);
-    void explain(String message) {
-      if (onExplain case final callback?) {
-        callback(message);
-      } else {
-        final messenger = ScaffoldMessenger.of(context);
-        messenger.hideCurrentSnackBar();
-        messenger.showSnackBar(
-          SnackBar(content: Text(message), showCloseIcon: true),
-        );
-      }
-    }
+    void explain(String message) =>
+        _explainSelection(context, onExplain, message);
 
     return Row(
       mainAxisSize: MainAxisSize.min,
@@ -350,7 +375,7 @@ class ModelRoleSelector extends StatelessWidget {
           // supersedes older route intents by stable target identity, so users
           // can select A -> B -> C without waiting for each Bridge round trip.
           enabled: enabled && selectionBlockedReason == null,
-          onBlockedTap: !enabled || selectionBlockedReason == null
+          onBlockedTap: selectionBlockedReason == null
               ? null
               : () => explain(selectionBlockedReason),
           onSelected: (option) async {
@@ -418,9 +443,16 @@ class ReasoningEffortSelector extends StatelessWidget {
       key: StudioDriverKeys.reasoningEffort,
       tooltip: blockedReason ?? context.l10n.statusReasoningEffort,
       enabled: selectionEnabled,
-      onBlockedTap: !enabled || blockedReason == null
-          ? null
-          : () => onExplain?.call(blockedReason!),
+      // 与模型选择器同一规则：禁用必须解释，不能静默吞掉点击。
+      onBlockedTap: blockedReason != null
+          ? () => _explainSelection(context, onExplain, blockedReason!)
+          : !enabled
+          ? () => _explainSelection(
+              context,
+              onExplain,
+              context.l10n.statusSelectorsNotReady,
+            )
+          : null,
       onSelected: (nextEffort) {
         final result = onEffortSelected?.call(nextEffort);
         if (result is Future<void>) unawaited(result);

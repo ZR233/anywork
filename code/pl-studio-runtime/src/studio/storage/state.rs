@@ -55,9 +55,25 @@ pub(crate) fn checkpoint_recovery_snapshot() -> BTreeMap<String, String> {
 pub(crate) struct InputIdentityEntry {
     /// Content digest of the originally accepted body, for future content-equality checks.
     pub(crate) digest: String,
+    /// 该输入是否携带接续来源；控制输入的受理结果据此重建。
+    ///
+    /// 旧版本写入的行没有这个字段，按「没有接续来源」解码，历史身份保持原样。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) continuation: Option<pl_core::thread::input::InputContinuation>,
     /// Delivery routing receipt retained from the original admission.
     pub(crate) delivery: pl_core::thread::input::InputDelivery,
     pub(crate) id: String,
+    /// 原始受理的用途：控制输入在正文离开驻留队列后仍然可识别。
+    ///
+    /// 旧行没有该字段时按普通消息解码。
+    #[serde(default)]
+    pub(crate) purpose: pl_core::thread::input::InputPurpose,
+    /// 控制输入受理时调用方冻结的模型路由版本；首写值即请求身份的一部分。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) expected_model_route_revision: Option<u64>,
+    /// 控制输入首次受理时的输入 revision；重放原回执时用它重建目标戳，不被后续状态推进覆盖。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) continuation_admission_revision: Option<u64>,
     pub(crate) ordinal: u64,
     pub(crate) revision: u64,
     pub(crate) state: pl_core::thread::input::InputState,
@@ -72,8 +88,14 @@ impl InputIdentityEntry {
     ) -> Self {
         Self {
             digest: identity.digest,
+            continuation: identity.continuation,
             delivery: identity.delivery,
             id: identity.id,
+            purpose: identity.purpose,
+            // These two are filled by the control identity write path; a plain message identity
+            // never carries them.
+            expected_model_route_revision: None,
+            continuation_admission_revision: None,
             ordinal: identity.ordinal,
             revision: identity.revision,
             state: identity.state,
@@ -105,6 +127,23 @@ impl StateStore {
 
     /// Explicit recovery upgrades existing SQLite state before decoding the checkpoint.
     /// Preparing storage does not create a missing history database.
+    /// Strictly read-only checkpoint read for read-only product projections.
+    ///
+    /// Unlike [`Self::load`] this never imports a legacy checkpoint, never deletes the files it
+    /// replaced and never touches the state directory: a projection only reports facts that are
+    /// already durable in the history database. Migration and legacy cleanup stay exclusive to the
+    /// explicit recovery/activation entries.
+    pub(crate) async fn load_read_only(
+        &self,
+        history: &super::history::HistoryStore,
+    ) -> Result<Option<ThreadCheckpoint>> {
+        ensure!(
+            history.thread_id() == self.thread_id,
+            "history database belongs to another Thread"
+        );
+        history.checkpoint().await
+    }
+
     pub(crate) async fn load_after_migration(
         &self,
         history: &super::history::HistoryStore,

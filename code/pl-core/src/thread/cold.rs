@@ -592,6 +592,7 @@ impl Owner {
                     self.state.persistence.execution_phase = StorageExecutionPhase::Running;
                     self.publish_snapshot();
                 }
+                self.note_execution_phase(self.execution_progress_phase());
                 return Ok(());
             }
             if self.state.persistence.execution_phase != StorageExecutionPhase::PausedForStorage {
@@ -599,6 +600,9 @@ impl Owner {
                 self.publish_snapshot();
                 self.state.persistence.execution_phase = StorageExecutionPhase::PausedForStorage;
                 self.publish_snapshot();
+                // A wait for storage is a preparation phase like any other: stopping it is what the
+                // caller asked for, and the execution stays visible while it cannot proceed.
+                self.note_execution_phase(ExecutionPhase::AwaitingStorage);
             }
             let cancelled = self
                 .await_with_mailbox(async {
@@ -611,6 +615,77 @@ impl Owner {
                             }
                         } => { if !available { updates = None; } false },
                         () = tokio::time::sleep(std::time::Duration::from_secs(1)) => false,
+                    }
+                })
+                .await;
+            if cancelled || self.interrupt.is_closing() {
+                return Err(ThreadError::Cancelled);
+            }
+        }
+    }
+
+    /// Waits for the fixed durable watermark a claimed continuation owes.
+    ///
+    /// The claim is only an authorization once the commit that admitted it is durable, so a new
+    /// model request waits here for exactly that sequence. The wait is a host wait, not a lock: the
+    /// mailbox stays reachable, so a stop, a close, a message or a storage repair still arrives, and
+    /// a stop answers [`ThreadError::Cancelled`] without consuming a single input. A real storage
+    /// fault keeps the existing explicit-resume semantics instead of pretending the claim is saved,
+    /// and a host without a cold store never claims durability, so it is not held back either.
+    pub(super) async fn await_continuation_durability(
+        &mut self,
+        cancellation: &tokio_util::sync::CancellationToken,
+    ) -> Result<(), ThreadError> {
+        let Some(required) = self.state.required_durable_sequence else {
+            return Ok(());
+        };
+        let Some(_store) = self.cold.as_ref() else {
+            // A host without a cold store cannot claim durability at all, so the obligation is
+            // released together with the claim it named instead of waiting for a watermark no backend
+            // here can ever advance: keeping it would block the first request of a store attached
+            // later on a sequence from a host that never saved anything.
+            self.state.required_durable_sequence = None;
+            self.publish_snapshot();
+            return Ok(());
+        };
+        let mut updates = self
+            .cold
+            .as_ref()
+            .and_then(|cold| cold.subscribe_pressure(&self.id));
+        loop {
+            self.admit_cold();
+            self.refresh_storage_pressure();
+            if let Some(error) = &self.cold_error {
+                self.state.persistence.resume_required = true;
+                self.publish_snapshot();
+                return Err(ThreadError::Storage(error.clone()));
+            }
+            if self.state.persistence.durable_sequence >= required {
+                // The claim and everything that references it are durable now, so the requirement is
+                // discharged instead of being awaited again by the next request.
+                self.state.required_durable_sequence = None;
+                self.publish_snapshot();
+                return Ok(());
+            }
+            self.note_execution_phase(ExecutionPhase::AwaitingStorage);
+            let cancelled = self
+                .await_with_mailbox(async {
+                    tokio::select! {
+                        () = cancellation.cancelled() => true,
+                        available = async {
+                            match updates.as_mut() {
+                                Some(update) => update.changed().await.is_ok(),
+                                // A backend without a notification is polled at a bounded interval
+                                // instead of waiting forever for a wake-up that cannot arrive.
+                                None => std::future::pending::<bool>().await,
+                            }
+                        } => {
+                            if !available {
+                                updates = None;
+                            }
+                            false
+                        }
+                        () = tokio::time::sleep(std::time::Duration::from_secs(1)), if updates.is_none() => false,
                     }
                 })
                 .await;

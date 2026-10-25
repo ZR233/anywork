@@ -34,6 +34,10 @@ pub(crate) const RAW_PAYLOAD_FIELD: &str = "raw.payload.";
 /// `saved` 是 writer 已确认的保存水位，独立于执行终态 `lifecycle`。返回的条目是**完整**条目：
 /// 有界预览只在交付边界由宿主 codec 裁剪，且裁剪不改变字段的完整字节数。
 pub(crate) fn typed_item(item: ThreadItem, saved: bool) -> Result<ChatItem> {
+    // History keeps exactly what the projection of the day wrote: a raw record stays a raw record and
+    // is never re-interpreted at read time. A payload can be produced by several sources (a stored
+    // input, a parent message, an undecodable model response), so its shape alone can never prove
+    // that a row was framework control.
     let lifecycle = if item.state().is_terminal() {
         ChatLifecycle::Terminal
     } else {
@@ -190,6 +194,7 @@ pub(crate) fn static_state(state: &ThreadItemState) -> ThreadItemState {
             .with_wait(tool.wait().cloned()),
         ),
         ThreadItemState::Raw(raw) => ThreadItemState::Raw(ThreadRawItem {
+            origin: raw.origin,
             payloads: raw
                 .payloads
                 .iter()
@@ -239,6 +244,7 @@ pub(crate) fn canonical_item(item: &ChatItem) -> Result<ThreadItem> {
             )
         }
         ThreadItemState::Raw(raw) => ThreadItemState::Raw(ThreadRawItem {
+            origin: raw.origin,
             payloads: raw
                 .payloads
                 .iter()

@@ -1,6 +1,6 @@
 //! User-input tool schema and model-facing result projection.
 
-use pl_protocol::{UserQuestion, UserQuestionOption};
+use pl_protocol::{AGENT_SESSION_PLAN_CONFIRMATION_QUESTION_ID, UserQuestion, UserQuestionOption};
 use schemars::JsonSchema;
 use serde::Deserialize;
 
@@ -19,6 +19,7 @@ pub struct AskUserInput {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct UserQuestionInput {
     /// Stable snake_case id used as the answer map key.
+    /// `plan_confirmation` is reserved for plan_submit.
     id: String,
     /// Short label for the question.
     header: String,
@@ -87,6 +88,18 @@ impl pl_core::tool::opaque::Tool for AskUserTool {
     ) -> Result<pl_core::tool::ToolOutput, pl_core::tool::opaque::ToolError> {
         let input: AskUserInput =
             serde_json::from_str(input.content()).map_err(pl_core::tool::opaque::ToolError::new)?;
+        if input
+            .questions
+            .iter()
+            .any(|question| question.id == AGENT_SESSION_PLAN_CONFIRMATION_QUESTION_ID)
+        {
+            return Err(pl_core::tool::opaque::ToolError::new(crate::tool_error(
+                "request_user_input",
+                format!(
+                    "question ID `{AGENT_SESSION_PLAN_CONFIRMATION_QUESTION_ID}` is reserved for plan_submit"
+                ),
+            )));
+        }
         let mut ids = std::collections::BTreeSet::new();
         if input.questions.is_empty()
             || input.questions.iter().any(|question| {

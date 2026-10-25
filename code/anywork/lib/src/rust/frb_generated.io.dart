@@ -324,6 +324,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  BridgeAgentExecution dco_decode_box_autoadd_bridge_agent_execution(
+    dynamic raw,
+  );
+
+  @protected
   BridgeAgentProfilesData dco_decode_box_autoadd_bridge_agent_profiles_data(
     dynamic raw,
   );
@@ -382,6 +387,16 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   BridgeClosingAgent dco_decode_box_autoadd_bridge_closing_agent(dynamic raw);
+
+  @protected
+  BridgeContinuationReason dco_decode_box_autoadd_bridge_continuation_reason(
+    dynamic raw,
+  );
+
+  @protected
+  BridgeContinuationView dco_decode_box_autoadd_bridge_continuation_view(
+    dynamic raw,
+  );
 
   @protected
   BridgeCreateBotConversationThreadRequest
@@ -1190,6 +1205,14 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  BridgeAgentExecution dco_decode_bridge_agent_execution(dynamic raw);
+
+  @protected
+  BridgeAgentExecutionPhase dco_decode_bridge_agent_execution_phase(
+    dynamic raw,
+  );
+
+  @protected
   BridgeAgentProfileDiagnostic dco_decode_bridge_agent_profile_diagnostic(
     dynamic raw,
   );
@@ -1363,6 +1386,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  BridgeChildInteractionSummary dco_decode_bridge_child_interaction_summary(
+    dynamic raw,
+  );
+
+  @protected
   BridgeClosedAgent dco_decode_bridge_closed_agent(dynamic raw);
 
   @protected
@@ -1381,6 +1409,26 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   BridgeContentField dco_decode_bridge_content_field(dynamic raw);
+
+  @protected
+  BridgeContinuationOperationState
+  dco_decode_bridge_continuation_operation_state(dynamic raw);
+
+  @protected
+  BridgeContinuationOperationView dco_decode_bridge_continuation_operation_view(
+    dynamic raw,
+  );
+
+  @protected
+  BridgeContinuationReason dco_decode_bridge_continuation_reason(dynamic raw);
+
+  @protected
+  BridgeContinuationView dco_decode_bridge_continuation_view(dynamic raw);
+
+  @protected
+  BridgeContinueThreadReply dco_decode_bridge_continue_thread_reply(
+    dynamic raw,
+  );
 
   @protected
   BridgeCreateBotConversationThreadRequest
@@ -1513,10 +1561,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   BridgeInteractionScope dco_decode_bridge_interaction_scope(dynamic raw);
-
-  @protected
-  BridgeInterruptTurnCommandReply
-  dco_decode_bridge_interrupt_turn_command_reply(dynamic raw);
 
   @protected
   BridgeListBotConversationsRequest
@@ -1798,6 +1842,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   BridgeQueuedAgent dco_decode_bridge_queued_agent(dynamic raw);
 
   @protected
+  BridgeRawItemOrigin dco_decode_bridge_raw_item_origin(dynamic raw);
+
+  @protected
   BridgeRawPayload dco_decode_bridge_raw_payload(dynamic raw);
 
   @protected
@@ -2027,6 +2074,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   BridgeStatisticsSummaryPage dco_decode_bridge_statistics_summary_page(
     dynamic raw,
   );
+
+  @protected
+  BridgeStopThreadReply dco_decode_bridge_stop_thread_reply(dynamic raw);
 
   @protected
   BridgeStoppedResource dco_decode_bridge_stopped_resource(dynamic raw);
@@ -2687,6 +2737,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   List<BridgeBotSnapshot> dco_decode_list_bridge_bot_snapshot(dynamic raw);
 
   @protected
+  List<BridgeChildInteractionSummary>
+  dco_decode_list_bridge_child_interaction_summary(dynamic raw);
+
+  @protected
   List<BridgeConnectionModeDescriptor>
   dco_decode_list_bridge_connection_mode_descriptor(dynamic raw);
 
@@ -2986,6 +3040,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  BridgeAgentExecution? dco_decode_opt_box_autoadd_bridge_agent_execution(
+    dynamic raw,
+  );
+
+  @protected
   BridgeAgentTaskCategory?
   dco_decode_opt_box_autoadd_bridge_agent_task_category(dynamic raw);
 
@@ -3013,6 +3072,15 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   BridgeBotRegistrationAttempt?
   dco_decode_opt_box_autoadd_bridge_bot_registration_attempt(dynamic raw);
+
+  @protected
+  BridgeContinuationReason?
+  dco_decode_opt_box_autoadd_bridge_continuation_reason(dynamic raw);
+
+  @protected
+  BridgeContinuationView? dco_decode_opt_box_autoadd_bridge_continuation_view(
+    dynamic raw,
+  );
 
   @protected
   BridgeHistoryFault? dco_decode_opt_box_autoadd_bridge_history_fault(
@@ -3563,6 +3631,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  BridgeAgentExecution sse_decode_box_autoadd_bridge_agent_execution(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   BridgeAgentProfilesData sse_decode_box_autoadd_bridge_agent_profiles_data(
     SseDeserializer deserializer,
   );
@@ -3641,6 +3714,16 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   BridgeClosingAgent sse_decode_box_autoadd_bridge_closing_agent(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeContinuationReason sse_decode_box_autoadd_bridge_continuation_reason(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeContinuationView sse_decode_box_autoadd_bridge_continuation_view(
     SseDeserializer deserializer,
   );
 
@@ -4699,6 +4782,16 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  BridgeAgentExecution sse_decode_bridge_agent_execution(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeAgentExecutionPhase sse_decode_bridge_agent_execution_phase(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   BridgeAgentProfileDiagnostic sse_decode_bridge_agent_profile_diagnostic(
     SseDeserializer deserializer,
   );
@@ -4928,6 +5021,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  BridgeChildInteractionSummary sse_decode_bridge_child_interaction_summary(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   BridgeClosedAgent sse_decode_bridge_closed_agent(
     SseDeserializer deserializer,
   );
@@ -4954,6 +5052,30 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   BridgeContentField sse_decode_bridge_content_field(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeContinuationOperationState
+  sse_decode_bridge_continuation_operation_state(SseDeserializer deserializer);
+
+  @protected
+  BridgeContinuationOperationView sse_decode_bridge_continuation_operation_view(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeContinuationReason sse_decode_bridge_continuation_reason(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeContinuationView sse_decode_bridge_continuation_view(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeContinueThreadReply sse_decode_bridge_continue_thread_reply(
     SseDeserializer deserializer,
   );
 
@@ -5122,10 +5244,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   BridgeInteractionScope sse_decode_bridge_interaction_scope(
     SseDeserializer deserializer,
   );
-
-  @protected
-  BridgeInterruptTurnCommandReply
-  sse_decode_bridge_interrupt_turn_command_reply(SseDeserializer deserializer);
 
   @protected
   BridgeListBotConversationsRequest
@@ -5475,6 +5593,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  BridgeRawItemOrigin sse_decode_bridge_raw_item_origin(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   BridgeRawPayload sse_decode_bridge_raw_payload(SseDeserializer deserializer);
 
   @protected
@@ -5762,6 +5885,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   BridgeStatisticsSummaryPage sse_decode_bridge_statistics_summary_page(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeStopThreadReply sse_decode_bridge_stop_thread_reply(
     SseDeserializer deserializer,
   );
 
@@ -6556,6 +6684,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  List<BridgeChildInteractionSummary>
+  sse_decode_list_bridge_child_interaction_summary(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   List<BridgeConnectionModeDescriptor>
   sse_decode_list_bridge_connection_mode_descriptor(
     SseDeserializer deserializer,
@@ -6917,6 +7051,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  BridgeAgentExecution? sse_decode_opt_box_autoadd_bridge_agent_execution(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   BridgeAgentTaskCategory?
   sse_decode_opt_box_autoadd_bridge_agent_task_category(
     SseDeserializer deserializer,
@@ -6946,6 +7085,17 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   BridgeBotRegistrationAttempt?
   sse_decode_opt_box_autoadd_bridge_bot_registration_attempt(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeContinuationReason?
+  sse_decode_opt_box_autoadd_bridge_continuation_reason(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeContinuationView? sse_decode_opt_box_autoadd_bridge_continuation_view(
     SseDeserializer deserializer,
   );
 
@@ -7624,6 +7774,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_box_autoadd_bridge_agent_execution(
+    BridgeAgentExecution self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_box_autoadd_bridge_agent_profiles_data(
     BridgeAgentProfilesData self,
     SseSerializer serializer,
@@ -7710,6 +7866,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_box_autoadd_bridge_closing_agent(
     BridgeClosingAgent self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_bridge_continuation_reason(
+    BridgeContinuationReason self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_bridge_continuation_view(
+    BridgeContinuationView self,
     SseSerializer serializer,
   );
 
@@ -8908,6 +9076,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_bridge_agent_execution(
+    BridgeAgentExecution self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_agent_execution_phase(
+    BridgeAgentExecutionPhase self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_bridge_agent_profile_diagnostic(
     BridgeAgentProfileDiagnostic self,
     SseSerializer serializer,
@@ -9190,6 +9370,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_bridge_child_interaction_summary(
+    BridgeChildInteractionSummary self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_bridge_closed_agent(
     BridgeClosedAgent self,
     SseSerializer serializer,
@@ -9222,6 +9408,36 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_bridge_content_field(
     BridgeContentField self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_continuation_operation_state(
+    BridgeContinuationOperationState self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_continuation_operation_view(
+    BridgeContinuationOperationView self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_continuation_reason(
+    BridgeContinuationReason self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_continuation_view(
+    BridgeContinuationView self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_continue_thread_reply(
+    BridgeContinueThreadReply self,
     SseSerializer serializer,
   );
 
@@ -9429,12 +9645,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_bridge_interaction_scope(
     BridgeInteractionScope self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_bridge_interrupt_turn_command_reply(
-    BridgeInterruptTurnCommandReply self,
     SseSerializer serializer,
   );
 
@@ -9859,6 +10069,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_bridge_raw_item_origin(
+    BridgeRawItemOrigin self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_bridge_raw_payload(
     BridgeRawPayload self,
     SseSerializer serializer,
@@ -10209,6 +10425,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_bridge_statistics_summary_page(
     BridgeStatisticsSummaryPage self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_stop_thread_reply(
+    BridgeStopThreadReply self,
     SseSerializer serializer,
   );
 
@@ -11170,6 +11392,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_list_bridge_child_interaction_summary(
+    List<BridgeChildInteractionSummary> self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_list_bridge_connection_mode_descriptor(
     List<BridgeConnectionModeDescriptor> self,
     SseSerializer serializer,
@@ -11596,6 +11824,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_opt_box_autoadd_bridge_agent_execution(
+    BridgeAgentExecution? self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_opt_box_autoadd_bridge_agent_task_category(
     BridgeAgentTaskCategory? self,
     SseSerializer serializer,
@@ -11628,6 +11862,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_opt_box_autoadd_bridge_bot_registration_attempt(
     BridgeBotRegistrationAttempt? self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_opt_box_autoadd_bridge_continuation_reason(
+    BridgeContinuationReason? self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_opt_box_autoadd_bridge_continuation_view(
+    BridgeContinuationView? self,
     SseSerializer serializer,
   );
 

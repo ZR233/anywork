@@ -507,8 +507,10 @@ impl ThreadObservations {
                 continue;
             }
             let child = pl_protocol::Thread::from(child);
+            // Reconciliation is a projection: it reads the saved checkpoint without migrating,
+            // activating, rebuilding a workspace or asking any model.
             let Some(checkpoint) =
-                crate::studio::thread_factory::recovery::load_checkpoint_for_recovery(
+                crate::studio::thread_factory::recovery::load_checkpoint_read_only(
                     &services.store,
                     &child,
                 )
@@ -516,6 +518,10 @@ impl ThreadObservations {
             else {
                 continue;
             };
+            // A cold child's interruption is a fact the list must publish: a restart otherwise loses
+            // "stopped, waiting for the main agent" for every member that is not loaded again. This
+            // reads only the saved checkpoint — no activation, no workspace, no model request.
+            directory::publish_cold_scheduling_state(services, &child, &checkpoint.state).await?;
             if let Some(turn) = checkpoint
                 .state
                 .turns
@@ -1838,7 +1844,9 @@ mod storage_fault_tests {
             elapsed_ms: None,
         };
         let input = InputRecord {
+            continuation: None,
             input: ThreadInput {
+                purpose: pl_core::thread::input::InputPurpose::Message,
                 id: input_id.into(),
                 payload: OpaquePayload::new(
                     "pl.studio.interaction-continuation",

@@ -9,6 +9,7 @@ import '../../presentation/providers/thread_session_store.dart';
 import '../../domain/models/studio_models.dart';
 import '../../l10n/studio_l10n.dart';
 import '../../shared/studio_driver_keys.dart';
+import 'hosted_child_interaction.dart';
 import 'interaction_payload.dart';
 import 'interaction_widgets.dart';
 
@@ -18,14 +19,20 @@ class ToolApprovalDock extends ConsumerStatefulWidget {
     required this.interactionId,
     required this.payload,
     required this.enabled,
+    this.hostedChild,
     this.trailing,
     super.key,
   });
 
+  /// 宿主会话：root 自身交互就是 root；转交的 child 交互也是 root。
   final String threadId;
   final String interactionId;
   final InteractionPayloadSnapshot payload;
   final bool enabled;
+
+  /// 非空表示这是主会话代表的直接 child 交互，决定经主会话提交。
+  final HostedChildInteraction? hostedChild;
+
   final Widget? trailing;
 
   @override
@@ -53,10 +60,13 @@ class _ToolApprovalDockState extends ConsumerState<ToolApprovalDock> {
     final arguments = payload.formattedArguments;
     final enabled =
         widget.enabled &&
-        pendingInteractionIsActive(
-          ref.watch(threadSessionStoreProvider(widget.threadId)).interactions,
-          widget.interactionId,
-        );
+        (widget.hostedChild != null ||
+            pendingInteractionIsActive(
+              ref
+                  .watch(threadSessionStoreProvider(widget.threadId))
+                  .interactions,
+              widget.interactionId,
+            ));
     return InteractionDockShell(
       kind: InteractionDockKind.permission,
       trailing: widget.trailing,
@@ -121,6 +131,15 @@ class _ToolApprovalDockState extends ConsumerState<ToolApprovalDock> {
 
   void _resolve(ToolApprovalDecision decision) {
     final reason = _reasonController.text.trim();
+    final resolution = ToolApprovalResolutionCommand(
+      decision: decision,
+      reason: reason.isEmpty ? null : reason,
+    );
+    final hosted = widget.hostedChild;
+    if (hosted != null) {
+      submitHostedChildDecision(ref, widget.threadId, hosted, resolution);
+      return;
+    }
     unawaited(
       ref
           .read(anyworkClientProvider)
@@ -128,10 +147,7 @@ class _ToolApprovalDockState extends ConsumerState<ToolApprovalDock> {
           .resolveActiveInteraction(
             widget.threadId,
             widget.interactionId,
-            ToolApprovalResolutionCommand(
-              decision: decision,
-              reason: reason.isEmpty ? null : reason,
-            ),
+            resolution,
           ),
     );
   }

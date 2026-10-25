@@ -69,6 +69,7 @@ class PendingInteraction {
     required this.title,
     required this.body,
     this.payload = const UnknownInteractionPayload(),
+    this.revision = 0,
   });
 
   final String id;
@@ -78,6 +79,22 @@ class PendingInteraction {
   final String title;
   final String body;
   final InteractionPayload payload;
+
+  /// 规范交互版本；决议请求的 CAS 基线。
+  ///
+  /// `0` 表示发布方未携带版本（例如本地演示数据），调用方据此不做版本前提。
+  final int revision;
+
+  /// 计划确认沿用通用 `UserInput` 载荷，但它是根会话自有的诊断事实。
+  ///
+  /// 子会话的计划请求既不进入主会话的可决议投影，也不能经该投影决议；判别只依据载荷里的
+  /// 计划确认问题身份，不依赖标题或正文措辞。
+  bool get isPlanConfirmation => switch (payload) {
+    UserInputInteractionPayload(:final questions) => questions.any(
+      (question) => question.id == agentSessionPlanConfirmationQuestionId,
+    ),
+    _ => false,
+  };
 }
 
 class PlanConfirmationView {

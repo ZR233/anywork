@@ -131,6 +131,34 @@ pub enum InteractionContent {
     ToolApproval(ToolApprovalInteraction),
 }
 
+/// 主会话中的一条只读子任务交互摘要。
+///
+/// 事实仍归原子会话所有：这里只携带来源成员、原交互身份、类型、revision 与只读展示内容，
+/// 供主会话展示与提交决议，不物化第二份可写交互。决定必须回到原交互身份与版本，主会话只是
+/// 调用者身份。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ChildInteractionSummary {
+    /// 持有该交互的成员会话；它就是 `interaction.scope.thread_id`。
+    pub child_thread_id: String,
+    pub interaction_id: String,
+    pub kind: InteractionKind,
+    pub revision: u64,
+    pub interaction: InteractionRequest,
+}
+
+impl ChildInteractionSummary {
+    pub fn new(interaction: InteractionRequest) -> Self {
+        Self {
+            child_thread_id: interaction.scope.thread_id.clone(),
+            interaction_id: interaction.interaction_id.clone(),
+            kind: interaction.kind(),
+            revision: interaction.revision,
+            interaction,
+        }
+    }
+}
+
 /// 一个有 identity、revision 与 typed content 的 Interaction 聚合。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]

@@ -208,7 +208,12 @@ class _TimelineMessageBlock extends StatelessWidget {
   }) {
     final history = userInput ?? item.tool?.userInput;
     if (history != null) {
-      final receipt = history.planReceipt;
+      // 计划语义只属于发起计划确认的那次工具调用：旧历史的普通问答工具可能复用过
+      // 保留的问题 ID，因此不能按问题 ID/标题推断，只看工具条目自己的权威名称。
+      // 普通问答历史继续走同一只读回执，不隐藏、也不冒充计划。
+      final receipt = ownsPlanConfirmation(item.tool?.name)
+          ? history.planReceipt
+          : null;
       if (receipt != null) {
         // 待确认期间只保留尾部唯一摘要入口，不出现第二张计划历史卡。
         if (!receipt.isResolved) return const SizedBox.shrink();
@@ -603,6 +608,20 @@ class _RawRecordBlock extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // 运行时说明不是历史载荷：它没有可展开内容，标题和正文都由界面本地化，
+    // 不能用“原始历史记录”冒充，也不能把框架内部句子当作用户可见文案。
+    if (record.origin == ThreadRawItemOrigin.runtimeControl) {
+      return Padding(
+        padding: const EdgeInsets.only(bottom: 8),
+        child: TimelineActivityRow(
+          key: ValueKey('runtime-notice-$itemId'),
+          icon: Icons.info_outline,
+          label: context.l10n.timelineRuntimeNotice,
+          tooltip: context.l10n.timelineRuntimeNoticeDetail,
+          expandable: false,
+        ),
+      );
+    }
     return Padding(
       padding: const EdgeInsets.only(bottom: 8),
       child: Column(

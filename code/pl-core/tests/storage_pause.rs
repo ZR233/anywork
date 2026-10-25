@@ -23,7 +23,7 @@ use pl_core::{
             OutputRetryObligation, OutputRetryOutcome, OutputStorageFault, StorageExecutionPhase,
             StorageFaultKind, StoragePressure, ThreadWrite,
         },
-        input::ThreadInput,
+        input::{InputPurpose, ThreadInput},
         task::TaskStatus,
     },
     tool::{
@@ -459,6 +459,7 @@ async fn paused_turn_resumes_without_replaying_model_or_tool(failure: Failure) {
     }
     let fresh = ThreadInput {
         id: "blocked-input".into(),
+        purpose: InputPurpose::Message,
         payload: OpaquePayload::text("blocked"),
         context: vec![text("blocked")],
     };

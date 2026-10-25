@@ -10,7 +10,10 @@ use pl_tool::remote::{SshManager, normalize_remote_absolute_path};
 
 use pl_tool::git::GitPolicy;
 
-use super::backend::{changed_files, checked_output, non_empty_head};
+use super::backend::{
+    branch_args, changed_files, checked_output, current_branch, git_common_dir_args,
+    non_empty_head, worktree_list_args,
+};
 use super::{WorktreeBackend, WorktreeCreateFailure, WorktreeError, WorktreeStatus};
 
 const WORKTREE_GIT_TIMEOUT: Duration = Duration::from_secs(120);
@@ -312,6 +315,10 @@ impl WorktreeBackend for RemoteWorktreeBackend {
             let output = checked_output(&args, self.run_git(worktree_path, &args).await?)?;
             Ok(WorktreeStatus {
                 head,
+                branch: current_branch(&checked_output(
+                    &branch_args(),
+                    self.run_git(worktree_path, &branch_args()).await?,
+                )?),
                 changed_files: changed_files(&output.stdout),
             })
         }
@@ -348,6 +355,30 @@ impl WorktreeBackend for RemoteWorktreeBackend {
             let args = vec!["branch".to_string(), "-D".to_string(), branch.to_string()];
             let output = self.run_git(repo_root, &args).await?;
             checked_output(&args, output).map(|_| ())
+        }
+        .boxed()
+    }
+
+    fn worktree_list<'a>(
+        &'a self,
+        repo_root: &'a Path,
+    ) -> BoxFuture<'a, Result<String, WorktreeError>> {
+        async move {
+            let args = worktree_list_args();
+            let output = self.run_git(repo_root, &args).await?;
+            checked_output(&args, output).map(|output| output.stdout)
+        }
+        .boxed()
+    }
+
+    fn git_common_dir<'a>(
+        &'a self,
+        path: &'a Path,
+    ) -> BoxFuture<'a, Result<String, WorktreeError>> {
+        async move {
+            let args = git_common_dir_args();
+            let output = self.run_git(path, &args).await?;
+            checked_output(&args, output).map(|output| output.stdout)
         }
         .boxed()
     }

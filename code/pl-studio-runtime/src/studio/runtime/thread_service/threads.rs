@@ -590,7 +590,25 @@ impl StudioRuntime {
             tree.insert(thread.id.clone(), thread);
         }
         tree.insert(root.id.clone(), root);
+        // 显式归档恢复是本流程唯一的「重建被清理工作树」授权来源：给树内每个已被归档清理的
+        // 子智能体 lease 记录一次性授权事实，普通继续/激活只能核对原现场，不能据此重建。
         let now = crate::studio::unix_seconds();
+        for id in tree.keys() {
+            let Some(mut lease) = self.agent_facility.worktrees.get(id) else {
+                continue;
+            };
+            if lease.state != crate::studio::agent_host::worktree_lease::WorktreeLeaseState::Cleaned
+            {
+                continue;
+            }
+            lease.grant_restore(now);
+            self.agent_facility
+                .worktrees
+                .record(lease)
+                .map_err(|error| {
+                    error.context("authorize the restored session tree worktree rebuild")
+                })?;
+        }
         for thread in tree.values_mut() {
             thread.archived = false;
             thread.updated_at = now;

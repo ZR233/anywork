@@ -21,6 +21,21 @@ pub struct StudioAgentDirectoryEntry {
     pub summary: Option<String>,
     pub depth: u32,
     pub state: pl_protocol::AgentState,
+    /// 该成员当前拥有的执行；未装载、无当前执行时为 `None`。
+    ///
+    /// 它来自会话执行事实，不是 `activeTurn` 的可空投影：准备、等待准入与清理期同样有身份，
+    /// 所以列表可以在没有轮次编号时仍给出正确的停止目标。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution: Option<pl_protocol::AgentExecution>,
+    /// 用户是否可以对这一行发起精确停止。
+    ///
+    /// 由当前执行、生命周期与显式关闭意图派生；`state` 仍是业务状态，两者不互相推断。
+    pub can_stop: bool,
+    /// 该成员存在继续点且尚未被任何操作认领：用户已停止/执行被中断，等待主智能体调度。
+    ///
+    /// 只表达这一个执行事实，`false` 同时覆盖「从未运行」「正常完成」和「继续已受理」。它是
+    /// 目录级轻状态，完整继续点视图仍只在该会话自己的运行时快照里发布。
+    pub awaiting_scheduling: bool,
     pub updated_at: i64,
 }
 

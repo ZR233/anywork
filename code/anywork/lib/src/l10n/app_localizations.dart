@@ -2000,6 +2000,18 @@ abstract class AppLocalizations {
   /// **'Session mode cannot change while the session is running or a workflow is active'**
   String get statusSessionModeLocked;
 
+  /// No description provided for @statusSelectorsNotReady.
+  ///
+  /// In en, this message translates to:
+  /// **'Session settings are not ready yet, or a submission is in flight; the selection is unavailable for now.'**
+  String get statusSelectorsNotReady;
+
+  /// No description provided for @statusModeNeedsProject.
+  ///
+  /// In en, this message translates to:
+  /// **'Choose a project before setting the session mode.'**
+  String get statusModeNeedsProject;
+
   /// No description provided for @composerWorkspaceModeLabel.
   ///
   /// In en, this message translates to:
@@ -2623,12 +2635,6 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'{count, plural, =1{1 agent} other{{count} agents}}'**
   String statusAgentsCount(int count);
-
-  /// No description provided for @composerAgentRuntimeDriven.
-  ///
-  /// In en, this message translates to:
-  /// **'This agent session is driven by the runtime'**
-  String get composerAgentRuntimeDriven;
 
   /// No description provided for @statusSkillsSection.
   ///
@@ -5735,6 +5741,18 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Original history record'**
   String get timelineRawRecord;
+
+  /// No description provided for @timelineRuntimeNotice.
+  ///
+  /// In en, this message translates to:
+  /// **'Runtime notice'**
+  String get timelineRuntimeNotice;
+
+  /// No description provided for @timelineRuntimeNoticeDetail.
+  ///
+  /// In en, this message translates to:
+  /// **'This session continued after it was stopped. This entry is a runtime notice and carries no user input.'**
+  String get timelineRuntimeNoticeDetail;
 
   /// No description provided for @sidebarSearch.
   ///
@@ -9407,6 +9425,240 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'This model\'s canonical identity changed. Reload its details.'**
   String get modelDetailStale;
+
+  /// No description provided for @composerContinue.
+  ///
+  /// In en, this message translates to:
+  /// **'Continue'**
+  String get composerContinue;
+
+  /// No description provided for @composerContinueTooltip.
+  ///
+  /// In en, this message translates to:
+  /// **'Continue the interrupted work without new input'**
+  String get composerContinueTooltip;
+
+  /// No description provided for @composerStopping.
+  ///
+  /// In en, this message translates to:
+  /// **'Stopping'**
+  String get composerStopping;
+
+  /// No description provided for @composerContinuing.
+  ///
+  /// In en, this message translates to:
+  /// **'Continuing'**
+  String get composerContinuing;
+
+  /// No description provided for @composerContinueReasonUserStop.
+  ///
+  /// In en, this message translates to:
+  /// **'Stopped by the user'**
+  String get composerContinueReasonUserStop;
+
+  /// No description provided for @composerContinueReasonHostShutdown.
+  ///
+  /// In en, this message translates to:
+  /// **'The app exited while this session was still running'**
+  String get composerContinueReasonHostShutdown;
+
+  /// No description provided for @composerContinueReasonProcessInterrupted.
+  ///
+  /// In en, this message translates to:
+  /// **'The process was interrupted'**
+  String get composerContinueReasonProcessInterrupted;
+
+  /// No description provided for @composerContinueReasonStepLimit.
+  ///
+  /// In en, this message translates to:
+  /// **'The step budget ran out'**
+  String get composerContinueReasonStepLimit;
+
+  /// No description provided for @composerContinueReasonExecutionFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Execution failed'**
+  String get composerContinueReasonExecutionFailed;
+
+  /// No description provided for @composerContinueReasonUnknown.
+  ///
+  /// In en, this message translates to:
+  /// **'Execution was interrupted'**
+  String get composerContinueReasonUnknown;
+
+  /// No description provided for @composerBlockedStorage.
+  ///
+  /// In en, this message translates to:
+  /// **'Saving has not finished yet, so continuing is unavailable.'**
+  String get composerBlockedStorage;
+
+  /// No description provided for @composerBlockedModel.
+  ///
+  /// In en, this message translates to:
+  /// **'The current model is unavailable, so continuing is unavailable.'**
+  String get composerBlockedModel;
+
+  /// No description provided for @composerBlockedWorkspace.
+  ///
+  /// In en, this message translates to:
+  /// **'The session workspace is unavailable, so continuing is unavailable.'**
+  String get composerBlockedWorkspace;
+
+  /// No description provided for @composerBlockedArchived.
+  ///
+  /// In en, this message translates to:
+  /// **'This session is archived, so continuing is unavailable.'**
+  String get composerBlockedArchived;
+
+  /// No description provided for @composerBlockerUnknown.
+  ///
+  /// In en, this message translates to:
+  /// **'The last action could not be confirmed. Check the session state before retrying.'**
+  String get composerBlockerUnknown;
+
+  /// No description provided for @composerFailureChildRequiresParentScheduling.
+  ///
+  /// In en, this message translates to:
+  /// **'A child agent is scheduled by the main agent.'**
+  String get composerFailureChildRequiresParentScheduling;
+
+  /// No description provided for @composerFailureContinuationUnavailable.
+  ///
+  /// In en, this message translates to:
+  /// **'There is no interrupted work left to continue.'**
+  String get composerFailureContinuationUnavailable;
+
+  /// No description provided for @composerFailureContinuationClaimed.
+  ///
+  /// In en, this message translates to:
+  /// **'The continuation was already accepted and is being prepared.'**
+  String get composerFailureContinuationClaimed;
+
+  /// No description provided for @composerFailureStaleContinuation.
+  ///
+  /// In en, this message translates to:
+  /// **'The observed continuation point is out of date.'**
+  String get composerFailureStaleContinuation;
+
+  /// No description provided for @composerFailureStaleExecution.
+  ///
+  /// In en, this message translates to:
+  /// **'The observed execution already ended or was replaced.'**
+  String get composerFailureStaleExecution;
+
+  /// No description provided for @composerFailureExecutionInProgress.
+  ///
+  /// In en, this message translates to:
+  /// **'The session is still executing or settling.'**
+  String get composerFailureExecutionInProgress;
+
+  /// No description provided for @composerFailureInteractionNotHosted.
+  ///
+  /// In en, this message translates to:
+  /// **'This interaction is decided in the main session.'**
+  String get composerFailureInteractionNotHosted;
+
+  /// No description provided for @composerFailureStaleInteraction.
+  ///
+  /// In en, this message translates to:
+  /// **'This interaction was already updated. Open it again.'**
+  String get composerFailureStaleInteraction;
+
+  /// No description provided for @agentStopSemantics.
+  ///
+  /// In en, this message translates to:
+  /// **'Stop member {name}'**
+  String agentStopSemantics(String name);
+
+  /// No description provided for @agentStopping.
+  ///
+  /// In en, this message translates to:
+  /// **'Stopping'**
+  String get agentStopping;
+
+  /// No description provided for @agentStopWaitingScheduling.
+  ///
+  /// In en, this message translates to:
+  /// **'Stopped, waiting for the main agent to schedule'**
+  String get agentStopWaitingScheduling;
+
+  /// No description provided for @agentStopFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Stop was not accepted: {message}'**
+  String agentStopFailed(String message);
+
+  /// No description provided for @composerAgentReadOnlyTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Child session (read-only)'**
+  String get composerAgentReadOnlyTitle;
+
+  /// No description provided for @composerAgentReadOnlyWaiting.
+  ///
+  /// In en, this message translates to:
+  /// **'Waiting for the main agent to schedule this member.'**
+  String get composerAgentReadOnlyWaiting;
+
+  /// No description provided for @composerAgentReadOnlyScope.
+  ///
+  /// In en, this message translates to:
+  /// **'History, progress, model and workspace are shown for review only. Ask the main agent when this member should continue.'**
+  String get composerAgentReadOnlyScope;
+
+  /// No description provided for @composerAgentReadOnlyPending.
+  ///
+  /// In en, this message translates to:
+  /// **'A pending question or permission request is decided in the main session.'**
+  String get composerAgentReadOnlyPending;
+
+  /// No description provided for @childInteractionFrom.
+  ///
+  /// In en, this message translates to:
+  /// **'From {agent}'**
+  String childInteractionFrom(String agent);
+
+  /// No description provided for @childInteractionRevision.
+  ///
+  /// In en, this message translates to:
+  /// **'Revision {revision}'**
+  String childInteractionRevision(int revision);
+
+  /// No description provided for @childInteractionAnswerSaved.
+  ///
+  /// In en, this message translates to:
+  /// **'The answer is saved. The main agent decides whether this member continues.'**
+  String get childInteractionAnswerSaved;
+
+  /// No description provided for @childInteractionApprovalResolved.
+  ///
+  /// In en, this message translates to:
+  /// **'The original permission wait is decided. The original call may continue when it was approved, and is not executed when it was denied.'**
+  String get childInteractionApprovalResolved;
+
+  /// No description provided for @childInteractionDecideFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'The decision was not accepted: {message}'**
+  String childInteractionDecideFailed(String message);
+
+  /// No description provided for @childInteractionLoadFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Child interactions could not be read: {message}'**
+  String childInteractionLoadFailed(String message);
+
+  /// No description provided for @childInteractionRetry.
+  ///
+  /// In en, this message translates to:
+  /// **'Reload'**
+  String get childInteractionRetry;
+
+  /// No description provided for @childInteractionDecisionAccepted.
+  ///
+  /// In en, this message translates to:
+  /// **'The decision was accepted. Waiting for the session to confirm it.'**
+  String get childInteractionDecisionAccepted;
 }
 
 class _AppLocalizationsDelegate

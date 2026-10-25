@@ -1,4 +1,57 @@
+import 'agent_models.dart';
 import 'collection_equality.dart';
+
+/// 继续点存在的原因。只有中断本身能证明的原因才会记录。
+enum ContinuationReason {
+  userStop,
+  hostShutdown,
+  processInterrupted,
+  stepLimit,
+  executionFailed;
+
+  /// Canonical wire 标签。
+  String get label => name;
+}
+
+/// 会话当前继续点的只读投影。
+///
+/// 它只回答「这个会话还有哪些因中断未完成的工作」，不复制任务正文；`claimed` 区分
+/// 「可以继续」与「继续已受理、仍在准备或等待准入」。客户端不从轮次终态或最后一条
+/// 消息推断能否继续，也不在本地生成这个身份。
+final class ContinuationView {
+  const ContinuationView({
+    required this.id,
+    required this.createdAt,
+    required this.claimed,
+    this.sourceTurnId,
+    this.reason,
+  });
+
+  final String id;
+
+  /// 被中断的轮次；尚未创建轮次就停止时为空。
+  final String? sourceTurnId;
+
+  /// 已知中断原因；无法证明具体原因时为空，不伪造「用户点击停止」。
+  final ContinuationReason? reason;
+  final DateTime createdAt;
+
+  /// 本次继续意图已被认可（或已被另一次受理认领），不能再发起新的继续。
+  final bool claimed;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is ContinuationView &&
+          id == other.id &&
+          sourceTurnId == other.sourceTurnId &&
+          reason == other.reason &&
+          createdAt == other.createdAt &&
+          claimed == other.claimed;
+
+  @override
+  int get hashCode => Object.hash(id, sourceTurnId, reason, createdAt, claimed);
+}
 
 class RuntimeCostView {
   const RuntimeCostView({required this.currency, required this.amount});
@@ -238,6 +291,8 @@ class ThreadRuntimeView {
     this.workflow,
     this.plan,
     this.modelRoute,
+    this.execution,
+    this.continuation,
   });
 
   final String modelId;
@@ -274,6 +329,14 @@ class ThreadRuntimeView {
   final WorkflowRuntimeView? workflow;
   final PlanRuntimeView? plan;
   final ThreadModelRouteView? modelRoute;
+
+  /// 主会话自己的当前执行身份；精确停止的目标来自它，而不是当前轮次投影。
+  final AgentExecutionView? execution;
+
+  /// 当前继续点；为空表示没有因中断而未完成的工作。
+  ///
+  /// 无内容继续只认这个规范投影给出的身份，不在本地重建「继续」资格。
+  final ContinuationView? continuation;
 
   bool get hasActiveWorkflow => workflow?.isActive ?? false;
   bool get hasUsage =>
@@ -316,7 +379,9 @@ class ThreadRuntimeView {
             liveUsage == other.liveUsage &&
             workflow == other.workflow &&
             plan == other.plan &&
-            modelRoute == other.modelRoute;
+            modelRoute == other.modelRoute &&
+            execution == other.execution &&
+            continuation == other.continuation;
   }
 
   @override
@@ -351,6 +416,8 @@ class ThreadRuntimeView {
     workflow,
     plan,
     modelRoute,
+    execution,
+    continuation,
   ]);
 
   ThreadRuntimeView copyWith({
@@ -384,6 +451,8 @@ class ThreadRuntimeView {
     WorkflowRuntimeView? workflow,
     Object? plan = _threadRuntimeUnset,
     ThreadModelRouteView? modelRoute,
+    Object? execution = _threadRuntimeUnset,
+    Object? continuation = _threadRuntimeUnset,
   }) {
     return ThreadRuntimeView(
       modelId: modelId ?? this.modelId,
@@ -425,6 +494,12 @@ class ThreadRuntimeView {
           ? this.plan
           : plan as PlanRuntimeView?,
       modelRoute: modelRoute ?? this.modelRoute,
+      execution: identical(execution, _threadRuntimeUnset)
+          ? this.execution
+          : execution as AgentExecutionView?,
+      continuation: identical(continuation, _threadRuntimeUnset)
+          ? this.continuation
+          : continuation as ContinuationView?,
     );
   }
 }

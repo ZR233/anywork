@@ -70,6 +70,11 @@ class DemoStudioTransport extends StudioTransport
   Timer? _lspActivityTimer;
   final Map<String, ThreadWorkspace> _workspaces = {};
   final Map<String, int> _promptGenerations = {};
+
+  /// 每个会话当前的继续点投影；demo 用它模拟「还有未完成工作」。
+  final Map<String, ContinuationView> _demoContinuationPoints = {};
+  final Map<String, _DemoContinuation> _demoContinuations = {};
+  int _continuationSequence = 0;
   final Map<String, ThreadModeId> _threadModes = {};
   int _threadModeCatalogRevision = 1;
   final Set<String> _readOnlyModeIds = {'mode.simple', 'mode.task'};
@@ -98,7 +103,14 @@ class DemoStudioTransport extends StudioTransport
   final Set<String> _archivedProjectIds = {};
   final Map<String, String> _projectNames = {};
   final Set<String> _archivedThreadIds = {};
-  final Map<String, ({PendingInteraction interaction, Object resolution})>
+  final Map<
+    String,
+    ({
+      PendingInteraction interaction,
+      Object resolution,
+      StudioCommandReceipt receipt,
+    })
+  >
   _resolvedInteractions = {};
   final List<StudioThread> _createdRootThreads = [];
   final List<StudioThread> _pageFillThreads = [];
@@ -3247,6 +3259,9 @@ class DemoStudioTransport extends StudioTransport
       inputId: input.inputId,
       cursor: workspace.revision + 1,
     );
+    // New content claims the pending continuation point instead of adding a
+    // second control input (§4.2 replacement authorization).
+    _demoContinuationPoints.remove(threadId);
     // 模拟服务同样只在成功受理后推进最近用户消息时间；拒绝路径在上方抛出、不推进。
     _advanceDemoLastUserMessage(threadId, now);
     _upsertChatItem(
@@ -3315,9 +3330,12 @@ class DemoStudioTransport extends StudioTransport
     required String trimmedPrompt,
     required int generation,
     required DateTime startedAt,
+    void Function()? onAdmitted,
   }) async {
     await Future<void>.delayed(promptStartDelay);
     if (_promptGenerations[threadId] != generation) return;
+    // 到这里模型请求才真正准入：控制输入在这一刻被消费，之后停止不会改写它。
+    onAdmitted?.call();
     final reasoningId = '$turnId:reasoning';
     const reasoningSummary =
         '## Inspecting the request\n\nChecking the live ThreadItem projection.';
@@ -3627,25 +3645,287 @@ class DemoStudioTransport extends StudioTransport
   }
 
   @override
-  Future<InterruptTurnCommandReply> interruptTurn(
+  Future<StopThreadCommandReply> stopThread(
     String threadId,
-    String turnId, {
+    String executionId, {
     required OperationId operationId,
   }) async {
-    final interrupted = _interruptDemoTurn(threadId, turnId);
-    return InterruptTurnCommandReply(
+    final execution = _demoExecutionOf(threadId);
+    if (execution == null || execution.id != executionId) {
+      throw const StudioFailure(
+        code: StudioFailureCode.conflict,
+        message: 'The observed execution is no longer current',
+        retryable: false,
+        correlationId: 'demo-stop-stale-execution',
+        reason: StudioFailureReason.staleExecution,
+      );
+    }
+    final turnId = execution.turnId;
+    final stopped = turnId != null && _interruptDemoTurn(threadId, turnId);
+    return StopThreadCommandReply(
       threadId: threadId,
-      turnId: turnId,
-      interrupted: interrupted,
+      executionId: executionId,
+      stopped: stopped,
       receipt: _demoReceipt(
         operationId,
-        changed: interrupted,
+        changed: stopped,
         targets: const [],
         effect: EffectPoint.immediate,
         effective: false,
         requiresIdentityObservation: true,
       ),
     );
+  }
+
+  /// demo 的当前执行身份：与生产一样由状态里的执行记录给出，而不是轮次投影。
+  AgentExecutionView? _demoExecutionOf(String threadId) {
+    final active = _workspaces[threadId]?.activeTurn;
+    if (active == null || !active.state.isBusy) return null;
+    return AgentExecutionView(
+      id: _demoExecutionId(active.turnId),
+      phase: AgentExecutionPhase.running,
+      turnId: active.turnId,
+    );
+  }
+
+  static String _demoExecutionId(String turnId) => 'demo-exec:$turnId';
+
+  @override
+  Future<ContinueThreadCommandReply> continueThread(
+    String threadId,
+    String continuationId, {
+    required int expectedModelRouteRevision,
+    required OperationId operationId,
+  }) async {
+    final workspace = _workspaces[threadId];
+    if (workspace == null) throw StateError('unknown demo thread $threadId');
+    final thread = _sortedDirectoryThreads()
+        .where((candidate) => candidate.id == threadId)
+        .firstOrNull;
+    if (thread != null && !thread.isRoot) {
+      throw const StudioFailure(
+        code: StudioFailureCode.permissionDenied,
+        message:
+            'A child agent is continued and instructed by the main session',
+        retryable: false,
+        correlationId: 'demo-child-requires-parent-scheduling',
+        reason: StudioFailureReason.childThreadRequiresParentScheduling,
+      );
+    }
+    final existing = _demoContinuations[operationId.value];
+    if (existing != null) {
+      // Same operation identity answers the original admission, but only for the very same
+      // request facts: a different target, continuation or route revision is a conflict and
+      // must never inherit another request's receipt.
+      if (!existing.matches(
+        threadId,
+        continuationId,
+        expectedModelRouteRevision,
+      )) {
+        throw const StudioFailure(
+          code: StudioFailureCode.conflict,
+          message: 'This operation identity already accepted a different continuation request',
+          retryable: false,
+          correlationId: 'demo-continuation-identity-conflict',
+          reason: StudioFailureReason.continuationUnavailable,
+        );
+      }
+      return ContinueThreadCommandReply(
+        threadId: existing.threadId,
+        inputId: existing.inputId,
+        continuationId: existing.continuationId,
+        cursor: existing.acceptedSequence,
+        receipt: existing.receipt,
+      );
+    }
+    if (_demoExecutionOf(threadId) != null) {
+      throw const StudioFailure(
+        code: StudioFailureCode.busy,
+        message: 'The Thread is still executing or settling',
+        retryable: true,
+        correlationId: 'demo-continue-execution-in-progress',
+        reason: StudioFailureReason.executionInProgress,
+      );
+    }
+    final point = _demoContinuationPoints[threadId];
+    if (continuationId.isEmpty || point == null) {
+      throw const StudioFailure(
+        code: StudioFailureCode.conflict,
+        message: 'This Thread has no continuation to claim',
+        retryable: false,
+        correlationId: 'demo-continue-unavailable',
+        reason: StudioFailureReason.continuationUnavailable,
+      );
+    }
+    if (point.claimed) {
+      throw const StudioFailure(
+        code: StudioFailureCode.conflict,
+        message: 'The continuation point is already claimed',
+        retryable: false,
+        correlationId: 'demo-continue-claimed',
+        reason: StudioFailureReason.continuationClaimed,
+      );
+    }
+    if (point.id != continuationId) {
+      throw const StudioFailure(
+        code: StudioFailureCode.conflict,
+        message: 'The observed continuation point is no longer current',
+        retryable: false,
+        correlationId: 'demo-continue-stale',
+        reason: StudioFailureReason.staleContinuation,
+      );
+    }
+    if (workspace.runtime.modelRoute?.revision != expectedModelRouteRevision) {
+      throw const StudioFailure(
+        code: StudioFailureCode.staleRevision,
+        message: 'The Thread model route changed before continuation admission',
+        retryable: false,
+        correlationId: 'demo-continue-route-conflict',
+        reason: StudioFailureReason.staleContinuation,
+      );
+    }
+    // The claim is published as a canonical fact before the Turn exists.
+    _demoContinuationPoints[threadId] = ContinuationView(
+      id: point.id,
+      sourceTurnId: point.sourceTurnId,
+      reason: point.reason,
+      createdAt: point.createdAt,
+      claimed: true,
+    );
+    final generation = _promptGenerations.update(
+      threadId,
+      (value) => value + 1,
+      ifAbsent: () => 1,
+    );
+    final turnId = 'demo-turn-${++_turnSequence}';
+    final now = DateTime.now();
+    final receipt = _demoReceipt(
+      operationId,
+      changed: true,
+      targets: const [],
+      effect: EffectPoint.immediate,
+      effective: false,
+      requiresIdentityObservation: true,
+    );
+    final accepted = _DemoContinuation(
+      threadId: threadId,
+      inputId: operationId.value,
+      continuationId: continuationId,
+      expectedModelRouteRevision: expectedModelRouteRevision,
+      acceptedSequence: workspace.revision + 1,
+      receipt: receipt,
+    );
+    _demoContinuations[operationId.value] = accepted;
+    while (_demoContinuations.length > 64) {
+      _demoContinuations.remove(_demoContinuations.keys.first);
+    }
+    // Admitted, not started: the canonical Turn is what proves effect.
+    _emitThreadUpdate(
+      threadId,
+      ThreadTurnUpdate(
+        StudioTurnView(
+          turnId: turnId,
+          inputId: operationId.value,
+          threadId: threadId,
+          revision: 0,
+          state: RunningStudioTurnState(
+            startedAt: now.millisecondsSinceEpoch ~/ 1000,
+            activity: StudioTurnActivity.thinking,
+          ),
+          updatedAt: now,
+        ),
+      ),
+    );
+    _emitActivity(
+      threadId,
+      turnId: turnId,
+      inputId: operationId.value,
+      kind: ThreadActivityKind.thinking,
+    );
+    // Consumed at the model-request admission inside the prompt runner, not at publication
+    // and not at completion: a stop before admission leaves the operation pending.
+    unawaited(
+      _completePrompt(
+        threadId: threadId,
+        turnId: turnId,
+        trimmedPrompt: '继续未完成的任务',
+        generation: generation,
+        startedAt: now,
+        onAdmitted: () => accepted.turnId = turnId,
+      ),
+    );
+    // The control input was consumed by the new Turn, so the point is gone.
+    _demoContinuationPoints.remove(threadId);
+    final current = _workspaces[threadId];
+    if (current != null && current.runtime.continuation != null) {
+      _emitThreadUpdate(
+        threadId,
+        ThreadRuntimeUpdate(
+          runtime: current.runtime.copyWith(continuation: null),
+          todo: current.todo,
+        ),
+      );
+    }
+    return ContinueThreadCommandReply(
+      threadId: threadId,
+      inputId: operationId.value,
+      continuationId: accepted.continuationId,
+      cursor: accepted.acceptedSequence,
+      receipt: receipt,
+    );
+  }
+
+  @override
+  Future<ContinuationOperationView> readContinuationOperation(
+    String threadId,
+    String operationId,
+  ) async {
+    final accepted = _demoContinuations[operationId];
+    if (accepted == null || accepted.threadId != threadId) {
+      throw const StudioFailure(
+        code: StudioFailureCode.notFound,
+        message: 'No accepted continuation operation carries this identity',
+        retryable: false,
+        correlationId: 'demo-continuation-not-found',
+      );
+    }
+    return ContinuationOperationView(
+      threadId: accepted.threadId,
+      operationId: operationId,
+      inputId: accepted.inputId,
+      continuationId: accepted.continuationId,
+      acceptedSequence: accepted.acceptedSequence,
+      state: accepted.turnId == null
+          ? const PendingContinuation()
+          : ConsumedContinuation(accepted.turnId!),
+      durable: false,
+      receipt: accepted.receipt,
+    );
+  }
+
+  @override
+  Future<List<ChildInteractionSummary>> readChildInteractions(
+    String hostThreadId,
+  ) async {
+    final summaries = <ChildInteractionSummary>[];
+    for (final workspace in _workspaces.values) {
+      if (workspace.thread.parentThreadId != hostThreadId) continue;
+      for (final interaction in workspace.interactions) {
+        // 子会话的计划请求是诊断事实：生产侧的目录与决议入口都按计划确认问题身份排除它，
+        // 演示数据据同一判据不把它提供给主会话决议。
+        if (interaction.isPlanConfirmation) continue;
+        summaries.add(
+          ChildInteractionSummary(
+            childThreadId: workspace.thread.id,
+            interactionId: interaction.id,
+            kind: interaction.kind,
+            revision: interaction.revision,
+            interaction: interaction,
+          ),
+        );
+      }
+    }
+    return summaries;
   }
 
   bool _interruptDemoTurn(String threadId, String turnId) {
@@ -3659,6 +3939,15 @@ class DemoStudioTransport extends StudioTransport
         correlationId: 'demo-interrupt-turn-identity',
       );
     }
+    // A user stop leaves a continuation point behind; the next explicit
+    // continuation (or new content) claims it.
+    _demoContinuationPoints[threadId] = ContinuationView(
+      id: 'demo-continuation:${++_continuationSequence}',
+      sourceTurnId: turnId,
+      reason: ContinuationReason.userStop,
+      createdAt: DateTime.now(),
+      claimed: false,
+    );
     _promptGenerations.update(
       threadId,
       (value) => value + 1,
@@ -3688,7 +3977,9 @@ class DemoStudioTransport extends StudioTransport
 
   @override
   Future<InteractionCommandReply> respondInteraction(
+    String hostThreadId,
     String interactionId,
+    int expectedRevision,
     InteractionResolutionCommand resolution, {
     required OperationId operationId,
   }) async {
@@ -3705,8 +3996,74 @@ class DemoStudioTransport extends StudioTransport
         <Object?>['tool-approval', decision, reason],
     };
     final previous = _resolvedInteractions[interactionId];
+    final interaction = [
+      for (final workspace in _workspaces.values) ...workspace.interactions,
+    ].where((item) => item.id == interactionId).firstOrNull;
+    // A terminal replay is still decided from its original interaction identity, so
+    // hosting and identity are validated before any idempotent reply is returned.
+    final decided = interaction ?? previous?.interaction;
+    if (decided == null) {
+      throw const StudioFailure(
+        code: StudioFailureCode.notFound,
+        message: 'Interaction is unavailable',
+        retryable: false,
+        correlationId: 'demo-interaction-not-found',
+      );
+    }
+    // The decision is submitted under the hosting main session: a root session may
+    // decide its own questions and its direct child's handed-over ones. A child is
+    // never a host for its own interaction.
+    final host = _workspaces[hostThreadId]?.thread;
+    if (host == null || host.parentThreadId != null) {
+      throw const StudioFailure(
+        code: StudioFailureCode.permissionDenied,
+        message: 'Only a main session can decide an interaction',
+        retryable: false,
+        correlationId: 'demo-interaction-not-hosted',
+        reason: StudioFailureReason.interactionNotHosted,
+      );
+    }
+    // A child Plan request stays a diagnostic: it is not offered in the main session
+    // projection and its decision entry rejects it too, exactly like the production
+    // handover filter.
+    if (decided.threadId != hostThreadId && decided.isPlanConfirmation) {
+      throw const StudioFailure(
+        code: StudioFailureCode.permissionDenied,
+        message:
+            'A child plan confirmation cannot be decided from the main session',
+        retryable: false,
+        correlationId: 'demo-child-plan-diagnostic',
+        reason: StudioFailureReason.interactionNotHosted,
+      );
+    }
+    final owner = _workspaces[decided.threadId]?.thread;
+    final hosted =
+        decided.threadId == hostThreadId ||
+        owner?.parentThreadId == hostThreadId;
+    if (!hosted) {
+      throw const StudioFailure(
+        code: StudioFailureCode.permissionDenied,
+        message: 'The interaction is not hosted by this session; decide it from its main session',
+        retryable: false,
+        correlationId: 'demo-interaction-not-hosted',
+        reason: StudioFailureReason.interactionNotHosted,
+      );
+    }
+    // Only the current revision may be decided: an older card must not overwrite a newer
+    // decision, and a newer expectation proves this client is behind. A terminal replay
+    // must satisfy the same check against the revision it was decided at.
+    if (expectedRevision != decided.revision) {
+      throw const StudioFailure(
+        code: StudioFailureCode.conflict,
+        message: 'The interaction revision is no longer current',
+        retryable: false,
+        correlationId: 'demo-interaction-stale',
+        reason: StudioFailureReason.staleInteraction,
+      );
+    }
     if (previous != null) {
-      if (!_sameDemoFacts(previous.resolution, facts)) {
+      if (!_sameDemoFacts(previous.resolution, facts) ||
+          previous.interaction.threadId != decided.threadId) {
         throw const StudioFailure(
           code: StudioFailureCode.conflict,
           message: 'Interaction already has a different terminal resolution',
@@ -3716,18 +4073,9 @@ class DemoStudioTransport extends StudioTransport
       }
       return InteractionCommandReply(
         interaction: previous.interaction,
-        receipt: _demoReceipt(
-          operationId,
-          changed: false,
-          targets: const [],
-          effect: EffectPoint.immediate,
-          requiresIdentityObservation: true,
-        ),
+        receipt: previous.receipt,
       );
     }
-    final interaction = [
-      for (final workspace in _workspaces.values) ...workspace.interactions,
-    ].where((item) => item.id == interactionId).firstOrNull;
     if (interaction == null) {
       throw const StudioFailure(
         code: StudioFailureCode.notFound,
@@ -3736,9 +4084,17 @@ class DemoStudioTransport extends StudioTransport
         correlationId: 'demo-interaction-not-found',
       );
     }
+    final receipt = _demoReceipt(
+      operationId,
+      changed: true,
+      targets: const [],
+      effect: EffectPoint.immediate,
+      requiresIdentityObservation: true,
+    );
     _resolvedInteractions[interactionId] = (
       interaction: interaction,
       resolution: facts,
+      receipt: receipt,
     );
     // Bound terminal receipts without inventing a new active interaction owner.
     while (_resolvedInteractions.length > 128) {
@@ -3751,16 +4107,7 @@ class DemoStudioTransport extends StudioTransport
     if (interaction.kind == InteractionKind.userInput) {
       _advanceDemoLastUserMessage(interaction.threadId, DateTime.now());
     }
-    return InteractionCommandReply(
-      interaction: interaction,
-      receipt: _demoReceipt(
-        operationId,
-        changed: true,
-        targets: const [],
-        effect: EffectPoint.immediate,
-        requiresIdentityObservation: true,
-      ),
-    );
+    return InteractionCommandReply(interaction: interaction, receipt: receipt);
   }
 
   @override
@@ -4665,6 +5012,24 @@ class DemoStudioTransport extends StudioTransport
         update: update,
       ),
     );
+    // The stop target is an execution identity and the continue target is a
+    // continuation point, so the runtime projection carries both: derive them
+    // from the canonical facts and publish them as their own facts.
+    final execution = _demoExecutionOf(threadId);
+    final continuation = _demoContinuationPoints[threadId];
+    if (execution != updated.runtime.execution ||
+        continuation != updated.runtime.continuation) {
+      _emitThreadUpdate(
+        threadId,
+        ThreadRuntimeUpdate(
+          runtime: updated.runtime.copyWith(
+            execution: execution,
+            continuation: continuation,
+          ),
+          todo: updated.todo,
+        ),
+      );
+    }
     if (update case ThreadTurnUpdate(:final turn)) {
       final id = 'turn:${turn.turnId.length}:${turn.turnId}';
       final previous = _threadItems[threadId]
@@ -4813,6 +5178,36 @@ class DemoStudioTransport extends StudioTransport
 /// 一次内容变更的 typed 事实：推送它的身份、新预览值或“已删除”。
 ///
 /// 这就是 demo 的“producer 通知”：内容连接不需要为每次交付重建全历史版本表。
+/// demo 已受理的一次无内容继续；同一个操作身份只回答同一份事实。
+final class _DemoContinuation {
+  _DemoContinuation({
+    required this.threadId,
+    required this.inputId,
+    required this.continuationId,
+    required this.expectedModelRouteRevision,
+    required this.acceptedSequence,
+    required this.receipt,
+  });
+
+  final String threadId;
+  final String inputId;
+  final String continuationId;
+
+  /// 受理时冻结的路由版本：同身份重试必须与它一致。
+  final int expectedModelRouteRevision;
+  final int acceptedSequence;
+  final StudioCommandReceipt receipt;
+
+  /// 控制输入被实际轮次消费后的接续轮次；准入即确定，不等待整轮完成。
+  String? turnId;
+
+  /// 同一个操作身份是否描述同一份请求事实。
+  bool matches(String thread, String continuation, int routeRevision) =>
+      threadId == thread &&
+      continuationId == continuation &&
+      expectedModelRouteRevision == routeRevision;
+}
+
 final class _DemoItemChange {
   const _DemoItemChange({
     required this.version,
@@ -5568,6 +5963,7 @@ class _DemoTimelineConnection implements StudioTimelineConnection {
         :final payloads,
         :final notice,
         :final recordedAt,
+        :final origin,
       ):
         return item.copyWith(
           state: ThreadRawItemStateView(
@@ -5582,6 +5978,7 @@ class _DemoTimelineConnection implements StudioTimelineConnection {
             ],
             notice,
             recordedAt,
+            origin: origin,
           ),
         );
       default:
@@ -6470,7 +6867,9 @@ class DriverDemoStudioTransport extends DemoStudioTransport {
     required String trimmedPrompt,
     required int generation,
     required DateTime startedAt,
+    void Function()? onAdmitted,
   }) async {
+    onAdmitted?.call();
     if (_retryNextTurn) {
       _retryNextTurn = false;
       for (var attempt = 1; attempt <= 5; attempt++) {

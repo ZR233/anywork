@@ -1085,7 +1085,7 @@ async fn persist_effect(
             EffectCommit {
                 items: &projected.items,
                 rolled_back_turns: &rolled_back_turns(&write.checkpoint.state),
-                identities: &terminal_input_identities(&write.checkpoint.state),
+                identities: &durable_input_identities(&inner.thread.id, &write.checkpoint.state),
                 messages: &admitted_message_identities(&write.effect),
                 receipts: &fact_receipts(&write.effect)?,
                 tasks: &write.effect.tasks,
@@ -1165,28 +1165,70 @@ fn admitted_message_identities(
         .collect()
 }
 
-/// Minimal identities of every terminal input the effect-matched state still carries.
+/// Minimal identities of every input this commit must be able to answer for.
 ///
-/// Alongside the canonical identity it derives the host submission digest from the saved payload,
-/// so the durable index can prove a repeated submission carries the same body after the resident
-/// identity window (and the attachment drafts it referenced) are gone.
-fn terminal_input_identities(snapshot: &ThreadSnapshot) -> Vec<InputIdentityWrite> {
-    use pl_core::thread::input::InputState;
+/// A terminal input keeps its receipt so a repeated submission is answered after the resident
+/// identity window (and the attachment drafts it referenced) are gone. A still-pending continuation
+/// control is written too: its admission is the whole point of the operation, so the receipt has to
+/// be readable before the input is consumed, while consuming and discarding later only move its
+/// state forward in the same row.
+///
+/// A control input has no host prompt body, so its request digest binds the Thread and the
+/// continuation it was admitted for instead of a payload that does not exist.
+fn durable_input_identities(thread_id: &str, snapshot: &ThreadSnapshot) -> Vec<InputIdentityWrite> {
+    use pl_core::thread::input::{InputPurpose, InputState};
     snapshot
         .inputs
         .iter()
-        .filter(|record| record.state != InputState::Pending)
-        .map(|record| InputIdentityWrite {
-            entry: crate::studio::storage::state::InputIdentityEntry::new(
+        .filter(|record| {
+            record.state != InputState::Pending
+                || record.input.purpose == InputPurpose::Continuation
+        })
+        .map(|record| {
+            let control = record
+                .continuation
+                .as_ref()
+                .filter(|_| record.input.purpose == InputPurpose::Continuation);
+            let mut entry = crate::studio::storage::state::InputIdentityEntry::new(
                 pl_core::thread::input::input_identity(record),
                 record.accepted_sequence,
-            ),
-            request_digest: crate::studio::thread_projection::saved_prompt_request_digest(
-                &record.input.payload,
-            ),
-            presentation: crate::studio::thread_projection::input_presentation(record),
+            );
+            if control.is_some() {
+                // The frozen route revision and the admission revision belong to the first
+                // admission; the write path preserves them, so only a first write fills them in.
+                entry.expected_model_route_revision = frozen_route_revision(snapshot);
+                entry.continuation_admission_revision = Some(record.revision);
+            }
+            InputIdentityWrite {
+                entry,
+                request_digest: match control {
+                    Some(continuation) => Some(
+                        crate::studio::thread_projection::continuation_request_digest(
+                            thread_id,
+                            &continuation.point_id,
+                            frozen_route_revision(snapshot),
+                        ),
+                    ),
+                    None => crate::studio::thread_projection::saved_prompt_request_digest(
+                        &record.input.payload,
+                    ),
+                },
+                presentation: crate::studio::thread_projection::input_presentation(record),
+            }
         })
         .collect()
+}
+
+/// Route revision this Thread had when the control input was first written.
+///
+/// A control input is only admitted after the caller's frozen revision matched the saved one under
+/// the same lifecycle lock, so the value the identity index keeps is the request's own frozen fact;
+/// it is never rewritten by a later commit.
+fn frozen_route_revision(snapshot: &ThreadSnapshot) -> Option<u64> {
+    crate::studio::model_route::route_record(snapshot, false)
+        .ok()
+        .flatten()
+        .map(|(record, _)| record.revision)
 }
 
 fn record_error(inner: &Inner, kind: pl_protocol::studio::HistoryFault, message: String) {
@@ -1694,9 +1736,11 @@ mod storage_fault_tests {
     ) -> Result<ThreadWrite> {
         let mut write = ticket(thread_id, 1);
         let input = InputRecord {
+            continuation: None,
             accepted_sequence: 1,
             delivery: Default::default(),
             input: ThreadInput {
+                purpose: pl_core::thread::input::InputPurpose::Message,
                 id: "attached-input".to_owned(),
                 payload: OpaquePayload::new(
                     "pl.studio.prompt",
@@ -1869,7 +1913,13 @@ mod storage_fault_tests {
         let write = ticket(id, 1);
         let checkpoint = write.checkpoint.clone();
         original.admit(id, write)?;
-        tokio::time::timeout(Duration::from_secs(5), original.flush(id, 1)).await??;
+        await_durable(
+            Duration::from_secs(5),
+            &format!("commit {}", 1),
+            original.flush(id, 1),
+            || channel_facts(&original),
+        )
+        .await??;
         drop(original);
         drop(store);
 
@@ -1888,7 +1938,13 @@ mod storage_fault_tests {
             .attach_storage(ColdStoreHandle::new(reopened.clone()))
             .await?;
         assert_eq!(reopened.pressure(id).durable_sequence, 1);
-        tokio::time::timeout(Duration::from_secs(5), resumed.flush()).await??;
+        await_durable(
+            Duration::from_secs(5),
+            "reopened durable barrier",
+            resumed.flush(),
+            || String::from("the reopened owner never reached its durable ticket"),
+        )
+        .await??;
         resumed.close().await?;
         let saved = reopened
             .0
@@ -1997,9 +2053,11 @@ mod storage_fault_tests {
     fn visible_input_ticket(thread_id: &str, sequence: u64, input_id: &str) -> Result<ThreadWrite> {
         let mut write = ticket(thread_id, sequence);
         let input = InputRecord {
+            continuation: None,
             accepted_sequence: sequence,
             delivery: Default::default(),
             input: ThreadInput {
+                purpose: pl_core::thread::input::InputPurpose::Message,
                 id: input_id.to_owned(),
                 payload: OpaquePayload::new(
                     "pl.studio.prompt",
@@ -2107,7 +2165,13 @@ mod storage_fault_tests {
             false,
         )?)?;
         sink.admit(id, visible_input_ticket(id, 1, "projected-first")?)?;
-        tokio::time::timeout(Duration::from_secs(5), sink.flush(id, 1)).await??;
+        await_durable(
+            Duration::from_secs(5),
+            &format!("commit {}", 1),
+            sink.flush(id, 1),
+            || channel_facts(&sink),
+        )
+        .await??;
         let published = shown_item(&chat, "projected-first").await;
         assert!(
             published.saved,
@@ -2150,7 +2214,13 @@ mod storage_fault_tests {
             &write.checkpoint.state,
         )?;
         sink.0.channel.prepare(prepared);
-        tokio::time::timeout(Duration::from_secs(5), sink.flush("no-handoff", 1)).await??;
+        await_durable(
+            Duration::from_secs(5),
+            &format!("commit {}", 1),
+            sink.flush("no-handoff", 1),
+            || channel_facts(&sink),
+        )
+        .await??;
         assert_eq!(store.history("no-handoff").await?.watermark().await?, 1);
         Ok(())
     }
@@ -2162,9 +2232,11 @@ mod storage_fault_tests {
         let turn_id = "turn-after-confirmation";
         let mut accepted = ticket("hidden-input", 1);
         let input = InputRecord {
+            continuation: None,
             accepted_sequence: 1,
             delivery: Default::default(),
             input: ThreadInput {
+                purpose: pl_core::thread::input::InputPurpose::Message,
                 id: input_id.into(),
                 payload: OpaquePayload::new(
                     "pl.studio.interaction-continuation",
@@ -2186,7 +2258,13 @@ mod storage_fault_tests {
         accepted.checkpoint.state.inputs = Arc::from([input.clone()]);
         Arc::make_mut(&mut accepted.effect).inputs = Arc::from([InputChange::Accepted(input)]);
         sink.admit("hidden-input", accepted)?;
-        tokio::time::timeout(Duration::from_secs(5), sink.flush("hidden-input", 1)).await??;
+        await_durable(
+            Duration::from_secs(5),
+            &format!("commit {}", 1),
+            sink.flush("hidden-input", 1),
+            || channel_facts(&sink),
+        )
+        .await??;
         let history = store.history("hidden-input").await?;
         assert!(history.existing_items([input_id.into()]).await?.is_empty());
         assert!(history.input_identity(input_id).await?.is_some());
@@ -2202,7 +2280,13 @@ mod storage_fault_tests {
         later.checkpoint.state.turns = Arc::from([turn.clone()]);
         Arc::make_mut(&mut later.effect).turn = Some(turn);
         sink.admit("hidden-input", later)?;
-        tokio::time::timeout(Duration::from_secs(5), sink.flush("hidden-input", 2)).await??;
+        await_durable(
+            Duration::from_secs(5),
+            &format!("commit {}", 2),
+            sink.flush("hidden-input", 2),
+            || channel_facts(&sink),
+        )
+        .await??;
         assert_eq!(history.watermark().await?, 2);
         assert_eq!(sink.0.channel.subscribe().borrow().fault, None);
         Ok(())
@@ -2221,9 +2305,11 @@ mod storage_fault_tests {
             ThreadStorageSink::new(store.clone(), test_thread("missing-visible"), None).await?;
         let mut accepted = ticket("missing-visible", 1);
         let input = InputRecord {
+            continuation: None,
             accepted_sequence: 1,
             delivery: Default::default(),
             input: ThreadInput {
+                purpose: pl_core::thread::input::InputPurpose::Message,
                 id: "visible-input".into(),
                 payload: OpaquePayload::new(
                     "pl.studio.prompt",
@@ -2255,7 +2341,13 @@ mod storage_fault_tests {
             &accepted.checkpoint.state,
         )?;
         sink.0.channel.prepare(prepared);
-        tokio::time::timeout(Duration::from_secs(5), sink.flush("missing-visible", 1)).await??;
+        await_durable(
+            Duration::from_secs(5),
+            &format!("commit {}", 1),
+            sink.flush("missing-visible", 1),
+            || channel_facts(&sink),
+        )
+        .await??;
         let history = store.history("missing-visible").await?;
         let path = store
             .session_paths("project-test", "missing-visible")?
@@ -2287,10 +2379,15 @@ mod storage_fault_tests {
         later.checkpoint.state.turns = Arc::from([turn.clone()]);
         Arc::make_mut(&mut later.effect).turn = Some(turn);
         sink.admit("missing-visible", later)?;
-        let error = tokio::time::timeout(Duration::from_secs(5), sink.flush("missing-visible", 2))
-            .await
-            .context("a torn projection must fail the durable barrier instead of hanging")?
-            .expect_err("a visible input without its item must fail closed");
+        let error = await_durable(
+            Duration::from_secs(5),
+            &format!("commit {}", 2),
+            sink.flush("missing-visible", 2),
+            || channel_facts(&sink),
+        )
+        .await
+        .context("a torn projection must fail the durable barrier instead of hanging")?
+        .expect_err("a visible input without its item must fail closed");
         assert!(
             error
                 .to_string()
@@ -2339,7 +2436,13 @@ mod storage_fault_tests {
             write.checkpoint.state.turns = Arc::from([turn.clone()]);
             Arc::make_mut(&mut write.effect).turn = Some(turn);
             drive_live_projection(&mut projection, &chat, &sink, id, write)?;
-            tokio::time::timeout(Duration::from_secs(5), sink.flush(id, sequence)).await??;
+            await_durable(
+                Duration::from_secs(5),
+                &format!("commit {}", sequence),
+                sink.flush(id, sequence),
+                || channel_facts(&sink),
+            )
+            .await??;
             let saved = store
                 .history(id)
                 .await?
@@ -2360,7 +2463,13 @@ mod storage_fault_tests {
             state: input.state.clone(),
         }]);
         drive_live_projection(&mut projection, &chat, &sink, id, consumed)?;
-        tokio::time::timeout(Duration::from_secs(5), sink.flush(id, 5)).await??;
+        await_durable(
+            Duration::from_secs(5),
+            &format!("commit {}", 5),
+            sink.flush(id, 5),
+            || channel_facts(&sink),
+        )
+        .await??;
         let history = store.history(id).await?;
         let saved = history.existing_items(["pending-input".into()]).await?;
         assert_eq!(saved["pending-input"].turn_id, "second-turn");
@@ -2375,9 +2484,11 @@ mod storage_fault_tests {
     /// a visible timeline item whose `turn_id` is the Turn it opened.
     fn consumed_visible_input(id: &str, turn_id: &str, sequence: u64) -> Result<InputRecord> {
         Ok(InputRecord {
+            continuation: None,
             accepted_sequence: sequence,
             delivery: Default::default(),
             input: ThreadInput {
+                purpose: pl_core::thread::input::InputPurpose::Message,
                 id: id.to_owned(),
                 payload: OpaquePayload::new(
                     "pl.studio.prompt",
@@ -2608,7 +2719,13 @@ mod storage_fault_tests {
         let failed = shown_item(&chat, &failed_id).await;
         let current = shown_item(&chat, &current_id).await;
         drop(locked);
-        tokio::time::timeout(Duration::from_secs(5), sink.flush(id, 1)).await??;
+        await_durable(
+            Duration::from_secs(5),
+            &format!("commit {}", 1),
+            sink.flush(id, 1),
+            || channel_facts(&sink),
+        )
+        .await??;
 
         // No further provider update is needed to keep either identity visible after the save ack.
         let saved_window = chat
@@ -2690,7 +2807,13 @@ mod storage_fault_tests {
         Arc::make_mut(&mut consumed.effect).attempt = Some(update);
         Arc::make_mut(&mut consumed.effect).consumed_messages = Some(1);
         drive_live_projection(&mut projection, &chat, &sink, id, consumed)?;
-        tokio::time::timeout(Duration::from_secs(5), sink.flush(id, 2)).await??;
+        await_durable(
+            Duration::from_secs(5),
+            &format!("commit {}", 2),
+            sink.flush(id, 2),
+            || channel_facts(&sink),
+        )
+        .await??;
         let history = store.history(id).await?;
         let saved = history.existing_items([item_id.clone()]).await?;
         let item = saved.get(&item_id).context("saved parent message")?;
@@ -2715,7 +2838,13 @@ mod storage_fault_tests {
         followup.checkpoint.state.inbox = Arc::from([record.clone()]);
         Arc::make_mut(&mut followup.effect).inbox = Arc::from([record.clone()]);
         drive_live_projection(&mut projection, &chat, &sink, id, followup)?;
-        tokio::time::timeout(Duration::from_secs(5), sink.flush(id, 3)).await??;
+        await_durable(
+            Duration::from_secs(5),
+            &format!("commit {}", 3),
+            sink.flush(id, 3),
+            || channel_facts(&sink),
+        )
+        .await??;
         let followup_id = crate::studio::thread_projection::order::message_id(&record.message.id);
         let saved = history.existing_items([followup_id.clone()]).await?;
         let original = saved[&followup_id].clone();
@@ -2729,7 +2858,13 @@ mod storage_fault_tests {
         Arc::make_mut(&mut consumed.effect).attempt = Some(update);
         Arc::make_mut(&mut consumed.effect).consumed_messages = Some(2);
         drive_live_projection(&mut projection, &chat, &sink, id, consumed)?;
-        tokio::time::timeout(Duration::from_secs(5), sink.flush(id, 4)).await??;
+        await_durable(
+            Duration::from_secs(5),
+            &format!("commit {}", 4),
+            sink.flush(id, 4),
+            || channel_facts(&sink),
+        )
+        .await??;
         let saved = history.existing_items([followup_id.clone()]).await?;
         assert_eq!(saved[&followup_id].ordinal, original.ordinal);
         assert_eq!(saved[&followup_id].turn_id, "next-turn");
@@ -2814,7 +2949,13 @@ mod storage_fault_tests {
         // Every fact is handed over, so the durable barrier reaches the terminal commit with no
         // fault, and the rows a long Turn produced are complete instead of a hole or a revision
         // conflict.
-        tokio::time::timeout(Duration::from_secs(30), sink.flush(thread_id, 3)).await??;
+        await_durable(
+            Duration::from_secs(30),
+            &format!("commit {}", 3),
+            sink.flush(thread_id, 3),
+            || channel_facts(&sink),
+        )
+        .await??;
         let history = store.history(thread_id).await?;
         assert_eq!(history.watermark().await?, 3);
         assert_eq!(sink.0.channel.subscribe().borrow().fault, None);
@@ -2902,7 +3043,13 @@ mod storage_fault_tests {
         Arc::make_mut(&mut opening.effect).turn =
             Some(turn_record(turn_id, input_id, TurnState::Running));
         drive_live_projection(&mut projection, &chat, &sink, thread_id, opening)?;
-        tokio::time::timeout(Duration::from_secs(30), sink.flush(thread_id, 1)).await??;
+        await_durable(
+            Duration::from_secs(30),
+            &format!("commit {}", 1),
+            sink.flush(thread_id, 1),
+            || channel_facts(&sink),
+        )
+        .await??;
         assert!(
             store
                 .history(thread_id)
@@ -2947,7 +3094,13 @@ mod storage_fault_tests {
         let live = crate::studio::thread_projection::prepared_terminal_turn(&prepared)
             .context("the live projection must carry the finished Turn")?;
         drive_live_projection(&mut projection, &chat, &sink, thread_id, terminal)?;
-        tokio::time::timeout(Duration::from_secs(30), sink.flush(thread_id, 11)).await??;
+        await_durable(
+            Duration::from_secs(30),
+            &format!("commit {}", 11),
+            sink.flush(thread_id, 11),
+            || channel_facts(&sink),
+        )
+        .await??;
 
         let cold = store
             .history(thread_id)
@@ -2981,7 +3134,13 @@ mod storage_fault_tests {
         Arc::make_mut(&mut next.effect).turn =
             Some(turn_record(next_id, "newer-input", TurnState::Running));
         drive_live_projection(&mut projection, &chat, &sink, thread_id, next)?;
-        tokio::time::timeout(Duration::from_secs(30), sink.flush(thread_id, 12)).await??;
+        await_durable(
+            Duration::from_secs(30),
+            &format!("commit {}", 12),
+            sink.flush(thread_id, 12),
+            || channel_facts(&sink),
+        )
+        .await??;
         let latest = history.latest_turn_at(12).await?.context("latest Turn")?;
         assert_eq!(latest.id, next_id);
         assert!(!latest.state.is_terminal());
@@ -3042,15 +3201,15 @@ mod storage_fault_tests {
             1,
             1,
             1,
-            pl_protocol::ThreadItemState::Raw(pl_protocol::ThreadRawItem {
-                payloads: vec![pl_protocol::ThreadRawPayload {
+            pl_protocol::ThreadItemState::Raw(pl_protocol::ThreadRawItem::stored(
+                vec![pl_protocol::ThreadRawPayload {
                     format: "pl.model.receipt".to_owned(),
                     version: 1,
                     content: raw_content.clone(),
                 }],
-                notice: String::new(),
-                recorded_at: 1,
-            }),
+                String::new(),
+                1,
+            )),
         );
         let failed_text = pl_protocol::ThreadItem::new(
             "failed-text".to_owned(),
@@ -3291,7 +3450,13 @@ mod storage_fault_tests {
     async fn sqlite_rejection_retains_the_real_writer_queue_until_recovery() -> Result<()> {
         let (_temp, store, sink) = sink("sqlite-rejection").await?;
         sink.admit("sqlite-rejection", ticket("sqlite-rejection", 1))?;
-        tokio::time::timeout(Duration::from_secs(5), sink.flush("sqlite-rejection", 1)).await??;
+        await_durable(
+            Duration::from_secs(5),
+            &format!("commit {}", 1),
+            sink.flush("sqlite-rejection", 1),
+            || channel_facts(&sink),
+        )
+        .await??;
         let path = store
             .session_paths("project-test", "sqlite-rejection")?
             .root()
@@ -3571,7 +3736,13 @@ mod storage_fault_tests {
         // Commit one effect first so the history database exists, then reject the second one's whole
         // transaction from the watermark update that every atomic commit performs.
         sink.admit("atomic-failure", ticket("atomic-failure", 1))?;
-        tokio::time::timeout(Duration::from_secs(5), sink.flush("atomic-failure", 1)).await??;
+        await_durable(
+            Duration::from_secs(5),
+            &format!("commit {}", 1),
+            sink.flush("atomic-failure", 1),
+            || channel_facts(&sink),
+        )
+        .await??;
         let path = store
             .session_paths("project-test", "atomic-failure")?
             .root()
@@ -3703,7 +3874,13 @@ mod storage_fault_tests {
     async fn closing_the_chat_and_sink_does_not_release_pending_history() -> Result<()> {
         let (_temp, store, sink) = sink("closed-view").await?;
         sink.admit("closed-view", ticket("closed-view", 1))?;
-        tokio::time::timeout(Duration::from_secs(5), sink.flush("closed-view", 1)).await??;
+        await_durable(
+            Duration::from_secs(5),
+            &format!("commit {}", 1),
+            sink.flush("closed-view", 1),
+            || channel_facts(&sink),
+        )
+        .await??;
         let chat = store.chat_session("closed-view").await?;
         let path = store
             .session_paths("project-test", "closed-view")?
@@ -3765,7 +3942,13 @@ mod storage_fault_tests {
             .report_calls(store.calls().metrics());
         assert!(store.thread_persistence().queue_snapshot().statistics_gap);
         sink.admit("statistics-gap", ticket("statistics-gap", 1))?;
-        tokio::time::timeout(Duration::from_secs(5), sink.flush("statistics-gap", 1)).await??;
+        await_durable(
+            Duration::from_secs(5),
+            &format!("commit {}", 1),
+            sink.flush("statistics-gap", 1),
+            || channel_facts(&sink),
+        )
+        .await??;
         assert_eq!(store.history("statistics-gap").await?.watermark().await?, 1);
         assert_eq!(sink.0.channel.subscribe().borrow().fault, None);
         assert!(store.thread_persistence().queue_snapshot().statistics_gap);
@@ -3798,9 +3981,14 @@ mod storage_fault_tests {
         assert!(resumed_ticket > dropped_ticket);
 
         sink.admit("statistics-crash", ticket("statistics-crash", 1))?;
-        tokio::time::timeout(Duration::from_secs(5), sink.flush("statistics-crash", 1))
-            .await
-            .context("history flush stalled after the call writer exit")??;
+        await_durable(
+            Duration::from_secs(5),
+            &format!("commit {}", 1),
+            sink.flush("statistics-crash", 1),
+            || channel_facts(&sink),
+        )
+        .await
+        .context("history flush stalled after the call writer exit")??;
         assert_eq!(
             store.history("statistics-crash").await?.watermark().await?,
             1
@@ -3989,7 +4177,13 @@ mod storage_fault_tests {
         }
         sink.admit("revision-fence", write)?;
         sink.0.channel.prepare(prepared);
-        tokio::time::timeout(Duration::from_secs(5), sink.flush("revision-fence", 9)).await??;
+        await_durable(
+            Duration::from_secs(5),
+            &format!("commit {}", 9),
+            sink.flush("revision-fence", 9),
+            || channel_facts(&sink),
+        )
+        .await??;
 
         let published = shown_item(&chat, "revision-input").await;
         // The real allocation entry point is pinned, not just "different from the commit sequence":
@@ -4216,6 +4410,52 @@ mod storage_fault_tests {
             snapshot.commit_sequence,
             snapshot.persistence.durable_sequence,
         )
+    }
+
+    /// A best-effort snapshot of the reliable channel taken when one durable barrier expires.
+    ///
+    /// It reports the watermarks, the queue, the published fault and the oldest effect no projection
+    /// has taken over yet, so an expired budget is accompanied by the facts the wait was measured
+    /// against instead of only `deadline has elapsed`. The values are read from live state and may
+    /// already reflect concurrent progress: they are not an atomic snapshot of one instant, and
+    /// `unprojected` names only the earliest effect that is unprepared at the moment of the read.
+    /// Neither its presence nor its absence decides on its own whether a stall came from scheduling,
+    /// IO, a lock or a logic defect — those fields are evidence for a later judgement, not a verdict.
+    fn channel_facts(sink: &ThreadStorageSink) -> String {
+        let channel = &sink.0.channel;
+        let facts = {
+            let status = channel.subscribe();
+            let status = status.borrow();
+            format!(
+                "durable={} admitted={} queued={} ({} bytes) fault={:?} generation={} error={:?}",
+                status.committed_sequence,
+                status.admitted_sequence,
+                status.queued_records,
+                status.queued_bytes,
+                status.fault,
+                status.fault_generation,
+                status.error,
+            )
+        };
+        let unprojected = channel
+            .next_unprojected()
+            .map(|write| write.effect.sequence);
+        format!("{facts} unprojected={unprojected:?}")
+    }
+
+    /// Awaits the supplied future under the caller's timeout budget.
+    ///
+    /// On expiry, appends the caller-provided diagnostic text without inferring a cause.
+    async fn await_durable<T>(
+        budget: Duration,
+        stage: &str,
+        future: impl std::future::Future<Output = T>,
+        describe: impl FnOnce() -> String,
+    ) -> Result<T> {
+        match tokio::time::timeout(budget, future).await {
+            Ok(value) => Ok(value),
+            Err(_) => anyhow::bail!("`{stage}` did not land: {}", describe()),
+        }
     }
 
     /// Waits until the authoritative snapshot satisfies `predicate`, tagging `stage` on timeout.

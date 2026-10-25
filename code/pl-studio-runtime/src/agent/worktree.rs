@@ -4,6 +4,7 @@ mod backend;
 mod manager;
 mod remote;
 
+pub(crate) use backend::RegisteredWorktree;
 pub use backend::{
     LocalWorktreeBackend, WorktreeBackend, WorktreeCreateFailure, WorktreeCreateFailureDisposition,
     WorktreeError, WorktreeStatus,

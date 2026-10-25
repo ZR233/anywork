@@ -10,8 +10,11 @@
 //! 1. The continuation model attempt fails with an explicit non-retryable error:
 //!    the same card closes as `Failed`, the durable stream names the new Turn,
 //!    and the confirmed preview is kept.
-//! 2. The continuation attempt is held with no Final and the operator interrupts
-//!    that Turn through `DELETE /api/v1/threads/{thread_id}/turns/{turn_id}`.
+//! 2. The continuation attempt is held with no Final and the operator stops that
+//!    exact execution through `POST /api/v1/threads/{thread_id}/stop`. The route is
+//!    no longer addressed by Turn id: the request names the execution observed in
+//!    the thread snapshot, so a superseded identity fails instead of stopping
+//!    whatever runs next.
 //!    Design 14 §14.2 / 27 make an explicit local interrupt a *cancellation*: the
 //!    targeted Turn ends `Cancelled{Interrupted}`, the already consumed
 //!    continuation input is never replayed, and the card closes as `Cancelled` on
@@ -324,13 +327,37 @@ async fn continuation_outcomes_inner(
         )
     })?;
     let attempts_before_interrupt = session.model_attempts();
+    // The stop names the execution the caller really observed for that Turn; the Turn id itself is
+    // never the target identity.
+    let execution_id = wait_execution_of_turn(session, &thread_id, &continuation_turn).await?;
     let reply = session
         .http()?
-        .interrupt_turn(&thread_id, &continuation_turn, "op-bots-cont-interrupt")
+        .stop_thread(&thread_id, &execution_id, "op-bots-cont-stop")
         .await?;
     ensure!(
-        reply.interrupted && reply.turn_id == continuation_turn && reply.thread_id == thread_id,
-        "the public interrupt must target exactly the active continuation Turn"
+        reply.stopped && reply.execution_id == execution_id && reply.thread_id == thread_id,
+        "the public stop must acknowledge exactly the observed execution {execution_id}"
+    );
+    ensure!(
+        !reply.receipt.effective && reply.receipt.requires_identity_observation,
+        "a stop acknowledgement is accepted but not effective; it still needs the identity observation: {:?}",
+        reply.receipt
+    );
+    // The acknowledgement is the owner's, not a locally fabricated success: it names this operation,
+    // reports a real disposition and targets the execution resource it accepted.
+    ensure!(
+        reply.receipt.operation_id == "op-bots-cont-stop"
+            && reply.receipt.effect == "immediate"
+            && !reply.receipt.durable
+            && matches!(reply.receipt.disposition.as_str(), "applied" | "noChange")
+            && reply
+                .receipt
+                .targets
+                .iter()
+                .any(|target| target["resourceKey"]
+                    == serde_json::json!(format!("thread-execution:{thread_id}"))),
+        "the stop receipt must describe this operation and its target execution: {:?}",
+        reply.receipt
     );
 
     // Canonical Turn fact: the targeted Turn ends Cancelled with cause Interrupted.
@@ -515,6 +542,9 @@ async fn resolve_question(
             &interaction.interaction_id,
             &ResolveInteractionRequest {
                 operation_id: format!("op-bots-cont-{question_id}"),
+                // 该机器人会话就是这条交互所属的主会话，宿主身份与版本都来自刚观察到的权威记录。
+                host_thread_id: interaction.scope.thread_id.clone(),
+                expected_revision: interaction.revision,
                 resolution: InteractionResolution::UserInput(UserInputResolution {
                     answers: HashMap::from([(
                         question_id.to_string(),
@@ -623,6 +653,33 @@ async fn card_entity(session: &Session, card_id: &str) -> Result<CardEntityRepor
 }
 
 /// Waits for the active Turn identity of the bound Thread.
+/// Waits until the observed Thread publishes the execution of `turn_id`.
+///
+/// The execution identity is what a precise stop names; a Turn id or `activeTurn` cannot
+/// substitute for it.
+async fn wait_execution_of_turn(
+    session: &Session,
+    thread_id: &str,
+    turn_id: &str,
+) -> Result<String> {
+    let deadline = std::time::Instant::now() + http::PREDICATE_TIMEOUT;
+    loop {
+        let snapshot = session.http()?.read_thread(thread_id).await?;
+        if let Some(execution) = snapshot
+            .runtime
+            .as_ref()
+            .and_then(|runtime| runtime.execution.as_ref())
+            && execution.turn_id() == Some(turn_id)
+        {
+            return Ok(execution.id().to_owned());
+        }
+        if std::time::Instant::now() >= deadline {
+            anyhow::bail!("the Thread never published an execution for Turn {turn_id}");
+        }
+        tokio::time::sleep(http::POLL).await;
+    }
+}
+
 async fn wait_active_turn(session: &Session, thread_id: &str) -> Result<String> {
     let deadline = std::time::Instant::now() + http::PREDICATE_TIMEOUT;
     loop {

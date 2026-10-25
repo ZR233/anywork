@@ -1,7 +1,8 @@
 use anyhow::Result;
 use pl_protocol::{
-    CancelledInteractionState, ExpiredInteractionState, InteractionContent, InteractionRequest,
-    ToolApprovalResolution, ToolApprovalState, UserInputState, UserQuestion,
+    CancelledInteractionState, ChildInteractionSummary, ExpiredInteractionState,
+    InteractionContent, InteractionRequest, ToolApprovalResolution, ToolApprovalState,
+    UserInputState, UserQuestion,
 };
 
 use crate::api::studio::types::*;
@@ -116,6 +117,18 @@ fn tool_approval_resolution(value: ToolApprovalResolution) -> BridgeToolApproval
         ToolApprovalResolution::Approved => BridgeToolApprovalResolution::Approved,
         ToolApprovalResolution::Denied => BridgeToolApprovalResolution::Denied,
     }
+}
+
+pub(crate) fn child_interaction(
+    value: ChildInteractionSummary,
+) -> Result<BridgeChildInteractionSummary> {
+    Ok(BridgeChildInteractionSummary {
+        child_thread_id: value.child_thread_id,
+        interaction_id: value.interaction_id,
+        kind: value.kind.as_str().to_owned(),
+        revision: value.revision,
+        interaction: interaction(value.interaction)?,
+    })
 }
 
 fn question(value: UserQuestion) -> BridgeUserQuestion {

@@ -32,6 +32,9 @@ final class _DraftTransport implements StudioTransport {
   int startCalls = 0;
   final List<String> removed = [];
   int promptCalls = 0;
+
+  /// 非空时提交以该错误结束；用于证明已知拒绝不会被当成未知结果。
+  Object? promptFailure;
   int? promptRouteRevision;
   int? canonicalRouteRevision;
   final List<int> submittedRouteRevisions = [];
@@ -56,6 +59,7 @@ final class _DraftTransport implements StudioTransport {
     promptCalls += 1;
     promptRouteRevision = expectedModelRouteRevision;
     submittedRouteRevisions.add(expectedModelRouteRevision);
+    if (promptFailure case final failure?) return Future.error(failure);
     if (canonicalRouteRevision != null &&
         canonicalRouteRevision != expectedModelRouteRevision) {
       return Future.error(
@@ -1367,5 +1371,52 @@ void main() {
     expect(client.attachments.unresolvedStagingPaths, isEmpty);
     expect(client.budget.used(ResourceKind.attachment), 0);
     await client.close();
+  });
+
+  test('a child target rejection stays typed, keeps the draft and never becomes unknown', () async {
+    final transport = _DraftTransport();
+    final client = _client(transport);
+    client.session('thread').applySnapshot(_workspace());
+    final owner = client.composer('thread');
+    owner.updateDraft('继续这个子任务');
+    await owner.addLocalAttachments(['/child.bin']);
+    final attachmentIds = owner.state.attachments
+        .map((item) => item.id)
+        .toList();
+    transport.promptFailure = const StudioFailure(
+      code: StudioFailureCode.permissionDenied,
+      message: 'A child agent is continued and instructed by the main session, not by the user',
+      retryable: false,
+      correlationId: 'child-requires-parent-scheduling',
+      reason: StudioFailureReason.childThreadRequiresParentScheduling,
+    );
+    await owner.submit();
+
+    expect(transport.promptCalls, 1);
+    expect(
+      owner.state.draft,
+      '继续这个子任务',
+      reason: 'A typed rejection never clears the user draft',
+    );
+    expect(owner.state.attachments.map((item) => item.id), attachmentIds);
+    expect(owner.state.isSubmissionPending, isFalse);
+    expect(owner.state.error, isNotNull);
+    final operation = client.mutations.operations.single;
+    expect(
+      operation.failurePhase,
+      OperationPhase.rejected,
+      reason: 'A known rejection is not an unknown outcome',
+    );
+    expect(
+      (operation.error! as StudioFailure).reason,
+      StudioFailureReason.childThreadRequiresParentScheduling,
+    );
+    expect(
+      transport.removed,
+      isEmpty,
+      reason: 'Rejected admission keeps the frozen attachment references',
+    );
+    await owner.discard();
+    await _close(client, transport);
   });
 }

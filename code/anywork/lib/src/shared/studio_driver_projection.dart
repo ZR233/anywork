@@ -4,6 +4,7 @@ import 'package:anywork_client/studio_client.dart';
 import 'package:flutter_chat_core/flutter_chat_core.dart';
 
 import '../domain/models/agent_workspace_view.dart';
+import '../domain/models/plan_confirmation_ownership.dart';
 import '../domain/models/timeline_presentation.dart';
 import '../features/shell/shell_view.dart' show primaryInteraction, projectById;
 import '../presentation/view_models/timeline_session_owner.dart';
@@ -245,7 +246,11 @@ TimelineItemFacts _timelineItemFacts(TimelineMessagePayload payload) {
   final item = payload.item;
   final tool = item.tool;
   final userInput = tool?.userInput ?? item.tool?.userInput;
-  final receipt = userInput?.planReceipt;
+  // 与时间线同一归属规则：只有 `plan_submit` 发起的调用才是计划确认，
+  // 普通问答即使带保留的问题 ID 也必须报告为普通问答。
+  final receipt = ownsPlanConfirmation(tool?.name)
+      ? userInput?.planReceipt
+      : null;
   return TimelineItemFacts(
     id: item.id,
     ordinal: item.ordinal,

@@ -101,7 +101,7 @@ async fn sqlite_v10_context_migration_preserves_history_and_marks_unknown_usage_
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(restored.schema_version, 4);
+    assert_eq!(restored.schema_version, ThreadCheckpoint::SCHEMA_VERSION);
     assert_eq!(
         restored
             .state
@@ -1068,5 +1068,160 @@ async fn migrate_v7_adds_checkpoint_table_without_losing_effects() {
             .unwrap()
             .is_none()
     );
+    reopened.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn sqlite_v11_migration_converts_a_schema_4_checkpoint() {
+    use sea_orm::{ConnectionTrait, DatabaseBackend, Statement};
+
+    let directory = tempfile::tempdir().unwrap();
+    let options = SqliteSessionOptions {
+        path: directory.path().join("legacy-envelope.sqlite"),
+    };
+    let store = SqliteSessionStore::open(options.clone()).await.unwrap();
+    let (model, _) = ScriptedModel::new(&[]);
+    let thread =
+        ThreadHandle::start("legacy-envelope".into(), DynModelSession::new(model)).unwrap();
+    thread
+        .attach_storage(ColdStoreHandle::new(store.clone()))
+        .await
+        .unwrap();
+    thread
+        .submit_input_and_run(
+            pl_core::thread::input::ThreadInput {
+                id: "asked".into(),
+                purpose: pl_core::thread::input::InputPurpose::Message,
+                payload: OpaquePayload::text("Please handle this request"),
+                context: vec![support::text("Please handle this request")],
+            },
+            pl_core::thread::input::InputDriverOptions {
+                max_model_steps: pl_core::thread::ModelStepLimit::Limited(
+                    2.try_into().expect("nonzero limit"),
+                ),
+            },
+        )
+        .await
+        .unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        while !thread
+            .snapshot()
+            .terminal_inputs
+            .iter()
+            .any(|identity| identity.id == "asked")
+        {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("the turn consumes its input");
+    thread.flush().await.unwrap();
+    thread.close().await.unwrap();
+    store.shutdown().await.unwrap();
+
+    // Rewrite the stored checkpoint into the schema-4 shape: the fields that schema never had are absent.
+    let db = sea_orm::Database::connect(format!("sqlite://{}?mode=rw", options.path.display()))
+        .await
+        .unwrap();
+    let row = db
+        .query_one_raw(Statement::from_string(
+            DatabaseBackend::Sqlite,
+            "SELECT envelope FROM thread_checkpoints WHERE thread_id='legacy-envelope'",
+        ))
+        .await
+        .unwrap()
+        .unwrap();
+    let envelope: String = row.try_get("", "envelope").unwrap();
+    let mut value: serde_json::Value = serde_json::from_str(&envelope).unwrap();
+    value["schemaVersion"] = serde_json::json!(4);
+    {
+        let state = value["state"].as_object_mut().expect("state object");
+        state.remove("continuation");
+        state.remove("execution");
+        state.remove("executionSequence");
+        state.remove("requiredDurableSequence");
+        for key in ["inputs", "terminalInputs"] {
+            if let Some(records) = state.get_mut(key).and_then(serde_json::Value::as_array_mut) {
+                for record in records {
+                    let record = record.as_object_mut().expect("input object");
+                    record.remove("purpose");
+                    record.remove("continuation");
+                }
+            }
+        }
+    }
+    let envelope = serde_json::to_string(&value).unwrap();
+    let hash = pl_core::context::content_hash(envelope.as_bytes());
+    db.execute_raw(Statement::from_sql_and_values(
+        DatabaseBackend::Sqlite,
+        "UPDATE thread_checkpoints SET schema_version=4,envelope=?,payload_hash=? WHERE thread_id='legacy-envelope'",
+        vec![envelope.into(), hash.into()],
+    ))
+    .await
+    .unwrap();
+    db.execute_unprepared(
+        "DROP TABLE thread_tool_task_resources; DROP TABLE thread_tool_tasks; PRAGMA user_version=11",
+    )
+    .await
+    .unwrap();
+    db.close().await.unwrap();
+
+    // The explicit migration converts the envelope, its indexed version and its hash together.
+    migration::migrate_to_current(options.clone(), |_| Ok(()))
+        .await
+        .unwrap();
+    let db = sea_orm::Database::connect(format!("sqlite://{}?mode=rw", options.path.display()))
+        .await
+        .unwrap();
+    let version: i64 = db
+        .query_one_raw(Statement::from_string(
+            DatabaseBackend::Sqlite,
+            "PRAGMA user_version",
+        ))
+        .await
+        .unwrap()
+        .unwrap()
+        .try_get("", "user_version")
+        .unwrap();
+    assert_eq!(version, 12);
+    db.close().await.unwrap();
+
+    let reopened = SqliteSessionStore::open(options).await.unwrap();
+    let restored = reopened
+        .read_thread_checkpoint("legacy-envelope")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(restored.schema_version, ThreadCheckpoint::SCHEMA_VERSION);
+    // Missing fields take their defaults, and no continuation is invented for work that never owed any.
+    assert!(restored.state.continuation.is_none());
+    assert!(restored.state.execution.is_none());
+    assert_eq!(restored.state.execution_sequence, 0);
+    assert_eq!(restored.state.required_durable_sequence, None);
+    assert!(
+        restored
+            .state
+            .terminal_inputs
+            .iter()
+            .all(
+                |identity| identity.purpose == pl_core::thread::input::InputPurpose::Message
+                    && identity.continuation.is_none()
+            )
+    );
+    assert!(
+        !restored.state.terminal_inputs.is_empty(),
+        "the fixture must really carry the consumed input it strips"
+    );
+
+    // The converted checkpoint is a usable restart state, not just readable bytes.
+    let (model, _) = ScriptedModel::new(&[]);
+    let resumed = ThreadHandle::resume(
+        "legacy-envelope".into(),
+        DynModelSession::new(model),
+        Some(restored),
+    )
+    .unwrap();
+    assert!(resumed.snapshot().continuation.is_none());
+    resumed.close().await.unwrap();
     reopened.shutdown().await.unwrap();
 }

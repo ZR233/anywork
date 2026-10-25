@@ -31,6 +31,24 @@ pub(super) struct Owner {
         std::collections::BTreeMap<String, crate::tool::opaque::ExecutionAuthority>,
     pub(super) active_inputs: Vec<String>,
     pub(super) input_batch_through: Option<u64>,
+    /// Turn whose frozen batch is being prepared right now, if any.
+    ///
+    /// A batch copies its content when it freezes, so a replacement that arrives afterwards cannot be
+    /// absorbed into it; this is what lets the owner recognize that case and re-freeze instead.
+    pub(super) frozen_turn: Option<String>,
+    /// Stop generation the last continuation request produced when it cancelled a running Turn.
+    ///
+    /// `request_continuation` deliberately keeps the queue enabled so the continuation itself can run;
+    /// remembering the exact generation its own cancellation produced is what lets the driver tell that
+    /// authorization apart from a later external stop.
+    pub(super) continuation_cancel: Option<u64>,
+    /// Turn whose frozen batch a newer authorization replaced, with the stop generation that replacement
+    /// itself produced.
+    ///
+    /// Live state only: the driver consumes it at the exact cancelled Turn it caused, so the queue keeps
+    /// running with the new authorization instead of pausing. A later external stop changes the stop
+    /// generation, which is what keeps a replacement from swallowing it.
+    pub(super) superseded_batch: Option<(String, u64)>,
     pub(super) interrupted_turn: Option<String>,
     pub(super) input_driver: input::InputDriver,
     /// Turn admission gate installed for this incarnation, if the host supplied one.
@@ -166,6 +184,153 @@ pub(super) struct Owner {
 }
 
 impl Owner {
+    /// Allocates the live identity of the execution this owner is about to run.
+    ///
+    /// It exists before any Turn record and before the first storage wait, so a stop names this one
+    /// generation instead of inferring a target from the newest Turn. The identity comes from a
+    /// monotonic counter rather than from the Turn, because a preparing execution that is stopped has
+    /// no Turn record and the same Turn identity may legitimately be requested again afterwards: the
+    /// counter is what keeps an old stop from ever addressing the newer execution. The identity never
+    /// changes afterwards; entering the real Turn only fills the Turn reference and moves the phase.
+    pub(super) fn begin_execution(&mut self) -> Result<(), ThreadError> {
+        if self.state.execution.is_some() {
+            return Ok(());
+        }
+        let sequence = self
+            .state
+            .execution_sequence
+            .checked_add(1)
+            .ok_or(ThreadError::RevisionExhausted)?;
+        self.state.execution_sequence = sequence;
+        self.state.execution = Some(ActiveExecution {
+            id: format!("execution:{sequence}"),
+            phase: ExecutionPhase::Preparing,
+            turn_id: None,
+        });
+        self.publish_snapshot();
+        Ok(())
+    }
+
+    /// Records that the owned execution really entered its Turn.
+    pub(super) fn enter_running_execution(&mut self, turn_id: &str) {
+        let changed = match self.state.execution.as_mut() {
+            Some(execution) if execution.turn_id.is_none() => {
+                execution.turn_id = Some(turn_id.to_owned());
+                execution.phase = ExecutionPhase::Running;
+                true
+            }
+            Some(execution) if execution.turn_id.as_deref() == Some(turn_id) => {
+                let changed = execution.phase != ExecutionPhase::Running;
+                execution.phase = ExecutionPhase::Running;
+                changed
+            }
+            Some(_) | None => false,
+        };
+        if changed {
+            self.publish_snapshot();
+        }
+    }
+
+    /// Publishes a preparation phase of the live execution, if one exists.
+    ///
+    /// An accepted stop is latched: a later phase report never overwrites `Stopping` while the
+    /// interrupted generation is still settling.
+    pub(super) fn note_execution_phase(&mut self, phase: ExecutionPhase) {
+        let changed = match self.state.execution.as_mut() {
+            Some(execution)
+                if execution.phase != phase && execution.phase != ExecutionPhase::Stopping =>
+            {
+                execution.phase = phase;
+                true
+            }
+            Some(_) | None => false,
+        };
+        if changed {
+            self.publish_snapshot();
+        }
+    }
+
+    /// Whether the current execution still holds a frozen batch that was never admitted.
+    ///
+    /// An admitted batch has already copied its content into a request and consumed its inputs; a
+    /// frozen one has not, so its content cannot be changed by patching the queue afterwards.
+    pub(super) fn execution_preparing(&self) -> bool {
+        let Some(turn_id) = self.frozen_turn.as_ref() else {
+            return false;
+        };
+        self.state.execution.is_some()
+            && !self
+                .state
+                .attempts
+                .iter()
+                .any(|attempt| &attempt.turn_id == turn_id)
+    }
+
+    /// The phase the execution really is in after a wait returned.
+    pub(super) fn execution_progress_phase(&self) -> ExecutionPhase {
+        match self.state.execution.as_ref() {
+            Some(execution) if execution.turn_id.is_some() => ExecutionPhase::Running,
+            Some(_) | None => ExecutionPhase::Preparing,
+        }
+    }
+
+    /// Releases the live execution identity on every exit path of its Turn.
+    ///
+    /// The owner is serial and owns at most one execution, so the execution this Turn ran is the one
+    /// that either already names the Turn or is still preparing for it.
+    pub(super) fn finish_execution(&mut self, turn_id: &str) {
+        let owned = self.state.execution.as_ref().is_some_and(|execution| {
+            execution.turn_id.is_none() || execution.turn_id.as_deref() == Some(turn_id)
+        });
+        if owned {
+            self.state.execution = None;
+            self.publish_snapshot();
+        }
+    }
+
+    /// Leaves owed work behind as a durable point before a close has to cut it.
+    ///
+    /// Only a Thread that really has live or queued work forms one, so an idle Thread that finished
+    /// normally does not become continuable just because the process is going away. The point is part
+    /// of the same checkpoint boundary as the close, so the final saved state says what was still
+    /// owed; it is never a reason to start anything by itself.
+    pub(super) fn form_host_shutdown(&mut self) {
+        let source_turn = self
+            .state
+            .turns
+            .iter()
+            .rev()
+            .find(|turn| turn.state == TurnState::Running)
+            .map(|turn| turn.turn_id.clone())
+            .or_else(|| {
+                self.state
+                    .execution
+                    .as_ref()
+                    .and_then(|execution| execution.turn_id.clone())
+            });
+        let owed = source_turn.is_some()
+            || self.state.execution.is_some()
+            || self
+                .state
+                .attempts
+                .last()
+                .is_some_and(|attempt| attempt.status == AttemptStatus::Running)
+            || self
+                .state
+                .inputs
+                .iter()
+                .any(|record| record.state == input::InputState::Pending)
+            || self.state.wake_messages_through > self.state.consumed_messages;
+        if !owed {
+            return;
+        }
+        let source = source_turn.as_ref().map_or_else(
+            || "shutdown".to_owned(),
+            |turn_id| format!("turn:{turn_id}"),
+        );
+        self.form_continuation(ContinuationReason::HostShutdown, source_turn, &source);
+    }
+
     pub(super) async fn run(mut self, mut commands: mpsc::Receiver<Command>) {
         // The backend's own storage watch, subscribed once a store is attached. An idle owner reads
         // the same typed report a paused Turn's safety point reads, so a save that recovered — or a
@@ -393,6 +558,9 @@ impl Owner {
                 Command::Close(reply) => {
                     if self.state.lifecycle == ThreadLifecycle::Open {
                         self.state.lifecycle = ThreadLifecycle::Closing;
+                        // Whatever this close is about to cut stays owed as a durable fact in the same
+                        // boundary; an idle close forms nothing.
+                        self.form_host_shutdown();
                         self.publish();
                     }
                     let result = match self.close_resources().await {
@@ -412,8 +580,10 @@ impl Owner {
                 }
             }
         }
-        // A last-handle drop seals admission and still settles owned work before releasing it.
+        // A last-handle drop seals admission and still settles owned work before releasing it. The
+        // work the shutdown is cutting stays owed, so a restart offers an explicit continuation.
         self.state.lifecycle = ThreadLifecycle::Closing;
+        self.form_host_shutdown();
         self.publish();
         match self.close_resources().await {
             Ok(()) => {

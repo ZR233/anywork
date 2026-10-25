@@ -545,11 +545,14 @@ class _PlanFeedbackTransport extends DemoStudioTransport {
 
   @override
   Future<InteractionCommandReply> respondInteraction(
+    String hostThreadId,
     String interactionId,
+    int expectedRevision,
     InteractionResolutionCommand resolution, {
     required OperationId operationId,
   }) async {
     respondCalls++;
+    expect(hostThreadId, isNotEmpty);
     final pending = gate;
     if (pending != null) await pending.future;
     if (failure case final error?) throw error;

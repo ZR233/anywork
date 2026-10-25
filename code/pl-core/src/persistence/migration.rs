@@ -548,6 +548,9 @@ async fn migrate_v10(options: SqliteSessionOptions) -> Result<(), SessionStoreEr
         let version = tx.query_one_raw(sqlite::statement("PRAGMA user_version", vec![])).await?.ok_or_else(|| SessionStoreError::Invalid("missing version".into()))?.try_get::<i64>("", "user_version")?;
         if version == 11 || version == 12 { tx.commit().await?; return Ok(()); }
         if version != 10 { return Err(SessionStoreError::UnsupportedSchema { found: version, supported: super::SESSION_SCHEMA_VERSION }); }
+        // The envelope version and its index are one fact, so both are written from the same current
+        // schema: a hardcoded version here would renumber the index without converting the layout.
+        let current = i64::from(crate::thread::ThreadCheckpoint::SCHEMA_VERSION);
         let mut after = String::new();
         loop {
             let rows = tx.query_all_raw(sqlite::statement("SELECT * FROM thread_checkpoints WHERE thread_id>? ORDER BY thread_id LIMIT 128", vec![after.clone().into()])).await?;
@@ -561,10 +564,10 @@ async fn migrate_v10(options: SqliteSessionOptions) -> Result<(), SessionStoreEr
                 let header: serde_json::Value = serde_json::from_str(&envelope)?;
                 let indexed: i64 = row.try_get("", "schema_version")?;
                 if header["schemaVersion"].as_i64() != Some(indexed) { return Err(SessionStoreError::Invalid("checkpoint schema mismatch".into())); }
-                let checkpoint: crate::thread::ThreadCheckpoint = if indexed == 4 { serde_json::from_str(&envelope)? } else { crate::thread::ThreadCheckpoint::decode_legacy(&envelope).map_err(|e| SessionStoreError::Invalid(e.to_string()))? };
+                let checkpoint: crate::thread::ThreadCheckpoint = if indexed == current { serde_json::from_str(&envelope)? } else { crate::thread::ThreadCheckpoint::decode_legacy(&envelope).map_err(|e| SessionStoreError::Invalid(e.to_string()))? };
                 if checkpoint.thread_id != id || checkpoint.state_revision != checkpoint.state.commit_sequence || checkpoint.history_fence > checkpoint.state_revision { return Err(SessionStoreError::Invalid("checkpoint ownership or fence mismatch".into())); }
                 let encoded = serde_json::to_string(&checkpoint)?;
-                tx.execute_raw(sqlite::statement("UPDATE thread_checkpoints SET schema_version=?,envelope=?,payload_hash=? WHERE thread_id=?", vec![4_i64.into(), encoded.clone().into(), crate::context::content_hash(encoded.as_bytes()).into(), id.into()])).await?;
+                tx.execute_raw(sqlite::statement("UPDATE thread_checkpoints SET schema_version=?,envelope=?,payload_hash=? WHERE thread_id=?", vec![current.into(), encoded.clone().into(), crate::context::content_hash(encoded.as_bytes()).into(), id.into()])).await?;
             }
         }
         tx.execute_unprepared("PRAGMA user_version=11").await?;

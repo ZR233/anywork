@@ -116,8 +116,12 @@ impl StudioRuntime {
             .map_err(anyhow::Error::from);
         }
         let thread = self.read_protocol_thread(thread_id).await?;
-        let checkpoint =
-            crate::studio::thread_factory::recovery::load_checkpoint(&self.store, &thread).await?;
+        // Read-only projection: never prepares, migrates or cleans storage.
+        let checkpoint = crate::studio::thread_factory::recovery::load_checkpoint_read_only(
+            &self.store,
+            &thread,
+        )
+        .await?;
         checkpoint
             .and_then(|checkpoint| {
                 crate::thread_assembler::project_thread_interaction(
