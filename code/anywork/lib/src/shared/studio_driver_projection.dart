@@ -388,7 +388,6 @@ Map<String, int> _connectionCounts(AnyworkClient client) {
   counts.add(client.lsp.state.sync);
   counts.add(client.modeCatalog.state.sync);
   counts.add(client.accountUsage.state.sync);
-  counts.add(client.modelPerformance.state.sync);
   counts.add(client.updater.state.sync);
   counts.add(client.persistence.state.stateSync);
   counts.add(client.persistence.state.queueSync);
@@ -428,7 +427,6 @@ Map<String, Object?> _projectionRevisions(AnyworkClient client) {
     'lsp': client.lsp.state.revision,
     'threadModeCatalog': client.modeCatalog.state.revision,
     'accountUsage': client.accountUsage.state.revision,
-    'modelPerformance': client.modelPerformance.state.revision,
     'persistence': client.persistence.state.stateRevision,
     'persistenceQueue': client.persistence.state.queue?.revision,
     'agentProfiles': settings.agentProfiles?.revision,

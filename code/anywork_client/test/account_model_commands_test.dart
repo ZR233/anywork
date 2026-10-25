@@ -173,7 +173,6 @@ AnyworkClient _client(_Transport transport) {
       lspState: LspStateSnapshot(revision: 1),
       skillsByProject: const {},
       threadModeCatalog: const ThreadModeCatalogView(),
-      modelPerformance: const ModelPerformanceSnapshotView(),
       accountUsageState: AccountUsageStateSnapshot(revision: 1),
       updaterState: DisabledUpdaterStateSnapshot(
         revision: 1,

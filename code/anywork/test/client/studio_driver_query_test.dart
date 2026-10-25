@@ -1,3 +1,5 @@
+import 'support/test_statistics_feed.dart';
+
 import 'dart:async';
 import 'dart:convert';
 
@@ -40,6 +42,7 @@ void main() {
   test('canonical cold and closed members survive a root-only Thread page and cold selection', () async {
     final transport = _ColdDirectoryTransport();
     final graph = AppGraph(
+      statisticsFeed: const TestStatisticsFeedPort(),
       transport: transport,
       clientId: 'canonical-agent-members',
     );
@@ -385,6 +388,7 @@ void main() {
 
   test('workspace and Driver join current directory identity after a Turn', () async {
     final graph = AppGraph(
+      statisticsFeed: const TestStatisticsFeedPort(),
       transport: RecordingDemoTransport(),
       clientId: 'directory-identity',
     );

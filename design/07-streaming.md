@@ -322,3 +322,28 @@ Runtime 是同一有序状态流中的独立 typed 事件，不另开速度 tran
 所有用户可见实时字段都必须有可追踪的 owner、事件或快照、Dart reducer、watermark、selector
 和可见 lease。Widget 不能通过页面切换、延迟或轮询获得本应由事件提供的更新；缺失事件、
 `lagged`、关闭和旧 generation 统一按当前订阅生命周期处理，迟到事实不得写入新 Thread。
+
+## 7.8 统计 FRB 推送与关闭
+
+统计 GUI 使用独立 typed feed，由 FRB StreamSink 向 Dart Stream 主动推送头部与传输状态，
+不暴露需要 Dart 逐帧调用的 `next` RPC，也不通过通用产品封套或聚合 bootstrap
+传送完整统计快照。Rust 内部等待 watch 更新不是接口轮询；它由同一受管 producer 消费，
+不能把这份等待重新交给 Dart 泵。领域来源与不可变材料的有界读取见
+[18](./18-studio-state.md#1822-统计观察与不可变读取)；其他 product/Thread transport
+保持各自现役协议，不因统计切片迁移自动改变。
+
+feed 首帧为基线，后续交付已发布材料/状态的版本化变化；缺口、类型化失败与关闭明确
+可观察。统计是可覆盖的只读投影，慢消费者的待发槽只保留最新发布；必须保留它的真实
+来源和材料身份，不能将省略的中间状态伪装成必须连续的业务增量。
+
+StreamSink 投递成功不等于 Dart 消费完成。每个 feed 同时最多两个未确认数据帧，基线
+占同一额度；Repository 完成转换与归并后 ACK 该 feed 的 delivery sequence 连续前缀。
+重复旧 ACK 幂等，超出已发送序号的 ACK 拒绝；delivery sequence 与 owner/material
+revision、落盘 ticket 分属不同版本域，不互相代替。仅在 sink 前放有界通道不能证明
+native port 在途有界，容量许可必须持有到消费确认。
+
+取消优先于等待容量，传输 Failure/Closed 至多一次且不依赖数据 ACK 才能收束。失败
+不能日志后跳帧，关闭不能以丢弃 JoinHandle、Stream.cancel 或 opaque GC 冒充完成。
+requestClose 先封闭准入并取消，close 等待 producer、sink 和已登记读取真正退出，才
+释放许可；关闭等待被取消或超时时仍保留原 join 责任。重新观察建立新基线，不重放
+业务命令、不用旧句柄或查询结果修补新 feed 水位。

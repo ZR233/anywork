@@ -813,7 +813,8 @@ lagged/失败/重连行为和未支持能力；无缺陷的行也保留静态证
 | Timeline | 流式正文、旧页、详情、图片/工具预览 | Session tail initial/next、page、detail | Client 有界 tail；展示 lease 的唯一 Message 集合 | Connector/View props | threadId/attempt/展示代次 | History 冻结；显式回实时；迟到回包不污染新代次 |
 | Composer | 文本、attachments、preview、pending/failure | Client DraftStore + admission result | Client canonical draft reducer | composer Connector/View | logical draft/project | paste/local/remove/submit race；旧 ACK 不清新 revision |
 | Product settings | accounts/routes/catalog/settings | typed resource baseline/frame + confirmed owner response | Client SettingsReadModel；catalog 独立版本 | settings/account | app owner，页面只观察 | 保存后同页 canonical 更新，无成功补偿回读 |
-| Usage/statistics/costs | quota、model performance、session costs | scoped product topics | Client scoped reducers | usage/statistics/costs | 可见需求由 Client 管理，observer 可取消 | 隐藏取消观察；需求重开取基线 |
+| Usage/costs | quota、session costs | scoped product topics | Client scoped reducers | usage/costs | 可见需求由 Client 管理，observer 可取消 | 隐藏取消观察；需求重开取基线 |
+| Statistics | model performance 汇总、effort 与历史 | 统计 owner 的 typed feed / immutable read scope | 独立 StatisticsRepository 唯一 reducer | 统计 ViewModel / 纯 View | Repository 持可见需求、scope 与真实 close | 完整物化后原子发布；状态变化不重读材料；隐藏/重开拒迟到 |
 | Resources | MCP/LSP/Skills/Profiles/updater/persistence/recovery | scoped topic/command | Client resource read models | resource projections | Client topic owner/current interest | 连接、失败、恢复即时可见 |
 | Lifecycle | startup/shutdown/subscription diagnostics | startup/exit progress | AppGraph/Client lifecycle | startup/exit views | process owner | cancel/release/no stale frame；unresolved 保留 |
 
@@ -839,6 +840,15 @@ failure 或 unknown 及资源释放。
 `test_driver`、真实宿主的启动路由与实时 UI 仍通过 `manual-gui`/Driver 和人工取证覆盖，不加入自动门禁，
 也不建立第二套实时状态事实源。真实系统剪贴板 PNG 另在当前宿主人工验收并记录截图、snapshot、
 日志和进程回收；模拟或纯 Dart 通过不外推真实厂商兼容、native FRB 或跨平台通过。
+
+统计 Repository 的公开行为测试独立于旧 Client/bootstrap，覆盖固定来源的完整物化、
+材料复用、版本/代次拒迟到、失败保留 last-good、隐藏/重开、预算与真实关闭等待。
+呈现适配通过注入统计 Repository 验证筛选和可见需求，不用旧 store 作为 fixture 旁路。
+目录存在不证明模块隔离：审查必须核对领域、port、adapter、ViewModel、纯 View 的依赖
+方向、唯一公共路径和旧接口删除，不留下重导出或新调旧的兼容层。
+真实 native 验收另核对 feed ACK、不可变读取和关闭，比较重构前后同尺寸截图、widget tree、
+模型/effort/mismatch 筛选及滚动；空态、统计 pending、自动更新与重启恢复沿用既有场景。
+截图和日志是验收证据，不进入源码；模拟通过不外推真实供应商或其他平台。
 
 ## 24.6 账号、额度与 MCP 隔离验收
 

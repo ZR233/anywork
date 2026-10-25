@@ -1,3 +1,5 @@
+import 'support/test_statistics_feed.dart';
+
 import 'dart:convert';
 
 import 'package:anywork/src/app/app_graph.dart';
@@ -134,6 +136,7 @@ void main() {
     'settings navigation to bots does not close the active session',
     () async {
       final graph = AppGraph(
+        statisticsFeed: const TestStatisticsFeedPort(),
         transport: RecordingDemoTransport(),
         clientId: 'bots-session',
       );

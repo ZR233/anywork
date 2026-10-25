@@ -1,3 +1,5 @@
+import 'support/test_statistics_feed.dart';
+
 import 'package:anywork/src/app/app_graph.dart';
 import 'package:anywork/src/features/status/status_view.dart';
 import 'package:anywork/src/domain/models/studio_reactive_projections.dart';
@@ -14,6 +16,7 @@ void main() {
     'idle context follows canonical catalog while running binding stays frozen',
     () async {
       final graph = AppGraph(
+        statisticsFeed: const TestStatisticsFeedPort(),
         transport: RecordingDemoTransport(),
         clientId: 'context-policy',
       );
@@ -110,7 +113,11 @@ void main() {
 
   test('status projections isolate throughput from context, chrome, and unrelated facts', () async {
     final transport = RecordingDemoTransport();
-    final graph = AppGraph(transport: transport, clientId: 'status-throughput');
+    final graph = AppGraph(
+      statisticsFeed: const TestStatisticsFeedPort(),
+      transport: transport,
+      clientId: 'status-throughput',
+    );
     addTearDown(() => graph.close(deadline: _deadline()));
     await graph.client.bootstrap();
     await graph.client.directoryCommands.selectThread('thread-main');

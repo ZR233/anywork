@@ -1,3 +1,5 @@
+import 'support/test_statistics_feed.dart';
+
 import 'package:anywork/src/app/anywork_app.dart';
 import 'package:anywork/src/app/app_graph.dart';
 import 'package:anywork/src/app/studio_host_lifecycle.dart';
@@ -20,7 +22,11 @@ void main() {
       correlationId: 'startup-route-failure',
     );
     final transport = _StartupFailureTransport(failure);
-    final graph = AppGraph(transport: transport, clientId: 'startup-route');
+    final graph = AppGraph(
+      statisticsFeed: const TestStatisticsFeedPort(),
+      transport: transport,
+      clientId: 'startup-route',
+    );
     final messenger =
         TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
     messenger.setMockMethodCallHandler(StudioHostLifecycle.channel, (

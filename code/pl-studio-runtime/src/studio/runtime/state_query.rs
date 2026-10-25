@@ -52,7 +52,7 @@ impl StudioRuntime {
                 ));
             }
         }
-        let (model_performance, session_costs) = self.model_performance.snapshot_and_costs().await;
+        let session_costs = self.model_performance.published_session_costs().await;
         Ok(StudioStateSnapshot {
             owner_epoch: self.owner_epoch.clone(),
             runtime,
@@ -79,7 +79,6 @@ impl StudioRuntime {
             skills_by_project,
             thread_mode_catalog: self.read_thread_mode_catalog(),
             account_usage: self.read_account_usage_state().await,
-            model_performance,
             session_costs,
             updater: self.read_update_state().await,
             persistence: self.agent_facility.product_events.persistence_state(),

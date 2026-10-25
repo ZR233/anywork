@@ -114,7 +114,6 @@ AnyworkClient _client(_Transport transport, AccountSettingsView account) {
       skillsByProject: const {},
       threadModeCatalog: const ThreadModeCatalogView(),
       accountUsageState: AccountUsageStateSnapshot(revision: 1),
-      modelPerformance: const ModelPerformanceSnapshotView(),
       updaterState: DisabledUpdaterStateSnapshot(
         revision: 1,
         updatedAt: DateTime.utc(2026),

@@ -1,3 +1,5 @@
+import 'support/test_statistics_feed.dart';
+
 import 'dart:async';
 
 import 'package:anywork/src/app/app_graph.dart';
@@ -19,7 +21,11 @@ void main() {
 
   test('observing missing resources never admits a Client owner', () async {
     final transport = RecordingDemoTransport();
-    final graph = AppGraph(transport: transport, clientId: 'missing-owner');
+    final graph = AppGraph(
+      statisticsFeed: const TestStatisticsFeedPort(),
+      transport: transport,
+      clientId: 'missing-owner',
+    );
     addTearDown(() => graph.close(deadline: _deadline()));
     final client = graph.client;
     final readModels = client.budget.used(ResourceKind.readModel);
@@ -71,7 +77,11 @@ void main() {
     'account cancellation, disposal and rebuilding preserve app resources',
     () async {
       final transport = RecordingDemoTransport();
-      final graph = AppGraph(transport: transport, clientId: 'observer-owner');
+      final graph = AppGraph(
+        statisticsFeed: const TestStatisticsFeedPort(),
+        transport: transport,
+        clientId: 'observer-owner',
+      );
       addTearDown(() => graph.close(deadline: _deadline()));
       await graph.client.bootstrap();
       await graph.client.directoryCommands.selectThread('thread-main');
@@ -185,8 +195,16 @@ void main() {
   test('two injected AppGraphs have independent sessions and drafts', () async {
     final firstTransport = RecordingDemoTransport();
     final secondTransport = RecordingDemoTransport();
-    final first = AppGraph(transport: firstTransport, clientId: 'first-app');
-    final second = AppGraph(transport: secondTransport, clientId: 'second-app');
+    final first = AppGraph(
+      statisticsFeed: const TestStatisticsFeedPort(),
+      transport: firstTransport,
+      clientId: 'first-app',
+    );
+    final second = AppGraph(
+      statisticsFeed: const TestStatisticsFeedPort(),
+      transport: secondTransport,
+      clientId: 'second-app',
+    );
     addTearDown(() => first.close(deadline: _deadline()));
     addTearDown(() => second.close(deadline: _deadline()));
     await Future.wait([first.client.bootstrap(), second.client.bootstrap()]);
@@ -283,6 +301,7 @@ void main() {
         return window;
       };
       final graph = AppGraph(
+        statisticsFeed: const TestStatisticsFeedPort(),
         transport: transport,
         clientId: 'late-demo-attempt',
       );

@@ -11,7 +11,7 @@
 //! 展示投影只由明确的前进点建立：startup 初始化（`initialize_projection`）、计费
 //! durability/flags 变化（`emit_snapshot_after_flush`）与归档/恢复命令。全局性能与逐 root
 //! 会话费用由同一计费 owner 分别发布（作用域 revision 按 root 独立单调，含清除与淘汰）；
-//! 查询（snapshot/snapshot_and_costs/session_costs_snapshot）只读已发布值：不写库、
+//! 查询（snapshot/session_costs_snapshot/published_session_costs）只读已发布值：不写库、
 //! 不推进 revision、不扫描补建作用域、不发事件。
 
 use std::collections::{BTreeMap, VecDeque};
@@ -22,17 +22,17 @@ use pl_protocol::{InferenceBillingRecord, InferenceModelObservation, ModelMatchS
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+use crate::statistics::{
+    StatisticsFeed, StatisticsPublisher, StudioModelPerformanceEffortSummary,
+    StudioModelPerformanceSample, StudioModelPerformanceSnapshot, StudioModelPerformanceSummary,
+};
 use crate::studio::storage::calls::{
     CallRetention, CallStatus, PerformanceSampleRow, PerformanceSummaryRow, PurposeCostRollup,
     SessionCostRollup,
 };
 use crate::studio::store::object::{PersistedStudioObject, load_object, put_object};
 use crate::studio::{ProductEventBus, StudioStore, unix_seconds};
-use crate::{
-    PureError, StudioModelPerformanceEffortSummary, StudioModelPerformanceSample,
-    StudioModelPerformanceSnapshot, StudioModelPerformanceSummary, StudioSessionCostSnapshot,
-    StudioSessionCostsState,
-};
+use crate::{PureError, StudioSessionCostSnapshot, StudioSessionCostsState};
 
 pub(in crate::studio) const MODEL_PERFORMANCE_OWNER_ID: &str = "global";
 const CACHE_VERSION: u32 = 4;
@@ -64,6 +64,8 @@ pub(crate) struct ModelPerformanceOwner {
     project_lock: Arc<tokio::sync::Mutex<()>>,
     /// 已发布的展示投影：全局性能与逐 root 费用同一次发布原子可见。
     published: Arc<tokio::sync::Mutex<PublishedProjection>>,
+    /// Same-owner latest-value source for the independent GUI feed.
+    statistics: StatisticsPublisher,
 }
 
 /// 当前已发布的展示投影；查询路径只 clone，不推进。
@@ -229,7 +231,11 @@ enum BillingRetention {
 }
 
 impl ModelPerformanceOwner {
-    pub(in crate::studio) fn new(store: StudioStore, product_events: ProductEventBus) -> Self {
+    pub(in crate::studio) fn new(
+        store: StudioStore,
+        product_events: ProductEventBus,
+        owner_epoch: String,
+    ) -> Self {
         Self {
             state: Arc::new(Mutex::new(ModelPerformanceState::default())),
             store,
@@ -245,7 +251,12 @@ impl ModelPerformanceOwner {
                 scoped_updated_at: 0,
                 scoped: BTreeMap::new(),
             })),
+            statistics: StatisticsPublisher::new(owner_epoch),
         }
+    }
+
+    pub(crate) fn subscribe_statistics(&self) -> StatisticsFeed {
+        self.statistics.subscribe()
     }
 
     /// 恢复固定上限缓存；不读取调用库，执行恢复不依赖 calls。
@@ -286,22 +297,17 @@ impl ModelPerformanceOwner {
         Ok(())
     }
 
-    /// 产品快照：仅返回 owner 已发布的当前展示投影。
+    /// Returns only the owner-published scoped costs required by the GUI bootstrap.
     ///
-    /// 纯读（design/18 §18.2.1/18.4）：不写库、不推进 revision、不扫描补建作用域、
-    /// 不发事件。全局性能与逐 root 费用来自同一次发布，读取端看到一致的成对值。
-    pub(crate) async fn snapshot_and_costs(
-        &self,
-    ) -> (StudioModelPerformanceSnapshot, Vec<StudioSessionCostsState>) {
+    /// This narrow read does not clone the global summaries or retained history and does not
+    /// mutate revisions, scan calls storage, or publish events.
+    pub(crate) async fn published_session_costs(&self) -> Vec<StudioSessionCostsState> {
         let published = self.published.lock().await;
-        (
-            published.global.clone(),
-            published
-                .scoped
-                .iter()
-                .map(|(root, entry)| entry.state(root))
-                .collect(),
-        )
+        published
+            .scoped
+            .iter()
+            .map(|(root, entry)| entry.state(root))
+            .collect()
     }
 
     /// 全局模型性能快照（已发布值；不含按 root 会话费用）。
@@ -370,6 +376,7 @@ impl ModelPerformanceOwner {
             let scoped_revision = published.scoped_revision.saturating_add(1);
             global.revision = published.global.revision.saturating_add(1);
             published.global = global.clone();
+            self.statistics.publish(&published.global);
             let scoped = &mut published.scoped;
             let mut seen = std::collections::BTreeSet::new();
             for cost in fresh {
@@ -435,6 +442,12 @@ impl ModelPerformanceOwner {
             published.global.statistics_pending = pending;
             published.global.statistics_gap = gap;
             published.global.read_failed = true;
+            self.statistics.publish_status(
+                published.global.revision,
+                published.global.statistics_pending,
+                published.global.statistics_gap,
+                published.global.read_failed,
+            );
             for (root, entry) in published.scoped.iter_mut() {
                 if entry.differs(pending, gap, true, &entry.cost.clone()) {
                     entry.revision = scoped_revision;
@@ -452,6 +465,59 @@ impl ModelPerformanceOwner {
             published.global.clone()
         };
         (global, events)
+    }
+
+    /// Publishes only owner status. This path never touches calls.sqlite or rebuilds material.
+    async fn commit_statistics_flags(
+        &self,
+        pending: bool,
+        gap: bool,
+    ) -> (StudioModelPerformanceSnapshot, Vec<StudioSessionCostsState>) {
+        let mut events = Vec::new();
+        let global = {
+            let mut published = self.published.lock().await;
+            let changed = published.global.statistics_pending != pending
+                || published.global.statistics_gap != gap;
+            if !changed {
+                return (published.global.clone(), events);
+            }
+
+            let scoped_revision = published.scoped_revision.saturating_add(1);
+            published.global.revision = published.global.revision.saturating_add(1);
+            published.global.updated_at = unix_seconds();
+            published.global.statistics_pending = pending;
+            published.global.statistics_gap = gap;
+            self.statistics.publish_status(
+                published.global.revision,
+                published.global.statistics_pending,
+                published.global.statistics_gap,
+                published.global.read_failed,
+            );
+            for (root, entry) in published.scoped.iter_mut() {
+                if entry.differs(pending, gap, entry.read_failed, &entry.cost.clone()) {
+                    entry.revision = scoped_revision;
+                    entry.updated_at = unix_seconds();
+                    entry.statistics_pending = pending;
+                    entry.statistics_gap = gap;
+                    events.push(entry.state(root));
+                }
+            }
+            if !events.is_empty() {
+                published.scoped_revision = scoped_revision;
+                published.scoped_updated_at = unix_seconds();
+            }
+            published.global.clone()
+        };
+        (global, events)
+    }
+
+    async fn publish_statistics_flags(&self) {
+        let (pending, gap) = self.statistics_flags();
+        let (global, scoped_events) = self.commit_statistics_flags(pending, gap).await;
+        let _ = self.product_events.emit_model_performance_state(global);
+        for state in scoped_events {
+            self.product_events.emit_session_costs(state);
+        }
     }
 
     fn statistics_flags(&self) -> (bool, bool) {
@@ -672,7 +738,14 @@ impl ModelPerformanceOwner {
                     calls.statistics_gap(),
                 );
                 if published != Some(state) {
-                    owner.publish_projection().await;
+                    let material_changed = published.is_none_or(|previous| {
+                        (previous.0, previous.1, previous.2) != (state.0, state.1, state.2)
+                    });
+                    if state.1 > state.2 || !material_changed {
+                        owner.publish_statistics_flags().await;
+                    } else {
+                        owner.publish_projection().await;
+                    }
                     published = Some(state);
                 }
                 let now = (
@@ -732,8 +805,7 @@ impl ModelPerformanceOwner {
 
     /// 读取、在同一次 `published` 锁内原子采用、再在锁外按 typed topics 发布变化事实。
     ///
-    /// 全局与作用域在同一次锁内成对采用：`snapshot_and_costs` 不会观察到新 global 搭配
-    /// 旧 scoped 的撕裂组合；锁内不 send/await，发布事实全部在锁外发出。
+    /// 全局与作用域在同一次锁内采用；锁内不 send/await，发布事实全部在锁外发出。
     async fn publish_locked_projection(&self) {
         match self.read_projection().await {
             Ok(projection) => {

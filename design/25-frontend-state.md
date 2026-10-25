@@ -1,6 +1,8 @@
 # 25 - Client、前端状态与资源生命周期
 
-Rust 持有业务事实；应用实例持有纯 Dart Client；Riverpod 适配只读观察；Widget 呈现并发出意图。
+Rust 持有业务事实；应用实例装配纯 Dart 领域资源；Riverpod 组织呈现；Widget 呈现并发出意图。
+统计领域采用本篇 §25.13 的独立 Repository、ViewModel 与纯 View 边界；其余领域继续使用
+现有 Client，不以局部迁移要求全应用同时重写，也不保留统计的旧 Client 兼容入口。
 本篇是客户端所有权、命令、草稿和导航的唯一权威契约。可靠历史与迁移见
 [17](./17-studio-storage.md)，版本化流见 [07](./07-streaming.md)，领域和关闭见
 [18](./18-studio-state.md)，呈现与阅读位置见 [19](./19-studio-ui.md)，验证边界见
@@ -20,6 +22,7 @@ flowchart LR
   C --> V
 ```
 
+上图描述现有 Client 领域，统计切片的独立依赖方向见 §25.13。
 `anywork_client` 的运行依赖只有 Dart SDK，不依赖 Flutter、Riverpod、FRB、Ref 或
 BuildContext。生成 DTO 和 native 句柄留在 adapter，Client 只消费 typed domain 契约。
 feature 不导入生成代码、adapter、transport 或 Client 私有实现。应用装配入口同时认识
@@ -41,6 +44,7 @@ read model、首配/查询/发送 actions 和未完成操作。Riverpod 只观�
 | 事实或资源 | 权威 owner | Dart owner / 唯一写入入口 | 身份与结束条件 |
 | --- | --- | --- | --- |
 | 项目、目录、配置、catalog、服务状态 | Rust 对应领域 | 各领域 read model reducer | 各自 ResourceStamp；领域关闭或应用退出 |
+| 模型统计汇总、effort 与历史 | Rust 统计 owner | 独立 StatisticsRepository reducer | owner/material 来源；可见需求与应用关闭，见 §25.13 |
 | Turn、activity、interaction、runtime、storage | Rust Thread | Client session 的状态 reducer | Thread 与 owner epoch；选择变化结束观察，不结束 Turn |
 | 正文、saved、terminal、omitted、字段变更 | Rust Session | 有界尾部 reducer、历史页与详情 query | 内容订阅 stamp；逻辑 demand 变化或退出 |
 | 当前项目、会话与 Settings 导航 | Client 本地意图 | Workspace / Selection controller | 选择身份；旧异步命令不能覆盖新选择 |
@@ -294,7 +298,9 @@ UnknownOutcome，不自动重发。旧提交的进度和 finally 不覆盖新尝
 
 ## 25.9 应用退出
 
-AppGraph.close 幂等，重复调用复用首次 close Future 和绝对 deadline。先封闭草稿生产者，
+AppGraph.close 幂等，重复调用复用首次 close Future 和绝对 deadline。独立统计 Repository
+与现有 Client 均由 AppGraph 装配和关闭，统计未决任务并入同一 CloseReport，不能因脱离
+Client 而漏掉 native feed 或读取 scope。先封闭草稿生产者，
 加入在途提交，再收束会话、topic、update operation 和附件任务；独立取消并发启动，共用剩余
 预算。每个未解决 operation 和资源出现在 CloseReport，不释放仍未确认关闭的 permit。
 
@@ -336,7 +342,8 @@ GUI 不重复计算能力和预算条件。既有选择不满足筛选时保留�
 候选使用上述统一文本类型，不附加工具或 Mode 能力门槛。配置与目录继续使用独立 revision；账号参数更新一次发布该账号的受影响路由，
 旧响应不能回滚新目录。模型固有参数与路由价格均只读展示，缺价不代表模型未通过校验。
 
-Client 使用同一 AccountModelKey 表达模型选择、统计顶层筛选和模型需求；显示名不是 key。
+模型选择、统计顶层筛选和模型需求均以账号 ID 与配置模型 ID 的复合身份为准，显示名不是
+key。统计的 AccountModelKey 归独立统计领域，不通过旧 Client 混合 models 重新导出。
 统计先按账号和配置模型接收 canonical 汇总，effort 是组内细分，发送及返回模型是冻结诊断。
 未知历史身份不得由当前目录补写。账号模板只负责创建默认值，不参与已有账号或统计身份。
 
@@ -355,3 +362,47 @@ Client 使用同一 AccountModelKey 表达模型选择、统计顶层筛选和�
 偏移重新扫描目录。目录选择器替换当前页，换目录、切换服务器或销毁时释放旧游标，并以
 请求代次拒绝迟到结果。Client 关闭先封闭查询、等待已接纳请求交接，再并行关闭仍持有的
 游标；关闭失败保留对应责任，不以页面销毁报告远端清理成功。展示层不创建 SSH 连接。
+
+## 25.13 独立统计领域与呈现模块
+
+统计的数据路径为 `Rust 统计 owner → typed 统计 port / FRB adapter → StatisticsRepository
+→ ViewModel / ViewState → Connector → 纯 View`。Repository 是当前应用实例唯一的统计
+canonical reducer，直接拥有观察需求、物化读取、错误与资源收束；不通过旧 Client、聚合
+Settings、通用 product channel 或另一个 store 转发。现有计费 owner 与有效 HTTP 消费者
+继续共享同一 Rust 事实，不能成为 GUI 回退旧链的理由。来源与读取协议见
+[18](./18-studio-state.md#1822-统计观察与不可变读取)，运输边界见
+[07](./07-streaming.md#78-统计-frb-推送与关闭)。
+
+领域、数据、adapter 和呈现按真实职责独立组织。领域公共入口只暴露不可变值、身份、只读
+状态与 Repository 契约；port 和构造能力仅供适配与装配，内部 reducer、可写 source 和
+native 句柄不公开。领域值只有一条 canonical 公共路径，不留旧混合 models 的重导出或
+类型别名。观察、预算与关闭报告复用中性底层能力，不依赖旧 Client 私有实现，也不建立
+第二套无领域差异的基础设施。
+
+每个 AppGraph 注入独立 Repository，并负责应用关闭。设置壳只挂载统计入口和传递可见性；
+feature 不认识 AppGraph、全局 Client 或其他 feature 的私有 provider。生成式 ViewModel
+消费注入的 Repository，持有模型、effort、mismatch 筛选及不可变呈现状态；Connector
+绑定状态与 typed 回调，纯 View/Widget 不读取 provider、transport 或生成 DTO。通用主题、
+本地化和纯视觉基础组件可复用，不能为复用引入旧 Settings 业务状态依赖。
+
+观察登记同步返回当前值；观察取消只结束自己的 listener。可见需求另有明确租约，最后一个
+需求释放时封闭旧观察代次并取消/等待 feed 和在途读取，失败保留原责任与预算。返回页面
+取得新基线，期间最近有效数据保留原来源，不能冒充新 owner 的 ready。Widget 销毁不
+关闭应用 Repository，不影响 Thread、Timeline、草稿或会话费用；快速隐藏/重开必须先
+收束旧连接，不让迟到 open、page、error 或 finally 污染新代次。
+
+数据页由 Repository 内部连续物化，不把分页变成新的页面操作。只在相同来源与完整读取
+成立后原子发布当前有界窗口；读取失败保留最近有效内容并表达错误，不发布半份空集合。
+未改变的汇总/历史材料复用同一领域值，状态变化不重复读取它们。筛选项清理由完整权威
+集合证明，不能依据尚未读取的页推断删除。ViewState 只派生显示，不复制可写业务事实；
+页面不保留另一份 last snapshot，不在 build 中创建请求或修正 canonical 数据。
+
+退出先封闭需求和读取准入，等待已登记 open、消费、page、ACK 和 close；所有任务在首次
+await 前归属其 attempt。超时/关闭失败保留 unresolved，显式清理重试继续等待原资源，
+不重放读取之外的业务操作，也不新建连接掩盖旧连接未关闭。只读诊断消费 Repository 公共
+快照，不导入 feature 私有呈现、不另建统计缓存。
+
+迁移后删除 GUI 统计 bootstrap、常驻旧 topic、Client store/channel、旧 provider 和混合
+视图入口，以及旧 FRB 分支和孤儿生成物；Demo 与测试实现同一统计 port，不依赖旧链适配。
+新旧 API 转发、双写和失败回退均不属于目标架构。后续其他领域重构通过组合根与上述小型
+接口接线，不要求统计内部追随聚合 Client 或 Settings 的结构变化。

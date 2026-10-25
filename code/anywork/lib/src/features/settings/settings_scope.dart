@@ -10,7 +10,6 @@ import '../../presentation/providers/acp_auth_store.dart';
 import '../../presentation/providers/acp_install_store.dart';
 import '../../presentation/providers/lsp_store.dart';
 import '../../presentation/providers/mcp_store.dart';
-import '../../presentation/providers/model_performance_store.dart';
 import '../../presentation/providers/provider_usage_store.dart';
 import '../../presentation/providers/recovery_store.dart';
 import '../../presentation/providers/settings_store.dart';
@@ -83,9 +82,6 @@ final settingsTopicSyncProvider = Provider.autoDispose
         ),
         AcpInstallTopic() => ref.watch(
           acpInstallStateProvider.select((state) => state.sync),
-        ),
-        ModelPerformanceTopic() => ref.watch(
-          modelPerformanceStoreProvider.select((state) => state.sync),
         ),
         BotsTopic() => ref.watch(
           botsStoreProvider.select((state) => state.sync),

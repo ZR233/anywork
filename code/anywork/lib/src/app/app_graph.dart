@@ -1,9 +1,13 @@
 import 'package:anywork_client/studio_client.dart';
+import 'package:anywork_client/statistics.dart';
+import 'package:anywork_client/statistics_ports.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter/foundation.dart';
 
 import '../infrastructure/frb/studio_api.dart';
 import '../infrastructure/frb/studio_update_api.dart';
+import '../infrastructure/frb/statistics/frb_statistics_feed.dart';
+import '../infrastructure/demo/statistics/demo_statistics_feed.dart';
 import '../platform/clipboard_image_reader.dart';
 import '../platform/studio_platform.dart';
 import '../platform/error_log.dart';
@@ -14,6 +18,7 @@ import '../presentation/view_models/timeline_session_owner.dart';
 class AppGraph {
   AppGraph({
     required StudioTransport transport,
+    required StatisticsFeedPort statisticsFeed,
     String? clientId,
     StudioUpdateApi? updateApi,
     bool updatesEnabled = false,
@@ -37,12 +42,18 @@ class AppGraph {
         staged.remove(path);
       },
     );
+    statisticsRepository = createStatisticsRepository(
+      feed: statisticsFeed,
+      budget: client.budget,
+      owner: client.clientId,
+    );
     client.updates.attach();
     timeline = TimelineSessionOwner(client: client);
   }
 
   factory AppGraph.production() => AppGraph(
     transport: FrbStudioTransport(),
+    statisticsFeed: const FrbStatisticsFeedPort(),
     updateApi: const FrbStudioUpdateApi(),
     updatesEnabled:
         isWindowsPlatform &&
@@ -54,6 +65,7 @@ class AppGraph {
     transport: driver
         ? DriverDemoStudioTransport(lspActivityLoop: true)
         : DemoStudioTransport(lspActivityLoop: true),
+    statisticsFeed: DemoStatisticsFeedPort(),
   );
 
   ValueListenable<StudioStartupPhase> get startupProgress =>
@@ -81,6 +93,7 @@ class AppGraph {
   }
 
   late final AnyworkClient client;
+  late final StatisticsRepository statisticsRepository;
   late final TimelineSessionOwner timeline;
   Future<CloseReport>? _closing;
 
@@ -95,7 +108,12 @@ class AppGraph {
   Future<CloseReport> _close(DateTime deadline) async {
     final timelineClose = timeline.close(deadline: deadline);
     final clientClose = client.close(deadline: deadline);
-    final reports = await Future.wait([timelineClose, clientClose]);
+    final statisticsClose = statisticsRepository.close(deadline: deadline);
+    final reports = await Future.wait([
+      timelineClose,
+      clientClose,
+      statisticsClose,
+    ]);
     return CloseReport(
       unresolved: [for (final report in reports) ...report.unresolved],
     );

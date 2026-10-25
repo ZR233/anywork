@@ -30,8 +30,6 @@ ProductTopicEventPayload _productPayloadFromFrb(
       ThreadModeCatalogChangedPayload(_threadModeCatalogFromFrb(field0)),
     frb.BridgeProductEventPayload_AccountUsageStateChanged(:final field0) =>
       AccountUsageStateChangedPayload(_accountUsageStateFromFrb(field0)),
-    frb.BridgeProductEventPayload_ModelPerformanceStateChanged(:final field0) =>
-      ModelPerformanceStateChangedPayload(_modelPerformanceFromFrb(field0)),
     frb.BridgeProductEventPayload_SessionCostsChanged(:final field0) =>
       SessionCostsChangedPayload(_sessionCostsStateFromFrb(field0)),
     frb.BridgeProductEventPayload_UpdaterStateChanged(:final field0) =>
@@ -121,8 +119,6 @@ ProductTopic _productTopicFromBridge(frb_topic_types.BridgeProductTopic topic) {
       const ThreadModeCatalogTopic(),
     frb_topic_types.BridgeProductTopic_AccountUsage() =>
       const AccountUsageTopic(),
-    frb_topic_types.BridgeProductTopic_ModelPerformance() =>
-      const ModelPerformanceTopic(),
     frb_topic_types.BridgeProductTopic_SessionCosts(:final rootThreadId) =>
       SessionCostsTopic(rootThreadId: rootThreadId),
     frb_topic_types.BridgeProductTopic_Updater() => const UpdaterTopic(),
@@ -162,8 +158,6 @@ ProductTopic _productPayloadTopicFromBridge(
       const ThreadModeCatalogTopic(),
     frb.BridgeProductEventPayload_AccountUsageStateChanged() =>
       const AccountUsageTopic(),
-    frb.BridgeProductEventPayload_ModelPerformanceStateChanged() =>
-      const ModelPerformanceTopic(),
     frb.BridgeProductEventPayload_SessionCostsChanged(:final field0) =>
       SessionCostsTopic(rootThreadId: field0.rootThreadId),
     frb.BridgeProductEventPayload_UpdaterStateChanged() => const UpdaterTopic(),
@@ -202,8 +196,6 @@ frb_topic_types.BridgeProductTopic bridgeProductTopic(ProductTopic topic) {
       const frb_topic_types.BridgeProductTopic.threadModeCatalog(),
     AccountUsageTopic() =>
       const frb_topic_types.BridgeProductTopic.accountUsage(),
-    ModelPerformanceTopic() =>
-      const frb_topic_types.BridgeProductTopic.modelPerformance(),
     SessionCostsTopic(:final rootThreadId) =>
       frb_topic_types.BridgeProductTopic.sessionCosts(
         rootThreadId: rootThreadId,
@@ -249,8 +241,6 @@ ProductTopicBaselineState _productBaselineFromFrb(
       ThreadModeCatalogBaseline(_threadModeCatalogFromFrb(field0)),
     frb_topic_types.BridgeProductBaseline_AccountUsage(:final field0) =>
       AccountUsageBaseline(_accountUsageStateFromFrb(field0)),
-    frb_topic_types.BridgeProductBaseline_ModelPerformance(:final field0) =>
-      ModelPerformanceBaseline(_modelPerformanceFromFrb(field0)),
     frb_topic_types.BridgeProductBaseline_SessionCosts(:final field0) =>
       SessionCostsBaseline(_sessionCostsStateFromFrb(field0)),
     frb_topic_types.BridgeProductBaseline_Updater(:final field0) =>
@@ -428,7 +418,6 @@ StudioBootstrap studioBootstrapFromFrbSnapshot(
     },
     threadModeCatalog: _threadModeCatalogFromFrb(value.threadModeCatalog),
     accountUsageState: _accountUsageStateFromFrb(value.accountUsage),
-    modelPerformance: _modelPerformanceFromFrb(value.modelPerformance),
     updaterState: updaterStateFromFrb(value.updater),
     persistenceState: _persistenceStateFromFrb(value.persistence),
     persistenceQueueState: _persistenceQueueStateFromFrb(
@@ -1187,73 +1176,6 @@ AccountUsageStateSnapshot _accountUsageStateFromFrb(
       frb.BridgeAccountUsageStateSnapshot_Stopped(:final field0) =>
         _stoppedResource(field0),
     },
-  );
-}
-
-ModelPerformanceSnapshotView _modelPerformanceFromFrb(
-  frb.BridgeModelPerformanceSnapshot value,
-) {
-  final updatedAt = value.updatedAt.toInt();
-  return ModelPerformanceSnapshotView(
-    revision: value.revision.toInt(),
-    updatedAt: updatedAt == 0 ? null : _dateFromUnix(value.updatedAt),
-    statisticsPending: value.statisticsPending,
-    statisticsGap: value.statisticsGap,
-    readFailed: value.readFailed,
-    summaries: [
-      for (final summary in value.summaries)
-        ModelPerformanceSummaryView(
-          accountId: summary.accountId,
-          accountDisplayName: summary.accountDisplayName,
-          modelId: summary.modelId,
-          sampleCount: summary.sampleCount.toInt(),
-          completionTokens: summary.completionTokens.toInt(),
-          totalTtftMillis: summary.totalTtftMillis.toInt(),
-          ttftSampleCount: summary.ttftSampleCount.toInt(),
-          totalResponseMillis: summary.totalResponseMillis.toInt(),
-          tokensPerSecond: summary.tokensPerSecond,
-          averageTtftMillis: summary.averageTtftMillis,
-          averageResponseMillis: summary.averageResponseMillis,
-          effortBreakdowns: [
-            for (final effort in summary.effortBreakdowns)
-              ModelPerformanceEffortSummaryView(
-                effort: effort.effort,
-                sampleCount: effort.sampleCount.toInt(),
-                completionTokens: effort.completionTokens.toInt(),
-                totalTtftMillis: effort.totalTtftMillis.toInt(),
-                ttftSampleCount: effort.ttftSampleCount.toInt(),
-                totalResponseMillis: effort.totalResponseMillis.toInt(),
-                tokensPerSecond: effort.tokensPerSecond,
-                averageTtftMillis: effort.averageTtftMillis,
-                averageResponseMillis: effort.averageResponseMillis,
-              ),
-          ],
-        ),
-    ],
-    history: [
-      for (final sample in value.history)
-        ModelPerformanceSampleView(
-          completedAt: _dateFromUnix(sample.completedAt),
-          accountId: sample.accountId,
-          accountDisplayName: sample.accountDisplayName,
-          modelId: sample.modelId,
-          sentModel: sample.sentModel,
-          reportedModel: sample.reportedModel,
-          modelMatchState: switch (sample.modelMatchState) {
-            frb.BridgeModelMatchState.matched => ModelMatchState.matched,
-            frb.BridgeModelMatchState.mismatched => ModelMatchState.mismatched,
-            frb.BridgeModelMatchState.unreported => ModelMatchState.unreported,
-            frb.BridgeModelMatchState.legacyUnknown =>
-              ModelMatchState.legacyUnknown,
-          },
-          effort: sample.effort,
-          completionTokens: sample.completionTokens.toInt(),
-          ttftMillis: sample.ttftMillis?.toInt(),
-          decodeMillis: sample.decodeMillis?.toInt(),
-          totalResponseMillis: sample.totalResponseMillis?.toInt(),
-          tokensPerSecond: sample.tokensPerSecond,
-        ),
-    ],
   );
 }
 

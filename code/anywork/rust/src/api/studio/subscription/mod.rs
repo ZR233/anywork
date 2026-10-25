@@ -33,6 +33,9 @@ use tokio_util::sync::CancellationToken;
 
 use crate::api::studio::bridge_runtime::current_bridge;
 use crate::api::studio::handlers::StartupFrame;
+use crate::api::studio::statistics::{
+    BridgeStatisticsFeedInner, PendingStatisticsFeedCancellation, StatisticsFeedRegistry,
+};
 use crate::api::studio::types::{
     BridgeError, BridgeProductTopicStreamEnvelope, BridgeShutdownIssue,
     BridgeThreadSubscriptionUpdate,
@@ -345,6 +348,7 @@ pub(crate) struct BridgeTaskRegistry {
     /// a confirmed clean stop, and never form an `Arc` cycle because the owned tasks capture only
     /// tokens/receivers, not this inner.
     subscriptions: Mutex<HashMap<u64, Arc<BridgeSubscriptionInner>>>,
+    statistics_feeds: StatisticsFeedRegistry,
 }
 
 /// Live bridge-owned content subscriptions captured by the broadcast phase and joined later within
@@ -352,6 +356,7 @@ pub(crate) struct BridgeTaskRegistry {
 pub(crate) struct PendingSubscriptionCancellation {
     owners: Vec<Arc<BridgeSubscriptionInner>>,
     issues: Vec<BridgeShutdownIssue>,
+    statistics: PendingStatisticsFeedCancellation,
 }
 
 impl BridgeTaskRegistry {
@@ -359,6 +364,7 @@ impl BridgeTaskRegistry {
         Self {
             next_id: AtomicU64::new(1),
             subscriptions: Mutex::new(HashMap::new()),
+            statistics_feeds: StatisticsFeedRegistry::new(),
         }
     }
 
@@ -383,6 +389,18 @@ impl BridgeTaskRegistry {
         {
             subscriptions.remove(&id);
         }
+    }
+
+    pub(crate) async fn register_statistics_feed(
+        &self,
+        inner: &Arc<BridgeStatisticsFeedInner>,
+        shutdown: &CancellationToken,
+    ) -> Result<(), BridgeError> {
+        self.statistics_feeds.register(inner, shutdown).await
+    }
+
+    pub(crate) async fn unregister_statistics_feed(&self, id: u64) {
+        self.statistics_feeds.unregister(id).await;
     }
 
     /// Signals every registered, bridge-owned content subscription **without joining** any of them.
@@ -426,9 +444,11 @@ impl BridgeTaskRegistry {
         for subscription in &subscriptions {
             subscription.signal_cancel();
         }
+        let statistics = self.statistics_feeds.broadcast_cancel(deadline).await;
         PendingSubscriptionCancellation {
             owners: subscriptions,
             issues,
+            statistics,
         }
     }
 
@@ -441,7 +461,25 @@ impl BridgeTaskRegistry {
         pending: PendingSubscriptionCancellation,
         deadline: Instant,
     ) -> Vec<BridgeShutdownIssue> {
-        let PendingSubscriptionCancellation { owners, mut issues } = pending;
+        let PendingSubscriptionCancellation {
+            owners,
+            issues,
+            statistics,
+        } = pending;
+        let (mut subscription_issues, statistics_issues) = tokio::join!(
+            self.join_subscription_cancellations(owners, issues, deadline),
+            self.statistics_feeds.join_cancelled(statistics, deadline),
+        );
+        subscription_issues.extend(statistics_issues);
+        subscription_issues
+    }
+
+    async fn join_subscription_cancellations(
+        &self,
+        owners: Vec<Arc<BridgeSubscriptionInner>>,
+        mut issues: Vec<BridgeShutdownIssue>,
+        deadline: Instant,
+    ) -> Vec<BridgeShutdownIssue> {
         // Wait on every owner **concurrently** within the same first deadline: a slow owner must not
         // consume the budget before the remaining owners are observed. Each owner keeps its strong
         // registry entry until it really stops, so a timeout only abandons that wait.
@@ -491,7 +529,7 @@ impl BridgeTaskRegistry {
         issues
     }
 
-    fn next_id(&self) -> u64 {
+    pub(crate) fn next_id(&self) -> u64 {
         self.next_id.fetch_add(1, Ordering::Relaxed)
     }
 }

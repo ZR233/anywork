@@ -1,8 +1,11 @@
+import 'support/test_statistics_feed.dart';
+
 import 'dart:async';
 
 import 'package:anywork/src/app/anywork_app.dart';
 import 'package:anywork/src/app/app_graph.dart';
 import 'package:anywork/src/app/studio_host_lifecycle.dart';
+import 'package:anywork/src/features/settings/statistics/view_models/statistics_repository_provider.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
 import 'package:anywork/src/platform/host_app_icons.dart';
 import 'package:anywork/src/shared/studio_driver_keys.dart';
@@ -20,6 +23,7 @@ void main() {
     (tester) async {
       final transport = _RouteTurnTransport();
       final graph = AppGraph(
+        statisticsFeed: const TestStatisticsFeedPort(),
         transport: transport,
         clientId: 'route-draft-owner',
       );
@@ -69,7 +73,12 @@ void main() {
 
       await tester.pumpWidget(
         ProviderScope(
-          overrides: [appGraphProvider.overrideWithValue(graph)],
+          overrides: [
+            appGraphProvider.overrideWithValue(graph),
+            statisticsRepositoryProvider.overrideWithValue(
+              graph.statisticsRepository,
+            ),
+          ],
           child: const AnyworkApp(),
         ),
       );

@@ -147,7 +147,6 @@ class StudioChannels {
       ),
       ThreadModeCatalogTopic() => _clock(_client.modeCatalog.state),
       AccountUsageTopic() => _clock(_client.accountUsage.state),
-      ModelPerformanceTopic() => _clock(_client.modelPerformance.state),
       SessionCostsTopic(:final rootThreadId) => _clock(
         _client.existingSessionCosts(rootThreadId)?.state,
       ),
@@ -203,8 +202,6 @@ class StudioChannels {
         _client.modeCatalog.apply(state);
       case AccountUsageBaseline(:final state):
         _client.accountUsage.apply(state);
-      case ModelPerformanceBaseline(:final state):
-        _client.modelPerformance.apply(state);
       case SessionCostsBaseline(:final state):
         _client.existingSessionCosts(state.rootThreadId)?.apply(state);
       case UpdaterBaseline(:final state):
@@ -261,8 +258,6 @@ class StudioChannels {
         _client.modeCatalog.apply(state);
       case AccountUsageStateChangedPayload(:final state):
         _client.accountUsage.apply(state);
-      case ModelPerformanceStateChangedPayload(:final state):
-        _client.modelPerformance.apply(state);
       case SessionCostsChangedPayload(:final state):
         _client.existingSessionCosts(state.rootThreadId)?.apply(state);
       case UpdaterStateChangedPayload(:final state):
@@ -308,8 +303,6 @@ class StudioChannels {
         _client.modeCatalog.applyTransport(sync);
       case AccountUsageTopic():
         _client.accountUsage.applyTransport(sync);
-      case ModelPerformanceTopic():
-        _client.modelPerformance.applyTransport(sync);
       case SessionCostsTopic(:final rootThreadId):
         _client.existingSessionCosts(rootThreadId)?.applyTransport(sync);
       case UpdaterTopic():
@@ -374,7 +367,6 @@ int? _incomingRevision(ProductTopicFrame frame) {
         SkillsBaseline(:final state) => state.revision,
         ThreadModeCatalogBaseline(:final state) => state.revision,
         AccountUsageBaseline(:final state) => state.revision,
-        ModelPerformanceBaseline(:final state) => state.revision,
         SessionCostsBaseline(:final state) => state.revision,
         UpdaterBaseline(:final state) => state.revision,
         PersistenceBaseline(:final state) => state.revision,
@@ -397,7 +389,6 @@ int? _incomingRevision(ProductTopicFrame frame) {
       SkillsStateChangedPayload(:final state) => state.revision,
       ThreadModeCatalogChangedPayload(:final state) => state.revision,
       AccountUsageStateChangedPayload(:final state) => state.revision,
-      ModelPerformanceStateChangedPayload(:final state) => state.revision,
       SessionCostsChangedPayload(:final state) => state.revision,
       UpdaterStateChangedPayload(:final state) => state.revision,
       PersistenceStateChangedPayload(:final state) => state.revision,

@@ -1,3 +1,5 @@
+import 'support/test_statistics_feed.dart';
+
 import 'dart:async';
 
 import 'package:anywork/src/app/app_graph.dart';
@@ -18,7 +20,11 @@ void main() {
     'closing the selected thread does not reopen content from shell',
     (tester) async {
       final transport = RecordingDemoTransport();
-      final graph = AppGraph(transport: transport, clientId: 'closing-shell');
+      final graph = AppGraph(
+        statisticsFeed: const TestStatisticsFeedPort(),
+        transport: transport,
+        clientId: 'closing-shell',
+      );
       addTearDown(() async {
         await tester.pumpWidget(const SizedBox.shrink());
         await pumpClientFuture(
@@ -82,6 +88,7 @@ void main() {
     (tester) async {
       final transport = _DirectoryFailureTransport();
       final graph = AppGraph(
+        statisticsFeed: const TestStatisticsFeedPort(),
         transport: transport,
         clientId: 'directory-recovery',
       );
