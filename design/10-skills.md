@@ -1,86 +1,43 @@
-# 10 - 项目级 Skills
+# 10 - 项目级技能（Skills）
 
 ## 10.1 目标与所有权
 
-Skills 是可复用的任务知识文档，供 agent 在需要时按需读取。pl-tool 的 skill 模块提供与来源
-无关的 Provider、注册表、固定来源的发现能力和不可变 catalog；Studio 只拥有进程级 Provider 注册
-表、项目 catalog 投影与系统资源目录。系统默认只把自学习产物写入当前项目，避免把项目经验
-污染到用户全局配置。当前不实现在线 Hub、安装市场、文件 watcher、平铺 `<name>.md` 或用户级
-自动写入。
+技能（Skills）是供智能体在执行任务期间按需查阅的可复用领域知识文档。职责边界划分如下：
+- **`pl-tool` 技能模块**：提供与底层存储来源无关的技能提供方接口（`SkillProvider`）、注册表、固定来源集合的扫描发现能力、不可变技能目录（catalog）以及统一的召回评分算法。
+- **`pl-skill-core`**：统一负责 `SKILL.md` 前置元数据（YAML frontmatter）解析、正文与支持文件读取路径校验。
+- **Studio 产品宿主**：维护进程级提供方注册表、项目级目录投影以及内置系统技能资源目录。
 
-默认能力闭环为：发现本地与远端项目 skills；向模型注入简短索引；通过工具读取完整 skill 或
-支持文件；通过工具创建、修补和删除项目级 skill；每轮结束后由后台 reviewer 自动沉淀可复用
-经验。
+系统默认仅将自动沉淀的自学习技能写入当前项目目录，避免将单个项目的局部经验污染至用户全局配置。当前版本不设在线技能市场、文件监听器（watcher）、平铺 `<name>.md` 格式或用户级目录自动写入。
 
-来源注册、发现能力与 catalog 构造和 Skill 工具安装是公共产品宿主能力，不是 Studio 私有实现细节。
-产品可能从容器 sidecar、只读 Review revision、产品缓存或其他 durable 资源得到 Skill 根；
-这些资源的准备和生命周期属于产品，但 SKILL.md 解析、winner 选择、冻结 generation、正文与
-支持文件读取、激活事实和模型工具语义必须由 PL 统一拥有。任意工具宿主必须能够注册产品拥有的
-Skill source、在一次 Turn 前冻结发现来源和准备期 catalog，并把准备期 catalog 用于用户显式
-调用与模型索引；普通 Skill 工具在相同来源内按调用重新发现。Provider 的 locator 与读取责任
-不得被强制收回 Studio，也不得要求产品
-通过 JSON 或兼容适配层重建 PL Skill。`Project` 是 winner 排序与产品语义，不代表该 Skill 一定
-位于默认项目目录，也不授权 PL 向默认目录写入另一个 Provider 的状态；产品提供的 Review
-revision、容器卷或缓存快照可以标记为 Project，但仍保持只读；成功激活后的使用统计若存在，
-必须由持有冻结 locator 的 Provider 在自己的信任根内处理。本文约束功能语义而不锁定具体
-Rust 接口。
+默认能力闭环包括：扫描本地与 SSH 远程项目技能 → 向模型系统提示词注入精简索引 → 按需通过工具或 `/name` 手势加载完整技能文档及支持文件 → 通过管理工具在项目目录内增删改查技能 → 每轮根会话结束后由后台审查智能体自动提炼可复用经验。
 
-## 10.2 目录与优先级
+技能来源注册、目录构造与工具装配是通用的产品宿主能力：外部产品宿主可从容器边车（sidecar）、只读代码审查快照或持久化缓存中挂载自定义 `SkillProvider`，在轮次开始前冻结发现来源与准备期目录，并交由底层统一完成同名胜出裁决（winner selection）、激活记录与工具调用；宿主标记为 `Project` 来源的只读快照仍保持只读，使用统计（若启用）由持有冻结定位符（locator）的提供方在自身信任边界内处理。
 
-运行时按以下优先级发现 skills：
+## 10.2 目录层级与同名覆盖优先级
 
-1. 项目目录：`<workspace_root>/.agents/skills/`
-2. 配置用户目录：`[skills].user_dir`，默认 `~/.anywork/skills/`
-3. Agents 兼容用户目录：Linux `$HOME/.agents/skills/`、Windows `%USERPROFILE%\.agents\skills\`
-4. Studio 系统目录：`<studio_home>/studio/skills/.system/`
-5. 配置里的外部目录：`[skills].external_dirs`
+运行时按以下优先级从高到低扫描发现技能：
 
-这些目录由默认文件系统 Provider 映射为带不透明 locator 的候选。Provider 可以并行发现，重名
-winner 依次按来源 rank、Provider 注册顺序和 Provider 本地顺序确定；同名 skill 只保留最高
-优先级来源。显式配置的用户目录优先于 Agents 兼容目录，两者都标记为 User 来源；若两者解析为
-同一路径，只扫描一次。项目目录是唯一写入目标；用户目录、系统目录和外部目录仅参与只读发现。
-模型尝试修改非项目来源的 skill 时，工具必须拒绝原地修改，并提示在项目目录创建同名项目覆盖
-或新建项目 skill。
+1. **项目目录**：`<workspace_root>/.agents/skills/`（通过 `[skills].project_dir` 配置相对路径，默认 `.agents/skills`，解析后必须位于工作区根目录内部）。
+2. **配置用户目录**：`[skills].user_dir`（默认 `~/.anywork/skills/`）。
+3. **兼容用户目录**：Linux 下为 `$HOME/.agents/skills/`，Windows 下为 `%USERPROFILE%\.agents\skills\`。
+4. **Studio 系统内置目录**：`<studio_home>/studio/skills/.system/`。
+5. **外部附加目录**：`[skills].external_dirs`。
 
-`[skills].project_dir` 是相对工作区根目录的路径，默认 `.agents/skills`；解析后必须位于
-workspace_root 内。显式配置的其他相对目录继续按配置使用，运行时不自动搬迁旧目录。
+各目录由默认文件系统提供方映射为携带不透明定位符的候选技能，支持并行扫描；当出现同名技能时，严格按「来源优先级顺序 → 提供方注册顺序 → 提供方内部字典序」决定唯一胜出者（winner）。显式配置的用户目录优先于兼容用户目录（两者均标记为 `User` 来源；若指向同一物理路径则仅扫描一次）。**项目目录是唯一的技能写入目标**，其余四类目录均为只读来源；当模型尝试修改非项目来源的技能时，`skill_manage` 工具直接拒绝原地修改，并提示在项目目录下创建同名覆盖技能或新建项目技能。
 
-项目 skills 路径按主机文件边界处理：项目目录、skill 目录、`SKILL.md`、支持文件和使用统计的
-已有祖先都不能是 symbolic link 或 Windows reparse point。发现和支持文件索引跳过链接入口；
-`skill_view` 与 `skill_manage` 直接访问链接时拒绝。删除 skill 时，skill 子树内的链接只删除
-入口，不能递归进入或修改其目标。用户、系统和显式 external source 仍是只读来源，但其内部
-发现同样不跟随链接。
+所有技能路径均严格执行安全边界校验：项目目录、技能子目录、`SKILL.md`、支持文件及使用统计文件的任意祖先路径均禁止为符号链接（symlink）或 Windows 重解析点（reparse point）。目录扫描与支持文件索引自动跳过链接入口，`skill_view` 与 `skill_manage` 直接访问链接时明确拒绝；删除项目技能时，若子树内存在符号链接，仅删除链接本身而不递归进入目标目录。
 
-### 预置系统 Skills
+### 预置系统技能
 
-Studio 预置 skills 归 pl-studio-runtime 所有，canonical 内容检入其源码树（assets/skills），
-分两类来源：
+Studio 预置系统技能归属 `pl-studio-runtime`，规范源码检入仓库 `code/pl-studio-runtime/assets/skills/` 目录，分为两类来源：
+- **仓库原创技能**（`skill-creator`、`studio-config`、`subagent-workflow`）：直接在源码树中维护（其中 `studio-config` 为 `anywork` 配置指南，随 [20](./20-config.md) 同步维护）。
+- **上游同步技能**（`canvas-design`、`docx`、`frontend-design`、`pdf`、`powerpoint`、`xlsx`）：通过仓库根目录的 `cargo xtask sync-skills` 命令从上游仓库浅拉取最新默认分支提交，校验 `SKILL.md` 前置元数据（`name` 与目录名一致且 `description` 非空）后整目录替换并提交进源码库，构建期绝不联网下载。上游技能许可证必须允许再分发（如 Apache-2.0、MIT），禁止预置限制再分发的专有许可技能；同步修订号与许可证声明记录于 `THIRD_PARTY_NOTICES.md`。
 
-- 仓库原创类（`skill-creator`、`studio-config`、`subagent-workflow`）直接检入源码树。
-- 上游同步类（`canvas-design`、`docx`、`frontend-design`、`pdf`、`powerpoint`、`xlsx`）由
-  仓库统一的同步命令手动同步：浅拉取上游默认分支最新提交，完全替换同名技能目录并提交进
-  源码库；源码库即 canonical 内容，构建期不访问网络。替换前校验每个选中技能存在
-  `SKILL.md` 且 frontmatter 的 name 与目录一致、description 非空；上游来源、最近同步
-  revision 与许可记录于第三方声明文件。同步命令的技能清单必须与运行时预期的系统技能清单
-  人工保持一致。上游同步类的许可必须允许再分发（Apache 2.0、MIT 等）；禁止再分发的专有
-  许可技能不得预置。
+`pl-studio-runtime` 将预置技能通过启用压缩与确定性时间戳的资源嵌入打包进二进制，并在每次 Studio 运行时启动时全量校验并解压重建至 `<studio_home>/studio/skills/.system/`（先在不跟随符号链接的前提下清理旧目录，写入同级暂存树后通过原子重命名发布；不使用版本号标记跳过重建，任一步失败则运行时拒绝进入就绪态）。配置项 `[skills.system].enabled` 仅控制该系统目录是否参与技能发现，不影响启动期的资源解压重建。
 
-每个预置 skill 以独立目录保存，主文件仍为 `SKILL.md`；pl-studio-runtime 通过启用压缩与
-确定性时间戳的资源嵌入把技能打进所有构建模式，并在每次 Studio 运行时启动时把完整资源树重建
-到 `<studio_home>/studio/skills/.system/`。缓存目录由 Pure 管理，不是源码，用户不应手动编辑；
-若需要覆盖系统 skill，应在项目目录创建同名 skill。
+## 10.3 技能定义格式
 
-启动刷新先完整验证嵌入路径与全部 `SKILL.md`，再以不跟随 symbolic link 或 Windows reparse
-point 的方式删除旧目标，在同一父目录写入暂存树并通过 rename 发布。失败时 runtime 不进入
-ready，且不得暴露半成品目录。刷新不使用版本 marker，连续两次启动也必须全量重建；
-`[skills.system].enabled` 只控制系统来源是否参与发现，不控制资源刷新。
-
-anywork 配置指南系统 skill 名为 `studio-config`；配置契约及该 skill 的同步维护要求见
-[20](./20-config.md)。
-
-## 10.3 Skill 格式
-
-每个 skill 是一个目录，主文件固定为 `SKILL.md`，文件开头使用 YAML frontmatter：
+每个技能对应一个独立子目录，主文档文件名固定为 `SKILL.md`，顶部采用 YAML 前置元数据（frontmatter）：
 
 ```markdown
 ---
@@ -95,145 +52,51 @@ platforms: ["windows", "linux", "macos"]
 ...
 ```
 
-`name` 和 `description` 必填。`category`、`platforms`、`disable-model-invocation` 与
-`user-invocable` 可选；后两者分别默认 `false` 和 `true`，在核心模型中投影为正向
-model_invocable / user_invocable。调用策略字段类型无效时整个 skill 失败关闭并产生 warning。
-`platforms` 缺失表示所有平台可用。
+字段约束如下：
+- **必填字段**：`name` 与 `description`。
+- **可选字段**：`category`、`platforms`（省略表示全平台通用）、`disable-model-invocation`（默认 `false`）与 `user-invocable`（默认 `true`）。后两者在内部模型中映射为正向布尔标志 `model_invocable` 与 `user_invocable`；若调用策略字段类型非法，整个技能按失败关闭（fail-closed）跳过并生成告警。
+- **支持文件白名单目录**：技能附带的支持文件仅允许放置在 `references/`、`templates/`、`scripts/`、`assets/` 四个子目录下。工具读写支持文件时严格拦截路径穿越（`..`）及白名单目录之外的访问（上游同步技能若含其他子目录，虽随包解压但不可通过 `skill_view` 读取）。
 
-支持文件只允许放在 `references/`、`templates/`、`scripts/`、`assets/` 目录。工具读取和写入
-支持文件时必须拒绝 path traversal，并拒绝访问这些目录之外的文件。上游技能若包含白名单之外
-的目录，内容仍随技能完整物化，但 `skill_view` 无法把它们当作支持文件读取。
+## 10.4 技能工具契约
 
-## 10.4 工具
+默认技能工具集包含以下三个工具：
 
-默认工具集包含：
+- **`skills_list(category?, query?, limit?)`**：在当前工具装配固定的来源集合内重新扫描，列出已启用且允许模型调用（`model_invocable = true`）的技能简短索引。未传 `query` 时按名称字典序返回完整列表；传入 `query` 时先按 `category` 过滤，再调用统一召回评分器返回正分结果及截断标志。
+- **`skill_view(name, filePath?)`**：在固定来源集合内重新扫描并锁定胜出提供方（winner provider），读取完整 `SKILL.md`（省略 `filePath`、传空串、`.` 或 `SKILL.md` 均代表读取主文档）或四个白名单子目录下的支持文件。名称采用精确匹配，不支持模糊查找；工作模式（`Thread Mode`）不属于技能，禁止使用任何 `mode.` 前缀名称调用。
+- **`skill_manage(action, ...)`**：在项目技能目录（`<workspace_root>/<project_dir>/`）下执行 `create`、`patch`、`edit`、`delete`、`writeFile`、`removeFile` 操作。其中 `patch.oldString` 优先按 `SKILL.md` 字面量精确匹配；当字面量匹配失败且输入形如经过二次转义的 JSON 字符串片段时，运行时允许解码一层后再按相同唯一性规则匹配替换，以消除模型输出转义噪声。
 
-- `skills_list(category?, query?, limit?)`：重新发现后列出启用且允许模型调用的 skill 简短索引；无
-  query 时返回完整、按名称排序的 model-invocable catalog，有 query 时 category 先过滤，再
-  使用统一召回器返回正分结果和截断状态。
-- `skill_view(name, filePath?)`：重新发现后，通过本次调用冻结的 winner Provider 读取完整 `SKILL.md` 或支持
-  文件。省略 `filePath`、传空字符串、`.` 或 `SKILL.md` 都表示读取主文档；只有真正的支持文件
-  路径才必须位于四个支持目录下。始终保持精确名称语义，不接受模糊名称；项目 Skill 的使用
-  统计与 Thread Mode 无关，Thread Mode 不属于 Skill，也不能由该工具按需调用。
-- `skill_manage(action, ...)`：管理项目目录中的 skill，支持 create、patch、edit、delete、
-  writeFile、removeFile。所有写入都只作用于 `<workspace_root>/<project_dir>/`，并进入现有
-  工具审批流程。`patch.oldString` 首先按 `SKILL.md` 原文字面量匹配；完全匹配失败时，运行时
-  只允许把看起来像 JSON string fragment 的模型输出解码一层，再按同一匹配数量规则替换，避免
-  JSON/Markdown 二次转义噪声导致可恢复 patch 失败；不维护额外的手写转义替换表。
+### 扫描一致性与信任根边界
 
-`skills_list` 与 `skill_view` 每次调用都在工具装配时固定的来源内重新扫描，不以旧 catalog
-或通用只读工具缓存代替发现。完整的新观测立即反映技能新增、删除、格式失效、平台适用性与
-同名覆盖变化；确认缺失的目录是有效空结果，存在但类型错误的来源根不是空目录。单项格式
-错误保留 warning 并跳过，不阻断其他有效技能；I/O、Provider 故障或持续代次变化导致的
-不完整观测则使本次调用失败，不返回部分
-列表，也不回退到上次 winner。取消必须收束本次来源扫描，不能遗留无 owner 的后台扫描或
-让其结果影响下一次调用。删除仅影响当前目录，不删除用户文件或历史激活事实。
+`skills_list` 与 `skill_view` 每次执行时均在工具装配期固定的来源集合内实时重新扫描，不使用陈旧目录缓存替代，从而立即反映技能的新增、删除、修改或同名覆盖变化：
+- 确认不存在的目录视为合法的空集合；单项技能格式错误仅记录告警并跳过，不阻断其他合法技能；但若发生底层 I/O 错误、提供方故障或扫描期间代次连续变化导致观测不完整，则本次工具调用直接返回失败，不返回残缺列表或回退至旧版胜出者。
+- 单次 `skill_view` 在扫描完成后立即冻结目标候选者，主文档读取、支持文件读取与使用计数更新均在同一冻结提供方内完成（默认文件系统提供方仅对自己按标准工作区配置发现的可写项目技能更新 `.usage.json`）。
 
-一次 `skill_view` 在发现完成后固定 candidate，主文档、支持文件与使用记录共用同一个
-Provider。每次都重新加载正文，并重新校验名称和模型调用策略；candidate 的身份或权限在
-发现后变化时拒绝陈旧结果并使 Provider 失效。主文档
-响应只返回资源基底和按需读取说明，不递归枚举资源；支持文件由胜出 Provider 的资源读取实现，
-成功读取后的 Provider 专属 view 记录也委托给同一个冻结 Provider。默认文件系统 Provider 只为
-自己按标准 workspace 配置发现的可写 Project Skill 更新 `.usage.json`；宿主显式注册的目录
-视为只读快照，即使来源为 Project 也不写统计。必须保留"本次调用冻结 candidate 的 Provider 拥有
-副作用和信任根"这一功能语义。本合同不限制主文档或支持文件大小。
+## 10.5 提示词注入与确定性召回
 
-## 10.5 Prompt 注入与召回
+- **系统提示词索引注入**：当 `[skills].enabled = true` 时，核心轮次在基础系统指令与项目记忆之间注入所有允许模型调用的技能简短索引（仅含空白归一化后的 `name` 与截断至 500 个 Unicode 字符的 `description`，不含物理路径、优先级或正文）及调用规则，要求模型在任务匹配某项技能时必须先调用 `skill_view(name)` 阅读全文。当 `enabled = false` 时，同步关闭索引注入、技能工具注册与用户 `/name` 手势。
+- **轮次级候选召回（Turn Overlay）**：每个普通智能体轮次还会根据本轮原始用户输入文本，从冻结目录的 `name` 与完整 `description` 中确定性召回最多 **5 个**正分候选技能（排除本轮已由用户 `/name` 手势直接加载的技能），作为轮次级用户覆盖层（overlay）追加在稳定指令前缀之后。召回评分器是位于 `pl-tool` 技能模块内的共享纯函数，按「完整名称短语匹配 → 精确名称匹配 → 名称词项与前缀 → 描述词项与前缀 → 查询词覆盖率」依次加权计分，零分不返回，同分按名称字典序稳定排列；Studio 设置页搜索与 `skills_list(query)` 复用同一评分器。
+- **根智能体与子智能体共享视图**：根智能体与子智能体共用相同的技能工具入口与目录优先级。技能执行期间产生的中间文件、探针脚本与临时产物必须写入当前线程专属的会话文件目录（见 [17](./17-studio-storage.md)），严禁将只读的技能安装目录或进程默认工作目录当作输出目录。
 
-`[skills].enabled = true` 时，核心 turn 在 base instructions 与项目记忆之间注入允许模型调用
-的 skills 索引和使用规则。索引只包含空白规范化后的名称和 description，不包含路径、rank、
-Provider locator 或正文；description 只在模型目录投影时折叠空白并截断为 500 个 Unicode
-字符（catalog、Studio 与 Provider 仍保存完整 description）。任务明显匹配某个 skill 时，模型
-必须先调用 `skill_view(name)` 读取完整内容。`enabled = false` 同时关闭目录、工具和用户
-`/name` 手势；工具不可见时不得注入调用指引。
+## 10.6 技能激活、上下文压缩重置与界面投影
 
-每个普通 agent turn 还根据本轮原始文本，从冻结 catalog 的 name 与完整 description 中确定性
-召回最多 5 个候选，并将摘要作为 Turn 级 user overlay 追加在稳定 instructions 前缀之后。召回
-只考虑允许模型调用的普通 Skill，排除本轮已由用户手势直接加载的名称；无正分候选时不注入
-overlay。候选建议不读取正文、不激活 Skill，也不替代 `skill_view`；独立 compaction 不重新
-生成候选建议。
+### 激活方式与持久化扩展
 
-召回器是 pl-tool skill 模块的共享纯函数边界：query 与单个文档都有界截断，评分依次奖励完整
-name 短语、精确 name、name 词项与前缀、description 词项与前缀，再加命中 query 词项数的覆盖
-奖励；零分候选不返回，同分按名称稳定排序；Provider rank 只决定同名 winner，不能混入相关度
-分数。前端与调用方不复制评分器，非空 query 只消费后端排序结果。
+Studio 状态栏的技能指示器仅展示当前线程**已激活**的技能集合。技能激活有两种触发途径：
+1. **工具激活（`Tool { tool_call_id }`）**：当前线程内成功调用 `skill_view`。
+2. **用户手势激活（`UserGesture { invocation_id }`）**：用户输入文本中按空白边界精确匹配 `/name` 且该技能允许用户调用（`user_invocable = true`）。同一轮次内的同名手势按首次出现去重，保留原始用户输入文本，同时将与工具加载格式一致的 `<skill_content>` 包装块作为轮次级用户指令注入，并明确告知模型无需再次调用 `skill_view`（若匹配到的已确认可调用技能加载失败，则直接中止本轮请求准备）。
 
-root agent 和 subagent 使用同一工具入口，因此共享同一项目 skills 上下文和同一加载优先级。
-系统 skills 与用户/外部 skills 一样对 root 和 subagent 可见，但只读；模型如需沉淀新的项目
-经验，必须通过 `skill_manage` 写入项目目录。
+每次成功激活均记录为 `SkillActivated` 运行时事实，并投影为一条独立的终态技能时间线条目（`Skill Item`，其条目 ID 分别由 `Turn ID + tool_call_id` 或 `Turn ID + invocation_id` 确定性生成）。运行时快照中的当前已激活技能列表（`activeSkills`）由线程内持久化的 `pl.tool.skill-view` 扩展按名称去重排序派生；会话冷恢复直接读取同一检查点与日志，不扫描历史时间线条目。
 
-Skill 执行的中间文件、探针与未交付产物消费当前 Thread 的执行文件事实，位置与边界统一见
-[17](./17-studio-storage.md)；不能把只读 Skill 安装目录、资源目录或默认 cwd 当作输出目录。
-上游示例的 `out/`、相对文件名和系统临时路径只表达用法，应改传当前会话的实际输出路径，
-除非用户明确指定交付位置。该规则由系统提示词和原创技能说明，上游同步技能保持原文；
-可复用知识仍写项目 Skill，不把临时脚本、截图或一次性验收日志沉淀为 Skill 资产。
+当会话发生成功的**上下文压缩**（含自动阈值压缩、服务端超窗恢复压缩与手动压缩）时，在提交上下文替换的同一原子事务边界内清空 `pl.tool.skill-view` 激活扩展，`activeSkills` 随之归零，压缩后的新加载将重新累计（已写入 `history.sqlite` 的历史技能条目保持不变，且冷重开不会从压缩前的旧历史重新恢复已清空的激活状态）。在时间线展示中，技能条目与同轮相邻的推理思考、普通工具调用合并为统一的活动折叠组（见 [19](./19-studio-ui.md) §19.9 与 [26](./26-timeline-content.md)）。
 
-## 10.6 激活与投影
+### 设置页目录展示与轮次准备期冻结
 
-Studio 状态栏的 Skills 只展示当前 Thread 已激活的 skills。激活定义为该 Thread 中成功的
-`skill_view`，或直接用户输入中按空白边界精确匹配 `/name` 且该 skill 允许用户调用。用户手势
-按首次出现顺序去重，保留原始用户文本，并把与工具加载共用的规范 `<skill_content>` 包装作为
-Turn 级 user instruction 注入，同时明确提示模型无需再调用 `skill_view`。未知名称、路径、
-分数和用户调用已禁用的名称继续作为普通文本；已确认可调用 skill 的加载失败则终止 Turn
-准备。
+Studio 设置页的技能标签页直接读取已发布的项目技能目录缓存（展示调用策略、提供方来源、格式告警与完整性状态），进入页面不触发磁盘扫描，仅在点击显式刷新命令或每个新轮次准备阶段才执行强制扫描（若扫描结果与已发布目录完全一致则不递增目录修订号）。
 
-每次成功加载都由后端记录为 SkillActivated runtime fact，来源是带不变量的
-`Tool { tool_call_id }` 或 `UserGesture { invocation_id }`，并投影为独立、终态的 durable
-Skill Timeline Item；重复读取同一 skill 仍保留多条激活 Item，同一 Turn 同名用户手势只产生
-一次。Item ID 分别由 Turn ID 与 tool call ID、Turn ID 与用户 invocation ID 确定。
-历史 Skill Item 表达当时的加载事实，不等同于当前模型上下文仍持有的技能集合。
-runtime snapshot 的 activeSkills 由 Thread 内持久化的 `pl.tool.skill-view` 激活扩展派生，
-按名称去重排序；冷恢复消费同一 checkpoint 与 journal，不扫描历史 Item 或另设 activation 表。
-前端只消费 typed Skill Item 和 runtime snapshot，不解析工具输出 JSON。
+每个新轮次在准备阶段扫描完成后，立即冻结本轮的胜出技能列表、提供方定位符与目录修订号；工具装配同时绑定固定的工作区、技能配置、系统技能目录（必须由 Studio 显式传入，不从用户目录推导）及完整的提供方来源集合。`skill_manage` 写入成功后立即令内存注册表缓存失效，使同一轮次内的下一次 `skills_list` 或 `skill_view` 立即可见最新改动。
 
-成功的上下文压缩在提交上下文替换的同一原子边界清空这些激活扩展，activeSkills 随即为空，
-之后的成功加载重新累计。自动阈值压缩、容量恢复和手动压缩遵守相同规则；未触发、失败、
-取消或被拒绝的压缩，以及非压缩的上下文更新不清空。清空不删除历史 Skill 或工具 Item，
-也不影响技能目录与调用权限；删除事实随 checkpoint 与 journal 保留，重开不会从旧历史
-重新激活。该规则从后续成功压缩开始生效，不追溯删除现有会话记录。
+## 10.7 后台自学习（Auto-Learn）
 
-Timeline 将技能与相邻同轮思考、普通工具组成统一活动组。一次工具加载的 Skill 与原调用
-保留两份 canonical 身份，只合并其可见活动行；分组、配对、详情与半对呈现遵循
-[26](./26-timeline-content.md)，视觉规范见 [19](./19-studio-ui.md) §19.9。
-
-Studio 设置页的 Skills 标签页展示已发布的完整项目 catalog，包括调用策略、Provider、warning
-和完整性；进入标签页只读缓存，不访问文件系统，显式发现命令强制扫描。每个新代理 Turn 的
-准备阶段也强制扫描一次；完整 catalog 内容不变时不增加公开 revision。该列表不调用
-`skill_view`，不改变会话 active skills，也不写入使用统计。Studio 的非空搜索通过 runtime
-对已发布 catalog 执行同一召回器，返回 catalog revision、完整 Skill summaries 与截断状态；
-它不触发 discover、revision 变化或 activation。Studio 搜索包含全部普通 skills，Agent 与
-`skills_list` 调用方则先过滤为 model-invocable skills。
-
-注册表发现返回观测结构（候选列表、完整性、警告）：确认缺失的目录是完整空结果；单个格式
-错误产生 warning 并跳过；意外 I/O、Provider 暂时失败或发现期间代次连续变化产生不完整观测，
-代次变化时重试一次，再次变化则发布不完整观测。已有完整 catalog 时不完整结果保留 last-good
-并发布 Degraded；首次发现失败时该 Turn 不注入目录、不注册 Skill 工具，但普通任务仍可执行。
-
-每个新代理 Turn 在扫描后冻结准备期 winner、Provider locator 和 revision，用于提示索引、
-候选建议与用户显式加载。工具装配同时保留固定的 workspace、SkillsConfig、系统目录及完整
-Provider 来源集合，包括本次没有候选的来源。Skill catalog 的系统来源必须由 Studio 显式传入，
-不得从 `[skills].user_dir` 推导，非 Studio 调用不传系统目录。
-
-`skills_list` 与 `skill_view` 按 §10.4 在该固定来源集合内重新发现，每次使用调用自己的取消
-信号。来源能力与发现结果分离：文件增删不会引入后来注册的 Provider、新目录配置或其他
-workspace；远端发现继续持有原远端执行边界。Provider 必须声明进程内非秘密的完整来源能力
-身份，覆盖其实现、信任根与连接边界；不能只用名称或当前候选清单代替。工具授权身份由完整
-有序来源能力与固定配置决定，同源重装配保持稳定，不因内容扫描、取消或失效代次变化而撤销
-已冻结调用。来源或配置权限实质改变仍通过工具重新装配与现有撤销机制生效。每次查看按新
-candidate 重新校验调用策略，不能以旧列表结果授权读取旧 locator。
-
-工具调用的扫描结果不隐式发布 Settings revision、不重写准备期提示或历史工具输出。
-`skill_manage` 仍以准备期 catalog 校验目标并遵守 workspace 写权限，写入成功后使注册表失效，
-结果在同一 Turn 的下一次 list/view 即可见。system Skills 只在 Studio 运行时启动时全量刷新，
-不在项目 discover 时刷新，也不设置隐式 filesystem watcher。
-
-## 10.7 自学习
-
-root turn 完成并保存记录后，如果 `[skills].auto_learn = true`，后台启动 reviewer 复盘本轮
-对话。reviewer 只注册 skills 工具，不注册 shell、文件或 subagent 工具；该行为不按 Thread
-Mode 分支，也不拥有或推进 root workflow，workspace 写入和 Agent 协调仍由 root 对话负责。
-
-自学习默认写入项目目录。reviewer 优先修补本轮已读取的项目 skill，其次修补已有项目
-umbrella skill，最后才创建新的泛化 skill；不得修改系统、用户或外部 skill。系统 skill 给出
-通用指导而本轮产生项目特定经验时，应创建或更新项目 skill。reviewer 不应记录一次性任务、
-瞬时环境失败、负面工具断言或纯用户私密偏好。自学习失败只写日志，不影响用户 turn 的结果。
+当根会话轮次正常完成并可靠落盘后，若配置开启了 `[skills].auto_learn = true`，系统在后台派生一个独立的复盘审查任务（reviewer）回顾本轮对话：
+- **最小工具集与职责隔离**：自学习任务仅注册技能读写工具（`skills_list`、`skill_view`、`skill_manage`），不挂载终端命令、普通文件读写或子智能体派生工具；该机制不按工作模式分支，也不持有或推进根会话工作流。
+- **沉淀策略**：自学习产物仅写入当前项目的技能目录。复盘任务优先修补本轮已读取过的项目技能，其次修补项目内已有的综合（umbrella）技能，最后才创建新的泛化项目技能；严禁修改系统、用户或外部目录中的技能，且不记录一次性任务细节、瞬时环境故障、负面工具断言或纯个人隐私偏好。自学习过程若发生失败仅记录后台日志，不影响主会话已完成的轮次结果。

@@ -1,408 +1,136 @@
-# 25 - Client、前端状态与资源生命周期
+# 25 - 客户端、前端状态与资源生命周期
 
-Rust 持有业务事实；应用实例装配纯 Dart 领域资源；Riverpod 组织呈现；Widget 呈现并发出意图。
-统计领域采用本篇 §25.13 的独立 Repository、ViewModel 与纯 View 边界；其余领域继续使用
-现有 Client，不以局部迁移要求全应用同时重写，也不保留统计的旧 Client 兼容入口。
-本篇是客户端所有权、命令、草稿和导航的唯一权威契约。可靠历史与迁移见
-[17](./17-studio-storage.md)，版本化流见 [07](./07-streaming.md)，领域和关闭见
-[18](./18-studio-state.md)，呈现与阅读位置见 [19](./19-studio-ui.md)，验证边界见
-[24](./24-testing.md)。规范不把源码实现或纯 Dart 测试等同于真实 native 与平台验收。
+Rust 运行时持有业务权威事实；每个应用实例装配独立的纯 Dart 领域资源；`Riverpod` 负责组织呈现层观察；界面组件（Widget）负责渲染呈现与发出用户意图。其中，性能统计领域采用本文 [§25.13](#2513-独立统计领域与呈现模块) 的独立仓储（`StatisticsRepository`）、视图模型（`ViewModel`）与纯视图（`View`）边界；其余领域继续通过现有客户端（`anywork_client`）统一管理，既不因局部模块演进要求全应用同步重写，也不在统计领域保留旧版 Client 兼容入口。本文是客户端所有权、命令回执、输入草稿与页面导航的唯一权威契约。可靠历史与数据迁移见 [17](./17-studio-storage.md)，版本化流协议见 [07](./07-streaming.md)，领域状态与关闭编排见 [18](./18-studio-state.md)，界面呈现与阅读位置见 [19](./19-studio-ui.md)，测试与验收边界见 [24](./24-testing.md)。
 
-## 25.1 分层与应用实例
+## 25.1 分层架构与应用实例隔离
 
 ```mermaid
 flowchart LR
-  V[View] --> C[Connector / Riverpod]
-  C --> A[anywork_client 公共 API]
-  A --> P[Typed transport ports]
-  F[FRB adapter] -.实现.-> P
-  F --> R[Rust runtime / pl-core]
+  V["视图组件 (View)"] --> C["连接器 / Riverpod (Connector)"]
+  C --> A["anywork_client 公共 API"]
+  A --> P["类型化传输端口 (Transport Ports)"]
+  F["FRB 适配器 (Adapter)"] -.实现.-> P
+  F --> R["Rust 运行时 / pl-core"]
   R --> F
   A --> C
   C --> V
 ```
 
-上图描述现有 Client 领域，统计切片的独立依赖方向见 §25.13。
-`anywork_client` 的运行依赖只有 Dart SDK，不依赖 Flutter、Riverpod、FRB、Ref 或
-BuildContext。生成 DTO 和 native 句柄留在 adapter，Client 只消费 typed domain 契约。
-feature 不导入生成代码、adapter、transport 或 Client 私有实现。应用装配入口同时认识
-Client 与 adapter，其他层只认识各自的公共依赖。
+上图展示现有 Client 管辖领域的分层流向，统计领域的独立切片依赖方向见 [§25.13](#2513-独立统计领域与呈现模块)。`anywork_client` 的运行期依赖仅限 Dart SDK，不依赖 Flutter、`Riverpod`、FRB、`Ref` 或 `BuildContext`。FRB 生成的 DTO 与原生句柄封装在适配器（adapter）层内部，Client 仅消费类型化的领域契约；业务视图模块（`features/**`）不得导入生成代码、适配器、传输层或 Client 私有实现。唯有应用装配入口同时感知 Client 与适配器，其余各层仅依赖各自的公开契约。
 
-每个 AppGraph 创建自己的 Client、transport 订阅登记、read models、命令板、草稿和附件
-owner。禁止 module-level Client、业务 Map 和跨 ProviderContainer 共享的会话资源。
-原生库的进程初始化与宿主退出仍归 native host，不能借此共享两个 Client 的观察句柄或草稿。
-ProviderScope 借用注入的实例，只拥有自己的观察注册。
+每个应用实例（`AppGraph`）创建独立的 Client、传输层订阅登记表、只读模型（read model）、变更看板（`MutationBoard`）、输入草稿与附件所有者。严禁使用模块级全局 Client、全局业务字典或跨 `ProviderContainer` 共享的会话资源。原生动态库的进程级初始化与宿主退出仍归原生宿主管理，但不得借此在两个 Client 实例间共享观察句柄或草稿；`ProviderScope` 仅借用注入的实例并管理自身的观察注册。
 
-## 25.2 所有权与唯一写入
+## 25.2 状态所有权与唯一写入入口
 
-机器人领域同样由 Rust owner 持有业务事实，每 AppGraph 的 Client 独立拥有 `Bots` topic、
-read model、首配/查询/发送 actions 和未完成操作。Riverpod 只观察，离开设置页不关闭物理
-机器人，不清理当前聊天资源；注册取消是显式业务动作，退出须等待其真实收束。机器人
-配置 revision、领域 revision、查询尝试和发送 operation ID 不互相替代，完整契约见
-[27](./27-bots.md)。
+各领域事实与前端资源遵循严格的单一所有者与唯一写入入口约束（机器人领域同样由 Rust 所有者持有业务事实，每个 `AppGraph` 的 Client 独立持有 `Bots` 主题、只读模型、配对/查询/发送动作与未完成操作，离开设置页不关闭物理机器人连接，详见 [27](./27-bots.md)）：
 
-| 事实或资源 | 权威 owner | Dart owner / 唯一写入入口 | 身份与结束条件 |
+| 事实或前端资源 | 权威所有者 | Dart 侧所有者 / 唯一写入入口 | 身份标识与生命周期结束条件 |
 | --- | --- | --- | --- |
-| 项目、目录、配置、catalog、服务状态 | Rust 对应领域 | 各领域 read model reducer | 各自 ResourceStamp；领域关闭或应用退出 |
-| 模型统计汇总、effort 与历史 | Rust 统计 owner | 独立 StatisticsRepository reducer | owner/material 来源；可见需求与应用关闭，见 §25.13 |
-| Turn、activity、interaction、runtime、storage | Rust Thread | Client session 的状态 reducer | Thread 与 owner epoch；选择变化结束观察，不结束 Turn |
-| 正文、saved、terminal、omitted、字段变更 | Rust Session | 有界尾部 reducer、历史页与详情 query | 内容订阅 stamp；逻辑 demand 变化或退出 |
-| 当前项目、会话与 Settings 导航 | Client 本地意图 | Workspace / Selection controller | 选择身份；旧异步命令不能覆盖新选择 |
-| 输入、参数、route 与附件引用 | Client 草稿；受理后可靠附件由 Rust 持有 | Draft owner 与附件 ownership ledger | DraftStamp + OperationId；明确转移或放弃 |
-| 提交、pending overlay 与未知结果 | Rust mutation owner / Client operation owner | MutationBoard | OperationId 与目标 stamp；真实结果分别记录 |
-| Live/History 与已加载消息 | 当前展示 lease | InMemoryChatController 展示项及其成员 Listenable | ThreadId + 展示代次；显式回实时或切会话释放旧集合 |
-| 光标、composing、焦点、折叠与即时滚动几何 | Widget / UI controller | 局部 UI controller | draftId / reading generation；Widget dispose |
+| 项目、目录、配置、模型目录、服务状态 | Rust 对应领域所有者 | 各领域只读模型归约器（reducer） | 各自 `ResourceStamp`；领域关闭或应用退出 |
+| 模型统计汇总、推理强度（`effort`）细分与调用历史 | Rust 统计所有者 | 独立 `StatisticsRepository` 归约器 | 所有者／统计材料来源；绑定页面可见需求与应用关闭（见 [§25.13](#2513-独立统计领域与呈现模块)） |
+| 轮次、活动摘要、交互、运行时、存储状态 | Rust 会话（`Thread`）所有者 | Client 会话状态归约器 | 会话 ID 与 `owner epoch`；选择切换结束观察，不终止轮次 |
+| 时间线正文、落盘确认、终态、省略标记、字段变更 | Rust 会话（`Session`） | 有界尾部归约器、历史分页与详情查询 | 内容订阅戳；逻辑需求（demand）变化或应用退出 |
+| 当前选中项目、会话与设置导航 | Client 本地导航意图 | 工作区与选择控制器（Selection controller） | 选择身份；旧异步命令结果不得覆盖较新的选择意图 |
+| 输入文本、参数、路由与附件引用 | Client 草稿（受理后可靠附件归 Rust） | 草稿所有者与附件所有权账本（ownership ledger） | `DraftStamp + OperationId`；所有权明确转移或显式放弃 |
+| 命令提交、待确认覆盖层（pending overlay）与未知结果 | Rust 变更所有者 / Client 操作所有者 | `MutationBoard` | `OperationId` 与目标资源戳；真实结果按操作独立记录 |
+| 实时/历史模式（Live/History）与已加载消息集合 | 当前展示租约（display lease） | `InMemoryChatController` 展示项及成员 `Listenable` | `ThreadId + 展示代次`；显式回到实时或切换会话时释放旧集合 |
+| 光标、输入法组词（composing）、焦点、折叠态与滚动几何 | 组件 / 局部 UI 控制器 | 局部 UI 控制器 | `draftId` 或阅读代次；组件销毁（dispose）时释放 |
 
-同一 canonical 资源只有一个 reducer。命令响应若携带该资源的权威 snapshot，进入同一个
-reducer；命令状态和 overlay 不成为第二份 canonical。bootstrap 只负责启动恢复，不能在
-命令成功后读取聚合状态掩盖缺帧。Demo 分领域发布 baseline/frame，不能把生产缺帧通过
-本地成功回读补齐。可靠历史、SQLite、checkpoint 和 writer 始终由 Rust 持有。
-Demo 的模式目录同样由独立、带版本的 catalog baseline 交付，组件不以本地默认列表补全缺失的能力。
+同一权威资源仅设一个归约器（reducer）。命令响应若携带该资源的权威快照，直接进入同一个归约器；命令待确认状态与覆盖层不构成第二份权威状态。引导快照（bootstrap）仅负责启动初始化恢复，严禁在普通命令成功后通过重读聚合状态来掩盖缺帧。演示模式（demo）同样按领域发布带版本的基线与增量帧，不在组件层用本地默认列表补全缺失数据。
 
-启动的 loading、ready 与 typed failure 由 Client 持有并供只读观察。应用生命周期调用一次
-bootstrap；目录与 catalog 均就绪后才显示可用 shell。首个 baseline 前的失败也必须显示其
-typed code 与 correlation，不能困在 Widget 的局部等待标志里。显式重试复用同一 Client，
-清除失败尝试后重新启动；路由重建和普通查询不自动重试启动。
-启动成功后，目录观察失败保留最后有效目录与可用 shell，并显示该领域的显式重试入口；不能
-退回无操作的启动页。Thread 状态流的同步状态与 ChatUiState 分别属于各自观察通道；正文
-重连或预算阻塞不污染 runtime 同步状态，正文恢复也不能把仍失败的 runtime 标成 ready。
+启动阶段的 `loading`、`ready` 与类型化失败状态由 Client 持有并供只读观察。应用生命周期调用一次引导加载，待项目会话目录与静态模板目录均就绪后才展示主界面外壳（shell）；若在首帧基线前发生失败，必须展示类型化错误码与关联 ID（`correlationId`），显式重试时复用同一 Client 实例清除失败尝试后重新启动。启动成功后，若某个目录观察失败，则保留最后有效目录与可用主界面并展示该领域的显式重试入口，不退回无操作的启动等待页。会话状态流的同步状态与聊天界面内容状态（`ChatUiState`）分属各自独立的观察通道，互不覆盖。
 
-## 25.3 版本域
+## 25.3 版本域与资源戳（Stamps）
 
-- ResourceStamp 由 ResourceKey、OwnerEpoch、Revision 组成。仅同资源同 owner 可比较。
-- ViewStamp 由 ThreadId、ViewId、ViewEpoch、Version 组成。新 view 的版本不能与旧 view 比较。
-- AttemptId 是一次客户端异步绑定身份，不能充当业务 owner epoch。
-- OperationId 是一次业务提交身份，首次 await 前产生，未知结果不换 ID 自动重放。
-- DraftStamp 是 DraftId 与字段或项目 revision，不能用窗口版本替代。
+前端状态管理严格区分五类不可混用的版本域标识：
+- **`ResourceStamp`**：由 `(ResourceKey, OwnerEpoch, Revision)` 组成，仅在同一资源、同一 `OwnerEpoch` 下可比。所有者代次更换后必须采纳新基线，旧 `epoch` 的回执不得由新 `epoch` 满足。
+- **`ViewStamp`**：由 `(ThreadId, ViewId, ViewEpoch, Version)` 组成，新视图代次的版本号不得与旧视图比较。
+- **`AttemptId`**：单次客户端异步连接绑定身份，不得充当业务 `OwnerEpoch`。
+- **`OperationId`**：单次业务提交身份，在首次 `await` 前分配；结果未知的非幂等操作不得更换 ID 自动重放。
+- **`DraftStamp`**：由 `(DraftId, 字段或项目修订号)` 组成，不得以窗口版本替代。
 
-配置与 catalog 的 revision 独立；Thread model route revision 是 route extension 的 CAS，
-不是 Thread 通知序号。`saved` 与执行终态独立。页查询不推进订阅基线，不存在用窗口版本猜测分页回执的语义。owner 更换后必须接受新 baseline，旧 epoch 的回执不能由新 epoch 满足。
+设置配置与模型目录使用独立的修订号；会话模型路由修订号是路由扩展的 CAS 令牌，而非会话通知序号；历史落盘确认（`saved`）与轮次执行终态相互独立；历史分页查询不推进尾部订阅基线。
 
-ACP 账号配置与认证观察也属于独立资源。Client 的“保存并连接”先消费 canonical 配置回执，
-再提交认证检查；后一步失败不得撤销前一步成功或清空草稿。认证帧与命令响应进入同一 reducer，
-按 owner/revision 与 operation 身份收敛，不靠 Widget 的 loading 布尔值推断已登录。认证观察
-投影到账号时还须匹配其 connection revision；跨资源帧乱序期间，不能把旧连接的成功用于新配置。
-Client 必须实际持有相应 topic 订阅，不能以只观察本地 store 代替订阅建立。Accounts
-可见需求拥有 `acpAuth` 观察租约；离页、重建或返回不取消登录、不重启检查，重新观察读取
-当前基线。交互呈现见 [19](./19-studio-ui.md)，认证语义见 [28](./28-acp.md)。
-认证事件可先于 start 命令响应到达；一旦 canonical 状态提供当前 operation 身份，取消必须
-可独立提交，不能被 start 的本地 busy 标志或命令队列阻塞。命令回执仍经同一 reducer 收敛。
-已加载认证快照的水位同时参与 MutationBoard 的 `acp-auth` 资源观察，使用当前 runtime owner
-epoch；topic 名 `acpAuth` 与回执资源名不混用。命令响应与先到事件都通过同一 canonical
-观察满足回执，不能只更新画面而把已确认命令永久留在 awaiting-observation，也不能在退出时
-直接丢弃 pending 操作或用人工成功标志伪造观察完成。
+ACP 账号配置、ACP 认证观察（`acpAuth`，回执资源名 `acp-auth`）与 ACP 服务安装准备（`acpInstall`，回执资源名 `acp-install`）同样是各自独立的资源域：
+- **保存并连接编排**：“保存并连接”先消费权威配置保存回执，再发起认证检查命令；认证检查失败不撤销已保存的账号配置，也不清空草稿。认证事件帧与命令响应进入同一归约器，按 `owner/revision`、连接修订号（`connectionRevision`）与 `OperationId` 收敛；一旦权威状态提供了当前操作身份，取消请求即可经独立通道提交，不受启动命令的本地忙碌标志阻塞。
+- **安装准备与草稿绑定**：安装准备结果按供应商、操作身份与草稿意图绑定，终态保留操作身份；仅匹配当前意图的准备结果可授予草稿保存资格（其他草稿须通过显式“使用已就绪安装”动作绑定，不按品牌或路径自动认领）。离开设置页仅释放页面自身的观察订阅，返回页面时重新读取当前基线；唯有运行时关闭才收束后台安装与认证任务（详见 [28](./28-acp.md)）。
 
-ACP 安装有独立 typed domain、命令与 `acpInstall` 观察租约，回执资源为 `acp-install`。
-已加载快照含 revision 0 也必须按当前 owner epoch 提交 MutationBoard 观察。开始受理与
-安装终态分开，取消走独立 lane；页面不等待长任务 future 推测状态，不拥有下载关闭权。
-取消去重以 provider 与目标 operation 为键：同一目标的在途重复请求拒绝；若 canonical 已
-推进到新操作，旧操作尚未返回的取消回执不得阻止取消新操作。每个在途命令仍由 Client
-拥有并在关闭时 join，旧回执不能清除新目标的 pending 或回退 canonical 状态。
-离页只移除自己的订阅，返回消费 baseline；runtime 关闭才收束安装。进度不是 Settings、
-认证或草稿事实，不能通过频繁推进设置版本模拟刷新。
+## 25.4 观察注册与页面导航
 
-准备结果按 provider、operation 和草稿意图绑定，终态保留 operation 身份。仅匹配当前
-意图才能取得保存资格；草稿不持有可编辑 program/argv、来源或版本选择，取消表单或另建
-草稿后的迟到结果不得回写。另一草稿可
-通过明确的使用准备结果动作绑定当前已就绪安装，不因同品牌或路径相似自动认领。准备不
-自动保存账号；保存与连接继续沿用既有动作与独立成功事实。UI 不补造未知总量、速度、阶段
-或来源资格；固定版本来自模板 supportedVersion，不以客户端常量决定启动。已有账号的
-安装缺失/损坏与认证错误分别表达，改名不改变连接代次、不自动准备。Client/adapter 必须
-完整消费 typed 状态与错误，不靠文本解析或 raw JSON 兼容。
+只读观察 API 在同步阶段完成接收者登记并立即返回当前镜像值，检查当前镜像与注册谓词（predicate）之间严禁插入任何 `await` 间隙，确保读取快照与注册观察之间到达的更新绝不漏帧。当显示观察处于暂停状态（如页面被路由覆盖）时，每个观察者仅保留最新显示快照；而可靠有序事件流仍严格按序归约，不套用丢弃中间帧的策略。取消观察订阅仅移除当前观察者，绝不关闭跨路由的会话、内容连接、输入草稿或附件。
 
-## 25.4 观察与导航
+`AppGraph` 通过逻辑需求（logical demand）管理底层资源生命周期：进入设置页、切换设置标签页或组件暂停均不改变当前会话的内容订阅需求，也不清理新会话或已有会话的输入草稿；唯有用户显式切换会话、关闭项目、归档会话或退出应用时，才退役（retire）对应的旧内容资源。
 
-观察 API 同步登记接收者并返回当前值，检查当前镜像与注册 predicate 之间不能有 await。
-当前活动 Session 的可用性由 Client 通过只读快照与观察入口发布，只引用同一资源 owner；创建或重试成功后通知
-展示重新绑定，观察者登记时立即消费返回的当前快照，不等待下一条内容帧或强制刷新 provider。
-显示观察暂停时，每个观察者只保留最新快照；可靠事件仍使用有序交付，不套用 latest-only。
-订阅取消只移除自己的观察，不能关闭跨路由 Session、内容连接、草稿或附件。
+## 25.5 时间线连接与退役收束
 
-AppGraph 通过逻辑 demand 管理资源。进入 Settings、切换设置标签和 Widget 暂停不改变当前
-内容订阅 demand，不清理新会话或 Thread 草稿。明确切换 Thread 才 retire 旧内容资源；关闭项目、
-归档与应用退出显式结束相应需求。account keepAlive 不能承担 native 资源所有权，也不能让
-每个曾访问会话永久保留正文。轻量 owner 缓存、观察者和镜像均受预算约束。
+时间线内容连接维护 `open`、`initial`、`next` 生命周期，按 [26](./26-timeline-content.md) 提供有界尾部订阅、无状态历史分页查询与按需详情查询。每次连接尝试（attempt）在首次 `await` 前登记逻辑需求、原始打开 Future、候选句柄、取消令牌、事件泵（pump）、在途查询、关闭汇合句柄与内存预算许可（permit）；每次异步返回后均核对会话身份、`attempt` 代次、逻辑需求与退役状态。
 
-## 25.5 Timeline 连接与关闭
+- **独立基线与代次隔离**：`initial` 建立新订阅自身的版本基线；同一订阅同一时刻最多挂起一个 `next` 拉取，完成归约后才继续拉取下一帧。发生内容缺口时仅重同步当前连接，不重放业务命令，也不将旧的 `lastGood` 快照当作新基线。历史分页与详情查询结果仅作用于发起时捕获的展示代次；在 `A → B → A` 快速切换场景下，第一次 `A` 的迟到成功、失败或 `finally` 回调均不得清空第二次 `A` 的加载状态或内容。
+- **确定性退役收束（Retire）**：退役连接时先锁闭发布与查询准入，再发出取消与 `requestClose` 指令，等待事件泵、在途查询、数据汇（sink）与原生句柄返回真实确认（ACK）。若关闭失败则保留未解决所有者（unresolved owner）与预算占用；关闭内容连接仅回收前端流资源，不关闭 Rust 侧的 `Session`、活动轮次或持久化写入器。
 
-内容连接保留 open、initial、next 生命周期，按 [26](./26-timeline-content.md) 提供尾部订阅、
-无状态历史页和详情查询，不再提供 focus/load/expand 窗口回执。每次 attempt 在首次 await
-前登记 demand、原始 open Future、候选句柄、取消、pump、查询、close/join 和预算许可。
-句柄返回立即归属该 attempt，每次 await 后核对 Thread、attempt、demand 与 retired 状态。
+## 25.6 只读模型（Read Model）与细粒度呈现
 
-initial 建立新订阅自己的基线；同一订阅最多一个 next，reduce 后才继续取帧。内容缺口只
-重同步当前连接，不重放业务操作，也不把旧 lastGood 当新基线。状态流和内容订阅独立，
-一方恢复不把另一方标为 ready。页／详情结果只作用于捕获的展示代次；旧 A→B→A 请求
-成功、失败或 finally 均不能清新 A 的 loading、内容或错误。
-FRB 的 initial、next、页和详情在异步返回后同样检查连接关闭状态；关闭后的迟到成功以
-typed Cancelled 收束，不向直接消费者交付旧内容。重连成功清除旧连接错误，空游标按
-当前代次的权威值发布，不能用上一代非空游标补齐。
+设置、项目目录、会话目录、当前选择、会话轻量状态与时间线内容各自拥有唯一的归约器。会话状态流快照不反写会话目录行，业务时间戳 `updatedAt` 不充当跨资源版本号；工作模式等会话身份变更由 Rust 提交目录增量并推进目录水位（见 [18.11.1](./18-studio-state.md#18111-thread-身份的单一来源)）。
 
-retire 先封闭发布与查询准入，再取消并 requestClose，等待泵、在途查询、sink 与句柄真实
-ACK。失败保留 unresolved owner 和预算；取消等待不等于资源关闭。返回过晚的 open 仍由原
-attempt 收束。关闭内容连接不关闭 Rust Session、Turn 或 writer；account 只取消自己的观察。
-Settings、标签页或 Widget 暂停不改变逻辑 demand，Thread 切换、项目关闭与退出才 retire。
+同一会话的运行时状态、轮次、活动摘要与存储状态共用单条带水位的有序状态订阅；`Riverpod` 呈现层按明确的 `threadId` 派生不可变且按值相等的细粒度投影（如吞吐率投影、上下文容量投影与状态栏稳定字段投影），使高频吞吐率更新仅通知吞吐率消费者，不会连带重建上下文浮层、时间线列表或输入区。
 
-观察重连采用有界退避和显式 retry；许可不足只在真实释放通知后恢复准入，不轮询或增加
-容量。opening、active、retiring、unresolved 及查询等待均计入预算，失败不能用清空容器伪装
-完成。已知 CAS 冲突只重建 runtime binding，保留独立的内容连接和草稿。
+普通用户问答回执、计划确认回执与图片展示卡片均由权威工具条目的类型化投影派生，复用同一会话附件缓存与内容源，不在视图层缓存原始字节或二次解析 JSON。Client 仅持有有界尾部基线与类型化查询状态，由当前展示租约将内容投影为唯一的 `InMemoryChatController` 消息集合；连接器（Connector）从只读模型读取属性并绑定稳定动作回调后注入纯视图组件（View）。
 
-## 25.6 Read model 与呈现
+## 25.7 命令、观察屏障与变更看板（MutationBoard）
 
-设置、项目、目录、选择、Thread 轻状态和内容各有唯一 reducer。ThreadWorkspace 的 Thread
-仅用于身份，目录元数据以 directory owner 为准；状态流不反写正文，保存与终态不互相推导。
-状态流快照不反写目录行；updatedAt 不充当跨资源版本，同秒晚到快照不能回滚目录终态。
-mode 等身份变更由 Rust 提交目录增量并推进所属水位。
+所有业务命令在首次 `await` 前同步冻结目标资源标识、期望修订号（`expectedRevision`）与 `OperationId`（停止命令在点击当刻固定 `ThreadId + TurnId`，不随排队期间的选择切换而偏移）。同一资源的冲突写入串行化，不同资源独立推进；停止命令与取消请求不排在长耗时任务队列末尾。
 
-同 Thread 的 runtime、turn、activity、storage 共用一条带水位的状态订阅，typed Runtime
-事件独立更新其镜像；速度不另建 transport、reducer 或业务缓存。Riverpod 呈现层按明确
-`threadId` 派生不可变、值相等的细粒度 projection，并由对应 Consumer 实际观察：速度、上下文
-和状态栏稳定字段互不因无关值变化而重建。`select` 或值相等的派生 account 只筛选通知，
-不拥有第二份业务事实。参数化呈现观察自动释放时只取消自身 observer 与许可，不能关闭
-Session/ChatView 或清除草稿；完整样本的速度选择见 [18](./18-studio-state.md) §18.8。
+命令提交回执（`CommitReceipt`）至少携带 `OperationId`、`Applied/NoChange`、目标 `ResourceStamp` 与生效点（`effect point`）。系统严格区分五个独立阶段：已受理（`Accepted`）、等待观察（`AwaitingObservation`）、已观察（`Observed`）、已生效（`Effective`）与已持久化（`Durable`），以及三类非成功结果：明确拒绝（`Rejected`）、结果未知（`UnknownOutcome`，严禁对非幂等命令自动重放）与观察同步失败（`SyncFailed`）。`MutationBoard` 分别保存每次操作的真实结果与每个目标资源的最新意图（latest intent），旧操作完成绝不清除较新意图的待确认覆盖层。
 
-普通问答与计划确认回执由 canonical 工具条目的 typed 问答历史派生，沿用同一身份与内容版本；
-adapter 保留问题、答案列表、脱敏标记和权威状态，不让 feature 重新解析工具载荷。
-composer pending interaction 队列只服务待处理交互，resolved 后不留队，不另建回答缓存。
-页、尾部订阅和重开都从同一 Session 内容源恢复回执；局部展开不写回业务事实。敏感值
-只接受后端脱敏投影，详情、摘要、复制和辅助语义均不得泄漏原值。
-
-图片展示工具产生独立的图片卡片呈现项（presentation）：它只派生展示属性（所属调用、typed 附件、参数中的展示文案），图片字节仍由 Thread 附件缓存按身份读取；呈现层不缓存字节，也不因卡片存在而改写工具条目本身。
-
-Client 只持有有界尾部基线及 typed 查询状态，当前 AppGraph 展示 lease 将内容投影为唯一
-InMemoryChatController 消息集合；活动、图片与重连的 GUI 分组只持有逐条 canonical 预览，
-不改变后端逐条保存。组内定向观察与展开意图由当前 lease 所有，不成为第二份正文缓存。
-库负责列表与滚动；Live/History、消息稳定身份、分页、
-详情及显示预算以 [26](./26-timeline-content.md) 为准。无服务端几何窗口镜像、跨层阅读锚点
-或另一份完整历史 rows/body cache；页查询不改变尾部订阅基线。
-
-Connector 读取查询并调用稳定目标 action，向纯 View 传唯一 props，不从 account fallback
-重读同一业务值。features 不得穿透 Client 公共边界直连 FRB、transport 或 SQL。详情、图片和
-菜单等平台交互归适配层或 UI controller。显式回实时或发送创建新列表代次；旧代次只在其
-子树释放与资源收束后销毁。Thread 切换释放旧展示集合，Settings 往返不关闭展示 owner。
-
-## 25.7 命令、观察与效果
-
-首次 await 前冻结目标、expected revision 和 OperationId。停止命令捕获 ThreadId + TurnId，
-不按排队执行时的当前选择重定向。同一资源的冲突写串行，不同资源可独立推进；停止不排在
-长任务 FIFO 后。分页和正文查询不占用设置写 lane。
-
-CommitReceipt 至少携带 OperationId、Applied/NoChange、目标 ResourceStamp 和 effect point。
-接受、观察、生效、持久化是独立事实：Accepted、AwaitingObservation、Observed、Effective、Durable
-不能彼此替代。模型配置可对下一 Turn 或未来新会话生效，收到配置响应不代表正在执行的
-调用已经切换。durable 只由可靠保存确认推进。
-
-身份型回执按 [18](./18-studio-state.md) 的 Turn/interaction 谓词观察，不伪造 revision 或
-通过空目标绕过屏障。观察拥有预算，并在确认、失败或 owner close 时释放；草稿提交的保存
-确认继续等待对应 input 的 `saved`，不能以 terminal 代替。观察未到达时阶段仍为
-AwaitingObservation，已知 Effective/Durable 单独保留。
-
-Rejected 表示明确未受理；UnknownOutcome 表示提交可能已执行但缺少确定结果；SyncFailed
-表示已知结果的观察失败。未知结果的非幂等命令不自动重放。局部 conflict、lagged 或失败才做
-对应领域 typed resync；正常成功不执行 readStudioState 或聚合 reload。
-
-MutationBoard 分开保存每次真实结果与每个目标的 latest intent。旧 operation 不能清除新 overlay。
-观察 predicate 原子检查当前镜像并注册，使帧先到和回执先到均不漏确认。观察水位只在相同
-owner epoch 和资源域合并。
-
-账号模型启用开关是目标为 `(accountId, modelId)` 的独立字段意图，切换立即交给 Client
-命令 owner，不等待账号编辑页保存。目标字段操作串行，CAS 冲突重读当前资源后只重施
-本次意图，不能回传陈旧账号快照覆盖凭据、目录或其他覆盖。pending/failure 由 mutation
-owner 持有，canonical enabled 仅由 Settings/目录响应和事件更新；旧完成不能覆盖新意图。
-页面退出只取消观察，已受理操作参与 Client 关闭 join，失败和未知结果沿用上述语义。
-账号“不计费”开关与类别选择消费同一 canonical `billingKind`/`billingKindOverride`，不另存
-免费布尔设置。已有账号开启写入 `noCharge`，关闭清除覆盖；普通连接/凭据草稿保存不能覆盖
-该窄意图。新账号初始类别随创建提交；失败不伪造开关成功，重开与其他观察者消费同一设置事实。
-
-启用、计费类别和手动模型删除的窄请求均显式传递本次 OperationId；Runtime 回执原样返回，
-Client 不改写不匹配的回执来强行关联。基于明确 CAS 拒绝的重试仍属于同一业务意图，
-不因刷新 revision 丢失操作身份；未知结果不自动重放。
-
-模型资料与评价详情是按账号模型身份有界的查询资源，不在 Widget 或 settings reducer
-合成另一份模型目录、评分或可用性；迟到详情响应不得写入已切换的模型。智能体列表
-直接消费 typed 冻结模型标识，字段参与镜像比较，不以 Profile 当前值填补历史未知。
-根会话的智能体成员集合由 canonical AgentDirectory 的根归属与父子身份确定；侧栏
-ThreadDirectory 的分页窗口和 session 热集合不代表完整成员，不能与它们取交集后再
-渲染菜单或计数。Client/展示投影按稳定身份消费目录成员，已有 Thread 元数据仅补充
-相应展示，不伪造缺失 Thread、路由、权限或工作区事实。切换根会话保持成员隔离，
-冷成员仅在显式选中时按需取得其会话数据；列举本身不激活 owner 或订阅全部 Timeline。
-导航以用户最新选择意图为准；新意图一经接收，就使旧的按需读取失去发布选择的资格，
-不能等串行命令真正执行才使旧意图失效。迟到结果不得并入目录、改变选择或启动已过时
-成员的历史观察；切项目、切根、选兄弟成员及新建会话遵守相同边界。当前有效选择的
-读取失败保持原错误可见，但过时读取的错误不覆盖较新的导航结果。
-
-账号详情模型列表的阈值编辑只拥有原始输入、短暂防抖与最新意图身份；原始覆盖由 Settings reducer 拥有，
-最终上下文解析结果由 catalog reducer 原样接收。有效输入和恢复自动触发同一
-account 原子保存，Client 在串行写 lane 内从最新 canonical account 应用目标模型变更，
-CAS 重试也重新构造，不携带未改动字段的陈旧副本。其余模型的持久覆盖必须完整保留，包括
-因在线目录暂时撤下而不可见的覆盖。旧响应可推进自身操作记录及 canonical 水位，不能覆盖
-较新原始输入、清除较新 pending/error 或让不同模型的修改互相丢失。
-页面离开前将已产生的有效意图交给 Client；已经提交或排队的操作由 Client 持有并参与退出 join，
-不能由 Widget dispose 取消。输入无效时不提交、保留校验错误；已知保存失败允许显式重试，
-未知结果按既有 UnknownOutcome 语义处理，不自动伪造成功。
-
-阈值的持久覆盖由 Settings revision 所有，最终上下文策略由 catalog revision 所有；配置 owner
-在同一锁内读取二者，所有影响策略的配置及目录更新推进目录水位。Client 独立合并两个水位，
-只接收后端最终策略，不从容量或原始覆盖重算。配置旧响应不能回滚较新的目录策略，撤下模型
-的原始覆盖继续保留；只在 Rust 显式写边界归一化。设置返回后立即消费最新 canonical 结果。
+特殊领域的窄命令与局部状态遵循以下收敛规则：
+- **模型启用开关、计费类别与手动模型删除**：三类窄命令均显式传递 `OperationId` 并在回执中原样核对。切换模型启用状态或账号「不计费」开关后立即交由 Client 串行通道提交；遇到 CAS 冲突时在最新权威账号状态上仅重新应用当次窄字段意图，不回传陈旧的整卡快照。
+- **智能体目录成员与导航意图抢占**：根会话的智能体切换菜单成员由权威 `AgentDirectory` 的根归属与父子关系唯一确定，不与侧栏分页窗口或热会话集合取交集；用户发起新的会话选择导航意图后，立即使此前尚未完成的按需冷会话读取失去发布选中态的资格，防止迟到回包篡改最新导航目标。
+- **上下文压缩阈值内联保存与双水位合并**：账号详情卡模型列表中的压缩阈值编辑经过短暂防抖后触发账号原子保存；阈值的持久化覆盖归属 `settingsRevision`，最终生效的上下文策略归属 `modelCatalogRevision`，Client 按双时钟独立合并两个水位（见 [18](./18-studio-state.md) §18.11），不因旧配置响应回滚较新的目录解析策略。
 
 ### 25.7.1 账号用量需求
 
-账号标签的 feature 状态负责自动加载策略，Client 查询 owner 负责按实例启动、去重、
-pending/error 和在途任务，额度事实仍只经 AccountUsageStore 的唯一 reducer 接收 canonical
-响应或事件。Riverpod 展示适配只观察 Client，不直接调用 transport，不以另一份 AsyncValue
-缓存取代同一 canonical。焦点、筛选、选择、FormKey 和编辑草稿继续由局部 UI owner 管理。
+账号设置标签页的业务状态负责声明自动额度加载需求，Client 查询所有者负责按账号实例启动检查、请求去重、维护 `pending/error` 状态与托管在途任务，额度权威数据仅经由 `AccountUsageStore` 的唯一归约器接收响应或事件帧。
 
-标签首次可见为每个当前查询身份发起一次检查；每个实例完成即发布，不等待其它实例。
-同 account ID、同 `usageQueryRevision` 的重叠自动/手动检查合并，不同身份的旧结果不能清理
-新 pending 或覆盖新结果。查询身份由 Rust 所有，定义见 [18.2](./18-studio-state.md#182-公共-snapshot)。
-标签可见期间，新增或查询身份变化只补查对应实例；隐藏时停止产生新的自动请求，重新可见
-只补查未加载或失效身份。失败也计入本轮已尝试，不由重建、默认值变化或自动重试形成请求
-循环。页面状态真正重建允许再次加载，手动刷新可明确发起新尝试，刷新全部复用同一实例能力。
+当账号标签页首次可见时，系统为当前每个账号的查询身份（`usageQueryRevision`，定义见 [18.2](./18-studio-state.md#182-公共快照)）并行发起一次额度检查，单实例完成后立即发布更新，无需等待其他实例。同一账号 ID 且同一 `usageQueryRevision` 的自动加载与手动刷新请求自动合并；标签页可见期间若新增账号或修改了影响额度查询的配置（如服务地址、模板或凭据），仅对受影响实例补发检查；标签页隐藏时停止发起新的自动请求，重新可见时仅补查尚未加载或查询身份已更新的实例。单次失败同样计入本轮已尝试，不触发自动重试循环。在途额度检查任务由 Client 持有并在应用退出时参与汇合，离开页面取消观察不会丢弃在途任务，删除账号时立即清理其需求与操作身份以防迟到响应复活已删条目。
 
-页面只声明需求，不能在每次 Widget build 中创建请求，也不在保存回调中等待额度。已有在途
-请求由 Client 持有并在应用退出时 join，页面取消观察不丢弃任务；删除实例清理其需求及操作
-身份，迟到响应不得复活删除项。保留的标签状态往返不重复检查，不清当前 Thread／内容连接
-或草稿；跨 AppGraph 不共享请求、需求、加载集合或结果镜像。
+## 25.8 输入草稿与附件所有权账本
 
-## 25.8 草稿与附件
+起始页草稿（`StartDraft`）与会话输入草稿（`ComposerDraft`）拥有独立的逻辑生命周期，不随页面观察者销毁而重置。调用 `freezeForSubmit` 时，系统在同步阶段一次性冻结 `DraftStamp`、项目或会话身份、提示词文本、工作模式、工作区模式、完整模型路由、解析后的子智能体分发模式与偏好以及附件 ID 集合。提交过程中用户可继续输入与修改草稿（递增草稿修订号）；当旧提交的确认回执到达时，仅清理仍归属该次 `DraftStamp + OperationId` 且修订号匹配的字段，绝不清空用户新输入的内容或重置 `TextEditingController` 的光标与组词区间。
 
-StartDraft 与 ComposerDraft 有独立逻辑寿命，不随页面 observer 消失。freezeForSubmit 在
-同步阶段冻结 DraftStamp、项目/Thread 身份、文本、模式、工作区、完整 route、解析后的
-分发模式/偏好和附件 ID 集合。
-新建 Thread 直接提交该 route，不先写全局默认设置再读取缓存。已有 Thread 提交携带所观察的
-route extension revision，受理 CAS 的语义见 [18](./18-studio-state.md)。
+新建根会话提交后的环境准备进度属于该次冻结提交的临时展示状态，由 `StartDraft` 所有者按 `inputId`、项目身份与提交身份维护唯一镜像，在创建成功进入对话后移除，或在创建失败时原位保留失败阶段、原因及原始草稿。
 
-新会话的分发模式和偏好是项目草稿内两个独立可选覆盖；空值表示跟随 canonical 设置，
-不复制一份默认值保存为覆盖。创建提交在首次 await 前解析并冻结两者，之后设置变化
-不能改写已提交值；成功只清理仍匹配 DraftStamp 的草稿，失败保留选择和附件。固定
-模式保留偏好选择但不应用提示词。已有会话的分发策略只读，不因路由观察者销毁而重置。
+附件所有权账本（attachment ownership ledger）分别记录逻辑草稿引用与冻结提交引用：提交成功后仅转移冻结提交引用，若较新的草稿仍引用同一附件 ID 则继续保持有效；唯有当某个附件的最后一个所有者释放引用后，才向原生层请求物理删除。结果未知（`UnknownOutcome`）的提交保留其冻结附件引用，不因离开页面或放弃当前草稿而误删。剪贴板图片粘贴暂存与两阶段预览字节补齐同样纳入同一账本统一收束。
 
-markSubmitting、accepted、observed 和 durable 均关联同一 DraftStamp + OperationId。
-提交期间可继续输入和修改草稿；旧 ACK 只清理仍属于该提交且 revision 相符的字段。
-TextEditingController 保存 composing/selection，draftId 变化时替换；同一草稿的普通重建不反复
-重写 controller.text，旧完成也不能直接清空当前 controller。
+## 25.9 应用退出协调
 
-新会话环境准备属于冻结提交的临时展示状态，由 StartDraft owner 按 `inputId`、项目及提交身份
-维护唯一镜像。Widget 与 Riverpod 只读观察当前项目的镜像，Settings 往返或观察销毁不取消
-创建命令。阶段来自同一次 typed 创建流，成功／失败终态只结算一次；终态前断流保留
-UnknownOutcome，不自动重发。旧提交的进度和 finally 不覆盖新尝试或较新的草稿，成功结果
-仅在导航意图仍属于原提交时自动选择新 Thread。成功移除准备镜像，失败保留原阶段和原因；
-准备信息不成为目录事实或聊天历史，也不承担取消与工作树资源释放责任。
+`AppGraph.close` 具备幂等性，重复调用直接复用首次创建的关闭 Future 与首次绝对期限。独立的 `StatisticsRepository` 与现有 Client 均由 `AppGraph` 统一装配并负责关闭，统计模块的未决任务一并汇入同一个 `CloseReport`，确保不会因统计模块独立于 Client 而遗漏原生推送流或读取作用域的收束。关闭流程先锁闭草稿生产者并汇合在途提交，再并发收束会话内容连接、各领域主题订阅、统计仓储、更新操作与附件任务，将任何未确认收束的操作与资源记入 `CloseReport` 并保留其预算许可。
 
-附件 ledger 分开记录逻辑草稿引用和冻结提交引用。提交成功只转移冻结引用，较新草稿继续
-引用的相同附件 ID 仍有效。只有最后一个 owner 释放后才请求 native 删除；删除失败保留 owner、
-诊断与预算。未知受理结果保留冻结引用，不因页面退出、放弃当前草稿或全局 orphan sweep 删除。
-本地 clipboard 暂存和晚到 admission 也由同一 ledger 收束。关闭过程等待在途创建和清理，
-不以销毁观察适配代替异步资源回收；可靠附件与旧数据保留规则见 [17](./17-studio-storage.md)。
+`StudioExitCoordinator` 的状态严格按应用实例隔离。Client 的 `CloseReport` 在调用 Rust 终态关停前并入 `externalIssues`；唯有当所有外部取消确认与后端可靠保存全部完成时，最终关停报告才可判定为 `Clean`。手动触发更新安装时，待安装包准备与进度流真实完成后再将“更新后重启”意图移交同一退出协调器（若当前窗口隐藏于系统托盘，则先在原期限内恢复显示主窗口，并为失败提示留出一次渲染及最多 `1.2 秒` 阅读时间）。退出提示界面在 `MaterialApp.builder` 层级直接替换整个路由子树（Router subtree），促使当前页面及被覆盖的后台页面真实卸载并释放展示租约。
 
-## 25.9 应用退出
+## 25.10 验证层级与冗余清理
 
-AppGraph.close 幂等，重复调用复用首次 close Future 和绝对 deadline。独立统计 Repository
-与现有 Client 均由 AppGraph 装配和关闭，统计未决任务并入同一 CloseReport，不能因脱离
-Client 而漏掉 native feed 或读取 scope。先封闭草稿生产者，
-加入在途提交，再收束会话、topic、update operation 和附件任务；独立取消并发启动，共用剩余
-预算。每个未解决 operation 和资源出现在 CloseReport，不释放仍未确认关闭的 permit。
-
-StudioExitCoordinator 的应用实例状态不跨图共享；宿主出口只路由到当前协调器。Client 的
-CloseReport 在 Rust finalizer 前并入 externalIssues，只有所有真实 ACK 和可靠保存均确认才可
-报告 Clean。超时不得另起期限或在 runtime 宣布 Clean 后追加失败来掩盖提前释锁。
-
-手动更新的请求状态归 Client，点击后同步发布 pending，页面只观察、不持有准备任务。已有后台
-下载时复用同一次准备；准备操作与进度流真实完成后，才把更新后重启意图交给同一退出协调器。
-首次退出固定普通退出或更新后重启意图及期限，后续请求只加入，不重新启动或改变意图。
-退出结果分别承载关停报告与安装交接结果；安装器启动失败不能改写可靠保存的结论，也不能
-被关停 Clean 隐藏。更新退出先在原期限内恢复既有主窗口，确保托盘隐藏时提示仍实际可见。
-界面显示更新版本、停止会话和保存提示；关停失败与安装交接失败均在
-首次退出的剩余期限内留出一次渲染和最多 1.2 秒阅读时间，随后按既有退出期限结束。
-
-退出提示在 `MaterialApp.builder` 内替换整个 Router 子树，促使当前及被覆盖的页面真实卸载，
-再由原展示 owner 等待 lease 的释放确认。被 Settings 覆盖的聊天页面可能因 Riverpod 的
-`TickerMode` 暂停观察；不得依赖隐藏页面收到状态刷新才能退出，也不得在子树仍挂载时
-提前销毁 controller 或伪造释放确认。退出提示与应用 owner 位于 Router 之外，持续负责
-进度、失败提示和同一次有界关停。
-
-## 25.10 验证与删除项
-
-验证层次、证据边界与正式门禁以 [24](./24-testing.md) 为准。纯 Client fake、Riverpod adapter、
-真实 Flutter 路由、FRB DTO fake、真实 native 和各平台 GUI 不相互替代。Driver 只保留诊断与
-可见投影，不维护另一套业务生命周期或可写 canonical。
-
-已被新 owner 替代的观察适配资源租约、第二份正文 baseline、成功后聚合回读、全局附件清扫、
-宿主 Timeline fallback 和直接 FRB feature 入口应随调用方迁移删除，不保留永久回退分支。
+客户端与前端状态的验证层级、证据边界与 CI 正式门禁（`cargo xtask verify-client`）见 [24](./24-testing.md) §24.1.1。随着单向数据流架构演进，凡已被新所有者替代的旧观察租约、第二份正文基线、命令成功后的聚合状态回读、全局孤儿附件清扫、宿主时间线回退分支以及视图层直连 FRB 的入口均须彻底移除，不在代码库中保留兼容死分支。
 
 ## 25.11 模型目录一致性
 
-目录同时发布完整成员与后端计算的类型匹配结果；Client 模型查询不传类型时返回全部，文本查询
-用于所有新旧会话、Mode、内置角色与自定义 Agent Profile 的模型菜单，设置页仍展示完整目录。
-GUI 不重复计算能力和预算条件。既有选择不满足筛选时保留路由并显示原因，不自动换模型；
-未配置的草稿仅从合格集合初始化。候选资格与请求可用性分别表达，筛选不新增请求执行门槛。
+后端目录同时发布完整模型成员及文本类型资格匹配结果：会话、工作模式、系统角色与用户智能体模板的模型选择菜单统一消费后端发布的文本资格筛选结果并排除禁用模型，账号设置管理页则展示完整模型目录。既有路由若因模型被撤下或禁用而不满足筛选条件，仍原样保留路由并展示不可用原因，绝不自动切换至其他模型。模型选择、性能统计顶层筛选与模型资料查询统一以 `(accountId, 配置的 modelId)` 复合身份为准，不以显示名称充当键；其中统计领域的 `AccountModelKey` 归属独立统计领域模块，不通过旧版 Client 的混合模型包重新导出。统计模块先按账号与配置模型接收权威汇总，推理强度（`effort`）作为组内细分维度，实际发送模型与上游返回模型则作为冻结诊断字段保存；未知的历史模型身份不得由当前目录回填篡改。
 
-所有会话与模式消费同一 canonical 模型目录，选择项按账号 ID 与 modelId 复合键去重，
-候选使用上述统一文本类型，不附加工具或 Mode 能力门槛。配置与目录继续使用独立 revision；账号参数更新一次发布该账号的受影响路由，
-旧响应不能回滚新目录。模型固有参数与路由价格均只读展示，缺价不代表模型未通过校验。
+## 25.12 工作模式编辑草稿与远端目录游标
 
-模型选择、统计顶层筛选和模型需求均以账号 ID 与配置模型 ID 的复合身份为准，显示名不是
-key。统计的 AccountModelKey 归独立统计领域，不通过旧 Client 混合 models 重新导出。
-统计先按账号和配置模型接收 canonical 汇总，effort 是组内细分，发送及返回模型是冻结诊断。
-未知历史身份不得由当前目录补写。账号模板只负责创建默认值，不参与已有账号或统计身份。
+每个 `AppGraph` 的 Client 独立持有自定义工作模式编辑草稿、原始 JSON 文本以及最多 **64 步**撤销/重做（undo/redo）历史栈；流程图画布与 JSON 编辑器是同一份编辑资源的两种同步视图。画布控制器仅持有节点展示坐标与交互投影，不构成第二份业务事实源。离开存在未保存修改（dirty）的草稿时必须提示用户选择保存、放弃或取消；保存操作携带读取时的模式目录修订号执行 CAS 校验。读取定义、JSON 校验、运行预演与 Schema 查询共享同一命令通道的并行查询登记；Client 关闭时先锁闭查询准入，等待在途查询与串行保存真实完成后才释放草稿许可。
 
-## 25.11 工作模式编辑草稿
+### 25.12.1 远端目录查询资源
 
-每个 AppGraph 的 Client 拥有模式编辑草稿、原始 JSON 与最多 64 次撤销/重做历史；
-图和 JSON 是同一编辑资源的两种视图。JSON 解析或保存失败保留输入，校验和预演结果由 Rust 返回。
-图控制器只持有展示坐标与交互投影，不成为另一份业务事实源。离开脏草稿必须选择保存、放弃或取消；
-保存采用读取时的目录 revision，冲突不覆盖草稿。页面销毁只取消观察，草稿由 Client 生命周期管理。
-读取定义、JSON 校验、预演及 schema 查询复用同一命令通道的并行查询登记；关闭先封闭准入，
-等待这些已受理查询和串行变更真实完成后才释放草稿许可，迟到结果不再发布编辑状态。
-
-## 25.12 远端目录查询资源
-
-`RemoteActions` 拥有远端目录游标，typed listing 的 `nextCursor` 是唯一续页依据；页面不从
-偏移重新扫描目录。目录选择器替换当前页，换目录、切换服务器或销毁时释放旧游标，并以
-请求代次拒绝迟到结果。Client 关闭先封闭查询、等待已接纳请求交接，再并行关闭仍持有的
-游标；关闭失败保留对应责任，不以页面销毁报告远端清理成功。展示层不创建 SSH 连接。
+`RemoteActions` 持有 SSH 远端目录浏览的分页游标，类型化目录列表返回的 `nextCursor` 是唯一的续页依据，前端页面不按偏移量重新扫描目录。切换目录、切换服务器或销毁选择器时立即释放旧游标，并通过请求代次拒绝迟到回包；Client 关闭时先锁闭查询准入、等待已接纳请求完成交接，再并行关闭所有仍持有的远端目录游标。
 
 ## 25.13 独立统计领域与呈现模块
 
-统计的数据路径为 `Rust 统计 owner → typed 统计 port / FRB adapter → StatisticsRepository
-→ ViewModel / ViewState → Connector → 纯 View`。Repository 是当前应用实例唯一的统计
-canonical reducer，直接拥有观察需求、物化读取、错误与资源收束；不通过旧 Client、聚合
-Settings、通用 product channel 或另一个 store 转发。现有计费 owner 与有效 HTTP 消费者
-继续共享同一 Rust 事实，不能成为 GUI 回退旧链的理由。来源与读取协议见
-[18](./18-studio-state.md#1822-统计观察与不可变读取)，运输边界见
-[07](./07-streaming.md#78-统计-frb-推送与关闭)。
+统计模块的数据流向固定为：`Rust 统计所有者 → 强类型统计端口 (Port) / FRB 适配器 → StatisticsRepository → ViewModel / ViewState → Connector → 纯视图组件 (View)`。`StatisticsRepository` 是当前应用实例内唯一的统计权威归约器（Reducer），直接持有可见观察需求、分页物化读取、错误状态与资源收束责任，不经由旧版 Client、聚合 `Settings`、通用产品通道或另一个外部存储转发。后端计费所有者与有效的 HTTP 订阅消费者继续共享同一份 Rust 侧权威事实，但这不构成桌面 GUI 回退至旧链路的理由。统计事实来源与不可变读取契约见 [18.2.2](./18-studio-state.md#1822-统计观察与不可变读取)，FRB 推送与关闭边界见 [7.8](./07-streaming.md#78-统计-frb-推送与关闭)。
 
-领域、数据、adapter 和呈现按真实职责独立组织。领域公共入口只暴露不可变值、身份、只读
-状态与 Repository 契约；port 和构造能力仅供适配与装配，内部 reducer、可写 source 和
-native 句柄不公开。领域值只有一条 canonical 公共路径，不留旧混合 models 的重导出或
-类型别名。观察、预算与关闭报告复用中性底层能力，不依赖旧 Client 私有实现，也不建立
-第二套无领域差异的基础设施。
+模块内部按领域层、数据层、适配层与呈现层独立组织：
 
-每个 AppGraph 注入独立 Repository，并负责应用关闭。设置壳只挂载统计入口和传递可见性；
-feature 不认识 AppGraph、全局 Client 或其他 feature 的私有 provider。生成式 ViewModel
-消费注入的 Repository，持有模型、effort、mismatch 筛选及不可变呈现状态；Connector
-绑定状态与 typed 回调，纯 View/Widget 不读取 provider、transport 或生成 DTO。通用主题、
-本地化和纯视觉基础组件可复用，不能为复用引入旧 Settings 业务状态依赖。
-
-观察登记同步返回当前值；观察取消只结束自己的 listener。可见需求另有明确租约，最后一个
-需求释放时封闭旧观察代次并取消/等待 feed 和在途读取，失败保留原责任与预算。返回页面
-取得新基线，期间最近有效数据保留原来源，不能冒充新 owner 的 ready。Widget 销毁不
-关闭应用 Repository，不影响 Thread、Timeline、草稿或会话费用；快速隐藏/重开必须先
-收束旧连接，不让迟到 open、page、error 或 finally 污染新代次。
-
-数据页由 Repository 内部连续物化，不把分页变成新的页面操作。只在相同来源与完整读取
-成立后原子发布当前有界窗口；读取失败保留最近有效内容并表达错误，不发布半份空集合。
-未改变的汇总/历史材料复用同一领域值，状态变化不重复读取它们。筛选项清理由完整权威
-集合证明，不能依据尚未读取的页推断删除。ViewState 只派生显示，不复制可写业务事实；
-页面不保留另一份 last snapshot，不在 build 中创建请求或修正 canonical 数据。
-
-退出先封闭需求和读取准入，等待已登记 open、消费、page、ACK 和 close；所有任务在首次
-await 前归属其 attempt。超时/关闭失败保留 unresolved，显式清理重试继续等待原资源，
-不重放读取之外的业务操作，也不新建连接掩盖旧连接未关闭。只读诊断消费 Repository 公共
-快照，不导入 feature 私有呈现、不另建统计缓存。
-
-迁移后删除 GUI 统计 bootstrap、常驻旧 topic、Client store/channel、旧 provider 和混合
-视图入口，以及旧 FRB 分支和孤儿生成物；Demo 与测试实现同一统计 port，不依赖旧链适配。
-新旧 API 转发、双写和失败回退均不属于目标架构。后续其他领域重构通过组合根与上述小型
-接口接线，不要求统计内部追随聚合 Client 或 Settings 的结构变化。
+- **清晰的公开契约边界**：领域层公共入口仅暴露不可变值对象、复合身份、只读状态与 `StatisticsRepository` 接口契约；传输端口（Port）与构造能力仅供适配层与应用装配层调用，内部归约器、可写数据源与原生句柄一律不对外公开。统计领域值仅保留唯一一条规范公共导入路径，不保留旧版混合模型包的重导出或类型别名；观察登记、内存预算与关闭报告直接复用中立的底层基础设施，不依赖旧版 Client 的私有实现。
+- **应用级注入与呈现解耦**：每个 `AppGraph` 注入独立的 `StatisticsRepository` 实例并负责在应用退出时将其关闭。设置页面外壳仅负责挂载统计入口并传递标签页可见性，统计功能模块（Feature）不感知 `AppGraph`、全局 Client 或其他业务模块的私有提供者（Provider）。生成式 `ViewModel` 消费注入的 `StatisticsRepository`，持有模型、推理强度（`effort`）与模型不匹配（`mismatch`）筛选条件及不可变呈现状态；`Connector` 绑定状态与强类型回调，纯视图组件（`View` / `Widget`）不直接读取 Provider、传输层或生成 DTO。
+- **观察生命周期与可见性租约**：注册观察时同步返回当前状态值，取消观察仅移除当前监听器。页面可见性需求通过独立租约管理：当最后一个可见性需求释放时，立即封闭旧观察代次并取消、等待推送流（Feed）与在途读取收束；若收束失败则保留原所有权责任与预算占用。重新进入统计标签页时拉取新基线，加载期间保留最近一次有效数据及其原始来源，但不将其冒充为新所有者的已就绪状态。销毁局部组件不会关闭应用级 `StatisticsRepository`，也不影响会话线程、时间线、输入草稿或会话费用；快速隐藏并重开页面时必须先收束旧连接，防止迟到的打开、分页、错误或 `finally` 回调污染新代次。
+- **内部连续物化与原子发布**：统计数据页由 `StatisticsRepository` 在内部连续拉取物化，不向界面暴露翻页交互；唯有当同一来源下的全部分页完整读取成立后，才原子发布当前有界统计窗口。读取失败时保留最近一次有效内容并暴露错误提示，不发布残缺的半份集合或空状态。未发生变化的汇总或历史材料直接复用同一领域值，仅状态标记变化时不重复拉取材料；筛选项的失效清理必须由完整权威集合证明，不得依据尚未读取完毕的分页推断某筛选项已被删除。`ViewState` 仅派生界面显示属性，不在组件 `build` 过程中发起请求或篡改权威数据。
+- **退出排空与旧链路清理**：关闭时先封闭可见性需求与读取准入，等待已登记的流打开、帧消费、分页读取、ACK 确认与底层关闭全部完成；所有异步任务在首次 `await` 前即绑定所属尝试（Attempt）。超时或关闭失败时保留未决记录（Unresolved），后续显式清理重试继续等待原资源，不新建连接掩盖未关闭句柄；只读诊断直接读取 `StatisticsRepository` 公共快照。架构迁移后彻底删除旧版 GUI 统计引导字段、常驻旧主题、Client 侧存储／通道、旧 Provider、混合视图入口及旧 FRB 分支；演示模式（Demo）与单元测试统一实现相同的统计端口契约。
