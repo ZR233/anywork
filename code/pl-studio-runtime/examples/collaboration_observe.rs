@@ -289,7 +289,15 @@ async fn collect(
                 .filter(|agent| agent.root_thread_id == thread.id)
             {
                 if observed.insert(agent.thread_id.clone()) {
-                    observers.push(observe(runtime, &agent.thread_id, artifacts).await?);
+                    match observe(runtime, &agent.thread_id, artifacts).await {
+                        Ok(handle) => observers.push(handle),
+                        // Directory membership precedes publication, so a just-reserved child
+                        // is not subscribable yet; skip this cycle and retry on the next poll.
+                        Err(error) => {
+                            println!("observation defers {}: {error}", agent.thread_id);
+                            observed.remove(&agent.thread_id);
+                        }
+                    }
                 }
             }
         }
