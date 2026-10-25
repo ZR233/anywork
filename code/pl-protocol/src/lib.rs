@@ -118,6 +118,7 @@ pub use studio::{
     PersistenceQueueSnapshot, ThreadPersistenceSnapshot, ThreadStorageExecution, ThreadStorageState,
 };
 pub use thread::mode::*;
+mod thread_audience;
 pub use thread::{
     CacheUsageSummary, THREAD_SCHEMA_VERSION, Thread, ThreadContextDisposition,
     ThreadModelRouteSnapshot, ThreadNotification, ThreadNotificationEnvelope,
@@ -125,6 +126,7 @@ pub use thread::{
     ThreadSnapshot, ThreadStatus, ThreadSubscriptionRequest, ThreadSubscriptionUpdate,
     ThreadTurnHistory, ThreadTurnPage, ThreadWorkspaceMode, TimelineTurn,
 };
+pub use thread_audience::*;
 mod session_entry;
 pub use session_entry::SessionEntry;
 pub use thread_item::*;

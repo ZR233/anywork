@@ -34,6 +34,13 @@ const INBOUND_CLAIM_TTL_SECONDS: i64 = 60;
 const INBOUND_RETRY_BASE_SECONDS: i64 = 5;
 const INBOUND_RETRY_MAX_SECONDS: i64 = 300;
 const INBOUND_RETRY_BUDGET: i64 = 8;
+/// 首输入就绪等待的独立上限：与失败退避预算完全分开。就绪等待不计数、不消耗失败
+/// 预算，只有这个期限到期才会以“准备未完成”收束为需处理。
+const INBOUND_READINESS_WAIT_BUDGET_SECONDS: i64 = 900;
+/// 就绪等待的重派节奏：只推进下一次尝试时间，不计入失败次数。
+const INBOUND_READINESS_POLL_SECONDS: i64 = 5;
+/// 就绪等待在既有 `diagnostic` 文本列里的持久标记（不新增 schema 列）。
+const INBOUND_READINESS_WAIT_MARKER: &str = "readiness-wait:";
 const INBOUND_PENDING_LIMIT: i64 = 64;
 const INBOUND_PENDING_BYTES: i64 = 512 * 1024;
 
@@ -233,6 +240,9 @@ pub(crate) enum WorkFinish<'a> {
     NeedsAttention(&'a str),
     /// 真实 retryable 失败：计数退避；预算耗尽自动转 needs_attention。
     Retryable(&'a str),
+    /// 等待外部就绪（首输入准备）：只推进下一次尝试时间，不计数、不耗失败预算；
+    /// 独立等待期限到期后才以“准备未完成”（而非失败次数）收束为 needs_attention。
+    Deferred(&'a str),
 }
 
 #[derive(Debug, Clone)]
@@ -288,6 +298,16 @@ pub struct BindingOperation {
     pub creation_id: String,
     pub thread_id: Option<String>,
     pub(in crate::bots) target: target::TargetProof,
+}
+
+/// The already-verified first authorization a caller wants committed together with the
+/// binding. Storage owns the generation/revision/delivery counters so the row can never
+/// disagree with the route it was written beside.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(in crate::bots) struct FirstStart {
+    pub bot_id: String,
+    pub app_id: String,
+    pub operation_id: String,
 }
 
 impl BotStateStore {
@@ -697,15 +717,42 @@ impl BotStateStore {
                 Ok(mark_outcome(updated.rows_affected()))
             }
             WorkFinish::Interrupted => {
-                let updated = db
+                let tx = db.begin().await.map_err(storage)?;
+                let row = tx
+                    .query_one_raw(statement(
+                        "SELECT diagnostic FROM inbound_work
+                         WHERE identity=? AND bot_id=? AND chat_id=? AND message_id=?
+                           AND claimed_by=? AND status='claimed' AND claimed_at>?",
+                        vec![
+                            identity.clone().into(),
+                            bot_id.to_string().into(),
+                            chat_id.to_string().into(),
+                            message_id.to_string().into(),
+                            worker_id.to_string().into(),
+                            lease_cutoff.into(),
+                        ],
+                    ))
+                    .await
+                    .map_err(storage)?;
+                let Some(row) = row else {
+                    tx.commit().await.map_err(storage)?;
+                    return Ok(MarkOutcome::LostClaim);
+                };
+                // 关停中断是“稍后继续”，不是新的起点：既有等待起点必须沿用，否则
+                // 每次重启都会把就绪等待期限重新计时。
+                let diagnostic = carried_readiness_wait(
+                    &stored_text(&row, "diagnostic")?,
+                    "runtime stopped before a local terminal fact",
+                );
+                let updated = tx
                     .execute_raw(statement(
                         "UPDATE inbound_work
-                         SET status='pending',
-                             diagnostic='runtime stopped before a local terminal fact',
+                         SET status='pending', diagnostic=?,
                              claimed_by='', claimed_at=0, next_attempt_at=0, updated_at=?
                          WHERE identity=? AND bot_id=? AND chat_id=? AND message_id=?
                            AND claimed_by=? AND status='claimed' AND claimed_at>?",
                         vec![
+                            diagnostic.into(),
                             now.into(),
                             identity.into(),
                             bot_id.to_string().into(),
@@ -717,7 +764,13 @@ impl BotStateStore {
                     ))
                     .await
                     .map_err(storage)?;
-                Ok(mark_outcome(updated.rows_affected()))
+                let applied = updated.rows_affected() == 1;
+                tx.commit().await.map_err(storage)?;
+                if applied {
+                    Ok(MarkOutcome::Applied)
+                } else {
+                    Ok(MarkOutcome::LostClaim)
+                }
             }
             WorkFinish::NeedsAttention(diagnostic) => {
                 let updated = db
@@ -745,7 +798,7 @@ impl BotStateStore {
                 let tx = db.begin().await.map_err(storage)?;
                 let row = tx
                     .query_one_raw(statement(
-                        "SELECT attempt_count FROM inbound_work
+                        "SELECT attempt_count, diagnostic FROM inbound_work
                          WHERE identity=? AND bot_id=? AND chat_id=? AND message_id=?
                            AND claimed_by=? AND status='claimed' AND claimed_at>?",
                         vec![
@@ -759,15 +812,22 @@ impl BotStateStore {
                     ))
                     .await
                     .map_err(storage)?;
-                let attempt_count = match row {
-                    Some(row) => stored_i64(&row, "attempt_count")?,
+                let (attempt_count, stored_diagnostic) = match row {
+                    Some(row) => (
+                        stored_i64(&row, "attempt_count")?,
+                        stored_text(&row, "diagnostic")?,
+                    ),
                     None => {
                         tx.commit().await.map_err(storage)?;
                         return Ok(MarkOutcome::LostClaim);
                     }
                 };
                 let next_count = attempt_count.saturating_add(1);
-                let updated = if next_count >= INBOUND_RETRY_BUDGET {
+                let exhausted = next_count >= INBOUND_RETRY_BUDGET;
+                // 可重试失败仍是同一轮等待的后续观测：既有等待起点沿用，最新原因并入
+                // 同一条诊断。终局收束不再等待，因此不携带等待标记。
+                let carried = carried_readiness_wait(&stored_diagnostic, diagnostic);
+                let updated = if exhausted {
                     tx.execute_raw(statement(
                         "UPDATE inbound_work
                          SET status='needs_attention',
@@ -799,9 +859,99 @@ impl BotStateStore {
                          WHERE identity=? AND bot_id=? AND chat_id=? AND message_id=?
                            AND claimed_by=? AND status='claimed' AND claimed_at>?",
                         vec![
-                            diagnostic.to_string().into(),
+                            carried.into(),
                             next_count.into(),
                             now.saturating_add(retry_backoff_seconds(next_count)).into(),
+                            now.into(),
+                            identity.into(),
+                            bot_id.to_string().into(),
+                            chat_id.to_string().into(),
+                            message_id.to_string().into(),
+                            worker_id.to_string().into(),
+                            lease_cutoff.into(),
+                        ],
+                    ))
+                    .await
+                    .map_err(storage)?
+                };
+                let applied = updated.rows_affected() == 1;
+                // 预算耗尽的终局必须与入站终态原子提交：失 claim 时既不入站终态，也不
+                // 收束创建身份。同一事务内重核活 claim（上面的 SELECT + UPDATE 谓词）
+                // 之后才写路由，任何一步失败整体回滚，不留半态。
+                if applied && exhausted {
+                    Self::close_creating_route_in(&tx, chat_id, diagnostic).await?;
+                }
+                tx.commit().await.map_err(storage)?;
+                if applied {
+                    Ok(MarkOutcome::Applied)
+                } else {
+                    Ok(MarkOutcome::LostClaim)
+                }
+            }
+            WorkFinish::Deferred(diagnostic) => {
+                let tx = db.begin().await.map_err(storage)?;
+                let row = tx
+                    .query_one_raw(statement(
+                        "SELECT diagnostic FROM inbound_work
+                         WHERE identity=? AND bot_id=? AND chat_id=? AND message_id=?
+                           AND claimed_by=? AND status='claimed' AND claimed_at>?",
+                        vec![
+                            identity.clone().into(),
+                            bot_id.to_string().into(),
+                            chat_id.to_string().into(),
+                            message_id.to_string().into(),
+                            worker_id.to_string().into(),
+                            lease_cutoff.into(),
+                        ],
+                    ))
+                    .await
+                    .map_err(storage)?;
+                let Some(row) = row else {
+                    tx.commit().await.map_err(storage)?;
+                    return Ok(MarkOutcome::LostClaim);
+                };
+                // 等待起点持久在既有 `diagnostic` 列：崩溃/重启后继续用同一起点计时。
+                let waiting_since =
+                    readiness_wait_started(&stored_text(&row, "diagnostic")?).unwrap_or(now);
+                let updated = if now.saturating_sub(waiting_since)
+                    >= INBOUND_READINESS_WAIT_BUDGET_SECONDS
+                {
+                    // 等待上限到期：诊断指向“准备未完成”，与失败次数无关；此时路由是
+                    // bound + PendingStart，不得按 creating 收束。
+                    tx.execute_raw(statement(
+                        "UPDATE inbound_work
+                         SET status='needs_attention', diagnostic=?, claimed_by='', claimed_at=0, updated_at=?
+                         WHERE identity=? AND bot_id=? AND chat_id=? AND message_id=?
+                           AND claimed_by=? AND status='claimed' AND claimed_at>?",
+                        vec![
+                            format!(
+                                "first input preparation did not complete within {INBOUND_READINESS_WAIT_BUDGET_SECONDS}s: {diagnostic}"
+                            )
+                            .into(),
+                            now.into(),
+                            identity.into(),
+                            bot_id.to_string().into(),
+                            chat_id.to_string().into(),
+                            message_id.to_string().into(),
+                            worker_id.to_string().into(),
+                            lease_cutoff.into(),
+                        ],
+                    ))
+                    .await
+                    .map_err(storage)?
+                } else {
+                    tx.execute_raw(statement(
+                        "UPDATE inbound_work
+                         SET status='pending', diagnostic=?, claimed_by='', claimed_at=0,
+                             next_attempt_at=?, updated_at=?
+                         WHERE identity=? AND bot_id=? AND chat_id=? AND message_id=?
+                           AND claimed_by=? AND status='claimed' AND claimed_at>?",
+                        vec![
+                            // 等待起点后面保留人类可读原因：标记与诊断同列并存，
+                            // 既不新增 schema 列也不丢可观察性。
+                            format!("{INBOUND_READINESS_WAIT_MARKER}{waiting_since}:{diagnostic}")
+                                .into(),
+                            now.saturating_add(INBOUND_READINESS_POLL_SECONDS).into(),
                             now.into(),
                             identity.into(),
                             bot_id.to_string().into(),
@@ -1014,12 +1164,13 @@ impl BotStateStore {
         }
     }
 
-    pub async fn bind_thread(
+    pub(in crate::bots) async fn bind_thread(
         &self,
         chat_id: &str,
         thread_id: &str,
         creation_id: &str,
         project_id: &str,
+        first_start: Option<&FirstStart>,
     ) -> Result<String, FeishuError> {
         let db = self.db().await?;
         let tx = db.begin().await.map_err(storage)?;
@@ -1147,8 +1298,101 @@ impl BotStateStore {
             &target,
         )
         .await?;
+        // 首次授权与绑定事实同批提交：不允许出现「绑定已可见、授权头缺失」的窗口。
+        // 只有当前创建意图（Created）才能自动建立；旧来源迁入的意图保持人工升级。
+        if let Some(first) = first_start {
+            if !matches!(target, target::TargetProof::Created { .. }) {
+                tx.commit().await.map_err(storage)?;
+                return Err(binding_needs_recovery());
+            }
+            audience::first_pending_start(
+                &tx,
+                first,
+                chat_id,
+                creation_id,
+                project_id,
+                revision,
+                thread_id,
+            )
+            .await?;
+        }
         tx.commit().await.map_err(storage)?;
         Ok(thread_id.to_string())
+    }
+
+    /// Collapses this chat's still-`creating` route on the caller's connection. The budget
+    /// exhaustion path calls it inside the same transaction that re-checked the live claim,
+    /// so a lost claim can never collapse a route a successor is still creating.
+    async fn close_creating_route_in<C: ConnectionTrait>(
+        db: &C,
+        chat_id: &str,
+        diagnostic: &str,
+    ) -> Result<bool, FeishuError> {
+        let row = db
+            .query_one_raw(statement(
+                "SELECT status, creation_id, project_id FROM thread_bindings WHERE chat_id=?",
+                vec![chat_id.to_string().into()],
+            ))
+            .await
+            .map_err(storage)?;
+        let Some(row) = row else {
+            return Ok(false);
+        };
+        if strict_text(&row, "status")? != "creating" {
+            return Ok(false);
+        }
+        let creation = strict_text(&row, "creation_id")?;
+        let project = strict_text(&row, "project_id")?;
+        if creation.is_empty() || project.is_empty() {
+            return Ok(false);
+        }
+        let reason = format!("conversation Thread creation did not complete: {diagnostic}");
+        Self::collapse_creating_route(db, chat_id, &creation, &project, &reason).await
+    }
+
+    /// Collapses a `creating` route that can never complete into the **existing**
+    /// `needs_attention` state: same status value, same `diagnostic` column and the same
+    /// revision bump as `mark_binding_attention` (which itself requires a bound route and
+    /// therefore cannot express this case). Idempotent: a second call changes nothing.
+    pub(in crate::bots) async fn mark_creating_attention(
+        &self,
+        chat_id: &str,
+        creation_id: &str,
+        project_id: &str,
+        diagnostic: &str,
+    ) -> Result<bool, FeishuError> {
+        let tx = self.db().await?.begin().await.map_err(storage)?;
+        let changed =
+            Self::collapse_creating_route(&tx, chat_id, creation_id, project_id, diagnostic)
+                .await?;
+        tx.commit().await.map_err(storage)?;
+        Ok(changed)
+    }
+
+    /// The single owner of the `creating → needs_attention` write; runs on a caller-provided
+    /// connection so the exhaustion path stays atomic with the inbound terminal state.
+    async fn collapse_creating_route<C: ConnectionTrait>(
+        db: &C,
+        chat_id: &str,
+        creation_id: &str,
+        project_id: &str,
+        diagnostic: &str,
+    ) -> Result<bool, FeishuError> {
+        let result = db
+            .execute_raw(statement(
+                "UPDATE thread_bindings SET status='needs_attention', diagnostic=?, updated_at=?, revision=revision+1
+                 WHERE chat_id=? AND creation_id=? AND project_id=? AND status='creating' AND revision<9223372036854775807",
+                vec![
+                    diagnostic.to_string().into(),
+                    unix_seconds().into(),
+                    chat_id.to_string().into(),
+                    creation_id.to_string().into(),
+                    project_id.to_string().into(),
+                ],
+            ))
+            .await
+            .map_err(storage)?;
+        Ok(result.rows_affected() == 1)
     }
 
     pub(in crate::bots) async fn mark_binding_attention(
@@ -1956,6 +2200,24 @@ fn retry_backoff_seconds(attempt: i64) -> i64 {
     INBOUND_RETRY_BASE_SECONDS
         .saturating_mul(1i64.checked_shl(shift).unwrap_or(INBOUND_RETRY_MAX_SECONDS))
         .min(INBOUND_RETRY_MAX_SECONDS)
+}
+
+/// 就绪等待的起点只从本模块写下的标记里解码；任何其它诊断文本都不算等待起点，
+/// 因此失败诊断不会被误当成“还在准备”，等待也不会被一次失败清零。
+fn readiness_wait_started(diagnostic: &str) -> Option<i64> {
+    let raw = diagnostic.strip_prefix(INBOUND_READINESS_WAIT_MARKER)?;
+    let (stamp, _) = raw.split_once(':').unwrap_or((raw, ""));
+    let start = stamp.parse::<i64>().ok()?;
+    (start > 0).then_some(start)
+}
+
+/// 失败/中断写入不得丢弃既有等待起点：起点沿用**最早**观测值，最新原因并入同一条
+/// 诊断。没有起点时原样写新原因，所以普通失败诊断不会被误当成等待。
+fn carried_readiness_wait(stored: &str, diagnostic: &str) -> String {
+    match readiness_wait_started(stored) {
+        Some(start) => format!("{INBOUND_READINESS_WAIT_MARKER}{start}:{diagnostic}"),
+        None => diagnostic.to_string(),
+    }
 }
 
 fn mark_outcome(rows_affected: u64) -> MarkOutcome {
@@ -3195,6 +3457,32 @@ async fn table_columns<C: ConnectionTrait>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ---- 首绑 / 首次授权 / 撤权 / 接续的持久状态不变量 ----
+    //
+    // 这些用例只断言 bot 状态库里可核对的持久事实（路由、授权头、代次、幂等与
+    // 失败/就绪预算），与上面的迁移、历史保存与恢复故障测试同风格；只能通过真实
+    // 平台行为观察的部分（下载次数、CardKit 语义）由 `bots_protocol_observe` 的
+    // 对应用例证明，不在这里用 runtime 单测表达。
+    use crate::bots::audience::{first_start, permission_close_reason, prepare_permission};
+    use crate::bots::config::{
+        BOT_CONFIG_SCHEMA_VERSION, BotConfigFile, BotPlatformConfig, FeishuBotConfig,
+    };
+    use crate::bots::protocol::error::FeishuErrorKind;
+    use crate::bots::storage::audience::Authorization;
+    use crate::bots::storage::target::{TargetClaim, TargetKind};
+    use crate::studio::audience_start::{AudienceStartIntent, AudienceStartReceipt};
+    use crate::studio::thread_audience::BotThreadInputReadiness;
+    use pl_protocol::studio::{
+        BotAuthorizationPhase, BotThreadSyncAction, ChangeBotThreadSyncRequest,
+    };
+    use pl_protocol::{BotAudienceCloseReason, BotAuthorizationHead, BotSyncCas};
+
+    const BOT: &str = "botfixture";
+    const CHAT: &str = "chat-1";
+    const THREAD: &str = "thread-1";
+    const PROJECT: &str = "project";
+    const APP: &str = "app";
 
     #[cfg(unix)]
     fn resource_claim(
@@ -5095,7 +5383,7 @@ mod tests {
         // 来源行缺席时绑定必须被拒，且不写之后必然打不开的 origin。
         assert!(
             store
-                .bind_thread("chat", "thread-c", "botthread:legacy:chat", "project")
+                .bind_thread("chat", "thread-c", "botthread:legacy:chat", "project", None)
                 .await
                 .is_err(),
             "binding referenced a source row that never reached storage"
@@ -5115,7 +5403,7 @@ mod tests {
         .await?;
         assert_eq!(
             store
-                .bind_thread("chat", "thread-c", "botthread:legacy:chat", "project")
+                .bind_thread("chat", "thread-c", "botthread:legacy:chat", "project", None)
                 .await?,
             "thread-c"
         );
@@ -5165,7 +5453,8 @@ mod tests {
                     "ui-chat",
                     "thread-u",
                     "botthread:legacy:ui-chat:op1",
-                    "project"
+                    "project",
+                    None
                 )
                 .await?,
             "thread-u"
@@ -5333,6 +5622,239 @@ mod tests {
         Ok(())
     }
 
+    /// R9：入站退避预算耗尽时，`creating` 路由必须拿到终局（`needs_attention`），
+    /// 不能留下永久占位；预算未耗尽时不得提前收束。
+    #[tokio::test]
+    async fn exhausted_inbound_budget_gives_the_creating_route_a_terminal_state()
+    -> Result<(), Box<dyn std::error::Error>> {
+        const DIAGNOSTIC: &str = "failed to create bot Thread: fixture";
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("budget.sqlite");
+        let store = BotStateStore::new(path);
+        let db = store.db().await?.clone();
+        let claim = target::TargetClaim::from_operation(
+            "botfixture",
+            "app",
+            "project",
+            "chat-1",
+            "botthread:botfixture:chat-1:op1",
+            "op1",
+            target::TargetKind::Group,
+        );
+        assert!(matches!(
+            store.claim_thread_binding(&claim).await?,
+            ThreadBindingClaim::Creating { .. }
+        ));
+        let inbound = FrozenInbound {
+            bot_id: "botfixture".to_string(),
+            message_id: "m1".to_string(),
+            chat_id: "chat-1".to_string(),
+            content_hash: "hash".to_string(),
+            text: "hi".to_string(),
+            attachments: Vec::new(),
+            open_id: String::new(),
+            chat_kind: "group".to_string(),
+            app_id: "app".to_string(),
+            project_id: "project".to_string(),
+            creation_id: "botthread:botfixture:chat-1:op1".to_string(),
+            binding_revision: 1,
+            watch_input: String::new(),
+        };
+        assert!(matches!(
+            store.admit_inbound(inbound).await?,
+            InboundAdmit::Fresh(_)
+        ));
+        // 首次失败就属于“项目缺席”这一类：只保留有界退避，路由与入站都不收束。
+        assert_eq!(
+            store
+                .claim_inbound_work("botfixture", "chat-1", "m1", "w1")
+                .await?,
+            InboundClaim::Claimed
+        );
+        assert_eq!(
+            store
+                .finish_inbound_work(
+                    "botfixture",
+                    "chat-1",
+                    "m1",
+                    "w1",
+                    WorkFinish::Retryable(DIAGNOSTIC),
+                )
+                .await?,
+            MarkOutcome::Applied
+        );
+        let route = store
+            .binding_for_chat("chat-1", "botfixture", "project")
+            .await?;
+        assert_eq!(
+            route.status, "creating",
+            "the first retryable failure must keep the creation intent"
+        );
+        assert_eq!(
+            store
+                .claim_inbound_work("botfixture", "chat-1", "m1", "w1")
+                .await?,
+            InboundClaim::NotDue,
+            "the inbound keeps its recorded backoff instead of being consumed"
+        );
+        // 只把重试计数器推进到边界：真实退避需要等待分钟级时间，探针不允许 sleep；
+        // 这里不涉及任何来源/证明事实（inbound 行本身由真实受理写入）。
+        let seed = |attempt: i64| {
+            let db = db.clone();
+            async move {
+                db.execute_unprepared(&format!(
+                    "UPDATE inbound_work SET attempt_count={attempt}, status='pending', \
+                     claimed_by='', claimed_at=0, next_attempt_at=0"
+                ))
+                .await
+                .unwrap();
+            }
+        };
+        // 未耗尽：下一次失败只计数，路由仍 creating、入站未被消费。
+        seed(6).await;
+        assert_eq!(
+            store
+                .claim_inbound_work("botfixture", "chat-1", "m1", "w1")
+                .await?,
+            InboundClaim::Claimed
+        );
+        assert_eq!(
+            store
+                .finish_inbound_work(
+                    "botfixture",
+                    "chat-1",
+                    "m1",
+                    "w1",
+                    WorkFinish::Retryable(DIAGNOSTIC),
+                )
+                .await?,
+            MarkOutcome::Applied
+        );
+        let route = store
+            .binding_for_chat("chat-1", "botfixture", "project")
+            .await?;
+        assert_eq!(
+            route.status, "creating",
+            "a retryable failure before the budget is exhausted must keep the creation intent"
+        );
+        assert_eq!(route.creation_id, "botthread:botfixture:chat-1:op1");
+        assert_eq!(
+            store
+                .claim_inbound_work("botfixture", "chat-1", "m1", "w1")
+                .await?,
+            InboundClaim::NotDue,
+            "the inbound must stay retryable with its recorded backoff"
+        );
+
+        // 耗尽：这一次失败必须让创建身份有终局。
+        seed(7).await;
+        assert_eq!(
+            store
+                .claim_inbound_work("botfixture", "chat-1", "m1", "w1")
+                .await?,
+            InboundClaim::Claimed
+        );
+        assert_eq!(
+            store
+                .finish_inbound_work(
+                    "botfixture",
+                    "chat-1",
+                    "m1",
+                    "w1",
+                    WorkFinish::Retryable(DIAGNOSTIC),
+                )
+                .await?,
+            MarkOutcome::Applied
+        );
+        let route = store
+            .binding_for_chat("chat-1", "botfixture", "project")
+            .await?;
+        assert_eq!(
+            route.status, "needs_attention",
+            "the exhausted budget must give the creating route a terminal state"
+        );
+        assert_eq!(
+            route.creation_id, "botthread:botfixture:chat-1:op1",
+            "no second creation intent may be invented"
+        );
+        assert!(route.thread_id.is_none());
+        assert!(
+            route.revision > 1,
+            "the collapse must advance the route revision"
+        );
+        // 入站与 binding 的诊断可对账（同一基础原因）。
+        let (diagnostic, applied_index) = match store.claim_thread_binding(&claim).await? {
+            ThreadBindingClaim::NeedsAttention { diagnostic } => (diagnostic, true),
+            _ => (String::new(), false),
+        };
+        assert!(
+            applied_index,
+            "the collapsed route must report needs-attention"
+        );
+        assert!(
+            diagnostic.contains(DIAGNOSTIC),
+            "binding diagnostic: {diagnostic}"
+        );
+        assert!(
+            store
+                .claim_thread_binding(&claim)
+                .await
+                .is_ok_and(|claim| matches!(claim, ThreadBindingClaim::NeedsAttention { .. })),
+            "a collapsed creation identity stays fully described"
+        );
+        assert_eq!(
+            store
+                .claim_inbound_work("botfixture", "chat-1", "m1", "w1")
+                .await?,
+            InboundClaim::NeedsAttention,
+            "the inbound must be collapsed with the binding, not silently dropped"
+        );
+        // 收束幂等：再次收束不再改变任何东西。
+        assert!(
+            !store
+                .mark_creating_attention(
+                    "chat-1",
+                    "botthread:botfixture:chat-1:op1",
+                    "project",
+                    "again",
+                )
+                .await?,
+            "the collapse must not repeat"
+        );
+        // 可恢复：既有显式创建按当前 revision 替换该路由。
+        let projection = store
+            .binding_for_chat("chat-1", "botfixture", "project")
+            .await?;
+        let replacement = target::TargetClaim::from_operation(
+            "botfixture",
+            "app",
+            "project",
+            "chat-1",
+            "botthread:botfixture:chat-1:op2",
+            "op2",
+            target::TargetKind::Group,
+        );
+        let operation = BindingOperation {
+            operation_id: "op2".to_string(),
+            bot_id: "botfixture".to_string(),
+            chat_id: "chat-1".to_string(),
+            content_hash: "hash2".to_string(),
+            expected_revision: projection.revision,
+            creation_id: "botthread:botfixture:chat-1:op2".to_string(),
+            thread_id: None,
+            target: replacement.freeze(projection.revision + 1),
+        };
+        store
+            .begin_binding_operation("chat-1", projection.revision, "project", &operation)
+            .await?;
+        let rebound = store
+            .binding_for_chat("chat-1", "botfixture", "project")
+            .await?;
+        assert_eq!(rebound.status, "creating");
+        assert_eq!(rebound.creation_id, "botthread:botfixture:chat-1:op2");
+        Ok(())
+    }
+
     async fn remove_schema9_fixture(db: &DatabaseConnection) -> Result<(), sea_orm::DbErr> {
         db.execute_unprepared("DROP TABLE bot_delivery_items; DROP TABLE bot_sync_operations; DROP TABLE bot_authorizations; DROP TABLE bot_audience_origins;
             DROP INDEX IF EXISTS bot_legacy_unfinished_count; DROP INDEX IF EXISTS bot_legacy_unknown_count; DROP INDEX IF EXISTS bot_legacy_attention_count;
@@ -5370,5 +5892,1301 @@ mod tests {
         state.lifecycle = lifecycle;
         state.confirmed_sequence = state.sequence;
         state.last_operation.as_mut().unwrap().status = card::CardOperationStatus::Confirmed;
+    }
+    fn config_with(enabled: bool, trusted_chat: bool, trusted_open: &[&str]) -> BotConfigFile {
+        BotConfigFile {
+            schema_version: BOT_CONFIG_SCHEMA_VERSION,
+            id: BOT.to_string(),
+            name: "fixture".to_string(),
+            project_id: PROJECT.to_string(),
+            platform: BotPlatformConfig::FeishuChina(FeishuBotConfig {
+                app_id: APP.to_string(),
+                trusted_open_ids: trusted_open.iter().map(|id| id.to_string()).collect(),
+                trusted_chat_ids: if trusted_chat {
+                    [CHAT.to_string()].into_iter().collect()
+                } else {
+                    Default::default()
+                },
+            }),
+            enabled,
+            tools_enabled: true,
+            model_route: None,
+            config_revision: 1,
+            selected_ref: None,
+            created_at: 1,
+            updated_at: 1,
+        }
+    }
+
+    fn config(enabled: bool, trusted_chat: bool) -> BotConfigFile {
+        config_with(enabled, trusted_chat, &[])
+    }
+
+    fn group_first(config: &BotConfigFile) -> Option<FirstStart> {
+        first_start(config, BOT, CHAT, APP, PROJECT, &TargetKind::Group)
+    }
+
+    fn creation() -> String {
+        format!("botthread:{BOT}:{CHAT}:op1")
+    }
+
+    /// 与真实 route 同身份的 pending 授权（用于没有自动授权头的场景）。
+    fn pending_at(creation_id: &str, generation: u64, binding_revision: u64) -> Authorization {
+        Authorization {
+            intent: AudienceStartIntent {
+                // 与 `first_start` 生成并持久化的自动 operation 身份一致；这两个用例都在
+                // 没有授权头的路由上构造 pending 事实，因此不能从 head() 取。
+                operation_id: "botprepare:botfixture:chat-1:1".to_string(),
+                thread_id: THREAD.to_string(),
+                authorization: pl_protocol::BotAuthorizationId {
+                    bot_id: BOT.to_string(),
+                    chat_id: CHAT.to_string(),
+                    generation,
+                },
+                binding_revision,
+            },
+            app_id: APP.to_string(),
+            project_id: PROJECT.to_string(),
+            creation_id: creation_id.to_string(),
+            revision: 1,
+            phase: BotAuthorizationPhase::PendingStart,
+            start: None,
+            closed: None,
+            delivery_version: 1,
+        }
+    }
+
+    /// 真实首次绑定路径：已冻结的创建意图 → 断言门控判据 → 原子绑定（含首次授权头）。
+    async fn bind_first(
+        path: &Path,
+        config: &BotConfigFile,
+    ) -> Result<BotStateStore, Box<dyn std::error::Error>> {
+        bind_kind(path, config, TargetKind::Group).await
+    }
+
+    async fn bind_kind(
+        path: &Path,
+        config: &BotConfigFile,
+        kind: TargetKind,
+    ) -> Result<BotStateStore, Box<dyn std::error::Error>> {
+        let store = BotStateStore::new(path.to_path_buf());
+        store.binding_for_chat(CHAT, BOT, PROJECT).await?;
+        let claim =
+            TargetClaim::from_operation(BOT, APP, PROJECT, CHAT, &creation(), "op1", kind.clone());
+        let operation = BindingOperation {
+            operation_id: "op1".to_string(),
+            bot_id: BOT.to_string(),
+            chat_id: CHAT.to_string(),
+            content_hash: "hash".to_string(),
+            expected_revision: 0,
+            creation_id: creation(),
+            thread_id: None,
+            target: claim.freeze(1),
+        };
+        store
+            .begin_binding_operation(CHAT, 0, PROJECT, &operation)
+            .await?;
+        let first = first_start(config, BOT, CHAT, APP, PROJECT, &kind);
+        store
+            .bind_thread(CHAT, THREAD, &creation(), PROJECT, first.as_ref())
+            .await?;
+        Ok(store)
+    }
+
+    async fn head(store: &BotStateStore) -> Authorization {
+        store
+            .audience_scope(THREAD, BOT)
+            .await
+            .expect("audience scope")
+            .expect("proven origin")
+            .head
+            .expect("authorization head")
+    }
+
+    fn receipt(intent: &AudienceStartIntent) -> AudienceStartReceipt {
+        AudienceStartReceipt {
+            version: 1,
+            intent: intent.clone(),
+            extension_revision: 1,
+            sequence: 1,
+            excluded_turn_id: None,
+        }
+    }
+
+    fn request(
+        operation_id: &str,
+        action: BotThreadSyncAction,
+        auth: &Authorization,
+    ) -> ChangeBotThreadSyncRequest {
+        ChangeBotThreadSyncRequest {
+            operation_id: operation_id.to_string(),
+            thread_id: THREAD.to_string(),
+            action,
+            expected: BotSyncCas {
+                binding_revision: auth.intent.binding_revision,
+                authorization_head: BotAuthorizationHead::Present {
+                    authorization: auth.reference(),
+                },
+            },
+        }
+    }
+
+    /// R1：首次授权判据只依据调用方已核验并冻结的目标事实 + 当前配置，不依赖账本行。
+    /// 受信群且**从未收到任何入站消息**时必须建立 gen1 PendingStart；其余三种未获准情形不建立。
+    #[tokio::test]
+    async fn first_start_uses_frozen_target_and_current_permission()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("gate.sqlite");
+        let trusted = config(true, true);
+        // 旧判据（从账本推断 chat 种类）在这个真实状态下不可用：没有任何入站行。
+        let probe = BotStateStore::new(path.clone());
+        probe.binding_for_chat(CHAT, BOT, PROJECT).await?;
+        assert!(
+            probe.audience_target(CHAT).await.is_err(),
+            "the ledger cannot classify a chat that never received an inbound message"
+        );
+        drop(probe);
+        // 新判据只依赖冻结目标 + 当前配置。
+        assert!(
+            group_first(&trusted).is_some(),
+            "a trusted group must establish its first authorization without ledger rows"
+        );
+        // 端到端：真实绑定 → gen1 PendingStart 存在。
+        let store = bind_first(&path, &trusted).await?;
+        let pending = head(&store).await;
+        assert_eq!(pending.phase, BotAuthorizationPhase::PendingStart);
+        assert_eq!(pending.intent.authorization.generation, 1);
+        drop(store);
+        // 未获准的三种情形一律不建立。
+        assert!(
+            group_first(&config(true, false)).is_none(),
+            "an untrusted group must not be authorized"
+        );
+        assert!(
+            group_first(&config(false, true)).is_none(),
+            "a disabled bot must not authorize anything"
+        );
+        assert!(
+            first_start(
+                &trusted,
+                BOT,
+                CHAT,
+                APP,
+                PROJECT,
+                &TargetKind::Direct {
+                    open_id: String::new(),
+                }
+            )
+            .is_none(),
+            "an unknown direct peer identity must not be trusted by inference"
+        );
+        assert!(
+            first_start(
+                &trusted,
+                BOT,
+                CHAT,
+                APP,
+                PROJECT,
+                &TargetKind::Direct {
+                    open_id: "peer".to_string(),
+                }
+            )
+            .is_none(),
+            "a direct peer outside the trusted set must not be authorized"
+        );
+        assert!(
+            first_start(
+                &config_with(true, false, &["peer"]),
+                BOT,
+                CHAT,
+                APP,
+                PROJECT,
+                &TargetKind::Direct {
+                    open_id: "peer".to_string(),
+                }
+            )
+            .is_some(),
+            "a trusted direct peer must be authorized from the frozen identity"
+        );
+        // 身份不匹配（app/project）同样不建立。
+        let mut changed = trusted.clone();
+        changed.project_id = "other-project".to_string();
+        assert!(group_first(&changed).is_none());
+        Ok(())
+    }
+
+    /// P1：没有任何首入站消息的新群会话，首次绑定后自动出现 generation 1 PendingStart，
+    /// 由同一 intent/op 推进到 Active；重启只看到一个 intent，不重复切 cut、不多推进
+    /// delivery_version，也不需要手动 Enable。
+    #[tokio::test]
+    async fn first_binding_commits_pending_start_and_resumes_once()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let path: PathBuf = directory.path().join("first-start.sqlite");
+        let store = bind_first(&path, &config(true, true)).await?;
+        let scope = store
+            .audience_scope(THREAD, BOT)
+            .await?
+            .expect("origin written with the binding");
+        let Some(pending) = scope.head else {
+            panic!("a permitted first binding must freeze its first authorization");
+        };
+        assert_eq!(pending.intent.authorization.generation, 1);
+        assert_eq!(pending.phase, BotAuthorizationPhase::PendingStart);
+        // 自动 operation 身份是持久事实：首绑写入的正是 `botprepare:<bot>:<chat>:1`
+        // （`audience::command::first_start_operation` 的生成结果，这里按持久值断言）。
+        assert_eq!(
+            pending.intent.operation_id,
+            "botprepare:botfixture:chat-1:1"
+        );
+        assert_eq!(pending.intent.binding_revision, 1);
+        assert_eq!(pending.delivery_version, 1);
+        assert!(pending.start.is_none());
+        assert!(pending.closed.is_none());
+        // 未激活时本机输入等待：Preparing 只表示确有正在准备的 cut。
+        assert_eq!(
+            store.thread_input_readiness(BOT, THREAD, PROJECT).await?,
+            BotThreadInputReadiness::Preparing
+        );
+        drop(store);
+
+        // 重启：同一库、同一 intent，只有一条待推进记录；不需要手动 Enable。
+        let reopened = BotStateStore::new(path.clone());
+        reopened.binding_for_chat(CHAT, BOT, PROJECT).await?;
+        let pendings = reopened.pending_syncs(("", 0)).await?;
+        assert_eq!(pendings.len(), 1, "restart must not open another intent");
+        assert_eq!(pendings[0].intent, pending.intent);
+        let receipt = receipt(&pendings[0].intent);
+        let activated = reopened.activate_sync(&receipt).await?;
+        assert!(
+            activated.changed,
+            "the saved cut must activate this generation"
+        );
+        assert_eq!(activated.authorization.phase, BotAuthorizationPhase::Active);
+        assert_eq!(activated.authorization.start.as_ref(), Some(&receipt));
+        assert_eq!(activated.authorization.intent, pending.intent);
+        assert_eq!(
+            activated.authorization.delivery_version, 1,
+            "activation must not advance the delivery version"
+        );
+        assert_eq!(
+            reopened
+                .thread_input_readiness(BOT, THREAD, PROJECT)
+                .await?,
+            BotThreadInputReadiness::Ready
+        );
+        // 同一 Saved 再次到达：不再切 cut、不再改代、不再加 revision。
+        let again = reopened.activate_sync(&receipt).await?;
+        assert!(!again.changed);
+        assert_eq!(
+            again.authorization.revision,
+            activated.authorization.revision
+        );
+        assert_eq!(again.authorization.start.as_ref(), Some(&receipt));
+        drop(reopened);
+
+        let third = BotStateStore::new(path);
+        third.binding_for_chat(CHAT, BOT, PROJECT).await?;
+        let settled = head(&third).await;
+        assert_eq!(settled.phase, BotAuthorizationPhase::Active);
+        assert_eq!(settled.intent.authorization.generation, 1);
+        assert_eq!(settled.start.as_ref(), Some(&receipt));
+        assert_eq!(settled.delivery_version, 1);
+        Ok(())
+    }
+
+    /// P2：撤权/停用/绑定不可用都必须显式 Closed 且记录真实原因；PendingStart 同样被封闭，
+    /// 之后 enable(true) 只开新代，不复活旧代、不自动授信。
+    #[tokio::test]
+    async fn revocation_closes_explicitly_and_enable_only_opens_a_new_generation()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("closed.sqlite");
+        let store = bind_first(&path, &config(true, true)).await?;
+        let pending = head(&store).await;
+        assert_eq!(pending.phase, BotAuthorizationPhase::PendingStart);
+
+        // 停用：PendingStart 也必须落到 Closed(BotDisabled)。
+        let (changed, _) = store
+            .prune_authorization_page(&config(false, true), ("", 0))
+            .await?;
+        assert!(
+            changed,
+            "disabling the bot must close the pending generation"
+        );
+        let closed = head(&store).await;
+        assert_eq!(closed.phase, BotAuthorizationPhase::Closed);
+        assert_eq!(
+            closed.closed.as_ref().map(|(reason, _)| *reason),
+            Some(BotAudienceCloseReason::BotDisabled)
+        );
+
+        // enable(true) 只在 Closed 上开新代；旧代保持原样。
+        let enabled = config(true, true);
+        let reopened = store
+            .change_sync(
+                &request("enable-1", BotThreadSyncAction::Enable, &closed),
+                &enabled,
+            )
+            .await?;
+        assert!(reopened.changed);
+        assert_eq!(
+            reopened.authorization.phase,
+            BotAuthorizationPhase::PendingStart
+        );
+        assert_eq!(
+            reopened.authorization.intent.authorization.generation, 2,
+            "enable must open the next generation, not revive the closed one"
+        );
+        let old = store
+            .audience_authorization(&closed.intent.authorization)
+            .await?
+            .expect("closed generation retained");
+        assert_eq!(old.phase, BotAuthorizationPhase::Closed);
+        assert_eq!(
+            old.closed.as_ref().map(|(reason, _)| *reason),
+            Some(BotAudienceCloseReason::BotDisabled)
+        );
+        // PendingStart 不能被 Enable 顶替/复活。
+        assert!(
+            store
+                .change_sync(
+                    &request(
+                        "enable-2",
+                        BotThreadSyncAction::Enable,
+                        &reopened.authorization
+                    ),
+                    &enabled
+                )
+                .await
+                .is_err(),
+            "a pending generation must not be replaced by another enable"
+        );
+        drop(store);
+
+        // 撤回信任（enabled 但不在 trusted 列表）→ TrustRevoked。
+        let untrusted_path = directory.path().join("trust.sqlite");
+        let untrusted = bind_first(&untrusted_path, &config(true, true)).await?;
+        let (changed, _) = untrusted
+            .prune_authorization_page(&config(true, false), ("", 0))
+            .await?;
+        assert!(changed);
+        let closed = head(&untrusted).await;
+        assert_eq!(closed.phase, BotAuthorizationPhase::Closed);
+        assert_eq!(
+            closed.closed.as_ref().map(|(reason, _)| *reason),
+            Some(BotAudienceCloseReason::TrustRevoked)
+        );
+        drop(untrusted);
+
+        // 绑定不可用 → BindingUnavailable（真实路径：mark_binding_attention）。
+        let unavailable_path = directory.path().join("unavailable.sqlite");
+        let unavailable = bind_first(&unavailable_path, &config(true, true)).await?;
+        let before = head(&unavailable).await;
+        let scope = unavailable
+            .audience_scope(THREAD, BOT)
+            .await?
+            .expect("origin");
+        assert!(
+            unavailable
+                .mark_binding_attention(
+                    &BoundThreadExpectation {
+                        chat_id: CHAT.to_string(),
+                        thread_id: THREAD.to_string(),
+                        creation_id: creation(),
+                        project_id: PROJECT.to_string(),
+                        revision: scope.binding.revision,
+                    },
+                    "fixture attention",
+                )
+                .await?
+        );
+        // attention 之后路由不再是 bound：直接读该代授权行验证封闭原因。
+        let closed = unavailable
+            .audience_authorization(&before.intent.authorization)
+            .await?
+            .expect("closed head retained");
+        assert_eq!(
+            closed.closed.as_ref().map(|(reason, _)| *reason),
+            Some(BotAudienceCloseReason::BindingUnavailable)
+        );
+        Ok(())
+    }
+
+    /// P3：Close 之后到达的 Saved 只能得到 Closed —— 不激活、不改 revision/原因、不推进
+    /// delivery_version、不产生 start。
+    #[tokio::test]
+    async fn late_saved_after_close_never_revives() -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("late-saved.sqlite");
+        let store = bind_first(&path, &config(true, true)).await?;
+        let pending = head(&store).await;
+        let closed = store
+            .change_sync(
+                &request("close-1", BotThreadSyncAction::Close, &pending),
+                &config(true, true),
+            )
+            .await?;
+        assert!(closed.changed);
+        assert_eq!(closed.authorization.phase, BotAuthorizationPhase::Closed);
+        assert_eq!(
+            closed
+                .authorization
+                .closed
+                .as_ref()
+                .map(|(reason, _)| *reason),
+            Some(BotAudienceCloseReason::LocalClose)
+        );
+        let settled_revision = closed.authorization.revision;
+        let settled_delivery = closed.authorization.delivery_version;
+
+        let late = store.activate_sync(&receipt(&pending.intent)).await?;
+        assert!(!late.changed, "a closed generation must not activate");
+        assert_eq!(late.authorization.phase, BotAuthorizationPhase::Closed);
+        assert_eq!(late.authorization.revision, settled_revision);
+        assert_eq!(late.authorization.closed, closed.authorization.closed);
+        assert_eq!(late.authorization.delivery_version, settled_delivery);
+        assert!(late.authorization.start.is_none());
+        drop(store);
+
+        // 新实例读同一事实：仍是 Closed(LocalClose)，没有 start。
+        let reopened = BotStateStore::new(path);
+        reopened.binding_for_chat(CHAT, BOT, PROJECT).await?;
+        let settled = head(&reopened).await;
+        assert_eq!(settled.phase, BotAuthorizationPhase::Closed);
+        assert_eq!(
+            settled.closed.as_ref().map(|(reason, _)| *reason),
+            Some(BotAudienceCloseReason::LocalClose)
+        );
+        assert!(settled.start.is_none());
+        assert_eq!(settled.delivery_version, settled_delivery);
+        Ok(())
+    }
+
+    /// R2：自动建立的 operation 身份不得被后续显式 Enable 复用（跨代复用会让宿主拒绝该代
+    /// cut）。复用必须 typed conflict 且不写新代；换全新 id 仍能开新代并激活。
+    #[tokio::test]
+    async fn auto_start_operation_id_cannot_be_reused_by_a_later_enable()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("operation-reuse.sqlite");
+        let store = bind_first(&path, &config(true, true)).await?;
+        let pending = head(&store).await;
+        let enabled = config(true, true);
+        let closed = store
+            .change_sync(
+                &request("close-1", BotThreadSyncAction::Close, &pending),
+                &enabled,
+            )
+            .await?;
+        assert_eq!(closed.authorization.phase, BotAuthorizationPhase::Closed);
+        // 复用自动 operation id 的 Enable：必须在写库前确定性拒绝。
+        let reused = pending.intent.operation_id.clone();
+        let rejected = match store
+            .change_sync(
+                &request(&reused, BotThreadSyncAction::Enable, &closed.authorization),
+                &enabled,
+            )
+            .await
+        {
+            Err(error) => error,
+            Ok(_) => panic!("reusing the automatic operation id must be a typed conflict"),
+        };
+        assert_eq!(
+            rejected.kind(),
+            FeishuErrorKind::Conflict,
+            "the reuse must be reported as a conflict, not as another failure"
+        );
+        assert!(
+            store
+                .audience_authorization(&pl_protocol::BotAuthorizationId {
+                    bot_id: BOT.to_string(),
+                    chat_id: CHAT.to_string(),
+                    generation: 2,
+                })
+                .await?
+                .is_none(),
+            "a rejected reuse must not write the next generation"
+        );
+        // 全新 id 仍能正常开新代并激活。
+        let fresh = store
+            .change_sync(
+                &request(
+                    "enable-fresh",
+                    BotThreadSyncAction::Enable,
+                    &closed.authorization,
+                ),
+                &enabled,
+            )
+            .await?;
+        assert_eq!(fresh.authorization.intent.authorization.generation, 2);
+        assert_eq!(
+            fresh.authorization.phase,
+            BotAuthorizationPhase::PendingStart
+        );
+        let activated = store
+            .activate_sync(&receipt(&fresh.authorization.intent))
+            .await?;
+        assert_eq!(activated.authorization.phase, BotAuthorizationPhase::Active);
+        Ok(())
+    }
+
+    /// R4：恢复路径的权限重核必须用该 chat 持久化的 typed 证明，不能回到账本推断。
+    #[tokio::test]
+    async fn prepare_permission_uses_the_persisted_typed_target()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        // A. GUI 新建群：Created{Group} 证明 + 零 inbound/observed 行。
+        let group_path = directory.path().join("prepare-group.sqlite");
+        let group = bind_first(&group_path, &config(true, true)).await?;
+        let pending = head(&group).await;
+        assert!(
+            group.audience_target(CHAT).await.is_err(),
+            "the ledger still cannot classify a chat that never received an inbound message"
+        );
+        prepare_permission(&group, &config(true, true), &pending)
+            .await
+            .expect("the recovery recheck must use the persisted typed target");
+        // 撤权事实 → Permission，并按真实原因关闭。
+        let untrusted = prepare_permission(&group, &config(true, false), &pending)
+            .await
+            .expect_err("an untrusted group must not pass the recheck");
+        assert_eq!(untrusted.kind(), FeishuErrorKind::Permission);
+        assert_eq!(
+            permission_close_reason(&config(true, false)),
+            BotAudienceCloseReason::TrustRevoked
+        );
+        assert_eq!(
+            permission_close_reason(&config(false, true)),
+            BotAudienceCloseReason::BotDisabled
+        );
+        drop(group);
+
+        // B. Direct 证明：判据来自 proof 里的 open_id，而不是 observed_directs。
+        let direct_path = directory.path().join("prepare-direct.sqlite");
+        let peer = TargetKind::Direct {
+            open_id: "peer".to_string(),
+        };
+        let direct = bind_kind(&direct_path, &config(true, false), peer.clone()).await?;
+        // 同一共享门控的拒绝由紧随其后的 `prepare_permission` 断言与真实用例覆盖。
+        let pending = pending_at(&creation(), 1, 1);
+        let rejected = prepare_permission(&direct, &config(true, false), &pending)
+            .await
+            .expect_err("an untrusted direct peer must not pass the recheck");
+        assert_eq!(rejected.kind(), FeishuErrorKind::Permission);
+        prepare_permission(&direct, &config_with(true, false, &["peer"]), &pending)
+            .await
+            .expect("a trusted direct peer must pass from its frozen identity");
+        Ok(())
+    }
+
+    /// R7：Created 证明与 pending auth / route 的身份必须逐字段等值；「无 binding 行」不得
+    /// 回退账本推断。错配一律 fail-closed（不关闭真实授权）。
+    #[tokio::test]
+    async fn prepare_permission_requires_matching_identity()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("identity.sqlite");
+        let store = bind_first(&path, &config(true, true)).await?;
+        let auth = head(&store).await;
+        let trusted = config(true, true);
+        prepare_permission(&store, &trusted, &auth)
+            .await
+            .expect("matching route/proof/pending identity");
+
+        let cases: [(&str, Authorization); 6] = [
+            ("other chat", {
+                let mut broken = auth.clone();
+                broken.intent.authorization.chat_id = "other-chat".to_string();
+                broken
+            }),
+            ("other creation", {
+                let mut broken = auth.clone();
+                broken.creation_id = "botthread:other".to_string();
+                broken
+            }),
+            ("other binding revision", {
+                let mut broken = auth.clone();
+                broken.intent.binding_revision = 2;
+                broken
+            }),
+            ("other bot", {
+                let mut broken = auth.clone();
+                broken.intent.authorization.bot_id = "otherbotfixture".to_string();
+                broken
+            }),
+            ("other app", {
+                let mut broken = auth.clone();
+                broken.app_id = "other-app".to_string();
+                broken
+            }),
+            ("other project", {
+                let mut broken = auth.clone();
+                broken.project_id = "other-project".to_string();
+                broken
+            }),
+        ];
+        for (label, broken) in cases {
+            let error = match prepare_permission(&store, &trusted, &broken).await {
+                Ok(()) => panic!("{label} must not pass the recovery recheck"),
+                Err(error) => error,
+            };
+            assert_eq!(
+                error.kind(),
+                FeishuErrorKind::Unavailable,
+                "{label} must fail closed as an inconsistency, not as a permission fact"
+            );
+            assert!(!error.retryable(), "{label} is not a transient failure");
+        }
+        // 错配不得关闭真实授权：head 仍是 PendingStart。
+        assert_eq!(
+            head(&store).await.phase,
+            BotAuthorizationPhase::PendingStart,
+            "an inconsistent identity must not close the pending authorization"
+        );
+        drop(store);
+
+        // 「无 binding 行」即使账本可分类，也必须 fail-closed。
+        let orphan_path = directory.path().join("orphan.sqlite");
+        let orphan = BotStateStore::new(orphan_path);
+        orphan.binding_for_chat(CHAT, BOT, PROJECT).await?;
+        orphan.observe_direct(CHAT, Some("peer"), None).await?;
+        assert!(
+            orphan.audience_target(CHAT).await.is_ok(),
+            "the ledger can classify this chat, so a fallback would wrongly pass"
+        );
+        let error = match prepare_permission(
+            &orphan,
+            &config_with(true, false, &["peer"]),
+            &pending_at(&creation(), 1, 1),
+        )
+        .await
+        {
+            Ok(()) => panic!("a missing binding row must not fall back to the ledger"),
+            Err(error) => error,
+        };
+        assert_eq!(error.kind(), FeishuErrorKind::Unavailable);
+        Ok(())
+    }
+
+    /// R3：未获许可的首次绑定不建立授权头，且该已绑定 Thread 在本机必须 `Ready`
+    /// （不能永久 `Preparing` 阻塞输入）。
+    #[tokio::test]
+    async fn unpermitted_binding_establishes_no_authorization_and_stays_ready()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("unpermitted.sqlite");
+        let store = bind_first(&path, &config(true, false)).await?;
+        let scope = store.audience_scope(THREAD, BOT).await?.expect("origin");
+        assert!(
+            scope.head.is_none(),
+            "an unverified permission must not freeze an authorization"
+        );
+        assert_eq!(
+            store.thread_input_readiness(BOT, THREAD, PROJECT).await?,
+            BotThreadInputReadiness::Ready,
+            "a bound Thread without any authorization head must stay locally usable"
+        );
+        Ok(())
+    }
+
+    /// R8：创建身份不可重试冲突必须一次性收束为可见需处理状态；可重试分类不得收束。
+    #[tokio::test]
+    async fn identity_conflict_collapses_the_creating_route_once()
+    -> Result<(), Box<dyn std::error::Error>> {
+        const DIAGNOSTIC: &str = "conversation Thread creation identity cannot be bound";
+        // 纯分类/项目事实探针就近放在 `bots::creation` 的单元测试里（纯函数，不涉持久状态）。
+
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("identity-conflict.sqlite");
+        let store = BotStateStore::new(path);
+        store.binding_for_chat(CHAT, BOT, PROJECT).await?;
+        let claim_target = TargetClaim::from_operation(
+            BOT,
+            APP,
+            PROJECT,
+            CHAT,
+            &creation(),
+            "op1",
+            TargetKind::Group,
+        );
+        assert!(matches!(
+            store.claim_thread_binding(&claim_target).await?,
+            ThreadBindingClaim::Creating { .. }
+        ));
+        // 可重试分类（`bots::creation` 的纯函数探针）下不收束：创建意图仍保留。
+        assert!(matches!(
+            store.claim_thread_binding(&claim_target).await?,
+            ThreadBindingClaim::Creating { .. }
+        ));
+
+        // 身份冲突：一次性收束（幂等）。
+        assert!(
+            store
+                .mark_creating_attention(CHAT, &creation(), PROJECT, DIAGNOSTIC)
+                .await?
+        );
+        assert!(
+            !store
+                .mark_creating_attention(CHAT, &creation(), PROJECT, DIAGNOSTIC)
+                .await?,
+            "the collapse must happen exactly once"
+        );
+        match store.claim_thread_binding(&claim_target).await? {
+            ThreadBindingClaim::NeedsAttention { diagnostic } => {
+                assert_eq!(diagnostic, DIAGNOSTIC, "the real reason must be visible");
+            }
+            _ => panic!("a collapsed creation identity must report needs-attention"),
+        }
+        let projection = store.binding_for_chat(CHAT, BOT, PROJECT).await?;
+        assert_eq!(projection.status, "needs_attention");
+        assert_eq!(
+            projection.creation_id,
+            creation(),
+            "the collapsed route must keep the original creation identity"
+        );
+        assert!(
+            projection.thread_id.is_none(),
+            "no partially bound Thread may be recorded"
+        );
+
+        // 既有恢复入口：显式创建可以按当前 revision 替换该路由（新操作/新创建意图），
+        // 因此不会把该 chat 永久挡住。
+        let replacement = TargetClaim::from_operation(
+            BOT,
+            APP,
+            PROJECT,
+            CHAT,
+            "botthread:botfixture:chat-1:op2",
+            "op2",
+            TargetKind::Group,
+        );
+        let operation = BindingOperation {
+            operation_id: "op2".to_string(),
+            bot_id: BOT.to_string(),
+            chat_id: CHAT.to_string(),
+            content_hash: "hash2".to_string(),
+            expected_revision: projection.revision,
+            creation_id: "botthread:botfixture:chat-1:op2".to_string(),
+            thread_id: None,
+            target: replacement.freeze(projection.revision + 1),
+        };
+        store
+            .begin_binding_operation(CHAT, projection.revision, PROJECT, &operation)
+            .await?;
+        let rebound = store.binding_for_chat(CHAT, BOT, PROJECT).await?;
+        assert_eq!(rebound.status, "creating");
+        assert_eq!(
+            rebound.creation_id, operation.creation_id,
+            "recovery replaces the intent instead of creating a second one"
+        );
+        assert_eq!(rebound.revision, projection.revision + 1);
+        Ok(())
+    }
+
+    /// 入站账本的完整持久行（就绪等待/失败预算探针共用）。
+    struct WorkLedger {
+        status: String,
+        diagnostic: String,
+        claimed_by: String,
+        attempt_count: i64,
+        next_attempt_at: i64,
+    }
+
+    async fn work_ledger(store: &BotStateStore, identity: &str) -> WorkLedger {
+        let db = store.db().await.unwrap();
+        let row = db
+            .query_one_raw(statement(
+                "SELECT status, diagnostic, claimed_by, attempt_count, next_attempt_at
+                 FROM inbound_work WHERE identity=?",
+                vec![identity.to_string().into()],
+            ))
+            .await
+            .unwrap()
+            .expect("inbound work row");
+        WorkLedger {
+            status: row.try_get("", "status").unwrap(),
+            diagnostic: row.try_get("", "diagnostic").unwrap(),
+            claimed_by: row.try_get("", "claimed_by").unwrap(),
+            attempt_count: row.try_get("", "attempt_count").unwrap(),
+            next_attempt_at: row.try_get("", "next_attempt_at").unwrap(),
+        }
+    }
+
+    /// 就绪等待（首输入准备）是正常等待而不是失败：反复等待不消耗失败预算、不收束
+    /// `bound + PendingStart` 路由；就绪到达后仍可正常完成。
+    #[tokio::test]
+    async fn readiness_waiting_never_consumes_the_failure_budget()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("readiness-wait.sqlite");
+        let store = bind_first(&path, &config(true, true)).await?;
+        assert_eq!(
+            head(&store).await.phase,
+            BotAuthorizationPhase::PendingStart,
+            "the ready-wait probe needs the real first-bound pending authorization"
+        );
+        assert!(matches!(
+            store.admit_inbound(probe_inbound("m-ready")).await?,
+            InboundAdmit::Fresh(_)
+        ));
+        let identity = inbound_identity(BOT, CHAT, "m-ready");
+        let db = store.db().await?.clone();
+        // 失败预算只有 8 次：就绪等待 12 轮仍必须可继续，且一次失败都不计。
+        for round in 0..12 {
+            db.execute_unprepared(
+                "UPDATE inbound_work SET status='pending', claimed_by='', claimed_at=0, next_attempt_at=0",
+            )
+            .await?;
+            assert_eq!(
+                store.claim_inbound_work(BOT, CHAT, "m-ready", "w1").await?,
+                InboundClaim::Claimed
+            );
+            assert_eq!(
+                store
+                    .finish_inbound_work(
+                        BOT,
+                        CHAT,
+                        "m-ready",
+                        "w1",
+                        WorkFinish::Deferred("bot conversation is preparing its first input"),
+                    )
+                    .await?,
+                MarkOutcome::Applied
+            );
+            let ledger = work_ledger(&store, &identity).await;
+            assert_eq!(
+                ledger.status, "pending",
+                "round {round} must stay reschedulable"
+            );
+            assert_eq!(ledger.claimed_by, "", "the claim must be released");
+            assert_eq!(
+                ledger.attempt_count, 0,
+                "round {round}: readiness waiting must never consume the failure budget"
+            );
+            assert!(
+                ledger.next_attempt_at > 0,
+                "round {round}: the wait must schedule its own next attempt"
+            );
+            assert!(
+                ledger.diagnostic.contains("preparing its first input"),
+                "round {round}: the wait must stay visible: {}",
+                ledger.diagnostic
+            );
+            assert_eq!(
+                store.binding_for_chat(CHAT, BOT, PROJECT).await?.status,
+                "bound",
+                "round {round}: readiness waiting must never collapse a bound route"
+            );
+        }
+        // 就绪到达后同一入站仍可正常完成。
+        db.execute_unprepared(
+            "UPDATE inbound_work SET status='pending', claimed_by='', claimed_at=0, next_attempt_at=0",
+        )
+        .await?;
+        assert_eq!(
+            store.claim_inbound_work(BOT, CHAT, "m-ready", "w1").await?,
+            InboundClaim::Claimed
+        );
+        assert_eq!(
+            store
+                .finish_inbound_work(BOT, CHAT, "m-ready", "w1", WorkFinish::Completed)
+                .await?,
+            MarkOutcome::Applied
+        );
+        assert_eq!(
+            store.claim_inbound_work(BOT, CHAT, "m-ready", "w1").await?,
+            InboundClaim::Completed
+        );
+        Ok(())
+    }
+
+    /// 就绪等待必须有自己明示的上限：到期以“准备未完成”收束，不按失败次数归因，
+    /// 也不触碰 `bound` 路由。
+    #[tokio::test]
+    async fn readiness_waiting_expires_on_its_own_deadline()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("readiness-expired.sqlite");
+        let store = bind_first(&path, &config(true, true)).await?;
+        assert!(matches!(
+            store.admit_inbound(probe_inbound("m-expired")).await?,
+            InboundAdmit::Fresh(_)
+        ));
+        let identity = inbound_identity(BOT, CHAT, "m-expired");
+        let db = store.db().await?.clone();
+        // 真实时间推进需要 15 分钟：只预置持久等待起点（等待标记，不涉任何来源事实）。
+        db.execute_unprepared(&format!(
+            "UPDATE inbound_work SET status='pending', claimed_by='', claimed_at=0, next_attempt_at=0, \
+             diagnostic='{INBOUND_READINESS_WAIT_MARKER}{}'",
+            unix_seconds() - INBOUND_READINESS_WAIT_BUDGET_SECONDS - 1
+        ))
+        .await?;
+        assert_eq!(
+            store
+                .claim_inbound_work(BOT, CHAT, "m-expired", "w1")
+                .await?,
+            InboundClaim::Claimed
+        );
+        assert_eq!(
+            store
+                .finish_inbound_work(
+                    BOT,
+                    CHAT,
+                    "m-expired",
+                    "w1",
+                    WorkFinish::Deferred("bot conversation is preparing its first input"),
+                )
+                .await?,
+            MarkOutcome::Applied
+        );
+        let ledger = work_ledger(&store, &identity).await;
+        assert_eq!(ledger.status, "needs_attention");
+        assert!(
+            ledger
+                .diagnostic
+                .contains("first input preparation did not complete"),
+            "the terminal diagnostic must name the unfinished preparation: {}",
+            ledger.diagnostic
+        );
+        assert!(
+            !ledger.diagnostic.contains("recovery budget exhausted"),
+            "readiness waiting must never be reported as an exhausted failure budget: {}",
+            ledger.diagnostic
+        );
+        assert_eq!(
+            store.binding_for_chat(CHAT, BOT, PROJECT).await?.status,
+            "bound",
+            "only the inbound work becomes terminal; the routing row stays bound"
+        );
+        assert_eq!(
+            store
+                .claim_inbound_work(BOT, CHAT, "m-expired", "w1")
+                .await?,
+            InboundClaim::NeedsAttention
+        );
+        Ok(())
+    }
+
+    /// 预算耗尽的收束必须 claim-fenced：失租的旧持有者既不能写入站终态，也不能把
+    /// 后继仍在创建的 `creating` 路由判成终局；有效认领时两者一起生效。
+    #[tokio::test]
+    async fn exhausted_budget_collapse_requires_a_live_claim()
+    -> Result<(), Box<dyn std::error::Error>> {
+        const DIAGNOSTIC: &str = "failed to create bot Thread: fixture";
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("claim-fenced.sqlite");
+        let store = BotStateStore::new(path);
+        let claim = target::TargetClaim::from_operation(
+            BOT,
+            APP,
+            PROJECT,
+            CHAT,
+            &creation(),
+            "op1",
+            target::TargetKind::Group,
+        );
+        assert!(matches!(
+            store.claim_thread_binding(&claim).await?,
+            ThreadBindingClaim::Creating { .. }
+        ));
+        assert!(matches!(
+            store.admit_inbound(probe_inbound("m-fence")).await?,
+            InboundAdmit::Fresh(_)
+        ));
+        let identity = inbound_identity(BOT, CHAT, "m-fence");
+        let db = store.db().await?.clone();
+
+        // A. 认领已被另一 worker 接管：旧持有者不得收束任何东西。
+        db.execute_unprepared(&format!(
+            "UPDATE inbound_work SET status='claimed', attempt_count=7, claimed_by='w2', claimed_at={}",
+            unix_seconds()
+        ))
+        .await?;
+        assert_eq!(
+            store
+                .finish_inbound_work(
+                    BOT,
+                    CHAT,
+                    "m-fence",
+                    "w1",
+                    WorkFinish::Retryable(DIAGNOSTIC)
+                )
+                .await?,
+            MarkOutcome::LostClaim
+        );
+        assert_eq!(
+            store.binding_for_chat(CHAT, BOT, PROJECT).await?.status,
+            "creating",
+            "a lost claim must never collapse the route a successor is still creating"
+        );
+        let ledger = work_ledger(&store, &identity).await;
+        assert_eq!(
+            (ledger.status.as_str(), ledger.claimed_by.as_str()),
+            ("claimed", "w2"),
+            "a lost claim must not rewrite the inbound terminal state either"
+        );
+
+        // B. 同一 worker 但租约已过期：同样不得收束。
+        db.execute_unprepared(&format!(
+            "UPDATE inbound_work SET status='claimed', claimed_by='w1', claimed_at={}",
+            unix_seconds() - INBOUND_CLAIM_TTL_SECONDS - 1
+        ))
+        .await?;
+        assert_eq!(
+            store
+                .finish_inbound_work(
+                    BOT,
+                    CHAT,
+                    "m-fence",
+                    "w1",
+                    WorkFinish::Retryable(DIAGNOSTIC)
+                )
+                .await?,
+            MarkOutcome::LostClaim
+        );
+        assert_eq!(
+            store.binding_for_chat(CHAT, BOT, PROJECT).await?.status,
+            "creating",
+            "an expired lease must not collapse the creating route"
+        );
+
+        // C. 有效认领：入站终态与路由收束在同一次调用里一起生效。
+        db.execute_unprepared(&format!(
+            "UPDATE inbound_work SET status='claimed', claimed_by='w1', claimed_at={}",
+            unix_seconds()
+        ))
+        .await?;
+        assert_eq!(
+            store
+                .finish_inbound_work(
+                    BOT,
+                    CHAT,
+                    "m-fence",
+                    "w1",
+                    WorkFinish::Retryable(DIAGNOSTIC)
+                )
+                .await?,
+            MarkOutcome::Applied
+        );
+        let route = store.binding_for_chat(CHAT, BOT, PROJECT).await?;
+        assert_eq!(route.status, "needs_attention");
+        assert!(
+            route
+                .diagnostic
+                .as_deref()
+                .is_some_and(|diagnostic| diagnostic.contains(DIAGNOSTIC)),
+            "the collapsed route must carry the real reason"
+        );
+        let ledger = work_ledger(&store, &identity).await;
+        assert_eq!(ledger.status, "needs_attention");
+        assert!(
+            ledger.diagnostic.contains("recovery budget exhausted"),
+            "the inbound must record the exhausted budget: {}",
+            ledger.diagnostic
+        );
+        Ok(())
+    }
+
+    /// 三个探针共用的真实入站事实（与 `bots_protocol_observe` 的直聊入站同形状）。
+    fn probe_inbound(message_id: &str) -> FrozenInbound {
+        FrozenInbound {
+            bot_id: BOT.to_string(),
+            message_id: message_id.to_string(),
+            chat_id: CHAT.to_string(),
+            content_hash: format!("hash-{message_id}"),
+            text: "hi".to_string(),
+            attachments: Vec::new(),
+            open_id: String::new(),
+            chat_kind: "group".to_string(),
+            app_id: APP.to_string(),
+            project_id: PROJECT.to_string(),
+            creation_id: creation(),
+            binding_revision: 1,
+            watch_input: String::new(),
+        }
+    }
+
+    /// 关停中断是“稍后继续”而不是新的等待起点：`Interrupted` 必须沿用已存在的
+    /// `readiness-wait:<start>`，否则每次重启都会把 900s 期限重新计时。
+    #[tokio::test]
+    async fn interrupted_then_deferred_keeps_the_original_wait_deadline()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("readiness-interrupted.sqlite");
+        let store = bind_first(&path, &config(true, true)).await?;
+        assert!(matches!(
+            store.admit_inbound(probe_inbound("m-interrupted")).await?,
+            InboundAdmit::Fresh(_)
+        ));
+        let identity = inbound_identity(BOT, CHAT, "m-interrupted");
+        let db = store.db().await?.clone();
+        let start = unix_seconds() - INBOUND_READINESS_WAIT_BUDGET_SECONDS - 1;
+        db.execute_unprepared(&format!(
+            "UPDATE inbound_work SET status='pending', claimed_by='', claimed_at=0, next_attempt_at=0, \
+             diagnostic='{INBOUND_READINESS_WAIT_MARKER}{start}:preparing'"
+        ))
+        .await?;
+        assert_eq!(
+            store
+                .claim_inbound_work(BOT, CHAT, "m-interrupted", "w1")
+                .await?,
+            InboundClaim::Claimed
+        );
+        assert_eq!(
+            store
+                .finish_inbound_work(BOT, CHAT, "m-interrupted", "w1", WorkFinish::Interrupted)
+                .await?,
+            MarkOutcome::Applied
+        );
+        let ledger = work_ledger(&store, &identity).await;
+        assert_eq!(
+            ledger.status, "pending",
+            "an interrupted run must stay reschedulable"
+        );
+        assert_eq!(
+            readiness_wait_started(&ledger.diagnostic),
+            Some(start),
+            "the interruption must not restart the readiness deadline: {}",
+            ledger.diagnostic
+        );
+        // 再认领后到达就绪：等待已超期，必须直接收束而不是回到 pending 重新计时。
+        assert_eq!(
+            store
+                .claim_inbound_work(BOT, CHAT, "m-interrupted", "w1")
+                .await?,
+            InboundClaim::Claimed
+        );
+        assert_eq!(
+            store
+                .finish_inbound_work(
+                    BOT,
+                    CHAT,
+                    "m-interrupted",
+                    "w1",
+                    WorkFinish::Deferred("bot conversation is preparing its first input"),
+                )
+                .await?,
+            MarkOutcome::Applied
+        );
+        let ledger = work_ledger(&store, &identity).await;
+        assert_eq!(
+            ledger.status, "needs_attention",
+            "an expired wait must not be refreshed by a restart"
+        );
+        assert!(
+            ledger
+                .diagnostic
+                .contains("first input preparation did not complete"),
+            "the terminal reason must name the unfinished preparation: {}",
+            ledger.diagnostic
+        );
+        assert!(
+            !ledger.diagnostic.contains("recovery budget exhausted"),
+            "readiness waiting must never be reported as an exhausted budget: {}",
+            ledger.diagnostic
+        );
+        assert_eq!(
+            store.binding_for_chat(CHAT, BOT, PROJECT).await?.status,
+            "bound",
+            "the routing row and its pending authorization stay untouched"
+        );
+        Ok(())
+    }
+
+    /// 可重试失败同样是同一轮等待的后续观测：`Retryable` 不得丢掉等待起点。
+    #[tokio::test]
+    async fn retryable_failure_then_deferred_keeps_the_original_wait_deadline()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("readiness-retryable.sqlite");
+        let store = bind_first(&path, &config(true, true)).await?;
+        assert!(matches!(
+            store.admit_inbound(probe_inbound("m-retryable")).await?,
+            InboundAdmit::Fresh(_)
+        ));
+        let identity = inbound_identity(BOT, CHAT, "m-retryable");
+        let db = store.db().await?.clone();
+        let start = unix_seconds() - INBOUND_READINESS_WAIT_BUDGET_SECONDS - 1;
+        db.execute_unprepared(&format!(
+            "UPDATE inbound_work SET status='pending', claimed_by='', claimed_at=0, next_attempt_at=0, \
+             diagnostic='{INBOUND_READINESS_WAIT_MARKER}{start}:preparing'"
+        ))
+        .await?;
+        assert_eq!(
+            store
+                .claim_inbound_work(BOT, CHAT, "m-retryable", "w1")
+                .await?,
+            InboundClaim::Claimed
+        );
+        assert_eq!(
+            store
+                .finish_inbound_work(
+                    BOT,
+                    CHAT,
+                    "m-retryable",
+                    "w1",
+                    WorkFinish::Retryable("bot input readiness is unreadable: fixture"),
+                )
+                .await?,
+            MarkOutcome::Applied
+        );
+        let ledger = work_ledger(&store, &identity).await;
+        assert_eq!(ledger.status, "failed");
+        assert_eq!(
+            readiness_wait_started(&ledger.diagnostic),
+            Some(start),
+            "a retryable failure must not restart the readiness deadline: {}",
+            ledger.diagnostic
+        );
+        assert!(
+            ledger
+                .diagnostic
+                .contains("bot input readiness is unreadable"),
+            "the newest reason must stay visible next to the preserved start: {}",
+            ledger.diagnostic
+        );
+        // 失败退避到期后再认领：等待已超期，必须直接收束。
+        db.execute_unprepared(&format!(
+            "UPDATE inbound_work SET status='pending', claimed_by='', claimed_at=0, next_attempt_at=0, \
+             diagnostic='{INBOUND_READINESS_WAIT_MARKER}{start}:preparing'"
+        ))
+        .await?;
+        assert_eq!(
+            store
+                .claim_inbound_work(BOT, CHAT, "m-retryable", "w1")
+                .await?,
+            InboundClaim::Claimed
+        );
+        assert_eq!(
+            store
+                .finish_inbound_work(
+                    BOT,
+                    CHAT,
+                    "m-retryable",
+                    "w1",
+                    WorkFinish::Deferred("bot conversation is preparing its first input"),
+                )
+                .await?,
+            MarkOutcome::Applied
+        );
+        let ledger = work_ledger(&store, &identity).await;
+        assert_eq!(
+            ledger.status, "needs_attention",
+            "a retryable failure must not refresh the readiness deadline"
+        );
+        assert!(
+            ledger
+                .diagnostic
+                .contains("first input preparation did not complete"),
+            "the terminal reason must name the unfinished preparation: {}",
+            ledger.diagnostic
+        );
+        assert_eq!(
+            store.binding_for_chat(CHAT, BOT, PROJECT).await?.status,
+            "bound"
+        );
+        Ok(())
     }
 }

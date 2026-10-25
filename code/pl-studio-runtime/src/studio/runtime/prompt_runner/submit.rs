@@ -159,6 +159,11 @@ impl StudioRuntime {
                 cursor: previous.entry.accepted_sequence,
             });
         }
+        // Directory publication precedes bot binding/cut completion. Both GUI and queued input
+        // must wait for the original creation to become ready, without consuming any drafts.
+        // Already accepted identities above retain their original receipt even during recovery.
+        self.ensure_thread_input_ready(&thread_record, &thread.snapshot())
+            .await?;
         // The caller's frozen route is a CAS against its canonical extension,
         // not a Thread revision or the current mode default. Both route writes
         // and input admission hold lifecycle_lock, so it cannot change between

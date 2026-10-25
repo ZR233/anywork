@@ -2,7 +2,8 @@ use axum::Json;
 use axum::extract::State;
 use axum::response::IntoResponse;
 use pl_protocol::studio::{
-    CancelBotRegistrationRequest, ListBotConversationsRequest, ReadBotMessagesRequest,
+    CancelBotRegistrationRequest, ChangeBotThreadSyncRequest, ListBotConversationsRequest,
+    ReadBotMessagesRequest, ReadThreadAudienceItemsRequest, ReadThreadClosedAuthorizationsRequest,
     RetryBotConnectionRequest, SaveBotRequest, SendBotMessageRequest, SetBotEnabledRequest,
     SetBotTrustedChatRequest, SetBotTrustedUserRequest, StartBotRegistrationRequest,
 };
@@ -26,6 +27,9 @@ pub(crate) fn bot_routes() -> utoipa_axum::router::OpenApiRouter<AppState> {
         .routes(routes!(read_bot_messages))
         .routes(routes!(send_bot_message))
         .routes(routes!(create_bot_conversation_thread))
+        .routes(routes!(read_thread_closed_authorizations))
+        .routes(routes!(read_thread_audience_items))
+        .routes(routes!(change_bot_thread_sync))
 }
 
 #[utoipa::path(get, path = "/api/v1/bots", operation_id = "bots.read", responses(StudioApiErrors, (status = 200)))]
@@ -184,6 +188,48 @@ async fn create_bot_conversation_thread(
         state
             .runtime
             .create_bot_conversation_thread(request)
+            .await
+            .map_err(ApiError::from)?,
+    ))
+}
+
+#[utoipa::path(post, path = "/api/v1/bots/threads/closed-authorizations", operation_id = "bots.readThreadClosedAuthorizations", request_body = ReadThreadClosedAuthorizationsRequest, responses(StudioApiErrors, (status = 200, body = pl_protocol::studio::ReadThreadClosedAuthorizationsReply)))]
+async fn read_thread_closed_authorizations(
+    State(state): State<AppState>,
+    ApiJson(request): ApiJson<ReadThreadClosedAuthorizationsRequest>,
+) -> Result<impl IntoResponse, ApiError> {
+    Ok(Json(
+        state
+            .runtime
+            .read_thread_closed_authorizations(request)
+            .await
+            .map_err(ApiError::from)?,
+    ))
+}
+
+#[utoipa::path(post, path = "/api/v1/bots/threads/audience-items", operation_id = "bots.readThreadAudienceItems", request_body = ReadThreadAudienceItemsRequest, responses(StudioApiErrors, (status = 200, body = pl_protocol::studio::ReadThreadAudienceItemsReply)))]
+async fn read_thread_audience_items(
+    State(state): State<AppState>,
+    ApiJson(request): ApiJson<ReadThreadAudienceItemsRequest>,
+) -> Result<impl IntoResponse, ApiError> {
+    Ok(Json(
+        state
+            .runtime
+            .read_thread_audience_items(request)
+            .await
+            .map_err(ApiError::from)?,
+    ))
+}
+
+#[utoipa::path(post, path = "/api/v1/bots/threads/sync", operation_id = "bots.changeThreadSync", request_body = ChangeBotThreadSyncRequest, responses(StudioApiErrors, (status = 200, body = pl_protocol::studio::ChangeBotThreadSyncReply)))]
+async fn change_bot_thread_sync(
+    State(state): State<AppState>,
+    ApiJson(request): ApiJson<ChangeBotThreadSyncRequest>,
+) -> Result<impl IntoResponse, ApiError> {
+    Ok(Json(
+        state
+            .runtime
+            .change_bot_thread_sync(request)
             .await
             .map_err(ApiError::from)?,
     ))

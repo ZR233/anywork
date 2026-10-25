@@ -3,7 +3,7 @@
 mod command;
 mod prepare;
 mod read;
-
+pub(in crate::bots) use command::{first_start, permission_close_reason, prepare_permission};
 pub(in crate::bots) use prepare::AudiencePrepareTasks;
 
 use super::owner::ManagedBot;

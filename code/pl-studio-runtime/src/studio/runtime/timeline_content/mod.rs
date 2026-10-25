@@ -7,7 +7,10 @@
 //! 这里不缓存第二份正文，也不重建客户端基线。
 
 mod field;
+mod metadata;
 pub(crate) mod preview;
+
+pub(crate) use metadata::{TimelineFieldLength, TimelineItemMetadata, TimelineMetadataRead};
 
 use anyhow::Result;
 use pl_core::chat::{

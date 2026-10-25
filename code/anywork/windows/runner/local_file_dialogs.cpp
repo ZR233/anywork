@@ -6,6 +6,8 @@
 #include <flutter/standard_method_codec.h>
 
 #include <algorithm>
+#include <limits>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -102,6 +104,65 @@ void Pick(HWND window, bool directory, const std::wstring& pattern,
   }
 }
 
+bool SaveName(const flutter::EncodableValue* arguments, std::wstring* name) {
+  const auto* value = arguments == nullptr
+                          ? nullptr
+                          : std::get_if<std::string>(arguments);
+  if (value == nullptr || value->empty() || *value == "." || *value == ".." ||
+      value->find_first_of("/\\") != std::string::npos ||
+      value->size() > static_cast<size_t>((std::numeric_limits<int>::max)())) {
+    return false;
+  }
+  const int source_length = static_cast<int>(value->size());
+  const int length = ::MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS,
+                                          value->data(), source_length, nullptr, 0);
+  if (length == 0) return false;
+  name->resize(length);
+  if (::MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, value->data(),
+                            source_length, name->data(), length) != length) {
+    return false;
+  }
+  return std::none_of(name->begin(), name->end(), [](wchar_t character) {
+    return character < 0x20 || (character >= 0x7f && character <= 0x9f);
+  });
+}
+
+void ChooseSavePath(HWND window, const std::wstring& name, Result* result) {
+  Microsoft::WRL::ComPtr<IFileSaveDialog> dialog;
+  HRESULT status = ::CoCreateInstance(CLSID_FileSaveDialog, nullptr,
+                                      CLSCTX_INPROC_SERVER,
+                                      IID_PPV_ARGS(dialog.GetAddressOf()));
+  if (FAILED(status)) return Fail(result, "Create save dialog", status);
+  DWORD options = 0;
+  status = dialog->GetOptions(&options);
+  if (FAILED(status)) return Fail(result, "Read save dialog options", status);
+  options |= FOS_FORCEFILESYSTEM | FOS_PATHMUSTEXIST | FOS_NOCHANGEDIR |
+             FOS_OVERWRITEPROMPT;
+  status = dialog->SetOptions(options);
+  if (FAILED(status)) return Fail(result, "Configure save dialog", status);
+  status = dialog->SetFileName(name.c_str());
+  if (FAILED(status)) return Fail(result, "Set suggested filename", status);
+  status = dialog->Show(window);
+  if (status == HRESULT_FROM_WIN32(ERROR_CANCELLED)) {
+    result->Success();
+    return;
+  }
+  if (FAILED(status)) return Fail(result, "Show save dialog", status);
+
+  Microsoft::WRL::ComPtr<IShellItem> item;
+  status = dialog->GetResult(item.GetAddressOf());
+  if (FAILED(status)) return Fail(result, "Read save selection", status);
+  PWSTR raw_path = nullptr;
+  status = item->GetDisplayName(SIGDN_FILESYSPATH, &raw_path);
+  const auto release_path = [](wchar_t* path) { ::CoTaskMemFree(path); };
+  const std::unique_ptr<wchar_t, decltype(release_path)> path(raw_path, release_path);
+  if (FAILED(status)) return Fail(result, "Read save path", status);
+  const std::string utf8 = Utf8FromUtf16(path.get());
+  if (utf8.empty()) return Fail(result, "Decode save path", E_INVALIDARG);
+  // This is a chosen destination, not a saved-file receipt. Dart owns the subsequent I/O.
+  result->Success(flutter::EncodableValue(utf8));
+}
+
 }  // namespace
 
 std::unique_ptr<flutter::MethodChannel<flutter::EncodableValue>>
@@ -113,6 +174,15 @@ CreateLocalFileDialogs(flutter::BinaryMessenger* messenger, HWND window) {
   channel->SetMethodCallHandler(
       [window](const flutter::MethodCall<flutter::EncodableValue>& call,
                std::unique_ptr<Result> result) {
+        if (call.method_name() == "chooseSavePath") {
+          std::wstring name;
+          if (!SaveName(call.arguments(), &name)) {
+            result->Error("invalid_arguments", "Expected a filename, not a path.");
+            return;
+          }
+          ChooseSavePath(window, name, result.get());
+          return;
+        }
         const bool directory = call.method_name() == "pickDirectory";
         if (!directory && call.method_name() != "pickFiles") {
           result->NotImplemented();

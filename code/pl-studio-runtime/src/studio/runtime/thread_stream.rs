@@ -26,6 +26,7 @@ use tokio::{
     time::{Duration, Instant},
 };
 
+use super::thread_audience::ThreadAudienceObservation;
 use super::thread_observation::ThreadLiveEvent;
 use crate::studio::thread_projection::{ActivityDetailRead, LiveEvent, TurnEvent};
 
@@ -114,6 +115,7 @@ struct LiveSubscription {
     /// not manufacture a second notification — while a genuinely newer revision of the same Turn
     /// (a late metadata update the writer legalised at the same identity) is a new fact and passes.
     delivered_terminal: Option<(String, u64)>,
+    audience: ThreadAudienceObservation,
 }
 
 /// One non-blocking step of the projection feed.
@@ -157,6 +159,7 @@ impl LiveSubscription {
         )?;
         runtime.annotate_model_route(&mut snapshot)?;
         runtime.annotate_mode_availability(&mut snapshot);
+        snapshot.audience = self.audience.current.clone();
         // The first frame carries the authoritative activity and the owner's typed storage state;
         // later frames only carry them when they really changed. Reading the owner's own value here
         // (and marking it seen) means the very first frame can never disagree with the owner, and the
@@ -289,6 +292,7 @@ impl LiveSubscription {
             Feed(Result<ThreadLiveEvent, broadcast::error::RecvError>),
             Storage(bool),
             Turn(bool),
+            Audience,
         }
         // Without an owner feed there is no projection to wait on; the stream is over. Waiting on
         // the storage watch alone would park a released subscription instead of ending it.
@@ -299,6 +303,7 @@ impl LiveSubscription {
             let feed = self.feed.as_mut();
             let storage = self.storage_feed.as_mut();
             let last_turn = self.last_turn.as_mut();
+            let audience = &mut self.audience;
             tokio::select! {
                 received = async {
                     match feed {
@@ -320,6 +325,7 @@ impl LiveSubscription {
                         None => std::future::pending().await,
                     }
                 } => Woke::Turn(changed),
+                () = audience.changed() => Woke::Audience,
             }
         };
         match woke {
@@ -348,6 +354,7 @@ impl LiveSubscription {
                 }
                 FeedStep::Frame
             }
+            Woke::Audience => FeedStep::Frame,
         }
     }
 
@@ -487,6 +494,12 @@ impl LiveSubscription {
                     if same_live_runtime_identity(runtime, old)
                 )
             }
+            ThreadNotification::AudienceChanged { .. } => {
+                matches!(
+                    &last.notification,
+                    ThreadNotification::AudienceChanged { .. }
+                )
+            }
             _ => false,
         };
         if mergeable {
@@ -602,6 +615,11 @@ impl StudioThreadSubscription {
             // A commit or an owner snapshot may have changed the storage state; refresh it from the
             // typed coordinator facts before deciding whether the queue is only coalescable frames.
             live.refresh_observations();
+            if let Some(audience) = live.audience.refresh(&runtime, &live.thread_id).await {
+                live.enqueue(ThreadNotification::AudienceChanged {
+                    audience: Box::new(audience),
+                });
+            }
             // A Turn that finished before this subscriber registered — or while it was parked — is
             // the owner's retained terminal fact, not something the client may infer from content.
             live.reflect_retained_turn();
@@ -621,6 +639,11 @@ impl StudioThreadSubscription {
                         }
                     }
                     live.refresh_observations();
+                    if let Some(audience) = live.audience.refresh(&runtime, &live.thread_id).await {
+                        live.enqueue(ThreadNotification::AudienceChanged {
+                            audience: Box::new(audience),
+                        });
+                    }
                 }
                 live.observation_due = None;
                 let mut update = live.pending.pop_front();
@@ -714,6 +737,7 @@ impl StudioRuntime {
             // that commit restores the last-turn fact instead of reporting none.
             let last_turn = live_feed.as_ref().map(|feed| feed.last_turn());
             let baseline = handle.snapshot();
+            let audience = self.observe_thread_audience(&thread, &baseline).await;
             let applied = baseline.commit_sequence;
             SubscriptionSource::Live(Box::new(LiveSubscription {
                 handle,
@@ -734,6 +758,7 @@ impl StudioRuntime {
                 last_turn,
                 active_turn: None,
                 delivered_terminal: None,
+                audience,
             }))
         };
         Ok(StudioThreadSubscription {
@@ -766,6 +791,9 @@ impl StudioRuntime {
         )?;
         self.annotate_model_route(&mut snapshot)?;
         self.annotate_mode_availability(&mut snapshot);
+        snapshot.audience = self
+            .thread_audience_snapshot(&snapshot.thread, &state)
+            .await;
         Ok(snapshot)
     }
 

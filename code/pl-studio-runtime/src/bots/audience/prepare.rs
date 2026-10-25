@@ -1,7 +1,7 @@
 //! Bounded ownership of real prepare continuations, independent of API waiters and reply workers.
 //! Only the existing mutation/recovery driver registers here; reads never create work.
 
-use super::command::{permission, unavailable};
+use super::command::unavailable;
 use crate::bots::BotRuntime;
 use crate::bots::occupancy::{
     OCCUPANCY_TASK_LIMIT, OccupancyBudget, PublishOnExit, counted_extra_bytes, counted_text_bytes,
@@ -10,6 +10,7 @@ use crate::bots::owner::ManagedBot;
 use crate::bots::protocol::error::{FeishuError, FeishuErrorKind};
 use crate::bots::storage::audience::Authorization;
 use crate::studio::audience_start::AudienceStartIntent;
+use pl_protocol::BotAudienceCloseReason;
 use pl_protocol::studio::BotAuthorizationPhase;
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -203,8 +204,11 @@ impl BotRuntime {
         if auth.phase != BotAuthorizationPhase::PendingStart {
             return Ok(auth);
         }
-        self.check_audience_permission(managed, &auth.intent.authorization.chat_id)
-            .await?;
+        // 撤权/停用必须显式封闭这一代：不能把 PendingStart 留在库里等之后 enable 自动接续。
+        // 判据与首次绑定门控共用，且优先使用该 chat 已持久化的 typed 目标证明。
+        if let Err(error) = self.prepare_permission(managed, &auth).await {
+            return self.settle_unstartable(managed, &auth, error).await;
+        }
         let current = managed
             .store
             .audience_authorization(&auth.intent.authorization)
@@ -220,8 +224,20 @@ impl BotRuntime {
             biased;
             _ = self.inner.audience_prepares.stopping.cancelled() => return Ok(auth),
             result = host.prepare_bot_audience_start(&auth.intent) => result,
-        }
-        .map_err(|e| FeishuError::history_read("audience cut remains pending", e))?;
+        };
+        let result = match result {
+            Ok(result) => result,
+            Err(error) => {
+                let error = FeishuError::history_read("audience cut remains pending", error);
+                if error.retryable() {
+                    return Err(error);
+                }
+                // 确定性失败不会自行恢复：显式封闭为 StartFailed，不让 PendingStart 挂着。
+                return self
+                    .close_pending(managed, &auth, BotAudienceCloseReason::StartFailed)
+                    .await;
+            }
+        };
         match result {
             crate::studio::AudienceStartPreparation::Pending { extension_revision } => {
                 if extension_revision == 0 {
@@ -230,32 +246,25 @@ impl BotRuntime {
                 Ok(auth)
             }
             crate::studio::AudienceStartPreparation::Superseded => {
-                let changed = managed
-                    .store
-                    .close_sync_generation(
-                        &auth.intent.authorization,
-                        pl_protocol::BotAudienceCloseReason::StartCancelled,
-                    )
-                    .await?;
-                if changed {
-                    managed.audience_changed();
-                }
-                managed
-                    .store
-                    .audience_authorization(&auth.intent.authorization)
-                    .await?
-                    .ok_or_else(unavailable)
+                self.close_pending(managed, &auth, BotAudienceCloseReason::StartCancelled)
+                    .await
             }
             crate::studio::AudienceStartPreparation::Saved(receipt) => {
                 let _admission = managed.admission.lock().await;
                 self.reject_closed_admission(managed)?;
-                self.check_audience_permission(managed, &auth.intent.authorization.chat_id)
-                    .await?;
-                let config = managed.config.lock().await;
-                if config.project_id != auth.project_id || config.feishu().app_id != auth.app_id {
-                    return Err(permission());
+                if let Err(error) = self.prepare_permission(managed, &auth).await {
+                    return self.settle_unstartable(managed, &auth, error).await;
                 }
-                drop(config);
+                let identity_matches = {
+                    let config = managed.config.lock().await;
+                    config.project_id == auth.project_id && config.feishu().app_id == auth.app_id
+                };
+                if !identity_matches {
+                    // 目标应用/项目身份已变：这一代不再可能激活，按真实原因封闭。
+                    return self
+                        .close_pending(managed, &auth, BotAudienceCloseReason::TrustRevoked)
+                        .await;
+                }
                 let change = managed.store.activate_sync(&receipt).await?;
                 if change.changed {
                     managed.audience_changed();
@@ -263,6 +272,53 @@ impl BotRuntime {
                 Ok(change.authorization)
             }
         }
+    }
+
+    /// The durable-prepare permission recheck: current config plus the chat's persisted typed
+    /// target proof, shared with the first-binding gate (`first_start_allowed`).
+    async fn prepare_permission(
+        &self,
+        managed: &Arc<ManagedBot>,
+        auth: &Authorization,
+    ) -> Result<(), FeishuError> {
+        let config = managed.config.lock().await.clone();
+        super::prepare_permission(&managed.store, &config, auth).await
+    }
+
+    /// A pending generation that can never start is closed with its real reason instead of
+    /// staying pending forever. Only permission facts close here; transient errors stay
+    /// retryable with the durable intent untouched.
+    async fn settle_unstartable(
+        &self,
+        managed: &Arc<ManagedBot>,
+        auth: &Authorization,
+        error: FeishuError,
+    ) -> Result<Authorization, FeishuError> {
+        if error.kind() != FeishuErrorKind::Permission {
+            return Err(error);
+        }
+        let reason = super::permission_close_reason(&*managed.config.lock().await);
+        self.close_pending(managed, auth, reason).await
+    }
+
+    async fn close_pending(
+        &self,
+        managed: &Arc<ManagedBot>,
+        auth: &Authorization,
+        reason: BotAudienceCloseReason,
+    ) -> Result<Authorization, FeishuError> {
+        let changed = managed
+            .store
+            .close_sync_generation(&auth.intent.authorization, reason)
+            .await?;
+        if changed {
+            managed.audience_changed();
+        }
+        managed
+            .store
+            .audience_authorization(&auth.intent.authorization)
+            .await?
+            .ok_or_else(unavailable)
     }
 
     pub(in crate::bots) async fn recover_audience_prepares(

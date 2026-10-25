@@ -16,35 +16,6 @@ use crate::bots::{
 };
 
 impl StudioRuntime {
-    /// Resolve the actual source of this frozen model call, not merely this Thread's binding or
-    /// its first input. Core has already durably fenced the tool's running fact before execution.
-    pub(crate) async fn bot_call_input(
-        &self,
-        context: &pl_core::tool::opaque::CallContext,
-    ) -> Result<Option<String>> {
-        if context.history_fence == 0 {
-            return Ok(None);
-        }
-        let history = self.store.history(&context.thread_id).await?;
-        let Some(turn) = history.latest_turn_at(context.history_fence).await? else {
-            return Ok(None);
-        };
-        if turn.id != context.turn_id {
-            return Ok(None);
-        }
-        let Some(input) = history
-            .consumed_input_at(&context.turn_id, context.history_fence)
-            .await?
-        else {
-            return Ok(None);
-        };
-        if !matches!(input.state, pl_core::thread::input::InputState::Consumed { ref turn_id, .. } if turn_id == &context.turn_id)
-        {
-            return Ok(None);
-        }
-        Ok(Some(input.id))
-    }
-
     /// 读取一条输入的持久路由与消费身份；不重新受理、不回放历史。
     pub(crate) async fn bot_input_fact(
         &self,

@@ -66,11 +66,27 @@ pub enum BridgeThreadItemState {
         media_type: Option<String>,
         completed_at: i64,
     },
+    PublicArtifact {
+        publication_id: String,
+        tool_call_id: String,
+        display_name: String,
+        resource: BridgeThreadArtifactResource,
+        published_at: i64,
+    },
     ContextCompaction {
         before_tokens: Option<u64>,
         after_tokens: Option<u64>,
         compacted_at: i64,
     },
+}
+
+/// Exact archived original metadata; authorization is checked by Studio when reading bytes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BridgeThreadArtifactResource {
+    pub id: String,
+    pub content_digest: String,
+    pub byte_len: u64,
+    pub media_type: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

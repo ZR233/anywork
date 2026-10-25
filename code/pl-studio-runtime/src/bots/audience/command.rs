@@ -4,6 +4,7 @@ use crate::bots::BotRuntime;
 use crate::bots::owner::ManagedBot;
 use crate::bots::protocol::error::{FeishuError, FeishuErrorKind};
 use crate::studio::thread_audience::VerifiedBotAudienceOwner;
+use pl_protocol::BotAudienceCloseReason;
 use pl_protocol::studio::*;
 use std::sync::Arc;
 
@@ -223,6 +224,156 @@ impl BotRuntime {
             return Err(permission());
         }
         Ok(())
+    }
+}
+
+/// The automatic first authorization exists only under the *current* permission facts, and
+/// it is decided from the target the caller already verified and froze — never from ledger
+/// rows. A brand-new group has no `inbound_work` row at all, so inferring the kind from the
+/// ledger would refuse a legitimately permitted first binding.
+pub(in crate::bots) fn first_start(
+    config: &crate::bots::config::BotConfigFile,
+    bot_id: &str,
+    chat_id: &str,
+    app_id: &str,
+    project_id: &str,
+    target: &crate::bots::storage::target::TargetKind,
+) -> Option<crate::bots::storage::FirstStart> {
+    first_start_allowed(config, bot_id, chat_id, app_id, project_id, target).then(|| {
+        crate::bots::storage::FirstStart {
+            bot_id: bot_id.to_string(),
+            app_id: app_id.to_string(),
+            operation_id: first_start_operation(bot_id, chat_id),
+        }
+    })
+}
+
+/// The one permission predicate shared by the first-binding gate and the durable prepare
+/// recovery: current config facts plus the typed target, never ledger inference.
+pub(in crate::bots) fn first_start_allowed(
+    config: &crate::bots::config::BotConfigFile,
+    bot_id: &str,
+    chat_id: &str,
+    app_id: &str,
+    project_id: &str,
+    target: &crate::bots::storage::target::TargetKind,
+) -> bool {
+    if !config.enabled
+        || config.id != bot_id
+        || config.project_id != project_id
+        || config.feishu().app_id != app_id
+    {
+        return false;
+    }
+    match target {
+        crate::bots::storage::target::TargetKind::Group => {
+            config.feishu().trusted_chat_ids.contains(chat_id)
+        }
+        // Unknown direct peer identity is never trusted by inference.
+        crate::bots::storage::target::TargetKind::Direct { open_id } => {
+            !open_id.is_empty() && config.feishu().trusted_open_ids.contains(open_id)
+        }
+    }
+}
+
+/// Durable-prepare recheck. It accepts only a provable current binding whose route, frozen
+/// proof and pending authorization agree field by field; anything else is a real
+/// inconsistency (fail-closed, pending retained) rather than a permission fact to close.
+/// Only an explicitly persisted `Legacy`/`Unproven` proof keeps the old ledger judgement.
+pub(in crate::bots) async fn prepare_permission(
+    store: &crate::bots::storage::BotStateStore,
+    config: &crate::bots::config::BotConfigFile,
+    auth: &crate::bots::storage::audience::Authorization,
+) -> Result<(), FeishuError> {
+    let bot = auth.intent.authorization.bot_id.as_str();
+    let chat = auth.intent.authorization.chat_id.as_str();
+    let thread = auth.intent.thread_id.as_str();
+    // 没有可证明的当前绑定（缺失行 / 不一致）时不得回退账本推断。
+    let Some(scope) = store.audience_scope(thread, bot).await? else {
+        return Err(crate::bots::storage::audience::unreadable());
+    };
+    // route 与 origin 必须同时等于本次 pending auth 的身份。
+    if scope.binding.thread_id.as_deref() != Some(thread)
+        || scope.binding.status != "bound"
+        || scope.binding.creation_id != auth.creation_id
+        || scope.binding.project_id != auth.project_id
+        || scope.binding.revision != auth.intent.binding_revision
+        || scope.origin.chat_id != chat
+        || scope.origin.project_id != auth.project_id
+        || scope.origin.creation_id != auth.creation_id
+        || scope.origin.binding_revision != auth.intent.binding_revision
+    {
+        return Err(crate::bots::storage::audience::unreadable());
+    }
+    match &scope.origin.target {
+        // 当前创建意图：证明内的全部身份必须逐字段等于本次 pending auth。
+        crate::bots::storage::target::TargetProof::Created { evidence } => {
+            if evidence.bot_id != bot
+                || evidence.app_id != auth.app_id
+                || evidence.project_id != auth.project_id
+                || evidence.chat_id != chat
+                || evidence.creation_id != auth.creation_id
+                || evidence.binding_revision != auth.intent.binding_revision
+            {
+                return Err(crate::bots::storage::audience::unreadable());
+            }
+            if first_start_allowed(
+                config,
+                bot,
+                chat,
+                &auth.app_id,
+                &auth.project_id,
+                &evidence.target,
+            ) {
+                Ok(())
+            } else {
+                Err(permission())
+            }
+        }
+        // 只有显式持久化的旧证明才允许沿用既有账本判定（不改旧行语义）。
+        crate::bots::storage::target::TargetProof::Legacy { .. }
+        | crate::bots::storage::target::TargetProof::Unproven => {
+            check_audience_permission_for(store, config, chat).await
+        }
+    }
+}
+
+/// Ledger fallback used **only** for non-current proofs. It keeps the pre-existing judgement
+/// of a migrated/legacy row unchanged instead of silently re-classifying it.
+async fn check_audience_permission_for(
+    store: &crate::bots::storage::BotStateStore,
+    config: &crate::bots::config::BotConfigFile,
+    chat: &str,
+) -> Result<(), FeishuError> {
+    let (kind, user) = store.audience_target(chat).await?;
+    let trusted = match kind {
+        pl_protocol::studio::BotConversationKind::Direct => user
+            .as_ref()
+            .is_some_and(|id| config.feishu().trusted_open_ids.contains(id)),
+        pl_protocol::studio::BotConversationKind::Group => {
+            config.feishu().trusted_chat_ids.contains(chat)
+        }
+    };
+    if !config.enabled || !trusted {
+        return Err(permission());
+    }
+    Ok(())
+}
+
+/// Stable identity of the automatic first preparation: the same chat/generation always
+/// resumes the same operation, so a restart cannot establish a second cut.
+pub(in crate::bots) fn first_start_operation(bot: &str, chat: &str) -> String {
+    format!("botprepare:{bot}:{chat}:1")
+}
+
+/// A closed authorization records why it can no longer continue; never one fixed reason.
+pub(in crate::bots) fn permission_close_reason(
+    config: &crate::bots::config::BotConfigFile,
+) -> BotAudienceCloseReason {
+    if config.enabled {
+        BotAudienceCloseReason::TrustRevoked
+    } else {
+        BotAudienceCloseReason::BotDisabled
     }
 }
 

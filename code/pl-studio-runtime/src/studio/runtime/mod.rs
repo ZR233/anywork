@@ -18,6 +18,7 @@ mod account_usage;
 mod acp_auth;
 mod acp_install;
 pub(in crate::studio) mod attachment_drafts;
+mod audience_start;
 mod background_task;
 mod bots_api;
 mod bots_recovery;
@@ -42,6 +43,7 @@ mod shutdown_progress;
 mod skill_catalog;
 mod ssh;
 mod state_query;
+mod thread_audience;
 mod thread_mode;
 mod thread_service;
 mod thread_stream;
@@ -51,12 +53,16 @@ mod tool_refresh;
 pub use product_subscription::StudioProductTopicSubscription;
 pub use thread_stream::StudioThreadSubscription;
 pub use timeline_content::{TimelineContentReader, TimelineTailStream};
+pub(crate) use timeline_content::{
+    TimelineFieldLength, TimelineItemMetadata, TimelineMetadataRead,
+};
 mod thread_observation;
 mod thread_title;
 mod updater;
 
 pub(crate) use account_usage::AccountUsageRuntime;
 pub use account_usage::{AccountUsageStateData, AccountUsageStateSnapshot};
+pub(crate) use audience_start::AudienceStartPreparation;
 pub(crate) use model_performance::ModelPerformanceOwner;
 pub(crate) use shutdown_progress::ShutdownProgressBus;
 pub(crate) use skill_catalog::SkillCatalogRuntime;

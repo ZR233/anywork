@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 // 也不做 `pub use` 以免与 `thread_activity::*` 产生同名 glob 歧义。
 use super::{
     BridgeDelegationMode, BridgeDelegationPreference, BridgeNewThreadModelRoute,
-    BridgeThreadActivity, BridgeThreadStorageState,
+    BridgeThreadActivity, BridgeThreadAudience, BridgeThreadStorageState,
 };
 
 pub mod item;
@@ -62,6 +62,9 @@ pub enum BridgeThreadNotification {
     StorageChanged {
         storage: Option<Box<BridgeThreadStorageState>>,
     },
+    AudienceChanged {
+        audience: Box<BridgeThreadAudience>,
+    },
     Lagged {
         dropped: u64,
     },
@@ -72,6 +75,7 @@ pub struct BridgeThreadSnapshot {
     pub schema_version: u32,
     pub revision: u64,
     pub thread: BridgeThread,
+    pub audience: BridgeThreadAudience,
     pub active_turn: Option<BridgeTurn>,
     pub interactions: Vec<BridgeInteractionRequest>,
     pub runtime: Option<BridgeThreadRuntimeSnapshot>,

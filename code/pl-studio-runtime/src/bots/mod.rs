@@ -7,6 +7,7 @@ mod audience;
 mod commands;
 mod config;
 mod connect;
+mod creation;
 mod credentials;
 mod delivery;
 mod host;
@@ -94,6 +95,10 @@ pub(crate) enum InboundWorkOutcome {
     Interrupted,
     /// 真实 retryable 失败：入站账本按分类退避并计数，预算耗尽转需处理。
     Recoverable {
+        diagnostic: String,
+    },
+    /// 等待外部就绪（首输入准备）：不计数、不耗失败预算，只按独立等待期限推进重派。
+    Deferred {
         diagnostic: String,
     },
     NeedsAttention {

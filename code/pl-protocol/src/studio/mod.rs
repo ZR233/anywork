@@ -3,6 +3,7 @@
 mod acp;
 mod acp_install;
 mod attachment;
+mod bot_audience;
 mod bots;
 mod error;
 mod operation;
@@ -17,6 +18,7 @@ mod thread_preparation;
 pub use acp::*;
 pub use acp_install::*;
 pub use attachment::*;
+pub use bot_audience::*;
 pub use bots::*;
 pub use error::*;
 pub use operation::*;

@@ -474,6 +474,38 @@ impl BotRuntime {
         run: &ReplyRun,
         cancel: &CancellationToken,
     ) -> Step {
+        // 首输入尚未就绪时不能先行下载原件：Studio 的就绪门会拒绝这次 submit，而重试
+        // 只能把同一 (message_id, file_key) 再下载一次。这里读的是该门自己用的同一
+        // canonical 事实（创建/授权来源 + 已保存的 starting cut），拒绝必然一致。
+        let managed = match self.managed(&run.bot_id).await {
+            Ok(managed) => managed,
+            Err(error) => {
+                return Step::Done(recoverable(format!(
+                    "bot runtime lost before inbound attachment admission: {error}"
+                )));
+            }
+        };
+        match managed
+            .store
+            .thread_input_readiness(&run.bot_id, &run.thread_id, &run.source.project_id)
+            .await
+        {
+            Ok(crate::studio::thread_audience::BotThreadInputReadiness::Ready) => {}
+            Ok(crate::studio::thread_audience::BotThreadInputReadiness::Preparing) => {
+                // 未就绪是**正常等待**而不是失败：不下载、不消耗失败预算；入站按独立
+                // 就绪等待期限重派，只有就绪后才下载并提交一次。
+                return Step::Done(InboundWorkOutcome::Deferred {
+                    diagnostic:
+                        "bot conversation is preparing its first input; no resource was downloaded"
+                            .to_string(),
+                });
+            }
+            Err(error) => {
+                return Step::Done(recoverable(format!(
+                    "bot input readiness is unreadable: {error}"
+                )));
+            }
+        }
         let drafts = match self
             .prepare_inbound_attachments(
                 runtime,
@@ -724,6 +756,7 @@ impl BotRuntime {
             creation_id,
             ..
         } = inbound;
+        // 只用于 Thread 标题；权限判据一律在 admission 边界内取当前配置。
         let config = managed.config.lock().await.clone();
         // 目标种类只接受本次冻结入站自身的 typed 事实：直聊必须有真实对端身份。
         let target = if inbound.chat_kind == "direct" {
@@ -749,7 +782,7 @@ impl BotRuntime {
             chat_id,
             creation_id,
             &inbound.message_id,
-            target,
+            target.clone(),
         );
         let claim = managed
             .store
@@ -759,21 +792,100 @@ impl BotRuntime {
         let thread_id = match claim {
             crate::bots::storage::ThreadBindingClaim::Bound { thread_id, .. } => thread_id,
             crate::bots::storage::ThreadBindingClaim::Creating { creation_id, .. } => {
-                let created = runtime
+                let created = match runtime
                     .create_thread_with_id(
                         creation_id.clone(),
                         project_id,
                         &format!("{} / {chat_id}", config.name),
                     )
                     .await
-                    .map_err(|error| {
-                        recoverable(format!("failed to create bot Thread: {error:#}"))
+                {
+                    Ok(record) => record,
+                    Err(error) => {
+                        // 用 typed 状态分类，不看错误文案：只有同一创建身份已拥有不可
+                        // 绑定的 Thread（归档/跨项目）才一次性收束；其余保留有界退避，
+                        // 终局由预算耗尽兜底。
+                        let thread = match runtime.find_owned_thread(&creation_id).await {
+                            Ok(record) => crate::bots::creation::created_thread_state(
+                                record.as_ref(),
+                                project_id,
+                            ),
+                            // 无法判定时保守按可重试处理，不收束耐久意图。
+                            Err(_) => crate::bots::creation::CreatedThreadState::Absent,
+                        };
+                        // 项目事实只用于判定身份冲突是否可证；读不到或缺席都不收束。
+                        let project = match runtime.list_projects().await {
+                            Ok(projects) => {
+                                crate::bots::creation::target_project_state(&projects, project_id)
+                            }
+                            Err(_) => crate::bots::creation::TargetProject::Present,
+                        };
+                        if matches!(
+                            crate::bots::creation::classify_creation_failure(project, thread),
+                            crate::bots::creation::CreationFailure::IdentityConflict
+                        ) {
+                            let diagnostic =
+                                "conversation Thread creation identity cannot be bound";
+                            managed
+                                .store
+                                .mark_creating_attention(
+                                    chat_id,
+                                    &creation_id,
+                                    project_id,
+                                    diagnostic,
+                                )
+                                .await
+                                .map_err(|error| {
+                                    binding_failure("binding attention failed", error)
+                                })?;
+                            managed.audience_changed();
+                            return Err(InboundWorkOutcome::NeedsAttention {
+                                diagnostic: diagnostic.to_string(),
+                            });
+                        }
+                        return Err(recoverable(format!(
+                            "failed to create bot Thread: {error:#}"
+                        )));
+                    }
+                };
+                // 配置可能在创建 Thread 期间变化：进入 admission 边界后取**当前**配置再
+                // 判定，并与绑定事实同批提交；不使用跨 await 的旧快照。
+                let (bound, gated) = {
+                    let _admission = managed.admission.lock().await;
+                    // 用户撤权会先置 admission_closed 再落新配置：临界区内必须先拒绝，
+                    // 否则会读到旧受信配置并写入本不该存在的首次授权。
+                    // Thread 已在临界区前创建完成；此处拒绝按既有 creating 语义保留该入站
+                    // 工作等待重试（同一 creation_id 复用，见 resolve 的重试路径）。
+                    self.reject_closed_admission(managed).map_err(|error| {
+                        binding_failure("bot admission closed before first authorization", error)
                     })?;
-                managed
-                    .store
-                    .bind_thread(chat_id, &created.id, &creation_id, project_id)
-                    .await
-                    .map_err(|error| binding_failure("thread binding persist failed", error))?
+                    let current = managed.config.lock().await.clone();
+                    let first = crate::bots::audience::first_start(
+                        &current,
+                        bot_id,
+                        chat_id,
+                        &inbound.app_id,
+                        project_id,
+                        &target,
+                    );
+                    let bound = managed
+                        .store
+                        .bind_thread(
+                            chat_id,
+                            &created.id,
+                            &creation_id,
+                            project_id,
+                            first.as_ref(),
+                        )
+                        .await
+                        .map_err(|error| binding_failure("thread binding persist failed", error))?;
+                    (bound, first.is_some())
+                };
+                if gated {
+                    // 只唤醒原受管 owner：cut/激活仍走既有 recovery 与原 CAS。
+                    self.inner.audience_prepare_notify.notify_one();
+                }
+                bound
             }
             crate::bots::storage::ThreadBindingClaim::NeedsAttention { diagnostic } => {
                 return Err(InboundWorkOutcome::NeedsAttention { diagnostic });
@@ -796,8 +908,11 @@ impl BotRuntime {
                     .to_string(),
             });
         }
+        // 项目归属按**当前**配置核对：外层 `config` 只是创建前的快照，不能用来判定
+        // 绑定是否仍属于本项目。
+        let current_project = managed.config.lock().await.project_id.clone();
         match runtime.find_owned_thread(&thread_id).await {
-            Ok(Some(existing)) if existing.project_id != config.project_id => {
+            Ok(Some(existing)) if existing.project_id != current_project => {
                 self.mark_binding_unavailable(
                     managed.clone(),
                     projection,

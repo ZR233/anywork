@@ -19,6 +19,8 @@ pub(crate) const FEISHU_ROOT_ID: &str = "root:feishu";
 pub(crate) const LEGACY_ROOT_ID: &str = "root:legacy";
 /// 内置定义的修订；角色指令内容变化时才提高。
 const BUILTIN_REVISION: &str = "1";
+/// First frozen Feishu definition that permits public commentary and explicit artifacts.
+pub(crate) const FEISHU_FRONTEND_REVISION: &str = "2";
 /// 旧版混用来源迁移后的修订：明确区别于任何当前内置或 Profile 修订。
 const MIGRATED_REVISION: &str = "legacy";
 /// 根定义占用保留命名空间，因此不能与用户 Agent Profile 名称冲突，也不能被派发。
@@ -138,7 +140,12 @@ fn builtin_identity(id: &str) -> AgentDefinitionIdentity {
     AgentDefinitionIdentity {
         id: id.to_owned(),
         scope: AgentDefinitionScope::Root,
-        revision: BUILTIN_REVISION.to_owned(),
+        revision: if id == FEISHU_ROOT_ID {
+            FEISHU_FRONTEND_REVISION
+        } else {
+            BUILTIN_REVISION
+        }
+        .to_owned(),
         origin: AgentDefinitionOrigin::Builtin,
     }
 }

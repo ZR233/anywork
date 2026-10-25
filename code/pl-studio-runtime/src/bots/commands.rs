@@ -576,6 +576,9 @@ impl BotRuntime {
             expected_binding_revision,
         } = request;
         let managed = self.managed(&bot_id).await?;
+        // 首次绑定可能自动建立授权头，必须先确保持久 recovery driver 已在运行再受理：
+        // 否则 intent 会写入而无人推进。
+        self.ensure_inbound_recovery().await?;
         let content_hash = super::protocol::im::content_hash(
             &operation_id,
             &chat_id,
@@ -1003,10 +1006,43 @@ impl BotRuntime {
                 encoded_target.as_str(),
                 2,
             )])?)?;
+            // 首次授权只在真实获准时自动建立，且只依据本次已核验并冻结的目标事实：
+            // 新群此刻没有任何入站账本行，不能反过来用账本推断种类。
+            let first = match &stored_target {
+                super::storage::target::TargetProof::Created { evidence } => {
+                    let current = managed.config.lock().await;
+                    super::audience::first_start(
+                        &current,
+                        &bot_id,
+                        &chat_id,
+                        &app_id,
+                        &project_id,
+                        &evidence.target,
+                    )
+                }
+                _ => None,
+            };
+            if let Some(first) = &first {
+                budget.reserve_more(super::occupancy::counted_text_bytes([
+                    (first.bot_id.as_str(), 1),
+                    (first.app_id.as_str(), 1),
+                    (first.operation_id.as_str(), 2),
+                ])?)?;
+            }
             managed
                 .store
-                .bind_thread(&chat_id, &created.id, &frozen_creation, &project_id)
+                .bind_thread(
+                    &chat_id,
+                    &created.id,
+                    &frozen_creation,
+                    &project_id,
+                    first.as_ref(),
+                )
                 .await?;
+            if first.is_some() {
+                // 只唤醒原受管 owner：cut 与激活仍由既有 recovery + 原 CAS 推进。
+                self.inner.audience_prepare_notify.notify_one();
+            }
             managed.audience_changed();
             managed
                 .store
@@ -1796,6 +1832,9 @@ impl BotRuntime {
                     }
                     super::InboundWorkOutcome::Recoverable { diagnostic } => {
                         Some(super::storage::WorkFinish::Retryable(diagnostic.as_str()))
+                    }
+                    super::InboundWorkOutcome::Deferred { diagnostic } => {
+                        Some(super::storage::WorkFinish::Deferred(diagnostic.as_str()))
                     }
                     super::InboundWorkOutcome::NeedsAttention { diagnostic } => Some(
                         super::storage::WorkFinish::NeedsAttention(diagnostic.as_str()),

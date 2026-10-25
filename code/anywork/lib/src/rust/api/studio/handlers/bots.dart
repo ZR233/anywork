@@ -4,9 +4,11 @@
 // ignore_for_file: invalid_use_of_internal_member, unused_import, unnecessary_import
 
 import '../../../frb_generated.dart';
+import '../types/bot_audience.dart';
 import '../types/bots.dart';
 import '../types/command.dart';
 import '../types/error.dart';
+import '../types/thread_audience.dart';
 
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
@@ -75,3 +77,21 @@ Future<BridgeBotConversationThreadReply> createBotConversationThread({
   required BridgeCreateBotConversationThreadRequest request,
 }) => RustLib.instance.api
     .crateApiStudioHandlersBotsCreateBotConversationThread(request: request);
+
+Future<BridgeReadThreadClosedAuthorizationsReply>
+readThreadClosedAuthorizations({
+  required BridgeReadThreadClosedAuthorizationsRequest request,
+}) => RustLib.instance.api
+    .crateApiStudioHandlersBotsReadThreadClosedAuthorizations(request: request);
+
+Future<BridgeReadThreadAudienceItemsReply> readThreadAudienceItems({
+  required BridgeReadThreadAudienceItemsRequest request,
+}) => RustLib.instance.api.crateApiStudioHandlersBotsReadThreadAudienceItems(
+  request: request,
+);
+
+Future<BridgeChangeBotThreadSyncReply> changeBotThreadSync({
+  required BridgeChangeBotThreadSyncRequest request,
+}) => RustLib.instance.api.crateApiStudioHandlersBotsChangeBotThreadSync(
+  request: request,
+);

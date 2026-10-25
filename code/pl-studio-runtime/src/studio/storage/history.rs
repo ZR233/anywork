@@ -19,6 +19,7 @@ use sea_orm::{
 const HISTORY_SCHEMA_VERSION: i64 = 9;
 
 mod checkpoint;
+mod receipts;
 mod resources;
 pub(crate) use resources::context_resources;
 /// 单页返回的总 payload 字节预算；达到预算即停止装入更多条目。
@@ -168,7 +169,7 @@ pub(crate) struct EffectCommit<'a> {
     pub identities: &'a [InputIdentityWrite],
     /// Minimal identities of the messages this effect admitted, committed with the same transaction.
     pub messages: &'a [MessageIdentityWrite],
-    /// Terminal fact receipts produced by this effect.
+    /// Canonical fact receipts produced by this effect, including immutable start proofs.
     pub receipts: &'a [FactReceiptWrite],
     /// Task lifecycle and full delivery are authority, not lossy call statistics.
     pub tasks: &'a [pl_core::thread::task::TaskRecord],
@@ -701,46 +702,6 @@ impl HistoryStore {
                 request_digest: row.try_get::<Option<String>>("", "request_digest")?,
             })),
             None => Ok(None),
-        }
-    }
-
-    /// Latest actually consumed input for a specific Turn at a tool's durable fence. This includes
-    /// steering inputs and survives model-context compaction; the Turn's first input alone would
-    /// incorrectly lend bot authority to an ordinary later local input.
-    pub(crate) async fn consumed_input_at(
-        &self,
-        turn_id: &str,
-        history_fence: u64,
-    ) -> Result<Option<pl_core::thread::input::InputIdentity>> {
-        let Some(connection) = self.reader().await? else {
-            return Ok(None);
-        };
-        // Decode before filtering: a damaged newer identity must not be skipped in favour of
-        // an older bot input. json_extract also masks malformed JSON as a generic query failure.
-        // Keyset pages bound memory without loading the whole identity history.
-        let mut before: Option<i64> = None;
-        loop {
-            let rows = connection
-                .db
-                .query_all_raw(statement(
-                    "SELECT ordinal,payload FROM history_input_identities
-                     WHERE last_write_seq<=? AND (? IS NULL OR ordinal<?)
-                     ORDER BY ordinal DESC LIMIT 64",
-                    vec![integer(history_fence)?.into(), before.into(), before.into()],
-                ))
-                .await?;
-            if rows.is_empty() {
-                return Ok(None);
-            }
-            for row in rows {
-                before = Some(row.try_get("", "ordinal")?);
-                let input: pl_core::thread::input::InputIdentity =
-                    serde_json::from_str(&row.try_get::<String>("", "payload")?)?;
-                if matches!(&input.state, pl_core::thread::input::InputState::Consumed { turn_id: consumed_turn, .. } if consumed_turn == turn_id)
-                {
-                    return Ok(Some(input));
-                }
-            }
         }
     }
 
@@ -2859,7 +2820,7 @@ async fn write_message_identity(
     Ok(())
 }
 
-/// Writes one terminal fact receipt in the same transaction as the effect that produced it.
+/// Writes one canonical fact receipt in the same transaction as the effect that produced it.
 /// The digest is taken from the canonical source payload (the committed record), so a repeated
 /// write of the same `(item_id, revision)` is idempotent while a different payload for an
 /// already-recorded revision is an identity conflict that fails the whole effect transaction.
@@ -2961,7 +2922,8 @@ mod storage_fault_tests {
     /// Malformed durable input must remain a persistent-data failure, not a retryable SQLite
     /// query error or an absent source proof. The external diagnostic must not expose the row.
     #[tokio::test]
-    async fn bot_source_input_corruption_is_nonretryable_without_exposing_payload() -> Result<()> {
+    async fn bot_input_identity_corruption_is_nonretryable_without_exposing_payload() -> Result<()>
+    {
         use crate::bots::FeishuError;
         use pl_core::thread::input::{InputIdentity, InputState};
         let directory = tempfile::tempdir()?;
@@ -2969,40 +2931,36 @@ mod storage_fault_tests {
             HistoryStore::open(&directory.path().join("history.sqlite"), "bot-source").await?;
         let connection = store.writer().await?;
         let db = &connection.db;
-        for (id, ordinal, sequence) in [("original", 1, 8), ("steering", 2, 10), ("future", 3, 12)]
-        {
-            write_input_identity(
-                db,
-                sequence,
-                &InputIdentityWrite {
-                    entry: crate::studio::storage::state::InputIdentityEntry::new(
-                        InputIdentity {
-                            id: id.into(),
-                            ordinal,
-                            revision: 1,
-                            digest: format!("{id}-digest"),
-                            delivery: Default::default(),
-                            state: InputState::Consumed {
-                                turn_id: "bot-turn".into(),
-                                attempt_id: "attempt".into(),
-                            },
+        write_input_identity(
+            db,
+            10,
+            &InputIdentityWrite {
+                entry: crate::studio::storage::state::InputIdentityEntry::new(
+                    InputIdentity {
+                        id: "steering".into(),
+                        ordinal: 2,
+                        revision: 1,
+                        digest: "input-digest".into(),
+                        delivery: Default::default(),
+                        state: InputState::Consumed {
+                            turn_id: "bot-turn".into(),
+                            attempt_id: "attempt".into(),
                         },
-                        1,
-                    ),
-                    request_digest: None,
-                    presentation: pl_protocol::MessagePresentation::Visible,
-                },
-            )
-            .await?;
-        }
+                    },
+                    1,
+                ),
+                request_digest: None,
+                presentation: pl_protocol::MessagePresentation::Visible,
+            },
+        )
+        .await?;
         assert_eq!(
             store
-                .consumed_input_at("bot-turn", 10)
+                .input_identity("steering")
                 .await?
-                .map(|entry| entry.id),
+                .map(|receipt| receipt.entry.id),
             Some("steering".into())
         );
-        assert!(store.consumed_input_at("other-turn", 10).await?.is_none());
         let private_marker = "private-corrupt-row-marker";
         db.execute_raw(statement(
             "UPDATE history_input_identities SET payload=? WHERE item_id='steering'",
@@ -3014,10 +2972,11 @@ mod storage_fault_tests {
         ))
         .await?;
         let cause = store
-            .consumed_input_at("bot-turn", 10)
+            .input_identity("steering")
             .await
-            .expect_err("corrupt source must fail closed");
-        let error = FeishuError::history_read("read current bot tool input", cause);
+            .err()
+            .context("corrupt input identity must fail closed")?;
+        let error = FeishuError::history_read("read canonical bot input identity", cause);
         assert_eq!(error.diagnostic().code, "unavailable");
         assert!(
             !error.retryable(),

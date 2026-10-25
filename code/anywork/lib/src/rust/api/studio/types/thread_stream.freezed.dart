@@ -695,7 +695,7 @@ extension BridgeThreadNotificationPatterns on BridgeThreadNotification {
 /// }
 /// ```
 
-@optionalTypeArgs TResult maybeMap<TResult extends Object?>({TResult Function( BridgeThreadNotification_TurnStarted value)?  turnStarted,TResult Function( BridgeThreadNotification_TurnUpdated value)?  turnUpdated,TResult Function( BridgeThreadNotification_TurnCompleted value)?  turnCompleted,TResult Function( BridgeThreadNotification_InteractionChanged value)?  interactionChanged,TResult Function( BridgeThreadNotification_ThreadRuntimeUpdated value)?  threadRuntimeUpdated,TResult Function( BridgeThreadNotification_ActivityChanged value)?  activityChanged,TResult Function( BridgeThreadNotification_StorageChanged value)?  storageChanged,TResult Function( BridgeThreadNotification_Lagged value)?  lagged,required TResult orElse(),}){
+@optionalTypeArgs TResult maybeMap<TResult extends Object?>({TResult Function( BridgeThreadNotification_TurnStarted value)?  turnStarted,TResult Function( BridgeThreadNotification_TurnUpdated value)?  turnUpdated,TResult Function( BridgeThreadNotification_TurnCompleted value)?  turnCompleted,TResult Function( BridgeThreadNotification_InteractionChanged value)?  interactionChanged,TResult Function( BridgeThreadNotification_ThreadRuntimeUpdated value)?  threadRuntimeUpdated,TResult Function( BridgeThreadNotification_ActivityChanged value)?  activityChanged,TResult Function( BridgeThreadNotification_StorageChanged value)?  storageChanged,TResult Function( BridgeThreadNotification_AudienceChanged value)?  audienceChanged,TResult Function( BridgeThreadNotification_Lagged value)?  lagged,required TResult orElse(),}){
 final _that = this;
 switch (_that) {
 case BridgeThreadNotification_TurnStarted() when turnStarted != null:
@@ -705,7 +705,8 @@ return turnCompleted(_that);case BridgeThreadNotification_InteractionChanged() w
 return interactionChanged(_that);case BridgeThreadNotification_ThreadRuntimeUpdated() when threadRuntimeUpdated != null:
 return threadRuntimeUpdated(_that);case BridgeThreadNotification_ActivityChanged() when activityChanged != null:
 return activityChanged(_that);case BridgeThreadNotification_StorageChanged() when storageChanged != null:
-return storageChanged(_that);case BridgeThreadNotification_Lagged() when lagged != null:
+return storageChanged(_that);case BridgeThreadNotification_AudienceChanged() when audienceChanged != null:
+return audienceChanged(_that);case BridgeThreadNotification_Lagged() when lagged != null:
 return lagged(_that);case _:
   return orElse();
 
@@ -724,7 +725,7 @@ return lagged(_that);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult map<TResult extends Object?>({required TResult Function( BridgeThreadNotification_TurnStarted value)  turnStarted,required TResult Function( BridgeThreadNotification_TurnUpdated value)  turnUpdated,required TResult Function( BridgeThreadNotification_TurnCompleted value)  turnCompleted,required TResult Function( BridgeThreadNotification_InteractionChanged value)  interactionChanged,required TResult Function( BridgeThreadNotification_ThreadRuntimeUpdated value)  threadRuntimeUpdated,required TResult Function( BridgeThreadNotification_ActivityChanged value)  activityChanged,required TResult Function( BridgeThreadNotification_StorageChanged value)  storageChanged,required TResult Function( BridgeThreadNotification_Lagged value)  lagged,}){
+@optionalTypeArgs TResult map<TResult extends Object?>({required TResult Function( BridgeThreadNotification_TurnStarted value)  turnStarted,required TResult Function( BridgeThreadNotification_TurnUpdated value)  turnUpdated,required TResult Function( BridgeThreadNotification_TurnCompleted value)  turnCompleted,required TResult Function( BridgeThreadNotification_InteractionChanged value)  interactionChanged,required TResult Function( BridgeThreadNotification_ThreadRuntimeUpdated value)  threadRuntimeUpdated,required TResult Function( BridgeThreadNotification_ActivityChanged value)  activityChanged,required TResult Function( BridgeThreadNotification_StorageChanged value)  storageChanged,required TResult Function( BridgeThreadNotification_AudienceChanged value)  audienceChanged,required TResult Function( BridgeThreadNotification_Lagged value)  lagged,}){
 final _that = this;
 switch (_that) {
 case BridgeThreadNotification_TurnStarted():
@@ -734,7 +735,8 @@ return turnCompleted(_that);case BridgeThreadNotification_InteractionChanged():
 return interactionChanged(_that);case BridgeThreadNotification_ThreadRuntimeUpdated():
 return threadRuntimeUpdated(_that);case BridgeThreadNotification_ActivityChanged():
 return activityChanged(_that);case BridgeThreadNotification_StorageChanged():
-return storageChanged(_that);case BridgeThreadNotification_Lagged():
+return storageChanged(_that);case BridgeThreadNotification_AudienceChanged():
+return audienceChanged(_that);case BridgeThreadNotification_Lagged():
 return lagged(_that);}
 }
 /// A variant of `map` that fallback to returning `null`.
@@ -749,7 +751,7 @@ return lagged(_that);}
 /// }
 /// ```
 
-@optionalTypeArgs TResult? mapOrNull<TResult extends Object?>({TResult? Function( BridgeThreadNotification_TurnStarted value)?  turnStarted,TResult? Function( BridgeThreadNotification_TurnUpdated value)?  turnUpdated,TResult? Function( BridgeThreadNotification_TurnCompleted value)?  turnCompleted,TResult? Function( BridgeThreadNotification_InteractionChanged value)?  interactionChanged,TResult? Function( BridgeThreadNotification_ThreadRuntimeUpdated value)?  threadRuntimeUpdated,TResult? Function( BridgeThreadNotification_ActivityChanged value)?  activityChanged,TResult? Function( BridgeThreadNotification_StorageChanged value)?  storageChanged,TResult? Function( BridgeThreadNotification_Lagged value)?  lagged,}){
+@optionalTypeArgs TResult? mapOrNull<TResult extends Object?>({TResult? Function( BridgeThreadNotification_TurnStarted value)?  turnStarted,TResult? Function( BridgeThreadNotification_TurnUpdated value)?  turnUpdated,TResult? Function( BridgeThreadNotification_TurnCompleted value)?  turnCompleted,TResult? Function( BridgeThreadNotification_InteractionChanged value)?  interactionChanged,TResult? Function( BridgeThreadNotification_ThreadRuntimeUpdated value)?  threadRuntimeUpdated,TResult? Function( BridgeThreadNotification_ActivityChanged value)?  activityChanged,TResult? Function( BridgeThreadNotification_StorageChanged value)?  storageChanged,TResult? Function( BridgeThreadNotification_AudienceChanged value)?  audienceChanged,TResult? Function( BridgeThreadNotification_Lagged value)?  lagged,}){
 final _that = this;
 switch (_that) {
 case BridgeThreadNotification_TurnStarted() when turnStarted != null:
@@ -759,7 +761,8 @@ return turnCompleted(_that);case BridgeThreadNotification_InteractionChanged() w
 return interactionChanged(_that);case BridgeThreadNotification_ThreadRuntimeUpdated() when threadRuntimeUpdated != null:
 return threadRuntimeUpdated(_that);case BridgeThreadNotification_ActivityChanged() when activityChanged != null:
 return activityChanged(_that);case BridgeThreadNotification_StorageChanged() when storageChanged != null:
-return storageChanged(_that);case BridgeThreadNotification_Lagged() when lagged != null:
+return storageChanged(_that);case BridgeThreadNotification_AudienceChanged() when audienceChanged != null:
+return audienceChanged(_that);case BridgeThreadNotification_Lagged() when lagged != null:
 return lagged(_that);case _:
   return null;
 
@@ -777,7 +780,7 @@ return lagged(_that);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function( BridgeTurn turn)?  turnStarted,TResult Function( BridgeTurn turn)?  turnUpdated,TResult Function( BridgeTurn turn)?  turnCompleted,TResult Function( BridgeInteractionRequest interaction)?  interactionChanged,TResult Function( BridgeThreadRuntimeSnapshot runtime)?  threadRuntimeUpdated,TResult Function( BridgeThreadActivity? activity)?  activityChanged,TResult Function( BridgeThreadStorageState? storage)?  storageChanged,TResult Function( BigInt dropped)?  lagged,required TResult orElse(),}) {final _that = this;
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function( BridgeTurn turn)?  turnStarted,TResult Function( BridgeTurn turn)?  turnUpdated,TResult Function( BridgeTurn turn)?  turnCompleted,TResult Function( BridgeInteractionRequest interaction)?  interactionChanged,TResult Function( BridgeThreadRuntimeSnapshot runtime)?  threadRuntimeUpdated,TResult Function( BridgeThreadActivity? activity)?  activityChanged,TResult Function( BridgeThreadStorageState? storage)?  storageChanged,TResult Function( BridgeThreadAudience audience)?  audienceChanged,TResult Function( BigInt dropped)?  lagged,required TResult orElse(),}) {final _that = this;
 switch (_that) {
 case BridgeThreadNotification_TurnStarted() when turnStarted != null:
 return turnStarted(_that.turn);case BridgeThreadNotification_TurnUpdated() when turnUpdated != null:
@@ -786,7 +789,8 @@ return turnCompleted(_that.turn);case BridgeThreadNotification_InteractionChange
 return interactionChanged(_that.interaction);case BridgeThreadNotification_ThreadRuntimeUpdated() when threadRuntimeUpdated != null:
 return threadRuntimeUpdated(_that.runtime);case BridgeThreadNotification_ActivityChanged() when activityChanged != null:
 return activityChanged(_that.activity);case BridgeThreadNotification_StorageChanged() when storageChanged != null:
-return storageChanged(_that.storage);case BridgeThreadNotification_Lagged() when lagged != null:
+return storageChanged(_that.storage);case BridgeThreadNotification_AudienceChanged() when audienceChanged != null:
+return audienceChanged(_that.audience);case BridgeThreadNotification_Lagged() when lagged != null:
 return lagged(_that.dropped);case _:
   return orElse();
 
@@ -805,7 +809,7 @@ return lagged(_that.dropped);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function( BridgeTurn turn)  turnStarted,required TResult Function( BridgeTurn turn)  turnUpdated,required TResult Function( BridgeTurn turn)  turnCompleted,required TResult Function( BridgeInteractionRequest interaction)  interactionChanged,required TResult Function( BridgeThreadRuntimeSnapshot runtime)  threadRuntimeUpdated,required TResult Function( BridgeThreadActivity? activity)  activityChanged,required TResult Function( BridgeThreadStorageState? storage)  storageChanged,required TResult Function( BigInt dropped)  lagged,}) {final _that = this;
+@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function( BridgeTurn turn)  turnStarted,required TResult Function( BridgeTurn turn)  turnUpdated,required TResult Function( BridgeTurn turn)  turnCompleted,required TResult Function( BridgeInteractionRequest interaction)  interactionChanged,required TResult Function( BridgeThreadRuntimeSnapshot runtime)  threadRuntimeUpdated,required TResult Function( BridgeThreadActivity? activity)  activityChanged,required TResult Function( BridgeThreadStorageState? storage)  storageChanged,required TResult Function( BridgeThreadAudience audience)  audienceChanged,required TResult Function( BigInt dropped)  lagged,}) {final _that = this;
 switch (_that) {
 case BridgeThreadNotification_TurnStarted():
 return turnStarted(_that.turn);case BridgeThreadNotification_TurnUpdated():
@@ -814,7 +818,8 @@ return turnCompleted(_that.turn);case BridgeThreadNotification_InteractionChange
 return interactionChanged(_that.interaction);case BridgeThreadNotification_ThreadRuntimeUpdated():
 return threadRuntimeUpdated(_that.runtime);case BridgeThreadNotification_ActivityChanged():
 return activityChanged(_that.activity);case BridgeThreadNotification_StorageChanged():
-return storageChanged(_that.storage);case BridgeThreadNotification_Lagged():
+return storageChanged(_that.storage);case BridgeThreadNotification_AudienceChanged():
+return audienceChanged(_that.audience);case BridgeThreadNotification_Lagged():
 return lagged(_that.dropped);}
 }
 /// A variant of `when` that fallback to returning `null`
@@ -829,7 +834,7 @@ return lagged(_that.dropped);}
 /// }
 /// ```
 
-@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function( BridgeTurn turn)?  turnStarted,TResult? Function( BridgeTurn turn)?  turnUpdated,TResult? Function( BridgeTurn turn)?  turnCompleted,TResult? Function( BridgeInteractionRequest interaction)?  interactionChanged,TResult? Function( BridgeThreadRuntimeSnapshot runtime)?  threadRuntimeUpdated,TResult? Function( BridgeThreadActivity? activity)?  activityChanged,TResult? Function( BridgeThreadStorageState? storage)?  storageChanged,TResult? Function( BigInt dropped)?  lagged,}) {final _that = this;
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function( BridgeTurn turn)?  turnStarted,TResult? Function( BridgeTurn turn)?  turnUpdated,TResult? Function( BridgeTurn turn)?  turnCompleted,TResult? Function( BridgeInteractionRequest interaction)?  interactionChanged,TResult? Function( BridgeThreadRuntimeSnapshot runtime)?  threadRuntimeUpdated,TResult? Function( BridgeThreadActivity? activity)?  activityChanged,TResult? Function( BridgeThreadStorageState? storage)?  storageChanged,TResult? Function( BridgeThreadAudience audience)?  audienceChanged,TResult? Function( BigInt dropped)?  lagged,}) {final _that = this;
 switch (_that) {
 case BridgeThreadNotification_TurnStarted() when turnStarted != null:
 return turnStarted(_that.turn);case BridgeThreadNotification_TurnUpdated() when turnUpdated != null:
@@ -838,7 +843,8 @@ return turnCompleted(_that.turn);case BridgeThreadNotification_InteractionChange
 return interactionChanged(_that.interaction);case BridgeThreadNotification_ThreadRuntimeUpdated() when threadRuntimeUpdated != null:
 return threadRuntimeUpdated(_that.runtime);case BridgeThreadNotification_ActivityChanged() when activityChanged != null:
 return activityChanged(_that.activity);case BridgeThreadNotification_StorageChanged() when storageChanged != null:
-return storageChanged(_that.storage);case BridgeThreadNotification_Lagged() when lagged != null:
+return storageChanged(_that.storage);case BridgeThreadNotification_AudienceChanged() when audienceChanged != null:
+return audienceChanged(_that.audience);case BridgeThreadNotification_Lagged() when lagged != null:
 return lagged(_that.dropped);case _:
   return null;
 
@@ -1321,6 +1327,83 @@ as BridgeThreadStorageState?,
 }
 
 
+}
+
+/// @nodoc
+
+
+class BridgeThreadNotification_AudienceChanged extends BridgeThreadNotification {
+  const BridgeThreadNotification_AudienceChanged({required this.audience}): super._();
+
+
+ final  BridgeThreadAudience audience;
+
+/// Create a copy of BridgeThreadNotification
+/// with the given fields replaced by the non-null parameter values.
+@JsonKey(includeFromJson: false, includeToJson: false)
+@pragma('vm:prefer-inline')
+$BridgeThreadNotification_AudienceChangedCopyWith<BridgeThreadNotification_AudienceChanged> get copyWith => _$BridgeThreadNotification_AudienceChangedCopyWithImpl<BridgeThreadNotification_AudienceChanged>(this, _$identity);
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeThreadNotification_AudienceChanged&&(identical(other.audience, audience) || other.audience == audience));
+}
+
+
+@override
+int get hashCode {
+    return Object.hash(runtimeType,audience);
+}
+
+@override
+String toString() {
+    return 'BridgeThreadNotification.audienceChanged(audience: $audience)';
+}
+
+
+}
+
+/// @nodoc
+abstract mixin class $BridgeThreadNotification_AudienceChangedCopyWith<$Res> implements $BridgeThreadNotificationCopyWith<$Res> {
+  factory $BridgeThreadNotification_AudienceChangedCopyWith(BridgeThreadNotification_AudienceChanged value, $Res Function(BridgeThreadNotification_AudienceChanged) _then) = _$BridgeThreadNotification_AudienceChangedCopyWithImpl;
+@useResult
+$Res call({
+ BridgeThreadAudience audience
+});
+
+
+$BridgeThreadAudienceCopyWith<$Res> get audience;
+
+}
+/// @nodoc
+class _$BridgeThreadNotification_AudienceChangedCopyWithImpl<$Res>
+    implements $BridgeThreadNotification_AudienceChangedCopyWith<$Res> {
+  _$BridgeThreadNotification_AudienceChangedCopyWithImpl(this._self, this._then);
+
+  final BridgeThreadNotification_AudienceChanged _self;
+  final $Res Function(BridgeThreadNotification_AudienceChanged) _then;
+
+/// Create a copy of BridgeThreadNotification
+/// with the given fields replaced by the non-null parameter values.
+@pragma('vm:prefer-inline') $Res call({Object? audience = null,}) {
+  return _then(BridgeThreadNotification_AudienceChanged(
+audience: null == audience ? _self.audience : audience // ignore: cast_nullable_to_non_nullable
+as BridgeThreadAudience,
+  ));
+}
+
+/// Create a copy of BridgeThreadNotification
+/// with the given fields replaced by the non-null parameter values.
+@override
+@pragma('vm:prefer-inline')
+$BridgeThreadAudienceCopyWith<$Res> get audience {
+
+  return $BridgeThreadAudienceCopyWith<$Res>(_self.audience, (value) {
+    return _then(_self.copyWith(audience: value));
+  });
+}
 }
 
 /// @nodoc

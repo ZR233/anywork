@@ -42,6 +42,10 @@ pub(in crate::studio) fn project_snapshot(
         revision: state.commit_sequence,
         runtime,
         thread,
+        // Audience belongs to the local binding owner, not to the generic core projection.
+        audience: pl_protocol::ThreadAudience::Unavailable {
+            reason: pl_protocol::ThreadAudienceUnavailableReason::OwnershipUnproven,
+        },
         active_turn,
         interactions,
         activity,

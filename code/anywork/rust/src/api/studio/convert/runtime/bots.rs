@@ -122,7 +122,7 @@ fn bridge_pairing(value: BotPairingRequest) -> BridgeBotPairingRequest {
     }
 }
 
-fn bridge_diagnostic(value: BotDiagnostic) -> BridgeBotDiagnostic {
+pub(crate) fn bridge_diagnostic(value: BotDiagnostic) -> BridgeBotDiagnostic {
     BridgeBotDiagnostic {
         code: value.code,
         message: value.message,

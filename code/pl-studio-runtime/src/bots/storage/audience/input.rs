@@ -227,8 +227,11 @@ impl BotStateStore {
             }
             BotThreadInputReadiness::Ready
         } else if status == "bound" && bound == thread && creation == origin.creation_id {
+            let preparing = head
+                .as_ref()
+                .is_some_and(|auth| auth.intent.thread_id == thread);
             if head.as_ref().is_some_and(|auth| {
-                if auth.intent.thread_id == thread {
+                if preparing {
                     auth.phase != BotAuthorizationPhase::PendingStart
                 } else {
                     auth.phase != BotAuthorizationPhase::Closed
@@ -236,7 +239,14 @@ impl BotStateStore {
             }) {
                 return Err(unreadable());
             }
-            BotThreadInputReadiness::Preparing
+            // `Preparing` 只表示「确有本 Thread 的 PendingStart，正在准备 cut」。没有授权
+            // 头的已绑定 Thread 在本机可正常使用（前端不活跃由受众视图表达），不能借用
+            // 输入就绪来长期阻塞它。
+            if preparing {
+                BotThreadInputReadiness::Preparing
+            } else {
+                BotThreadInputReadiness::Ready
+            }
         } else {
             return Err(unreadable());
         };

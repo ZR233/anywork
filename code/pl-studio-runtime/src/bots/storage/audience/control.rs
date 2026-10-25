@@ -7,7 +7,7 @@ use crate::bots::storage::{BotStateStore, statement, storage};
 use crate::studio::audience_start::{AudienceStartIntent, AudienceStartReceipt};
 use crate::studio::unix_seconds;
 use pl_protocol::studio::{BotAuthorizationPhase, BotThreadSyncAction, ChangeBotThreadSyncRequest};
-use pl_protocol::{BotAudienceCloseReason, BotAuthorizationHead, BotAuthorizationId};
+use pl_protocol::{BotAudienceCloseReason, BotAuthorizationHead, BotAuthorizationId, BotSyncCas};
 use sea_orm::{ConnectionTrait, TransactionTrait};
 
 pub(in crate::bots) struct SyncChange {
@@ -299,6 +299,70 @@ impl BotStateStore {
             vec![after.0.into(),i64::try_from(after.1).map_err(|_|unreadable())?.into()])).await.map_err(storage)?;
         rows.iter().map(super::authorization).collect()
     }
+}
+
+/// Commits the automatic first authorization beside the binding it belongs to. It is a
+/// durable intent only: the original CAS in `activate_sync` still decides activation, and any
+/// existing head (in any phase) forbids opening a second generation automatically.
+pub(in crate::bots::storage) async fn first_pending_start<C: ConnectionTrait>(
+    db: &C,
+    first: &crate::bots::storage::FirstStart,
+    chat: &str,
+    creation: &str,
+    project: &str,
+    revision: u64,
+    thread: &str,
+) -> Result<(), FeishuError> {
+    if super::read::head(db, chat).await?.is_some() {
+        return Ok(());
+    }
+    let auth = Authorization {
+        intent: AudienceStartIntent {
+            operation_id: first.operation_id.clone(),
+            thread_id: thread.to_string(),
+            authorization: BotAuthorizationId {
+                bot_id: first.bot_id.clone(),
+                chat_id: chat.to_string(),
+                generation: 1,
+            },
+            binding_revision: revision,
+        },
+        app_id: first.app_id.clone(),
+        project_id: project.to_string(),
+        creation_id: creation.to_string(),
+        revision: 1,
+        phase: BotAuthorizationPhase::PendingStart,
+        start: None,
+        closed: None,
+        delivery_version: 1,
+    };
+    // 同一事务占用该 operation 身份：后续显式 Enable 复用同一 id 时会在既有幂等查询里
+    // 命中「同 id 不同 request」而被拒，避免把跨代复用交给宿主才发现。
+    let operation = SyncOperation {
+        request: ChangeBotThreadSyncRequest {
+            operation_id: first.operation_id.clone(),
+            thread_id: thread.to_string(),
+            action: BotThreadSyncAction::Enable,
+            expected: BotSyncCas {
+                binding_revision: revision,
+                authorization_head: BotAuthorizationHead::None {},
+            },
+        },
+        authorization: auth.intent.authorization.clone(),
+    };
+    db.execute_raw(statement(
+        "INSERT INTO bot_sync_operations(operation_id,thread_id,request_json) VALUES(?,?,?)",
+        vec![
+            first.operation_id.clone().into(),
+            thread.into(),
+            serde_json::to_string(&operation)
+                .map_err(|_| unreadable())?
+                .into(),
+        ],
+    ))
+    .await
+    .map_err(storage)?;
+    write_auth(db, &auth).await
 }
 
 pub(in crate::bots::storage) async fn close_generation<C: ConnectionTrait>(

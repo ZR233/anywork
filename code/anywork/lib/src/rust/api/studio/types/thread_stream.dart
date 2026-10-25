@@ -4,12 +4,14 @@
 // ignore_for_file: invalid_use_of_internal_member, unused_import, unnecessary_import
 
 import '../../../frb_generated.dart';
+import 'bots.dart';
 import 'delegation.dart';
 
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 import 'package:freezed_annotation/freezed_annotation.dart' hide protected;
 
 import 'thread_activity.dart';
+import 'thread_audience.dart';
 import 'thread_stream/item.dart';
 part 'thread_stream.freezed.dart';
 
@@ -512,6 +514,9 @@ sealed class BridgeThreadNotification with _$BridgeThreadNotification {
   const factory BridgeThreadNotification.storageChanged({
     BridgeThreadStorageState? storage,
   }) = BridgeThreadNotification_StorageChanged;
+  const factory BridgeThreadNotification.audienceChanged({
+    required BridgeThreadAudience audience,
+  }) = BridgeThreadNotification_AudienceChanged;
   const factory BridgeThreadNotification.lagged({required BigInt dropped}) =
       BridgeThreadNotification_Lagged;
 }
@@ -784,6 +789,7 @@ class BridgeThreadSnapshot {
   final int schemaVersion;
   final BigInt revision;
   final BridgeThread thread;
+  final BridgeThreadAudience audience;
   final BridgeTurn? activeTurn;
   final List<BridgeInteractionRequest> interactions;
   final BridgeThreadRuntimeSnapshot? runtime;
@@ -799,6 +805,7 @@ class BridgeThreadSnapshot {
     required this.schemaVersion,
     required this.revision,
     required this.thread,
+    required this.audience,
     this.activeTurn,
     required this.interactions,
     this.runtime,
@@ -812,6 +819,7 @@ class BridgeThreadSnapshot {
       schemaVersion.hashCode ^
       revision.hashCode ^
       thread.hashCode ^
+      audience.hashCode ^
       activeTurn.hashCode ^
       interactions.hashCode ^
       runtime.hashCode ^
@@ -827,6 +835,7 @@ class BridgeThreadSnapshot {
           schemaVersion == other.schemaVersion &&
           revision == other.revision &&
           thread == other.thread &&
+          audience == other.audience &&
           activeTurn == other.activeTurn &&
           interactions == other.interactions &&
           runtime == other.runtime &&

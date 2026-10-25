@@ -78,10 +78,13 @@ pub enum StudioOperation {
     ReadBotMessages,
     SendBotMessage,
     CreateBotConversationThread,
+    ReadThreadClosedAuthorizations,
+    ReadThreadAudienceItems,
+    ChangeBotThreadSync,
 }
 
 impl StudioOperation {
-    pub const ALL: [Self; 71] = [
+    pub const ALL: [Self; 74] = [
         Self::ReadState,
         Self::OpenProject,
         Self::RenameProject,
@@ -153,6 +156,9 @@ impl StudioOperation {
         Self::ReadBotMessages,
         Self::SendBotMessage,
         Self::CreateBotConversationThread,
+        Self::ReadThreadClosedAuthorizations,
+        Self::ReadThreadAudienceItems,
+        Self::ChangeBotThreadSync,
     ];
 
     pub const fn operation_id(self) -> &'static str {
@@ -228,6 +234,9 @@ impl StudioOperation {
             Self::ReadBotMessages => "bots.readMessages",
             Self::SendBotMessage => "bots.sendMessage",
             Self::CreateBotConversationThread => "bots.createConversationThread",
+            Self::ReadThreadClosedAuthorizations => "bots.readThreadClosedAuthorizations",
+            Self::ReadThreadAudienceItems => "bots.readThreadAudienceItems",
+            Self::ChangeBotThreadSync => "bots.changeThreadSync",
         }
     }
 }

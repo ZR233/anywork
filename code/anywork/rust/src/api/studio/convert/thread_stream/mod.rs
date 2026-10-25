@@ -74,6 +74,11 @@ fn thread_notification(
                 storage: value.map(|current| Box::new(activity::storage(*current))),
             }
         }
+        ThreadNotification::AudienceChanged { audience } => {
+            BridgeThreadNotification::AudienceChanged {
+                audience: Box::new(super::thread_audience::bridge_audience(*audience)),
+            }
+        }
         ThreadNotification::Lagged { dropped } => BridgeThreadNotification::Lagged { dropped },
     };
     Ok(Some(BridgeThreadNotificationEnvelope {
@@ -96,6 +101,7 @@ pub(crate) fn bridge_thread_snapshot(value: ThreadSnapshot) -> Result<BridgeThre
         schema_version: value.schema_version,
         revision: value.revision,
         thread: bridge_thread(value.thread),
+        audience: super::thread_audience::bridge_audience(value.audience),
         active_turn: value.active_turn.map(bridge_turn),
         interactions: value
             .interactions
@@ -399,6 +405,18 @@ fn item_state(value: &ThreadItemState) -> Result<BridgeThreadItemState> {
             path: value.path().to_string(),
             media_type: value.media_type().map(str::to_string),
             completed_at: value.completed_at(),
+        },
+        ThreadItemState::PublicArtifact(value) => BridgeThreadItemState::PublicArtifact {
+            publication_id: value.publication_id.clone(),
+            tool_call_id: value.tool_call_id.clone(),
+            display_name: value.display_name.clone(),
+            resource: BridgeThreadArtifactResource {
+                id: value.resource.id.clone(),
+                content_digest: value.resource.content_digest.clone(),
+                byte_len: value.resource.byte_len,
+                media_type: value.resource.media_type.clone(),
+            },
+            published_at: value.published_at,
         },
         ThreadItemState::Raw(value) => BridgeThreadItemState::Raw {
             payloads: value

@@ -7,7 +7,7 @@ mod proof;
 mod read;
 mod schema;
 
-pub(super) use control::{bind_origin, close_chat, close_unavailable_binding};
+pub(super) use control::{bind_origin, close_chat, close_unavailable_binding, first_pending_start};
 pub(super) use counts::prepare_indexes as prepare_count_indexes;
 pub(in crate::bots) use read::AudienceScope;
 pub(super) use schema::validate_target_structure;

@@ -371,25 +371,6 @@ impl StudioThreadFactory {
                     thread_id,
                 )?);
             }
-            if bot_bound
-                || self
-                    .services
-                    .bots
-                    .has_source_thread(thread_id)
-                    .await
-                    .map_err(|error| resource_error("resolve durable bot source", error))?
-            {
-                if remote.is_some() {
-                    return Err(ThreadAssemblyError::Identity(
-                        "bot file submission requires its managed local workspace".into(),
-                    ));
-                }
-                tools = tools.with_tools(vec![crate::bots::file_tool::registration(
-                    self.services.bots.clone(),
-                    thread_id,
-                    workspace.clone(),
-                )?]);
-            }
         }
         let policies = match &preparation {
             CatalogPreparation::Refresh {

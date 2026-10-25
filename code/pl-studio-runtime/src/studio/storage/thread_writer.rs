@@ -1125,7 +1125,7 @@ async fn persist_effect(
                 rolled_back_turns: &rolled_back_turns(&write.checkpoint.state),
                 identities: &terminal_input_identities(&write.checkpoint.state),
                 messages: &admitted_message_identities(&write.effect),
-                receipts: &fact_receipts(&write.effect)?,
+                receipts: &fact_receipts(write)?,
                 tasks: &write.effect.tasks,
                 deliveries: &write.effect.deliveries,
                 delivery_repairs: &write.effect.delivery_repairs,
@@ -1542,16 +1542,17 @@ impl ColdStore for ThreadStorageSink {
     }
 }
 
-/// Durable receipts for the terminal interaction/permission facts one effect committed.
+/// Durable receipts for the interaction/permission and immutable start facts one effect committed.
 ///
-/// The receipt payload is the committed core record itself (its stable serde encoding is the
-/// source of the digest) and its revision is the record's own revision, so a repeated terminal
-/// command can be answered with the same receipt while a conflicting payload for one revision
-/// fails the effect transaction instead of overwriting the accepted fact.
+/// Interaction/permission receipts use the committed core record and its own revision. Start
+/// receipts use a fixed revision and bind their original effect sequence. In both cases a repeated
+/// write has the same payload digest, while a conflicting payload fails the effect transaction
+/// instead of overwriting the accepted fact.
 fn fact_receipts(
-    effect: &pl_core::thread::ThreadEffectBatch,
+    write: &ThreadWrite,
 ) -> Result<Vec<crate::studio::storage::history::FactReceiptWrite>> {
-    let mut receipts = Vec::new();
+    let effect = &write.effect;
+    let mut receipts = crate::studio::audience_start::receipt_writes(write)?;
     for record in effect.interactions.iter() {
         receipts.push(crate::studio::storage::history::FactReceiptWrite {
             item_id: crate::studio::thread_projection::order::receipt_id(
@@ -1733,6 +1734,20 @@ mod storage_fault_tests {
             checkpoint: ThreadCheckpoint::capture_transfer(thread_id.to_owned(), sequence, state),
             output_claim: None,
         }
+    }
+
+    fn ticket_starting_turn(thread_id: &str) -> ThreadWrite {
+        let mut write = ticket(thread_id, 1);
+        let turn = TurnRecord {
+            turn_id: "receipt-turn".to_owned(),
+            input_id: None,
+            state: TurnState::Running,
+            model_steps: 0,
+            elapsed_ms: None,
+        };
+        Arc::make_mut(&mut write.effect).turn = Some(turn.clone());
+        write.checkpoint.state.turns = vec![turn].into();
+        write
     }
 
     fn ticket_referencing_attachment(
@@ -3569,7 +3584,7 @@ mod storage_fault_tests {
         // The Thread's projection owner hands the batch over before the writer may write it. The test
         // drives that one write directly, under the step lock, so it can lose the acknowledgement while
         // the queue entry stays — exactly the retry the writer has to make idempotent.
-        let write = ticket("lost-ack", 1);
+        let write = ticket_starting_turn("lost-ack");
         let chat = store.chat_session("lost-ack").await?;
         let mut projection = live_projection();
         let prepared = projection.project_committed(
@@ -3582,6 +3597,13 @@ mod storage_fault_tests {
         sink.admit("lost-ack", write.clone())?;
         persist_effect(&sink.0, 1, &write, &prepared).await?;
         assert_eq!(store.history("lost-ack").await?.watermark().await?, 1);
+        let start = store
+            .history("lost-ack")
+            .await?
+            .turn_start_receipt("receipt-turn")
+            .await?
+            .context("committed Turn start receipt is missing")?;
+        assert_eq!(start.sequence, 1);
         assert_eq!(sink.0.channel.subscribe().borrow().queued_records, 1);
         sink.0.channel.mark_unavailable();
         let unavailable = sink.0.channel.subscribe().borrow().clone();
@@ -3599,6 +3621,15 @@ mod storage_fault_tests {
         )
         .await??;
         assert_eq!(store.history("lost-ack").await?.watermark().await?, 1);
+        assert_eq!(
+            store
+                .history("lost-ack")
+                .await?
+                .turn_start_receipt("receipt-turn")
+                .await?,
+            Some(start),
+            "lost acknowledgement must not mint a new start receipt"
+        );
         let status = sink.0.channel.subscribe().borrow().clone();
         assert_eq!(status.queued_records, 0);
         assert_eq!(status.fault, None);
@@ -3628,11 +3659,62 @@ mod storage_fault_tests {
     #[tokio::test]
     async fn a_rejected_atomic_commit_never_advances_history_without_its_checkpoint() -> Result<()>
     {
+        use crate::studio::audience_start::{AUDIENCE_START_EXTENSION, AudienceStartIntent};
+        use pl_core::thread::extensions::{ExtensionChange, ExtensionRecord};
+
         let (_temp, store, sink) = sink("atomic-failure").await?;
         // Commit one effect first so the history database exists, then reject the second one's whole
         // transaction from the watermark update that every atomic commit performs.
-        sink.admit("atomic-failure", ticket("atomic-failure", 1))?;
+        let mut first = ticket_starting_turn("atomic-failure");
+        let owner = ExtensionRecord {
+            revision: 1,
+            payload: crate::studio::model_route::encode_bot_owner("bot-cut-test")?,
+        };
+        first.checkpoint.state.extensions.insert(
+            crate::studio::model_route::BOT_OWNER_EXTENSION.to_owned(),
+            owner.clone(),
+        );
+        first.checkpoint.state.extension_sequence = 1;
+        Arc::make_mut(&mut first.effect).extensions = vec![ExtensionChange::Put {
+            id: crate::studio::model_route::BOT_OWNER_EXTENSION.to_owned(),
+            record: owner,
+        }]
+        .into();
+        sink.admit("atomic-failure", first.clone())?;
         tokio::time::timeout(Duration::from_secs(5), sink.flush("atomic-failure", 1)).await??;
+        let history = store.history("atomic-failure").await?;
+        let start = history
+            .turn_start_receipt("receipt-turn")
+            .await?
+            .context("saved start is missing")?;
+        let intent = AudienceStartIntent {
+            operation_id: "atomic-cut".to_owned(),
+            thread_id: "atomic-failure".to_owned(),
+            authorization: pl_protocol::BotAuthorizationId {
+                bot_id: "bot-cut-test".to_owned(),
+                chat_id: "chat-cut".to_owned(),
+                generation: 1,
+            },
+            binding_revision: 1,
+        };
+        let cut = ExtensionRecord {
+            revision: 2,
+            payload: intent.encode()?,
+        };
+        let mut second = ticket("atomic-failure", 2);
+        second.checkpoint.state = first.checkpoint.state.clone();
+        second.checkpoint.state.commit_sequence = 2;
+        second.checkpoint.state.extension_sequence = 2;
+        second
+            .checkpoint
+            .state
+            .extensions
+            .insert(AUDIENCE_START_EXTENSION.to_owned(), cut.clone());
+        Arc::make_mut(&mut second.effect).extensions = vec![ExtensionChange::Put {
+            id: AUDIENCE_START_EXTENSION.to_owned(),
+            record: cut,
+        }]
+        .into();
         let path = store
             .session_paths("project-test", "atomic-failure")?
             .root()
@@ -3652,7 +3734,7 @@ mod storage_fault_tests {
         )
         .await?;
         let mut status = sink.0.channel.subscribe();
-        sink.admit("atomic-failure", ticket("atomic-failure", 2))?;
+        sink.admit("atomic-failure", second)?;
         tokio::time::timeout(Duration::from_secs(5), async {
             while status.borrow_and_update().fault.is_none() {
                 status.changed().await?;
@@ -3670,6 +3752,11 @@ mod storage_fault_tests {
         assert_eq!(failed.committed_sequence, 1);
         assert_eq!(failed.queued_records, 1);
         assert_eq!(store.history("atomic-failure").await?.watermark().await?, 1);
+        assert!(history.audience_start_receipt(&intent).await?.is_none());
+        assert_eq!(
+            history.turn_start_receipt("receipt-turn").await?,
+            Some(start.clone())
+        );
         assert!(sink.flush("atomic-failure", 2).await.is_err());
         db.execute_unprepared("DROP TRIGGER reject_watermark")
             .await?;
@@ -3682,6 +3769,22 @@ mod storage_fault_tests {
         .await??;
         assert_eq!(store.history("atomic-failure").await?.watermark().await?, 2);
         assert_eq!(sink.0.channel.subscribe().borrow().fault, None);
+        let receipt = history
+            .audience_start_receipt(&intent)
+            .await?
+            .context("retried cut was not saved with its checkpoint")?;
+        assert_eq!(receipt.sequence, 2);
+        assert_eq!(receipt.extension_revision, 2);
+        assert_eq!(receipt.excluded_turn_id.as_deref(), Some("receipt-turn"));
+        // Cold proof reads neither reconstruct an old journal nor borrow the live writer state.
+        let cold = crate::studio::HistoryStore::open(&path, "atomic-failure").await?;
+        assert_eq!(cold.audience_start_receipt(&intent).await?, Some(receipt));
+        assert_eq!(cold.turn_start_receipt("receipt-turn").await?, Some(start));
+        db.execute_unprepared(
+            "UPDATE history_fact_receipts SET digest='damaged' WHERE kind='audience-start'",
+        )
+        .await?;
+        assert!(cold.audience_start_receipt(&intent).await.is_err());
         Ok(())
     }
 

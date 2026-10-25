@@ -82,14 +82,61 @@ FlMethodResponse* Pick(GtkWindow* window, bool directory, FlValue* arguments) {
   return FL_METHOD_RESPONSE(fl_method_success_response_new(selection));
 }
 
+FlMethodResponse* ChooseSavePath(GtkWindow* window, FlValue* arguments) {
+  if (arguments == nullptr || fl_value_get_type(arguments) != FL_VALUE_TYPE_STRING) {
+    return Error("invalid_arguments", "Expected a suggested filename.");
+  }
+  // Dart validates the basename before dispatch; check the native UTF-8 suggestion as well.
+  const gchar* name = fl_value_get_string(arguments);
+  if (!g_utf8_validate(name, -1, nullptr) || name[0] == '\0' ||
+      g_str_equal(name, ".") || g_str_equal(name, "..")) {
+    return Error("invalid_arguments", "Expected a filename, not a path.");
+  }
+  for (const gchar* cursor = name; *cursor != '\0'; cursor = g_utf8_next_char(cursor)) {
+    const gunichar value = g_utf8_get_char(cursor);
+    if (value == '/' || value == '\\' || g_unichar_iscntrl(value)) {
+      return Error("invalid_arguments", "Expected a filename, not a path.");
+    }
+  }
+  g_autoptr(GtkFileChooserNative) dialog = gtk_file_chooser_native_new(
+      nullptr, window, GTK_FILE_CHOOSER_ACTION_SAVE, nullptr, nullptr);
+  GtkFileChooser* chooser = GTK_FILE_CHOOSER(dialog);
+  gtk_file_chooser_set_local_only(chooser, TRUE);
+  gtk_file_chooser_set_do_overwrite_confirmation(chooser, TRUE);
+  gtk_file_chooser_set_current_name(chooser, name);
+
+  const gint response = gtk_native_dialog_run(GTK_NATIVE_DIALOG(dialog));
+  g_autoptr(FlValue) selection = nullptr;
+  if (response == GTK_RESPONSE_ACCEPT) {
+    g_autofree gchar* path = gtk_file_chooser_get_filename(chooser);
+    if (path == nullptr || !g_path_is_absolute(path) ||
+        !g_utf8_validate(path, -1, nullptr)) {
+      gtk_native_dialog_destroy(GTK_NATIVE_DIALOG(dialog));
+      return Error("file_dialog_failed", "No representable local save path was selected.");
+    }
+    selection = fl_value_new_string(path);
+  } else if (response != GTK_RESPONSE_CANCEL &&
+             response != GTK_RESPONSE_DELETE_EVENT) {
+    gtk_native_dialog_destroy(GTK_NATIVE_DIALOG(dialog));
+    return Error("file_dialog_failed", "Save dialog failed to return a selection.");
+  }
+  gtk_native_dialog_destroy(GTK_NATIVE_DIALOG(dialog));
+  // Only selection is acknowledged here. The managed Client action owns file I/O and opening.
+  return FL_METHOD_RESPONSE(fl_method_success_response_new(selection));
+}
+
 void OnMethodCall(FlMethodChannel* channel, FlMethodCall* call, gpointer user_data) {
   (void)channel;
   const gchar* method = fl_method_call_get_name(call);
   const bool directory = g_strcmp0(method, "pickDirectory") == 0;
-  g_autoptr(FlMethodResponse) response =
-      directory || g_strcmp0(method, "pickFiles") == 0
-          ? Pick(GTK_WINDOW(user_data), directory, fl_method_call_get_args(call))
-          : FL_METHOD_RESPONSE(fl_method_not_implemented_response_new());
+  g_autoptr(FlMethodResponse) response = nullptr;
+  if (g_strcmp0(method, "chooseSavePath") == 0) {
+    response = ChooseSavePath(GTK_WINDOW(user_data), fl_method_call_get_args(call));
+  } else if (directory || g_strcmp0(method, "pickFiles") == 0) {
+    response = Pick(GTK_WINDOW(user_data), directory, fl_method_call_get_args(call));
+  } else {
+    response = FL_METHOD_RESPONSE(fl_method_not_implemented_response_new());
+  }
   g_autoptr(GError) error = nullptr;
   if (!fl_method_call_respond(call, response, &error)) {
     g_warning("Failed to send file dialog response: %s", error->message);

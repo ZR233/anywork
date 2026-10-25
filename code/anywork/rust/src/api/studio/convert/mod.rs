@@ -1,5 +1,6 @@
 pub(crate) mod acp;
 pub(crate) mod acp_install;
+pub(crate) mod bot_audience;
 pub(crate) mod commands;
 pub(crate) mod delegation;
 pub(crate) mod event;
@@ -7,5 +8,6 @@ pub(crate) mod mode_editor;
 pub(crate) mod records;
 pub(crate) mod runtime;
 pub(crate) mod settings;
+pub(crate) mod thread_audience;
 pub(crate) mod thread_stream;
 pub(crate) mod timeline_content;

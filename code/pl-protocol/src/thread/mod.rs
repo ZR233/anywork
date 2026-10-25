@@ -8,7 +8,7 @@ use crate::{
     TodoListSnapshot, Turn,
 };
 
-pub const THREAD_SCHEMA_VERSION: u32 = 15;
+pub const THREAD_SCHEMA_VERSION: u32 = 17;
 
 /// Timeline 游标 token 的版本号。
 ///
@@ -161,6 +161,8 @@ pub struct ThreadSnapshot {
     pub schema_version: u32,
     pub revision: u64,
     pub thread: Thread,
+    /// Locally proven output audience; an unreadable scope is never silently unbound.
+    pub audience: crate::ThreadAudience,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub active_turn: Option<Turn>,
     #[serde(default)]
@@ -184,6 +186,9 @@ impl ThreadSnapshot {
             schema_version: THREAD_SCHEMA_VERSION,
             revision: 0,
             thread: Thread::placeholder(thread_id),
+            audience: crate::ThreadAudience::Unavailable {
+                reason: crate::ThreadAudienceUnavailableReason::OwnershipUnproven,
+            },
             active_turn: None,
             interactions: Vec::new(),
             runtime: None,
@@ -373,6 +378,10 @@ pub enum ThreadNotification {
     /// 因此正文更新不会额外走一遍状态流。
     StorageChanged {
         storage: Option<Box<crate::ThreadStorageState>>,
+    },
+    /// Audience/control/delivery summary changed independently of model output.
+    AudienceChanged {
+        audience: Box<crate::ThreadAudience>,
     },
     Lagged {
         dropped: u64,

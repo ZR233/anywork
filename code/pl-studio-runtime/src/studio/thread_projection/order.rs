@@ -25,7 +25,7 @@ pub(in crate::studio) fn tool_id(id: &str) -> String {
     format!("tool:{}:{id}", id.len())
 }
 
-/// Durable receipt identity of one terminal interaction/permission record.
+/// Durable receipt identity of one canonical fact within its producer-owned kind.
 ///
 /// The writer records the receipt in the same transaction as the effect that produced it and the
 /// host reads it back by this identity, so both sides derive it from the same function instead of

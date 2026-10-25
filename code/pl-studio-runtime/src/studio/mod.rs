@@ -1,5 +1,6 @@
 pub(crate) mod agent_close;
 mod agent_host;
+pub(crate) mod audience_start;
 pub(crate) mod catalog;
 pub(crate) mod delegation;
 pub(crate) mod entity;
@@ -23,6 +24,7 @@ pub(crate) use storage::history::{HistoryStore, context_resources};
 pub(crate) mod store;
 mod store_support;
 pub(crate) mod thread;
+pub(crate) mod thread_audience;
 pub(crate) mod thread_factory;
 pub(crate) mod thread_projection;
 mod toml_store;

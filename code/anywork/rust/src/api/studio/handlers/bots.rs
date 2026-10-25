@@ -1,4 +1,5 @@
 use crate::api::studio::bridge_runtime::active_bridge;
+use crate::api::studio::convert::bot_audience;
 use crate::api::studio::convert::runtime::{
     bridge_bots_command_reply, bridge_bots_state, bridge_conversation_page,
     bridge_conversation_thread_reply, bridge_message_page, bridge_send_result,
@@ -10,8 +11,11 @@ use crate::api::studio::convert::runtime::{
 use crate::api::studio::types::{
     BridgeBotConversationPage, BridgeBotConversationThreadReply, BridgeBotMessagePage,
     BridgeBotSendResult, BridgeBotsCommandReply, BridgeBotsStateSnapshot,
-    BridgeCancelBotRegistrationRequest, BridgeCreateBotConversationThreadRequest, BridgeError,
+    BridgeCancelBotRegistrationRequest, BridgeChangeBotThreadSyncReply,
+    BridgeChangeBotThreadSyncRequest, BridgeCreateBotConversationThreadRequest, BridgeError,
     BridgeListBotConversationsRequest, BridgeReadBotMessagesRequest,
+    BridgeReadThreadAudienceItemsReply, BridgeReadThreadAudienceItemsRequest,
+    BridgeReadThreadClosedAuthorizationsReply, BridgeReadThreadClosedAuthorizationsRequest,
     BridgeRetryBotConnectionRequest, BridgeSaveBotRequest, BridgeSendBotMessageRequest,
     BridgeSetBotEnabledRequest, BridgeSetBotTrustedChatRequest, BridgeSetBotTrustedUserRequest,
     BridgeStartBotRegistrationRequest,
@@ -147,6 +151,42 @@ pub async fn create_bot_conversation_thread(
         bridge
             .studio
             .create_bot_conversation_thread(protocol_create_thread(request))
+            .await?,
+    ))
+}
+
+pub async fn read_thread_closed_authorizations(
+    request: BridgeReadThreadClosedAuthorizationsRequest,
+) -> Result<BridgeReadThreadClosedAuthorizationsReply, BridgeError> {
+    let bridge = active_bridge().await?;
+    Ok(bot_audience::closed_reply(
+        bridge
+            .studio
+            .read_thread_closed_authorizations(bot_audience::read_closed_request(request))
+            .await?,
+    ))
+}
+
+pub async fn read_thread_audience_items(
+    request: BridgeReadThreadAudienceItemsRequest,
+) -> Result<BridgeReadThreadAudienceItemsReply, BridgeError> {
+    let bridge = active_bridge().await?;
+    Ok(bot_audience::items_reply(
+        bridge
+            .studio
+            .read_thread_audience_items(bot_audience::items_request(request))
+            .await?,
+    ))
+}
+
+pub async fn change_bot_thread_sync(
+    request: BridgeChangeBotThreadSyncRequest,
+) -> Result<BridgeChangeBotThreadSyncReply, BridgeError> {
+    let bridge = active_bridge().await?;
+    Ok(bot_audience::sync_reply(
+        bridge
+            .studio
+            .change_bot_thread_sync(bot_audience::sync_request(request))
             .await?,
     ))
 }

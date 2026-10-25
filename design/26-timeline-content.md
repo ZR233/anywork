@@ -230,6 +230,23 @@ writer。存储迁移、数据与凭据保留继续遵守 [17](./17-studio-stora
 | `ChatTail::next(&mut self)` | `Result<Option<ChatTailUpdate>, ChatError>`；类型保证单消费者；错误不能变成正常结束 |
 | `ChatTail::close(&mut self)` | 释放该观察的正文基线和 Session 引用；本体不派生后台任务，调用方先取消在途 future，再关闭或丢弃观察 |
 | `Session::read_detail(ChatDetailRequest)` | `ChatDetailChunk`：稳定 item/field/revision、UTF-8 文本块、字段总字节数和下一 continuation；默认 64 KiB，显式块大小最小 4 字节、最大 256 KiB |
+| `Session::read_metadata(&[String])` | 按给定身份读取当前元数据；1..=100 个非空、不重复 ID，按请求顺序返回 `Present(ChatItemMetadata)` 或 `Missing { item_id }`，不以连续分页或整库扫描代替点读 |
+
+`ChatItemMetadata` 只含 item/Turn 身份、order、revision、opaque 静态 `meta`、各字段的完整
+UTF-8 字节数、saved 和 lifecycle，不含 `ContentBlock` 或任何字段正文。它是同一 Session
+当前事实的只读结果，不是另一个内容缓存或外部受众授权。热/冷合并继续由 Session 独占：
+存储等待期间出现的新 revision、字段集合、保存确认和终态事实优先于旧冷行；撤回或观察
+覆盖无法证明时返回明确的 `ReadInvalidated`，不可使已撤回的预览或较旧冷修订复活。
+可知有更新但已无可读元数据时明确报不可读取，不能以旧行或 `Missing` 掩盖。
+
+一次结果复用 2 MiB 的页元数据预算，身份、静态结构和字段索引均计入；超限整次明确
+拒绝，不截断静态结构、不遗漏请求身份。查询不推进 Session 内容版本、不发布通知、
+不改变顺序分配或保存事实，不触发模型与工具。存储实现可沿现有单项读取解码冷条目，
+但逐项提取后释放正文，不保留 100 份完整原文；此接口不声称底层磁盘读取只发生于前缀。
+`Missing` 仅表示当前无法找到该身份，不证明从未存在或业务已删除。窗口退出和失去历史
+覆盖均不构成 durable tombstone；已知送达身份消失时，上层须保留来源不完整，不能据此
+推进送达水位或声称平台撤回。Studio 的最多 100 项渠道查询复用本接口并映射 typed 状态，
+不在产品层重建另一套热/冷裁决。
 
 `ChatCursor` 表达严格 `(order, item_id)` keyset 边界；产品 wire 游标另绑定 Thread 并版本化，
 消费者只能原样传递不透明 token。边界可以来自尚未保存的权威条目，因此新页游标不要求

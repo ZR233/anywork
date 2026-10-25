@@ -20,6 +20,7 @@ import 'types/response.dart';
 import 'types/runtime.dart';
 import 'types/settings.dart';
 import 'types/thread_activity.dart';
+import 'types/thread_audience.dart';
 import 'types/thread_stream.dart';
 import 'types/thread_stream/item.dart';
 import 'types/updater.dart';
