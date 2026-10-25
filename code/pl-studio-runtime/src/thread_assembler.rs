@@ -158,7 +158,9 @@ pub enum ThreadAssemblyError {
     },
     #[error("only a root Thread may create child agents")]
     ChildDepth,
-    #[error("agent tree capacity of {0} includes preparing children")]
+    #[error(
+        "agent tree capacity of {0} reached (root, open and preparing children included); close unused agents with close_agent before spawning more"
+    )]
     ChildCapacity(usize),
     #[error("Profile {0} does not accept a directory write scope")]
     WorkspaceScope(String),
