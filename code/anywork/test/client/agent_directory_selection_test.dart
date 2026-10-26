@@ -442,6 +442,8 @@ void main() {
           value: env.conversationPort.facets.execution.isEmpty
               ? const ThreadExecutionBaseline(
                   status: ThreadStatus.idle,
+                  execution: null,
+                  continuation: null,
                   activeTurn: null,
                   recentTerminalTurn: null,
                   interactions: InteractionIndexHeader(

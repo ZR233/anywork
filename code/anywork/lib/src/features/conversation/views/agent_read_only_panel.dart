@@ -15,7 +15,6 @@ class AgentReadOnlyPanel extends StatelessWidget {
     required this.statusLabel,
     required this.modelLabel,
     this.executionLabel,
-    this.effortLabel,
     this.workspacePath,
     this.retiredPlanner = false,
     super.key,
@@ -25,8 +24,7 @@ class AgentReadOnlyPanel extends StatelessWidget {
   final bool pendingInteraction;
   final String statusLabel;
   final String? executionLabel;
-  final String modelLabel;
-  final String? effortLabel;
+  final String? modelLabel;
   final String? workspacePath;
   final bool retiredPlanner;
 
@@ -92,16 +90,11 @@ class AgentReadOnlyPanel extends StatelessWidget {
                   icon: Icons.bolt_outlined,
                   label: executionLabel!,
                 ),
-              InfoChip(
-                key: const ValueKey('agent-readonly-model'),
-                icon: Icons.memory_outlined,
-                label: modelLabel,
-              ),
-              if (effortLabel != null)
+              if (modelLabel != null)
                 InfoChip(
-                  key: const ValueKey('agent-readonly-effort'),
-                  icon: Icons.psychology_alt_outlined,
-                  label: effortLabel!,
+                  key: const ValueKey('agent-readonly-model'),
+                  icon: Icons.memory_outlined,
+                  label: modelLabel!,
                 ),
               if (workspacePath != null)
                 InfoChip(

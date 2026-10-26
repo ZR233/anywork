@@ -87,6 +87,8 @@ final class PlanFeedbackEnvironment {
           stamp: native.origin,
           value: ThreadExecutionBaseline(
             status: ThreadStatus.waitingInteraction,
+            execution: null,
+            continuation: null,
             activeTurn: null,
             recentTerminalTurn: null,
             interactions: native.index,

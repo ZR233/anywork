@@ -13,17 +13,20 @@ enum TimelinePresentationKind { single, activity, images, imageCard, recovery }
 
 bool payloadHasIssue(TimelineMessagePayload payload) => const {
   'failed',
-  'cancelled',
   'denied',
-  'interrupted',
   'budgetLimited',
 }.contains(payload.item.status);
 
 bool timelinePayloadIsVisible(TimelineMessagePayload payload) =>
-    switch (payload.item.kind) {
-      ThreadItemKind.inference || ThreadItemKind.file => false,
-      ThreadItemKind.turn =>
-        payload.item.isTerminal && payload.item.error?.isNotEmpty == true,
+    switch (payload.item.state) {
+      ThreadInferenceItemStateView() || ThreadFileItemStateView() => false,
+      ThreadTurnItemStateView(:final state) => switch (state) {
+        // Cancellation is a visible control outcome even without raw error text.
+        CancelledTurn() => true,
+        FailedTurn() || BudgetLimitedTurn() =>
+          state.reason?.isNotEmpty == true,
+        QueuedTurn() || RunningTurn() || CompletedTurn() => false,
+      },
       _ => true,
     };
 

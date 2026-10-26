@@ -2945,6 +2945,14 @@ async fn an_external_stop_after_a_replacement_is_never_mistaken_for_it() {
 
     drop(hold);
     thread.flush().await.unwrap();
+    // flush() is the durability barrier, not a settlement barrier: the cancelled Turn may still be
+    // unwinding when it returns, so the assertions wait for the settled queue instead of observing
+    // the transient state between the admission wait ending and the driver pausing.
+    wait_until(&thread, || {
+        let snapshot = thread.snapshot();
+        snapshot.execution.is_none() && matches!(snapshot.input_execution, InputExecution::Paused)
+    })
+    .await;
     assert_eq!(
         requests.lock().unwrap().len(),
         1,

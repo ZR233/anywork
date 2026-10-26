@@ -815,6 +815,7 @@
   },
   "timelineViewImageReading": "Reading image",
   "timelineViewImageFailed": "Failed to read image",
+  "timelineViewImageStopped": "Stopped reading image",
   "timelineReadFileCompleted": "Read",
   "timelineReadFileReading": "Reading",
   "timelineReadFileFailed": "Unable to read",
@@ -903,6 +904,12 @@
   "timelineToolWaitSucceeded": "Waited",
   "timelineToolWaitRunning": "Waiting",
   "timelineToolWaitFailed": "Wait failed",
+  "timelineTurnStopped": "Turn stopped",
+  "timelineTurnCancelled": "Turn cancelled",
+  "timelineTurnRuntimeShutdown": "Runtime shut down; turn stopped",
+  "timelineTurnAgentClosed": "Agent closed; turn stopped",
+  "timelineTurnRecoveryStopped": "Turn stopped during recovery",
+  "timelineTurnCoalesced": "Turn merged into a later turn",
   "timelineToolCompleted": "{name} completed",
   "@timelineToolCompleted": {
     "placeholders": {
@@ -977,7 +984,7 @@
       }
     }
   },
-  "timelineToolInterrupted": "{name} interrupted",
+  "timelineToolInterrupted": "{name} stopped",
   "@timelineToolInterrupted": {
     "placeholders": {
       "name": {
@@ -2129,7 +2136,7 @@
   "timelineWaitTimedOut": "Wait timed out",
   "timelineWaitCancelled": "Wait cancelled",
   "timelineWaitFailed": "Wait failed",
-  "timelineWaitInterrupted": "Wait interrupted",
+  "timelineWaitInterrupted": "Wait stopped",
   "timelineWaitTargetCount": "{count, plural, =1{1 task} other{{count} tasks}}",
   "@timelineWaitTargetCount": {
     "placeholders": {
@@ -2163,7 +2170,7 @@
   "timelineWaitStatusSucceeded": "Succeeded",
   "timelineWaitStatusFailed": "Failed",
   "timelineWaitStatusCancelled": "Cancelled",
-  "timelineWaitStatusInterrupted": "Interrupted",
+  "timelineWaitStatusInterrupted": "Stopped",
   "conversationActivityWaitingTools": "Waiting for tools",
   "conversationActivityWaitingMessages": "Waiting for a subagent or new message",
   "conversationActivityWaitingTimer": "Timer",

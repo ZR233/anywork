@@ -6,6 +6,7 @@ import 'package:anywork/src/features/conversation/view_models/conversation_view_
 import 'package:anywork/src/features/conversation/view_models/thread_status_view_model.dart';
 import 'package:anywork/src/features/interaction/connectors/conversation_input_connector.dart';
 import 'package:anywork/src/features/interaction/connectors/start_input_connector.dart';
+import 'package:anywork/src/features/interaction/view_models/session_options_view_model.dart';
 import 'package:anywork/src/features/status/status.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
 import 'package:anywork/src/l10n/studio_l10n.dart';
@@ -295,10 +296,17 @@ void main() {
   });
 
   testWidgets('未打开项目时输入禁用，模型和强度仍能先选；Mode锁定有可见原因', (tester) async {
-    await initialize(tester);
+    await tester.runAsync(() => env.establish());
     env.workspace.restoreSelection(const WorkspaceSelection(projectId: null, threadId: null, needsOpen: false));
+    final startRoutes = env.drafts.startRoutes;
+    final baselineObservers = startRoutes.observerCount;
+    final optionsProvider = sessionOptionsViewModelProvider(null);
+    expect(env.container.exists(optionsProvider), isFalse);
     await tester.pumpWidget(harness(const StartInputConnector(projectId: null)));
     await tester.pump();
+    expect(env.container.exists(optionsProvider), isTrue);
+    expect(startRoutes.observerCount, baselineObservers + 1,
+      reason: '真实挂载的无项目VM仅借用一份原Start偏好观察');
     final input = tester.widget<TextField>(find.byKey(StudioDriverKeys.composerInput));
     expect(input.enabled, isFalse, reason: '未打开项目不能发送');
     final controls = tester.widget<InputModelControlsView>(find.byType(InputModelControlsView));
@@ -311,21 +319,53 @@ void main() {
     await tester.pumpAndSettle();
     final selected = tester.widget<InputModelControlsView>(find.byType(InputModelControlsView));
     expect((selected.accountId, selected.modelId), (next.accountId, next.modelId));
+    expect(env.drafts.startRoutes.value.models[ThreadModeId.simple.id],
+      StartModelIntent(accountId: next.accountId, modelId: next.modelId));
     final effort = next.descriptor.reasoning!.candidates.firstWhere((effort) => effort != selected.effort);
     await tester.tap(trigger(StudioDriverKeys.reasoningEffort));
     await tester.pumpAndSettle();
     await tester.tap(find.byKey(StudioDriverKeys.reasoningEffortOption(effort)));
     await tester.pumpAndSettle();
     expect(tester.widget<InputModelControlsView>(find.byType(InputModelControlsView)).effort, effort);
+    expect(env.drafts.startRoutes.value.efforts[ThreadModeId.simple.id], effort);
     expect(tester.widget<TextField>(find.byKey(StudioDriverKeys.composerInput)).enabled, isFalse);
     final mode = trigger(StudioDriverKeys.sessionMode);
     expect(tester.widget<TextButton>(mode).onPressed, isNotNull);
     await tester.tap(mode);
     await tester.pumpAndSettle();
     expect(find.text(tester.element(mode).l10n.statusModeNeedsProject), findsOneWidget);
-    expect(find.byKey(StudioDriverKeys.sessionModeOption(ThreadModeId.simple.name)), findsNothing);
+    expect(find.byKey(StudioDriverKeys.sessionModeOption(ThreadModeId.simple.id)), findsNothing);
     expect(find.byKey(StudioDriverKeys.sessionWorkspaceMode), findsNothing);
     expect(find.byKey(StudioDriverKeys.sessionSettings), findsNothing);
+    await tester.pumpWidget(harness(const SizedBox.shrink()));
+    await pumpClientFuture(tester, env.container.pump(), 'projectless options provider disposal');
+    expect(env.container.exists(optionsProvider), isFalse);
+    expect(startRoutes.observerCount, baselineObservers,
+      reason: '仓储仍开启，页面provider真实销毁后仅释放自己的观察');
+    await tester.pumpWidget(harness(const StartInputConnector(projectId: null)));
+    await tester.pumpAndSettle();
+    expect(env.container.exists(optionsProvider), isTrue);
+    expect(startRoutes.observerCount, baselineObservers + 1,
+      reason: '重挂只新增当前页的一份观察，不遗留旧VM');
+    final remounted = tester.widget<InputModelControlsView>(find.byType(InputModelControlsView));
+    expect((remounted.accountId, remounted.modelId, remounted.effort),
+      (next.accountId, next.modelId, effort), reason: '预选来自真实Drafts偏好，不靠页面内第二份选择状态');
+    expect(remounted.mode, ThreadModeId.simple);
+    expect(env.workspace.state.value.selection.projectId, isNull);
+    expect(env.workspace.state.value.selection.threadId, isNull);
+    expect(env.conversations.active.value, isNull);
+    expect(env.directory.activations, isEmpty);
+    expect(env.configurationPort.opens, isEmpty, reason: '无项目预选不创建假项目草稿或项目路由读取');
+    expect(env.creations.begins.values, isEmpty);
+    expect(env.commands.prompts.values, isEmpty);
+    await tester.pumpWidget(harness(const SizedBox.shrink()));
+    await pumpClientFuture(tester, env.container.pump(), 'remounted projectless options provider disposal');
+    expect(env.container.exists(optionsProvider), isFalse);
+    expect(startRoutes.observerCount, baselineObservers,
+      reason: '再次卸载也须在关闭整个repository之前归还观察');
+    expect(startRoutes.value.models[ThreadModeId.simple.id],
+      StartModelIntent(accountId: next.accountId, modelId: next.modelId));
+    expect(startRoutes.value.efforts[ThreadModeId.simple.id], effort);
     await finish(tester);
   });
 

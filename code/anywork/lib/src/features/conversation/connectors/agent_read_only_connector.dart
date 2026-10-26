@@ -50,10 +50,7 @@ class AgentReadOnlyConnector extends ConsumerWidget {
           execution.phase == AgentExecutionPhase.stopping
               ? ThreadStatus.cancelling : ThreadStatus.running,
         ),
-        modelLabel: route?.modelId ?? '—',
-        // Before the material is ready, unknown is not a guessed effort. Once
-        // read, a canonical null effort retains the existing absent-chip rule.
-        effortLabel: route == null ? '—' : route.effort,
+        modelLabel: route?.modelId,
         workspacePath: path != null && path.trim().isNotEmpty ? path : null,
         retiredPlanner: conversation?.retiredPlanner == true,
       ),

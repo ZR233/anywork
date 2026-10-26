@@ -7,6 +7,19 @@ import '../timeline/presentation_item.dart';
 String timelineToolLabel(BuildContext context, ThreadItemView item) {
   final name = item.tool?.name ?? context.l10n.timelineToolFallback;
   final l10n = context.l10n;
+  if (item.tool?.name == 'view_image') {
+    switch (item.status) {
+      case 'succeeded':
+        return l10n.timelineViewImageRead;
+      case 'failed' || 'denied' || 'budgetLimited':
+        return l10n.timelineViewImageFailed;
+      case 'cancelled' || 'interrupted':
+        return l10n.timelineViewImageStopped;
+      case 'queued' || 'started' || 'streaming' || 'approved' ||
+          'running' || 'awaitingApproval' || 'cancelling':
+        return l10n.timelineViewImageReading;
+    }
+  }
   return switch (item.status) {
     'succeeded' => l10n.timelineToolCompleted(name),
     'failed' || 'budgetLimited' => l10n.timelineToolFailed(name),
@@ -67,7 +80,10 @@ String timelineGroupLabel(BuildContext context, TimelinePresentationItem item) {
       if (item.issueCount > 0)
         l10n.timelineViewImageFailed
       else if (item.activeCount > 0)
-        l10n.timelineViewImageReading,
+        l10n.timelineViewImageReading
+      else if (item.length > 0 && const {'cancelled', 'interrupted'}
+          .contains(item.latest.item.status))
+        l10n.timelineViewImageStopped,
     ].join(' · ');
   }
   if (item.thinkingCount > 0 && item.toolCount == 0 && item.skillCount == 0) {
@@ -103,6 +119,36 @@ String timelineGroupLabel(BuildContext context, TimelinePresentationItem item) {
     ...counts,
   ].join(' · ');
 }
+
+String timelineTurnCancellationLabel(
+  BuildContext context,
+  TurnCancellationCause cause,
+) => switch (cause) {
+  InterruptedTurnCancellation() || UserRequestedTurnCancellation() =>
+    context.l10n.timelineTurnStopped,
+  UnspecifiedTurnCancellation() => context.l10n.timelineTurnCancelled,
+  RuntimeShutdownTurnCancellation() => context.l10n.timelineTurnRuntimeShutdown,
+  AgentClosedTurnCancellation() => context.l10n.timelineTurnAgentClosed,
+  RecoveryTurnCancellation() => context.l10n.timelineTurnRecoveryStopped,
+  CoalescedTurnCancellation() => context.l10n.timelineTurnCoalesced,
+};
+
+IconData timelineImageStatusIcon(ThreadToolLifecycleView lifecycle) => switch (lifecycle) {
+  FailedThreadToolView() || DeniedThreadToolView() => Icons.broken_image_outlined,
+  CancelledThreadToolView() || InterruptedThreadToolView() => Icons.stop_circle_outlined,
+  QueuedThreadToolView() || StartedThreadToolView() || StreamingThreadToolView() ||
+  AwaitingApprovalThreadToolView() || ApprovedThreadToolView() ||
+  RunningThreadToolView() || CancellingThreadToolView() ||
+  SucceededThreadToolView() => Icons.image_outlined,
+};
+
+/// Preserve the original diagnostic without turning normal control into error.
+Color timelineToolDiagnosticColor(BuildContext context, ThreadToolLifecycleView lifecycle) =>
+    switch (lifecycle) {
+      CancelledThreadToolView() || InterruptedThreadToolView() =>
+        Theme.of(context).colorScheme.onSurfaceVariant,
+      _ => Theme.of(context).colorScheme.error,
+    };
 
 IconData timelineGroupIcon(TimelinePresentationItem item) =>
     switch (item.kind) {

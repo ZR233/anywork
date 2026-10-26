@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:anywork_client/configuration.dart';
 import 'package:anywork_client/conversation.dart';
+import 'package:anywork_client/drafts.dart';
 import 'package:anywork_client/models.dart';
 import 'package:anywork_client/modes.dart';
 import 'package:anywork_client/operations.dart';
@@ -27,6 +28,7 @@ Future<CommandResult<T>?> _observeOptionsResult<T>(
 @riverpod
 class SessionOptionsViewModel extends _$SessionOptionsViewModel {
   Observation? _observation;
+  Observation? _routeObservation;
   Object _lifetime = Object();
   late Completer<void> _disposed;
   ModelSelection? _threadRoute;
@@ -45,16 +47,34 @@ class SessionOptionsViewModel extends _$SessionOptionsViewModel {
   }
 
   @override
-  FutureOr<SessionOptionsState> build(String projectId) {
-    _lifetime = Object();
+  FutureOr<SessionOptionsState> build(String? projectId) {
+    final lifetime = _lifetime = Object();
     final disposed = _disposed = Completer<void>();
     ref.onDispose(() {
+      if (identical(_lifetime, lifetime)) _lifetime = Object();
       if (!disposed.isCompleted) disposed.complete();
       final observation = _observation;
       _observation = null;
       observation?.cancel();
+      final routeObservation = _routeObservation;
+      _routeObservation = null;
+      routeObservation?.cancel();
     });
-    return const SessionOptionsState();
+    if (projectId != null) return const SessionOptionsState();
+    // This scope borrows the original Start preferences, not a project draft.
+    // Register before consuming the initial snapshot; disposal only unobserves.
+    final routes = ref
+        .read(draftsRepositoryProvider)
+        .startRoutes
+        .watchLatest((preferences) {
+          if (ref.mounted && identical(_lifetime, lifetime) && state.hasValue) {
+            state = AsyncData(
+              state.requireValue.copyWith(preferences: preferences),
+            );
+          }
+        });
+    _routeObservation = routes.observation;
+    return SessionOptionsState(preferences: routes.value);
   }
 
   void explain(String? message) {
@@ -64,32 +84,47 @@ class SessionOptionsViewModel extends _$SessionOptionsViewModel {
   // Null remains a real follow-default intent until D1 freezes submission.
   // Disposing this VM never discards the original project draft.
   void chooseDelegationMode(DelegationMode? mode) {
-    _editDraft(
-      () => ref
-          .read(draftsRepositoryProvider)
-          .start(projectId)
-          .setDelegationMode(mode),
-    );
+    _editDraft((draft) => draft.setDelegationMode(mode));
   }
 
   void chooseDelegationPreference(DelegationPreference? preference) {
-    _editDraft(
+    _editDraft((draft) => draft.setDelegationPreference(preference));
+  }
+
+  void chooseStartModel(String accountId, String modelId) {
+    _editIntent(
       () => ref
           .read(draftsRepositoryProvider)
-          .start(projectId)
-          .setDelegationPreference(preference),
+          .setStartModel(ThreadModeId.simple, accountId, modelId),
     );
   }
 
-  void _editDraft(void Function() edit) {
-    if (!ref.mounted) return;
+  void chooseStartEffort(String effort) {
+    _editIntent(
+      () => ref
+          .read(draftsRepositoryProvider)
+          .setStartEffort(ThreadModeId.simple, effort),
+    );
+  }
+
+  void _editDraft(void Function(StartDraft) edit) {
+    final targetProjectId = projectId;
+    if (targetProjectId == null) return;
+    _editIntent(
+      () => edit(ref.read(draftsRepositoryProvider).start(targetProjectId)),
+    );
+  }
+
+  void _editIntent(void Function() edit) {
+    if (!ref.mounted || !state.hasValue) return;
+    final lifetime = _lifetime;
     try {
       edit();
-      if (ref.mounted) {
+      if (ref.mounted && identical(_lifetime, lifetime) && state.hasValue) {
         state = AsyncData(state.requireValue.copyWith(error: null));
       }
     } on StudioFailure catch (error) {
-      if (ref.mounted) {
+      if (ref.mounted && identical(_lifetime, lifetime) && state.hasValue) {
         state = AsyncData(state.requireValue.copyWith(error: error));
       }
     }
@@ -158,16 +193,22 @@ class SessionOptionsViewModel extends _$SessionOptionsViewModel {
     OperationTicket<ThreadModelRouteCommandReply> Function(ModelSelection)
     write,
   ) {
-    if (!ref.mounted || !state.hasValue || state.requireValue.pending) {
+    if (projectId == null ||
+        !ref.mounted ||
+        !state.hasValue ||
+        state.requireValue.pending) {
       return Future<void>.value();
     }
     _threadRoute = selection;
     return _perform(() => write(selection));
   }
 
-  Future<void> _write(SettingsFieldUpdate update) => _perform(
-    () => ref.read(configurationRepositoryProvider).applyField(update),
-  );
+  Future<void> _write(SettingsFieldUpdate update) {
+    if (projectId == null) return Future<void>.value();
+    return _perform(
+      () => ref.read(configurationRepositoryProvider).applyField(update),
+    );
+  }
 
   Future<void> _perform<T>(OperationTicket<T> Function() command) async {
     if (!ref.mounted || state.requireValue.pending) return;

@@ -29,6 +29,7 @@ class InputModelControlsView extends StatelessWidget {
     this.modeEnabled = true,
     this.showWorkspace = true,
     this.blockedReason,
+    this.modeBlockedReason,
     this.unavailableReason,
     this.explanation,
     this.sessionOptions,
@@ -49,6 +50,7 @@ class InputModelControlsView extends StatelessWidget {
   final bool modeEnabled;
   final bool showWorkspace;
   final String? blockedReason;
+  final String? modeBlockedReason;
   final String? unavailableReason;
   final String? explanation;
   final Widget? sessionOptions;
@@ -88,20 +90,31 @@ class InputModelControlsView extends StatelessWidget {
           ModeSelector(
             modes: modes,
             selected: mode,
-            enabled: enabled && modeEnabled && onMode != null,
+            enabled:
+                enabled &&
+                modeEnabled &&
+                onMode != null &&
+                blockedReason == null &&
+                modeBlockedReason == null,
+            lockedHint: blockedReason ?? modeBlockedReason,
+            onBlockedTap:
+                (blockedReason ?? modeBlockedReason) != null && onExplain != null
+                ? () => onExplain!((blockedReason ?? modeBlockedReason)!)
+                : null,
             onSelected: (next) => onMode?.call(next),
           ),
           if (showWorkspace)
             WorkspaceModeSelector(
               mode: workspaceMode,
-              enabled: enabled && onWorkspaceMode != null,
+              enabled:
+                  enabled && onWorkspaceMode != null && blockedReason == null,
               onSelected: (next) => onWorkspaceMode?.call(next),
             ),
           ModelRouteSelector(
             options: models,
             accountId: accountId,
             modelId: modelId,
-            enabled: enabled && onModel != null,
+            enabled: enabled && onModel != null && blockedReason == null,
             selectorKey: StudioDriverKeys.model,
             optionKeyBuilder: (option) =>
                 StudioDriverKeys.modelOption(option.accountId, option.modelId),

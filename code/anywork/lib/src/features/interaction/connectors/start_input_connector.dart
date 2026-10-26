@@ -61,8 +61,22 @@ class _StartInputConnectorState extends ConsumerState<StartInputConnector> {
     final projectId = widget.projectId;
     if (projectId == null) {
       final catalog = ref.watch(selectorCatalogViewModelProvider).value;
-      // The same production controls remain visible without creating a fake
-      // project draft, a route intent or a project-scoped settings menu.
+      final optionsProvider = sessionOptionsViewModelProvider(null);
+      final optionsValue = ref.watch(optionsProvider);
+      final options = optionsValue.value;
+      final choices = ref.read(optionsProvider.notifier);
+      final selected = options?.preferences?.models[ThreadModeId.simple.id];
+      final accountId = selected?.accountId ?? '';
+      final modelId = selected?.modelId ?? '';
+      final models = catalog == null ? null : selectorModels(catalog);
+      final descriptor = catalog == null
+          ? null
+          : selectedDescriptor(catalog.models, accountId, modelId);
+      final eligible = models?.any(
+        (option) => option.accountId == accountId && option.modelId == modelId,
+      ) == true;
+      // Preselection is the original per-mode intent, never a locally resolved
+      // route. Only a real project draft asks native to prepare and validate it.
       return Column(
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -70,16 +84,33 @@ class _StartInputConnectorState extends ConsumerState<StartInputConnector> {
           ComposerConnector.disabled(compact: widget.compact),
           InputModelControlsView(
             modes: catalog == null ? const [] : selectorModes(catalog),
-            models: catalog == null ? const [] : selectorModels(catalog),
-            efforts: const [],
+            models: models ?? const [],
+            efforts: eligible
+                ? descriptor?.reasoning?.candidates ?? const []
+                : const [],
             mode: ThreadModeId.simple,
+            modeEnabled: false,
+            modeBlockedReason: context.l10n.statusModeNeedsProject,
             workspaceMode: ThreadWorkspaceMode.local,
-            accountId: '',
-            modelId: '',
-            effort: null,
-            enabled: false,
+            accountId: accountId,
+            modelId: modelId,
+            effort: options?.preferences?.efforts[ThreadModeId.simple.id],
+            enabled: catalog != null && options != null,
             showWorkspace: false,
+            unavailableReason: descriptor?.enabled == false
+                ? context.l10n.settingsModelDisabled
+                : null,
+            explanation: options?.explanation,
+            onModel: (model) {
+              choices.explain(null);
+              choices.chooseStartModel(model.accountId, model.modelId);
+            },
+            onEffort: choices.chooseStartEffort,
+            onExplain: options == null ? null : choices.explain,
+            onDismiss: options == null ? null : () => choices.explain(null),
           ),
+          if (optionsValue.hasError) Text(optionsValue.error.toString()),
+          if (options?.error case final error?) Text(error.message),
         ],
       );
     }

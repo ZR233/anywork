@@ -15,6 +15,7 @@ import '../views/timeline_activity_section.dart';
 import '../views/timeline_group_view.dart';
 import '../views/timeline_image_card_view.dart';
 import '../views/timeline_row_frame.dart';
+import '../views/timeline_turn_outcome_view.dart';
 import '../widgets/activity_row.dart';
 import '../widgets/conversation_markdown.dart';
 import '../widgets/plan_receipt.dart';
@@ -302,20 +303,8 @@ class _TimelineMemberConnector extends StatelessWidget {
           return TimelineImageCardView(
             key: entryId == null ? null : StudioDriverKeys.imageCard(entryId),
             statusLabel: context.toolStatusLabel(lifecycle.status),
-            isIssue: switch (lifecycle) {
-              FailedThreadToolView() ||
-              DeniedThreadToolView() ||
-              CancelledThreadToolView() ||
-              InterruptedThreadToolView() => true,
-              QueuedThreadToolView() ||
-              StartedThreadToolView() ||
-              StreamingThreadToolView() ||
-              AwaitingApprovalThreadToolView() ||
-              ApprovedThreadToolView() ||
-              RunningThreadToolView() ||
-              CancellingThreadToolView() ||
-              SucceededThreadToolView() => false,
-            },
+            isIssue: payloadHasIssue(payload),
+            statusIcon: timelineImageStatusIcon(lifecycle),
             media: attachment == null || entryId == null
                 ? null
                 : TimelineImageCardMediaConnector(
@@ -348,12 +337,23 @@ class _TimelineMemberConnector extends StatelessWidget {
             diagnostics: body,
           );
         }
+        final imageRead = item.tool?.name == 'view_image';
         return _section(
           payload,
           label: timelineToolLabel(context, item),
-          icon: item.tool?.name == 'web_search'
+          icon: imageRead
+              ? timelineImageStatusIcon(lifecycle)
+              : item.tool?.name == 'web_search'
               ? Icons.travel_explore
               : Icons.build_outlined,
+          // Image status retains its broken/stop icon rather than substituting
+          // the activity row's generic error icon. Counts still use the payload.
+          isIssue: imageRead ? false : null,
+          iconColor: imageRead
+              ? payloadHasIssue(payload)
+                  ? Theme.of(context).colorScheme.error
+                  : Theme.of(context).colorScheme.onSurfaceVariant
+              : null,
           child: body,
         );
       case ThreadAgentItemStateView(:final identity, :final lifecycle):
@@ -410,16 +410,32 @@ class _TimelineMemberConnector extends StatelessWidget {
               ? context.l10n.timelineCompactionDetail(beforeTokens, afterTokens)
               : null,
         );
-      case ThreadTurnItemStateView():
-        return item.isTerminal && item.error?.isNotEmpty == true
-            ? Semantics(
-                liveRegion: true,
-                child: Text(
-                  item.error!,
-                  style: TextStyle(color: Theme.of(context).colorScheme.error),
+      case ThreadTurnItemStateView(:final state):
+        if (!item.isTerminal) return null;
+        switch (state) {
+          case CancelledTurn(:final cause):
+            return TimelineTurnOutcomeView(
+              itemId: item.id,
+              kind: TimelineTurnOutcomeKind.stopped,
+              label: timelineTurnCancellationLabel(context, cause),
+            );
+          case FailedTurn() || BudgetLimitedTurn():
+            final reason = item.error;
+            if (reason == null || reason.isEmpty) return null;
+            return Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                TimelineTurnOutcomeView(
+                  itemId: item.id,
+                  kind: TimelineTurnOutcomeKind.failed,
+                  label: reason,
                 ),
-              )
-            : null;
+                ?details,
+              ],
+            );
+          case QueuedTurn() || RunningTurn() || CompletedTurn():
+            return null;
+        }
       case ThreadInferenceItemStateView() || ThreadFileItemStateView():
         return null;
     }
@@ -433,13 +449,16 @@ class _TimelineMemberConnector extends StatelessWidget {
     required IconData icon,
     required Widget child,
     Key? labelKey,
+    bool? isIssue,
+    Color? iconColor,
   }) => TimelineActivitySection(
     key: ValueKey(('timeline-member-section', memberId)),
     label: label,
     icon: icon,
+    iconColor: iconColor,
     labelKey: labelKey ?? StudioDriverKeys.timelineActivitySummary(payload.id),
     active: !payload.item.isTerminal,
-    isIssue: payloadHasIssue(payload),
+    isIssue: isIssue ?? payloadHasIssue(payload),
     expanded: group.memberExpanded(memberId),
     onExpanded: _expanded,
     child: child,
@@ -452,7 +471,16 @@ class _TimelineMemberConnector extends StatelessWidget {
   }) {
     final item = payload.item;
     final tool = item.tool;
-    if (tool == null) return const SizedBox.shrink();
+    final state = item.state;
+    if (tool == null || state is! ThreadToolItemStateView) {
+      return const SizedBox.shrink();
+    }
+    final diagnostic = switch (state.lifecycle) {
+      CancelledThreadToolView(:final reason) ||
+      InterruptedThreadToolView(:final reason) => reason,
+      _ => item.error,
+    };
+    final diagnosticColor = timelineToolDiagnosticColor(context, state.lifecycle);
     final hidePayload =
         item.status == 'succeeded' &&
         const {'workflow_transition', 'workflow_restart'}.contains(tool.name);
@@ -465,7 +493,9 @@ class _TimelineMemberConnector extends StatelessWidget {
         if (tool.exitCode != null)
           Text(context.l10n.timelineToolExitCode(tool.exitCode!)),
         if (tool.timedOut) Text(context.l10n.timelineToolTimedOut),
-        if (tool.denialReason != null) Text(tool.denialReason!),
+        if (tool.denialReason != null)
+          Text(tool.denialReason!,
+            style: Theme.of(context).textTheme.bodySmall?.copyWith(color: diagnosticColor)),
         if (tool.name == 'exec' &&
             item.completedAt != null &&
             item.completedAt! >= item.createdAt)
@@ -486,8 +516,9 @@ class _TimelineMemberConnector extends StatelessWidget {
             language: context.l10n.timelineToolOutput,
             maxHeight: 280,
           ),
-        if (item.error?.isNotEmpty == true && item.error != tool.result)
-          Text(item.error!),
+        if (diagnostic != null && diagnostic.isNotEmpty && diagnostic != tool.result)
+          Text(diagnostic,
+            style: Theme.of(context).textTheme.bodySmall?.copyWith(color: diagnosticColor)),
         if (includeAttachments) ..._attachments(item.id, tool.attachments),
         ?links,
         ?_details(context, payload),

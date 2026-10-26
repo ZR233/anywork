@@ -51,7 +51,8 @@ class TimelineActivityRow extends StatelessWidget {
   /// 状态色覆盖；缺省使用次级文字色。
   final Color? iconColor;
 
-  /// 该行代表失败、取消或拒绝：只替换图标，不改变文案颜色。
+  /// 该行代表真正失败、拒绝或预算限制：只替换图标，不改变文案颜色。
+  /// 取消与中断是正常控制结果，保持中性图标与次级色。
   final bool isIssue;
 
   /// 该行对应的成员仍在进行中。

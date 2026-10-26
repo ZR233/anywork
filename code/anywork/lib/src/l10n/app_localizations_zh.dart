@@ -1579,6 +1579,9 @@ class AppLocalizationsZh extends AppLocalizations {
   String get timelineViewImageFailed => '读取图片失败';
 
   @override
+  String get timelineViewImageStopped => '已停止读取图片';
+
+  @override
   String get timelineReadFileCompleted => '已读取';
 
   @override
@@ -1749,6 +1752,24 @@ class AppLocalizationsZh extends AppLocalizations {
   String get timelineToolWaitFailed => '等待失败';
 
   @override
+  String get timelineTurnStopped => '本轮已停止';
+
+  @override
+  String get timelineTurnCancelled => '本轮已取消';
+
+  @override
+  String get timelineTurnRuntimeShutdown => '运行时已关闭，本轮已停止';
+
+  @override
+  String get timelineTurnAgentClosed => '代理已关闭，本轮已停止';
+
+  @override
+  String get timelineTurnRecoveryStopped => '恢复期间已停止本轮';
+
+  @override
+  String get timelineTurnCoalesced => '本轮已并入后续轮次';
+
+  @override
   String timelineToolCompleted(String name) {
     return '$name 已完成';
   }
@@ -1801,7 +1822,7 @@ class AppLocalizationsZh extends AppLocalizations {
 
   @override
   String timelineToolInterrupted(String name) {
-    return '$name 已中断';
+    return '$name 已停止';
   }
 
   @override
@@ -4128,7 +4149,7 @@ class AppLocalizationsZh extends AppLocalizations {
   String get timelineWaitFailed => '等待失败';
 
   @override
-  String get timelineWaitInterrupted => '等待已中断';
+  String get timelineWaitInterrupted => '等待已停止';
 
   @override
   String timelineWaitTargetCount(int count) {
@@ -4173,7 +4194,7 @@ class AppLocalizationsZh extends AppLocalizations {
   String get timelineWaitStatusCancelled => '已取消';
 
   @override
-  String get timelineWaitStatusInterrupted => '已中断';
+  String get timelineWaitStatusInterrupted => '已停止';
 
   @override
   String get conversationActivityWaitingTools => '等待工具完成';

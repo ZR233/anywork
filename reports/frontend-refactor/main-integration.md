@@ -5,11 +5,11 @@
 - 原进度检查点：`5564fae30e04d67a73add35eb1c4b5cb2626bf49`，已推原 PR 分支；不是完成交付。
 - 共同祖先：`466bc5f45b581a1015606cb496c9b1f26f96eb75`。
 - 首轮调查主线：`900a23c5eae44d3c34fde7319b0f57688b3d3937`。
-- 本轮重新 fetch 后冻结主线：`7aa6ee04bb60551ccaf0e7de345803f9d30b9230`，新增 #177；以下以该版本为合流目标。
+- 首轮冻结主线：`7aa6ee04bb60551ccaf0e7de345803f9d30b9230`，新增 #177，已收入 `e3e33b77`。
 - 第二轮重新核对远端：主线新增 `a9e4e807ee6dd891378fc89d60ebd25f846d9b87`（#174）。上一检查点 `e3e33b774bba4766e2ebc168f5eca84f49d7a9ba` 已合入 #177，但尚未包含此提交，因此 GitHub 仍报告冲突；本轮须完整迁入 #174 后重新推送并回读可合并状态。
-- 批准计划 revision 2 持续有效。用户要求先解决冲突，原 history-close 返修暂停；合流保留原关闭责任实现及已发现问题，不用 main 覆盖掩盖问题。
+- 批准计划 revision 2 持续有效。用户要求先解决冲突再推送；原 history-close 已恢复互斥范围内的集中返修，不把其未通过的候选顺带收入冲突合流提交，也不用 main 覆盖掩盖问题。
 - 本文件是实施与证据清单，不是设计权威源。设计见 `design/12`、`14`—`19`、`22`—`26`。
-- 当前阶段：设计先行提交为 `420c4fe87476b9b0664d81973f58a6f35413c0a8`，已实际合并冻结主线并进入冲突处理，`MERGE_HEAD` 为 `7aa6ee04`。下表“待迁移/待验证”均不表示通过。无冲突标记或 Git 已暂存不等于语义保全或验收完成。
+- 当前第二轮设计先行提交为 `557cc1915866da30dd3dcbda0be2bc9cc266d1f9`，`MERGE_HEAD` 为 `a9e4e807`。原六处索引冲突及正文标记已清零；Core 整组与无项目预选已通过静态审查，Conversation 与测试的集中保真修正待复审收拢。下表历史“待迁移/待验证”不表示当前已通过；无冲突标记或 Git 已暂存不等于语义保全或验收完成。
 
 ## 逐提交保全矩阵
 
@@ -86,7 +86,7 @@
 - 原历史关闭编译问题、Native 资源接续及恢复公开面收尾、未选项目时的模型预选、消费者迁移检查和各目录待审项继续保留，不以消除 Git 冲突标记替代处理。
 - 本检查点未运行本轮完整工具链、原生 GUI 或 CI 验收；后续只有当前最终代码的真实门禁与集成结果才能支持完成声明。
 
-### 本轮目录汇合记录（仅源码证据）
+### 首轮目录汇合记录（历史源码证据）
 
 - A1 执行/命令/交互及错误适配、A2 目录/Recovery/附件路由、U1 Conversation、U2 Workspace/Recovery 已获得对应内容版本的独立静态批准；SDK 停止准入、Native 控制与存储/附件返修仍在进行。C1 测试目录与 C2 Driver/诊断目录互斥并行，尚未统一生成或运行门禁。
 - 原 shell 两文件的 main 增量分别是归档不受工作树故障阻塞与抽取智能体菜单；这些目的已由 U2 的 `sidebar_rows.dart` 和 `workspace_agent_menu.dart` 承担。两份 shell 冲突恢复为原 PR120 纯视图实现，内容对象与 `420c4fe8` 一致，而不是复活旧容器。
@@ -96,4 +96,4 @@
 
 当前 children 仅源码、只读 Git、diffcheck/hash；所有 Cargo、格式、分析、测试、生成及 GUI 由 root 串行承担。迁移与静态审查就绪后统一 `cargo xtask generate-gui`，再依批准计划执行全量门禁、真实迁移与 Linux Driver 验收。旧 435/455 Client、226 runtime 或之前 workspace 绿色均不覆盖本轮合流。
 
-主线合流完成后恢复 history-close 原返修：嵌套任务结果与借用编译错误、dirty predecessor 的 task failure 不可洗白、真正取消 owning future、确定性 ACK、supervisor/helper join、Bots stage 唯一性。最后补立即归零的 FD 验收、修正 binding 顺序后的原生 GUI 重跑、截图附件和新 head CI。
+history-close 原返修已恢复：嵌套任务结果与借用编译错误、dirty predecessor 的 task failure 不可洗白、真正取消 owning future、确定性 ACK、supervisor/helper join、Bots stage 唯一性仍按当前候选复审，不能以作者自述代替通过。Recovery 的 HTTP 有界读取与旧公开出口清理另按固定合同推进；ACP 继承的独特生命周期回归及按操作身份取消缺口继续保留。最后补立即归零的 FD 验收、修正 binding 顺序后的原生 GUI 重跑、截图附件和新 head CI。

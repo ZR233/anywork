@@ -54,6 +54,9 @@ Product event 按领域 revision 发布类型化实体 upsert/remove、有界窗
 
 产品订阅以类型化主题表达领域，项目 Skills 携带 `projectId`，会话费用携带`rootThreadId`；不提供无作用域的 GUI 全事件订阅。全局目录、Settings、Recovery、MCP、LSP、Mode catalog、Account usage、ACP auth/install、模型统计、Updater、持久化状态与队列、配置级 Agent Profiles 各自是独立职责。无关领域不进入订阅者的有效缓冲，不因无关更新让该订阅 lag。通道只分发所有者已发布的事实，不持有另一套业务投影。
 
+恢复领域的独立事件流、具名读取与旧聚合出口退役契约见
+[25.16.1](./25-frontend-state.md#25161-恢复领域的外部读取)；这里的领域划分不要求保留旧整表主题变体。
+
 机器人使用独立 `Bots` 主题与 `BotsStateChanged`，状态只包含轻量配置、连接、注册和配对信息，不携带会话正文。产品领域 revision 与各机器人 `configRevision` 分开；查询和发送是显式 action，成功响应进入同一权威归并器，不以聚合回读或 GUI 轮询补偿。接口、授权、注册和连接关闭契约见 [27](./27-bots.md)。
 
 产品边界交付各自的有界元数据、集合基线与upsert/remove，而不是在一个全状态载荷里携带所有领域正文。列表实体、嵌套列表、长文本由原资源版本的类型化读取作用域按需取得；读取作用域固定不可变版本，关闭后真实join查询。没有value的来源状态与已知空集合分开，不能用空数组/零计数抹掉初始化、失败或未知。分页/流控缺口只使对应资源或查询窗口重同步。

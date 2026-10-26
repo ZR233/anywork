@@ -406,9 +406,10 @@ Color _waitStateColor(BuildContext context, ThreadWaitState state) {
     ThreadWaitState.ready ||
     ThreadWaitState.elapsed => context.statusColors.success,
     ThreadWaitState.timedOut => context.statusColors.warning,
-    ThreadWaitState.cancelled => context.colors.onSurfaceVariant,
-    ThreadWaitState.failed ||
-    ThreadWaitState.interrupted => context.colors.error,
+    // 取消与中断是正常控制结果，与取消一致使用中性色；只有失败保持错误色。
+    ThreadWaitState.cancelled ||
+    ThreadWaitState.interrupted => context.colors.onSurfaceVariant,
+    ThreadWaitState.failed => context.colors.error,
   };
 }
 

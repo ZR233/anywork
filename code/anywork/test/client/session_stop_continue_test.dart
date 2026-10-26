@@ -33,6 +33,7 @@ void main() {
     expect(fixture.env.commands.interrupts.values, isEmpty);
     expect(fixture.env.budget.usage, usage, reason: 'No ticket or mutation is registered');
     expect(() => fixture.session.stopExecution(origin: stamp.copyWith(incarnation: stamp.incarnation + 1), executionId: 'already-finished'), throwsA(isA<StudioFailure>()));
+    expect(() => fixture.session.stopExecution(origin: stamp.copyWith(revision: stamp.revision + 1), executionId: 'already-finished'), throwsA(isA<StudioFailure>()));
     expect(fixture.env.commands.interrupts.values, isEmpty);
   });
 
@@ -49,6 +50,10 @@ void main() {
       await fixture.env.conversationPort.publishExecution(selectorExecution());
       expect(admission.ticket.state.value.observed, isFalse);
       expect(admission.ticket.state.value.receipt, isNull);
+      final retained = fixture.session.stopExecution(origin: origin, executionId: 'execution-$phase') as StopExecutionOperation;
+      expect(retained.ticket.id, admission.ticket.id,
+        reason: '同owner的较新完整来源已无execution时，原未释放票据仍优先于NoExecution');
+      expect(fixture.env.commands.interrupts.values, hasLength(1));
       call.reply.complete(StopExecutionReply(threadId: call.threadId, executionId: call.executionId, stopped: true, receipt: composerReceipt(call.operationId)));
       final result = await admission.ticket.result;
       expect(result, isA<CommittedCommandResult<Unit>>());

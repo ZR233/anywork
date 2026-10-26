@@ -174,6 +174,7 @@ impl ThreadHandle {
             frozen_turn: None,
             continuation_cancel: None,
             superseded_batch: None,
+            authorized_stops: None,
             interrupted_turn: None,
             input_driver: if resumed {
                 input::InputDriver::Paused

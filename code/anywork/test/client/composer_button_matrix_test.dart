@@ -97,12 +97,21 @@ void main() {
     await pumpClientFuture(tester, fixture.waitFor((state) => state.stop?.failure != null), 'stop rejection');
     await tester.pump();
     expect(find.byKey(const ValueKey('composer-stop-failure')), findsOneWidget);
+    expect(find.text('The observed execution already ended or was replaced.'), findsOneWidget);
+    expect(find.byKey(StudioDriverKeys.composerStop), findsOneWidget);
     expect(fixture.state.stop!.accepted, isFalse);
     await fixture.publish(tester, selectorExecution(continuation: composerContinuation));
     await tester.tap(find.byKey(StudioDriverKeys.composerContinue));
     final continuation = await pumpClientFuture(tester, fixture.env.commands.continues.at(0), 'rejected continuation entered');
-    continuation.reply.completeError(const CommandDispatchFailure.rejected(failure: _failure));
+    continuation.reply.completeError(const CommandDispatchFailure.rejected(failure: StudioFailure(
+      code: StudioFailureCode.busy, message: 'raw continue failure', retryable: true,
+      correlationId: 'continue-busy', details: StudioFailureDetails.reason(reason: 'executionInProgress'),
+    )));
     await pumpClientFuture(tester, fixture.waitFor((state) => state.continuation?.result is RejectedCommandResult<ContinueThreadReply>), 'continue rejection');
+    await tester.pump();
+    expect(find.text('The session is still executing or settling.'), findsOneWidget);
+    expect(find.byKey(StudioDriverKeys.composerContinue), findsOneWidget);
+    expect(find.byKey(const ValueKey('composer-failure')), findsOneWidget);
     await tester.enterText(find.byKey(StudioDriverKeys.composerInput), 'draft after failure');
     await tester.pump();
     expect(fixture.env.drafts.composer(composerThreadId).state.value.text, 'draft after failure');
@@ -148,15 +157,21 @@ void main() {
     final fixture = await ComposerEnvironment.open(tester, initial: selectorExecution(execution: composerExecution));
     await fixture.pump(tester);
     final old = fixture.vm.captureStop(fixture.page)!;
+    await tester.enterText(find.byKey(StudioDriverKeys.composerInput), 'preserve captured draft');
     await fixture.publish(tester, selectorExecution(execution: composerExecution.copyWith(id: 'replacement-execution')));
     await pumpClientFuture(tester, old(), 'stale captured stop');
     expect(fixture.env.commands.interrupts.values, isEmpty);
-    expect(fixture.env.drafts.composer(composerThreadId).state.value.text, '');
-    await tester.tap(find.byKey(StudioDriverKeys.composerStop));
+    expect(fixture.env.drafts.composer(composerThreadId).state.value.text, 'preserve captured draft');
+    await tester.sendKeyEvent(LogicalKeyboardKey.escape);
     final call = await pumpClientFuture(tester, fixture.env.commands.interrupts.at(0), 'replacement stop entered');
     expect((call.threadId, call.executionId), (composerThreadId, 'replacement-execution'));
     call.reply.completeError(const CommandDispatchFailure.rejected(failure: _failure));
     await pumpClientFuture(tester, fixture.waitFor((state) => state.stop?.failure != null), 'exact target rejection');
+    await tester.pump();
+    expect(find.text('The observed execution already ended or was replaced.'), findsOneWidget);
+    expect(find.byKey(StudioDriverKeys.composerStopping), findsNothing);
+    expect(fixture.env.drafts.composer(composerThreadId).state.value.text, 'preserve captured draft');
+    expect(fixture.env.commands.interrupts.values, hasLength(1), reason: 'staleExecution不重发或改选新的目标');
   });
 
   testWidgets('请求在途只禁用停止，不伪受理；Escape 在有草稿时仍停原执行', (tester) async {

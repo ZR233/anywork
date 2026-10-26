@@ -13,6 +13,7 @@ class TimelineImageCardView extends StatelessWidget {
   const TimelineImageCardView({
     required this.statusLabel,
     required this.isIssue,
+    required this.statusIcon,
     required this.diagnostics,
     this.media,
     super.key,
@@ -20,6 +21,7 @@ class TimelineImageCardView extends StatelessWidget {
 
   final String statusLabel;
   final bool isIssue;
+  final IconData statusIcon;
   final Widget diagnostics;
   final Widget? media;
 
@@ -43,9 +45,9 @@ class TimelineImageCardView extends StatelessWidget {
               Row(
                 children: [
                   Icon(
-                    Icons.image_outlined,
+                    statusIcon,
                     size: 16,
-                    color: context.colors.onSurfaceVariant,
+                    color: isIssue ? context.colors.error : context.colors.onSurfaceVariant,
                   ),
                   const SizedBox(width: 8),
                   Expanded(
@@ -82,7 +84,7 @@ class TimelineImageCardView extends StatelessWidget {
                       context.l10n.timelineImageCardEmpty,
                       textAlign: TextAlign.center,
                       style: context.text.bodySmall?.copyWith(
-                        color: context.colors.error,
+                        color: isIssue ? context.colors.error : context.colors.onSurfaceVariant,
                       ),
                     ),
                   ),

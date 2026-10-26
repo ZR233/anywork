@@ -13,6 +13,7 @@ class TimelineActivitySection extends StatefulWidget {
     required this.child,
     this.active = false,
     this.isIssue = false,
+    this.iconColor,
     this.tooltip,
     this.labelKey,
     this.indent = true,
@@ -23,6 +24,7 @@ class TimelineActivitySection extends StatefulWidget {
   final bool expanded;
   final bool active;
   final bool isIssue;
+  final Color? iconColor;
   final String? tooltip;
   final Key? labelKey;
   final bool indent;
@@ -76,6 +78,7 @@ class _TimelineActivitySectionState extends State<TimelineActivitySection> {
       title: TimelineActivityRow(
         key: widget.labelKey,
         icon: widget.icon,
+        iconColor: widget.iconColor,
         label: widget.label,
         active: widget.active,
         isIssue: widget.isIssue,

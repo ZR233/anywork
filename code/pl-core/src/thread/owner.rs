@@ -49,6 +49,15 @@ pub(super) struct Owner {
     /// running with the new authorization instead of pausing. A later external stop changes the stop
     /// generation, which is what keeps a replacement from swallowing it.
     pub(super) superseded_batch: Option<(String, u64)>,
+    /// Stop generation the next queued Turn may start under, when a cancellation kept the queue
+    /// running to reach it.
+    ///
+    /// A replacement re-freeze and a continuation request both keep the queue enabled through their
+    /// own cancellation; the generation that cancellation produced is the authorization their next
+    /// queued Turn starts under, so a stop that arrives first refuses that Turn instead of being
+    /// consumed as a fresh request it never caused. Live state only: an explicit resume of a queue
+    /// that had stopped spends it.
+    pub(super) authorized_stops: Option<u64>,
     pub(super) interrupted_turn: Option<String>,
     pub(super) input_driver: input::InputDriver,
     /// Turn admission gate installed for this incarnation, if the host supplied one.
@@ -477,7 +486,7 @@ impl Owner {
                     cancellation,
                     reply,
                 } => {
-                    let active = self.interrupt.activate(&cancellation);
+                    let active = self.interrupt.activate(&cancellation, None);
                     let result = self
                         .retry_attempt(source, attempt, active.token.clone())
                         .await;
@@ -511,7 +520,7 @@ impl Owner {
                     let _ = reply.send(result);
                 }
                 Command::Turn(mut input, reply) => {
-                    let active = self.interrupt.activate(&input.cancellation);
+                    let active = self.interrupt.activate(&input.cancellation, None);
                     input.cancellation = active.token.clone();
                     let result = self.run_turn(input).await;
                     let _ = reply.send(result);
@@ -533,7 +542,7 @@ impl Owner {
                     let _ = reply.send(self.update_facts(facts));
                 }
                 Command::CompactContext(revision, cancellation, reply) => {
-                    let active = self.interrupt.activate(&cancellation);
+                    let active = self.interrupt.activate(&cancellation, None);
                     let result = self
                         .compact_idle_context(revision, active.token.clone())
                         .await;
@@ -543,13 +552,13 @@ impl Owner {
                     let _ = reply.send(self.replace_context(replacement));
                 }
                 Command::Execute(id, cancellation, reply) => {
-                    let active = self.interrupt.activate(&cancellation);
+                    let active = self.interrupt.activate(&cancellation, None);
                     let result = self.execute_tool(id, active.token.clone()).await;
                     let _ = reply.send(result);
                 }
 
                 Command::Step(mut input, reply) => {
-                    let active = self.interrupt.activate(&input.cancellation);
+                    let active = self.interrupt.activate(&input.cancellation, None);
                     input.cancellation = active.token.clone();
                     let result = self.step(input).await;
                     let _ = reply.send(result);

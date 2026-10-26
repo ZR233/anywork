@@ -3006,6 +3006,12 @@ abstract class AppLocalizations {
   /// **'Failed to read image'**
   String get timelineViewImageFailed;
 
+  /// No description provided for @timelineViewImageStopped.
+  ///
+  /// In en, this message translates to:
+  /// **'Stopped reading image'**
+  String get timelineViewImageStopped;
+
   /// No description provided for @timelineReadFileCompleted.
   ///
   /// In en, this message translates to:
@@ -3330,6 +3336,42 @@ abstract class AppLocalizations {
   /// **'Wait failed'**
   String get timelineToolWaitFailed;
 
+  /// No description provided for @timelineTurnStopped.
+  ///
+  /// In en, this message translates to:
+  /// **'Turn stopped'**
+  String get timelineTurnStopped;
+
+  /// No description provided for @timelineTurnCancelled.
+  ///
+  /// In en, this message translates to:
+  /// **'Turn cancelled'**
+  String get timelineTurnCancelled;
+
+  /// No description provided for @timelineTurnRuntimeShutdown.
+  ///
+  /// In en, this message translates to:
+  /// **'Runtime shut down; turn stopped'**
+  String get timelineTurnRuntimeShutdown;
+
+  /// No description provided for @timelineTurnAgentClosed.
+  ///
+  /// In en, this message translates to:
+  /// **'Agent closed; turn stopped'**
+  String get timelineTurnAgentClosed;
+
+  /// No description provided for @timelineTurnRecoveryStopped.
+  ///
+  /// In en, this message translates to:
+  /// **'Turn stopped during recovery'**
+  String get timelineTurnRecoveryStopped;
+
+  /// No description provided for @timelineTurnCoalesced.
+  ///
+  /// In en, this message translates to:
+  /// **'Turn merged into a later turn'**
+  String get timelineTurnCoalesced;
+
   /// No description provided for @timelineToolCompleted.
   ///
   /// In en, this message translates to:
@@ -3399,7 +3441,7 @@ abstract class AppLocalizations {
   /// No description provided for @timelineToolInterrupted.
   ///
   /// In en, this message translates to:
-  /// **'{name} interrupted'**
+  /// **'{name} stopped'**
   String timelineToolInterrupted(String name);
 
   /// No description provided for @timelineAgentSubagent.
@@ -7803,7 +7845,7 @@ abstract class AppLocalizations {
   /// No description provided for @timelineWaitInterrupted.
   ///
   /// In en, this message translates to:
-  /// **'Wait interrupted'**
+  /// **'Wait stopped'**
   String get timelineWaitInterrupted;
 
   /// No description provided for @timelineWaitTargetCount.
@@ -7881,7 +7923,7 @@ abstract class AppLocalizations {
   /// No description provided for @timelineWaitStatusInterrupted.
   ///
   /// In en, this message translates to:
-  /// **'Interrupted'**
+  /// **'Stopped'**
   String get timelineWaitStatusInterrupted;
 
   /// No description provided for @conversationActivityWaitingTools.

@@ -1678,6 +1678,9 @@ class AppLocalizationsEn extends AppLocalizations {
   String get timelineViewImageFailed => 'Failed to read image';
 
   @override
+  String get timelineViewImageStopped => 'Stopped reading image';
+
+  @override
   String get timelineReadFileCompleted => 'Read';
 
   @override
@@ -1848,6 +1851,24 @@ class AppLocalizationsEn extends AppLocalizations {
   String get timelineToolWaitFailed => 'Wait failed';
 
   @override
+  String get timelineTurnStopped => 'Turn stopped';
+
+  @override
+  String get timelineTurnCancelled => 'Turn cancelled';
+
+  @override
+  String get timelineTurnRuntimeShutdown => 'Runtime shut down; turn stopped';
+
+  @override
+  String get timelineTurnAgentClosed => 'Agent closed; turn stopped';
+
+  @override
+  String get timelineTurnRecoveryStopped => 'Turn stopped during recovery';
+
+  @override
+  String get timelineTurnCoalesced => 'Turn merged into a later turn';
+
+  @override
   String timelineToolCompleted(String name) {
     return '$name completed';
   }
@@ -1900,7 +1921,7 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String timelineToolInterrupted(String name) {
-    return '$name interrupted';
+    return '$name stopped';
   }
 
   @override
@@ -4345,7 +4366,7 @@ class AppLocalizationsEn extends AppLocalizations {
   String get timelineWaitFailed => 'Wait failed';
 
   @override
-  String get timelineWaitInterrupted => 'Wait interrupted';
+  String get timelineWaitInterrupted => 'Wait stopped';
 
   @override
   String timelineWaitTargetCount(int count) {
@@ -4398,7 +4419,7 @@ class AppLocalizationsEn extends AppLocalizations {
   String get timelineWaitStatusCancelled => 'Cancelled';
 
   @override
-  String get timelineWaitStatusInterrupted => 'Interrupted';
+  String get timelineWaitStatusInterrupted => 'Stopped';
 
   @override
   String get conversationActivityWaitingTools => 'Waiting for tools';

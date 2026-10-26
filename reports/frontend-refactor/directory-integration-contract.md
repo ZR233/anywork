@@ -1,6 +1,6 @@
 # 最新主线合流：目录分工与固定实施合同
 
-本文件只记录实施步骤与验收责任，不替代 `design/25-frontend-state.md` 的权威设计。基线为 HEAD `420c4fe8`、MERGE_HEAD `7aa6ee04`；原批准计划持续有效。当前手写阶段不运行工具链，全部汇合后由 root 串行生成、格式检查、分析、测试与 GUI 验收。
+本文件只记录实施步骤与验收责任，不替代 `design/25-frontend-state.md` 的权威设计。首轮基线为 HEAD `420c4fe8`、MERGE_HEAD `7aa6ee04`，已保存为 `e3e33b77`；本轮继续合流 `a9e4e807`，原批准计划持续有效。当前手写阶段不运行工具链，全部汇合后由 root 串行生成、格式检查、分析、测试与 GUI 验收。
 
 ## 1. 所有权与依赖
 
@@ -166,6 +166,8 @@ read/feed 为唯一界面入口。主代理已确认并删除无主库的旧 `st
 
 ## 9. Driver 共享采集接线
 
+### 9.1 原有采集合同
+
 C2 继续拥有 `test_driver/**` 与 `diagnostics/**`；C3 仅拥有 `shared/**` 内
 `driver_projection.dart`、`driver_snapshot.dart`、`driver_snapshot_json.dart` 及必要私有
 诊断拆分。C1 继续唯一拥有 `test/client/**`，不并写。
@@ -184,3 +186,65 @@ execution 有无决定。活跃交互的类型、身份、目标和已物化问�
 统计请求只输出现公开快照的真实配对身份，移除三个无来源的旧单流占位键；不新增 SDK
 诊断仓储或为 Driver 扩大 Freezed 值。请求 release 归还需求，真正 feed/read join 仍由
 原 statistics owner 监督，最终应用关闭统一证明，不新增请求级强关共享仓储能力。
+
+## 10. 冷显式关闭的受管结果与集中收尾
+
+冷 checkpoint 已 Closed 且带显式 marker 的分支也统一进入现有 Entry／CleanupGate／
+ThreadCloseRun，不再直接调用一次性 factory 然后丢结果。旧 resident 的责任未结束时先接续，
+真正退役后才建立新的 storage-only owner；已有 marker 的 commit 幂等，不启模型或工具。
+显式关闭的目录确认纳入原 run 的具名阶段，位于原资源处置成功之后、RemoveEntry 之前。
+阶段仅持原 factory、record 与身份，使用原 Thread 的已保存封口事实；不得新建全局结果表。
+
+```text
+冷/热显式关闭共用：登记原owner → 附接存储 → 确认封口意图 → 冻结显式策略
+原run：存储/工具/内核/观察收束 → PublishedResources → DirectoryProjection → RemoveEntry
+PublishedResources失败：保原FactoryCloseFailure，只显式恢复原责任
+DirectoryProjection失败：保原阶段与错误，Entry不移除，物理成功不回退
+显式重试投影：同factory/record/原owner，以现幂等目录写重做此阶段，不重跑物理处置
+standalone或普通Retain：没有Studio投影责任，不产生上述目录写和新物理授权
+```
+
+不要在 run 外先保存投影错误，再做物理处置，最后抛出已无所有者持有的错误；也不要先替换
+旧 incarnation 或用 Done 的旧 run 充当新 owner。新阶段仅扩现关闭责任，不扩恢复权限到
+其它失败阶段。集中收尾同时保产品库 19–21 的 `StorageMigrationRequired` 分类；这些旧
+格式在任何 ledger 写入前交回启动所有者，不误报为更高版本，也不直接迁移或重置数据。
+
+## 11. 无项目预选接线
+
+Interaction 目录独立收尾：复用现有 `SessionOptionsViewModel`，允许其呈现键为可空
+projectId；仅无项目实例观察现有 `DraftsRepository.startRoutes`，dispose 只取消自己的
+观察。现有项目草稿动作先检查非空 projectId；模型／effort 预选调用仓储既有
+`setStartModel`／`setStartEffort`，不创建假项目草稿，不引入第二份选择状态。
+`StartInputConnector(projectId:null)` 借该实例和已有 selector catalog 装配选择器，
+输入仍禁用，mode 为原默认 simple 但不可编辑，点击 mode 通过现有菜单的 onBlockedTap
+说明 needsProject；model/effort 根据实际目录与已选偏好可用，未知不猜默认。
+`ModeSelector` 只补纯回调／提示参数并转交现 `QuietSelectorMenu`，不另造菜单。
+纯 `InputModelControlsView` 区分 mode-only 原因与全行阻塞，不能用 needsProject 同时
+禁掉模型和强度。C1 保留并增强现 session_selector_sync 真实行为回归，执行者不并写测试。
+
+## 12. 恢复领域外部出口收尾
+
+架构与公开接口见 design/25 §25.16.1，实施分为互斥范围：Server 负责 HTTP 传输，
+Native 负责 runtime／FRB 旧出口退役。后者须等当前 Native 关闭与诊断候选冻结后再实施，
+不得并写 `recovery_task`、`tool_refresh` 等当前范围。
+
+- Server 复用现有 Templates／Configuration 的传输生命周期模式，新增域专属 Recovery
+  路由与传输所有者，不创建业务缓存或通用框架。读接口沿现有 `StudioRecoveryRead` 与
+  来源状态读取能力；问题、变更文件和文本保持有界，未知保持空值。
+- 事件流、确认、关闭与读取路由按 design/25 的域前缀注册；精确路由分类保独立控制额度。
+  `AppState` 与退出链登记同一传输所有者，首次期限不延长，未决句柄不丢弃。
+- Server 删除旧恢复整表 GET、旧产品主题解析及 SSE 标签；重试命令仍返回原命令签发的
+  `RecoveryReadTarget`，清理命令不扩大授权。其他诊断域不删除。
+- Native 保原 `StudioRecoveryRegistry` 到 `RecoverySource` 的发布边界，移除不再需要的
+  整表事件、旧主题/基线变体、旧快照恢复字段及 FRB 对应 DTO/转换。全应用旧 FRB 查询
+  若无消费者则删除入口；有消费者的服务端聚合仅退役恢复字段，不以空列表占位。
+- 原生 typed feed/read、动作集合、nullable 工作树事实、命令发布寿命和安全诊断保持。
+  生成物由 root 最后统一更新，不能手工修 FRB 输出。
+
+## 13. ACP 取消身份与继承回归
+
+Settings Accounts 的生产执行者只修安装取消的原操作身份隔离，C1 继续独占应用测试。
+固定合同见 design/25 §25.19：A 的取消在途不能挡 B 的取消，A 的迟到结果不结算 B。
+旧主线三份 ACP 测试中的认证呈现、命令通知归属、草稿认领与取消生命周期独特断言须逐项
+迁入真实当前 VM／Repository／View，不恢复旧 facade、不把安装事实写入表单草稿。
+只读面板与失败消息测试按原主线呈现纠正，不把新增 effort chip 或错误背景卡片当作保真要求。

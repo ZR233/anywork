@@ -1,3 +1,4 @@
+import 'package:anywork_client/drafts.dart';
 import 'package:anywork_client/operations.dart';
 import 'package:anywork_client/resources.dart';
 import 'package:freezed_annotation/freezed_annotation.dart';
@@ -13,6 +14,7 @@ abstract class SessionOptionsState with _$SessionOptionsState {
     OperationState? operation,
     StudioFailure? error,
     String? explanation,
+    StartRoutePreferences? preferences,
   }) = _SessionOptionsState;
 
   bool get pending => waiting || operation?.isPending == true;

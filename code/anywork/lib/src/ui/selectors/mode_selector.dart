@@ -14,6 +14,8 @@ class ModeSelector extends StatelessWidget {
     required this.selected,
     required this.onSelected,
     this.enabled = true,
+    this.onBlockedTap,
+    this.lockedHint,
     this.snapshotDisplayName,
     this.usesSnapshot = false,
     super.key,
@@ -23,6 +25,8 @@ class ModeSelector extends StatelessWidget {
   final ThreadModeId selected;
   final ValueChanged<ThreadModeId> onSelected;
   final bool enabled;
+  final VoidCallback? onBlockedTap;
+  final String? lockedHint;
   final String? snapshotDisplayName;
   final bool usesSnapshot;
 
@@ -35,16 +39,18 @@ class ModeSelector extends StatelessWidget {
         (usesSnapshot
             ? '${snapshotDisplayName ?? context.compileModeLabel(selected)} · ${context.l10n.modeSnapshotBadge}'
             : '${context.compileModeLabel(selected)} · ${context.l10n.modeDeletedBadge}');
+    final defaultTooltip = deleted
+        ? (usesSnapshot
+              ? context.l10n.modeDeletedUsingSnapshot
+              : context.l10n.modeDeletedChooseAnother)
+        : enabled
+        ? context.l10n.statusSessionMode
+        : context.l10n.statusSessionModeLocked;
     return QuietSelectorMenu<ThreadModeId>(
       key: const ValueKey<String>('session-mode-selector'),
-      tooltip: deleted
-          ? (usesSnapshot
-                ? context.l10n.modeDeletedUsingSnapshot
-                : context.l10n.modeDeletedChooseAnother)
-          : enabled
-          ? context.l10n.statusSessionMode
-          : context.l10n.statusSessionModeLocked,
+      tooltip: (!enabled ? lockedHint : null) ?? defaultTooltip,
       enabled: enabled,
+      onBlockedTap: onBlockedTap,
       onSelected: onSelected,
       items: [
         for (final mode in modes)
