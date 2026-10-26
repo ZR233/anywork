@@ -114,7 +114,7 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get sidebarArchiveSessionConfirmBody =>
-      'Archiving ends any running work, deletes this session tree\'s worktree along with any uncommitted or unmerged content, then moves the session out of the list. Continue?';
+      'Archiving stops active work in this session and its child sessions, then moves them to the archived list. Session history, workspaces, branches, and uncommitted content are kept. Continue?';
 
   @override
   String get sidebarArchiveSessionConfirmAction => 'Archive';
@@ -2916,7 +2916,7 @@ class AppLocalizationsEn extends AppLocalizations {
   }
 
   @override
-  String get settingsWorktreeCleanup => 'Clean up worktree and branch';
+  String get settingsWorktreeCleanup => 'Remove worktree (keep branch)';
 
   @override
   String get settingsWorktreeOwnerSession => 'Session worktree';
@@ -3254,7 +3254,7 @@ class AppLocalizationsEn extends AppLocalizations {
   String get sidebarArchived => 'Archived';
 
   @override
-  String get sidebarRestore => 'Restore session';
+  String get sidebarRestore => 'Unarchive session';
 
   @override
   String get sidebarPin => 'Pin';
@@ -3473,6 +3473,32 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get settingsWorktreeDirty => 'dirty';
+
+  @override
+  String get settingsWorktreeClean => 'No uncommitted changes';
+
+  @override
+  String get settingsWorktreeDirtyUnknown => 'Change status unknown';
+
+  @override
+  String get settingsWorktreeChangedFilesUnknown =>
+      'Changed files are not yet known. Retry the inspection.';
+
+  @override
+  String get settingsWorktreeInspectionAvailable => 'Worktree verified';
+
+  @override
+  String get settingsWorktreeInspectionMissing => 'Worktree missing';
+
+  @override
+  String get settingsWorktreeInspectionIdentityMismatch =>
+      'Worktree identity mismatch';
+
+  @override
+  String get settingsWorktreeInspectionUnavailable => 'Inspection unavailable';
+
+  @override
+  String get settingsWorktreeRetry => 'Retry inspection';
 
   @override
   String get startupPreparing => 'Preparing application…';

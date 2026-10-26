@@ -830,7 +830,7 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard> {
     _watchObservation(operation, () => _clear(key));
     return _lane.enqueue(() async {
       final thread = _directoryThread(threadId);
-      if (thread == null || !thread.isRoot || _blocksThread(threadId)) {
+      if (thread == null || !thread.isRoot) {
         operation.reject(StateError('Thread archive is unavailable'));
         if (_isLatest(operation)) _clear(key);
         return;

@@ -201,9 +201,9 @@ pub struct StudioRuntime {
     helper_source: crate::worker_assets::RemoteHelperSource,
     /// 外部服务（MCP/LSP/SSH）关闭 job 的常驻槽位；跨阶段与跨重试保留，超时不丢句柄。
     service_stops: lifecycle::shutdown::ServiceStopSlots,
-    /// One archive owns lifecycle admission through close and directory commit, even if its
-    /// caller disconnects. The bounded slot retains its actual completion for retry/shutdown.
-    archive_task: background_task::BackgroundTaskSlot,
+    /// An archive or worktree cleanup owns lifecycle admission through its real terminal commit,
+    /// independent of its caller. The shared slot retains completion for retry/shutdown.
+    thread_lifecycle_task: background_task::BackgroundTaskSlot,
     lifecycle_lock: std::sync::Arc<tokio::sync::Mutex<()>>,
     /// 单向关闭终止闩：commit 后拒绝迟到安装。
     shutdown_latch: lifecycle::shutdown::ShutdownLatch,

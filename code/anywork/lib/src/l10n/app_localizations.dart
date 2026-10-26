@@ -281,7 +281,7 @@ abstract class AppLocalizations {
   /// No description provided for @sidebarArchiveSessionConfirmBody.
   ///
   /// In en, this message translates to:
-  /// **'Archiving ends any running work, deletes this session tree\'s worktree along with any uncommitted or unmerged content, then moves the session out of the list. Continue?'**
+  /// **'Archiving stops active work in this session and its child sessions, then moves them to the archived list. Session history, workspaces, branches, and uncommitted content are kept. Continue?'**
   String get sidebarArchiveSessionConfirmBody;
 
   /// No description provided for @sidebarArchiveSessionConfirmAction.
@@ -5223,7 +5223,7 @@ abstract class AppLocalizations {
   /// No description provided for @settingsWorktreeCleanup.
   ///
   /// In en, this message translates to:
-  /// **'Clean up worktree and branch'**
+  /// **'Remove worktree (keep branch)'**
   String get settingsWorktreeCleanup;
 
   /// No description provided for @settingsWorktreeOwnerSession.
@@ -5877,7 +5877,7 @@ abstract class AppLocalizations {
   /// No description provided for @sidebarRestore.
   ///
   /// In en, this message translates to:
-  /// **'Restore session'**
+  /// **'Unarchive session'**
   String get sidebarRestore;
 
   /// No description provided for @sidebarPin.
@@ -6245,6 +6245,54 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'dirty'**
   String get settingsWorktreeDirty;
+
+  /// No description provided for @settingsWorktreeClean.
+  ///
+  /// In en, this message translates to:
+  /// **'No uncommitted changes'**
+  String get settingsWorktreeClean;
+
+  /// No description provided for @settingsWorktreeDirtyUnknown.
+  ///
+  /// In en, this message translates to:
+  /// **'Change status unknown'**
+  String get settingsWorktreeDirtyUnknown;
+
+  /// No description provided for @settingsWorktreeChangedFilesUnknown.
+  ///
+  /// In en, this message translates to:
+  /// **'Changed files are not yet known. Retry the inspection.'**
+  String get settingsWorktreeChangedFilesUnknown;
+
+  /// No description provided for @settingsWorktreeInspectionAvailable.
+  ///
+  /// In en, this message translates to:
+  /// **'Worktree verified'**
+  String get settingsWorktreeInspectionAvailable;
+
+  /// No description provided for @settingsWorktreeInspectionMissing.
+  ///
+  /// In en, this message translates to:
+  /// **'Worktree missing'**
+  String get settingsWorktreeInspectionMissing;
+
+  /// No description provided for @settingsWorktreeInspectionIdentityMismatch.
+  ///
+  /// In en, this message translates to:
+  /// **'Worktree identity mismatch'**
+  String get settingsWorktreeInspectionIdentityMismatch;
+
+  /// No description provided for @settingsWorktreeInspectionUnavailable.
+  ///
+  /// In en, this message translates to:
+  /// **'Inspection unavailable'**
+  String get settingsWorktreeInspectionUnavailable;
+
+  /// No description provided for @settingsWorktreeRetry.
+  ///
+  /// In en, this message translates to:
+  /// **'Retry inspection'**
+  String get settingsWorktreeRetry;
 
   /// No description provided for @startupPreparing.
   ///

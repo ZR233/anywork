@@ -3,6 +3,8 @@ import 'dart:async';
 import 'package:anywork_client/studio_client.dart';
 import 'package:test/test.dart';
 
+import 'support/timeline_transport.dart';
+
 final class _ModeCall {
   _ModeCall(this.operationId, this.threadId, this.mode);
   final OperationId operationId;
@@ -65,6 +67,13 @@ final class _InteractionCall {
   final reply = Completer<InteractionCommandReply>();
 }
 
+final class _ArchiveCall {
+  _ArchiveCall(this.operationId, this.threadId);
+  final OperationId operationId;
+  final String threadId;
+  final reply = Completer<ArchiveThreadCommandReply>();
+}
+
 /// Only the external owner response is controlled. Operation allocation,
 /// command lanes, reducers, observation barriers and overlays are production.
 final class _Transport implements StudioTransport {
@@ -74,7 +83,11 @@ final class _Transport implements StudioTransport {
     addTearDown(() => stops.close());
     addTearDown(() => continues.close());
     addTearDown(() => interactions.close());
+    addTearDown(() => archives.close());
     addTearDown(() async {
+      for (final binding in threadBindings) {
+        await binding.close();
+      }
       for (final sink in topicSinks) {
         await sink.close();
       }
@@ -86,8 +99,11 @@ final class _Transport implements StudioTransport {
   final stops = StreamController<_StopCall>.broadcast();
   final continues = StreamController<_ContinueCall>.broadcast();
   final interactions = StreamController<_InteractionCall>.broadcast();
+  final archives = StreamController<_ArchiveCall>.broadcast();
+  final archiveCalls = <_ArchiveCall>[];
   final compactions = <Completer<void>>[];
   final List<StreamController<ProductTopicFrame>> topicSinks = [];
+  final List<StreamController<ThreadStreamFrame>> threadBindings = [];
   final List<ContinuationOperationView> continuationReads = [];
   ContinuationOperationView? continuationReadReply;
   List<ChildInteractionSummary> childInteractions = const [];
@@ -95,6 +111,17 @@ final class _Transport implements StudioTransport {
   int stopCalls = 0;
   int continueCalls = 0;
   int interactionCalls = 0;
+
+  @override
+  Stream<ThreadStreamFrame> subscribeThread(String threadId) {
+    final binding = StreamController<ThreadStreamFrame>.broadcast(sync: true);
+    threadBindings.add(binding);
+    return binding.stream;
+  }
+
+  @override
+  Future<StudioTimelineConnection> openTimeline(String threadId) async =>
+      TestTimelineConnection(initial: baseline(1));
 
   @override
   Future<void> compactThread(String threadId) {
@@ -217,6 +244,17 @@ final class _Transport implements StudioTransport {
     );
     interactionCalls++;
     interactions.add(call);
+    return call.reply.future;
+  }
+
+  @override
+  Future<ArchiveThreadCommandReply> archiveThread(
+    String threadId, {
+    required OperationId operationId,
+  }) {
+    final call = _ArchiveCall(operationId, threadId);
+    archiveCalls.add(call);
+    archives.add(call);
     return call.reply.future;
   }
 
@@ -638,6 +676,101 @@ StudioCommandReceipt _receipt(
 );
 
 void main() {
+  test('archive accepts a blocked repository-recovery root and releases its session', () async {
+    final transport = _Transport();
+    final client = AnyworkClient(transport: transport, clientId: 'client');
+    client.applyBootstrap(
+      StudioBootstrap(
+        ownerEpoch: _epoch,
+        projectDirectory: ProjectDirectoryState(
+          values: [_project],
+          revision: 1,
+        ),
+        threadDirectory: ThreadDirectoryWindow(
+          threads: [_thread()],
+          revision: 1,
+        ),
+        agentDirectory: AgentDirectoryState(revision: 1),
+        settingsState: _settings(1),
+        recoveryState: RecoveryStateSnapshot(
+          revision: 1,
+          values: const [
+            StudioRecoveryIssue(
+              id: 'missing-worktree',
+              scope: RecoveryIssueScope.thread,
+              category: RecoveryIssueCategory.repository,
+              availableActions: [RecoveryIssueAction.retry],
+              threadId: 'thread',
+              detail: 'worktree is missing',
+              worktree: WorktreeRecoveryPreview(
+                inspection: WorktreeInspection.missing,
+                ownerKind: WorktreeOwnerKind.session,
+                ownerThreadId: 'thread',
+                leaseRevision: 1,
+                state: 'active',
+                repositoryRoot: '/project',
+                path: '/project/.anywork/worktrees/thread/session',
+                branch: 'pure-session-thread',
+                baseCommit: 'base',
+                headCommit: null,
+                dirty: null,
+                changedFiles: null,
+              ),
+            ),
+          ],
+        ),
+        mcpState: McpStateSnapshot(revision: 1),
+        lspState: LspStateSnapshot(revision: 1),
+        skillsByProject: const {},
+        threadModeCatalog: const ThreadModeCatalogView(),
+        accountUsageState: AccountUsageStateSnapshot(revision: 1),
+        updaterState: DisabledUpdaterStateSnapshot(
+          revision: 1,
+          updatedAt: DateTime.utc(2026),
+        ),
+        persistenceState: const PersistenceStateSnapshot.ready(),
+      ),
+    );
+    client.selection.restoreStartup(
+      projectId: 'project',
+      threadId: 'thread',
+      needsOpen: true,
+    );
+    final session = client.session('thread')..applySnapshot(_workspace());
+    session.start();
+    expect(session.isActive, isTrue);
+    addTearDown(client.close);
+
+    final archive = client.threadCommands.archiveThread('thread');
+    final callObserved = transport.archives.stream.first;
+    await Future.any<void>([archive, callObserved.then<void>((_) {})]);
+    expect(transport.archiveCalls, hasLength(1));
+    final call = transport.archiveCalls.single;
+    expect(call.threadId, 'thread');
+    call.reply.complete(
+      ArchiveThreadCommandReply(
+        result: const ArchiveThreadResult(
+          archivedRootId: 'thread',
+          removedThreadIds: ['thread'],
+        ),
+        receipt: _receipt(call.operationId, const [
+          ResourceStamp(
+            resourceKey: 'catalog',
+            ownerEpoch: _epoch,
+            revision: 2,
+          ),
+        ]),
+      ),
+    );
+    await archive;
+
+    expect(
+      client.mutations.lookup(call.operationId)?.state.value.receipt,
+      isNotNull,
+    );
+    expect(session.isActive, isFalse);
+  });
+
   test('manual compaction waits for its owner, rejects duplicate dispatch and exposes failure', () async {
     final transport = _Transport();
     final client = _client(transport);

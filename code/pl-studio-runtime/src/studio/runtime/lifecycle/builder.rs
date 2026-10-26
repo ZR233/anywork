@@ -188,7 +188,7 @@ impl StudioRuntime {
             attachment_drafts,
             ssh_manager,
             service_stops: Default::default(),
-            archive_task: Default::default(),
+            thread_lifecycle_task: Default::default(),
             lifecycle_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
             shutdown_latch: Default::default(),
             shutdown_run: Default::default(),

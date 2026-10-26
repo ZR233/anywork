@@ -30,6 +30,16 @@ class _WorktreeRecoverySectionState
         ? l10n.settingsWorktreeOwnerSession
         : l10n.settingsWorktreeOwnerChild;
     final identity = '${worktree.ownerKind.id}-${worktree.ownerThreadId}';
+    final canCleanup =
+        widget.issue.availableActions.contains(
+          RecoveryIssueAction.cleanupWorktree,
+        ) &&
+        worktree.inspection == WorktreeInspection.available;
+    final dirtyLabel = switch (worktree.dirty) {
+      true => l10n.settingsWorktreeDirty,
+      false => l10n.settingsWorktreeClean,
+      null => l10n.settingsWorktreeDirtyUnknown,
+    };
     return SettingsResourceRow(
       key: ValueKey('worktree-recovery-$identity'),
       title: worktree.branch,
@@ -38,21 +48,30 @@ class _WorktreeRecoverySectionState
       status: Text(
         [
           context.worktreeStateLabel(worktree.state),
-          if (worktree.dirty) context.l10n.settingsWorktreeDirty,
+          _inspectionLabel(context, worktree.inspection),
+          dirtyLabel,
         ].join(' · '),
       ),
       actions: [
-        TextButton.icon(
-          key: ValueKey('worktree-cleanup-$identity'),
-          onPressed: _cleaning ? null : () => _cleanup(worktree),
-          icon: _cleaning
-              ? const SizedBox.square(
-                  dimension: 16,
-                  child: CircularProgressIndicator(strokeWidth: 2),
-                )
-              : const Icon(Icons.delete_sweep_outlined, size: 18),
-          label: Text(context.l10n.settingsWorktreeCleanup),
-        ),
+        if (canCleanup)
+          TextButton.icon(
+            key: ValueKey('worktree-cleanup-$identity'),
+            onPressed: _cleaning ? null : () => _cleanup(worktree),
+            icon: _cleaning
+                ? const SizedBox.square(
+                    dimension: 16,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : const Icon(Icons.delete_sweep_outlined, size: 18),
+            label: Text(context.l10n.settingsWorktreeCleanup),
+          ),
+        if (widget.issue.canRetry)
+          TextButton.icon(
+            key: ValueKey('worktree-retry-$identity'),
+            onPressed: _cleaning ? null : _retryInspection,
+            icon: const Icon(Icons.refresh, size: 18),
+            label: Text(context.l10n.settingsWorktreeRetry),
+          ),
       ],
       children: [
         SelectableText(
@@ -66,11 +85,16 @@ class _WorktreeRecoverySectionState
           style: DefaultTextStyle.of(context).style
               .copyWith(fontFamily: studioCodeFontFamily),
         ),
-        if (worktree.changedFiles.isNotEmpty) ...[
+        const SizedBox(height: 8),
+        SelectableText(widget.issue.detail),
+        if (worktree.changedFiles == null) ...[
+          const SizedBox(height: 8),
+          Text(l10n.settingsWorktreeChangedFilesUnknown),
+        ] else if (worktree.changedFiles!.isNotEmpty) ...[
           const SizedBox(height: 8),
           Text(
             context.l10n.settingsWorktreeChangedFiles(
-              worktree.changedFiles.join(', '),
+              worktree.changedFiles!.join(', '),
             ),
             style: const TextStyle(fontFamily: studioCodeFontFamily),
           ),
@@ -78,6 +102,27 @@ class _WorktreeRecoverySectionState
         const Divider(height: 24),
       ],
     );
+  }
+
+  String _inspectionLabel(BuildContext context, WorktreeInspection state) =>
+      switch (state) {
+        WorktreeInspection.available =>
+          context.l10n.settingsWorktreeInspectionAvailable,
+        WorktreeInspection.missing =>
+          context.l10n.settingsWorktreeInspectionMissing,
+        WorktreeInspection.identityMismatch =>
+          context.l10n.settingsWorktreeInspectionIdentityMismatch,
+        WorktreeInspection.unavailable =>
+          context.l10n.settingsWorktreeInspectionUnavailable,
+      };
+
+  Future<void> _retryInspection() async {
+    setState(() => _cleaning = true);
+    try {
+      await ref.read(anyworkClientProvider).directoryCommands.retryRecovery();
+    } finally {
+      if (mounted) setState(() => _cleaning = false);
+    }
   }
 
   Future<void> _cleanup(WorktreeRecoveryPreview worktree) async {
