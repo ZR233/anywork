@@ -89,7 +89,17 @@ impl StudioRecoveryWorktreeOwner {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
+pub enum StudioWorktreeInspection {
+    Available,
+    Missing,
+    IdentityMismatch,
+    Unavailable,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct StudioWorktreeRecoveryPreview {
+    pub inspection: StudioWorktreeInspection,
     pub owner_kind: StudioRecoveryWorktreeOwner,
     pub owner_thread_id: String,
     pub lease_revision: u64,
@@ -99,8 +109,8 @@ pub struct StudioWorktreeRecoveryPreview {
     pub branch: String,
     pub base_commit: String,
     pub head_commit: Option<String>,
-    pub dirty: bool,
-    pub changed_files: Vec<String>,
+    pub dirty: Option<bool>,
+    pub changed_files: Option<Vec<String>>,
 }
 
 /// 单个项目或 Thread 的可隔离恢复问题。

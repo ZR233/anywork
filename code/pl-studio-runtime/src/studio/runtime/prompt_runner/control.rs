@@ -283,7 +283,7 @@ impl StudioRuntime {
         // arrives from here on is its own later fact and must not be delayed by this wait. Both the
         // lifecycle lock and the per-Thread operation guard were only needed up to the admission, and
         // the archive takes them in that order — lifecycle admission first, then the same per-Thread
-        // guard (`run_archive` → `archive_thread_owned`) — so keeping either one alive through the
+        // guard (`run_thread_lifecycle_operation` → `archive_thread_owned`) — so keeping either one alive through the
         // durability wait would let this command block closing for the whole wait.
         drop(lifecycle_guard);
         drop(agent_operation);

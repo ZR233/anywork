@@ -15026,6 +15026,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  BridgeWorktreeInspection dco_decode_bridge_worktree_inspection(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return BridgeWorktreeInspection.values[raw as int];
+  }
+
+  @protected
   BridgeWorktreeOwner dco_decode_bridge_worktree_owner(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return BridgeWorktreeOwner.values[raw as int];
@@ -15036,20 +15042,21 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   dco_decode_bridge_worktree_recovery_preview_dto(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 11)
-      throw Exception('unexpected arr length: expect 11 but see ${arr.length}');
+    if (arr.length != 12)
+      throw Exception('unexpected arr length: expect 12 but see ${arr.length}');
     return BridgeWorktreeRecoveryPreviewDto(
-      ownerKind: dco_decode_bridge_worktree_owner(arr[0]),
-      ownerThreadId: dco_decode_String(arr[1]),
-      leaseRevision: dco_decode_u_64(arr[2]),
-      state: dco_decode_String(arr[3]),
-      repositoryRoot: dco_decode_String(arr[4]),
-      path: dco_decode_String(arr[5]),
-      branch: dco_decode_String(arr[6]),
-      baseCommit: dco_decode_String(arr[7]),
-      headCommit: dco_decode_opt_String(arr[8]),
-      dirty: dco_decode_bool(arr[9]),
-      changedFiles: dco_decode_list_String(arr[10]),
+      inspection: dco_decode_bridge_worktree_inspection(arr[0]),
+      ownerKind: dco_decode_bridge_worktree_owner(arr[1]),
+      ownerThreadId: dco_decode_String(arr[2]),
+      leaseRevision: dco_decode_u_64(arr[3]),
+      state: dco_decode_String(arr[4]),
+      repositoryRoot: dco_decode_String(arr[5]),
+      path: dco_decode_String(arr[6]),
+      branch: dco_decode_String(arr[7]),
+      baseCommit: dco_decode_String(arr[8]),
+      headCommit: dco_decode_opt_String(arr[9]),
+      dirty: dco_decode_opt_box_autoadd_bool(arr[10]),
+      changedFiles: dco_decode_opt_list_String(arr[11]),
     );
   }
 
@@ -16519,6 +16526,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     return raw == null
         ? null
         : dco_decode_box_bridge_thread_wait_presentation(raw);
+  }
+
+  @protected
+  List<String>? dco_decode_opt_list_String(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return raw == null ? null : dco_decode_list_String(raw);
   }
 
   @protected
@@ -27909,6 +27922,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  BridgeWorktreeInspection sse_decode_bridge_worktree_inspection(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var inner = sse_decode_i_32(deserializer);
+    return BridgeWorktreeInspection.values[inner];
+  }
+
+  @protected
   BridgeWorktreeOwner sse_decode_bridge_worktree_owner(
     SseDeserializer deserializer,
   ) {
@@ -27923,6 +27945,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     SseDeserializer deserializer,
   ) {
     // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_inspection = sse_decode_bridge_worktree_inspection(deserializer);
     var var_ownerKind = sse_decode_bridge_worktree_owner(deserializer);
     var var_ownerThreadId = sse_decode_String(deserializer);
     var var_leaseRevision = sse_decode_u_64(deserializer);
@@ -27932,9 +27955,10 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_branch = sse_decode_String(deserializer);
     var var_baseCommit = sse_decode_String(deserializer);
     var var_headCommit = sse_decode_opt_String(deserializer);
-    var var_dirty = sse_decode_bool(deserializer);
-    var var_changedFiles = sse_decode_list_String(deserializer);
+    var var_dirty = sse_decode_opt_box_autoadd_bool(deserializer);
+    var var_changedFiles = sse_decode_opt_list_String(deserializer);
     return BridgeWorktreeRecoveryPreviewDto(
+      inspection: var_inspection,
       ownerKind: var_ownerKind,
       ownerThreadId: var_ownerThreadId,
       leaseRevision: var_leaseRevision,
@@ -30261,6 +30285,17 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
 
     if (sse_decode_bool(deserializer)) {
       return (sse_decode_box_bridge_thread_wait_presentation(deserializer));
+    } else {
+      return null;
+    }
+  }
+
+  @protected
+  List<String>? sse_decode_opt_list_String(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    if (sse_decode_bool(deserializer)) {
+      return (sse_decode_list_String(deserializer));
     } else {
       return null;
     }
@@ -39878,6 +39913,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_bridge_worktree_inspection(
+    BridgeWorktreeInspection self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_i_32(self.index, serializer);
+  }
+
+  @protected
   void sse_encode_bridge_worktree_owner(
     BridgeWorktreeOwner self,
     SseSerializer serializer,
@@ -39892,6 +39936,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     SseSerializer serializer,
   ) {
     // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_bridge_worktree_inspection(self.inspection, serializer);
     sse_encode_bridge_worktree_owner(self.ownerKind, serializer);
     sse_encode_String(self.ownerThreadId, serializer);
     sse_encode_u_64(self.leaseRevision, serializer);
@@ -39901,8 +39946,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_String(self.branch, serializer);
     sse_encode_String(self.baseCommit, serializer);
     sse_encode_opt_String(self.headCommit, serializer);
-    sse_encode_bool(self.dirty, serializer);
-    sse_encode_list_String(self.changedFiles, serializer);
+    sse_encode_opt_box_autoadd_bool(self.dirty, serializer);
+    sse_encode_opt_list_String(self.changedFiles, serializer);
   }
 
   @protected
@@ -41957,6 +42002,19 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_bool(self != null, serializer);
     if (self != null) {
       sse_encode_box_bridge_thread_wait_presentation(self, serializer);
+    }
+  }
+
+  @protected
+  void sse_encode_opt_list_String(
+    List<String>? self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    sse_encode_bool(self != null, serializer);
+    if (self != null) {
+      sse_encode_list_String(self, serializer);
     }
   }
 

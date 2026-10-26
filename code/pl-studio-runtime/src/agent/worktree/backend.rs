@@ -15,6 +15,10 @@ const WORKTREE_GIT_TIMEOUT: Duration = Duration::from_secs(120);
 
 #[derive(Debug, thiserror::Error)]
 pub enum WorktreeError {
+    #[error("worktree path is missing; no cleanup was performed")]
+    Missing,
+    #[error("worktree identity mismatch: {0}")]
+    IdentityMismatch(String),
     #[error("invalid worktree resource: {0}")]
     InvalidResource(String),
     #[error("unsafe git branch `{0}`")]
@@ -31,8 +35,30 @@ pub enum WorktreeError {
     },
     #[error("git {args} status is unknown: {stderr}")]
     GitStatusUnknown { args: String, stderr: String },
-    #[error("worktree io error: {0}")]
-    Io(String),
+    #[error("{operation}: filesystem error ({:?}, os={:?})", .source.kind(), .source.raw_os_error())]
+    LocalIo {
+        operation: &'static str,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("{operation}: {}", super::diagnostic::remote_code(.source))]
+    Remote {
+        operation: &'static str,
+        #[source]
+        source: super::RemoteClientError,
+    },
+    #[error("git {}: {}", super::diagnostic::git_operation(.args), super::diagnostic::execution_cause(.source))]
+    RemoteExecution {
+        args: String,
+        #[source]
+        source: super::RemoteExecutionError,
+    },
+    #[error("{operation}: remote file operation failed")]
+    RemoteFile {
+        operation: &'static str,
+        #[source]
+        source: crate::PureError,
+    },
     #[error("{operation}; rollback succeeded")]
     OperationFailedAfterCleanup { operation: Box<WorktreeError> },
     #[error("{operation}; rollback failed: {cleanup}")]
@@ -218,7 +244,10 @@ impl WorktreeBackend for LocalWorktreeBackend {
             let args = vec!["rev-parse".to_string(), "--show-toplevel".to_string()];
             let output = self.run_git(path, &args).await?;
             let root = non_empty_head(&args, &output.stdout)?;
-            dunce::canonicalize(root).map_err(|error| WorktreeError::Io(error.to_string()))
+            dunce::canonicalize(root).map_err(|source| WorktreeError::LocalIo {
+                operation: "canonicalize repository root",
+                source,
+            })
         }
         .boxed()
     }
@@ -236,7 +265,10 @@ impl WorktreeBackend for LocalWorktreeBackend {
             })?;
             tokio::fs::create_dir_all(parent)
                 .await
-                .map_err(|error| WorktreeError::Io(error.to_string()))
+                .map_err(|source| WorktreeError::LocalIo {
+                    operation: "create worktree parent",
+                    source,
+                })
         }
         .boxed()
     }
@@ -246,7 +278,10 @@ impl WorktreeBackend for LocalWorktreeBackend {
             match tokio::fs::symlink_metadata(path).await {
                 Ok(_) => Ok(true),
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
-                Err(error) => Err(WorktreeError::Io(error.to_string())),
+                Err(source) => Err(WorktreeError::LocalIo {
+                    operation: "stat worktree path",
+                    source,
+                }),
             }
         }
         .boxed()
@@ -263,7 +298,12 @@ impl WorktreeBackend for LocalWorktreeBackend {
                 target_path,
             )
             .await
-            .map_err(|error| WorktreeError::Io(error.to_string()))
+            .map_err(|error| match error {
+                pl_tool::workspace::path_safety::PathSafetyError::Io {
+                    source, operation, ..
+                } => WorktreeError::LocalIo { operation, source },
+                other => WorktreeError::InvalidResource(other.to_string()),
+            })
         }
         .boxed()
     }
@@ -327,6 +367,7 @@ impl WorktreeBackend for LocalWorktreeBackend {
                 "status".to_string(),
                 "--porcelain=v1".to_string(),
                 "--untracked-files=all".to_string(),
+                "--ignored=matching".to_string(),
             ];
             let output = self.run_git(worktree_path, &args).await?;
             Ok(WorktreeStatus {
@@ -412,7 +453,7 @@ pub(super) fn git_request(cwd: &Path, args: &[String]) -> ExecutionRequest {
         program: PathBuf::from("git"),
         args: full_args,
         cwd: cwd.to_path_buf(),
-        env: BTreeMap::new(),
+        env: BTreeMap::from([("LC_ALL".into(), "C".into())]),
         timeout: Some(WORKTREE_GIT_TIMEOUT),
     }
 }

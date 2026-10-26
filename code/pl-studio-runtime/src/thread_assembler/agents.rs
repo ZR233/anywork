@@ -593,7 +593,11 @@ impl AgentControlHost for AgentHost {
             .map_err(ToolError::new)?;
         drop(root_operation);
         for (_, id) in targets {
-            owner.close(&id).await.map_err(ToolError::new)?;
+            let _operation = owner.agent_operation(&id).await;
+            owner
+                .close_with_permit(&id, super::PublishedWorkspaceRetirement::ApplyExplicitClose)
+                .await
+                .map_err(ToolError::new)?;
         }
         output(
             serde_json::json!({"target":target,"lifecycle":ThreadLifecycle::Closed,"workspaceDisposition":disposition}),

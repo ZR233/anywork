@@ -53,6 +53,16 @@ impl StudioChildResources for StudioThreadFactory {
                 project_root.clone(),
             )
             .map_err(|error| resource_error("resolve session workspace root", error))?;
+        if root_thread.workspace_mode == pl_protocol::ThreadWorkspaceMode::Worktree {
+            crate::studio::agent_host::workspace_preparation::verify_root_session_worktree(
+                &self.services.worktrees,
+                &self.services.ssh_manager,
+                &project,
+                &parent.root_thread_id,
+            )
+            .await
+            .map_err(|error| resource_error("verify parent session workspace", error))?;
+        }
         // child 的创建窗口与 root 会话一样由进程内 creating 标记保护：标记在记录 `prepared`
         // 之前设置，离开本函数（成功、失败、取消或展开）时由守卫清除。标记键是 child_id，
         // 不会影响会话路径的判定。
