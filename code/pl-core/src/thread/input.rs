@@ -420,6 +420,12 @@ impl Owner {
         if self.state.lifecycle != ThreadLifecycle::Open || self.interrupt.is_closing() {
             return Err(ThreadError::Closed);
         }
+        // An explicit resume of a queue that had stopped is a fresh authorization, so the stop
+        // generation an earlier cancellation armed for the queue's next Turn is spent: the resumed
+        // queue runs under the stop count it now has, not under one a stop already overtook.
+        if self.input_driver.options().is_none() {
+            self.authorized_stops = None;
+        }
         self.input_driver.enable(options);
         self.publish_snapshot();
         Ok(())
@@ -494,7 +500,9 @@ impl Owner {
         let result = if has_input {
             self.run_next_input(request).await
         } else {
-            let active = self.interrupt.activate(&request.cancellation);
+            let active = self
+                .interrupt
+                .activate(&request.cancellation, self.authorized_stops.take());
             // A message-only Turn also holds a frozen (empty) batch, so a replacement arriving while it
             // prepares must re-freeze here for the same reason the queue batch does.
             self.frozen_turn = Some(request.turn_id.clone());
@@ -515,21 +523,29 @@ impl Owner {
         // the stop generation that cancellation produced. Any later stop request — the public interrupt,
         // a Turn stop, an execution stop — changes the generation and therefore wins over the
         // replacement, and a closing owner is never re-frozen either.
-        let re_freeze = matches!(
-            self.superseded_batch.take(),
+        let re_freeze = match self.superseded_batch.take() {
             Some((turn, stops))
                 if turn == driven_turn
                     && stops == self.interrupt.stops()
                     && !self.interrupt.is_closing()
-                    && self.input_driver.options().is_some()
-        );
+                    && self.input_driver.options().is_some() =>
+            {
+                Some(stops)
+            }
+            _ => None,
+        };
         // A continuation request that cancelled the running Turn keeps the queue enabled so the
         // continuation itself can run — but only while no later stop replaced that authorization. The
         // marker is always consumed, so a stale generation can never authorize a later cancellation.
-        let continuation_allowed = self
-            .continuation_cancel
-            .take()
-            .is_none_or(|generation| generation == self.interrupt.stops());
+        let continuation_cancel = self.continuation_cancel.take();
+        let continuation_allowed =
+            continuation_cancel.is_none_or(|generation| generation == self.interrupt.stops());
+        // The stop generation that kept the queue running through this cancellation is exactly the
+        // one the Turn it authorized may start under: a stop that arrives before that Turn activates
+        // pauses the queue through it, instead of being silently consumed by a fresh generation the
+        // stop never caused.
+        let authorized_stops = re_freeze
+            .or(continuation_cancel.filter(|generation| *generation == self.interrupt.stops()));
         match result {
             Ok(Some(TurnCompletion {
                 outcome: TurnOutcome::Completed,
@@ -543,12 +559,17 @@ impl Owner {
             // The batch this Turn froze was replaced before it was ever admitted, so the content it
             // holds no longer matches what it would consume. It is dropped and the queue keeps running
             // with the new authorization instead of pausing or sending a request without that content.
-            Err(ThreadError::Cancelled) if re_freeze => {}
+            Err(ThreadError::Cancelled) if re_freeze.is_some() => {
+                self.authorized_stops = authorized_stops;
+            }
             Err(ThreadError::Cancelled)
                 if self.interrupted_turn.is_some()
                     && self.input_driver.options().is_some()
                     && !self.interrupt.is_closing()
-                    && continuation_allowed => {}
+                    && continuation_allowed =>
+            {
+                self.authorized_stops = authorized_stops
+            }
             Err(ThreadError::Cancelled) => self.pause_inputs(),
             Err(error) => {
                 self.input_driver.fail(Arc::new(error));
@@ -704,7 +725,9 @@ impl Owner {
             .into_iter()
             .flat_map(|input| input.input.context)
             .collect();
-        let active = self.interrupt.activate(&request.cancellation);
+        let active = self
+            .interrupt
+            .activate(&request.cancellation, self.authorized_stops.take());
         // The batch copies its content here, so this is the window in which a replacement has to
         // re-freeze instead of patching the queue.
         self.frozen_turn = Some(request.turn_id.clone());
