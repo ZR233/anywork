@@ -507,10 +507,10 @@ impl ThreadObservations {
                 continue;
             }
             let child = pl_protocol::Thread::from(child);
-            // Reconciliation is a projection: it reads the saved checkpoint without migrating,
-            // activating, rebuilding a workspace or asking any model.
+            // Parent recovery explicitly prepares its cold children's storage before projecting
+            // their facts. It never activates a child, rebuilds its workspace or asks a model.
             let Some(checkpoint) =
-                crate::studio::thread_factory::recovery::load_checkpoint_read_only(
+                crate::studio::thread_factory::recovery::load_checkpoint_for_recovery(
                     &services.store,
                     &child,
                 )

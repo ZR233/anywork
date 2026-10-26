@@ -91,7 +91,7 @@ impl StudioThreadFactory {
             .await
             .map_err(|error| resource_error("open child instruction migration writer", error))?;
         let checkpoint = history
-            .migrate_recovery_checkpoint(&checkpoint, |state| {
+            .prepare_execution_identity(|state| {
                 crate::instruction::migrate_saved_representation(state, &saved_identity)
             })
             .await

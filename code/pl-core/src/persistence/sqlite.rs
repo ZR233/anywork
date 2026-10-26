@@ -52,6 +52,16 @@ pub enum SessionStoreError {
     Replay(#[from] crate::storage::ReplayError),
     #[error("unsupported session schema {found}; expected {supported}; existing data preserved")]
     UnsupportedSchema { found: i64, supported: i64 },
+    #[error(
+        "session checkpoint migration required; invoke migrate_to_current; existing data preserved"
+    )]
+    MigrationRequired,
+    #[error("session SQLite migration step {step} failed: {source}")]
+    Migration {
+        step: String,
+        #[source]
+        source: Box<dyn std::error::Error + Send + Sync>,
+    },
     #[error("session database operation failed: {0}")]
     Database(#[source] Box<dyn std::error::Error + Send + Sync>),
     #[error(
@@ -101,6 +111,8 @@ impl SessionStoreError {
             | Self::Replay(_)
             | Self::Codec(_)
             | Self::UnsupportedSchema { .. }
+            | Self::MigrationRequired
+            | Self::Migration { .. }
             | Self::Io(_)
             | Self::Conflict { .. }
             | Self::Invalid(_)
@@ -123,6 +135,7 @@ pub(super) async fn open(
                 "session database path must be absolute".into(),
             ));
         }
+        super::migration::inspect_existing(&options.path, false).await?;
         let mut url = url::Url::parse("sqlite:///")
             .map_err(|error| SessionStoreError::Invalid(error.to_string()))?;
         url.set_path(options.path.to_str().ok_or_else(|| {
@@ -151,64 +164,11 @@ pub(super) async fn open(
 }
 
 async fn initialize(db: &DatabaseConnection) -> Result<(), SessionStoreError> {
-    let version = db
-        .query_one_raw(statement("PRAGMA user_version", vec![]))
-        .await?
-        .ok_or_else(|| SessionStoreError::Invalid("missing SQLite schema version".into()))?
-        .try_get::<i64>("", "user_version")?;
-    if version != 0 && version != super::SESSION_SCHEMA_VERSION {
-        return Err(SessionStoreError::UnsupportedSchema {
-            found: version,
-            supported: super::SESSION_SCHEMA_VERSION,
-        });
-    }
-    if version == 0 {
-        let existing = db.query_one_raw(statement(
-            "SELECT name FROM sqlite_schema WHERE type='table' AND substr(name,1,7)<>'sqlite_' LIMIT 1",
-            vec![],
-        )).await?;
-        if existing.is_some() {
-            return Err(SessionStoreError::UnsupportedSchema {
-                found: 0,
-                supported: super::SESSION_SCHEMA_VERSION,
-            });
-        }
-    }
+    super::migration::initialize(db).await?;
     db.execute_unprepared(
         "PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA busy_timeout=5000;",
     )
     .await?;
-    if version == super::SESSION_SCHEMA_VERSION {
-        return Ok(());
-    }
-    // 空库的结构、索引与版本号一起提交，初始化中断不会留下不可重开的半份结构。
-    let tx = db.begin().await?;
-    tx.execute_unprepared(
-        "CREATE TABLE session_entries (
-            session_id TEXT NOT NULL, id TEXT NOT NULL, type_id TEXT NOT NULL,
-            ordinal INTEGER NOT NULL, turn_id TEXT, envelope TEXT NOT NULL CHECK(json_valid(envelope)), payload_hash TEXT NOT NULL,
-            PRIMARY KEY(session_id,id));
-         CREATE INDEX session_entries_kind ON session_entries(session_id,type_id,ordinal,id);
-         CREATE INDEX session_entries_turn ON session_entries(session_id,turn_id,type_id,ordinal);
-         CREATE TABLE session_entry_history (
-            session_id TEXT NOT NULL, sequence INTEGER NOT NULL,
-            envelope TEXT NOT NULL, payload_hash TEXT NOT NULL,
-            PRIMARY KEY(session_id,sequence));
-         CREATE TABLE session_history_heads (
-            session_id TEXT PRIMARY KEY, sequence INTEGER NOT NULL, payload_hash TEXT NOT NULL);
-         CREATE TABLE thread_checkpoints (
-            thread_id TEXT PRIMARY KEY, schema_version INTEGER NOT NULL,
-            state_revision INTEGER NOT NULL, history_fence INTEGER NOT NULL,
-            envelope TEXT NOT NULL CHECK(json_valid(envelope)), payload_hash TEXT NOT NULL);"
-    ).await?;
-    tx.execute_unprepared(super::tool_task_index::SCHEMA)
-        .await?;
-    tx.execute_unprepared(&format!(
-        "PRAGMA user_version={}",
-        super::SESSION_SCHEMA_VERSION
-    ))
-    .await?;
-    tx.commit().await?;
     Ok(())
 }
 

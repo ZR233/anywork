@@ -181,7 +181,7 @@ gh pr view PR_NUMBER --repo OWNER/REPO --json body --jq .body
 
 ### Rust 异步接口约定
 
-- 禁止使用 `#[async_trait]` 和 `#[allow(async_fn_in_trait)]`。
+- 禁止使用 `#[async_trait]` 和 `#[allow(async_fn_in_trait)]`；仅实现 `sea_orm_migration` 的 `MigrationTrait`、`MigratorTrait`、`MigratorTraitSelf` 时允许使用其官方 `async_trait` 宏，以遵循第三方接口契约。
 - 异步 trait 使用原生 RPITIT，在返回 future 上显式声明 `Send`；不通过宏隐藏生命周期或线程安全约束。
 
 ### 核心 crate

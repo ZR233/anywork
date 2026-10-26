@@ -19,6 +19,7 @@ pl-trace = { workspace = true }
 pl-lsp = { workspace = true }
 anyhow = { workspace = true }
 sea-orm = { workspace = true }
+sea-orm-migration = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 prost = { workspace = true }

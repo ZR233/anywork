@@ -126,7 +126,7 @@ async fn insert_row(
 }
 
 /// 迁移时先把旧 `model_calls` 的累计费用保全为摘要（revision 0，供可靠 writer 后续覆盖）。
-pub(super) async fn migrate_from_legacy(db: &DatabaseConnection) -> Result<()> {
+pub(super) async fn migrate_from_legacy(db: &impl ConnectionTrait) -> Result<()> {
     db.execute_raw(statement(
         "INSERT INTO call_usage_summary(
             root_thread_id,thread_id,purpose,cost_currency,amount,has_unpriced_usage,revision)
