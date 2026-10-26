@@ -66,7 +66,7 @@ impl AgentServices {
             let turn = history.latest_turn_at(after.commit_sequence).await?;
             (after, turn)
         } else {
-            // Evaluation is a strict canonical read, not a recovery entry: StateStore::load may
+            // Evaluation is a strict canonical read, not a recovery entry: StateStore::prepare_recovery may
             // import legacy TOML or finish its cleanup even when SQLite already has a checkpoint.
             let (checkpoint, turn) = history
                 .read_only_checkpoint_with_latest_turn()

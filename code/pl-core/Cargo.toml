@@ -6,11 +6,12 @@ license.workspace = true
 
 [features]
 default = []
-sqlite = ["dep:sea-orm", "dep:fs4", "dep:url"]
+sqlite = ["dep:sea-orm", "dep:sea-orm-migration", "dep:fs4", "dep:url"]
 
 [dependencies]
 serde = { workspace = true, features = ["rc"] }
 sea-orm = { workspace = true, optional = true }
+sea-orm-migration = { workspace = true, optional = true }
 fs4 = { workspace = true, optional = true }
 url = { workspace = true, optional = true }
 serde_json = { workspace = true }

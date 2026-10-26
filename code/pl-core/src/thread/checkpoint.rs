@@ -435,7 +435,7 @@ impl LegacyThreadCheckpoint {
             return Err(CheckpointLegacyError::InvalidAttemptSlot);
         }
         let mut checkpoint: ThreadCheckpoint = serde_json::from_value(root)?;
-        checkpoint.schema_version = ThreadCheckpoint::SCHEMA_VERSION;
+        checkpoint.schema_version = 5;
         Ok(Self {
             checkpoint,
             attempts,
@@ -471,7 +471,7 @@ impl LegacyThreadCheckpoint {
         &self.attempt_bodies
     }
 
-    /// Converts the reified legacy checkpoint into the current schema-4 resident form.
+    /// Converts the reified legacy checkpoint into the current resident form.
     ///
     /// # Errors
     /// Rejects a still-pending current-context body: converting would drop body text the live
@@ -485,6 +485,12 @@ impl LegacyThreadCheckpoint {
         } = self;
         if !checkpoint.external_bodies.is_empty() {
             return Err(CheckpointLegacyError::ExternalBodiesPending);
+        }
+        if checkpoint.schema_version == 4 {
+            // Schema 4 already records typed context sources and usage provenance. Adding the
+            // schema-5 execution/continuation defaults must not erase or re-infer those facts.
+            checkpoint.schema_version = 5;
+            return Ok(checkpoint);
         }
         // The legacy envelope already stored `liveCalls`; attempt identity is rebuilt from the
         // attempts it carried so a retry can never re-admit an already-observed identity.
@@ -509,7 +515,7 @@ impl LegacyThreadCheckpoint {
                 .collect::<Vec<_>>()
                 .into();
         }
-        checkpoint.schema_version = ThreadCheckpoint::SCHEMA_VERSION;
+        checkpoint.schema_version = 5;
         checkpoint.state.last_attempt_usage_origin = None;
         let sources = checkpoint
             .state

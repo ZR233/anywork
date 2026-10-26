@@ -135,7 +135,7 @@ impl StudioRuntime {
         // 索引回答重复提交；只读取最小身份记录，不把历史实体搬回 core，也不重放 effect。
         // 幂等命中必须证明正文身份：索引里的 host 提交摘要与本次请求一致才是重放，不一致或
         // 索引无法给出摘要都按身份冲突拒绝，不能只凭 ID 返回旧回执。
-        let durable_receipt = match self.ensure_timeline_history(&thread_id).await {
+        let durable_receipt = match self.read_timeline_history(&thread_id).await {
             Ok(history) => history.input_identity(&input.input_id).await?,
             // 历史尚未追平 checkpoint fence 时退回普通受理：驻留队列仍然覆盖本 incarnation
             // 的重复提交，不能因为一次只读索引未就绪而拒绝新输入。

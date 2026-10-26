@@ -125,11 +125,9 @@ impl StateStore {
         self
     }
 
-    /// Explicit recovery upgrades existing SQLite state before decoding the checkpoint.
-    /// Preparing storage does not create a missing history database.
     /// Strictly read-only checkpoint read for read-only product projections.
     ///
-    /// Unlike [`Self::load`] this never imports a legacy checkpoint, never deletes the files it
+    /// Unlike [`Self::prepare_recovery`] this never imports a legacy checkpoint, never deletes the files it
     /// replaced and never touches the state directory: a projection only reports facts that are
     /// already durable in the history database. Migration and legacy cleanup stay exclusive to the
     /// explicit recovery/activation entries.
@@ -144,15 +142,8 @@ impl StateStore {
         history.checkpoint().await
     }
 
-    pub(crate) async fn load_after_migration(
-        &self,
-        history: &super::history::HistoryStore,
-    ) -> Result<Option<ThreadCheckpoint>> {
-        history.prepare_activation().await?;
-        self.load(history).await
-    }
-
-    pub(crate) async fn load(
+    /// The sole file-import entry. SQLite migrations finish before any checkpoint is decoded.
+    pub(crate) async fn prepare_recovery(
         &self,
         history: &super::history::HistoryStore,
     ) -> Result<Option<ThreadCheckpoint>> {
@@ -160,6 +151,7 @@ impl StateStore {
             history.thread_id() == self.thread_id,
             "history database belongs to another Thread"
         );
+        history.prepare_activation().await?;
         if let Some(checkpoint) = history.checkpoint().await? {
             self.cleanup_legacy(history).await?;
             return Ok(Some(checkpoint));

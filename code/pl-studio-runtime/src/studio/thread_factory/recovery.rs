@@ -18,17 +18,6 @@ use pl_core::thread::ThreadCheckpoint;
 
 use crate::studio::StudioStore;
 
-pub(crate) async fn load_checkpoint(
-    store: &StudioStore,
-    thread: &pl_protocol::Thread,
-) -> Result<Option<ThreadCheckpoint>> {
-    let history = store.history_for(&thread.project_id, &thread.id).await?;
-    store
-        .state_for(&thread.project_id, &thread.id)?
-        .load(&history)
-        .await
-}
-
 /// Strictly read-only checkpoint read for projections that must not prepare or migrate storage.
 ///
 /// A read-only projection reports only already-durable facts; a legacy checkpoint that still needs
@@ -56,20 +45,12 @@ pub(crate) async fn load_checkpoint_for_recovery(
     thread: &pl_protocol::Thread,
 ) -> Result<Option<ThreadCheckpoint>> {
     let history = store.history_for(&thread.project_id, &thread.id).await?;
-    let Some(checkpoint) = store
+    let Some(_) = store
         .state_for(&thread.project_id, &thread.id)?
-        .load_after_migration(&history)
+        .prepare_recovery(&history)
         .await?
     else {
         return Ok(None);
     };
-    let migrated = history
-        .migrate_recovery_checkpoint(&checkpoint, |state| {
-            // Absence in old v2 data stays absent: never manufacture closure from core lifecycle.
-            crate::studio::agent_close::is_explicitly_closed(state)?;
-            crate::studio::model_route::migrate_saved_representation(state)?;
-            crate::studio::delegation::migrate(state)
-        })
-        .await?;
-    Ok(Some(migrated))
+    history.prepare_model_access().await
 }

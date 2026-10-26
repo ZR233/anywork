@@ -506,21 +506,6 @@ fn decode(row: QueryResult, binding: &CardBinding) -> Result<CardStream, FeishuE
     Ok(state)
 }
 
-pub(super) async fn migrate<C: ConnectionTrait>(db: &C) -> anyhow::Result<()> {
-    db.execute_unprepared(
-        "CREATE TABLE IF NOT EXISTS bot_card_streams (
-            identity TEXT PRIMARY KEY,
-            bot_id TEXT NOT NULL, chat_id TEXT NOT NULL, message_id TEXT NOT NULL,
-            thread_id TEXT NOT NULL, original_input TEXT NOT NULL,
-            watch_input TEXT NOT NULL, turn_id TEXT NOT NULL,
-            version INTEGER NOT NULL CHECK(version>0), state_json TEXT NOT NULL,
-            updated_at INTEGER NOT NULL
-        )",
-    )
-    .await?;
-    Ok(())
-}
-
 fn corrupt() -> FeishuError {
     FeishuError::new(
         FeishuErrorKind::Unavailable,

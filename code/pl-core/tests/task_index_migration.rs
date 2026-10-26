@@ -80,7 +80,7 @@ async fn v11_task_index_migration_is_atomic_and_preserves_source_effects() {
         .into_iter()
         .map(|row| row.try_get::<String>("", "envelope").unwrap())
         .collect::<Vec<_>>();
-    db.execute_unprepared("DROP TABLE thread_tool_task_resources; DROP TABLE thread_tool_tasks; PRAGMA user_version=11;
+    db.execute_unprepared("DROP TABLE thread_tool_task_resources; DROP TABLE thread_tool_tasks; DROP TABLE IF EXISTS seaql_migrations; PRAGMA user_version=11;
         UPDATE session_entries SET payload_hash='damaged' WHERE id='pl.resource.thread-commit.00000000000000000002'").await.unwrap();
     db.close().await.unwrap();
     assert!(SqliteSessionStore::open(options.clone()).await.is_err());
@@ -209,7 +209,7 @@ async fn by_id_task_read_is_independent_and_rejects_corrupt_index() {
 async fn task_index_migration_rejects_an_effect_gap() {
     let (_root, options) = seed().await;
     let db = database(&options).await;
-    db.execute_unprepared("DROP TABLE thread_tool_task_resources; DROP TABLE thread_tool_tasks; PRAGMA user_version=11;
+    db.execute_unprepared("DROP TABLE thread_tool_task_resources; DROP TABLE thread_tool_tasks; DROP TABLE IF EXISTS seaql_migrations; PRAGMA user_version=11;
         DELETE FROM session_entries WHERE id='pl.resource.thread-commit.00000000000000000001'").await.unwrap();
     db.close().await.unwrap();
     assert!(

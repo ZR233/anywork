@@ -5,9 +5,9 @@ import 'flutter_driver_session.dart';
 import 'timeline_observation.dart';
 
 Future<void> main(List<String> args) async {
-  if (args.length != 2) {
+  if (args.length != 2 && !(args.length == 3 && args[2] == '--exit')) {
     stderr.writeln(
-      'usage: dart --packages=.dart_tool/package_config.json test_driver/manual_capture.dart VM_URL OUTPUT_DIR',
+      'usage: dart --packages=.dart_tool/package_config.json test_driver/manual_capture.dart VM_URL OUTPUT_DIR [--exit]',
     );
     exitCode = 64;
     return;
@@ -43,6 +43,9 @@ Future<void> main(List<String> args) async {
       throw StateError('native GUI shutdown did not complete');
     }
     await stage('shutdown_completed');
+    if (args.length == 3) {
+      await driver.requestData('request-app-exit');
+    }
     stdout.writeln('Evidence captured; human verdict pending.');
   } finally {
     try {
