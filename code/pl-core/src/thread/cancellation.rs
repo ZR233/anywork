@@ -18,14 +18,26 @@ struct InterruptState {
 }
 
 impl InterruptHandle {
-    pub(super) fn activate(&self, parent: &CancellationToken) -> ActiveExecution {
+    /// Starts the next execution generation, optionally bound to the stop count that authorized it.
+    ///
+    /// The comparison and the installation share one lock acquisition, so a queued Turn authorized
+    /// by an earlier stop generation can never lose a stop between its check and its start: a stop
+    /// that already arrived makes the fresh generation born cancelled — it settles as stopped
+    /// instead of making the request that stop never authorized — and a stop that arrives afterwards
+    /// cancels the token this call installed.
+    pub(super) fn activate(
+        &self,
+        parent: &CancellationToken,
+        authorized_stops: Option<u64>,
+    ) -> ActiveExecution {
         let token = parent.child_token();
         {
             let mut state = self
                 .0
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            if state.closing {
+            if state.closing || authorized_stops.is_some_and(|authorized| authorized != state.stops)
+            {
                 token.cancel();
             }
             state.active = Some(token.clone());

@@ -479,6 +479,12 @@ impl Owner {
     }
 
     fn request_continuation(&mut self, options: input::InputDriverOptions) {
+        // Resuming a queue that had stopped is a fresh authorization, so a stop generation an
+        // earlier cancellation armed is spent; an already enabled queue keeps its guard, because
+        // this submission joins the authorization that previous cancellation still owes.
+        if self.input_driver.options().is_none() {
+            self.authorized_stops = None;
+        }
         self.input_driver.enable(options);
         if let Some(turn) = self
             .state

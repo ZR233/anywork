@@ -370,6 +370,8 @@ void main() {
     String? toolName,
     int revision = 1,
     String turnId = 'turn',
+    ThreadContentLifecycleView? contentLifecycle,
+    StudioTimelineLifecycle itemLifecycle = StudioTimelineLifecycle.streaming,
   }) => StudioTimelineItem(
     item: ThreadItemView(
       id: id,
@@ -380,10 +382,10 @@ void main() {
       createdAt: DateTime.utc(2026),
       updatedAt: DateTime.utc(2026),
       state: toolName == null
-          ? const ThreadThinkingItemStateView(
-              summary: ['Investigating'],
-              content: [],
-              lifecycle: StreamingThreadContentView(),
+          ? ThreadThinkingItemStateView(
+              summary: const ['Investigating'],
+              content: const [],
+              lifecycle: contentLifecycle ?? const StreamingThreadContentView(),
             )
           : ThreadToolItemStateView(
               invocation: ThreadToolInvocationView(
@@ -395,7 +397,7 @@ void main() {
             ),
     ),
     saved: false,
-    lifecycle: StudioTimelineLifecycle.streaming,
+    lifecycle: itemLifecycle,
     omittedBytes: 0,
     details: const [],
   );
@@ -1676,4 +1678,271 @@ void main() {
       expect(groups.last!.memberIds, ['image-c']);
     },
   );
+
+  StudioTimelineItem toolTerminal(
+    String id,
+    int order, {
+    required ThreadToolLifecycleView lifecycle,
+    ThreadWaitStateView? waitState,
+  }) => StudioTimelineItem(
+    item: ThreadItemView(
+      id: id,
+      threadId: 'thread',
+      turnId: 'turn',
+      ordinal: order,
+      revision: 2,
+      createdAt: DateTime.utc(2026),
+      updatedAt: DateTime.utc(2026),
+      state: ThreadToolItemStateView(
+        invocation: ThreadToolInvocationView(
+          toolCallId: id,
+          name: 'run_command',
+          arguments: '{}',
+        ),
+        lifecycle: lifecycle,
+        wait: waitState == null
+            ? null
+            : ThreadWaitPresentationView(
+                intent: ThreadWaitEventsIntentView(
+                  targets: [
+                    ThreadWaitTargetView(
+                      taskId: 'task:exec-1',
+                      toolName: 'exec',
+                      summary: 'cargo test',
+                      status: ThreadWaitTargetStatusView.cancelled,
+                    ),
+                  ],
+                  timeoutMs: 60000,
+                ),
+                state: waitState,
+              ),
+      ),
+    ),
+    saved: false,
+    lifecycle: StudioTimelineLifecycle.terminal,
+    omittedBytes: 0,
+    details: const [],
+  );
+
+  StudioTimelineItem turnCall(String id, int order, StudioTurnState state) =>
+      StudioTimelineItem(
+        item: ThreadItemView(
+          id: id,
+          threadId: 'thread',
+          turnId: 'turn',
+          ordinal: order,
+          revision: 1,
+          createdAt: DateTime.utc(2026),
+          updatedAt: DateTime.utc(2026),
+          state: ThreadTurnItemStateView(state),
+          saved: false,
+        ),
+        saved: false,
+        lifecycle: StudioTimelineLifecycle.terminal,
+        omittedBytes: 0,
+        details: const [],
+      );
+
+  test(
+    'stopping a turn keeps cancelled members neutral without losing identity',
+    () {
+      final display = lease();
+      addTearDown(display.retire);
+      display.adoptBaseline(
+        StudioTimelineBaseline(
+          subscriptionId: 'sub',
+          version: 1,
+          before: null,
+          hasOlder: false,
+          items: [
+            activity('thinking', 1),
+            activity('command', 2, toolName: 'run_command'),
+            waitCall('wait-1', 3),
+          ],
+        ),
+      );
+      final group = timelinePresentationOf(display.controller.messages.single)!;
+      group.setExpanded(true);
+      expect(group.issueCount, 0);
+
+      // 真实 canonical 终态：用户停止后工具 interrupted、等待 cancelled。
+      expect(
+        display.applyPatch(
+          StudioTimelinePatch(
+            subscriptionId: 'sub',
+            from: 1,
+            to: 2,
+            priority: StudioTimelinePriority.immediate,
+            changes: [
+              StudioTimelineAdd(
+                activity(
+                  'thinking',
+                  1,
+                  revision: 2,
+                  contentLifecycle: CancelledThreadContentView(
+                    DateTime.utc(2026),
+                    'Interrupted',
+                  ),
+                  itemLifecycle: StudioTimelineLifecycle.terminal,
+                ),
+              ),
+              StudioTimelineAdd(
+                toolTerminal(
+                  'command',
+                  2,
+                  lifecycle: InterruptedThreadToolView(
+                    DateTime.utc(2026),
+                    'Interrupted',
+                  ),
+                ),
+              ),
+              StudioTimelineAdd(
+                toolTerminal(
+                  'wait-1',
+                  3,
+                  lifecycle: CancelledThreadToolView(
+                    DateTime.utc(2026),
+                    'Cancelled',
+                  ),
+                  waitState: ThreadWaitStateView.cancelled,
+                ),
+              ),
+            ],
+          ),
+        ),
+        isTrue,
+      );
+
+      expect(display.presentationFor('command'), same(group));
+      expect(group.id, startsWith('presentation:'));
+      expect(group.memberIds, ['thinking', 'command', 'wait-1']);
+      expect(group.expanded, isTrue, reason: '展开意图不因终态重置');
+      expect(group.issueCount, 0, reason: '取消与中断不是问题');
+      expect(group.activeCount, 0);
+      expect(group.payload('command')!.terminal, isTrue);
+      expect(group.payload('wait-1')!.terminal, isTrue);
+    },
+  );
+
+  test('real failures still count while cancelled members add none', () {
+    final display = lease();
+    addTearDown(display.retire);
+    display.adoptBaseline(
+      StudioTimelineBaseline(
+        subscriptionId: 'sub',
+        version: 1,
+        before: null,
+        hasOlder: false,
+        items: [
+          activity('thinking', 1),
+          activity('broken', 2, toolName: 'run_command'),
+          activity('stopped', 3, toolName: 'run_command'),
+        ],
+      ),
+    );
+    expect(
+      display.applyPatch(
+        StudioTimelinePatch(
+          subscriptionId: 'sub',
+          from: 1,
+          to: 2,
+          priority: StudioTimelinePriority.immediate,
+          changes: [
+            StudioTimelineAdd(
+              activity(
+                'thinking',
+                1,
+                revision: 2,
+                contentLifecycle: CancelledThreadContentView(
+                  DateTime.utc(2026),
+                  'Interrupted',
+                ),
+                itemLifecycle: StudioTimelineLifecycle.terminal,
+              ),
+            ),
+            StudioTimelineAdd(
+              toolTerminal(
+                'broken',
+                2,
+                lifecycle: FailedThreadToolView(
+                  DateTime.utc(2026),
+                  const ThreadToolFailureView(
+                    kind: ThreadToolFailureKindView.execution,
+                    message: 'exit code 1',
+                  ),
+                  null,
+                ),
+              ),
+            ),
+            StudioTimelineAdd(
+              toolTerminal(
+                'stopped',
+                3,
+                lifecycle: InterruptedThreadToolView(
+                  DateTime.utc(2026),
+                  'Interrupted',
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+      isTrue,
+    );
+    final group = timelinePresentationOf(display.controller.messages.single)!;
+    expect(group.memberIds, ['thinking', 'broken', 'stopped']);
+    expect(group.issueCount, 1, reason: '只有真实失败计入问题数量');
+    expect(group.activeCount, 0);
+  });
+
+  test('an interrupted turn stays visible without becoming an issue', () {
+    final display = lease();
+    addTearDown(display.retire);
+    display.adoptBaseline(
+      StudioTimelineBaseline(
+        subscriptionId: 'sub',
+        version: 1,
+        before: null,
+        hasOlder: false,
+        items: [activity('thinking', 1)],
+      ),
+    );
+    expect(
+      display.applyPatch(
+        StudioTimelinePatch(
+          subscriptionId: 'sub',
+          from: 1,
+          to: 2,
+          priority: StudioTimelinePriority.immediate,
+          changes: [
+            StudioTimelineAdd(
+              turnCall(
+                'turn-end',
+                2,
+                const CancelledStudioTurnState(
+                  startedAt: 1,
+                  requestedAt: 2,
+                  completedAt: 3,
+                  cause: InterruptedTurnCancellation(),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+      isTrue,
+    );
+    final payload = display.payloadOf('turn-end')!;
+    expect(payload.item.error, isNotEmpty);
+    expect(
+      timelinePayloadIsVisible(payload),
+      isTrue,
+      reason: '停止终态必须可见，不能被当作空内容隐藏',
+    );
+    expect(
+      timelinePresentationOf(display.controller.messages.last)!.issueCount,
+      0,
+      reason: 'interrupted turn 不产生问题指示',
+    );
+  });
 }

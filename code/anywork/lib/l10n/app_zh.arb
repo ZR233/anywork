@@ -586,6 +586,7 @@
   },
   "timelineViewImageReading": "正在读取图片",
   "timelineViewImageFailed": "读取图片失败",
+  "timelineViewImageStopped": "已停止读取图片",
   "timelineReadFileCompleted": "已读取",
   "timelineReadFileReading": "正在读取",
   "timelineReadFileFailed": "读取失败",
@@ -640,6 +641,12 @@
   "timelineToolWaitSucceeded": "已等待",
   "timelineToolWaitRunning": "正在等待",
   "timelineToolWaitFailed": "等待失败",
+  "timelineTurnStopped": "本轮已停止",
+  "timelineTurnCancelled": "本轮已取消",
+  "timelineTurnRuntimeShutdown": "运行时已关闭，本轮已停止",
+  "timelineTurnAgentClosed": "代理已关闭，本轮已停止",
+  "timelineTurnRecoveryStopped": "恢复期间已停止本轮",
+  "timelineTurnCoalesced": "本轮已并入后续轮次",
   "timelineToolCompleted": "{name} 已完成",
   "timelineToolFailed": "{name} 失败",
   "timelineToolDenied": "{name} 被拒绝",
@@ -665,7 +672,7 @@
       }
     }
   },
-  "timelineToolInterrupted": "{name} 已中断",
+  "timelineToolInterrupted": "{name} 已停止",
   "@timelineToolInterrupted": {
     "placeholders": {
       "name": {
@@ -1675,7 +1682,7 @@
   "timelineWaitTimedOut": "等待超时",
   "timelineWaitCancelled": "等待已取消",
   "timelineWaitFailed": "等待失败",
-  "timelineWaitInterrupted": "等待已中断",
+  "timelineWaitInterrupted": "等待已停止",
   "timelineWaitTargetCount": "{count} 个任务",
   "@timelineWaitTargetCount": {
     "placeholders": {
@@ -1709,7 +1716,7 @@
   "timelineWaitStatusSucceeded": "已成功",
   "timelineWaitStatusFailed": "已失败",
   "timelineWaitStatusCancelled": "已取消",
-  "timelineWaitStatusInterrupted": "已中断",
+  "timelineWaitStatusInterrupted": "已停止",
   "conversationActivityWaitingTools": "等待工具完成",
   "conversationActivityWaitingMessages": "等待子代理或新消息",
   "conversationActivityWaitingTimer": "计时器",
