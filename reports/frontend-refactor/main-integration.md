@@ -6,6 +6,7 @@
 - 共同祖先：`466bc5f45b581a1015606cb496c9b1f26f96eb75`。
 - 首轮调查主线：`900a23c5eae44d3c34fde7319b0f57688b3d3937`。
 - 本轮重新 fetch 后冻结主线：`7aa6ee04bb60551ccaf0e7de345803f9d30b9230`，新增 #177；以下以该版本为合流目标。
+- 第二轮重新核对远端：主线新增 `a9e4e807ee6dd891378fc89d60ebd25f846d9b87`（#174）。上一检查点 `e3e33b774bba4766e2ebc168f5eca84f49d7a9ba` 已合入 #177，但尚未包含此提交，因此 GitHub 仍报告冲突；本轮须完整迁入 #174 后重新推送并回读可合并状态。
 - 批准计划 revision 2 持续有效。用户要求先解决冲突，原 history-close 返修暂停；合流保留原关闭责任实现及已发现问题，不用 main 覆盖掩盖问题。
 - 本文件是实施与证据清单，不是设计权威源。设计见 `design/12`、`14`—`19`、`22`—`26`。
 - 当前阶段：设计先行提交为 `420c4fe87476b9b0664d81973f58a6f35413c0a8`，已实际合并冻结主线并进入冲突处理，`MERGE_HEAD` 为 `7aa6ee04`。下表“待迁移/待验证”均不表示通过。无冲突标记或 Git 已暂存不等于语义保全或验收完成。
@@ -25,6 +26,14 @@
 | `409de852` #171 | 五类 SQLite 唯一迁移调度、升级后会话可载入、错误保现场 | SeaORM migration 2.0.4；schema/导入/model-access/身份分阶段；兼容当前 history lease/显式 close | 待迁移 |
 | `900a23c5` #173 | helper 双架构并行，发布消费已提交生成物，不重复源码质量门禁 | RC/release matrix、target 隔离缓存/artifact、GUI 等待两份 helper；保签名/verify/冒烟/attestation与 PR 门禁 | 待合流核对 |
 | `7aa6ee04` #177 | 归档与安全清理解耦、退役重建授权、远端结构化诊断 | 归档保历史/目录/分支/未提交内容，取消归档不重建；Recovery inspection/nullable facts/原来源命令；订阅失败无互等 | 设计已同步，源码调查与迁移待办 |
+| `a9e4e807` #174 | 用户中断和插入消息的中性提示；后继执行启动与停止代次的原子保护 | 新 Conversation Timeline 纯视图与唯一呈现投影；原 core 取消／输入 driver；保留真实失败及既有取消收束与修订空间修复 | 设计先行，集中合流待完成 |
+
+## 第二轮集中合流合同
+
+- Core 仅融合 #174 的 `authorized_stops`：替换／继续保存原代次，下一队列执行在安装取消句柄时原子核验；显式恢复已暂停队列清旧授权，直接命令不借用队列授权。保留 PR120 的同次中断代次、终态检查点、批次修订空间和原错误／清理责任。`flush` 只证明保存，测试另等 execution 清除与队列 Paused。
+- Conversation 将 #174 的旧 Timeline 文件改动迁入当前 `payload_semantics`、`presentation/timeline_labels`、连接器与纯视图，不恢复旧 `features/timeline` 或旧领域模型。取消／中断保持可见、中性色、不计失败；真实 failed/denied/budgetLimited 继续计数。取消原因只消费现有 `TurnCancellationCause`，不从错误文本、草稿或当前选择猜原因。
+- C1 把上游 `timeline_display_lease_test.dart` 三个新增行为与修订后的生命周期断言迁到当前真实展示租约／呈现 owner，保成员身份、顺序、展开意图和实时／历史一致性；不恢复 facade，不删已有独特回归。
+- root 负责两语言 ARB、设计、Git 及最终全局冲突检查；生成物只从现有工程入口统一产生，不以临时生成快照证明生成一致性。各目录整组交付后集中收拢，推送前重新 fetch 并核主线是否变化，推送后核 GitHub `mergeable`，不能仅凭本地无 MERGE_HEAD 宣称远端冲突消失。
 
 ## 跨层共享契约与写入顺序
 
