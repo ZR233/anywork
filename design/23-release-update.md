@@ -36,6 +36,8 @@ Windows 本机编译第三方 C 依赖（如 `zstd-sys`）若遇到 MSVC `D8050`
 
 正式打包入口命令（`stage`、`finalize`、`verify`，参数为规范 `x.y.z` 版本号）要求传入版本与 `pubspec.yaml` 完全一致。`stage` 阶段复用 GUI 构建产物生成单用户 Inno Setup 安装器（使用稳定 `AppId`，默认安装至 `LocalAppData`，声明 `CloseApplications` 与 `RestartApplications`，支持英语与随源码固定的简体中文界面，并将 `code/pl-studio-runtime/THIRD_PARTY_NOTICES.md` 与 `LICENSE` 打入发行包根目录）。
 
+Windows 安装器固定使用 `PrivilegesRequired=lowest`，不主动启用 `RedirectionGuard`。在受影响的 Windows 版本上，安装器启用的重定向信任策略会随安装后启动或更新重启传入应用及其命令子进程，阻止普通用户创建的目录链接，破坏 Flutter 等开发工具链。安装器显式使用 Inno Setup 的 `RedirectionGuard=no`，避免在安装链主动附加此策略；不修改系统缓解策略、提权或在运行时尝试撤销已经继承的策略。已受限的旧版应用启动更新时，限制仍可能沿更新进程链继承；升级后须完全退出，再从开始菜单或快捷方式启动一次。由外部宿主或系统配置施加的策略仍由其管理。此选择只适用于当前不提权的单用户安装边界；若未来引入管理员安装，必须重新评估安装器的路径重定向防护与应用启动隔离。
+
 发布的安装器不包含调试符号文件（PDB）；Windows 构建会额外生成独立的符号构件（包含与发布版本、提交 SHA 及会话协议版本映射的启动器与 Rust 桥接库 PDB），专门用于崩溃转储分析。升级后的用户数据与配置遵循 [17](./17-studio-storage.md) 与 [20](./20-config.md) 的迁移契约（迁移边界见 [17.7](./17-studio-storage.md#177-大版本隔离与配置迁移)）。
 
 签名信任机制分为两层：
