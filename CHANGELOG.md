@@ -5,6 +5,21 @@ anywork release notes are generated from Conventional Commits by Release Please.
 以下已发布记录保留当时的名称与行为，不作为当前工程规范；当前架构演进规则见
 [AGENTS.md](AGENTS.md)，数据迁移契约及实现缺口见[存储设计](design/17-studio-storage.md)。
 
+## [6.28.0](https://github.com/ZR233/anywork/compare/v6.27.0...v6.28.0) (2026-10-26)
+
+
+### ⚠ BREAKING CHANGES
+
+* **studio:** core 显式 SQLite 迁移入口的转换回调新增 'static 约束；SessionStoreError 新增 MigrationRequired 与 Migration 变体，调用方需更新穷尽匹配。
+* **studio:** newThread 附件准入上下文删除 mode，改为必填 route（accountId、modelId、effort）；调用方须发送完整模型路由。
+
+### Bug Fixes
+
+* **studio:** 使用智谱官网 Z 标识替换账号图标 ([#169](https://github.com/ZR233/anywork/issues/169)) ([52db463](https://github.com/ZR233/anywork/commit/52db463eb12263b635cbbe8cbe2789bfecf2124f))
+* **studio:** 修复附件准入模型与拒绝提示 ([#165](https://github.com/ZR233/anywork/issues/165)) ([5802582](https://github.com/ZR233/anywork/commit/58025822c2c8b5a4c871df332035849f28f88339)), closes [#164](https://github.com/ZR233/anywork/issues/164)
+* **studio:** 统一 SQLite 迁移并修复升级后会话加载 ([#171](https://github.com/ZR233/anywork/issues/171)) ([409de85](https://github.com/ZR233/anywork/commit/409de85262b8f4fca631249c45ffe113e9d7d7c5))
+* **studio:** 避免 Windows 安装器限制命令目录链接 ([#170](https://github.com/ZR233/anywork/issues/170)) ([54f03be](https://github.com/ZR233/anywork/commit/54f03be0409a49ce00b5187e7245ebc99910431d))
+
 ## [6.27.0](https://github.com/ZR233/anywork/compare/v6.26.0...v6.27.0) (2026-10-26)
 
 
