@@ -20,7 +20,8 @@ pub(super) fn stage(workspace_root: &Path, release_dir: &Path, version: &Version
         BuildGuiOptions {
             demo: false,
             no_clean: false,
-            check_generated: true,
+            // Release staging consumes the generated files validated by the PR quality gate.
+            check_generated: false,
         },
         &version.to_string(),
     )?;
