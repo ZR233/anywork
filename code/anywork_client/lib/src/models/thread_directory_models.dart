@@ -36,6 +36,12 @@ class StudioProject {
   final String? sshAlias;
 }
 
+/// 退役成员的角色判据：旧版 `planner` 子成员不再是合法角色。
+///
+/// 这是角色字符串的唯一判据；调用方只组合自己的上下文条件（例如该行是否为成员），
+/// 不再重复写一遍角色比较，避免空白或措辞漂移出第二份事实。
+bool isRetiredAgentRole(String role) => role.trim() == 'planner';
+
 class StudioThread {
   const StudioThread({
     required this.id,
@@ -93,7 +99,7 @@ class StudioThread {
   bool get isAgent => parentThreadId != null;
 
   /// The former planner child role is retained for history, never execution.
-  bool get isRetiredAgent => isAgent && role == 'planner';
+  bool get isRetiredAgent => isAgent && isRetiredAgentRole(role);
 
   String get effectiveRootThreadId => rootThreadId.isEmpty ? id : rootThreadId;
 

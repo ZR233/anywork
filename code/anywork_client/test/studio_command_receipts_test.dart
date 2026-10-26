@@ -28,17 +28,39 @@ final class _RouteCall {
 }
 
 final class _StopCall {
-  _StopCall(this.operationId, this.threadId, this.turnId);
+  _StopCall(this.operationId, this.threadId, this.executionId);
   final OperationId operationId;
   final String threadId;
-  final String turnId;
-  final reply = Completer<InterruptTurnCommandReply>();
+  final String executionId;
+  final reply = Completer<StopThreadCommandReply>();
+}
+
+final class _ContinueCall {
+  _ContinueCall(
+    this.operationId,
+    this.threadId,
+    this.continuationId,
+    this.expectedModelRouteRevision,
+  );
+  final OperationId operationId;
+  final String threadId;
+  final String continuationId;
+  final int expectedModelRouteRevision;
+  final reply = Completer<ContinueThreadCommandReply>();
 }
 
 final class _InteractionCall {
-  _InteractionCall(this.operationId, this.interactionId, this.resolution);
+  _InteractionCall(
+    this.operationId,
+    this.hostThreadId,
+    this.interactionId,
+    this.expectedRevision,
+    this.resolution,
+  );
   final OperationId operationId;
+  final String hostThreadId;
   final String interactionId;
+  final int expectedRevision;
   final InteractionResolutionCommand resolution;
   final reply = Completer<InteractionCommandReply>();
 }
@@ -50,6 +72,7 @@ final class _Transport implements StudioTransport {
     addTearDown(() => modes.close());
     addTearDown(() => routes.close());
     addTearDown(() => stops.close());
+    addTearDown(() => continues.close());
     addTearDown(() => interactions.close());
     addTearDown(() async {
       for (final sink in topicSinks) {
@@ -61,9 +84,17 @@ final class _Transport implements StudioTransport {
   final modes = StreamController<_ModeCall>.broadcast();
   final routes = StreamController<_RouteCall>.broadcast();
   final stops = StreamController<_StopCall>.broadcast();
+  final continues = StreamController<_ContinueCall>.broadcast();
   final interactions = StreamController<_InteractionCall>.broadcast();
   final compactions = <Completer<void>>[];
   final List<StreamController<ProductTopicFrame>> topicSinks = [];
+  final List<ContinuationOperationView> continuationReads = [];
+  ContinuationOperationView? continuationReadReply;
+  List<ChildInteractionSummary> childInteractions = const [];
+  int childInteractionReads = 0;
+  int stopCalls = 0;
+  int continueCalls = 0;
+  int interactionCalls = 0;
 
   @override
   Future<void> compactThread(String threadId) {
@@ -114,23 +145,77 @@ final class _Transport implements StudioTransport {
   }
 
   @override
-  Future<InterruptTurnCommandReply> interruptTurn(
+  Future<StopThreadCommandReply> stopThread(
     String threadId,
-    String turnId, {
+    String executionId, {
     required OperationId operationId,
   }) {
-    final call = _StopCall(operationId, threadId, turnId);
+    stopCalls++;
+    final call = _StopCall(operationId, threadId, executionId);
     stops.add(call);
     return call.reply.future;
   }
 
   @override
+  Future<ContinueThreadCommandReply> continueThread(
+    String threadId,
+    String continuationId, {
+    required int expectedModelRouteRevision,
+    required OperationId operationId,
+  }) {
+    continueCalls++;
+    final call = _ContinueCall(
+      operationId,
+      threadId,
+      continuationId,
+      expectedModelRouteRevision,
+    );
+    continues.add(call);
+    return call.reply.future;
+  }
+
+  @override
+  Future<ContinuationOperationView> readContinuationOperation(
+    String threadId,
+    String operationId,
+  ) async {
+    final reply = continuationReadReply;
+    if (reply == null) {
+      throw const StudioFailure(
+        code: StudioFailureCode.notFound,
+        message: 'no accepted continuation carries this identity',
+        retryable: false,
+        correlationId: 'stale-continuation-read',
+      );
+    }
+    continuationReads.add(reply);
+    return reply;
+  }
+
+  @override
+  Future<List<ChildInteractionSummary>> readChildInteractions(
+    String threadId,
+  ) async {
+    childInteractionReads++;
+    return childInteractions;
+  }
+
+  @override
   Future<InteractionCommandReply> respondInteraction(
+    String hostThreadId,
     String interactionId,
+    int expectedRevision,
     InteractionResolutionCommand resolution, {
     required OperationId operationId,
   }) {
-    final call = _InteractionCall(operationId, interactionId, resolution);
+    final call = _InteractionCall(
+      operationId,
+      hostThreadId,
+      interactionId,
+      expectedRevision,
+      resolution,
+    );
+    interactionCalls++;
     interactions.add(call);
     return call.reply.future;
   }
@@ -281,36 +366,72 @@ StudioThread _thread({ThreadModeId mode = ThreadModeId.simple}) => StudioThread(
   workspacePath: '/project',
 );
 
-ThreadRuntimeView _runtime({String modelId = 'alpha', int routeRevision = 1}) =>
-    ThreadRuntimeView(
-      modelId: modelId,
-      contextTokens: 0,
-      contextWindow: 100,
-      totalTokens: 0,
-      costLabel: '',
-      activeSkills: const [],
-      activeMcpServers: const [],
-      activeLspServers: const [],
-      modelRoute: ThreadModelRouteView(
-        accountId: 'account',
-        modelId: modelId,
-        effort: 'medium',
-        revision: routeRevision,
-        available: true,
-      ),
-    );
+/// A direct child of the main session: the same directory identity the agent
+/// list publishes, with no separate page or content view.
+StudioThread _childThread() => StudioThread(
+  id: 'child',
+  projectId: 'project',
+  title: 'Child',
+  mode: ThreadModeId.simple,
+  delegationMode: DelegationMode.profile,
+  delegationPreference: DelegationPreference.balanced,
+  parentThreadId: 'thread',
+  rootThreadId: 'thread',
+  agentPath: 'root/child',
+  role: 'executor',
+  updatedAt: DateTime.utc(2026),
+  workspacePath: '/project',
+);
+
+AgentExecutionView? _execution({
+  String id = 'execution-1',
+  String turnId = 'turn',
+  AgentExecutionPhase phase = AgentExecutionPhase.running,
+}) => AgentExecutionView(id: id, phase: phase, turnId: turnId);
+
+ThreadRuntimeView _runtime({
+  String modelId = 'alpha',
+  int routeRevision = 1,
+  AgentExecutionView? execution,
+  ContinuationView? continuation,
+}) => ThreadRuntimeView(
+  modelId: modelId,
+  contextTokens: 0,
+  contextWindow: 100,
+  totalTokens: 0,
+  costLabel: '',
+  activeSkills: const [],
+  activeMcpServers: const [],
+  activeLspServers: const [],
+  modelRoute: ThreadModelRouteView(
+    accountId: 'account',
+    modelId: modelId,
+    effort: 'medium',
+    revision: routeRevision,
+    available: true,
+  ),
+  execution: execution,
+  continuation: continuation,
+);
 
 ThreadWorkspace _workspace({
   int revision = 1,
   String modelId = 'alpha',
   int routeRevision = 1,
   StudioTurnView? activeTurn,
+  AgentExecutionView? execution,
+  ContinuationView? continuation,
   List<PendingInteraction> interactions = const [],
 }) => ThreadWorkspace(
   thread: _thread(),
   revision: revision,
   interactions: interactions,
-  runtime: _runtime(modelId: modelId, routeRevision: routeRevision),
+  runtime: _runtime(
+    modelId: modelId,
+    routeRevision: routeRevision,
+    execution: execution,
+    continuation: continuation,
+  ),
   activeTurn: activeTurn,
 );
 
@@ -346,6 +467,62 @@ const _resolution = UserInputResolutionCommand(
   answers: [
     UserInputAnswerCommand(questionId: 'question', answers: ['Continue']),
   ],
+);
+
+StudioAgentView _agent({
+  required String threadId,
+  required String path,
+  String? parentPath,
+  AgentExecutionView? execution,
+  bool canStop = true,
+}) => StudioAgentView(
+  id: threadId,
+  threadId: threadId,
+  path: path,
+  parentPath: parentPath,
+  rootThreadId: 'thread',
+  depth: parentPath == null ? 0 : 1,
+  role: 'executor',
+  task: threadId,
+  state: const IdleStudioAgent(),
+  delegationMode: DelegationMode.profile,
+  delegationPreference: DelegationPreference.balanced,
+  updatedAt: DateTime.utc(2026),
+  execution: execution,
+  canStop: canStop,
+);
+
+ChildInteractionSummary _childSummary({
+  required int revision,
+  String childThreadId = 'child',
+}) => ChildInteractionSummary(
+  childThreadId: childThreadId,
+  interactionId: 'child-interaction',
+  kind: InteractionKind.userInput,
+  revision: revision,
+  interaction: PendingInteraction(
+    id: 'child-interaction',
+    threadId: childThreadId,
+    turnId: 'child-turn',
+    kind: InteractionKind.userInput,
+    title: 'Child question',
+    body: 'Answer from the main session',
+    revision: revision,
+  ),
+);
+
+/// The canonical continuation projection the UI freezes before continuing.
+ContinuationView _continuation({
+  String id = 'continuation-1',
+  String? sourceTurnId = 'turn',
+  ContinuationReason? reason = ContinuationReason.userStop,
+  bool claimed = false,
+}) => ContinuationView(
+  id: id,
+  sourceTurnId: sourceTurnId,
+  reason: reason,
+  createdAt: DateTime.utc(2026),
+  claimed: claimed,
 );
 
 void _applyOwnerUpdate(AnyworkClient client, ThreadWorkspaceUpdate update) {
@@ -719,15 +896,17 @@ void main() {
   );
 
   for (final framesFirst in [false, true]) {
-    for (final interrupted in [false, true]) {
+    for (final stopped in [false, true]) {
       test(
-        'actual stop waits for its captured Turn (framesFirst=$framesFirst, interrupted=$interrupted)',
+        'actual stop targets the captured execution identity (framesFirst=$framesFirst, stopped=$stopped)',
         () async {
           final transport = _Transport();
           final client = _client(transport);
           client
               .session('thread')
-              .applySnapshot(_workspace(activeTurn: _turn()));
+              .applySnapshot(
+                _workspace(activeTurn: _turn(), execution: _execution()),
+              );
           final baselineObservers = client.budget.used(ResourceKind.observer);
           final entered = transport.stops.stream.first;
           final stopping = client.threadCommands.stop('thread');
@@ -740,7 +919,11 @@ void main() {
           final call = await entered;
           expect(call.operationId, operation.id);
           expect(call.threadId, 'thread');
-          expect(call.turnId, 'turn');
+          expect(
+            call.executionId,
+            'execution-1',
+            reason: 'The stop target is the canonical execution identity',
+          );
           expect(
             client.budget.used(ResourceKind.observer),
             baselineObservers + 1,
@@ -751,27 +934,44 @@ void main() {
             needsOpen: true,
           );
           if (framesFirst) {
-            _applyOwnerUpdate(client, ThreadTurnUpdate(_turn(completed: true)));
+            client
+                .session('thread')
+                .applySnapshot(_workspace(revision: 2, activeTurn: null));
           }
           call.reply.complete(
-            InterruptTurnCommandReply(
+            StopThreadCommandReply(
               threadId: call.threadId,
-              turnId: call.turnId,
-              interrupted: interrupted,
+              executionId: call.executionId,
+              stopped: stopped,
               receipt: _identityReceipt(
                 call.operationId,
-                disposition: interrupted
+                disposition: stopped
                     ? CommitDisposition.applied
                     : CommitDisposition.noChange,
               ),
             ),
           );
-          await stopping;
+          final outcome = await stopping;
+          expect(
+            outcome,
+            isA<StopRequested>()
+                .having((value) => value.threadId, 'threadId', 'thread')
+                .having(
+                  (value) => value.executionId,
+                  'executionId',
+                  'execution-1',
+                )
+                .having(
+                  (value) => value.operationId,
+                  'operationId',
+                  operation.id,
+                )
+                .having((value) => value.requested, 'requested', isTrue),
+            reason: 'The caller learns that a stop request really went out, and with which identity',
+          );
           expect(
             operation.state.value.receipt!.disposition,
-            interrupted
-                ? CommitDisposition.applied
-                : CommitDisposition.noChange,
+            stopped ? CommitDisposition.applied : CommitDisposition.noChange,
           );
           if (!framesFirst) {
             expect(
@@ -781,7 +981,7 @@ void main() {
             expect(
               operation.state.value.effective,
               isFalse,
-              reason: 'An interrupt request ACK does not prove the Turn ended',
+              reason: 'A stop ACK does not prove the execution ended',
             );
             expect(
               client.threadCommands.state.commands['stop:thread']?.phase,
@@ -789,14 +989,19 @@ void main() {
             );
             _applyOwnerUpdate(
               client,
-              ThreadRuntimeUpdate(runtime: _runtime(), todo: null),
+              ThreadRuntimeUpdate(
+                runtime: _runtime(execution: _execution()),
+                todo: null,
+              ),
             );
             expect(
               operation.state.value.observed,
               isFalse,
-              reason: 'Unrelated owner facts do not confirm the captured Turn',
+              reason: 'Unrelated owner facts do not confirm the execution end',
             );
-            _applyOwnerUpdate(client, ThreadTurnUpdate(_turn(completed: true)));
+            client
+                .session('thread')
+                .applySnapshot(_workspace(revision: 2, activeTurn: null));
           }
           expect(operation.state.value.observed, isTrue);
           expect(operation.state.value.effective, isTrue);
@@ -828,7 +1033,9 @@ void main() {
         final operation = client.mutations.latest('interaction:thread')!;
         final call = await entered;
         expect(call.operationId, operation.id);
+        expect(call.hostThreadId, 'thread');
         expect(call.interactionId, interaction.id);
+        expect(call.expectedRevision, 0);
         expect(call.resolution, same(_resolution));
         if (framesFirst) {
           _applyOwnerUpdate(
@@ -1188,4 +1395,948 @@ void main() {
       expect(settled, isTrue);
     },
   );
+
+  test('a replaced execution makes the frozen stop target obsolete, not successful', () async {
+    final transport = _Transport();
+    final client = _client(transport);
+    client
+        .session('thread')
+        .applySnapshot(
+          _workspace(activeTurn: _turn(), execution: _execution()),
+        );
+    final stopping = client.threadCommands.stop('thread');
+    // The canonical owner publishes a successor execution before the queued stop
+    // reaches it: the captured identity is stale and must never stop its successor.
+    client
+        .session('thread')
+        .applySnapshot(
+          _workspace(
+            revision: 2,
+            activeTurn: _turn(turnId: 'turn-2'),
+            execution: _execution(id: 'execution-2', turnId: 'turn-2'),
+          ),
+        );
+    await expectLater(
+      stopping,
+      throwsA(
+        isA<StudioFailure>()
+            .having(
+              (error) => error.reason,
+              'reason',
+              StudioFailureReason.staleExecution,
+            )
+            .having((error) => error.code, 'code', StudioFailureCode.conflict),
+      ),
+    );
+    final status = client.threadCommands.state.commands['stop:thread'];
+    expect(status?.phase, CommandPhase.failed);
+    expect(status?.error?.reason, StudioFailureReason.staleExecution);
+  });
+
+  test(
+    'child row stop uses the directory execution without selecting the member',
+    () async {
+      final transport = _Transport();
+      final client = _client(transport);
+      client.threadDirectory.applyDelta(
+        revision: 2,
+        upserted: [_childThread()],
+        removed: const [],
+      );
+      client.project.applyAgentDirectory(
+        AgentDirectoryState(
+          revision: 2,
+          values: [
+            _agent(
+              threadId: 'child',
+              path: 'root/child',
+              parentPath: 'root',
+              execution: _execution(id: 'child-execution', turnId: 'c-turn'),
+            ),
+          ],
+        ),
+      );
+      final selection = client.selection.state;
+      final entered = transport.stops.stream.first;
+      final stopping = client.threadCommands.stopAgent('child');
+      final call = await entered;
+      expect(call.threadId, 'child');
+      expect(call.executionId, 'child-execution');
+      expect(
+        client.selection.state,
+        same(selection),
+        reason: 'Stopping a row never selects or opens the member',
+      );
+      expect(
+        client.sessionStates.map((state) => state.threadId),
+        isNot(contains('child')),
+        reason: 'A row stop opens no session and no content subscription',
+      );
+      expect(
+        client.mutations.latest('stop:child')?.state.value.receipt,
+        isNull,
+      );
+      call.reply.complete(
+        StopThreadCommandReply(
+          threadId: 'child',
+          executionId: 'child-execution',
+          stopped: true,
+          receipt: _identityReceipt(call.operationId),
+        ),
+      );
+      final outcome = await stopping;
+      expect(
+        outcome,
+        isA<StopRequested>()
+            .having((value) => value.threadId, 'threadId', 'child')
+            .having(
+              (value) => value.executionId,
+              'executionId',
+              'child-execution',
+            ),
+        reason: 'The row stop reports the execution identity it sent',
+      );
+      expect(
+        client.threadCommands.state.commands['stop:child']?.phase,
+        CommandPhase.pending,
+        reason: 'An ACK is not an observed execution end',
+      );
+      client.project.applyAgentDirectory(
+        AgentDirectoryState(
+          revision: 3,
+          values: [
+            _agent(
+              threadId: 'child',
+              path: 'root/child',
+              parentPath: 'root',
+              execution: null,
+              canStop: false,
+            ),
+          ],
+        ),
+      );
+      expect(
+        client.threadCommands.state.commands,
+        isNot(contains('stop:child')),
+        reason: 'The same row confirming no execution settles the stop',
+      );
+      expect(
+        client.sessionStates.map((state) => state.threadId),
+        isNot(contains('child')),
+      );
+    },
+  );
+
+  test('a child row without a stop qualification is not sent and an unloaded page is not an end', () async {
+    final transport = _Transport();
+    final client = _client(transport);
+    client.project.applyAgentDirectory(
+      AgentDirectoryState(
+        revision: 2,
+        values: [
+          _agent(
+            threadId: 'child',
+            path: 'root/child',
+            parentPath: 'root',
+            execution: _execution(id: 'child-execution'),
+            canStop: false,
+          ),
+        ],
+      ),
+    );
+    expect(
+      await client.threadCommands.stopAgent('child'),
+      isA<StopNotQualified>()
+          .having((value) => value.threadId, 'threadId', 'child')
+          .having((value) => value.requested, 'requested', isFalse),
+      reason: 'A row without the stop qualification gets no execution intent',
+    );
+    expect(transport.stops.hasListener, isFalse);
+    expect(client.mutations.latest('stop:child'), isNull);
+    // A member that is not loaded publishes no execution at all.
+    expect(
+      await client.threadCommands.stopAgent('unknown-child'),
+      isA<StopNotQualified>(),
+    );
+    expect(transport.stopCalls, 0);
+    expect(client.mutations.latest('stop:unknown-child'), isNull);
+  });
+
+  test('a stop without a canonical execution reports that nothing was sent', () async {
+    final transport = _Transport();
+    final client = _client(transport);
+    // The interface may still hold a stale "busy" view; the canonical owner has
+    // no execution, so no request may be fabricated for it.
+    client.session('thread').applySnapshot(_workspace(activeTurn: _turn()));
+    expect(
+      await client.threadCommands.stop('thread'),
+      isA<StopNoExecution>()
+          .having((value) => value.threadId, 'threadId', 'thread')
+          .having((value) => value.requested, 'requested', isFalse),
+      reason: 'A synchronous view is not a stop target',
+    );
+    expect(transport.stopCalls, 0);
+    expect(client.mutations.latest('stop:thread'), isNull);
+    expect(client.threadCommands.state.commands, isEmpty);
+  });
+
+  test('the command board distinguishes "in flight" from "accepted, waiting for canonical"', () async {
+    final transport = _Transport();
+    final client = _client(transport);
+    client
+        .session('thread')
+        .applySnapshot(
+          _workspace(activeTurn: _turn(), execution: _execution()),
+        );
+    final entered = transport.stops.stream.first;
+    final stopping = client.threadCommands.stop('thread');
+    final call = await entered;
+    expect(
+      client.threadCommands.state.commands['stop:thread']?.accepted,
+      isFalse,
+      reason: 'An in-flight request has no acceptance receipt yet',
+    );
+    call.reply.complete(
+      StopThreadCommandReply(
+        threadId: 'thread',
+        executionId: 'execution-1',
+        stopped: true,
+        receipt: _identityReceipt(call.operationId),
+      ),
+    );
+    expect(await stopping, isA<StopRequested>());
+    final accepted = client.threadCommands.state.commands['stop:thread'];
+    expect(
+      accepted?.phase,
+      CommandPhase.pending,
+      reason: 'The execution has not left the canonical state yet',
+    );
+    expect(
+      accepted?.accepted,
+      isTrue,
+      reason: 'The acceptance receipt is readable after an interface rebuild',
+    );
+    // Canonical convergence settles the command: the entry disappears.
+    client
+        .session('thread')
+        .applySnapshot(_workspace(revision: 2, activeTurn: null));
+    expect(
+      client.threadCommands.state.commands,
+      isNot(contains('stop:thread')),
+    );
+  });
+
+  test(
+    'a stop rejected before acceptance never claims an accepted receipt',
+    () async {
+      final transport = _Transport();
+      final client = _client(transport);
+      client
+          .session('thread')
+          .applySnapshot(
+            _workspace(activeTurn: _turn(), execution: _execution()),
+          );
+      final entered = transport.stops.stream.first;
+      final stopping = client.threadCommands.stop('thread');
+      final call = await entered;
+      call.reply.completeError(
+        const StudioFailure(
+          code: StudioFailureCode.conflict,
+          message: 'The observed execution is no longer current',
+          retryable: false,
+          correlationId: 'server-stale-execution',
+          reason: StudioFailureReason.staleExecution,
+        ),
+      );
+      await expectLater(stopping, throwsA(isA<StudioFailure>()));
+      final status = client.threadCommands.state.commands['stop:thread'];
+      expect(status?.phase, CommandPhase.failed);
+      expect(
+        status?.accepted,
+        isFalse,
+        reason: 'A rejection is not an acceptance receipt',
+      );
+    },
+  );
+
+  test(
+    'a repeated stop keeps one in-flight request plus one queued retry',
+    () async {
+      final transport = _Transport();
+      final client = _client(transport);
+      client
+          .session('thread')
+          .applySnapshot(
+            _workspace(activeTurn: _turn(), execution: _execution()),
+          );
+      final entered = transport.stops.stream.first;
+      final first = client.threadCommands.stop('thread');
+      // One explicit retry is registered; further clicks merge into it.
+      final firstRetry = client.threadCommands.stop('thread');
+      final secondRetry = client.threadCommands.stop(
+        'thread',
+        expectedExecutionId: 'execution-1',
+      );
+      expect(identical(firstRetry, secondRetry), isTrue);
+      expect(
+        await firstRetry,
+        isA<StopQueued>()
+            .having((value) => value.executionId, 'executionId', 'execution-1')
+            .having((value) => value.requested, 'requested', isFalse),
+        reason: 'The retry is queued, not sent, and says so',
+      );
+      final call = await entered;
+      expect(
+        transport.stopCalls,
+        1,
+        reason: 'A queued retry never dispatches beside the in-flight attempt',
+      );
+      expect(
+        client.mutations.operations.where(
+          (value) => value.target == 'stop:thread',
+        ),
+        hasLength(1),
+        reason: 'Queueing creates no operation and no pending permit',
+      );
+      call.reply.complete(
+        StopThreadCommandReply(
+          threadId: 'thread',
+          executionId: 'execution-1',
+          stopped: true,
+          receipt: _identityReceipt(call.operationId),
+        ),
+      );
+      expect(await first, isA<StopRequested>());
+      // The queued retry takes its turn as soon as the first attempt settles.
+      final queuedCall = await transport.stops.stream.first;
+      expect(transport.stopCalls, 2);
+      expect(queuedCall.executionId, 'execution-1');
+      expect(
+        client.mutations.operations.where(
+          (value) => value.target == 'stop:thread',
+        ),
+        hasLength(2),
+        reason: 'Exactly one queued attempt became a real request',
+      );
+      queuedCall.reply.complete(
+        StopThreadCommandReply(
+          threadId: 'thread',
+          executionId: 'execution-1',
+          stopped: true,
+          receipt: _identityReceipt(queuedCall.operationId),
+        ),
+      );
+      // Fully settled: a later explicit click is a fresh attempt again.
+      await Future<void>.delayed(Duration.zero);
+      expect(
+        client.mutations.lookup(queuedCall.operationId)!.state.value.receipt,
+        isNotNull,
+      );
+      final enteredAgain = transport.stops.stream.first;
+      final retry = client.threadCommands.stop(
+        'thread',
+        expectedExecutionId: 'execution-1',
+      );
+      final retryCall = await enteredAgain;
+      expect(transport.stopCalls, 3);
+      retryCall.reply.complete(
+        StopThreadCommandReply(
+          threadId: 'thread',
+          executionId: 'execution-1',
+          stopped: true,
+          receipt: _identityReceipt(retryCall.operationId),
+        ),
+      );
+      await retry;
+      expect(
+        client.mutations.operations.where(
+          (value) => value.target == 'stop:thread',
+        ),
+        hasLength(3),
+      );
+    },
+  );
+
+  test('stop flights are per execution and per thread, never merged across targets', () async {
+    final transport = _Transport();
+    final client = _client(transport);
+    client
+        .session('thread')
+        .applySnapshot(
+          _workspace(activeTurn: _turn(), execution: _execution()),
+        );
+    final received = <String>[];
+    final entered = transport.stops.stream.first;
+    final first = client.threadCommands.stop('thread');
+    final other = client.threadCommands.stop(
+      'thread',
+      expectedExecutionId: 'execution-other',
+    );
+    final firstCall = await entered;
+    received.add(firstCall.executionId);
+    // The lane is serial: the second target only dispatches after the first
+    // request settles, so its reply is completed here rather than awaited.
+    final enteredOther = transport.stops.stream.first;
+    firstCall.reply.complete(
+      StopThreadCommandReply(
+        threadId: 'thread',
+        executionId: firstCall.executionId,
+        stopped: true,
+        receipt: _identityReceipt(firstCall.operationId),
+      ),
+    );
+    final otherCall = await enteredOther;
+    received.add(otherCall.executionId);
+    expect(received, unorderedEquals(['execution-1', 'execution-other']));
+    expect(transport.stopCalls, 2);
+    expect(identical(first, other), isFalse);
+    otherCall.reply.complete(
+      StopThreadCommandReply(
+        threadId: 'thread',
+        executionId: otherCall.executionId,
+        stopped: true,
+        receipt: _identityReceipt(otherCall.operationId),
+      ),
+    );
+    await Future.wait([first, other]);
+  });
+
+  test('a command records its start once and keeps it across accepted/failed states', () async {
+    var clock = 1700000000000;
+    final transport = _Transport();
+    final client = AnyworkClient(
+      transport: transport,
+      clientId: 'client',
+      threadCommandsClock: () => clock,
+    );
+    addTearDown(client.close);
+    client.project.applyProjectDirectory(
+      ProjectDirectoryState(values: [_project], revision: 1),
+    );
+    client.selection.restoreStartup(
+      projectId: 'project',
+      threadId: 'thread',
+      needsOpen: true,
+    );
+    client
+        .session('thread')
+        .applySnapshot(
+          _workspace(activeTurn: _turn(), execution: _execution()),
+        );
+    final entered = transport.stops.stream.first;
+    final stopping = client.threadCommands.stop('thread');
+    expect(
+      client.threadCommands.state.commands['stop:thread']?.startedAtMs,
+      clock,
+      reason: 'The start fact is written when the command is registered',
+    );
+    final call = await entered;
+    clock += 5000;
+    call.reply.complete(
+      StopThreadCommandReply(
+        threadId: 'thread',
+        executionId: 'execution-1',
+        stopped: true,
+        receipt: _identityReceipt(call.operationId),
+      ),
+    );
+    expect(await stopping, isA<StopRequested>());
+    final accepted = client.threadCommands.state.commands['stop:thread']!;
+    expect(
+      accepted.startedAtMs,
+      1700000000000,
+      reason: 'Acceptance never restamps the start fact',
+    );
+    expect(accepted.accepted, isTrue);
+    // Equality includes the start fact, so an unchanged time never churns.
+    expect(
+      accepted,
+      CommandStatus(
+        key: 'stop:thread',
+        phase: CommandPhase.pending,
+        target: accepted.target,
+        accepted: true,
+        startedAtMs: 1700000000000,
+      ),
+    );
+    clock += 5000;
+    final failed = client.threadCommands.state.commands['stop:thread']!
+        .withAccepted();
+    expect(failed.startedAtMs, accepted.startedAtMs);
+  });
+
+  test('a frozen expected execution is sent as-is and the server owns the staleness verdict', () async {
+    final transport = _Transport();
+    final client = _client(transport);
+    // The interface rendered execution-1; canonical already moved to execution-2.
+    client
+        .session('thread')
+        .applySnapshot(
+          _workspace(
+            activeTurn: _turn(turnId: 'turn-2'),
+            execution: _execution(id: 'execution-2', turnId: 'turn-2'),
+          ),
+        );
+    final entered = transport.stops.stream.first;
+    final stopping = client.threadCommands.stop(
+      'thread',
+      expectedExecutionId: 'execution-1',
+    );
+    final call = await entered;
+    expect(
+      call.executionId,
+      'execution-1',
+      reason: 'The frozen identity is the only target, never the latest one',
+    );
+    call.reply.completeError(
+      const StudioFailure(
+        code: StudioFailureCode.conflict,
+        message: 'The observed execution is no longer current',
+        retryable: false,
+        correlationId: 'server-stale-execution',
+        reason: StudioFailureReason.staleExecution,
+      ),
+    );
+    await expectLater(
+      stopping,
+      throwsA(
+        isA<StudioFailure>().having(
+          (error) => error.reason,
+          'reason',
+          StudioFailureReason.staleExecution,
+        ),
+      ),
+      reason: 'A stale frozen identity surfaces as a typed failure',
+    );
+    expect(
+      client.mutations.latest('stop:thread')!.state.value.failurePhase,
+      OperationPhase.rejected,
+    );
+    expect(
+      client.threadCommands.state.commands['stop:thread']?.error?.reason,
+      StudioFailureReason.staleExecution,
+    );
+  });
+
+  test(
+    'a frozen expected execution is still sent when canonical publishes none',
+    () async {
+      final transport = _Transport();
+      final client = _client(transport);
+      client.session('thread').applySnapshot(_workspace(activeTurn: _turn()));
+      final entered = transport.stops.stream.first;
+      final stopping = client.threadCommands.stop(
+        'thread',
+        expectedExecutionId: 'execution-1',
+      );
+      final call = await entered;
+      expect(call.executionId, 'execution-1');
+      call.reply.complete(
+        StopThreadCommandReply(
+          threadId: 'thread',
+          executionId: 'execution-1',
+          stopped: false,
+          receipt: _identityReceipt(
+            call.operationId,
+            disposition: CommitDisposition.noChange,
+          ),
+        ),
+      );
+      final outcome = await stopping;
+      expect(
+        outcome,
+        isA<StopRequested>()
+            .having((value) => value.executionId, 'executionId', 'execution-1')
+            .having(
+              (value) => value.receipt.disposition,
+              'disposition',
+              CommitDisposition.noChange,
+            ),
+        reason:
+            'The caller asked about a specific execution; the request goes out',
+      );
+    },
+  );
+
+  test('a frozen expected execution on a qualified row skips the directory target recheck', () async {
+    final transport = _Transport();
+    final client = _client(transport);
+    client.project.applyAgentDirectory(
+      AgentDirectoryState(
+        revision: 2,
+        values: [
+          _agent(
+            threadId: 'child',
+            path: 'root/child',
+            parentPath: 'root',
+            execution: null,
+            canStop: true,
+          ),
+        ],
+      ),
+    );
+    final entered = transport.stops.stream.first;
+    final stopping = client.threadCommands.stopAgent(
+      'child',
+      expectedExecutionId: 'child-execution',
+    );
+    final call = await entered;
+    expect(call.executionId, 'child-execution');
+    call.reply.complete(
+      StopThreadCommandReply(
+        threadId: 'child',
+        executionId: 'child-execution',
+        stopped: true,
+        receipt: _identityReceipt(call.operationId),
+      ),
+    );
+    expect(
+      await stopping,
+      isA<StopRequested>().having(
+        (value) => value.executionId,
+        'executionId',
+        'child-execution',
+      ),
+    );
+    // Without a frozen identity the same row reports that nothing was sent.
+    expect(
+      await client.threadCommands.stopAgent('child'),
+      isA<StopNotQualified>(),
+    );
+    expect(transport.stopCalls, 1);
+  });
+
+  test('continue is admitted once, observed as a new Turn and re-read by identity instead of resent', () async {
+    final transport = _Transport();
+    final client = _client(transport);
+    client.session('thread').applySnapshot(_workspace());
+    final entered = transport.continues.stream.first;
+    final continuing = client.threadCommands.continueThread(
+      'thread',
+      _continuation(),
+      expectedModelRouteRevision: 1,
+    );
+    // A second click on the same intent while the first is in flight joins it.
+    final repeated = client.threadCommands.continueThread(
+      'thread',
+      _continuation(),
+      expectedModelRouteRevision: 1,
+    );
+    expect(identical(repeated, continuing), isTrue);
+    final operation = client.mutations.latest('continue:thread')!;
+    final call = await entered;
+    expect(call.operationId, operation.id);
+    expect(call.threadId, 'thread');
+    expect(call.continuationId, 'continuation-1');
+    expect(call.expectedModelRouteRevision, 1);
+    expect(transport.continueCalls, 1);
+    call.reply.complete(
+      ContinueThreadCommandReply(
+        threadId: 'thread',
+        inputId: operation.id.value,
+        continuationId: 'continuation-1',
+        cursor: 4,
+        receipt: _identityReceipt(operation.id),
+      ),
+    );
+    await continuing;
+    expect(
+      operation.state.value.phase,
+      OperationPhase.awaitingObservation,
+      reason: 'Admission does not prove a Turn started',
+    );
+    expect(
+      operation.state.value.effective,
+      isFalse,
+      reason: 'Continue acceptance alone is not effective',
+    );
+    expect(
+      client.threadCommands.state.commands['continue:thread']?.phase,
+      CommandPhase.pending,
+    );
+    // The canonical new Turn is what proves the continuation became effective.
+    client
+        .session('thread')
+        .applySnapshot(
+          _workspace(
+            revision: 2,
+            activeTurn: _turn(turnId: 'turn-continued'),
+            execution: _execution(
+              id: 'execution-continued',
+              turnId: 'turn-continued',
+            ),
+          ),
+        );
+    expect(operation.state.value.observed, isTrue);
+    expect(operation.state.value.effective, isTrue);
+    expect(
+      client.threadCommands.state.commands,
+      isNot(contains('continue:thread')),
+    );
+    expect(
+      transport.continueCalls,
+      1,
+      reason: 'Exactly one continue request was dispatched',
+    );
+
+    // A lost receipt is reconciled by the original identity, never resent.
+    transport.continuationReadReply = ContinuationOperationView(
+      threadId: 'thread',
+      operationId: operation.id.value,
+      inputId: operation.id.value,
+      continuationId: 'continuation-1',
+      acceptedSequence: 4,
+      state: ConsumedContinuation('turn-continued'),
+      durable: true,
+      receipt: _identityReceipt(operation.id),
+    );
+    final reread = await client.threadCommands.continueThread(
+      'thread',
+      _continuation(),
+      expectedModelRouteRevision: 1,
+    );
+    expect(reread.inputId, operation.id.value);
+    expect(transport.continuationReads, hasLength(1));
+    final view = await client.threadCommands.readContinuationOperation(
+      'thread',
+      operation.id.value,
+    );
+    expect(view.state, const ConsumedContinuation('turn-continued'));
+    expect(view.durable, isTrue);
+    expect(
+      client.mutations.operations.where(
+        (value) => value.target == 'continue:thread',
+      ),
+      hasLength(1),
+      reason: 'Re-reading never allocates a second operation',
+    );
+  });
+
+  test('the canonical continuation projection feeds continue and a claimed point sends nothing', () async {
+    final transport = _Transport();
+    final client = _client(transport);
+    final published = _continuation();
+    client.session('thread').applySnapshot(_workspace(continuation: published));
+    expect(
+      client.threadCommands.continuation('thread'),
+      published,
+      reason: 'The continue target is read from the canonical projection',
+    );
+    final entered = transport.continues.stream.first;
+    final continuing = client.threadCommands.continueThread(
+      'thread',
+      published,
+      expectedModelRouteRevision: 1,
+    );
+    final call = await entered;
+    expect(call.continuationId, published.id);
+    call.reply.complete(
+      ContinueThreadCommandReply(
+        threadId: 'thread',
+        inputId: call.operationId.value,
+        continuationId: published.id,
+        cursor: 4,
+        receipt: _identityReceipt(call.operationId),
+      ),
+    );
+    await continuing;
+    // The canonical new Turn proves the accepted continuation took effect.
+    client
+        .session('thread')
+        .applySnapshot(
+          _workspace(
+            revision: 2,
+            activeTurn: _turn(turnId: 'turn-continued'),
+            execution: _execution(
+              id: 'execution-continued',
+              turnId: 'turn-continued',
+            ),
+            continuation: _continuation(claimed: true),
+          ),
+        );
+    expect(
+      client.mutations.lookup(call.operationId)!.state.value.observed,
+      isTrue,
+    );
+    // A point another acceptance already claimed never dispatches a request.
+    final claimed = _continuation(id: 'continuation-2', claimed: true);
+    client
+        .session('thread')
+        .applySnapshot(
+          _workspace(
+            revision: 3,
+            activeTurn: _turn(turnId: 'turn-continued'),
+            execution: _execution(
+              id: 'execution-continued',
+              turnId: 'turn-continued',
+            ),
+            continuation: claimed,
+          ),
+        );
+    await expectLater(
+      client.threadCommands.continueThread(
+        'thread',
+        claimed,
+        expectedModelRouteRevision: 1,
+      ),
+      throwsA(
+        isA<StudioFailure>().having(
+          (error) => error.reason,
+          'reason',
+          StudioFailureReason.continuationClaimed,
+        ),
+      ),
+    );
+    expect(
+      transport.continueCalls,
+      1,
+      reason: 'A claimed continuation sends nothing',
+    );
+    // An older increment cannot replace the newer continuation projection.
+    final session = client.session('thread');
+    session.applyNotification(
+      ThreadNotificationFrame(
+        threadId: 'thread',
+        revision: session.state.revision,
+        baseRevision: session.state.revision,
+        update: ThreadRuntimeUpdate(
+          runtime: _runtime(continuation: _continuation(id: 'obsolete')),
+          todo: null,
+        ),
+      ),
+    );
+    expect(
+      client.threadCommands.continuation('thread')!.id,
+      claimed.id,
+      reason: 'A lowered frame revision never rewrites the projection',
+    );
+    // The consumed Turn clears the point: nothing local is offered afterwards.
+    client
+        .session('thread')
+        .applySnapshot(
+          _workspace(
+            revision: 4,
+            activeTurn: _turn(turnId: 'turn-continued'),
+            execution: _execution(
+              id: 'execution-continued',
+              turnId: 'turn-continued',
+            ),
+            continuation: null,
+          ),
+        );
+    expect(client.threadCommands.continuation('thread'), isNull);
+    // Nothing derived locally: the point only comes from the canonical snapshot.
+    expect(client.threadCommands.continuation('thread'), isNull);
+    expect(transport.continuationReads, isEmpty);
+  });
+
+  test('continue is rejected for a child Thread before any request', () async {
+    final transport = _Transport();
+    final client = _client(transport);
+
+    expect(
+      client.threadDirectory.mergeOverlayThreads([_childThread()]),
+      isTrue,
+    );
+    await expectLater(
+      client.threadCommands.continueThread(
+        'child',
+        _continuation(),
+        expectedModelRouteRevision: 1,
+      ),
+      throwsA(
+        isA<StudioFailure>().having(
+          (error) => error.reason,
+          'reason',
+          StudioFailureReason.childThreadRequiresParentScheduling,
+        ),
+      ),
+    );
+    expect(transport.continueCalls, 0);
+  });
+
+  test('a child decision is routed through the hosting main session with its revision', () async {
+    final transport = _Transport();
+    final client = _client(transport);
+    final summary = _childSummary(revision: 3);
+    transport.childInteractions = [summary];
+    await client.threadCommands.readChildInteractions('thread');
+    expect(transport.childInteractionReads, 1);
+    expect(
+      client.childInteractions.state.items.single.interactionId,
+      'child-interaction',
+    );
+    final entered = transport.interactions.stream.first;
+    final resolving = client.threadCommands.resolveChildInteraction(
+      'thread',
+      summary,
+      _resolution,
+    );
+    final call = await entered;
+    expect(call.hostThreadId, 'thread');
+    expect(call.interactionId, 'child-interaction');
+    expect(call.expectedRevision, 3);
+    expect(call.resolution, same(_resolution));
+    call.reply.complete(
+      InteractionCommandReply(
+        interaction: summary.interaction,
+        receipt: _identityReceipt(call.operationId),
+      ),
+    );
+    await resolving;
+    expect(
+      client.mutations.latest('interaction:thread')!.state.value.observed,
+      isFalse,
+      reason:
+          'The original child interaction is still pending in the projection',
+    );
+    // The projection stops offering the interaction: the decision took effect.
+    transport.childInteractions = const [];
+    await client.threadCommands.readChildInteractions('thread');
+    expect(
+      client.mutations.latest('interaction:thread')!.state.value.observed,
+      isTrue,
+    );
+    expect(
+      client.threadCommands.state.commands,
+      isNot(contains('interaction:thread')),
+    );
+  });
+
+  test('a child session cannot host its own decision', () async {
+    final transport = _Transport();
+    final client = _client(transport);
+    expect(
+      client.threadDirectory.mergeOverlayThreads([_childThread()]),
+      isTrue,
+    );
+    final summary = _childSummary(revision: 1);
+    await expectLater(
+      client.threadCommands.resolveChildInteraction(
+        'child',
+        summary,
+        _resolution,
+      ),
+      throwsA(
+        isA<StudioFailure>().having(
+          (error) => error.reason,
+          'reason',
+          StudioFailureReason.interactionNotHosted,
+        ),
+      ),
+    );
+    await expectLater(
+      client.threadCommands.resolveChildInteraction(
+        'thread',
+        _childSummary(revision: 1, childThreadId: 'thread'),
+        _resolution,
+      ),
+      throwsA(isA<StudioFailure>()),
+    );
+    expect(
+      transport.interactionCalls,
+      0,
+      reason: 'A child session has no entry to decide its own interaction',
+    );
+  });
 }

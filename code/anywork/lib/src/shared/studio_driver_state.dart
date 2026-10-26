@@ -198,7 +198,8 @@ final class TimelineUserInputFacts {
   final String interactionId;
   final String state;
 
-  /// 这条问答是否就是计划确认：来自唯一 public typed `planReceipt != null`。
+  /// 这条问答是否就是计划确认：只有归属工具为 `plan_submit` 且 public typed
+  /// `planReceipt != null` 时成立；普通问答复用了保留的问题 ID 也仍为 false。
   ///
   /// 待确认（pending）的计划同样是计划确认；它不是“已决才为真”。
   final bool isPlanConfirmation;

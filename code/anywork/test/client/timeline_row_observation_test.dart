@@ -7,6 +7,7 @@
 // 作者来自条目自身、typed 载荷的保存/终态/省略账目与逐字段详情引用，以及原位更新的身份
 // 稳定性；另外验证公开展示状态确实只携带元数据。
 import 'package:anywork/src/app/theme/material3_theme.dart';
+import 'package:anywork/src/domain/models/plan_confirmation_ownership.dart';
 import 'package:anywork/src/domain/models/timeline_commands.dart';
 import 'package:anywork/src/domain/models/timeline_presentation.dart';
 import 'package:anywork/src/features/timeline/timeline_view.dart';
@@ -316,6 +317,7 @@ void main() {
     String id = 'qa',
     int revision = 1,
     List<StudioTimelineDetailRef> details = const [],
+    String toolName = 'ask_user',
   }) => StudioTimelineItem(
     item: ThreadItemView(
       id: id,
@@ -328,10 +330,10 @@ void main() {
       saved: true,
       executionTerminal: false,
       state: ThreadToolItemStateView(
-        invocation: const ThreadToolInvocationView(
+        invocation: ThreadToolInvocationView(
           toolCallId: 'call',
           callId: 'call',
-          name: 'ask_user',
+          name: toolName,
           arguments: '{}',
         ),
         lifecycle: const RunningThreadToolView(''),
@@ -505,7 +507,10 @@ void main() {
 
     testWidgets('待确认时不出第二张历史卡', (tester) async {
       final lease = leaseWith(
-        toolItemWithInput(planHistory(const PendingThreadToolUserInputView())),
+        toolItemWithInput(
+          planHistory(const PendingThreadToolUserInputView()),
+          toolName: planSubmitToolName,
+        ),
       );
       await pumpTimeline(tester, lease);
       expect(
@@ -529,6 +534,7 @@ void main() {
               ),
             ]),
           ),
+          toolName: planSubmitToolName,
         ),
       );
       await pumpTimeline(tester, lease);
@@ -537,6 +543,104 @@ void main() {
       await tester.tap(receipt);
       await tester.pumpAndSettle();
       expect(find.text('请补充回滚步骤'), findsOneWidget);
+    });
+  });
+
+  group('旧历史：普通问答复用保留问题 ID', () {
+    /// 旧普通问答工具曾把问题 ID 写成保留的 `plan_confirmation`：历史原样只读，
+    /// 归属只看工具条目自己的权威名称，不能按问题 ID 或标题改判成计划。
+    ThreadToolUserInputView legacyHistory(ThreadToolUserInputStateView state) =>
+        ThreadToolUserInputView(
+          interactionId: 'legacy-1',
+          questions: [
+            question(
+              id: agentSessionPlanConfirmationQuestionId,
+              header: 'Plan',
+              text: '# Plan title\n\n- step one',
+            ),
+          ],
+          state: state,
+        );
+
+    testWidgets('已回答的普通问答仍渲染普通只读回执', (tester) async {
+      final lease = leaseWith(
+        toolItemWithInput(
+          legacyHistory(
+            const ResolvedThreadToolUserInputView([
+              ThreadUserInputAnswerView(
+                questionId: agentSessionPlanConfirmationQuestionId,
+                answers: [agentSessionPlanApproveAnswer],
+              ),
+            ]),
+          ),
+        ),
+      );
+      await pumpTimeline(tester, lease);
+      expect(
+        find.byKey(StudioDriverKeys.timelinePlanReceipt('qa')),
+        findsNothing,
+        reason: '普通工具历史不得冒充计划回执',
+      );
+      final receipt = find.byKey(StudioDriverKeys.timelineUserInput('qa'));
+      expect(receipt, findsOneWidget, reason: '普通问答必须可见');
+      await tester.tap(receipt);
+      await tester.pumpAndSettle();
+      expect(
+        find.byKey(StudioDriverKeys.timelineUserInputQuestion('qa', 0)),
+        findsOneWidget,
+      );
+      expect(
+        find.byKey(StudioDriverKeys.timelineUserInputAnswer('qa', 0)),
+        findsOneWidget,
+      );
+    });
+
+    testWidgets('待决的普通问答不被隐藏，也不出现计划卡', (tester) async {
+      final lease = leaseWith(
+        toolItemWithInput(
+          legacyHistory(const PendingThreadToolUserInputView()),
+        ),
+      );
+      await pumpTimeline(tester, lease);
+      expect(
+        find.byKey(StudioDriverKeys.timelineUserInput('qa')),
+        findsOneWidget,
+        reason: '旧普通待决问答不能因为 ID 相同就被当成待确认计划而隐藏',
+      );
+      expect(
+        find.byKey(StudioDriverKeys.timelinePlanReceipt('qa')),
+        findsNothing,
+      );
+    });
+
+    testWidgets('标题含 Plan 但普通问题 ID 不被改判', (tester) async {
+      final lease = leaseWith(
+        toolItemWithInput(
+          ThreadToolUserInputView(
+            interactionId: 'titled-1',
+            questions: [
+              question(
+                id: 'q1',
+                header: 'Plan review',
+                text: '# Plan title\n\n- step one',
+              ),
+            ],
+            state: const ResolvedThreadToolUserInputView([
+              ThreadUserInputAnswerView(questionId: 'q1', answers: ['A']),
+            ]),
+          ),
+        ),
+      );
+      await pumpTimeline(tester, lease);
+      expect(
+        find.byKey(StudioDriverKeys.timelinePlanReceipt('qa')),
+        findsNothing,
+        reason: '计划语义不能从标题文案推断',
+      );
+      expect(
+        find.byKey(StudioDriverKeys.timelineUserInput('qa')),
+        findsOneWidget,
+      );
     });
   });
 

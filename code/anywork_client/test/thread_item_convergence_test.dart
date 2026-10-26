@@ -348,4 +348,47 @@ void main() {
     );
     expect(item.detailFor(const ThreadTextFieldView())!.truncated, isTrue);
   });
+
+  test('原始记录的来源是事实：同来源收敛并保留，不同来源不可互相冒充', () {
+    ThreadItemView raw({
+      required ThreadRawItemOrigin origin,
+      required String notice,
+    }) => ThreadItemView(
+      id: 'raw',
+      threadId: 'thread',
+      turnId: 'turn-a',
+      ordinal: 6,
+      revision: 4,
+      createdAt: DateTime.utc(2026),
+      updatedAt: DateTime.utc(2026),
+      state: ThreadRawItemStateView(
+        const [RawHistoryPayload('text/plain', 1, '正文')],
+        notice,
+        DateTime.utc(2026),
+        origin: origin,
+      ),
+    );
+
+    final loaded = raw(
+      origin: ThreadRawItemOrigin.runtimeControl,
+      notice: 'runtime notice',
+    );
+    final merged = loaded.convergeWith(
+      raw(origin: ThreadRawItemOrigin.runtimeControl, notice: 'runtime notice'),
+      omittedBytes: 0,
+    )!;
+    expect(
+      (merged.state as ThreadRawItemStateView).origin,
+      ThreadRawItemOrigin.runtimeControl,
+      reason: '来源不随收敛丢失',
+    );
+    expect(
+      loaded.convergeWith(
+        raw(origin: ThreadRawItemOrigin.stored, notice: 'runtime notice'),
+        omittedBytes: 0,
+      ),
+      isNull,
+      reason: '同一正文不能同时是历史载荷与运行时说明',
+    );
+  });
 }

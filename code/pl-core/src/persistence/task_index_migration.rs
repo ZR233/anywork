@@ -3,6 +3,80 @@ use sea_orm::{ConnectionTrait, Database, TransactionTrait};
 
 use super::{SessionStoreError, SqliteSessionOptions, sqlite, thread_history, tool_task_index};
 
+/// Converts every current-state checkpoint envelope to this build's schema, in one transaction.
+///
+/// Only rows whose indexed version differs from [`crate::thread::ThreadCheckpoint::SCHEMA_VERSION`] are
+/// rewritten, and each is converted through the explicit legacy reader, so an already current envelope
+/// is neither re-encoded nor renumbered.
+async fn convert_checkpoints(tx: &sea_orm::DatabaseTransaction) -> Result<(), SessionStoreError> {
+    let current = i64::from(crate::thread::ThreadCheckpoint::SCHEMA_VERSION);
+    let mut after = String::new();
+    loop {
+        let rows = tx
+            .query_all_raw(sqlite::statement(
+                "SELECT * FROM thread_checkpoints WHERE thread_id>? ORDER BY thread_id LIMIT 128",
+                vec![after.clone().into()],
+            ))
+            .await?;
+        if rows.is_empty() {
+            break;
+        }
+        for row in rows {
+            let thread_id: String = row.try_get("", "thread_id")?;
+            after.clone_from(&thread_id);
+            let indexed: i64 = row.try_get("", "schema_version")?;
+            let envelope: String = row.try_get("", "envelope")?;
+            let hash: String = row.try_get("", "payload_hash")?;
+            if crate::context::content_hash(envelope.as_bytes()) != hash {
+                return Err(SessionStoreError::Invalid(format!(
+                    "Thread {thread_id} checkpoint integrity check failed"
+                )));
+            }
+            let header: serde_json::Value = serde_json::from_str(&envelope)?;
+            if header
+                .get("schemaVersion")
+                .and_then(serde_json::Value::as_i64)
+                != Some(indexed)
+            {
+                return Err(SessionStoreError::Invalid(
+                    "checkpoint schema index/envelope mismatch".into(),
+                ));
+            }
+            if indexed == current {
+                continue;
+            }
+            let checkpoint =
+                crate::thread::ThreadCheckpoint::decode_legacy(&envelope).map_err(|error| {
+                    SessionStoreError::Invalid(format!(
+                        "Thread {thread_id} legacy checkpoint conversion failed: {error}"
+                    ))
+                })?;
+            if checkpoint.thread_id != thread_id
+                || checkpoint.state_revision != checkpoint.state.commit_sequence
+                || checkpoint.history_fence > checkpoint.state_revision
+                || !checkpoint.external_bodies.is_empty()
+            {
+                return Err(SessionStoreError::Invalid(
+                    "checkpoint ownership or fence mismatch".into(),
+                ));
+            }
+            let encoded = serde_json::to_string(&checkpoint)?;
+            let encoded_hash = crate::context::content_hash(encoded.as_bytes());
+            tx.execute_raw(sqlite::statement(
+                "UPDATE thread_checkpoints SET schema_version=?,envelope=?,payload_hash=? WHERE thread_id=?",
+                vec![
+                    current.into(),
+                    encoded.into(),
+                    encoded_hash.into(),
+                    thread_id.into(),
+                ],
+            ))
+            .await?;
+        }
+    }
+    Ok(())
+}
+
 pub(super) async fn migrate_v11(options: SqliteSessionOptions) -> Result<(), SessionStoreError> {
     let mut url = url::Url::parse("sqlite:///")
         .map_err(|error| SessionStoreError::Invalid(error.to_string()))?;
@@ -19,10 +93,10 @@ pub(super) async fn migrate_v11(options: SqliteSessionOptions) -> Result<(), Ses
         let version = tx.query_one_raw(sqlite::statement("PRAGMA user_version", vec![])).await?
             .ok_or_else(|| SessionStoreError::Invalid("missing version".into()))?
             .try_get::<i64>("", "user_version")?;
-        if version == 12 { tx.commit().await?; return Ok(()); }
-        if version != 11 {
+        if version != 11 && version != 12 {
             return Err(SessionStoreError::UnsupportedSchema { found: version, supported: 12 });
         }
+        if version == 11 {
         tx.execute_unprepared(tool_task_index::SCHEMA).await?;
         let mut after_thread = String::new();
         loop {
@@ -55,7 +129,15 @@ pub(super) async fn migrate_v11(options: SqliteSessionOptions) -> Result<(), Ses
                 }
             }
         }
-        tx.execute_unprepared("PRAGMA user_version=12").await?;
+        }
+        // A database that reached 11 or 12 before this build can still carry the schema-4 current-state
+        // envelope, which the current reader refuses. Converting it here keeps the envelope, its indexed
+        // version and its hash one fact; the pass is idempotent, so a database already at 12 is repaired
+        // in place instead of staying unreadable.
+        convert_checkpoints(&tx).await?;
+        if version == 11 {
+            tx.execute_unprepared("PRAGMA user_version=12").await?;
+        }
         tx.commit().await?;
         Ok(())
     }.await;

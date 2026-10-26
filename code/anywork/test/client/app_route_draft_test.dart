@@ -139,6 +139,20 @@ void main() {
         () => session.state.activeTurn == running,
         'running Turn before Settings',
       );
+      // 停止入口只以 canonical 执行身份为目标：轮次运行同时发布该执行身份。
+      final runningExecution = transport.emitExecution(
+        session.state.runtime!,
+        const AgentExecutionView(
+          id: 'settings-route-execution',
+          phase: AgentExecutionPhase.running,
+          turnId: 'settings-route-turn',
+        ),
+      );
+      await pumpClientUntil(
+        tester,
+        () => session.state.runtime?.execution == runningExecution.execution,
+        'running execution identity',
+      );
       await tester.pump();
       expect(find.byKey(StudioDriverKeys.composerStop), findsOneWidget);
       await tester.enterText(
@@ -171,6 +185,13 @@ void main() {
                 session.state.workspace?.latestTurn == completed &&
                 session.state.activeTurn == null,
             'completed Turn while Settings hides the workspace',
+          );
+          // 轮次结束即执行结束；停止入口与发送语义随之回到普通发送。
+          transport.emitExecution(session.state.runtime!, null);
+          await pumpClientUntil(
+            tester,
+            () => session.state.runtime?.execution == null,
+            'execution ended with the Turn',
           );
           expect(find.byKey(StudioDriverKeys.settingsPage), findsOneWidget);
           expect(find.byKey(StudioDriverKeys.composerInput), findsNothing);
@@ -332,5 +353,31 @@ final class _RouteTurnTransport extends RecordingDemoTransport {
       ),
     );
     return turn;
+  }
+
+  /// 发布一次 canonical 运行时投影，只用于给出该轮次的执行身份。
+  ///
+  /// 执行身份与轮次一样只能来自会话状态，不由活动快照或界面记忆推断。
+  ThreadRuntimeView emitExecution(
+    ThreadRuntimeView current,
+    AgentExecutionView? execution,
+  ) {
+    final runtime = _runtime;
+    final base = _revision;
+    if (runtime == null || base == null) {
+      throw StateError('The selected Thread must own its state subscription');
+    }
+    final revision = base + 1;
+    _revision = revision;
+    final next = current.copyWith(execution: execution);
+    runtime.addSync(
+      ThreadNotificationFrame(
+        threadId: 'thread-main',
+        baseRevision: base,
+        revision: revision,
+        update: ThreadRuntimeUpdate(runtime: next, todo: null),
+      ),
+    );
+    return next;
   }
 }

@@ -84,17 +84,17 @@ pub struct SubmitPromptRequest {
     pub expected_model_route_revision: u64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct InterruptTurnRequest {
-    pub operation_id: String,
-    pub expected_turn_id: String,
-}
-
+/// 交互决议请求：用户只能经有权访问的主会话提交与原始请求绑定的决定。
+///
+/// `host_thread_id` 是承载这张卡片的会话，必须是主会话；原交互的 owner 必须是它的直接子会话
+/// 或它自身。`expected_revision` 是调用方观察到的原交互版本，过期请求在产生任何决议副作用
+/// 之前被拒绝。原交互记录仍然只保存在其所属会话中，主会话只是投影与调用者身份。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, ToSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ResolveInteractionRequest {
     pub operation_id: String,
+    pub host_thread_id: String,
+    pub expected_revision: u64,
     pub resolution: crate::InteractionResolution,
 }
 

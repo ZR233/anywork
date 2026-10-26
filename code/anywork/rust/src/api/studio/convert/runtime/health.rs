@@ -1,6 +1,7 @@
 //! agent 目录、MCP/LSP 健康与观测状态桥接。
 
 use crate::api::studio::types::*;
+use pl_protocol::AgentExecutionPhase;
 use pl_studio_runtime::*;
 
 pub(crate) fn bridge_agent_directory_entry(
@@ -20,6 +21,21 @@ pub(crate) fn bridge_agent_directory_entry(
         summary: agent.summary,
         depth: agent.depth,
         state: bridge_agent_state(agent.state),
+        execution: agent.execution.map(|execution| BridgeAgentExecution {
+            turn_id: execution.turn_id().map(str::to_owned),
+            phase: match execution.phase() {
+                AgentExecutionPhase::Preparing => BridgeAgentExecutionPhase::Preparing,
+                AgentExecutionPhase::AwaitingStorage => BridgeAgentExecutionPhase::AwaitingStorage,
+                AgentExecutionPhase::AwaitingAdmission => {
+                    BridgeAgentExecutionPhase::AwaitingAdmission
+                }
+                AgentExecutionPhase::Running => BridgeAgentExecutionPhase::Running,
+                AgentExecutionPhase::Stopping => BridgeAgentExecutionPhase::Stopping,
+            },
+            id: execution.id().to_owned(),
+        }),
+        can_stop: agent.can_stop,
+        awaiting_scheduling: agent.awaiting_scheduling,
         updated_at: agent.updated_at,
     }
 }

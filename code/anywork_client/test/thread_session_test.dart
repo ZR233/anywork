@@ -725,4 +725,33 @@ void main() {
       await transport.close();
     },
   );
+
+  test('the retired agent role has one trimmed judgement', () {
+    expect(isRetiredAgentRole('planner'), isTrue);
+    expect(isRetiredAgentRole(' planner '), isTrue);
+    expect(isRetiredAgentRole('executor'), isFalse);
+    expect(isRetiredAgentRole(''), isFalse);
+    StudioThread agent({
+      String role = 'planner',
+      String? parentThreadId = 'root',
+    }) => StudioThread(
+      id: 'member',
+      projectId: 'project',
+      title: 'Member',
+      mode: ThreadModeId.simple,
+      delegationMode: DelegationMode.profile,
+      delegationPreference: DelegationPreference.balanced,
+      parentThreadId: parentThreadId,
+      rootThreadId: 'root',
+      agentPath: 'root/member',
+      role: role,
+      updatedAt: DateTime.utc(2026),
+      workspacePath: '/tmp/member',
+    );
+    // The role judgement is shared; the caller still owns the membership context.
+    expect(agent().isRetiredAgent, isTrue);
+    expect(agent(role: ' planner ').isRetiredAgent, isTrue);
+    expect(agent(role: 'executor').isRetiredAgent, isFalse);
+    expect(agent(parentThreadId: null).isRetiredAgent, isFalse);
+  });
 }

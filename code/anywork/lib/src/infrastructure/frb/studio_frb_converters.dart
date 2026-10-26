@@ -283,8 +283,30 @@ StudioAgentView _agentDirectoryEntryFromFrb(
     depth: agent.depth,
     state: _agentStateFromFrb(agent.state),
     updatedAt: _dateFromUnix(agent.updatedAt),
+    execution: agent.execution == null
+        ? null
+        : _agentExecutionFromFrb(agent.execution!),
+    canStop: agent.canStop,
+    awaitingScheduling: agent.awaitingScheduling,
   );
 }
+
+/// 目录行与主会话运行时的执行身份；阶段是规范枚举，不按轮次投影推导。
+AgentExecutionView _agentExecutionFromFrb(frb.BridgeAgentExecution execution) =>
+    AgentExecutionView(
+      id: execution.id,
+      phase: switch (execution.phase) {
+        frb.BridgeAgentExecutionPhase.preparing =>
+          AgentExecutionPhase.preparing,
+        frb.BridgeAgentExecutionPhase.awaitingStorage =>
+          AgentExecutionPhase.awaitingStorage,
+        frb.BridgeAgentExecutionPhase.awaitingAdmission =>
+          AgentExecutionPhase.awaitingAdmission,
+        frb.BridgeAgentExecutionPhase.running => AgentExecutionPhase.running,
+        frb.BridgeAgentExecutionPhase.stopping => AgentExecutionPhase.stopping,
+      },
+      turnId: execution.turnId,
+    );
 
 StudioAgentState _agentStateFromFrb(frb.BridgeAgentState state) {
   return switch (state) {

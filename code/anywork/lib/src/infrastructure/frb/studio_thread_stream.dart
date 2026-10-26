@@ -428,7 +428,7 @@ ThreadItemStateView _threadItemStateFromFrb(
         ),
     file: (path, mediaType, completedAt) =>
         ThreadFileItemStateView(path, mediaType, _dateFromUnix(completedAt)),
-    raw: (payloads, notice, recordedAt) => ThreadRawItemStateView(
+    raw: (origin, payloads, notice, recordedAt) => ThreadRawItemStateView(
       payloads
           .map(
             (payload) => RawHistoryPayload(
@@ -440,6 +440,11 @@ ThreadItemStateView _threadItemStateFromFrb(
           .toList(),
       notice,
       _dateFromUnix(recordedAt),
+      origin: switch (origin) {
+        frb_item.BridgeRawItemOrigin.stored => ThreadRawItemOrigin.stored,
+        frb_item.BridgeRawItemOrigin.runtimeControl =>
+          ThreadRawItemOrigin.runtimeControl,
+      },
     ),
     contextCompaction: (beforeTokens, afterTokens, compactedAt) =>
         ThreadContextCompactionItemStateView(
@@ -825,8 +830,35 @@ ThreadRuntimeView _threadRuntimeFromFrb(frb.BridgeThreadRuntimeSnapshot value) {
         ? null
         : _workflowRuntimeFromFrb(value.workflow!),
     plan: value.plan == null ? null : _planRuntimeFromFrb(value.plan!),
+    execution: value.execution == null
+        ? null
+        : _agentExecutionFromFrb(value.execution!),
+    continuation: value.continuation == null
+        ? null
+        : _continuationFromFrb(value.continuation!),
   );
 }
+
+/// 继续点投影：身份与原因都来自规范快照，客户端不重建「可继续」资格。
+ContinuationView _continuationFromFrb(
+  frb.BridgeContinuationView continuation,
+) => ContinuationView(
+  id: continuation.id,
+  sourceTurnId: continuation.sourceTurnId,
+  reason: switch (continuation.reason) {
+    null => null,
+    frb.BridgeContinuationReason.userStop => ContinuationReason.userStop,
+    frb.BridgeContinuationReason.hostShutdown =>
+      ContinuationReason.hostShutdown,
+    frb.BridgeContinuationReason.processInterrupted =>
+      ContinuationReason.processInterrupted,
+    frb.BridgeContinuationReason.stepLimit => ContinuationReason.stepLimit,
+    frb.BridgeContinuationReason.executionFailed =>
+      ContinuationReason.executionFailed,
+  },
+  createdAt: _dateFromUnix(continuation.createdAt),
+  claimed: continuation.claimed,
+);
 
 PlanRuntimeView _planRuntimeFromFrb(frb.BridgePlanRuntimeSnapshot value) {
   final document = value.document;
@@ -934,8 +966,27 @@ PendingInteraction _interactionFromFrb(frb.BridgeInteractionRequest value) {
     title: _interactionTitle(mapped.kind, mapped.payload),
     body: _interactionBody(mapped.kind, mapped.payload),
     payload: mapped.payload,
+    revision: value.revision.toInt(),
   );
 }
+
+/// Canonical interaction kind 标签；未知标签返回 `null`，由调用方保留已有事实。
+InteractionKind? _interactionKindFromLabel(String label) => switch (label) {
+  'userInput' => InteractionKind.userInput,
+  'toolApproval' => InteractionKind.toolApproval,
+  _ => null,
+};
+
+ContinuationOperationState _continuationStateFromFrb(
+  frb_command.BridgeContinuationOperationState state,
+) => switch (state) {
+  frb_command.BridgeContinuationOperationState_Pending() =>
+    const PendingContinuation(),
+  frb_command.BridgeContinuationOperationState_Consumed(:final turnId) =>
+    ConsumedContinuation(turnId),
+  frb_command.BridgeContinuationOperationState_Discarded() =>
+    const DiscardedContinuation(),
+};
 
 bool _interactionIsPending(frb.BridgeInteractionRequest value) {
   return value.content.when(
@@ -995,6 +1046,7 @@ Object _studioFailure(Object error) {
       retryable: bridge.retryable,
       correlationId: bridge.correlationId,
       detailsJson: bridge.detailsJson,
+      reason: _failureReasonFromDetails(bridge.detailsJson),
     ),
     _ => StudioFailure(
       code: StudioFailureCode.internal,
@@ -1003,6 +1055,20 @@ Object _studioFailure(Object error) {
       correlationId: newStudioCorrelationId(),
     ),
   };
+}
+
+/// Typed reason 只从结构化详情里的 `reason` 标签读取，不解析提示文本。
+StudioFailureReason? _failureReasonFromDetails(String? detailsJson) {
+  if (detailsJson == null) return null;
+  final Object? decoded;
+  try {
+    decoded = jsonDecode(detailsJson);
+  } on FormatException {
+    return null;
+  }
+  if (decoded is! Map) return null;
+  final label = decoded['reason'];
+  return label is String ? StudioFailureReason.fromLabel(label) : null;
 }
 
 /// 传输中立错误码到领域错误码的完整映射；每个桥变体都必须显式落位。

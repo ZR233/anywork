@@ -104,6 +104,37 @@ impl WorktreeManager {
         self.backend.resolve_head(path).await
     }
 
+    /// The worktrees this repository has registered, as Git itself reports them.
+    ///
+    /// This is how a directory proves it belongs to *this* repository: a directory at an expected
+    /// path may exist, be a Git worktree of another repository, or not be a worktree at all, but only
+    /// the resolved repository's own registration list names it as its worktree on a given branch.
+    ///
+    /// # Errors
+    /// Rejects an unreadable or failed `git worktree list` in the repository.
+    pub(crate) async fn registered_worktrees(
+        &self,
+    ) -> Result<Vec<super::RegisteredWorktree>, WorktreeError> {
+        let stdout = self.backend.worktree_list(&self.repo_root).await?;
+        Ok(super::backend::registered_worktrees(&stdout))
+    }
+
+    /// The Git directory shared by this repository and the given directory, resolved to one form.
+    ///
+    /// Equal answers prove both directories belong to the same repository; `None` means Git's answer
+    /// cannot be normalized, so the caller must treat the identity as unproven.
+    ///
+    /// # Errors
+    /// Rejects an unreadable or failed `git rev-parse --git-common-dir` in that directory.
+    pub(crate) async fn git_common_dir(
+        &self,
+        path: &Path,
+    ) -> Result<Option<String>, WorktreeError> {
+        let raw = self.backend.git_common_dir(path).await?;
+        let base = path.to_string_lossy();
+        Ok(super::backend::resolved_git_path(&raw, &base))
+    }
+
     pub async fn preview(&self, handle: &WorktreeHandle) -> Result<WorktreeStatus, WorktreeError> {
         self.validate_handle(handle)?;
         self.backend.status(&handle.path).await

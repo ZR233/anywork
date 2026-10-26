@@ -203,7 +203,10 @@ impl StudioRuntime {
             category: StudioRecoveryIssueCategory::Repository,
             action: StudioRecoveryIssueAction::CleanupWorktree,
             project_id: Some(lease.project_id.clone()),
-            thread_id: Some(lease.root_thread_id.clone()),
+            // The issue belongs to the Thread that owns the workspace. A child's site must be resolvable
+            // — and retirable — by that child alone; attributing it to the root made activation unable
+            // to clear its own entry and let a root activation clear a different child's entry.
+            thread_id: Some(lease.owner_thread_id.clone()),
             message,
             worktree: Some(crate::StudioWorktreeRecoveryPreview {
                 owner_kind: recovery_owner(lease.owner_kind),
@@ -227,6 +230,16 @@ impl StudioRuntime {
         owner_thread_id: &str,
         expected_lease_revision: u64,
     ) -> Result<()> {
+        // Physical cleanup is serialized with every other product operation on this owner: a restore or
+        // archive holds the lifecycle admission, and activation, submission and stopping hold the
+        // per-Thread operation guard. Both are taken here in the same order archiving uses (lifecycle
+        // first), so a cleanup can neither race a restore that revives the Thread and reuses the site
+        // nor an activation that is already running in it.
+        let _lifecycle = self.thread_lifecycle_admission().await?;
+        let _operation = self.threads.agent_operation(owner_thread_id).await;
+        // Re-read the lease *after* the guards: the facts the card was rendered from may already be
+        // stale, and every check below must run against the state that is true while nothing else can
+        // change it.
         let mut lease = self
             .agent_facility
             .worktrees
@@ -252,27 +265,30 @@ impl StudioRuntime {
             "worktree lease is already cleaned"
         );
         // Server-side precondition: a stale or forged card must never delete a workspace a
-        // live Thread still owns. Only a preserved resource, or one whose owner Thread is
-        // no longer registered, is eligible for explicit cleanup.
+        // live Thread still owns. The lease state cannot grant that: a `preserved` site may be a
+        // directory a running child is using, so only a site whose owner Thread is no longer live is
+        // eligible for explicit cleanup.
         anyhow::ensure!(
-            lease.state == WorktreeLeaseState::Preserved
-                || !self.live_thread_owns_lease(&lease.owner_thread_id).await,
+            !self.live_thread_owns_lease(&lease.owner_thread_id).await,
             "worktree lease is still owned by a live Thread"
         );
         lease.validate_identity()?;
         let manager = self.worktree_manager(&lease)?;
         let handle = worktree_handle(&lease);
         manager.preview_existing(&handle).await?;
-        lease.transition(WorktreeLeaseState::CleanupRequested);
+        // An explicit cleanup settles the site for good: `settle` moves the state and spends any
+        // pending archive-restore grant in the same revision, so the cleaned lease can never
+        // authorize a later ordinary activation.
+        lease.settle(WorktreeLeaseState::CleanupRequested);
         self.agent_facility.worktrees.record(lease.clone())?;
         if let Err(error) = manager.discard(&handle).await {
-            lease.transition(WorktreeLeaseState::Preserved);
+            lease.settle(WorktreeLeaseState::Preserved);
             self.agent_facility.worktrees.record(lease.clone())?;
             // 回落改变了 lease revision：必须同步刷新卡片，否则下一次显式重试会被 CAS 拒绝。
             self.publish_worktree_recovery(None, &lease).await;
             return Err(error.into());
         }
-        lease.transition(WorktreeLeaseState::Cleaned);
+        lease.settle(WorktreeLeaseState::Cleaned);
         self.agent_facility.worktrees.record(lease.clone())?;
         let issues = self.recovery.remove(&worktree_issue_id(owner_thread_id));
         self.agent_facility
@@ -344,7 +360,7 @@ impl StudioRuntime {
             category: StudioRecoveryIssueCategory::Repository,
             action: StudioRecoveryIssueAction::CleanupWorktree,
             project_id: Some(thread.project_id.clone()),
-            thread_id: Some(thread.root_thread_id.clone()),
+            thread_id: Some(thread.id.clone()),
             message: String::new(),
             worktree: None,
         };
@@ -358,7 +374,7 @@ impl StudioRuntime {
             None => without_lease(),
         };
         issue.id = issue_id.clone();
-        issue.thread_id = Some(thread.root_thread_id.clone());
+        issue.thread_id = Some(thread.id.clone());
         issue.message = format!(
             "Thread {} cannot use its saved workspace and was not moved to the main workspace: {error:#}",
             thread.id

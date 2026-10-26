@@ -159,6 +159,7 @@ pub(in crate::studio) async fn prepare_workspace(
                 path: workspace_path_text(&path, remote)?,
                 branch: branch.clone(),
                 base_commit: base_commit.clone(),
+                restore_authorized_at: None,
             };
             prepare_repository_worktree_pool(
                 ssh_manager,
@@ -242,7 +243,7 @@ pub(in crate::studio) fn manager_from_lease(
 /// workspace handle 根、Git 工作目录与相对路径基准都取自该仓库根，而不是配置的 Project
 /// 目录，因此 Project 目录是仓库子目录时同样成立。解析本身在 Project 目录上执行，返回的
 /// manager 与 `manager_from_lease` 使用同一约定，创建路径因此与恢复、preview 和清理一致。
-async fn repository_manager(
+pub(in crate::studio) async fn repository_manager(
     ssh_manager: &Arc<pl_tool::remote::SshManager>,
     ssh_alias: Option<&str>,
     project_root: &Path,
@@ -324,6 +325,7 @@ where
         path: workspace_path_text(&path, remote)?,
         branch,
         base_commit: base_commit.clone(),
+        restore_authorized_at: None,
     };
     prepare_repository_worktree_pool(ssh_manager, project.ssh_alias.as_deref(), &repository_root)
         .await?;
@@ -372,10 +374,18 @@ pub(in crate::studio) async fn close_workspace(
     disposition: pl_tool::collaboration::thread::AgentWorkspaceDisposition,
 ) -> anyhow::Result<()> {
     use pl_tool::collaboration::thread::AgentWorkspaceDisposition;
+    // A settled site may still carry an archive-restore grant whose rebuild never happened; ending
+    // the window is itself the settlement, so the residue is consumed instead of being left behind
+    // where a later ordinary activation could read it as a live permission.
     if lease.state == WorktreeLeaseState::Cleaned {
+        if lease.consume_restore() {
+            leases.record(lease)?;
+        }
         return Ok(());
     }
-    lease.transition(WorktreeLeaseState::Preserved);
+    // A new explicit cleanup ends the window of any earlier archive-restore authorization: that
+    // authorization only ever covered the site the restore itself was reacting to.
+    lease.settle(WorktreeLeaseState::Preserved);
     leases.record(lease.clone())?;
     match disposition {
         AgentWorkspaceDisposition::Preserve => return Ok(()),
@@ -411,16 +421,16 @@ pub(in crate::studio) async fn recreate_child_worktree(
     root_thread_id: &str,
     child_id: &str,
     receipt: &AgentWorktreeSnapshot,
+    repository_root: &Path,
 ) -> Result<WorktreeLease> {
-    let repository_root = PathBuf::from(&receipt.repository_root);
     let manager = WorktreeManager::new(
-        repository_root.clone(),
-        backend_for(ssh_manager, project.ssh_alias.as_deref(), &repository_root)?,
+        repository_root.to_path_buf(),
+        backend_for(ssh_manager, project.ssh_alias.as_deref(), repository_root)?,
     );
     let ownership = WorktreeOwnership::Child {
         child_id: child_id.to_owned(),
     };
-    let path = WorktreeManager::allocate_path(&repository_root, root_thread_id, &ownership);
+    let path = WorktreeManager::allocate_path(repository_root, root_thread_id, &ownership);
     let remote = project.ssh_alias.is_some();
     if !workspace_paths_equal(&path, Path::new(&receipt.path), remote)? {
         return Err(lifecycle_error(
@@ -432,6 +442,12 @@ pub(in crate::studio) async fn recreate_child_worktree(
         .get(child_id)
         .map(|lease| lease.revision.saturating_add(1))
         .unwrap_or(1);
+    // The expiry of a rebuild authorization belongs to the successful rebuild, not to this record:
+    // carrying it over keeps a failed or interrupted attempt retryable, and the caller clears it only
+    // after the physical worktree really exists.
+    let restore_authorized_at = worktrees
+        .get(child_id)
+        .and_then(|lease| lease.restore_authorized_at);
     let durable = WorktreeLease {
         revision,
         state: WorktreeLeaseState::Prepared,
@@ -440,19 +456,20 @@ pub(in crate::studio) async fn recreate_child_worktree(
         root_thread_id: root_thread_id.to_owned(),
         project_id: project.id.clone(),
         ssh_alias: project.ssh_alias.clone(),
-        repository_root: workspace_path_text(&repository_root, remote)?,
+        repository_root: workspace_path_text(repository_root, remote)?,
         path: workspace_path_text(Path::new(&receipt.path), remote)?,
         branch: branch.clone(),
         base_commit: receipt.base_commit.clone(),
+        restore_authorized_at,
     };
-    prepare_repository_worktree_pool(ssh_manager, project.ssh_alias.as_deref(), &repository_root)
+    prepare_repository_worktree_pool(ssh_manager, project.ssh_alias.as_deref(), repository_root)
         .await?;
     worktrees
         .record(durable.clone())
         .map_err(|error| lifecycle_error(error.to_string()))?;
     let handle = match manager
         .create(WorktreeCreateSpec {
-            repo_root: repository_root,
+            repo_root: repository_root.to_path_buf(),
             root_thread_id: root_thread_id.to_owned(),
             ownership,
             base_commit: receipt.base_commit.clone(),

@@ -105,6 +105,16 @@ fn studio_error_from_ref(error: &anyhow::Error) -> StudioError {
     if let Some(error) = error.downcast_ref::<StudioUpdateError>() {
         return update_error(error);
     }
+    // A malformed product interaction identity is a caller mistake, not a runtime failure: it must
+    // stay a typed rejection on every entry that decodes one, including the decision path.
+    if error
+        .downcast_ref::<crate::thread_assembler::InteractionKeyError>()
+        .is_some()
+    {
+        return StudioError::invalid_argument(
+            "The interaction identity is not a Studio interaction id",
+        );
+    }
     if let Some(error) = error.downcast_ref::<pl_core::thread::ThreadError>()
         && let Some(studio_error) = thread_error(error)
     {
@@ -250,6 +260,16 @@ fn thread_error(error: &pl_core::thread::ThreadError) -> Option<StudioError> {
             true,
         )),
         pl_core::thread::ThreadError::Storage(_) => Some(StudioError::storage()),
+        pl_core::thread::ThreadError::NoContinuation => Some(StudioError::new(
+            StudioErrorCode::Conflict,
+            "This Thread has no continuation to claim",
+            false,
+        )),
+        pl_core::thread::ThreadError::InvalidControlInput => Some(StudioError::new(
+            StudioErrorCode::InvalidArgument,
+            "Studio sent a continuation control input that carries content",
+            false,
+        )),
         pl_core::thread::ThreadError::Closed => Some(StudioError::new(
             StudioErrorCode::RuntimeStopped,
             "Studio runtime stopped; restart the runtime to continue",

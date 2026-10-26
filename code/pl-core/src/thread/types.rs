@@ -296,6 +296,37 @@ pub struct ThreadSnapshot {
     pub commit_sequence: u64,
     pub persistence: cold::PersistenceState,
     pub lifecycle: ThreadLifecycle,
+    /// Work this Thread still owes after an interruption; `None` when nothing is owed.
+    ///
+    /// It is the one durable logical fact a body-less continuation relies on: it names the work,
+    /// never copies its content, and only references an existing input or inbox message as its
+    /// claim. The commit that admits the claimed model request clears it, so a Thread that finished
+    /// normally never offers an empty continuation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub continuation: Option<ContinuationPoint>,
+    /// Identity and phase of the execution this owner currently owns.
+    ///
+    /// Allocated once the driver has selected work and before any Turn record or storage wait
+    /// exists, so a stop can name exactly that execution instead of guessing from the newest Turn.
+    /// The identity is stable for the execution's whole life: entering the actual Turn keeps it and
+    /// only changes the phase and the Turn reference.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution: Option<ActiveExecution>,
+    /// Monotonic counter of the execution identities this Thread has handed out.
+    ///
+    /// An execution identity must never be reused, and a preparing execution has no Turn record to
+    /// derive one from, so the counter is the only identity source. It outlives the executions
+    /// themselves and is restored with the checkpoint, so a caller that still holds an identity can
+    /// never address a newer execution.
+    #[serde(default)]
+    pub execution_sequence: u64,
+    /// Fixed durable watermark a claimed continuation has to reach before a new model request.
+    ///
+    /// Set in the same commit that admits the claim, so the requirement always names the commit that
+    /// carries it. A host without a cold store never claims durability, so the wait is skipped there
+    /// instead of pretending the fact was saved.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub required_durable_sequence: Option<u64>,
     pub context: ContextSnapshot,
     /// Attempts of turns that are still unfinished; their identity and order are needed for
     /// retry, correction and usage observation inside the live Turn.
@@ -775,6 +806,139 @@ pub struct ReplaceContext {
     pub records: Vec<ContextRecord>,
 }
 
+/// Durable fact that this Thread still owes work because execution was interrupted.
+///
+/// A point names the work, never its content: it carries a stable identity, the Turn it came from
+/// when there is one, the reason only when the interruption really established one, the moment it
+/// was formed and an optional claim that references an already admitted input or inbox message.
+/// Claiming never deletes the point; the commit that admits the claimed model request clears it.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ContinuationPoint {
+    /// Stable identity derived from the forming commit and its source, so it is never reused.
+    pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_turn_id: Option<String>,
+    /// `None` when the interruption did not establish a reason; core never invents one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<ContinuationReason>,
+    pub created_at: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub claim: Option<ContinuationClaim>,
+}
+
+impl ContinuationPoint {
+    /// Builds the point an interruption establishes.
+    ///
+    /// The identity is derived from the commit that forms the point and from its source, so two
+    /// settlements of the same fact produce the same identity and a later interruption of the same
+    /// work cannot reuse an identity that already answered a receipt.
+    pub fn new(
+        commit_sequence: u64,
+        source: &str,
+        source_turn_id: Option<String>,
+        reason: Option<ContinuationReason>,
+    ) -> Self {
+        Self {
+            id: format!("continuation:{commit_sequence}:{source}"),
+            source_turn_id,
+            reason,
+            created_at: crate::time::unix_seconds(),
+            claim: None,
+        }
+    }
+
+    /// Whether this point already expresses the same interruption the caller would form.
+    ///
+    /// Settling an already settled state, or re-forming the point of the same stop, must not answer
+    /// with a new identity, so the comparison is on the facts the point stands for.
+    pub fn same_fact(
+        &self,
+        source_turn_id: Option<&str>,
+        reason: Option<ContinuationReason>,
+    ) -> bool {
+        self.source_turn_id.as_deref() == source_turn_id && self.reason == reason
+    }
+
+    /// The input identity this point is claimed by, when the claim is input-shaped.
+    pub fn claimed_input(&self) -> Option<&str> {
+        match self.claim.as_ref()? {
+            ContinuationClaim::Input { input_id } => Some(input_id),
+            ContinuationClaim::InboxMessage { .. } => None,
+        }
+    }
+
+    /// The inbox message sequence this point is claimed by, when the claim is message-shaped.
+    pub fn claimed_message(&self) -> Option<u64> {
+        match self.claim.as_ref()? {
+            ContinuationClaim::InboxMessage { sequence, .. } => Some(*sequence),
+            ContinuationClaim::Input { .. } => None,
+        }
+    }
+}
+
+/// Why a continuation point exists. Only reasons the interruption itself established are recorded.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ContinuationReason {
+    /// The user stopped the execution.
+    UserStop,
+    /// The host shut the Thread down with work still owed.
+    HostShutdown,
+    /// Recovery found work interrupted by a process that is gone.
+    ProcessInterrupted,
+    /// Execution stopped at its model step budget.
+    StepLimit,
+    /// Execution failed with a typed error.
+    ExecutionFailed,
+}
+
+/// Already admitted fact that currently carries one continuation point.
+///
+/// A claim only references an existing input or inbox message; it never creates a second queue, a
+/// pause table or a shadow copy of the operation's state.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    tag = "kind"
+)]
+pub enum ContinuationClaim {
+    Input { input_id: String },
+    InboxMessage { message_id: String, sequence: u64 },
+}
+
+/// One execution this owner owns, from work selection until it is settled.
+///
+/// The identity is what a product names when it stops that execution: the newest Turn, the snapshot
+/// and `activeTurn` cannot substitute for it, because the work may still be preparing and no Turn
+/// record may exist yet.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ActiveExecution {
+    pub id: String,
+    pub phase: ExecutionPhase,
+    /// Filled once the execution really entered a Turn; the identity does not change then.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn_id: Option<String>,
+}
+
+/// Where an execution currently is; preparation phases are stoppable exactly like a running Turn.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ExecutionPhase {
+    /// Work was selected; no Turn record and no storage wait exist yet.
+    Preparing,
+    /// Waiting for the claimed facts to become durable.
+    AwaitingStorage,
+    /// Waiting for the Turn admission gate.
+    AwaitingAdmission,
+    /// The Turn is executing inside the owner.
+    Running,
+    /// A stop was accepted and this execution is settling.
+    Stopping,
+}
+
 /// Owner lifecycle, independent of product modes and workflows.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase", tag = "kind", content = "value")]
@@ -1169,6 +1333,10 @@ pub enum ThreadError {
     InputRequiresActiveTurn,
     #[error("input is being prepared for model admission")]
     InputInUse,
+    #[error("a control input carries no user content, so it cannot be built with context")]
+    InvalidControlInput,
+    #[error("Thread has no claimable continuation point")]
+    NoContinuation,
     #[error("input was already consumed")]
     InputConsumed,
     #[error("Thread model session is unavailable; replace the model binding to continue")]

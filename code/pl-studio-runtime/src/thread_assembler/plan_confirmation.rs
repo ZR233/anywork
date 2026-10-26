@@ -31,6 +31,9 @@ pub enum PlanInteractionError {
     Decode(#[from] serde_json::Error),
     #[error("Plan confirmation does not match its pending Plan or interaction revision")]
     Identity,
+    /// Plan 确认是主会话能力：子会话历史里的同类交互只保留诊断，不进入可决议路径。
+    #[error("Plan confirmation is a main-session capability, not a child interaction")]
+    NotRoot,
     #[error("invalid Plan confirmation answer: {0}")]
     Answer(String),
     #[error("Plan confirmation was rejected: {0:?}")]
@@ -150,6 +153,9 @@ pub fn project_plan_confirmation(
 #[serde(rename_all = "camelCase")]
 struct OrderedAnswer<'a> {
     answers: BTreeMap<&'a str, &'a pl_protocol::UserInputAnswer>,
+    /// 该决议的操作身份；随决定一起冻结，重放与冲突裁决都读它。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    operation_id: Option<String>,
 }
 fn answer_payload(resolution: &ResolveUserInput) -> Result<OpaquePayload, PlanInteractionError> {
     let answer = OrderedAnswer {
@@ -158,6 +164,7 @@ fn answer_payload(resolution: &ResolveUserInput) -> Result<OpaquePayload, PlanIn
             .iter()
             .map(|(id, answer)| (id.as_str(), answer))
             .collect(),
+        operation_id: Some(resolution.operation_id.clone()),
     };
     Ok(OpaquePayload::new(
         crate::plan_tool::PLAN_ANSWER_FORMAT,
@@ -246,6 +253,7 @@ fn prepare_resolution(
             payload: encode_plan_state(machine.state())?,
         }],
         continuation: Some(ThreadInput {
+            purpose: pl_core::thread::input::InputPurpose::Message,
             id: format!("interaction:{}:continuation", current.request.id),
             payload: continuation_payload,
             context: vec![ContextContent::Text {
@@ -271,14 +279,22 @@ impl StudioThreadAssembler {
         }
         resolution.interaction_id = local_id.to_owned();
         let _operation = self.agent_operation(thread_id).await;
-        let (thread, execution) = {
-            self.0
-                .state()
-                .entries
-                .get(thread_id)
-                .map(|entry| (entry.thread.clone(), entry.execution))
+        let (thread, execution, is_root) = {
+            self.0.state().entries.get(thread_id).map(|entry| {
+                (
+                    entry.thread.clone(),
+                    entry.execution,
+                    entry.parent_id.is_none(),
+                )
+            })
         }
         .ok_or(PlanInteractionError::Identity)?;
+        // A plan answer decides the main session's own workflow. A child can never own that
+        // capability, so a historical child Plan interaction stays a diagnostic and is not decidable
+        // — approving it would both fabricate a root decision and resume a child execution.
+        if !is_root {
+            return Err(PlanInteractionError::NotRoot);
+        }
         let snapshot = thread.snapshot();
         let current = snapshot
             .interactions

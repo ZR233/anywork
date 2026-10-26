@@ -7,8 +7,8 @@ use serde::{Deserialize, Serialize};
 // 活动/存储 DTO 定义在兄弟模块 `thread_activity`，由 `types` 重导出；这里显式引入，不复制定义，
 // 也不做 `pub use` 以免与 `thread_activity::*` 产生同名 glob 歧义。
 use super::{
-    BridgeDelegationMode, BridgeDelegationPreference, BridgeNewThreadModelRoute,
-    BridgeThreadActivity, BridgeThreadStorageState,
+    BridgeAgentExecution, BridgeDelegationMode, BridgeDelegationPreference,
+    BridgeNewThreadModelRoute, BridgeThreadActivity, BridgeThreadStorageState,
 };
 
 pub mod item;
@@ -258,7 +258,30 @@ pub struct BridgeThreadRuntimeSnapshot {
     pub mcp_health: Option<BridgeThreadMcpHealthSnapshot>,
     pub workflow: Option<BridgeWorkflowRuntimeSnapshot>,
     pub plan: Option<BridgePlanRuntimeSnapshot>,
+    /// 主会话自己的当前执行身份；精确停止的目标来自它，而不是当前轮次投影。
+    pub execution: Option<BridgeAgentExecution>,
+    /// 该会话当前仍然欠着的继续点；继续命令的 expectedContinuationId 只能来自它。
+    pub continuation: Option<BridgeContinuationView>,
     pub updated_at: i64,
+}
+
+/// 继续点的只读投影：`claimed` 区分「可以继续」与「继续已受理、仍在准备」。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BridgeContinuationView {
+    pub id: String,
+    pub source_turn_id: Option<String>,
+    pub reason: Option<BridgeContinuationReason>,
+    pub created_at: i64,
+    pub claimed: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BridgeContinuationReason {
+    UserStop,
+    HostShutdown,
+    ProcessInterrupted,
+    StepLimit,
+    ExecutionFailed,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -403,6 +426,16 @@ pub struct BridgeInteractionRequest {
     pub content: BridgeInteractionContent,
     pub created_at: i64,
     pub updated_at: i64,
+}
+
+/// 主会话中的一条子任务待决交互摘要：只读投影，决定仍回到原交互身份。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BridgeChildInteractionSummary {
+    pub child_thread_id: String,
+    pub interaction_id: String,
+    pub kind: String,
+    pub revision: u64,
+    pub interaction: BridgeInteractionRequest,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -8,7 +8,9 @@ use anyhow::{Context, Result};
 use super::{StudioRuntime, StudioStartNewThreadRequest, StudioStartNewThreadResponse};
 
 impl StudioRuntime {
-    async fn thread_lifecycle_admission(&self) -> Result<tokio::sync::OwnedMutexGuard<()>> {
+    pub(in crate::studio::runtime) async fn thread_lifecycle_admission(
+        &self,
+    ) -> Result<tokio::sync::OwnedMutexGuard<()>> {
         // A bot operation can be awaited by shutdown while it is still queued for this lock.
         // The existing one-way latch wakes that unadmitted operation instead of creating a
         // lifecycle -> bot join -> lifecycle cycle. No accepted worker is cancelled here.

@@ -7,6 +7,7 @@ use crate::studio::ThreadRecord;
 use super::super::{
     StudioRuntime, StudioSubmitPromptOptions, StudioSubmitPromptRequest, StudioSubmitPromptResponse,
 };
+use super::{UserThreadAction, ensure_thread_not_archived, ensure_user_root_target};
 
 /// How one product admission treats a Turn that is already running on the same Thread.
 ///
@@ -70,6 +71,10 @@ impl StudioRuntime {
         // Serialize turn registration with the shared shutdown admission fence.
         let _lifecycle_guard = self.lifecycle_lock.lock().await;
         let thread_record = self.read_owned_thread(&request.thread_id).await?;
+        // The user-facing submission stops here for a child target: the trusted association proves
+        // the parent, so this runs before the owner is activated, before attachment drafts resolve
+        // and before any route or prompt work. Only the parent agent schedules child work.
+        ensure_user_root_target(&thread_record, UserThreadAction::Submit)?;
         self.submit_owned_prompt_with_admission(request, thread_record, mode)
             .await
     }
@@ -99,10 +104,7 @@ impl StudioRuntime {
             options,
         } = request;
         validate_prompt_content(&input)?;
-        anyhow::ensure!(
-            thread_record.visibility == crate::studio::ThreadVisibility::Active,
-            "archived Thread cannot accept input"
-        );
+        ensure_thread_not_archived(&thread_record, UserThreadAction::Submit)?;
         let thread = self.ensure_thread_owner(&thread_id).await?;
         let _agent_operation = self.threads.agent_operation(&thread_id).await;
         self.threads.ensure_agent_admission_open(&thread_id)?;
@@ -186,6 +188,10 @@ impl StudioRuntime {
             self.thread_observations
                 .reconcile_children(&thread_id)
                 .await?;
+            // A main-session send is the other explicit user turn, so the same idempotent
+            // reconciliation repairs any child decision notice that was never delivered. A failure is
+            // reported instead of swallowed; nothing has been admitted yet, so retrying is safe.
+            self.reconcile_child_interaction_notices(&thread_id).await?;
         }
         let original_request = input.clone();
         let pl_protocol::studio::StudioPromptInput {
@@ -271,6 +277,7 @@ impl StudioRuntime {
             .record_attachments(attachments.clone())
             .await?;
         let thread_input = pl_core::thread::input::ThreadInput {
+            purpose: pl_core::thread::input::InputPurpose::Message,
             id: input_id,
             payload,
             context,

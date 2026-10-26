@@ -171,6 +171,9 @@ impl ThreadHandle {
             permission_leases: Default::default(),
             active_inputs: Vec::new(),
             input_batch_through: None,
+            frozen_turn: None,
+            continuation_cancel: None,
+            superseded_batch: None,
             interrupted_turn: None,
             input_driver: if resumed {
                 input::InputDriver::Paused
@@ -286,6 +289,32 @@ impl ThreadHandle {
         let (reply, response) = oneshot::channel();
         self.mailbox
             .send(super::mailbox::MailboxCommand::InterruptTurn { expected, reply })
+            .await
+            .map_err(|_| ThreadError::Closed)?;
+        response.await.map_err(|_| ThreadError::Closed)?
+    }
+
+    /// Stops exactly the named execution, including one that is still preparing.
+    ///
+    /// The owner compares the identity with the execution it really owns, so a superseded identity
+    /// answers [`ThreadError::InvalidIdentity`] instead of stopping whatever runs now. Accepting the
+    /// stop pauses the queue and forms the continuation point the settled execution leaves behind;
+    /// the receipt only proves the stop was accepted, and a caller that needs completion observes the
+    /// execution leaving the snapshot.
+    ///
+    /// # Errors
+    /// Returns `InvalidIdentity` when no execution carries the identity, or `Closed` when the owner
+    /// is no longer reachable.
+    pub async fn interrupt_execution(
+        &self,
+        expected_execution_id: String,
+    ) -> Result<bool, ThreadError> {
+        let (reply, response) = oneshot::channel();
+        self.mailbox
+            .send(super::mailbox::MailboxCommand::InterruptExecution {
+                expected: expected_execution_id,
+                reply,
+            })
             .await
             .map_err(|_| ThreadError::Closed)?;
         response.await.map_err(|_| ThreadError::Closed)?

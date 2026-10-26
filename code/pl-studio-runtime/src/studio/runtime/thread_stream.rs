@@ -930,10 +930,15 @@ impl StudioRuntime {
             return Ok(snapshot);
         }
         let thread = self.read_protocol_thread(thread_id).await?;
-        let checkpoint =
-            crate::studio::thread_factory::recovery::load_checkpoint(&self.store, &thread)
-                .await?
-                .ok_or_else(|| anyhow::anyhow!("Thread has no saved checkpoint"))?;
+        // A read-only projection never prepares storage: it reports only already-durable facts, so a
+        // legacy checkpoint that still needs import stays invisible until an explicit activation
+        // migrates it (design/17).
+        let checkpoint = crate::studio::thread_factory::recovery::load_checkpoint_read_only(
+            &self.store,
+            &thread,
+        )
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("Thread has no saved checkpoint"))?;
         self.store
             .thread_persistence()
             .seed_usage(thread_id, checkpoint.state.usage_summary.clone());

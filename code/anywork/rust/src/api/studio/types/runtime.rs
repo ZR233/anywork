@@ -287,7 +287,32 @@ pub struct BridgeAgentDirectoryEntryDto {
     pub summary: Option<String>,
     pub depth: u32,
     pub state: BridgeAgentState,
+    /// 该成员当前执行；未装载或无当前执行时为空。
+    pub execution: Option<BridgeAgentExecution>,
+    /// 用户是否可对这一行发起精确停止。
+    pub can_stop: bool,
+    /// 该成员已被停止/中断且尚无操作认领其继续点，等待主智能体调度。
+    pub awaiting_scheduling: bool,
     pub updated_at: i64,
+}
+
+/// 目录行的当前执行身份与阶段：停止目标来自它，而不是当前选中会话的轮次。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct BridgeAgentExecution {
+    pub id: String,
+    pub phase: BridgeAgentExecutionPhase,
+    pub turn_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum BridgeAgentExecutionPhase {
+    Preparing,
+    AwaitingStorage,
+    AwaitingAdmission,
+    Running,
+    Stopping,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

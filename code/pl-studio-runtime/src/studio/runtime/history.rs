@@ -16,7 +16,8 @@ impl StudioRuntime {
         limit: usize,
     ) -> Result<pl_protocol::ThreadTurnPage> {
         self.read_owned_thread(thread_id).await?;
-        self.ensure_timeline_history(thread_id)
+        // Reading a Turn page is a projection, not a preparation step.
+        self.read_timeline_history(thread_id)
             .await?
             .turn_page(cursor, limit)
             .await

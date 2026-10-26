@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import 'package:anywork_client/models.dart';
 
+import '../domain/models/composer_primary_action.dart';
 import 'app_localizations.dart';
 
 extension StudioLocalizationsX on BuildContext {
@@ -228,6 +229,61 @@ extension StudioLocalizationsX on BuildContext {
       'interrupted' => l10n.agentDetailStatusInterrupted,
       'budgetLimited' => l10n.timelineReasoningBudgetLimited,
       _ => status,
+    };
+  }
+
+  /// 主输入区被阻塞的类型化原因。
+  ///
+  /// 保存、模型与工作区阻塞由 canonical 事实判定；后端明确拒绝时用
+  /// [StudioFailureReason] 的 typed 文案，缺失原因才退到中性说明，不把原始错误
+  /// 文本当成原因分类。
+  String composerBlockerLabel(ComposerBlocker blocker) {
+    return switch (blocker) {
+      ComposerStorageBlocker() => l10n.composerBlockedStorage,
+      ComposerModelBlocker() => l10n.composerBlockedModel,
+      ComposerWorkspaceBlocker() => l10n.composerBlockedWorkspace,
+      ComposerFailureBlocker(:final reason) => composerFailureReasonLabel(
+        reason,
+      ),
+    };
+  }
+
+  /// 后端 typed 失败原因的用户说明。
+  String composerFailureReasonLabel(StudioFailureReason? reason) {
+    return switch (reason) {
+      StudioFailureReason.childThreadRequiresParentScheduling =>
+        l10n.composerFailureChildRequiresParentScheduling,
+      StudioFailureReason.continuationUnavailable =>
+        l10n.composerFailureContinuationUnavailable,
+      StudioFailureReason.continuationClaimed =>
+        l10n.composerFailureContinuationClaimed,
+      StudioFailureReason.staleContinuation =>
+        l10n.composerFailureStaleContinuation,
+      StudioFailureReason.staleExecution => l10n.composerFailureStaleExecution,
+      StudioFailureReason.executionInProgress =>
+        l10n.composerFailureExecutionInProgress,
+      StudioFailureReason.interactionNotHosted =>
+        l10n.composerFailureInteractionNotHosted,
+      StudioFailureReason.staleInteraction =>
+        l10n.composerFailureStaleInteraction,
+      // 归档会话只读：使用专用的继续/提交阻塞说明，不复用侧栏的归档标签。
+      StudioFailureReason.threadArchived => l10n.composerBlockedArchived,
+      null => l10n.composerBlockerUnknown,
+    };
+  }
+
+  /// 继续点记录的已知中断原因；`null` 用中性说明，绝不回填「用户停止」。
+  String composerContinuationReasonLabel(ContinuationReason? reason) {
+    return switch (reason) {
+      ContinuationReason.userStop => l10n.composerContinueReasonUserStop,
+      ContinuationReason.hostShutdown =>
+        l10n.composerContinueReasonHostShutdown,
+      ContinuationReason.processInterrupted =>
+        l10n.composerContinueReasonProcessInterrupted,
+      ContinuationReason.stepLimit => l10n.composerContinueReasonStepLimit,
+      ContinuationReason.executionFailed =>
+        l10n.composerContinueReasonExecutionFailed,
+      null => l10n.composerContinueReasonUnknown,
     };
   }
 

@@ -1,8 +1,6 @@
 import 'dart:async';
 import 'dart:ui' show PointerDeviceKind;
 
-import 'package:anywork_client/studio_client.dart' show AgentDirectoryQueries;
-
 import 'package:flutter/material.dart';
 import 'package:flutter/gestures.dart' show DragStartBehavior;
 import 'package:flutter/services.dart';
@@ -13,7 +11,6 @@ import 'package:multi_split_view/multi_split_view.dart';
 
 import '../../app/app_graph.dart';
 import '../../presentation/providers/client_provider.dart';
-import '../../presentation/providers/settings_store.dart';
 
 import '../../shared/studio_loading.dart';
 import '../../shared/recovery_check_status.dart';
@@ -32,6 +29,7 @@ import '../../platform/zed_launcher.dart';
 import '../../shared/studio_chrome.dart';
 import '../../shared/studio_driver_keys.dart';
 import '../../shared/delegation_labels.dart';
+import 'agent_switcher_menu.dart';
 import '../../shared/studio_driver_state.dart';
 import '../../presentation/providers/studio_update_controller.dart';
 import '../settings/settings_common.dart';

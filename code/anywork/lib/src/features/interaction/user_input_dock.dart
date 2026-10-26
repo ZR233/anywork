@@ -9,6 +9,7 @@ import '../../presentation/providers/thread_session_store.dart';
 import '../../domain/models/studio_models.dart';
 import '../../l10n/studio_l10n.dart';
 import '../../shared/studio_driver_keys.dart';
+import 'hosted_child_interaction.dart';
 import 'interaction_payload.dart';
 import 'interaction_widgets.dart';
 import 'fallback_question_dock.dart';
@@ -21,14 +22,20 @@ class UserInputDock extends ConsumerStatefulWidget {
     required this.interactionId,
     required this.payload,
     required this.enabled,
+    this.hostedChild,
     this.trailing,
     super.key,
   });
 
+  /// 宿主会话：root 自身交互就是 root；转交的 child 交互也是 root。
   final String threadId;
   final String interactionId;
   final InteractionPayloadSnapshot payload;
   final bool enabled;
+
+  /// 非空表示这是主会话代表的直接 child 交互，答案经主会话提交。
+  final HostedChildInteraction? hostedChild;
+
   final Widget? trailing;
 
   @override
@@ -73,10 +80,13 @@ class _UserInputDockState extends ConsumerState<UserInputDock> {
   Widget build(BuildContext context) {
     final enabled =
         widget.enabled &&
-        pendingInteractionIsActive(
-          ref.watch(threadSessionStoreProvider(widget.threadId)).interactions,
-          widget.interactionId,
-        );
+        (widget.hostedChild != null ||
+            pendingInteractionIsActive(
+              ref
+                  .watch(threadSessionStoreProvider(widget.threadId))
+                  .interactions,
+              widget.interactionId,
+            ));
     final questions = widget.payload.questions;
     if (questions.isEmpty) {
       return FallbackQuestionDock(
@@ -279,23 +289,26 @@ class _UserInputDockState extends ConsumerState<UserInputDock> {
     if (text.isEmpty) {
       return;
     }
-    unawaited(
-      ref
-          .read(anyworkClientProvider)
-          .threadCommands
-          .resolveActiveInteraction(
-            widget.threadId,
-            widget.interactionId,
-            UserInputResolutionCommand(
-              answers: [
-                UserInputAnswerCommand(questionId: 'answer', answers: [text]),
-              ],
-            ),
-          ),
+    _submit(
+      UserInputResolutionCommand(
+        answers: [
+          UserInputAnswerCommand(questionId: 'answer', answers: [text]),
+        ],
+      ),
     );
   }
 
   void _submitAnswers() {
+    _submit(UserInputResolutionCommand(answers: _answers()));
+  }
+
+  /// root 自身交互走本会话目标，转交的 child 交互经主会话提交。
+  void _submit(UserInputResolutionCommand resolution) {
+    final hosted = widget.hostedChild;
+    if (hosted != null) {
+      submitHostedChildDecision(ref, widget.threadId, hosted, resolution);
+      return;
+    }
     unawaited(
       ref
           .read(anyworkClientProvider)
@@ -303,7 +316,7 @@ class _UserInputDockState extends ConsumerState<UserInputDock> {
           .resolveActiveInteraction(
             widget.threadId,
             widget.interactionId,
-            UserInputResolutionCommand(answers: _answers()),
+            resolution,
           ),
     );
   }

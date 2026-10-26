@@ -28,6 +28,8 @@ enum ControlError {
     Relationship { caller: String, target: String },
     #[error("invalid agent ancestry")]
     Ancestry,
+    #[error("agent {0} has no current execution to stop")]
+    StaleExecution(String),
 }
 
 impl AgentHost {
@@ -497,21 +499,32 @@ impl AgentControlHost for AgentHost {
 
     async fn interrupt(&self, caller: &str, target: &str) -> Result<ToolOutput, ToolError> {
         let owner = self.owner()?;
-        let thread = {
+        // The parent stops exactly the execution it observed, through the same precise stop the user
+        // interfaces use. A superseded identity fails instead of cancelling whatever runs now.
+        let (thread, execution) = {
             let state = owner.0.state();
             if state.closing {
                 return Err(ToolError::new(ControlError::Closed));
             }
             descendant(&state, caller, target)?;
-            state
+            let entry = state
                 .entries
                 .get(target)
-                .ok_or_else(|| ToolError::new(ControlError::Missing(target.into())))?
-                .thread
-                .clone()
+                .ok_or_else(|| ToolError::new(ControlError::Missing(target.into())))?;
+            (entry.thread.clone(), entry.thread.snapshot().execution)
         };
-        let interrupted = thread.interrupt_turn(None).await.map_err(ToolError::new)?;
-        output(serde_json::json!({"target":target,"interrupted":interrupted}))
+        let Some(execution) = execution else {
+            return Err(ToolError::new(ControlError::StaleExecution(target.into())));
+        };
+        let interrupted = thread
+            .interrupt_execution(execution.id.clone())
+            .await
+            .map_err(ToolError::new)?;
+        output(serde_json::json!({
+            "target":target,
+            "executionId":execution.id,
+            "interrupted":interrupted,
+        }))
     }
 
     async fn close(

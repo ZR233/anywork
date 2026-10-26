@@ -6,6 +6,26 @@ impl Owner {
         &mut self,
         input: TurnInput,
     ) -> Result<TurnCompletion, ThreadError> {
+        let turn_id = input.turn_id.clone();
+        let result = self.execute_turn(input).await;
+        // A Turn that ended before it ever created its record (a stop during preparation) still has to
+        // settle the batch it froze: a body-less control it never consumed was replaced meanwhile and
+        // must not linger as phantom owed work. The normal path settles inside its own terminal commit.
+        if !self.state.turns.iter().any(|turn| turn.turn_id == turn_id) {
+            if let Err(error) = self.settle_replaced_controls() {
+                self.input_driver.fail(Arc::new(error));
+                self.pause_inputs();
+            }
+            self.publish();
+        }
+        // The execution identity belongs to live state only, so every exit path releases it — a
+        // failed or cancelled Turn as well as a completed one. A stop that named this generation
+        // settles here too; the continuation point it formed is a separate durable fact and stays.
+        self.finish_execution(&turn_id);
+        result
+    }
+
+    async fn execute_turn(&mut self, input: TurnInput) -> Result<TurnCompletion, ThreadError> {
         if self.state.lifecycle != ThreadLifecycle::Open {
             return Err(ThreadError::Closed);
         }
@@ -22,6 +42,10 @@ impl Owner {
         if input.cancellation.is_cancelled() {
             return Err(ThreadError::Cancelled);
         }
+        // A direct Turn reaches this point without the queue driver, so the execution identity is
+        // allocated here when nobody did it yet. A driver-started Turn keeps the generation the
+        // driver already published.
+        self.begin_execution()?;
         // The Turn admission gate is the one place new Turns are held back, and it is checked before
         // this Turn owns anything: while the owner waits here no Turn record exists and no input is
         // consumed, so a held Turn leaves the queue exactly as it found it.
@@ -37,6 +61,7 @@ impl Owner {
             model_steps: 0,
         });
         self.state.turns = turns.clone().into();
+        self.enter_running_execution(&turn_id);
         self.publish();
         // Publish the generation before any asynchronous preparation: input received while a
         // model is being opened must redirect this Turn, not silently queue behind it.
@@ -86,8 +111,50 @@ impl Owner {
             };
         }
         self.state.turns = turns.into();
+        // Only a terminal outcome that really owes work becomes continuable, and it does so in this
+        // same commit. Interaction waits, storage faults, cancellations and validation or identity
+        // failures all have their own state and are never disguised as "continue".
+        if let Some(reason) = self.turn_continuation_reason(&result) {
+            self.form_continuation(reason, Some(turn_id.clone()), &format!("turn:{turn_id}"));
+        }
+        // The batch this Turn froze is settled with the same commit: a body-less control the batch
+        // carried but never consumed, and whose authorization this outcome spent or replaced, can
+        // never authorize anything again. Keeping it pending would leave phantom owed work that
+        // recovery would later report as interrupted.
+        if let Err(error) = self.settle_replaced_controls() {
+            self.input_driver.fail(Arc::new(error));
+            self.pause_inputs();
+        }
         self.publish();
         result
+    }
+
+    /// The continuation a Turn's terminal outcome leaves behind, if it leaves one.
+    fn turn_continuation_reason(
+        &self,
+        result: &Result<TurnCompletion, ThreadError>,
+    ) -> Option<ContinuationReason> {
+        match result {
+            Ok(completion) if completion.outcome == TurnOutcome::StepLimit => {
+                Some(ContinuationReason::StepLimit)
+            }
+            // A close that had to cut live work leaves that same owed work behind, under its own
+            // reason, so a restart offers an explicit continuation instead of silently dropping it.
+            Err(ThreadError::Cancelled) if self.interrupt.is_closing() => {
+                Some(ContinuationReason::HostShutdown)
+            }
+            // A cancellation that latched a real failure is that failure, exactly like the terminal
+            // state records it; the run itself reports cancellation.
+            Err(ThreadError::Cancelled) => self
+                .input_driver
+                .error()
+                .filter(|error| recoverable_continuation(error))
+                .map(|_| ContinuationReason::ExecutionFailed),
+            Err(error) if recoverable_continuation(error) => {
+                Some(ContinuationReason::ExecutionFailed)
+            }
+            Ok(_) | Err(_) => None,
+        }
     }
 
     /// Holds this Turn at the admission gate until the gate is open, and claims its permit.
@@ -112,6 +179,7 @@ impl Owner {
             return Ok(permit);
         }
         self.turn_admission_waiting = true;
+        self.note_execution_phase(ExecutionPhase::AwaitingAdmission);
         self.publish_snapshot();
         let outcome = loop {
             if cancellation.is_cancelled() || self.interrupt.is_closing() {
@@ -139,6 +207,7 @@ impl Owner {
             }
         };
         self.turn_admission_waiting = false;
+        self.note_execution_phase(self.execution_progress_phase());
         self.publish_snapshot();
         outcome
     }
@@ -338,5 +407,36 @@ fn failed_turn(error: &ThreadError) -> TurnState {
             ThreadError::Model(error) => Some(Box::new(error.failure_facts())),
             _ => None,
         },
+    }
+}
+
+/// Whether a Turn failure leaves work a caller can recover by explicitly continuing.
+///
+/// Only a failure a later explicit request can actually change counts, and a Thread whose model binding
+/// itself is unavailable. The model categories are:
+///
+/// - `Unavailable`: the provider is temporarily unavailable, so a retry or a new binding can succeed.
+/// - `ContextLimit`: the context no longer fits. The Turn already had its one automatic compaction, so
+///   continuing needs a host decision — a bigger window or a different binding — and without a point the
+///   consumed request could never be run again once that decision is made.
+/// - `UnsupportedContent`: this binding cannot carry the request content. A binding that can is a host
+///   decision too, and the already consumed request is otherwise lost.
+///
+/// Everything else keeps its own state instead of pretending to be continuable: `InvalidResponse` (the
+/// answer could not be used), `ImplementationPanicked` (an adapter defect), `IncompatibleContext` (the
+/// request shape has to change, not the authorization), a storage fault (explicit save recovery), a
+/// pending tool commit (retry), an interaction (its own resolution entry), a closed owner, a cancellation
+/// and every validation or identity violation. Nothing here ever retries by itself: a point only makes an
+/// explicit continuation possible.
+fn recoverable_continuation(error: &ThreadError) -> bool {
+    match error {
+        ThreadError::ModelUnavailable => true,
+        ThreadError::Model(error) => matches!(
+            error.kind,
+            crate::model::ModelFailureKind::Unavailable
+                | crate::model::ModelFailureKind::ContextLimit
+                | crate::model::ModelFailureKind::UnsupportedContent
+        ),
+        _ => false,
     }
 }

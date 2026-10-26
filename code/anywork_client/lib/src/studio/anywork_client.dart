@@ -40,6 +40,7 @@ import 'stores/updater_store.dart';
 import 'stores/persistence_store.dart';
 import 'stores/bots_store.dart';
 import 'stores/bots_send_store.dart';
+import 'stores/child_interaction_store.dart';
 import 'update_client.dart';
 import 'stores/domain_sync.dart' show typedCommandFailure;
 
@@ -54,6 +55,7 @@ class AnyworkClient {
     Future<void> Function(String)? clipboardImageCleanup,
     StudioUpdateApi? updateApi,
     bool updatesEnabled = false,
+    int Function()? threadCommandsClock,
   }) : budget = budget ?? ResourceBudget() {
     mutations = MutationBoard(clientId: clientId, budget: this.budget);
     modeEditor = ModeEditorOwner(this);
@@ -66,7 +68,8 @@ class AnyworkClient {
     acpInstallCommands = AcpInstallCommands(this);
     botsCommands = BotsCommands(this);
     botsQueries = BotsQueries(this);
-    threadCommands = ThreadCommands(this);
+    // Test seam: the wall clock used to record command start facts.
+    threadCommands = ThreadCommands(this, nowMs: threadCommandsClock);
     remote = RemoteActions(transport);
     attachments = AttachmentDraftsOwner(
       this,
@@ -167,6 +170,7 @@ class AnyworkClient {
   final persistence = PersistenceStore();
   final bots = BotsStore();
   final botsSends = BotsSendStore();
+  final childInteractions = ChildInteractionStore();
   final bootstrapState = LatestValue(const StudioBootstrapState());
   final Map<String, SkillsStore> _skills = {};
   final Map<String, SessionCostsStore> _sessionCosts = {};
