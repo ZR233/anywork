@@ -18,7 +18,6 @@ const List<ProductTopic> bridgeShellTopics = [
   ThreadDirectoryTopic(),
   AgentDirectoryTopic(),
   SettingsConfigTopic(),
-  ModelCatalogTopic(),
   RecoveryTopic(),
   PersistenceTopic(),
   UpdaterTopic(),
@@ -27,10 +26,10 @@ const List<ProductTopic> bridgeShellTopics = [
 
 /// 设置页可见 tab 的按需 topic 作用域。
 ///
-/// 每个 tab 是独立职责：MCP、LSP、项目 Skills、Provider usage、
-/// 配置级 Profiles 不合并为一个含糊的 `services` 作用域；隐藏 tab 不持有租约，
-/// 只保留 UI 状态。Skills 作用域始终携带当前 project identity。
-enum BridgeSettingsScopeKind { agents, mcp, lsp, skills, usage, acp, bots }
+/// MCP、LSP、项目 Skills、配置级 Profiles 与 Bots 不合并为含糊的 `services`
+/// 作用域；账号用量与 ACP 由各自领域持有需求，不经过此通用设置入口。
+/// 隐藏 tab 不持有租约，只保留 UI 状态。Skills 始终携带当前 project identity。
+enum BridgeSettingsScopeKind { agents, mcp, lsp, skills, bots }
 
 /// 该设置作用域需要的 topics。
 ///
@@ -52,11 +51,6 @@ List<ProductTopic> bridgeSettingsScopeTopics(
       return projectId == null || projectId.isEmpty
           ? const []
           : [SkillsTopic(projectId: projectId)];
-    case BridgeSettingsScopeKind.usage:
-      return const [AccountUsageTopic()];
-    case BridgeSettingsScopeKind.acp:
-      // Accounts 页可见时只租用认证与准备观察；进入页面不启动检查、不联网。
-      return const [AcpAuthTopic(), AcpInstallTopic()];
     case BridgeSettingsScopeKind.bots:
       return const [BotsTopic()];
   }

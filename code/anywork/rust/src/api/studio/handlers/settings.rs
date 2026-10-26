@@ -151,7 +151,7 @@ pub async fn save_runtime_permission_mode(
     ))
 }
 
-pub async fn save_account(
+pub async fn create_account(
     operation_id: String,
     expected_settings_revision: u64,
     input: AccountSettingsInput,
@@ -160,7 +160,7 @@ pub async fn save_account(
     Ok(settings_command_reply(
         bridge
             .studio
-            .save_account(account_settings_request(
+            .create_account(account_settings_request(
                 operation_id,
                 expected_settings_revision,
                 input,

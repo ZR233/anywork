@@ -1,6 +1,6 @@
 ---
 name: flutter-studio-build
-description: Use when building anywork on Windows or Linux, manually validating the native GUI with Flutter Driver (including headless SSH/Xvfb), debugging release builds, or troubleshooting flutter_rust_bridge generated bindings.
+description: Use when building anywork on Windows or Linux, validating pure widgets with the official Widget Previewer, manually validating the native GUI with Flutter Driver (including headless SSH/Xvfb), debugging release builds, or troubleshooting flutter_rust_bridge generated bindings.
 category: guides
 platforms: [windows, linux]
 ---
@@ -114,3 +114,9 @@ Linux 缺少编译器、CMake、Ninja、pkg-config 或 GTK 3 开发文件时，�
 执行前读取 [人工验收操作指南](references/manual-gui.md)：包含隔离 harness、Linux SSH 下的
 伪终端与 Xvfb、Flutter Driver 定向操作、截图/快照核对及进程回收。不要将无交互终端直接
 等同于无法验收，也不要把 demo、静态分析或成功启动等同于完整业务验收。
+
+## 官方组件预览
+
+验证无需业务运行时的生产组件时，读取 [Widget Previewer 指南](references/widget-preview.md)。
+优先使用官方预览编译、缓存和热更新，分别验证纯入口、主题/本地化、交互与进程回收；
+浏览器预览不替代原生 Driver、bridge、凭据或持久化验收。

@@ -354,10 +354,11 @@ extension BridgeModelCatalogErrorPatterns on BridgeModelCatalogError {
 /// }
 /// ```
 
-@optionalTypeArgs TResult maybeMap<TResult extends Object?>({TResult Function( BridgeModelCatalogError_Unsupported value)?  unsupported,TResult Function( BridgeModelCatalogError_Configuration value)?  configuration,TResult Function( BridgeModelCatalogError_Timeout value)?  timeout,TResult Function( BridgeModelCatalogError_Transport value)?  transport,TResult Function( BridgeModelCatalogError_Http value)?  http,TResult Function( BridgeModelCatalogError_TooLarge value)?  tooLarge,TResult Function( BridgeModelCatalogError_Protocol value)?  protocol,TResult Function( BridgeModelCatalogError_CacheIdentity value)?  cacheIdentity,TResult Function( BridgeModelCatalogError_UnexpectedNotModified value)?  unexpectedNotModified,TResult Function( BridgeModelCatalogError_CacheWrite value)?  cacheWrite,TResult Function( BridgeModelCatalogError_Closing value)?  closing,required TResult orElse(),}){
+@optionalTypeArgs TResult maybeMap<TResult extends Object?>({TResult Function( BridgeModelCatalogError_TaskFailed value)?  taskFailed,TResult Function( BridgeModelCatalogError_Unsupported value)?  unsupported,TResult Function( BridgeModelCatalogError_Configuration value)?  configuration,TResult Function( BridgeModelCatalogError_Timeout value)?  timeout,TResult Function( BridgeModelCatalogError_Transport value)?  transport,TResult Function( BridgeModelCatalogError_Http value)?  http,TResult Function( BridgeModelCatalogError_TooLarge value)?  tooLarge,TResult Function( BridgeModelCatalogError_Protocol value)?  protocol,TResult Function( BridgeModelCatalogError_CacheIdentity value)?  cacheIdentity,TResult Function( BridgeModelCatalogError_UnexpectedNotModified value)?  unexpectedNotModified,TResult Function( BridgeModelCatalogError_CacheWrite value)?  cacheWrite,TResult Function( BridgeModelCatalogError_Closing value)?  closing,required TResult orElse(),}){
 final _that = this;
 switch (_that) {
-case BridgeModelCatalogError_Unsupported() when unsupported != null:
+case BridgeModelCatalogError_TaskFailed() when taskFailed != null:
+return taskFailed(_that);case BridgeModelCatalogError_Unsupported() when unsupported != null:
 return unsupported(_that);case BridgeModelCatalogError_Configuration() when configuration != null:
 return configuration(_that);case BridgeModelCatalogError_Timeout() when timeout != null:
 return timeout(_that);case BridgeModelCatalogError_Transport() when transport != null:
@@ -386,10 +387,11 @@ return closing(_that);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult map<TResult extends Object?>({required TResult Function( BridgeModelCatalogError_Unsupported value)  unsupported,required TResult Function( BridgeModelCatalogError_Configuration value)  configuration,required TResult Function( BridgeModelCatalogError_Timeout value)  timeout,required TResult Function( BridgeModelCatalogError_Transport value)  transport,required TResult Function( BridgeModelCatalogError_Http value)  http,required TResult Function( BridgeModelCatalogError_TooLarge value)  tooLarge,required TResult Function( BridgeModelCatalogError_Protocol value)  protocol,required TResult Function( BridgeModelCatalogError_CacheIdentity value)  cacheIdentity,required TResult Function( BridgeModelCatalogError_UnexpectedNotModified value)  unexpectedNotModified,required TResult Function( BridgeModelCatalogError_CacheWrite value)  cacheWrite,required TResult Function( BridgeModelCatalogError_Closing value)  closing,}){
+@optionalTypeArgs TResult map<TResult extends Object?>({required TResult Function( BridgeModelCatalogError_TaskFailed value)  taskFailed,required TResult Function( BridgeModelCatalogError_Unsupported value)  unsupported,required TResult Function( BridgeModelCatalogError_Configuration value)  configuration,required TResult Function( BridgeModelCatalogError_Timeout value)  timeout,required TResult Function( BridgeModelCatalogError_Transport value)  transport,required TResult Function( BridgeModelCatalogError_Http value)  http,required TResult Function( BridgeModelCatalogError_TooLarge value)  tooLarge,required TResult Function( BridgeModelCatalogError_Protocol value)  protocol,required TResult Function( BridgeModelCatalogError_CacheIdentity value)  cacheIdentity,required TResult Function( BridgeModelCatalogError_UnexpectedNotModified value)  unexpectedNotModified,required TResult Function( BridgeModelCatalogError_CacheWrite value)  cacheWrite,required TResult Function( BridgeModelCatalogError_Closing value)  closing,}){
 final _that = this;
 switch (_that) {
-case BridgeModelCatalogError_Unsupported():
+case BridgeModelCatalogError_TaskFailed():
+return taskFailed(_that);case BridgeModelCatalogError_Unsupported():
 return unsupported(_that);case BridgeModelCatalogError_Configuration():
 return configuration(_that);case BridgeModelCatalogError_Timeout():
 return timeout(_that);case BridgeModelCatalogError_Transport():
@@ -414,10 +416,11 @@ return closing(_that);}
 /// }
 /// ```
 
-@optionalTypeArgs TResult? mapOrNull<TResult extends Object?>({TResult? Function( BridgeModelCatalogError_Unsupported value)?  unsupported,TResult? Function( BridgeModelCatalogError_Configuration value)?  configuration,TResult? Function( BridgeModelCatalogError_Timeout value)?  timeout,TResult? Function( BridgeModelCatalogError_Transport value)?  transport,TResult? Function( BridgeModelCatalogError_Http value)?  http,TResult? Function( BridgeModelCatalogError_TooLarge value)?  tooLarge,TResult? Function( BridgeModelCatalogError_Protocol value)?  protocol,TResult? Function( BridgeModelCatalogError_CacheIdentity value)?  cacheIdentity,TResult? Function( BridgeModelCatalogError_UnexpectedNotModified value)?  unexpectedNotModified,TResult? Function( BridgeModelCatalogError_CacheWrite value)?  cacheWrite,TResult? Function( BridgeModelCatalogError_Closing value)?  closing,}){
+@optionalTypeArgs TResult? mapOrNull<TResult extends Object?>({TResult? Function( BridgeModelCatalogError_TaskFailed value)?  taskFailed,TResult? Function( BridgeModelCatalogError_Unsupported value)?  unsupported,TResult? Function( BridgeModelCatalogError_Configuration value)?  configuration,TResult? Function( BridgeModelCatalogError_Timeout value)?  timeout,TResult? Function( BridgeModelCatalogError_Transport value)?  transport,TResult? Function( BridgeModelCatalogError_Http value)?  http,TResult? Function( BridgeModelCatalogError_TooLarge value)?  tooLarge,TResult? Function( BridgeModelCatalogError_Protocol value)?  protocol,TResult? Function( BridgeModelCatalogError_CacheIdentity value)?  cacheIdentity,TResult? Function( BridgeModelCatalogError_UnexpectedNotModified value)?  unexpectedNotModified,TResult? Function( BridgeModelCatalogError_CacheWrite value)?  cacheWrite,TResult? Function( BridgeModelCatalogError_Closing value)?  closing,}){
 final _that = this;
 switch (_that) {
-case BridgeModelCatalogError_Unsupported() when unsupported != null:
+case BridgeModelCatalogError_TaskFailed() when taskFailed != null:
+return taskFailed(_that);case BridgeModelCatalogError_Unsupported() when unsupported != null:
 return unsupported(_that);case BridgeModelCatalogError_Configuration() when configuration != null:
 return configuration(_that);case BridgeModelCatalogError_Timeout() when timeout != null:
 return timeout(_that);case BridgeModelCatalogError_Transport() when transport != null:
@@ -445,9 +448,10 @@ return closing(_that);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function()?  unsupported,TResult Function()?  configuration,TResult Function()?  timeout,TResult Function( int? httpStatus)?  transport,TResult Function( int status)?  http,TResult Function()?  tooLarge,TResult Function()?  protocol,TResult Function()?  cacheIdentity,TResult Function()?  unexpectedNotModified,TResult Function()?  cacheWrite,TResult Function()?  closing,required TResult orElse(),}) {final _that = this;
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function()?  taskFailed,TResult Function()?  unsupported,TResult Function()?  configuration,TResult Function()?  timeout,TResult Function( int? httpStatus)?  transport,TResult Function( int status)?  http,TResult Function()?  tooLarge,TResult Function()?  protocol,TResult Function()?  cacheIdentity,TResult Function()?  unexpectedNotModified,TResult Function()?  cacheWrite,TResult Function()?  closing,required TResult orElse(),}) {final _that = this;
 switch (_that) {
-case BridgeModelCatalogError_Unsupported() when unsupported != null:
+case BridgeModelCatalogError_TaskFailed() when taskFailed != null:
+return taskFailed();case BridgeModelCatalogError_Unsupported() when unsupported != null:
 return unsupported();case BridgeModelCatalogError_Configuration() when configuration != null:
 return configuration();case BridgeModelCatalogError_Timeout() when timeout != null:
 return timeout();case BridgeModelCatalogError_Transport() when transport != null:
@@ -476,9 +480,10 @@ return closing();case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function()  unsupported,required TResult Function()  configuration,required TResult Function()  timeout,required TResult Function( int? httpStatus)  transport,required TResult Function( int status)  http,required TResult Function()  tooLarge,required TResult Function()  protocol,required TResult Function()  cacheIdentity,required TResult Function()  unexpectedNotModified,required TResult Function()  cacheWrite,required TResult Function()  closing,}) {final _that = this;
+@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function()  taskFailed,required TResult Function()  unsupported,required TResult Function()  configuration,required TResult Function()  timeout,required TResult Function( int? httpStatus)  transport,required TResult Function( int status)  http,required TResult Function()  tooLarge,required TResult Function()  protocol,required TResult Function()  cacheIdentity,required TResult Function()  unexpectedNotModified,required TResult Function()  cacheWrite,required TResult Function()  closing,}) {final _that = this;
 switch (_that) {
-case BridgeModelCatalogError_Unsupported():
+case BridgeModelCatalogError_TaskFailed():
+return taskFailed();case BridgeModelCatalogError_Unsupported():
 return unsupported();case BridgeModelCatalogError_Configuration():
 return configuration();case BridgeModelCatalogError_Timeout():
 return timeout();case BridgeModelCatalogError_Transport():
@@ -503,9 +508,10 @@ return closing();}
 /// }
 /// ```
 
-@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function()?  unsupported,TResult? Function()?  configuration,TResult? Function()?  timeout,TResult? Function( int? httpStatus)?  transport,TResult? Function( int status)?  http,TResult? Function()?  tooLarge,TResult? Function()?  protocol,TResult? Function()?  cacheIdentity,TResult? Function()?  unexpectedNotModified,TResult? Function()?  cacheWrite,TResult? Function()?  closing,}) {final _that = this;
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function()?  taskFailed,TResult? Function()?  unsupported,TResult? Function()?  configuration,TResult? Function()?  timeout,TResult? Function( int? httpStatus)?  transport,TResult? Function( int status)?  http,TResult? Function()?  tooLarge,TResult? Function()?  protocol,TResult? Function()?  cacheIdentity,TResult? Function()?  unexpectedNotModified,TResult? Function()?  cacheWrite,TResult? Function()?  closing,}) {final _that = this;
 switch (_that) {
-case BridgeModelCatalogError_Unsupported() when unsupported != null:
+case BridgeModelCatalogError_TaskFailed() when taskFailed != null:
+return taskFailed();case BridgeModelCatalogError_Unsupported() when unsupported != null:
 return unsupported();case BridgeModelCatalogError_Configuration() when configuration != null:
 return configuration();case BridgeModelCatalogError_Timeout() when timeout != null:
 return timeout();case BridgeModelCatalogError_Transport() when transport != null:
@@ -523,6 +529,38 @@ return closing();case _:
 }
 
 }
+
+/// @nodoc
+
+
+class BridgeModelCatalogError_TaskFailed extends BridgeModelCatalogError {
+  const BridgeModelCatalogError_TaskFailed(): super._();
+
+
+
+
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeModelCatalogError_TaskFailed);
+}
+
+
+@override
+int get hashCode => runtimeType.hashCode;
+
+@override
+String toString() {
+    return 'BridgeModelCatalogError.taskFailed()';
+}
+
+
+}
+
+
+
 
 /// @nodoc
 

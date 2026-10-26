@@ -10,6 +10,152 @@ class AppLocalizationsZh extends AppLocalizations {
   AppLocalizationsZh([String locale = 'zh']) : super(locale);
 
   @override
+  String get accountsStateStale => '连接已变化。当前账号重新被观察前显示旧数据，并保留你的输入。';
+
+  @override
+  String get accountsSavePending => '变更已受理，正在等待观察并持久保存此账号。';
+
+  @override
+  String get accountsUnknownSaveOutcome => '保存结果未知，已保留输入。请勿盲目提交新的替代请求。';
+
+  @override
+  String get accountsRequiredField => '请输入非空内容。';
+
+  @override
+  String get accountsDuplicateModel => '每个手动模型必须使用唯一的 ID。';
+
+  @override
+  String get accountsOutputBudget => '输出预算不能超过上下文窗口。';
+
+  @override
+  String get accountsOutputModalities => '输出模态';
+
+  @override
+  String get accountsSavedConnectionFailed => '账号已保存，但连接请求失败。';
+
+  @override
+  String get accountsTargetMissing => '此账号已不存在。';
+
+  @override
+  String get accountsStatusColumn => '状态';
+
+  @override
+  String get accountsBalanceColumn => '余额与额度';
+
+  @override
+  String get accountsSettingsSection => '账号设置';
+
+  @override
+  String get accountsAdvancedSection => '高级信息';
+
+  @override
+  String get accountsSyncModels => '同步模型';
+
+  @override
+  String get accountsSyncUnsupported => '此账号不支持发现模型。';
+
+  @override
+  String get accountsSyncingModels => '正在同步模型…';
+
+  @override
+  String get accountsQueryIdle => '尚未查询用量。';
+
+  @override
+  String get accountsQueryUnsupported => '此账号暂不支持用量查询。';
+
+  @override
+  String get accountsQueryFailed => '刷新用量失败。';
+
+  @override
+  String get accountsUsageLastGood => '已保留最近成功的数据。';
+
+  @override
+  String get accountsLoading => '正在加载账号…';
+
+  @override
+  String get accountsRetry => '重试';
+
+  @override
+  String get accountsAutomatic => '自动';
+
+  @override
+  String get accountsOverride => '覆盖';
+
+  @override
+  String get accountsBillingDisclaimer =>
+      '计费设置仅控制本应用的费用估算。「不计费」不表示供应商免费；订阅不保证额度有效，也不排除额外费用。';
+
+  @override
+  String get accountsSource => '来源';
+
+  @override
+  String get accountsVerifySignIn => '验证登录';
+
+  @override
+  String get accountsLowQuota => '剩余额度不足';
+
+  @override
+  String get accountsRemaining => '剩余';
+
+  @override
+  String get accountsPriceTiers => '阶梯价格';
+
+  @override
+  String get accountsPerformance => '性能样本';
+
+  @override
+  String get accountsEvaluations => '最近评价（最多 10 条）';
+
+  @override
+  String get accountsReadout => '加载性能与评价资料';
+
+  @override
+  String get accountsConnection => '连接方式';
+
+  @override
+  String get accountsHttp => 'HTTP';
+
+  @override
+  String get accountsWebSocket => 'WebSocket';
+
+  @override
+  String get accountsUnsavedTitle => '保存账号更改？';
+
+  @override
+  String get accountsUnsavedBody => '离开前保存、放弃更改，或继续编辑。保存失败时会保留当前输入。';
+
+  @override
+  String get accountsDiscard => '放弃更改';
+
+  @override
+  String get accountsKeepEditing => '继续编辑';
+
+  @override
+  String get accountsDirty => '尚未保存的更改';
+
+  @override
+  String get accountsTemplatePickerHint => '选择模型 API 账号或官方 ACP 接入。';
+
+  @override
+  String get accountsDeleteTitle => '删除此账号？';
+
+  @override
+  String get accountsDeleteBody =>
+      '检查引用后仅移除此账号，历史与账单保持不变。移除 ACP 接入不会退出官方程序的登录。';
+
+  @override
+  String get accountsBack => '返回账号列表';
+
+  @override
+  String get accountsClearSearch => '清除搜索';
+
+  @override
+  String get accountsShowCredential => '显示凭据';
+
+  @override
+  String get accountsHideCredential => '隐藏凭据';
+
+  @override
   String get promptAccepted => '已受理';
 
   @override
@@ -3395,7 +3541,7 @@ class AppLocalizationsZh extends AppLocalizations {
   String get settingsModelCatalogChecked => '上次检查';
 
   @override
-  String get settingsModelCatalogFailed => '启动时模型同步失败，继续使用当前列表。';
+  String get settingsModelCatalogFailed => '模型同步失败，继续使用当前列表。';
 
   @override
   String get settingsModelCatalogCacheWarning => '无法加载已保存的模型列表，当前使用内置列表。';

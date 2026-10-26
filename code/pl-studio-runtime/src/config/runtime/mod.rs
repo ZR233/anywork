@@ -24,11 +24,11 @@ pub struct ConfigRuntime {
     command_lock: Arc<Mutex<()>>,
     state: Arc<RwLock<RuntimeState>>,
     catalog_updates: tokio::sync::broadcast::Sender<CatalogChange>,
-    /// canonical Settings 提交的同步观察者（当前由 ACP 身份 owner 使用）。
+    /// canonical Settings 提交的同步观察者（ACP 身份与账号用量 owner）。
     ///
     /// 配置 owner 强持有该观察者，观察者自身只以 `Weak` 引用运行时 owner，因此不会形成
     /// ConfigRuntime ↔ 运行时 owner 的 `Arc` 环。
-    settings_observer: Arc<Mutex<Option<Arc<dyn SettingsCommitObserver>>>>,
+    settings_observer: Arc<Mutex<Vec<Arc<dyn SettingsCommitObserver>>>>,
     /// 配置 owner 持有的 canonical Agent Profiles 资源；命令路径扫描，查询只读缓存。
     profiles: AgentProfilesResource,
     /// 配置 owner 独占的 Mode 注册表；StudioRuntime 只持有同一 manager 的克隆。
@@ -43,6 +43,8 @@ struct RuntimeState {
     catalog: ModelCatalogRuntimeSnapshot,
     observations: BTreeMap<AccountId, Observation>,
     closing: bool,
+    /// Target delivery metadata from the original settings/catalog clocks; no business mirror.
+    account_projection_revisions: BTreeMap<pl_protocol::studio::AccountIdentity, (u64, u64)>,
 }
 
 /// canonical Settings 提交的同步观察者。
@@ -53,7 +55,7 @@ struct RuntimeState {
 /// 交错。
 pub(crate) trait SettingsCommitObserver: Send + Sync {
     /// 已提交的 canonical 设置 revision 与其内容。
-    fn settings_committed(&self, revision: u64, config: &StudioConfig);
+    fn settings_committed(&self, snapshot: &ConfigRuntimeSnapshot);
 }
 
 #[derive(Clone)]
@@ -119,6 +121,8 @@ impl std::fmt::Debug for ResolvedAgentProfile {
 /// Stable Settings owner failures used by transport adapters.
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigRuntimeError {
+    #[error("model discovery is unsupported for this account")]
+    ModelDiscoveryUnsupported,
     #[error(
         "bundled Agent product resources are invalid; startup must stop without data recovery: {0:#}"
     )]
@@ -138,6 +142,9 @@ type ConfigRuntimeResult<T> = std::result::Result<T, ConfigRuntimeError>;
 impl From<ConfigRuntimeError> for PureError {
     fn from(error: ConfigRuntimeError) -> Self {
         match error {
+            ConfigRuntimeError::ModelDiscoveryUnsupported => {
+                PureError::ConfigError("model discovery is unsupported".into())
+            }
             ConfigRuntimeError::Core(error) | ConfigRuntimeError::Migration(error) => error,
             ConfigRuntimeError::BundledAgentCatalog(error) => {
                 PureError::ConfigError(format!("bundled Agent resources are invalid: {error:#}"))
@@ -158,7 +165,7 @@ impl ConfigRuntime {
         crate::agent::catalog::validate_startup_entries()
             .map_err(|error| ConfigRuntimeError::BundledAgentCatalog(anyhow::Error::new(error)))?;
         let desired = store.load_for_startup()?;
-        let observations = model_catalog::reconcile(store.paths(), &desired, &BTreeMap::new())?;
+        let observations = model_catalog::reconcile(store.paths(), &desired, &BTreeMap::new(), 1)?;
         let config = effective_runtime_config(&desired, &observations)?;
         config.validate_declarations()?;
         super::AgentProfileCatalog::validate_for_startup(store.paths())?;
@@ -171,8 +178,9 @@ impl ConfigRuntime {
             store,
             command_lock: Arc::new(Mutex::new(())),
             catalog_updates,
-            settings_observer: Arc::new(Mutex::new(None)),
+            settings_observer: Arc::new(Mutex::new(Vec::new())),
             state: Arc::new(RwLock::new(RuntimeState {
+                account_projection_revisions: initial_account_projection_revisions(&desired),
                 desired: desired.clone(),
                 closing: false,
                 snapshot: ConfigRuntimeSnapshot {
@@ -209,6 +217,44 @@ impl ConfigRuntime {
             .map_err(|_| config_runtime_poisoned())
     }
 
+    /// Borrowed, bounded account projections. The closure must not do IO or reenter this owner.
+    /// Lock order is ConfigRuntime command/state before the ACP/usage projection owners.
+    pub(crate) fn with_account_projection<T>(
+        &self,
+        read: impl FnOnce(&ConfigRuntimeSnapshot, &ModelCatalogRuntimeSnapshot) -> T,
+    ) -> ConfigRuntimeResult<T> {
+        let _command = self
+            .command_lock
+            .lock()
+            .map_err(|_| config_runtime_poisoned())?;
+        let state = self.state.read().map_err(|_| config_runtime_poisoned())?;
+        Ok(read(&state.snapshot, &state.catalog))
+    }
+
+    pub(crate) fn account_configuration_revision(
+        &self,
+        identity: &pl_protocol::studio::AccountIdentity,
+    ) -> ConfigRuntimeResult<Option<u64>> {
+        let state = self.state.read().map_err(|_| config_runtime_poisoned())?;
+        Ok(state
+            .account_projection_revisions
+            .get(identity)
+            .map(|revisions| revisions.0))
+    }
+
+    pub(crate) fn account_catalog_revision(
+        &self,
+        account: &str,
+    ) -> ConfigRuntimeResult<Option<u64>> {
+        let state = self.state.read().map_err(|_| config_runtime_poisoned())?;
+        Ok(state
+            .account_projection_revisions
+            .get(&pl_protocol::studio::AccountIdentity::Native {
+                account_id: account.to_owned(),
+            })
+            .map(|revisions| revisions.1))
+    }
+
     /// Coherent configuration and directory watermarks from one owner read lock.
     pub fn read_with_catalog(
         &self,
@@ -228,15 +274,15 @@ impl ConfigRuntime {
             .command_lock
             .lock()
             .map_err(|_| config_runtime_poisoned())?;
-        let (revision, desired) = {
+        let snapshot = {
             let state = self.state.read().map_err(|_| config_runtime_poisoned())?;
-            (state.snapshot.revision, state.desired.clone())
+            state.snapshot.clone()
         };
-        *self
-            .settings_observer
+        self.settings_observer
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Arc::clone(&observer));
-        observer.settings_committed(revision, &desired);
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(Arc::clone(&observer));
+        observer.settings_committed(&snapshot);
         Ok(())
     }
 
@@ -274,14 +320,13 @@ impl ConfigRuntime {
 
     /// 在 command 锁内同步通知已提交的 canonical revision。
     fn notify_settings_committed(&self, snapshot: &ConfigRuntimeSnapshot) {
-        let observer = self
+        let observers = self
             .settings_observer
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .as_ref()
-            .cloned();
-        if let Some(observer) = observer {
-            observer.settings_committed(snapshot.revision, snapshot.canonical_config());
+            .clone();
+        for observer in observers {
+            observer.settings_committed(snapshot);
         }
     }
 
@@ -518,8 +563,12 @@ impl ConfigRuntime {
         for account in next_config.models.accounts.values_mut() {
             account.clear_model_catalog_overlay();
         }
-        let next_observations =
-            model_catalog::reconcile(self.store.paths(), &next_config, &observations)?;
+        let next_observations = model_catalog::reconcile(
+            self.store.paths(),
+            &next_config,
+            &observations,
+            current.revision.saturating_add(1),
+        )?;
         let effective = effective_runtime_config(&next_config, &next_observations)?;
         effective.validate_declarations()?;
         validate_changed_selections(&desired, &effective)?;
@@ -545,6 +594,7 @@ impl ConfigRuntime {
         };
         invalidate_observations(&observations, &next_observations);
         let mut state = self.state.write().map_err(|_| config_runtime_poisoned())?;
+        update_account_projection_revisions(&mut state, &next, &catalog);
         state.desired = next_config;
         state.observations = next_observations;
         state.snapshot = next.clone();
@@ -575,8 +625,12 @@ impl ConfigRuntime {
             .map_err(|_| config_runtime_poisoned())?
             .observations
             .clone();
-        let next_observations =
-            model_catalog::reconcile(self.store.paths(), &desired, &observations)?;
+        let next_observations = model_catalog::reconcile(
+            self.store.paths(),
+            &desired,
+            &observations,
+            current.revision.saturating_add(1),
+        )?;
         let config = effective_runtime_config(&desired, &next_observations)?;
         config.validate_declarations()?;
         super::AgentProfileCatalog::validate_for_startup(self.store.paths())?;
@@ -594,6 +648,7 @@ impl ConfigRuntime {
         };
         invalidate_observations(&observations, &next_observations);
         let mut state = self.state.write().map_err(|_| config_runtime_poisoned())?;
+        update_account_projection_revisions(&mut state, &next, &catalog);
         state.desired = desired;
         state.observations = next_observations;
         state.snapshot = next.clone();
@@ -605,6 +660,76 @@ impl ConfigRuntime {
         self.notify_settings_committed(&next);
         Ok(next)
     }
+}
+
+fn initial_account_projection_revisions(
+    config: &StudioConfig,
+) -> BTreeMap<pl_protocol::studio::AccountIdentity, (u64, u64)> {
+    use pl_protocol::studio::AccountIdentity;
+    config
+        .models
+        .accounts
+        .keys()
+        .map(|id| AccountIdentity::Native {
+            account_id: id.to_string(),
+        })
+        .chain(config.acp.accounts.keys().map(|id| AccountIdentity::Acp {
+            account_id: id.clone(),
+        }))
+        .map(|identity| (identity, (1, 1)))
+        .collect()
+}
+
+fn update_account_projection_revisions(
+    state: &mut RuntimeState,
+    next: &ConfigRuntimeSnapshot,
+    catalog: &ModelCatalogRuntimeSnapshot,
+) {
+    use pl_protocol::studio::AccountIdentity;
+    let mut revisions = BTreeMap::new();
+    for (id, account) in &next.canonical_config.models.accounts {
+        let identity = AccountIdentity::Native {
+            account_id: id.to_string(),
+        };
+        let old = state.account_projection_revisions.get(&identity).copied();
+        let same_config = state.desired.models.accounts.get(id) == Some(account)
+            && default_account_model(&state.desired, id)
+                == default_account_model(&next.canonical_config, id)
+            && state.snapshot.usage_query_revision(id) == next.usage_query_revision(id);
+        let same_catalog = state.snapshot.config.models.accounts.get(id)
+            == next.config.models.accounts.get(id)
+            && state.catalog.catalogs.get(id) == catalog.catalogs.get(id);
+        revisions.insert(
+            identity,
+            (
+                old.filter(|_| same_config)
+                    .map_or(next.revision, |value| value.0),
+                old.filter(|_| same_catalog)
+                    .map_or(catalog.revision, |value| value.1),
+            ),
+        );
+    }
+    for (id, account) in &next.canonical_config.acp.accounts {
+        let identity = AccountIdentity::Acp {
+            account_id: id.clone(),
+        };
+        let revision = state
+            .account_projection_revisions
+            .get(&identity)
+            .filter(|_| state.desired.acp.accounts.get(id) == Some(account))
+            .map_or(next.revision, |value| value.0);
+        revisions.insert(identity, (revision, 0));
+    }
+    state.account_projection_revisions = revisions;
+}
+
+fn default_account_model<'a>(config: &'a StudioConfig, id: &AccountId) -> Option<&'a str> {
+    config
+        .models
+        .routes
+        .values()
+        .find(|route| &route.account_id == id)
+        .map(|route| route.model_id.as_str())
 }
 
 fn next_usage_query_revisions(

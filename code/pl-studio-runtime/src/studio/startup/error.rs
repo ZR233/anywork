@@ -126,6 +126,9 @@ fn is_session_layout_migration(error: &anyhow::Error) -> bool {
 
 fn is_storage_migration(error: &anyhow::Error) -> bool {
     error.is::<StorageMigrationFailed>()
+        || error
+            .chain()
+            .any(|cause| cause.is::<crate::studio::AccountUsageCacheMigrationError>())
         || is_session_layout_migration(error)
         || error.chain().any(|cause| {
             cause.is::<StorageMigrationFailed>()

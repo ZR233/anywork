@@ -1,8 +1,7 @@
 import 'dart:convert';
 
-import '../../../anywork_client.dart'
-    show ReadModel, ResourceKind, ResourcePermit;
-import '../../../models.dart';
+import '../../anywork_client.dart' show ReadModel, ResourceKind, ResourcePermit;
+import '../../models.dart';
 import 'anywork_client.dart';
 import 'commands/command_lane.dart';
 

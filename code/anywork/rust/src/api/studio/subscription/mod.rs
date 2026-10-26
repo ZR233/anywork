@@ -31,6 +31,10 @@ use tokio::sync::{Mutex, mpsc};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
+use crate::api::studio::accounts::{
+    feed::BridgeAccountObservationInner,
+    registry::{AccountObservationRegistry, PendingAccountObservations},
+};
 use crate::api::studio::bridge_runtime::current_bridge;
 use crate::api::studio::handlers::StartupFrame;
 use crate::api::studio::statistics::{
@@ -349,6 +353,7 @@ pub(crate) struct BridgeTaskRegistry {
     /// tokens/receivers, not this inner.
     subscriptions: Mutex<HashMap<u64, Arc<BridgeSubscriptionInner>>>,
     statistics_feeds: StatisticsFeedRegistry,
+    account_observations: AccountObservationRegistry,
 }
 
 /// Live bridge-owned content subscriptions captured by the broadcast phase and joined later within
@@ -357,14 +362,28 @@ pub(crate) struct PendingSubscriptionCancellation {
     owners: Vec<Arc<BridgeSubscriptionInner>>,
     issues: Vec<BridgeShutdownIssue>,
     statistics: PendingStatisticsFeedCancellation,
+    accounts: PendingAccountObservations,
 }
 
 impl BridgeTaskRegistry {
+    pub(crate) fn register_account_observation(
+        &self,
+        owner: &Arc<BridgeAccountObservationInner>,
+        shutdown: &CancellationToken,
+    ) -> Result<(), BridgeError> {
+        self.account_observations.register(owner, shutdown)
+    }
+
+    pub(crate) fn unregister_account_observation(&self, id: u64) {
+        self.account_observations.unregister(id);
+    }
+
     pub(crate) fn new() -> Self {
         Self {
             next_id: AtomicU64::new(1),
             subscriptions: Mutex::new(HashMap::new()),
             statistics_feeds: StatisticsFeedRegistry::new(),
+            account_observations: AccountObservationRegistry::default(),
         }
     }
 
@@ -420,6 +439,7 @@ impl BridgeTaskRegistry {
         &self,
         deadline: Instant,
     ) -> PendingSubscriptionCancellation {
+        let accounts = self.account_observations.broadcast_cancel();
         let mut issues = Vec::new();
         // Bound the registry lock by the shared exit deadline; a lock timeout must not stall exit.
         let subscriptions = {
@@ -449,6 +469,7 @@ impl BridgeTaskRegistry {
             owners: subscriptions,
             issues,
             statistics,
+            accounts,
         }
     }
 
@@ -465,12 +486,15 @@ impl BridgeTaskRegistry {
             owners,
             issues,
             statistics,
+            accounts,
         } = pending;
-        let (mut subscription_issues, statistics_issues) = tokio::join!(
+        let (mut subscription_issues, statistics_issues, account_issues) = tokio::join!(
             self.join_subscription_cancellations(owners, issues, deadline),
             self.statistics_feeds.join_cancelled(statistics, deadline),
+            self.account_observations.join_cancelled(accounts, deadline),
         );
         subscription_issues.extend(statistics_issues);
+        subscription_issues.extend(account_issues);
         subscription_issues
     }
 

@@ -1,11 +1,12 @@
 import 'package:riverpod_annotation/riverpod_annotation.dart';
 
 import '../../presentation/providers/client_provider.dart';
+import '../../presentation/providers/account_domains.dart';
 import '../../presentation/providers/lsp_store.dart';
 import '../../presentation/providers/mode_catalog_store.dart';
 import '../../presentation/providers/observe_client.dart';
 import '../../presentation/providers/thread_directory_store.dart';
-import '../settings/settings_views.dart';
+import '../../presentation/providers/settings_store.dart';
 
 import 'package:anywork_client/studio_client.dart';
 
@@ -43,7 +44,8 @@ List<LspServerStateView> statusLspServers(Ref ref) {
 StatusBarView? statusBarView(Ref ref, String threadId) {
   final thread = _directoryThread(ref, threadId);
   if (thread == null) return null;
-  final catalog = ref.watch(settingsAccountsViewProvider);
+  final accounts = ref.watch(modelSelectionAccountsProvider);
+  final roles = ref.watch(settingsStoreProvider).canonical?.roles;
   final chrome =
       _observeSession(
         ref,
@@ -61,8 +63,8 @@ StatusBarView? statusBarView(Ref ref, String threadId) {
       );
   return StatusBarView(
     thread: thread,
-    accounts: catalog.accounts,
-    roles: catalog.canonical?.roles ?? const [],
+    accounts: accounts,
+    roles: roles ?? const [],
     isBusy: chrome.isBusy,
     modelRoute: chrome.modelRoute,
     workflowRun: chrome.workflowRun,
@@ -87,7 +89,7 @@ CommandStatus? statusCompactionCommand(Ref ref, String threadId) {
 
 @riverpod
 StudioContextProjection? statusContextProjection(Ref ref, String threadId) {
-  final accounts = ref.watch(settingsAccountsViewProvider).accounts;
+  final accounts = ref.watch(modelSelectionAccountsProvider);
   return _observeSession(
     ref,
     threadId,

@@ -390,6 +390,23 @@ pub struct AccountUsageRecord {
 }
 
 impl AccountUsageRecord {
+    /// Read-only adapter for the current owner's richer per-account state.
+    pub(crate) fn from_projection(
+        account_id: String,
+        revision: u64,
+        updated_at: i64,
+        operation_id: String,
+        state: AccountUsageState,
+    ) -> Self {
+        Self {
+            account_id,
+            revision,
+            updated_at,
+            last_operation_id: operation_id,
+            state,
+        }
+    }
+
     pub fn new(account_id: impl Into<String>) -> Self {
         Self {
             account_id: account_id.into(),

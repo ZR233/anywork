@@ -47,6 +47,7 @@ class _DartSubscription {
     this._release,
     this._onDrained, {
     this.externallyCoordinated = false,
+    this.retryFailedRelease = false,
   });
 
   final String stage;
@@ -57,6 +58,7 @@ class _DartSubscription {
   /// 强持有它直到真正 ACK（阻止 GC / safeDispose 并发），但通用 `cancelDartSubscriptions`
   /// 汇总不重复 cancel / settle，避免两份取消事实与重复 issue。
   final bool externallyCoordinated;
+  final bool retryFailedRelease;
 
   final Completer<void> _created = Completer<void>();
   Future<void>? _cancellation;
@@ -116,6 +118,7 @@ class _DartSubscription {
           // 保留 pending owner，但保留具体（脱敏）错因与堆栈供同步诊断。
           _error ??= error;
           _stackTrace ??= stackTrace;
+          if (retryFailedRelease) _cancellation = null;
         },
       ),
     );
@@ -181,55 +184,129 @@ class _BeginExitOutcome {
   final StackTrace? stackTrace;
 }
 
-frb.AccountInput _accountInputFromCommand(AccountCommand account) {
-  return frb.AccountInput(
-    accountId: account.id,
-    templateId: account.templateId,
-    protocol: account.protocol,
-    name: account.name,
-    baseUrl: account.baseUrl,
-    secret: switch (account.secret.action) {
+frb.AccountModelInput _manualModelInput(AccountModelCommand model) =>
+    frb.AccountModelInput(
+      modelId: model.modelId,
+      displayName: model.displayName,
+      wireApi: model.wireApi,
+      contextWindow: model.contextWindow == null
+          ? null
+          : BigInt.from(model.contextWindow!),
+      maxOutputTokens: model.maxOutputTokens == null
+          ? null
+          : BigInt.from(model.maxOutputTokens!),
+    );
+frb.AccountSecretInput _secretInput(AccountSecretCommand secret) =>
+    switch (secret.action) {
       AccountSecretAction.preserve => const frb.AccountSecretInput.preserve(),
-      AccountSecretAction.replace => frb.AccountSecretInput.replace(
-        value: account.secret.value!,
-      ),
       AccountSecretAction.clear => const frb.AccountSecretInput.clear(),
-    },
-    initialBillingKind: account.initialBillingKind == null
-        ? null
-        : _billingKindToFrb(account.initialBillingKind!),
-    customModels: [
-      for (final model in account.customModels)
-        frb.AccountModelInput(
-          modelId: model.modelId,
-          displayName: model.displayName,
-          wireApi: model.wireApi,
-          contextWindow: model.contextWindow == null
-              ? null
-              : BigInt.from(model.contextWindow!),
-          maxOutputTokens: model.maxOutputTokens == null
-              ? null
-              : BigInt.from(model.maxOutputTokens!),
+      AccountSecretAction.replace => frb.AccountSecretInput.replace(
+        value: secret.value ?? '',
+      ),
+    };
+frb_accounts.BridgeAccountTextPatch _textPatchInput(AccountTextPatch patch) =>
+    switch (patch) {
+      AccountTextKeep() => const frb_accounts.BridgeAccountTextPatch.keep(),
+      AccountTextSet(:final value) => frb_accounts.BridgeAccountTextPatch.set_(
+        value: value,
+      ),
+      AccountTextRestore() =>
+        const frb_accounts.BridgeAccountTextPatch.restore(),
+    };
+
+final class _FrbAccountDomainObservation implements AccountDomainObservation {
+  _FrbAccountDomainObservation(this.transport, this.target) {
+    registration = _DartSubscription(
+      'account-observation:${target.key}',
+      _release,
+      transport._forgetDartSubscription,
+      retryFailedRelease: true,
+    );
+    transport._trackDartSubscription(registration);
+  }
+  final FrbStudioTransport transport;
+  final AccountObservationTarget target;
+  late final _DartSubscription registration;
+  final Completer<void> _opened = Completer<void>();
+  frb_account_feed.BridgeAccountObservation? _handle;
+  Future<AccountDomainFrame?>? _next;
+  bool _stop = false;
+
+  Future<void> open() async {
+    try {
+      final handle = await FrbStudioTransport._bridgeCall(
+        () => frb_account_feed.openAccountObservation(
+          target: _accountTargetToFrb(target),
         ),
-    ],
-    modelConnectionModes: [
-      for (final model in account.modelConnectionModes)
-        frb.AccountModelConnectionInput(
-          modelId: model.modelId,
-          connectionMode: model.connectionMode,
-        ),
-    ],
-    modelAutoCompactLimits: [
-      for (final limit in account.modelAutoCompactLimits)
-        frb.AccountModelAutoCompactInput(
-          modelId: limit.modelId,
-          limit: BigInt.from(limit.limit),
-        ),
-    ],
-  );
+      );
+      _handle = handle;
+      if (_stop || registration.cancelRequested) handle.requestClose();
+    } finally {
+      _opened.complete();
+      registration.markCreated();
+    }
+  }
+
+  @override
+  Future<AccountDomainFrame?> next() {
+    if (_stop || registration.cancelRequested) return Future.value(null);
+    if (_next != null) {
+      return Future.error(StateError('Account next is already in flight'));
+    }
+    final work = () async {
+      await _opened.future;
+      final handle = _handle;
+      if (handle == null || _stop || registration.cancelRequested) return null;
+      final frame = await FrbStudioTransport._bridgeCall(handle.next);
+      return frame == null ? null : _accountFrameFromFrb(frame);
+    }();
+    _next = work;
+    unawaited(
+      work.then<void>(
+        (_) {
+          _next = null;
+        },
+        onError: (Object _, StackTrace _) {
+          _next = null;
+        },
+      ),
+    );
+    return work;
+  }
+
+  @override
+  void requestClose() {
+    _stop = true;
+    _handle?.requestClose();
+  }
+
+  Future<void> _release() async {
+    requestClose();
+    await _opened.future;
+    final handle = _handle;
+    if (handle != null) {
+      handle.requestClose();
+      await FrbStudioTransport._bridgeCall(handle.close);
+    }
+    final pending = _next;
+    if (pending != null) {
+      await pending.then<void>((_) {}, onError: (Object _, StackTrace _) {});
+    }
+  }
+
+  @override
+  Future<void> close() => registration.beginCancel();
 }
 
-class FrbStudioTransport implements StudioTransport, PersistenceQueueReader {
+class FrbStudioTransport
+    implements
+        StudioTransport,
+        PersistenceQueueReader,
+        AccountFeedPort,
+        AccountConfigurationPort,
+        AccountModelsPort,
+        AccountUsagePort,
+        AcpPort {
   static final startupProgress = ValueNotifier(
     StudioStartupPhase.loadingBridge,
   );
@@ -239,6 +316,177 @@ class FrbStudioTransport implements StudioTransport, PersistenceQueueReader {
   Future<RecoveryStateSnapshot> retryRecovery() async {
     await _ensureReady();
     return _recoveryStateFromFrb(await _bridgeCall(frb.retryRecovery));
+  }
+
+  @override
+  Future<AccountDomainObservation> openAccountObservation(
+    AccountObservationTarget target,
+  ) async {
+    await _ensureReady();
+    if (_dartSubscriptionsSealed) {
+      throw StateError('Studio transport is closed');
+    }
+    final observation = _FrbAccountDomainObservation(this, target);
+    try {
+      await observation.open();
+      return observation;
+    } catch (_) {
+      unawaited(
+        observation.close().then<void>(
+          (_) {},
+          onError: (Object _, StackTrace _) {},
+        ),
+      );
+      rethrow;
+    }
+  }
+
+  @override
+  Future<AccountDomainFrame> readAccountDomain(
+    AccountObservationTarget target,
+  ) async {
+    await _ensureReady();
+    return _accountFrameFromFrb(
+      await _bridgeCall(
+        () => frb_account_feed.readAccountDomain(
+          target: _accountTargetToFrb(target),
+        ),
+      ),
+    );
+  }
+
+  @override
+  Future<SettingsCommandReply> patchAccount(
+    int revision,
+    PatchAccountCommand command, {
+    required OperationId operationId,
+  }) async {
+    await _ensureReady();
+    return _settingsCommandReplyFromFrb(
+      await _bridgeCall(
+        () => frb_account_commands.patchAccount(
+          operationId: operationId.value,
+          expectedSettingsRevision: BigInt.from(revision),
+          accountId: command.identity.accountId,
+          input: frb_accounts.BridgePatchAccountInput(
+            name: _textPatchInput(command.name),
+            baseUrl: _textPatchInput(command.baseUrl),
+            templateId: _textPatchInput(command.templateId),
+            protocol: _textPatchInput(command.protocol),
+            secret: _secretInput(command.secret),
+            customModels: switch (command.customModels) {
+              AccountModelsKeep() =>
+                const frb_accounts.BridgeAccountModelsPatch.keep(),
+              AccountModelsRestore() =>
+                const frb_accounts.BridgeAccountModelsPatch.restore(),
+              AccountModelsSet(:final models) =>
+                frb_accounts.BridgeAccountModelsPatch.set_(
+                  models: models.map(_manualModelInput).toList(),
+                ),
+            },
+          ),
+        ),
+      ),
+    );
+  }
+
+  @override
+  Future<SettingsCommandReply> setAccountModelAutoCompact(
+    int revision,
+    AccountModelIdentity identity,
+    AutoCompactIntent intent, {
+    required OperationId operationId,
+  }) async {
+    await _ensureReady();
+    return _settingsCommandReplyFromFrb(
+      await _bridgeCall(
+        () => frb_account_commands.setAccountModelAutoCompact(
+          operationId: operationId.value,
+          expectedSettingsRevision: BigInt.from(revision),
+          accountId: identity.accountId,
+          modelId: identity.modelId,
+          intent: switch (intent) {
+            SetAutoCompactLimit(:final limit) =>
+              frb_accounts.BridgeAutoCompactIntent.set_(
+                limit: BigInt.from(limit),
+              ),
+            ClearAutoCompactLimit() =>
+              const frb_accounts.BridgeAutoCompactIntent.clear(),
+          },
+        ),
+      ),
+    );
+  }
+
+  @override
+  Future<SettingsCommandReply> setAccountModelConnection(
+    int revision,
+    AccountModelIdentity identity,
+    ModelConnectionIntent intent, {
+    required OperationId operationId,
+  }) async {
+    await _ensureReady();
+    return _settingsCommandReplyFromFrb(
+      await _bridgeCall(
+        () => frb_account_commands.setAccountModelConnection(
+          operationId: operationId.value,
+          expectedSettingsRevision: BigInt.from(revision),
+          accountId: identity.accountId,
+          modelId: identity.modelId,
+          intent: switch (intent) {
+            SetModelConnection(:final mode) =>
+              frb_accounts.BridgeModelConnectionIntent.set_(
+                mode: switch (mode) {
+                  AccountConnectionMode.http =>
+                    frb_accounts.BridgeAccountConnectionMode.http,
+                  AccountConnectionMode.webSocket =>
+                    frb_accounts.BridgeAccountConnectionMode.webSocket,
+                },
+              ),
+            ClearModelConnection() =>
+              const frb_accounts.BridgeModelConnectionIntent.clear(),
+          },
+        ),
+      ),
+    );
+  }
+
+  @override
+  Future<ModelSyncAdmission> syncAccountModels(
+    NativeAccountIdentity identity, {
+    required OperationId operationId,
+  }) async {
+    await _ensureReady();
+    final reply = await _bridgeCall(
+      () => frb_account_commands.syncAccountModels(
+        operationId: operationId.value,
+        accountId: identity.accountId,
+      ),
+    );
+    return ModelSyncAdmission(
+      operationId: OperationId(reply.operationId),
+      account: NativeAccountIdentity(reply.accountId),
+      queryGeneration: reply.queryGeneration.toInt(),
+      joinedExisting: reply.joinedExisting,
+    );
+  }
+
+  @override
+  Future<AccountUsageFrame> queryAccountUsage(
+    NativeAccountIdentity identity,
+  ) async {
+    await _ensureReady();
+    final frame = _accountFrameFromFrb(
+      await _bridgeCall(
+        () => frb_account_commands.checkAccountUsage(
+          accountId: identity.accountId,
+        ),
+      ),
+    );
+    if (frame is! AccountUsageFrame) {
+      throw StateError('Usage query returned another domain');
+    }
+    return frame;
   }
 
   static Future<void>? _initFuture;
@@ -1033,12 +1281,6 @@ class FrbStudioTransport implements StudioTransport, PersistenceQueueReader {
   }
 
   @override
-  Future<AcpAuthSnapshotView> readAcpAuthState() async {
-    await _ensureReady();
-    return _acpAuthSnapshotFromFrb(await _bridgeCall(frb.readAcpAuthState));
-  }
-
-  @override
   Future<AcpAuthCommandReply> startAcpAuth({
     required OperationId operationId,
     required String accountId,
@@ -1073,14 +1315,6 @@ class FrbStudioTransport implements StudioTransport, PersistenceQueueReader {
           targetOperationId: targetOperationId.value,
         ),
       ),
-    );
-  }
-
-  @override
-  Future<AcpInstallSnapshotView> readAcpInstallState() async {
-    await _ensureReady();
-    return _acpInstallSnapshotFromFrb(
-      await _bridgeCall(frb.readAcpInstallState),
     );
   }
 
@@ -2330,19 +2564,46 @@ class FrbStudioTransport implements StudioTransport, PersistenceQueueReader {
   }
 
   @override
-  Future<SettingsCommandReply> saveAccount(
+  Future<SettingsCommandReply> createAccount(
     int expectedSettingsRevision,
-    AccountCommand command, {
+    CreateAccountCommand command, {
     required OperationId operationId,
   }) async {
     await _ensureReady();
     return _settingsCommandReplyFromFrb(
       await _bridgeCall(
-        () => frb.saveAccount(
+        () => frb.createAccount(
           operationId: operationId.value,
           expectedSettingsRevision: BigInt.from(expectedSettingsRevision),
           input: frb.AccountSettingsInput(
-            account: _accountInputFromCommand(command),
+            account: frb.AccountInput(
+              accountId: command.identity.accountId,
+              templateId: command.templateId,
+              protocol: command.protocol,
+              name: command.name,
+              baseUrl: command.baseUrl,
+              secret: _secretInput(command.secret),
+              initialBillingKind: command.initialBillingKind == null
+                  ? null
+                  : _billingKindToFrb(command.initialBillingKind!),
+              customModels: command.customModels
+                  .map(_manualModelInput)
+                  .toList(),
+              modelConnectionModes: [
+                for (final connection in command.modelConnectionModes)
+                  frb.AccountModelConnectionInput(
+                    modelId: connection.modelId,
+                    connectionMode: connection.connectionMode,
+                  ),
+              ],
+              modelAutoCompactLimits: [
+                for (final compact in command.modelAutoCompactLimits)
+                  frb.AccountModelAutoCompactInput(
+                    modelId: compact.modelId,
+                    limit: BigInt.from(compact.limit),
+                  ),
+              ],
+            ),
           ),
         ),
       ),
@@ -2506,14 +2767,6 @@ class FrbStudioTransport implements StudioTransport, PersistenceQueueReader {
   Future<SettingsStateSnapshot> readSettingsState() async {
     await _ensureReady();
     return _settingsStateFromFrb(await _bridgeCall(frb.readSettingsState));
-  }
-
-  @override
-  Future<AccountUsageStateSnapshot> checkAccountUsage(String accountId) async {
-    await _ensureReady();
-    return _accountUsageStateFromFrb(
-      await _bridgeCall(() => frb.checkAccountUsage(accountId: accountId)),
-    );
   }
 
   @override

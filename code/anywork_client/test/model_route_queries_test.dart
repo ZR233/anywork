@@ -1,6 +1,8 @@
 import 'package:anywork_client/studio_client.dart';
 import 'package:test/test.dart';
 
+import 'support/accounts_test_runtime.dart';
+
 void main() {
   test(
     'typed model queries preserve full catalogs and configured excluded routes',
@@ -25,7 +27,7 @@ void main() {
         ['observed-model'],
       );
       final role = ModelRouteQueries.roleRoute(
-        accounts: [mixed],
+        accounts: selectionAccounts([mixed]),
         roles: const [
           RoleSettingsView(
             key: 'worker',
@@ -45,11 +47,11 @@ void main() {
       );
       expect(
         ModelRouteQueries.roleRoute(
-          accounts: [
+          accounts: selectionAccounts([
             mixed.copyWith(
               models: [unknown.copyWith(enabled: false), eligible],
             ),
-          ],
+          ]),
           roles: const [
             RoleSettingsView(
               key: 'worker',
@@ -64,13 +66,16 @@ void main() {
         reason: 'Explicit unified disablement still blocks a configured route',
       );
       expect(
-        ModelRouteQueries.newAgentProfileRoute([mixed]).modelId,
+        ModelRouteQueries.newAgentProfileRoute(selectionAccounts([mixed]))
+            .modelId,
         'observed-model',
       );
       expect(
-        ModelRouteQueries.newAgentProfileRoute([
-          mixed.copyWith(models: [unknown]),
-        ]).modelId,
+        ModelRouteQueries.newAgentProfileRoute(
+          selectionAccounts([
+            mixed.copyWith(models: [unknown]),
+          ]),
+        ).modelId,
         isEmpty,
       );
     },
@@ -96,7 +101,7 @@ void main() {
     final display = ModelRouteQueries.threadRoute(
       canonical: canonical,
       command: pending,
-      accounts: [_account],
+      accounts: selectionAccounts([_account]),
     )!;
     expect(display.modelId, 'removed-model');
     expect(display.effort, 'high');
@@ -138,7 +143,7 @@ void main() {
     expect(route.pending, isFalse);
 
     final configured = ModelRouteQueries.roleRoute(
-      accounts: [_account],
+      accounts: selectionAccounts([_account]),
       roles: const [
         RoleSettingsView(
           key: 'reviewer',
@@ -154,7 +159,7 @@ void main() {
     expect(configured.unavailable, isTrue);
     expect(configured.hasConfiguredRoute, isTrue);
     final unconfigured = ModelRouteQueries.roleRoute(
-      accounts: [_account],
+      accounts: selectionAccounts([_account]),
       roles: const [],
       role: 'new-agent',
     );
@@ -162,7 +167,7 @@ void main() {
     expect(unconfigured.effort, 'medium');
     expect(unconfigured.hasConfiguredRoute, isFalse);
     final configuredDefault = ModelRouteQueries.roleRoute(
-      accounts: [_account],
+      accounts: selectionAccounts([_account]),
       roles: const [
         RoleSettingsView(
           key: 'worker',

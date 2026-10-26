@@ -65,6 +65,7 @@ impl StudioErrorCode {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub enum StudioErrorReason {
+    AccountModelDiscoveryUnsupported,
     /// 用户不能对子会话发送、继续或提交；子会话的执行由主智能体调度。
     ChildThreadRequiresParentScheduling,
     /// 目标会话当前没有可认领的继续点。
@@ -89,6 +90,7 @@ impl StudioErrorReason {
     /// 稳定 camelCase 标签，与序列化结果一致。
     pub const fn label(self) -> &'static str {
         match self {
+            Self::AccountModelDiscoveryUnsupported => "accountModelDiscoveryUnsupported",
             Self::ChildThreadRequiresParentScheduling => "childThreadRequiresParentScheduling",
             Self::ContinuationUnavailable => "continuationUnavailable",
             Self::ContinuationClaimed => "continuationClaimed",

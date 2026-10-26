@@ -10,7 +10,7 @@ import '../../domain/models/agent_list_stop.dart';
 import '../../domain/models/agent_membership.dart';
 import '../../l10n/studio_l10n.dart';
 import '../../presentation/providers/client_provider.dart';
-import '../../presentation/providers/settings_store.dart';
+import '../../presentation/providers/account_domains.dart';
 import '../../shared/studio_driver_keys.dart';
 
 /// 智能体切换列表。
@@ -377,9 +377,7 @@ class _AgentSwitcherMenuState extends ConsumerState<AgentSwitcherMenu> {
               : context.roleLabel(role));
     final frozen = agent.frozenModel ?? thread?.frozenModel;
     final account = ref
-        .watch(settingsStoreProvider)
-        .canonical
-        ?.accounts
+        .watch(modelSelectionAccountsProvider)
         .where((account) => account.id == frozen?.accountId)
         .firstOrNull;
     final descriptor = account?.models

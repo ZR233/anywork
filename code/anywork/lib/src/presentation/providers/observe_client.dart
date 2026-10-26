@@ -15,7 +15,11 @@ final class ClientObservationFailure implements Exception {
 
 /// Registers a read-only observer and reads its current snapshot synchronously.
 /// Ref owns only this observer and its budget permit, never the Client resource.
-T observeClient<T>(Ref ref, LatestValue<T> source, void Function(T) onUpdate) {
+T observeClient<T>(
+  Ref ref,
+  ValueObservation<T> source,
+  void Function(T) onUpdate,
+) {
   final permit = ref
       .read(anyworkClientProvider)
       .budget

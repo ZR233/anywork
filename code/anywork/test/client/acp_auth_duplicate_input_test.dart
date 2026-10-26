@@ -1,191 +1,264 @@
-import 'package:anywork/src/features/settings/settings_acp_account_details.dart';
+import 'package:anywork/src/features/settings/accounts/view_models/acp_account_view_model.dart';
+import 'package:anywork/src/features/settings/accounts/view_models/acp_command_notice.dart';
+import 'package:anywork/src/features/settings/accounts/state/account_presentations.dart';
 import 'package:anywork_client/studio_client.dart';
+import 'package:anywork_client/accounts.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-/// 认证命令的 `busy` 何时只是“重复输入”（同账号同连接身份下已有 canonical 在途
-/// 操作），何时必须照常呈现失败。
-///
-/// 说明：生产 tab 只把该判定委托给 [isAcpAuthDuplicateWhileInFlight]，本文件直接
-/// 驱动同一份生产规则；不声称覆盖完整 `AccountsTab` 挂载（那需要整套设置页壳层与
-/// 权限 scope 装配）。
-void main() {
-  AcpAccountEntryView entry(
-    String id,
-    AcpAuthStateView state, {
-    int connectionRevision = 1,
-  }) => AccountDirectoryView.from(
-    acpAccounts: [
-      AcpAccountSettingsView(
-        accountId: id,
-        name: id.toUpperCase(),
-        provider: AcpProviderView.antigravity,
-        connectionRevision: connectionRevision,
-      ),
-    ],
-    auth: AcpAuthSnapshotView(
-      revision: 1,
-      updatedAt: 1,
-      accounts: [
-        AcpAuthAccountView(
-          accountId: id,
-          connectionRevision: connectionRevision,
-          state: state,
-        ),
-      ],
-    ),
-  ).acpEntries.single;
+import 'accounts_view_models_test.dart';
 
+void main() {
   const busy = StudioFailure(
     code: StudioFailureCode.busy,
-    message: 'An ACP authentication operation is already active',
-    retryable: false,
-    correlationId: 'test-acp-busy',
+    message: 'Busy',
+    retryable: true,
+    correlationId: 'test',
   );
-
-  test('同账号同连接身份且 canonical 在途 → 是重复输入', () {
-    for (final state in <AcpAuthStateView>[
-      const AcpCheckingState(operationId: 'op-check'),
-      const AcpAuthenticatingState(operationId: 'op-auth', methodId: 'browser'),
-      const AcpVerifyingState(operationId: 'op-verify'),
-      const AcpCancellingState(operationId: 'op-cancel'),
-    ]) {
-      final target = entry('a', state);
+  const failed = StudioFailure(
+    code: StudioFailureCode.unavailable,
+    message: 'Start failed',
+    retryable: true,
+    correlationId: 'start',
+  );
+  test(
+    'late authentication failure cannot bind a newer canonical operation',
+    () async {
+      final h = AccountsVmHarness();
+      addTearDown(h.dispose);
+      publishVmAcp(h, const AcpUncheckedState());
+      final owner = await listenVmAcp(h, vmAcpKey);
+      final checking = owner.authenticate();
+      publishVmAcp(h, const AcpCheckingState(operationId: 'old'));
+      publishVmAcp(h, const AcpCancelledState());
+      publishVmAcp(h, const AcpCheckingState(operationId: 'new'));
+      h.acp.authStarts.single.completeError(failed);
+      await checking;
+      final panel = h.container
+          .read(acpAccountViewModelProvider(vmAcpKey))
+          .requireValue
+          .panel;
+      expect(panel.error, isNull);
+      expect(panel.phase, AcpPresentationPhase.checking);
+      expect(
+        panel.availableActions,
+        contains(AcpAccountAction.cancelAuthentication),
+      );
+    },
+  );
+  test(
+    'a replaced authentication attempt cannot clear a newer local start',
+    () async {
+      final h = AccountsVmHarness();
+      addTearDown(h.dispose);
+      publishVmAcp(h, const AcpUncheckedState());
+      final owner = await listenVmAcp(h, vmAcpKey);
+      final first = owner.authenticate();
+      publishVmAcp(h, const AcpCheckingState(operationId: 'old'));
+      publishVmAcp(h, const AcpCancelledState());
+      publishVmAcp(h, const AcpCheckingState(operationId: 'replacement'));
+      publishVmAcp(h, const AcpCancelledState());
+      final second = owner.authenticate();
+      expect(h.acp.authStarts, hasLength(2));
+      h.acp.authStarts.first.completeError(failed);
+      await first;
+      var panel = h.container
+          .read(acpAccountViewModelProvider(vmAcpKey))
+          .requireValue
+          .panel;
+      expect(panel.error, isNull);
+      expect(panel.availableActions, isNot(contains(AcpAccountAction.check)));
+      publishVmAcp(h, const AcpCheckingState(operationId: 'current'));
+      h.acp.authStarts.last.completeError(failed);
+      await second;
+      panel = h.container
+          .read(acpAccountViewModelProvider(vmAcpKey))
+          .requireValue
+          .panel;
+      expect(panel.error, failed.message);
+    },
+  );
+  test('current authentication failures remain visible before and after its operation is observed', () async {
+    final h = AccountsVmHarness();
+    addTearDown(h.dispose);
+    publishVmAcp(h, const AcpUncheckedState());
+    final owner = await listenVmAcp(h, vmAcpKey);
+    var checking = owner.authenticate();
+    h.acp.authStarts.single.completeError(failed);
+    await checking;
+    expect(
+      h.container
+          .read(acpAccountViewModelProvider(vmAcpKey))
+          .requireValue
+          .panel
+          .error,
+      failed.message,
+    );
+    checking = owner.authenticate();
+    publishVmAcp(h, const AcpCheckingState(operationId: 'current'));
+    // A different account's snapshot revision cannot retire this target intent.
+    h.acp.auth.publish(
+      const AccountResource(
+        stamp: vmStamp,
+        value: AcpAuthSnapshotView(
+          revision: 2,
+          updatedAt: 2,
+          accounts: [
+            AcpAuthAccountView(
+              accountId: 'acp',
+              connectionRevision: 1,
+              state: AcpCheckingState(operationId: 'current'),
+            ),
+            AcpAuthAccountView(
+              accountId: 'another-account',
+              connectionRevision: 2,
+              state: AcpCheckingState(operationId: 'unrelated'),
+            ),
+          ],
+        ),
+      ),
+    );
+    h.acp.authStarts.last.completeError(failed);
+    await checking;
+    expect(
+      h.container
+          .read(acpAccountViewModelProvider(vmAcpKey))
+          .requireValue
+          .panel
+          .error,
+      failed.message,
+    );
+  });
+  test(
+    'only typed busy for this exact live account connection is duplicate input',
+    () {
+      for (final auth in <AcpAuthStateView>[
+        const AcpCheckingState(operationId: 'check'),
+        const AcpAuthenticatingState(operationId: 'auth', methodId: 'browser'),
+        const AcpVerifyingState(operationId: 'verify'),
+        const AcpCancellingState(operationId: 'cancel'),
+        const AcpClosingState(operationId: 'close'),
+      ]) {
+        expect(
+          isAcpAuthDuplicateWhileInFlight(
+            error: busy,
+            accountId: 'acp',
+            requestConnectionRevision: 1,
+            account: vmAcpAccount,
+            auth: auth,
+          ),
+          isTrue,
+        );
+        expect(
+          isAcpAuthDuplicateWhileInFlight(
+            error: busy,
+            accountId: 'other',
+            requestConnectionRevision: 1,
+            account: vmAcpAccount,
+            auth: auth,
+          ),
+          isFalse,
+        );
+        expect(
+          isAcpAuthDuplicateWhileInFlight(
+            error: busy,
+            accountId: 'acp',
+            requestConnectionRevision: 2,
+            account: vmAcpAccount,
+            auth: auth,
+          ),
+          isFalse,
+        );
+      }
+      for (final auth in <AcpAuthStateView>[
+        const AcpUncheckedState(),
+        const AcpCancelledState(),
+        const AcpRequiredState(server: null),
+        const AcpVerifiedState(checkedAt: 10, server: null),
+      ]) {
+        expect(
+          isAcpAuthDuplicateWhileInFlight(
+            error: busy,
+            accountId: 'acp',
+            requestConnectionRevision: 1,
+            account: vmAcpAccount,
+            auth: auth,
+          ),
+          isFalse,
+        );
+      }
+      for (final error in <Object>[
+        StateError('transport'),
+        const StudioFailure(
+          code: StudioFailureCode.conflict,
+          message: 'Changed',
+          retryable: false,
+          correlationId: 'test',
+        ),
+        const StudioFailure(
+          code: StudioFailureCode.cancellationTooLate,
+          message: 'Closing',
+          retryable: false,
+          correlationId: 'test',
+        ),
+      ]) {
+        expect(
+          isAcpAuthDuplicateWhileInFlight(
+            error: error,
+            accountId: 'acp',
+            requestConnectionRevision: 1,
+            account: vmAcpAccount,
+            auth: const AcpCheckingState(operationId: 'check'),
+          ),
+          isFalse,
+        );
+      }
       expect(
         isAcpAuthDuplicateWhileInFlight(
           error: busy,
-          accountId: 'a',
+          accountId: 'acp',
           requestConnectionRevision: 1,
-          entry: target,
+          account: null,
+          auth: const AcpCheckingState(operationId: 'check'),
         ),
-        isTrue,
-        reason: 'busy 命中当前在途操作：$state',
+        isFalse,
       );
-    }
-  });
-
-  test('连接身份已前进 → 旧请求的 busy 不得当作重复输入', () {
-    // 请求发出时是 revision 1，响应时该接入已重建为 revision 2 且新连接在途。
-    final advanced = entry(
-      'a',
-      const AcpCheckingState(operationId: 'op-new'),
-      connectionRevision: 2,
-    );
+    },
+  );
+  test('real ACP VM suppresses matching busy, exposes real failures and cancellation remains independent', () async {
+    final h = AccountsVmHarness();
+    addTearDown(h.dispose);
+    publishVmAcp(h, const AcpUncheckedState());
+    final owner = await listenVmAcp(h, vmAcpKey);
+    final checking = owner.authenticate();
+    publishVmAcp(h, const AcpCheckingState(operationId: 'new'));
+    final cancelling = owner.cancelAuthentication();
+    expect(h.acp.authCancels, hasLength(1));
+    h.acp.authStarts.single.completeError(busy);
+    await checking;
     expect(
-      isAcpAuthDuplicateWhileInFlight(
-        error: busy,
-        accountId: 'a',
-        requestConnectionRevision: 1,
-        entry: advanced,
-      ),
-      isFalse,
+      h.container
+          .read(acpAccountViewModelProvider(vmAcpKey))
+          .requireValue
+          .panel
+          .error,
+      isNull,
     );
-  });
-
-  test('目标不是该账号 → 不得吞掉另一个账号的 busy', () {
-    final other = entry(
-      'b',
-      const AcpCheckingState(operationId: 'op-b'),
-      connectionRevision: 1,
-    );
-    expect(
-      isAcpAuthDuplicateWhileInFlight(
-        error: busy,
-        accountId: 'a',
-        requestConnectionRevision: 1,
-        entry: other,
-      ),
-      isFalse,
-    );
-  });
-
-  test('非 busy 的 typed 失败 → 一律呈现', () {
-    final target = entry('a', const AcpCheckingState(operationId: 'op-check'));
-    for (final failure in <StudioFailure>[
+    h.acp.authCancels.single.completeError(
       const StudioFailure(
         code: StudioFailureCode.unavailable,
-        message: 'ACP server did not start',
+        message: 'Cancel failed',
         retryable: true,
-        correlationId: 'test-acp',
+        correlationId: 'test',
       ),
-      const StudioFailure(
-        code: StudioFailureCode.conflict,
-        message: 'The ACP connection identity changed',
-        retryable: false,
-        correlationId: 'test-acp',
-      ),
-      const StudioFailure(
-        code: StudioFailureCode.cancellationTooLate,
-        message: 'The ACP operation is already settling',
-        retryable: false,
-        correlationId: 'test-acp',
-      ),
-    ]) {
-      expect(
-        isAcpAuthDuplicateWhileInFlight(
-          error: failure,
-          accountId: 'a',
-          requestConnectionRevision: 1,
-          entry: target,
-        ),
-        isFalse,
-        reason: '${failure.code}',
-      );
-    }
-    // 非 StudioFailure（例如传输层错误）同样不得被吞掉。
-    expect(
-      isAcpAuthDuplicateWhileInFlight(
-        error: StateError('transport closed'),
-        accountId: 'a',
-        requestConnectionRevision: 1,
-        entry: target,
-      ),
-      isFalse,
     );
-  });
-
-  test('canonical 没有在途操作 → busy 仍是真实失败', () {
-    for (final state in <AcpAuthStateView>[
-      const AcpUncheckedState(),
-      const AcpCancelledState(),
-      const AcpRequiredState(
-        server: AcpServerInfoView(name: 'antigravity', version: '1.2.3'),
-      ),
-      const AcpVerifiedState(
-        checkedAt: 90,
-        server: AcpServerInfoView(name: 'antigravity', version: '1.2.3'),
-      ),
-      const AcpFailedState(
-        failure: AcpAuthFailureView(
-          code: AcpAuthFailureCodeView.cleanup,
-          stage: AcpAuthStageView.cleanup,
-          message: 'ACP process is still exiting',
-          retryable: true,
-        ),
-      ),
-    ]) {
-      final target = entry('a', state);
-      expect(
-        isAcpAuthDuplicateWhileInFlight(
-          error: busy,
-          accountId: 'a',
-          requestConnectionRevision: 1,
-          entry: target,
-        ),
-        isFalse,
-        reason: '没有在途操作时不得吞掉 busy：$state',
-      );
-    }
-  });
-
-  test('接入已不存在 → 不得吞掉 busy', () {
+    await cancelling;
     expect(
-      isAcpAuthDuplicateWhileInFlight(
-        error: busy,
-        accountId: 'a',
-        requestConnectionRevision: 1,
-        entry: null,
-      ),
-      isFalse,
+      h.container
+          .read(acpAccountViewModelProvider(vmAcpKey))
+          .requireValue
+          .panel
+          .error,
+      'Cancel failed',
     );
   });
 }

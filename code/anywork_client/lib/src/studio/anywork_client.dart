@@ -1,19 +1,18 @@
 import 'dart:async';
 import 'dart:typed_data';
 
+import '../../accounts_ports.dart';
+import '../../model_directory.dart';
+
 import '../../anywork_client.dart';
 import '../../models.dart';
 import '../../studio_ports.dart';
 import 'bridge/studio_channels.dart';
 import 'bridge/product_topic_registry.dart';
 import 'commands/directory_commands.dart';
-import 'commands/account_usage_queries.dart';
-import 'commands/model_detail_queries.dart';
 import 'commands/bots_commands.dart';
 import 'commands/bots_queries.dart';
 import 'commands/settings_commands.dart';
-import 'commands/acp_commands.dart';
-import 'commands/acp_install_commands.dart';
 import 'commands/thread_commands.dart';
 import 'commands/command_lane.dart';
 import 'drafts/attachment_drafts.dart';
@@ -30,9 +29,6 @@ import 'stores/thread_directory_store.dart';
 import 'stores/mcp_store.dart';
 import 'stores/lsp_store.dart';
 import 'stores/mode_catalog_store.dart';
-import 'stores/account_usage_store.dart';
-import 'stores/acp_auth_store.dart';
-import 'stores/acp_install_store.dart';
 import 'stores/recovery_store.dart';
 import 'stores/session_costs_store.dart';
 import 'stores/skills_store.dart';
@@ -51,21 +47,23 @@ class AnyworkClient {
     required this.transport,
     required this.clientId,
     ResourceBudget? budget,
+    SettingsWriteCoordinator? settingsWrites,
+    MutationBoard? mutationBoard,
+    AccountDomainResources? accountDomains,
     Future<String?> Function(Uint8List)? clipboardImageStager,
     Future<void> Function(String)? clipboardImageCleanup,
     StudioUpdateApi? updateApi,
     bool updatesEnabled = false,
     int Function()? threadCommandsClock,
-  }) : budget = budget ?? ResourceBudget() {
-    mutations = MutationBoard(clientId: clientId, budget: this.budget);
+  }) : budget = budget ?? ResourceBudget(),
+       settingsWrites = settingsWrites ?? SettingsWriteCoordinator(),
+       _accountDomains = accountDomains {
+    mutations =
+        mutationBoard ?? MutationBoard(clientId: clientId, budget: this.budget);
     modeEditor = ModeEditorOwner(this);
     channels = StudioChannels(this, transport);
     directoryCommands = DirectoryCommands(this);
-    accountUsageQueries = AccountUsageQueries(this);
-    modelDetailQueries = ModelDetailQueries(this);
     settingsCommands = SettingsCommands(this);
-    acpCommands = AcpCommands(this);
-    acpInstallCommands = AcpInstallCommands(this);
     botsCommands = BotsCommands(this);
     botsQueries = BotsQueries(this);
     // Test seam: the wall clock used to record command start facts.
@@ -109,22 +107,6 @@ class AnyworkClient {
         if (value.loaded)
           observeResource('thread-mode-catalog', value.revision);
       }),
-      // ACP 认证回执的 targets 是 `acp-auth`：产品 topic 帧与命令响应进入同一
-      // reducer，因此该领域也必须把 canonical 水位登记给 MutationBoard，否则
-      // check/login/cancel 受理后永远停在 awaitingObservation。未加载时没有水位，
-      // 首帧（含 revision 0）才是有效观察。
-      acpAuth.source.watch((value) {
-        final snapshot = value.value;
-        if (value.loaded && snapshot != null)
-          observeResource('acp-auth', snapshot.revision);
-      }),
-      // 安装回执的 targets 是 `acp-install`：与认证同理由同一 reducer 收敛，
-      // 因此该领域也必须把 canonical 水位（含 revision 0）登记给 MutationBoard。
-      acpInstall.source.watch((value) {
-        final snapshot = value.value;
-        if (value.loaded && snapshot != null)
-          observeResource('acp-install', snapshot.revision);
-      }),
       bots.source.watch((value) {
         if (!value.loaded) return;
         observeResource('bots', value.revision);
@@ -138,16 +120,84 @@ class AnyworkClient {
   final StudioTransport transport;
   final String clientId;
   final ResourceBudget budget;
+  final SettingsWriteCoordinator settingsWrites;
+  final AccountDomainResources? _accountDomains;
+  bool modelCatalogLoaded = false;
+  int modelCatalogRevision = 0;
+
+  List<ModelSelectionAccount> get modelAccounts {
+    final domains = _accountDomains;
+    return domains == null
+        ? const []
+        : modelSelectionAccounts(
+            domains.accounts.state.value,
+            domains.models.state.value,
+          );
+  }
+
+  void acceptSettingsSnapshot(
+    SettingsStateSnapshot snapshot, {
+    SettingsMergeScope scope = SettingsMergeScope.both,
+    SettingsWriteOwner? owner,
+  }) {
+    final captured = owner ?? settingsWrites.captureOwner();
+    settingsWrites.requireOwner(captured);
+    final epoch = _runtimeOwnerEpoch;
+    settings.merge(snapshot, scope: scope);
+    // Read-model publication invokes listeners synchronously. A listener may
+    // reconnect, so the remainder still belongs to captured, never to whichever
+    // epoch happens to be installed after that notification returns.
+    settingsWrites.requireOwner(captured);
+    if (scope != SettingsMergeScope.catalogOnly &&
+        epoch != null &&
+        snapshot.state.value != null) {
+      settingsWrites.observe(
+        ResourceStamp(
+          resourceKey: 'settings',
+          ownerEpoch: epoch,
+          revision: snapshot.revision,
+        ),
+      );
+    }
+    if (scope != SettingsMergeScope.configOnly &&
+        epoch != null &&
+        snapshot.state.value != null) {
+      _accountDomains?.acceptCatalog(snapshot, epoch, owner: captured);
+      settingsWrites.requireOwner(captured);
+      modelCatalogLoaded = true;
+      if (snapshot.modelCatalogRevision > modelCatalogRevision)
+        modelCatalogRevision = snapshot.modelCatalogRevision;
+    }
+  }
+
+  void acceptSettingsReply(
+    SettingsCommandReply reply, {
+    SettingsWriteOwner? owner,
+  }) {
+    final captured = owner ?? settingsWrites.captureOwner();
+    settingsWrites.requireOwner(captured);
+    final epoch = _runtimeOwnerEpoch;
+    if (epoch != null &&
+        reply.receipt.targets.any(
+          (target) =>
+              target.resourceKey == 'settings' && target.ownerEpoch != epoch,
+        ))
+      return;
+    final domains = _accountDomains;
+    if (domains == null) {
+      acceptSettingsSnapshot(reply.snapshot, owner: captured);
+    } else {
+      domains.acceptReply(reply, owner: captured);
+    }
+    settingsWrites.requireOwner(captured);
+  }
+
   late final MutationBoard mutations;
   late final WorkspaceController workspace;
   late final StudioChannels channels;
   late final ModeEditorOwner modeEditor;
   late final DirectoryCommands directoryCommands;
-  late final AccountUsageQueries accountUsageQueries;
-  late final ModelDetailQueries modelDetailQueries;
   late final SettingsCommands settingsCommands;
-  late final AcpCommands acpCommands;
-  late final AcpInstallCommands acpInstallCommands;
   late final BotsCommands botsCommands;
   late final BotsQueries botsQueries;
   late final ThreadCommands threadCommands;
@@ -162,9 +212,6 @@ class AnyworkClient {
   final mcp = McpStore();
   final lsp = LspStore();
   final modeCatalog = ModeCatalogStore();
-  final accountUsage = AccountUsageStore();
-  final acpAuth = AcpAuthStore();
-  final acpInstall = AcpInstallStore();
   final recovery = RecoveryStore();
   final updater = UpdaterStore();
   final persistence = PersistenceStore();
@@ -445,41 +492,49 @@ class AnyworkClient {
     final snapshot = await transport.readBootstrap();
     if (_closed) return;
     applyBootstrap(snapshot);
-    final catalog = await transport.loadAccountCatalog();
-    if (_closed) return;
-    settings.applyAccountCatalog(catalog);
-    // ACP 目录是只读默认值：只登记模板与官方安装说明，不启动外部程序。
-    final acpCatalog = await transport.loadAcpAccountCatalog();
-    if (_closed) return;
-    settings.applyAcpAccountCatalog(acpCatalog);
     _applicationTopics = channels.acquireTopics([
       ...bridgeShellTopics,
       const AgentProfilesTopic(),
-      // ACP 认证观察属于应用级业务 owner：页面只借用快照，不创建/关闭订阅。
-      const AcpAuthTopic(),
-      // 安装进度同样属于应用级共享资产：离页只释放自己的观察，不取消下载。
-      const AcpInstallTopic(),
       const McpTopic(),
       const LspTopic(),
-      const AccountUsageTopic(),
       const PersistenceQueueTopic(),
       const BotsTopic(),
     ]);
   }
 
   void applyBootstrap(StudioBootstrap snapshot) {
+    final changed = _runtimeOwnerEpoch != snapshot.ownerEpoch;
     _runtimeOwnerEpoch = snapshot.ownerEpoch;
+    settingsWrites.adoptOwnerEpoch(snapshot.ownerEpoch);
+    final owner = settingsWrites.captureOwner();
+    final finishOwnerChange = _accountDomains?.prepareOwnerEpoch(
+      snapshot.ownerEpoch,
+    );
+    try {
+      if (changed) {
+        modelCatalogLoaded = false;
+        modelCatalogRevision = 0;
+        settings.resetForOwner();
+        settingsWrites.requireOwner(owner);
+      }
+    } finally {
+      finishOwnerChange?.call();
+    }
+    settingsWrites.requireOwner(owner);
     project.applyProjectDirectory(snapshot.projectDirectory);
     project.applyAgentDirectory(snapshot.agentDirectory);
     threadDirectory.applyWindow(snapshot.threadDirectory);
-    settings.merge(snapshot.settingsState);
+    acceptSettingsSnapshot(
+      snapshot.settingsState,
+      scope: SettingsMergeScope.configOnly,
+      owner: owner,
+    );
     final profiles = snapshot.agentProfilesState;
     if (profiles != null) settings.applyAgentProfiles(profiles);
     recovery.apply(snapshot.recoveryState);
     mcp.apply(snapshot.mcpState);
     lsp.apply(snapshot.lspState);
     modeCatalog.apply(snapshot.threadModeCatalog);
-    accountUsage.apply(snapshot.accountUsageState);
     updater.apply(snapshot.updaterState);
     persistence.applyState(snapshot.persistenceState);
     final queue = snapshot.persistenceQueueState;
@@ -498,23 +553,6 @@ class AnyworkClient {
         needsOpen: snapshot.selectedThreadId != null,
       );
     }
-  }
-
-  /// 账号面板的 typed 聚合视图：Native 账号与 ACP 接入按各自事实源合并。
-  ///
-  /// 读取不改变 demand：没有 ACP 目录或认证观察时只是没有对应条目。
-  AccountDirectoryView get accountDirectory {
-    final current = settings.state;
-    return AccountDirectoryView.from(
-      nativeAccounts: accountsWithCatalogMetadata(
-        current.canonical?.accounts ?? const <AccountSettingsView>[],
-        current.accountCatalog,
-      ),
-      acpAccounts: current.canonical?.acpAccounts ?? const [],
-      nativeCatalog: current.accountCatalog,
-      acpCatalog: current.acpCatalog,
-      auth: acpAuth.state.value ?? const AcpAuthSnapshotView.empty(),
-    );
   }
 
   StudioThread? findThread(String id) {
@@ -692,14 +730,6 @@ class AnyworkClient {
       _joinOwner('drafts', draftWork, deadline),
       _joinOwner('settings-commands', settingsCommands.close(), deadline),
       _joinOwner('directory-commands', directoryCommands.close(), deadline),
-      _joinOwner(
-        'account-usage-queries',
-        accountUsageQueries.close(),
-        deadline,
-      ),
-      _joinOwner('acp-commands', acpCommands.close(), deadline),
-      _joinOwner('acp-install-commands', acpInstallCommands.close(), deadline),
-      _joinOwner('model-detail-queries', modelDetailQueries.close(), deadline),
       _joinOwner('bots-commands', botsCommands.close(), deadline),
       _joinOwner('bots-queries', botsQueries.close(), deadline),
       _joinOwner('thread-commands', threadCommands.close(), deadline),

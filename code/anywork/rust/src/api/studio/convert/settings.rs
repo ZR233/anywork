@@ -74,48 +74,7 @@ pub(crate) fn bridge_settings(
         accounts: settings
             .accounts
             .into_iter()
-            .map(|account| BridgeAccountSettingsDto {
-                billing_kind: account.billing_kind.into(),
-                billing_kind_override: account.billing_kind_override.map(Into::into),
-                disabled_models: account.disabled_models,
-                account_id: account.account_id,
-                template_id: account.template_id,
-                protocol: account.protocol,
-                name: account.name,
-                base_url: account.base_url,
-                has_bearer_token: account.has_bearer_token,
-                usage_query_revision: account.usage_query_revision,
-                credential_required: account.credential_required,
-                capability_source: account.capability_source,
-                hosted_web_search: account.hosted_web_search,
-                hosted_web_search_dialect: account.hosted_web_search_dialect,
-                standalone_web_search: account.standalone_web_search,
-                prompt_cache_dialect: account.prompt_cache_dialect,
-                responses_programmatic_tool_calling: account.responses_programmatic_tool_calling,
-                default_model_id: account.default_model_id,
-                custom_models: account
-                    .custom_models
-                    .into_iter()
-                    .map(bridge_custom_model_settings)
-                    .collect(),
-                model_connection_modes: account
-                    .model_connection_modes
-                    .into_iter()
-                    .map(|mode| BridgeModelConnectionSettingsDto {
-                        model_id: mode.model_id,
-                        connection_mode: mode.connection_mode,
-                    })
-                    .collect(),
-                model_auto_compact_limits: account
-                    .model_auto_compact_limits
-                    .into_iter()
-                    .map(|limit| BridgeModelAutoCompactSettingsDto {
-                        model_id: limit.model_id,
-                        override_limit: limit.override_limit,
-                    })
-                    .collect(),
-                catalog_id: account.catalog_id,
-            })
+            .map(bridge_account_settings)
             .collect(),
         acp_accounts: settings
             .acp_accounts
@@ -254,9 +213,9 @@ pub(crate) fn account_settings_request(
     operation_id: String,
     expected_revision: u64,
     input: AccountSettingsInput,
-) -> pl_protocol::studio::UpdateAccountRequest {
+) -> pl_protocol::studio::CreateAccountRequest {
     let account = input.account;
-    pl_protocol::studio::UpdateAccountRequest {
+    pl_protocol::studio::CreateAccountRequest {
         operation_id,
         expected_revision,
         account: pl_protocol::studio::AccountSettingsUpdate {
@@ -375,5 +334,52 @@ fn zhipu_window_labels(window: &ZhipuQuotaWindow) -> (&'static str, &str) {
         ZhipuQuotaWindow::Weekly => ("weekly", "7d"),
         ZhipuQuotaWindow::McpMonthly => ("mcpMonthly", "MCP"),
         ZhipuQuotaWindow::Other(label) => ("other", label.as_str()),
+    }
+}
+
+pub(crate) fn bridge_account_settings(
+    account: pl_protocol::studio::StudioAccountSettings,
+) -> BridgeAccountSettingsDto {
+    BridgeAccountSettingsDto {
+        billing_kind: account.billing_kind.into(),
+        billing_kind_override: account.billing_kind_override.map(Into::into),
+        disabled_models: account.disabled_models,
+        account_id: account.account_id,
+        template_id: account.template_id,
+        protocol: account.protocol,
+        name: account.name,
+        base_url: account.base_url,
+        has_bearer_token: account.has_bearer_token,
+        usage_query_revision: account.usage_query_revision,
+        credential_required: account.credential_required,
+        capability_source: account.capability_source,
+        hosted_web_search: account.hosted_web_search,
+        hosted_web_search_dialect: account.hosted_web_search_dialect,
+        standalone_web_search: account.standalone_web_search,
+        prompt_cache_dialect: account.prompt_cache_dialect,
+        responses_programmatic_tool_calling: account.responses_programmatic_tool_calling,
+        default_model_id: account.default_model_id,
+        custom_models: account
+            .custom_models
+            .into_iter()
+            .map(bridge_custom_model_settings)
+            .collect(),
+        model_connection_modes: account
+            .model_connection_modes
+            .into_iter()
+            .map(|mode| BridgeModelConnectionSettingsDto {
+                model_id: mode.model_id,
+                connection_mode: mode.connection_mode,
+            })
+            .collect(),
+        model_auto_compact_limits: account
+            .model_auto_compact_limits
+            .into_iter()
+            .map(|limit| BridgeModelAutoCompactSettingsDto {
+                model_id: limit.model_id,
+                override_limit: limit.override_limit,
+            })
+            .collect(),
+        catalog_id: account.catalog_id,
     }
 }

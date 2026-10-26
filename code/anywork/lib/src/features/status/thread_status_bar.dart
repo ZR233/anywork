@@ -1,5 +1,7 @@
 import 'dart:async';
 
+import 'package:anywork_client/model_directory.dart';
+
 import 'package:anywork_client/studio_client.dart' show CommandPhase;
 
 import '../../presentation/providers/client_provider.dart';
@@ -82,7 +84,7 @@ class ThreadStatusBar extends StatelessWidget {
 
   final String threadId;
   final StudioThread thread;
-  final List<AccountSettingsView> accounts;
+  final List<ModelSelectionAccount> accounts;
   final List<LspServerStateView> lspServers;
   final ThreadModelRouteView? modelRoute;
   final WorkflowRunView? workflowRun;

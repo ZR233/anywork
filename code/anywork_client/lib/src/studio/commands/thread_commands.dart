@@ -2,6 +2,8 @@ import 'dart:async';
 
 import '../../../models.dart';
 import '../../../studio_ports.dart';
+import '../../../accounts_ports.dart'
+    show SettingsWriteOwner, SettingsWriteOwnerChanged;
 import '../../../anywork_client.dart'
     show
         ReadModel,
@@ -93,21 +95,25 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard> {
     _ensureOpen();
     final targetThreadId = threadId ?? _client.selection.state.selectedThreadId;
     if (targetThreadId == null) return Future<void>.value();
+    final owner = _client.settingsWrites.captureOwner();
     final operation = _client.mutations.begin(
       target: 'thread-route:$targetThreadId',
+      observationOwner: owner,
     );
     _client.settings.beginCommand(
       'thread-route:$targetThreadId',
       CommandTarget(accountId: accountId, modelId: modelId, effort: effort),
     );
-    _watchObservation(
-      operation,
-      () => _client.settings.clearCommand('thread-route:$targetThreadId'),
-    );
+    _watchObservation(operation, () {
+      if (_client.settingsWrites.isCurrentOwner(owner)) {
+        _client.settings.clearCommand('thread-route:$targetThreadId');
+      }
+    });
     return _track(
-      () => _client.settingsCommands.enqueueSettingsWrite(
+      () => _client.settingsWrites.enqueue(
         () => _applyThreadModelRoute(
           operation: operation,
+          owner: owner,
           threadId: targetThreadId,
           accountId: accountId,
           modelId: modelId,
@@ -861,6 +867,7 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard> {
 
   Future<void> _applyThreadModelRoute({
     required OperationHandle operation,
+    required SettingsWriteOwner owner,
     required String threadId,
     required String accountId,
     required String modelId,
@@ -873,32 +880,59 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard> {
       effort: effort,
     );
     final settings = _client.settings;
+    var issued = false;
+    Object? requestFailure;
     try {
+      _client.settingsWrites.requireOwner(owner);
       if (!_client.settings.state.configLoaded) {
-        final refreshed = await _client.settingsCommands.refreshCanonical();
+        final refreshed = await _client.settingsCommands.refreshCanonical(
+          owner: owner,
+        );
+        _client.settingsWrites.requireOwner(owner);
         if (refreshed == null || !_client.settings.state.configLoaded) {
           throw StateError('Settings are not available yet.');
         }
       }
-      final response = await retryRevisionConflict(
-        () => _requestThreadModelRoute(
-          operationId: operation.id,
-          threadId: threadId,
-          accountId: accountId,
-          modelId: modelId,
-          effort: effort,
-        ),
-        refresh: () => _refreshRouteOwners(threadId),
-      );
+      final response = await retryRevisionConflict(() async {
+        _client.settingsWrites.requireOwner(owner);
+        try {
+          return await _requestThreadModelRoute(
+            operationId: operation.id,
+            owner: owner,
+            onIssue: () {
+              issued = true;
+              requestFailure = null;
+            },
+            threadId: threadId,
+            accountId: accountId,
+            modelId: modelId,
+            effort: effort,
+          );
+        } catch (error) {
+          requestFailure = error;
+          rethrow;
+        }
+      }, refresh: () => _refreshRouteOwners(threadId, owner));
       operation.accept(response.receipt.toCommitReceipt());
+      _client.settingsWrites.requireOwner(owner);
       if (!!_client.isClosed) return;
-      settings.merge(response.settings);
+      _client.acceptSettingsSnapshot(response.settings, owner: owner);
+      _client.settingsWrites.requireOwner(owner);
       if (_isLatest(operation)) {
         _rememberWarning(threadId, response.warning);
       }
     } catch (error) {
-      _failOperation(operation, error);
-      if (!_client.isClosed && _isLatest(operation)) {
+      if (error is SettingsWriteOwnerChanged && !issued) {
+        operation.reject(error);
+      } else {
+        _failOperation(
+          operation,
+          error is SettingsWriteOwnerChanged ? requestFailure ?? error : error,
+        );
+      }
+      if (!_client.isClosed &&
+          _client.settingsWrites.isCurrentOwner(owner) &&
+          _isLatest(operation)) {
         settings.failCommand(
           key,
           typedCommandFailure(error, correlationId: 'client-thread-route'),
@@ -912,43 +946,59 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard> {
   /// 两次 revision 都在尝试前从各自 owner 读取。响应 runtime 不进入 store。
   Future<ThreadModelRouteCommandReply> _requestThreadModelRoute({
     required OperationId operationId,
+    required SettingsWriteOwner owner,
+    required void Function() onIssue,
     required String threadId,
     required String accountId,
     required String modelId,
     String? effort,
   }) async {
+    _client.settingsWrites.requireOwner(owner);
     final session = _client.session(threadId).state;
     final route = session.runtime?.modelRoute;
     final target = _findModel(accountId, modelId);
     if (!session.hasSnapshot || route == null || target == null) {
       throw StateError('Selected thread model route is unavailable.');
     }
+    _client.settingsWrites.requireOwner(owner);
+    onIssue();
     return _api.setThreadModelRoute(
       operationId: operationId,
       threadId: threadId,
       expectedModelRouteRevision: route.revision,
-      expectedSettingsRevision: _client.settings.state.settingsRevision,
+      expectedSettingsRevision:
+          _client.settingsWrites.stamp?.revision ??
+          _client.settings.state.settingsRevision,
       accountId: accountId,
       modelId: modelId,
       effort: effort ?? target.reasoningEfforts.firstOrNull,
     );
   }
 
-  Future<bool> _refreshRouteOwners(String threadId) async {
-    final settings = await _client.settingsCommands.refreshCanonical();
+  Future<bool> _refreshRouteOwners(
+    String threadId,
+    SettingsWriteOwner owner,
+  ) async {
+    _client.settingsWrites.requireOwner(owner);
+    final settings = await _client.settingsCommands.refreshCanonical(
+      owner: owner,
+    );
+    _client.settingsWrites.requireOwner(owner);
     if (settings == null || !!_client.isClosed) return false;
     try {
       await _client.session(threadId).resyncRuntime();
     } catch (_) {
+      _client.settingsWrites.requireOwner(owner);
       // Only a fresh owner baseline permits another CAS attempt. Observation
       // failure or retired demand preserves the original known conflict.
       return false;
     }
+    _client.settingsWrites.requireOwner(owner);
     return !_client.isClosed;
   }
 
   AccountModelView? _findModel(String accountId, String modelId) {
-    final accounts = _client.settings.state.canonical?.accounts ?? const [];
+    final accounts = _client.modelAccounts;
     for (final account in accounts) {
       if (account.id != accountId) continue;
       for (final candidate in account.models) {

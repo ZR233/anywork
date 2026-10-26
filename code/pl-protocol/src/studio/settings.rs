@@ -109,6 +109,8 @@ pub struct StudioAccountSettings {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct StudioModelCatalogStatus {
+    pub query_generation: u64,
+    pub operation_id: Option<String>,
     pub supported: bool,
     pub source: StudioModelCatalogSource,
     pub probing: bool,
@@ -144,6 +146,7 @@ pub enum StudioModelCatalogError {
     CacheIdentity,
     UnexpectedNotModified,
     CacheWrite,
+    TaskFailed,
     Closing,
 }
 

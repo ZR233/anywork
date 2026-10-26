@@ -1,4 +1,5 @@
 import '../../models.dart';
+import '../../model_directory.dart';
 import 'stores/domain_sync.dart';
 
 /// Display intent deliberately has no resource revision. A pending selection
@@ -93,7 +94,7 @@ abstract final class ModelRouteQueries {
       routes.where((route) => route.modeId == ThreadModeId.simple).firstOrNull;
 
   static AccountModelView? model(
-    List<AccountSettingsView> accounts,
+    List<ModelSelectionAccount> accounts,
     String accountId,
     String modelId,
   ) {
@@ -185,7 +186,7 @@ abstract final class ModelRouteQueries {
   static ModelRouteDisplay? threadRoute({
     required ThreadModelRouteView? canonical,
     required CommandStatus? command,
-    required List<AccountSettingsView> accounts,
+    required List<ModelSelectionAccount> accounts,
   }) {
     final target = command?.isPending == true ? command?.target : null;
     final pending = target?.accountId != null && target?.modelId != null;
@@ -212,7 +213,7 @@ abstract final class ModelRouteQueries {
   }
 
   static RoleRouteQuery roleRoute({
-    required List<AccountSettingsView> accounts,
+    required List<ModelSelectionAccount> accounts,
     required List<RoleSettingsView> roles,
     required String role,
   }) {
@@ -260,7 +261,7 @@ abstract final class ModelRouteQueries {
   }
 
   static RoleRouteQuery newAgentProfileRoute(
-    List<AccountSettingsView> accounts,
+    List<ModelSelectionAccount> accounts,
   ) {
     return roleRoute(accounts: accounts, roles: const [], role: '');
   }
@@ -317,7 +318,7 @@ abstract final class ModelRouteQueries {
 
   /// 删除账号时若被删者仍是默认账号，按稳定顺序选择首个剩余账号。
   static String? accountAfterRemoval({
-    required List<AccountSettingsView> accounts,
+    required List<ModelSelectionAccount> accounts,
     required String? currentDefault,
     required String removed,
   }) => currentDefault == removed

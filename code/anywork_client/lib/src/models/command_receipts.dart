@@ -6,6 +6,7 @@ import 'runtime_models.dart';
 import 'studio_enums.dart';
 import 'studio_state_snapshots.dart';
 import 'thread_directory_models.dart';
+import '../accounts/account_frames.dart';
 
 export '../commands/mutation_board.dart'
     show CommitDisposition, CommitReceipt, EffectPoint;
@@ -46,9 +47,16 @@ final class StudioCommandReceipt {
 }
 
 final class SettingsCommandReply {
-  const SettingsCommandReply({required this.snapshot, required this.receipt});
+  const SettingsCommandReply({
+    required this.snapshot,
+    required this.receipt,
+    this.accountFrames = const [],
+  });
   final SettingsStateSnapshot snapshot;
   final StudioCommandReceipt receipt;
+
+  /// Actual target content returned by the owner, routed to each domain once.
+  final List<AccountDomainFrame> accountFrames;
 }
 
 final class ThreadModeCommandReply {

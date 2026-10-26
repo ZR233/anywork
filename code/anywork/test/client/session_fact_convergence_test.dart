@@ -8,6 +8,7 @@ import 'package:anywork/src/app/app_graph.dart';
 import 'package:anywork_client/studio_client.dart';
 
 import 'package:anywork/src/infrastructure/frb/studio_api.dart';
+import 'package:anywork/src/presentation/providers/account_domains.dart';
 import 'package:anywork/src/presentation/providers/settings_store.dart';
 import 'package:anywork/src/presentation/providers/thread_directory_store.dart';
 import 'package:anywork/src/presentation/providers/thread_session_store.dart';
@@ -52,13 +53,32 @@ void main() {
       (_, _) {},
     );
     await graph.client.session(threadId).source.waitFor((s) => s.hasSnapshot);
+    const limit = Duration(seconds: 5);
+    await graph.accounts.state.waitFor((state) => state.loaded).timeout(limit);
+    await graph.models.state
+        .waitFor(
+          (state) => state.accounts.values.any(
+            (resource) =>
+                resource.loaded && resource.value?.models.isNotEmpty == true,
+          ),
+        )
+        .timeout(limit);
   });
 
   tearDown(() async {
     sessionHold.close();
     composerHold.close();
     container.dispose();
-    await graph.close(deadline: DateTime.now().add(const Duration(seconds: 5)));
+    final report = await graph.close(
+      deadline: DateTime.now().add(const Duration(seconds: 5)),
+    );
+    expect(
+      report.complete,
+      isTrue,
+      reason: report.unresolved
+          .map((value) => '${value.owner}: ${value.reason}')
+          .join('; '),
+    );
   });
 
   int routeRevision() => _routeRevision(container, threadId);
@@ -227,17 +247,11 @@ AccountModelView? _modelFor(
   ProviderContainer container,
   String accountId,
   String model,
-) {
-  final accounts =
-      container.read(settingsStoreProvider).canonical?.accounts ?? const [];
-  for (final account in accounts) {
-    if (account.id != accountId) continue;
-    for (final candidate in account.models) {
-      if (candidate.modelId == model) return candidate;
-    }
-  }
-  return null;
-}
+) => ModelRouteQueries.model(
+  container.read(modelSelectionAccountsProvider),
+  accountId,
+  model,
+);
 
 ThreadNotificationFrame _notification({
   required int revision,

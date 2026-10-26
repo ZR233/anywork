@@ -11,6 +11,7 @@ import '../../presentation/providers/recovery_store.dart';
 import '../../presentation/providers/selection_store.dart';
 import '../../presentation/providers/session_costs_store.dart';
 import '../../presentation/providers/settings_store.dart';
+import '../../presentation/providers/account_domains.dart';
 import '../../presentation/providers/thread_directory_store.dart';
 
 import '../../presentation/providers/thread_session_store.dart';
@@ -262,10 +263,7 @@ AgentWorkspaceView? shellComposerWorkspace(Ref ref) {
     composerMode: thread.isAgent
         ? AgentComposerMode.runtimeDriven
         : AgentComposerMode.editable,
-    accounts: accountsWithCatalogMetadata(
-      canonical?.accounts ?? const <AccountSettingsView>[],
-      settings.accountCatalog,
-    ),
+    accounts: ref.watch(modelSelectionAccountsProvider),
     modeModelRoutes: canonical?.modeModelRoutes ?? const [],
     roles: canonical?.roles ?? const [],
     agents: AgentDirectoryQueries.forRoot(

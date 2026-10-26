@@ -1,7 +1,12 @@
 import 'dart:async';
 
+import 'package:anywork_client/accounts.dart' show NativeAccountIdentity;
+import 'package:anywork_client/accounts_ports.dart'
+    show SettingsWriteOwnerChanged;
 import 'package:anywork_client/studio_client.dart';
 import 'package:test/test.dart';
+
+import 'support/accounts_test_runtime.dart';
 
 final class _ModeCall {
   _ModeCall(this.operationId, this.threadId, this.mode);
@@ -65,9 +70,17 @@ final class _InteractionCall {
   final reply = Completer<InteractionCommandReply>();
 }
 
+final class _SettingsCall {
+  _SettingsCall(this.revision, this.command, this.operationId);
+  final int revision;
+  final SettingsFieldCommand command;
+  final OperationId operationId;
+  final reply = Completer<SettingsCommandReply>();
+}
+
 /// Only the external owner response is controlled. Operation allocation,
 /// command lanes, reducers, observation barriers and overlays are production.
-final class _Transport implements StudioTransport {
+final class _Transport extends AccountsTestTransport {
   _Transport() {
     addTearDown(() => modes.close());
     addTearDown(() => routes.close());
@@ -95,6 +108,36 @@ final class _Transport implements StudioTransport {
   int stopCalls = 0;
   int continueCalls = 0;
   int interactionCalls = 0;
+  final settingsCalls = <_SettingsCall>[];
+  final routeCalls = <_RouteCall>[];
+  final _settingsEntered = <int, Completer<_SettingsCall>>{};
+  Future<SettingsCommandReply> Function(_SettingsCall)? settingsReply;
+  Future<ThreadModelRouteCommandReply> Function(_RouteCall)? routeReply;
+  Future<SettingsStateSnapshot> Function()? settingsRead;
+  final settingsReadEntered = Completer<void>();
+
+  Future<_SettingsCall> settingsCall(int index) => settingsCalls.length > index
+      ? Future.value(settingsCalls[index])
+      : (_settingsEntered[index] ??= Completer<_SettingsCall>()).future;
+
+  @override
+  Future<SettingsCommandReply> applySettingsField(
+    int revision,
+    SettingsFieldCommand command, {
+    required OperationId operationId,
+  }) {
+    final call = _SettingsCall(revision, command, operationId);
+    final index = settingsCalls.length;
+    settingsCalls.add(call);
+    _settingsEntered.remove(index)?.complete(call);
+    return settingsReply?.call(call) ?? Future.error(_probeRejection);
+  }
+
+  @override
+  Future<SettingsStateSnapshot> readSettingsState() {
+    if (!settingsReadEntered.isCompleted) settingsReadEntered.complete();
+    return settingsRead?.call() ?? Future.value(_settings(1));
+  }
 
   @override
   Future<void> compactThread(String threadId) {
@@ -141,7 +184,8 @@ final class _Transport implements StudioTransport {
       expectedSettingsRevision,
     );
     routes.add(call);
-    return call.reply.future;
+    routeCalls.add(call);
+    return routeReply?.call(call) ?? call.reply.future;
   }
 
   @override
@@ -586,28 +630,41 @@ SettingsStateSnapshot _settings(int revision) => SettingsStateSnapshot(
   ],
 );
 
-AnyworkClient _client(_Transport transport) {
-  final client = AnyworkClient(transport: transport, clientId: 'client');
-  client.applyBootstrap(
+const _probeRejection = StudioFailure(
+  code: StudioFailureCode.invalidArgument,
+  message: 'Scripted request rejection',
+  retryable: false,
+  correlationId: 'settings-owner-test',
+);
+StudioBootstrap _bootstrap(String epoch, SettingsStateSnapshot settings) =>
     StudioBootstrap(
-      ownerEpoch: _epoch,
+      ownerEpoch: epoch,
       projectDirectory: ProjectDirectoryState(values: [_project], revision: 1),
       threadDirectory: ThreadDirectoryWindow(threads: [_thread()], revision: 1),
       agentDirectory: AgentDirectoryState(revision: 1),
-      settingsState: _settings(1),
+      settingsState: settings,
       recoveryState: RecoveryStateSnapshot(revision: 1),
       mcpState: McpStateSnapshot(revision: 1),
       lspState: LspStateSnapshot(revision: 1),
       skillsByProject: const {},
       threadModeCatalog: const ThreadModeCatalogView(),
-      accountUsageState: AccountUsageStateSnapshot(revision: 1),
       updaterState: DisabledUpdaterStateSnapshot(
         revision: 1,
         updatedAt: DateTime.utc(2026),
       ),
       persistenceState: const PersistenceStateSnapshot.ready(),
-    ),
-  );
+    );
+
+AnyworkClient _client(
+  _Transport transport, {
+  void Function(AccountsTestRuntime)? onRuntime,
+}) {
+  transport.epoch = _epoch;
+  final runtime = AccountsTestRuntime(transport, clientId: 'client');
+  runtime.seed(_settings(1));
+  onRuntime?.call(runtime);
+  final client = runtime.client;
+  client.applyBootstrap(_bootstrap(_epoch, _settings(1)));
   // The command has a stable selected identity; this test does not open a native
   // ChatView. State frames enter through the production read-model reducers.
   client.selection.restoreStartup(
@@ -616,7 +673,7 @@ AnyworkClient _client(_Transport transport) {
     needsOpen: true,
   );
   client.session('thread').applySnapshot(_workspace());
-  addTearDown(client.close);
+  addTearDown(runtime.close);
   return client;
 }
 
@@ -638,6 +695,892 @@ StudioCommandReceipt _receipt(
 );
 
 void main() {
+  for (final replacement in ['third', 'next']) {
+    for (final boundary in [
+      'settings reset',
+      'summaries',
+      'first detail',
+      if (replacement == 'next') 'settings reset direct',
+    ]) {
+      test(
+        '${replacement == 'next' ? 'same-next' : 'reentrant'} bootstrap invalidation preserves the nested owner baseline after $boundary notification',
+        () async {
+          final transport = _Transport();
+          final runtime = AccountsTestRuntime(
+            transport,
+            clientId: 'bootstrap-reentry',
+          );
+          addTearDown(runtime.close);
+          final client = runtime.client;
+          const first = NativeAccountIdentity('account');
+          const second = NativeAccountIdentity('second');
+          SettingsStateSnapshot baseline(int revision) => SettingsStateSnapshot(
+            revision: revision,
+            modelCatalogRevision: revision,
+            accounts: [
+              ..._settings(revision).accounts,
+              const AccountSettingsView(
+                id: 'second',
+                name: 'Second',
+                baseUrl: 'https://second.invalid',
+                defaultModelId: '',
+                status: 'ready',
+                usageLabel: '',
+                models: [],
+              ),
+            ],
+          );
+          client.applyBootstrap(_bootstrap('old', baseline(99)));
+          transport.epoch = 'old';
+          runtime.seed(baseline(99));
+          var replaced = false;
+          late List<Object> nestedDetails;
+          late List<Object> nestedConfigurations;
+          void replace() {
+            if (replaced) return;
+            replaced = true;
+            if (boundary != 'settings reset direct') {
+              client.applyBootstrap(_bootstrap(replacement, baseline(1)));
+            }
+            transport.epoch = replacement;
+            runtime.seed(baseline(1));
+            nestedDetails = [
+              for (final id in [first, second])
+                runtime.domains.accounts.details(id).value,
+            ];
+            nestedConfigurations = [
+              for (final id in [first, second])
+                runtime.domains.models.state.value.configurations[id]!,
+            ];
+          }
+
+          final listener = switch (boundary) {
+            'settings reset' ||
+            'settings reset direct' => client.settings.source.watch((value) {
+              if (!value.configLoaded) replace();
+            }),
+            'first detail' => runtime.domains.accounts.details(first).watch((
+              value,
+            ) {
+              if (value.stale) replace();
+            }),
+            _ => runtime.domains.accounts.state.watch((value) {
+              if (value.stale) replace();
+            }),
+          };
+          addTearDown(listener.cancel);
+          if (replacement == 'third') {
+            expect(
+              () => client.applyBootstrap(_bootstrap('next', baseline(1))),
+              throwsA(isA<SettingsWriteOwnerChanged>()),
+            );
+          } else {
+            client.applyBootstrap(_bootstrap('next', baseline(1)));
+          }
+          expect(replaced, isTrue);
+          expect(client.settings.state.settingsRevision, 1);
+          expect(
+            runtime.coordinator.stamp,
+            testStamp('settings', 1, epoch: replacement),
+          );
+          for (var index = 0; index < 2; index++) {
+            final id = [first, second][index];
+            final detail = runtime.domains.accounts.details(id).value;
+            final configuration =
+                runtime.domains.models.state.value.configurations[id]!;
+            expect(
+              (detail.loaded, detail.stale, detail.loading),
+              (true, false, false),
+            );
+            expect(
+              (
+                configuration.loaded,
+                configuration.stale,
+                configuration.loading,
+              ),
+              (true, false, false),
+            );
+            expect(detail, same(nestedDetails[index]));
+            expect(configuration, same(nestedConfigurations[index]));
+          }
+          // The nested baseline must already be ready: deduplicated replay is not
+          // a recovery mechanism for an old invalidation tail.
+          runtime.seed(baseline(1));
+          expect(
+            runtime.domains.accounts.details(second).value,
+            same(nestedDetails[1]),
+          );
+          expect(
+            runtime.domains.models.state.value.configurations[second],
+            same(nestedConfigurations[1]),
+          );
+          listener.cancel();
+          expect((await runtime.close()).complete, isTrue);
+        },
+      );
+    }
+  }
+
+  test('reentrant settings reply routing retains its receipt but stops old target frames after reconnect', () async {
+    final transport = _Transport()..settingsReply = (call) => call.reply.future;
+    late AccountsTestRuntime runtime;
+    final client = _client(transport, onRuntime: (value) => runtime = value);
+    client.applyBootstrap(_bootstrap('old', _settings(99)));
+    transport.epoch = 'old';
+    runtime.seed(_settings(99));
+    var replaced = false;
+    final listener = client.settings.source.watch((state) {
+      if (!replaced && state.settingsRevision == 100) {
+        replaced = true;
+        client.applyBootstrap(_bootstrap('next', _settings(1)));
+        client.applyBootstrap(_bootstrap('old', _settings(1)));
+        transport.epoch = 'old';
+        runtime.seed(_settings(1));
+      }
+    });
+    addTearDown(listener.cancel);
+    final failure = expectLater(
+      client.settingsCommands.applySettingsField(
+        const InstructionUserCommand('old-input'),
+      ),
+      throwsStateError,
+    );
+    final call = await transport.settingsCall(0);
+    call.reply.complete(
+      accountReply(
+        snapshot: SettingsStateSnapshot(
+          revision: 100,
+          modelCatalogRevision: 100,
+          accounts: [
+            ..._settings(1).accounts,
+            const AccountSettingsView(
+              id: 'late-b',
+              name: 'Retired B',
+              baseUrl: 'http://retired.invalid',
+              defaultModelId: '',
+              models: [],
+              status: 'ready',
+              usageLabel: '',
+            ),
+          ],
+        ),
+        receipt: StudioCommandReceipt(
+          operationId: call.operationId,
+          disposition: CommitDisposition.applied,
+          targets: const [
+            ResourceStamp(
+              resourceKey: 'settings',
+              ownerEpoch: 'old',
+              revision: 100,
+            ),
+          ],
+          effect: EffectPoint.futureSession,
+          effective: true,
+          durable: true,
+        ),
+      ),
+    );
+    await failure;
+    expect(replaced, isTrue);
+    expect(client.settings.state.settingsRevision, 1);
+    expect(
+      client.settingsWrites.stamp,
+      const ResourceStamp(
+        resourceKey: 'settings',
+        ownerEpoch: 'old',
+        revision: 1,
+      ),
+    );
+    expect(client.modelCatalogLoaded, isFalse);
+    expect(client.modelCatalogRevision, 0);
+    expect(
+      runtime.domains.models.state.value.accounts.keys.map(
+        (identity) => identity.accountId,
+      ),
+      isNot(contains('late-b')),
+    );
+    final operation = client.mutations.lookup(call.operationId)!.state.value;
+    expect(operation.receipt!.operationId, call.operationId);
+    expect(operation.durable, isTrue);
+    expect(operation.effective, isTrue);
+    expect(operation.phase, OperationPhase.syncFailed);
+    listener.cancel();
+    await client.close();
+  });
+
+  for (final routeWrite in [false, true]) {
+    test(
+      'owner incarnation cannot observe a retired sent ${routeWrite ? 'route' : 'settings'} receipt when its epoch name returns',
+      () async {
+        for (final replacementFrameFirst in [false, true]) {
+          final transport = _Transport()
+            ..settingsReply = (call) => call.reply.future;
+          late AccountsTestRuntime runtime;
+          final client = _client(
+            transport,
+            onRuntime: (value) => runtime = value,
+          );
+          client.applyBootstrap(_bootstrap('old', _settings(99)));
+          transport.epoch = 'old';
+          runtime.seed(_settings(99));
+          late final Future<void> failure;
+          late final OperationId id;
+          late final void Function() complete;
+          if (routeWrite) {
+            final entered = transport.routes.stream.first;
+            failure = expectLater(
+              client.threadCommands.setThreadModelRoute(
+                threadId: 'thread',
+                accountId: 'account',
+                modelId: 'beta',
+              ),
+              throwsStateError,
+            );
+            final call = await entered;
+            id = call.operationId;
+            complete = () => call.reply.complete(
+              ThreadModelRouteCommandReply(
+                runtime: _runtime(routeRevision: 4),
+                settings: _settings(100),
+                modeDefaultSaved: true,
+                receipt: StudioCommandReceipt(
+                  operationId: id,
+                  disposition: CommitDisposition.applied,
+                  targets: const [
+                    ResourceStamp(
+                      resourceKey: 'settings',
+                      ownerEpoch: 'old',
+                      revision: 100,
+                    ),
+                  ],
+                  effect: EffectPoint.futureSession,
+                  effective: true,
+                  durable: true,
+                ),
+              ),
+            );
+          } else {
+            failure = expectLater(
+              client.settingsCommands.applySettingsField(
+                const InstructionUserCommand('retired-input'),
+              ),
+              throwsStateError,
+            );
+            final call = await transport.settingsCall(0);
+            id = call.operationId;
+            complete = () => call.reply.complete(
+              SettingsCommandReply(
+                snapshot: _settings(100),
+                receipt: StudioCommandReceipt(
+                  operationId: id,
+                  disposition: CommitDisposition.applied,
+                  targets: const [
+                    ResourceStamp(
+                      resourceKey: 'settings',
+                      ownerEpoch: 'old',
+                      revision: 100,
+                    ),
+                  ],
+                  effect: EffectPoint.futureSession,
+                  effective: true,
+                  durable: true,
+                ),
+              ),
+            );
+          }
+          client.applyBootstrap(_bootstrap('next', _settings(1)));
+          client.applyBootstrap(_bootstrap('old', _settings(1)));
+          transport.epoch = 'old';
+          runtime.seed(_settings(1));
+          if (replacementFrameFirst)
+            client.acceptSettingsSnapshot(_settings(101));
+          complete();
+          await failure;
+          final operation = client.mutations.lookup(id)!;
+          final before = operation.state.value;
+          expect(
+            before.observed,
+            isFalse,
+            reason: 'Acceptance cannot use a replacement incarnation watermark',
+          );
+          expect(before.phase, OperationPhase.syncFailed);
+          final ownerFailure = before.error;
+          client.acceptSettingsSnapshot(_settings(102));
+          final after = operation.state.value;
+          expect(
+            after.observed,
+            isFalse,
+            reason: 'Every later automatic merge must retain the original observation qualification',
+          );
+          expect(after.phase, OperationPhase.syncFailed);
+          expect(after.error, same(ownerFailure));
+          expect(after.receipt!.operationId, id);
+          expect(
+            after.receipt!.targets.single,
+            const ResourceStamp(
+              resourceKey: 'settings',
+              ownerEpoch: 'old',
+              revision: 100,
+            ),
+          );
+          expect(after.receipt!.disposition, CommitDisposition.applied);
+          expect(after.effective, isTrue);
+          expect(after.durable, isTrue);
+          expect(
+            client.budget.used(ResourceKind.pendingOperation),
+            1,
+            reason: 'A failed observation is not an early permit release',
+          );
+          final report = await client.close();
+          expect(report.complete, isFalse);
+          expect(
+            report.unresolved.any(
+              (resource) => resource.owner == 'operation:${id.value}',
+            ),
+            isTrue,
+          );
+        }
+      },
+    );
+  }
+
+  for (final withDomains in [false, true]) {
+    test(
+      'reentrant settings reduction cannot retag an old read or publish its catalog (domains=$withDomains)',
+      () async {
+        final transport = _Transport();
+        final read = Completer<SettingsStateSnapshot>();
+        transport.settingsRead = () => read.future;
+        AccountsTestRuntime? runtime;
+        final client = withDomains
+            ? _client(transport, onRuntime: (value) => runtime = value)
+            : AnyworkClient(transport: transport, clientId: 'reentrant-read');
+        if (!withDomains) addTearDown(client.close);
+        client.applyBootstrap(_bootstrap('old', _settings(99)));
+        var replaced = false;
+        final listener = client.settings.source.watch((state) {
+          if (!replaced && state.settingsRevision == 100) {
+            replaced = true;
+            client.applyBootstrap(_bootstrap('next', _settings(1)));
+            transport.epoch = 'next';
+            runtime?.seed(_settings(1));
+          }
+        });
+        addTearDown(listener.cancel);
+        final reading = client.settingsCommands.refreshCanonical();
+        final rejected = expectLater(reading, throwsStateError);
+        read.complete(
+          SettingsStateSnapshot(
+            revision: 100,
+            modelCatalogRevision: 100,
+            accounts: _settings(1).accounts,
+            instructions: const InstructionsSettingsView(user: 'retired-read'),
+          ),
+        );
+        await rejected;
+        expect(replaced, isTrue);
+        expect(client.settings.state.settingsRevision, 1);
+        expect(client.settings.state.canonical!.instructions.user, isEmpty);
+        expect(
+          client.settingsWrites.stamp,
+          const ResourceStamp(
+            resourceKey: 'settings',
+            ownerEpoch: 'next',
+            revision: 1,
+          ),
+        );
+        expect(client.modelCatalogLoaded, isFalse);
+        expect(client.modelCatalogRevision, 0);
+        if (withDomains) {
+          final models = runtime!.domains.models.state.value.accounts.values;
+          expect(models.single.stamp!.ownerEpoch, 'next');
+          expect(models.single.stamp!.revision, 1);
+        }
+        listener.cancel();
+        expect((await client.close()).complete, isTrue);
+      },
+    );
+  }
+
+  test('reentrant model reduction stops the remainder of a whole catalog even after the epoch name returns', () async {
+    final transport = _Transport();
+    final read = Completer<SettingsStateSnapshot>();
+    transport.settingsRead = () => read.future;
+    late AccountsTestRuntime runtime;
+    final client = _client(transport, onRuntime: (value) => runtime = value);
+    client.applyBootstrap(_bootstrap('old', _settings(99)));
+    transport.epoch = 'old';
+    runtime.seed(_settings(99));
+    var replaced = false;
+    final listener = runtime.domains.models.state.watch((state) {
+      if (!replaced &&
+          state.accounts.values.any((value) => value.stamp?.revision == 100)) {
+        replaced = true;
+        client.applyBootstrap(_bootstrap('next', _settings(1)));
+        client.applyBootstrap(_bootstrap('old', _settings(1)));
+        transport.epoch = 'old';
+        runtime.seed(_settings(1));
+      }
+    });
+    addTearDown(listener.cancel);
+    final rejected = expectLater(
+      client.settingsCommands.refreshCanonical(),
+      throwsStateError,
+    );
+    read.complete(
+      SettingsStateSnapshot(
+        revision: 100,
+        modelCatalogRevision: 100,
+        accounts: [
+          ..._settings(1).accounts,
+          const AccountSettingsView(
+            id: 'late-b',
+            name: 'Retired B',
+            baseUrl: 'http://retired.invalid',
+            defaultModelId: '',
+            models: [],
+            status: 'ready',
+            usageLabel: '',
+          ),
+        ],
+      ),
+    );
+    await rejected;
+    expect(replaced, isTrue);
+    expect(client.settings.state.settingsRevision, 1);
+    expect(
+      client.settingsWrites.stamp,
+      const ResourceStamp(
+        resourceKey: 'settings',
+        ownerEpoch: 'old',
+        revision: 1,
+      ),
+    );
+    expect(client.modelCatalogLoaded, isFalse);
+    expect(client.modelCatalogRevision, 0);
+    expect(
+      runtime.domains.models.state.value.accounts.keys.map(
+        (identity) => identity.accountId,
+      ),
+      isNot(contains('late-b')),
+    );
+    expect(
+      runtime.domains.models.state.value.accounts.values.single.stamp!.revision,
+      1,
+    );
+    listener.cancel();
+    expect((await client.close()).complete, isTrue);
+  });
+
+  test('settings owner change back to the same epoch name cannot revive an old queued intent', () async {
+    final transport = _Transport();
+    final client = _client(transport);
+    client.applyBootstrap(_bootstrap('old', _settings(99)));
+    final entered = Completer<void>();
+    final release = Completer<void>();
+    final blocking = client.settingsWrites.enqueue(() async {
+      entered.complete();
+      await release.future;
+    });
+    await entered.future;
+    final rejected = expectLater(
+      client.settingsCommands.applySettingsField(
+        const InstructionUserCommand('retired-incarnation'),
+      ),
+      throwsStateError,
+    );
+    client.applyBootstrap(_bootstrap('next', _settings(1)));
+    client.applyBootstrap(_bootstrap('old', _settings(1)));
+    release.complete();
+    await blocking;
+    await rejected;
+    expect(transport.settingsCalls, isEmpty);
+    expect(
+      client.mutations.latest('settings:instructions:user')!.state.value.phase,
+      OperationPhase.rejected,
+    );
+    expect((await client.close()).complete, isTrue);
+  });
+
+  test('settings owner change rejects a queued intent before transport and admits the new low revision', () async {
+    final transport = _Transport();
+    final client = _client(transport);
+    client.applyBootstrap(_bootstrap('old', _settings(99)));
+    final entered = Completer<void>();
+    final release = Completer<void>();
+    final blocking = client.settingsWrites.enqueue(() async {
+      entered.complete();
+      await release.future;
+    });
+    await entered.future;
+    final old = client.settingsCommands.applySettingsField(
+      const InstructionUserCommand('old-owner-input'),
+    );
+    final oldOperation = client.mutations.latest('settings:instructions:user')!;
+    final rejected = expectLater(old, throwsStateError);
+    client.applyBootstrap(_bootstrap('next', _settings(1)));
+    release.complete();
+    await blocking;
+    await rejected;
+    expect(transport.settingsCalls, isEmpty);
+    expect(oldOperation.state.value.phase, OperationPhase.rejected);
+    expect(client.settings.state.commands, isEmpty);
+    await expectLater(
+      client.settingsCommands.applySettingsField(
+        const InstructionUserCommand('next-owner-input'),
+      ),
+      throwsA(same(_probeRejection)),
+    );
+    expect(transport.settingsCalls.map((call) => call.revision), [1]);
+    expect(
+      (transport.settingsCalls.single.command as InstructionUserCommand).value,
+      'next-owner-input',
+    );
+    expect((await client.close()).complete, isTrue);
+  });
+
+  test('settings owner change while acquiring CAS rejects the old read before publication or dispatch', () async {
+    final transport = _Transport();
+    final read = Completer<SettingsStateSnapshot>();
+    transport.settingsRead = () => read.future;
+    final client = _client(transport);
+    client.applyBootstrap(
+      _bootstrap(
+        'loading-old',
+        const SettingsStateSnapshot.fromState(
+          state: UninitializedObservedResource<SettingsStateData>(updatedAt: 0),
+        ),
+      ),
+    );
+    final old = client.settingsCommands.applySettingsField(
+      const InstructionUserCommand('old-owner-input'),
+    );
+    final rejected = expectLater(old, throwsStateError);
+    await transport.settingsReadEntered.future;
+    client.applyBootstrap(_bootstrap('next', _settings(1)));
+    read.complete(
+      SettingsStateSnapshot(
+        revision: 999,
+        instructions: const InstructionsSettingsView(user: 'late-old-read'),
+      ),
+    );
+    await rejected;
+    expect(transport.settingsCalls, isEmpty);
+    expect(client.settings.state.settingsRevision, 1);
+    expect(client.settings.state.canonical!.instructions.user, isEmpty);
+    expect(
+      client.settingsWrites.stamp,
+      const ResourceStamp(
+        resourceKey: 'settings',
+        ownerEpoch: 'next',
+        revision: 1,
+      ),
+    );
+    expect(
+      client.mutations.latest('settings:instructions:user')!.state.value.phase,
+      OperationPhase.rejected,
+    );
+    expect((await client.close()).complete, isTrue);
+  });
+
+  test('settings owner change during conflict refresh does not retry or rebind the late canonical read', () async {
+    final transport = _Transport();
+    final read = Completer<SettingsStateSnapshot>();
+    transport.settingsRead = () => read.future;
+    const conflict = StudioFailure(
+      code: StudioFailureCode.staleRevision,
+      message: 'Old settings changed',
+      retryable: true,
+      correlationId: 'owner-conflict',
+    );
+    transport.settingsReply = (_) => Future.error(conflict);
+    final client = _client(transport);
+    client.applyBootstrap(_bootstrap('old', _settings(99)));
+    final old = client.settingsCommands.applySettingsField(
+      const InstructionUserCommand('old-owner-input'),
+    );
+    final rejected = expectLater(old, throwsStateError);
+    await transport.settingsReadEntered.future;
+    client.applyBootstrap(_bootstrap('next', _settings(1)));
+    read.complete(
+      SettingsStateSnapshot(
+        revision: 100,
+        instructions: const InstructionsSettingsView(user: 'old-refresh'),
+      ),
+    );
+    await rejected;
+    expect(transport.settingsCalls.map((call) => call.revision), [99]);
+    expect(client.settings.state.settingsRevision, 1);
+    expect(client.settings.state.canonical!.instructions.user, isEmpty);
+    final operation = client.mutations
+        .latest('settings:instructions:user')!
+        .state
+        .value;
+    expect(
+      operation.phase,
+      OperationPhase.rejected,
+      reason: 'The old RPC was definitely rejected, even though its retry owner retired',
+    );
+    expect(operation.error, same(conflict));
+    expect((await client.close()).complete, isTrue);
+  });
+
+  test('settings owner change joins a sent RPC but cannot apply its late response to the new owner', () async {
+    final transport = _Transport()..settingsReply = (call) => call.reply.future;
+    final client = _client(transport);
+    client.applyBootstrap(_bootstrap('old', _settings(99)));
+    final old = client.settingsCommands.applySettingsField(
+      const InstructionUserCommand('old-owner-input'),
+    );
+    final failure = expectLater(old, throwsStateError);
+    final call = await transport.settingsCall(0);
+    client.applyBootstrap(_bootstrap('next', _settings(1)));
+    var closed = false;
+    final closing = client.close().then((report) {
+      closed = true;
+      return report;
+    });
+    expect(closed, isFalse);
+    call.reply.complete(
+      SettingsCommandReply(
+        snapshot: SettingsStateSnapshot(
+          revision: 100,
+          instructions: const InstructionsSettingsView(user: 'late-old-reply'),
+        ),
+        receipt: StudioCommandReceipt(
+          operationId: call.operationId,
+          disposition: CommitDisposition.applied,
+          targets: const [
+            ResourceStamp(
+              resourceKey: 'settings',
+              ownerEpoch: 'old',
+              revision: 100,
+            ),
+          ],
+          effect: EffectPoint.futureSession,
+          effective: false,
+          durable: true,
+        ),
+      ),
+    );
+    await failure;
+    final report = await closing;
+    expect(closed, isTrue);
+    expect(transport.settingsCalls, hasLength(1));
+    expect(client.settings.state.settingsRevision, 1);
+    expect(client.settings.state.canonical!.instructions.user, isEmpty);
+    final operation = client.mutations
+        .latest('settings:instructions:user')!
+        .state
+        .value;
+    expect(operation.receipt!.operationId, call.operationId);
+    expect(operation.durable, isTrue);
+    expect(operation.observed, isFalse);
+    expect(operation.phase, OperationPhase.syncFailed);
+    expect(
+      report.unresolved.any(
+        (resource) => resource.owner == 'settings-commands',
+      ),
+      isFalse,
+      reason: 'The RPC was really joined, not detached by the owner switch',
+    );
+    expect(
+      report.unresolved.any(
+        (resource) => resource.owner == 'operation:${call.operationId.value}',
+      ),
+      isTrue,
+      reason: 'A retired owner observation is honestly unresolved, not satisfied by the new baseline',
+    );
+  });
+
+  test('thread route owner change rejects a queued intent on the same shared write lane', () async {
+    final transport = _Transport()
+      ..routeReply = (_) => Future.error(_probeRejection);
+    late AccountsTestRuntime runtime;
+    final client = _client(transport, onRuntime: (value) => runtime = value);
+    client.applyBootstrap(_bootstrap('old', _settings(99)));
+    transport.epoch = 'old';
+    runtime.seed(_settings(99));
+    final entered = Completer<void>();
+    final release = Completer<void>();
+    final blocking = client.settingsWrites.enqueue(() async {
+      entered.complete();
+      await release.future;
+    });
+    await entered.future;
+    final old = client.threadCommands.setThreadModelRoute(
+      threadId: 'thread',
+      accountId: 'account',
+      modelId: 'beta',
+    );
+    final rejected = expectLater(old, throwsStateError);
+    client.applyBootstrap(_bootstrap('next', _settings(1)));
+    transport.epoch = 'next';
+    runtime.seed(_settings(1));
+    release.complete();
+    await blocking;
+    await rejected;
+    expect(transport.routeCalls, isEmpty);
+    expect(
+      client.mutations.latest('thread-route:thread')!.state.value.phase,
+      OperationPhase.rejected,
+    );
+    expect(client.settings.state.commands, isEmpty);
+    expect((await client.close()).complete, isTrue);
+  });
+
+  test('thread route owner change during settings refresh cannot publish or retry an old request', () async {
+    const conflict = StudioFailure(
+      code: StudioFailureCode.staleRevision,
+      message: 'Old route settings changed',
+      retryable: true,
+      correlationId: 'route-owner-conflict',
+    );
+    final transport = _Transport()..routeReply = (_) => Future.error(conflict);
+    final read = Completer<SettingsStateSnapshot>();
+    transport.settingsRead = () => read.future;
+    late AccountsTestRuntime runtime;
+    final client = _client(transport, onRuntime: (value) => runtime = value);
+    client.applyBootstrap(_bootstrap('old', _settings(99)));
+    transport.epoch = 'old';
+    runtime.seed(_settings(99));
+    final old = client.threadCommands.setThreadModelRoute(
+      threadId: 'thread',
+      accountId: 'account',
+      modelId: 'beta',
+    );
+    final rejected = expectLater(old, throwsStateError);
+    await transport.settingsReadEntered.future;
+    client.applyBootstrap(_bootstrap('next', _settings(1)));
+    transport.epoch = 'next';
+    runtime.seed(_settings(1));
+    read.complete(_settings(100));
+    await rejected;
+    expect(transport.routeCalls.map((call) => call.expectedSettingsRevision), [
+      99,
+    ]);
+    expect(client.settings.state.settingsRevision, 1);
+    final operation = client.mutations
+        .latest('thread-route:thread')!
+        .state
+        .value;
+    expect(operation.phase, OperationPhase.rejected);
+    expect(operation.error, same(conflict));
+    expect((await client.close()).complete, isTrue);
+  });
+
+  test('thread route owner change joins the sent response without applying old settings or warnings', () async {
+    final transport = _Transport();
+    late AccountsTestRuntime runtime;
+    final client = _client(transport, onRuntime: (value) => runtime = value);
+    client.applyBootstrap(_bootstrap('old', _settings(99)));
+    transport.epoch = 'old';
+    runtime.seed(_settings(99));
+    final entered = transport.routes.stream.first;
+    final failure = expectLater(
+      client.threadCommands.setThreadModelRoute(
+        threadId: 'thread',
+        accountId: 'account',
+        modelId: 'beta',
+      ),
+      throwsStateError,
+    );
+    final call = await entered;
+    client.applyBootstrap(_bootstrap('next', _settings(1)));
+    transport.epoch = 'next';
+    runtime.seed(_settings(1));
+    var closed = false;
+    final closing = client.close().then((report) {
+      closed = true;
+      return report;
+    });
+    expect(closed, isFalse);
+    call.reply.complete(
+      ThreadModelRouteCommandReply(
+        runtime: _runtime(routeRevision: 4),
+        settings: _settings(100),
+        modeDefaultSaved: true,
+        warning: 'old-owner-warning',
+        receipt: StudioCommandReceipt(
+          operationId: call.operationId,
+          disposition: CommitDisposition.applied,
+          targets: const [
+            ResourceStamp(
+              resourceKey: 'settings',
+              ownerEpoch: 'old',
+              revision: 100,
+            ),
+          ],
+          effect: EffectPoint.futureSession,
+          effective: false,
+          durable: true,
+        ),
+      ),
+    );
+    await failure;
+    final report = await closing;
+    expect(closed, isTrue);
+    expect(transport.routeCalls, hasLength(1));
+    expect(client.settings.state.settingsRevision, 1);
+    expect(client.threadCommands.state.warnings, isEmpty);
+    final operation = client.mutations
+        .latest('thread-route:thread')!
+        .state
+        .value;
+    expect(operation.receipt!.operationId, call.operationId);
+    expect(operation.phase, OperationPhase.syncFailed);
+    expect(operation.observed, isFalse);
+    expect(
+      report.unresolved.any((resource) => resource.owner == 'thread-commands'),
+      isFalse,
+    );
+    expect(
+      report.unresolved.any(
+        (resource) => resource.owner == 'operation:${call.operationId.value}',
+      ),
+      isTrue,
+    );
+  });
+
+  test('thread route owner change while joining runtime resync prevents another CAS attempt', () async {
+    final transport = _RouteConflictTransport();
+    late AccountsTestRuntime runtime;
+    final client = _client(transport, onRuntime: (value) => runtime = value);
+    client.selection.markOpened();
+    final session = client.existingSession('thread')!;
+    transport.bindings.first.add(
+      ThreadSnapshotFrame(
+        workspace: _workspace(revision: 40, routeRevision: 2),
+      ),
+    );
+    await session.timeline.ready;
+    final failure = expectLater(
+      client.threadCommands.setThreadModelRoute(
+        threadId: 'thread',
+        accountId: 'account',
+        modelId: 'beta',
+      ),
+      throwsStateError,
+    );
+    await transport.refreshEntered.future;
+    client.applyBootstrap(_bootstrap('next', _settings(1)));
+    transport.epoch = 'next';
+    runtime.seed(_settings(1));
+    transport.bindings.last.add(
+      ThreadSnapshotFrame(
+        workspace: _workspace(revision: 80, routeRevision: 3),
+      ),
+    );
+    await failure;
+    expect(transport.attempts, hasLength(1));
+    expect(client.settings.state.settingsRevision, 1);
+    expect(
+      client.mutations.latest('thread-route:thread')!.state.value.phase,
+      OperationPhase.rejected,
+    );
+    expect((await client.close()).complete, isTrue);
+  });
+
   test('manual compaction waits for its owner, rejects duplicate dispatch and exposes failure', () async {
     final transport = _Transport();
     final client = _client(transport);

@@ -2,6 +2,9 @@ import 'dart:async';
 
 import 'package:anywork_client/studio_client.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:anywork/src/app/app_graph.dart';
+
+import 'support/test_statistics_feed.dart';
 
 import 'support/recording_demo_transport.dart';
 
@@ -48,16 +51,26 @@ void main() {
   });
 
   test(
-    'catalog failure can explicitly retry the entire typed bootstrap',
+    'template failure retries its own resource without re-running bootstrap',
     () async {
       final transport = _CatalogFailureTransport();
-      final client = AnyworkClient(
+      final graph = AppGraph(
         transport: transport,
+        statisticsFeed: const TestStatisticsFeedPort(),
         clientId: 'bootstrap-retry',
       );
-      await expectLater(client.bootstrap(), throwsStateError);
+      final client = graph.client;
+      addTearDown(
+        () => graph.close(
+          deadline: DateTime.now().add(const Duration(seconds: 3)),
+        ),
+      );
       await client.bootstrap();
-      expect(transport.bootstrapCalls, 2);
+      await expectLater(graph.accounts.loadTemplates(), throwsStateError);
+      expect(graph.accounts.state.value.templates.revision, isEmpty);
+      await graph.accounts.loadTemplates();
+      expect(graph.accounts.state.value.templates.revision, isNotEmpty);
+      expect(transport.bootstrapCalls, 1);
       expect(transport.catalogCalls, 2);
       expect(client.applicationTopics, isNotEmpty);
       expect((await client.close()).complete, isTrue);

@@ -5,9 +5,7 @@ use pl_model::{
     model::{ModelInfo, ModelTransportProfile},
     protocol::ProtocolEndpoint,
 };
-use pl_protocol::studio::{
-    AccountModelConnectionUpdate, AccountModelUpdate, AccountSecretUpdate, AccountSettingsUpdate,
-};
+use pl_protocol::studio::{AccountModelUpdate, AccountModelsPatch, AccountSecretUpdate};
 use pl_protocol::{AgentWorkspaceMode, ThreadModeId};
 use pl_provider_fixture::agent_definitions::{
     CHILD_MODEL, COMPACT_MODEL, DISABLED_PROFILE, FUTURE_MODEL, ROOT_MODEL, UNAVAILABLE_MODEL,
@@ -158,7 +156,9 @@ pub(super) fn has_explicit_system_route(home: &Path, profile_id: &str) -> Result
 
 /// Edits the real child account through the public account command. The
 /// unreferenced anchor keeps that account valid when no Profile is executable.
-pub(super) fn account_update(base_url: &str, update: ChildAccountUpdate) -> AccountSettingsUpdate {
+pub(super) fn account_models_patch(
+    update: ChildAccountUpdate,
+) -> (AccountModelsPatch, AccountSecretUpdate) {
     let (models, secret) = match update {
         // The server's private Secret Service owns this synthetic credential.
         // Keep the initial catalog intact until the explicit withdrawal below.
@@ -175,33 +175,21 @@ pub(super) fn account_update(base_url: &str, update: ChildAccountUpdate) -> Acco
             (vec![model(SPARE_MODEL)], AccountSecretUpdate::Preserve)
         }
     };
-    AccountSettingsUpdate {
-        account_id: CHILD_ACCOUNT.into(),
-        template_id: Some("openai".into()),
-        protocol: pl_model::protocol::ProtocolKind::OpenAi.as_str().into(),
-        name: "Agent observation child".into(),
-        base_url: child_base_url(base_url),
+    (
+        AccountModelsPatch::Set {
+            models: models
+                .into_iter()
+                .map(|model| AccountModelUpdate {
+                    model_id: model.model_id,
+                    display_name: model.display_name,
+                    wire_api: "responses".into(),
+                    context_window: model.context_window,
+                    max_output_tokens: model.max_output_tokens,
+                })
+                .collect(),
+        },
         secret,
-        initial_billing_kind: None,
-        model_connection_modes: models
-            .iter()
-            .map(|model| AccountModelConnectionUpdate {
-                model_id: model.model_id.clone(),
-                connection_mode: "http".into(),
-            })
-            .collect(),
-        custom_models: models
-            .into_iter()
-            .map(|model| AccountModelUpdate {
-                model_id: model.model_id,
-                display_name: model.display_name,
-                wire_api: "responses".into(),
-                context_window: model.context_window,
-                max_output_tokens: model.max_output_tokens,
-            })
-            .collect(),
-        model_auto_compact_limits: Vec::new(),
-    }
+    )
 }
 
 fn child_base_url(base_url: &str) -> String {

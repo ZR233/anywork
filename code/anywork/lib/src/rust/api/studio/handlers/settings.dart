@@ -95,11 +95,11 @@ Future<BridgeSettingsCommandReply> saveRuntimePermissionMode({
       mode: mode,
     );
 
-Future<BridgeSettingsCommandReply> saveAccount({
+Future<BridgeSettingsCommandReply> createAccount({
   required String operationId,
   required BigInt expectedSettingsRevision,
   required AccountSettingsInput input,
-}) => RustLib.instance.api.crateApiStudioHandlersSettingsSaveAccount(
+}) => RustLib.instance.api.crateApiStudioHandlersSettingsCreateAccount(
   operationId: operationId,
   expectedSettingsRevision: expectedSettingsRevision,
   input: input,

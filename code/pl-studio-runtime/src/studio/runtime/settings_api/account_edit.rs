@@ -39,11 +39,10 @@ pub(super) fn account_edit(
         AccountSecretUpdate::Replace { value } => {
             let value = value.trim();
             if value.is_empty() {
-                return Err(invalid_settings_argument(
-                    "Replacement account credential cannot be empty",
-                ));
+                current_token
+            } else {
+                Some(value.to_string())
             }
-            Some(value.to_string())
         }
         AccountSecretUpdate::Clear => None,
     };

@@ -3,11 +3,10 @@
 use anyhow::{Context, Result, bail};
 use pl_protocol::ThreadModeId;
 use pl_protocol::studio::{
-    CommandEffectPoint, RemoveAccountModelRequest, RemoveAccountRequest,
+    CommandEffectPoint, CreateAccountRequest, RemoveAccountModelRequest, RemoveAccountRequest,
     SetAccountBillingKindRequest, SetAccountModelEnabledRequest, SetDefaultAccountRequest,
     SetThreadModelRouteRequest, SettingsCommandReply, SettingsFieldUpdate, SettingsStateResponse,
-    ThreadModelRouteCommandReply, UpdateAccountRequest, UpdatePermissionSettingsRequest,
-    UpdateSettingsFieldRequest,
+    ThreadModelRouteCommandReply, UpdatePermissionSettingsRequest, UpdateSettingsFieldRequest,
 };
 
 use crate::PermissionMode;
@@ -16,12 +15,15 @@ use crate::config::{AccountId, ModelRouteConfig, ReasoningEffort};
 use super::StudioRuntime;
 
 mod account_edit;
+mod account_patch;
 mod acp;
 mod acp_install;
 mod view;
 
 use account_edit::invalid_settings_argument;
-pub(crate) use view::{model_catalog_snapshot, settings_config_snapshot, settings_state_response};
+pub(crate) use view::{
+    account_settings, model_catalog_snapshot, settings_config_snapshot, settings_state_response,
+};
 use view::{normalized_optional, normalized_string_list};
 
 impl StudioRuntime {
@@ -381,27 +383,33 @@ impl StudioRuntime {
         self.config_runtime.reload_from_disk(expected_revision)?;
         self.publish_settings_state()?;
         self.skills.mark_all_stale().await;
-        let _ = self.apply_account_config().await?;
         self.read_settings_response()
     }
 
-    pub async fn save_account(
+    pub async fn create_account(
         &self,
-        request: UpdateAccountRequest,
+        request: CreateAccountRequest,
     ) -> Result<SettingsCommandReply> {
         Self::validate_operation_id(&request.operation_id)?;
-        let current = self.config_runtime.read()?;
-        let account = account_edit::account_edit(request.account, &current.config)?;
-        let next = account.to_single_config(&current.config)?;
-        let state = self
-            .config_runtime
-            .replace(request.expected_revision, next)?;
+        let state = self.config_runtime.update_with_effective(
+            request.expected_revision,
+            |desired, effective| {
+                let id = AccountId::new(request.account.account_id.trim())?;
+                if desired.models.accounts.contains_key(&id) {
+                    return Err(pl_protocol::PureError::ConfigError(
+                        "account already exists; use a field patch".into(),
+                    ));
+                }
+                let account = account_edit::account_edit(request.account, effective)
+                    .map_err(|error| pl_protocol::PureError::ConfigError(error.to_string()))?;
+                account.to_single_config(effective)
+            },
+        )?;
         self.publish_settings_state()?;
-        let _ = self.apply_account_config().await?;
         self.settings_command_reply(
             request.operation_id,
             &state,
-            current.canonical_config() != state.canonical_config(),
+            true,
             CommandEffectPoint::FutureSession,
         )
     }
@@ -592,7 +600,6 @@ impl StudioRuntime {
             .config_runtime
             .replace(request.expected_revision, next)?;
         self.publish_settings_state()?;
-        self.apply_account_config().await?;
         self.settings_command_reply(
             request.operation_id,
             &state,

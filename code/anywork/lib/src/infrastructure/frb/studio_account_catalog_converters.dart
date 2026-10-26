@@ -1,5 +1,284 @@
 part of 'studio_api.dart';
 
+ResourceStamp _accountStampFromFrb(frb_command.BridgeResourceStamp stamp) =>
+    ResourceStamp(
+      resourceKey: stamp.resourceKey,
+      ownerEpoch: stamp.ownerEpoch,
+      revision: stamp.revision.toInt(),
+    );
+
+AccountIdentity _accountIdentityFromFrb(
+  frb_accounts.BridgeAccountIdentity identity,
+) => switch (identity) {
+  frb_accounts.BridgeAccountIdentity_Native(:final accountId) =>
+    NativeAccountIdentity(accountId),
+  frb_accounts.BridgeAccountIdentity_Acp(:final accountId) =>
+    AcpAccountIdentity(accountId),
+};
+frb_accounts.BridgeAccountIdentity _accountIdentityToFrb(
+  AccountIdentity identity,
+) => switch (identity) {
+  NativeAccountIdentity(:final accountId) =>
+    frb_accounts.BridgeAccountIdentity.native(accountId: accountId),
+  AcpAccountIdentity(:final accountId) =>
+    frb_accounts.BridgeAccountIdentity.acp(accountId: accountId),
+};
+frb_accounts.BridgeAccountObservationTarget _accountTargetToFrb(
+  AccountObservationTarget target,
+) => switch (target) {
+  AccountSummariesTarget() =>
+    const frb_accounts.BridgeAccountObservationTarget.summaries(),
+  AccountDetailTarget(:final identity) =>
+    frb_accounts.BridgeAccountObservationTarget.detail(
+      identity: _accountIdentityToFrb(identity),
+    ),
+  AccountModelsTarget(:final identity) =>
+    frb_accounts.BridgeAccountObservationTarget.models(
+      accountId: identity.accountId,
+    ),
+  AccountUsageTarget() =>
+    const frb_accounts.BridgeAccountObservationTarget.usage(),
+  AcpAuthTarget() =>
+    const frb_accounts.BridgeAccountObservationTarget.acpAuth(),
+  AcpInstallTarget() =>
+    const frb_accounts.BridgeAccountObservationTarget.acpInstall(),
+};
+
+NativeAccountDetails _nativeAccountDetailsFromFrb(
+  frb.BridgeAccountSettingsDto value,
+) => NativeAccountDetails(
+  identity: NativeAccountIdentity(value.accountId),
+  name: value.name,
+  protocol: value.protocol,
+  templateId: value.templateId,
+  baseUrl: value.baseUrl,
+  hasBearerToken: value.hasBearerToken,
+  credentialRequired: value.credentialRequired,
+  usageQueryRevision: value.usageQueryRevision.toInt(),
+  customModels: [
+    for (final model in value.customModels)
+      AccountModelCommand(
+        modelId: model.modelId,
+        displayName: model.displayName,
+        wireApi: model.wireApi,
+        contextWindow: model.contextWindow?.toInt(),
+        maxOutputTokens: model.maxOutputTokens?.toInt(),
+      ),
+  ],
+);
+AccountModelCatalog _accountModelCatalogFromFrb(
+  frb.BridgeModelCatalogAccountDto value,
+) => AccountModelCatalog(
+  identity: NativeAccountIdentity(value.accountId),
+  models: value.effectiveModels.map(accountModelFromCatalog),
+  status: _modelCatalogStatusFromFrb(value.modelCatalog),
+);
+AccountModelConfiguration _modelConfigurationFromFrb(
+  frb.BridgeAccountSettingsDto value,
+) => AccountModelConfiguration(
+  disabledModels: value.disabledModels,
+  connections: {
+    for (final connection in value.modelConnectionModes)
+      connection.modelId: switch (connection.connectionMode) {
+        'http' => AccountConnectionMode.http,
+        'web_socket' => AccountConnectionMode.webSocket,
+        final mode => throw FormatException(
+          'Unknown account connection: $mode',
+        ),
+      },
+  },
+  autoCompactLimits: {
+    for (final compact in value.modelAutoCompactLimits)
+      if (compact.overrideLimit case final limit?)
+        compact.modelId: limit.toInt(),
+  },
+);
+
+AccountDomainFrame _accountFrameFromFrb(
+  frb_accounts.BridgeAccountDomainFrame frame,
+) => switch (frame) {
+  frb_accounts.BridgeAccountDomainFrame_Summaries(
+    :final stamp,
+    :final accounts,
+  ) =>
+    AccountSummariesFrame(_accountStampFromFrb(stamp), [
+      for (final account in accounts)
+        AccountSummary(
+          identity: _accountIdentityFromFrb(account.identity),
+          name: account.name,
+          brandKey: account.brandKey,
+          isDefault: account.isDefault,
+          billingKind: account.billingKind == null
+              ? null
+              : _billingKindFromFrb(account.billingKind!),
+          billingKindOverride: account.billingKindOverride == null
+              ? null
+              : _billingKindFromFrb(account.billingKindOverride!),
+          credentialReady: account.credentialReady,
+          usageQueryRevision: account.usageQueryRevision?.toInt(),
+          acpConnectionRevision: _frbNullableInt(account.acpConnectionRevision),
+          capabilities: AccountCapabilities(
+            setDefault: account.capabilities.setDefault,
+            edit: account.capabilities.edit,
+            remove: account.capabilities.remove,
+            queryUsage: account.capabilities.queryUsage,
+            syncModels: account.capabilities.syncModels,
+            editModels: account.capabilities.editModels,
+            acpAuth: account.capabilities.acpAuth,
+          ),
+        ),
+    ]),
+  frb_accounts.BridgeAccountDomainFrame_Detail(
+    :final stamp,
+    :final identity,
+    :final account,
+  ) =>
+    AccountDetailFrame(
+      _accountStampFromFrb(stamp),
+      _accountIdentityFromFrb(identity),
+      switch (account) {
+        null => null,
+        frb_accounts.BridgeAccountDetail_Native(:final field0) =>
+          _nativeAccountDetailsFromFrb(field0),
+        frb_accounts.BridgeAccountDetail_Acp(:final field0) =>
+          AcpAccountDetails(_acpAccountFromFrb(field0)),
+      },
+      modelConfiguration: account is frb_accounts.BridgeAccountDetail_Native
+          ? _modelConfigurationFromFrb(account.field0)
+          : null,
+    ),
+  frb_accounts.BridgeAccountDomainFrame_Models(
+    :final stamp,
+    :final accountId,
+    :final catalog,
+  ) =>
+    AccountModelsFrame(
+      _accountStampFromFrb(stamp),
+      NativeAccountIdentity(accountId),
+      catalog == null ? null : _accountModelCatalogFromFrb(catalog),
+    ),
+  frb_accounts.BridgeAccountDomainFrame_Usage(:final stamp, :final accounts) =>
+    AccountUsageFrame(
+      _accountStampFromFrb(stamp),
+      accounts.map(_usageObservationFromFrb),
+    ),
+  frb_accounts.BridgeAccountDomainFrame_AcpAuth(
+    :final stamp,
+    :final snapshot,
+  ) =>
+    AcpAuthFrame(
+      _accountStampFromFrb(stamp),
+      _acpAuthSnapshotFromFrb(snapshot),
+    ),
+  frb_accounts.BridgeAccountDomainFrame_AcpInstall(
+    :final stamp,
+    :final snapshot,
+  ) =>
+    AcpInstallFrame(
+      _accountStampFromFrb(stamp),
+      _acpInstallSnapshotFromFrb(snapshot),
+    ),
+};
+
+AccountUsageObservation _usageObservationFromFrb(
+  frb_accounts.BridgeAccountUsageObservation value,
+) => AccountUsageObservation(
+  identity: NativeAccountIdentity(value.accountId),
+  queryRevision: value.queryRevision.toInt(),
+  revision: value.revision.toInt(),
+  phase: switch (value.phase) {
+    frb_accounts.BridgeAccountUsagePhase.unchecked =>
+      AccountUsagePhase.unchecked,
+    frb_accounts.BridgeAccountUsagePhase.querying => AccountUsagePhase.querying,
+    frb_accounts.BridgeAccountUsagePhase.succeeded =>
+      AccountUsagePhase.succeeded,
+    frb_accounts.BridgeAccountUsagePhase.unsupported =>
+      AccountUsagePhase.unsupported,
+    frb_accounts.BridgeAccountUsagePhase.missingCredential =>
+      AccountUsagePhase.missingCredential,
+    frb_accounts.BridgeAccountUsagePhase.failed => AccountUsagePhase.failed,
+  },
+  operationId: value.operationId,
+  checkedAt: value.checkedAt?.toInt(),
+  failure: value.failure == null
+      ? null
+      : AccountUsageFailure(
+          code: switch (value.failure!.code) {
+            frb_accounts.BridgeAccountUsageFailureCode.configuration =>
+              AccountUsageFailureCode.configuration,
+            frb_accounts.BridgeAccountUsageFailureCode.query =>
+              AccountUsageFailureCode.query,
+            frb_accounts.BridgeAccountUsageFailureCode.cancelled =>
+              AccountUsageFailureCode.cancelled,
+            frb_accounts.BridgeAccountUsageFailureCode.taskFailed =>
+              AccountUsageFailureCode.taskFailed,
+          },
+          retryable: value.failure!.retryable,
+        ),
+  lastGood: value.lastGood == null
+      ? null
+      : AccountUsageSuccess(
+          checkedAt: value.lastGood!.checkedAt.toInt(),
+          value: _usageValueFromFrb(value.lastGood!.value),
+        ),
+);
+AccountUsageValue _usageValueFromFrb(
+  frb_accounts.BridgeAccountUsageValue value,
+) => switch (value) {
+  frb_accounts.BridgeAccountUsageValue_Balance(
+    :final available,
+    :final balances,
+  ) =>
+    AccountBalance(
+      available: available,
+      balances: [
+        for (final balance in balances)
+          AccountMoneyBalance(
+            currency: balance.currency,
+            total: balance.total,
+            granted: balance.granted,
+            toppedUp: balance.toppedUp,
+          ),
+      ],
+    ),
+  frb_accounts.BridgeAccountUsageValue_Subscription(
+    :final level,
+    :final quotas,
+  ) =>
+    AccountSubscription(
+      level: level,
+      quotas: [
+        for (final quota in quotas)
+          AccountQuota(
+            window: switch (quota.window) {
+              frb_accounts.BridgeAccountQuotaWindow_FiveHour() =>
+                const AccountQuotaWindow(AccountQuotaWindowKind.fiveHour),
+              frb_accounts.BridgeAccountQuotaWindow_Weekly() =>
+                const AccountQuotaWindow(AccountQuotaWindowKind.weekly),
+              frb_accounts.BridgeAccountQuotaWindow_McpMonthly() =>
+                const AccountQuotaWindow(AccountQuotaWindowKind.mcpMonthly),
+              frb_accounts.BridgeAccountQuotaWindow_Other(:final field0) =>
+                AccountQuotaWindow(AccountQuotaWindowKind.other, name: field0),
+            },
+            percentage: quota.percentage,
+            used: quota.used,
+            total: quota.total,
+            remaining: quota.remaining,
+            resetAt: quota.resetAt?.toInt(),
+            details: [
+              for (final detail in quota.details)
+                AccountQuotaDetail(
+                  name: detail.name,
+                  used: detail.used,
+                  total: detail.total,
+                  percentage: detail.percentage,
+                ),
+            ],
+          ),
+      ],
+    ),
+};
+
 AccountCatalogView accountCatalogFromFrb(
   frb.BridgeAccountCatalogSnapshot snapshot,
 ) {

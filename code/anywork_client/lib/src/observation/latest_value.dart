@@ -1,10 +1,18 @@
 import 'dart:async';
 
+/// A borrowed observation surface. Publishing and closing remain with its owner.
+abstract interface class ValueObservation<T> {
+  T get value;
+  Observation watch(void Function(T) listener, {bool fireImmediately = false});
+  LatestWatch<T> watchLatest(void Function(T) listener);
+  Future<T> waitFor(bool Function(T) predicate);
+}
+
 /// A bounded display mirror. This is not a reliable event queue.
 ///
 /// Registration and reading [value] are synchronous in the owning isolate. A
 /// paused observer retains only the latest value and owns no business resource.
-final class LatestValue<T> {
+final class LatestValue<T> implements ValueObservation<T> {
   LatestValue(this._value);
 
   T _value;
