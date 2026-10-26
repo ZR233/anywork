@@ -1,4 +1,5 @@
 import 'package:anywork_client/models.dart';
+import 'package:anywork_client/model_directory.dart';
 import 'package:freezed_annotation/freezed_annotation.dart';
 
 import 'agent_workspace_view.dart';
@@ -117,7 +118,7 @@ abstract class StatusBarView with _$StatusBarView {
 
   const factory StatusBarView({
     required StudioThread thread,
-    required List<AccountSettingsView> accounts,
+    required List<ModelSelectionAccount> accounts,
     required List<RoleSettingsView> roles,
     required bool isBusy,
     ThreadModelRouteView? modelRoute,

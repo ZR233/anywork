@@ -122,6 +122,28 @@ final class ClientBoundaryDiagnostic {
 
 String _normalized(String path) => path.replaceAll('\\', '/');
 
+const _accountsRoot = 'code/anywork/lib/src/features/settings/accounts/';
+
+// Normalize package and relative imports to the same source boundary. This
+// does not resolve symbols or infer ownership from a type's name.
+String _sourcePath(String from, String uri) {
+  if (uri.startsWith('package:anywork/')) {
+    return Uri.parse(uri.replaceFirst('package:anywork/', 'code/anywork/lib/'))
+        .normalizePath()
+        .toString();
+  }
+  return Uri(path: from).resolve(uri).toString();
+}
+
+bool _isAccountPresentation(String path) =>
+    path == '${_accountsRoot}accounts_views.dart' ||
+    const [
+      'state/',
+      'views/',
+      'widgets/',
+      'previews/',
+    ].any((directory) => path.startsWith('$_accountsRoot$directory'));
+
 bool _isHandwrittenDart(String path) {
   path = _normalized(path);
   return path.endsWith('.dart') &&
@@ -152,6 +174,11 @@ final class _BoundaryVisitor extends RecursiveAstVisitor<void> {
       path.startsWith('code/anywork/lib/src/presentation/providers/');
   bool get isCommand =>
       path.contains('/commands/') || path.endsWith('_commands.dart');
+  bool get isAccountFeature => path.startsWith(_accountsRoot);
+  bool get isAccountPresentation => _isAccountPresentation(path);
+  bool get isAccountState => path.startsWith('${_accountsRoot}state/');
+  bool get isAccountViewModel =>
+      path.startsWith('${_accountsRoot}view_models/');
 
   @override
   void visitImportDirective(ImportDirective node) {
@@ -171,10 +198,39 @@ final class _BoundaryVisitor extends RecursiveAstVisitor<void> {
     super.visitExportDirective(node);
   }
 
+  @override
+  void visitPartDirective(PartDirective node) {
+    final uri = node.uri.stringValue ?? '';
+    if (isAccountFeature &&
+        !uri.endsWith('.g.dart') &&
+        !uri.endsWith('.freezed.dart')) {
+      report(
+        node.offset,
+        'UI-02',
+        'Account modules use imports; only generator-owned parts are allowed',
+      );
+    }
+    super.visitPartDirective(node);
+  }
+
+  @override
+  void visitPartOfDirective(PartOfDirective node) {
+    // Generated files are excluded by the source walker, so a handwritten
+    // part cannot evade the dependency boundary of its owning library.
+    if (isAccountFeature && _isHandwrittenDart(path)) {
+      report(
+        node.offset,
+        'UI-02',
+        'Account modules cannot be handwritten parts',
+      );
+    }
+    super.visitPartOfDirective(node);
+  }
+
   void _checkUri(StringLiteral literal) {
     final uri = literal.stringValue;
     if (uri == null) return;
-    final resolved = Uri(path: path).resolve(uri).toString();
+    final resolved = _sourcePath(path, uri);
     if (isClient &&
         uri.startsWith('package:') &&
         !uri.startsWith('package:anywork_client/')) {
@@ -197,18 +253,88 @@ final class _BoundaryVisitor extends RecursiveAstVisitor<void> {
             resolved.contains('/infrastructure/') ||
             resolved.contains('/src/rust/') ||
             uri.startsWith('package:flutter_rust_bridge/') ||
-            uri.endsWith('/transport_ports.dart') ||
-            uri.endsWith('/studio_ports.dart'))) {
+            uri.endsWith('_ports.dart'))) {
       report(
         literal.offset,
         'OWN-01',
         'Feature must use Client queries/actions, not transport: $uri',
       );
     }
+    if (isAccountPresentation) {
+      final appDependency = resolved.startsWith('code/anywork/lib/');
+      final pureAppDependency =
+          _isAccountPresentation(resolved) ||
+          resolved.startsWith('code/anywork/lib/src/l10n/') ||
+          resolved.startsWith('code/anywork/lib/src/app/theme/') ||
+          resolved == 'code/anywork/lib/src/shared/account_brand.dart';
+      final businessPackage =
+          uri.startsWith('package:anywork_client/') ||
+          uri.startsWith('package:flutter_rust_bridge/') ||
+          const [
+            'riverpod',
+            'flutter_riverpod',
+            'riverpod_annotation',
+            'provider',
+          ].any((package) => uri.startsWith('package:$package/'));
+      if (businessPackage ||
+          (appDependency && !pureAppDependency) ||
+          const {'dart:io', 'dart:ffi', 'dart:isolate'}.contains(uri)) {
+        report(
+          literal.offset,
+          'UI-02',
+          'Account presentation/preview must not depend on business or platform owners: $uri',
+        );
+      }
+    }
+    if (isAccountState &&
+        (uri.startsWith('package:flutter/') ||
+            resolved.startsWith('code/anywork/lib/src/l10n/') ||
+            resolved.startsWith('code/anywork/lib/src/app/theme/') ||
+            resolved == 'code/anywork/lib/src/shared/account_brand.dart' ||
+            (resolved.startsWith(_accountsRoot) &&
+                !resolved.startsWith('${_accountsRoot}state/')))) {
+      report(
+        literal.offset,
+        'UI-02',
+        'Account presentation values cannot depend on Widgets or UI controllers: $uri',
+      );
+    }
+    if (isAccountViewModel &&
+        ((uri.startsWith('package:flutter/') &&
+                uri != 'package:flutter/foundation.dart') ||
+            uri.startsWith('package:flutter_riverpod/') ||
+            resolved == '${_accountsRoot}accounts_views.dart' ||
+            const ['views/', 'widgets/', 'connectors/', 'previews/'].any(
+              (directory) => resolved.startsWith('$_accountsRoot$directory'),
+            ) ||
+            resolved.startsWith('code/anywork/lib/src/app/') ||
+            const {'dart:io', 'dart:ffi'}.contains(uri))) {
+      report(
+        literal.offset,
+        'UI-02',
+        'Account ViewModel uses domain APIs and injected providers, not Widgets or adapters: $uri',
+      );
+    }
   }
 
   @override
   void visitNamedType(NamedType node) {
+    if (isAccountState &&
+        const {
+          'Future',
+          'FutureOr',
+          'Stream',
+          'StreamSubscription',
+          'StreamController',
+          'Completer',
+          'Timer',
+        }.contains(node.name.lexeme)) {
+      report(
+        node.offset,
+        'UI-02',
+        'Account presentation values cannot carry asynchronous resources',
+      );
+    }
     if (isClient &&
         const {'Ref', 'WidgetRef', 'BuildContext'}.contains(node.name.lexeme)) {
       report(

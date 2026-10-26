@@ -1,239 +1,189 @@
 import 'dart:async';
 
-import 'package:anywork/src/features/settings/settings_account_usage_demand.dart';
-import 'package:anywork/src/features/settings/settings_views.dart';
-import 'package:anywork/src/presentation/providers/client_provider.dart';
-import 'package:anywork/src/presentation/providers/account_usage_queries.dart';
-import 'package:anywork_client/studio_client.dart';
+import 'package:anywork/src/app/app_graph.dart';
+import 'package:anywork/src/presentation/providers/account_domains.dart';
+import 'package:anywork_client/account_usage.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+
+import 'support/scripted_usage_transport.dart';
+import 'support/test_statistics_feed.dart';
+
+AppGraph _graph(ScriptedUsageTransport transport) {
+  final graph = AppGraph(
+    transport: transport,
+    statisticsFeed: const TestStatisticsFeedPort(),
+    clientId: 'usage-adapter',
+  );
+  graph.accountDomains.adoptOwnerEpoch(ScriptedUsageTransport.epoch);
+  graph.accountDomains.acceptFrame(
+    transport.publishAccounts([
+      usageAccount('a', name: 'Alpha'),
+      usageAccount('b', name: 'Beta'),
+    ]),
+  );
+  addTearDown(
+    () => graph.close(deadline: DateTime.now().add(const Duration(seconds: 3))),
+  );
+  return graph;
+}
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
-  test('production auto demand swallows query errors without uncaught zone failures', () async {
-    final transport = _UsageTransport();
-    final client = AnyworkClient(
-      transport: transport,
-      clientId: 'usage-demand',
-    );
-    addTearDown(client.close);
-    client.settings.merge(
-      SettingsStateSnapshot(
-        revision: 1,
-        accounts: [
-          _account('a', usageQueryRevision: 1),
-          _account('b', usageQueryRevision: 1),
-        ],
-      ),
-    );
-    final demand = AccountUsageAutoDemand();
-    final queries = client.accountUsageQueries;
+  test('application visibility demand swallows query failures without forging provider health', () async {
+    final transport = ScriptedUsageTransport();
+    final graph = _graph(transport);
     final uncaught = <Object>[];
     await runZonedGuarded(() async {
-      demand.apply(
-        visible: true,
-        accounts: const [
-          AccountUsageQueryIdentity(id: 'a', usageQueryRevision: 1),
-          AccountUsageQueryIdentity(id: 'b', usageQueryRevision: 1),
-        ],
-        refresh: (id) => ignoreAccountUsageQueryErrors(queries.refresh(id)),
+      final demand = graph.accountUsage.observeVisible();
+      addTearDown(demand.release);
+      final a = await transport.started('a');
+      final b = await transport.started('b');
+      expect(transport.calls.map((call) => call.identity.accountId), [
+        'a',
+        'b',
+      ]);
+      await graph.accountUsage.state.waitFor(
+        (value) =>
+            value.value?.values.every(
+                  (value) => value.phase == AccountUsagePhase.querying,
+                ) ==
+                true &&
+            value.value?.length == 2,
       );
-      await transport.started('a').future;
-      await transport.started('b').future;
-      expect(transport.startedIds, ['a', 'b']);
-      expect(queries.state.loadingAccountIds, containsAll(['a', 'b']));
-      transport.release('a').complete(_usage('a'));
-      await queries.source.waitFor(
-        (state) => !state.loadingAccountIds.contains('a'),
+      transport.succeed(a);
+      await graph.accountUsage.state.waitFor(
+        (value) =>
+            value.value?[const NativeAccountIdentity('a')]?.phase ==
+            AccountUsagePhase.unsupported,
       );
-      expect(queries.state.loadingAccountIds.contains('b'), isTrue);
-      expect(queries.state.errorsByAccountId.containsKey('a'), isFalse);
-      transport.release('b').completeError(StateError('b failed'));
-      await queries.source.waitFor(
-        (state) =>
-            !state.loadingAccountIds.contains('b') &&
-            state.errorsByAccountId.containsKey('b'),
+      expect(
+        graph
+            .accountUsage
+            .state
+            .value
+            .value![const NativeAccountIdentity('b')]!
+            .phase,
+        AccountUsagePhase.querying,
       );
-      expect(queries.state.errorsByAccountId['b'], isNotNull);
-      expect(queries.state.errorsByAccountId.containsKey('a'), isFalse);
-      demand.apply(
-        visible: true,
-        accounts: const [
-          AccountUsageQueryIdentity(id: 'a', usageQueryRevision: 1),
-          AccountUsageQueryIdentity(id: 'b', usageQueryRevision: 1),
-        ],
-        refresh: (id) => ignoreAccountUsageQueryErrors(queries.refresh(id)),
+      expect(graph.accountUsage.queryFailures.value, isEmpty);
+      transport.fail(b);
+      await graph.accountUsage.queryFailures.waitFor(
+        (value) => value.containsKey(const NativeAccountIdentity('b')),
       );
-      expect(transport.startedIds, ['a', 'b']);
+      expect(
+        graph.accountUsage.queryFailures.value.containsKey(
+          const NativeAccountIdentity('a'),
+        ),
+        isFalse,
+      );
+      expect(
+        graph
+            .accountUsage
+            .state
+            .value
+            .value![const NativeAccountIdentity('b')]!
+            .phase,
+        AccountUsagePhase.querying,
+        reason: 'A local transport error cannot invent a Rust terminal',
+      );
+      graph.accountDomains.acceptFrame(
+        transport.publishAccounts([
+          usageAccount('a', name: 'Renamed'),
+          usageAccount('b'),
+        ]),
+      );
+      expect(
+        transport.calls,
+        hasLength(2),
+        reason:
+            'A failed visible query is attempted, not an automatic retry loop',
+      );
     }, (error, _) => uncaught.add(error));
     expect(uncaught, isEmpty);
   });
 
-  test(
-    'readonly query adapter observes query state and identity selector',
-    () async {
-      final transport = _UsageTransport();
-      final client = AnyworkClient(
-        transport: transport,
-        clientId: 'usage-observe',
-      );
-      addTearDown(client.close);
-      client.settings.merge(
-        SettingsStateSnapshot(
-          revision: 1,
-          accounts: [
-            _account('a', name: 'Alpha', usageQueryRevision: 1),
-            _account('b', name: 'Beta', usageQueryRevision: 1),
-          ],
-        ),
-      );
-      final container = ProviderContainer(
-        overrides: [anyworkClientProvider.overrideWith((ref) => client)],
-      );
-      addTearDown(container.dispose);
-      final querySub = container.listen(
-        accountUsageQueriesProvider,
-        (_, _) {},
-        fireImmediately: true,
-      );
-      addTearDown(querySub.close);
-      final identityNotifications = <AccountUsageQueryIdentitySnapshot>[];
-      final identitySub = container.listen(
-        settingsAccountUsageQueryIdentitiesProvider,
-        (_, next) => identityNotifications.add(next),
-        fireImmediately: true,
-      );
-      addTearDown(identitySub.close);
-
-      expect(querySub.read().loadingAccountIds, isEmpty);
-      expect(transport.startedIds, isEmpty);
-      expect(identitySub.read().identities, const [
-        AccountUsageQueryIdentity(id: 'a', usageQueryRevision: 1),
-        AccountUsageQueryIdentity(id: 'b', usageQueryRevision: 1),
-      ]);
-      identityNotifications.clear();
-
-      ignoreAccountUsageQueryErrors(client.accountUsageQueries.refresh('a'));
-      await transport.started('a').future;
-      await client.accountUsageQueries.source.waitFor(
-        (state) => state.loadingAccountIds.contains('a'),
-      );
-      expect(querySub.read().loadingAccountIds, contains('a'));
-      transport.release('a').complete(_usage('a'));
-      await client.accountUsageQueries.source.waitFor(
-        (state) => state.loadingAccountIds.isEmpty,
-      );
-      expect(querySub.read().loadingAccountIds, isEmpty);
-      expect(querySub.read().errorsByAccountId, isEmpty);
-      expect(transport.startedIds, ['a']);
-
-      client.settings.merge(
-        SettingsStateSnapshot(
-          revision: 2,
-          accounts: [
-            _account('a', name: 'Alpha renamed', usageQueryRevision: 1),
-            _account('b', name: 'Beta', usageQueryRevision: 1),
-          ],
-        ),
-      );
-      await Future<void>.delayed(Duration.zero);
-      expect(identityNotifications, isEmpty);
-      expect(transport.startedIds, ['a']);
-
-      client.settings.merge(
-        SettingsStateSnapshot(
-          revision: 3,
-          accounts: [
-            _account('a', name: 'Alpha renamed', usageQueryRevision: 2),
-            _account('b', name: 'Beta', usageQueryRevision: 1),
-          ],
-        ),
-      );
-      await Future<void>.delayed(Duration.zero);
-      expect(identityNotifications, [
-        AccountUsageQueryIdentitySnapshot(const [
-          AccountUsageQueryIdentity(id: 'a', usageQueryRevision: 2),
-          AccountUsageQueryIdentity(id: 'b', usageQueryRevision: 1),
-        ]),
-      ]);
-      expect(transport.startedIds, ['a']);
-
-      client.settings.merge(
-        SettingsStateSnapshot(
-          revision: 4,
-          accounts: [
-            _account('a', name: 'Alpha renamed', usageQueryRevision: 2),
-          ],
-        ),
-      );
-      await Future<void>.delayed(Duration.zero);
-      expect(
-        identityNotifications.last,
-        const AccountUsageQueryIdentitySnapshot([
-          AccountUsageQueryIdentity(id: 'a', usageQueryRevision: 2),
-        ]),
-      );
-      expect(transport.startedIds, ['a']);
-    },
-  );
-}
-
-AccountSettingsView _account(
-  String id, {
-  String? name,
-  int usageQueryRevision = 1,
-}) {
-  return AccountSettingsView(
-    id: id,
-    name: name ?? id,
-    baseUrl: 'http://local.invalid',
-    defaultModelId: 'model',
-    models: const [
-      AccountModelView(
-        modelId: 'model',
-        displayName: 'Model',
-        reasoningEfforts: ['medium'],
+  test('readonly providers reflect usage and query identity changes without issuing requests', () async {
+    final transport = ScriptedUsageTransport();
+    final graph = _graph(transport);
+    final container = ProviderContainer(
+      overrides: [appGraphProvider.overrideWithValue(graph)],
+    );
+    addTearDown(container.dispose);
+    final usage = container.listen(accountUsageStateProvider, (_, _) {});
+    addTearDown(usage.close);
+    final errors = container.listen(
+      accountUsageQueryFailuresProvider,
+      (_, _) {},
+    );
+    addTearDown(errors.close);
+    final accounts = container.listen(accountsStateProvider, (_, _) {});
+    addTearDown(accounts.close);
+    expect(usage.read().loaded, isFalse);
+    expect(usage.read().value, isEmpty);
+    expect(errors.read(), isEmpty);
+    expect(transport.calls, isEmpty);
+    expect(
+      accounts.read().accounts.map(
+        (value) => (value.identity.accountId, value.usageQueryRevision),
       ),
-    ],
-    status: 'ready',
-    usageLabel: '',
-    usageQueryRevision: usageQueryRevision,
-  );
-}
-
-AccountUsageStateSnapshot _usage(String accountId) {
-  return AccountUsageStateSnapshot(
-    revision: 1,
-    usages: [
-      AccountUsageView(
-        accountId: accountId,
-        updatedAt: 1,
-        state: const UnsupportedAccountUsageView(),
+      [('a', 1), ('b', 1)],
+    );
+    final pending = graph.accountUsage.refresh(
+      const NativeAccountIdentity('a'),
+    );
+    final call = await transport.started('a');
+    await graph.accountUsage.state.waitFor(
+      (value) =>
+          value.value?[const NativeAccountIdentity('a')]?.phase ==
+          AccountUsagePhase.querying,
+    );
+    expect(
+      usage.read().value![const NativeAccountIdentity('a')]!.phase,
+      AccountUsagePhase.querying,
+    );
+    transport.succeed(call);
+    await pending;
+    expect(
+      usage.read().value![const NativeAccountIdentity('a')]!.phase,
+      AccountUsagePhase.unsupported,
+    );
+    expect(errors.read(), isEmpty);
+    graph.accountDomains.acceptFrame(
+      transport.publishAccounts([
+        usageAccount('a', name: 'Alpha renamed'),
+        usageAccount('b', name: 'Beta'),
+      ]),
+    );
+    expect(accounts.read().accounts.first.name, 'Alpha renamed');
+    expect(transport.calls, hasLength(1));
+    graph.accountDomains.acceptFrame(
+      transport.publishAccounts([
+        usageAccount('a', name: 'Alpha renamed', query: 2),
+        usageAccount('b', name: 'Beta'),
+      ]),
+    );
+    expect(
+      accounts.read().accounts.map(
+        (value) => (value.identity.accountId, value.usageQueryRevision),
       ),
-    ],
-  );
-}
-
-class _UsageTransport implements StudioTransport {
-  final startedGates = <String, Completer<void>>{};
-  final releaseGates = <String, Completer<AccountUsageStateSnapshot>>{};
-  final startedIds = <String>[];
-
-  Completer<void> started(String accountId) =>
-      startedGates.putIfAbsent(accountId, Completer<void>.new);
-
-  Completer<AccountUsageStateSnapshot> release(String accountId) => releaseGates
-      .putIfAbsent(accountId, Completer<AccountUsageStateSnapshot>.new);
-
-  @override
-  Future<AccountUsageStateSnapshot> checkAccountUsage(String accountId) async {
-    startedIds.add(accountId);
-    started(accountId).complete();
-    return release(accountId).future;
-  }
-
-  @override
-  dynamic noSuchMethod(Invocation invocation) =>
-      throw UnsupportedError('Unused transport: ${invocation.memberName}');
+      [('a', 2), ('b', 1)],
+    );
+    expect(
+      usage.read().value!.containsKey(const NativeAccountIdentity('a')),
+      isFalse,
+      reason: 'A new query cannot reuse lastGood or health from the old query',
+    );
+    expect(transport.calls, hasLength(1));
+    graph.accountDomains.acceptFrame(
+      transport.publishAccounts([
+        usageAccount('a', name: 'Alpha renamed', query: 2),
+      ]),
+    );
+    expect(accounts.read().accounts.map((value) => value.identity.accountId), [
+      'a',
+    ]);
+    expect(transport.calls, hasLength(1));
+  });
 }

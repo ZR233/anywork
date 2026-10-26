@@ -64,3 +64,67 @@ GUI 交互通过 `cargo xtask manual-gui` 的隔离模拟服务人工验收；�
 直接使用用户配置运行 `cargo xtask run-gui --driver`，不作为自动测试通过的证明。
 
 The default app path initializes the native FRB runtime and subscribes only to the selected session stream. `DemoStudioApi` is selected only by an explicit demo build flag or a test override; native runtime failures are surfaced instead of switching implementations.
+
+## 账号组件预览
+
+账号列表、详情、编辑与关键组件的纯入口是
+`lib/src/features/settings/accounts/accounts_views.dart`；它只导出不可变呈现值与生产视图，
+不导出 ViewModel、Connector、Client 或 Rust bridge。官方预览入口位于该功能的
+`previews/accounts_previews.dart`，直接复用生产组件、主题、本地化和品牌资源，以合成数据
+覆盖宽窄布局、额度、失败保留数据、Native/ACP 编辑等场景；预览动作仅改变本地展示或记录回调。
+
+官方工具会编译项目内所有已发现的预览，搜索筛选不是依赖隔离。不要在原生应用壳的
+`part` 中注册预览，或通过预览入口导入 AppGraph/FRB；旧工作区聚合预览已移除，
+完整工作区和时间线仍使用原生 demo/Driver 观察。Native 模型声明使用同一套结构化手动模型
+字段，不另设自由文本解析器或第二份文本草稿。
+
+从仓库根目录操作，生成输入变化后先同步生成物：
+
+```text
+cargo xtask generate-gui
+cargo dart analyze lib/src/features/settings/accounts
+cargo flutter widget-preview start
+```
+
+SSH 或需要手动选择浏览器时使用 `cargo flutter widget-preview start --web-server --no-devtools`，
+打开命令输出的实际服务地址；不要占用项目保留端口 `1420`。首次仍需 Flutter Web 编译，
+后续由官方工具使用 `.widget_preview/` 缓存并响应源文件修改，不构建桌面程序或启动业务运行时。
+在预览底部搜索框按场景名称筛选，可直接操作生产组件的搜索、展开与编辑回调。
+
+验证热更新时优先让官方工具启动并连接 Chrome；Linux 无桌面环境可使用
+`cargo flutter widget-preview start --headless --no-devtools`，必要时将 `CHROME_EXECUTABLE`
+指向实际安装的 Chrome/Chromium。`--web-server` 的完整调试依赖 Dart Debug Chrome 扩展，
+不能将不带扩展的浏览器布局截图等同于热更新成功；反复关闭页面后若出现热重载客户端超时，
+应退出该服务并切换到官方浏览器模式，不修改预览工具源码或把失败吞掉。关闭预览使用 `Ctrl-C`，
+等待命令及所属分析服务、DTD 和浏览器进程退出；临时目录和截图仍遵循会话文件约定。
+
+### 当前依赖覆盖的准备
+
+Flutter 3.47 的预览工程是单独的依赖解析根，不继承应用的 `dependency_overrides`。
+当前 `flutter_chat_ui` 依赖的官方 `cross_cache 1.1.1` 尚未适配项目使用的 `cross_file 0.4`，
+因此预览必须引用应用已有的同一个兼容包，而非再复制一份实现。
+首次启动前，创建 `code/anywork/.widget_preview/pubspec_overrides.yaml`：
+
+```yaml
+dependency_overrides:
+  cross_cache:
+    path: ../packages/cross_cache
+```
+
+这是 Dart 官方支持的本地依赖覆盖配置，放在已忽略的预览缓存内，不提交该目录，也不修改 Flutter SDK。
+若首次启动曾因版本冲突中断，先执行 `cargo flutter widget-preview clean`，再重新创建上述文件后启动，
+避免复用不完整的预览依赖缓存；清理或 SDK 升级后应检查该配置是否仍存在。
+应用的 `pubspec.yaml` 和 `pubspec.lock` 不因这一步改变。
+
+当前依赖策略是短期保留 `packages/cross_cache` 兼容补丁，不为去掉该目录而降级
+`cross_file` / `desktop_drop`，也不另加缓存库。相对官方 `cross_cache 1.1.1`，本地代码
+只适配 `XFile.fileSystem(path: ...)`，并等待图片解码 Future，使异步解码失败进入既有错误处理；
+包约束同步适配 `cross_file 0.4`。当上游发布兼容版本后，先核对这两处行为和桌面/Web 依赖解析，
+再统一移除本地包、应用及预览 override，更新应用 lockfile 并完成相关图片与预览回归。
+
+预览证明的是组件解耦、Web 渲染和布局，不证明原生插件、FRB、凭据、持久化或进程关闭行为；
+这些仍需通过 `cargo xtask manual-gui` 和真实 Driver 验收，PR 产品截图也应来自原生程序。
+截图和诊断日志写入当前会话产物目录，不放入源码或预览缓存的 Git 提交。
+
+官方参考：[Widget Previewer](https://docs.flutter.dev/tools/widget-previewer)、
+[依赖覆盖与 pubspec_overrides.yaml](https://dart.dev/tools/pub/dependencies#pubspec_overridesyaml)。

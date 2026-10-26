@@ -78,8 +78,11 @@ void main() {
         );
         if (frameFirst) board.observe(stamp);
         operation.accept(receipt);
+        Object? syncFailure;
         if (!frameFirst) {
           expect(operation.state.value.observed, isFalse);
+          syncFailure = StateError('Owner observation interrupted');
+          operation.syncFailed(syncFailure);
           board.observe(stamp);
         }
         expect(operation.state.value.observed, isTrue);
@@ -89,6 +92,14 @@ void main() {
         );
         expect(operation.state.value.effective, isFalse);
         expect(operation.state.value.durable, isTrue);
+        if (syncFailure != null) {
+          expect(operation.state.value.failurePhase, OperationPhase.syncFailed);
+          expect(
+            operation.state.value.error,
+            same(syncFailure),
+            reason: 'Merging a true observation must not erase independently recorded synchronization failure',
+          );
+        }
         expect(board.budget.used(ResourceKind.pendingOperation), 0);
       }
     },

@@ -280,9 +280,8 @@ AccountUsageView _demoAccountUsage(AccountSettingsView account) {
   );
 }
 
-List<AccountSettingsView> _providersFromCommands(
-  List<AccountCommand> commands, {
-  List<AccountSettingsView> previous = const [],
+List<AccountSettingsView> _accountsFromCreateCommands(
+  List<CreateAccountCommand> commands, {
   required AccountCatalogView catalog,
 }) {
   return commands.map((account) {
@@ -304,8 +303,14 @@ List<AccountSettingsView> _providersFromCommands(
         )
         .where((model) => model.modelId.isNotEmpty)
         .toList();
-    final template =
-        catalog.template(account.templateId ?? '') ?? catalog.templates.first;
+    final template = catalog.template(account.templateId ?? '');
+    if (account.templateId != null && template == null) {
+      throw ArgumentError.value(
+        account.templateId,
+        'templateId',
+        'Unknown account template',
+      );
+    }
     final connectionModes = {
       for (final model in account.modelConnectionModes)
         model.modelId: model.connectionMode,
@@ -315,29 +320,11 @@ List<AccountSettingsView> _providersFromCommands(
           connectionMode:
               connectionModes[model.modelId] ?? model.defaultConnectionMode,
         );
-    final previousAccount = previous
-        .where((item) => item.id == account.id)
-        .firstOrNull;
-    if (previousAccount != null && account.initialBillingKind != null) {
-      throw const StudioFailure(
-        code: StudioFailureCode.invalidArgument,
-        message:
-            'Existing account billing kind requires its dedicated command.',
-        retryable: false,
-        correlationId: 'demo-account-billing-kind',
-      );
-    }
-    final billingOverride = previousAccount == null
-        ? account.initialBillingKind
-        : previousAccount.billingKindOverride;
-    final observed = [
-      for (final model in previousAccount?.models ?? const <AccountModelView>[])
-        if (model.origin != ModelOrigin.manual) model,
-    ];
-    final catalogModels = catalog.modelsFor(template.modelCatalogId);
-    final observedModels = (observed.isNotEmpty ? observed : catalogModels)
-        .map(withCurrentConnection)
-        .toList();
+    final billingOverride = account.initialBillingKind;
+    final catalogModels = template == null
+        ? const <AccountModelView>[]
+        : catalog.modelsFor(template.modelCatalogId);
+    final observedModels = catalogModels.map(withCurrentConnection).toList();
     final models = [
       ...observedModels,
       ...customModels.map(withCurrentConnection),
@@ -354,54 +341,49 @@ List<AccountSettingsView> _providersFromCommands(
         ),
     };
     final hasToken = switch (account.secret.action) {
-      AccountSecretAction.preserve => previousAccount?.hasBearerToken ?? false,
-      AccountSecretAction.replace => true,
+      AccountSecretAction.preserve => false,
+      AccountSecretAction.replace =>
+        account.secret.value?.trim().isNotEmpty == true,
       AccountSecretAction.clear => false,
     };
     return AccountSettingsView(
-      id: account.id,
+      id: account.identity.accountId,
       templateId: account.templateId,
       protocol: account.protocol,
-      name: account.name.isEmpty ? template.displayName : account.name,
-      subtitle: account.name.isEmpty ? template.displayName : account.name,
-      baseUrl: account.baseUrl.isEmpty ? template.baseUrl : account.baseUrl,
+      name: account.name,
+      subtitle: template?.description ?? '',
+      baseUrl: account.baseUrl,
       bearerToken: '',
       hasBearerToken: hasToken,
-      credentialRequired: template.credentialEnv.isNotEmpty,
+      credentialRequired: template?.credentialEnv.isNotEmpty ?? true,
       defaultModelId:
-          models.any((model) => model.modelId == template.suggestedModelId)
-          ? template.suggestedModelId
+          models.any((model) => model.modelId == template?.suggestedModelId)
+          ? template!.suggestedModelId
           : models.firstOrNull?.modelId ?? '',
       models: models,
       autoCompactLimits: autoCompactLimits,
-      status: hasToken || template.credentialEnv.isEmpty
+      status: hasToken || template?.credentialEnv.isEmpty == true
           ? 'ready'
           : 'missingCredential',
       usageLabel: '${models.length} models',
       modelCount: '${models.length}',
       updatedAt: 'Preview',
-      catalogId: template.modelCatalogId,
-      credentialLabel: template.credentialLabel,
-      credentialEnv: template.credentialEnv,
+      catalogId: template?.modelCatalogId ?? '',
+      credentialLabel: template?.credentialLabel ?? 'API Key',
+      credentialEnv: template?.credentialEnv ?? '',
       // Synthetic Demo templates supply no native canonical billing classification.
       // Automatic is Unknown, never a memo of the current effective override.
       billingKind: billingOverride ?? BillingKind.unknown,
       billingKindOverride: billingOverride,
-      disabledModels: previousAccount?.disabledModels ?? const [],
       capabilitySource: 'template_defaults',
-      hostedWebSearch:
-          previousAccount?.hostedWebSearch ?? template.hostedWebSearch,
+      hostedWebSearch: template?.hostedWebSearch ?? false,
       hostedWebSearchDialect:
-          previousAccount?.hostedWebSearchDialect ??
-          template.hostedWebSearchDialect,
-      standaloneWebSearch:
-          previousAccount?.standaloneWebSearch ?? template.standaloneWebSearch,
-      promptCacheDialect:
-          previousAccount?.promptCacheDialect ?? template.promptCacheDialect,
+          template?.hostedWebSearchDialect ?? 'open_ai_responses',
+      standaloneWebSearch: template?.standaloneWebSearch ?? '',
+      promptCacheDialect: template?.promptCacheDialect ?? 'none',
       responsesProgrammaticToolCalling:
-          previousAccount?.responsesProgrammaticToolCalling ??
-          template.responsesProgrammaticToolCalling,
-      iconKey: template.iconKey,
+          template?.responsesProgrammaticToolCalling ?? false,
+      iconKey: template?.iconKey,
     );
   }).toList();
 }

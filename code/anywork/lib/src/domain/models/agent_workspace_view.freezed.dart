@@ -15,7 +15,7 @@ T _$identity<T>(T value) => value;
 /// @nodoc
 mixin _$AgentWorkspaceView {
 
- StudioThread get thread; StudioThread get rootThread; AgentWorkspaceSyncState get syncState; String? get loadError; TimelineTodoListUpdate? get todo; ThreadRuntimeView get runtime; StudioTurnView? get turn; StudioTurnView? get lastTurn; PendingInteraction? get activeInteraction; ComposerThreadState get composer; AgentComposerMode get composerMode; List<AccountSettingsView> get accounts; List<ModeModelRouteView> get modeModelRoutes; List<RoleSettingsView> get roles; List<StudioAgentView> get agents;
+ StudioThread get thread; StudioThread get rootThread; AgentWorkspaceSyncState get syncState; String? get loadError; TimelineTodoListUpdate? get todo; ThreadRuntimeView get runtime; StudioTurnView? get turn; StudioTurnView? get lastTurn; PendingInteraction? get activeInteraction; ComposerThreadState get composer; AgentComposerMode get composerMode; List<ModelSelectionAccount> get accounts; List<ModeModelRouteView> get modeModelRoutes; List<RoleSettingsView> get roles; List<StudioAgentView> get agents;
 /// Create a copy of AgentWorkspaceView
 /// with the given fields replaced by the non-null parameter values.
 @JsonKey(includeFromJson: false, includeToJson: false)
@@ -51,7 +51,7 @@ abstract mixin class $AgentWorkspaceViewCopyWith<$Res>  {
   factory $AgentWorkspaceViewCopyWith(AgentWorkspaceView value, $Res Function(AgentWorkspaceView) _then) = _$AgentWorkspaceViewCopyWithImpl;
 @useResult
 $Res call({
- StudioThread thread, StudioThread rootThread, AgentWorkspaceSyncState syncState, String? loadError, TimelineTodoListUpdate? todo, ThreadRuntimeView runtime, StudioTurnView? turn, StudioTurnView? lastTurn, PendingInteraction? activeInteraction, ComposerThreadState composer, AgentComposerMode composerMode, List<AccountSettingsView> accounts, List<ModeModelRouteView> modeModelRoutes, List<RoleSettingsView> roles, List<StudioAgentView> agents
+ StudioThread thread, StudioThread rootThread, AgentWorkspaceSyncState syncState, String? loadError, TimelineTodoListUpdate? todo, ThreadRuntimeView runtime, StudioTurnView? turn, StudioTurnView? lastTurn, PendingInteraction? activeInteraction, ComposerThreadState composer, AgentComposerMode composerMode, List<ModelSelectionAccount> accounts, List<ModeModelRouteView> modeModelRoutes, List<RoleSettingsView> roles, List<StudioAgentView> agents
 });
 
 
@@ -82,7 +82,7 @@ as StudioTurnView?,activeInteraction: freezed == activeInteraction ? _self.activ
 as PendingInteraction?,composer: null == composer ? _self.composer : composer // ignore: cast_nullable_to_non_nullable
 as ComposerThreadState,composerMode: null == composerMode ? _self.composerMode : composerMode // ignore: cast_nullable_to_non_nullable
 as AgentComposerMode,accounts: null == accounts ? _self.accounts : accounts // ignore: cast_nullable_to_non_nullable
-as List<AccountSettingsView>,modeModelRoutes: null == modeModelRoutes ? _self.modeModelRoutes : modeModelRoutes // ignore: cast_nullable_to_non_nullable
+as List<ModelSelectionAccount>,modeModelRoutes: null == modeModelRoutes ? _self.modeModelRoutes : modeModelRoutes // ignore: cast_nullable_to_non_nullable
 as List<ModeModelRouteView>,roles: null == roles ? _self.roles : roles // ignore: cast_nullable_to_non_nullable
 as List<RoleSettingsView>,agents: null == agents ? _self.agents : agents // ignore: cast_nullable_to_non_nullable
 as List<StudioAgentView>,
@@ -170,7 +170,7 @@ return $default(_that);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult maybeWhen<TResult extends Object?>(TResult Function( StudioThread thread,  StudioThread rootThread,  AgentWorkspaceSyncState syncState,  String? loadError,  TimelineTodoListUpdate? todo,  ThreadRuntimeView runtime,  StudioTurnView? turn,  StudioTurnView? lastTurn,  PendingInteraction? activeInteraction,  ComposerThreadState composer,  AgentComposerMode composerMode,  List<AccountSettingsView> accounts,  List<ModeModelRouteView> modeModelRoutes,  List<RoleSettingsView> roles,  List<StudioAgentView> agents)?  $default,{required TResult orElse(),}) {final _that = this;
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>(TResult Function( StudioThread thread,  StudioThread rootThread,  AgentWorkspaceSyncState syncState,  String? loadError,  TimelineTodoListUpdate? todo,  ThreadRuntimeView runtime,  StudioTurnView? turn,  StudioTurnView? lastTurn,  PendingInteraction? activeInteraction,  ComposerThreadState composer,  AgentComposerMode composerMode,  List<ModelSelectionAccount> accounts,  List<ModeModelRouteView> modeModelRoutes,  List<RoleSettingsView> roles,  List<StudioAgentView> agents)?  $default,{required TResult orElse(),}) {final _that = this;
 switch (_that) {
 case _AgentWorkspaceView() when $default != null:
 return $default(_that.thread,_that.rootThread,_that.syncState,_that.loadError,_that.todo,_that.runtime,_that.turn,_that.lastTurn,_that.activeInteraction,_that.composer,_that.composerMode,_that.accounts,_that.modeModelRoutes,_that.roles,_that.agents);case _:
@@ -191,7 +191,7 @@ return $default(_that.thread,_that.rootThread,_that.syncState,_that.loadError,_t
 /// }
 /// ```
 
-@optionalTypeArgs TResult when<TResult extends Object?>(TResult Function( StudioThread thread,  StudioThread rootThread,  AgentWorkspaceSyncState syncState,  String? loadError,  TimelineTodoListUpdate? todo,  ThreadRuntimeView runtime,  StudioTurnView? turn,  StudioTurnView? lastTurn,  PendingInteraction? activeInteraction,  ComposerThreadState composer,  AgentComposerMode composerMode,  List<AccountSettingsView> accounts,  List<ModeModelRouteView> modeModelRoutes,  List<RoleSettingsView> roles,  List<StudioAgentView> agents)  $default,) {final _that = this;
+@optionalTypeArgs TResult when<TResult extends Object?>(TResult Function( StudioThread thread,  StudioThread rootThread,  AgentWorkspaceSyncState syncState,  String? loadError,  TimelineTodoListUpdate? todo,  ThreadRuntimeView runtime,  StudioTurnView? turn,  StudioTurnView? lastTurn,  PendingInteraction? activeInteraction,  ComposerThreadState composer,  AgentComposerMode composerMode,  List<ModelSelectionAccount> accounts,  List<ModeModelRouteView> modeModelRoutes,  List<RoleSettingsView> roles,  List<StudioAgentView> agents)  $default,) {final _that = this;
 switch (_that) {
 case _AgentWorkspaceView():
 return $default(_that.thread,_that.rootThread,_that.syncState,_that.loadError,_that.todo,_that.runtime,_that.turn,_that.lastTurn,_that.activeInteraction,_that.composer,_that.composerMode,_that.accounts,_that.modeModelRoutes,_that.roles,_that.agents);case _:
@@ -211,7 +211,7 @@ return $default(_that.thread,_that.rootThread,_that.syncState,_that.loadError,_t
 /// }
 /// ```
 
-@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>(TResult? Function( StudioThread thread,  StudioThread rootThread,  AgentWorkspaceSyncState syncState,  String? loadError,  TimelineTodoListUpdate? todo,  ThreadRuntimeView runtime,  StudioTurnView? turn,  StudioTurnView? lastTurn,  PendingInteraction? activeInteraction,  ComposerThreadState composer,  AgentComposerMode composerMode,  List<AccountSettingsView> accounts,  List<ModeModelRouteView> modeModelRoutes,  List<RoleSettingsView> roles,  List<StudioAgentView> agents)?  $default,) {final _that = this;
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>(TResult? Function( StudioThread thread,  StudioThread rootThread,  AgentWorkspaceSyncState syncState,  String? loadError,  TimelineTodoListUpdate? todo,  ThreadRuntimeView runtime,  StudioTurnView? turn,  StudioTurnView? lastTurn,  PendingInteraction? activeInteraction,  ComposerThreadState composer,  AgentComposerMode composerMode,  List<ModelSelectionAccount> accounts,  List<ModeModelRouteView> modeModelRoutes,  List<RoleSettingsView> roles,  List<StudioAgentView> agents)?  $default,) {final _that = this;
 switch (_that) {
 case _AgentWorkspaceView() when $default != null:
 return $default(_that.thread,_that.rootThread,_that.syncState,_that.loadError,_that.todo,_that.runtime,_that.turn,_that.lastTurn,_that.activeInteraction,_that.composer,_that.composerMode,_that.accounts,_that.modeModelRoutes,_that.roles,_that.agents);case _:
@@ -226,7 +226,7 @@ return $default(_that.thread,_that.rootThread,_that.syncState,_that.loadError,_t
 
 
 class _AgentWorkspaceView extends AgentWorkspaceView {
-  const _AgentWorkspaceView({required this.thread, required this.rootThread, required this.syncState, this.loadError, required this.todo, required this.runtime, required this.turn, this.lastTurn, required this.activeInteraction, required this.composer, required this.composerMode, required  List<AccountSettingsView> accounts,  List<ModeModelRouteView> modeModelRoutes = const <ModeModelRouteView>[], required  List<RoleSettingsView> roles, required  List<StudioAgentView> agents}): _accounts = accounts,_modeModelRoutes = modeModelRoutes,_roles = roles,_agents = agents,super._();
+  const _AgentWorkspaceView({required this.thread, required this.rootThread, required this.syncState, this.loadError, required this.todo, required this.runtime, required this.turn, this.lastTurn, required this.activeInteraction, required this.composer, required this.composerMode, required  List<ModelSelectionAccount> accounts,  List<ModeModelRouteView> modeModelRoutes = const <ModeModelRouteView>[], required  List<RoleSettingsView> roles, required  List<StudioAgentView> agents}): _accounts = accounts,_modeModelRoutes = modeModelRoutes,_roles = roles,_agents = agents,super._();
 
 
 @override final  StudioThread thread;
@@ -240,8 +240,8 @@ class _AgentWorkspaceView extends AgentWorkspaceView {
 @override final  PendingInteraction? activeInteraction;
 @override final  ComposerThreadState composer;
 @override final  AgentComposerMode composerMode;
- final  List<AccountSettingsView> _accounts;
-@override List<AccountSettingsView> get accounts {
+ final  List<ModelSelectionAccount> _accounts;
+@override List<ModelSelectionAccount> get accounts {
   if (_accounts is EqualUnmodifiableListView) return _accounts;
   // ignore: implicit_dynamic_type
   return EqualUnmodifiableListView(_accounts);
@@ -301,7 +301,7 @@ abstract mixin class _$AgentWorkspaceViewCopyWith<$Res> implements $AgentWorkspa
   factory _$AgentWorkspaceViewCopyWith(_AgentWorkspaceView value, $Res Function(_AgentWorkspaceView) _then) = __$AgentWorkspaceViewCopyWithImpl;
 @override @useResult
 $Res call({
- StudioThread thread, StudioThread rootThread, AgentWorkspaceSyncState syncState, String? loadError, TimelineTodoListUpdate? todo, ThreadRuntimeView runtime, StudioTurnView? turn, StudioTurnView? lastTurn, PendingInteraction? activeInteraction, ComposerThreadState composer, AgentComposerMode composerMode, List<AccountSettingsView> accounts, List<ModeModelRouteView> modeModelRoutes, List<RoleSettingsView> roles, List<StudioAgentView> agents
+ StudioThread thread, StudioThread rootThread, AgentWorkspaceSyncState syncState, String? loadError, TimelineTodoListUpdate? todo, ThreadRuntimeView runtime, StudioTurnView? turn, StudioTurnView? lastTurn, PendingInteraction? activeInteraction, ComposerThreadState composer, AgentComposerMode composerMode, List<ModelSelectionAccount> accounts, List<ModeModelRouteView> modeModelRoutes, List<RoleSettingsView> roles, List<StudioAgentView> agents
 });
 
 
@@ -332,7 +332,7 @@ as StudioTurnView?,activeInteraction: freezed == activeInteraction ? _self.activ
 as PendingInteraction?,composer: null == composer ? _self.composer : composer // ignore: cast_nullable_to_non_nullable
 as ComposerThreadState,composerMode: null == composerMode ? _self.composerMode : composerMode // ignore: cast_nullable_to_non_nullable
 as AgentComposerMode,accounts: null == accounts ? _self._accounts : accounts // ignore: cast_nullable_to_non_nullable
-as List<AccountSettingsView>,modeModelRoutes: null == modeModelRoutes ? _self._modeModelRoutes : modeModelRoutes // ignore: cast_nullable_to_non_nullable
+as List<ModelSelectionAccount>,modeModelRoutes: null == modeModelRoutes ? _self._modeModelRoutes : modeModelRoutes // ignore: cast_nullable_to_non_nullable
 as List<ModeModelRouteView>,roles: null == roles ? _self._roles : roles // ignore: cast_nullable_to_non_nullable
 as List<RoleSettingsView>,agents: null == agents ? _self._agents : agents // ignore: cast_nullable_to_non_nullable
 as List<StudioAgentView>,

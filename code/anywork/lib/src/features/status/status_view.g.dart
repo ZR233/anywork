@@ -179,7 +179,7 @@ final class StatusBarViewProvider
   }
 }
 
-String _$statusBarViewHash() => r'b7e6631120bec41224595f16765fe95172dd4ead';
+String _$statusBarViewHash() => r'6c25b7a32bcc3776b6e2d1c8c694aa9f8f88bf46';
 
 /// Stable status-bar fields for one Thread. Throughput and context are not
 /// part of this value, so response-timing updates cannot rebuild the chrome.
@@ -349,7 +349,7 @@ final class StatusContextProjectionProvider
 }
 
 String _$statusContextProjectionHash() =>
-    r'9cb1f768f067e57bb876d86ca4dfdabb6ef6bbe4';
+    r'93abdce8a7b9a19456255a2d167d09b8e01e14e1';
 
 final class StatusContextProjectionFamily extends $Family
     with $FunctionalFamilyOverride<StudioContextProjection?, String> {

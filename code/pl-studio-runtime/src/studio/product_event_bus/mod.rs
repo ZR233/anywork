@@ -80,6 +80,16 @@ struct PersistenceQueuePublication {
 }
 
 impl ProductEventBus {
+    /// Registers before the caller reads a baseline. Only source changes are retained, not frames.
+    pub(crate) fn subscribe_topic_signal(
+        &self,
+        topic: &StudioProductTopic,
+    ) -> tokio::sync::watch::Receiver<()> {
+        self.topics
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .subscribe_signal(topic)
+    }
     pub(in crate::studio) fn new(store: StudioStore, writer: ThreadWriteBehindWriter) -> Self {
         let (internal, _) = broadcast::channel(256);
         Self {

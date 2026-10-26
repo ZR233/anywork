@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../presentation/providers/client_provider.dart';
+import '../../presentation/providers/account_domains.dart';
 
 import 'package:anywork_client/studio_client.dart';
 
@@ -22,7 +23,7 @@ class AgentRouteConnector extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final settings = ref.watch(settingsAgentsViewProvider);
-    final accounts = settings.accounts;
+    final accounts = ref.watch(modelSelectionAccountsProvider);
     final route = ModelRouteQueries.roleRoute(
       accounts: accounts,
       roles: settings.roles,

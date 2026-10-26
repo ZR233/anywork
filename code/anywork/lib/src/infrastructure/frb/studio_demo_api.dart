@@ -30,7 +30,13 @@ const WorkflowDefinition _demoTaskWorkflow = WorkflowDefinition(
 );
 
 class DemoStudioTransport extends StudioTransport
-    implements PersistenceQueueReader {
+    implements
+        PersistenceQueueReader,
+        AccountFeedPort,
+        AccountConfigurationPort,
+        AccountModelsPort,
+        AccountUsagePort,
+        AcpPort {
   @override
   Future<RecoveryStateSnapshot> retryRecovery() async => _demoRecoveryState();
 
@@ -43,6 +49,617 @@ class DemoStudioTransport extends StudioTransport
   static const int directoryPageSize = 20;
 
   final AccountCatalogView _accountCatalog;
+  final Map<DemoAccountObservation, AccountObservationTarget>
+  _accountObservations = {};
+  final Map<NativeAccountIdentity, AccountUsageObservation> _usageFacts = {};
+  final Map<NativeAccountIdentity, ModelSyncAdmission> _modelSyncs = {};
+  bool _accountAdmissionsSealed = false;
+  int _modelCatalogRevision = 1;
+  int _usageIdentitySequence = 1;
+  int _modelQuerySequence = 0;
+  bool _runtimeExiting = false;
+  final Set<Future<void>> _demoJobs = {};
+  final Set<_DemoDelay> _demoDelays = {};
+  final List<StudioShutdownIssue> _demoBusinessIssues = [];
+  Future<void>? _demoBusinessStopped;
+  Future<StudioExitReport>? _demoShutdown;
+
+  void _ensureDemoRunning() {
+    if (_runtimeExiting) {
+      throw const StudioFailure(
+        code: StudioFailureCode.runtimeStopped,
+        message: 'Demo runtime is stopping',
+        retryable: false,
+        correlationId: 'demo-runtime-stopped',
+      );
+    }
+  }
+
+  Future<void> _waitDemo(Duration duration) {
+    if (_runtimeExiting) return Future.value();
+    final delay = _DemoDelay(duration);
+    _demoDelays.add(delay);
+    return delay.done.future.whenComplete(() {
+      _demoDelays.remove(delay);
+    });
+  }
+
+  void _runDemoJob(Future<void> Function() run) {
+    if (_runtimeExiting) return;
+    final completed = Completer<void>();
+    final joined = completed.future;
+    _demoJobs.add(joined);
+    void finish() {
+      _demoJobs.remove(joined);
+      completed.complete();
+    }
+
+    unawaited(
+      Future<void>.sync(run).then<void>(
+        (_) {
+          finish();
+        },
+        onError: (Object _, StackTrace _) {
+          _demoBusinessIssues.add(
+            const StudioShutdownIssue(
+              stage: 'demo-business',
+              code: 'taskFailed',
+              message: 'Demo task failed',
+              retryable: false,
+              correlationId: 'demo-task',
+            ),
+          );
+          finish();
+        },
+      ),
+    );
+  }
+
+  void _stopDemoBusiness() {
+    if (_runtimeExiting) return;
+    _runtimeExiting = true;
+    _lspActivityTimer?.cancel();
+    _lspActivityTimer = null;
+    for (final entry in _acpInstallTimers.entries.toList()) {
+      entry.value.cancel();
+      final operation = _acpInstalls[entry.key]?.operationId;
+      if (operation != null) {
+        _publishInstall(
+          entry.key,
+          AcpInstallCancelledState(operationId: operation),
+        );
+      }
+    }
+    _acpInstallTimers.clear();
+    _modelSyncs.clear();
+    for (final thread in _promptGenerations.keys.toList()) {
+      _promptGenerations[thread] = _promptGenerations[thread]! + 1;
+    }
+    for (final delay in _demoDelays.toList()) {
+      delay.cancel();
+    }
+  }
+
+  Future<void> _joinDemoBusiness() =>
+      _demoBusinessStopped ??= Future.wait(_demoJobs.toList())
+          .then<void>((_) {});
+
+  @override
+  void sealForShutdown() {
+    _accountAdmissionsSealed = true;
+    _stopDemoBusiness();
+    for (final observation in _accountObservations.keys.toList()) {
+      observation.requestClose();
+    }
+  }
+
+  @override
+  Future<List<StudioShutdownIssue>> cancelDartSubscriptions({
+    required int budgetMs,
+  }) async {
+    sealForShutdown();
+    final deadline = DateTime.now().add(Duration(milliseconds: budgetMs));
+    final issues = <StudioShutdownIssue>[];
+    await Future.wait([
+      () async {
+        try {
+          final remaining = deadline.difference(DateTime.now());
+          await _joinDemoBusiness().timeout(
+            remaining > Duration.zero
+                ? remaining
+                : const Duration(microseconds: 1),
+          );
+        } catch (_) {
+          issues.add(
+            const StudioShutdownIssue(
+              stage: 'demo-business',
+              code: 'joinFailed',
+              message: 'Demo business tasks did not stop',
+              retryable: true,
+              correlationId: 'demo-business-close',
+            ),
+          );
+        }
+      }(),
+      for (final observation in _accountObservations.keys.toList())
+        () async {
+          try {
+            final remaining = deadline.difference(DateTime.now());
+            await observation.close().timeout(
+              remaining > Duration.zero
+                  ? remaining
+                  : const Duration(microseconds: 1),
+            );
+          } catch (_) {
+            issues.add(
+              const StudioShutdownIssue(
+                stage: 'demo-account-observation',
+                code: 'closeFailed',
+                message: 'Account observation did not close',
+                retryable: true,
+                correlationId: 'demo-account-close',
+              ),
+            );
+          }
+        }(),
+    ]);
+    return [...issues, ..._demoBusinessIssues];
+  }
+
+  @override
+  Future<AccountDomainObservation> openAccountObservation(
+    AccountObservationTarget target,
+  ) async {
+    if (_accountAdmissionsSealed) {
+      throw StateError('Demo account observation is closed');
+    }
+    late final DemoAccountObservation observation;
+    observation = DemoAccountObservation(
+      read: () => _readAccountDomain(target),
+      onClosed: () {
+        _accountObservations.remove(observation);
+      },
+    );
+    _accountObservations[observation] = target;
+    return observation;
+  }
+
+  @override
+  Future<AccountDomainFrame> readAccountDomain(
+    AccountObservationTarget target,
+  ) async => _readAccountDomain(target);
+
+  NativeAccountDetails _nativeDetails(AccountSettingsView account) =>
+      NativeAccountDetails(
+        identity: NativeAccountIdentity(account.id),
+        name: account.name,
+        protocol: account.protocol,
+        templateId: account.templateId,
+        baseUrl: account.baseUrl,
+        hasBearerToken: account.hasBearerToken,
+        credentialRequired: account.credentialRequired,
+        usageQueryRevision: account.usageQueryRevision,
+        customModels: [
+          for (final model in account.models.where(
+            (model) => model.origin == ModelOrigin.manual,
+          ))
+            AccountModelCommand(
+              modelId: model.modelId,
+              displayName: model.displayName,
+              wireApi: model.wireApi,
+              contextWindow: model.contextWindow,
+              maxOutputTokens: model.maxOutputTokens,
+            ),
+        ],
+      );
+
+  AccountDomainFrame _readAccountDomain(AccountObservationTarget target) {
+    final accounts = _accounts ?? [_demoDefaultAccount()];
+    switch (target) {
+      case AccountSummariesTarget():
+        return AccountSummariesFrame(
+          _demoStamp('settings', _settingsRevision),
+          [
+            for (final account in accounts)
+              AccountSummary(
+                identity: NativeAccountIdentity(account.id),
+                name: account.name,
+                brandKey: account.templateId,
+                isDefault:
+                    account.id ==
+                    (_defaultAccountId ?? accounts.firstOrNull?.id),
+                billingKind: account.billingKind,
+                billingKindOverride: account.billingKindOverride,
+                credentialReady:
+                    account.hasBearerToken || !account.credentialRequired,
+                usageQueryRevision: account.usageQueryRevision,
+                capabilities: AccountCapabilities(
+                  setDefault: true,
+                  edit: true,
+                  remove: true,
+                  queryUsage: true,
+                  syncModels: account.modelCatalog.supported,
+                  editModels: true,
+                  acpAuth: false,
+                ),
+              ),
+            for (final account in _acpAccounts)
+              AccountSummary(
+                identity: AcpAccountIdentity(account.accountId),
+                name: account.name,
+                brandKey: account.provider.wire,
+                isDefault: false,
+                acpConnectionRevision: account.connectionRevision,
+                capabilities: const AccountCapabilities(
+                  setDefault: false,
+                  edit: true,
+                  remove: true,
+                  queryUsage: false,
+                  syncModels: false,
+                  editModels: false,
+                  acpAuth: true,
+                ),
+              ),
+          ],
+        );
+      case AccountDetailTarget(:final identity):
+        final AccountDetails? detail;
+        switch (identity) {
+          case NativeAccountIdentity(:final accountId):
+            final account = accounts
+                .where((account) => account.id == accountId)
+                .firstOrNull;
+            detail = account == null ? null : _nativeDetails(account);
+          case AcpAccountIdentity(:final accountId):
+            final account = _acpAccounts
+                .where((account) => account.accountId == accountId)
+                .firstOrNull;
+            detail = account == null ? null : AcpAccountDetails(account);
+        }
+        final native = identity is NativeAccountIdentity
+            ? accounts
+                  .where((account) => account.id == identity.accountId)
+                  .firstOrNull
+            : null;
+        return AccountDetailFrame(
+          _demoStamp('settings', _settingsRevision),
+          identity,
+          detail,
+          modelConfiguration: native == null
+              ? null
+              : AccountModelConfiguration(
+                  disabledModels: native.disabledModels,
+                  connections: {
+                    for (final entry in native.modelConnectionModes.entries)
+                      entry.key: switch (entry.value) {
+                        'http' => AccountConnectionMode.http,
+                        'web_socket' => AccountConnectionMode.webSocket,
+                        final mode => throw FormatException(
+                          'Unknown demo connection: $mode',
+                        ),
+                      },
+                  },
+                  autoCompactLimits: {
+                    for (final compact in native.autoCompactLimits.entries)
+                      compact.key: ?compact.value.overrideLimit,
+                  },
+                ),
+        );
+      case AccountModelsTarget(:final identity):
+        final account = accounts
+            .where((account) => account.id == identity.accountId)
+            .firstOrNull;
+        return AccountModelsFrame(
+          _demoStamp('model-catalog', _modelCatalogRevision),
+          identity,
+          account == null
+              ? null
+              : AccountModelCatalog(
+                  identity: identity,
+                  models: account.models,
+                  status: account.modelCatalog,
+                ),
+        );
+      case AccountUsageTarget():
+        return AccountUsageFrame(
+          _demoStamp('account-usage', _accountUsageRevision),
+          [
+            for (final account in accounts)
+              if (_usageFacts[NativeAccountIdentity(account.id)]
+                  case final usage?
+                  when usage.queryRevision == account.usageQueryRevision)
+                usage
+              else
+                AccountUsageObservation(
+                  identity: NativeAccountIdentity(account.id),
+                  queryRevision: account.usageQueryRevision,
+                  revision: _accountUsageRevision,
+                  phase: AccountUsagePhase.unchecked,
+                ),
+          ],
+        );
+      case AcpAuthTarget():
+        return AcpAuthFrame(
+          _demoStamp('acp-auth', _demoAcpAuth.snapshot.revision),
+          _demoAcpAuth.snapshot,
+        );
+      case AcpInstallTarget():
+        return AcpInstallFrame(
+          _demoStamp('acp-install', _demoInstallSnapshot().revision),
+          _demoInstallSnapshot(),
+        );
+    }
+  }
+
+  @override
+  Future<AccountUsageFrame> queryAccountUsage(
+    NativeAccountIdentity identity,
+  ) async {
+    _ensureDemoRunning();
+    final account = (_accounts ?? [_demoDefaultAccount()])
+        .where((account) => account.id == identity.accountId)
+        .firstOrNull;
+    if (account == null) throw ArgumentError('Account is unavailable');
+    _accountUsageRevision++;
+    _usageFacts[identity] = AccountUsageObservation(
+      identity: identity,
+      queryRevision: account.usageQueryRevision,
+      revision: _accountUsageRevision,
+      phase: account.hasBearerToken || !account.credentialRequired
+          ? AccountUsagePhase.unsupported
+          : AccountUsagePhase.missingCredential,
+    );
+    _publishProductPayload(
+      AccountUsageStateChangedPayload(_demoAccountUsageState()),
+    );
+    return _readAccountDomain(const AccountUsageTarget()) as AccountUsageFrame;
+  }
+
+  @override
+  Future<SettingsCommandReply> patchAccount(
+    int revision,
+    PatchAccountCommand command, {
+    required OperationId operationId,
+  }) async {
+    final before = _demoSettingsState();
+    _checkSettingsRevision(revision);
+    final current = before.accounts
+        .where((account) => account.id == command.identity.accountId)
+        .firstOrNull;
+    if (current == null) throw ArgumentError('Account is unavailable');
+    final templateId = switch (command.templateId) {
+      AccountTextKeep() => current.templateId,
+      AccountTextSet(:final value) => value,
+      AccountTextRestore() => null,
+    };
+    final template = _accountCatalog.template(templateId ?? '');
+    String text(AccountTextPatch patch, String current, String? initial) =>
+        switch (patch) {
+          AccountTextKeep() => current,
+          AccountTextSet(:final value) => value,
+          AccountTextRestore() =>
+            initial ?? (throw ArgumentError('No applicable template default')),
+        };
+    final manual = switch (command.customModels) {
+      AccountModelsKeep() =>
+        current.models
+            .where((model) => model.origin == ModelOrigin.manual)
+            .toList(),
+      AccountModelsRestore() => <AccountModelView>[],
+      AccountModelsSet(:final models) => [
+        for (final model in models)
+          AccountModelView(
+            modelId: model.modelId,
+            displayName: model.displayName,
+            reasoningEfforts: const [],
+            wireApi: model.wireApi,
+            contextWindow: model.contextWindow,
+            maxOutputTokens: model.maxOutputTokens,
+            origin: ModelOrigin.manual,
+          ),
+      ],
+    };
+    final removed = current.models
+        .where(
+          (model) =>
+              model.origin == ModelOrigin.manual &&
+              !manual.any((next) => next.modelId == model.modelId),
+        )
+        .map((model) => model.modelId)
+        .toSet();
+    final next = current.copyWith(
+      name: text(command.name, current.name, template?.displayName),
+      baseUrl: text(command.baseUrl, current.baseUrl, template?.baseUrl),
+      protocol: text(command.protocol, current.protocol, template?.protocol),
+      templateId: templateId,
+      hasBearerToken: switch (command.secret.action) {
+        AccountSecretAction.preserve => current.hasBearerToken,
+        AccountSecretAction.clear => false,
+        AccountSecretAction.replace =>
+          command.secret.value?.isEmpty != false
+              ? current.hasBearerToken
+              : true,
+      },
+      models: [
+        for (final model in current.models)
+          if (model.origin != ModelOrigin.manual) model,
+        ...manual,
+      ],
+      disabledModels: current.disabledModels
+          .where((id) => !removed.contains(id))
+          .toList(),
+      modelConnectionModes: {...current.modelConnectionModes}
+        ..removeWhere((id, _) => removed.contains(id)),
+      autoCompactLimits: {...current.autoCompactLimits}
+        ..removeWhere((id, _) => removed.contains(id)),
+      usageQueryRevision:
+          command.baseUrl is AccountTextKeep &&
+              command.protocol is AccountTextKeep &&
+              command.templateId is AccountTextKeep &&
+              command.secret.action == AccountSecretAction.preserve
+          ? current.usageQueryRevision
+          : ++_usageIdentitySequence,
+    );
+    _accounts = [
+      for (final account in before.accounts)
+        account.id == current.id ? next : account,
+    ];
+    _settingsRevision++;
+    return _demoSettingsReply(operationId, before);
+  }
+
+  @override
+  Future<SettingsCommandReply> setAccountModelAutoCompact(
+    int revision,
+    AccountModelIdentity identity,
+    AutoCompactIntent intent, {
+    required OperationId operationId,
+  }) async {
+    final before = _demoSettingsState();
+    _checkSettingsRevision(revision);
+    final current = before.accounts
+        .where((account) => account.id == identity.accountId)
+        .firstOrNull;
+    if (current == null ||
+        !current.models.any((model) => model.modelId == identity.modelId)) {
+      throw ArgumentError('Account model is unavailable');
+    }
+    final next = current.withAutoCompactLimit(
+      AccountModelAutoCompactView(
+        modelId: identity.modelId,
+        overrideLimit: switch (intent) {
+          SetAutoCompactLimit(:final limit) => limit,
+          ClearAutoCompactLimit() => null,
+        },
+      ),
+    );
+    _accounts = [
+      for (final account in before.accounts)
+        account.id == current.id ? next : account,
+    ];
+    _settingsRevision++;
+    return _demoSettingsReply(operationId, before);
+  }
+
+  @override
+  Future<SettingsCommandReply> setAccountModelConnection(
+    int revision,
+    AccountModelIdentity identity,
+    ModelConnectionIntent intent, {
+    required OperationId operationId,
+  }) async {
+    final before = _demoSettingsState();
+    _checkSettingsRevision(revision);
+    final current = before.accounts
+        .where((account) => account.id == identity.accountId)
+        .firstOrNull;
+    final model = current?.models
+        .where((model) => model.modelId == identity.modelId)
+        .firstOrNull;
+    if (current == null || model == null) {
+      throw ArgumentError('Account model is unavailable');
+    }
+    final mode = switch (intent) {
+      SetModelConnection(:final mode) =>
+        mode == AccountConnectionMode.http ? 'http' : 'web_socket',
+      ClearModelConnection() => model.defaultConnectionMode,
+    };
+    if (!model.supportedConnectionModes.contains(mode)) {
+      throw ArgumentError('Model connection is unsupported');
+    }
+    final overrides = {...current.modelConnectionModes};
+    if (intent is ClearModelConnection) {
+      overrides.remove(identity.modelId);
+    } else {
+      overrides[identity.modelId] = mode;
+    }
+    _accounts = [
+      for (final account in before.accounts)
+        account.id == current.id
+            ? current.copyWith(
+                modelConnectionModes: overrides,
+                models: [
+                  for (final candidate in current.models)
+                    candidate.modelId == identity.modelId
+                        ? candidate.copyWith(connectionMode: mode)
+                        : candidate,
+                ],
+              )
+            : account,
+    ];
+    _settingsRevision++;
+    return _demoSettingsReply(operationId, before);
+  }
+
+  @override
+  Future<ModelSyncAdmission> syncAccountModels(
+    NativeAccountIdentity identity, {
+    required OperationId operationId,
+  }) async {
+    _ensureDemoRunning();
+    final account = (_accounts ?? [_demoDefaultAccount()])
+        .where((account) => account.id == identity.accountId)
+        .firstOrNull;
+    if (account == null || !account.modelCatalog.supported) {
+      throw const StudioFailure(
+        code: StudioFailureCode.invalidArgument,
+        message: 'Account model discovery is unsupported',
+        retryable: false,
+        correlationId: 'demo-model-sync',
+      );
+    }
+    final running = _modelSyncs[identity];
+    if (running != null) {
+      return ModelSyncAdmission(
+        operationId: running.operationId,
+        account: identity,
+        queryGeneration: running.queryGeneration,
+        joinedExisting: true,
+      );
+    }
+    final admission = ModelSyncAdmission(
+      operationId: operationId,
+      account: identity,
+      queryGeneration: ++_modelQuerySequence,
+      joinedExisting: false,
+    );
+    _modelSyncs[identity] = admission;
+    void publish(bool probing) {
+      _accounts = [
+        for (final item in _accounts ?? [_demoDefaultAccount()])
+          item.id == identity.accountId
+              ? item.copyWith(
+                  modelCatalog: ModelCatalogStatusView(
+                    supported: true,
+                    source: item.modelCatalog.source,
+                    probing: probing,
+                    operationId: operationId.value,
+                    queryGeneration: admission.queryGeneration,
+                    lastSuccessAt: item.modelCatalog.lastSuccessAt,
+                    checkedAt: item.modelCatalog.checkedAt,
+                    error: item.modelCatalog.error,
+                    cacheWarning: item.modelCatalog.cacheWarning,
+                  ),
+                )
+              : item,
+      ];
+      _modelCatalogRevision++;
+      _publishProductPayload(
+        ModelCatalogStateChangedPayload(_demoSettingsState()),
+      );
+    }
+
+    publish(true);
+    _runDemoJob(() async {
+      await Future<void>.value();
+      if (_runtimeExiting) return;
+      if (identical(_modelSyncs[identity], admission)) {
+        publish(false);
+        _modelSyncs.remove(identity);
+      }
+    });
+    return admission;
+  }
 
   /// 是否周期推进 demo LSP 索引活动；GUI demo 构建开启，测试默认关闭保持确定性。
   final bool lspActivityLoop;
@@ -163,7 +780,6 @@ class DemoStudioTransport extends StudioTransport
   int _attachmentSequence = 0;
   int _skillsRevision = 1;
   int _accountUsageRevision = 1;
-  final Map<String, AccountUsageView> _accountUsages = {};
   List<AcpAccountSettingsView> _acpAccounts = const [];
   final DemoAcpAuth _demoAcpAuth = DemoAcpAuth();
   int _acpInstallRevision = 0;
@@ -206,9 +822,10 @@ class DemoStudioTransport extends StudioTransport
 
   @override
   Future<void> beginRuntimeExit({required int remainingMs}) async {
-    // demo 无 native runtime owner：与 public StudioTransport 契约一致，早期封闭是无副作用的
-    // no-op。真正的早期封闭由 FrbStudioTransport 调 native `begin_runtime_exit`；这里不声称任何
-    // raw demo 结果验证过 Rust。
+    sealForShutdown();
+    await _joinDemoBusiness().timeout(
+      Duration(milliseconds: remainingMs > 0 ? remainingMs : 1),
+    );
   }
 
   @override
@@ -216,7 +833,17 @@ class DemoStudioTransport extends StudioTransport
     required int remainingMs,
     List<StudioShutdownIssue> externalIssues = const [],
     StudioExitIntent intent = StudioExitIntent.exit,
+  }) => _demoShutdown ??= _shutdownDemo(
+    remainingMs: remainingMs,
+    externalIssues: externalIssues,
+  );
+
+  Future<StudioExitReport> _shutdownDemo({
+    required int remainingMs,
+    required List<StudioShutdownIssue> externalIssues,
   }) async {
+    final ownIssues = await cancelDartSubscriptions(budgetMs: remainingMs);
+    final issues = [...externalIssues, ...ownIssues];
     for (final phase in StudioShutdownPhase.values) {
       if (shutdownPhaseDelay > Duration.zero) {
         await Future<void>.delayed(shutdownPhaseDelay);
@@ -238,7 +865,7 @@ class DemoStudioTransport extends StudioTransport
     await _shutdownEvents.close();
     // Demo 的确定性结局：所有阶段成功且持久化已排空。外部（Dart）取消 issue 是本次关闭
     // 的最终成功前置条件，只要存在就如实为 Degraded，绝不伪 Clean。
-    if (externalIssues.isEmpty) {
+    if (issues.isEmpty) {
       return const StudioExitReport(
         shutdown: StudioShutdownReport(
           outcome: StudioShutdownOutcome.clean,
@@ -250,7 +877,7 @@ class DemoStudioTransport extends StudioTransport
     return StudioExitReport(
       shutdown: StudioShutdownReport(
         outcome: StudioShutdownOutcome.degraded,
-        issues: externalIssues,
+        issues: issues,
         persistence: const DrainedStudioPendingPersistence(),
       ),
     );
@@ -308,7 +935,6 @@ class DemoStudioTransport extends StudioTransport
           project.id: _demoSkillsState(project.id, _skillsRevision),
       },
       threadModeCatalog: _demoThreadModeCatalog(),
-      accountUsageState: _demoAccountUsageState(),
       updaterState: _demoUpdaterState(),
       persistenceState: _demoPersistenceState(),
       persistenceQueueState: _demoPersistenceQueueState(),
@@ -397,12 +1023,20 @@ class DemoStudioTransport extends StudioTransport
 
   AccountSettingsView _demoDefaultAccount() {
     final template = _accountCatalog.templates.first;
-    return template
-        .createAccount(
-          template.id,
-          _accountCatalog.modelsFor(template.modelCatalogId),
-        )
-        .copyWith(hasBearerToken: true, status: 'ready', updatedAt: 'Loaded');
+    return _accountsFromCreateCommands([
+      CreateAccountCommand(
+        identity: NativeAccountIdentity(template.id),
+        name: template.displayName,
+        protocol: template.protocol,
+        templateId: template.id,
+        baseUrl: template.baseUrl,
+        secret: const AccountSecretCommand.preserve(),
+      ),
+    ], catalog: _accountCatalog).single.copyWith(
+      hasBearerToken: true,
+      status: 'ready',
+      updatedAt: 'Loaded',
+    );
   }
 
   SettingsStateSnapshot _demoSettingsState() {
@@ -448,10 +1082,7 @@ class DemoStudioTransport extends StudioTransport
 
   AccountUsageStateSnapshot _demoAccountUsageState() {
     final accounts = _accounts ?? [_demoDefaultAccount()];
-    final usages = [
-      for (final account in accounts)
-        _accountUsages[account.id] ?? _demoAccountUsage(account),
-    ];
+    final usages = [for (final account in accounts) _demoAccountUsage(account)];
     return AccountUsageStateSnapshot.fromState(
       state: _demoReadyResource(
         _accountUsageRevision,
@@ -515,6 +1146,7 @@ class DemoStudioTransport extends StudioTransport
       state: _demoReadyResource(
         _settingsRevision,
         SettingsStateData(
+          modelCatalogRevision: _modelCatalogRevision,
           accounts: accounts,
           acpAccounts: _acpAccounts,
           defaultAccountId: _defaultAccountId ?? accounts.firstOrNull?.id,
@@ -1031,15 +1663,13 @@ class DemoStudioTransport extends StudioTransport
   }
 
   @override
-  Future<AcpAuthSnapshotView> readAcpAuthState() async => _demoAcpAuth.snapshot;
-
-  @override
   Future<AcpAuthCommandReply> startAcpAuth({
     required OperationId operationId,
     required String accountId,
     required int expectedConnectionRevision,
     required AcpAuthActionView action,
   }) async {
+    _ensureDemoRunning();
     final account = _demoAcpAccount(accountId);
     if (account.connectionRevision != expectedConnectionRevision) {
       throw StudioFailure(
@@ -1065,6 +1695,7 @@ class DemoStudioTransport extends StudioTransport
     required String accountId,
     required OperationId targetOperationId,
   }) async {
+    _ensureDemoRunning();
     final account = _demoAcpAccount(accountId);
     final snapshot = _demoAcpAuth.cancel(account, targetOperationId.value);
     return _demoAcpReply(operationId, snapshot);
@@ -1114,14 +1745,11 @@ class DemoStudioTransport extends StudioTransport
   static const int _demoInstallStepBytes = 1572864;
 
   @override
-  Future<AcpInstallSnapshotView> readAcpInstallState() async =>
-      _demoInstallSnapshot();
-
-  @override
   Future<AcpInstallCommandReply> startAcpInstall({
     required OperationId operationId,
     required AcpProviderView provider,
   }) async {
+    _ensureDemoRunning();
     final current = _acpInstalls[provider] ?? const AcpInstallIdleState();
     if (current.isBusy) {
       throw StudioFailure(
@@ -1140,6 +1768,10 @@ class DemoStudioTransport extends StudioTransport
     _acpInstallTimers[provider] = Timer.periodic(
       const Duration(milliseconds: 260),
       (timer) {
+        if (_runtimeExiting) {
+          timer.cancel();
+          return;
+        }
         step += 1;
         if (step == 1) {
           _publishInstall(
@@ -1225,6 +1857,7 @@ class DemoStudioTransport extends StudioTransport
     required AcpProviderView provider,
     required OperationId targetOperationId,
   }) async {
+    _ensureDemoRunning();
     final current = _acpInstalls[provider] ?? const AcpInstallIdleState();
     if (current.operationId != targetOperationId.value) {
       throw StudioFailure(
@@ -1746,9 +2379,65 @@ class DemoStudioTransport extends StudioTransport
     bool? changed,
     EffectPoint effect = EffectPoint.futureSession,
   }) {
+    final next = _demoSettingsState();
+    List<Object?> catalogs(SettingsStateSnapshot snapshot) => [
+      for (final account in snapshot.accounts)
+        [
+          account.id,
+          for (final model in account.models)
+            [
+              model.modelId,
+              model.enabled,
+              model.connectionMode,
+              model.context.autoCompactLimit,
+            ],
+          for (final entry in account.autoCompactLimits.entries)
+            [entry.key, entry.value.overrideLimit],
+        ],
+    ];
+    if (!_sameDemoFacts(catalogs(before), catalogs(next))) {
+      _modelCatalogRevision++;
+    }
     final snapshot = _settingsWriteResult();
     return SettingsCommandReply(
       snapshot: snapshot,
+      accountFrames: [
+        for (final account in snapshot.accounts)
+          _readAccountDomain(
+            AccountDetailTarget(NativeAccountIdentity(account.id)),
+          ),
+        for (final account in snapshot.acpAccounts)
+          _readAccountDomain(
+            AccountDetailTarget(AcpAccountIdentity(account.accountId)),
+          ),
+        for (final account in before.accounts)
+          if (!snapshot.accounts.any((next) => next.id == account.id))
+            AccountDetailFrame(
+              _demoStamp('settings', snapshot.revision),
+              NativeAccountIdentity(account.id),
+              null,
+            ),
+        for (final account in before.acpAccounts)
+          if (!snapshot.acpAccounts.any(
+            (next) => next.accountId == account.accountId,
+          ))
+            AccountDetailFrame(
+              _demoStamp('settings', snapshot.revision),
+              AcpAccountIdentity(account.accountId),
+              null,
+            ),
+        for (final account in snapshot.accounts)
+          _readAccountDomain(
+            AccountModelsTarget(NativeAccountIdentity(account.id)),
+          ),
+        for (final account in before.accounts)
+          if (!snapshot.accounts.any((next) => next.id == account.id))
+            AccountModelsFrame(
+              _demoStamp('model-catalog', _modelCatalogRevision),
+              NativeAccountIdentity(account.id),
+              null,
+            ),
+      ],
       receipt: _demoReceipt(
         operationId,
         changed:
@@ -2918,6 +3607,18 @@ class DemoStudioTransport extends StudioTransport
 
   /// 把一个 owner 事实发布给该 topic 的已登记 receiver；无接收者时不缓冲。
   void _publishProductPayload(ProductTopicEventPayload payload) {
+    if (_runtimeExiting) return;
+    for (final entry in _accountObservations.entries.toList()) {
+      final source = switch (entry.value) {
+        AccountSummariesTarget() ||
+        AccountDetailTarget() => const SettingsConfigTopic(),
+        AccountModelsTarget() => const ModelCatalogTopic(),
+        AccountUsageTarget() => const AccountUsageTopic(),
+        AcpAuthTarget() => const AcpAuthTopic(),
+        AcpInstallTarget() => const AcpInstallTopic(),
+      };
+      if (source == payload.topic) entry.key.notify();
+    }
     final sinks = _topicSinks[payload.topic];
     if (sinks == null || sinks.isEmpty) return;
     for (final sink in List.of(sinks)) {
@@ -3013,7 +3714,7 @@ class DemoStudioTransport extends StudioTransport
   /// 周期发布 LSP 索引活动状态：40→55→70→85→100 后回到 idle，再循环。
   /// 每步递增 revision，保证 reducer 的 meta.isNewerThan 校验通过。
   void _startLspActivityLoop() {
-    if (_lspActivityTimer != null) return;
+    if (_runtimeExiting || _lspActivityTimer != null) return;
     const cycle = [40, 55, 70, 85, 100, null];
     var index = 0;
     _lspActivityTimer = Timer.periodic(lspActivityStepDelay, (_) {
@@ -3210,6 +3911,7 @@ class DemoStudioTransport extends StudioTransport
     StudioPromptInput input, {
     int? expectedModelRouteRevision,
   }) async {
+    _ensureDemoRunning();
     final trimmed = input.text.trim();
     if (trimmed.isEmpty && input.attachmentDraftIds.isEmpty) {
       throw ArgumentError.value(input.text, 'text', 'empty');
@@ -3312,8 +4014,8 @@ class DemoStudioTransport extends StudioTransport
       inputId: input.inputId,
       kind: ThreadActivityKind.thinking,
     );
-    unawaited(
-      _completePrompt(
+    _runDemoJob(
+      () => _completePrompt(
         threadId: threadId,
         turnId: turnId,
         trimmedPrompt: trimmed,
@@ -3332,7 +4034,7 @@ class DemoStudioTransport extends StudioTransport
     required DateTime startedAt,
     void Function()? onAdmitted,
   }) async {
-    await Future<void>.delayed(promptStartDelay);
+    await _waitDemo(promptStartDelay);
     if (_promptGenerations[threadId] != generation) return;
     // 到这里模型请求才真正准入：控制输入在这一刻被消费，之后停止不会改写它。
     onAdmitted?.call();
@@ -3358,7 +4060,7 @@ class DemoStudioTransport extends StudioTransport
         ),
       ),
     );
-    await Future<void>.delayed(promptActivityDelay);
+    await _waitDemo(promptActivityDelay);
     if (_promptGenerations[threadId] != generation) return;
     _appendChatContent(
       threadId,
@@ -3367,7 +4069,7 @@ class DemoStudioTransport extends StudioTransport
       field: const ThreadThinkingSummaryFieldView(0),
       text: '## Inspecting',
     );
-    await Future<void>.delayed(promptActivityDelay);
+    await _waitDemo(promptActivityDelay);
     if (_promptGenerations[threadId] != generation) return;
     _appendChatContent(
       threadId,
@@ -3432,7 +4134,7 @@ class DemoStudioTransport extends StudioTransport
       field: const ThreadTextFieldView(),
       text: '正在逐段核对 Timeline',
     );
-    await Future<void>.delayed(promptActivityDelay);
+    await _waitDemo(promptActivityDelay);
     if (_promptGenerations[threadId] != generation) return;
     _appendChatContent(
       threadId,
@@ -3508,7 +4210,7 @@ class DemoStudioTransport extends StudioTransport
       field: const ThreadToolArgumentsFieldView(),
       text: '{"command":"cargo test -p pl-model ',
     );
-    await Future<void>.delayed(promptActivityDelay);
+    await _waitDemo(promptActivityDelay);
     if (_promptGenerations[threadId] != generation) return;
     _appendChatContent(
       threadId,
@@ -3538,7 +4240,7 @@ class DemoStudioTransport extends StudioTransport
       field: const ThreadToolResultFieldView(),
       text: 'running widget tests...\n',
     );
-    await Future<void>.delayed(promptToolDelay);
+    await _waitDemo(promptToolDelay);
     if (_promptGenerations[threadId] != generation) return;
     _appendChatContent(
       threadId,
@@ -3598,7 +4300,7 @@ class DemoStudioTransport extends StudioTransport
       field: const ThreadTextFieldView(),
       text: 'Demo response for: **$trimmedPrompt**',
     );
-    await Future<void>.delayed(promptActivityDelay);
+    await _waitDemo(promptActivityDelay);
     if (_promptGenerations[threadId] != generation) return;
     const finalSuffix = '\n\n- reasoning、tool output 与 Plan 都直接来自 typed delta';
     _appendChatContent(
@@ -3697,6 +4399,7 @@ class DemoStudioTransport extends StudioTransport
     required int expectedModelRouteRevision,
     required OperationId operationId,
   }) async {
+    _ensureDemoRunning();
     final workspace = _workspaces[threadId];
     if (workspace == null) throw StateError('unknown demo thread $threadId');
     final thread = _sortedDirectoryThreads()
@@ -3844,8 +4547,8 @@ class DemoStudioTransport extends StudioTransport
     );
     // Consumed at the model-request admission inside the prompt runner, not at publication
     // and not at completion: a stop before admission leaves the operation pending.
-    unawaited(
-      _completePrompt(
+    _runDemoJob(
+      () => _completePrompt(
         threadId: threadId,
         turnId: turnId,
         trimmedPrompt: '继续未完成的任务',
@@ -4124,23 +4827,26 @@ class DemoStudioTransport extends StudioTransport
   }
 
   @override
-  Future<SettingsCommandReply> saveAccount(
+  Future<SettingsCommandReply> createAccount(
     int expectedSettingsRevision,
-    AccountCommand command, {
+    CreateAccountCommand command, {
     required OperationId operationId,
   }) async {
     final before = _demoSettingsState();
     _checkSettingsRevision(expectedSettingsRevision);
     final current = before;
-    final converted = _providersFromCommands(
-      [command],
-      previous: current.accounts,
-      catalog: _accountCatalog,
-    );
+    if (current.accounts.any(
+      (account) => account.id == command.identity.accountId,
+    )) {
+      throw ArgumentError('Account already exists');
+    }
+    final converted = _accountsFromCreateCommands([
+      command,
+    ], catalog: _accountCatalog);
     _accounts = [
-      for (final account in current.accounts)
-        if (account.id != command.id) account,
-      ...converted,
+      for (final account in current.accounts) account,
+      for (final account in converted)
+        account.copyWith(usageQueryRevision: ++_usageIdentitySequence),
     ];
     _settingsRevision += 1;
     return _demoSettingsReply(operationId, before);
@@ -4320,21 +5026,6 @@ class DemoStudioTransport extends StudioTransport
   @override
   Future<SettingsStateSnapshot> readSettingsState() async =>
       _demoSettingsState();
-
-  @override
-  Future<AccountUsageStateSnapshot> checkAccountUsage(String accountId) async {
-    final accounts = _accounts ?? [_demoDefaultAccount()];
-    final account = accounts.where((item) => item.id == accountId).firstOrNull;
-    if (account != null) {
-      _accountUsages[accountId] = _demoAccountUsage(account);
-    } else {
-      _accountUsages.remove(accountId);
-    }
-    _accountUsageRevision += 1;
-    final state = _demoAccountUsageState();
-    _publishProductPayload(AccountUsageStateChangedPayload(state));
-    return state;
-  }
 
   @override
   Future<SkillsStateSnapshot> readSkillsState(String projectId) async {
@@ -4887,9 +5578,13 @@ class DemoStudioTransport extends StudioTransport
   }
 
   void _checkSettingsRevision(int expected) {
+    _ensureDemoRunning();
     if (expected != _settingsRevision) {
-      throw StateError(
-        'settings revision conflict: expected $expected, actual $_settingsRevision',
+      throw const StudioFailure(
+        code: StudioFailureCode.staleRevision,
+        message: 'Settings revision conflict',
+        retryable: true,
+        correlationId: 'demo-settings-cas',
       );
     }
   }
@@ -4965,6 +5660,7 @@ class DemoStudioTransport extends StudioTransport
   /// 这里**，它们写进内存条目，并由 Timeline 内容连接（`openTimeline` →
   /// `_DemoTimelineConnection`）按同一有界尾部契约交付。
   void _emitThreadUpdate(String threadId, ThreadWorkspaceUpdate update) {
+    if (_runtimeExiting) return;
     final workspace = _workspaces[threadId];
     if (workspace == null) return;
     final revision = workspace.revision + 1;
@@ -5179,6 +5875,22 @@ class DemoStudioTransport extends StudioTransport
 ///
 /// 这就是 demo 的“producer 通知”：内容连接不需要为每次交付重建全历史版本表。
 /// demo 已受理的一次无内容继续；同一个操作身份只回答同一份事实。
+final class _DemoDelay {
+  _DemoDelay(Duration duration) {
+    _timer = Timer(duration, _finish);
+  }
+  late final Timer _timer;
+  final Completer<void> done = Completer<void>();
+  void _finish() {
+    if (!done.isCompleted) done.complete();
+  }
+
+  void cancel() {
+    _timer.cancel();
+    _finish();
+  }
+}
+
 final class _DemoContinuation {
   _DemoContinuation({
     required this.threadId,
@@ -6873,7 +7585,7 @@ class DriverDemoStudioTransport extends DemoStudioTransport {
     if (_retryNextTurn) {
       _retryNextTurn = false;
       for (var attempt = 1; attempt <= 5; attempt++) {
-        await Future<void>.delayed(promptActivityDelay);
+        await _waitDemo(promptActivityDelay);
         if (_promptGenerations[threadId] != generation) return;
         final now = DateTime.now();
         _upsertChatItem(
@@ -6906,7 +7618,7 @@ class DriverDemoStudioTransport extends DemoStudioTransport {
       );
     }
     _failNextTurn = false;
-    await Future<void>.delayed(promptActivityDelay);
+    await _waitDemo(promptActivityDelay);
     if (_promptGenerations[threadId] != generation) return;
     _emitThreadUpdate(
       threadId,

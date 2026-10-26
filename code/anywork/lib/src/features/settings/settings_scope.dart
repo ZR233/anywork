@@ -6,11 +6,8 @@ import '../../app/theme/studio_tokens.dart';
 import 'package:anywork_client/studio_client.dart';
 
 import '../../presentation/providers/client_provider.dart';
-import '../../presentation/providers/acp_auth_store.dart';
-import '../../presentation/providers/acp_install_store.dart';
 import '../../presentation/providers/lsp_store.dart';
 import '../../presentation/providers/mcp_store.dart';
-import '../../presentation/providers/provider_usage_store.dart';
 import '../../presentation/providers/recovery_store.dart';
 import '../../presentation/providers/settings_store.dart';
 import '../../presentation/providers/skills_store.dart';
@@ -51,17 +48,13 @@ void watchSettingsScope(
   }
 }
 
-/// 静态供应商目录与启动选择由 `app/startup_facts.dart` 在 shell 挂载前写入。
-/// 设置页只消费已经就绪的 canonical，不再做过渡写入。
-
+/// Generic settings topics exclude the migrated account domains. Account
+/// connectors observe their repositories, including target-local failures.
 final settingsTopicSyncProvider = Provider.autoDispose
     .family<DomainSyncStatus, ProductTopic>((ref, topic) {
       return switch (topic) {
         SettingsConfigTopic() => ref.watch(
           settingsStoreProvider.select((state) => state.configSync),
-        ),
-        ModelCatalogTopic() => ref.watch(
-          settingsStoreProvider.select((state) => state.catalogSync),
         ),
         RecoveryTopic() => ref.watch(
           recoveryStoreProvider.select((state) => state.sync),
@@ -74,14 +67,13 @@ final settingsTopicSyncProvider = Provider.autoDispose
         SkillsTopic(:final projectId) => ref.watch(
           skillsStoreProvider(projectId).select((state) => state.sync),
         ),
-        AccountUsageTopic() => ref.watch(
-          accountUsageStoreProvider.select((state) => state.sync),
-        ),
-        AcpAuthTopic() => ref.watch(
-          acpAuthStateProvider.select((state) => state.sync),
-        ),
-        AcpInstallTopic() => ref.watch(
-          acpInstallStateProvider.select((state) => state.sync),
+        ModelCatalogTopic() ||
+        AccountUsageTopic() ||
+        AcpAuthTopic() ||
+        AcpInstallTopic() => throw ArgumentError.value(
+          topic,
+          'topic',
+          'Account domains use repository observations, not settings topics',
         ),
         BotsTopic() => ref.watch(
           botsStoreProvider.select((state) => state.sync),

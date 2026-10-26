@@ -1,9 +1,11 @@
 import 'package:anywork_client/studio_client.dart';
+import 'package:anywork_client/model_directory.dart';
 import 'package:flutter/foundation.dart' show listEquals, mapEquals;
 import 'package:riverpod_annotation/riverpod_annotation.dart';
 
 import '../../domain/models/composer_primary_action.dart';
 import '../../presentation/providers/client_provider.dart';
+import '../../presentation/providers/account_domains.dart';
 import '../../presentation/providers/mode_catalog_store.dart';
 import '../../presentation/providers/project_store.dart';
 import '../../presentation/providers/recovery_store.dart';
@@ -25,6 +27,7 @@ StartPageComposerProjection startPageComposerView(Ref ref) {
   final sessionDraft = ref.watch(startSessionControllerProvider);
   final selection = ref.watch(selectionStoreProvider);
   final settings = ref.watch(settingsStoreProvider);
+  final accounts = ref.watch(modelSelectionAccountsProvider);
   final projects = ref.watch(projectStoreProvider).projects?.values ?? const [];
   final project = projects
       .where((candidate) => candidate.id == selection.selectedProjectId)
@@ -44,7 +47,7 @@ StartPageComposerProjection startPageComposerView(Ref ref) {
   final attachments = ref.watch(attachmentDraftsProvider);
   return StartPageComposerProjection(
     project: project,
-    accounts: canonical?.accounts ?? const [],
+    accounts: accounts,
     modeModelRoutes: canonical?.modeModelRoutes ?? const [],
     settingsLoaded: settings.configLoaded,
     canSubmit:
@@ -67,6 +70,7 @@ ComposerDockView composerDockView(Ref ref, String threadId) {
   final session = ref.watch(threadSessionStoreProvider(threadId));
   final draft = ref.watch(composerDraftControllerProvider(threadId));
   final settings = ref.watch(settingsStoreProvider);
+  final accounts = ref.watch(modelSelectionAccountsProvider);
   final directory = ref.watch(threadDirectoryStoreProvider);
   final attachments = ref.watch(attachmentDraftsProvider);
   final recovery = ref.watch(recoveryStoreProvider).value?.values ?? const [];
@@ -142,14 +146,14 @@ ComposerDockView composerDockView(Ref ref, String threadId) {
     routeDisplay: ModelRouteQueries.threadRoute(
       canonical: canonicalRoute,
       command: routeCommand,
-      accounts: settings.canonical?.accounts ?? const [],
+      accounts: accounts,
     ),
     routePending: routeCommand?.isPending ?? false,
     routeFailure: routeCommand?.phase == CommandPhase.failed
         ? routeCommand?.error?.message
         : null,
     workflow: session.workflow,
-    accounts: settings.canonical?.accounts ?? const [],
+    accounts: accounts,
     settingsLoaded: settings.configLoaded,
     targetDiagnostic: projectId == null
         ? null
@@ -184,7 +188,7 @@ class StartPageComposerProjection {
   });
 
   final StudioProject? project;
-  final List<AccountSettingsView> accounts;
+  final List<ModelSelectionAccount> accounts;
   final List<ModeModelRouteView> modeModelRoutes;
   final bool settingsLoaded;
   final bool canSubmit;
@@ -321,7 +325,7 @@ class ComposerDockView {
   final bool routePending;
   final String? routeFailure;
   final WorkflowRuntimeView? workflow;
-  final List<AccountSettingsView> accounts;
+  final List<ModelSelectionAccount> accounts;
   final bool settingsLoaded;
   final ComposerTargetDiagnostic? targetDiagnostic;
   final List<ComposerTargetDiagnostic> additionalDiagnostics;

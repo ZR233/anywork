@@ -1,10 +1,8 @@
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import '../../presentation/providers/acp_auth_store.dart';
 import '../../presentation/providers/lsp_store.dart';
 import '../../presentation/providers/mcp_store.dart';
-import '../../presentation/providers/provider_usage_store.dart';
 import '../../presentation/providers/recovery_store.dart';
 import '../../presentation/providers/selection_store.dart';
 import '../../presentation/providers/settings_store.dart';
@@ -12,10 +10,11 @@ import '../../presentation/providers/skills_store.dart';
 import '../../presentation/providers/bots_store.dart';
 import '../../presentation/providers/project_store.dart';
 import '../../presentation/providers/thread_session_store.dart';
+import '../../presentation/providers/account_domains.dart';
 
+import 'package:anywork_client/accounts.dart';
+import 'package:anywork_client/model_directory.dart';
 import 'package:anywork_client/studio_client.dart';
-
-import 'settings_account_usage_demand.dart';
 
 /// 设置页是否已经有可渲染的配置 canonical。
 ///
@@ -64,110 +63,6 @@ final settingsPageReadinessProvider =
         configSync: selected.sync,
       );
     }, name: 'settingsPageReadinessProvider');
-
-class SettingsAccountsView {
-  SettingsAccountsView({
-    required this.canonical,
-    required this.accountCatalog,
-    required this.acpCatalog,
-    required this.defaultAccountId,
-    required this.settingsRevision,
-    required this.modelCatalogRevision,
-    required this.accountCatalogRevision,
-  }) : accounts = List<AccountSettingsView>.unmodifiable(
-         accountsWithCatalogMetadata(
-           canonical?.accounts ?? const <AccountSettingsView>[],
-           accountCatalog,
-         ),
-       ),
-       acpAccounts = List<AcpAccountSettingsView>.unmodifiable(
-         canonical?.acpAccounts ?? const <AcpAccountSettingsView>[],
-       );
-
-  final SettingsStateSnapshot? canonical;
-  final AccountCatalogView accountCatalog;
-
-  /// ACP 接入目录（只读默认值）与已保存的接入配置；与 Native 账号并列。
-  final AcpAccountCatalogView acpCatalog;
-  final List<AcpAccountSettingsView> acpAccounts;
-  final String? defaultAccountId;
-  final int settingsRevision;
-  final int modelCatalogRevision;
-  final String accountCatalogRevision;
-  final List<AccountSettingsView> accounts;
-
-  @override
-  bool operator ==(Object other) =>
-      identical(this, other) ||
-      other is SettingsAccountsView &&
-          defaultAccountId == other.defaultAccountId &&
-          settingsRevision == other.settingsRevision &&
-          modelCatalogRevision == other.modelCatalogRevision &&
-          accountCatalogRevision == other.accountCatalogRevision &&
-          identical(canonical, other.canonical) &&
-          identical(accountCatalog, other.accountCatalog) &&
-          identical(acpCatalog, other.acpCatalog);
-
-  @override
-  int get hashCode => Object.hash(
-    defaultAccountId,
-    settingsRevision,
-    modelCatalogRevision,
-    accountCatalogRevision,
-    identityHashCode(canonical),
-    identityHashCode(accountCatalog),
-    identityHashCode(acpCatalog),
-  );
-}
-
-final settingsAccountsViewProvider = Provider.autoDispose<SettingsAccountsView>(
-  (ref) {
-    final store = ref.watch(settingsStoreProvider);
-    return SettingsAccountsView(
-      canonical: store.canonical,
-      accountCatalog: store.accountCatalog,
-      acpCatalog: store.acpCatalog,
-      defaultAccountId: store.canonical?.defaultAccountId,
-      settingsRevision: store.settingsRevision,
-      modelCatalogRevision: store.modelCatalogRevision,
-      accountCatalogRevision: store.accountCatalogRevision,
-    );
-  },
-  name: 'settingsAccountsViewProvider',
-);
-
-/// 账号面板的 typed 聚合：Native 账号与 ACP 接入合并为一个条目/模板来源。
-///
-/// 只读投影：Native 的模型、默认账号与用量仍由 Native 路径拥有，ACP 的认证状态只来自
-/// `acpAuth` 观察。
-final settingsAccountDirectoryProvider =
-    Provider.autoDispose<AccountDirectoryView>((ref) {
-      final accounts = ref.watch(settingsAccountsViewProvider);
-      final auth = ref.watch(acpAuthStateProvider);
-      return AccountDirectoryView.from(
-        nativeAccounts: accounts.accounts,
-        acpAccounts: accounts.acpAccounts,
-        nativeCatalog: accounts.accountCatalog,
-        acpCatalog: accounts.acpCatalog,
-        auth: auth.value ?? const AcpAuthSnapshotView.empty(),
-      );
-    }, name: 'settingsAccountDirectoryProvider');
-
-/// 自动额度只消费 (id, usageQueryRevision)，不把 catalog/settings 全局水位当查询身份。
-final settingsAccountUsageQueryIdentitiesProvider =
-    Provider.autoDispose<AccountUsageQueryIdentitySnapshot>((ref) {
-      return ref.watch(
-        settingsAccountsViewProvider.select((view) {
-          return AccountUsageQueryIdentitySnapshot([
-            for (final account in view.accounts)
-              AccountUsageQueryIdentity(
-                id: account.id,
-                usageQueryRevision: account.usageQueryRevision,
-              ),
-          ]);
-        }),
-      );
-    }, name: 'settingsAccountUsageQueryIdentitiesProvider');
 
 class SettingsInstructionsView {
   const SettingsInstructionsView({
@@ -266,31 +161,20 @@ class SettingsAgentsView {
     required this.profilesLoaded,
     required this.profilesRevision,
     required this.profilesSync,
-    required this.canonical,
-    required this.accountCatalog,
+    required this.roles,
     required this.recovery,
     required this.recoveryRevision,
     required this.settingsRevision,
-    required this.accountCatalogRevision,
   });
 
   final AgentProfilesStateView? profiles;
   final bool profilesLoaded;
   final int profilesRevision;
   final DomainSyncStatus profilesSync;
-  final SettingsStateSnapshot? canonical;
-  final AccountCatalogView accountCatalog;
+  final List<RoleSettingsView> roles;
   final RecoveryStateSnapshot? recovery;
   final int recoveryRevision;
   final int settingsRevision;
-  final String accountCatalogRevision;
-
-  List<AccountSettingsView> get accounts => accountsWithCatalogMetadata(
-    canonical?.accounts ?? const <AccountSettingsView>[],
-    accountCatalog,
-  );
-
-  List<RoleSettingsView> get roles => canonical?.roles ?? const [];
 
   bool get profilesFailed => profilesSync.phase == DomainSyncPhase.failed;
 
@@ -308,10 +192,8 @@ class SettingsAgentsView {
           profilesSync == other.profilesSync &&
           recoveryRevision == other.recoveryRevision &&
           settingsRevision == other.settingsRevision &&
-          accountCatalogRevision == other.accountCatalogRevision &&
           identical(profiles, other.profiles) &&
-          identical(canonical, other.canonical) &&
-          identical(accountCatalog, other.accountCatalog) &&
+          identical(roles, other.roles) &&
           identical(recovery, other.recovery);
 
   @override
@@ -321,10 +203,8 @@ class SettingsAgentsView {
     profilesSync,
     recoveryRevision,
     settingsRevision,
-    accountCatalogRevision,
     identityHashCode(profiles),
-    identityHashCode(canonical),
-    identityHashCode(accountCatalog),
+    identityHashCode(roles),
     identityHashCode(recovery),
   );
 }
@@ -339,12 +219,10 @@ final settingsAgentsViewProvider = Provider.autoDispose<SettingsAgentsView>((
     profilesLoaded: settings.agentProfilesLoaded,
     profilesRevision: settings.agentProfilesRevision,
     profilesSync: settings.agentProfilesSync,
-    canonical: settings.canonical,
-    accountCatalog: settings.accountCatalog,
+    roles: settings.canonical?.roles ?? const <RoleSettingsView>[],
     recovery: recovery.value,
     recoveryRevision: recovery.revision,
     settingsRevision: settings.settingsRevision,
-    accountCatalogRevision: settings.accountCatalogRevision,
   );
 }, name: 'settingsAgentsViewProvider');
 
@@ -532,48 +410,6 @@ final settingsSkillsViewProvider = Provider.autoDispose<SettingsSkillsView>((
   );
 }, name: 'settingsSkillsViewProvider');
 
-class SettingsUsageView {
-  const SettingsUsageView({
-    required this.snapshot,
-    required this.revision,
-    required this.loaded,
-    required this.sync,
-  });
-
-  final AccountUsageStateSnapshot? snapshot;
-  final int revision;
-  final bool loaded;
-  final DomainSyncStatus sync;
-
-  List<AccountUsageView> get usages =>
-      snapshot?.usages ?? const <AccountUsageView>[];
-
-  @override
-  bool operator ==(Object other) =>
-      identical(this, other) ||
-      other is SettingsUsageView &&
-          revision == other.revision &&
-          loaded == other.loaded &&
-          sync == other.sync &&
-          identical(snapshot, other.snapshot);
-
-  @override
-  int get hashCode =>
-      Object.hash(revision, loaded, sync, identityHashCode(snapshot));
-}
-
-final settingsUsageViewProvider = Provider.autoDispose<SettingsUsageView>((
-  ref,
-) {
-  final store = ref.watch(accountUsageStoreProvider);
-  return SettingsUsageView(
-    snapshot: store.value,
-    revision: store.revision,
-    loaded: store.loaded,
-    sync: store.sync,
-  );
-}, name: 'settingsUsageViewProvider');
-
 class SettingsBotsView {
   const SettingsBotsView({
     required this.snapshot,
@@ -632,16 +468,20 @@ final settingsBotsViewProvider = Provider.autoDispose<SettingsBotsView>((ref) {
     settings?.modeModelRoutes ?? const [],
     ThreadModeId.simple,
   );
-  final account = settings?.accounts
-      .where((account) => account.id == route?.accountId)
-      .firstOrNull;
+  final accounts = ref.watch(modelSelectionAccountsProvider);
+  final accountSummaries = ref.watch(accountsStateProvider);
   final model = route == null
       ? null
-      : ModelRouteQueries.model(
-          settings?.accounts ?? const [],
-          route.accountId,
-          route.modelId,
-        );
+      : ModelRouteQueries.model(accounts, route.accountId, route.modelId);
+  final account = route == null
+      ? null
+      : accountSummaries.accounts
+            .where(
+              (summary) =>
+                  summary.identity is NativeAccountIdentity &&
+                  summary.identity.accountId == route.accountId,
+            )
+            .firstOrNull;
   final projects = ref.watch(
     projectStoreProvider.select(
       (state) =>
@@ -657,10 +497,7 @@ final settingsBotsViewProvider = Provider.autoDispose<SettingsBotsView>((ref) {
     queries: queries,
     sends: sends,
     projects: projects,
-    modelConfigured:
-        model != null &&
-        account != null &&
-        (!account.credentialRequired || account.hasBearerToken),
+    modelConfigured: model != null && account?.credentialReady == true,
   );
 }, name: 'settingsBotsViewProvider');
 

@@ -1,155 +1,154 @@
-import 'package:anywork/src/features/settings/settings_account_draft_save.dart';
-import 'package:anywork/src/features/settings/settings_account_usage_demand.dart';
+import 'package:anywork/src/app/app_graph.dart';
+import 'package:anywork_client/accounts.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-void main() {
-  group('AccountUsageAutoDemand', () {
-    test('visible first pass requests every identity concurrently once', () {
-      final demand = AccountUsageAutoDemand();
-      final started = <String>[];
-      final needed = demand.apply(
-        visible: true,
-        accounts: const [
-          AccountUsageQueryIdentity(id: 'a', usageQueryRevision: 1),
-          AccountUsageQueryIdentity(id: 'b', usageQueryRevision: 1),
-        ],
-        refresh: started.add,
-      );
-      expect(needed, ['a', 'b']);
-      expect(started, ['a', 'b']);
-      expect(
-        demand.apply(
-          visible: true,
-          accounts: const [
-            AccountUsageQueryIdentity(id: 'a', usageQueryRevision: 1),
-            AccountUsageQueryIdentity(id: 'b', usageQueryRevision: 1),
-          ],
-          refresh: started.add,
-        ),
-        isEmpty,
-      );
-      expect(started, ['a', 'b']);
-    });
+import 'support/scripted_usage_transport.dart';
+import 'support/test_statistics_feed.dart';
 
+AppGraph _graph(
+  ScriptedUsageTransport transport,
+  List<AccountSummary> accounts,
+) {
+  final graph = AppGraph(
+    transport: transport,
+    statisticsFeed: const TestStatisticsFeedPort(),
+    clientId: 'usage-demand',
+  );
+  graph.accountDomains.adoptOwnerEpoch(ScriptedUsageTransport.epoch);
+  graph.accountDomains.acceptFrame(transport.publishAccounts(accounts));
+  addTearDown(
+    () => graph.close(deadline: DateTime.now().add(const Duration(seconds: 3))),
+  );
+  return graph;
+}
+
+void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
+  group('application-owned usage visibility', () {
     test(
-      'hidden identity changes wait until visible and only refresh self',
-      () {
-        final demand = AccountUsageAutoDemand();
-        expect(
-          demand.sync(
-            visible: true,
-            accounts: const [
-              AccountUsageQueryIdentity(id: 'a', usageQueryRevision: 1),
-              AccountUsageQueryIdentity(id: 'b', usageQueryRevision: 1),
-            ],
-          ),
-          ['a', 'b'],
-        );
-        expect(
-          demand.sync(
-            visible: false,
-            accounts: const [
-              AccountUsageQueryIdentity(id: 'a', usageQueryRevision: 2),
-              AccountUsageQueryIdentity(id: 'b', usageQueryRevision: 1),
-              AccountUsageQueryIdentity(id: 'c', usageQueryRevision: 1),
-            ],
-          ),
-          isEmpty,
-        );
-        expect(
-          demand.sync(
-            visible: true,
-            accounts: const [
-              AccountUsageQueryIdentity(id: 'a', usageQueryRevision: 2),
-              AccountUsageQueryIdentity(id: 'b', usageQueryRevision: 1),
-              AccountUsageQueryIdentity(id: 'c', usageQueryRevision: 1),
-            ],
-          ),
-          ['a', 'c'],
-        );
+      'first visible demand starts each identity concurrently once',
+      () async {
+        final transport = ScriptedUsageTransport();
+        final graph = _graph(transport, [usageAccount('a'), usageAccount('b')]);
+        final demand = graph.accountUsage.observeVisible();
+        final a = await transport.started('a');
+        final b = await transport.started('b');
+        expect(transport.calls.map((call) => call.identity.accountId), [
+          'a',
+          'b',
+        ]);
+        final second = graph.accountUsage.observeVisible();
+        await second.release();
+        expect(transport.calls, hasLength(2));
+        final joined = Future.wait([
+          graph.accountUsage.refresh(a.identity),
+          graph.accountUsage.refresh(b.identity),
+        ]);
+        transport.succeed(a);
+        transport.succeed(b);
+        await joined;
+        await demand.release();
+        final reopened = graph.accountUsage.observeVisible();
+        await reopened.release();
+        expect(transport.calls, hasLength(2));
       },
     );
-
-    test('failed identity is not retried until revision or page rebuild', () {
-      final demand = AccountUsageAutoDemand();
-      expect(
-        demand.sync(
-          visible: true,
-          accounts: const [
-            AccountUsageQueryIdentity(id: 'a', usageQueryRevision: 3),
-          ],
-        ),
-        ['a'],
+    test('hidden identity changes wait for visibility and only new query identities start', () async {
+      final transport = ScriptedUsageTransport();
+      final graph = _graph(transport, [usageAccount('a'), usageAccount('b')]);
+      final visible = graph.accountUsage.observeVisible();
+      final a = await transport.started('a');
+      final b = await transport.started('b');
+      final joined = Future.wait([
+        graph.accountUsage.refresh(a.identity),
+        graph.accountUsage.refresh(b.identity),
+      ]);
+      transport.succeed(a);
+      transport.succeed(b);
+      await joined;
+      await visible.release();
+      graph.accountDomains.acceptFrame(
+        transport.publishAccounts([
+          usageAccount('a', query: 2),
+          usageAccount('b'),
+          usageAccount('c'),
+        ]),
       );
+      expect(transport.calls, hasLength(2));
+      final reopened = graph.accountUsage.observeVisible();
+      addTearDown(reopened.release);
+      final nextA = await transport.started('a', number: 2);
+      final c = await transport.started('c');
       expect(
-        demand.sync(
-          visible: true,
-          accounts: const [
-            AccountUsageQueryIdentity(id: 'a', usageQueryRevision: 3),
-          ],
+        transport.calls.map(
+          (call) => (call.identity.accountId, call.queryRevision),
         ),
-        isEmpty,
+        [('a', 1), ('b', 1), ('a', 2), ('c', 1)],
       );
-      expect(
-        AccountUsageAutoDemand().sync(
-          visible: true,
-          accounts: const [
-            AccountUsageQueryIdentity(id: 'a', usageQueryRevision: 3),
-          ],
-        ),
-        ['a'],
-      );
+      final next = Future.wait([
+        graph.accountUsage.refresh(nextA.identity),
+        graph.accountUsage.refresh(c.identity),
+      ]);
+      transport.succeed(nextA);
+      transport.succeed(c);
+      await next;
     });
-
-    test('deleted accounts drop attempted identity', () {
-      final demand = AccountUsageAutoDemand();
-      expect(
-        demand.sync(
-          visible: true,
-          accounts: const [
-            AccountUsageQueryIdentity(id: 'keep', usageQueryRevision: 1),
-            AccountUsageQueryIdentity(id: 'gone', usageQueryRevision: 1),
-          ],
-        ),
-        ['keep', 'gone'],
+    test('a failed visible query is not retried by a page rebuild, only a changed query identity', () async {
+      final transport = ScriptedUsageTransport();
+      final graph = _graph(transport, [usageAccount('a', query: 3)]);
+      final visible = graph.accountUsage.observeVisible();
+      final first = await transport.started('a');
+      transport.fail(first);
+      await graph.accountUsage.queryFailures.waitFor(
+        (value) => value.containsKey(first.identity),
       );
-      expect(
-        demand.sync(
-          visible: true,
-          accounts: const [
-            AccountUsageQueryIdentity(id: 'keep', usageQueryRevision: 1),
-          ],
-        ),
-        isEmpty,
+      await visible.release();
+      final rebuilt = graph.accountUsage.observeVisible();
+      addTearDown(rebuilt.release);
+      expect(transport.calls, hasLength(1));
+      graph.accountDomains.acceptFrame(
+        transport.publishAccounts([usageAccount('a', query: 4)]),
       );
-      expect(
-        demand.sync(
-          visible: true,
-          accounts: const [
-            AccountUsageQueryIdentity(id: 'keep', usageQueryRevision: 1),
-            AccountUsageQueryIdentity(id: 'gone', usageQueryRevision: 1),
-          ],
-        ),
-        ['gone'],
-      );
+      final second = await transport.started('a', number: 2);
+      expect(second.queryRevision, 4);
+      final joined = graph.accountUsage.refresh(second.identity);
+      transport.succeed(second);
+      await joined;
+      expect(graph.accountUsage.queryFailures.value, isEmpty);
     });
-  });
-
-  group('AccountDraftSaveSession', () {
-    test('old save finally cannot lock a newer add draft', () {
-      final session = AccountDraftSaveSession();
-      final first = session.begin();
-      expect(session.isSaving, isTrue);
-      session.abandon();
-      expect(session.isSaving, isFalse);
-      final second = session.begin();
-      expect(session.owns(first), isFalse);
-      session.succeed(first);
-      expect(session.isSaving, isTrue);
-      session.fail(first);
-      expect(session.isSaving, isTrue);
-      session.succeed(second);
-      expect(session.isSaving, isFalse);
+    test('deleting an account invalidates its attempted identity without retrying retained siblings', () async {
+      final transport = ScriptedUsageTransport();
+      final graph = _graph(transport, [
+        usageAccount('keep'),
+        usageAccount('gone'),
+      ]);
+      final visible = graph.accountUsage.observeVisible();
+      addTearDown(visible.release);
+      final keep = await transport.started('keep');
+      final gone = await transport.started('gone');
+      final joined = Future.wait([
+        graph.accountUsage.refresh(keep.identity),
+        graph.accountUsage.refresh(gone.identity),
+      ]);
+      transport.succeed(keep);
+      transport.succeed(gone);
+      await joined;
+      graph.accountDomains.acceptFrame(
+        transport.publishAccounts([usageAccount('keep')]),
+      );
+      expect(transport.calls, hasLength(2));
+      graph.accountDomains.acceptFrame(
+        transport.publishAccounts([usageAccount('keep'), usageAccount('gone')]),
+      );
+      final readded = await transport.started('gone', number: 2);
+      expect(transport.calls.map((call) => call.identity.accountId), [
+        'keep',
+        'gone',
+        'gone',
+      ]);
+      final next = graph.accountUsage.refresh(readded.identity);
+      transport.succeed(readded);
+      await next;
     });
   });
 }

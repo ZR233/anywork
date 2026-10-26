@@ -172,6 +172,90 @@ async fn seed(home: &Path) -> Result<StudioPaths> {
     Ok(paths)
 }
 
+/// The v2 key had no verifiable credential/query binding. Preserve its exact bytes through a
+/// durable load migration and restart rather than claiming those balances belong to today's query.
+#[tokio::test]
+async fn account_usage_v2_load_migration_preserves_unbound_money_and_survives_restart() -> Result<()>
+{
+    let temp = tempfile::tempdir()?;
+    let home = temp.path().join("home");
+    let paths = seed(&home).await?;
+    let legacy = r#"{"state":{"kind":"ready","data":{"revision":19,"updatedAt":22,"lastCheckedAt":22,"value":{"configFingerprint":"legacy-inputs","usages":[{"accountId":"legacy-balance","revision":9,"updatedAt":22,"lastOperationId":"legacy-check","state":{"kind":"ready","data":{"data":{"kind":"deepSeekBalance","data":{"is_available":true,"balances":[{"currency":"USD","total_balance":"1.000001","granted_balance":"0.000001","topped_up_balance":"1.000000"},{"currency":"CNY","total_balance":"7.25","granted_balance":"2.00","topped_up_balance":"5.25"}]}}}}}]}}}}"#;
+    let store = crate::StudioStore::open(paths.database()).await?;
+    store
+        .save_setting("observed:accountUsage:v2", legacy)
+        .await?;
+    store.close().await?;
+
+    let runtime = StudioRuntime::initialize(options(&home)).await?;
+    assert!(runtime.runtime_snapshot().await?.startup_recovery.is_none());
+    let upgraded = runtime
+        .store
+        .load_setting("observed:accountUsage:v2")
+        .await?
+        .expect("migrated setting");
+    let document: serde_json::Value = serde_json::from_str(&upgraded)?;
+    assert_eq!(document["formatVersion"], 3);
+    assert_eq!(document["legacyUnbound"].as_str(), Some(legacy));
+    assert_eq!(
+        runtime
+            .store
+            .read_project("project-cold")
+            .await?
+            .expect("existing project survived")
+            .id,
+        "project-cold"
+    );
+    runtime.shutdown_runtime().await?;
+
+    let runtime = StudioRuntime::initialize(options(&home)).await?;
+    assert!(runtime.runtime_snapshot().await?.startup_recovery.is_none());
+    assert_eq!(
+        runtime
+            .store
+            .load_setting("observed:accountUsage:v2")
+            .await?,
+        Some(upgraded)
+    );
+    runtime.shutdown_runtime().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn account_usage_future_cache_version_fails_migration_without_resetting_user_data()
+-> Result<()> {
+    let temp = tempfile::tempdir()?;
+    let home = temp.path().join("home");
+    let paths = seed(&home).await?;
+    let future = r#"{"formatVersion":999,"futurePayload":"preserve exactly"}"#;
+    let catalog = std::fs::read(paths.catalog_file())?;
+    let store = crate::StudioStore::open(paths.database()).await?;
+    store
+        .save_setting("observed:accountUsage:v2", future)
+        .await?;
+    store.close().await?;
+    let error = match StudioRuntime::initialize(options(&home)).await {
+        Ok(runtime) => {
+            runtime.shutdown_runtime().await?;
+            anyhow::bail!("future usage cache must refuse startup");
+        }
+        Err(error) => error,
+    };
+    assert_eq!(error.kind, StudioStartupErrorKind::Migration);
+    let store = crate::StudioStore::open(paths.database()).await?;
+    assert_eq!(
+        store.load_setting("observed:accountUsage:v2").await?,
+        Some(future.into())
+    );
+    store.close().await?;
+    assert_eq!(std::fs::read(paths.catalog_file())?, catalog);
+    assert_eq!(
+        std::fs::read(home.join("agents/preserved.bin"))?,
+        b"agent bytes"
+    );
+    Ok(())
+}
+
 #[tokio::test]
 async fn corrupted_global_inputs_backup_once_and_preserve_external_data() -> Result<()> {
     for fault in [

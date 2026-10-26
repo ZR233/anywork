@@ -8,6 +8,7 @@
 import 'dart:async';
 
 import 'package:anywork_client/studio_client.dart';
+import 'package:anywork_client/accounts_ports.dart';
 import 'package:anywork/src/app/theme/material3_theme.dart';
 import 'package:anywork/src/presentation/providers/client_provider.dart';
 import 'package:anywork/src/shared/studio_driver_key_values.dart';
@@ -26,6 +27,8 @@ import 'package:flutter/services.dart';
 import 'package:flutter_chat_ui/flutter_chat_ui.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+
+import '../../client/support/unused_account_ports.dart';
 
 void main() {
   final timestamp = DateTime.utc(2026, 1, 1);
@@ -1510,7 +1513,35 @@ void main() {
     );
     final deadline = DateTime.now().add(const Duration(seconds: 5));
     final lease = owner.lease('thread')!;
-    bindStudioDriver(client, timeline: owner);
+    // Driver only reads these domains; any account transport use fails closed.
+    final accounts = (await tester.runAsync(() async {
+      final ports = _UnusedTimelineAccountPorts();
+      return AccountDomainResources(
+        feed: ports,
+        configuration: ports,
+        modelPort: ports,
+        usagePort: ports,
+        acpPort: ports,
+        coordinator: client.settingsWrites,
+        mutations: client.mutations,
+        budget: client.budget,
+        owner: 'timeline-driver-accounts',
+      );
+    }))!;
+    addTearDown(() async {
+      await tester.runAsync(() async {
+        final report = await accounts.close(deadline: deadline);
+        expect(report.unresolved, isEmpty);
+      });
+    });
+    bindStudioDriver(
+      client,
+      timeline: owner,
+      accountsRepository: accounts.accounts,
+      modelsRepository: accounts.models,
+      usageRepository: accounts.usage,
+      acpService: accounts.acp,
+    );
 
     await tester.pumpWidget(
       host(
@@ -1610,6 +1641,8 @@ void main() {
     );
     await tester.runAsync(() async {
       await owner.close(deadline: deadline);
+      final accountReport = await accounts.close(deadline: deadline);
+      expect(accountReport.unresolved, isEmpty);
       await client.close(deadline: deadline);
     });
     await _pumpFrames(tester, frames: 2);
@@ -2636,6 +2669,8 @@ final class _DetailConnection implements StudioTimelineConnection {
     requestClose();
   }
 }
+
+final class _UnusedTimelineAccountPorts extends UnusedAccountPorts {}
 
 /// 真实附件字节通路的受控 backend：记录实际读取，返回可解码的 1×1 PNG。
 final class _ImageTransport implements StudioTransport {

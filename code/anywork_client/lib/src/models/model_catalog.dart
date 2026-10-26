@@ -12,6 +12,7 @@ enum ModelCatalogFailure {
   unexpectedNotModified,
   cacheWrite,
   closing,
+  taskFailed,
 }
 
 /// Effective catalog membership origin published with each model descriptor.
@@ -34,6 +35,8 @@ class ModelCatalogStatusView {
     this.checkedAt,
     this.error,
     this.cacheWarning,
+    this.queryGeneration = 0,
+    this.operationId,
   });
   final bool supported;
   final ModelCatalogSource source;
@@ -42,4 +45,6 @@ class ModelCatalogStatusView {
   final int? checkedAt;
   final ModelCatalogErrorView? error;
   final ModelCatalogCacheWarning? cacheWarning;
+  final int queryGeneration;
+  final String? operationId;
 }

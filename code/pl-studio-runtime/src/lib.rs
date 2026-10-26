@@ -26,6 +26,7 @@ mod protocol;
 pub mod resource_store;
 pub mod statistics;
 mod studio;
+pub use studio::accounts;
 pub mod thread_assembler;
 mod updater;
 mod worker_assets;

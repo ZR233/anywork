@@ -915,7 +915,7 @@ as List<PendingInteraction>,
 /// @nodoc
 mixin _$StatusBarView {
 
- StudioThread get thread; List<AccountSettingsView> get accounts; List<RoleSettingsView> get roles; bool get isBusy; ThreadModelRouteView? get modelRoute; WorkflowRunView? get workflowRun; List<String> get activeSkills; List<String> get activeMcpServers; List<String> get activeLspServers;
+ StudioThread get thread; List<ModelSelectionAccount> get accounts; List<RoleSettingsView> get roles; bool get isBusy; ThreadModelRouteView? get modelRoute; WorkflowRunView? get workflowRun; List<String> get activeSkills; List<String> get activeMcpServers; List<String> get activeLspServers;
 /// Create a copy of StatusBarView
 /// with the given fields replaced by the non-null parameter values.
 @JsonKey(includeFromJson: false, includeToJson: false)
@@ -951,7 +951,7 @@ abstract mixin class $StatusBarViewCopyWith<$Res>  {
   factory $StatusBarViewCopyWith(StatusBarView value, $Res Function(StatusBarView) _then) = _$StatusBarViewCopyWithImpl;
 @useResult
 $Res call({
- StudioThread thread, List<AccountSettingsView> accounts, List<RoleSettingsView> roles, bool isBusy, ThreadModelRouteView? modelRoute, WorkflowRunView? workflowRun, List<String> activeSkills, List<String> activeMcpServers, List<String> activeLspServers
+ StudioThread thread, List<ModelSelectionAccount> accounts, List<RoleSettingsView> roles, bool isBusy, ThreadModelRouteView? modelRoute, WorkflowRunView? workflowRun, List<String> activeSkills, List<String> activeMcpServers, List<String> activeLspServers
 });
 
 
@@ -972,7 +972,7 @@ class _$StatusBarViewCopyWithImpl<$Res>
   return _then(StatusBarView(
 thread: null == thread ? _self.thread : thread // ignore: cast_nullable_to_non_nullable
 as StudioThread,accounts: null == accounts ? _self.accounts : accounts // ignore: cast_nullable_to_non_nullable
-as List<AccountSettingsView>,roles: null == roles ? _self.roles : roles // ignore: cast_nullable_to_non_nullable
+as List<ModelSelectionAccount>,roles: null == roles ? _self.roles : roles // ignore: cast_nullable_to_non_nullable
 as List<RoleSettingsView>,isBusy: null == isBusy ? _self.isBusy : isBusy // ignore: cast_nullable_to_non_nullable
 as bool,modelRoute: freezed == modelRoute ? _self.modelRoute : modelRoute // ignore: cast_nullable_to_non_nullable
 as ThreadModelRouteView?,workflowRun: freezed == workflowRun ? _self.workflowRun : workflowRun // ignore: cast_nullable_to_non_nullable
@@ -1064,7 +1064,7 @@ return $default(_that);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult maybeWhen<TResult extends Object?>(TResult Function( StudioThread thread,  List<AccountSettingsView> accounts,  List<RoleSettingsView> roles,  bool isBusy,  ThreadModelRouteView? modelRoute,  WorkflowRunView? workflowRun,  List<String> activeSkills,  List<String> activeMcpServers,  List<String> activeLspServers)?  $default,{required TResult orElse(),}) {final _that = this;
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>(TResult Function( StudioThread thread,  List<ModelSelectionAccount> accounts,  List<RoleSettingsView> roles,  bool isBusy,  ThreadModelRouteView? modelRoute,  WorkflowRunView? workflowRun,  List<String> activeSkills,  List<String> activeMcpServers,  List<String> activeLspServers)?  $default,{required TResult orElse(),}) {final _that = this;
 switch (_that) {
 case _StatusBarView() when $default != null:
 return $default(_that.thread,_that.accounts,_that.roles,_that.isBusy,_that.modelRoute,_that.workflowRun,_that.activeSkills,_that.activeMcpServers,_that.activeLspServers);case _:
@@ -1085,7 +1085,7 @@ return $default(_that.thread,_that.accounts,_that.roles,_that.isBusy,_that.model
 /// }
 /// ```
 
-@optionalTypeArgs TResult when<TResult extends Object?>(TResult Function( StudioThread thread,  List<AccountSettingsView> accounts,  List<RoleSettingsView> roles,  bool isBusy,  ThreadModelRouteView? modelRoute,  WorkflowRunView? workflowRun,  List<String> activeSkills,  List<String> activeMcpServers,  List<String> activeLspServers)  $default,) {final _that = this;
+@optionalTypeArgs TResult when<TResult extends Object?>(TResult Function( StudioThread thread,  List<ModelSelectionAccount> accounts,  List<RoleSettingsView> roles,  bool isBusy,  ThreadModelRouteView? modelRoute,  WorkflowRunView? workflowRun,  List<String> activeSkills,  List<String> activeMcpServers,  List<String> activeLspServers)  $default,) {final _that = this;
 switch (_that) {
 case _StatusBarView():
 return $default(_that.thread,_that.accounts,_that.roles,_that.isBusy,_that.modelRoute,_that.workflowRun,_that.activeSkills,_that.activeMcpServers,_that.activeLspServers);case _:
@@ -1105,7 +1105,7 @@ return $default(_that.thread,_that.accounts,_that.roles,_that.isBusy,_that.model
 /// }
 /// ```
 
-@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>(TResult? Function( StudioThread thread,  List<AccountSettingsView> accounts,  List<RoleSettingsView> roles,  bool isBusy,  ThreadModelRouteView? modelRoute,  WorkflowRunView? workflowRun,  List<String> activeSkills,  List<String> activeMcpServers,  List<String> activeLspServers)?  $default,) {final _that = this;
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>(TResult? Function( StudioThread thread,  List<ModelSelectionAccount> accounts,  List<RoleSettingsView> roles,  bool isBusy,  ThreadModelRouteView? modelRoute,  WorkflowRunView? workflowRun,  List<String> activeSkills,  List<String> activeMcpServers,  List<String> activeLspServers)?  $default,) {final _that = this;
 switch (_that) {
 case _StatusBarView() when $default != null:
 return $default(_that.thread,_that.accounts,_that.roles,_that.isBusy,_that.modelRoute,_that.workflowRun,_that.activeSkills,_that.activeMcpServers,_that.activeLspServers);case _:
@@ -1120,12 +1120,12 @@ return $default(_that.thread,_that.accounts,_that.roles,_that.isBusy,_that.model
 
 
 class _StatusBarView extends StatusBarView {
-  const _StatusBarView({required this.thread, required  List<AccountSettingsView> accounts, required  List<RoleSettingsView> roles, required this.isBusy, this.modelRoute, this.workflowRun,  List<String> activeSkills = const <String>[],  List<String> activeMcpServers = const <String>[],  List<String> activeLspServers = const <String>[]}): _accounts = accounts,_roles = roles,_activeSkills = activeSkills,_activeMcpServers = activeMcpServers,_activeLspServers = activeLspServers,super._();
+  const _StatusBarView({required this.thread, required  List<ModelSelectionAccount> accounts, required  List<RoleSettingsView> roles, required this.isBusy, this.modelRoute, this.workflowRun,  List<String> activeSkills = const <String>[],  List<String> activeMcpServers = const <String>[],  List<String> activeLspServers = const <String>[]}): _accounts = accounts,_roles = roles,_activeSkills = activeSkills,_activeMcpServers = activeMcpServers,_activeLspServers = activeLspServers,super._();
 
 
 @override final  StudioThread thread;
- final  List<AccountSettingsView> _accounts;
-@override List<AccountSettingsView> get accounts {
+ final  List<ModelSelectionAccount> _accounts;
+@override List<ModelSelectionAccount> get accounts {
   if (_accounts is EqualUnmodifiableListView) return _accounts;
   // ignore: implicit_dynamic_type
   return EqualUnmodifiableListView(_accounts);
@@ -1195,7 +1195,7 @@ abstract mixin class _$StatusBarViewCopyWith<$Res> implements $StatusBarViewCopy
   factory _$StatusBarViewCopyWith(_StatusBarView value, $Res Function(_StatusBarView) _then) = __$StatusBarViewCopyWithImpl;
 @override @useResult
 $Res call({
- StudioThread thread, List<AccountSettingsView> accounts, List<RoleSettingsView> roles, bool isBusy, ThreadModelRouteView? modelRoute, WorkflowRunView? workflowRun, List<String> activeSkills, List<String> activeMcpServers, List<String> activeLspServers
+ StudioThread thread, List<ModelSelectionAccount> accounts, List<RoleSettingsView> roles, bool isBusy, ThreadModelRouteView? modelRoute, WorkflowRunView? workflowRun, List<String> activeSkills, List<String> activeMcpServers, List<String> activeLspServers
 });
 
 
@@ -1216,7 +1216,7 @@ class __$StatusBarViewCopyWithImpl<$Res>
   return _then(_StatusBarView(
 thread: null == thread ? _self.thread : thread // ignore: cast_nullable_to_non_nullable
 as StudioThread,accounts: null == accounts ? _self._accounts : accounts // ignore: cast_nullable_to_non_nullable
-as List<AccountSettingsView>,roles: null == roles ? _self._roles : roles // ignore: cast_nullable_to_non_nullable
+as List<ModelSelectionAccount>,roles: null == roles ? _self._roles : roles // ignore: cast_nullable_to_non_nullable
 as List<RoleSettingsView>,isBusy: null == isBusy ? _self.isBusy : isBusy // ignore: cast_nullable_to_non_nullable
 as bool,modelRoute: freezed == modelRoute ? _self.modelRoute : modelRoute // ignore: cast_nullable_to_non_nullable
 as ThreadModelRouteView?,workflowRun: freezed == workflowRun ? _self.workflowRun : workflowRun // ignore: cast_nullable_to_non_nullable

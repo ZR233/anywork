@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../presentation/providers/client_provider.dart';
+import '../../presentation/providers/account_domains.dart';
 import '../../app/theme/studio_tokens.dart';
 import '../../shared/recovery_check_status.dart';
 import '../../domain/models/studio_models.dart';
@@ -53,7 +54,7 @@ class _AgentsTabState extends ConsumerState<AgentsTab> {
       builder: (context) => Consumer(
         builder: (context, ref, child) => AgentProfileDialog(
           profile: profile,
-          accounts: ref.watch(settingsAgentsViewProvider).accounts,
+          accounts: ref.watch(modelSelectionAccountsProvider),
         ),
       ),
     );

@@ -178,7 +178,7 @@ pub struct ThreadModelRouteCommandReply {
     pub warning: Option<String>,
 }
 
-/// 更新一个 account 的配置。
+/// 创建一个 account 的完整初始配置；已有 ID 必须使用字段 patch，不能整卡覆盖。
 ///
 /// Account、默认 account、模式路由和角色路由是四个独立的配置意图。
 /// 这个请求只允许改变一个 account 资源；account 内部的 endpoint、凭据和
@@ -187,7 +187,7 @@ pub struct ThreadModelRouteCommandReply {
 /// 账号 ID 创建后稳定，不提供 `originalId` 重命名路径。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, ToSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct UpdateAccountRequest {
+pub struct CreateAccountRequest {
     pub operation_id: String,
     pub expected_revision: u64,
     pub account: AccountSettingsUpdate,

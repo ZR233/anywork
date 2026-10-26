@@ -9,20 +9,21 @@ use axum::http::{StatusCode, header};
 use axum::response::IntoResponse;
 use pl_protocol::ThreadActivityDetailQuery;
 use pl_protocol::studio::{
-    AcpAccountCatalog, AcpAuthCommandReply, AcpAuthSnapshot, AcpInstallCommandReply,
-    AcpInstallSnapshot, AdmitAttachmentDraftsRequest, AdmitAttachmentDraftsResponse,
-    CancelAcpAuthRequest, CancelAcpInstallRequest, ContinuationOperationView,
-    ContinueThreadRequest, ContinueThreadResponse, CreateThreadRequest, ExpectedRevisionRequest,
-    HealthResponse, LspResetRequest, McpResetRequest, OpenProjectRequest,
-    RemoveAccountModelRequest, RemoveAccountRequest, RemoveAcpAccountRequest, RenameThreadRequest,
-    ResolveInteractionRequest, SearchSkillsRequest, SetAccountBillingKindRequest,
-    SetAccountModelEnabledRequest, SetDefaultAccountRequest, SetThreadModeRequest,
-    SetThreadModelRouteRequest, SettingsCommandReply, SettingsStateResponse, StartAcpAuthRequest,
-    StartAcpInstallRequest, StopThreadRequest, StopThreadResponse,
+    AccountDomainFrame, AccountObservationTarget, AcpAccountCatalog, AcpAuthCommandReply,
+    AcpAuthSnapshot, AcpInstallCommandReply, AcpInstallSnapshot, AdmitAttachmentDraftsRequest,
+    AdmitAttachmentDraftsResponse, CancelAcpAuthRequest, CancelAcpInstallRequest,
+    ContinuationOperationView, ContinueThreadRequest, ContinueThreadResponse, CreateAccountRequest,
+    CreateThreadRequest, ExpectedRevisionRequest, HealthResponse, LspResetRequest, McpResetRequest,
+    OpenProjectRequest, PatchAccountRequest, RemoveAccountModelRequest, RemoveAccountRequest,
+    RemoveAcpAccountRequest, RenameThreadRequest, ResolveInteractionRequest, SearchSkillsRequest,
+    SetAccountBillingKindRequest, SetAccountModelAutoCompactRequest,
+    SetAccountModelConnectionRequest, SetAccountModelEnabledRequest, SetDefaultAccountRequest,
+    SetThreadModeRequest, SetThreadModelRouteRequest, SettingsCommandReply, SettingsStateResponse,
+    StartAcpAuthRequest, StartAcpInstallRequest, StopThreadRequest, StopThreadResponse,
     StudioAttachmentAdmissionContext, StudioAttachmentDraftSource, StudioCommandRequest,
-    StudioError, SubmitPromptRequest, ThreadModelRouteCommandReply, ThreadPageQuery,
-    UpdateAccountRequest, UpdateAcpAccountRequest, UpdatePermissionSettingsRequest,
-    UpdateSettingsFieldRequest,
+    StudioError, SubmitPromptRequest, SyncAccountModelsReply, SyncAccountModelsRequest,
+    ThreadModelRouteCommandReply, ThreadPageQuery, UpdateAcpAccountRequest,
+    UpdatePermissionSettingsRequest, UpdateSettingsFieldRequest,
 };
 use pl_protocol::{
     DelegationModelDetail, DelegationModelList, GetDelegationModelRequest,
@@ -268,7 +269,12 @@ pub(crate) fn api_router() -> OpenApiRouter<AppState> {
         .routes(routes!(set_account_model_enabled))
         .routes(routes!(set_account_billing_kind))
         .routes(routes!(save_permission_settings))
-        .routes(routes!(save_account))
+        .routes(routes!(create_account))
+        .routes(routes!(patch_account))
+        .routes(routes!(set_account_model_auto_compact))
+        .routes(routes!(set_account_model_connection))
+        .routes(routes!(sync_account_models))
+        .routes(routes!(read_account_domain))
         .routes(routes!(set_default_account))
         .routes(routes!(remove_account))
         .routes(routes!(apply_settings_field))
@@ -1077,18 +1083,58 @@ async fn set_account_billing_kind(
     ))
 }
 
-#[utoipa::path(put, path = "/api/v1/settings/account", operation_id = "settings.saveAccount", request_body = UpdateAccountRequest, responses(StudioApiErrors, (status = 200, body = SettingsCommandReply)))]
-async fn save_account(
+#[utoipa::path(post, path = "/api/v1/accounts", operation_id = "accounts.create", request_body = CreateAccountRequest, responses(StudioApiErrors, (status = 200, body = SettingsCommandReply)))]
+async fn create_account(
     State(state): State<AppState>,
-    ApiJson(request): ApiJson<UpdateAccountRequest>,
+    ApiJson(request): ApiJson<CreateAccountRequest>,
 ) -> Result<Json<SettingsCommandReply>, ApiError> {
     Ok(Json(
         state
             .runtime
-            .save_account(request)
+            .create_account(request)
             .await
             .map_err(ApiError::from)?,
     ))
+}
+
+#[utoipa::path(patch, path = "/api/v1/accounts", operation_id = "accounts.patch", request_body = PatchAccountRequest, responses(StudioApiErrors, (status = 200, body = SettingsCommandReply)))]
+async fn patch_account(
+    State(state): State<AppState>,
+    ApiJson(request): ApiJson<PatchAccountRequest>,
+) -> Result<Json<SettingsCommandReply>, ApiError> {
+    Ok(Json(state.runtime.patch_account(request).await?))
+}
+
+#[utoipa::path(put, path = "/api/v1/accounts/model-auto-compact", operation_id = "accounts.setModelAutoCompact", request_body = SetAccountModelAutoCompactRequest, responses(StudioApiErrors, (status = 200, body = SettingsCommandReply)))]
+async fn set_account_model_auto_compact(
+    State(state): State<AppState>,
+    ApiJson(request): ApiJson<SetAccountModelAutoCompactRequest>,
+) -> Result<Json<SettingsCommandReply>, ApiError> {
+    Ok(Json(state.runtime.set_account_model_auto_compact(request)?))
+}
+
+#[utoipa::path(put, path = "/api/v1/accounts/model-connection", operation_id = "accounts.setModelConnection", request_body = SetAccountModelConnectionRequest, responses(StudioApiErrors, (status = 200, body = SettingsCommandReply)))]
+async fn set_account_model_connection(
+    State(state): State<AppState>,
+    ApiJson(request): ApiJson<SetAccountModelConnectionRequest>,
+) -> Result<Json<SettingsCommandReply>, ApiError> {
+    Ok(Json(state.runtime.set_account_model_connection(request)?))
+}
+
+#[utoipa::path(post, path = "/api/v1/accounts/sync-models", operation_id = "accounts.syncModels", request_body = SyncAccountModelsRequest, responses(StudioApiErrors, (status = 200, body = SyncAccountModelsReply)))]
+async fn sync_account_models(
+    State(state): State<AppState>,
+    ApiJson(request): ApiJson<SyncAccountModelsRequest>,
+) -> Result<Json<SyncAccountModelsReply>, ApiError> {
+    Ok(Json(state.runtime.sync_account_models(request).await?))
+}
+
+#[utoipa::path(post, path = "/api/v1/accounts/read", operation_id = "accounts.read", request_body = AccountObservationTarget, responses(StudioApiErrors, (status = 200, body = AccountDomainFrame)))]
+async fn read_account_domain(
+    State(state): State<AppState>,
+    ApiJson(target): ApiJson<AccountObservationTarget>,
+) -> Result<Json<AccountDomainFrame>, ApiError> {
+    Ok(Json(state.runtime.read_account_domain(&target)?))
 }
 
 #[utoipa::path(put, path = "/api/v1/settings/default-account", operation_id = "settings.setDefaultAccount", request_body = SetDefaultAccountRequest, responses(StudioApiErrors, (status = 200, body = SettingsCommandReply)))]
@@ -1246,7 +1292,11 @@ async fn set_thread_model_route(
 
 #[utoipa::path(get, path = "/api/v1/runtime/account-usage", operation_id = "accountUsage.read", responses(StudioApiErrors, (status = 200)))]
 async fn read_account_usage(State(state): State<AppState>) -> Result<impl IntoResponse, ApiError> {
-    Ok(Json(state.runtime.read_account_usage_state().await))
+    Ok(Json(
+        state
+            .runtime
+            .read_account_domain(&AccountObservationTarget::Usage)?,
+    ))
 }
 
 #[utoipa::path(post, path = "/api/v1/runtime/account-usage/{account_id}/check", operation_id = "accountUsage.check", params(("account_id" = String, Path)), responses(StudioApiErrors, (status = 200)))]
@@ -1254,12 +1304,11 @@ async fn check_account_usage(
     State(state): State<AppState>,
     Path(account_id): Path<String>,
 ) -> Result<impl IntoResponse, ApiError> {
+    state.runtime.check_account_usage(&account_id).await?;
     Ok(Json(
         state
             .runtime
-            .check_account_usage(&account_id)
-            .await
-            .map_err(ApiError::from)?,
+            .read_account_domain(&AccountObservationTarget::Usage)?,
     ))
 }
 

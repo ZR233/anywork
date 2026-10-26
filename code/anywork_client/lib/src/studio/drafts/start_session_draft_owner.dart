@@ -83,11 +83,7 @@ class StartSessionDraftOwner extends ReadModel<StartSessionDraft> {
     final efforts = {...state.effortIntents};
     if (changed) {
       final effort = ModelRouteQueries.effortAfterModelSelection(
-        ModelRouteQueries.model(
-          snapshot?.accounts ?? const [],
-          accountId,
-          modelId,
-        ),
+        ModelRouteQueries.model(_client.modelAccounts, accountId, modelId),
         null,
       );
       if (effort != null && effort.isNotEmpty) {
@@ -441,7 +437,7 @@ class StartSessionDraftOwner extends ReadModel<StartSessionDraft> {
     if (route == null || route.accountId.isEmpty || route.modelId.isEmpty) {
       throw StateError('A complete model route is required');
     }
-    final account = settings.canonical?.accounts
+    final account = _client.modelAccounts
         .where((value) => value.id == route.accountId)
         .firstOrNull;
     final model = account?.models

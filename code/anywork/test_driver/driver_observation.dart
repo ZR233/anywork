@@ -272,6 +272,26 @@ void verifyAccountListRedacted(
     throw StateError('account list observation leaked a +N model label');
   }
 
+  for (final row in list) {
+    if (row.keys.any(
+      (key) => const {
+        'models',
+        'modelDetails',
+        'defaultModelId',
+        'modelCount',
+        'defaultModelConfigured',
+        'status',
+        'secret',
+        'token',
+      }.contains(key),
+    )) {
+      throw StateError(
+        'account list observation includes retired/detail fields',
+      );
+    }
+  }
+  // Model availability comes from the same directory, not from opening a
+  // details owner purely for a redaction assertion.
   final details = driverAccountDetailsObservation(snapshot);
   final matchingAccount = accountId == null
       ? details

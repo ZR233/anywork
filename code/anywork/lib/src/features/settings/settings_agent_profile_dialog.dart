@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import 'package:anywork_client/studio_client.dart';
+import 'package:anywork_client/model_directory.dart';
 
 import '../../l10n/studio_l10n.dart';
 import '../../shared/model_route_selector.dart';
@@ -11,7 +12,7 @@ class AgentProfileDialog extends StatefulWidget {
   const AgentProfileDialog({super.key, this.profile, required this.accounts});
 
   final AgentProfileView? profile;
-  final List<AccountSettingsView> accounts;
+  final List<ModelSelectionAccount> accounts;
 
   @override
   State<AgentProfileDialog> createState() => _AgentProfileDialogState();

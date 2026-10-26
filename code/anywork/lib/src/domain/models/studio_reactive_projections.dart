@@ -1,6 +1,9 @@
 import 'package:anywork_client/models.dart';
+import 'package:anywork_client/accounts.dart';
+import 'package:anywork_client/account_usage.dart';
+import 'package:anywork_client/model_directory.dart';
 import 'package:anywork_client/studio_client.dart' show ModelRouteQueries;
-import 'package:flutter/foundation.dart' show listEquals;
+import 'package:flutter/foundation.dart' show listEquals, mapEquals;
 
 import 'agent_workspace_view.dart';
 import 'studio_state.dart';
@@ -42,7 +45,7 @@ class StudioContextProjection {
   factory StudioContextProjection.fromRuntime(
     String? threadId,
     ThreadRuntimeView runtime, {
-    required List<AccountSettingsView> accounts,
+    required List<ModelSelectionAccount> accounts,
     required bool isBusy,
   }) {
     final live = runtime.liveUsage;
@@ -205,7 +208,7 @@ class StudioStatusProjection {
   }
 
   final StudioThread? thread;
-  final List<AccountSettingsView> accounts;
+  final List<ModelSelectionAccount> accounts;
   final List<RoleSettingsView> roles;
   final bool isBusy;
 
@@ -264,39 +267,35 @@ class StudioComposerDiagnosticsProjection {
 /// Provider usage has its own topic/revision. It must not be invalidated by a
 /// Thread runtime event merely because both facts live in StudioState.
 class StudioAccountUsageProjection {
-  const StudioAccountUsageProjection({
-    required this.revision,
-    required this.configFingerprint,
-    required this.usages,
-  });
+  const StudioAccountUsageProjection({required this.resource});
 
-  factory StudioAccountUsageProjection.fromState(StudioState state) {
-    final snapshot = state.accountUsageState;
-    return StudioAccountUsageProjection(
-      revision: snapshot.revision,
-      configFingerprint: snapshot.configFingerprint,
-      usages: snapshot.usages,
-    );
-  }
+  factory StudioAccountUsageProjection.fromState(StudioState state) =>
+      StudioAccountUsageProjection(resource: state.accountUsageState);
 
-  final int revision;
-  final String configFingerprint;
-  final List<AccountUsageView> usages;
+  final AccountResource<Map<NativeAccountIdentity, AccountUsageObservation>>
+  resource;
 
   @override
-  bool operator ==(Object other) {
-    return identical(this, other) ||
-        other is StudioAccountUsageProjection &&
-            revision == other.revision &&
-            configFingerprint == other.configFingerprint &&
-            _listEqualsBy(usages, other.usages, _accountUsageEquals);
-  }
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is StudioAccountUsageProjection &&
+          resource.stamp == other.resource.stamp &&
+          resource.loading == other.resource.loading &&
+          resource.failure == other.resource.failure &&
+          mapEquals(resource.value, other.resource.value);
 
   @override
   int get hashCode => Object.hash(
-    revision,
-    configFingerprint,
-    Object.hashAll(usages.map(_accountUsageHash)),
+    resource.stamp,
+    resource.loading,
+    resource.failure,
+    resource.value == null
+        ? null
+        : Object.hashAllUnordered(
+            resource.value!.entries.map(
+              (entry) => Object.hash(entry.key, entry.value),
+            ),
+          ),
   );
 }
 
@@ -371,7 +370,7 @@ class StudioComposerProjection {
   final String? loadError;
   final ComposerThreadState composer;
   final AgentComposerMode composerMode;
-  final List<AccountSettingsView> accounts;
+  final List<ModelSelectionAccount> accounts;
   final List<ModeModelRouteView> modeModelRoutes;
   final List<RoleSettingsView> roles;
   final PendingInteraction? activeInteraction;
@@ -553,77 +552,24 @@ bool _modeRouteEquals(ModeModelRouteView left, ModeModelRouteView right) =>
 int _modeRouteHash(ModeModelRouteView route) =>
     Object.hash(route.modeId, route.accountId, route.modelId, route.effort);
 
-bool _accountEquals(AccountSettingsView left, AccountSettingsView right) {
-  return left.billingKind == right.billingKind &&
-      left.billingKindOverride == right.billingKindOverride &&
-      listEquals(left.disabledModels, right.disabledModels) &&
-      _catalogStatusEquals(left.modelCatalog, right.modelCatalog) &&
-      left.id == right.id &&
-      left.templateId == right.templateId &&
-      left.name == right.name &&
-      left.subtitle == right.subtitle &&
-      left.baseUrl == right.baseUrl &&
-      left.bearerToken == right.bearerToken &&
-      left.hasBearerToken == right.hasBearerToken &&
-      left.usageQueryRevision == right.usageQueryRevision &&
-      left.credentialRequired == right.credentialRequired &&
-      left.defaultModelId == right.defaultModelId &&
-      _listEqualsBy(left.models, right.models, _accountModelEquals) &&
-      _stringMapEquals(left.modelConnectionModes, right.modelConnectionModes) &&
-      _autoCompactMapEquals(left.autoCompactLimits, right.autoCompactLimits) &&
-      left.status == right.status &&
-      left.usageLabel == right.usageLabel &&
-      left.modelCount == right.modelCount &&
-      left.updatedAt == right.updatedAt &&
-      left.catalogId == right.catalogId &&
-      left.credentialLabel == right.credentialLabel &&
-      left.credentialEnv == right.credentialEnv &&
-      left.capabilitySource == right.capabilitySource &&
-      left.hostedWebSearch == right.hostedWebSearch &&
-      left.hostedWebSearchDialect == right.hostedWebSearchDialect &&
-      left.standaloneWebSearch == right.standaloneWebSearch &&
-      left.promptCacheDialect == right.promptCacheDialect &&
-      left.responsesProgrammaticToolCalling ==
-          right.responsesProgrammaticToolCalling &&
-      left.iconKey == right.iconKey;
-}
+bool _accountEquals(ModelSelectionAccount left, ModelSelectionAccount right) =>
+    left.id == right.id &&
+    left.name == right.name &&
+    left.brandKey == right.brandKey &&
+    left.billingKind == right.billingKind &&
+    _listEqualsBy(left.models, right.models, _accountModelEquals);
 
-int _accountHash(AccountSettingsView account) => Object.hashAll([
-  account.billingKind,
-  account.billingKindOverride,
-  Object.hashAll(account.disabledModels),
-  _catalogStatusHash(account.modelCatalog),
+int _accountHash(ModelSelectionAccount account) => Object.hash(
   account.id,
-  account.templateId,
   account.name,
-  account.subtitle,
-  account.baseUrl,
-  account.bearerToken,
-  account.hasBearerToken,
-  account.usageQueryRevision,
-  account.credentialRequired,
-  account.defaultModelId,
+  account.brandKey,
+  account.billingKind,
   Object.hashAll(account.models.map(_accountModelHash)),
-  _stringMapHash(account.modelConnectionModes),
-  _autoCompactMapHash(account.autoCompactLimits),
-  account.status,
-  account.usageLabel,
-  account.modelCount,
-  account.updatedAt,
-  account.catalogId,
-  account.credentialLabel,
-  account.credentialEnv,
-  account.capabilitySource,
-  account.hostedWebSearch,
-  account.hostedWebSearchDialect,
-  account.standaloneWebSearch,
-  account.promptCacheDialect,
-  account.responsesProgrammaticToolCalling,
-  account.iconKey,
-]);
+);
 
 bool _accountModelEquals(AccountModelView left, AccountModelView right) =>
     left.modelId == right.modelId &&
+    left.enabled == right.enabled &&
     left.displayName == right.displayName &&
     _listEqualsBy(
       left.typeSupport,
@@ -647,6 +593,7 @@ bool _accountModelEquals(AccountModelView left, AccountModelView right) =>
     left.defaultReasoningEffort == right.defaultReasoningEffort &&
     left.currency == right.currency &&
     left.priceSource == right.priceSource &&
+    left.priceVerifiedAt == right.priceVerifiedAt &&
     _listEqualsBy(left.priceTiers, right.priceTiers, _priceTierEquals) &&
     left.baseInstructions == right.baseInstructions &&
     left.wireApi == right.wireApi &&
@@ -657,6 +604,7 @@ bool _accountModelEquals(AccountModelView left, AccountModelView right) =>
 
 int _accountModelHash(AccountModelView model) => Object.hashAll([
   model.modelId,
+  model.enabled,
   model.displayName,
   Object.hashAll(model.typeSupport.map(_modelTypeSupportHash)),
   Object.hashAll(model.reasoningEfforts),
@@ -672,6 +620,7 @@ int _accountModelHash(AccountModelView model) => Object.hashAll([
   model.defaultReasoningEffort,
   model.currency,
   model.priceSource,
+  model.priceVerifiedAt,
   Object.hashAll(model.priceTiers.map(_priceTierHash)),
   model.baseInstructions,
   model.wireApi,
@@ -728,246 +677,6 @@ int _priceTierHash(ModelPriceTierView tier) => Object.hash(
   tier.output,
   tier.cacheRead,
   tier.cacheWrite,
-);
-
-bool _catalogStatusEquals(
-  ModelCatalogStatusView left,
-  ModelCatalogStatusView right,
-) =>
-    left.supported == right.supported &&
-    left.source == right.source &&
-    left.probing == right.probing &&
-    left.lastSuccessAt == right.lastSuccessAt &&
-    left.checkedAt == right.checkedAt &&
-    left.cacheWarning == right.cacheWarning &&
-    left.error?.kind == right.error?.kind &&
-    left.error?.httpStatus == right.error?.httpStatus;
-
-int _catalogStatusHash(ModelCatalogStatusView status) => Object.hash(
-  status.supported,
-  status.source,
-  status.probing,
-  status.lastSuccessAt,
-  status.checkedAt,
-  status.cacheWarning,
-  status.error?.kind,
-  status.error?.httpStatus,
-);
-
-bool _autoCompactEquals(
-  AccountModelAutoCompactView left,
-  AccountModelAutoCompactView right,
-) =>
-    left.modelId == right.modelId &&
-    left.overrideLimit == right.overrideLimit &&
-    left.context == right.context;
-
-int _autoCompactHash(AccountModelAutoCompactView value) =>
-    Object.hash(value.modelId, value.overrideLimit, value.context);
-
-bool _stringMapEquals(Map<String, String> left, Map<String, String> right) {
-  if (left.length != right.length) return false;
-  for (final entry in left.entries) {
-    if (right[entry.key] != entry.value) return false;
-  }
-  return true;
-}
-
-bool _autoCompactMapEquals(
-  Map<String, AccountModelAutoCompactView> left,
-  Map<String, AccountModelAutoCompactView> right,
-) {
-  if (left.length != right.length) return false;
-  for (final entry in left.entries) {
-    final other = right[entry.key];
-    if (other == null || !_autoCompactEquals(entry.value, other)) return false;
-  }
-  return true;
-}
-
-int _stringMapHash(Map<String, String> value) =>
-    Object.hashAll(_sortedStringEntries(value).map(_stringEntryHash));
-
-int _autoCompactMapHash(Map<String, AccountModelAutoCompactView> value) =>
-    Object.hashAll(_sortedStringEntries(value).map(_autoCompactEntryHash));
-
-List<MapEntry<String, T>> _sortedStringEntries<T>(Map<String, T> value) {
-  final entries = value.entries.toList();
-  entries.sort((left, right) => left.key.compareTo(right.key));
-  return entries;
-}
-
-int _stringEntryHash(MapEntry<String, String> entry) =>
-    Object.hash(entry.key, entry.value);
-
-int _autoCompactEntryHash(
-  MapEntry<String, AccountModelAutoCompactView> entry,
-) => Object.hash(entry.key, _autoCompactHash(entry.value));
-
-bool _accountUsageEquals(AccountUsageView left, AccountUsageView right) =>
-    left.accountId == right.accountId &&
-    left.revision == right.revision &&
-    left.updatedAt == right.updatedAt &&
-    _accountUsageStateEquals(left.state, right.state);
-
-int _accountUsageHash(AccountUsageView usage) => Object.hash(
-  usage.accountId,
-  usage.revision,
-  usage.updatedAt,
-  _accountUsageStateHash(usage.state),
-);
-
-bool _accountUsageStateEquals(
-  AccountUsageStateView left,
-  AccountUsageStateView right,
-) {
-  if (left.runtimeType != right.runtimeType) return false;
-  return switch ((left, right)) {
-    (UnsupportedAccountUsageView(), UnsupportedAccountUsageView()) => true,
-    (
-      MissingCredentialAccountUsageView(message: final leftMessage),
-      MissingCredentialAccountUsageView(message: final rightMessage),
-    ) =>
-      leftMessage == rightMessage,
-    (
-      FailedAccountUsageView(
-        code: final leftCode,
-        message: final leftMessage,
-        retryable: final leftRetryable,
-      ),
-      FailedAccountUsageView(
-        code: final rightCode,
-        message: final rightMessage,
-        retryable: final rightRetryable,
-      ),
-    ) =>
-      leftCode == rightCode &&
-          leftMessage == rightMessage &&
-          leftRetryable == rightRetryable,
-    (
-      ReadyAccountUsageView(data: final leftData),
-      ReadyAccountUsageView(data: final rightData),
-    ) =>
-      _accountUsageDataEquals(leftData, rightData),
-    _ => false,
-  };
-}
-
-int _accountUsageStateHash(AccountUsageStateView state) {
-  return switch (state) {
-    UnsupportedAccountUsageView() => Object.hash(
-      UnsupportedAccountUsageView,
-      0,
-    ),
-    MissingCredentialAccountUsageView(message: final message) => Object.hash(
-      MissingCredentialAccountUsageView,
-      message,
-    ),
-    FailedAccountUsageView(
-      code: final code,
-      message: final message,
-      retryable: final retryable,
-    ) =>
-      Object.hash(FailedAccountUsageView, code, message, retryable),
-    ReadyAccountUsageView(data: final data) => Object.hash(
-      ReadyAccountUsageView,
-      _accountUsageDataHash(data),
-    ),
-  };
-}
-
-bool _accountUsageDataEquals(
-  AccountUsageDataView left,
-  AccountUsageDataView right,
-) {
-  if (left.runtimeType != right.runtimeType) return false;
-  return switch ((left, right)) {
-    (
-      DeepSeekBalanceAccountUsageView(balance: final leftBalance),
-      DeepSeekBalanceAccountUsageView(balance: final rightBalance),
-    ) =>
-      leftBalance.isAvailable == rightBalance.isAvailable &&
-          _listEqualsBy(
-            leftBalance.balances,
-            rightBalance.balances,
-            _deepSeekBalanceEquals,
-          ),
-    (
-      ZhipuCodingPlanAccountUsageView(codingPlan: final leftPlan),
-      ZhipuCodingPlanAccountUsageView(codingPlan: final rightPlan),
-    ) =>
-      leftPlan.level == rightPlan.level &&
-          _listEqualsBy(leftPlan.limits, rightPlan.limits, _zhipuLimitEquals),
-    _ => false,
-  };
-}
-
-int _accountUsageDataHash(AccountUsageDataView data) {
-  return switch (data) {
-    DeepSeekBalanceAccountUsageView(balance: final balance) => Object.hash(
-      DeepSeekBalanceAccountUsageView,
-      balance.isAvailable,
-      Object.hashAll(balance.balances.map(_deepSeekBalanceHash)),
-    ),
-    ZhipuCodingPlanAccountUsageView(codingPlan: final plan) => Object.hash(
-      ZhipuCodingPlanAccountUsageView,
-      plan.level,
-      Object.hashAll(plan.limits.map(_zhipuLimitHash)),
-    ),
-  };
-}
-
-bool _deepSeekBalanceEquals(
-  DeepSeekBalanceInfoView left,
-  DeepSeekBalanceInfoView right,
-) =>
-    left.currency == right.currency &&
-    left.totalBalance == right.totalBalance &&
-    left.grantedBalance == right.grantedBalance &&
-    left.toppedUpBalance == right.toppedUpBalance;
-
-int _deepSeekBalanceHash(DeepSeekBalanceInfoView balance) => Object.hash(
-  balance.currency,
-  balance.totalBalance,
-  balance.grantedBalance,
-  balance.toppedUpBalance,
-);
-
-bool _zhipuLimitEquals(ZhipuQuotaLimitView left, ZhipuQuotaLimitView right) =>
-    left.window == right.window &&
-    left.label == right.label &&
-    left.percentage == right.percentage &&
-    left.currentValue == right.currentValue &&
-    left.total == right.total &&
-    left.remaining == right.remaining &&
-    left.nextResetAt == right.nextResetAt &&
-    _listEqualsBy(left.usageDetails, right.usageDetails, _zhipuDetailEquals);
-
-int _zhipuLimitHash(ZhipuQuotaLimitView limit) => Object.hash(
-  limit.window,
-  limit.label,
-  limit.percentage,
-  limit.currentValue,
-  limit.total,
-  limit.remaining,
-  limit.nextResetAt,
-  Object.hashAll(limit.usageDetails.map(_zhipuDetailHash)),
-);
-
-bool _zhipuDetailEquals(
-  ZhipuToolUsageDetailView left,
-  ZhipuToolUsageDetailView right,
-) =>
-    left.name == right.name &&
-    left.currentValue == right.currentValue &&
-    left.total == right.total &&
-    left.percentage == right.percentage;
-
-int _zhipuDetailHash(ZhipuToolUsageDetailView detail) => Object.hash(
-  detail.name,
-  detail.currentValue,
-  detail.total,
-  detail.percentage,
 );
 
 bool _interactionEquals(PendingInteraction? left, PendingInteraction? right) {

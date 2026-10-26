@@ -3,10 +3,13 @@ import 'dart:typed_data';
 
 import 'package:anywork_client/studio_client.dart';
 import 'package:test/test.dart';
+import 'package:anywork_client/accounts_ports.dart';
+
+import 'support/accounts_test_runtime.dart';
 
 /// Only transport responses and asynchronous barriers are fake. Draft revision,
 /// route freezing, attachment ownership and operation observation are production.
-final class _DraftTransport implements StudioTransport {
+final class _DraftTransport extends AccountsTestTransport {
   _DraftTransport() {
     addTearDown(() => frames.close());
     addTearDown(() => startEvents.close());
@@ -271,56 +274,80 @@ AnyworkClient _client(
   Future<String?> Function(Uint8List)? stage,
   Future<void> Function(String)? cleanup,
 }) {
+  final resourcesBudget = budget ?? ResourceBudget();
+  final coordinator = SettingsWriteCoordinator();
+  final board = MutationBoard(clientId: id, budget: resourcesBudget);
+  final domains = AccountDomainResources(
+    feed: transport,
+    configuration: transport,
+    modelPort: transport,
+    usagePort: transport,
+    acpPort: transport,
+    coordinator: coordinator,
+    mutations: board,
+    budget: resourcesBudget,
+    owner: id,
+  );
+  domains.adoptOwnerEpoch('owner');
+  addTearDown(
+    () =>
+        domains.close(deadline: DateTime.now().add(const Duration(seconds: 3))),
+  );
   final client = AnyworkClient(
     transport: transport,
     clientId: id,
-    budget: budget,
+    budget: resourcesBudget,
+    settingsWrites: coordinator,
+    mutationBoard: board,
+    accountDomains: domains,
     clipboardImageStager: stage,
     clipboardImageCleanup: cleanup,
   );
   client.project.applyProjectDirectory(
     ProjectDirectoryState(values: [_project], revision: 1),
   );
-  client.settings.merge(
-    SettingsStateSnapshot(
-      revision: 1,
-      modelCatalogRevision: 1,
-      accounts: const [
-        AccountSettingsView(
-          id: 'account',
-          name: 'Provider',
-          baseUrl: 'http://local.invalid',
-          defaultModelId: 'alpha',
-          status: 'configured',
-          usageLabel: '',
-          models: [
-            AccountModelView(
-              modelId: 'alpha',
-              displayName: 'Alpha',
-              typeSupport: [ModelTypeSupportView(modelType: ModelType.text)],
-              reasoningEfforts: ['medium'],
-              defaultReasoningEffort: 'medium',
-            ),
-            AccountModelView(
-              modelId: 'beta',
-              displayName: 'Beta',
-              typeSupport: [ModelTypeSupportView(modelType: ModelType.text)],
-              reasoningEfforts: ['high'],
-              defaultReasoningEffort: 'high',
-            ),
-          ],
-        ),
-      ],
-      modeModelRoutes: const [
-        ModeModelRouteView(
-          modeId: ThreadModeId.simple,
-          accountId: 'account',
-          modelId: 'alpha',
-          effort: 'medium',
-        ),
-      ],
-    ),
+  final snapshot = SettingsStateSnapshot(
+    revision: 1,
+    modelCatalogRevision: 1,
+    accounts: const [
+      AccountSettingsView(
+        id: 'account',
+        name: 'Provider',
+        baseUrl: 'http://local.invalid',
+        defaultModelId: 'alpha',
+        status: 'configured',
+        usageLabel: '',
+        models: [
+          AccountModelView(
+            modelId: 'alpha',
+            displayName: 'Alpha',
+            typeSupport: [ModelTypeSupportView(modelType: ModelType.text)],
+            reasoningEfforts: ['medium'],
+            defaultReasoningEffort: 'medium',
+          ),
+          AccountModelView(
+            modelId: 'beta',
+            displayName: 'Beta',
+            typeSupport: [ModelTypeSupportView(modelType: ModelType.text)],
+            reasoningEfforts: ['high'],
+            defaultReasoningEffort: 'high',
+          ),
+        ],
+      ),
+    ],
+    modeModelRoutes: const [
+      ModeModelRouteView(
+        modeId: ThreadModeId.simple,
+        accountId: 'account',
+        modelId: 'alpha',
+        effort: 'medium',
+      ),
+    ],
   );
+  client.settings.merge(snapshot);
+  for (final frame in accountFrames(snapshot)) {
+    domains.acceptFrame(frame);
+  }
   client.selection.selectProject(_project.id);
   return client;
 }
@@ -506,7 +533,6 @@ void main() {
         SettingsStateSnapshot(
           revision: revision,
           modelCatalogRevision: canonical.modelCatalogRevision,
-          accounts: canonical.accounts,
           modeModelRoutes: canonical.modeModelRoutes,
           delegation: DelegationSettingsView(
             mode: mode,

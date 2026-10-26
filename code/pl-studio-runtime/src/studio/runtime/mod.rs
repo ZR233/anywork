@@ -15,6 +15,7 @@ pub type ThreadPreparationObserver =
     std::sync::Arc<dyn Fn(ThreadPreparationProgress) + Send + Sync>;
 
 mod account_usage;
+pub mod accounts;
 mod acp_auth;
 mod acp_install;
 mod attachment_drafts;
@@ -55,6 +56,7 @@ mod thread_observation;
 mod thread_title;
 mod updater;
 
+pub(crate) use account_usage::AccountUsageCacheMigrationError;
 pub(crate) use account_usage::AccountUsageRuntime;
 pub use account_usage::{AccountUsageStateData, AccountUsageStateSnapshot};
 pub(crate) use model_performance::ModelPerformanceOwner;

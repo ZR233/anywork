@@ -3,6 +3,8 @@ import 'dart:async';
 import 'package:anywork_client/studio_client.dart';
 import 'package:test/test.dart';
 
+import 'support/accounts_test_runtime.dart';
+
 const _a = DelegationModelKey(accountId: 'a', modelId: 'shared');
 const _b = DelegationModelKey(accountId: 'b', modelId: 'shared');
 const _model = AccountModelView(
@@ -50,7 +52,7 @@ DelegationModelDetail _detail(DelegationModelKey key) => DelegationModelDetail(
   recentEvaluations: const [],
 );
 
-class _Transport implements StudioTransport {
+class _Transport extends AccountsTestTransport {
   final calls = <(DelegationModelKey, Completer<DelegationModelDetail>)>[];
   @override
   Future<DelegationModelDetail> getDelegationModel(DelegationModelKey key) {
@@ -64,47 +66,46 @@ class _Transport implements StudioTransport {
       throw UnsupportedError('Unexpected ${invocation.memberName}');
 }
 
-AnyworkClient _client(_Transport transport) {
-  final client = AnyworkClient(transport: transport, clientId: 'details');
-  client.settings.merge(_settings(1));
-  addTearDown(client.close);
-  return client;
+AccountsTestRuntime _client(_Transport transport) {
+  final runtime = AccountsTestRuntime(transport, clientId: 'details');
+  runtime.seed(_settings(1));
+  addTearDown(runtime.close);
+  return runtime;
 }
 
 void main() {
   test('exact account/model queries dedupe and never substitute stale or other-account details', () async {
     final transport = _Transport();
     final client = _client(transport);
-    final owner = client.modelDetailQueries;
-    final a = owner.refresh(_a);
-    expect(identical(owner.refresh(_a), a), isTrue);
-    final b = owner.refresh(_b);
+    final owner = client.domains.models;
+    final a = owner.performance(modelIdentity(_a.accountId, _a.modelId));
+    expect(
+      identical(owner.performance(modelIdentity(_a.accountId, _a.modelId)), a),
+      isTrue,
+    );
+    final b = owner.performance(modelIdentity(_b.accountId, _b.modelId));
     expect(transport.calls.map((call) => call.$1), [_a, _b]);
     transport.calls[1].$2.complete(_detail(_b));
-    await b;
-    expect(owner.state[_b]?.value?.key, _b);
-    expect(owner.state[_a]?.loading, isTrue);
-    client.settings.merge(_settings(2));
-    expect(
-      owner.state[_b]?.value,
-      isNull,
-      reason: 'Previously cached data must invalidate immediately',
-    );
-    expect(owner.state[_b]?.error?.code, StudioFailureCode.staleRevision);
+    expect((await b).key, _b);
+    expect(transport.calls[0].$2.isCompleted, isFalse);
+    client.seed(_settings(2));
     final stale = expectLater(
       a,
       throwsA(
         isA<StudioFailure>().having(
-          (e) => e.message,
-          'identity',
-          contains('a/shared'),
+          (e) => e.code,
+          'identity failure',
+          StudioFailureCode.staleRevision,
         ),
       ),
     );
     transport.calls[0].$2.complete(_detail(_a));
     await stale;
-    expect(owner.state[_a]?.value, isNull);
-    final wrong = owner.refresh(_a);
+    expect(
+      owner.state.value.model(modelIdentity('a', 'shared'))?.displayName,
+      'Shared',
+    );
+    final wrong = owner.performance(modelIdentity('a', 'shared'));
     final rejected = expectLater(
       wrong,
       throwsA(
@@ -117,33 +118,44 @@ void main() {
     );
     transport.calls[2].$2.complete(_detail(_b));
     await rejected;
-    expect(owner.state[_a]?.value, isNull);
     expect(
-      owner.state[_b]?.value,
-      isNull,
-      reason: 'Wrong-account return must not populate another key',
+      owner.state.value.model(modelIdentity('a', 'shared'))?.displayName,
+      'Shared',
     );
-    final latest = owner.refresh(_a);
-    transport.calls[3].$2.complete(_detail(_a));
-    await latest;
-    expect(owner.state[_a]?.value?.performance.averageTtftMillis, 250);
     expect(
-      owner.state[_a]?.value?.recentEvaluations,
+      owner.state.value.model(modelIdentity('b', 'shared'))?.displayName,
+      'Shared',
+      reason:
+          'Wrong-account return must not mutate another canonical descriptor',
+    );
+    final latest = owner.performance(modelIdentity('a', 'shared'));
+    transport.calls[3].$2.complete(_detail(_a));
+    final detail = await latest;
+    expect(detail.performance.averageTtftMillis, 250);
+    expect(
+      detail.recentEvaluations,
       isEmpty,
       reason: '55 call samples cannot become task evaluations',
     );
-    owner.forget(_a);
-    expect(owner.state.containsKey(_a), isFalse);
+    final fresh = owner.performance(modelIdentity('a', 'shared'));
+    expect(
+      identical(fresh, latest),
+      isFalse,
+      reason: 'Completed performance data is not retained in a parallel history cache',
+    );
+    transport.calls[4].$2.complete(_detail(_a));
+    expect((await fresh).key, _a);
   });
 
   test('dismissed and closed detail queries remain owned until their real futures settle', () async {
     final transport = _Transport();
     final client = _client(transport);
-    final owner = client.modelDetailQueries;
-    final pending = owner.refresh(_a);
-    owner.forget(_a);
+    final owner = client.domains.models;
+    final pending = owner.performance(modelIdentity('a', 'shared'));
+    final display = owner.state.watch((_) {});
+    display.cancel();
     var joined = false;
-    final closing = owner.close().then((_) => joined = true);
+    final closing = client.close().then((_) => joined = true);
     await Future<void>.value();
     expect(
       joined,
@@ -153,7 +165,7 @@ void main() {
     transport.calls.single.$2.complete(_detail(_a));
     await pending;
     await closing;
-    expect(owner.state, isEmpty);
-    expect(owner.refresh(_b), throwsStateError);
+    expect(display.isCancelled, isTrue);
+    expect(owner.performance(modelIdentity('b', 'shared')), throwsStateError);
   });
 }

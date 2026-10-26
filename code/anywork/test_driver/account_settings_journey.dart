@@ -3,6 +3,8 @@ import 'dart:io';
 
 import 'package:flutter_driver/flutter_driver.dart';
 
+import 'package:anywork/src/features/settings/accounts/state/account_view_key_values.dart';
+
 import 'driver_observation.dart';
 import 'flutter_driver_session.dart';
 
@@ -23,28 +25,58 @@ Future<void> main(List<String> args) async {
   final driver = await FlutterDriverSession.connect(vmServiceUrl: args[0]);
   try {
     final recorder = _Recorder(output, driver);
-    final baseline = await recorder.readSnapshot();
-    final fixture = _accounts(baseline)
+    final startup = await recorder.readSnapshot();
+    final fixture = _accounts(startup)
         .where((account) => '${account['id']}'.startsWith('gui-fixture-'))
         .single;
     final id = '${fixture['id']}';
-    final model = '${fixture['defaultModelId']}';
+    final originalName =
+        (startup['settings']['accountDomains']['accounts'] as List)
+                .cast<Map>()
+                .singleWhere(
+                  (account) =>
+                      account['kind'] == 'native' && account['id'] == id,
+                )['name']
+            as String;
+    final model =
+        (fixture['modelDetails'] as List).cast<Map>().firstWhere(
+              (model) =>
+                  model['enabled'] == true &&
+                  model['contextWindow'] is int &&
+                  (model['contextWindow'] as int) > 21000,
+            )['modelId']
+            as String;
+    await recorder.openAccounts();
+    await recorder.assertAccountListRedacted(id, model);
+    await recorder.openDetails(id);
+    final baseline = await recorder.waitLimit(
+      id,
+      model,
+      (value) =>
+          value['override'] == null &&
+          value['effective'] is int &&
+          value['adjustment'] == null &&
+          value['unavailable'] == null,
+      expected: const {
+        'override': null,
+        'effective': 'observed int',
+        'adjustment': null,
+        'unavailable': null,
+      },
+    );
+    final automatic = Map<String, dynamic>.from(_limit(baseline, id, model));
     final siblings = {
       for (final modelId in _models(fixture))
         if (modelId != model) modelId: _limit(baseline, id, modelId),
     };
-    await recorder.openAccounts();
-    await recorder.assertAccountListRedacted(id, model);
-    await recorder.openDetails(id);
-    await recorder.capture('details-defaults', await recorder.readSnapshot());
+    await recorder.capture('details-defaults', baseline);
     await driver.waitForAbsent(find.byValueKey('account-save'));
-    final template = _models(fixture).singleWhere((modelId) {
-      final limit = _limit(baseline, id, modelId);
-      return modelId != model && limit['effective'] != null;
-    });
-    await recorder._scrollTo(
-      find.byValueKey('account-$id-model-$template-auto-compact-input'),
+    final template = _models(fixture).singleWhere(
+      (modelId) =>
+          modelId != model &&
+          _limit(baseline, id, modelId)['effective'] != null,
     );
+    await recorder.revealCompact(id, template);
     await recorder.capture(
       'model-template-default',
       await recorder.readSnapshot(),
@@ -52,35 +84,35 @@ Future<void> main(List<String> args) async {
 
     await recorder.setCompactInput(id, model, '18000');
     await recorder.capture('input-pending', await recorder.readSnapshot());
-    final afterInput = await recorder.waitOverride(id, model, 18000);
+    final afterInput = await recorder.waitThreshold(id, model, {
+      ...automatic,
+      'override': 18000,
+      'effective': 18000,
+    });
     await recorder.capture('input-applied-without-save', afterInput);
     const excessive = 9000000000;
     await recorder.setCompactInput(id, model, '$excessive');
-    final above = await recorder.waitOverride(id, model, excessive);
-    final resolved = _limit(above, id, model);
-    if (resolved['adjustment'] != 'safetyLimit' ||
-        resolved['effective'] is! int) {
-      throw StateError('backend did not classify the adjusted override');
-    }
+    final aboveExpected = {
+      ...automatic,
+      'override': excessive,
+      'adjustment': 'safetyLimit',
+    };
+    final above = await recorder.waitThreshold(id, model, aboveExpected);
     await recorder.capture('above-safe-clamped', above);
 
     await recorder.setCompactInput(id, model, 'not-a-number');
-    // Negative proof: observe past the 650ms debounce, not merely one frame.
-    await Future<void>.delayed(const Duration(milliseconds: 1100));
-    final invalid = await recorder.readSnapshot();
-    if (_limit(invalid, id, model)['override'] != excessive ||
-        invalid['settings']['revision'] != above['settings']['revision']) {
-      throw StateError('invalid input changed canonical settings');
-    }
+    // The negative debounce observation starts only after both sources settled.
+    final invalid = await recorder.observeInvalidUnchanged(
+      id,
+      model,
+      aboveExpected,
+      above['settings']['revision'] as int,
+    );
     await recorder.capture('invalid-kept-not-persisted', invalid);
 
     await recorder.tapCompactReset(id, model);
-    final reset = await recorder.waitOverride(id, model, null);
-    if (_limit(reset, id, model)['effective'] !=
-        _limit(baseline, id, model)['effective']) {
-      throw StateError('reset did not restore the backend automatic value');
-    }
-    await recorder.capture('restored-default', await recorder.readSnapshot());
+    final reset = await recorder.waitThreshold(id, model, automatic);
+    await recorder.capture('restored-default', reset);
 
     // Rapid typing must keep the newest raw input and eventually canonicalize
     // it without a page round trip. Deterministic CAS/old-ACK races live in the
@@ -88,7 +120,12 @@ Future<void> main(List<String> args) async {
     await recorder.setCompactInput(id, model, '19000');
     await recorder.setCompactInput(id, model, '21000');
     await driver.sendTextInputAction(TextInputAction.done);
-    final latest = await recorder.waitOverride(id, model, 21000);
+    final latestExpected = {
+      ...automatic,
+      'override': 21000,
+      'effective': 21000,
+    };
+    final latest = await recorder.waitThreshold(id, model, latestExpected);
     await recorder.capture('latest-intent-applied', latest);
     for (final sibling in siblings.entries) {
       if (jsonEncode(_limit(latest, id, sibling.key)) !=
@@ -106,41 +143,66 @@ Future<void> main(List<String> args) async {
     if (_limit(baseline, id, unknown)['effective'] != null) {
       throw StateError('unknown-capacity fixture fabricated a default');
     }
-    await recorder.setCompactInput(id, unknown, '17000');
-    final unknownApplied = await recorder.waitOverride(id, unknown, 17000);
-    if (_limit(unknownApplied, id, unknown)['effective'] != null) {
-      throw StateError('unknown context enabled compaction');
+    final unknownAutomatic = Map<String, dynamic>.from(
+      _limit(baseline, id, unknown),
+    );
+    if (unknownAutomatic['override'] != null) {
+      throw StateError(
+        'unknown-capacity fixture did not start at its automatic value',
+      );
     }
+    await recorder.setCompactInput(id, unknown, '17000');
+    final unknownApplied = await recorder.waitThreshold(id, unknown, {
+      ...unknownAutomatic,
+      'override': 17000,
+    });
     await recorder.capture('unknown-capacity-stays-off', unknownApplied);
     await recorder.tapCompactReset(id, unknown);
-    await recorder.waitOverride(id, unknown, null);
+    await recorder.waitThreshold(id, unknown, unknownAutomatic);
 
-    // Explicit Save remains only for other account fields, with no second
-    // threshold entry. Its canonical payload must preserve the thresholds.
-    await driver.scrollBy(find.byValueKey('account-editor'), 3000);
-    await driver.tap(find.byValueKey('account-edit'));
-    await driver.waitFor(find.byValueKey('account-save'));
-    await driver.waitForAbsent(
-      find.byValueKey('account-$id-model-$model-auto-compact-input'),
+    // Billing is an immediate, narrow detail action. A later connection form
+    // save must preserve it rather than replay a stale account card.
+    final noCharge = find.ancestor(
+      of: find.descendant(
+        of: find.byType('AccountBillingControl'),
+        matching: find.text(await recorder.label('noCharge')),
+      ),
+      matching: find.byType('ChoiceChip'),
+      firstMatchOnly: true,
     );
-    await recorder.capture(
-      'editor-without-threshold-entry',
-      await recorder.readSnapshot(),
-    );
-    final noCharge = find.byValueKey('account-no-charge');
-    await driver.scrollUntilVisible(
-      find.byValueKey('account-editor-scroll'),
-      noCharge,
-      dyScroll: -180,
-    );
+    await recorder.revealDetails(id, noCharge);
     await driver.tap(noCharge);
     await recorder.capture(
       'no-charge-canonical',
       await recorder.waitBilling(id, 'noCharge', 'noCharge'),
     );
+    await driver.scrollBy(await recorder.detailsScroll(id), 10000);
+    await driver.tap(find.byValueKey('account-edit'));
+    await driver.waitFor(
+      find.byValueKey('account-save'),
+      timeout: FlutterDriverSession.tapDeadline,
+    );
+    await driver.waitForAbsent(find.byType('AccountCompactView'));
+    final editorView = (await recorder
+        .readSnapshot())['driverDiagnostics']['accountsPresentation']['mountedViews']['nativeEditor'];
+    if (editorView == null ||
+        (editorView['compactModelIds'] as List).isNotEmpty) {
+      throw StateError('connection editor includes a second threshold entry');
+    }
+    await recorder.capture(
+      'editor-without-threshold-entry',
+      await recorder.readSnapshot(),
+    );
+    const editedName = 'Account connection edit journey';
+    await recorder.setEditorName(id, editedName);
     await driver.tap(find.byValueKey('account-save'));
     await driver.waitForAbsent(find.byValueKey('account-save'));
-    final afterAccountSave = await recorder.waitOverride(id, model, 21000);
+    await recorder.waitAccountName(id, editedName);
+    final afterAccountSave = await recorder.waitThreshold(
+      id,
+      model,
+      latestExpected,
+    );
     if (_account(afterAccountSave, id)['billingKind'] != 'noCharge') {
       throw StateError(
         'ordinary connection save replayed stale billing intent',
@@ -155,22 +217,38 @@ Future<void> main(List<String> args) async {
       'account-save-preserved-overrides',
       afterAccountSave,
     );
-    await recorder.openDetails(id);
-    await driver.tap(find.byValueKey('account-edit'));
-    await driver.scrollUntilVisible(
-      find.byValueKey('account-editor-scroll'),
-      noCharge,
-      dyScroll: -180,
+    await driver.waitFor(find.byValueKey('account-edit'));
+    final resetBilling = find.descendant(
+      of: find.byType('AccountBillingControl'),
+      matching: find.text(await recorder.label('restore')),
     );
-    await driver.tap(noCharge);
+    await recorder.revealDetails(id, resetBilling);
+    await driver.tap(resetBilling);
     await recorder.capture(
       'no-charge-off-restores-auto',
       await recorder.waitBilling(id, '${fixture['billingKind']}', null),
     );
-    await driver.tap(find.byValueKey('account-cancel'));
-    await recorder.openDetails(id);
     await recorder.tapCompactReset(id, model);
-    await recorder.waitOverride(id, model, null);
+    await recorder.waitThreshold(id, model, automatic);
+    // Restore the isolated fixture's name so later journeys see the same
+    // account identity/label; this is a new UI intent, not replaying Save.
+    await driver.scrollBy(await recorder.detailsScroll(id), 10000);
+    await driver.tap(find.byValueKey('account-edit'));
+    await driver.waitFor(
+      find.byValueKey('account-save'),
+      timeout: FlutterDriverSession.tapDeadline,
+    );
+    await recorder.setEditorName(id, originalName);
+    await driver.tap(find.byValueKey('account-save'));
+    await driver.waitForAbsent(find.byValueKey('account-save'));
+    await recorder.waitAccountName(id, originalName);
+    await recorder.waitBilling(id, '${fixture['billingKind']}', null);
+    final restored = await recorder.waitThreshold(id, model, automatic);
+    if (_limit(restored, id, model)['override'] != null) {
+      throw StateError(
+        'restoring the connection form replayed a cleared threshold',
+      );
+    }
     await File('${output.path}/account-journey-summary.json').writeAsString(
       '${const JsonEncoder.withIndent('  ').convert({'fixtureAccountId': id, 'model': model, 'unknownModel': unknown, 'inlineAutoSave': true, 'backendPolicy': true, 'restoreDefault': true, 'invalidNotPersisted': true, 'aboveSafeClamped': true, 'latestIntent': true, 'siblingsUnchanged': true, 'secondEditorEntryAbsent': true, 'noChargeCanonical': true, 'connectionEditPreservesBilling': true, 'noChargeOffClearsOverride': true, 'humanVerdict': 'pending'})}\n',
     );
@@ -199,11 +277,17 @@ class _Recorder {
         .writeAsString(await driver.renderTree());
   }
 
-  Future<Map<String, dynamic>> waitOverride(
+  Future<Map<String, dynamic>> waitThreshold(
     String id,
     String model,
-    int? value,
-  ) => waitLimit(id, model, (limit) => limit['override'] == value);
+    Map<String, dynamic> expected,
+  ) => waitLimit(
+    id,
+    model,
+    (limit) =>
+        expected.entries.every((entry) => limit[entry.key] == entry.value),
+    expected: expected,
+  );
 
   Future<Map<String, dynamic>> waitBilling(
     String id,
@@ -225,29 +309,199 @@ class _Recorder {
     );
   }
 
+  Future<void> waitAccountName(String id, String name) async {
+    final deadline = DateTime.now().add(FlutterDriverSession.tapDeadline);
+    while (DateTime.now().isBefore(deadline)) {
+      final snapshot = await readSnapshot().timeout(
+        deadline.difference(DateTime.now()),
+      );
+      final domains = snapshot['settings']['accountDomains'] as Map;
+      final matches = (domains['accounts'] as List)
+          .cast<Map>()
+          .where(
+            (account) => account['kind'] == 'native' && account['id'] == id,
+          )
+          .toList();
+      if (domains['summaries']['loaded'] == true &&
+          matches.length == 1 &&
+          matches.single['name'] == name) {
+        return;
+      }
+      final remaining = deadline.difference(DateTime.now()).inMilliseconds;
+      if (remaining <= 0) break;
+      await Future<void>.delayed(
+        Duration(milliseconds: remaining.clamp(1, 100)),
+      );
+    }
+    throw StateError(
+      'canonical Native account name did not settle within 30 seconds: $id',
+    );
+  }
+
   Future<Map<String, dynamic>> waitLimit(
     String id,
     String model,
-    bool Function(Map<String, dynamic>) predicate,
-  ) async {
+    bool Function(Map<String, dynamic>) predicate, {
+    required Map<String, dynamic> expected,
+  }) async {
     final deadline = DateTime.now().add(const Duration(seconds: 30));
+    Map<String, dynamic>? last;
     while (DateTime.now().isBefore(deadline)) {
       final snapshot = await readSnapshot();
-      if (predicate(_limit(snapshot, id, model))) return snapshot;
+      last = snapshot;
+      if (_thresholdResourcesReady(snapshot, id) &&
+          predicate(_limit(snapshot, id, model))) {
+        return snapshot;
+      }
       await Future<void>.delayed(const Duration(milliseconds: 100));
     }
+    await recordThresholdFailure(id, model, expected, last);
     throw StateError('canonical threshold did not settle: $id/$model');
   }
 
+  Future<Map<String, dynamic>> observeInvalidUnchanged(
+    String id,
+    String model,
+    Map<String, dynamic> expected,
+    int settingsRevision,
+  ) async {
+    // Preserve the existing 1100ms negative window beyond the 650ms debounce,
+    // but inspect throughout it rather than sleeping past a possible write.
+    final deadline = DateTime.now().add(const Duration(milliseconds: 1100));
+    while (true) {
+      final snapshot = await readSnapshot();
+      final limit = _limit(snapshot, id, model);
+      if (!_thresholdResourcesReady(snapshot, id) ||
+          !expected.entries.every((entry) => limit[entry.key] == entry.value) ||
+          snapshot['settings']['revision'] != settingsRevision) {
+        await recordThresholdFailure(id, model, {
+          ...expected,
+          'settingsRevision': settingsRevision,
+          'condition': 'unchanged throughout the invalid-input debounce window',
+        }, snapshot);
+        throw StateError('invalid input changed canonical settings');
+      }
+      final remaining = deadline.difference(DateTime.now()).inMilliseconds;
+      if (remaining <= 0) return snapshot;
+      await Future<void>.delayed(
+        Duration(milliseconds: remaining.clamp(1, 100)),
+      );
+    }
+  }
+
+  Future<void> recordThresholdFailure(
+    String id,
+    String model,
+    Map<String, dynamic> expected,
+    Map<String, dynamic>? snapshot,
+  ) async {
+    try {
+      final domains = snapshot?['settings']?['accountDomains'] as Map?;
+      final account = snapshot == null
+          ? null
+          : _accounts(snapshot)
+                .where((account) => account['id'] == id)
+                .firstOrNull;
+      await File(
+        '${output.path}/threshold-failure-${_captureIndex++}.json',
+      ).writeAsString(
+        const JsonEncoder.withIndent('  ').convert({
+          'target': {'kind': 'native', 'id': id, 'modelId': model},
+          'expected': expected,
+          'settingsRevision': snapshot?['settings']?['revision'],
+          'actualLimits': account?['autoCompactLimits'],
+          'resources': {
+            for (final domain in const ['catalogs', 'configurations'])
+              domain: [
+                for (final resource in domains?[domain] as List? ?? const [])
+                  if ((resource as Map)['accountId'] == id) resource,
+              ],
+          },
+        }),
+      );
+    } catch (error) {
+      stderr.writeln('threshold failure capture failed: ${error.runtimeType}');
+    }
+  }
+
   Future<void> assertAccountListRedacted(String id, String model) async {
-    verifyAccountListRedacted(
-      await readSnapshot(),
-      fixtureModelId: model,
-      accountId: id,
+    final list = find.descendant(
+      of: find.byValueKey('settings-page'),
+      matching: find.byType('AccountsListView'),
     );
-    final tree = await driver.renderTree();
-    if (tree.contains(model)) {
-      throw StateError('account list rendered model modelId');
+    final add = find.descendant(
+      of: list,
+      matching: find.byValueKey('account-add'),
+    );
+    final snapshot = await readSnapshot();
+    Map<String, dynamic>? widget;
+    _RenderedAccountList? rendered;
+    try {
+      // Official finders skip offstage routes. Tappability additionally proves
+      // this is the current page, not a retained background list.
+      await driver.sendCommand(
+        WaitForTappable(add, timeout: const Duration(seconds: 15)),
+      );
+      await driver.waitFor(
+        find.descendant(
+          of: list,
+          matching: find.byValueKey(AccountViewKeyValues.row('native', id)),
+        ),
+        timeout: const Duration(seconds: 15),
+      );
+      widget = await driver.sendCommand(
+        GetDiagnosticsTree(
+          list,
+          DiagnosticsType.widget,
+          includeProperties: false,
+          timeout: const Duration(seconds: 15),
+        ),
+      );
+      if (widget['widgetRuntimeType'] != 'AccountsListView') {
+        throw StateError('the current page has no production AccountsListView');
+      }
+      final tree = await driver.sendCommand(
+        GetDiagnosticsTree(
+          list,
+          DiagnosticsType.renderObject,
+          subtreeDepth: 128,
+          timeout: const Duration(seconds: 15),
+        ),
+      );
+      rendered = _RenderedAccountList.read(tree);
+      verifyAccountListRedacted(snapshot, fixtureModelId: model, accountId: id);
+      final modelIds = {
+        model,
+        for (final account in driverAccountDetailsObservation(snapshot))
+          for (final descriptor in account['models'] as List? ?? const [])
+            if (descriptor is Map && descriptor['modelId'] is String)
+              descriptor['modelId'] as String,
+      };
+      rendered.verify(modelIds);
+    } catch (error, stack) {
+      // Capture only this synthetic list scenario: never dump the entire
+      // window, background chat, arbitrary diagnostic properties or text here.
+      try {
+        await File('${output.path}/account-list-redaction-failure.json')
+            .writeAsString(
+              const JsonEncoder.withIndent('  ').convert({
+                'scope': 'settings-page / AccountsListView',
+                'widgetRuntimeType': widget?['widgetRuntimeType'],
+                'renderNodeCount': rendered?.nodeCount,
+                'renderedTextCount': rendered?.texts.length,
+                'canonicalList': driverAccountListObservation(snapshot),
+                'fixtureAccountId': id,
+                'fixtureModelId': model,
+              }),
+            );
+        await File('${output.path}/account-list-redaction-failure.png')
+            .writeAsBytes(await driver.screenshot());
+      } catch (captureError) {
+        stderr.writeln(
+          'account list failure capture failed: ${captureError.runtimeType}',
+        );
+      }
+      Error.throwWithStackTrace(error, stack);
     }
   }
 
@@ -263,37 +517,406 @@ class _Recorder {
   }
 
   Future<void> openDetails(String id) async {
-    await driver.tap(find.byValueKey('account-row-$id'));
+    final list = find.descendant(
+      of: find.byValueKey('settings-page'),
+      matching: find.byType('AccountsListView'),
+    );
+    final row = find.descendant(
+      of: list,
+      matching: find.byValueKey(AccountViewKeyValues.row('native', id)),
+    );
+    await driver.scrollUntilVisible(
+      find.descendant(of: list, matching: find.byType('ListView')),
+      row,
+      dyScroll: -180,
+      timeout: FlutterDriverSession.tapDeadline,
+    );
+    await driver.tap(row);
     await driver.waitFor(find.byValueKey('account-edit'));
   }
 
-  Future<void> _scrollTo(SerializableFinder finder) async {
-    // The isolated gui fixture has three model cards. Re-anchor at the top so
-    // targets above a lazy ListView's cache are built before scrolling down.
-    await driver.scrollBy(find.byValueKey('account-editor'), 3000);
-    await driver.scrollUntilVisible(
-      find.byValueKey('account-editor'),
-      finder,
-      dyScroll: -220,
-      timeout: const Duration(seconds: 45),
+  Future<Map<String, dynamic>> usage() async =>
+      (jsonDecode(await driver.requestData('account-usage-state')) as Map)
+          .cast<String, dynamic>();
+
+  Future<String> label(String name) async =>
+      ((await usage())['labels'] as Map)[name] as String;
+
+  Future<String> waitEditorId(String id) async {
+    final deadline = DateTime.now().add(FlutterDriverSession.tapDeadline);
+    while (DateTime.now().isBefore(deadline)) {
+      final snapshot = await readSnapshot().timeout(
+        deadline.difference(DateTime.now()),
+      );
+      final presentation =
+          snapshot['driverDiagnostics']['accountsPresentation'] as Map;
+      final editor = presentation['editor'] as Map?;
+      final mounted = presentation['mountedViews']?['nativeEditor'] as Map?;
+      if (editor != null) {
+        final target = editor['target'] as Map?;
+        if (target?['kind'] != 'native' ||
+            target?['id'] != id ||
+            editor['creating'] != false) {
+          throw StateError(
+            'the observed editor is not the requested existing Native account: $id',
+          );
+        }
+        final editorId = editor['editorId'];
+        if (editorId is String &&
+            editorId.isNotEmpty &&
+            editor['stale'] == false &&
+            editor['saving'] == false &&
+            mounted?['editorId'] == editorId) {
+          return editorId;
+        }
+      }
+      final remaining = deadline.difference(DateTime.now()).inMilliseconds;
+      if (remaining <= 0) break;
+      await Future<void>.delayed(
+        Duration(milliseconds: remaining.clamp(1, 100)),
+      );
+    }
+    throw StateError(
+      'the existing Native editor did not become ready within 30 seconds: $id',
     );
   }
 
-  Future<void> setCompactInput(String id, String modelId, String value) async {
-    final finder = find.byValueKey(
-      'account-$id-model-$modelId-auto-compact-input',
+  SerializableFinder get _detailsView => find.descendant(
+    of: find.byValueKey('settings-page'),
+    matching: find.byType('AccountDetailsView'),
+  );
+
+  Future<SerializableFinder> detailsScroll(String id) async {
+    final presentation =
+        (await readSnapshot())['driverDiagnostics']['accountsPresentation']
+            as Map;
+    final selected = presentation['selected'] as Map?;
+    if (selected?['kind'] != 'native' ||
+        selected?['id'] != id ||
+        presentation['editor'] != null) {
+      throw StateError(
+        'the current details view is not the requested Native account',
+      );
+    }
+    // PageStorageKey is intentionally not ValueKey. Keep production scroll
+    // restoration and use the unique ListView inside the current details view.
+    return find.descendant(of: _detailsView, matching: find.byType('ListView'));
+  }
+
+  Future<void> revealDetails(String id, SerializableFinder finder) async {
+    final scroll = await detailsScroll(id);
+    await driver.scrollBy(scroll, 10000);
+    await driver.scrollUntilVisible(
+      scroll,
+      finder,
+      dyScroll: -180,
+      timeout: FlutterDriverSession.tapDeadline,
     );
-    await _scrollTo(finder);
-    await driver.tap(finder);
+  }
+
+  Future<void> setEditorName(String id, String value) async {
+    final deadline = DateTime.now().add(FlutterDriverSession.tapDeadline);
+    Duration remaining() {
+      final budget = deadline.difference(DateTime.now());
+      if (budget <= Duration.zero) {
+        throw StateError(
+          'Native name draft did not become save-ready within 30 seconds: $id',
+        );
+      }
+      return budget;
+    }
+
+    Duration layoutBudget() {
+      final budget = remaining();
+      return budget < FlutterDriverSession.geometryDeadline
+          ? budget
+          : FlutterDriverSession.geometryDeadline;
+    }
+
+    final editorId = await waitEditorId(id).timeout(remaining());
+    final view = find.descendant(
+      of: find.byValueKey('settings-page'),
+      matching: find.byType('NativeAccountEditorView'),
+    );
+    Future<Map?> readCurrentEditor() async {
+      final snapshot = await readSnapshot().timeout(remaining());
+      final presentation =
+          snapshot['driverDiagnostics']['accountsPresentation'] as Map;
+      final editor = presentation['editor'] as Map?;
+      final mounted = presentation['mountedViews']?['nativeEditor'] as Map?;
+      if (editor != null &&
+          (editor['editorId'] != editorId ||
+              editor['target']?['kind'] != 'native' ||
+              editor['target']?['id'] != id ||
+              editor['creating'] != false)) {
+        throw StateError(
+          'Native name editor identity changed before Save: $id',
+        );
+      }
+      if (mounted != null && mounted['editorId'] != editorId) {
+        throw StateError(
+          'a different Native name editor was mounted before Save: $id',
+        );
+      }
+      return mounted == null ? null : editor;
+    }
+
+    final baseline = await readCurrentEditor();
+    final baselineRevision = baseline?['draftRevision'];
+    if (baselineRevision is! int ||
+        baseline?['saving'] != false ||
+        baseline?['stale'] != false) {
+      throw StateError('Native name editor has no current input baseline: $id');
+    }
+    bool ready(Map? editor) {
+      final revision = editor?['draftRevision'];
+      return revision is int &&
+          revision > baselineRevision &&
+          editor?['dirty'] == true &&
+          editor?['canSave'] == true &&
+          editor?['saving'] == false &&
+          editor?['stale'] == false;
+    }
+
+    final field = find.descendant(
+      of: find.descendant(
+        of: view,
+        matching: find.byValueKey(
+          AccountViewKeyValues.editorField(editorId, 'name'),
+        ),
+      ),
+      matching: find.byType('EditableText'),
+    );
+    final save = find.descendant(
+      of: view,
+      matching: find.byValueKey('account-save'),
+    );
+    await driver.tap(field, timeout: remaining());
+    await driver.enterText(value).timeout(remaining());
+    while (true) {
+      final editor = await readCurrentEditor();
+      if (ready(editor) &&
+          await driver.getText(field).timeout(remaining()) == value) {
+        // Hit-testability alone cannot prove a button is enabled. Require the
+        // current owner to authorize Save, then let its footer rebuild before
+        // checking the real control. No Save is issued by this preparation.
+        await driver
+            .waitForNoPendingFrame(timeout: layoutBudget())
+            .timeout(remaining());
+        await driver.sendCommand(
+          WaitForTappable(save, timeout: layoutBudget()),
+        );
+        if (ready(await readCurrentEditor()) &&
+            await driver.getText(field).timeout(remaining()) == value) {
+          return;
+        }
+      }
+      await Future<void>.delayed(
+        Duration(milliseconds: remaining().inMilliseconds.clamp(1, 100)),
+      );
+    }
+  }
+
+  Future<SerializableFinder> revealCompact(String id, String model) async {
+    final item = find.descendant(
+      of: _detailsView,
+      matching: find.byValueKey(
+        AccountViewKeyValues.modelItem('native', id, model),
+      ),
+    );
+    final tile = find.descendant(
+      of: item,
+      matching: find.byType('ExpansionTile'),
+    );
+    final header = find.descendant(of: tile, matching: find.byType('ListTile'));
+    final scroll = await detailsScroll(id);
+    await driver.scrollBy(scroll, 10000);
+    await driver.scrollUntilVisible(
+      scroll,
+      header,
+      dyScroll: -220,
+      timeout: const Duration(seconds: 45),
+    );
+    final input = _compactInputFinder(tile);
+    // The maintained body always has an Offstage, even when collapsed. Read
+    // its actual flag; a failed Driver command is never evidence of absence.
+    final body = await driver.sendCommand(
+      GetDiagnosticsTree(
+        find.descendant(of: tile, matching: find.byType('Offstage')),
+        DiagnosticsType.widget,
+        timeout: const Duration(seconds: 15),
+      ),
+    );
+    if (!_compactBodyExpanded(body)) {
+      await driver.tap(header);
+    }
+    // Expansion changes the body's heightFactor. EnsureVisible must measure
+    // settled geometry, not an intermediate frame of that animation. This
+    // bounded condition waits for scheduled frames, not every future cursor
+    // blink or all global transient callbacks.
+    await driver.waitForNoPendingFrame(
+      timeout: FlutterDriverSession.geometryDeadline,
+    );
+    await driver.scrollUntilVisible(
+      scroll,
+      input,
+      dyScroll: -180,
+      timeout: FlutterDriverSession.tapDeadline,
+    );
+    await driver.sendCommand(
+      WaitForTappable(input, timeout: FlutterDriverSession.geometryDeadline),
+    );
+    return tile;
+  }
+
+  Future<void> setCompactInput(String id, String modelId, String value) async {
+    final tile = await revealCompact(id, modelId);
+    final input = _compactInputFinder(tile);
+    await driver.tap(input);
     await driver.enterText(value);
   }
 
   Future<void> tapCompactReset(String id, String modelId) async {
-    final finder = find.byValueKey(
-      'account-$id-model-$modelId-auto-compact-reset',
+    final tile = await revealCompact(id, modelId);
+    final reset = find.descendant(
+      of: _compactViewFinder(tile),
+      matching: find.text(await label('restore')),
     );
-    await _scrollTo(finder);
-    await driver.tap(finder);
+    await driver.scrollUntilVisible(
+      await detailsScroll(id),
+      reset,
+      dyScroll: -180,
+      timeout: FlutterDriverSession.tapDeadline,
+    );
+    await driver.tap(reset);
+  }
+}
+
+bool _thresholdResourcesReady(Map<String, dynamic> snapshot, String id) {
+  final domains = snapshot['settings']['accountDomains'] as Map;
+  if (domains['schemaVersion'] != 2 || domains['summaries']['loaded'] != true) {
+    return false;
+  }
+  if (!(domains['accounts'] as List).cast<Map>().any(
+    (account) => account['kind'] == 'native' && account['id'] == id,
+  )) {
+    return false;
+  }
+  for (final domain in const ['catalogs', 'configurations']) {
+    final resources = (domains[domain] as List)
+        .cast<Map>()
+        .where((resource) => resource['accountId'] == id)
+        .toList();
+    if (resources.length != 1 ||
+        resources.single['loaded'] != true ||
+        resources.single['stale'] != false ||
+        resources.single['hasValue'] != true) {
+      return false;
+    }
+  }
+  return true;
+}
+
+SerializableFinder _compactViewFinder(SerializableFinder tile) =>
+    find.descendant(of: tile, matching: find.byType('AccountCompactView'));
+
+SerializableFinder _compactInputFinder(SerializableFinder tile) {
+  final rawField = find.descendant(
+    of: _compactViewFinder(tile),
+    matching: find.byType('AccountRawTextField'),
+  );
+  final textField = find.descendant(
+    of: rawField,
+    matching: find.byType('TextField'),
+  );
+  // SelectableText elsewhere in the model tile also owns EditableText. Only
+  // the threshold's production TextField is an editable input target here.
+  return find.descendant(of: textField, matching: find.byType('EditableText'));
+}
+
+bool _compactBodyExpanded(Map<String, dynamic> diagnostics) {
+  if (diagnostics['truncated'] == true ||
+      diagnostics['widgetRuntimeType'] != 'Offstage' ||
+      diagnostics['properties'] is! List) {
+    throw StateError('compact body has no Offstage diagnostics');
+  }
+  final flags = (diagnostics['properties'] as List)
+      .whereType<Map>()
+      .where((property) => property['name'] == 'offstage')
+      .toList();
+  if (flags.length != 1 || flags.single['value'] is! bool) {
+    throw StateError('compact body has no unique observed offstage flag');
+  }
+  return !(flags.single['value'] as bool);
+}
+
+/// Reads only descendants of the list's actual RenderObject. Creator chains,
+/// widget keys and layout properties are not visible text and are not searched.
+final class _RenderedAccountList {
+  final List<String> texts = [];
+  int nodeCount = 0;
+
+  void verify(Set<String> modelIds) {
+    if (texts.isEmpty) {
+      throw StateError('account list render diagnostics contain no text');
+    }
+    for (final text in texts) {
+      if (modelIds.any((id) => id.isNotEmpty && text.contains(id))) {
+        throw StateError('account list rendered a model ID');
+      }
+      if (RegExp(r'\+\s*\d+').hasMatch(text) ||
+          RegExp(
+            r'\b\d+\s+(?:models?|bundled)\b',
+            caseSensitive: false,
+          ).hasMatch(text) ||
+          RegExp(r'\d+\s*(?:个模型|個模型|个内置|個內建)').hasMatch(text)) {
+        throw StateError('account list rendered a model count');
+      }
+    }
+  }
+
+  static _RenderedAccountList read(Map<String, dynamic> root) {
+    final result = _RenderedAccountList();
+    void visit(Map node, [List<String>? paragraph]) {
+      result.nodeCount++;
+      final description = node['description'];
+      final startsParagraph =
+          description is String &&
+          (description.startsWith('RenderParagraph') ||
+              description.startsWith('RenderEditable'));
+      final textParts = startsParagraph ? <String>[] : paragraph;
+      final children = node['children'];
+      if (node['truncated'] == true ||
+          (node['hasChildren'] == true &&
+              (children is! List || children.isEmpty))) {
+        throw StateError('account list render diagnostics were truncated');
+      }
+      // RenderParagraph/RenderEditable describe their InlineSpan children.
+      // These text properties are the rendered data, unlike a creator string
+      // that may mention widgets above this list or offstage sibling routes.
+      for (final property in node['properties'] as List? ?? const []) {
+        if (property is Map &&
+            property['name'] == 'text' &&
+            property['value'] is String) {
+          textParts?.add(property['value'] as String);
+        }
+      }
+      if (children is List) {
+        for (final child in children) {
+          if (child is! Map) {
+            throw StateError('invalid account list render diagnostic child');
+          }
+          visit(child, textParts);
+        }
+      }
+      // InlineSpan boundaries do not separate visible words or model IDs.
+      if (startsParagraph && textParts!.isNotEmpty) {
+        result.texts.add(textParts.join());
+      }
+    }
+
+    visit(root);
+    return result;
   }
 }
 

@@ -1,4 +1,10 @@
 import 'package:anywork_client/studio_client.dart';
+import 'package:anywork_client/accounts.dart';
+import 'package:anywork_client/accounts_ports.dart';
+import 'package:anywork_client/model_directory.dart';
+
+import 'support/accounts_test_runtime.dart';
+
 import 'package:test/test.dart';
 
 const _nativeTemplate = AccountTemplateView(
@@ -39,14 +45,47 @@ const _acpTemplate = AcpAccountTemplateView(
 
 const _acpCatalog = AcpAccountCatalogView(templates: [_acpTemplate]);
 
-AccountSettingsView _nativeAccount(String id) =>
-    _nativeCatalog.template('openai-compatible')!.createAccount(id, const [
-      AccountModelView(
-        modelId: 'gpt',
-        displayName: 'GPT',
-        reasoningEfforts: ['low', 'high'],
-      ),
-    ]);
+AccountSettingsView _nativeAccount(String id) => AccountSettingsView(
+  id: id,
+  name: 'Native',
+  templateId: 'openai-compatible',
+  protocol: 'open_ai_compatible',
+  baseUrl: 'http://localhost:11434/v1',
+  defaultModelId: 'gpt',
+  models: _nativeCatalog.modelCatalogs['openai-compatible']!,
+  status: 'ready',
+  usageLabel: '',
+);
+
+final class _DirectoryTransport extends AccountsTestTransport {
+  @override
+  Future<AccountCatalogView> loadAccountCatalog() async => _nativeCatalog;
+  @override
+  Future<AcpAccountCatalogView> loadAcpAccountCatalog() async => _acpCatalog;
+}
+
+AccountsTestRuntime _runtime({
+  List<AccountSettingsView> native = const [],
+  List<AcpAccountSettingsView> acp = const [],
+}) {
+  final runtime = AccountsTestRuntime(_DirectoryTransport());
+  runtime.seed(
+    SettingsStateSnapshot(revision: 1, accounts: native, acpAccounts: acp),
+  );
+  addTearDown(runtime.close);
+  return runtime;
+}
+
+void _apply(AccountsTestRuntime runtime, AcpAuthSnapshotView snapshot) =>
+    runtime.domains.acceptFrame(
+      AcpAuthFrame(testStamp('acp-auth', snapshot.revision), snapshot),
+    );
+AcpAuthStateView _stateOf(
+  AccountsTestRuntime runtime,
+  String id,
+  int connection,
+) => (runtime.domains.acp.auth.value.value ?? const AcpAuthSnapshotView.empty())
+    .stateOf(id, connectionRevision: connection);
 
 AcpAccountSettingsView _acpAccount(
   String id, {
@@ -66,15 +105,18 @@ AcpAuthSnapshotView _auth({
     AcpAuthSnapshotView(revision: revision, updatedAt: 100, accounts: accounts);
 
 void main() {
-  test('templates and entries aggregate both branches without guessing', () {
-    final directory = AccountDirectoryView.from(
-      nativeAccounts: [_nativeAccount('native-1')],
-      acpAccounts: [_acpAccount('acp-1')],
-      nativeCatalog: _nativeCatalog,
-      acpCatalog: _acpCatalog,
-      auth: _auth(
-        accounts: [
-          const AcpAuthAccountView(
+  test('summaries retain both typed branches while templates and auth remain separately owned', () async {
+    final runtime = _runtime(
+      native: [_nativeAccount('native-1')],
+      acp: [_acpAccount('acp-1')],
+    );
+    await runtime.domains.accounts.loadTemplates();
+    await runtime.domains.acp.loadTemplates();
+    _apply(
+      runtime,
+      _auth(
+        accounts: const [
+          AcpAuthAccountView(
             accountId: 'acp-1',
             connectionRevision: 3,
             state: AcpVerifiedState(
@@ -85,79 +127,125 @@ void main() {
         ],
       ),
     );
-
-    expect(directory.entries.map((entry) => entry.id), ['native-1', 'acp-1']);
-    expect(directory.templates.map((choice) => choice.displayName), [
-      'OpenAI API 兼容',
-      'Antigravity',
+    final accounts = runtime.domains.accounts.state.value;
+    expect(accounts.accounts.map((entry) => entry.identity.accountId), [
+      'native-1',
+      'acp-1',
     ]);
-    expect(directory.templates.first.isAcp, isFalse);
-    expect(directory.templates.last.isAcp, isTrue);
-    // ACP 模板的协议身份来自 backend catalog，不从显示名推断。
-    expect(directory.templates.last.acpProvider, AcpProviderView.antigravity);
-    // 固定受管版本来自后端模板，不是客户端可编辑/可选择的字段。
-    expect(directory.acpEntries.single.template?.supportedVersion, '1.4.1');
-    expect(directory.acpEntries.single.template, _acpTemplate);
-    expect(directory.acpEntries.single.auth, isA<AcpVerifiedState>());
-    expect(directory.nativeEntries.single.account.id, 'native-1');
-    expect(directory.authRevision, 1);
+    expect(accounts.accounts.first.identity, isA<NativeAccountIdentity>());
+    expect(accounts.accounts.last.identity, isA<AcpAccountIdentity>());
+    expect(accounts.templates.templates.single.displayName, 'OpenAI API 兼容');
+    final template = runtime.domains.acp.templates.value.template(
+      AcpProviderView.antigravity,
+    )!;
+    expect(template.displayName, 'Antigravity');
+    expect(template.provider, AcpProviderView.antigravity);
+    expect(template.supportedVersion, '1.4.1');
+    expect(template, _acpTemplate);
+    expect(_stateOf(runtime, 'acp-1', 3), isA<AcpVerifiedState>());
+    expect(runtime.domains.acp.auth.value.stamp!.revision, 1);
+    expect(
+      (runtime.domains.accounts
+                  .details(const NativeAccountIdentity('native-1'))
+                  .value
+                  .value!
+              as NativeAccountDetails)
+          .identity
+          .accountId,
+      'native-1',
+    );
+  });
+
+  test('an account with no auth observation is unchecked, never verified', () {
+    final runtime = _runtime(acp: [_acpAccount('acp-1')]);
+    expect(runtime.domains.acp.auth.value.loaded, isFalse);
+    expect(_stateOf(runtime, 'acp-1', 3), isA<AcpUncheckedState>());
+    _apply(runtime, _auth());
+    expect(runtime.domains.acp.auth.value.loaded, isTrue);
+    expect(_stateOf(runtime, 'acp-1', 3), isA<AcpUncheckedState>());
+    expect(
+      const AcpAuthSnapshotView.empty().stateOf('acp-1', connectionRevision: 3),
+      isA<AcpUncheckedState>(),
+    );
+  });
+
+  test('same spelling is not a cross-kind identity collision or a native route candidate', () {
+    final runtime = _runtime(
+      native: [_nativeAccount('antigravity')],
+      acp: [_acpAccount('antigravity')],
+    );
+    final accounts = runtime.domains.accounts.state.value;
+    expect(accounts.accounts.map((value) => value.identity).toSet(), {
+      const NativeAccountIdentity('antigravity'),
+      const AcpAccountIdentity('antigravity'),
+    });
+    expect(
+      accounts.account(const NativeAccountIdentity('antigravity'))!.name,
+      'Native',
+    );
+    expect(
+      accounts.account(const AcpAccountIdentity('antigravity'))!.name,
+      'Antigravity',
+    );
+    expect(
+      runtime.domains.accounts
+          .details(const NativeAccountIdentity('antigravity'))
+          .value
+          .value,
+      isA<NativeAccountDetails>(),
+    );
+    expect(
+      runtime.domains.accounts
+          .details(const AcpAccountIdentity('antigravity'))
+          .value
+          .value,
+      isA<AcpAccountDetails>(),
+    );
+    expect(
+      modelSelectionAccounts(
+        accounts,
+        runtime.domains.models.state.value,
+      ).map((value) => value.id),
+      ['antigravity'],
+    );
   });
 
   test(
-    'an account without an observation entry is unchecked, never verified',
+    'an auth observation from an older connection identity is not reused',
     () {
-      final directory = AccountDirectoryView.from(
-        acpAccounts: [_acpAccount('acp-1')],
-        acpCatalog: _acpCatalog,
-        auth: _auth(),
+      final runtime = _runtime(
+        acp: [_acpAccount('acp-1', connectionRevision: 3)],
       );
-
-      expect(directory.acpEntries.single.auth, isA<AcpUncheckedState>());
+      final auth = _auth(
+        accounts: const [
+          AcpAuthAccountView(
+            accountId: 'acp-1',
+            connectionRevision: 2,
+            state: AcpVerifiedState(
+              checkedAt: 90,
+              server: AcpServerInfoView(name: 'antigravity', version: '1.2.3'),
+            ),
+          ),
+        ],
+      );
+      _apply(runtime, auth);
+      expect(_stateOf(runtime, 'acp-1', 3), isA<AcpUncheckedState>());
       expect(
-        const AcpAuthSnapshotView.empty().stateOf(
+        runtime.domains.acp.auth.value.value!.account(
+          'acp-1',
+          connectionRevision: 2,
+        ),
+        isNotNull,
+      );
+      expect(
+        runtime.domains.acp.auth.value.value!.account(
           'acp-1',
           connectionRevision: 3,
         ),
-        isA<AcpUncheckedState>(),
+        isNull,
       );
     },
   );
-
-  test('suggested ids stay stable and skip both account kinds', () {
-    final directory = AccountDirectoryView.from(
-      nativeAccounts: [_nativeAccount('antigravity')],
-      acpAccounts: [_acpAccount('antigravity-2')],
-    );
-
-    expect(directory.hasId('antigravity'), isTrue);
-    expect(directory.suggestId('antigravity'), 'antigravity-3');
-    expect(directory.suggestId('fresh'), 'fresh');
-  });
-
-  test('an observation from an older connection identity is not reused', () {
-    // 旧 connectionRevision（甚至删除后重建的同 ID 账号）的观察不得套用到新配置。
-    final auth = _auth(
-      accounts: [
-        const AcpAuthAccountView(
-          accountId: 'acp-1',
-          connectionRevision: 2,
-          state: AcpVerifiedState(
-            checkedAt: 90,
-            server: AcpServerInfoView(name: 'antigravity', version: '1.2.3'),
-          ),
-        ),
-      ],
-    );
-    final directory = AccountDirectoryView.from(
-      acpAccounts: [_acpAccount('acp-1', connectionRevision: 3)],
-      acpCatalog: _acpCatalog,
-      auth: auth,
-    );
-
-    expect(directory.acpEntries.single.auth, isA<AcpUncheckedState>());
-    expect(auth.account('acp-1', connectionRevision: 2), isNotNull);
-    expect(auth.account('acp-1', connectionRevision: 3), isNull);
-  });
 
   test(
     'closing is a busy nonterminal state that still carries its operation',

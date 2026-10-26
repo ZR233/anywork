@@ -1,6 +1,9 @@
 import 'dart:convert';
 
 import 'package:anywork_client/studio_client.dart';
+import 'package:anywork_client/accounts.dart';
+import 'package:anywork_client/account_usage.dart';
+import 'package:anywork_client/model_directory.dart';
 
 import '../domain/models/agent_workspace_view.dart';
 import '../domain/models/timeline_commands.dart';
@@ -226,13 +229,20 @@ final class StudioDriverFacts {
     this.threadComposer = const ComposerThreadState.idle(),
     this.settingsRevision = 0,
     this.sidebarWidth,
-    this.modelCatalogRevision = 0,
     List<ModeModelRouteView> modeModelRoutes = const [],
     List<RoleSettingsView> roles = const [],
-    List<AccountSettingsView> accounts = const [],
-    List<AcpAccountSettingsView> acpAccounts = const [],
+    List<ModelSelectionAccount> accounts = const [],
+    this.accountSummaries,
+    this.modelDirectory,
+    this.accountUsage,
+    Map<NativeAccountIdentity, StudioFailure> accountUsageQueryFailures =
+        const {},
+    Map<AccountIdentity, AccountResource<AccountDetails>> accountDetails =
+        const {},
     List<String> accountTemplates = const [],
     this.acpAuth = const AcpAuthSnapshotView.empty(),
+    this.acpAuthResource,
+    this.acpInstallResource,
     required this.acpAuthLoaded,
     this.acpInstall,
     List<CommandStatus> commands = const [],
@@ -247,7 +257,8 @@ final class StudioDriverFacts {
        modeModelRoutes = List.unmodifiable(modeModelRoutes),
        roles = List.unmodifiable(roles),
        accounts = List.unmodifiable(accounts),
-       acpAccounts = List.unmodifiable(acpAccounts),
+       accountUsageQueryFailures = Map.unmodifiable(accountUsageQueryFailures),
+       accountDetails = Map.unmodifiable(accountDetails),
        accountTemplates = List.unmodifiable(accountTemplates),
        commands = List.unmodifiable(commands),
        recoveryIssues = List.unmodifiable(recoveryIssues);
@@ -271,15 +282,29 @@ final class StudioDriverFacts {
   final ComposerThreadState threadComposer;
   final int settingsRevision;
   final int? sidebarWidth;
-  final int modelCatalogRevision;
+
   final List<ModeModelRouteView> modeModelRoutes;
   final List<RoleSettingsView> roles;
-  final List<AccountSettingsView> accounts;
+  final List<ModelSelectionAccount> accounts;
+  final AccountsState? accountSummaries;
+  final ModelDirectoryState? modelDirectory;
+  final AccountResource<Map<NativeAccountIdentity, AccountUsageObservation>>?
+  accountUsage;
+
+  /// Client query/transport diagnostics, never a canonical usage phase.
+  final Map<NativeAccountIdentity, StudioFailure> accountUsageQueryFailures;
+  final Map<AccountIdentity, AccountResource<AccountDetails>> accountDetails;
 
   /// ACP 接入配置与认证观察：与 Native 账号并列的独立事实源。
-  final List<AcpAccountSettingsView> acpAccounts;
+  /// Only already observed target details; Driver never opens a detail demand.
+  Iterable<AcpAccountSettingsView> get acpAccounts => [
+    for (final resource in accountDetails.values)
+      if (resource.value case AcpAccountDetails(:final account)) account,
+  ];
   final List<String> accountTemplates;
   final AcpAuthSnapshotView acpAuth;
+  final AccountResource<AcpAuthSnapshotView>? acpAuthResource;
+  final AccountResource<AcpInstallSnapshotView>? acpInstallResource;
 
   /// `acpAuth` 是否来自**已加载**的 canonical 观察。
   ///
@@ -557,6 +582,12 @@ abstract final class StudioDriverState {
     final facts = observed ?? readFacts();
     final workspace = facts.workspace;
     final lastTurn = workspace?.lastTurn;
+    // Static templates are observed independently of account summaries. Only
+    // their own revision distinguishes a loaded directory from empty().
+    final catalog = facts.accountSummaries?.templates;
+    final templates = catalog != null && catalog.revision.isNotEmpty
+        ? catalog
+        : null;
     return jsonEncode({
       'recoveryIssues': [
         for (final issue in facts.recoveryIssues)
@@ -625,18 +656,104 @@ abstract final class StudioDriverState {
       'settings': {
         'revision': facts.settingsRevision,
         'sidebarWidth': facts.sidebarWidth,
-        'modelCatalogRevision': facts.modelCatalogRevision,
+        'accountDomains': {
+          'schemaVersion': 2,
+          'summaries': studioDriverSummariesJson(facts.accountSummaries),
+          'templates': {
+            'loaded': templates != null,
+            'revision': templates?.revision,
+            'usable': templates?.isUsable,
+          },
+          'accounts': [
+            for (final summary
+                in facts.accountSummaries?.accounts ?? const <AccountSummary>[])
+              {
+                'kind': summary.identity is NativeAccountIdentity
+                    ? 'native'
+                    : 'acp',
+                'id': summary.identity.accountId,
+                'name': summary.name,
+                'isDefault': summary.isDefault,
+                'credentialReady': summary.credentialReady,
+                'billingKind': summary.billingKind?.name,
+                'billingKindOverride': summary.billingKindOverride?.name,
+                'usageQueryRevision': summary.usageQueryRevision,
+                'acpConnectionRevision': summary.acpConnectionRevision,
+                'details': studioDriverResourceJson(
+                  facts.accountDetails[summary.identity],
+                ),
+              },
+          ],
+          'catalogs': [
+            for (final entry
+                in facts.modelDirectory?.accounts.entries ??
+                    const <
+                      MapEntry<
+                        NativeAccountIdentity,
+                        AccountResource<AccountModelCatalog>
+                      >
+                    >[])
+              {
+                'accountId': entry.key.accountId,
+                ...studioDriverResourceJson(entry.value),
+              },
+          ],
+          'configurations': [
+            for (final entry
+                in facts.modelDirectory?.configurations.entries ??
+                    const <
+                      MapEntry<
+                        NativeAccountIdentity,
+                        AccountResource<AccountModelConfiguration>
+                      >
+                    >[])
+              {
+                'accountId': entry.key.accountId,
+                ...studioDriverResourceJson(entry.value),
+                'disabledModels': entry.value.value?.disabledModels,
+                'connections': entry.value.value?.connections.map(
+                  (key, value) => MapEntry(key, value.name),
+                ),
+                'autoCompactLimits': entry.value.value?.autoCompactLimits,
+              },
+          ],
+          'usage': {
+            ...studioDriverResourceJson(facts.accountUsage),
+            'queryFailures': [
+              for (final entry in facts.accountUsageQueryFailures.entries)
+                {
+                  'accountId': entry.key.accountId,
+                  'code': entry.value.code.name,
+                  'retryable': entry.value.retryable,
+                  'correlationId': entry.value.correlationId,
+                },
+            ],
+            'accounts': [
+              for (final observation
+                  in facts.accountUsage?.value?.values ??
+                      const <AccountUsageObservation>[])
+                _usageJson(observation),
+            ],
+          },
+        },
         'accounts': [
           for (final account in facts.accounts)
             {
               'id': account.id,
-              'templateId': account.templateId,
-              'protocol': account.protocol,
-              'billingKind': account.billingKind.name,
-              'billingKindOverride': account.billingKindOverride?.name,
-              'defaultModelId': account.defaultModelId,
-              'hasBearerToken': account.hasBearerToken,
-              'status': account.status,
+              'templateId': _nativeDetails(facts, account.id)?.templateId,
+              'protocol': _nativeDetails(facts, account.id)?.protocol,
+              'billingKind': account.billingKind?.name,
+              'billingKindOverride': facts.accountSummaries
+                  ?.account(NativeAccountIdentity(account.id))
+                  ?.billingKindOverride
+                  ?.name,
+              'hasBearerToken': _nativeDetails(
+                facts,
+                account.id,
+              )?.hasBearerToken,
+              'credentialReady': facts.accountSummaries
+                  ?.account(NativeAccountIdentity(account.id))
+                  ?.credentialReady,
               'models': [for (final model in account.models) model.modelId],
               'textModels': [
                 for (final model in account.modelsFor(type: ModelType.text))
@@ -646,6 +763,9 @@ abstract final class StudioDriverState {
                 for (final model in account.models)
                   {
                     'modelId': model.modelId,
+                    'enabled': model.enabled,
+                    'origin': model.origin.name,
+                    'connectionMode': model.connectionMode,
                     'contextWindow': model.contextWindow,
                     'maxContextWindow': model.maxContextWindow,
                     'typeSupport': [
@@ -663,27 +783,19 @@ abstract final class StudioDriverState {
                     'priced': model.priceTiers.isNotEmpty,
                   },
               ],
-              'modelCatalog': {
-                'supported': account.modelCatalog.supported,
-                'source': account.modelCatalog.source.name,
-                'probing': account.modelCatalog.probing,
-                'error': account.modelCatalog.error?.kind.name,
-                'cacheWarning': account.modelCatalog.cacheWarning?.name,
-                'lastSuccessAt': account.modelCatalog.lastSuccessAt,
-              },
+              'modelCatalog': _catalogJson(facts, account.id),
               // 配置意图与模型层最终解析结果，Driver 不派生阈值。
               // 缺失值保持 null，便于 Driver 断言未知容量与覆盖归一化。
               'autoCompactLimits': [
                 for (final model in account.models)
                   {
                     'modelId': model.modelId,
-                    'override': account
-                        .autoCompactLimitFor(model)
-                        .overrideLimit,
-                    'effective': account
-                        .autoCompactLimitFor(model)
-                        .context
-                        .autoCompactLimit,
+                    'override': facts
+                        .modelDirectory
+                        ?.configurations[NativeAccountIdentity(account.id)]
+                        ?.value
+                        ?.autoCompactLimits[model.modelId],
+                    'effective': model.context.autoCompactLimit,
                     'adjustment': model.context.adjustment?.name,
                     'unavailable': model.context.unavailable?.name,
                   },
@@ -691,19 +803,22 @@ abstract final class StudioDriverState {
             },
         ],
         // 同一“添加账号”入口的 typed 模板 token：Native 用模板 id，ACP 用 provider wire。
-        'nativeTemplates': [
-          for (final template in facts.accountTemplates) template,
-        ],
+        'nativeTemplates': templates == null
+            ? null
+            : [for (final template in templates.templates) template.id],
         'acpAccounts': [
-          for (final account in facts.acpAccounts)
-            {
-              'accountId': account.accountId,
-              'name': account.name,
-              'provider': account.provider.wire,
-              'connectionRevision': account.connectionRevision,
-            },
+          for (final account
+              in facts.accountSummaries?.accounts ?? const <AccountSummary>[])
+            if (account.identity is AcpAccountIdentity)
+              {
+                'accountId': account.identity.accountId,
+                'name': account.name,
+                'provider': _acpDetails(facts, account.identity)?.provider.wire,
+                'connectionRevision': account.acpConnectionRevision,
+              },
         ],
         'acpAuth': {
+          ...studioDriverResourceJson(facts.acpAuthResource),
           'loaded': facts.acpAuthLoaded,
           'revision': facts.acpAuth.revision,
           'updatedAt': facts.acpAuth.updatedAt,
@@ -716,7 +831,12 @@ abstract final class StudioDriverState {
               },
           ],
         },
-        'acpInstall': _acpInstallFactsJson(facts.acpInstall),
+        'acpInstall': facts.acpInstall == null
+            ? studioDriverResourceJson(facts.acpInstallResource)
+            : {
+                ...studioDriverResourceJson(facts.acpInstallResource),
+                ..._acpInstallFactsJson(facts.acpInstall)!,
+              },
         'roles': [
           for (final role in facts.roles)
             {
@@ -801,7 +921,7 @@ abstract final class StudioDriverState {
                 'hasIncompleteUsage': workspace.runtime.hasIncompleteUsage,
               },
               'modelCapabilities': _modelCapabilities(workspace),
-              'modelAccount': _modelAccount(workspace),
+              'modelAccount': _modelAccount(workspace, facts),
               'composer': {
                 'mode': workspace.composerMode.name,
                 'draft': workspace.composer.draft,
@@ -955,7 +1075,7 @@ abstract final class StudioDriverState {
   ///
   /// 同名模型可同时存在于多个账号，裸 model id 不足以定位账号：路由缺失、账号未知或
   /// 该账号目录不含此模型时返回 `null` 保持 unknown，不按 model id 猜另一个账号。
-  static ({AccountSettingsView account, AccountModelView model})?
+  static ({ModelSelectionAccount account, AccountModelView model})?
   _routedAccountModel(AgentWorkspaceView workspace) {
     final route = workspace.runtime.modelRoute;
     if (route == null) return null;
@@ -980,13 +1100,22 @@ abstract final class StudioDriverState {
     ];
   }
 
-  static Map<String, Object?>? _modelAccount(AgentWorkspaceView workspace) {
+  static Map<String, Object?>? _modelAccount(
+    AgentWorkspaceView workspace,
+    StudioDriverFacts facts,
+  ) {
     final routed = _routedAccountModel(workspace);
     if (routed == null) return null;
     return {
       'id': routed.account.id,
-      'hasBearerToken': routed.account.hasBearerToken,
-      'credentialEnv': routed.account.credentialEnv,
+      'hasBearerToken': _nativeDetails(
+        facts,
+        routed.account.id,
+      )?.hasBearerToken,
+      'credentialReady': facts.accountSummaries
+          ?.account(NativeAccountIdentity(routed.account.id))
+          ?.credentialReady,
+      'credentialEnv': null,
     };
   }
 
@@ -1207,6 +1336,125 @@ final class TimelineScrollDiagnostic {
   };
 }
 
+/// Resource identity is kept intact: no settings watermark substitutes for it.
+Map<String, Object?>? studioDriverStampJson(ResourceStamp? stamp) =>
+    stamp == null
+    ? null
+    : {
+        'resourceKey': stamp.resourceKey,
+        'ownerEpoch': stamp.ownerEpoch,
+        'revision': stamp.revision,
+      };
+
+Map<String, Object?> studioDriverSummariesJson(AccountsState? state) => {
+  'loaded': state?.loaded ?? false,
+  'stale': state?.stale ?? false,
+  'loading': state?.loading ?? false,
+  'stamp': studioDriverStampJson(state?.stamp),
+  'error': state?.failure?.code.name,
+};
+
+Map<String, Object?> studioDriverResourceJson<T>(
+  AccountResource<T>? resource,
+) => {
+  'loaded': resource?.loaded ?? false,
+  'stale': resource?.stale ?? false,
+  'hasValue': resource?.value != null,
+  'loading': resource?.loading ?? false,
+  'stamp': studioDriverStampJson(resource?.stamp),
+  'error': resource?.failure?.code.name,
+};
+
+NativeAccountDetails? _nativeDetails(StudioDriverFacts facts, String id) =>
+    switch (facts.accountDetails[NativeAccountIdentity(id)]?.value) {
+      NativeAccountDetails details => details,
+      _ => null,
+    };
+
+AcpAccountSettingsView? _acpDetails(
+  StudioDriverFacts facts,
+  AccountIdentity identity,
+) => switch (facts.accountDetails[identity]?.value) {
+  AcpAccountDetails(:final account) => account,
+  _ => null,
+};
+
+Map<String, Object?>? _catalogJson(StudioDriverFacts facts, String id) {
+  final catalog = facts.modelDirectory?.accounts[NativeAccountIdentity(id)];
+  final status = catalog?.value?.status;
+  if (status == null) return null;
+  return {
+    ...studioDriverResourceJson(catalog),
+    'supported': status.supported,
+    'source': status.source.name,
+    'probing': status.probing,
+    'error': status.error?.kind.name,
+    'cacheWarning': status.cacheWarning?.name,
+    'lastSuccessAt': status.lastSuccessAt,
+    'checkedAt': status.checkedAt,
+  };
+}
+
+Map<String, Object?> _usageJson(AccountUsageObservation observation) => {
+  'accountId': observation.identity.accountId,
+  'queryRevision': observation.queryRevision,
+  'revision': observation.revision,
+  'phase': observation.phase.name,
+  'operationId': observation.operationId,
+  'checkedAt': observation.checkedAt,
+  'failure': observation.failure == null
+      ? null
+      : {
+          'code': observation.failure!.code.name,
+          'retryable': observation.failure!.retryable,
+        },
+  'lastGood': observation.lastGood == null
+      ? null
+      : {
+          'checkedAt': observation.lastGood!.checkedAt,
+          'value': switch (observation.lastGood!.value) {
+            AccountBalance(:final available, :final balances) => {
+              'kind': 'balance',
+              'available': available,
+              'balances': [
+                for (final balance in balances)
+                  {
+                    'currency': balance.currency,
+                    'total': balance.total,
+                    'granted': balance.granted,
+                    'toppedUp': balance.toppedUp,
+                  },
+              ],
+            },
+            AccountSubscription(:final level, :final quotas) => {
+              'kind': 'subscription',
+              'level': level,
+              'quotas': [
+                for (final quota in quotas)
+                  {
+                    'window': quota.window.kind.name,
+                    'name': quota.window.name,
+                    'percentage': quota.percentage,
+                    'used': quota.used,
+                    'total': quota.total,
+                    'remaining': quota.remaining,
+                    'resetAt': quota.resetAt,
+                    'details': [
+                      for (final detail in quota.details)
+                        {
+                          'name': detail.name,
+                          'used': detail.used,
+                          'total': detail.total,
+                          'percentage': detail.percentage,
+                        },
+                    ],
+                  },
+              ],
+            },
+          },
+        },
+};
+
 /// ACP 认证状态的只读投影：`kind` 与界面阶段 token 一致，便于 Driver 断言。
 Map<String, Object?> _acpAuthStateJson(AcpAuthStateView state) =>
     switch (state) {
@@ -1250,7 +1498,6 @@ Map<String, Object?> _acpAuthStateJson(AcpAuthStateView state) =>
             : {
                 'code': failure.code.name,
                 'stage': failure.stage.name,
-                'message': failure.message,
                 'retryable': failure.retryable,
               },
       },
@@ -1264,7 +1511,6 @@ Map<String, Object?> _acpAuthStateJson(AcpAuthStateView state) =>
         'failure': {
           'code': failure.code.name,
           'stage': failure.stage.name,
-          'message': failure.message,
           'retryable': failure.retryable,
         },
       },

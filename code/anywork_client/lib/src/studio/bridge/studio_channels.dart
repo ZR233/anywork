@@ -132,8 +132,8 @@ class StudioChannels {
         _client.settings.state.settingsRevision,
       ),
       ModelCatalogTopic() => _loaded(
-        _client.settings.state.catalogLoaded,
-        _client.settings.state.modelCatalogRevision,
+        _client.modelCatalogLoaded,
+        _client.modelCatalogRevision,
       ),
       AgentProfilesTopic() => _loaded(
         _client.settings.state.agentProfilesLoaded,
@@ -146,7 +146,7 @@ class StudioChannels {
         _client.existingSkills(projectId)?.state,
       ),
       ThreadModeCatalogTopic() => _clock(_client.modeCatalog.state),
-      AccountUsageTopic() => _clock(_client.accountUsage.state),
+      AccountUsageTopic() => throw StateError('Use account usage domain'),
       SessionCostsTopic(:final rootThreadId) => _clock(
         _client.existingSessionCosts(rootThreadId)?.state,
       ),
@@ -159,8 +159,8 @@ class StudioChannels {
         _client.persistence.state.queueLoaded,
         _client.persistence.state.queueRevision,
       ),
-      AcpAuthTopic() => _clock(_client.acpAuth.state),
-      AcpInstallTopic() => _clock(_client.acpInstall.state),
+      AcpAuthTopic() => throw StateError('Use ACP domain'),
+      AcpInstallTopic() => throw StateError('Use ACP domain'),
       BotsTopic() => _clock(_client.bots.state),
     };
   }
@@ -187,9 +187,15 @@ class StudioChannels {
       case AgentDirectoryBaseline(:final state):
         _client.project.applyAgentDirectory(state);
       case SettingsConfigBaseline(:final state):
-        _client.settings.merge(state, scope: SettingsMergeScope.configOnly);
+        _client.acceptSettingsSnapshot(
+          state,
+          scope: SettingsMergeScope.configOnly,
+        );
       case ModelCatalogBaseline(:final state):
-        _client.settings.merge(state, scope: SettingsMergeScope.catalogOnly);
+        _client.acceptSettingsSnapshot(
+          state,
+          scope: SettingsMergeScope.catalogOnly,
+        );
       case RecoveryBaseline(:final state):
         _client.recovery.apply(state);
       case McpBaseline(:final state):
@@ -200,8 +206,8 @@ class StudioChannels {
         _client.existingSkills(state.projectId)?.apply(state);
       case ThreadModeCatalogBaseline(:final state):
         _client.modeCatalog.apply(state);
-      case AccountUsageBaseline(:final state):
-        _client.accountUsage.apply(state);
+      case AccountUsageBaseline():
+        throw StateError('Use account domain observation');
       case SessionCostsBaseline(:final state):
         _client.existingSessionCosts(state.rootThreadId)?.apply(state);
       case UpdaterBaseline(:final state):
@@ -212,10 +218,10 @@ class StudioChannels {
         _client.persistence.applyQueue(state);
       case AgentProfilesBaseline(:final state):
         _client.settings.applyAgentProfiles(state);
-      case AcpAuthBaseline(:final state):
-        _client.acpAuth.apply(state);
-      case AcpInstallBaseline(:final state):
-        _client.acpInstall.apply(state);
+      case AcpAuthBaseline():
+        throw StateError('Use account domain observation');
+      case AcpInstallBaseline():
+        throw StateError('Use account domain observation');
       case BotsBaseline(:final state):
         _client.bots.apply(state);
     }
@@ -243,9 +249,15 @@ class StudioChannels {
       case AgentDirectoryChangedPayload(:final state):
         _client.project.applyAgentDirectory(state);
       case SettingsConfigStateChangedPayload(:final state):
-        _client.settings.merge(state, scope: SettingsMergeScope.configOnly);
+        _client.acceptSettingsSnapshot(
+          state,
+          scope: SettingsMergeScope.configOnly,
+        );
       case ModelCatalogStateChangedPayload(:final state):
-        _client.settings.merge(state, scope: SettingsMergeScope.catalogOnly);
+        _client.acceptSettingsSnapshot(
+          state,
+          scope: SettingsMergeScope.catalogOnly,
+        );
       case RecoveryStateChangedPayload(:final state):
         _client.recovery.apply(state);
       case McpStateChangedPayload(:final state):
@@ -256,8 +268,8 @@ class StudioChannels {
         _client.existingSkills(state.projectId)?.apply(state);
       case ThreadModeCatalogChangedPayload(:final state):
         _client.modeCatalog.apply(state);
-      case AccountUsageStateChangedPayload(:final state):
-        _client.accountUsage.apply(state);
+      case AccountUsageStateChangedPayload():
+        throw StateError('Use account domain observation');
       case SessionCostsChangedPayload(:final state):
         _client.existingSessionCosts(state.rootThreadId)?.apply(state);
       case UpdaterStateChangedPayload(:final state):
@@ -268,10 +280,10 @@ class StudioChannels {
         _client.persistence.applyQueue(state);
       case AgentProfilesStateChangedPayload(:final state):
         _client.settings.applyAgentProfiles(state);
-      case AcpAuthStateChangedPayload(:final state):
-        _client.acpAuth.apply(state);
-      case AcpInstallStateChangedPayload(:final state):
-        _client.acpInstall.apply(state);
+      case AcpAuthStateChangedPayload():
+        throw StateError('Use account domain observation');
+      case AcpInstallStateChangedPayload():
+        throw StateError('Use account domain observation');
       case BotsStateChangedPayload(:final state):
         _client.bots.apply(state);
     }
@@ -288,7 +300,7 @@ class StudioChannels {
       case SettingsConfigTopic():
         _client.settings.applyConfigTransport(sync);
       case ModelCatalogTopic():
-        _client.settings.applyCatalogTransport(sync);
+        break; // Models owns catalog transport demand and content.
       case AgentProfilesTopic():
         _client.settings.applyAgentProfilesTransport(sync);
       case RecoveryTopic():
@@ -302,7 +314,7 @@ class StudioChannels {
       case ThreadModeCatalogTopic():
         _client.modeCatalog.applyTransport(sync);
       case AccountUsageTopic():
-        _client.accountUsage.applyTransport(sync);
+        throw StateError('Use account domain observation');
       case SessionCostsTopic(:final rootThreadId):
         _client.existingSessionCosts(rootThreadId)?.applyTransport(sync);
       case UpdaterTopic():
@@ -312,9 +324,9 @@ class StudioChannels {
       case PersistenceQueueTopic():
         _client.persistence.applyQueueTransport(sync);
       case AcpAuthTopic():
-        _client.acpAuth.applyTransport(sync);
+        throw StateError('Use account domain observation');
       case AcpInstallTopic():
-        _client.acpInstall.applyTransport(sync);
+        throw StateError('Use account domain observation');
       case BotsTopic():
         _client.bots.applyTransport(sync);
     }
