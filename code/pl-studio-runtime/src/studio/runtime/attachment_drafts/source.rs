@@ -6,6 +6,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, bail, ensure};
 use futures::StreamExt;
+use pl_protocol::studio::StudioError;
 use reqwest::header::LOCATION;
 use tokio::io::AsyncReadExt;
 use url::Url;
@@ -18,21 +19,31 @@ const REMOTE_FETCH_TOTAL_TIMEOUT: Duration = Duration::from_secs(45);
 pub(super) async fn read_local_file(path: &Path, max_bytes: u64) -> Result<Vec<u8>> {
     let file = tokio::fs::File::open(path)
         .await
-        .context("failed to open attachment file")?;
+        .context(StudioError::invalid_argument(
+            "无法打开附件，请检查文件是否存在及访问权限。",
+        ))?;
     let metadata = file
         .metadata()
         .await
-        .context("failed to inspect attachment file")?;
-    ensure!(metadata.is_file(), "attachment source is not a file");
-    ensure!(metadata.len() <= max_bytes, "attachment file is too large");
+        .context(StudioError::invalid_argument("无法读取附件的文件信息。"))?;
+    ensure!(
+        metadata.is_file(),
+        StudioError::invalid_argument("附件必须是常规文件，不能是目录。")
+    );
+    ensure!(
+        metadata.len() <= max_bytes,
+        StudioError::invalid_argument("附件文件大小超过限制。")
+    );
     let mut bytes = Vec::with_capacity(metadata.len() as usize);
     file.take(max_bytes.saturating_add(1))
         .read_to_end(&mut bytes)
         .await
-        .context("failed to read attachment file")?;
+        .context(StudioError::invalid_argument(
+            "无法读取附件内容，请重新选择文件。",
+        ))?;
     ensure!(
         bytes.len() as u64 <= max_bytes,
-        "attachment file is too large"
+        StudioError::invalid_argument("附件文件大小超过限制。")
     );
     Ok(bytes)
 }

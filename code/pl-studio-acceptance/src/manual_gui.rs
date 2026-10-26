@@ -3359,6 +3359,26 @@ fn fixture_config(
         preset.context_window = Some(64_000);
         preset.max_context_window = Some(64_000);
         preset.auto_compact_token_limit = Some(24_000);
+        preset.capabilities.input.push(ModelInputCapability::media(
+            ModelModality::Image,
+            vec![ModelInputSource::Local],
+        ));
+        preset.binding.request.media.push(ModelMediaInputProfile {
+            modality: ModelModality::Image,
+            wire: MediaWireFormat::ResponsesInputImage,
+            first_send: vec![MediaRepresentation::DataUrl],
+            replay: vec![MediaRepresentation::DataUrl],
+        });
+        let mut file_input =
+            ModelInputCapability::media(ModelModality::File, vec![ModelInputSource::Local]);
+        file_input.limits.media_types = vec!["application/pdf".into()];
+        preset.capabilities.input.push(file_input);
+        preset.binding.request.media.push(ModelMediaInputProfile {
+            modality: ModelModality::File,
+            wire: MediaWireFormat::ResponsesInputFile,
+            first_send: vec![MediaRepresentation::DataUrl],
+            replay: vec![MediaRepresentation::DataUrl],
+        });
         let mut unknown = models[0].clone();
         unknown.model_id = "fixture-unknown".into();
         unknown.display_name = "Fixture with unknown context capacity".into();

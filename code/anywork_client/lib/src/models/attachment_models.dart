@@ -2,7 +2,7 @@ import 'dart:typed_data';
 
 import 'collection_equality.dart';
 
-import 'studio_enums.dart';
+import 'settings_models.dart';
 
 enum AttachmentModalityView { image, video, file }
 
@@ -11,7 +11,7 @@ sealed class AttachmentAdmissionContext {
 
   const factory AttachmentAdmissionContext.existingThread(String threadId) =
       ExistingThreadAttachmentAdmissionContext;
-  const factory AttachmentAdmissionContext.newThread(ThreadModeId mode) =
+  const factory AttachmentAdmissionContext.newThread(ModeModelRouteView route) =
       NewThreadAttachmentAdmissionContext;
 }
 
@@ -23,8 +23,8 @@ final class ExistingThreadAttachmentAdmissionContext
 
 final class NewThreadAttachmentAdmissionContext
     extends AttachmentAdmissionContext {
-  const NewThreadAttachmentAdmissionContext(this.mode);
-  final ThreadModeId mode;
+  const NewThreadAttachmentAdmissionContext(this.route);
+  final ModeModelRouteView route;
 }
 
 sealed class AttachmentDraftSource {

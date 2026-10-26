@@ -39,6 +39,8 @@ final class _DraftTransport implements StudioTransport {
   int? canonicalRouteRevision;
   final List<int> submittedRouteRevisions = [];
   int admissionCalls = 0;
+  final List<AttachmentAdmissionContext> admissionContexts = [];
+  Object? admissionFailure;
   int settingsWrites = 0;
   bool removeSucceeds = true;
   final window = _DraftConnection();
@@ -115,6 +117,8 @@ final class _DraftTransport implements StudioTransport {
     List<AttachmentDraftSource> sources,
   ) async {
     admissionCalls += 1;
+    admissionContexts.add(context);
+    if (admissionFailure case final failure?) throw failure;
     return [
       for (var index = 0; index < sources.length; index += 1)
         AttachmentDraftView(
@@ -330,6 +334,82 @@ Future<void> _close(AnyworkClient client, _DraftTransport transport) async {
 }
 
 void main() {
+  test('new Thread attachments freeze the selected route and recover after rejection', () async {
+    final transport = _DraftTransport();
+    final staged = Completer<String?>();
+    final cleaned = <String>[];
+    final client = _client(
+      transport,
+      stage: (_) => staged.future,
+      cleanup: (path) async => cleaned.add(path),
+    );
+    final owner = client.startDraft;
+    owner.updateDraft(_project.id, 'keep this draft');
+    owner.setModelIntent(ThreadModeId.simple, 'account', 'beta');
+    await client.attachments.admitNewThread(
+      projectId: _project.id,
+      mode: ThreadModeId.simple,
+      sources: [const AttachmentDraftSource.localFile('/first.bin')],
+    );
+    await client.attachments.addNewThreadRemote(
+      projectId: _project.id,
+      mode: ThreadModeId.simple,
+      url: 'https://example.invalid/second.bin',
+    );
+    final paste = client.attachments.addNewThreadClipboard(
+      projectId: _project.id,
+      mode: ThreadModeId.simple,
+      pngBytes: Uint8List.fromList([1, 2, 3]),
+    );
+    owner.setModelIntent(ThreadModeId.simple, 'account', 'alpha');
+    staged.complete('/clipboard.png');
+    await paste;
+    expect(
+      transport.admissionContexts.map((context) {
+        final route = (context as NewThreadAttachmentAdmissionContext).route;
+        return (route.accountId, route.modelId, route.effort);
+      }),
+      List.filled(3, ('account', 'beta', 'high')),
+      reason: 'All sources use the selection at admission intent, including before staging',
+    );
+    expect(cleaned, ['/clipboard.png']);
+    final admitted = client.attachments.state
+        .newThread(_project.id)
+        .attachments;
+    transport.admissionFailure = const StudioFailure(
+      code: StudioFailureCode.invalidArgument,
+      message: 'Unsupported file media type',
+      retryable: false,
+      correlationId: 'rejected-file',
+    );
+    await client.attachments.admitNewThread(
+      projectId: _project.id,
+      mode: ThreadModeId.simple,
+      sources: [const AttachmentDraftSource.localFile('/unsupported.bin')],
+    );
+    final rejected = client.attachments.state.newThread(_project.id);
+    expect(rejected.error, contains('Unsupported file media type'));
+    expect(rejected.attachments, admitted);
+    expect(owner.state.forProject(_project.id).text, 'keep this draft');
+    expect(client.budget.used(ResourceKind.attachment), 3);
+    transport.admissionFailure = null;
+    await client.attachments.admitNewThread(
+      projectId: _project.id,
+      mode: ThreadModeId.simple,
+      sources: [const AttachmentDraftSource.localFile('/supported.bin')],
+    );
+    final recovered = client.attachments.state.newThread(_project.id);
+    expect(recovered.error, isNull);
+    expect(recovered.attachments.length, 4);
+    final last =
+        transport.admissionContexts.last as NewThreadAttachmentAdmissionContext;
+    expect(last.route.modelId, 'alpha');
+    expect(transport.settingsWrites, 0);
+    await owner.discardProject(_project.id);
+    await _close(client, transport);
+    expect(client.budget.used(ResourceKind.attachment), 0);
+  });
+
   test('actual composer preserves revision 9 text and attachments after revision 8 ACK', () async {
     final transport = _DraftTransport();
     final client = _client(transport);
