@@ -324,9 +324,24 @@ Iterable<ResourceUsage> _turnUsage(DraftsFixture fixture) =>
           usage.owner == 'thread-read:thread',
     );
 
+/// The selected Session's already-accepted UI Timeline connections take no
+/// extra open, page or detail read on behalf of anything else.
+void _noBorrowedTimelineReads(DraftsFixture fixture, {required String reason}) {
+  expect(
+    fixture.conversations.timeline.requests,
+    hasLength(fixture.timelineOpens),
+    reason: reason,
+  );
+  expect(fixture.timelineReadsNow, fixture.timelineReads, reason: reason);
+}
+
 void _noReplayOrTimeline(DraftsFixture fixture) {
   expect(fixture.commands.prompts.values, hasLength(1));
-  expect(fixture.conversations.timeline.requests, isEmpty);
+  _noBorrowedTimelineReads(
+    fixture,
+    reason:
+        'Evidence never opens or reads through the accepted UI Timeline scope',
+  );
 }
 
 Future<void> _createdOnly({
@@ -528,7 +543,11 @@ Future<void> _createdOnly({
     );
     expect(source.incarnation, 1);
   }
-  expect(fixture.conversations.timeline.requests, isEmpty);
+  _noBorrowedTimelineReads(
+    fixture,
+    reason:
+        'The created-source observation opens or reads no UI Timeline scope',
+  );
   header.complete(pin.value);
   await source.feed.acknowledged(emptyFirst ? 2 : 1);
   expect(
@@ -907,7 +926,10 @@ void main() {
     expect(job.sourceCalls.values, hasLength(1));
     expect(job.closes.values, hasLength(1));
     expect(source.opens, 1);
-    expect(fixture.conversations.timeline.requests, isEmpty);
+    _noBorrowedTimelineReads(
+      fixture,
+      reason: 'A known creation opens or reads no UI Timeline scope',
+    );
   });
 
   test('deferred UTF-8 input identity is exact and bounded; a matching started failure never loads its error body', () async {
@@ -1065,6 +1087,7 @@ void main() {
           ),
         );
         await action.ticket.state.waitFor((state) => state.durable);
+        _noReplayOrTimeline(fixture);
         expect(
           _turnUsage(fixture),
           hasLength(1),
@@ -1272,13 +1295,17 @@ void main() {
     });
     boundary.afterEvidence = (failure) {
       notifications.add(failure);
-      if (notifications.length != 1) return;
-      // Both public calls enter while the original Session callback is running.
-      // Neither may turn this same pass's new notification failure into a loop.
-      firstClose = fixture.repository.close();
-      reentrantRetry = fixture.repository.retryCleanup();
-      entered.complete();
-      throw _notificationFailure;
+      if (notifications.length == 1) {
+        // Both public calls enter while the original Session callback is
+        // running; the retry is retained as exactly one follow-up pass of this
+        // same owner instead of a bounded snapshot of the first one.
+        firstClose = fixture.repository.close();
+        reentrantRetry = fixture.repository.retryCleanup();
+        entered.complete();
+      }
+      // The accepted follow-up pass declares the same failure, so the retry
+      // signal stays real instead of being rewritten by a later success.
+      if (notifications.length <= 2) throw _notificationFailure;
     };
     final originalFeed = fixture.execution!.feed;
     fixture.retainedExecutionFailure = _sourceFailure;
@@ -1305,10 +1332,14 @@ void main() {
     expect(_issues(await reentrantRetry!), contains(notificationIssue));
     expect(
       notifications,
-      hasLength(1),
-      reason: 'A reentrant retry joins the initial failed notification pass',
+      hasLength(2),
+      reason: 'The reentrant retry is one retained follow-up pass, and both passes own the same failed notification',
     );
-    expect(notifications.single, same(_sourceFailure));
+    expect(
+      notifications.every((failure) => identical(failure, _sourceFailure)),
+      isTrue,
+      reason: 'Both accepted passes report the same original failure',
+    );
     expect(_inputUsage(fixture, action.ticket.id), hasLength(1));
     expect(
       boundary.watches.every((watch) => !watch.isCancelled),
@@ -1324,7 +1355,11 @@ void main() {
       isTrue,
       reason: 'Successful re-notification clears its RetryClose item and permits the original evidence/work to release',
     );
-    expect(notifications, hasLength(2));
+    expect(
+      notifications,
+      hasLength(3),
+      reason: 'The explicit recovery is its own pass and notifies once more',
+    );
     expect(
       notifications.every((failure) => identical(failure, _sourceFailure)),
       isTrue,
@@ -1357,7 +1392,7 @@ void main() {
     expect((await fixture.repository.retryCleanup()).complete, isTrue);
     expect(
       notifications,
-      hasLength(2),
+      hasLength(3),
       reason: 'An already successful callback is not notified again',
     );
 
@@ -1495,14 +1530,29 @@ void main() {
       await fixture.repository.retryCleanup();
       await Future.wait(reentrant);
     });
+    final snapshotGate = Completer<Future<CloseReport>>();
+    late int firstCancelCalls;
+    late bool p2CancelPending;
     evidenceWatch.beforeCancel = () {
-      if (evidenceWatch.cancelCalls != 1) return;
+      if (evidenceWatch.cancelCalls == 1) {
+        // The first pass really attempted the cancel stage and nothing has been
+        // cancelled yet; its retry is accepted and retained behind that pass.
+        firstCancelCalls = evidenceWatch.cancelCalls;
+        reentrant.add(fixture.repository.retryCleanup());
+        throw _cancelFailure;
+      }
+      if (evidenceWatch.cancelCalls != 2) return;
+      // The retained follow-up pass owns this stage right now: the stage issue is
+      // still the first pass' and the real cancel has not run, so this snapshot
+      // shows that first failure without waiting on any turn or timer.
+      p2CancelPending = !evidenceWatch.isCancelled;
+      snapshotGate.complete(
+        fixture.repository.close(deadline: DateTime.utc(2000)),
+      );
       reentrant.add(fixture.repository.retryCleanup());
-      throw _cancelFailure;
     };
     evidenceWatch.afterCancel = () {
       if (evidenceWatch.cancelCalls != 2) return;
-      reentrant.add(fixture.repository.retryCleanup());
       throw _partialCancelFailure;
     };
 
@@ -1525,40 +1575,35 @@ void main() {
     expect(_inputUsage(fixture, action.ticket.id), hasLength(1));
     expect(closed, isFalse);
     history.reply.completeError(_historyFailure);
-    final first = await closing;
     final firstIssue = _cleanupIssue(
       'inputIdentityOperationWatch',
       _cancelFailure,
     );
-    expect(_issues(first), contains(firstIssue));
-    expect(_issues(await reentrant.single), contains(firstIssue));
-    expect(
-      evidenceWatch.cancelCalls,
-      1,
-      reason: 'Ordinary close/reentry does not keep retrying its new failure',
-    );
-    expect(evidenceWatch.isCancelled, isFalse);
-    expect(action.ticket.state.observerCount, 2);
-    expect(workWatch.isCancelled, isFalse);
-    expect(
-      _inputUsage(fixture, action.ticket.id).single.phase,
-      ResourcePhase.unresolved,
-    );
-    expect(action.ticket.state.value.evidenceError, same(_historyFailure));
-    expect(await action.ticket.result, same(business));
-
-    final partial = await fixture.repository.retryCleanup();
     final partialIssue = _cleanupIssue(
       'inputIdentityOperationWatch',
       _partialCancelFailure,
     );
-    expect(_issues(partial), contains(partialIssue));
-    expect(_issues(await reentrant.last), contains(partialIssue));
+
+    // The first pass' own failure, captured on the real boundary where its
+    // accepted follow-up pass owns the stage but has not cancelled yet.
+    // Real entry barrier: only that follow-up pass can complete the gate, so the
+    // snapshot is never consumed before it was captured.
+    final snapshotJoin = await snapshotGate.future;
+    final firstReport = await snapshotJoin;
+    expect(firstCancelCalls, 1);
+    expect(p2CancelPending, isTrue);
+    expect(_issues(firstReport), contains(firstIssue));
+    expect(firstReport.complete, isFalse);
+
+    // The retained follow-up pass really cancelled and then declared a partial
+    // side effect: that is this responsibility's real end state.
+    final first = await closing;
+    expect(_issues(first), contains(partialIssue));
+    expect(first.complete, isFalse);
     expect(
       evidenceWatch.cancelCalls,
       2,
-      reason:
-          'This explicit pass attempts the previously failed stage only once',
+      reason: 'One failed attempt in the first pass and one real cancellation in its accepted follow-up',
     );
     expect(
       evidenceWatch.isCancelled,
@@ -1575,6 +1620,22 @@ void main() {
     );
     expect(action.ticket.state.value.evidenceError, same(_historyFailure));
     expect(await action.ticket.result, same(business));
+
+    // Both public retries reentered the one accepted responsibility. Their
+    // Futures are wrappers, so the sharing is proved by the same responsibility's
+    // issues and by the side effects, never by Future identity.
+    expect(reentrant, hasLength(2));
+    final firstJoin = await reentrant.first;
+    final lastJoin = await reentrant.last;
+    expect(_issues(firstJoin), contains(partialIssue));
+    expect(_issues(lastJoin), contains(partialIssue));
+    expect(firstJoin.complete, isFalse);
+    expect(lastJoin.complete, isFalse);
+    expect(
+      evidenceWatch.cancelCalls,
+      2,
+      reason: 'No extra accepted pass attempted another cancellation',
+    );
 
     final released = Completer<void>();
     final releaseWatch = fixture.budget.watchAvailability(
@@ -1601,8 +1662,10 @@ void main() {
     expect(action.ticket.state.observerCount, 0);
     expect(session.execution.observerCount, 0);
     expect(_inputUsage(fixture, action.ticket.id), isEmpty);
-    expect(_issues(first), contains(firstIssue));
-    expect(_issues(partial), contains(partialIssue));
+    expect(_issues(firstReport), contains(firstIssue));
+    expect(_issues(first), contains(partialIssue));
+    expect(_issues(firstJoin), contains(partialIssue));
+    expect(_issues(lastJoin), contains(partialIssue));
     expect(action.ticket.state.value.evidenceError, same(_historyFailure));
     expect(await action.ticket.result, same(business));
     expect((await fixture.repository.retryCleanup()).complete, isTrue);

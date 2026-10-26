@@ -1,4 +1,5 @@
 import 'package:anywork/src/app/anywork_app.dart';
+import 'package:anywork_client/acp.dart';
 import 'package:anywork_client/conversation.dart';
 import 'package:anywork_client/workspace.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
@@ -78,7 +79,7 @@ void main() {
       await tester.pump();
       final startRevision = startOwner.state.value.stamp;
 
-      await _settingsRoundTrip(tester);
+      await _settingsRoundTrip(tester, environment);
 
       expect(graph.drafts.start(projectId), same(startOwner));
       expect(startOwner.state.value.stamp, startRevision);
@@ -147,6 +148,7 @@ void main() {
 
       await _settingsRoundTrip(
         tester,
+        environment,
         whileSettingsOpen: () async {
           // This notification must reach the application owner with both of its
           // business observers hidden by the real Settings route.
@@ -262,15 +264,32 @@ void main() {
       );
       expect(connection.closeCompleted.isCompleted, isTrue);
       expect(tester.takeException(), isNull);
+      await pumpClientFuture(
+        tester,
+        environment.close(),
+        'body owned fixture close before widget invariants',
+      );
     },
   );
 }
 
 Future<void> _settingsRoundTrip(
-  WidgetTester tester, {
+  WidgetTester tester,
+  ApplicationTestEnvironment environment, {
   Future<void> Function()? whileSettingsOpen,
 }) async {
   await tester.tap(find.byKey(StudioDriverKeys.settingsOpen));
+  // Accounts is the initial tab. This synthetic native environment explicitly
+  // declares no ACP templates; answer the admitted read, not an unknown VM value.
+  await pumpClientUntil(
+    tester,
+    () => environment.acpPort.catalogReads.isNotEmpty,
+    'Accounts native ACP catalog read',
+  );
+  expect(environment.acpPort.catalogReads, hasLength(1));
+  if (!environment.acpPort.catalogReads.single.isCompleted) {
+    environment.acpPort.answerCatalogRead(0, AcpAccountCatalog.empty);
+  }
   await tester.pumpAndSettle();
   expect(find.byKey(StudioDriverKeys.settingsPage), findsOneWidget);
   for (final tab in ['general', 'agents', 'accounts']) {

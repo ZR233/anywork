@@ -2,11 +2,16 @@ import 'package:anywork_client/configuration_ports.dart';
 import 'package:anywork_client/operations_ports.dart';
 import 'package:anywork_client/resources_ports.dart';
 
+import '../../../../rust/api/studio/products/read/configuration_acp_commands.dart'
+    as acp;
 import '../../../../rust/api/studio/products/read/configuration_commands.dart'
     as native;
 import '../../../../rust/api/studio/products/read/profile_commands.dart'
     as profile;
 import '../../shared/adapter_failure.dart';
+import '../../shared/exact_numbers.dart';
+import '../acp/acp_converters.dart';
+import 'acp_account_command_call.dart';
 import 'call_failures.dart';
 import 'command_inputs.dart';
 import 'configuration_command_call.dart';
@@ -99,6 +104,29 @@ final class FrbConfigurationPort implements ConfigurationPort {
           input: configurationAccountToBridge(request.account),
         ),
       );
+
+  // ACP 写入复用同一受管调用通道，只把结果类型换成 ACP 专用窄形状。
+  @override
+  Future<AcpAccountCommandCall> saveAcpAccount(
+    UpdateAcpAccountRequest request,
+  ) => _beginAcpAccount(
+    request.operationId,
+    request.expectedRevision,
+    () => acp.BridgeAcpAccountMutation.saveAccount(
+      input: acpAccountUpdateToBridge(request.account),
+    ),
+  );
+  @override
+  Future<AcpAccountCommandCall> removeAcpAccount(
+    RemoveAcpAccountRequest request,
+  ) => _beginAcpAccount(
+    request.operationId,
+    request.expectedRevision,
+    () => acp.BridgeAcpAccountMutation.removeAccount(
+      accountId: request.accountId,
+    ),
+  );
+
   @override
   Future<ConfigurationCommandCall> setDefaultAccount(
     SetDefaultAccountRequest request,
@@ -198,6 +226,40 @@ final class FrbConfigurationPort implements ConfigurationPort {
   ) async {
     final call = FrbConfigurationCommandCall.find(operationId);
     return await call.opened ? call : null;
+  }
+
+  @override
+  Future<AcpAccountCommandCall?> findAcpAccountCommand(
+    OperationId operationId,
+  ) async {
+    final call = FrbAcpAccountCommandCall.find(operationId);
+    return await call.opened ? call : null;
+  }
+
+  Future<AcpAccountCommandCall> _beginAcpAccount(
+    OperationId operation,
+    int revision,
+    acp.BridgeAcpAccountMutation Function() mutation,
+  ) async {
+    final prepared = _prepare(
+      () => (
+        operationId: configurationOperationToBridge(operation),
+        revision: nativeU64(revision, 'expected settings revision'),
+        mutation: mutation(),
+      ),
+    );
+    final call = FrbAcpAccountCommandCall.begin(
+      operation: operation,
+      operationId: prepared.operationId,
+      expectedSettingsRevision: prepared.revision,
+      mutation: prepared.mutation,
+    );
+    if (!await call.opened) {
+      throw configurationUnknownFailure(
+        adapterProtocol('acp-account-command-missing-begin'),
+      );
+    }
+    return call;
   }
 
   @override

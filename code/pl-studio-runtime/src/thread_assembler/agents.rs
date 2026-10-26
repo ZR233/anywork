@@ -10,7 +10,8 @@ use pl_core::{
     },
 };
 use pl_tool::collaboration::thread::{
-    AgentControlHost, AgentControlKind, AgentMessage, AgentSpawn, ThreadAgentControl,
+    AgentControlHost, AgentControlKind, AgentMessage, AgentSpawn, AgentSpawnProfile,
+    ThreadAgentControl,
 };
 use std::sync::{Arc, Weak};
 
@@ -72,6 +73,28 @@ fn descendant(state: &State, caller: &str, target: &str) -> Result<(), ToolError
             caller: caller.into(),
             target: target.into(),
         }));
+    }
+    Ok(())
+}
+
+/// Lists one in-flight tree member that holds capacity but has no published Thread snapshot.
+/// The row carries identity plus the explicit preparing lifecycle; no model or run-state facts
+/// are invented. Members whose parent is outside the tree are skipped.
+fn push_preparing_row(
+    state: &State,
+    root: &str,
+    rows: &mut std::collections::BTreeMap<String, serde_json::Value>,
+    id: &str,
+    parent: Option<&str>,
+) -> Result<(), ToolError> {
+    let Some(parent) = parent else {
+        return Ok(());
+    };
+    if ancestry(state, parent)?.last().is_some_and(|id| id == root) {
+        rows.insert(
+            id.to_owned(),
+            serde_json::json!({"id":id, "parentId":parent, "lifecycle":{"kind":"preparing"}}),
+        );
     }
     Ok(())
 }
@@ -414,21 +437,47 @@ impl AgentControlHost for AgentHost {
             let root = path
                 .last()
                 .ok_or_else(|| ToolError::new(ControlError::Ancestry))?;
-            let mut rows = Vec::new();
+            // A complete listing also covers in-flight members: reserved spawns and cold
+            // activations that already hold tree capacity but are not published yet. They carry
+            // no Thread snapshot, so only identity and the explicit preparing fact are projected.
+            let mut rows = std::collections::BTreeMap::new();
+            for (id, child) in &state.unpublished_children {
+                push_preparing_row(&state, root, &mut rows, id, Some(child.parent.as_str()))?;
+            }
+            for (id, preparation) in &state.creating {
+                push_preparing_row(
+                    &state,
+                    root,
+                    &mut rows,
+                    id,
+                    preparation.parent_id.as_deref(),
+                )?;
+            }
             for (id, entry) in &state.entries {
                 let snapshot = entry.thread.snapshot();
-                if (!entry.ready && snapshot.lifecycle == ThreadLifecycle::Open)
-                    || ancestry(&state, id)?.last() != Some(root)
-                {
+                if ancestry(&state, id)?.last() != Some(root) {
                     continue;
                 }
-                rows.push(
+                if !entry.ready && snapshot.lifecycle == ThreadLifecycle::Open {
+                    if !rows.contains_key(id) {
+                        push_preparing_row(
+                            &state,
+                            root,
+                            &mut rows,
+                            id,
+                            entry.parent_id.as_deref(),
+                        )?;
+                    }
+                    continue;
+                }
+                rows.insert(
+                    id.clone(),
                     agent_row(id, entry.parent_id.as_deref(), &snapshot).map_err(|error| {
                         ToolError::new(super::agent_services::ServiceError(error))
                     })?,
                 );
             }
-            rows
+            rows.into_values().collect::<Vec<_>>()
         };
         let services = owner.0.state().agent_services.clone();
         if let Some(services) = services {
@@ -540,14 +589,35 @@ impl AgentControlHost for AgentHost {
 }
 
 impl StudioThreadAssembler {
-    /// Creates control frontends with a weak coordinator reference; tools cannot keep their registry alive.
+    /// Creates control frontends and a query view from one published Profile generation.
+    /// Tools hold a weak coordinator reference and cannot keep their registry alive.
     ///
     /// # Errors
-    /// Returns model declaration encoding or registration errors.
+    /// Returns catalog, schema construction, model declaration encoding or registration errors.
     pub fn agent_control_tools(
         &self,
+        profiles: &crate::config::AgentProfilesSnapshot,
         selection: pl_protocol::DelegationSettings,
     ) -> Result<Vec<Registration>, ThreadAssemblyError> {
+        let mut catalog = profiles
+            .catalog
+            .executable(selection.mode)
+            .map_err(|source| ThreadAssemblyError::Resource {
+                operation: "read executable Agent Profile catalog",
+                source: Box::new(source),
+            })?;
+        catalog.profiles.retain(|profile| {
+            profile.profile_id != crate::config::ROOT_AGENT_ROUTE_KEY
+                && !crate::agent::definition::is_root_definition_id(&profile.profile_id)
+        });
+        let profiles = catalog
+            .profiles
+            .iter()
+            .map(|profile| AgentSpawnProfile {
+                profile_id: profile.profile_id.clone(),
+                workspace_mode: profile.workspace_mode,
+            })
+            .collect::<Vec<_>>();
         let host = Arc::new(AgentHost(Arc::downgrade(&self.0)));
         let mut kinds = vec![
             AgentControlKind::Send,
@@ -558,18 +628,20 @@ impl StudioThreadAssembler {
         if self.0.state().child_factory.is_some() {
             kinds.push(AgentControlKind::Spawn);
         }
-        let mut tools = kinds
-            .into_iter()
-            .map(|kind| {
-                let mut spec = kind.declaration();
-                if matches!(kind, AgentControlKind::Spawn) {
-                    spec = self.spawn_declaration(selection)?;
-                }
+        let mut tools = Vec::new();
+        for kind in kinds {
+            let spec = kind
+                .declaration(&profiles, selection.mode)
+                .map_err(|source| ThreadAssemblyError::Resource {
+                    operation: "build Agent control schema",
+                    source: Box::new(source),
+                })?;
+            if let Some(spec) = spec {
                 let declaration = pl_model::runtime::thread_tool_declaration(&spec)?;
-                Ok(ThreadAgentControl::new(host.clone(), kind).registration(declaration)?)
-            })
-            .collect::<Result<Vec<_>, ThreadAssemblyError>>()?;
-        tools.extend(self.agent_query_tools(selection)?);
+                tools.push(ThreadAgentControl::new(host.clone(), kind).registration(declaration)?);
+            }
+        }
+        tools.extend(self.agent_query_tools(catalog, selection)?);
         Ok(tools)
     }
 }

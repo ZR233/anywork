@@ -139,7 +139,6 @@ ThreadSettingsAccount commandSettingsAccountFromBridge(
   native.BridgeAccountSettingsDto value,
 ) => ThreadSettingsAccount(
   configuration: AccountConfiguration(
-    pricingEnabled: value.pricingEnabled,
     billingKind: configurationBillingFromBridge(value.billingKind),
     billingKindOverride: value.billingKindOverride == null
         ? null

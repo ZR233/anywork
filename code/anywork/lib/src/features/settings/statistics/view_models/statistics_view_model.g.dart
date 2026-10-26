@@ -8,12 +8,21 @@ part of 'statistics_view_model.dart';
 
 // GENERATED CODE - DO NOT MODIFY BY HAND
 // ignore_for_file: type=lint, type=warning
+/// Owns the statistics page's visibility demand, its observation and its
+/// filters. Every collection, page and read identity stays inside the
+/// Repository; this ViewModel never pages, merges or fabricates a snapshot.
 
 @ProviderFor(StatisticsViewModel)
 final statisticsViewModelProvider = StatisticsViewModelProvider._();
 
+/// Owns the statistics page's visibility demand, its observation and its
+/// filters. Every collection, page and read identity stays inside the
+/// Repository; this ViewModel never pages, merges or fabricates a snapshot.
 final class StatisticsViewModelProvider
     extends $AsyncNotifierProvider<StatisticsViewModel, StatisticsViewState> {
+  /// Owns the statistics page's visibility demand, its observation and its
+  /// filters. Every collection, page and read identity stays inside the
+  /// Repository; this ViewModel never pages, merges or fabricates a snapshot.
   StatisticsViewModelProvider._()
     : super(
         from: null,
@@ -34,7 +43,11 @@ final class StatisticsViewModelProvider
 }
 
 String _$statisticsViewModelHash() =>
-    r'2a93f074087bb49e637b0c19b3e5633c92033740';
+    r'f2ffc031106ec6e44c365e33864c2f0395747162';
+
+/// Owns the statistics page's visibility demand, its observation and its
+/// filters. Every collection, page and read identity stays inside the
+/// Repository; this ViewModel never pages, merges or fabricates a snapshot.
 
 abstract class _$StatisticsViewModel
     extends $AsyncNotifier<StatisticsViewState> {

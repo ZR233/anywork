@@ -91,10 +91,6 @@ final class ThreadDirectoryReads {
   }
 
   Future<ThreadDirectoryRecord> lookup(String id) {
-    // PROBE
-    print(
-      '[W] lookup($id)\n${StackTrace.current.toString().split('\n').where((line) => !line.contains('dart:async')).take(18).join('\n')}',
-    );
     final demand = mirror.capture();
     final attempt = ++_lookupAttempt;
     ThreadDirectoryBinding? original = demand.binding;

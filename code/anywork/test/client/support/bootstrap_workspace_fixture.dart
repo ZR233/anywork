@@ -12,10 +12,15 @@ import '../../../../anywork_client/test/support/thread_metadata_fixture.dart';
 import '../../../../anywork_client/test/support/timeline_transport.dart';
 import '../../../../anywork_client/test/support/workspace_port_fixture.dart';
 
-typedef SelectionDelivery = ({String? threadId, bool needsOpen, int selectionGeneration});
+typedef SelectionDelivery = ({
+  String? threadId,
+  bool needsOpen,
+  int selectionGeneration,
+});
 
 SelectionDelivery selectionDelivery(WorkspaceState value) => (
-  threadId: value.selection.threadId, needsOpen: value.selection.needsOpen,
+  threadId: value.selection.threadId,
+  needsOpen: value.selection.needsOpen,
   selectionGeneration: value.selectionGeneration,
 );
 
@@ -29,22 +34,41 @@ final class RecordingConversationDemand implements ConversationDemand {
   final calls = <SelectionDelivery>[];
   final observerCounts = <int>[];
   @override
-  void select({required String? threadId, required bool needsOpen, required int selectionGeneration}) {
-    calls.add((threadId: threadId, needsOpen: needsOpen, selectionGeneration: selectionGeneration));
+  void select({
+    required String? threadId,
+    required bool needsOpen,
+    required int selectionGeneration,
+  }) {
+    calls.add((
+      threadId: threadId,
+      needsOpen: needsOpen,
+      selectionGeneration: selectionGeneration,
+    ));
     observerCounts.add(observerCount());
-    delegate.select(threadId: threadId, needsOpen: needsOpen, selectionGeneration: selectionGeneration);
+    delegate.select(
+      threadId: threadId,
+      needsOpen: needsOpen,
+      selectionGeneration: selectionGeneration,
+    );
   }
+
   @override
-  Future<CloseReport> retire(String threadId, {DateTime? deadline}) => delegate.retire(threadId, deadline: deadline);
+  Future<CloseReport> retire(String threadId, {DateTime? deadline}) =>
+      delegate.retire(threadId, deadline: deadline);
   @override
   void retrySelected(String threadId) => delegate.retrySelected(threadId);
   @override
-  SubmissionExecutionLease retainForSubmission(ConversationSession session, {required ThreadFacetStamp expectedOrigin}) =>
-    delegate.retainForSubmission(session, expectedOrigin: expectedOrigin);
+  SubmissionExecutionLease retainForSubmission(
+    ConversationSession session, {
+    required ThreadFacetStamp expectedOrigin,
+  }) => delegate.retainForSubmission(session, expectedOrigin: expectedOrigin);
   @override
-  SubmissionExecutionLease retainForCreatedInput(ConversationSession session,
-    {required SubmitPromptReceipt receipt, required CreatedInputExecutionSource source}) =>
-    delegate.retainForCreatedInput(session, receipt: receipt, source: source);
+  SubmissionExecutionLease retainForCreatedInput(
+    ConversationSession session, {
+    required SubmitPromptReceipt receipt,
+    required CreatedInputExecutionSource source,
+  }) =>
+      delegate.retainForCreatedInput(session, receipt: receipt, source: source);
 }
 
 /// A narrow real public component assembly, not a partial AppGraph claiming
@@ -52,17 +76,40 @@ final class RecordingConversationDemand implements ConversationDemand {
 /// The real Conversation archive leaf satisfies Workspace construction; this
 /// selection/Bootstrap journey never invokes archive or needs a Drafts leaf.
 final class BootstrapWorkspaceFixture {
-  BootstrapWorkspaceFixture({required ResourceBudget budget, required OperationRecorder operations}) {
-    final conversationAssembly = createConversationRepository(port: facets, context: context,
+  BootstrapWorkspaceFixture({
+    required ResourceBudget budget,
+    required OperationRecorder operations,
+  }) {
+    final conversationAssembly = createConversationRepository(
+      port: facets,
+      context: context,
       commands: const UnscriptedConversationCommands(),
-      timeline: timeline, budget: budget, operations: operations);
+      timeline: timeline,
+      budget: budget,
+      operations: operations,
+    );
     conversation = conversationAssembly.repository;
-    recovery = createRecoveryRepository(port: recoveryPort, budget: budget, operations: operations);
-    final workspaceAssembly = createWorkspaceRepository(port: port, budget: budget, operations: operations,
-      recovery: recovery.state, archiveCapture: conversationAssembly.archive);
+    recovery = createRecoveryRepository(
+      port: recoveryPort,
+      budget: budget,
+      operations: operations,
+    );
+    final workspaceAssembly = createWorkspaceRepository(
+      port: port,
+      budget: budget,
+      operations: operations,
+      recovery: recovery.state,
+      archiveCapture: conversationAssembly.archive,
+    );
     workspace = workspaceAssembly.repository;
-    demand = RecordingConversationDemand(conversationAssembly.demand, () => workspace.state.observerCount);
-    binding = WorkspaceConversationBinding(workspace: workspace, demand: demand);
+    demand = RecordingConversationDemand(
+      conversationAssembly.demand,
+      () => workspace.state.observerCount,
+    );
+    binding = WorkspaceConversationBinding(
+      workspace: workspace,
+      demand: demand,
+    );
   }
   final port = ScriptedWorkspacePort();
   final recoveryPort = ProfileRecoveryPort();
@@ -75,18 +122,38 @@ final class BootstrapWorkspaceFixture {
   late final RecordingConversationDemand demand;
   late final WorkspaceConversationBinding binding;
 
-  void seal() { binding.seal(); workspace.seal(); conversation.seal(); recovery.seal(); }
+  void seal() {
+    binding.seal();
+    workspace.seal();
+    conversation.seal();
+    recovery.seal();
+  }
 
   Future<CloseReport> close() async {
     seal();
     port.releasePending();
-    for (final owner in context.metadataOwners.whereType<ScriptedThreadMetadata>()) { owner.releasePending(); }
-    for (final opening in timeline.requests) {
-      if (!opening.result.isCompleted) opening.result.complete(TestTimelineConnection(initial: baseline(1)));
-      final native = await opening.result.future;
-      if (native is TestTimelineConnection && native.closeGate?.isCompleted == false) native.closeGate!.complete();
+    for (final owner
+        in context.metadataOwners.whereType<ScriptedThreadMetadata>()) {
+      owner.releasePending();
     }
-    final reports = await Future.wait([binding.close(), workspace.close(), conversation.close(), recovery.close()]);
-    return CloseReport(unresolved: [for (final report in reports) ...report.unresolved]);
+    for (final opening in timeline.requests) {
+      if (!opening.result.isCompleted) {
+        opening.result.complete(TestTimelineConnection(initial: baseline(1)));
+      }
+      final native = await opening.result.future;
+      if (native is TestTimelineConnection &&
+          native.closeGate?.isCompleted == false) {
+        native.closeGate!.complete();
+      }
+    }
+    final reports = await Future.wait([
+      binding.close(),
+      workspace.close(),
+      conversation.close(),
+      recovery.close(),
+    ]);
+    return CloseReport(
+      unresolved: [for (final report in reports) ...report.unresolved],
+    );
   }
 }

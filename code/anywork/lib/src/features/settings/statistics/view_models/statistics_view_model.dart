@@ -1,71 +1,35 @@
 import 'dart:async';
 
-import 'package:anywork_client/account_usage.dart';
 import 'package:anywork_client/resources.dart';
+import 'package:anywork_client/statistics.dart';
 import 'package:riverpod_annotation/riverpod_annotation.dart';
 
 import '../../../../app/app_bindings.dart';
 import '../../state/settings_navigation_state.dart';
-import '../../view_models/collection_values.dart';
 import '../../view_models/settings_navigation_view_model.dart';
 import '../../view_models/settings_tab_lifecycle.dart';
-import '../../view_models/visible_read_demand.dart';
 import '../state/statistics_view_state.dart';
 
 part 'statistics_view_model.g.dart';
 
+/// Owns the statistics page's visibility demand, its observation and its
+/// filters. Every collection, page and read identity stays inside the
+/// Repository; this ViewModel never pages, merges or fabricates a snapshot.
 @riverpod
 class StatisticsViewModel extends _$StatisticsViewModel {
   late StatisticsRepository _repository;
-  late VisibleReadDemand<(ProductReadOrigin, PerformanceSummariesReadRef)>
-  _summaries;
-  late VisibleReadDemand<(ProductReadOrigin, PerformanceHistoryReadRef)>
-  _history;
-  Observation? _summaryObservation;
-  Observation? _historyObservation;
-  final _manualReading = <StatisticsReadField>{};
-  final _bootstrapped = <StatisticsReadField>{};
-  final _observerErrors = <StatisticsReadField, StudioFailure>{};
+  Observation? _observation;
+  StatisticsVisibilityLease? _lease;
+  Future<void>? _retrying;
   bool _alive = true;
   bool _visible = false;
   int _lifetime = 0;
+
   @override
   Future<StatisticsViewState> build() async {
     _alive = true;
     final lifetime = ++_lifetime;
     _repository = ref.watch(statisticsRepositoryProvider);
-    _summaries = VisibleReadDemand(
-      read: (target) async {
-        final source = _repository.summaries.value.projection;
-        if (source.stamp?.origin == target.$1 &&
-            source.header?.reference == target.$2) {
-          await _repository.loadSummariesPage();
-        }
-      },
-      changed: (target, error, current) => _changed(
-        StatisticsReadField.summaries,
-        error,
-        current,
-        _summaries.reading,
-        lifetime,
-      ),
-    );
-    _history = VisibleReadDemand(
-      read: (target) async {
-        final source = _repository.history.value.projection;
-        if (source.stamp?.origin == target.$1 &&
-            source.header?.reference == target.$2) {
-          await _repository.loadHistoryPage();
-        }
-      },
-      changed: (target, error, current) => _changed(
-        StatisticsReadField.history,
-        error,
-        current,
-        _history.reading,
-        lifetime,
-      ),
-    );
     final tab = ref
         .read(settingsNavigationViewModelProvider.notifier)
         .register(
@@ -76,321 +40,227 @@ class StatisticsViewModel extends _$StatisticsViewModel {
     ref.onDispose(() {
       _alive = false;
       _lifetime++;
+      _retrying = null;
       tab.unregister();
+      _releaseDemand();
       _detach();
-      _summaries.dispose();
-      _history.dispose();
-      // Statistics are read-only. No accepted read or Repository is cancelled.
+      // Statistics are read-only: this page never closes the Repository and
+      // never cancels an accepted notification or transform.
     });
-    if (_visible) _attach(lifetime);
-    Future<void>(() {
-      if (_owns(lifetime)) _refresh();
-    });
-    return StatisticsViewState(
-      summaries: _repository.summaries.value,
-      history: _repository.history.value,
-      visible: _visible,
-      observationIssues: {..._observerErrors},
-    );
+    // Registration is synchronous, so the first projection already shows the
+    // mirror's current value. A hidden build creates no demand.
+    _attach(lifetime);
+    final repository = _repository;
+    // Everything this build may still return exists before the first wait, so a
+    // dispose/rebuild during it never reads ref, state or a newer repository.
+    final initial = _derive(repository.state.value);
+    if (!_visible) return initial;
+    _acquireDemand(lifetime);
+    if (!_current(lifetime) || _lease == null) return initial;
+    try {
+      await repository.synchronize();
+    } on StudioFailure {
+      // The attempt failure is already published as the mirror's `sync` value,
+      // so the page shows the real error in its own light status area and
+      // retries through the Repository's read-only recovery. Nothing is
+      // fabricated here, and the original attempt/owner keeps its duty.
+    }
+    if (!_current(lifetime)) return initial;
+    return _derive(repository.state.value);
   }
 
-  bool _owns(int lifetime) =>
-      _alive && lifetime == _lifetime && state.asData != null;
+  bool _current(int lifetime) => _alive && lifetime == _lifetime;
+
   void _attach(int lifetime) {
-    try {
-      _summaryObservation ??= _repository.summaries.watchLatest((source) {
-        if (!_owns(lifetime) || !_visible) return;
-        state = AsyncData(state.requireValue.copyWith(summaries: source));
-        _pruneFilters();
-        _refresh();
-      }).observation;
-      _observerErrors.remove(StatisticsReadField.summaries);
-    } on StudioFailure catch (error) {
-      _observerErrors[StatisticsReadField.summaries] = error;
-    }
-    try {
-      _historyObservation ??= _repository.history.watchLatest((source) {
-        if (!_owns(lifetime) || !_visible) return;
-        state = AsyncData(state.requireValue.copyWith(history: source));
-        _pruneFilters();
-        _refresh();
-      }).observation;
-      _observerErrors.remove(StatisticsReadField.history);
-    } on StudioFailure catch (error) {
-      _observerErrors[StatisticsReadField.history] = error;
-    }
-    if (_owns(lifetime)) {
-      state = AsyncData(
-        state.requireValue.copyWith(observationIssues: {..._observerErrors}),
-      );
-    }
+    if (_observation != null || !_alive) return;
+    _observation = _repository.state.watchLatest((source) {
+      if (!_current(lifetime)) return;
+      _publish(source);
+    }).observation;
   }
 
   void _detach() {
-    _summaryObservation?.cancel();
-    _summaryObservation = null;
-    _historyObservation?.cancel();
-    _historyObservation = null;
+    _observation?.cancel();
+    _observation = null;
+  }
+
+  void _releaseDemand() {
+    final lease = _lease;
+    _lease = null;
+    lease?.release();
+  }
+
+  /// Registers the visible demand before any notification can observe it, and
+  /// releases the just-acquired lease when a reentrant dispose/hide invalidates
+  /// this attempt. No timer, delay or deferred retry is involved.
+  void _acquireDemand(int lifetime) {
+    if (_lease != null || !_visible || !_current(lifetime)) return;
+    final StatisticsVisibilityLease lease;
+    try {
+      lease = _repository.acquireVisibleDemand();
+    } on StudioFailure {
+      // A sealed Repository grants no new demand; the last known snapshot
+      // stays published and no second attempt masks the original duty.
+      return;
+    }
+    _lease = lease;
+    if (_current(lifetime) && _visible) return;
+    if (identical(_lease, lease)) _lease = null;
+    lease.release();
+  }
+
+  /// Publishing is guarded: a page that is loading or already failed never
+  /// resurrects itself from a late notification.
+  void _publish(StatisticsState source) {
+    if (!_alive || state.asData == null) return;
+    state = AsyncData(_derive(source));
   }
 
   void setVisible(bool visible) {
     if (!_alive || _visible == visible) return;
     _visible = visible;
+    final lifetime = _lifetime;
     if (!visible) {
+      _releaseDemand();
       _detach();
-      _summaries.visible(false);
-      _history.visible(false);
     } else {
-      _attach(_lifetime);
+      _attach(lifetime);
+      _acquireDemand(lifetime);
+      if (_lease != null) unawaited(_synchronize(lifetime));
     }
-    if (state.asData != null) {
-      state = AsyncData(
-        state.requireValue.copyWith(
-          visible: visible,
-          summaries: visible
-              ? _repository.summaries.value
-              : state.requireValue.summaries,
-          history: visible
-              ? _repository.history.value
-              : state.requireValue.history,
-        ),
-      );
-      _pruneFilters();
-      _refresh();
-    }
+    _publish(_repository.state.value);
   }
 
-  void _changed(
-    StatisticsReadField field,
-    StudioFailure? error,
-    bool current,
-    bool reading,
-    int lifetime,
-  ) {
-    if (!_owns(lifetime)) return;
-    final issues = {...state.requireValue.readIssues};
-    if (current) {
-      if (error == null) {
-        issues.remove(field);
-      } else {
-        issues[field] = error;
+  /// Awaits one complete publication of the current attempt. A failure keeps
+  /// the last complete snapshot; the failure itself stays in the mirror's
+  /// `sync` value and is presented by the page's light status area.
+  Future<void> _synchronize(int lifetime) async {
+    final repository = _repository;
+    try {
+      await repository.synchronize();
+    } on StudioFailure {
+      // Keep last good content, scroll and filters; the published failure is
+      // visible through the mirror and still offers the real retry.
+    }
+    if (!_current(lifetime) || !identical(repository, _repository)) return;
+    _publish(repository.state.value);
+  }
+
+  /// The one explicit recovery of a failed attempt: a read-only re-sync of the
+  /// original owner, never a business reload and never a provider rebuild. An
+  /// in-flight retry is joined instead of opening a second one.
+  void retrySync() {
+    if (!_alive || !_visible || _lease == null || _retrying != null) return;
+    final lifetime = _lifetime;
+    late final Future<void> retrying;
+    retrying = _retry(lifetime).whenComplete(() {
+      if (identical(_retrying, retrying)) _retrying = null;
+    });
+    _retrying = retrying;
+    unawaited(retrying);
+  }
+
+  Future<void> _retry(int lifetime) async {
+    final repository = _repository;
+    try {
+      await repository.retrySync();
+    } on StudioFailure {
+      // The Repository republishes the real failure and keeps the unresolved
+      // cleanup responsibility; the page shows that same error.
+    }
+    if (!_current(lifetime) || !identical(repository, _repository)) return;
+    _publish(repository.state.value);
+  }
+
+  void selectModel(StatisticsModelKey? value) {
+    final current = state.asData?.value;
+    if (!_alive || current == null || current.modelFilter == value) return;
+    state = AsyncData(_filtered(current.copyWith(modelFilter: value)));
+  }
+
+  void selectEffort(StatisticsEffortFilter? value) {
+    final current = state.asData?.value;
+    if (!_alive || current == null || current.effortFilter == value) return;
+    state = AsyncData(_filtered(current.copyWith(effortFilter: value)));
+  }
+
+  void setMismatchesOnly(bool value) {
+    final current = state.asData?.value;
+    if (!_alive || current == null || current.mismatchesOnly == value) return;
+    state = AsyncData(_filtered(current.copyWith(mismatchesOnly: value)));
+  }
+
+  StatisticsViewState _derive(StatisticsState source) {
+    final current = state.asData?.value;
+    final snapshot = source.snapshot;
+    final summaries = snapshot?.summaries ?? const <PerformanceSummary>[];
+    final history = snapshot?.history ?? const <PerformanceSample>[];
+    final modelOptions = List<StatisticsModelOption>.unmodifiable(
+      _modelOptions(summaries, history),
+    );
+    final effortOptions = List<StatisticsEffortFilter>.unmodifiable(
+      _effortOptions(history),
+    );
+    var modelFilter = current?.modelFilter;
+    var effortFilter = current?.effortFilter;
+    // A bounded page or a last-good value never proves an identity is gone: only
+    // a complete authoritative snapshot prunes a selected filter.
+    if (snapshot != null) {
+      if (modelFilter != null &&
+          !modelOptions.any((option) => option.key == modelFilter)) {
+        modelFilter = null;
+      }
+      if (effortFilter != null && !effortOptions.contains(effortFilter)) {
+        effortFilter = null;
       }
     }
-    state = AsyncData(
-      state.requireValue.copyWith(
-        reading: {...state.requireValue.reading}
-          ..remove(field)
-          ..addAll(reading ? [field] : []),
-        readIssues: issues,
+    return _filtered(
+      StatisticsViewState(
+        source: source,
+        visible: _visible,
+        modelFilter: modelFilter,
+        effortFilter: effortFilter,
+        mismatchesOnly: current?.mismatchesOnly ?? false,
+        modelOptions: modelOptions,
+        effortOptions: effortOptions,
       ),
     );
   }
 
-  static bool _needsPage<T>(
-    CollectionMirror<T> mirror,
-    ProductReadOrigin origin,
+  StatisticsViewState _filtered(StatisticsViewState value) {
+    final history =
+        value.source.snapshot?.history ?? const <PerformanceSample>[];
+    final model = value.modelFilter;
+    final effort = value.effortFilter;
+    final mismatchesOnly = value.mismatchesOnly;
+    return value.copyWith(
+      filteredHistory: List<PerformanceSample>.unmodifiable([
+        for (final sample in history)
+          if ((model == null ||
+                  model ==
+                      _keyOf(
+                        sample.identity.accountId,
+                        sample.identity.modelId,
+                      )) &&
+              (effort == null || effort.value == sample.identity.effort) &&
+              (!mismatchesOnly ||
+                  sample.identity.modelMatchState ==
+                      ModelMatchState.mismatched))
+            sample,
+      ]),
+    );
+  }
+
+  /// History identities first (they are the frozen call facts), then the
+  /// aggregates the owner published for the same account model.
+  List<StatisticsModelOption> _modelOptions(
+    List<PerformanceSummary> summaries,
+    List<PerformanceSample> history,
   ) {
-    if (mirror is! CurrentCollectionMirror<T> ||
-        mirror.window.origin != origin) {
-      return true;
-    }
-    final window = mirror.window;
-    return window.entries.isEmpty && !window.complete ||
-        window.entries.any((reference) {
-          final row = window.rows[reference.entry];
-          return row is! ReadyReadValue<T, ProductEntityRef> ||
-              row.current.origin != origin ||
-              row.current.reference != reference;
-        });
-  }
-
-  void _refresh() {
-    if (!_alive || state.asData == null) return;
-    final summary = state.requireValue.summaries;
-    final history = state.requireValue.history;
-    final summaryOrigin = summary.projection.stamp?.origin;
-    final summaryRef = summary.projection.header?.reference;
-    final historyOrigin = history.projection.stamp?.origin;
-    final historyRef = history.projection.header?.reference;
-    _summaries.target(
-      summaryOrigin == null || summaryRef == null
-          ? null
-          : (summaryOrigin, summaryRef),
-      needed:
-          !_manualReading.contains(StatisticsReadField.summaries) &&
-          summaryOrigin != null &&
-          _needsPage(summary.summaries, summaryOrigin),
-    );
-    _history.target(
-      historyOrigin == null || historyRef == null
-          ? null
-          : (historyOrigin, historyRef),
-      needed:
-          !_manualReading.contains(StatisticsReadField.history) &&
-          historyOrigin != null &&
-          _needsPage(history.samples, historyOrigin),
-    );
-    _summaries.visible(_visible);
-    _history.visible(_visible);
-    if (_visible) {
-      // Missing origin/ref requires the Repository's real bootstrap, not a fake
-      // source identity. Reserve before publication so reentry cannot duplicate.
-      final missing = [
-        if ((summaryOrigin == null || summaryRef == null) &&
-            !_bootstrapped.contains(StatisticsReadField.summaries))
-          StatisticsReadField.summaries,
-        if ((historyOrigin == null || historyRef == null) &&
-            !_bootstrapped.contains(StatisticsReadField.history))
-          StatisticsReadField.history,
-      ];
-      _bootstrapped.addAll(missing);
-      for (final field in missing) {
-        unawaited(
-          Future<void>(() async {
-            if (!_alive || !_visible) {
-              _bootstrapped.remove(field);
-              return;
-            }
-            await load(field);
-          }),
-        );
-      }
-    }
-  }
-
-  Future<void> load(StatisticsReadField field) async {
-    if (!_alive ||
-        !_visible ||
-        state.asData == null ||
-        _manualReading.contains(field) ||
-        (field == StatisticsReadField.summaries
-            ? _summaries.reading
-            : _history.reading)) {
-      return;
-    }
-    final lifetime = _lifetime;
-    final repository = _repository;
-    _manualReading.add(field);
-    _attach(
-      lifetime,
-    ); // Explicit read/retry can restore only missing UI observers.
-    final beforeSummary = repository.summaries.value.projection;
-    final beforeHistory = repository.history.value.projection;
-    final summaryTarget =
-        beforeSummary.stamp == null || beforeSummary.header == null
-        ? null
-        : (beforeSummary.stamp!.origin, beforeSummary.header!.reference);
-    final historyTarget =
-        beforeHistory.stamp == null || beforeHistory.header == null
-        ? null
-        : (beforeHistory.stamp!.origin, beforeHistory.header!.reference);
-    StudioFailure? failure;
-    var issued = false;
-    _changed(field, null, true, true, lifetime);
-    try {
-      if (!_owns(lifetime) || !_visible) {
-        _bootstrapped.remove(field);
-        return;
-      }
-      issued = true;
-      if (field == StatisticsReadField.summaries) {
-        await repository.loadSummariesPage();
-      } else {
-        await repository.loadHistoryPage();
-      }
-      if (_owns(lifetime) && _visible) {
-        state = AsyncData(
-          state.requireValue.copyWith(
-            summaries: repository.summaries.value,
-            history: repository.history.value,
-          ),
-        );
-      }
-      if (_owns(lifetime)) _changed(field, null, true, false, lifetime);
-    } on StudioFailure catch (error) {
-      failure = error;
-      if (_owns(lifetime) && _visible) {
-        state = AsyncData(
-          state.requireValue.copyWith(
-            summaries: repository.summaries.value,
-            history: repository.history.value,
-          ),
-        );
-      }
-      if (_owns(lifetime)) _changed(field, error, true, false, lifetime);
-    } finally {
-      _manualReading.remove(field);
-      if (_owns(lifetime)) {
-        final summary = repository.summaries.value.projection;
-        final history = repository.history.value.projection;
-        if (issued && field == StatisticsReadField.summaries) {
-          if (summaryTarget != null) {
-            _summaries.remember(summaryTarget);
-          } else if (failure != null &&
-              summary.stamp != null &&
-              summary.header != null &&
-              displayCollection(repository.summaries.value.summaries)?.error ==
-                  failure) {
-            _summaries.remember((
-              summary.stamp!.origin,
-              summary.header!.reference,
-            ));
-          }
-        }
-        if (issued && field == StatisticsReadField.history) {
-          if (historyTarget != null) {
-            _history.remember(historyTarget);
-          } else if (failure != null &&
-              history.stamp != null &&
-              history.header != null &&
-              displayCollection(repository.history.value.samples)?.error ==
-                  failure) {
-            _history.remember((
-              history.stamp!.origin,
-              history.header!.reference,
-            ));
-          }
-        }
-        state = AsyncData(
-          state.requireValue.copyWith(
-            reading: {...state.requireValue.reading}..remove(field),
-          ),
-        );
-        _refresh();
-      }
-    }
-  }
-
-  List<PerformanceSummary> get summaryRows =>
-      displayCollectionRows(state.requireValue.summaries.summaries);
-  List<PerformanceSample> get allHistory =>
-      displayCollectionRows(state.requireValue.history.samples);
-  List<PerformanceSample> get filteredHistory {
-    final value = state.requireValue;
-    return [
-      for (final sample in allHistory)
-        if ((value.modelFilter == null ||
-                value.modelFilter ==
-                    StatisticsModelKey(
-                      accountId: sample.identity.accountId,
-                      modelId: sample.identity.modelId,
-                    )) &&
-            (value.effortFilter == null ||
-                value.effortFilter!.value == sample.identity.effort) &&
-            (!value.mismatchesOnly ||
-                sample.identity.modelMatchState == ModelMatchState.mismatched))
-          sample,
-    ];
-  }
-
-  List<StatisticsModelOption> get modelOptions {
     final options = <StatisticsModelKey, StatisticsModelOption>{};
-    for (final sample in allHistory) {
+    for (final sample in history) {
       final identity = sample.identity;
-      final key = StatisticsModelKey(
-        accountId: identity.accountId,
-        modelId: identity.modelId,
-      );
+      final key = _keyOf(identity.accountId, identity.modelId);
       options.putIfAbsent(
         key,
         () => StatisticsModelOption(
@@ -400,12 +270,9 @@ class StatisticsViewModel extends _$StatisticsViewModel {
         ),
       );
     }
-    for (final summary in summaryRows) {
+    for (final summary in summaries) {
       final identity = summary.identity;
-      final key = StatisticsModelKey(
-        accountId: identity.accountId,
-        modelId: identity.modelId,
-      );
+      final key = _keyOf(identity.accountId, identity.modelId);
       options.putIfAbsent(
         key,
         () => StatisticsModelOption(
@@ -415,52 +282,16 @@ class StatisticsViewModel extends _$StatisticsViewModel {
         ),
       );
     }
-    return options.values.toList();
+    return options.values.toList(growable: false);
   }
 
-  List<StatisticsEffortFilter> get effortOptions => {
-    for (final sample in allHistory)
+  static List<StatisticsEffortFilter> _effortOptions(
+    List<PerformanceSample> history,
+  ) => {
+    for (final sample in history)
       StatisticsEffortFilter(value: sample.identity.effort),
-  }.toList();
-  void setModel(StatisticsModelKey? value) {
-    if (_alive && state.asData != null) {
-      state = AsyncData(state.requireValue.copyWith(modelFilter: value));
-    }
-  }
+  }.toList(growable: false);
 
-  void setEffort(StatisticsEffortFilter? value) {
-    if (_alive && state.asData != null) {
-      state = AsyncData(state.requireValue.copyWith(effortFilter: value));
-    }
-  }
-
-  void setMismatchesOnly(bool value) {
-    if (_alive && state.asData != null) {
-      state = AsyncData(state.requireValue.copyWith(mismatchesOnly: value));
-    }
-  }
-
-  void _pruneFilters() {
-    final value = state.requireValue;
-    final summariesComplete = collectionComplete(
-      value.summaries.summaries,
-      value.summaries.projection.stamp?.origin,
-    );
-    final historyComplete = collectionComplete(
-      value.history.samples,
-      value.history.projection.stamp?.origin,
-    );
-    // A bounded page missing a selected identity does not prove its deletion.
-    if (summariesComplete &&
-        historyComplete &&
-        value.modelFilter != null &&
-        !modelOptions.any((option) => option.key == value.modelFilter)) {
-      setModel(null);
-    }
-    if (historyComplete &&
-        value.effortFilter != null &&
-        !effortOptions.contains(value.effortFilter)) {
-      setEffort(null);
-    }
-  }
+  static StatisticsModelKey _keyOf(String accountId, String? modelId) =>
+      StatisticsModelKey(accountId: accountId, modelId: modelId);
 }

@@ -13,17 +13,18 @@ use pl_protocol::studio::{
     StudioRoleSettings, StudioSettings, StudioSkillsSettings, StudioWebSearchSettings,
 };
 
-use crate::{ConfigRuntimeSnapshot, ModelCatalogRuntimeSnapshot, StudioRole};
+use crate::{ConfigRuntimeSnapshot, ModelCatalogRuntimeSnapshot};
 use pl_model::config::{AccountCapabilitySelection, AccountModelCatalogConfig};
 use pl_tool::search::{WebSearchAvailability, WebSearchDeepSeekOptions};
 
 pub(crate) fn settings_config_snapshot(
     state: &ConfigRuntimeSnapshot,
+    acp_accounts: Vec<pl_protocol::studio::AcpAccountSettings>,
 ) -> Result<SettingsConfigSnapshot> {
     Ok(SettingsConfigSnapshot {
         revision: state.revision,
         updated_at: state.updated_at,
-        settings: settings_view(state)?,
+        settings: settings_view(state, acp_accounts)?,
     })
 }
 
@@ -70,14 +71,18 @@ pub(crate) fn model_catalog_snapshot(
 pub(crate) fn settings_state_response(
     state: &ConfigRuntimeSnapshot,
     catalog: &ModelCatalogRuntimeSnapshot,
+    acp_accounts: Vec<pl_protocol::studio::AcpAccountSettings>,
 ) -> Result<SettingsStateResponse> {
     Ok(SettingsStateResponse {
-        config: settings_config_snapshot(state)?,
+        config: settings_config_snapshot(state, acp_accounts)?,
         catalog: model_catalog_snapshot(state, catalog)?,
     })
 }
 
-fn settings_view(state: &ConfigRuntimeSnapshot) -> Result<StudioSettings> {
+fn settings_view(
+    state: &ConfigRuntimeSnapshot,
+    acp_accounts: Vec<pl_protocol::studio::AcpAccountSettings>,
+) -> Result<StudioSettings> {
     let config = state.canonical_config();
     let accounts = config
         .models
@@ -106,7 +111,6 @@ fn settings_view(state: &ConfigRuntimeSnapshot) -> Result<StudioSettings> {
                 billing_kind: account.billing_kind()?,
                 billing_kind_override: account.billing_kind,
                 disabled_models: account.disabled_models().iter().cloned().collect(),
-                pricing_enabled: account.pricing_mode == pl_protocol::PricingMode::Catalog,
                 account_id: id.to_string(),
                 template_id: account.template_id().map(ToString::to_string),
                 protocol: account.protocol.as_str().to_string(),
@@ -182,26 +186,15 @@ fn settings_view(state: &ConfigRuntimeSnapshot) -> Result<StudioSettings> {
                 .unwrap_or_default(),
         })
         .collect();
-    let roles = StudioRole::child_roles()
+    let roles = crate::config::system_agent_profiles(config)?
         .into_iter()
-        .map(|role| {
-            let route = config
-                .models
-                .routes
-                .get(&role.id())
-                .with_context(|| format!("missing Studio role route: {}", role.key()))?;
-            Ok(StudioRoleSettings {
-                key: role.key().to_string(),
-                account_id: route.account_id.to_string(),
-                model_id: route.model_id.clone(),
-                effort: route
-                    .effort
-                    .as_ref()
-                    .map(|effort| effort.as_str().to_string())
-                    .unwrap_or_default(),
-            })
+        .map(|profile| StudioRoleSettings {
+            key: profile.profile_id,
+            account_id: profile.account_id,
+            model_id: profile.model_id,
+            effort: profile.effort.unwrap_or_default(),
         })
-        .collect::<Result<Vec<_>>>()?;
+        .collect();
     let mcp_servers = crate::config::effective_mcp_servers(config)
         .into_values()
         .map(|server| StudioMcpServerSettings {
@@ -231,6 +224,7 @@ fn settings_view(state: &ConfigRuntimeSnapshot) -> Result<StudioSettings> {
             .get(&pl_protocol::ThreadModeId::simple())
             .map(|route| route.account_id.to_string()),
         accounts,
+        acp_accounts,
         mode_model_routes,
         roles,
         permission_mode: config.runtime.permission_mode.label().to_string(),

@@ -144,9 +144,21 @@ final class _DraftsRepository
   bool _sealed = false;
   bool _disposed = false;
   bool _admitting = false;
-  DateTime? _deadline;
   Future<void>? _cleaning;
   Future<CloseReport>? _closing;
+
+  /// The lifetime responsibility [_closing] settled on, and whether it settled
+  /// complete. A later explicit retry installs a newer responsibility there, so
+  /// a close that settled incomplete only stays shared while that responsibility
+  /// is still the current one.
+  Future<void>? _joined;
+  int _joinGeneration = 0;
+  bool _joinSettled = false;
+  bool _joinComplete = false;
+
+  /// One shared bounded observation of [_closing]; reused while it is pending.
+  Future<CloseReport>? _boundedClosing;
+  bool _boundedSettled = false;
   bool _archiveCleanupRequested = false;
   bool _archiveCleanupScheduled = false;
   @override
@@ -535,21 +547,96 @@ final class _DraftsRepository
   ];
   @override
   Future<CloseReport> close({DateTime? deadline}) {
-    // Repeated close exposes the original close responsibility: callers observe
-    // the same Future instead of a new wrapper around the same underlying work.
-    if (_closing case final first?) return first;
-    _boundDeadline(deadline);
+    final joining = _currentJoin();
+    // Repeated close shares the current join by identity, never a new wrapper
+    // around the same work.
+    if (deadline == null) return joining;
+    // A deadline bounds this observation only: it never replaces, shortens or
+    // cancels the original join, which stays the same Future above. Concurrent
+    // bounded calls also share one observation instance.
+    if (_boundedClosing case final pending? when !_boundedSettled)
+      return pending;
+    final started = _observeClose(joining, deadline);
+    _boundedSettled = false;
+    started
+        .then(
+          (_) => _boundedSettled = true,
+          onError: (Object _, StackTrace __) => _boundedSettled = true,
+        )
+        .ignore();
+    return _boundedClosing = started;
+  }
+
+  /// The close join this repository currently owes.
+  ///
+  /// A running join stays shared by identity, and so does one whose report
+  /// already ended the whole responsibility. A join that settled incomplete is
+  /// only shared while the lifetime still reports the responsibility it settled
+  /// on: after a later explicit retry installed a newer one, this joins the
+  /// newer responsibility instead of reporting the earlier incomplete snapshot
+  /// again, and without asking the owners for another unresolved cleanup.
+  Future<CloseReport> _currentJoin() {
+    final cached = _closing;
+    if (cached != null &&
+        (!_joinSettled ||
+            _joinComplete ||
+            identical(_joined, lifetime.closing))) {
+      return cached;
+    }
+    return _newJoin();
+  }
+
+  /// Publishes the one join Future, then runs the real join behind it.
+  ///
+  /// Sealing, owner cleanup and canonical notifications can all reenter this
+  /// repository synchronously, so the identity must exist before any of them
+  /// runs. Completion bookkeeping belongs to the current generation only: a
+  /// later join must never be described by an older one's result.
+  Future<CloseReport> _newJoin() {
+    final done = Completer<CloseReport>();
+    final generation = ++_joinGeneration;
+    _joinSettled = false;
+    _joinComplete = false;
+    _joined = null;
+    // 1. The one identity exists before anything can reenter close.
+    _closing = done.future;
+    // 2. Seal admission records before the join starts any cleanup.
     seal();
-    return _closing ??= lifetime.close(deadline: _deadline);
+    // 3. Only now run the real join, whose startup still reenters safely.
+    unawaited(
+      _closeJoin().then<void>(
+        (result) {
+          if (generation == _joinGeneration) {
+            _joinSettled = true;
+            _joinComplete = result.report.complete;
+            _joined = result.joined;
+          }
+          if (!done.isCompleted) done.complete(result.report);
+        },
+        onError: (Object error, StackTrace stack) {
+          // A failed join never stands in for the next responsibility.
+          if (generation == _joinGeneration) {
+            _joinSettled = true;
+            _joinComplete = false;
+            _joined = null;
+          }
+          if (!done.isCompleted) done.completeError(error, stack);
+        },
+      ),
+    );
+    return done.future;
   }
 
   @override
   Future<CloseReport> retryCleanup({DateTime? deadline}) async {
     if (_sealed) {
-      _boundDeadline(deadline);
-      // A retry is a new observation of the same close responsibility, so it
-      // becomes the close Future later repeated close callers share.
-      return _closing = lifetime.close(deadline: _deadline, retry: true);
+      // The unique unbounded join stays the original responsibility. An explicit
+      // retry is one additional pass over the same registered owners; it never
+      // replaces that join and never degrades it to a bounded snapshot.
+      _closing ??= _newJoin();
+      final retried = _retryClose();
+      if (deadline == null) return retried;
+      return _observeClose(retried, deadline);
     }
     await _observeDraftWork(
       Future.wait([
@@ -562,12 +649,63 @@ final class _DraftsRepository
     for (final handle in [..._composers.values, ..._starts.values]) {
       refreshIssues(handle);
     }
-    return lifetime.snapshotReport();
+    return _composeArchiveReport(lifetime.snapshotReport());
   }
 
-  void _boundDeadline(DateTime? next) {
-    if (next != null && (_deadline == null || next.isBefore(_deadline!)))
-      _deadline = next;
+  /// A capture's own unresolved owners (for example its original membership
+  /// read) are part of this close responsibility, not a flattened issue list on
+  /// the capture. Nested owners keep their identity; nothing is reported twice.
+  CloseReport _composeArchiveReport(CloseReport report) {
+    final owners = {for (final resource in report.unresolved) resource.owner};
+    return CloseReport(
+      unresolved: [
+        ...report.unresolved,
+        for (final capture in List.of(_archives))
+          for (final resource in capture.report().unresolved)
+            if (owners.add(resource.owner)) resource,
+      ],
+    );
+  }
+
+  /// One explicit retry pass over the same registered owners.
+  Future<CloseReport> _retryClose() async =>
+      _composeArchiveReport(await lifetime.close(retry: true));
+
+  /// The one real close join. It is never bounded by a caller's deadline.
+  ///
+  /// A concurrent explicit retry installs a newer close responsibility in the
+  /// same lifetime, so this join follows it instead of reporting the snapshot
+  /// taken before that retry finished: the original work is joined to its real
+  /// end, not to the first pass' result.
+  Future<({CloseReport report, Future<void>? joined})> _closeJoin() async {
+    Future<void>? followed;
+    while (true) {
+      final report = _composeArchiveReport(await lifetime.close());
+      if (report.complete) return (report: report, joined: lifetime.closing);
+      // This repository's own disposal covers only its records, ledger and
+      // permit. Owners registered independently in the same lifetime — a
+      // PinnedReadOwner behind an AttachmentBinaryReadOwner, for example — still
+      // owe their own close, so disposal never ends this join early.
+      final pending = lifetime.closing;
+      if (pending == null || identical(pending, followed))
+        return (report: report, joined: pending);
+      followed = pending;
+      await pending;
+    }
+  }
+
+  Future<CloseReport> _observeClose(
+    Future<CloseReport> joining,
+    DateTime deadline,
+  ) async {
+    final remaining = deadline.difference(DateTime.now());
+    if (remaining <= Duration.zero)
+      return _composeArchiveReport(lifetime.snapshotReport());
+    try {
+      return await joining.timeout(remaining);
+    } on TimeoutException {
+      return _composeArchiveReport(lifetime.snapshotReport());
+    }
   }
 
   void remember(Object error, StackTrace stack) {

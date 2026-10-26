@@ -17,7 +17,6 @@ abstract class AccountTemplatesReadHeader with _$AccountTemplatesReadHeader {
 @Freezed(toStringOverride: false)
 abstract class AccountTemplateRead with _$AccountTemplateRead {
   const factory AccountTemplateRead({
-    required bool pricingEnabled,
     required ReadText id,
     required ReadText displayName,
     required ReadText? description,

@@ -1,18 +1,17 @@
-import 'package:anywork_client/account_usage_ports.dart';
 import 'package:anywork_client/resources_ports.dart';
+import 'package:anywork_client/statistics_ports.dart';
 
 import 'history_read_connection.dart';
 import 'identity_read_connections.dart';
 import 'performance_history_feed.dart';
 import 'performance_summaries_feed.dart';
-import 'session_costs_feed.dart';
-import 'session_costs_read_connection.dart';
 import 'summaries_read_connection.dart';
 
 StatisticsPort createStatisticsPort() => const FrbStatisticsPort();
 
 /// No secondary statistics cache or model selection. Every read opens the
 /// exact reference/origin supplied by the Repository, including identity reads.
+/// Root-session costs are not part of this domain.
 final class FrbStatisticsPort implements StatisticsPort {
   const FrbStatisticsPort();
 
@@ -33,15 +32,6 @@ final class FrbStatisticsPort implements StatisticsPort {
   }
 
   @override
-  Future<FeedConnection<SessionCostsFrame>> openSessionCosts(
-    String rootThreadId,
-  ) async {
-    final connection = FrbSessionCostsConnection(rootThreadId);
-    await connection.opened;
-    return connection;
-  }
-
-  @override
   Future<PerformanceSummariesReadConnection> openPerformanceSummariesRead(
     PerformanceSummariesReadRef reference, {
     required ProductReadOrigin origin,
@@ -57,16 +47,6 @@ final class FrbStatisticsPort implements StatisticsPort {
     required ProductReadOrigin origin,
   }) async {
     final connection = FrbPerformanceHistoryReadConnection(reference, origin);
-    await connection.opened;
-    return connection;
-  }
-
-  @override
-  Future<SessionCostsReadConnection> openSessionCostsRead(
-    SessionCostsReadRef reference, {
-    required ProductReadOrigin origin,
-  }) async {
-    final connection = FrbSessionCostsReadConnection(reference, origin);
     await connection.opened;
     return connection;
   }

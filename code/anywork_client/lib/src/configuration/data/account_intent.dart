@@ -1,4 +1,6 @@
 import '../../../resources.dart';
+import '../../../models.dart' show BillingKind;
+import '../../acp/domain/acp_values.dart' show AcpAccountUpdate;
 import '../domain/account_edits.dart';
 import '../domain/configuration_values.dart';
 import '../domain/settings_updates.dart';
@@ -17,6 +19,11 @@ AccountEdit freezeAccountEdit(AccountEdit intent) {
       'Rebuilding model configuration requires an explicit template.',
     );
   }
+  if (!intent.create && intent.initialBillingKind != null) {
+    throw _invalid(
+      'The initial billing kind only applies to account creation.',
+    );
+  }
   for (final change in intent.autoCompactLimits) {
     if (change.overrideLimit != null && change.overrideLimit! <= 0) {
       throw _invalid(
@@ -28,10 +35,9 @@ AccountEdit freezeAccountEdit(AccountEdit intent) {
       (intent.templateId is! SetField<String?> ||
           intent.protocol is! SetField<String> ||
           intent.name is! SetField<String> ||
-          intent.baseUrl is! SetField<String> ||
-          intent.pricingEnabled is! SetField<bool>)) {
+          intent.baseUrl is! SetField<String>)) {
     throw _invalid(
-      'Account creation requires explicit template, protocol, name, URL and pricing fields.',
+      'Account creation requires explicit template, protocol, name and URL.',
     );
   }
   return intent.copyWith(
@@ -188,15 +194,31 @@ AccountSettingsUpdate buildAccountUpdate(
     name: _requiredField(intent.name, canonical?.name),
     baseUrl: _requiredField(intent.baseUrl, canonical?.baseUrl),
     secret: intent.secret,
-    pricingEnabled: _requiredField(
-      intent.pricingEnabled,
-      canonical?.pricingEnabled,
-    ),
+    initialBillingKind: intent.create
+        ? _initialBillingKind(intent.initialBillingKind)
+        : null,
     customModels: List.unmodifiable(models),
     modelConnectionModes: List.unmodifiable(connections),
     modelAutoCompactLimits: List.unmodifiable(limits),
   );
 }
+
+/// ACP 接入的写入意图在提交前冻结。
+///
+/// 只接受持久化的三个字段：稳定 ID、名称与 provider。program/argv、版本或自定义
+/// 路径无法通过这个入口进入配置；这里也不改写调用方给出的名称，运行期负责最终校验。
+AcpAccountUpdate freezeAcpAccountUpdate(AcpAccountUpdate intent) {
+  if (intent.accountId.trim().isEmpty || intent.name.trim().isEmpty) {
+    throw _invalid('An ACP account requires a non-empty id and name.');
+  }
+  return intent;
+}
+
+/// `unknown` 表示“未指定”，不作为新账号的初始计费类别提交。
+///
+/// 显式的 `unknown` 覆盖仍由 `setAccountBillingKind` 窄命令表达，两者语义分离。
+BillingKind? _initialBillingKind(BillingKind? value) =>
+    value == BillingKind.unknown ? null : value;
 
 T _requiredField<T>(FieldEdit<T> field, T? canonical) => switch (field) {
   SetField<T>(:final value) => value,

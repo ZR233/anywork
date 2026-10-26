@@ -66,6 +66,24 @@ final class AccountConfigurationReadPage with _$AccountConfigurationReadPage {
   final int? nextOffset;
 }
 
+/// 有界的 ACP 接入分页；页身份、进展与续页沿用配置列表的同一约定。
+@Freezed(toStringOverride: false)
+final class AcpAccountConfigurationReadPage
+    with _$AcpAccountConfigurationReadPage {
+  AcpAccountConfigurationReadPage({
+    required this.listId,
+    required this.offset,
+    required this.total,
+    required List<AcpAccountConfigurationRead> items,
+    required this.nextOffset,
+  }) : items = List.unmodifiable(items);
+  final int listId;
+  final int offset;
+  final int total;
+  final List<AcpAccountConfigurationRead> items;
+  final int? nextOffset;
+}
+
 @Freezed(toStringOverride: false)
 final class CustomModelConfigurationReadPage
     with _$CustomModelConfigurationReadPage {

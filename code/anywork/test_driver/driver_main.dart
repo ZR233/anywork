@@ -115,6 +115,12 @@ void _enableDriverCommands() {
     ],
   );
   SchedulerBinding.instance.addTimingsCallback(_recordFrameTimings);
+  // 退出协调器只有一份：生产装配（`assembleApplication`）在启动时构造唯一的
+  // `ApplicationExitCoordinator`，Driver 直接借用同一实例
+  // （`_graph.exitCoordinator.requestHostExit` / `exit`）。因此不再需要首帧后
+  // 抢占 active 的安装，也不存在"首帧覆盖更早安装"的第二份协调器；既有 close
+  // 报告的 unresolved 资源由协调器状态暴露（`driver_inspection.dart` 的
+  // `exit-status` → `unresolvedClientResources` / `clientResources`）。
 }
 
 late ProviderContainer _container;
@@ -915,6 +921,13 @@ Future<int> _observeNativeArm() async {
   return remaining;
 }
 
+/// 本地化上下文只用于把 label 解析到当前 Locale，不读取任何业务值。
+///
+/// 旧的 Driver 专用投影（`_shutdownReportJson`、`_accountUsageStateJson`、
+/// `_clientCloseResourcesJson` 等）已随旧 Client facade 一起移除，事实来源改为
+/// 真实 owner 的 typed 投影：退出报告/未收束资源见 `driver_inspection.dart` 的
+/// `exit-status`，账号用量见 `driver_product_requests.dart` 的
+/// `account-usage-state`。
 BuildContext? _localizedDriverContext() {
   final root = WidgetsBinding.instance.rootElement;
   if (root == null) return null;

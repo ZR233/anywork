@@ -20,7 +20,9 @@ void main() {
   test(
     'start-page observers rebind to the same preparation after disposal',
     () async {
-      final fixture = TimelineDraftsEnvironment(clientId: 'preparation-adapter');
+      final fixture = TimelineDraftsEnvironment(
+        clientId: 'preparation-adapter',
+      );
       addTearDown(fixture.close);
       await _boundary(fixture.establish(), 'initial native material');
       await _boundary(
@@ -40,7 +42,7 @@ void main() {
       );
       ProviderContainer createContainer() => ProviderContainer(
         overrides: [
-        draftsRepositoryProvider.overrideWithValue(fixture.repository),
+          draftsRepositoryProvider.overrideWithValue(fixture.repository),
         ],
       );
       var container = createContainer();
@@ -61,7 +63,7 @@ void main() {
         StartRouteRead.ready(
           sources: routePin.originalHeader,
           query: resolve.query,
-        intent: resolve.query.intent,
+          intent: resolve.query.intent,
           route: const ModelSelection(
             model: AccountModelKey(
               accountId: 'start-account',
@@ -85,7 +87,7 @@ void main() {
           (result) => throw StateError(switch (result) {
             RejectedCommandResult(:final error) =>
               'Creation rejected: ${error.code.name}: ${error.message}',
-          _ => 'Creation was not admitted: $result',
+            _ => 'Creation was not admitted: $result',
           }),
         ),
       ]);
@@ -115,7 +117,7 @@ void main() {
         ThreadPreparationProgress(
           projectId: 'project',
           inputId: opening.request.input.inputId,
-            stage: ThreadPreparationStage.creatingWorktree,
+          stage: ThreadPreparationStage.creatingWorktree,
           workspacePath: '/isolated/session-worktree',
           branch: 'pure/session',
         ),
@@ -141,7 +143,7 @@ void main() {
 
       result.completeError(
         const CommandDispatchFailure.rejected(
-        failure: StudioFailure(
+          failure: StudioFailure(
             code: StudioFailureCode.invalidArgument,
             message: 'the repository has no HEAD',
             retryable: false,

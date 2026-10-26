@@ -12,6 +12,7 @@ import 'connectors/settings_failure_text.dart';
 import 'connectors/settings_navigation_connector.dart';
 import 'connectors/settings_project_context.dart';
 import 'general/connectors/general_settings_connector.dart';
+import 'general/view_models/settings_readiness_view_model.dart';
 import 'instructions/connectors/instructions_connector.dart';
 import 'lsp/connectors/lsp_connector.dart';
 import 'mcp/connectors/mcp_connector.dart';
@@ -35,6 +36,8 @@ class SettingsScreen extends ConsumerStatefulWidget {
 }
 
 class _SettingsScreenState extends ConsumerState<SettingsScreen> {
+  final Object _readinessEntry = Object();
+  SettingsReadinessViewModel? _readinessOwner;
   bool _entryScheduled =
       false; // Coalesce UI lifecycle callbacks, not tab state.
 
@@ -61,6 +64,12 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
   }
 
   Future<void> _enter() async {
+    if (!mounted || ModalRoute.of(context)?.isActive != true) return;
+    if (_readinessOwner == null) {
+      final readiness = ref.read(settingsReadinessViewModelProvider.notifier);
+      _readinessOwner = readiness;
+      unawaited(readiness.enter(_readinessEntry));
+    }
     final initialTab = widget.initialTab;
     final owner = ref.read(settingsNavigationViewModelProvider.notifier);
     final before = ref.read(settingsNavigationViewModelProvider);
@@ -103,8 +112,15 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
   }
 
   @override
+  void dispose() {
+    _readinessOwner?.leave(_readinessEntry);
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
     final navigation = ref.watch(settingsNavigationViewModelProvider);
+    final readiness = ref.watch(settingsReadinessViewModelProvider);
     return PopScope<void>(
       canPop: false,
       onPopInvokedWithResult: (didPop, result) {
@@ -112,7 +128,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
       },
       child: Scaffold(
         body: SafeArea(
-          child: navigation.when(
+          child: readiness.when(
             loading: () => const Center(child: CircularProgressIndicator()),
             error: (error, stack) {
               if (error is! StudioFailure) {
@@ -120,16 +136,34 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
               }
               return Center(child: SelectableText(settingsFailureText(error)));
             },
-            data: (state) => SettingsView(
-              state: state,
-              panels: {
-                for (final tab in SettingsTab.values)
-                  if (state.visited.contains(tab)) tab: _panel(tab),
-              },
-              onSelect: (tab) =>
-                  unawaited(selectSettingsTab(context, ref, tab)),
-              onBack: _back,
-            ),
+            data: (ready) => !ready.ready
+                ? Center(
+                    child: ready.error == null
+                        ? const CircularProgressIndicator()
+                        : SelectableText(settingsFailureText(ready.error!)),
+                  )
+                : navigation.when(
+                    loading: () =>
+                        const Center(child: CircularProgressIndicator()),
+                    error: (error, stack) {
+                      if (error is! StudioFailure) {
+                        Error.throwWithStackTrace(error, stack);
+                      }
+                      return Center(
+                        child: SelectableText(settingsFailureText(error)),
+                      );
+                    },
+                    data: (state) => SettingsView(
+                      state: state,
+                      panels: {
+                        for (final tab in SettingsTab.values)
+                          if (state.visited.contains(tab)) tab: _panel(tab),
+                      },
+                      onSelect: (tab) =>
+                          unawaited(selectSettingsTab(context, ref, tab)),
+                      onBack: _back,
+                    ),
+                  ),
           ),
         ),
       ),

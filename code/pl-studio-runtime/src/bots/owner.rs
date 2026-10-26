@@ -79,6 +79,7 @@ pub(crate) struct ManagedBot {
     pub(crate) diagnostic: Mutex<Option<pl_protocol::studio::BotDiagnostic>>,
     pub(crate) generation: Arc<AtomicU64>,
     pub(crate) token: TokenLease,
+    pub(crate) send_rate: super::send::SendRate,
     pub(crate) bot_open_id: Mutex<Option<(u64, String)>>,
     pub(crate) admission: tokio::sync::Mutex<()>,
     pub(crate) admission_closed: AtomicBool,

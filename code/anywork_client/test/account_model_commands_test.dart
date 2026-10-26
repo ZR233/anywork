@@ -46,7 +46,6 @@ AccountConfiguration _account() => AccountConfiguration(
   name: 'Account',
   baseUrl: 'https://original.invalid',
   hasBearerToken: false,
-  pricingEnabled: false,
   bearerTokenEnv: null,
   billingKind: BillingKind.subscription,
   billingKindOverride: null,
@@ -1166,5 +1165,72 @@ void main() {
     expect(fixture.port.lookups, isEmpty);
     expect(await ticket.result, committed);
     expect(ticket.state.value.receipt, receipt);
+  });
+
+  test('an explicit no-charge toggle is not optimistically applied and a failed write leaves canonical billing intact', () async {
+    final fixture = await _fixture();
+    Future<AccountConfiguration> current() =>
+        fixture.repository.loadAccount('account');
+
+    final toggle = fixture.repository.setAccountBillingKind(
+      'account',
+      BillingKind.noCharge,
+    );
+    final charged = await fixture.port.billingChanged(0);
+    expect(
+      charged.request,
+      SetAccountBillingKindRequest(
+        operationId: toggle.id,
+        expectedRevision: 1,
+        accountId: 'account',
+        billingKind: BillingKind.noCharge,
+      ),
+    );
+    // The switch is a projection of canonical billing facts: dispatch alone
+    // must not report a no-charge account.
+    expect((await current()).billingKind, BillingKind.subscription);
+    expect((await current()).billingKindOverride, isNull);
+    await _commit(
+      fixture,
+      charged,
+      toggle,
+      2,
+      canonical: _account().copyWith(
+        billingKind: BillingKind.noCharge,
+        billingKindOverride: BillingKind.noCharge,
+      ),
+    );
+    expect((await current()).billingKind, BillingKind.noCharge);
+    expect((await current()).billingKindOverride, BillingKind.noCharge);
+
+    // Turning no charge off clears the override; it never replays the
+    // effective category as a new explicit intent.
+    final clear = fixture.repository.setAccountBillingKind('account', null);
+    final clearing = await fixture.port.billingChanged(1);
+    expect(clearing.request.billingKind, isNull);
+    expect(
+      clearing.request.billingKind,
+      isNot(BillingKind.noCharge),
+      reason: 'Turning no charge off must clear, not replay the effective kind',
+    );
+    await _commit(fixture, clearing, clear, 3, canonical: _account());
+    expect((await current()).billingKind, BillingKind.subscription);
+    expect((await current()).billingKindOverride, isNull);
+
+    // A refused write cannot fabricate the switch state.
+    final failing = fixture.repository.setAccountBillingKind(
+      'account',
+      BillingKind.noCharge,
+    );
+    final refused = await fixture.port.billingChanged(2);
+    await _reject(refused, failing);
+    expect(failing.state.value.error, _refusal);
+    expect((await current()).billingKind, BillingKind.subscription);
+    expect((await current()).billingKindOverride, isNull);
+    expect(
+      fixture.port.saves,
+      isEmpty,
+      reason: 'The billing switch is never a full account save',
+    );
   });
 }

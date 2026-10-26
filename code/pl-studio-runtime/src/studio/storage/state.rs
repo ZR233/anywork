@@ -121,13 +121,21 @@ impl StateStore {
             history.thread_id() == self.thread_id,
             "history database belongs to another Thread"
         );
-        if let Some(checkpoint) = history.checkpoint().await? {
+        // 一次只读快照同时给出 checkpoint 有无、写入水位，并在同一事务内校验库身份与 schema：
+        // 绝不能把"提交前读到的 None"与"提交后读到的非零水位"拼成损坏结论。判据本身不放宽。
+        let snapshot = history.checkpoint_snapshot().await?;
+        if let Some(checkpoint) = snapshot
+            .as_ref()
+            .and_then(|snapshot| snapshot.checkpoint.clone())
+        {
             self.cleanup_legacy(history).await?;
             return Ok(Some(checkpoint));
         }
         let Some(mut checkpoint) = self.load_legacy().await? else {
+            // 没有 history 数据库时水位按 0 计；有数据库时使用同一次快照的水位。
+            let watermark = snapshot.as_ref().map_or(0, |snapshot| snapshot.watermark);
             ensure!(
-                history.watermark().await? == 0,
+                watermark == 0,
                 "history exists without a recovery checkpoint"
             );
             return Ok(None);

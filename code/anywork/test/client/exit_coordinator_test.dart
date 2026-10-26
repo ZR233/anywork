@@ -172,7 +172,9 @@ void main() {
       );
       final first = coordinator.requestHostExit(firstIntent);
       final competing = coordinator.requestHostExit(
-        firstIntent == ExitIntent.exit ? ExitIntent.updateRestart : ExitIntent.exit,
+        firstIntent == ExitIntent.exit
+            ? ExitIntent.updateRestart
+            : ExitIntent.exit,
       );
       expect(competing, same(first));
       expect(order, ['handoff', 'operations-sealed', 'detached']);
@@ -188,11 +190,16 @@ void main() {
       expect(earlyBudget, inInclusiveRange(1, 28000));
       for (final deadline in deadlines) {
         expect(deadline, isNotNull);
-        expect(deadline!.difference(DateTime.now()).inMilliseconds,
-            inInclusiveRange(1, 28000));
+        expect(
+          deadline!.difference(DateTime.now()).inMilliseconds,
+          inInclusiveRange(1, 28000),
+        );
       }
-      expect(lifecycle.intents, isEmpty,
-          reason: 'Both independent close owners must finish before finalizer');
+      expect(
+        lifecycle.intents,
+        isEmpty,
+        reason: 'Both independent close owners must finish before finalizer',
+      );
       conversation.receipt.complete(CloseReport(unresolved: []));
       await Future<void>.value();
       expect(lifecycle.intents, isEmpty);
@@ -201,63 +208,87 @@ void main() {
       expect(lifecycle.intents, [firstIntent]);
       expect(lifecycle.externalReports.single, isEmpty);
       expect(lifecycle.finalizerBudgets.single, lessThanOrEqualTo(earlyBudget));
-      expect(host.methods.where((method) => method == 'showMainWindow'), hasLength(1),
-          reason: 'A tray-hidden update notice must be shown before finalization');
+      expect(
+        host.methods.where((method) => method == 'showMainWindow'),
+        hasLength(1),
+        reason: 'A tray-hidden update notice must be shown before finalization',
+      );
       expect(notices.single.$2, isFalse);
       lifecycle.result.complete(_ordinaryExit);
       await lifecycle.finishingDiagnostics.future;
-      expect(host.exitCodes, isEmpty,
-          reason: 'Diagnostic finalization is a separate real join');
+      expect(
+        host.exitCodes,
+        isEmpty,
+        reason: 'Diagnostic finalization is a separate real join',
+      );
       lifecycle.diagnosticsReceipt.complete();
       await first;
       expect(lifecycle.beginCalls, 1);
       expect(lifecycle.diagnosticsCalls, 1);
       expect(conversation.calls, 1);
       expect(updates.calls, 1);
-      expect(host.methods.where((method) => method == 'beginExit'), hasLength(1));
+      expect(
+        host.methods.where((method) => method == 'beginExit'),
+        hasLength(1),
+      );
       expect(host.exitCodes, [0]);
     });
   }
 
-  test('external unresolved issues reach the unique native finalizer before Clean',
-      () async {
-    final host = _HostCalls()..install();
-    host.armReceipt.complete(30000);
-    final lifecycle = _Lifecycle();
-    final owner = _CloseOwner('conversation');
-    final coordinator = _coordinator(lifecycle, participants: [owner.participant]);
-    final exit = coordinator.exit(ExitIntent.exit);
-    await owner.entered.future;
-    final unresolved = UnresolvedResource(
-      owner: 'original-session',
-      attemptId: const AttemptId(7),
-      issues: const [FeedCloseIssue(
-        diagnostic: _closeFailure,
-        recovery: CleanupRecovery.retryClose,
-      )],
-    );
-    owner.receipt.complete(CloseReport(unresolved: [unresolved]));
-    await lifecycle.finalizing.future;
-    expect(lifecycle.externalReports.single, [_closeFailure]);
-    expect(coordinator.state.value.unresolved, [unresolved]);
-    lifecycle.result.complete(_ordinaryExit);
-    await lifecycle.finishingDiagnostics.future;
-    lifecycle.diagnosticsReceipt.complete();
-    final report = await exit;
-    expect(report.shutdown.outcome, ShutdownOutcome.degraded,
-        reason: 'A violating native Clean cannot hide Dart unresolved resources');
-    expect(report.shutdown.issues, contains(_closeFailure));
-    expect(coordinator.state.value.unresolved, [unresolved]);
-    expect(coordinator.exit(ExitIntent.updateRestart), same(exit));
-    expect(lifecycle.intents, [ExitIntent.exit]);
-  });
+  test(
+    'external unresolved issues reach the unique native finalizer before Clean',
+    () async {
+      final host = _HostCalls()..install();
+      host.armReceipt.complete(30000);
+      final lifecycle = _Lifecycle();
+      final owner = _CloseOwner('conversation');
+      final coordinator = _coordinator(
+        lifecycle,
+        participants: [owner.participant],
+      );
+      final exit = coordinator.exit(ExitIntent.exit);
+      await owner.entered.future;
+      final unresolved = UnresolvedResource(
+        owner: 'original-session',
+        attemptId: const AttemptId(7),
+        issues: const [
+          FeedCloseIssue(
+            diagnostic: _closeFailure,
+            recovery: CleanupRecovery.retryClose,
+          ),
+        ],
+      );
+      owner.receipt.complete(CloseReport(unresolved: [unresolved]));
+      await lifecycle.finalizing.future;
+      expect(lifecycle.externalReports.single, [_closeFailure]);
+      expect(coordinator.state.value.unresolved, [unresolved]);
+      lifecycle.result.complete(_ordinaryExit);
+      await lifecycle.finishingDiagnostics.future;
+      lifecycle.diagnosticsReceipt.complete();
+      final report = await exit;
+      expect(
+        report.shutdown.outcome,
+        ShutdownOutcome.degraded,
+        reason:
+            'A violating native Clean cannot hide Dart unresolved resources',
+      );
+      expect(report.shutdown.issues, contains(_closeFailure));
+      expect(coordinator.state.value.unresolved, [unresolved]);
+      expect(coordinator.exit(ExitIntent.updateRestart), same(exit));
+      expect(lifecycle.intents, [ExitIntent.exit]);
+    },
+  );
 
   for (final failure in [
     StudioExitReport(
       shutdown: _clean,
-      updateHandoff: UpdateHandoff.failed(error: SourceStateError(
-        code: 'installerLaunchFailed', message: 'Launch denied', retryable: false,
-      )),
+      updateHandoff: UpdateHandoff.failed(
+        error: SourceStateError(
+          code: 'installerLaunchFailed',
+          message: 'Launch denied',
+          retryable: false,
+        ),
+      ),
     ),
     StudioExitReport(
       shutdown: StudioShutdownReport(
@@ -268,39 +299,47 @@ void main() {
       updateHandoff: UpdateHandoff.notRequested(),
     ),
   ]) {
-    test('${failure.shutdown.outcome.name} and installer result remain independent '
-        'and host waits for visible failure notice', () async {
-      final host = _HostCalls()..install();
-      host.armReceipt.complete(30000);
-      final lifecycle = _Lifecycle();
-      final noticeEntered = Completer<Duration>();
-      final noticeReceipt = Completer<void>();
-      final coordinator = _coordinator(lifecycle, notice: (remaining, allowReading) {
-        expect(allowReading, isTrue);
-        noticeEntered.complete(remaining);
-        return noticeReceipt.future;
-      });
-      final exit = coordinator.requestHostExit(ExitIntent.updateRestart);
-      await lifecycle.finalizing.future;
-      lifecycle.result.complete(failure);
-      await lifecycle.finishingDiagnostics.future;
-      lifecycle.diagnosticsReceipt.complete();
-      final remaining = await noticeEntered.future;
-      expect(remaining.inMilliseconds, inInclusiveRange(1, 30000));
-      expect(coordinator.state.value.report, failure);
-      expect(coordinator.state.value.failed, isTrue);
-      expect(host.exitCodes, isEmpty,
-          reason: 'Failure rendering/read interval cannot be bypassed by exit');
-      noticeReceipt.complete();
-      await exit;
-      expect(host.exitCodes, [1]);
-      expect(host.methods.last, 'finishExit');
-      expect(lifecycle.intents, [ExitIntent.updateRestart]);
-    });
+    test(
+      '${failure.shutdown.outcome.name} and installer result remain independent '
+      'and host waits for visible failure notice',
+      () async {
+        final host = _HostCalls()..install();
+        host.armReceipt.complete(30000);
+        final lifecycle = _Lifecycle();
+        final noticeEntered = Completer<Duration>();
+        final noticeReceipt = Completer<void>();
+        final coordinator = _coordinator(
+          lifecycle,
+          notice: (remaining, allowReading) {
+            expect(allowReading, isTrue);
+            noticeEntered.complete(remaining);
+            return noticeReceipt.future;
+          },
+        );
+        final exit = coordinator.requestHostExit(ExitIntent.updateRestart);
+        await lifecycle.finalizing.future;
+        lifecycle.result.complete(failure);
+        await lifecycle.finishingDiagnostics.future;
+        lifecycle.diagnosticsReceipt.complete();
+        final remaining = await noticeEntered.future;
+        expect(remaining.inMilliseconds, inInclusiveRange(1, 30000));
+        expect(coordinator.state.value.report, failure);
+        expect(coordinator.state.value.failed, isTrue);
+        expect(
+          host.exitCodes,
+          isEmpty,
+          reason: 'Failure rendering/read interval cannot be bypassed by exit',
+        );
+        noticeReceipt.complete();
+        await exit;
+        expect(host.exitCodes, [1]);
+        expect(host.methods.last, 'finishExit');
+        expect(lifecycle.intents, [ExitIntent.updateRestart]);
+      },
+    );
   }
 
-  test('failed edit handoff and shell release cannot block other seals or cancellation',
-      () async {
+  test('failed edit handoff and shell release cannot block other seals or cancellation', () async {
     final host = _HostCalls()..install();
     host.armReceipt.complete(30000);
     final lifecycle = _Lifecycle();
@@ -313,7 +352,9 @@ void main() {
           calls.add('failed-handoff');
           throw const StudioFailure(
             code: StudioFailureCode.internal,
-            message: 'handoff failed', retryable: false, correlationId: 'handoff',
+            message: 'handoff failed',
+            retryable: false,
+            correlationId: 'handoff',
           );
         }),
         _EditProducer(() => calls.add('second-handoff')),
@@ -325,28 +366,39 @@ void main() {
         calls.add('shell-release');
         throw const StudioFailure(
           code: StudioFailureCode.internal,
-          message: 'shell failed', retryable: false, correlationId: 'shell',
+          message: 'shell failed',
+          retryable: false,
+          correlationId: 'shell',
         );
       },
     );
     final exit = coordinator.exit(ExitIntent.exit);
-    expect(calls, ['failed-handoff', 'second-handoff', 'operations-sealed', 'detached']);
+    expect(calls, [
+      'failed-handoff',
+      'second-handoff',
+      'operations-sealed',
+      'detached',
+    ]);
     expect(owner.seals, 1);
     await owner.entered.future;
     await lifecycle.begun.future;
     owner.receipt.complete(CloseReport(unresolved: []));
     await lifecycle.finalizing.future;
     expect(calls, contains('shell-release'));
-    expect(lifecycle.externalReports.single.map((issue) => issue.correlationId),
-        containsAll(['handoff', 'shell']));
-    lifecycle.result.complete(StudioExitReport(
-      shutdown: StudioShutdownReport(
-        outcome: ShutdownOutcome.degraded,
-        issues: lifecycle.externalReports.single,
-        persistence: const PendingPersistence.drained(),
+    expect(
+      lifecycle.externalReports.single.map((issue) => issue.correlationId),
+      containsAll(['handoff', 'shell']),
+    );
+    lifecycle.result.complete(
+      StudioExitReport(
+        shutdown: StudioShutdownReport(
+          outcome: ShutdownOutcome.degraded,
+          issues: lifecycle.externalReports.single,
+          persistence: const PendingPersistence.drained(),
+        ),
+        updateHandoff: const UpdateHandoff.notRequested(),
       ),
-      updateHandoff: const UpdateHandoff.notRequested(),
-    ));
+    );
     await lifecycle.finishingDiagnostics.future;
     lifecycle.diagnosticsReceipt.complete();
     final report = await exit;

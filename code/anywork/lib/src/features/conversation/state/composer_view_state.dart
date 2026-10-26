@@ -1,4 +1,5 @@
 import 'package:anywork_client/drafts.dart';
+import 'package:anywork_client/models.dart';
 import 'package:anywork_client/operations.dart';
 import 'package:anywork_client/resources.dart';
 import 'package:freezed_annotation/freezed_annotation.dart';
@@ -6,6 +7,38 @@ import 'package:freezed_annotation/freezed_annotation.dart';
 import 'editor_keys.dart';
 
 part 'composer_view_state.freezed.dart';
+
+/// Current catalog presentation only. Unknown and failed reads never infer
+/// support, and this value never owns draft attachments or admission policy.
+@Freezed(toStringOverride: false)
+abstract class ComposerAttachmentState with _$ComposerAttachmentState {
+  const ComposerAttachmentState._();
+  const factory ComposerAttachmentState({
+    @Default([]) List<ModelInputCapability> local,
+    @Default([]) List<ModelInputCapability> remote,
+    StudioFailure? error,
+  }) = _ComposerAttachmentState;
+
+  List<String> get localExtensions {
+    final modalities = local.map((capability) => capability.modality).toSet();
+    if (modalities.contains(ModelModality.file)) return const [];
+    return [
+      if (modalities.contains(ModelModality.image)) ...const [
+        'png',
+        'jpg',
+        'jpeg',
+        'gif',
+        'webp',
+      ],
+      if (modalities.contains(ModelModality.video)) ...const [
+        'mp4',
+        'mov',
+        'webm',
+        'mkv',
+      ],
+    ];
+  }
+}
 
 @Freezed(toStringOverride: false)
 abstract class ComposerViewState with _$ComposerViewState {

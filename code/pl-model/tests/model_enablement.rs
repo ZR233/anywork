@@ -266,11 +266,6 @@ fn billing_kind_follows_template_and_canonical_endpoint() {
         coding_plan.billing_kind().unwrap(),
         BillingKind::Subscription
     );
-    // 订阅模板同时关闭金额估算：两者是独立事实。
-    assert_eq!(
-        coding_plan.pricing_mode,
-        pl_model::model::PricingMode::Disabled
-    );
     assert_eq!(
         template("mimo-token-plan").billing_kind().unwrap(),
         BillingKind::Subscription
@@ -287,10 +282,6 @@ fn billing_kind_follows_template_and_canonical_endpoint() {
     // 自定义兼容入口既不是订阅也不是已知按量计价。
     let compatible = template("openai-compatible");
     assert_eq!(compatible.billing_kind().unwrap(), BillingKind::Unknown);
-    assert_eq!(
-        compatible.pricing_mode,
-        pl_model::model::PricingMode::Disabled
-    );
 
     // 推导只认模板自身的 canonical endpoint。
     assert_eq!(
@@ -324,6 +315,15 @@ fn billing_kind_follows_template_and_canonical_endpoint() {
         explicit.inferred_billing_kind().unwrap(),
         BillingKind::Subscription
     );
+    explicit.billing_kind = Some(BillingKind::NoCharge);
+    explicit.base_url = "https://example.test/no-charge".into();
+    assert_eq!(explicit.billing_kind().unwrap(), BillingKind::NoCharge);
+    assert_eq!(
+        explicit.inferred_billing_kind().unwrap(),
+        BillingKind::Unknown
+    );
+    explicit.billing_kind = None;
+    assert_eq!(explicit.billing_kind().unwrap(), BillingKind::Unknown);
 
     let custom = openai_account();
     assert_eq!(custom.billing_kind, None);
@@ -354,6 +354,130 @@ fn billing_kind_follows_template_and_canonical_endpoint() {
             .unwrap()
             .iter()
             .all(|entry| entry.enabled)
+    );
+}
+
+/// 计费意图只改变请求冻结策略，不改写参考价或历史账单。
+#[test]
+fn billing_kind_freezes_accounting_without_erasing_reference_prices() {
+    use pl_model::model::{ModelPricing, TokenPriceTier};
+    use pl_protocol::{InferenceAccounting, PricingOutcome, UsageReport};
+
+    let mut model = ModelInfo::compatible("priced-model");
+    model.context_window = Some(64_000);
+    model.max_context_window = Some(64_000);
+    model.pricing = ModelPricing::published_at(
+        "USD",
+        vec![TokenPriceTier::flat(2.0, 8.0, Some(0.5), Some(3.0))],
+        "https://example.test/prices",
+        1,
+    );
+    let reference = model.pricing.catalog_pricing();
+    let mut account = AccountConfig::from_explicit_models(
+        ProtocolEndpoint::compatible("Synthetic", "https://example.test/v1"),
+        vec![model],
+    );
+    account.billing_kind = Some(BillingKind::NoCharge);
+    let account_id = AccountId::new("billing").unwrap();
+    let role = AgentRoleId::new("executor").unwrap();
+    let selector = ModelRouteConfig {
+        account_id: account_id.clone(),
+        model_id: "priced-model".into(),
+        effort: None,
+    };
+    let mut config = AgentModelConfig {
+        accounts: [(account_id.clone(), account)].into(),
+        routes: [(role.clone(), selector.clone())].into(),
+    };
+    assert_eq!(
+        model_descriptor(&member(&config.accounts[&account_id], "priced-model")).pricing,
+        reference
+    );
+    let frozen = config.resolve_route(role.clone(), &selector).unwrap();
+    let usage = UsageReport {
+        input_tokens: Some(1_000),
+        output_tokens: Some(100),
+        cache_read_tokens: Some(400),
+        cache_write_tokens: Some(100),
+        reasoning_tokens: Some(50),
+        total_tokens: Some(1_100),
+    };
+    for kind in [
+        BillingKind::Subscription,
+        BillingKind::Metered,
+        BillingKind::Unknown,
+    ] {
+        config.accounts.get_mut(&account_id).unwrap().billing_kind = Some(kind);
+        let current = config.resolve_route(role.clone(), &selector).unwrap();
+        let estimated = current
+            .model
+            .pricing
+            .account(usage.clone(), current.pricing_mode, 100);
+        assert!(matches!(
+            estimated.pricing,
+            PricingOutcome::Estimated { .. }
+        ));
+        assert!(estimated.estimated_costs()[0].amount > 0.0);
+        assert!(estimated.price_snapshot.is_some());
+        assert_eq!(
+            model_descriptor(&member(&config.accounts[&account_id], "priced-model")).pricing,
+            reference
+        );
+    }
+    let no_charge = frozen
+        .model
+        .pricing
+        .account(usage.clone(), frozen.pricing_mode, 100);
+    assert_eq!(
+        no_charge,
+        InferenceAccounting {
+            usage,
+            pricing: PricingOutcome::NoCharge,
+            price_snapshot: None,
+            request_started_at: Some(100),
+        }
+    );
+    assert!(no_charge.estimated_costs().is_empty());
+    assert!(no_charge.estimated_cache_savings().is_empty());
+    assert!(!no_charge.has_unpriced_usage());
+    let zero_estimate = ModelPricing::published_at(
+        "USD",
+        vec![TokenPriceTier::flat(0.0, 0.0, Some(0.0), Some(0.0))],
+        "https://example.test/zero-prices",
+        1,
+    )
+    .account(
+        no_charge.usage.clone(),
+        BillingKind::Subscription.into(),
+        100,
+    );
+    assert!(
+        matches!(&zero_estimate.pricing, PricingOutcome::Estimated { cost, .. }
+        if cost.amount == 0.0 && cost.currency == "USD")
+    );
+    assert_ne!(zero_estimate.pricing, no_charge.pricing);
+    assert_eq!(
+        ModelPricing::Unknown
+            .account(UsageReport::default(), frozen.pricing_mode, 100)
+            .pricing,
+        PricingOutcome::NoCharge
+    );
+    let historical: InferenceAccounting = serde_json::from_value(json!({
+        "usage": {}, "pricing": {"kind":"disabled"},
+        "priceSnapshot": null, "requestStartedAt": 1,
+    }))
+    .unwrap();
+    assert_eq!(historical.pricing, PricingOutcome::Disabled);
+    assert_ne!(historical.pricing, no_charge.pricing);
+    assert_eq!(
+        serde_json::from_value::<InferenceAccounting>(serde_json::to_value(&historical).unwrap())
+            .unwrap(),
+        historical
+    );
+    assert_eq!(
+        serde_json::from_value::<InferenceAccounting>(serde_json::to_value(&no_charge).unwrap())
+            .unwrap(),
+        no_charge
     );
 }
 

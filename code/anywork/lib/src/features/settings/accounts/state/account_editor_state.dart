@@ -8,7 +8,7 @@ import '../../state/settings_action.dart';
 
 part 'account_editor_state.freezed.dart';
 
-enum AccountEditorField { template, name, baseUrl, pricing, secret }
+enum AccountEditorField { template, name, baseUrl, secret }
 
 enum AccountSecretIntent { preserve, replace, clear }
 
@@ -64,7 +64,12 @@ abstract class AccountEditorViewState with _$AccountEditorViewState {
     required String protocol,
     required String name,
     required String baseUrl,
-    required bool pricingEnabled,
+
+    /// 新建账号的初始计费类别草稿；`BillingKind.unknown` 表示“未指定”，提交为 null。
+    ///
+    /// 只在 [create] 为 true 时使用：编辑已有账号的计费改写必须走
+    /// `setAccountBillingKind` 窄命令，不得借保存覆盖类别。
+    @Default(BillingKind.unknown) BillingKind initialBillingKind,
     @Default(AccountSecretIntent.preserve) AccountSecretIntent secretIntent,
     @Default('') String secretRaw,
     @Default([]) List<CustomModelDraft> customModels,
@@ -78,6 +83,9 @@ abstract class AccountEditorViewState with _$AccountEditorViewState {
     @Default(false) bool verifying,
     SettingsAction? saveAction,
     SettingsAction? defaultAction,
+
+    /// 编辑已有账号时 `setAccountBillingKind` 的受理与结果（noCharge 开关）。
+    SettingsAction? billingAction,
     StudioFailure? sourceError,
   }) = _AccountEditorViewState;
 

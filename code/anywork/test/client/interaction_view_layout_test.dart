@@ -32,7 +32,8 @@ void main() {
       expect(
         approve.right,
         closeTo(input.right, 1),
-        reason: '${layout.width}px / ${layout.scale}x actions follow input right',
+        reason:
+            '${layout.width}px / ${layout.scale}x actions follow input right',
       );
       if (layout.width == 1100) {
         expect(revise.height, closeTo(approve.height, 1));
@@ -108,9 +109,8 @@ Future<void> _pumpPlan(
       localizationsDelegates: AppLocalizations.localizationsDelegates,
       supportedLocales: AppLocalizations.supportedLocales,
       builder: (context, child) => MediaQuery(
-        data: MediaQuery.of(context).copyWith(
-          textScaler: TextScaler.linear(scale),
-        ),
+        data: MediaQuery.of(context)
+            .copyWith(textScaler: TextScaler.linear(scale)),
         child: child!,
       ),
       home: Scaffold(

@@ -229,23 +229,15 @@ final class ConversationFacetFeed<F> implements ConversationFacetControl {
           enteredStage = 'thread:${facet.name}:apply';
           return true;
         });
-        // PROBE
-        print('[P] consume ${facet.name} seq=$sequence');
         if (!_current(owner, generation)) return;
         if (feedId() case final id?) owner.expectFeedId(id);
         enteredStage = null;
         if (sequence != null) {
           enteredStage = 'thread:${facet.name}:ack';
-          // PROBE
-          print('[P] ack-begin ${facet.name} $sequence');
           await connection.ackThrough(sequence);
-          // PROBE
-          print('[P] ack-end ${facet.name} $sequence');
           enteredStage = null;
         }
       }
-      // PROBE
-      print('[P] eof ${facet.name}');
       if (_current(owner, generation))
         throw const StudioFailure(
           code: StudioFailureCode.unavailable,
@@ -254,10 +246,6 @@ final class ConversationFacetFeed<F> implements ConversationFacetControl {
           correlationId: 'thread-feed-eof',
         );
     } catch (error, stack) {
-      // PROBE
-      print(
-        '[P] catch ${facet.name} ${error.runtimeType} $error stage=$enteredStage',
-      );
       owner.lastCause = error;
       owner.lastStack = stack;
       if (enteredStage case final stage?)

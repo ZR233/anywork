@@ -61,6 +61,17 @@ final class ConversationFixture {
     needsOpen: false,
     selectionGeneration: ++_selectionGeneration,
   );
+
+  /// Answers every still-pending scripted Timeline open with one real native
+  /// connection. The fixture owns that native side, so an unanswered open keeps
+  /// the production join genuinely pending instead of proving the close clean.
+  void acceptPendingTimelineOpens() {
+    for (var index = 0; index < timeline.requests.length; index++) {
+      final request = timeline.requests[index];
+      if (request.result.isCompleted) continue;
+      request.result.complete(TestTimelineConnection());
+    }
+  }
 }
 
 /// Read-only factory consumers have no command scenario. Fail at the actual

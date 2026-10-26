@@ -10,6 +10,8 @@ use crate::studio::ReadText;
 pub struct ConfigurationReadHeader {
     pub default_account_id: Option<ReadText>,
     pub accounts: TypedListRef,
+    /// ACP 账号目录行；`connectionRevision` 是 ACP 身份所有者的连接代次，不是设置版本。
+    pub acp_accounts: TypedListRef,
     pub mode_model_routes: TypedListRef,
     pub roles: TypedListRef,
     pub permission_mode: ReadText,
@@ -22,11 +24,21 @@ pub struct ConfigurationReadHeader {
     pub deepseek_web_search: DeepSeekSearchConfigurationRead,
 }
 
+/// 一条 ACP 接入的固定读取行；ID 与名称按原 scope 文本字段分块读取。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[derive(utoipa::ToSchema)]
+pub struct AcpAccountConfigurationRead {
+    pub account_id: ReadText,
+    pub name: ReadText,
+    pub provider: crate::studio::AcpProvider,
+    pub connection_revision: u64,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[derive(utoipa::ToSchema)]
 pub struct AccountConfigurationRead {
-    pub pricing_enabled: bool,
     pub billing_kind: crate::BillingKind,
     pub billing_kind_override: Option<crate::BillingKind>,
     pub disabled_models: TypedListRef,

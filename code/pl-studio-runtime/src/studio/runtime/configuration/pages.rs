@@ -105,7 +105,6 @@ impl ConfigurationReadMaterial {
         let value = self.account(index)?;
         let text = |field| self.read(TextField::Account(index, field), inline);
         Ok(AccountConfigurationRead {
-            pricing_enabled: value.pricing_enabled,
             billing_kind: value.billing_kind,
             billing_kind_override: value.billing_kind_override,
             disabled_models: self.string_list(StringList::DisabledModels(index))?,
@@ -139,6 +138,44 @@ impl ConfigurationReadMaterial {
                 .as_ref()
                 .map(|_| text(AccountText::Catalog))
                 .transpose()?,
+        })
+    }
+
+    /// 原 Configuration scope 下的 ACP 目录分页；连接代次来自 ACP 身份所有者的捕获值。
+    pub(super) fn acp_accounts(
+        &self,
+        list_id: u64,
+        offset: u64,
+        limit: u32,
+    ) -> Result<AcpAccountConfigurationReadPage, StudioError> {
+        if self.lists.field(list_id)? != ListField::AcpAccounts {
+            return Err(wrong_field());
+        }
+        let result = page(
+            PageBinding::List(list_id),
+            self.value().acp_accounts.len(),
+            offset,
+            limit,
+            |index, inline| {
+                let value = self
+                    .value()
+                    .acp_accounts
+                    .get(index)
+                    .ok_or_else(wrong_field)?;
+                Ok(AcpAccountConfigurationRead {
+                    account_id: self.read(TextField::Acp(index, AcpText::Id), inline)?,
+                    name: self.read(TextField::Acp(index, AcpText::Name), inline)?,
+                    provider: value.provider,
+                    connection_revision: value.connection_revision,
+                })
+            },
+        )?;
+        Ok(AcpAccountConfigurationReadPage {
+            list_id,
+            offset,
+            total: result.total,
+            items: result.items,
+            next_offset: result.next_offset,
         })
     }
 

@@ -11,8 +11,6 @@ use anyhow::{Context, Result};
 use pl_model::model::ModelInfo;
 use pl_protocol::studio::{AdmitAttachmentDraftsRequest, StudioAttachmentAdmissionContext};
 
-use crate::config::StudioRole;
-
 use super::StudioRuntime;
 use validate::{admission_rejection, preflight_sources};
 
@@ -44,7 +42,7 @@ impl StudioRuntime {
                 let role = if thread.parent_thread_id.is_some() {
                     pl_protocol::AgentRoleId::new(thread.role)?
                 } else {
-                    StudioRole::Planner.id()
+                    crate::config::root_agent_route_id()
                 };
                 config.config.models.resolve_route(role, &selector)?
             }

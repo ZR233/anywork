@@ -163,10 +163,19 @@ pub struct OutputObligationState {
 /// `flush`: a batch the backend already holds durably is answerable from history, so its resident
 /// body is no longer needed. The byte counts are the retained memory that really exists at the
 /// report, not just what is still unwritten: a backend also counts the product bodies its live
-/// projection keeps after their batch became durable, so a Thread cannot claim to be drained while
-/// it still holds its Turn. Completed but unsaved work may exceed the byte limits.
+/// projection keeps after their batch became durable, so admission never treats retained bodies as
+/// free memory. Retained bytes alone do not mean persistence is still owed; idle close checks that
+/// responsibility separately. Completed but unsaved work may exceed the byte limits.
 #[derive(Debug, Clone, Default)]
 pub struct StoragePressure {
+    /// Whether this backend still owns unfinished reliable work for this Thread.
+    ///
+    /// This includes accepted work awaiting durable handoff and output reservations that have not
+    /// been released, even when they currently retain zero bytes. Already-durable product bodies
+    /// that can be reconstructed from history do not count as unfinished work. The default means
+    /// the backend owns no such work; it is not a replacement for the owner's activity and error
+    /// checks. Admission still uses the complete byte counts below, not this lifecycle predicate.
+    pub has_uncommitted_work: bool,
     /// Retained bytes of this one Thread: the effects its writer queue still holds, the batches still
     /// waiting to be written, the bodies its live projection and report accumulator still keep and
     /// the ceilings still reserved for its in-flight model/tool output. This is what pauses new

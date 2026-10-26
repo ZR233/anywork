@@ -92,6 +92,7 @@ final class ConversationConnectionOwner<C> {
   final Set<FeedCloseIssue> _terminalNative = {};
   C? _connection;
   Future<void>? _joining;
+  Future<void>? _retryJoin;
   Future<FeedCloseReport>? _nativeJoining;
   FeedCloseReport? _nativeReport;
   FeedCloseIssue? _nativeError;
@@ -276,6 +277,14 @@ final class ConversationConnectionOwner<C> {
     }
   }
 
+  /// Start the real native join of the handle this owner already opened,
+  /// without closing admission for the reads it already admitted. A caller that
+  /// must join an in-flight read cannot use [requestClose]: that would turn the
+  /// admitted read into a cancelled query instead of a joined one. When no
+  /// connection exists yet this is a no-op, so a still-opening handle keeps its
+  /// own admission and is closed by the later real close.
+  void requestNativeClose() => _requestNative();
+
   void _startCancel(Future<void> Function() cancel) {
     final index = ++_cancelSequence;
     // Cancellation and native join are both started before either is awaited.
@@ -370,16 +379,51 @@ final class ConversationConnectionOwner<C> {
   Future<CloseReport> close({DateTime? deadline, bool retry = false}) async {
     if (_released) return CloseReport(unresolved: []);
     requestClose();
-    var joining = _joining;
-    if (joining == null) {
-      joining = _join(retry: retry);
-      _joining = joining;
-      joining.whenComplete(() {
-        if (identical(_joining, joining)) _joining = null;
-      }).ignore();
-    }
+    final joining = retry
+        ? _acceptRetry()
+        : (_joining ?? _startJoin(retry: false));
+    // The deadline bounds this observation only; it never withdraws the retry.
     await observeConversationCompletion(joining, deadline);
     return report();
+  }
+
+  /// Accepts exactly one explicit retry on this original owner and handle. The
+  /// intent is retained here rather than derived from an observation, so a
+  /// caller deadline that expires while the original join is still in flight
+  /// cannot drop it: once that join really completes, one retry of the original
+  /// native close follows. Repeated/overlapping retries share this one pass.
+  Future<void> _acceptRetry() {
+    if (_retryJoin case final pending?) return pending;
+    final original = _joining;
+    final chained = original == null
+        ? _startJoin(retry: true)
+        : original
+              .then<void>((_) {}, onError: (Object _, StackTrace __) {})
+              .then<void>((_) async {
+                if (_released) return;
+                if (_nativeJoining case final native?) {
+                  try {
+                    await native;
+                  } catch (_) {
+                    /* the original diagnostic stays on this owner */
+                  }
+                }
+                if (_canRetryNative) await _startJoin(retry: true);
+              });
+    _retryJoin = chained;
+    chained.whenComplete(() {
+      if (identical(_retryJoin, chained)) _retryJoin = null;
+    }).ignore();
+    return chained;
+  }
+
+  Future<void> _startJoin({required bool retry}) {
+    final joining = _join(retry: retry);
+    _joining = joining;
+    joining.whenComplete(() {
+      if (identical(_joining, joining)) _joining = null;
+    }).ignore();
+    return joining;
   }
 
   Future<void> _join({required bool retry}) async {

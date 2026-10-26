@@ -22,6 +22,14 @@ pub struct BridgeAccountConfigurationReadPage {
     pub next_offset: Option<u64>,
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BridgeAcpAccountConfigurationReadPage {
+    pub list_id: u64,
+    pub offset: u64,
+    pub total: u64,
+    pub items: Vec<BridgeAcpAccountConfigurationRead>,
+    pub next_offset: Option<u64>,
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BridgeCustomModelConfigurationReadPage {
     pub list_id: u64,
     pub offset: u64,

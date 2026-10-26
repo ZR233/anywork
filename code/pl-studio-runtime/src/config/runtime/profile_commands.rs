@@ -79,12 +79,16 @@ impl ConfigRuntime {
             canonical_config: current.canonical_config,
             usage_query_revisions: current.usage_query_revisions,
         };
+        // Profile 提交同样先取得与新 revision 严格相符的不可变 ACP 目录，再在原状态发布边界
+        // 采用配置材料；此处不持有配置状态锁。
+        let acp_directory = self.observe_settings_commit(&next);
         // Real ConfirmedWithoutUsableReceipt path: write returned success, but this guard failed.
         // We cannot invent a configuration revision/receipt from the prospective `next` value.
         let mut state = self
             .state
             .write()
             .map_err(|_| ProfileMutationFailure::Confirmed(config_runtime_poisoned()))?;
+        state.acp_directory = Some(acp_directory);
         state.snapshot = next.clone();
         let publication = self.publish_projection_locked(&mut state);
         let catalog = state.catalog.clone();
@@ -116,7 +120,9 @@ impl ConfigRuntime {
         profile_id: &str,
         enabled: bool,
     ) -> Result<ConfigProfileCommandResult, ProfileMutationFailure> {
-        if !super::super::is_system_profile_id(profile_id) {
+        if !super::super::is_system_profile_id(profile_id)
+            .map_err(|error| ProfileMutationFailure::Preflight(error.into()))?
+        {
             return Err(ProfileMutationFailure::Preflight(
                 PureError::ConfigError("not a system Agent Profile".into()).into(),
             ));

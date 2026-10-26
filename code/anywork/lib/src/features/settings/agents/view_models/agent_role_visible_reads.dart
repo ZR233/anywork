@@ -88,7 +88,7 @@ final class AgentRoleVisibleReads {
       for (final profile in displayCollectionRows(
         configuration.profiles.value.profiles,
       ))
-        if (profile.system && profile.profileId != 'planner') profile.profileId,
+        if (profile.system) profile.profileId,
     };
     _target = target;
     _roles = roles;

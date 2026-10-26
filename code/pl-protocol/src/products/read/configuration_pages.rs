@@ -34,6 +34,17 @@ pub struct AccountConfigurationReadPage {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[derive(utoipa::ToSchema)]
+pub struct AcpAccountConfigurationReadPage {
+    pub list_id: u64,
+    pub offset: u64,
+    pub total: u64,
+    pub items: Vec<AcpAccountConfigurationRead>,
+    pub next_offset: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[derive(utoipa::ToSchema)]
 pub struct CustomModelConfigurationReadPage {
     pub list_id: u64,
     pub offset: u64,

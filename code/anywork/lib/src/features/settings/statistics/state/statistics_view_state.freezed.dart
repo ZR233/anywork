@@ -825,7 +825,7 @@ $StatisticsModelKeyCopyWith<$Res> get key {
 /// @nodoc
 mixin _$StatisticsViewState {
 
- StatisticsSummaryState get summaries; StatisticsHistoryState get history; StatisticsModelKey? get modelFilter; StatisticsEffortFilter? get effortFilter; bool get mismatchesOnly; Set<StatisticsReadField> get reading; Map<StatisticsReadField, StudioFailure> get readIssues; Map<StatisticsReadField, StudioFailure> get observationIssues; bool get visible;
+ StatisticsState get source; bool get visible; StatisticsModelKey? get modelFilter; StatisticsEffortFilter? get effortFilter; bool get mismatchesOnly; List<PerformanceSample> get filteredHistory; List<StatisticsModelOption> get modelOptions; List<StatisticsEffortFilter> get effortOptions;
 /// Create a copy of StatisticsViewState
 /// with the given fields replaced by the non-null parameter values.
 @JsonKey(includeFromJson: false, includeToJson: false)
@@ -837,14 +837,14 @@ $StatisticsViewStateCopyWith<StatisticsViewState> get copyWith => _$StatisticsVi
 @override
 bool operator ==(Object other) {
   final _this = this as StatisticsViewState;
-  return identical(this, other) || (other.runtimeType == runtimeType&&other is StatisticsViewState&&(identical(other.summaries, _this.summaries) || other.summaries == _this.summaries)&&(identical(other.history, _this.history) || other.history == _this.history)&&(identical(other.modelFilter, _this.modelFilter) || other.modelFilter == _this.modelFilter)&&(identical(other.effortFilter, _this.effortFilter) || other.effortFilter == _this.effortFilter)&&(identical(other.mismatchesOnly, _this.mismatchesOnly) || other.mismatchesOnly == _this.mismatchesOnly)&&const DeepCollectionEquality().equals(other.reading, _this.reading)&&const DeepCollectionEquality().equals(other.readIssues, _this.readIssues)&&const DeepCollectionEquality().equals(other.observationIssues, _this.observationIssues)&&(identical(other.visible, _this.visible) || other.visible == _this.visible));
+  return identical(this, other) || (other.runtimeType == runtimeType&&other is StatisticsViewState&&(identical(other.source, _this.source) || other.source == _this.source)&&(identical(other.visible, _this.visible) || other.visible == _this.visible)&&(identical(other.modelFilter, _this.modelFilter) || other.modelFilter == _this.modelFilter)&&(identical(other.effortFilter, _this.effortFilter) || other.effortFilter == _this.effortFilter)&&(identical(other.mismatchesOnly, _this.mismatchesOnly) || other.mismatchesOnly == _this.mismatchesOnly)&&const DeepCollectionEquality().equals(other.filteredHistory, _this.filteredHistory)&&const DeepCollectionEquality().equals(other.modelOptions, _this.modelOptions)&&const DeepCollectionEquality().equals(other.effortOptions, _this.effortOptions));
 }
 
 
 @override
 int get hashCode {
   final _this = this as StatisticsViewState;
-  return Object.hash(runtimeType,_this.summaries,_this.history,_this.modelFilter,_this.effortFilter,_this.mismatchesOnly,const DeepCollectionEquality().hash(_this.reading),const DeepCollectionEquality().hash(_this.readIssues),const DeepCollectionEquality().hash(_this.observationIssues),_this.visible);
+  return Object.hash(runtimeType,_this.source,_this.visible,_this.modelFilter,_this.effortFilter,_this.mismatchesOnly,const DeepCollectionEquality().hash(_this.filteredHistory),const DeepCollectionEquality().hash(_this.modelOptions),const DeepCollectionEquality().hash(_this.effortOptions));
 }
 
 
@@ -856,11 +856,11 @@ abstract mixin class $StatisticsViewStateCopyWith<$Res>  {
   factory $StatisticsViewStateCopyWith(StatisticsViewState value, $Res Function(StatisticsViewState) _then) = _$StatisticsViewStateCopyWithImpl;
 @useResult
 $Res call({
- StatisticsSummaryState summaries, StatisticsHistoryState history, StatisticsModelKey? modelFilter, StatisticsEffortFilter? effortFilter, bool mismatchesOnly, Set<StatisticsReadField> reading, Map<StatisticsReadField, StudioFailure> readIssues, Map<StatisticsReadField, StudioFailure> observationIssues, bool visible
+ StatisticsState source, bool visible, StatisticsModelKey? modelFilter, StatisticsEffortFilter? effortFilter, bool mismatchesOnly, List<PerformanceSample> filteredHistory, List<StatisticsModelOption> modelOptions, List<StatisticsEffortFilter> effortOptions
 });
 
 
-$StatisticsSummaryStateCopyWith<$Res> get summaries;$StatisticsHistoryStateCopyWith<$Res> get history;$StatisticsModelKeyCopyWith<$Res>? get modelFilter;$StatisticsEffortFilterCopyWith<$Res>? get effortFilter;
+$StatisticsStateCopyWith<$Res> get source;$StatisticsModelKeyCopyWith<$Res>? get modelFilter;$StatisticsEffortFilterCopyWith<$Res>? get effortFilter;
 
 }
 /// @nodoc
@@ -873,37 +873,27 @@ class _$StatisticsViewStateCopyWithImpl<$Res>
 
 /// Create a copy of StatisticsViewState
 /// with the given fields replaced by the non-null parameter values.
-@pragma('vm:prefer-inline') @override $Res call({Object? summaries = null,Object? history = null,Object? modelFilter = freezed,Object? effortFilter = freezed,Object? mismatchesOnly = null,Object? reading = null,Object? readIssues = null,Object? observationIssues = null,Object? visible = null,}) {
+@pragma('vm:prefer-inline') @override $Res call({Object? source = null,Object? visible = null,Object? modelFilter = freezed,Object? effortFilter = freezed,Object? mismatchesOnly = null,Object? filteredHistory = null,Object? modelOptions = null,Object? effortOptions = null,}) {
   return _then(StatisticsViewState(
-summaries: null == summaries ? _self.summaries : summaries // ignore: cast_nullable_to_non_nullable
-as StatisticsSummaryState,history: null == history ? _self.history : history // ignore: cast_nullable_to_non_nullable
-as StatisticsHistoryState,modelFilter: freezed == modelFilter ? _self.modelFilter : modelFilter // ignore: cast_nullable_to_non_nullable
+source: null == source ? _self.source : source // ignore: cast_nullable_to_non_nullable
+as StatisticsState,visible: null == visible ? _self.visible : visible // ignore: cast_nullable_to_non_nullable
+as bool,modelFilter: freezed == modelFilter ? _self.modelFilter : modelFilter // ignore: cast_nullable_to_non_nullable
 as StatisticsModelKey?,effortFilter: freezed == effortFilter ? _self.effortFilter : effortFilter // ignore: cast_nullable_to_non_nullable
 as StatisticsEffortFilter?,mismatchesOnly: null == mismatchesOnly ? _self.mismatchesOnly : mismatchesOnly // ignore: cast_nullable_to_non_nullable
-as bool,reading: null == reading ? _self.reading : reading // ignore: cast_nullable_to_non_nullable
-as Set<StatisticsReadField>,readIssues: null == readIssues ? _self.readIssues : readIssues // ignore: cast_nullable_to_non_nullable
-as Map<StatisticsReadField, StudioFailure>,observationIssues: null == observationIssues ? _self.observationIssues : observationIssues // ignore: cast_nullable_to_non_nullable
-as Map<StatisticsReadField, StudioFailure>,visible: null == visible ? _self.visible : visible // ignore: cast_nullable_to_non_nullable
-as bool,
+as bool,filteredHistory: null == filteredHistory ? _self.filteredHistory : filteredHistory // ignore: cast_nullable_to_non_nullable
+as List<PerformanceSample>,modelOptions: null == modelOptions ? _self.modelOptions : modelOptions // ignore: cast_nullable_to_non_nullable
+as List<StatisticsModelOption>,effortOptions: null == effortOptions ? _self.effortOptions : effortOptions // ignore: cast_nullable_to_non_nullable
+as List<StatisticsEffortFilter>,
   ));
 }
 /// Create a copy of StatisticsViewState
 /// with the given fields replaced by the non-null parameter values.
 @override
 @pragma('vm:prefer-inline')
-$StatisticsSummaryStateCopyWith<$Res> get summaries {
+$StatisticsStateCopyWith<$Res> get source {
 
-  return $StatisticsSummaryStateCopyWith<$Res>(_self.summaries, (value) {
-    return _then(_self.copyWith(summaries: value));
-  });
-}/// Create a copy of StatisticsViewState
-/// with the given fields replaced by the non-null parameter values.
-@override
-@pragma('vm:prefer-inline')
-$StatisticsHistoryStateCopyWith<$Res> get history {
-
-  return $StatisticsHistoryStateCopyWith<$Res>(_self.history, (value) {
-    return _then(_self.copyWith(history: value));
+  return $StatisticsStateCopyWith<$Res>(_self.source, (value) {
+    return _then(_self.copyWith(source: value));
   });
 }/// Create a copy of StatisticsViewState
 /// with the given fields replaced by the non-null parameter values.
@@ -1011,10 +1001,10 @@ return $default(_that);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult maybeWhen<TResult extends Object?>(TResult Function( StatisticsSummaryState summaries,  StatisticsHistoryState history,  StatisticsModelKey? modelFilter,  StatisticsEffortFilter? effortFilter,  bool mismatchesOnly,  Set<StatisticsReadField> reading,  Map<StatisticsReadField, StudioFailure> readIssues,  Map<StatisticsReadField, StudioFailure> observationIssues,  bool visible)?  $default,{required TResult orElse(),}) {final _that = this;
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>(TResult Function( StatisticsState source,  bool visible,  StatisticsModelKey? modelFilter,  StatisticsEffortFilter? effortFilter,  bool mismatchesOnly,  List<PerformanceSample> filteredHistory,  List<StatisticsModelOption> modelOptions,  List<StatisticsEffortFilter> effortOptions)?  $default,{required TResult orElse(),}) {final _that = this;
 switch (_that) {
 case _StatisticsViewState() when $default != null:
-return $default(_that.summaries,_that.history,_that.modelFilter,_that.effortFilter,_that.mismatchesOnly,_that.reading,_that.readIssues,_that.observationIssues,_that.visible);case _:
+return $default(_that.source,_that.visible,_that.modelFilter,_that.effortFilter,_that.mismatchesOnly,_that.filteredHistory,_that.modelOptions,_that.effortOptions);case _:
   return orElse();
 
 }
@@ -1032,10 +1022,10 @@ return $default(_that.summaries,_that.history,_that.modelFilter,_that.effortFilt
 /// }
 /// ```
 
-@optionalTypeArgs TResult when<TResult extends Object?>(TResult Function( StatisticsSummaryState summaries,  StatisticsHistoryState history,  StatisticsModelKey? modelFilter,  StatisticsEffortFilter? effortFilter,  bool mismatchesOnly,  Set<StatisticsReadField> reading,  Map<StatisticsReadField, StudioFailure> readIssues,  Map<StatisticsReadField, StudioFailure> observationIssues,  bool visible)  $default,) {final _that = this;
+@optionalTypeArgs TResult when<TResult extends Object?>(TResult Function( StatisticsState source,  bool visible,  StatisticsModelKey? modelFilter,  StatisticsEffortFilter? effortFilter,  bool mismatchesOnly,  List<PerformanceSample> filteredHistory,  List<StatisticsModelOption> modelOptions,  List<StatisticsEffortFilter> effortOptions)  $default,) {final _that = this;
 switch (_that) {
 case _StatisticsViewState():
-return $default(_that.summaries,_that.history,_that.modelFilter,_that.effortFilter,_that.mismatchesOnly,_that.reading,_that.readIssues,_that.observationIssues,_that.visible);case _:
+return $default(_that.source,_that.visible,_that.modelFilter,_that.effortFilter,_that.mismatchesOnly,_that.filteredHistory,_that.modelOptions,_that.effortOptions);case _:
   throw StateError('Unexpected subclass');
 
 }
@@ -1052,10 +1042,10 @@ return $default(_that.summaries,_that.history,_that.modelFilter,_that.effortFilt
 /// }
 /// ```
 
-@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>(TResult? Function( StatisticsSummaryState summaries,  StatisticsHistoryState history,  StatisticsModelKey? modelFilter,  StatisticsEffortFilter? effortFilter,  bool mismatchesOnly,  Set<StatisticsReadField> reading,  Map<StatisticsReadField, StudioFailure> readIssues,  Map<StatisticsReadField, StudioFailure> observationIssues,  bool visible)?  $default,) {final _that = this;
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>(TResult? Function( StatisticsState source,  bool visible,  StatisticsModelKey? modelFilter,  StatisticsEffortFilter? effortFilter,  bool mismatchesOnly,  List<PerformanceSample> filteredHistory,  List<StatisticsModelOption> modelOptions,  List<StatisticsEffortFilter> effortOptions)?  $default,) {final _that = this;
 switch (_that) {
 case _StatisticsViewState() when $default != null:
-return $default(_that.summaries,_that.history,_that.modelFilter,_that.effortFilter,_that.mismatchesOnly,_that.reading,_that.readIssues,_that.observationIssues,_that.visible);case _:
+return $default(_that.source,_that.visible,_that.modelFilter,_that.effortFilter,_that.mismatchesOnly,_that.filteredHistory,_that.modelOptions,_that.effortOptions);case _:
   return null;
 
 }
@@ -1066,37 +1056,36 @@ return $default(_that.summaries,_that.history,_that.modelFilter,_that.effortFilt
 /// @nodoc
 
 
-class _StatisticsViewState implements StatisticsViewState {
-  const _StatisticsViewState({required this.summaries, required this.history, this.modelFilter, this.effortFilter, this.mismatchesOnly = false,  Set<StatisticsReadField> reading = const {},  Map<StatisticsReadField, StudioFailure> readIssues = const {},  Map<StatisticsReadField, StudioFailure> observationIssues = const {}, this.visible = false}): _reading = reading,_readIssues = readIssues,_observationIssues = observationIssues;
+class _StatisticsViewState extends StatisticsViewState {
+  const _StatisticsViewState({required this.source, required this.visible, this.modelFilter, this.effortFilter, this.mismatchesOnly = false,  List<PerformanceSample> filteredHistory = const <PerformanceSample>[],  List<StatisticsModelOption> modelOptions = const <StatisticsModelOption>[],  List<StatisticsEffortFilter> effortOptions = const <StatisticsEffortFilter>[]}): _filteredHistory = filteredHistory,_modelOptions = modelOptions,_effortOptions = effortOptions,super._();
 
 
-@override final  StatisticsSummaryState summaries;
-@override final  StatisticsHistoryState history;
+@override final  StatisticsState source;
+@override final  bool visible;
 @override final  StatisticsModelKey? modelFilter;
 @override final  StatisticsEffortFilter? effortFilter;
 @override@JsonKey() final  bool mismatchesOnly;
- final  Set<StatisticsReadField> _reading;
-@override@JsonKey() Set<StatisticsReadField> get reading {
-  if (_reading is EqualUnmodifiableSetView) return _reading;
+ final  List<PerformanceSample> _filteredHistory;
+@override@JsonKey() List<PerformanceSample> get filteredHistory {
+  if (_filteredHistory is EqualUnmodifiableListView) return _filteredHistory;
   // ignore: implicit_dynamic_type
-  return EqualUnmodifiableSetView(_reading);
+  return EqualUnmodifiableListView(_filteredHistory);
 }
 
- final  Map<StatisticsReadField, StudioFailure> _readIssues;
-@override@JsonKey() Map<StatisticsReadField, StudioFailure> get readIssues {
-  if (_readIssues is EqualUnmodifiableMapView) return _readIssues;
+ final  List<StatisticsModelOption> _modelOptions;
+@override@JsonKey() List<StatisticsModelOption> get modelOptions {
+  if (_modelOptions is EqualUnmodifiableListView) return _modelOptions;
   // ignore: implicit_dynamic_type
-  return EqualUnmodifiableMapView(_readIssues);
+  return EqualUnmodifiableListView(_modelOptions);
 }
 
- final  Map<StatisticsReadField, StudioFailure> _observationIssues;
-@override@JsonKey() Map<StatisticsReadField, StudioFailure> get observationIssues {
-  if (_observationIssues is EqualUnmodifiableMapView) return _observationIssues;
+ final  List<StatisticsEffortFilter> _effortOptions;
+@override@JsonKey() List<StatisticsEffortFilter> get effortOptions {
+  if (_effortOptions is EqualUnmodifiableListView) return _effortOptions;
   // ignore: implicit_dynamic_type
-  return EqualUnmodifiableMapView(_observationIssues);
+  return EqualUnmodifiableListView(_effortOptions);
 }
 
-@override@JsonKey() final  bool visible;
 
 /// Create a copy of StatisticsViewState
 /// with the given fields replaced by the non-null parameter values.
@@ -1108,13 +1097,13 @@ _$StatisticsViewStateCopyWith<_StatisticsViewState> get copyWith => __$Statistic
 
 @override
 bool operator ==(Object other) {
-    return identical(this, other) || (other.runtimeType == runtimeType&&other is _StatisticsViewState&&(identical(other.summaries, summaries) || other.summaries == summaries)&&(identical(other.history, history) || other.history == history)&&(identical(other.modelFilter, modelFilter) || other.modelFilter == modelFilter)&&(identical(other.effortFilter, effortFilter) || other.effortFilter == effortFilter)&&(identical(other.mismatchesOnly, mismatchesOnly) || other.mismatchesOnly == mismatchesOnly)&&const DeepCollectionEquality().equals(other.reading, _reading)&&const DeepCollectionEquality().equals(other.readIssues, _readIssues)&&const DeepCollectionEquality().equals(other.observationIssues, _observationIssues)&&(identical(other.visible, visible) || other.visible == visible));
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is _StatisticsViewState&&(identical(other.source, source) || other.source == source)&&(identical(other.visible, visible) || other.visible == visible)&&(identical(other.modelFilter, modelFilter) || other.modelFilter == modelFilter)&&(identical(other.effortFilter, effortFilter) || other.effortFilter == effortFilter)&&(identical(other.mismatchesOnly, mismatchesOnly) || other.mismatchesOnly == mismatchesOnly)&&const DeepCollectionEquality().equals(other.filteredHistory, _filteredHistory)&&const DeepCollectionEquality().equals(other.modelOptions, _modelOptions)&&const DeepCollectionEquality().equals(other.effortOptions, _effortOptions));
 }
 
 
 @override
 int get hashCode {
-    return Object.hash(runtimeType,summaries,history,modelFilter,effortFilter,mismatchesOnly,const DeepCollectionEquality().hash(_reading),const DeepCollectionEquality().hash(_readIssues),const DeepCollectionEquality().hash(_observationIssues),visible);
+    return Object.hash(runtimeType,source,visible,modelFilter,effortFilter,mismatchesOnly,const DeepCollectionEquality().hash(_filteredHistory),const DeepCollectionEquality().hash(_modelOptions),const DeepCollectionEquality().hash(_effortOptions));
 }
 
 
@@ -1126,11 +1115,11 @@ abstract mixin class _$StatisticsViewStateCopyWith<$Res> implements $StatisticsV
   factory _$StatisticsViewStateCopyWith(_StatisticsViewState value, $Res Function(_StatisticsViewState) _then) = __$StatisticsViewStateCopyWithImpl;
 @override @useResult
 $Res call({
- StatisticsSummaryState summaries, StatisticsHistoryState history, StatisticsModelKey? modelFilter, StatisticsEffortFilter? effortFilter, bool mismatchesOnly, Set<StatisticsReadField> reading, Map<StatisticsReadField, StudioFailure> readIssues, Map<StatisticsReadField, StudioFailure> observationIssues, bool visible
+ StatisticsState source, bool visible, StatisticsModelKey? modelFilter, StatisticsEffortFilter? effortFilter, bool mismatchesOnly, List<PerformanceSample> filteredHistory, List<StatisticsModelOption> modelOptions, List<StatisticsEffortFilter> effortOptions
 });
 
 
-@override $StatisticsSummaryStateCopyWith<$Res> get summaries;@override $StatisticsHistoryStateCopyWith<$Res> get history;@override $StatisticsModelKeyCopyWith<$Res>? get modelFilter;@override $StatisticsEffortFilterCopyWith<$Res>? get effortFilter;
+@override $StatisticsStateCopyWith<$Res> get source;@override $StatisticsModelKeyCopyWith<$Res>? get modelFilter;@override $StatisticsEffortFilterCopyWith<$Res>? get effortFilter;
 
 }
 /// @nodoc
@@ -1143,18 +1132,17 @@ class __$StatisticsViewStateCopyWithImpl<$Res>
 
 /// Create a copy of StatisticsViewState
 /// with the given fields replaced by the non-null parameter values.
-@override @pragma('vm:prefer-inline') $Res call({Object? summaries = null,Object? history = null,Object? modelFilter = freezed,Object? effortFilter = freezed,Object? mismatchesOnly = null,Object? reading = null,Object? readIssues = null,Object? observationIssues = null,Object? visible = null,}) {
+@override @pragma('vm:prefer-inline') $Res call({Object? source = null,Object? visible = null,Object? modelFilter = freezed,Object? effortFilter = freezed,Object? mismatchesOnly = null,Object? filteredHistory = null,Object? modelOptions = null,Object? effortOptions = null,}) {
   return _then(_StatisticsViewState(
-summaries: null == summaries ? _self.summaries : summaries // ignore: cast_nullable_to_non_nullable
-as StatisticsSummaryState,history: null == history ? _self.history : history // ignore: cast_nullable_to_non_nullable
-as StatisticsHistoryState,modelFilter: freezed == modelFilter ? _self.modelFilter : modelFilter // ignore: cast_nullable_to_non_nullable
+source: null == source ? _self.source : source // ignore: cast_nullable_to_non_nullable
+as StatisticsState,visible: null == visible ? _self.visible : visible // ignore: cast_nullable_to_non_nullable
+as bool,modelFilter: freezed == modelFilter ? _self.modelFilter : modelFilter // ignore: cast_nullable_to_non_nullable
 as StatisticsModelKey?,effortFilter: freezed == effortFilter ? _self.effortFilter : effortFilter // ignore: cast_nullable_to_non_nullable
 as StatisticsEffortFilter?,mismatchesOnly: null == mismatchesOnly ? _self.mismatchesOnly : mismatchesOnly // ignore: cast_nullable_to_non_nullable
-as bool,reading: null == reading ? _self._reading : reading // ignore: cast_nullable_to_non_nullable
-as Set<StatisticsReadField>,readIssues: null == readIssues ? _self._readIssues : readIssues // ignore: cast_nullable_to_non_nullable
-as Map<StatisticsReadField, StudioFailure>,observationIssues: null == observationIssues ? _self._observationIssues : observationIssues // ignore: cast_nullable_to_non_nullable
-as Map<StatisticsReadField, StudioFailure>,visible: null == visible ? _self.visible : visible // ignore: cast_nullable_to_non_nullable
-as bool,
+as bool,filteredHistory: null == filteredHistory ? _self._filteredHistory : filteredHistory // ignore: cast_nullable_to_non_nullable
+as List<PerformanceSample>,modelOptions: null == modelOptions ? _self._modelOptions : modelOptions // ignore: cast_nullable_to_non_nullable
+as List<StatisticsModelOption>,effortOptions: null == effortOptions ? _self._effortOptions : effortOptions // ignore: cast_nullable_to_non_nullable
+as List<StatisticsEffortFilter>,
   ));
 }
 
@@ -1162,19 +1150,10 @@ as bool,
 /// with the given fields replaced by the non-null parameter values.
 @override
 @pragma('vm:prefer-inline')
-$StatisticsSummaryStateCopyWith<$Res> get summaries {
+$StatisticsStateCopyWith<$Res> get source {
 
-  return $StatisticsSummaryStateCopyWith<$Res>(_self.summaries, (value) {
-    return _then(_self.copyWith(summaries: value));
-  });
-}/// Create a copy of StatisticsViewState
-/// with the given fields replaced by the non-null parameter values.
-@override
-@pragma('vm:prefer-inline')
-$StatisticsHistoryStateCopyWith<$Res> get history {
-
-  return $StatisticsHistoryStateCopyWith<$Res>(_self.history, (value) {
-    return _then(_self.copyWith(history: value));
+  return $StatisticsStateCopyWith<$Res>(_self.source, (value) {
+    return _then(_self.copyWith(source: value));
   });
 }/// Create a copy of StatisticsViewState
 /// with the given fields replaced by the non-null parameter values.

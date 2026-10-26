@@ -271,6 +271,33 @@ impl ConfigurationSource {
         Ok(())
     }
 
+    /// Expose only this capture's Configuration material and return its typed read target.
+    ///
+    /// ACP account commands return a Settings-only receipt plus the Configuration target captured
+    /// by that very commit: they neither need nor pretend to have a Models pair. The caller's
+    /// retained publication keeps this material alive until explicit call close.
+    pub(crate) fn expose_committed_configuration(
+        &self,
+        snapshot: &ConfigurationSnapshot,
+    ) -> Result<pl_protocol::products::references::ConfigurationReadTarget, StudioError> {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.ensure_open()?;
+        let material = snapshot
+            .material
+            .as_ref()
+            .map_err(|failure| failure.diagnostic.clone())?;
+        state
+            .values
+            .insert(material.reference.revision, Arc::downgrade(material));
+        Ok(pl_protocol::products::references::ConfigurationReadTarget {
+            origin: self.origin.clone(),
+            reference: material.reference,
+        })
+    }
+
     pub(crate) fn ensure_open(&self) -> Result<(), StudioError> {
         if self.sealed.load(Ordering::Acquire) {
             Err(cancelled())

@@ -33,6 +33,10 @@ abstract interface class ConversationDemand {
 abstract interface class SubmissionExecutionLease {
   String get threadId;
   AttemptId get attemptId;
+
+  /// This lease's own admitted execution source actually failed or was replaced.
+  /// A late read from such an attempt is not current input evidence.
+  bool get sourceSuperseded;
   ReadonlyLatestValue<ThreadExecutionState> get execution;
   Future<ThreadFacetStamp> get ready;
   void bindExecutionTurns({

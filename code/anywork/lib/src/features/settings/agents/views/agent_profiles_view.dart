@@ -301,6 +301,21 @@ class AgentProfilesView extends StatelessWidget {
   }
 }
 
+String _systemAgentName(BuildContext context, AgentProfileSummary profile) {
+  final localized = context.roleLabel(profile.profileId);
+  return localized == profile.profileId ? profile.displayName : localized;
+}
+
+String _systemAgentDescription(
+  BuildContext context,
+  AgentProfileSummary profile,
+) {
+  final localized = context.roleDescription(profile.profileId);
+  return localized == context.l10n.settingsRoleFallbackDescription
+      ? profile.description
+      : localized;
+}
+
 /// Agent row: identity, workspace-mode status and the switch/edit action, with
 /// the role route panel (system profiles) and a 24-high divider underneath.
 class _AgentProfileRow extends StatelessWidget {
@@ -330,12 +345,10 @@ class _AgentProfileRow extends StatelessWidget {
   Widget build(BuildContext context) {
     final subtitle =
         '${profile.profileId} · '
-        '${system ? context.roleDescription(profile.profileId) : profile.description}';
+        '${system ? _systemAgentDescription(context, profile) : profile.description}';
     return SettingsResourceRow(
       icon: system ? Icons.lock_outline : Icons.person_outline,
-      title: system
-          ? context.roleLabel(profile.profileId)
-          : profile.displayName,
+      title: system ? _systemAgentName(context, profile) : profile.displayName,
       subtitle: subtitle,
       status: Text(
         agentWorkspaceLabel(context, profile.workspaceMode),

@@ -4,6 +4,7 @@ import '../../../../rust/api/studio/products/read/configuration_values.dart'
     as native;
 import '../../shared/exact_numbers.dart';
 import '../../shared/read_converters.dart';
+import '../acp/acp_converters.dart';
 import 'scalar_values.dart';
 
 ConfigurationReadHeader configurationReadHeaderFromBridge(
@@ -11,6 +12,7 @@ ConfigurationReadHeader configurationReadHeaderFromBridge(
 ) => ConfigurationReadHeader(
   defaultAccountId: nullableReadText(value.defaultAccountId),
   accounts: typedListFromBridge(value.accounts),
+  acpAccounts: typedListFromBridge(value.acpAccounts),
   modeModelRoutes: typedListFromBridge(value.modeModelRoutes),
   roles: typedListFromBridge(value.roles),
   permissionMode: readTextFromBridge(value.permissionMode),
@@ -29,7 +31,6 @@ ConfigurationReadHeader configurationReadHeaderFromBridge(
 AccountConfigurationRead accountConfigurationFromBridge(
   native.BridgeAccountConfigurationRead value,
 ) => AccountConfigurationRead(
-  pricingEnabled: value.pricingEnabled,
   billingKind: configurationBillingFromBridge(value.billingKind),
   billingKindOverride: value.billingKindOverride == null
       ? null
@@ -50,6 +51,20 @@ AccountConfigurationRead accountConfigurationFromBridge(
   modelConnectionModes: typedListFromBridge(value.modelConnectionModes),
   modelAutoCompactLimits: typedListFromBridge(value.modelAutoCompactLimits),
   catalogId: nullableReadText(value.catalogId),
+);
+
+/// 一条 ACP 接入的固定读取行：ID 与名称保持原 scope 的分块文本引用，连接代次由原生
+/// 捕获材料给出，适配层不推导、不缓存，也不把它换算成认证结论。
+AcpAccountConfigurationRead acpAccountConfigurationFromBridge(
+  native.BridgeAcpAccountConfigurationRead value,
+) => AcpAccountConfigurationRead(
+  accountId: readTextFromBridge(value.accountId),
+  name: readTextFromBridge(value.name),
+  provider: acpProviderFromBridge(value.provider),
+  connectionRevision: exactU64(
+    value.connectionRevision,
+    'ACP connection revision',
+  ),
 );
 
 CustomModelConfigurationRead customModelConfigurationFromBridge(

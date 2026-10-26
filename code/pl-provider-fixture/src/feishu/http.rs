@@ -9,20 +9,17 @@ use axum::response::{IntoResponse, Response};
 use axum::{Form, Json};
 use serde::Deserialize;
 use serde_json::{Value, json};
-use tokio_util::sync::CancellationToken;
 
-use super::state::{InFlightGuard, Shared, app_id_ok, bearer_ok, credentials_match, unix_millis};
+use super::card;
+use super::state::{InFlightGuard, app_id_ok, credentials_match, unix_millis};
 use super::types::{
     CallKind, REGISTERED_APP_ID, RegistrationBeginOptions, RegistrationPollScript, SendDisposition,
     TENANT_ACCESS_TOKEN, TRUSTED_USER_OPEN_ID, TokenScript, WsDiscoveryScript,
 };
 use super::wire::{decode_addons, parse_form, validate_required_addons};
 
-#[derive(Clone)]
-pub(crate) struct HttpState {
-    pub shared: Shared,
-    pub cancel: CancellationToken,
-}
+pub(crate) use super::guard::HttpState;
+use super::guard::{auth_ok, headers_authorized, kind_blocked, record_reject};
 
 pub(crate) async fn unexpected(
     State(state): State<HttpState>,
@@ -968,19 +965,21 @@ pub(crate) struct SendBody {
     pub uuid: Option<String>,
 }
 
+/// IM send entry: `post` Markdown and `interactive` card messages.
+///
+/// Everything shared (auth, query shape, body shape, uuid length, encoded size,
+/// call bounds) is validated once here. The card path then delegates to the
+/// CardKit module, which serializes the entity identity, the scripted send gate
+/// and the commit on the per-card boundary.
 pub(crate) async fn message_send(
     State(state): State<HttpState>,
     headers: HeaderMap,
     Query(query): Query<SendQuery>,
-    Json(body): Json<SendBody>,
+    raw: Bytes,
 ) -> Response {
     let path = "/open-apis/im/v1/messages";
-    if !auth_ok(
-        &state.shared,
-        headers.get(axum::http::header::AUTHORIZATION),
-    )
-    .await
-    {
+    let request_bytes = raw.len();
+    if !headers_authorized(&state, &headers).await {
         record_reject(
             &state.shared,
             "POST",
@@ -1003,6 +1002,20 @@ pub(crate) async fn message_send(
         return Json(json!({"code": 232001, "msg": "receive_id_type must be chat_id"}))
             .into_response();
     }
+    let body: SendBody = match serde_json::from_slice(&raw) {
+        Ok(body) => body,
+        Err(error) => {
+            record_reject(
+                &state.shared,
+                "POST",
+                path,
+                Some(CallKind::MessageSend),
+                format!("send body json: {error}"),
+            )
+            .await;
+            return Json(json!({"code": 232001, "msg": "send body must be JSON"})).into_response();
+        }
+    };
     if let Some(uuid) = &body.uuid
         && uuid.chars().count() > 50
     {
@@ -1016,6 +1029,27 @@ pub(crate) async fn message_send(
         .await;
         return Json(json!({"code": 232001, "msg": "uuid too long"})).into_response();
     }
+    // The documented per-request limit applies to the encoded request, not to a
+    // count of body characters. Segmentation is a product decision; this peer
+    // only reports the real bytes it received.
+    if request_bytes > card::MESSAGE_REQUEST_MAX_BYTES {
+        record_reject(
+            &state.shared,
+            "POST",
+            path,
+            Some(CallKind::MessageSend),
+            format!(
+                "encoded request {request_bytes} exceeds {} bytes",
+                card::MESSAGE_REQUEST_MAX_BYTES
+            ),
+        )
+        .await;
+        return Json(json!({
+            "code": 230025,
+            "msg": "request exceeds the 30 KB message limit"
+        }))
+        .into_response();
+    }
     if let Some(reason) = kind_blocked(&state.shared, CallKind::MessageSend).await {
         record_reject(
             &state.shared,
@@ -1027,6 +1061,47 @@ pub(crate) async fn message_send(
         .await;
         return Json(json!({"code": 99991672, "msg": reason})).into_response();
     }
+    match body.msg_type.as_str() {
+        "post" => send_post(&state, &body, request_bytes).await,
+        "interactive" => super::cardkit::send_card_message(&state, &body, request_bytes).await,
+        other => {
+            // The Markdown contract sends `post`; automatic replies send an
+            // `interactive` card entity. A plain `text` request is a regression,
+            // not an unknown outcome.
+            record_reject(
+                &state.shared,
+                "POST",
+                path,
+                Some(CallKind::MessageSend),
+                format!("msg_type {other} is not part of the outbound contract"),
+            )
+            .await;
+            Json(json!({
+                "code": 230001,
+                "msg": "msg_type must be post or interactive"
+            }))
+            .into_response()
+        }
+    }
+}
+
+/// One ordinary `post` Markdown message.
+async fn send_post(state: &HttpState, body: &SendBody, request_bytes: usize) -> Response {
+    let path = "/open-apis/im/v1/messages";
+    let post = match card::parse_post_content(&body.content) {
+        Ok(post) => post,
+        Err(error) => {
+            record_reject(
+                &state.shared,
+                "POST",
+                path,
+                Some(CallKind::MessageSend),
+                format!("post content: {error:#}"),
+            )
+            .await;
+            return Json(json!({"code": 232001, "msg": "invalid post content"})).into_response();
+        }
+    };
     let (disposition, assigned, waiter) = {
         let mut inner = state.shared.lock().await;
         if !inner.is_known_chat(&body.receive_id) {
@@ -1047,12 +1122,14 @@ pub(crate) async fn message_send(
             .front()
             .cloned()
             .unwrap_or(SendDisposition::Succeed);
-        let raw = serde_json::to_value(&body).unwrap_or(Value::Null);
         inner.record("POST", path, Some(CallKind::MessageSend), true, None);
         if let Some(last) = inner.calls.last_mut() {
-            last.send_body = Some(raw);
+            last.send_body = Some(serde_json::to_value(body).unwrap_or(Value::Null));
             last.assigned_message_id = Some(assigned.clone());
             last.uuid = body.uuid.clone();
+            last.request_bytes = request_bytes;
+            last.msg_type = Some(body.msg_type.clone());
+            last.md_text = Some(post.md_text.clone());
         }
         (disposition, assigned, inner.im.hang.waiter())
     };
@@ -1067,8 +1144,9 @@ pub(crate) async fn message_send(
         inner.next_send()
     };
     match disposition {
-        SendDisposition::Hang => Json(send_ok(&assigned, &body)).into_response(),
-        SendDisposition::Succeed => Json(send_ok(&assigned, &body)).into_response(),
+        SendDisposition::Hang | SendDisposition::Succeed => {
+            Json(send_ok(&assigned, body)).into_response()
+        }
         SendDisposition::Reject { code, msg } => {
             Json(json!({"code": code, "msg": msg})).into_response()
         }
@@ -1079,7 +1157,39 @@ pub(crate) async fn message_send(
     }
 }
 
-fn send_ok(message_id: &str, body: &SendBody) -> Value {
+/// Builds the IM send answer for an explicit identity, so a replay reports the
+/// stored facts instead of the retried request.
+pub(crate) fn send_ok_fields(
+    message_id: &str,
+    receive_id: &str,
+    msg_type: &str,
+    content: &str,
+) -> Value {
+    json!({
+        "code": 0,
+        "msg": "success",
+        "data": {
+            "message_id": message_id,
+            "root_id": "",
+            "parent_id": "",
+            "msg_type": msg_type,
+            "create_time": "1710000001000",
+            "update_time": "1710000001000",
+            "deleted": false,
+            "updated": false,
+            "chat_id": receive_id,
+            "sender": {
+                "id": REGISTERED_APP_ID,
+                "id_type": "app_id",
+                "sender_type": "app",
+                "tenant_key": "anywork_fixture_tenant"
+            },
+            "body": { "content": content }
+        }
+    })
+}
+
+pub(crate) fn send_ok(message_id: &str, body: &SendBody) -> Value {
     json!({
         "code": 0,
         "msg": "success",
@@ -1102,27 +1212,6 @@ fn send_ok(message_id: &str, body: &SendBody) -> Value {
             "body": { "content": body.content }
         }
     })
-}
-
-async fn auth_ok(shared: &Shared, header: Option<&axum::http::HeaderValue>) -> bool {
-    let inner = shared.lock().await;
-    bearer_ok(&inner, header.and_then(|value| value.to_str().ok()))
-}
-
-async fn kind_blocked(shared: &Shared, kind: CallKind) -> Option<String> {
-    let inner = shared.lock().await;
-    inner.kind_forbidden_or_excess(kind)
-}
-
-async fn record_reject(
-    shared: &Shared,
-    method: &str,
-    path: &str,
-    kind: Option<CallKind>,
-    diagnostic: String,
-) {
-    let mut inner = shared.lock().await;
-    inner.record(method, path, kind, false, Some(diagnostic));
 }
 
 fn json_error(status: StatusCode, error: &str, description: &str) -> Response {

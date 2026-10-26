@@ -27,7 +27,7 @@ pub mod config;
 mod config_editor;
 mod error_mapping;
 mod first_run;
-pub mod instruction;
+mod instruction;
 mod protocol;
 pub mod resource_store;
 mod studio;
@@ -45,8 +45,8 @@ pub use pl_tool::skill::{SkillCatalog, SkillMetadata, SkillResourceBase, SkillSo
 pub use config::{
     AccountId, ConfigPaths, ConfigRuntimeError, ConfigRuntimeSnapshot, ConfigStore,
     DeepSeekWebSearchConfig, ModelCatalogRuntimeSnapshot, ReasoningEffort,
-    STUDIO_CONFIG_SCHEMA_VERSION, StudioConfig, StudioMcpConfig, StudioRole, StudioUiConfig,
-    UserAgentProfile, WebSearchContextSize, WebSearchLocation, WebSearchMode,
+    STUDIO_CONFIG_SCHEMA_VERSION, StudioConfig, StudioMcpConfig, StudioUiConfig, UserAgentProfile,
+    WebSearchContextSize, WebSearchLocation, WebSearchMode,
 };
 pub use config_editor::{AccountEdit, AccountModelEdit, account_template_kind};
 pub use error_mapping::studio_error_from_anyhow;
@@ -108,7 +108,7 @@ pub use studio::thread_context_read;
 pub use studio::thread_execution;
 pub use studio::thread_execution_read;
 pub use studio::workspace;
-pub use studio::{lsp, mcp, skills};
+pub use studio::{acp_auth, acp_install, lsp, mcp, skills};
 pub use studio::{modes, statistics, updates};
 pub use studio::{
     persistence_products as persistence, recovery, remote_directory, startup_products as startup,

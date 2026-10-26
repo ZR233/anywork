@@ -7,6 +7,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../../l10n/studio_l10n.dart';
 import '../../connectors/settings_failure_text.dart';
 import '../../state/editor_keys.dart';
+import '../state/account_editor_state.dart';
 import '../view_models/account_editor_view_model.dart';
 import '../views/account_editor_view.dart';
 
@@ -59,9 +60,10 @@ class AccountEditorConnector extends ConsumerWidget {
               onTemplate: vm.setTemplate,
               onName: vm.setName,
               onBaseUrl: vm.setBaseUrl,
-              onPricing: vm.setPricing,
               onSecret: vm.setSecret,
               onSecretIntent: vm.setSecretIntent,
+              onNoCharge: (enabled) => unawaited(vm.setNoCharge(enabled)),
+              billingError: _billingError(state),
               onAddModel: vm.addCustomModel,
               onModel: vm.setCustomModel,
               onRemoveModel: vm.removeCustomModel,
@@ -88,5 +90,16 @@ class AccountEditorConnector extends ConsumerWidget {
 
   Future<void> _save(BuildContext context, AccountEditorViewModel vm) async {
     if (await vm.save() && context.mounted) onSaved();
+  }
+
+  /// 计费窄命令的就地说明（就地显示在开关下面，与主线位置一致）。
+  String? _billingError(AccountEditorViewState state) {
+    final action = state.billingAction;
+    final error =
+        action?.error ??
+        action?.observationError ??
+        action?.operation?.error ??
+        action?.operation?.evidenceError;
+    return error == null ? null : settingsFailureText(error);
   }
 }

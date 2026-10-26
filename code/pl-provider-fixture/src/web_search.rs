@@ -176,6 +176,7 @@ fn record(
         expected_path: Some(path.to_owned()),
         expected_kind: "web_search".to_owned(),
         expected_prompt: None,
+        actual_prompt: None,
         expected_step: None,
         actual_prompt_present: true,
         prompt_matches_expected: accepted,
@@ -422,10 +423,7 @@ fn prior_call_names(items: &[Value], start: usize) -> Vec<String> {
 /// no-tools and `tool_choice: none` facts it always sends, so a real user Turn
 /// that genuinely lacks a tool declaration is never silently accepted here.
 fn is_auxiliary_title_request(body: &Value) -> bool {
-    let instructions = body
-        .get("instructions")
-        .and_then(Value::as_str)
-        .unwrap_or_default();
+    let instructions = leading_instruction(body);
     let tools_absent = body
         .get("tools")
         .and_then(Value::as_array)
@@ -433,6 +431,31 @@ fn is_auxiliary_title_request(body: &Value) -> bool {
     body.get("tool_choice").and_then(Value::as_str) == Some("none")
         && tools_absent
         && instructions.contains(AUXILIARY_TITLE_INSTRUCTION)
+}
+
+fn leading_instruction(body: &Value) -> String {
+    let Some(first) = body
+        .get("input")
+        .and_then(Value::as_array)
+        .and_then(|items| items.first())
+    else {
+        return String::new();
+    };
+    if !matches!(
+        first.get("role").and_then(Value::as_str),
+        Some("developer") | Some("system")
+    ) {
+        return String::new();
+    }
+    match first.get("content") {
+        Some(Value::String(text)) => text.clone(),
+        Some(Value::Array(parts)) => parts
+            .iter()
+            .filter_map(|part| part.get("text").and_then(Value::as_str))
+            .collect::<Vec<_>>()
+            .join("\n"),
+        _ => String::new(),
+    }
 }
 
 /// Real Responses endpoint for the scenario: returns a declared-tool call, then
@@ -452,6 +475,17 @@ pub(super) async fn responses(
         );
         return StatusCode::BAD_REQUEST.into_response();
     };
+    if body.get("instructions").is_some() {
+        record(
+            &state,
+            "POST",
+            "/v1/responses",
+            body,
+            false,
+            Some("web_search_reserved_instructions"),
+        );
+        return StatusCode::BAD_REQUEST.into_response();
+    }
     // The auxiliary Thread-title completion has its own instruction contract and
     // always sends no tools. It embeds the first user prompt (and thus its
     // marker) as untrusted data, so it must be answered as a title instead of

@@ -164,10 +164,6 @@ final class ConversationMetadataRead {
   void _start() {
     if (_started || _value.isCompleted) return;
     _started = true;
-    // PROBE
-    print(
-      '[M] start metadata $threadId\n${StackTrace.current.toString().split('\n').take(10).join('\n')}',
-    );
     try {
       _permit = _budget.acquire(
         ResourceKind.pendingOperation,

@@ -39,29 +39,27 @@ pub(super) struct LookupProfileRequest {
 
 pub(super) fn router() -> OpenApiRouter<AppState> {
     OpenApiRouter::new()
-        .routes(routes!(events, open, open_source))
-        .routes(routes!(
-            header,
-            text,
-            entries,
-            entity,
-            lookup_profile,
-            profiles,
-            diagnostics,
-            source_header,
-            source_text
-        ))
-        .routes(routes!(
-            profile_control::ack,
-            profile_control::request_close,
-            profile_control::close,
-            profile_control::retry_close
-        ))
-        .routes(routes!(
-            profile_control::request_read_close,
-            profile_control::read_close,
-            profile_control::retry_read_close
-        ))
+        // 每个 handler 各自声明自己的 path/method：`routes!` 只产生一个 MethodRouter，
+        // 多个同 method 的 handler 放进同一次调用会在装配期重复登记 POST。
+        .routes(routes!(events))
+        .routes(routes!(open))
+        .routes(routes!(open_source))
+        .routes(routes!(header))
+        .routes(routes!(text))
+        .routes(routes!(entries))
+        .routes(routes!(entity))
+        .routes(routes!(lookup_profile))
+        .routes(routes!(profiles))
+        .routes(routes!(diagnostics))
+        .routes(routes!(source_header))
+        .routes(routes!(source_text))
+        .routes(routes!(profile_control::ack))
+        .routes(routes!(profile_control::request_close))
+        .routes(routes!(profile_control::close))
+        .routes(routes!(profile_control::retry_close))
+        .routes(routes!(profile_control::request_read_close))
+        .routes(routes!(profile_control::read_close))
+        .routes(routes!(profile_control::retry_read_close))
 }
 #[utoipa::path(post, path = "/api/v1/products/agent-profiles/events", operation_id = "agentProfiles.events", request_body = EmptyRequest,
     responses(StudioApiErrors, (status = 200, description = "Original Profiles stream, no replay; baseline occupies ordinary ACK credit.",

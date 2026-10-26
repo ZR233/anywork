@@ -21,38 +21,28 @@ pub(crate) fn router() -> OpenApiRouter<AppState> {
         .routes(routes!(request_read_close))
         .routes(routes!(read_close))
         .routes(routes!(retry_read_close))
-        .routes(routes!(
-            read_routes::turn_open,
-            read_routes::index_open,
-            read_routes::interaction_open
-        ))
-        .routes(routes!(
-            read_routes::activity_open,
-            read_routes::storage_open,
-            read_routes::resolve_interaction
-        ))
-        .routes(routes!(
-            read_routes::turn_header,
-            read_routes::index_header,
-            read_routes::interaction_header
-        ))
-        .routes(routes!(
-            read_routes::activity_header,
-            read_routes::storage_header,
-            read_routes::index_entries
-        ))
-        .routes(routes!(
-            read_routes::questions,
-            read_routes::options,
-            read_routes::answer_entries,
-            read_routes::answer_values
-        ))
-        .routes(routes!(
-            read_routes::tools,
-            read_routes::wait_targets,
-            read_routes::latest_wait_targets,
-            read_routes::text
-        ))
+        // 每个 handler 各自声明自己的 path/method：`routes!` 只产生一个 MethodRouter，
+        // 多个同 method 的 handler 放进同一次调用会在装配期重复登记 POST。
+        .routes(routes!(read_routes::turn_open))
+        .routes(routes!(read_routes::index_open))
+        .routes(routes!(read_routes::interaction_open))
+        .routes(routes!(read_routes::activity_open))
+        .routes(routes!(read_routes::storage_open))
+        .routes(routes!(read_routes::resolve_interaction))
+        .routes(routes!(read_routes::turn_header))
+        .routes(routes!(read_routes::index_header))
+        .routes(routes!(read_routes::interaction_header))
+        .routes(routes!(read_routes::activity_header))
+        .routes(routes!(read_routes::storage_header))
+        .routes(routes!(read_routes::index_entries))
+        .routes(routes!(read_routes::questions))
+        .routes(routes!(read_routes::options))
+        .routes(routes!(read_routes::answer_entries))
+        .routes(routes!(read_routes::answer_values))
+        .routes(routes!(read_routes::tools))
+        .routes(routes!(read_routes::wait_targets))
+        .routes(routes!(read_routes::latest_wait_targets))
+        .routes(routes!(read_routes::text))
 }
 
 #[utoipa::path(post, path = "/api/v1/threads/{thread_id}/execution/events", operation_id = "thread.execution.events", params(("thread_id" = String, Path)), request_body = ExecutionRequest,

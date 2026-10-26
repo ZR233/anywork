@@ -78,6 +78,8 @@ impl ColdStore for ObserveCheckpoint {
     }
     fn pressure(&self, _: &str) -> StoragePressure {
         StoragePressure {
+            // This fake completes its write synchronously inside `admit`.
+            has_uncommitted_work: false,
             durable_sequence: self.durable.load(Ordering::SeqCst),
             ..Default::default()
         }

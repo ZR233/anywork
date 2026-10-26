@@ -507,7 +507,7 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get settingsBotsPermissions =>
-      'Requested scopes (preset=false): im:message:send_as_bot, im:message.p2p_msg:readonly, im:message.group_at_msg:readonly, im:chat:readonly, im:message:readonly. Event: im.message.receive_v1. Declaring them does not mean an admin has approved or published the app.';
+      'Requested scopes (preset=false): im:message:send_as_bot, im:message.p2p_msg:readonly, im:message.group_at_msg:readonly, im:chat:readonly, im:message:readonly, im:resource, cardkit:card:write. Event: im.message.receive_v1. Image and file reception is retained; streaming cards add creation and update access. Existing apps need an administrator to grant card access and publish the app. Declaring permissions does not mean they are approved.';
 
   @override
   String get settingsBotsName => 'Name';
@@ -3085,11 +3085,11 @@ class AppLocalizationsEn extends AppLocalizations {
   String get roleEmpty => 'Agent';
 
   @override
-  String get settingsPricingEnabled => 'Estimate token cost';
+  String get settingsNoCharge => 'No charge';
 
   @override
-  String get settingsPricingHelp =>
-      'Controls in-app cost estimates; token and cache statistics remain available. Plans default to off.';
+  String get settingsNoChargeHelp =>
+      'On: declare future model calls on this account as not charged. Off: clear the billing override and restore automatic classification. Token, cache and performance statistics and model reference prices are preserved. Other categories estimate costs when prices and usage are available.';
 
   @override
   String get settingsModelAdvanced => 'Optional model settings';
@@ -4434,6 +4434,338 @@ class AppLocalizationsEn extends AppLocalizations {
   String get settingsModelAutoCompactCustom => 'Custom';
 
   @override
+  String get acpAccountPickerTitle => 'Add account';
+
+  @override
+  String get acpAccountPickerNativeGroup => 'Model API account';
+
+  @override
+  String get acpAccountPickerAcpGroup => 'Agent integration (ACP)';
+
+  @override
+  String get acpAccountNoApiKeyHint =>
+      'No API key needed — the official program handles sign-in.';
+
+  @override
+  String get acpAccountSaveAndConnect => 'Save and connect';
+
+  @override
+  String acpAccountSavedConnectIncomplete(String reason) {
+    return 'Account saved. Connection not finished: $reason';
+  }
+
+  @override
+  String acpAccountSaveFailed(String reason) {
+    return 'Could not save this integration: $reason';
+  }
+
+  @override
+  String get acpAccountProviderChip => 'ACP';
+
+  @override
+  String get acpAccountScopeNotice =>
+      'This version only configures the account and sign-in. ACP chat and model selection are not available yet.';
+
+  @override
+  String get acpAccountRemoveNotLogout =>
+      'Removing an integration does not sign out the official program.';
+
+  @override
+  String get acpAccountRemoveFailed => 'Could not remove this integration.';
+
+  @override
+  String get acpAuthUnchecked => 'Connection not checked yet.';
+
+  @override
+  String get acpAuthChecking => 'Checking connection…';
+
+  @override
+  String get acpAuthRequiredTitle => 'Sign-in required';
+
+  @override
+  String get acpAuthRequiredBody =>
+      'The official program reported the sign-in methods below.';
+
+  @override
+  String get acpAuthMethodLabel => 'Sign-in method';
+
+  @override
+  String get acpAuthLogin => 'Sign in';
+
+  @override
+  String get acpAuthAuthenticatingTitle => 'Waiting for sign-in';
+
+  @override
+  String get acpAuthAuthenticatingBody =>
+      'Finish signing in inside the official sign-in window. This page keeps following the same attempt.';
+
+  @override
+  String get acpAuthVerifyingTitle => 'Verifying sign-in…';
+
+  @override
+  String get acpAuthVerifiedTitle => 'Connected';
+
+  @override
+  String acpAuthVerifiedAt(String time) {
+    return 'Verified $time';
+  }
+
+  @override
+  String get acpAuthRecheck => 'Check again';
+
+  @override
+  String get acpAuthCheck => 'Check connection';
+
+  @override
+  String get acpAuthCancel => 'Cancel sign-in';
+
+  @override
+  String get acpAuthCancelCheck => 'Cancel check';
+
+  @override
+  String get acpAuthCancelling => 'Cancelling…';
+
+  @override
+  String get acpAuthCancelled => 'Cancelled.';
+
+  @override
+  String get acpAuthFailedTitle => 'Connection failed';
+
+  @override
+  String get acpAuthTerminalOnly =>
+      'The server only offers terminal sign-in, which this version does not support.';
+
+  @override
+  String get acpAuthUnsupportedOnly =>
+      'The server only offers sign-in methods this version does not implement.';
+
+  @override
+  String get acpAuthClosingTitle => 'Finishing cleanup';
+
+  @override
+  String get acpAuthClosingBody =>
+      'The protocol exchange is over; the process and its pipes are still being joined. No new attempt starts until this settles.';
+
+  @override
+  String get acpAuthServerUnknown => 'The server did not provide its identity.';
+
+  @override
+  String get acpAuthMethodSelectHint => 'Choose a sign-in method';
+
+  @override
+  String get acpAuthMethodRequired => 'Select a sign-in method to continue.';
+
+  @override
+  String get acpAuthRowClosing => 'Cleaning up';
+
+  @override
+  String get acpAccountInstallOpen => 'Open official guide';
+
+  @override
+  String get acpAuthNoMethods =>
+      'The server did not offer a usable sign-in method.';
+
+  @override
+  String get acpAuthRetry => 'Retry';
+
+  @override
+  String get acpAuthEditConfig => 'Edit configuration';
+
+  @override
+  String get acpAuthDone => 'Done';
+
+  @override
+  String get acpAuthDiagnostics => 'Technical details';
+
+  @override
+  String acpAuthStageLabel(String stage) {
+    return 'Stage: $stage';
+  }
+
+  @override
+  String acpAuthCodeLabel(String code) {
+    return 'Reason: $code';
+  }
+
+  @override
+  String get acpAuthRowUnchecked => 'Not checked';
+
+  @override
+  String get acpAuthRowChecking => 'Checking';
+
+  @override
+  String get acpAuthRowRequired => 'Sign-in required';
+
+  @override
+  String get acpAuthRowAuthenticating => 'Signing in';
+
+  @override
+  String get acpAuthRowVerifying => 'Verifying';
+
+  @override
+  String get acpAuthRowVerified => 'Connected';
+
+  @override
+  String get acpAuthRowCancelling => 'Cancelling';
+
+  @override
+  String get acpAuthRowCancelled => 'Cancelled';
+
+  @override
+  String get acpAuthRowFailed => 'Connection failed';
+
+  @override
+  String get acpAccountDetailsSummary =>
+      'Official ACP integration — no API key needed.';
+
+  @override
+  String get acpAccountConnectionInfoTitle => 'Connection details';
+
+  @override
+  String get acpAccountProviderLabel => 'Provider';
+
+  @override
+  String acpAuthFailureSummary(String reason, String stage) {
+    return '$reason ($stage)';
+  }
+
+  @override
+  String get acpFailureCodeStartup => 'Process start failed';
+
+  @override
+  String get acpFailureCodeMissingExecutable => 'Server program not found';
+
+  @override
+  String get acpFailureCodeIo => 'I/O error';
+
+  @override
+  String get acpFailureCodeUnsupportedVersion => 'Unsupported protocol version';
+
+  @override
+  String get acpFailureCodeUnsupportedMethod => 'Unsupported sign-in method';
+
+  @override
+  String get acpFailureCodeAuthentication => 'Sign-in failed';
+
+  @override
+  String get acpFailureCodeProbe => 'Connection check failed';
+
+  @override
+  String get acpFailureCodeProtocol => 'Protocol error';
+
+  @override
+  String get acpFailureCodeTransport => 'Transport error';
+
+  @override
+  String get acpFailureCodeTimeout => 'Timed out';
+
+  @override
+  String get acpFailureCodeResourceLimit => 'Resource limit reached';
+
+  @override
+  String get acpFailureCodeCancelled => 'Cancelled';
+
+  @override
+  String get acpFailureCodeStaleOperation => 'Operation was superseded';
+
+  @override
+  String get acpFailureCodeConfigChanged => 'Configuration changed';
+
+  @override
+  String get acpFailureCodeCleanup => 'Cleanup failed';
+
+  @override
+  String get acpFailureCodeInternal => 'Internal error';
+
+  @override
+  String get acpFailureStageProcess => 'during process start';
+
+  @override
+  String get acpFailureStageConfig => 'during configuration read';
+
+  @override
+  String get acpFailureStageInitialize => 'during initialize';
+
+  @override
+  String get acpFailureStageAuthenticate => 'during sign-in';
+
+  @override
+  String get acpFailureStageProbe => 'during connection check';
+
+  @override
+  String get acpFailureStageClose => 'during session close';
+
+  @override
+  String get acpFailureStageCleanup => 'during cleanup';
+
+  @override
+  String get studioFailureCodeNotInitialized => 'Not initialized';
+
+  @override
+  String get studioFailureCodeRuntimeStopped => 'Runtime stopped';
+
+  @override
+  String get studioFailureCodeInstanceBusy => 'Another operation is running';
+
+  @override
+  String get studioFailureCodeInvalidArgument => 'Invalid request';
+
+  @override
+  String get studioFailureCodeNotFound => 'Not found';
+
+  @override
+  String get studioFailureCodeBusy => 'Busy';
+
+  @override
+  String get studioFailureCodeConflict => 'Conflict';
+
+  @override
+  String get studioFailureCodeStaleRevision => 'Outdated revision';
+
+  @override
+  String get studioFailureCodePermissionDenied => 'Permission denied';
+
+  @override
+  String get studioFailureCodeCancelled => 'Cancelled';
+
+  @override
+  String get studioFailureCodeCancellationTooLate => 'Too late to cancel';
+
+  @override
+  String get studioFailureCodeOverloaded => 'Overloaded';
+
+  @override
+  String get studioFailureCodeUnavailable => 'Unavailable';
+
+  @override
+  String get studioFailureCodeProtocol => 'Protocol error';
+
+  @override
+  String get studioFailureCodeStorage => 'Storage error';
+
+  @override
+  String get studioFailureCodeUpdate => 'Update error';
+
+  @override
+  String get studioFailureCodeInternal => 'Internal error';
+
+  @override
+  String get acpAuthCancellingBody =>
+      'Waiting for the sign-in window and its process to finish.';
+
+  @override
+  String get acpAuthCancelledBody =>
+      'No attempt is running now. You can check or sign in again.';
+
+  @override
+  String acpAuthCommandFailure(String reason) {
+    return 'The request was not accepted. $reason';
+  }
+
+  @override
+  String get acpAuthCommandUnavailable => 'The request could not be completed.';
+
+  @override
   String get botsOverviewHint =>
       'Bring your sessions to Feishu to search, collaborate, and share files.';
 
@@ -4468,6 +4800,230 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get settingsSshNextPage => 'Next page';
+
+  @override
+  String acpInstallUnsupportedPlatform(String version) {
+    return 'No official managed build of $version exists for this platform.';
+  }
+
+  @override
+  String get acpFailureStagePrepare => 'Preparing the managed server';
+
+  @override
+  String get acpFailureCodePreparationRequired =>
+      'The managed server is not prepared yet';
+
+  @override
+  String get acpFailureCodeInstallationInvalid =>
+      'The prepared server is incomplete or damaged';
+
+  @override
+  String get acpFailureCodeUnsupportedPlatform =>
+      'No official managed build for this platform';
+
+  @override
+  String get acpFailureCodeServerVersionMismatch =>
+      'The server version is not the supported one';
+
+  @override
+  String get acpInstallFactVersion => 'Version';
+
+  @override
+  String get acpInstallFactTarget => 'Platform';
+
+  @override
+  String get acpInstallFactStage => 'Stage';
+
+  @override
+  String get acpInstallFactRetries => 'Automatic retries';
+
+  @override
+  String acpInstallRetryValue(int count) {
+    String _temp0 = intl.Intl.pluralLogic(
+      count,
+      locale: localeName,
+      other: '$count times',
+      zero: 'None',
+    );
+    return '$_temp0';
+  }
+
+  @override
+  String acpInstallProgressDownloaded(String done, String total) {
+    return '$done of $total downloaded';
+  }
+
+  @override
+  String acpInstallProgressUnknown(String done) {
+    return '$done downloaded, total unknown';
+  }
+
+  @override
+  String acpInstallProgressVerified(String done, String total) {
+    return '$done of $total verified';
+  }
+
+  @override
+  String acpInstallProgressVerifiedUnknown(String done) {
+    return '$done verified, total unknown';
+  }
+
+  @override
+  String acpInstallProgressExtracted(String done, String total) {
+    return '$done of $total extracted';
+  }
+
+  @override
+  String acpInstallProgressExtractedUnknown(String done) {
+    return '$done extracted, total unknown';
+  }
+
+  @override
+  String acpInstallProgressProcessed(String done, String total) {
+    return '$done of $total processed';
+  }
+
+  @override
+  String acpInstallProgressProcessedUnknown(String done) {
+    return '$done processed, total unknown';
+  }
+
+  @override
+  String acpInstallProgressPercent(int percent) {
+    return '$percent%';
+  }
+
+  @override
+  String acpInstallSpeed(String speed) {
+    return '$speed/s';
+  }
+
+  @override
+  String get acpInstallStageResolve => 'Reading the official manifest';
+
+  @override
+  String get acpInstallStageWaitForLock => 'Waiting for the install lock';
+
+  @override
+  String get acpInstallStageDownload => 'Downloading package';
+
+  @override
+  String get acpInstallStageVerify => 'Verifying package';
+
+  @override
+  String get acpInstallStageExtract => 'Extracting files';
+
+  @override
+  String get acpInstallStagePublish => 'Publishing installation';
+
+  @override
+  String get acpInstallStageClose => 'Closing download';
+
+  @override
+  String get acpInstallStart => 'Download and prepare';
+
+  @override
+  String get acpInstallRestart => 'Prepare again';
+
+  @override
+  String get acpInstallCancel => 'Cancel download';
+
+  @override
+  String get acpInstallCancelling => 'Cancelling…';
+
+  @override
+  String get acpInstallCancelSharedHint =>
+      'Preparing is shared: cancelling stops this preparation and leaves saved accounts untouched.';
+
+  @override
+  String get acpInstallUsePrepared => 'Use prepared server';
+
+  @override
+  String acpInstallUsePreparedHint(String version, String target) {
+    return 'An existing prepared $version ($target) can be claimed for this account.';
+  }
+
+  @override
+  String get acpInstallReadyTitle => 'Server ready';
+
+  @override
+  String get acpInstallReadyBody =>
+      'Preparing never saves an account or signs in.';
+
+  @override
+  String get acpInstallReusedBadge => 'Reused existing installation';
+
+  @override
+  String get acpInstallFailureRetry => 'Retry preparation';
+
+  @override
+  String get acpInstallTrustOfficialHttps =>
+      'Trust boundary: official HTTPS source, no publisher checksum provided.';
+
+  @override
+  String get acpInstallPendingAdmission => 'Accepting the preparation request…';
+
+  @override
+  String acpInstallCommandFailed(String reason) {
+    return 'The request was not accepted. $reason';
+  }
+
+  @override
+  String acpInstallFailureSummary(String reason, String stage) {
+    return '$reason ($stage)';
+  }
+
+  @override
+  String get acpInstallFailureCodeUnsupportedPlatform =>
+      'This platform is not supported';
+
+  @override
+  String get acpInstallFailureCodeSourceRejected => 'Source rejected';
+
+  @override
+  String get acpInstallFailureCodeNetwork => 'Network error';
+
+  @override
+  String get acpInstallFailureCodeTimeout => 'Timed out';
+
+  @override
+  String get acpInstallFailureCodeTooLarge => 'Package exceeds the limit';
+
+  @override
+  String get acpInstallFailureCodeChecksumMismatch => 'Checksum mismatch';
+
+  @override
+  String get acpInstallFailureCodeInvalidArchive => 'Invalid package';
+
+  @override
+  String get acpInstallFailureCodeMissingExecutable =>
+      'Server program missing in package';
+
+  @override
+  String get acpInstallFailureCodeCacheCorrupt =>
+      'Existing installation is corrupt';
+
+  @override
+  String get acpInstallFailureCodeIo => 'File system error';
+
+  @override
+  String get acpInstallFailureCodeBusy => 'Another preparation is running';
+
+  @override
+  String get acpInstallFailureCodeStaleOperation =>
+      'Preparation was superseded';
+
+  @override
+  String get acpInstallFailureCodeCancelled => 'Cancelled';
+
+  @override
+  String get acpInstallFailureCodeResourceClose => 'Cleanup failed';
+
+  @override
+  String get acpAccountTermsOpen => 'Terms of service';
+
+  @override
+  String get acpAccountTermsTitle => 'Official terms';
 
   @override
   String get delegationSettingsTitle => 'Subagent delegation';
@@ -4574,7 +5130,7 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get settingsBillingHint =>
-      'Independent of cost estimates. A category does not confirm an active subscription or remaining quota.';
+      'No charge applies only to future calls; other categories estimate costs from available prices and usage. Subscription does not confirm an active plan, remaining quota or zero cost. Model reference prices are preserved.';
 
   @override
   String get settingsModelDetails => 'Model details';

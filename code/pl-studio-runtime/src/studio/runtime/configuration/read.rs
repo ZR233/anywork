@@ -139,6 +139,17 @@ impl StudioConfigurationRead {
         self.scope
             .query(move |material| material.accounts(list_id, offset, limit))
     }
+    /// 原 Configuration scope 的 ACP 目录分页；不另设 ACP 读取登记表或最新目录入口。
+    pub fn acp_accounts(
+        &self,
+        list_id: u64,
+        offset: u64,
+        limit: u32,
+    ) -> impl Future<Output = Result<AcpAccountConfigurationReadPage>> + Send + 'static + use<>
+    {
+        self.scope
+            .query(move |material| material.acp_accounts(list_id, offset, limit))
+    }
     pub fn custom_models(
         &self,
         list_id: u64,

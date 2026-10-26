@@ -97,6 +97,7 @@ without echoing the original input.
 | --- | --- |
 | `bots-env message unknown-direct` | delivers one fixed synthetic DM event from the additional pairing-only synthetic user `ou_anywork_fixture_unknown` in chat `oc_anywork_fixture_env_direct`, platform message id `om_anywork_fixture_env_unknown_direct`, body is the existing GUI model prompt |
 | `bots-env message resend-direct` | delivers one fixed synthetic DM event from the same user and chat with a different platform message id `om_anywork_fixture_env_resend-direct` |
+| `bots-env message markdown-direct` | delivers one fixed synthetic DM event from the same user and chat, platform message id `om_anywork_fixture_env_markdown_direct`, body is the fixed Markdown sample prompt |
 | `bots-env conversations prepare-pages` | replaces this peer's synthetic group directory and history with the bounded paging sample |
 
 Message semantics:
@@ -115,6 +116,25 @@ Message semantics:
 - The model main flow may run at most once, at the resend stage, from these
   environment inputs. Registration ticket screenshots stay PR-safe only after
   Expired/Cancelled; raw Driver captures are never PR-ready evidence.
+
+Markdown sample semantics:
+
+- `markdown-direct` uses the same synthetic pairing-only user and chat. Its
+  prompt is the fixed `GUI_MARKDOWN_PROMPT`; the scripted model answers with a
+  fixed Chinese heading, paragraph with bold/inline code/link, list, fenced code
+  block and small table, paced over several seconds.
+- Order matters: approve the synthetic pairing user in the GUI **first**, then
+  deliver `markdown-direct` once. The action has one fixed platform message id,
+  so re-invoking it before approval is a duplicate delivery of the same
+  unauthorized input and must not be expected to run later. A new legitimate
+  event identity (`resend-direct`) exists only for the plain acknowledgement
+  sample, not for this Markdown sample. No environment action approves a user,
+  edits trust, or re-delivers an old input with a new identity.
+- The pacing exists only to open a screenshot window for the **local native**
+  generating state; the completed state is the same fixed text. Neither
+  screenshot proves a Feishu client rendering or the CardKit wire. Markdown and
+  streaming-card protocol evidence comes from the separate
+  `bots_protocol_observe --case markdown-streaming-cards` run.
 
 Paging sample semantics:
 
@@ -159,6 +179,7 @@ pub(super) enum EnvLine {
 pub(super) enum MessageEnvCommand {
     UnknownDirect,
     ResendDirect,
+    Markdown,
 }
 
 /// Fixed synthetic conversation catalog sample for this peer.
@@ -339,6 +360,7 @@ impl MessageEnvCommand {
         match tokens {
             ["bots-env", "message", "unknown-direct"] => Some(Self::UnknownDirect),
             ["bots-env", "message", "resend-direct"] => Some(Self::ResendDirect),
+            ["bots-env", "message", "markdown-direct"] => Some(Self::Markdown),
             _ => None,
         }
     }
@@ -347,6 +369,7 @@ impl MessageEnvCommand {
         match self {
             Self::UnknownDirect => "env-message-unknown-direct",
             Self::ResendDirect => "env-message-resend-direct",
+            Self::Markdown => "env-message-markdown-direct",
         }
     }
 
@@ -354,6 +377,7 @@ impl MessageEnvCommand {
         match self {
             Self::UnknownDirect => bots_env_samples::unknown_direct_event(),
             Self::ResendDirect => bots_env_samples::resend_direct_event(),
+            Self::Markdown => bots_env_samples::markdown_direct_event(),
         }
     }
 }

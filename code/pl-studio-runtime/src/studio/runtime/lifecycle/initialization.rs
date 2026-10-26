@@ -320,6 +320,10 @@ impl StudioRuntime {
         // 配置 watch 转发由 runtime 持有；失败路径由 `dispose_startup` 取消并等待。
         self.start_agent_profiles_forwarder().await;
         self.store.calls().start().await;
+        // 统计进度 follower 必须晚于调用库 writer 启动：先注册进度 watcher 再按当前水位收敛
+        // 一次，启动窗口内已发生的受理不会丢；`initialize_projection` 已建立首帧，水位未前进
+        // 时这里只推进轻量状态，不会重复发布。失败路径同样由 `dispose_startup` 取消并 join。
+        self.start_statistics_follower().await;
         let writer = self
             .agent_facility
             .persistence
@@ -372,7 +376,8 @@ impl StudioRuntime {
             self.stop_mcp_config_watcher(),
             self.stop_mcp_health_watcher(),
             self.stop_lsp_state_watcher(),
-            self.stop_agent_profiles_forwarder()
+            self.stop_agent_profiles_forwarder(),
+            self.stop_statistics_follower()
         );
         let observer = background_task::stop(&self.persistence_observer).await;
         let mcp = self.external_runtimes.mcp.shutdown().await;
@@ -395,7 +400,7 @@ impl StudioRuntime {
         let storage = self.store.close().await;
         catalogs.map_err(|error| internal("stop_model_catalogs", error))?;
         for result in [
-            results.0, results.1, results.2, results.3, results.4, results.5, results.6,
+            results.0, results.1, results.2, results.3, results.4, results.5, results.6, results.7,
         ] {
             result.map_err(|error| internal("stop_services", error))?;
         }

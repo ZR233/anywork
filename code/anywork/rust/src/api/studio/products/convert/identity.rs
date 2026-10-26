@@ -24,6 +24,8 @@ impl From<protocol::ProductResource> for bridge::BridgeProductResource {
             protocol::ProductResource::PersistenceQueue => Self::PersistenceQueue,
             protocol::ProductResource::Updates => Self::Updates,
             protocol::ProductResource::Bots => Self::Bots,
+            protocol::ProductResource::AcpAuth => Self::AcpAuth,
+            protocol::ProductResource::AcpInstall => Self::AcpInstall,
         }
     }
 }

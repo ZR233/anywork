@@ -224,7 +224,7 @@ packages:
     source: hosted
     version: "1.0.0"
   cross_file_io:
-    dependency: transitive
+    dependency: "direct dev"
     description:
       name: cross_file_io
       sha256: b8d6af657ed47860d603130e2908f76c062c13b4764fd0ae3190243c55c396bc
@@ -232,7 +232,7 @@ packages:
     source: hosted
     version: "1.0.0"
   cross_file_platform_interface:
-    dependency: transitive
+    dependency: "direct dev"
     description:
       name: cross_file_platform_interface
       sha256: "6f8fd6dc53835107ca38f7f2226985b7730c26bb8dedc313de19ed6a68feac84"

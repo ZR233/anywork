@@ -1,4 +1,6 @@
-import 'package:anywork_client/account_usage.dart';
+import 'package:anywork_client/acp.dart';
+import 'package:anywork_client/account_usage.dart'
+    show AccountUsageRepository, SessionCostsRepository;
 import 'package:anywork_client/bots.dart';
 import 'package:anywork_client/configuration.dart';
 import 'package:anywork_client/conversation.dart';
@@ -11,6 +13,7 @@ import 'package:anywork_client/persistence.dart';
 import 'package:anywork_client/recovery.dart';
 import 'package:anywork_client/remote.dart';
 import 'package:anywork_client/skills.dart';
+import 'package:anywork_client/statistics.dart' show StatisticsRepository;
 import 'package:anywork_client/updates.dart';
 import 'package:anywork_client/workspace.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -58,6 +61,12 @@ final statisticsRepositoryProvider = Provider<StatisticsRepository>((ref) {
   throw StateError('StatisticsRepository must be injected by the application');
 });
 
+final sessionCostsRepositoryProvider = Provider<SessionCostsRepository>((ref) {
+  throw StateError(
+    'SessionCostsRepository must be injected by the application',
+  );
+});
+
 final conversationRepositoryProvider = Provider<ConversationRepository>((ref) {
   throw StateError(
     'ConversationRepository must be injected by the application',
@@ -78,6 +87,14 @@ final mcpRepositoryProvider = Provider<McpRepository>((ref) {
 
 final lspRepositoryProvider = Provider<LspRepository>((ref) {
   throw StateError('LspRepository must be injected by the application');
+});
+
+final acpAuthRepositoryProvider = Provider<AcpAuthRepository>((ref) {
+  throw StateError('AcpAuthRepository must be injected by the application');
+});
+
+final acpInstallRepositoryProvider = Provider<AcpInstallRepository>((ref) {
+  throw StateError('AcpInstallRepository must be injected by the application');
 });
 
 final skillsRepositoryProvider = Provider<SkillsRepository>((ref) {

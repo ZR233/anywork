@@ -1,70 +1,61 @@
-import 'package:anywork_client/account_usage.dart';
+import 'package:anywork_client/statistics.dart';
 import 'package:flutter/material.dart';
 
-import '../../../../diagnostics/studio_driver_keys.dart';
 import '../../../../app/theme/studio_tokens.dart';
+import '../../../../diagnostics/studio_driver_keys.dart';
 import '../../../../l10n/studio_l10n.dart';
 import '../../widgets/settings_layout.dart';
-import '../../accounts/widgets/auto_page_loader.dart';
 import '../state/statistics_view_state.dart';
 import '../widgets/statistics_format.dart';
 import '../widgets/statistics_history_row.dart';
+import '../widgets/statistics_status_widgets.dart';
 import '../widgets/statistics_summary_view.dart';
 
+/// Pure statistics view. Every filter and the whole snapshot arrive through
+/// immutable props; this page never reads, pages or holds a resource identity.
 class StatisticsView extends StatelessWidget {
   const StatisticsView({
     required this.state,
-    required this.summaries,
-    required this.history,
-    required this.modelOptions,
-    required this.effortOptions,
-    required this.summaryKnownEmpty,
-    required this.historyKnownEmpty,
-    required this.hasMoreSummaries,
-    required this.hasMoreHistory,
-    required this.hasHistory,
-    required this.pending,
-    required this.gap,
-    required this.readFailed,
-    required this.onModel,
-    required this.onEffort,
-    required this.onMismatch,
-    required this.onRead,
+    required this.onModelChanged,
+    required this.onEffortChanged,
+    required this.onMismatchesOnlyChanged,
+    required this.onRetry,
     super.key,
   });
+
   final StatisticsViewState state;
-  final List<PerformanceSummary> summaries;
-  final List<PerformanceSample> history;
-  final List<StatisticsModelOption> modelOptions;
-  final List<StatisticsEffortFilter> effortOptions;
-  final bool summaryKnownEmpty;
-  final bool historyKnownEmpty;
-  final bool hasMoreSummaries;
-  final bool hasMoreHistory;
-  final bool hasHistory;
-  final bool pending;
-  final bool gap;
-  final bool readFailed;
-  final ValueChanged<StatisticsModelKey?> onModel;
-  final ValueChanged<StatisticsEffortFilter?> onEffort;
-  final ValueChanged<bool> onMismatch;
-  final ValueChanged<StatisticsReadField> onRead;
+  final ValueChanged<StatisticsModelKey?> onModelChanged;
+  final ValueChanged<StatisticsEffortFilter?> onEffortChanged;
+  final ValueChanged<bool> onMismatchesOnlyChanged;
+
+  /// The page's only recovery: the domain's read-only re-sync.
+  final VoidCallback onRetry;
 
   @override
   Widget build(BuildContext context) {
-    return AutoPageLoader(
-      hasMore: hasMoreSummaries,
-      loading: state.reading.contains(StatisticsReadField.summaries),
-      blocked: state.readIssues.containsKey(StatisticsReadField.summaries),
-      requestedCount: summaries.length,
-      onLoadMore: () => onRead(StatisticsReadField.summaries),
-      child: AutoPageLoader(
-        hasMore: hasMoreHistory,
-        loading: state.reading.contains(StatisticsReadField.history),
-        blocked: state.readIssues.containsKey(StatisticsReadField.history),
-        requestedCount: history.length,
-        onLoadMore: () => onRead(StatisticsReadField.history),
-        child: SettingsPageLayout(
+    final header = state.snapshot;
+    final summaries = header?.summaries ?? const <PerformanceSummary>[];
+    final sourceHistory = header?.history ?? const <PerformanceSample>[];
+    final history = state.filteredHistory;
+    final filter = state.modelFilter;
+    final mismatchesOnly = state.mismatchesOnly;
+    final sync = state.source.sync;
+    final readFailed = header?.readFailed ?? false;
+    final gap = header?.statisticsGap ?? false;
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final compact = constraints.maxWidth < 760;
+        // gap/readFailed are stable header issues. pending is the routine
+        // transient while a call lands: it never gets a status line and only
+        // suppresses a premature empty-history conclusion.
+        final headerIssue = gap || readFailed;
+        final hasProjectionIssue =
+            header == null ||
+            header.statisticsPending ||
+            header.statisticsGap ||
+            header.readFailed;
+        final knownEmpty = header != null && !hasProjectionIssue;
+        return SettingsPageLayout(
           maxWidth: 1120,
           header: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -73,111 +64,182 @@ class StatisticsView extends StatelessWidget {
                 title: context.l10n.settingsStatisticsTitle,
                 subtitle: context.l10n.settingsStatisticsSubtitle,
               ),
-              // gap/readFailed stay in the fixed heading as a light status line and
-              // never push the body down.
-              if (gap || readFailed)
+              // gap/readFailed 在固定页头轻量显示，不在正文顶部插拔大块。
+              if (state.visible && headerIssue)
                 Padding(
                   padding: const EdgeInsets.only(top: 10),
-                  child: _StatisticsStatusLine(
-                    readFailed: readFailed,
-                    gap: gap,
-                  ),
+                  child: StatisticsStatusLine(readFailed: readFailed, gap: gap),
                 ),
+              // 只有真实失败（或必要重连）才出现的统计连接状态，沿用原 topic 状态
+              // 的几何、文案与 key；idle/connecting/ready 不渲染。
+              if (state.visible)
+                StatisticsConnectionStatus(sync: sync, onRetry: onRetry),
             ],
           ),
-          child: LayoutBuilder(
-            builder: (context, constraints) {
-              final compact = constraints.maxWidth < 760;
-              final filtered =
-                  state.modelFilter != null ||
-                  state.effortFilter != null ||
-                  state.mismatchesOnly;
-              final showEmpty =
-                  filtered ||
-                  hasHistory ||
-                  historyKnownEmpty && !pending && !gap && !readFailed;
-              return CustomScrollView(
-                key: StudioDriverKeys.statisticsHistory,
-                slivers: [
+          child: CustomScrollView(
+            key: StudioDriverKeys.statisticsHistory,
+            slivers: [
+              SliverToBoxAdapter(
+                child: StatisticsSummaryView(
+                  summaries: summaries,
+                  compact: compact,
+                  knownEmpty: knownEmpty,
+                ),
+              ),
+              SliverPadding(
+                padding: const EdgeInsets.symmetric(vertical: 20),
+                sliver: SliverToBoxAdapter(
+                  child: _filters(context, constraints.maxWidth),
+                ),
+              ),
+              if (history.isEmpty) ...[
+                if (filter != null ||
+                    mismatchesOnly ||
+                    sourceHistory.isNotEmpty ||
+                    !hasProjectionIssue)
                   SliverToBoxAdapter(
-                    child: StatisticsSummaryView(
-                      summaries: summaries,
-                      knownEmpty:
-                          summaryKnownEmpty && !pending && !gap && !readFailed,
+                    child: _EmptyState(
+                      label:
+                          sourceHistory.isEmpty &&
+                              filter == null &&
+                              !mismatchesOnly
+                          ? context.l10n.settingsStatisticsEmpty
+                          : mismatchesOnly
+                          ? context.l10n.settingsStatisticsMismatchEmpty
+                          : context.l10n.settingsStatisticsFilteredEmpty,
                     ),
                   ),
-                  SliverPadding(
-                    padding: const EdgeInsets.symmetric(vertical: 20),
-                    sliver: SliverToBoxAdapter(
-                      child: _filters(context, constraints.maxWidth),
+              ] else ...[
+                if (!compact)
+                  const SliverToBoxAdapter(
+                    child: StatisticsWideHistoryHeader(),
+                  ),
+                SliverList.builder(
+                  itemCount: history.length,
+                  itemBuilder: (context, index) {
+                    final sample = history[index];
+                    return StatisticsHistoryRow(
+                      key: StudioDriverKeys.statisticsHistoryRow(
+                        sample.identity.accountId,
+                        sample.identity.modelId ?? '',
+                        sample.identity.effort,
+                        index,
+                      ),
+                      sample: sample,
+                      compact: compact,
+                    );
+                  },
+                ),
+              ],
+              // 口径说明放在页面末尾：既解释公式与耗时边界，也不挤占顶部筛选与汇总的
+              // 可视区域。
+              SliverToBoxAdapter(
+                child: Padding(
+                  padding: const EdgeInsets.only(top: 20),
+                  child: Text(
+                    context.l10n.settingsStatisticsThroughputNote,
+                    style: context.text.bodySmall?.copyWith(
+                      color: context.colors.onSurfaceVariant,
                     ),
                   ),
-                  if (history.isEmpty && showEmpty)
-                    SliverToBoxAdapter(
-                      child: Padding(
-                        padding: const EdgeInsets.symmetric(vertical: 40),
-                        child: Center(
-                          child: Text(
-                            state.mismatchesOnly
-                                ? context.l10n.settingsStatisticsMismatchEmpty
-                                : filtered || hasHistory
-                                ? context.l10n.settingsStatisticsFilteredEmpty
-                                : context.l10n.settingsStatisticsEmpty,
-                          ),
-                        ),
-                      ),
-                    )
-                  else if (history.isNotEmpty) ...[
-                    if (!compact)
-                      SliverToBoxAdapter(child: _wideHeader(context)),
-                    // The loaded history page is bounded, so rows are materialised
-                    // eagerly: every keyed row stays addressable regardless of the
-                    // viewport height, with no change in order or appearance.
-                    SliverToBoxAdapter(
-                      child: Column(
-                        children: [
-                          for (var index = 0; index < history.length; index++)
-                            StatisticsHistoryRow(
-                              key: StudioDriverKeys.statisticsHistoryRow(
-                                history[index].identity.accountId,
-                                history[index].identity.modelId ?? '',
-                                history[index].identity.effort,
-                                index,
-                              ),
-                              sample: history[index],
-                              compact: compact,
-                            ),
-                        ],
-                      ),
-                    ),
-                  ],
-                  SliverToBoxAdapter(
-                    child: Padding(
-                      padding: const EdgeInsets.symmetric(vertical: 20),
-                      child: Text(
-                        context.l10n.settingsStatisticsThroughputNote,
-                        style: Theme.of(context).textTheme.bodySmall,
-                      ),
-                    ),
-                  ),
-                ],
-              );
-            },
+                ),
+              ),
+              const SliverToBoxAdapter(child: SizedBox(height: 24)),
+            ],
           ),
-        ),
-      ),
+        );
+      },
     );
   }
 
   Widget _filters(BuildContext context, double maxWidth) {
-    final width = maxWidth < 240 ? maxWidth : 240.0;
+    final filterWidth = maxWidth < 240 ? maxWidth : 240.0;
     final title = Text(
       context.l10n.settingsStatisticsHistoryTitle,
       style: Theme.of(context).textTheme.titleMedium
           ?.copyWith(fontWeight: FontWeight.w600),
     );
-    final mismatchesOnly = InkWell(
-      onTap: () => onMismatch(!state.mismatchesOnly),
+    final filter = SizedBox(
+      key: StudioDriverKeys.statisticsFilter,
+      width: filterWidth,
+      child: DropdownMenu<StatisticsModelKey?>(
+        // Caller-owned canonical selection, not a draft edit: the field follows
+        // [state] via initialSelection without a value-driven key, so choosing
+        // a filter never remounts the field's state (an explicit null —
+        // 「全部模型」 — stays a legitimate value).
+        initialSelection: state.modelFilter,
+        hintText: context.l10n.settingsStatisticsAllModels,
+        expandedInsets: EdgeInsets.zero,
+        dropdownMenuEntries: [
+          DropdownMenuEntry<StatisticsModelKey?>(
+            value: null,
+            label: context.l10n.settingsStatisticsAllModels,
+            labelWidget: Text(context.l10n.settingsStatisticsAllModels),
+          ),
+          for (final option in state.modelOptions)
+            DropdownMenuEntry<StatisticsModelKey?>(
+              value: option.key,
+              label:
+                  '${statisticsIdentity(context, option.accountDisplayName)}'
+                  ' · ${statisticsIdentity(context, option.key.accountId)}'
+                  ' · ${statisticsIdentity(context, option.displayModel)}',
+              labelWidget: Text(
+                '${statisticsIdentity(context, option.accountDisplayName)}'
+                ' · ${statisticsIdentity(context, option.key.accountId)}'
+                ' · ${statisticsIdentity(context, option.displayModel)}',
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
+          // A selection that is no longer in the complete set is pruned by the
+          // ViewModel; until then it keeps its own label instead of silently
+          // reading as 「全部模型」.
+          if (state.modelFilter case final selected?)
+            if (!state.modelOptions.any((option) => option.key == selected))
+              DropdownMenuEntry<StatisticsModelKey?>(
+                value: selected,
+                label:
+                    '${statisticsIdentity(context, selected.accountId)}'
+                    ' · ${statisticsIdentity(context, selected.modelId)}',
+              ),
+        ],
+        onSelected: onModelChanged,
+      ),
+    );
+    final effortFilter = SizedBox(
+      key: StudioDriverKeys.statisticsEffortFilter,
+      width: filterWidth,
+      child: DropdownMenu<StatisticsEffortFilter?>(
+        // 强度筛选是顶层模型身份的组内细分，独立于模型筛选。
+        initialSelection: state.effortFilter,
+        hintText: context.l10n.statisticsAllEfforts,
+        expandedInsets: EdgeInsets.zero,
+        dropdownMenuEntries: [
+          DropdownMenuEntry<StatisticsEffortFilter?>(
+            value: null,
+            label: context.l10n.statisticsAllEfforts,
+            labelWidget: Text(context.l10n.statisticsAllEfforts),
+          ),
+          for (final effort in state.effortOptions)
+            DropdownMenuEntry<StatisticsEffortFilter?>(
+              value: effort,
+              label: statisticsEffort(context, effort.value),
+              labelWidget: Text(
+                statisticsEffort(context, effort.value),
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
+          if (state.effortFilter case final selected?)
+            if (!state.effortOptions.contains(selected))
+              DropdownMenuEntry<StatisticsEffortFilter?>(
+                value: selected,
+                label: statisticsEffort(context, selected.value),
+              ),
+        ],
+        onSelected: onEffortChanged,
+      ),
+    );
+    final mismatchFilter = InkWell(
+      onTap: () => onMismatchesOnlyChanged(!state.mismatchesOnly),
       borderRadius: BorderRadius.circular(4),
       child: Padding(
         padding: const EdgeInsets.symmetric(vertical: 4),
@@ -187,8 +249,8 @@ class StatisticsView extends StatelessWidget {
             Checkbox(
               key: StudioDriverKeys.statisticsMismatchOnly,
               value: state.mismatchesOnly,
+              onChanged: (value) => onMismatchesOnlyChanged(value ?? false),
               visualDensity: VisualDensity.compact,
-              onChanged: (value) => onMismatch(value ?? false),
             ),
             Flexible(
               child: Text(
@@ -200,169 +262,31 @@ class StatisticsView extends StatelessWidget {
         ),
       ),
     );
-    final model = SizedBox(
-      key: StudioDriverKeys.statisticsFilter,
-      width: width,
-      child: DropdownMenu<StatisticsModelKey?>(
-        initialSelection: state.modelFilter,
-        hintText: context.l10n.settingsStatisticsAllModels,
-        expandedInsets: EdgeInsets.zero,
-        dropdownMenuEntries: [
-          DropdownMenuEntry(
-            value: null,
-            label: context.l10n.settingsStatisticsAllModels,
-          ),
-          for (final option in modelOptions)
-            DropdownMenuEntry(
-              value: option.key,
-              label:
-                  '${statisticsIdentity(context, option.accountDisplayName)} · ${statisticsIdentity(context, option.key.accountId)} · ${statisticsIdentity(context, option.displayModel)}',
-            ),
-          if (state.modelFilter case final selected?)
-            if (!modelOptions.any((option) => option.key == selected))
-              DropdownMenuEntry(
-                value: selected,
-                label:
-                    '${selected.accountId} · ${statisticsIdentity(context, selected.modelId)}',
-              ),
-        ],
-        onSelected: onModel,
-      ),
+    // 筛选区域按可用宽度换行：标题与三个控件都保持自身宽度，空间不足时整组
+    // 换到下一行，不隐藏、不压缩，也不依赖固定机型阈值。
+    return Wrap(
+      alignment: WrapAlignment.spaceBetween,
+      crossAxisAlignment: WrapCrossAlignment.center,
+      spacing: 12,
+      runSpacing: 8,
+      children: [title, mismatchFilter, filter, effortFilter],
     );
-    final effort = SizedBox(
-      key: StudioDriverKeys.statisticsEffortFilter,
-      width: width,
-      child: DropdownMenu<StatisticsEffortFilter?>(
-        initialSelection: state.effortFilter,
-        hintText: context.l10n.statisticsAllEfforts,
-        expandedInsets: EdgeInsets.zero,
-        dropdownMenuEntries: [
-          DropdownMenuEntry(
-            value: null,
-            label: context.l10n.statisticsAllEfforts,
-          ),
-          for (final effort in effortOptions)
-            DropdownMenuEntry(
-              value: effort,
-              label: statisticsEffort(context, effort.value),
-            ),
-          if (state.effortFilter case final selected?)
-            if (!effortOptions.contains(selected))
-              DropdownMenuEntry(
-                value: selected,
-                label: statisticsEffort(context, selected.value),
-              ),
-        ],
-        onSelected: onEffort,
-      ),
-    );
-    // The title, the mismatch toggle and both filters keep their own width and
-    // wrap as a group; nothing hides or compresses on narrow windows.
-    // Filters never hide or shrink below their content: below the wrap
-    // threshold the whole group falls to the next line, and on a real desktop
-    // row the two width-capped dropdowns share the leftover width.
-    if (maxWidth < 620) {
-      return Wrap(
-        alignment: WrapAlignment.spaceBetween,
-        spacing: 12,
-        runSpacing: 8,
-        crossAxisAlignment: WrapCrossAlignment.center,
-        children: [title, mismatchesOnly, model, effort],
-      );
-    }
-    return Row(
-      crossAxisAlignment: CrossAxisAlignment.center,
-      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-      children: [
-        title,
-        mismatchesOnly,
-        Flexible(child: model),
-        Flexible(child: effort),
-      ],
-    );
-  }
-
-  Widget _wideHeader(BuildContext context) => Padding(
-    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-    child: Row(
-      children: [
-        for (final (index, label) in [
-          context.l10n.statisticsCompletedAt,
-          context.l10n.statisticsHistoryModelHeader,
-          context.l10n.statisticsReasoningEffort,
-          context.l10n.statisticsOutputTokens,
-          'TTFT',
-          context.l10n.statisticsDecode,
-          context.l10n.statisticsTotalResponse,
-          context.l10n.statisticsSpeed,
-        ].indexed)
-          Expanded(
-            flex: index == 1 ? 2 : 1,
-            child: Text(
-              label,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: Theme.of(context).textTheme.labelMedium,
-            ),
-          ),
-      ],
-    ),
-  );
-}
-
-/// Light status line of the fixed heading: a failure and a projection gap read
-/// as inline items with their established identities.
-class _StatisticsStatusLine extends StatelessWidget {
-  const _StatisticsStatusLine({required this.readFailed, required this.gap});
-
-  final bool readFailed;
-  final bool gap;
-
-  @override
-  Widget build(BuildContext context) {
-    final items = <Widget>[
-      if (readFailed)
-        _StatisticsStatusItem(
-          key: const ValueKey('statistics-status-read-failed'),
-          icon: Icons.error_outline,
-          label: context.l10n.settingsStatisticsReadFailedTitle,
-          color: Theme.of(context).colorScheme.error,
-        ),
-      if (gap)
-        _StatisticsStatusItem(
-          key: const ValueKey('statistics-status-gap'),
-          icon: Icons.warning_amber_rounded,
-          label: context.l10n.settingsStatisticsGapTitle,
-          color: context.statusColors.warning,
-        ),
-    ];
-    if (items.isEmpty) return const SizedBox.shrink();
-    return Wrap(spacing: 16, runSpacing: 4, children: items);
   }
 }
 
-class _StatisticsStatusItem extends StatelessWidget {
-  const _StatisticsStatusItem({
-    required this.icon,
-    required this.label,
-    required this.color,
-    super.key,
-  });
+class _EmptyState extends StatelessWidget {
+  const _EmptyState({required this.label});
 
-  final IconData icon;
   final String label;
-  final Color color;
 
   @override
-  Widget build(BuildContext context) => Row(
-    mainAxisSize: MainAxisSize.min,
-    children: [
-      Icon(icon, size: 15, color: color),
-      const SizedBox(width: 6),
-      Text(
+  Widget build(BuildContext context) => Padding(
+    padding: const EdgeInsets.symmetric(vertical: 48),
+    child: Center(
+      child: Text(
         label,
-        style: Theme.of(context).textTheme.bodySmall?.copyWith(color: color),
+        style: TextStyle(color: context.colors.onSurfaceVariant),
       ),
-    ],
+    ),
   );
 }

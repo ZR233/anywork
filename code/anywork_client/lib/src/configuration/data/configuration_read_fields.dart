@@ -3,6 +3,8 @@ import 'dart:math' as math;
 
 import '../../../resources.dart';
 import '../../../resources_ports.dart' show ResourceBudgetExceeded;
+import '../../acp/domain/acp_values.dart';
+import '../domain/account_entries.dart';
 
 /// Field readers are pure queries over an already owned, immutable Config pin.
 /// The repository owns cancellation/join; these helpers never open a handle.
@@ -87,6 +89,46 @@ StudioFailure configurationProtocol(String message) => StudioFailure(
   retryable: false,
   correlationId: 'configuration',
 );
+
+/// ACP 接入行集必须自洽：空/重复 ID 与负数连接代次都是协议错误。
+///
+/// 不能静默“最后一个生效”；连接代次由运行期拥有，这里只校验范围与唯一性，
+/// 不从名称或 provider 推断，也不重新分配。
+void validateAcpAccountRows(List<AcpAccountSettings> accounts) {
+  final ids = <String>{};
+  for (final account in accounts) {
+    if (account.accountId.trim().isEmpty ||
+        account.connectionRevision < 0 ||
+        !ids.add(account.accountId)) {
+      throw configurationProtocol(
+        'An ACP account row has an invalid or duplicate identity.',
+      );
+    }
+  }
+}
+
+/// 配置材料里的 ACP 账号目录必须是可用的固定读取结果。
+void validateAcpAccountDirectory(AcpAccountDirectory value) {
+  final origin = value.origin;
+  final reference = value.reference;
+  if (origin.ownerEpoch.trim().isEmpty ||
+      origin.incarnation < 0 ||
+      reference.entry < 0 ||
+      reference.revision < 0) {
+    throw configurationProtocol(
+      'The ACP account directory has no usable read provenance.',
+    );
+  }
+  if (value.revision < 0 || value.updatedAt < 0) {
+    throw configurationProtocol(
+      'The ACP account directory has a negative revision.',
+    );
+  }
+  // The business revision above and the material reference revision are
+  // different facts captured from the same header: neither replaces nor has to
+  // equal the other.
+  validateAcpAccountRows(value.accounts);
+}
 
 StudioFailure configurationFailure(Object error) => switch (error) {
   StudioFailure() => error,

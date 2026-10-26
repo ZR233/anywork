@@ -4,7 +4,8 @@ import 'package:anywork/src/infrastructure/frb/conversation/timeline_port.dart';
 import 'package:anywork/src/rust/api/studio/handlers/chat.dart' as wire;
 import 'package:anywork/src/rust/api/studio/types/chat.dart' as dto;
 import 'package:anywork/src/rust/api/studio/types/error.dart' as err;
-import 'package:anywork/src/rust/api/studio/types/shutdown.dart' as shutdown_dto;
+import 'package:anywork/src/rust/api/studio/types/shutdown.dart'
+    as shutdown_dto;
 import 'package:anywork/src/rust/api/studio/types/thread_stream/item.dart'
     as item_dto;
 import 'package:anywork_client/conversation.dart';
@@ -23,7 +24,10 @@ void main() {
         ),
       ),
     );
-    final connection = FrbTimelineConnection(threadId: 'thread-A', handle: bridge);
+    final connection = FrbTimelineConnection(
+      threadId: 'thread-A',
+      handle: bridge,
+    );
     addTearDown(connection.close);
 
     final iterator = StreamIterator<StudioTimelineFeedFrame>(connection.events);
@@ -158,7 +162,10 @@ void main() {
     'resync keeps the subscription identity and carries a fresh baseline',
     () async {
       final bridge = _GeneratedTimeline(_baseline());
-      final connection = FrbTimelineConnection(threadId: 'thread-A', handle: bridge);
+      final connection = FrbTimelineConnection(
+        threadId: 'thread-A',
+        handle: bridge,
+      );
       addTearDown(connection.close);
       final iterator = StreamIterator<StudioTimelineFeedFrame>(
         connection.events,
@@ -191,7 +198,10 @@ void main() {
     'page and detail queries carry opaque cursors and typed fields',
     () async {
       final bridge = _GeneratedTimeline(_baseline());
-      final connection = FrbTimelineConnection(threadId: 'thread-A', handle: bridge);
+      final connection = FrbTimelineConnection(
+        threadId: 'thread-A',
+        handle: bridge,
+      );
       addTearDown(connection.close);
 
       final page = await connection.page(before: 'tlp1.opaque', limit: 32);
@@ -239,7 +249,10 @@ void main() {
           hasOlder: false,
         ),
       );
-      final connection = FrbTimelineConnection(threadId: 'thread-A', handle: bridge);
+      final connection = FrbTimelineConnection(
+        threadId: 'thread-A',
+        handle: bridge,
+      );
       addTearDown(connection.close);
       final iterator = StreamIterator<StudioTimelineFeedFrame>(
         connection.events,
@@ -262,7 +275,10 @@ void main() {
         hasOlder: false,
       ),
     );
-    final connection = FrbTimelineConnection(threadId: 'thread-A', handle: bridge);
+    final connection = FrbTimelineConnection(
+      threadId: 'thread-A',
+      handle: bridge,
+    );
     addTearDown(connection.close);
     final iterator = StreamIterator<StudioTimelineFeedFrame>(connection.events);
     addTearDown(iterator.cancel);
@@ -275,7 +291,10 @@ void main() {
 
   test('reading events twice does not claim the stream before the first subscription', () {
     final bridge = _GeneratedTimeline(_baseline());
-    final connection = FrbTimelineConnection(threadId: 'thread-A', handle: bridge);
+    final connection = FrbTimelineConnection(
+      threadId: 'thread-A',
+      handle: bridge,
+    );
     addTearDown(connection.close);
     final first = connection.events;
     expect(first, isA<Stream<StudioTimelineFeedFrame>>());
@@ -285,7 +304,10 @@ void main() {
 
   test('the second actual listen is a typed Conflict even through a fresh getter view', () async {
     final bridge = _GeneratedTimeline(_baseline());
-    final connection = FrbTimelineConnection(threadId: 'thread-A', handle: bridge);
+    final connection = FrbTimelineConnection(
+      threadId: 'thread-A',
+      handle: bridge,
+    );
     addTearDown(connection.close);
     final first = StreamIterator<StudioTimelineFeedFrame>(connection.events);
     expect(await first.moveNext(), isTrue);
@@ -321,7 +343,10 @@ void main() {
           ),
         ],
       );
-      final connection = FrbTimelineConnection(threadId: 'thread-A', handle: bridge);
+      final connection = FrbTimelineConnection(
+        threadId: 'thread-A',
+        handle: bridge,
+      );
       addTearDown(connection.close);
       final frames = await connection.events.toList();
       expect(frames.first, isA<StudioTimelineFeedFailure>());
@@ -354,7 +379,10 @@ void main() {
           ),
         ],
       );
-      final connection = FrbTimelineConnection(threadId: 'thread-A', handle: bridge);
+      final connection = FrbTimelineConnection(
+        threadId: 'thread-A',
+        handle: bridge,
+      );
       addTearDown(connection.close);
       final frames = await connection.events.toList();
       expect(frames, hasLength(1));
@@ -373,7 +401,10 @@ void main() {
     'a native stream error is the same single typed terminal failure',
     () async {
       final bridge = _GeneratedTimeline(_baseline());
-      final connection = FrbTimelineConnection(threadId: 'thread-A', handle: bridge);
+      final connection = FrbTimelineConnection(
+        threadId: 'thread-A',
+        handle: bridge,
+      );
       addTearDown(connection.close);
       final iterator = StreamIterator<StudioTimelineFeedFrame>(
         connection.events,
@@ -414,7 +445,10 @@ void main() {
     () async {
       final bridge = _GeneratedTimeline(_baseline())
         ..closeBarrier = Completer<void>();
-      final connection = FrbTimelineConnection(threadId: 'thread-A', handle: bridge);
+      final connection = FrbTimelineConnection(
+        threadId: 'thread-A',
+        handle: bridge,
+      );
       final received = Completer<void>();
       final subscription = connection.events.listen((_) => received.complete());
       await received.future;
@@ -436,7 +470,10 @@ void main() {
     () async {
       final bridge = _GeneratedTimeline(_baseline())
         ..closeBarrier = Completer<void>();
-      final connection = FrbTimelineConnection(threadId: 'thread-A', handle: bridge);
+      final connection = FrbTimelineConnection(
+        threadId: 'thread-A',
+        handle: bridge,
+      );
       final received = Completer<void>();
       final subscription = connection.events.listen((_) => received.complete());
       await received.future;
@@ -461,7 +498,10 @@ void main() {
       final gate = Completer<void>();
       final bridge = _GeneratedTimeline(_baseline())
         ..nativeCancelBarrier = gate;
-      final connection = FrbTimelineConnection(threadId: 'thread-A', handle: bridge);
+      final connection = FrbTimelineConnection(
+        threadId: 'thread-A',
+        handle: bridge,
+      );
       final received = Completer<void>();
       final subscription = connection.events.listen((_) => received.complete());
       await received.future;
@@ -506,18 +546,21 @@ void main() {
             issues: [
               dto.BridgeFeedCloseIssue(
                 diagnostic: shutdown_dto.BridgeShutdownIssue(
-                stage: 'sink',
-                code: 'timeout',
-                message: 'native sink remains unresolved',
-                retryable: false,
-                correlationId: 'native-sink-unresolved',
+                  stage: 'sink',
+                  code: 'timeout',
+                  message: 'native sink remains unresolved',
+                  retryable: false,
+                  correlationId: 'native-sink-unresolved',
                 ),
                 recovery: dto.BridgeCleanupRecovery.awaitCompletion,
               ),
             ],
           ),
         );
-      final connection = FrbTimelineConnection(threadId: 'thread-A', handle: bridge);
+      final connection = FrbTimelineConnection(
+        threadId: 'thread-A',
+        handle: bridge,
+      );
       final received = Completer<void>();
       final subscription = connection.events.listen((_) => received.complete());
       await received.future;
@@ -539,7 +582,8 @@ void main() {
       expect(
         issues.last.recovery,
         CleanupRecovery.terminal,
-        reason: 'Diagnostic retryable is not an independent Dart cancel capability',
+        reason:
+            'Diagnostic retryable is not an independent Dart cancel capability',
       );
       expect(bridge.disposeCalls, 0);
       expect(bridge.nativeCancelCalls, 1);
@@ -560,68 +604,88 @@ void main() {
           (recoveredNative.outcome as UnresolvedFeedCloseOutcome).issues;
       expect(retained, [issues.last]);
       expect(bridge.retryCloseCalls, 1);
-      expect(bridge.nativeCancelCalls, 1, reason: 'A failed cancel is never replayed');
-      expect(bridge.disposeCalls, 0, reason: 'Native Clean cannot erase terminal local work');
-      final stillUnresolved = await connection.retryClose();
       expect(
-        (stillUnresolved.outcome as UnresolvedFeedCloseOutcome).issues,
-        [issues.last],
+        bridge.nativeCancelCalls,
+        1,
+        reason: 'A failed cancel is never replayed',
       );
-      expect(bridge.retryCloseCalls, 1, reason: 'A completed native join is not reopened');
+      expect(
+        bridge.disposeCalls,
+        0,
+        reason: 'Native Clean cannot erase terminal local work',
+      );
+      final stillUnresolved = await connection.retryClose();
+      expect((stillUnresolved.outcome as UnresolvedFeedCloseOutcome).issues, [
+        issues.last,
+      ]);
+      expect(
+        bridge.retryCloseCalls,
+        1,
+        reason: 'A completed native join is not reopened',
+      );
       expect(bridge.nativeCancelCalls, 1);
       expect(bridge.streamCalls, 1);
       expect(bridge.disposeCalls, 0);
     },
   );
 
-  test(
-    'output detachment leaves the original native join failure on its recoverable owner',
-    () async {
-      final bridge = _GeneratedTimeline(_baseline())
-        ..closeFailure = const err.BridgeError(
-          code: err.BridgeErrorCode.internal,
-          message: 'native timeline join failed',
-          retryable: false,
-          correlationId: 'native-join-failed',
-        );
-      final connection = FrbTimelineConnection(threadId: 'thread-A', handle: bridge);
-      final received = Completer<void>();
-      final subscription = connection.events.listen((_) => received.complete());
-      await received.future;
-
-      await subscription.cancel();
-      expect(bridge.disposeCalls, 0, reason: '真正异常必须保留 opaque 供后续 join 重试');
-
-      final unresolved =
-          (await connection.close()).outcome as UnresolvedFeedCloseOutcome;
-      expect(
-        unresolved.issues.single.diagnostic.code,
-        'internal',
-        reason: 'Output detachment must not erase the original native join diagnostic',
+  test('output detachment leaves the original native join failure on its recoverable owner', () async {
+    final bridge = _GeneratedTimeline(_baseline())
+      ..closeFailure = const err.BridgeError(
+        code: err.BridgeErrorCode.internal,
+        message: 'native timeline join failed',
+        retryable: false,
+        correlationId: 'native-join-failed',
       );
-      expect(unresolved.issues.single.diagnostic.stage, 'timeline-native-close');
-      expect(unresolved.issues.single.diagnostic.message, 'native timeline join failed');
-      expect(unresolved.issues.single.diagnostic.retryable, isFalse);
-      expect(unresolved.issues.single.diagnostic.correlationId, 'native-join-failed');
-      expect(unresolved.issues.single.recovery, CleanupRecovery.retryClose);
+    final connection = FrbTimelineConnection(
+      threadId: 'thread-A',
+      handle: bridge,
+    );
+    final received = Completer<void>();
+    final subscription = connection.events.listen((_) => received.complete());
+    await received.future;
 
-      bridge.closeFailure = null;
-      final report = await connection.retryClose();
-      expect(report.outcome is CleanFeedCloseOutcome, isTrue);
-      expect(bridge.closeCalls, 1);
-      expect(bridge.retryCloseCalls, 1, reason: '重试使用原 handle 的新 join，不重开 feed');
-      expect(bridge.requestCloseCalls, 1);
-      expect(bridge.nativeCancelCalls, 1);
-      expect(bridge.disposeCalls, 1);
-    },
-  );
+    await subscription.cancel();
+    expect(bridge.disposeCalls, 0, reason: '真正异常必须保留 opaque 供后续 join 重试');
+
+    final unresolved =
+        (await connection.close()).outcome as UnresolvedFeedCloseOutcome;
+    expect(
+      unresolved.issues.single.diagnostic.code,
+      'internal',
+      reason: 'Output detachment must not erase the original native join diagnostic',
+    );
+    expect(unresolved.issues.single.diagnostic.stage, 'timeline-native-close');
+    expect(
+      unresolved.issues.single.diagnostic.message,
+      'native timeline join failed',
+    );
+    expect(unresolved.issues.single.diagnostic.retryable, isFalse);
+    expect(
+      unresolved.issues.single.diagnostic.correlationId,
+      'native-join-failed',
+    );
+    expect(unresolved.issues.single.recovery, CleanupRecovery.retryClose);
+
+    bridge.closeFailure = null;
+    final report = await connection.retryClose();
+    expect(report.outcome is CleanFeedCloseOutcome, isTrue);
+    expect(bridge.closeCalls, 1);
+    expect(bridge.retryCloseCalls, 1, reason: '重试使用原 handle 的新 join，不重开 feed');
+    expect(bridge.requestCloseCalls, 1);
+    expect(bridge.nativeCancelCalls, 1);
+    expect(bridge.disposeCalls, 1);
+  });
 
   test(
     'requestClose rejects new calls and close joins before disposing opaque',
     () async {
       final bridge = _GeneratedTimeline(_baseline())
         ..closeBarrier = Completer<void>();
-      final connection = FrbTimelineConnection(threadId: 'thread-A', handle: bridge);
+      final connection = FrbTimelineConnection(
+        threadId: 'thread-A',
+        handle: bridge,
+      );
       final iterator = StreamIterator<StudioTimelineFeedFrame>(
         connection.events,
       );
@@ -645,8 +709,11 @@ void main() {
         cancelled,
         reason: 'closing 的 ACK 调用优先收到 typed Cancelled',
       );
-      expect(() => staleEvents.listen((_) {}), cancelled,
-          reason: 'Closing is checked before the already-listened Conflict');
+      expect(
+        () => staleEvents.listen((_) {}),
+        cancelled,
+        reason: 'Closing is checked before the already-listened Conflict',
+      );
       expect(() => connection.events, cancelled);
       await expectLater(() => connection.page(), cancelled);
       await expectLater(
@@ -700,7 +767,10 @@ void main() {
 
   test('a real EOF is a closed frame, not a null update', () async {
     final bridge = _GeneratedTimeline(_baseline());
-    final connection = FrbTimelineConnection(threadId: 'thread-A', handle: bridge);
+    final connection = FrbTimelineConnection(
+      threadId: 'thread-A',
+      handle: bridge,
+    );
     addTearDown(connection.close);
 
     final iterator = StreamIterator<StudioTimelineFeedFrame>(connection.events);
@@ -728,7 +798,10 @@ void main() {
     'real generated BridgeError crosses the boundary as the same typed code',
     () async {
       final bridge = _GeneratedTimeline(_baseline());
-      final connection = FrbTimelineConnection(threadId: 'thread-A', handle: bridge);
+      final connection = FrbTimelineConnection(
+        threadId: 'thread-A',
+        handle: bridge,
+      );
       addTearDown(connection.close);
 
       final iterator = StreamIterator<StudioTimelineFeedFrame>(
@@ -775,7 +848,10 @@ void main() {
 
       // 未终止的连接上，真实 BridgeError 的 code/retryable/correlation 原样穿越。
       final queryBridge = _GeneratedTimeline(_baseline());
-      final queryConnection = FrbTimelineConnection(threadId: 'thread-A', handle: queryBridge);
+      final queryConnection = FrbTimelineConnection(
+        threadId: 'thread-A',
+        handle: queryBridge,
+      );
       addTearDown(queryConnection.close);
       queryBridge.pageFailure = const err.BridgeError(
         code: err.BridgeErrorCode.cancelled,
@@ -830,7 +906,10 @@ void main() {
           hasOlder: false,
         ),
       );
-      final connection = FrbTimelineConnection(threadId: 'thread-A', handle: bridge);
+      final connection = FrbTimelineConnection(
+        threadId: 'thread-A',
+        handle: bridge,
+      );
       addTearDown(connection.close);
 
       final iterator = StreamIterator<StudioTimelineFeedFrame>(
@@ -867,28 +946,31 @@ void main() {
             issues: [
               dto.BridgeFeedCloseIssue(
                 diagnostic: shutdown_dto.BridgeShutdownIssue(
-                stage: 'delivery',
-                code: 'cancelled',
-                message: 'a delivery call is still in flight',
-                retryable: true,
-                correlationId: 'issue-1',
-              ),
+                  stage: 'delivery',
+                  code: 'cancelled',
+                  message: 'a delivery call is still in flight',
+                  retryable: true,
+                  correlationId: 'issue-1',
+                ),
                 recovery: dto.BridgeCleanupRecovery.awaitCompletion,
               ),
               dto.BridgeFeedCloseIssue(
                 diagnostic: shutdown_dto.BridgeShutdownIssue(
-                stage: 'sink',
-                code: 'timeout',
-                message: 'the sink did not drain',
-                retryable: false,
-                correlationId: 'issue-2',
+                  stage: 'sink',
+                  code: 'timeout',
+                  message: 'the sink did not drain',
+                  retryable: false,
+                  correlationId: 'issue-2',
                 ),
                 recovery: dto.BridgeCleanupRecovery.retryClose,
               ),
             ],
           ),
         );
-      final connection = FrbTimelineConnection(threadId: 'thread-A', handle: bridge);
+      final connection = FrbTimelineConnection(
+        threadId: 'thread-A',
+        handle: bridge,
+      );
 
       final report = await connection.close();
       expect(report.outcome is CleanFeedCloseOutcome, isFalse);
@@ -900,7 +982,10 @@ void main() {
       expect(unresolved.issues.first.diagnostic.retryable, isTrue);
       expect(unresolved.issues.first.diagnostic.correlationId, 'issue-1');
       expect(unresolved.issues.first.recovery, CleanupRecovery.awaitCompletion);
-      expect(unresolved.issues.last.diagnostic.message, 'the sink did not drain');
+      expect(
+        unresolved.issues.last.diagnostic.message,
+        'the sink did not drain',
+      );
       expect(unresolved.issues.last.recovery, CleanupRecovery.retryClose);
       expect(
         bridge.disposeCalls,
@@ -955,9 +1040,16 @@ void main() {
       expect(clean.outcome, isA<CleanFeedCloseOutcome>());
       expect(bridge.closeCalls, 1);
       expect(bridge.requestCloseCalls, 1);
-      expect(bridge.streamCalls, 0, reason: 'Recovery never opens a replacement feed');
+      expect(
+        bridge.streamCalls,
+        0,
+        reason: 'Recovery never opens a replacement feed',
+      );
       expect(bridge.disposeCalls, 1);
-      expect((await connection.retryClose()).outcome, isA<CleanFeedCloseOutcome>());
+      expect(
+        (await connection.retryClose()).outcome,
+        isA<CleanFeedCloseOutcome>(),
+      );
       expect(bridge.retryCloseCalls, 2);
       expect(bridge.disposeCalls, 1);
     },
@@ -969,7 +1061,10 @@ void main() {
         feedId: '',
         outcome: dto.BridgeFeedCloseOutcome.clean(),
       );
-    final connection = FrbTimelineConnection(threadId: 'thread-A', handle: bridge);
+    final connection = FrbTimelineConnection(
+      threadId: 'thread-A',
+      handle: bridge,
+    );
     await expectLater(
       connection.close(),
       throwsA(
@@ -987,7 +1082,10 @@ void main() {
         feedId: 'sub-1',
         outcome: dto.BridgeFeedCloseOutcome.unresolved(issues: []),
       );
-    final emptyConnection = FrbTimelineConnection(threadId: 'thread-A', handle: emptyIssues);
+    final emptyConnection = FrbTimelineConnection(
+      threadId: 'thread-A',
+      handle: emptyIssues,
+    );
     await expectLater(
       emptyConnection.close(),
       throwsA(
@@ -1011,16 +1109,26 @@ void main() {
         correlationId: 'unclaimed-native-join-failed',
       );
       final bridge = _GeneratedTimeline(_baseline())..closeFailure = failure;
-      final connection = FrbTimelineConnection(threadId: 'thread-A', handle: bridge);
+      final connection = FrbTimelineConnection(
+        threadId: 'thread-A',
+        handle: bridge,
+      );
 
       // 关闭失败同样以 typed 失败穿越边界，但句柄与许可保留供重试。
       await expectLater(
         connection.close(),
         throwsA(
           isA<StudioFailure>()
-              .having((failure) => failure.code, 'code', StudioFailureCode.internal)
-              .having((failure) => failure.correlationId, 'correlationId',
-                'unclaimed-native-join-failed'),
+              .having(
+                (failure) => failure.code,
+                'code',
+                StudioFailureCode.internal,
+              )
+              .having(
+                (failure) => failure.correlationId,
+                'correlationId',
+                'unclaimed-native-join-failed',
+              ),
         ),
       );
       expect(
@@ -1043,24 +1151,60 @@ void main() {
 
   test('output cancellation before the first identity observes but does not replace the retained close error', () async {
     final bridge = _GeneratedTimeline(_baseline(), initialFrames: const [])
-      ..closeFailure = StateError('private native close failure before the first baseline');
-    final connection = FrbTimelineConnection(threadId: 'thread-A', handle: bridge);
-    final subscription = connection.events.listen((_) => fail('No baseline was supplied'));
+      ..closeFailure = StateError(
+        'private native close failure before the first baseline',
+      );
+    final connection = FrbTimelineConnection(
+      threadId: 'thread-A',
+      handle: bridge,
+    );
+    final subscription = connection.events.listen(
+      (_) => fail('No baseline was supplied'),
+    );
     await bridge.streamEntered.future;
     final closing = connection.close();
-    final retained = expectLater(closing, throwsA(isA<StudioFailure>()
-      .having((failure) => failure.code, 'code', StudioFailureCode.protocol)
-      .having((failure) => failure.retryable, 'retryable', isFalse)
-      .having((failure) => failure.correlationId, 'correlationId', 'adapter-bridge-call')
-      .having((failure) => failure.message, 'message', isNot(contains('private native close failure')))));
+    final retained = expectLater(
+      closing,
+      throwsA(
+        isA<StudioFailure>()
+            .having(
+              (failure) => failure.code,
+              'code',
+              StudioFailureCode.protocol,
+            )
+            .having((failure) => failure.retryable, 'retryable', isFalse)
+            .having(
+              (failure) => failure.correlationId,
+              'correlationId',
+              'adapter-bridge-call',
+            )
+            .having(
+              (failure) => failure.message,
+              'message',
+              isNot(contains('private native close failure')),
+            ),
+      ),
+    );
     await subscription.cancel();
     await retained;
-    await expectLater(connection.close(), throwsA(isA<StudioFailure>().having(
-      (failure) => failure.correlationId, 'correlationId', 'adapter-bridge-call')));
+    await expectLater(
+      connection.close(),
+      throwsA(
+        isA<StudioFailure>().having(
+          (failure) => failure.correlationId,
+          'correlationId',
+          'adapter-bridge-call',
+        ),
+      ),
+    );
     expect(bridge.closeCalls, 1);
     expect(bridge.nativeCancelCalls, 1);
-    expect(bridge.disposeCalls, 0,
-      reason: 'Output detachment does not prove native Clean or release the handle');
+    expect(
+      bridge.disposeCalls,
+      0,
+      reason:
+          'Output detachment does not prove native Clean or release the handle',
+    );
     bridge.closeFailure = null;
     final report = await connection.retryClose();
     expect(report.outcome, isA<CleanFeedCloseOutcome>());

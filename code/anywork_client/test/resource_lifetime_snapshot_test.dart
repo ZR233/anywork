@@ -16,7 +16,171 @@ const _retryIssue = FeedCloseIssue(
   recovery: CleanupRecovery.retryClose,
 );
 
+final class _GatedOwner implements ResourceOwner {
+  _GatedOwner(this.lifetime) : attempt = lifetime.nextAttempt() {
+    lifetime.register(this);
+  }
+  final ResourceLifetime lifetime;
+  @override
+  final int attempt;
+  @override
+  final String owner = 'retry:gated';
+  final List<bool> cleanups = [];
+  final firstEntered = Completer<void>();
+  final firstGate = Completer<void>();
+  final retryEntered = Completer<void>();
+  final retryGate = Completer<void>();
+  bool _released = false;
+
+  @override
+  bool get released => _released;
+  @override
+  void requestClose() {}
+  @override
+  List<FeedCloseIssue> get issues => _released ? const [] : const [_retryIssue];
+
+  @override
+  Future<void> cleanup({required bool retry}) async {
+    cleanups.add(retry);
+    if (!retry) {
+      if (!firstEntered.isCompleted) firstEntered.complete();
+      await firstGate.future;
+      return;
+    }
+    if (!retryEntered.isCompleted) retryEntered.complete();
+    await retryGate.future;
+    _released = true;
+  }
+}
+
 void main() {
+  test('a retry accepted while the first pass is in flight runs once after it', () async {
+    final lifetime = ResourceLifetime(ResourceBudget());
+    final owner = _GatedOwner(lifetime);
+
+    // The first pass is genuinely in flight inside the owner.
+    expect(
+      (await lifetime.close(deadline: DateTime.utc(2000))).complete,
+      isFalse,
+    );
+    await owner.firstEntered.future;
+    expect(owner.cleanups, [false]);
+
+    // Overlapping explicit retries are accepted while that pass runs: each only
+    // observes a bounded snapshot, and both share one retained retry instead of
+    // queueing passes or folding into the running one.
+    expect(
+      (await lifetime.close(
+        retry: true,
+        deadline: DateTime.utc(2000),
+      )).complete,
+      isFalse,
+    );
+    expect(
+      (await lifetime.close(
+        retry: true,
+        deadline: DateTime.utc(2000),
+      )).complete,
+      isFalse,
+    );
+    expect(owner.cleanups, [
+      false,
+    ], reason: 'The original pass owns the only running cleanup');
+
+    // The unbounded close joins the whole responsibility, retry included.
+    final closing = lifetime.close();
+    owner.firstGate.complete();
+    await owner.retryEntered.future;
+    expect(owner.cleanups, [
+      false,
+      true,
+    ], reason: 'The retained retry advances once without another public call');
+    owner.retryGate.complete();
+
+    final report = await closing;
+    expect(report.complete, isTrue);
+    expect(owner.cleanups, [false, true]);
+    expect(lifetime.snapshotReport().complete, isTrue);
+  });
+
+  test('one explicit retry reaches each owner once even when another owner releases first', () async {
+    final budget = ResourceBudget();
+    final lifetime = ResourceLifetime(budget);
+    final released = ScriptedFeed<int>(
+      feedId: 'retry-released',
+      sequenceOf: (value) => value,
+      isTerminal: (_) => false,
+    )..outcome = const FeedCloseOutcome.clean();
+    final unresolved = ScriptedFeed<int>(
+      feedId: 'retry-unresolved',
+      sequenceOf: (value) => value,
+      isTerminal: (_) => false,
+    )..outcome = FeedCloseOutcome.unresolved(issues: [_retryIssue]);
+    final cleanPin = PinnedReadOwner<ScriptedFeed<int>>(
+      lifetime: lifetime,
+      owner: 'retry:clean',
+      open: () async => released,
+      request: (value) => value.requestClose(),
+      closeNative: (value) => value.close(),
+      retryNative: (value) => value.retryClose(),
+    );
+    final pendingPin = PinnedReadOwner<ScriptedFeed<int>>(
+      lifetime: lifetime,
+      owner: 'retry:pending',
+      open: () async => unresolved,
+      request: (value) => value.requestClose(),
+      closeNative: (value) => value.close(),
+      retryNative: (value) => value.retryClose(),
+    );
+    try {
+      await cleanPin.opened;
+      await pendingPin.opened;
+
+      final report = await lifetime.close(retry: true);
+      expect(report.complete, isFalse);
+      // The first owner really released, so the convergence pass ran.
+      expect(
+        budget.usage.any((use) => use.owner == 'retry:clean'),
+        isFalse,
+        reason: 'A Clean owner was released and removed in the first pass',
+      );
+      expect(
+        (released.retryCloseCalls, released.closeCalls),
+        (1, 0),
+        reason: 'The caller asked for exactly one explicit retry per owner',
+      );
+      expect(
+        (unresolved.retryCloseCalls, unresolved.closeCalls),
+        (1, 0),
+        reason: 'A later pass only exists because another owner was removed; it must not retry the same original handle again',
+      );
+      // The unresolved owner keeps its identity, issue and permit.
+      expect(budget.used(ResourceKind.readModel), 1);
+      expect(
+        budget.usage.where((use) => use.owner == 'retry:pending').single.phase,
+        ResourcePhase.unresolved,
+      );
+      expect(
+        lifetime
+            .snapshotReport()
+            .unresolved
+            .singleWhere((value) => value.owner == 'retry:pending')
+            .issues,
+        [_retryIssue],
+      );
+
+      // A second explicit retry is a new caller decision and advances once more.
+      unresolved.outcome = const FeedCloseOutcome.clean();
+      expect((await lifetime.close(retry: true)).complete, isTrue);
+      expect(unresolved.retryCloseCalls, 2);
+      expect(budget.usage, isEmpty);
+    } finally {
+      released.outcome = const FeedCloseOutcome.clean();
+      unresolved.outcome = const FeedCloseOutcome.clean();
+      await lifetime.close(retry: true);
+    }
+  });
+
   test('snapshots retain live owners and work without starting close or preventing later admission and recovery', () async {
     final budget = ResourceBudget();
     final lifetime = ResourceLifetime(budget);

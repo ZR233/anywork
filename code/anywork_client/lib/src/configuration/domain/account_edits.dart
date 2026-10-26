@@ -1,5 +1,7 @@
 import 'package:freezed_annotation/freezed_annotation.dart';
 
+import '../../../models.dart' show BillingKind;
+
 part 'account_edits.freezed.dart';
 
 @freezed
@@ -28,7 +30,7 @@ final class AccountEdit with _$AccountEdit {
     required this.name,
     required this.baseUrl,
     required this.secret,
-    required this.pricingEnabled,
+    required this.initialBillingKind,
     required this.rebuildModelConfiguration,
     required List<CustomModelChange> customModels,
     required List<ModelConnectionChange> connections,
@@ -44,7 +46,12 @@ final class AccountEdit with _$AccountEdit {
   final FieldEdit<String> name;
   final FieldEdit<String> baseUrl;
   final AccountSecretUpdate secret;
-  final FieldEdit<bool> pricingEnabled;
+
+  /// 新账号的初始计费类别；只在 [create] 为 true 时提交。
+  ///
+  /// 编辑已有账号不得用它改写计费类别（改写走 setAccountBillingKind 窄命令）；
+  /// `BillingKind.unknown` 表示“未指定”，不会作为初始值提交。
+  final BillingKind? initialBillingKind;
   final bool rebuildModelConfiguration;
   final List<CustomModelChange> customModels;
   final List<ModelConnectionChange> connections;

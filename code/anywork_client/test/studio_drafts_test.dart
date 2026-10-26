@@ -620,6 +620,9 @@ void main() {
     composer.setText('input');
     final ticket = composer.submit();
     final call = await fixture.commands.prompts.at(0);
+    // The selected Session owns its one UI Timeline connection; durable evidence
+    // reads the original history input instead of another UI Timeline read.
+    final timelineOpens = fixture.conversations.timeline.requests.length;
     call.reply.complete(fixture.receipt(call));
     final first = await fixture.commands.acceptances.at(0);
     expect((first.threadId, first.inputId), ('thread', ticket.id.value));
@@ -698,7 +701,11 @@ void main() {
     expect(ticket.state.value.observed, isTrue);
     expect(ticket.state.value.effective, isTrue);
     expect(fixture.commands.prompts.values, hasLength(1));
-    expect(fixture.conversations.timeline.requests, isEmpty);
+    expect(
+      fixture.conversations.timeline.requests,
+      hasLength(timelineOpens),
+      reason: 'Submission evidence never opens or consumes another UI read',
+    );
   });
 
   test('a receipt arriving after the current saved baseline still queries its original input; discarded is durable but not effective', () async {
@@ -736,6 +743,9 @@ void main() {
     composer.setText('identity');
     final ticket = composer.submit();
     final call = await fixture.commands.prompts.at(0);
+    // The selected Session owns its one UI Timeline connection; Turn evidence
+    // reads the original execution source instead of another UI Timeline read.
+    final timelineOpens = fixture.conversations.timeline.requests.length;
     await _acknowledge(fixture, ticket, call);
     final headers = <int, TurnReadHeader>{};
     final pins = <DraftTurnPin>[];
@@ -818,7 +828,11 @@ void main() {
     expect(pins, hasLength(3));
     expect(pins.every((pin) => pin.texts.values.isEmpty), isTrue);
     expect(fixture.commands.prompts.values, hasLength(1));
-    expect(fixture.conversations.timeline.requests, isEmpty);
+    expect(
+      fixture.conversations.timeline.requests,
+      hasLength(timelineOpens),
+      reason: 'Submission evidence never opens or consumes a UI Timeline read',
+    );
   });
 
   test('observer admission failure is a known non-dispatch and preserves draft refs and text', () async {

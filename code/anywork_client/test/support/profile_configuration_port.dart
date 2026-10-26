@@ -613,7 +613,6 @@ final class _SettingsPin extends ProfileNativePin
     return ConfigurationEntityRead(
       reference: reference,
       value: AccountConfigurationRead(
-        pricingEnabled: false,
         accountId: ReadText.inline(text: accountIds[index]),
         templateId: null,
         billingKind: BillingKind.unknown,

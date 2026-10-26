@@ -15,6 +15,8 @@ pub type ThreadPreparationObserver =
     std::sync::Arc<dyn Fn(ThreadPreparationProgress) + Send + Sync>;
 
 pub mod account_usage;
+pub mod acp_auth;
+pub mod acp_install;
 pub mod attachment_binary;
 mod attachment_drafts;
 mod background_task;
@@ -260,7 +262,16 @@ pub struct StudioRuntime {
     skills: SkillCatalogRuntime,
     thread_modes: crate::mode::ThreadModeManager,
     account_usage: AccountUsageRuntime,
+    /// ACP 接入与认证 owner：连接身份、操作代次、探测资源与独立 `acpAuth` topic。
+    acp_auth: acp_auth::AcpAuthRuntime,
+    /// 官方 server 准备 owner：与认证、Settings 相互独立的共享资产 owner。
+    acp_install: acp_install::AcpInstallRuntime,
     model_performance: ModelPerformanceOwner,
+    /// 统计进度 follower：调用库的统计受理/落库/缺口 watch → 同一 owner 的投影发布任务。
+    ///
+    /// runtime 持有该任务（`BackgroundTaskSlot`）：shutdown 先广播取消、再在独立资源组以同一
+    /// 首次期限有界 join；超时不丢句柄，slot 的 Drop 只 abort 不 join。
+    statistics_follower: background_task::BackgroundTaskSlot,
     updater: StudioUpdateRuntime,
     activation: ProjectActivationRuntime,
     attachment_drafts: attachment_drafts::AttachmentDraftRuntime,
@@ -375,7 +386,7 @@ impl StudioRuntime {
         enabled: bool,
     ) -> Result<pl_protocol::studio::SettingsCommandReply> {
         Self::validate_operation_id(&operation_id)?;
-        if !crate::config::is_system_profile_id(profile_id) {
+        if !crate::config::is_system_profile_id(profile_id)? {
             anyhow::bail!("`{profile_id}` is not a system Agent Profile");
         }
         let committed = self.config_runtime.set_system_agent_enabled(

@@ -146,10 +146,6 @@ final class WorkspaceThreadDirectory {
   }
 
   Future<void> retryMetadata(String id) {
-    // PROBE
-    print(
-      '[W] retryMetadata($id)\n${StackTrace.current.toString().split('\n').where((line) => !line.contains('dart:async')).take(24).join('\n')}',
-    );
     lifetime.admit();
     return Future.wait([
       reads.lookup(id).then<void>((_) {}),

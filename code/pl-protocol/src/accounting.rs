@@ -101,7 +101,10 @@ pub enum UnpricedReason {
     rename_all_fields = "camelCase"
 )]
 pub enum PricingOutcome {
+    /// Historical requests whose monetary estimation was disabled, not a free call.
     Disabled,
+    /// Frozen account declaration; no monetary contribution or invented tariff.
+    NoCharge,
     Unpriced {
         reason: UnpricedReason,
     },
@@ -130,11 +133,13 @@ pub struct InferenceAccounting {
 }
 
 impl InferenceAccounting {
-    /// Frozen known monetary contribution; disabled and unknown are not zero prices.
+    /// Frozen monetary contribution; no-charge, historical disabled and unknown are not zero rates.
     pub fn estimated_costs(&self) -> Vec<RuntimeCostAmount> {
         match &self.pricing {
             PricingOutcome::Estimated { cost, .. } => vec![cost.clone()],
-            PricingOutcome::Disabled | PricingOutcome::Unpriced { .. } => Vec::new(),
+            PricingOutcome::NoCharge
+            | PricingOutcome::Disabled
+            | PricingOutcome::Unpriced { .. } => Vec::new(),
         }
     }
 
@@ -144,7 +149,9 @@ impl InferenceAccounting {
             PricingOutcome::Estimated { cache_savings, .. } => {
                 cache_savings.iter().cloned().collect()
             }
-            PricingOutcome::Disabled | PricingOutcome::Unpriced { .. } => Vec::new(),
+            PricingOutcome::NoCharge
+            | PricingOutcome::Disabled
+            | PricingOutcome::Unpriced { .. } => Vec::new(),
         }
     }
 
@@ -158,11 +165,22 @@ impl InferenceAccounting {
     }
 }
 
-/// Explicit per-provider monetary accounting choice, frozen for each invocation.
+/// Current request policy derived from the account category and frozen for each invocation.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum PricingMode {
     #[default]
     Catalog,
-    Disabled,
+    NoCharge,
+}
+
+impl From<crate::BillingKind> for PricingMode {
+    fn from(kind: crate::BillingKind) -> Self {
+        match kind {
+            crate::BillingKind::NoCharge => Self::NoCharge,
+            crate::BillingKind::Metered
+            | crate::BillingKind::Subscription
+            | crate::BillingKind::Unknown => Self::Catalog,
+        }
+    }
 }

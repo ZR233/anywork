@@ -2,7 +2,8 @@ import 'package:flutter_test/flutter_test.dart';
 
 import '../../../../xtask/dart/client_boundary_check.dart';
 
-const _artifact = 'code/anywork/lib/src/features/conversation/presentation/artifact_links.dart';
+const _artifact =
+    'code/anywork/lib/src/features/conversation/presentation/artifact_links.dart';
 
 void main() {
   for (final fixture in <({String name, String path, String source})>[
@@ -59,7 +60,8 @@ void main() {
     (
       name: 'raw-history content does not become an artifact JSON list',
       path: _artifact,
-      source: 'Object? read(RawHistoryPayload value) => jsonDecode(value.content);',
+      source:
+          'Object? read(RawHistoryPayload value) => jsonDecode(value.content);',
     ),
     (
       name: 'a nested formal can shadow the opaque input without inheriting its exemption',
@@ -84,9 +86,15 @@ void read(Iterable<OpaqueArtifactJson> artifacts) {
     ),
   ]) {
     test(fixture.name, () {
-      final diagnostics = checkClientSource(path: fixture.path, source: fixture.source);
-      expect(diagnostics.where((item) => item.rule == 'SYNTAX'), isEmpty,
-          reason: 'A rejected fixture must still be valid Dart syntax');
+      final diagnostics = checkClientSource(
+        path: fixture.path,
+        source: fixture.source,
+      );
+      expect(
+        diagnostics.where((item) => item.rule == 'SYNTAX'),
+        isEmpty,
+        reason: 'A rejected fixture must still be valid Dart syntax',
+      );
       expect(diagnostics.map((item) => item.rule), contains('JSON-01'));
     });
   }
@@ -116,9 +124,13 @@ Object? read(OpaqueArtifactJson artifact) => const JsonDecoder().convert(artifac
     ]) {
       expect(checkClientSource(path: _artifact, source: source), isEmpty);
     }
-    expect(checkClientSource(
-      path: 'code/anywork_client/lib/src/conversation/domain/fixture.dart',
-      source: 'String raw(OpaqueArtifactJson value) => value.json;',
-    ), isEmpty, reason: 'Repositories may retain the explicit opaque String without decoding it');
+    expect(
+      checkClientSource(
+        path: 'code/anywork_client/lib/src/conversation/domain/fixture.dart',
+        source: 'String raw(OpaqueArtifactJson value) => value.json;',
+      ),
+      isEmpty,
+      reason: 'Repositories may retain the explicit opaque String without decoding it',
+    );
   });
 }

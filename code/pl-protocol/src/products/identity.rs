@@ -24,6 +24,8 @@ pub enum ProductResource {
     PersistenceQueue,
     Updates,
     Bots,
+    AcpAuth,
+    AcpInstall,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]

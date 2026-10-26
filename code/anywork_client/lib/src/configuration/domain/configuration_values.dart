@@ -47,7 +47,6 @@ final class ConfigurationValue with _$ConfigurationValue {
 @freezed
 final class AccountConfiguration with _$AccountConfiguration {
   AccountConfiguration({
-    required this.pricingEnabled,
     required this.billingKind,
     required this.billingKindOverride,
     required List<String> disabledModels,
@@ -67,8 +66,6 @@ final class AccountConfiguration with _$AccountConfiguration {
        customModels = List.unmodifiable(customModels),
        modelConnectionModes = List.unmodifiable(modelConnectionModes),
        modelAutoCompactLimits = List.unmodifiable(modelAutoCompactLimits);
-
-  final bool pricingEnabled;
 
   /// Effective billing is canonical; null override means inference, not unknown.
   final BillingKind billingKind;

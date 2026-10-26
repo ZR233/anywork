@@ -6,7 +6,6 @@ Future<AccountTemplate> readAccountTemplate(
   AccountTemplateRead value,
   ModelReadAccess access,
 ) async => AccountTemplate(
-  pricingEnabled: value.pricingEnabled,
   id: await access.string(value.id),
   displayName: await access.string(value.displayName),
   description: await access.optional(value.description),

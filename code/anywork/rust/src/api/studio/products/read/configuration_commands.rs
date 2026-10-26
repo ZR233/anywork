@@ -137,14 +137,14 @@ impl BridgeConfigurationCommandCall {
         let mut query = self.owner.result_query()?;
         match query.result().await? {
             BridgeCallOutcome::Configuration(outcome) => Ok(outcome),
-            BridgeCallOutcome::Profile(_) | BridgeCallOutcome::Reload(_) => {
-                Err(pl_protocol::studio::StudioError::new(
-                    pl_protocol::studio::StudioErrorCode::Protocol,
-                    "Original call result has the wrong resource kind",
-                    false,
-                )
-                .into())
-            }
+            BridgeCallOutcome::Profile(_)
+            | BridgeCallOutcome::Reload(_)
+            | BridgeCallOutcome::AcpAccount(_) => Err(pl_protocol::studio::StudioError::new(
+                pl_protocol::studio::StudioErrorCode::Protocol,
+                "Original call result has the wrong resource kind",
+                false,
+            )
+            .into()),
         }
     }
     #[flutter_rust_bridge::frb(sync)]

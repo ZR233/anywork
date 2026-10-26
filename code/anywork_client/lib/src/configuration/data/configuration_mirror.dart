@@ -3,6 +3,7 @@ import 'dart:async';
 import '../../../operations.dart' show CommitReceipt;
 import '../../../operations_ports.dart' show OperationRecorder;
 import '../../../resources_ports.dart';
+import '../domain/account_entries.dart';
 import '../domain/configuration_state.dart';
 import '../domain/configuration_values.dart';
 import 'configuration_access.dart';
@@ -98,6 +99,7 @@ final class ConfigurationMirror implements ConfigurationReadAccess {
     Future<AccountConfiguration?>
   >
   _accounts = {};
+  final Map<ConfigurationDemand, Future<AcpAccountDirectory>> _acpAccounts = {};
   final Map<
     ({
       ConfigurationDemand demand,
@@ -251,8 +253,6 @@ final class ConfigurationMirror implements ConfigurationReadAccess {
     ),
   );
   void _failed(ProductFeedOwner<ConfigurationFrame> feed, StudioFailure error) {
-    // PROBE
-    print('[F] failed ${error.code} ${error.message}');
     if (!identical(_feed, feed) || lifetime.sealed) return;
     _sync(ResourceSyncPhase.failed, error);
     feed.requestClose();
@@ -341,8 +341,6 @@ final class ConfigurationMirror implements ConfigurationReadAccess {
     ConfigurationBaseline? baseline,
     ConfigurationChange? change,
   }) {
-    // PROBE
-    print('[F] adopt rev=${stamp.revision} baseline=${baseline != null}');
     final valueAvailable =
         header.source.brief is ReadyObservedBrief ||
         header.source.brief is RefreshingObservedBrief ||
@@ -461,6 +459,7 @@ final class ConfigurationMirror implements ConfigurationReadAccess {
       final collection = _collection;
       if (header.reference == null ||
           header.configurationRevision == null ||
+          header.updatedAt == null ||
           collection == null)
         throw const StudioFailure(
           code: StudioFailureCode.unavailable,
@@ -475,6 +474,9 @@ final class ConfigurationMirror implements ConfigurationReadAccess {
         ),
         collection: collection,
         revision: header.configurationRevision!,
+        // Frozen from the same immutable header that supplied the reference:
+        // the ACP directory reports this captured time, never a later latest.
+        updatedAt: header.updatedAt!,
       );
       return true;
     });
@@ -1019,6 +1021,156 @@ final class ConfigurationMirror implements ConfigurationReadAccess {
           );
         final revision = value.projection.header?.configurationRevision;
         return revision != null && revision >= targets.single.revision;
+      });
+    });
+  }
+
+  /// 固定原配置目标读取 ACP 账号目录；结果只交回调用方，不写成第二 canonical。
+  ///
+  /// 首次需求先同步既有 configuration 源并真实 pin 原目标；目录的 revision/time
+  /// 用捕获时冻结的 header（与 reference 同一快照），不 await 后从 latest 补。
+  /// `superseded` 只做一次有界重取（新的原准入），不无限重试。
+  Future<AcpAccountDirectory> readAcpAccounts() async {
+    lifetime.admit();
+    for (var attempt = 0; attempt < 2; attempt += 1) {
+      final demand = capture();
+      try {
+        return await _acpAccountsFor(demand);
+      } on StudioFailure catch (error) {
+        if (error.code != StudioFailureCode.superseded || attempt == 1) {
+          rethrow;
+        }
+      }
+    }
+    throw configurationSuperseded;
+  }
+
+  Future<AcpAccountDirectory> _acpAccountsFor(ConfigurationDemand demand) {
+    final pending = _acpAccounts[demand];
+    if (pending != null) return pending;
+    final done = Completer<AcpAccountDirectory>();
+    _acpAccounts[demand] = done.future;
+    unawaited(
+      lifetime
+          .run('configuration:acp-accounts', () => _readAcpAccounts(demand))
+          .then(
+            (value) {
+              unawaited(_acpAccounts.remove(demand));
+              done.complete(value);
+            },
+            onError: (Object error, StackTrace stack) {
+              unawaited(_acpAccounts.remove(demand));
+              done.completeError(configurationFailure(error), stack);
+            },
+          ),
+    );
+    return done.future;
+  }
+
+  Future<AcpAccountDirectory> _readAcpAccounts(
+    ConfigurationDemand demand,
+  ) async {
+    // bind 只接受仍与 demand 相容的当前 header：材料 reference 与业务时钟同源，
+    // 材料版本本身不是 Settings revision。
+    final binding = await bind(demand);
+    final target = binding.target;
+    final pin = this.pin(target);
+    var completed = false;
+    try {
+      final accounts = await pin.use((scope) async {
+        final header = await scope.header();
+        if (lifetime.sealed) throw resourceCancelled;
+        final values = await ConfigurationReader(scope)
+            .acpAccounts(header.acpAccounts);
+        if (lifetime.sealed) throw resourceCancelled;
+        return values;
+      });
+      if (!current(target)) throw configurationSuperseded;
+      final directory = AcpAccountDirectory(
+        // Provenance comes from the target frozen at bind time, never from a
+        // later latest: a caller must be able to tell whether this material
+        // still belongs to the current owner.
+        origin: target.origin,
+        reference: target.reference,
+        revision: binding.revision,
+        updatedAt: binding.updatedAt,
+        accounts: accounts,
+      );
+      validateAcpAccountDirectory(directory);
+      completed = true;
+      return directory;
+    } finally {
+      // 已受理的读取仍由原 lifetime join；这里只退役不再接受的 pin。
+      if (!completed || !pin.accepting || !current(target)) pin.retire();
+    }
+  }
+
+  /// Consumes the original configuration target captured by one ACP account
+  /// write: reads every directory page of that fixed target, validates the row
+  /// set, and then waits for the real Settings receipt watermark.
+  ///
+  /// This is the only boundary that observes such a write: the material read and
+  /// the identity convergence happen in one place, so no second
+  /// owner-replacement window opens between them. It must finish before the
+  /// original call closes. Failure keeps the already-decided commit evidence
+  /// (settled by the write lane as a synchronization failure) and never saves
+  /// again or back-fills the directory time into a new fact.
+  Future<void> consumeAcpAccountTarget(
+    ConfigurationReadTarget target, {
+    required CommitReceipt receipt,
+  }) {
+    lifetime.admit();
+    return lifetime.run('configuration:acp-write-target', () async {
+      final pin = this.pin(target);
+      var completed = false;
+      try {
+        await pin.use((scope) async {
+          final header = await scope.header();
+          if (lifetime.sealed) throw resourceCancelled;
+          final values = await ConfigurationReader(scope)
+              .acpAccounts(header.acpAccounts);
+          validateAcpAccountRows(values);
+          if (lifetime.sealed) throw resourceCancelled;
+        });
+        completed = true;
+      } finally {
+        if (!completed || !pin.accepting || !current(target)) pin.retire();
+      }
+      await observeReceipt(receipt);
+    });
+  }
+
+  /// Waits until this mirror's canonical settings watermark covers a real
+  /// Settings receipt.
+  ///
+  /// Used where a write carries no configuration/models read target of its own,
+  /// so the settings topic stays the only canonical source: no read target and
+  /// no second invocation identity is synthesized to pretend otherwise. ACP
+  /// account writes reach it through [consumeAcpAccountTarget] only, so exactly
+  /// one boundary observes each of those writes.
+  Future<void> observeReceipt(CommitReceipt receipt) {
+    lifetime.admit();
+    capture();
+    return lifetime.run('configuration:settings-receipt', () async {
+      final targets = receipt.targets
+          .whereType<ResourceStamp>()
+          .where((stamp) => stamp.resourceKey == 'settings')
+          .toList();
+      if (targets.length != 1) {
+        throw configurationProtocol(
+          'The Settings receipt has inconsistent source targets.',
+        );
+      }
+      final target = targets.single;
+      await source.waitFor((value) {
+        final sync = value.projection.sync;
+        if (sync.phase == ResourceSyncPhase.failed) throw sync.error!;
+        if (sync.phase != ResourceSyncPhase.ready) return false;
+        if (value.projection.stamp?.ownerEpoch != target.ownerEpoch) {
+          throw configurationSuperseded;
+        }
+        final revision = value.projection.header?.configurationRevision;
+        return revision != null && revision >= target.revision;
       });
     });
   }

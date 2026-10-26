@@ -168,7 +168,13 @@ class AgentProfilesConnector extends ConsumerWidget {
               raw,
               systemNames: {
                 for (final profile in profiles.where((value) => value.system))
-                  profile.profileId: context.roleLabel(profile.profileId),
+                  profile.profileId: switch (context.roleLabel(
+                    profile.profileId,
+                  )) {
+                    final localized when localized == profile.profileId =>
+                      profile.displayName,
+                    final localized => localized,
+                  },
               },
             ),
             onAdd: () => unawaited(_editor(context, vm)),

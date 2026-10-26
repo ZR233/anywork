@@ -2,6 +2,7 @@ import 'package:freezed_annotation/freezed_annotation.dart';
 
 import '../../../resources.dart';
 import '../../../models.dart' show BillingKind;
+import '../../acp/domain/acp_values.dart';
 import '../domain/configuration_values.dart';
 
 part 'configuration_reads.freezed.dart';
@@ -11,6 +12,7 @@ abstract class ConfigurationReadHeader with _$ConfigurationReadHeader {
   const factory ConfigurationReadHeader({
     required ReadText? defaultAccountId,
     required TypedListRef accounts,
+    required TypedListRef acpAccounts,
     required TypedListRef modeModelRoutes,
     required TypedListRef roles,
     required ReadText permissionMode,
@@ -24,10 +26,24 @@ abstract class ConfigurationReadHeader with _$ConfigurationReadHeader {
   }) = _ConfigurationReadHeader;
 }
 
+/// 配置材料里的一行 ACP 接入。
+///
+/// 稳定 ID 与名称是可分块读取的文本，[provider] 是类型化供应商，
+/// [connectionRevision] 是该设置版本捕获的 ACP 连接代次。SDK 不重新推导连接代次：
+/// 它不是 Settings revision、不是列表位置，也不是认证观察的最新状态。
+@Freezed(toStringOverride: false)
+abstract class AcpAccountConfigurationRead with _$AcpAccountConfigurationRead {
+  const factory AcpAccountConfigurationRead({
+    required ReadText accountId,
+    required ReadText name,
+    required AcpProvider provider,
+    required int connectionRevision,
+  }) = _AcpAccountConfigurationRead;
+}
+
 @Freezed(toStringOverride: false)
 abstract class AccountConfigurationRead with _$AccountConfigurationRead {
   const factory AccountConfigurationRead({
-    required bool pricingEnabled,
     required BillingKind billingKind,
     required BillingKind? billingKindOverride,
     required TypedListRef disabledModels,

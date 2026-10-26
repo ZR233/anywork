@@ -1,21 +1,21 @@
 import 'dart:async';
 
 import '../../../resources_ports.dart';
-import '../domain/statistics_repository.dart';
-import '../domain/statistics_state.dart';
-import '../domain/statistics_values.dart';
+import '../domain/session_costs_repository.dart';
+import '../domain/session_costs_state.dart';
+import '../domain/session_costs_values.dart';
 import 'account_read_fields.dart';
-import 'statistics_frames.dart';
-import 'statistics_port.dart';
-import 'statistics_reader.dart';
+import 'session_costs_frames.dart';
+import 'session_costs_port.dart';
+import 'session_costs_reader.dart';
 
 typedef _CostsDemand = ({SessionCostsReadTarget? target, Object? opening});
 
 /// A concrete root-scoped query borrow. Separate borrows have separate native
 /// observations and close rights; every scope still charges the App's one
 /// shared ResourceBudget. No observer can close another borrow's connection.
-final class StatisticsCostsQuery implements SessionCostsQuery {
-  StatisticsCostsQuery(
+final class SessionCostsBorrow implements SessionCostsQuery {
+  SessionCostsBorrow(
     this.port,
     ResourceBudget budget,
     this.rootThreadId,
@@ -36,14 +36,14 @@ final class StatisticsCostsQuery implements SessionCostsQuery {
           cost: null,
         ),
         budget,
-        'statistics:costs:observer',
+        'session-costs:observer',
       ) {
     lifetime.onSeal(source.seal);
   }
-  final StatisticsPort port;
+  final SessionCostsPort port;
   final ResourceLifetime lifetime;
   final ResourceSource<SessionCostsState> source;
-  final void Function(StatisticsCostsQuery) onClean;
+  final void Function(SessionCostsBorrow) onClean;
   @override
   final String rootThreadId;
   @override
@@ -64,7 +64,7 @@ final class StatisticsCostsQuery implements SessionCostsQuery {
     late final ProductFeedOwner<SessionCostsFrame> feed;
     feed = ProductFeedOwner(
       lifetime: lifetime,
-      owner: 'statistics:costs-feed',
+      owner: 'session-costs:feed',
       open: () => port.openSessionCosts(rootThreadId),
       sequence: (frame) =>
           frame is SessionCostsData ? frame.deliverySequence : null,
@@ -122,7 +122,7 @@ final class StatisticsCostsQuery implements SessionCostsQuery {
                   code: StudioFailureCode.unavailable,
                   message: 'The SessionCosts feed closed.',
                   retryable: true,
-                  correlationId: 'statistics',
+                  correlationId: 'session-costs',
                 ),
               );
             }
@@ -181,7 +181,7 @@ final class StatisticsCostsQuery implements SessionCostsQuery {
       if (identical(_retiring, feed)) return prior;
       feed.requestClose();
       return Future<void>.sync(
-        () => lifetime.run('statistics:costs-deferred-resync', () async {
+        () => lifetime.run('session-costs:deferred-resync', () async {
           await prior;
           if (!lifetime.sealed && identical(_feed, feed))
             await _resync(retry: retry);
@@ -196,7 +196,7 @@ final class StatisticsCostsQuery implements SessionCostsQuery {
     feed.requestClose();
     unawaited(
       Future<void>.sync(
-        () => lifetime.run('statistics:costs-resync', () async {
+        () => lifetime.run('session-costs:resync', () async {
           await feed.cleanup(retry: retry);
           if (!lifetime.sealed && identical(_feed, feed)) {
             if (!feed.released)
@@ -204,7 +204,7 @@ final class StatisticsCostsQuery implements SessionCostsQuery {
                 code: StudioFailureCode.busy,
                 message: 'The SessionCosts feed has unresolved cleanup.',
                 retryable: true,
-                correlationId: 'statistics',
+                correlationId: 'session-costs',
               );
             _start(opening: done.future);
           }
@@ -352,7 +352,7 @@ final class StatisticsCostsQuery implements SessionCostsQuery {
     if (previous != null && previous.accepting) return previous;
     return _pins[target] = PinnedReadOwner(
       lifetime: lifetime,
-      owner: 'statistics:costs-read',
+      owner: 'session-costs:read',
       open: () =>
           port.openSessionCostsRead(target.reference, origin: target.origin),
       request: (scope) => scope.requestClose(),
@@ -376,7 +376,7 @@ final class StatisticsCostsQuery implements SessionCostsQuery {
     _loads[demand] = done.future;
     unawaited(
       lifetime
-          .run('statistics:costs-load', () async {
+          .run('session-costs:load', () async {
             final binding = await _bind(demand);
             final target = binding.target;
             source.publish(

@@ -6,6 +6,7 @@ import 'package:test/test.dart';
 
 import 'support/configuration_fixture.dart';
 import 'support/configuration_command_fixture.dart';
+import 'support/profile_model_port.dart';
 
 /// 模板只负责创建默认值，不是已有账号或统计的身份来源。
 ///
@@ -21,6 +22,60 @@ const _capabilities = AccountServiceCapabilities(
   ),
   promptCacheDialect: 'openai',
   responsesProgrammaticToolCalling: true,
+);
+
+const _catalogOrigin = ProductReadOrigin(
+  ownerEpoch: 'template-native-catalog',
+  incarnation: 3,
+);
+const _catalogTarget = ModelCatalogReadTarget(
+  origin: _catalogOrigin,
+  reference: ModelCatalogReadRef(entry: 1, revision: 1),
+);
+
+/// Explicit native reply; the feed publication below is declared separately and
+/// never derived from the request.
+ConfigurationCommandReply _reply(OperationId operationId, int revision) =>
+    ConfigurationCommandReply(
+      receipt: CommitReceipt(
+        operationId: operationId,
+        disposition: CommitDisposition.applied,
+        targets: [
+          ResourceStamp(
+            resourceKey: 'settings',
+            ownerEpoch: configurationFixtureOrigin.ownerEpoch,
+            revision: revision,
+          ),
+        ],
+        effect: EffectPoint.futureSession,
+        effective: false,
+        durable: true,
+      ),
+      configuration: ConfigurationReadTarget(
+        origin: configurationFixtureOrigin,
+        reference: ConfigurationReadRef(entry: 1, revision: revision),
+      ),
+      models: _catalogTarget,
+    );
+
+/// The account a successful create makes canonical: no explicit billing
+/// category was chosen, so only the inferred one is observable.
+AccountConfiguration _createdAccount() => AccountConfiguration(
+  accountId: 'account-1',
+  templateId: 'open-ai',
+  protocol: 'open_ai',
+  name: 'OpenAI',
+  baseUrl: 'https://api.openai.example/v1',
+  hasBearerToken: false,
+  bearerTokenEnv: null,
+  billingKind: BillingKind.metered,
+  billingKindOverride: null,
+  disabledModels: const [],
+  usageQueryRevision: 1,
+  catalogId: 'open-ai',
+  customModels: const [],
+  modelConnectionModes: const [],
+  modelAutoCompactLimits: const [],
 );
 
 ModelDescriptor _descriptor(String modelId, String displayName) =>
@@ -81,7 +136,6 @@ AccountTemplatesValue _catalog() => AccountTemplatesValue(
       protocol: 'open_ai',
       suggestedModelId: 'gpt-5.6',
       iconKey: 'open-ai',
-      pricingEnabled: true,
       serviceCapabilities: _capabilities,
     ),
     AccountTemplate(
@@ -97,7 +151,6 @@ AccountTemplatesValue _catalog() => AccountTemplatesValue(
       protocol: 'open_ai_compatible',
       suggestedModelId: '',
       iconKey: null,
-      pricingEnabled: false,
       serviceCapabilities: _capabilities,
     ),
   ],
@@ -124,7 +177,6 @@ AccountConfiguration _legacyAccount() => AccountConfiguration(
   baseUrl: 'https://legacy.example/v1',
   hasBearerToken: false,
   bearerTokenEnv: null,
-  pricingEnabled: true,
   billingKind: BillingKind.metered,
   billingKindOverride: null,
   disabledModels: const [],
@@ -141,8 +193,8 @@ AccountEdit _create({
   String protocol = 'open_ai',
   String name = 'OpenAI',
   String baseUrl = 'https://api.openai.example/v1',
-  bool pricingEnabled = true,
   AccountSecretUpdate secret = const AccountSecretUpdate.preserve(),
+  BillingKind? initialBillingKind,
 }) => AccountEdit(
   accountId: accountId,
   create: true,
@@ -151,7 +203,8 @@ AccountEdit _create({
   name: FieldEdit.set(name),
   baseUrl: FieldEdit.set(baseUrl),
   secret: secret,
-  pricingEnabled: FieldEdit.set(pricingEnabled),
+  // 创建路径可以携带真实初始类别；未显式选择时为 null。
+  initialBillingKind: initialBillingKind,
   rebuildModelConfiguration: false,
   customModels: const [],
   connections: const [],
@@ -229,7 +282,6 @@ void main() {
     final template = _template(catalog, 'openai-compatible');
     expect(template.id, 'openai-compatible');
     expect(template.protocol, 'open_ai_compatible');
-    expect(template.pricingEnabled, isFalse);
     expect(catalog.modelCatalogs[template.modelCatalogId]!.models, isEmpty);
     expect(template.suggestedModelId, isEmpty);
   });
@@ -245,6 +297,8 @@ void main() {
     expect(update.protocol, 'open_ai');
     expect(update.baseUrl, 'https://api.openai.example/v1');
     expect(update.secret, isA<PreserveAccountSecret>());
+    // 创建时没有显式选择计费类别，因此不提交初始类别。
+    expect(update.initialBillingKind, isNull);
     // 创建意图只带自定义模型声明，不存在“账号默认模型”字段。
     expect(update.customModels, isEmpty);
     await _reject(call, ticket);
@@ -307,7 +361,6 @@ void main() {
         protocol: 'open_ai_compatible',
         name: '自定义（OpenAI 兼容）',
         baseUrl: 'http://localhost:11434/v1',
-        pricingEnabled: false,
       ),
     );
     final call = await fixture.port.saved(0);
@@ -315,7 +368,12 @@ void main() {
     expect(call.request.account.protocol, 'open_ai_compatible');
     expect(call.request.account.templateId, 'openai-compatible');
     expect(call.request.account.name, '自定义（OpenAI 兼容）');
-    expect(call.request.account.pricingEnabled, isFalse);
+    // 普通连接/模板编辑不回传也不覆盖计费类别：显式覆盖只由独立的窄命令改写。
+    expect(
+      fixture.port.billingChanges,
+      isEmpty,
+      reason: 'An ordinary connection edit must not replay billing intent',
+    );
     await _reject(call, switched);
   });
 
@@ -330,7 +388,7 @@ void main() {
         name: const FieldEdit.keep(),
         baseUrl: const FieldEdit.keep(),
         secret: const AccountSecretUpdate.preserve(),
-        pricingEnabled: const FieldEdit.keep(),
+        initialBillingKind: null,
         rebuildModelConfiguration: false,
         customModels: const [],
         connections: const [],
@@ -353,5 +411,110 @@ void main() {
       isEmpty,
     );
     expect(catalog.modelCatalogs['missing'], isNull);
+  });
+
+  test('创建可携带真实初始计费类别，编辑携带该类别在进入写入通道前被拒绝', () async {
+    final fixture = await _fixture(_legacyAccount());
+    final created = fixture.repository.saveAccount(
+      _create(initialBillingKind: BillingKind.noCharge),
+    );
+    final call = await fixture.port.saved(0);
+    expect(call.request.account.initialBillingKind, BillingKind.noCharge);
+    await _reject(call, created);
+
+    // `unknown` 表示“未指定”，不是可提交的初始类别，也不能当作“免费”。
+    final unspecified = fixture.repository.saveAccount(
+      _create(initialBillingKind: BillingKind.unknown),
+    );
+    final unspecifiedCall = await fixture.port.saved(1);
+    expect(unspecifiedCall.request.account.initialBillingKind, isNull);
+    await _reject(unspecifiedCall, unspecified);
+
+    // 编辑既有账号不得用初始类别改写计费：SDK 在提交前拒绝该意图。
+    expect(
+      () => fixture.repository.saveAccount(
+        AccountEdit(
+          accountId: 'legacy',
+          create: false,
+          templateId: const FieldEdit.keep(),
+          protocol: const FieldEdit.keep(),
+          name: const FieldEdit.keep(),
+          baseUrl: const FieldEdit.keep(),
+          secret: const AccountSecretUpdate.preserve(),
+          initialBillingKind: BillingKind.noCharge,
+          rebuildModelConfiguration: false,
+          customModels: const [],
+          connections: const [],
+          autoCompactLimits: const [],
+        ),
+      ),
+      throwsA(
+        isA<StudioFailure>().having(
+          (StudioFailure error) => error.code,
+          'code',
+          StudioFailureCode.invalidArgument,
+        ),
+      ),
+    );
+    expect(fixture.port.saves, hasLength(2), reason: '被拒绝的编辑没有创建原生调用');
+    expect(
+      fixture.port.billingChanges,
+      isEmpty,
+      reason: '计费类别只由窄命令改写，编辑不回传该类别',
+    );
+  });
+
+  test('新建账号提交后没有显式计费覆盖，类别仍由模板与 endpoint 推导', () async {
+    final nativeModels = ProfileModelsPort(
+      origin: _catalogOrigin,
+      accounts: const [],
+      textEligibleAccounts: const {},
+    );
+    final fixture = ConfigurationFixture(modelsPort: nativeModels);
+    await fixture.establish(_legacyAccount());
+    addTearDown(() async {
+      final deadline = DateTime.now().add(const Duration(seconds: 3));
+      final reports = await Future.wait([
+        fixture.repository.close(deadline: deadline),
+        fixture.models.close(deadline: deadline),
+      ]);
+      expect(
+        reports.expand((CloseReport report) => report.unresolved),
+        isEmpty,
+      );
+      expect(fixture.budget.usage, isEmpty);
+    });
+
+    final ticket = fixture.repository.saveAccount(_create());
+    final call = await fixture.port.saved(0);
+    await call.native.resultRead(0);
+    call.native.resultAt(0).reply.complete(_reply(ticket.id, 2));
+    await fixture.port.publishAccount(2, _createdAccount());
+    await nativeModels.feed.listened.future;
+    nativeModels.baseline();
+    await nativeModels.feed.acknowledged(1);
+    final result = await ticket.result;
+    expect(result, isA<CommittedCommandResult<Unit>>());
+    final closing = await call.native.closed(0);
+    closing.reply.complete(
+      FeedCloseReport(
+        feedId: call.native.callId,
+        outcome: const FeedCloseOutcome.clean(),
+      ),
+    );
+
+    final created = await fixture.repository.loadAccount('account-1');
+    // 新建账号不把开关状态当作持久覆盖：没有显式选择时只有推导出的生效类别。
+    expect(
+      created.billingKindOverride,
+      isNull,
+      reason: 'A new account carries no explicit billing category',
+    );
+    expect(created.billingKind, BillingKind.metered);
+    expect(
+      fixture.port.billingChanges,
+      isEmpty,
+      reason: 'Creation is not a billing narrow command',
+    );
   });
 }

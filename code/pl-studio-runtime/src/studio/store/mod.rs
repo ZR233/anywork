@@ -75,14 +75,33 @@ impl StudioStore {
         project_id: &str,
         thread_id: &str,
     ) -> anyhow::Result<HistoryStore> {
+        // Sharing or opening a handle happens inside the same boundary the final close seals, so a
+        // holder can never appear after the close decided none is left.
+        let _admission = self.thread_persistence.history_admission().await?;
+        self.history_handle(project_id, thread_id).await
+        }
+
+    /// Opens or shares this Thread's history handle; the caller holds the admission boundary.
+    ///
+    /// Split from [`Self::history_for`] so a caller that already holds that boundary (the shared
+    /// session path) does not take it twice and deadlock on itself.
+    async fn history_handle(
+        &self,
+        project_id: &str,
+        thread_id: &str,
+    ) -> anyhow::Result<HistoryStore> {
         if let Some(shared) = self.thread_persistence.shared_history(thread_id) {
             return Ok(shared);
         }
-        let opened = HistoryStore::open(
+        // Production construction is the one place that hands over the close responsibility: the
+        // coordinator's owner keeps every still-open connection of this Thread until its last holder
+        // is gone and closes it for real, instead of leaving that to a drop nobody can wait for.
+        let opened = HistoryStore::open_with(
             &self
                 .session_paths(project_id, thread_id)?
                 .history_database(),
             thread_id,
+            self.thread_persistence.history_close_owner(),
         )
         .await?;
         Ok(self
@@ -105,10 +124,14 @@ impl StudioStore {
         project_id: &str,
         thread_id: &str,
     ) -> anyhow::Result<pl_core::chat::Session> {
+        // A cached session is a real history holder too, so it is admitted through the same boundary:
+        // after the final close sealed admission it can no longer be handed out.
+        let _admission = self.thread_persistence.history_admission().await?;
         if let Some(active) = self.thread_persistence.chat_session(thread_id) {
             return Ok(active);
         }
-        let session = pl_core::chat::Session::new(self.history_for(project_id, thread_id).await?);
+        let session =
+            pl_core::chat::Session::new(self.history_handle(project_id, thread_id).await?);
         Ok(self
             .thread_persistence
             .install_chat_session(thread_id, session))
@@ -155,6 +178,16 @@ impl StudioStore {
     /// Temporary attachment-draft root derived from the canonical Studio layout.
     pub(crate) fn attachment_drafts_dir(&self) -> PathBuf {
         self.paths.attachment_drafts_dir()
+    }
+
+    /// 一条 ACP 接入专属的空探测工作目录；只由稳定接入 ID 派生，不使用用户项目。
+    pub(crate) fn acp_probe_dir(&self, account_id: &str) -> anyhow::Result<PathBuf> {
+        self.paths.acp_probe_dir(account_id)
+    }
+
+    /// 官方 ACP server 安装根；下载/staging/已发布安装共用同一产品路径入口。
+    pub(crate) fn acp_servers_root(&self) -> PathBuf {
+        self.paths.acp_servers_root()
     }
 
     /// 每会话资源（工具持久化媒体等）根目录；与附件 blob 根同属一个会话目录。

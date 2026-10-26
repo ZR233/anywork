@@ -224,17 +224,15 @@ impl ConfigurationOwner {
             .is_some()
     }
     fn send(&self, frame: ConfigurationFrame) -> Result<(), StudioError> {
-        let result = self
-            .sink
+        // Pure synchronous port write: it must not touch the task state lock, because every caller
+        // below may already hold that guard (`admit_studio`). A failure is remembered by the caller
+        // outside the guard (see `run`).
+        self.sink
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .as_ref()
             .ok_or_else(transport_failed)
-            .and_then(|sink| sink.add(frame.into()).map_err(|_| transport_failed()));
-        if let Err(error) = &result {
-            self.task.record_failure(error.clone().into());
-        }
-        result
+            .and_then(|sink| sink.add(frame.into()).map_err(|_| transport_failed()))
     }
 }
 #[flutter_rust_bridge::frb(ignore)]
@@ -261,10 +259,22 @@ async fn run(owner: &ConfigurationOwner, feed: &StudioConfigurationFeed) {
             }
             return;
         }
-        if let Err(error) = owner
-            .task
-            .admit_studio(|| feed.send_pending(|frame| owner.send(frame)))
-        {
+        // The admission guard holds the task state lock. Never record a sink error recursively
+        // inside that guard: remember this synchronous send's failure and publish it after unlock.
+        let mut delivery_failure = None;
+        let result = owner.task.admit_studio(|| {
+            feed.send_pending(|frame| {
+                let result = owner.send(frame);
+                if let Err(error) = &result {
+                    delivery_failure = Some(error.clone());
+                }
+                result
+            })
+        });
+        if let Some(error) = delivery_failure {
+            owner.task.record_failure(error.into());
+        }
+        if let Err(error) = result {
             finish(owner, feed, error);
             return;
         }

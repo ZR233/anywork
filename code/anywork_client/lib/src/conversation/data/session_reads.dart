@@ -24,6 +24,7 @@ final class ConversationSessionReads {
       Object? evidence,
       bool Function() released,
       bool Function() closing,
+      void Function() requestNativeClose,
       CloseReport Function() report,
     })
   >
@@ -117,6 +118,7 @@ final class ConversationSessionReads {
       evidence: evidence,
       released: () => owner.released,
       closing: () => owner.isClosing,
+      requestNativeClose: () => owner.requestNativeClose(),
       report: owner.report,
     );
     owner.start(() async {
@@ -159,6 +161,15 @@ final class ConversationSessionReads {
   void requestCloseEvidence(Object evidence) {
     for (final entry in List.of(_scopes.entries)) {
       if (identical(entry.value.evidence, evidence)) entry.key.requestClose();
+    }
+  }
+
+  /// Join each already-opened evidence handle without denying the reads this
+  /// evidence already admitted. Used when the caller that must join them is the
+  /// same context that admitted them.
+  void requestNativeCloseEvidence(Object evidence) {
+    for (final entry in List.of(_scopes.values)) {
+      if (identical(entry.evidence, evidence)) entry.requestNativeClose();
     }
   }
 

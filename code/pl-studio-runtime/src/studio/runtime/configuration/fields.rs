@@ -32,6 +32,11 @@ pub(super) enum AccountText {
     BearerTokenEnv,
 }
 #[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum AcpText {
+    Id,
+    Name,
+}
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum ModelText {
     Id,
     Name,
@@ -71,6 +76,7 @@ pub(super) enum StringList {
 pub(super) enum TextField {
     Root(RootText),
     Account(usize, AccountText),
+    Acp(usize, AcpText),
     Model(ModelPath, ModelText),
     Connection(usize, usize, bool),
     AutoCompact(usize, usize),
@@ -82,6 +88,7 @@ pub(super) enum TextField {
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum ListField {
     Accounts,
+    AcpAccounts,
     CustomModels(usize),
     Connections(usize),
     AutoCompact(usize),

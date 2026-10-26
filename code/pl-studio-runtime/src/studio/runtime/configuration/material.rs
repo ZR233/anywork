@@ -39,6 +39,7 @@ impl ConfigurationReadMaterial {
                     .map(|_| text(RootText::DefaultAccount))
                     .transpose()?,
                 accounts: self.list(ListField::Accounts, value.accounts.len())?,
+                acp_accounts: self.list(ListField::AcpAccounts, value.acp_accounts.len())?,
                 mode_model_routes: self.list(ListField::Modes, value.mode_model_routes.len())?,
                 roles: self.list(ListField::Roles, value.roles.len())?,
                 permission_mode: text(RootText::Permission)?,
@@ -221,6 +222,12 @@ impl ConfigurationReadMaterial {
                     }
                     .as_str(),
                 )
+            }
+            TextField::Acp(index, field) => {
+                value.acp_accounts.get(index).map(|account| match field {
+                    AcpText::Id => account.account_id.as_str(),
+                    AcpText::Name => account.name.as_str(),
+                })
             }
             TextField::Connection(account, index, mode) => self
                 .account(account)?

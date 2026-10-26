@@ -178,6 +178,7 @@ impl From<protocol::ConfigurationReadHeader> for BridgeConfigurationReadHeader {
         Self {
             default_account_id: value.default_account_id.map(Into::into),
             accounts: value.accounts.into(),
+            acp_accounts: value.acp_accounts.into(),
             mode_model_routes: value.mode_model_routes.into(),
             roles: value.roles.into(),
             permission_mode: value.permission_mode.into(),
@@ -191,10 +192,19 @@ impl From<protocol::ConfigurationReadHeader> for BridgeConfigurationReadHeader {
         }
     }
 }
+impl From<protocol::AcpAccountConfigurationRead> for BridgeAcpAccountConfigurationRead {
+    fn from(value: protocol::AcpAccountConfigurationRead) -> Self {
+        Self {
+            account_id: value.account_id.into(),
+            name: value.name.into(),
+            provider: crate::api::studio::convert::acp::bridge_acp_provider(value.provider),
+            connection_revision: value.connection_revision,
+        }
+    }
+}
 impl From<protocol::AccountConfigurationRead> for BridgeAccountConfigurationRead {
     fn from(value: protocol::AccountConfigurationRead) -> Self {
         Self {
-            pricing_enabled: value.pricing_enabled,
             billing_kind: value.billing_kind.into(),
             billing_kind_override: value.billing_kind_override.map(Into::into),
             disabled_models: value.disabled_models.into(),
@@ -373,6 +383,10 @@ macro_rules! page {
 page!(
     AccountConfigurationReadPage,
     BridgeAccountConfigurationReadPage
+);
+page!(
+    AcpAccountConfigurationReadPage,
+    BridgeAcpAccountConfigurationReadPage
 );
 page!(
     CustomModelConfigurationReadPage,

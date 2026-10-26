@@ -43,6 +43,7 @@ impl From<BridgeBillingKind> for pl_protocol::BillingKind {
         match value {
             BridgeBillingKind::Metered => Self::Metered,
             BridgeBillingKind::Subscription => Self::Subscription,
+            BridgeBillingKind::NoCharge => Self::NoCharge,
             BridgeBillingKind::Unknown => Self::Unknown,
         }
     }
@@ -53,6 +54,7 @@ impl From<pl_protocol::BillingKind> for BridgeBillingKind {
         match value {
             pl_protocol::BillingKind::Metered => Self::Metered,
             pl_protocol::BillingKind::Subscription => Self::Subscription,
+            pl_protocol::BillingKind::NoCharge => Self::NoCharge,
             pl_protocol::BillingKind::Unknown => Self::Unknown,
         }
     }

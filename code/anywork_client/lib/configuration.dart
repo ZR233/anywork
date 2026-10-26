@@ -3,6 +3,7 @@ library;
 
 export 'src/configuration/domain/account_configuration_read_source.dart'
     show AccountConfigurationReadSource;
+export 'src/configuration/domain/account_entries.dart';
 export 'src/configuration/domain/account_edits.dart';
 export 'src/configuration/domain/config_projection_stamp.dart'
     show ConfigProjectionStamp;

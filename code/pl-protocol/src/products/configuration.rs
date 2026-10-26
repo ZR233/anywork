@@ -30,6 +30,11 @@ pub struct ConfigurationRoleReadTarget {
 pub struct ConfigurationValue {
     pub default_account_id: Option<String>,
     pub accounts: Vec<AccountConfiguration>,
+    /// ACP 账号目录：接入身份归配置所有者，`connection_revision` 归 ACP 身份所有者。
+    ///
+    /// 只在 Settings 提交观察边界按同一 Settings 版本捕获；空列表表达"已确认无接入"，
+    /// 来源未就绪时配置材料本身发布失败，不用空列表补齐未知事实。
+    pub acp_accounts: Vec<crate::studio::AcpAccountSettings>,
     pub mode_model_routes: Vec<crate::studio::StudioModeModelSettings>,
     pub roles: Vec<crate::studio::StudioRoleSettings>,
     pub permission_mode: String,
@@ -47,7 +52,6 @@ pub struct ConfigurationValue {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[derive(utoipa::ToSchema)]
 pub struct AccountConfiguration {
-    pub pricing_enabled: bool,
     pub billing_kind: crate::BillingKind,
     pub billing_kind_override: Option<crate::BillingKind>,
     pub disabled_models: Vec<String>,

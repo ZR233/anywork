@@ -38,6 +38,11 @@ pub struct ConfigRuntime {
     state: Arc<RwLock<RuntimeState>>,
     catalog_updates: tokio::sync::broadcast::Sender<CatalogChange>,
     projection_updates: tokio::sync::watch::Sender<pl_protocol::studio::ConfigProjectionStamp>,
+    /// canonical Settings 提交的同步观察者（当前由 ACP 身份 owner 使用）。
+    ///
+    /// 配置 owner 强持有该观察者，观察者自身只以 `Weak` 引用运行时 owner，因此不会形成
+    /// ConfigRuntime ↔ 运行时 owner 的 `Arc` 环。
+    settings_observer: Arc<Mutex<Option<Arc<dyn SettingsCommitObserver>>>>,
     /// 配置 owner 持有的 canonical Agent Profiles 资源；命令路径扫描，查询只读缓存。
     profiles: AgentProfilesResource,
     /// 配置 owner 独占的 Mode 注册表；StudioRuntime 只持有同一 manager 的克隆。
@@ -55,7 +60,48 @@ struct RuntimeState {
     models_sources: BTreeMap<String, std::sync::Weak<ModelCatalogSource>>,
     configuration_sources: BTreeMap<String, std::sync::Weak<ConfigurationSource>>,
     configuration_status: configuration_projection::ConfigurationMetadata,
+    /// 与 `snapshot.revision` 严格相符的 ACP 目录捕获值。
+    ///
+    /// 只保存 Settings 提交观察边界取得的不可变值；配置所有者不管理认证任务，也不分配连接代次。
+    acp_directory: Option<AcpDirectoryCapture>,
     closing: bool,
+}
+
+/// 一次 Settings 提交观察捕获的 ACP 目录事实。
+///
+/// 失败保留类型化诊断：来源未就绪或投影与设置版本不符都显式可见，绝不用空列表或零连接代次补齐。
+#[derive(Clone)]
+struct AcpDirectoryCapture {
+    settings_revision: u64,
+    accounts: std::result::Result<
+        Arc<[pl_protocol::studio::AcpAccountSettings]>,
+        Arc<pl_protocol::studio::StudioError>,
+    >,
+}
+
+/// 一次 Settings 提交观察返回的不可变 ACP 目录投影。
+pub(crate) struct SettingsCommitProjection {
+    pub(crate) settings_revision: u64,
+    pub(crate) accounts: Arc<[pl_protocol::studio::AcpAccountSettings]>,
+}
+
+/// canonical Settings 提交的同步观察者。
+///
+/// 在 Settings command 锁内、配置材料捕获之前被调用：实现必须是同步、非阻塞的，不得等待 IO、
+/// 用户输入或进程退出，也不得重入配置 owner。它把"已提交的 canonical revision"交给需要与该
+/// revision 严格对齐的 owner（例如 ACP 接入身份），并回传同一 revision 的不可变目录投影，
+/// 因此同一 revision 的身份同步、目录捕获与配置材料发布不会与提交交错。
+pub(crate) trait SettingsCommitObserver: Send + Sync {
+    /// 已提交的 canonical 设置 revision 与其内容；返回同一 revision 的不可变 ACP 目录投影。
+    ///
+    /// 在配置材料捕获**之前**调用：实现同步 ACP 身份并返回该 revision 的目录，调用方随后才在
+    /// 原状态发布边界采用配置材料，因此不存在"已发布配置 + 旧目录"的窗口。实现不得 I/O、
+    /// await 或重入配置 owner，也不得在持有配置状态锁时被调用。
+    fn settings_committed(
+        &self,
+        revision: u64,
+        config: &StudioConfig,
+    ) -> std::result::Result<SettingsCommitProjection, pl_protocol::studio::StudioError>;
 }
 
 #[derive(Clone)]
@@ -193,6 +239,10 @@ impl std::fmt::Debug for ResolvedAgentProfile {
 /// Stable Settings owner failures used by transport adapters.
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigRuntimeError {
+    #[error(
+        "bundled Agent product resources are invalid; startup must stop without data recovery: {0:#}"
+    )]
+    BundledAgentCatalog(#[source] anyhow::Error),
     #[error("configuration migration failed; original file preserved: {0}")]
     Migration(#[source] PureError),
     #[error("work mode configuration requires repair; original files preserved: {0:#}")]
@@ -209,6 +259,9 @@ impl From<ConfigRuntimeError> for PureError {
     fn from(error: ConfigRuntimeError) -> Self {
         match error {
             ConfigRuntimeError::Core(error) | ConfigRuntimeError::Migration(error) => error,
+            ConfigRuntimeError::BundledAgentCatalog(error) => {
+                PureError::ConfigError(format!("bundled Agent resources are invalid: {error:#}"))
+            }
             ConfigRuntimeError::ModeDefinitions(error) => PureError::ConfigError(format!(
                 "work mode configuration requires repair: {error:#}"
             )),
@@ -259,11 +312,13 @@ impl ConfigRuntime {
 
     /// 从磁盘加载并校验初始 desired config。
     pub fn initialize(store: ConfigStore) -> ConfigRuntimeResult<Self> {
+        crate::agent::catalog::validate_startup_entries()
+            .map_err(|error| ConfigRuntimeError::BundledAgentCatalog(anyhow::Error::new(error)))?;
         let desired = store.load_for_startup()?;
         let observations = model_catalog::reconcile(store.paths(), &desired, &BTreeMap::new())?;
         let config = effective_runtime_config(&desired, &observations)?;
         config.validate_declarations()?;
-        super::AgentProfileCatalog::validate_for_startup(store.paths(), &config)?;
+        super::AgentProfileCatalog::validate_for_startup(store.paths())?;
         // canonical Agent Profiles 资源：启动卸载一次扫描，之后查询/订阅只读缓存。
         let profiles = AgentProfilesResource::new(store.paths(), &config);
         let (modes, mode_documents) = mode_definitions::initialize(store.paths())
@@ -281,6 +336,7 @@ impl ConfigRuntime {
             command_lock: Arc::new(Mutex::new(())),
             catalog_updates,
             projection_updates,
+            settings_observer: Arc::new(Mutex::new(None)),
             state: Arc::new(RwLock::new(RuntimeState {
                 desired: desired.clone(),
                 closing: false,
@@ -317,6 +373,8 @@ impl ConfigRuntime {
                     initialized_at,
                     (),
                 ))),
+                // 尚无 Settings 提交观察者；首次安装观察者后才取得同版本的 ACP 目录捕获值。
+                acp_directory: None,
             })),
             profiles,
             modes,
@@ -399,6 +457,106 @@ impl ConfigRuntime {
         }
     }
 
+    /// 安装 Settings 提交观察者，并在同一 command 边界内立即观察当前 canonical 快照。
+    ///
+    /// 安装与首次观察都在 command 锁内完成，因此不会出现"提交已发生但观察者还没装上"的缺口。
+    /// 观察同时返回当前 revision 的 ACP 目录捕获值，供随后建立的配置材料直接使用。
+    pub(crate) fn install_settings_observer(
+        &self,
+        observer: Arc<dyn SettingsCommitObserver>,
+    ) -> ConfigRuntimeResult<()> {
+        let _command = self
+            .command_lock
+            .lock()
+            .map_err(|_| config_runtime_poisoned())?;
+        let snapshot = {
+            let state = self.state.read().map_err(|_| config_runtime_poisoned())?;
+            state.snapshot.clone()
+        };
+        *self
+            .settings_observer
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Arc::clone(&observer));
+        // 观察者可能同步回调其它 owner；此处不持有配置状态锁。
+        let capture = self.observe_settings_commit(&snapshot);
+        self.state
+            .write()
+            .map_err(|_| config_runtime_poisoned())?
+            .acp_directory = Some(capture);
+        Ok(())
+    }
+
+    /// 在当前 command 边界内取得与 `snapshot.revision` 严格相符的 ACP 目录捕获值。
+    ///
+    /// 调用方必须持有 command 锁且不持有配置状态锁。只有观察者在同一 revision 成功返回捕获时
+    /// 才形成目录事实（其中可以就是空列表）；观察者未安装或返回错误都保留显式诊断，绝不以
+    /// canonical 的空集合伪装已确认空目录。
+    fn observe_settings_commit(&self, snapshot: &ConfigRuntimeSnapshot) -> AcpDirectoryCapture {
+        let observer = self
+            .settings_observer
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .cloned();
+        let accounts = match observer {
+            Some(observer) => {
+                match observer.settings_committed(snapshot.revision, snapshot.canonical_config()) {
+                    Ok(projection) if projection.settings_revision == snapshot.revision => {
+                        Ok(projection.accounts)
+                    }
+                    Ok(_) => Err(Arc::new(pl_protocol::studio::StudioError::new(
+                        pl_protocol::studio::StudioErrorCode::Protocol,
+                        "ACP directory projection does not match the committed Settings revision",
+                        false,
+                    ))),
+                    Err(error) => Err(Arc::new(error)),
+                }
+            }
+            // 未安装观察者即来源未就绪：保留显式错误，绝不把"没有观察者"当成已确认空目录。
+            None => Err(Arc::new(pl_protocol::studio::StudioError::new(
+                pl_protocol::studio::StudioErrorCode::Unavailable,
+                "ACP directory projection is not prepared: the settings commit observer is not installed",
+                true,
+            ))),
+        };
+        AcpDirectoryCapture {
+            settings_revision: snapshot.revision,
+            accounts,
+        }
+    }
+
+    /// 在 Settings command 串行边界内取得 canonical 快照并执行同步 closure。
+    ///
+    /// closure 内可以安全地把该 revision 与其它 owner 的准入/身份绑定：其间没有其它配置提交能
+    /// 插入。closure 不得 await、做 IO，也不得再次进入本配置 owner。
+    pub(crate) fn with_canonical_snapshot<T>(
+        &self,
+        run: impl FnOnce(u64, &StudioConfig) -> T,
+    ) -> ConfigRuntimeResult<T> {
+        let _command = self
+            .command_lock
+            .lock()
+            .map_err(|_| config_runtime_poisoned())?;
+        let (revision, desired) = {
+            let state = self.state.read().map_err(|_| config_runtime_poisoned())?;
+            (state.snapshot.revision, state.desired.clone())
+        };
+        Ok(run(revision, &desired))
+    }
+
+    /// 同一 command 边界内取得一致的 Settings 与目录快照；供只读投影使用。
+    pub(crate) fn with_consistent_snapshot<T>(
+        &self,
+        run: impl FnOnce(&ConfigRuntimeSnapshot, &ModelCatalogRuntimeSnapshot) -> T,
+    ) -> ConfigRuntimeResult<T> {
+        let _command = self
+            .command_lock
+            .lock()
+            .map_err(|_| config_runtime_poisoned())?;
+        let (snapshot, catalog) = self.read_with_catalog()?;
+        Ok(run(&snapshot, &catalog))
+    }
+
     /// Commits an in-memory observation at the same boundary as input invalidation.
     /// The callback must not await, perform IO, or re-enter this config owner.
     pub(crate) fn if_usage_query_current(
@@ -435,7 +593,11 @@ impl ConfigRuntime {
 
     /// 从已发布缓存取得启用 Profile 的执行视图；不扫描文件。
     pub fn agent_profiles(&self) -> ConfigRuntimeResult<super::AgentProfileCatalog> {
-        Ok(self.profiles.read().catalog.enabled_only())
+        Ok(self
+            .profiles
+            .read()
+            .catalog
+            .executable(pl_protocol::DelegationMode::Profile)?)
     }
 
     /// 读取已发布的 Agent Profiles 资源快照（完整配置与诊断）；纯缓存读取。
@@ -491,13 +653,22 @@ impl ConfigRuntime {
             .command_lock
             .lock()
             .map_err(|_| config_runtime_poisoned())?;
-        if profile_id == super::StudioRole::Planner.key() {
+        if profile_id == super::ROOT_AGENT_ROUTE_KEY {
             return Err(PureError::ConfigError(
                 "planner is reserved for the main agent; this child role is retired and cannot resume".into(),
             ).into());
         }
+        // Root Agent definitions are product built-in roles, not dispatchable child Profiles.
+        if crate::agent::definition::is_root_definition_id(profile_id) {
+            return Err(PureError::ConfigError(format!(
+                "root Agent definition `{profile_id}` cannot be dispatched as a child agent"
+            ))
+            .into());
+        }
         let snapshot = self.read()?;
-        let catalog = self.profiles.read().catalog.enabled_only();
+        // Resolve the actual frozen/selected route below rather than replacing its diagnostic
+        // with a generic "missing Profile" from the model-visible availability filter.
+        let catalog = self.profiles.read().catalog.enabled_for_dispatch()?;
         let mut profile = catalog
             .profiles
             .into_iter()
@@ -690,6 +861,9 @@ impl ConfigRuntime {
             canonical_config: next_config.clone(),
             usage_query_revisions: next_usage_query_revisions(&current, &effective),
         };
+        // 目录投影必须在配置材料捕获之前取得：持久化已确定，观察与发布失败都不改动提交结论，
+        // 只作为提交后的观察失败保留类型化诊断。此处不持有配置状态锁。
+        let acp_directory = self.observe_settings_commit(&next);
         let catalog_changed = statuses(&next_observations) != current_catalog.catalogs
             || effective.models.accounts != current.config.models.accounts;
         let models_inputs_changed = catalog_changed
@@ -708,6 +882,7 @@ impl ConfigRuntime {
             .state
             .write()
             .map_err(|_| ConfigMutationFailure::Confirmed(config_runtime_poisoned()))?;
+        state.acp_directory = Some(acp_directory);
         state.desired = next_config;
         state.observations = next_observations;
         state.snapshot = next.clone();
@@ -767,7 +942,7 @@ impl ConfigRuntime {
             model_catalog::reconcile(self.store.paths(), &desired, &observations)?;
         let config = effective_runtime_config(&desired, &next_observations)?;
         config.validate_declarations()?;
-        super::AgentProfileCatalog::validate_for_startup(self.store.paths(), &config)?;
+        super::AgentProfileCatalog::validate_for_startup(self.store.paths())?;
         let next = ConfigRuntimeSnapshot {
             revision: settings_revision,
             updated_at: unix_seconds(),
@@ -775,6 +950,8 @@ impl ConfigRuntime {
             canonical_config: desired.clone(),
             usage_query_revisions: next_usage_query_revisions(&current, &config),
         };
+        // 重载同样先取得同版本的不可变 ACP 目录，再在原状态发布边界采用配置材料。
+        let acp_directory = self.observe_settings_commit(&next);
         let catalog = ModelCatalogRuntimeSnapshot {
             revision: catalog_revision,
             updated_at: unix_seconds(),
@@ -782,6 +959,7 @@ impl ConfigRuntime {
         };
         invalidate_observations(&observations, &next_observations);
         let mut state = self.state.write().map_err(|_| config_runtime_poisoned())?;
+        state.acp_directory = Some(acp_directory);
         state.desired = desired;
         state.observations = next_observations;
         state.snapshot = next.clone();
@@ -820,6 +998,34 @@ impl ConfigRuntime {
     ) -> ConfigRuntimeResult<ConfigProfileCommandResult> {
         self.set_system_agent_enabled_phased(expected_revision, profile_id, enabled)
             .map_err(ConfigRuntimeError::from)
+    }
+}
+
+/// 与 `revision` 严格相符的 ACP 目录事实。
+///
+/// 只有同一 revision 的成功捕获才可交付（其行集可以就是空列表，即已确认空目录）；捕获值缺失、
+/// 跨版本或捕获失败一律返回显式类型化失败，绝不补空列表或零连接代次。
+fn acp_directory(
+    revision: u64,
+    capture: Option<&AcpDirectoryCapture>,
+) -> std::result::Result<
+    Arc<[pl_protocol::studio::AcpAccountSettings]>,
+    Arc<pl_protocol::studio::StudioError>,
+> {
+    // 先要求匹配的同 revision 捕获并传播其错误；只有成功捕获（其中可以就是空列表）才构成该
+    // 版本的目录事实。canonical 的空集合不能替代捕获，否则会把"来源未就绪/失败"伪造成已知空。
+    match capture {
+        Some(capture) if capture.settings_revision == revision => capture.accounts.clone(),
+        Some(_) => Err(Arc::new(pl_protocol::studio::StudioError::new(
+            pl_protocol::studio::StudioErrorCode::Protocol,
+            "ACP directory projection does not match the committed Settings revision",
+            false,
+        ))),
+        None => Err(Arc::new(pl_protocol::studio::StudioError::new(
+            pl_protocol::studio::StudioErrorCode::Unavailable,
+            "ACP directory projection is not prepared for this Settings revision",
+            true,
+        ))),
     }
 }
 
@@ -905,7 +1111,7 @@ fn validate_changed_selections(old: &StudioConfig, next: &StudioConfig) -> Resul
     for (mode, route) in &next.mode_model_routes {
         if old.mode_model_routes.get(mode) != Some(route) {
             next.models
-                .resolve_route(super::StudioRole::Planner.id(), route)?;
+                .resolve_route(super::root_agent_route_id(), route)?;
         }
     }
     for (id, account) in &next.models.accounts {

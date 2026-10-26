@@ -12,6 +12,7 @@ typedef ConfigurationBinding = ({
   ConfigurationReadTarget target,
   ProductCollectionRef collection,
   int revision,
+  int updatedAt,
 });
 
 /// Private implementation boundary inside this domain, never a public SDK API.

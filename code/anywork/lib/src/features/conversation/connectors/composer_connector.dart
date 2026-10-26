@@ -11,6 +11,7 @@ import '../../../platform/local_file_dialogs.dart';
 import '../state/composer_view_state.dart';
 import '../state/conversation_view_state.dart';
 import '../state/editor_keys.dart';
+import '../view_models/composer_attachment_view_model.dart';
 import '../view_models/composer_view_model.dart';
 import '../view_models/conversation_view_model.dart';
 import '../views/composer_view.dart';
@@ -52,6 +53,9 @@ class ComposerConnector extends ConsumerWidget {
     final provider = composerViewModelProvider(target);
     final value = ref.watch(provider);
     final vm = ref.read(provider.notifier);
+    final capabilityProvider = composerAttachmentViewModelProvider(target);
+    final capabilities = ref.watch(capabilityProvider).value;
+    final capabilityVm = ref.read(capabilityProvider.notifier);
     final drafts = ref.read(draftsRepositoryProvider);
     final clipboard = ref.read(clipboardImageReaderProvider);
     final conversation = switch (target) {
@@ -63,6 +67,16 @@ class ComposerConnector extends ConsumerWidget {
       loading: () => const LinearProgressIndicator(),
       error: (error, stack) => const Icon(Icons.error_outline),
       data: (state) {
+        final ownsAttachmentTarget = vm.captureAttachmentTarget();
+        bool allowsLocal() =>
+            ownsAttachmentTarget() && capabilityVm.allowsLocal(capabilities);
+        bool allowsRemote() =>
+            ownsAttachmentTarget() && capabilityVm.allowsRemote(capabilities);
+        Future<void> admitLocal(List<String> paths) async {
+          if (!allowsLocal()) return;
+          await vm.addLocalFiles(paths);
+        }
+
         final editable =
             (target is StartComposerKey || conversation?.canCompose == true) &&
             !state.closing &&
@@ -107,18 +121,20 @@ class ComposerConnector extends ConsumerWidget {
         }
 
         return _ComposerDropSurface(
-          enabled: editable,
+          enabled: editable && capabilities?.local.isNotEmpty == true,
           onDrop: (details) async {
+            if (!allowsLocal()) return;
             final files = details.items.whereType<DropFileItem>().toList(
               growable: false,
             );
             await vm.withPlatformRead<void>(
-              () => admitDroppedAttachments(files, vm.addLocalFiles),
+              () => admitDroppedAttachments(files, admitLocal),
             );
           },
           builder: (dragging) => ComposerView(
             key: ValueKey(target),
             state: state,
+            attachmentState: capabilities,
             enabled: editable,
             dragging: dragging,
             canSend: canSend,
@@ -128,10 +144,18 @@ class ComposerConnector extends ConsumerWidget {
             onSend: () => vm.send().ignore(),
             onStop: onStop,
             stopState: stopState,
-            onAddLocal: () => vm.withPlatformRead<void>(() async {
-              final paths = await pickLocalAttachmentPaths();
-              if (paths.isNotEmpty) await vm.addLocalFiles(paths);
-            }).ignore(),
+            onAddLocal: () {
+              if (!allowsLocal()) return;
+              final extensions = capabilities!.localExtensions;
+              vm.withPlatformRead<void>(() async {
+                final paths = await pickLocalAttachmentPaths(
+                  extensions: extensions,
+                );
+                if (paths.isNotEmpty) {
+                  await admitLocal(paths);
+                }
+              }).ignore();
+            },
             onPaste: () => vm.withPlatformRead<String?>(() async {
               final image = await clipboard.readImage();
               if (image != null) {
@@ -140,14 +164,23 @@ class ComposerConnector extends ConsumerWidget {
               }
               return clipboard.readText();
             }),
-            onAddUrl: () => vm
-                .withPlatformRead<void>(
-                  () => showDialog<void>(
-                    context: context,
-                    builder: (_) => _ComposerUrlConnector(target: target),
-                  ),
-                )
-                .ignore(),
+            onAddUrl: () {
+              if (!allowsRemote()) return;
+              vm
+                  .withPlatformRead<void>(
+                    () => showDialog<void>(
+                      context: context,
+                      builder: (_) => _ComposerUrlConnector(
+                        target: target,
+                        owner: vm,
+                        initial: state,
+                        ownsTarget: ownsAttachmentTarget,
+                        allowsAdmission: allowsRemote,
+                      ),
+                    ),
+                  )
+                  .ignore();
+            },
             onRemove: removeAttachment,
             onOpenAttachment: openAttachment,
             attachmentCard: (attachment) => DraftAttachmentRailItem(
@@ -213,51 +246,77 @@ class _ComposerDropSurfaceState extends State<_ComposerDropSurface> {
       if (_dragging) setState(() => _dragging = false);
     },
     onDrop: widget.onDrop,
-    child: widget.builder(_dragging),
+    child: widget.builder(_dragging && widget.enabled),
   );
 }
 
-class _ComposerUrlConnector extends ConsumerWidget {
-  const _ComposerUrlConnector({required this.target});
+class _ComposerUrlConnector extends ConsumerStatefulWidget {
+  const _ComposerUrlConnector({
+    required this.target,
+    required this.owner,
+    required this.initial,
+    required this.ownsTarget,
+    required this.allowsAdmission,
+  });
   final ComposerKey target;
+  final ComposerViewModel owner;
+  final ComposerViewState initial;
+  final bool Function() ownsTarget;
+  final bool Function() allowsAdmission;
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final provider = composerViewModelProvider(target);
+  ConsumerState<_ComposerUrlConnector> createState() =>
+      _ComposerUrlConnectorState();
+}
+
+class _ComposerUrlConnectorState extends ConsumerState<_ComposerUrlConnector> {
+  late ComposerViewState _shown = widget.initial;
+  @override
+  Widget build(BuildContext context) {
+    final provider = composerViewModelProvider(widget.target);
     final value = ref.watch(provider);
-    final vm = ref.read(provider.notifier);
-    return value.when(
-      loading: () => const CircularProgressIndicator(),
-      error: (error, stack) => const Icon(Icons.error_outline),
-      data: (state) => AlertDialog(
-        title: Text(context.l10n.composerAddUrlTitle),
-        content: SizedBox(
-          width: 420,
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              RawTextInput(
-                raw: state.urlRaw,
-                onChanged: vm.setUrl,
-                enabled: !state.pending,
-                onSubmit: () => vm.addRemoteUrl().ignore(),
-                canSubmit: !state.pending,
-                decoration: const InputDecoration(hintText: 'https://'),
-              ),
-              if (state.error != null) Text(state.error!.message),
-            ],
-          ),
+    // This dialog is a separate route. Reuse the same capability observation
+    // for rebuilds; admission still validates the original captured snapshot.
+    ref.watch(composerAttachmentViewModelProvider(widget.target));
+    final original =
+        identical(ref.read(provider.notifier), widget.owner) &&
+        widget.ownsTarget();
+    if (original && value.asData != null) _shown = value.requireValue;
+    final state = _shown;
+    final enabled = original && !state.pending;
+    void admit() {
+      if (!widget.ownsTarget() || !widget.allowsAdmission()) return;
+      widget.owner.addRemoteUrl().ignore();
+    }
+
+    return AlertDialog(
+      title: Text(context.l10n.composerAddUrlTitle),
+      content: SizedBox(
+        width: 420,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            RawTextInput(
+              raw: state.urlRaw,
+              onChanged: original ? widget.owner.setUrl : null,
+              enabled: enabled,
+              onSubmit: admit,
+              canSubmit: enabled && widget.allowsAdmission(),
+              decoration: const InputDecoration(hintText: 'https://'),
+            ),
+            if (state.error != null) Text(state.error!.message),
+          ],
         ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(),
-            child: Text(MaterialLocalizations.of(context).cancelButtonLabel),
-          ),
-          TextButton(
-            onPressed: state.pending ? null : () => vm.addRemoteUrl().ignore(),
-            child: Text(context.l10n.composerAddUrlConfirm),
-          ),
-        ],
       ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: Text(MaterialLocalizations.of(context).cancelButtonLabel),
+        ),
+        TextButton(
+          onPressed: enabled && widget.allowsAdmission() ? admit : null,
+          child: Text(context.l10n.composerAddUrlConfirm),
+        ),
+      ],
     );
   }
 }

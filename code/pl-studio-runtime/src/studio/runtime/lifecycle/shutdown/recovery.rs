@@ -45,11 +45,18 @@ pub(super) fn can_retry(id: StageId, cause: &FailureCause) -> bool {
         StageId::AgentFramework => framework_retry(error),
         // wait_for_drain currently erases recoverable write failures and terminal released-dirty
         // incarnations into the same anyhow error. Without that owner's typed distinction, do
-        // not grant retry merely because the error arose before writer shutdown.
-        StageId::Persistence => matches!(
-            error.downcast_ref::<PersistenceShutdownFailure>(),
-            Some(PersistenceShutdownFailure::Flush(_))
+        // not grant retry merely because the error arose before writer shutdown. A history close
+        // that did not finish is retryable only when its own typed failures say so: a panicked close
+        // task or a hand-over after the seal is not something another attempt may silently repeat.
+        StageId::Persistence => match error.downcast_ref::<PersistenceShutdownFailure>() {
+            Some(PersistenceShutdownFailure::Flush(_)) => true,
+            Some(PersistenceShutdownFailure::History(group)) => group
+                .downcast_ref::<crate::studio::storage::coordinator::history_close::HistoryCloseGroup>()
+                .is_some_and(
+                    crate::studio::storage::coordinator::history_close::HistoryCloseGroup::is_retryable,
         ),
+            _ => false,
+        },
         // These jobs are once-only or have no proven original recovery contract. In particular,
         // rerunning drained title/probe maps cannot repair their already consumed join failures.
         StageId::ModelCatalog
@@ -66,6 +73,9 @@ pub(super) fn can_retry(id: StageId, cause: &FailureCause) -> bool {
         | StageId::PersistenceObserver
         | StageId::Ssh
         | StageId::AgentProfiles
+        | StageId::StatisticsFollower
+        | StageId::AcpAuth
+        | StageId::AcpInstall
         | StageId::Store => false,
     }
 }

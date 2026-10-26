@@ -81,9 +81,11 @@ class GeneralSettingsView extends StatelessWidget {
     final configuredWeb = state.configuredWebSearch;
     final configuredDeepSeek = state.configuredDeepSeek;
     final canonical = state.canonical;
-    // Every block stays on the page, like the pre-refactor tab: a not-yet-read
-    // configuration renders its placeholder values instead of disappearing and
-    // shifting the sections below it.
+    if (canonical == null) {
+      return const Center(child: CircularProgressIndicator());
+    }
+    // Effective network readings may still be unknown; their established
+    // unavailable presentation is separate from the initial configuration gate.
     final draft =
         web ??
         const WebSearchDraft(
@@ -112,45 +114,29 @@ class GeneralSettingsView extends StatelessWidget {
         SettingsSection(
           title: l10n.settingsAppearanceGroup,
           children: [
-            // The rows stay on the page before the first read; without canonical
-            // data they report the unavailable placeholder and accept no command.
-            if (canonical == null)
-              Padding(
-                padding: const EdgeInsets.only(bottom: 4),
-                child: Text(
-                  l10n.settingsNotAvailable,
-                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                    color: Theme.of(context).colorScheme.onSurfaceVariant,
-                  ),
-                ),
-              ),
             SettingsToggleRow(
               key: const ValueKey('general-follow-active-turn'),
               icon: Icons.vertical_align_bottom,
               title: l10n.settingsFollowActiveTurn,
               subtitle: l10n.settingsFollowActiveTurnSubtitle,
-              value: canonical?.followActiveTurn ?? false,
-              onChanged: canonical == null
-                  ? null
-                  : (value) {
-                      if (!_blocked(GeneralSettingAction.followActiveTurn)) {
-                        onFollow(value);
-                      }
-                    },
+              value: canonical.followActiveTurn,
+              onChanged: (value) {
+                if (!_blocked(GeneralSettingAction.followActiveTurn)) {
+                  onFollow(value);
+                }
+              },
             ),
             SettingsToggleRow(
               key: const ValueKey('general-compact-timeline'),
               icon: Icons.view_agenda_outlined,
               title: l10n.settingsCompactTimeline,
               subtitle: l10n.settingsCompactTimelineSubtitle,
-              value: canonical?.compactTimeline ?? false,
-              onChanged: canonical == null
-                  ? null
-                  : (value) {
-                      if (!_blocked(GeneralSettingAction.compactTimeline)) {
-                        onCompact(value);
-                      }
-                    },
+              value: canonical.compactTimeline,
+              onChanged: (value) {
+                if (!_blocked(GeneralSettingAction.compactTimeline)) {
+                  onCompact(value);
+                }
+              },
             ),
           ],
         ),
@@ -192,6 +178,16 @@ class GeneralSettingsView extends StatelessWidget {
             children: [updates!],
           ),
         for (final error in errors) SettingsInlineError(message: error),
+        if (state.delegation == null && delegationReadError != null) ...[
+          SettingsInlineError(message: delegationReadError!),
+          Align(
+            alignment: Alignment.centerLeft,
+            child: TextButton(
+              onPressed: state.delegationReadPending ? null : onRetryRead,
+              child: Text(l10n.sidebarRetry),
+            ),
+          ),
+        ],
       ],
     );
   }

@@ -2205,6 +2205,7 @@ impl BotOperationOwner {
                 String::new(),
             ),
             bot_open_id: Mutex::new(None),
+            send_rate: super::send::SendRate::new(),
             admission: Mutex::new(()),
             admission_closed: AtomicBool::new(false),
             submitting: AtomicBool::new(false),

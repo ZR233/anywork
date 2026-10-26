@@ -35,6 +35,10 @@ abstract interface class ConfigurationPort {
   // Begin rejection is admission rejection (no call was created). Once a call
   // is admitted, business failures, including CAS rejection, belong to result.
   Future<ConfigurationCommandCall> saveAccount(UpdateAccountRequest request);
+  Future<AcpAccountCommandCall> saveAcpAccount(UpdateAcpAccountRequest request);
+  Future<AcpAccountCommandCall> removeAcpAccount(
+    RemoveAcpAccountRequest request,
+  );
   Future<ConfigurationCommandCall> setDefaultAccount(
     SetDefaultAccountRequest request,
   );
@@ -62,6 +66,11 @@ abstract interface class ConfigurationPort {
     SetSystemProfileEnabledRequest request,
   );
   Future<ProfileCommandCall?> findProfileCommand(OperationId operationId);
+
+  /// 只查找并加入原操作的 ACP 账号调用；绝不发起第二次提交。
+  ///
+  /// 请求开始的响应丢失时使用：找不到不是“未提交”的证明，未知结果不得重发。
+  Future<AcpAccountCommandCall?> findAcpAccountCommand(OperationId operationId);
   Future<ConfigurationReloadCall> reload(ConfigurationReloadRequest request);
   Future<ConfigurationReloadCall?> findConfigurationReload(
     OperationId operationId,
@@ -102,6 +111,24 @@ abstract interface class ConfigurationReloadCall {
   Future<FeedCloseReport> retryClose();
 }
 
+/// One Settings-shaped ACP account write: a real retained native call.
+///
+/// 复用配置领域已有的受管调用契约：这是一次 Settings 写入，不是 configuration+models
+/// 双目标事务，但 [callId]、[operationId]、[result]、[requestClose]、[close]、
+/// [retryClose] 全部是真实原生身份与资源——原调用在显式关闭前保留本次提交捕获的配置
+/// 材料责任，[close] 封闭新查询并等待已受理写入、结果读取及子作用域真实结束。
+/// 结果只携带真实 Settings 回执与本次提交捕获的配置读取目标，不携带整份账号目录，
+/// 也不伪造模型目录目标或模型资源回执。准入拒绝、业务失败与提交后观察失败沿用
+/// ConfigurationCommandCall 的分类；[findAcpAccountCommand] 只用于响应丢失时加入原调用。
+abstract interface class AcpAccountCommandCall {
+  String get callId;
+  OperationId get operationId;
+  Future<AcpAccountCommandReply> result();
+  void requestClose();
+  Future<FeedCloseReport> close();
+  Future<FeedCloseReport> retryClose();
+}
+
 abstract interface class ConfigurationReadConnection {
   Future<ConfigurationReadHeader> header();
   Future<TextChunk> text(int fieldId, {int offset = 0, int maxBytes = 65536});
@@ -109,6 +136,11 @@ abstract interface class ConfigurationReadConnection {
   Future<ConfigurationEntityRead> entity(ProductEntityRef reference);
   Future<ProductEntityRef?> lookupAccount(String accountId);
   Future<AccountConfigurationReadPage> accounts(
+    int listId, {
+    int offset = 0,
+    int limit = 32,
+  });
+  Future<AcpAccountConfigurationReadPage> acpAccounts(
     int listId, {
     int offset = 0,
     int limit = 32,

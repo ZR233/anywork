@@ -258,7 +258,7 @@
   "settingsBotsSetupTitle": "First-time setup",
   "settingsBotsSetupClose": "Close setup",
   "settingsBotsRisk": "Remote messages can start this computer's agent tools. The current policy is full-access. Linking a project is not an OS sandbox.",
-  "settingsBotsPermissions": "Requested scopes (preset=false): im:message:send_as_bot, im:message.p2p_msg:readonly, im:message.group_at_msg:readonly, im:chat:readonly, im:message:readonly. Event: im.message.receive_v1. Declaring them does not mean an admin has approved or published the app.",
+  "settingsBotsPermissions": "Requested scopes (preset=false): im:message:send_as_bot, im:message.p2p_msg:readonly, im:message.group_at_msg:readonly, im:chat:readonly, im:message:readonly, im:resource, cardkit:card:write. Event: im.message.receive_v1. Image and file reception is retained; streaming cards add creation and update access. Existing apps need an administrator to grant card access and publish the app. Declaring permissions does not mean they are approved.",
   "settingsBotsName": "Name",
   "settingsBotsProject": "Linked project",
   "settingsBotsRiskAck": "I understand remote messages can run local tools with full-access",
@@ -1558,8 +1558,8 @@
   "roleWorktreeExecutor": "Worktree executor",
   "roleReviewer": "Reviewer",
   "roleEmpty": "Agent",
-  "settingsPricingEnabled": "Estimate token cost",
-  "settingsPricingHelp": "Controls in-app cost estimates; token and cache statistics remain available. Plans default to off.",
+  "settingsNoCharge": "No charge",
+  "settingsNoChargeHelp": "On: declare future model calls on this account as not charged. Off: clear the billing override and restore automatic classification. Token, cache and performance statistics and model reference prices are preserved. Other categories estimate costs when prices and usage are available.",
   "settingsModelAdvanced": "Optional model settings",
   "settingsContextBudget": "Context budget (tokens)",
   "settingsOutputBudget": "Maximum output (tokens)",
@@ -2162,6 +2162,160 @@
   "statusCompacting": "Compacting…",
   "statusCompactionFailed": "Compaction failed. Try again.",
   "settingsModelAutoCompactCustom": "Custom",
+  "acpAccountPickerTitle": "Add account",
+  "acpAccountPickerNativeGroup": "Model API account",
+  "acpAccountPickerAcpGroup": "Agent integration (ACP)",
+  "acpAccountNoApiKeyHint": "No API key needed — the official program handles sign-in.",
+  "acpAccountSaveAndConnect": "Save and connect",
+  "acpAccountSavedConnectIncomplete": "Account saved. Connection not finished: {reason}",
+  "@acpAccountSavedConnectIncomplete": {
+    "placeholders": {
+      "reason": {
+        "type": "String"
+}
+    }
+  },
+  "acpAccountSaveFailed": "Could not save this integration: {reason}",
+  "@acpAccountSaveFailed": {
+    "placeholders": {
+      "reason": {
+        "type": "String"
+      }
+    }
+  },
+  "acpAccountProviderChip": "ACP",
+  "acpAccountScopeNotice": "This version only configures the account and sign-in. ACP chat and model selection are not available yet.",
+  "acpAccountRemoveNotLogout": "Removing an integration does not sign out the official program.",
+  "acpAccountRemoveFailed": "Could not remove this integration.",
+  "acpAuthUnchecked": "Connection not checked yet.",
+  "acpAuthChecking": "Checking connection…",
+  "acpAuthRequiredTitle": "Sign-in required",
+  "acpAuthRequiredBody": "The official program reported the sign-in methods below.",
+  "acpAuthMethodLabel": "Sign-in method",
+  "acpAuthLogin": "Sign in",
+  "acpAuthAuthenticatingTitle": "Waiting for sign-in",
+  "acpAuthAuthenticatingBody": "Finish signing in inside the official sign-in window. This page keeps following the same attempt.",
+  "acpAuthVerifyingTitle": "Verifying sign-in…",
+  "acpAuthVerifiedTitle": "Connected",
+  "acpAuthVerifiedAt": "Verified {time}",
+  "@acpAuthVerifiedAt": {
+    "placeholders": {
+      "time": {
+        "type": "String"
+      }
+    }
+  },
+  "acpAuthRecheck": "Check again",
+  "acpAuthCheck": "Check connection",
+  "acpAuthCancel": "Cancel sign-in",
+  "acpAuthCancelCheck": "Cancel check",
+  "acpAuthCancelling": "Cancelling…",
+  "acpAuthCancelled": "Cancelled.",
+  "acpAuthFailedTitle": "Connection failed",
+  "acpAuthTerminalOnly": "The server only offers terminal sign-in, which this version does not support.",
+  "acpAuthUnsupportedOnly": "The server only offers sign-in methods this version does not implement.",
+  "acpAuthClosingTitle": "Finishing cleanup",
+  "acpAuthClosingBody": "The protocol exchange is over; the process and its pipes are still being joined. No new attempt starts until this settles.",
+  "acpAuthServerUnknown": "The server did not provide its identity.",
+  "acpAuthMethodSelectHint": "Choose a sign-in method",
+  "acpAuthMethodRequired": "Select a sign-in method to continue.",
+  "acpAuthRowClosing": "Cleaning up",
+  "acpAccountInstallOpen": "Open official guide",
+  "acpAuthNoMethods": "The server did not offer a usable sign-in method.",
+  "acpAuthRetry": "Retry",
+  "acpAuthEditConfig": "Edit configuration",
+  "acpAuthDone": "Done",
+  "acpAuthDiagnostics": "Technical details",
+  "acpAuthStageLabel": "Stage: {stage}",
+  "@acpAuthStageLabel": {
+    "placeholders": {
+      "stage": {
+        "type": "String"
+      }
+    }
+  },
+  "acpAuthCodeLabel": "Reason: {code}",
+  "@acpAuthCodeLabel": {
+    "placeholders": {
+      "code": {
+        "type": "String"
+      }
+    }
+  },
+  "acpAuthRowUnchecked": "Not checked",
+  "acpAuthRowChecking": "Checking",
+  "acpAuthRowRequired": "Sign-in required",
+  "acpAuthRowAuthenticating": "Signing in",
+  "acpAuthRowVerifying": "Verifying",
+  "acpAuthRowVerified": "Connected",
+  "acpAuthRowCancelling": "Cancelling",
+  "acpAuthRowCancelled": "Cancelled",
+  "acpAuthRowFailed": "Connection failed",
+  "acpAccountDetailsSummary": "Official ACP integration — no API key needed.",
+  "acpAccountConnectionInfoTitle": "Connection details",
+  "acpAccountProviderLabel": "Provider",
+  "acpAuthFailureSummary": "{reason} ({stage})",
+  "@acpAuthFailureSummary": {
+    "placeholders": {
+      "reason": {
+        "type": "String"
+      },
+      "stage": {
+        "type": "String"
+}
+    }
+  },
+  "acpFailureCodeStartup": "Process start failed",
+  "acpFailureCodeMissingExecutable": "Server program not found",
+  "acpFailureCodeIo": "I/O error",
+  "acpFailureCodeUnsupportedVersion": "Unsupported protocol version",
+  "acpFailureCodeUnsupportedMethod": "Unsupported sign-in method",
+  "acpFailureCodeAuthentication": "Sign-in failed",
+  "acpFailureCodeProbe": "Connection check failed",
+  "acpFailureCodeProtocol": "Protocol error",
+  "acpFailureCodeTransport": "Transport error",
+  "acpFailureCodeTimeout": "Timed out",
+  "acpFailureCodeResourceLimit": "Resource limit reached",
+  "acpFailureCodeCancelled": "Cancelled",
+  "acpFailureCodeStaleOperation": "Operation was superseded",
+  "acpFailureCodeConfigChanged": "Configuration changed",
+  "acpFailureCodeCleanup": "Cleanup failed",
+  "acpFailureCodeInternal": "Internal error",
+  "acpFailureStageProcess": "during process start",
+  "acpFailureStageConfig": "during configuration read",
+  "acpFailureStageInitialize": "during initialize",
+  "acpFailureStageAuthenticate": "during sign-in",
+  "acpFailureStageProbe": "during connection check",
+  "acpFailureStageClose": "during session close",
+  "acpFailureStageCleanup": "during cleanup",
+  "studioFailureCodeNotInitialized": "Not initialized",
+  "studioFailureCodeRuntimeStopped": "Runtime stopped",
+  "studioFailureCodeInstanceBusy": "Another operation is running",
+  "studioFailureCodeInvalidArgument": "Invalid request",
+  "studioFailureCodeNotFound": "Not found",
+  "studioFailureCodeBusy": "Busy",
+  "studioFailureCodeConflict": "Conflict",
+  "studioFailureCodeStaleRevision": "Outdated revision",
+  "studioFailureCodePermissionDenied": "Permission denied",
+  "studioFailureCodeCancelled": "Cancelled",
+  "studioFailureCodeCancellationTooLate": "Too late to cancel",
+  "studioFailureCodeOverloaded": "Overloaded",
+  "studioFailureCodeUnavailable": "Unavailable",
+  "studioFailureCodeProtocol": "Protocol error",
+  "studioFailureCodeStorage": "Storage error",
+  "studioFailureCodeUpdate": "Update error",
+  "studioFailureCodeInternal": "Internal error",
+  "acpAuthCancellingBody": "Waiting for the sign-in window and its process to finish.",
+  "acpAuthCancelledBody": "No attempt is running now. You can check or sign in again.",
+  "acpAuthCommandFailure": "The request was not accepted. {reason}",
+  "@acpAuthCommandFailure": {
+    "placeholders": {
+      "reason": {
+        "type": "String"
+      }
+    }
+  },
+  "acpAuthCommandUnavailable": "The request could not be completed.",
   "botsOverviewHint": "Bring your sessions to Feishu to search, collaborate, and share files.",
   "botsPlatformFeishu": "Feishu",
   "botsModelTitle": "Model and reasoning",
@@ -2173,6 +2327,110 @@
   "botsPlatformTools": "Feishu messages and test sending",
   "botsManagedModel": "Managed by bot settings",
   "settingsSshNextPage": "Next page",
+  "acpInstallUnsupportedPlatform": "No official managed build of {version} exists for this platform.",
+  "@acpInstallUnsupportedPlatform": {
+    "placeholders": {"version": {"type": "String"}}
+  },
+  "acpFailureStagePrepare": "Preparing the managed server",
+  "acpFailureCodePreparationRequired": "The managed server is not prepared yet",
+  "acpFailureCodeInstallationInvalid": "The prepared server is incomplete or damaged",
+  "acpFailureCodeUnsupportedPlatform": "No official managed build for this platform",
+  "acpFailureCodeServerVersionMismatch": "The server version is not the supported one",
+  "acpInstallFactVersion": "Version",
+  "acpInstallFactTarget": "Platform",
+  "acpInstallFactStage": "Stage",
+  "acpInstallFactRetries": "Automatic retries",
+  "acpInstallRetryValue": "{count, plural, =0{None} other{{count} times}}",
+  "@acpInstallRetryValue": {
+    "placeholders": {"count": {"type": "int"}}
+  },
+  "acpInstallProgressDownloaded": "{done} of {total} downloaded",
+  "@acpInstallProgressDownloaded": {
+    "placeholders": {"done": {"type": "String"}, "total": {"type": "String"}}
+  },
+  "acpInstallProgressUnknown": "{done} downloaded, total unknown",
+  "@acpInstallProgressUnknown": {
+    "placeholders": {"done": {"type": "String"}}
+  },
+  "acpInstallProgressVerified": "{done} of {total} verified",
+  "@acpInstallProgressVerified": {
+    "placeholders": {"done": {"type": "String"}, "total": {"type": "String"}}
+  },
+  "acpInstallProgressVerifiedUnknown": "{done} verified, total unknown",
+  "@acpInstallProgressVerifiedUnknown": {
+    "placeholders": {"done": {"type": "String"}}
+  },
+  "acpInstallProgressExtracted": "{done} of {total} extracted",
+  "@acpInstallProgressExtracted": {
+    "placeholders": {"done": {"type": "String"}, "total": {"type": "String"}}
+  },
+  "acpInstallProgressExtractedUnknown": "{done} extracted, total unknown",
+  "@acpInstallProgressExtractedUnknown": {
+    "placeholders": {"done": {"type": "String"}}
+  },
+  "acpInstallProgressProcessed": "{done} of {total} processed",
+  "@acpInstallProgressProcessed": {
+    "placeholders": {"done": {"type": "String"}, "total": {"type": "String"}}
+  },
+  "acpInstallProgressProcessedUnknown": "{done} processed, total unknown",
+  "@acpInstallProgressProcessedUnknown": {
+    "placeholders": {"done": {"type": "String"}}
+  },
+  "acpInstallProgressPercent": "{percent}%",
+  "@acpInstallProgressPercent": {
+    "placeholders": {"percent": {"type": "int"}}
+  },
+  "acpInstallSpeed": "{speed}/s",
+  "@acpInstallSpeed": {
+    "placeholders": {"speed": {"type": "String"}}
+  },
+  "acpInstallStageResolve": "Reading the official manifest",
+  "acpInstallStageWaitForLock": "Waiting for the install lock",
+  "acpInstallStageDownload": "Downloading package",
+  "acpInstallStageVerify": "Verifying package",
+  "acpInstallStageExtract": "Extracting files",
+  "acpInstallStagePublish": "Publishing installation",
+  "acpInstallStageClose": "Closing download",
+  "acpInstallStart": "Download and prepare",
+  "acpInstallRestart": "Prepare again",
+  "acpInstallCancel": "Cancel download",
+  "acpInstallCancelling": "Cancelling…",
+  "acpInstallCancelSharedHint": "Preparing is shared: cancelling stops this preparation and leaves saved accounts untouched.",
+  "acpInstallUsePrepared": "Use prepared server",
+  "acpInstallUsePreparedHint": "An existing prepared {version} ({target}) can be claimed for this account.",
+  "@acpInstallUsePreparedHint": {
+    "placeholders": {"version": {"type": "String"}, "target": {"type": "String"}}
+  },
+  "acpInstallReadyTitle": "Server ready",
+  "acpInstallReadyBody": "Preparing never saves an account or signs in.",
+  "acpInstallReusedBadge": "Reused existing installation",
+  "acpInstallFailureRetry": "Retry preparation",
+  "acpInstallTrustOfficialHttps": "Trust boundary: official HTTPS source, no publisher checksum provided.",
+  "acpInstallPendingAdmission": "Accepting the preparation request…",
+  "acpInstallCommandFailed": "The request was not accepted. {reason}",
+  "@acpInstallCommandFailed": {
+    "placeholders": {"reason": {"type": "String"}}
+  },
+  "acpInstallFailureSummary": "{reason} ({stage})",
+  "@acpInstallFailureSummary": {
+    "placeholders": {"reason": {"type": "String"}, "stage": {"type": "String"}}
+  },
+  "acpInstallFailureCodeUnsupportedPlatform": "This platform is not supported",
+  "acpInstallFailureCodeSourceRejected": "Source rejected",
+  "acpInstallFailureCodeNetwork": "Network error",
+  "acpInstallFailureCodeTimeout": "Timed out",
+  "acpInstallFailureCodeTooLarge": "Package exceeds the limit",
+  "acpInstallFailureCodeChecksumMismatch": "Checksum mismatch",
+  "acpInstallFailureCodeInvalidArchive": "Invalid package",
+  "acpInstallFailureCodeMissingExecutable": "Server program missing in package",
+  "acpInstallFailureCodeCacheCorrupt": "Existing installation is corrupt",
+  "acpInstallFailureCodeIo": "File system error",
+  "acpInstallFailureCodeBusy": "Another preparation is running",
+  "acpInstallFailureCodeStaleOperation": "Preparation was superseded",
+  "acpInstallFailureCodeCancelled": "Cancelled",
+  "acpInstallFailureCodeResourceClose": "Cleanup failed",
+  "acpAccountTermsOpen": "Terms of service",
+  "acpAccountTermsTitle": "Official terms",
   "delegationSettingsTitle": "Subagent delegation",
   "delegationDefaultMode": "Default delegation mode",
   "delegationDefaultPreference": "Default automatic preference",
@@ -2205,7 +2463,7 @@
   "settingsBillingUnknown": "Unknown",
   "settingsBillingEffective": "Effective category",
   "settingsBillingOverride": "Explicit override",
-  "settingsBillingHint": "Independent of cost estimates. A category does not confirm an active subscription or remaining quota.",
+  "settingsBillingHint": "No charge applies only to future calls; other categories estimate costs from available prices and usage. Subscription does not confirm an active plan, remaining quota or zero cost. Model reference prices are preserved.",
   "settingsModelDetails": "Model details",
   "modelDetailLoading": "Loading model details…",
   "modelDetailUnknown": "Unknown / not verified",

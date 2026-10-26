@@ -38,41 +38,32 @@ impl FromRequestParts<AppState> for NoReplay {
 pub(crate) fn router() -> OpenApiRouter<AppState> {
     OpenApiRouter::new()
         .routes(routes!(events))
-        .routes(routes!(
-            control::ack,
-            control::request_close,
-            control::close,
-            control::retry_close
-        ))
-        .routes(routes!(
-            control::request_read_close,
-            control::read_close,
-            control::retry_read_close
-        ))
-        .routes(routes!(
-            read_routes::open,
-            read_routes::header,
-            read_routes::text,
-            read_routes::entries,
-            read_routes::entity
-        ))
-        .routes(routes!(
-            read_routes::lookup_template,
-            read_routes::templates,
-            read_routes::catalogs,
-            read_routes::models
-        ))
-        .routes(routes!(
-            read_routes::type_support,
-            read_routes::type_exclusions,
-            read_routes::connection_modes
-        ))
-        .routes(routes!(
-            read_routes::input_capabilities,
-            read_routes::input_sources,
-            read_routes::modalities
-        ))
-        .routes(routes!(read_routes::price_tiers, read_routes::strings))
+        // 每个 handler 各自声明自己的 path/method：`routes!` 只产生一个 MethodRouter，
+        // 多个同 method 的 handler 放进同一次调用会在装配期重复登记 POST。
+        .routes(routes!(control::ack))
+        .routes(routes!(control::request_close))
+        .routes(routes!(control::close))
+        .routes(routes!(control::retry_close))
+        .routes(routes!(control::request_read_close))
+        .routes(routes!(control::read_close))
+        .routes(routes!(control::retry_read_close))
+        .routes(routes!(read_routes::open))
+        .routes(routes!(read_routes::header))
+        .routes(routes!(read_routes::text))
+        .routes(routes!(read_routes::entries))
+        .routes(routes!(read_routes::entity))
+        .routes(routes!(read_routes::lookup_template))
+        .routes(routes!(read_routes::templates))
+        .routes(routes!(read_routes::catalogs))
+        .routes(routes!(read_routes::models))
+        .routes(routes!(read_routes::type_support))
+        .routes(routes!(read_routes::type_exclusions))
+        .routes(routes!(read_routes::connection_modes))
+        .routes(routes!(read_routes::input_capabilities))
+        .routes(routes!(read_routes::input_sources))
+        .routes(routes!(read_routes::modalities))
+        .routes(routes!(read_routes::price_tiers))
+        .routes(routes!(read_routes::strings))
 }
 
 #[utoipa::path(post, path = "/api/v1/products/account-templates/events", operation_id = "templates.events", request_body = EmptyRequest,

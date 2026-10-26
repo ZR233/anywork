@@ -1,4 +1,6 @@
 mod account_usage;
+mod acp_auto_install;
+mod acp_support;
 mod bots_fixture;
 mod context_replay_recovery;
 mod delegation;
@@ -46,7 +48,10 @@ pub(crate) struct ManualGuiOptions {
     /// history-writer, history-fault retry/resume, plan shutdown/restart
     /// recovery (`plan-recovery`), or the 30-second application shutdown
     /// acceptance journey (`shutdown`), or the wait/sleep/child observation
-    /// journey (`wait-events`).
+    /// journey (`wait-events`), or the fixed Antigravity 1.4.1 install / save /
+    /// authenticate journey (`acp-auto-install`), which drives the controlled
+    /// distribution peer and a fake ACP Agent through the real product bridge and
+    /// needs no HTTP provider fixture.
     #[arg(long, default_value = "gui", value_parser = pl_provider_fixture::GUI_SCENARIOS)]
     pub(crate) scenario: String,
     /// Directory for sanitized evidence (defaults to target/manual-gui/<timestamp>-<pid>).
@@ -105,6 +110,17 @@ pub(crate) struct ManualGuiOptions {
     /// Requires `--scenario gui` and a Linux debug native environment.
     #[arg(long)]
     pub(crate) bots_fixture: bool,
+    /// Start point for the ACP auto-install acceptance.
+    ///
+    /// Omitting the flag keeps the default `first` (all eight frozen phases). The
+    /// explicit flag must name its start point: `cancel` runs only
+    /// `cancel/retry/reuse/faults-unsafe-zip` in a fresh isolated environment, and
+    /// `first` states the full run explicitly. A bare flag is rejected instead of
+    /// defaulting, so an accidental full or partial run cannot happen by typo. No
+    /// other phase can be a start point and no phase is skipped inside a selected
+    /// group. Only valid with `--scenario acp-auto-install`.
+    #[arg(long, value_name = "PHASE", value_parser = ["first", "cancel"])]
+    pub(crate) acp_install_from: Option<String>,
     /// Optional session-owned Dart Driver for the dedicated delegation scenes.
     /// Arguments: VM URL, project, phase evidence directory, environment, phase,
     /// fixture origin. It must not shut down the application; the harness does.
@@ -545,7 +561,69 @@ impl OwnedProcess {
     }
 
     fn exited(&mut self) -> Result<bool> {
-        Ok(self.child.try_wait()?.is_some())
+        Ok(self.exit_status()?.is_some())
+    }
+
+    /// Reads the real exit status once, if this child already ended.
+    ///
+    /// A failed startup must report how the child ended instead of the generic
+    /// "exited" wording, so the operator sees the peer's own exit status even when
+    /// its output was written to a log file.
+    fn exit_status(&mut self) -> Result<Option<std::process::ExitStatus>> {
+        Ok(self.child.try_wait()?)
+    }
+
+    /// Marks this owner as already reaped after the caller independently proved
+    /// its whole process tree is gone, so `Drop` does not signal a process group
+    /// that may already belong to another process.
+    fn mark_reaped(&mut self) {
+        self.stopped = true;
+    }
+
+    /// Delivers one stop request to this owner's process group without escalating.
+    ///
+    /// The `--native-launch` launcher runs a supervisor that handles SIGTERM
+    /// (`ctrlc` with the `termination` feature): it cancels its own children,
+    /// reclaims them and still reports the real native outcome. Killing the group
+    /// would take that responsibility away from the supervisor, so this owner
+    /// accepts only stop requests; waiting for the real exit belongs to the caller.
+    fn request_stop(&self) -> bool {
+        #[cfg(unix)]
+        {
+            Command::new("kill")
+                .arg("-TERM")
+                .arg("--")
+                .arg(format!("-{}", self.child.id()))
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .is_ok_and(|status| status.success())
+        }
+        #[cfg(windows)]
+        {
+            // The launcher is not created as its own console process group here, so
+            // no portable stop request can be addressed to it. The caller records
+            // that the request was unavailable instead of pretending it was sent.
+            false
+        }
+    }
+
+    /// Waits, bounded, for this owner to exit on its own, then reaps it.
+    ///
+    /// `Ok(None)` means it was still running at the deadline; the caller keeps
+    /// ownership and decides the next step instead of dropping a live tree.
+    fn wait_exit(&mut self, timeout: Duration) -> Result<Option<std::process::ExitStatus>> {
+        let deadline = Instant::now() + timeout;
+        loop {
+            if let Some(status) = self.child.try_wait()? {
+                self.stopped = true;
+                return Ok(Some(status));
+            }
+            if Instant::now() >= deadline {
+                return Ok(None);
+            }
+            thread::sleep(Duration::from_millis(100));
+        }
     }
 
     fn terminate(&mut self) {
@@ -713,6 +791,7 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
                     | "timeline-history"
                     | "stress-body-large"
                     | "wait-events"
+                    | "acp-auto-install"
                     | "delegation-routing"
                     | "delegation-lifecycle"
                     | "delegation-window"
@@ -720,11 +799,15 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
                     | "delegation-recovery"
             ),
         "--retain-environment is supported by --scenario gui, single-instance, tool-scroll, \
-         timeline-history, stress-body-large, wait-events and delegation scenes"
+         timeline-history, stress-body-large, wait-events, acp-auto-install and the delegation scenes"
     );
     ensure!(
         !options.timeline_displacement || options.scenario == "timeline-history",
         "--timeline-displacement requires --scenario timeline-history"
+    );
+    ensure!(
+        options.acp_install_from.is_none() || options.scenario == "acp-auto-install",
+        "--acp-install-from is supported only by --scenario acp-auto-install"
     );
     ensure!(
         options.startup_fault.is_none() || options.scenario == "gui",
@@ -808,6 +891,7 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
             | "timeline-history"
             | "skill-activity"
             | "wait-events"
+            | "acp-auto-install"
     ) && !options.model_catalog_restart
         && !options.model_catalog_restart_check
         && options.delegation_driver.is_none()
@@ -863,6 +947,50 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
         .context("failed to create isolated GUI home")?;
     let home = working.path().join("home");
     fs::create_dir(&home)?;
+
+    // The 1.4.1 journey needs no HTTP model step: it drives the fixed distribution
+    // peer, the real managed install chain and the real ACP handshake instead, so
+    // the model fixture is never started and cannot be reported as accepted.
+    if options.scenario == "acp-auto-install" {
+        let start = match options.acp_install_from.as_deref() {
+            None | Some("first") => acp_auto_install::StartPhase::First,
+            Some("cancel") => acp_auto_install::StartPhase::Cancel,
+            Some(other) => bail!("unsupported --acp-install-from value `{other}`"),
+        };
+        let result = acp_auto_install::run(&acp_auto_install::AcpAutoInstallScenario {
+            workspace: &workspace,
+            app_dir: &app_dir,
+            home: &home,
+            working: working.path(),
+            output: &output,
+            fixture_program: &fixture_executable,
+            retain_environment: options.retain_environment,
+            start,
+            interrupt: &interrupt_rx,
+        });
+        if result.is_ok() {
+            if options.retain_environment {
+                keep_isolated_environment(working, &home, &output, None)?;
+            }
+            return Ok(());
+        }
+        let error = result.expect_err("the ACP install journey reported an error");
+        // A failure must keep its own evidence: this directory holds the peer's real
+        // stdout/stderr, the control document it consumed, its ready/report/requests
+        // files and whatever the lifecycle started. Dropping the TempDir would delete
+        // the only record of why it failed, so the site is retained (0700) inside the
+        // evidence directory together with a redacted summary.
+        return match acp_auto_install::preserve_failure(working, &output, &error) {
+            Ok(summary) => Err(error.context(format!(
+                "the isolated ACP environment was retained as local evidence: {}",
+                summary.display()
+            ))),
+            Err(preserve) => Err(error.context(format!(
+                "the isolated ACP environment could not be retained: {preserve:#}"
+            ))),
+        };
+    }
+
     let ready_file = working.path().join("fixture-ready.json");
     let requests_file = working.path().join("requests.json");
     let stress_report_file = working.path().join("stress-report.json");
@@ -3416,25 +3544,7 @@ fn wait_for_vm(
     let deadline = Instant::now() + Duration::from_secs(600);
     loop {
         let log = fs::read_to_string(path)?;
-        if let Some(url) = log
-            .lines()
-            .filter_map(|line| {
-                // The Flutter launch tool prints `available at:`; a directly
-                // launched debug/profile artifact prints the engine's own
-                // `The Dart VM service is listening on`. Either is the real VM
-                // service for the running host.
-                line.split("available at: http://127.0.0.1:")
-                    .nth(1)
-                    .or_else(|| line.split("listening on http://127.0.0.1:").nth(1))
-                    .map(|tail| {
-                        format!(
-                            "http://127.0.0.1:{}",
-                            tail.split_whitespace().next().unwrap_or("")
-                        )
-                    })
-            })
-            .next_back()
-        {
+        if let Some(url) = vm_service_url(&log) {
             return Ok(url);
         }
         ensure!(!gui.exited()?, "GUI exited before publishing VM service");
@@ -3452,6 +3562,27 @@ fn wait_for_vm(
         );
         thread::sleep(Duration::from_millis(300));
     }
+}
+
+/// Extracts the VM service URL a GUI launcher published in its log.
+///
+/// The Flutter launch tool prints `available at:`; a directly launched
+/// debug/profile artifact prints the engine's own `The Dart VM service is
+/// listening on`. Either is the real VM service for the running host.
+fn vm_service_url(log: &str) -> Option<String> {
+    log.lines()
+        .filter_map(|line| {
+            line.split("available at: http://127.0.0.1:")
+                .nth(1)
+                .or_else(|| line.split("listening on http://127.0.0.1:").nth(1))
+                .map(|tail| {
+                    format!(
+                        "http://127.0.0.1:{}",
+                        tail.split_whitespace().next().unwrap_or("")
+                    )
+                })
+        })
+        .next_back()
 }
 
 fn seed_startup_fault(home: &Path, fault: &str) -> Result<()> {

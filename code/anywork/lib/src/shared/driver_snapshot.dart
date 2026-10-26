@@ -1,3 +1,4 @@
+import 'package:anywork_client/acp.dart';
 import 'package:anywork_client/configuration.dart';
 import 'package:anywork_client/conversation.dart';
 import 'package:anywork_client/drafts.dart';
@@ -46,6 +47,10 @@ final class DriverSnapshot {
     required this.status,
     required this.plan,
     required this.bots,
+    this.acpAuth,
+    this.acpInstall,
+    this.acpAccounts,
+    this.templates,
   }) : directory = directory == null ? null : List.unmodifiable(directory),
        agents = agents == null ? null : List.unmodifiable(agents),
        operations = List.unmodifiable(operations);
@@ -78,6 +83,31 @@ final class DriverSnapshot {
   final ThreadStatusViewState? status;
   final PlanViewState? plan;
   final DriverBotsObservation bots;
+
+  /// `acpAuth` 的 canonical 镜像；`null` 表示本 graph 尚未加载该领域。
+  ///
+  /// 只借用既有 `AcpAuthRepository.state` 的当前值：投影不订阅、不
+  /// `synchronize()`、不启动检查，也不把空快照当成“已全部未检查”的已加载事实。
+  /// 默认 `null` 让只关心其它事实的调用方不必伪造 ACP 事实，而不是提供一个
+  /// “已加载的空观察”占位。
+  final AcpAuthSnapshot? acpAuth;
+
+  /// `acpInstall` 的 canonical 镜像；`null` 表示尚未加载。
+  ///
+  /// 与 [acpAuth] 分属两个独立资源：准备事实不能替代认证事实，`null` 也不是
+  /// “全部未准备”的成功结果。阶段与失败类别都留在 typed 状态里，本层不复制判定。
+  final AcpInstallSnapshot? acpInstall;
+
+  /// Settings canonical 快照里的 ACP 接入目录；`null` 表示尚未读到该事实。
+  ///
+  /// ACP 账号不在 `ConfigurationState.accounts` 里，只能由设置页既有的有界读取供出；
+  /// Driver 只借用已挂载 owner 的结果，不发起新读取、不维护第二份目录。
+  final AcpAccountDirectory? acpAccounts;
+
+  /// 已加载的 Native 账号模板目录；`null` 表示尚未读取。
+  ///
+  /// 只用于“Native 表单仍可用”的对照，Driver 不自行请求模板目录。
+  final AccountTemplatesValue? templates;
 }
 
 /// The Bots adapter will consume `anywork_client/bots.dart` only after its

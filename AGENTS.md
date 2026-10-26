@@ -38,6 +38,36 @@
 - 用户可见缺陷优先使用 `fix`，新能力优先使用 `feat`；破坏性变更使用 `!` 或 `BREAKING CHANGE` footer。
 - squash 合并前同时检查 PR 标题和实际 commit subject，确保最终提交可被 Release Please 解析。
 
+### PR 截图证据与附件
+
+- 涉及界面设计或功能修改的 PR，正文必须嵌入与本次改动直接相关的真实截图证据，并说明截图来源、场景、平台及实际覆盖范围。界面变更使用实际运行截图，按需提供同窗口尺寸的前后对照；纯文档变更不要求截图，也不为凑截图运行无关产品 GUI 或全量测试。
+- 截图必须通过 GitHub 附件等已授权渠道上传，不能只放本地路径、文字日志或 PR 评论来替代正文中的图片；不得用示意图、生成图或其他版本的截图冒充本次验证。上传前检查并遮蔽凭据、个人信息等敏感内容，必要遮蔽须说明，不能改动验证结果。
+- 截图、预览文件和上传中间产物遵循下文“会话文件与交付位置”，不得放入源码、Git 提交或长期 Skill 资产；已有工具的固定产物入口保持不变。提交前检查暂存区与 PR 差异，不为隐藏截图修改仓库或全局忽略规则。
+
+#### 使用 GitHub CLI 添加附件
+
+先运行 `gh --version`、`gh pr create --help` 和 `gh pr edit --help`，核对当前版本的 `--attach` 能力与行为，不凭旧版本经验断言 CLI 无法上传。以下示例在本会话 `artifacts` 目录执行；`OWNER/REPO`、`BASE`、`BRANCH`、`PR_NUMBER`、标题与文件名均替换为实际值。
+
+```sh
+# 创建 PR，同时上传截图；重复 --attach 可添加多张图片。
+gh pr create --repo OWNER/REPO --base BASE --head BRANCH --title "fix(studio): 描述本次改动" --body-file pr-body.md --attach "./after.png#改动后"
+
+# 给已有 PR 追加截图；不传正文参数时保留原正文。
+gh pr edit PR_NUMBER --repo OWNER/REPO --attach "./after.png#改动后"
+
+# 上传后回读实际正文，确认图片引用已替换为附件 URL。
+gh pr view PR_NUMBER --repo OWNER/REPO --json body --jq .body
+```
+
+- 需要指定图片位置时，在 `pr-body.md` 中写入 `![改动后](./after.png)`，并通过 `--attach` 上传同一文件；CLI 会把对应本地引用改为上传后的附件 URL，保留正文中的替代文本。未在正文引用的附件会追加到正文末尾；`#改动后` 是附件未被正文引用时的图片替代文本，不是文件名的一部分。
+- `--body-file` 内的相对图片路径优先相对于正文文件所在目录解析，再回退到命令工作目录；`--attach` 的相对文件路径相对于命令工作目录。不要把本机绝对路径或尚未上传的相对路径当作可交付图片链接。
+- 更新已有 PR 的正文前，先读取最新远端正文，保留其已有修改和附件 URL，再使用 `--body-file` 提交；不要用上传前还带本地图片路径的旧正文覆盖已上传版本。
+- 部分附件上传失败时，PR 仍可能已创建或更新，CLI 会输出 PR URL 并以非零状态退出。先核对该 PR 和已成功附件，再对缺失部分用 `gh pr edit --attach` 补传，不因退出码非零直接重复创建 PR。
+- 若当前 CLI 不支持附件，按环境权限升级到支持版本，或在 GitHub 网页 PR 正文编辑器中拖拽、粘贴、选择图片上传并保存。额外图床、图片仓库或 Release 需要单独授权，不以提交图片到源码或伪造附件 URL 绕过限制；无法上传时如实报告阻塞。
+- 上传成功后，回读 PR 正文并打开或下载实际图片，确认可访问、内容与本次截图一致，且无遗漏或重复。仅命令退出成功不足以证明证据交付完成；截图也不能替代正文中的验证命令、结果与未覆盖项。
+
+命令行为以当前 CLI 帮助及官方手册 [gh pr create](https://cli.github.com/manual/gh_pr_create)、[gh pr edit](https://cli.github.com/manual/gh_pr_edit) 为准。
+
 ### Studio 发版决策
 
 - 自动版本计算统一递增 minor，`fix:` 也不自动递增 patch；`!` / `BREAKING CHANGE:`

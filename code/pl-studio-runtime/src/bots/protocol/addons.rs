@@ -31,8 +31,8 @@ struct RegistrationEventItems<'a> {
 }
 
 /// 首版最小权限模板：`preset:false` + 应用身份 tenant scopes。
-/// 覆盖发送、单聊/群提及接收、会话目录与按需历史；不申请通用 `im:message`
-/// 或读取全部群消息。
+/// 保留既有发送、单聊/群提及接收、会话目录、按需历史与资源读取权限，
+/// 仅新增 CardKit 写入；不申请通用 `im:message` 或读取全部群消息。
 const TENANT_SCOPES: &[&str] = &[
     "im:message:send_as_bot",
     "im:message.p2p_msg:readonly",
@@ -40,6 +40,7 @@ const TENANT_SCOPES: &[&str] = &[
     "im:chat:readonly",
     "im:message:readonly",
     "im:resource",
+    "cardkit:card:write",
 ];
 const TENANT_EVENTS: &[&str] = &["im.message.receive_v1"];
 

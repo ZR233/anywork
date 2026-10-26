@@ -23,6 +23,12 @@ enum ProductResource {
   persistenceQueue,
   updates,
   bots,
+
+  /// ACP 认证观察的独立版本域（`acpAuth` topic）。
+  acpAuth,
+
+  /// ACP 受管安装的独立版本域（`acpInstall` topic）。
+  acpInstall,
 }
 
 enum ProductResyncReason { sourceLagged, reliableQueueFull, revisionGap }

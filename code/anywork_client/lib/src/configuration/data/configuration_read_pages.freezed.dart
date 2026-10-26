@@ -1194,6 +1194,195 @@ case _:
 }
 
 /// @nodoc
+mixin _$AcpAccountConfigurationReadPage {
+
+
+/// Create a copy of AcpAccountConfigurationReadPage
+/// with the given fields replaced by the non-null parameter values.
+@JsonKey(includeFromJson: false, includeToJson: false)
+@pragma('vm:prefer-inline')
+$AcpAccountConfigurationReadPageCopyWith<AcpAccountConfigurationReadPage> get copyWith => _$AcpAccountConfigurationReadPageCopyWithImpl<AcpAccountConfigurationReadPage>(this as AcpAccountConfigurationReadPage, _$identity);
+
+
+
+@override
+bool operator ==(Object other) {
+  final _this = this as AcpAccountConfigurationReadPage;
+  return identical(this, other) || (other.runtimeType == runtimeType&&other is AcpAccountConfigurationReadPage&&(identical(other.listId, _this.listId) || other.listId == _this.listId)&&(identical(other.offset, _this.offset) || other.offset == _this.offset)&&(identical(other.total, _this.total) || other.total == _this.total)&&const DeepCollectionEquality().equals(other.items, _this.items)&&(identical(other.nextOffset, _this.nextOffset) || other.nextOffset == _this.nextOffset));
+}
+
+
+@override
+int get hashCode {
+  final _this = this as AcpAccountConfigurationReadPage;
+  return Object.hash(runtimeType,_this.listId,_this.offset,_this.total,const DeepCollectionEquality().hash(_this.items),_this.nextOffset);
+}
+
+
+
+}
+
+/// @nodoc
+abstract mixin class $AcpAccountConfigurationReadPageCopyWith<$Res>  {
+  factory $AcpAccountConfigurationReadPageCopyWith(AcpAccountConfigurationReadPage value, $Res Function(AcpAccountConfigurationReadPage) _then) = _$AcpAccountConfigurationReadPageCopyWithImpl;
+@useResult
+$Res call({
+ int listId, int offset, int total, List<AcpAccountConfigurationRead> items, int? nextOffset
+});
+
+
+
+
+}
+/// @nodoc
+class _$AcpAccountConfigurationReadPageCopyWithImpl<$Res>
+    implements $AcpAccountConfigurationReadPageCopyWith<$Res> {
+  _$AcpAccountConfigurationReadPageCopyWithImpl(this._self, this._then);
+
+  final AcpAccountConfigurationReadPage _self;
+  final $Res Function(AcpAccountConfigurationReadPage) _then;
+
+/// Create a copy of AcpAccountConfigurationReadPage
+/// with the given fields replaced by the non-null parameter values.
+@pragma('vm:prefer-inline') @override $Res call({Object? listId = null,Object? offset = null,Object? total = null,Object? items = null,Object? nextOffset = freezed,}) {
+  return _then(AcpAccountConfigurationReadPage(
+listId: null == listId ? _self.listId : listId // ignore: cast_nullable_to_non_nullable
+as int,offset: null == offset ? _self.offset : offset // ignore: cast_nullable_to_non_nullable
+as int,total: null == total ? _self.total : total // ignore: cast_nullable_to_non_nullable
+as int,items: null == items ? _self.items : items // ignore: cast_nullable_to_non_nullable
+as List<AcpAccountConfigurationRead>,nextOffset: freezed == nextOffset ? _self.nextOffset : nextOffset // ignore: cast_nullable_to_non_nullable
+as int?,
+  ));
+}
+
+}
+
+
+/// Adds pattern-matching-related methods to [AcpAccountConfigurationReadPage].
+extension AcpAccountConfigurationReadPagePatterns on AcpAccountConfigurationReadPage {
+/// A variant of `map` that fallback to returning `orElse`.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case _:
+///     return orElse();
+/// }
+/// ```
+
+@optionalTypeArgs TResult maybeMap<TResult extends Object?>({required TResult orElse(),}){
+final _that = this;
+switch (_that) {
+case _:
+  return orElse();
+
+}
+}
+/// A `switch`-like method, using callbacks.
+///
+/// Callbacks receives the raw object, upcasted.
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case final Subclass2 value:
+///     return ...;
+/// }
+/// ```
+
+@optionalTypeArgs TResult map<TResult extends Object?>(){
+final _that = this;
+switch (_that) {
+case _:
+  throw StateError('Unexpected subclass');
+
+}
+}
+/// A variant of `map` that fallback to returning `null`.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case _:
+///     return null;
+/// }
+/// ```
+
+@optionalTypeArgs TResult? mapOrNull<TResult extends Object?>(){
+final _that = this;
+switch (_that) {
+case _:
+  return null;
+
+}
+}
+/// A variant of `when` that fallback to an `orElse` callback.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case _:
+///     return orElse();
+/// }
+/// ```
+
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({required TResult orElse(),}) {final _that = this;
+switch (_that) {
+case _:
+  return orElse();
+
+}
+}
+/// A `switch`-like method, using callbacks.
+///
+/// As opposed to `map`, this offers destructuring.
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case Subclass2(:final field2):
+///     return ...;
+/// }
+/// ```
+
+@optionalTypeArgs TResult when<TResult extends Object?>() {final _that = this;
+switch (_that) {
+case _:
+  throw StateError('Unexpected subclass');
+
+}
+}
+/// A variant of `when` that fallback to returning `null`
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case _:
+///     return null;
+/// }
+/// ```
+
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>() {final _that = this;
+switch (_that) {
+case _:
+  return null;
+
+}
+}
+
+}
+
+/// @nodoc
 mixin _$CustomModelConfigurationReadPage {
 
 

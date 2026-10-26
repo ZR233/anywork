@@ -1,3 +1,5 @@
+import 'package:anywork_client/configuration.dart';
+import 'package:anywork_client/models.dart';
 import 'package:anywork_client/resources.dart';
 import 'package:anywork_client/workspace.dart';
 
@@ -24,6 +26,8 @@ final class DriverViewFacts {
     this.conversation,
     this.status,
     this.plan,
+    this.acpAccounts,
+    this.templates,
   });
   final WorkspaceViewState? workspace;
   final SidebarViewState? sidebar;
@@ -32,6 +36,15 @@ final class DriverViewFacts {
   final ConversationViewState? conversation;
   final ThreadStatusViewState? status;
   final PlanViewState? plan;
+
+  /// ACP 接入目录的 canonical 读取结果；`null` 表示设置页还没有读到该事实。
+  ///
+  /// 传具体 domain 值而不传 feature 私有的 ViewState：`shared` 诊断只消费
+  /// `anywork_client` 的领域值，不反向依赖 feature 的私有呈现状态。
+  final AcpAccountDirectory? acpAccounts;
+
+  /// Native 账号模板目录；`null` 表示还没有读到。
+  final AccountTemplatesValue? templates;
 }
 
 /// Synchronous request-local capture of this graph's canonical mirrors.
@@ -42,6 +55,7 @@ DriverSnapshot captureDriverSnapshot(
   required DriverBotsObservation bots,
 }) {
   final selection = graph.workspace.state.value.selection;
+  final configurationState = graph.configuration.state.value;
   final selected = selection.threadId;
   final active = graph.conversation.active.value;
   final session = !selection.needsOpen && active?.threadId == selected
@@ -113,7 +127,7 @@ DriverSnapshot captureDriverSnapshot(
                 ComposerKey.thread(threadId: session.threadId)
         ? visible.threadComposer?.draft
         : null,
-    configuration: graph.configuration.state.value,
+    configuration: configurationState,
     models: graph.models.state.value,
     operations: graph.operations.records.value,
     persistence: graph.persistence.state.value,
@@ -146,7 +160,44 @@ DriverSnapshot captureDriverSnapshot(
         ? visible.plan
         : null,
     bots: bots,
+    // ACP 事实借自已装配的 owner 的 canonical 镜像：`ReadonlyLatestValue.value`
+    // 是同步读取，不注册观察者、不占预算 permit、不触发 `synchronize()`，因此
+    // Driver 请求不会改变业务 demand，也不会让未加载的领域变成“已加载空集合”。
+    acpAuth: graph.acpAuth.state.value.canonical,
+    acpInstall: graph.acpInstall.state.value.canonical,
+    // ACP 账号与 Native 模板只能来自设置页既有的有界读取结果：这两项不在
+    // ConfigurationState 里，Driver 借用调用方已取得的当前值，不新建 demand。
+    // 借用来的目录必须仍是**当前** Settings 快照的读取结果：来源 owner、材料引用
+    // 与业务版本三键一致才算 current，否则宁可 null，也不输出上一次 refresh 的
+    // last-good 目录。
+    acpAccounts: currentAcpAccounts(visible.acpAccounts, configurationState),
+    templates: visible.templates,
   );
+}
+
+/// ACP 接入目录只有在仍属于**当前** Settings 快照时才允许作为 current 事实。
+///
+/// 三键必须同时成立：读取来源 owner（[AcpAccountDirectory.origin]，ownerEpoch +
+/// incarnation）、材料引用（[AcpAccountDirectory.reference]）与 Settings 业务版本
+/// （[ConfigurationHeader.configurationRevision]）。任一缺失或不一致都返回 null：
+/// 不能把上一次成功读取的 last-good 目录当成当前事实，也不为未加载的领域伪造
+/// 空目录。与 [currentDriverRead] 同一判定风格，只在这里定义一次，不复制第二套算法。
+AcpAccountDirectory? currentAcpAccounts(
+  AcpAccountDirectory? directory,
+  ConfigurationState configuration,
+) {
+  if (directory == null) return null;
+  final projection = configuration.projection;
+  if (projection.sync.phase != ResourceSyncPhase.ready) return null;
+  final origin = projection.stamp?.origin;
+  final header = projection.header;
+  if (origin == null || header == null) return null;
+  if (directory.origin != origin) return null;
+  final reference = header.reference;
+  if (reference == null || directory.reference != reference) return null;
+  final revision = header.configurationRevision;
+  if (revision == null || directory.revision != revision) return null;
+  return directory;
 }
 
 /// Never promote `previous` material to current evidence. Callers additionally

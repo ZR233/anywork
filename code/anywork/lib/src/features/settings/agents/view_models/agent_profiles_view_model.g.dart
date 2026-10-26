@@ -35,7 +35,7 @@ final class AgentProfilesViewModelProvider
 }
 
 String _$agentProfilesViewModelHash() =>
-    r'20fd0386517687935b022c054709431fca4ea900';
+    r'3930cdf08fe42a672f0b441ab4f24cff95d5ca85';
 
 abstract class _$AgentProfilesViewModel
     extends $AsyncNotifier<AgentProfilesViewState> {

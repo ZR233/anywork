@@ -101,7 +101,7 @@ impl SkillCatalogRuntime {
             self.registry.discover(request).await?
         };
         anyhow::ensure!(
-            catalog.snapshot().warnings.is_empty(),
+            catalog.snapshot().complete,
             "Skill directory discovery is incomplete: {}",
             catalog.snapshot().warnings.join("; ")
         );

@@ -1,7 +1,5 @@
 import 'dart:async';
 
-import 'package:anywork_client/account_usage.dart'
-    show LocalModelPerformanceSummary;
 import 'package:anywork_client/configuration_ports.dart';
 import 'package:anywork_client/models_ports.dart';
 import 'package:anywork_client/resources_ports.dart';

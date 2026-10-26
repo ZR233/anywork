@@ -18,7 +18,7 @@ part 'shell_chrome_view_model.g.dart';
 class ShellChromeViewModel extends _$ShellChromeViewModel {
   late WorkspaceRepository _workspace;
   late ConfigurationRepository _configuration;
-  late StatisticsRepository _statistics;
+  late SessionCostsRepository _sessionCosts;
   late ConversationRepository _conversations;
   final List<Observation> _observations = [];
   final Map<String, Object> _reads = {};
@@ -36,7 +36,7 @@ class ShellChromeViewModel extends _$ShellChromeViewModel {
     _lifetime = lifetime;
     _workspace = ref.watch(workspaceRepositoryProvider);
     _configuration = ref.watch(configurationRepositoryProvider);
-    _statistics = ref.watch(statisticsRepositoryProvider);
+    _sessionCosts = ref.watch(sessionCostsRepositoryProvider);
     _conversations = ref.watch(conversationRepositoryProvider);
     ref.onDispose(() => _dispose(lifetime));
     try {
@@ -237,7 +237,7 @@ class ShellChromeViewModel extends _$ShellChromeViewModel {
     _attempts[key] = borrowed;
     SessionCostsQuery? query;
     try {
-      query = _statistics.costs(borrowed.id);
+      query = _sessionCosts.costs(borrowed.id);
       if (!_current(lifetime) || !identical(_root, borrowed)) {
         _closeCosts(query);
         return;

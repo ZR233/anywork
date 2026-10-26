@@ -12,6 +12,7 @@ use pl_protocol::studio::{StudioError, StudioErrorCode};
 use pl_studio_runtime::configuration::ConfigurationCallResult;
 use tokio::sync::{Notify, watch};
 
+use super::configuration_acp_commands::BridgeAcpAccountCommandOutcome;
 use super::configuration_commands::BridgeConfigurationCommandOutcome;
 use super::profile_commands::{BridgeConfigurationReloadOutcome, BridgeProfileCommandOutcome};
 use crate::api::studio::bridge_runtime::BridgeRuntime;
@@ -28,6 +29,7 @@ pub(super) enum BridgeCallOutcome {
     Configuration(BridgeConfigurationCommandOutcome),
     Profile(BridgeProfileCommandOutcome),
     Reload(BridgeConfigurationReloadOutcome),
+    AcpAccount(BridgeAcpAccountCommandOutcome),
 }
 impl From<ConfigurationCallOutcome> for BridgeCallOutcome {
     fn from(outcome: ConfigurationCallOutcome) -> Self {
@@ -35,6 +37,7 @@ impl From<ConfigurationCallOutcome> for BridgeCallOutcome {
             ConfigurationCallOutcome::Configuration(value) => Self::Configuration(value.into()),
             ConfigurationCallOutcome::Profile(value) => Self::Profile(value.into()),
             ConfigurationCallOutcome::Reload(value) => Self::Reload(value.into()),
+            ConfigurationCallOutcome::AcpAccount(value) => Self::AcpAccount(value.into()),
         }
     }
 }
@@ -296,6 +299,12 @@ impl CommandOwner {
             }
             ConfigurationCallKind::Reload => {
                 BridgeCallOutcome::Reload(BridgeConfigurationReloadOutcome::Rejected {
+                    operation_id,
+                    error,
+                })
+            }
+            ConfigurationCallKind::AcpAccount => {
+                BridgeCallOutcome::AcpAccount(BridgeAcpAccountCommandOutcome::Rejected {
                     operation_id,
                     error,
                 })

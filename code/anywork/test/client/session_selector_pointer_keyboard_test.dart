@@ -24,32 +24,32 @@ void main() {
         final selected = <ThreadModeId>[];
         await tester.pumpWidget(
           MaterialApp(
-              theme: ThemeData(platform: TargetPlatform.linux),
-              locale: const Locale('en'),
-              localizationsDelegates: AppLocalizations.localizationsDelegates,
-              supportedLocales: AppLocalizations.supportedLocales,
-              home: Scaffold(
-                body: Column(
-                  children: [
-                    TextField(
-                      key: StudioDriverKeys.composerInput,
-                      controller: text,
-                      focusNode: inputFocus,
-                    ),
-                    ModeSelector(
-                      modes: selectorModes,
-                      selected: ThreadModeId.simple,
-                      onSelected: selected.add,
-                    ),
-                    TextButton(
-                      focusNode: afterFocus,
-                      onPressed: () {},
-                      child: const Text('After selector'),
-                    ),
-                  ],
-                ),
+            theme: ThemeData(platform: TargetPlatform.linux),
+            locale: const Locale('en'),
+            localizationsDelegates: AppLocalizations.localizationsDelegates,
+            supportedLocales: AppLocalizations.supportedLocales,
+            home: Scaffold(
+              body: Column(
+                children: [
+                  TextField(
+                    key: StudioDriverKeys.composerInput,
+                    controller: text,
+                    focusNode: inputFocus,
+                  ),
+                  ModeSelector(
+                    modes: selectorModes,
+                    selected: ThreadModeId.simple,
+                    onSelected: selected.add,
+                  ),
+                  TextButton(
+                    focusNode: afterFocus,
+                    onPressed: () {},
+                    child: const Text('After selector'),
+                  ),
+                ],
               ),
             ),
+          ),
         );
         final mouse = await tester.createGesture(kind: PointerDeviceKind.mouse);
         addTearDown(mouse.removePointer);

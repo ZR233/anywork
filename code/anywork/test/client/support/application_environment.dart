@@ -4,6 +4,7 @@ import 'package:anywork/src/app/app_graph.dart';
 import 'package:anywork/src/app/composition/application_container.dart';
 import 'package:anywork/src/app/composition/assemble_application.dart';
 import 'package:anywork/src/app/lifecycle/native_exit_host.dart';
+import 'package:anywork_client/acp_ports.dart';
 import 'package:anywork_client/account_usage_ports.dart';
 import 'package:anywork_client/bots_ports.dart';
 import 'package:anywork_client/lsp_ports.dart';
@@ -12,6 +13,7 @@ import 'package:anywork_client/persistence_ports.dart';
 import 'package:anywork_client/remote_ports.dart';
 import 'package:anywork_client/resources_ports.dart';
 import 'package:anywork_client/skills_ports.dart';
+import 'package:anywork_client/statistics_ports.dart';
 import 'package:anywork_client/updates_ports.dart';
 import 'package:anywork_client/workspace_ports.dart';
 import 'package:flutter/services.dart';
@@ -19,6 +21,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import '../../../../anywork_client/test/support/scripted_feed.dart';
+import '../../../../anywork_client/test/support/acp_port_fixture.dart'
+    show ScriptedAcpPort;
 import 'selector_environment.dart';
 
 /// Real application assembly and all real repositories. Native ports provide
@@ -46,6 +50,10 @@ final class ApplicationTestEnvironment {
       port: _UnusedStatisticsPort(),
       budget: budget,
     );
+    final sessionCosts = createSessionCostsRepository(
+      port: _UnusedSessionCostsPort(),
+      budget: budget,
+    );
     final remote = createRemoteRepository(
       port: _UnusedRemotePort(),
       budget: budget,
@@ -58,6 +66,19 @@ final class ApplicationTestEnvironment {
     );
     final lsp = createLspRepository(
       port: _UnusedLspPort(),
+      budget: budget,
+      operations: operations,
+    );
+    // ACP 认证与安装是两个独立资源。这里用既有的 native 脚本端口装配真实
+    // Repository：本环境不打开订阅、也不发起命令，端口上的读/命令因此不被消费；
+    // 关闭仍走同一退出协调器。
+    final acpAuth = createAcpAuthRepository(
+      port: acpPort,
+      budget: budget,
+      operations: operations,
+    );
+    final acpInstall = createAcpInstallRepository(
+      port: acpPort,
       budget: budget,
       operations: operations,
     );
@@ -88,6 +109,7 @@ final class ApplicationTestEnvironment {
       modes: domains.modes,
       accountUsage: usage,
       statistics: statistics,
+      sessionCosts: sessionCosts,
       workspace: domains.workspace,
       startup: startup,
       conversation: domains.conversations,
@@ -96,6 +118,8 @@ final class ApplicationTestEnvironment {
       remote: remote,
       mcp: mcp,
       lsp: lsp,
+      acpAuth: acpAuth,
+      acpInstall: acpInstall,
       skills: skills,
       bots: bots,
       recovery: domains.recovery,
@@ -116,6 +140,9 @@ final class ApplicationTestEnvironment {
   final domains = SelectorEnvironment();
   final startupPort = ApplicationStartupPort();
   final skillsPort = RecordingSkillsPort();
+  // Tests may answer catalog reads admitted by mounted production owners.
+  // Exposing the scripted port does not start a read or create a second owner.
+  final acpPort = ScriptedAcpPort();
   final lifecycle = ApplicationLifecycleFixture();
   final exitCodes = <int>[];
   final hostFinished = Completer<void>();
@@ -148,7 +175,7 @@ final class ApplicationTestEnvironment {
         .setMockMethodCallHandler(hostChannel, null);
   }
 
-  /// Fixture-only settlement of externally held Start reads. Cancellation is
+  /// Fixture-only settlement of held Start/catalog reads. Cancellation is
   /// not a successful route and cannot create a business acknowledgement.
   void releaseNativeReads() {
     const failure = StudioFailure(
@@ -162,6 +189,9 @@ final class ApplicationTestEnvironment {
       for (final call in pin.calls) {
         if (!call.reply.isCompleted) call.reply.completeError(failure);
       }
+    }
+    for (final read in acpPort.catalogReads) {
+      if (!read.isCompleted) read.completeError(failure);
     }
   }
 }
@@ -261,6 +291,9 @@ final class _UnusedUsagePort extends _UnusedPort implements AccountUsagePort {}
 
 final class _UnusedStatisticsPort extends _UnusedPort
     implements StatisticsPort {}
+
+final class _UnusedSessionCostsPort extends _UnusedPort
+    implements SessionCostsPort {}
 
 final class _UnusedRemotePort extends _UnusedPort implements RemotePort {}
 

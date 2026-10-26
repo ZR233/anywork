@@ -33,6 +33,8 @@ ProductResource productResourceFromBridge(
     ProductResource.persistenceQueue,
   native.BridgeProductResource.updates => ProductResource.updates,
   native.BridgeProductResource.bots => ProductResource.bots,
+  native.BridgeProductResource.acpAuth => ProductResource.acpAuth,
+  native.BridgeProductResource.acpInstall => ProductResource.acpInstall,
 };
 
 ProductFeedIdentity productFeedIdentityFromBridge(

@@ -50,7 +50,10 @@ native.AccountSettingsInput configurationAccountToBridge(
       ),
       ClearAccountSecret() => const native.AccountSecretInput.clear(),
     },
-    pricingEnabled: value.pricingEnabled,
+    // 只有创建意图会携带初始计费类别；SDK 已在编辑路径把它冻结为 null。
+    initialBillingKind: value.initialBillingKind == null
+        ? null
+        : configurationBillingToBridge(value.initialBillingKind!),
     customModels: value.customModels
         .map(
           (model) => native.AccountModelInput(

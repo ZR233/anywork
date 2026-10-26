@@ -28,7 +28,8 @@ AccountEdit accountEdit({
   name: const FieldEdit.keep(),
   baseUrl: const FieldEdit.keep(),
   secret: const AccountSecretUpdate.preserve(),
-  pricingEnabled: const FieldEdit.keep(),
+  // 编辑既有账号不得携带初始计费类别：类别只由 setAccountBillingKind 改写。
+  initialBillingKind: null,
   customModels: models,
   connections: connections,
   autoCompactLimits: limits,
@@ -466,7 +467,6 @@ final class _AccountPin implements ConfigurationReadConnection {
     return ConfigurationEntityRead(
       reference: reference,
       value: AccountConfigurationRead(
-        pricingEnabled: account.pricingEnabled,
         billingKind: account.billingKind,
         billingKindOverride: account.billingKindOverride,
         disabledModels: TypedListRef(

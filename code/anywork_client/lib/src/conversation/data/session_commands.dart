@@ -274,8 +274,6 @@ final class _ConversationCommands {
         operationId: operationId,
         requireIdentityObservation: observe != null,
       );
-      // PROBE
-      print('[C] run begin $target');
       if (retried != null) retried.retryConsumed = true;
       lifetime.register(owner);
       owner.start(previous);
@@ -299,13 +297,7 @@ final class _ConversationCommands {
     String key,
   ) async {
     final revision = _target(owner.receipt!, key).revision;
-    // PROBE
-    print('[C] observe begin $key rev=$revision');
     await owner.waitFor(session.configuration, (state) {
-      // PROBE
-      print(
-        '[C] observe poll phase=${state.sync.phase} route=${state.value?.modelRoute?.revision} mode=${state.value?.modeBindingRevision}',
-      );
       final stamp = state.stamp;
       if (stamp != null && !_sameProjection(stamp, origin))
         throw _submissionSuperseded;
@@ -533,8 +525,6 @@ final class _ConversationCommand<T> extends _ConversationCommandOwner {
             writer!.identityObserved();
           }
         } catch (error, stack) {
-          // PROBE
-          print('[C] fail $target ${error.runtimeType} $error');
           _fail(error, stack);
         } finally {
           actions._dispatchSettled(this);

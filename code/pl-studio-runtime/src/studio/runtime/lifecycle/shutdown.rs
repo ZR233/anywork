@@ -313,8 +313,10 @@ impl ShutdownCollector {
         {
             use super::framework::PersistenceShutdownFailure;
             let (PersistenceShutdownFailure::Drain(error)
+            | PersistenceShutdownFailure::Writers(error)
             | PersistenceShutdownFailure::Flush(error)
-            | PersistenceShutdownFailure::Shutdown(error)) = persistence;
+            | PersistenceShutdownFailure::Shutdown(error)
+            | PersistenceShutdownFailure::History(error)) = persistence;
             self.record_error(stage, stage_elapsed_ms, error);
             return;
         }
@@ -1182,7 +1184,16 @@ impl StudioRuntime {
         background_task::signal(&self.external_runtimes.lsp_state_watcher).await;
         background_task::signal(&self.persistence_observer).await;
         background_task::signal(&self.profiles_forwarder).await;
+        // 统计进度 follower 与其它独立 owner 一样，先广播取消（打断 watch 等待），真正的
+        // 有界 join 在独立资源组完成。
+        background_task::signal(&self.statistics_follower).await;
         self.title_tasks.signal_cancel().await;
+        // ACP 认证操作只接收取消信号：真正的 protocol/进程收束与终态由该 owner 自己的
+        // supervisor 完成，随后在独立阶段有界 join，避免提前释放仍存活的进程。
+        self.acp_auth.signal_cancel();
+        // 官方 server 准备同样只接收取消信号：下载库、校验/解压阻塞任务与发布提交的收束与终态
+        // 由该 owner 自己的 supervisor 完成，随后在独立阶段有界 join。
+        self.acp_install.signal_cancel();
         // 活动 Turn / 模型 / 工具：通过既有的纯取消入口取消每个驻留 Thread 当前执行代次。
         // 这里只发信号，不 join、也不 close——真正的收束仍由后续唯一 `agentFramework` 阶段完成，
         // 因此不会重复 close，也绝不提前释放 writer 或实例锁。先前已封闭准入，取消只是加速在途
@@ -1258,6 +1269,16 @@ impl StudioRuntime {
             retries.clone(),
             |runtime| async move { runtime.close_detail_reads().await },
         ));
+        // Bot 应答 owner 在收束前持 store.history（bots_recovery::bot_input_fact），因此它同样是
+        // 历史读取生产者：必须与其它生产者一起真实停止，写入链才允许进入 persistence 并封印历史
+        // 关闭。它与远端工具无依赖，故不进入 SSH 闸门的判据（见下方 producers_settled 的计算）。
+        producers.push(self.stage_branch(
+            budget,
+            StageId::Bots,
+            Some(SERVICE_STAGE_LIMIT),
+            retries.clone(),
+            |runtime| async move { runtime.bots.shutdown().await.map_err(anyhow::Error::new) },
+        ));
         producers.push(self.stage_branch(
             budget,
             StageId::ModelCatalog,
@@ -1321,6 +1342,24 @@ impl StudioRuntime {
             Some(SERVICE_STAGE_LIMIT),
             retries.clone(),
             |runtime| async move { runtime.stop_tool_refresh().await },
+        ));
+        // ACP 认证操作持有官方 server 进程与管道；取消已广播，这里是有界 join。超时保留 owner
+        // 与 join 句柄，令 `Clean` 不可达并可重试，绝不伪报已回收。
+        remote_dependents.push(self.stage_branch(
+            budget,
+            StageId::AcpAuth,
+            Some(SERVICE_STAGE_LIMIT),
+            retries.clone(),
+            |runtime| async move { runtime.acp_auth.cancel_and_join().await },
+        ));
+        // ACP server 准备持有下载、校验/解压阻塞任务、文件锁与发布提交；取消已广播，这里是有界
+        // join。超时保留 owner 与 join 句柄，令 `Clean` 不可达并可重试。
+        remote_dependents.push(self.stage_branch(
+            budget,
+            StageId::AcpInstall,
+            Some(SERVICE_STAGE_LIMIT),
+            retries.clone(),
+            |runtime| async move { runtime.acp_install.cancel_and_join().await },
         ));
 
         // MCP/LSP 只 join `ensure_service_stops` 已启动的那一次关闭，消费真实 typed 结果；
@@ -1418,6 +1457,17 @@ impl StudioRuntime {
             |runtime| async move { runtime.stop_agent_profiles_forwarder().await },
         ));
 
+        // 统计进度 follower 同样由 runtime 拥有：正常退出与失败路径都必须在同一首次期限内有界
+        // signal + join，失败 / 超时经 collector 记为该次退出的 issue，令 `Clean` 不可达并保留
+        // owner（常驻槽位超时不丢句柄）；不得只靠 `dispose_startup` 或 slot Drop 收束。
+        independent.push(self.stage_branch(
+            budget,
+            StageId::StatisticsFollower,
+            Some(SERVICE_STAGE_LIMIT),
+            retries.clone(),
+            |runtime| async move { runtime.stop_statistics_follower().await },
+        ));
+
         independent.push(self.stage_branch(
             budget,
             StageId::Bots,
@@ -1425,7 +1475,6 @@ impl StudioRuntime {
             retries.clone(),
             |runtime| async move { runtime.bots.shutdown().await.map_err(anyhow::Error::new) },
         ));
-
         // 写入生产者依赖的共享完成信号：写入链只有在生产者真实停止 ACK 后继续持久化；SSH 依赖同一份
         // 生产者事实——远端工具由 Turn / Agent 等生产者驱动，它们未收束时不得先切断 SSH 通信——
         // 但 SSH 只等这条依赖边，不等与它无关的持久化 / 数据库提交。信号载荷刻意区分两件事实：
@@ -1505,7 +1554,13 @@ impl StudioRuntime {
                 // 放行 SSH 依赖闸门并如实携带「实际是否全部成功 ACK」：写入链仍是 outcome 唯一记录方，
                 // 这里只传事实、不复制诊断。成功与有界失败都照样请求 SSH 回收。
                 let producers_settled = outcomes.iter().all(StageOutcome::is_done);
-                let _ = producers_settled_tx.send(producers_settled);
+                // SSH 闸门只表达“远端工具所依赖的生产者已停止”：Bot 应答 owner 只持历史读取，
+                // 不驱动远端工具，因此不延长 SSH 收束；持久化仍要求全部生产者真实停止。
+                let _ = producers_settled_tx.send(
+                    outcomes
+                        .iter()
+                        .all(|outcome| outcome.id == StageId::Bots || outcome.is_done()),
+                );
                 let writer_reclaimed = if producers_settled {
                     // 只在真实已知时发布 pending count；未知不伪造 0。
                     if let Some(pending_before) = pending_before {

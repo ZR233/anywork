@@ -1,17 +1,12 @@
-# 07 - Thread 实时流
+# 07 - 会话线程实时流
 
-产品低频 topic 与作用域见 [18](./18-studio-state.md) §18.2.1；它们与本篇 Thread 状态、
-Timeline 内容源组合，不汇成 GUI 全事件流。选中会话仅观察该 Thread 的状态和内容，
-费用另按所属根会话订阅。切换、离开页面或关闭时先使旧世代失效，再取消并等待释放旧句柄；
-迟到帧不得写入新会话。共享 topic 的最后一个观察者离开即释放订阅。
+产品低频主题与作用域见 [18](./18-studio-state.md) §18.2.1；它们与本篇 Thread 状态、Timeline 内容源组合，不汇成 GUI 全事件流。选中会话仅观察该 Thread 的状态和内容，费用另按所属根会话订阅。切换、离开页面或关闭时先使旧世代失效，再取消并等待释放旧句柄；迟到帧不得写入新会话。共享主题的最后一个观察者离开即释放订阅。
 
-所有 bounded 转发等待都可被取消打断，传输终态送达不能阻塞关闭；失败、lag 与关闭明确可观察，
-恢复以该领域/会话的新基线完成，不建立第二份实时投影或完整历史缓存。
+所有 bounded 转发等待都可被取消打断，传输终态送达不能阻塞关闭；失败、lag 与关闭明确可观察，恢复以该领域/会话的新基线完成，不建立第二份实时投影或完整历史缓存。
 
 ## 7.1 帧模型
 
-Thread feed 以 `threadId` 和 typed facet 定义观察范围，首帧是该域的基线，后续只交付该域的
-typed 变化。不是给每个标量开流，也不再将整份 runtime 放入每个高频通知。
+Thread 事件流以 `threadId` 和类型化 facet 定义观察范围，首帧是该域的基线，后续只交付该域的类型化变化。不是给每个标量开流，也不再将整份运行时放入每个高频通知。
 
 | facet | 事实与发布策略 |
 | --- | --- |
@@ -19,44 +14,21 @@ typed 变化。不是给每个标量开流，也不再将整份 runtime 放入�
 | metrics | 同 attempt 的 live usage 与成对聚合速度样本；latest-value，可覆盖中间读数 |
 | context | 上下文容量、阈值、累计 usage、cache 与费用；同一读数所需事实原子交付 |
 | configuration | route、active skills／MCP／LSP、MCP health；仅实际变化发布 |
-| authoring | plan、workflow、todo、progress 的独立 typed 变化；只改变 workflow 不重传 plan 正文 |
+| authoring | plan、workflow、todo、progress 的独立类型化变化；只改变 workflow 不重传 plan 正文 |
 
-每域返回 `baseline`、`data`、`resyncRequired` 及传输 `failure/closed`。基线不含完整 Item 历史。
-缺口恢复只重建受影响资源，不从聚合数据库查询拼接 feed 水位，也不能重放业务命令。
-正文由独立的 Timeline push 交付；历史页与详情仍是按需 query，见 [26](./26-timeline-content.md)。
+每域返回 `baseline`、`data`、`resyncRequired` 及传输 `failure/closed`。基线不含完整 Item 历史。缺口恢复只重建受影响资源，不从聚合数据库查询拼接事件流水位，也不能重放业务命令。正文由独立的 Timeline push 交付；历史页与详情仍是按需 query，见 [26](./26-timeline-content.md)。
 
-每个驻留 Thread 有唯一的实时投影发布者：Thread 观察任务持有该 Thread 唯一的 live projection，
-在**没有 GUI 的情况下也**消费 owner 发布的每条已成立 effect，把内容发布进共享会话并广播同一组
-typed 变更。订阅只是这份投影的读者：先注册投影帧 receiver，再读取 Thread owner 的小型
-authoritative snapshot，最后发送 snapshot，之后只转发投影帧，自己不投影、不读 effect window、
-不发布会话内容；注册与快照之间提交的 effect 仍会投递，其中已被快照覆盖的帧按提交序号丢弃。
-内容权威来自共享 Session：它统一合并 pending、流式与已保存历史，提供 keyset 小页、有界
-尾部订阅与按身份详情，契约见 [26](./26-timeline-content.md)。状态订阅不携带正文、不构造
-另一条实时内容队列；内容初开无需等待 writer，冷历史查询不激活执行 owner。
-内容缺口只重建受影响订阅，返回明确新基线，不要求重放全部 token，不重启业务 owner。
-历史展示冻结期间的重同步不替换已显示消息，Live 使用同一新展示代次语义接收新基线。
+每个驻留 Thread 有唯一的实时投影发布者：Thread 观察任务持有该 Thread 唯一的 live 投影，在**没有 GUI 的情况下也**消费所有者发布的每条已成立 effect，把内容发布进共享会话并广播同一组类型化变更。订阅只是这份投影的读者：先注册投影帧 receiver，再读取 Thread 所有者的小型authoritative 快照，最后发送快照，之后只转发投影帧，自己不投影、不读 effect window、不发布会话内容；注册与快照之间提交的 effect 仍会投递，其中已被快照覆盖的帧按提交序号丢弃。内容权威来自共享 Session：它统一合并 pending、流式与已保存历史，提供 keyset 小页、有界尾部订阅与按身份详情，契约见 [26](./26-timeline-content.md)。状态订阅不携带正文、不构造另一条实时内容队列；内容初开无需等待 writer，冷历史查询不激活执行所有者。内容缺口只重建受影响订阅，返回明确新基线，不要求重放全部 token，不重启业务所有者。历史展示冻结期间的重同步不替换已显示消息，Live 使用同一新展示代次语义接收新基线。
 
-实时事件总线只拥有 Turn、Item、Interaction、runtime 与 live overlay 的实时投影，不拥有
-Thread directory 元数据。订阅注册完成后，Studio 运行时必须用内存 Thread directory owner 的
-当前条目重绑尚未发送的首帧；不得为了重绑查询 SQLite，也不得把事件总线中为投影保留的 Thread
-副本当成 mode、role、title 或 status 的事实源。数据库行只在 owner 冷激活前作为恢复基线。
+实时事件总线只拥有 Turn、Item、Interaction、运行时与 live overlay 的实时投影，不拥有Thread directory 元数据。订阅注册完成后，Studio 运行时必须用内存 Thread directory 所有者的当前条目重绑尚未发送的首帧；不得为了重绑查询 SQLite，也不得把事件总线中为投影保留的 Thread副本当成 mode、role、title 或 status 的事实源。数据库行只在所有者冷激活前作为恢复基线。
 
-## 7.2 Notification
+## 7.2 状态变更通知
 
-内部 trace 的生产者提交开始、追加和终态操作，不预分配 write sequence 或 item revision。唯一
-内存发布入口在同一短临界区内校验、编号、更新当前状态并形成规范 effect；Item ordinal 在开始时
-首次分配后不变。实时投影与 history writer 消费同一 effect。writer 受理失败必须可观察并暂停新的
-执行准入，已成立事实保留重试；它不能通过重放旧 effect 再次进入实时投影。
+内部 trace 的生产者提交开始、追加和终态操作，不预分配 write sequence 或 item revision。唯一内存发布入口在同一短临界区内校验、编号、更新当前状态并形成规范 effect；Item ordinal 在开始时首次分配后不变。实时投影与 history writer 消费同一 effect。writer 受理失败必须可观察并暂停新的执行准入，已成立事实保留重试；它不能通过重放旧 effect 再次进入实时投影。
 
-可靠通知由版本化封套承载：resource key、owner epoch、订阅身份与 feed revision 均明确，
-`base_revision` 是应用前水位，`revision` 是应用后水位。同资源、同 owner、同订阅且 base
-恰好匹配才能拼接；否则显式重同步。latest 样本使用自己的单调样本序号，不要求交付每个
-中间读数，也不能因此制造 execution 域缺口。传输 delivery sequence 与上述业务水位独立。
+可靠通知由版本化封套承载：resource key、所有者 epoch、订阅身份与事件流 revision 均明确，`base_revision` 是应用前水位，`revision` 是应用后水位。同资源、同所有者、同订阅且 base恰好匹配才能拼接；否则显式重同步。latest 样本使用自己的单调样本序号，不要求交付每个中间读数，也不能因此制造 execution 域缺口。传输 delivery sequence 与上述业务水位独立。
 
-查询快照的 core commit sequence 与订阅通知的 revision 属于不同版本域，不能用查询结果修补
-当前订阅水位。已知 CAS 冲突需要刷新 Thread 轻状态时，会话服务取消并 join 受影响域的旧 binding，
-重新订阅并等待该 binding 的首个 owner baseline，再按原 OperationId 重试；当前内容连接保留。
-关闭或切换会话终止 baseline 等待，实际取消未完成的 binding 仍由 Session 持有并计入预算。
+查询快照的 core commit sequence 与订阅通知的 revision 属于不同版本域，不能用查询结果修补当前订阅水位。已知 CAS 冲突需要刷新 Thread 轻状态时，会话服务取消并 join 受影响域的旧 binding，重新订阅并等待该 binding 的首个所有者基线，再按原 OperationId 重试；当前内容连接保留。关闭或切换会话终止基线等待，实际取消未完成的 binding 仍由 Session 持有并计入预算。
 
 通知穷尽为：
 
@@ -71,279 +43,86 @@ Thread directory 元数据。订阅注册完成后，Studio 运行时必须用�
 - `storageChanged`
 - `lagged`
 
-状态流**不含内容帧**：`itemStarted`/`itemDelta`/`itemCompleted` 不再存在，条目与流式正文只由该
-Thread 的 Session 内容源交付；过滤发生在生产端，客户端不靠
-末端丢弃内容帧来去重，也不会因此制造 revision 空洞。Turn 与 Interaction 的通知 payload 仍携带
-canonical tagged state，而不是 status string 与平行 failure/reason/timestamp。Turn 终态固定为
-Completed、Cancelled、Failed、BudgetLimited；取消原因和预算 rollover 结果位于对应终态 payload。
+状态流**不含内容帧**：`itemStarted`/`itemDelta`/`itemCompleted` 不再存在，条目与流式正文只由该Thread 的 Session 内容源交付；过滤发生在生产端，客户端不靠末端丢弃内容帧来去重，也不会因此制造 revision 空洞。Turn 与 Interaction 的通知载荷仍携带权威 tagged state，而不是 status string 与平行 failure/reason/timestamp。Turn 终态固定为Completed、Cancelled、Failed、BudgetLimited；取消原因和预算 rollover 结果位于对应终态载荷。
 
-`activityChanged` 携带 typed `ThreadActivity` 小摘要（阶段、稳定 activity 身份、并行工具数量与
-最近开始摘要），`storageChanged` 携带 typed `ThreadStorageState`（故障类别、代数、accepted/
-durable 水位、执行阶段、`pressurePaused`、`resumeRequired`、`canResume`）；两者都只在真变化时
-补发，`None` 分别表示没有活动、没有可报告的存储事实。`canResume` 是“现在显式继续真的会被接受”
-的 typed 就绪事实（闩仍 owed、无硬故障、无未上交批次、无字节阈值、恢复 fence 已 durable），
-界面只据此启用继续入口，后端仍会重查防竞态。
+`activityChanged` 携带类型化 `ThreadActivity` 小摘要（阶段、稳定 activity 身份、并行工具数量与最近开始摘要），`storageChanged` 携带类型化 `ThreadStorageState`（故障类别、代数、accepted/durable 水位、执行阶段、`pressurePaused`、`resumeRequired`、`canResume`）；两者都只在真变化时补发，`None` 分别表示没有活动、没有可报告的存储事实。`canResume` 是“现在显式继续真的会被接受”的类型化就绪事实（闩仍 owed、无硬故障、无未上交批次、无字节阈值、恢复 fence 已 durable），界面只据此启用继续入口，后端仍会重查防竞态。
 
-`turnUpdated` 承载**运行中 Turn 的 canonical 阶段**，而不只是 Turn 记录的修订：Task 启动/结束
-与模型 attempt 提交都会改变由运行事实派生的阶段，实时投影在每个 effect 之后重新推导运行中 Turn
-的阶段，变化就补发一帧，不等待下一次 Turn 记录提交，也不依赖客户端窗口行。阶段帧与被同一
-effect 投影的 Item 使用同一提交序号作为 revision；Turn 终态提交后不再有更晚的阶段帧覆盖它。
-阶段帧本身不携带工具身份、关键词或并行工具数量；活动行的这些细节来自同一 owner 发布的
-`activityChanged`（见 [18](./18-studio-state.md) §18.8.1），完整详情按活动身份按需读取。
+`turnUpdated` 承载**运行中 Turn 的权威阶段**，而不只是 Turn 记录的修订：Task 启动/结束与模型 attempt 提交都会改变由运行事实派生的阶段，实时投影在每个 effect 之后重新推导运行中 Turn的阶段，变化就补发一帧，不等待下一次 Turn 记录提交，也不依赖客户端窗口行。阶段帧与被同一effect 投影的 Item 使用同一提交序号作为 revision；Turn 终态提交后不再有更晚的阶段帧覆盖它。阶段帧本身不携带工具身份、关键词或并行工具数量；活动行的这些细节来自同一所有者发布的`activityChanged`（见 [18](./18-studio-state.md) §18.8.1），完整详情按活动身份按需读取。
 
-Turn 的最近终态必须对慢消费者与重订阅可恢复，而不是只对当时在场的订阅者可见：`turnCompleted`
-只广播一次，快照又只携带**活动** Turn，所以唯一 owner 同时保留它投影出的最新终态 Turn 作为自己的
-typed 事实。订阅建立时若快照没有活动 Turn，就以同一水位在该快照之后补发这条 `turnCompleted`，
-该帧与被广播帧来自同一个 Turn 投影，因此最近终态、原因与身份在实时与重订阅之间一致，不
-需要客户端从窗口正文反推 Turn，也不需要缓存它曾见到的 `running` 状态。活动 Turn 存在时不补发，
-迟到的终态帧也不会把已终结的 Turn 重新标成运行；同一 Turn 的终态只交付一次。Item 仍然没有
-durable replay：缺口依旧靠内容订阅的显式新基线收束，这里补发的只是 owner 作为当前
-状态持有的**最新 Turn 事实**，不是历史条目。
+Turn 的最近终态必须对慢消费者与重订阅可恢复，而不是只对当时在场的订阅者可见：`turnCompleted`只广播一次，快照又只携带**活动** Turn，所以唯一所有者同时保留它投影出的最新终态 Turn 作为自己的类型化事实。订阅建立时若快照没有活动 Turn，就以同一水位在该快照之后补发这条 `turnCompleted`，该帧与被广播帧来自同一个 Turn 投影，因此最近终态、原因与身份在实时与重订阅之间一致，不需要客户端从窗口正文反推 Turn，也不需要缓存它曾见到的 `running` 状态。活动 Turn 存在时不补发，迟到的终态帧也不会把已终结的 Turn 重新标成运行；同一 Turn 的终态只交付一次。Item 仍然没有durable 重放：缺口依旧靠内容订阅的显式新基线收束，这里补发的只是所有者作为当前状态持有的**最新 Turn 事实**，不是历史条目。
 
-owner 首次安装或进程回收后冷恢复时，这份保留事实不能是空：live owner 在安装路径（本就读取
-history 的唯一冷读点）从既有 durable Turn 记录做一次有界、不读条目正文的读取，取得最近终态 Turn
-并按执行序号播种；正在投影的更新只按更大的执行序号/修订向前合并，正常实时提交路径仍不回读刚写
-SQL。retired 子会话没有 owner 可保留，其订阅在权威快照之后以同一 `turnCompleted` 契约补发一次
-durable 最近终态 Turn，因此有无 owner 的前端都从同一 Turn 事实读 `lastTurn`。这仍不是 Item 的
-durable replay，缺的条目依旧由内容订阅新基线和按需历史页恢复。
+所有者首次安装或进程回收后冷恢复时，这份保留事实不能是空：live 所有者在安装路径（本就读取history 的唯一冷读点）从既有 durable Turn 记录做一次有界、不读条目正文的读取，取得最近终态 Turn并按执行序号播种；正在投影的更新只按更大的执行序号/修订向前合并，正常实时提交路径仍不回读刚写SQL。retired 子会话没有所有者可保留，其订阅在权威快照之后以同一 `turnCompleted` 契约补发一次durable 最近终态 Turn，因此有无所有者的前端都从同一 Turn 事实读 `lastTurn`。这仍不是 Item 的durable 重放，缺的条目依旧由内容订阅新基线和按需历史页恢复。
 
-TurnFinished 是最终校验与 worker 失败的终态投影边界：非正常完成必须在 TurnCompleted 前发布
-对应 typed Turn Item，使实时与持久化历史均能显示失败、取消或预算原因；已有同轮终态错误 Item
-时不重复插入；模型正文生成完成不等同于最终校验通过。准备阶段保留必要进度；正文后不追加
-"正文已完成"或"本轮已完成"评论，避免重复最终回答或提前宣告最终校验成功。
+TurnFinished 是最终校验与 worker 失败的终态投影边界：非正常完成必须在 TurnCompleted 前发布对应类型化 Turn Item，使实时与持久化历史均能显示失败、取消或预算原因；已有同轮终态错误 Item时不重复插入；模型正文生成完成不等同于最终校验通过。准备阶段保留必要进度；正文后不追加"正文已完成"或"本轮已完成"评论，避免重复最终回答或提前宣告最终校验成功。
 
-执行步数策略由宿主在 Turn 开始时冻结，明确区分无限制与有限步数。Studio 主会话不设置累计调用
-次数或总时长预算；子会话每个 Turn 达到 256 步后以 stepLimit 暂停，等待显式续接。
-新 Turn 从零计数并获得完整额度，不累计上一 Turn 的消耗；同一 Turn 内的模型与工具往返不刷新
-额度。模型与工具调用计量继续
-保留，用户停止、关闭、交互和实际失败独立生效。历史预算终态保持可读，不自动续跑已停止的
-Turn；上下文压力触发的正常压缩不属于停止预算。
+执行步数策略由宿主在 Turn 开始时冻结，明确区分无限制与有限步数。Studio 主会话不设置累计调用次数或总时长预算；子会话每个 Turn 达到 256 步后以 stepLimit 暂停，等待显式续接。新 Turn 从零计数并获得完整额度，不累计上一 Turn 的消耗；同一 Turn 内的模型与工具往返不刷新额度。模型与工具调用计量继续保留，用户停止、关闭、交互和实际失败独立生效。历史预算终态保持可读，不自动续跑已停止的Turn；上下文压力触发的正常压缩不属于停止预算。
 
-内容源的字段变化只携带 canonical 身份与 typed 字段（`ChatField`，例如 agent message text、
-reasoning summary/content、plan text、tool arguments/output），正文按 `Append`/`Replace`/`Remove`
-交付，一次 `UpdateItem` 只提交一次内容 revision；未终态的流式正文只驻留 Session 内存，不形成
-history 写入。terminal Item 携带完整 authoritative payload 并随同一 `ThreadEffectBatch` 交给唯一
-history writer；内容订阅按 `ChatLifecycle` 收敛执行终态、保存确认只翻 `saved`，不等待 SQL 确认，也不
-存在第二份 overlay 与 SQL 行合并。文本 Item 的 channel
-穷尽区分 `user`、`parentAgent`、`commentary` 与 `final`；`parentAgent` 只由 runtime 冻结的
-mailbox 来源产生，所有 transport 和 Flutter reducer 都机械透传，不在客户端推导。
+内容源的字段变化只携带权威身份与类型化字段（`ChatField`，例如 agent message text、reasoning summary/content、plan text、tool arguments/output），正文按 `Append`/`Replace`/`Remove`交付，一次 `UpdateItem` 只提交一次内容 revision；未终态的流式正文只驻留 Session 内存，不形成history 写入。terminal Item 携带完整 authoritative 载荷并随同一 `ThreadEffectBatch` 交给唯一history writer；内容订阅按 `ChatLifecycle` 收敛执行终态、保存确认只翻 `saved`，不等待 SQL 确认，也不存在第二份 overlay 与 SQL 行合并。文本 Item 的 channel穷尽区分 `user`、`parentAgent`、`commentary` 与 `final`；`parentAgent` 只由运行时冻结的mailbox 来源产生，所有传输层和 Flutter 归并器都机械透传，不在客户端推导。
 
-模型失败或主动取消时，失败事实携带最后一次已发布的完整 `ModelProgress`，投影按原 Item
-身份及已预留 ordinal 提交失败/取消终态正文。未终结期间的 progress 仍只驻留内存；进程异常退出
-的未终结正文允许丢失，重启恢复产生的中断终态不伪造先前前缀。
+模型失败或主动取消时，失败事实携带最后一次已发布的完整 `ModelProgress`，投影按原 Item身份及已预留 ordinal 提交失败/取消终态正文。未终结期间的 progress 仍只驻留内存；进程异常退出的未终结正文允许丢失，重启恢复产生的中断终态不伪造先前前缀。
 
-透明重试的观察边界归 [16](./16-core-contracts.md) §16.3：同一个 core attempt 内，展示身份
-还包含观察代次。已结束失败子尝试以独立的非成功生命周期收束，后续代次不能修改或误完成它；
-响应使用同一个 provider item id 也必须隔离。当前快照保留有界失败观察及类型化重试状态，
-观察者跳过中间快照后仍可收敛；不能用空 progress 猜测失败、重试或删除旧项目。
+透明重试的观察边界归 [16](./16-core-contracts.md) §16.3：同一个 core attempt 内，展示身份还包含观察代次。已结束失败子尝试以独立的非成功生命周期收束，后续代次不能修改或误完成它；响应使用同一个 provider item id 也必须隔离。当前快照保留有界失败观察及类型化重试状态，观察者跳过中间快照后仍可收敛；不能用空 progress 猜测失败、重试或删除旧项目。
 
-观察边界在运行中立即可见，不等待最终 SQL 保存；其完整 authoritative 正文与恢复提示在最终
-模型回执中收束，随对应可靠 effect 交给唯一 history writer。实时已展示项目与终态回执使用
-相同身份及预留 ordinal，不能重复插入，保存确认仍只改变 saved。成功回执只把成功子尝试用于
-模型上下文与工具执行，失败项目与运行时提示不影响 Turn 的正常继续。恢复期间 Turn 保持运行，
-停止立即进入取消路径。运行时提示由真实模型观察链路发布，不依赖可选 trace listener。
+观察边界在运行中立即可见，不等待最终 SQL 保存；其完整 authoritative 正文与恢复提示在最终模型回执中收束，随对应可靠 effect 交给唯一 history writer。实时已展示项目与终态回执使用相同身份及预留 ordinal，不能重复插入，保存确认仍只改变 saved。成功回执只把成功子尝试用于模型上下文与工具执行，失败项目与运行时提示不影响 Turn 的正常继续。恢复期间 Turn 保持运行，停止立即进入取消路径。运行时提示由真实模型观察链路发布，不依赖可选 trace listener。
 
-未终结期间的 `ModelProgress` 每帧只把新 chunk 追加到本帧变化的那一条观察身份上，身份与内容
-版本稳定不变，正文仍按共享 prefix 链增量传递。投影自身不持有、也不在每次事件重新克隆整份 part
-列表：列表是发布快照里的分块容器 `ModelParts`——已填满的 chunk 与仍在增长的 tail 各自共享，
-watch 仍持其唯一引用时原地更新；一旦观察者克隆过某一帧，一次编辑只按 copy-on-write 复制所编辑的
-那一个 chunk，另外在编辑落在已填满 chunk 时（以及 tail 转为 filled 的那次追加）复制一次 chunk
-索引，其余 chunk 不复制，因此被持有帧保持不可变。`filled` 的每块与 `tail` 的长度上界都是一个
-chunk。包含大量 part 的响应按事件追加一个 chunk，**整表复制被消除**；逐帧持有快照的消费者仍可能
-每帧触发一次其共享 chunk 的复制，本机制不承诺实测性能。快照版本、稳定身份与终态拒迟到语义不变；
-可靠输出计量不变，但被拒绝的编辑仍会前进一次版本并发一次通知（内容保持已接纳的部分），不宣称
-全部语义完全一致。
+未终结期间的 `ModelProgress` 每帧只把新 chunk 追加到本帧变化的那一条观察身份上，身份与内容版本稳定不变，正文仍按共享 prefix 链增量传递。投影自身不持有、也不在每次事件重新克隆整份 part列表：列表是发布快照里的分块容器 `ModelParts`——已填满的 chunk 与仍在增长的 tail 各自共享，watch 仍持其唯一引用时原地更新；一旦观察者克隆过某一帧，一次编辑只按 copy-on-write 复制所编辑的那一个 chunk，另外在编辑落在已填满 chunk 时（以及 tail 转为 filled 的那次追加）复制一次 chunk索引，其余 chunk 不复制，因此被持有帧保持不可变。`filled` 的每块与 `tail` 的长度上界都是一个chunk。包含大量 part 的响应按事件追加一个 chunk，**整表复制被消除**；逐帧持有快照的消费者仍可能每帧触发一次其共享 chunk 的复制，本机制不承诺实测性能。快照版本、稳定身份与终态拒迟到语义不变；可靠输出计量不变，但被拒绝的编辑仍会前进一次版本并发一次通知（内容保持已接纳的部分），不宣称全部语义完全一致。
 
-直接父代理的初始任务与后续 inbox 消息均参与同一 Timeline 投影。消息准入后即使尚未消费
-也可见；持久消息身份用于去重，准入事实确定时间和稳定顺序，消费事实将消息关联到实际
-Turn，关联更新不改变 Item 身份。实时、历史分页与冷恢复共用此规则；内部通知和非直接
-父代理来源不会显示为 `parentAgent` 对话。消息正文保持原样，不从当前模型上下文重建。
+直接父代理的初始任务与后续 inbox 消息均参与同一 Timeline 投影。消息准入后即使尚未消费也可见；持久消息身份用于去重，准入事实确定时间和稳定顺序，消费事实将消息关联到实际Turn，关联更新不改变 Item 身份。实时、历史分页与冷恢复共用此规则；内部通知和非直接父代理来源不会显示为 `parentAgent` 对话。消息正文保持原样，不从当前模型上下文重建。
 
 ## 7.3 背压
 
-FRB StreamSink 的投递成功不是消费者处理完成；仅在 sink 前使用有界 mpsc，不能证明 Dart
-port 在途消息有界。每个 feed 同时最多有 **2 个未确认 data frame**，baseline 同样占额度。
-Repository 完成 typed 转换与归并后，以该 opaque feed 的 delivery sequence 确认连续前缀；
-重复旧 ACK 幂等，超过已发送序号的 ACK 拒绝，不能释放其它订阅的额度。
+FRB StreamSink 的投递成功不是消费者处理完成；仅在 sink 前使用有界 mpsc，不能证明 Dart port 在途消息有界。每个事件流同时最多有 **2 个未确认 data frame**，基线同样占额度。仓储完成类型化转换与归并后，以该 opaque 事件流的 delivery sequence 确认连续前缀；重复旧 ACK 幂等，超过已发送序号的 ACK 拒绝，不能释放其它订阅的额度。
 
-可靠待发数据按帧数和载荷字节双重约束；额度不足时等待或显式重同步，不在 Dart future 链或
-native port 后继续堆积。metrics 待发槽只保留 **1 份最新样本**，不建立 token 回放队列。
-Turn terminal、Interaction request、内容 terminal／saved 是业务数据，仍按所属域的顺序和额度
-交付，不能为绕过背压而标成传输终帧。无法证明连续必须显式 ResyncRequired，不静默丢请求。
+可靠待发数据按帧数和载荷字节双重约束；额度不足时等待或显式重同步，不在 Dart future 链或原生 port 后继续堆积。metrics 待发槽只保留 **1 份最新样本**，不建立 token 回放队列。Turn terminal、Interaction request、内容 terminal／saved 是业务数据，仍按所属域的顺序和额度交付，不能为绕过背压而标成传输终帧。无法证明连续必须显式 ResyncRequired，不静默丢请求。
 
-Execution 与 Authoring 的可靠待发额度为 64 帧、8 MiB 源 JSON，单个 Data 最多 256 KiB；
-不可用 latest 覆盖队头、Turn 终态或交互决定。运输层可借出一个待发槽，但它仍属于同一
-可靠待发责任与预算，不在 FIFO 外再叠一套积压。Metrics 的 latest 单槽规则不能泛化到
-这些可靠域；来源 lag、队列溢出或 revision gap 显式终结该域连续性，不重放业务命令。
+Execution 与 Authoring 的可靠待发额度为 64 帧、8 MiB 源 JSON，单个 Data 最多 256 KiB；不可用 latest 覆盖队头、Turn 终态或交互决定。运输层可借出一个待发槽，但它仍属于同一可靠待发责任与预算，不在 FIFO 外再叠一套积压。Metrics 的 latest 单槽规则不能泛化到这些可靠域；来源 lag、队列溢出或 revision gap 显式终结该域连续性，不重放业务命令。
 
-传输取消优先于等待容量；Failure／Closed 至多一次，不因缺 ACK 阻塞 close/join。requestClose
-先封闭准入，再取消所有 owner；close 等待 producer、sink、open 和在途 query 真实结束后释放。
-Stream.cancel、Ref.dispose、opaque.dispose 或 GC 不代替该 ACK。超时与失败保留 unresolved。
-transport ACK 只归还额度，不等于业务提交、Observed、Effective 或 durable 保存。
+传输取消优先于等待容量；Failure／Closed 至多一次，不因缺 ACK 阻塞 close/join。requestClose先封闭准入，再取消所有所有者；close 等待生产者、sink、open 和在途 query 真实结束后释放。Stream.cancel、Ref.dispose、opaque.dispose 或 GC 不代替该 ACK。超时与失败保留 unresolved。传输层 ACK 只归还额度，不等于业务提交、Observed、Effective 或 durable 保存。
 
-## 7.4 Flutter reducer
+## 7.4 Flutter 归并器
 
-纯 Dart Repository 按资源域持有唯一 canonical reducer；Freezed ViewState 与 AsyncNotifier
-只组织呈现与交互，不能重建另一份全工作区业务状态。基线替换所属域，旧 owner／订阅数据不
-与新基线混合。composer 草稿、滚动、展开和 submission revision 不属于业务基线。
+纯 Dart 仓储按资源域持有唯一权威归并器；Freezed 视图状态与 AsyncNotifier只组织呈现与交互，不能重建另一份全工作区业务状态。基线替换所属域，旧所有者／订阅数据不与新基线混合。composer 草稿、滚动、展开和 submission revision 不属于业务基线。
 
-`selectedThreadId = null` 是稳定的本地选择状态，表示当前 Project 的未持久化新会话起始页。该
-状态按 Project 保存独立 Composer 草稿；只有首次提交成功进入 `startNewThread` command 后才产生
-durable Thread。product/thread resync、目录新增和 Widget 重建不得把 null 隐式改写为任意目录
-Thread。
+`selectedThreadId = null` 是稳定的本地选择状态，表示当前 Project 的未持久化新会话起始页。该状态按 Project 保存独立 Composer 草稿；只有首次提交成功进入 `startNewThread` command 后才产生durable Thread。product/thread 重同步、目录新增和界面组件重建不得把 null 隐式改写为任意目录Thread。
 
-Thread directory 是 Thread 元数据的唯一 canonical cache。snapshot 中携带的 Thread 只用于校验
-身份并重绑到当前 directory entry，不能反向覆盖 directory——product stream 与 thread stream
-即使并发到达，也不会用旧 workspace snapshot 回滚刚确认的 mode/role。
+Thread directory 是 Thread 元数据的唯一权威 cache。快照中携带的 Thread 只用于校验身份并重绑到当前 directory entry，不能反向覆盖 directory——product stream 与 thread stream即使并发到达，也不会用旧 workspace 快照回滚刚确认的 mode/role。
 
-切换 Thread 时立即使旧 attempt 失效、取消并 join 旧内容连接；迟到 frame、query、error 与
-finally 只结束自己，不影响新选择。正文与 Thread 状态分离；状态流首快照及连续封套仍由
-原状态 reducer 管理，不能拿查询版本修补状态流水位。
+切换 Thread 时立即使旧 attempt 失效、取消并 join 旧内容连接；迟到 frame、query、error 与finally 只结束自己，不影响新选择。正文与 Thread 状态分离；状态流首快照及连续封套仍由原状态归并器管理，不能拿查询版本修补状态流水位。
 
-Timeline 的数据接口、尾部版本与字段更新以 [26](./26-timeline-content.md) 为准。
-历史页来自同一 Session 的无状态 keyset query，不再通过服务端窗口移动；详情也不改变
-订阅基线。尾部推送 baseline 与 patch 只推进自身连续性，历史页不能作为尾部 Patch 的新基线。
-内容 push 的变化必须匹配 identity 与 expected revision，一批只提交一次内容版本，不向
-JSON 字符串追加文本。字段删除、权威替换、保存确认、终态和只推进
-revision 的变化均有明确语义，缺口触发该内容连接的显式重同步。
+Timeline 的数据接口、尾部版本与字段更新以 [26](./26-timeline-content.md) 为准。历史页来自同一 Session 的无状态 keyset query，不再通过服务端窗口移动；详情也不改变订阅基线。尾部推送基线与 patch 只推进自身连续性，历史页不能作为尾部 Patch 的新基线。内容 push 的变化必须匹配 identity 与 expected revision，一批只提交一次内容版本，不向JSON 字符串追加文本。字段删除、权威替换、保存确认、终态和只推进revision 的变化均有明确语义，缺口触发该内容连接的显式重同步。
 
-应用的唯一已加载 Message 集合归当前展示 lease，库内部消费 operations；Repository 不持有
-第二份随访问增长的窗口镜像。Live 原位增量更新与追加，用户阅读后进入 History，冻结
-已显示内容但继续接收有界尾部和新内容提示。只有显式回实时或发送才替换最新小页和
-展示代次；不通过 resize、方向通知或滚轮到达本地底端自动恢复。
+应用的唯一已加载 Message 集合归当前展示租约，库内部消费 operations；仓储不持有第二份随访问增长的窗口镜像。Live 原位增量更新与追加，用户阅读后进入 History，冻结已显示内容但继续接收有界尾部和新内容提示。只有显式回实时或发送才替换最新小页和展示代次；不通过 resize、方向通知或滚轮到达本地底端自动恢复。
 
-内容 publisher 仍按稳定 ChatField 和共享不可变 ContentBlock 发布；内容 revision、订阅
-version、saved 与执行终态独立。终态拒绝迟到预览不依赖 writer，可靠事实更高版本补充仍
-合法。保存确认不改变正文或顺序，缓存释放不能删除前端已加载消息或漏报连续性。
-合帧只在 core 尾部交付处发生一次，首字、终态、保存和故障打断固定普通正文 deadline；
-HTTP 与 FRB 不二次合帧。取消安全的 readiness 等待不跨锁阻塞，终止必须唤醒等待者。
+内容 publisher 仍按稳定 ChatField 和共享不可变 ContentBlock 发布；内容 revision、订阅version、saved 与执行终态独立。终态拒绝迟到预览不依赖 writer，可靠事实更高版本补充仍合法。保存确认不改变正文或顺序，缓存释放不能删除前端已加载消息或漏报连续性。合帧只在 core 尾部交付处发生一次，首字、终态、保存和故障打断固定普通正文 deadline；HTTP 与 FRB 不二次合帧。取消安全的 readiness 等待不跨锁阻塞，终止必须唤醒等待者。
 
-运行中工具调用的输出不走"每来一个 chunk 就把累计全文再报一遍"的路径。生产者（命令执行等）持有
-共享不可变 `ContentBlock` 链，只把**变化的部分**交给 Thread：一个生产者自选的 opaque 输出身份
-（例如 `command-output`，core 不解析该 key、不从正文推断、也不与 provider 的 part 身份混用）加上
-`Append{chunk}` 或 `Replace{text}`。core 的 owner 先按"应用这份增量之后的总字节数"向该调用的可靠
-输出预留计费，再接受增量，因此被拒的增量只取消该调用并保留已接受内容，绝不悄悄丢弃已发布的字节。
-实时观察窗口另有自己的上限（`MAX_TOOL_PROGRESS_BYTES`、`MAX_TOOL_PROGRESS_PARTS`）：到达上限时
-生产者必须显式 rollover 成 `Replace(有界后缀)`，把"头部已被丢弃"如实表达为整段替换，而不是让观察
-层把它当成对旧正文的 append；真正的增量由共享链血缘（`appended_since`/`increment_since`）验证，
-基线不再是祖先就一定按替换交付。这个窗口是**实时观察窗口**，不是调用的可靠输出预算：调用的
-canonical 结果与归档输出由各自的 cap/文件机制负责，可靠保存额度由 owner 的预留与写者记账，两者
-不同名同义、也不互相冒充。live 投影按该身份的 `version` 去重并直接共享最新 block，不再从累计
-字符串重建正文；只有 canonical/DTO 交付与详情展开才把当前有界窗口物化一次文本。
+运行中工具调用的输出不走"每来一个 chunk 就把累计全文再报一遍"的路径。生产者（命令执行等）持有共享不可变 `ContentBlock` 链，只把**变化的部分**交给 Thread：一个生产者自选的 opaque 输出身份（例如 `command-output`，core 不解析该 key、不从正文推断、也不与 provider 的 part 身份混用）加上`Append{chunk}` 或 `Replace{text}`。core 的所有者先按"应用这份增量之后的总字节数"向该调用的可靠输出预留计费，再接受增量，因此被拒的增量只取消该调用并保留已接受内容，绝不悄悄丢弃已发布的字节。实时观察窗口另有自己的上限（`MAX_TOOL_PROGRESS_BYTES`、`MAX_TOOL_PROGRESS_PARTS`）：到达上限时生产者必须显式 rollover 成 `Replace(有界后缀)`，把"头部已被丢弃"如实表达为整段替换，而不是让观察层把它当成对旧正文的 append；真正的增量由共享链血缘（`appended_since`/`increment_since`）验证，基线不再是祖先就一定按替换交付。这个窗口是**实时观察窗口**，不是调用的可靠输出预算：调用的权威结果与归档输出由各自的 cap/文件机制负责，可靠保存额度由所有者的预留与写者记账，两者不同名同义、也不互相冒充。live 投影按该身份的 `version` 去重并直接共享最新 block，不再从累计字符串重建正文；只有权威/DTO 交付与详情展开才把当前有界窗口物化一次文本。
 
-模型工具调用的参数与正文共享同一可靠输出计量：`ToolInputStarted/Delta/Completed/ToolCallReady`
-在把参数复制进 canonical 累积器**之前**按调用身份的已计费高水位计入 `MAX_OUTPUT_BYTES`，等长权威
-`completed` 不重复扣、替换后继续追加不漏扣；参数迟到或失败只保留已接收 partial receipt 供诊断，
-**不执行**未闭合参数、也不构造不完整 JSON。命令 operation 的 stdout/stderr 合流捕获另有独立的单命令
-落盘上限：backend 用 `capture_limit_bytes` 声明自己的上限（没声明时用 PL 默认的 `MAX_CAPTURE_BYTES`），
-并用自己的 `capture_storage_cost` 在**接纳前**计算每个 chunk 会给它带来多少落盘成本——把同一份输出
-同时写进合并文件与 per-stream 捕获的 backend 因此为两份都计费，只约束其中一份的额度不算上限。两流
-各自只按读取序把 chunk 接纳进**同一个有界有序修复计划**并通知
-operation 生命周期内的**唯一** writer 任务，reader 永不等待磁盘，plan 满即拒绝新 chunk（被拒字节从不
-入计划，只累计成被拒事实）。首个 append
-失败后不再接纳新 chunk，但失败前已接纳/排队的两流 chunk 全部按序保留在**同一**计划里，不被后续失败
-或首类别覆盖；重放以 backend 确认的已提交长度为截断点（先截回该长度再按同 framing 幂等重放），绝不
-把重新读到的 fragment 长度冒充 offset，也不静默截断后称成功。终态快照由 `capture_drained` 门控：
-只有 writer 把已接纳字节写盘、或把未落盘者作为同一计划保留，且两流都已关闭后，operation 才发布
-`Final`（终态不早于 writer 收束，不假成功）。命中所声明的上限是**预期容量终止**：命令被取消并等待进程
-真实结束，已写字节保留并照常归档，结果按 typed `OutputLimitExceeded`（上限、已保留、被拒字节）报告，
-与 32 KiB 级模型输出截断、timeout、以及 rg 的 exit 1（无匹配）/ exit 2（错误）各自分开；它不产出
-`OutputStorageFault`，因此既不挂义务也不暂停准入，同一条上限不会反复触发 repair。落盘上限之外还有一条
-独立的**模型可见上限**：backend 用 `model_output_bytes_cap` 声明（默认不声明，行为与从前完全一致），
-单位是**字节**而不是 Unicode 字符，覆盖两个流的可见正文之和——多字节正文不会因为按字符计数而放大上下文；
-工具结果自身的元数据（状态、进程/路径、artifact 说明）不计入这条上限，它约束的是会进入模型上下文的正文。
-省略标记也计入正文预算；预算不足以容纳标记时只保留能容纳的 UTF-8 前缀，由结构化截断字段保留事实。
-模型投影先根据两个流的实际保留长度、调用者单流限额与宿主总限额分配最终字节预算，再由
-`pl-output` 对保留的头尾各投影一次；省略行的实际字节长度计入预算，不预留魔数，也不
-对已经带省略行的结果二次截断。原始捕获长度和截断事实独立于正文预算保留；省略行不重复
-输出字节计量，避免将 lossy UTF-8 解码后的展示长度冒充原始字节数。
-捕获写/flush 或归档
-未落盘这类**可靠输出存储故障**另带
-一个 `OutputRetryObligation`：producer 在失败当下经运行中调用的可靠通道上报，立即阻断并行
-model/tool 准入；显式重试按稳定身份保存**同一份**已接收字节，只有同一 `fault_generation` 的目标与
-`fence` 都落地才允许继续；容量终止不是存储故障，所以既没有该义务也不要求显式恢复。重试成功后补充的 durable 资源引用按**原 call 身份**
-落到那条已提交的工具结果上：只把引用追加到同一身份的交付与条目资源元数据，正文、顺序、终态状态与身份
-都不移动，也不重跑命令或重复交付；引用早于承载它的提交到达时保持 pending。修复不依赖有界 live 窗口：
-身份仍在窗口内时 live 投影补一帧实时修正；身份已离窗（未打开 GUI、慢消费者或窗口滚动淘汰）时由同一个
-单投影 owner 先按原 call 身份读回**已经提交**的正文并折回自身表，再补充交付；canonical 条目与内容版本
-始终由该 owner 决定，writer 只做纯保存确认（只补 durable delivery 事实，不发明条目版本、不回读正在写的
-effect 正文）。因此窗口淘汰不会把已提交身份判成缺口，也不让观察窗口决定一次可靠保存是否成立。
+模型工具调用的参数与正文共享同一可靠输出计量：`ToolInputStarted/Delta/Completed/ToolCallReady`在把参数复制进权威累积器**之前**按调用身份的已计费高水位计入 `MAX_OUTPUT_BYTES`，等长权威`completed` 不重复扣、替换后继续追加不漏扣；参数迟到或失败只保留已接收 partial 回执供诊断，**不执行**未闭合参数、也不构造不完整 JSON。命令 operation 的 stdout/stderr 合流捕获另有独立的单命令落盘上限：backend 用 `capture_limit_bytes` 声明自己的上限（没声明时用 PL 默认的 `MAX_CAPTURE_BYTES`），并用自己的 `capture_storage_cost` 在**接纳前**计算每个 chunk 会给它带来多少落盘成本——把同一份输出同时写进合并文件与 per-stream 捕获的 backend 因此为两份都计费，只约束其中一份的额度不算上限。两流各自只按读取序把 chunk 接纳进**同一个有界有序修复计划**并通知operation 生命周期内的**唯一** writer 任务，reader 永不等待磁盘，plan 满即拒绝新 chunk（被拒字节从不入计划，只累计成被拒事实）。首个 append失败后不再接纳新 chunk，但失败前已接纳/排队的两流 chunk 全部按序保留在**同一**计划里，不被后续失败或首类别覆盖；重放以 backend 确认的已提交长度为截断点（先截回该长度再按同 framing 幂等重放），绝不把重新读到的 fragment 长度冒充 offset，也不静默截断后称成功。终态快照由 `capture_drained` 门控：只有 writer 把已接纳字节写盘、或把未落盘者作为同一计划保留，且两流都已关闭后，operation 才发布`Final`（终态不早于 writer 收束，不假成功）。命中所声明的上限是**预期容量终止**：命令被取消并等待进程真实结束，已写字节保留并照常归档，结果按类型化 `OutputLimitExceeded`（上限、已保留、被拒字节）报告，与 32 KiB 级模型输出截断、timeout、以及 rg 的 exit 1（无匹配）/ exit 2（错误）各自分开；它不产出`OutputStorageFault`，因此既不挂义务也不暂停准入，同一条上限不会反复触发 repair。落盘上限之外还有一条独立的**模型可见上限**：backend 用 `model_output_bytes_cap` 声明（默认不声明，行为与从前完全一致），单位是**字节**而不是 Unicode 字符，覆盖两个流的可见正文之和——多字节正文不会因为按字符计数而放大上下文；工具结果自身的元数据（状态、进程/路径、artifact 说明）不计入这条上限，它约束的是会进入模型上下文的正文。省略标记也计入正文预算；预算不足以容纳标记时只保留能容纳的 UTF-8 前缀，由结构化截断字段保留事实。模型投影先根据两个流的实际保留长度、调用者单流限额与宿主总限额分配最终字节预算，再由`pl-output` 对保留的头尾各投影一次；省略行的实际字节长度计入预算，不预留魔数，也不对已经带省略行的结果二次截断。原始捕获长度和截断事实独立于正文预算保留；省略行不重复输出字节计量，避免将 lossy UTF-8 解码后的展示长度冒充原始字节数。捕获写/flush 或归档未落盘这类**可靠输出存储故障**另带一个 `OutputRetryObligation`：生产者在失败当下经运行中调用的可靠通道上报，立即阻断并行model/tool 准入；显式重试按稳定身份保存**同一份**已接收字节，只有同一 `fault_generation` 的目标与`fence` 都落地才允许继续；容量终止不是存储故障，所以既没有该义务也不要求显式恢复。重试成功后补充的 durable 资源引用按**原 call 身份**落到那条已提交的工具结果上：只把引用追加到同一身份的交付与条目资源元数据，正文、顺序、终态状态与身份都不移动，也不重跑命令或重复交付；引用早于承载它的提交到达时保持 pending。修复不依赖有界 live 窗口：身份仍在窗口内时 live 投影补一帧实时修正；身份已离窗（未打开 GUI、慢消费者或窗口滚动淘汰）时由同一个单投影所有者先按原 call 身份读回**已经提交**的正文并折回自身表，再补充交付；权威条目与内容版本始终由该所有者决定，writer 只做纯保存确认（只补 durable delivery 事实，不发明条目版本、不回读正在写的effect 正文）。因此窗口淘汰不会把已提交身份判成缺口，也不让观察窗口决定一次可靠保存是否成立。
 
-捕获责任通过 `CommandCaptureOwnership` 明确：Manager 负责接纳与唯一 writer 的后端必须给出
-真实 chunk 成本，`prepare_output` 同样在写任何头部前检查传入预算。Producer 负责写盘的 SSH
-helper 在 spawn 协议中接收同一上限，逐块在写标签、正文和补换行之前计费；触顶停止捕获并终止
-进程，后续管道只作物理排空。终态携带实际计费回执，由 adapter 转成同一 typed 容量终止。
-客户端以传输窗口和有界头尾缓冲约束内存，不再执行第二套累计磁盘额度；快照 `capture_usage`
-在 Producer 回执到达前为 `None`，最终磁盘事实只接受 producer 回执，不能用流接收量代算。
-LSP 与 Git/worktree 的内部执行没有归档读者，显式使用 `RemoteCapture::None`，不创建命令日志
-或消费一次性 exec 的磁盘额度。协议升级要求配套新 helper，不保留旧协议路径。
+捕获责任通过 `CommandCaptureOwnership` 明确：Manager 负责接纳与唯一 writer 的后端必须给出真实 chunk 成本，`prepare_output` 同样在写任何头部前检查传入预算。Producer 负责写盘的 SSH helper 在 spawn 协议中接收同一上限，逐块在写标签、正文和补换行之前计费；触顶停止捕获并终止进程，后续管道只作物理排空。终态携带实际计费回执，由适配器转成同一类型化容量终止。客户端以传输窗口和有界头尾缓冲约束内存，不再执行第二套累计磁盘额度；快照 `capture_usage`在 Producer 回执到达前为 `None`，最终磁盘事实只接受生产者回执，不能用流接收量代算。LSP 与 Git/worktree 的内部执行没有归档读者，显式使用 `RemoteCapture::None`，不创建命令日志或消费一次性 exec 的磁盘额度。协议升级要求配套新 helper，不保留旧协议路径。
 
-## 7.5 Product stream
+## 7.5 产品事件流
 
-项目、root/child Thread directory、设置、Account usage 和 MCP/LSP health 使用独立低频
-product stream。product stream 不携带 Turn/Item delta；Thread directory 变化只重绑 workspace
-中的 Thread 元数据引用，不改变 Turn、Item、Interaction 或 runtime 内容。
+项目、root/child Thread directory、设置、Account usage 和 MCP/LSP health 使用独立低频product stream。product stream 不携带 Turn/Item delta；Thread directory 变化只重绑 workspace中的 Thread 元数据引用，不改变 Turn、Item、Interaction 或运行时内容。
 
-## 7.6 FRB 与 HTTP transport
+## 7.6 FRB 与 HTTP 传输层
 
-FRB 与 HTTP SSE 消费同一份领域 feed／Session，不各自实现业务投影状态机。HTTP product stream
-为 `GET /api/v1/events/product`，Thread stream 为 `GET /api/v1/threads/{thread_id}/events`。
-Updater topic 的首帧来自运行时当前更新状态，接收者登记在读取基线之前；
-客户端对首帧和增量使用同一 revision 归并，建立订阅期间结束的后台检查能够恢复真实终态。
-首次订阅与重新订阅遵循同一顺序。
-Thread 首帧是所选 facet 的 authoritative baseline，后续发送 typed data、resyncRequired 与
-传输终态；producer 在
-连接存活期间持有 Thread residency pin，断开或 server shutdown 必须取消 producer、释放
-receiver 与 pin。Runtime subscription 在恢复 owner 前取得 pin，并持有至订阅释放；重叠订阅与
-临时激活分别计数，任一 guard 释放不影响其余 pin。
+FRB 与 HTTP SSE 消费同一份领域事件流／Session，不各自实现业务投影状态机。HTTP product stream为 `GET /api/v1/events/product`，Thread stream 为 `GET /api/v1/threads/{thread_id}/events`。Updater 主题的首帧来自运行时当前更新状态，接收者登记在读取基线之前；客户端对首帧和增量使用同一 revision 归并，建立订阅期间结束的后台检查能够恢复真实终态。首次订阅与重新订阅遵循同一顺序。Thread 首帧是所选 facet 的 authoritative 基线，后续发送类型化 data、resyncRequired 与传输终态；生产者在连接存活期间持有 Thread residency pin，断开或 server 关闭编排必须取消生产者、释放receiver 与 pin。Runtime subscription 在恢复所有者前取得 pin，并持有至订阅释放；重叠订阅与临时激活分别计数，任一锁守卫释放不影响其余 pin。
 
-FRB `readThreadSnapshot` 与 HTTP `GET /api/v1/threads/{thread_id}` 机械调用同一个 snapshot
-query，均返回不含历史 Item 的当前 Thread 状态，不得退化为只返回 directory 元数据。
-Timeline 内容页、tail events 与详情统一消费 Session 内容能力，HTTP 与 FRB 只做机械映射；
-旧 window/focus/load/expand 回执接口删除，不保留纯 SQL 页作为 GUI 恢复旁路。
-公开内容接口与版本契约见 [26](./26-timeline-content.md)。
-Skill 激活使用普通的终态 Skill Item 和 configuration 域的 active-resources 变化；激活来源是 typed 的
-`Tool { toolCallId } | UserGesture { invocationId }`，资源位置是 typed resource base，不允许
-transport 或前端从工具 JSON 推断；Timeline 文案按来源区分代理激活与用户激活。首次订阅及重连
-从 HistoryReader 取得相同的 Skill Item，状态 snapshot 只携带 runtime 的 activeSkills；
-其成功压缩后重置与冷恢复语义见 [10](./10-skills.md) §10.6，不从历史 Skill Item 反推当前集合。
-Skill Item 只接受 typed
-resource base、provider identity 与 `Tool | UserGesture` 来源；旧 `path + toolCallId`、缺失
-provider 或未知字段一律是协议错误，不做映射、默认填充或读时升级。
+FRB `readThreadSnapshot` 与 HTTP `GET /api/v1/threads/{thread_id}` 机械调用同一个快照query，均返回不含历史 Item 的当前 Thread 状态，不得退化为只返回 directory 元数据。Timeline 内容页、tail events 与详情统一消费 Session 内容能力，HTTP 与 FRB 只做机械映射；旧 window/focus/load/expand 回执接口删除，不保留纯 SQL 页作为 GUI 恢复旁路。公开内容接口与版本契约见 [26](./26-timeline-content.md)。Skill 激活使用普通的终态 Skill Item 和 configuration 域的 active-resources 变化；激活来源是类型化的`Tool { toolCallId } | UserGesture { invocationId }`，资源位置是类型化 resource base，不允许传输层或前端从工具 JSON 推断；Timeline 文案按来源区分代理激活与用户激活。首次订阅及重连从 HistoryReader 取得相同的 Skill Item，状态快照只携带运行时的 activeSkills；其成功压缩后重置与冷恢复语义见 [10](./10-skills.md) §10.6，不从历史 Skill Item 反推当前集合。Skill Item 只接受类型化resource base、provider identity 与 `Tool | UserGesture` 来源；旧 `path + toolCallId`、缺失provider 或未知字段一律是协议错误，不做映射、默认填充或读时升级。
 
-Product lag 发送 `stale` 并要求重建相应 topic 基线，不读取全应用聚合状态。SSE 不提供 durable replay；收到
-`Last-Event-ID` 时先发送 `stale`。每 15 秒发送 comment heartbeat；heartbeat 不占用领域
-sequence，FRB 与 HTTP 的 transport buffer 也不共享 sequence 或取消句柄。
+Product lag 发送 `stale` 并要求重建相应主题基线，不读取全应用聚合状态。SSE 不提供 durable 重放；收到`Last-Event-ID` 时先发送 `stale`。每 15 秒发送 comment heartbeat；heartbeat 不占用领域sequence，FRB 与 HTTP 的传输层 buffer 也不共享 sequence 或取消句柄。
 
-Thread title 的生成与提交流程是领域生命周期话题，见 [18](./18-studio-state.md)；流层只保证
-成功的 title mutation 通过 `ThreadDirectoryChanged` 增量事件发布，不新增平行 title 通知。
+Thread title 的生成与提交流程是领域生命周期话题，见 [18](./18-studio-state.md)；流层只保证成功的 title mutation 通过 `ThreadDirectoryChanged` 增量事件发布，不新增平行 title 通知。
 
 ## 7.7 实时运行事实与 Flutter 投影边界
 
-Thread 的各 facet 来自同一权威发布者，但具有独立订阅与连续性域。需要一起解释的成对样本或
-执行事实放在同一 typed payload；不同 facet 不伪装成单事务原子快照。高频 metrics 不带 plan、
-workflow、服务列表或正文，不因样本覆盖导致 execution／context 重新订阅。Flutter 的 selector
-只优化呈现通知，不承担传输分割或修补领域水位的责任。
+Thread 的各 facet 来自同一权威发布者，但具有独立订阅与连续性域。需要一起解释的成对样本或执行事实放在同一类型化载荷；不同 facet 不伪装成单事务原子快照。高频 metrics 不带 plan、workflow、服务列表或正文，不因样本覆盖导致 execution／context 重新订阅。Flutter 的 selector只优化呈现通知，不承担传输分割或修补领域水位的责任。
 
-运行中的模型 usage 分为两类：`live` 是模型适配器或运行时 owner 能确认的尽力观察，
-`authoritative` 是 attempt 完成回执或持久化事实。适配器不能提供增量 token 时，live
-token 保持未知，宿主不得用字符数、字节数或本地计时冒充 token。live 观察不写入 durable
-`UsageSummary`，attempt 结束时由 authoritative 事实覆盖并清除 live 标识；重订阅首帧必须
-携带当前 live/authoritative 状态。吞吐 projection 只接受同一 live 观察内同时存在的
-有效 output token 与 decode 时长。live 任一字段缺失或无效时，不能借用另一 attempt 的字段
-拼成速度；状态栏可以改为完整采用 canonical runtime 中最近已确认的成对聚合样本。只有两类
-完整样本均不可用时才显示未知，具体选择与聚合保持语义见 [18](./18-studio-state.md) §18.8。
+运行中的模型 usage 分为两类：`live` 是模型适配器或运行时所有者能确认的尽力观察，`authoritative` 是 attempt 完成回执或持久化事实。适配器不能提供增量 token 时，live token 保持未知，宿主不得用字符数、字节数或本地计时冒充 token。live 观察不写入 durable`UsageSummary`，attempt 结束时由 authoritative 事实覆盖并清除 live 标识；重订阅首帧必须携带当前 live/authoritative 状态。吞吐投影只接受同一 live 观察内同时存在的有效 output token 与 decode 时长。live 任一字段缺失或无效时，不能借用另一 attempt 的字段拼成速度；状态栏可以改为完整采用权威运行时中最近已确认的成对聚合样本。只有两类完整样本均不可用时才显示未知，具体选择与聚合保持语义见 [18](./18-studio-state.md) §18.8。
 
-投影 owner 先折叠本轮已受理 effect，再向实际变化的 facet 发布小型 typed 事实；不能先构造
-完整 wire runtime 再要求 Dart 丢弃无关字段。终态计数不等待无关事件或页面重开，metrics 与
-context 的 Repository 分别归并各自水位；它们共享权威来源，而不是共享一个易互相阻塞的队列。
+投影所有者先折叠本轮已受理 effect，再向实际变化的 facet 发布小型类型化事实；不能先构造完整 wire 运行时再要求 Dart 丢弃无关字段。终态计数不等待无关事件或页面重开，metrics 与context 的仓储分别归并各自水位；它们共享权威来源，而不是共享一个易互相阻塞的队列。
 
-配置、模型目录与 Mode 目录变化也必须主动唤醒已驻留 Thread 的权威投影：route 可用性、
-Mode 删除提示及空闲会话采用的最终上下文策略由实际变化发布到所属 facet，不等待下一次
-token、Turn 或订阅读取时再补算。进行中请求与历史仍使用各自冻结绑定，不被当前目录重写。
-该失效通知只要求 owner 重新解释其已驻留事实，不为刷新 GUI 激活冷 Thread、读取全应用
-聚合状态或制造第二份配置／目录镜像；没有值变化不提升领域 revision。
+配置、模型目录与 Mode 目录变化也必须主动唤醒已驻留 Thread 的权威投影：route 可用性、Mode 删除提示及空闲会话采用的最终上下文策略由实际变化发布到所属 facet，不等待下一次token、Turn 或订阅读取时再补算。进行中请求与历史仍使用各自冻结绑定，不被当前目录重写。该失效通知只要求所有者重新解释其已驻留事实，不为刷新 GUI 激活冷 Thread、读取全应用聚合状态或制造第二份配置／目录镜像；没有值变化不提升领域 revision。
 
-所有用户可见实时字段都必须有可追踪的 owner、事件或快照、Dart reducer、watermark、selector
-和可见 lease。Widget 不能通过页面切换、延迟或轮询获得本应由事件提供的更新；缺失事件、
-`lagged`、关闭和旧 generation 统一按当前订阅生命周期处理，迟到事实不得写入新 Thread。
+所有用户可见实时字段都必须有可追踪的所有者、事件或快照、Dart 归并器、watermark、selector和可见租约。界面组件不能通过页面切换、延迟或轮询获得本应由事件提供的更新；缺失事件、`lagged`、关闭和旧 generation 统一按当前订阅生命周期处理，迟到事实不得写入新 Thread。

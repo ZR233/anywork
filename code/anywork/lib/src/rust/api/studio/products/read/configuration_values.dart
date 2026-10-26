@@ -6,6 +6,7 @@
 import '../../../../frb_generated.dart';
 import '../../conversation/identity.dart';
 import '../../observation.dart';
+import '../../types/acp.dart';
 import '../../types/delegation.dart';
 import '../../types/error.dart';
 import '../../types/settings.dart';
@@ -18,10 +19,9 @@ import 'package:freezed_annotation/freezed_annotation.dart' hide protected;
 import 'primitives.dart';
 part 'configuration_values.freezed.dart';
 
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`
 
 class BridgeAccountConfigurationRead {
-  final bool pricingEnabled;
   final BridgeBillingKind billingKind;
   final BridgeBillingKind? billingKindOverride;
   final BridgeTypedListRef disabledModels;
@@ -41,7 +41,6 @@ class BridgeAccountConfigurationRead {
   final BridgeReadText? catalogId;
 
   const BridgeAccountConfigurationRead({
-    required this.pricingEnabled,
     required this.billingKind,
     this.billingKindOverride,
     required this.disabledModels,
@@ -61,7 +60,6 @@ class BridgeAccountConfigurationRead {
 
   @override
   int get hashCode =>
-      pricingEnabled.hashCode ^
       billingKind.hashCode ^
       billingKindOverride.hashCode ^
       disabledModels.hashCode ^
@@ -83,7 +81,6 @@ class BridgeAccountConfigurationRead {
       identical(this, other) ||
       other is BridgeAccountConfigurationRead &&
           runtimeType == other.runtimeType &&
-          pricingEnabled == other.pricingEnabled &&
           billingKind == other.billingKind &&
           billingKindOverride == other.billingKindOverride &&
           disabledModels == other.disabledModels &&
@@ -101,9 +98,44 @@ class BridgeAccountConfigurationRead {
           catalogId == other.catalogId;
 }
 
+/// 一条 ACP 接入的固定读取行；ID 与名称按原 scope 文本字段分块读取。
+class BridgeAcpAccountConfigurationRead {
+  final BridgeReadText accountId;
+  final BridgeReadText name;
+  final BridgeAcpProvider provider;
+  final BigInt connectionRevision;
+
+  const BridgeAcpAccountConfigurationRead({
+    required this.accountId,
+    required this.name,
+    required this.provider,
+    required this.connectionRevision,
+  });
+
+  @override
+  int get hashCode =>
+      accountId.hashCode ^
+      name.hashCode ^
+      provider.hashCode ^
+      connectionRevision.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is BridgeAcpAccountConfigurationRead &&
+          runtimeType == other.runtimeType &&
+          accountId == other.accountId &&
+          name == other.name &&
+          provider == other.provider &&
+          connectionRevision == other.connectionRevision;
+}
+
 class BridgeConfigurationReadHeader {
   final BridgeReadText? defaultAccountId;
   final BridgeTypedListRef accounts;
+
+  /// ACP 账号目录行；`connectionRevision` 来自 ACP 身份所有者，不是设置版本。
+  final BridgeTypedListRef acpAccounts;
   final BridgeTypedListRef modeModelRoutes;
   final BridgeTypedListRef roles;
   final BridgeReadText permissionMode;
@@ -118,6 +150,7 @@ class BridgeConfigurationReadHeader {
   const BridgeConfigurationReadHeader({
     this.defaultAccountId,
     required this.accounts,
+    required this.acpAccounts,
     required this.modeModelRoutes,
     required this.roles,
     required this.permissionMode,
@@ -134,6 +167,7 @@ class BridgeConfigurationReadHeader {
   int get hashCode =>
       defaultAccountId.hashCode ^
       accounts.hashCode ^
+      acpAccounts.hashCode ^
       modeModelRoutes.hashCode ^
       roles.hashCode ^
       permissionMode.hashCode ^
@@ -152,6 +186,7 @@ class BridgeConfigurationReadHeader {
           runtimeType == other.runtimeType &&
           defaultAccountId == other.defaultAccountId &&
           accounts == other.accounts &&
+          acpAccounts == other.acpAccounts &&
           modeModelRoutes == other.modeModelRoutes &&
           roles == other.roles &&
           permissionMode == other.permissionMode &&

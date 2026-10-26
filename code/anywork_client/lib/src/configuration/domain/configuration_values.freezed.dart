@@ -282,20 +282,20 @@ $AccountConfigurationCopyWith<AccountConfiguration> get copyWith => _$AccountCon
 @override
 bool operator ==(Object other) {
   final _this = this as AccountConfiguration;
-  return identical(this, other) || (other.runtimeType == runtimeType&&other is AccountConfiguration&&(identical(other.pricingEnabled, _this.pricingEnabled) || other.pricingEnabled == _this.pricingEnabled)&&(identical(other.billingKind, _this.billingKind) || other.billingKind == _this.billingKind)&&(identical(other.billingKindOverride, _this.billingKindOverride) || other.billingKindOverride == _this.billingKindOverride)&&const DeepCollectionEquality().equals(other.disabledModels, _this.disabledModels)&&(identical(other.accountId, _this.accountId) || other.accountId == _this.accountId)&&(identical(other.templateId, _this.templateId) || other.templateId == _this.templateId)&&(identical(other.protocol, _this.protocol) || other.protocol == _this.protocol)&&(identical(other.name, _this.name) || other.name == _this.name)&&(identical(other.baseUrl, _this.baseUrl) || other.baseUrl == _this.baseUrl)&&(identical(other.hasBearerToken, _this.hasBearerToken) || other.hasBearerToken == _this.hasBearerToken)&&(identical(other.bearerTokenEnv, _this.bearerTokenEnv) || other.bearerTokenEnv == _this.bearerTokenEnv)&&(identical(other.usageQueryRevision, _this.usageQueryRevision) || other.usageQueryRevision == _this.usageQueryRevision)&&const DeepCollectionEquality().equals(other.customModels, _this.customModels)&&const DeepCollectionEquality().equals(other.modelConnectionModes, _this.modelConnectionModes)&&const DeepCollectionEquality().equals(other.modelAutoCompactLimits, _this.modelAutoCompactLimits)&&(identical(other.catalogId, _this.catalogId) || other.catalogId == _this.catalogId));
+  return identical(this, other) || (other.runtimeType == runtimeType&&other is AccountConfiguration&&(identical(other.billingKind, _this.billingKind) || other.billingKind == _this.billingKind)&&(identical(other.billingKindOverride, _this.billingKindOverride) || other.billingKindOverride == _this.billingKindOverride)&&const DeepCollectionEquality().equals(other.disabledModels, _this.disabledModels)&&(identical(other.accountId, _this.accountId) || other.accountId == _this.accountId)&&(identical(other.templateId, _this.templateId) || other.templateId == _this.templateId)&&(identical(other.protocol, _this.protocol) || other.protocol == _this.protocol)&&(identical(other.name, _this.name) || other.name == _this.name)&&(identical(other.baseUrl, _this.baseUrl) || other.baseUrl == _this.baseUrl)&&(identical(other.hasBearerToken, _this.hasBearerToken) || other.hasBearerToken == _this.hasBearerToken)&&(identical(other.bearerTokenEnv, _this.bearerTokenEnv) || other.bearerTokenEnv == _this.bearerTokenEnv)&&(identical(other.usageQueryRevision, _this.usageQueryRevision) || other.usageQueryRevision == _this.usageQueryRevision)&&const DeepCollectionEquality().equals(other.customModels, _this.customModels)&&const DeepCollectionEquality().equals(other.modelConnectionModes, _this.modelConnectionModes)&&const DeepCollectionEquality().equals(other.modelAutoCompactLimits, _this.modelAutoCompactLimits)&&(identical(other.catalogId, _this.catalogId) || other.catalogId == _this.catalogId));
 }
 
 
 @override
 int get hashCode {
   final _this = this as AccountConfiguration;
-  return Object.hash(runtimeType,_this.pricingEnabled,_this.billingKind,_this.billingKindOverride,const DeepCollectionEquality().hash(_this.disabledModels),_this.accountId,_this.templateId,_this.protocol,_this.name,_this.baseUrl,_this.hasBearerToken,_this.bearerTokenEnv,_this.usageQueryRevision,const DeepCollectionEquality().hash(_this.customModels),const DeepCollectionEquality().hash(_this.modelConnectionModes),const DeepCollectionEquality().hash(_this.modelAutoCompactLimits),_this.catalogId);
+  return Object.hash(runtimeType,_this.billingKind,_this.billingKindOverride,const DeepCollectionEquality().hash(_this.disabledModels),_this.accountId,_this.templateId,_this.protocol,_this.name,_this.baseUrl,_this.hasBearerToken,_this.bearerTokenEnv,_this.usageQueryRevision,const DeepCollectionEquality().hash(_this.customModels),const DeepCollectionEquality().hash(_this.modelConnectionModes),const DeepCollectionEquality().hash(_this.modelAutoCompactLimits),_this.catalogId);
 }
 
 @override
 String toString() {
   final _this = this as AccountConfiguration;
-  return 'AccountConfiguration(pricingEnabled: ${_this.pricingEnabled}, billingKind: ${_this.billingKind}, billingKindOverride: ${_this.billingKindOverride}, disabledModels: ${_this.disabledModels}, accountId: ${_this.accountId}, templateId: ${_this.templateId}, protocol: ${_this.protocol}, name: ${_this.name}, baseUrl: ${_this.baseUrl}, hasBearerToken: ${_this.hasBearerToken}, bearerTokenEnv: ${_this.bearerTokenEnv}, usageQueryRevision: ${_this.usageQueryRevision}, customModels: ${_this.customModels}, modelConnectionModes: ${_this.modelConnectionModes}, modelAutoCompactLimits: ${_this.modelAutoCompactLimits}, catalogId: ${_this.catalogId})';
+  return 'AccountConfiguration(billingKind: ${_this.billingKind}, billingKindOverride: ${_this.billingKindOverride}, disabledModels: ${_this.disabledModels}, accountId: ${_this.accountId}, templateId: ${_this.templateId}, protocol: ${_this.protocol}, name: ${_this.name}, baseUrl: ${_this.baseUrl}, hasBearerToken: ${_this.hasBearerToken}, bearerTokenEnv: ${_this.bearerTokenEnv}, usageQueryRevision: ${_this.usageQueryRevision}, customModels: ${_this.customModels}, modelConnectionModes: ${_this.modelConnectionModes}, modelAutoCompactLimits: ${_this.modelAutoCompactLimits}, catalogId: ${_this.catalogId})';
 }
 
 
@@ -306,7 +306,7 @@ abstract mixin class $AccountConfigurationCopyWith<$Res>  {
   factory $AccountConfigurationCopyWith(AccountConfiguration value, $Res Function(AccountConfiguration) _then) = _$AccountConfigurationCopyWithImpl;
 @useResult
 $Res call({
- bool pricingEnabled, BillingKind billingKind, BillingKind? billingKindOverride, List<String> disabledModels, String accountId, String? templateId, String protocol, String name, String baseUrl, bool hasBearerToken, String? bearerTokenEnv, int usageQueryRevision, List<CustomModelConfiguration> customModels, List<ModelConnection> modelConnectionModes, List<ModelAutoCompact> modelAutoCompactLimits, String? catalogId
+ BillingKind billingKind, BillingKind? billingKindOverride, List<String> disabledModels, String accountId, String? templateId, String protocol, String name, String baseUrl, bool hasBearerToken, String? bearerTokenEnv, int usageQueryRevision, List<CustomModelConfiguration> customModels, List<ModelConnection> modelConnectionModes, List<ModelAutoCompact> modelAutoCompactLimits, String? catalogId
 });
 
 
@@ -323,10 +323,9 @@ class _$AccountConfigurationCopyWithImpl<$Res>
 
 /// Create a copy of AccountConfiguration
 /// with the given fields replaced by the non-null parameter values.
-@pragma('vm:prefer-inline') @override $Res call({Object? pricingEnabled = null,Object? billingKind = null,Object? billingKindOverride = freezed,Object? disabledModels = null,Object? accountId = null,Object? templateId = freezed,Object? protocol = null,Object? name = null,Object? baseUrl = null,Object? hasBearerToken = null,Object? bearerTokenEnv = freezed,Object? usageQueryRevision = null,Object? customModels = null,Object? modelConnectionModes = null,Object? modelAutoCompactLimits = null,Object? catalogId = freezed,}) {
+@pragma('vm:prefer-inline') @override $Res call({Object? billingKind = null,Object? billingKindOverride = freezed,Object? disabledModels = null,Object? accountId = null,Object? templateId = freezed,Object? protocol = null,Object? name = null,Object? baseUrl = null,Object? hasBearerToken = null,Object? bearerTokenEnv = freezed,Object? usageQueryRevision = null,Object? customModels = null,Object? modelConnectionModes = null,Object? modelAutoCompactLimits = null,Object? catalogId = freezed,}) {
   return _then(AccountConfiguration(
-pricingEnabled: null == pricingEnabled ? _self.pricingEnabled : pricingEnabled // ignore: cast_nullable_to_non_nullable
-as bool,billingKind: null == billingKind ? _self.billingKind : billingKind // ignore: cast_nullable_to_non_nullable
+billingKind: null == billingKind ? _self.billingKind : billingKind // ignore: cast_nullable_to_non_nullable
 as BillingKind,billingKindOverride: freezed == billingKindOverride ? _self.billingKindOverride : billingKindOverride // ignore: cast_nullable_to_non_nullable
 as BillingKind?,disabledModels: null == disabledModels ? _self.disabledModels : disabledModels // ignore: cast_nullable_to_non_nullable
 as List<String>,accountId: null == accountId ? _self.accountId : accountId // ignore: cast_nullable_to_non_nullable

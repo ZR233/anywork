@@ -31,7 +31,8 @@ pub struct AccountEdit {
     pub name: String,
     pub base_url: Option<String>,
     pub bearer_token: Option<String>,
-    pub pricing_mode: pl_protocol::PricingMode,
+    /// 只用于新账号；已有账号的计费类别由独立窄命令修改。
+    pub initial_billing_kind: Option<pl_protocol::BillingKind>,
     pub custom_models: Vec<AccountModelEdit>,
     pub model_connection_modes: BTreeMap<String, ConnectionMode>,
     /// 该 account 实例完整的上下文压缩阈值用户覆盖集合；未列出模型使用默认值。
@@ -229,7 +230,13 @@ impl AccountEdit {
                 *connection_overrides = self.model_connection_modes.clone();
             }
         }
-        config.pricing_mode = self.pricing_mode;
+        if current.is_none() {
+            config.billing_kind = self.initial_billing_kind;
+        } else if self.initial_billing_kind.is_some() {
+            return Err(PureError::ConfigError(
+                "existing account billing kind requires its dedicated command".into(),
+            ));
+        }
         if let Some(protocol) = template_protocol {
             config.protocol = protocol;
         }

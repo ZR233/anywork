@@ -15,7 +15,6 @@ AccountTemplatesReadHeader templatesReadHeaderFromBridge(
 AccountTemplateRead accountTemplateReadFromBridge(
   native.BridgeAccountTemplateRead value,
 ) => AccountTemplateRead(
-  pricingEnabled: value.pricingEnabled,
   id: readTextFromBridge(value.id),
   displayName: readTextFromBridge(value.displayName),
   description: nullableReadText(value.description),

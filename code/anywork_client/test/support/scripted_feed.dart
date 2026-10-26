@@ -22,6 +22,11 @@ final class ScriptedFeed<T> implements FeedConnection<T> {
   final _ackWaiters = <int, Completer<void>>{};
   Completer<void>? cancellationReceipt;
   Completer<void>? ackReceipt;
+
+  /// Completes when the first acknowledgement actually entered the native call,
+  /// before that call's own receipt resolves. This is the real handshake for
+  /// holding an in-flight acknowledgement; no timer guesses when it is reached.
+  final acknowledgementEntered = Completer<int>();
   Completer<FeedCloseReport>? closeReceipt;
   FeedCloseOutcome outcome = const FeedCloseOutcome.clean();
   int closeCalls = 0;
@@ -73,6 +78,9 @@ final class ScriptedFeed<T> implements FeedConnection<T> {
   Future<void> ackThrough(int deliverySequence) async {
     if (deliverySequence < _acknowledged || deliverySequence > _sent) {
       throw _failure(StudioFailureCode.invalidArgument);
+    }
+    if (!acknowledgementEntered.isCompleted) {
+      acknowledgementEntered.complete(deliverySequence);
     }
     await ackReceipt?.future;
     _acknowledged = deliverySequence;

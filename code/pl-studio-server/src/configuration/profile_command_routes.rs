@@ -27,22 +27,20 @@ pub(super) struct FindCallRequest {
 
 pub(super) fn router() -> OpenApiRouter<AppState> {
     OpenApiRouter::new()
-        .routes(routes!(
-            begin_profile,
-            find_profile,
-            profile_result,
-            profile_request_close,
-            profile_close,
-            profile_retry_close
-        ))
-        .routes(routes!(
-            begin_reload,
-            find_reload,
-            reload_result,
-            reload_request_close,
-            reload_close,
-            reload_retry_close
-        ))
+        // 每个 handler 各自声明自己的 path/method：`routes!` 只产生一个 MethodRouter，
+        // 多个同 method 的 handler 放进同一次调用会在装配期重复登记 POST。
+        .routes(routes!(begin_profile))
+        .routes(routes!(find_profile))
+        .routes(routes!(profile_result))
+        .routes(routes!(profile_request_close))
+        .routes(routes!(profile_close))
+        .routes(routes!(profile_retry_close))
+        .routes(routes!(begin_reload))
+        .routes(routes!(find_reload))
+        .routes(routes!(reload_result))
+        .routes(routes!(reload_request_close))
+        .routes(routes!(reload_close))
+        .routes(routes!(reload_retry_close))
 }
 fn begin(
     state: &AppState,

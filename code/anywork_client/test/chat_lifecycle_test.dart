@@ -31,6 +31,40 @@ _openReady(
 Matcher _failure(StudioFailureCode code) =>
     isA<StudioFailure>().having((error) => error.code, 'code', code);
 
+const _retryableNativeIssue = FeedCloseIssue(
+  diagnostic: StudioShutdownIssue(
+    stage: 'test-timeline',
+    code: 'nativeClosePending',
+    message: 'The original native close still needs an explicit retry.',
+    retryable: true,
+    correlationId: 'gate-cleanup-pending',
+  ),
+  recovery: CleanupRecovery.retryClose,
+);
+
+FeedCloseReport _retryableClose(TestTimelineConnection native) =>
+    FeedCloseReport(
+      feedId: native.feedId,
+      outcome: FeedCloseOutcome.unresolved(
+        issues: const [_retryableNativeIssue],
+      ),
+    );
+
+/// Keeps an early failure of a join that is awaited later from becoming an
+/// unhandled async error. The caller still awaits the original Future, so that
+/// completion stays the only proof the responsibility really released.
+Future<T> _watchedJoin<T>(Future<T> join, List<Object> failures) {
+  unawaited(
+    join.then<void>(
+      (_) {},
+      onError: (Object error, StackTrace stack) {
+        failures.add(error);
+      },
+    ),
+  );
+  return join;
+}
+
 void main() {
   for (final pendingOpen in [false, true]) {
     test(
@@ -445,8 +479,137 @@ void main() {
       TimelineConnectionPhase.ready,
     );
     expect(ready.session.timeline.state.value.lastStamp!.viewId, 'new');
+    // retryCleanup continues only already retired cleanup; the original close
+    // responsibility (and its permits) still has to be requested explicitly.
+    expect((await fixture.repository.close()).complete, isFalse);
     old.closeFailure = null;
     expect((await fixture.repository.retryCleanup()).complete, isTrue);
+    expect(old.retryCloseCalls, 1);
+    expect(fixture.budget.usage, isEmpty);
+  });
+
+  test('a retry observed through an expired deadline still advances once on the original handle', () async {
+    final fixture = ConversationFixture();
+    final gateScope = baseline(1, subscriptionId: 'gate');
+    final native = TestTimelineConnection(initial: gateScope);
+    // Attempt 0 is the original close, 1 the retained retry and 2 the next
+    // explicit retry. Each attempt's native reply is frozen by its own index,
+    // so no attempt can ever consume a result scripted for another one.
+    final originalReply = Completer<FeedCloseReport>();
+    final retainedReply = Completer<FeedCloseReport>();
+    final secondReply = Completer<FeedCloseReport>();
+    native.scriptedCloseReplies[0] = originalReply;
+    native.scriptedCloseReplies[1] = retainedReply;
+    native.scriptedCloseReplies[2] = secondReply;
+    final ready = await _openReady(fixture, native: native);
+
+    // The original close join is genuinely in flight: its own native reply has
+    // not arrived. That is the attempt's real reply point, not the snapshot an
+    // expired deadline happens to return.
+    expect(
+      (await fixture.repository.close(deadline: DateTime.utc(2000))).complete,
+      isFalse,
+    );
+    await native.closeStarted.future;
+    final originalAttempt = await native.closeAttempt(0);
+    await originalAttempt.entered.future;
+    expect(originalAttempt.index, 0);
+    expect(originalAttempt.retry, isFalse);
+
+    // A retry observed through an expired deadline returns the current
+    // unresolved state. It neither cancels the original join nor drops the
+    // retry the caller already asked for.
+    expect(
+      (await fixture.repository.retryCleanup(deadline: DateTime.utc(2000)))
+          .complete,
+      isFalse,
+    );
+    expect(
+      ready.connection.native.retryCloseCalls,
+      0,
+      reason: 'The retained retry has not reached the handle yet',
+    );
+
+    // The original join really answers unresolved, so its responsibility stays
+    // registered instead of exiting clean.
+    originalReply.complete(_retryableClose(native));
+
+    // Without another public call the retained retry really reaches the handle.
+    final retainedAttempt = await native.closeAttempt(1);
+    await retainedAttempt.entered.future;
+    expect(retainedAttempt.index, 1);
+    expect(retainedAttempt.retry, isTrue);
+
+    // While that attempt is still gated, a second public retry joins the retry
+    // already accepted instead of asking for a third one. Its future is kept
+    // and awaited later: finishing it is the proof the SDK released the retry
+    // join, which no fake completion can stand in for.
+    final retainedFailures = <Object>[];
+    final retainedRetryJoin = _watchedJoin(
+      fixture.repository.retryCleanup(),
+      retainedFailures,
+    );
+
+    retainedReply.complete(_retryableClose(native));
+    final retainedReport = await retainedAttempt.settled.future;
+    expect(retainedReport.outcome, isA<UnresolvedFeedCloseOutcome>());
+    final retainedJoinReport = await retainedRetryJoin;
+    expect(retainedFailures, isEmpty);
+    expect(retainedJoinReport.complete, isFalse);
+    final retainedIssues = <FeedCloseIssue>[
+      for (final resource in retainedJoinReport.unresolved) ...resource.issues,
+    ];
+    expect(
+      retainedIssues,
+      contains(_retryableNativeIssue),
+      reason: 'The original unresolved native issue is still owed, intact',
+    );
+    // A public join that returned a premature snapshot instead of joining the
+    // accepted retry would also report the still-running work as pending, so
+    // nothing of this connection may still be awaiting completion here.
+    expect(
+      retainedIssues.where(
+        (issue) => issue.recovery == CleanupRecovery.awaitCompletion,
+      ),
+      isEmpty,
+      reason: 'A premature snapshot would report pending work, not a release',
+    );
+    expect(
+      retainedIssues.where(
+        (issue) => issue.diagnostic.correlationId == 'conversation-join',
+      ),
+      isEmpty,
+      reason: 'The connection join marker must not survive a released retry',
+    );
+    expect(ready.connection.native.retryCloseCalls, 1);
+    expect(
+      ready.connection.native.nativeJoinCalls,
+      2,
+      reason: 'The original join plus exactly one retained retry',
+    );
+
+    // A later explicit retry is a new caller decision and advances once more on
+    // the same handle; its reply is scripted only for this final attempt.
+    final finalFailures = <Object>[];
+    final finalRetry = _watchedJoin(
+      fixture.repository.retryCleanup(),
+      finalFailures,
+    );
+    final lastAttempt = await native.closeAttempt(2);
+    await lastAttempt.entered.future;
+    expect(lastAttempt.index, 2);
+    expect(lastAttempt.retry, isTrue);
+    secondReply.complete(
+      FeedCloseReport(
+        feedId: native.feedId,
+        outcome: const FeedCloseOutcome.clean(),
+      ),
+    );
+    expect((await finalRetry).complete, isTrue);
+    expect(finalFailures, isEmpty);
+    expect(ready.connection.native.retryCloseCalls, 2);
+    expect(ready.connection.native.nativeJoinCalls, 3);
+    expect(native.closeAttempts, hasLength(3));
     expect(fixture.budget.usage, isEmpty);
   });
 

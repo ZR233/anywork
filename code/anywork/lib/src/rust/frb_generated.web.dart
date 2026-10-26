@@ -32,6 +32,8 @@ import 'api/studio/draft_commands/commands.dart';
 import 'api/studio/draft_commands/handles.dart';
 import 'api/studio/draft_commands/types.dart';
 import 'api/studio/handlers/accounts.dart';
+import 'api/studio/handlers/acp.dart';
+import 'api/studio/handlers/acp_install.dart';
 import 'api/studio/handlers/agent_profiles.dart';
 import 'api/studio/handlers/attachment.dart';
 import 'api/studio/handlers/bots.dart';
@@ -51,6 +53,10 @@ import 'api/studio/observation.dart';
 import 'api/studio/products/feed/account_templates.dart';
 import 'api/studio/products/feed/account_usage.dart';
 import 'api/studio/products/feed/account_usage_transport.dart';
+import 'api/studio/products/feed/acp_auth.dart';
+import 'api/studio/products/feed/acp_auth_transport.dart';
+import 'api/studio/products/feed/acp_install.dart';
+import 'api/studio/products/feed/acp_install_transport.dart';
 import 'api/studio/products/feed/agent_directory.dart';
 import 'api/studio/products/feed/agent_directory_transport.dart';
 import 'api/studio/products/feed/agent_profiles.dart';
@@ -96,6 +102,7 @@ import 'api/studio/products/read/bot_conversations.dart';
 import 'api/studio/products/read/bots.dart';
 import 'api/studio/products/read/catalog.dart';
 import 'api/studio/products/read/configuration.dart';
+import 'api/studio/products/read/configuration_acp_commands.dart';
 import 'api/studio/products/read/configuration_commands.dart';
 import 'api/studio/products/read/configuration_pages.dart';
 import 'api/studio/products/read/configuration_values.dart';
@@ -129,6 +136,8 @@ import 'api/studio/subscription/product_topic.dart';
 import 'api/studio/subscription/shutdown.dart';
 import 'api/studio/subscription/thread.dart';
 import 'api/studio/subscription/typed_feed.dart';
+import 'api/studio/types/acp.dart';
+import 'api/studio/types/acp_install.dart';
 import 'api/studio/types/agent_profile.dart';
 import 'api/studio/types/attachment.dart';
 import 'api/studio/types/bots.dart';
@@ -185,6 +194,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   CrossPlatformFinalizerArg
   get rust_arc_decrement_strong_count_BridgeAccountUsageSourceStatusReadConnectionPtr =>
       wire.rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeAccountUsageSourceStatusReadConnection;
+
+  CrossPlatformFinalizerArg
+  get rust_arc_decrement_strong_count_BridgeAcpAccountCommandCallPtr => wire
+      .rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeAcpAccountCommandCall;
+
+  CrossPlatformFinalizerArg
+  get rust_arc_decrement_strong_count_BridgeAcpAuthFeedPtr => wire
+      .rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeAcpAuthFeed;
+
+  CrossPlatformFinalizerArg
+  get rust_arc_decrement_strong_count_BridgeAcpInstallFeedPtr => wire
+      .rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeAcpInstallFeed;
 
   CrossPlatformFinalizerArg
   get rust_arc_decrement_strong_count_BridgeActivityReadPtr => wire
@@ -552,6 +573,24 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   BridgeAccountUsageSourceStatusReadConnection
   dco_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeAccountUsageSourceStatusReadConnection(
+    dynamic raw,
+  );
+
+  @protected
+  BridgeAcpAccountCommandCall
+  dco_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeAcpAccountCommandCall(
+    dynamic raw,
+  );
+
+  @protected
+  BridgeAcpAuthFeed
+  dco_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeAcpAuthFeed(
+    dynamic raw,
+  );
+
+  @protected
+  BridgeAcpInstallFeed
+  dco_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeAcpInstallFeed(
     dynamic raw,
   );
 
@@ -1090,6 +1129,24 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  BridgeAcpAccountCommandCall
+  dco_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeAcpAccountCommandCall(
+    dynamic raw,
+  );
+
+  @protected
+  BridgeAcpAuthFeed
+  dco_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeAcpAuthFeed(
+    dynamic raw,
+  );
+
+  @protected
+  BridgeAcpInstallFeed
+  dco_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeAcpInstallFeed(
+    dynamic raw,
+  );
+
+  @protected
   BridgeActivityRead
   dco_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeActivityRead(
     dynamic raw,
@@ -1624,6 +1681,24 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  BridgeAcpAccountCommandCall
+  dco_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeAcpAccountCommandCall(
+    dynamic raw,
+  );
+
+  @protected
+  BridgeAcpAuthFeed
+  dco_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeAcpAuthFeed(
+    dynamic raw,
+  );
+
+  @protected
+  BridgeAcpInstallFeed
+  dco_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeAcpInstallFeed(
+    dynamic raw,
+  );
+
+  @protected
   BridgeActivityRead
   dco_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeActivityRead(
     dynamic raw,
@@ -2136,6 +2211,14 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   dco_decode_StreamSink_bridge_account_usage_frame_Sse(dynamic raw);
 
   @protected
+  RustStreamSink<BridgeAcpAuthFrame>
+  dco_decode_StreamSink_bridge_acp_auth_frame_Sse(dynamic raw);
+
+  @protected
+  RustStreamSink<BridgeAcpInstallFrame>
+  dco_decode_StreamSink_bridge_acp_install_frame_Sse(dynamic raw);
+
+  @protected
   RustStreamSink<BridgeAgentDirectoryFrame>
   dco_decode_StreamSink_bridge_agent_directory_frame_Sse(dynamic raw);
 
@@ -2301,6 +2384,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   bool dco_decode_bool(dynamic raw);
 
   @protected
+  BridgeAcpAccountCommandCall
+  dco_decode_box_autoadd_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeAcpAccountCommandCall(
+    dynamic raw,
+  );
+
+  @protected
   BridgeAttachmentAdmission
   dco_decode_box_autoadd_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeAttachmentAdmission(
     dynamic raw,
@@ -2397,6 +2486,73 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   BridgeAccountUsageStateSnapshot
   dco_decode_box_autoadd_bridge_account_usage_state_snapshot(dynamic raw);
+
+  @protected
+  BridgeAcpAccountCommandReply
+  dco_decode_box_autoadd_bridge_acp_account_command_reply(dynamic raw);
+
+  @protected
+  BridgeAcpAccountMutation dco_decode_box_autoadd_bridge_acp_account_mutation(
+    dynamic raw,
+  );
+
+  @protected
+  BridgeAcpAccountUpdate dco_decode_box_autoadd_bridge_acp_account_update(
+    dynamic raw,
+  );
+
+  @protected
+  BridgeAcpAuthAction dco_decode_box_autoadd_bridge_acp_auth_action(
+    dynamic raw,
+  );
+
+  @protected
+  BridgeAcpAuthEvent dco_decode_box_autoadd_bridge_acp_auth_event(dynamic raw);
+
+  @protected
+  BridgeAcpAuthFailure dco_decode_box_autoadd_bridge_acp_auth_failure(
+    dynamic raw,
+  );
+
+  @protected
+  BridgeAcpAuthSnapshot dco_decode_box_autoadd_bridge_acp_auth_snapshot(
+    dynamic raw,
+  );
+
+  @protected
+  BridgeAcpInstallEvent dco_decode_box_autoadd_bridge_acp_install_event(
+    dynamic raw,
+  );
+
+  @protected
+  BridgeAcpInstallFailure dco_decode_box_autoadd_bridge_acp_install_failure(
+    dynamic raw,
+  );
+
+  @protected
+  BridgeAcpInstallProgress dco_decode_box_autoadd_bridge_acp_install_progress(
+    dynamic raw,
+  );
+
+  @protected
+  BridgeAcpInstallRelease dco_decode_box_autoadd_bridge_acp_install_release(
+    dynamic raw,
+  );
+
+  @protected
+  BridgeAcpInstallSnapshot dco_decode_box_autoadd_bridge_acp_install_snapshot(
+    dynamic raw,
+  );
+
+  @protected
+  BridgeAcpInstalledServer dco_decode_box_autoadd_bridge_acp_installed_server(
+    dynamic raw,
+  );
+
+  @protected
+  BridgeAcpServerInfo dco_decode_box_autoadd_bridge_acp_server_info(
+    dynamic raw,
+  );
 
   @protected
   BridgeActivityBrief dco_decode_box_autoadd_bridge_activity_brief(dynamic raw);
@@ -3760,6 +3916,14 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  BridgeAcpAuthSnapshot dco_decode_box_bridge_acp_auth_snapshot(dynamic raw);
+
+  @protected
+  BridgeAcpInstallSnapshot dco_decode_box_bridge_acp_install_snapshot(
+    dynamic raw,
+  );
+
+  @protected
   BridgeAgentProfilesStateSnapshot
   dco_decode_box_bridge_agent_profiles_state_snapshot(dynamic raw);
 
@@ -4005,6 +4169,128 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   BridgeAccountUsageStateSnapshot
   dco_decode_bridge_account_usage_state_snapshot(dynamic raw);
+
+  @protected
+  BridgeAcpAccountCatalog dco_decode_bridge_acp_account_catalog(dynamic raw);
+
+  @protected
+  BridgeAcpAccountCommandOutcome dco_decode_bridge_acp_account_command_outcome(
+    dynamic raw,
+  );
+
+  @protected
+  BridgeAcpAccountCommandReply dco_decode_bridge_acp_account_command_reply(
+    dynamic raw,
+  );
+
+  @protected
+  BridgeAcpAccountConfigurationRead
+  dco_decode_bridge_acp_account_configuration_read(dynamic raw);
+
+  @protected
+  BridgeAcpAccountConfigurationReadPage
+  dco_decode_bridge_acp_account_configuration_read_page(dynamic raw);
+
+  @protected
+  BridgeAcpAccountMutation dco_decode_bridge_acp_account_mutation(dynamic raw);
+
+  @protected
+  BridgeAcpAccountSettings dco_decode_bridge_acp_account_settings(dynamic raw);
+
+  @protected
+  BridgeAcpAccountTemplate dco_decode_bridge_acp_account_template(dynamic raw);
+
+  @protected
+  BridgeAcpAccountUpdate dco_decode_bridge_acp_account_update(dynamic raw);
+
+  @protected
+  BridgeAcpAuthAccount dco_decode_bridge_acp_auth_account(dynamic raw);
+
+  @protected
+  BridgeAcpAuthAction dco_decode_bridge_acp_auth_action(dynamic raw);
+
+  @protected
+  BridgeAcpAuthCommandReply dco_decode_bridge_acp_auth_command_reply(
+    dynamic raw,
+  );
+
+  @protected
+  BridgeAcpAuthEvent dco_decode_bridge_acp_auth_event(dynamic raw);
+
+  @protected
+  BridgeAcpAuthFailure dco_decode_bridge_acp_auth_failure(dynamic raw);
+
+  @protected
+  BridgeAcpAuthFailureCode dco_decode_bridge_acp_auth_failure_code(dynamic raw);
+
+  @protected
+  BridgeAcpAuthFrame dco_decode_bridge_acp_auth_frame(dynamic raw);
+
+  @protected
+  BridgeAcpAuthMethod dco_decode_bridge_acp_auth_method(dynamic raw);
+
+  @protected
+  BridgeAcpAuthMethodKind dco_decode_bridge_acp_auth_method_kind(dynamic raw);
+
+  @protected
+  BridgeAcpAuthSnapshot dco_decode_bridge_acp_auth_snapshot(dynamic raw);
+
+  @protected
+  BridgeAcpAuthStage dco_decode_bridge_acp_auth_stage(dynamic raw);
+
+  @protected
+  BridgeAcpAuthState dco_decode_bridge_acp_auth_state(dynamic raw);
+
+  @protected
+  BridgeAcpInstallAvailability dco_decode_bridge_acp_install_availability(
+    dynamic raw,
+  );
+
+  @protected
+  BridgeAcpInstallCommandReply dco_decode_bridge_acp_install_command_reply(
+    dynamic raw,
+  );
+
+  @protected
+  BridgeAcpInstallEntry dco_decode_bridge_acp_install_entry(dynamic raw);
+
+  @protected
+  BridgeAcpInstallEvent dco_decode_bridge_acp_install_event(dynamic raw);
+
+  @protected
+  BridgeAcpInstallFailure dco_decode_bridge_acp_install_failure(dynamic raw);
+
+  @protected
+  BridgeAcpInstallFailureCode dco_decode_bridge_acp_install_failure_code(
+    dynamic raw,
+  );
+
+  @protected
+  BridgeAcpInstallFrame dco_decode_bridge_acp_install_frame(dynamic raw);
+
+  @protected
+  BridgeAcpInstallProgress dco_decode_bridge_acp_install_progress(dynamic raw);
+
+  @protected
+  BridgeAcpInstallRelease dco_decode_bridge_acp_install_release(dynamic raw);
+
+  @protected
+  BridgeAcpInstallSnapshot dco_decode_bridge_acp_install_snapshot(dynamic raw);
+
+  @protected
+  BridgeAcpInstallStage dco_decode_bridge_acp_install_stage(dynamic raw);
+
+  @protected
+  BridgeAcpInstallState dco_decode_bridge_acp_install_state(dynamic raw);
+
+  @protected
+  BridgeAcpInstalledServer dco_decode_bridge_acp_installed_server(dynamic raw);
+
+  @protected
+  BridgeAcpProvider dco_decode_bridge_acp_provider(dynamic raw);
+
+  @protected
+  BridgeAcpServerInfo dco_decode_bridge_acp_server_info(dynamic raw);
 
   @protected
   BridgeActiveTurn dco_decode_bridge_active_turn(dynamic raw);
@@ -7355,6 +7641,33 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  List<BridgeAcpAccountConfigurationRead>
+  dco_decode_list_bridge_acp_account_configuration_read(dynamic raw);
+
+  @protected
+  List<BridgeAcpAccountSettings> dco_decode_list_bridge_acp_account_settings(
+    dynamic raw,
+  );
+
+  @protected
+  List<BridgeAcpAccountTemplate> dco_decode_list_bridge_acp_account_template(
+    dynamic raw,
+  );
+
+  @protected
+  List<BridgeAcpAuthAccount> dco_decode_list_bridge_acp_auth_account(
+    dynamic raw,
+  );
+
+  @protected
+  List<BridgeAcpAuthMethod> dco_decode_list_bridge_acp_auth_method(dynamic raw);
+
+  @protected
+  List<BridgeAcpInstallEntry> dco_decode_list_bridge_acp_install_entry(
+    dynamic raw,
+  );
+
+  @protected
   List<BridgeActiveTurn> dco_decode_list_bridge_active_turn(dynamic raw);
 
   @protected
@@ -7944,6 +8257,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   String? dco_decode_opt_String(dynamic raw);
 
   @protected
+  BridgeAcpAccountCommandCall?
+  dco_decode_opt_box_autoadd_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeAcpAccountCommandCall(
+    dynamic raw,
+  );
+
+  @protected
   BridgeAttachmentAdmission?
   dco_decode_opt_box_autoadd_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeAttachmentAdmission(
     dynamic raw,
@@ -7984,6 +8303,20 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   BridgeAccountUsageReadRef?
   dco_decode_opt_box_autoadd_bridge_account_usage_read_ref(dynamic raw);
+
+  @protected
+  BridgeAcpAuthFailure? dco_decode_opt_box_autoadd_bridge_acp_auth_failure(
+    dynamic raw,
+  );
+
+  @protected
+  BridgeAcpInstallFailure?
+  dco_decode_opt_box_autoadd_bridge_acp_install_failure(dynamic raw);
+
+  @protected
+  BridgeAcpServerInfo? dco_decode_opt_box_autoadd_bridge_acp_server_info(
+    dynamic raw,
+  );
 
   @protected
   BridgeActivityBrief? dco_decode_opt_box_autoadd_bridge_activity_brief(
@@ -8572,6 +8905,24 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  BridgeAcpAccountCommandCall
+  sse_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeAcpAccountCommandCall(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeAcpAuthFeed
+  sse_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeAcpAuthFeed(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeAcpInstallFeed
+  sse_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeAcpInstallFeed(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   BridgeActivityRead
   sse_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeActivityRead(
     SseDeserializer deserializer,
@@ -9102,6 +9453,24 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   BridgeAccountUsageSourceStatusReadConnection
   sse_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeAccountUsageSourceStatusReadConnection(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeAcpAccountCommandCall
+  sse_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeAcpAccountCommandCall(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeAcpAuthFeed
+  sse_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeAcpAuthFeed(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeAcpInstallFeed
+  sse_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeAcpInstallFeed(
     SseDeserializer deserializer,
   );
 
@@ -9640,6 +10009,24 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  BridgeAcpAccountCommandCall
+  sse_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeAcpAccountCommandCall(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeAcpAuthFeed
+  sse_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeAcpAuthFeed(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeAcpInstallFeed
+  sse_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeAcpInstallFeed(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   BridgeActivityRead
   sse_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeActivityRead(
     SseDeserializer deserializer,
@@ -10156,6 +10543,16 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  RustStreamSink<BridgeAcpAuthFrame>
+  sse_decode_StreamSink_bridge_acp_auth_frame_Sse(SseDeserializer deserializer);
+
+  @protected
+  RustStreamSink<BridgeAcpInstallFrame>
+  sse_decode_StreamSink_bridge_acp_install_frame_Sse(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   RustStreamSink<BridgeAgentDirectoryFrame>
   sse_decode_StreamSink_bridge_agent_directory_frame_Sse(
     SseDeserializer deserializer,
@@ -10368,6 +10765,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   bool sse_decode_bool(SseDeserializer deserializer);
 
   @protected
+  BridgeAcpAccountCommandCall
+  sse_decode_box_autoadd_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeAcpAccountCommandCall(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   BridgeAttachmentAdmission
   sse_decode_box_autoadd_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeAttachmentAdmission(
     SseDeserializer deserializer,
@@ -10482,6 +10885,77 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   BridgeAccountUsageStateSnapshot
   sse_decode_box_autoadd_bridge_account_usage_state_snapshot(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeAcpAccountCommandReply
+  sse_decode_box_autoadd_bridge_acp_account_command_reply(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeAcpAccountMutation sse_decode_box_autoadd_bridge_acp_account_mutation(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeAcpAccountUpdate sse_decode_box_autoadd_bridge_acp_account_update(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeAcpAuthAction sse_decode_box_autoadd_bridge_acp_auth_action(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeAcpAuthEvent sse_decode_box_autoadd_bridge_acp_auth_event(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeAcpAuthFailure sse_decode_box_autoadd_bridge_acp_auth_failure(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeAcpAuthSnapshot sse_decode_box_autoadd_bridge_acp_auth_snapshot(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeAcpInstallEvent sse_decode_box_autoadd_bridge_acp_install_event(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeAcpInstallFailure sse_decode_box_autoadd_bridge_acp_install_failure(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeAcpInstallProgress sse_decode_box_autoadd_bridge_acp_install_progress(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeAcpInstallRelease sse_decode_box_autoadd_bridge_acp_install_release(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeAcpInstallSnapshot sse_decode_box_autoadd_bridge_acp_install_snapshot(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeAcpInstalledServer sse_decode_box_autoadd_bridge_acp_installed_server(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeAcpServerInfo sse_decode_box_autoadd_bridge_acp_server_info(
     SseDeserializer deserializer,
   );
 
@@ -12245,6 +12719,16 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  BridgeAcpAuthSnapshot sse_decode_box_bridge_acp_auth_snapshot(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeAcpInstallSnapshot sse_decode_box_bridge_acp_install_snapshot(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   BridgeAgentProfilesStateSnapshot
   sse_decode_box_bridge_agent_profiles_state_snapshot(
     SseDeserializer deserializer,
@@ -12536,6 +13020,188 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   BridgeAccountUsageStateSnapshot
   sse_decode_bridge_account_usage_state_snapshot(SseDeserializer deserializer);
+
+  @protected
+  BridgeAcpAccountCatalog sse_decode_bridge_acp_account_catalog(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeAcpAccountCommandOutcome sse_decode_bridge_acp_account_command_outcome(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeAcpAccountCommandReply sse_decode_bridge_acp_account_command_reply(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeAcpAccountConfigurationRead
+  sse_decode_bridge_acp_account_configuration_read(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeAcpAccountConfigurationReadPage
+  sse_decode_bridge_acp_account_configuration_read_page(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeAcpAccountMutation sse_decode_bridge_acp_account_mutation(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeAcpAccountSettings sse_decode_bridge_acp_account_settings(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeAcpAccountTemplate sse_decode_bridge_acp_account_template(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeAcpAccountUpdate sse_decode_bridge_acp_account_update(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeAcpAuthAccount sse_decode_bridge_acp_auth_account(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeAcpAuthAction sse_decode_bridge_acp_auth_action(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeAcpAuthCommandReply sse_decode_bridge_acp_auth_command_reply(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeAcpAuthEvent sse_decode_bridge_acp_auth_event(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeAcpAuthFailure sse_decode_bridge_acp_auth_failure(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeAcpAuthFailureCode sse_decode_bridge_acp_auth_failure_code(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeAcpAuthFrame sse_decode_bridge_acp_auth_frame(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeAcpAuthMethod sse_decode_bridge_acp_auth_method(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeAcpAuthMethodKind sse_decode_bridge_acp_auth_method_kind(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeAcpAuthSnapshot sse_decode_bridge_acp_auth_snapshot(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeAcpAuthStage sse_decode_bridge_acp_auth_stage(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeAcpAuthState sse_decode_bridge_acp_auth_state(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeAcpInstallAvailability sse_decode_bridge_acp_install_availability(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeAcpInstallCommandReply sse_decode_bridge_acp_install_command_reply(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeAcpInstallEntry sse_decode_bridge_acp_install_entry(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeAcpInstallEvent sse_decode_bridge_acp_install_event(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeAcpInstallFailure sse_decode_bridge_acp_install_failure(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeAcpInstallFailureCode sse_decode_bridge_acp_install_failure_code(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeAcpInstallFrame sse_decode_bridge_acp_install_frame(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeAcpInstallProgress sse_decode_bridge_acp_install_progress(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeAcpInstallRelease sse_decode_bridge_acp_install_release(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeAcpInstallSnapshot sse_decode_bridge_acp_install_snapshot(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeAcpInstallStage sse_decode_bridge_acp_install_stage(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeAcpInstallState sse_decode_bridge_acp_install_state(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeAcpInstalledServer sse_decode_bridge_acp_installed_server(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeAcpProvider sse_decode_bridge_acp_provider(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeAcpServerInfo sse_decode_bridge_acp_server_info(
+    SseDeserializer deserializer,
+  );
 
   @protected
   BridgeActiveTurn sse_decode_bridge_active_turn(SseDeserializer deserializer);
@@ -16738,6 +17404,37 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  List<BridgeAcpAccountConfigurationRead>
+  sse_decode_list_bridge_acp_account_configuration_read(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  List<BridgeAcpAccountSettings> sse_decode_list_bridge_acp_account_settings(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  List<BridgeAcpAccountTemplate> sse_decode_list_bridge_acp_account_template(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  List<BridgeAcpAuthAccount> sse_decode_list_bridge_acp_auth_account(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  List<BridgeAcpAuthMethod> sse_decode_list_bridge_acp_auth_method(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  List<BridgeAcpInstallEntry> sse_decode_list_bridge_acp_install_entry(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   List<BridgeActiveTurn> sse_decode_list_bridge_active_turn(
     SseDeserializer deserializer,
   );
@@ -17439,6 +18136,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   String? sse_decode_opt_String(SseDeserializer deserializer);
 
   @protected
+  BridgeAcpAccountCommandCall?
+  sse_decode_opt_box_autoadd_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeAcpAccountCommandCall(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   BridgeAttachmentAdmission?
   sse_decode_opt_box_autoadd_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeAttachmentAdmission(
     SseDeserializer deserializer,
@@ -17479,6 +18182,22 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   BridgeAccountUsageReadRef?
   sse_decode_opt_box_autoadd_bridge_account_usage_read_ref(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeAcpAuthFailure? sse_decode_opt_box_autoadd_bridge_acp_auth_failure(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeAcpInstallFailure?
+  sse_decode_opt_box_autoadd_bridge_acp_install_failure(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeAcpServerInfo? sse_decode_opt_box_autoadd_bridge_acp_server_info(
     SseDeserializer deserializer,
   );
 
@@ -18234,6 +18953,27 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void
+  sse_encode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeAcpAccountCommandCall(
+    BridgeAcpAccountCommandCall self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void
+  sse_encode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeAcpAuthFeed(
+    BridgeAcpAuthFeed self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void
+  sse_encode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeAcpInstallFeed(
+    BridgeAcpInstallFeed self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void
   sse_encode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeActivityRead(
     BridgeActivityRead self,
     SseSerializer serializer,
@@ -18852,6 +19592,27 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   void
   sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeAccountUsageSourceStatusReadConnection(
     BridgeAccountUsageSourceStatusReadConnection self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void
+  sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeAcpAccountCommandCall(
+    BridgeAcpAccountCommandCall self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void
+  sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeAcpAuthFeed(
+    BridgeAcpAuthFeed self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void
+  sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeAcpInstallFeed(
+    BridgeAcpInstallFeed self,
     SseSerializer serializer,
   );
 
@@ -19480,6 +20241,27 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void
+  sse_encode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeAcpAccountCommandCall(
+    BridgeAcpAccountCommandCall self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void
+  sse_encode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeAcpAuthFeed(
+    BridgeAcpAuthFeed self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void
+  sse_encode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeAcpInstallFeed(
+    BridgeAcpInstallFeed self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void
   sse_encode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeActivityRead(
     BridgeActivityRead self,
     SseSerializer serializer,
@@ -20079,6 +20861,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_StreamSink_bridge_acp_auth_frame_Sse(
+    RustStreamSink<BridgeAcpAuthFrame> self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_StreamSink_bridge_acp_install_frame_Sse(
+    RustStreamSink<BridgeAcpInstallFrame> self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_StreamSink_bridge_agent_directory_frame_Sse(
     RustStreamSink<BridgeAgentDirectoryFrame> self,
     SseSerializer serializer,
@@ -20317,6 +21111,13 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void
+  sse_encode_box_autoadd_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeAcpAccountCommandCall(
+    BridgeAcpAccountCommandCall self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void
   sse_encode_box_autoadd_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeAttachmentAdmission(
     BridgeAttachmentAdmission self,
     SseSerializer serializer,
@@ -20440,6 +21241,90 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_box_autoadd_bridge_account_usage_state_snapshot(
     BridgeAccountUsageStateSnapshot self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_bridge_acp_account_command_reply(
+    BridgeAcpAccountCommandReply self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_bridge_acp_account_mutation(
+    BridgeAcpAccountMutation self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_bridge_acp_account_update(
+    BridgeAcpAccountUpdate self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_bridge_acp_auth_action(
+    BridgeAcpAuthAction self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_bridge_acp_auth_event(
+    BridgeAcpAuthEvent self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_bridge_acp_auth_failure(
+    BridgeAcpAuthFailure self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_bridge_acp_auth_snapshot(
+    BridgeAcpAuthSnapshot self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_bridge_acp_install_event(
+    BridgeAcpInstallEvent self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_bridge_acp_install_failure(
+    BridgeAcpInstallFailure self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_bridge_acp_install_progress(
+    BridgeAcpInstallProgress self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_bridge_acp_install_release(
+    BridgeAcpInstallRelease self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_bridge_acp_install_snapshot(
+    BridgeAcpInstallSnapshot self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_bridge_acp_installed_server(
+    BridgeAcpInstalledServer self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_bridge_acp_server_info(
+    BridgeAcpServerInfo self,
     SseSerializer serializer,
   );
 
@@ -22397,6 +23282,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_box_bridge_acp_auth_snapshot(
+    BridgeAcpAuthSnapshot self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_bridge_acp_install_snapshot(
+    BridgeAcpInstallSnapshot self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_box_bridge_agent_profiles_state_snapshot(
     BridgeAgentProfilesStateSnapshot self,
     SseSerializer serializer,
@@ -22738,6 +23635,222 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_bridge_account_usage_state_snapshot(
     BridgeAccountUsageStateSnapshot self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_acp_account_catalog(
+    BridgeAcpAccountCatalog self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_acp_account_command_outcome(
+    BridgeAcpAccountCommandOutcome self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_acp_account_command_reply(
+    BridgeAcpAccountCommandReply self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_acp_account_configuration_read(
+    BridgeAcpAccountConfigurationRead self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_acp_account_configuration_read_page(
+    BridgeAcpAccountConfigurationReadPage self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_acp_account_mutation(
+    BridgeAcpAccountMutation self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_acp_account_settings(
+    BridgeAcpAccountSettings self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_acp_account_template(
+    BridgeAcpAccountTemplate self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_acp_account_update(
+    BridgeAcpAccountUpdate self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_acp_auth_account(
+    BridgeAcpAuthAccount self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_acp_auth_action(
+    BridgeAcpAuthAction self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_acp_auth_command_reply(
+    BridgeAcpAuthCommandReply self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_acp_auth_event(
+    BridgeAcpAuthEvent self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_acp_auth_failure(
+    BridgeAcpAuthFailure self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_acp_auth_failure_code(
+    BridgeAcpAuthFailureCode self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_acp_auth_frame(
+    BridgeAcpAuthFrame self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_acp_auth_method(
+    BridgeAcpAuthMethod self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_acp_auth_method_kind(
+    BridgeAcpAuthMethodKind self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_acp_auth_snapshot(
+    BridgeAcpAuthSnapshot self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_acp_auth_stage(
+    BridgeAcpAuthStage self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_acp_auth_state(
+    BridgeAcpAuthState self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_acp_install_availability(
+    BridgeAcpInstallAvailability self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_acp_install_command_reply(
+    BridgeAcpInstallCommandReply self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_acp_install_entry(
+    BridgeAcpInstallEntry self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_acp_install_event(
+    BridgeAcpInstallEvent self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_acp_install_failure(
+    BridgeAcpInstallFailure self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_acp_install_failure_code(
+    BridgeAcpInstallFailureCode self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_acp_install_frame(
+    BridgeAcpInstallFrame self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_acp_install_progress(
+    BridgeAcpInstallProgress self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_acp_install_release(
+    BridgeAcpInstallRelease self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_acp_install_snapshot(
+    BridgeAcpInstallSnapshot self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_acp_install_stage(
+    BridgeAcpInstallStage self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_acp_install_state(
+    BridgeAcpInstallState self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_acp_installed_server(
+    BridgeAcpInstalledServer self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_acp_provider(
+    BridgeAcpProvider self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_acp_server_info(
+    BridgeAcpServerInfo self,
     SseSerializer serializer,
   );
 
@@ -27860,6 +28973,42 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_list_bridge_acp_account_configuration_read(
+    List<BridgeAcpAccountConfigurationRead> self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_list_bridge_acp_account_settings(
+    List<BridgeAcpAccountSettings> self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_list_bridge_acp_account_template(
+    List<BridgeAcpAccountTemplate> self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_list_bridge_acp_auth_account(
+    List<BridgeAcpAuthAccount> self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_list_bridge_acp_auth_method(
+    List<BridgeAcpAuthMethod> self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_list_bridge_acp_install_entry(
+    List<BridgeAcpInstallEntry> self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_list_bridge_active_turn(
     List<BridgeActiveTurn> self,
     SseSerializer serializer,
@@ -28698,6 +29847,13 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void
+  sse_encode_opt_box_autoadd_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeAcpAccountCommandCall(
+    BridgeAcpAccountCommandCall? self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void
   sse_encode_opt_box_autoadd_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeAttachmentAdmission(
     BridgeAttachmentAdmission? self,
     SseSerializer serializer,
@@ -28743,6 +29899,24 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_opt_box_autoadd_bridge_account_usage_read_ref(
     BridgeAccountUsageReadRef? self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_opt_box_autoadd_bridge_acp_auth_failure(
+    BridgeAcpAuthFailure? self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_opt_box_autoadd_bridge_acp_install_failure(
+    BridgeAcpInstallFailure? self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_opt_box_autoadd_bridge_acp_server_info(
+    BridgeAcpServerInfo? self,
     SseSerializer serializer,
   );
 
@@ -29612,6 +30786,54 @@ class RustLibWire implements BaseWire {
     int ptr,
   ) => wasmModule
       .rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeAccountUsageSourceStatusReadConnection(
+        ptr,
+      );
+
+  void
+  rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeAcpAccountCommandCall(
+    int ptr,
+  ) => wasmModule
+      .rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeAcpAccountCommandCall(
+        ptr,
+      );
+
+  void
+  rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeAcpAccountCommandCall(
+    int ptr,
+  ) => wasmModule
+      .rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeAcpAccountCommandCall(
+        ptr,
+      );
+
+  void
+  rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeAcpAuthFeed(
+    int ptr,
+  ) => wasmModule
+      .rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeAcpAuthFeed(
+        ptr,
+      );
+
+  void
+  rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeAcpAuthFeed(
+    int ptr,
+  ) => wasmModule
+      .rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeAcpAuthFeed(
+        ptr,
+      );
+
+  void
+  rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeAcpInstallFeed(
+    int ptr,
+  ) => wasmModule
+      .rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeAcpInstallFeed(
+        ptr,
+      );
+
+  void
+  rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeAcpInstallFeed(
+    int ptr,
+  ) => wasmModule
+      .rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeAcpInstallFeed(
         ptr,
       );
 
@@ -31013,6 +32235,36 @@ extension type RustLibWasmModule._(JSObject _) implements JSObject {
 
   external void
   rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeAccountUsageSourceStatusReadConnection(
+    int ptr,
+  );
+
+  external void
+  rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeAcpAccountCommandCall(
+    int ptr,
+  );
+
+  external void
+  rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeAcpAccountCommandCall(
+    int ptr,
+  );
+
+  external void
+  rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeAcpAuthFeed(
+    int ptr,
+  );
+
+  external void
+  rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeAcpAuthFeed(
+    int ptr,
+  );
+
+  external void
+  rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeAcpInstallFeed(
+    int ptr,
+  );
+
+  external void
+  rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeAcpInstallFeed(
     int ptr,
   );
 

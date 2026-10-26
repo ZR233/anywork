@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:anywork_client/acp_ports.dart';
 import 'package:anywork_client/account_usage_ports.dart';
 import 'package:anywork_client/bots_ports.dart';
 import 'package:anywork_client/configuration_ports.dart';
@@ -15,6 +16,7 @@ import 'package:anywork_client/recovery_ports.dart';
 import 'package:anywork_client/remote_ports.dart';
 import 'package:anywork_client/resources_ports.dart';
 import 'package:anywork_client/skills_ports.dart';
+import 'package:anywork_client/statistics_ports.dart';
 import 'package:anywork_client/updates_ports.dart';
 import 'package:anywork_client/workspace_ports.dart';
 
@@ -25,6 +27,7 @@ import '../../infrastructure/frb/drafts/attachment_admission_port.dart';
 import '../../infrastructure/frb/drafts/attachment_binary_port.dart';
 import '../../infrastructure/frb/drafts/new_thread_creation_port.dart';
 import '../../infrastructure/frb/products/account_usage/account_usage_port.dart';
+import '../../infrastructure/frb/products/acp/acp_port.dart';
 import '../../infrastructure/frb/products/bots/bots_port.dart';
 import '../../infrastructure/frb/products/configuration/configuration_port.dart';
 import '../../infrastructure/frb/products/lsp/lsp_port.dart';
@@ -34,6 +37,7 @@ import '../../infrastructure/frb/products/modes/modes_port.dart';
 import '../../infrastructure/frb/products/persistence/persistence_port.dart';
 import '../../infrastructure/frb/products/recovery/recovery_port.dart';
 import '../../infrastructure/frb/products/remote/remote_port.dart';
+import '../../infrastructure/frb/products/session_costs/session_costs_port.dart';
 import '../../infrastructure/frb/products/skills/skills_port.dart';
 import '../../infrastructure/frb/products/startup/startup_port.dart';
 import '../../infrastructure/frb/products/statistics/statistics_port.dart';
@@ -175,6 +179,16 @@ Future<NativeApplication> createNativeApplicationOwners({
       statistics.close,
       statistics.retryCleanup,
     );
+    final sessionCosts = createSessionCostsRepository(
+      port: createSessionCostsPort(),
+      budget: budget,
+    );
+    constructing.retain(
+      'session-costs',
+      sessionCosts.seal,
+      sessionCosts.close,
+      sessionCosts.retryCleanup,
+    );
     final recovery = createRecoveryRepository(
       port: const FrbRecoveryPort(),
       budget: budget,
@@ -283,6 +297,31 @@ Future<NativeApplication> createNativeApplicationOwners({
       operations: operations,
     );
     constructing.retain('lsp', lsp.seal, lsp.close, lsp.retryCleanup);
+    // ACP 认证与受管安装是两个独立资源：各自 revision、各自 feed 与关闭通道，
+    // 共享同一个 port 不表示共享状态或水位。
+    const acpPort = FrbAcpPort();
+    final acpAuth = createAcpAuthRepository(
+      port: acpPort,
+      budget: budget,
+      operations: operations,
+    );
+    constructing.retain(
+      'acp-auth',
+      acpAuth.seal,
+      acpAuth.close,
+      acpAuth.retryCleanup,
+    );
+    final acpInstall = createAcpInstallRepository(
+      port: acpPort,
+      budget: budget,
+      operations: operations,
+    );
+    constructing.retain(
+      'acp-install',
+      acpInstall.seal,
+      acpInstall.close,
+      acpInstall.retryCleanup,
+    );
     final skills = createSkillsRepository(
       port: const FrbSkillsPort(),
       budget: budget,
@@ -340,6 +379,7 @@ Future<NativeApplication> createNativeApplicationOwners({
       modes: modes,
       accountUsage: accountUsage,
       statistics: statistics,
+      sessionCosts: sessionCosts,
       workspace: workspace.repository,
       startup: startup,
       conversation: conversation.repository,
@@ -348,6 +388,8 @@ Future<NativeApplication> createNativeApplicationOwners({
       remote: remote,
       mcp: mcp,
       lsp: lsp,
+      acpAuth: acpAuth,
+      acpInstall: acpInstall,
       skills: skills,
       recovery: recovery,
       persistence: persistence,

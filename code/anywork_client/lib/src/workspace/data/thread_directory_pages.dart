@@ -173,14 +173,6 @@ final class ThreadDirectoryPages {
                           frozen.reference.total) ||
                   (page.nextCursor != null) != page.hasMore ||
                   page.hasMore && page.items.isEmpty) {
-                // PROBE
-                print(
-                  '[K] page mismatch collection=${page.collection == frozen.reference} '
-                  'items=${page.items.map((ref) => ref.entry).toList()} limit=$limit '
-                  'entries=${frozen.entries.map((ref) => ref.entry).toList()} '
-                  'total=${frozen.reference.total} hasMore=${page.hasMore} '
-                  'nextCursor=${page.nextCursor != null} pageCollection=${page.collection} frozen=${frozen.reference}',
-                );
                 throw resourceProtocol(
                   'A keyset page changed its original collection or ordered prefix.',
                 );
@@ -211,10 +203,6 @@ final class ThreadDirectoryPages {
             for (final ref in refs) {
               if (_ready(rows[ref.entry], binding.origin, ref)) continue;
               try {
-                // PROBE
-                print(
-                  '[W] page entity entry=${ref.entry}\n${StackTrace.current.toString().split('\n').where((line) => !line.contains('dart:async')).take(18).join('\n')}',
-                );
                 final entity = await scope.entity(ref);
                 if (entity.reference != ref)
                   throw resourceProtocol(

@@ -20,6 +20,7 @@ class ComposerViewModel extends _$ComposerViewModel {
   late DraftsRepository _drafts;
   ComposerDraft? _draft;
   StartDraft? _start;
+  Object? _lifetime;
   final List<Observation> _observations = [];
   Observation? _operationObservation;
   int _platformReads = 0;
@@ -27,10 +28,15 @@ class ComposerViewModel extends _$ComposerViewModel {
 
   @override
   FutureOr<ComposerViewState> build(ComposerKey target) {
+    final lifetime = Object();
+    _lifetime = lifetime;
+    _platformReads = 0;
+    _platformAttempt = 0;
     _drafts = ref.read(draftsRepositoryProvider);
     _draft = null;
     _start = null;
     ref.onDispose(() {
+      if (identical(_lifetime, lifetime)) _lifetime = null;
       for (final observation in _observations) {
         observation.cancel();
       }
@@ -119,6 +125,26 @@ class ComposerViewModel extends _$ComposerViewModel {
 
   void setUrl(String raw) =>
       state = AsyncData(state.requireValue.copyWith(urlRaw: raw));
+
+  /// Platform waits belong to this concrete VM lifetime and logical draft, not
+  /// to a replacement notifier/draft that happens to use the same family key.
+  bool Function() captureAttachmentTarget() {
+    final lifetime = _lifetime;
+    final draft = _draft;
+    final start = _start;
+    final draftId =
+        draft?.state.value.stamp.draftId ?? start?.state.value.stamp.draftId;
+    return () =>
+        ref.mounted &&
+        lifetime != null &&
+        identical(_lifetime, lifetime) &&
+        identical(_draft, draft) &&
+        identical(_start, start) &&
+        draftId != null &&
+        (draft?.state.value.stamp.draftId ??
+                start?.state.value.stamp.draftId) ==
+            draftId;
+  }
 
   Future<void> addLocalFiles(List<String> paths) => _perform(
     () =>
@@ -225,6 +251,8 @@ class ComposerViewModel extends _$ComposerViewModel {
   /// admission finish; navigating never redirects the late files to a new VM.
   Future<R?> withPlatformRead<R>(Future<R> Function() read) async {
     if (state.requireValue.closing) return null;
+    final lifetime = _lifetime;
+    bool current() => ref.mounted && identical(_lifetime, lifetime);
     final keepAlive = ref.keepAlive();
     final attempt = ++_platformAttempt;
     _platformReads++;
@@ -234,11 +262,11 @@ class ComposerViewModel extends _$ComposerViewModel {
     try {
       return await read();
     } on StudioFailure catch (failure) {
-      if (ref.mounted && attempt == _platformAttempt) {
+      if (current() && attempt == _platformAttempt) {
         reportPlatformFailure(failure);
       }
     } catch (_) {
-      if (ref.mounted && attempt == _platformAttempt) {
+      if (current() && attempt == _platformAttempt) {
         reportPlatformFailure(
           const StudioFailure(
             code: StudioFailureCode.unavailable,
@@ -249,8 +277,8 @@ class ComposerViewModel extends _$ComposerViewModel {
         );
       }
     } finally {
-      _platformReads--;
-      if (ref.mounted) {
+      if (current()) {
+        _platformReads--;
         state = AsyncData(
           state.requireValue.copyWith(platformPending: _platformReads != 0),
         );

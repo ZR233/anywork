@@ -37,16 +37,23 @@ impl StatisticsReadMaterial {
             lists: FieldTable::default(),
         }
     }
-    fn global(&self) -> Result<&crate::StudioModelPerformanceSnapshot, StudioError> {
+    /// 固定读取数据只来自材料本身；发布状态不在材料里，读取不暴露它。
+    fn summary_values(&self) -> Result<&[crate::StudioModelPerformanceSummary], StudioError> {
         match &self.source.root {
-            Root::Global { value, .. } => Ok(value),
-            _ => Err(wrong()),
+            Root::Summaries(summaries) => Ok(summaries),
+            Root::History { .. } | Root::Costs(_) => Err(wrong()),
+        }
+    }
+    fn sample_values(&self) -> Result<&[crate::StudioModelPerformanceSample], StudioError> {
+        match &self.source.root {
+            Root::History { samples, .. } => Ok(samples),
+            Root::Summaries(_) | Root::Costs(_) => Err(wrong()),
         }
     }
     fn cost(&self) -> Result<&crate::StudioSessionCostSnapshot, StudioError> {
         match &self.source.root {
-            Root::Costs(value) => value.cost.as_ref().ok_or_else(wrong),
-            _ => Err(wrong()),
+            Root::Costs(cost) => cost.as_ref().ok_or_else(wrong),
+            Root::Summaries(_) | Root::History { .. } => Err(wrong()),
         }
     }
     fn list(&self, key: List, len: usize) -> Result<TypedListRef, StudioError> {
@@ -63,7 +70,7 @@ impl StatisticsReadMaterial {
             return Err(wrong());
         }
         Ok(PerformanceSummariesReadHeader {
-            summaries: self.list(List::Summaries, self.global()?.summaries.len())?,
+            summaries: self.list(List::Summaries, self.summary_values()?.len())?,
         })
     }
     pub fn history_header(&self) -> Result<PerformanceHistoryReadHeader, StudioError> {
@@ -71,17 +78,16 @@ impl StatisticsReadMaterial {
             return Err(wrong());
         }
         Ok(PerformanceHistoryReadHeader {
-            samples: self.list(List::Samples, self.global()?.history.len())?,
+            samples: self.list(List::Samples, self.sample_values()?.len())?,
         })
     }
     pub fn costs_header(&self) -> Result<SessionCostsReadHeader, StudioError> {
-        let Root::Costs(value) = &self.source.root else {
+        let Root::Costs(cost) = &self.source.root else {
             return Err(wrong());
         };
         bounded_header(|inline| {
             Ok(SessionCostsReadHeader {
-                cost: value
-                    .cost
+                cost: cost
                     .as_ref()
                     .map(|cost| -> Result<_, StudioError> {
                         Ok(SessionCostRead {
@@ -97,7 +103,7 @@ impl StatisticsReadMaterial {
         })
     }
     fn summary(&self, index: usize) -> Result<PerformanceSummaryRead, StudioError> {
-        let value = self.global()?.summaries.get(index).ok_or_else(wrong)?;
+        let value = self.summary_values()?.get(index).ok_or_else(wrong)?;
         let identity = self
             .source
             .identities
@@ -114,7 +120,7 @@ impl StatisticsReadMaterial {
         })
     }
     fn sample(&self, index: usize) -> Result<PerformanceSampleRead, StudioError> {
-        let value = self.global()?.history.get(index).ok_or_else(wrong)?;
+        let value = self.sample_values()?.get(index).ok_or_else(wrong)?;
         let identity = self
             .source
             .identities
@@ -231,8 +237,7 @@ impl StatisticsReadMaterial {
             return Err(wrong());
         }
         Ok(self
-            .global()?
-            .summaries
+            .summary_values()?
             .iter()
             .position(|value| value.account_id == account && value.model_id == model)
             .map(|index| self.source.entities[index]))
@@ -248,7 +253,7 @@ impl StatisticsReadMaterial {
         }
         let result = page(
             PageBinding::List(list_id),
-            self.global()?.summaries.len(),
+            self.summary_values()?.len(),
             offset,
             limit,
             |index, _| self.summary(index),
@@ -271,8 +276,7 @@ impl StatisticsReadMaterial {
             return Err(wrong());
         };
         let values = &self
-            .global()?
-            .summaries
+            .summary_values()?
             .get(summary)
             .ok_or_else(wrong)?
             .effort_breakdowns;
@@ -317,7 +321,7 @@ impl StatisticsReadMaterial {
         }
         let result = page(
             PageBinding::List(list_id),
-            self.global()?.history.len(),
+            self.sample_values()?.len(),
             offset,
             limit,
             |index, _| self.sample(index),

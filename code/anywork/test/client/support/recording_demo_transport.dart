@@ -37,39 +37,43 @@ final class RecordingTimelineConnection implements StudioTimelineConnection {
     this.initialFailure,
     this.onFirstFrameHeld,
   }) {
-    _connection = AdapterFeedConnection<
-      StudioTimelineFeedFrame, StudioTimelineFeedFrame
-    >(
-      resource: 'recording-timeline',
-      openNativeStream: _openRecordedStream,
-      convert: (frame) => frame,
-      failureFrame: (failure) => StudioTimelineFeedFrame.failure(error: failure),
-      isTerminal: (frame) => frame is! StudioTimelineFeedData,
-      identity: (frame) => switch (frame) {
-        StudioTimelineFeedData(event: StudioTimelineFeedBaseline(:final baseline)) =>
-          baseline.subscriptionId,
-        _ => null,
-      },
-      acknowledgeNative: (sequence) async {
-        final value = sequence.toInt();
-        // AdapterFeedConnection already verified this exact int on admission.
-        await inner.ackThrough(value);
-        acks.add(value);
-      },
-      requestNativeClose: inner.requestClose,
-      closeNative: inner.close,
-      retryNativeClose: inner.retryClose,
-      // The inner connection disposes its own native handle after its Clean.
-      disposeNative: () {},
-      mapFailure: _recordingFailure,
-    );
+    _connection =
+        AdapterFeedConnection<StudioTimelineFeedFrame, StudioTimelineFeedFrame>(
+          resource: 'recording-timeline',
+          openNativeStream: _openRecordedStream,
+          convert: (frame) => frame,
+          failureFrame: (failure) =>
+              StudioTimelineFeedFrame.failure(error: failure),
+          isTerminal: (frame) => frame is! StudioTimelineFeedData,
+          identity: (frame) => switch (frame) {
+            StudioTimelineFeedData(
+              event: StudioTimelineFeedBaseline(:final baseline),
+            ) =>
+              baseline.subscriptionId,
+            _ => null,
+          },
+          acknowledgeNative: (sequence) async {
+            final value = sequence.toInt();
+            // AdapterFeedConnection already verified this exact int on admission.
+            await inner.ackThrough(value);
+            acks.add(value);
+          },
+          requestNativeClose: inner.requestClose,
+          closeNative: inner.close,
+          retryNativeClose: inner.retryClose,
+          // The inner connection disposes its own native handle after its Clean.
+          disposeNative: () {},
+          mapFailure: _recordingFailure,
+        );
   }
 
   final String threadId;
   final StudioTimelineConnection inner;
   late final AdapterFeedConnection<
-    StudioTimelineFeedFrame, StudioTimelineFeedFrame
-  > _connection;
+    StudioTimelineFeedFrame,
+    StudioTimelineFeedFrame
+  >
+  _connection;
   Object? initialFailure;
   void Function(Completer<void> gate)? onFirstFrameHeld;
   Completer<void>? initialGate;
@@ -99,33 +103,35 @@ final class RecordingTimelineConnection implements StudioTimelineConnection {
       nextEntered.complete();
       // Async setup is a resource responsibility, not a detached callback.
       // Cancellation below waits its settlement even when the first gate is held.
-      unawaited(Future<void>.sync(() async {
-        try {
-          final gate = initialGate;
-          if (gate != null) {
-            onFirstFrameHeld?.call(gate);
-            await gate.future;
-          }
-          if (_connection.owner.isClosing) return;
-          final failure = initialFailure;
-          initialFailure = null;
-          if (failure != null) throw failure;
-          source = inner.events.listen(
-            controller.add,
-            onError: controller.addError,
-            onDone: () {
+      unawaited(
+        Future<void>.sync(() async {
+          try {
+            final gate = initialGate;
+            if (gate != null) {
+              onFirstFrameHeld?.call(gate);
+              await gate.future;
+            }
+            if (_connection.owner.isClosing) return;
+            final failure = initialFailure;
+            initialFailure = null;
+            if (failure != null) throw failure;
+            source = inner.events.listen(
+              controller.add,
+              onError: controller.addError,
+              onDone: () {
+                if (!controller.isClosed) unawaited(controller.close());
+              },
+            );
+          } on Object catch (error, stack) {
+            if (!_connection.owner.isClosing) {
+              controller.addError(_recordingFailure(error), stack);
               if (!controller.isClosed) unawaited(controller.close());
-            },
-          );
-        } on Object catch (error, stack) {
-          if (!_connection.owner.isClosing) {
-            controller.addError(_recordingFailure(error), stack);
-            if (!controller.isClosed) unawaited(controller.close());
+            }
+          } finally {
+            openingSettled.complete();
           }
-        } finally {
-          openingSettled.complete();
-        }
-      }));
+        }),
+      );
     };
     controller.onCancel = () async {
       await openingSettled.future;

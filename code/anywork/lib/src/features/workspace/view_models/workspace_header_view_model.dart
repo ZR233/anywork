@@ -29,7 +29,7 @@ class WorkspaceHeaderViewModel extends _$WorkspaceHeaderViewModel {
     ref.onDispose(_disposeBindings);
     try {
       final workspace = ref.watch(workspaceRepositoryProvider);
-      final statistics = ref.watch(statisticsRepositoryProvider);
+      final sessionCosts = ref.watch(sessionCostsRepositoryProvider);
       final root = workspace.thread(rootThreadId);
       _root = root;
       final rootWatch = root.state.watchLatest((value) {
@@ -37,7 +37,7 @@ class WorkspaceHeaderViewModel extends _$WorkspaceHeaderViewModel {
         state = AsyncData(state.requireValue.copyWith(root: value));
       });
       _observations.add(rootWatch.observation);
-      final costs = statistics.costs(rootThreadId);
+      final costs = sessionCosts.costs(rootThreadId);
       _costs = costs;
       final costWatch = costs.state.watchLatest((value) {
         if (!_alive || _initializing || !identical(_costs, costs)) return;

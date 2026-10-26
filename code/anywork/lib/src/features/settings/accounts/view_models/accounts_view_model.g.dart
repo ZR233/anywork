@@ -33,7 +33,7 @@ final class AccountsViewModelProvider
   AccountsViewModel create() => AccountsViewModel();
 }
 
-String _$accountsViewModelHash() => r'bb22fa746407d3c7de537b82451806065d4e965a';
+String _$accountsViewModelHash() => r'f312d3b1d9e89942252a3e22efa3c5f26e063aa3';
 
 abstract class _$AccountsViewModel extends $AsyncNotifier<AccountsViewState> {
   FutureOr<AccountsViewState> build();

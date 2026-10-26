@@ -39,7 +39,6 @@ class BridgeAccountServiceCapabilitiesRead {
 }
 
 class BridgeAccountTemplateRead {
-  final bool pricingEnabled;
   final BridgeReadText id;
   final BridgeReadText displayName;
   final BridgeReadText? description;
@@ -52,7 +51,6 @@ class BridgeAccountTemplateRead {
   final BridgeAccountServiceCapabilitiesRead serviceCapabilities;
 
   const BridgeAccountTemplateRead({
-    required this.pricingEnabled,
     required this.id,
     required this.displayName,
     this.description,
@@ -67,7 +65,6 @@ class BridgeAccountTemplateRead {
 
   @override
   int get hashCode =>
-      pricingEnabled.hashCode ^
       id.hashCode ^
       displayName.hashCode ^
       description.hashCode ^
@@ -84,7 +81,6 @@ class BridgeAccountTemplateRead {
       identical(this, other) ||
       other is BridgeAccountTemplateRead &&
           runtimeType == other.runtimeType &&
-          pricingEnabled == other.pricingEnabled &&
           id == other.id &&
           displayName == other.displayName &&
           description == other.description &&

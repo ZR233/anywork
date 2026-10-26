@@ -1,6 +1,8 @@
 //! Each resource owns a distinct event and frame type with no aggregate payload discriminator.
 pub mod account_templates;
 pub mod account_usage;
+pub mod acp_auth;
+pub mod acp_install;
 pub mod agent_directory;
 pub mod agent_profiles;
 pub mod configuration;

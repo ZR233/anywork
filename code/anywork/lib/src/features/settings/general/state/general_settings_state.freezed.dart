@@ -13,6 +13,315 @@ part of 'general_settings_state.dart';
 // dart format off
 T _$identity<T>(T value) => value;
 /// @nodoc
+mixin _$SettingsReadinessState {
+
+ bool get ready; ProductReadOrigin? get readyOrigin; StudioFailure? get error;
+/// Create a copy of SettingsReadinessState
+/// with the given fields replaced by the non-null parameter values.
+@JsonKey(includeFromJson: false, includeToJson: false)
+@pragma('vm:prefer-inline')
+$SettingsReadinessStateCopyWith<SettingsReadinessState> get copyWith => _$SettingsReadinessStateCopyWithImpl<SettingsReadinessState>(this as SettingsReadinessState, _$identity);
+
+
+
+@override
+bool operator ==(Object other) {
+  final _this = this as SettingsReadinessState;
+  return identical(this, other) || (other.runtimeType == runtimeType&&other is SettingsReadinessState&&(identical(other.ready, _this.ready) || other.ready == _this.ready)&&(identical(other.readyOrigin, _this.readyOrigin) || other.readyOrigin == _this.readyOrigin)&&(identical(other.error, _this.error) || other.error == _this.error));
+}
+
+
+@override
+int get hashCode {
+  final _this = this as SettingsReadinessState;
+  return Object.hash(runtimeType,_this.ready,_this.readyOrigin,_this.error);
+}
+
+
+
+}
+
+/// @nodoc
+abstract mixin class $SettingsReadinessStateCopyWith<$Res>  {
+  factory $SettingsReadinessStateCopyWith(SettingsReadinessState value, $Res Function(SettingsReadinessState) _then) = _$SettingsReadinessStateCopyWithImpl;
+@useResult
+$Res call({
+ bool ready, ProductReadOrigin? readyOrigin, StudioFailure? error
+});
+
+
+$ProductReadOriginCopyWith<$Res>? get readyOrigin;$StudioFailureCopyWith<$Res>? get error;
+
+}
+/// @nodoc
+class _$SettingsReadinessStateCopyWithImpl<$Res>
+    implements $SettingsReadinessStateCopyWith<$Res> {
+  _$SettingsReadinessStateCopyWithImpl(this._self, this._then);
+
+  final SettingsReadinessState _self;
+  final $Res Function(SettingsReadinessState) _then;
+
+/// Create a copy of SettingsReadinessState
+/// with the given fields replaced by the non-null parameter values.
+@pragma('vm:prefer-inline') @override $Res call({Object? ready = null,Object? readyOrigin = freezed,Object? error = freezed,}) {
+  return _then(SettingsReadinessState(
+ready: null == ready ? _self.ready : ready // ignore: cast_nullable_to_non_nullable
+as bool,readyOrigin: freezed == readyOrigin ? _self.readyOrigin : readyOrigin // ignore: cast_nullable_to_non_nullable
+as ProductReadOrigin?,error: freezed == error ? _self.error : error // ignore: cast_nullable_to_non_nullable
+as StudioFailure?,
+  ));
+}
+/// Create a copy of SettingsReadinessState
+/// with the given fields replaced by the non-null parameter values.
+@override
+@pragma('vm:prefer-inline')
+$ProductReadOriginCopyWith<$Res>? get readyOrigin {
+    if (_self.readyOrigin == null) {
+    return null;
+  }
+
+  return $ProductReadOriginCopyWith<$Res>(_self.readyOrigin!, (value) {
+    return _then(_self.copyWith(readyOrigin: value));
+  });
+}/// Create a copy of SettingsReadinessState
+/// with the given fields replaced by the non-null parameter values.
+@override
+@pragma('vm:prefer-inline')
+$StudioFailureCopyWith<$Res>? get error {
+    if (_self.error == null) {
+    return null;
+  }
+
+  return $StudioFailureCopyWith<$Res>(_self.error!, (value) {
+    return _then(_self.copyWith(error: value));
+  });
+}
+}
+
+
+/// Adds pattern-matching-related methods to [SettingsReadinessState].
+extension SettingsReadinessStatePatterns on SettingsReadinessState {
+/// A variant of `map` that fallback to returning `orElse`.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case _:
+///     return orElse();
+/// }
+/// ```
+
+@optionalTypeArgs TResult maybeMap<TResult extends Object?>(TResult Function( _SettingsReadinessState value)?  $default,{required TResult orElse(),}){
+final _that = this;
+switch (_that) {
+case _SettingsReadinessState() when $default != null:
+return $default(_that);case _:
+  return orElse();
+
+}
+}
+/// A `switch`-like method, using callbacks.
+///
+/// Callbacks receives the raw object, upcasted.
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case final Subclass2 value:
+///     return ...;
+/// }
+/// ```
+
+@optionalTypeArgs TResult map<TResult extends Object?>(TResult Function( _SettingsReadinessState value)  $default,){
+final _that = this;
+switch (_that) {
+case _SettingsReadinessState():
+return $default(_that);case _:
+  throw StateError('Unexpected subclass');
+
+}
+}
+/// A variant of `map` that fallback to returning `null`.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case _:
+///     return null;
+/// }
+/// ```
+
+@optionalTypeArgs TResult? mapOrNull<TResult extends Object?>(TResult? Function( _SettingsReadinessState value)?  $default,){
+final _that = this;
+switch (_that) {
+case _SettingsReadinessState() when $default != null:
+return $default(_that);case _:
+  return null;
+
+}
+}
+/// A variant of `when` that fallback to an `orElse` callback.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case _:
+///     return orElse();
+/// }
+/// ```
+
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>(TResult Function( bool ready,  ProductReadOrigin? readyOrigin,  StudioFailure? error)?  $default,{required TResult orElse(),}) {final _that = this;
+switch (_that) {
+case _SettingsReadinessState() when $default != null:
+return $default(_that.ready,_that.readyOrigin,_that.error);case _:
+  return orElse();
+
+}
+}
+/// A `switch`-like method, using callbacks.
+///
+/// As opposed to `map`, this offers destructuring.
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case Subclass2(:final field2):
+///     return ...;
+/// }
+/// ```
+
+@optionalTypeArgs TResult when<TResult extends Object?>(TResult Function( bool ready,  ProductReadOrigin? readyOrigin,  StudioFailure? error)  $default,) {final _that = this;
+switch (_that) {
+case _SettingsReadinessState():
+return $default(_that.ready,_that.readyOrigin,_that.error);case _:
+  throw StateError('Unexpected subclass');
+
+}
+}
+/// A variant of `when` that fallback to returning `null`
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case _:
+///     return null;
+/// }
+/// ```
+
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>(TResult? Function( bool ready,  ProductReadOrigin? readyOrigin,  StudioFailure? error)?  $default,) {final _that = this;
+switch (_that) {
+case _SettingsReadinessState() when $default != null:
+return $default(_that.ready,_that.readyOrigin,_that.error);case _:
+  return null;
+
+}
+}
+
+}
+
+/// @nodoc
+
+
+class _SettingsReadinessState implements SettingsReadinessState {
+  const _SettingsReadinessState({this.ready = false, this.readyOrigin, this.error});
+
+
+@override@JsonKey() final  bool ready;
+@override final  ProductReadOrigin? readyOrigin;
+@override final  StudioFailure? error;
+
+/// Create a copy of SettingsReadinessState
+/// with the given fields replaced by the non-null parameter values.
+@override @JsonKey(includeFromJson: false, includeToJson: false)
+@pragma('vm:prefer-inline')
+_$SettingsReadinessStateCopyWith<_SettingsReadinessState> get copyWith => __$SettingsReadinessStateCopyWithImpl<_SettingsReadinessState>(this, _$identity);
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is _SettingsReadinessState&&(identical(other.ready, ready) || other.ready == ready)&&(identical(other.readyOrigin, readyOrigin) || other.readyOrigin == readyOrigin)&&(identical(other.error, error) || other.error == error));
+}
+
+
+@override
+int get hashCode {
+    return Object.hash(runtimeType,ready,readyOrigin,error);
+}
+
+
+
+}
+
+/// @nodoc
+abstract mixin class _$SettingsReadinessStateCopyWith<$Res> implements $SettingsReadinessStateCopyWith<$Res> {
+  factory _$SettingsReadinessStateCopyWith(_SettingsReadinessState value, $Res Function(_SettingsReadinessState) _then) = __$SettingsReadinessStateCopyWithImpl;
+@override @useResult
+$Res call({
+ bool ready, ProductReadOrigin? readyOrigin, StudioFailure? error
+});
+
+
+@override $ProductReadOriginCopyWith<$Res>? get readyOrigin;@override $StudioFailureCopyWith<$Res>? get error;
+
+}
+/// @nodoc
+class __$SettingsReadinessStateCopyWithImpl<$Res>
+    implements _$SettingsReadinessStateCopyWith<$Res> {
+  __$SettingsReadinessStateCopyWithImpl(this._self, this._then);
+
+  final _SettingsReadinessState _self;
+  final $Res Function(_SettingsReadinessState) _then;
+
+/// Create a copy of SettingsReadinessState
+/// with the given fields replaced by the non-null parameter values.
+@override @pragma('vm:prefer-inline') $Res call({Object? ready = null,Object? readyOrigin = freezed,Object? error = freezed,}) {
+  return _then(_SettingsReadinessState(
+ready: null == ready ? _self.ready : ready // ignore: cast_nullable_to_non_nullable
+as bool,readyOrigin: freezed == readyOrigin ? _self.readyOrigin : readyOrigin // ignore: cast_nullable_to_non_nullable
+as ProductReadOrigin?,error: freezed == error ? _self.error : error // ignore: cast_nullable_to_non_nullable
+as StudioFailure?,
+  ));
+}
+
+/// Create a copy of SettingsReadinessState
+/// with the given fields replaced by the non-null parameter values.
+@override
+@pragma('vm:prefer-inline')
+$ProductReadOriginCopyWith<$Res>? get readyOrigin {
+    if (_self.readyOrigin == null) {
+    return null;
+  }
+
+  return $ProductReadOriginCopyWith<$Res>(_self.readyOrigin!, (value) {
+    return _then(_self.copyWith(readyOrigin: value));
+  });
+}/// Create a copy of SettingsReadinessState
+/// with the given fields replaced by the non-null parameter values.
+@override
+@pragma('vm:prefer-inline')
+$StudioFailureCopyWith<$Res>? get error {
+    if (_self.error == null) {
+    return null;
+  }
+
+  return $StudioFailureCopyWith<$Res>(_self.error!, (value) {
+    return _then(_self.copyWith(error: value));
+  });
+}
+}
+
+/// @nodoc
 mixin _$WebSearchDraft {
 
  String get mode; String? get contextSize; String get domains; String get country; String get region; String get city; String get timezone; Set<WebSearchField> get dirtyFields; Map<WebSearchField, int> get fieldRevisions; int get revision;

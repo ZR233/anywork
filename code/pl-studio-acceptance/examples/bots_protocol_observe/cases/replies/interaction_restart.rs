@@ -22,7 +22,7 @@ use pl_protocol::{
     InteractionResolution, InteractionStatus, UserInputAnswer, UserInputResolution,
 };
 use pl_provider_fixture::feishu::{
-    CallKind, ChatType, DIRECT_CHAT_ID, SenderKind, TRUSTED_USER_OPEN_ID, text_event,
+    ChatType, DIRECT_CHAT_ID, SenderKind, TRUSTED_USER_OPEN_ID, text_event,
 };
 use pl_provider_fixture::{
     Protocol, RealtimeToolCall, Reply, Step, responses_text, responses_tool_calls,
@@ -114,7 +114,7 @@ async fn interaction_restart_inner(
     // binary against the same home/manifest/keyring store. The Feishu peer and
     // the model fixture stay alive for the whole case.
     let restart = session.restart_studio_server().await?;
-    evidence.push(restart);
+    evidence.push(restart.to_string());
     session.wait_connected(&bot_id).await?;
     http::hold_for(RESTART_SETTLE).await;
     let model_after_restart = session.model_executions();
@@ -212,15 +212,13 @@ async fn interaction_restart_inner(
         "two hints plus one formal reply must be the whole send history, got {}",
         facts_final.total
     );
-    let final_body = session
-        .send_bodies()
-        .await?
-        .into_iter()
-        .find(|body| body.to_string().contains(FINAL_MARKER))
-        .context("final send body missing")?;
+    // The formal reply is one platform message; its delivered content is either
+    // the decoded `post.md` text or the card entity the message references.
+    let (_, complete) = super::delivered_counts(session, &[&[FINAL_TEXT]]).await?;
     ensure!(
-        body_has_complete_final(&final_body),
-        "the sent formal reply must carry the complete final text"
+        complete[0] == 1,
+        "the sent formal reply must carry the complete final text exactly once, got {}",
+        complete[0]
     );
 
     session.wait_inbound_completed(&bot_id, MESSAGE_ID).await?;
@@ -230,14 +228,40 @@ async fn interaction_restart_inner(
         "the whole journey must consume exactly three model executions, got {model_total}"
     );
 
+    // The two interaction hints are ordinary post sends and stay in the old
+    // send ledger; the automatic formal reply owns a durable card stream, so it
+    // is never expected in `send_operations`.
     let sends = crate::sqlite::send_details(&session.home, &bot_id).await?;
     ensure!(
-        sends.len() == 3 && sends.iter().all(|row| row.status == "succeeded"),
-        "two hints plus one formal reply must be the durable send ledger, got {:?}",
+        sends.len() == 2 && sends.iter().all(|row| row.status == "succeeded"),
+        "the two interaction hints must be the whole ordinary send ledger, got {:?}",
         sends
             .iter()
             .map(|row| (row.operation_id.as_str(), row.status.as_str()))
             .collect::<Vec<_>>()
+    );
+    let reply_stream = super::card_stream::card_stream(&session.home, &bot_id, MESSAGE_ID).await?;
+    ensure!(
+        reply_stream.state.lifecycle == super::card_stream::Lifecycle::Completed,
+        "the one formal reply must be a completed card stream, got {:?}",
+        reply_stream.state.lifecycle
+    );
+    ensure!(
+        reply_stream.state.confirmed_text == FINAL_TEXT,
+        "the completed card stream must keep the exact formal reply body, got {} bytes",
+        reply_stream.state.confirmed_text.len()
+    );
+    let reply_last = reply_stream
+        .state
+        .last_operation
+        .as_ref()
+        .context("the completed card stream must keep its last operation")?;
+    ensure!(
+        reply_last.action.kind == super::card_stream::ActionKind::Settings
+            && reply_last.status == super::card_stream::OperationStatus::Confirmed,
+        "the one formal reply must end with a confirmed stream close, got {:?}/{:?}",
+        reply_last.action.kind,
+        reply_last.status
     );
     let bindings = crate::sqlite::thread_bindings(&session.home, &bot_id).await?;
     let dm = bindings
@@ -275,23 +299,12 @@ struct ReplySendFacts {
 /// carries the final marker) from every other send (the per-interaction local
 /// hint), so unexpected sends cannot hide inside the hint count.
 async fn reply_send_facts(session: &Session) -> Result<ReplySendFacts> {
-    let report = session.control()?.snapshot_report().await;
-    let mut total = 0usize;
-    let mut final_bodies = 0usize;
-    for call in report
-        .calls
-        .iter()
-        .filter(|call| call.kind == Some(CallKind::MessageSend) && call.accepted)
-    {
-        total += 1;
-        if call
-            .send_body
-            .as_ref()
-            .is_some_and(|body| body.to_string().contains(FINAL_MARKER))
-        {
-            final_bodies += 1;
-        }
-    }
+    // Delivered content is read from the decode of either shape: the `post.md`
+    // text of an ordinary send, or the card entity an automatic reply owns
+    // (cumulative bodies and settings summary included).
+    let (total, counts) =
+        super::delivered_counts(session, &[&[FINAL_MARKER, "plan approval."]]).await?;
+    let final_bodies = counts[0];
     Ok(ReplySendFacts {
         total,
         final_bodies,
@@ -310,11 +323,6 @@ async fn wait_hint_count(session: &Session, expected: usize) -> Result<()> {
     .with_context(|| {
         format!("local-processing hints did not reach exactly {expected} before the next phase")
     })
-}
-
-fn body_has_complete_final(body: &serde_json::Value) -> bool {
-    let rendered = body.to_string();
-    rendered.contains(FINAL_MARKER) && rendered.contains("plan approval.")
 }
 
 fn is_user_input_question(item: &InteractionRequest, question_id: &str) -> bool {

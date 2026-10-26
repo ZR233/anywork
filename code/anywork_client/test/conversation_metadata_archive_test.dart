@@ -79,7 +79,15 @@ final class _Scenario {
     }
     for (final opening in fixture.timeline.requests) {
       if (!opening.result.isCompleted)
-        opening.result.complete(TestTimelineConnection(initial: baseline(1)));
+        opening.result.complete(
+          TestTimelineConnection(
+            // A Thread's Timeline carries only that Thread's own items.
+            initial: baseline(
+              1,
+              items: [timelineItem(1, threadId: opening.threadId)],
+            ),
+          ),
+        );
       final native = await opening.result.future;
       final connection = native is TimelineConnectionProbe
           ? native.native
@@ -399,7 +407,13 @@ void main() {
     final current = fixture.select('A');
     current.timeline.attachConsumer((_) {});
     final currentNative = TimelineConnectionProbe(
-      TestTimelineConnection(initial: baseline(1, subscriptionId: 'new-A')),
+      TestTimelineConnection(
+        initial: baseline(
+          1,
+          subscriptionId: 'new-A',
+          items: [timelineItem(1, threadId: 'A')],
+        ),
+      ),
     );
     (await fixture.timeline.opened(1)).result.complete(currentNative);
     await current.timeline.ready;
@@ -418,7 +432,11 @@ void main() {
     expect(fixture.repository.active.value, same(current));
     expect(fixture.repository.existingSession('A'), same(current));
     final oldNative = TestTimelineConnection(
-      initial: baseline(9, subscriptionId: 'old-A'),
+      initial: baseline(
+        9,
+        subscriptionId: 'old-A',
+        items: [timelineItem(9, threadId: 'A')],
+      ),
     )..closeGate = Completer<void>();
     late.result.complete(oldNative);
     await oldNative.closeStarted.future;
@@ -532,6 +550,17 @@ void main() {
     recoveryReply.complete(const ConversationRecoveryAccess.allowed());
     final uiMetrics = await fixture.facets.metricsOpened(0);
     await uiMetrics.feed.listened.future;
+    // The user-selected Session owns exactly one UI Timeline connection; it is
+    // real native work that the archive retirement has to join, not a read.
+    final uiTimeline = TestTimelineConnection(
+      initial: baseline(
+        1,
+        subscriptionId: 'created-ui',
+        items: [timelineItem(1, threadId: 'created')],
+      ),
+    );
+    (await fixture.timeline.opened(0)).result.complete(uiTimeline);
+    await uiTimeline.subscribed.future;
     final confirmation = ArchiveThreadResult(
       archivedRootId: 'created',
       removedThreadIds: ['created'],
@@ -574,7 +603,12 @@ void main() {
       isEmpty,
       reason: 'UI/archive never substitute an ordinary activating source for the original creation source',
     );
-    expect(fixture.timeline.requests, isEmpty);
+    expect(
+      fixture.timeline.requests,
+      hasLength(1),
+      reason:
+          'Only the UI borrow owns a Timeline connection, never the archive',
+    );
     lease.release();
     await source.feed.closeStarted.future;
     expect((await fixture.repository.close()).complete, isTrue);

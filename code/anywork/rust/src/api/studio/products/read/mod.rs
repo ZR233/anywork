@@ -4,6 +4,7 @@ pub mod bot_conversations;
 pub mod bots;
 pub mod catalog;
 pub mod configuration;
+pub mod configuration_acp_commands;
 pub(crate) mod configuration_command_registry;
 pub mod configuration_commands;
 pub mod configuration_pages;

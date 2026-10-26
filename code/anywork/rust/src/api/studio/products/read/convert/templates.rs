@@ -15,7 +15,6 @@ impl From<protocol::AccountTemplatesReadHeader> for BridgeAccountTemplatesReadHe
 impl From<protocol::AccountTemplateRead> for BridgeAccountTemplateRead {
     fn from(value: protocol::AccountTemplateRead) -> Self {
         Self {
-            pricing_enabled: value.pricing_enabled,
             id: value.id.into(),
             display_name: value.display_name.into(),
             description: value.description.map(Into::into),

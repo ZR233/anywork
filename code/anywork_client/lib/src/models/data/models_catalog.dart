@@ -266,10 +266,20 @@ final class ModelsCatalog {
                 if (_feedStamp == null ||
                     _feedStamp!.origin != stamp.origin ||
                     baseRevision != _feedStamp!.revision ||
-                    stamp.revision <= baseRevision)
-                  throw resourceProtocol(
-                    'The catalog projection has a revision gap.',
+                    stamp.revision <= baseRevision) {
+                  // A delta from another source or an impossible revision is a
+                  // violation of this feed's own contract, not an unexpected
+                  // consumer crash. Publish the typed failure and close the feed
+                  // deterministically; the rejected frame is never ACKed because
+                  // the failed source is already closing here.
+                  _failed(
+                    feed,
+                    resourceProtocol(
+                      'The catalog projection has a revision gap.',
+                    ),
                   );
+                  return deliverySequence;
+                }
                 _feedStamp = stamp;
                 _adopt(
                   stamp,

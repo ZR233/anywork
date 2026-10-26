@@ -72,6 +72,16 @@ pub(crate) fn bridge_product_event(
                     state.state,
                 ))
             }
+            StudioProductEventKind::AcpAuthStateChanged(state) => {
+                BridgeProductEventPayload::AcpAuthStateChanged(Box::new(
+                    super::acp::bridge_acp_auth_snapshot(*state),
+                ))
+            }
+            StudioProductEventKind::AcpInstallStateChanged(state) => {
+                BridgeProductEventPayload::AcpInstallStateChanged(Box::new(
+                    super::acp_install::bridge_acp_install_snapshot(*state),
+                ))
+            }
             StudioProductEventKind::ModelPerformanceStateChanged(state) => {
                 BridgeProductEventPayload::ModelPerformanceStateChanged(bridge_model_performance(
                     state,
@@ -148,6 +158,12 @@ pub(crate) fn bridge_product_baseline(
         StudioProductBaselineState::AccountUsage(state) => {
             BridgeProductBaseline::AccountUsage(bridge_account_usage_state(state.state))
         }
+        StudioProductBaselineState::AcpAuth(state) => {
+            BridgeProductBaseline::AcpAuth(Box::new(super::acp::bridge_acp_auth_snapshot(*state)))
+        }
+        StudioProductBaselineState::AcpInstall(state) => BridgeProductBaseline::AcpInstall(
+            Box::new(super::acp_install::bridge_acp_install_snapshot(*state)),
+        ),
         StudioProductBaselineState::ModelPerformance(state) => {
             BridgeProductBaseline::ModelPerformance(bridge_model_performance(*state))
         }

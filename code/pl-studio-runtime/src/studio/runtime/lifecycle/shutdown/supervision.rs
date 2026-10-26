@@ -37,9 +37,13 @@ pub(super) enum StageId {
     PersistenceObserver,
     Ssh,
     AgentProfiles,
+    AcpAuth,
     Bots,
+    AcpInstall,
     DetailReads,
     Store,
+    /// 统计进度 follower 的有界 join；追加在末尾，既有 stage 的 order 不变。
+    StatisticsFollower,
 }
 
 impl StageId {
@@ -66,9 +70,12 @@ impl StageId {
             Self::PersistenceObserver => "persistenceObserver",
             Self::Ssh => "ssh",
             Self::AgentProfiles => "agentProfiles",
+            Self::AcpAuth => "acpAuth",
             Self::Bots => "bots",
+            Self::AcpInstall => "acpInstall",
             Self::DetailReads => "detailReads",
             Self::Store => "store",
+            Self::StatisticsFollower => "statisticsFollower",
         }
     }
 }

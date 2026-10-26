@@ -569,14 +569,14 @@ $AccountEditCopyWith<AccountEdit> get copyWith => _$AccountEditCopyWithImpl<Acco
 @override
 bool operator ==(Object other) {
   final _this = this as AccountEdit;
-  return identical(this, other) || (other.runtimeType == runtimeType&&other is AccountEdit&&(identical(other.accountId, _this.accountId) || other.accountId == _this.accountId)&&(identical(other.create, _this.create) || other.create == _this.create)&&(identical(other.templateId, _this.templateId) || other.templateId == _this.templateId)&&(identical(other.protocol, _this.protocol) || other.protocol == _this.protocol)&&(identical(other.name, _this.name) || other.name == _this.name)&&(identical(other.baseUrl, _this.baseUrl) || other.baseUrl == _this.baseUrl)&&(identical(other.secret, _this.secret) || other.secret == _this.secret)&&(identical(other.pricingEnabled, _this.pricingEnabled) || other.pricingEnabled == _this.pricingEnabled)&&(identical(other.rebuildModelConfiguration, _this.rebuildModelConfiguration) || other.rebuildModelConfiguration == _this.rebuildModelConfiguration)&&const DeepCollectionEquality().equals(other.customModels, _this.customModels)&&const DeepCollectionEquality().equals(other.connections, _this.connections)&&const DeepCollectionEquality().equals(other.autoCompactLimits, _this.autoCompactLimits));
+  return identical(this, other) || (other.runtimeType == runtimeType&&other is AccountEdit&&(identical(other.accountId, _this.accountId) || other.accountId == _this.accountId)&&(identical(other.create, _this.create) || other.create == _this.create)&&(identical(other.templateId, _this.templateId) || other.templateId == _this.templateId)&&(identical(other.protocol, _this.protocol) || other.protocol == _this.protocol)&&(identical(other.name, _this.name) || other.name == _this.name)&&(identical(other.baseUrl, _this.baseUrl) || other.baseUrl == _this.baseUrl)&&(identical(other.secret, _this.secret) || other.secret == _this.secret)&&(identical(other.initialBillingKind, _this.initialBillingKind) || other.initialBillingKind == _this.initialBillingKind)&&(identical(other.rebuildModelConfiguration, _this.rebuildModelConfiguration) || other.rebuildModelConfiguration == _this.rebuildModelConfiguration)&&const DeepCollectionEquality().equals(other.customModels, _this.customModels)&&const DeepCollectionEquality().equals(other.connections, _this.connections)&&const DeepCollectionEquality().equals(other.autoCompactLimits, _this.autoCompactLimits));
 }
 
 
 @override
 int get hashCode {
   final _this = this as AccountEdit;
-  return Object.hash(runtimeType,_this.accountId,_this.create,_this.templateId,_this.protocol,_this.name,_this.baseUrl,_this.secret,_this.pricingEnabled,_this.rebuildModelConfiguration,const DeepCollectionEquality().hash(_this.customModels),const DeepCollectionEquality().hash(_this.connections),const DeepCollectionEquality().hash(_this.autoCompactLimits));
+  return Object.hash(runtimeType,_this.accountId,_this.create,_this.templateId,_this.protocol,_this.name,_this.baseUrl,_this.secret,_this.initialBillingKind,_this.rebuildModelConfiguration,const DeepCollectionEquality().hash(_this.customModels),const DeepCollectionEquality().hash(_this.connections),const DeepCollectionEquality().hash(_this.autoCompactLimits));
 }
 
 
@@ -588,11 +588,11 @@ abstract mixin class $AccountEditCopyWith<$Res>  {
   factory $AccountEditCopyWith(AccountEdit value, $Res Function(AccountEdit) _then) = _$AccountEditCopyWithImpl;
 @useResult
 $Res call({
- String accountId, bool create, FieldEdit<String?> templateId, FieldEdit<String> protocol, FieldEdit<String> name, FieldEdit<String> baseUrl, AccountSecretUpdate secret, FieldEdit<bool> pricingEnabled, bool rebuildModelConfiguration, List<CustomModelChange> customModels, List<ModelConnectionChange> connections, List<ModelLimitChange> autoCompactLimits
+ String accountId, bool create, FieldEdit<String?> templateId, FieldEdit<String> protocol, FieldEdit<String> name, FieldEdit<String> baseUrl, AccountSecretUpdate secret, BillingKind? initialBillingKind, bool rebuildModelConfiguration, List<CustomModelChange> customModels, List<ModelConnectionChange> connections, List<ModelLimitChange> autoCompactLimits
 });
 
 
-$FieldEditCopyWith<String?, $Res> get templateId;$FieldEditCopyWith<String, $Res> get protocol;$FieldEditCopyWith<String, $Res> get name;$FieldEditCopyWith<String, $Res> get baseUrl;$AccountSecretUpdateCopyWith<$Res> get secret;$FieldEditCopyWith<bool, $Res> get pricingEnabled;
+$FieldEditCopyWith<String?, $Res> get templateId;$FieldEditCopyWith<String, $Res> get protocol;$FieldEditCopyWith<String, $Res> get name;$FieldEditCopyWith<String, $Res> get baseUrl;$AccountSecretUpdateCopyWith<$Res> get secret;
 
 }
 /// @nodoc
@@ -605,7 +605,7 @@ class _$AccountEditCopyWithImpl<$Res>
 
 /// Create a copy of AccountEdit
 /// with the given fields replaced by the non-null parameter values.
-@pragma('vm:prefer-inline') @override $Res call({Object? accountId = null,Object? create = null,Object? templateId = null,Object? protocol = null,Object? name = null,Object? baseUrl = null,Object? secret = null,Object? pricingEnabled = null,Object? rebuildModelConfiguration = null,Object? customModels = null,Object? connections = null,Object? autoCompactLimits = null,}) {
+@pragma('vm:prefer-inline') @override $Res call({Object? accountId = null,Object? create = null,Object? templateId = null,Object? protocol = null,Object? name = null,Object? baseUrl = null,Object? secret = null,Object? initialBillingKind = freezed,Object? rebuildModelConfiguration = null,Object? customModels = null,Object? connections = null,Object? autoCompactLimits = null,}) {
   return _then(AccountEdit(
 accountId: null == accountId ? _self.accountId : accountId // ignore: cast_nullable_to_non_nullable
 as String,create: null == create ? _self.create : create // ignore: cast_nullable_to_non_nullable
@@ -614,8 +614,8 @@ as FieldEdit<String?>,protocol: null == protocol ? _self.protocol : protocol // 
 as FieldEdit<String>,name: null == name ? _self.name : name // ignore: cast_nullable_to_non_nullable
 as FieldEdit<String>,baseUrl: null == baseUrl ? _self.baseUrl : baseUrl // ignore: cast_nullable_to_non_nullable
 as FieldEdit<String>,secret: null == secret ? _self.secret : secret // ignore: cast_nullable_to_non_nullable
-as AccountSecretUpdate,pricingEnabled: null == pricingEnabled ? _self.pricingEnabled : pricingEnabled // ignore: cast_nullable_to_non_nullable
-as FieldEdit<bool>,rebuildModelConfiguration: null == rebuildModelConfiguration ? _self.rebuildModelConfiguration : rebuildModelConfiguration // ignore: cast_nullable_to_non_nullable
+as AccountSecretUpdate,initialBillingKind: freezed == initialBillingKind ? _self.initialBillingKind : initialBillingKind // ignore: cast_nullable_to_non_nullable
+as BillingKind?,rebuildModelConfiguration: null == rebuildModelConfiguration ? _self.rebuildModelConfiguration : rebuildModelConfiguration // ignore: cast_nullable_to_non_nullable
 as bool,customModels: null == customModels ? _self.customModels : customModels // ignore: cast_nullable_to_non_nullable
 as List<CustomModelChange>,connections: null == connections ? _self.connections : connections // ignore: cast_nullable_to_non_nullable
 as List<ModelConnectionChange>,autoCompactLimits: null == autoCompactLimits ? _self.autoCompactLimits : autoCompactLimits // ignore: cast_nullable_to_non_nullable
@@ -666,15 +666,6 @@ $AccountSecretUpdateCopyWith<$Res> get secret {
 
   return $AccountSecretUpdateCopyWith<$Res>(_self.secret, (value) {
     return _then(_self.copyWith(secret: value));
-  });
-}/// Create a copy of AccountEdit
-/// with the given fields replaced by the non-null parameter values.
-@override
-@pragma('vm:prefer-inline')
-$FieldEditCopyWith<bool, $Res> get pricingEnabled {
-
-  return $FieldEditCopyWith<bool, $Res>(_self.pricingEnabled, (value) {
-    return _then(_self.copyWith(pricingEnabled: value));
   });
 }
 }

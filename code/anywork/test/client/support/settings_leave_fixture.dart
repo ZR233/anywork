@@ -18,8 +18,14 @@ ModesFixture settingsLeaveModesFixture() {
   final fixture = ModesFixture();
   final document = modeDocument();
   fixture.port.definitions[document.definition.id.id] = ModeDefinitionSnapshot(
-    revision: 1, document: document, readOnly: false);
-  fixture.port.validation = ModeValidationResult(document: document, issues: const []);
+    revision: 1,
+    document: document,
+    readOnly: false,
+  );
+  fixture.port.validation = ModeValidationResult(
+    document: document,
+    issues: const [],
+  );
   return fixture;
 }
 
@@ -29,9 +35,11 @@ final class SettingsLeaveFixture {
   SettingsLeaveFixture(this.tester, this.original)
     : container = ProviderContainer(
         // Observe the original failed build, not Riverpod's timed retry loop.
-        retry: (_, _) => null, overrides: [
-        modesRepositoryProvider.overrideWithValue(original.repository),
-      ]) {
+        retry: (_, _) => null,
+        overrides: [
+          modesRepositoryProvider.overrideWithValue(original.repository),
+        ],
+      ) {
     fixtures.add(original);
   }
   final WidgetTester tester;
@@ -41,27 +49,42 @@ final class SettingsLeaveFixture {
   late BuildContext context;
   late WidgetRef ref;
 
-  ModeEditorViewModel get vm => container.read(modeEditorViewModelProvider.notifier);
-  ModeEditorViewState get state => container.read(modeEditorViewModelProvider).requireValue;
-  SettingsNavigationViewModel get navigation => container.read(settingsNavigationViewModelProvider.notifier);
-  SettingsNavigationState get navigationState => container.read(settingsNavigationViewModelProvider).requireValue;
+  ModeEditorViewModel get vm =>
+      container.read(modeEditorViewModelProvider.notifier);
+  ModeEditorViewState get state =>
+      container.read(modeEditorViewModelProvider).requireValue;
+  SettingsNavigationViewModel get navigation =>
+      container.read(settingsNavigationViewModelProvider.notifier);
+  SettingsNavigationState get navigationState =>
+      container.read(settingsNavigationViewModelProvider).requireValue;
 
-  static Future<SettingsLeaveFixture> create(WidgetTester tester, {bool open = true}) async {
+  static Future<SettingsLeaveFixture> create(
+    WidgetTester tester, {
+    bool open = true,
+  }) async {
     final original = settingsLeaveModesFixture();
     await original.establish();
     final harness = SettingsLeaveFixture(tester, original);
     addTearDown(harness.close);
-    await tester.pumpWidget(UncontrolledProviderScope(container: harness.container,
-      child: MaterialApp(locale: const Locale('en'),
-        localizationsDelegates: AppLocalizations.localizationsDelegates,
-        supportedLocales: AppLocalizations.supportedLocales,
-        home: Consumer(builder: (context, ref, child) {
-          harness.context = context;
-          harness.ref = ref;
-          ref.watch(modeEditorViewModelProvider);
-          ref.watch(settingsNavigationViewModelProvider);
-          return const SizedBox.shrink();
-        }))));
+    await tester.pumpWidget(
+      UncontrolledProviderScope(
+        container: harness.container,
+        child: MaterialApp(
+          locale: const Locale('en'),
+          localizationsDelegates: AppLocalizations.localizationsDelegates,
+          supportedLocales: AppLocalizations.supportedLocales,
+          home: Consumer(
+            builder: (context, ref, child) {
+              harness.context = context;
+              harness.ref = ref;
+              ref.watch(modeEditorViewModelProvider);
+              ref.watch(settingsNavigationViewModelProvider);
+              return const SizedBox.shrink();
+            },
+          ),
+        ),
+      ),
+    );
     await harness.container.read(modeEditorViewModelProvider.future);
     await harness.container.read(settingsNavigationViewModelProvider.future);
     if (open) expect(await harness.vm.open('mode.custom'), isTrue);
@@ -72,13 +95,18 @@ final class SettingsLeaveFixture {
 
   Future<void> replace(ModesFixture replacement) async {
     fixtures.add(replacement);
-    container.updateOverrides([modesRepositoryProvider.overrideWithValue(replacement.repository)]);
+    container.updateOverrides([
+      modesRepositoryProvider.overrideWithValue(replacement.repository),
+    ]);
     await container.read(modeEditorViewModelProvider.future);
   }
 
   Future<void> choose(ModeLeaveChoice choice) async {
     await tester.pumpAndSettle();
-    expect(find.byKey(const ValueKey('mode-editor-unsaved-dialog')), findsOneWidget);
+    expect(
+      find.byKey(const ValueKey('mode-editor-unsaved-dialog')),
+      findsOneWidget,
+    );
     final key = switch (choice) {
       ModeLeaveChoice.save => 'mode-editor-unsaved-save',
       ModeLeaveChoice.discard => 'mode-editor-unsaved-discard',
@@ -89,7 +117,9 @@ final class SettingsLeaveFixture {
   }
 
   Future<void> close() async {
-    if (context.mounted) Navigator.of(context).popUntil((route) => route.isFirst);
+    if (context.mounted) {
+      Navigator.of(context).popUntil((route) => route.isFirst);
+    }
     await tester.pumpWidget(const SizedBox.shrink());
     container.dispose();
     for (final fixture in fixtures) {
@@ -97,14 +127,25 @@ final class SettingsLeaveFixture {
       if (pending != null && !pending.isCompleted) pending.complete();
       for (final call in fixture.port.commands) {
         if (!call.reply.isCompleted) {
-          call.reply.completeError(const CommandDispatchFailure.rejected(
-          failure: StudioFailure(code: StudioFailureCode.cancelled,
-            message: 'The scripted test is closing.', retryable: false, correlationId: 'settings-leave-test')));
+          call.reply.completeError(
+            const CommandDispatchFailure.rejected(
+              failure: StudioFailure(
+                code: StudioFailureCode.cancelled,
+                message: 'The scripted test is closing.',
+                retryable: false,
+                correlationId: 'settings-leave-test',
+              ),
+            ),
+          );
         }
       }
-      final report = await pumpClientFuture(tester,
-        fixture.repository.close(deadline: DateTime.now().add(const Duration(seconds: 3))),
-        'Settings leave Repository cleanup');
+      final report = await pumpClientFuture(
+        tester,
+        fixture.repository.close(
+          deadline: DateTime.now().add(const Duration(seconds: 3)),
+        ),
+        'Settings leave Repository cleanup',
+      );
       expect(report.unresolved, isEmpty);
       expect(fixture.budget.usage, isEmpty);
     }

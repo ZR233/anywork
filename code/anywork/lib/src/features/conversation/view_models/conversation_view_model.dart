@@ -633,13 +633,15 @@ class ConversationViewModel extends _$ConversationViewModel {
     if (!ref.mounted || _stopSyncScheduled) return;
     _stopSyncScheduled = true;
     final lifetime = _stopLifetime;
-    unawaited(
-      Future<void>(() {
-        if (!ref.mounted || !identical(_stopLifetime, lifetime)) return;
-        _stopSyncScheduled = false;
-        _syncStopPage(lifetime);
-      }),
-    );
+    // The deferred read-back keeps this frame's widget lifecycle and Provider
+    // publication apart. A microtask is enough to leave the current stack, and
+    // unlike a timer it leaves nothing pending when the tree is torn down from
+    // inside that stack (design/25).
+    scheduleMicrotask(() {
+      if (!ref.mounted || !identical(_stopLifetime, lifetime)) return;
+      _stopSyncScheduled = false;
+      _syncStopPage(lifetime);
+    });
   }
 
   void _syncStopPage(Object lifetime) {

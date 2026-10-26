@@ -79,6 +79,8 @@ pub enum BridgeStartRouteRead {
 pub struct BridgeConfigurationReadHeader {
     pub default_account_id: Option<BridgeReadText>,
     pub accounts: BridgeTypedListRef,
+    /// ACP 账号目录行；`connectionRevision` 来自 ACP 身份所有者，不是设置版本。
+    pub acp_accounts: BridgeTypedListRef,
     pub mode_model_routes: BridgeTypedListRef,
     pub roles: BridgeTypedListRef,
     pub permission_mode: BridgeReadText,
@@ -93,7 +95,6 @@ pub struct BridgeConfigurationReadHeader {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BridgeAccountConfigurationRead {
-    pub pricing_enabled: bool,
     pub billing_kind: BridgeBillingKind,
     pub billing_kind_override: Option<BridgeBillingKind>,
     pub disabled_models: BridgeTypedListRef,
@@ -110,6 +111,15 @@ pub struct BridgeAccountConfigurationRead {
     pub model_connection_modes: BridgeTypedListRef,
     pub model_auto_compact_limits: BridgeTypedListRef,
     pub catalog_id: Option<BridgeReadText>,
+}
+
+/// 一条 ACP 接入的固定读取行；ID 与名称按原 scope 文本字段分块读取。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BridgeAcpAccountConfigurationRead {
+    pub account_id: BridgeReadText,
+    pub name: BridgeReadText,
+    pub provider: crate::api::studio::types::BridgeAcpProvider,
+    pub connection_revision: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

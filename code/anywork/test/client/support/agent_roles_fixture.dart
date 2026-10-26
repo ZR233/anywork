@@ -21,24 +21,51 @@ import 'pump_client_future.dart';
 const agentRole = 'executor';
 
 /// Explicit synthetic native material, not a pair built from two latest states.
-ConfigurationRoleReadTarget nativeRolePair(ProductReadOrigin origin, {
-  int revision = 1, int catalogEntry = 1, int catalogRevision = 1,
+ConfigurationRoleReadTarget nativeRolePair(
+  ProductReadOrigin origin, {
+  int revision = 1,
+  int catalogEntry = 1,
+  int catalogRevision = 1,
 }) => ConfigurationRoleReadTarget(
   reference: ConfigurationRoleReadRef(entry: 70, revision: revision),
-  configuration: ConfigurationReadTarget(origin: origin, reference: const ConfigurationReadRef(entry: 1, revision: 1)),
-  catalog: ModelCatalogReadTarget(origin: origin, reference: ModelCatalogReadRef(entry: catalogEntry, revision: catalogRevision)),
-  stamp: ConfigProjectionStamp(settingsRevision: 1, modelCatalogRevision: catalogRevision, closing: false));
+  configuration: ConfigurationReadTarget(
+    origin: origin,
+    reference: const ConfigurationReadRef(entry: 1, revision: 1),
+  ),
+  catalog: ModelCatalogReadTarget(
+    origin: origin,
+    reference: ModelCatalogReadRef(
+      entry: catalogEntry,
+      revision: catalogRevision,
+    ),
+  ),
+  stamp: ConfigProjectionStamp(
+    settingsRevision: 1,
+    modelCatalogRevision: catalogRevision,
+    closing: false,
+  ),
+);
 
 final class RoleRepositories {
-  RoleRepositories({String ownerEpoch = 'role-native', int accountCount = 2, Set<String>? textEligibleAccounts}) {
-    profile = ProfileEditorFixture(ownerEpoch: ownerEpoch, accountCount: accountCount,
+  RoleRepositories({
+    String ownerEpoch = 'role-native',
+    int accountCount = 2,
+    Set<String>? textEligibleAccounts,
+  }) {
+    profile = ProfileEditorFixture(
+      ownerEpoch: ownerEpoch,
+      accountCount: accountCount,
       textEligibleAccounts: textEligibleAccounts,
-      profile: profileSnapshot().copyWith(profileId: agentRole, system: true));
+      profile: profileSnapshot().copyWith(profileId: agentRole, system: true),
+    );
     profile.configurationPort.scriptProfileCommands = true;
     pair = nativeRolePair(profile.origin);
     profile.configurationPort.declareRolePair(pair, initial: true);
-    recovery = createRecoveryRepository(port: recoveryPort,
-      budget: profile.budget, operations: profile.operations);
+    recovery = createRecoveryRepository(
+      port: recoveryPort,
+      budget: profile.budget,
+      operations: profile.operations,
+    );
   }
   late final ProfileEditorFixture profile;
   late final ConfigurationRoleReadTarget pair;
@@ -46,7 +73,10 @@ final class RoleRepositories {
   late final RecoveryRepository recovery;
 
   Future<void> establish() async {
-    await Future.wait<void>([profile.establish(), recoveryPort.establish(recovery)]);
+    await Future.wait<void>([
+      profile.establish(),
+      recoveryPort.establish(recovery),
+    ]);
   }
 }
 
@@ -60,17 +90,25 @@ final class _StateWait {
 /// are scripted, and every accepted read is joined during teardown.
 final class AgentRolesFixture {
   AgentRolesFixture(this.initial, this.tester)
-    : container = ProviderContainer(retry: (_, _) => null, overrides: [
-        configurationRepositoryProvider.overrideWithValue(initial.profile.configuration),
-        modelsRepositoryProvider.overrideWithValue(initial.profile.models),
-        recoveryRepositoryProvider.overrideWithValue(initial.recovery),
-      ]) {
+    : container = ProviderContainer(
+        retry: (_, _) => null,
+        overrides: [
+          configurationRepositoryProvider.overrideWithValue(
+            initial.profile.configuration,
+          ),
+          modelsRepositoryProvider.overrideWithValue(initial.profile.models),
+          recoveryRepositoryProvider.overrideWithValue(initial.recovery),
+        ],
+      ) {
     worlds.add(initial);
     subscription = container.listen(agentProfilesViewModelProvider, (_, next) {
       if (next.asData?.value case final value?) {
         publications.add(value);
         for (final waiting in List.of(_waiting)) {
-          if (waiting.matches(value)) { _waiting.remove(waiting); waiting.done.complete(value); }
+          if (waiting.matches(value)) {
+            _waiting.remove(waiting);
+            waiting.done.complete(value);
+          }
         }
       }
     }, fireImmediately: true);
@@ -82,17 +120,28 @@ final class AgentRolesFixture {
   final publications = <AgentProfilesViewState>[];
   final expectedUnknown = <RoleRepositories, OperationState>{};
   final _waiting = <_StateWait>[];
-  late final ProviderSubscription<AsyncValue<AgentProfilesViewState>> subscription;
+  late final ProviderSubscription<AsyncValue<AgentProfilesViewState>>
+  subscription;
   bool _disposed = false;
 
-  AgentProfilesViewState get state => container.read(agentProfilesViewModelProvider).requireValue;
-  AgentProfilesViewModel get vm => container.read(agentProfilesViewModelProvider.notifier);
-  SettingsNavigationViewModel get navigation => container.read(settingsNavigationViewModelProvider.notifier);
+  AgentProfilesViewState get state =>
+      container.read(agentProfilesViewModelProvider).requireValue;
+  AgentProfilesViewModel get vm =>
+      container.read(agentProfilesViewModelProvider.notifier);
+  SettingsNavigationViewModel get navigation =>
+      container.read(settingsNavigationViewModelProvider.notifier);
 
-  static Future<AgentRolesFixture> create({String ownerEpoch = 'role-native', int accountCount = 2,
-    Set<String>? textEligibleAccounts, WidgetTester? tester}) async {
-    final world = RoleRepositories(ownerEpoch: ownerEpoch, accountCount: accountCount,
-      textEligibleAccounts: textEligibleAccounts);
+  static Future<AgentRolesFixture> create({
+    String ownerEpoch = 'role-native',
+    int accountCount = 2,
+    Set<String>? textEligibleAccounts,
+    WidgetTester? tester,
+  }) async {
+    final world = RoleRepositories(
+      ownerEpoch: ownerEpoch,
+      accountCount: accountCount,
+      textEligibleAccounts: textEligibleAccounts,
+    );
     final harness = AgentRolesFixture(world, tester);
     addTearDown(harness.close);
     await world.establish();
@@ -102,7 +151,9 @@ final class AgentRolesFixture {
     return harness;
   }
 
-  Future<AgentProfilesViewState> waitFor(bool Function(AgentProfilesViewState) matches) {
+  Future<AgentProfilesViewState> waitFor(
+    bool Function(AgentProfilesViewState) matches,
+  ) {
     final current = state;
     if (matches(current)) return Future.value(current);
     final waiting = _StateWait(matches);
@@ -110,54 +161,89 @@ final class AgentRolesFixture {
     return waiting.done.future;
   }
 
-  Future<AgentProfilesViewState> reply(ProfileRoleCall call, RoleRouteRead value) {
+  Future<AgentProfilesViewState> reply(
+    ProfileRoleCall call,
+    RoleRouteRead value,
+  ) {
     call.reply.complete(value);
-    return waitFor((state) => state.roleReads[agentRole]?.target == call.target &&
-      state.roleReads[agentRole]?.pending == false && state.roleReads[agentRole]?.value == value);
+    return waitFor(
+      (state) =>
+          state.roleReads[agentRole]?.target == call.target &&
+          state.roleReads[agentRole]?.pending == false &&
+          state.roleReads[agentRole]?.value == value,
+    );
   }
 
   Future<void> replace(RoleRepositories replacement) async {
     worlds.add(replacement);
     container.updateOverrides([
-      configurationRepositoryProvider.overrideWithValue(replacement.profile.configuration),
+      configurationRepositoryProvider.overrideWithValue(
+        replacement.profile.configuration,
+      ),
       modelsRepositoryProvider.overrideWithValue(replacement.profile.models),
       recoveryRepositoryProvider.overrideWithValue(replacement.recovery),
     ]);
     await container.read(agentProfilesViewModelProvider.future);
   }
 
-  Future<void> close() => tester == null ? _close()
-    : pumpClientFuture(tester!, _close(), 'Agent role Repository cleanup');
+  Future<void> close() => tester == null
+      ? _close()
+      : pumpClientFuture(tester!, _close(), 'Agent role Repository cleanup');
 
   Future<void> _close() async {
     if (_disposed) return;
     _disposed = true;
     subscription.close();
     container.dispose();
-    const cancelled = StudioFailure(code: StudioFailureCode.cancelled,
-      message: 'The scripted role scenario is closing.', retryable: false, correlationId: 'role-test-close');
+    const cancelled = StudioFailure(
+      code: StudioFailureCode.cancelled,
+      message: 'The scripted role scenario is closing.',
+      retryable: false,
+      correlationId: 'role-test-close',
+    );
     for (final world in worlds) {
       for (final open in world.profile.configurationPort.configurationOpens) {
-        final native = open.native ?? (!open.reply.isCompleted ? open.acceptNew('role-close-settings-${open.index}') : null);
+        final native =
+            open.native ??
+            (!open.reply.isCompleted
+                ? open.acceptNew('role-close-settings-${open.index}')
+                : null);
         final cancellation = native?.cancellationReceipt;
-        if (cancellation != null && !cancellation.isCompleted) cancellation.complete();
+        if (cancellation != null && !cancellation.isCompleted) {
+          cancellation.complete();
+        }
         final closing = native?.closeReceipt;
         if (closing != null && !closing.isCompleted) {
           closing.complete(
-          FeedCloseReport(feedId: native!.feedId, outcome: const FeedCloseOutcome.clean()));
+            FeedCloseReport(
+              feedId: native!.feedId,
+              outcome: const FeedCloseOutcome.clean(),
+            ),
+          );
         }
       }
       final unknown = expectedUnknown[world];
-      if (unknown != null) expectSync(world.profile.operations.observations.lookup(unknown.id)!.state.value, unknown);
+      if (unknown != null) {
+        expectSync(
+          world.profile.operations.observations.lookup(unknown.id)!.state.value,
+          unknown,
+        );
+      }
       for (final call in world.profile.configurationPort.enabledChanges) {
         if (!call.beginReply.isCompleted) {
-          call.beginReply.completeError(const CommandDispatchFailure.rejected(failure: cancelled));
+          call.beginReply.completeError(
+            const CommandDispatchFailure.rejected(failure: cancelled),
+          );
         } else if (call.accepted) {
           await call.native.resultRead(0);
           for (var index = 0; index < call.native.resultCalls; index++) {
             final read = call.native.resultAt(index);
-            if (!read.reply.isCompleted) read.reply.completeError(const CommandDispatchFailure.rejected(failure: cancelled));
-      }
+            if (!read.reply.isCompleted) {
+              read.reply.completeError(
+                const CommandDispatchFailure.rejected(failure: cancelled),
+              );
+            }
+          }
         }
       }
       for (final call in world.profile.configurationPort.roleCalls) {
@@ -170,31 +256,51 @@ final class AgentRolesFixture {
         if (!call.reply.isCompleted) call.reply.completeError(cancelled);
       }
       final deadline = DateTime.now().add(const Duration(seconds: 3));
-      final closing = Future.wait([world.profile.close(deadline: deadline), world.recovery.close(deadline: deadline)]);
-      for (final call in world.profile.configurationPort.enabledChanges.where((call) => call.accepted)) {
+      final closing = Future.wait([
+        world.profile.close(deadline: deadline),
+        world.recovery.close(deadline: deadline),
+      ]);
+      for (final call in world.profile.configurationPort.enabledChanges.where(
+        (call) => call.accepted,
+      )) {
         if (unknown?.id == call.request.operationId) {
           // UI assertions above retain Unknown unchanged. Teardown now obtains
           // a definitive *original* business rejection, not a fabricated Clean
           // for an invocation whose result is still unknown.
           final originalResult = await call.native.resultRead(1);
-          originalResult.reply.completeError(const CommandDispatchFailure.rejected(failure: cancelled));
-      }
+          originalResult.reply.completeError(
+            const CommandDispatchFailure.rejected(failure: cancelled),
+          );
+        }
         final nativeClose = await call.native.closed(0);
         if (!nativeClose.reply.isCompleted) {
           nativeClose.reply.complete(
-          FeedCloseReport(feedId: call.native.callId, outcome: const FeedCloseOutcome.clean()));
+            FeedCloseReport(
+              feedId: call.native.callId,
+              outcome: const FeedCloseOutcome.clean(),
+            ),
+          );
         }
       }
       final reports = await closing;
-      expectSync([for (final report in reports) ...report.unresolved], isEmpty,
-          reason: 'Every original role/field read and observer belongs to real Repository cleanup');
+      expectSync(
+        [for (final report in reports) ...report.unresolved],
+        isEmpty,
+        reason: 'Every original role/field read and observer belongs to real Repository cleanup',
+      );
       expectSync(world.profile.budget.usage, isEmpty);
       if (unknown != null) {
-        final settled = world.profile.operations.observations.lookup(unknown.id)!.state.value;
+        final settled = world.profile.operations.observations
+            .lookup(unknown.id)!
+            .state
+            .value;
         expectSync(settled.failurePhase, OperationFailurePhase.rejected);
         expectSync(settled.error, cancelled);
-        expectSync((settled.receipt, settled.acknowledged, settled.observed), (null, false, false),
-          reason: 'Cleanup joins the native rejection; it never fabricates save/observation evidence');
+        expectSync(
+          (settled.receipt, settled.acknowledged, settled.observed),
+          (null, false, false),
+          reason: 'Cleanup joins the native rejection; it never fabricates save/observation evidence',
+        );
         final call = world.profile.configurationPort.enabledChanges.single;
         expectSync(call.native.resultCalls, 2);
         expectSync(call.native.closeCalls + call.native.retryCloseCalls, 1);

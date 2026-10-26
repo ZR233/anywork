@@ -13,6 +13,303 @@ part of 'composer_view_state.dart';
 // dart format off
 T _$identity<T>(T value) => value;
 /// @nodoc
+mixin _$ComposerAttachmentState {
+
+ List<ModelInputCapability> get local; List<ModelInputCapability> get remote; StudioFailure? get error;
+/// Create a copy of ComposerAttachmentState
+/// with the given fields replaced by the non-null parameter values.
+@JsonKey(includeFromJson: false, includeToJson: false)
+@pragma('vm:prefer-inline')
+$ComposerAttachmentStateCopyWith<ComposerAttachmentState> get copyWith => _$ComposerAttachmentStateCopyWithImpl<ComposerAttachmentState>(this as ComposerAttachmentState, _$identity);
+
+
+
+@override
+bool operator ==(Object other) {
+  final _this = this as ComposerAttachmentState;
+  return identical(this, other) || (other.runtimeType == runtimeType&&other is ComposerAttachmentState&&const DeepCollectionEquality().equals(other.local, _this.local)&&const DeepCollectionEquality().equals(other.remote, _this.remote)&&(identical(other.error, _this.error) || other.error == _this.error));
+}
+
+
+@override
+int get hashCode {
+  final _this = this as ComposerAttachmentState;
+  return Object.hash(runtimeType,const DeepCollectionEquality().hash(_this.local),const DeepCollectionEquality().hash(_this.remote),_this.error);
+}
+
+
+
+}
+
+/// @nodoc
+abstract mixin class $ComposerAttachmentStateCopyWith<$Res>  {
+  factory $ComposerAttachmentStateCopyWith(ComposerAttachmentState value, $Res Function(ComposerAttachmentState) _then) = _$ComposerAttachmentStateCopyWithImpl;
+@useResult
+$Res call({
+ List<ModelInputCapability> local, List<ModelInputCapability> remote, StudioFailure? error
+});
+
+
+$StudioFailureCopyWith<$Res>? get error;
+
+}
+/// @nodoc
+class _$ComposerAttachmentStateCopyWithImpl<$Res>
+    implements $ComposerAttachmentStateCopyWith<$Res> {
+  _$ComposerAttachmentStateCopyWithImpl(this._self, this._then);
+
+  final ComposerAttachmentState _self;
+  final $Res Function(ComposerAttachmentState) _then;
+
+/// Create a copy of ComposerAttachmentState
+/// with the given fields replaced by the non-null parameter values.
+@pragma('vm:prefer-inline') @override $Res call({Object? local = null,Object? remote = null,Object? error = freezed,}) {
+  return _then(ComposerAttachmentState(
+local: null == local ? _self.local : local // ignore: cast_nullable_to_non_nullable
+as List<ModelInputCapability>,remote: null == remote ? _self.remote : remote // ignore: cast_nullable_to_non_nullable
+as List<ModelInputCapability>,error: freezed == error ? _self.error : error // ignore: cast_nullable_to_non_nullable
+as StudioFailure?,
+  ));
+}
+/// Create a copy of ComposerAttachmentState
+/// with the given fields replaced by the non-null parameter values.
+@override
+@pragma('vm:prefer-inline')
+$StudioFailureCopyWith<$Res>? get error {
+    if (_self.error == null) {
+    return null;
+  }
+
+  return $StudioFailureCopyWith<$Res>(_self.error!, (value) {
+    return _then(_self.copyWith(error: value));
+  });
+}
+}
+
+
+/// Adds pattern-matching-related methods to [ComposerAttachmentState].
+extension ComposerAttachmentStatePatterns on ComposerAttachmentState {
+/// A variant of `map` that fallback to returning `orElse`.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case _:
+///     return orElse();
+/// }
+/// ```
+
+@optionalTypeArgs TResult maybeMap<TResult extends Object?>(TResult Function( _ComposerAttachmentState value)?  $default,{required TResult orElse(),}){
+final _that = this;
+switch (_that) {
+case _ComposerAttachmentState() when $default != null:
+return $default(_that);case _:
+  return orElse();
+
+}
+}
+/// A `switch`-like method, using callbacks.
+///
+/// Callbacks receives the raw object, upcasted.
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case final Subclass2 value:
+///     return ...;
+/// }
+/// ```
+
+@optionalTypeArgs TResult map<TResult extends Object?>(TResult Function( _ComposerAttachmentState value)  $default,){
+final _that = this;
+switch (_that) {
+case _ComposerAttachmentState():
+return $default(_that);case _:
+  throw StateError('Unexpected subclass');
+
+}
+}
+/// A variant of `map` that fallback to returning `null`.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case _:
+///     return null;
+/// }
+/// ```
+
+@optionalTypeArgs TResult? mapOrNull<TResult extends Object?>(TResult? Function( _ComposerAttachmentState value)?  $default,){
+final _that = this;
+switch (_that) {
+case _ComposerAttachmentState() when $default != null:
+return $default(_that);case _:
+  return null;
+
+}
+}
+/// A variant of `when` that fallback to an `orElse` callback.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case _:
+///     return orElse();
+/// }
+/// ```
+
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>(TResult Function( List<ModelInputCapability> local,  List<ModelInputCapability> remote,  StudioFailure? error)?  $default,{required TResult orElse(),}) {final _that = this;
+switch (_that) {
+case _ComposerAttachmentState() when $default != null:
+return $default(_that.local,_that.remote,_that.error);case _:
+  return orElse();
+
+}
+}
+/// A `switch`-like method, using callbacks.
+///
+/// As opposed to `map`, this offers destructuring.
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case Subclass2(:final field2):
+///     return ...;
+/// }
+/// ```
+
+@optionalTypeArgs TResult when<TResult extends Object?>(TResult Function( List<ModelInputCapability> local,  List<ModelInputCapability> remote,  StudioFailure? error)  $default,) {final _that = this;
+switch (_that) {
+case _ComposerAttachmentState():
+return $default(_that.local,_that.remote,_that.error);case _:
+  throw StateError('Unexpected subclass');
+
+}
+}
+/// A variant of `when` that fallback to returning `null`
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case _:
+///     return null;
+/// }
+/// ```
+
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>(TResult? Function( List<ModelInputCapability> local,  List<ModelInputCapability> remote,  StudioFailure? error)?  $default,) {final _that = this;
+switch (_that) {
+case _ComposerAttachmentState() when $default != null:
+return $default(_that.local,_that.remote,_that.error);case _:
+  return null;
+
+}
+}
+
+}
+
+/// @nodoc
+
+
+class _ComposerAttachmentState extends ComposerAttachmentState {
+  const _ComposerAttachmentState({ List<ModelInputCapability> local = const [],  List<ModelInputCapability> remote = const [], this.error}): _local = local,_remote = remote,super._();
+
+
+ final  List<ModelInputCapability> _local;
+@override@JsonKey() List<ModelInputCapability> get local {
+  if (_local is EqualUnmodifiableListView) return _local;
+  // ignore: implicit_dynamic_type
+  return EqualUnmodifiableListView(_local);
+}
+
+ final  List<ModelInputCapability> _remote;
+@override@JsonKey() List<ModelInputCapability> get remote {
+  if (_remote is EqualUnmodifiableListView) return _remote;
+  // ignore: implicit_dynamic_type
+  return EqualUnmodifiableListView(_remote);
+}
+
+@override final  StudioFailure? error;
+
+/// Create a copy of ComposerAttachmentState
+/// with the given fields replaced by the non-null parameter values.
+@override @JsonKey(includeFromJson: false, includeToJson: false)
+@pragma('vm:prefer-inline')
+_$ComposerAttachmentStateCopyWith<_ComposerAttachmentState> get copyWith => __$ComposerAttachmentStateCopyWithImpl<_ComposerAttachmentState>(this, _$identity);
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is _ComposerAttachmentState&&const DeepCollectionEquality().equals(other.local, _local)&&const DeepCollectionEquality().equals(other.remote, _remote)&&(identical(other.error, error) || other.error == error));
+}
+
+
+@override
+int get hashCode {
+    return Object.hash(runtimeType,const DeepCollectionEquality().hash(_local),const DeepCollectionEquality().hash(_remote),error);
+}
+
+
+
+}
+
+/// @nodoc
+abstract mixin class _$ComposerAttachmentStateCopyWith<$Res> implements $ComposerAttachmentStateCopyWith<$Res> {
+  factory _$ComposerAttachmentStateCopyWith(_ComposerAttachmentState value, $Res Function(_ComposerAttachmentState) _then) = __$ComposerAttachmentStateCopyWithImpl;
+@override @useResult
+$Res call({
+ List<ModelInputCapability> local, List<ModelInputCapability> remote, StudioFailure? error
+});
+
+
+@override $StudioFailureCopyWith<$Res>? get error;
+
+}
+/// @nodoc
+class __$ComposerAttachmentStateCopyWithImpl<$Res>
+    implements _$ComposerAttachmentStateCopyWith<$Res> {
+  __$ComposerAttachmentStateCopyWithImpl(this._self, this._then);
+
+  final _ComposerAttachmentState _self;
+  final $Res Function(_ComposerAttachmentState) _then;
+
+/// Create a copy of ComposerAttachmentState
+/// with the given fields replaced by the non-null parameter values.
+@override @pragma('vm:prefer-inline') $Res call({Object? local = null,Object? remote = null,Object? error = freezed,}) {
+  return _then(_ComposerAttachmentState(
+local: null == local ? _self._local : local // ignore: cast_nullable_to_non_nullable
+as List<ModelInputCapability>,remote: null == remote ? _self._remote : remote // ignore: cast_nullable_to_non_nullable
+as List<ModelInputCapability>,error: freezed == error ? _self.error : error // ignore: cast_nullable_to_non_nullable
+as StudioFailure?,
+  ));
+}
+
+/// Create a copy of ComposerAttachmentState
+/// with the given fields replaced by the non-null parameter values.
+@override
+@pragma('vm:prefer-inline')
+$StudioFailureCopyWith<$Res>? get error {
+    if (_self.error == null) {
+    return null;
+  }
+
+  return $StudioFailureCopyWith<$Res>(_self.error!, (value) {
+    return _then(_self.copyWith(error: value));
+  });
+}
+}
+
+/// @nodoc
 mixin _$ComposerViewState {
 
  ComposerKey get key; ComposerDraftState? get draft; StartDraftState? get startDraft; StartRoutePreferences? get preferences; String get urlRaw; ValidationIssue? get inputIssue; StudioFailure? get error; StudioFailure? get platformError; OperationState? get operation; int get latestIntent; bool get pending; bool get platformPending; bool get closing;

@@ -1,143 +1,69 @@
-# 11 - Thread Mode 与预设工作流
+# 11 - 工作模式（Thread Mode）与预设工作流
 
-本文是 Thread Mode 注册、图协议、workflow 工具契约与持久化上限的唯一权威源；协作编排（child
-派发、交付证据、reviewer 门禁）见 [12](./12-collaboration.md)，Plan 确认状态机见
-[13](./13-plan.md)，通用工具运行时见 [09](./09-tool-runtime.md)。
+本文是工作模式（`Thread Mode`）注册、工作流状态图协议、`workflow_*` 工具契约与持久化上限的唯一权威源；多智能体协作编排（子智能体派发、交付证据、审查门禁）见 [12](./12-collaboration.md)，计划确认状态机见 [13](./13-plan.md)，通用工具运行时见 [09](./09-tool-runtime.md)。
 
 ## 11.1 领域边界
 
-Mode 是 root Thread 的执行配置。Mode 不是 Skill、Agent Profile、provider wire mode 或另一种
-会话类型：Simple、Task 与后续自定义 Mode 继续使用同一套 Thread、Turn、模型循环和工具运行时；
-是否使用工作流由注册 Mode 是否携带图决定。工作流只影响模型提示和合法状态边，不关闭文件、
-命令、Git、Agent 或最终回复能力。所有 Mode 使用 `finish_turn({message})` 或自然 final 提交汇报并结束
-Turn。
+工作模式（`Mode`）是根会话线程（root `Thread`）的执行配置，与技能（`Skill`）、智能体预设（`Agent Profile`）、模型厂商线协议模式完全正交：
+- 内置的简洁模式（`mode.simple`）、任务模式（`mode.task`）及用户自定义模式共用同一套会话线程、执行轮次（`Turn`）、模型推理循环与工具运行时；是否启用工作流状态机仅取决于所注册的模式是否携带状态图定义（`WorkflowDefinition`）。
+- 工作流状态图仅约束阶段提示词注入与合法的状态转换边，不关闭文件读写、命令执行、Git、子智能体派发或最终回复能力。所有工作模式均通过自然生成最终回答或调用 `finish_turn({message})` 汇报结果并结束当前轮次。
+- 跨 crate 的稳定标识类型为 `ThreadModeId`，线协议（wire）统一采用 `mode.<id>` 字符串格式（内置值为 `mode.simple` 与 `mode.task`）。标识与目录 DTO 定义于 `pl-protocol`；内存注册表、不可变目录快照、状态图编译器与工作流状态工具归属 `pl-studio-runtime` 的 `mode` 模块。普通技能系统不解析、不发现、也不加载工作模式。
 
-跨 crate 的稳定 ID 是 ThreadModeId，wire 使用 `mode.<id>` 字符串（内置值为 `mode.simple` 与
-`mode.task`，未来自定义模式仍使用 `mode.<id>`）。ID 与目录 DTO 归 pl-protocol；内存注册表、
-不可变快照、预设图编译和状态工具归 Studio 的 mode 模块；内置 Mode 随 Studio 二进制发布。
-普通 Skill 系统不解析、发现、保护、投影或加载 Mode；Mode 不使用 SKILL.md、frontmatter、
-Skill Provider、`skills_list`、`skill_view` 或 Skill 调用策略，也不进入普通 skills 目录。
+## 11.2 注册与状态图编译
 
-## 11.2 注册与图编译
+工作模式注册输入包含模式 ID、显示名称、描述、排序权重、模式提示词（Mode Prompt）以及可选的工作流定义（`WorkflowDefinition`）。模式管理器按来源以批次为单位原子替换注册项：先在锁外完成全部 ID 格式、提示词非空、重复项检查与工作流状态图编译校验，全部通过后才在极短的写锁临界区内发布新的不可变目录快照（批次内任一项校验失败则整批拒绝并保留上一份完整快照）。同一模式 ID 禁止由两个来源同时提供，内置模式不可被外部来源覆盖。结构修订号与散列值仅覆盖规范化后的工作流状态图，模式提示词与展示元数据变更不改变状态图散列值。
 
-注册输入是拥有所有权的结构，包含 ID、展示名称、描述、排序、Mode Prompt 和可选
-WorkflowDefinition；不经过 Skill frontmatter、调用策略或 Provider。Mode 管理器按来源原子替换
-一批注册：先在锁外完成所有 ID、Prompt、重复项和工作流编译校验，全部成功后才在短写锁内发布
-新的不可变目录快照；读取方取得快照后不再持锁。批次失败保留上一份完整快照。同一 ID 不能由
-两个来源同时提供，内置来源不可被外部来源覆盖，其他来源之间不设 winner precedence——重复 ID
-使整个注册批次失败。注册表不读取文件；配置 owner 在文件边界解析、校验后提交同一注册接口。结构 revision/hash 只覆盖规范化后的工作流图，Prompt 和展示元数据不参与图 hash。
+### 11.2.1 状态图协议与静态编译规则
 
-### 图协议
+工作流状态图遵循 W3C SCXML 与 XState 的扁平确定性有限状态机原则，并在注册阶段完成静态图完整性校验：
+- **受限确定性子集**：每个工作流运行实例（run）在同一时刻恰处于一个活动状态（state）、整张图恰有一个初始状态（initial state），终态（final state）显式标注，状态转换边（transition）显式指定源状态（`sourceStateId`）、目标状态（`targetStateId`）与无副作用的声明性守卫条件（`guard`）。协议不支持嵌套层级状态、并行状态、历史状态、进出动作脚本（entry/exit actions）或运行时表达式解释器——守卫条件是供智能体自行核对并在调用转换工具时声明已满足的自然语言条件，运行时通过显式目标状态加 CAS 校验决定唯一转换。
+- **结构与规模上限**：单张状态图最多包含 **32 个状态**、**96 条有向边**，规范化 JSON 体积上限为 **64 KiB**；状态 ID 仅允许使用长度 `1..=64` 的小写 ASCII 字母、数字、`-` 与 `_`。
+- **静态可达性与可终结性校验（复杂度 $O(V + E)$）**：
+  1. 状态 ID 唯一、初始状态唯一、所有边的源与目标状态均已定义、同一对 `(sourceStateId, targetStateId)` 至多存在一条有向边；
+  2. 每个非终态（`atomic`）必须包含非空的阶段指令与完成标准，且至少有一条出边；每个终态（`final`）禁止存在任何出边；允许存在自环、循环与返工回路；
+  3. 从初始状态正向遍历必须能到达所有状态（拒绝不可达孤岛节点）；从所有终态反向遍历必须能覆盖所有非终态（拒绝无法到达任何终态的死锁节点）。
+- **规范化散列**：编译器将状态按 ID 排序、将转换边按 `source / target / guard` 排序后计算稳定的结构散列值（单纯调整 JSON 数组书写顺序不改变散列值，单个状态内部完成标准的声明顺序予以保留）。智能体在运行期无权定义、编译、修补或替换状态图。
 
-工作流协议采用 W3C SCXML 与 XState 的扁平确定性状态机原则，并借鉴 Amazon States Language
-在注册阶段完成静态图校验。Pure-Lang 只实现一个受限子集：每个 run 恰有一个活动 state、恰有
-一个 initial state、final state 显式标注、transition 使用明确 source/target，guard 必须是无
-副作用的声明性条件。协议不支持层级/并行 state、history state、entry/exit action、可执行
-表达式或运行时解释器。这里的 guard 是提供给 Agent 判断并在调用转换工具时声明已满足的自然
-语言条件，不是由 runtime 执行的脚本；显式 target 加 CAS 决定唯一转换，不依赖顺序选择第一条
-可用边。
+## 11.3 轮次快照、模式切换与运行实例生命周期
 
-WorkflowDefinition 的 canonical 字段是 title、goal、initialStateId、states 与 transitions；
-state 显式携带穷尽的 kind（atomic | final），transition 使用 sourceStateId、targetStateId 与
-声明性 guard。限制与规则：
+### 11.3.1 角色与模式解耦及空闲态模式切换
 
-- 最多 32 个 state、96 条边，规范化 JSON 最大 64 KiB；state ID 只允许小写 ASCII、数字、
-  `-`、`_`，长度 1–64。
-- 非终态必须有指令与完成标准，且至少有一条出边；终态禁止出边。允许自环、循环和返工；
-  同一 source/target 只能出现一次。
-- 编译按固定次序规范化并拒绝非法图：唯一 state ID、唯一 initial、已知 source/target、无
-  重复 transition、final state 无出边；从初态正向遍历拒绝不可达节点，从所有终态反向遍历
-  拒绝无法终结的非终态。编译复杂度为 O(V + E)。
+智能体定义表达“由谁执行”，工作模式表达“按何种流程执行”，两者的指令来源相互独立（见 [12](./12-collaboration.md)）。普通桌面根会话与飞书根会话共用同一套工作模式机制；模式切换、注册表更新或上下文压缩仅替换归属工作模式的指令槽位，绝不覆盖已冻结的智能体角色定义。子智能体（`child`）使用创建时冻结的智能体预设（`Agent Profile`），不创建、不继承也不推进根会话的工作流。
 
-编译结果建立按 ID 和 source 索引的只读结构，按 ID 排序 state、按 source/target/guard 排序 transition，并从规范化协议数据计算
-稳定 hash；单纯重排 state 或 transition 不改变 hash，完成标准的声明顺序保留。编译器不执行
-workflow，也不接受模型输入；模型没有定义、编译、patch 或 supersede 图的入口。
+根会话仅在空闲（`idle`）且无待决交互（pending `Interaction`）时允许切换工作模式：
+- **原子重配置**：运行时归档当前活动的旧工作流运行实例，并根据配置中目标模式的默认模型选择器解析新路由，将 `studio.mode`、`studio.model-route`、系统指令、工作流状态、上下文、工具目录及下一轮待生效的模型更新作为一次空闲重配置（idle reconfiguration）原子提交至 `pl-core`（若内核拒绝则保持原模式与原路由不变）。
+- **单向目录水位发布**：提交成功后，新模式同步写入线程目录并推进目录水位，同时随线程状态流快照下发；前端按 [18.11.1](./18-studio-state.md#18111-会话身份的单一来源) 以目录自身水位合并身份。
+- **函数调用能力前置校验**：带有工作流状态图的模式强制要求当前根会话的模型路由支持函数调用（`function_calling`）；轮次准备阶段在发起模型请求前会显式拦截不具备函数调用能力的模型，严禁为迁就托管搜索等独占路径而静默卸载工作流工具。
+- **等待用户输入时自然结束轮次**：当智能体需要等待下一条用户输入时，直接通过自然生成最终回答或调用 `finish_turn` 结束当前轮次，工作流保持在当前非终态阶段；严禁在无后台任务、子智能体或定时器时使用空循环调用 `wait` 挂起等待用户输入。
 
-## 11.3 Turn 快照与 run 生命周期
+### 11.3.2 工作流运行实例（Run）与谱系（Lineage）演进
 
-root Turn 在调用 provider 前捕获一个 Mode 快照；本 Turn 的 Prompt、工具、图和状态校验全部
-使用该快照，注册更新从下一个 root Turn 生效。child Thread 使用冻结的 Agent Profile，不创建、
-继承或推进 root workflow。模式切换要求 root idle 且没有 pending interaction，runtime 负责归档
-旧活动 run。切换同时从配置中的目标 Mode 默认 selector 解析模型，将 `studio.mode`、
-`studio.model-route`、instructions、workflow、context、tools 与下一 Turn 的 pending model update
-作为一次 idle reconfiguration 提交；失败时保持原 Mode 与原路由。切换提交后，新的 Mode 作为
-目录事实发布（目录行 upsert 并推进目录水位），同时该会话自身的状态流快照也携带同一 Mode；
-GUI 侧按 [18.11.1](./18-studio-state.md#18111-thread-身份的单一来源) 以目录自身水位合并身份，
-会话快照不反写目录；selector 的文案与选中态不依赖页面跳转或重订阅即可收敛。
+仅在界面上选择或切换工作模式不会立即创建工作流运行实例（`run`）：
+- **按需创建与原子初始化**：对于带状态图的工作模式，当收到根用户输入且当前无活动 `run` 时，系统自动从初始状态创建新 `run`，并将用户输入与初始工作流状态在第一个线程检查点中原子提交（若准备或提交失败则不调用模型）。当 `run` 进入终态（`terminal`）后，下一条根用户输入将自动开启新的工作流谱系（`lineage`）。
+- **状态图热更新对账（`modeUpdated`）**：每个 `run` 仅保存模式 ID、状态图散列值、谱系与运行实例 ID、生命周期状态（`active` / `terminal`）、当前阶段 ID、CAS 修订号、转换记录及归档关联；完整的模式定义（含提示词与状态图）保存在线程的 `studio.mode` 检查点扩展中。下一轮次开始前，若检测到同一模式的状态图散列值已发生变更，系统优先以 `modeUpdated` 原因归档旧 `run`，并在同一谱系下创建替代运行实例（replacement）；若仅模式提示词文本变化而状态图散列值未变，则继续沿用当前活动 `run` 并应用最新提示词。即使某个自定义模式已从全局配置中删除，存量会话仍可继续使用其 `studio.mode` 检查点中保存的完整模式快照运行。
+- **冷会话恢复边界**：激活冷会话时仅解码已保存的工作流状态，不立即校验状态图散列值，也不归档或重置 `run`；待恢复后首次发起模型请求的准备阶段，再按上述 `modeUpdated` 规则生成候选更新并与上下文投影一同经内核 CAS 提交（单纯打开历史浏览不会触发模型请求或状态转换）。
+- **每模式独立记忆默认路由**：全局配置按完整的 `ThreadModeId` 记录每个工作模式最近一次选中的账号、模型与推理强度（内置 `mode.simple` 与 `mode.task` 各自独立保存；尚未单独选择过的自定义模式初始继承 `mode.simple` 的路由，首次显式选择后写入独立条目）。修改某模式的默认路由仅影响后续新建会话与显式切换至该模式的会话，不会反向篡改当前已处于该模式的其他存量会话。
 
-带工作流的 Mode 要求当前 root route 支持 function calling；Turn 准备阶段在 provider 请求前
-显式拒绝不具备该能力的模型，不能为了迁就 hosted Web Search 的 exclusive 路径而静默卸载
-workflow 工具。无图的 Mode 和 child Agent 不受这项约束。
+## 11.4 持久化上限与模型上下文投影
 
-等待下一条用户输入时通过 final 或 finish_turn 结束当前轮次，保留当前非终结工作流阶段。
-wait 仅用于接收已存在的后台任务、代理或定时器结果；不存在独立工作时不得用空任务循环
-等待用户输入，也不得因等待超时重新读取已经确认的状态或重复验证已完成操作。
+线程扩展 `studio.workflow` 保存 `WorkflowSessionState`，包含单调递增的修订号、当前运行实例、最近 **16 个**归档运行摘要、滚动历史摘要以及最近 **32 条**成功的操作回执（operation receipts）；当前运行实例内部保留最近 **64 条**状态转换记录。整个类型化工作流状态序列化后的体积上限为 **256 KiB**（完整状态图由当轮 `studio.mode` 快照提供，更早的转换细节由时间线与追踪日志留存）。
 
-只选择 Mode 不创建 run。带图的 Mode 在收到根用户输入且没有活动 run 时自动从初态创建 run；
-用户输入与新 working state 在第一次 Thread checkpoint 一起提交，准备或提交失败不得调用
-provider。进入 terminal 后，下一条根用户输入创建新 lineage。切换 Mode 会归档旧活动 run，但
-不会在没有用户输入时创建新 run。
-模式选择复用归档操作，根装配只保存 `studio.mode`，不启动工作流；恢复边界仅在该扩展缺失时
-依据已核验的目录模式补写。模型准备从 core 冻结的、尚未消费的 Turn 发起输入识别新根用户
-请求，并将工作流候选与当前事实一次提交；不从聊天正文或后续工具续接推断新任务。
+模型上下文不直接注入完整的 `studio.workflow` JSON，而是由 Studio 派生出保留标识为 `pl.workflow` 的精简运行上下文快照（仅含当前阶段指令、完成标准、允许的直接出边、最近转换摘要及下一次 CAS 所需的期望参数）。每当工作流状态发生变化，下一模型步骤将最新的 `pl.workflow` 快照追加至对话历史末尾（内容未变时不重复追加；上下文压缩移除旧快照后自动重新注入当前最新投影）。
 
-每个 run 只保存 Mode ID、图 hash、lineage/run ID、生命周期（active/terminal）、当前 state、
-CAS revision、转换记录与归档关系，不保存 Mode Prompt 或完整图。下一个 Turn 若发现相同
-Mode 的图 hash 已变化，先以 modeUpdated 归档旧 run，再以同 lineage 创建 replacement；仅
-Prompt 变化时继续当前活动 run 并使用最新 Prompt；已终结且图未变化的工作流在新根输入到来时
-仍按新任务创建 lineage。图身份变化优先按 modeUpdated 对账，包括已有 run 为终态的情况。
-已删除的 ID 继续使用会话最后保存的完整快照；新建会话和显式切换只能选择当前目录中的 Mode。
+## 11.5 工作流工具契约
 
-冷会话激活只解码保存的工作流，不要求保存的图 hash 与当前注册图相同，也不归档或重置 run。
-恢复后第一次模型请求的上下文准备按上述 modeUpdated 规则生成候选更新；新工作流扩展与当前
-状态投影经 core 的同一比较交换提交后才调用模型。准备失败或取消不提交候选，单纯重开历史
-不发起 provider 请求。图身份相同但当前 state 无法投影仍作为无效状态拒绝。
+工作流工具仅装配于根线程（子智能体不挂载这些工具，无法代根智能体篡改工作流进度），共拆分为 4 个只读查询工具与 2 个状态写工具：
 
-模型输入注入 `<preloaded_thread_mode_prompt>` 与由注册图和 run 派生的精简当前状态；完整图
-按需通过工具读取。完整 Mode 定义（包含 Prompt 和图）随 `studio.mode` checkpoint 保存，workflow working state 只保存运行事实。持久化结构变化
-遵循 [17](./17-studio-storage.md) 的迁移契约；Mode/Workflow 历史形状在迁移边界转换，
-运行时只使用当前结构。
+- **`workflow_current`（共存查询 `Coexist`）**：读取当前模式 ID、运行实例 ID、状态图散列值、当前阶段 ID 与 CAS 修订号。
+- **`workflow_next`（共存查询 `Coexist`）**：读取当前阶段的所有直接出边及其声明性守卫条件。
+- **`workflow_graph`（共存查询 `Coexist`）**：读取本轮模式快照中的完整预设状态图。
+- **`workflow_history`（共存查询 `Coexist`）**：读取当前运行实例的有序状态转换历史。
+- **`workflow_transition`（独占写入 `Solo`）**：通过「运行实例 ID + 修订号 + 当前阶段 ID」三重 CAS 校验完成当前阶段，并沿合法的直接有向边进入目标后继阶段。
+- **`workflow_restart`（独占写入 `Solo`）**：归档当前运行实例，并按同一预设状态图从初始状态创建新的运行实例。
 
-配置按完整 `ThreadModeId` 保存每个 Mode 最后一次选择的 provider、model 与 effort。内置
-`mode.simple`、`mode.task` 独立保存；合法但当前未注册的自定义 Mode 条目仍保留。某个自定义
-Mode 尚无记录时临时继承 `mode.simple`，首次显式选择后写入独立条目。Mode 默认值只影响新建
-Thread 与显式切换 Mode，不反向改写当前仍处于该 Mode 的其他 Thread。
+两个写工具与 `finish_turn` 一样声明为独占批次（`Solo`）：若同一模型响应中还夹带任何其他工具调用，整批调用将被直接拒绝且不产生任何副作用。
 
-## 11.4 持久化与上下文投影
-
-`studio.workflow` Thread 扩展保存 WorkflowSessionState：单调 revision、当前 run、最近 16 个
-归档摘要、滚动摘要以及最近 32 个成功 operation receipt。当前 run 保存 lineage/run id、
-Mode ID、图 hash、生命周期、当前 state、时间和最近 64 条 transition。完整 typed state 最大
-256 KiB——图由本 Turn 的 Mode 快照提供，旧细节由 Thread timeline/trace 审计，热状态只保存
-有界尾部。
-
-模型上下文不直接暴露完整 JSON：Studio 上下文投影派生保留 id `pl.workflow`，只包含当前
-state 指令、完成标准、允许边、最近摘要和下一次 CAS 参数。workflow 状态变化后，下一模型步骤
-把最新 `pl.workflow` 作为完整运行上下文快照追加到历史，不改写已发送前缀；相同内容不重复
-追加；compaction 移除旧快照后重新补入当前 projection。
-
-## 11.5 Workflow 工具合同
-
-root-only 工具拆为六个，均实现 core 不透明 Tool 并注册到 root Thread；child 不注册 root 的
-workflow 工具，因此不能替 root 改写 run：
-
-- `workflow_current`：读取 Mode、run、图 hash、当前 state 与 CAS revision。
-- `workflow_next`：读取当前 state 的直接出边及条件。
-- `workflow_graph`：读取本 Turn 快照中的完整预设图。
-- `workflow_history`：读取当前 run 的有序转换记录。
-- `workflow_transition`：以 run/revision/state 三重 CAS 进入直接后继，表示完成当前阶段。
-- `workflow_restart`：归档当前 run 并按同一预设图创建新 run。
-
-四个查询工具为 Coexist 且不修改 revision；两个写工具与 `finish_turn` 为 Solo——同一 response
-中若还有任何其他调用则整批拒绝且无副作用。查询工具读取同一只读扩展快照；写工具从只读扩展
-快照计算 CAS 候选，显式授予扩展更新权限并独占批次。runtime 校验 schema、图、CAS、合法直接
-边、大小限制与 operation identity；guard、阶段完成标准和证据真实性由 Agent 判断。工具不
-保存第二个 working set 或兼容注册器。
-
-`workflow_transition` 的 mutation 输入只使用一份规范结构：run/revision/state/target CAS 位于
-顶层，完成声明统一位于 `completion`，其内部包含 reason、summary 与 evidence。reason 不在
-顶层，也不接受两种布局——转换原因与完成证据属于同一个领域对象，provider schema 与持久化
-转换记录保持同构。规范形状为：
+`workflow_transition` 的输入参数严格采用单一规范结构：顶层放置 CAS 期望字段与目标阶段 ID，阶段完成声明统一封装在 `completion` 对象内（包含 `reason`、`summary` 与 `evidence` 数组），不再支持将 `reason` 放在顶层的双轨格式：
 
 ```json
 {
@@ -146,36 +72,20 @@ workflow 工具，因此不能替 root 改写 run：
   "expectedStateId": "working",
   "targetStateId": "integrating",
   "completion": {
-    "reason": "所有实现 owner 已交付",
-    "summary": "实现及聚焦验证完成",
-    "evidence": ["focused tests passed"]
+    "reason": "所有实现子任务均已交付并通过局部审查",
+    "summary": "完成核心模块实现与定向回归测试",
+    "evidence": ["cargo test -p pl-core passed"]
   }
 }
 ```
 
-稳定拒绝码为 `workflowNotStarted`、`runMismatch`、`staleRevision`、`stateMismatch`、
-`modeSnapshotMismatch`、`invalidCompletion`、`invalidReason`、`transitionNotAllowed` 与
-`operationIdentityConflict`；成功和幂等重放分别返回 `transitioned | restarted` 与
-`alreadyApplied`。所有语义拒绝返回 `accepted: false`、稳定 code、最新 canonical snapshot、
-constraint prompt 与 recovery actions，且无副作用。
+- **稳定拒绝码与自恢复引导**：非法转换返回结构化的 `accepted: false` 响应，携带稳定拒绝码（`workflowNotStarted`、`runMismatch`、`staleRevision`、`stateMismatch`、`modeSnapshotMismatch`、`invalidCompletion`、`invalidReason`、`transitionNotAllowed`、`operationIdentityConflict`）、最新规范快照、当前阶段约束提示与可直接执行的恢复动作建议。
+- **幂等键与原子提交**：写操作以 `(turnId, callId, argumentHash)` 为幂等键（完全相同的重放返回 `alreadyApplied`；同一 `turnId/callId` 传入不同参数则返回 `operationIdentityConflict`）。成功的转换由「助手工具调用 + 工具结果（内含新阶段约束提示） + 新工作流状态」在同一个线程检查点中原子提交。智能体在常规推进中直接依据宿主注入的 `pl.workflow` 投影发起 CAS 转换，仅在投影缺失或发生并发版本冲突时才按需调用 `workflow_current` / `workflow_next`。
 
-幂等键是 `(turnId, callId, argumentHash)`：完全重放返回 `alreadyApplied`；同一 turn/call
-使用不同参数返回 identity conflict。成功 operation receipt 最近保留 32 条。
+## 11.6 内置工作模式
 
-成功 mutation 由 assistant tool call、tool result 与 working state 的统一 Thread checkpoint
-原子提交（见 [09](./09-tool-runtime.md)）；提交失败保留完成对象用于重试，不再次执行副作用。
-transition result 内含最新 stage constraint，供同一 Turn 后续 inference 使用；下一 Turn 从
-working state 派生 `pl.workflow`，context compaction 后重新捕获最新 projection，不复用压缩前
-阶段。
-
-Task Mode 使用最新宿主状态投影的 run、revision、当前阶段和直接后继进行比较交换，不从旧摘要或旧 mutation receipt 推测状态。投影缺失或发生并发冲突时再调用 `workflow_current`、`workflow_next`，图与历史信息确有需要时再查询；mutation 仍独占一次 tool response。
-
-## 11.6 内置 Mode
-
-`mode.simple` 不带 workflow，也不要求阶段转换：它直接工作、按风险验证，并在完成时调用
-`finish_turn`；不增加 Git、固定审查轮次或交付门禁。
-
-`mode.task` 注册预设图：
+- **`mode.simple`（简洁模式）**：不携带工作流状态图，不要求阶段转换，智能体直接执行探索、修改与风险验证，完成后自然回复或调用 `finish_turn`。
+- **`mode.task`（任务模式）**：内置如下预设状态图：
 
 ```text
 planning -> editing_documents
@@ -187,47 +97,20 @@ reviewing -> working | editing_documents | completed
 completed、stopped 为终态
 ```
 
-`completed` 与 `stopped` 都是无任何出边的 final state，停止边只从非终态进入 `stopped`。
-working 内各执行者独立进行编码、局部静态审查和修复；本地任务通过后直接完成，
-工作树任务通过后由 root 增量合入，不等待整批。integrating 核对全部任务与合入完整性，
-reviewing 由 root 完成整体集成及功能验收，不强制最终全量子代理审查。最终验收的代码
-finding 回到 working，设计 finding 回到 editing_documents；两条返工路径都重新经过
-integrating 和 reviewing。状态指令、完成标准和每条边的 guard 属于图；协作、工具使用与角色
-约束属于 Mode Prompt（完整编排合同见 [12](./12-collaboration.md)）。
+在 `mode.task` 中：
+1. **`planning`（规划阶段）**：智能体必须通过 `plan_submit` 提交完整计划并请求用户确认；计划确认流程由独立的计划状态机（`plan_*` 工具，见 [13](./13-plan.md)）管理，在用户批准前工作流阶段始终保持为 `planning`。仅当宿主计划状态投影为 `approved` 后，才允许转换至 `editing_documents`。
+2. **`editing_documents` → `working` → `integrating` → `reviewing`**：在 `working` 阶段各执行子智能体独立完成编码、局部测试与局部审查；本地目录任务通过后直接完成，独立工作树（`worktree`）任务通过后由根智能体增量合入。`integrating` 阶段核对全部子任务与代码合入完整性；`reviewing` 阶段由根智能体对照完整计划执行整体集成与功能验收。若发现代码缺陷则退回 `working` 交由原执行者修复，若发现设计偏差则退回 `editing_documents` 同步设计文档，两条返工路径均须重新经过 `integrating` 与 `reviewing` 后方可进入 `completed` 终态（详见 [12](./12-collaboration.md)）。
 
-完整计划必须在 planning 中通过 `plan_current`、`plan_next` 和 `plan_submit` 请求批准或修订；
-只有当前宿主计划投影为 `approved` 后才可 transition 到 editing_documents。计划确认不属于
-Mode 图：它由 Plan 固定状态机和整套 `plan_*` 工具管理（见 [13](./13-plan.md)），planning
-期间的澄清、提交、要求修订和重新批准都保持 workflow state 为 `planning`，Plan 已批准是
-`planning -> editing_documents` 的声明性条件。进入 `completed` 后自然 final 或调用 `finish_turn({message})`，只交付一次。
+## 11.7 桌面界面展示与条件发布
 
-## 11.7 Studio 与 GUI
+桌面界面的工作模式选择器消费独立的模式目录快照；会话状态栏仅展示当前工作模式名称与当前所处阶段名称，不向普通界面暴露底层状态图拓扑或手动跳阶段入口。工具目录异步刷新时捕获当前模式扩展身份与水位，发布前执行条件水位校验，防止模式切换前启动的旧目录准备覆盖新模式的工具集（见 [01](./01-overview.md) §1.5）。
 
-GUI 的 Mode selector 消费独立的 Mode 目录快照。Thread 状态栏只显示 Mode 与当前状态；不提供
-完整图、历史详情、展开面板或人工状态切换，Flutter 不从 state ID 推演状态；Driver 从
-canonical snapshot、工具回执和 wire 读取完整历史。
+### 11.7.1 当前工作流投影
 
-工具目录刷新捕获 Mode 扩展身份和扩展水位：异步准备后的发布必须条件验证该水位，防止旧
-Mode 目录覆盖已完成切换的新工具；过期发布不记为已安装、不清空当前目录，关闭候选后安排
-重新准备。刷新指纹包含 Mode 扩展身份；模型/工具执行期间发生的普通状态事件不单独触发目录
-重建（通用条件发布机制见 [01](./01-overview.md)）。
+根会话的每次模型请求直接包含当前工作流身份、状态图版本、当前阶段指令、完成标准、允许的转换边以及 CAS 参数。即使关闭自动上下文压缩，该投影依然保持有效；在上下文压缩与进程重启恢复后，系统直接从持久化的最新工作流扩展恢复业务阶段，绝不依据旧摘要回退至初始阶段。
 
-## 当前工作流投影
+## 11.8 工作模式编辑器与离线预演
 
-根会话请求直接包含当前工作流身份、图版本、当前阶段指令、完成标准、允许转换及比较交换所需参数。关闭自动压缩仍保持投影；压缩和重启后恢复最新业务状态，不能依据旧摘要回退到初始阶段。注册图版本变化按 11.3 的 modeUpdated 规则归档替换；图身份相同但业务状态无法投影时明确拒绝。查询工具用于信息缺失或并发冲突，不作为每步重新定位的强制前置操作。
-
-## 11.8 工作流编辑与预演
-
-工作模式编辑器复用注册协议、编译器和转换机器。内置简洁与任务模式可查看和复制，自定义模式
-可增删改查。文件定义的执行字段为 id、displayName、description、order、prompt、workflow；
-可选 editor.nodes 只保存 stateId 和有限二维坐标，不参与工作流 hash 或会话执行快照。
-图与 JSON 编辑同一份 Client 草稿。非法中间状态允许留在草稿中，只有完整校验成功的定义才可保存。
-
-预演接收完整草稿和最多 128 步的路径，在隔离内存中由生产转换机器逐步重放；不创建真实会话、
-不访问模型、不改变持久化状态。操作者负责判断自然语言条件，机器验证合法边、完成声明和终态。
-
-会话持久化完整 Mode 快照及其图 revision。下一 root Turn 在首次 provider 请求准备时，从同一次目录快照
-捕获最新定义，并将 Mode、Prompt、workflow 对账一起 CAS 提交；后续推理和工具只读取本 Turn
-已保存的冻结定义。仅 Prompt 变化保留运行进度；图变化按 modeUpdated 规则替换 run。
-删除配置不删除会话快照，也不将恢复快照重新注册到目录。当前 Turn、热会话、冷会话及归档会话
-都拥有其快照；更新、切换和删除会话自然释放旧引用，不以工作流终态或归档作为回收条件。
+Studio 设置页提供独立的工作模式编辑器，复用底层的注册协议、状态图编译器与状态转换机：
+- **内置只读与自定义编辑**：内置的简洁模式与任务模式支持查看与复制，用户可基于副本或从零创建自定义工作模式（支持流程图画布与 JSON 源码双向同步编辑同一份客户端草稿；画布节点坐标保存在可选的 `editor.nodes` 中，不参与状态图散列计算或会话执行快照）。草稿允许暂存未完成的中间状态，但仅当通过 Rust 编译器完整静态校验后才允许落盘保存。
+- **隔离内存预演**：编辑器支持传入完整草稿与最多 **128 步**的转换路径，在隔离内存中由生产转换机逐步重放验证合法边、完成声明与终态可达性；预演过程不创建真实会话、不调用模型，也不修改任何持久化状态。

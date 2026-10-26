@@ -21,7 +21,10 @@ abstract class ModelSelection with _$ModelSelection {
 
 enum ModelType { text }
 
-enum BillingKind { metered, subscription, unknown }
+/// 账号计费类别的唯一事实：`noCharge` 表示供应商不按用量计费。
+///
+/// 这里不保留「pricing enabled」之类的布尔；生效值与显式覆盖都由本枚举表达。
+enum BillingKind { metered, subscription, noCharge, unknown }
 
 enum ModelTypeExclusion {
   textInputUnsupported,

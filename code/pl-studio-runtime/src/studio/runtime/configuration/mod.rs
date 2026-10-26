@@ -13,6 +13,7 @@ mod routes;
 mod scope;
 mod source_status;
 pub use calls::ConfigurationCallResult;
+pub use commands::{AcpAccountCommandResult, ConfigurationCommandResult};
 pub use pl_protocol::products::profile_commands::{
     ConfigurationReloadOutcome, ConfigurationReloadRequest, ConfigurationReloadResult,
     ProfileCommandOutcome, ProfileCommandReply, ProfileCommandRequest,
@@ -21,7 +22,6 @@ pub use profile_commands::{ConfigurationReloadCommandResult, ProfileCommandResul
 mod profiles;
 pub use profiles::*;
 
-pub use commands::ConfigurationCommandResult;
 pub use feed::StudioConfigurationFeed;
 pub use pl_protocol::products::configuration_commands::{
     ConfigurationCommandOutcome, ConfigurationCommandReply, ConfigurationCommandRequest,

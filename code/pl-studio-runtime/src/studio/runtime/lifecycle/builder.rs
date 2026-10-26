@@ -132,6 +132,30 @@ impl StudioRuntime {
             usage_source.clone(),
         );
         usage_source.publish(account_usage.read().await)?;
+        // ACP 认证 owner 只持有身份与操作事实；构造期不启动任何外部程序，只把当前配置的
+        // 连接身份登记为 `Unchecked`。
+        let acp_auth = super::super::acp_auth::AcpAuthRuntime::new(
+            store.clone(),
+            config_runtime.clone(),
+            product_events.clone(),
+            helper_source.clone(),
+            pl_protocol::products::identity::ProductReadOrigin {
+                owner_epoch: owner_epoch.clone(),
+                incarnation: observation_ids.next()?,
+            },
+        );
+        // 安装 Settings 提交观察者并立即观察当前 canonical 快照；安装、首次观察与后续提交共用
+        // 同一 Settings command 锁，因此不会有提交落在两者之间。
+        acp_auth.install_settings_observer(&config_runtime)?;
+        // 官方 server 准备 owner 只持有独立快照与操作槽位；构造期不读取 registry、不写文件。
+        let acp_install = super::super::acp_install::AcpInstallRuntime::new(
+            store.clone(),
+            product_events.clone(),
+            pl_protocol::products::identity::ProductReadOrigin {
+                owner_epoch: owner_epoch.clone(),
+                incarnation: observation_ids.next()?,
+            },
+        );
         let updater = StudioUpdateRuntime::new(product_events.clone(), updates_source.clone())?;
         updates_source.publish(updater.read().await)?;
         let mcp_source = super::super::mcp::source::McpSource::new(
@@ -318,7 +342,10 @@ impl StudioRuntime {
             skills,
             thread_modes,
             account_usage,
+            acp_auth,
+            acp_install,
             model_performance,
+            statistics_follower: Default::default(),
             updater,
             activation: Default::default(),
             attachment_drafts,

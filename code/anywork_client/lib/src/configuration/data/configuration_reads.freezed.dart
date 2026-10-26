@@ -15,7 +15,7 @@ T _$identity<T>(T value) => value;
 /// @nodoc
 mixin _$ConfigurationReadHeader {
 
- ReadText? get defaultAccountId; TypedListRef get accounts; TypedListRef get modeModelRoutes; TypedListRef get roles; ReadText get permissionMode; InstructionsSettingsRead get instructions; SkillsSettingsRead get skills; TypedListRef get mcpServers; GeneralSettingsRead get general; DelegationSettings get delegation; WebSearchConfigurationRead get webSearch; DeepSeekSearchConfigurationRead get deepseekWebSearch;
+ ReadText? get defaultAccountId; TypedListRef get accounts; TypedListRef get acpAccounts; TypedListRef get modeModelRoutes; TypedListRef get roles; ReadText get permissionMode; InstructionsSettingsRead get instructions; SkillsSettingsRead get skills; TypedListRef get mcpServers; GeneralSettingsRead get general; DelegationSettings get delegation; WebSearchConfigurationRead get webSearch; DeepSeekSearchConfigurationRead get deepseekWebSearch;
 /// Create a copy of ConfigurationReadHeader
 /// with the given fields replaced by the non-null parameter values.
 @JsonKey(includeFromJson: false, includeToJson: false)
@@ -27,14 +27,14 @@ $ConfigurationReadHeaderCopyWith<ConfigurationReadHeader> get copyWith => _$Conf
 @override
 bool operator ==(Object other) {
   final _this = this as ConfigurationReadHeader;
-  return identical(this, other) || (other.runtimeType == runtimeType&&other is ConfigurationReadHeader&&(identical(other.defaultAccountId, _this.defaultAccountId) || other.defaultAccountId == _this.defaultAccountId)&&(identical(other.accounts, _this.accounts) || other.accounts == _this.accounts)&&(identical(other.modeModelRoutes, _this.modeModelRoutes) || other.modeModelRoutes == _this.modeModelRoutes)&&(identical(other.roles, _this.roles) || other.roles == _this.roles)&&(identical(other.permissionMode, _this.permissionMode) || other.permissionMode == _this.permissionMode)&&(identical(other.instructions, _this.instructions) || other.instructions == _this.instructions)&&(identical(other.skills, _this.skills) || other.skills == _this.skills)&&(identical(other.mcpServers, _this.mcpServers) || other.mcpServers == _this.mcpServers)&&(identical(other.general, _this.general) || other.general == _this.general)&&(identical(other.delegation, _this.delegation) || other.delegation == _this.delegation)&&(identical(other.webSearch, _this.webSearch) || other.webSearch == _this.webSearch)&&(identical(other.deepseekWebSearch, _this.deepseekWebSearch) || other.deepseekWebSearch == _this.deepseekWebSearch));
+  return identical(this, other) || (other.runtimeType == runtimeType&&other is ConfigurationReadHeader&&(identical(other.defaultAccountId, _this.defaultAccountId) || other.defaultAccountId == _this.defaultAccountId)&&(identical(other.accounts, _this.accounts) || other.accounts == _this.accounts)&&(identical(other.acpAccounts, _this.acpAccounts) || other.acpAccounts == _this.acpAccounts)&&(identical(other.modeModelRoutes, _this.modeModelRoutes) || other.modeModelRoutes == _this.modeModelRoutes)&&(identical(other.roles, _this.roles) || other.roles == _this.roles)&&(identical(other.permissionMode, _this.permissionMode) || other.permissionMode == _this.permissionMode)&&(identical(other.instructions, _this.instructions) || other.instructions == _this.instructions)&&(identical(other.skills, _this.skills) || other.skills == _this.skills)&&(identical(other.mcpServers, _this.mcpServers) || other.mcpServers == _this.mcpServers)&&(identical(other.general, _this.general) || other.general == _this.general)&&(identical(other.delegation, _this.delegation) || other.delegation == _this.delegation)&&(identical(other.webSearch, _this.webSearch) || other.webSearch == _this.webSearch)&&(identical(other.deepseekWebSearch, _this.deepseekWebSearch) || other.deepseekWebSearch == _this.deepseekWebSearch));
 }
 
 
 @override
 int get hashCode {
   final _this = this as ConfigurationReadHeader;
-  return Object.hash(runtimeType,_this.defaultAccountId,_this.accounts,_this.modeModelRoutes,_this.roles,_this.permissionMode,_this.instructions,_this.skills,_this.mcpServers,_this.general,_this.delegation,_this.webSearch,_this.deepseekWebSearch);
+  return Object.hash(runtimeType,_this.defaultAccountId,_this.accounts,_this.acpAccounts,_this.modeModelRoutes,_this.roles,_this.permissionMode,_this.instructions,_this.skills,_this.mcpServers,_this.general,_this.delegation,_this.webSearch,_this.deepseekWebSearch);
 }
 
 
@@ -46,11 +46,11 @@ abstract mixin class $ConfigurationReadHeaderCopyWith<$Res>  {
   factory $ConfigurationReadHeaderCopyWith(ConfigurationReadHeader value, $Res Function(ConfigurationReadHeader) _then) = _$ConfigurationReadHeaderCopyWithImpl;
 @useResult
 $Res call({
- ReadText? defaultAccountId, TypedListRef accounts, TypedListRef modeModelRoutes, TypedListRef roles, ReadText permissionMode, InstructionsSettingsRead instructions, SkillsSettingsRead skills, TypedListRef mcpServers, GeneralSettingsRead general, DelegationSettings delegation, WebSearchConfigurationRead webSearch, DeepSeekSearchConfigurationRead deepseekWebSearch
+ ReadText? defaultAccountId, TypedListRef accounts, TypedListRef acpAccounts, TypedListRef modeModelRoutes, TypedListRef roles, ReadText permissionMode, InstructionsSettingsRead instructions, SkillsSettingsRead skills, TypedListRef mcpServers, GeneralSettingsRead general, DelegationSettings delegation, WebSearchConfigurationRead webSearch, DeepSeekSearchConfigurationRead deepseekWebSearch
 });
 
 
-$ReadTextCopyWith<$Res>? get defaultAccountId;$TypedListRefCopyWith<$Res> get accounts;$TypedListRefCopyWith<$Res> get modeModelRoutes;$TypedListRefCopyWith<$Res> get roles;$ReadTextCopyWith<$Res> get permissionMode;$InstructionsSettingsReadCopyWith<$Res> get instructions;$SkillsSettingsReadCopyWith<$Res> get skills;$TypedListRefCopyWith<$Res> get mcpServers;$GeneralSettingsReadCopyWith<$Res> get general;$DelegationSettingsCopyWith<$Res> get delegation;$WebSearchConfigurationReadCopyWith<$Res> get webSearch;$DeepSeekSearchConfigurationReadCopyWith<$Res> get deepseekWebSearch;
+$ReadTextCopyWith<$Res>? get defaultAccountId;$TypedListRefCopyWith<$Res> get accounts;$TypedListRefCopyWith<$Res> get acpAccounts;$TypedListRefCopyWith<$Res> get modeModelRoutes;$TypedListRefCopyWith<$Res> get roles;$ReadTextCopyWith<$Res> get permissionMode;$InstructionsSettingsReadCopyWith<$Res> get instructions;$SkillsSettingsReadCopyWith<$Res> get skills;$TypedListRefCopyWith<$Res> get mcpServers;$GeneralSettingsReadCopyWith<$Res> get general;$DelegationSettingsCopyWith<$Res> get delegation;$WebSearchConfigurationReadCopyWith<$Res> get webSearch;$DeepSeekSearchConfigurationReadCopyWith<$Res> get deepseekWebSearch;
 
 }
 /// @nodoc
@@ -63,10 +63,11 @@ class _$ConfigurationReadHeaderCopyWithImpl<$Res>
 
 /// Create a copy of ConfigurationReadHeader
 /// with the given fields replaced by the non-null parameter values.
-@pragma('vm:prefer-inline') @override $Res call({Object? defaultAccountId = freezed,Object? accounts = null,Object? modeModelRoutes = null,Object? roles = null,Object? permissionMode = null,Object? instructions = null,Object? skills = null,Object? mcpServers = null,Object? general = null,Object? delegation = null,Object? webSearch = null,Object? deepseekWebSearch = null,}) {
+@pragma('vm:prefer-inline') @override $Res call({Object? defaultAccountId = freezed,Object? accounts = null,Object? acpAccounts = null,Object? modeModelRoutes = null,Object? roles = null,Object? permissionMode = null,Object? instructions = null,Object? skills = null,Object? mcpServers = null,Object? general = null,Object? delegation = null,Object? webSearch = null,Object? deepseekWebSearch = null,}) {
   return _then(ConfigurationReadHeader(
 defaultAccountId: freezed == defaultAccountId ? _self.defaultAccountId : defaultAccountId // ignore: cast_nullable_to_non_nullable
 as ReadText?,accounts: null == accounts ? _self.accounts : accounts // ignore: cast_nullable_to_non_nullable
+as TypedListRef,acpAccounts: null == acpAccounts ? _self.acpAccounts : acpAccounts // ignore: cast_nullable_to_non_nullable
 as TypedListRef,modeModelRoutes: null == modeModelRoutes ? _self.modeModelRoutes : modeModelRoutes // ignore: cast_nullable_to_non_nullable
 as TypedListRef,roles: null == roles ? _self.roles : roles // ignore: cast_nullable_to_non_nullable
 as TypedListRef,permissionMode: null == permissionMode ? _self.permissionMode : permissionMode // ignore: cast_nullable_to_non_nullable
@@ -100,6 +101,15 @@ $TypedListRefCopyWith<$Res> get accounts {
 
   return $TypedListRefCopyWith<$Res>(_self.accounts, (value) {
     return _then(_self.copyWith(accounts: value));
+  });
+}/// Create a copy of ConfigurationReadHeader
+/// with the given fields replaced by the non-null parameter values.
+@override
+@pragma('vm:prefer-inline')
+$TypedListRefCopyWith<$Res> get acpAccounts {
+
+  return $TypedListRefCopyWith<$Res>(_self.acpAccounts, (value) {
+    return _then(_self.copyWith(acpAccounts: value));
   });
 }/// Create a copy of ConfigurationReadHeader
 /// with the given fields replaced by the non-null parameter values.
@@ -273,10 +283,10 @@ return $default(_that);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult maybeWhen<TResult extends Object?>(TResult Function( ReadText? defaultAccountId,  TypedListRef accounts,  TypedListRef modeModelRoutes,  TypedListRef roles,  ReadText permissionMode,  InstructionsSettingsRead instructions,  SkillsSettingsRead skills,  TypedListRef mcpServers,  GeneralSettingsRead general,  DelegationSettings delegation,  WebSearchConfigurationRead webSearch,  DeepSeekSearchConfigurationRead deepseekWebSearch)?  $default,{required TResult orElse(),}) {final _that = this;
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>(TResult Function( ReadText? defaultAccountId,  TypedListRef accounts,  TypedListRef acpAccounts,  TypedListRef modeModelRoutes,  TypedListRef roles,  ReadText permissionMode,  InstructionsSettingsRead instructions,  SkillsSettingsRead skills,  TypedListRef mcpServers,  GeneralSettingsRead general,  DelegationSettings delegation,  WebSearchConfigurationRead webSearch,  DeepSeekSearchConfigurationRead deepseekWebSearch)?  $default,{required TResult orElse(),}) {final _that = this;
 switch (_that) {
 case _ConfigurationReadHeader() when $default != null:
-return $default(_that.defaultAccountId,_that.accounts,_that.modeModelRoutes,_that.roles,_that.permissionMode,_that.instructions,_that.skills,_that.mcpServers,_that.general,_that.delegation,_that.webSearch,_that.deepseekWebSearch);case _:
+return $default(_that.defaultAccountId,_that.accounts,_that.acpAccounts,_that.modeModelRoutes,_that.roles,_that.permissionMode,_that.instructions,_that.skills,_that.mcpServers,_that.general,_that.delegation,_that.webSearch,_that.deepseekWebSearch);case _:
   return orElse();
 
 }
@@ -294,10 +304,10 @@ return $default(_that.defaultAccountId,_that.accounts,_that.modeModelRoutes,_tha
 /// }
 /// ```
 
-@optionalTypeArgs TResult when<TResult extends Object?>(TResult Function( ReadText? defaultAccountId,  TypedListRef accounts,  TypedListRef modeModelRoutes,  TypedListRef roles,  ReadText permissionMode,  InstructionsSettingsRead instructions,  SkillsSettingsRead skills,  TypedListRef mcpServers,  GeneralSettingsRead general,  DelegationSettings delegation,  WebSearchConfigurationRead webSearch,  DeepSeekSearchConfigurationRead deepseekWebSearch)  $default,) {final _that = this;
+@optionalTypeArgs TResult when<TResult extends Object?>(TResult Function( ReadText? defaultAccountId,  TypedListRef accounts,  TypedListRef acpAccounts,  TypedListRef modeModelRoutes,  TypedListRef roles,  ReadText permissionMode,  InstructionsSettingsRead instructions,  SkillsSettingsRead skills,  TypedListRef mcpServers,  GeneralSettingsRead general,  DelegationSettings delegation,  WebSearchConfigurationRead webSearch,  DeepSeekSearchConfigurationRead deepseekWebSearch)  $default,) {final _that = this;
 switch (_that) {
 case _ConfigurationReadHeader():
-return $default(_that.defaultAccountId,_that.accounts,_that.modeModelRoutes,_that.roles,_that.permissionMode,_that.instructions,_that.skills,_that.mcpServers,_that.general,_that.delegation,_that.webSearch,_that.deepseekWebSearch);case _:
+return $default(_that.defaultAccountId,_that.accounts,_that.acpAccounts,_that.modeModelRoutes,_that.roles,_that.permissionMode,_that.instructions,_that.skills,_that.mcpServers,_that.general,_that.delegation,_that.webSearch,_that.deepseekWebSearch);case _:
   throw StateError('Unexpected subclass');
 
 }
@@ -314,10 +324,10 @@ return $default(_that.defaultAccountId,_that.accounts,_that.modeModelRoutes,_tha
 /// }
 /// ```
 
-@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>(TResult? Function( ReadText? defaultAccountId,  TypedListRef accounts,  TypedListRef modeModelRoutes,  TypedListRef roles,  ReadText permissionMode,  InstructionsSettingsRead instructions,  SkillsSettingsRead skills,  TypedListRef mcpServers,  GeneralSettingsRead general,  DelegationSettings delegation,  WebSearchConfigurationRead webSearch,  DeepSeekSearchConfigurationRead deepseekWebSearch)?  $default,) {final _that = this;
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>(TResult? Function( ReadText? defaultAccountId,  TypedListRef accounts,  TypedListRef acpAccounts,  TypedListRef modeModelRoutes,  TypedListRef roles,  ReadText permissionMode,  InstructionsSettingsRead instructions,  SkillsSettingsRead skills,  TypedListRef mcpServers,  GeneralSettingsRead general,  DelegationSettings delegation,  WebSearchConfigurationRead webSearch,  DeepSeekSearchConfigurationRead deepseekWebSearch)?  $default,) {final _that = this;
 switch (_that) {
 case _ConfigurationReadHeader() when $default != null:
-return $default(_that.defaultAccountId,_that.accounts,_that.modeModelRoutes,_that.roles,_that.permissionMode,_that.instructions,_that.skills,_that.mcpServers,_that.general,_that.delegation,_that.webSearch,_that.deepseekWebSearch);case _:
+return $default(_that.defaultAccountId,_that.accounts,_that.acpAccounts,_that.modeModelRoutes,_that.roles,_that.permissionMode,_that.instructions,_that.skills,_that.mcpServers,_that.general,_that.delegation,_that.webSearch,_that.deepseekWebSearch);case _:
   return null;
 
 }
@@ -329,11 +339,12 @@ return $default(_that.defaultAccountId,_that.accounts,_that.modeModelRoutes,_tha
 
 
 class _ConfigurationReadHeader implements ConfigurationReadHeader {
-  const _ConfigurationReadHeader({required this.defaultAccountId, required this.accounts, required this.modeModelRoutes, required this.roles, required this.permissionMode, required this.instructions, required this.skills, required this.mcpServers, required this.general, required this.delegation, required this.webSearch, required this.deepseekWebSearch});
+  const _ConfigurationReadHeader({required this.defaultAccountId, required this.accounts, required this.acpAccounts, required this.modeModelRoutes, required this.roles, required this.permissionMode, required this.instructions, required this.skills, required this.mcpServers, required this.general, required this.delegation, required this.webSearch, required this.deepseekWebSearch});
 
 
 @override final  ReadText? defaultAccountId;
 @override final  TypedListRef accounts;
+@override final  TypedListRef acpAccounts;
 @override final  TypedListRef modeModelRoutes;
 @override final  TypedListRef roles;
 @override final  ReadText permissionMode;
@@ -355,13 +366,13 @@ _$ConfigurationReadHeaderCopyWith<_ConfigurationReadHeader> get copyWith => __$C
 
 @override
 bool operator ==(Object other) {
-    return identical(this, other) || (other.runtimeType == runtimeType&&other is _ConfigurationReadHeader&&(identical(other.defaultAccountId, defaultAccountId) || other.defaultAccountId == defaultAccountId)&&(identical(other.accounts, accounts) || other.accounts == accounts)&&(identical(other.modeModelRoutes, modeModelRoutes) || other.modeModelRoutes == modeModelRoutes)&&(identical(other.roles, roles) || other.roles == roles)&&(identical(other.permissionMode, permissionMode) || other.permissionMode == permissionMode)&&(identical(other.instructions, instructions) || other.instructions == instructions)&&(identical(other.skills, skills) || other.skills == skills)&&(identical(other.mcpServers, mcpServers) || other.mcpServers == mcpServers)&&(identical(other.general, general) || other.general == general)&&(identical(other.delegation, delegation) || other.delegation == delegation)&&(identical(other.webSearch, webSearch) || other.webSearch == webSearch)&&(identical(other.deepseekWebSearch, deepseekWebSearch) || other.deepseekWebSearch == deepseekWebSearch));
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is _ConfigurationReadHeader&&(identical(other.defaultAccountId, defaultAccountId) || other.defaultAccountId == defaultAccountId)&&(identical(other.accounts, accounts) || other.accounts == accounts)&&(identical(other.acpAccounts, acpAccounts) || other.acpAccounts == acpAccounts)&&(identical(other.modeModelRoutes, modeModelRoutes) || other.modeModelRoutes == modeModelRoutes)&&(identical(other.roles, roles) || other.roles == roles)&&(identical(other.permissionMode, permissionMode) || other.permissionMode == permissionMode)&&(identical(other.instructions, instructions) || other.instructions == instructions)&&(identical(other.skills, skills) || other.skills == skills)&&(identical(other.mcpServers, mcpServers) || other.mcpServers == mcpServers)&&(identical(other.general, general) || other.general == general)&&(identical(other.delegation, delegation) || other.delegation == delegation)&&(identical(other.webSearch, webSearch) || other.webSearch == webSearch)&&(identical(other.deepseekWebSearch, deepseekWebSearch) || other.deepseekWebSearch == deepseekWebSearch));
 }
 
 
 @override
 int get hashCode {
-    return Object.hash(runtimeType,defaultAccountId,accounts,modeModelRoutes,roles,permissionMode,instructions,skills,mcpServers,general,delegation,webSearch,deepseekWebSearch);
+    return Object.hash(runtimeType,defaultAccountId,accounts,acpAccounts,modeModelRoutes,roles,permissionMode,instructions,skills,mcpServers,general,delegation,webSearch,deepseekWebSearch);
 }
 
 
@@ -373,11 +384,11 @@ abstract mixin class _$ConfigurationReadHeaderCopyWith<$Res> implements $Configu
   factory _$ConfigurationReadHeaderCopyWith(_ConfigurationReadHeader value, $Res Function(_ConfigurationReadHeader) _then) = __$ConfigurationReadHeaderCopyWithImpl;
 @override @useResult
 $Res call({
- ReadText? defaultAccountId, TypedListRef accounts, TypedListRef modeModelRoutes, TypedListRef roles, ReadText permissionMode, InstructionsSettingsRead instructions, SkillsSettingsRead skills, TypedListRef mcpServers, GeneralSettingsRead general, DelegationSettings delegation, WebSearchConfigurationRead webSearch, DeepSeekSearchConfigurationRead deepseekWebSearch
+ ReadText? defaultAccountId, TypedListRef accounts, TypedListRef acpAccounts, TypedListRef modeModelRoutes, TypedListRef roles, ReadText permissionMode, InstructionsSettingsRead instructions, SkillsSettingsRead skills, TypedListRef mcpServers, GeneralSettingsRead general, DelegationSettings delegation, WebSearchConfigurationRead webSearch, DeepSeekSearchConfigurationRead deepseekWebSearch
 });
 
 
-@override $ReadTextCopyWith<$Res>? get defaultAccountId;@override $TypedListRefCopyWith<$Res> get accounts;@override $TypedListRefCopyWith<$Res> get modeModelRoutes;@override $TypedListRefCopyWith<$Res> get roles;@override $ReadTextCopyWith<$Res> get permissionMode;@override $InstructionsSettingsReadCopyWith<$Res> get instructions;@override $SkillsSettingsReadCopyWith<$Res> get skills;@override $TypedListRefCopyWith<$Res> get mcpServers;@override $GeneralSettingsReadCopyWith<$Res> get general;@override $DelegationSettingsCopyWith<$Res> get delegation;@override $WebSearchConfigurationReadCopyWith<$Res> get webSearch;@override $DeepSeekSearchConfigurationReadCopyWith<$Res> get deepseekWebSearch;
+@override $ReadTextCopyWith<$Res>? get defaultAccountId;@override $TypedListRefCopyWith<$Res> get accounts;@override $TypedListRefCopyWith<$Res> get acpAccounts;@override $TypedListRefCopyWith<$Res> get modeModelRoutes;@override $TypedListRefCopyWith<$Res> get roles;@override $ReadTextCopyWith<$Res> get permissionMode;@override $InstructionsSettingsReadCopyWith<$Res> get instructions;@override $SkillsSettingsReadCopyWith<$Res> get skills;@override $TypedListRefCopyWith<$Res> get mcpServers;@override $GeneralSettingsReadCopyWith<$Res> get general;@override $DelegationSettingsCopyWith<$Res> get delegation;@override $WebSearchConfigurationReadCopyWith<$Res> get webSearch;@override $DeepSeekSearchConfigurationReadCopyWith<$Res> get deepseekWebSearch;
 
 }
 /// @nodoc
@@ -390,10 +401,11 @@ class __$ConfigurationReadHeaderCopyWithImpl<$Res>
 
 /// Create a copy of ConfigurationReadHeader
 /// with the given fields replaced by the non-null parameter values.
-@override @pragma('vm:prefer-inline') $Res call({Object? defaultAccountId = freezed,Object? accounts = null,Object? modeModelRoutes = null,Object? roles = null,Object? permissionMode = null,Object? instructions = null,Object? skills = null,Object? mcpServers = null,Object? general = null,Object? delegation = null,Object? webSearch = null,Object? deepseekWebSearch = null,}) {
+@override @pragma('vm:prefer-inline') $Res call({Object? defaultAccountId = freezed,Object? accounts = null,Object? acpAccounts = null,Object? modeModelRoutes = null,Object? roles = null,Object? permissionMode = null,Object? instructions = null,Object? skills = null,Object? mcpServers = null,Object? general = null,Object? delegation = null,Object? webSearch = null,Object? deepseekWebSearch = null,}) {
   return _then(_ConfigurationReadHeader(
 defaultAccountId: freezed == defaultAccountId ? _self.defaultAccountId : defaultAccountId // ignore: cast_nullable_to_non_nullable
 as ReadText?,accounts: null == accounts ? _self.accounts : accounts // ignore: cast_nullable_to_non_nullable
+as TypedListRef,acpAccounts: null == acpAccounts ? _self.acpAccounts : acpAccounts // ignore: cast_nullable_to_non_nullable
 as TypedListRef,modeModelRoutes: null == modeModelRoutes ? _self.modeModelRoutes : modeModelRoutes // ignore: cast_nullable_to_non_nullable
 as TypedListRef,roles: null == roles ? _self.roles : roles // ignore: cast_nullable_to_non_nullable
 as TypedListRef,permissionMode: null == permissionMode ? _self.permissionMode : permissionMode // ignore: cast_nullable_to_non_nullable
@@ -428,6 +440,15 @@ $TypedListRefCopyWith<$Res> get accounts {
 
   return $TypedListRefCopyWith<$Res>(_self.accounts, (value) {
     return _then(_self.copyWith(accounts: value));
+  });
+}/// Create a copy of ConfigurationReadHeader
+/// with the given fields replaced by the non-null parameter values.
+@override
+@pragma('vm:prefer-inline')
+$TypedListRefCopyWith<$Res> get acpAccounts {
+
+  return $TypedListRefCopyWith<$Res>(_self.acpAccounts, (value) {
+    return _then(_self.copyWith(acpAccounts: value));
   });
 }/// Create a copy of ConfigurationReadHeader
 /// with the given fields replaced by the non-null parameter values.
@@ -523,9 +544,309 @@ $DeepSeekSearchConfigurationReadCopyWith<$Res> get deepseekWebSearch {
 }
 
 /// @nodoc
+mixin _$AcpAccountConfigurationRead {
+
+ ReadText get accountId; ReadText get name; AcpProvider get provider; int get connectionRevision;
+/// Create a copy of AcpAccountConfigurationRead
+/// with the given fields replaced by the non-null parameter values.
+@JsonKey(includeFromJson: false, includeToJson: false)
+@pragma('vm:prefer-inline')
+$AcpAccountConfigurationReadCopyWith<AcpAccountConfigurationRead> get copyWith => _$AcpAccountConfigurationReadCopyWithImpl<AcpAccountConfigurationRead>(this as AcpAccountConfigurationRead, _$identity);
+
+
+
+@override
+bool operator ==(Object other) {
+  final _this = this as AcpAccountConfigurationRead;
+  return identical(this, other) || (other.runtimeType == runtimeType&&other is AcpAccountConfigurationRead&&(identical(other.accountId, _this.accountId) || other.accountId == _this.accountId)&&(identical(other.name, _this.name) || other.name == _this.name)&&(identical(other.provider, _this.provider) || other.provider == _this.provider)&&(identical(other.connectionRevision, _this.connectionRevision) || other.connectionRevision == _this.connectionRevision));
+}
+
+
+@override
+int get hashCode {
+  final _this = this as AcpAccountConfigurationRead;
+  return Object.hash(runtimeType,_this.accountId,_this.name,_this.provider,_this.connectionRevision);
+}
+
+
+
+}
+
+/// @nodoc
+abstract mixin class $AcpAccountConfigurationReadCopyWith<$Res>  {
+  factory $AcpAccountConfigurationReadCopyWith(AcpAccountConfigurationRead value, $Res Function(AcpAccountConfigurationRead) _then) = _$AcpAccountConfigurationReadCopyWithImpl;
+@useResult
+$Res call({
+ ReadText accountId, ReadText name, AcpProvider provider, int connectionRevision
+});
+
+
+$ReadTextCopyWith<$Res> get accountId;$ReadTextCopyWith<$Res> get name;
+
+}
+/// @nodoc
+class _$AcpAccountConfigurationReadCopyWithImpl<$Res>
+    implements $AcpAccountConfigurationReadCopyWith<$Res> {
+  _$AcpAccountConfigurationReadCopyWithImpl(this._self, this._then);
+
+  final AcpAccountConfigurationRead _self;
+  final $Res Function(AcpAccountConfigurationRead) _then;
+
+/// Create a copy of AcpAccountConfigurationRead
+/// with the given fields replaced by the non-null parameter values.
+@pragma('vm:prefer-inline') @override $Res call({Object? accountId = null,Object? name = null,Object? provider = null,Object? connectionRevision = null,}) {
+  return _then(AcpAccountConfigurationRead(
+accountId: null == accountId ? _self.accountId : accountId // ignore: cast_nullable_to_non_nullable
+as ReadText,name: null == name ? _self.name : name // ignore: cast_nullable_to_non_nullable
+as ReadText,provider: null == provider ? _self.provider : provider // ignore: cast_nullable_to_non_nullable
+as AcpProvider,connectionRevision: null == connectionRevision ? _self.connectionRevision : connectionRevision // ignore: cast_nullable_to_non_nullable
+as int,
+  ));
+}
+/// Create a copy of AcpAccountConfigurationRead
+/// with the given fields replaced by the non-null parameter values.
+@override
+@pragma('vm:prefer-inline')
+$ReadTextCopyWith<$Res> get accountId {
+
+  return $ReadTextCopyWith<$Res>(_self.accountId, (value) {
+    return _then(_self.copyWith(accountId: value));
+  });
+}/// Create a copy of AcpAccountConfigurationRead
+/// with the given fields replaced by the non-null parameter values.
+@override
+@pragma('vm:prefer-inline')
+$ReadTextCopyWith<$Res> get name {
+
+  return $ReadTextCopyWith<$Res>(_self.name, (value) {
+    return _then(_self.copyWith(name: value));
+  });
+}
+}
+
+
+/// Adds pattern-matching-related methods to [AcpAccountConfigurationRead].
+extension AcpAccountConfigurationReadPatterns on AcpAccountConfigurationRead {
+/// A variant of `map` that fallback to returning `orElse`.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case _:
+///     return orElse();
+/// }
+/// ```
+
+@optionalTypeArgs TResult maybeMap<TResult extends Object?>(TResult Function( _AcpAccountConfigurationRead value)?  $default,{required TResult orElse(),}){
+final _that = this;
+switch (_that) {
+case _AcpAccountConfigurationRead() when $default != null:
+return $default(_that);case _:
+  return orElse();
+
+}
+}
+/// A `switch`-like method, using callbacks.
+///
+/// Callbacks receives the raw object, upcasted.
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case final Subclass2 value:
+///     return ...;
+/// }
+/// ```
+
+@optionalTypeArgs TResult map<TResult extends Object?>(TResult Function( _AcpAccountConfigurationRead value)  $default,){
+final _that = this;
+switch (_that) {
+case _AcpAccountConfigurationRead():
+return $default(_that);case _:
+  throw StateError('Unexpected subclass');
+
+}
+}
+/// A variant of `map` that fallback to returning `null`.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case _:
+///     return null;
+/// }
+/// ```
+
+@optionalTypeArgs TResult? mapOrNull<TResult extends Object?>(TResult? Function( _AcpAccountConfigurationRead value)?  $default,){
+final _that = this;
+switch (_that) {
+case _AcpAccountConfigurationRead() when $default != null:
+return $default(_that);case _:
+  return null;
+
+}
+}
+/// A variant of `when` that fallback to an `orElse` callback.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case _:
+///     return orElse();
+/// }
+/// ```
+
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>(TResult Function( ReadText accountId,  ReadText name,  AcpProvider provider,  int connectionRevision)?  $default,{required TResult orElse(),}) {final _that = this;
+switch (_that) {
+case _AcpAccountConfigurationRead() when $default != null:
+return $default(_that.accountId,_that.name,_that.provider,_that.connectionRevision);case _:
+  return orElse();
+
+}
+}
+/// A `switch`-like method, using callbacks.
+///
+/// As opposed to `map`, this offers destructuring.
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case Subclass2(:final field2):
+///     return ...;
+/// }
+/// ```
+
+@optionalTypeArgs TResult when<TResult extends Object?>(TResult Function( ReadText accountId,  ReadText name,  AcpProvider provider,  int connectionRevision)  $default,) {final _that = this;
+switch (_that) {
+case _AcpAccountConfigurationRead():
+return $default(_that.accountId,_that.name,_that.provider,_that.connectionRevision);case _:
+  throw StateError('Unexpected subclass');
+
+}
+}
+/// A variant of `when` that fallback to returning `null`
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case _:
+///     return null;
+/// }
+/// ```
+
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>(TResult? Function( ReadText accountId,  ReadText name,  AcpProvider provider,  int connectionRevision)?  $default,) {final _that = this;
+switch (_that) {
+case _AcpAccountConfigurationRead() when $default != null:
+return $default(_that.accountId,_that.name,_that.provider,_that.connectionRevision);case _:
+  return null;
+
+}
+}
+
+}
+
+/// @nodoc
+
+
+class _AcpAccountConfigurationRead implements AcpAccountConfigurationRead {
+  const _AcpAccountConfigurationRead({required this.accountId, required this.name, required this.provider, required this.connectionRevision});
+
+
+@override final  ReadText accountId;
+@override final  ReadText name;
+@override final  AcpProvider provider;
+@override final  int connectionRevision;
+
+/// Create a copy of AcpAccountConfigurationRead
+/// with the given fields replaced by the non-null parameter values.
+@override @JsonKey(includeFromJson: false, includeToJson: false)
+@pragma('vm:prefer-inline')
+_$AcpAccountConfigurationReadCopyWith<_AcpAccountConfigurationRead> get copyWith => __$AcpAccountConfigurationReadCopyWithImpl<_AcpAccountConfigurationRead>(this, _$identity);
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is _AcpAccountConfigurationRead&&(identical(other.accountId, accountId) || other.accountId == accountId)&&(identical(other.name, name) || other.name == name)&&(identical(other.provider, provider) || other.provider == provider)&&(identical(other.connectionRevision, connectionRevision) || other.connectionRevision == connectionRevision));
+}
+
+
+@override
+int get hashCode {
+    return Object.hash(runtimeType,accountId,name,provider,connectionRevision);
+}
+
+
+
+}
+
+/// @nodoc
+abstract mixin class _$AcpAccountConfigurationReadCopyWith<$Res> implements $AcpAccountConfigurationReadCopyWith<$Res> {
+  factory _$AcpAccountConfigurationReadCopyWith(_AcpAccountConfigurationRead value, $Res Function(_AcpAccountConfigurationRead) _then) = __$AcpAccountConfigurationReadCopyWithImpl;
+@override @useResult
+$Res call({
+ ReadText accountId, ReadText name, AcpProvider provider, int connectionRevision
+});
+
+
+@override $ReadTextCopyWith<$Res> get accountId;@override $ReadTextCopyWith<$Res> get name;
+
+}
+/// @nodoc
+class __$AcpAccountConfigurationReadCopyWithImpl<$Res>
+    implements _$AcpAccountConfigurationReadCopyWith<$Res> {
+  __$AcpAccountConfigurationReadCopyWithImpl(this._self, this._then);
+
+  final _AcpAccountConfigurationRead _self;
+  final $Res Function(_AcpAccountConfigurationRead) _then;
+
+/// Create a copy of AcpAccountConfigurationRead
+/// with the given fields replaced by the non-null parameter values.
+@override @pragma('vm:prefer-inline') $Res call({Object? accountId = null,Object? name = null,Object? provider = null,Object? connectionRevision = null,}) {
+  return _then(_AcpAccountConfigurationRead(
+accountId: null == accountId ? _self.accountId : accountId // ignore: cast_nullable_to_non_nullable
+as ReadText,name: null == name ? _self.name : name // ignore: cast_nullable_to_non_nullable
+as ReadText,provider: null == provider ? _self.provider : provider // ignore: cast_nullable_to_non_nullable
+as AcpProvider,connectionRevision: null == connectionRevision ? _self.connectionRevision : connectionRevision // ignore: cast_nullable_to_non_nullable
+as int,
+  ));
+}
+
+/// Create a copy of AcpAccountConfigurationRead
+/// with the given fields replaced by the non-null parameter values.
+@override
+@pragma('vm:prefer-inline')
+$ReadTextCopyWith<$Res> get accountId {
+
+  return $ReadTextCopyWith<$Res>(_self.accountId, (value) {
+    return _then(_self.copyWith(accountId: value));
+  });
+}/// Create a copy of AcpAccountConfigurationRead
+/// with the given fields replaced by the non-null parameter values.
+@override
+@pragma('vm:prefer-inline')
+$ReadTextCopyWith<$Res> get name {
+
+  return $ReadTextCopyWith<$Res>(_self.name, (value) {
+    return _then(_self.copyWith(name: value));
+  });
+}
+}
+
+/// @nodoc
 mixin _$AccountConfigurationRead {
 
- bool get pricingEnabled; BillingKind get billingKind; BillingKind? get billingKindOverride; TypedListRef get disabledModels; ReadText get accountId; ReadText? get templateId; ReadText get protocol; ReadText get name; ReadText get baseUrl; bool get hasBearerToken; ReadText? get bearerTokenEnv; int get usageQueryRevision; TypedListRef get customModels; TypedListRef get modelConnectionModes; TypedListRef get modelAutoCompactLimits; ReadText? get catalogId;
+ BillingKind get billingKind; BillingKind? get billingKindOverride; TypedListRef get disabledModels; ReadText get accountId; ReadText? get templateId; ReadText get protocol; ReadText get name; ReadText get baseUrl; bool get hasBearerToken; ReadText? get bearerTokenEnv; int get usageQueryRevision; TypedListRef get customModels; TypedListRef get modelConnectionModes; TypedListRef get modelAutoCompactLimits; ReadText? get catalogId;
 /// Create a copy of AccountConfigurationRead
 /// with the given fields replaced by the non-null parameter values.
 @JsonKey(includeFromJson: false, includeToJson: false)
@@ -537,14 +858,14 @@ $AccountConfigurationReadCopyWith<AccountConfigurationRead> get copyWith => _$Ac
 @override
 bool operator ==(Object other) {
   final _this = this as AccountConfigurationRead;
-  return identical(this, other) || (other.runtimeType == runtimeType&&other is AccountConfigurationRead&&(identical(other.pricingEnabled, _this.pricingEnabled) || other.pricingEnabled == _this.pricingEnabled)&&(identical(other.billingKind, _this.billingKind) || other.billingKind == _this.billingKind)&&(identical(other.billingKindOverride, _this.billingKindOverride) || other.billingKindOverride == _this.billingKindOverride)&&(identical(other.disabledModels, _this.disabledModels) || other.disabledModels == _this.disabledModels)&&(identical(other.accountId, _this.accountId) || other.accountId == _this.accountId)&&(identical(other.templateId, _this.templateId) || other.templateId == _this.templateId)&&(identical(other.protocol, _this.protocol) || other.protocol == _this.protocol)&&(identical(other.name, _this.name) || other.name == _this.name)&&(identical(other.baseUrl, _this.baseUrl) || other.baseUrl == _this.baseUrl)&&(identical(other.hasBearerToken, _this.hasBearerToken) || other.hasBearerToken == _this.hasBearerToken)&&(identical(other.bearerTokenEnv, _this.bearerTokenEnv) || other.bearerTokenEnv == _this.bearerTokenEnv)&&(identical(other.usageQueryRevision, _this.usageQueryRevision) || other.usageQueryRevision == _this.usageQueryRevision)&&(identical(other.customModels, _this.customModels) || other.customModels == _this.customModels)&&(identical(other.modelConnectionModes, _this.modelConnectionModes) || other.modelConnectionModes == _this.modelConnectionModes)&&(identical(other.modelAutoCompactLimits, _this.modelAutoCompactLimits) || other.modelAutoCompactLimits == _this.modelAutoCompactLimits)&&(identical(other.catalogId, _this.catalogId) || other.catalogId == _this.catalogId));
+  return identical(this, other) || (other.runtimeType == runtimeType&&other is AccountConfigurationRead&&(identical(other.billingKind, _this.billingKind) || other.billingKind == _this.billingKind)&&(identical(other.billingKindOverride, _this.billingKindOverride) || other.billingKindOverride == _this.billingKindOverride)&&(identical(other.disabledModels, _this.disabledModels) || other.disabledModels == _this.disabledModels)&&(identical(other.accountId, _this.accountId) || other.accountId == _this.accountId)&&(identical(other.templateId, _this.templateId) || other.templateId == _this.templateId)&&(identical(other.protocol, _this.protocol) || other.protocol == _this.protocol)&&(identical(other.name, _this.name) || other.name == _this.name)&&(identical(other.baseUrl, _this.baseUrl) || other.baseUrl == _this.baseUrl)&&(identical(other.hasBearerToken, _this.hasBearerToken) || other.hasBearerToken == _this.hasBearerToken)&&(identical(other.bearerTokenEnv, _this.bearerTokenEnv) || other.bearerTokenEnv == _this.bearerTokenEnv)&&(identical(other.usageQueryRevision, _this.usageQueryRevision) || other.usageQueryRevision == _this.usageQueryRevision)&&(identical(other.customModels, _this.customModels) || other.customModels == _this.customModels)&&(identical(other.modelConnectionModes, _this.modelConnectionModes) || other.modelConnectionModes == _this.modelConnectionModes)&&(identical(other.modelAutoCompactLimits, _this.modelAutoCompactLimits) || other.modelAutoCompactLimits == _this.modelAutoCompactLimits)&&(identical(other.catalogId, _this.catalogId) || other.catalogId == _this.catalogId));
 }
 
 
 @override
 int get hashCode {
   final _this = this as AccountConfigurationRead;
-  return Object.hash(runtimeType,_this.pricingEnabled,_this.billingKind,_this.billingKindOverride,_this.disabledModels,_this.accountId,_this.templateId,_this.protocol,_this.name,_this.baseUrl,_this.hasBearerToken,_this.bearerTokenEnv,_this.usageQueryRevision,_this.customModels,_this.modelConnectionModes,_this.modelAutoCompactLimits,_this.catalogId);
+  return Object.hash(runtimeType,_this.billingKind,_this.billingKindOverride,_this.disabledModels,_this.accountId,_this.templateId,_this.protocol,_this.name,_this.baseUrl,_this.hasBearerToken,_this.bearerTokenEnv,_this.usageQueryRevision,_this.customModels,_this.modelConnectionModes,_this.modelAutoCompactLimits,_this.catalogId);
 }
 
 
@@ -556,7 +877,7 @@ abstract mixin class $AccountConfigurationReadCopyWith<$Res>  {
   factory $AccountConfigurationReadCopyWith(AccountConfigurationRead value, $Res Function(AccountConfigurationRead) _then) = _$AccountConfigurationReadCopyWithImpl;
 @useResult
 $Res call({
- bool pricingEnabled, BillingKind billingKind, BillingKind? billingKindOverride, TypedListRef disabledModels, ReadText accountId, ReadText? templateId, ReadText protocol, ReadText name, ReadText baseUrl, bool hasBearerToken, ReadText? bearerTokenEnv, int usageQueryRevision, TypedListRef customModels, TypedListRef modelConnectionModes, TypedListRef modelAutoCompactLimits, ReadText? catalogId
+ BillingKind billingKind, BillingKind? billingKindOverride, TypedListRef disabledModels, ReadText accountId, ReadText? templateId, ReadText protocol, ReadText name, ReadText baseUrl, bool hasBearerToken, ReadText? bearerTokenEnv, int usageQueryRevision, TypedListRef customModels, TypedListRef modelConnectionModes, TypedListRef modelAutoCompactLimits, ReadText? catalogId
 });
 
 
@@ -573,10 +894,9 @@ class _$AccountConfigurationReadCopyWithImpl<$Res>
 
 /// Create a copy of AccountConfigurationRead
 /// with the given fields replaced by the non-null parameter values.
-@pragma('vm:prefer-inline') @override $Res call({Object? pricingEnabled = null,Object? billingKind = null,Object? billingKindOverride = freezed,Object? disabledModels = null,Object? accountId = null,Object? templateId = freezed,Object? protocol = null,Object? name = null,Object? baseUrl = null,Object? hasBearerToken = null,Object? bearerTokenEnv = freezed,Object? usageQueryRevision = null,Object? customModels = null,Object? modelConnectionModes = null,Object? modelAutoCompactLimits = null,Object? catalogId = freezed,}) {
+@pragma('vm:prefer-inline') @override $Res call({Object? billingKind = null,Object? billingKindOverride = freezed,Object? disabledModels = null,Object? accountId = null,Object? templateId = freezed,Object? protocol = null,Object? name = null,Object? baseUrl = null,Object? hasBearerToken = null,Object? bearerTokenEnv = freezed,Object? usageQueryRevision = null,Object? customModels = null,Object? modelConnectionModes = null,Object? modelAutoCompactLimits = null,Object? catalogId = freezed,}) {
   return _then(AccountConfigurationRead(
-pricingEnabled: null == pricingEnabled ? _self.pricingEnabled : pricingEnabled // ignore: cast_nullable_to_non_nullable
-as bool,billingKind: null == billingKind ? _self.billingKind : billingKind // ignore: cast_nullable_to_non_nullable
+billingKind: null == billingKind ? _self.billingKind : billingKind // ignore: cast_nullable_to_non_nullable
 as BillingKind,billingKindOverride: freezed == billingKindOverride ? _self.billingKindOverride : billingKindOverride // ignore: cast_nullable_to_non_nullable
 as BillingKind?,disabledModels: null == disabledModels ? _self.disabledModels : disabledModels // ignore: cast_nullable_to_non_nullable
 as TypedListRef,accountId: null == accountId ? _self.accountId : accountId // ignore: cast_nullable_to_non_nullable
@@ -784,10 +1104,10 @@ return $default(_that);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult maybeWhen<TResult extends Object?>(TResult Function( bool pricingEnabled,  BillingKind billingKind,  BillingKind? billingKindOverride,  TypedListRef disabledModels,  ReadText accountId,  ReadText? templateId,  ReadText protocol,  ReadText name,  ReadText baseUrl,  bool hasBearerToken,  ReadText? bearerTokenEnv,  int usageQueryRevision,  TypedListRef customModels,  TypedListRef modelConnectionModes,  TypedListRef modelAutoCompactLimits,  ReadText? catalogId)?  $default,{required TResult orElse(),}) {final _that = this;
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>(TResult Function( BillingKind billingKind,  BillingKind? billingKindOverride,  TypedListRef disabledModels,  ReadText accountId,  ReadText? templateId,  ReadText protocol,  ReadText name,  ReadText baseUrl,  bool hasBearerToken,  ReadText? bearerTokenEnv,  int usageQueryRevision,  TypedListRef customModels,  TypedListRef modelConnectionModes,  TypedListRef modelAutoCompactLimits,  ReadText? catalogId)?  $default,{required TResult orElse(),}) {final _that = this;
 switch (_that) {
 case _AccountConfigurationRead() when $default != null:
-return $default(_that.pricingEnabled,_that.billingKind,_that.billingKindOverride,_that.disabledModels,_that.accountId,_that.templateId,_that.protocol,_that.name,_that.baseUrl,_that.hasBearerToken,_that.bearerTokenEnv,_that.usageQueryRevision,_that.customModels,_that.modelConnectionModes,_that.modelAutoCompactLimits,_that.catalogId);case _:
+return $default(_that.billingKind,_that.billingKindOverride,_that.disabledModels,_that.accountId,_that.templateId,_that.protocol,_that.name,_that.baseUrl,_that.hasBearerToken,_that.bearerTokenEnv,_that.usageQueryRevision,_that.customModels,_that.modelConnectionModes,_that.modelAutoCompactLimits,_that.catalogId);case _:
   return orElse();
 
 }
@@ -805,10 +1125,10 @@ return $default(_that.pricingEnabled,_that.billingKind,_that.billingKindOverride
 /// }
 /// ```
 
-@optionalTypeArgs TResult when<TResult extends Object?>(TResult Function( bool pricingEnabled,  BillingKind billingKind,  BillingKind? billingKindOverride,  TypedListRef disabledModels,  ReadText accountId,  ReadText? templateId,  ReadText protocol,  ReadText name,  ReadText baseUrl,  bool hasBearerToken,  ReadText? bearerTokenEnv,  int usageQueryRevision,  TypedListRef customModels,  TypedListRef modelConnectionModes,  TypedListRef modelAutoCompactLimits,  ReadText? catalogId)  $default,) {final _that = this;
+@optionalTypeArgs TResult when<TResult extends Object?>(TResult Function( BillingKind billingKind,  BillingKind? billingKindOverride,  TypedListRef disabledModels,  ReadText accountId,  ReadText? templateId,  ReadText protocol,  ReadText name,  ReadText baseUrl,  bool hasBearerToken,  ReadText? bearerTokenEnv,  int usageQueryRevision,  TypedListRef customModels,  TypedListRef modelConnectionModes,  TypedListRef modelAutoCompactLimits,  ReadText? catalogId)  $default,) {final _that = this;
 switch (_that) {
 case _AccountConfigurationRead():
-return $default(_that.pricingEnabled,_that.billingKind,_that.billingKindOverride,_that.disabledModels,_that.accountId,_that.templateId,_that.protocol,_that.name,_that.baseUrl,_that.hasBearerToken,_that.bearerTokenEnv,_that.usageQueryRevision,_that.customModels,_that.modelConnectionModes,_that.modelAutoCompactLimits,_that.catalogId);case _:
+return $default(_that.billingKind,_that.billingKindOverride,_that.disabledModels,_that.accountId,_that.templateId,_that.protocol,_that.name,_that.baseUrl,_that.hasBearerToken,_that.bearerTokenEnv,_that.usageQueryRevision,_that.customModels,_that.modelConnectionModes,_that.modelAutoCompactLimits,_that.catalogId);case _:
   throw StateError('Unexpected subclass');
 
 }
@@ -825,10 +1145,10 @@ return $default(_that.pricingEnabled,_that.billingKind,_that.billingKindOverride
 /// }
 /// ```
 
-@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>(TResult? Function( bool pricingEnabled,  BillingKind billingKind,  BillingKind? billingKindOverride,  TypedListRef disabledModels,  ReadText accountId,  ReadText? templateId,  ReadText protocol,  ReadText name,  ReadText baseUrl,  bool hasBearerToken,  ReadText? bearerTokenEnv,  int usageQueryRevision,  TypedListRef customModels,  TypedListRef modelConnectionModes,  TypedListRef modelAutoCompactLimits,  ReadText? catalogId)?  $default,) {final _that = this;
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>(TResult? Function( BillingKind billingKind,  BillingKind? billingKindOverride,  TypedListRef disabledModels,  ReadText accountId,  ReadText? templateId,  ReadText protocol,  ReadText name,  ReadText baseUrl,  bool hasBearerToken,  ReadText? bearerTokenEnv,  int usageQueryRevision,  TypedListRef customModels,  TypedListRef modelConnectionModes,  TypedListRef modelAutoCompactLimits,  ReadText? catalogId)?  $default,) {final _that = this;
 switch (_that) {
 case _AccountConfigurationRead() when $default != null:
-return $default(_that.pricingEnabled,_that.billingKind,_that.billingKindOverride,_that.disabledModels,_that.accountId,_that.templateId,_that.protocol,_that.name,_that.baseUrl,_that.hasBearerToken,_that.bearerTokenEnv,_that.usageQueryRevision,_that.customModels,_that.modelConnectionModes,_that.modelAutoCompactLimits,_that.catalogId);case _:
+return $default(_that.billingKind,_that.billingKindOverride,_that.disabledModels,_that.accountId,_that.templateId,_that.protocol,_that.name,_that.baseUrl,_that.hasBearerToken,_that.bearerTokenEnv,_that.usageQueryRevision,_that.customModels,_that.modelConnectionModes,_that.modelAutoCompactLimits,_that.catalogId);case _:
   return null;
 
 }
@@ -840,10 +1160,9 @@ return $default(_that.pricingEnabled,_that.billingKind,_that.billingKindOverride
 
 
 class _AccountConfigurationRead implements AccountConfigurationRead {
-  const _AccountConfigurationRead({required this.pricingEnabled, required this.billingKind, required this.billingKindOverride, required this.disabledModels, required this.accountId, required this.templateId, required this.protocol, required this.name, required this.baseUrl, required this.hasBearerToken, required this.bearerTokenEnv, required this.usageQueryRevision, required this.customModels, required this.modelConnectionModes, required this.modelAutoCompactLimits, required this.catalogId});
+  const _AccountConfigurationRead({required this.billingKind, required this.billingKindOverride, required this.disabledModels, required this.accountId, required this.templateId, required this.protocol, required this.name, required this.baseUrl, required this.hasBearerToken, required this.bearerTokenEnv, required this.usageQueryRevision, required this.customModels, required this.modelConnectionModes, required this.modelAutoCompactLimits, required this.catalogId});
 
 
-@override final  bool pricingEnabled;
 @override final  BillingKind billingKind;
 @override final  BillingKind? billingKindOverride;
 @override final  TypedListRef disabledModels;
@@ -870,13 +1189,13 @@ _$AccountConfigurationReadCopyWith<_AccountConfigurationRead> get copyWith => __
 
 @override
 bool operator ==(Object other) {
-    return identical(this, other) || (other.runtimeType == runtimeType&&other is _AccountConfigurationRead&&(identical(other.pricingEnabled, pricingEnabled) || other.pricingEnabled == pricingEnabled)&&(identical(other.billingKind, billingKind) || other.billingKind == billingKind)&&(identical(other.billingKindOverride, billingKindOverride) || other.billingKindOverride == billingKindOverride)&&(identical(other.disabledModels, disabledModels) || other.disabledModels == disabledModels)&&(identical(other.accountId, accountId) || other.accountId == accountId)&&(identical(other.templateId, templateId) || other.templateId == templateId)&&(identical(other.protocol, protocol) || other.protocol == protocol)&&(identical(other.name, name) || other.name == name)&&(identical(other.baseUrl, baseUrl) || other.baseUrl == baseUrl)&&(identical(other.hasBearerToken, hasBearerToken) || other.hasBearerToken == hasBearerToken)&&(identical(other.bearerTokenEnv, bearerTokenEnv) || other.bearerTokenEnv == bearerTokenEnv)&&(identical(other.usageQueryRevision, usageQueryRevision) || other.usageQueryRevision == usageQueryRevision)&&(identical(other.customModels, customModels) || other.customModels == customModels)&&(identical(other.modelConnectionModes, modelConnectionModes) || other.modelConnectionModes == modelConnectionModes)&&(identical(other.modelAutoCompactLimits, modelAutoCompactLimits) || other.modelAutoCompactLimits == modelAutoCompactLimits)&&(identical(other.catalogId, catalogId) || other.catalogId == catalogId));
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is _AccountConfigurationRead&&(identical(other.billingKind, billingKind) || other.billingKind == billingKind)&&(identical(other.billingKindOverride, billingKindOverride) || other.billingKindOverride == billingKindOverride)&&(identical(other.disabledModels, disabledModels) || other.disabledModels == disabledModels)&&(identical(other.accountId, accountId) || other.accountId == accountId)&&(identical(other.templateId, templateId) || other.templateId == templateId)&&(identical(other.protocol, protocol) || other.protocol == protocol)&&(identical(other.name, name) || other.name == name)&&(identical(other.baseUrl, baseUrl) || other.baseUrl == baseUrl)&&(identical(other.hasBearerToken, hasBearerToken) || other.hasBearerToken == hasBearerToken)&&(identical(other.bearerTokenEnv, bearerTokenEnv) || other.bearerTokenEnv == bearerTokenEnv)&&(identical(other.usageQueryRevision, usageQueryRevision) || other.usageQueryRevision == usageQueryRevision)&&(identical(other.customModels, customModels) || other.customModels == customModels)&&(identical(other.modelConnectionModes, modelConnectionModes) || other.modelConnectionModes == modelConnectionModes)&&(identical(other.modelAutoCompactLimits, modelAutoCompactLimits) || other.modelAutoCompactLimits == modelAutoCompactLimits)&&(identical(other.catalogId, catalogId) || other.catalogId == catalogId));
 }
 
 
 @override
 int get hashCode {
-    return Object.hash(runtimeType,pricingEnabled,billingKind,billingKindOverride,disabledModels,accountId,templateId,protocol,name,baseUrl,hasBearerToken,bearerTokenEnv,usageQueryRevision,customModels,modelConnectionModes,modelAutoCompactLimits,catalogId);
+    return Object.hash(runtimeType,billingKind,billingKindOverride,disabledModels,accountId,templateId,protocol,name,baseUrl,hasBearerToken,bearerTokenEnv,usageQueryRevision,customModels,modelConnectionModes,modelAutoCompactLimits,catalogId);
 }
 
 
@@ -888,7 +1207,7 @@ abstract mixin class _$AccountConfigurationReadCopyWith<$Res> implements $Accoun
   factory _$AccountConfigurationReadCopyWith(_AccountConfigurationRead value, $Res Function(_AccountConfigurationRead) _then) = __$AccountConfigurationReadCopyWithImpl;
 @override @useResult
 $Res call({
- bool pricingEnabled, BillingKind billingKind, BillingKind? billingKindOverride, TypedListRef disabledModels, ReadText accountId, ReadText? templateId, ReadText protocol, ReadText name, ReadText baseUrl, bool hasBearerToken, ReadText? bearerTokenEnv, int usageQueryRevision, TypedListRef customModels, TypedListRef modelConnectionModes, TypedListRef modelAutoCompactLimits, ReadText? catalogId
+ BillingKind billingKind, BillingKind? billingKindOverride, TypedListRef disabledModels, ReadText accountId, ReadText? templateId, ReadText protocol, ReadText name, ReadText baseUrl, bool hasBearerToken, ReadText? bearerTokenEnv, int usageQueryRevision, TypedListRef customModels, TypedListRef modelConnectionModes, TypedListRef modelAutoCompactLimits, ReadText? catalogId
 });
 
 
@@ -905,10 +1224,9 @@ class __$AccountConfigurationReadCopyWithImpl<$Res>
 
 /// Create a copy of AccountConfigurationRead
 /// with the given fields replaced by the non-null parameter values.
-@override @pragma('vm:prefer-inline') $Res call({Object? pricingEnabled = null,Object? billingKind = null,Object? billingKindOverride = freezed,Object? disabledModels = null,Object? accountId = null,Object? templateId = freezed,Object? protocol = null,Object? name = null,Object? baseUrl = null,Object? hasBearerToken = null,Object? bearerTokenEnv = freezed,Object? usageQueryRevision = null,Object? customModels = null,Object? modelConnectionModes = null,Object? modelAutoCompactLimits = null,Object? catalogId = freezed,}) {
+@override @pragma('vm:prefer-inline') $Res call({Object? billingKind = null,Object? billingKindOverride = freezed,Object? disabledModels = null,Object? accountId = null,Object? templateId = freezed,Object? protocol = null,Object? name = null,Object? baseUrl = null,Object? hasBearerToken = null,Object? bearerTokenEnv = freezed,Object? usageQueryRevision = null,Object? customModels = null,Object? modelConnectionModes = null,Object? modelAutoCompactLimits = null,Object? catalogId = freezed,}) {
   return _then(_AccountConfigurationRead(
-pricingEnabled: null == pricingEnabled ? _self.pricingEnabled : pricingEnabled // ignore: cast_nullable_to_non_nullable
-as bool,billingKind: null == billingKind ? _self.billingKind : billingKind // ignore: cast_nullable_to_non_nullable
+billingKind: null == billingKind ? _self.billingKind : billingKind // ignore: cast_nullable_to_non_nullable
 as BillingKind,billingKindOverride: freezed == billingKindOverride ? _self.billingKindOverride : billingKindOverride // ignore: cast_nullable_to_non_nullable
 as BillingKind?,disabledModels: null == disabledModels ? _self.disabledModels : disabledModels // ignore: cast_nullable_to_non_nullable
 as TypedListRef,accountId: null == accountId ? _self.accountId : accountId // ignore: cast_nullable_to_non_nullable

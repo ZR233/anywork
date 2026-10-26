@@ -1,4 +1,4 @@
-import 'package:anywork_client/account_usage_ports.dart';
+import 'package:anywork_client/statistics_ports.dart';
 
 import '../../../../rust/api/studio/products/read/statistics.dart' as native;
 import '../../../../rust/api/studio/types/response.dart' as response;
@@ -112,30 +112,3 @@ PerformanceSampleIdentityRead sampleIdentityReadFromBridge(
   },
   effort: nullableReadText(value.effort),
 );
-
-SessionCostsReadHeader costsReadHeaderFromBridge(
-  native.BridgeSessionCostsReadHeader value,
-) => SessionCostsReadHeader(
-  cost: value.cost == null ? null : sessionCostReadFromBridge(value.cost!),
-);
-
-SessionCostRead sessionCostReadFromBridge(native.BridgeSessionCostRead value) =>
-    SessionCostRead(
-      rootThreadId: readTextFromBridge(value.rootThreadId),
-      purposeCosts: typedListFromBridge(value.purposeCosts),
-      estimatedCosts: typedListFromBridge(value.estimatedCosts),
-      hasUnpricedUsage: value.hasUnpricedUsage,
-    );
-
-PurposeCostRead purposeCostReadFromBridge(native.BridgePurposeCostRead value) =>
-    PurposeCostRead(
-      purpose: nullableReadText(value.purpose),
-      estimatedCosts: typedListFromBridge(value.estimatedCosts),
-      hasUnpricedUsage: value.hasUnpricedUsage,
-    );
-
-RuntimeCostRead runtimeCostReadFromBridge(native.BridgeRuntimeCostRead value) =>
-    RuntimeCostRead(
-      currency: readTextFromBridge(value.currency),
-      amount: value.amount,
-    );

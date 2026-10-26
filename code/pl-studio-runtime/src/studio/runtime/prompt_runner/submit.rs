@@ -8,6 +8,20 @@ use super::super::{
     StudioRuntime, StudioSubmitPromptOptions, StudioSubmitPromptRequest, StudioSubmitPromptResponse,
 };
 
+/// How one product admission treats a Turn that is already running on the same Thread.
+///
+/// This is an explicit product decision, not a tuning flag: the desktop UI and explicit
+/// interaction continuation keep replacing the current Turn, while a platform message identity
+/// becomes its own queued input so two messages of the same conversation never interrupt or merge
+/// each other.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AdmissionMode {
+    /// Explicit user submission: interrupt the running Turn and continue.
+    InterruptAndContinue,
+    /// Platform message identity: enqueue a separate input without interrupting the Turn.
+    Queued,
+}
+
 impl StudioRuntime {
     /// Pure read of the original durable input identity. Does not activate or prepare storage.
     pub fn read_input_acceptance(
@@ -96,18 +110,33 @@ impl StudioRuntime {
         &self,
         request: StudioSubmitPromptRequest,
     ) -> Result<StudioSubmitPromptResponse> {
-        validate_prompt_content(&request.input)?;
-        // Serialize turn registration with the shared shutdown admission fence.
-        let _lifecycle_guard = self.lifecycle_lock.lock().await;
-        self.submit_prompt_with_lifecycle_lock(request).await
+        self.submit_owned_prompt(request, AdmissionMode::InterruptAndContinue)
+            .await
     }
 
-    pub(in crate::studio::runtime) async fn submit_prompt_with_lifecycle_lock(
+    /// 非打断准入：平台消息作为独立输入排队，不中断同一 Thread 正在运行的 Turn。
+    ///
+    /// 与 [`Self::submit_prompt`] 共享全部内容校验、生命周期栅栏、正文身份、持久回执、route
+    /// CAS、附件准备、预算与事件；只有最终的 core 准入不同——排队输入由 actor 串行消费，因此
+    /// 同一会话的两条平台消息各自形成独立输入与 Turn，不会互相打断或合并。
+    pub(crate) async fn submit_queued_prompt(
         &self,
         request: StudioSubmitPromptRequest,
     ) -> Result<StudioSubmitPromptResponse> {
+        self.submit_owned_prompt(request, AdmissionMode::Queued)
+            .await
+    }
+
+    async fn submit_owned_prompt(
+        &self,
+        request: StudioSubmitPromptRequest,
+        mode: AdmissionMode,
+    ) -> Result<StudioSubmitPromptResponse> {
+        validate_prompt_content(&request.input)?;
+        // Serialize turn registration with the shared shutdown admission fence.
+        let _lifecycle_guard = self.lifecycle_lock.lock().await;
         let thread_record = self.read_owned_thread(&request.thread_id).await?;
-        self.submit_prompt_for_owned_thread_with_lifecycle_lock(request, thread_record, None)
+        self.submit_owned_prompt_with_admission(request, thread_record, mode, None)
             .await
     }
 
@@ -115,6 +144,22 @@ impl StudioRuntime {
         &self,
         request: StudioSubmitPromptRequest,
         thread_record: ThreadRecord,
+        creation: Option<&super::super::draft_commands::CreationEvidence>,
+    ) -> Result<StudioSubmitPromptResponse> {
+        self.submit_owned_prompt_with_admission(
+            request,
+            thread_record,
+            AdmissionMode::InterruptAndContinue,
+            creation,
+        )
+        .await
+    }
+
+    async fn submit_owned_prompt_with_admission(
+        &self,
+        request: StudioSubmitPromptRequest,
+        thread_record: ThreadRecord,
+        mode: AdmissionMode,
         creation: Option<&super::super::draft_commands::CreationEvidence>,
     ) -> Result<StudioSubmitPromptResponse> {
         let StudioSubmitPromptRequest {
@@ -206,8 +251,8 @@ impl StudioRuntime {
         // The caller's frozen route is a CAS against its canonical extension,
         // not a Thread revision or the current mode default. Both route writes
         // and input admission hold lifecycle_lock, so it cannot change between
-        // this check and submit_input_and_continue. An already accepted input
-        // above keeps its original receipt even after a later route update.
+        // this check and the core admission. An already accepted input above
+        // keeps its original receipt even after a later route update.
         if let Some(expected) = options.expected_model_route_revision {
             let state = thread.snapshot();
             let (record, _) = crate::studio::model_route::route_record(
@@ -317,22 +362,29 @@ impl StudioRuntime {
         if let Some(creation) = creation {
             creation.dispatching();
         }
-        let accepted = thread
-            .submit_input_and_continue(
-                pl_core::thread::input::ThreadInput {
-                    id: input_id,
-                    payload,
-                    context,
-                },
-                pl_core::thread::input::InputDriverOptions {
-                    max_model_steps: if thread_record.parent_thread_id.is_none() {
-                        pl_core::thread::ModelStepLimit::Unlimited
-                    } else {
-                        crate::studio::thread_factory::StudioThreadFactory::CHILD_MODEL_STEP_LIMIT
-                    },
-                },
-            )
-            .await?;
+        let thread_input = pl_core::thread::input::ThreadInput {
+            id: input_id,
+            payload,
+            context,
+        };
+        let driver = pl_core::thread::input::InputDriverOptions {
+            max_model_steps: if thread_record.parent_thread_id.is_none() {
+                pl_core::thread::ModelStepLimit::Unlimited
+            } else {
+                crate::studio::thread_factory::StudioThreadFactory::CHILD_MODEL_STEP_LIMIT
+            },
+        };
+        // The only semantic difference between the product admissions. `input_and_run` lets the
+        // actor own the queued input and consume it after the current Turn, while
+        // `input_and_continue` replaces the running Turn.
+        let accepted = match mode {
+            AdmissionMode::InterruptAndContinue => {
+                thread
+                    .submit_input_and_continue(thread_input, driver)
+                    .await?
+            }
+            AdmissionMode::Queued => thread.submit_input_and_run(thread_input, driver).await?,
+        };
         let receipt = StudioSubmitPromptResponse {
             thread_id: thread_id.clone(),
             input_id: accepted.input.id,

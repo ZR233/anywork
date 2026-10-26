@@ -5,6 +5,8 @@ import '../../../models.dart' show BillingKind;
 import '../../../operations.dart';
 import '../../../operations_ports.dart' show OperationRecorder;
 import '../../../resources_ports.dart';
+import '../../acp/domain/acp_values.dart' show AcpAccountUpdate;
+import '../domain/account_entries.dart';
 import '../domain/account_edits.dart';
 import '../domain/configuration_repository.dart';
 import '../domain/configuration_state.dart';
@@ -107,6 +109,14 @@ final class _ConfigurationRepository
     AgentProfilesReadTarget target, {
     CommitReceipt? receipt,
   }) => profileCatalog.synchronize(target, receipt: receipt);
+  @override
+  Future<void> observeSettings(CommitReceipt receipt) =>
+      configuration.observeReceipt(receipt);
+  @override
+  Future<void> consumeAcpAccountTarget(
+    ConfigurationReadTarget target, {
+    required CommitReceipt receipt,
+  }) => configuration.consumeAcpAccountTarget(target, receipt: receipt);
 
   @override
   Future<void> loadSourceStatus() {
@@ -172,6 +182,14 @@ final class _ConfigurationRepository
   Future<String> loadPermissionMode() {
     admit();
     return configuration.fields.permission();
+  }
+
+  @override
+  Future<AcpAccountDirectory> loadAcpAccounts() {
+    admit();
+    // 沿既有 ConfigurationMirror/PinnedReadOwner 固定原配置目标分页读取；
+    // 返回校验后的值，不把 query 结果写成第二 canonical。
+    return configuration.readAcpAccounts();
   }
 
   @override
@@ -248,6 +266,12 @@ final class _ConfigurationRepository
   @override
   OperationTicket<Unit> saveAccount(AccountEdit intent) =>
       writes.saveAccount(intent);
+  @override
+  OperationTicket<Unit> saveAcpAccount(AcpAccountUpdate intent) =>
+      writes.saveAcpAccount(intent);
+  @override
+  OperationTicket<Unit> removeAcpAccount(String accountId) =>
+      writes.removeAcpAccount(accountId);
   @override
   OperationTicket<Unit> setDefaultAccount(String accountId) =>
       writes.setDefaultAccount(accountId);

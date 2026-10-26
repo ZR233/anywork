@@ -1,7 +1,9 @@
 use super::super::{
     StudioRuntime, lifecycle::shutdown::ShutdownLatch, models::delivery_window::DeliveryWindow,
 };
-use super::source::{Key, Root, StatisticsMaterial, StatisticsSource, cancelled};
+use super::source::{
+    Key, Root, StatisticsMaterial, StatisticsPublication, StatisticsSource, cancelled,
+};
 use pl_protocol::products::feed::{
     performance_history as history, performance_summaries as summaries, session_costs as costs,
 };
@@ -14,9 +16,18 @@ use std::sync::{Arc, Mutex};
 use tokio::sync::{Notify, watch};
 use tokio_util::sync::CancellationToken;
 
+/// 一次活跃会话费用订阅持有的原 root 观察需求，以及与登记同一边界的费用基线。
+///
+/// 只借用既有计费所有者：不创建或激活会话执行 owner，也不触发模型、工具或调用库扫描。
+/// 调用方持有该租约到订阅关闭或释放，此后没有费用材料的空观察条目可被回收。
+pub(in crate::studio::runtime) struct SessionCostsObservation {
+    pub(in crate::studio::runtime) lease: Arc<()>,
+    pub(in crate::studio::runtime) baseline: crate::StudioSessionCostsState,
+}
+
 struct Window {
-    delivery: DeliveryWindow<StatisticsMaterial>,
-    previous: Option<Arc<StatisticsMaterial>>,
+    delivery: DeliveryWindow<StatisticsPublication>,
+    previous: Option<Arc<StatisticsPublication>>,
 }
 struct Feed {
     identity: ProductFeedIdentity,
@@ -80,9 +91,10 @@ impl StudioRuntime {
             let lease = runtime
                 .statistics_source
                 .lease(&Key::Costs(root_thread_id.clone()))?;
+            // 已取得 lease 的 root 必须登记观察，否则没有 rollup 的空材料收不到后续状态。
             let captured = runtime
                 .model_performance
-                .session_costs_snapshot(&root_thread_id)
+                .observe_session_costs(&root_thread_id)
                 .await;
             let material = runtime.statistics_source.publish_costs(captured)?;
             let feed = Feed::open(
@@ -94,6 +106,24 @@ impl StudioRuntime {
             drop(lease);
             Ok(StudioSessionCostsFeed { feed })
         })
+    }
+    /// 活跃会话费用订阅的观察边界：先登记原 root 需求，再交付同一边界的基线。
+    ///
+    /// 复用桌面费用订阅已有的 lease 与 `observe_session_costs`：尚无费用记录的 root 也进入同一
+    /// 费用账本，因此随后只有 pending/gap/readFailed（或首次真实 rollup）变化时不会漏发。这里
+    /// 不读取调用库、不激活 Thread 执行 owner、也不产生额外数据库扫描。
+    pub(in crate::studio::runtime) async fn observe_session_costs_subscription(
+        &self,
+        root_thread_id: &str,
+    ) -> Result<SessionCostsObservation, StudioError> {
+        let lease = self
+            .statistics_source
+            .lease(&Key::Costs(root_thread_id.to_owned()))?;
+        let baseline = self
+            .model_performance
+            .observe_session_costs(root_thread_id)
+            .await;
+        Ok(SessionCostsObservation { lease, baseline })
     }
 }
 impl Feed {
@@ -155,8 +185,8 @@ impl Feed {
         &self,
         build: impl FnOnce(
             u64,
-            &StatisticsMaterial,
-            Option<&StatisticsMaterial>,
+            &StatisticsPublication,
+            Option<&StatisticsPublication>,
         ) -> Result<F, StudioError>,
         resync: impl FnOnce(ProductResyncReason) -> F,
         send: impl FnOnce(F) -> Result<(), StudioError>,
@@ -167,17 +197,18 @@ impl Feed {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         self.check(&window)?;
         window.delivery.require_claimed("Statistics")?;
-        let material = self.source.current(&self.key)?;
+        // 发布投影版本只在本来源单调；材料与状态在同一发布边界配对。
+        let publication = self.source.current(&self.key)?;
         if window
             .previous
             .as_ref()
-            .is_some_and(|old| old.revision == material.revision)
+            .is_some_and(|old| old.revision == publication.revision)
         {
             return Ok(false);
         }
-        window.delivery.pending = Some(material.clone());
+        window.delivery.pending = Some(publication.clone());
         if let Some(old) = &window.previous {
-            let (upserted, removed) = diff(&material, old);
+            let (upserted, removed) = diff(&publication.material, &old.material);
             if upserted.len() + removed.len() > 100 {
                 window.delivery.closing = true;
                 let result = window
@@ -193,26 +224,26 @@ impl Feed {
             return Ok(false);
         }
         let previous = window.previous.clone();
-        let sent = self.source.send_exposing(&material, || {
+        let sent = self.source.send_exposing(&publication.material, || {
             window
                 .delivery
                 .deliver(
                     "Statistics",
-                    |sequence, material| build(sequence, material, previous.as_deref()),
+                    |sequence, publication| build(sequence, publication, previous.as_deref()),
                     send,
                 )
                 .map(|sent| sent.is_some())
         })?;
         if sent {
-            window.previous = Some(material);
+            window.previous = Some(publication);
         }
         Ok(sent)
     }
-    fn stamp(&self, material: &StatisticsMaterial) -> ProductProjectionStamp {
+    fn stamp(&self, publication: &StatisticsPublication) -> ProductProjectionStamp {
         ProductProjectionStamp {
             owner_epoch: self.identity.owner_epoch.clone(),
             incarnation: self.identity.incarnation,
-            revision: material.revision,
+            revision: publication.revision,
         }
     }
     fn ack_through(&self, sequence: u64) -> Result<(), StudioError> {
@@ -347,42 +378,44 @@ impl StudioPerformanceSummariesFeed {
         send: impl FnOnce(summaries::PerformanceSummariesFrame) -> Result<(), StudioError>,
     ) -> Result<bool, StudioError> {
         self.feed.send_pending(
-            |delivery_sequence, material, previous| {
-                let Root::Global { value, .. } = &material.root else {
+            |delivery_sequence, publication, previous| {
+                let Root::Summaries(_) = &publication.material.root else {
                     return Err(cancelled());
                 };
                 let header = summaries::PerformanceSummariesHeader {
-                    revision: value.revision,
-                    updated_at: value.updated_at,
-                    statistics_pending: value.statistics_pending,
-                    statistics_gap: value.statistics_gap,
-                    read_failed: value.read_failed,
+                    revision: publication.status.revision,
+                    updated_at: publication.status.updated_at,
+                    statistics_pending: publication.status.statistics_pending,
+                    statistics_gap: publication.status.statistics_gap,
+                    read_failed: publication.status.read_failed,
                     reference: PerformanceSummariesReadRef {
-                        entry: material.entry,
-                        revision: material.revision,
+                        entry: publication.material.entry,
+                        revision: publication.material.revision,
                     },
                 };
-                let stamp = self.feed.stamp(material);
+                let stamp = self.feed.stamp(publication);
                 let event = match previous {
                     None => summaries::PerformanceSummariesEvent::Baseline {
                         identity: self.identity(),
                         stamp,
                         value: summaries::PerformanceSummariesBaseline {
                             header,
-                            collection: material.collection,
+                            collection: publication.material.collection,
                         },
                     },
                     Some(old) => {
-                        let (upserted, removed_entries) = diff(material, old);
+                        let (upserted, removed_entries) =
+                            diff(&publication.material, &old.material);
                         summaries::PerformanceSummariesEvent::Change {
                             stamp,
                             base_revision: old.revision,
                             value: summaries::PerformanceSummariesChange {
                                 header,
                                 base_collection_revision: old
+                                    .material
                                     .collection
                                     .map(|collection| collection.revision),
-                                collection: material.collection,
+                                collection: publication.material.collection,
                                 upserted,
                                 removed_entries,
                             },
@@ -408,42 +441,44 @@ impl StudioPerformanceHistoryFeed {
         send: impl FnOnce(history::PerformanceHistoryFrame) -> Result<(), StudioError>,
     ) -> Result<bool, StudioError> {
         self.feed.send_pending(
-            |delivery_sequence, material, previous| {
-                let Root::Global { value, .. } = &material.root else {
+            |delivery_sequence, publication, previous| {
+                let Root::History { .. } = &publication.material.root else {
                     return Err(cancelled());
                 };
                 let header = history::PerformanceHistoryHeader {
-                    revision: value.revision,
-                    updated_at: value.updated_at,
-                    statistics_pending: value.statistics_pending,
-                    statistics_gap: value.statistics_gap,
-                    read_failed: value.read_failed,
+                    revision: publication.status.revision,
+                    updated_at: publication.status.updated_at,
+                    statistics_pending: publication.status.statistics_pending,
+                    statistics_gap: publication.status.statistics_gap,
+                    read_failed: publication.status.read_failed,
                     reference: PerformanceHistoryReadRef {
-                        entry: material.entry,
-                        revision: material.revision,
+                        entry: publication.material.entry,
+                        revision: publication.material.revision,
                     },
                 };
-                let stamp = self.feed.stamp(material);
+                let stamp = self.feed.stamp(publication);
                 let event = match previous {
                     None => history::PerformanceHistoryEvent::Baseline {
                         identity: self.identity(),
                         stamp,
                         value: history::PerformanceHistoryBaseline {
                             header,
-                            collection: material.collection,
+                            collection: publication.material.collection,
                         },
                     },
                     Some(old) => {
-                        let (upserted, removed_entries) = diff(material, old);
+                        let (upserted, removed_entries) =
+                            diff(&publication.material, &old.material);
                         history::PerformanceHistoryEvent::Change {
                             stamp,
                             base_revision: old.revision,
                             value: history::PerformanceHistoryChange {
                                 header,
                                 base_collection_revision: old
+                                    .material
                                     .collection
                                     .map(|collection| collection.revision),
-                                collection: material.collection,
+                                collection: publication.material.collection,
                                 upserted,
                                 removed_entries,
                             },
@@ -469,24 +504,24 @@ impl StudioSessionCostsFeed {
         send: impl FnOnce(costs::SessionCostsFrame) -> Result<(), StudioError>,
     ) -> Result<bool, StudioError> {
         self.feed.send_pending(
-            |delivery_sequence, material, previous| {
-                let Root::Costs(value) = &material.root else {
+            |delivery_sequence, publication, previous| {
+                let Root::Costs(cost) = &publication.material.root else {
                     return Err(cancelled());
                 };
                 let header = costs::SessionCostsHeader {
-                    revision: value.revision,
-                    updated_at: value.updated_at,
-                    statistics_pending: value.statistics_pending,
-                    statistics_gap: value.statistics_gap,
-                    read_failed: value.read_failed,
-                    has_cost: value.cost.is_some(),
-                    has_unpriced_usage: value.cost.as_ref().map(|cost| cost.has_unpriced_usage),
+                    revision: publication.status.revision,
+                    updated_at: publication.status.updated_at,
+                    statistics_pending: publication.status.statistics_pending,
+                    statistics_gap: publication.status.statistics_gap,
+                    read_failed: publication.status.read_failed,
+                    has_cost: cost.is_some(),
+                    has_unpriced_usage: cost.as_ref().map(|cost| cost.has_unpriced_usage),
                     reference: SessionCostsReadRef {
-                        entry: material.entry,
-                        revision: material.revision,
+                        entry: publication.material.entry,
+                        revision: publication.material.revision,
                     },
                 };
-                let stamp = self.feed.stamp(material);
+                let stamp = self.feed.stamp(publication);
                 let event = match previous {
                     None => costs::SessionCostsEvent::Baseline {
                         identity: self.identity(),

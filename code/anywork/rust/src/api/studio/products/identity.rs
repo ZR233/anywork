@@ -20,6 +20,8 @@ pub enum BridgeProductResource {
     PersistenceQueue,
     Updates,
     Bots,
+    AcpAuth,
+    AcpInstall,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

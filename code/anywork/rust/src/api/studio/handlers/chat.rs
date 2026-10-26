@@ -517,11 +517,20 @@ mod timeline_feed_tests {
     #[tokio::test]
     async fn timeline_feed_close_joins_without_stream_and_repeats_result() {
         let owner = owner();
+        // 未挂流时 owner 仍持有构造期发出的真实原始 feed id；close 必须报告同一份身份，
+        // 既不能清空它，也不能在第二次 close 时换成另一份身份。
+        let opening_feed_id = owner.feed_id();
+        assert!(
+            !opening_feed_id.is_empty(),
+            "a timeline opening owner must expose its real feed id before close"
+        );
         let first = owner.close().await;
         let second = owner.close().await;
         assert_eq!(first, second);
-        assert_eq!(first.feed_id, "");
+        assert_eq!(first.feed_id, opening_feed_id);
+        assert_eq!(second.feed_id, opening_feed_id);
         assert_eq!(first.outcome, BridgeFeedCloseOutcome::Clean);
+        assert_eq!(second.outcome, BridgeFeedCloseOutcome::Clean);
     }
 
     #[tokio::test]

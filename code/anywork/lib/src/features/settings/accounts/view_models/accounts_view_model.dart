@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:anywork_client/account_usage.dart';
+import 'package:anywork_client/acp.dart';
 import 'package:anywork_client/configuration.dart';
 import 'package:anywork_client/models.dart';
 import 'package:anywork_client/operations.dart';
@@ -17,7 +18,10 @@ import '../../view_models/read_values.dart';
 import '../../view_models/settings_navigation_view_model.dart';
 import '../../view_models/settings_tab_lifecycle.dart';
 import '../state/accounts_state.dart';
+import '../state/acp_account_target.dart';
+import '../state/acp_command_notice.dart';
 import 'account_detail_participant.dart';
+import 'account_selectors.dart';
 import 'account_usage_checks.dart';
 import 'accounts_visible_reads.dart';
 
@@ -26,12 +30,16 @@ part 'accounts_view_model.g.dart';
 @Riverpod(keepAlive: true)
 class AccountsViewModel extends _$AccountsViewModel {
   late ConfigurationRepository _configuration;
+
+  /// ACP 观察 owner：可选注入。缺少注入或读取失败只记录读问题，不影响 Native 账号路径。
+  AcpAuthRepository? _acp;
   late ModelsRepository _models;
   late AccountUsageRepository _usage;
   late AccountsVisibleReads _reads;
   final _observations = <Observation>[];
   final _rowObservations = <(String, AccountRowAction), Observation>{};
   final _modelObservations = <(String, String), Observation>{};
+  final _removalObservations = <String, Observation>{};
   AccountUsageChecks? _usageChecks;
   int _lifetime = 0;
   int _editorId = 0;
@@ -40,6 +48,9 @@ class AccountsViewModel extends _$AccountsViewModel {
   Set<String> _visibleUsage = const {};
   AccountDetailParticipant? _detail;
   String? _detailAccountId;
+  AcpObservationLease<AcpAuthObservation>? _acpLease;
+  AcpAccountCatalog? _acpCatalog;
+  AcpAccountDirectory? _acpDirectory;
 
   bool detailRequested(String accountId) =>
       _alive &&
@@ -75,6 +86,7 @@ class AccountsViewModel extends _$AccountsViewModel {
     _alive = true;
     final lifetime = ++_lifetime;
     _configuration = ref.watch(configurationRepositoryProvider);
+    _acp = _resolveAcpRepository();
     _models = ref.watch(modelsRepositoryProvider);
     _usage = ref.watch(accountUsageRepositoryProvider);
     _reads = AccountsVisibleReads(
@@ -117,6 +129,7 @@ class AccountsViewModel extends _$AccountsViewModel {
     ref.onDispose(() {
       _alive = false;
       _lifetime++;
+      _releaseAcpLease();
       _reads.dispose();
       _usageChecks?.dispose();
       tab.unregister();
@@ -132,6 +145,10 @@ class AccountsViewModel extends _$AccountsViewModel {
       }
       _rowObservations.clear();
       _modelObservations.clear();
+      for (final observation in _removalObservations.values) {
+        observation.cancel();
+      }
+      _removalObservations.clear();
       // Repository, accepted checks and writes outlive their display observer.
     });
     // Sources publish while other providers may still be building; the write is
@@ -194,9 +211,29 @@ class AccountsViewModel extends _$AccountsViewModel {
       ),
       read(AccountsReadField.modelSource, _models.loadSourceStatus),
       read(AccountsReadField.usageSource, _usage.loadSourceStatus),
+      // ACP 目录与接入模板是两条独立的有界读取：任一侧失败都如实记录，不互相冒充。
+      read(AccountsReadField.acpAccounts, () async {
+        final acp = _acp;
+        // 组合根未装配 ACP owner 时不发起 ACP 读取（账号页的 Native 路径与它无关）。
+        if (acp == null) return;
+        StudioFailure? issue;
+        try {
+          _acpDirectory = await _configuration.loadAcpAccounts();
+        } on StudioFailure catch (error) {
+          issue = error;
+        }
+        try {
+          _acpCatalog = await acp.readCatalog();
+        } on StudioFailure catch (error) {
+          issue ??= error;
+        }
+        if (issue != null) throw issue;
+      }),
     ]);
+    if (_visible) _acquireAcpLease(lifetime);
     _reads.rememberInitialFailures();
     _usageChecks!.refresh();
+    final initialAcpAuth = _acpLease?.latest.value.canonical;
     final initial = _filter(
       AccountsViewState(
         source: _configuration.state.value,
@@ -204,6 +241,10 @@ class AccountsViewModel extends _$AccountsViewModel {
         templateSource: _models.templates.value,
         usageSource: _usage.state.value,
         templates: templates,
+        acpAccounts: _acpDirectory,
+        acpCatalog: _acpCatalog,
+        acpAuth: initialAcpAuth,
+        directory: _composeDirectory(auth: initialAcpAuth),
         readIssues: errors,
         usageChecks: _usageChecks!.snapshot,
       ),
@@ -231,7 +272,7 @@ class AccountsViewModel extends _$AccountsViewModel {
 
   void _publish(AccountsViewState value) {
     final lifetime = _lifetime;
-    state = AsyncData(_filter(value));
+    state = AsyncData(_filter(_withAcp(value)));
     if (!_owns(lifetime)) return;
     _reads.visible(_visible);
     if (!_owns(lifetime)) return;
@@ -292,6 +333,18 @@ class AccountsViewModel extends _$AccountsViewModel {
             ].join(' ').toLowerCase().contains(query))
           account.accountId,
     ];
+    final acpEntries =
+        value.directory?.acpEntries ?? const <AcpAccountEntryView>[];
+    final matchingAcp = [
+      for (final entry in acpEntries)
+        if (query.isEmpty ||
+            [
+              entry.account.accountId,
+              entry.account.name,
+              entry.account.provider.name,
+            ].join(' ').toLowerCase().contains(query))
+          entry.account.accountId,
+    ];
     final complete = collectionComplete(
       value.source.accounts,
       value.source.projection.stamp?.origin,
@@ -303,17 +356,140 @@ class AccountsViewModel extends _$AccountsViewModel {
         value.editor == null) {
       return value.copyWith(
         matchingAccountIds: matching,
+        matchingAcpAccountIds: matchingAcp,
         selectedAccountId: accounts.firstOrNull?.accountId,
         showDetails: false,
       );
     }
-    return value.copyWith(matchingAccountIds: matching);
+    final selectedAcp = value.selectedAcpAccountId;
+    final acpMissing =
+        selectedAcp != null &&
+        value.acpEditor == null &&
+        value.directory != null &&
+        !acpEntries.any((entry) => entry.account.accountId == selectedAcp);
+    if (acpMissing) {
+      return value.copyWith(
+        matchingAccountIds: matching,
+        matchingAcpAccountIds: matchingAcp,
+        selectedAcpAccountId: null,
+        showDetails: value.selectedAccountId == null
+            ? false
+            : value.showDetails,
+        acpNotices: {...value.acpNotices}..remove(selectedAcp),
+      );
+    }
+    return value.copyWith(
+      matchingAccountIds: matching,
+      matchingAcpAccountIds: matchingAcp,
+    );
+  }
+
+  /// ACP 目录素材随任一 canonical 源一起刷新；缺任一侧时不合成空目录冒充事实。
+  AccountsViewState _withAcp(AccountsViewState value) => value.copyWith(
+    acpAccounts: _acpDirectory ?? value.acpAccounts,
+    acpCatalog: _acpCatalog ?? value.acpCatalog,
+    directory: _composeDirectory(auth: value.acpAuth),
+  );
+
+  AccountDirectoryView? _composeDirectory({required AcpAuthSnapshot? auth}) {
+    final acpAccounts = _acpDirectory;
+    final catalog = _acpCatalog;
+    if (acpAccounts == null || catalog == null) return null;
+    final templates = currentTemplatesValue(_models.templates.value);
+    return AccountDirectoryView.from(
+      acpAccounts: acpAccounts,
+      nativeAccounts: displayCollectionRows(
+        _configuration.state.value.accounts,
+      ),
+      nativeTemplates: templates?.templates ?? const [],
+      acpCatalog: catalog,
+      auth: auth,
+    );
+  }
+
+  /// 页面可见时的 `acpAuth` 观察租约；离页只释放自身租约，不取消已受理的检查。
+  void _acquireAcpLease(int lifetime) {
+    if (_acpLease != null) return;
+    final acp = _acp;
+    if (acp == null) return;
+    try {
+      _acpLease = acp.observe(
+        onState: (observation) {
+          if (!_owns(lifetime) || !_visible) return;
+          final snapshot = observation.canonical;
+          state = AsyncData(
+            _filter(
+              _withAcp(
+                state.requireValue.copyWith(
+                  acpAuth: snapshot,
+                  directory: _composeDirectory(auth: snapshot),
+                ),
+              ),
+            ),
+          );
+        },
+      );
+    } on StudioFailure catch (error) {
+      if (state.asData == null) return;
+      state = AsyncData(
+        state.requireValue.copyWith(
+          readIssues: {
+            ...state.requireValue.readIssues,
+            AccountsReadField.acpAccounts: error,
+          },
+        ),
+      );
+      return;
+    }
+    unawaited(_synchronizeAcp(lifetime));
+  }
+
+  Future<void> _synchronizeAcp(int lifetime) async {
+    final acp = _acp;
+    if (acp == null) return;
+    try {
+      await acp.synchronize();
+    } on StudioFailure catch (error) {
+      if (!_owns(lifetime)) return;
+      state = AsyncData(
+        state.requireValue.copyWith(
+          readIssues: {
+            ...state.requireValue.readIssues,
+            AccountsReadField.acpAccounts: error,
+          },
+        ),
+      );
+    }
+  }
+
+  /// ACP owner 的可选依赖接缝。
+  ///
+  /// 正式组合根总会装配它；只有只关注 Native 账号的测试装置会省略。因此这里只把
+  /// “未注入”（provider 的 `StateError`）当作 ACP 附加能力缺席，其它错误照常向上抛，
+  /// 不被静默吞掉。
+  AcpAuthRepository? _resolveAcpRepository() {
+    try {
+      return ref.read(acpAuthRepositoryProvider);
+    } on StateError {
+      return null;
+    }
+  }
+
+  void _releaseAcpLease() {
+    _acpLease?.release();
+    _acpLease = null;
   }
 
   void setVisible(bool value) {
     if (!_alive) return;
     if (!value) _detail?.leave();
     _visible = value;
+    // ACP 认证观察是独立的可见需求：只在页面可见时持有自己的租约。
+    if (value) {
+      _acquireAcpLease(_lifetime);
+    } else {
+      _releaseAcpLease();
+    }
     if (value &&
         state.asData?.value.showDetails == true &&
         _detailAccountId == state.requireValue.selectedAccountId) {
@@ -336,6 +512,9 @@ class AccountsViewModel extends _$AccountsViewModel {
     _publish(
       state.requireValue.copyWith(
         selectedAccountId: id,
+        selectedAcpAccountId: null,
+        acpEditor: null,
+        acpNeedsPreparation: false,
         showDetails: true,
         navigationIntent: state.requireValue.navigationIntent + 1,
       ),
@@ -348,7 +527,255 @@ class AccountsViewModel extends _$AccountsViewModel {
     _publish(
       state.requireValue.copyWith(
         showDetails: false,
+        selectedAcpAccountId: null,
+        acpEditor: null,
+        acpNeedsPreparation: false,
         navigationIntent: state.requireValue.navigationIntent + 1,
+      ),
+    );
+  }
+
+  /// 选择一条已保存的 ACP 接入进入详情；与 Native 选择互斥。
+  void selectAcp(String accountId) {
+    if (!_alive) return;
+    final entries =
+        state.requireValue.directory?.acpEntries ??
+        const <AcpAccountEntryView>[];
+    if (!entries.any((entry) => entry.account.accountId == accountId)) return;
+    _endDetail();
+    _publish(
+      state.requireValue.copyWith(
+        selectedAcpAccountId: accountId,
+        selectedAccountId: null,
+        acpEditor: null,
+        acpNeedsPreparation: false,
+        showDetails: true,
+        navigationIntent: state.requireValue.navigationIntent + 1,
+      ),
+    );
+  }
+
+  /// 打开已保存接入的编辑表单。
+  ///
+  /// 模板必须来自后端目录：解析不到时返回 null，由调用方报告模板不可用，不在这里合成
+  /// 受管版本或安装资格。
+  AcpAccountEditorTarget? startAcpEdit(AcpAccountSettings account) {
+    if (!_alive || state.requireValue.editor != null) return null;
+    final template = state.requireValue.directory?.acpEntries
+        .where((entry) => entry.account.accountId == account.accountId)
+        .firstOrNull
+        ?.template;
+    if (template == null) return null;
+    final target = AcpAccountEditTarget(account: account, template: template);
+    _publish(
+      state.requireValue.copyWith(
+        acpEditor: target,
+        selectedAcpAccountId: account.accountId,
+        selectedAccountId: null,
+        showDetails: false,
+        acpNeedsPreparation: _needsPreparation(account.accountId),
+        editorError: null,
+        navigationIntent: state.requireValue.navigationIntent + 1,
+      ),
+    );
+    return target;
+  }
+
+  void closeAcpEditor({String? savedAccountId}) {
+    if (!_alive) return;
+    _publish(
+      state.requireValue.copyWith(
+        acpEditor: null,
+        acpNeedsPreparation: false,
+        selectedAcpAccountId: savedAccountId,
+        selectedAccountId: null,
+        showDetails: savedAccountId != null,
+        navigationIntent: state.requireValue.navigationIntent + 1,
+      ),
+    );
+  }
+
+  /// 该接入的 canonical 认证回执是否明确“需要准备/安装不合格”：只看 typed 失败码。
+  bool _needsPreparation(String accountId) {
+    final entry = state.requireValue.directory?.acpEntries
+        .where((value) => value.account.accountId == accountId)
+        .firstOrNull;
+    final auth = entry?.auth;
+    if (auth is! AcpAuthFailed) return false;
+    return auth.failure.code == AcpAuthFailureCode.preparationRequired ||
+        auth.failure.code == AcpAuthFailureCode.installationInvalid;
+  }
+
+  /// 命令失败通知按目标接入记账：只影响该行/该详情，不跨账号串位。
+  void setAcpNotice(String accountId, AcpCommandNotice notice) {
+    if (!_alive || state.asData == null) return;
+    state = AsyncData(
+      state.requireValue.copyWith(
+        acpNotices: {...state.requireValue.acpNotices, accountId: notice},
+      ),
+    );
+  }
+
+  void clearAcpNotice(String accountId) {
+    if (!_alive || state.asData == null) return;
+    if (!state.requireValue.acpNotices.containsKey(accountId)) return;
+    state = AsyncData(
+      state.requireValue.copyWith(
+        acpNotices: {...state.requireValue.acpNotices}..remove(accountId),
+      ),
+    );
+  }
+
+  /// 保存 ACP 接入后重新读取 canonical 目录并发布；返回该账号的已保存身份。
+  ///
+  /// 只做一次有界读取：配置写入已由保存编排结算，这里用于让列表/详情看到新事实，而不是
+  /// 反向证明保存成功。
+  Future<AcpAccountSettings?> refreshAcpAccounts(String accountId) async {
+    if (!_alive || state.asData == null) return null;
+    // 未装配 ACP owner 的装置里不存在 ACP 账号，也就没有可刷新的事实。
+    if (_acp == null) return null;
+    final lifetime = _lifetime;
+    try {
+      _acpDirectory = await _configuration.loadAcpAccounts();
+    } on StudioFailure catch (error) {
+      if (_owns(lifetime)) {
+        state = AsyncData(
+          state.requireValue.copyWith(
+            readIssues: {
+              ...state.requireValue.readIssues,
+              AccountsReadField.acpAccounts: error,
+            },
+          ),
+        );
+      }
+      return null;
+    }
+    if (!_owns(lifetime)) return null;
+    _publish(state.requireValue);
+    return state.requireValue.directory?.acpEntries
+        .where((entry) => entry.account.accountId == accountId)
+        .firstOrNull
+        ?.account;
+  }
+
+  /// 删除一条 ACP 接入：不注销官方账号、不删除凭据、也不取消共享安装。
+  Future<void> removeAcp(String accountId) async {
+    if (!_alive ||
+        (state.requireValue.acpRemovals[accountId]?.preventsResubmission ??
+            false)) {
+      return;
+    }
+    final entry = state.requireValue.directory?.acpEntries
+        .where((value) => value.account.accountId == accountId)
+        .firstOrNull;
+    final lifetime = _lifetime;
+    final intent = state.requireValue.latestIntent + 1;
+    state = AsyncData(
+      state.requireValue.copyWith(
+        latestIntent: intent,
+        acpRemovals: {
+          ...state.requireValue.acpRemovals,
+          accountId: SettingsAction(intent: intent, pending: true),
+        },
+        acpNotices: {...state.requireValue.acpNotices}..remove(accountId),
+      ),
+    );
+    bool owns() =>
+        _owns(lifetime) &&
+        state.requireValue.acpRemovals[accountId]?.intent == intent;
+    void update(SettingsAction action) {
+      if (!owns()) return;
+      state = AsyncData(
+        state.requireValue.copyWith(
+          acpRemovals: {...state.requireValue.acpRemovals, accountId: action},
+        ),
+      );
+    }
+
+    OperationTicket<Unit> ticket;
+    try {
+      ticket = _configuration.removeAcpAccount(accountId);
+    } on StudioFailure catch (error) {
+      update(
+        SettingsAction(
+          intent: intent,
+          outcome: SettingsActionOutcome.rejected,
+          error: error,
+        ),
+      );
+      _acpRemovalNotice(accountId, entry, error);
+      return;
+    }
+    StudioFailure? observationError;
+    if (owns()) {
+      try {
+        final watch = ticket.state.watchLatest((operation) {
+          if (!owns()) return;
+          update(
+            state.requireValue.acpRemovals[accountId]!.copyWith(
+              operation: operation,
+            ),
+          );
+        });
+        if (owns()) {
+          _removalObservations[accountId]?.cancel();
+          _removalObservations[accountId] = watch.observation;
+        } else {
+          watch.observation.cancel();
+        }
+      } on StudioFailure catch (error) {
+        observationError = error;
+      }
+    }
+    final result = await ticket.result;
+    if (!owns()) return;
+    final action = settledSettingsAction(
+      intent,
+      result,
+      operation: ticket.state.value,
+    ).copyWith(observationError: observationError);
+    update(action);
+    final error = action.error;
+    if (error != null) {
+      _acpRemovalNotice(accountId, entry, error);
+      return;
+    }
+    // 删除已结算：canonical 目录必须重新读取，列表不得继续显示已删除的接入。
+    // 只重新读 Settings 快照，不注销官方账号、不删除凭据，也不取消共享安装。
+    await refreshAcpAccounts(accountId);
+    if (state.asData == null) return;
+    state = AsyncData(
+      state.requireValue.copyWith(
+        acpRemovals: {...state.requireValue.acpRemovals}..remove(accountId),
+        selectedAcpAccountId:
+            state.requireValue.selectedAcpAccountId == accountId
+            ? null
+            : state.requireValue.selectedAcpAccountId,
+        showDetails: state.requireValue.selectedAcpAccountId == accountId
+            ? false
+            : state.requireValue.showDetails,
+        acpNotices: {...state.requireValue.acpNotices}..remove(accountId),
+      ),
+    );
+  }
+
+  void _acpRemovalNotice(
+    String accountId,
+    AcpAccountEntryView? entry,
+    StudioFailure error,
+  ) {
+    if (!_alive || state.asData == null) return;
+    state = AsyncData(
+      state.requireValue.copyWith(
+        acpNotices: {
+          ...state.requireValue.acpNotices,
+          accountId: AcpCommandNotice(
+            kind: AcpCommandNoticeKind.remove,
+            accountId: accountId,
+            connectionRevision: entry?.account.connectionRevision ?? -1,
+            failure: error,
+          ),
+        },
       ),
     );
   }
@@ -401,6 +828,21 @@ class AccountsViewModel extends _$AccountsViewModel {
       unawaited(_page(AccountsReadField.usage, () => _usage.loadRecordsPage()));
       unawaited(_page(AccountsReadField.usageSource, _usage.loadSourceStatus));
     }
+    // ACP 目录与接入模板是独立的具名读取：失败后由显式重试重新取一次。
+    final acp = _acp;
+    if (acp != null &&
+        (_acpDirectory == null ||
+            _acpCatalog == null ||
+            state.requireValue.readIssues.containsKey(
+              AccountsReadField.acpAccounts,
+            ))) {
+      unawaited(
+        _page(AccountsReadField.acpAccounts, () async {
+          _acpCatalog ??= await acp.readCatalog();
+          _acpDirectory = await _configuration.loadAcpAccounts();
+        }),
+      );
+    }
   }
 
   Future<void> loadMore() async {
@@ -447,7 +889,11 @@ class AccountsViewModel extends _$AccountsViewModel {
     );
   }
 
-  Future<void> startCreate() async {
+  /// 从统一“添加账号”入口按 typed 分支创建草稿。
+  ///
+  /// Native 模型账号进入既有编辑器；ACP 接入进入只含显示名的编辑表单，账号 ID 由
+  /// Native+ACP 已占用身份集合推出，保存前不会写入任何账号。
+  Future<void> startCreate(AccountTemplateChoice choice) async {
     if (!_alive || state.requireValue.editor != null) return;
     _endDetail();
     final lifetime = _lifetime;
@@ -458,6 +904,37 @@ class AccountsViewModel extends _$AccountsViewModel {
         editorError: null,
       ),
     );
+    if (choice is AcpAccountTemplateChoice) {
+      final ids = {
+        for (final account in displayCollectionRows(
+          _configuration.state.value.accounts,
+        ))
+          account.accountId,
+        for (final entry
+            in state.requireValue.directory?.acpEntries ??
+                const <AcpAccountEntryView>[])
+          entry.account.accountId,
+      };
+      var id = choice.template.provider.name;
+      for (var index = 2; ids.contains(id); index++) {
+        id = '${choice.template.provider.name}-$index';
+      }
+      _publish(
+        state.requireValue.copyWith(
+          acpEditor: AcpAccountCreateTarget(
+            accountId: id,
+            template: choice.template,
+          ),
+          selectedAcpAccountId: id,
+          selectedAccountId: null,
+          acpNeedsPreparation: false,
+          showDetails: false,
+        ),
+      );
+      return;
+    }
+    if (choice is! NativeAccountTemplateChoice) return;
+    final nativeChoice = choice;
     // A stable human-readable ID is based on the complete current account set,
     // not the visible page. Each await explicitly asks for one bounded page.
     try {
@@ -477,11 +954,13 @@ class AccountsViewModel extends _$AccountsViewModel {
           state.requireValue.navigationIntent != navigation) {
         return;
       }
-      final template = templates.templates.firstOrNull;
+      final template = templates.templates
+          .where((value) => value.id == nativeChoice.template.id)
+          .firstOrNull;
       if (template == null) {
         throw _failure(
-          StudioFailureCode.unavailable,
-          'Account template catalog is unavailable.',
+          StudioFailureCode.notFound,
+          'The chosen account template is unavailable.',
         );
       }
       final ids = displayCollectionRows(_configuration.state.value.accounts)
@@ -499,6 +978,8 @@ class AccountsViewModel extends _$AccountsViewModel {
             editorId: ++_editorId,
             initialTemplateId: template.id,
           ),
+          acpEditor: null,
+          selectedAcpAccountId: null,
           showDetails: false,
         ),
       );
@@ -516,6 +997,9 @@ class AccountsViewModel extends _$AccountsViewModel {
     _publish(
       state.requireValue.copyWith(
         selectedAccountId: id,
+        selectedAcpAccountId: null,
+        acpEditor: null,
+        acpNeedsPreparation: false,
         editorAccountId: id,
         showDetails: false,
         navigationIntent: state.requireValue.navigationIntent + 1,

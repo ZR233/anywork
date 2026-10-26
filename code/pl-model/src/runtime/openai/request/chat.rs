@@ -5,6 +5,7 @@ use serde::Serialize;
 
 use crate::completion::CompletionRequest;
 use crate::model::info::{MaxTokensField, MediaWireFormat, ModelInfo};
+use crate::protocol::InstructionWireRole;
 
 use super::body::ToolFormatBody;
 use super::content::{
@@ -41,11 +42,20 @@ struct ChatStreamOptions {
 }
 
 impl ChatRequestBody {
-    pub(super) fn from_request(request: &CompletionRequest, model: &ModelInfo) -> Result<Self> {
+    pub(super) fn from_request(
+        request: &CompletionRequest,
+        model: &ModelInfo,
+        instruction_role: InstructionWireRole,
+    ) -> Result<Self> {
         let crate::model::ModelProtocolOptions::ChatCompletions(options) =
             &model.binding.request.protocol
         else {
             return Err(protocol_error("Chat request requires Chat options"));
+        };
+        let InstructionWireRole::System = instruction_role else {
+            return Err(protocol_error(
+                "Chat Completions can only send trusted instructions as system",
+            ));
         };
         let mut messages = Vec::new();
         let media_plan = MediaRepresentationPlan::for_request(request, model)?;
@@ -76,9 +86,9 @@ impl ChatRequestBody {
                 }
             };
 
-        if let Some(instructions) = &request.instructions {
+        if let Some(system_prompt) = &request.system_prompt {
             messages.push(ChatMessage::System {
-                content: instructions.clone(),
+                content: system_prompt.content().to_owned(),
             });
         }
 

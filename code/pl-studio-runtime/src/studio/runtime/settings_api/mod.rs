@@ -10,12 +10,14 @@ use pl_protocol::studio::{
     UpdateSettingsFieldRequest,
 };
 
+use crate::PermissionMode;
 use crate::config::{AccountId, ModelRouteConfig, ReasoningEffort};
-use crate::{PermissionMode, StudioRole};
 
 use super::StudioRuntime;
 
 mod account_edit;
+mod acp;
+mod acp_install;
 mod commands;
 mod view;
 
@@ -26,8 +28,35 @@ use view::{normalized_optional, normalized_string_list};
 
 impl StudioRuntime {
     pub(super) fn read_settings_response(&self) -> Result<SettingsStateResponse> {
-        let (state, catalog) = self.config_runtime.read_with_catalog()?;
-        settings_state_response(&state, &catalog)
+        // 同一 Settings command 边界内取得配置与 ACP 投影：不会看到"提交已生效但身份未对齐"的中间态。
+        // 外层是命令边界错误，内层是投影错误；两层都保留为命令错误，不丢弃任何一层。
+        self.config_runtime
+            .with_consistent_snapshot(|state, catalog| {
+                let acp_accounts = self
+                    .acp_auth
+                    .settings_view(state.revision, state.canonical_config())?;
+                settings_state_response(state, catalog, acp_accounts)
+            })
+            .map_err(anyhow::Error::from)
+            .flatten()
+    }
+
+    /// `SettingsConfig` topic 的单域 canonical 快照：与命令回执使用同一投影与同一序列化边界。
+    pub(super) fn read_settings_config_state(
+        &self,
+    ) -> Result<crate::StudioSettingsConfigStateSnapshot> {
+        let projected = self
+            .config_runtime
+            .with_consistent_snapshot(|state, _catalog| {
+                let acp_accounts = self
+                    .acp_auth
+                    .settings_view(state.revision, state.canonical_config())?;
+                settings_config_snapshot(state, acp_accounts)
+            })?;
+        let config = projected?;
+        Ok(crate::StudioSettingsConfigStateSnapshot {
+            state: pl_protocol::ObservedResource::ready(config.revision, config.updated_at, config),
+        })
     }
 
     /// Reads the canonical built-in account and model catalog.
@@ -267,69 +296,50 @@ impl StudioRuntime {
                         account_id,
                         model_id,
                     } => {
-                        let role = StudioRole::from_key(role.trim()).ok_or_else(|| {
-                            pl_protocol::PureError::ConfigError(
-                                "Unsupported model role".to_string(),
-                            )
-                        })?;
-                        if role == StudioRole::Planner {
+                        let role_key = role.trim();
+                        if role_key == crate::config::ROOT_AGENT_ROUTE_KEY {
                             return Err(pl_protocol::PureError::ConfigError(
                                 "planner is a root identity, not a configurable child model role"
                                     .to_string(),
                             ));
                         }
-                        let effort = config
-                            .models
-                            .routes
-                            .get(&role.id())
-                            .filter(|route| {
-                                route.account_id.as_str() == account_id.trim()
-                                    && route.model_id == model_id.trim()
-                            })
-                            .and_then(|route| route.effort.as_ref().map(|value| value.as_str()));
+                        let role_id = crate::AgentRoleId::new(role_key.to_string())?;
+                        let current =
+                            crate::config::effective_system_profile_route(&config, role_key)?;
+                        let effort = (current.account_id.as_str() == account_id.trim()
+                            && current.model_id == model_id.trim())
+                        .then(|| current.effort.as_ref().map(|value| value.as_str()))
+                        .flatten();
                         let route = validated_route(
                             route_validation_config,
-                            &format!("role {}", role.key()),
+                            &format!("role {role_key}"),
                             &account_id,
                             &model_id,
                             effort,
                         )
                         .map_err(|error| pl_protocol::PureError::ConfigError(error.to_string()))?;
-                        config.models.routes.insert(role.id(), route);
+                        config.models.routes.insert(role_id, route);
                     }
                     SettingsFieldUpdate::RoleReasoningEffort { role, effort } => {
-                        let role = StudioRole::from_key(role.trim()).ok_or_else(|| {
-                            pl_protocol::PureError::ConfigError(
-                                "Unsupported model role".to_string(),
-                            )
-                        })?;
-                        if role == StudioRole::Planner {
+                        let role_key = role.trim();
+                        if role_key == crate::config::ROOT_AGENT_ROUTE_KEY {
                             return Err(pl_protocol::PureError::ConfigError(
                                 "planner is a root identity, not a configurable child model role"
                                     .to_string(),
                             ));
                         }
+                        let role_id = crate::AgentRoleId::new(role_key.to_string())?;
                         let current =
-                            config
-                                .models
-                                .routes
-                                .get(&role.id())
-                                .cloned()
-                                .ok_or_else(|| {
-                                    pl_protocol::PureError::ConfigError(format!(
-                                        "role {} has no model route",
-                                        role.key()
-                                    ))
-                                })?;
+                            crate::config::effective_system_profile_route(&config, role_key)?;
                         let route = validated_route(
                             route_validation_config,
-                            &format!("role {}", role.key()),
+                            &format!("role {role_key}"),
                             current.account_id.as_str(),
                             &current.model_id,
                             effort.as_deref(),
                         )
                         .map_err(|error| pl_protocol::PureError::ConfigError(error.to_string()))?;
-                        config.models.routes.insert(role.id(), route);
+                        config.models.routes.insert(role_id, route);
                     }
                 }
                 config.validate_declarations()?;
@@ -378,7 +388,17 @@ impl StudioRuntime {
     pub async fn reload_settings(&self, expected_revision: u64) -> Result<SettingsStateResponse> {
         let reloaded = self.config_runtime.reload_from_disk(expected_revision)?;
         self.configuration_reload_followup().await?;
-        settings_state_response(&reloaded.evidence.configuration, &reloaded.evidence.catalog)
+        // 重载提交已在同一 command 边界内同步通知身份 owner，因此这里读到的 ACP 投影属于
+        // 同一个 canonical revision；两者都必须出现在返回的 Settings 快照里。
+        let acp_accounts = self.acp_auth.settings_view(
+            reloaded.evidence.configuration.revision,
+            reloaded.evidence.configuration.canonical_config(),
+        )?;
+        settings_state_response(
+            &reloaded.evidence.configuration,
+            &reloaded.evidence.catalog,
+            acp_accounts,
+        )
     }
 
     pub(super) fn commit_account(
@@ -651,7 +671,7 @@ impl StudioRuntime {
         let route = settings
             .config
             .models
-            .resolve_route(StudioRole::Planner.id(), &selector)?;
+            .resolve_route(crate::config::root_agent_route_id(), &selector)?;
 
         Self::validate_model_media(&state, &route.model, &[])?;
         pl_model::runtime::ThreadModel::new(

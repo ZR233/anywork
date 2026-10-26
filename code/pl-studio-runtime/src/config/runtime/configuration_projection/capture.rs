@@ -6,25 +6,42 @@ use pl_protocol::products::configuration::{
     AccountConfiguration, ConfigurationValue, DeepSeekSearchConfiguration, WebSearchConfiguration,
 };
 use pl_protocol::studio::{
-    StudioCustomModelSettings, StudioGeneralSettings, StudioInstructionsSettings,
-    StudioMcpServerConfiguration, StudioMcpServerSettings, StudioModeModelSettings,
-    StudioModelAutoCompactSettings, StudioModelConnectionSettings, StudioRoleSettings,
-    StudioSkillsSettings,
+    AcpAccountSettings, StudioCustomModelSettings, StudioError, StudioErrorCode,
+    StudioGeneralSettings, StudioInstructionsSettings, StudioMcpServerConfiguration,
+    StudioMcpServerSettings, StudioModeModelSettings, StudioModelAutoCompactSettings,
+    StudioModelConnectionSettings, StudioRoleSettings, StudioSkillsSettings,
 };
+use std::sync::Arc;
 
 use crate::ConfigRuntimeSnapshot;
 
 /// Read canonical desired fields directly. No Settings serialization, credentials or live handles
 /// cross this boundary; only the credential-presence decision is retained.
-pub(super) fn capture(snapshot: &ConfigRuntimeSnapshot) -> Result<ConfigurationValue> {
+pub(super) fn capture(
+    snapshot: &ConfigRuntimeSnapshot,
+    acp_accounts: std::result::Result<Arc<[AcpAccountSettings]>, Arc<StudioError>>,
+) -> Result<ConfigurationValue> {
     let config = snapshot.canonical_config();
+    let acp_accounts = acp_accounts.map_err(|error| anyhow::Error::new(error.as_ref().clone()))?;
+    // 目录捕获值必须与同一 Settings 版本的接入集合逐项一致；不一致是协议失败，不能补齐。
+    if acp_accounts.len() != config.acp.accounts.len()
+        || acp_accounts
+            .iter()
+            .zip(config.acp.accounts.keys())
+            .any(|(row, account_id)| &row.account_id != account_id)
+    {
+        return Err(anyhow::Error::new(StudioError::new(
+            StudioErrorCode::Protocol,
+            "ACP directory projection does not cover the committed Settings accounts",
+            false,
+        )));
+    }
     let accounts = config
         .models
         .accounts
         .iter()
         .map(|(id, account)| {
             Ok(AccountConfiguration {
-                pricing_enabled: account.pricing_mode == pl_protocol::PricingMode::Catalog,
                 billing_kind: account.billing_kind()?,
                 billing_kind_override: account.billing_kind,
                 disabled_models: account.disabled_models().iter().cloned().collect(),
@@ -69,6 +86,7 @@ pub(super) fn capture(snapshot: &ConfigRuntimeSnapshot) -> Result<ConfigurationV
             .get(&pl_protocol::ThreadModeId::simple())
             .map(|route| route.account_id.to_string()),
         accounts,
+        acp_accounts: acp_accounts.to_vec(),
         mode_model_routes: config
             .mode_model_routes
             .iter()

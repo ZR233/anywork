@@ -703,8 +703,9 @@ class AccountModelLimitsViewModel extends _$AccountModelLimitsViewModel
           protocol: const FieldEdit.keep(),
           name: const FieldEdit.keep(),
           baseUrl: const FieldEdit.keep(),
-          pricingEnabled: const FieldEdit.keep(),
           secret: const AccountSecretUpdate.preserve(),
+          // 编辑路径不提交初始计费类别：改写计费只经 setAccountBillingKind 窄命令。
+          initialBillingKind: null,
           customModels: [],
           connections: [],
           autoCompactLimits: [

@@ -84,6 +84,10 @@ final class DraftAdmissionPort implements AttachmentAdmissionPort {
   final begins = DraftCalls<DraftAdmissionBegin>();
   final finds = DraftCalls<DraftLookup<AttachmentAdmissionJob>>();
   final removals = DraftCalls<DraftRemove>();
+
+  /// Optional environment notification fired synchronously when the native
+  /// removal is requested; it never replaces the recorded call or any cleanup.
+  void Function(String draftId)? onRemove;
   @override
   Future<AttachmentAdmissionJob> begin(
     OperationId id,
@@ -106,6 +110,7 @@ final class DraftAdmissionPort implements AttachmentAdmissionPort {
   Future<bool> remove(String draftId) {
     final call = DraftRemove(draftId);
     removals.add(call);
+    onRemove?.call(draftId);
     return call.reply.future;
   }
 }
@@ -314,6 +319,7 @@ final class DraftBinaryPin implements AttachmentBinaryRead {
 
   @override
   void requestClose() => requests++;
+
   @override
   Future<FeedCloseReport> close() => _close(false);
   @override

@@ -253,6 +253,7 @@ fn reject(
         expected_path: None,
         expected_kind: "delegation".into(),
         expected_prompt: None,
+        actual_prompt: None,
         expected_step: None,
         actual_prompt_present: false,
         prompt_matches_expected: false,
@@ -308,6 +309,10 @@ pub(super) async fn responses(
     let result = async {
         ensure!(!credential_present, "synthetic credential-free endpoints must not receive Authorization");
         ensure!(path == "/v1/delegation-a/responses" || path == "/v1/delegation-b/responses", "account endpoint identity was lost");
+        ensure!(
+            body.get("instructions").is_none(),
+            "Responses request must not re-open the reserved top-level `instructions` channel"
+        );
         let request = parsed?;
         if let Some(expected) = request.expected_completion()? {
             ensure!(request.model == expected.model_id && path == format!("/v1/delegation-{}/responses", expected.endpoint_alias), "actual child completion endpoint/model differs from selected frozen route");
@@ -442,7 +447,7 @@ fn record(
             .into_iter()
             .filter(|label| {
                 request
-                    .instructions
+                    .system_instructions()
                     .contains(&format!("自动分发偏好：{label}。"))
             })
             .map(str::to_owned)
@@ -476,6 +481,7 @@ fn record(
             expected_path: None,
             expected_kind: "delegation".into(),
             expected_prompt: None,
+            actual_prompt: None,
             expected_step: None,
             actual_prompt_present: true,
             prompt_matches_expected: accepted,

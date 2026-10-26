@@ -167,6 +167,19 @@ impl BridgeConfigurationReadConnection {
             .await?
             .into())
     }
+    /// 原 Configuration scope 的 ACP 目录分页；连接代次由捕获材料给出，不在适配层推导。
+    pub async fn acp_accounts(
+        &self,
+        list_id: u64,
+        offset: u64,
+        limit: u32,
+    ) -> Result<BridgeAcpAccountConfigurationReadPage, BridgeError> {
+        Ok(self
+            .read
+            .query(move |source| source.acp_accounts(list_id, offset, limit))?
+            .await?
+            .into())
+    }
     pub async fn custom_models(
         &self,
         list_id: u64,

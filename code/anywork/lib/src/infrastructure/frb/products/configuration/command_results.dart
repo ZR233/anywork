@@ -2,6 +2,8 @@ import 'package:anywork_client/configuration_ports.dart';
 import 'package:anywork_client/operations_ports.dart';
 import 'package:anywork_client/resources.dart';
 
+import '../../../../rust/api/studio/products/read/configuration_acp_commands.dart'
+    as acp;
 import '../../../../rust/api/studio/products/read/configuration_commands.dart'
     as native;
 import '../../../../rust/api/studio/products/read/profile_commands.dart'
@@ -71,6 +73,55 @@ ConfigurationCommandReply configurationOutcomeFromBridge(
   ) =>
     _unknown(operationId, operation, error),
 };
+
+/// ACP 提交只携带真实 Settings 回执与本次提交捕获的配置读取目标。
+///
+/// 提交后的目标映射失败保留真实回执（`committedButUnobserved`），回执本身不可用则是
+/// `confirmedWithoutUsableReceipt`；只有原生 typed `Rejected` 才是拒绝，普通调用异常由
+/// 调用方归为 `unknownOutcome`（design 25.19.4）。
+AcpAccountCommandReply acpAccountOutcomeFromBridge(
+  acp.BridgeAcpAccountCommandOutcome value,
+  OperationId operation,
+) => switch (value) {
+  acp.BridgeAcpAccountCommandOutcome_Committed(:final reply) =>
+    _acpAccountReply(reply, operation),
+  acp.BridgeAcpAccountCommandOutcome_CommittedButUnobserved(
+    :final receipt,
+    :final error,
+  ) =>
+    throw CommandDispatchFailure.committedButUnobserved(
+      receipt: _confirmedReceipt(receipt, operation),
+      failure: configurationCallFailure(error),
+    ),
+  acp.BridgeAcpAccountCommandOutcome_Rejected(
+    :final operationId,
+    :final error,
+  ) =>
+    _rejected(operationId, operation, error),
+  acp.BridgeAcpAccountCommandOutcome_Unknown(
+    :final operationId,
+    :final error,
+  ) =>
+    _unknown(operationId, operation, error),
+};
+
+AcpAccountCommandReply _acpAccountReply(
+  acp.BridgeAcpAccountCommandReply value,
+  OperationId operation,
+) {
+  final receipt = _confirmedReceipt(value.receipt, operation);
+  try {
+    return AcpAccountCommandReply(
+      receipt: receipt,
+      configuration: configurationTargetFromBridge(value.configuration),
+    );
+  } on Object catch (error) {
+    throw CommandDispatchFailure.committedButUnobserved(
+      receipt: receipt,
+      failure: configurationCallFailure(error),
+    );
+  }
+}
 
 ProfileCommandReply _profileReply(
   profile.BridgeProfileCommandReply value,

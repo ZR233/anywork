@@ -198,6 +198,8 @@ enum BridgeProductResource {
   persistenceQueue,
   updates,
   bots,
+  acpAuth,
+  acpInstall,
 }
 
 enum BridgeProductResyncReason { sourceLagged, reliableQueueFull, revisionGap }

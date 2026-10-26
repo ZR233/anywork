@@ -120,7 +120,7 @@ async fn observe(
         .and_then(|p| p.candidates.first())
         .cloned();
     let runtime = ModelRuntime::new_with_account_id(account_id, account.to_endpoint()?, model)?
-        .with_pricing_mode(account.pricing_mode);
+        .with_pricing_mode(account.billing_kind()?.into());
     let session = ModelSession::default();
     let (tx, mut rx) = tokio::sync::broadcast::channel(4096);
     let events_path = artifacts.join("events.jsonl");

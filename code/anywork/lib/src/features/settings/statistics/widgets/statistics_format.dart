@@ -1,4 +1,4 @@
-import 'package:anywork_client/account_usage.dart';
+import 'package:anywork_client/statistics.dart';
 import 'package:flutter/material.dart';
 
 import '../../../../l10n/studio_l10n.dart';

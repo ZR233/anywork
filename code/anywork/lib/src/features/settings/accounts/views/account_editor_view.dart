@@ -22,13 +22,14 @@ class AccountEditorView extends StatelessWidget {
     required this.onTemplate,
     required this.onName,
     required this.onBaseUrl,
-    required this.onPricing,
     required this.onSecret,
     required this.onSecretIntent,
+    required this.onNoCharge,
     required this.onAddModel,
     required this.onModel,
     required this.onRemoveModel,
     required this.onConnection,
+    this.billingError,
     super.key,
   });
   final AccountEditorViewState state;
@@ -38,9 +39,15 @@ class AccountEditorView extends StatelessWidget {
   final ValueChanged<String> onTemplate;
   final ValueChanged<String> onName;
   final ValueChanged<String> onBaseUrl;
-  final ValueChanged<bool> onPricing;
   final ValueChanged<String> onSecret;
   final ValueChanged<AccountSecretIntent> onSecretIntent;
+
+  /// 免计费开关意图：新建写草稿，编辑提交 canonical 窄命令。
+  final ValueChanged<bool> onNoCharge;
+
+  /// 编辑模式下计费命令失败的本地化说明（就地显示在开关下面）。
+  final String? billingError;
+
   final VoidCallback onAddModel;
   final void Function(int rowId, CustomModelField field, String raw) onModel;
   final ValueChanged<int> onRemoveModel;
@@ -186,13 +193,35 @@ class AccountEditorView extends StatelessWidget {
                   ),
                 ],
               ),
-              SwitchListTile(
-                key: StudioDriverKeys.accountPricing,
-                title: Text(context.l10n.settingsPricingEnabled),
-                subtitle: Text(context.l10n.settingsPricingHelp),
-                value: state.pricingEnabled,
-                onChanged: editable ? onPricing : null,
+              // 免计费（noCharge）：与主线同控件/位置/文案/键。
+              // 新建是表单草稿（随保存提交 initialBillingKind）；编辑是 canonical 窄命令，
+              // 只读 canonical 类别，未触碰开关不会清掉显式 metered/subscription 覆盖。
+              const SizedBox(height: 12),
+              Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  SwitchListTile(
+                    key: StudioDriverKeys.accountNoCharge,
+                    title: Text(context.l10n.settingsNoCharge),
+                    subtitle: Text(context.l10n.settingsNoChargeHelp),
+                    value: state.create
+                        ? state.initialBillingKind == BillingKind.noCharge
+                        : state.canonical?.billingKind == BillingKind.noCharge,
+                    onChanged:
+                        editable &&
+                            !(state.billingAction?.preventsResubmission ??
+                                false)
+                        ? (enabled) => onNoCharge(enabled)
+                        : null,
+                  ),
+                  if (!state.create && state.billingAction?.pending == true)
+                    Text(context.l10n.settingsModelSaving),
+                  if (!state.create)
+                    if (billingError case final message?)
+                      SettingsInlineError(message: message),
+                ],
               ),
+              const SizedBox(height: 12),
               for (final origin in [ModelOrigin.online, ModelOrigin.bundled])
                 SettingsSection(
                   title: origin == ModelOrigin.online

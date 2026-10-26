@@ -40,7 +40,7 @@ final class ShellChromeViewModelProvider
 }
 
 String _$shellChromeViewModelHash() =>
-    r'876bae8311c5f6448f4208fe8c7dfad7dd268e59';
+    r'7d808d825ed70b19cce5b3616f7e3eba0191a52d';
 
 /// Chrome owns only read demands. It cannot select/open a Thread, stop a Turn,
 /// submit a draft, save preferences, or close an application-owned Session.

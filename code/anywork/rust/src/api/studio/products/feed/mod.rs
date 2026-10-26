@@ -1,5 +1,9 @@
 pub mod account_templates;
 pub mod account_usage;
+pub mod acp_auth;
+pub mod acp_auth_transport;
+pub mod acp_install;
+pub mod acp_install_transport;
 pub mod agent_directory;
 pub mod agent_directory_transport;
 pub mod agent_profiles;

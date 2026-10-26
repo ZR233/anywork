@@ -26,7 +26,9 @@ ModelDescriptor selectorModel({String id = 'model', String name = 'Model'}) =>
     ModelDescriptor(
       modelId: id,
       enabled: true,
-      typeSupport: [ModelTypeSupport(modelType: ModelType.text, exclusions: [])],
+      typeSupport: [
+        ModelTypeSupport(modelType: ModelType.text, exclusions: []),
+      ],
       origin: ModelOrigin.manual,
       displayName: name,
       description: null,

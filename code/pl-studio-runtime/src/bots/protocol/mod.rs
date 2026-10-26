@@ -6,6 +6,7 @@
 //! 本模块只适配所需接口，不复制整个 SDK。
 
 pub(crate) mod addons;
+pub(crate) mod cardkit;
 pub(crate) mod endpoint;
 pub(crate) mod error;
 pub(crate) mod frame;

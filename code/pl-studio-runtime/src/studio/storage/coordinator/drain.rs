@@ -3,7 +3,37 @@
 use std::sync::Arc;
 
 use super::{ThreadPersistenceCoordinator, ThreadPersistenceMetrics, WriterState};
+use super::WriterTaskFailure;
 use crate::studio::storage::thread_writer::HistoryChannel;
+
+/// Every writer task that ended abnormally, as this layer's own typed reason.
+///
+/// `wait_for_writers_end` returns it instead of reporting success: a drained queue followed by a
+/// panicking worker or helper is a failure of the close, not a clean end. All of them are kept —
+/// reporting only the first would hide another incarnation's real failure.
+#[derive(Debug)]
+pub(crate) struct WriterTasksEndFailure(Vec<Arc<WriterTaskFailure>>);
+
+impl std::fmt::Display for WriterTasksEndFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "{} writer task(s) did not end normally: {}",
+            self.0.len(),
+            self.0
+                .first()
+                .map_or_else(String::new, |failure| failure.to_string())
+        )
+    }
+}
+
+impl std::error::Error for WriterTasksEndFailure {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.0
+            .first()
+            .map(|failure| failure.as_ref() as &(dyn std::error::Error + 'static))
+    }
+}
 
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum ThreadPersistenceDrainFailure {
@@ -49,6 +79,73 @@ pub(crate) struct ThreadPersistenceDrainIssue {
 }
 
 impl ThreadPersistenceCoordinator {
+    /// Waits until the writer tasks of `thread_id` — or of every Thread — really ended.
+    ///
+    /// This is deliberately *not* part of [`Self::wait_for_drain`]. A drained queue only means the
+    /// admitted facts are durable; it says nothing about the writer task, its helpers, or the
+    /// history connections they hold. Keeping the two apart is what lets a running process flush
+    /// without waiting for writers that are still legitimately alive.
+    ///
+    /// The registered task completions are awaited here instead of trusting the incarnation row: if
+    /// the task that would have observed them died, this waiter still drives their real end and
+    /// finishes the incarnation itself, so "stopped" can never be reported for tasks that are still
+    /// running.
+    pub(crate) async fn wait_for_writers_end(&self, thread_id: Option<&str>) -> anyhow::Result<()> {
+        let mut progress = self.subscribe();
+        loop {
+            // Mark the snapshot seen before reading canonical state, exactly like `wait_for_drain`:
+            // an end published after this read always leaves a wake behind.
+            let _ = progress.borrow_and_update().clone();
+            let (live, running) = {
+                let threads = self
+                    .0
+                    .threads
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let selected = threads.iter().filter(|(id, _)| match thread_id {
+                    Some(thread_id) => id.as_str() == thread_id,
+                    None => true,
+                });
+                let mut live = 0_usize;
+                let mut running = Vec::new();
+                for (id, status) in selected {
+                    for (owner, incarnation) in &status.incarnations {
+                        if !incarnation.is_live() {
+                            continue;
+                }
+                        live += 1;
+                        if let Some(tasks) = &incarnation.tasks {
+                            running.push((id.clone(), *owner, tasks.clone()));
+            }
+        }
+    }
+                (live, running)
+            };
+            if live == 0 {
+                // The tasks really ended — but a queue that drained and a task that ended are two
+                // different facts. The canonical rows are read here (not a value this wait happened
+                // to observe), so an incarnation that stopped before this wait started still fails
+                // the close, every time it is asked.
+                let failures = self.task_end_failures(thread_id);
+                return match failures.is_empty() {
+                    true => Ok(()),
+                    false => Err(anyhow::Error::new(WriterTasksEndFailure(failures))),
+                };
+            }
+            if !running.is_empty() {
+                for (id, owner, tasks) in running {
+                    let outcome = tasks.join().await;
+                    self.finish_incarnation(&id, owner, outcome);
+            }
+                continue;
+            }
+            progress
+                .changed()
+                .await
+                .map_err(ThreadPersistenceDrainFailure::ProgressClosed)?;
+        }
+    }
+
     pub(crate) async fn wait_for_drain(&self) -> anyhow::Result<()> {
         let mut progress = self.subscribe();
         loop {

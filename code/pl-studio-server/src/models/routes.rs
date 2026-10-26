@@ -18,53 +18,39 @@ use utoipa_axum::{router::OpenApiRouter, routes};
 pub(crate) fn router() -> OpenApiRouter<AppState> {
     OpenApiRouter::new()
         .routes(routes!(events))
-        .routes(routes!(
-            control::ack,
-            control::request_close,
-            control::close,
-            control::retry_close
-        ))
-        .routes(routes!(
-            control::request_read_close,
-            control::read_close,
-            control::retry_read_close
-        ))
-        .routes(routes!(
-            read::open_catalog,
-            read::open_status,
-            read::open_delegation
-        ))
-        .routes(routes!(
-            read::catalog_header,
-            read::entries,
-            read::entity,
-            read::lookup_account
-        ))
-        .routes(routes!(
-            read::accounts,
-            read::models,
-            read::effort_after_model_selection,
-            read::first_text_model
-        ))
-        .routes(routes!(
-            read::text,
-            read::strings,
-            read::type_support,
-            read::type_exclusions,
-            read::connection_modes
-        ))
-        .routes(routes!(
-            read::input_capabilities,
-            read::input_sources,
-            read::modalities,
-            read::price_tiers
-        ))
-        .routes(routes!(
-            read::source_header,
-            read::delegation_header,
-            read::selection_sources,
-            read::evaluations
-        ))
+        // 每个 handler 各自声明自己的 path/method：`routes!` 只产生一个 MethodRouter，
+        // 多个同 method 的 handler 放进同一次调用会在装配期重复登记 POST。
+        .routes(routes!(control::ack))
+        .routes(routes!(control::request_close))
+        .routes(routes!(control::close))
+        .routes(routes!(control::retry_close))
+        .routes(routes!(control::request_read_close))
+        .routes(routes!(control::read_close))
+        .routes(routes!(control::retry_read_close))
+        .routes(routes!(read::open_catalog))
+        .routes(routes!(read::open_status))
+        .routes(routes!(read::open_delegation))
+        .routes(routes!(read::catalog_header))
+        .routes(routes!(read::entries))
+        .routes(routes!(read::entity))
+        .routes(routes!(read::lookup_account))
+        .routes(routes!(read::accounts))
+        .routes(routes!(read::models))
+        .routes(routes!(read::effort_after_model_selection))
+        .routes(routes!(read::first_text_model))
+        .routes(routes!(read::text))
+        .routes(routes!(read::strings))
+        .routes(routes!(read::type_support))
+        .routes(routes!(read::type_exclusions))
+        .routes(routes!(read::connection_modes))
+        .routes(routes!(read::input_capabilities))
+        .routes(routes!(read::input_sources))
+        .routes(routes!(read::modalities))
+        .routes(routes!(read::price_tiers))
+        .routes(routes!(read::source_header))
+        .routes(routes!(read::delegation_header))
+        .routes(routes!(read::selection_sources))
+        .routes(routes!(read::evaluations))
 }
 struct NoReplay;
 impl FromRequestParts<AppState> for NoReplay {

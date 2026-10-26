@@ -487,9 +487,52 @@ abstract class _DraftArchive implements WorkspaceArchiveCapture, ResourceOwner {
   Future<CloseReport> retryCleanup({DateTime? deadline}) =>
       observe(deadline, retry: true);
 
+  bool get _settled => _released || _confirmation != null;
+
+  /// Work that becomes eligible only with the original archive decision or an
+  /// explicit release. It owns no dependency on a sibling metadata/native close
+  /// join, so a decision arriving while such a join is still pending starts this
+  /// work immediately instead of waiting behind unrelated records.
+  List<Future<void>> _settledWork({required bool retry}) => [
+    if (_settled) ...[
+      // Preserve detach-before-sibling-cleanup ordering and the original
+      // stamp/generation/ref guards.
+      for (final entry in _selected) _detach(entry, retry: retry),
+      for (final entry in _selected)
+        for (final work in entry.work)
+          if (work.archiveCleanupEligible) work.cleanup(retry: retry),
+      for (final entry in entries)
+        for (final route in List.of(entry.preparing))
+          route.then<void>((_) {}, onError: (Object _, StackTrace __) {}),
+    ],
+  ];
+
+  void _startSettledWork({required bool retry}) {
+    final work = _settledWork(retry: retry);
+    if (work.isEmpty) return;
+    Future.wait(work)
+        .then<void>(
+          (_) {},
+          onError: (Object error, StackTrace stack) {
+            repo.remember(error, stack);
+            _cleanupFailure = resourceCleanupIssue(
+              error,
+              CleanupRecovery.retryClose,
+            );
+          },
+        )
+        .ignore();
+  }
+
   @override
   Future<void> cleanup({required bool retry}) {
-    if (_cleaning case final pending?) return pending;
+    if (_cleaning case final pending?) {
+      // The decision can arrive while an original metadata read or native close
+      // is still pending. Join that work, but never hold the already eligible
+      // detach/cleanup behind it.
+      _startSettledWork(retry: retry);
+      return pending;
+    }
     if (released) return Future<void>.value();
     final done = Completer<void>();
     _cleaning = done.future;
@@ -508,28 +551,12 @@ abstract class _DraftArchive implements WorkspaceArchiveCapture, ResourceOwner {
               onError: (Object _, StackTrace __) {},
             );
           }
-          final settled = _released || _confirmation != null;
           await Future.wait([
-            // Start detach before metadata callbacks, preserving reentrant capture
-            // identity and the original stamp/generation/ref guards.
-            if (settled)
-              for (final entry in _selected) _detach(entry, retry: retryPass),
+            ..._settledWork(retry: retryPass),
             if (_prepareDone || _released)
               for (final entry in entries)
                 if (entry.metadata != null)
                   _cleanupMetadata(entry, retry: retryPass),
-            if (settled)
-              for (final entry in _selected)
-                for (final work in entry.work)
-                  if (work.archiveCleanupEligible)
-                    work.cleanup(retry: retryPass),
-            if (settled)
-              for (final entry in entries)
-                for (final route in List.of(entry.preparing))
-                  route.then<void>(
-                    (_) {},
-                    onError: (Object _, StackTrace __) {},
-                  ),
           ]);
           changed = revision != _revision;
           retryPass = false;

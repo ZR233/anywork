@@ -11,6 +11,7 @@ BillingKind configurationBillingFromBridge(native.BridgeBillingKind value) =>
     switch (value) {
       native.BridgeBillingKind.metered => BillingKind.metered,
       native.BridgeBillingKind.subscription => BillingKind.subscription,
+      native.BridgeBillingKind.noCharge => BillingKind.noCharge,
       native.BridgeBillingKind.unknown => BillingKind.unknown,
     };
 
@@ -18,6 +19,7 @@ native.BridgeBillingKind configurationBillingToBridge(BillingKind value) =>
     switch (value) {
       BillingKind.metered => native.BridgeBillingKind.metered,
       BillingKind.subscription => native.BridgeBillingKind.subscription,
+      BillingKind.noCharge => native.BridgeBillingKind.noCharge,
       BillingKind.unknown => native.BridgeBillingKind.unknown,
     };
 

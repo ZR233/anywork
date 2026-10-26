@@ -240,7 +240,7 @@ impl Owner {
                     && self.cold_error.is_none()
                     && !self.cold.as_ref().is_some_and(|store| {
                         let pressure = store.pressure(&self.id);
-                        pressure.thread_bytes > 0 || pressure.error.is_some()
+                        pressure.has_uncommitted_work || pressure.error.is_some()
                     });
                 if idle {
                     self.interrupt.begin_close();

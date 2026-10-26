@@ -21,6 +21,7 @@ class ComposerView extends StatelessWidget {
     this.onSend,
     this.onAddLocal,
     this.onAddUrl,
+    this.attachmentState,
     this.onRemove,
     this.onOpenAttachment,
     this.attachmentCard,
@@ -50,6 +51,7 @@ class ComposerView extends StatelessWidget {
   final ConversationStopState? stopState;
   final VoidCallback? onAddLocal;
   final VoidCallback? onAddUrl;
+  final ComposerAttachmentState? attachmentState;
   final ValueChanged<String>? onRemove;
   final ValueChanged<String>? onOpenAttachment;
 
@@ -71,6 +73,7 @@ class ComposerView extends StatelessWidget {
         ? null
         : value.error?.message ??
               value.platformError?.message ??
+              attachmentState?.error?.message ??
               value.inputIssue?.message;
     final submissionFailure = value?.submissionFailure;
     return SafeArea(
@@ -153,6 +156,8 @@ class ComposerView extends StatelessWidget {
                   children: [
                     _AttachmentMenu(
                       enabled: enabled,
+                      local: attachmentState?.local.isNotEmpty == true,
+                      remote: attachmentState?.remote.isNotEmpty == true,
                       onPickLocal: onAddLocal,
                       onAddUrl: onAddUrl,
                     ),
@@ -224,11 +229,15 @@ class ComposerView extends StatelessWidget {
 class _AttachmentMenu extends StatefulWidget {
   const _AttachmentMenu({
     required this.enabled,
+    required this.local,
+    required this.remote,
     required this.onPickLocal,
     required this.onAddUrl,
   });
 
   final bool enabled;
+  final bool local;
+  final bool remote;
   final VoidCallback? onPickLocal;
   final VoidCallback? onAddUrl;
 
@@ -241,33 +250,38 @@ class _AttachmentMenuState extends State<_AttachmentMenu> {
 
   @override
   Widget build(BuildContext context) {
+    final hasAny = widget.local || widget.remote;
     return MenuAnchor(
       key: StudioDriverKeys.attachmentEntry,
       controller: _controller,
       alignmentOffset: const Offset(6, 6),
       menuChildren: [
-        MenuItemButton(
-          key: StudioDriverKeys.attachmentLocal,
-          overflowAxis: Axis.vertical,
-          onPressed: widget.enabled ? widget.onPickLocal : null,
-          child: ListTile(
-            leading: const Icon(Icons.folder_open_outlined),
-            title: Text(context.l10n.composerAttachmentPickLocal),
+        if (widget.local)
+          MenuItemButton(
+            key: StudioDriverKeys.attachmentLocal,
+            overflowAxis: Axis.vertical,
+            onPressed: widget.enabled ? widget.onPickLocal : null,
+            child: ListTile(
+              leading: const Icon(Icons.folder_open_outlined),
+              title: Text(context.l10n.composerAttachmentPickLocal),
+            ),
           ),
-        ),
-        MenuItemButton(
-          key: StudioDriverKeys.attachmentUrl,
-          overflowAxis: Axis.vertical,
-          onPressed: widget.enabled ? widget.onAddUrl : null,
-          child: ListTile(
-            leading: const Icon(Icons.link),
-            title: Text(context.l10n.composerAddUrlTitle),
+        if (widget.remote)
+          MenuItemButton(
+            key: StudioDriverKeys.attachmentUrl,
+            overflowAxis: Axis.vertical,
+            onPressed: widget.enabled ? widget.onAddUrl : null,
+            child: ListTile(
+              leading: const Icon(Icons.link),
+              title: Text(context.l10n.composerAddUrlTitle),
+            ),
           ),
-        ),
       ],
       child: IconButton(
-        tooltip: context.l10n.composerAttachmentAddTooltip,
-        onPressed: widget.enabled
+        tooltip: hasAny
+            ? context.l10n.composerAttachmentAddTooltip
+            : context.l10n.composerAttachmentUnsupportedTooltip,
+        onPressed: widget.enabled && hasAny
             ? () {
                 if (_controller.isOpen) {
                   _controller.close();

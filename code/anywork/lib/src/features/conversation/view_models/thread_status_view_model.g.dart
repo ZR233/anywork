@@ -52,7 +52,7 @@ final class ThreadStatusViewModelProvider
 }
 
 String _$threadStatusViewModelHash() =>
-    r'3bdac486f09b3765c15b981373afa279afdadd2d';
+    r'2e76cc504df38c5f9a5109bbb33a7b73fb41dcbb';
 
 final class ThreadStatusViewModelFamily extends $Family
     with

@@ -727,7 +727,11 @@ final class ConversationSessionOwner extends ConversationScopeAccess {
       close: [
         if (current)
           () => _feeds.retireUi(
-            retainExecution: _executionDemand,
+            // An admitted operation lease owns its execution source until it
+            // releases it; opening it was only one step of that ownership. An
+            // archive retirement therefore must never close the source an
+            // operation still reads its Turns from.
+            retainExecution: _evidence.isNotEmpty,
             deadline: deadline,
             retry: retry,
           ),
@@ -1060,6 +1064,12 @@ class _ExecutionEvidenceOwner {
     unawaited(
       Future<void>.sync(() async {
         requestCloseTurnReads();
+        // Joining an already-opened evidence handle must never wait for the
+        // handoff that this same close joins: a pending header read would
+        // otherwise keep its own native close from starting. Only the native
+        // join starts here; the admission seal below still waits for the
+        // admitted reads to settle, and a still-opening handle is left to it.
+        _readOwners.requestNativeCloseEvidence(this);
         if (retryNotification) _notifyFailure(retry: true);
         final notification = _notifyingFailure?.future;
         // Accepted handoffs settle before their Turn reads are closed: each one
@@ -1263,4 +1273,7 @@ final class _SubmissionExecutionLease extends _ExecutionEvidenceOwner
     consume: (origin, _, turns) => consume(this, origin, turns),
     onFailure: onFailure,
   );
+
+  @override
+  bool get sourceSuperseded => _sourceFailure != null;
 }

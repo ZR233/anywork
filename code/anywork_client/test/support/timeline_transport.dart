@@ -86,6 +86,31 @@ final class TestTimelineTransport implements TimelineTransport {
   }
 }
 
+/// One real native close/retry join, recorded in call order.
+///
+/// The fake only records what the test scripted for this attempt and what the
+/// attempt really produced; it never decides when an attempt advances.
+final class TimelineCloseAttempt {
+  TimelineCloseAttempt({required this.index, required this.retry});
+  final int index;
+  final bool retry;
+
+  /// Completed when a scripted attempt starts awaiting its frozen native reply.
+  /// An attempt that reuses already native state never reaches one.
+  final entered = Completer<void>();
+
+  /// The report this attempt really produced, frozen per attempt.
+  final settled = Completer<FeedCloseReport>();
+
+  void markEntered() {
+    if (!entered.isCompleted) entered.complete();
+  }
+
+  void settle(FeedCloseReport report) {
+    if (!settled.isCompleted) settled.complete(report);
+  }
+}
+
 final class TestTimelineConnection implements StudioTimelineConnection {
   TestTimelineConnection({StudioTimelineBaseline? initial})
     : _initial = initial,
@@ -106,6 +131,19 @@ final class TestTimelineConnection implements StudioTimelineConnection {
   final subscribed = Completer<void>();
   final closeCompleted = Completer<void>();
   final closeStarted = Completer<void>();
+
+  /// Completes when `retryClose()` is requested on this handle. This is a
+  /// request entry, not a completion: an attempt's real result is
+  /// [TimelineCloseAttempt.settled].
+  final retryEntered = Completer<void>();
+
+  /// Scripted native replies by join attempt index. An attempt with an entry
+  /// awaits exactly that frozen reply and never reinterprets it; an attempt
+  /// without one keeps using [closeGate]/[closeFailure]/[closeReport].
+  final Map<int, Completer<FeedCloseReport>> scriptedCloseReplies = {};
+
+  /// Every real native close/retry join, in call order.
+  final List<TimelineCloseAttempt> closeAttempts = [];
   Completer<void>? closeGate;
   FeedCloseReport? closeReport;
   Object? closeFailure;
@@ -147,13 +185,25 @@ final class TestTimelineConnection implements StudioTimelineConnection {
   Future<void>? _streamCancellation;
   FeedCloseIssue? _streamCancellationIssue;
   final List<FeedCloseIssue> _terminalNativeIssues = [];
+  final _attemptWaiters = <int, Completer<TimelineCloseAttempt>>{};
 
   bool get wasSubscribed => subscribed.isCompleted;
   int get ackedThrough => _acked;
 
+  /// The scope identity this handle reports; a scripted reply must match it.
+  String get feedId => _feedId;
+
   Future<void> acknowledged(int prefix) => _acked >= prefix
       ? Future.value()
       : _ackWaiters.putIfAbsent(prefix, Completer<void>.new).future;
+
+  /// Awaits the [index]-th real join attempt without polling or guessing turns.
+  Future<TimelineCloseAttempt> closeAttempt(int index) {
+    if (index < closeAttempts.length) return Future.value(closeAttempts[index]);
+    return _attemptWaiters
+        .putIfAbsent(index, Completer<TimelineCloseAttempt>.new)
+        .future;
+  }
 
   void _ensureOpen() {
     if (_closed) throw _cancelled;
@@ -406,6 +456,7 @@ final class TestTimelineConnection implements StudioTimelineConnection {
   @override
   Future<FeedCloseReport> retryClose() {
     retryCloseCalls++;
+    if (!retryEntered.isCompleted) retryEntered.complete();
     _requestForJoin();
     if (_joining) return _closing!;
     if (disposeCalls != 0) return Future.value(_currentReport!);
@@ -414,15 +465,44 @@ final class TestTimelineConnection implements StudioTimelineConnection {
 
   Future<FeedCloseReport> _startJoin({required bool retry}) {
     nativeJoinCalls++;
+    final attempt = TimelineCloseAttempt(
+      index: closeAttempts.length,
+      retry: retry,
+    );
+    closeAttempts.add(attempt);
+    _attemptWaiters.remove(attempt.index)?.complete(attempt);
     final completion = Completer<FeedCloseReport>();
     _closing = completion.future;
     _joining = true;
     unawaited(
-      _join(retry: retry)
-          .then<void>(completion.complete, onError: completion.completeError),
+      _join(retry: retry, attempt: attempt).then<void>(
+        (value) {
+          attempt.settle(value);
+          completion.complete(value);
+        },
+        onError: (Object error, StackTrace stack) {
+          attempt.settle(_failedJoinReport(error));
+          completion.completeError(error, stack);
+        },
+      ),
     );
     return completion.future;
   }
+
+  /// A failed join recorded as a fact, so a watcher of the attempt never waits
+  /// on a result that cannot arrive. The error still reaches the join future.
+  FeedCloseReport _failedJoinReport(Object error) => FeedCloseReport(
+    feedId: _feedId,
+    outcome: FeedCloseOutcome.unresolved(
+      issues: [
+        _issue(
+          _typedFailure(error),
+          'test-timeline-native-join',
+          CleanupRecovery.terminal,
+        ),
+      ],
+    ),
+  );
 
   Future<void> _cancelStreamOnce() => _streamCancellation ??=
       Future<void>.sync(() async {
@@ -442,7 +522,10 @@ final class TestTimelineConnection implements StudioTimelineConnection {
         },
       );
 
-  Future<FeedCloseReport> _join({required bool retry}) async {
+  Future<FeedCloseReport> _join({
+    required bool retry,
+    required TimelineCloseAttempt attempt,
+  }) async {
     _joining = true;
     if (!closeStarted.isCompleted) closeStarted.complete();
     try {
@@ -455,10 +538,20 @@ final class TestTimelineConnection implements StudioTimelineConnection {
           );
       final join = report == null || retry && recoverable
           ? Future<void>.sync(() async {
-              await closeGate?.future;
-              if (closeFailure case final error?) throw error;
+              final scripted = scriptedCloseReplies[attempt.index];
+              final FeedCloseReport? reply;
+              if (scripted != null) {
+                attempt.markEntered();
+                reply = await scripted.future;
+              } else {
+                final gate = closeGate;
+                if (gate != null) await gate.future;
+                final failure = closeFailure;
+                if (failure != null) throw failure;
+                reply = closeReport;
+              }
               report =
-                  closeReport ??
+                  reply ??
                   FeedCloseReport(
                     feedId: _feedId,
                     outcome: const FeedCloseOutcome.clean(),

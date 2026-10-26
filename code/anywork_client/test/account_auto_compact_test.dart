@@ -18,6 +18,8 @@ AccountConfiguration _account({
     ModelAutoCompact(modelId: 'temporarily-unlisted', overrideLimit: 777),
   ],
   String name = 'Fixture',
+  BillingKind billingKind = BillingKind.metered,
+  BillingKind? billingKindOverride,
 }) => AccountConfiguration(
   accountId: 'fixture',
   templateId: 'template-a',
@@ -26,9 +28,8 @@ AccountConfiguration _account({
   baseUrl: 'http://fixture.invalid',
   hasBearerToken: true,
   bearerTokenEnv: null,
-  pricingEnabled: false,
-  billingKind: BillingKind.metered,
-  billingKindOverride: null,
+  billingKind: billingKind,
+  billingKindOverride: billingKindOverride,
   disabledModels: const [],
   usageQueryRevision: 7,
   catalogId: 'catalog',
@@ -184,7 +185,7 @@ void main() {
         name: const FieldEdit.keep(),
         baseUrl: const FieldEdit.keep(),
         secret: const AccountSecretUpdate.preserve(),
-        pricingEnabled: const FieldEdit.keep(),
+        initialBillingKind: null,
         rebuildModelConfiguration: false,
         customModels: const [
           CustomModelChange.upsert(
@@ -243,7 +244,7 @@ void main() {
         name: const FieldEdit.keep(),
         baseUrl: const FieldEdit.keep(),
         secret: const AccountSecretUpdate.preserve(),
-        pricingEnabled: const FieldEdit.keep(),
+        initialBillingKind: null,
         rebuildModelConfiguration: false,
         customModels: const [],
         connections: const [],
@@ -271,7 +272,7 @@ void main() {
       name: const FieldEdit.keep(),
       baseUrl: const FieldEdit.keep(),
       secret: const AccountSecretUpdate.preserve(),
-      pricingEnabled: const FieldEdit.keep(),
+      initialBillingKind: null,
       rebuildModelConfiguration: false,
       customModels: const [],
       connections: const [],
@@ -292,5 +293,47 @@ void main() {
       );
     }
     expect(fixture.port.saves, isEmpty);
+  });
+
+  test('an external billing rewrite is adopted and an unrelated limit edit never replays it', () async {
+    final fixture = await _fixture();
+    // Another writer (or a native settings refresh) turned the account into an
+    // explicit no-charge one between the two writes.
+    await fixture.port.publishAccount(
+      2,
+      _account(
+        billingKind: BillingKind.noCharge,
+        billingKindOverride: BillingKind.noCharge,
+      ),
+    );
+    var current = await fixture.repository.loadAccount('fixture');
+    expect(current.billingKind, BillingKind.noCharge);
+    expect(current.billingKindOverride, BillingKind.noCharge);
+
+    // An auto-compact edit is not billing intent: the prepared account write
+    // carries no category at all, so it cannot restore a stale inference or
+    // clear the explicit no-charge the native surface reports.
+    final ticket = fixture.repository.saveAccount(
+      accountEdit(
+        limits: const [ModelLimitChange(modelId: 'alpha', overrideLimit: 100)],
+      ),
+    );
+    final call = await fixture.port.saved(0);
+    expect(call.request.account.accountId, 'fixture');
+    expect(_dispatchedLimits(call.request.account)['alpha'], 100);
+    expect(
+      fixture.port.billingChanges,
+      isEmpty,
+      reason: 'an ordinary edit must not replay billing intent',
+    );
+    await _reject(call, ticket);
+
+    current = await fixture.repository.loadAccount('fixture');
+    expect(current.billingKind, BillingKind.noCharge);
+    expect(current.billingKindOverride, BillingKind.noCharge);
+    expect(current.modelAutoCompactLimits, const [
+      ModelAutoCompact(modelId: 'beta', overrideLimit: 250),
+      ModelAutoCompact(modelId: 'temporarily-unlisted', overrideLimit: 777),
+    ]);
   });
 }

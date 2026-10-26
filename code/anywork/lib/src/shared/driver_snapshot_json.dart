@@ -1,3 +1,4 @@
+import 'package:anywork_client/acp.dart';
 import 'package:anywork_client/configuration.dart';
 import 'package:anywork_client/conversation.dart';
 import 'package:anywork_client/drafts.dart';
@@ -473,7 +474,6 @@ Map<String, Object?> settingsDiagnostic(DriverSnapshot snapshot) {
                 'name': account.name,
                 'templateId': account.templateId,
                 'protocol': account.protocol,
-                'pricingEnabled': account.pricingEnabled,
                 'hasBearerToken': account.hasBearerToken,
                 'billingKind': account.billingKind.name,
                 'billingKindOverride': account.billingKindOverride?.name,
@@ -534,8 +534,199 @@ Map<String, Object?> settingsDiagnostic(DriverSnapshot snapshot) {
             'error': operation.error?.code.name,
           },
     ],
+    // ACP 认证与安装是两个独立事实源，各自 `loaded` 都由 canonical 镜像是否存在
+    // 决定；未加载时不给空集合，也不伪造 revision 0 的“已加载”水位。
+    'acpAuthLoaded': snapshot.acpAuth != null,
+    // 原 main 的 accounts/auth 字段：认证按“账号 + 连接代次”发布，配置身份单独发布。
+    'acpAuth': acpAuthDiagnostic(snapshot.acpAuth),
+    'acpAccounts': acpAccountRows(snapshot.acpAccounts),
+    'nativeTemplates': snapshot.templates == null
+        ? null
+        : [for (final template in snapshot.templates!.templates) template.id],
+    'acpInstall': acpInstallDiagnostic(snapshot.acpInstall),
   };
 }
+
+/// ACP 认证的只读投影：`kind` 是认证状态变体的固定名字。
+///
+/// 未加载时 `accounts` 为 `null`（不是空列表冒充）；`connectionRevision` 与配置
+/// 身份必须同时匹配才算同一目标，调用方据此拒绝旧代次的观察。
+Map<String, Object?> acpAuthDiagnostic(AcpAuthSnapshot? auth) => {
+  'loaded': auth != null,
+  'revision': auth?.revision,
+  'updatedAt': auth?.updatedAt,
+  'accounts': auth == null
+      ? null
+      : [
+          for (final account in auth.accounts)
+            {
+              'accountId': account.accountId,
+              'connectionRevision': account.connectionRevision,
+              'state': acpAuthStateDiagnostic(account.state),
+            },
+        ],
+};
+
+/// ACP 接入配置行；`null` 表示本 graph 尚未读到该目录。
+List<Map<String, Object?>>? acpAccountRows(AcpAccountDirectory? directory) =>
+    directory == null
+    ? null
+    : [
+        for (final account in directory.accounts)
+          {
+            'accountId': account.accountId,
+            'name': account.name,
+            'provider': account.provider.name,
+            'connectionRevision': account.connectionRevision,
+          },
+      ];
+
+/// 认证状态变体与其携带的 typed 事实；不合成 server/method 缺失时的占位。
+Map<String, Object?> acpAuthStateDiagnostic(AcpAuthState state) =>
+    switch (state) {
+      AcpAuthUnchecked() => {'kind': 'unchecked'},
+      AcpAuthChecking(:final operationId) => {
+        'kind': 'checking',
+        'operationId': operationId,
+      },
+      AcpAuthRequired(:final server, :final methods) => {
+        'kind': 'required',
+        'server': acpServerDiagnostic(server),
+        'methods': [
+          for (final method in methods)
+            {
+              'id': method.id,
+              'name': method.name,
+              'kind': method.kind.name,
+              'description': method.description,
+            },
+        ],
+      },
+      AcpAuthAuthenticating(:final operationId, :final methodId) => {
+        'kind': 'authenticating',
+        'operationId': operationId,
+        'methodId': methodId,
+      },
+      AcpAuthVerifying(:final operationId) => {
+        'kind': 'verifying',
+        'operationId': operationId,
+      },
+      AcpAuthClosing(:final operationId, :final failure) => {
+        'kind': 'closing',
+        'operationId': operationId,
+        'failure': acpAuthFailureDiagnostic(failure),
+      },
+      AcpAuthVerified(:final checkedAt, :final server) => {
+        'kind': 'verified',
+        'checkedAt': checkedAt,
+        'server': acpServerDiagnostic(server),
+      },
+      AcpAuthCancelling(:final operationId) => {
+        'kind': 'cancelling',
+        'operationId': operationId,
+      },
+      AcpAuthCancelled() => {'kind': 'cancelled'},
+      AcpAuthFailed(:final failure) => {
+        'kind': 'failed',
+        'failure': acpAuthFailureDiagnostic(failure),
+      },
+    };
+
+Map<String, Object?>? acpServerDiagnostic(AcpServerInfo? server) =>
+    server == null
+    ? null
+    : {'name': server.name, 'title': server.title, 'version': server.version};
+
+/// 认证失败：`code`/`stage` 是 typed 枚举的固定名字，`message` 是后端脱敏原文。
+Map<String, Object?>? acpAuthFailureDiagnostic(AcpAuthFailure? failure) =>
+    failure == null
+    ? null
+    : {
+        'code': failure.code.name,
+        'stage': failure.stage.name,
+        'message': failure.message,
+        'retryable': failure.retryable,
+      };
+
+/// `acpInstall` 的只读投影：只搬运 typed 状态已经发布的事实。
+///
+/// `loaded` 为 `false` 时 `revision`/`installations` 都是 `null`，因为“没有加载”
+/// 不等于“没有任何安装”或“全部未准备”；`loaded` 为 `true` 时 `revision` 即使为
+/// 0 也是合法的已加载水位。
+Map<String, Object?> acpInstallDiagnostic(AcpInstallSnapshot? install) => {
+  'loaded': install != null,
+  'revision': install?.revision,
+  'installations': install == null
+      ? null
+      : [
+          for (final entry in install.installations)
+            {
+              'provider': entry.provider.name,
+              'phase': acpInstallPhase(entry.state),
+              // 终态没有“当前阶段”；失败发生在哪一步由 failure 自己携带。
+              'stage': entry.state.stage?.name,
+              'operationId': entry.state.operationId,
+              // 进度/重试只在对应阶段有真实字节与计数，其余为 null。
+              'progress': acpInstallProgressDiagnostic(entry.state.progress),
+              'retryCount': entry.state.retryCount,
+              // 冻结的发行描述符：解析前与未准备时为 null。
+              'release': acpInstallReleaseDiagnostic(entry.state.release),
+              // 就绪结果只由就绪状态携带：program 是只读诊断，不是可编辑启动配置。
+              'program': entry.state.server?.program,
+              'reused': entry.state.server?.reused,
+              'failure': acpInstallFailureDiagnostic(entry.state.failure),
+            },
+        ],
+};
+
+Map<String, Object?>? acpInstallProgressDiagnostic(
+  AcpInstallProgress? progress,
+) => progress == null
+    ? null
+    : {
+        'completedBytes': progress.completedBytes,
+        'totalBytes': progress.totalBytes,
+        'bytesPerSecond': progress.bytesPerSecond,
+      };
+
+Map<String, Object?>? acpInstallReleaseDiagnostic(AcpInstallRelease? release) =>
+    release == null
+    ? null
+    : {
+        'version': release.version,
+        'target': release.target,
+        'archiveUrl': release.archiveUrl,
+        'sha256': release.sha256,
+      };
+
+/// 安装状态变体的固定名字，静态解析自 sealed 状态；不按 message 或字符串猜阶段。
+String acpInstallPhase(AcpInstallState state) => switch (state) {
+  AcpInstallIdleState() => 'idle',
+  AcpInstallResolving() => 'resolving',
+  AcpInstallWaiting() => 'waiting',
+  AcpInstallDownloading() => 'downloading',
+  AcpInstallVerifying() => 'verifying',
+  AcpInstallExtracting() => 'extracting',
+  AcpInstallPublishing() => 'publishing',
+  AcpInstallClosing() => 'closing',
+  AcpInstallReady() => 'ready',
+  AcpInstallCancelling() => 'cancelling',
+  AcpInstallCancelled() => 'cancelled',
+  AcpInstallFailed() => 'failed',
+};
+
+/// 失败只发布安全类别：`code` 是 typed 枚举的固定名字，`retryable` 是已发布值。
+///
+/// 这里直接访问枚举成员，不经过 `dynamic` 分发，也不解析脱敏 message。
+Map<String, Object?>? acpInstallFailureDiagnostic(AcpInstallFailure? failure) =>
+    failure == null
+    ? null
+    : {
+        'code': failure.code.name,
+        'stage': failure.stage.name,
+        'message': failure.message,
+        'retryable': failure.retryable,
+      };
 
 Map<String, Object?> accountCatalogDiagnostic(AccountCatalogEntry? catalog) => {
   'defaultModelId': catalog?.defaultModelId,

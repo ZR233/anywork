@@ -10,7 +10,6 @@ pub struct BridgeAccountTemplatesReadHeader {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BridgeAccountTemplateRead {
-    pub pricing_enabled: bool,
     pub id: BridgeReadText,
     pub display_name: BridgeReadText,
     pub description: Option<BridgeReadText>,

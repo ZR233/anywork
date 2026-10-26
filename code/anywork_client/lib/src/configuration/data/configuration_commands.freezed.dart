@@ -27,14 +27,14 @@ $AccountSettingsUpdateCopyWith<AccountSettingsUpdate> get copyWith => _$AccountS
 @override
 bool operator ==(Object other) {
   final _this = this as AccountSettingsUpdate;
-  return identical(this, other) || (other.runtimeType == runtimeType&&other is AccountSettingsUpdate&&(identical(other.accountId, _this.accountId) || other.accountId == _this.accountId)&&(identical(other.templateId, _this.templateId) || other.templateId == _this.templateId)&&(identical(other.protocol, _this.protocol) || other.protocol == _this.protocol)&&(identical(other.name, _this.name) || other.name == _this.name)&&(identical(other.baseUrl, _this.baseUrl) || other.baseUrl == _this.baseUrl)&&(identical(other.secret, _this.secret) || other.secret == _this.secret)&&(identical(other.pricingEnabled, _this.pricingEnabled) || other.pricingEnabled == _this.pricingEnabled)&&const DeepCollectionEquality().equals(other.customModels, _this.customModels)&&const DeepCollectionEquality().equals(other.modelConnectionModes, _this.modelConnectionModes)&&const DeepCollectionEquality().equals(other.modelAutoCompactLimits, _this.modelAutoCompactLimits));
+  return identical(this, other) || (other.runtimeType == runtimeType&&other is AccountSettingsUpdate&&(identical(other.accountId, _this.accountId) || other.accountId == _this.accountId)&&(identical(other.templateId, _this.templateId) || other.templateId == _this.templateId)&&(identical(other.protocol, _this.protocol) || other.protocol == _this.protocol)&&(identical(other.name, _this.name) || other.name == _this.name)&&(identical(other.baseUrl, _this.baseUrl) || other.baseUrl == _this.baseUrl)&&(identical(other.secret, _this.secret) || other.secret == _this.secret)&&(identical(other.initialBillingKind, _this.initialBillingKind) || other.initialBillingKind == _this.initialBillingKind)&&const DeepCollectionEquality().equals(other.customModels, _this.customModels)&&const DeepCollectionEquality().equals(other.modelConnectionModes, _this.modelConnectionModes)&&const DeepCollectionEquality().equals(other.modelAutoCompactLimits, _this.modelAutoCompactLimits));
 }
 
 
 @override
 int get hashCode {
   final _this = this as AccountSettingsUpdate;
-  return Object.hash(runtimeType,_this.accountId,_this.templateId,_this.protocol,_this.name,_this.baseUrl,_this.secret,_this.pricingEnabled,const DeepCollectionEquality().hash(_this.customModels),const DeepCollectionEquality().hash(_this.modelConnectionModes),const DeepCollectionEquality().hash(_this.modelAutoCompactLimits));
+  return Object.hash(runtimeType,_this.accountId,_this.templateId,_this.protocol,_this.name,_this.baseUrl,_this.secret,_this.initialBillingKind,const DeepCollectionEquality().hash(_this.customModels),const DeepCollectionEquality().hash(_this.modelConnectionModes),const DeepCollectionEquality().hash(_this.modelAutoCompactLimits));
 }
 
 
@@ -46,7 +46,7 @@ abstract mixin class $AccountSettingsUpdateCopyWith<$Res>  {
   factory $AccountSettingsUpdateCopyWith(AccountSettingsUpdate value, $Res Function(AccountSettingsUpdate) _then) = _$AccountSettingsUpdateCopyWithImpl;
 @useResult
 $Res call({
- String accountId, String? templateId, String protocol, String name, String baseUrl, AccountSecretUpdate secret, bool pricingEnabled, List<AccountModelUpdate> customModels, List<AccountModelConnectionUpdate> modelConnectionModes, List<AccountModelAutoCompactUpdate> modelAutoCompactLimits
+ String accountId, String? templateId, String protocol, String name, String baseUrl, AccountSecretUpdate secret, BillingKind? initialBillingKind, List<AccountModelUpdate> customModels, List<AccountModelConnectionUpdate> modelConnectionModes, List<AccountModelAutoCompactUpdate> modelAutoCompactLimits
 });
 
 
@@ -63,7 +63,7 @@ class _$AccountSettingsUpdateCopyWithImpl<$Res>
 
 /// Create a copy of AccountSettingsUpdate
 /// with the given fields replaced by the non-null parameter values.
-@pragma('vm:prefer-inline') @override $Res call({Object? accountId = null,Object? templateId = freezed,Object? protocol = null,Object? name = null,Object? baseUrl = null,Object? secret = null,Object? pricingEnabled = null,Object? customModels = null,Object? modelConnectionModes = null,Object? modelAutoCompactLimits = null,}) {
+@pragma('vm:prefer-inline') @override $Res call({Object? accountId = null,Object? templateId = freezed,Object? protocol = null,Object? name = null,Object? baseUrl = null,Object? secret = null,Object? initialBillingKind = freezed,Object? customModels = null,Object? modelConnectionModes = null,Object? modelAutoCompactLimits = null,}) {
   return _then(AccountSettingsUpdate(
 accountId: null == accountId ? _self.accountId : accountId // ignore: cast_nullable_to_non_nullable
 as String,templateId: freezed == templateId ? _self.templateId : templateId // ignore: cast_nullable_to_non_nullable
@@ -71,8 +71,8 @@ as String?,protocol: null == protocol ? _self.protocol : protocol // ignore: cas
 as String,name: null == name ? _self.name : name // ignore: cast_nullable_to_non_nullable
 as String,baseUrl: null == baseUrl ? _self.baseUrl : baseUrl // ignore: cast_nullable_to_non_nullable
 as String,secret: null == secret ? _self.secret : secret // ignore: cast_nullable_to_non_nullable
-as AccountSecretUpdate,pricingEnabled: null == pricingEnabled ? _self.pricingEnabled : pricingEnabled // ignore: cast_nullable_to_non_nullable
-as bool,customModels: null == customModels ? _self.customModels : customModels // ignore: cast_nullable_to_non_nullable
+as AccountSecretUpdate,initialBillingKind: freezed == initialBillingKind ? _self.initialBillingKind : initialBillingKind // ignore: cast_nullable_to_non_nullable
+as BillingKind?,customModels: null == customModels ? _self.customModels : customModels // ignore: cast_nullable_to_non_nullable
 as List<AccountModelUpdate>,modelConnectionModes: null == modelConnectionModes ? _self.modelConnectionModes : modelConnectionModes // ignore: cast_nullable_to_non_nullable
 as List<AccountModelConnectionUpdate>,modelAutoCompactLimits: null == modelAutoCompactLimits ? _self.modelAutoCompactLimits : modelAutoCompactLimits // ignore: cast_nullable_to_non_nullable
 as List<AccountModelAutoCompactUpdate>,
@@ -1621,6 +1621,894 @@ $OperationIdCopyWith<$Res> get operationId {
 
   return $OperationIdCopyWith<$Res>(_self.operationId, (value) {
     return _then(_self.copyWith(operationId: value));
+  });
+}
+}
+
+/// @nodoc
+mixin _$UpdateAcpAccountRequest {
+
+ OperationId get operationId; int get expectedRevision; AcpAccountUpdate get account;
+/// Create a copy of UpdateAcpAccountRequest
+/// with the given fields replaced by the non-null parameter values.
+@JsonKey(includeFromJson: false, includeToJson: false)
+@pragma('vm:prefer-inline')
+$UpdateAcpAccountRequestCopyWith<UpdateAcpAccountRequest> get copyWith => _$UpdateAcpAccountRequestCopyWithImpl<UpdateAcpAccountRequest>(this as UpdateAcpAccountRequest, _$identity);
+
+
+
+@override
+bool operator ==(Object other) {
+  final _this = this as UpdateAcpAccountRequest;
+  return identical(this, other) || (other.runtimeType == runtimeType&&other is UpdateAcpAccountRequest&&(identical(other.operationId, _this.operationId) || other.operationId == _this.operationId)&&(identical(other.expectedRevision, _this.expectedRevision) || other.expectedRevision == _this.expectedRevision)&&(identical(other.account, _this.account) || other.account == _this.account));
+}
+
+
+@override
+int get hashCode {
+  final _this = this as UpdateAcpAccountRequest;
+  return Object.hash(runtimeType,_this.operationId,_this.expectedRevision,_this.account);
+}
+
+@override
+String toString() {
+  final _this = this as UpdateAcpAccountRequest;
+  return 'UpdateAcpAccountRequest(operationId: ${_this.operationId}, expectedRevision: ${_this.expectedRevision}, account: ${_this.account})';
+}
+
+
+}
+
+/// @nodoc
+abstract mixin class $UpdateAcpAccountRequestCopyWith<$Res>  {
+  factory $UpdateAcpAccountRequestCopyWith(UpdateAcpAccountRequest value, $Res Function(UpdateAcpAccountRequest) _then) = _$UpdateAcpAccountRequestCopyWithImpl;
+@useResult
+$Res call({
+ OperationId operationId, int expectedRevision, AcpAccountUpdate account
+});
+
+
+$OperationIdCopyWith<$Res> get operationId;$AcpAccountUpdateCopyWith<$Res> get account;
+
+}
+/// @nodoc
+class _$UpdateAcpAccountRequestCopyWithImpl<$Res>
+    implements $UpdateAcpAccountRequestCopyWith<$Res> {
+  _$UpdateAcpAccountRequestCopyWithImpl(this._self, this._then);
+
+  final UpdateAcpAccountRequest _self;
+  final $Res Function(UpdateAcpAccountRequest) _then;
+
+/// Create a copy of UpdateAcpAccountRequest
+/// with the given fields replaced by the non-null parameter values.
+@pragma('vm:prefer-inline') @override $Res call({Object? operationId = null,Object? expectedRevision = null,Object? account = null,}) {
+  return _then(UpdateAcpAccountRequest(
+operationId: null == operationId ? _self.operationId : operationId // ignore: cast_nullable_to_non_nullable
+as OperationId,expectedRevision: null == expectedRevision ? _self.expectedRevision : expectedRevision // ignore: cast_nullable_to_non_nullable
+as int,account: null == account ? _self.account : account // ignore: cast_nullable_to_non_nullable
+as AcpAccountUpdate,
+  ));
+}
+/// Create a copy of UpdateAcpAccountRequest
+/// with the given fields replaced by the non-null parameter values.
+@override
+@pragma('vm:prefer-inline')
+$OperationIdCopyWith<$Res> get operationId {
+
+  return $OperationIdCopyWith<$Res>(_self.operationId, (value) {
+    return _then(_self.copyWith(operationId: value));
+  });
+}/// Create a copy of UpdateAcpAccountRequest
+/// with the given fields replaced by the non-null parameter values.
+@override
+@pragma('vm:prefer-inline')
+$AcpAccountUpdateCopyWith<$Res> get account {
+
+  return $AcpAccountUpdateCopyWith<$Res>(_self.account, (value) {
+    return _then(_self.copyWith(account: value));
+  });
+}
+}
+
+
+/// Adds pattern-matching-related methods to [UpdateAcpAccountRequest].
+extension UpdateAcpAccountRequestPatterns on UpdateAcpAccountRequest {
+/// A variant of `map` that fallback to returning `orElse`.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case _:
+///     return orElse();
+/// }
+/// ```
+
+@optionalTypeArgs TResult maybeMap<TResult extends Object?>(TResult Function( _UpdateAcpAccountRequest value)?  $default,{required TResult orElse(),}){
+final _that = this;
+switch (_that) {
+case _UpdateAcpAccountRequest() when $default != null:
+return $default(_that);case _:
+  return orElse();
+
+}
+}
+/// A `switch`-like method, using callbacks.
+///
+/// Callbacks receives the raw object, upcasted.
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case final Subclass2 value:
+///     return ...;
+/// }
+/// ```
+
+@optionalTypeArgs TResult map<TResult extends Object?>(TResult Function( _UpdateAcpAccountRequest value)  $default,){
+final _that = this;
+switch (_that) {
+case _UpdateAcpAccountRequest():
+return $default(_that);case _:
+  throw StateError('Unexpected subclass');
+
+}
+}
+/// A variant of `map` that fallback to returning `null`.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case _:
+///     return null;
+/// }
+/// ```
+
+@optionalTypeArgs TResult? mapOrNull<TResult extends Object?>(TResult? Function( _UpdateAcpAccountRequest value)?  $default,){
+final _that = this;
+switch (_that) {
+case _UpdateAcpAccountRequest() when $default != null:
+return $default(_that);case _:
+  return null;
+
+}
+}
+/// A variant of `when` that fallback to an `orElse` callback.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case _:
+///     return orElse();
+/// }
+/// ```
+
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>(TResult Function( OperationId operationId,  int expectedRevision,  AcpAccountUpdate account)?  $default,{required TResult orElse(),}) {final _that = this;
+switch (_that) {
+case _UpdateAcpAccountRequest() when $default != null:
+return $default(_that.operationId,_that.expectedRevision,_that.account);case _:
+  return orElse();
+
+}
+}
+/// A `switch`-like method, using callbacks.
+///
+/// As opposed to `map`, this offers destructuring.
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case Subclass2(:final field2):
+///     return ...;
+/// }
+/// ```
+
+@optionalTypeArgs TResult when<TResult extends Object?>(TResult Function( OperationId operationId,  int expectedRevision,  AcpAccountUpdate account)  $default,) {final _that = this;
+switch (_that) {
+case _UpdateAcpAccountRequest():
+return $default(_that.operationId,_that.expectedRevision,_that.account);case _:
+  throw StateError('Unexpected subclass');
+
+}
+}
+/// A variant of `when` that fallback to returning `null`
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case _:
+///     return null;
+/// }
+/// ```
+
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>(TResult? Function( OperationId operationId,  int expectedRevision,  AcpAccountUpdate account)?  $default,) {final _that = this;
+switch (_that) {
+case _UpdateAcpAccountRequest() when $default != null:
+return $default(_that.operationId,_that.expectedRevision,_that.account);case _:
+  return null;
+
+}
+}
+
+}
+
+/// @nodoc
+
+
+class _UpdateAcpAccountRequest implements UpdateAcpAccountRequest {
+  const _UpdateAcpAccountRequest({required this.operationId, required this.expectedRevision, required this.account});
+
+
+@override final  OperationId operationId;
+@override final  int expectedRevision;
+@override final  AcpAccountUpdate account;
+
+/// Create a copy of UpdateAcpAccountRequest
+/// with the given fields replaced by the non-null parameter values.
+@override @JsonKey(includeFromJson: false, includeToJson: false)
+@pragma('vm:prefer-inline')
+_$UpdateAcpAccountRequestCopyWith<_UpdateAcpAccountRequest> get copyWith => __$UpdateAcpAccountRequestCopyWithImpl<_UpdateAcpAccountRequest>(this, _$identity);
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is _UpdateAcpAccountRequest&&(identical(other.operationId, operationId) || other.operationId == operationId)&&(identical(other.expectedRevision, expectedRevision) || other.expectedRevision == expectedRevision)&&(identical(other.account, account) || other.account == account));
+}
+
+
+@override
+int get hashCode {
+    return Object.hash(runtimeType,operationId,expectedRevision,account);
+}
+
+@override
+String toString() {
+    return 'UpdateAcpAccountRequest(operationId: $operationId, expectedRevision: $expectedRevision, account: $account)';
+}
+
+
+}
+
+/// @nodoc
+abstract mixin class _$UpdateAcpAccountRequestCopyWith<$Res> implements $UpdateAcpAccountRequestCopyWith<$Res> {
+  factory _$UpdateAcpAccountRequestCopyWith(_UpdateAcpAccountRequest value, $Res Function(_UpdateAcpAccountRequest) _then) = __$UpdateAcpAccountRequestCopyWithImpl;
+@override @useResult
+$Res call({
+ OperationId operationId, int expectedRevision, AcpAccountUpdate account
+});
+
+
+@override $OperationIdCopyWith<$Res> get operationId;@override $AcpAccountUpdateCopyWith<$Res> get account;
+
+}
+/// @nodoc
+class __$UpdateAcpAccountRequestCopyWithImpl<$Res>
+    implements _$UpdateAcpAccountRequestCopyWith<$Res> {
+  __$UpdateAcpAccountRequestCopyWithImpl(this._self, this._then);
+
+  final _UpdateAcpAccountRequest _self;
+  final $Res Function(_UpdateAcpAccountRequest) _then;
+
+/// Create a copy of UpdateAcpAccountRequest
+/// with the given fields replaced by the non-null parameter values.
+@override @pragma('vm:prefer-inline') $Res call({Object? operationId = null,Object? expectedRevision = null,Object? account = null,}) {
+  return _then(_UpdateAcpAccountRequest(
+operationId: null == operationId ? _self.operationId : operationId // ignore: cast_nullable_to_non_nullable
+as OperationId,expectedRevision: null == expectedRevision ? _self.expectedRevision : expectedRevision // ignore: cast_nullable_to_non_nullable
+as int,account: null == account ? _self.account : account // ignore: cast_nullable_to_non_nullable
+as AcpAccountUpdate,
+  ));
+}
+
+/// Create a copy of UpdateAcpAccountRequest
+/// with the given fields replaced by the non-null parameter values.
+@override
+@pragma('vm:prefer-inline')
+$OperationIdCopyWith<$Res> get operationId {
+
+  return $OperationIdCopyWith<$Res>(_self.operationId, (value) {
+    return _then(_self.copyWith(operationId: value));
+  });
+}/// Create a copy of UpdateAcpAccountRequest
+/// with the given fields replaced by the non-null parameter values.
+@override
+@pragma('vm:prefer-inline')
+$AcpAccountUpdateCopyWith<$Res> get account {
+
+  return $AcpAccountUpdateCopyWith<$Res>(_self.account, (value) {
+    return _then(_self.copyWith(account: value));
+  });
+}
+}
+
+/// @nodoc
+mixin _$RemoveAcpAccountRequest {
+
+ OperationId get operationId; int get expectedRevision; String get accountId;
+/// Create a copy of RemoveAcpAccountRequest
+/// with the given fields replaced by the non-null parameter values.
+@JsonKey(includeFromJson: false, includeToJson: false)
+@pragma('vm:prefer-inline')
+$RemoveAcpAccountRequestCopyWith<RemoveAcpAccountRequest> get copyWith => _$RemoveAcpAccountRequestCopyWithImpl<RemoveAcpAccountRequest>(this as RemoveAcpAccountRequest, _$identity);
+
+
+
+@override
+bool operator ==(Object other) {
+  final _this = this as RemoveAcpAccountRequest;
+  return identical(this, other) || (other.runtimeType == runtimeType&&other is RemoveAcpAccountRequest&&(identical(other.operationId, _this.operationId) || other.operationId == _this.operationId)&&(identical(other.expectedRevision, _this.expectedRevision) || other.expectedRevision == _this.expectedRevision)&&(identical(other.accountId, _this.accountId) || other.accountId == _this.accountId));
+}
+
+
+@override
+int get hashCode {
+  final _this = this as RemoveAcpAccountRequest;
+  return Object.hash(runtimeType,_this.operationId,_this.expectedRevision,_this.accountId);
+}
+
+@override
+String toString() {
+  final _this = this as RemoveAcpAccountRequest;
+  return 'RemoveAcpAccountRequest(operationId: ${_this.operationId}, expectedRevision: ${_this.expectedRevision}, accountId: ${_this.accountId})';
+}
+
+
+}
+
+/// @nodoc
+abstract mixin class $RemoveAcpAccountRequestCopyWith<$Res>  {
+  factory $RemoveAcpAccountRequestCopyWith(RemoveAcpAccountRequest value, $Res Function(RemoveAcpAccountRequest) _then) = _$RemoveAcpAccountRequestCopyWithImpl;
+@useResult
+$Res call({
+ OperationId operationId, int expectedRevision, String accountId
+});
+
+
+$OperationIdCopyWith<$Res> get operationId;
+
+}
+/// @nodoc
+class _$RemoveAcpAccountRequestCopyWithImpl<$Res>
+    implements $RemoveAcpAccountRequestCopyWith<$Res> {
+  _$RemoveAcpAccountRequestCopyWithImpl(this._self, this._then);
+
+  final RemoveAcpAccountRequest _self;
+  final $Res Function(RemoveAcpAccountRequest) _then;
+
+/// Create a copy of RemoveAcpAccountRequest
+/// with the given fields replaced by the non-null parameter values.
+@pragma('vm:prefer-inline') @override $Res call({Object? operationId = null,Object? expectedRevision = null,Object? accountId = null,}) {
+  return _then(RemoveAcpAccountRequest(
+operationId: null == operationId ? _self.operationId : operationId // ignore: cast_nullable_to_non_nullable
+as OperationId,expectedRevision: null == expectedRevision ? _self.expectedRevision : expectedRevision // ignore: cast_nullable_to_non_nullable
+as int,accountId: null == accountId ? _self.accountId : accountId // ignore: cast_nullable_to_non_nullable
+as String,
+  ));
+}
+/// Create a copy of RemoveAcpAccountRequest
+/// with the given fields replaced by the non-null parameter values.
+@override
+@pragma('vm:prefer-inline')
+$OperationIdCopyWith<$Res> get operationId {
+
+  return $OperationIdCopyWith<$Res>(_self.operationId, (value) {
+    return _then(_self.copyWith(operationId: value));
+  });
+}
+}
+
+
+/// Adds pattern-matching-related methods to [RemoveAcpAccountRequest].
+extension RemoveAcpAccountRequestPatterns on RemoveAcpAccountRequest {
+/// A variant of `map` that fallback to returning `orElse`.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case _:
+///     return orElse();
+/// }
+/// ```
+
+@optionalTypeArgs TResult maybeMap<TResult extends Object?>(TResult Function( _RemoveAcpAccountRequest value)?  $default,{required TResult orElse(),}){
+final _that = this;
+switch (_that) {
+case _RemoveAcpAccountRequest() when $default != null:
+return $default(_that);case _:
+  return orElse();
+
+}
+}
+/// A `switch`-like method, using callbacks.
+///
+/// Callbacks receives the raw object, upcasted.
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case final Subclass2 value:
+///     return ...;
+/// }
+/// ```
+
+@optionalTypeArgs TResult map<TResult extends Object?>(TResult Function( _RemoveAcpAccountRequest value)  $default,){
+final _that = this;
+switch (_that) {
+case _RemoveAcpAccountRequest():
+return $default(_that);case _:
+  throw StateError('Unexpected subclass');
+
+}
+}
+/// A variant of `map` that fallback to returning `null`.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case _:
+///     return null;
+/// }
+/// ```
+
+@optionalTypeArgs TResult? mapOrNull<TResult extends Object?>(TResult? Function( _RemoveAcpAccountRequest value)?  $default,){
+final _that = this;
+switch (_that) {
+case _RemoveAcpAccountRequest() when $default != null:
+return $default(_that);case _:
+  return null;
+
+}
+}
+/// A variant of `when` that fallback to an `orElse` callback.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case _:
+///     return orElse();
+/// }
+/// ```
+
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>(TResult Function( OperationId operationId,  int expectedRevision,  String accountId)?  $default,{required TResult orElse(),}) {final _that = this;
+switch (_that) {
+case _RemoveAcpAccountRequest() when $default != null:
+return $default(_that.operationId,_that.expectedRevision,_that.accountId);case _:
+  return orElse();
+
+}
+}
+/// A `switch`-like method, using callbacks.
+///
+/// As opposed to `map`, this offers destructuring.
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case Subclass2(:final field2):
+///     return ...;
+/// }
+/// ```
+
+@optionalTypeArgs TResult when<TResult extends Object?>(TResult Function( OperationId operationId,  int expectedRevision,  String accountId)  $default,) {final _that = this;
+switch (_that) {
+case _RemoveAcpAccountRequest():
+return $default(_that.operationId,_that.expectedRevision,_that.accountId);case _:
+  throw StateError('Unexpected subclass');
+
+}
+}
+/// A variant of `when` that fallback to returning `null`
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case _:
+///     return null;
+/// }
+/// ```
+
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>(TResult? Function( OperationId operationId,  int expectedRevision,  String accountId)?  $default,) {final _that = this;
+switch (_that) {
+case _RemoveAcpAccountRequest() when $default != null:
+return $default(_that.operationId,_that.expectedRevision,_that.accountId);case _:
+  return null;
+
+}
+}
+
+}
+
+/// @nodoc
+
+
+class _RemoveAcpAccountRequest implements RemoveAcpAccountRequest {
+  const _RemoveAcpAccountRequest({required this.operationId, required this.expectedRevision, required this.accountId});
+
+
+@override final  OperationId operationId;
+@override final  int expectedRevision;
+@override final  String accountId;
+
+/// Create a copy of RemoveAcpAccountRequest
+/// with the given fields replaced by the non-null parameter values.
+@override @JsonKey(includeFromJson: false, includeToJson: false)
+@pragma('vm:prefer-inline')
+_$RemoveAcpAccountRequestCopyWith<_RemoveAcpAccountRequest> get copyWith => __$RemoveAcpAccountRequestCopyWithImpl<_RemoveAcpAccountRequest>(this, _$identity);
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is _RemoveAcpAccountRequest&&(identical(other.operationId, operationId) || other.operationId == operationId)&&(identical(other.expectedRevision, expectedRevision) || other.expectedRevision == expectedRevision)&&(identical(other.accountId, accountId) || other.accountId == accountId));
+}
+
+
+@override
+int get hashCode {
+    return Object.hash(runtimeType,operationId,expectedRevision,accountId);
+}
+
+@override
+String toString() {
+    return 'RemoveAcpAccountRequest(operationId: $operationId, expectedRevision: $expectedRevision, accountId: $accountId)';
+}
+
+
+}
+
+/// @nodoc
+abstract mixin class _$RemoveAcpAccountRequestCopyWith<$Res> implements $RemoveAcpAccountRequestCopyWith<$Res> {
+  factory _$RemoveAcpAccountRequestCopyWith(_RemoveAcpAccountRequest value, $Res Function(_RemoveAcpAccountRequest) _then) = __$RemoveAcpAccountRequestCopyWithImpl;
+@override @useResult
+$Res call({
+ OperationId operationId, int expectedRevision, String accountId
+});
+
+
+@override $OperationIdCopyWith<$Res> get operationId;
+
+}
+/// @nodoc
+class __$RemoveAcpAccountRequestCopyWithImpl<$Res>
+    implements _$RemoveAcpAccountRequestCopyWith<$Res> {
+  __$RemoveAcpAccountRequestCopyWithImpl(this._self, this._then);
+
+  final _RemoveAcpAccountRequest _self;
+  final $Res Function(_RemoveAcpAccountRequest) _then;
+
+/// Create a copy of RemoveAcpAccountRequest
+/// with the given fields replaced by the non-null parameter values.
+@override @pragma('vm:prefer-inline') $Res call({Object? operationId = null,Object? expectedRevision = null,Object? accountId = null,}) {
+  return _then(_RemoveAcpAccountRequest(
+operationId: null == operationId ? _self.operationId : operationId // ignore: cast_nullable_to_non_nullable
+as OperationId,expectedRevision: null == expectedRevision ? _self.expectedRevision : expectedRevision // ignore: cast_nullable_to_non_nullable
+as int,accountId: null == accountId ? _self.accountId : accountId // ignore: cast_nullable_to_non_nullable
+as String,
+  ));
+}
+
+/// Create a copy of RemoveAcpAccountRequest
+/// with the given fields replaced by the non-null parameter values.
+@override
+@pragma('vm:prefer-inline')
+$OperationIdCopyWith<$Res> get operationId {
+
+  return $OperationIdCopyWith<$Res>(_self.operationId, (value) {
+    return _then(_self.copyWith(operationId: value));
+  });
+}
+}
+
+/// @nodoc
+mixin _$AcpAccountCommandReply {
+
+ CommitReceipt get receipt; ConfigurationReadTarget get configuration;
+/// Create a copy of AcpAccountCommandReply
+/// with the given fields replaced by the non-null parameter values.
+@JsonKey(includeFromJson: false, includeToJson: false)
+@pragma('vm:prefer-inline')
+$AcpAccountCommandReplyCopyWith<AcpAccountCommandReply> get copyWith => _$AcpAccountCommandReplyCopyWithImpl<AcpAccountCommandReply>(this as AcpAccountCommandReply, _$identity);
+
+
+
+@override
+bool operator ==(Object other) {
+  final _this = this as AcpAccountCommandReply;
+  return identical(this, other) || (other.runtimeType == runtimeType&&other is AcpAccountCommandReply&&(identical(other.receipt, _this.receipt) || other.receipt == _this.receipt)&&(identical(other.configuration, _this.configuration) || other.configuration == _this.configuration));
+}
+
+
+@override
+int get hashCode {
+  final _this = this as AcpAccountCommandReply;
+  return Object.hash(runtimeType,_this.receipt,_this.configuration);
+}
+
+
+
+}
+
+/// @nodoc
+abstract mixin class $AcpAccountCommandReplyCopyWith<$Res>  {
+  factory $AcpAccountCommandReplyCopyWith(AcpAccountCommandReply value, $Res Function(AcpAccountCommandReply) _then) = _$AcpAccountCommandReplyCopyWithImpl;
+@useResult
+$Res call({
+ CommitReceipt receipt, ConfigurationReadTarget configuration
+});
+
+
+$CommitReceiptCopyWith<$Res> get receipt;$ConfigurationReadTargetCopyWith<$Res> get configuration;
+
+}
+/// @nodoc
+class _$AcpAccountCommandReplyCopyWithImpl<$Res>
+    implements $AcpAccountCommandReplyCopyWith<$Res> {
+  _$AcpAccountCommandReplyCopyWithImpl(this._self, this._then);
+
+  final AcpAccountCommandReply _self;
+  final $Res Function(AcpAccountCommandReply) _then;
+
+/// Create a copy of AcpAccountCommandReply
+/// with the given fields replaced by the non-null parameter values.
+@pragma('vm:prefer-inline') @override $Res call({Object? receipt = null,Object? configuration = null,}) {
+  return _then(AcpAccountCommandReply(
+receipt: null == receipt ? _self.receipt : receipt // ignore: cast_nullable_to_non_nullable
+as CommitReceipt,configuration: null == configuration ? _self.configuration : configuration // ignore: cast_nullable_to_non_nullable
+as ConfigurationReadTarget,
+  ));
+}
+/// Create a copy of AcpAccountCommandReply
+/// with the given fields replaced by the non-null parameter values.
+@override
+@pragma('vm:prefer-inline')
+$CommitReceiptCopyWith<$Res> get receipt {
+
+  return $CommitReceiptCopyWith<$Res>(_self.receipt, (value) {
+    return _then(_self.copyWith(receipt: value));
+  });
+}/// Create a copy of AcpAccountCommandReply
+/// with the given fields replaced by the non-null parameter values.
+@override
+@pragma('vm:prefer-inline')
+$ConfigurationReadTargetCopyWith<$Res> get configuration {
+
+  return $ConfigurationReadTargetCopyWith<$Res>(_self.configuration, (value) {
+    return _then(_self.copyWith(configuration: value));
+  });
+}
+}
+
+
+/// Adds pattern-matching-related methods to [AcpAccountCommandReply].
+extension AcpAccountCommandReplyPatterns on AcpAccountCommandReply {
+/// A variant of `map` that fallback to returning `orElse`.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case _:
+///     return orElse();
+/// }
+/// ```
+
+@optionalTypeArgs TResult maybeMap<TResult extends Object?>(TResult Function( _AcpAccountCommandReply value)?  $default,{required TResult orElse(),}){
+final _that = this;
+switch (_that) {
+case _AcpAccountCommandReply() when $default != null:
+return $default(_that);case _:
+  return orElse();
+
+}
+}
+/// A `switch`-like method, using callbacks.
+///
+/// Callbacks receives the raw object, upcasted.
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case final Subclass2 value:
+///     return ...;
+/// }
+/// ```
+
+@optionalTypeArgs TResult map<TResult extends Object?>(TResult Function( _AcpAccountCommandReply value)  $default,){
+final _that = this;
+switch (_that) {
+case _AcpAccountCommandReply():
+return $default(_that);case _:
+  throw StateError('Unexpected subclass');
+
+}
+}
+/// A variant of `map` that fallback to returning `null`.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case _:
+///     return null;
+/// }
+/// ```
+
+@optionalTypeArgs TResult? mapOrNull<TResult extends Object?>(TResult? Function( _AcpAccountCommandReply value)?  $default,){
+final _that = this;
+switch (_that) {
+case _AcpAccountCommandReply() when $default != null:
+return $default(_that);case _:
+  return null;
+
+}
+}
+/// A variant of `when` that fallback to an `orElse` callback.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case _:
+///     return orElse();
+/// }
+/// ```
+
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>(TResult Function( CommitReceipt receipt,  ConfigurationReadTarget configuration)?  $default,{required TResult orElse(),}) {final _that = this;
+switch (_that) {
+case _AcpAccountCommandReply() when $default != null:
+return $default(_that.receipt,_that.configuration);case _:
+  return orElse();
+
+}
+}
+/// A `switch`-like method, using callbacks.
+///
+/// As opposed to `map`, this offers destructuring.
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case Subclass2(:final field2):
+///     return ...;
+/// }
+/// ```
+
+@optionalTypeArgs TResult when<TResult extends Object?>(TResult Function( CommitReceipt receipt,  ConfigurationReadTarget configuration)  $default,) {final _that = this;
+switch (_that) {
+case _AcpAccountCommandReply():
+return $default(_that.receipt,_that.configuration);case _:
+  throw StateError('Unexpected subclass');
+
+}
+}
+/// A variant of `when` that fallback to returning `null`
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case _:
+///     return null;
+/// }
+/// ```
+
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>(TResult? Function( CommitReceipt receipt,  ConfigurationReadTarget configuration)?  $default,) {final _that = this;
+switch (_that) {
+case _AcpAccountCommandReply() when $default != null:
+return $default(_that.receipt,_that.configuration);case _:
+  return null;
+
+}
+}
+
+}
+
+/// @nodoc
+
+
+class _AcpAccountCommandReply implements AcpAccountCommandReply {
+  const _AcpAccountCommandReply({required this.receipt, required this.configuration});
+
+
+@override final  CommitReceipt receipt;
+@override final  ConfigurationReadTarget configuration;
+
+/// Create a copy of AcpAccountCommandReply
+/// with the given fields replaced by the non-null parameter values.
+@override @JsonKey(includeFromJson: false, includeToJson: false)
+@pragma('vm:prefer-inline')
+_$AcpAccountCommandReplyCopyWith<_AcpAccountCommandReply> get copyWith => __$AcpAccountCommandReplyCopyWithImpl<_AcpAccountCommandReply>(this, _$identity);
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is _AcpAccountCommandReply&&(identical(other.receipt, receipt) || other.receipt == receipt)&&(identical(other.configuration, configuration) || other.configuration == configuration));
+}
+
+
+@override
+int get hashCode {
+    return Object.hash(runtimeType,receipt,configuration);
+}
+
+
+
+}
+
+/// @nodoc
+abstract mixin class _$AcpAccountCommandReplyCopyWith<$Res> implements $AcpAccountCommandReplyCopyWith<$Res> {
+  factory _$AcpAccountCommandReplyCopyWith(_AcpAccountCommandReply value, $Res Function(_AcpAccountCommandReply) _then) = __$AcpAccountCommandReplyCopyWithImpl;
+@override @useResult
+$Res call({
+ CommitReceipt receipt, ConfigurationReadTarget configuration
+});
+
+
+@override $CommitReceiptCopyWith<$Res> get receipt;@override $ConfigurationReadTargetCopyWith<$Res> get configuration;
+
+}
+/// @nodoc
+class __$AcpAccountCommandReplyCopyWithImpl<$Res>
+    implements _$AcpAccountCommandReplyCopyWith<$Res> {
+  __$AcpAccountCommandReplyCopyWithImpl(this._self, this._then);
+
+  final _AcpAccountCommandReply _self;
+  final $Res Function(_AcpAccountCommandReply) _then;
+
+/// Create a copy of AcpAccountCommandReply
+/// with the given fields replaced by the non-null parameter values.
+@override @pragma('vm:prefer-inline') $Res call({Object? receipt = null,Object? configuration = null,}) {
+  return _then(_AcpAccountCommandReply(
+receipt: null == receipt ? _self.receipt : receipt // ignore: cast_nullable_to_non_nullable
+as CommitReceipt,configuration: null == configuration ? _self.configuration : configuration // ignore: cast_nullable_to_non_nullable
+as ConfigurationReadTarget,
+  ));
+}
+
+/// Create a copy of AcpAccountCommandReply
+/// with the given fields replaced by the non-null parameter values.
+@override
+@pragma('vm:prefer-inline')
+$CommitReceiptCopyWith<$Res> get receipt {
+
+  return $CommitReceiptCopyWith<$Res>(_self.receipt, (value) {
+    return _then(_self.copyWith(receipt: value));
+  });
+}/// Create a copy of AcpAccountCommandReply
+/// with the given fields replaced by the non-null parameter values.
+@override
+@pragma('vm:prefer-inline')
+$ConfigurationReadTargetCopyWith<$Res> get configuration {
+
+  return $ConfigurationReadTargetCopyWith<$Res>(_self.configuration, (value) {
+    return _then(_self.copyWith(configuration: value));
   });
 }
 }

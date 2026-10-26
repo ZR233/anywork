@@ -6,6 +6,7 @@
 import '../../../../frb_generated.dart';
 import '../../conversation/identity.dart';
 import '../../observation.dart';
+import '../../types/acp.dart';
 import '../../types/chat.dart';
 import '../../types/delegation.dart';
 import '../../types/error.dart';
@@ -63,6 +64,13 @@ openConfigurationSourceStatusRead({
 abstract class BridgeConfigurationReadConnection
     implements RustOpaqueInterface {
   Future<BridgeAccountConfigurationReadPage> accounts({
+    required BigInt listId,
+    required BigInt offset,
+    required int limit,
+  });
+
+  /// 原 Configuration scope 的 ACP 目录分页；连接代次由捕获材料给出，不在适配层推导。
+  Future<BridgeAcpAccountConfigurationReadPage> acpAccounts({
     required BigInt listId,
     required BigInt offset,
     required int limit,

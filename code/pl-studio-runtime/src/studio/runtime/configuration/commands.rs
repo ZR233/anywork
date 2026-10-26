@@ -1,6 +1,9 @@
 use std::future::Future;
 use std::sync::Arc;
 
+use pl_protocol::products::configuration_calls::{
+    AcpAccountCallRequest, AcpAccountCommandOutcome, AcpAccountCommandReply,
+};
 use pl_protocol::products::configuration_commands::{
     ConfigurationCommandOutcome, ConfigurationCommandReply, ConfigurationCommandRequest,
 };
@@ -22,6 +25,22 @@ pub struct ConfigurationCommandResult {
 impl ConfigurationCommandResult {
     /// A pure wire value; cloning it does not transfer the original capture's ownership.
     pub fn outcome(&self) -> &ConfigurationCommandOutcome {
+        &self.outcome
+    }
+}
+
+/// 一次 ACP 接入提交的原始结果。
+///
+/// 与普通配置命令共用同一调用所有者、操作身份与真实关闭机制；成功只携带 Settings-only 回执与
+/// 本次提交捕获的 Configuration 读取目标，并保留该目标的材料责任直到显式关闭。
+pub struct AcpAccountCommandResult {
+    outcome: AcpAccountCommandOutcome,
+    _capture: Option<Arc<crate::config::ConfigurationSnapshot>>,
+}
+
+impl AcpAccountCommandResult {
+    /// 纯 wire 值；克隆不转移原始捕获的所有权。
+    pub fn outcome(&self) -> &AcpAccountCommandOutcome {
         &self.outcome
     }
 }
@@ -165,6 +184,121 @@ impl StudioRuntime {
             _capture: capture,
             _profiles: Some(profiles),
         }
+    }
+
+    /// Runs exactly one original ACP account CAS command in the existing Configuration call owner.
+    ///
+    /// 与普通配置命令一样只有一次提交：请求登记、冻结与结果保留都由调用所有者承担，本方法不
+    /// 重试、不重放，也不把提交后的捕获失败改写为拒绝。
+    pub fn acp_account_command(
+        &self,
+        request: AcpAccountCallRequest,
+    ) -> impl Future<Output = AcpAccountCommandResult> + Send + 'static + use<> {
+        let runtime = self.clone();
+        async move {
+            let operation_id = request.operation_id().to_owned();
+            if runtime.shutdown_committed() {
+                return AcpAccountCommandResult {
+                    outcome: AcpAccountCommandOutcome::Rejected {
+                        operation_id,
+                        error: StudioError::new(
+                            StudioErrorCode::Cancelled,
+                            "ACP account commands are sealed",
+                            false,
+                        ),
+                    },
+                    _capture: None,
+                };
+            }
+            let committed = match request {
+                AcpAccountCallRequest::Save(request) => runtime.commit_save_acp_account(request),
+                AcpAccountCallRequest::Remove(request) => {
+                    runtime.commit_remove_acp_account(request)
+                }
+            };
+            let commit = match committed {
+                Ok(commit) => commit,
+                Err(error) => {
+                    return AcpAccountCommandResult {
+                        outcome: classify_acp_uncommitted(operation_id, error),
+                        _capture: None,
+                    };
+                }
+            };
+            runtime.acp_account_committed(commit).await
+        }
+    }
+
+    async fn acp_account_committed(&self, commit: SettingsCommit) -> AcpAccountCommandResult {
+        let receipt = self.command_receipt(
+            commit.operation_id.clone(),
+            commit.changed,
+            vec![self.resource_stamp("settings", commit.evidence.configuration.revision)],
+            commit.effect,
+            true,
+        );
+        let publication = commit
+            .evidence
+            .captures
+            .get(self.owner_epoch())
+            .cloned()
+            .unwrap_or_else(|| {
+                Err(StudioError::new(
+                    StudioErrorCode::Unavailable,
+                    "The committed Configuration publication is not attached to this runtime",
+                    true,
+                ))
+            });
+        let capture = publication.as_ref().ok().cloned();
+        // 只采用本次提交捕获的 Configuration 材料：不借用 Models pair，也不含模型目标或回执。
+        let reply = publication.and_then(|publication| {
+            Ok(AcpAccountCommandReply {
+                receipt: receipt.clone(),
+                configuration: self
+                    .configuration_source
+                    .expose_committed_configuration(&publication)?,
+            })
+        });
+        let followup = commit
+            .followup(self)
+            .await
+            .map_err(crate::studio_error_from_anyhow);
+        let outcome = match (reply, followup) {
+            (Ok(reply), Ok(())) => AcpAccountCommandOutcome::Committed { reply },
+            (Err(error), _) | (Ok(_), Err(error)) => {
+                AcpAccountCommandOutcome::CommittedButUnobserved { receipt, error }
+            }
+        };
+        AcpAccountCommandResult {
+            outcome,
+            _capture: capture,
+        }
+    }
+}
+
+fn classify_acp_uncommitted(
+    operation_id: String,
+    error: anyhow::Error,
+) -> AcpAccountCommandOutcome {
+    // 持久化未知与提交确定后无回执都保持 Unknown；只有提交边界前的类型化拒绝才是 Rejected。
+    match error.downcast::<crate::config::ConfigMutationFailure>() {
+        Ok(
+            crate::config::ConfigMutationFailure::Commit(error)
+            | crate::config::ConfigMutationFailure::Confirmed(error),
+        ) => AcpAccountCommandOutcome::Unknown {
+            operation_id,
+            error: crate::studio_error_from_anyhow(error.into()),
+        },
+        Ok(crate::config::ConfigMutationFailure::Preflight(error)) => {
+            AcpAccountCommandOutcome::Rejected {
+                operation_id,
+                error: crate::studio_error_from_anyhow(error.into()),
+            }
+        }
+        Err(error) => AcpAccountCommandOutcome::Rejected {
+            operation_id,
+            error: crate::studio_error_from_anyhow(error),
+        },
     }
 }
 

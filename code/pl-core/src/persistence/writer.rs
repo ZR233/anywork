@@ -219,6 +219,22 @@ impl SqliteSessionStore {
             })
     }
 
+    /// Accepted work for this Thread, independent of its retained byte count.
+    ///
+    /// The worker only borrows queued records while writing; it removes them under this same lock
+    /// after the transaction succeeds. Queue membership therefore also covers in-flight writes and
+    /// records retained after a failure, including records whose payload is empty.
+    pub(crate) fn has_pending_work(&self, thread_id: &str) -> bool {
+        self.owner
+            .shared
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .queue
+            .iter()
+            .any(|pending| pending.operation.session_id == thread_id)
+    }
+
     /// Newest durable Thread commit sequence the writer has confirmed for one Thread.
     ///
     /// This is the plain SQLite backend's typed durability receipt: the owner folds it at a storage

@@ -226,6 +226,16 @@ struct CallsWriter {
     retry_notify: Notify,
     admitted_ticket: AtomicU64,
     durable_ticket: watch::Sender<u64>,
+    /// 统计事实（Billing / 可靠历史派生 Summary）的最高受理 ticket。
+    ///
+    /// 只在这两类 mutation 真正入队（取得 ticket）后前进；`Effect`（会话历史写入）不进入
+    /// 这对水位，因此历史提交既不算"待写统计"，也不会触发统计投影的整库重读。
+    statistics_admitted: AtomicU64,
+    /// 统计事实的最高已落库 ticket。
+    ///
+    /// 只在同一批事务 `commit` 成功、且该条目确实是统计事实后前进：被拒绝的条目、仍被重试
+    /// 的条目、以及被更旧 revision 合并淘汰的 Summary 都不会让未写入的事实被当成已落库。
+    statistics_durable: AtomicU64,
     /// Encoded bytes of the batch currently being written; a read-only pressure observation.
     in_flight_bytes: AtomicU64,
     stopping: AtomicBool,
@@ -270,7 +280,7 @@ impl CallsStore {
     }
 
     pub(crate) fn mark_statistics_gap(&self) {
-        self.writer.statistics_gap.store(true, Ordering::Release);
+        mark_gap(&self.writer);
     }
 
     #[cfg(test)]
@@ -354,6 +364,8 @@ impl CallsStore {
             retry_notify: Notify::new(),
             admitted_ticket: AtomicU64::new(0),
             durable_ticket,
+            statistics_admitted: AtomicU64::new(0),
+            statistics_durable: AtomicU64::new(0),
             in_flight_bytes: AtomicU64::new(0),
             stopping: AtomicBool::new(false),
             statistics_gap: AtomicBool::new(startup_error.is_some()),
@@ -394,34 +406,64 @@ impl CallsStore {
     /// 主代理从 Thread 折叠出的权威累计值（含 purpose 拆分）调用本接口；更小的 revision 被忽略，
     /// 因此重复投递同一投影是幂等的，且摘要不依赖将被删除的日志正文。
     pub(crate) fn replace_session_usage(&self, projection: SessionUsageProjection) -> Result<()> {
-        ensure!(
-            !self.writer.stopping.load(Ordering::Acquire),
-            "call writer is stopping"
-        );
+        if self.writer.stopping.load(Ordering::Acquire) {
+            // 停机拒绝同样是一次不会落库的统计事实：置 gap 并唤醒观察者。
+            self.mark_statistics_gap();
+            bail!("call writer is stopping");
+        }
         let mutation = CallMutation::Summary(projection);
         let bytes = mutation.estimated_bytes();
-        {
+        let ticket = {
             let mut queue = self
                 .writer
                 .queue
                 .lock()
                 .unwrap_or_else(|error| error.into_inner());
+            // 容量必须按"替换后的候选"在删除任何已受理条目之前验证：否则一次失败的替换会先丢掉
+            // 旧 Summary 的 ticket、新条目又没有入队，这份已受理责任就再也无法落库。
+            let mut superseded = 0usize;
+            let mut superseded_bytes = 0usize;
+            if let CallMutation::Summary(newest) = &mutation {
+                for entry in queue.iter() {
+                    if let CallMutation::Summary(previous) = &entry.mutation
+                        && previous.thread_id == newest.thread_id
+                        && previous.revision <= newest.revision
+                    {
+                        superseded += 1;
+                        superseded_bytes = superseded_bytes.saturating_add(entry.bytes);
+                    }
+                }
+            }
+            let candidate_mutations = queue.len().saturating_sub(superseded).saturating_add(1);
+            let candidate_bytes = queue_bytes(&queue)
+                .saturating_sub(superseded_bytes)
+                .saturating_add(bytes);
+            if candidate_mutations > MAX_QUEUE_MUTATIONS || candidate_bytes > MAX_QUEUE_BYTES {
+                // 拒绝：原 queue 与全部已受理 ticket 保持不变；只表达缺口并唤醒观察者，
+                // 因此没有后续新统计时旧 Summary 仍能真实提交。
+                self.mark_statistics_gap();
+                bail!("call summary queue is full");
+            }
+            // 获准后才原子替换：删除被更新 revision 合法覆盖的旧项，再入队新项。
             if let CallMutation::Summary(newest) = &mutation {
                 queue.retain(|entry| !matches!(&entry.mutation, CallMutation::Summary(previous) if previous.thread_id == newest.thread_id && previous.revision <= newest.revision));
             }
-            ensure!(
-                queue.len() < MAX_QUEUE_MUTATIONS
-                    && queue_bytes(&queue).saturating_add(bytes) <= MAX_QUEUE_BYTES,
-                "call summary queue is full"
-            );
+            let ticket = self.next_ticket();
             queue.push_back(QueuedCallMutation {
-                ticket: self.next_ticket(),
+                ticket,
                 accepted_at: tokio::time::Instant::now(),
                 bytes,
                 mutation,
             });
-        }
+            ticket
+        };
+        self.writer
+            .statistics_admitted
+            .fetch_max(ticket, Ordering::AcqRel);
         self.writer.work_notify.notify_one();
+        // 可靠历史派生的累计费用同样是统计事实：受理那一刻就要让 follower 重新读事实，
+        // 不能只靠随后的 durable 前进（单次调用的最后一笔费用必须在正常期自然可见）。
+        notify_progress(&self.writer);
         Ok(())
     }
 
@@ -471,8 +513,27 @@ impl CallsStore {
         *self.writer.durable_ticket.borrow()
     }
 
+    /// 订阅调用库进度。
+    ///
+    /// **这不是"某次写入已落库"的证据**：同一条 channel 也承载"统计受理 / 拒绝 / 缺口等状态
+    /// 变化，请重新读取当前事实"的纯唤醒（值可能不变）。消费者每次被唤醒后都必须重新读取
+    /// 真实水位（[`Self::durable_ticket`] / [`Self::statistics_durable`]）再决定提交还是跳过，
+    /// 不能把 `changed()` 本身当成 durability 事实。
     pub(crate) fn subscribe_durable_ticket(&self) -> watch::Receiver<u64> {
         self.writer.durable_ticket.subscribe()
+    }
+
+    /// 已受理的最高统计事实（Billing / 可靠历史派生 Summary）ticket。
+    pub(crate) fn statistics_admitted(&self) -> u64 {
+        self.writer.statistics_admitted.load(Ordering::Acquire)
+    }
+
+    /// 已落库的最高统计事实（Billing / Summary）ticket。
+    ///
+    /// 只由这两类 mutation 的真实提交推进；`Effect` 提交、被拒绝的条目、被重试中的条目与
+    /// 被更新 revision 合并淘汰的旧 Summary 都不会让它越过未写入的统计事实。
+    pub(crate) fn statistics_durable(&self) -> u64 {
+        self.writer.statistics_durable.load(Ordering::Acquire)
     }
 
     /// Reads the committed effect watermark for one Thread, independently of global queue tickets.
@@ -599,7 +660,8 @@ impl CallsStore {
         retention: CallRetention,
     ) -> Result<u64> {
         if self.writer.stopping.load(Ordering::Acquire) {
-            self.writer.statistics_gap.store(true, Ordering::Release);
+            // 停机拒绝同样是"这次统计事实没有落库"的真实缺口：置 gap 并唤醒观察者。
+            self.mark_statistics_gap();
             bail!("call writer is stopping");
         }
         let record = event::billing_record(root_thread_id, thread_id, retention, billing, status);
@@ -614,7 +676,9 @@ impl CallsStore {
             if queue.len() >= MAX_QUEUE_MUTATIONS
                 || queue_bytes(&queue).saturating_add(bytes) > MAX_QUEUE_BYTES
             {
-                self.writer.statistics_gap.store(true, Ordering::Release);
+                // 拒绝也是真实状态变化：置 gap 并唤醒统计进度观察者（`mark_statistics_gap`
+                // 内含通知），不能只在随后的下一次调用或查询时才对消费者可见。
+                self.mark_statistics_gap();
                 bail!("call writer queue is full");
             }
             let ticket = self.next_ticket();
@@ -626,7 +690,12 @@ impl CallsStore {
             });
             ticket
         };
+        self.writer
+            .statistics_admitted
+            .fetch_max(ticket, Ordering::AcqRel);
         self.writer.work_notify.notify_one();
+        // 受理即唤醒：待写事实必须在真 durable 之前就对外可见，不能等下一次调用或查询。
+        notify_progress(&self.writer);
         Ok(ticket)
     }
 
@@ -949,6 +1018,9 @@ async fn apply_batch(
     let mut log = shared.log.lock().await;
     let tx = shared.db.begin().await?;
     let mut completed = 0;
+    // 本批真正提交的统计事实（Billing / 可靠历史派生 Summary）最高 ticket；只有外层事务
+    // `commit` 成功后才写进 `statistics_durable`，所以未提交的条目永远不会被当成已落库。
+    let mut statistics_committed = 0;
     let mut failures = Vec::new();
     let mut deferred = None;
     for entry in pending {
@@ -957,7 +1029,15 @@ async fn apply_batch(
             panic!("injected call statistics consumer exit");
         }
         match apply_mutation(&mut log, &tx, &entry.mutation).await {
-            Ok(()) => {}
+            Ok(()) => {
+                if matches!(
+                    &entry.mutation,
+                    CallMutation::Billing(_) | CallMutation::Summary(_)
+                ) {
+                    // 只有这两类事实进入统计水位；Effect（会话历史写入）不参与。
+                    statistics_committed = statistics_committed.max(entry.ticket);
+                }
+            }
             Err(failure) if failure.retryable => {
                 deferred = Some(failure);
                 break;
@@ -968,6 +1048,13 @@ async fn apply_batch(
     }
     performance::trim(&tx).await?;
     tx.commit().await?;
+    if statistics_committed > 0 {
+        shared
+            .statistics_durable
+            .fetch_max(statistics_committed, Ordering::AcqRel);
+        // 落库即唤醒：单次调用的最后一笔费用不需要等下一次调用、重启或查询副作用。
+        notify_progress(shared);
+    }
     Ok((completed, failures, deferred))
 }
 
@@ -1011,6 +1098,30 @@ fn requeue(shared: &CallsWriter, entries: VecDeque<QueuedCallMutation>) {
     }
 }
 
+/// 纯唤醒统计进度观察者：请重新读取当前事实，**不改变** durable 数值。
+///
+/// 官方 `watch::Sender::send_modify` 的语义是"无条件就地修改并通知全部接收者"：空闭包因此
+/// 既不读也不写旧值，不会倒退，也不会覆盖并发 `advance_durable` 写入的新值；没有接收者时
+/// 同样不会失败。真实落库水位只由 `advance_durable` 与 `statistics_durable` 推进。
+fn notify_progress(shared: &CallsWriter) {
+    shared.durable_ticket.send_modify(|_| {});
+}
+
+/// 一次统计事实被明确判为"不会落库"（队列满、停机、写入被拒绝或降级）。
+///
+/// 缺口与受理/落库一样是真实状态变化，因此**首次**由"无缺口"变为"有缺口"时必须唤醒统计进度
+/// 观察者，让它把 gap 而不是 ready 发布出去（只置位不唤醒会让消费者停在上一次快照上）。
+///
+/// 但重复标记同一个缺口**不能**再发通知：缺口一旦为 true 就不再复位，而观察者被唤醒后会重新
+/// 读取水位，读取持续失败又会再次标记缺口；若无条件通知，就会形成"通知 → 读取失败 → 标记
+/// 缺口 → 通知"的自激数据库热循环（多个 observer 会放大它）。这里用 `swap` 只让真实的
+/// false→true 跃迁产生一次广播。
+fn mark_gap(shared: &CallsWriter) {
+    if !shared.statistics_gap.swap(true, Ordering::AcqRel) {
+        notify_progress(shared);
+    }
+}
+
 /// 一次受理得到结论（提交或显式拒绝）后推进耐久 ticket 水位。
 fn advance_durable(shared: &CallsWriter, ticket: u64) {
     let current = *shared.durable_ticket.borrow();
@@ -1025,7 +1136,8 @@ fn fail_mutation(shared: &CallsWriter, message: &str) {
 }
 
 fn record_last_error(shared: &CallsWriter, message: String) {
-    shared.statistics_gap.store(true, Ordering::Release);
+    // 拒绝 / 降级也是真实状态变化：置 gap 并唤醒统计进度观察者（把 gap 而不是 ready 发布）。
+    mark_gap(shared);
     tracing::error!(error = message, "call writer is degraded");
     *shared
         .last_error

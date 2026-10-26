@@ -90,10 +90,6 @@ final class WorkspaceDirectories {
   }
 
   Future<WorkspaceThreadRecord> readThread(String id) {
-    // PROBE
-    print(
-      '[W] readThread($id)\n${StackTrace.current.toString().split('\n').where((line) => !line.contains('dart:async')).take(26).join('\n')}',
-    );
     lifetime.admit();
     final owner = openScope(ThreadDirectoryScope.thread(threadId: id));
     return lifetime.run('workspace-read-thread', () async {

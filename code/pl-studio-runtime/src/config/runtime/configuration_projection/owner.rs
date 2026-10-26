@@ -3,7 +3,8 @@ use pl_protocol::studio::{StudioError, StudioErrorCode};
 use std::sync::{Arc, Weak};
 
 use super::super::{
-    ConfigRuntime, ModelCatalogSource, RuntimeState, config_runtime_poisoned, projection_stamp,
+    ConfigRuntime, ModelCatalogSource, RuntimeState, acp_directory, config_runtime_poisoned,
+    projection_stamp,
 };
 use super::{ConfigurationCaptureFailure, ConfigurationSource, capture, status};
 
@@ -63,9 +64,12 @@ impl ConfigRuntime {
             projection_stamp(&state),
             state.snapshot.updated_at,
             state.configuration_status.clone(),
-            capture::capture(&state.snapshot)
-                .map(Arc::new)
-                .map_err(ConfigurationCaptureFailure::new),
+            capture::capture(
+                &state.snapshot,
+                acp_directory(state.snapshot.revision, state.acp_directory.as_ref()),
+            )
+            .map(Arc::new)
+            .map_err(ConfigurationCaptureFailure::new),
         );
         state
             .configuration_sources
@@ -93,9 +97,12 @@ impl ConfigRuntime {
         if sources.is_empty() {
             return sources;
         }
-        let captured = capture::capture(&state.snapshot)
-            .map(Arc::new)
-            .map_err(ConfigurationCaptureFailure::new);
+        let captured = capture::capture(
+            &state.snapshot,
+            acp_directory(state.snapshot.revision, state.acp_directory.as_ref()),
+        )
+        .map(Arc::new)
+        .map_err(ConfigurationCaptureFailure::new);
         for source in &sources {
             source.publish(
                 projection_stamp(state),

@@ -1,6 +1,8 @@
 import 'dart:async';
 
-import 'package:anywork_client/account_usage.dart';
+import 'package:anywork_client/acp.dart';
+import 'package:anywork_client/account_usage.dart'
+    show AccountUsageRepository, SessionCostsRepository;
 import 'package:anywork_client/bots.dart';
 import 'package:anywork_client/configuration.dart';
 import 'package:anywork_client/conversation_ports.dart';
@@ -16,6 +18,7 @@ import 'package:anywork_client/remote.dart';
 import 'package:anywork_client/resources.dart';
 import 'package:anywork_client/resources_ports.dart' show ResourceBudget;
 import 'package:anywork_client/skills.dart';
+import 'package:anywork_client/statistics.dart' show StatisticsRepository;
 import 'package:anywork_client/updates_ports.dart';
 import 'package:anywork_client/workspace_ports.dart';
 
@@ -41,6 +44,7 @@ AppGraph assembleApplication({
   required ModesRepository modes,
   required AccountUsageRepository accountUsage,
   required StatisticsRepository statistics,
+  required SessionCostsRepository sessionCosts,
   required WorkspaceRepository workspace,
   required StartupRepository startup,
   required ConversationRepository conversation,
@@ -49,6 +53,8 @@ AppGraph assembleApplication({
   required RemoteRepository remote,
   required McpRepository mcp,
   required LspRepository lsp,
+  required AcpAuthRepository acpAuth,
+  required AcpInstallRepository acpInstall,
   required SkillsRepository skills,
   required BotsRepository bots,
   required RecoveryRepository recovery,
@@ -240,6 +246,12 @@ AppGraph assembleApplication({
         retryCleanup: statistics.retryCleanup,
       ),
       ApplicationCloseParticipant(
+        name: 'session-costs',
+        seal: sessionCosts.seal,
+        close: sessionCosts.close,
+        retryCleanup: sessionCosts.retryCleanup,
+      ),
+      ApplicationCloseParticipant(
         name: 'remote',
         seal: remote.seal,
         close: remote.close,
@@ -256,6 +268,18 @@ AppGraph assembleApplication({
         seal: lsp.seal,
         close: lsp.close,
         retryCleanup: lsp.retryCleanup,
+      ),
+      ApplicationCloseParticipant(
+        name: 'acp-auth',
+        seal: acpAuth.seal,
+        close: acpAuth.close,
+        retryCleanup: acpAuth.retryCleanup,
+      ),
+      ApplicationCloseParticipant(
+        name: 'acp-install',
+        seal: acpInstall.seal,
+        close: acpInstall.close,
+        retryCleanup: acpInstall.retryCleanup,
       ),
       ApplicationCloseParticipant(
         name: 'skills',
@@ -295,6 +319,7 @@ AppGraph assembleApplication({
     modes: modes,
     accountUsage: accountUsage,
     statistics: statistics,
+    sessionCosts: sessionCosts,
     workspace: workspace,
     startup: startup,
     conversation: conversation,
@@ -302,6 +327,8 @@ AppGraph assembleApplication({
     remote: remote,
     mcp: mcp,
     lsp: lsp,
+    acpAuth: acpAuth,
+    acpInstall: acpInstall,
     skills: skills,
     bots: bots,
     recovery: recovery,

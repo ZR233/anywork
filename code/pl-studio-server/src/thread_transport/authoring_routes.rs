@@ -21,21 +21,17 @@ pub(crate) fn authoring_router() -> OpenApiRouter<AppState> {
         .routes(routes!(request_read_close))
         .routes(routes!(read_close))
         .routes(routes!(retry_read_close))
-        .routes(routes!(
-            authoring_read_routes::todo_open,
-            authoring_read_routes::workflow_open,
-            authoring_read_routes::plan_document_open
-        ))
-        .routes(routes!(
-            authoring_read_routes::todo_header,
-            authoring_read_routes::todo_items,
-            authoring_read_routes::workflow_header
-        ))
-        .routes(routes!(
-            authoring_read_routes::plan_document_header,
-            authoring_read_routes::plan_document,
-            authoring_read_routes::text
-        ))
+        // 每个 handler 各自声明自己的 path/method：`routes!` 只产生一个 MethodRouter，
+        // 多个同 method 的 handler 放进同一次调用会在装配期重复登记 POST。
+        .routes(routes!(authoring_read_routes::todo_open))
+        .routes(routes!(authoring_read_routes::workflow_open))
+        .routes(routes!(authoring_read_routes::plan_document_open))
+        .routes(routes!(authoring_read_routes::todo_header))
+        .routes(routes!(authoring_read_routes::todo_items))
+        .routes(routes!(authoring_read_routes::workflow_header))
+        .routes(routes!(authoring_read_routes::plan_document_header))
+        .routes(routes!(authoring_read_routes::plan_document))
+        .routes(routes!(authoring_read_routes::text))
 }
 
 #[utoipa::path(post, path = "/api/v1/threads/{thread_id}/authoring/events", operation_id = "thread.authoring.events", params(("thread_id" = String, Path)), request_body = AuthoringRequest,

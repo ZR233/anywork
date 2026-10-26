@@ -7,6 +7,16 @@ import '../../state/settings_action.dart';
 
 part 'general_settings_state.freezed.dart';
 
+/// Shell readiness is a presentation gate, not a second settings snapshot.
+@Freezed(toStringOverride: false)
+abstract class SettingsReadinessState with _$SettingsReadinessState {
+  const factory SettingsReadinessState({
+    @Default(false) bool ready,
+    ProductReadOrigin? readyOrigin,
+    StudioFailure? error,
+  }) = _SettingsReadinessState;
+}
+
 enum GeneralSettingAction {
   followActiveTurn,
   compactTimeline,

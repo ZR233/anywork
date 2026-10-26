@@ -4,6 +4,8 @@ import '../../../operations.dart';
 import '../../models/domain/model_values.dart';
 import '../../models/domain/models_state.dart';
 import '../../resources/domain/identity.dart';
+// ACP 接入值由该库定义；窄 `show` 会让生成的 `$AcpAccountUpdateCopyWith` 不可见。
+import '../../acp/domain/acp_values.dart';
 import '../domain/account_edits.dart';
 import '../domain/configuration_state.dart';
 import '../domain/profile_values.dart';
@@ -20,7 +22,7 @@ final class AccountSettingsUpdate with _$AccountSettingsUpdate {
     required this.name,
     required this.baseUrl,
     required this.secret,
-    required this.pricingEnabled,
+    required this.initialBillingKind,
     required List<AccountModelUpdate> customModels,
     required List<AccountModelConnectionUpdate> modelConnectionModes,
     required List<AccountModelAutoCompactUpdate> modelAutoCompactLimits,
@@ -33,7 +35,9 @@ final class AccountSettingsUpdate with _$AccountSettingsUpdate {
   final String name;
   final String baseUrl;
   final AccountSecretUpdate secret;
-  final bool pricingEnabled;
+
+  /// 仅创建时携带的初始计费类别；编辑已有账号必须为 null。
+  final BillingKind? initialBillingKind;
   final List<AccountModelUpdate> customModels;
   final List<AccountModelConnectionUpdate> modelConnectionModes;
   final List<AccountModelAutoCompactUpdate> modelAutoCompactLimits;
@@ -83,6 +87,42 @@ abstract class RemoveAccountRequest with _$RemoveAccountRequest {
     required String accountId,
     required String? replacementAccountId,
   }) = _RemoveAccountRequest;
+}
+
+/// 保存（新增或更新）一条 ACP 接入；与 Native 账号共用 Settings CAS 边界。
+///
+/// 只有稳定 ID、名称与 provider：受管 server 的 program/argv 属于产品固定发行，
+/// 客户端、HTTP 与配置文件都不能提交或恢复任意执行路径。
+@freezed
+abstract class UpdateAcpAccountRequest with _$UpdateAcpAccountRequest {
+  const factory UpdateAcpAccountRequest({
+    required OperationId operationId,
+    required int expectedRevision,
+    required AcpAccountUpdate account,
+  }) = _UpdateAcpAccountRequest;
+}
+
+/// 删除一条 ACP 接入；只移除本地接入，不注销官方账号或删除其凭据。
+@freezed
+abstract class RemoveAcpAccountRequest with _$RemoveAcpAccountRequest {
+  const factory RemoveAcpAccountRequest({
+    required OperationId operationId,
+    required int expectedRevision,
+    required String accountId,
+  }) = _RemoveAcpAccountRequest;
+}
+
+/// ACP 账号写入的真实结果：一次 Settings 写入，不是 configuration+models 双目标事务。
+///
+/// [receipt] 是真实 Settings 回执（唯一目标为 `settings` 资源）；[configuration] 是本次
+/// 提交捕获的配置读取目标，用于在调用关闭前从原目标完整读取 ACP 账号目录。
+/// 这里不携带整份账号目录、不伪造模型目录目标，也不把材料版本当成 Settings revision。
+@Freezed(toStringOverride: false)
+abstract class AcpAccountCommandReply with _$AcpAccountCommandReply {
+  const factory AcpAccountCommandReply({
+    required CommitReceipt receipt,
+    required ConfigurationReadTarget configuration,
+  }) = _AcpAccountCommandReply;
 }
 
 @freezed

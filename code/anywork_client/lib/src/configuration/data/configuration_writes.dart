@@ -12,6 +12,7 @@ import '../../../operations_ports.dart'
         ConfirmedWithoutUsableReceiptCommandDispatchFailure;
 import '../../../resources.dart';
 import '../../../resources_ports.dart' show ResourceBudget;
+import '../../acp/domain/acp_values.dart';
 import '../domain/account_edits.dart';
 import '../domain/configuration_repository.dart';
 import '../domain/configuration_values.dart';
@@ -238,6 +239,56 @@ final class ConfigurationWrites {
       },
     );
   }
+
+  /// 保存（新增或更新）一条 ACP 接入；同一 Settings CAS lane，与 Native 账号一致。
+  OperationTicket<Unit> saveAcpAccount(AcpAccountUpdate value) {
+    _admit();
+    final intent = freezeAcpAccountUpdate(value);
+    return _single<AcpAccountUpdate, UpdateAcpAccountRequest>(
+      'configuration:acp-account:${intent.accountId.length}:'
+      '${intent.accountId}',
+      intent,
+      (intent, id, capture) async {
+        final base = await host.currentWriteBase();
+        final request = UpdateAcpAccountRequest(
+          operationId: id,
+          expectedRevision: base.revision,
+          account: intent,
+        );
+        capture(request, base.origin);
+        final reply = await _acpAccountReply(
+          id,
+          () => port.saveAcpAccount(request),
+        );
+        return ConfigurationWriteReply.acpAccount(
+          _validatedAcpAccountReply(reply, operationId: id),
+        );
+      },
+    );
+  }
+
+  /// 删除一条 ACP 接入；不注销官方账号、不删除其凭据、不取消共享安装。
+  OperationTicket<Unit> removeAcpAccount(String accountId) =>
+      _single<String, RemoveAcpAccountRequest>(
+        'configuration:acp-account:${accountId.length}:$accountId',
+        accountId,
+        (accountId, id, capture) async {
+          final base = await host.currentWriteBase();
+          final request = RemoveAcpAccountRequest(
+            operationId: id,
+            expectedRevision: base.revision,
+            accountId: accountId,
+          );
+          capture(request, base.origin);
+          final reply = await _acpAccountReply(
+            id,
+            () => port.removeAcpAccount(request),
+          );
+          return ConfigurationWriteReply.acpAccount(
+            _validatedAcpAccountReply(reply, operationId: id),
+          );
+        },
+      );
 
   OperationTicket<Unit> setDefaultAccount(String accountId) =>
       _single<String, SetDefaultAccountRequest>(
@@ -563,6 +614,85 @@ final class ConfigurationWrites {
     ConfigurationWriteReply.settings,
   );
 
+  /// One Settings-shaped ACP account write.
+  ///
+  /// 复用配置领域既有的受管调用：结果只带真实 Settings 回执与本次提交捕获的配置读取
+  /// 目标；请求开始的响应丢失时只查找并加入原调用，绝不发起第二次提交。目标材料与
+  /// 模型目录目标互不替代。
+  Future<AcpAccountCommandReply> _acpAccountReply(
+    OperationId id,
+    Future<AcpAccountCommandCall> Function() begin,
+  ) => _ownedCommand<AcpAccountCommandReply>(
+    id,
+    () async => _acpAccountCall(await begin()),
+    () async {
+      final call = await port.findAcpAccountCommand(id);
+      return call == null ? null : _acpAccountCall(call);
+    },
+    (value) =>
+        ConfigurationWriteReply.acpAccount(_validatedAcpAccountReply(value)),
+  );
+
+  /// 已确认原生回执、但回执内容（Settings 回执或配置读取目标）非法时的结算材料。
+  ///
+  /// 保留真实回执并结算为「已提交但不可观察」：ticket 必须完成并携带 typed 失败，
+  /// 既不冒充 accepted，也不留在途状态。这里只校验回执形状与目标身份，不把材料版本
+  /// 当成 Settings revision，也不要求它与回执 revision 相等。
+  AcpAccountCommandReply _validatedAcpAccountReply(
+    AcpAccountCommandReply reply, {
+    OperationId? operationId,
+  }) {
+    try {
+      if (operationId != null && reply.receipt.operationId != operationId) {
+        throw configurationProtocol(
+          'The ACP account receipt belongs to another operation.',
+        );
+      }
+      // The raw target list must hold exactly one stamp and it must be the real
+      // Settings resource. Filtering by type first would silently drop a view
+      // stamp, and the operation registry would then wait for a resource this
+      // write never observed.
+      final targets = reply.receipt.targets;
+      if (targets.length != 1) {
+        throw configurationProtocol(
+          'The ACP account receipt does not target one real Settings resource.',
+        );
+      }
+      final stamp = targets.single;
+      if (stamp is! ResourceStamp ||
+          stamp.resourceKey != 'settings' ||
+          stamp.ownerEpoch.isEmpty ||
+          stamp.revision < 0) {
+        throw configurationProtocol(
+          'The ACP account receipt does not target one real Settings resource.',
+        );
+      }
+      final target = reply.configuration;
+      // The captured material target and the real receipt must belong to the
+      // same Settings owner: a stale-owner target read after a new-owner receipt
+      // would publish old material as this write's result. The material
+      // reference revision is a different fact from the Settings revision and is
+      // deliberately not compared with it.
+      if (target.origin.ownerEpoch != stamp.ownerEpoch ||
+          target.origin.incarnation < 0 ||
+          target.reference.entry < 0 ||
+          target.reference.revision < 0) {
+        throw configurationProtocol(
+          'The ACP account reply has an invalid configuration target.',
+        );
+      }
+    } catch (error, stack) {
+      Error.throwWithStackTrace(
+        CommittedButUnobservedCommandDispatchFailure(
+          receipt: reply.receipt,
+          failure: configurationFailure(error),
+        ),
+        stack,
+      );
+    }
+    return reply;
+  }
+
   Future<ProfileCommandReply> _profileCommand(
     OperationId id,
     Future<ProfileCommandCall> Function() begin,
@@ -604,6 +734,17 @@ final class ConfigurationWrites {
 
   ConfigurationCallBinding<ProfileCommandReply> _profileCall(
     ProfileCommandCall call,
+  ) => (
+    callId: () => call.callId,
+    operationId: () => call.operationId,
+    result: call.result,
+    requestClose: call.requestClose,
+    close: call.close,
+    retryClose: call.retryClose,
+  );
+
+  ConfigurationCallBinding<AcpAccountCommandReply> _acpAccountCall(
+    AcpAccountCommandCall call,
   ) => (
     callId: () => call.callId,
     operationId: () => call.operationId,
@@ -669,20 +810,40 @@ final class ConfigurationWrites {
   ) async {
     // One receiver can reject synchronously (for example after seal). Observe
     // every admitted peer even then; never orphan an earlier target Future.
+    final configuration = reply.configuration;
+    final models = reply.models;
+    final acpConfiguration = reply.acpConfiguration;
+    final receipt = reply.receipt;
     await Future.wait<void>([
-      Future<void>.sync(
-        () => host.synchronizeConfiguration(
-          reply.configuration,
-          receipt: reply.receipt,
+      if (configuration != null)
+        Future<void>.sync(
+          () => host.synchronizeConfiguration(configuration, receipt: receipt),
         ),
-      ),
-      Future<void>.sync(() => modelTargets.synchronize(reply.models)),
+      if (models != null)
+        Future<void>.sync(() => modelTargets.synchronize(models)),
       if (reply.profiles case final profiles?)
         Future<void>.sync(
-          () => host.synchronizeProfiles(profiles, receipt: reply.receipt),
+          () => host.synchronizeProfiles(profiles, receipt: receipt),
         ),
+      // A Settings-only write has no Settings read target: the settings topic
+      // is the only canonical source, so its watermark must cover the receipt.
+      if (configuration == null && acpConfiguration == null && receipt != null)
+        Future<void>.sync(() => host.observeSettings(receipt)),
     ]);
-    job.currentCall?.synchronized(reply.receipt);
+    if (acpConfiguration != null) {
+      if (receipt == null) {
+        throw configurationProtocol(
+          'An ACP account write has no real Settings receipt to observe.',
+        );
+      }
+      // One ACP account write observes its own watermark exactly once: the fixed
+      // target captured by the original call is read to the end, then that same
+      // boundary waits for the real Settings receipt. Calling observeSettings
+      // here as well would open a second owner-replacement window between the
+      // material read and the identity convergence.
+      await host.consumeAcpAccountTarget(acpConfiguration, receipt: receipt);
+    }
+    job.currentCall?.synchronized(receipt);
   }
 
   Future<void> _reconcile(
@@ -777,6 +938,54 @@ final class ConfigurationWrites {
   }
 
   Future<CommandResult<Unit>> _execute(ConfigurationWriteJobBase job) async {
+    try {
+      await _executeAttempts(job);
+    } catch (error, stack) {
+      // 任何逃出既有分类的失败仍然必须结算 ticket：绝不把它留在途状态。
+      host.retainFailure(error, stack);
+      _settleEscapedFailure(job, error);
+    } finally {
+      job.finished = true;
+      _release(job);
+    }
+    return job.writer.ticket.result;
+  }
+
+  /// Every settlement form of the write lane must leave the ticket completed.
+  ///
+  /// A settlement that already published evidence is never overwritten; a still
+  /// pending ticket is settled here with the real cause instead of hanging.
+  void _settleEscapedFailure(ConfigurationWriteJobBase job, Object error) {
+    final writer = job.writer;
+    final state = writer.ticket.state.value;
+    if (state.failurePhase != null ||
+        state.acknowledged ||
+        state.observed ||
+        state.receipt != null) {
+      job.retainUnresolved();
+      return;
+    }
+    final failure = _dispatchFailure(error);
+    try {
+      if (state.receipt case final receipt?) {
+        writer.synchronizationFailed(failure, receipt: receipt);
+      } else {
+        writer.unknownOutcome(failure);
+      }
+    } catch (settlementError, settlementStack) {
+      host.retainFailure(settlementError, settlementStack);
+      try {
+        writer.unknownOutcome(failure);
+      } catch (fallbackError, fallbackStack) {
+        // The writer refused every settlement form: keep the real causes instead
+        // of pretending this operation finished.
+        host.retainFailure(fallbackError, fallbackStack);
+      }
+    }
+    job.retainUnresolved();
+  }
+
+  Future<void> _executeAttempts(ConfigurationWriteJobBase job) async {
     final writer = job.writer;
     CommitReceipt? committed;
     var confirmedWithoutReceipt = false;
@@ -876,9 +1085,6 @@ final class ConfigurationWrites {
         break;
       }
     }
-    job.finished = true;
-    _release(job);
-    return writer.ticket.result;
   }
 
   StudioFailure _dispatchFailure(Object error) => switch (error) {

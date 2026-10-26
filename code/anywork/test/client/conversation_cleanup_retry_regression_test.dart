@@ -29,39 +29,48 @@ const _deliveryIssue = FeedCloseIssue(
 );
 
 void main() {
-  test('cleanup retry leaves a healthy active Session and its permits intact', () async {
-    final fixture = ConversationFixture();
-    addTearDown(() async {
-      expect((await fixture.repository.close()).complete, isTrue);
-      expect(fixture.budget.usage, isEmpty);
-    });
-    final ready = await _select(fixture, 'healthy');
-    final attempt = ready.session.timeline.state.value.attemptId;
-    final stamp = ready.session.timeline.state.value.lastStamp;
-    final usage = fixture.budget.used(ResourceKind.readModel);
+  test(
+    'cleanup retry leaves a healthy active Session and its permits intact',
+    () async {
+      final fixture = ConversationFixture();
+      addTearDown(() async {
+        expect((await fixture.repository.close()).complete, isTrue);
+        expect(fixture.budget.usage, isEmpty);
+      });
+      final ready = await _select(fixture, 'healthy');
+      final attempt = ready.session.timeline.state.value.attemptId;
+      final stamp = ready.session.timeline.state.value.lastStamp;
+      final usage = fixture.budget.used(ResourceKind.readModel);
 
-    expect((await fixture.repository.retryCleanup()).complete, isTrue);
+      expect((await fixture.repository.retryCleanup()).complete, isTrue);
 
-    expect(fixture.repository.active.value, same(ready.session));
-    expect(fixture.repository.existingSession('healthy'), same(ready.session));
-    expect(ready.session.timeline.state.value.phase, TimelineConnectionPhase.ready);
-    expect(ready.session.timeline.state.value.attemptId, attempt);
-    expect(ready.session.timeline.state.value.lastStamp, stamp);
-    expect(ready.connection.native.requestCloseCalls, 0);
-    expect(ready.connection.native.closeCalls, 0);
-    expect(ready.connection.native.retryCloseCalls, 0);
-    expect(fixture.facets.execution.single.feed.requestCloseCalls, 0);
-    expect(fixture.facets.metrics.single.feed.requestCloseCalls, 0);
-    expect(fixture.facets.context.single.feed.requestCloseCalls, 0);
-    expect(fixture.facets.configuration.single.feed.requestCloseCalls, 0);
-    expect(fixture.facets.authoring.single.feed.requestCloseCalls, 0);
-    expect(fixture.timeline.requests, hasLength(1));
-    expect(fixture.budget.used(ResourceKind.chatHandle), 1);
-    expect(fixture.budget.used(ResourceKind.readModel), usage);
+      expect(fixture.repository.active.value, same(ready.session));
+      expect(
+        fixture.repository.existingSession('healthy'),
+        same(ready.session),
+      );
+      expect(
+        ready.session.timeline.state.value.phase,
+        TimelineConnectionPhase.ready,
+      );
+      expect(ready.session.timeline.state.value.attemptId, attempt);
+      expect(ready.session.timeline.state.value.lastStamp, stamp);
+      expect(ready.connection.native.requestCloseCalls, 0);
+      expect(ready.connection.native.closeCalls, 0);
+      expect(ready.connection.native.retryCloseCalls, 0);
+      expect(fixture.facets.execution.single.feed.requestCloseCalls, 0);
+      expect(fixture.facets.metrics.single.feed.requestCloseCalls, 0);
+      expect(fixture.facets.context.single.feed.requestCloseCalls, 0);
+      expect(fixture.facets.configuration.single.feed.requestCloseCalls, 0);
+      expect(fixture.facets.authoring.single.feed.requestCloseCalls, 0);
+      expect(fixture.timeline.requests, hasLength(1));
+      expect(fixture.budget.used(ResourceKind.chatHandle), 1);
+      expect(fixture.budget.used(ResourceKind.readModel), usage);
 
-    // A no-op cleanup must not seal new admission either.
-    expect(fixture.repository.session('another'), isNotNull);
-  });
+      // A no-op cleanup must not seal new admission either.
+      expect(fixture.repository.session('another'), isNotNull);
+    },
+  );
 
   test('cleanup retry advances only the unresolved retired Session beside a healthy one', () async {
     final fixture = ConversationFixture();
@@ -74,13 +83,17 @@ void main() {
     });
     old.connection.native.closeReport = _unresolved('retired');
     final retiring = await fixture.demand.retire('retired');
-    final original = retiring.unresolved.singleWhere((entry) => entry.owner == 'timeline:retired');
+    final original = retiring.unresolved.singleWhere(
+      (entry) => entry.owner == 'timeline:retired',
+    );
     expect(original.issues, containsAll([_closeIssue, _deliveryIssue]));
     final healthy = await _select(fixture, 'healthy');
     final attempt = healthy.session.timeline.state.value.attemptId;
 
     final failedRetry = await fixture.repository.retryCleanup();
-    final retained = failedRetry.unresolved.singleWhere((entry) => entry.owner == original.owner);
+    final retained = failedRetry.unresolved.singleWhere(
+      (entry) => entry.owner == original.owner,
+    );
     expect(retained.attemptId, original.attemptId);
     expect(retained.issues, containsAll([_closeIssue, _deliveryIssue]));
     expect(old.connection.native.retryCloseCalls, 1);
@@ -88,7 +101,11 @@ void main() {
 
     old.connection.native.closeReport = _clean('retired');
     expect((await fixture.repository.retryCleanup()).complete, isTrue);
-    expect(old.connection.native.retryCloseCalls, 2, reason: 'an Unresolved Future is not cached forever');
+    expect(
+      old.connection.native.retryCloseCalls,
+      2,
+      reason: 'an Unresolved Future is not cached forever',
+    );
     expect(old.connection.native.disposeCalls, 1);
     expect(fixture.repository.active.value, same(healthy.session));
     expect(healthy.session.timeline.state.value.attemptId, attempt);
@@ -97,8 +114,16 @@ void main() {
     expect(fixture.budget.used(ResourceKind.chatHandle), 1);
     expect((await fixture.repository.retryCleanup()).complete, isTrue);
     expect(old.connection.native.retryCloseCalls, 2);
-    expect(old.connection.native.disposeCalls, 1, reason: 'successful cleanup releases only once');
-    expect(fixture.timeline.requests, hasLength(2), reason: 'cleanup never opens a connection');
+    expect(
+      old.connection.native.disposeCalls,
+      1,
+      reason: 'successful cleanup releases only once',
+    );
+    expect(
+      fixture.timeline.requests,
+      hasLength(2),
+      reason: 'cleanup never opens a connection',
+    );
   });
 
   test('cleanup retry joins an old Timeline attempt without sealing its current Session', () async {
@@ -131,9 +156,16 @@ void main() {
     final original = await ready.session.timeline.lifecycle.observeRetired(
       deadline: DateTime.now().add(const Duration(seconds: 3)),
     );
-    expect(original.unresolved.expand((entry) => entry.issues).any((issue) =>
-      issue.diagnostic.correlationId == 'retired-native-close' &&
-      issue.recovery == CleanupRecovery.retryClose), isTrue);
+    expect(
+      original.unresolved
+          .expand((entry) => entry.issues)
+          .any(
+            (issue) =>
+                issue.diagnostic.correlationId == 'retired-native-close' &&
+                issue.recovery == CleanupRecovery.retryClose,
+          ),
+      isTrue,
+    );
     final attempt = ready.session.timeline.state.value.attemptId;
 
     ready.connection.native.closeFailure = null;
@@ -162,9 +194,15 @@ void main() {
 
     final closing = await fixture.repository.close();
 
-    expect(closing.unresolved.expand((entry) => entry.issues), containsAll([_closeIssue, _deliveryIssue]));
+    expect(
+      closing.unresolved.expand((entry) => entry.issues),
+      containsAll([_closeIssue, _deliveryIssue]),
+    );
     expect(fixture.repository.active.value, isNull);
-    expect(() => fixture.repository.session('another'), throwsA(isA<StudioFailure>()));
+    expect(
+      () => fixture.repository.session('another'),
+      throwsA(isA<StudioFailure>()),
+    );
     expect(ready.connection.native.requestCloseCalls, greaterThan(0));
     expect(fixture.budget.used(ResourceKind.chatHandle), 1);
     ready.connection.native.closeReport = _clean('thread');
@@ -176,13 +214,14 @@ void main() {
   });
 }
 
-Future<({ConversationSession session, TimelineConnectionProbe connection})> _select(
-  ConversationFixture fixture,
-  String threadId,
-) async {
+Future<({ConversationSession session, TimelineConnectionProbe connection})>
+_select(ConversationFixture fixture, String threadId) async {
   final session = fixture.select(threadId);
   session.timeline.attachConsumer((_) {});
-  return (session: session, connection: await _accept(fixture, session, threadId));
+  return (
+    session: session,
+    connection: await _accept(fixture, session, threadId),
+  );
 }
 
 Future<TimelineConnectionProbe> _accept(
@@ -190,10 +229,14 @@ Future<TimelineConnectionProbe> _accept(
   ConversationSession session,
   String subscriptionId,
 ) async {
-  final index = fixture.timeline.requests.where((request) => request.result.isCompleted).length;
-  final connection = TimelineConnectionProbe(TestTimelineConnection(
-    initial: baseline(1, subscriptionId: subscriptionId, items: const []),
-  ));
+  final index = fixture.timeline.requests
+      .where((request) => request.result.isCompleted)
+      .length;
+  final connection = TimelineConnectionProbe(
+    TestTimelineConnection(
+      initial: baseline(1, subscriptionId: subscriptionId, items: const []),
+    ),
+  );
   (await fixture.timeline.opened(index)).result.complete(connection);
   await session.timeline.ready;
   await connection.acknowledged(1);

@@ -32,7 +32,6 @@ impl ModelReadMaterial {
             .ok_or_else(wrong_field)?;
         let text = |field| self.read(TextField::Template(index, field), inline);
         Ok(AccountTemplateRead {
-            pricing_enabled: source.pricing_enabled,
             id: text(TemplateText::Id)?,
             display_name: text(TemplateText::DisplayName)?,
             description: source

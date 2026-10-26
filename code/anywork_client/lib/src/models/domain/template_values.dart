@@ -22,7 +22,6 @@ final class AccountTemplatesValue with _$AccountTemplatesValue {
 @freezed
 abstract class AccountTemplate with _$AccountTemplate {
   const factory AccountTemplate({
-    required bool pricingEnabled,
     required String id,
     required String displayName,
     required String? description,

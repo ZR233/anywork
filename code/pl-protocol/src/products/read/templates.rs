@@ -16,7 +16,6 @@ pub struct AccountTemplatesReadHeader {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[derive(utoipa::ToSchema)]
 pub struct AccountTemplateRead {
-    pub pricing_enabled: bool,
     pub id: ReadText,
     pub display_name: ReadText,
     pub description: Option<ReadText>,

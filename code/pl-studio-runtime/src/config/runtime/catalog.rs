@@ -213,12 +213,18 @@ impl ConfigRuntime {
             Err(error) => next.status.error = Some(error),
         }
         let mut state = self.state.write().map_err(|_| config_runtime_poisoned())?;
+        let profiles_config = effective_config.clone();
         if let Some(config) = effective_config {
             state.snapshot.config = config;
         }
         state.observations = next_observations;
         let publication = self.publish_catalog_locked(&mut state, affected);
         drop(state);
+        // Model withdrawal/recovery changes whether an otherwise enabled child Profile can run.
+        // Publish that availability through the existing Profile owner and generation channel.
+        if let Some(config) = profiles_config {
+            self.profiles.adopt_scan(self.store.paths(), &config);
+        }
         drop(_command);
         self.notify_projection(publication);
         Ok(())

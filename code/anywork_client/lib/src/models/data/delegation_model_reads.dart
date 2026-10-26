@@ -1,11 +1,11 @@
 import 'package:freezed_annotation/freezed_annotation.dart';
 
 import '../../../resources.dart';
-import '../../account_usage/domain/statistics_values.dart';
 import '../../modes/domain/delegation_values.dart';
 import '../domain/delegation_model_values.dart';
 import '../domain/model_evaluation_values.dart';
 import '../domain/model_guide_values.dart';
+import '../domain/model_performance_values.dart';
 import '../domain/model_values.dart';
 import 'model_reads.dart';
 

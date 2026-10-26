@@ -57,7 +57,7 @@ final class AccountModelLimitsViewModelProvider
 }
 
 String _$accountModelLimitsViewModelHash() =>
-    r'67beaeb50760f49b4de3fcd37c42074648062eab';
+    r'b273eceb19297a48531782ebd71a4542c05269c5';
 
 final class AccountModelLimitsViewModelFamily extends $Family
     with

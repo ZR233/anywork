@@ -1,5 +1,3 @@
-import 'package:anywork_client/account_usage.dart'
-    show LocalModelPerformanceSummary;
 import 'package:anywork_client/models_ports.dart';
 import 'package:anywork_client/modes.dart'
     show DelegationMode, DelegationPreference;

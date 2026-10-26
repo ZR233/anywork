@@ -58,7 +58,6 @@ final class ConfigurationStartFixture {
       name: 'Original account',
       baseUrl: 'https://start.invalid',
       hasBearerToken: true,
-      pricingEnabled: true,
       billingKind: BillingKind.metered,
       bearerTokenEnv: null,
       billingKindOverride: null,

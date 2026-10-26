@@ -5,10 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../connectors/settings_failure_text.dart';
-import '../../../../l10n/studio_l10n.dart';
 import '../../state/settings_action.dart';
-import '../../widgets/settings_feedback.dart';
-import '../../widgets/settings_pane.dart';
 import '../../updates/connectors/updates_connector.dart';
 import '../state/general_settings_state.dart';
 import '../view_models/general_settings_view_model.dart';
@@ -23,6 +20,19 @@ class GeneralSettingsConnector extends ConsumerWidget {
       .when(
         data: (state) {
           final vm = ref.read(generalSettingsViewModelProvider.notifier);
+          if (state.canonical == null) {
+            final error =
+                state.readIssues[GeneralReadField.general] ??
+                switch (state.source.general) {
+                  FailedReadValue(:final error) => error,
+                  _ => state.source.projection.sync.error,
+                };
+            return Center(
+              child: error == null
+                  ? const CircularProgressIndicator()
+                  : SelectableText(settingsFailureText(error)),
+            );
+          }
           return GeneralSettingsView(
             state: state,
             updates: const UpdatesConnector(),
@@ -81,23 +91,10 @@ class GeneralSettingsConnector extends ConsumerWidget {
             ],
           );
         },
-        // The page shell stays in place for both states; loading and failure are
-        // content-area rows, never a whole-page replacement.
-        loading: () => SettingsPane.scrolling(
-          title: context.l10n.settingsGeneralTitle,
-          subtitle: context.l10n.settingsGeneralSubtitle,
-          children: const [SizedBox(height: 16), LinearProgressIndicator()],
-        ),
+        loading: () => const Center(child: CircularProgressIndicator()),
         error: (error, stack) {
           if (error is! StudioFailure) Error.throwWithStackTrace(error, stack);
-          return SettingsPane.scrolling(
-            title: context.l10n.settingsGeneralTitle,
-            subtitle: context.l10n.settingsGeneralSubtitle,
-            children: [
-              const SizedBox(height: 16),
-              SettingsInlineError(message: settingsFailureText(error)),
-            ],
-          );
+          return Center(child: SelectableText(settingsFailureText(error)));
         },
       );
 }

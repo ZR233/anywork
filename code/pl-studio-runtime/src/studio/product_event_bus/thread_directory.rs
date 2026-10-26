@@ -246,7 +246,7 @@ impl ProductEventBus {
         upserted: Vec<Thread>,
         removed: Vec<String>,
     ) -> Result<StudioProductEventEnvelope> {
-        self.publish_thread_delta(upserted, removed, Vec::new())
+        Ok(self.publish_thread_delta(upserted, removed, Vec::new()))
     }
 
     fn publish_thread_delta(
@@ -254,7 +254,7 @@ impl ProductEventBus {
         mut upserted: Vec<Thread>,
         removed: Vec<String>,
         archived: Vec<Thread>,
-    ) -> Result<StudioProductEventEnvelope> {
+    ) -> StudioProductEventEnvelope {
         let (revision, updated_at) = {
             let mut index = self
                 .thread_index
@@ -289,14 +289,14 @@ impl ProductEventBus {
             self.revision(&self.revisions.thread)
         };
         // State and tombstones are visible before observers receive removal.
-        Ok(self.emit(StudioProductEventKind::ThreadDirectoryChanged(
+        self.emit(StudioProductEventKind::ThreadDirectoryChanged(
             StudioThreadDirectoryDelta {
                 revision,
                 updated_at,
                 upserted,
                 removed,
             },
-        )))
+        ))
     }
 
     /// Applies only runtime-owned fields to the current hot directory entry.
@@ -427,6 +427,23 @@ impl ProductEventBus {
         }
     }
 
+    /// Records a Thread fact already committed by core before waiting for its persistence.
+    /// A failed/cancelled wait cannot reject that fact: write-behind retains the exact delta and
+    /// exposes its normal PersistenceState/retry path. No core operation is replayed on retry.
+    pub(in crate::studio) async fn commit_observed_thread(
+        &self,
+        thread: Thread,
+    ) -> Result<StudioProductEventEnvelope> {
+        self.writer.record_directory(DirectoryDelta {
+            thread_upserts: vec![thread.clone()],
+            ..Default::default()
+        });
+        let ticket = self.writer.admitted_ticket();
+        let event = self.publish_thread_delta(vec![thread], Vec::new(), Vec::new());
+        self.writer.flush_through(ticket).await?;
+        Ok(event)
+    }
+
     /// 提交一次目录事实：在内存登记事实、更新热集合并广播。
     ///
     /// 这是 Thread/Project 目录 mutation 的唯一命令通道；后台保存不能拒绝目录事实。
@@ -491,8 +508,7 @@ impl ProductEventBus {
         );
         let mut envelope = None;
         if !thread_upserts.is_empty() || !thread_removals.is_empty() {
-            envelope =
-                Some(self.publish_thread_delta(thread_upserts, thread_removals, archived)?);
+            envelope = Some(self.publish_thread_delta(thread_upserts, thread_removals, archived));
         }
         let project_upserts = delta
             .project_upserts

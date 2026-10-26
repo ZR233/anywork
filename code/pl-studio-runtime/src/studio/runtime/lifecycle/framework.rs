@@ -165,6 +165,12 @@ impl StudioRuntime {
     /// 只有原生产者全部收束后，最终 persistence 阶段才停止 writer。
     pub(super) async fn shutdown_persistence(&self) -> Result<()> {
         self.flush_persistence().await?;
+        // A drained queue only means the admitted facts are durable. The writer task and its two
+        // helpers own the same Thread separately, so their real end is waited for here: before the
+        // persistence owner is released, and while the global recorder can still take their last
+        // report.
+        let writers = self.store.thread_persistence().wait_for_writers_end(None).await;
+        writers.map_err(PersistenceShutdownFailure::Writers)?;
         let repository = self.agent_facility.persistence.lock().await.clone();
         if let Some(repository) = repository {
             repository
@@ -175,6 +181,17 @@ impl StudioRuntime {
         }
         // Call statistics are a lossy projection; they never hold up authoritative history.
         self.store.calls().stop_best_effort();
+        // History connections outlive their Thread: their last holder handed them to the coordinator
+        // instead of leaving them to an unobservable drop. Sealing takes the same admission boundary
+        // the handle construction uses, so after it returns no new holder can appear; every
+        // producer, reader and session owner was already joined above. Settling then joins those
+        // original connections and keeps every real failure.
+        let persistence = self.store.thread_persistence();
+        persistence.seal_history().await;
+        persistence
+            .settle_history()
+            .await
+            .map_err(|group| PersistenceShutdownFailure::History(anyhow::Error::new(group)))?;
         Ok(())
     }
 
@@ -230,10 +247,14 @@ fn retryable_thread_close(error: &crate::thread_assembler::ThreadAssemblyError) 
 pub(super) enum PersistenceShutdownFailure {
     #[error("history drain did not complete")]
     Drain(#[source] anyhow::Error),
+    #[error("writer tasks did not end")]
+    Writers(#[source] anyhow::Error),
     #[error("write-behind flush did not complete")]
     Flush(#[source] anyhow::Error),
     #[error("write-behind shutdown did not complete")]
     Shutdown(#[source] anyhow::Error),
+    #[error("history connections were not closed")]
+    History(#[source] anyhow::Error),
 }
 
 impl std::fmt::Display for FrameworkShutdownFailure {

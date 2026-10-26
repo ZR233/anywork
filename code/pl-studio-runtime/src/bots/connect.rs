@@ -335,6 +335,7 @@ pub struct ClaimedSend<'a> {
     pub store: &'a BotStateStore,
     pub plan: SendPlan,
     pub facts: Vec<SendSegmentFact>,
+    pub rate: &'a super::send::SendRate,
 }
 
 pub async fn send_text(
@@ -349,6 +350,7 @@ pub async fn send_text(
         store,
         plan,
         mut facts,
+        rate,
     } = claimed;
     let im = FeishuIm::new(http.clone());
     let mut segments = Vec::new();
@@ -356,8 +358,9 @@ pub async fn send_text(
     let mut unknown = false;
     let mut rejected = false;
     for (index, segment) in plan.segments.iter().enumerate() {
+        rate.acquire().await.start();
         match im
-            .send_text(token, chat_id, segment, &plan.uuids[index])
+            .send_markdown(token, chat_id, segment, &plan.uuids[index])
             .await
         {
             Ok(outcome) => {
@@ -371,12 +374,7 @@ pub async fn send_text(
                 facts[index].status = SendRecordStatus::Succeeded;
                 facts[index].platform_message_id = Some(outcome.message_id.clone());
             }
-            Err(error)
-                if matches!(
-                    error.kind(),
-                    FeishuErrorKind::Timeout | FeishuErrorKind::Transport
-                ) =>
-            {
+            Err(error) if error.acceptance_unknown() => {
                 unknown = true;
                 segments.push(pl_protocol::studio::BotSendSegment {
                     index: index as u32,

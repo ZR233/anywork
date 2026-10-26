@@ -13,7 +13,11 @@ void main() {
   test('production auto demand exposes query errors without uncaught zone failures', () async {
     final fixture = await settingsUsageFixture({'a': 1, 'b': 1});
     final queries = fixture.usage;
-    final presentation = AccountUsageChecks(fixture.configuration, queries, (_) {});
+    final presentation = AccountUsageChecks(
+      fixture.configuration,
+      queries,
+      (_) {},
+    );
     addTearDown(presentation.dispose);
     presentation.visibleAccounts({'a', 'b'});
     final uncaught = <Object>[];
@@ -22,23 +26,41 @@ void main() {
       final a = await fixture.usagePort.called(0);
       final b = await fixture.usagePort.called(1);
       expect(fixture.usagePort.calls.map((call) => call.accountId), ['a', 'b']);
-      expect(presentation.snapshot.entries.where((entry) => entry.value.operation.isPending)
-        .map((entry) => entry.key), containsAll(['a', 'b']));
-      expect(presentation.snapshot.map((id, check) => MapEntry(id, check.identity)), {
-        'a': AccountUsageQueryIdentity(accountId: 'a', usageQueryRevision: 1,
-          ownerEpoch: usageFixtureOrigin.ownerEpoch),
-        'b': AccountUsageQueryIdentity(accountId: 'b', usageQueryRevision: 1,
-          ownerEpoch: usageFixtureOrigin.ownerEpoch),
-      });
+      expect(
+        presentation.snapshot.entries
+            .where((entry) => entry.value.operation.isPending)
+            .map((entry) => entry.key),
+        containsAll(['a', 'b']),
+      );
+      expect(
+        presentation.snapshot.map((id, check) => MapEntry(id, check.identity)),
+        {
+          'a': AccountUsageQueryIdentity(
+            accountId: 'a',
+            usageQueryRevision: 1,
+            ownerEpoch: usageFixtureOrigin.ownerEpoch,
+          ),
+          'b': AccountUsageQueryIdentity(
+            accountId: 'b',
+            usageQueryRevision: 1,
+            ownerEpoch: usageFixtureOrigin.ownerEpoch,
+          ),
+        },
+      );
       final aTicket = queries.checks.value['a']!.ticket;
       final bTicket = queries.checks.value['b']!.ticket;
       fixture.declareUsage(1, {'a': usageRecord('a', 1)});
       a.succeed(1);
       await fixture.publishUsage(1);
-      expect(await aTicket.result, isA<AcknowledgedCommandResult<AccountUsageRecord>>());
+      expect(
+        await aTicket.result,
+        isA<AcknowledgedCommandResult<AccountUsageRecord>>(),
+      );
       expect(presentation.snapshot['b']!.operation.isPending, isTrue);
       expect(presentation.snapshot['a']!.operation.error, isNull);
-      b.reply.completeError(const CommandDispatchFailure.rejected(failure: settingsUsageFailure));
+      b.reply.completeError(
+        const CommandDispatchFailure.rejected(failure: settingsUsageFailure),
+      );
       await bTicket.result;
       expect(presentation.snapshot['b']!.operation.isPending, isFalse);
       expect(presentation.snapshot['b']!.operation.error, settingsUsageFailure);
@@ -52,15 +74,22 @@ void main() {
   test('readonly check adapter observes progress and exact canonical query identity without scheduling', () async {
     final fixture = await settingsUsageFixture({'a': 1, 'b': 1});
     final queries = fixture.usage;
-    final presentation = AccountUsageChecks(fixture.configuration, queries, (_) {});
+    final presentation = AccountUsageChecks(
+      fixture.configuration,
+      queries,
+      (_) {},
+    );
     addTearDown(presentation.dispose);
     presentation.visibleAccounts({'a', 'b'});
     expect(presentation.snapshot, isEmpty);
     expect(fixture.usagePort.calls, isEmpty);
     final ticket = queries.check('a');
     final call = await fixture.usagePort.called(0);
-    final identity = AccountUsageQueryIdentity(accountId: 'a', usageQueryRevision: 1,
-      ownerEpoch: usageFixtureOrigin.ownerEpoch);
+    final identity = AccountUsageQueryIdentity(
+      accountId: 'a',
+      usageQueryRevision: 1,
+      ownerEpoch: usageFixtureOrigin.ownerEpoch,
+    );
     expect(presentation.snapshot['a']!.identity, identity);
     expect(presentation.snapshot['a']!.operation.isPending, isTrue);
     fixture.declareUsage(1, {'a': usageRecord('a', 1)});
@@ -75,8 +104,9 @@ void main() {
     // An unrelated rename is not a new usage identity or a network demand.
     queries.setVisibleAccounts({'a'});
     await fixture.configurationChanged({'a': 1, 'b': 1});
-    await queries.checks.waitFor((checks) => checks['a']?.identity == identity)
-      .timeout(const Duration(seconds: 3));
+    await queries.checks
+        .waitFor((checks) => checks['a']?.identity == identity)
+        .timeout(const Duration(seconds: 3));
     presentation.refresh();
     expect(presentation.snapshot['a']!.identity, identity);
     expect(presentation.snapshot['a']!.operation.id, ticket.id);
@@ -85,14 +115,25 @@ void main() {
     queries.setVisibleAccounts({});
     await fixture.configurationChanged({'a': 2, 'b': 1});
     presentation.refresh();
-    expect(presentation.snapshot.containsKey('a'), isFalse,
-      reason: 'The old revision cannot remain current or trigger a replacement read by observation alone');
+    expect(
+      presentation.snapshot.containsKey('a'),
+      isFalse,
+      reason: 'The old revision cannot remain current or trigger a replacement read by observation alone',
+    );
     expect(fixture.usagePort.calls.map((call) => call.accountId), ['a']);
     final current = queries.check('a');
     final next = await fixture.usagePort.called(1);
-    expect(presentation.snapshot['a']!.identity, AccountUsageQueryIdentity(
-      accountId: 'a', usageQueryRevision: 2, ownerEpoch: usageFixtureOrigin.ownerEpoch));
-    next.reply.completeError(const CommandDispatchFailure.rejected(failure: settingsUsageFailure));
+    expect(
+      presentation.snapshot['a']!.identity,
+      AccountUsageQueryIdentity(
+        accountId: 'a',
+        usageQueryRevision: 2,
+        ownerEpoch: usageFixtureOrigin.ownerEpoch,
+      ),
+    );
+    next.reply.completeError(
+      const CommandDispatchFailure.rejected(failure: settingsUsageFailure),
+    );
     await current.result;
     await fixture.configurationChanged({'b': 1});
     presentation.refresh();

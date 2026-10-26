@@ -14,6 +14,7 @@ ProviderContainer createApplicationContainer(AppGraph graph) =>
         modesRepositoryProvider.overrideWithValue(graph.modes),
         accountUsageRepositoryProvider.overrideWithValue(graph.accountUsage),
         statisticsRepositoryProvider.overrideWithValue(graph.statistics),
+        sessionCostsRepositoryProvider.overrideWithValue(graph.sessionCosts),
         workspaceRepositoryProvider.overrideWithValue(graph.workspace),
         startupRepositoryProvider.overrideWithValue(graph.startup),
         conversationRepositoryProvider.overrideWithValue(graph.conversation),
@@ -21,6 +22,8 @@ ProviderContainer createApplicationContainer(AppGraph graph) =>
         remoteRepositoryProvider.overrideWithValue(graph.remote),
         mcpRepositoryProvider.overrideWithValue(graph.mcp),
         lspRepositoryProvider.overrideWithValue(graph.lsp),
+        acpAuthRepositoryProvider.overrideWithValue(graph.acpAuth),
+        acpInstallRepositoryProvider.overrideWithValue(graph.acpInstall),
         skillsRepositoryProvider.overrideWithValue(graph.skills),
         botsRepositoryProvider.overrideWithValue(graph.bots),
         recoveryRepositoryProvider.overrideWithValue(graph.recovery),
@@ -62,6 +65,10 @@ void requireApplicationContainer(ProviderContainer container, AppGraph graph) {
         container.read(statisticsRepositoryProvider),
         graph.statistics,
       ) &&
+      identical(
+        container.read(sessionCostsRepositoryProvider),
+        graph.sessionCosts,
+      ) &&
       identical(container.read(workspaceRepositoryProvider), graph.workspace) &&
       identical(container.read(startupRepositoryProvider), graph.startup) &&
       identical(
@@ -72,6 +79,11 @@ void requireApplicationContainer(ProviderContainer container, AppGraph graph) {
       identical(container.read(remoteRepositoryProvider), graph.remote) &&
       identical(container.read(mcpRepositoryProvider), graph.mcp) &&
       identical(container.read(lspRepositoryProvider), graph.lsp) &&
+      identical(container.read(acpAuthRepositoryProvider), graph.acpAuth) &&
+      identical(
+        container.read(acpInstallRepositoryProvider),
+        graph.acpInstall,
+      ) &&
       identical(container.read(skillsRepositoryProvider), graph.skills) &&
       identical(container.read(botsRepositoryProvider), graph.bots) &&
       identical(container.read(recoveryRepositoryProvider), graph.recovery) &&

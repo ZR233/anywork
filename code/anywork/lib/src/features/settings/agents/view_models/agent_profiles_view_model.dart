@@ -275,10 +275,9 @@ class AgentProfilesViewModel extends _$AgentProfilesViewModel {
       routes: routes,
       matchingProfileIds: [
         for (final profile in profiles)
-          if (profile.profileId != 'planner' &&
-              '${value.systemSearchLabels[profile.profileId] ?? profile.displayName} ${profile.profileId} ${profile.description}'
-                  .toLowerCase()
-                  .contains(query))
+          if ('${value.systemSearchLabels[profile.profileId] ?? profile.displayName} ${profile.profileId} ${profile.description}'
+              .toLowerCase()
+              .contains(query))
             profile.profileId,
       ],
     );
@@ -531,7 +530,7 @@ class AgentProfilesViewModel extends _$AgentProfilesViewModel {
       _configuration.profiles.value.projection.stamp?.origin,
       (profile) => profile.profileId == id,
     )?.value;
-    if (profile == null || !profile.system || profile.profileId == 'planner') {
+    if (profile == null || !profile.system) {
       return;
     }
     await _profileAction(
@@ -633,8 +632,7 @@ class AgentProfilesViewModel extends _$AgentProfilesViewModel {
   bool _roleEditable(String role) {
     final target = currentRoleReadTarget(_configuration.state.value);
     final read = state.requireValue.roleReads[role];
-    return role != 'planner' &&
-        target != null &&
+    return target != null &&
         read?.target == target &&
         read?.value != null &&
         read?.pending == false &&

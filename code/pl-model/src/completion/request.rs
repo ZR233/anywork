@@ -9,9 +9,37 @@ use pl_protocol::{
     AttachmentModality, ContentPart, Message, ModelContextItem, PureError, ToolSpec,
 };
 
+/// Provider-neutral trusted instruction content for one completion request.
+///
+/// Callers assemble the complete trusted body (base, Agent/Mode roles, platform, config,
+/// skills and tool-scheduling rules) and hand it here without selecting a wire role. The
+/// vendor protocol adapter decides whether the content is sent as `system` or `developer`
+/// from the concrete protocol and wire API, never from a model name or endpoint URL.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SystemPrompt {
+    content: String,
+}
+
+impl SystemPrompt {
+    pub fn new(content: impl Into<String>) -> Self {
+        Self {
+            content: content.into(),
+        }
+    }
+
+    /// The complete provider-neutral instruction text.
+    pub fn content(&self) -> &str {
+        &self.content
+    }
+
+    pub fn into_string(self) -> String {
+        self.content
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct CompletionRequest {
-    pub instructions: Option<String>,
+    pub system_prompt: Option<SystemPrompt>,
     pub input: Vec<ModelContextItem>,
     pub attachments: Vec<super::AttachmentInput>,
     pub(crate) prepared_content: Vec<ResolvedAttachment>,
@@ -53,13 +81,13 @@ pub struct CompletionRequestBuilder {
 }
 
 impl CompletionRequestBuilder {
-    pub fn instructions(mut self, instructions: impl Into<String>) -> Self {
-        self.request.instructions = Some(instructions.into());
+    pub fn system_prompt(mut self, system_prompt: SystemPrompt) -> Self {
+        self.request.system_prompt = Some(system_prompt);
         self
     }
 
-    pub fn maybe_instructions(mut self, instructions: Option<String>) -> Self {
-        self.request.instructions = instructions;
+    pub fn maybe_system_prompt(mut self, system_prompt: Option<SystemPrompt>) -> Self {
+        self.request.system_prompt = system_prompt;
         self
     }
 
@@ -178,7 +206,7 @@ impl CompletionRequest {
     pub fn builder() -> CompletionRequestBuilder {
         CompletionRequestBuilder {
             request: CompletionRequest {
-                instructions: None,
+                system_prompt: None,
                 input: Vec::new(),
                 prepared_content: Vec::new(),
                 replay_spans: Vec::new(),

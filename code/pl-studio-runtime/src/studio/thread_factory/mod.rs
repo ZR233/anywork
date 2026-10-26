@@ -93,6 +93,13 @@ impl std::fmt::Debug for StudioThreadFactory {
 }
 
 impl crate::thread_assembler::StudioActivationFactory for StudioThreadFactory {
+    async fn root_delegation(
+        &self,
+        identity: &crate::thread_assembler::ThreadActivation,
+    ) -> Result<pl_protocol::DelegationSettings, crate::thread_assembler::ThreadAssemblyError> {
+        self.resolve_root_delegation(identity).await
+    }
+
     async fn prepare(
         &self,
         request: crate::thread_assembler::ThreadPreparation,
@@ -103,8 +110,7 @@ impl crate::thread_assembler::StudioActivationFactory for StudioThreadFactory {
         if request.identity.parent_id.is_some() {
             self.prepare_restored_child(request).await
         } else {
-            self.prepare_root_thread(&request.identity.id, request.cancellation)
-                .await
+            self.prepare_root_thread(request).await
         }
     }
 }

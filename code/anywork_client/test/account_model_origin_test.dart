@@ -63,7 +63,6 @@ AccountConfiguration _account() => AccountConfiguration(
   baseUrl: 'http://fixture.invalid',
   hasBearerToken: true,
   bearerTokenEnv: null,
-  pricingEnabled: false,
   billingKind: BillingKind.metered,
   billingKindOverride: null,
   disabledModels: const [],

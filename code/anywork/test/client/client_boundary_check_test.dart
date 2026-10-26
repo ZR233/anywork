@@ -3,7 +3,8 @@ import 'package:flutter_test/flutter_test.dart';
 import '../../../../xtask/dart/client_boundary_check.dart';
 
 const _client = 'code/anywork_client/lib/src/fixture.dart';
-const _feature = 'code/anywork/lib/src/features/conversation/views/chat_view.dart';
+const _feature =
+    'code/anywork/lib/src/features/conversation/views/chat_view.dart';
 const _account = 'code/anywork/lib/src/presentation/providers/fixture.dart';
 const _state = 'code/anywork/lib/src/features/conversation/state/fixture.dart';
 const _vm = 'code/anywork/lib/src/features/settings/view_models/fixture.dart';
@@ -85,12 +86,19 @@ void main() {
           "'package:flutter_riverpod/flutter_riverpod.dart';",
       rule: 'UI-02',
     ),
-    for (final owner in ['WidgetRef', 'ConfigurationRepository', 'ThreadSession',
-      'TimelineConnection', 'AppGraph', 'GetIt'])
+    for (final owner in [
+      'WidgetRef',
+      'ConfigurationRepository',
+      'ThreadSession',
+      'TimelineConnection',
+      'AppGraph',
+      'GetIt',
+    ])
       (
         name: 'Dumb cannot receive $owner instead of immutable props',
         path: _feature,
-        source: 'class ConversationView { ConversationView(this.owner); '
+        source:
+            'class ConversationView { ConversationView(this.owner); '
             'final $owner owner; }',
         rule: 'UI-02',
       ),
@@ -100,13 +108,21 @@ void main() {
       source: 'Object build() => getIt.get<ConfigurationRepository>();',
       rule: 'UI-02',
     ),
-    for (final owner in ['Widget', 'WidgetRef', 'Future<void>',
-      'StreamSubscription<int>', 'TimelineConnection', 'OperationTicket<int>',
-      'TextEditingController', 'ReadonlyLatestValue<int>'])
+    for (final owner in [
+      'Widget',
+      'WidgetRef',
+      'Future<void>',
+      'StreamSubscription<int>',
+      'TimelineConnection',
+      'OperationTicket<int>',
+      'TextEditingController',
+      'ReadonlyLatestValue<int>',
+    ])
       (
         name: 'Freezed state cannot value-object runtime owner $owner',
         path: _state,
-        source: '@freezed abstract class EditorState with _\$EditorState { '
+        source:
+            '@freezed abstract class EditorState with _\$EditorState { '
             'const factory EditorState({required $owner owner}) = _EditorState; }',
         rule: 'STATE-01',
       ),
@@ -125,14 +141,17 @@ void main() {
     (
       name: 'Generated name alone does not turn a canonical getter into a VM',
       path: _vm,
-      source: '@riverpod class AccountViewModel extends _\$AccountViewModel { '
+      source:
+          '@riverpod class AccountViewModel extends _\$AccountViewModel { '
           'EditorState build() => repository.state; }',
       rule: 'VM-03',
     ),
     (
-      name: 'Synchronous generated Notifier cannot stand in for AsyncNotifier VM',
+      name:
+          'Synchronous generated Notifier cannot stand in for AsyncNotifier VM',
       path: _vm,
-      source: '@riverpod class AccountViewModel extends _\$AccountViewModel { '
+      source:
+          '@riverpod class AccountViewModel extends _\$AccountViewModel { '
           'EditorState build() => EditorState(); '
           'void edit(String text) {} }',
       rule: 'VM-02',
@@ -176,7 +195,8 @@ void main() {
     (
       name: 'A domain barrel cannot become the replacement giant bucket',
       path: 'code/anywork_client/lib/models.dart',
-      source: "export 'src/configuration/domain/configuration_repository.dart';",
+      source:
+          "export 'src/configuration/domain/configuration_repository.dart';",
       rule: 'EXPORT-01',
     ),
     (
@@ -397,11 +417,13 @@ ConfigurationValue convert(BridgeConfigurationValue value) => decode(value);
       ),
       (
         path: 'code/anywork_client/lib/configuration_ports.dart',
-        source: "export 'configuration.dart'; "
+        source:
+            "export 'configuration.dart'; "
             "export 'src/configuration/data/configuration_frames.dart';",
       ),
       (
-        path: 'code/anywork/lib/src/features/settings/modes/widgets/fixture.dart',
+        path:
+            'code/anywork/lib/src/features/settings/modes/widgets/fixture.dart',
         source: '''
 import 'package:vyuh_node_flow/vyuh_node_flow.dart' as graph;
 class WorkflowCanvas {

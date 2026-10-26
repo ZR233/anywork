@@ -91,7 +91,7 @@ fn updated(result: ModelCatalogQueryResult) -> Vec<ModelInfo> {
 fn account_template_descriptor_projects_protocol_and_camel_case_wire() {
     let snapshot = builtin_account_catalog().unwrap().snapshot().unwrap();
     let value = serde_json::to_value(&snapshot).unwrap();
-    assert_eq!(value["schemaVersion"], 17);
+    assert_eq!(value["schemaVersion"], 18);
     assert!(value.get("presets").is_none());
     assert!(value.get("templates").is_some());
     assert!(value.get("modelCatalogs").is_some());

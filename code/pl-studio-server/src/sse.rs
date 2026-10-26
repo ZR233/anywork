@@ -93,6 +93,9 @@ pub(crate) async fn product_events(
         loop {
             let frame = tokio::select! {
                 _ = shutdown.cancelled() => break,
+                // 客户端断开即结束等待：Response 丢弃会关闭 channel 接收端，静默 topic 不必等
+                // 下一帧或关机就能释放订阅（含其 root 观察租约与 stream permit）。
+                _ = sender.closed() => break,
                 frame = events.recv() => match frame {
                     Ok(Some(frame)) => frame,
                     Ok(None) | Err(_) => break,
@@ -188,6 +191,8 @@ fn topic_token(topic: &pl_studio_runtime::StudioProductTopic) -> &'static str {
         StudioProductTopic::Skills { .. } => "skills",
         StudioProductTopic::ThreadModeCatalog => "threadModeCatalog",
         StudioProductTopic::AccountUsage => "accountUsage",
+        StudioProductTopic::AcpAuth => "acpAuth",
+        StudioProductTopic::AcpInstall => "acpInstall",
         StudioProductTopic::ModelPerformance => "modelPerformance",
         StudioProductTopic::SessionCosts { .. } => "sessionCosts",
         StudioProductTopic::Updater => "updater",

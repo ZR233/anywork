@@ -622,9 +622,14 @@ void main() {
     final ready = await open();
     final lease = ready.owner.display('thread')!;
     final error = StateError('page failed');
-    ready.connection.pageResult = Completer<StudioTimelinePage>()
-      ..completeError(error);
-    await ready.owner.loadOlder('thread', lease.generation);
+    final page = Completer<StudioTimelinePage>();
+    ready.connection.pageResult = page;
+    final loading = ready.owner.loadOlder('thread', lease.generation);
+    // 分页读取已经在途才失败：错误必须在监听建立后交付，否则测试自身先制造
+    // 一个无人拥有的失败 future，本轮真正要验证的“原错误身份”反而被掩盖。
+    await _until(() => ready.owner.value!.olderLoading);
+    page.completeError(error);
+    await loading;
     expect(ready.owner.value!.olderError, same(error));
     ready.owner.enterHistory('thread');
     ready.transport.holdNextOpen = true;

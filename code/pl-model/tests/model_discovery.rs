@@ -1119,13 +1119,17 @@ async fn rich_envelopes_drive_real_inference_wire_and_unknown_pricing_preserves_
         );
         assert!(response.accounting.usage.input_tokens.is_some());
         assert!(response.accounting.usage.output_tokens.is_some());
-        let disabled = runtime
-            .with_pricing_mode(pl_model::model::PricingMode::Disabled)
+        let no_charge = runtime
+            .with_pricing_mode(pl_model::model::PricingMode::NoCharge)
             .complete(request, ModelInvocationContext::default())
             .await
             .unwrap();
-        assert_eq!(disabled.accounting.pricing, PricingOutcome::Disabled);
-        assert_eq!(disabled.accounting.usage, response.accounting.usage);
+        assert_eq!(no_charge.accounting.pricing, PricingOutcome::NoCharge);
+        assert_eq!(no_charge.accounting.usage, response.accounting.usage);
+        assert!(no_charge.accounting.price_snapshot.is_none());
+        assert!(no_charge.accounting.estimated_costs().is_empty());
+        assert!(no_charge.accounting.estimated_cache_savings().is_empty());
+        assert!(!no_charge.accounting.has_unpriced_usage());
         let records = fixture.finish().await.unwrap();
         if effort_path == "reasoning" {
             assert_eq!(records[0].body[effort_path]["effort"], "new-ultra");

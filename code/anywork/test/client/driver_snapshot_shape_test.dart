@@ -54,14 +54,17 @@ void main() {
     );
   });
 
-  test('historyAttachments remains a castable empty list without a display', () {
-    final json = _json(_snapshot(thread: fixtureThread('shape-thread')));
-    expect(json['timeline'], isNull);
-    final workspace = json['workspace'] as Map<String, dynamic>;
-    final attachments = (workspace['historyAttachments'] as List)
-        .cast<Map<String, dynamic>>();
-    expect(attachments, isEmpty);
-  });
+  test(
+    'historyAttachments remains a castable empty list without a display',
+    () {
+      final json = _json(_snapshot(thread: fixtureThread('shape-thread')));
+      expect(json['timeline'], isNull);
+      final workspace = json['workspace'] as Map<String, dynamic>;
+      final attachments = (workspace['historyAttachments'] as List)
+          .cast<Map<String, dynamic>>();
+      expect(attachments, isEmpty);
+    },
+  );
 }
 
 // Exercise the real Driver whitelist and JSON boundary, not a test projection.

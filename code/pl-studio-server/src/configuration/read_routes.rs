@@ -162,6 +162,26 @@ pub(super) async fn accounts(
             .await?,
     ))
 }
+#[utoipa::path(post, path = "/api/v1/configuration-reads/{scope_id}/acp-accounts", operation_id = "configuration.read.acpAccounts", params(("scope_id" = String, Path)), request_body = ListRequest, responses(StudioApiErrors, (status = 200, body = AcpAccountConfigurationReadPage)))]
+pub(super) async fn acp_accounts(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    ApiJson(body): ApiJson<ListRequest>,
+) -> Result<Json<AcpAccountConfigurationReadPage>, ApiError> {
+    Ok(Json(
+        state
+            .configuration
+            .read(&id)?
+            .query(|source| {
+                Ok(source.value()?.acp_accounts(
+                    body.list_id,
+                    body.offset,
+                    body.limit.unwrap_or(32),
+                ))
+            })?
+            .await?,
+    ))
+}
 #[utoipa::path(post, path = "/api/v1/configuration-reads/{scope_id}/custom-models", operation_id = "configuration.read.customModels", params(("scope_id" = String, Path)), request_body = ListRequest, responses(StudioApiErrors, (status = 200, body = CustomModelConfigurationReadPage)))]
 pub(super) async fn custom_models(
     State(state): State<AppState>,

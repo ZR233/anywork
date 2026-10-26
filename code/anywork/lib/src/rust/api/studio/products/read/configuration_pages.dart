@@ -5,6 +5,7 @@
 
 import '../../../../frb_generated.dart';
 import '../../observation.dart';
+import '../../types/acp.dart';
 import '../../types/delegation.dart';
 import '../../types/settings.dart';
 import '../identity.dart';
@@ -12,7 +13,7 @@ import 'configuration_values.dart';
 
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`
 
 class BridgeAccountConfigurationReadPage {
   final BigInt listId;
@@ -41,6 +42,41 @@ class BridgeAccountConfigurationReadPage {
   bool operator ==(Object other) =>
       identical(this, other) ||
       other is BridgeAccountConfigurationReadPage &&
+          runtimeType == other.runtimeType &&
+          listId == other.listId &&
+          offset == other.offset &&
+          total == other.total &&
+          items == other.items &&
+          nextOffset == other.nextOffset;
+}
+
+class BridgeAcpAccountConfigurationReadPage {
+  final BigInt listId;
+  final BigInt offset;
+  final BigInt total;
+  final List<BridgeAcpAccountConfigurationRead> items;
+  final BigInt? nextOffset;
+
+  const BridgeAcpAccountConfigurationReadPage({
+    required this.listId,
+    required this.offset,
+    required this.total,
+    required this.items,
+    this.nextOffset,
+  });
+
+  @override
+  int get hashCode =>
+      listId.hashCode ^
+      offset.hashCode ^
+      total.hashCode ^
+      items.hashCode ^
+      nextOffset.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is BridgeAcpAccountConfigurationReadPage &&
           runtimeType == other.runtimeType &&
           listId == other.listId &&
           offset == other.offset &&

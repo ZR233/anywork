@@ -35,6 +35,8 @@ class DelegationDefaultsSection extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final defaults = state.delegation;
+    if (defaults == null) return const SizedBox.shrink();
     final read = state.source.delegation;
     final material = switch (read) {
       ReadyReadValue<DelegationSettings, ConfigurationReadRef>(
@@ -55,7 +57,6 @@ class DelegationDefaultsSection extends StatelessWidget {
         state.source.projection.header?.reference != null &&
         material?.origin == state.source.projection.stamp?.origin &&
         material?.reference == state.source.projection.header?.reference;
-    final defaults = state.delegation;
     final modeAction = state.actions[GeneralSettingAction.delegationMode];
     final preferenceAction =
         state.actions[GeneralSettingAction.delegationPreference];
@@ -68,14 +69,7 @@ class DelegationDefaultsSection extends StatelessWidget {
             '${context.l10n.resourceSourceLastKnown} · ${material.origin.ownerEpoch}/${material.origin.incarnation} · r${material.reference.revision}',
             style: Theme.of(context).textTheme.bodySmall,
           ),
-        if (loading)
-          Text(context.l10n.resourceSourceLoading)
-        else if (defaults == null)
-          Text(
-            readError == null
-                ? context.l10n.resourceSourceUninitialized
-                : context.l10n.toolStatusFailed,
-          ),
+        if (loading) Text(context.l10n.resourceSourceLoading),
         if (read case FailedReadValue<DelegationSettings, ConfigurationReadRef>(
           :final origin,
           :final reference,
@@ -91,8 +85,7 @@ class DelegationDefaultsSection extends StatelessWidget {
         DropdownButton<DelegationMode>(
           key: StudioDriverKeys.defaultDelegationMode,
           isExpanded: true,
-          value: defaults?.mode,
-          hint: const Text('—'),
+          value: defaults.mode,
           items: [
             for (final mode in DelegationMode.values)
               DropdownMenuItem(
@@ -116,8 +109,7 @@ class DelegationDefaultsSection extends StatelessWidget {
         DropdownButton<DelegationPreference>(
           key: StudioDriverKeys.defaultDelegationPreference,
           isExpanded: true,
-          value: defaults?.preference,
-          hint: const Text('—'),
+          value: defaults.preference,
           items: [
             for (final preference in DelegationPreference.values)
               DropdownMenuItem(
@@ -140,10 +132,8 @@ class DelegationDefaultsSection extends StatelessWidget {
                 },
         ),
         Text(context.l10n.delegationOnlyAutomatic),
-        if (defaults != null) ...[
-          const SizedBox(height: 4),
-          Text(context.delegationPreferenceHint(defaults.preference)),
-        ],
+        const SizedBox(height: 4),
+        Text(context.delegationPreferenceHint(defaults.preference)),
         _DelegationActionStatus(
           action: preferenceAction,
           errors: preferenceErrors,

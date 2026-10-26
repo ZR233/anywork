@@ -14,7 +14,6 @@ AccountConfiguration _account() => AccountConfiguration(
   name: 'Canonical account',
   baseUrl: 'https://fixture.invalid',
   hasBearerToken: true,
-  pricingEnabled: true,
   bearerTokenEnv: null,
   billingKind: BillingKind.metered,
   billingKindOverride: null,
@@ -282,7 +281,8 @@ void main() {
     expect(update.accountId, 'fixture');
     expect(update.name, 'Canonical account');
     expect(update.baseUrl, 'https://fixture.invalid');
-    expect(update.pricingEnabled, isTrue);
+    // 普通模型编辑不回传计费类别：初始类别只随创建提交。
+    expect(update.initialBillingKind, isNull);
     expect(update.secret, isA<PreserveAccountSecret>());
     await _reject(call, ticket);
   });

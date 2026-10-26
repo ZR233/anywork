@@ -1,4 +1,6 @@
-import 'package:anywork_client/account_usage.dart';
+import 'package:anywork_client/acp.dart';
+import 'package:anywork_client/account_usage.dart'
+    show AccountUsageRepository, SessionCostsRepository;
 import 'package:anywork_client/bots.dart';
 import 'package:anywork_client/configuration.dart';
 import 'package:anywork_client/conversation.dart';
@@ -13,6 +15,7 @@ import 'package:anywork_client/recovery.dart';
 import 'package:anywork_client/remote.dart';
 import 'package:anywork_client/resources_ports.dart' show ResourceBudget;
 import 'package:anywork_client/skills.dart';
+import 'package:anywork_client/statistics.dart' show StatisticsRepository;
 import 'package:anywork_client/updates.dart';
 import 'package:anywork_client/workspace.dart';
 
@@ -37,6 +40,7 @@ final class AppGraph {
     required this.modes,
     required this.accountUsage,
     required this.statistics,
+    required this.sessionCosts,
     required this.workspace,
     required this.startup,
     required this.conversation,
@@ -44,6 +48,8 @@ final class AppGraph {
     required this.remote,
     required this.mcp,
     required this.lsp,
+    required this.acpAuth,
+    required this.acpInstall,
     required this.skills,
     required this.bots,
     required this.recovery,
@@ -65,6 +71,10 @@ final class AppGraph {
   final ModesRepository modes;
   final AccountUsageRepository accountUsage;
   final StatisticsRepository statistics;
+
+  /// Root-session costs keep their own repository inside the account-usage
+  /// domain; they are not a statistics read.
+  final SessionCostsRepository sessionCosts;
   final WorkspaceRepository workspace;
   final StartupRepository startup;
   final ConversationRepository conversation;
@@ -72,6 +82,8 @@ final class AppGraph {
   final RemoteRepository remote;
   final McpRepository mcp;
   final LspRepository lsp;
+  final AcpAuthRepository acpAuth;
+  final AcpInstallRepository acpInstall;
   final SkillsRepository skills;
   final BotsRepository bots;
   final RecoveryRepository recovery;

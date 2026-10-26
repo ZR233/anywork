@@ -200,12 +200,14 @@ ThreadItemStateView? applyThreadContentField(
               current = input.optionDescription(questionIndex, optionIndex);
             case ThreadUserInputAnswerFieldPartView(:final answerIndex):
               final answer = input.answerAt(questionIndex);
-              if (answer == null ||
-                  answer.redacted ||
-                  answerIndex < 0 ||
-                  answerIndex >= answer.answers.length) {
-                return change is RemoveThreadFieldChangeView ? state : null;
-              }
+              // The question status is the authoritative fact: a pending,
+              // cancelled or redacted question has no answer body to patch, so
+              // an answer-text field change leaves it unchanged instead of
+              // turning it into an answered one. Only an index outside the real
+              // answer list is a protocol mismatch.
+              if (answer == null || answer.redacted) return state;
+              if (answerIndex < 0 || answerIndex >= answer.answers.length)
+                return null;
               current = input.answerText(questionIndex, answerIndex);
           }
           return state.copyWith(

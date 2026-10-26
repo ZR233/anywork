@@ -37,7 +37,10 @@ void main() {
       expect(host.submitted, isEmpty);
       expect(_input(tester).controller, same(controller));
       expect(
-        tester.widget<EditableText>(find.byType(EditableText)).focusNode.hasFocus,
+        tester
+            .widget<EditableText>(find.byType(EditableText))
+            .focusNode
+            .hasFocus,
         isTrue,
       );
     },
@@ -50,8 +53,8 @@ void main() {
       final controller = _input(tester).controller!;
       tester.testTextInput.updateEditingValue(
         const TextEditingValue(
-        text: 'first',
-        selection: TextSelection(baseOffset: 3, extentOffset: 0),
+          text: 'first',
+          selection: TextSelection(baseOffset: 3, extentOffset: 0),
         ),
       );
       await tester.pump();
@@ -83,7 +86,10 @@ void main() {
       expect(host.submitted, ['first']);
       expect(controller.text, 'first');
       expect(
-        tester.widget<EditableText>(find.byType(EditableText)).focusNode.hasFocus,
+        tester
+            .widget<EditableText>(find.byType(EditableText))
+            .focusNode
+            .hasFocus,
         isTrue,
       );
 
@@ -136,8 +142,8 @@ void main() {
     await _shiftEnter(tester);
     tester.testTextInput.updateEditingValue(
       const TextEditingValue(
-      text: 'first\n',
-      selection: TextSelection.collapsed(offset: 6),
+        text: 'first\n',
+        selection: TextSelection.collapsed(offset: 6),
       ),
     );
     await tester.testTextInput.receiveAction(TextInputAction.send);
@@ -188,15 +194,17 @@ Future<_InputHostState> _mountInput(
   final key = GlobalKey<_InputHostState>();
   await tester.pumpWidget(
     MaterialApp(
-    theme: ThemeData(platform: TargetPlatform.linux),
-    home: Scaffold(body: _InputHost(key: key, raw: raw)),
+      theme: ThemeData(platform: TargetPlatform.linux),
+      home: Scaffold(
+        body: _InputHost(key: key, raw: raw),
+      ),
     ),
   );
   await tester.showKeyboard(find.byType(TextField));
   tester.testTextInput.updateEditingValue(
     TextEditingValue(
-    text: raw,
-    selection: TextSelection.collapsed(offset: raw.length),
+      text: raw,
+      selection: TextSelection.collapsed(offset: raw.length),
     ),
   );
   await tester.pump();

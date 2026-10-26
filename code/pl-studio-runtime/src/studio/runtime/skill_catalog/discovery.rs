@@ -9,7 +9,9 @@ use crate::studio::ids::unix_seconds;
 use anyhow::{Error, Result};
 use pl_protocol::{ObservedResourceCommand, ObservedResourceKind, StateError, StateOperation};
 use pl_tool::skill::SkillsConfig;
-use pl_tool::skill::{SkillCatalog, SkillProviderRequest};
+use pl_tool::skill::{
+    FrozenSkillCatalog, SkillCatalog, SkillDiscoverySources, SkillProviderRequest,
+};
 
 use super::super::skills::SkillsDiscovery;
 use super::remote;
@@ -58,7 +60,7 @@ impl SkillCatalogRuntime {
             DiscoverySource::Remote(remote_backend),
         )
         .await
-        .map(|capture| capture.snapshot)
+        .map(|(capture, _)| capture.snapshot)
     }
 
     pub async fn discover_with_cancellation(
@@ -76,9 +78,10 @@ impl SkillCatalogRuntime {
             DiscoverySource::Local,
         )
         .await
-        .map(|capture| capture.snapshot)
+        .map(|(capture, _)| capture.snapshot)
     }
 
+    /// 产品命令的显式发现：同时保留快照与本次发布的捕获证据。
     pub(in crate::studio::runtime) async fn discover_product(
         &self,
         project_id: &str,
@@ -93,8 +96,10 @@ impl SkillCatalogRuntime {
             DiscoverySource::Local,
         )
         .await
+        .map(|(capture, _)| capture)
     }
 
+    /// 远端产品命令的显式发现：与本地发现共用同一快照与发布路径。
     pub(in crate::studio::runtime) async fn discover_remote_product(
         &self,
         project_id: &str,
@@ -111,6 +116,27 @@ impl SkillCatalogRuntime {
             DiscoverySource::Remote(remote_backend),
         )
         .await
+        .map(|(capture, _)| capture)
+    }
+
+    /// Publishes preparation discovery while keeping the current source capability separate
+    /// from any last-good catalog retained by the Settings state machine.
+    pub(in crate::studio) async fn prepare_thread_catalog(
+        &self,
+        project_id: &str,
+        workspace_root: &Path,
+        config: &SkillsConfig,
+        cancellation: tokio_util::sync::CancellationToken,
+        remote: Option<Arc<pl_tool::remote::RemoteWorkspaceFileBackend>>,
+    ) -> Result<Option<(Arc<FrozenSkillCatalog>, SkillDiscoverySources)>> {
+        let source = remote.map_or(DiscoverySource::Local, DiscoverySource::Remote);
+        let (snapshot, sources) = self
+            .discover_from_source(project_id, workspace_root, config, cancellation, source)
+            .await?;
+        Ok(snapshot
+            .snapshot
+            .catalog_for_turn()
+            .map(|catalog| (catalog, sources)))
     }
 
     async fn discover_from_source(
@@ -120,7 +146,7 @@ impl SkillCatalogRuntime {
         config: &SkillsConfig,
         cancellation: tokio_util::sync::CancellationToken,
         source: DiscoverySource,
-    ) -> Result<SkillsDiscovery> {
+    ) -> Result<(SkillsDiscovery, SkillDiscoverySources)> {
         let _command = tokio::select! {
             biased;
             () = cancellation.cancelled() => anyhow::bail!("Skill discovery cancelled"),
@@ -208,6 +234,7 @@ impl SkillCatalogRuntime {
                 return Err(error);
             }
         };
+        let sources = catalog.discovery_sources();
         let checked_at = unix_seconds();
         if !catalog.snapshot().complete {
             let failed = SkillsStateSnapshot {
@@ -227,10 +254,15 @@ impl SkillCatalogRuntime {
                     .next_state,
             };
             let publication = self.publish(project_id, failed.clone()).await?;
-            return Ok(SkillsDiscovery {
-                snapshot: failed,
-                publication,
-            });
+            // The incomplete catalog is published as a failed observation and still keeps its
+            // exact publication capture and per-source capability available to both callers.
+            return Ok((
+                SkillsDiscovery {
+                    snapshot: failed,
+                    publication,
+                },
+                sources,
+            ));
         }
         let catalog_revision = previous.state.value().map_or(1, |data| {
             if catalog_content_eq(data.catalog.snapshot(), catalog.snapshot()) {
@@ -257,10 +289,13 @@ impl SkillCatalogRuntime {
                 .next_state,
         };
         let publication = self.publish(project_id, snapshot.clone()).await?;
-        Ok(SkillsDiscovery {
-            snapshot,
-            publication,
-        })
+        Ok((
+            SkillsDiscovery {
+                snapshot,
+                publication,
+            },
+            sources,
+        ))
     }
 
     /// Settings 变化只标记旧 payload stale，不执行扫描。

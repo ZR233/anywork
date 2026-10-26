@@ -6,19 +6,26 @@ import 'package:anywork/src/features/conversation/state/thread_status_state.dart
 import 'package:anywork/src/features/conversation/view_models/conversation_view_model.dart';
 import 'package:anywork/src/features/conversation/view_models/thread_status_view_model.dart';
 import 'package:anywork/src/features/workspace/view_models/workspace_view_model.dart';
+import 'package:anywork/src/features/settings/accounts/view_models/accounts_view_model.dart';
+import 'package:anywork/src/features/settings/accounts/state/accounts_state.dart';
+import 'package:anywork/src/shared/driver_projection.dart';
 import 'package:anywork/src/shared/driver_snapshot.dart';
 import 'package:anywork/src/shared/driver_snapshot_json.dart';
+import 'package:anywork_client/acp.dart';
+import 'package:anywork_client/configuration.dart';
 import 'package:anywork_client/conversation.dart';
 import 'package:anywork_client/drafts.dart' show AttachmentModality;
 import 'package:anywork_client/models.dart';
 import 'package:anywork_client/modes.dart';
 import 'package:anywork_client/resources.dart';
 import 'package:anywork_client/workspace.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import '../../../anywork_client/test/support/conversation_fixture.dart'
     show fixtureThread;
 import '../../../anywork_client/test/support/timeline_transport.dart';
+import '../../test_driver/driver_inspection.dart';
 import '../../test_driver/timeline_observation.dart';
 import 'support/driver_environment.dart';
 import 'support/selector_conversation_port.dart';
@@ -36,6 +43,14 @@ Future<DriverTestEnvironment> _environment({
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
+
+  // ACP 认证/安装事实的 Driver 覆盖：
+  //
+  // `DriverSnapshot.acpAuth`/`acpInstall` 是 `graph.acpAuth`/`graph.acpInstall`
+  // canonical 镜像的可空读取入口（未加载即 null），`settingsDiagnostic` 发布
+  // `acpAuthLoaded` 与 `acpInstall{loaded, revision, installations[...]}`，失败类别
+  // 由 typed 枚举静态解析。下面两组断言锁定安装失败终态与关闭中的 cancelled 失败，
+  // 并核对“投影只读现有镜像、不建立业务 demand”。
 
   test('canonical cold and closed members survive a root-only Thread page and cold selection', () async {
     final root = _factsThread();
@@ -967,6 +982,635 @@ void main() {
     expect(parsed.connectionErrorCorrelationId, isNull);
     expect(env.application.domains.timeline.requests.length, opens);
   });
+
+  test('ACP 安装失败是终态：phase=failed、阶段为 null，失败类别由 typed 枚举解析', () async {
+    final env = await _environment();
+    final base = env.capture();
+
+    // 真实装配尚未加载 acpInstall：既不伪造 loaded，也不用空集合冒充“已加载”。
+    final unpublished = base.toJson()['settings'] as Map;
+    expect(unpublished['acpAuthLoaded'], isFalse);
+    expect(unpublished['acpInstall'], {
+      'loaded': false,
+      'revision': null,
+      'installations': null,
+    });
+    // 认证、ACP 账号目录与 Native 模板同样是“没读到就是 null”，不用空集合冒充。
+    expect(unpublished['acpAuth'], {
+      'loaded': false,
+      'revision': null,
+      'updatedAt': null,
+      'accounts': null,
+    });
+    expect(unpublished['acpAccounts'], isNull);
+    expect(unpublished['nativeTemplates'], isNull);
+
+    // baseline 含 revision 0 必达：revision 0 是合法的“已加载”水位，和被当成
+    // 缺失是两个不同的结论，不能因为水位为 0 就退回 `loaded=false`。
+    final baseline = _acpSnapshot(
+      base,
+      auth: AcpAuthSnapshot.empty,
+      install: AcpInstallSnapshot.empty,
+    );
+    final baselineSettings = baseline.toJson()['settings'] as Map;
+    expect(baselineSettings['acpAuthLoaded'], isTrue);
+    final baselineInstall = baselineSettings['acpInstall'] as Map;
+    expect(baselineInstall['loaded'], isTrue);
+    expect(baselineInstall['revision'], 0);
+    // 已加载且确实没有任何安装条目是真实空集合，与未加载的 null 语义不同。
+    expect(baselineInstall['installations'], isNotNull);
+    expect(baselineInstall['installations'], isEmpty);
+    // 同一个 revision 0 的认证盒子：已加载、没有任何账号观察。
+    expect(baselineSettings['acpAuth'], {
+      'loaded': true,
+      'revision': 0,
+      'updatedAt': 0,
+      'accounts': <Object?>[],
+    });
+
+    // Failed 是终态：状态层没有“当前阶段”，失败发生在哪一步由 failure 携带。
+    final failed = _acpSnapshot(
+      base,
+      auth: AcpAuthSnapshot.empty,
+      install: AcpInstallSnapshot(
+        revision: 7,
+        updatedAt: 1760000000,
+        installations: [
+          AcpInstallEntry(
+            provider: AcpProvider.antigravity,
+            state: const AcpInstallState.failed(
+              operationId: 'op-failed',
+              failure: AcpInstallFailure(
+                code: AcpInstallFailureCode.checksumMismatch,
+                stage: AcpInstallStage.verify,
+                message: 'checksum mismatch',
+                retryable: true,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+    final settings = failed.toJson()['settings'] as Map;
+    expect(settings['acpAuthLoaded'], isTrue);
+    final install = settings['acpInstall'] as Map;
+    expect(install['loaded'], isTrue);
+    expect(install['revision'], 7);
+    final entry = (install['installations'] as List).single as Map;
+    expect(entry['provider'], 'antigravity');
+    expect(entry['phase'], 'failed');
+    expect(entry['operationId'], 'op-failed');
+    // 终态没有“当前阶段”；失败发生在 verify 由 failure 自己携带。
+    expect(entry['stage'], isNull);
+    // 终态没有进度、发行描述符与就绪结果，这些字段必须如实为 null。
+    expect(entry['progress'], isNull);
+    expect(entry['release'], isNull);
+    expect(entry['program'], isNull);
+    expect(entry['reused'], isNull);
+    expect(entry['retryCount'], 0);
+    expect(entry['failure'], {
+      'code': 'checksumMismatch',
+      'stage': 'verify',
+      'message': 'checksum mismatch',
+      'retryable': true,
+    });
+
+    // 投影是 typed 镜像的纯函数：同一事实重复序列化不会推进状态机或改写结果。
+    expect(jsonEncode(failed.toJson()), jsonEncode(failed.toJson()));
+  });
+
+  test('ACP 安装关闭中保留 cancelled 失败且不被 Ready 吞掉，投影不建立业务 demand', () async {
+    final env = await _environment();
+    final graph = env.application.graph;
+    final authObservers = graph.acpAuth.state.observerCount;
+    final installObservers = graph.acpInstall.state.observerCount;
+    // 完整 usage 集合而不是条数：新增、释放或换阶段都会改变 permit 事实。
+    List<ResourceUsage> permits() => graph.budget.usage.toList();
+    final permitsBefore = permits();
+    final base = env.capture();
+
+    final closing = _acpSnapshot(
+      base,
+      install: AcpInstallSnapshot(
+        revision: 8,
+        updatedAt: 1760000010,
+        installations: [
+          AcpInstallEntry(
+            provider: AcpProvider.antigravity,
+            state: const AcpInstallState.closing(
+              operationId: 'op-closing',
+              failure: AcpInstallFailure(
+                code: AcpInstallFailureCode.cancelled,
+                stage: AcpInstallStage.download,
+                message: 'cancelled by user',
+                retryable: true,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+
+    // 序列化后再核对：Driver 消费的是 JSON 里的真实失败事实。
+    final json =
+        jsonDecode(jsonEncode(closing.toJson())) as Map<String, dynamic>;
+    final install =
+        (json['settings'] as Map<String, dynamic>)['acpInstall']
+            as Map<String, dynamic>;
+    expect(install['loaded'], isTrue);
+    expect(install['revision'], 8);
+    final entry =
+        (install['installations'] as List).single as Map<String, dynamic>;
+    // 关闭中是物理收束非终态：阶段是 close，而不是失败来源的 download。
+    expect(entry['phase'], 'closing');
+    expect(entry['phase'], isNot('ready'));
+    expect(entry['stage'], 'close');
+    expect(entry['operationId'], 'op-closing');
+    expect(entry['failure'], {
+      'code': 'cancelled',
+      'stage': 'download',
+      'message': 'cancelled by user',
+      'retryable': true,
+    });
+
+    // 投影只读现有镜像：没有观察租约、没有占用 permit，也没有让未加载的领域
+    // 变成已加载（`synchronize()` 才是业务 demand，本路径不调用）。
+    expect(graph.acpAuth.state.observerCount, authObservers);
+    expect(graph.acpInstall.state.observerCount, installObservers);
+    expect(authObservers, 0, reason: '本装配不打开 ACP 认证订阅');
+    expect(installObservers, 0, reason: '本装配不打开 ACP 安装订阅');
+    expect(permits(), permitsBefore, reason: '投影不占用或释放任何预算 permit');
+    // 与集合是否为空无关的固定事实：诊断路径从不取得 ACP 域的任何 permit。
+    expect(
+      permits().where((usage) => usage.owner.startsWith('acp')),
+      isEmpty,
+      reason: 'ACP permit 只由订阅/命令产生，只读投影不产生',
+    );
+    expect(graph.acpAuth.state.value.canonical, isNull);
+    expect(graph.acpInstall.state.value.canonical, isNull);
+    final reread = env.capture();
+    expect(reread.acpAuth, isNull);
+    expect(reread.acpInstall, isNull);
+  });
+
+  test('ACP 认证按账号与连接代次发布，安装条目带 typed 进度/发行描述符/就绪结果', () async {
+    final env = await _environment();
+    final base = env.capture();
+
+    final observed = _acpSnapshot(
+      base,
+      auth: AcpAuthSnapshot(
+        revision: 3,
+        updatedAt: 30,
+        accounts: [
+          AcpAuthAccount(
+            accountId: 'acct-antigravity',
+            connectionRevision: 5,
+            state: const AcpAuthState.verified(
+              checkedAt: 1760000000,
+              server: AcpServerInfo(name: 'agy', title: null, version: '1.4.1'),
+            ),
+          ),
+          AcpAuthAccount(
+            accountId: 'acct-other',
+            connectionRevision: 1,
+            state: const AcpAuthState.required(
+              server: null,
+              methods: [
+                AcpAuthMethod(
+                  id: 'm1',
+                  name: 'Login',
+                  description: null,
+                  kind: AcpAuthMethodKind.agent,
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+      // 来源三键取自本用例真实捕获的当前 Settings 目标：不假造空 owner，也不把
+      // 材料引用版本当成 Settings 业务版本。
+      accounts: AcpAccountDirectory(
+        origin: base.configuration.projection.stamp!.origin,
+        reference: base.configuration.projection.header!.reference!,
+        revision: base.configuration.projection.header!.configurationRevision!,
+        updatedAt: base.configuration.projection.header!.updatedAt ?? 0,
+        accounts: [
+          AcpAccountSettings(
+            accountId: 'acct-antigravity',
+            name: 'Antigravity',
+            provider: AcpProvider.antigravity,
+            connectionRevision: 5,
+          ),
+        ],
+      ),
+      templates: _nativeTemplates(['native-fixture']),
+      install: AcpInstallSnapshot(
+        revision: 4,
+        updatedAt: 40,
+        installations: [
+          AcpInstallEntry(
+            provider: AcpProvider.antigravity,
+            state: AcpInstallState.downloading(
+              operationId: 'op-download',
+              release: _fixedRelease,
+              progress: const AcpInstallProgress(
+                completedBytes: 120,
+                totalBytes: null,
+                bytesPerSecond: 40,
+              ),
+              retryCount: 2,
+            ),
+          ),
+        ],
+      ),
+    );
+
+    final settings = observed.toJson()['settings'] as Map;
+    expect(settings['acpAuthLoaded'], isTrue);
+    final auth = settings['acpAuth'] as Map;
+    expect(auth['revision'], 3);
+    expect(auth['updatedAt'], 30);
+    final authAccounts = (auth['accounts'] as List).cast<Map>();
+    expect(authAccounts.map((row) => row['accountId']), [
+      'acct-antigravity',
+      'acct-other',
+    ]);
+    // 认证观察必须带连接代次：只有同代次才能与配置身份配对。
+    expect(authAccounts.first['connectionRevision'], 5);
+    expect(authAccounts.first['state'], {
+      'kind': 'verified',
+      'checkedAt': 1760000000,
+      'server': {'name': 'agy', 'title': null, 'version': '1.4.1'},
+    });
+    final required = authAccounts[1]['state'] as Map;
+    expect(required['kind'], 'required');
+    expect(required['server'], isNull);
+    expect((required['methods'] as List).single, {
+      'id': 'm1',
+      'name': 'Login',
+      'kind': 'agent',
+      'description': null,
+    });
+    // ACP 账号配置身份与 Native 模板身份各自发布，顺序即 canonical 顺序。
+    expect(settings['acpAccounts'], [
+      {
+        'accountId': 'acct-antigravity',
+        'name': 'Antigravity',
+        'provider': 'antigravity',
+        'connectionRevision': 5,
+      },
+    ]);
+    expect(settings['nativeTemplates'], ['native-fixture']);
+    final entry =
+        ((settings['acpInstall'] as Map)['installations'] as List).single
+            as Map;
+    expect(entry['phase'], 'downloading');
+    expect(entry['stage'], 'download');
+    expect(entry['progress'], {
+      'completedBytes': 120,
+      'totalBytes': null,
+      'bytesPerSecond': 40,
+    });
+    expect(entry['retryCount'], 2);
+    expect(entry['release'], _fixedReleaseJson);
+    // 未就绪时没有 program/reused；失败为空也不能伪造。
+    expect(entry['program'], isNull);
+    expect(entry['reused'], isNull);
+    expect(entry['failure'], isNull);
+  });
+
+  test('ACP 目录投影三键校验：当前 Settings 输出 []，来源推进后必须 null，重新读到当前才再现', () async {
+    final env = await _environment();
+    final graph = env.application.graph;
+
+    await _waitUntil(
+      () =>
+          graph
+              .configuration
+              .state
+              .value
+              .projection
+              .header
+              ?.configurationRevision !=
+          null,
+      reason: 'initial configuration header',
+    );
+    // 真实配置领域读取：目录的 origin/reference/revision 由 SDK mirror 冻结，
+    // 测试不手工构造目录，也不替换 repository。
+    final directory = await graph.configuration.loadAcpAccounts();
+    expect(
+      directory.accounts,
+      isEmpty,
+      reason: '本环境 header 声明 acpAccounts.total = 0',
+    );
+
+    DriverSnapshot captureWith(AcpAccountDirectory? borrowed) =>
+        captureDriverSnapshot(
+          graph,
+          visible: DriverViewFacts(acpAccounts: borrowed),
+          bots: const DriverBotsUnknown('not mounted in this scenario'),
+        );
+    Map settingsOf(DriverSnapshot snapshot) =>
+        snapshot.toJson()['settings'] as Map;
+
+    // 三键与当前 Settings 一致 → 真实空目录输出 []（不是 null，也不是缺省）。
+    final current = captureWith(directory);
+    expect(settingsOf(current)['acpAccounts'], isEmpty);
+    expect(current.acpAccounts, same(directory));
+
+    // 推进真实 Settings 源：新的材料引用与 configurationRevision。
+    await env.application.domains.configurationPort.base.publishSettings(2);
+    await _waitUntil(
+      () =>
+          graph
+              .configuration
+              .state
+              .value
+              .projection
+              .header
+              ?.configurationRevision ==
+          2,
+      reason: 'configuration revision 2',
+    );
+
+    // 旧目录的来源已过期：Driver 不得把它当成 current，也不降级成空集合。
+    final stale = captureWith(directory);
+    expect(settingsOf(stale)['acpAccounts'], isNull);
+    expect(stale.acpAccounts, isNull);
+
+    // 在新源上重新真实读取成功后再次可见，仍然只是 []。
+    final refreshed = await graph.configuration.loadAcpAccounts();
+    expect(refreshed.revision, 2);
+    expect(refreshed.accounts, isEmpty);
+    expect(settingsOf(captureWith(refreshed))['acpAccounts'], isEmpty);
+  });
+
+  test('未挂载账号页时不实例化 owner：Driver 的 ACP 目录与模板保持 null 且不占新 permit', () async {
+    final env = await _environment();
+    final container = env.application.container;
+    final inspection = DriverInspection(
+      graph: env.application.graph,
+      container: container,
+    );
+
+    final permitsBefore = env.application.graph.budget.usage.toList();
+    final settings = inspection.capture().toJson()['settings'] as Map;
+
+    expect(settings['acpAccounts'], isNull);
+    expect(settings['nativeTemplates'], isNull);
+    // exists() 不实例化 owner：未打开账号页就没有该 VM，也没有新的读取。
+    expect(container.exists(accountsViewModelProvider), isFalse);
+    expect(env.application.graph.budget.usage.toList(), permitsBefore);
+  });
+
+  test('已挂 AccountsVM：读取失败→null、成功空目录→[]、来源变更→null 且 last-good 仍在', () async {
+    final env = await _environment();
+    final container = env.application.container;
+    final graph = env.application.graph;
+    final port = env.application.acpPort;
+    final inspection = DriverInspection(graph: graph, container: container);
+
+    /// 标量 scope 计数：ACP 观察者与三侧真实读取次数。
+    ///
+    /// budget permit 必须做集合深度比较，不能放进 record：record 按字段 `==`
+    /// 比较，而每次 `usage.toList()` 都是新 List，恒等比较必然失败。
+    ({
+      int authObservers,
+      int installObservers,
+      int catalogReads,
+      int authReads,
+      int installReads,
+    })
+    scopeCounts() => (
+      authObservers: graph.acpAuth.state.observerCount,
+      installObservers: graph.acpInstall.state.observerCount,
+      catalogReads: port.catalogReads.length,
+      authReads: port.authReads.length,
+      installReads: port.installReads.length,
+    );
+
+    /// 每次 capture 前后精确比对 scope：Driver 不得新增 query/observer/permit。
+    Map settingsOfCapture() {
+      final permitsBefore = graph.budget.usage.toList();
+      final countsBefore = scopeCounts();
+      final settings = inspection.capture().toJson()['settings'] as Map;
+      expect(
+        graph.budget.usage.toList(),
+        permitsBefore,
+        reason: '投影不占用或释放任何预算 permit',
+      );
+      expect(
+        scopeCounts(),
+        countsBefore,
+        reason: '投影不新增 query/observer/permit',
+      );
+      return settings;
+    }
+
+    var answeredCatalogReads = 0;
+
+    /// 只应答**一条**尚未结算的 catalog 请求；有界等待它真实出现。
+    ///
+    /// 不批量应答、不自动成功：某一阶段多出来的请求由该阶段的精确计数断言暴露成
+    /// 失败，而不是被顺手答掉。
+    Future<void> answerNextCatalogRead(
+      AcpAccountCatalog? catalog, {
+      Object? error,
+    }) async {
+      final deadline = DateTime.now().add(const Duration(seconds: 5));
+      while (answeredCatalogReads == port.catalogReads.length) {
+        if (!DateTime.now().isBefore(deadline)) {
+          throw StateError('no ACP catalog read arrived');
+        }
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+      }
+      final reply = port.catalogReads[answeredCatalogReads++];
+      if (error != null) {
+        reply.completeError(error);
+      } else {
+        reply.complete(catalog!);
+      }
+    }
+
+    /// 目录是否已满足 Driver 侧 guard 的**全部**条件：本次读取完成（目录非 null）、
+    /// 该字段 issue 已清除、且来源三键仍指向当前 Settings 目标。
+    ///
+    /// 只判断 `acpAccounts != null` 是不够的：① 里目录在 catalog 失败前已部分成功，
+    /// 于是它一开始就非空，而 `readIssues` 仍存在——Driver 会正确返回 null。
+    bool acpDirectoryIsCurrent() {
+      final state = container.read(accountsViewModelProvider).asData?.value;
+      final directory = state?.acpAccounts;
+      if (state == null ||
+          directory == null ||
+          state.readIssues.containsKey(AccountsReadField.acpAccounts)) {
+        return false;
+      }
+      final projection = graph.configuration.state.value.projection;
+      if (projection.sync.phase != ResourceSyncPhase.ready) return false;
+      return directory.origin == projection.stamp?.origin &&
+          directory.reference == projection.header?.reference &&
+          directory.revision == projection.header?.configurationRevision;
+    }
+
+    /// 有界等待上述真实状态成立；沿用 `_waitUntil` 原有的 5s 上限。
+    ///
+    /// 这里**不再代为应答**任何 catalog 请求：该出现的请求由各阶段显式应答并计数，
+    /// 意外请求直接让计数断言失败。
+    Future<void> waitAcpDirectoryReady({required String reason}) => _waitUntil(
+      acpDirectoryIsCurrent,
+      reason: 'ACP directory current: $reason',
+    );
+
+    final listen = container.listen(accountsViewModelProvider, (_, _) {});
+    addTearDown(listen.close);
+
+    // ① 真实读取失败（catalog 侧抛 typed 失败）：VM 记录 readIssues，Driver 不得输出。
+    await answerNextCatalogRead(
+      null,
+      error: const StudioFailure(
+        code: StudioFailureCode.unavailable,
+        message: 'acp catalog read failed for this cycle',
+        retryable: true,
+        correlationId: 'driver-acp-catalog-failure',
+      ),
+    );
+    await _waitUntil(
+      () =>
+          container
+              .read(accountsViewModelProvider)
+              .asData
+              ?.value
+              .readIssues
+              .containsKey(AccountsReadField.acpAccounts) ??
+          false,
+      reason: 'acpAccounts read issue recorded by the mounted accounts page',
+    );
+    // 计数取样放在该阶段真正完成之后：issue 已被记录，说明这次失败读取已结算。
+    expect(port.catalogReads.length, 1, reason: '① 只允许一次 catalog 读取');
+    final failedState = container.read(accountsViewModelProvider).requireValue;
+    expect(
+      failedState.readIssues.containsKey(AccountsReadField.acpAccounts),
+      isTrue,
+      reason: '本次 refresh 失败必须被 VM 记录',
+    );
+    expect(settingsOfCapture()['acpAccounts'], isNull);
+
+    // ② 显式重试后真实成功：有效空目录输出 []，不是 null。
+    final notifier = container.read(accountsViewModelProvider.notifier);
+    notifier.setVisible(true);
+    notifier.retryRead();
+    await answerNextCatalogRead(AcpAccountCatalog.empty);
+    // 必须等到该次读取真的完成、issue 清除且来源仍是当前目标：
+    // 仅 `acpAccounts != null` 在 ① 部分成功后立刻成立，会让 Driver 按残留 issue
+    // 正确返回 null（不是生产缺陷）。
+    await waitAcpDirectoryReady(
+      reason: 'ACP directory loaded through the mounted accounts page',
+    );
+    expect(
+      port.catalogReads.length,
+      2,
+      reason: '② 重试只允许一次追加 catalog 读取（实测 1→2）',
+    );
+    final loadedState = container.read(accountsViewModelProvider).requireValue;
+    expect(loadedState.acpAccounts, isNotNull);
+    expect(loadedState.acpAccounts!.accounts, isEmpty);
+    final validEmpty = settingsOfCapture();
+    expect(validEmpty['acpAccounts'], isEmpty);
+
+    // ③ 推进真实 Settings 源：VM 仍保留旧目录（不清 UI last-good），Driver 必须 null。
+    await env.application.domains.configurationPort.base.publishSettings(2);
+    await _waitUntil(
+      () =>
+          graph
+              .configuration
+              .state
+              .value
+              .projection
+              .header
+              ?.configurationRevision ==
+          2,
+      reason: 'configuration revision 2',
+    );
+    final staleState = container.read(accountsViewModelProvider).requireValue;
+    expect(
+      staleState.acpAccounts,
+      isNotNull,
+      reason: 'Driver 不自作主张清空 UI 的 last-good 目录',
+    );
+    final stale = settingsOfCapture();
+    expect(stale['acpAccounts'], isNull);
+
+    // ④ 在新源上重新真实读取成功后再次可见，仍然只是 []。
+    final catalogReadsBeforeRefresh = port.catalogReads.length;
+    await notifier.refreshAcpAccounts('acct-none');
+    // 同一真实屏障：读取完成 + issue 清除 + 目录已是当前 revision 2 的目标。
+    await waitAcpDirectoryReady(reason: 'ACP directory re-read at revision 2');
+    expect(
+      port.catalogReads.length,
+      catalogReadsBeforeRefresh,
+      reason: '④ refreshAcpAccounts 只做配置读取，不得新发起 catalog 读取',
+    );
+    final refreshed = settingsOfCapture();
+    expect(refreshed['acpAccounts'], isEmpty);
+
+    // ⑤ 同一 source / 当前 target 下让 Settings header 读取真实失败：VM 保留
+    //    last-good（仍是 revision 2 的目录），Driver 必须输出 null。
+    env.application.domains.configurationPort.configurationHeaderFailure =
+        const StudioFailure(
+          code: StudioFailureCode.unavailable,
+          message: 'settings header read failed for this cycle',
+          retryable: true,
+          correlationId: 'driver-acp-refresh-failure',
+        );
+    await notifier.refreshAcpAccounts('acct-none');
+    await _waitUntil(
+      () =>
+          container
+              .read(accountsViewModelProvider)
+              .asData
+              ?.value
+              .readIssues
+              .containsKey(AccountsReadField.acpAccounts) ??
+          false,
+      reason: 'ACP refresh failure recorded for this cycle',
+    );
+    final failedRefresh = container
+        .read(accountsViewModelProvider)
+        .requireValue;
+    expect(
+      failedRefresh.acpAccounts,
+      isNotNull,
+      reason: 'VM 仍保留 last-good 目录，Driver 只决定自己的输出',
+    );
+    expect(failedRefresh.acpAccounts!.revision, 2);
+    expect(settingsOfCapture()['acpAccounts'], isNull);
+
+    // ⑥ 清除故障后显式重试：同一 source guard 仍匹配，目录再次输出 []。
+    //    catalog 在 ② 成功时已缓存（VM 用 `??=`），同 target 恢复不应再产生
+    //    catalog 读取：先记基线，等真实完成屏障后断言计数未增、无悬空 reply。
+    final catalogReadsBeforeRetry = port.catalogReads.length;
+    env.application.domains.configurationPort.configurationHeaderFailure = null;
+    notifier.retryRead();
+    // 同一真实屏障：恢复后仍要求 issue 清除、读取完成且来源三键指向当前目标。
+    await waitAcpDirectoryReady(
+      reason: 'ACP directory recovered after clearing the failure',
+    );
+    expect(
+      port.catalogReads.length,
+      catalogReadsBeforeRetry,
+      reason: 'catalog 已缓存，同 target 的显式重试不应再发起 catalog 读取',
+    );
+    final recovered = settingsOfCapture();
+    expect(recovered['acpAccounts'], isEmpty);
+
+    // 收尾责任：本条用例产生的每个 catalog 读取都已结算，没有悬空 reply。
+    expect(
+      answeredCatalogReads,
+      port.catalogReads.length,
+      reason: '所有 catalog reply 都必须已结算',
+    );
+  });
 }
 
 const _connectionErrorKeys = <String>[
@@ -1005,6 +1649,118 @@ ModelRouteReadValue _sharedModelRoute({
   revision: 3,
   available: available,
   unavailableReason: null,
+);
+
+/// 有界等待一个真实投影条件成立；超时即失败，不用固定 sleep 掩盖时序。
+Future<void> _waitUntil(
+  bool Function() ready, {
+  required String reason,
+  Duration timeout = const Duration(seconds: 5),
+}) async {
+  final deadline = DateTime.now().add(timeout);
+  while (DateTime.now().isBefore(deadline)) {
+    if (ready()) return;
+    await Future<void>.delayed(const Duration(milliseconds: 20));
+  }
+  throw StateError('timed out waiting for $reason');
+}
+
+/// 产品固定的受管发行描述符：1.4.1 清单没有发布方摘要，`sha256` 必须保持 null。
+const _fixedRelease = AcpInstallRelease(
+  version: '1.4.1',
+  target: 'linux-x86_64',
+  archiveUrl:
+      'https://dl.google.com/agy-extensions/releases/linux/'
+      'agy-acp-server-1.4.1-linux-x86_64.zip',
+  sha256: null,
+);
+
+/// 同一描述符的投影形状；消费者按字段读，不解析 URL 推断目标。
+const _fixedReleaseJson = <String, Object?>{
+  'version': '1.4.1',
+  'target': 'linux-x86_64',
+  'archiveUrl':
+      'https://dl.google.com/agy-extensions/releases/linux/'
+      'agy-acp-server-1.4.1-linux-x86_64.zip',
+  'sha256': null,
+};
+
+/// Native 模板目录的最小真实构造：只提供投影需要的稳定身份。
+AccountTemplatesValue _nativeTemplates(List<String> ids) =>
+    AccountTemplatesValue(
+      schemaVersion: 1,
+      revision: '1',
+      templates: [
+        for (final id in ids)
+          AccountTemplate(
+            id: id,
+            displayName: id,
+            description: null,
+            baseUrl: 'https://fixture.invalid/v1',
+            credential: const CredentialDescriptor(
+              label: 'API key',
+              envVar: null,
+            ),
+            modelCatalogId: 'catalog',
+            protocol: 'openai',
+            suggestedModelId: 'model',
+            iconKey: null,
+            serviceCapabilities: const AccountServiceCapabilities(
+              webSearch: WebSearchServiceCapabilities(
+                hostedResponses: false,
+                hostedDialect: 'none',
+                standalone: null,
+              ),
+              promptCacheDialect: 'none',
+              responsesProgrammaticToolCalling: false,
+            ),
+          ),
+      ],
+      modelCatalogs: const {},
+    );
+
+/// Immutable published input to the production Driver serializer: the two ACP
+/// canonical mirrors are supplied as values instead of a fake Repository, while
+/// every unrelated fact is borrowed from a fully real application assembly.
+DriverSnapshot _acpSnapshot(
+  DriverSnapshot base, {
+  AcpAuthSnapshot? auth,
+  AcpInstallSnapshot? install,
+  AcpAccountDirectory? accounts,
+  AccountTemplatesValue? templates,
+}) => DriverSnapshot(
+  selection: base.selection,
+  project: base.project,
+  thread: base.thread,
+  rootThreadId: base.rootThreadId,
+  directory: base.directory,
+  directoryHasMore: base.directoryHasMore,
+  agents: base.agents,
+  agentDirectoryError: base.agentDirectoryError,
+  execution: base.execution,
+  metrics: base.metrics,
+  context: base.context,
+  threadConfiguration: base.threadConfiguration,
+  authoring: base.authoring,
+  interactions: base.interactions,
+  startDraft: base.startDraft,
+  composer: base.composer,
+  configuration: base.configuration,
+  models: base.models,
+  operations: base.operations,
+  persistence: base.persistence,
+  recovery: base.recovery,
+  updates: base.updates,
+  startup: base.startup,
+  display: base.display,
+  conversation: base.conversation,
+  status: base.status,
+  plan: base.plan,
+  bots: base.bots,
+  acpAuth: auth,
+  acpInstall: install,
+  acpAccounts: accounts,
+  templates: templates,
 );
 
 /// Immutable published input to the production Driver serializer, just as the
@@ -1115,6 +1871,8 @@ DriverSnapshot _identitySnapshot(
     status: status,
     plan: base.plan,
     bots: base.bots,
+    acpAuth: base.acpAuth,
+    acpInstall: base.acpInstall,
   );
 }
 

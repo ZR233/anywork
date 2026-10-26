@@ -75,7 +75,6 @@ pub(crate) fn bridge_settings(
             .accounts
             .into_iter()
             .map(|account| BridgeAccountSettingsDto {
-                pricing_enabled: account.pricing_enabled,
                 billing_kind: account.billing_kind.into(),
                 billing_kind_override: account.billing_kind_override.map(Into::into),
                 disabled_models: account.disabled_models,
@@ -118,6 +117,11 @@ pub(crate) fn bridge_settings(
                     .collect(),
                 catalog_id: account.catalog_id,
             })
+            .collect(),
+        acp_accounts: settings
+            .acp_accounts
+            .into_iter()
+            .map(super::acp::bridge_acp_account_settings)
             .collect(),
         mode_model_routes: settings
             .mode_model_routes
@@ -269,7 +273,7 @@ pub(crate) fn account_settings_request(
                 }
                 AccountSecretInput::Clear => pl_protocol::studio::AccountSecretUpdate::Clear,
             },
-            pricing_enabled: account.pricing_enabled,
+            initial_billing_kind: account.initial_billing_kind.map(Into::into),
             custom_models: account
                 .custom_models
                 .into_iter()

@@ -13,8 +13,8 @@ import 'application_launch_boundary.dart';
 void bootstrapStudio({
   required Future<void> Function() assemble,
 
-  /// Runs inside the same guarded zone after binding creation and before the
-  /// first frame. Driver extension registration uses it; production passes none.
+  /// Runs inside the same guarded zone before the default binding is ensured.
+  /// Driver installs its own binding here; production passes none.
   void Function()? beforeRun,
 }) {
   FlutterError.onError = (details) {
@@ -26,8 +26,8 @@ void bootstrapStudio({
     return true;
   };
   runZonedGuarded(() {
-    WidgetsFlutterBinding.ensureInitialized();
     beforeRun?.call();
+    WidgetsFlutterBinding.ensureInitialized();
     runApp(createApplicationLaunch(assemble: assemble));
   }, recordDartError);
 }

@@ -180,10 +180,6 @@ final class WorkspaceCommands {
       value = await work.action(scope);
       scope.confirm(value: value);
     } catch (error, stack) {
-      // PROBE
-      print(
-        '[K] fail ${work.label} ${error.runtimeType}: $error\n${stack.toString().split('\n').where((line) => !line.contains('dart:async')).take(16).join('\n')}',
-      );
       _remember(work, error, stack);
       failure = error is CommandDispatchFailure
           ? error.failure

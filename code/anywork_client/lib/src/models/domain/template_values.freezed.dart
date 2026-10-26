@@ -208,7 +208,7 @@ case _:
 /// @nodoc
 mixin _$AccountTemplate {
 
- bool get pricingEnabled; String get id; String get displayName; String? get description; String get baseUrl; CredentialDescriptor get credential; String get modelCatalogId; String get protocol; String get suggestedModelId; String? get iconKey; AccountServiceCapabilities get serviceCapabilities;
+ String get id; String get displayName; String? get description; String get baseUrl; CredentialDescriptor get credential; String get modelCatalogId; String get protocol; String get suggestedModelId; String? get iconKey; AccountServiceCapabilities get serviceCapabilities;
 /// Create a copy of AccountTemplate
 /// with the given fields replaced by the non-null parameter values.
 @JsonKey(includeFromJson: false, includeToJson: false)
@@ -220,20 +220,20 @@ $AccountTemplateCopyWith<AccountTemplate> get copyWith => _$AccountTemplateCopyW
 @override
 bool operator ==(Object other) {
   final _this = this as AccountTemplate;
-  return identical(this, other) || (other.runtimeType == runtimeType&&other is AccountTemplate&&(identical(other.pricingEnabled, _this.pricingEnabled) || other.pricingEnabled == _this.pricingEnabled)&&(identical(other.id, _this.id) || other.id == _this.id)&&(identical(other.displayName, _this.displayName) || other.displayName == _this.displayName)&&(identical(other.description, _this.description) || other.description == _this.description)&&(identical(other.baseUrl, _this.baseUrl) || other.baseUrl == _this.baseUrl)&&(identical(other.credential, _this.credential) || other.credential == _this.credential)&&(identical(other.modelCatalogId, _this.modelCatalogId) || other.modelCatalogId == _this.modelCatalogId)&&(identical(other.protocol, _this.protocol) || other.protocol == _this.protocol)&&(identical(other.suggestedModelId, _this.suggestedModelId) || other.suggestedModelId == _this.suggestedModelId)&&(identical(other.iconKey, _this.iconKey) || other.iconKey == _this.iconKey)&&(identical(other.serviceCapabilities, _this.serviceCapabilities) || other.serviceCapabilities == _this.serviceCapabilities));
+  return identical(this, other) || (other.runtimeType == runtimeType&&other is AccountTemplate&&(identical(other.id, _this.id) || other.id == _this.id)&&(identical(other.displayName, _this.displayName) || other.displayName == _this.displayName)&&(identical(other.description, _this.description) || other.description == _this.description)&&(identical(other.baseUrl, _this.baseUrl) || other.baseUrl == _this.baseUrl)&&(identical(other.credential, _this.credential) || other.credential == _this.credential)&&(identical(other.modelCatalogId, _this.modelCatalogId) || other.modelCatalogId == _this.modelCatalogId)&&(identical(other.protocol, _this.protocol) || other.protocol == _this.protocol)&&(identical(other.suggestedModelId, _this.suggestedModelId) || other.suggestedModelId == _this.suggestedModelId)&&(identical(other.iconKey, _this.iconKey) || other.iconKey == _this.iconKey)&&(identical(other.serviceCapabilities, _this.serviceCapabilities) || other.serviceCapabilities == _this.serviceCapabilities));
 }
 
 
 @override
 int get hashCode {
   final _this = this as AccountTemplate;
-  return Object.hash(runtimeType,_this.pricingEnabled,_this.id,_this.displayName,_this.description,_this.baseUrl,_this.credential,_this.modelCatalogId,_this.protocol,_this.suggestedModelId,_this.iconKey,_this.serviceCapabilities);
+  return Object.hash(runtimeType,_this.id,_this.displayName,_this.description,_this.baseUrl,_this.credential,_this.modelCatalogId,_this.protocol,_this.suggestedModelId,_this.iconKey,_this.serviceCapabilities);
 }
 
 @override
 String toString() {
   final _this = this as AccountTemplate;
-  return 'AccountTemplate(pricingEnabled: ${_this.pricingEnabled}, id: ${_this.id}, displayName: ${_this.displayName}, description: ${_this.description}, baseUrl: ${_this.baseUrl}, credential: ${_this.credential}, modelCatalogId: ${_this.modelCatalogId}, protocol: ${_this.protocol}, suggestedModelId: ${_this.suggestedModelId}, iconKey: ${_this.iconKey}, serviceCapabilities: ${_this.serviceCapabilities})';
+  return 'AccountTemplate(id: ${_this.id}, displayName: ${_this.displayName}, description: ${_this.description}, baseUrl: ${_this.baseUrl}, credential: ${_this.credential}, modelCatalogId: ${_this.modelCatalogId}, protocol: ${_this.protocol}, suggestedModelId: ${_this.suggestedModelId}, iconKey: ${_this.iconKey}, serviceCapabilities: ${_this.serviceCapabilities})';
 }
 
 
@@ -244,7 +244,7 @@ abstract mixin class $AccountTemplateCopyWith<$Res>  {
   factory $AccountTemplateCopyWith(AccountTemplate value, $Res Function(AccountTemplate) _then) = _$AccountTemplateCopyWithImpl;
 @useResult
 $Res call({
- bool pricingEnabled, String id, String displayName, String? description, String baseUrl, CredentialDescriptor credential, String modelCatalogId, String protocol, String suggestedModelId, String? iconKey, AccountServiceCapabilities serviceCapabilities
+ String id, String displayName, String? description, String baseUrl, CredentialDescriptor credential, String modelCatalogId, String protocol, String suggestedModelId, String? iconKey, AccountServiceCapabilities serviceCapabilities
 });
 
 
@@ -261,10 +261,9 @@ class _$AccountTemplateCopyWithImpl<$Res>
 
 /// Create a copy of AccountTemplate
 /// with the given fields replaced by the non-null parameter values.
-@pragma('vm:prefer-inline') @override $Res call({Object? pricingEnabled = null,Object? id = null,Object? displayName = null,Object? description = freezed,Object? baseUrl = null,Object? credential = null,Object? modelCatalogId = null,Object? protocol = null,Object? suggestedModelId = null,Object? iconKey = freezed,Object? serviceCapabilities = null,}) {
+@pragma('vm:prefer-inline') @override $Res call({Object? id = null,Object? displayName = null,Object? description = freezed,Object? baseUrl = null,Object? credential = null,Object? modelCatalogId = null,Object? protocol = null,Object? suggestedModelId = null,Object? iconKey = freezed,Object? serviceCapabilities = null,}) {
   return _then(AccountTemplate(
-pricingEnabled: null == pricingEnabled ? _self.pricingEnabled : pricingEnabled // ignore: cast_nullable_to_non_nullable
-as bool,id: null == id ? _self.id : id // ignore: cast_nullable_to_non_nullable
+id: null == id ? _self.id : id // ignore: cast_nullable_to_non_nullable
 as String,displayName: null == displayName ? _self.displayName : displayName // ignore: cast_nullable_to_non_nullable
 as String,description: freezed == description ? _self.description : description // ignore: cast_nullable_to_non_nullable
 as String?,baseUrl: null == baseUrl ? _self.baseUrl : baseUrl // ignore: cast_nullable_to_non_nullable
@@ -377,10 +376,10 @@ return $default(_that);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult maybeWhen<TResult extends Object?>(TResult Function( bool pricingEnabled,  String id,  String displayName,  String? description,  String baseUrl,  CredentialDescriptor credential,  String modelCatalogId,  String protocol,  String suggestedModelId,  String? iconKey,  AccountServiceCapabilities serviceCapabilities)?  $default,{required TResult orElse(),}) {final _that = this;
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>(TResult Function( String id,  String displayName,  String? description,  String baseUrl,  CredentialDescriptor credential,  String modelCatalogId,  String protocol,  String suggestedModelId,  String? iconKey,  AccountServiceCapabilities serviceCapabilities)?  $default,{required TResult orElse(),}) {final _that = this;
 switch (_that) {
 case _AccountTemplate() when $default != null:
-return $default(_that.pricingEnabled,_that.id,_that.displayName,_that.description,_that.baseUrl,_that.credential,_that.modelCatalogId,_that.protocol,_that.suggestedModelId,_that.iconKey,_that.serviceCapabilities);case _:
+return $default(_that.id,_that.displayName,_that.description,_that.baseUrl,_that.credential,_that.modelCatalogId,_that.protocol,_that.suggestedModelId,_that.iconKey,_that.serviceCapabilities);case _:
   return orElse();
 
 }
@@ -398,10 +397,10 @@ return $default(_that.pricingEnabled,_that.id,_that.displayName,_that.descriptio
 /// }
 /// ```
 
-@optionalTypeArgs TResult when<TResult extends Object?>(TResult Function( bool pricingEnabled,  String id,  String displayName,  String? description,  String baseUrl,  CredentialDescriptor credential,  String modelCatalogId,  String protocol,  String suggestedModelId,  String? iconKey,  AccountServiceCapabilities serviceCapabilities)  $default,) {final _that = this;
+@optionalTypeArgs TResult when<TResult extends Object?>(TResult Function( String id,  String displayName,  String? description,  String baseUrl,  CredentialDescriptor credential,  String modelCatalogId,  String protocol,  String suggestedModelId,  String? iconKey,  AccountServiceCapabilities serviceCapabilities)  $default,) {final _that = this;
 switch (_that) {
 case _AccountTemplate():
-return $default(_that.pricingEnabled,_that.id,_that.displayName,_that.description,_that.baseUrl,_that.credential,_that.modelCatalogId,_that.protocol,_that.suggestedModelId,_that.iconKey,_that.serviceCapabilities);case _:
+return $default(_that.id,_that.displayName,_that.description,_that.baseUrl,_that.credential,_that.modelCatalogId,_that.protocol,_that.suggestedModelId,_that.iconKey,_that.serviceCapabilities);case _:
   throw StateError('Unexpected subclass');
 
 }
@@ -418,10 +417,10 @@ return $default(_that.pricingEnabled,_that.id,_that.displayName,_that.descriptio
 /// }
 /// ```
 
-@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>(TResult? Function( bool pricingEnabled,  String id,  String displayName,  String? description,  String baseUrl,  CredentialDescriptor credential,  String modelCatalogId,  String protocol,  String suggestedModelId,  String? iconKey,  AccountServiceCapabilities serviceCapabilities)?  $default,) {final _that = this;
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>(TResult? Function( String id,  String displayName,  String? description,  String baseUrl,  CredentialDescriptor credential,  String modelCatalogId,  String protocol,  String suggestedModelId,  String? iconKey,  AccountServiceCapabilities serviceCapabilities)?  $default,) {final _that = this;
 switch (_that) {
 case _AccountTemplate() when $default != null:
-return $default(_that.pricingEnabled,_that.id,_that.displayName,_that.description,_that.baseUrl,_that.credential,_that.modelCatalogId,_that.protocol,_that.suggestedModelId,_that.iconKey,_that.serviceCapabilities);case _:
+return $default(_that.id,_that.displayName,_that.description,_that.baseUrl,_that.credential,_that.modelCatalogId,_that.protocol,_that.suggestedModelId,_that.iconKey,_that.serviceCapabilities);case _:
   return null;
 
 }
@@ -433,10 +432,9 @@ return $default(_that.pricingEnabled,_that.id,_that.displayName,_that.descriptio
 
 
 class _AccountTemplate implements AccountTemplate {
-  const _AccountTemplate({required this.pricingEnabled, required this.id, required this.displayName, required this.description, required this.baseUrl, required this.credential, required this.modelCatalogId, required this.protocol, required this.suggestedModelId, required this.iconKey, required this.serviceCapabilities});
+  const _AccountTemplate({required this.id, required this.displayName, required this.description, required this.baseUrl, required this.credential, required this.modelCatalogId, required this.protocol, required this.suggestedModelId, required this.iconKey, required this.serviceCapabilities});
 
 
-@override final  bool pricingEnabled;
 @override final  String id;
 @override final  String displayName;
 @override final  String? description;
@@ -458,18 +456,18 @@ _$AccountTemplateCopyWith<_AccountTemplate> get copyWith => __$AccountTemplateCo
 
 @override
 bool operator ==(Object other) {
-    return identical(this, other) || (other.runtimeType == runtimeType&&other is _AccountTemplate&&(identical(other.pricingEnabled, pricingEnabled) || other.pricingEnabled == pricingEnabled)&&(identical(other.id, id) || other.id == id)&&(identical(other.displayName, displayName) || other.displayName == displayName)&&(identical(other.description, description) || other.description == description)&&(identical(other.baseUrl, baseUrl) || other.baseUrl == baseUrl)&&(identical(other.credential, credential) || other.credential == credential)&&(identical(other.modelCatalogId, modelCatalogId) || other.modelCatalogId == modelCatalogId)&&(identical(other.protocol, protocol) || other.protocol == protocol)&&(identical(other.suggestedModelId, suggestedModelId) || other.suggestedModelId == suggestedModelId)&&(identical(other.iconKey, iconKey) || other.iconKey == iconKey)&&(identical(other.serviceCapabilities, serviceCapabilities) || other.serviceCapabilities == serviceCapabilities));
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is _AccountTemplate&&(identical(other.id, id) || other.id == id)&&(identical(other.displayName, displayName) || other.displayName == displayName)&&(identical(other.description, description) || other.description == description)&&(identical(other.baseUrl, baseUrl) || other.baseUrl == baseUrl)&&(identical(other.credential, credential) || other.credential == credential)&&(identical(other.modelCatalogId, modelCatalogId) || other.modelCatalogId == modelCatalogId)&&(identical(other.protocol, protocol) || other.protocol == protocol)&&(identical(other.suggestedModelId, suggestedModelId) || other.suggestedModelId == suggestedModelId)&&(identical(other.iconKey, iconKey) || other.iconKey == iconKey)&&(identical(other.serviceCapabilities, serviceCapabilities) || other.serviceCapabilities == serviceCapabilities));
 }
 
 
 @override
 int get hashCode {
-    return Object.hash(runtimeType,pricingEnabled,id,displayName,description,baseUrl,credential,modelCatalogId,protocol,suggestedModelId,iconKey,serviceCapabilities);
+    return Object.hash(runtimeType,id,displayName,description,baseUrl,credential,modelCatalogId,protocol,suggestedModelId,iconKey,serviceCapabilities);
 }
 
 @override
 String toString() {
-    return 'AccountTemplate(pricingEnabled: $pricingEnabled, id: $id, displayName: $displayName, description: $description, baseUrl: $baseUrl, credential: $credential, modelCatalogId: $modelCatalogId, protocol: $protocol, suggestedModelId: $suggestedModelId, iconKey: $iconKey, serviceCapabilities: $serviceCapabilities)';
+    return 'AccountTemplate(id: $id, displayName: $displayName, description: $description, baseUrl: $baseUrl, credential: $credential, modelCatalogId: $modelCatalogId, protocol: $protocol, suggestedModelId: $suggestedModelId, iconKey: $iconKey, serviceCapabilities: $serviceCapabilities)';
 }
 
 
@@ -480,7 +478,7 @@ abstract mixin class _$AccountTemplateCopyWith<$Res> implements $AccountTemplate
   factory _$AccountTemplateCopyWith(_AccountTemplate value, $Res Function(_AccountTemplate) _then) = __$AccountTemplateCopyWithImpl;
 @override @useResult
 $Res call({
- bool pricingEnabled, String id, String displayName, String? description, String baseUrl, CredentialDescriptor credential, String modelCatalogId, String protocol, String suggestedModelId, String? iconKey, AccountServiceCapabilities serviceCapabilities
+ String id, String displayName, String? description, String baseUrl, CredentialDescriptor credential, String modelCatalogId, String protocol, String suggestedModelId, String? iconKey, AccountServiceCapabilities serviceCapabilities
 });
 
 
@@ -497,10 +495,9 @@ class __$AccountTemplateCopyWithImpl<$Res>
 
 /// Create a copy of AccountTemplate
 /// with the given fields replaced by the non-null parameter values.
-@override @pragma('vm:prefer-inline') $Res call({Object? pricingEnabled = null,Object? id = null,Object? displayName = null,Object? description = freezed,Object? baseUrl = null,Object? credential = null,Object? modelCatalogId = null,Object? protocol = null,Object? suggestedModelId = null,Object? iconKey = freezed,Object? serviceCapabilities = null,}) {
+@override @pragma('vm:prefer-inline') $Res call({Object? id = null,Object? displayName = null,Object? description = freezed,Object? baseUrl = null,Object? credential = null,Object? modelCatalogId = null,Object? protocol = null,Object? suggestedModelId = null,Object? iconKey = freezed,Object? serviceCapabilities = null,}) {
   return _then(_AccountTemplate(
-pricingEnabled: null == pricingEnabled ? _self.pricingEnabled : pricingEnabled // ignore: cast_nullable_to_non_nullable
-as bool,id: null == id ? _self.id : id // ignore: cast_nullable_to_non_nullable
+id: null == id ? _self.id : id // ignore: cast_nullable_to_non_nullable
 as String,displayName: null == displayName ? _self.displayName : displayName // ignore: cast_nullable_to_non_nullable
 as String,description: freezed == description ? _self.description : description // ignore: cast_nullable_to_non_nullable
 as String?,baseUrl: null == baseUrl ? _self.baseUrl : baseUrl // ignore: cast_nullable_to_non_nullable

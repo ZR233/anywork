@@ -10,6 +10,7 @@ import '../../widgets/settings_feedback.dart';
 import '../../widgets/settings_form_layout.dart';
 import '../../widgets/settings_layout.dart';
 import '../state/accounts_state.dart';
+import '../widgets/acp_account_list_row.dart';
 import '../widgets/account_list_row.dart';
 import '../widgets/auto_page_loader.dart';
 
@@ -23,6 +24,12 @@ class AccountsView extends StatelessWidget {
   const AccountsView({
     required this.state,
     required this.accounts,
+    required this.acpEntries,
+    required this.acpNoticeSummaries,
+    required this.selectedAcpAccountId,
+    required this.onSelectAcp,
+    required this.onEditAcp,
+    required this.onRemoveAcp,
     required this.catalogs,
     required this.usages,
     required this.defaultAccountId,
@@ -44,6 +51,18 @@ class AccountsView extends StatelessWidget {
   });
   final AccountsViewState state;
   final List<AccountConfiguration> accounts;
+
+  /// 与查询匹配的 ACP 接入（已按 canonical 顺序排列）。
+  final List<AcpAccountEntryView> acpEntries;
+
+  /// 按目标接入记账的命令失败摘要（已本地化）；只出现在目标行。
+  final Map<String, String> acpNoticeSummaries;
+
+  final String? selectedAcpAccountId;
+  final ValueChanged<AcpAccountEntryView> onSelectAcp;
+  final ValueChanged<AcpAccountEntryView> onEditAcp;
+  final ValueChanged<AcpAccountEntryView> onRemoveAcp;
+
   final Map<String, AccountCatalogEntry> catalogs;
   final Map<String, AccountUsageRecord> usages;
   final String? defaultAccountId;
@@ -109,7 +128,7 @@ class AccountsView extends StatelessWidget {
           const SizedBox(height: 14),
         ],
         Expanded(
-          child: accounts.isEmpty
+          child: accounts.isEmpty && acpEntries.isEmpty
               ? Center(
                   child: StudioEmptyState(
                     icon: Icons.cloud_off_outlined,
@@ -125,6 +144,18 @@ class AccountsView extends StatelessWidget {
                   child: SettingsGroup(
                     children: [
                       for (final account in accounts) _row(context, account),
+                      for (final entry in acpEntries)
+                        AcpAccountListRow(
+                          entry: entry,
+                          selected:
+                              state.showDetails &&
+                              selectedAcpAccountId == entry.account.accountId,
+                          noticeSummary:
+                              acpNoticeSummaries[entry.account.accountId],
+                          onOpen: () => onSelectAcp(entry),
+                          onEdit: () => onEditAcp(entry),
+                          onRemove: () => onRemoveAcp(entry),
+                        ),
                     ],
                   ),
                 ),

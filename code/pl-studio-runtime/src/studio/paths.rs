@@ -26,6 +26,9 @@ const ATTACHMENTS_FILE_NAME: &str = "attachments.toml";
 const BLOBS_DIR_NAME: &str = "blobs";
 const RESOURCES_DIR_NAME: &str = "thread-resources";
 const SCRATCH_DIR_NAME: &str = "scratch";
+const ACP_PROBE_DIR_NAME: &str = "acp-probe";
+/// 官方 ACP server 安装根目录名；与数据根同级隔离，不进入用户项目。
+const ACP_SERVERS_DIR_NAME: &str = "acp-servers";
 const PROJECT_MANIFEST_FILE_NAME: &str = "project.toml";
 const SESSION_MANIFEST_FILE_NAME: &str = "session.toml";
 
@@ -141,6 +144,30 @@ impl StudioPaths {
     /// `blobs` directory; this root is never an attachment catalog or content-addressed store.
     pub fn attachment_drafts_dir(&self) -> PathBuf {
         self.data_dir.join(ATTACHMENT_DRAFTS_DIR_NAME)
+    }
+
+    /// ACP 认证探测工作区根：产品数据根下按接入稳定 key 隔离，不使用用户项目目录。
+    ///
+    /// 目录只作为外部 Agent 的空 `cwd`；它不承载凭据、会话历史或供应商状态，删除它不撤销
+    /// 官方程序的登录（见 design/17、design/28）。
+    pub fn acp_probe_root(&self) -> PathBuf {
+        self.data_dir.join(ACP_PROBE_DIR_NAME)
+    }
+
+    /// 一条接入专属的空探测目录；key 只由稳定接入 ID 派生。
+    pub fn acp_probe_dir(&self, account_id: &str) -> Result<PathBuf> {
+        Ok(self
+            .acp_probe_root()
+            .join(storage_key(account_id, "ACP account")?))
+    }
+
+    /// 官方 ACP server 安装根：`<Studio home>/studio/acp-servers`。
+    ///
+    /// 与会话版本数据根（`studio/v2`）、空探测 cwd、更新安装器缓存和会话 scratch 隔离；下载、
+    /// 私有 staging、锁与已发布安装都在该根下按 provider/target/安装身份分层。它不绑定账号，
+    /// 删除账号不删除资产（见 design/17、design/28 §28.5–28.7）。
+    pub fn acp_servers_root(&self) -> PathBuf {
+        self.home.join(STUDIO_DIR_NAME).join(ACP_SERVERS_DIR_NAME)
     }
 
     /// Stable on-disk directory for one Project.

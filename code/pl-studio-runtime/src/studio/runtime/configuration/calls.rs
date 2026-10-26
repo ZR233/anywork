@@ -1,6 +1,9 @@
 //! Closed result ownership used by the existing transport registry; not a new writer or bus.
 use super::super::StudioRuntime;
-use super::{ConfigurationCommandResult, ConfigurationReloadCommandResult, ProfileCommandResult};
+use super::{
+    AcpAccountCommandResult, ConfigurationCommandResult, ConfigurationReloadCommandResult,
+    ProfileCommandResult,
+};
 use pl_protocol::products::configuration_calls::{
     ConfigurationCallOutcome, ConfigurationCallRequest,
 };
@@ -9,6 +12,7 @@ pub enum ConfigurationCallResult {
     Configuration(ConfigurationCommandResult),
     Profile(ProfileCommandResult),
     Reload(ConfigurationReloadCommandResult),
+    AcpAccount(AcpAccountCommandResult),
 }
 impl ConfigurationCallResult {
     pub async fn run(runtime: &StudioRuntime, request: ConfigurationCallRequest) -> Self {
@@ -22,6 +26,9 @@ impl ConfigurationCallResult {
             ConfigurationCallRequest::Reload(request) => {
                 Self::Reload(runtime.configuration_reload(request).await)
             }
+            ConfigurationCallRequest::AcpAccount(request) => {
+                Self::AcpAccount(runtime.acp_account_command(request).await)
+            }
         }
     }
     /// Clone only the pure outcome; retain this actual resource until explicit call close.
@@ -32,6 +39,9 @@ impl ConfigurationCallResult {
             }
             Self::Profile(result) => ConfigurationCallOutcome::Profile(result.outcome().clone()),
             Self::Reload(result) => ConfigurationCallOutcome::Reload(result.outcome().clone()),
+            Self::AcpAccount(result) => {
+                ConfigurationCallOutcome::AcpAccount(result.outcome().clone())
+            }
         }
     }
 }

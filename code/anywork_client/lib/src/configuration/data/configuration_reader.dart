@@ -2,6 +2,7 @@ import '../../../models.dart' show ModelInputCapability;
 import '../../../models_ports.dart'
     show ModelInputCapabilityRead, ModelInputSourceReadItem;
 import '../../../resources.dart';
+import '../../acp/domain/acp_values.dart';
 import '../domain/configuration_values.dart';
 import 'configuration_port.dart';
 import 'configuration_read_fields.dart';
@@ -35,6 +36,39 @@ final class ConfigurationReader {
     });
     return List.unmodifiable([
       for (final item in items) await text(item.value),
+    ]);
+  }
+
+  /// 有界读取 ACP 接入目录：ID/名称沿连续 UTF8 文本读取，供应商与连接代次按原值。
+  ///
+  /// 页身份、偏移、总量、进展与续页由 [readConfigurationList] 校验；重复身份由
+  /// 目录级校验统一判定，不在这里另造第二套规则，也不重新推导连接代次。
+  Future<List<AcpAccountSettings>> acpAccounts(TypedListRef reference) async {
+    final rows = await readConfigurationList<AcpAccountConfigurationRead>(
+      reference,
+      (offset) async {
+        final page = await scope.acpAccounts(
+          reference.listId,
+          offset: offset,
+          limit: 32,
+        );
+        return (
+          listId: page.listId,
+          offset: page.offset,
+          total: page.total,
+          items: page.items,
+          nextOffset: page.nextOffset,
+        );
+      },
+    );
+    return List.unmodifiable([
+      for (final row in rows)
+        AcpAccountSettings(
+          accountId: await text(row.accountId),
+          name: await text(row.name),
+          provider: row.provider,
+          connectionRevision: row.connectionRevision,
+        ),
     ]);
   }
 
@@ -159,7 +193,6 @@ final class ConfigurationReader {
       },
     );
     return AccountConfiguration(
-      pricingEnabled: value.pricingEnabled,
       billingKind: value.billingKind,
       billingKindOverride: value.billingKindOverride,
       disabledModels: await strings(value.disabledModels),

@@ -122,6 +122,27 @@ final class FrbConfigurationReadConnection
     return page;
   });
   @override
+  Future<AcpAccountConfigurationReadPage> acpAccounts(
+    int listId, {
+    int offset = 0,
+    int limit = 32,
+  }) => _owner.list(listId, offset, limit, (handle, id, start, count) async {
+    final page = configurationAcpAccountsPageFromBridge(
+      await handle.acpAccounts(listId: id, offset: start, limit: count),
+    );
+    requireModelPage(
+      requestedOffset: offset,
+      limit: limit,
+      listId: page.listId,
+      requestedListId: listId,
+      offset: page.offset,
+      total: page.total,
+      count: page.items.length,
+      nextOffset: page.nextOffset,
+    );
+    return page;
+  });
+  @override
   Future<CustomModelConfigurationReadPage> customModels(
     int listId, {
     int offset = 0,

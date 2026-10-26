@@ -41,6 +41,17 @@ AccountConfigurationReadPage configurationAccountsPageFromBridge(
     'configuration accounts next offset',
   ),
 );
+AcpAccountConfigurationReadPage configurationAcpAccountsPageFromBridge(
+  native.BridgeAcpAccountConfigurationReadPage value,
+) => AcpAccountConfigurationReadPage(
+  listId: exactU64(value.listId, 'ACP accounts list'),
+  offset: exactU64(value.offset, 'ACP accounts offset'),
+  total: exactU64(value.total, 'ACP accounts total'),
+  items: value.items
+      .map(acpAccountConfigurationFromBridge)
+      .toList(growable: false),
+  nextOffset: nullableU64(value.nextOffset, 'ACP accounts next offset'),
+);
 CustomModelConfigurationReadPage configurationCustomModelsPageFromBridge(
   native.BridgeCustomModelConfigurationReadPage value,
 ) => CustomModelConfigurationReadPage(

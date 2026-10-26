@@ -1,812 +1,281 @@
 # 18 - Studio 状态查询与领域生命周期
 
-本文是 CQS 边界、公共 snapshot、activation、shutdown、自动 title 生命周期与产品投影的
-唯一权威源；存储与 checkpoint 见 [17](./17-studio-storage.md)，UI 呈现见
-[19](./19-studio-ui.md)。
+本文是 CQS 边界、公共快照、activation、关闭编排、自动 title 生命周期与产品投影的唯一权威源；存储与 checkpoint 见 [17](./17-studio-storage.md)，UI 呈现见[19](./19-studio-ui.md)。
 
-## 18.1 CQS
+## 18.1 命令查询分离
 
-Studio 使用 Command Query Separation。查询只读取 owner 已发布的 canonical snapshot；
-初始化、激活、扫描 Skill/Profile、修复、重连和关闭只能由明确 typed command 触发。
-Widget rebuild、stream resync 与 `read*` 查询不得写 SQLite/配置、访问网络或创建 runtime
-owner。进程运行期间 Project、Thread、Agent、Workflow、Recovery 和服务目录的内存 owner
-是活动事实源；会话 SQLite 的最新 checkpoint 提供 activation 基线，历史与累计计量同事务保存，调用日志独立用于调试。
+Studio 使用 Command Query Separation。查询只读取所有者已发布的权威快照；初始化、激活、扫描 Skill/Profile、修复、重连和关闭只能由明确类型化 command 触发。界面组件 rebuild、stream 重同步与 `read*` 查询不得写 SQLite/配置、访问网络或创建运行时所有者。进程运行期间 Project、Thread、Agent、Workflow、Recovery 和服务目录的内存所有者是活动事实源；会话 SQLite 的最新 checkpoint 提供 activation 基线，历史与累计计量同事务保存，调用日志独立用于调试。
 
-## 18.2 公共 snapshot
+## 18.2 公共快照
 
-账号用量刷新按 account 发布独立的成功、失败、缺少凭据或不支持状态。单个账号
-查询失败仍是本次观察的有效结果，不丢弃其他账号的新结果，也不升级成所有卡片共享的
-命令错误；只有观察协调或持久化失败才使整个刷新命令失败。
+通用 `StudioError` 保持稳定的 `code`、`message`、`retryable`、`correlationId` 与可选 `details` 错误体。内部表示变化不得改变公开 JSON 形状、空值省略规则或 FRB 的脱敏详情契约。
 
-用量检查以必需的 account ID 为目标，HTTP command 为
-`POST /api/v1/runtime/account-usage/{account_id}/check`；只读快照继续按领域查询。
-刷新全部是多个单实例检查的编排，不是等待所有账号返回后才发布的整批检查。联网阶段
-不持全局配置或用量命令锁，结果在短提交边界合并当前快照，只更新所属实例。不同实例可
-并行并分别发布，同实例同查询身份的重叠检查合并；删除或改变查询输入后旧结果不得写回。
+ACP 认证通过独立 `acpAuth` 主题交付权威基线与修订号；只读查询不启动程序或检查凭据。账号保存、删除归设置领域，检查连接、登录与取消归认证领域。认证所有者纳入统一早期取消与关闭编排，页面只拥有观察权。操作互斥、安装前置、连接代次、成功判定及失败保留语义统一见 [28](./28-acp.md)。
 
-账号只读 descriptor 的 `usageQueryRevision` 是配置 owner 拥有的非密、按实例查询身份，
-仅在额度查询输入（包括服务地址、template、有效凭据）改变时推进。该身份与 runtime owner
-epoch 一起解释，不是全局 Settings revision，不随名称、默认路由或在线模型目录观察推进，
-也不持久化为用户配置。不能以 secret 或 secret 哈希作为公开查询身份。自动加载和手动刷新
-均消费同一身份及结果 reducer，Repository／ViewModel 需求合同见
-[25.7.1](./25-frontend-state.md#2571-账号用量需求)。
+ACP 服务端准备通过独立 `acpInstall` 主题交付权威基线与修订号；读取不联网、不扫描或修复安装。准备不保存账号或启动认证，页面只拥有观察租约；退出须收束安装所有者及其已受理工作，并纳入统一关闭报告。操作身份、互斥、固定发行与准备成功条件见 [28](./28-acp.md)，文件保留边界见 [17](./17-studio-storage.md)。
 
-Thread 目录 DTO 的 `lastUserMessageAt` 是可空的 Unix 秒时间，仅由成功受理用户输入推进，
-与普通 `updatedAt` 分离。Rust protocol、FRB DTO、Dart domain 与目录增量均传递同一事实；
-运行观察、标题和配置变更保留该值，不因迟到快照回退。已接受排队输入计入，系统/代理输入、
-失败提交和恢复重放不计入。目录排序和版本化游标只消费会话元信息，不从历史回填；
-字段缺失与保存语义遵循 [17](./17-studio-storage.md)。
+账号用量刷新按 account 发布独立的成功、失败、缺少凭据或不支持状态。单个账号查询失败仍是本次观察的有效结果，不丢弃其他账号的新结果，也不升级成所有卡片共享的命令错误；只有观察协调或持久化失败才使整个刷新命令失败。
 
-应用启动先取得 runtime identity 与恢复选择等最小启动事实，再登记所需领域的基线和事件。
-projectDirectory、threadDirectory、agentDirectory、modeCatalog、settings、recovery、MCP/LSP、
-account usage、模型统计、根会话费用、Profiles、持久化队列与 updater 按独立职责交付，
-不为普通页面或命令成功回传全应用聚合 snapshot。服务端聚合诊断查询不是 GUI 的正常恢复路径。
-Thread 的 execution、metrics、context、configuration 和 plan/workflow 使用分域 feed，
-需要原子解释的字段在同一 typed 投影内提交；不同 feed 不冒充跨域事务。Timeline 内容通过
-独立推送、小页和详情读取交付，不放入工作区轻状态；不存在 taskDirectory。
-runtime 每次实例拥有独立 owner epoch，bootstrap 与命令资源 stamp 引用同一
-epoch；客户端订阅 attempt 和 topic 重连代次不能替代业务 owner epoch。Thread 目录条目携带
-会话工作区模式（`local | worktree`）与会话工作区地址 `workspacePath`，只读投影为侧栏与会话
-展示的 canonical 事实，GUI 不推导、不本地改写，也不按模式分别取 Project 路径或工作树路径。
-Settings snapshot 以 `modeModelRoutes` 暴露全局 Mode 默认 selector，并继续以 `roles` 暴露四个
-系统子代理 route；Thread runtime snapshot 另行暴露当前 Thread 的 typed `modelRoute`、revision
-与 available 状态。两者职责不同，GUI 不用 Mode 默认值覆盖已有 Thread 的 route。
+用量检查以必需的 account ID 为目标，HTTP command 为`POST /api/v1/runtime/account-usage/{account_id}/check`；只读快照继续按领域查询。刷新全部是多个单实例检查的编排，不是等待所有账号返回后才发布的整批检查。联网阶段不持全局配置或用量命令锁，结果在短提交边界合并当前快照，只更新所属实例。不同实例可并行并分别发布，同实例同查询身份的重叠检查合并；删除或改变查询输入后旧结果不得写回。
 
-Settings 另行暴露新会话分发模式/偏好默认值，Thread 目录与 runtime 投影保存的实际
-`delegationMode`、`delegationPreference`，不跟随全局默认回写。Agent 目录包含可空的
-typed 模型身份摘要（accountId/modelId/effort），child 值只取创建时冻结绑定；冷目录
-同样消费已保存摘要，未知不从当前 Profile 推断。该字段贯通 HTTP、FRB 与 Client，
-用于智能体列表展示，不携带上下文或额外模型调用。存储与迁移见 [17](./17-studio-storage.md)。
+账号只读 descriptor 的 `usageQueryRevision` 是配置所有者拥有的非密、按实例查询身份，仅在额度查询输入（包括服务地址、template、有效凭据）改变时推进。该身份与运行时所有者epoch 一起解释，不是全局 Settings revision，不随名称、默认路由或在线模型目录观察推进，也不持久化为用户配置。不能以 secret 或 secret 哈希作为公开查询身份。自动加载和手动刷新均消费同一身份及结果归并器，仓储／视图模型需求合同见[25.7.1](./25-frontend-state.md#2571-账号用量需求)。
 
-模型查询基于账号有效目录、统一资格与启用状态，计费类别和性能读取各自 canonical
-领域；本地评价通过按账号模型的有界详情查询返回，不注入全局 bootstrap 或 Settings。
-查询不刷新网络、不写配置、不生成评价。写评价使用 [12](./12-collaboration.md) 的
-父子授权和最终 Turn/revision 校验，提交成功后返回权威结果；旧查询不能回滚较新记录。
+Thread 目录 DTO 的 `lastUserMessageAt` 是可空的 Unix 秒时间，仅由成功受理用户输入推进，与普通 `updatedAt` 分离。Rust protocol、FRB DTO、Dart domain 与目录增量均传递同一事实；运行观察、标题和配置变更保留该值，不因迟到快照回退。已接受排队输入计入，系统/代理输入、失败提交和恢复重放不计入。目录排序和版本化游标只消费会话元信息，不从历史回填；字段缺失与保存语义遵循 [17](./17-studio-storage.md)。
 
-Thread runtime snapshot 同时派生只读 Plan 投影：当前状态、revision、当前计划文档（含内容
-hash）与更新时间，取自 canonical `studio.plan` Thread 扩展；扩展缺失即无计划投影，不物化
-默认状态、不写状态。该投影只供 GUI 只读展示已批准计划与状态栏计划入口，不新增 Plan 协议
-状态、持久化实体或第二个事实源（见 [13](./13-plan.md)）。
+应用启动先取得运行时 identity 与恢复选择等最小启动事实，再登记所需领域的基线和事件。projectDirectory、threadDirectory、agentDirectory、modeCatalog、settings、recovery、MCP/LSP、account usage、模型统计、根会话费用、Profiles、持久化队列与 updater 按独立职责交付，不为普通页面或命令成功回传全应用聚合快照。服务端聚合诊断查询不是 GUI 的正常恢复路径。Thread 的 execution、metrics、context、configuration 和 plan/workflow 使用分域事件流，需要原子解释的字段在同一类型化投影内提交；不同事件流不冒充跨域事务。Timeline 内容通过独立推送、小页和详情读取交付，不放入工作区轻状态；不存在 taskDirectory。运行时每次实例拥有独立所有者 epoch，启动装配与命令资源版本戳引用同一epoch；客户端订阅 attempt 和主题重连代次不能替代业务所有者 epoch。Thread 目录条目携带会话工作区模式（`local | worktree`）与会话工作区地址 `workspacePath`，只读投影为侧栏与会话展示的权威事实，GUI 不推导、不本地改写，也不按模式分别取 Project 路径或工作树路径。Settings 快照以 `modeModelRoutes` 暴露全局 Mode 默认 selector，并继续以 `roles` 暴露四个系统子代理 route；Thread 运行时快照另行暴露当前 Thread 的类型化 `modelRoute`、revision与 available 状态。两者职责不同，GUI 不用 Mode 默认值覆盖已有 Thread 的 route。
 
-Authoring 的 Todo、Plan 与 Workflow 从同一原 Thread 的 canonical 扩展派生；热态变更
-以已提交的扩展变更及对应 checkpoint 为依据，不从可合并的 token/metrics 通知推断可靠
-变更。首次基线与冷读取只消费原实例快照或可靠保存材料，不激活模型、不运行工具，也不
-物化缺失扩展的默认状态。三个领域独立替换或删除，自己的内容未变时不因别域更新重发。
-领域 revision、扩展 revision 与 feed 交付序号分别校验，不互相代替。
+Settings 另行暴露新会话分发模式/偏好默认值，Thread 目录与运行时投影保存的实际`delegationMode`、`delegationPreference`，不跟随全局默认回写。Agent 目录包含可空的类型化模型身份摘要（accountId/modelId/effort），child 值只取创建时冻结绑定；冷目录同样消费已保存摘要，未知不从当前 Profile 推断。该字段贯通 HTTP、FRB 与客户端，用于智能体列表展示，不携带上下文或额外模型调用。存储与迁移见 [17](./17-studio-storage.md)。
 
-Authoring 可靠交付遵循 [07](./07-streaming.md) 的既有窗口和字节预算；大指令、Todo
-条目、Workflow 状态与 Plan 正文经原引用的具名 scope 分页或分块读取。引用绑定原
-Thread incarnation 与不可变材料，Plan 正文另核文档版本和 hash；过期材料不可取得时
-明确失败，不从当前 Mode 定义、相邻工具文本或另一个同 ID owner 补齐。Todo 的 call
-身份仅在原 delivery 证据可证明时提供，未知保持空；尚无真实 progress 能力时如实表达
-既有 unsupported 能力，不伪造工作流进度事件。
+模型查询基于账号有效目录、统一资格与启用状态，计费类别和性能读取各自权威领域；本地评价通过按账号模型的有界详情查询返回，不注入全局启动装配或 Settings。查询不刷新网络、不写配置、不生成评价。写评价使用 [12](./12-collaboration.md) 的父子授权和最终 Turn/revision 校验，提交成功后返回权威结果；旧查询不能回滚较新记录。
 
-Workflow 的 Mode 展示材料还须匹配原 run 绑定的 Mode ID、graph revision 和 graph hash；
-同一 Thread 快照不代表其中的 Mode 定义与旧 run 相容。同 ID 更新图后若旧 run 仍存在，
-不得将新图名称或状态标题补入旧 run；不匹配时保留原 run 已有信息，不查 latest 或重新编译。
+Thread 运行时快照同时派生只读 Plan 投影：当前状态、revision、当前计划文档（含内容hash）与更新时间，取自权威 `studio.plan` Thread 扩展；扩展缺失即无计划投影，不物化默认状态、不写状态。该投影只供 GUI 只读展示已批准计划与状态栏计划入口，不新增 Plan 协议状态、持久化实体或第二个事实源（见 [13](./13-plan.md)）。
 
-已有 Thread 的模型切换请求携带 `expectedModelRouteRevision`，取自客户端已观察到的
-canonical `modelRoute.revision`。该令牌对应模型路由 extension 的版本，既不是订阅通知
-计数，也不是 owner journal 的提交序号。运行时通过 route extension 的原子并发检查拒绝
-过时请求，不无条件覆盖或自动重试写入；失败保留原路由并向会话输入区反馈错误。
-客户端同样不得在 staleRevision 或 conflict 后刷新版本并自动重发模型／effort 切换；
-用户必须基于重新观察的路由明确发起新意图。此规则不改变 Configuration 其它命令的
-既定重试合同，也不改变 Rust 在已提交 Thread 路由后保存 Mode 默认值的内部有界重试。
-成功响应中的 canonical route 与 settings 更新选择状态，Flutter 不人为递增 workspace
-订阅 revision；通知水位仍只由状态流维护。
+Authoring 的 Todo、Plan 与 Workflow 从同一原 Thread 的权威扩展派生；热态变更以已提交的扩展变更及对应 checkpoint 为依据，不从可合并的 token/metrics 通知推断可靠变更。首次基线与冷读取只消费原实例快照或可靠保存材料，不激活模型、不运行工具，也不物化缺失扩展的默认状态。三个领域独立替换或删除，自己的内容未变时不因别域更新重发。领域 revision、扩展 revision 与事件流交付序号分别校验，不互相代替。
 
-已有 Thread 的新 prompt 同样携带已观察的 `expectedModelRouteRevision`。runtime 在现有
-Thread lifecycle 锁内先检查 input 幂等命中，再校验 route extension revision，成功后才执行附件
-promotion 与新输入受理。过期 route 明确拒绝，不能把本地冻结 selector 当作后端已采用的事实；
-该 CAS 不承诺后续显式 route 更新不会影响未来 Turn。新建 Thread 随创建请求直接携带完整 route，
-在目录发布与首次 activation 前作为该 Thread 的初始化输入，不先修改全局 mode 默认值。
+Authoring 可靠交付遵循 [07](./07-streaming.md) 的既有窗口和字节预算；大指令、Todo条目、Workflow 状态与 Plan 正文经原引用的具名读取作用域分页或分块读取。引用绑定原Thread incarnation 与不可变材料，Plan 正文另核文档版本和 hash；过期材料不可取得时明确失败，不从当前 Mode 定义、相邻工具文本或另一个同 ID 所有者补齐。Todo 的 call身份仅在原 delivery 证据可证明时提供，未知保持空；尚无真实 progress 能力时如实表达既有 unsupported 能力，不伪造工作流进度事件。
 
-业务 mutation 返回携带 OperationId、Applied/NoChange、目标 ResourceStamp、effect point 的
-typed receipt。结果由实际 owner 的提交点给出，不能通过响应和镜像 revision 相等推断 NoChange。
-Accepted、Observed、Effective、Durable 分别确认；配置对 next Turn 或 future Session 生效与
-正在执行的模型调用切换不同。durable 只来自真实保存确认。客户端未知结果与观察失败的处理
-以及 latest intent 的隔离见 [25](./25-frontend-state.md)。
+Workflow 的 Mode 展示材料还须匹配原 run 绑定的 Mode ID、graph revision 和 graph hash；同一 Thread 快照不代表其中的 Mode 定义与旧 run 相容。同 ID 更新图后若旧 run 仍存在，不得将新图名称或状态标题补入旧 run；不匹配时保留原 run 已有信息，不查 latest 或重新编译。
 
-停止与交互确认使用明确的身份观察屏障：receipt 声明 `requiresIdentityObservation` 时，空目标
-或资源版本相等均不能自动确认。客户端在发命令前注册对应 Thread owner 的原子观察，只有目标
-Turn 已结束或目标 interaction 的精确版本及回应终态已被权威来源确认才确认 Observed。
-目录/索引移除本身不是交互解决证据，不能把Cancelled/Expired当作回应成功。停止 ACK 只确认取消请求已受理，
-Effective 要等目标 Turn 结束；交互受理可先 Effective，但仍等待对应身份事实。普通受理不表示
-Durable，只有命中真实已保存的交互回执才确认持久化。输入提交的 Durable 指该次输入受理
-身份已可靠保存：必须从原历史身份索引读取，并匹配冻结 ThreadId/inputId、原生返回的请求
-摘要与 accepted sequence。该索引目前只保存已消费或已丢弃的输入，Pending 不能据此提前
-宣称 durable；无记录也不证明未受理。任一 Chat Turn 的 saved、执行终态、receipt cursor
-或其他资源 revision 均不能单独替代此证据；输入身份 durable 不表示未来所有 Turn 结果已保存。
+已有 Thread 的模型切换请求携带 `expectedModelRouteRevision`，取自客户端已观察到的权威 `modelRoute.revision`。该令牌对应模型路由 extension 的版本，既不是订阅通知计数，也不是所有者 journal 的提交序号。运行时通过 route extension 的原子并发检查拒绝过时请求，不无条件覆盖或自动重试写入；失败保留原路由并向会话输入区反馈错误。客户端同样不得在 staleRevision 或 conflict 后刷新版本并自动重发模型／effort 切换；用户必须基于重新观察的路由明确发起新意图。此规则不改变 Configuration 其它命令的既定重试合同，也不改变 Rust 在已提交 Thread 路由后保存 Mode 默认值的内部有界重试。成功响应中的权威 route 与 settings 更新选择状态，Flutter 不人为递增 workspace订阅 revision；通知水位仍只由状态流维护。
 
-客户端停止动作绑定具体 Session、原 Execution origin 与用户看到的 active Turn 引用，
-首次 await 前登记原操作及观察责任。Turn ID 只能从该原引用的具名读取物化，不能把
-entry 拼成 ID、等待后改选新 active Turn 或重查同 ID 新 Session。原同 incarnation 的
-后继权威帧可证明原 Turn 不再 busy；关闭、断流、resync 控制或来源替换本身不是终态。
-Stop 独立于长写命令推进，调用原精确 interrupt 命令，不停止证据 feed、不关闭 Thread。
-普通错误（包括 InvalidArgument）不证明原 mailbox 尚未执行；已派发而缺少明确结果时
-保持 Unknown，不自动重发，不因后来 Turn 结束补造 receipt，也不新增 bot 会话禁令。
+已有 Thread 的新 prompt 同样携带已观察的 `expectedModelRouteRevision`。运行时在现有Thread lifecycle 锁内先检查 input 幂等命中，再校验 route extension revision，成功后才执行附件promotion 与新输入受理。过期 route 明确拒绝，不能把本地冻结 selector 当作后端已采用的事实；该 CAS 不承诺后续显式 route 更新不会影响未来 Turn。新建 Thread 随创建请求直接携带完整 route，在目录发布与首次 activation 前作为该 Thread 的初始化输入，不先修改全局 mode 默认值。
 
-Product event 按领域 revision 发布 typed 实体 upsert/remove、有界窗口变化或小型状态替换。
-来源状态机水位、产品交付水位与业务详情版本分别标识。刷新/失败等来源metadata独立读取，
-不改变未变化业务正文的引用；下载进度、统计质量标记也不能使稳定文本重复失效。无value
-与已知空集合保持区别，last-known只保留其真实旧版本。普通集合使用固定版本offset页，
-Thread目录继续使用绑定原查询及读取身份的keyset cursor，不以通用分页改写既有排序语义。
-Project／Thread／Agent directory、catalog、账号、Profiles、资源与统计等集合不能因单项
-变化重传其它无关实体；模型统计摘要与历史明细分别交付。Dart Repository 拒绝旧 revision，
-并用受影响领域的基线从 stream lag 恢复；它不自行
-推导 workflow transition。一次目录命令可以同时改变 Project 与 Thread，但每个实际变化的
-领域最多发布一次事件；空 delta 不得提升 revision 或发布空事件。冷记录进入驻留/归档命令
-的内存索引属于 owner 准备步骤，不单独形成产品事实或广播。归档只装载目录，不读取冷历史
-或激活冷 owner；最终业务 mutation 才通过
-directory command 发布 canonical delta。
-项目归档与新建根会话共用准入边界，最终树范围须包含归档获准前已完成准备的 child，
-不能在枚举后遗漏并发创建的根或子会话。只检查驻留 owner 的活动工作；冷目录不因归档
-而恢复执行。资源关闭和目录提交之间失败时，以 canonical 目录及真实关闭事实保留可重试
-路径，不能把未归档项目永久封死，也不能为回滚而重新执行已经关闭的会话。
+业务 mutation 返回携带 OperationId、Applied/NoChange、目标 ResourceStamp、effect point 的类型化回执。结果由实际所有者的提交点给出，不能通过响应和镜像 revision 相等推断 NoChange。Accepted、Observed、Effective、Durable 分别确认；配置对 next Turn 或 future Session 生效与正在执行的模型调用切换不同。durable 只来自真实保存确认。客户端未知结果与观察失败的处理以及 latest intent 的隔离见 [25](./25-frontend-state.md)。
 
-作用域 baseline resync 按所属领域 revision 合并模型统计或根会话费用，与增量事件使用同一
-canonical 状态；本地已有快照不能遮蔽服务端更新，旧基线也不能覆盖已收到的新事件。
-模型统计属于尽力而为的数据库投影：读取已提交数据与发布其展示 revision 串行化，
-待写事实的早期空读不能占用最终落库结果的版本。写入结论到达后发布新快照；读取失败
-保留上次可用数据并显式标记失败，待写与统计缺口也分别可见。
-该投影由启动命令与计费/归档变化推进；基线查询只读取 owner 当前已发布的有界投影，
-不推进 revision、不写产品对象，也不通过全局查询补建作用域费用。未知 root 返回空费用，
-归档清除与读取失败由同一 owner 发布，查询不得重新引入已清除费用。
-累计用量与费用仍归可靠历史/checkpoint 所有；调用库保存绝对统计及有界性能投影，
-领域拆分不改变这份存储归属，也不以调试日志承担计费幂等或执行恢复。
-恢复归档会话的命令重新发布已有统计投影的可见费用，不执行历史工作。费用作用域的
-revision 在空状态缓存淘汰、重新订阅及恢复之间也不得回退；空基线必须足以清除较旧费用。
+停止与交互确认使用明确的身份观察屏障：回执声明 `requiresIdentityObservation` 时，空目标或资源版本相等均不能自动确认。客户端在发命令前注册对应 Thread 所有者的原子观察，只有目标Turn 已结束或目标 interaction 的精确版本及回应终态已被权威来源确认才确认 Observed。目录/索引移除本身不是交互解决证据，不能把Cancelled/Expired当作回应成功。停止 ACK 只确认取消请求已受理，Effective 要等目标 Turn 结束；交互受理可先 Effective，但仍等待对应身份事实。普通受理不表示Durable，只有命中真实已保存的交互回执才确认持久化。输入提交的 Durable 指该次输入受理身份已可靠保存：必须从原历史身份索引读取，并匹配冻结 ThreadId/inputId、原生返回的请求摘要与 accepted sequence。该索引目前只保存已消费或已丢弃的输入，Pending 不能据此提前宣称 durable；无记录也不证明未受理。任一 Chat Turn 的 saved、执行终态、回执 cursor或其他资源 revision 均不能单独替代此证据；输入身份 durable 不表示未来所有 Turn 结果已保存。
+
+客户端停止动作绑定具体 Session、原 Execution origin 与用户看到的 active Turn 引用，首次 await 前登记原操作及观察责任。Turn ID 只能从该原引用的具名读取物化，不能把entry 拼成 ID、等待后改选新 active Turn 或重查同 ID 新 Session。原同 incarnation 的后继权威帧可证明原 Turn 不再 busy；关闭、断流、重同步控制或来源替换本身不是终态。Stop 独立于长写命令推进，调用原精确 interrupt 命令，不停止证据事件流、不关闭 Thread。普通错误（包括 InvalidArgument）不证明原 mailbox 尚未执行；已派发而缺少明确结果时保持 Unknown，不自动重发，不因后来 Turn 结束补造回执，也不新增 bot 会话禁令。
+
+Product event 按领域 revision 发布类型化实体 upsert/remove、有界窗口变化或小型状态替换。来源状态机水位、产品交付水位与业务详情版本分别标识。刷新/失败等来源metadata独立读取，不改变未变化业务正文的引用；下载进度、统计质量标记也不能使稳定文本重复失效。无value与已知空集合保持区别，最近已知值只保留其真实旧版本。普通集合使用固定版本offset页，Thread目录继续使用绑定原查询及读取身份的keyset cursor，不以通用分页改写既有排序语义。Project／Thread／Agent directory、catalog、账号、Profiles、资源与统计等集合不能因单项变化重传其它无关实体；模型统计摘要与历史明细分别交付。Dart 仓储拒绝旧 revision，并用受影响领域的基线从 stream lag 恢复；它不自行推导 workflow transition。一次目录命令可以同时改变 Project 与 Thread，但每个实际变化的领域最多发布一次事件；空 delta 不得提升 revision 或发布空事件。冷记录进入驻留/归档命令的内存索引属于所有者准备步骤，不单独形成产品事实或广播。归档只装载目录，不读取冷历史或激活冷所有者；最终业务 mutation 才通过directory command 发布权威 delta。项目归档与新建根会话共用准入边界，最终树范围须包含归档获准前已完成准备的 child，不能在枚举后遗漏并发创建的根或子会话。只检查驻留所有者的活动工作；冷目录不因归档而恢复执行。资源关闭和目录提交之间失败时，以权威目录及真实关闭事实保留可重试路径，不能把未归档项目永久封死，也不能为回滚而重新执行已经关闭的会话。
+
+作用域基线重同步按所属领域 revision 合并模型统计或根会话费用，与增量事件使用同一权威状态；本地已有快照不能遮蔽服务端更新，旧基线也不能覆盖已收到的新事件。模型统计属于尽力而为的数据库投影：读取已提交数据与发布其展示 revision 串行化，待写事实的早期空读不能占用最终落库结果的版本。写入结论到达后发布新快照；读取失败保留上次可用数据并显式标记失败，待写与统计缺口也分别可见。该投影由启动命令与计费/归档变化推进；基线查询只读取所有者当前已发布的有界投影，不推进 revision、不写产品对象，也不通过全局查询补建作用域费用。未知 root 返回空费用，归档清除与读取失败由同一所有者发布，查询不得重新引入已清除费用。累计用量与费用仍归可靠历史/checkpoint 所有；调用库保存绝对统计及有界性能投影，领域拆分不改变这份存储归属，也不以调试日志承担计费幂等或执行恢复。恢复归档会话的命令重新发布已有统计投影的可见费用，不执行历史工作。费用作用域的revision 在空状态缓存淘汰、重新订阅及恢复之间也不得回退；空基线必须足以清除较旧费用。
 
 ### 18.2.1 按职责订阅
 
-产品订阅以 typed topic 表达领域，项目 Skills 携带 `projectId`，会话费用携带
-`rootThreadId`；不提供无作用域的 GUI 全事件订阅。全局目录、Settings、Recovery、
-MCP、LSP、Mode catalog、Account usage、模型统计、Updater、持久化状态与队列、
-配置级 Agent Profiles 各自是独立职责。无关领域不进入订阅者的有效缓冲，不因无关更新
-让该订阅 lag。通道只分发 owner 已发布的事实，不持有另一套业务投影。
+产品订阅以类型化主题表达领域，项目 Skills 携带 `projectId`，会话费用携带`rootThreadId`；不提供无作用域的 GUI 全事件订阅。全局目录、Settings、Recovery、MCP、LSP、Mode catalog、Account usage、ACP auth/install、模型统计、Updater、持久化状态与队列、配置级 Agent Profiles 各自是独立职责。无关领域不进入订阅者的有效缓冲，不因无关更新让该订阅 lag。通道只分发所有者已发布的事实，不持有另一套业务投影。
 
-机器人使用独立 `Bots` topic 与 `BotsStateChanged`，状态只包含轻量配置、连接、注册和
-配对信息，不携带会话正文。产品领域 revision 与各机器人 `configRevision` 分开；查询和
-发送是显式 action，成功响应进入同一 canonical reducer，不以聚合回读或 GUI 轮询补偿。
-接口、授权、注册和连接关闭契约见 [27](./27-bots.md)。
+机器人使用独立 `Bots` 主题与 `BotsStateChanged`，状态只包含轻量配置、连接、注册和配对信息，不携带会话正文。产品领域 revision 与各机器人 `configRevision` 分开；查询和发送是显式 action，成功响应进入同一权威归并器，不以聚合回读或 GUI 轮询补偿。接口、授权、注册和连接关闭契约见 [27](./27-bots.md)。
 
-产品边界交付各自的有界元数据、集合基线与upsert/remove，而不是在一个全状态payload里
-携带所有领域正文。列表实体、嵌套列表、长文本由原资源版本的typed读取scope按需取得；
-scope固定不可变版本，关闭后真实join查询。没有value的来源状态与已知空集合分开，不能
-用空数组/零计数抹掉初始化、失败或未知。分页/流控缺口只使对应资源或查询窗口重同步。
+产品边界交付各自的有界元数据、集合基线与upsert/remove，而不是在一个全状态载荷里携带所有领域正文。列表实体、嵌套列表、长文本由原资源版本的类型化读取作用域按需取得；读取作用域固定不可变版本，关闭后真实join查询。没有value的来源状态与已知空集合分开，不能用空数组/零计数抹掉初始化、失败或未知。分页/流控缺口只使对应资源或查询窗口重同步。
 
-配置镜像只拥有配置/声明及其无密钥事实；有效模型、能力、上下文策略、目录状态与有效搜索
-策略归模型目录镜像。两者分别归并自己的canonical来源，不把旧聚合Settings快照包装成
-两个Repository，也不在Dart复制模型政策计算。业务receipt的来源水位与产品投影/交付序号
-分开；跨域展示可只读组合，不能用一个全局revision覆盖另一领域。
+配置镜像只拥有配置/声明及其无密钥事实；有效模型、能力、上下文策略、目录状态与有效搜索策略归模型目录镜像。两者分别归并自己的权威来源，不把旧聚合Settings快照包装成两个仓储，也不在Dart复制模型政策计算。业务回执的来源水位与产品投影/交付序号分开；跨域展示可只读组合，不能用一个全局revision覆盖另一领域。
 
-订阅先登记接收者，再取得当前领域基线；期间通知按 payload 的领域 revision 合并，
-旧基线不能覆盖较新事件。会话目录基线是有 revision 和 cursor 的分页窗口，不能用 delta
-冒充全量页。过滤后全局 sequence 允许不连续，只有显式 lag 表达无法证明连续；无 durable
-replay。重同步只读取受影响领域，不触发 activation、扫描或 mutation。
+订阅先登记接收者，再取得当前领域基线；期间通知按载荷的领域 revision 合并，旧基线不能覆盖较新事件。会话目录基线是有 revision 和 cursor 的分页窗口，不能用 delta冒充全量页。过滤后全局 sequence 允许不连续，只有显式 lag 表达无法证明连续；无 durable重放。重同步只读取受影响领域，不触发 activation、扫描或 mutation。
 
-Dart 侧接线遵循 [25](./25-frontend-state.md)：topic/作用域 lease 由应用实例的领域资源服务持有
-与释放，帧经单一分发点进入对应 Repository reducer，再由生成式 AsyncNotifier 编排功能状态，
-Smart Connector 绑定观察和意图。页面不得复制 reducer 或直接消费底层 stream；最后一个观察者退出只取消自己的
-观察，不关闭仍有应用逻辑 demand 的 topic、会话内容源或草稿。Settings 往返不重建当前会话资源。
-收到 `lagged` 时只使对应 topic/作用域进入局部重同步，取消旧句柄并重新建立“先接收后
-基线”的订阅；预算耗尽、`failure` 或 `closed` 保留最后有效内容并暴露局部错误，不以静默
-空状态或无界快速重连掩盖缺口。旧 lease 的 generation 在关闭与新 lease 建立期间继续生效，
-迟到帧不得写入新观察者。
+Dart 侧接线遵循 [25](./25-frontend-state.md)：主题/作用域租约由应用实例的领域资源服务持有与释放，帧经单一分发点进入对应仓储归并器，再由生成式 AsyncNotifier 编排功能状态，连接器绑定观察和意图。页面不得复制归并器或直接消费底层 stream；最后一个观察者退出只取消自己的观察，不关闭仍有应用逻辑 demand 的主题、会话内容源或草稿。Settings 往返不重建当前会话资源。收到 `lagged` 时只使对应主题/作用域进入局部重同步，取消旧句柄并重新建立“先接收后基线”的订阅；预算耗尽、`failure` 或 `closed` 保留最后有效内容并暴露局部错误，不以静默空状态或无界快速重连掩盖缺口。旧租约的 generation 在关闭与新租约建立期间继续生效，迟到帧不得写入新观察者。
 
-设置领域保持真实职责边界：MCP、LSP、项目 Skills、Account usage、模型性能、持久化队列、
-Profiles 等分别按当前可见页面或组件取得观察者，不以一个含糊的 `services` 作用域代替多个
-topic；Skills 作用域始终携带当前 project identity。订阅生命周期与导航的关系遵循
-[25](./25-frontend-state.md) §25.4：导航不产生业务写入，当前 Timeline 展示、费用与草稿归属不因
-页面往返被清除或重建。
+设置领域保持真实职责边界：MCP、LSP、项目 Skills、Account usage、模型性能、持久化队列、Profiles 等分别按当前可见页面或组件取得观察者，不以一个含糊的 `services` 作用域代替多个主题；Skills 作用域始终携带当前 project identity。订阅生命周期与导航的关系遵循[25](./25-frontend-state.md) §25.4：导航不产生业务写入，当前 Timeline 展示、费用与草稿归属不因页面往返被清除或重建。
 
-模型统计与根会话费用由同一计费 owner 发布，分别交付；会话费用消费者不接收全局历史。
-模型统计的汇总与最近历史窗口也分别观察/分页，历史页固定原窗口身份；source仍是同一
-计费owner，不另建聚合器，不因高频Thread指标而加载/重发全局历史。原样本窗口上限与
-统计完整性标记保留，不把本次分层暗中扩成无限历史浏览。
-模型统计 snapshot 按 accountId/modelId 给出唯一顶层汇总和组内 effort 细分，modelId 表示冻结的
-配置选择，不以 sentModel/reportedModel 代替；无法证明的旧身份保持未知。分组与存储契约见
-[06](./06-model.md) 与 [17](./17-studio-storage.md)，消费者不在各层重新聚合另一套身份。
-顶层 summaries 的每项包含 accountId、accountDisplayName、modelId、该组总指标和
-effortBreakdowns；每个细分项包含可空 effort 及同口径指标，不重复定义另一组账号模型身份。
-历史 sample 的 modelId 可空，仍保留冻结发送/返回模型及 effort 诊断。未知身份不混入任何已知
-账号模型汇总，原有历史、用量和费用事实不因此被删除；仅指标有效样本参与速度聚合的规则保持不变。
-持久化队列由现有协调器发布真实队列、在途字节、压力与逐 Thread 水位变化，包括 calls
-writer 进度；进程级保存诊断不能替代队列状态。年龄是通知时间基线的展示，不驱动接口轮询。
-Account 用量等外部查询仍由 typed 检查命令触发；账号标签的自动可见需求也通过该命令
-执行，不在查询或订阅基线中暗中联网。结果通过 canonical 事件/响应更新，不虚构第三方推送。
+模型性能统计与根会话费用由同一计费所有者发布、按职责分别交付；会话费用消费者不接收全局历史。模型汇总与最近历史窗口沿统一产品协议分别观察和分页读取，不另设桌面专用事实源或聚合器，也不因高频会话指标变化重发全局历史。原样本窗口上限与统计完整性标记保持不变，不将分层重构扩展为无限历史浏览。
 
-### 18.2.2 Thread 只读策略来源与驻留投影
+统计的待写入与完成判据同时覆盖调用计费记录，以及可靠历史派生的会话累计摘要。
+两者可以独立落盘，但每项已受理写入都必须沿原存储进度唤醒同一计费所有者，
+在真实持久化完成后发布对应材料；较早的空读不能成为持续显示正常的最终结果。
+最后一笔会话费用不依赖下一次模型调用、宿主重启或查询副作用才能出现。
+失败与未完成责任仍归原写入及发布所有者，不以消费者补刷或第二套聚合数据弥补。
+累计摘要的合并替换须保留已受理责任：替换未获准时，原已受理写入仍须能够完成，
+不能先丢弃原项再以新项受理失败结束。进度通知只要求重核当前事实，不等同于统计材料变化
+或持久化证明；同一统计进度上的读取失败不能因无关历史写入而反复重读，新的统计进度
+或明确恢复动作仍可触发读取。重试资格与成功读取水位分开，失败不能推进成功读取水位。
+缺口通知对应缺口状态的真实变化；重复观察同一缺口不得再次通知并触发自身的读取重试。
 
-Thread 五域由同一个执行实例的唯一产品投影 owner 发布。配置、模型目录与 Mode 的变化是
-该 owner 的额外只读输入，不通过 GUI subscriber 再建投影，也不靠新 token、换页或页面重开
-触发。所需能力由组合根显式注入；事件总线拥有通知不表示它拥有配置／Mode 的 canonical 值。
+桌面事件流和 HTTP 的活跃会话费用订阅都在读取基线前登记原根会话的观察需求，并由订阅持有租约直到关闭或释放。该需求只借用既有计费所有者，不创建或激活会话执行所有者，也不触发模型、工具或额外数据库扫描。尚无费用记录的根会话同样接收待写入、缺口和读取失败等状态变化；最后一个需求消失后，可回收没有费用材料的空观察条目。单次费用快照查询仍保持纯读取，不暗中登记长期需求。
 
-观察 opening 在返回 future 前登记到原读取监督 owner。仍排队等待 runtime lifecycle
-准入、尚未开始 I/O 的 opening 必须能响应同一个单向 shutdown 闩，以原 typed Cancelled
-结束；取得准入后仍重核关闭状态，不能让关闭持准入锁等待一个反向等待该锁的 opening。
-此规则不取消已开始的 I/O，不提前释放登记或 permit；关闭仍 join 原工作至真实终态。
+同一计费所有者最多准入 **256 个不同根会话的活跃费用观察**；同根观察共享需求，模型汇总和历史观察不占该额度。活跃需求对应的空条目不得被后台投影或缓存淘汰移除；无需求的空条目才可回收。既有费用材料不因观察额度耗尽而删除或截断，历史材料保留与活跃需求预算分别计量。不能承担新观察责任时显式返回资源不足，不先受理再停止交付。HTTP 响应连接关闭即终止其订阅等待并释放租约与流许可，不依赖后续业务事件或宿主退出才发现断连。
 
-配置 owner 提供一对相容的 Settings／catalog 当前值及各自 revision；观察登记与这对基线
-读取在配置 owner 的同一同步边界完成。后续真实提交在该 owner 的发布边界保留最新 revision
-对并唤醒观察者，即使当时没有观察者也不丢当前水位。Mode owner 同样提供自己 registry 的
-同步登记、当前不可变快照和 retained revision 通知。通知只带来源水位，不保另一份配置、
-凭据、目录或 Mode 定义；使用现有 Tokio watch 能力，不自建消息总线或无界重放日志。
-Mode 的 canonical 提交与通知分阶段：在原 manager 锁内提交快照及 revision、取得有界
-通知责任，释放该锁以及外层配置命令锁后才发布 retained 水位。迟到通知不得回退水位；
-直接使用 manager 的调用方也遵守锁外通知。准备、校验或编译失败不提交也不发假通知，
-不为此改变原 Mode 文件写入、回滚、CAS、编译或 graph revision 语义。
+统计的发布状态与读取材料具有不同版本域：待写入、统计缺口、读取失败及更新时间的变化可以推进发布水位，但未变化的汇总、推理强度细分或历史材料继续使用原不可变材料和读取引用。只变状态时不得重建整份历史或迫使客户端重新读取所有页面；汇总和历史分别判断材料变化，一方变化不使另一方的材料版本失效。状态与材料引用在同一权威发布边界配对，读取引用版本不冒充发布版本或传输交付序号。
 
-Settings／catalog 的相容读不延伸为与 Mode 的跨 owner 事务。投影分别记录它们的来源水位；
-接收者先消费登记时返回的当前值，再等后续变化，不能等待本来已被视为 seen 的首个通知。
-接收方从 watch 借用中取得必要的 owned 值并结束借用后，才跨 owner 调用或 await；
-不持 Thread facet／registry guard 读取 Config／Mode，也不以长借用构造伪跨域事务。
-唤醒后读取同一 canonical owner 的最新值并核对身份／revision；来源读取失败保持 last-known
-及显式错误，不把它变成空集合、没有路由或健康。观察者取消只解除自己的输入观察，不关闭
-配置或 Mode；Thread 投影收束仍须真实 task join，不以 drop receiver 代替。
-配置来源的 closing 是单向生命周期事实，也在同一来源登记／发布边界可见。关闭导致目录探测
-状态变化时，目录 revision 必须反映该真实变化；重复关闭不伪造新变化。观察者确认 closing 后
-保留最后已知策略，不再等待该来源后续更新，但仍完成 Thread 的执行终态与可靠保存收束。
-所有配置写入口在关闭封准入后拒绝新写入，不因 Profile 保存或显式 reload 绕开这一闩。
-来源关闭不等于 Thread 观察已 join，也不能把剩余可靠交互或终态作为可丢的尾部样本。
+读取作用域固定原所有者、实例代次和材料身份，已打开的作用域不随新发布切换内容。历史成员身份来自原实际执行会话及调用身份，不用时间戳、模型名或列表位置合成；汇总保留账号与配置模型复合身份。各页仍受条目数量与源编码字节预算约束，推理强度细分与长文本也通过有界读取取得。客户端完整物化和最近有效快照的呈现契约见 [25.20](./25-frontend-state.md#2520-独立模型性能统计与完整快照)。模型统计快照按 accountId/modelId 给出唯一顶层汇总和组内 effort 细分，modelId 表示冻结的配置选择，不以 sentModel/reportedModel 代替；无法证明的旧身份保持未知。分组与存储契约见[06](./06-model.md) 与 [17](./17-studio-storage.md)，消费者不在各层重新聚合另一套身份。顶层 summaries 的每项包含 accountId、accountDisplayName、modelId、该组总指标和effortBreakdowns；每个细分项包含可空 effort 及同口径指标，不重复定义另一组账号模型身份。历史 sample 的 modelId 可空，仍保留冻结发送/返回模型及 effort 诊断。未知身份不混入任何已知账号模型汇总，原有历史、用量和费用事实不因此被删除；仅指标有效样本参与速度聚合的规则保持不变。持久化队列由现有协调器发布真实队列、在途字节、压力与逐 Thread 水位变化，包括 calls writer 进度；进程级保存诊断不能替代队列状态。年龄是通知时间基线的展示，不驱动接口轮询。Account 用量等外部查询仍由类型化检查命令触发；账号标签的自动可见需求也通过该命令执行，不在查询或订阅基线中暗中联网。结果通过权威事件/响应更新，不虚构第三方推送。
 
-这些 retained 输入通知允许合并中间配置水位，只表示当前状态失效与重新求值，不是执行／交互
-可靠事件、命令 receipt、effective 或 durable 证明。Turn、交互及必须有序的故障继续由其
-原有权威提交源驱动，不改为 watch-only。来源 revision、Thread facet revision、owner epoch
-与 delivery sequence 互不代替；无关来源水位前进不能凭自身使其它域的数据 revision 前进。
+### 18.2.2 会话只读策略来源与驻留投影
 
-刷新只针对已驻留的同一 Thread 实例，不激活冷 owner、不扫描持久化或联网。只向实际变化的
-configuration、当前策略相关的 context，以及 Mode 可用性相关的 workflow 投影发布变化；
-不因这些通知重传 Plan 正文、清空 Timeline 或通知 metrics。当前模型策略复用模型层的唯一
-解析能力；最近请求的冻结绑定、计量来源、历史和在途调用不被当前目录回填或改写。
-既有 deferred model refresh 仍独占执行模型在后续 Turn 的更新责任；本只读刷新不向执行队列
-重复提交模型变更，不把“界面当前可用”冒充“正在运行的请求已切换”。
+Thread 五域由同一个执行实例的唯一产品投影所有者发布。配置、模型目录与 Mode 的变化是该所有者的额外只读输入，不通过 GUI subscriber 再建投影，也不靠新 token、换页或页面重开触发。所需能力由组合根显式注入；事件总线拥有通知不表示它拥有配置／Mode 的权威值。
+
+观察 opening 在返回 future 前登记到原读取监督所有者。仍排队等待运行时 lifecycle准入、尚未开始 I/O 的 opening 必须能响应同一个单向关闭编排闩，以原类型化 Cancelled结束；取得准入后仍重核关闭状态，不能让关闭持准入锁等待一个反向等待该锁的 opening。此规则不取消已开始的 I/O，不提前释放登记或资源许可；关闭仍 join 原工作至真实终态。
+
+配置所有者提供一对相容的 Settings／catalog 当前值及各自 revision；观察登记与这对基线读取在配置所有者的同一同步边界完成。后续真实提交在该所有者的发布边界保留最新 revision对并唤醒观察者，即使当时没有观察者也不丢当前水位。Mode 所有者同样提供自己登记表的同步登记、当前不可变快照和 retained revision 通知。通知只带来源水位，不保另一份配置、凭据、目录或 Mode 定义；使用现有 Tokio watch 能力，不自建消息总线或无界重放日志。Mode 的权威提交与通知分阶段：在原 manager 锁内提交快照及 revision、取得有界通知责任，释放该锁以及外层配置命令锁后才发布 retained 水位。迟到通知不得回退水位；直接使用 manager 的调用方也遵守锁外通知。准备、校验或编译失败不提交也不发假通知，不为此改变原 Mode 文件写入、回滚、CAS、编译或 graph revision 语义。
+
+Settings／catalog 的相容读不延伸为与 Mode 的跨所有者事务。投影分别记录它们的来源水位；接收者先消费登记时返回的当前值，再等后续变化，不能等待本来已被视为 seen 的首个通知。接收方从 watch 借用中取得必要的 owned 值并结束借用后，才跨所有者调用或 await；不持 Thread facet／登记表锁守卫读取 Config／Mode，也不以长借用构造伪跨域事务。唤醒后读取同一权威所有者的最新值并核对身份／revision；来源读取失败保持最近已知值及显式错误，不把它变成空集合、没有路由或健康。观察者取消只解除自己的输入观察，不关闭配置或 Mode；Thread 投影收束仍须真实 task join，不以 drop receiver 代替。配置来源的 closing 是单向生命周期事实，也在同一来源登记／发布边界可见。关闭导致目录探测状态变化时，目录 revision 必须反映该真实变化；重复关闭不伪造新变化。观察者确认 closing 后保留最后已知策略，不再等待该来源后续更新，但仍完成 Thread 的执行终态与可靠保存收束。所有配置写入口在关闭封准入后拒绝新写入，不因 Profile 保存或显式 reload 绕开这一闩。来源关闭不等于 Thread 观察已 join，也不能把剩余可靠交互或终态作为可丢的尾部样本。
+
+这些 retained 输入通知允许合并中间配置水位，只表示当前状态失效与重新求值，不是执行／交互可靠事件、命令回执、effective 或 durable 证明。Turn、交互及必须有序的故障继续由其原有权威提交源驱动，不改为 watch-only。来源 revision、Thread facet revision、所有者 epoch与 delivery sequence 互不代替；无关来源水位前进不能凭自身使其它域的数据 revision 前进。
+
+刷新只针对已驻留的同一 Thread 实例，不激活冷所有者、不扫描持久化或联网。只向实际变化的configuration、当前策略相关的 context，以及 Mode 可用性相关的 workflow 投影发布变化；不因这些通知重传 Plan 正文、清空 Timeline 或通知 metrics。当前模型策略复用模型层的唯一解析能力；最近请求的冻结绑定、计量来源、历史和在途调用不被当前目录回填或改写。既有 deferred model refresh 仍独占执行模型在后续 Turn 的更新责任；本只读刷新不向执行队列重复提交模型变更，不把“界面当前可用”冒充“正在运行的请求已切换”。
 
 ### 18.2.3 大载荷读取与交互回应身份
 
-完整问题、选项、审批参数、终态回答及无界故障文本不依赖实时feed反复整包交付。它们通过
-原资源版本绑定的typed读取scope、具体列表页和UTF-8文本块可达；不能以缩小合法输入范围、
-静默截断或raw JSON拼包替代完整字段。typed判别、isSecret、nullable与空集合区别必须保留。
+完整问题、选项、审批参数、终态回答及无界故障文本不依赖实时事件流反复整包交付。它们通过原资源版本绑定的类型化读取作用域、具体列表页和UTF-8文本块可达；不能以缩小合法输入范围、静默截断或raw JSON拼包替代完整字段。类型化判别、isSecret、可空与空集合区别必须保留。
 
-有界实时封套以本次runtime的投影incarnation和feed身份关联原打开目标，不要求在每帧重复
-可能无界的已持久化Thread ID。canonical ID仍是String、原样保留；Session在打开前冻结
-目标，详情返回完整业务身份。不能为证明传输预算新增历史ID长度限制、重命名或删除旧记录。
+有界实时封套以本次运行时的投影incarnation和事件流身份关联原打开目标，不要求在每帧重复可能无界的已持久化Thread ID。权威 ID仍是String、原样保留；Session在打开前冻结目标，详情返回完整业务身份。不能为证明传输预算新增历史ID长度限制、重命名或删除旧记录。
 
-scope创建时核对期望版本并取得不可变来源；已经过期且不能取得该版本时返回Superseded。
-成功打开后固定原版本，普通后续变化不使长文本永远读不完，也不能把原scope偷偷换成新版本。
-读取结果始终携带原身份，呈现层不发布迟到结果；owner替换或关闭封准入并取消/join原查询，
-真实完成后才释放源引用。读取只拥有必要的不可变源和字段索引，不建立第二份可写事实或全文缓存。
+读取作用域创建时核对期望版本并取得不可变来源；已经过期且不能取得该版本时返回Superseded。成功打开后固定原版本，普通后续变化不使长文本永远读不完，也不能把原读取作用域偷偷换成新版本。读取结果始终携带原身份，呈现层不发布迟到结果；所有者替换或关闭封准入并取消/join原查询，真实完成后才释放源引用。读取只拥有必要的不可变源和字段索引，不建立第二份可写事实或全文缓存。
 
-读完旧版本不授予过期写权限。交互回应携带UI冻结的expected interaction revision，与已有
-operation ID、interaction ID及typed resolution一起校验；pending路径逐层使用同一revision，
-不能在内层重新读取current来替代CAS条件。相同终态决定可按已确认原事实作NoChange读取返回，
-但仍核对该终态或可证明前置revision；不同决定或不相容revision明确拒绝，不重复授权或续接。
-外部operation ID仍是命令回执相关身份，不能伪称现有持久事实已经保存了它的去重记录。
+读完旧版本不授予过期写权限。交互回应携带UI冻结的expected interaction revision，与已有operation ID、interaction ID及类型化 resolution一起校验；pending路径逐层使用同一revision，不能在内层重新读取current来替代CAS条件。相同终态决定可按已确认原事实作NoChange读取返回，但仍核对该终态或可证明前置revision；不同决定或不相容revision明确拒绝，不重复授权或续接。外部operation ID仍是命令回执相关身份，不能伪称现有持久事实已经保存了它的去重记录。
 
-呈现层把“请求资料完整可读”与“答案必填”分开：完整题目和选项/isSecret先于可操作输入，
-但正常问题仍允许提交空答案；合法空题集保留已有自由回答路径。非空题目ID原样用于回应，
-不因展示层trim或大小写转换改变身份。读取失败保留草稿并阻止对应提交，不自动重放决定。
-Plan正文按文档身份独立读取，不随指标和状态重复交付；限额遵循真实writer：trim后正文
-UTF-8字节限制与包含原始空白的完整持久状态JSON限制是两个不同边界，不混称单字段上限。
+呈现层把“请求资料完整可读”与“答案必填”分开：完整题目和选项/isSecret先于可操作输入，但正常问题仍允许提交空答案；合法空题集保留已有自由回答路径。非空题目ID原样用于回应，不因展示层trim或大小写转换改变身份。读取失败保留草稿并阻止对应提交，不自动重放决定。Plan正文按文档身份独立读取，不随指标和状态重复交付；限额遵循真实writer：trim后正文UTF-8字节限制与包含原始空白的完整持久状态JSON限制是两个不同边界，不混称单字段上限。
 
-### 18.2.4 HTTP运输与读取归属
+### 18.2.4 HTTP 传输与读取归属
 
-Server与FRB消费同一组typed领域feed/read/command能力。HTTP按领域显式打开POST SSE，
-订阅认领与打开属于同一次请求；ACK、取消及等待关闭是独立控制能力，不以SSE id或TCP
-发送成功代替业务处理确认。不提供Last-Event-ID回放或旧聚合GET兼容入口。
+Server与FRB消费同一组类型化领域事件流/read/command能力。HTTP按领域显式打开POST SSE，订阅认领与打开属于同一次请求；ACK、取消及等待关闭是独立控制能力，不以SSE id或TCP发送成功代替业务处理确认。不提供Last-Event-ID回放或旧聚合GET兼容入口。
 
-HTTP读取归属按领域明确区分。Thread五域的具名详情（含相关统计identity读取）与Models
-的ModelCatalog、来源状态、精确模型详情使用显式原origin/ref或完整target独立打开；
-native必须校验并pin原版本，不从当前feed补身份。停止、断开或重开实时feed不撤销已经
-交接的独立scope，也不把它重绑到同ID新owner。其余产品，包括Configuration、Profiles
-和AccountTemplates，保留既有父feed监督：从原父feed取得身份，父关闭封闭并收束子scope。
+HTTP读取归属按领域明确区分。Thread五域的具名详情（含相关统计identity读取）与Models的ModelCatalog、来源状态、精确模型详情使用显式原origin/ref或完整target独立打开；原生必须校验并pin原版本，不从当前事件流补身份。停止、断开或重开实时事件流不撤销已经交接的独立读取作用域，也不把它重绑到同ID新所有者。其余产品，包括Configuration、Profiles和AccountTemplates，保留既有父事件流监督：从原父事件流取得身份，父关闭封闭并收束子读取作用域。
 
-独立scope由调用方显式关闭，并始终纳入Server原运输owner及应用退出协调器；调用方
-未关闭时仍占用原有限额度，不新增无限保留或自动超时释放承诺。打开中取消、丢失回复
-及断连不丢已受理的open/query/producer；未交接或未收束的资源仍由原owner负责。
-所有scope都固定原不可变版本，显式关闭与退出须真正join工作，Unresolved保责任和
-显式重试能力。Server在Rust finalizer之前汇总全部外部关闭问题，不以Drop/EOF/超时
-假称Clean。loopback Host/Origin检查继续保留，它不是用户级认证；控制请求不排在普通
-长写队列之后。这一读取归属不改变业务命令、执行停止或Unknown不重放的语义。
+独立读取作用域由调用方显式关闭，并始终纳入Server原运输所有者及应用退出协调器；调用方未关闭时仍占用原有限额度，不新增无限保留或自动超时释放承诺。打开中取消、丢失回复及断连不丢已受理的open/query/生产者；未交接或未收束的资源仍由原所有者负责。所有读取作用域都固定原不可变版本，显式关闭与退出须真正join工作，Unresolved保责任和显式重试能力。Server在Rust finalizer之前汇总全部外部关闭问题，不以Drop/EOF/超时假称Clean。loopback Host/Origin检查继续保留，它不是用户级认证；控制请求不排在普通长写队列之后。这一读取归属不改变业务命令、执行停止或Unknown不重放的语义。
 
-拆分不能丢原公开查询的事实：完整Turn历史不等于Execution当前/最近Turn摘要；更新安装
-资产虽不在GUI摘要中，原Server公开详情仍须typed可达。runtime自身状态/恢复摘要也不能
-因删除聚合Studio快照而消失。历史页与目录页各自保留真实来源、排序和游标，不混用。
+拆分不能丢原公开查询的事实：完整Turn历史不等于Execution当前/最近Turn摘要；更新安装资产虽不在GUI摘要中，原Server公开详情仍须类型化可达。运行时自身状态/恢复摘要也不能因删除聚合Studio快照而消失。历史页与目录页各自保留真实来源、排序和游标，不混用。
 
-## 18.3 Activation
+## 18.3 会话按需激活
 
-启动通过唯一异步初始化入口返回已经就绪的运行时；构造和初始化不再分两次发布。
-桥接与服务端仅安装成功结果，普通读取不改变启动状态，失败不由后续查询隐式重试。
-启动进度与恢复摘要来自同一协调器，展示并行准备、汇合、备份重建及终态；恢复规则见 [17.2](./17-studio-storage.md#172-启动与按需激活)。
-RuntimeSnapshot 的可空 `startupRecovery` 携带 `backupPath`、脱敏 `reason` 与 Unix 秒 `createdAt`，只在本次恢复完成后发布；界面保留可关闭的备份提示，不由后台工作区审计覆盖。
-跨FRB的启动成功结果只携带真实Ready的revision/时间及typed详情引用；恢复摘要与active
-Turn身份列表按需读取原不可变启动快照，不重新聚合配置、目录或会话正文。library初始化
-属于显式启动动作，不能藏在bootstrap/read getter；生产启动不伪造selected Project/Thread。
-启动只等待迁移、全局 TOML、轻量目录和本地预置资源就绪。启动不打开会话数据库、不读取会话
-checkpoint，也不调度全部会话恢复。全局 worktree/数据根审计由 runtime 持有的后台任务完成，
-Recovery 使用现有 ObservedResource 发布 loading、ready 和失败状态，
-工具目录问题使用 `ToolCatalog/Retry`，保留诊断但不阻止打开、读历史、停止或继续会话。
-侧栏会话菜单提供重试入口；显式重试同时重新刷新工具目录，即使配置修订未变化，成功才清除诊断。
-显式 `recovery.retry` 重新发起审计，`recovery.read` 只读取当前状态。关闭先停止并等待审计，
-再关闭会话与持久化。启动阶段通过可在 runtime 未启动时订阅的 typed progress stream 向
-bridge 提供存储打开、配置读取、目录读取、资源准备及终态，不依赖普通产品订阅已经建立。
-首帧提供当前真实阶段，先订阅再启动，成功/失败结束并释放资源；GUI 不周期读取启动状态。
-进度订阅只是统一初始化协调器的传输投影，必须保留并行准备、备份恢复摘要与类型化启动失败；
-不另立初始化过程，也不把失败细节降为仅有阶段枚举。进程退出的单向闩优先于尝试令牌，
-任何已创建而未安装的运行时仍由现有关闭编排持有并收束。
-每次显式启动尝试先取得进程级尝试令牌，再按该令牌建立进度订阅和执行启动命令。
-准备尝试、订阅与启动的身份必须一致：旧尝试的终态不能结束新尝试的观察，过期或重复启动
-请求明确拒绝，旧观察者不接收新尝试的阶段。在途启动不接受另一尝试覆盖；已 Ready 的
-runtime 保持幂等成功，不重开服务或伪造存储打开阶段。订阅本身不复位启动状态。
-关闭开始后启动尝试立即失效，并通知等待中的进度观察者结束；已停止的 runtime 不支持
-同进程再次启动，迟到的成功阶段不能作为有效启动结果交付。
-更新安装在安装包准备完成后进入普通应用退出，不要求会话空闲；退出提交后在外部 owner
-取消或等待之前失效尝试，不等关闭成功后才通知。
-后台会话恢复与前台 activation 共用 assembler 的逐 Thread preparation reservation；已有
-活动、正在准备或关闭的 owner 不接受后台恢复写入。冷激活在发布 owner 前完成 durable
-settlement。审计结果按当前 lease revision 和已清理问题过滤，不能覆盖后续用户操作。
+启动通过唯一异步初始化入口返回已经就绪的运行时；构造和初始化不再分两次发布。桥接与服务端仅安装成功结果，普通读取不改变启动状态，失败不由后续查询隐式重试。启动进度与恢复摘要来自同一协调器，展示并行准备、汇合、备份重建及终态；恢复规则见 [17.2](./17-studio-storage.md#172-启动与按需激活)。RuntimeSnapshot 的可空 `startupRecovery` 携带 `backupPath`、脱敏 `reason` 与 Unix 秒 `createdAt`，只在本次恢复完成后发布；界面保留可关闭的备份提示，不由后台工作区审计覆盖。跨FRB的启动成功结果只携带真实Ready的revision/时间及类型化详情引用；恢复摘要与active Turn身份列表按需读取原不可变启动快照，不重新聚合配置、目录或会话正文。library初始化属于显式启动动作，不能藏在启动装配/read getter；生产启动不伪造selected Project/Thread。启动只等待迁移、全局 TOML、轻量目录和本地预置资源就绪。启动不打开会话数据库、不读取会话checkpoint，也不调度全部会话恢复。全局 worktree/数据根审计由运行时持有的后台任务完成，Recovery 使用现有 ObservedResource 发布 loading、ready 和失败状态，工具目录问题使用 `ToolCatalog/Retry`，保留诊断但不阻止打开、读历史、停止或继续会话。侧栏会话菜单提供重试入口；显式重试同时重新刷新工具目录，即使配置修订未变化，成功才清除诊断。显式 `recovery.retry` 重新发起审计，`recovery.read` 只读取当前状态。关闭先停止并等待审计，再关闭会话与持久化。启动阶段通过可在运行时未启动时订阅的类型化 progress stream 向bridge 提供存储打开、配置读取、目录读取、资源准备及终态，不依赖普通产品订阅已经建立。首帧提供当前真实阶段，先订阅再启动，成功/失败结束并释放资源；GUI 不周期读取启动状态。进度订阅只是统一初始化协调器的传输投影，必须保留并行准备、备份恢复摘要与类型化启动失败；不另立初始化过程，也不把失败细节降为仅有阶段枚举。进程退出的单向闩优先于尝试令牌，任何已创建而未安装的运行时仍由现有关闭编排持有并收束。每次显式启动尝试先取得进程级尝试令牌，再按该令牌建立进度订阅和执行启动命令。准备尝试、订阅与启动的身份必须一致：旧尝试的终态不能结束新尝试的观察，过期或重复启动请求明确拒绝，旧观察者不接收新尝试的阶段。在途启动不接受另一尝试覆盖；已 Ready 的运行时保持幂等成功，不重开服务或伪造存储打开阶段。订阅本身不复位启动状态。关闭开始后启动尝试立即失效，并通知等待中的进度观察者结束；已停止的运行时不支持同进程再次启动，迟到的成功阶段不能作为有效启动结果交付。更新安装在安装包准备完成后进入普通应用退出，不要求会话空闲；退出提交后在外部所有者取消或等待之前失效尝试，不等关闭成功后才通知。后台会话恢复与前台 activation 共用 assembler 的逐 Thread preparation reservation；已有活动、正在准备或关闭的所有者不接受后台恢复写入。冷激活在发布所有者前完成 durable settlement。审计结果按当前租约 revision 和已清理问题过滤，不能覆盖后续用户操作。
 
-选择冷 Thread、提交输入或后台 child 继续时显式 activation。runtime 在一致读视图中校验
-并加载 Thread checkpoint、working state 与 pending Interaction，全部成功后一次安装 owner。
-Mode snapshot 和 workflow projection 与 session 同时恢复，不存在独立任务 runtime 恢复扫描。
-Timeline 初始最新小页与尾部基线读取同一 Session 权威内容，历史分页与详情查询不激活
-执行 owner，契约见 [26](./26-timeline-content.md)；产品交互回答前按保存的父子顺序激活所需 Thread。
-已退役子会话的显式打开同样先迁移既有 v2 检查点，但只发布冷状态与历史，不安装执行 owner；
-普通快照查询和历史分页不触发这一步 SQLite 升级。
-GUI 首个可用画面之后若已选中 Thread，复用普通打开命令激活该 Thread，不遍历其他 Thread，
-也不自动继续模型或工具执行。
+选择冷 Thread、提交输入或后台 child 继续时显式 activation。运行时在一致读视图中校验并加载 Thread checkpoint、working state 与 pending Interaction，全部成功后一次安装所有者。Mode 快照和 workflow 投影与 session 同时恢复，不存在独立任务运行时恢复扫描。Timeline 初始最新小页与尾部基线读取同一 Session 权威内容，历史分页与详情查询不激活执行所有者，契约见 [26](./26-timeline-content.md)；产品交互回答前按保存的父子顺序激活所需 Thread。已退役子会话的显式打开同样先迁移既有 v2 检查点，但只发布冷状态与历史，不安装执行所有者；普通快照查询和历史分页不触发这一步 SQLite 升级。GUI 首个可用画面之后若已选中 Thread，复用普通打开命令激活该 Thread，不遍历其他 Thread，也不自动继续模型或工具执行。
 
-启动关闭终止闩是单向事实：退出开始后本进程余下生命周期内拒绝任何迟到的 runtime 安装，
-从而迟到安装无法在退出期间重新发布运行时；闩不因重复退出或启动重试复位，也不通过复位触发
-新的初始化。正常启动而未进入退出的进程不受该闩影响。
+启动关闭终止闩是单向事实：退出开始后本进程余下生命周期内拒绝任何迟到的运行时安装，从而迟到安装无法在退出期间重新发布运行时；闩不因重复退出或启动重试复位，也不通过复位触发新的初始化。正常启动而未进入退出的进程不受该闩影响。
 
-创建根会话是可失败的类型化命令，请求同时携带 Mode 与会话工作区模式。`worktree` 模式在发布
-Thread 之前完成仓库解析、worktree 创建与 lease 落库；任一阶段失败都让命令失败、不留下已发布
-Thread，GUI 保留输入草稿并显示失败原因。激活时工作区资源缺失或身份不符只显式失败并发布该
-Thread 的 Recovery，不静默回落到 Project 根目录，也不在内存中改写已保存的工作区模式。
-Thread 目录事实已经发布而后续步骤失败时，必须先按未启动会话补偿（关闭并归档）再返回类型化
-错误，不能留下无法激活的已发布会话。
+创建根会话是可失败的类型化命令，请求同时携带 Mode 与会话工作区模式。`worktree` 模式在发布Thread 之前完成仓库解析、worktree 创建与租约落库；任一阶段失败都让命令失败、不留下已发布Thread，GUI 保留输入草稿并显示失败原因。激活时工作区资源缺失或身份不符只显式失败并发布该Thread 的 Recovery，不静默回落到 Project 根目录，也不在内存中改写已保存的工作区模式。Thread 目录事实已经发布而后续步骤失败时，必须先按未启动会话补偿（关闭并归档）再返回类型化错误，不能留下无法激活的已发布会话。
 
-根会话创建可观察同一次命令的临时准备进度，按稳定 `inputId` 与 `projectId` 关联：检查项目、
-准备工作区、初始化会话与提交首条请求。工作树准备另报告仓库解析及物理创建；路径和分支只在
-实际解析或分配后发布。进度由创建流程在真实阶段边界推进，不解析日志、不估算检出百分比，
-也不提前发布 Thread 或写入聊天历史。FRB 通过单次调用的 typed 事件流交付进度及唯一成功／失败
-终态；HTTP 继续消费同一创建命令的最终结果。观察断开不等于取消创建，已有资源与失败补偿仍
-由原 owner 收束；缺少确定终态的客户端按未知结果处理，不自动重复创建。
-仓库解析、HEAD 解析和工作树检出失败在对应边界提供可操作的 typed 错误说明，保留内部错误链，
-不把原始 Git 输出作为用户错误文案；失败卡片同时保留最后确认的阶段。
+根会话创建可观察同一次命令的临时准备进度，按稳定 `inputId` 与 `projectId` 关联：检查项目、准备工作区、初始化会话与提交首条请求。工作树准备另报告仓库解析及物理创建；路径和分支只在实际解析或分配后发布。进度由创建流程在真实阶段边界推进，不解析日志、不估算检出百分比，也不提前发布 Thread 或写入聊天历史。FRB 通过单次调用的类型化事件流交付进度及唯一成功／失败终态；HTTP 继续消费同一创建命令的最终结果。观察断开不等于取消创建，已有资源与失败补偿仍由原所有者收束；缺少确定终态的客户端按未知结果处理，不自动重复创建。仓库解析、HEAD 解析和工作树检出失败在对应边界提供可操作的类型化错误说明，保留内部错误链，不把原始 Git 输出作为用户错误文案；失败卡片同时保留最后确认的阶段。
 
 ## 18.4 配置目录
 
-Mode catalog 直接投影 Studio Mode 注册表的内存 snapshot：内置 Mode 由 Studio 启动时以
-静态描述注册，既不扫描 Skill，也不读取或复制用户目录资源；未来外部 loader 只能先把文件
-解析为同一拥有所有权的 registration，再调用公开注册接口。Agent Profile catalog 合并
-Rust builtin 与用户 TOML；配置 owner 持有独立的 canonical Agent Profiles 资源，通过
-Agent Profiles 事件发布完整配置和诊断，与运行期 Agent directory 区分。启动、配置命令
-与明确重扫采用目录变化；查询/订阅仅读取已发布资源，不扫描文件、不周期重扫。Mode catalog
-在实际注册/装载变化时按 revision 发布。系统启停、系统
-route 更新、Mode 默认 route 更新和用户 Profile 保存都携带 `expectedSettingsRevision`；成功后返回
-本次完整提交对应的 typed 领域目标，并发布已更新的 Profiles 资源；相关 Repository 消费各自原目标，
-不只修改本地 draft，也不以事后 latest 拼成提交证明。
+Mode catalog 直接投影 Studio Mode 注册表的内存快照：内置 Mode 由 Studio 启动时以静态描述注册，既不扫描 Skill，也不读取或复制用户目录资源；未来外部 loader 只能先把文件解析为同一拥有所有权的 registration，再调用公开注册接口。Agent Profile catalog 合并Rust builtin 与用户 TOML；配置所有者持有独立的权威 Agent Profiles 资源，通过Agent Profiles 事件发布完整配置和诊断，与运行期 Agent directory 区分。启动、配置命令与明确重扫采用目录变化；查询/订阅仅读取已发布资源，不扫描文件、不周期重扫。Mode catalog在实际注册/装载变化时按 revision 发布。系统启停、系统route 更新、Mode 默认 route 更新和用户 Profile 保存都携带 `expectedSettingsRevision`；成功后返回本次完整提交对应的类型化领域目标，并发布已更新的 Profiles 资源；相关仓储消费各自原目标，不只修改本地 draft，也不以事后 latest 拼成提交证明。
 
-Profiles 的材料、集合成员身份与来源元数据在原扫描结果采用边界捕获，观察通知只用于唤醒，
-不能从合并后的 watch 值重建成员历史。同 ID 经已采用扫描删除后再出现须获得新 entry；
-普通编辑保留成员身份并推进其内容 revision。来源、目录业务与投影 revision 分离，
-不把 Profile 自身的文件 revision/content hash 当作传输水位。
+Profiles 的材料、集合成员身份与来源元数据在原扫描结果采用边界捕获，观察通知只用于唤醒，不能从合并后的 watch 值重建成员历史。同 ID 经已采用扫描删除后再出现须获得新 entry；普通编辑保留成员身份并推进其内容 revision。来源、目录业务与投影 revision 分离，不把 Profile 自身的文件 revision/content hash 当作传输水位。
 
-扫描沿原配置目录语义：目录不存在允许没有用户 Profile；目录与逐文件读取、解析和校验
-问题仍以原诊断发布，不丢弃诊断或假装所有文件有效，也不因此发起联网探测或全局配置重置。
-设置视图保留禁用的 Profile；执行资格与系统 Profile 不可编辑规则仍归配置与协作契约。
-扫描结果连同诊断是一份已采用的不可变材料；材料捕获或来源本身失败则显式报告，不能
-发布缺损的正常空集合。关闭发布停止状态并封新读取，已 pin 的资源由原 owner 真实收束。
-Configuration／Profiles 当前材料的最终释放还须满足原统一 finalizer 的 Clean 前置，
-包括外部 transport 的真实收束；仅 native read-calls/scopes 已结束，不证明 HTTP body
-consumer 或 bridge 调用也已结束。Degraded 保留原来源及未决 owner，不提前清空材料。
+扫描沿原配置目录语义：目录不存在允许没有用户 Profile；目录与逐文件读取、解析和校验问题仍以原诊断发布，不丢弃诊断或假装所有文件有效，也不因此发起联网探测或全局配置重置。设置视图保留禁用的 Profile；执行资格与系统 Profile 不可编辑规则仍归配置与协作契约。扫描结果连同诊断是一份已采用的不可变材料；材料捕获或来源本身失败则显式报告，不能发布缺损的正常空集合。关闭发布停止状态并封新读取，已 pin 的资源由原所有者真实收束。Configuration／Profiles 当前材料的最终释放还须满足原统一 finalizer 的 Clean 前置，包括外部传输层的真实收束；仅原生 read-calls/scopes 已结束，不证明 HTTP body消费者或 bridge 调用也已结束。Degraded 保留原来源及未决所有者，不提前清空材料。
 
-完整目录、指令和诊断通过独立 Profiles feed 与具名有界 read scope 可达；读取只 pin
-原材料，不重扫磁盘。显式 reload 在原命令边界保留 Configuration、Models 与 Profiles
-各自的捕获结果，不能等待三个订阅的 latest 来补回执；该边界不承诺外部文件修改的跨文件
-事务快照，也不把三个领域合并成另一份全量 Settings owner。
+完整目录、指令和诊断通过独立 Profiles 事件流与具名有界读取作用域可达；读取只 pin原材料，不重扫磁盘。显式 reload 在原命令边界保留 Configuration、Models 与 Profiles各自的捕获结果，不能等待三个订阅的 latest 来补回执；该边界不承诺外部文件修改的跨文件事务快照，也不把三个领域合并成另一份全量 Settings 所有者。
 
-## 18.5 Shutdown
+## 18.5 优雅关闭
 
-关闭只有一套阶段编排，区分桌面应用退出与进程内服务关闭。手动更新与正常退出使用相同的
-桌面退出入口，停止运行中的会话，不等待自然空闲；只有关停报告为真实 Clean 才交接安装器。
-进程内服务关闭要求真实 Clean 才成功；桌面退出接受 Clean 或 Degraded，并按退出期限终止。
-退出结果在关停报告之外独立承载安装交接结果，不把安装器启动失败改写为关停失败或隐藏它。
+关闭只有一套阶段编排，区分桌面应用退出与进程内服务关闭。手动更新与正常退出使用相同的桌面退出入口，停止运行中的会话，不等待自然空闲；只有关停报告为真实 Clean 才交接安装器。进程内服务关闭要求真实 Clean 才成功；桌面退出接受 Clean 或 Degraded，并按退出期限终止。退出结果在关停报告之外独立承载安装交接结果，不把安装器启动失败改写为关停失败或隐藏它。
 
-宿主关停只结束当次 owner 与资源，不把仍可续修的 child 标记为显式关闭。重新启动后，
-新的显式输入可按既有冻结身份恢复未封口的 child；已显式关闭的 child 则拒绝执行。
-持久意图、目录投影和旧记录语义统一遵循 [12](./12-collaboration.md) 与
-[17](./17-studio-storage.md)，不根据 Core `Closed` 或工作区回收结果推测关闭意图。
+宿主关停只结束当次所有者与资源，不把仍可续修的 child 标记为显式关闭。重新启动后，新的显式输入可按既有冻结身份恢复未封口的 child；已显式关闭的 child 则拒绝执行。持久意图、目录投影和旧记录语义统一遵循 [12](./12-collaboration.md) 与[17](./17-studio-storage.md)，不根据 Core `Closed` 或工作区回收结果推测关闭意图。
 
-按领域拆分的产品、启动与 Thread 订阅继续加入同一 bridge 订阅 owner 与取消收束，
-不引入另一套退出流程。原有总期限、外部取消 issue、typed 报告和严格调用方的 Clean
-前置条件同样覆盖这些订阅；页面 lease 释放与应用退出均等待真实句柄收束。
+按领域拆分的产品、启动与 Thread 订阅继续加入同一 bridge 订阅所有者与取消收束，不引入另一套退出流程。原有总期限、外部取消 issue、类型化报告和严格调用方的 Clean前置条件同样覆盖这些订阅；页面租约释放与应用退出均等待真实句柄收束。
 
-关闭按固定依赖 DAG 推进：封闭准入并拒绝新 mutation → 取消当前代次与在途执行 → 有界收束已
-启动资源（Thread 与 title 任务、审计、MCP、LSP、订阅，以及依赖它们的 SSH transport）→ flush
-所有 Thread checkpoint 并等待固定可靠水位 → 仅在保存已收束后关闭 writer 与数据库 → 释放实例
-锁。彼此独立的收束不在依赖上互相等待，因此按同一期限并发推进同一依赖层内的多个阶段。这里只有
-两条真实的有向边：一条是写入链「生产者停止 ACK → 保存 drain / writer 停止 → 关闭数据库 / 释放
-实例锁」；另一条是把远端 MCP / LSP / 工具当作 SSH transport 的依赖——SSH transport 承载它们的
-通信，其真实关闭（关闭连接即终止本地 SSH 子进程）必须发生在这些远端服务的停止请求与结果处理、
-以及驱动远端工具的生产者（Turn / Agent 等）停止 ACK **之后**，否则会先切断通信、把健康远端资源
-的正常退出误判为失败。SSH transport 的关闭仍与写入链并发，不等与它无关的持久化 / 数据库提交；
-依赖停止超时或失败时按有界降级照样请求 SSH 回收，只放弃等待其 ACK、owner 仍由常驻槽位保留。
-前序阶段失败仍继续执行后续彼此独立的安全清理并合并
-错误；单阶段不可用不得阻断其余阶段。每个阶段有稳定的诊断标签（含开始 / 完成耗时、资源与关联
-标识，SSH 的依赖等待与真正的 transport stop 分别计时），只用于诊断边界，不替代既有 typed
-progress。
-同一 `agentFramework` 阶段内部的 Thread 关闭遵循同一原则：assembler 先封闭组装准入并广播
-所有 preparation 取消，然后按真实依赖**局部化**并发推进——每个独立森林 / 分支 / 兄弟节点只等待
-自身需要的子 entry、未发布子资源与自身 preparation，某个 root 的卡住子分支或准备过程只阻塞它
-自己（真实依赖），不会被无关 root 的关闭等待；子关闭确认先于需要它的父关闭，任一分支失败只累计
-并保留其 owner，不阻止其他独立资源收到 close/discard。封闭准入后不再准入任何新的创建 / 子准备
-owner；`close_all` 只在**全部**已准入 `creating` / `preparing_children` owner 真实排空后才成功返回，
-覆盖完全处于创建、尚无 entry 的 root 与未被树快照覆盖的准备过程，这份全局最终 ACK 与上述局部化
-收束**并发**推进，绝不前置阻塞独立 close；排空后才可见的迟到 entry / 未发布资源由同一编排继续收束，
-失败清理保留 owner 并计入报告，不因根集合为空或阶段超时而伪报 Clean / `Stopped`。
-本地原生子进程树在退出或强杀后必须被回收；
-远端 helper 的停止由单向关闭及 30 秒心跳租约保证，不把等待 SSH 失联作为退出条件，也不等待
-远端退出确认。Driver harness 仍须确认本地原生子进程树已退出。
+关闭按固定依赖 DAG 推进：封闭准入并拒绝新 mutation → 取消当前代次与在途执行 → 有界收束已启动资源（Thread 与 title 任务、审计、MCP、LSP、订阅，以及依赖它们的 SSH 传输层）→ flush所有 Thread checkpoint 并等待固定可靠水位 → 仅在保存已收束后关闭 writer 与数据库 → 释放实例锁。彼此独立的收束不在依赖上互相等待，因此按同一期限并发推进同一依赖层内的多个阶段。这里只有两条真实的有向边：一条是写入链「生产者停止 ACK → 保存 drain / writer 停止 → 关闭数据库 / 释放实例锁」；另一条是把远端 MCP / LSP / 工具当作 SSH 传输层的依赖——SSH 传输层承载它们的通信，其真实关闭（关闭连接即终止本地 SSH 子进程）必须发生在这些远端服务的停止请求与结果处理、以及驱动远端工具的生产者（Turn / Agent 等）停止 ACK **之后**，否则会先切断通信、把健康远端资源的正常退出误判为失败。SSH 传输层的关闭仍与写入链并发，不等与它无关的持久化 / 数据库提交；依赖停止超时或失败时按有界降级照样请求 SSH 回收，只放弃等待其 ACK、所有者仍由常驻槽位保留。前序阶段失败仍继续执行后续彼此独立的安全清理并合并错误；单阶段不可用不得阻断其余阶段。每个阶段有稳定的诊断标签（含开始 / 完成耗时、资源与关联标识，SSH 的依赖等待与真正的传输层 stop 分别计时），只用于诊断边界，不替代既有类型化progress。同一 `agentFramework` 阶段内部的 Thread 关闭遵循同一原则：assembler 先封闭组装准入并广播所有 preparation 取消，然后按真实依赖**局部化**并发推进——每个独立森林 / 分支 / 兄弟节点只等待自身需要的子 entry、未发布子资源与自身 preparation，某个 root 的卡住子分支或准备过程只阻塞它自己（真实依赖），不会被无关 root 的关闭等待；子关闭确认先于需要它的父关闭，任一分支失败只累计并保留其所有者，不阻止其他独立资源收到 close/discard。封闭准入后不再准入任何新的创建 / 子准备所有者；`close_all` 只在**全部**已准入 `creating` / `preparing_children` 所有者真实排空后才成功返回，覆盖完全处于创建、尚无 entry 的 root 与未被树快照覆盖的准备过程，这份全局最终 ACK 与上述局部化收束**并发**推进，绝不前置阻塞独立 close；排空后才可见的迟到 entry / 未发布资源由同一编排继续收束，失败清理保留所有者并计入报告，不因根集合为空或阶段超时而伪报 Clean / `Stopped`。本地原生子进程树在退出或强杀后必须被回收；远端 helper 的停止由单向关闭及 30 秒心跳租约保证，不把等待 SSH 失联作为退出条件，也不等待远端退出确认。Driver harness 仍须确认本地原生子进程树已退出。
 
-封闭准入后，收束的独立 owner（后台 watcher、title 任务、MCP、LSP 与订阅）先各自收到
-一次取消 / abort 广播，再做受总期限约束的有界 join；SSH transport 的回收在同一编排内、在依赖
-它的远端服务与生产者停止 ACK 之后才请求（见上一条有向边）。上述独立 owner **并发**发起与并发等待：
-它们共享同一首次绝对期限的剩余预算（原生 30 秒总期限、桌面 28 秒清理上限共用一份剩余时间），
-不逐个串行等待，任一 owner 的收束等待都不会抢占其他 owner 尚未开始的等待预算；某个 owner 的
-收束超时只放弃等待并记录诊断，绝不丢弃在途的存储、writer 或 JoinHandle 所有者。写入链保持有向
-顺序——后台任务 / Turn / Agent / title 等生产者的停止 ACK 先于可靠保存 drain 与 writer 停止，
-writer 真实 ack 先于关闭数据库与释放实例锁——但整条写入链与上述彼此独立的 owner 并发收束。
-统一编排内的阶段进度只反映并发在途，不作为串行的调用契约。退出编排本身运行在独立 owned 任务上，
-即使等待方超时或全部离开也会被继续 poll 到结束。
+封闭准入后，收束的独立所有者（后台 watcher、title 任务、MCP、LSP 与订阅）先各自收到一次取消 / abort 广播，再做受总期限约束的有界 join；SSH 传输层的回收在同一编排内、在依赖它的远端服务与生产者停止 ACK 之后才请求（见上一条有向边）。上述独立所有者 **并发**发起与并发等待：它们共享同一首次绝对期限的剩余预算（原生 30 秒总期限、桌面 28 秒清理上限共用一份剩余时间），不逐个串行等待，任一所有者的收束等待都不会抢占其他所有者尚未开始的等待预算；某个所有者的收束超时只放弃等待并记录诊断，绝不丢弃在途的存储、writer 或 JoinHandle 所有者。写入链保持有向顺序——后台任务 / Turn / Agent / title 等生产者的停止 ACK 先于可靠保存 drain 与 writer 停止，writer 真实 ack 先于关闭数据库与释放实例锁——但整条写入链与上述彼此独立的所有者并发收束。统一编排内的阶段进度只反映并发在途，不作为串行的调用契约。退出编排本身运行在独立 owned 任务上，即使等待方超时或全部离开也会被继续 poll 到结束。
 
-bridge 与 Dart 持有的订阅、在途更新操作的取消结果在同一退出编排内作为成功前置条件。
-彼此独立的 owner 组并发观测，共享首次绝对期限；任一侧未确认都不能发布 `Stopped`、释放
-实例锁或安装更新。更新准备与进度流必须在请求退出前真实结束，不保留交接操作自等待的特殊路径。
-服务关闭 job 仍只启动一次并保留，等待超时不丢 owner，严格重试只重新观测而不重启停止。
+bridge 与 Dart 持有的订阅、在途更新操作的取消结果在同一退出编排内作为成功前置条件。彼此独立的所有者组并发观测，共享首次绝对期限；任一侧未确认都不能发布 `Stopped`、释放实例锁或安装更新。更新准备与进度流必须在请求退出前真实结束，不保留交接操作自等待的特殊路径。服务关闭 job 仍只启动一次并保留，等待超时不丢所有者，严格重试只重新观测而不重启停止。
 
-所有已受理阶段的工作及 completion 由原 `ShutdownRun` 持有，包括条件满足后才可开始
-的 Store 关闭；不新增平行关闭协调器。阶段登记先于业务首次执行，登记锁不跨 I/O、
-join、取消广播或产品通知。观察的 TimedOut/Skipped 不等于工作终态，Skipped 只跳过
-本次等待，依赖已许可的必执行关闭仍受管运行；Store 仍必须通过保存与成功前置条件。
+所有已受理阶段的工作及 completion 由原 `ShutdownRun` 持有，包括条件满足后才可开始的 Store 关闭；不新增平行关闭协调器。阶段登记先于业务首次执行，登记锁不跨 I/O、join、取消广播或产品通知。观察的 TimedOut/Skipped 不等于工作终态，Skipped 只跳过本次等待，依赖已许可的必执行关闭仍受管运行；Store 仍必须通过保存与成功前置条件。
 
-运行中的阶段只 join 原工作，成功阶段不重跑。三服务、原后台任务的终态 panic/join
-失败，以及缺少明确恢复能力的失败保原结果；只有原 owner 明确允许恢复的阶段，才在
-一次显式严格重试中为入场时已确认的可恢复失败登记一次新尝试。新观察到的失败留待
-下一次显式调用，不在同轮内部循环重试。原 cause、真实子任务错误及当前未解决 issues
-保留，已修复历史不能永久阻止 Clean；不通过空任务表重跑把旧失败洗成成功。
+运行中的阶段只 join 原工作，成功阶段不重跑。三服务、原后台任务的终态 panic/join失败，以及缺少明确恢复能力的失败保原结果；只有原所有者明确允许恢复的阶段，才在一次显式严格重试中为入场时已确认的可恢复失败登记一次新尝试。新观察到的失败留待下一次显式调用，不在同轮内部循环重试。原 cause、真实子任务错误及当前未解决 issues保留，已修复历史不能永久阻止 Clean；不通过空任务表重跑把旧失败洗成成功。
 
-严格关闭保持调用驱动：调用者离开后已受理阶段仍可再次 join，尚未到达的依赖后继由
-显式严格重试或退出编排接续，不承诺自动完成尚未受理的阶段。迟到结果保存在同一
-completion，后续 join 才确认真实终态，不以 task.is_finished 代替结果。持久化恢复
-仍走原显式恢复能力，不因关闭重试自动清除指定 history fault generation。
+严格关闭保持调用驱动：调用者离开后已受理阶段仍可再次 join，尚未到达的依赖后继由显式严格重试或退出编排接续，不承诺自动完成尚未受理的阶段。迟到结果保存在同一completion，后续 join 才确认真实终态，不以 task.is_finished 代替结果。持久化恢复仍走原显式恢复能力，不因关闭重试自动清除指定 history fault generation。
 
-同一阶段同时含终态失败和可继续清理时，显式重试只接续有原 owner、原身份和恢复能力
-证明的剩余责任；已成功及终态步骤不重做。原阶段保留未解决的终态原因，因此其它
-资源清理取得进展不等于整体可以 Clean。该接续属于原关闭 owner 与原失败结果，不另建
-调度器、资源登记表或自动重试循环。观察与保存等待保留原目标 ticket；等待方取消、
-重试或出现更晚写入都不能把既定屏障换为 latest。
+同一阶段同时含终态失败和可继续清理时，显式重试只接续有原所有者、原身份和恢复能力证明的剩余责任；已成功及终态步骤不重做。原阶段保留未解决的终态原因，因此其它资源清理取得进展不等于整体可以 Clean。该接续属于原关闭所有者与原失败结果，不另建调度器、资源登记表或自动重试循环。观察与保存等待保留原目标 ticket；等待方取消、重试或出现更晚写入都不能把既定屏障换为 latest。
 
-Thread 资源关闭的恢复判断须绑定实际关闭阶段和原实例能力，而不是错误文案或同 ID
-仍有登记。已发布实例保原 incarnation、ThreadHandle 与清理门；未发布资源保原工厂和
-清理门，Thread entry 已移除也不消除其剩余责任。资格查询无副作用，接续时在原串行
-边界重核身份，只推进未完成阶段；依赖尚未完成不自行授予恢复资格。工作树按原 lease
-及已冻结策略保留验证、记录、预览和物理清理事实，物理成功不因记录失败重做；物理与
-记录同时失败均须保留。身份或记录冲突不能按普通 I/O 失败自动重试。
+Thread 资源关闭的恢复判断须绑定实际关闭阶段和原实例能力，而不是错误文案或同 ID仍有登记。已发布实例保原 incarnation、ThreadHandle 与清理门；未发布资源保原工厂和清理门，Thread entry 已移除也不消除其剩余责任。资格查询无副作用，接续时在原串行边界重核身份，只推进未完成阶段；依赖尚未完成不自行授予恢复资格。工作树按原租约及已冻结策略保留验证、记录、预览和物理清理事实，物理成功不因记录失败重做；物理与记录同时失败均须保留。身份或记录冲突不能按普通 I/O 失败自动重试。
 
-协作操作的任务失败与其业务返回分别结算，原 job/driver 的真实 join 错误和剩余 join
-责任不能被一次读取消耗。write-behind 内层 worker 的既有恢复与 supervisor 的终态
-失败分开；监督句柄尚在途或未真实 join 时，空槽或 is_finished 不授权替换它。原显式
-恢复可在原任务真实结束、身份与停止状态允许后接续保留队列；关闭重试本身不触发重建。
+协作操作的任务失败与其业务返回分别结算，原 job/driver 的真实 join 错误和剩余 join责任不能被一次读取消耗。write-behind 内层 worker 的既有恢复与 supervisor 的终态失败分开；监督句柄尚在途或未真实 join 时，空槽或 is_finished 不授权替换它。原显式恢复可在原任务真实结束、身份与停止状态允许后接续保留队列；关闭重试本身不触发重建。
 
-持久化 drain 的错误分类来自原存储 owner 的完整 incarnation 事实；准备中、已结束或
-仅有残留记录的 writer 不构成重试能力。观察关闭所等的 history handoff ticket 保持原身份，
-不借公开最新水位更换目标；原队列有运行中 writer 的恢复能力也不承诺外部故障必然可修复。
+持久化 drain 的错误分类来自原存储所有者的完整 incarnation 事实；准备中、已结束或仅有残留记录的 writer 不构成重试能力。观察关闭所等的 history handoff ticket 保持原身份，不借公开最新水位更换目标；原队列有运行中 writer 的恢复能力也不承诺外部故障必然可修复。
 
-首个退出的绝对期限与外部 issues 在原协调器同一边界确定。Store 准入与最终 Clean
-提交均核对已经提交的退出前置；先运行的 unbounded strict 不能绕过后来先于最终提交
-到达的退出期限/外部问题。已开始 Store I/O 不取消，但迟到完成不能据此发布 Stopped
-或释锁。最终状态提交在该许可边界内裁决，通知与实际资源释放在锁外执行；先完成的
-Clean 不对未来尚未知的外部问题作追溯承诺，后到请求也不能再次执行 finalizer。
+首个退出的绝对期限与外部 issues 在原协调器同一边界确定。Store 准入与最终 Clean提交均核对已经提交的退出前置；先运行的 unbounded strict 不能绕过后来先于最终提交到达的退出期限/外部问题。已开始 Store I/O 不取消，但迟到完成不能据此发布 Stopped或释锁。最终状态提交在该许可边界内裁决，通知与实际资源释放在锁外执行；先完成的Clean 不对未来尚未知的外部问题作追溯承诺，后到请求也不能再次执行 finalizer。
 
 ### 18.5.1 报告形状
 
-应用退出报告是冻结的最低接口形状（对外 camelCase，内部 snake_case）。它是 CQS 边界上的 typed
-命令结果，不新增平行可选字段或第二个 status enum：
+应用退出报告是冻结的最低接口形状（对外 camelCase，内部 snake_case）。它是 CQS 边界上的类型化命令结果，不新增平行可选字段或第二个 status enum：
 
-- `StudioShutdownOutcome`：`NotStarted | Clean | Degraded`。未安装 runtime 为 `NotStarted`；
+- `StudioShutdownOutcome`：`NotStarted | Clean | Degraded`。未安装运行时为 `NotStarted`；
   所有阶段成功且持久化为 `Drained` 才是 `Clean`；其余为 `Degraded`。
 - `StudioPendingPersistence`：`Unknown | Pending { count } | Drained`。`count` 是尚无 durable
   确认的待保存事实数量；无法确定时为 `Unknown`，绝不用 `Drained` 掩盖未知。
 - `StudioShutdownIssue`：`stage`、`code`、`message`、`retryable`、`correlation_id`。`stage`
-  是已知阶段的稳定诊断标签；`code` 是稳定诊断码（字符串），不是 typed 错误 enum，typed 失败
+  是已知阶段的稳定诊断标签；`code` 是稳定诊断码（字符串），不是类型化错误 enum，类型化失败
   原因仍由既有进度与错误通道承载；`correlation_id` 关联同步日志与诊断。
 - `StudioShutdownReport`：`outcome`、`issues`、`persistence`。
 
-最终报告是 runtime 阶段、bridge 侧以及调用方（native / Dart）在进入 runtime 之前已确定的
-订阅/更新取消结果的**同一编排**聚合，不是两套 cleanup 的事后合并，也不是先释锁再补写第二份
-结论。已知的外部 issue 在 runtime 收束前作为这次关闭的成功前置条件播种：任一侧存在 issue 时
-整体不得为 `Clean`；`Clean`、发布 `Stopped` 与释放实例锁都只有当 bridge 与 runtime 两侧全部
-确认真实收束才可达，绝不以 `Clean` 掩盖未收束的 owner。
+最终报告是运行时阶段、bridge 侧以及调用方（原生 / Dart）在进入运行时之前已确定的订阅/更新取消结果的**同一编排**聚合，不是两套 cleanup 的事后合并，也不是先释锁再补写第二份结论。已知的外部 issue 在运行时收束前作为这次关闭的成功前置条件播种：任一侧存在 issue 时整体不得为 `Clean`；`Clean`、发布 `Stopped` 与释放实例锁都只有当 bridge 与运行时两侧全部确认真实收束才可达，绝不以 `Clean` 掩盖未收束的所有者。
 
-报告只表达诊断与退出结果，不伪造 `Stopped`，也不宣称持久化成功；只有真实 `Clean` 才发布
-`Stopped`，degraded 与超时都不得发布 `Stopped`，也不得声称保存或实例锁已安全收束。
+报告只表达诊断与退出结果，不伪造 `Stopped`，也不宣称持久化成功；只有真实 `Clean` 才发布`Stopped`，degraded 与超时都不得发布 `Stopped`，也不得声称保存或实例锁已安全收束。
 
 ### 18.5.2 持久化收束与实例所有权
 
-桌面宿主另持有同一 OS 文件锁的进程期租约：运行时 Clean 收束释放自己的引用后，目录
-仍由原生宿主持有到进程结束。因此退出中的重复启动仍只激活原窗口，不启动新运行时。
-Server 与测试宿主没有额外桌面租约，沿用下述释放顺序。
+桌面宿主另持有同一 OS 文件锁的进程期租约：运行时 Clean 收束释放自己的引用后，目录仍由原生宿主持有到进程结束。因此退出中的重复启动仍只激活原窗口，不启动新运行时。Server 与测试宿主没有额外桌面租约，沿用下述释放顺序。
 
-保存收束以 writer ack 为准：writer 确认之前保留 owner 与句柄；只要仍有运行中的 writer，就不得
-关闭数据库，也不得释放实例锁。报告携带的保存 fence 与 `StudioPendingPersistence` 只反映真实
-进度；runtime 侧的 degraded 或超时都不释放实例锁，锁的最终释放由进程退出时的 OS 语义兜底，
-避免下一个实例与仍在写库的 writer 竞争。实例锁与数据库的释放只由同一关闭编排的最终成功判定
-决定：writer 真实 ack、store 确实关闭、待保存排空**且** bridge 与调用方已知的所有外部取消都
-已确认，缺一不可。任何 `Degraded`（无论来自 runtime 阶段还是桥端/调用方已确定的外部 issue）
-都不得发布 `Stopped`，也不得提前释放实例锁。
+保存收束以 writer ack 为准：writer 确认之前保留所有者与句柄；只要仍有运行中的 writer，就不得关闭数据库，也不得释放实例锁。报告携带的保存 fence 与 `StudioPendingPersistence` 只反映真实进度；运行时侧的 degraded 或超时都不释放实例锁，锁的最终释放由进程退出时的 OS 语义兜底，避免下一个实例与仍在写库的 writer 竞争。实例锁与数据库的释放只由同一关闭编排的最终成功判定决定：writer 真实 ack、状态存储确实关闭、待保存排空**且** bridge 与调用方已知的所有外部取消都已确认，缺一不可。任何 `Degraded`（无论来自运行时阶段还是桥端/调用方已确定的外部 issue）都不得发布 `Stopped`，也不得提前释放实例锁。
 
 ### 18.5.3 应用退出期限
 
-应用退出有单一总期限 30 秒。native 宿主在首个应用退出请求之前武装独立线程持有该期限，
-重复退出或重试都不延长；前 28 秒用于正常清理，余下 2 秒用于诊断退出，到期强制结束本进程
-并以退出码 1，正常完成退出码为 0。清理不得被日志 IO、Dart 或 bridge 挂起阻断：期限由独立
-线程推进，不依赖 Dart 或 bridge 返回；写日志也不得延误退出期限。退出入口的剩余预算由 native
-宿主剩余清理时间决定且上限 28 秒（见 [19](./19-studio-ui.md)）。
+应用退出有单一总期限 30 秒。原生宿主在首个应用退出请求之前武装独立线程持有该期限，重复退出或重试都不延长；前 28 秒用于正常清理，余下 2 秒用于诊断退出，到期强制结束本进程并以退出码 1，正常完成退出码为 0。清理不得被日志 IO、Dart 或 bridge 挂起阻断：期限由独立线程推进，不依赖 Dart 或 bridge 返回；写日志也不得延误退出期限。退出入口的剩余预算由原生宿主剩余清理时间决定且上限 28 秒（见 [19](./19-studio-ui.md)）。
 
-bridge 在首个退出入口同步封闭单向退出闩，并在任何 await 之前固定同一首个绝对期限；闩、生命周期
-门、订阅与更新取消、runtime 阶段和诊断收尾全部扣除同一期限，重复退出不延长。退出入口在接受
-native 剩余预算的同时，接收调用方（native / Dart）已完成并观测到的 typed 取消 issue（含关机
-进度订阅），bridge 再并入自身取消结果，一并作为同一编排的成功前置条件。安装的「发布」与退出
-的「封闭」由**单一 linearization 事实源**原子决定，二者互相排斥：关闭胜出后任何安装都不再发布，
-安装先胜出的 runtime 必被早期入口与最终退出入口观察并纳入同一编排收束。该判定只在无 await、
-无 IO 的极短临界区内完成，从不在初始化或任何 await 期间持有，因此即使被竞争也是有界等待，
-不拖住 native 期限。初始化仍在进行时不得伪报 `NotStarted`；迟到安装即使已创建资源也必须被
-拒绝发布，其 owner 由统一 bridge 生命周期强持有至真实 `Clean` ACK 或当前进程终止，并由同一
-owned 关闭编排、同一首个绝对期限的剩余预算收束；它不作为已发布 runtime 对上层可见，也不被
-推进为 active/ready。只要报告为 `Degraded`，实例锁与 writer/数据库/外部 service owner 就继续
-保留、不释放，避免「清理期间保留、降级返回后又丢失 owner」；确曾创建资源而未能收束时报告
-`Degraded` 并给出 `Unknown` 待保存状态。
+bridge 在首个退出入口同步封闭单向退出闩，并在任何 await 之前固定同一首个绝对期限；闩、生命周期门、订阅与更新取消、运行时阶段和诊断收尾全部扣除同一期限，重复退出不延长。退出入口在接受原生剩余预算的同时，接收调用方（原生 / Dart）已完成并观测到的类型化取消 issue（含关机进度订阅），bridge 再并入自身取消结果，一并作为同一编排的成功前置条件。安装的「发布」与退出的「封闭」由**单一 linearization 事实源**原子决定，二者互相排斥：关闭胜出后任何安装都不再发布，安装先胜出的运行时必被早期入口与最终退出入口观察并纳入同一编排收束。该判定只在无 await、无 IO 的极短临界区内完成，从不在初始化或任何 await 期间持有，因此即使被竞争也是有界等待，不拖住原生期限。初始化仍在进行时不得伪报 `NotStarted`；迟到安装即使已创建资源也必须被拒绝发布，其所有者由统一 bridge 生命周期强持有至真实 `Clean` ACK 或当前进程终止，并由同一owned 关闭编排、同一首个绝对期限的剩余预算收束；它不作为已发布运行时对上层可见，也不被推进为 active/ready。只要报告为 `Degraded`，实例锁与 writer/数据库/外部 service 所有者就继续保留、不释放，避免「清理期间保留、降级返回后又丢失所有者」；确曾创建资源而未能收束时报告`Degraded` 并给出 `Unknown` 待保存状态。
 
-native 首个应用退出请求先进入轻量的早期退出入口，再执行 Dart 侧有界的自身取消收束，最后才进入统一
-`shutdown_runtime(remaining_ms, external_issues)`。早期入口立即同步封闭单向退出闩、固定同一
-首个绝对期限，并对已安装的 runtime 同步封闭 domain 准入（拒绝新 mutation 与 turn）并向**所有**
-独立的在途 owner 广播一次取消——既含后台 watcher、title 任务与持久化 observer，也含每个驻留
-Thread 当前执行代次（活动 Turn、模型与工具）经既有纯取消入口的取消。它只发信号：
-绝不触发初始化、绝不启动 MCP/LSP/SSH 的真正 stop 或 join、绝不 close Thread、绝不关闭数据库 /
-释放实例锁，也不发布 `Stopped`；真正收束仍由后续唯一阶段完成，因此不重复 close。早期入口同时
-预先广播 bridge 侧的订阅取消（内容流，不含自持 token 的关机进度流）与更新操作取消，附带真实
-错误与相关诊断，交由同一 collector 作为成功前置条件。因此早期 arm 绝不被误认为最终终态，真正
-的收束与 finalize 只由随后的同一编排完成；早期观测到的诊断既不吞错也不伪成功。这样即使 Dart
-侧取消长时间不返回，runtime 的准入与全部独立取消（含 Turn）也已在 native 期限一开始完成，
-迟到安装无法在退出期间发布运行时。早期入口本身有界：它不在生命周期门、快照、订阅或 title
-任何锁上无界等待；原生 30 秒强制退出不依赖 Dart 或 bridge 返回。
+原生首个应用退出请求先进入轻量的早期退出入口，再执行 Dart 侧有界的自身取消收束，最后才进入统一`shutdown_runtime(remaining_ms, external_issues)`。早期入口立即同步封闭单向退出闩、固定同一首个绝对期限，并对已安装的运行时同步封闭 domain 准入（拒绝新 mutation 与 turn）并向**所有**独立的在途所有者广播一次取消——既含后台 watcher、title 任务与持久化观察者，也含每个驻留Thread 当前执行代次（活动 Turn、模型与工具）经既有纯取消入口的取消。它只发信号：绝不触发初始化、绝不启动 MCP/LSP/SSH 的真正 stop 或 join、绝不 close Thread、绝不关闭数据库 /释放实例锁，也不发布 `Stopped`；真正收束仍由后续唯一阶段完成，因此不重复 close。早期入口同时预先广播 bridge 侧的订阅取消（内容流，不含自持 token 的关机进度流）与更新操作取消，附带真实错误与相关诊断，交由同一 collector 作为成功前置条件。因此早期 arm 绝不被误认为最终终态，真正的收束与 finalize 只由随后的同一编排完成；早期观测到的诊断既不吞错也不伪成功。这样即使 Dart侧取消长时间不返回，运行时的准入与全部独立取消（含 Turn）也已在原生期限一开始完成，迟到安装无法在退出期间发布运行时。早期入口本身有界：它不在生命周期门、快照、订阅或 title任何锁上无界等待；原生 30 秒强制退出不依赖 Dart 或 bridge 返回。
 
 ### 18.5.4 诊断收尾
 
-诊断收尾独立于 runtime 初始化状态：即使 runtime 从未安装或安装失败，也有独立命令回收诊断
-资源，Dart 在安全 dispose 之前或退出之前调用。退出错误聚合真实原因（`code`、`correlation_id`、
-待保存事实与保存 fence），不包含凭据或正文；错误通过同步日志、临时应急文件与 stderr 兜底
-（Windows 另有 debug 输出兜底）记录，写入不得延误退出期限。诊断收尾与退出错误的落盘细节见
-[17](./17-studio-storage.md) 与 [23](./23-release-update.md)。
+诊断收尾独立于运行时初始化状态：即使运行时从未安装或安装失败，也有独立命令回收诊断资源，Dart 在安全 dispose 之前或退出之前调用。退出错误聚合真实原因（`code`、`correlation_id`、待保存事实与保存 fence），不包含凭据或正文；错误通过同步日志、临时应急文件与 stderr 兜底（Windows 另有 debug 输出兜底）记录，写入不得延误退出期限。诊断收尾与退出错误的落盘细节见[17](./17-studio-storage.md) 与 [23](./23-release-update.md)。
 
 ### 18.5.5 子树归属
 
-本地原生子进程树必须随退出收束：Windows 通过统一后台进程工厂的 per-child Job 工厂回收本地
-工具；Linux 本地 MCP/LSP 复用既有 worker 监督路径（LSP 通过既有 host 注入入口挂载到 runtime，
-不新增第二套 supervisor），GUI 被强杀时由 control EOF 触发回收。远端 helper 由单向关闭及
-30 秒心跳租约保证，不阻塞 GUI 退出确认。进程工厂与策略归属见 [05](./05-conventions.md) §5.5，
-MCP 与 LSP 的监督契约见 [09](./09-tool-runtime.md) 与 [21](./21-lsp.md)，SSH helper 分发与
-回收见 [22](./22-ssh-remote.md)。
+本地原生子进程树必须随退出收束：Windows 通过统一后台进程工厂的 per-child Job 工厂回收本地工具；Linux 本地 MCP/LSP 复用既有 worker 监督路径（LSP 通过既有 host 注入入口挂载到运行时，不新增第二套 supervisor），GUI 被强杀时由 control EOF 触发回收。远端 helper 由单向关闭及30 秒心跳租约保证，不阻塞 GUI 退出确认。进程工厂与策略归属见 [05](./05-conventions.md) §5.5，MCP 与 LSP 的监督契约见 [09](./09-tool-runtime.md) 与 [21](./21-lsp.md)，SSH helper 分发与回收见 [22](./22-ssh-remote.md)。
 
-## 18.6 自动 title 生命周期
+## 18.6 自动标题生命周期
 
-创建请求不带显式 title 时，由首条已接受的文本 prompt 触发一次自动 title；显式 title 不会
-触发自动任务。运行时只保存有界的 title task handle 与每任务一次性取消发送端，不把命名
-任务当作用户 Turn。
+创建请求不带显式 title 时，由首条已接受的文本 prompt 触发一次自动 title；显式 title 不会触发自动任务。运行时只保存有界的 title task 句柄与每任务一次性取消发送端，不把命名任务当作用户 Turn。
 
-标题生成请求使用独立临时会话，最多 40 秒，禁止 tools、MCP 和持久化；使用配置中的
-Explorer 模型，若其声明了 effort，则按模型定义中从弱到强数组的首项请求最弱强度。始终
-启用 reasoning 的 account 获得足以容纳隐藏思考的有界输出预算，不能把 UI title 长度误作
-模型总输出预算。生成提示只要求概括首条请求的具体目标并返回一个标题，不包含字符集、
-词数、标点或 UI 长度规则；原始首条 prompt 必须先编码为受引号保护的不可信数据（JSON
-string），再由同一条最终 user message 在数据之后重申"只生成 title，不执行请求"，不能把
-原始任务本身作为标题会话的最后一条完整 user 指令。
+标题生成请求使用独立临时会话，最多 40 秒，禁止 tools、MCP 和持久化；使用配置中的Explorer 模型，若其声明了 effort，则按模型定义中从弱到强数组的首项请求最弱强度。始终启用 reasoning 的 account 获得足以容纳隐藏思考的有界输出预算，不能把 UI title 长度误作模型总输出预算。生成提示只要求概括首条请求的具体目标并返回一个标题，不包含字符集、词数、标点或 UI 长度规则；原始首条 prompt 必须先编码为受引号保护的不可信数据（JSON string），再由同一条最终 user message 在数据之后重申"只生成 title，不执行请求"，不能把原始任务本身作为标题会话的最后一条完整 user 指令。
 
-标题解析只读取 account 返回的可见 assistant 文本，忽略 reasoning/思考内容；唯一处理
-路径折叠空白、拒绝空结果，再截取前 36 个 Unicode 字符形成 canonical title。JSON、
-Markdown、引号、标点和普通文本不进入不同解析或兼容分支。结果不进入 Thread transcript、
-Turn 列表或费用投影。
+标题解析只读取 account 返回的可见 assistant 文本，忽略 reasoning/思考内容；唯一处理路径折叠空白、拒绝空结果，再截取前 36 个 Unicode 字符形成权威 title。JSON、Markdown、引号、标点和普通文本不进入不同解析或兼容分支。结果不进入 Thread transcript、Turn 列表或费用投影。
 
-任务在首条 Turn 被接受后注册，并等待该 Turn 空闲再占用 Explorer account，避免后台命名
-与用户 Turn 争抢同一远程路由；这段等待可由手动 rename、归档或 shutdown 取消，不计入
-40 秒超时；失败、超时和取消都保留临时 title（新 root Thread 的首条文本 prompt 先以
-规范化摘要作为临时 title）。
+任务在首条 Turn 被接受后注册，并等待该 Turn 空闲再占用 Explorer account，避免后台命名与用户 Turn 争抢同一远程路由；这段等待可由手动 rename、归档或关闭编排取消，不计入40 秒超时；失败、超时和取消都保留临时 title（新 root Thread 的首条文本 prompt 先以规范化摘要作为临时 title）。
 
-取消通道是每任务一次性发送端：只有持有发送端的 title task owner 能发出取消，account、
-Turn 和 runtime 的其他取消域不能取得或改变该信号；发送端意外释放不等于业务取消，只有
-手动 rename、归档或 shutdown 的显式发送才结束标题任务。runtime shutdown 只 drain 当时
-已经注册的任务；同一 runtime 对象再次启动时创建新的通道，不复用上一生命周期的取消
-状态。
+取消通道是每任务一次性发送端：只有持有发送端的 title task 所有者能发出取消，account、Turn 和运行时的其他取消域不能取得或改变该信号；发送端意外释放不等于业务取消，只有手动 rename、归档或关闭编排的显式发送才结束标题任务。运行时关闭编排只 drain 当时已经注册的任务；同一运行时对象再次启动时创建新的通道，不复用上一生命周期的取消状态。
 
-自动结果只能在 directory owner 的 CAS 检查通过后提交：当前 title 必须仍等于生成任务
-启动时的临时 title。手动 rename 先提交 canonical title 并取消对应任务，因此自动任务
-观察到期望值变化时必须丢弃结果；即使取消与 account 返回发生竞态，手动 mutation 仍使
-陈旧自动结果失效。成功的 title mutation 通过 `ThreadDirectoryChanged` 增量事件发布，
-Thread stream 不新增平行 title 通知（见 [07](./07-streaming.md)）。
+自动结果只能在 directory 所有者的 CAS 检查通过后提交：当前 title 必须仍等于生成任务启动时的临时 title。手动 rename 先提交权威 title 并取消对应任务，因此自动任务观察到期望值变化时必须丢弃结果；即使取消与 account 返回发生竞态，手动 mutation 仍使陈旧自动结果失效。成功的 title mutation 通过 `ThreadDirectoryChanged` 增量事件发布，Thread stream 不新增平行 title 通知（见 [07](./07-streaming.md)）。
 
 ## 18.7 项目侧栏
 
-侧栏按项目展示根 Thread。搜索覆盖持久化目录与尚未保存的内存事实，项目过滤和归档状态
-在分页前应用；结果不能由当前已加载的首屏推断。归档恢复属于显式生命周期命令，保留原
-Thread 身份与历史，不创建副本。侧栏宽度、项目置顶与项目内会话置顶属于现有 UI
-settings，由配置运行时持有并通过 Settings CAS 返回 canonical snapshot；搜索词、展开
-状态和抽屉显隐为临时 UI 状态。概念与视觉设计见
-[concepts/project-sidebar.md](./concepts/project-sidebar.md)。
+侧栏按项目展示根 Thread。搜索覆盖持久化目录与尚未保存的内存事实，项目过滤和归档状态在分页前应用；结果不能由当前已加载的首屏推断。归档恢复属于显式生命周期命令，保留原Thread 身份与历史，不创建副本。侧栏宽度、项目置顶与项目内会话置顶属于现有 UI settings，由配置运行时持有并通过 Settings CAS 返回权威快照；搜索词、展开状态和抽屉显隐为临时 UI 状态。概念与视觉设计见[concepts/project-sidebar.md](./concepts/project-sidebar.md)。
 
 ## 18.8 产品投影与观察
 
-输入显示投影读取提交时保存的产品正文、附件元数据和 presentation，不把模型附件注释反向
-当成用户输入。输入载荷中的原始 request 用于幂等受理校验，不替代展示正文；其存在不能使
-正常消息降级为原始记录，展示解析仍校验已知字段的类型并拒绝未知结构。
-通用文本片段直接拼接并保留原始空白；未知输入格式交由原始记录查看，不能
-默认为空文本。模型正文投影读取已保存输出与 model 回执，保留文本分片的实际字节和推理
-正文；取消后返回或被拒绝的输出显示对应非成功终态，不作为正常回复；不支持的模型内容
-明确暴露投影失败，不能静默变成空正文。Turn 产品投影依据保存的状态、提交时间和实测
-耗时生成，不以数据库时间或当前时间替代；只有通用取消事实而没有发起者证据时显示
-unspecified。Thread runtime 的模型身份、有效上下文窗口 `contextWindow`、模型最大窗口
-`maxContextWindow` 和最终自动压缩阈值 `autoCompactLimit` 来自最新模型尝试的已保存请求绑定，
-在请求准入后即可整体投影，不等待成功响应；新绑定中未知的值清除前一模型对应值，不能因失败、
-取消或历史回放而沿用。窗口和阈值沿可选 wire 字段传给 GUI，UI 不重新解析模型目录，不按当前
-设置回填，也不推导安全上限；辅助推理和压缩回执不覆盖主 Thread 的绑定事实。
-最近有效账号用量与活动 attempt 的 live 读数仍按既有用量契约更新；压缩准备阶段使用的输入
-估算不是账号用量，进度达到阈值不等于压缩已经发生。新请求尚未回报用量时可以保留最近有效
-读数，不能据此隐藏其超过新阈值的情况。快照、状态流、重订阅与冷恢复传递相同的绑定事实。
+输入显示投影读取提交时保存的产品正文、附件元数据和 presentation，不把模型附件注释反向当成用户输入。输入载荷中的原始 request 用于幂等受理校验，不替代展示正文；其存在不能使正常消息降级为原始记录，展示解析仍校验已知字段的类型并拒绝未知结构。通用文本片段直接拼接并保留原始空白；未知输入格式交由原始记录查看，不能默认为空文本。模型正文投影读取已保存输出与 model 回执，保留文本分片的实际字节和推理正文；取消后返回或被拒绝的输出显示对应非成功终态，不作为正常回复；不支持的模型内容明确暴露投影失败，不能静默变成空正文。Turn 产品投影依据保存的状态、提交时间和实测耗时生成，不以数据库时间或当前时间替代；只有通用取消事实而没有发起者证据时显示unspecified。Thread 运行时的模型身份、有效上下文窗口 `contextWindow`、模型最大窗口`maxContextWindow` 和最终自动压缩阈值 `autoCompactLimit` 来自最新模型尝试的已保存请求绑定，在请求准入后即可整体投影，不等待成功响应；新绑定中未知的值清除前一模型对应值，不能因失败、取消或历史回放而沿用。窗口和阈值沿可选 wire 字段传给 GUI，UI 不重新解析模型目录，不按当前设置回填，也不推导安全上限；辅助推理和压缩回执不覆盖主 Thread 的绑定事实。最近有效账号用量与活动 attempt 的 live 读数仍按既有用量契约更新；压缩准备阶段使用的输入估算不是账号用量，进度达到阈值不等于压缩已经发生。新请求尚未回报用量时可以保留最近有效读数，不能据此隐藏其超过新阈值的情况。快照、状态流、重订阅与冷恢复传递相同的绑定事实。
 
-透明模型恢复按 [16](./16-core-contracts.md) §16.3 的观察代次投影，实时及最终回执遵循
-[07](./07-streaming.md)。失败子尝试与当前子尝试分开呈现，原 account part 身份不改写；
-不能因最终逻辑调用成功把先前失败片段收束为成功，也不能把旧预览的空占位当成正文。
-重试、恢复及耗尽显示为 Runtime 来源的 commentary 项目，与正文共用同一 Timeline 内容源；提示
-从类型化恢复事实生成，不从账号错误正文反推状态。无 GUI 时仍保留同一回执事实，慢消费者
-与历史重开可获得相同失败边界，不在 Flutter 维护另一个重试计数或片段合并器。
+透明模型恢复按 [16](./16-core-contracts.md) §16.3 的观察代次投影，实时及最终回执遵循[07](./07-streaming.md)。失败子尝试与当前子尝试分开呈现，原 account part 身份不改写；不能因最终逻辑调用成功把先前失败片段收束为成功，也不能把旧预览的空占位当成正文。重试、恢复及耗尽显示为 Runtime 来源的 commentary 项目，与正文共用同一 Timeline 内容源；提示从类型化恢复事实生成，不从账号错误正文反推状态。无 GUI 时仍保留同一回执事实，慢消费者与历史重开可获得相同失败边界，不在 Flutter 维护另一个重试计数或片段合并器。
 
-产品时间线 ordinal 在 effect 首次创建 Item 时从输入、Turn、模型尝试和工具调用顺序统一分配；
-隐藏或暂时为空的投影保留槽位，后续正文出现或终态更新不能挤动已有条目；各投影的当前
-输出集合不作为历史排序的事实源。工具时间线从已提交模型调用恢复原参数，从任务/许可
-事实投影执行状态，从 delivery 读取实际交付内容；业务 payload 只作原始事实保存，不能被
-UI 投影当作 exit code、审批或成功状态来源。成功且具有已保存结束 Turn 控制的 complete
-工具交付，通过生产者的版本化 decoder 将原 summary 投影为最终回复，并使用交付时固定的
-时间线位置；业务 payload 中的 completed 字符串不能独自生成完成状态。Composer 只有仍
-持有非空 accepted input identity 时才消费对应 Turn 的提交结果；启动确认清除关联后，
-后续执行失败只留在时间线，不能把空 identity 相等误判为当前输入失败。
+产品时间线 ordinal 在 effect 首次创建 Item 时从输入、Turn、模型尝试和工具调用顺序统一分配；隐藏或暂时为空的投影保留槽位，后续正文出现或终态更新不能挤动已有条目；各投影的当前输出集合不作为历史排序的事实源。工具时间线从已提交模型调用恢复原参数，从任务/许可事实投影执行状态，从 delivery 读取实际交付内容；业务载荷只作原始事实保存，不能被UI 投影当作 exit code、审批或成功状态来源。成功且具有已保存结束 Turn 控制的 complete工具交付，通过生产者的版本化 decoder 将原 summary 投影为最终回复，并使用交付时固定的时间线位置；业务载荷中的 completed 字符串不能独自生成完成状态。Composer 只有仍持有非空 accepted input identity 时才消费对应 Turn 的提交结果；启动确认清除关联后，后续执行失败只留在时间线，不能把空 identity 相等误判为当前输入失败。
 
-普通用户问答与计划确认在原工具条目上附带可选的 typed `userInput` 历史投影，不增加第二条持久化问答
-记录。它包含交互身份、按原顺序的问题及 pending、resolved、cancelled 等权威状态；resolved
-答案通过 question ID 关联，保留答案列表及自由文本。状态取自同一 canonical interaction
-事实，不从工具成功状态、隐藏 continuation 或摘要文本推断。交互提交原位更新既有工具 item，
-保留 item ID、ordinal 与创建时间，并按实际内容变化推进条目版本；live、durable history、
-分页和重开均消费这一投影，不在 Thread 轻状态长期复制已解决交互。
-工具调用与交互的身份转换由 core 提供的统一身份函数负责，Studio 不复制身份前缀规则，也不
-通过时间或相邻条目猜测关联；解析身份不证明记录存在或授予权限，仍须核对 canonical 记录。
-交互更新需要原工具条目正文，而不是放置元数据。待回答交互可跨 owner 回收或进程重启继续，
-当前投影未持有该正文时，投影 owner 按已验证工具身份从可靠历史补齐所需条目，再发布同一
-交互变更；不扫描整轮历史、不激活模型或工具，也不建立第二份问答缓存。缺失、损坏或身份
-矛盾仍显式失败，不能因预览受限或热缓存已回收而跳过用户回答。
+普通用户问答与计划确认在原工具条目上附带可选的类型化 `userInput` 历史投影，不增加第二条持久化问答记录。它包含交互身份、按原顺序的问题及待回答（`pending`）、已回答（`resolved`）、已取消（`cancelled`）等权威状态；已回答内容按问题身份关联，保留答案列表及自由文本。状态取自同一权威交互事实，不从工具成功状态、隐藏续接输入或摘要文本推断。
 
-格式所有者在 Rust 边界解码原始提问与响应；FRB 和 Client 传递 typed 数据，feature 不解析
-opaque JSON。`isSecret` 对应的回答在公开历史投影中移除原值，只保留足以表达已回答/隐藏的
-状态；私有可靠回执及模型 continuation 保持原语义。问题和回答正文纳入既有内容预算与按身份
-回源契约，不能通过放进 metadata 绕过预算。未知格式保留诊断、不伪造已回答。
-计划确认复用格式所有者对计划正文 hash、revision、问题身份及决定的校验，再转换为同一
-typed 历史结构；不在历史投影另写一套 Plan 状态机或解码约定。唯一 `plan_confirmation`
-问题标识该结构中的计划语义，回答列表保留批准/修订决定与用户反馈，GUI 仅将决定标记映射
-为本地化状态。计划 runtime 投影仍只负责当前计划，不作为历史决定的事实源；pending 队列
-只保留尚待处理的交互。既有 v2 历史的补齐规则见 [17](./17-studio-storage.md) §17.4。
+交互提交原位更新既有工具条目，保留条目身份、顺序号（`ordinal`）与创建时间，并按实际内容变化推进条目版本；实时展示、持久化历史、分页和重开均消费这一投影，不在会话轻状态中长期复制已解决交互。工具调用与交互的身份映射由内核统一定义，Studio 不复制身份前缀规则，也不通过时间或相邻条目猜测关联；解析身份不证明记录存在或授予权限，仍须核对权威记录。
 
-Studio 拥有 Thread 产品观察任务，它是该 Thread **唯一的实时投影发布者**：直接消费 owner 发布的
-不可变 effect，持有该 Thread 唯一的 live projection，把内容发布进共享会话并投影 Agent/Thread
-目录、显式进展和模型计费，再把历史/调用事实交给各自 writer。它在没有 GUI 订阅时也照常消费已
-成立事实，订阅只读取这份投影的帧，不驱动任何发布。普通提交直接从内存 effect 投影，不逐批
-flush，也不回读历史：终态报告与目录摘要都由这份可靠内存投影结果生成，因此跨多条 effect 的长
-Turn 会带上它此前提交的正文。owner 命令队列里的 flush 只在 owner 空闲时被处理，正在执行的 Turn
-会让 owner 停在 Turn future 里，逐批 flush 会把实时产品事实拖到 Turn 结束。只有内存投影无法证明
-它从该 Turn 第一条记录折起时才按 `items_for_turn` 从 history 读该 Turn 的有界切片重建终态事实，
-而这只发生在两处冷边界：没有驻留投影的冷恢复，以及投影安装时一次性播种该 Thread 运行中及最新
-Turn 的已提交条目（Turn 运行中才被重新激活或中途接管）。热路径没有 gap 重播种、也没有第二份
-字典兜底：投影只消费可靠受理队列，一条 fact 只投影一次。冷读保留所需的 durable 屏障；该屏障
-等待的是投影 owner 自己的接管票据（它已交回的最新提交），
-不是绝对 commit 水位，因此本进程新激活、早先提交已经 durable 的 Thread 不会被一个无法再移动的
-水位卡住；已从 Turn 起步折起的内存投影不在此列。除实时 effect 帧外，投影 owner 还以可靠通道的
-水位变化为信号补齐迟到的初始化受理（准入被存储压力推迟到观察安装之后的事实不会被当成实时帧
-重放，但照样要交回保存）。终态报告只带已提交的条目身份，未被提交收束的流式预览不进入父级报告与
-目录摘要。实时投影为报告常驻的是有界累积器（终态文本按 identity 归并、可见 commentary 有上限、
-最新工具条目与已提交身份集合），不是整轮过程正文；可变正文只在还能被改写时驻留，其余条目只保留
-放置元数据。effect window 的释放来自存储后端 pressure 报告里的 typed durable 水位，owner 在提交
-后的内存安全边界折入它并释放已覆盖批次，不需要显式 flush 或额外的 lease。投影自己的表（仍可改写
-的驻留条目、放置元数据与报告累积器）在批次 durable 之后仍然驻留，因此投影 owner 向同一可靠通道
-发布**绝对**驻留字节水位，Thread 预算与暂停判定把它和队列正文、在途预留一起计入；正常所需的报告
-结果因此不被丢弃或静默截断，压力表现为暂停新模型/工具准入的安全间隙。投影无法完成的事实永远不会
-被交接，所以它同时是一次保存失败：等待保存回执的屏障既观察协调器水位，也观察可靠通道自己的类型化
-故障，两者都以真实原因 fail-closed，而不是等一个永远不会推进的水位。计费使用回执中的冻结
-模型绑定、价格和用量，恢复从调用库按 inference identity 幂等读取；父级通知只处理观察注册后的
-新增事实，使用稳定消息 identity
-防止失败重试重复送达；观察失败保留可重试状态，由同步屏障返回错误；同步屏障除等待最终
-commit 的投影、目录保存及计费保存完成外，还确认该 commit 的 history 已 durable——观察不再
-逐批 flush，冷恢复与未驻留子会话的终态修复直接读 history，所以“观察已应用”必须蕴含“这次交回
-已落库”，而该等待只按投影 owner 已交回的提交追溯，不等待尚未投影的后续提交。观察者更新产品目录时仅在目录 owner 的锁内修改
-运行状态和更新时间，不重写预先读取的完整 Thread；并发标题、Mode 与归档操作保持当前
-事实，已移出热目录的条目不被迟到观察结果重新插入。Agent 查询仅允许读取自身或同树
-后代，不通过查询激活冷 Thread；会话及进展分页游标绑定数据库 ID 与 applied write 水位，进展保留每次显式
-提交的完整 detail，超大单条以带字节位置的 UTF-8 JSON 分片继续读取，不能截断正文。
-冷目录读取遇到未知 mode payload 保留已有目录元数据；只读历史展示原始载荷，真正激活
-仍严格校验所需 producer codec。
+交互更新须包含原工具条目正文，不能只发布元数据。待回答交互可跨所有者回收或进程重启继续；当前投影未持有该正文时，投影所有者按已验证工具身份从可靠历史补齐所需条目，再发布同一交互变更。不扫描整轮历史、不激活模型或工具，也不建立第二份问答缓存。缺失、损坏或身份矛盾仍显式失败，不能因预览受限或热缓存已回收而跳过用户回答。
 
-Thread runtime 的缓存统计是独立的 typed 投影 `cache_usage`，包含参与统计的输入总量、
-缓存读取总量、命中率及完整性标记；不复用总用量的完整性标记决定能否计算。样本要求
-输入与缓存读取均已报告，读取不超过输入；若报告缓存写入，则读取与写入之和必须
-不溢出且不超过输入。输出计数缺失不影响这一判定；缺失或矛盾的输入缓存计数不参与
-累计，并将缓存统计标记为不完整。零输入零读取为有效样本，但零累计分母不产生比例。
-未结束调用不贡献样本；已中断且无回执的调用表示统计不完整。已结束调用和压缩回执
-在各自 canonical 身份下只计入一次，重投影、重同步和冷恢复得到同样结果；新事实
-发布后使用当前样本重建累计投影，不在 GUI 另设增量账本。缓存有效样本使用 checked
-计数累加，溢出显式报错，不发布回绕或截断比例。现有总 token、原始缓存计数和费用
-保持原语义，派生缓存统计不改写持久化账单与日志。`ThreadRuntimeUsage` 的外部消费者
-须迁移旧的 `cacheHitRate`、`cacheMissTokens` 到 `cacheUsage`：比例取其 `hitRate`，
-未命中取同组 `inputTokens - cacheReadTokens`；旧字段不再提供，Bridge 与 GUI 须一并升级。
+格式所有者在 Rust 边界解码原始提问与响应；FRB 和客户端传递类型化数据，feature 不解析opaque JSON。`isSecret` 对应的回答在公开历史投影中移除原值，只保留足以表达已回答/隐藏的状态；私有可靠回执及模型 continuation 保持原语义。问题和回答正文纳入既有内容预算与按身份回源契约，不能通过放进 metadata 绕过预算。未知格式保留诊断、不伪造已回答。计划确认复用格式所有者对计划正文 hash、revision、问题身份及决定的校验，再转换为同一类型化历史结构；不在历史投影另写一套 Plan 状态机或解码约定。唯一 `plan_confirmation`问题标识该结构中的计划语义，回答列表保留批准/修订决定与用户反馈，GUI 仅将决定标记映射为本地化状态。计划运行时投影仍只负责当前计划，不作为历史决定的事实源；pending 队列只保留尚待处理的交互。既有 v2 历史的补齐规则见 [17](./17-studio-storage.md) §17.4。
 
-模型性能历史以冻结账单中的账号与配置模型作为统计身份，并投影实际发送模型、Account 返回模型和
-`matched`、`mismatched`、`unreported`、`legacyUnknown` 四态结果。返回模型不参与费用或速度
-汇总，旧账单没有观察事实时只能标记 `legacyUnknown`。速度样本的有效性、单调窗口与聚合
-公式统一遵循 [06](./06-model.md) §6.12；实时状态栏与历史汇总不能采用不同口径，也不以
-展示层封顶或零时长伪造速度。
+Studio 拥有 Thread 产品观察任务，它是该 Thread **唯一的实时投影发布者**：直接消费所有者发布的不可变 effect，持有该 Thread 唯一的 live 投影，把内容发布进共享会话并投影 Agent/Thread目录、显式进展和模型计费，再把历史/调用事实交给各自 writer。它在没有 GUI 订阅时也照常消费已成立事实，订阅只读取这份投影的帧，不驱动任何发布。普通提交直接从内存 effect 投影，不逐批flush，也不回读历史：终态报告与目录摘要都由这份可靠内存投影结果生成，因此跨多条 effect 的长Turn 会带上它此前提交的正文。所有者命令队列里的 flush 只在所有者空闲时被处理，正在执行的 Turn会让所有者停在 Turn future 里，逐批 flush 会把实时产品事实拖到 Turn 结束。只有内存投影无法证明它从该 Turn 第一条记录折起时才按 `items_for_turn` 从 history 读该 Turn 的有界切片重建终态事实，而这只发生在两处冷边界：没有驻留投影的冷恢复，以及投影安装时一次性播种该 Thread 运行中及最新Turn 的已提交条目（Turn 运行中才被重新激活或中途接管）。热路径没有 gap 重播种、也没有第二份字典兜底：投影只消费可靠受理队列，一条 fact 只投影一次。冷读保留所需的 durable 屏障；该屏障等待的是投影所有者自己的接管票据（它已交回的最新提交），不是绝对 commit 水位，因此本进程新激活、早先提交已经 durable 的 Thread 不会被一个无法再移动的水位卡住；已从 Turn 起步折起的内存投影不在此列。除实时 effect 帧外，投影所有者还以可靠通道的水位变化为信号补齐迟到的初始化受理（准入被存储压力推迟到观察安装之后的事实不会被当成实时帧重放，但照样要交回保存）。终态报告只带已提交的条目身份，未被提交收束的流式预览不进入父级报告与目录摘要。实时投影为报告常驻的是有界累积器（终态文本按 identity 归并、可见 commentary 有上限、最新工具条目与已提交身份集合），不是整轮过程正文；可变正文只在还能被改写时驻留，其余条目只保留放置元数据。effect window 的释放来自存储后端 pressure 报告里的类型化 durable 水位，所有者在提交后的内存安全边界折入它并释放已覆盖批次，不需要显式 flush 或额外的租约。投影自己的表（仍可改写的驻留条目、放置元数据与报告累积器）在批次 durable 之后仍然驻留，因此投影所有者向同一可靠通道发布**绝对**驻留字节水位，Thread 预算与暂停判定把它和队列正文、在途预留一起计入；正常所需的报告结果因此不被丢弃或静默截断，压力表现为暂停新模型/工具准入的安全间隙。投影无法完成的事实永远不会被交接，所以它同时是一次保存失败：等待保存回执的屏障既观察协调器水位，也观察可靠通道自己的类型化故障，两者都以真实原因 fail-closed，而不是等一个永远不会推进的水位。计费使用回执中的冻结模型绑定、价格和用量，恢复从调用库按 inference identity 幂等读取；父级通知只处理观察注册后的新增事实，使用稳定消息 identity防止失败重试重复送达；观察失败保留可重试状态，由同步屏障返回错误；同步屏障除等待最终commit 的投影、目录保存及计费保存完成外，还确认该 commit 的 history 已 durable——观察不再逐批 flush，冷恢复与未驻留子会话的终态修复直接读 history，所以“观察已应用”必须蕴含“这次交回已落库”，而该等待只按投影所有者已交回的提交追溯，不等待尚未投影的后续提交。观察者更新产品目录时仅在目录所有者的锁内修改运行状态和更新时间，不重写预先读取的完整 Thread；并发标题、Mode 与归档操作保持当前事实，已移出热目录的条目不被迟到观察结果重新插入。Agent 查询仅允许读取自身或同树后代，不通过查询激活冷 Thread；会话及进展分页游标绑定数据库 ID 与 applied write 水位，进展保留每次显式提交的完整 detail，超大单条以带字节位置的 UTF-8 JSON 分片继续读取，不能截断正文。冷目录读取遇到未知 mode 载荷保留已有目录元数据；只读历史展示原始载荷，真正激活仍严格校验所需生产者 codec。
 
-Thread 的 canonical 累计摘要同时保留最近一个已有有效速度样本的 Turn 及其成对聚合计数。
-新 Turn 受理、模型准备、partial live、工具等待和没有有效速度样本的调用均不清空这组已确认
-事实；新 Turn 首个有效完成样本到来时才原子切换归属、重置并纳入该样本，同 Turn 后续有效
-样本继续成对累加。计数使用 checked 算术，溢出不发布部分更新。该保持语义沿用现有摘要的
-持久化与幂等水位，重订阅、组件重建和冷恢复读取同一结果，不增加全会话速度账本。
+Thread 运行时的缓存统计是独立的类型化投影 `cache_usage`，包含参与统计的输入总量、缓存读取总量、命中率及完整性标记；不复用总用量的完整性标记决定能否计算。样本要求输入与缓存读取均已报告，读取不超过输入；若报告缓存写入，则读取与写入之和必须不溢出且不超过输入。输出计数缺失不影响这一判定；缺失或矛盾的输入缓存计数不参与累计，并将缓存统计标记为不完整。零输入零读取为有效样本，但零累计分母不产生比例。未结束调用不贡献样本；已中断且无回执的调用表示统计不完整。已结束调用和压缩回执在各自权威身份下只计入一次，重投影、重同步和冷恢复得到同样结果；新事实发布后使用当前样本重建累计投影，不在 GUI 另设增量账本。缓存有效样本使用 checked计数累加，溢出显式报错，不发布回绕或截断比例。现有总 token、原始缓存计数和费用保持原语义，派生缓存统计不改写持久化账单与日志。`ThreadRuntimeUsage` 的外部消费者须迁移旧的 `cacheHitRate`、`cacheMissTokens` 到 `cacheUsage`：比例取其 `hitRate`，未命中取同组 `inputTokens - cacheReadTokens`；旧字段不再提供，Bridge 与 GUI 须一并升级。
 
-live usage 的输出词元与总响应时长仍可独立未知。状态栏优先采用同一观察代次中成对有效的
-live 样本；若不成立，则完整采用 canonical 摘要的最近已确认聚合样本；二者均不成立才显示
-未知。选择旧的完整样本不表示当前 pending 调用已有测量结果，UI 文案须明确“最近已确认速度”。
-不得把 live 与 authoritative 的分子、分母交叉配对；不得用 Widget 私有快照或另一个 Thread 的
-数值补缺。readout 只呈现上述查询结果，不拥有速度账本，页面释放不会改变已确认统计。
-速度字段统一表达总响应耗时，不以 decode 名称承载含首字等待的分母；TPS、可空首字与首字后
-诊断耗时遵循 [06](./06-model.md) §6.12。透明重试切换观察代次时原子清空该代用量与耗时，
-不能让旧代次的单调计数约束阻止新代次正确计时。旧 decode 口径的 checkpoint 速度缓存不可
-继续展示或累加；它不影响累计费用与用量，新样本从空的成对摘要重新建立。
-失败、取消或恢复耗尽的模型观察必须在终态尚未收束的可发布窗口中撤销整组 live 测量，
-但保留部分内容、失败观察与最终计费事实。所有取消能力（包括输入令牌的父子传播和直接
-中断能力）均须唤醒 owner 发布撤销后的快照，不依赖下一条模型进度或函数返回；迟到进度
-与整份观察替换均不得重新打开已撤销代次，只有明确进入下一重试代次才能恢复 live 测量。
+模型性能历史以冻结账单中的账号与配置模型作为统计身份，并投影实际发送模型、Account 返回模型和`matched`、`mismatched`、`unreported`、`legacyUnknown` 四态结果。返回模型不参与费用或速度汇总，旧账单没有观察事实时只能标记 `legacyUnknown`。速度样本的有效性、单调窗口与聚合公式统一遵循 [06](./06-model.md) §6.12；实时状态栏与历史汇总不能采用不同口径，也不以展示层封顶或零时长伪造速度。
 
-工具附件投影：Studio 从持久化工具媒体通过格式所有者的 typed 解码生成工具输出附件，
-实时与历史恢复共用同一投影。附件身份沿用归档引用，MIME、字节数与可用尺寸必须对应
-实际归档变体，未知尺寸不猜测；core 不解释媒体格式，Flutter 不解析不透明载荷。附件
-读取入口同时支持用户附件与工具图片，但读取工具资源前必须验证 Thread 访问权以及该
-资源属于该 Thread 的持久化工具媒体引用——仅有资源 ID 前缀、摘要或一个可访问 Thread
-都不足以授权，客户端路径不能成为文件读取入口；未引用、损坏或丢失资源显式失败，不得
-用原始 workspace 文件补回。已完成的工具交付从 Thread history 中的完整 delivery 读取；
-尚未落库的交付从当前未持久化 effect 读取，不能依赖已被回收的 resident snapshot。
+Thread 的权威累计摘要同时保留最近一个已有有效速度样本的 Turn 及其成对聚合计数。新 Turn 受理、模型准备、partial live、工具等待和没有有效速度样本的调用均不清空这组已确认事实；新 Turn 首个有效完成样本到来时才原子切换归属、重置并纳入该样本，同 Turn 后续有效样本继续成对累加。计数使用 checked 算术，溢出不发布部分更新。该保持语义沿用现有摘要的持久化与幂等水位，重订阅、组件重建和冷恢复读取同一结果，不增加全会话速度账本。
+
+live usage 的输出词元与总响应时长仍可独立未知。状态栏优先采用同一观察代次中成对有效的live 样本；若不成立，则完整采用权威摘要的最近已确认聚合样本；二者均不成立才显示未知。选择旧的完整样本不表示当前 pending 调用已有测量结果，UI 文案须明确“最近已确认速度”。不得把 live 与 authoritative 的分子、分母交叉配对；不得用界面组件私有快照或另一个 Thread 的数值补缺。readout 只呈现上述查询结果，不拥有速度账本，页面释放不会改变已确认统计。速度字段统一表达总响应耗时，不以 decode 名称承载含首字等待的分母；TPS、可空首字与首字后诊断耗时遵循 [06](./06-model.md) §6.12。透明重试切换观察代次时原子清空该代用量与耗时，不能让旧代次的单调计数约束阻止新代次正确计时。旧 decode 口径的 checkpoint 速度缓存不可继续展示或累加；它不影响累计费用与用量，新样本从空的成对摘要重新建立。失败、取消或恢复耗尽的模型观察必须在终态尚未收束的可发布窗口中撤销整组 live 测量，但保留部分内容、失败观察与最终计费事实。所有取消能力（包括输入令牌的父子传播和直接中断能力）均须唤醒所有者发布撤销后的快照，不依赖下一条模型进度或函数返回；迟到进度与整份观察替换均不得重新打开已撤销代次，只有明确进入下一重试代次才能恢复 live 测量。
+
+工具附件投影：Studio 从持久化工具媒体通过格式所有者的类型化解码生成工具输出附件，实时与历史恢复共用同一投影。附件身份沿用归档引用，MIME、字节数与可用尺寸必须对应实际归档变体，未知尺寸不猜测；core 不解释媒体格式，Flutter 不解析不透明载荷。附件读取入口同时支持用户附件与工具图片，但读取工具资源前必须验证 Thread 访问权以及该资源属于该 Thread 的持久化工具媒体引用——仅有资源 ID 前缀、摘要或一个可访问 Thread都不足以授权，客户端路径不能成为文件读取入口；未引用、损坏或丢失资源显式失败，不得用原始 workspace 文件补回。已完成的工具交付从 Thread history 中的完整 delivery 读取；尚未落库的交付从当前未持久化 effect 读取，不能依赖已被回收的 resident 快照。
 
 ### 18.8.1 活动、Timeline 内容与存储状态
 
 三条事实各自有唯一所有者，互不代替：
 
-- **活动（activity）**：`ThreadActivity` 是当前“在做什么”的 typed 小摘要，与 Timeline 阅读内容
-  正交。它由该 Thread **唯一的投影 owner**（观察任务里的 `ActivityProjection`）从它刚发布的
+- **活动（activity）**：`ThreadActivity` 是当前“在做什么”的类型化小摘要，与 Timeline 阅读内容
+  正交。它由该 Thread **唯一的投影所有者**（观察任务里的 `ActivityProjection`）从它刚发布的
   `ThreadSnapshot` 推导（turns/attempts/tasks/permissions/interactions/input_execution/
   `model_execution`/`model_progress`/`tool_progress`），是**纯内存纯函数**：不读 `Session`、不做
   SQL、不整 Turn 回读历史、不新增第二份正文缓存。身份是 `activity:{turn_id}:{step}:{kind}`；
   身份不变时只有内容真变化才递增 `revision`，身份变化即新活动。阶段变化（含 `model_execution`
-  的阶段推进）由 owner 在提交新 snapshot 后随活动帧补发，不依赖 `effect.turn` 变化；普通保存
+  的阶段推进）由所有者在提交新快照后随活动帧补发，不依赖 `effect.turn` 变化；普通保存
   不会虚构 `persisting` 阶段。详情（reasoning/正文/工具参数与流式输出）按活动身份**按需**读，
-  同样只从驻留 owner 事实推导，活动结束后返回 `Superseded`/`Ended` 而不回退旧正文；驻留摘要与
+  同样只从驻留所有者事实推导，活动结束后返回 `Superseded`/`Ended` 而不回退旧正文；驻留摘要与
   详情计入同一可靠保留预算。
 
-  等待展示使用共享的 typed 等待投影，附于活动工具与对应 Timeline 工具条目。意图区分事件等待
+  等待展示使用共享的类型化等待投影，附于活动工具与对应 Timeline 工具条目。意图区分事件等待
   （所选任务与最大等待时长，同时观察新消息）和计时器（定时时长）；任务来源携带稳定 taskId、
   可用的工具名称、摘要及真实状态，结果区分等待中、就绪、正常超时、计时完成、取消、失败与中断。
   事件就绪还保留 `messagesReady`，不能把消息唤醒误称为所有任务完成。未能解析完整合法参数时
@@ -814,8 +283,8 @@ live 样本；若不成立，则完整采用 canonical 摘要的最近已确认�
   等待调用自身因失败被收束时，条目的等待结果同步转为失败，不保留旧的“等待中”或消息就绪结果；
   目标任务的已观察状态仍保留，不能由观察调用失败推断目标任务被取消。
 
-  产品边界按已知工具契约从 canonical 参数、任务与结果派生一次 typed 信息，Bridge 机械映射，
-  Client 与 Flutter 不再次解析等待参数或结果 JSON。实时活动的目标摘要只取驻留事实，不为显示
+  产品边界按已知工具契约从权威参数、任务与结果派生一次类型化信息，Bridge 机械映射，
+  客户端与 Flutter 不再次解析等待参数或结果 JSON。实时活动的目标摘要只取驻留事实，不为显示
   名称做历史 SQL；活动组内的历史等待成员消费保存的条目投影，缺失摘要和工具名称时主行显示通用任务标签，
   精确 taskId 仅留诊断区，不用当前任务表改写旧结果。没有真实开始时间就只提供配置时长，
   不伪造截止时间或剩余进度。
@@ -827,25 +296,25 @@ live 样本；若不成立，则完整采用 canonical 摘要的最近已确认�
 
   运行中工具的实时输出不按“每来一个 chunk 就把累计全文再报一遍”投影：生产者持有共享不可变
   `ContentBlock` 链，只把变化的部分作为该调用自己 opaque 身份（例如 `command-output`）的
-  `Append{chunk}` / `Replace{text}` 交回 owner（契约见 [07-streaming](./07-streaming.md) §7.4）。
-  owner 把它存成该调用的 `ToolProgress`，实时投影直接共享最新 block、按该身份的 `version` 去重，
-  不逐 chunk 复制或物化整段正文；canonical 保存、展示预览交付与显式详情读取按各自契约物化文本。
+  `Append{chunk}` / `Replace{text}` 交回所有者（契约见 [07-streaming](./07-streaming.md) §7.4）。
+  所有者把它存成该调用的 `ToolProgress`，实时投影直接共享最新 block、按该身份的 `version` 去重，
+  不逐 chunk 复制或物化整段正文；权威保存、展示预览交付与显式详情读取按各自契约物化文本。
   活动行与 `retained_bytes` 因此按 `ToolProgress::bytes()` 计量而不物化正文，天然计入同一可靠
-  保留预算。工具条目的 `ordinal` 取 owner 写在该任务上的真实开始序号（`TaskRecord.started_sequence`），
+  保留预算。工具条目的 `ordinal` 取所有者写在该任务上的真实开始序号（`TaskRecord.started_sequence`），
   不再恒为 `None`；Unix `started_at` 本会话没有该事实仍如实为 `None`。`latest_started` 取真实
-  启动顺序：先比 owner 开始序号，同一提交批内并发创建的任务序号相等时再用该 Turn 的实际调用次序
+  启动顺序：先比所有者开始序号，同一提交批内并发创建的任务序号相等时再用该 Turn 的实际调用次序
   （`call_rank`）破平，最后按 `call_id` 稳定排序，不靠新到的输出或 wall-clock 猜。
 
-  启动顺序本身是 owner 的持久化事实：`TaskRecord.started_sequence` 是 `Option<u64>`，带
-  `#[serde(default)]`，旧 v2 的 `state.toml`/history payload 缺少该字段时解码为 `None`（回落到
+  启动顺序本身是所有者的持久化事实：`TaskRecord.started_sequence` 是 `Option<u64>`，带
+  `#[serde(default)]`，旧 v2 的 `state.toml`/history 载荷缺少该字段时解码为 `None`（回落到
   该 Turn 的调用次序，并发工具的真实启动次序就是调用次序，语义仍正确），不升 schema、不清库、
   不改旧目录。
 - **内容（Timeline）**：core Session 的最新／更早小页、有界尾部订阅与版本化详情读取
-  消费同一 canonical 已发布事实及历史存储，合并未落盘内容与持久化历史，按稳定顺序和身份
-  交付。HTTP 与 FRB 共用 Studio 唯一 typed 映射，不再暴露几何窗口、focus、对端裁剪或
+  消费同一权威已发布事实及历史存储，合并未落盘内容与持久化历史，按稳定顺序和身份
+  交付。HTTP 与 FRB 共用 Studio 唯一类型化映射，不再暴露几何窗口、focus、对端裁剪或
   窗口操作回执。状态流不生成或转发正文条目帧，正文也不因交付到尾部就重复进入轻状态。
   条目内容 revision、尾部交付版本、保存确认与执行终态相互独立；热缓存淘汰不表示删除。
-  数据源与单次查询有预算，当前展示 lease 的唯一 stock controller 则保留本次实际加载的
+  数据源与单次查询有预算，当前展示租约的唯一 stock controller 则保留本次实际加载的
   Message 集合。History 冻结已有展示内容、更早页可前插且不裁另一端，后台执行与保存
   继续；显式回实时或发送触发最新小页读取，仅在新首帧成功后切换展示代次，不保存或
   恢复旧像素锚点。慢消费者
@@ -853,23 +322,23 @@ live 样本；若不成立，则完整采用 canonical 摘要的最近已确认�
   大字段经稳定字段身份显式分块读取，预览额度与原文完整性分开核验。内容、预算、关闭
   及展示所有权的完整契约见 [26](./26-timeline-content.md)，流式事实见
   [07-streaming](./07-streaming.md) §7.4。
-- **存储状态（storage）**：`ThreadStorageState` 是 typed 事实，不由错误文本推断。故障类别与
-  generation、history 的 accepted/durable 水位来自 runtime 持久化协调器的 typed 值；执行阶段
+- **存储状态（storage）**：`ThreadStorageState` 是类型化事实，不由错误文本推断。故障类别与
+  generation、history 的 accepted/durable 水位来自运行时持久化协调器的类型化值；执行阶段
   （`running`/`pausing`/`paused`）与压力暂停来自 core 的存储执行事实；core 的原始错误文本只作为
-  诊断字段透出。首帧随 `ThreadSnapshot` 带权威存储状态，后续只用一条独立、typed 的存储 watch
+  诊断字段透出。首帧随 `ThreadSnapshot` 带权威存储状态，后续只用一条独立、类型化的存储 watch
   （协调器）加 core 执行阶段变化补发 `StorageChanged`，正文更新不会额外走状态流。订阅同时等待
   投影帧与这条存储 watch，并把交付过的状态按**值**比较，因此保存暂停即使没有任何内容/活动帧
-  也会被及时送达；owner 侧只用一个无载荷的存储唤醒帧表示「快照里与存储相关的字段变了」，
-  载荷仍由订阅者从 typed 来源读取，不是第二份存储事实。
+  也会被及时送达；所有者侧只用一个无载荷的存储唤醒帧表示「快照里与存储相关的字段变了」，
+  载荷仍由订阅者从类型化来源读取，不是第二份存储事实。
 
-  `resume_required` 是**显式继续**的 typed 闸门，与自动恢复的 `pressure_paused` 严格区分：
+  `resume_required` 是**显式继续**的类型化闸门，与自动恢复的 `pressure_paused` 严格区分：
   短暂压力（队列/字节预算）在安全间隙自动等待并自动恢复，不改写执行阶段以外的事实；保存
   真正失败（`queueFull`/`writeFailed`/`writerUnavailable`/`noProgress`/`checkpointFailed`/
   `blobFailed`）会把 core 的准入闩住并把 `resume_required` 报为 `true`，新的模型与工具工作在
   下一次准入前停止，已有在途结果在预留预算内收束，预算耗尽则取消该操作并保留已产出内容。
-  截断（在途输出超出可靠预留）本身就是一条 typed 故障：工具预览被拒当刻、以及模型流按预留
+  截断（在途输出超出可靠预留）本身就是一条类型化故障：工具预览被拒当刻、以及模型流按预留
   拒绝增量当刻就发布，不等调用返回——慢收束的工具不会把故障和准入拦截藏到 commit 之后；
-  发布者是该 Thread 的唯一 owner，不新增第二份存储事实。预留额度**按操作归属**：该次调用自己产出
+  发布者是该 Thread 的唯一所有者，不新增第二份存储事实。预留额度**按操作归属**：该次调用自己产出
   的事实（含任务转 `running`、取消请求、attempt 进入 `running` 等中间事实）在入队时接过这份预留
   （事实之后计自己这一份，调用结束时只归还未被覆盖的余量），所以同一份输出只计一次、正常调用的
   次数不会累积泄漏进程预算，进程预算被并行预留占满时结果也仍能交接。没有归属的事实（受理的输入、
@@ -880,152 +349,71 @@ live 样本；若不成立，则完整采用 canonical 摘要的最近已确认�
 
   1. `retryThreadHistory(thread_id, fault_generation)`：按代数重试保存并等到该 Thread 的
      checkpoint/history durable fence 确认。它只把积压事实写下去，**不**恢复执行。
-  2. `resumeThreadHistory(thread_id, fault_generation)`：把调用方核验过的代数交给驻留 owner，
-     owner 重新读取后端 typed 报告，只有在代数匹配、故障已消失且每个已发布批次都已上交时才
-     解除闩并把执行阶段置回 `running`。owner 在故障首次被观测时就从自己已发布的事实上固定这次恢复
+  2. `resumeThreadHistory(thread_id, fault_generation)`：把调用方核验过的代数交给驻留所有者，
+     所有者重新读取后端类型化报告，只有在代数匹配、故障已消失且每个已发布批次都已上交时才
+     解除闩并把执行阶段置回 `running`。所有者在故障首次被观测时就从自己已发布的事实上固定这次恢复
      要到达的 durable fence（已上交的最新提交与存储尚未接管的队首批次中的较大者），并核验该 fence
      真的 durable——后端只是接受了批次、或只是不再上报错误都不算恢复。代数过期
      （`ThreadError::StaleStorageRecovery`）、后端仍在上报故障、仍有未上交批次、仍有压力或 fence
-     尚未 durable（`ThreadError::StorageRecoveryPending`，typed 拒绝而非无界等待）都会被拒绝。
-     显式继续走 owner 的**有界 mailbox**：暂停中的 Turn 停在存储安全间隙、只服务 mailbox，因此
+     尚未 durable（`ThreadError::StorageRecoveryPending`，类型化拒绝而非无界等待）都会被拒绝。
+     显式继续走所有者的**有界 mailbox**：暂停中的 Turn 停在存储安全间隙、只服务 mailbox，因此
      在 Turn 仍在运行时这条命令同样可达，不会因为外层命令队列要等 Turn 结束而自我死锁。
 
   重试成功不够，核验通过后也必须由用户显式继续：系统不会在重试成功后偷偷续执行。不驻留的
-  Thread 没有活跃 owner，也就没有活跃的准入闩，`resumeThreadHistory` 返回成功但不激活任何
+  Thread 没有活跃所有者，也就没有活跃的准入闩，`resumeThreadHistory` 返回成功但不激活任何
   Thread；重新激活的 Thread 不继承旧闩。失败后 `pressure_paused` 仍有压力时 `resume` 会被拒绝，
   界面保持暂停态直到压力消散后再次继续。
 
   `ThreadStorageState.canResume` 是这条恢复链的就绪事实，而不是界面推断：它要求闩仍然 owed、
   没有仍在报告的硬故障、每个已发布批次都已上交、没有字节阈值挡住，且本次故障代数固定的恢复
   fence 已 durable；后端命名了故障代数时，还要求**该后端自己核验**的恢复代次正是当前代数。
-  它只有**一个**计算点：core 的存储 owner 用上述 typed 事实算出 `state.persistence.resume_ready`，
+  它只有**一个**计算点：core 的存储所有者用上述类型化事实算出 `state.persistence.resume_ready`，
   投影直接采用它，绝不与 writer 自己的 `persistence.resume_ready` 做 OR——否则旧代次的 writer
-  恢复会在 core 仍有新故障时代替 owner 点亮继续入口。writer 的 typed 报告只作为 `StoragePressure`
-  输入（`durable_sequence`、`fault`/`fault_generation`、`recovered_generation`）进入 owner 的同代次
-  核验，不是并列的第二事实源。任何输入变化都立即触达 owner：暂停中的 Turn 在安全间隙读同一条
-  后端 watch，没有运行中 Turn 的空闲 owner 也把同一条 watch 作为独立唤醒源，重算并发布就绪性，
+  恢复会在 core 仍有新故障时代替所有者点亮继续入口。writer 的类型化报告只作为 `StoragePressure`
+  输入（`durable_sequence`、`fault`/`fault_generation`、`recovered_generation`）进入所有者的同代次
+  核验，不是并列的第二事实源。任何输入变化都立即触达所有者：暂停中的 Turn 在安全间隙读同一条
+  后端 watch，没有运行中 Turn 的空闲所有者也把同一条 watch 作为独立唤醒源，重算并发布就绪性，
   因此保存重试让 fence 落地时界面无需任何其它帧就能看到继续入口变为可用；`resume` 本身仍重查全部
   条件，`canResume` 只决定是否提供入口，绝不替代守卫。
 
-状态的发布者与内容的发布者是同一个人：该 Thread 的观察任务。没有 GUI 订阅时它照常消费与发布，
-订阅只转发它广播的帧。
+状态的发布者与内容的发布者是同一个人：该 Thread 的观察任务。没有 GUI 订阅时它照常消费与发布，订阅只转发它广播的帧。
 
-存储状态同样只由这一处推导：投影 owner 直接监听保存协调器的 typed status watch（故障类别、
-代数、accepted/durable 水位）与该 Thread 自己的 owner 快照（执行阶段、压力闩、`resume_required`、
-诊断文本），派生出唯一的 `ThreadStorageState` 并通过该 Thread feed 的独立 `watch` 发布。协调器
-的 watch 是观察任务 select 里的一等唤醒源，所以"保存失败但没有任何内容帧"也会被立即发布，
-而不是等某个不相关提交顺带到达。订阅者只镜像这个 `watch` 的值并在变化时交付 `StorageChanged`，
-不再自己从协调器快照与 owner 快照拼接第二份存储状态——存储状态只有一个计算点。慢 GUI 不进入
-任何门控：投影 owner 在无订阅时照常发布，writer 的保留释放也不等订阅者。
+存储状态同样只由这一处推导：投影所有者直接监听保存协调器的类型化 status watch（故障类别、代数、accepted/durable 水位）与该 Thread 自己的所有者快照（执行阶段、压力闩、`resume_required`、诊断文本），派生出唯一的 `ThreadStorageState` 并通过该 Thread 事件流的独立 `watch` 发布。协调器的 watch 是观察任务 select 里的一等唤醒源，所以"保存失败但没有任何内容帧"也会被立即发布，而不是等某个不相关提交顺带到达。订阅者只镜像这个 `watch` 的值并在变化时交付 `StorageChanged`，不再自己从协调器快照与所有者快照拼接第二份存储状态——存储状态只有一个计算点。慢 GUI 不进入任何门控：投影所有者在无订阅时照常发布，writer 的保留释放也不等订阅者。
 
 ## 18.9 顶栏工作区打开菜单
 
-会话顶栏 actions 区（与智能体切换器、费用 chip 同级）提供带图标与文字的「打开工作区」按钮，点击展开
-下拉菜单，并列提供「VS Code」「Zed」与「终端」。有当前会话及所属项目时显示入口，不以任一编辑器
-安装情况控制整个入口；各项独立探测可用性，不可用项禁用并说明原因。菜单项只显示应用图标与
-单行操作名称，不重复展示目标路径，也不为路径预留固定宽度；菜单按操作名称自然收紧。
-入口与菜单项提供可本地化 tooltip、读屏名称和打开目标路径说明；不可用原因通过菜单项的
-tooltip 与可访问性说明表达，不占据列表第二行。
+会话顶栏 actions 区（与智能体切换器、费用 chip 同级）提供带图标与文字的「打开工作区」按钮，点击展开下拉菜单，并列提供「VS Code」「Zed」与「终端」。有当前会话及所属项目时显示入口，不以任一编辑器安装情况控制整个入口；各项独立探测可用性，不可用项禁用并说明原因。菜单项只显示应用图标与单行操作名称，不重复展示目标路径，也不为路径预留固定宽度；菜单按操作名称自然收紧。入口与菜单项提供可本地化 tooltip、读屏名称和打开目标路径说明；不可用原因通过菜单项的tooltip 与可访问性说明表达，不占据列表第二行。
 
-会话顶栏保留所属项目名称作为副标题，其悬停提示显示所选根会话的 canonical
-`workspacePath`：普通会话显示项目目录，工作树会话显示实际工作树地址。不随子代理切换
-改用子代理路径，也不由 GUI 推导工作树布局。未选择会话时回退到所属项目路径；侧栏的
-项目路径仍表示项目根目录。
+会话顶栏保留所属项目名称作为副标题，其悬停提示显示所选根会话的权威`workspacePath`：普通会话显示项目目录，工作树会话显示实际工作树地址。不随子代理切换改用子代理路径，也不由 GUI 推导工作树布局。未选择会话时回退到所属项目路径；侧栏的项目路径仍表示项目根目录。
 
-三个入口的目标均由会话 canonical `workspacePath` 决定，不按 `workspace_mode` 分别取
-Project 路径或工作树路径，GUI 不推导工作树布局。菜单读取宿主的 VS Code、Zed 与终端应用图标，
-保留应用原色；Windows Terminal 使用注册的打包应用图标，不能使用执行别名的通用文件图标。
-图标缺失或解码失败时仍显示明确的文字和通用入口图标，不影响启动。GUI 负责目标选择与反馈，
-平台启动器负责可用性与启动。
+三个入口的目标均由会话权威 `workspacePath` 决定，不按 `workspace_mode` 分别取Project 路径或工作树路径，GUI 不推导工作树布局。菜单读取宿主的 VS Code、Zed 与终端应用图标，保留应用原色；Windows Terminal 使用注册的打包应用图标，不能使用执行别名的通用文件图标。图标缺失或解码失败时仍显示明确的文字和通用入口图标，不影响启动。GUI 负责目标选择与反馈，平台启动器负责可用性与启动。
 
-打开直接启动宿主解析出的 VS Code 可执行文件，通过 `--folder-uri` 传递一个文件夹 URI，
-不经过 shell 或 `vscode://` 外部链接处理器，避免触发外部应用打开路径确认。本地使用
-`file:` URI，远端使用 `vscode-remote://ssh-remote+<别名>/<远端路径>`；路径按 URI 规则
-百分号编码。Remote-SSH 的 URI 不携带端口与
-密钥，连接参数由 `~/.ssh/config` 的 Host 别名解析（见 [22](./22-ssh-remote.md)）。URI
-构建与协议白名单校验是纯函数；专用启动器仅接受上述两类文件夹 URI，作为独立参数传递，
-不接受任意命令。VS Code 自身的工作区信任、SSH 认证策略保持有效，不修改用户安全设置。
-启动失败以界面提示回报，不自动重试或回退外部链接。Windows 查询 `vscode` 协议关联，
-Linux 优先解析同一协议的 GIO 默认应用可执行文件，无关联时查找 PATH 中的 `code`；
-可用性与启动共用该解析入口。结果缓存于进程内 account，demo 与测试可覆写。
+打开直接启动宿主解析出的 VS Code 可执行文件，通过 `--folder-uri` 传递一个文件夹 URI，不经过 shell 或 `vscode://` 外部链接处理器，避免触发外部应用打开路径确认。本地使用`file:` URI，远端使用 `vscode-remote://ssh-remote+<别名>/<远端路径>`；路径按 URI 规则百分号编码。Remote-SSH 的 URI 不携带端口与密钥，连接参数由 `~/.ssh/config` 的 Host 别名解析（见 [22](./22-ssh-remote.md)）。URI构建与协议白名单校验是纯函数；专用启动器仅接受上述两类文件夹 URI，作为独立参数传递，不接受任意命令。VS Code 自身的工作区信任、SSH 认证策略保持有效，不修改用户安全设置。启动失败以界面提示回报，不自动重试或回退外部链接。Windows 查询 `vscode` 协议关联，Linux 优先解析同一协议的 GIO 默认应用可执行文件，无关联时查找 PATH 中的 `code`；可用性与启动共用该解析入口。结果缓存于进程内 account，demo 与测试可覆写。
 
-Zed 通过官方命令行程序直接打开目标，不经过 shell 或 `zed://` 外部链接处理器。本地目标以
-单个 canonical 目录参数传递；远端目标使用 `ssh://<Host 别名>/<远端路径>`，路径按 URI 规则
-百分号编码，连接参数继续由 `~/.ssh/config` 解析。Windows 从 PATH 解析 Zed 的独立命令行程序，
-不能把 `zed` 协议关联的图形主程序误作命令行程序；协议关联只用于读取品牌图标。Linux 依次
-查找 PATH 中的 `zed`、`zeditor`，品牌图标取自 `zed` 协议的 GIO 默认应用。探测与启动共用
-同一解析入口，参数按 argv 原样传递，失败明确反馈且不自动重试或切换目标。
+Zed 通过官方命令行程序直接打开目标，不经过 shell 或 `zed://` 外部链接处理器。本地目标以单个权威目录参数传递；远端目标使用 `ssh://<Host 别名>/<远端路径>`，路径按 URI 规则百分号编码，连接参数继续由 `~/.ssh/config` 解析。Windows 从 PATH 解析 Zed 的独立命令行程序，不能把 `zed` 协议关联的图形主程序误作命令行程序；协议关联只用于读取品牌图标。Linux 依次查找 PATH 中的 `zed`、`zeditor`，品牌图标取自 `zed` 协议的 GIO 默认应用。探测与启动共用同一解析入口，参数按 argv 原样传递，失败明确反馈且不自动重试或切换目标。
 
-Windows 终端使用 Windows Terminal（`wt.exe`），本地工作目录为会话工作区，不回退成独立
-cmd 或 PowerShell 窗口。Windows 入口探测接受 WindowsApps 执行别名，不要求将该别名
-解析为普通文件；执行别名由系统在启动时解析。Linux 优先使用 `xdg-terminal-exec`，其次
-使用系统配置的 `x-terminal-emulator`，遵循各自的工作目录与执行参数契约，不猜测其他已安装终端，不使用
-文件管理器代替终端；无可用默认终端入口时明确反馈不可用。
+Windows 终端使用 Windows Terminal（`wt.exe`），本地工作目录为会话工作区，不回退成独立cmd 或 PowerShell 窗口。Windows 入口探测接受 WindowsApps 执行别名，不要求将该别名解析为普通文件；执行别名由系统在启动时解析。Linux 优先使用 `xdg-terminal-exec`，其次使用系统配置的 `x-terminal-emulator`，遵循各自的工作目录与执行参数契约，不猜测其他已安装终端，不使用文件管理器代替终端；无可用默认终端入口时明确反馈不可用。
 
-远端项目在宿主终端中启动系统 OpenSSH，使用项目 Host 别名复用 `~/.ssh/config`，不复制
-连接参数或改变 known_hosts 与认证策略。外部 SSH 会话分配交互终端，安全切换至远端会话
-工作区后进入交互 shell；切换失败不得静默进入其他目录。本地启动以参数数组传递，不经
-本地 shell 拼接；远端目录切换必须正确引用空格、单引号及 shell 元字符，别名不得成为
-SSH 选项或任意命令。缺少别名、启动失败等错误给予对应提示，不自动重试或切换目标。
-这些用户主动启动的外部应用拥有独立生命周期，不随 Studio 退出终止，也不复用 helper
-非交互通道或改变其资源回收契约。
+远端项目在宿主终端中启动系统 OpenSSH，使用项目 Host 别名复用 `~/.ssh/config`，不复制连接参数或改变 known_hosts 与认证策略。外部 SSH 会话分配交互终端，安全切换至远端会话工作区后进入交互 shell；切换失败不得静默进入其他目录。本地启动以参数数组传递，不经本地 shell 拼接；远端目录切换必须正确引用空格、单引号及 shell 元字符，别名不得成为SSH 选项或任意命令。缺少别名、启动失败等错误给予对应提示，不自动重试或切换目标。这些用户主动启动的外部应用拥有独立生命周期，不随 Studio 退出终止，也不复用 helper非交互通道或改变其资源回收契约。
 
-## 18.10 Canonical freshness invariant
+## 18.10 权威状态新鲜度不变量
 
-每个用户可见字段都必须能沿唯一链路追溯：生产 owner → 事件/快照来源 → Bridge 唯一分发点
-→ Repository reducer → revision/watermark → 职责内 ViewModel／selector → Connector／View，以及
-失败、重连和退出时的局部重同步与清理。Widget 不得通过一次性 `read`、切页重建或轮询取得
-本应由订阅提供的事实，也不得直接读取 FRB、raw JSON、SQLite 或底层 stream（Dart 侧分层
-契约见 [25](./25-frontend-state.md) §25.7）。
+每个用户可见字段都必须能沿唯一链路追溯：生产所有者 → 事件/快照来源 → Bridge 唯一分发点→ 仓储归并器 → revision/watermark → 职责内视图模型／selector → 连接器／视图，以及失败、重连和退出时的局部重同步与清理。界面组件不得通过一次性 `read`、切页重建或轮询取得本应由订阅提供的事实，也不得直接读取 FRB、raw JSON、SQLite 或底层 stream（Dart 侧分层契约见 [25](./25-frontend-state.md) §25.7）。
 
-Settings、account usage、model performance、session costs、MCP、LSP、Skills、Profiles、
-persistence、updater 与 recovery 等独立职责继续使用各自 typed topic/lease；无关领域不得进入
-彼此缓冲。订阅按“先登记接收者、再基线、后事件”建立，最后一个观察者释放时取消，重新进入
-先采用最新基线再接收事件。Thread 的 runtime、turn、interaction、workflow、activity 与
-storage 按 [07](./07-streaming.md) 分属 execution、metrics、context、configuration 与
-authoring feed；可靠增量只连接同域 `ownerEpoch/baseRevision/revision`，不假装跨域事务，
-也不在末端 selector 之前重传整份 runtime。gap、lagged、旧 generation 和关闭都必须走该领域既定的
-resync/last-valid/typed failure 语义，迟到帧不能覆盖新事实。
+Settings、account usage、model performance、session costs、MCP、LSP、Skills、Profiles、persistence、updater 与 recovery 等独立职责继续使用各自类型化主题/租约；无关领域不得进入彼此缓冲。订阅按“先登记接收者、再基线、后事件”建立，最后一个观察者释放时取消，重新进入先采用最新基线再接收事件。Thread 的运行时、turn、interaction、workflow、activity 与storage 按 [07](./07-streaming.md) 分属 execution、metrics、context、configuration 与authoring 事件流；可靠增量只连接同域 `ownerEpoch/baseRevision/revision`，不假装跨域事务，也不在末端 selector 之前重传整份运行时。gap、lagged、旧 generation 和关闭都必须走该领域既定的重同步/最近有效值/类型化 failure 语义，迟到帧不能覆盖新事实。
 
-违背该不变量的典型形态是"数据看起来需要一次路由往返才新鲜"：把导航、页面重建或浮层开关
-当作刷新条件，等于承认某个字段的事实源缺了一条事件或响应路径。修正必须落在那条路径上，
-不得用页面级刷新、扩展订阅生命周期或重读整棵状态来掩盖。
+违背该不变量的典型形态是"数据看起来需要一次路由往返才新鲜"：把导航、页面重建或浮层开关当作刷新条件，等于承认某个字段的事实源缺了一条事件或响应路径。修正必须落在那条路径上，不得用页面级刷新、扩展订阅生命周期或重读整棵状态来掩盖。
 
-## 18.11 Settings 与 Model Catalog 的独立时钟
+## 18.11 设置与模型目录的独立时钟
 
-Settings 配置事实与模型目录观察是两个资源，分别使用 `settingsRevision` 与
-`modelCatalogRevision`。Bridge 的直接响应会同时返回两个资源，但 topic 事件分别只携带
-对应资源；消费者必须分别比较：配置水位前进时只替换配置字段，目录水位前进时只替换 account
-的模型与目录状态。同一水位幂等丢弃，较低水位不得覆盖较新事实。direct response、topic
-frame 和 baseline 进入 Configuration／ModelCatalog Repository 各自的唯一 merge path，调用方不得按到达顺序整体替换
-（Dart 侧分层与所有权见 [25](./25-frontend-state.md)）。
+Settings 配置事实与模型目录观察是两个资源，分别使用 `settingsRevision` 与`modelCatalogRevision`。Bridge 的直接响应会同时返回两个资源，但主题事件分别只携带对应资源；消费者必须分别比较：配置水位前进时只替换配置字段，目录水位前进时只替换 account的模型与目录状态。同一水位幂等丢弃，较低水位不得覆盖较新事实。direct response、主题frame 和基线进入 Configuration／ModelCatalog 仓储各自的唯一 merge path，调用方不得按到达顺序整体替换（Dart 侧分层与所有权见 [25](./25-frontend-state.md)）。
 
-静态账号模板目录是启动阶段加载的独立事实，只由账号模板领域能力持有并与运行时
-配置快照组合显示。最小 bootstrap 不携带该目录；其它快照转换不得以空目录
-覆盖已加载目录，目录加载失败也不得静默降级为可用的空目录。账号 Logo、template
-能力和目录模型均通过该唯一目录投影进入 UI。
+静态账号模板目录是启动阶段加载的独立事实，只由账号模板领域能力持有并与运行时配置快照组合显示。最小启动装配不携带该目录；其它快照转换不得以空目录覆盖已加载目录，目录加载失败也不得静默降级为可用的空目录。账号 Logo、template能力和目录模型均通过该唯一目录投影进入 UI。
 
-Flutter 的新会话草稿、Thread route 和 Settings canonical state 是三种不同事实，所有权与
-组合显示规则遵循 [25](./25-frontend-state.md) §25.2/§25.5/§25.6：草稿由逻辑草稿服务
-持有，canonical 永不覆盖；配置写入由 settings 操作 lane 串行化并以响应 canonical
-收敛；页面离开只释放观察者租约，不取消在途命令，也不存在返回前的等待或刷新步骤。
+Flutter 的新会话草稿、Thread route 和 Settings 权威 state 是三种不同事实，所有权与组合显示规则遵循 [25](./25-frontend-state.md) §25.2/§25.5/§25.6：草稿由逻辑草稿服务持有，权威永不覆盖；配置写入由 settings 操作 lane 串行化并以响应权威收敛；页面离开只释放观察者租约，不取消在途命令，也不存在返回前的等待或刷新步骤。
 
-## 18.11.1 Thread 身份的单一来源
+### 18.11.1 会话身份的单一来源
 
-Thread 身份事实（mode、title、status、workspace）的显示值由目录 owner 交付，按目录的
-epoch/revision 合并。会话状态流快照也携带 Thread 定位信息，但属于另一个版本域，不能
-反写目录窗口；`updatedAt` 是业务时间，既不能排序这两个资源的更新，也不能证明同秒载荷
-的新旧。首快照即使晚于目录终态到达，也不能把 idle、最新 title 或 mode 覆盖为旧值。
-workspace、Connector 与 Driver 从当前目录行组合身份与会话轻状态；未取得目录行的独立
-会话镜像仅以自身快照定位，不据此插入分页目录。mode 变更必须由 Rust 提交目录增量并推进
-目录水位；不能以首快照合并、同水位基线或命令后的回读补偿缺失的目录事件。
+Thread 身份事实（mode、title、status、workspace）的显示值由目录所有者交付，按目录的epoch/revision 合并。会话状态流快照也携带 Thread 定位信息，但属于另一个版本域，不能反写目录窗口；`updatedAt` 是业务时间，既不能排序这两个资源的更新，也不能证明同秒载荷的新旧。首快照即使晚于目录终态到达，也不能把 idle、最新 title 或 mode 覆盖为旧值。workspace、连接器与 Driver 从当前目录行组合身份与会话轻状态；未取得目录行的独立会话镜像仅以自身快照定位，不据此插入分页目录。mode 变更必须由 Rust 提交目录增量并推进目录水位；不能以首快照合并、同水位基线或命令后的回读补偿缺失的目录事件。
 
-Thread route 变更的 canonical 只由 Thread configuration feed 交付：native 在提交
-model_route 扩展变更时 publish typed route 变化，Dart 侧按该域的
-`ownerEpoch/baseRevision/revision` 水位收敛。命令响应里的 route 结果只服务于调用方 CAS 与
-就地提示，**不写入 canonical 镜像**，也不再按 revision 与流事实
-比较后择一采纳——同一事实不允许存在第二条合并路径。响应同时携带的 settings 是另一个资源，
-按 §18.11 的双时钟合并；mode 变更则由 `ThreadDirectoryChanged` 增量交付（§18.2/§18.8），
-mode 默认 route 的改写属 Thread 事实。由此得到硬约束：命令成功后不得再重新读取聚合状态或 thread snapshot 来
-"补齐"显示值；缺帧必须修在帧的那条路径上（[25](./25-frontend-state.md) §25.5）。
-丢弃这份 canonical route 会让选择器在乐观投影清除后回落到旧值，表现为"改完又变回去"。
+Thread route 变更的权威只由 Thread configuration 事件流交付：原生在提交model_route 扩展变更时 publish 类型化 route 变化，Dart 侧按该域的`ownerEpoch/baseRevision/revision` 水位收敛。命令响应里的 route 结果只服务于调用方 CAS 与就地提示，**不写入权威镜像**，也不再按 revision 与流事实比较后择一采纳——同一事实不允许存在第二条合并路径。响应同时携带的 settings 是另一个资源，按 §18.11 的双时钟合并；mode 变更则由 `ThreadDirectoryChanged` 增量交付（§18.2/§18.8），mode 默认 route 的改写属 Thread 事实。由此得到硬约束：命令成功后不得再重新读取聚合状态或 thread 快照来"补齐"显示值；缺帧必须修在帧的那条路径上（[25](./25-frontend-state.md) §25.5）。丢弃这份权威 route 会让选择器在乐观投影清除后回落到旧值，表现为"改完又变回去"。

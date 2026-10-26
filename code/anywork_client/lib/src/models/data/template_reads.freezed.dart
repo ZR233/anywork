@@ -333,7 +333,7 @@ $TypedListRefCopyWith<$Res> get modelCatalogs {
 /// @nodoc
 mixin _$AccountTemplateRead {
 
- bool get pricingEnabled; ReadText get id; ReadText get displayName; ReadText? get description; ReadText get baseUrl; CredentialDescriptorRead get credential; ReadText get modelCatalogId; ReadText get protocol; ReadText get suggestedModelId; ReadText? get iconKey; AccountServiceCapabilitiesRead get serviceCapabilities;
+ ReadText get id; ReadText get displayName; ReadText? get description; ReadText get baseUrl; CredentialDescriptorRead get credential; ReadText get modelCatalogId; ReadText get protocol; ReadText get suggestedModelId; ReadText? get iconKey; AccountServiceCapabilitiesRead get serviceCapabilities;
 /// Create a copy of AccountTemplateRead
 /// with the given fields replaced by the non-null parameter values.
 @JsonKey(includeFromJson: false, includeToJson: false)
@@ -345,14 +345,14 @@ $AccountTemplateReadCopyWith<AccountTemplateRead> get copyWith => _$AccountTempl
 @override
 bool operator ==(Object other) {
   final _this = this as AccountTemplateRead;
-  return identical(this, other) || (other.runtimeType == runtimeType&&other is AccountTemplateRead&&(identical(other.pricingEnabled, _this.pricingEnabled) || other.pricingEnabled == _this.pricingEnabled)&&(identical(other.id, _this.id) || other.id == _this.id)&&(identical(other.displayName, _this.displayName) || other.displayName == _this.displayName)&&(identical(other.description, _this.description) || other.description == _this.description)&&(identical(other.baseUrl, _this.baseUrl) || other.baseUrl == _this.baseUrl)&&(identical(other.credential, _this.credential) || other.credential == _this.credential)&&(identical(other.modelCatalogId, _this.modelCatalogId) || other.modelCatalogId == _this.modelCatalogId)&&(identical(other.protocol, _this.protocol) || other.protocol == _this.protocol)&&(identical(other.suggestedModelId, _this.suggestedModelId) || other.suggestedModelId == _this.suggestedModelId)&&(identical(other.iconKey, _this.iconKey) || other.iconKey == _this.iconKey)&&(identical(other.serviceCapabilities, _this.serviceCapabilities) || other.serviceCapabilities == _this.serviceCapabilities));
+  return identical(this, other) || (other.runtimeType == runtimeType&&other is AccountTemplateRead&&(identical(other.id, _this.id) || other.id == _this.id)&&(identical(other.displayName, _this.displayName) || other.displayName == _this.displayName)&&(identical(other.description, _this.description) || other.description == _this.description)&&(identical(other.baseUrl, _this.baseUrl) || other.baseUrl == _this.baseUrl)&&(identical(other.credential, _this.credential) || other.credential == _this.credential)&&(identical(other.modelCatalogId, _this.modelCatalogId) || other.modelCatalogId == _this.modelCatalogId)&&(identical(other.protocol, _this.protocol) || other.protocol == _this.protocol)&&(identical(other.suggestedModelId, _this.suggestedModelId) || other.suggestedModelId == _this.suggestedModelId)&&(identical(other.iconKey, _this.iconKey) || other.iconKey == _this.iconKey)&&(identical(other.serviceCapabilities, _this.serviceCapabilities) || other.serviceCapabilities == _this.serviceCapabilities));
 }
 
 
 @override
 int get hashCode {
   final _this = this as AccountTemplateRead;
-  return Object.hash(runtimeType,_this.pricingEnabled,_this.id,_this.displayName,_this.description,_this.baseUrl,_this.credential,_this.modelCatalogId,_this.protocol,_this.suggestedModelId,_this.iconKey,_this.serviceCapabilities);
+  return Object.hash(runtimeType,_this.id,_this.displayName,_this.description,_this.baseUrl,_this.credential,_this.modelCatalogId,_this.protocol,_this.suggestedModelId,_this.iconKey,_this.serviceCapabilities);
 }
 
 
@@ -364,7 +364,7 @@ abstract mixin class $AccountTemplateReadCopyWith<$Res>  {
   factory $AccountTemplateReadCopyWith(AccountTemplateRead value, $Res Function(AccountTemplateRead) _then) = _$AccountTemplateReadCopyWithImpl;
 @useResult
 $Res call({
- bool pricingEnabled, ReadText id, ReadText displayName, ReadText? description, ReadText baseUrl, CredentialDescriptorRead credential, ReadText modelCatalogId, ReadText protocol, ReadText suggestedModelId, ReadText? iconKey, AccountServiceCapabilitiesRead serviceCapabilities
+ ReadText id, ReadText displayName, ReadText? description, ReadText baseUrl, CredentialDescriptorRead credential, ReadText modelCatalogId, ReadText protocol, ReadText suggestedModelId, ReadText? iconKey, AccountServiceCapabilitiesRead serviceCapabilities
 });
 
 
@@ -381,10 +381,9 @@ class _$AccountTemplateReadCopyWithImpl<$Res>
 
 /// Create a copy of AccountTemplateRead
 /// with the given fields replaced by the non-null parameter values.
-@pragma('vm:prefer-inline') @override $Res call({Object? pricingEnabled = null,Object? id = null,Object? displayName = null,Object? description = freezed,Object? baseUrl = null,Object? credential = null,Object? modelCatalogId = null,Object? protocol = null,Object? suggestedModelId = null,Object? iconKey = freezed,Object? serviceCapabilities = null,}) {
+@pragma('vm:prefer-inline') @override $Res call({Object? id = null,Object? displayName = null,Object? description = freezed,Object? baseUrl = null,Object? credential = null,Object? modelCatalogId = null,Object? protocol = null,Object? suggestedModelId = null,Object? iconKey = freezed,Object? serviceCapabilities = null,}) {
   return _then(AccountTemplateRead(
-pricingEnabled: null == pricingEnabled ? _self.pricingEnabled : pricingEnabled // ignore: cast_nullable_to_non_nullable
-as bool,id: null == id ? _self.id : id // ignore: cast_nullable_to_non_nullable
+id: null == id ? _self.id : id // ignore: cast_nullable_to_non_nullable
 as ReadText,displayName: null == displayName ? _self.displayName : displayName // ignore: cast_nullable_to_non_nullable
 as ReadText,description: freezed == description ? _self.description : description // ignore: cast_nullable_to_non_nullable
 as ReadText?,baseUrl: null == baseUrl ? _self.baseUrl : baseUrl // ignore: cast_nullable_to_non_nullable
@@ -575,10 +574,10 @@ return $default(_that);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult maybeWhen<TResult extends Object?>(TResult Function( bool pricingEnabled,  ReadText id,  ReadText displayName,  ReadText? description,  ReadText baseUrl,  CredentialDescriptorRead credential,  ReadText modelCatalogId,  ReadText protocol,  ReadText suggestedModelId,  ReadText? iconKey,  AccountServiceCapabilitiesRead serviceCapabilities)?  $default,{required TResult orElse(),}) {final _that = this;
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>(TResult Function( ReadText id,  ReadText displayName,  ReadText? description,  ReadText baseUrl,  CredentialDescriptorRead credential,  ReadText modelCatalogId,  ReadText protocol,  ReadText suggestedModelId,  ReadText? iconKey,  AccountServiceCapabilitiesRead serviceCapabilities)?  $default,{required TResult orElse(),}) {final _that = this;
 switch (_that) {
 case _AccountTemplateRead() when $default != null:
-return $default(_that.pricingEnabled,_that.id,_that.displayName,_that.description,_that.baseUrl,_that.credential,_that.modelCatalogId,_that.protocol,_that.suggestedModelId,_that.iconKey,_that.serviceCapabilities);case _:
+return $default(_that.id,_that.displayName,_that.description,_that.baseUrl,_that.credential,_that.modelCatalogId,_that.protocol,_that.suggestedModelId,_that.iconKey,_that.serviceCapabilities);case _:
   return orElse();
 
 }
@@ -596,10 +595,10 @@ return $default(_that.pricingEnabled,_that.id,_that.displayName,_that.descriptio
 /// }
 /// ```
 
-@optionalTypeArgs TResult when<TResult extends Object?>(TResult Function( bool pricingEnabled,  ReadText id,  ReadText displayName,  ReadText? description,  ReadText baseUrl,  CredentialDescriptorRead credential,  ReadText modelCatalogId,  ReadText protocol,  ReadText suggestedModelId,  ReadText? iconKey,  AccountServiceCapabilitiesRead serviceCapabilities)  $default,) {final _that = this;
+@optionalTypeArgs TResult when<TResult extends Object?>(TResult Function( ReadText id,  ReadText displayName,  ReadText? description,  ReadText baseUrl,  CredentialDescriptorRead credential,  ReadText modelCatalogId,  ReadText protocol,  ReadText suggestedModelId,  ReadText? iconKey,  AccountServiceCapabilitiesRead serviceCapabilities)  $default,) {final _that = this;
 switch (_that) {
 case _AccountTemplateRead():
-return $default(_that.pricingEnabled,_that.id,_that.displayName,_that.description,_that.baseUrl,_that.credential,_that.modelCatalogId,_that.protocol,_that.suggestedModelId,_that.iconKey,_that.serviceCapabilities);case _:
+return $default(_that.id,_that.displayName,_that.description,_that.baseUrl,_that.credential,_that.modelCatalogId,_that.protocol,_that.suggestedModelId,_that.iconKey,_that.serviceCapabilities);case _:
   throw StateError('Unexpected subclass');
 
 }
@@ -616,10 +615,10 @@ return $default(_that.pricingEnabled,_that.id,_that.displayName,_that.descriptio
 /// }
 /// ```
 
-@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>(TResult? Function( bool pricingEnabled,  ReadText id,  ReadText displayName,  ReadText? description,  ReadText baseUrl,  CredentialDescriptorRead credential,  ReadText modelCatalogId,  ReadText protocol,  ReadText suggestedModelId,  ReadText? iconKey,  AccountServiceCapabilitiesRead serviceCapabilities)?  $default,) {final _that = this;
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>(TResult? Function( ReadText id,  ReadText displayName,  ReadText? description,  ReadText baseUrl,  CredentialDescriptorRead credential,  ReadText modelCatalogId,  ReadText protocol,  ReadText suggestedModelId,  ReadText? iconKey,  AccountServiceCapabilitiesRead serviceCapabilities)?  $default,) {final _that = this;
 switch (_that) {
 case _AccountTemplateRead() when $default != null:
-return $default(_that.pricingEnabled,_that.id,_that.displayName,_that.description,_that.baseUrl,_that.credential,_that.modelCatalogId,_that.protocol,_that.suggestedModelId,_that.iconKey,_that.serviceCapabilities);case _:
+return $default(_that.id,_that.displayName,_that.description,_that.baseUrl,_that.credential,_that.modelCatalogId,_that.protocol,_that.suggestedModelId,_that.iconKey,_that.serviceCapabilities);case _:
   return null;
 
 }
@@ -631,10 +630,9 @@ return $default(_that.pricingEnabled,_that.id,_that.displayName,_that.descriptio
 
 
 class _AccountTemplateRead implements AccountTemplateRead {
-  const _AccountTemplateRead({required this.pricingEnabled, required this.id, required this.displayName, required this.description, required this.baseUrl, required this.credential, required this.modelCatalogId, required this.protocol, required this.suggestedModelId, required this.iconKey, required this.serviceCapabilities});
+  const _AccountTemplateRead({required this.id, required this.displayName, required this.description, required this.baseUrl, required this.credential, required this.modelCatalogId, required this.protocol, required this.suggestedModelId, required this.iconKey, required this.serviceCapabilities});
 
 
-@override final  bool pricingEnabled;
 @override final  ReadText id;
 @override final  ReadText displayName;
 @override final  ReadText? description;
@@ -656,13 +654,13 @@ _$AccountTemplateReadCopyWith<_AccountTemplateRead> get copyWith => __$AccountTe
 
 @override
 bool operator ==(Object other) {
-    return identical(this, other) || (other.runtimeType == runtimeType&&other is _AccountTemplateRead&&(identical(other.pricingEnabled, pricingEnabled) || other.pricingEnabled == pricingEnabled)&&(identical(other.id, id) || other.id == id)&&(identical(other.displayName, displayName) || other.displayName == displayName)&&(identical(other.description, description) || other.description == description)&&(identical(other.baseUrl, baseUrl) || other.baseUrl == baseUrl)&&(identical(other.credential, credential) || other.credential == credential)&&(identical(other.modelCatalogId, modelCatalogId) || other.modelCatalogId == modelCatalogId)&&(identical(other.protocol, protocol) || other.protocol == protocol)&&(identical(other.suggestedModelId, suggestedModelId) || other.suggestedModelId == suggestedModelId)&&(identical(other.iconKey, iconKey) || other.iconKey == iconKey)&&(identical(other.serviceCapabilities, serviceCapabilities) || other.serviceCapabilities == serviceCapabilities));
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is _AccountTemplateRead&&(identical(other.id, id) || other.id == id)&&(identical(other.displayName, displayName) || other.displayName == displayName)&&(identical(other.description, description) || other.description == description)&&(identical(other.baseUrl, baseUrl) || other.baseUrl == baseUrl)&&(identical(other.credential, credential) || other.credential == credential)&&(identical(other.modelCatalogId, modelCatalogId) || other.modelCatalogId == modelCatalogId)&&(identical(other.protocol, protocol) || other.protocol == protocol)&&(identical(other.suggestedModelId, suggestedModelId) || other.suggestedModelId == suggestedModelId)&&(identical(other.iconKey, iconKey) || other.iconKey == iconKey)&&(identical(other.serviceCapabilities, serviceCapabilities) || other.serviceCapabilities == serviceCapabilities));
 }
 
 
 @override
 int get hashCode {
-    return Object.hash(runtimeType,pricingEnabled,id,displayName,description,baseUrl,credential,modelCatalogId,protocol,suggestedModelId,iconKey,serviceCapabilities);
+    return Object.hash(runtimeType,id,displayName,description,baseUrl,credential,modelCatalogId,protocol,suggestedModelId,iconKey,serviceCapabilities);
 }
 
 
@@ -674,7 +672,7 @@ abstract mixin class _$AccountTemplateReadCopyWith<$Res> implements $AccountTemp
   factory _$AccountTemplateReadCopyWith(_AccountTemplateRead value, $Res Function(_AccountTemplateRead) _then) = __$AccountTemplateReadCopyWithImpl;
 @override @useResult
 $Res call({
- bool pricingEnabled, ReadText id, ReadText displayName, ReadText? description, ReadText baseUrl, CredentialDescriptorRead credential, ReadText modelCatalogId, ReadText protocol, ReadText suggestedModelId, ReadText? iconKey, AccountServiceCapabilitiesRead serviceCapabilities
+ ReadText id, ReadText displayName, ReadText? description, ReadText baseUrl, CredentialDescriptorRead credential, ReadText modelCatalogId, ReadText protocol, ReadText suggestedModelId, ReadText? iconKey, AccountServiceCapabilitiesRead serviceCapabilities
 });
 
 
@@ -691,10 +689,9 @@ class __$AccountTemplateReadCopyWithImpl<$Res>
 
 /// Create a copy of AccountTemplateRead
 /// with the given fields replaced by the non-null parameter values.
-@override @pragma('vm:prefer-inline') $Res call({Object? pricingEnabled = null,Object? id = null,Object? displayName = null,Object? description = freezed,Object? baseUrl = null,Object? credential = null,Object? modelCatalogId = null,Object? protocol = null,Object? suggestedModelId = null,Object? iconKey = freezed,Object? serviceCapabilities = null,}) {
+@override @pragma('vm:prefer-inline') $Res call({Object? id = null,Object? displayName = null,Object? description = freezed,Object? baseUrl = null,Object? credential = null,Object? modelCatalogId = null,Object? protocol = null,Object? suggestedModelId = null,Object? iconKey = freezed,Object? serviceCapabilities = null,}) {
   return _then(_AccountTemplateRead(
-pricingEnabled: null == pricingEnabled ? _self.pricingEnabled : pricingEnabled // ignore: cast_nullable_to_non_nullable
-as bool,id: null == id ? _self.id : id // ignore: cast_nullable_to_non_nullable
+id: null == id ? _self.id : id // ignore: cast_nullable_to_non_nullable
 as ReadText,displayName: null == displayName ? _self.displayName : displayName // ignore: cast_nullable_to_non_nullable
 as ReadText,description: freezed == description ? _self.description : description // ignore: cast_nullable_to_non_nullable
 as ReadText?,baseUrl: null == baseUrl ? _self.baseUrl : baseUrl // ignore: cast_nullable_to_non_nullable

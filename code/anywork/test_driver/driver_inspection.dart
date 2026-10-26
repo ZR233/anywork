@@ -9,6 +9,8 @@ import 'package:anywork/src/features/conversation/view_models/conversation_view_
 import 'package:anywork/src/features/conversation/view_models/plan_view_model.dart';
 import 'package:anywork/src/features/conversation/view_models/thread_status_view_model.dart';
 import 'package:anywork/src/features/settings/modes/view_models/mode_editor_view_model.dart';
+import 'package:anywork/src/features/settings/accounts/view_models/accounts_view_model.dart';
+import 'package:anywork/src/features/settings/accounts/state/accounts_state.dart';
 import 'package:anywork/src/features/settings/skills/view_models/skills_view_model.dart';
 import 'package:anywork/src/shared/driver_projection.dart';
 import 'package:anywork/src/shared/driver_bots_projection.dart';
@@ -16,11 +18,12 @@ import 'package:anywork/src/shared/driver_snapshot.dart';
 import 'package:anywork/src/shared/driver_snapshot_json.dart';
 import 'package:anywork/src/features/workspace/view_models/sidebar_view_model.dart';
 import 'package:anywork/src/features/workspace/view_models/workspace_view_model.dart';
-import 'package:anywork_client/account_usage.dart';
 import 'package:anywork_client/bots.dart';
+import 'package:anywork_client/configuration.dart';
 import 'package:anywork_client/drafts.dart';
 import 'package:anywork_client/models.dart';
 import 'package:anywork_client/resources.dart';
+import 'package:anywork_client/statistics.dart';
 import 'package:anywork_client/workspace.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -35,8 +38,42 @@ final class DriverInspection {
   int? _armedRemainder;
   Stopwatch? _sinceArmObservation;
 
+  /// 已挂载账号页的当前值里只取两个 domain 事实；未挂载时不实例化 owner。
+  ///
+  /// 读取已存在 VM 的当前值不是业务 demand；返回值不包含 feature 的呈现状态，
+  /// 因此 `shared` 投影只消费 `anywork_client` 领域值。
+  ///
+  /// 本次 refresh 失败的字段不输出：VM 会保留上一次成功的 last-good，但那是 UI 的
+  /// 展示兜底，不是 Driver 的 current 事实。两条读取各自独立，ACP 侧失败不会把模板
+  /// 一起置空。读取仍在进行时沿用“来源未变即仍有效”，由 `currentAcpAccounts` 的
+  /// 三键校验决定，这里不额外放行也不清空 UI 的 last-good。
+  ({AcpAccountDirectory? acpAccounts, AccountTemplatesValue? templates})
+  _accountsFacts() {
+    if (!container.exists(accountsViewModelProvider)) {
+      return (acpAccounts: null, templates: null);
+    }
+    final state = container.read(accountsViewModelProvider).asData?.value;
+    if (state == null) return (acpAccounts: null, templates: null);
+    return (
+      acpAccounts: state.readIssues.containsKey(AccountsReadField.acpAccounts)
+          ? null
+          : state.acpAccounts,
+      templates: state.readIssues.containsKey(AccountsReadField.templates)
+          ? null
+          : state.templates,
+    );
+  }
+
+  /// 只读取已装配 owner 的当前值；本方法不建立任何订阅或业务 demand。
+  ///
+  /// ACP 认证与安装事实随 [captureDriverSnapshot] 从 `graph.acpAuth` /
+  /// `graph.acpInstall` 的 canonical 镜像直接借用：`state.value` 是同步读取，
+  /// 因此 Driver 既不会 `observe()` 出一个租约，也不会用 `synchronize()` 把
+  /// 未加载的领域变成已加载，更不会启动检查、安装或取消。未加载就保持
+  /// `null`（JSON 里 `acpAuthLoaded=false`、`acpInstall.loaded=false`）。
   DriverSnapshot capture() {
     final selection = graph.workspace.state.value.selection;
+    final accountsFacts = _accountsFacts();
     final project = selection.projectId;
     final thread = selection.threadId;
     final start = project == null
@@ -76,6 +113,11 @@ final class DriverInspection {
         plan: plan != null && container.exists(plan)
             ? container.read(plan).asData?.value
             : null,
+        // ACP 账号目录与 Native 模板只由设置页自己的有界读取供出：exists() 不会
+        // 实例化 owner，因此未打开账号页时这里保持 null，而不是替它发起读取。
+        // 只把两个 domain 值交给 shared 投影，不把 feature 的 ViewState 交出去。
+        acpAccounts: accountsFacts.acpAccounts,
+        templates: accountsFacts.templates,
       ),
       bots: bots == null
           ? const DriverBotsUnknown('Application BotsRepository not injected')
@@ -411,23 +453,23 @@ final class DriverInspection {
   }
 
   Map<String, Object?> statistics() {
-    final summaries = graph.statistics.summaries.value;
-    final history = graph.statistics.history.value;
-    final summaryRows =
-        summaries.projection.sync.phase == ResourceSyncPhase.ready
-        ? currentDriverRows(
-            summaries.summaries,
-            summaries.projection.stamp?.origin,
-          )
-        : null;
-    final historyRows = history.projection.sync.phase == ResourceSyncPhase.ready
-        ? currentDriverRows(history.samples, history.projection.stamp?.origin)
-        : null;
+    final state = graph.statistics.state.value;
+    final snapshot = state.snapshot;
+    final summaryRows = snapshot?.summaries;
+    final historyRows = snapshot?.history;
     return {
-      'revision': summaries.projection.header?.revision,
-      'statisticsPending': summaries.projection.header?.statisticsPending,
-      'statisticsGap': summaries.projection.header?.statisticsGap,
-      'readFailed': summaries.projection.header?.readFailed,
+      'loaded': snapshot != null,
+      'syncPhase': state.sync.phase.name,
+      'syncError': state.sync.error == null
+          ? null
+          : {
+              'code': state.sync.error!.code.name,
+              'retryable': state.sync.error!.retryable,
+            },
+      'revision': snapshot?.revision,
+      'statisticsPending': snapshot?.statisticsPending,
+      'statisticsGap': snapshot?.statisticsGap,
+      'readFailed': snapshot?.readFailed,
       'summaries': summaryRows == null
           ? null
           : [

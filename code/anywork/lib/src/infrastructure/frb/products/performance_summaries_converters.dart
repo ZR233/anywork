@@ -1,4 +1,4 @@
-import 'package:anywork_client/account_usage_ports.dart';
+import 'package:anywork_client/statistics_ports.dart';
 
 import '../../../rust/api/studio/products/feed/performance_summaries.dart'
     as native;

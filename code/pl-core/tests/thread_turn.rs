@@ -2,15 +2,18 @@ mod support;
 #[path = "support/tool.rs"]
 mod tool_support;
 
-use std::sync::{
-    Arc, Mutex,
-    atomic::{AtomicBool, AtomicU64, Ordering},
+use std::{
+    collections::BTreeSet,
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 
 use pl_core::context::{ContextContent, ContextSource, OpaquePayload};
 use pl_core::model::DynModelSession;
 use pl_core::thread::{
-    ModelStepLimit, ThreadError, ThreadHandle, TurnOutcome, TurnState,
+    ModelStepLimit, ThreadError, ThreadHandle, ThreadLifecycle, TurnOutcome, TurnState,
     cold::{
         ColdStore, ColdStoreError, ColdStoreHandle, StorageFaultKind, StoragePressure, ThreadWrite,
     },
@@ -286,20 +289,68 @@ async fn tool_receives_the_committed_start_fact_as_its_history_fence() {
 struct FenceStore {
     entered: watch::Sender<Option<u64>>,
     released: watch::Sender<bool>,
-    admitted: Arc<Mutex<Vec<u64>>>,
-    durable: Arc<AtomicU64>,
+    state: Arc<Mutex<FenceStoreState>>,
     fail_once: Arc<AtomicBool>,
+}
+
+#[derive(Debug, Default)]
+struct FenceStoreState {
+    admitted: Vec<ThreadWrite>,
+    durable: u64,
+    output_reservations: BTreeSet<String>,
+    /// One rebuildable encoded body kept hot after its write is durable.
+    resident: Option<OpaquePayload>,
 }
 
 impl ColdStore for FenceStore {
     fn admit(&self, _thread_id: &str, write: ThreadWrite) -> Result<(), ColdStoreError> {
-        self.admitted.lock().unwrap().push(write.effect.sequence);
+        self.state.lock().unwrap().admitted.push(write);
         Ok(())
     }
 
+    fn reserve_operation_output(
+        &self,
+        _thread_id: &str,
+        operation_id: &str,
+        max_bytes: u64,
+    ) -> Result<u64, ColdStoreError> {
+        self.state
+            .lock()
+            .unwrap()
+            .output_reservations
+            .insert(operation_id.to_owned());
+        Ok(max_bytes)
+    }
+
+    fn release_operation_output(&self, _thread_id: &str, operation_id: &str) {
+        self.state
+            .lock()
+            .unwrap()
+            .output_reservations
+            .remove(operation_id);
+    }
+
     fn pressure(&self, _thread_id: &str) -> StoragePressure {
+        let state = self.state.lock().unwrap();
+        let pending = state
+            .admitted
+            .iter()
+            .filter(|write| write.effect.sequence > state.durable)
+            .collect::<Vec<_>>();
+        let queued_bytes = pending.iter().fold(0_u64, |total, write| {
+            total
+                .saturating_add(write.effect.encode().unwrap().content().len() as u64)
+                .saturating_add(serde_json::to_vec(&write.checkpoint).unwrap().len() as u64)
+        });
+        let resident_bytes = state
+            .resident
+            .as_ref()
+            .map_or(0, |payload| payload.content().len() as u64);
         StoragePressure {
-            durable_sequence: self.durable.load(Ordering::SeqCst),
+            has_uncommitted_work: !pending.is_empty() || !state.output_reservations.is_empty(),
+            thread_bytes: queued_bytes.saturating_add(resident_bytes),
+            store_bytes: queued_bytes,
+            durable_sequence: state.durable,
             ..Default::default()
         }
     }
@@ -310,13 +361,20 @@ impl ColdStore for FenceStore {
         while !*released.borrow_and_update() {
             released.changed().await.unwrap();
         }
-        assert!(self.admitted.lock().unwrap().contains(&sequence));
+        let mut state = self.state.lock().unwrap();
+        let write = state
+            .admitted
+            .iter()
+            .find(|write| write.effect.sequence == sequence)
+            .expect("only admitted facts can become durable");
         if self.fail_once.swap(false, Ordering::SeqCst) {
             return Err(ColdStoreError {
                 source: Box::new(std::io::Error::other("fence write failed")),
             });
         }
-        self.durable.fetch_max(sequence, Ordering::SeqCst);
+        let resident = write.effect.encode().unwrap();
+        state.resident = Some(resident);
+        state.durable = state.durable.max(sequence);
         Ok(())
     }
 }
@@ -345,12 +403,11 @@ async fn attached_store_must_flush_the_start_fact_before_a_tool_runs() {
     let store = FenceStore {
         entered,
         released: released.clone(),
-        admitted: Arc::new(Mutex::new(Vec::new())),
-        durable: Arc::new(AtomicU64::new(0)),
+        state: Arc::new(Mutex::new(FenceStoreState::default())),
         fail_once: Arc::new(AtomicBool::new(false)),
     };
     thread
-        .attach_storage(ColdStoreHandle::new(store))
+        .attach_storage(ColdStoreHandle::new(store.clone()))
         .await
         .unwrap();
     thread
@@ -380,13 +437,78 @@ async fn attached_store_must_flush_the_start_fact_before_a_tool_runs() {
     assert!(!executed.load(Ordering::SeqCst));
     assert!(!runner.is_finished());
     released.send_replace(true);
-    tokio::time::timeout(std::time::Duration::from_secs(5), runner)
+    let completed = tokio::time::timeout(std::time::Duration::from_secs(5), runner)
         .await
         .unwrap()
         .unwrap()
         .unwrap();
     assert!(executed.load(Ordering::SeqCst));
-    thread.close().await.unwrap();
+    assert_eq!(completed.outcome, TurnOutcome::Completed);
+    thread.flush().await.unwrap();
+    let saved = thread.snapshot();
+    assert_eq!(
+        store.pressure("durable-fence").durable_sequence,
+        saved.commit_sequence
+    );
+
+    // Evict just the rebuildable cache, then hold a real unused output reservation. Its zero byte
+    // weight must not make the backend's unfinished responsibility look like an idle Thread.
+    let resident = store.state.lock().unwrap().resident.take().unwrap();
+    store
+        .reserve_operation_output("durable-fence", "empty-output", 1024)
+        .unwrap();
+    let pressure = store.pressure("durable-fence");
+    assert!(pressure.has_uncommitted_work);
+    assert_eq!((pressure.thread_bytes, pressure.store_bytes), (0, 0));
+    assert!(
+        !tokio::time::timeout(std::time::Duration::from_secs(5), thread.close_if_idle())
+            .await
+            .unwrap()
+            .unwrap()
+    );
+    assert_eq!(thread.snapshot().lifecycle, ThreadLifecycle::Open);
+
+    store.release_operation_output("durable-fence", "empty-output");
+    store.state.lock().unwrap().resident = Some(resident);
+    let pressure = store.pressure("durable-fence");
+    assert!(!pressure.has_uncommitted_work);
+    assert!(pressure.thread_bytes > 0 && pressure.thread_bytes < 32 * 1024 * 1024);
+    assert_eq!(pressure.store_bytes, 0);
+    // The same lifecycle now has only already-durable resident bytes. Closing must really finish,
+    // including the final checkpoint; it cannot merely answer `true` or discard the saved Turn.
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_secs(5), thread.close_if_idle())
+            .await
+            .unwrap()
+            .unwrap()
+    );
+    assert_eq!(thread.snapshot().lifecycle, ThreadLifecycle::Closed);
+    assert_eq!(thread.snapshot().context, saved.context);
+    let state = store.state.lock().unwrap();
+    assert!(state.admitted.iter().any(|write| {
+        write.effect.turn.as_ref().is_some_and(|turn| {
+            turn.turn_id == "fenced-turn"
+                && turn.state == TurnState::Finished(TurnOutcome::Completed)
+        })
+    }));
+    assert!(state.admitted.iter().any(|write| {
+        write
+            .effect
+            .deliveries
+            .iter()
+            .any(|delivery| delivery.output.payload().content() == "  raw fenced\n")
+    }));
+    assert_eq!(
+        state.admitted.last().unwrap().checkpoint.state.lifecycle,
+        ThreadLifecycle::Closed
+    );
+    assert_eq!(
+        state.admitted.last().unwrap().checkpoint.state.context,
+        saved.context
+    );
+    assert_eq!(state.durable, thread.snapshot().commit_sequence);
+    drop(state);
+    assert!(!store.pressure("durable-fence").has_uncommitted_work);
 }
 
 #[tokio::test]
@@ -399,8 +521,7 @@ async fn failed_tool_fence_blocks_the_executor_and_latches_storage_fault() {
     let store = FenceStore {
         entered,
         released,
-        admitted: Arc::new(Mutex::new(Vec::new())),
-        durable: Arc::new(AtomicU64::new(0)),
+        state: Arc::new(Mutex::new(FenceStoreState::default())),
         fail_once: Arc::new(AtomicBool::new(true)),
     };
     thread

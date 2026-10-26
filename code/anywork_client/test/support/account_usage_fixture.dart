@@ -449,7 +449,6 @@ final class _ConfigurationPin extends _NativePin
         name: ReadText.inline(text: '$id version $revision'),
         baseUrl: const ReadText.inline(text: 'https://usage.invalid'),
         hasBearerToken: false,
-        pricingEnabled: false,
         usageQueryRevision: accountRevisions[id]!,
         catalogId: null,
         bearerTokenEnv: null,

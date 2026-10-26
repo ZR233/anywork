@@ -42,11 +42,7 @@ pub(crate) fn preparer(
     mode: OpenAiCompactionMode,
     modes: crate::mode::ThreadModeManager,
 ) -> Result<Option<ContextPreparer>, pl_model::PureError> {
-    let instruction_binding = InstructionBinding {
-        route_identity: model.route_identity(),
-        append_snapshots: route.endpoint.instruction_update_strategy(&route.model)
-            == pl_model::protocol::InstructionUpdateStrategy::AppendFullSnapshot,
-    };
+    let instruction_binding = instruction_binding(route, &model);
     Ok(Some(ContextPreparer::new(StudioCompaction {
         model,
         modes,
@@ -364,9 +360,37 @@ struct InstructionRepair {
 }
 #[derive(Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct InstructionBinding {
-    route_identity: String,
-    append_snapshots: bool,
+pub(crate) struct InstructionBinding {
+    pub(crate) route_identity: String,
+    pub(crate) append_snapshots: bool,
+}
+
+pub(crate) fn instruction_binding(
+    route: &ResolvedModelRoute,
+    model: &ThreadModel,
+) -> InstructionBinding {
+    InstructionBinding {
+        route_identity: model.route_identity(),
+        append_snapshots: route.endpoint.instruction_update_strategy(&route.model)
+            == pl_model::protocol::InstructionUpdateStrategy::AppendFullSnapshot,
+    }
+}
+
+pub(crate) fn decode_instruction_binding(
+    record: &ExtensionRecord,
+) -> std::io::Result<InstructionBinding> {
+    if record.payload.format() != "pl.studio.instruction-binding"
+        || record.payload.version() != 1
+        || record.revision == 0
+    {
+        return Err(std::io::Error::other("invalid instruction route binding"));
+    }
+    let binding: InstructionBinding =
+        serde_json::from_str(record.payload.content()).map_err(std::io::Error::other)?;
+    if binding.route_identity.is_empty() {
+        return Err(std::io::Error::other("empty instruction route binding"));
+    }
+    Ok(binding)
 }
 fn restore_current_instructions(
     request: &mut ContextPreparationRequest,
@@ -379,61 +403,27 @@ fn restore_current_instructions(
     let Some(mut record) = request.extensions.get("studio.instructions").cloned() else {
         return Ok(InstructionRepair::default());
     };
-    if record.payload.format() != "pl.studio.instructions"
-        || record.payload.version() != 1
-        || record.revision == 0
-    {
+    if record.revision == 0 {
         return Err(receipt_error(std::io::Error::other(
             "invalid current instruction snapshot authority",
         )));
     }
-    let mut snapshot: crate::instruction::InstructionSnapshot =
-        serde_json::from_str(record.payload.content()).map_err(receipt_error)?;
-    let profile_changed = if let Some(mode) = mode {
-        let profile = snapshot
-            .developer
-            .iter_mut()
-            .find(|block| {
-                block.source.kind == crate::instruction::InstructionSourceKind::ExecutionProfile
-            })
-            .ok_or_else(|| {
-                receipt_error(std::io::Error::other(
-                    "saved instructions contain no Mode profile",
-                ))
-            })?;
-        let changed = profile.content != mode.prompt()
-            || profile.source.label != mode.descriptor().display_name;
-        profile.content = mode.prompt().to_owned();
-        profile
-            .source
-            .label
-            .clone_from(&mode.descriptor().display_name);
-        changed
-    } else {
-        false
+    // Only the Mode-owned instruction source is refreshed here. The frozen Agent definition and
+    // its identity stay untouched, so context preparation can never rewrite the session's role.
+    let mut snapshot =
+        crate::instruction::decode_snapshot(&record.payload).map_err(receipt_error)?;
+    let profile_changed = match mode {
+        Some(mode) => snapshot
+            .set_mode_instruction(&mode.descriptor().display_name, mode.prompt())
+            .map_err(receipt_error)?,
+        None => false,
     };
     let previous_binding = request.extensions.get("studio.instructions.binding");
-    let binding_changed = match previous_binding {
-        Some(record) => {
-            if record.payload.format() != "pl.studio.instruction-binding"
-                || record.payload.version() != 1
-                || record.revision == 0
-            {
-                return Err(receipt_error(std::io::Error::other(
-                    "invalid instruction route binding",
-                )));
-            }
-            let previous: InstructionBinding =
-                serde_json::from_str(record.payload.content()).map_err(receipt_error)?;
-            if previous.route_identity.is_empty() {
-                return Err(receipt_error(std::io::Error::other(
-                    "empty instruction route binding",
-                )));
-            }
-            previous != *binding
-        }
-        None => true,
-    };
+    let binding_changed = previous_binding
+        .map(decode_instruction_binding)
+        .transpose()
+        .map_err(receipt_error)?
+        .is_none_or(|previous| previous != *binding);
     if binding_changed {
         mutations.push(ExtensionMutation::Put {
             id: "studio.instructions.binding".into(),
@@ -455,12 +445,7 @@ fn restore_current_instructions(
             .ok_or_else(|| {
                 receipt_error(std::io::Error::other("instruction revision exhausted"))
             })?;
-        record.payload = pl_core::context::OpaquePayload::new(
-            "pl.studio.instructions",
-            1,
-            serde_json::to_string(&snapshot).map_err(receipt_error)?,
-        )
-        .map_err(receipt_error)?;
+        record.payload = crate::instruction::encode_snapshot(&snapshot).map_err(receipt_error)?;
         mutations.push(ExtensionMutation::Put {
             id: "studio.instructions".into(),
             expected_revision: Some(expected_revision),
@@ -469,49 +454,12 @@ fn restore_current_instructions(
         std::sync::Arc::make_mut(&mut request.extensions)
             .insert("studio.instructions".into(), record.clone());
     }
-    let rendered = snapshot.context_records(&request.model.thread_id);
-    let complete = rendered
-        .iter()
-        .filter(|record| record.source == ContextSource::Instruction)
-        .flat_map(|record| &record.content)
-        .filter_map(|content| match content {
-            ContextContent::Text { text } => Some(text.as_ref()),
-            _ => None,
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
-    let hash = pl_core::context::content_hash(complete.as_bytes());
-    let latest = request
-        .committed_context
-        .records
-        .iter()
-        .rev()
-        .find(|record| matches!(record.source, ContextSource::InstructionSnapshot { .. }));
-    let current = if let Some(record) = latest {
-        record
-            .content
-            .iter()
-            .filter_map(|content| match content {
-                ContextContent::Text { text } => Some(text.as_ref()),
-                _ => None,
-            })
-            .collect::<Vec<_>>()
-            .join("\n")
-    } else {
-        request
-            .committed_context
-            .records
-            .iter()
-            .filter(|record| record.source == ContextSource::Instruction)
-            .flat_map(|record| &record.content)
-            .filter_map(|content| match content {
-                ContextContent::Text { text } => Some(text.as_ref()),
-                _ => None,
-            })
-            .collect::<Vec<_>>()
-            .join("\n")
-    };
-    if current == complete && (!binding_changed || latest.is_none()) {
+    let complete = snapshot.trusted_text();
+    let hash = snapshot.trusted_content_hash();
+    let current =
+        crate::instruction::current_instruction_context(&request.committed_context.records);
+    let latest = current.latest_snapshot();
+    if current.is_canonical_for(&complete) && (!binding_changed || latest.is_none()) {
         return Ok(InstructionRepair {
             replacement: None,
             mutations,
@@ -523,7 +471,7 @@ fn restore_current_instructions(
             replaces,
             ..
         } => {
-            if current == complete {
+            if current.body() == complete {
                 replaces.clone()
             } else {
                 Some(content_hash.clone())
@@ -827,8 +775,8 @@ fn current_facts(
         );
     }
     if let Some(record) = request.extensions.get("studio.instructions") {
-        let snapshot: crate::instruction::InstructionSnapshot =
-            serde_json::from_str(record.payload.content()).map_err(receipt_error)?;
+        let snapshot =
+            crate::instruction::decode_snapshot(&record.payload).map_err(receipt_error)?;
         for record in snapshot.context_records(&request.model.thread_id) {
             if let pl_core::context::ContextSource::RuntimeFact { source_id } = record.source {
                 facts.insert(
@@ -859,13 +807,24 @@ pub(crate) struct CompactionReceipt {
     pub implementation: Option<String>,
     pub error: Option<String>,
 }
+
+impl CompactionReceipt {
+    /// v3 adds explicit no-charge accounting; native context-only checkpoints are unchanged.
+    const VERSION: u32 = 3;
+
+    pub(crate) fn into_payload(
+        self,
+    ) -> Result<pl_core::context::OpaquePayload, pl_core::model::ModelError> {
+        let payload = serde_json::to_string(&self).map_err(receipt_error)?;
+        pl_core::context::OpaquePayload::new("pl.studio.compaction", Self::VERSION, payload)
+            .map_err(receipt_error)
+    }
+}
 fn receipt_mutation(
     expected_revision: Option<u64>,
     receipt: CompactionReceipt,
 ) -> Result<ExtensionMutation, pl_core::model::ModelError> {
-    let payload = serde_json::to_string(&receipt).map_err(receipt_error)?;
-    let payload = pl_core::context::OpaquePayload::new("pl.studio.compaction", 2, payload)
-        .map_err(receipt_error)?;
+    let payload = receipt.into_payload()?;
     Ok(ExtensionMutation::Put {
         id: LATEST_RECEIPT.into(),
         expected_revision,
@@ -892,7 +851,7 @@ fn receipt_error(
 /// 用量等冻结事实原样保留，不改写 opaque 正文。
 pub(crate) fn decode_receipt(version: u32, content: &str) -> anyhow::Result<CompactionReceipt> {
     anyhow::ensure!(
-        (1..=2).contains(&version),
+        (1..=CompactionReceipt::VERSION).contains(&version),
         "unsupported auxiliary accounting receipt"
     );
     let mut value: serde_json::Value = serde_json::from_str(content)?;
@@ -922,7 +881,13 @@ pub(crate) fn decode_receipt(version: u32, content: &str) -> anyhow::Result<Comp
             }
         }
     }
-    serde_json::from_value(value).map_err(anyhow::Error::from)
+    let receipt: CompactionReceipt = serde_json::from_value(value)?;
+    anyhow::ensure!(
+        version == CompactionReceipt::VERSION
+            || receipt.accounting.pricing != pl_protocol::PricingOutcome::NoCharge,
+        "no-charge accounting requires compaction receipt version 3"
+    );
+    Ok(receipt)
 }
 
 /// Producer payload conversion is confined to the persisted checkpoint migration boundary.

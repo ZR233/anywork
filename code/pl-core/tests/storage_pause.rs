@@ -58,6 +58,8 @@ struct StoreState {
     /// `None` grants the caller's request unchanged, so every other test still exercises the plain
     /// "no reliable budget" backend.
     operation_limit: Option<u64>,
+    /// Valid quotas remain unfinished responsibility even before they retain output bytes.
+    output_reservations: BTreeSet<String>,
     /// Typed fault kind this fake reports while it is failing.
     ///
     /// `None` keeps the plain "error text only, no named generation" backend every other test uses,
@@ -93,6 +95,7 @@ impl GatedStore {
                 accepted: BTreeSet::new(),
                 durable: 0,
                 operation_limit: None,
+                output_reservations: BTreeSet::new(),
                 typed_fault: None,
                 reported_generation: 0,
                 verified_generation: None,
@@ -159,15 +162,12 @@ impl ColdStore for GatedStore {
     fn reserve_operation_output(
         &self,
         _thread_id: &str,
-        _operation_id: &str,
+        operation_id: &str,
         max_bytes: u64,
     ) -> Result<u64, ColdStoreError> {
-        Ok(self
-            .state
-            .lock()
-            .unwrap()
-            .operation_limit
-            .unwrap_or(max_bytes))
+        let mut state = self.state.lock().unwrap();
+        state.output_reservations.insert(operation_id.to_owned());
+        Ok(state.operation_limit.unwrap_or(max_bytes))
     }
 
     fn charge_operation_output(
@@ -183,12 +183,23 @@ impl ColdStore for GatedStore {
         Ok(())
     }
 
-    fn release_operation_output(&self, _thread_id: &str, _operation_id: &str) {}
+    fn release_operation_output(&self, _thread_id: &str, operation_id: &str) {
+        self.state
+            .lock()
+            .unwrap()
+            .output_reservations
+            .remove(operation_id);
+    }
 
     fn pressure(&self, _thread_id: &str) -> StoragePressure {
         let state = self.state.lock().unwrap();
         let active = state.active;
         StoragePressure {
+            has_uncommitted_work: !state.output_reservations.is_empty()
+                || state
+                    .accepted
+                    .iter()
+                    .any(|sequence| *sequence > state.durable),
             thread_bytes: if active && self.failure == Failure::QueueFull {
                 64 * 1024 * 1024
             } else {
@@ -608,6 +619,10 @@ async fn a_typed_fault_needs_its_own_verified_recovery_before_the_continue_is_of
         ready.persistence.resume_required,
         "readiness is a hint for the caller; it never releases the latch by itself"
     );
+    // The backend has no outstanding writes now, but the paused Turn is still active. An empty
+    // reliable queue must not bypass the owner's original activity gates.
+    assert!(!store.pressure("verified").has_uncommitted_work);
+    assert!(!within(thread.close_if_idle()).await.unwrap());
     within(thread.resume_storage(1)).await.unwrap();
 
     let completed = tokio::time::timeout(Duration::from_secs(5), runner)
@@ -625,9 +640,10 @@ async fn a_typed_fault_needs_its_own_verified_recovery_before_the_continue_is_of
 
 /// A Thread parked between Turns learns about a verified recovery from the backend itself.
 ///
-/// Nothing here issues a command after the Turn ended: the owner's storage watch is the only
-/// wake-up, and the readiness it publishes is recomputed from its own typed facts — exactly what the
-/// continue command re-applies. The latch itself is never released by that notification.
+/// No command is issued between the Turn ending and the first verified recovery: the owner's
+/// storage watch is the only wake-up, and the readiness it publishes is recomputed from its own typed
+/// facts — exactly what the continue command re-applies. The latch itself is never released by that
+/// notification.
 #[tokio::test]
 async fn an_idle_owner_publishes_a_verified_recovery_without_a_command() {
     let store = GatedStore::new(Failure::Admission);
@@ -681,6 +697,16 @@ async fn an_idle_owner_publishes_a_verified_recovery_without_a_command() {
     store.commit_durable();
     let ready = await_snapshot(&thread, |snapshot| snapshot.persistence.resume_ready).await;
     assert!(ready.persistence.resume_required);
+
+    // Even with every accepted fact durable and no active Turn, a backend error still prevents
+    // idle close. The lifecycle predicate is not an alternative to the original error gates.
+    assert!(!store.pressure("idle").has_uncommitted_work);
+    store.fail_now();
+    await_snapshot(&thread, |snapshot| snapshot.persistence.error.is_some()).await;
+    assert!(!store.pressure("idle").has_uncommitted_work);
+    assert!(!within(thread.close_if_idle()).await.unwrap());
+    store.repair();
+    await_snapshot(&thread, |snapshot| snapshot.persistence.resume_ready).await;
 
     // The continue the caller now issues is the same verdict, revalidated at the command.
     within(thread.resume_storage(1)).await.unwrap();

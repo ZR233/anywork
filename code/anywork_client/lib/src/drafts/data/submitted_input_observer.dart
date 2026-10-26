@@ -230,13 +230,22 @@ final class SubmittedInputObserver<T> {
       StackTrace? failureStack;
       try {
         scope = await original.openTurn(turn.reference, origin: stamp);
-        final header = await scope.header();
-        if (!_closing &&
-            !_finished &&
-            await _matchesInputId(scope, header.inputId) &&
-            !_closing &&
-            !_finished) {
-          _considerHeader(header);
+
+        // The original close can join this late handoff while the open itself is
+        // still settling. That join must not start a new identity read: the
+        // already-owned handle is only closed below, so a close never turns a
+        // late open into one more evidence read.
+        if (!_closing && !_finished && !original.sourceSuperseded) {
+          final header = await scope.header();
+          if (!_closing &&
+              !_finished &&
+              !original.sourceSuperseded &&
+              await _matchesInputId(scope, header.inputId) &&
+              !_closing &&
+              !_finished &&
+              !original.sourceSuperseded) {
+            _considerHeader(header);
+          }
         }
       } catch (error, stack) {
         failure = error;
@@ -247,12 +256,18 @@ final class SubmittedInputObserver<T> {
             scope.requestClose();
             final report = await scope.close();
             if (!report.complete)
-              throw const StudioFailure(
-                code: StudioFailureCode.unavailable,
-                message:
-                    'The original Turn identity scope has unresolved cleanup.',
-                retryable: true,
-                correlationId: 'input-turn-cleanup',
+              // The original handle still owns recoverable cleanup. Keep it as a
+              // retryable cleanup responsibility of this same read instead of a
+              // terminal handoff failure that no later retry could clear.
+              _turnCloseFailed(
+                'inputIdentityJoin',
+                const StudioFailure(
+                  code: StudioFailureCode.unavailable,
+                  message: 'The original Turn identity scope has unresolved cleanup.',
+                  retryable: true,
+                  correlationId: 'input-turn-cleanup',
+                ),
+                StackTrace.current,
               );
           } catch (error, stack) {
             // The Session read owner retains every scope/report, including a

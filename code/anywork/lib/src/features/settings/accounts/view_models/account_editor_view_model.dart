@@ -23,6 +23,7 @@ class AccountEditorViewModel extends _$AccountEditorViewModel {
   final _observations = <Observation>[];
   Observation? _saveObservation;
   Observation? _defaultObservation;
+  Observation? _billingObservation;
   int _lifetime = 0;
   int _rowId = 0;
   int _intent = 0;
@@ -52,6 +53,7 @@ class AccountEditorViewModel extends _$AccountEditorViewModel {
       _observations.clear();
       _saveObservation?.cancel();
       _defaultObservation?.cancel();
+      _billingObservation?.cancel();
       // Manual forms are never auto-saved or business-cancelled on disposal.
     });
     // Sources can publish while another provider is still building; one trailing
@@ -115,7 +117,6 @@ class AccountEditorViewModel extends _$AccountEditorViewModel {
         protocol: template.protocol,
         name: template.displayName,
         baseUrl: template.baseUrl,
-        pricingEnabled: template.pricingEnabled,
       );
     }
     final account = currentCollectionRow(
@@ -147,7 +148,6 @@ class AccountEditorViewModel extends _$AccountEditorViewModel {
       protocol: account.protocol,
       name: account.name,
       baseUrl: account.baseUrl,
-      pricingEnabled: account.pricingEnabled,
       customModels: [
         for (final model in account.customModels)
           CustomModelDraft(
@@ -216,11 +216,83 @@ class AccountEditorViewModel extends _$AccountEditorViewModel {
 
   void setName(String value) => _field(AccountEditorField.name, value);
   void setBaseUrl(String value) => _field(AccountEditorField.baseUrl, value);
-  void setPricing(bool value) {
-    if (!_editable || state.requireValue.pricingEnabled == value) return;
-    _changed(
-      state.requireValue.copyWith(pricingEnabled: value),
-      AccountEditorField.pricing,
+
+  /// 免计费（noCharge）开关。
+  ///
+  /// 新建时它只是表单草稿（随保存作为 `initialBillingKind` 提交，`unknown` = 未指定）；
+  /// 编辑已有账号时它是 canonical 窄命令：开启写 `noCharge`，关闭写 `null`（清除覆盖，
+  /// 回到自动推导）——因此**未触碰开关不会改动**既有的显式 metered/subscription 覆盖。
+  Future<void> setNoCharge(bool enabled) async {
+    if (!_editable) return;
+    final current = state.requireValue;
+    if (current.create) {
+      final next = enabled ? BillingKind.noCharge : BillingKind.unknown;
+      if (current.initialBillingKind == next) return;
+      state = AsyncData(
+        current.copyWith(
+          initialBillingKind: next,
+          draftRevision: current.draftRevision + 1,
+        ),
+      );
+      return;
+    }
+    if (current.billingAction?.preventsResubmission ?? false) return;
+    final lifetime = _lifetime;
+    final intent = ++_intent;
+    state = AsyncData(
+      current.copyWith(
+        billingAction: SettingsAction(intent: intent, pending: true),
+      ),
+    );
+    bool owns() =>
+        _owns(lifetime) && state.requireValue.billingAction?.intent == intent;
+    void update(SettingsAction action) {
+      if (!owns()) return;
+      state = AsyncData(state.requireValue.copyWith(billingAction: action));
+    }
+
+    OperationTicket<Unit> ticket;
+    try {
+      // 只提交显式意图：关闭 = 清除覆盖（null），不是写 unknown。
+      ticket = _configuration.setAccountBillingKind(
+        current.accountId,
+        enabled ? BillingKind.noCharge : null,
+      );
+    } on StudioFailure catch (error) {
+      update(
+        SettingsAction(
+          intent: intent,
+          outcome: SettingsActionOutcome.rejected,
+          error: error,
+        ),
+      );
+      return;
+    }
+    StudioFailure? observationError;
+    if (owns()) {
+      try {
+        final watch = ticket.state.watchLatest((operation) {
+          final action = state.requireValue.billingAction;
+          if (action == null) return;
+          update(action.copyWith(operation: operation));
+        });
+        if (owns()) {
+          _billingObservation?.cancel();
+          _billingObservation = watch.observation;
+        } else {
+          watch.observation.cancel();
+        }
+      } on StudioFailure catch (error) {
+        observationError = error;
+      }
+    }
+    final result = await ticket.result;
+    update(
+      settledSettingsAction(
+        intent,
+        result,
+        operation: ticket.state.value,
+      ).copyWith(observationError: observationError),
     );
   }
 
@@ -288,7 +360,6 @@ class AccountEditorViewModel extends _$AccountEditorViewModel {
         protocol: template.protocol,
         name: template.displayName,
         baseUrl: template.baseUrl,
-        pricingEnabled: template.pricingEnabled,
         secretIntent: AccountSecretIntent.preserve,
         secretRaw: '',
         customModels: [],
@@ -302,7 +373,6 @@ class AccountEditorViewModel extends _$AccountEditorViewModel {
           AccountEditorField.template,
           AccountEditorField.name,
           AccountEditorField.baseUrl,
-          AccountEditorField.pricing,
           AccountEditorField.secret,
         },
         validation: {},
@@ -594,11 +664,6 @@ class AccountEditorViewModel extends _$AccountEditorViewModel {
                 frozen.dirtyFields.contains(AccountEditorField.baseUrl)
             ? FieldEdit.set(frozen.baseUrl.trim())
             : const FieldEdit.keep(),
-        pricingEnabled:
-            frozen.create ||
-                frozen.dirtyFields.contains(AccountEditorField.pricing)
-            ? FieldEdit.set(frozen.pricingEnabled)
-            : const FieldEdit.keep(),
         secret: switch (frozen.secretIntent) {
           AccountSecretIntent.preserve => const AccountSecretUpdate.preserve(),
           AccountSecretIntent.replace => AccountSecretUpdate.replace(
@@ -606,6 +671,12 @@ class AccountEditorViewModel extends _$AccountEditorViewModel {
           ),
           AccountSecretIntent.clear => const AccountSecretUpdate.clear(),
         },
+        // 新建时提交表单上的初始计费类别草稿（unknown = 未指定 → null，交给后端推导）；
+        // 编辑已有账号不得改写类别：一律 null，显式改写只经 setAccountBillingKind 窄命令。
+        initialBillingKind:
+            frozen.create && frozen.initialBillingKind != BillingKind.unknown
+            ? frozen.initialBillingKind
+            : null,
         customModels: [
           for (final id in frozen.removedCustomModelIds)
             CustomModelChange.remove(modelId: id),

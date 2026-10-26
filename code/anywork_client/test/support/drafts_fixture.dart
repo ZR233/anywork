@@ -19,6 +19,7 @@ import 'conversation_fixture.dart';
 import 'drafts_native_fixture.dart';
 import 'drafts_workspace_fixture.dart';
 import 'profile_recovery_port.dart';
+import 'timeline_transport.dart';
 
 const draftRuntime = 'draft-native-runtime';
 const draftDigest =
@@ -168,6 +169,24 @@ final class DraftsFixture {
   late final DraftsRepository repository;
   late final WorkspaceArchiveCapturePort archive;
   final captures = <WorkspaceArchiveCapture>[];
+
+  /// How many UI Timeline connections the last selected Session already owned.
+  int timelineOpens = 0;
+
+  /// The real native Timeline connections the Session already accepted.
+  List<TestTimelineConnection> timelineNatives = const [];
+
+  /// Page/detail reads those accepted connections had at the ready barrier.
+  List<({int pages, int details})> timelineReads = const [];
+
+  /// Current page/detail reads of the very same accepted connections.
+  List<({int pages, int details})> get timelineReadsNow => [
+    for (final native in timelineNatives)
+      (
+        pages: native.pageRequests.length,
+        details: native.detailRequests.length,
+      ),
+  ];
   bool protectUnknown = false;
   StudioFailure? retainedExecutionFailure;
   int _admissions = 0;
@@ -179,6 +198,10 @@ final class DraftsFixture {
   Future<void> establish() async {
     await configuration.establish(startSources());
     await recoveryPort.establish(recovery);
+    // WorkspaceAccess gates every command on the original Recovery source
+    // status, so this explicit demand is part of establishing access, not
+    // another ad-hoc read policy.
+    await recovery.loadSourceStatus();
     final reading = workspace.loadProjectsPage();
     await directory.projectsBaseline();
     await reading;
@@ -195,6 +218,30 @@ final class DraftsFixture {
     threadConfiguration = await conversations.facets.configurationOpened(index);
     await emitExecution(draftExecution(durable: durable));
     await emitRoute(routeRevision);
+    // The selected Session owns exactly one real UI Timeline connection. The
+    // fixture owns that native side, so it answers that open once the context
+    // demand is established instead of leaving a production join pending.
+    conversations.acceptPendingTimelineOpens();
+    timelineOpens = conversations.timeline.requests.length;
+    final natives = <TestTimelineConnection>[];
+    for (final request in conversations.timeline.requests) {
+      if (!request.result.isCompleted) continue;
+      final connection = await request.result.future;
+      // Every connection this fixture accepted must be the monitored native
+      // fake: an unexpected type would silently drop it from the read evidence.
+      expect(
+        connection,
+        isA<TestTimelineConnection>(),
+        reason: 'The fixture monitors every accepted Session Timeline native',
+      );
+      natives.add(connection as TestTimelineConnection);
+    }
+    timelineNatives = natives;
+    // Baseline taken right after the execution/configuration feeds are
+    // acknowledged and the fixture answers the pending Timeline open. No
+    // automatic page or detail read happens here, so a later increment can only
+    // come from borrowing that accepted scope.
+    timelineReads = timelineReadsNow;
     return repository.composer(threadId);
   }
 
@@ -391,6 +438,7 @@ final class DraftsFixture {
       }
     } finally {
       directory.native.acceptPendingOpens();
+      conversations.acceptPendingTimelineOpens();
       // Join every peer before checking the intentional failed-handoff report;
       // an assertion failure must not skip cleanup of the independent peers.
       final reports = await Future.wait([

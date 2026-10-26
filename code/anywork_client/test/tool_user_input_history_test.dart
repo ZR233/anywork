@@ -279,6 +279,84 @@ void main() {
     expect(projected.answerText(1, 0), '');
   });
 
+  test('redacted 答案正文被忽略而同条目合法字段仍应用，真正的答案下标越界仍拒绝', () {
+    final current = toolItem(
+      userInput: userInput(
+        state: ResolvedThreadToolUserInputView([
+          ThreadUserInputAnswerView(
+            questionId: 'account',
+            answers: ['anthropic'],
+          ),
+          ThreadUserInputAnswerView(questionId: 'token', redacted: true),
+        ]),
+        firstQuestion: 'Which account?',
+        secretQuestion: 'Paste the token',
+      ),
+      revision: 1,
+    );
+
+    final updated = current.applyFieldUpdates(
+      fields: const [
+        // 已隐藏的答案没有正文可补：忽略该字段，不能借此写入或读出原值。
+        ThreadFieldUpdateView(
+          field: ThreadToolUserInputFieldView(
+            questionIndex: 1,
+            part: ThreadUserInputAnswerFieldPartView(0),
+          ),
+          change: ReplaceThreadFieldChangeView('leaked-secret'),
+        ),
+        // 同一条目的合法 sibling 字段仍然应用，整条更新不被拒。
+        ThreadFieldUpdateView(
+          field: ThreadToolUserInputFieldView(
+            questionIndex: 0,
+            part: ThreadUserInputHeaderFieldPartView(),
+          ),
+          change: ReplaceThreadFieldChangeView('Provider v2'),
+        ),
+      ],
+      expectedRevision: 1,
+      revision: 2,
+      omittedUnits: 0,
+      saved: true,
+      terminal: false,
+    );
+
+    final projected = updated?.tool?.userInput;
+    expect(projected, isNotNull, reason: '忽略隐藏正文不等于拒绝整条条目更新');
+    expect(updated?.revision, 2);
+    expect(projected!.headerText(0), 'Provider v2');
+    expect(projected.answerText(0, 0), 'anthropic');
+    expect(projected.answerText(1, 0), '', reason: 'redacted 答案不得被字段更新写入正文');
+    expect(
+      projected.answers
+          .firstWhere((answer) => answer.questionId == 'token')
+          .redacted,
+      isTrue,
+    );
+
+    // 已回答问题里超出真实答案列表的下标仍是真实协议错，不放宽索引校验。
+    expect(
+      current.applyFieldUpdates(
+        fields: const [
+          ThreadFieldUpdateView(
+            field: ThreadToolUserInputFieldView(
+              questionIndex: 0,
+              part: ThreadUserInputAnswerFieldPartView(3),
+            ),
+            change: ReplaceThreadFieldChangeView('out-of-range'),
+          ),
+        ],
+        expectedRevision: 1,
+        revision: 2,
+        omittedUnits: 0,
+        saved: true,
+        terminal: false,
+      ),
+      isNull,
+      reason: '越界答案索引仍是协议不匹配，不能被当作可忽略正文',
+    );
+  });
+
   test('问答正文随条目省略量一起交付，省略提示不被丢弃', () {
     final item = toolItem(
       userInput: userInput(
