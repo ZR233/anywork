@@ -198,6 +198,11 @@ close 返回 `BridgeFeedCloseReport`：feed_id 与 Clean 或带非空类型化 i
 
 ## 26.8 领域仓储、视图模型与展示租约边界
 
+原始记录的来源由写入时的类型化事实标明：`stored` 保留历史载荷原貌，`runtimeControl`
+表示无正文控制输入对应的运行时说明。空载荷也可能是窗口占位，不能据此猜测来源。
+运行时说明以本地化标题和说明展示，不提供载荷展开；真实历史载荷继续保留原文与详情入口。
+读取方不按载荷形状改写历史，也不能据此授权执行。
+
 ### 26.8.1 连接与正文消费
 
 纯 Dart Session 服务的类型化内容连接提供 events、page、readDetail、requestClose、close， 同一连接捕获同一个 Session；原生 delivery ACK 由仓储／有界消费交接负责，不向 界面组件暴露。attempt、demand、资源许可与 unresolved-close 所有权继续适用，删除 Dart next 泵、窗口操作回执泛型、 load/focus/expand 控制面与 anchor 恢复。page/detail 是有类型返回值的查询，不通过 “等待下一个窗口版本确认操作完成”收束。
