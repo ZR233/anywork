@@ -17,6 +17,7 @@ pub const ACTIVITY_SUMMARY_LIMIT: usize = 512;
 /// 交互事实变化。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[derive(utoipa::ToSchema)]
 pub enum ThreadActivityKind {
     /// Turn 运行中，但还没有可观察到的前台 **provider** 阶段。
     ///
@@ -72,6 +73,7 @@ impl ThreadActivityKind {
 /// 参数，也不把缺失数据当成空参数。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[derive(utoipa::ToSchema)]
 pub enum ThreadActivityArguments {
     /// 参数完整且提取出命令行：摘要即完整命令行。
     CommandLine,
@@ -90,6 +92,7 @@ pub enum ThreadActivityArguments {
 /// [`Self::Finished`] 表示终态，**不会**把终态谎报成仍在运行。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[derive(utoipa::ToSchema)]
 pub enum ThreadActivityToolState {
     Running,
     AwaitingApproval,

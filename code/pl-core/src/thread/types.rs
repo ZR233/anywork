@@ -1134,6 +1134,10 @@ pub enum ModelOutputViolation {
     AttemptIdentity { expected: String, actual: String },
     #[error("model context revision mismatch: expected {expected}, got {actual}")]
     ContextRevision { expected: u64, actual: u64 },
+    /// Host admission has insufficient revision space for this batch's results or cancellation;
+    /// this is not a provider failure and never starts any tool in the rejected batch.
+    #[error("context revision {revision} has insufficient space to settle this tool-call batch")]
+    ContextRevisionExhausted { revision: u64 },
     #[error("model called unknown tool {tool_id} (call {call_id})")]
     UnknownTool { tool_id: String, call_id: String },
     #[error("model returned an empty tool call identity")]
@@ -1337,6 +1341,9 @@ pub enum ThreadError {
     InvalidControlInput,
     #[error("Thread has no claimable continuation point")]
     NoContinuation,
+    /// The owner atomically observed no active execution for an execution-stop request.
+    #[error("Thread has no active execution")]
+    NoExecution,
     #[error("input was already consumed")]
     InputConsumed,
     #[error("Thread model session is unavailable; replace the model binding to continue")]

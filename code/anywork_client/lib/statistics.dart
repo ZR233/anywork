@@ -1,8 +1,6 @@
-/// Immutable model-performance domain and its application-instance repository contract.
+/// Model-performance statistics, immutable snapshots and visible demand.
 library;
 
-export 'src/statistics/domain/statistics_models.dart';
-export 'src/statistics/domain/statistics_failure.dart';
 export 'src/statistics/domain/statistics_repository.dart';
-export 'src/models/failure_models.dart' show StudioFailure, StudioFailureCode;
-export 'src/lifecycle/resource_budget.dart' show CloseReport;
+export 'src/statistics/domain/statistics_state.dart';
+export 'src/statistics/domain/statistics_values.dart';

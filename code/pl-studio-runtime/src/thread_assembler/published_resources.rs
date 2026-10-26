@@ -125,55 +125,67 @@ impl StudioThreadAssembler {
     }
 
     pub(super) async fn close_published_resources(
-        &self,
-        id: &str,
-        incarnation: &Arc<()>,
+        registry: Weak<Registry>,
+        id: String,
+        owner: super::close_failure::EntryCloseOwner,
     ) -> Result<(), ThreadAssemblyError> {
-        let cleanup = {
-            let state = self.0.state();
-            if state.unpublished_children.contains_key(id) {
-                return Ok(());
-            }
-            state
-                .entries
-                .get(id)
-                .filter(|entry| {
-                    entry.parent_id.is_some() && Arc::ptr_eq(&entry.incarnation, incarnation)
-                })
-                .map(|entry| entry.cleanup.clone())
-        };
-        let Some(cleanup) = cleanup else {
+        if !owner.published || owner.disposition.is_none() {
             return Ok(());
-        };
-        let _permit = cleanup.acquire().await;
-        let resource = {
-            let state = self.0.state();
-            state
-                .entries
-                .get(id)
-                .filter(|entry| {
-                    !entry.published_resources_closed
-                        && Arc::ptr_eq(&entry.incarnation, incarnation)
-                })
-                .and_then(|entry| {
-                    // Ordinary retirement (archive or host shutdown) only stops/saves execution.
-                    // Published workspace disposition belongs to an explicit close_agent intent;
-                    // do not synthesize one here or even open the workspace backend.
-                    let disposition = entry.workspace_disposition?;
-                    state
-                        .child_factory
-                        .clone()
-                        .map(|factory| (factory, disposition))
-                })
-        };
-        if let Some((factory, disposition)) = resource {
-            factory.close_published(id, disposition).await?;
-            if let Some(entry) = self.0.state().entries.get_mut(id)
-                && Arc::ptr_eq(&entry.incarnation, incarnation)
-            {
-                entry.published_resources_closed = true;
-            }
         }
+        let cleanup = owner
+            .cleanup
+            .upgrade()
+            .ok_or_else(|| ThreadAssemblyError::Identity(id.to_owned()))?;
+        // The drive owns the original cleanup permit outside its retained phase future.
+        // Do not keep that gate or the registry alive through the future stored in that gate.
+        let completed = {
+            let registry = registry
+                .upgrade()
+                .ok_or_else(|| ThreadAssemblyError::Identity(id.clone()))?;
+            let state = registry.state();
+            let entry = state
+                .entries
+                .get(&id)
+                .filter(|entry| {
+                    Arc::ptr_eq(&entry.incarnation, &owner.incarnation)
+                        && entry.thread.same_instance(&owner.thread)
+                        && Arc::ptr_eq(&entry.cleanup, &cleanup)
+                        && entry.workspace_disposition == owner.disposition
+                })
+                .ok_or_else(|| ThreadAssemblyError::Identity(id.to_owned()))?;
+            if state.unpublished_children.contains_key(&id) {
+                return Err(ThreadAssemblyError::Identity(id.to_owned()));
+            }
+            entry.published_resources_closed
+        };
+        drop(cleanup);
+        if completed {
+            return Ok(());
+        }
+        if let (Some(factory), Some(disposition)) = (owner.factory, owner.disposition) {
+            factory
+                .close_published(&id, disposition)
+                .await?;
+        }
+        let registry = registry
+            .upgrade()
+            .ok_or_else(|| ThreadAssemblyError::Identity(id.clone()))?;
+        let cleanup = owner
+            .cleanup
+            .upgrade()
+            .ok_or_else(|| ThreadAssemblyError::Identity(id.clone()))?;
+        let mut state = registry.state();
+        let entry = state
+            .entries
+            .get_mut(&id)
+            .filter(|entry| {
+                Arc::ptr_eq(&entry.incarnation, &owner.incarnation)
+                    && entry.thread.same_instance(&owner.thread)
+                    && Arc::ptr_eq(&entry.cleanup, &cleanup)
+                    && entry.workspace_disposition == owner.disposition
+            })
+            .ok_or_else(|| ThreadAssemblyError::Identity(id.to_owned()))?;
+        entry.published_resources_closed = true;
         Ok(())
     }
 }

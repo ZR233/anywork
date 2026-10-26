@@ -544,8 +544,10 @@ impl Owner {
         // one the Turn it authorized may start under: a stop that arrives before that Turn activates
         // pauses the queue through it, instead of being silently consumed by a fresh generation the
         // stop never caused.
-        let authorized_stops = re_freeze
-            .or(continuation_cancel.filter(|generation| *generation == self.interrupt.stops()));
+        // Retain that original generation even if a stop races the checks above. Filtering it with
+        // another read could erase the guard after continuation_allowed was true, so activation
+        // would miss precisely the later stop it must reject under the interrupt lock.
+        let authorized_stops = re_freeze.or(continuation_cancel);
         match result {
             Ok(Some(TurnCompletion {
                 outcome: TurnOutcome::Completed,

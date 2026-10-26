@@ -19,6 +19,7 @@
 mod admission;
 mod archive;
 mod download;
+mod feed;
 mod mapping;
 mod operation;
 mod paths;
@@ -28,6 +29,8 @@ mod registry;
 mod source;
 
 pub(crate) use admission::AcpInstallRuntime;
+pub use feed::StudioAcpInstallFeed;
+pub use pl_protocol::products::feed::acp_install::AcpInstallFrame;
 pub(in crate::studio::runtime) use prepare::{
     PrepareFailure, ReleaseIdentity, VerifiedInstall, release_identity, verified_install,
 };

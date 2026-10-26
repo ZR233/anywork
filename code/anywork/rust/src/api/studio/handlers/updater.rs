@@ -91,6 +91,7 @@ static NEXT_OPERATION_ID: AtomicU64 = AtomicU64::new(1);
 static BACKGROUND_UPDATE_STARTED: AtomicBool = AtomicBool::new(false);
 static BACKGROUND_OPERATION_ID: AtomicU64 = AtomicU64::new(0);
 
+#[flutter_rust_bridge::frb(opaque)]
 pub struct BridgeStudioUpdateOperation {
     inner: Arc<BridgeStudioUpdateOperationInner>,
 }

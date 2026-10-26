@@ -7,7 +7,7 @@
 use serde::{Deserialize, Serialize};
 
 /// 一个会话当前拥有的执行；同一执行进入实际轮次后编号不变。
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AgentExecution {
     id: String,
@@ -40,7 +40,7 @@ impl AgentExecution {
 }
 
 /// 执行当前所处阶段；准备与清理阶段和运行中的轮次一样可以被停止。
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub enum AgentExecutionPhase {
     /// 已经选定工作，还没有建立轮次或等待保存。
@@ -60,7 +60,7 @@ pub enum AgentExecutionPhase {
 /// 它是执行事实的投影，不是客户端或本地可推导的资格：第一次点击「继续」所需的
 /// `id` 只能来自这里，不能被猜出或本地生成。`claimed` 说明这个点是否已被某个操作认领，
 /// 客户端据此区分「可以继续」与「继续已受理、正在准备」。
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ContinuationView {
     /// 稳定且不复用的继续点编号，用于拒绝过时点击。
@@ -115,7 +115,7 @@ impl ContinuationView {
 }
 
 /// 为什么这个会话还欠着工作；只记录打断本身确立过的原因。
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub enum ContinuationReason {
     /// 用户停止了该执行。

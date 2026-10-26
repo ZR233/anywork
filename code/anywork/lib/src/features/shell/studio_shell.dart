@@ -1,410 +1,246 @@
 import 'dart:async';
-import 'dart:ui' show PointerDeviceKind;
 
-import 'package:flutter/material.dart';
 import 'package:flutter/gestures.dart' show DragStartBehavior;
+import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:flutter/widget_previews.dart';
-import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:go_router/go_router.dart';
-import 'package:multi_split_view/multi_split_view.dart';
 
-import '../../app/app_graph.dart';
-import '../../presentation/providers/client_provider.dart';
-
-import '../../shared/studio_loading.dart';
-import '../../shared/recovery_check_status.dart';
-import '../../app/theme/material3_theme.dart';
 import '../../app/theme/studio_tokens.dart';
-import '../../domain/models/studio_models.dart';
-
-import '../../l10n/app_localizations.dart';
+import '../../diagnostics/studio_driver_keys.dart';
 import '../../l10n/studio_l10n.dart';
-import '../../platform/studio_platform.dart';
-import '../../platform/host_app_icons.dart';
-import '../../platform/local_file_dialogs.dart';
-import '../../platform/terminal_launcher.dart';
-import '../../platform/vscode_launcher.dart';
-import '../../platform/zed_launcher.dart';
-import '../../shared/studio_chrome.dart';
-import '../../shared/studio_driver_keys.dart';
-import '../../shared/delegation_labels.dart';
-import 'agent_switcher_menu.dart';
-import '../../shared/studio_driver_state.dart';
-import '../../presentation/providers/studio_update_controller.dart';
-import '../settings/settings_common.dart';
-import '../settings/settings_ssh_password_dialog.dart';
-import '../settings/settings_ssh_server_dialog.dart';
-import '../settings/settings_remote_directory_dialog.dart';
-import '../interaction/composer_dock.dart';
-import '../interaction/composer_view.dart';
-import '../status/thread_status_bar.dart';
-import '../timeline/conversation_activity_bar.dart';
-import '../timeline/timeline_view.dart';
-import '../timeline/timeline_connector.dart';
-import '../timeline/timeline_session_view.dart';
-import '../todo/todo_panel.dart';
-import 'shell_view.dart';
-import 'thread_preparation_card.dart';
 
-part 'studio_sidebar.dart';
-part 'add_project_dialog.dart';
-part 'sidebar_entries.dart';
-part 'sidebar_tiles.dart';
-part 'sidebar_thread_status.dart';
-part 'sidebar_detail_overlay.dart';
-part 'sidebar_actions.dart';
-part 'runtime_banners.dart';
-part 'studio_shell_chrome.dart';
-part 'studio_startup.dart';
-part 'agent_workspace_pane.dart';
-part 'agent_workspace_preview.dart';
+/// Marks navigation rendered inside the shell's modal drawer so the sidebar can
+/// offer the drawer's own close affordance instead of guessing its host.
+class ShellDrawerScope extends InheritedWidget {
+  const ShellDrawerScope({
+    required this.close,
+    required super.child,
+    super.key,
+  });
 
-typedef ProjectDirectoryPicker = Future<String?> Function(BuildContext context);
+  final VoidCallback close;
 
-final projectDirectoryPickerProvider = Provider<ProjectDirectoryPicker>((ref) {
-  if (const bool.fromEnvironment('ANYWORK_DRIVER')) {
-    return showDriverProjectPathDialog;
-  }
-  return (_) => pickLocalProjectDirectory();
-});
-
-Future<String?> showDriverProjectPathDialog(BuildContext context) {
-  return showDialog<String>(
-    context: context,
-    builder: (_) => const _DriverProjectPathDialog(),
-  );
-}
-
-class StudioShell extends ConsumerStatefulWidget {
-  const StudioShell({super.key});
+  static ShellDrawerScope? maybeOf(BuildContext context) =>
+      context.dependOnInheritedWidgetOfExactType<ShellDrawerScope>();
 
   @override
-  ConsumerState<StudioShell> createState() => _StudioShellState();
+  bool updateShouldNotify(ShellDrawerScope oldWidget) =>
+      close != oldWidget.close;
 }
 
-class _StudioShellState extends ConsumerState<StudioShell> {
-  static const _sidebarDividerWidth = 5.0;
-  final _scaffoldKey = GlobalKey<ScaffoldState>();
-  final _sidebarKey = GlobalKey<_SidebarState>();
-  final _startupClock = Stopwatch()..start();
-  final _sidebarResizeFocus = FocusNode(debugLabel: 'Sidebar resize');
+/// Dumb application geometry. Workspace supplies its canonical sidebar width,
+/// edit draft and save callbacks; shell owns only focus/drag/drawer state.
+/// [workspace] is the existing ConversationScreen or Workspace start content,
+/// preserving its status, timeline, interaction, Send and independent Stop.
+class AppShell extends StatefulWidget {
+  const AppShell({
+    required this.navigation,
+    required this.chrome,
+    required this.notices,
+    required this.workspace,
+    required this.canonicalSidebarWidth,
+    required this.widthDraft,
+    required this.onResizeWidth,
+    required this.onResetWidth,
+    required this.onCommitWidth,
+    required this.onCancelWidth,
+    super.key,
+  });
 
-  bool _reportedReady = false;
-  double? _sidebarWidth;
-  bool _sidebarHidden = false;
-  bool _sidebarResizeFocused = false;
-  bool _sidebarDragging = false;
-  GeneralSettingsView _general = const GeneralSettingsView();
-  int _sidebarDraftVersion = 0;
-  // KeyUp and focus loss share this edit's save; the Client orders distinct edits.
-  (int, Future<void>)? _sidebarSave;
+  final Widget navigation;
+  final Widget chrome;
+  final Widget notices;
+  final Widget workspace;
+  final int? canonicalSidebarWidth;
+  final double? widthDraft;
+  final void Function(double delta, double displayedWidth, double maximumWidth)
+  onResizeWidth;
+  final VoidCallback onResetWidth;
+  final Future<void> Function() onCommitWidth;
+  final VoidCallback onCancelWidth;
 
-  Future<void> _persistWidth() {
-    final submitted = _sidebarWidth;
-    if (submitted == null) return Future.value();
-    final version = _sidebarDraftVersion;
-    final pending = _sidebarSave;
-    if (pending != null && pending.$1 == version) return pending.$2;
-    late final Future<void> completion;
-    completion = _saveSidebarWidth(submitted, version).whenComplete(() {
-      if (identical(_sidebarSave?.$2, completion)) _sidebarSave = null;
-    });
-    _sidebarSave = (version, completion);
-    return completion;
+  @override
+  State<AppShell> createState() => _AppShellState();
+}
+
+class _AppShellState extends State<AppShell> {
+  final _scaffold = GlobalKey<ScaffoldState>();
+  final _resizeFocus = FocusNode(debugLabel: 'Application navigation resize');
+  bool _collapsed = false;
+  bool _resizing = false;
+  bool _dividerFocused = false;
+  static const _dividerWidth = 5.0;
+
+  @override
+  void dispose() {
+    _resizeFocus.dispose();
+    super.dispose();
   }
 
-  Future<void> _saveSidebarWidth(double submitted, int version) async {
-    try {
-      await _saveSidebarPreferences(
-        ref,
-        general: _general,
-        width: submitted.round(),
-      );
-      if (mounted && _sidebarDraftVersion == version) {
-        setState(() => _sidebarWidth = null);
-      }
-    } catch (error) {
-      if (mounted && _sidebarDraftVersion == version) {
-        setState(() => _sidebarWidth = null);
-        ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text(error.toString())));
-      }
-    }
-  }
+  void _commit() => unawaited(widget.onCommitWidth());
 
-  void _setSidebarWidth(double? width) {
-    setState(() {
-      _sidebarDraftVersion++;
-      _sidebarWidth = width;
-    });
-  }
+  void _resize(double delta, double width, double maximum) =>
+      widget.onResizeWidth(delta, width, maximum);
 
-  void _adjustSidebarWidth(double delta, double width, double maximumWidth) {
-    _setSidebarWidth(
-      ((_sidebarWidth ?? width).clamp(300.0, maximumWidth) + delta).clamp(
-        300.0,
-        maximumWidth,
-      ),
-    );
-  }
-
-  KeyEventResult _handleSidebarKey(
-    KeyEvent event,
-    double width,
-    double maximumWidth,
-  ) {
+  KeyEventResult _resizeKey(KeyEvent event, double width, double maximum) {
+    final key = event.logicalKey;
     final keyboard = HardwareKeyboard.instance;
-    if (event is! KeyUpEvent &&
-        (keyboard.isControlPressed ||
+    if ((keyboard.isControlPressed ||
             keyboard.isAltPressed ||
-            keyboard.isMetaPressed)) {
+            keyboard.isMetaPressed) &&
+        event is! KeyUpEvent) {
       return KeyEventResult.ignored;
     }
-    final key = event.logicalKey;
     if (key != LogicalKeyboardKey.arrowLeft &&
         key != LogicalKeyboardKey.arrowRight &&
         key != LogicalKeyboardKey.home) {
       return KeyEventResult.ignored;
     }
     if (event is KeyUpEvent) {
-      if (_sidebarWidth != null) unawaited(_persistWidth());
+      _commit();
     } else if (event is KeyDownEvent || event is KeyRepeatEvent) {
       if (key == LogicalKeyboardKey.home) {
-        _setSidebarWidth(336);
+        widget.onResetWidth();
       } else {
-        _adjustSidebarWidth(
+        _resize(
           key == LogicalKeyboardKey.arrowRight ? 16 : -16,
           width,
-          maximumWidth,
+          maximum,
         );
       }
     }
     return KeyEventResult.handled;
   }
 
-  @override
-  void dispose() {
-    _sidebarResizeFocus.dispose();
-    super.dispose();
-  }
+  Widget _divider(BuildContext context, double width, double maximum) => Focus(
+    focusNode: _resizeFocus,
+    onFocusChange: (focused) {
+      setState(() => _dividerFocused = focused);
+      if (!focused && !_resizing) _commit();
+    },
+    onKeyEvent: (_, event) => _resizeKey(event, width, maximum),
+    child: Semantics(
+      key: StudioDriverKeys.sidebarResize,
+      label: context.l10n.sidebarResize,
+      slider: true,
+      value: '${width.round()}',
+      increasedValue: '${(width + 16).clamp(300, maximum).round()}',
+      decreasedValue: '${(width - 16).clamp(300, maximum).round()}',
+      onIncrease: () {
+        _resize(16, width, maximum);
+        _commit();
+      },
+      onDecrease: () {
+        _resize(-16, width, maximum);
+        _commit();
+      },
+      child: MouseRegion(
+        cursor: SystemMouseCursors.resizeColumn,
+        child: Listener(
+          onPointerUp: (_) => _resizeFocus.requestFocus(),
+          child: GestureDetector(
+            dragStartBehavior: DragStartBehavior.down,
+            onHorizontalDragStart: (_) {
+              _resizing = true;
+              _resizeFocus.requestFocus();
+            },
+            onHorizontalDragUpdate: (details) =>
+                _resize(details.delta.dx, width, maximum),
+            onHorizontalDragEnd: (_) {
+              _resizing = false;
+              _commit();
+            },
+            onHorizontalDragCancel: () {
+              _resizing = false;
+              widget.onCancelWidth();
+            },
+            onDoubleTap: () {
+              widget.onResetWidth();
+              _commit();
+            },
+            child: ColoredBox(
+              color: _dividerFocused
+                  ? context.colors.primary
+                  : context.colors.outlineVariant.withValues(alpha: .5),
+              child: const SizedBox(
+                width: _dividerWidth,
+                height: double.infinity,
+              ),
+            ),
+          ),
+        ),
+      ),
+    ),
+  );
 
   @override
-  Widget build(BuildContext context) {
-    final startup = ref.watch(shellStartupViewProvider);
-    _general = ref.watch(shellGeneralProvider);
-    final savedWidth = _general.sidebarWidth;
-    final desiredWidth = _sidebarWidth ?? savedWidth.toDouble();
-    return Builder(
-      builder: (context) {
-        // 初次无数据才使用启动页；已有 chrome 时后续刷新/重连不整页替换已显示内容。
-        if (!startup.ready) {
-          return startup.error != null
-              ? _StudioFatalError(error: startup.error!)
-              : const _StudioStartup();
-        }
-        final chrome = ref.watch(shellChromeViewProvider);
-        final sidebar = ref.watch(sidebarViewProvider);
-        final header = ref.watch(headerViewProvider);
-        if (!_reportedReady) {
-          _reportedReady = true;
-          WidgetsBinding.instance.addPostFrameCallback((_) {
-            if (mounted) {
-              debugPrint(
-                'startup_stage=first_usable_frame elapsed_ms=${_startupClock.elapsedMilliseconds}',
-              );
-              unawaited(
-                ref
-                    .read(anyworkClientProvider)
-                    .directoryCommands
-                    .openSelectedThread(),
-              );
-            }
-          });
-        }
-        return LayoutBuilder(
-          builder: (context, constraints) {
-            final compact =
-                constraints.maxWidth < StudioLayout.compactBreakpoint ||
-                MediaQuery.textScalerOf(context).scale(14) >= 21;
-            final overlay = compact || _sidebarHidden;
-            final maximumWidth =
-                (constraints.maxWidth - 600 - _sidebarDividerWidth).clamp(
-                  300.0,
-                  440.0,
-                );
-            final width = desiredWidth.clamp(300.0, maximumWidth);
-            return Scaffold(
-              key: _scaffoldKey,
-              drawer: overlay
-                  ? Drawer(
-                      width: (constraints.maxWidth - 24).clamp(0.0, 360.0),
-                      child: _Sidebar(
-                        key: _sidebarKey,
-                        state: sidebar,
-                        onNavigate: () =>
-                            _scaffoldKey.currentState?.closeDrawer(),
-                      ),
-                    )
-                  : null,
-              backgroundColor: context.colors.surface,
-              body: KeyedSubtree(
-                key: StudioDriverKeys.shell,
-                child: Row(
-                  children: [
-                    if (!overlay) ...[
-                      SizedBox(
-                        width: width,
-                        child: _Sidebar(key: _sidebarKey, state: sidebar),
-                      ),
-                      Focus(
-                        focusNode: _sidebarResizeFocus,
-                        onFocusChange: (focused) {
-                          setState(() => _sidebarResizeFocused = focused);
-                          if (!focused &&
-                              !_sidebarDragging &&
-                              _sidebarWidth != null) {
-                            unawaited(_persistWidth());
+  Widget build(BuildContext context) => LayoutBuilder(
+    builder: (context, constraints) {
+      final compact =
+          constraints.maxWidth < StudioLayout.compactBreakpoint ||
+          MediaQuery.textScalerOf(context).scale(14) >= 21;
+      final overlay = compact || _collapsed;
+      final maximum = (constraints.maxWidth - 600 - _dividerWidth)
+          .clamp(300.0, 440.0)
+          .toDouble();
+      final width =
+          (widget.widthDraft ??
+                  (widget.canonicalSidebarWidth ?? 336).toDouble())
+              .clamp(300.0, maximum)
+              .toDouble();
+      return Scaffold(
+        key: _scaffold,
+        backgroundColor: context.colors.surface,
+        drawer: overlay
+            ? Drawer(
+                width: (constraints.maxWidth - 24).clamp(0.0, 360.0).toDouble(),
+                child: ShellDrawerScope(
+                  close: () => _scaffold.currentState?.closeDrawer(),
+                  child: widget.navigation,
+                ),
+              )
+            : null,
+        body: Row(
+          key: StudioDriverKeys.shell,
+          children: [
+            if (!overlay) ...[
+              SizedBox(width: width, child: widget.navigation),
+              _divider(context, width, maximum),
+            ],
+            Expanded(
+              child: Column(
+                children: [
+                  Row(
+                    children: [
+                      IconButton(
+                        key: const ValueKey('sidebar-toggle'),
+                        tooltip: context.l10n.sidebarNavigation,
+                        onPressed: () {
+                          if (overlay) {
+                            _scaffold.currentState?.openDrawer();
+                          } else {
+                            setState(() => _collapsed = true);
                           }
                         },
-                        onKeyEvent: (_, event) =>
-                            _handleSidebarKey(event, width, maximumWidth),
-                        child: Semantics(
-                          key: StudioDriverKeys.sidebarResize,
-                          label: context.l10n.sidebarResize,
-                          slider: true,
-                          value: '${width.round()}',
-                          increasedValue:
-                              '${(width + 16).clamp(300, maximumWidth).round()}',
-                          decreasedValue:
-                              '${(width - 16).clamp(300, maximumWidth).round()}',
-                          onIncrease: () {
-                            _adjustSidebarWidth(16, width, maximumWidth);
-                            unawaited(_persistWidth());
-                          },
-                          onDecrease: () {
-                            _adjustSidebarWidth(-16, width, maximumWidth);
-                            unawaited(_persistWidth());
-                          },
-                          child: MouseRegion(
-                            cursor: SystemMouseCursors.resizeColumn,
-                            child: Listener(
-                              // EditableText unfocuses on down; take focus afterwards.
-                              onPointerUp: (_) =>
-                                  _sidebarResizeFocus.requestFocus(),
-                              child: GestureDetector(
-                                dragStartBehavior: DragStartBehavior.down,
-                                onHorizontalDragStart: (_) {
-                                  _sidebarDragging = true;
-                                  _sidebarResizeFocus.requestFocus();
-                                },
-                                onHorizontalDragUpdate: (event) =>
-                                    _adjustSidebarWidth(
-                                      event.delta.dx,
-                                      width,
-                                      maximumWidth,
-                                    ),
-                                onHorizontalDragEnd: (_) {
-                                  _sidebarDragging = false;
-                                  unawaited(_persistWidth());
-                                },
-                                onHorizontalDragCancel: () {
-                                  if (_sidebarDragging) {
-                                    _sidebarDragging = false;
-                                    _setSidebarWidth(null);
-                                  }
-                                },
-                                onDoubleTap: () {
-                                  _setSidebarWidth(336);
-                                  unawaited(_persistWidth());
-                                },
-                                child: Container(
-                                  width: _sidebarDividerWidth,
-                                  color: _sidebarResizeFocused
-                                      ? context.colors.primary
-                                      : context.colors.outlineVariant
-                                            .withValues(alpha: .5),
-                                ),
-                              ),
-                            ),
-                          ),
-                        ),
+                        icon: Icon(overlay ? Icons.menu : Icons.chevron_left),
                       ),
+                      if (_collapsed && !compact)
+                        IconButton(
+                          tooltip: context.l10n.sidebarNavigation,
+                          onPressed: () => setState(() => _collapsed = false),
+                          icon: const Icon(Icons.chevron_right),
+                        ),
+                      Expanded(child: widget.chrome),
                     ],
-                    Expanded(
-                      child: DecoratedBox(
-                        decoration: BoxDecoration(
-                          color: context.colors.surface,
-                        ),
-                        child: Column(
-                          children: [
-                            Row(
-                              children: [
-                                IconButton(
-                                  key: const ValueKey('sidebar-toggle'),
-                                  tooltip: context.l10n.sidebarNavigation,
-                                  onPressed: () {
-                                    if (overlay) {
-                                      _scaffoldKey.currentState?.openDrawer();
-                                    } else {
-                                      setState(() => _sidebarHidden = true);
-                                    }
-                                  },
-                                  icon: Icon(
-                                    overlay ? Icons.menu : Icons.chevron_left,
-                                  ),
-                                ),
-                                if (_sidebarHidden && !compact)
-                                  IconButton(
-                                    tooltip: context.l10n.sidebarNavigation,
-                                    onPressed: () =>
-                                        setState(() => _sidebarHidden = false),
-                                    icon: const Icon(Icons.chevron_right),
-                                  ),
-                                Expanded(child: _Header(state: header)),
-                              ],
-                            ),
-                            if (startup.directoryError case final error?)
-                              MaterialBanner(
-                                key: const ValueKey(
-                                  'project-directory-failure',
-                                ),
-                                leading: const Icon(Icons.sync_problem),
-                                content: Text(error),
-                                actions: [
-                                  TextButton(
-                                    key: const ValueKey(
-                                      'project-directory-retry',
-                                    ),
-                                    onPressed: () => ref
-                                        .read(anyworkClientProvider)
-                                        .retryResource(
-                                          const ProjectDirectoryTopic(),
-                                        ),
-                                    child: Text(context.l10n.runtimeFatalRetry),
-                                  ),
-                                ],
-                              ),
-                            const _PersistenceStatusPanel(),
-                            const _StartupRecoveryBanner(),
-                            if (chrome.applicationRecoveryIssues.isNotEmpty)
-                              _ApplicationRecoveryBanner(
-                                issues: chrome.applicationRecoveryIssues,
-                              ),
-                            const RecoveryCheckStatus(showChecking: false),
-                            const Divider(height: 1),
-                            const Expanded(child: AgentWorkspacePane()),
-                          ],
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
+                  ),
+                  widget.notices,
+                  const Divider(height: 1),
+                  Expanded(child: widget.workspace),
+                ],
               ),
-            );
-          },
-        );
-      },
-    );
-  }
+            ),
+          ],
+        ),
+      );
+    },
+  );
 }

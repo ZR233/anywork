@@ -4,7 +4,7 @@
 
 ## 23.1 版本与发布流
 
-### Release Please 版本计算与人工审批
+### 23.1.1 Release Please 版本计算与人工审批
 
 Studio 使用 Release Please 的单一根组件管理版本：根版本文件、发布清单（release manifest）与带版本注解的 Flutter `pubspec.yaml` 由同一个 Release PR 同步更新；Flutter 版本仅允许规范的稳定语义化版本 `x.y.z`，不使用 `+build` 后缀。版本变更从整个仓库的约定式提交（Conventional Commits）收集，自动版本计算采用 `always-bump-minor` 策略：
 - **次版本统一递增**：可发布的产品修改统一递增次版本号（minor）并将修订号（patch）归零，`fix:` 提交也不自动递增 patch；携带 `!` 或 `BREAKING CHANGE:` 的提交不自动递增主版本号（major），但必须保留真实的破坏性变更标记与发行说明。
@@ -13,9 +13,9 @@ Studio 使用 Release Please 的单一根组件管理版本：根版本文件、
 
 PR 质量门禁（PR Quality Gate）对 PR 头部分支运行 Release Please 演练（dry run）以验证发布配置；仅在 GitHub GraphQL API 返回已知瞬时错误时执行有限重试，其余错误直接判定失败。
 
-人工批准发布表示前序质量验证已经完成。格式、静态分析、自动化测试及生成文件一致性由 PR 质量门禁负责；稳定发布与 RC 构建直接消费源码中已提交的生成文件，不再重复这些检查或重新生成绑定。发布仍须执行确定性构建与针对最终产物的签名、安装和完整性验证；它们属于交付信任边界，不由前序源码检查替代。
+### 23.1.2 三阶段发布器（Publisher）与权限分离
 
-### 三阶段发布器（Publisher）与权限分离
+人工批准发布表示前序质量验证已经完成。格式、静态分析、自动化测试及生成文件一致性由 PR 质量门禁负责；稳定发布与 RC 构建直接消费源码中已提交的生成文件，不再重复这些检查或重新生成绑定。发布仍须执行确定性构建与针对最终产物的签名、安装和完整性验证；它们属于交付信任边界，不由前序源码检查替代。
 
 发布工作流按 Release Please 官方模式运行，并使用仓库专属的细粒度个人访问令牌（fine-grained PAT，工作流须先校验其归属仓库所有者）创建或更新 Release PR，确保该 PR 及其合并提交能正常触发后续 GitHub Actions。Release PR 合并后，同一工作流运行实例从 Release Please 输出中解析不可变的 `v{x.y.z}` 标签、草稿发布（draft Release）与精确数字 ID，并同步调用可复用的发布器（publisher）；发布器再通过 GitHub API 与 Git 标签独立核验仓库身份、稳定版本号、提交 SHA 与三个版本文件，拒绝任何人工传入的版本号或 SHA 参数。版本回滚仅允许通过发布更高版本的正向修复（forward fix）完成，严禁覆盖既有 Git 标签或已发布的 Release。
 
@@ -28,7 +28,7 @@ PR 质量门禁（PR Quality Gate）对 PR 头部分支运行 Release Please 演
 
 稳定版 Release 固定包含四项公开资产：Windows 单用户（per-user）安装器、安装器的 `.minisig` 签名文件、`latest.json` 更新清单与 `SHA256SUMS.txt` 校验和文件（不提供便携版压缩包，也不执行 Cargo crate 发布）。
 
-### 工具链固定、构建缓存与 MSVC 环境排障
+### 23.1.3 工具链固定、构建缓存与 MSVC 环境排障
 
 Flutter 版本与 Rust 工具链版本在仓库中统一固定（以 `rust-toolchain.toml` 为唯一事实源，同时声明 `rustfmt`、`clippy`、`rust-analyzer` 组件以及 `aarch64-unknown-linux-musl`、`x86_64-unknown-linux-musl` 交叉编译目标）。`cargo xtask` 在触发任何 Rust 命令前先于仓库根目录执行 `rustc --version` 以完成固定工具链同步预检。CI 中的第三方生成工具（如 FRB 生成器与 `cargo-expand`）通过固定版本的 `cargo-binstall --force` 安装预编译二进制包，禁止回退至源码编译。构建缓存按宿主平台、实际工具链与产物集合隔离。
 
@@ -36,9 +36,9 @@ Windows 本机编译第三方 C 依赖（如 `zstd-sys`）若遇到 MSVC `D8050`
 
 ## 23.2 Windows 安装包与签名信任根
 
-正式打包入口命令（`stage`、`finalize`、`verify`，参数为规范 `x.y.z` 版本号）要求传入版本与 `pubspec.yaml` 完全一致。`stage` 阶段复用 GUI 构建产物生成单用户 Inno Setup 安装器（使用稳定 `AppId`，默认安装至 `LocalAppData`，声明 `CloseApplications` 与 `RestartApplications`，支持英语与随源码固定的简体中文界面，并将 `code/pl-studio-runtime/THIRD_PARTY_NOTICES.md` 与 `LICENSE` 打入发行包根目录）。
-
 Windows 安装器固定使用 `PrivilegesRequired=lowest`，不主动启用 `RedirectionGuard`。在受影响的 Windows 版本上，安装器启用的重定向信任策略会随安装后启动或更新重启传入应用及其命令子进程，阻止普通用户创建的目录链接，破坏 Flutter 等开发工具链。安装器显式使用 Inno Setup 的 `RedirectionGuard=no`，避免在安装链主动附加此策略；不修改系统缓解策略、提权或在运行时尝试撤销已经继承的策略。已受限的旧版应用启动更新时，限制仍可能沿更新进程链继承；升级后须完全退出，再从开始菜单或快捷方式启动一次。由外部宿主或系统配置施加的策略仍由其管理。此选择只适用于当前不提权的单用户安装边界；若未来引入管理员安装，必须重新评估安装器的路径重定向防护与应用启动隔离。
+
+正式打包入口命令（`stage`、`finalize`、`verify`，参数为规范 `x.y.z` 版本号）要求传入版本与 `pubspec.yaml` 完全一致。`stage` 阶段复用 GUI 构建产物生成单用户 Inno Setup 安装器（使用稳定 `AppId`，默认安装至 `LocalAppData`，声明 `CloseApplications` 与 `RestartApplications`，支持英语与随源码固定的简体中文界面，并将 `code/pl-studio-runtime/THIRD_PARTY_NOTICES.md` 与 `LICENSE` 打入发行包根目录）。
 
 发布的安装器不包含调试符号文件（PDB）；Windows 构建会额外生成独立的符号构件（包含与发布版本、提交 SHA 及会话协议版本映射的启动器与 Rust 桥接库 PDB），专门用于崩溃转储分析。升级后的用户数据与配置遵循 [17](./17-studio-storage.md) 与 [20](./20-config.md) 的迁移契约（迁移边界见 [17.7](./17-studio-storage.md#177-大版本隔离与配置迁移)）。
 

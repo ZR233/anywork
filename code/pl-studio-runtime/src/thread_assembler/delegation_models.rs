@@ -1,10 +1,8 @@
 //! Read-only candidate projections over the config, performance and evaluation owners.
 use super::{StudioThreadAssembler, agent_services::AgentServices};
+use crate::studio::delegation::resolve_catalog_selection;
 use anyhow::{Context, Result};
-use pl_model::{
-    config::{AccountId, AccountModelEntry, ModelRouteConfig, ReasoningEffort},
-    model::ModelType,
-};
+use pl_model::{config::AccountId, model::ModelType};
 use pl_protocol::{
     DelegationModelCapability as Capability, DelegationModelCursor, DelegationModelDetail,
     DelegationModelKey, DelegationModelList, DelegationModelListItem, GetDelegationModelRequest,
@@ -53,7 +51,7 @@ impl AgentServices {
             }
             // This is the model owner's only base qualification, not an automatic whitelist.
             for entry in account.selectable_catalog(Some(ModelType::Text))? {
-                if admission(&snapshot.config, account_id, &entry).is_err() {
+                if resolve_catalog_selection(&snapshot.config, account_id, &entry).is_err() {
                     continue;
                 }
                 if filter.min_context_window.is_some_and(|minimum| {
@@ -162,7 +160,7 @@ impl AgentServices {
             .into_iter()
             .find(|entry| entry.model.model_id == request.model_id)
             .ok_or_else(|| pl_protocol::studio::StudioError::not_found("Current account model"))?;
-        let availability = admission(&snapshot.config, &account_id, &entry);
+        let availability = resolve_catalog_selection(&snapshot.config, &account_id, &entry);
         let key = DelegationModelKey {
             account_id: request.account_id,
             model_id: request.model_id,
@@ -194,33 +192,13 @@ impl AgentServices {
     }
 }
 
-fn admission(
-    config: &crate::StudioConfig,
-    account_id: &AccountId,
-    entry: &AccountModelEntry,
-) -> crate::Result<pl_model::config::ResolvedModelRoute> {
-    let effort = entry
-        .model
-        .default_effort()
-        .or_else(|| entry.model.supported_efforts().first().cloned());
-    crate::studio::delegation::resolve_child_selection(
-        config,
-        crate::AgentRoleId::new("executor".to_string())?,
-        &ModelRouteConfig {
-            account_id: account_id.clone(),
-            model_id: entry.model.model_id.clone(),
-            effort: effort.map(ReasoningEffort::new),
-        },
-    )
-}
-
 fn stale_cursor(revision: u64) -> anyhow::Error {
     pl_protocol::studio::StudioError::new(
         pl_protocol::studio::StudioErrorCode::StaleRevision,
         "Delegation model cursor is stale or belongs to another query; restart the query",
         true,
     )
-    .with_details(serde_json::json!({"catalogRevision":revision}))
+    .with_details(pl_protocol::studio::StudioErrorDetails::CatalogRevision { revision })
     .into()
 }
 

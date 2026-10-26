@@ -69,4 +69,5 @@ pub struct RemoteDirectoryEntryDto {
     pub name: String,
     pub path: String,
     pub is_directory: bool,
+    pub is_symlink: bool,
 }

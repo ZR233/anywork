@@ -16,7 +16,8 @@ use super::storage::BotStateStore;
 use crate::studio::new_id;
 use pl_protocol::studio::{
     BotCredentialAvailability, BotCredentialOperation, BotDiagnostic,
-    BotPendingCredentialOperation, BotSecretUpdate, BotsCommandReply, SaveBotRequest,
+    BotPendingCredentialOperation, BotSecretUpdate, BotsCommandReply, BotsStateSnapshot,
+    CommandDisposition, CommandEffectPoint, ResourceStamp, SaveBotRequest, StudioCommandReceipt,
 };
 use std::collections::BTreeSet;
 use std::path::Path;
@@ -335,9 +336,10 @@ struct FinalizeOptions {
     clear_pairing: Option<String>,
 }
 
-/// 收尾可观察的连接结果：只用于显式重试用例报告，不改变保存结论。
+/// 收尾的原次发布材料与连接结果；连接错误只用于显式重试报告，不改变保存结论。
 struct CommitSettlement {
     connection_error: Option<FeishuError>,
+    publication: Option<BotsStateSnapshot>,
 }
 
 /// 旧连接隔离结果。
@@ -1286,10 +1288,9 @@ impl BotOperationOwner {
                 },
             )
             .await?;
-        self.runtime.publish().await;
         match settlement.connection_error {
             Some(error) => Err(error),
-            None => Ok(self.runtime.reply(operation_id, true, owner_epoch).await),
+            None => self.command_reply(settlement.publication, operation_id, owner_epoch),
         }
     }
 
@@ -1690,23 +1691,67 @@ impl BotOperationOwner {
         let decision = settled.commit.decision;
         let operation_id = settled.commit.operation_id.clone();
         let not_applied = not_applied_error(&settled.commit);
-        self.finalize_commit(
-            &settled,
-            previous,
-            FinalizeOptions {
-                start_connection: true,
-                coordinate_connection: false,
-                clear_pairing,
-            },
-        )
-        .await?;
+        let settlement = self
+            .finalize_commit(
+                &settled,
+                previous,
+                FinalizeOptions {
+                    start_connection: true,
+                    coordinate_connection: false,
+                    clear_pairing,
+                },
+            )
+            .await?;
         match decision {
             CredentialDecision::Applied => {
-                Ok(self.runtime.reply(operation_id, true, owner_epoch).await)
+                self.command_reply(settlement.publication, operation_id, owner_epoch)
             }
             CredentialDecision::Uncertain => Err(uncertain_error(&operation_id)),
             CredentialDecision::NotApplied => Err(not_applied),
         }
+    }
+
+    fn command_reply(
+        &self,
+        publication: Option<BotsStateSnapshot>,
+        operation_id: String,
+        owner_epoch: &str,
+    ) -> Result<BotsCommandReply, FeishuError> {
+        let publication = publication.ok_or_else(|| {
+            FeishuError::new(
+                FeishuErrorKind::Unavailable,
+                "bot command state was not published",
+                true,
+                None,
+            )
+        })?;
+        let bot = publication
+            .bots
+            .into_iter()
+            .find(|bot| bot.id == self.bot_id)
+            .ok_or_else(|| {
+                FeishuError::new(
+                    FeishuErrorKind::Unavailable,
+                    "bot command publication did not contain the affected bot",
+                    true,
+                    None,
+                )
+            })?;
+        let stamp = ResourceStamp {
+            resource_key: "bots".to_string(),
+            owner_epoch: owner_epoch.to_string(),
+            revision: publication.revision,
+        };
+        let receipt = StudioCommandReceipt {
+            operation_id,
+            disposition: CommandDisposition::Applied,
+            targets: vec![stamp.clone()],
+            effect: CommandEffectPoint::Immediate,
+            effective: true,
+            durable: true,
+            requires_identity_observation: false,
+        };
+        Ok(BotRuntime::reply(Some(bot), None, stamp, receipt))
     }
 
     /// 提交/恢复确定后统一收尾：短 admission 边界封口并失效旧回调 → 不持
@@ -1728,6 +1773,7 @@ impl BotOperationOwner {
             .await;
             return Ok(CommitSettlement {
                 connection_error: None,
+                publication: None,
             });
         }
         if !commit.publishable {
@@ -1735,6 +1781,7 @@ impl BotOperationOwner {
                 .await;
             return Ok(CommitSettlement {
                 connection_error: None,
+                publication: None,
             });
         }
         let managed = self.ensure_published(&commit.config).await?;
@@ -1818,8 +1865,11 @@ impl BotOperationOwner {
             self.clear_non_cleanup_diagnostic(&managed).await;
         }
         self.clear_submitting().await;
-        self.runtime.publish().await;
-        Ok(CommitSettlement { connection_error })
+        let publication = self.runtime.publish_returning().await;
+        Ok(CommitSettlement {
+            connection_error,
+            publication,
+        })
     }
 
     /// 不可发布的确定结论：没有可运行配置，只更新投影与必要占用。

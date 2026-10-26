@@ -1,6 +1,7 @@
 //! typed 产品 topic 订阅：登记接收者、读取领域基线与帧交付。
 
 use anyhow::Result;
+use std::sync::Arc;
 use tokio::sync::broadcast;
 
 use crate::{
@@ -21,6 +22,11 @@ pub struct StudioProductTopicSubscription {
     topic: StudioProductTopic,
     receiver: broadcast::Receiver<crate::StudioProductEventEnvelope>,
     baseline: Option<StudioProductBaseline>,
+    /// 活跃会话费用订阅持有的原 root 观察需求；与本订阅同生命周期释放。
+    ///
+    /// 只借用既有计费所有者：不创建或激活会话执行 owner。最后一份需求消失后，没有费用材料
+    /// 的空观察条目可被回收。
+    _session_costs_lease: Option<Arc<()>>,
 }
 
 impl StudioProductTopicSubscription {
@@ -59,11 +65,28 @@ impl StudioRuntime {
     ) -> Result<StudioProductTopicSubscription> {
         topic.validate()?;
         let receiver = self.agent_facility.product_events.subscribe_topic(&topic);
-        let baseline = self.read_product_baseline(&topic).await?;
+        // 活跃会话费用订阅必须先登记原 root 观察需求，再取与该登记同一边界的基线；其余 topic
+        // 保持原有的"先登记接收者、再读纯查询基线"顺序。
+        let (baseline, session_costs_lease) = match &topic {
+            StudioProductTopic::SessionCosts { root_thread_id } => {
+                let observation = self
+                    .observe_session_costs_subscription(root_thread_id)
+                    .await?;
+                (
+                    product_baseline(
+                        &topic,
+                        StudioProductBaselineState::SessionCosts(Box::new(observation.baseline)),
+                    ),
+                    Some(observation.lease),
+                )
+            }
+            _ => (self.read_product_baseline(&topic).await?, None),
+        };
         Ok(StudioProductTopicSubscription {
             topic,
             receiver,
             baseline: Some(baseline),
+            _session_costs_lease: session_costs_lease,
         })
     }
 
@@ -167,11 +190,18 @@ impl StudioRuntime {
                 StudioProductBaselineState::Bots(Box::new(self.bots.snapshot().await))
             }
         };
-        let revision = state.revision();
-        Ok(StudioProductBaseline {
-            topic: topic.clone(),
-            revision,
-            state,
-        })
+        Ok(product_baseline(topic, state))
+    }
+}
+
+/// 领域基线载体；`revision` 只来自该领域载荷自身。
+fn product_baseline(
+    topic: &StudioProductTopic,
+    state: StudioProductBaselineState,
+) -> StudioProductBaseline {
+    StudioProductBaseline {
+        topic: topic.clone(),
+        revision: state.revision(),
+        state,
     }
 }

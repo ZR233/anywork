@@ -8,14 +8,18 @@
 //! 与最近 inference 身份窗口（256 条，且不持久化）。执行恢复（`load_cache`）只读取产品对象
 //! 缓存，完全不读取调用库。
 //!
-//! 展示投影只由明确的前进点建立：startup 初始化（`initialize_projection`）、计费
-//! durability/flags 变化（`emit_snapshot_after_flush`）与归档/恢复命令。全局性能与逐 root
-//! 会话费用由同一计费 owner 分别发布（作用域 revision 按 root 独立单调，含清除与淘汰）；
-//! 查询（snapshot/session_costs_snapshot/published_session_costs）只读已发布值：不写库、
+//! 展示投影只由明确的前进点建立：startup 初始化（`initialize_projection`）、统计进度前进
+//! （`follow_statistics_progress`：Billing 与可靠历史派生 Summary 的受理 / 落库 / 拒绝都会
+//! 唤醒同一 owner）与归档/恢复命令。发布状态（业务 revision、
+//! 更新时间与 flags）与读取材料分属不同版本域：只有统计事实的落库水位前进才重新读取汇总、
+//! 历史与费用材料；纯待写、统计缺口与读取失败状态只推进轻量状态并保留上一次读取的不可变
+//! 材料，既有读取作用域继续有效。全局性能与逐 root 会话费用由同一计费 owner 分别发布
+//! （作用域 revision 按 root 独立单调，含清除与淘汰）；查询
+//! （snapshot/published_session_costs/session_costs_snapshot）只读已发布值：不写库、
 //! 不推进 revision、不扫描补建作用域、不发事件。
 
-use std::collections::{BTreeMap, VecDeque};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use pl_protocol::{InferenceBillingRecord, InferenceModelObservation, ModelMatchState};
@@ -23,7 +27,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::statistics::{
-    StatisticsFeed, StatisticsPublisher, StudioModelPerformanceEffortSummary,
+    StudioModelPerformanceEffortSummary,
     StudioModelPerformanceSample, StudioModelPerformanceSnapshot, StudioModelPerformanceSummary,
 };
 use crate::studio::storage::calls::{
@@ -44,7 +48,10 @@ const HISTORY_LIMIT: usize = crate::studio::storage::calls::PERFORMANCE_SAMPLE_L
 /// 持久 idempotency 已由 `calls.sqlite` 的调用身份唯一约束承担；这里只用于抑制同一
 /// 进程内重复投递，因此必须有界，且不参与持久化。
 const RECENT_IDENTITY_LIMIT: usize = 256;
-/// 作用域费用缓存的条目上限；超限时优先淘汰已清除（`cost == None`）的最旧条目。
+/// 已清除条目缓存（`cost == None`）的软上限。
+///
+/// 这不是费用总量的截断：有真实费用材料的条目永不因此被淘汰，仍被观察（source lease 存活）
+/// 的活跃根也不会被淘汰；它只限制"已清除且无观察"的空条目缓存，避免无界增长。
 const SCOPED_COST_LIMIT: usize = 256;
 
 #[derive(Clone)]
@@ -52,10 +59,7 @@ pub(crate) struct ModelPerformanceOwner {
     state: Arc<Mutex<ModelPerformanceState>>,
     store: StudioStore,
     product_events: ProductEventBus,
-    /// 已有刷新任务在跑；避免每次推理都重复整库聚合。
-    refreshing: Arc<AtomicBool>,
-    /// 已受理的最高调用库计费 ticket；刷新与快照只等待这个固定目标。
-    billing_ticket: Arc<AtomicU64>,
+    source: Arc<super::statistics::StatisticsSource>,
     /// 已持久化的产品对象 revision，避免同一 revision 重复写盘。
     persisted_revision: Arc<AtomicU64>,
     /// 串行化产品对象写入，避免刷新任务与显式快照并发写同一 revision。
@@ -64,13 +68,23 @@ pub(crate) struct ModelPerformanceOwner {
     project_lock: Arc<tokio::sync::Mutex<()>>,
     /// 已发布的展示投影：全局性能与逐 root 费用同一次发布原子可见。
     published: Arc<tokio::sync::Mutex<PublishedProjection>>,
-    /// Same-owner latest-value source for the independent GUI feed.
-    statistics: StatisticsPublisher,
+    /// 上一次真实材料读取覆盖的统计落库水位（Billing / 可靠历史派生 Summary）。
+    ///
+    /// 只作为刷新驱动的读取判据，不参与发布版本、材料版本或读取引用。
+    read_through: Arc<AtomicU64>,
+    /// 最近一次**尝试**整库读取所依据的统计水位，无论那次读取成功与否。
+    ///
+    /// 只用于 retry 资格判定：失败过的统计状态不会被无关的 Effect 进度反复重读，而新的统计
+    /// 进度前进（或 `initialize_projection` / `refresh_directory_visibility` 这类明确恢复动作）
+    /// 仍然会重新读取。它绝不冒充成功水位（成功水位只有 `read_through`），也不参与发布版本
+    /// 或读取材料。
+    attempted_through: Arc<AtomicU64>,
 }
 
 /// 当前已发布的展示投影；查询路径只 clone，不推进。
 struct PublishedProjection {
     global: StudioModelPerformanceSnapshot,
+    history_sources: Arc<[PerformanceSampleSource]>,
     /// 费用发布水位独立于全局统计；跨缓存淘汰仍给每个 root 单调的展示版本。
     scoped_revision: u64,
     scoped_updated_at: i64,
@@ -81,7 +95,17 @@ struct PublishedProjection {
 /// 一次调用库投影读取得到的完整事实：全局性能与各 root 会话费用。
 struct PerformanceProjection {
     global: StudioModelPerformanceSnapshot,
+    history_sources: Arc<[PerformanceSampleSource]>,
     session_costs: Vec<StudioSessionCostSnapshot>,
+    /// 本次读取开始前已落库的计费水位；刷新驱动据此判断材料是否可能变化。
+    watermark: u64,
+}
+
+/// Canonical log identity, deliberately separate from the public presentation fields.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub(super) struct PerformanceSampleSource {
+    pub(super) thread_id: String,
+    pub(super) call_id: String,
 }
 
 /// 单个 root 的作用域费用发布状态。
@@ -231,32 +255,29 @@ enum BillingRetention {
 }
 
 impl ModelPerformanceOwner {
-    pub(in crate::studio) fn new(
+    pub(in crate::studio::runtime) fn new(
         store: StudioStore,
         product_events: ProductEventBus,
-        owner_epoch: String,
+        source: Arc<super::statistics::StatisticsSource>,
     ) -> Self {
         Self {
             state: Arc::new(Mutex::new(ModelPerformanceState::default())),
             store,
             product_events,
-            refreshing: Arc::new(AtomicBool::new(false)),
-            billing_ticket: Arc::new(AtomicU64::new(0)),
+            source,
             persisted_revision: Arc::new(AtomicU64::new(0)),
             persist_lock: Arc::new(tokio::sync::Mutex::new(())),
             project_lock: Arc::new(tokio::sync::Mutex::new(())),
             published: Arc::new(tokio::sync::Mutex::new(PublishedProjection {
                 global: StudioModelPerformanceSnapshot::default(),
+                history_sources: Arc::from([]),
                 scoped_revision: 0,
                 scoped_updated_at: 0,
                 scoped: BTreeMap::new(),
             })),
-            statistics: StatisticsPublisher::new(owner_epoch),
+            read_through: Arc::new(AtomicU64::new(0)),
+            attempted_through: Arc::new(AtomicU64::new(0)),
         }
-    }
-
-    pub(crate) fn subscribe_statistics(&self) -> StatisticsFeed {
-        self.statistics.subscribe()
     }
 
     /// 恢复固定上限缓存；不读取调用库，执行恢复不依赖 calls。
@@ -331,10 +352,23 @@ impl ModelPerformanceOwner {
             .map(|summary| (published.global.updated_at, summary))
     }
 
+    /// Captures log keys and their values at the same publication boundary. A timestamp/model
+    /// combination is never used as a sample identity; equal-valued calls remain distinct.
+    pub(super) async fn history_source_snapshot(
+        &self,
+    ) -> (
+        StudioModelPerformanceSnapshot,
+        Arc<[PerformanceSampleSource]>,
+    ) {
+        let published = self.published.lock().await;
+        (published.global.clone(), published.history_sources.clone())
+    }
+
     /// 单个 root 会话的作用域费用基线；纯读已发布缓存。
     ///
     /// 未缓存 root 返回当前费用水位的空基线，不落缓存、不扫描调用库；即使清除条目
-    /// 已被淘汰，也可覆盖客户端更旧的费用。flags 来自同一次已发布投影。
+    /// 已被淘汰，也可覆盖客户端更旧的费用。flags 来自同一次已发布投影。这是纯查询，
+    /// 不登记观察；需要后续状态可达的 scope 走 [`Self::observe_session_costs`]。
     pub(crate) async fn session_costs_snapshot(
         &self,
         root_thread_id: &str,
@@ -354,6 +388,46 @@ impl ModelPerformanceOwner {
         .state(root_thread_id)
     }
 
+    /// 为一个已取得 scope lease 的 root 登记费用观察，返回同一份基线状态。
+    ///
+    /// 尚无 rollup 的 root 也进入同一份作用域费用账本（`cost == None` 即"没有费用事实"），
+    /// 因此后续 pending/gap/read_failed 变化与首次真实 rollup 都沿同一条公开发布路径到达
+    /// 该 root 的 feed。这里不读取调用库、不捏造费用、不改动 root 版本语义：空基线与首次
+    /// rollup 的 revision 仍全部由 `scoped_revision` 权威给出（`session_costs_snapshot`
+    /// 不登记观察，保持纯查询）。
+    ///
+    /// 观察生命周期由 source lease 决定：登记时回收已无 lease 且无费用的空条目，有费用的
+    /// 条目仍由既有容量上限管理，因此不会为没有观察的 root 建立永久增长的表。
+    pub(in crate::studio::runtime) async fn observe_session_costs(
+        &self,
+        root_thread_id: &str,
+    ) -> StudioSessionCostsState {
+        let mut published = self.published.lock().await;
+        let observed = self.source.observed_costs();
+        published
+            .scoped
+            .retain(|root, entry| entry.cost.is_some() || observed.contains(root));
+        let (revision, updated_at, statistics_pending, statistics_gap, read_failed) = (
+            published.scoped_revision,
+            published.scoped_updated_at,
+            published.global.statistics_pending,
+            published.global.statistics_gap,
+            published.global.read_failed,
+        );
+        published
+            .scoped
+            .entry(root_thread_id.to_owned())
+            .or_insert(ScopedCostEntry {
+                revision,
+                updated_at,
+                statistics_pending,
+                statistics_gap,
+                read_failed,
+                cost: None,
+            })
+            .state(root_thread_id)
+    }
+
     /// 在同一次 `published` 锁内原子采用一次投影的全局与作用域费用。
     ///
     /// 作用域真值未变化的 root 不提升 revision、不发事件；已发布过费用但不在最新投影
@@ -361,12 +435,14 @@ impl ModelPerformanceOwner {
     /// 已采用的全局快照与需要发布的作用域事实；typed topic 发布由调用方在锁外完成。
     async fn commit_projection(
         &self,
-        mut global: StudioModelPerformanceSnapshot,
+        mut snapshot: StudioModelPerformanceSnapshot,
+        history_sources: Arc<[PerformanceSampleSource]>,
         fresh: Vec<StudioSessionCostSnapshot>,
         flags: (bool, bool),
+        watermark: u64,
     ) -> (StudioModelPerformanceSnapshot, Vec<StudioSessionCostsState>) {
         let mut events = Vec::new();
-        {
+        let global = {
             let mut published = self.published.lock().await;
             let flags_changed = (
                 published.global.statistics_pending,
@@ -374,9 +450,25 @@ impl ModelPerformanceOwner {
                 published.global.read_failed,
             ) != (flags.0, flags.1, false);
             let scoped_revision = published.scoped_revision.saturating_add(1);
-            global.revision = published.global.revision.saturating_add(1);
-            published.global = global.clone();
-            self.statistics.publish(&published.global);
+            snapshot.revision = published.global.revision.saturating_add(1);
+            // 先提交候选：来源拒绝（关闭、失败、配对长度错误或版本空间溢出）时保留 last-good，
+            // 汇总/历史与作用域费用一起停留在上一次权威发布。
+            if let Err(error) = self
+                .source
+                .publish_global(snapshot.clone(), history_sources.clone())
+            {
+                tracing::warn!(%error, "performance product capture failed");
+                return (published.global.clone(), events);
+            }
+            published.global = snapshot.clone();
+            published.history_sources = history_sources;
+            // 成功读取水位只前进不回退：它记录"已经真实读到的统计状态"，与尝试水位分开。
+            if watermark > self.read_through.load(Ordering::Acquire) {
+                self.read_through.store(watermark, Ordering::Release);
+            }
+            // 活跃费用观察集合来自 source lease（同根共享、不跨 await）：淘汰必须排除它们，
+            // 否则活跃空条目连同其 pending/gap/readFailed 会被清掉。锁序仍是 published → source。
+            let observed_roots = self.source.observed_costs();
             let scoped = &mut published.scoped;
             let mut seen = std::collections::BTreeSet::new();
             for cost in fresh {
@@ -413,10 +505,16 @@ impl ModelPerformanceOwner {
                     events.push(entry.state(root));
                 }
             }
-            evict_cleared(scoped);
+            evict_cleared(scoped, &observed_roots);
             if flags_changed || !events.is_empty() {
                 published.scoped_revision = scoped_revision;
                 published.scoped_updated_at = unix_seconds();
+            }
+            snapshot
+        };
+        for event in &events {
+            if let Err(error) = self.source.publish_observed_costs(event.clone()) {
+                tracing::warn!(%error, "session costs product capture failed");
             }
         }
         (global, events)
@@ -424,6 +522,9 @@ impl ModelPerformanceOwner {
 
     /// 读失败时在同一次 `published` 锁内原子标记全局与各 root：保留最后可用数据，
     /// 只显式标记失败与 flags；返回需要发布的作用域事实供锁外发布。
+    ///
+    /// 失败不伪造 `updated_at` 或成功值，也不重建读取材料：汇总、历史与费用沿用上一次
+    /// 成功读取的不可变结果，已打开的读取作用域继续有效。
     async fn commit_read_failure(
         &self,
         pending: bool,
@@ -438,92 +539,104 @@ impl ModelPerformanceOwner {
                 published.global.read_failed,
             ) != (pending, gap, true);
             let scoped_revision = published.scoped_revision.saturating_add(1);
-            published.global.revision = published.global.revision.saturating_add(1);
-            published.global.statistics_pending = pending;
-            published.global.statistics_gap = gap;
-            published.global.read_failed = true;
-            self.statistics.publish_status(
-                published.global.revision,
-                published.global.statistics_pending,
-                published.global.statistics_gap,
-                published.global.read_failed,
-            );
-            for (root, entry) in published.scoped.iter_mut() {
-                if entry.differs(pending, gap, true, &entry.cost.clone()) {
-                    entry.revision = scoped_revision;
-                    entry.updated_at = unix_seconds();
-                    entry.statistics_pending = pending;
-                    entry.statistics_gap = gap;
-                    entry.read_failed = true;
-                    events.push(entry.state(root));
+            let mut candidate = published.global.clone();
+            candidate.revision = candidate.revision.saturating_add(1);
+            candidate.statistics_pending = pending;
+            candidate.statistics_gap = gap;
+            candidate.read_failed = true;
+            // 只推进轻量状态：来源拒绝时保留 last-good，不用失效状态覆盖已发布事实。
+            match self
+                .source
+                .publish_global(candidate.clone(), published.history_sources.clone())
+            {
+                Ok(()) => {
+                    published.global = candidate.clone();
+                    for (root, entry) in published.scoped.iter_mut() {
+                        if entry.differs(pending, gap, true, &entry.cost.clone()) {
+                            entry.revision = scoped_revision;
+                            entry.updated_at = unix_seconds();
+                            entry.statistics_pending = pending;
+                            entry.statistics_gap = gap;
+                            entry.read_failed = true;
+                            events.push(entry.state(root));
+                        }
+                    }
+                    if flags_changed || !events.is_empty() {
+                        published.scoped_revision = scoped_revision;
+                        published.scoped_updated_at = unix_seconds();
+                    }
+                    candidate
+                }
+                Err(error) => {
+                    tracing::warn!(%error, "performance failure projection capture failed");
+                    published.global.clone()
                 }
             }
-            if flags_changed || !events.is_empty() {
-                published.scoped_revision = scoped_revision;
-                published.scoped_updated_at = unix_seconds();
-            }
-            published.global.clone()
         };
+        for event in &events {
+            if let Err(error) = self.source.publish_observed_costs(event.clone()) {
+                tracing::warn!(%error, "session costs product capture failed");
+            }
+        }
         (global, events)
     }
 
-    /// Publishes only owner status. This path never touches calls.sqlite or rebuilds material.
-    async fn commit_statistics_flags(
+    /// 纯状态推进：只更新轻量业务状态与 flags，不重新读取调用库，也不重建读取材料。
+    ///
+    /// 待写与统计缺口的变化走这里：材料、实体与集合版本沿用上一次成功读取的结果。返回
+    /// `None` 表示没有需要对外发布的变化。
+    async fn commit_status(
         &self,
         pending: bool,
-        gap: bool,
-    ) -> (StudioModelPerformanceSnapshot, Vec<StudioSessionCostsState>) {
+    ) -> Option<(StudioModelPerformanceSnapshot, Vec<StudioSessionCostsState>)> {
         let mut events = Vec::new();
         let global = {
             let mut published = self.published.lock().await;
-            let changed = published.global.statistics_pending != pending
-                || published.global.statistics_gap != gap;
-            if !changed {
-                return (published.global.clone(), events);
-            }
-
-            let scoped_revision = published.scoped_revision.saturating_add(1);
-            published.global.revision = published.global.revision.saturating_add(1);
-            published.global.updated_at = unix_seconds();
-            published.global.statistics_pending = pending;
-            published.global.statistics_gap = gap;
-            self.statistics.publish_status(
-                published.global.revision,
+            let gap = self.store.calls().statistics_gap();
+            if (
                 published.global.statistics_pending,
                 published.global.statistics_gap,
-                published.global.read_failed,
-            );
-            for (root, entry) in published.scoped.iter_mut() {
-                if entry.differs(pending, gap, entry.read_failed, &entry.cost.clone()) {
-                    entry.revision = scoped_revision;
-                    entry.updated_at = unix_seconds();
-                    entry.statistics_pending = pending;
-                    entry.statistics_gap = gap;
-                    events.push(entry.state(root));
+            ) != (pending, gap)
+            {
+                let mut candidate = published.global.clone();
+                candidate.revision = candidate.revision.saturating_add(1);
+                candidate.statistics_pending = pending;
+                candidate.statistics_gap = gap;
+                match self
+                    .source
+                    .publish_global(candidate.clone(), published.history_sources.clone())
+                {
+                    Ok(()) => {
+                        let read_failed = candidate.read_failed;
+                        published.global = candidate.clone();
+                        adopt_scoped_status(&mut published, pending, gap, read_failed, &mut events);
+                        Some(candidate)
+                    }
+                    Err(error) => {
+                        tracing::warn!(%error, "performance status capture failed");
+                        None
+                    }
                 }
+            } else {
+                let read_failed = published.global.read_failed;
+                adopt_scoped_status(&mut published, pending, gap, read_failed, &mut events);
+                (!events.is_empty()).then(|| published.global.clone())
             }
-            if !events.is_empty() {
-                published.scoped_revision = scoped_revision;
-                published.scoped_updated_at = unix_seconds();
-            }
-            published.global.clone()
         };
-        (global, events)
-    }
-
-    async fn publish_statistics_flags(&self) {
-        let (pending, gap) = self.statistics_flags();
-        let (global, scoped_events) = self.commit_statistics_flags(pending, gap).await;
-        let _ = self.product_events.emit_model_performance_state(global);
-        for state in scoped_events {
-            self.product_events.emit_session_costs(state);
+        for event in &events {
+            if let Err(error) = self.source.publish_observed_costs(event.clone()) {
+                tracing::warn!(%error, "session costs product capture failed");
+            }
         }
+        global.map(|global| (global, events))
     }
 
     fn statistics_flags(&self) -> (bool, bool) {
         let calls = self.store.calls();
+        // 待写只比较统计事实（Billing / 可靠历史派生 Summary）的受理与落库水位：会话历史写入
+        // （Effect）既不算待写统计，也不会在这里触发统计投影的整库重读。
         (
-            self.billing_ticket.load(Ordering::Acquire) > calls.durable_ticket(),
+            calls.statistics_admitted() > calls.statistics_durable(),
             calls.statistics_gap(),
         )
     }
@@ -622,10 +735,9 @@ impl ModelPerformanceOwner {
             state.revision = state.revision.saturating_add(1);
             state.updated_at = unix_seconds();
         }
-        if let Some(ticket) = ticket {
-            self.billing_ticket.fetch_max(ticket, Ordering::AcqRel);
-        }
-        self.emit_snapshot_after_flush();
+        // 受理与落库的唤醒由调用库自身的统计进度通知发出（`admit_billing` /
+        // `replace_session_usage` / 真实提交 / 拒绝与缺口），owner 不再另存一份 ticket 目标，
+        // 也不为每次推理起一个一次性刷新任务。
         Ok(())
     }
 
@@ -641,14 +753,21 @@ impl ModelPerformanceOwner {
         if let Err(error) = self.persist_state().await {
             tracing::warn!(error = %error, "model performance cache persist failed");
         }
-        self.emit_snapshot_after_flush();
+        // 目录可见性是真实材料变化（该 root 的费用不再对产品暴露）：必须重新读取一次。
+        self.publish_projection().await;
         Ok(())
     }
 
     async fn read_projection(&self) -> Result<PerformanceProjection, PureError> {
         let calls = self.store.calls();
-        let settled_before_read = calls.durable_ticket();
-        let admitted = self.billing_ticket.load(Ordering::Acquire);
+        // 统计专属水位：只由 Billing / 可靠历史派生 Summary 的真实提交推进，不被 Effect
+        // （会话历史写入）的提交抬高，因此历史写入不会触发无关的整库重读。
+        let settled_before_read = calls.statistics_durable();
+        let admitted = calls.statistics_admitted();
+        // 记录"这个统计状态已经被尝试读取过"：读取失败时它让同一状态的 Effect 进度不会反复
+        // 触发整库重读；成功水位仍只由 `read_through` 表达。
+        self.attempted_through
+            .store(settled_before_read, Ordering::Release);
         // Statistics are an eventual, lossy projection: reads never wait for its writer.
         let costs = calls.session_cost_rollups().await.map_err(memory_error)?;
         let samples = calls
@@ -666,6 +785,14 @@ impl ModelPerformanceOwner {
         // 归档/删除会话后不再对产品暴露其会话级统计；模型级汇总仍是全局用量事实。
         let archived = self.archived_roots();
         Ok(PerformanceProjection {
+            watermark: settled_before_read,
+            history_sources: samples
+                .iter()
+                .map(|sample| PerformanceSampleSource {
+                    thread_id: sample.thread_id.clone(),
+                    call_id: sample.call_id.clone(),
+                })
+                .collect(),
             global: StudioModelPerformanceSnapshot {
                 revision,
                 updated_at,
@@ -716,74 +843,54 @@ impl ModelPerformanceOwner {
             .collect()
     }
 
-    /// Publish an initial projection, then follow the accepted billing ticket until settled.
-    /// The writer's progress is a wakeup, not proof that a rejected mutation was committed.
-    fn emit_snapshot_after_flush(&self) {
-        let Ok(handle) = tokio::runtime::Handle::try_current() else {
-            return;
-        };
-        if self.refreshing.swap(true, Ordering::AcqRel) {
-            return;
+    /// 跟随调用库的统计进度，直到 runtime 关闭或调用库释放。
+    ///
+    /// 唤醒只来自调用库既有的进度 watch：Billing 与可靠历史派生 Summary 的**受理**、**真实
+    /// 提交**、**拒绝与缺口**都会发出一次"请重读事实"的通知，因此这些事实都到达同一 owner，
+    /// 不存在"最后一次费用必须等下一次调用、重启或查询副作用"的空档，也没有第二个事件通道。
+    ///
+    /// 订阅后先按当前水位收敛一次，所以启动窗口内已发生的受理不会被漏掉；任务不轮询、不持
+    /// 整个 runtime，取消与有界 join 由 runtime 的 `BackgroundTaskSlot` 负责。
+    pub(in crate::studio::runtime) async fn follow_statistics_progress(&self) {
+        let mut progress = self.store.calls().subscribe_durable_ticket();
+        loop {
+            self.converge_statistics_progress().await;
+            // `changed()` 只是"请重读事实"（值可能未变）：真实水位在收敛内部读取；调用库关闭
+            // 后 sender 释放即返回错误，任务由此结束，不依赖 Drop 语义。
+            if progress.changed().await.is_err() {
+                break;
+            }
         }
-        let owner = self.clone();
-        handle.spawn(async move {
-            let calls = owner.store.calls();
-            let mut durable = calls.subscribe_durable_ticket();
-            let mut published = None;
-            loop {
-                let state = (
-                    owner.revision(),
-                    owner.billing_ticket.load(Ordering::Acquire),
-                    *durable.borrow_and_update(),
-                    calls.statistics_gap(),
-                );
-                if published != Some(state) {
-                    let material_changed = published.is_none_or(|previous| {
-                        (previous.0, previous.1, previous.2) != (state.0, state.1, state.2)
-                    });
-                    if state.1 > state.2 || !material_changed {
-                        owner.publish_statistics_flags().await;
-                    } else {
-                        owner.publish_projection().await;
-                    }
-                    published = Some(state);
-                }
-                let now = (
-                    owner.revision(),
-                    owner.billing_ticket.load(Ordering::Acquire),
-                    calls.durable_ticket(),
-                    calls.statistics_gap(),
-                );
-                if now != state {
-                    continue;
-                }
-                if now.1 <= now.2 {
-                    break;
-                }
-                tokio::select! {
-                    change = durable.changed() => {
-                        if change.is_err() { break; }
-                    }
-                    () = tokio::time::sleep(std::time::Duration::from_secs(1)) => {}
-                }
+    }
+
+    /// 一次统计进度收敛：未落库只推进轻量状态，统计落库水位真前进才重建读取材料。
+    ///
+    /// 每轮按真实水位是否变化决定继续，同一唤醒批次里的多次受理/提交不会被合并丢失；水位
+    /// 不变就立即返回，发布失败也不会空转。
+    async fn converge_statistics_progress(&self) {
+        loop {
+            let calls = self.store.calls();
+            let admitted = calls.statistics_admitted();
+            let settled = calls.statistics_durable();
+            // 只有"这个统计状态还没被尝试读过"才重建材料：失败过的状态不会因为无关的 Effect
+            // 进度而反复整库重读；新的统计进度（或 initialize/archive 这类显式恢复动作，
+            // 它们直接走 `publish_projection`）仍然会真实读取。
+            let attempted = self.attempted_through.load(Ordering::Acquire);
+            if settled > attempted {
+                self.publish_projection().await;
+            } else {
+                self.publish_status(admitted > settled).await;
             }
-            owner.refreshing.store(false, Ordering::Release);
-            let state = (
-                owner.revision(),
-                owner.billing_ticket.load(Ordering::Acquire),
-                calls.durable_ticket(),
-                calls.statistics_gap(),
-            );
-            if published != Some(state) {
-                owner.emit_snapshot_after_flush();
+            if calls.statistics_admitted() == admitted && calls.statistics_durable() == settled {
+                return;
             }
-        });
+        }
     }
 
     /// startup 在 `load_cache` 之后显式建立一次投影：已有调用事实立即成为最新首帧。
     ///
-    /// 这是查询之外的前进点之一（startup 初始化 / 计费 durability 与 flags 变化 /
-    /// 归档命令）；读取失败只影响展示 flags，不影响 runtime 启动。
+    /// 这是查询之外的前进点之一（startup 初始化 / 统计进度前进与 flags 变化 / 归档命令）；
+    /// 读取失败只影响展示 flags，不影响 runtime 启动。
     pub(crate) async fn initialize_projection(&self) {
         let _guard = self.project_lock.lock().await;
         self.publish_locked_projection().await;
@@ -814,7 +921,13 @@ impl ModelPerformanceOwner {
                     projection.global.statistics_gap,
                 );
                 let (global, scoped_events) = self
-                    .commit_projection(projection.global, projection.session_costs, flags)
+                    .commit_projection(
+                        projection.global,
+                        projection.history_sources,
+                        projection.session_costs,
+                        flags,
+                        projection.watermark,
+                    )
                     .await;
                 let _ = self.product_events.emit_model_performance_state(global);
                 for state in scoped_events {
@@ -837,20 +950,56 @@ impl ModelPerformanceOwner {
         }
     }
 
-    fn revision(&self) -> u64 {
-        let state = self.state.lock().unwrap_or_else(|error| error.into_inner());
-        state.revision
+    /// 只推进轻量发布状态：沿用原 `project_lock` 边界，不读取调用库、不重建材料。
+    async fn publish_status(&self, pending: bool) {
+        let _guard = self.project_lock.lock().await;
+        let Some((global, scoped_events)) = self.commit_status(pending).await else {
+            return;
+        };
+        let _ = self.product_events.emit_model_performance_state(global);
+        for state in scoped_events {
+            self.product_events.emit_session_costs(state);
+        }
     }
 }
 
-/// 超出上限时淘汰最旧的已清除条目；有费用的条目不因容量被丢弃。
-fn evict_cleared(scoped: &mut BTreeMap<String, ScopedCostEntry>) {
+/// 按新 flags 更新各 root 作用域的轻量状态，不改动已发布费用材料。
+fn adopt_scoped_status(
+    published: &mut PublishedProjection,
+    pending: bool,
+    gap: bool,
+    read_failed: bool,
+    events: &mut Vec<StudioSessionCostsState>,
+) {
+    let scoped_revision = published.scoped_revision.saturating_add(1);
+    for (root, entry) in published.scoped.iter_mut() {
+        if entry.differs(pending, gap, read_failed, &entry.cost.clone()) {
+            entry.revision = scoped_revision;
+            entry.updated_at = unix_seconds();
+            entry.statistics_pending = pending;
+            entry.statistics_gap = gap;
+            entry.read_failed = read_failed;
+            events.push(entry.state(root));
+        }
+    }
+    if !events.is_empty() {
+        published.scoped_revision = scoped_revision;
+        published.scoped_updated_at = unix_seconds();
+    }
+}
+
+/// 超出软上限时淘汰最旧的已清除条目。
+///
+/// 有真实费用材料的条目、以及仍被观察（`observed` 中的活跃 root）的条目都不淘汰：活跃空条目
+/// 携带待写入/缺口/读取失败状态，被淘汰会让其订阅静默失联。因此条目总数可能超过软上限，超出
+/// 的只是"已清除且最后一份观察需求已消失"的缓存。
+fn evict_cleared(scoped: &mut BTreeMap<String, ScopedCostEntry>, observed: &BTreeSet<String>) {
     if scoped.len() <= SCOPED_COST_LIMIT {
         return;
     }
     let mut cleared: Vec<(i64, String)> = scoped
         .iter()
-        .filter(|(_, entry)| entry.cost.is_none())
+        .filter(|(root, entry)| entry.cost.is_none() && !observed.contains(*root))
         .map(|(root, entry)| (entry.updated_at, root.clone()))
         .collect();
     cleared.sort_unstable();

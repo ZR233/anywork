@@ -7,16 +7,19 @@
 use std::sync::{Arc, PoisonError};
 
 use anyhow::Result;
+use pl_protocol::products::identity::ProductReadOrigin;
 use pl_protocol::studio::{
     AcpAuthFailureCode, AcpAuthSnapshot, AcpAuthState, CancelAcpAuthRequest, StartAcpAuthRequest,
-    StudioErrorCode,
+    StudioError, StudioErrorCode,
 };
 
 use super::mapping::{acp_error, acp_failure_error, ensure_operation_id};
 use super::operation::{self, OperationPlan};
 use super::registry::{AcceptedIntent, AcpAuthInner, ConnectionIdentity, Operation};
 use super::worker::{PROCESS_CLEANUP_LIMIT, WorkerSource};
-use crate::config::{ConfigRuntime, SettingsCommitObserver, StudioConfig};
+use crate::config::{
+    ConfigRuntime, SettingsCommitObserver, SettingsCommitProjection, StudioConfig,
+};
 use crate::studio::{ProductEventBus, StudioStore};
 
 /// 本 runtime 生命周期内保留的已受理操作身份上限。
@@ -45,6 +48,7 @@ impl AcpAuthRuntime {
         config: ConfigRuntime,
         events: ProductEventBus,
         source: crate::worker_assets::RemoteHelperSource,
+        origin: ProductReadOrigin,
     ) -> Self {
         Self {
             inner: Arc::new(AcpAuthInner::new(
@@ -52,8 +56,30 @@ impl AcpAuthRuntime {
                 config,
                 events,
                 WorkerSource::new(source),
+                origin,
             )),
         }
+    }
+
+    /// typed feed 的身份来源：与 `resource_stamp("acp-auth", revision)` 共用同一 owner epoch。
+    pub(super) fn origin(&self) -> ProductReadOrigin {
+        self.inner.origin().clone()
+    }
+
+    /// typed feed 打开：当前 canonical 快照与后续变更唤醒。
+    pub(super) fn observe(
+        &self,
+    ) -> Result<(AcpAuthSnapshot, tokio::sync::watch::Receiver<()>), StudioError> {
+        self.inner.observe()
+    }
+
+    /// typed feed 每次发送前读取的当前快照。
+    pub(super) fn current(&self) -> Result<AcpAuthSnapshot, StudioError> {
+        self.inner.current()
+    }
+
+    pub(super) fn ensure_open(&self) -> Result<(), StudioError> {
+        self.inner.ensure_open()
     }
 
     /// 安装 Settings 提交观察者，并立即取得当前 canonical 快照的接入身份。
@@ -255,10 +281,26 @@ struct AcpSettingsObserver {
 }
 
 impl SettingsCommitObserver for AcpSettingsObserver {
-    fn settings_committed(&self, revision: u64, config: &StudioConfig) {
-        if let Some(inner) = self.inner.upgrade() {
-            inner.observe_committed(revision, config);
-        }
+    fn settings_committed(
+        &self,
+        revision: u64,
+        config: &StudioConfig,
+    ) -> Result<SettingsCommitProjection, StudioError> {
+        let Some(inner) = self.inner.upgrade() else {
+            return Err(StudioError::new(
+                StudioErrorCode::Cancelled,
+                "ACP 认证 owner 不可用，无法取得与设置版本相符的目录投影",
+                false,
+            ));
+        };
+        // 先同步连接身份，再按同一 revision 取得不可变目录：两步都在 Settings command 锁内，
+        // 且不持有 ConfigRuntime 状态锁。
+        inner.observe_committed(revision, config);
+        let accounts = inner.settings_directory(revision, config)?;
+        Ok(SettingsCommitProjection {
+            settings_revision: revision,
+            accounts: std::sync::Arc::from(accounts),
+        })
     }
 }
 

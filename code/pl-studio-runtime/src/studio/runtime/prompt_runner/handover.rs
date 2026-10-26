@@ -5,8 +5,7 @@
 
 use anyhow::Result;
 
-use pl_core::thread::ThreadSnapshot;
-use pl_protocol::{ChildInteractionSummary, InteractionKind, InteractionResolution};
+use pl_protocol::{InteractionKind, InteractionResolution};
 
 use super::super::StudioRuntime;
 
@@ -18,48 +17,6 @@ impl StudioRuntime {
     pub async fn interaction_host_thread(&self, thread_id: &str) -> Result<String> {
         let record = self.read_owned_thread(thread_id).await?;
         Ok(record.parent_thread_id.unwrap_or(record.id))
-    }
-
-    /// Lists the pending interactions raised by the direct children of one main session.
-    ///
-    /// A loaded child answers from its live owner snapshot; a child that is not resident is read
-    /// from its saved checkpoint only, so reopening the application still surfaces questions the
-    /// user has to decide, without activating a child, starting a model call or touching its
-    /// workspace. A child Plan interaction is main-session-only and stays a diagnostic: it is not
-    /// offered here, and its resolution entry rejects it too.
-    pub async fn read_child_interactions(
-        &self,
-        host_thread_id: &str,
-    ) -> Result<Vec<ChildInteractionSummary>> {
-        // Opening publishes the parent owner before cold-child preparation finishes. A composer
-        // read must await that lifecycle boundary while remaining strictly read-only itself.
-        let _lifecycle_guard = self.lifecycle_lock.lock().await;
-        // Listing shares the decision entry's host check: a child id cannot read the interactions of
-        // its own subtree, so "main session projection, child read-only" holds for reads too.
-        self.ensure_root_host(host_thread_id).await?;
-        let mut summaries = Vec::new();
-        for (child_id, snapshot) in self.child_states(host_thread_id).await? {
-            for local_id in snapshot
-                .interactions
-                .keys()
-                .chain(snapshot.permissions.keys())
-            {
-                let Some(interaction) = crate::thread_assembler::project_thread_interaction(
-                    &child_id, local_id, &snapshot,
-                )?
-                else {
-                    continue;
-                };
-                if interaction.status() != pl_protocol::InteractionStatus::Pending {
-                    continue;
-                }
-                if is_child_plan_diagnostic(&snapshot, local_id) {
-                    continue;
-                }
-                summaries.push(ChildInteractionSummary::new(interaction));
-            }
-        }
-        Ok(summaries)
     }
 
     /// Re-delivers every child decision notice the main session may not have received yet.
@@ -159,35 +116,6 @@ impl StudioRuntime {
             })
             .map(|record| record.id)
             .collect())
-    }
-
-    /// Loaded or saved state of every direct child of `host_thread_id`, never activating one.
-    async fn child_states(&self, host_thread_id: &str) -> Result<Vec<(String, ThreadSnapshot)>> {
-        let mut states = Vec::new();
-        for child_id in self.child_thread_ids(host_thread_id).await? {
-            if let Some(thread) = self.threads.thread(&child_id) {
-                states.push((child_id, thread.snapshot()));
-                continue;
-            }
-            let Some(record) = self.store.read_thread(&child_id).await? else {
-                continue;
-            };
-            let thread = pl_protocol::Thread::from(record);
-            // Strictly read-only: a projection never imports a legacy checkpoint, never deletes
-            // the files migration replaced and never touches the state directory, so listing
-            // child questions cannot modify storage.
-            let Some(checkpoint) =
-                crate::studio::thread_factory::recovery::load_checkpoint_read_only(
-                    &self.store,
-                    &thread,
-                )
-                .await?
-            else {
-                continue;
-            };
-            states.push((child_id, checkpoint.state));
-        }
-        Ok(states)
     }
 
     /// Tells the main session that a child interaction reached a decision.
@@ -374,13 +302,6 @@ fn notice_text(
              whether and how to schedule that member again.\n{content}"
         ),
     }
-}
-
-/// Whether this record is a Plan interaction, which is a main-session capability.
-fn is_child_plan_diagnostic(snapshot: &ThreadSnapshot, local_id: &str) -> bool {
-    snapshot.interactions.get(local_id).is_some_and(|record| {
-        record.request.payload.format() == crate::plan_tool::PLAN_CONFIRMATION_FORMAT
-    })
 }
 
 /// The local interaction identity inside its owning Thread.

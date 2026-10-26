@@ -5,30 +5,17 @@
 
 import '../../../frb_generated.dart';
 import '../types/acp.dart';
-import '../types/attachment.dart';
 import '../types/command.dart';
 import '../types/delegation.dart';
 import '../types/error.dart';
 import '../types/response.dart';
 import '../types/runtime.dart';
 import '../types/settings.dart';
-import '../types/thread_preparation.dart';
 import '../types/thread_stream.dart';
 
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
 // These functions are ignored because they are not marked as `pub`: `thread_mode`
-
-/// Streams preparation and one terminal outcome while creating a root Thread.
-///
-/// Creation errors are carried by `Failed` after the normal resource settlement;
-/// losing the sink does not cancel creation. `Succeeded` confirms acceptance of the
-/// first input, independently of its later model execution or history persistence.
-Stream<BridgeNewThreadStartEvent> startNewThread({
-  required BridgeStartNewThreadRequest request,
-}) => RustLib.instance.api.crateApiStudioHandlersThreadStartNewThread(
-  request: request,
-);
 
 /// Renames a root Thread and returns its canonical directory record.
 Future<BridgeRenameThreadCommandReply> renameThread({

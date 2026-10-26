@@ -1,8 +1,6 @@
-import 'package:anywork_client/anywork_client.dart';
-import 'package:anywork_client/models.dart';
+import 'package:anywork_client/conversation.dart';
+import 'package:anywork_client/drafts.dart' show AttachmentModality;
 import 'package:test/test.dart';
-
-import 'support/timeline_transport.dart';
 
 /// 尾部 `Add` 携带权威整条预览，不保证该身份从未被页查询加载，也不保证随后补发
 /// `UpdateItem`；已加载身份必须在同 revision 上原位收敛（design/26 §26.7）。
@@ -10,6 +8,7 @@ import 'support/timeline_transport.dart';
 /// 整体省略量由**持有逐字段详情引用、已核实支配关系与预算的调用方**传入，这个 helper
 /// 只做字段收敛与事实非回退，不自行猜测账目（design/26 §26.8）。
 void main() {
+  const createdAt = 1767225600; // 2026-01-01 UTC, Unix seconds.
   ThreadItemView text({
     required String id,
     required int revision,
@@ -25,8 +24,8 @@ void main() {
     turnId: turnId ?? 'turn-a',
     ordinal: ordinal,
     revision: revision,
-    createdAt: DateTime.utc(2026),
-    updatedAt: DateTime.utc(2026),
+    createdAt: createdAt,
+    updatedAt: createdAt,
     bodyOmittedUnits: omitted,
     executionTerminal: terminal,
     saved: saved,
@@ -35,9 +34,22 @@ void main() {
       text: body,
       attachments: const [],
       lifecycle: terminal
-          ? CompletedThreadContentView(DateTime.utc(2026))
+          ? const CompletedThreadContentView(createdAt)
           : const StreamingThreadContentView(),
     ),
+  );
+
+  StudioTimelineItem timelineItem(
+    int revision, {
+    required String id,
+    String body = '正文',
+    List<StudioTimelineDetailRef> details = const [],
+  }) => StudioTimelineItem(
+    item: text(id: id, revision: revision, body: body),
+    saved: false,
+    lifecycle: StudioTimelineLifecycle.streaming,
+    omittedBytes: 0,
+    details: details,
   );
 
   test('同 revision 的权威整条取更完整正文并采用调用方给定的账目', () {
@@ -128,8 +140,8 @@ void main() {
       turnId: 'turn',
       ordinal: 3,
       revision: 2,
-      createdAt: DateTime.utc(2026),
-      updatedAt: DateTime.utc(2026),
+      createdAt: createdAt,
+      updatedAt: createdAt,
       state: ThreadToolItemStateView(
         invocation: ThreadToolInvocationView(
           toolCallId: toolCallId,
@@ -170,8 +182,8 @@ void main() {
       turnId: 'turn',
       ordinal: 3,
       revision: 2,
-      createdAt: DateTime.utc(2026),
-      updatedAt: DateTime.utc(2026),
+      createdAt: createdAt,
+      updatedAt: createdAt,
       state: ThreadToolItemStateView(
         invocation: ThreadToolInvocationView(
           toolCallId: 'call-1',
@@ -184,12 +196,8 @@ void main() {
 
     final succeeded = tool(
       SucceededThreadToolView(
-        DateTime.utc(2026),
-        const ThreadToolOutputView(
-          result: 'done',
-          attachments: [],
-          outputArtifacts: [],
-        ),
+        createdAt,
+        ThreadToolOutput(result: 'done', attachments: [], outputArtifacts: []),
       ),
     );
     final running = tool(const RunningThreadToolView('done'));
@@ -201,6 +209,51 @@ void main() {
     );
   });
 
+  test('开放 artifact 只按 typed opaque 值随真实工具收敛，保原字符串与顺序而不解码', () {
+    ThreadItemView withArtifacts(List<OpaqueArtifactJson> artifacts) =>
+        text(
+          id: 'artifact-tool',
+          revision: 2,
+          saved: true,
+          terminal: true,
+        ).copyWith(
+          state: ThreadToolItemStateView(
+            invocation: const ThreadToolInvocationView(
+              toolCallId: 'artifact-call',
+              name: 'artifact-tool',
+              arguments: '{}',
+            ),
+            lifecycle: SucceededThreadToolView(
+              createdAt,
+              ThreadToolOutput(
+                result: 'done',
+                attachments: const [],
+                outputArtifacts: artifacts,
+              ),
+            ),
+          ),
+        );
+    final raw = <OpaqueArtifactJson>[
+      const OpaqueArtifactJson(json: ' {"link":"https://fixture.example/"} '),
+      const OpaqueArtifactJson(
+        json: 'deliberately-not-json-at-the-SDK-boundary',
+      ),
+    ];
+    final loaded = withArtifacts(const []);
+    final incoming = withArtifacts(raw);
+    raw.clear();
+    final merged = loaded.convergeWith(incoming, omittedBytes: 0);
+    expect(
+      merged,
+      isNotNull,
+      reason: 'SDK reducers carry opaque native values without a JSON interpretation policy',
+    );
+    expect(merged!.tool!.outputArtifacts.map((artifact) => artifact.json), [
+      ' {"link":"https://fixture.example/"} ',
+      'deliberately-not-json-at-the-SDK-boundary',
+    ]);
+  });
+
   test('同事实重复交付不要求同一 Dart 实例，但必须保留全部权威元数据变化', () {
     final loaded = text(id: 'stable', revision: 4, body: 'abcd');
     final sameContent = ThreadItemView(
@@ -210,7 +263,7 @@ void main() {
       ordinal: loaded.ordinal,
       revision: loaded.revision,
       createdAt: loaded.createdAt,
-      updatedAt: DateTime.utc(2027),
+      updatedAt: 1798761600,
       contextDisposition: ThreadContextDisposition.rolledBack,
       bodyOmittedUnits: loaded.bodyOmittedUnits,
       executionTerminal: loaded.executionTerminal,
@@ -221,7 +274,7 @@ void main() {
     final state = merged.state as ThreadTextItemStateView;
     expect(state.text, 'abcd');
     expect(merged.turnId, 'turn-b', reason: 'Turn 关联由权威副本决定');
-    expect(merged.updatedAt, DateTime.utc(2027));
+    expect(merged.updatedAt, 1798761600);
     expect(
       merged.contextDisposition,
       ThreadContextDisposition.rolledBack,
@@ -236,15 +289,15 @@ void main() {
       turnId: 'turn',
       ordinal: 6,
       revision: 4,
-      createdAt: DateTime.utc(2026),
-      updatedAt: DateTime.utc(2026),
+      createdAt: createdAt,
+      updatedAt: createdAt,
       state: ThreadTextItemStateView(
         channel: ThreadTextChannel.finalAnswer,
         text: 'abcd',
         attachments: [
           ThreadAttachmentView(
             id: id,
-            modality: AttachmentModalityView.image,
+            modality: AttachmentModality.image,
             mediaType: 'image/png',
             byteSize: 12,
             filename: '$id.png',
@@ -359,12 +412,12 @@ void main() {
       turnId: 'turn-a',
       ordinal: 6,
       revision: 4,
-      createdAt: DateTime.utc(2026),
-      updatedAt: DateTime.utc(2026),
+      createdAt: createdAt,
+      updatedAt: createdAt,
       state: ThreadRawItemStateView(
         const [RawHistoryPayload('text/plain', 1, '正文')],
         notice,
-        DateTime.utc(2026),
+        createdAt,
         origin: origin,
       ),
     );

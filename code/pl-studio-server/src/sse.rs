@@ -74,7 +74,7 @@ pub(crate) async fn product_events(
     let has_cursor = headers.contains_key("last-event-id");
     let resync = topic_resync_path(events.topic());
     let (sender, receiver) = mpsc::channel(64);
-    tokio::spawn(async move {
+    let task = tokio::spawn(async move {
         let _permit = permit;
         if has_cursor
             && !flush_stale(
@@ -93,6 +93,9 @@ pub(crate) async fn product_events(
         loop {
             let frame = tokio::select! {
                 _ = shutdown.cancelled() => break,
+                // 客户端断开即结束等待：Response 丢弃会关闭 channel 接收端，静默 topic 不必等
+                // 下一帧或关机就能释放订阅（含其 root 观察租约与 stream permit）。
+                _ = sender.closed() => break,
                 frame = events.recv() => match frame {
                     Ok(Some(frame)) => frame,
                     Ok(None) | Err(_) => break,
@@ -146,6 +149,7 @@ pub(crate) async fn product_events(
         // 终态标记是尽力而为：shutdown 必须立即结束连接，不能用等待容量阻塞优雅关闭。
         let _ = sender.try_send(Ok(Event::default().event("closed").data("{}")));
     });
+    state.track_legacy_stream(task);
     Ok(Sse::new(ReceiverStream::new(receiver))
         .keep_alive(KeepAlive::new().interval(Duration::from_secs(15)).text("")))
 }
@@ -233,7 +237,7 @@ pub(crate) async fn thread_events(
     let shutdown = state.shutdown.clone();
     let has_cursor = headers.contains_key("last-event-id");
     let (sender, receiver) = mpsc::channel(128);
-    tokio::spawn(async move {
+    let task = tokio::spawn(async move {
         let _permit = permit;
         let _residency_pin = residency_pin;
         if has_cursor
@@ -300,6 +304,7 @@ pub(crate) async fn thread_events(
         }
         let _ = sender.try_send(Ok(Event::default().event("closed").data("{}")));
     });
+    state.track_legacy_stream(task);
     Ok(Sse::new(ReceiverStream::new(receiver))
         .keep_alive(KeepAlive::new().interval(Duration::from_secs(15)).text("")))
 }
@@ -338,7 +343,7 @@ pub(crate) async fn thread_timeline_events(
     let shutdown = state.shutdown.clone();
     // 一个批次容量：核心已经合帧，慢消费者由核心判定连续性或重同步，而不是在 transport 堆积。
     let (sender, receiver) = mpsc::channel(1);
-    tokio::spawn(async move {
+    let task = tokio::spawn(async move {
         let _permit = permit;
         if !send_json(&sender, "baseline", None, &baseline).await {
             return;
@@ -386,6 +391,7 @@ pub(crate) async fn thread_timeline_events(
         stream.close();
         let _ = sender.try_send(Ok(Event::default().event("closed").data("{}")));
     });
+    state.track_legacy_stream(task);
     Ok(Sse::new(ReceiverStream::new(receiver))
         .keep_alive(KeepAlive::new().interval(Duration::from_secs(15)).text("")))
 }

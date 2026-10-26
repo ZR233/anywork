@@ -97,13 +97,17 @@ impl StudioThreadAssembler {
             (observer.0)(id.to_owned(), thread.clone());
         }
     }
-    pub(super) async fn drain_observation(&self, id: &str) -> Result<(), ThreadAssemblyError> {
+    /// Detach the original callback under the short registry read. A retained close wait must
+    /// not borrow the assembler whose cleanup gate owns that same wait.
+    pub(super) fn drain_observation(
+        &self,
+        id: &str,
+    ) -> futures::future::BoxFuture<'static, Result<(), ThreadAssemblyError>> {
         let observer = self.0.state().observation.clone();
-        if let Some(observer) = observer {
-            let result = (observer.1)(id.to_owned()).await;
-            result?;
+        match observer {
+            Some(observer) => (observer.1)(id.to_owned()),
+            None => Box::pin(async { Ok(()) }),
         }
-        Ok(())
     }
     pub(super) fn prepare_close(
         &self,

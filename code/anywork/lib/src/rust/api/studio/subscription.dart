@@ -22,10 +22,11 @@ import 'types/settings.dart';
 import 'types/thread_activity.dart';
 import 'types/thread_stream.dart';
 import 'types/thread_stream/item.dart';
+import 'types/turn_failure.dart';
 import 'types/updater.dart';
 part 'subscription.freezed.dart';
 
-// These functions are ignored because they are not marked as `pub`: `broadcast_cancel`, `cancel_and_wait`, `is_settled`, `is_settled`, `join_cancelled`, `join_subscription_cancellations`, `new`, `next_id`, `owned_completion`, `register_statistics_feed`, `register`, `send_or_cancel`, `shutdown_issue`, `signal_cancel`, `unregister_statistics_feed`, `unregister`, `wait_stopped`
+// These functions are ignored because they are not marked as `pub`: `broadcast_cancel`, `cancel_and_wait`, `is_settled`, `is_settled`, `join_cancelled`, `new`, `next_id`, `owned_completion`, `register_timeline`, `register_typed`, `register`, `send_or_cancel`, `shutdown_issue`, `signal_cancel`, `unregister_timeline`, `unregister_typed`, `unregister`, `wait_stopped`, `wait_subscription_stop`
 // These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `BridgeSubscriptionInner`, `BridgeSubscriptionKind`, `BridgeTaskRegistry`, `PendingSubscriptionCancellation`, `SubscriptionCompletionFacts`, `SubscriptionOwner`, `SubscriptionStop`
 // These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `clone`, `clone`, `clone`, `drop`, `fmt`, `fmt`, `fmt`
 // These functions are ignored (category: IgnoreBecauseOwnerTyShouldIgnore): `default`
@@ -51,14 +52,6 @@ abstract class BridgeEventSubscription implements RustOpaqueInterface {
   /// # Errors
   /// Rejects another subscription kind or a second stream consumer.
   Stream<BridgeShutdownProgress> shutdownStream();
-
-  /// 打开启动进度流；首帧为本尝试的当前阶段，`Ready`/`Failed` 后结束。
-  ///
-  /// 新一代尝试开始后流直接终止：旧观察者不接收新世代阶段。
-  ///
-  /// # Errors
-  /// 拒绝其他订阅种类或第二个流消费者。
-  Stream<BridgeStartupStage> startupStream();
 
   /// 打开该 Thread 订阅的状态流；每个订阅只能打开一次。
   ///

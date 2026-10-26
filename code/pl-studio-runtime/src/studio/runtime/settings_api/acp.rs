@@ -16,8 +16,10 @@ use crate::config::acp::{
     AcpAccountConfig, normalize_acp_account, validate_acp_account_id, validate_acp_name,
 };
 
+use super::SettingsCommit;
 use super::StudioRuntime;
 use super::account_edit::invalid_settings_argument;
+use super::commands::Followup;
 
 impl StudioRuntime {
     /// 读取 ACP 接入模板目录；纯读取默认值，不启动程序、不检查凭据。
@@ -30,24 +32,19 @@ impl StudioRuntime {
     /// 只写这份接入资源；默认账号、模式/角色路由与 Native 账号都不被重放。这里既不验证也不等待
     /// 受管安装：保存成功不是安装就绪或认证通过的证明，检查时会在 `prepare` 阶段给出类型化失败。
     /// 接入不携带 program/argv，因此保存路径没有恢复自定义执行入口的可能。
-    pub fn save_acp_account(
+    ///
+    /// `commit_save_acp_account` 是同一次提交的原始证据出口：受管调用只保留本次捕获的配置读取
+    /// 目标，不再返回整份 Settings。
+    pub(in crate::studio::runtime) fn commit_save_acp_account(
         &self,
         request: UpdateAcpAccountRequest,
-    ) -> Result<SettingsCommandReply> {
+    ) -> Result<SettingsCommit> {
         Self::validate_operation_id(&request.operation_id)?;
-        let account_id = request.account.account_id;
-        validate_acp_account_id(&account_id)
-            .map_err(|_| invalid_settings_argument("ACP account id is invalid"))?;
-        validate_acp_name(&request.account.name)
-            .map_err(|_| invalid_settings_argument("ACP account name is invalid"))?;
-        let account = normalize_acp_account(AcpAccountConfig {
-            name: request.account.name,
-            provider: config_provider(request.account.provider),
-        });
+        let (account_id, account) = validated_acp_account(&request.account)?;
         let mut changed = false;
         let state = self
             .config_runtime
-            .update(request.expected_revision, |config| {
+            .update_evidence(request.expected_revision, |config| {
                 let mut next = config.clone();
                 changed = next.acp.accounts.get(&account_id) != Some(&account);
                 next.acp
@@ -56,40 +53,70 @@ impl StudioRuntime {
                 next.validate_declarations()?;
                 Ok(next)
             })?;
+        Ok(SettingsCommit {
+            evidence: state,
+            operation_id: request.operation_id,
+            changed,
+            effect: CommandEffectPoint::FutureSession,
+            followup: Followup::None,
+        })
+    }
+
+    pub fn save_acp_account(
+        &self,
+        request: UpdateAcpAccountRequest,
+    ) -> Result<SettingsCommandReply> {
+        let operation_id = request.operation_id.clone();
+        let commit = self.commit_save_acp_account(request)?;
         // 连接身份若变化，旧代次在发布前被撤消；设置快照返回新的 connection revision。
         self.publish_settings_state()?;
         self.settings_command_reply(
-            request.operation_id,
-            &state,
-            changed,
-            CommandEffectPoint::FutureSession,
+            operation_id,
+            &commit.evidence.configuration,
+            commit.changed,
+            commit.effect,
         )
     }
 
     /// 删除一条 ACP 接入。
     ///
     /// 只移除本地接入并取消其所属操作；不注销官方账号、不删除官方凭据、不影响其它接入。
-    pub fn remove_acp_account(
+    pub(in crate::studio::runtime) fn commit_remove_acp_account(
         &self,
         request: RemoveAcpAccountRequest,
-    ) -> Result<SettingsCommandReply> {
+    ) -> Result<SettingsCommit> {
         Self::validate_operation_id(&request.operation_id)?;
         validate_acp_account_id(&request.account_id)
             .map_err(|_| invalid_settings_argument("ACP account id is invalid"))?;
         let mut changed = false;
         let state = self
             .config_runtime
-            .update(request.expected_revision, |config| {
+            .update_evidence(request.expected_revision, |config| {
                 let mut next = config.clone();
                 changed = next.acp.accounts.remove(&request.account_id).is_some();
                 Ok(next)
             })?;
+        Ok(SettingsCommit {
+            evidence: state,
+            operation_id: request.operation_id,
+            changed,
+            effect: CommandEffectPoint::FutureSession,
+            followup: Followup::None,
+        })
+    }
+
+    pub fn remove_acp_account(
+        &self,
+        request: RemoveAcpAccountRequest,
+    ) -> Result<SettingsCommandReply> {
+        let operation_id = request.operation_id.clone();
+        let commit = self.commit_remove_acp_account(request)?;
         self.publish_settings_state()?;
         self.settings_command_reply(
-            request.operation_id,
-            &state,
-            changed,
-            CommandEffectPoint::FutureSession,
+            operation_id,
+            &commit.evidence.configuration,
+            commit.changed,
+            commit.effect,
         )
     }
 
@@ -134,6 +161,23 @@ impl StudioRuntime {
             snapshot: acceptance.snapshot,
         })
     }
+}
+
+/// 保存路径的严格校验与归一化；与既有请求字段一一对应，不复制第二套形状。
+fn validated_acp_account(
+    account: &pl_protocol::studio::AcpAccountUpdate,
+) -> Result<(String, AcpAccountConfig)> {
+    validate_acp_account_id(&account.account_id)
+        .map_err(|_| invalid_settings_argument("ACP account id is invalid"))?;
+    validate_acp_name(&account.name)
+        .map_err(|_| invalid_settings_argument("ACP account name is invalid"))?;
+    Ok((
+        account.account_id.clone(),
+        normalize_acp_account(AcpAccountConfig {
+            name: account.name.clone(),
+            provider: config_provider(account.provider),
+        }),
+    ))
 }
 
 /// wire 接入类型到配置类型的穷尽映射；两种表示刻意分离，避免协议类型进入配置文件。

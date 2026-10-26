@@ -145,9 +145,26 @@ pub(in crate::studio) fn project_runtime(
     Ok(ThreadRuntimeSnapshot {
         thread_id: thread_id.into(),
         model_route,
-        // The execution identity is a fact of this Thread's own state, so the same per-Thread
-        // projection that publishes usage also publishes what a precise stop would target.
-        execution: state.execution.as_ref().map(|execution| {
+        execution: project_execution(state),
+        continuation: project_continuation(state),
+        usage,
+        live_usage,
+        turn_completion_tokens: summary.turn_completion_tokens,
+        turn_response_millis: summary.turn_response_millis,
+        todo,
+        workflow,
+        plan,
+        active_skills,
+        active_mcp_servers: Vec::new(),
+        active_lsp_servers: Vec::new(),
+        progress: None,
+        mcp_health: None,
+        updated_at,
+    })
+}
+
+pub(in crate::studio) fn project_execution(state: &ThreadSnapshot) -> Option<pl_protocol::AgentExecution> {
+    state.execution.as_ref().map(|execution| {
             pl_protocol::AgentExecution::new(
                 execution.id.clone(),
                 match execution.phase {
@@ -169,11 +186,11 @@ pub(in crate::studio) fn project_runtime(
                 },
                 execution.turn_id.clone(),
             )
-        }),
-        // The owed work is part of this Thread's own state: the client's first continue needs this
-        // identity, and only the owner can publish it. It is never derived from history or guessed
-        // locally, and `claimed` separates "can continue" from "continue already accepted".
-        continuation: state.continuation.as_ref().map(|point| {
+        })
+}
+
+pub(in crate::studio) fn project_continuation(state: &ThreadSnapshot) -> Option<pl_protocol::ContinuationView> {
+    state.continuation.as_ref().map(|point| {
             pl_protocol::ContinuationView::new(
                 point.id.clone(),
                 point.source_turn_id.clone(),
@@ -197,21 +214,7 @@ pub(in crate::studio) fn project_runtime(
                 point.created_at,
                 point.claim.is_some(),
             )
-        }),
-        usage,
-        live_usage,
-        turn_completion_tokens: summary.turn_completion_tokens,
-        turn_response_millis: summary.turn_response_millis,
-        todo,
-        workflow,
-        plan,
-        active_skills,
-        active_mcp_servers: Vec::new(),
-        active_lsp_servers: Vec::new(),
-        progress: None,
-        mcp_health: None,
-        updated_at,
-    })
+        })
 }
 
 fn unknown_accounting(usage: &pl_core::model::ModelUsage) -> InferenceAccounting {

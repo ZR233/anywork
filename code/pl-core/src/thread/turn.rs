@@ -7,7 +7,8 @@ impl Owner {
         input: TurnInput,
     ) -> Result<TurnCompletion, ThreadError> {
         let turn_id = input.turn_id.clone();
-        let result = self.execute_turn(input).await;
+        let mut admission = None;
+        let result = self.execute_turn(input, &mut admission).await;
         // A Turn that ended before it ever created its record (a stop during preparation) still has to
         // settle the batch it froze: a body-less control it never consumed was replaced meanwhile and
         // must not linger as phantom owed work. The normal path settles inside its own terminal commit.
@@ -16,16 +17,23 @@ impl Owner {
                 self.input_driver.fail(Arc::new(error));
                 self.pause_inputs();
             }
-            self.publish();
         }
-        // The execution identity belongs to live state only, so every exit path releases it — a
-        // failed or cancelled Turn as well as a completed one. A stop that named this generation
-        // settles here too; the continuation point it formed is a separate durable fact and stays.
+        // execute_turn has returned after asynchronous cancellation cleanup. Release the execution
+        // with the terminal facts in one persisted commit, never in a later snapshot-only update.
+        // Keep its admission permit until that commit too: a host draining the gate must not see
+        // zero admitted Turns while their terminal facts are still uncommitted. A preparing exit
+        // without a Turn takes this same boundary; its accepted continuation remains a logical fact.
         self.finish_execution(&turn_id);
+        self.publish();
+        drop(admission);
         result
     }
 
-    async fn execute_turn(&mut self, input: TurnInput) -> Result<TurnCompletion, ThreadError> {
+    async fn execute_turn(
+        &mut self,
+        input: TurnInput,
+        admission: &mut Option<admission::TurnAdmissionPermit>,
+    ) -> Result<TurnCompletion, ThreadError> {
         if self.state.lifecycle != ThreadLifecycle::Open {
             return Err(ThreadError::Closed);
         }
@@ -49,7 +57,7 @@ impl Owner {
         // The Turn admission gate is the one place new Turns are held back, and it is checked before
         // this Turn owns anything: while the owner waits here no Turn record exists and no input is
         // consumed, so a held Turn leaves the queue exactly as it found it.
-        let _admitted = self.await_turn_admission(&input.cancellation).await?;
+        *admission = Some(self.await_turn_admission(&input.cancellation).await?);
         let started = tokio::time::Instant::now();
         let turn_id = input.turn_id.clone();
         let mut turns = self.state.turns.to_vec();
@@ -77,27 +85,42 @@ impl Owner {
             result = Err(ThreadError::Cancelled);
         }
         if matches!(result, Err(ThreadError::Cancelled)) {
-            self.cancel_pending_calls(Some(&turn_id))?;
+            let cancelled_calls = self.cancel_pending_calls(Some(&turn_id));
+            // A failed context settlement must not skip physical task cleanup or leave this Turn
+            // Running. Keep the original typed cleanup failure as the Turn result below.
             if self.interrupted_turn.as_deref() == Some(&turn_id) {
                 self.settle_turn_cancellation(&turn_id).await;
             }
+            if let Err(error) = cancelled_calls {
+                result = Err(error);
+            }
         }
         if let Some(turn) = turns.last_mut() {
-            turn.elapsed_ms = Some(
-                started
-                    .elapsed()
-                    .as_millis()
-                    .try_into()
-                    .map_err(|_| ThreadError::RevisionExhausted)?,
-            );
-            turn.model_steps = self
+            // Metadata failures must not replace an execution or cleanup error and its source.
+            turn.elapsed_ms = match started.elapsed().as_millis().try_into() {
+                Ok(elapsed) => Some(elapsed),
+                Err(_) => {
+                    if result.is_ok() {
+                        result = Err(ThreadError::RevisionExhausted);
+                    }
+                    None
+                }
+            };
+            match self
                 .state
                 .attempts
                 .iter()
                 .filter(|attempt| attempt.turn_id == turn_id)
                 .count()
                 .try_into()
-                .map_err(|_| ThreadError::RevisionExhausted)?;
+            {
+                Ok(steps) => turn.model_steps = steps,
+                Err(_) => {
+                    if result.is_ok() {
+                        result = Err(ThreadError::RevisionExhausted);
+                    }
+                }
+            }
             turn.state = match &result {
                 Ok(completed) => TurnState::Finished(completed.outcome),
                 Err(ThreadError::Cancelled) => match self.input_driver.error() {
@@ -125,7 +148,6 @@ impl Owner {
             self.input_driver.fail(Arc::new(error));
             self.pause_inputs();
         }
-        self.publish();
         result
     }
 

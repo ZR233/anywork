@@ -8,9 +8,10 @@
 use std::sync::{Arc, PoisonError};
 
 use anyhow::Result;
+use pl_protocol::products::identity::ProductReadOrigin;
 use pl_protocol::studio::{
     AcpInstallFailure, AcpInstallFailureCode, AcpInstallSnapshot, AcpInstallStage, AcpInstallState,
-    AcpProvider, CancelAcpInstallRequest, StartAcpInstallRequest, StudioErrorCode,
+    AcpProvider, CancelAcpInstallRequest, StartAcpInstallRequest, StudioError, StudioErrorCode,
 };
 use tokio_util::sync::CancellationToken;
 
@@ -40,10 +41,32 @@ impl AcpInstallRuntime {
     pub(crate) fn new(
         store: crate::studio::StudioStore,
         events: crate::studio::ProductEventBus,
+        origin: ProductReadOrigin,
     ) -> Self {
         Self {
-            inner: Arc::new(AcpInstallInner::new(store, events)),
+            inner: Arc::new(AcpInstallInner::new(store, events, origin)),
         }
+    }
+
+    /// typed feed 的身份来源：与 `resource_stamp("acp-install", revision)` 共用同一 owner epoch。
+    pub(super) fn origin(&self) -> ProductReadOrigin {
+        self.inner.origin().clone()
+    }
+
+    /// typed feed 打开：当前 canonical 快照与后续变更唤醒。
+    pub(super) fn observe(
+        &self,
+    ) -> Result<(AcpInstallSnapshot, tokio::sync::watch::Receiver<()>), StudioError> {
+        self.inner.observe()
+    }
+
+    /// typed feed 每次发送前读取的当前快照。
+    pub(super) fn current(&self) -> Result<AcpInstallSnapshot, StudioError> {
+        self.inner.current()
+    }
+
+    pub(super) fn ensure_open(&self) -> Result<(), StudioError> {
+        self.inner.ensure_open()
     }
 
     /// 当前 canonical 安装快照；纯读取，不联网、不扫描、不启动。

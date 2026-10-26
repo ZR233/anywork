@@ -1,51 +1,47 @@
+import 'package:anywork_client/resources.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../../../l10n/studio_l10n.dart';
+import '../../connectors/settings_failure_text.dart';
 import '../view_models/statistics_view_model.dart';
 import '../views/statistics_view.dart';
 
-/// Connects shell-provided visibility to the SDK-only repository demand lease.
-class StatisticsConnector extends ConsumerStatefulWidget {
-  const StatisticsConnector({required this.visible, super.key});
-
-  final bool visible;
-
-  @override
-  ConsumerState<StatisticsConnector> createState() =>
-      _StatisticsConnectorState();
-}
-
-class _StatisticsConnectorState extends ConsumerState<StatisticsConnector> {
-  @override
-  void initState() {
-    super.initState();
-    _applyVisibility();
-  }
+/// Smart boundary: it only reports the page's canonical projection and asks the
+/// ViewModel to change local filters. No read, page or close command is issued
+/// from here.
+class StatisticsConnector extends ConsumerWidget {
+  const StatisticsConnector({super.key});
 
   @override
-  void didUpdateWidget(covariant StatisticsConnector oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    if (oldWidget.visible != widget.visible) _applyVisibility();
-  }
-
-  void _applyVisibility() {
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted) return;
-      ref.read(statisticsViewModelProvider.notifier).setVisible(widget.visible);
-    });
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final state = ref.watch(statisticsViewModelProvider);
-    final viewModel = ref.read(statisticsViewModelProvider.notifier);
-    return StatisticsView(
-      state: state,
-      visible: widget.visible,
-      onModelChanged: viewModel.selectModel,
-      onEffortChanged: viewModel.selectEffort,
-      onMismatchesOnlyChanged: viewModel.setMismatchesOnly,
-      onRetry: viewModel.retry,
-    );
-  }
+  Widget build(BuildContext context, WidgetRef ref) => ref
+      .watch(statisticsViewModelProvider)
+      .when(
+        loading: () => const Center(child: CircularProgressIndicator()),
+        error: (error, stack) {
+          if (error is! StudioFailure) Error.throwWithStackTrace(error, stack);
+          return Center(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                SelectableText(settingsFailureText(error)),
+                TextButton(
+                  onPressed: () => ref.invalidate(statisticsViewModelProvider),
+                  child: Text(context.l10n.runtimeFatalRetry),
+                ),
+              ],
+            ),
+          );
+        },
+        data: (value) {
+          final vm = ref.read(statisticsViewModelProvider.notifier);
+          return StatisticsView(
+            state: value,
+            onModelChanged: vm.selectModel,
+            onEffortChanged: vm.selectEffort,
+            onMismatchesOnlyChanged: vm.setMismatchesOnly,
+            onRetry: vm.retrySync,
+          );
+        },
+      );
 }

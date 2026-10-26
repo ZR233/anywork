@@ -1,0 +1,649 @@
+import 'dart:async';
+
+import 'package:anywork_client/conversation.dart';
+import 'package:anywork_client/operations.dart';
+import 'package:anywork_client/resources.dart';
+import 'package:flutter_riverpod/misc.dart' show KeepAliveLink;
+import 'package:riverpod_annotation/riverpod_annotation.dart';
+
+import '../../../app/app_bindings.dart';
+import '../state/editor_keys.dart';
+import '../state/interaction_view_state.dart';
+import 'interaction_reader.dart';
+import 'interaction_validation.dart';
+
+part 'interaction_view_model.g.dart';
+
+/// Presentation borrows only this original operation. The Session owns its
+/// frozen resolution and continues it when this editor stops observing.
+final class _InteractionSubmission {
+  _InteractionSubmission({
+    required this.session,
+    required this.origin,
+    required this.key,
+    required this.intent,
+    required this.keepAlive,
+  });
+  final ConversationSession session;
+  final ThreadFacetStamp origin;
+  final InteractionEditorKey key;
+  final int intent;
+  final KeepAliveLink keepAlive;
+  OperationTicket<InteractionCommandReply>? ticket;
+  Observation? observation;
+  Future<void>? recovery;
+  Object? cause;
+  StackTrace? trace;
+}
+
+@riverpod
+class InteractionViewModel extends _$InteractionViewModel {
+  late ConversationRepository _repository;
+  late ConversationSession _session;
+  late InteractionReader _reader;
+  Observation? _execution;
+  Observation? _selection;
+  Observation? _interactionIndex;
+  InteractionIndexRef? _index;
+  int _readGeneration = 0;
+  KeepAliveLink? _editing;
+  _InteractionSubmission? _submission;
+  bool _enabled = true;
+  int _editRevision = 0;
+  int get editRevision => _editRevision;
+
+  @override
+  FutureOr<InteractionViewState> build(InteractionEditorKey key) {
+    final repository = ref.read(conversationRepositoryProvider);
+    _repository = repository;
+    _submission = null;
+    final session = repository.existingSession(key.threadId);
+    if (session == null) {
+      throw const StudioFailure(code: StudioFailureCode.unavailable,
+        message: 'The original interaction Session is not available',
+        retryable: true, correlationId: 'interaction-session-unavailable');
+    }
+    _session = session;
+    final stamp = session.execution.value.stamp;
+    if (stamp != null && (stamp.runtimeEpoch != key.runtimeEpoch ||
+        stamp.incarnation != key.incarnation)) {
+      throw const StudioFailure(code: StudioFailureCode.superseded,
+        message: 'The original interaction source has changed',
+        retryable: false, correlationId: 'interaction-source-replaced');
+    }
+    if (key.isHosted && (key.hostedReference == null || key.hostedOrigin == null ||
+        key.hostedOrigin?.runtimeEpoch != key.runtimeEpoch ||
+        key.hostedOrigin?.incarnation != key.incarnation ||
+        key.hostedOrigin?.facet != ThreadFacet.execution ||
+        key.hostedReference?.revision != key.revision)) {
+      throw const StudioFailure(code: StudioFailureCode.protocol,
+        message: 'The hosted interaction key has no matching original reference',
+        retryable: false, correlationId: 'interaction-hosted-key');
+    }
+    final initial = InteractionViewState(key: key, enabled: _enabled);
+    _createReader(initial);
+    final execution = _session.execution.watchLatest(_executionChanged);
+    _execution = execution.observation;
+    _index = execution.value.value?.interactions.reference;
+    final selection = repository.active.watchLatest((session) {
+      if (session?.threadId == key.threadId && !identical(session, _session)) {
+        _sourceChanged();
+      }
+    });
+    _selection = selection.observation;
+    final index = _session.interactions.watchLatest((value) {
+      if (ref.mounted && state.hasValue) _publish(state.requireValue);
+    });
+    _interactionIndex = index.observation;
+    ref.onDispose(() {
+      _submission?.observation?.cancel();
+      _submission?.keepAlive.close();
+      _submission = null;
+      _execution?.cancel();
+      _execution = null;
+      _selection?.cancel();
+      _selection = null;
+      _interactionIndex?.cancel();
+      _interactionIndex = null;
+      _reader.retire();
+      // This ends only the editing read/observation, never D1's frozen operation.
+    });
+    scheduleMicrotask(() {
+      if (ref.mounted) {
+        // HEAD 的 plan/tool dock 直接由 pending 数据驱动；现役读取是分页的，
+        // 身份文本（ids / hashes / 名称）必须补齐，否则提交会被
+        // `readIncomplete` 长期禁用而用户无入口加载。
+        _reader.open().then((_) {
+          if (ref.mounted) _reader.readMountData();
+        });
+        loadInteractionIndex();
+      }
+    });
+    return initial;
+  }
+
+  void _createReader(InteractionViewState initial) {
+    final generation = ++_readGeneration;
+    _reader = InteractionReader(
+      session: _session,
+      read: () => state.value ?? initial,
+      publish: _publish,
+      canPublish: () => ref.mounted && _readGeneration == generation,
+    );
+  }
+
+  void _publish(InteractionViewState value) {
+    if (!ref.mounted) return;
+    final next = value.copyWith(sourceCurrent: _sourceEligible(value));
+    state = AsyncData(next.copyWith(submitBlock: interactionSubmitBlock(next)));
+  }
+
+  bool _sourceEligible(InteractionViewState value) {
+    if (_reader.active == false ||
+        !_session.acceptsUserInput ||
+        value.closing ||
+        !identical(_repository.existingSession(value.key.threadId), _session)) {
+      return false;
+    }
+    final index = _session.interactions.value;
+    final current = index.current;
+    final header = value.header;
+    final execution = _session.execution.value;
+    if (index.error != null ||
+        current == null ||
+        header == null ||
+        execution.sync.phase != FacetSyncPhase.ready ||
+        execution.stamp?.runtimeEpoch != current.origin.runtimeEpoch ||
+        execution.stamp?.incarnation != current.origin.incarnation ||
+        execution.value?.interactions.reference != current.index.reference ||
+        current.origin.incarnation != value.key.incarnation ||
+        current.origin.runtimeEpoch != value.key.runtimeEpoch ||
+        header.scope.runtimeEpoch != current.origin.runtimeEpoch) {
+      return false;
+    }
+    return current.items.any(
+      (item) =>
+          item.interactionId == value.key.interactionId &&
+          item.targetThreadId == value.key.target &&
+          (!value.key.isHosted || item.reference == value.key.hostedReference &&
+              value.key.hostedOrigin?.runtimeEpoch == current.origin.runtimeEpoch &&
+              value.key.hostedOrigin?.incarnation == current.origin.incarnation &&
+              header.purpose is! PlanConfirmationPurposeRead) &&
+          item.revision == value.key.revision &&
+          item.status == InteractionStatus.pending,
+    );
+  }
+
+  Future<void> loadInteractionIndex() async {
+    try {
+      await _session.loadInteractionsPage();
+    } on StudioFailure catch (error) {
+      if (ref.mounted && state.hasValue) {
+        _publish(
+          state.requireValue.copyWith(
+            readIssues: [
+              ...state.requireValue.readIssues,
+              InteractionReadIssue(
+                section: InteractionReadSection.header,
+                error: error,
+              ),
+            ],
+          ),
+        );
+      }
+    }
+  }
+
+  void _executionChanged(ThreadExecutionState execution) {
+    if (!ref.mounted || !state.hasValue) return;
+    final index = execution.value?.interactions.reference;
+    if (execution.stamp?.incarnation != state.requireValue.key.incarnation ||
+        (_index != null && index != _index)) {
+      // A pinned Pending header is not proof that the current interaction is
+      // still Pending. Current index/materialized admission is supplied by D1.
+      _publish(state.requireValue.copyWith(sourceCurrent: false));
+    }
+    _index = index;
+    // Sync/closing and other admission facts can change without a new index.
+    _publish(state.requireValue);
+  }
+
+  void _sourceChanged() {
+    if (!ref.mounted || !state.hasValue) return;
+    _reader.retire();
+    _publish(state.requireValue.copyWith(sourceCurrent: false));
+  }
+
+  void _edit(InteractionViewState Function(InteractionViewState) change) {
+    final value = state.requireValue;
+    if (value.closing ||
+        !value.enabled ||
+        !value.sourceCurrent ||
+        value.header?.state is! PendingInteractionRead ||
+        value.submission?.isPending == true ||
+        value.submission?.receipt != null ||
+        value.submission?.acknowledged == true) {
+      return;
+    }
+    final next = change(value);
+    if (next == value) return;
+    _editRevision++;
+    if (next.hasDraftEdits) {
+      _editing ??= ref.keepAlive();
+    } else {
+      _editing?.close();
+      _editing = null;
+    }
+    _publish(next);
+  }
+
+  void setEnabled(bool value) {
+    _enabled = value;
+    if (state.hasValue) _publish(state.requireValue.copyWith(enabled: value));
+  }
+
+  void setQuestionText(int index, String raw) {
+    if (!state.requireValue.questions.containsKey(index)) return;
+    _edit(
+      (s) => s.copyWith(
+        answers: {
+          ...s.answers,
+          index: (s.answers[index] ?? const QuestionAnswerDraft()).copyWith(
+            text: raw,
+          ),
+        },
+      ),
+    );
+  }
+
+  void setOptionSelected(int index, String label, bool selected) {
+    final value = state.requireValue;
+    final question = value.questions[index];
+    if (question == null ||
+        !question.options.any(
+          (option) => value.textOf(option.label) == label,
+        )) {
+      return;
+    }
+    _edit((s) {
+      final answer = s.answers[index] ?? const QuestionAnswerDraft();
+      final labels = [...answer.selectedLabels];
+      if (selected) {
+        if (!labels.contains(label)) labels.add(label);
+      } else {
+        labels.remove(label);
+      }
+      return s.copyWith(
+        answers: {
+          ...s.answers,
+          index: answer.copyWith(selectedLabels: labels),
+        },
+      );
+    });
+  }
+
+  void setFallbackText(String raw) =>
+      _edit((s) => s.copyWith(fallbackText: raw));
+  void setApprovalReason(String raw) =>
+      _edit((s) => s.copyWith(approvalReason: raw));
+  void setPlanFeedback(String raw) =>
+      _edit((s) => s.copyWith(planFeedback: raw));
+
+  Future<void> submitAnswers() => _respond((value) {
+    if (value.header?.content is! UserInputContentRead ||
+        value.header?.purpose is PlanConfirmationPurposeRead) {
+      return null;
+    }
+    return InteractionResolutionCommand.userInput(
+      answers: answersForSubmission(value),
+    );
+  });
+
+  Future<void> approveTool() => _respondTool(ToolApprovalDecision.approved);
+  Future<void> denyTool() => _respondTool(ToolApprovalDecision.denied);
+
+  Future<void> _respondTool(ToolApprovalDecision decision) => _respond((value) {
+    if (value.header?.content is! ToolApprovalContentRead) return null;
+    final reason = value.approvalReason.trim();
+    return InteractionResolutionCommand.toolApproval(
+      decision: decision,
+      reason: reason.isEmpty ? null : reason,
+    );
+  });
+
+  Future<void> approvePlan() => _respondPlan(revise: false);
+  Future<void> submitPlanFeedback() => _respondPlan(revise: true);
+
+  Future<void> _respondPlan({required bool revise}) => _respond((value) {
+    if (value.header?.purpose is! PlanConfirmationPurposeRead ||
+        value.header?.content is! UserInputContentRead) {
+      return null;
+    }
+    final feedback = value.planFeedback.trim();
+    if (revise && feedback.isEmpty) return null;
+    final questionId = value.questions.values
+        .map((progress) => value.textOf(progress.question.id))
+        .where((id) => id == agentSessionPlanConfirmationQuestionId)
+        .firstOrNull;
+    if (questionId == null) {
+      throw const StudioFailure(
+        code: StudioFailureCode.protocol,
+        message: 'The plan confirmation question is unavailable',
+        retryable: false,
+        correlationId: 'interaction-plan-question',
+      );
+    }
+    return InteractionResolutionCommand.userInput(
+      answers: [
+        UserInputAnswerCommand(
+          questionId: questionId,
+          answers: revise
+              ? [agentSessionPlanReviseAnswer, feedback]
+              : [agentSessionPlanApproveAnswer],
+        ),
+      ],
+    );
+  });
+
+  Future<void> _respond(
+    InteractionResolutionCommand? Function(InteractionViewState) resolve,
+  ) {
+    if (!ref.mounted ||
+        !state.hasValue ||
+        (_submission != null && _submission!.ticket == null)) {
+      return Future<void>.value();
+    }
+    final value = state.requireValue.copyWith(
+      sourceCurrent: _sourceEligible(state.requireValue),
+    );
+    if (interactionSubmitBlock(value) != null) {
+      _publish(value);
+      return Future<void>.value();
+    }
+    // No read, retry, lookup by ID or await may replace these captured values.
+    final session = _session;
+    final origin = value.key.isHosted
+        ? value.key.hostedOrigin! : session.execution.value.stamp!;
+    final key = value.key;
+    final intent = value.latestIntent + 1;
+    try {
+      final resolution = resolve(value);
+      if (resolution == null) return Future<void>.value();
+      _submission?.observation?.cancel();
+      _submission?.keepAlive.close();
+      final submission = _InteractionSubmission(
+        session: session,
+        origin: origin,
+        key: key,
+        intent: intent,
+        keepAlive: ref.keepAlive(),
+      );
+      _submission = submission;
+      _publish(value.copyWith(latestIntent: intent, submissionError: null));
+      try {
+        final ticket = key.isHosted
+            ? session.respondHostedInteraction(
+                origin: origin,
+                reference: key.hostedReference!,
+                targetThreadId: key.target,
+                interactionId: key.interactionId,
+                expectedInteractionRevision: key.revision,
+                resolution: resolution,
+              )
+            : session.respondInteraction(
+          origin: origin,
+          interactionId: key.interactionId,
+          expectedInteractionRevision: key.revision,
+          resolution: resolution,
+        );
+        submission.ticket = ticket;
+        var delivered = false;
+        final watch = ticket.state.watchLatest(
+          (operation) {
+            delivered = true;
+            _submissionChanged(submission, operation);
+          },
+        );
+        submission.observation = watch.observation;
+        if (!delivered) _submissionChanged(submission, watch.value);
+        if (!_isOriginalSubmission(submission)) {
+          watch.observation.cancel();
+          submission.observation = null;
+        }
+        return _settleSubmission(submission, ticket);
+      } catch (error, trace) {
+        _submissionFailed(submission, error, trace);
+        final ticket = submission.ticket;
+        if (ticket != null) {
+          return _settleSubmission(submission, ticket);
+        }
+        submission.keepAlive.close();
+        _submission = null;
+      }
+    } on StudioFailure catch (error) {
+      _publish(value.copyWith(submissionError: error));
+    }
+    return Future<void>.value();
+  }
+
+  bool _isOriginalSubmission(_InteractionSubmission submission) =>
+      ref.mounted &&
+      state.hasValue &&
+      identical(_submission, submission) &&
+      identical(_session, submission.session) &&
+      state.requireValue.key == submission.key &&
+      state.requireValue.latestIntent == submission.intent &&
+      (state.requireValue.header == null ||
+          (state.requireValue.header!.scope.runtimeEpoch ==
+                  submission.origin.runtimeEpoch &&
+              state.requireValue.header!.scope.incarnation ==
+                  submission.origin.incarnation));
+
+  void _submissionChanged(
+    _InteractionSubmission submission,
+    OperationState operation,
+  ) {
+    if (!operation.isPending) submission.keepAlive.close();
+    if (!_isOriginalSubmission(submission) ||
+        operation.id != submission.ticket?.id) {
+      return;
+    }
+    _publish(
+      state.requireValue.copyWith(
+        submission: operation,
+        submissionError: operation.error ?? operation.evidenceError,
+      ),
+    );
+  }
+
+  Future<void> _settleSubmission(
+    _InteractionSubmission submission,
+    OperationTicket<InteractionCommandReply> ticket,
+  ) async {
+    try {
+      final result = await ticket.result;
+      if (!ticket.state.value.isPending) submission.keepAlive.close();
+      if (!_isOriginalSubmission(submission)) return;
+      final error = switch (result) {
+        RejectedCommandResult<InteractionCommandReply>(:final error) ||
+        UnknownOutcomeCommandResult<InteractionCommandReply>(:final error) ||
+        SyncFailedCommandResult<InteractionCommandReply>(:final error) ||
+        AcknowledgedSyncFailedCommandResult<InteractionCommandReply>(
+          :final error,
+        ) => error,
+        CommittedCommandResult<InteractionCommandReply>() ||
+        AcknowledgedCommandResult<InteractionCommandReply>() => null,
+      };
+      _publish(
+        state.requireValue.copyWith(
+          submission: ticket.state.value,
+          submissionError:
+              error ??
+              ticket.state.value.error ??
+              ticket.state.value.evidenceError,
+        ),
+      );
+      // Only canonical interaction/index updates retire the original decision.
+      // Never clear raw answers or infer a resolved header from the result DTO.
+    } catch (error, trace) {
+      _submissionFailed(submission, error, trace);
+    }
+  }
+
+  void _submissionFailed(
+    _InteractionSubmission submission,
+    Object error,
+    StackTrace trace,
+  ) {
+    submission.cause = error;
+    submission.trace = trace;
+    if (!_isOriginalSubmission(submission)) return;
+    _publish(
+      state.requireValue.copyWith(
+        submission:
+            submission.ticket?.state.value ?? state.requireValue.submission,
+        submissionError: error is StudioFailure
+            ? error
+            : const StudioFailure(
+                code: StudioFailureCode.internal,
+                message: 'The interaction response could not be observed',
+                retryable: false,
+                correlationId: 'interaction-submission-internal',
+              ),
+      ),
+    );
+  }
+
+  /// Explicit recovery observes the original source, never dispatches an unknown
+  /// resolution again or borrows a replacement Session with the same Thread ID.
+  Future<void> retrySubmissionRead() {
+    final submission = _submission;
+    if (submission == null ||
+        !_isOriginalSubmission(submission) ||
+        !const {
+          OperationFailurePhase.unknownOutcome,
+          OperationFailurePhase.syncFailed,
+        }.contains(submission.ticket?.state.value.failurePhase)) {
+      return Future<void>.value();
+    }
+    return submission.recovery ??= _recoverSubmissionRead(submission)
+        .whenComplete(() => submission.recovery = null);
+  }
+
+  Future<void> _recoverSubmissionRead(_InteractionSubmission submission) async {
+    try {
+      if (!identical(
+        _repository.existingSession(submission.key.threadId),
+        submission.session,
+      )) {
+        throw const StudioFailure(
+          code: StudioFailureCode.superseded,
+          message: 'The original interaction Session has been replaced',
+          retryable: false,
+          correlationId: 'interaction-submission-source',
+        );
+      }
+      await submission.session.retry(ThreadFacet.execution);
+      if (!_isOriginalSubmission(submission)) return;
+      final origin = submission.session.execution.value.stamp;
+      if (origin?.runtimeEpoch != submission.origin.runtimeEpoch ||
+          origin?.incarnation != submission.origin.incarnation) {
+        throw const StudioFailure(
+          code: StudioFailureCode.superseded,
+          message: 'The original interaction source has changed',
+          retryable: false,
+          correlationId: 'interaction-submission-origin',
+        );
+      }
+      await submission.session.loadInteractionsPage();
+      if (_isOriginalSubmission(submission) &&
+          _sourceEligible(state.requireValue)) {
+        await retryRead();
+        if (_isOriginalSubmission(submission)) await completeRead();
+      }
+    } on StudioFailure catch (error) {
+      if (_isOriginalSubmission(submission)) {
+        _publish(
+          state.requireValue.copyWith(
+            readIssues: [
+              ...state.requireValue.readIssues,
+              InteractionReadIssue(
+                section: InteractionReadSection.header,
+                error: error,
+              ),
+            ],
+          ),
+        );
+      }
+    } catch (error, trace) {
+      _submissionFailed(submission, error, trace);
+    }
+  }
+
+  Future<void> showQuestion(int index) async {
+    if (!state.requireValue.questions.containsKey(index)) return;
+    _publish(state.requireValue.copyWith(currentQuestionIndex: index));
+  }
+
+  Future<void> loadNextQuestions() => _reader.questions();
+  Future<void> loadNextOptions(int index) => _reader.options(index);
+  Future<void> loadNextAnswerEntries() => _reader.answerEntries();
+  Future<void> loadNextAnswerValues(int index) => _reader.answerValues(index);
+  Future<void> loadText(int fieldId) => _reader.text(fieldId);
+  Future<void> completeRead() => _reader.completeRead();
+
+  Future<void> retryRead() {
+    final value = state.requireValue;
+    if (value.readIssues.any(
+      (issue) => issue.error.code == StudioFailureCode.superseded,
+    )) {
+      _publish(
+        value.copyWith(
+          sourceCurrent: false,
+          submitBlock: InteractionSubmitBlock.sourceChanged,
+        ),
+      );
+      return Future<void>.value();
+    }
+    _reader.retire();
+    final next = value.copyWith(
+      scope: null,
+      header: null,
+      questions: {},
+      texts: {},
+      readIssues: [],
+      questionPageLoading: false,
+      completingRead: false,
+    );
+    _publish(next);
+    _createReader(next);
+    return _reader.open().then((_) => _reader.readMountData());
+  }
+
+  /// Called for a confirmed terminal editor or explicit discard, not from Widget
+  /// dispose/Settings navigation. Accepted/unknown payload remains with D1.
+  bool endEditing({
+    required int expectedEditRevision,
+    bool discardDraft = false,
+  }) {
+    final value = state.requireValue;
+    if (!value.canCloseEditor ||
+        expectedEditRevision != _editRevision ||
+        (value.hasDraftEdits && !discardDraft)) {
+      return false;
+    }
+    _reader.retire();
+    _publish(
+      value.copyWith(
+        closing: true,
+        answers: const {},
+        fallbackText: '',
+        approvalReason: '',
+        planFeedback: '',
+      ),
+    );
+    _editing?.close();
+    _editing = null;
+    return true;
+  }
+}

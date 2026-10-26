@@ -75,6 +75,7 @@ impl StudioRuntime {
         operation_id: &str,
         outcome: crate::config::ModeDefinitionCommandOutcome,
     ) -> Result<ThreadModeDefinitionCommandReply> {
+        self.modes_source.publish(outcome.catalog.clone())?;
         let _ = self
             .agent_facility
             .product_events

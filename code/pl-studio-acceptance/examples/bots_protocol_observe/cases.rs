@@ -1239,9 +1239,9 @@ impl Session {
         let error = match failed {
             Ok(reply) => {
                 bail!(
-                    "empty secret must be rejected, not Applied; receipt={:?} bots={}",
+                    "empty secret must be rejected, not Applied; receipt={:?} bot={}",
                     reply.receipt.disposition,
-                    reply.snapshot.bots.len()
+                    reply.bot.is_some()
                 )
             }
             Err(error) => error,
@@ -1295,10 +1295,9 @@ impl Session {
                     "valid retry must Apply under its own operationId"
                 );
                 let bot = reply
-                    .snapshot
-                    .bots
-                    .iter()
-                    .find(|bot| bot.app_id == PREPARE_APP_ID)
+                    .bot
+                    .as_ref()
+                    .filter(|bot| bot.app_id == PREPARE_APP_ID)
                     .context("valid retry did not publish the synthetic bot")?;
                 match bot.credential {
                     BotCredentialAvailability::SessionOnly | BotCredentialAvailability::Stored => {}
@@ -1362,10 +1361,9 @@ impl Session {
             "first save receipt must belong to op-cas-create and be Applied"
         );
         let bot = first
-            .snapshot
-            .bots
-            .iter()
-            .find(|bot| bot.app_id == CAS_APP_ID)
+            .bot
+            .as_ref()
+            .filter(|bot| bot.app_id == CAS_APP_ID)
             .context("CAS create did not publish a bot")?;
         let bot_id = bot.id.clone();
         let created_revision = bot.config_revision;
@@ -1390,10 +1388,9 @@ impl Session {
             "rename receipt must belong to op-cas-rename and be Applied"
         );
         let renamed_bot = renamed
-            .snapshot
-            .bots
-            .iter()
-            .find(|item| item.id == bot_id)
+            .bot
+            .as_ref()
+            .filter(|item| item.id == bot_id)
             .context("rename reply missing the original bot")?;
         ensure!(
             renamed_bot.name == "cas-bot-renamed"
@@ -1538,10 +1535,9 @@ impl Session {
             })
             .await?;
         let bot = saved
-            .snapshot
-            .bots
-            .iter()
-            .find(|bot| bot.app_id == DEFAULT_APP_ID)
+            .bot
+            .as_ref()
+            .filter(|bot| bot.app_id == DEFAULT_APP_ID)
             .context("topic save did not publish the isolated bot")?;
         ensure!(!bot.enabled, "topic bot must start disabled");
         let bot_id = bot.id.clone();
@@ -1698,10 +1694,9 @@ impl Session {
             })
             .await?;
         let bot = reply
-            .snapshot
-            .bots
-            .iter()
-            .find(|bot| bot.app_id == DEFAULT_APP_ID)
+            .bot
+            .as_ref()
+            .filter(|bot| bot.app_id == DEFAULT_APP_ID)
             .context("saveBot did not publish the synthetic bot")?;
         match bot.credential {
             BotCredentialAvailability::SessionOnly | BotCredentialAvailability::Stored => {}

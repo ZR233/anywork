@@ -5,6 +5,34 @@ use crate::thread_assembler::ThreadActivation;
 use anyhow::{Context, Result};
 
 impl StudioRuntime {
+    /// Explicit observation prepares a cold child's persisted format before checking its close
+    /// intent. Pure Cold reads stay read-only, and a retired/closed child never gains an owner.
+    pub(in crate::studio::runtime) async fn thread_observation_mode(
+        &self,
+        thread: &pl_protocol::Thread,
+        requested: pl_protocol::thread_facets::identity::ThreadObservationMode,
+    ) -> Result<pl_protocol::thread_facets::identity::ThreadObservationMode> {
+        use pl_protocol::thread_facets::identity::ThreadObservationMode;
+        if requested == ThreadObservationMode::Cold || thread.parent_thread_id.is_none() {
+            return Ok(requested);
+        }
+        let state = if let Some(owner) = self.threads.observed_thread(&thread.id) {
+            owner.snapshot()
+        } else {
+            crate::studio::thread_factory::recovery::load_checkpoint_for_recovery(
+                &self.store, thread,
+            ).await?.context("Thread has no saved checkpoint")?.state
+        };
+        if thread.role == crate::config::ROOT_AGENT_ROUTE_KEY
+            || (crate::studio::agent_close::is_explicitly_closed(&state)?
+                && self.threads.observed_thread(&thread.id).is_none())
+        {
+            Ok(ThreadObservationMode::Cold)
+        } else {
+            Ok(requested)
+        }
+    }
+
     pub(in crate::studio) async fn ensure_thread_owner(
         &self,
         id: &str,
@@ -54,6 +82,11 @@ impl StudioRuntime {
             .warm_thread_index(directory);
         for (identity, record) in ancestry.into_iter().rev() {
             let activated_id = identity.id.clone();
+            if record.parent_thread_id.is_none() {
+                // A root observation publishes its hosted index as soon as the owner exists.
+                // Prepare saved child formats first, without creating any child execution owner.
+                self.thread_observations.prepare_child_storage(&activated_id).await?;
+            }
             if let Err(error) = self
                 .threads
                 .activate(identity, self.thread_factory.clone())

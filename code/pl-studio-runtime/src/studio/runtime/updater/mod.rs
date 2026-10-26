@@ -16,6 +16,10 @@ use crate::{
     StudioUpdate, StudioUpdateCheck, StudioUpdateErrorCode, StudioUpdateEvent, StudioUpdater,
 };
 
+#[derive(Debug, thiserror::Error)]
+#[error("updater projection owner did not complete safely")]
+pub(in crate::studio::runtime) struct UpdateProjectionFailure(#[source] anyhow::Error);
+
 enum PreparedUpdate {
     None,
     Ready(crate::PreparedStudioUpdate),
@@ -29,16 +33,21 @@ pub(crate) struct StudioUpdateRuntime {
     state: Arc<RwLock<StudioUpdateStateSnapshot>>,
     events: crate::ProductEventBus,
     prepared: Arc<Mutex<PreparedUpdate>>,
+    source: std::sync::Weak<super::updates::UpdatesSource>,
 }
 
 impl StudioUpdateRuntime {
-    pub(crate) fn new(events: crate::ProductEventBus) -> Result<Self> {
+    pub(in crate::studio::runtime) fn new(
+        events: crate::ProductEventBus,
+        source: Arc<super::updates::UpdatesSource>,
+    ) -> Result<Self> {
         Ok(Self {
             updater: StudioUpdater::new_default()?,
             command_lock: Arc::new(Mutex::new(())),
             state: Arc::new(RwLock::new(StudioUpdateStateSnapshot::idle(unix_seconds()))),
             events,
             prepared: Arc::new(Mutex::new(PreparedUpdate::None)),
+            source: Arc::downgrade(&source),
         })
     }
 
@@ -46,10 +55,11 @@ impl StudioUpdateRuntime {
         self.state.read().await.clone()
     }
 
-    pub(crate) async fn check_cancellable(
+    pub(in crate::studio::runtime) async fn check_cancellable(
         &self,
         cancellation: &crate::StudioUpdateCancellation,
-    ) -> Result<StudioUpdateStateSnapshot> {
+        operation_id: String,
+    ) -> Result<Arc<super::updates::UpdatesMaterial>> {
         let _command = self.command_lock.try_lock().map_err(|_| {
             crate::StudioUpdateError::new(
                 StudioUpdateErrorCode::InstallInProgress,
@@ -58,12 +68,12 @@ impl StudioUpdateRuntime {
         })?;
         let previous = self.read().await;
         if matches!(previous, StudioUpdateStateSnapshot::Ready(_)) {
-            return Ok(previous);
+            return self.capture_completion(previous);
         }
         let running = self
             .apply(StudioUpdateCommand::BeginCheck {
                 expected_revision: previous.revision(),
-                operation_id: format!("studio-update-check-{}", previous.revision() + 1),
+                operation_id,
                 started_at: unix_seconds(),
             })
             .await?;
@@ -91,10 +101,26 @@ impl StudioUpdateRuntime {
                     failed_at: checked_at,
                     error: state_error(&error),
                 };
-                return self.apply(command).await;
+                return self.capture_completion(self.apply(command).await?);
             }
         };
-        self.apply(command).await
+        self.capture_completion(self.apply(command).await?)
+    }
+
+    fn capture_completion(
+        &self,
+        snapshot: StudioUpdateStateSnapshot,
+    ) -> Result<Arc<super::updates::UpdatesMaterial>> {
+        let source = self.source.upgrade().ok_or_else(|| {
+            pl_protocol::studio::StudioError::new(
+                pl_protocol::studio::StudioErrorCode::Cancelled,
+                "The original update source disappeared",
+                false,
+            )
+        })?;
+        let material = source.publish(snapshot)?;
+        source.expose_committed(&material);
+        Ok(material)
     }
 
     pub(crate) async fn verified_update(
@@ -103,22 +129,36 @@ impl StudioUpdateRuntime {
         version: &str,
     ) -> Result<StudioUpdate> {
         let state = self.read().await;
-        anyhow::ensure!(
-            state.revision() >= expected_revision,
-            "update revision conflict: expected {expected_revision}, actual {}",
-            state.revision()
-        );
+        if state.revision() < expected_revision {
+            return Err(pl_protocol::studio::StudioError::new(
+                pl_protocol::studio::StudioErrorCode::Conflict,
+                "Update revision is older than the selected target",
+                false,
+            )
+            .into());
+        }
         let update = match &state {
             StudioUpdateStateSnapshot::Available(value) => value.update(),
             StudioUpdateStateSnapshot::Downloading(value) => value.update(),
             StudioUpdateStateSnapshot::Verifying(value) => value.update(),
             StudioUpdateStateSnapshot::Ready(value) => value.update(),
             StudioUpdateStateSnapshot::InstallFailed(value) => value.update(),
-            _ => anyhow::bail!("cached update is not available for installation"),
+            _ => {
+                return Err(pl_protocol::studio::StudioError::invalid_argument(
+                    "No verified update is available for preparation",
+                )
+                .into());
+            }
         };
-        (update.version == version)
-            .then(|| update.clone())
-            .context("requested update is not the cached verified update")
+        if update.version != version {
+            return Err(pl_protocol::studio::StudioError::new(
+                pl_protocol::studio::StudioErrorCode::Conflict,
+                "The selected verified update version changed",
+                false,
+            )
+            .into());
+        }
+        Ok(update.clone())
     }
 
     pub(crate) async fn apply_install_event(
@@ -189,22 +229,22 @@ impl StudioUpdateRuntime {
     }
 
     /// 保留下载和进度投影的真实所有者，只有校验与投影完成才发布 Ready。
-    pub(crate) async fn prepare(
+    pub(in crate::studio::runtime) async fn prepare(
         &self,
         update: StudioUpdate,
         cancellation: crate::StudioUpdateCancellation,
         progress: Option<tokio::sync::mpsc::UnboundedSender<StudioUpdateStateSnapshot>>,
-    ) -> Result<()> {
+    ) -> Result<Arc<super::updates::UpdatesMaterial>> {
         let _command = self.lock_install(&update).await?;
         let current = self.read().await;
         if matches!(current, StudioUpdateStateSnapshot::Ready(_)) {
             if let Some(progress) = progress {
-                let _ = progress.send(current);
+                let _ = progress.send(current.clone());
             }
-            return Ok(());
+            return self.capture_completion(current);
         }
         *self.prepared.lock().await = PreparedUpdate::None;
-        let (events, mut receiver) = tokio::sync::mpsc::unbounded_channel();
+        let (events, mut receiver) = tokio::sync::mpsc::channel(64);
         let owner = self.clone();
         let target = update.clone();
         let projection_cancellation = cancellation.clone();
@@ -232,20 +272,20 @@ impl StudioUpdateRuntime {
             .and_then(|result| result);
         if let Err(error) = projected {
             self.publish_owner_failure(&error).await;
-            return Err(error);
+            return Err(UpdateProjectionFailure(error).into());
         }
         let prepared = match result {
             Ok(prepared) => prepared,
             Err(error) => {
                 // 下载业务失败已由完成的投影发布；所有者失败仍必须向调用方传播。
-                anyhow::ensure!(
-                    matches!(
-                        self.read().await,
-                        StudioUpdateStateSnapshot::InstallFailed(_)
-                    ),
-                    "update download failed without a terminal state: {error}"
-                );
-                return Ok(());
+                let failed = self.read().await;
+                if !matches!(failed, StudioUpdateStateSnapshot::InstallFailed(_)) {
+                    return Err(UpdateProjectionFailure(anyhow::anyhow!(
+                        "update download failed without a terminal state: {error}"
+                    ))
+                    .into());
+                }
+                return self.capture_completion(failed);
             }
         };
         let current = self.read().await;
@@ -258,9 +298,9 @@ impl StudioUpdateRuntime {
             })
             .await?;
         if let Some(progress) = progress {
-            let _ = progress.send(ready);
+            let _ = progress.send(ready.clone());
         }
-        Ok(())
+        self.capture_completion(ready)
     }
 
     pub(crate) async fn launch_ready_on_exit(
@@ -310,6 +350,9 @@ impl StudioUpdateRuntime {
             return Ok(next);
         }
         *current = next.clone();
+        if let Some(source) = self.source.upgrade() {
+            source.publish(next.clone())?;
+        }
         drop(current);
         self.events.emit_updater_state(next.clone());
         Ok(next)
@@ -344,6 +387,11 @@ impl StudioUpdateRuntime {
             }
         };
         *current = next.clone();
+        if let Some(source) = self.source.upgrade()
+            && let Err(capture) = source.publish(next.clone())
+        {
+            tracing::error!(%capture, "update owner failure capture failed");
+        }
         drop(current);
         self.events.emit_updater_state(next);
     }

@@ -218,6 +218,7 @@ impl Owner {
             }
             MailboxCommand::BeginIdleClose(reply) => {
                 let idle = self.active_inputs.is_empty()
+                    && self.state.execution.is_none()
                     && !self
                         .state
                         .turns
@@ -254,7 +255,7 @@ impl Owner {
                     && self.cold_error.is_none()
                     && !self.cold.as_ref().is_some_and(|store| {
                         let pressure = store.pressure(&self.id);
-                        pressure.thread_bytes > 0 || pressure.error.is_some()
+                        pressure.has_uncommitted_work || pressure.error.is_some()
                     });
                 if idle {
                     self.interrupt.begin_close();
@@ -337,12 +338,12 @@ impl Owner {
             }
 
             MailboxCommand::InterruptExecution { expected, reply } => {
-                // The named execution is compared with the one this owner really owns. A stop for a
-                // finished or replaced execution is an outdated identity, never "stop whatever runs
-                // now": the caller asked for exactly one generation, and stopping a newer one would
-                // cancel work it never named.
+                // Compare against the one execution this owner really owns at this same boundary:
+                // none is NoExecution, while a different live identity is stale. Neither result
+                // cancels a successor or manufactures a successful stop receipt.
                 let current = self.state.execution.clone();
                 let result = match current {
+                    Some(_) | None if expected.is_empty() => Err(ThreadError::InvalidIdentity),
                     Some(execution) if execution.id == expected => {
                         let turn_id = execution.turn_id.clone();
                         if let Some(execution) = self.state.execution.as_mut() {
@@ -368,7 +369,8 @@ impl Owner {
                         self.publish_snapshot();
                         tasks.map(|()| cancelled)
                     }
-                    Some(_) | None => Err(ThreadError::InvalidIdentity),
+                    Some(_) => Err(ThreadError::InvalidIdentity),
+                    None => Err(ThreadError::NoExecution),
                 };
                 let _ = reply.send(result);
             }

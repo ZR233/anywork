@@ -1,11 +1,12 @@
 import 'dart:ui' show PointerDeviceKind;
 
 import 'package:anywork/src/l10n/app_localizations.dart';
-import 'package:anywork/src/shared/model_route_selector.dart';
-import 'package:anywork_client/studio_client.dart';
+import 'package:anywork/src/ui/selectors/model_route_selector.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+
+import 'support/selector_values.dart';
 
 void main() {
   for (final backwards in [false, true]) {
@@ -28,15 +29,11 @@ void main() {
                 children: [
                   TextField(focusNode: input, autofocus: true),
                   ModelRouteSelector(
-                    options: const [
+                    options: [
                       ModelSelectionOption(
                         accountId: 'account',
                         accountName: 'Alpha',
-                        descriptor: AccountModelView(
-                          modelId: 'model',
-                          displayName: 'Model',
-                          reasoningEfforts: [],
-                        ),
+                        descriptor: selectorModel(),
                       ),
                     ],
                     accountId: 'account',

@@ -41,7 +41,7 @@ Rust 库 crate 统一使用 `pl-` 前缀；Flutter 桌面应用的 Dart 包名�
 | `pl-studio-acceptance` | 隔离的 GUI 与产品 API 人工验收工具、规范配置构造、模拟账号与模拟平台协调、数据库故障注入观察与验收证据采集 |
 | `pl-dev-support` | 工程工具共享的仓库路径解析、命令执行与平台进程树生命周期管理；不依赖 Studio、模型层、数据库或模拟服务 |
 
-### 工程与测试工具边界
+### 2.2.1 工程与测试工具边界
 
 工程工具间的依赖方向固定为：
 - `pl-xtask → pl-dev-support`
@@ -49,7 +49,7 @@ Rust 库 crate 统一使用 `pl-` 前缀；Flutter 桌面应用的 Dart 包名�
 
 `pl-xtask` 与 `pl-studio-acceptance` 仅通过命令行子进程调用交互，不建立 Cargo 编译期依赖。验收所需的数据库依赖归属 `pl-studio-acceptance`，日常工程命令不会触发 Studio 运行时编译；GUI 构建、人工验收与全工作区检查各自按需编译目标组件。模拟平台服务 `pl-provider-fixture` 独立于被测 Studio 及其私有协议模块，仅提供受控网络环境与请求证据，不代替被测产品执行授权校验、幂等去重、线程映射或发送结果判定（详见 [24](./24-testing.md) 与 [27](./27-bots.md)）。
 
-### 内核与远程工具职责切分
+### 2.2.2 内核与远程工具职责切分
 
 `pl-core` 不内置默认工具安装、账号配置、MCP 目录、产品工作集或旧版引擎门面。工具实例通过不透明注册句柄向线程转移所有权（见 [09](./09-tool-runtime.md)），模型实例通过核心模型会话契约注入；底层共享的物理服务通过显式租约复用，不同线程之间不共享可变工具实例。
 
@@ -63,3 +63,11 @@ SSH 远程开发场景中，递归目录扫描、通配符匹配（glob）、候
 - **统计与跨层类型导入**：可丢弃的调用统计由全局 `calls.sqlite` 独立写入。Studio 通过通用的扩展 CAS 接口保存业务状态并提交模型上下文投影，桌面界面仅消费规范的产品 DTO。账号配置、工具配置与业务协议分别从 `pl-model`、`pl-tool` 与 `pl-protocol` 直接导入，不经由 `pl-core` 镜像中转。
 
 存储与内核契约详见 [15](./15-session-storage.md) 与 [16](./16-core-contracts.md)。
+
+## 2.4 Dart 领域层与 FRB 传输边界
+
+`anywork_client` 是纯 Dart 数据与领域包，按领域公开仓储（Repository）、不可变值及会话与资源服务，不依赖 Flutter、`Riverpod`、FRB 或原生句柄。用于不可变领域模型的 `Freezed` 注解属于纯 Dart 依赖；“无 Flutter 依赖”不等于禁止所有生成依赖。
+
+Flutter 应用按功能组织连接器（Connector）、生成式异步视图模型（`AsyncNotifier`）、`Freezed` 视图状态和纯视图。视图模型只消费领域公共能力，只有 FRB 适配器接触生成 DTO 与原生句柄。跨功能能力由其领域所有者提供，不通过全局客户端门面、公开可写状态或服务定位器穿透分层，也不维护第二份业务镜像。状态与生命周期契约见 [25](./25-frontend-state.md)。
+
+`pl-studio-runtime` 向桌面与 HTTP 宿主提供同一领域事实的分域事件流、分页和详情读取能力；`pl-studio-bridge` 仅负责 FRB 投送额度、不透明句柄生命周期及 DTO 转换，不拥有另一份业务状态归并器。内核 `Session` 可以保留 Rust 异步等待接口，Dart 实时接口则统一使用推送，不暴露轮询拉取循环。产品协议调整须同步 `pl-protocol`、运行时、FRB、Dart 领域模型及受影响的 HTTP/SSE 消费者，不为保留旧内部接口引入额外 crate、转发别名或平行的权威路径。

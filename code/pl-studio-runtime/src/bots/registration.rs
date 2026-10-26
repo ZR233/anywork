@@ -1,8 +1,9 @@
 //! 扫码注册 attempt owner：短原子裁决、真实 job 槽、取消/完成竞争与协议轮询。
 //!
 //! 网络、凭据 IO 与 join 都在裁决锁外。可见状态离开无 await 短块前
-//! `request_publish`，回执再 `publish()`。job 句柄放在可 clone 的持久 owner 内，
-//! 元数据短锁只 clone 该 owner，锁外借 `&mut` 等待；不 `take` 句柄。
+//! `request_publish`；回执在锁内冻结 attempt，锁外取得原次发布水位。
+//! job 句柄放在可 clone 的持久 owner 内，元数据短锁只 clone 该 owner，
+//! 锁外借 `&mut` 等待；不 `take` 句柄。
 //! 开始/替换由独立 `registration_start` 协调闸门串行；cancel/close/worker 不取该闸门。
 
 use super::credentials::{CredentialCommit, CredentialDecision};
@@ -129,13 +130,23 @@ impl ActiveRegistration {
 }
 
 enum StartAdmission {
-    Reuse { changed: bool },
-    Launch { previous: Option<RegistrationJob> },
+    Reuse {
+        changed: bool,
+        attempt: BotRegistrationAttempt,
+    },
+    Launch {
+        previous: Option<RegistrationJob>,
+    },
 }
 
 enum CancelAdmission {
-    NoChange,
-    Cancelled { job: RegistrationJob },
+    NoChange {
+        attempt: BotRegistrationAttempt,
+    },
+    Cancelled {
+        job: RegistrationJob,
+        attempt: BotRegistrationAttempt,
+    },
 }
 
 enum WaitingAdmission {
@@ -201,7 +212,10 @@ impl BotRuntime {
                 }
                 match slot.as_mut() {
                     Some(active) if active.matches_request(&operation_id, &name, &project_id) => {
-                        StartAdmission::Reuse { changed: false }
+                        StartAdmission::Reuse {
+                            changed: false,
+                            attempt: active.snapshot(),
+                        }
                     }
                     Some(active) if active.operation_id == operation_id => {
                         return Err(FeishuError::new(
@@ -227,16 +241,16 @@ impl BotRuntime {
                 }
             };
             match admission {
-                StartAdmission::Reuse { changed } => {
-                    return Ok(self
-                        .registration_reply(operation_id, changed, owner_epoch)
-                        .await);
+                StartAdmission::Reuse { changed, attempt } => {
+                    return self
+                        .registration_reply(operation_id, changed, owner_epoch, attempt)
+                        .await;
                 }
                 StartAdmission::Launch { previous } => {
                     if let Some(job) = previous {
                         job.join().await?;
                     }
-                    if self
+                    if let Some(attempt) = self
                         .install_registration(
                             operation_id.clone(),
                             name.clone(),
@@ -244,10 +258,9 @@ impl BotRuntime {
                         )
                         .await?
                     {
-                        self.publish().await;
-                        return Ok(self
-                            .registration_reply(operation_id, true, owner_epoch)
-                            .await);
+                        return self
+                            .registration_reply(operation_id, true, owner_epoch, attempt)
+                            .await;
                     }
                 }
             }
@@ -259,14 +272,14 @@ impl BotRuntime {
         operation_id: String,
         name: String,
         project_id: String,
-    ) -> Result<bool, FeishuError> {
+    ) -> Result<Option<BotRegistrationAttempt>, FeishuError> {
         let mut slot = self.inner.registration.lock().await;
         if self.management_sealed() {
             return Err(sealed_registration_error());
         }
         match slot.as_ref() {
             Some(active) if active.matches_request(&operation_id, &name, &project_id) => {
-                return Ok(false);
+                return Ok(None);
             }
             Some(active) if active.operation_id == operation_id => {
                 return Err(FeishuError::new(
@@ -291,7 +304,7 @@ impl BotRuntime {
                 .run_registration(worker_attempt, worker_cancel)
                 .await;
         });
-        *slot = Some(ActiveRegistration {
+        let active = ActiveRegistration {
             attempt_id: attempt_id.clone(),
             operation_id,
             name,
@@ -306,9 +319,11 @@ impl BotRuntime {
             completed_bot_id: None,
             commit_claimed: false,
             job: RegistrationJob::spawn(handle),
-        });
+        };
+        let attempt = active.snapshot();
+        *slot = Some(active);
         self.request_publish();
-        Ok(true)
+        Ok(Some(attempt))
     }
 
     pub async fn cancel_registration(
@@ -332,17 +347,22 @@ impl BotRuntime {
                 Some(active)
                     if matches!(active.status, BotRegistrationStatus::Cancelled { .. }) =>
                 {
-                    CancelAdmission::NoChange
+                    CancelAdmission::NoChange {
+                        attempt: active.snapshot(),
+                    }
                 }
                 Some(active) if active.is_committing() => {
                     return Err(busy_registration_error());
                 }
-                Some(active) if active.is_terminal() => CancelAdmission::NoChange,
+                Some(active) if active.is_terminal() => CancelAdmission::NoChange {
+                    attempt: active.snapshot(),
+                },
                 Some(active) => {
                     invalidate_waiting(active);
                     self.request_publish();
                     CancelAdmission::Cancelled {
                         job: active.job.clone(),
+                        attempt: active.snapshot(),
                     }
                 }
                 None => {
@@ -356,15 +376,17 @@ impl BotRuntime {
             }
         };
         match admission {
-            CancelAdmission::NoChange => Ok(self
-                .registration_reply(operation_id, false, owner_epoch)
-                .await),
-            CancelAdmission::Cancelled { job } => {
-                self.publish().await;
+            CancelAdmission::NoChange { attempt } => {
+                self.registration_reply(operation_id, false, owner_epoch, attempt)
+                    .await
+            }
+            CancelAdmission::Cancelled { job, attempt } => {
+                let reply = self
+                    .registration_reply(operation_id, true, owner_epoch, attempt)
+                    .await;
+                // 发布失败也先回收原 job；回执已冻结，不在 join 后回读当前 attempt。
                 job.join().await?;
-                Ok(self
-                    .registration_reply(operation_id, true, owner_epoch)
-                    .await)
+                reply
             }
         }
     }
@@ -863,33 +885,35 @@ impl BotRuntime {
         operation_id: String,
         changed: bool,
         owner_epoch: &str,
-    ) -> BotsCommandReply {
-        let snapshot = self.snapshot().await;
-        BotsCommandReply {
-            stamp: Some(ResourceStamp {
-                resource_key: "bots".to_string(),
-                owner_epoch: owner_epoch.to_string(),
-                revision: snapshot.revision,
-            }),
-            receipt: StudioCommandReceipt {
-                operation_id,
-                disposition: if changed {
-                    CommandDisposition::Applied
-                } else {
-                    CommandDisposition::NoChange
-                },
-                targets: vec![ResourceStamp {
-                    resource_key: "bots".to_string(),
-                    owner_epoch: owner_epoch.to_string(),
-                    revision: snapshot.revision,
-                }],
-                effect: CommandEffectPoint::Immediate,
-                effective: true,
-                durable: false,
-                requires_identity_observation: false,
+        attempt: BotRegistrationAttempt,
+    ) -> Result<BotsCommandReply, FeishuError> {
+        let publication = self.publish_returning().await.ok_or_else(|| {
+            FeishuError::new(
+                FeishuErrorKind::Unavailable,
+                "bot registration command state was not published",
+                true,
+                None,
+            )
+        })?;
+        let stamp = ResourceStamp {
+            resource_key: "bots".to_string(),
+            owner_epoch: owner_epoch.to_string(),
+            revision: publication.revision,
+        };
+        let receipt = StudioCommandReceipt {
+            operation_id,
+            disposition: if changed {
+                CommandDisposition::Applied
+            } else {
+                CommandDisposition::NoChange
             },
-            snapshot,
-        }
+            targets: vec![stamp.clone()],
+            effect: CommandEffectPoint::Immediate,
+            effective: true,
+            durable: false,
+            requires_identity_observation: false,
+        };
+        Ok(Self::reply(None, Some(attempt), stamp, receipt))
     }
 }
 

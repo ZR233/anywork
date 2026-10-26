@@ -84,6 +84,7 @@ pub(crate) fn bridge_settings(
                 name: account.name,
                 base_url: account.base_url,
                 has_bearer_token: account.has_bearer_token,
+                bearer_token_env: account.bearer_token_env,
                 usage_query_revision: account.usage_query_revision,
                 credential_required: account.credential_required,
                 capability_source: account.capability_source,

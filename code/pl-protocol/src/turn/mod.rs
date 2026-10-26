@@ -99,6 +99,7 @@ impl Turn {
 /// Turn 执行期间的可展示活动阶段。
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
+#[derive(utoipa::ToSchema)]
 pub enum TurnPhase {
     Preparing,
     Thinking,
@@ -111,6 +112,7 @@ pub enum TurnPhase {
 /// Turn 正常完成的业务边界。
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
+#[derive(utoipa::ToSchema)]
 pub enum TurnCompletion {
     Normal,
     InteractionRequested,

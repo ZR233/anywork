@@ -77,7 +77,7 @@ use super::{
     FixtureReady, LspServerSpec, OwnedProcess, SqliteWriteLock, count_gui_errors, driver_command,
     history_lock_database, history_lock_quick_check, history_lock_watermark, sanitize_requests,
     wait_for_vm, write_config, write_config_with_lsp_server, write_config_with_mcp_server,
-    write_fixture_log, write_realtime_driver_evidence, write_sanitized_log,
+    write_fixture_log, write_process_evidence, write_sanitized_log,
 };
 use anyhow::{Context, Result, bail, ensure};
 use pl_dev_support::process;
@@ -2635,10 +2635,11 @@ pub(super) fn run(context: &ShutdownScenario<'_>, mut fixture: OwnedProcess) -> 
         (working.to_string_lossy().into_owned(), "<coord>"),
     ];
     for evidence in &driver_evidence {
-        write_realtime_driver_evidence(
+        write_process_evidence(
             &evidence.log,
             output,
             &evidence.stem,
+            "driver",
             evidence.exit,
             journey.as_ref().err(),
             &redactions,

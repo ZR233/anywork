@@ -10,15 +10,12 @@
 //! 图片，因此没有图片输入能力的 prepared 模型同样能在时间线上展示该图片
 //! （见 design/06 §6.13）。
 use super::ProjectionError;
-use crate::resource_store::FileResourceStore;
-use anyhow::Context;
 use pl_core::{
-    context::{ContextContent, ResourceReader, ResourceReference},
+    context::{ContextContent, ResourceReference},
     thread::ToolDelivery,
     tool::opaque::ToolError,
 };
 use pl_protocol::{AttachmentModality, ThreadAttachment};
-use tokio_util::sync::CancellationToken;
 
 /// One archived media variant referenced by a persisted tool delivery.
 #[derive(Debug, Clone)]
@@ -168,28 +165,4 @@ pub(crate) fn persisted_reference(
         }
     }
     Ok(resolved.map(|(reference, _)| reference))
-}
-
-/// Reads archived bytes only after proving this Thread itself persisted the reference.
-///
-/// A resource id prefix, digest, or Thread accessibility never authorizes a read; an unknown,
-/// unreferenced, corrupt, or missing resource fails instead of re-reading a workspace path.
-///
-/// # Errors
-/// Rejects an unreferenced or corrupt projection, and unavailable or integrity-failing bytes.
-pub(crate) async fn read_persisted_media(
-    store: &FileResourceStore,
-    deliveries: &[ToolDelivery],
-    attachment_id: &str,
-) -> anyhow::Result<Vec<u8>> {
-    let reference = persisted_reference(deliveries, attachment_id)?.with_context(|| {
-        format!(
-            "attachment {attachment_id} is not referenced by this Thread's persisted tool media"
-        )
-    })?;
-    let bytes = store
-        .read(reference, CancellationToken::new())
-        .await
-        .with_context(|| format!("archived tool media {attachment_id} is unavailable"))?;
-    Ok(bytes.to_vec())
 }

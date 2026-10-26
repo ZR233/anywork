@@ -90,8 +90,8 @@ gh pr view PR_NUMBER --repo OWNER/REPO --json body --jq .body
 - Rust crate 名称统一以 `pl-` 开头，例如 `pl-core`、`pl-model`、`pl-studio-bridge`。
 - Flutter app 的 Dart package 名称是 `anywork`。
 - Flutter 项目根目录是 `code/anywork`。
-- SDK-only Dart Client 位于 `code/anywork_client`，无 Flutter/Riverpod/FRB 依赖；Client 命令通过 `cargo xtask verify-client` 在正确目录执行。
-- 每个 `AppGraph` 拥有独立 Client 与资源。`presentation/providers` 只适配只读观察；其销毁只能取消自己的观察和预算 permit，不能关闭 Session/ChatView、清草稿或清附件。业务意图直接调用 Client action；`features/**` 不导入 FRB、transport 或 Client 私有实现。
+- 纯 Dart 数据／领域包位于 `code/anywork_client`，无 Flutter/Riverpod/FRB 依赖；可使用必要的纯 Dart Freezed annotation／生成工具，不能把此边界误写成所有依赖必须为空。领域包命令通过 `cargo xtask verify-client` 在正确目录执行。
+- 每个应用 composition root 装配独立 Repository、Session／资源服务与展示 owner，不建立巨型可写 Client facade。Feature-First Presentation 区分生成式 AsyncNotifier、Freezed ViewState、Smart Connector 与 Dumb View；业务意图经 VM 调领域公共能力，`features/**` 不导入 FRB、transport 或领域私有实现。observer／VM 销毁只取消自身观察和 timer，不能关闭跨路由 Session、清草稿或清附件；完整契约见 design/25-frontend-state.md。
 
 ### 会话文件与交付位置
 
@@ -139,13 +139,14 @@ gh pr view PR_NUMBER --repo OWNER/REPO --json body --jq .body
 
 ### GUI 生成文件
 
-- Riverpod、Freezed、l10n 和 FRB 文件属于生成边界，只能从仓库根目录统一生成：
+- 应用与纯 Dart 领域包的 Riverpod、Freezed、l10n 和 FRB 文件属于统一生成边界，只能从仓库根目录统一生成；各生成器仍在其所属 package 的正确目录执行：
 
   ```powershell
   cargo xtask generate-gui
   ```
 
 - 不得手工修改生成文件，也不得直接调用单个生成器。
+- 统一生成与 canonical 检查覆盖两包 `.g.dart`／`.freezed.dart` 的内容及文件集合，并清理已删除输入的孤儿产物；使用已审查的两份 lockfile，依赖调整须先显式解析并审查新的快照，不能由检查命令暗中升级。
 - 修改生成输入后运行 `cargo xtask check-gui-generated` 检查 canonical 输出，并分开审查生成 diff 与手写 diff。已授权的代码修改或生成一致性验证包含这些命令所需的生成操作，不为常规生成另行确认；用户明确限定只读时，不运行会改写跟踪文件的命令，报告未验证项。
 - 普通 `run-gui` 和 `build-gui` 只消费当前源码，不运行生成器或可写格式化；修改生成输入后必须先显式运行 `cargo xtask generate-gui`。
 - `check-gui-generated`、`verify-gui` 和 `build-gui --check-generated` 会重新生成并检查 canonical 输出，适用于提交前及 PR 质量门禁。稳定发布的 `release-gui stage` 与 RC 构建直接消费已提交的生成文件，不重复质量门禁；批准发布前须确认前序验证完成（见 [发布与更新](design/23-release-update.md)）。
@@ -201,7 +202,7 @@ crate 职责、依赖方向与禁止依赖的唯一权威源是 [Crate 边界](d
 
 - 验证按实际影响选择。纯文档、技能或协作规则修改（包括提交前）只检查内容、引用、规则一致性及适用格式，不运行 Rust、Flutter、GUI 或 live 全量验收；若同时改变构建／生成输入、运行配置或测试执行语义，则按这些实际影响验证。代码修改先运行定向检查，跨 crate、协议、构建或依赖变更扩展到相关消费者；提交前执行下述代码门禁，生成输入、GUI 行为与 live 验收另遵守对应要求。
 - 适用检查通过且需求已满足后直接交付；只有新修改、失败或尚未解决的具体风险才扩展或重复验证。只读分析以结论与出处为完成条件；修改任务以范围内修改完成、适用验证通过和差异可审查为完成条件；提 PR 任务还须交付 PR 链接及实际 CI 状态，排队或运行中不算通过。环境或权限阻塞时报告已完成项、原始失败和剩余工作，不声称全部完成。
-- Rust 常规自动化用例位于 `pl-model/tests/` 与 `pl-core/tests/`，只通过被测 crate 的公开 API 验证完整能力；纯 Dart Client 的公开行为测试位于 `code/anywork_client/test/`，Riverpod/路由适配契约测试位于 `code/anywork/test/client/` 并纳入 `verify-client` 门禁；仅 `pl-studio-runtime` 历史保存与数据迁移允许专项故障注入测试，不为测试扩展生产公共接口。其他 Rust crate 不新增测试；除上述 Client 适配契约外，Flutter widget/integration 与发布脚本测试仍不进入门禁。两库测试通过本地模拟供应商或脚本化模型运行；`pl-core` 不依赖 `pl-model`。上游预置技能自带的测试源码保持原样，但不进入本项目门禁。测试设计与失败传播遵循 [test-quality](.agents/skills/test-quality/SKILL.md)，具体边界见 [测试设计](design/24-testing.md)。
+- Rust 常规自动化用例位于 `pl-model/tests/` 与 `pl-core/tests/`，只通过被测 crate 的公开 API 验证完整能力；纯 Dart Repository／Session 公共行为测试位于 `code/anywork_client/test/`，AsyncNotifier／FRB adapter／Smart-Dumb／路由契约测试位于 `code/anywork/test/client/`，纳入 `verify-client` 门禁。`pl-studio-runtime` 历史保存与数据迁移允许专项故障注入；runtime／bridge 可为真实 feed、投送额度与取消／join owner 增加必要确定性契约测试，不为测试扩展生产 API，新增测试入口必须进入本地和 CI 对应检查。其他 Rust crate 不新增测试；其余 Flutter widget/integration 与发布脚本测试不进入门禁。两库测试通过本地模拟供应商或脚本化模型运行；`pl-core` 不依赖 `pl-model`。上游预置技能测试保持原样但不进入门禁。测试设计遵循 [test-quality](.agents/skills/test-quality/SKILL.md)，边界见 [测试设计](design/24-testing.md)。
 - `code/anywork/pubspec.lock` 是必须纳入 Git 的 canonical 应用依赖快照，不得加入 ignore；
   Flutter 直接依赖升级后必须同步提交重新解析的 lockfile。
 - 代码、构建、依赖或生成输入变更提交前，在本地执行与 CI 一致的检查清单（纯说明性变更按本节首条豁免；只需保证当前环境通过；
@@ -214,6 +215,7 @@ crate 职责、依赖方向与禁止依赖的唯一权威源是 [Crate 边界](d
   cargo test -p pl-model
   cargo test -p pl-core --features sqlite
   cargo test -p pl-studio-runtime
+  cargo test -p pl-studio-bridge --lib
   cargo xtask verify-client
   cargo xtask verify-gui
   ```

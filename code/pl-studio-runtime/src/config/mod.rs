@@ -6,8 +6,14 @@
 pub mod acp;
 mod agent_profile;
 mod instruction;
+mod profiles_projection;
 mod profiles_resource;
 pub use instruction::{DEFAULT_PROJECT_DOC_MAX_BYTES, InstructionsConfig};
+pub(crate) use profiles_projection::{
+    ProfilesCaptureFailure, ProfilesMaterial, ProfilesSnapshot, ProfilesSource,
+};
+pub(crate) use profiles_resource::{AgentProfilesEvidence, AgentProfilesPublication};
+pub(crate) use runtime::ProfileMutationFailure;
 mod bot_credentials;
 mod credential;
 mod execution;
@@ -62,11 +68,19 @@ pub(crate) use credential::{
     BotCredentialIoError, BotCredentialIoKind, BotProtectedPersist, BotProtectedRead,
 };
 pub use pl_model::config::{AccountId, AgentRoleId, ModelRouteConfig, ReasoningEffort};
+pub(crate) use runtime::ConfigProjectionObservation;
 pub(crate) use runtime::ModeDefinitionCommandOutcome;
 pub(crate) use runtime::SettingsCommitObserver;
+pub(crate) use runtime::SettingsCommitProjection;
+pub(crate) use runtime::{
+    ConfigMutationEvidence, ConfigMutationFailure, ConfigurationCaptureFailure,
+    ConfigurationMaterial, ConfigurationPair, ConfigurationSnapshot, ConfigurationSource,
+    ConfigurationStatusMaterial, ModelCaptureFailure, ModelCatalogMaterial, ModelCatalogSource,
+    ModelSourceStatusFailure, ModelSourceStatusMaterial, ModelsSnapshot,
+};
 pub use runtime::{
-    ConfigRuntime, ConfigRuntimeError, ConfigRuntimeSnapshot, ModelCatalogRuntimeSnapshot,
-    ResolvedAgentProfile,
+    ConfigProfileCommandResult, ConfigReloadResult, ConfigRuntime, ConfigRuntimeError,
+    ConfigRuntimeSnapshot, ModelCatalogRuntimeSnapshot, ResolvedAgentProfile,
 };
 pub use store::{ConfigPaths, ConfigStore};
 

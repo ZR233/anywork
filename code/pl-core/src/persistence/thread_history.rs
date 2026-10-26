@@ -98,7 +98,14 @@ pub(super) fn decode_effect(
     row: sea_orm::QueryResult,
     thread_id: &str,
 ) -> Result<ThreadEffectBatch, SessionStoreError> {
-    let entry = sqlite::decode_row(row)?;
+    decode_entry(sqlite::decode_row(row)?, thread_id)
+}
+
+/// Shared typed integrity/ownership boundary after the storage envelope has been verified.
+pub(super) fn decode_entry(
+    entry: crate::storage::SessionEntry,
+    thread_id: &str,
+) -> Result<ThreadEffectBatch, SessionStoreError> {
     let payload = OpaquePayload::new(entry.type_id, entry.schema_version, entry.payload)
         .map_err(|error| SessionStoreError::Invalid(error.to_string()))?;
     let effect = ThreadEffectBatch::decode(&payload)

@@ -1,17 +1,80 @@
 //! Process-wide observation and retry coordination for per-Thread persistence sinks.
 
+pub(crate) mod drain;
+pub(crate) mod history_close;
+
 use std::{
     collections::BTreeMap,
-    sync::{Arc, Mutex, atomic::AtomicU64},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, AtomicU64, Ordering},
+    },
 };
 
 use anyhow::{Result, bail};
+use futures::future::{BoxFuture, Shared};
 use pl_core::chat::{Session, WeakSession};
 use pl_core::thread::UsageSummary;
 use tokio::sync::{Notify, watch};
 
 use crate::studio::storage::history::{HistoryStore, HistoryStoreShare};
 use crate::studio::storage::thread_writer::HistoryChannel;
+use self::history_close::{HistoryCloseOwner, HistoryCloseGroup};
+
+/// Why one writer incarnation's task did not end normally.
+///
+/// The source stays typed: a panic is a joined `JoinError`, never a rendered message.
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum WriterTaskFailure {
+    #[error("{stage} task of Thread {thread_id} did not join")]
+    Join {
+        thread_id: String,
+        stage: &'static str,
+        #[source]
+        source: Arc<tokio::task::JoinError>,
+    },
+}
+
+/// The real tasks of one writer incarnation, registered where its watermarks live.
+///
+/// The completion resolves only after the worker and both helpers really ended, and it exists
+/// independently of whoever awaits it: an abnormal supervisor can therefore never hide a task that
+/// is still running, because this row — not that task — keeps the completion.
+#[derive(Clone)]
+pub(crate) struct WriterTasks {
+    completion: Shared<BoxFuture<'static, Result<(), Arc<WriterTaskFailure>>>>,
+    finished: Arc<AtomicBool>,
+}
+
+impl std::fmt::Debug for WriterTasks {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("WriterTasks")
+            .field("finished", &self.finished.load(Ordering::Acquire))
+            .finish_non_exhaustive()
+    }
+}
+
+impl WriterTasks {
+    pub(crate) fn new(
+        completion: Shared<BoxFuture<'static, Result<(), Arc<WriterTaskFailure>>>>,
+    ) -> Self {
+        Self {
+            completion,
+            finished: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
+    /// Drives and observes the real end of this incarnation's tasks.
+    pub(crate) async fn join(&self) -> Result<(), Arc<WriterTaskFailure>> {
+        self.completion.clone().await
+    }
+
+    /// Claims the single "this incarnation is finished" transition.
+    fn claim_finished(&self) -> bool {
+        !self.finished.swap(true, Ordering::AcqRel)
+    }
+}
 
 /// Per-Thread persistence watermarks and queue pressure reported by the owning writer.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -84,6 +147,7 @@ pub(crate) struct CallsQueueMetrics {
 /// Watermarks reported by one per-Thread writer incarnation.
 #[derive(Debug, Clone, Default)]
 struct IncarnationStatus {
+    writer: WriterState,
     /// Admitted effects this incarnation still owes an ordered history/calls write.
     pending: BTreeMap<u64, ()>,
     /// Whether this incarnation still owes the publication of a retained checkpoint.
@@ -93,11 +157,27 @@ struct IncarnationStatus {
     metrics: ThreadPersistenceMetrics,
     /// Terminal fact: this incarnation's writer task ended while it still owed commits.
     ///
-    /// The incarnations that follow start from the published checkpoint, which does not contain
-    /// these commits, so a later successful save cannot recover them and must not clear this
-    /// diagnostic. Its obligations stay counted, which is what makes the process-wide drain fail
-    /// with the real reason instead of hanging or reporting a synthetic success.
+    /// Kept until the existing claim/detach path transfers the same retained channel queue to
+    /// another writer. An unrelated successful save is not evidence that these facts are durable.
     released_dirty: Option<String>,
+    /// The real worker/helper tasks of this incarnation.
+    ///
+    /// Registered here so their end can be observed from the watermarks' own owner: an incarnation
+    /// may only read as stopped after these tasks really joined.
+    tasks: Option<Arc<WriterTasks>>,
+    /// The typed reason this incarnation's tasks ended abnormally, kept after it stops.
+    ///
+    /// A stopped row is not evidence of a clean end: the real task failure is read from here even by
+    /// a wait that only starts after the observer already finished this incarnation.
+    task_failure: Option<Arc<WriterTaskFailure>>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+enum WriterState {
+    #[default]
+    Preparing,
+    Running,
+    Stopped,
 }
 
 impl IncarnationStatus {
@@ -117,12 +197,10 @@ impl IncarnationStatus {
         self.owed() == 0 && self.failure().is_none()
     }
 
-    /// Whether this incarnation's writer task is still running.
-    ///
-    /// Only a stopped incarnation carries `released_dirty`, and a stopped one that owed nothing is
-    /// dropped, so any incarnation still tracked without that diagnostic is live.
+    /// Whether preparation or its accepted worker still owns this incarnation.
+    /// A stopped row may retain an error even when it has no outstanding commits.
     fn is_live(&self) -> bool {
-        self.released_dirty.is_none()
+        self.writer != WriterState::Stopped
     }
 }
 
@@ -135,7 +213,7 @@ impl IncarnationStatus {
 /// when its writer is superseded, and a replaced writer that stops dirty keeps failing the drain
 /// explicitly with its own error.
 ///
-/// The map stays bounded because a stopped incarnation is removed as soon as it owes nothing.
+/// A clean stopped incarnation is removed; retained failures are not runnable writers.
 #[derive(Debug, Default)]
 struct ThreadStatus {
     incarnations: BTreeMap<usize, IncarnationStatus>,
@@ -162,6 +240,22 @@ struct Inner {
     /// Views and the active writer share one session without pinning cold sessions forever.
     chats: Mutex<BTreeMap<String, WeakSession>>,
     channels: Mutex<BTreeMap<String, Arc<HistoryChannel>>>,
+    /// Connections the last history holder handed over for an explicit close.
+    ///
+    /// A history handle shares one connection state between the writer, its readers and this
+    /// registry, so its last strong reference drops wherever it was released — sometimes without a
+    /// runtime. Dropping the pool there would be no join point at all, so that drop registers the
+    /// still-open connections here and this owner closes them for real.
+    history_close: HistoryCloseOwner,
+    /// Admission boundary shared with the final history close.
+    ///
+    /// Opening or sharing a Thread history handle takes this lock; sealing takes it too, so a
+    /// handle can never be handed out after the final close decided no holder is left.
+    history_admission: tokio::sync::Mutex<()>,
+    history_closed: AtomicBool,
+    /// Test-only gate: the next installed supervisor waits on it before failing itself.
+    #[cfg(test)]
+    supervisor_failure_gate: Mutex<Option<tokio::sync::oneshot::Receiver<()>>>,
     queued_bytes: Arc<AtomicU64>,
     state: watch::Sender<ThreadPersistenceSnapshot>,
     retry: Notify,
@@ -180,6 +274,11 @@ impl Default for ThreadPersistenceCoordinator {
             history: Mutex::new(BTreeMap::new()),
             chats: Mutex::new(BTreeMap::new()),
             channels: Mutex::new(BTreeMap::new()),
+            history_close: HistoryCloseOwner::new(),
+            history_admission: tokio::sync::Mutex::new(()),
+            history_closed: AtomicBool::new(false),
+            #[cfg(test)]
+            supervisor_failure_gate: Mutex::new(None),
             queued_bytes: Arc::new(AtomicU64::new(0)),
             state,
             retry: Notify::new(),
@@ -188,6 +287,151 @@ impl Default for ThreadPersistenceCoordinator {
 }
 
 impl ThreadPersistenceCoordinator {
+    #[cfg(test)]
+    /// Arms the next installed writer supervisor to fail after this gate opens (test-only).
+    pub(crate) fn arm_supervisor_failure(&self, gate: tokio::sync::oneshot::Receiver<()>) {
+        *self
+            .0
+            .supervisor_failure_gate
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(gate);
+    }
+
+    #[cfg(test)]
+    /// Takes the armed supervisor gate, if this install is the one that should fail.
+    pub(crate) fn take_supervisor_failure_gate(
+        &self,
+    ) -> Option<tokio::sync::oneshot::Receiver<()>> {
+        self.0
+            .supervisor_failure_gate
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+    }
+
+    /// The owner that closes history connections after their last holder released them.
+    pub(crate) fn history_close_owner(&self) -> HistoryCloseOwner {
+        self.0.history_close.clone()
+    }
+
+    /// Registers the real tasks of one incarnation next to its watermarks.
+    pub(crate) fn register_writer_tasks(&self, thread_id: &str, owner: usize, tasks: Arc<WriterTasks>) {
+        {
+            let mut threads = self
+                .0
+                .threads
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if let Some(incarnation) = threads
+                .get_mut(thread_id)
+                .and_then(|status| status.incarnations.get_mut(&owner))
+            {
+                incarnation.tasks = Some(tasks);
+            }
+        }
+        self.refresh();
+    }
+
+    /// Finishes one incarnation **after** its tasks really joined.
+    ///
+    /// This is the only place that stops the incarnation, so a stopped row always means its worker
+    /// and both helpers ended. An abnormal end keeps the typed failure and can never read as clean.
+    /// Repeating the call is harmless: whoever observes the end first claims the transition.
+    pub(crate) fn finish_incarnation(
+        &self,
+        thread_id: &str,
+        owner: usize,
+        outcome: Result<(), Arc<WriterTaskFailure>>,
+    ) {
+        let claimed = {
+            let threads = self
+                .0
+                .threads
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            threads
+                .get(thread_id)
+                .and_then(|status| status.incarnations.get(&owner))
+                .and_then(|incarnation| incarnation.tasks.clone())
+                .is_none_or(|tasks| tasks.claim_finished())
+        };
+        if !claimed {
+            return;
+        }
+        if let Err(failure) = &outcome {
+            let detail = failure.to_string();
+            let mut threads = self
+                .0
+                .threads
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if let Some(incarnation) = threads
+                .get_mut(thread_id)
+                .and_then(|status| status.incarnations.get_mut(&owner))
+            {
+                // Kept even if the incarnation later reports a clean queue: a task that did not end
+                // normally is a terminal fact about this incarnation.
+                incarnation.error.get_or_insert(detail);
+                incarnation.task_failure = Some(failure.clone());
+            }
+            drop(threads);
+            self.refresh();
+        }
+        self.detach(thread_id, owner);
+    }
+
+    /// Every typed task failure this coordinator still knows about, stopped incarnations included.
+    ///
+    /// A close must not report success because the incarnation that failed happened to stop before
+    /// the wait began; this reads the canonical rows instead of what one wait happened to observe.
+    pub(crate) fn task_end_failures(
+        &self,
+        thread_id: Option<&str>,
+    ) -> Vec<Arc<WriterTaskFailure>> {
+        let threads = self
+            .0
+            .threads
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        threads
+            .iter()
+            .filter(|(id, _)| thread_id.is_none_or(|thread_id| id.as_str() == thread_id))
+            .flat_map(|(_, status)| status.incarnations.values())
+            .filter_map(|incarnation| incarnation.task_failure.clone())
+            .collect()
+    }
+
+    /// The admission boundary shared with the final history close.
+    ///
+    /// Holding it while opening or sharing a handle is what makes "no holder is left" a fact the
+    /// final close can rely on instead of a hope.
+    pub(crate) async fn history_admission(&self) -> Result<tokio::sync::MutexGuard<'_, ()>> {
+        let guard = self.0.history_admission.lock().await;
+        if self.0.history_closed.load(Ordering::Acquire) {
+            return Err(closed_history());
+        }
+        Ok(guard)
+    }
+
+    /// Seals the history close after every holder was really joined.
+    ///
+    /// Taking the admission lock first means a handle that is being handed out right now either
+    /// completes before the seal or fails with the typed closed error; nothing can arrive afterwards
+    /// as a legitimate holder.
+    pub(crate) async fn seal_history(&self) {
+        let _admission = self.0.history_admission.lock().await;
+        self.0.history_closed.store(true, Ordering::Release);
+        self.0.history_close.seal();
+    }
+
+    /// Closes every handed-over history connection and keeps the real failures.
+    ///
+    /// It waits for every registered state to end first: a Thread that still has a legitimate holder
+    /// keeps this pending until the caller's own deadline, and never reports a finished close.
+    pub(crate) async fn settle_history(&self) -> std::result::Result<(), HistoryCloseGroup> {
+        self.0.history_close.settle_when_no_state_is_left().await
+    }
+
     pub(crate) fn chat_session(&self, thread_id: &str) -> Option<Session> {
         let mut chats = self
             .0
@@ -368,6 +612,26 @@ impl ThreadPersistenceCoordinator {
         self.refresh();
     }
 
+    /// Transfers preparation to its worker immediately before spawn, with no intervening await.
+    /// The original detach guard covers both preparation cancellation and worker completion.
+    pub(crate) fn start_writer(&self, thread_id: &str, owner: usize) {
+        {
+            let mut threads = self
+                .0
+                .threads
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if let Some(incarnation) = threads
+                .get_mut(thread_id)
+                .and_then(|status| status.incarnations.get_mut(&owner))
+                && incarnation.writer == WriterState::Preparing
+            {
+                incarnation.writer = WriterState::Running;
+            }
+        }
+        self.refresh();
+    }
+
     /// Releases one Thread's watermarks when its per-Thread writer stops.
     ///
     /// A stopped writer can never report again. If it owed nothing its row is removed, because
@@ -383,6 +647,9 @@ impl ThreadPersistenceCoordinator {
         let mut empty = false;
         let mut unavailable = false;
         if let Some(status) = threads.get_mut(thread_id) {
+            if let Some(incarnation) = status.incarnations.get_mut(&owner) {
+                incarnation.writer = WriterState::Stopped;
+            }
             // Decide before mutating: `record_released_commits` deliberately keeps the row alive
             // when it owes commits, so the removal decision must come from the pre-release state.
             let mut release = false;
@@ -560,38 +827,6 @@ impl ThreadPersistenceCoordinator {
         self.0.retry.notified().await;
     }
 
-    pub(crate) async fn wait_for_drain(&self) -> Result<()> {
-        let mut progress = self.subscribe();
-        loop {
-            // Clone out of the watch borrow before re-reading the same channel, so the two read
-            // borrows of the shared watch state never overlap.
-            let snapshot = progress.borrow_and_update().clone();
-            if let Some(error) = snapshot.error.clone() {
-                bail!("Thread persistence is blocked: {error}");
-            }
-            if snapshot.pending_commits == 0 {
-                return Ok(());
-            }
-            let queue = self.queue_snapshot();
-            tracing::debug!(
-                calls_admitted = snapshot.calls_admitted_sequence,
-                calls_durable = snapshot.calls_durable_sequence,
-                calls_oldest_pending_age_millis = ?snapshot.calls_oldest_pending_age_millis,
-                pending_operations = queue.pending_operations,
-                pending_bytes = queue.pending_bytes,
-                in_flight_bytes = queue.in_flight_bytes,
-                oldest_pending_age_millis = ?queue.oldest_pending_age_millis,
-                pressure_paused = queue.pressure_paused,
-                threads = queue.threads.len(),
-                "waiting for Thread persistence to drain"
-            );
-            progress
-                .changed()
-                .await
-                .map_err(|_| anyhow::anyhow!("Thread persistence progress channel closed"))?;
-        }
-    }
-
     /// Re-aggregates the process-wide observation from the per-Thread status and recovery map.
     fn refresh(&self) {
         let snapshot = {
@@ -614,10 +849,9 @@ impl ThreadPersistenceCoordinator {
 /// Records the terminal fact that one writer incarnation stopped while it still owed commits.
 ///
 /// Called under the Threads lock from `detach`, the one place that knows a writer task has actually
-/// ended. A stopped writer can never make these facts durable, so the diagnostic is what turns an
-/// undrainable queue into an explicit shutdown failure instead of an unbounded wait. It stays
-/// visible for the life of the process: the following incarnations start from the published
-/// checkpoint, which does not contain these commits.
+/// ended (or preparation was cancelled). That incarnation can no longer make these facts durable.
+/// The diagnostic prevents synthetic success until the existing claim/detach path transfers the
+/// same retained queue to another owner; a new published checkpoint alone is not such a transfer.
 ///
 /// Its `pending` bookkeeping is deliberately kept: the obligation is still owned by this
 /// incarnation, so the process-wide drain keeps counting it and fails with this error instead of
@@ -743,4 +977,14 @@ fn aggregate(
     // 会让与之无关的 `wait_for_drain`（runtime shutdown/drain）因别人的恢复诊断失败，
     // 而真实 writer 失败仍通过各 incarnation 的 `failure()` 照常阻断 drain。
     snapshot
+}
+
+/// The typed rejection for a history handle asked for after the final close sealed admission.
+fn closed_history() -> anyhow::Error {
+    pl_protocol::studio::StudioError::new(
+        pl_protocol::studio::StudioErrorCode::Cancelled,
+        "Studio history is closed",
+        false,
+    )
+    .into()
 }

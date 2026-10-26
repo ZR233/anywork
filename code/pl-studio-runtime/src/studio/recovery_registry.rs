@@ -21,11 +21,15 @@ struct State {
     scan: ScanState,
     revision: u64,
     updated_at: i64,
+    projection: Option<Arc<super::runtime::recovery::RecoverySource>>,
 }
 impl State {
     fn touch(&mut self) {
         self.revision = self.revision.saturating_add(3);
         self.updated_at = unix_seconds();
+        if let Some(source) = &self.projection {
+            source.publish(self.snapshot());
+        }
     }
     fn snapshot(&self) -> ObservedResource<Vec<StudioRecoveryIssue>> {
         let base = ObservedResource::ready(self.revision, self.updated_at, self.issues.clone());
@@ -82,8 +86,17 @@ impl StudioRecoveryRegistry {
                 scan: ScanState::Idle,
                 revision: 0,
                 updated_at: unix_seconds(),
+                projection: None,
             })),
         }
+    }
+    pub(in crate::studio) fn attach_source(
+        &self,
+        source: Arc<super::runtime::recovery::RecoverySource>,
+    ) {
+        let mut state = self.inner.lock().expect("recovery lock poisoned");
+        source.publish(state.snapshot());
+        state.projection = Some(source);
     }
     pub fn snapshot(&self) -> Vec<StudioRecoveryIssue> {
         self.inner

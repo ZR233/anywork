@@ -43,6 +43,7 @@ impl IntoResponse for ApiError {
             StudioErrorCode::Busy
             | StudioErrorCode::Conflict
             | StudioErrorCode::StaleRevision
+            | StudioErrorCode::Superseded
             | StudioErrorCode::Cancelled
             | StudioErrorCode::CancellationTooLate
             | StudioErrorCode::InstanceBusy => StatusCode::CONFLICT,

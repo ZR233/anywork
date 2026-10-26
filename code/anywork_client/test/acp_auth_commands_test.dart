@@ -1,742 +1,347 @@
-import 'dart:async';
-
-import 'package:anywork_client/studio_client.dart';
+import 'package:anywork_client/acp_ports.dart';
+import 'package:anywork_client/operations_ports.dart';
+import 'package:anywork_client/resources_ports.dart';
 import 'package:test/test.dart';
 
-final class _AcpTransport implements StudioTransport {
-  int settingsRevision = 4;
-  int saveCalls = 0;
-  int startCalls = 0;
-  int cancelCalls = 0;
+import 'support/acp_port_fixture.dart';
 
-  /// 命令回执携带的 snapshot revision；调用方可抬高以模拟更新的 topic 事实。
-  int startRevision = 1;
-  int cancelRevision = 2;
+/// 命令回执只能证明受理：被拒绝、结果未知、已确认但观察失败必须是可区分的三类
+/// 结果，`closing`／`cancelling` 不是完成。全部用例通过 `OperationTicket` 的公开
+/// 结果和 canonical 观察判定，不读取 fake 的内部状态来“自证”。
+const _nativeRefusal = StudioFailure(
+  code: StudioFailureCode.invalidArgument,
+  message: 'The scripted native boundary declined this check',
+  retryable: false,
+  correlationId: 'acp-native-refusal',
+);
 
-  /// 收到的取消请求（账号 + 目标 operation）：测试据此证明“取消打到了正确的操作”。
-  final List<({String accountId, String targetOperationId})> cancelRequests =
-      [];
-
-  /// 每个账号的取消连接身份（默认 7，与单账号用例一致）。
-  final Map<String, int> cancelConnectionRevisions = {};
-
-  /// 按账号挂住取消，用于证明账号之间互不阻塞：只挂指定账号，其余立刻完成。
-  final Set<String> holdCancelAccounts = {};
-  final Map<String, Completer<void>> _cancelGates = {};
-
-  Completer<void>? cancelGate(String accountId) => _cancelGates[accountId];
-
-  void releaseCancel(String accountId) {
-    final gate = _cancelGates.remove(accountId);
-    if (gate != null && !gate.isCompleted) gate.complete();
-  }
-
-  /// 保存的 ACP 配置行。
-  List<AcpAccountSettingsView> accounts = const [];
-
-  /// 命令回执必须是**全量** auth 快照；只回一个账号会让多账号用例误判旧条目消失。
-  final Map<String, AcpAuthAccountView> authAccounts = {};
-
-  /// 令 start 停在 transport 上，用于观察并发去重与迟到回执。
-  Completer<void>? pendingStart;
-  bool holdStart = false;
-  StudioFailure? startFailure;
-  AcpAuthActionView? lastAction;
-  int? lastConnectionRevision;
-  AcpAccountUpdateView? lastSaved;
-
-  SettingsCommandReply _reply(OperationId operationId) {
-    settingsRevision += 1;
-    return SettingsCommandReply(
-      snapshot: SettingsStateSnapshot(
-        revision: settingsRevision,
-        acpAccounts: accounts,
-      ),
-      receipt: StudioCommandReceipt(
-        operationId: operationId,
-        disposition: CommitDisposition.applied,
-        targets: [
-          ResourceStamp(
-            resourceKey: 'settings',
-            ownerEpoch: 'test',
-            revision: settingsRevision,
-          ),
-        ],
-        effect: EffectPoint.futureSession,
-        effective: true,
-        durable: true,
-      ),
-    );
-  }
-
-  AcpAuthSnapshotView _authSnapshot(int revision) => AcpAuthSnapshotView(
-    revision: revision,
-    updatedAt: revision,
-    accounts: authAccounts.values.toList(growable: false),
-  );
-
-  @override
-  Future<SettingsCommandReply> saveAcpAccount(
-    int expectedSettingsRevision,
-    AcpAccountUpdateView account, {
-    required OperationId operationId,
-  }) async {
-    saveCalls += 1;
-    lastSaved = account;
-    accounts = [
-      AcpAccountSettingsView(
-        accountId: account.accountId,
-        name: account.name,
-        provider: account.provider,
-        connectionRevision: 7,
-      ),
-    ];
-    return _reply(operationId);
-  }
-
-  @override
-  Future<SettingsCommandReply> removeAcpAccount(
-    int expectedSettingsRevision,
-    String accountId, {
-    required OperationId operationId,
-  }) async {
-    accounts = [
-      for (final account in accounts)
-        if (account.accountId != accountId) account,
-    ];
-    return _reply(operationId);
-  }
-
-  @override
-  Future<AcpAuthCommandReply> startAcpAuth({
-    required OperationId operationId,
-    required String accountId,
-    required int expectedConnectionRevision,
-    required AcpAuthActionView action,
-  }) async {
-    startCalls += 1;
-    lastAction = action;
-    lastConnectionRevision = expectedConnectionRevision;
-    final failure = startFailure;
-    if (failure != null) throw failure;
-    authAccounts[accountId] = AcpAuthAccountView(
-      accountId: accountId,
-      connectionRevision: expectedConnectionRevision,
-      state: AcpCheckingState(operationId: operationId.value),
-    );
-    final reply = AcpAuthCommandReply(
-      receipt: StudioCommandReceipt(
-        operationId: operationId,
-        disposition: CommitDisposition.applied,
-        targets: [
-          ResourceStamp(
-            resourceKey: 'acp-auth',
-            ownerEpoch: 'test',
-            revision: startRevision,
-          ),
-        ],
-        effect: EffectPoint.immediate,
-        effective: true,
-        durable: false,
-      ),
-      snapshot: _authSnapshot(startRevision),
-    );
-    if (holdStart) {
-      final gate = pendingStart = Completer<void>();
-      await gate.future;
-    }
-    return reply;
-  }
-
-  @override
-  Future<AcpAuthCommandReply> cancelAcpAuth({
-    required OperationId operationId,
-    required String accountId,
-    required OperationId targetOperationId,
-  }) async {
-    cancelCalls += 1;
-    cancelRequests.add((
-      accountId: accountId,
-      targetOperationId: targetOperationId.value,
-    ));
-    if (holdCancelAccounts.contains(accountId)) {
-      final gate = _cancelGates[accountId] = Completer<void>();
-      await gate.future;
-    }
-    // revision 在真正完成时分配，模拟运行期按提交顺序发布。
-    final revision = cancelRevision++;
-    authAccounts[accountId] = AcpAuthAccountView(
-      accountId: accountId,
-      connectionRevision: cancelConnectionRevisions[accountId] ?? 7,
-      state: const AcpCancelledState(),
-    );
-    return AcpAuthCommandReply(
-      receipt: StudioCommandReceipt(
-        operationId: operationId,
-        disposition: CommitDisposition.applied,
-        targets: [
-          ResourceStamp(
-            resourceKey: 'acp-auth',
-            ownerEpoch: 'test',
-            revision: revision,
-          ),
-        ],
-        effect: EffectPoint.immediate,
-        effective: true,
-        durable: false,
-      ),
-      snapshot: _authSnapshot(revision),
-    );
-  }
-
-  @override
-  dynamic noSuchMethod(Invocation invocation) =>
-      throw UnsupportedError('Unused transport: ${invocation.memberName}');
-}
-
-AnyworkClient _client(_AcpTransport transport) {
-  final client = AnyworkClient(transport: transport, clientId: 'acp');
-  client.settings.merge(
-    SettingsStateSnapshot(
-      revision: transport.settingsRevision,
-      acpAccounts: transport.accounts,
-    ),
-  );
-  addTearDown(client.close);
-  return client;
-}
-
-const _update = AcpAccountUpdateView(
-  accountId: 'acp-1',
-  name: 'Antigravity',
-  provider: AcpProviderView.antigravity,
+const _lostReply = StudioFailure(
+  code: StudioFailureCode.unavailable,
+  message: 'The bridge call failed without a typed rejection boundary',
+  retryable: true,
+  correlationId: 'acp-bridge-call',
 );
 
 void main() {
   test(
-    'reducer accepts the first snapshot at revision zero and keeps order',
-    () {
-      final store = AcpAuthStore();
-      expect(store.snapshot, isNull);
-      expect(
-        store.stateOf('acp-1', connectionRevision: 7),
-        isA<AcpUncheckedState>(),
-      );
-
-      store.apply(
-        const AcpAuthSnapshotView(
-          revision: 0,
-          updatedAt: 10,
-          accounts: [
-            AcpAuthAccountView(
-              accountId: 'acp-1',
-              connectionRevision: 7,
-              state: AcpUncheckedState(),
-            ),
-          ],
-        ),
-      );
-      expect(store.snapshot, isNotNull);
-      expect(
-        store.stateOf('acp-1', connectionRevision: 7),
-        isA<AcpUncheckedState>(),
-      );
-
-      store.apply(
-        const AcpAuthSnapshotView(
-          revision: 2,
-          updatedAt: 12,
-          accounts: [
-            AcpAuthAccountView(
-              accountId: 'acp-1',
-              connectionRevision: 7,
-              state: AcpCheckingState(operationId: 'op-1'),
-            ),
-          ],
-        ),
-      );
-      expect(
-        store.stateOf('acp-1', connectionRevision: 7),
-        isA<AcpCheckingState>(),
-      );
-
-      // 迟到或重复事实不得回退当前状态。
-      store.apply(
-        const AcpAuthSnapshotView(
-          revision: 1,
-          updatedAt: 11,
-          accounts: [
-            AcpAuthAccountView(
-              accountId: 'acp-1',
-              connectionRevision: 7,
-              state: AcpUncheckedState(),
-            ),
-          ],
-        ),
-      );
-      expect(
-        store.stateOf('acp-1', connectionRevision: 7),
-        isA<AcpCheckingState>(),
-      );
-      expect(store.state.revision, 2);
-    },
-  );
-
-  test(
-    'transport failure keeps last canonical snapshot without inventing success',
-    () {
-      final store = AcpAuthStore();
-      store.apply(
-        const AcpAuthSnapshotView(
-          revision: 3,
-          updatedAt: 10,
-          accounts: [
-            AcpAuthAccountView(
-              accountId: 'acp-1',
-              connectionRevision: 7,
-              state: AcpVerifiedState(
-                checkedAt: 10,
-                server: AcpServerInfoView(
-                  name: 'antigravity',
-                  version: '1.0.0',
-                ),
-              ),
-            ),
-          ],
-        ),
-      );
-      store.applyTransport(
-        const DomainSyncStatus(
-          phase: DomainSyncPhase.failed,
-          errorMessage: 'channel closed',
-        ),
-      );
-      expect(store.state.sync.phase, DomainSyncPhase.failed);
-      expect(
-        store.stateOf('acp-1', connectionRevision: 7),
-        isA<AcpVerifiedState>(),
-      );
-    },
-  );
-
-  test(
-    'save then failed check keeps the saved account and does not resave',
+    'a typed native rejection settles as rejected and is never replayed',
     () async {
-      final transport = _AcpTransport()
-        ..startFailure = const StudioFailure(
-          code: StudioFailureCode.unavailable,
-          message: 'ACP server did not start',
-          retryable: true,
-          correlationId: 'test-acp',
+      final fixture = AcpPortFixture();
+      final repository = fixture.auth;
+      addTearDown(() async {
+        final report = await repository.close();
+        expect(report.unresolved, isEmpty);
+        expect(fixture.budget.usage, isEmpty);
+      });
+      final feed = await establishAcpAuth(fixture);
+
+      final ticket = repository.check(
+        accountId: acpTestAccountId,
+        expectedConnectionRevision: acpTestConnectionRevision,
+      );
+      final call = await fixture.port.authStarted(0);
+      expect(call.request.operationId, ticket.id);
+      expect(call.request.accountId, acpTestAccountId);
+      expect(
+        call.request.expectedConnectionRevision,
+        acpTestConnectionRevision,
+      );
+      expect(call.request.action, const AcpAuthAction.check());
+
+      call.reject(
+        const CommandDispatchFailure.rejected(failure: _nativeRefusal),
+      );
+      final result = await ticket.result;
+      expect(result, isA<RejectedCommandResult<AcpAuthSnapshot>>());
+      expect(
+        (result as RejectedCommandResult<AcpAuthSnapshot>).error,
+        _nativeRefusal,
+      );
+      expect(ticket.state.value.receipt, isNull);
+      expect(ticket.state.value.observed, isFalse);
+      expect(ticket.state.value.isPending, isFalse);
+      expect(
+        fixture.port.authStarts,
+        hasLength(1),
+        reason: 'a rejection is a final answer, not a retry signal',
+      );
+      expect(
+        repository.state.value.canonical?.revision,
+        1,
+        reason: 'a refused command publishes no canonical fact',
+      );
+      expect(feed.feed.closeCalls, 0);
+
+      // A missing method id is a local argument error: no operation is created.
+      final local = repository.authenticate(
+        accountId: acpTestAccountId,
+        expectedConnectionRevision: acpTestConnectionRevision,
+        methodId: '   ',
+      );
+      final localResult = await local.result;
+      expect(localResult, isA<RejectedCommandResult<AcpAuthSnapshot>>());
+      expect(
+        (localResult as RejectedCommandResult<AcpAuthSnapshot>).error.code,
+        StudioFailureCode.protocol,
+      );
+      expect(
+        fixture.port.authStarts,
+        hasLength(1),
+        reason: 'local validation never reaches the transport',
+      );
+    },
+  );
+
+  test(
+    'a plain call failure is an unknown outcome that is never resent',
+    () async {
+      final fixture = AcpPortFixture();
+      final repository = fixture.auth;
+      addTearDown(() async {
+        final report = await repository.close();
+        expect(report.unresolved, hasLength(1));
+        expect(report.unresolved.single.owner, startsWith('acp:action:'));
+        expect(
+          report.unresolved.single.issues.single.recovery,
+          CleanupRecovery.terminal,
         );
-      final client = _client(transport);
+      });
+      await establishAcpAuth(fixture);
 
-      final result = await client.acpCommands.saveAndConnect(_update);
+      final ticket = repository.check(
+        accountId: acpTestAccountId,
+        expectedConnectionRevision: acpTestConnectionRevision,
+      );
+      final call = await fixture.port.authStarted(0);
+      call.fail(_lostReply);
 
-      expect(result.saved.accountId, 'acp-1');
-      expect(result.saved.connectionRevision, 7);
-      expect(result.checkFailure?.code, StudioFailureCode.unavailable);
-      expect(transport.saveCalls, 1);
-      expect(transport.startCalls, 1);
+      final result = await ticket.result;
+      expect(result, isA<UnknownOutcomeCommandResult<AcpAuthSnapshot>>());
       expect(
-        client.settings.state.canonical?.acpAccounts.map((a) => a.accountId),
-        ['acp-1'],
-      );
-    },
-  );
-
-  test(
-    'check submits the canonical connection revision and reduces the reply',
-    () async {
-      final transport = _AcpTransport();
-      final client = _client(transport);
-      await client.acpCommands.saveAndConnect(_update);
-
-      // 保存意图只带身份与显示名：受管 program/argv 由产品固定发行决定。
-      expect(transport.lastSaved?.accountId, 'acp-1');
-      expect(transport.lastSaved?.name, 'Antigravity');
-      expect(transport.lastConnectionRevision, 7);
-      expect(transport.lastAction, isA<AcpCheckActionView>());
-      expect(
-        client.acpAuth.stateOf('acp-1', connectionRevision: 7),
-        isA<AcpCheckingState>(),
-      );
-    },
-  );
-
-  test(
-    'login sends the chosen method and cancel hits the current operation',
-    () async {
-      final transport = _AcpTransport();
-      final client = _client(transport);
-      await client.acpCommands.saveAndConnect(_update);
-
-      await client.acpCommands.login('acp-1', methodId: 'oauth');
-      expect(transport.lastAction, isA<AcpAuthenticateActionView>());
-
-      final cancelled = await client.acpCommands.cancel('acp-1');
-      expect(cancelled.accounts.single.state, isA<AcpCancelledState>());
-    },
-  );
-
-  test(
-    'a second start for the same account is rejected before transport',
-    () async {
-      final transport = _AcpTransport()..holdStart = true;
-      final client = _client(transport);
-      final connecting = client.acpCommands.saveAndConnect(_update);
-      // 保存完成、check 已登记并挂在 transport 上。
-      while (transport.pendingStart == null) {
-        await Future<void>.delayed(Duration.zero);
-      }
-      expect(transport.startCalls, 1);
-
-      await expectLater(
-        client.acpCommands.check('acp-1'),
-        throwsA(
-          isA<StudioFailure>().having(
-            (failure) => failure.code,
-            'code',
-            StudioFailureCode.busy,
-          ),
-        ),
-      );
-      expect(transport.startCalls, 1);
-
-      transport.pendingStart!.complete();
-      final result = await connecting;
-      expect(result.checkFailure, isNull);
-      expect(transport.startCalls, 1);
-
-      // 完成后的新意图仍被受理：去重不吞掉后续动作。
-      transport.holdStart = false;
-      await client.acpCommands.check('acp-1');
-      expect(transport.startCalls, 2);
-    },
-  );
-
-  test(
-    'cancel refuses an operation owned by another connection identity',
-    () async {
-      final transport = _AcpTransport();
-      final client = _client(transport);
-      await client.acpCommands.saveAndConnect(_update);
-      // 同一账号 ID 但连接身份已前进：旧 operation 不得被当作当前操作取消。
-      client.acpAuth.apply(
-        const AcpAuthSnapshotView(
-          revision: 12,
-          updatedAt: 300,
-          accounts: [
-            AcpAuthAccountView(
-              accountId: 'acp-1',
-              connectionRevision: 6,
-              state: AcpAuthenticatingState(
-                operationId: 'old-op',
-                methodId: 'oauth',
-              ),
-            ),
-          ],
-        ),
+        (result as UnknownOutcomeCommandResult<AcpAuthSnapshot>).error,
+        _lostReply,
       );
       expect(
-        client.acpAuth.stateOf('acp-1', connectionRevision: 7),
-        isA<AcpUncheckedState>(),
+        ticket.state.value.isPending,
+        isTrue,
+        reason: 'an unknown outcome stays protected evidence',
       );
-      await expectLater(
-        client.acpCommands.cancel('acp-1'),
-        throwsA(
-          isA<StudioFailure>().having(
-            (failure) => failure.code,
-            'code',
-            StudioFailureCode.notFound,
-          ),
-        ),
+      expect(ticket.state.value.receipt, isNull);
+      expect(
+        fixture.port.authStarts,
+        hasLength(1),
+        reason: 'an unknown outcome is never automatically replayed',
       );
     },
   );
 
-  test(
-    'cancel without an active operation fails instead of faking a cancel',
-    () async {
-      final transport = _AcpTransport();
-      final client = _client(transport);
-      await client.acpCommands.saveAndConnect(_update);
-      client.acpAuth.apply(
-        const AcpAuthSnapshotView(
-          revision: 9,
-          updatedAt: 200,
-          accounts: [
-            AcpAuthAccountView(
-              accountId: 'acp-1',
-              connectionRevision: 7,
-              state: AcpCancelledState(),
-            ),
-          ],
-        ),
-      );
+  test('a confirmed receipt whose observation fails keeps the receipt and never claims Clean', () async {
+    final fixture = AcpPortFixture();
+    final repository = fixture.auth;
+    final feed = await establishAcpAuth(fixture);
 
-      await expectLater(
-        client.acpCommands.cancel('acp-1'),
-        throwsA(
-          isA<StudioFailure>().having(
-            (failure) => failure.code,
-            'code',
-            StudioFailureCode.notFound,
-          ),
+    final ticket = repository.check(
+      accountId: acpTestAccountId,
+      expectedConnectionRevision: acpTestConnectionRevision,
+    );
+    final call = await fixture.port.authStarted(0);
+    final receipt = acpAuthReceipt(ticket.id, revision: 2);
+    call.accept(
+      AcpAuthCommandReply(
+        receipt: receipt,
+        snapshot: acpAuthSnapshot(
+          revision: 2,
+          state: AcpAuthState.checking(operationId: ticket.id.value),
         ),
-      );
-    },
-  );
-
-  test('closing state is reduced as busy and keeps the operation identity', () {
-    final store = AcpAuthStore();
-    store.apply(
-      const AcpAuthSnapshotView(
-        revision: 4,
-        updatedAt: 40,
-        accounts: [
-          AcpAuthAccountView(
-            accountId: 'acp-1',
-            connectionRevision: 7,
-            state: AcpClosingState(
-              operationId: 'op-close',
-              failure: AcpAuthFailureView(
-                code: AcpAuthFailureCodeView.cleanup,
-                stage: AcpAuthStageView.cleanup,
-                message: 'ACP process is still exiting',
-                retryable: true,
-              ),
-            ),
-          ),
-        ],
       ),
     );
-    final state = store.stateOf('acp-1', connectionRevision: 7);
-    expect(state, isA<AcpClosingState>());
-    expect(state.isBusy, isTrue);
-    expect(state.isSettled, isFalse);
-    expect(state.operationId, 'op-close');
+
+    // The accepted watermark is never published; the source fails instead.
+    await feed.listened;
+    feed.sendFailure(
+      const StudioFailure(
+        code: StudioFailureCode.runtimeStopped,
+        message: 'The acpAuth source has closed.',
+        retryable: false,
+        correlationId: 'acp-auth',
+      ),
+    );
+
+    final result = await ticket.result;
+    expect(result, isA<SyncFailedCommandResult<AcpAuthSnapshot>>());
+    final settled = result as SyncFailedCommandResult<AcpAuthSnapshot>;
+    expect(settled.receipt.operationId, ticket.id);
+    expect(settled.receipt.targets.single, isA<ResourceStamp>());
+    expect(ticket.state.value.receipt, receipt);
     expect(
-      (state as AcpClosingState).failure?.code,
-      AcpAuthFailureCodeView.cleanup,
+      ticket.state.value.observed,
+      isFalse,
+      reason: 'a receipt is not its own evidence of observation',
+    );
+    expect(
+      repository.state.value.canonical?.revision,
+      1,
+      reason: 'the acceptance snapshot is no canonical fact',
+    );
+    expect(
+      repository.state.value.stateOf(
+        acpTestAccountId,
+        connectionRevision: acpTestConnectionRevision,
+      ),
+      isA<AcpAuthUnchecked>(),
+      reason: 'an unobserved acceptance never becomes a login result',
+    );
+
+    final closeReport = await repository.close();
+    expect(closeReport.complete, isFalse);
+    expect(closeReport.unresolved.single.owner, startsWith('acp:action:'));
+    final retried = await repository.retryCleanup(
+      deadline: DateTime.now().add(const Duration(seconds: 1)),
+    );
+    expect(
+      retried.complete,
+      isFalse,
+      reason: 'an unobserved commit cannot be retried into a Clean report',
+    );
+    expect(retried.unresolved.single.owner, startsWith('acp:action:'));
+  });
+
+  test('closing and cancelling are non-terminal observations, not a finished login', () async {
+    final fixture = AcpPortFixture();
+    final repository = fixture.auth;
+    addTearDown(() async {
+      final report = await repository.close();
+      expect(report.unresolved, isEmpty);
+      expect(fixture.budget.usage, isEmpty);
+    });
+    final feed = await establishAcpAuth(fixture);
+
+    final ticket = repository.check(
+      accountId: acpTestAccountId,
+      expectedConnectionRevision: acpTestConnectionRevision,
+    );
+    final call = await fixture.port.authStarted(0);
+    final closing = acpAuthSnapshot(
+      revision: 2,
+      state: AcpAuthState.closing(operationId: ticket.id.value, failure: null),
+    );
+    call.accept(
+      AcpAuthCommandReply(
+        receipt: acpAuthReceipt(ticket.id, revision: 2),
+        snapshot: closing,
+      ),
+    );
+    await feed.publishChanged(closing, baseRevision: 1);
+
+    expect(
+      await ticket.result,
+      isA<CommittedCommandResult<AcpAuthSnapshot>>(),
+      reason: 'the receipt is real even while the process is closing',
+    );
+    final settling = repository.state.value.stateOf(
+      acpTestAccountId,
+      connectionRevision: acpTestConnectionRevision,
+    );
+    expect(settling, isA<AcpAuthClosing>());
+    expect(settling.isBusy, isTrue);
+    expect(settling.isSettled, isFalse);
+    expect(settling, isNot(isA<AcpAuthVerified>()));
+    expect(settling.operationId, ticket.id.value);
+
+    final cancelling = acpAuthSnapshot(
+      revision: 3,
+      state: const AcpAuthState.cancelling(operationId: 'op-current'),
+    );
+    await feed.publishChanged(cancelling, baseRevision: 2);
+    final cancelled = repository.state.value.stateOf(
+      acpTestAccountId,
+      connectionRevision: acpTestConnectionRevision,
+    );
+    expect(cancelled, isA<AcpAuthCancelling>());
+    expect(cancelled.isBusy, isTrue);
+    expect(cancelled.isSettled, isFalse);
+    expect(cancelled, isNot(isA<AcpAuthCancelled>()));
+    expect(
+      repository.state.value.stateOf(
+        acpTestAccountId,
+        connectionRevision: acpTestConnectionRevision + 1,
+      ),
+      isA<AcpAuthUnchecked>(),
+      reason: 'a connection identity that was never observed stays unchecked',
     );
   });
 
   test(
-    'cancel bypasses a pending start and its late reply cannot undo it',
+    'one account admits one operation at a time and releases it on settlement',
     () async {
-      final transport = _AcpTransport();
-      final client = _client(transport);
-      await client.acpCommands.saveAndConnect(_update);
+      final fixture = AcpPortFixture();
+      final repository = fixture.auth;
+      addTearDown(() async {
+        final report = await repository.close();
+        expect(report.unresolved, isEmpty);
+        expect(fixture.budget.usage, isEmpty);
+      });
+      final feed = await establishAcpAuth(fixture);
 
-      // topic 先给出 Authenticating 与 operation 身份（start 命令本身还没回执）。
-      final authenticating = const AcpAuthSnapshotView(
-        revision: 5,
-        updatedAt: 50,
-        accounts: [
-          AcpAuthAccountView(
-            accountId: 'acp-1',
-            connectionRevision: 7,
-            state: AcpAuthenticatingState(
-              operationId: 'op-auth',
-              methodId: 'browser',
-            ),
-          ),
-        ],
+      final first = repository.check(
+        accountId: acpTestAccountId,
+        expectedConnectionRevision: acpTestConnectionRevision,
       );
-      client.acpAuth.apply(authenticating);
+      final firstCall = await fixture.port.authStarted(0);
 
-      transport
-        ..holdStart = true
-        ..cancelRevision = 6;
-      final pendingStart = client.acpCommands.check('acp-1');
-      while (transport.pendingStart == null) {
-        await Future<void>.delayed(Duration.zero);
-      }
-
-      // 关键：cancel 不得等待 start 释放；start 仍挂在 transport 上。
-      final cancelled = await client.acpCommands
-          .cancel('acp-1')
-          .timeout(const Duration(seconds: 5));
-      expect(transport.cancelCalls, 1);
-      expect(cancelled.accounts.single.state, isA<AcpCancelledState>());
+      final second = repository.check(
+        accountId: acpTestAccountId,
+        expectedConnectionRevision: acpTestConnectionRevision,
+      );
+      final secondResult = await second.result;
+      expect(secondResult, isA<RejectedCommandResult<AcpAuthSnapshot>>());
       expect(
-        client.acpAuth.stateOf('acp-1', connectionRevision: 7),
-        isA<AcpCancelledState>(),
+        (secondResult as RejectedCommandResult<AcpAuthSnapshot>).error.code,
+        StudioFailureCode.busy,
+      );
+      expect(
+        fixture.port.authStarts,
+        hasLength(1),
+        reason: 'a duplicate start never creates a second process',
       );
 
-      // 迟到的 start 回执（revision 1）进入同一 reducer，但不得覆盖更晚的终态。
-      transport.pendingStart!.complete();
-      await pendingStart;
-      expect(client.acpAuth.state.revision, 6);
+      final firstSnapshot = acpAuthSnapshot(
+        revision: 2,
+        state: AcpAuthState.checking(operationId: first.id.value),
+      );
+      firstCall.accept(
+        AcpAuthCommandReply(
+          receipt: acpAuthReceipt(first.id, revision: 2),
+          snapshot: firstSnapshot,
+        ),
+      );
+      await feed.publishChanged(firstSnapshot, baseRevision: 1);
       expect(
-        client.acpAuth.stateOf('acp-1', connectionRevision: 7),
-        isA<AcpCancelledState>(),
+        await first.result,
+        isA<CommittedCommandResult<AcpAuthSnapshot>>(),
+      );
+
+      final third = repository.check(
+        accountId: acpTestAccountId,
+        expectedConnectionRevision: acpTestConnectionRevision,
+      );
+      final thirdCall = await fixture.port.authStarted(1);
+      expect(thirdCall.request.operationId, third.id);
+      final thirdSnapshot = acpAuthSnapshot(
+        revision: 3,
+        state: AcpAuthState.checking(operationId: third.id.value),
+      );
+      thirdCall.accept(
+        AcpAuthCommandReply(
+          receipt: acpAuthReceipt(third.id, revision: 3),
+          snapshot: thirdSnapshot,
+        ),
+      );
+      await feed.publishChanged(thirdSnapshot, baseRevision: 2);
+      expect(
+        await third.result,
+        isA<CommittedCommandResult<AcpAuthSnapshot>>(),
       );
     },
   );
-
-  test(
-    'pending cancel on one account does not block cancel on another',
-    () async {
-      final transport = _AcpTransport()
-        ..holdCancelAccounts.add('acp-1')
-        ..cancelRevision = 40
-        ..cancelConnectionRevisions['acp-1'] = 5
-        ..cancelConnectionRevisions['acp-2'] = 9;
-      final client = AnyworkClient(transport: transport, clientId: 'acp');
-      addTearDown(client.close);
-      client.settings.merge(
-        SettingsStateSnapshot(
-          revision: 1,
-          acpAccounts: [
-            const AcpAccountSettingsView(
-              accountId: 'acp-1',
-              name: 'A',
-              provider: AcpProviderView.antigravity,
-              connectionRevision: 5,
-            ),
-            AcpAccountSettingsView(
-              accountId: 'acp-2',
-              name: 'B',
-              provider: AcpProviderView.antigravity,
-              connectionRevision: 9,
-            ),
-          ],
-        ),
-      );
-      client.acpAuth.apply(
-        const AcpAuthSnapshotView(
-          revision: 30,
-          updatedAt: 30,
-          accounts: [
-            AcpAuthAccountView(
-              accountId: 'acp-1',
-              connectionRevision: 5,
-              state: AcpAuthenticatingState(
-                operationId: 'op-a',
-                methodId: 'browser',
-              ),
-            ),
-            AcpAuthAccountView(
-              accountId: 'acp-2',
-              connectionRevision: 9,
-              state: AcpAuthenticatingState(
-                operationId: 'op-b',
-                methodId: 'browser',
-              ),
-            ),
-          ],
-        ),
-      );
-
-      final first = client.acpCommands.cancel('acp-1');
-      while (transport.cancelGate('acp-1') == null) {
-        await Future<void>.delayed(Duration.zero);
-      }
-      // A 的取消仍挂在 transport 上；B 的取消必须立刻到达并完成。
-      final second = await client.acpCommands
-          .cancel('acp-2')
-          .timeout(const Duration(seconds: 5));
-      expect(second.accounts.single.state, isA<AcpCancelledState>());
-      expect(transport.cancelRequests.length, 2);
-      expect(transport.cancelRequests[0].accountId, 'acp-1');
-      expect(transport.cancelRequests[0].targetOperationId, 'op-a');
-      expect(transport.cancelRequests[1].accountId, 'acp-2');
-      expect(transport.cancelRequests[1].targetOperationId, 'op-b');
-
-      transport.releaseCancel('acp-1');
-      await first.timeout(const Duration(seconds: 5));
-      expect(
-        client.acpAuth.stateOf('acp-1', connectionRevision: 5),
-        isA<AcpCancelledState>(),
-      );
-      expect(
-        client.acpAuth.stateOf('acp-2', connectionRevision: 9),
-        isA<AcpCancelledState>(),
-      );
-    },
-  );
-
-  test(
-    'busy from a stale owner keeps the saved config and recovers after closing',
-    () async {
-      final transport = _AcpTransport()
-        ..startFailure = const StudioFailure(
-          code: StudioFailureCode.busy,
-          message: 'The previous ACP operation is still closing',
-          retryable: true,
-          correlationId: 'test-acp-busy',
-        );
-      final client = _client(transport);
-
-      final result = await client.acpCommands.saveAndConnect(_update);
-      // 保存是已成立事实：Busy 只是“连接未完成”。
-      expect(result.saved.accountId, 'acp-1');
-      expect(result.saved.connectionRevision, 7);
-      expect(result.checkFailure?.code, StudioFailureCode.busy);
-      expect(
-        client.settings.state.canonical?.acpAccounts.single.connectionRevision,
-        7,
-      );
-
-      // 新连接身份在旧 owner 收束期间显示 Closing（旧 operation），随后 Unchecked。
-      client.acpAuth.apply(
-        const AcpAuthSnapshotView(
-          revision: 20,
-          updatedAt: 200,
-          accounts: [
-            AcpAuthAccountView(
-              accountId: 'acp-1',
-              connectionRevision: 7,
-              state: AcpClosingState(operationId: 'op-old'),
-            ),
-          ],
-        ),
-      );
-      final closing = client.acpAuth.stateOf('acp-1', connectionRevision: 7);
-      expect(closing, isA<AcpClosingState>());
-      expect(closing.isBusy, isTrue);
-      client.acpAuth.apply(
-        const AcpAuthSnapshotView(
-          revision: 21,
-          updatedAt: 201,
-          accounts: [
-            AcpAuthAccountView(
-              accountId: 'acp-1',
-              connectionRevision: 7,
-              state: AcpUncheckedState(),
-            ),
-          ],
-        ),
-      );
-      expect(
-        client.acpAuth.stateOf('acp-1', connectionRevision: 7),
-        isA<AcpUncheckedState>(),
-      );
-
-      // 收束后显式 check 新 probe，配置仍是已保存事实。
-      transport
-        ..startFailure = null
-        ..startRevision = 22;
-      await client.acpCommands.check('acp-1');
-      expect(client.acpAuth.state.revision, 22);
-      expect(
-        client.acpAuth.stateOf('acp-1', connectionRevision: 7),
-        isA<AcpCheckingState>(),
-      );
-      expect(
-        client.settings.state.canonical?.acpAccounts.single.connectionRevision,
-        7,
-      );
-    },
-  );
-
-  test('removing the account drops it from canonical settings', () async {
-    final transport = _AcpTransport();
-    final client = _client(transport);
-    await client.acpCommands.saveAndConnect(_update);
-    await client.acpCommands.removeAccount('acp-1');
-    expect(client.settings.state.canonical?.acpAccounts, isEmpty);
-  });
 }

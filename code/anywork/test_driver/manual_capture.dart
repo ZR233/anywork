@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'flutter_driver_session.dart';
+import 'conversation_status_observation.dart';
 import 'timeline_observation.dart';
 
 Future<void> main(List<String> args) async {
@@ -14,6 +15,7 @@ Future<void> main(List<String> args) async {
   }
   final output = Directory(args[1]);
   final driver = await FlutterDriverSession.connect(vmServiceUrl: args[0]);
+  var captureFailed = false;
   try {
     Future<void> stage(String value) =>
         File('${output.path}/capture-stage.txt').writeAsString(value);
@@ -32,41 +34,67 @@ Future<void> main(List<String> args) async {
             .timeout(const Duration(seconds: 65)),
       );
     } catch (_) {
-      await stage('shutdown_request_failed');
+      try {
+        await stage('shutdown_request_failed');
+      } on Object catch (error) {
+        stderr.writeln(
+          'Shutdown failure evidence write failed: ${error.runtimeType}',
+        );
+      }
       rethrow;
     }
     await File('${output.path}/shutdown-report.json').writeAsString(
       '${const JsonEncoder.withIndent('  ').convert(shutdown)}\n',
     );
     if (shutdown is! Map || shutdown['shutdown'] != 'completed') {
-      await stage('shutdown_rejected');
+      try {
+        await stage('shutdown_rejected');
+      } on Object catch (error) {
+        stderr.writeln(
+          'Shutdown rejection evidence write failed: ${error.runtimeType}',
+        );
+      }
       throw StateError('native GUI shutdown did not complete');
     }
     await stage('shutdown_completed');
     if (args.length == 3) {
-      await driver.requestData('request-app-exit');
+      final exit = jsonDecode(
+        await driver.requestData(
+          'request-app-exit',
+          timeout: const Duration(seconds: 10),
+        ),
+      );
+      if (exit is! Map || exit['exit'] != 'exit_requested') {
+        throw StateError('native GUI exit request was not acknowledged');
+      }
     }
-    stdout.writeln('Evidence captured; human verdict pending.');
+  } on Object {
+    captureFailed = true;
+    rethrow;
   } finally {
     try {
       await driver.close().timeout(const Duration(seconds: 5));
-    } catch (_) {
-      // A completed shutdown must not keep the acceptance process open.
+    } on Object catch (error) {
+      if (!captureFailed) rethrow;
+      // Preserve the original capture/shutdown/exit failure and still report
+      // that its independent connection cleanup did not complete.
+      stderr.writeln('Driver connection cleanup failed: ${error.runtimeType}');
     }
   }
+  stdout.writeln('Evidence captured; human verdict pending.');
 }
 
 Map<String, Object?> _summary(Map<String, dynamic> snapshot) {
   final workspace = snapshot['workspace'];
   final details = workspace is Map ? workspace : const {};
-  final usage = details['usage'];
-  final usageDetails = usage is Map ? usage : const {};
+  final context = driverContextObservation(snapshot);
   final turn = details['turn'];
   final turnDetails = turn is Map ? turn : const {};
   final persistence = snapshot['persistence'];
   final persistenceDetails = persistence is Map ? persistence : const {};
   final composer = details['composer'];
   final composerDetails = composer is Map ? composer : const {};
+  final diagnostics = snapshot['driverDiagnostics'];
   return {
     'projectOpened': snapshot['project'] != null,
     // Pure geometry/identity so the integrated timeline scroll contract can be
@@ -83,6 +111,14 @@ Map<String, Object?> _summary(Map<String, dynamic> snapshot) {
       'pendingCommits': persistenceDetails['pendingCommits'],
       'needsAttention': persistenceDetails['needsAttention'],
     },
+    'context': context.toJson(),
+    'execution': driverExecutionObservation(snapshot).toJson(),
+    'conversationControls': diagnostics is Map
+        ? diagnostics['conversationControls']
+        : null,
+    'interactionIndex': diagnostics is Map
+        ? diagnostics['interactionIndex']
+        : null,
     'workspace': workspace == null
         ? null
         : {
@@ -91,8 +127,8 @@ Map<String, Object?> _summary(Map<String, dynamic> snapshot) {
             'syncState': details['syncState'],
             'turnStatus': turnDetails['status'],
             'timelineItems': TimelineObservation.optional(snapshot)?.itemCount,
-            'outputTokens': usageDetails['outputTokens'],
-            'hasIncompleteUsage': usageDetails['hasIncompleteUsage'],
+            'outputTokens': context.completionTokens,
+            'hasIncompleteUsage': context.hasIncompleteUsage,
             'submissionPending': composerDetails['submissionPending'],
           },
   };

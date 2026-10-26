@@ -1,126 +1,105 @@
-import 'package:anywork_client/studio_client.dart';
-import 'package:anywork_client/statistics.dart';
-import 'package:anywork_client/statistics_ports.dart';
-import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:flutter/foundation.dart';
+import 'package:anywork_client/acp.dart';
+import 'package:anywork_client/account_usage.dart'
+    show AccountUsageRepository, SessionCostsRepository;
+import 'package:anywork_client/bots.dart';
+import 'package:anywork_client/configuration.dart';
+import 'package:anywork_client/conversation.dart';
+import 'package:anywork_client/drafts.dart';
+import 'package:anywork_client/lsp.dart';
+import 'package:anywork_client/mcp.dart';
+import 'package:anywork_client/models.dart';
+import 'package:anywork_client/modes.dart';
+import 'package:anywork_client/operations.dart';
+import 'package:anywork_client/persistence.dart';
+import 'package:anywork_client/recovery.dart';
+import 'package:anywork_client/remote.dart';
+import 'package:anywork_client/resources_ports.dart' show ResourceBudget;
+import 'package:anywork_client/skills.dart';
+import 'package:anywork_client/statistics.dart' show StatisticsRepository;
+import 'package:anywork_client/updates.dart';
+import 'package:anywork_client/workspace.dart';
 
-import '../infrastructure/frb/studio_api.dart';
-import '../infrastructure/frb/studio_update_api.dart';
-import '../infrastructure/frb/statistics/frb_statistics_feed.dart';
-import '../infrastructure/demo/statistics/demo_statistics_feed.dart';
-import '../platform/clipboard_image_reader.dart';
-import '../platform/studio_platform.dart';
-import '../platform/error_log.dart';
-import '../presentation/view_models/timeline_session_owner.dart';
+import '../diagnostics/contracts/timeline_diagnostics.dart';
+import '../features/conversation/presentation_api.dart'
+    show ConversationTimelineDiagnostics, TimelineCoordinator;
+import 'bootstrap/application_bootstrap.dart';
+import 'bootstrap/automatic_updates_startup.dart';
+import 'lifecycle/application_exit_coordinator.dart';
+import 'lifecycle/exit_participant.dart';
+import 'lifecycle/native_exit_host.dart';
+import 'composition/resident_bots_demand.dart';
 
-/// The application composition root is the only place that knows both the
-/// transport implementation and the SDK-only Client.
-class AppGraph {
-  AppGraph({
-    required StudioTransport transport,
-    required StatisticsFeedPort statisticsFeed,
-    String? clientId,
-    StudioUpdateApi? updateApi,
-    bool updatesEnabled = false,
-  }) {
-    final staged = <String, StagedClipboardImage>{};
-    final stager = const SystemClipboardImageStager();
-    client = AnyworkClient(
-      transport: transport,
-      clientId: clientId ?? 'app-${identityHashCode(this)}',
-      updateApi: updateApi,
-      updatesEnabled: updatesEnabled,
-      clipboardImageStager: (Uint8List bytes) async {
-        final image = await stager.stage(bytes);
-        staged[image.path] = image;
-        return image.path;
-      },
-      clipboardImageCleanup: (path) async {
-        final image = staged[path];
-        if (image == null) return;
-        await image.dispose();
-        staged.remove(path);
-      },
-    );
-    statisticsRepository = createStatisticsRepository(
-      feed: statisticsFeed,
-      budget: client.budget,
-      owner: client.clientId,
-    );
-    client.updates.attach();
-    timeline = TimelineSessionOwner(client: client);
-  }
+/// An assembled application instance, not a forwarding Client. Composition
+/// creates these real domain/resource owners in dependency order, then injects
+/// this graph before building any feature VM. It must never reuse another
+/// graph's repositories, budget, drafts, operations or presentation coordinator.
+final class AppGraph {
+  AppGraph.assembled({
+    required this.configuration,
+    required this.models,
+    required this.modes,
+    required this.accountUsage,
+    required this.statistics,
+    required this.sessionCosts,
+    required this.workspace,
+    required this.startup,
+    required this.conversation,
+    required this.drafts,
+    required this.remote,
+    required this.mcp,
+    required this.lsp,
+    required this.acpAuth,
+    required this.acpInstall,
+    required this.skills,
+    required this.bots,
+    required this.recovery,
+    required this.persistence,
+    required this.updates,
+    required this.operations,
+    required this.budget,
+    required this.timeline,
+    required this.editProducers,
+    required this.bootstrap,
+    required this.automaticUpdates,
+    required this.residentBots,
+    required this.exitCoordinator,
+    required this.host,
+  }) : timelineDiagnostics = ConversationTimelineDiagnostics(timeline);
 
-  factory AppGraph.production() => AppGraph(
-    transport: FrbStudioTransport(),
-    statisticsFeed: const FrbStatisticsFeedPort(),
-    updateApi: const FrbStudioUpdateApi(),
-    updatesEnabled:
-        isWindowsPlatform &&
-        (const bool.fromEnvironment('dart.vm.product') ||
-            const bool.fromEnvironment('ANYWORK_DRIVER')) &&
-        !const bool.fromEnvironment('ANYWORK_DEMO'),
-  );
-  factory AppGraph.demo({bool driver = false}) => AppGraph(
-    transport: driver
-        ? DriverDemoStudioTransport(lspActivityLoop: true)
-        : DemoStudioTransport(lspActivityLoop: true),
-    statisticsFeed: DemoStatisticsFeedPort(),
-  );
+  final ConfigurationRepository configuration;
+  final ModelsRepository models;
+  final ModesRepository modes;
+  final AccountUsageRepository accountUsage;
+  final StatisticsRepository statistics;
 
-  ValueListenable<StudioStartupPhase> get startupProgress =>
-      FrbStudioTransport.startupProgress;
-  ValueListenable<StartupRecoveryReport?> get startupRecovery =>
-      FrbStudioTransport.startupRecovery;
-  void dismissStartupRecovery() =>
-      FrbStudioTransport.startupRecovery.value = null;
+  /// Root-session costs keep their own repository inside the account-usage
+  /// domain; they are not a statistics read.
+  final SessionCostsRepository sessionCosts;
+  final WorkspaceRepository workspace;
+  final StartupRepository startup;
+  final ConversationRepository conversation;
+  final DraftsRepository drafts;
+  final RemoteRepository remote;
+  final McpRepository mcp;
+  final LspRepository lsp;
+  final AcpAuthRepository acpAuth;
+  final AcpInstallRepository acpInstall;
+  final SkillsRepository skills;
+  final BotsRepository bots;
+  final RecoveryRepository recovery;
+  final PersistenceRepository persistence;
+  final UpdatesRepository updates;
+  final Operations operations;
+  final ResourceBudget budget;
+  final TimelineCoordinator timeline;
+  final TimelineDiagnosticsSource timelineDiagnostics;
+  final ApplicationEditProducerRegistry editProducers;
+  final ApplicationBootstrap bootstrap;
+  final AutomaticUpdatesStartup automaticUpdates;
 
-  /// Client publishes success/failure before this application-level handler
-  /// records diagnostics. A route never owns a separate startup Future or flag.
-  Future<void> initialize() =>
-      client.bootstrap().catchError((Object error, StackTrace stack) {
-        recordDartError(
-          error,
-          stack,
-          stage: 'bootstrap',
-          correlationId: client.bootstrapState.value.failure?.correlationId,
-        );
-      });
-
-  Future<void> retryStartup() {
-    FrbStudioTransport.retryInitialization();
-    return initialize();
-  }
-
-  late final AnyworkClient client;
-  late final StatisticsRepository statisticsRepository;
-  late final TimelineSessionOwner timeline;
-  Future<CloseReport>? _closing;
-
-  Future<CloseReport> close({required DateTime deadline}) =>
-      _closing ??= _close(deadline);
-
-  /// 关闭顺序：先同步发布「无展示」促使现存 Chat 子树卸载，再同时收束 Client。
-  ///
-  /// `timeline.close` 在首次 await 之前同步清空展示元数据；视图卸载后其真实 `dispose`
-  /// 才允许 lease 销毁 controller 并观察 stock stream done。树仍借用 controller 时不会
-  /// 提前 ACK，重复 close 得到同一个释放结果（design/26 §26.8）。
-  Future<CloseReport> _close(DateTime deadline) async {
-    final timelineClose = timeline.close(deadline: deadline);
-    final clientClose = client.close(deadline: deadline);
-    final statisticsClose = statisticsRepository.close(deadline: deadline);
-    final reports = await Future.wait([
-      timelineClose,
-      clientClose,
-      statisticsClose,
-    ]);
-    return CloseReport(
-      unresolved: [for (final report in reports) ...report.unresolved],
-    );
-  }
+  /// Resident Bots demand: established after RuntimeReady, released with the
+  /// graph. Settings visits never own or close it.
+  final ResidentBotsDemand residentBots;
+  final ApplicationExitCoordinator exitCoordinator;
+  final NativeExitHost host;
 }
-
-/// Borrowed instance. ProviderScope owns observations, never the application.
-final appGraphProvider = Provider<AppGraph>((ref) {
-  throw StateError('The application must inject its AppGraph');
-});

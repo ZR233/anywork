@@ -7,8 +7,10 @@ use serde::{Deserialize, Serialize};
 // 活动/存储 DTO 定义在兄弟模块 `thread_activity`，由 `types` 重导出；这里显式引入，不复制定义，
 // 也不做 `pub use` 以免与 `thread_activity::*` 产生同名 glob 歧义。
 use super::{
-    BridgeAgentExecution, BridgeDelegationMode, BridgeDelegationPreference,
-    BridgeNewThreadModelRoute, BridgeThreadActivity, BridgeThreadStorageState,
+    BridgeAgentExecution,
+    BridgeDelegationMode, BridgeDelegationPreference, BridgeNewThreadModelRoute,
+    BridgeProviderFailureKind, BridgeRetryDisposition, BridgeThreadActivity,
+    BridgeThreadStorageState, BridgeTurnFailureCategory,
 };
 
 pub mod item;
@@ -141,13 +143,12 @@ pub struct BridgeTurn {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BridgeTurnFailureDto {
-    pub category: String,
-    pub provider_kind: Option<String>,
+    pub category: BridgeTurnFailureCategory,
+    pub provider_kind: Option<BridgeProviderFailureKind>,
     pub code: Option<String>,
     pub http_status: Option<u16>,
     pub message: String,
-    pub retryable: bool,
-    pub retry_after_ms: Option<u64>,
+    pub retry: BridgeRetryDisposition,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -426,16 +427,6 @@ pub struct BridgeInteractionRequest {
     pub content: BridgeInteractionContent,
     pub created_at: i64,
     pub updated_at: i64,
-}
-
-/// 主会话中的一条子任务待决交互摘要：只读投影，决定仍回到原交互身份。
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BridgeChildInteractionSummary {
-    pub child_thread_id: String,
-    pub interaction_id: String,
-    pub kind: String,
-    pub revision: u64,
-    pub interaction: BridgeInteractionRequest,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

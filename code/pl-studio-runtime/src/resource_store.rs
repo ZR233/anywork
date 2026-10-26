@@ -59,6 +59,16 @@ pub enum ResourceStoreError {
 }
 
 impl FileResourceStore {
+    /// Opens an authorized reference and validates its length/SHA on that same file. The caller
+    /// must already have proved delivery ownership and run this blocking operation in its owned
+    /// worker. Returning the file, rather than a path, preserves the object across later reads.
+    pub(crate) fn open_verified(
+        &self,
+        reference: &ResourceReference,
+    ) -> Result<File, ResourceStoreError> {
+        open_verified_file(&resource_path(&self.root, reference)?, reference)
+    }
+
     /// Selects the persistent directory without creating files or reading configuration.
     pub fn new(root: PathBuf) -> Self {
         Self {
@@ -319,7 +329,7 @@ fn retain_input(
         Ok(_) => {}
         Err(error) if error.error.kind() == std::io::ErrorKind::AlreadyExists => {
             // Preserve a conflicting object for diagnosis. Never overwrite historical bytes.
-            verify_file(&destination, &reference)?;
+            open_verified_file(&destination, &reference)?;
         }
         Err(error) => {
             return Err(ResourceStoreError::Io {
@@ -358,20 +368,19 @@ fn resource_path(
     Ok(root.join(hash))
 }
 
-fn verify_file(path: &Path, reference: &ResourceReference) -> Result<(), ResourceStoreError> {
+fn open_verified_file(
+    path: &Path,
+    reference: &ResourceReference,
+) -> Result<File, ResourceStoreError> {
     let mut input = File::open(path).map_err(|source| ResourceStoreError::Io {
         path: path.to_owned(),
         source,
     })?;
-    if input
-        .metadata()
-        .map_err(|source| ResourceStoreError::Io {
-            path: path.to_owned(),
-            source,
-        })?
-        .len()
-        != reference.byte_len()
-    {
+    let metadata = input.metadata().map_err(|source| ResourceStoreError::Io {
+        path: path.to_owned(),
+        source,
+    })?;
+    if !metadata.is_file() || metadata.len() != reference.byte_len() {
         return Err(ResourceStoreError::Integrity(
             pl_core::context::ResourceError::ContentMismatch,
         ));
@@ -404,7 +413,13 @@ fn verify_file(path: &Path, reference: &ResourceReference) -> Result<(), Resourc
             pl_core::context::ResourceError::ContentMismatch,
         ));
     }
-    Ok(())
+    input
+        .seek(SeekFrom::Start(0))
+        .map_err(|source| ResourceStoreError::Io {
+            path: path.to_owned(),
+            source,
+        })?;
+    Ok(input)
 }
 
 #[cfg(test)]

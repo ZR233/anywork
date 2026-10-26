@@ -4,18 +4,27 @@
 // 没有可展开载荷；`stored` 仍是“原始历史记录”并可展开原样载荷。像素与真实数据由 Driver
 // 人工证据覆盖（design/19、design/26 §26.7）。
 import 'package:anywork/src/app/theme/material3_theme.dart';
-import 'package:anywork/src/domain/models/timeline_commands.dart';
-import 'package:anywork/src/features/timeline/timeline_view.dart';
+import 'package:anywork/src/features/conversation/state/timeline_view_state.dart';
+import 'package:anywork/src/features/conversation/timeline/display_lease.dart';
+import 'package:anywork/src/features/conversation/connectors/timeline_row_connector.dart';
+import 'package:anywork/src/features/conversation/views/timeline_view.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
 import 'package:anywork/src/l10n/studio_l10n.dart';
-import 'package:anywork/src/presentation/view_models/timeline_session_owner.dart';
-import 'package:anywork_client/studio_client.dart';
+import 'package:anywork_client/conversation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+
+import 'support/timeline_environment.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
-  final timestamp = DateTime.utc(2026, 1, 2, 3, 4, 5);
+  final timestamp = DateTime.utc(2026, 1, 2, 3, 4, 5).millisecondsSinceEpoch ~/ 1000;
+  late TimelineTestEnvironment environment;
+  setUp(() {
+    environment = TimelineTestEnvironment(timeline: const UnscriptedTimelineTransport());
+  });
+  tearDown(() => environment.close());
 
   StudioTimelineItem rawItem(
     String id, {
@@ -40,11 +49,10 @@ void main() {
 
   TimelineDisplayLease leaseWith(List<StudioTimelineItem> items) {
     final lease = TimelineDisplayLease(
-      threadId: 'thread',
+      session: environment.conversations.session('thread'),
       generation: 1,
-      openQueries: (_) => null,
     );
-    lease.adoptBaseline(
+    lease.content.adoptBaseline(
       StudioTimelineBaseline(
         subscriptionId: 'test',
         version: 0,
@@ -56,18 +64,16 @@ void main() {
     return lease;
   }
 
-  TimelineSessionViewState viewState() => TimelineSessionViewState(
+  TimelineViewState viewState() => TimelineViewState(
     threadId: 'thread',
     generation: 1,
-    mode: TimelineDisplayMode.live,
+    displayMode: TimelineDisplayMode.live,
     connection: TimelineConnectionPhase.ready,
-    connectionError: null,
     olderCursor: null,
     hasOlder: false,
-    isLoadingOlder: false,
-    olderError: null,
+    olderLoading: false,
     hasNewOutput: false,
-    isPreparingLive: false,
+    preparingLive: false,
   );
 
   Future<void> pumpTimeline(
@@ -77,15 +83,19 @@ void main() {
     await tester.binding.setSurfaceSize(const Size(900, 700));
     addTearDown(() => tester.binding.setSurfaceSize(null));
     await tester.pumpWidget(
-      MaterialApp(
+      ProviderScope(child: MaterialApp(
         theme: pureStudioTheme(),
         localizationsDelegates: AppLocalizations.localizationsDelegates,
         supportedLocales: AppLocalizations.supportedLocales,
         home: Scaffold(
           body: TimelineView(
             threadId: 'thread',
-            view: viewState(),
-            lease: lease,
+            state: viewState(),
+            binding: lease.canvas,
+            messageBuilder: (context, message) => TimelineRowConnector(
+              message: message,
+              display: lease.binding,
+            ),
             onLoadOlder: () async {},
             onRetryOlder: () async {},
             onReturnLive: () async {},
@@ -93,10 +103,9 @@ void main() {
             onRetryConnection: () async {},
           ),
         ),
-      ),
+      )),
     );
-    await tester.pump();
-    await tester.pump(const Duration(milliseconds: 50));
+    await tester.pumpAndSettle();
   }
 
   testWidgets('运行时说明不冒充原始历史记录，历史载荷仍可展开', (tester) async {

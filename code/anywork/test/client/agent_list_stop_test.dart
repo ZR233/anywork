@@ -1,16 +1,18 @@
-import 'package:anywork/src/domain/models/agent_list_stop.dart';
-import 'package:anywork_client/models.dart';
+import 'package:anywork/src/features/workspace/state/agent_list_stop.dart';
+import 'package:anywork_client/workspace.dart';
+import 'package:anywork_client/modes.dart';
+import 'package:anywork_client/resources.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-StudioAgentView _agent({
-  AgentExecutionView? execution,
+AgentDirectoryEntry _agent({
+  AgentExecution? execution,
   bool canStop = false,
   bool awaitingScheduling = false,
-  StudioAgentState state = const RunningStudioAgent('turn-1'),
+  AgentState state = const RunningAgentState(turnId: 'turn-1'),
   String? parentPath = 'root',
   String role = 'executor',
 }) {
-  return StudioAgentView(
+  return AgentDirectoryEntry(
     id: 'child-1',
     threadId: 'thread-child',
     path: 'root/child',
@@ -20,14 +22,18 @@ StudioAgentView _agent({
     delegationPreference: DelegationPreference.balanced,
     task: 'child task',
     state: state,
-    updatedAt: DateTime.utc(2026, 1, 1),
+    updatedAt: 1767225600,
+    rootThreadId: 'thread-root',
+    depth: 1,
+    summary: null,
+    frozenModel: null,
     execution: execution,
     canStop: canStop,
     awaitingScheduling: awaitingScheduling,
   );
 }
 
-const _execution = AgentExecutionView(
+const _execution = AgentExecution(
   id: 'exec-child-1',
   phase: AgentExecutionPhase.running,
   turnId: 'turn-1',
@@ -43,7 +49,7 @@ void main() {
     ]) {
       final state = AgentListStopState.resolve(
         agent: _agent(
-          execution: AgentExecutionView(id: 'exec-child-1', phase: phase),
+          execution: AgentExecution(id: 'exec-child-1', phase: phase, turnId: null),
           canStop: true,
         ),
       );
@@ -61,10 +67,20 @@ void main() {
     expect(state.showsControl, isFalse);
   });
 
+  test('accepted停止在空Idle目录行上仍等待独立观察屏障，不用Idle伪造完成', () {
+    final state = AgentListStopState.resolve(
+      agent: _agent(state: const IdleAgentState(budgetPause: null), awaitingScheduling: true),
+      acceptedExecutionId: 'exec-child-1',
+    );
+    expect(state.action, AgentListStopAction.stopping);
+    expect(state.executionId, 'exec-child-1');
+    expect(state.canStop, isFalse);
+  });
+
   test('停止已受理、清理未结束显示禁用的正在停止', () {
     final stopping = AgentListStopState.resolve(
       agent: _agent(
-        execution: const AgentExecutionView(
+        execution: const AgentExecution(
           id: 'exec-child-1',
           phase: AgentExecutionPhase.stopping,
           turnId: 'turn-1',
@@ -78,7 +94,7 @@ void main() {
     final cancelling = AgentListStopState.resolve(
       agent: _agent(
         execution: _execution,
-        state: const CancellingStudioAgent('turn-1'),
+        state: const CancellingAgentState(turnId: 'turn-1'),
       ),
     );
     expect(cancelling.action, AgentListStopAction.stopping);
@@ -98,7 +114,7 @@ void main() {
 
   test('有未认领继续点的成员说明等待主智能体调度，且没有继续或消息操作', () {
     final state = AgentListStopState.resolve(
-      agent: _agent(state: const IdleStudioAgent(), awaitingScheduling: true),
+      agent: _agent(state: const IdleAgentState(budgetPause: null), awaitingScheduling: true),
     );
     expect(state.action, AgentListStopAction.stoppedWaitingScheduling);
     expect(state.canStop, isFalse);
@@ -106,28 +122,30 @@ void main() {
   });
 
   test('正常完成、关闭与退役成员不声称等待调度', () {
-    for (final state in const <StudioAgentState>[
-      IdleStudioAgent(),
-      ClosingStudioAgent(),
-      ClosedStudioAgent(),
-      FaultedStudioAgent(
-        failure: AgentStateError(
+    for (final state in const <AgentState>[
+      IdleAgentState(budgetPause: null),
+      ClosingAgentState(workspaceDisposition: AgentWorkspaceDisposition.preserve, error: null, turnId: null),
+      ClosedAgentState(),
+      FaultedAgentState(
+        error: SourceStateError(
           code: 'failed',
           message: 'failed',
           retryable: false,
         ),
+        turnId: null,
+        classification: AgentFaultClassification.recoverableRuntime,
       ),
     ]) {
       final resolved = AgentListStopState.resolve(agent: _agent(state: state));
-      expect(resolved.action, AgentListStopAction.none, reason: state.label);
-      expect(resolved.showsControl, isFalse, reason: state.label);
+      expect(resolved.action, AgentListStopAction.none, reason: state.runtimeType.toString());
+      expect(resolved.showsControl, isFalse, reason: state.runtimeType.toString());
     }
   });
 
   test('已关闭成员即使遗留执行与停止资格也不产生停止入口', () {
     final resolved = AgentListStopState.resolve(
       agent: _agent(
-        state: const ClosedStudioAgent(),
+        state: const ClosedAgentState(),
         execution: _execution,
         canStop: true,
         awaitingScheduling: true,
@@ -140,36 +158,39 @@ void main() {
   });
 
   test('没有当前执行的终态成员不产生任何控制', () {
-    for (final state in const <StudioAgentState>[
-      IdleStudioAgent(),
-      FaultedStudioAgent(
-        failure: AgentStateError(
+    for (final state in const <AgentState>[
+      IdleAgentState(budgetPause: null),
+      FaultedAgentState(
+        error: SourceStateError(
           code: 'failed',
           message: 'failed',
           retryable: false,
         ),
+        turnId: null,
+        classification: AgentFaultClassification.recoverableRuntime,
       ),
-      ClosingStudioAgent(),
-      ClosedStudioAgent(),
+      ClosingAgentState(workspaceDisposition: AgentWorkspaceDisposition.preserve, error: null, turnId: null),
+      ClosedAgentState(),
     ]) {
       final resolved = AgentListStopState.resolve(
         agent: _agent(state: state, canStop: true),
       );
-      expect(resolved.action, AgentListStopAction.none, reason: state.label);
-      expect(resolved.showsControl, isFalse, reason: state.label);
+      expect(resolved.action, AgentListStopAction.none, reason: state.runtimeType.toString());
+      expect(resolved.showsControl, isFalse, reason: state.runtimeType.toString());
     }
   });
 
   test('正在关闭与故障成员即使遗留执行与停止资格也不产生控制', () {
-    for (final state in const <StudioAgentState>[
-      ClosingStudioAgent(turnId: 'turn-1'),
-      FaultedStudioAgent(
-        failure: AgentStateError(
+    for (final state in const <AgentState>[
+      ClosingAgentState(workspaceDisposition: AgentWorkspaceDisposition.preserve, error: null, turnId: 'turn-1'),
+      FaultedAgentState(
+        error: SourceStateError(
           code: 'failed',
           message: 'failed',
           retryable: false,
         ),
-        diagnosticTurnId: 'turn-1',
+        turnId: 'turn-1',
+        classification: AgentFaultClassification.recoverableRuntime,
       ),
     ]) {
       for (final phase in const [
@@ -180,7 +201,7 @@ void main() {
         final resolved = AgentListStopState.resolve(
           agent: _agent(
             state: state,
-            execution: AgentExecutionView(id: 'exec-child-1', phase: phase),
+            execution: AgentExecution(id: 'exec-child-1', phase: phase, turnId: null),
             canStop: true,
           ),
           acceptedExecutionId: 'exec-child-1',
@@ -188,13 +209,13 @@ void main() {
         expect(
           resolved.action,
           AgentListStopAction.none,
-          reason: '${state.label} / $phase',
+          reason: '${state.runtimeType} / $phase',
         );
-        expect(resolved.canStop, isFalse, reason: '${state.label} / $phase');
+        expect(resolved.canStop, isFalse, reason: '${state.runtimeType} / $phase');
         expect(
           resolved.showsControl,
           isFalse,
-          reason: '${state.label} / $phase',
+          reason: '${state.runtimeType} / $phase',
         );
       }
     }
@@ -208,8 +229,8 @@ void main() {
     ]) {
       final resolved = AgentListStopState.resolve(
         agent: _agent(
-          state: const IdleStudioAgent(),
-          execution: AgentExecutionView(id: 'exec-child-1', phase: phase),
+          state: const IdleAgentState(budgetPause: null),
+          execution: AgentExecution(id: 'exec-child-1', phase: phase, turnId: null),
           canStop: true,
         ),
       );
@@ -221,10 +242,11 @@ void main() {
   test('Idle 行的清理中执行仍显示正在停止，而不是等待调度', () {
     final resolved = AgentListStopState.resolve(
       agent: _agent(
-        state: const IdleStudioAgent(),
-        execution: const AgentExecutionView(
+        state: const IdleAgentState(budgetPause: null),
+        execution: const AgentExecution(
           id: 'exec-child-1',
           phase: AgentExecutionPhase.stopping,
+          turnId: null,
         ),
         awaitingScheduling: true,
       ),
@@ -236,7 +258,7 @@ void main() {
   test('Idle 行带执行与等待调度事实时按执行态判定', () {
     final resolved = AgentListStopState.resolve(
       agent: _agent(
-        state: const IdleStudioAgent(),
+        state: const IdleAgentState(budgetPause: null),
         execution: _execution,
         canStop: true,
         awaitingScheduling: true,
@@ -248,7 +270,7 @@ void main() {
   test('退役成员即使带遗留执行与停止资格也不产生控制', () {
     final resolved = AgentListStopState.resolve(
       agent: _agent(
-        state: const RunningStudioAgent('turn-1'),
+        state: const RunningAgentState(turnId: 'turn-1'),
         execution: _execution,
         canStop: true,
         role: 'planner',
@@ -263,7 +285,7 @@ void main() {
   test('角色相同但非子成员不算退役，仍按可执行中资格判定', () {
     final resolved = AgentListStopState.resolve(
       agent: _agent(
-        state: const RunningStudioAgent('turn-1'),
+        state: const RunningAgentState(turnId: 'turn-1'),
         execution: _execution,
         canStop: true,
         role: 'planner',
@@ -276,7 +298,7 @@ void main() {
   test('可执行中且具备停止资格时，即使同时带等待调度事实也给出停止', () {
     final resolved = AgentListStopState.resolve(
       agent: _agent(
-        state: const RunningStudioAgent('turn-1'),
+        state: const RunningAgentState(turnId: 'turn-1'),
         execution: _execution,
         canStop: true,
         awaitingScheduling: true,
@@ -289,14 +311,14 @@ void main() {
   test('清理中即使同时带等待调度事实也显示正在停止', () {
     for (final agent in [
       _agent(
-        state: const CancellingStudioAgent('turn-1'),
+        state: const CancellingAgentState(turnId: 'turn-1'),
         execution: _execution,
         canStop: true,
         awaitingScheduling: true,
       ),
       _agent(
-        state: const RunningStudioAgent('turn-1'),
-        execution: const AgentExecutionView(
+        state: const RunningAgentState(turnId: 'turn-1'),
+        execution: const AgentExecution(
           id: 'exec-child-1',
           phase: AgentExecutionPhase.stopping,
           turnId: 'turn-1',
@@ -305,7 +327,7 @@ void main() {
         awaitingScheduling: true,
       ),
       _agent(
-        state: const RunningStudioAgent('turn-1'),
+        state: const RunningAgentState(turnId: 'turn-1'),
         execution: _execution,
         canStop: true,
         awaitingScheduling: true,
@@ -313,12 +335,12 @@ void main() {
     ]) {
       final resolved = AgentListStopState.resolve(
         agent: agent,
-        acceptedExecutionId: agent.state is CancellingStudioAgent ? null : null,
+        acceptedExecutionId: null,
       );
       expect(
         resolved.action,
-        agent.execution!.phase.isStopping ||
-                agent.state is CancellingStudioAgent
+        agent.execution!.phase == AgentExecutionPhase.stopping ||
+                agent.state is CancellingAgentState
             ? AgentListStopAction.stopping
             : AgentListStopAction.stop,
       );
@@ -328,7 +350,7 @@ void main() {
   test('已受理停止且清理未结束优先于等待调度', () {
     final resolved = AgentListStopState.resolve(
       agent: _agent(
-        state: const RunningStudioAgent('turn-1'),
+        state: const RunningAgentState(turnId: 'turn-1'),
         execution: _execution,
         canStop: true,
         awaitingScheduling: true,
@@ -342,7 +364,7 @@ void main() {
 
   test('没有可执行中状态时等待调度才显示说明', () {
     final resolved = AgentListStopState.resolve(
-      agent: _agent(state: const IdleStudioAgent(), awaitingScheduling: true),
+      agent: _agent(state: const IdleAgentState(budgetPause: null), awaitingScheduling: true),
     );
     expect(resolved.action, AgentListStopAction.stoppedWaitingScheduling);
     expect(resolved.canStop, isFalse);
@@ -350,16 +372,16 @@ void main() {
   });
 
   test('可执行中但无停止资格时不提供停止', () {
-    for (final state in const <StudioAgentState>[
-      QueuedStudioAgent('turn-1'),
-      RunningStudioAgent('turn-1'),
-      WaitingToolStudioAgent('turn-1'),
-      WaitingInteractionStudioAgent('turn-1', 'interaction-1'),
+    for (final state in const <AgentState>[
+      QueuedAgentState(turnId: 'turn-1'),
+      RunningAgentState(turnId: 'turn-1'),
+      WaitingToolAgentState(turnId: 'turn-1'),
+      WaitingInteractionAgentState(turnId: 'turn-1', interactionId: 'interaction-1'),
     ]) {
       final resolved = AgentListStopState.resolve(
         agent: _agent(state: state, execution: _execution),
       );
-      expect(resolved.action, AgentListStopAction.none, reason: state.label);
+      expect(resolved.action, AgentListStopAction.none, reason: state.runtimeType.toString());
     }
   });
 }

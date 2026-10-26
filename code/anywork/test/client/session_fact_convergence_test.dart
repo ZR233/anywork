@@ -1,254 +1,360 @@
-import 'support/test_statistics_feed.dart';
-
-import 'package:anywork/src/presentation/providers/client_provider.dart';
+import 'package:anywork/src/features/conversation/presentation/model_route_presentation.dart';
+import 'package:anywork/src/features/conversation/view_models/conversation_view_model.dart';
+import 'package:anywork/src/features/conversation/view_models/thread_status_view_model.dart';
+import 'package:anywork_client/configuration.dart';
+import 'package:anywork_client/conversation.dart';
+import 'package:anywork_client/models.dart';
+import 'package:anywork_client/modes.dart';
+import 'package:anywork_client/operations.dart';
+import 'package:anywork_client/resources.dart';
+import 'package:anywork_client/workspace.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-import 'package:anywork/src/app/app_graph.dart';
-import 'package:anywork_client/studio_client.dart';
+import 'support/selector_command_reply.dart';
+import 'support/selector_conversation_port.dart';
+import 'support/selector_environment.dart';
 
-import 'package:anywork/src/infrastructure/frb/studio_api.dart';
-import 'package:anywork/src/presentation/providers/settings_store.dart';
-import 'package:anywork/src/presentation/providers/thread_directory_store.dart';
-import 'package:anywork/src/presentation/providers/thread_session_store.dart';
-import 'package:anywork/src/features/interaction/composer_view.dart';
-
-/// AppGraph/Riverpod 适配契约：改动“任务模式 / 思考强度”后，主界面的显示值必须**只由
-/// canonical 事实流收敛**——mode 走目录增量，运行时 route 走 Thread 有序流。
-///
-/// 这里用 AppGraph/Client owner 与只读 Riverpod adapter，只把
-/// transport 换成 Demo；它不证明 native FRB，但 Demo
-/// 少发任何一条真实侧会发的帧，本文件就会失败，而不会被“命令后重新读取”这类补偿
-/// 路径掩盖（design/25 §25.5：命令成功以响应 canonical 应用回 store，不额外触发
-/// 显式刷新）。
+/// Real Repository -> generated VM adapters. Native replies and canonical
+/// publications are independently gated so command-time refresh or optimistic
+/// state cannot hide a missing typed directory/configuration publication.
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
-
   const threadId = 'thread-main';
+  late SelectorEnvironment env;
+  late ProviderSubscription<Object?> conversationHold, statusHold;
+  late void Function() endRouteDemand;
 
-  late AppGraph graph;
-  late ProviderContainer container;
-  late ProviderSubscription<Object?> sessionHold;
-  late ProviderSubscription<Object?> composerHold;
+  ConversationModelRouteProps props() => env.container
+      .read(threadStatusViewModelProvider(threadId).notifier)
+      .modelRouteProps(
+        env.container
+            .read(conversationViewModelProvider(threadId))
+            .requireValue
+            .metadata,
+      );
+  ThreadModelRoute route() => props().route!;
+  ConversationSession session() => env.conversations.active.value!;
 
   setUp(() async {
-    final api = DemoStudioTransport(lspActivityLoop: false);
-    graph = AppGraph(
-      statisticsFeed: const TestStatisticsFeedPort(),
-      transport: api,
-      clientId: 'canonical-convergence',
-    );
-    container = ProviderContainer(
-      overrides: [appGraphProvider.overrideWithValue(graph)],
-    );
-    await graph.client.bootstrap();
-    await graph.client.directoryCommands.selectThread(threadId);
-    sessionHold = container.listen(
-      threadSessionStoreProvider(threadId),
+    env = SelectorEnvironment();
+    await env.establish();
+    await env.selectThread(threadId);
+    conversationHold = env.container.listen(
+      conversationViewModelProvider(threadId),
       (_, _) {},
     );
-    composerHold = container.listen(
-      composerDockViewProvider(threadId),
+    statusHold = env.container.listen(
+      threadStatusViewModelProvider(threadId),
       (_, _) {},
     );
-    await graph.client.session(threadId).source.waitFor((s) => s.hasSnapshot);
+    await env.container.read(conversationViewModelProvider(threadId).future);
+    await env.container.read(threadStatusViewModelProvider(threadId).future);
+    endRouteDemand = env.container
+        .read(threadStatusViewModelProvider(threadId).notifier)
+        .beginModelRouteDemand();
+    await env.container
+        .read(threadStatusViewModelProvider(threadId).notifier)
+        .loadModelRoute();
   });
-
   tearDown(() async {
-    sessionHold.close();
-    composerHold.close();
-    container.dispose();
-    await graph.close(deadline: DateTime.now().add(const Duration(seconds: 5)));
+    endRouteDemand();
+    conversationHold.close();
+    statusHold.close();
+    await env.close();
   });
 
-  int routeRevision() => _routeRevision(container, threadId);
-
-  AccountModelView? modelFor(String accountId, String model) =>
-      _modelFor(container, accountId, model);
-
-  test('任务模式由目录增量交付，运行时 route 由 Thread 帧交付', () async {
+  test('任务模式由目录增量交付，运行时 route 由 Configuration facet 交付', () async {
+    final before = env.container
+        .read(conversationViewModelProvider(threadId))
+        .requireValue
+        .thread!;
+    expect(before.mode, ThreadModeId.simple);
+    final routeRevisionBefore = route().revision;
+    final metadata = env.workspace.thread(threadId);
+    addTearDown(metadata.close);
+    await waitLatest(
+      metadata.state,
+      (value) =>
+          value.value
+              is ReadyReadValue<WorkspaceThreadRecord, ProductEntityRef>,
+    );
+    final directoryRevisionBefore =
+        metadata.state.value.projection.stamp!.revision;
+    final ticket = session().setThreadMode(
+      origin: session().configuration.value.stamp!,
+      mode: ThreadModeId.task.id,
+    );
+    final call = await env.commands.modes.at(0);
+    expect(call.mode, ThreadModeId.task.id);
+    expect(route().revision, routeRevisionBefore);
     expect(
-      container.read(composerDockViewProvider(threadId)).thread?.mode,
+      env.container
+          .read(conversationViewModelProvider(threadId))
+          .requireValue
+          .thread!
+          .mode,
       ThreadModeId.simple,
-      reason: 'demo fixture 的根会话默认是简洁模式',
+      reason: '命令发出不能提前改写目录 mode',
     );
-    final routeRevisionBefore = routeRevision();
-    final directoryRevisionBefore = container
-        .read(threadDirectoryStoreProvider)
-        .revision;
-
-    await container
-        .read(anyworkClientProvider)
-        .threadCommands
-        .setThreadMode(ThreadModeId.task);
-
-    await graph.client
-        .session(threadId)
-        .source
-        .waitFor(
-          (s) => s.runtime?.modelRoute?.revision == routeRevisionBefore + 1,
-        );
-    await graph.client.threadDirectory.source.waitFor(
-      (state) => state.window.threads.any(
-        (thread) => thread.id == threadId && thread.mode == ThreadModeId.task,
+    call.reply.complete(
+      CommitReceipt(
+        operationId: call.operationId,
+        disposition: CommitDisposition.applied,
+        targets: [
+          const ResourceStamp(
+            resourceKey: 'thread-mode:thread-main',
+            ownerEpoch: 'selector-native',
+            revision: 2,
+          ),
+          const ResourceStamp(
+            resourceKey: 'thread-directory',
+            ownerEpoch: 'selector-native',
+            revision: 8,
+          ),
+        ],
+        effect: EffectPoint.nextTurn,
+        requiresIdentityObservation: true,
       ),
     );
+    final next = route().copyWith(revision: routeRevisionBefore + 1);
+    await env.conversationPort.publishRoute(next, modeBindingRevision: 2);
+    await env.directory.publishThread(before.copyWith(mode: ThreadModeId.task));
+    await waitLatest(
+      metadata.state,
+      (value) =>
+          value.value
+              is ReadyReadValue<WorkspaceThreadRecord, ProductEntityRef> &&
+          (value.value
+                      as ReadyReadValue<
+                        WorkspaceThreadRecord,
+                        ProductEntityRef
+                      >)
+                  .current
+                  .value
+                  .mode ==
+              ThreadModeId.task,
+    );
+    expect(await ticket.result, isA<CommittedCommandResult<CommitReceipt>>());
+    await env.container
+        .read(threadStatusViewModelProvider(threadId).notifier)
+        .loadModelRoute();
     expect(
-      container.read(threadDirectoryStoreProvider).revision,
+      metadata.state.value.projection.stamp!.revision,
       greaterThan(directoryRevisionBefore),
-      reason: 'mode 是目录事实：必须经目录增量推进水位后才能被界面看到',
+      reason: 'mode 是 typed directory 事实，必须推进自己的水位',
     );
     expect(
-      routeRevision(),
+      route().revision,
       routeRevisionBefore + 1,
-      reason:
-          'mode 默认 route 是 Thread 运行时事实，必须由有序流帧交付；'
-          '命令后重新读取会掩盖这里缺帧',
+      reason: '路由来自 Configuration facet，不能依赖命令后聚合重新读取',
+    );
+    expect(
+      env.container
+          .read(conversationViewModelProvider(threadId))
+          .requireValue
+          .thread!
+          .mode,
+      ThreadModeId.task,
+    );
+    expect(
+      env.conversationPort.reads.last.origin,
+      session().configuration.value.stamp,
     );
   });
 
-  test('思考强度由 Thread 有序流收敛，命令响应只合并 settings', () async {
-    final route = container.read(composerDockViewProvider(threadId)).modelRoute;
-    expect(route, isNotNull, reason: '已建会话必须有 canonical route');
-    final canonicalRoute = route!;
-
-    final model = modelFor(canonicalRoute.accountId, canonicalRoute.modelId);
-    expect(model, isNotNull, reason: '当前 route 的模型必须在 account 目录中');
-    final target = model!.reasoningEfforts
-        .where((effort) => effort != canonicalRoute.effort)
-        .firstOrNull;
-    expect(target, isNotNull, reason: '模型需要至少两个思考强度候选');
-    final routeRevisionBefore = routeRevision();
-
-    await container
-        .read(anyworkClientProvider)
-        .threadCommands
-        .setThreadModelRoute(
-          threadId: threadId,
-          accountId: canonicalRoute.accountId,
-          modelId: canonicalRoute.modelId,
+  test(
+    '思考强度经 Configuration facet 与原版本 typed read 收敛，响应不能充当 canonical',
+    () async {
+      final canonical = route();
+      expect(canonical, isNotNull);
+      final catalog =
+          env.models.state.value.accounts
+              as CurrentCollectionMirror<AccountCatalogEntry>;
+      final model = catalog.window.rows.values
+          .whereType<ReadyReadValue<AccountCatalogEntry, ProductEntityRef>>()
+          .firstWhere(
+            (row) => row.current.value.accountId == canonical.accountId,
+          )
+          .current
+          .value
+          .effectiveModels
+          .firstWhere((model) => model.modelId == canonical.modelId);
+      expect(model, isNotNull);
+      final target = model.reasoning!.candidates
+          .where((effort) => effort != canonical.effort)
+          .firstOrNull;
+      expect(target, isNotNull);
+      final expected = canonical.copyWith(
+        effort: target,
+        revision: canonical.revision + 1,
+      );
+      final writer = env.container
+          .read(threadStatusViewModelProvider(threadId).notifier)
+          .captureModelRouteWriter(
+            env.container
+                .read(conversationViewModelProvider(threadId))
+                .requireValue
+                .metadata,
+          )!;
+      final ticket = writer(
+        ModelSelection(
+          model: AccountModelKey(
+            accountId: canonical.accountId,
+            modelId: canonical.modelId,
+          ),
           effort: target,
-        );
-
-    await graph.client
-        .session(threadId)
-        .source
-        .waitFor(
-          (state) =>
-              state.runtime?.modelRoute?.revision == routeRevisionBefore + 1 &&
-              state.runtime?.modelRoute?.effort == target,
-        );
-
-    expect(
-      container
-          .read(threadSessionStoreProvider(threadId))
-          .runtime
-          ?.modelRoute
-          ?.effort,
-      target,
-      reason: 'canonical 事实必须经 Thread 帧收敛，不能停留在乐观目标值',
-    );
-    expect(
-      routeRevision(),
-      routeRevisionBefore + 1,
-      reason: 'route 变更必须带新的模型路由 revision 到达 store',
-    );
-    final settled = container.read(composerDockViewProvider(threadId));
-    expect(settled.routePending, isFalse, reason: '命令完成后不得停在 pending 目标值');
-    expect(
-      settled.modelRoute?.effort,
-      target,
-      reason: '选择器显示值必须与收敛后的 canonical 一致（乐观值清除后不回落）',
-    );
-    expect(
-      container
-          .read(settingsStoreProvider)
-          .canonical
-          ?.modeModelRoutes
-          .where((candidate) => candidate.modeId == settled.thread?.mode)
-          .firstOrNull
-          ?.effort,
-      target,
-      reason: '命令响应的 settings canonical 是同一水位下的另一半事实',
-    );
-  });
-
-  test('Thread 单流水位门：同水位与更低水位丢弃，缺口走重同步', () {
-    const watermark = ThreadStreamWatermark(
-      hasSnapshot: true,
-      revision: 4,
-      epoch: 1,
-    );
-
-    expect(
-      classifyThreadFrame(watermark, _notification(revision: 4)),
-      ThreadFrameDecision.drop,
-      reason: '同水位重复帧不得重复应用',
-    );
-    expect(
-      classifyThreadFrame(watermark, _notification(revision: 3)),
-      ThreadFrameDecision.drop,
-      reason: '更低水位不得覆盖更新事实',
-    );
-    expect(
-      classifyThreadFrame(watermark, _notification(revision: 5)),
-      ThreadFrameDecision.apply,
-    );
-    expect(
-      classifyThreadFrame(watermark, _notification(revision: 7)),
-      ThreadFrameDecision.resync,
-      reason: '缺口不能就地拼接',
-    );
-    expect(
-      classifyThreadFrame(
-        watermark,
-        _notification(revision: 5, baseRevision: 3),
-      ),
-      ThreadFrameDecision.resync,
-      reason: '基线水位与当前水位不一致表示缺口',
-    );
-    expect(
-      classifyThreadFrame(watermark, _notification(revision: 5, epoch: 2)),
-      ThreadFrameDecision.resync,
-      reason: '跨订阅代次的通知不得应用',
-    );
-  });
-}
-
-int _routeRevision(ProviderContainer container, String threadId) =>
-    container
-        .read(threadSessionStoreProvider(threadId))
-        .runtime
-        ?.modelRoute
-        ?.revision ??
-    -1;
-
-AccountModelView? _modelFor(
-  ProviderContainer container,
-  String accountId,
-  String model,
-) {
-  final accounts =
-      container.read(settingsStoreProvider).canonical?.accounts ?? const [];
-  for (final account in accounts) {
-    if (account.id != accountId) continue;
-    for (final candidate in account.models) {
-      if (candidate.modelId == model) return candidate;
-    }
-  }
-  return null;
-}
-
-ThreadNotificationFrame _notification({
-  required int revision,
-  int? epoch,
-  int? baseRevision,
-}) {
-  return ThreadNotificationFrame(
-    threadId: 'thread-main',
-    revision: revision,
-    epoch: epoch,
-    baseRevision: baseRevision,
-    update: const ThreadActivityUpdate(activity: null),
+        ),
+      );
+      final call = await env.commands.routes.at(0);
+      expect(
+        (call.routeRevision, call.settingsRevision),
+        (canonical.revision, 1),
+      );
+      call.reply.complete(
+        selectorRouteReply(call, expected, saved: true, settingsRevision: 2),
+      );
+      await waitLatest(ticket.state, (value) => value.receipt != null);
+      expect(
+        route(),
+        canonical,
+        reason: '响应没有原 facet/read 身份，不能被乐观提升为 canonical',
+      );
+      expect(ticket.state.value.isPending, isTrue);
+      env.configurationPort.routes[2] = ModelSelection(
+        model: call.selection.model,
+        effort: target,
+      );
+      await env.configurationPort.base.publishSettings(2);
+      await env.conversationPort.publishRoute(expected);
+      expect(
+        await ticket.result,
+        isA<CommittedCommandResult<ThreadModelRouteCommandReply>>(),
+      );
+      await env.container
+          .read(threadStatusViewModelProvider(threadId).notifier)
+          .loadModelRoute();
+      await env.configuration.loadModeRoutes();
+      expect(
+        session().configuration.value.value?.modelRoute?.revision,
+        canonical.revision + 1,
+      );
+      expect(route().effort, target, reason: 'selector 必须消费真实 typed 原版本详情');
+      expect(route().revision, canonical.revision + 1);
+      expect(ticket.state.value.isPending, isFalse);
+      expect(
+        route().effort,
+        expected.effort,
+        reason: 'pending 清除后 canonical 不得回落',
+      );
+      final settings =
+          env.configuration.state.value.modeRoutes
+              as ReadyReadValue<List<ModeModelRoute>, ConfigurationReadRef>;
+      expect(
+        settings.current.value.single.effort,
+        target,
+        reason: '配置是独立 owner，由自身 feed/read 收敛',
+      );
+      expect(
+        env.conversationPort.reads.last.origin.runtimeEpoch,
+        'selector-native',
+      );
+      expect(env.conversationPort.reads.last.origin.incarnation, 1);
+      expect(
+        env.conversationPort.reads.last.origin.revision,
+        session().configuration.value.stamp!.revision,
+      );
+    },
   );
+
+  test('facet 水位门：重复/更低/缺口/跨原身份不覆盖 canonical，连续事实才应用', () async {
+    // The deleted helper silently dropped malformed notifications. The typed
+    // protocol is stricter: fail the original feed, preserve its last-known
+    // fact and require an explicit fresh baseline. Exercise the real Session.
+    for (final scenario in [
+      'duplicate',
+      'lower',
+      'next',
+      'gap',
+      'base',
+      'epoch',
+      'incarnation',
+    ]) {
+      final opening = env.conversationPort.facets.execution.last;
+      await opening.feed.acknowledged(1);
+      opening.feed.emit(
+        ThreadExecutionFrame.data(
+          deliverySequence: 2,
+          event: ThreadExecutionEvent.change(
+            stamp: selectorFacet(ThreadFacet.execution, 4),
+            baseRevision: 1,
+            value: const ThreadExecutionChange(
+              status: ThreadStatus.idle,
+              turns: null,
+              interactions: null,
+              activity: ActivityReplacement.unchanged(),
+              storage: StorageReplacement.unchanged(),
+            ),
+          ),
+        ),
+      );
+      await opening.feed.acknowledged(2);
+      final watermark = session().execution.value;
+      expect(watermark.stamp!.revision, 4);
+      final stamp = selectorFacet(
+        ThreadFacet.execution,
+        switch (scenario) {
+          'duplicate' => 4,
+          'lower' => 3,
+          _ => 5,
+        },
+        runtime: scenario == 'epoch' ? 'replacement-native' : 'selector-native',
+        incarnation: scenario == 'incarnation' ? 2 : 1,
+      );
+      opening.feed.emit(
+        ThreadExecutionFrame.data(
+          deliverySequence: scenario == 'gap' ? 4 : 3,
+          event: ThreadExecutionEvent.change(
+            stamp: stamp,
+            baseRevision: scenario == 'base' ? 3 : 4,
+            value: const ThreadExecutionChange(
+              status: ThreadStatus.running,
+              turns: null,
+              interactions: null,
+              activity: ActivityReplacement.unchanged(),
+              storage: StorageReplacement.unchanged(),
+            ),
+          ),
+        ),
+      );
+      if (scenario == 'next') {
+        await opening.feed.acknowledged(3);
+        expect(
+          session().execution.value.stamp,
+          selectorFacet(ThreadFacet.execution, 5),
+        );
+        expect(session().execution.value.value!.status, ThreadStatus.running);
+      } else {
+        final failed = await waitLatest(
+          session().execution,
+          (value) => value.sync.phase == FacetSyncPhase.failed,
+        );
+        expect(
+          failed.sync.error!.code,
+          StudioFailureCode.protocol,
+          reason: scenario,
+        );
+        expect(failed.stamp, watermark.stamp, reason: '$scenario 不得覆盖新事实');
+        expect(failed.value, watermark.value, reason: '$scenario 不得就地拼接');
+        expect(opening.feed.acknowledgements, [1, 2], reason: '坏帧不得伪造数据 ACK');
+      }
+      await session().retry(ThreadFacet.execution);
+      await waitLatest(
+        session().execution,
+        (value) =>
+            value.sync.phase == FacetSyncPhase.ready &&
+            value.stamp!.revision == 1,
+      );
+    }
+  });
 }

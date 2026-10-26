@@ -4,35 +4,11 @@
 // ignore_for_file: invalid_use_of_internal_member, unused_import, unnecessary_import
 
 import '../../../frb_generated.dart';
-import '../types/attachment.dart';
-import '../types/delegation.dart';
 import '../types/error.dart';
 
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
-
-Future<List<BridgeAttachmentDraft>> admitAttachmentDrafts({
-  required BridgeAttachmentAdmissionContext context,
-  required List<BridgeAttachmentDraftSource> sources,
-}) =>
-    RustLib.instance.api.crateApiStudioHandlersAttachmentAdmitAttachmentDrafts(
-      context: context,
-      sources: sources,
-    );
 
 Future<bool> removeAttachmentDraft({required String draftId}) => RustLib
     .instance
     .api
     .crateApiStudioHandlersAttachmentRemoveAttachmentDraft(draftId: draftId);
-
-Future<Uint8List> readAttachmentDraft({required String draftId}) => RustLib
-    .instance
-    .api
-    .crateApiStudioHandlersAttachmentReadAttachmentDraft(draftId: draftId);
-
-Future<Uint8List> readThreadAttachment({
-  required String threadId,
-  required String attachmentId,
-}) => RustLib.instance.api.crateApiStudioHandlersAttachmentReadThreadAttachment(
-  threadId: threadId,
-  attachmentId: attachmentId,
-);

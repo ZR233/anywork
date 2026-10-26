@@ -1,0 +1,178 @@
+import 'dart:async';
+
+import 'package:anywork_client/operations_ports.dart';
+import 'package:anywork_client/resources_ports.dart';
+
+import '../domain/skills_state.dart';
+import 'skills_mirror.dart';
+import 'skills_port.dart';
+
+/// Native discovery uses one SkillCatalogRuntime.command_lock across projects.
+/// Search and catalog reads do not enter this lane or replay discovery.
+final class SkillsActions {
+  SkillsActions(this.port, this.lifetime, this.operations);
+  final SkillsPort port;
+  final ResourceLifetime lifetime;
+  final OperationRecorder operations;
+  final Map<int, _SkillsWork> _work = {};
+  Future<void>? _tail;
+
+  OperationTicket<SkillsReadTarget> discover(SkillsMirror mirror) {
+    lifetime.admit();
+    if (_work.values.any((work) => work.unknown || work.terminal != null))
+      throw _conflict;
+    final projectId = mirror.projectId;
+    final prior = _tail;
+    final work = _SkillsWork(
+      lifetime.nextAttempt(),
+      projectId,
+      () => port.discover(projectId),
+    );
+    _work[work.attempt] = work;
+    _tail = work.done.future;
+    final handoff = Completer<OperationWriter<SkillsReadTarget>>();
+    try {
+      unawaited(
+        lifetime
+            .run('skills-discover:$projectId', () async {
+              final writer = await handoff.future;
+              await _run(work, mirror, writer, prior);
+            })
+            .then<void>(
+              (_) {},
+              onError: (Object error, StackTrace stack) {
+                lifetime.lastCause = error;
+                lifetime.lastStack = stack;
+              },
+            ),
+      );
+    } catch (_) {
+      _finish(work);
+      rethrow;
+    }
+    try {
+      final writer = operations.begin<SkillsReadTarget>(
+        target: 'skills-discover:$projectId',
+      );
+      final ticket = writer.ticket;
+      handoff.complete(writer);
+      return ticket;
+    } catch (error, stack) {
+      handoff.completeError(error, stack);
+      _finish(work);
+      rethrow;
+    }
+  }
+
+  Future<void> _run(
+    _SkillsWork work,
+    SkillsMirror mirror,
+    OperationWriter<SkillsReadTarget> writer,
+    Future<void>? prior,
+  ) async {
+    var dispatched = false;
+    SkillsReadTarget? confirmed;
+    try {
+      if (prior != null) await prior;
+      lifetime.admit();
+      if (_work.values.any(
+        (other) =>
+            !identical(other, work) &&
+            (other.unknown || other.terminal != null),
+      )) {
+        throw const CommandDispatchFailure.rejected(failure: _conflict);
+      }
+      dispatched = true;
+      final target = await work.dispatch();
+      confirmed = target;
+      if (target.reference.entry < 0 || target.reference.revision < 0) {
+        throw resourceProtocol(
+          'Skills discovery returned an invalid native target.',
+        );
+      }
+      await mirror.synchronize(target);
+      writer.acknowledged(target);
+    } catch (error, stack) {
+      work.causes.add((error, stack));
+      lifetime.lastCause = error;
+      lifetime.lastStack = stack;
+      final failure = error is CommandDispatchFailure
+          ? error.failure
+          : resourceFailure(error);
+      try {
+        if (confirmed != null) {
+          writer.acknowledgedSynchronizationFailed(failure, value: confirmed);
+        } else {
+          switch (error) {
+            case RejectedCommandDispatchFailure():
+              writer.rejected(failure);
+            case ConfirmedWithoutUsableReceiptCommandDispatchFailure():
+              writer.acknowledgedSynchronizationFailed(failure);
+            case CommittedButUnobservedCommandDispatchFailure(:final receipt):
+              writer.synchronizationFailed(failure, receipt: receipt);
+            case UnknownOutcomeCommandDispatchFailure():
+              work.unknown = true;
+              work.failure = failure;
+              writer.unknownOutcome(failure);
+            default:
+              if (dispatched) {
+                work.unknown = true;
+                work.failure = failure;
+                writer.unknownOutcome(failure);
+              } else {
+                writer.rejected(failure);
+              }
+          }
+        }
+      } catch (ownerError, ownerStack) {
+        work.causes.add((ownerError, ownerStack));
+        work.terminal = resourceCleanupIssue(
+          ownerError,
+          CleanupRecovery.terminal,
+        );
+        rethrow;
+      }
+    } finally {
+      _finish(work);
+    }
+  }
+
+  void _finish(_SkillsWork work) {
+    if (!work.done.isCompleted) work.done.complete();
+    if (identical(_tail, work.done.future)) _tail = null;
+    if (!work.unknown && work.terminal == null) _work.remove(work.attempt);
+  }
+
+  List<UnresolvedResource> get unresolved => [
+    for (final work in _work.values)
+      if (work.unknown || work.terminal != null)
+        UnresolvedResource(
+          owner: 'skills-discover:${work.projectId}',
+          attemptId: AttemptId(work.attempt),
+          issues: [
+            if (work.unknown)
+              resourceCleanupIssue(work.failure!, CleanupRecovery.terminal),
+            if (work.terminal case final issue?) issue,
+          ],
+        ),
+  ];
+
+  static const _conflict = StudioFailure(
+    code: StudioFailureCode.conflict,
+    message: 'A prior Skills discovery retains an unknown or terminal native outcome.',
+    retryable: false,
+    correlationId: 'skills',
+  );
+}
+
+final class _SkillsWork {
+  _SkillsWork(this.attempt, this.projectId, this.dispatch);
+  final int attempt;
+  final String projectId;
+  final Future<SkillsReadTarget> Function() dispatch;
+  final Completer<void> done = Completer<void>();
+  final List<(Object, StackTrace)> causes = [];
+  bool unknown = false;
+  StudioFailure? failure;
+  FeedCloseIssue? terminal;
+}

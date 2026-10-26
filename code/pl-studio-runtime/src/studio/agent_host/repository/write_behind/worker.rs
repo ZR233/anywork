@@ -13,6 +13,7 @@ use crate::PureError;
 use crate::studio::PersistenceState;
 
 use super::apply::apply_batch;
+use super::failure::WriteBehindCause;
 use super::handle::WriterShared;
 use super::queue::{
     FAST_BATCH_RETRIES, FLUSH_INTERVAL, MAX_BATCH_BYTES, MAX_BATCH_COMMITS, MAX_QUEUE_BYTES,
@@ -32,18 +33,28 @@ pub(super) enum PersistenceDisposition {
     Blocked,
 }
 
-pub(super) async fn supervise_writer(shared: Arc<WriterShared>, pending_commits: Arc<AtomicUsize>) {
+pub(super) async fn supervise_writer(
+    shared: Arc<WriterShared>,
+    pending_commits: Arc<AtomicUsize>,
+    task: Arc<()>,
+) {
     loop {
         let worker_shared = shared.clone();
-        let worker = tokio::spawn(run_writer(worker_shared, pending_commits.clone()));
+        let worker = tokio::spawn(run_writer(
+            worker_shared,
+            pending_commits.clone(),
+            task.clone(),
+        ));
         let Err(error) = worker.await else {
             return;
         };
-        recover_inflight(&shared);
+        // Preserve the actual failed join before diagnostics or recovery can themselves fail.
         publish_blocked(
             &shared,
-            &format!("write-behind worker terminated unexpectedly: {error}"),
+            Arc::new(WriteBehindCause::WorkerJoin(Arc::new(error))),
+            &task,
         );
+        recover_inflight(&shared);
         if shared.stopping.load(Ordering::Acquire) {
             return;
         }
@@ -54,7 +65,7 @@ pub(super) async fn supervise_writer(shared: Arc<WriterShared>, pending_commits:
     }
 }
 
-async fn run_writer(shared: Arc<WriterShared>, pending_commits: Arc<AtomicUsize>) {
+async fn run_writer(shared: Arc<WriterShared>, pending_commits: Arc<AtomicUsize>, task: Arc<()>) {
     let mut retries = 0usize;
     loop {
         let stopping = shared.stopping.load(Ordering::Acquire);
@@ -107,7 +118,7 @@ async fn run_writer(shared: Arc<WriterShared>, pending_commits: Arc<AtomicUsize>
         match apply_batch(&shared.store, &batch).await {
             Ok(()) => {
                 let was_unhealthy = matches!(
-                    shared.state.borrow().state,
+                    shared.state.borrow().snapshot.state,
                     PersistenceState::Degraded(_) | PersistenceState::Recovering(_)
                 );
                 retries = 0;
@@ -118,6 +129,7 @@ async fn run_writer(shared: Arc<WriterShared>, pending_commits: Arc<AtomicUsize>
                     &shared,
                     pending_commits.load(Ordering::Acquire),
                     was_unhealthy,
+                    &task,
                 );
                 tracing::trace!(
                     commits = commit_count,
@@ -128,17 +140,22 @@ async fn run_writer(shared: Arc<WriterShared>, pending_commits: Arc<AtomicUsize>
             }
             Err(BatchError::BlockedStore(error)) => {
                 requeue_batch(&shared, batch);
-                publish_blocked(&shared, &error.to_string());
+                publish_blocked(
+                    &shared,
+                    Arc::new(WriteBehindCause::Store(Arc::new(error))),
+                    &task,
+                );
                 if shared.stopping.load(Ordering::Acquire) {
                     return;
                 }
                 wait_for_retry(&shared, MAX_RETRY_BACKOFF).await;
             }
             Err(BatchError::RetryableStore(error)) => {
+                let error = Arc::new(error);
                 retries += 1;
                 requeue_batch(&shared, batch);
                 if shared.stopping.load(Ordering::Acquire) {
-                    publish_degraded(&shared, &error);
+                    publish_degraded(&shared, error.clone(), &task);
                     return;
                 }
                 if retries <= FAST_BATCH_RETRIES {
@@ -151,7 +168,7 @@ async fn run_writer(shared: Arc<WriterShared>, pending_commits: Arc<AtomicUsize>
                     wait_for_retry(&shared, backoff).await;
                     continue;
                 }
-                publish_degraded(&shared, &error);
+                publish_degraded(&shared, error, &task);
                 let exponent = u32::try_from(retries.saturating_sub(FAST_BATCH_RETRIES + 1))
                     .unwrap_or(u32::MAX)
                     .min(5);

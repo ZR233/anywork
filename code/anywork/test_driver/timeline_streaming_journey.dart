@@ -28,16 +28,54 @@ Future<Map<String, Object?>> observeStreamingHistory(
 
   String body(Map<String, dynamic> state) =>
       jsonEncode((state['timeline'] as Map)['items']);
+  Map<String, Object?> diagnostics(Map<String, dynamic> state) {
+    final content = TimelineObservation.optional(state);
+    return <String, Object?>{
+      'busy': busy(state),
+      'settled': settled(state),
+      'timeline': content == null
+          ? null
+          : <String, Object?>{
+              'threadId': content.threadId,
+              'generation': content.generation,
+              'ready': content.ready,
+              'connection': content.connection,
+              'connectionErrorType': content.connectionErrorType,
+              'connectionErrorCode': content.connectionErrorCode,
+              'connectionErrorRetryable': content.connectionErrorRetryable,
+              'connectionErrorCorrelationId':
+                  content.connectionErrorCorrelationId,
+              'mode': content.mode,
+              'itemCount': content.itemCount,
+              'loadingOlder': content.loadingOlder,
+              'preparingLive': content.preparingLive,
+            },
+      'scroll': TimelineScrollObservation.optional(state)?.toJson(),
+    };
+  }
+
   Future<Map<String, dynamic>> until(
     String stage,
     bool Function(Map<String, dynamic>) ready,
   ) async {
     final deadline = DateTime.now().add(const Duration(seconds: 90));
+    Map<String, Object?>? last;
+    Map<String, Object?>? lastWhileBusy;
     while (DateTime.now().isBefore(deadline)) {
       final state = await driver.readSnapshot();
       if (ready(state)) return state;
+      last = diagnostics(state);
+      if (busy(state)) lastWhileBusy = last;
       await Future<void>.delayed(const Duration(milliseconds: 50));
     }
+    // Bounded scalar-only evidence: never dump the loaded body or raw snapshot.
+    stderr.writeln(
+      const JsonEncoder.withIndent('  ').convert(<String, Object?>{
+        'streamingHistoryTimeout': stage,
+        'lastWhileBusy': lastWhileBusy,
+        'last': last,
+      }),
+    );
     throw StateError('Streaming history did not settle: $stage');
   }
 

@@ -1,11 +1,21 @@
 import 'dart:async';
 
-import 'package:anywork/src/domain/models/timeline_commands.dart';
-import 'package:anywork/src/domain/models/timeline_presentation.dart';
-import 'package:anywork/src/presentation/view_models/timeline_session_owner.dart';
-import 'package:anywork_client/studio_client.dart';
+import 'package:anywork/src/features/conversation/state/timeline_view_state.dart';
+import 'package:anywork/src/features/conversation/timeline/presentation_item.dart';
+import 'package:anywork/src/features/conversation/timeline/coordinator.dart';
+import 'package:anywork_client/conversation_ports.dart';
+import 'package:anywork_client/resources_ports.dart';
+import 'package:anywork_client/drafts.dart';
+import 'package:anywork_client/operations.dart';
+
+import 'support/timeline_drafts_environment.dart';
+
 import 'package:flutter_chat_core/flutter_chat_core.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:anywork/src/features/conversation/timeline/display_binding.dart';
+import 'package:anywork/src/features/conversation/timeline/selection_binding.dart';
+
+import 'support/timeline_environment.dart';
 
 /// 展示 owner 的缺陷敏感度：每代次新 controller/key、History 冻结、
 /// 显式回实时新订阅首帧成功后才换代次、发送准备不改动其他 Thread、
@@ -28,43 +38,21 @@ void main() {
       turnId: 'turn',
       ordinal: ordinal ?? revision,
       revision: revision,
-      createdAt: DateTime.utc(2026),
-      updatedAt: DateTime.utc(2026),
+      createdAt: (DateTime.utc(2026).millisecondsSinceEpoch ~/ 1000),
+      updatedAt: (DateTime.utc(2026).millisecondsSinceEpoch ~/ 1000),
       state: ThreadTextItemStateView(
         channel: ThreadTextChannel.finalAnswer,
         text: body,
         attachments: const [],
-        lifecycle: CompletedThreadContentView(DateTime.utc(2026)),
+        lifecycle: CompletedThreadContentView(
+          (DateTime.utc(2026).millisecondsSinceEpoch ~/ 1000),
+        ),
       ),
     ),
     saved: false,
     lifecycle: StudioTimelineLifecycle.terminal,
     omittedBytes: 0,
     details: const [],
-  );
-
-  /// 一条可发送 Thread 的最小 workspace 快照：展示准备与冻结发送只依赖 route 与 thread。
-  ThreadWorkspace workspaceFor(String threadId) => ThreadWorkspace(
-    thread: _thread(threadId),
-    revision: 1,
-    interactions: const [],
-    runtime: const ThreadRuntimeView(
-      modelId: 'alpha',
-      contextTokens: 0,
-      contextWindow: 100,
-      totalTokens: 0,
-      costLabel: '',
-      activeSkills: [],
-      activeMcpServers: [],
-      activeLspServers: [],
-      modelRoute: ThreadModelRouteView(
-        accountId: 'account',
-        modelId: 'alpha',
-        effort: 'medium',
-        revision: 1,
-        available: true,
-      ),
-    ),
   );
 
   /// 显式顺序、保存与终态事实的条目：用于验证权威 `Add` 的收敛与有序插入。
@@ -84,8 +72,8 @@ void main() {
       turnId: 'turn',
       ordinal: ordinal,
       revision: revision,
-      createdAt: DateTime.utc(2026),
-      updatedAt: DateTime.utc(2026),
+      createdAt: (DateTime.utc(2026).millisecondsSinceEpoch ~/ 1000),
+      updatedAt: (DateTime.utc(2026).millisecondsSinceEpoch ~/ 1000),
       bodyOmittedUnits: omitted,
       executionTerminal: terminal,
       saved: saved,
@@ -94,7 +82,9 @@ void main() {
         text: body,
         attachments: const [],
         lifecycle: terminal
-            ? CompletedThreadContentView(DateTime.utc(2026))
+            ? CompletedThreadContentView(
+                (DateTime.utc(2026).millisecondsSinceEpoch ~/ 1000),
+              )
             : const StreamingThreadContentView(),
       ),
     ),
@@ -108,31 +98,24 @@ void main() {
 
   Future<
     ({
-      AnyworkClient client,
-      TimelineSessionOwner owner,
+      TimelineTestEnvironment environment,
+      TimelineCoordinator owner,
       _ScriptedTransport transport,
       _ScriptedConnection connection,
     })
   >
-  open({List<StudioTimelineItem>? items, List<StudioThread>? threads}) async {
+  open({List<StudioTimelineItem>? items}) async {
     final transport = _ScriptedTransport()..baselineItems = items;
-    final client = AnyworkClient(transport: transport, clientId: 'owner');
-    addTearDown(
-      () => client.close(
-        deadline: DateTime.now().add(const Duration(seconds: 5)),
-      ),
-    );
-    client.selection.markOpened();
-    client.threadDirectory.applyBaseline(
-      ThreadDirectoryPage(threads: threads ?? [_thread()], revision: 1),
-      revision: 1,
-    );
-    final owner = TimelineSessionOwner(client: client);
-    client.workspace.selectThread('thread', projectId: 'project');
+    final environment = TimelineTestEnvironment(timeline: transport);
+    addTearDown(environment.close);
+    final owner = TimelineCoordinator(conversations: environment.conversations);
+    addTearDown(owner.close);
+    environment.select('thread');
+    await waitForTimeline(owner, (state) => state?.ready == true);
     final connection = transport.connections.single;
-    await owner.source.waitFor((state) => state?.generation != 0);
+    await _until(() => connection.nextCalls == 1);
     return (
-      client: client,
+      environment: environment,
       owner: owner,
       transport: transport,
       connection: connection,
@@ -143,13 +126,16 @@ void main() {
     'the first baseline becomes exactly one live display generation',
     () async {
       final ready = await open();
-      final view = ready.owner.source.value!;
-      final lease = ready.owner.lease('thread')!;
-      expect(view.mode, TimelineDisplayMode.live);
+      final view = ready.owner.value!;
+      final lease = ready.owner.display('thread')!;
+      expect(view.displayMode, TimelineDisplayMode.live);
       expect(view.generation, lease.generation);
-      expect(view.connection, TimelineConnectionPhase.ready);
+      expect(view.connectionPhase, TimelineConnectionPhase.ready);
       expect(
-        [for (final message in lease.controller.messages) message.id],
+        [
+          for (final message in lease.canvas.chatController.messages)
+            message.id,
+        ],
         ['a', 'b'],
       );
       expect(ready.connection.initialCalls, 1);
@@ -161,23 +147,26 @@ void main() {
     'history freezes the displayed set and only reports new output',
     () async {
       final ready = await open();
-      final lease = ready.owner.lease('thread')!;
-      final frozen = [...lease.controller.messages];
+      final lease = ready.owner.display('thread')!;
+      final frozen = [...lease.canvas.chatController.messages];
       final applied = lease.appliedVersion!;
-      await ready.owner.dispatch('thread', const TimelineEnterHistory());
-      expect(ready.owner.source.value!.mode, TimelineDisplayMode.history);
+      ready.owner.enterHistory('thread');
+      expect(ready.owner.value!.displayMode, TimelineDisplayMode.history);
 
       ready.connection.emit(
         StudioTimelinePatch(
-          subscriptionId: 'sub',
+          subscriptionId: 'sub-1',
           from: applied,
           to: applied + 1,
           changes: const [StudioTimelineRemove('a')],
           priority: StudioTimelinePriority.immediate,
         ),
       );
-      await ready.owner.source.waitFor((state) => state?.hasNewOutput == true);
-      expect(lease.controller.messages, frozen);
+      await waitForTimeline(
+        ready.owner,
+        (state) => state?.hasNewOutput == true,
+      );
+      expect(lease.canvas.chatController.messages, frozen);
       expect(lease.appliedVersion, applied, reason: '冻结水位不随后台输出前进');
     },
   );
@@ -186,44 +175,51 @@ void main() {
     'explicit return to live waits for a fresh baseline before switching',
     () async {
       final ready = await open();
-      final first = ready.owner.lease('thread')!;
-      await ready.owner.dispatch('thread', const TimelineEnterHistory());
+      final first = ready.owner.display('thread')!;
+      ready.owner.enterHistory('thread');
 
       ready.transport.holdNextOpen = true;
-      final switching = ready.owner.returnToLive('thread');
-      await ready.owner.source.waitFor((state) => state!.isPreparingLive);
+      final switching = ready.owner.returnLive('thread');
+      await waitForTimeline(ready.owner, (state) => state!.preparingLive);
       expect(
-        ready.owner.lease('thread'),
+        ready.owner.display('thread'),
         same(first),
         reason: '新首帧成功前旧 History 必须留在屏幕上',
       );
-      expect(ready.owner.source.value!.mode, TimelineDisplayMode.history);
+      expect(ready.owner.value!.displayMode, TimelineDisplayMode.history);
 
       ready.transport.completeOpen(version: 11);
       await switching;
-      final second = ready.owner.lease('thread')!;
+      final second = ready.owner.display('thread')!;
       expect(second, isNot(same(first)));
       expect(second.generation, greaterThan(first.generation));
-      expect(second.chatKey, isNot(first.chatKey));
-      expect(ready.owner.source.value!.mode, TimelineDisplayMode.live);
-      expect(ready.owner.source.value!.isPreparingLive, isFalse);
+      expect(second.canvas.chatKey, isNot(first.canvas.chatKey));
+      expect(ready.owner.value!.displayMode, TimelineDisplayMode.live);
+      expect(ready.owner.value!.preparingLive, isFalse);
+      // 旧代次的释放是异步真实收束（已受理查询退出 → 已启动写入结束 →
+      // controller dispose → operations stream done）。
+      await first.observeRelease(
+        deadline: DateTime.now().add(const Duration(seconds: 3)),
+      );
       expect(first.isReleased, isTrue, reason: '未挂载的旧代次直接释放');
     },
   );
 
   test('send preparation never steals another thread display', () async {
     final ready = await open();
-    final lease = ready.owner.lease('thread')!;
-    await ready.owner.prepareSend('other-thread');
-    expect(ready.owner.lease('thread'), same(lease));
-    expect(ready.owner.source.value!.isPreparingLive, isFalse);
+    final lease = ready.owner.display('thread')!;
+    await ready.owner.prepareSend(
+      ready.environment.conversations.session('other-thread'),
+    );
+    expect(ready.owner.display('thread'), same(lease));
+    expect(ready.owner.value!.preparingLive, isFalse);
     expect(ready.transport.opens, 1);
   });
 
   test('a failing live preparation keeps the frozen display and surfaces the error', () async {
     final ready = await open();
-    final frozenLease = ready.owner.lease('thread')!;
-    await ready.owner.dispatch('thread', const TimelineEnterHistory());
+    final frozenLease = ready.owner.display('thread')!;
+    ready.owner.enterHistory('thread');
     final failure = StudioFailure(
       code: StudioFailureCode.storage,
       message: 'first frame failed',
@@ -232,24 +228,26 @@ void main() {
     );
     // 打开与重试都失败：连接最终进入 failed，准备必须以同一 typed 错误收束。
     ready.transport.failOpens = failure;
-    final preparing = ready.owner.prepareSend('thread');
+    final preparing = ready.owner.prepareSend(
+      ready.environment.conversations.session('thread'),
+    );
     await expectLater(preparing, throwsA(same(failure)));
     ready.transport.failOpens = null;
-    expect(ready.owner.lease('thread'), same(frozenLease));
-    expect(ready.owner.source.value!.mode, TimelineDisplayMode.history);
-    expect(ready.owner.source.value!.isPreparingLive, isFalse);
-    expect(ready.owner.source.value!.connectionError, isNotNull);
+    expect(ready.owner.display('thread'), same(frozenLease));
+    expect(ready.owner.value!.displayMode, TimelineDisplayMode.history);
+    expect(ready.owner.value!.preparingLive, isFalse);
+    expect(ready.owner.value!.connectionError, isNotNull);
     ready.transport.holdNextOpen = true;
-    final recovering = ready.owner.returnToLive('thread');
+    final recovering = ready.owner.returnLive('thread');
     expect(
-      ready.owner.source.value!.connectionError,
+      ready.owner.value!.connectionError,
       isNull,
       reason: '新的 opening 不保留旧错误',
     );
     ready.transport.completeOpen(version: 7);
     await recovering;
-    expect(ready.owner.source.value!.connection, TimelineConnectionPhase.ready);
-    expect(ready.owner.source.value!.connectionError, isNull);
+    expect(ready.owner.value!.connectionPhase, TimelineConnectionPhase.ready);
+    expect(ready.owner.value!.connectionError, isNull);
   });
 
   test('同 revision 的预览补齐经生产 owner/applier 生效且不换代次', () async {
@@ -259,8 +257,8 @@ void main() {
       turnId: 'turn',
       ordinal: 3,
       revision: 3,
-      createdAt: DateTime.utc(2026),
-      updatedAt: DateTime.utc(2026),
+      createdAt: (DateTime.utc(2026).millisecondsSinceEpoch ~/ 1000),
+      updatedAt: (DateTime.utc(2026).millisecondsSinceEpoch ~/ 1000),
       bodyOmittedUnits: 4,
       saved: false,
       state: ThreadTextItemStateView(
@@ -288,7 +286,7 @@ void main() {
         ),
       ],
     );
-    final lease = ready.owner.lease('thread')!;
+    final lease = ready.owner.display('thread')!;
     final generation = lease.generation;
     final applied = lease.appliedVersion!;
     final subscription = 'sub-${ready.connection.baselineVersion}';
@@ -308,8 +306,9 @@ void main() {
         ),
       ],
     );
-    final manual = timelinePayloadOf(lease.controller.messages.single)!
-        .applyUpdate(change);
+    final manual = timelinePayloadOf(
+      lease.canvas.chatController.messages.single,
+    )!.applyUpdate(change);
     expect(
       manual == null
           ? null
@@ -326,15 +325,35 @@ void main() {
         priority: StudioTimelinePriority.immediate,
       ),
     );
-    final attempt = ready.client.session('thread').timeline.currentAttemptId;
+    final attempt = ready.environment.conversations
+        .session('thread')
+        .timeline
+        .state
+        .value
+        .attemptId;
     await _until(() => lease.appliedVersion == applied + 1);
     // 连接没有重连：同一 attempt、仍处于 ready、未请求关闭。
     expect(
-      ready.client.session('thread').timeline.state.value,
-      isA<ChatReady<StudioTimelineFrame>>(),
+      ready.environment.conversations
+          .session('thread')
+          .timeline
+          .state
+          .value
+          .phase,
+      TimelineConnectionPhase.ready,
     );
-    expect(ready.client.session('thread').timeline.currentAttemptId, attempt);
-    final payload = timelinePayloadOf(lease.controller.messages.single)!;
+    expect(
+      ready.environment.conversations
+          .session('thread')
+          .timeline
+          .state
+          .value
+          .attemptId,
+      attempt,
+    );
+    final payload = timelinePayloadOf(
+      lease.canvas.chatController.messages.single,
+    )!;
     expect((payload.item.state as ThreadTextItemStateView).text, 'abcdefgh');
     expect(payload.item.bodyOmittedUnits, 0);
     expect(payload.id, 'preview');
@@ -345,7 +364,7 @@ void main() {
       reason: '详情引用随该字段本帧提交更新',
     );
     expect(lease.generation, generation, reason: '不重连、不换代次');
-    expect(ready.owner.lease('thread'), same(lease));
+    expect(ready.owner.display('thread'), same(lease));
     expect(ready.connection.closeCalls, 0);
   });
 
@@ -356,15 +375,17 @@ void main() {
       turnId: 'turn-a',
       ordinal: 4,
       revision: 5,
-      createdAt: DateTime.utc(2026),
-      updatedAt: DateTime.utc(2026),
+      createdAt: (DateTime.utc(2026).millisecondsSinceEpoch ~/ 1000),
+      updatedAt: (DateTime.utc(2026).millisecondsSinceEpoch ~/ 1000),
       executionTerminal: true,
       saved: true,
       state: ThreadTextItemStateView(
         channel: ThreadTextChannel.finalAnswer,
         text: 'abc',
         attachments: const [],
-        lifecycle: CompletedThreadContentView(DateTime.utc(2026)),
+        lifecycle: CompletedThreadContentView(
+          (DateTime.utc(2026).millisecondsSinceEpoch ~/ 1000),
+        ),
       ),
     );
     final ready = await open(
@@ -378,7 +399,7 @@ void main() {
         ),
       ],
     );
-    final lease = ready.owner.lease('thread')!;
+    final lease = ready.owner.display('thread')!;
     final applied = lease.appliedVersion!;
     final subscription = 'sub-${ready.connection.baselineVersion}';
 
@@ -410,7 +431,9 @@ void main() {
       ),
     );
     await _until(() => lease.appliedVersion == applied + 1);
-    final updated = timelinePayloadOf(lease.controller.messages.single)!;
+    final updated = timelinePayloadOf(
+      lease.canvas.chatController.messages.single,
+    )!;
     expect((updated.item.state as ThreadTextItemStateView).text, 'abcdef');
     expect(updated.item.revision, 6);
     expect(updated.terminal, isTrue);
@@ -422,7 +445,7 @@ void main() {
         subscriptionId: subscription,
         from: applied + 1,
         to: applied + 2,
-        changes: const [
+        changes: [
           StudioTimelineUpdateItem(
             itemId: 'done',
             expectedRevision: 6,
@@ -437,7 +460,9 @@ void main() {
       ),
     );
     await _until(() => lease.appliedVersion == applied + 2);
-    final saved = timelinePayloadOf(lease.controller.messages.single)!;
+    final saved = timelinePayloadOf(
+      lease.canvas.chatController.messages.single,
+    )!;
     expect(saved.saved, isTrue);
     expect(saved.item.revision, 6);
   });
@@ -449,15 +474,17 @@ void main() {
       turnId: 'turn',
       ordinal: 4,
       revision: 5,
-      createdAt: DateTime.utc(2026),
-      updatedAt: DateTime.utc(2026),
+      createdAt: (DateTime.utc(2026).millisecondsSinceEpoch ~/ 1000),
+      updatedAt: (DateTime.utc(2026).millisecondsSinceEpoch ~/ 1000),
       executionTerminal: true,
       saved: true,
       state: ThreadTextItemStateView(
         channel: ThreadTextChannel.finalAnswer,
         text: 'abc',
         attachments: const [],
-        lifecycle: CompletedThreadContentView(DateTime.utc(2026)),
+        lifecycle: CompletedThreadContentView(
+          (DateTime.utc(2026).millisecondsSinceEpoch ~/ 1000),
+        ),
       ),
     );
     final ready = await open(
@@ -471,14 +498,14 @@ void main() {
         ),
       ],
     );
-    final lease = ready.owner.lease('thread')!;
+    final lease = ready.owner.display('thread')!;
     final applied = lease.appliedVersion!;
     ready.connection.emit(
       StudioTimelinePatch(
         subscriptionId: 'sub-${ready.connection.baselineVersion}',
         from: applied,
         to: applied + 1,
-        changes: const [
+        changes: [
           StudioTimelineUpdateItem(
             itemId: 'done',
             expectedRevision: 5,
@@ -495,9 +522,11 @@ void main() {
     );
     // owner 无法应用该身份 → 显式刷新内容连接（新 attempt），不把错误当成功。
     await _until(() => ready.transport.opens > 1);
-    final current = ready.owner.lease('thread')!;
+    final current = ready.owner.display('thread')!;
     expect(current, isNot(same(lease)));
-    final shown = timelinePayloadOf(current.controller.messages.single)!;
+    final shown = timelinePayloadOf(
+      current.canvas.chatController.messages.single,
+    )!;
     expect(shown.terminal, isTrue, reason: '非法帧不改变已展示的终态事实');
     expect(shown.id, 'done');
     expect(lease.appliedVersion, applied, reason: '非法帧不推进展示水位');
@@ -507,22 +536,22 @@ void main() {
     'paging shares one future, prepends older messages and keeps them distinct',
     () async {
       final ready = await open();
-      final lease = ready.owner.lease('thread')!;
+      final lease = ready.owner.display('thread')!;
       final watermark = lease.appliedVersion!;
       final page = Completer<StudioTimelinePage>();
       ready.connection.pageResult = page;
       final loading = ready.owner.loadOlder(
         'thread',
-        generation: ready.owner.lease('thread')!.generation,
+        ready.owner.display('thread')!.generation,
       );
       expect(
         ready.owner.loadOlder(
           'thread',
-          generation: ready.owner.lease('thread')!.generation,
+          ready.owner.display('thread')!.generation,
         ),
         same(loading),
       );
-      expect(ready.owner.source.value!.isLoadingOlder, isTrue);
+      expect(ready.owner.value!.olderLoading, isTrue);
       page.complete(
         StudioTimelinePage(
           // 页游标之前的真实边界：ordinal 严格早于已覆盖范围的下界。
@@ -534,42 +563,41 @@ void main() {
       await loading;
       // 重叠身份 'a' 不重复插入；分页不抬高内容水位。
       expect(
-        [for (final message in lease.controller.messages) message.id],
+        [
+          for (final message in lease.canvas.chatController.messages)
+            message.id,
+        ],
         ['older', 'a', 'b'],
       );
-      expect(ready.owner.source.value!.olderCursor, 'tlp1.older');
-      expect(ready.owner.source.value!.hasOlder, isTrue);
+      expect(ready.owner.value!.olderCursor, 'tlp1.older');
+      expect(ready.owner.value!.hasOlder, isTrue);
       expect(lease.appliedVersion, watermark, reason: '分页不抬高冻结展示的内容水位');
       ready.connection.pageResult = Completer<StudioTimelinePage>()
         ..complete(
-          const StudioTimelinePage(items: [], before: null, hasOlder: false),
+          StudioTimelinePage(items: [], before: null, hasOlder: false),
         );
       await ready.owner.loadOlder(
         'thread',
-        generation: ready.owner.lease('thread')!.generation,
+        ready.owner.display('thread')!.generation,
       );
-      expect(ready.owner.source.value!.hasOlder, isFalse);
-      expect(
-        ready.owner.source.value!.olderCursor,
-        isNull,
-        reason: 'EOF 的空游标是权威值',
-      );
+      expect(ready.owner.value!.hasOlder, isFalse);
+      expect(ready.owner.value!.olderCursor, isNull, reason: 'EOF 的空游标是权威值');
     },
   );
 
   test('无进展页停止分页并保留内容，显式重试可继续', () async {
     final ready = await open();
-    final before = ready.owner.source.value!.olderCursor;
+    final before = ready.owner.value!.olderCursor;
     ready.connection.pageResult = Completer<StudioTimelinePage>()
       ..complete(
         StudioTimelinePage(items: const [], before: before, hasOlder: true),
       );
     await ready.owner.loadOlder(
       'thread',
-      generation: ready.owner.lease('thread')!.generation,
+      ready.owner.display('thread')!.generation,
     );
-    final state = ready.owner.source.value!;
-    expect(state.isLoadingOlder, isFalse);
+    final state = ready.owner.value!;
+    expect(state.olderLoading, isFalse);
     expect(
       state.olderError,
       isA<StudioFailure>().having(
@@ -578,55 +606,57 @@ void main() {
         StudioFailureCode.protocol,
       ),
     );
-    expect(ready.owner.lease('thread')!.loadedCount, 2);
+    expect(itemCount(ready.owner.display('thread')!), 2);
     ready.connection.pageResult = Completer<StudioTimelinePage>()
-      ..complete(
-        const StudioTimelinePage(items: [], before: null, hasOlder: false),
-      );
-    await ready.owner.retryOlder(
+      ..complete(StudioTimelinePage(items: [], before: null, hasOlder: false));
+    await ready.owner.loadOlder(
       'thread',
-      generation: ready.owner.lease('thread')!.generation,
+      ready.owner.display('thread')!.generation,
+      retry: true,
     );
-    expect(ready.owner.source.value!.olderError, isNull);
-    expect(ready.owner.source.value!.hasOlder, isFalse);
+    expect(ready.owner.value!.olderError, isNull);
+    expect(ready.owner.value!.hasOlder, isFalse);
   });
 
   test('连接尚未恢复时重试分页保留原错误，恢复后才受理', () async {
     final ready = await open();
-    final lease = ready.owner.lease('thread')!;
+    final lease = ready.owner.display('thread')!;
     final error = StateError('page failed');
-    ready.connection.pageResult = Completer<StudioTimelinePage>()
-      ..completeError(error);
-    await ready.owner.loadOlder('thread', generation: lease.generation);
-    expect(ready.owner.source.value!.olderError, same(error));
-    await ready.owner.dispatch('thread', const TimelineEnterHistory());
+    final page = Completer<StudioTimelinePage>();
+    ready.connection.pageResult = page;
+    final loading = ready.owner.loadOlder('thread', lease.generation);
+    // 分页读取已经在途才失败：错误必须在监听建立后交付，否则测试自身先制造
+    // 一个无人拥有的失败 future，本轮真正要验证的“原错误身份”反而被掩盖。
+    await _until(() => ready.owner.value!.olderLoading);
+    page.completeError(error);
+    await loading;
+    expect(ready.owner.value!.olderError, same(error));
+    ready.owner.enterHistory('thread');
     ready.transport.holdNextOpen = true;
-    ready.client.session('thread').timeline.refresh();
+    ready.environment.conversations.session('thread').timeline.refresh();
     await _until(
-      () =>
-          ready.owner.source.value!.connection != TimelineConnectionPhase.ready,
+      () => ready.owner.value!.connectionPhase != TimelineConnectionPhase.ready,
     );
-    await ready.owner.retryOlder('thread', generation: lease.generation);
-    expect(ready.owner.source.value!.olderError, same(error));
-    expect(ready.owner.source.value!.isLoadingOlder, isFalse);
+    await ready.owner.loadOlder('thread', lease.generation, retry: true);
+    expect(ready.owner.value!.olderError, same(error));
+    expect(ready.owner.value!.olderLoading, isFalse);
     ready.transport.completeOpen(version: 23);
     await _until(
-      () =>
-          ready.owner.source.value!.connection == TimelineConnectionPhase.ready,
+      () => ready.owner.value!.connectionPhase == TimelineConnectionPhase.ready,
     );
     ready.transport.connections.last.pageResult =
         Completer<StudioTimelinePage>()..complete(
-          const StudioTimelinePage(items: [], before: null, hasOlder: false),
+          StudioTimelinePage(items: [], before: null, hasOlder: false),
         );
-    await ready.owner.retryOlder('thread', generation: lease.generation);
-    expect(ready.owner.source.value!.olderError, isNull);
-    expect(ready.owner.source.value!.hasOlder, isFalse);
+    await ready.owner.loadOlder('thread', lease.generation, retry: true);
+    expect(ready.owner.value!.olderError, isNull);
+    expect(ready.owner.value!.hasOlder, isFalse);
   });
 
   test('History 页无法连接冻结范围时保留内容并显示可重试错误', () async {
     final ready = await open();
-    final lease = ready.owner.lease('thread')!;
-    await ready.owner.dispatch('thread', const TimelineEnterHistory());
+    final lease = ready.owner.display('thread')!;
+    ready.owner.enterHistory('thread');
     ready.transport.holdNextOpen = true;
     ready.connection.pageResult = Completer<StudioTimelinePage>()
       ..complete(
@@ -636,84 +666,89 @@ void main() {
           hasOlder: true,
         ),
       );
-    await ready.owner.loadOlder('thread', generation: lease.generation);
-    expect(ready.owner.source.value!.olderError, isA<StudioFailure>());
-    expect(ready.owner.source.value!.isLoadingOlder, isFalse);
-    expect(ready.owner.lease('thread'), same(lease));
-    expect(lease.loadedCount, 2);
+    await ready.owner.loadOlder('thread', lease.generation);
+    expect(ready.owner.value!.olderError, isA<StudioFailure>());
+    expect(ready.owner.value!.olderLoading, isFalse);
+    expect(ready.owner.display('thread'), same(lease));
+    expect(itemCount(lease), 2);
     ready.transport.completeOpen(version: 25);
     await _until(
-      () =>
-          ready.owner.source.value!.connection == TimelineConnectionPhase.ready,
+      () => ready.owner.value!.connectionPhase == TimelineConnectionPhase.ready,
     );
-    expect(ready.owner.source.value!.olderError, isA<StudioFailure>());
+    expect(ready.owner.value!.olderError, isA<StudioFailure>());
   });
 
   test('登记观察时消费已经就绪的当前基线', () async {
     final ready = await open();
-    final secondOwner = TimelineSessionOwner(client: ready.client);
+    // v3：同 channel 只有一个 active consumer；新展示 owner 登记前先真实关闭
+    // 原 owner（解绑 consumer 并释放旧代次）。channel 对重 attach 且已有 demand
+    // 强制新 attempt/baseline，新 owner 从该真实首帧建立完整展示。
+    await ready.owner.close();
+    final secondOwner = TimelineCoordinator(
+      conversations: ready.environment.conversations,
+    );
     addTearDown(secondOwner.close);
-    expect(secondOwner.lease('thread'), isNotNull);
-    expect(secondOwner.source.value!.generation, greaterThan(0));
-    expect(secondOwner.lease('thread')!.loadedCount, 2);
+    await waitForTimeline(secondOwner, (state) => state?.generation != 0);
+    expect(secondOwner.display('thread'), isNotNull);
+    expect(secondOwner.value!.generation, greaterThan(0));
+    expect(itemCount(secondOwner.display('thread')!), 2);
   });
 
   test('Session 准入失败后重试创建资源，展示重新绑定当前基线', () async {
     final budget = ResourceBudget(
       capacities: {...ResourceBudget().capacities, ResourceKind.readModel: 8},
     );
-    final held = [
-      for (var i = 0; i < 8; i++)
-        budget.acquire(ResourceKind.readModel, owner: 'held-read-model-$i'),
-    ];
     final transport = _ScriptedTransport();
-    final client = AnyworkClient(
-      transport: transport,
-      clientId: 'retry-owner',
+    final environment = TimelineTestEnvironment(
+      timeline: transport,
       budget: budget,
     );
-    final owner = TimelineSessionOwner(client: client);
+    final owner = TimelineCoordinator(conversations: environment.conversations);
+    final held = [
+      for (var i = 0; i < 7; i++)
+        budget.acquire(ResourceKind.readModel, owner: 'held-read-model-$i'),
+    ];
     addTearDown(() async {
       for (final permit in held) {
         permit.release();
       }
       await owner.close();
-      await client.close();
+      await environment.close();
     });
-    client.threadDirectory.applyBaseline(
-      ThreadDirectoryPage(threads: [_thread()], revision: 1),
-      revision: 1,
-    );
-    client.workspace.selectThread('thread', projectId: 'project');
-    expect(owner.lease('thread'), isNull);
-    expect(owner.source.value!.connection, TimelineConnectionPhase.failed);
-    expect(owner.source.value!.connectionError, isNotNull);
+    environment.select('thread');
+    expect(owner.display('thread'), isNull);
+    // No Session exists yet: the repository is the sole activation-failure
+    // publisher, not an invented failed Timeline value for a missing Session.
+    final failure = environment.conversations.activationFailure.value!;
+    expect(failure.threadId, 'thread');
+    expect(failure.error.code, StudioFailureCode.overloaded);
     for (final permit in held) {
       permit.release();
     }
-    client.retrySession('thread');
-    await _until(() => transport.connections.isNotEmpty);
-    await transport.connections.single.opened.future;
-    await client.existingSession('thread')!.timeline.ready;
-    expect(owner.lease('thread'), isNotNull);
-    expect(owner.lease('thread')!.loadedCount, 2);
+    environment.conversations.retryActivation(
+      threadId: failure.threadId,
+      selectionGeneration: failure.selectionGeneration,
+    );
+    await waitForTimeline(owner, (state) => state?.ready == true);
+    expect(owner.display('thread'), isNotNull);
+    expect(itemCount(owner.display('thread')!), 2);
   });
 
   test('a page reply for a retired generation is dropped', () async {
     final ready = await open();
-    final first = ready.owner.lease('thread')!;
+    final first = ready.owner.display('thread')!;
     final page = Completer<StudioTimelinePage>();
     ready.connection.pageResult = page;
     final loading = ready.owner.loadOlder(
       'thread',
-      generation: ready.owner.lease('thread')!.generation,
+      ready.owner.display('thread')!.generation,
     );
-    expect(ready.owner.source.value!.isLoadingOlder, isTrue);
+    expect(ready.owner.value!.olderLoading, isTrue);
 
     // 显式回实时建立新代次：旧代次的页回包不得写新展示。
     ready.transport.holdNextOpen = true;
-    final switching = ready.owner.returnToLive('thread');
-    await ready.owner.source.waitFor((state) => state!.isPreparingLive);
+    final switching = ready.owner.returnLive('thread');
+    await waitForTimeline(ready.owner, (state) => state!.preparingLive);
     page.complete(
       StudioTimelinePage(
         items: [text('stale', 1)],
@@ -724,18 +759,20 @@ void main() {
     await loading;
     ready.transport.completeOpen(version: 21);
     await switching;
-    final second = ready.owner.lease('thread')!;
+    final second = ready.owner.display('thread')!;
     expect(second, isNot(same(first)));
     expect(
-      [for (final message in second.controller.messages) message.id],
+      [for (final message in second.canvas.chatController.messages) message.id],
       ['a', 'b'],
       reason: '旧代次的页结果不能前插到新代次',
     );
-    await ready.owner.loadOlder('thread', generation: first.generation);
-    await ready.owner.retryOlder('thread', generation: first.generation);
-    expect(ready.owner.source.value!.isLoadingOlder, isFalse);
-    expect(second.loadedCount, 2, reason: '旧视图的触发也不得向新代次发页');
-    await first.released;
+    await ready.owner.loadOlder('thread', first.generation);
+    await ready.owner.loadOlder('thread', first.generation, retry: true);
+    expect(ready.owner.value!.olderLoading, isFalse);
+    expect(itemCount(second), 2, reason: '旧视图的触发也不得向新代次发页');
+    await first.observeRelease(
+      deadline: DateTime.now().add(const Duration(seconds: 3)),
+    );
     expect(first.isReleased, isTrue);
   });
 
@@ -743,12 +780,12 @@ void main() {
     'page failures keep content, close loading and expose a retry',
     () async {
       final ready = await open();
-      final lease = ready.owner.lease('thread')!;
+      final lease = ready.owner.display('thread')!;
       final page = Completer<StudioTimelinePage>();
       ready.connection.pageResult = page;
       final loading = ready.owner.loadOlder(
         'thread',
-        generation: ready.owner.lease('thread')!.generation,
+        ready.owner.display('thread')!.generation,
       );
       page.completeError(
         const StudioFailure(
@@ -759,33 +796,34 @@ void main() {
         ),
       );
       await loading;
-      expect(ready.owner.source.value!.isLoadingOlder, isFalse);
-      expect(ready.owner.source.value!.olderError, isA<StudioFailure>());
-      expect(lease.controller.messages, isNotEmpty);
+      expect(ready.owner.value!.olderLoading, isFalse);
+      expect(ready.owner.value!.olderError, isA<StudioFailure>());
+      expect(lease.canvas.chatController.messages, isNotEmpty);
 
       final retried = Completer<StudioTimelinePage>();
       ready.connection.pageResult = retried;
-      final retrying = ready.owner.retryOlder(
+      final retrying = ready.owner.loadOlder(
         'thread',
-        generation: ready.owner.lease('thread')!.generation,
+        ready.owner.display('thread')!.generation,
+        retry: true,
       );
-      expect(ready.owner.source.value!.olderError, isNull);
+      expect(ready.owner.value!.olderError, isNull);
       retried.complete(
-        const StudioTimelinePage(items: [], before: null, hasOlder: false),
+        StudioTimelinePage(items: [], before: null, hasOlder: false),
       );
       await retrying;
-      expect(ready.owner.source.value!.hasOlder, isFalse);
+      expect(ready.owner.value!.hasOlder, isFalse);
     },
   );
 
   test('已加载身份收到更高 revision 的权威 Add 时原位收敛而不重插', () async {
     final ready = await open();
-    final lease = ready.owner.lease('thread')!;
-    final loaded = lease.controller.messages.firstWhere(
+    final lease = ready.owner.display('thread')!;
+    final loaded = lease.canvas.chatController.messages.firstWhere(
       (message) => message.id == 'a',
     );
     final operations = <ChatOperation>[];
-    final subscription = lease.controller.operationsStream.listen(
+    final subscription = lease.canvas.chatController.operationsStream.listen(
       operations.add,
     );
     addTearDown(subscription.cancel);
@@ -814,11 +852,13 @@ void main() {
     );
     await _until(() => lease.appliedVersion == applied + 1);
     expect(
-      [for (final message in lease.controller.messages) message.id],
+      [for (final message in lease.canvas.chatController.messages) message.id],
       ['a', 'b'],
       reason: '稳定身份与位置：不 remove/reinsert、不追加成最新消息',
     );
-    final payload = timelinePayloadOf(lease.controller.messages.first)!;
+    final payload = timelinePayloadOf(
+      lease.canvas.chatController.messages.first,
+    )!;
     expect((payload.item.state as ThreadTextItemStateView).text, 'body-a 已补齐');
     expect(payload.revision, 7);
     expect(payload.saved, isTrue, reason: '更高 revision 采纳它自己的保存事实');
@@ -864,11 +904,13 @@ void main() {
       ),
     );
     await _until(() => lease.appliedVersion == applied + 1);
-    final revised = timelinePayloadOf(lease.controller.messages.first)!;
+    final revised = timelinePayloadOf(
+      lease.canvas.chatController.messages.first,
+    )!;
     expect(revised.revision, 8);
     expect(revised.saved, isFalse, reason: '旧 saved 水位不补到新 revision');
     expect(ready.connection.closeCalls, 0, reason: '不重连、不换代次');
-    expect(ready.owner.lease('thread'), same(lease));
+    expect(ready.owner.display('thread'), same(lease));
   });
 
   test('更旧 revision 的权威 Add 不覆盖已加载事实', () {
@@ -916,7 +958,7 @@ void main() {
         ),
       ],
     );
-    final lease = ready.owner.lease('thread')!;
+    final lease = ready.owner.display('thread')!;
     final applied = lease.appliedVersion!;
     ready.connection.emit(
       StudioTimelinePatch(
@@ -947,7 +989,9 @@ void main() {
       ),
     );
     await _until(() => lease.appliedVersion == applied + 1);
-    final payload = timelinePayloadOf(lease.controller.messages.single)!;
+    final payload = timelinePayloadOf(
+      lease.canvas.chatController.messages.single,
+    )!;
     expect((payload.item.state as ThreadTextItemStateView).text, 'abcdefgh');
     expect(payload.item.bodyOmittedUnits, 0);
     expect(payload.saved, isTrue);
@@ -959,7 +1003,7 @@ void main() {
 
   test('同 revision 的权威 Add 无法证明兼容时显式重同步', () async {
     final ready = await open();
-    final lease = ready.owner.lease('thread')!;
+    final lease = ready.owner.display('thread')!;
     final applied = lease.appliedVersion!;
     ready.connection.emit(
       StudioTimelinePatch(
@@ -975,10 +1019,13 @@ void main() {
       ),
     );
     await _until(() => ready.transport.opens == 2);
-    final replacement = ready.owner.lease('thread')!;
+    final replacement = ready.owner.display('thread')!;
     expect(replacement, isNot(same(lease)));
     expect(
-      [for (final message in replacement.controller.messages) message.id],
+      [
+        for (final message in replacement.canvas.chatController.messages)
+          message.id,
+      ],
       ['a', 'b'],
       reason: '重同步建立新基线，旧代次内容不拼进新代次',
     );
@@ -991,10 +1038,10 @@ void main() {
         item(id: 'c', revision: 3, ordinal: 3, body: 'body-c'),
       ],
     );
-    final lease = ready.owner.lease('thread')!;
+    final lease = ready.owner.display('thread')!;
     final applied = lease.appliedVersion!;
     final operations = <ChatOperation>[];
-    final subscription = lease.controller.operationsStream.listen(
+    final subscription = lease.canvas.chatController.operationsStream.listen(
       operations.add,
     );
     addTearDown(subscription.cancel);
@@ -1013,7 +1060,7 @@ void main() {
     );
     await _until(() => lease.appliedVersion == applied + 1);
     expect(
-      [for (final message in lease.controller.messages) message.id],
+      [for (final message in lease.canvas.chatController.messages) message.id],
       ['a', 'b', 'c'],
       reason: '不把已覆盖范围内的新身份追加成最新消息',
     );
@@ -1026,7 +1073,7 @@ void main() {
 
   test('更早且未覆盖的新身份不插入也不反复重同步', () async {
     final ready = await open();
-    final lease = ready.owner.lease('thread')!;
+    final lease = ready.owner.display('thread')!;
     var applied = lease.appliedVersion!;
     ready.connection.emit(
       StudioTimelinePatch(
@@ -1065,12 +1112,12 @@ void main() {
     );
     await _until(() => lease.appliedVersion == applied + 1);
     expect(
-      [for (final message in lease.controller.messages) message.id],
+      [for (final message in lease.canvas.chatController.messages) message.id],
       ['a', 'b'],
       reason: '分页前缀的更早身份不在尾部提前插入',
     );
     expect(ready.transport.opens, 1, reason: '有意忽略的更早身份不得反复重建代次');
-    expect(ready.owner.lease('thread'), same(lease));
+    expect(ready.owner.display('thread'), same(lease));
 
     // 后续页读取当时的权威值。
     applied = lease.appliedVersion!;
@@ -1078,7 +1125,7 @@ void main() {
     ready.connection.pageResult = page;
     final loading = ready.owner.loadOlder(
       'thread',
-      generation: ready.owner.lease('thread')!.generation,
+      ready.owner.display('thread')!.generation,
     );
     page.complete(
       StudioTimelinePage(
@@ -1089,10 +1136,12 @@ void main() {
     );
     await loading;
     expect(
-      [for (final message in lease.controller.messages) message.id],
+      [for (final message in lease.canvas.chatController.messages) message.id],
       ['older', 'a', 'b'],
     );
-    final payload = timelinePayloadOf(lease.controller.messages.first)!;
+    final payload = timelinePayloadOf(
+      lease.canvas.chatController.messages.first,
+    )!;
     expect(payload.revision, 5);
     expect((payload.item.state as ThreadTextItemStateView).text, '后续页的权威正文');
     expect(lease.appliedVersion, applied, reason: '分页不抬高内容水位');
@@ -1100,7 +1149,7 @@ void main() {
 
   test('真实删除最早行后覆盖边界仍在，更早身份仍不插入', () async {
     final ready = await open();
-    final lease = ready.owner.lease('thread')!;
+    final lease = ready.owner.display('thread')!;
     final applied = lease.appliedVersion!;
     ready.connection.emit(
       StudioTimelinePatch(
@@ -1112,7 +1161,7 @@ void main() {
       ),
     );
     await _until(() => lease.appliedVersion == applied + 1);
-    expect(lease.controller.messages, isEmpty);
+    expect(lease.canvas.chatController.messages, isEmpty);
 
     final watermark = lease.appliedVersion!;
     ready.connection.emit(
@@ -1129,14 +1178,18 @@ void main() {
       ),
     );
     await _until(() => lease.appliedVersion == watermark + 1);
-    expect(lease.controller.messages, isEmpty, reason: '删除行不抹掉已覆盖范围的下界');
+    expect(
+      lease.canvas.chatController.messages,
+      isEmpty,
+      reason: '删除行不抹掉已覆盖范围的下界',
+    );
     expect(ready.transport.opens, 1);
 
     final page = Completer<StudioTimelinePage>();
     ready.connection.pageResult = page;
     final loading = ready.owner.loadOlder(
       'thread',
-      generation: ready.owner.lease('thread')!.generation,
+      ready.owner.display('thread')!.generation,
     );
     page.complete(
       StudioTimelinePage(
@@ -1149,26 +1202,29 @@ void main() {
     );
     await loading;
     expect(
-      [for (final message in lease.controller.messages) message.id],
+      [for (final message in lease.canvas.chatController.messages) message.id],
       ['deleted-floor'],
     );
-    expect(timelinePayloadOf(lease.controller.messages.single)!.revision, 6);
+    expect(
+      timelinePayloadOf(lease.canvas.chatController.messages.single)!.revision,
+      6,
+    );
   });
 
   test('新代次从自身空闲分页状态开始，旧页回包不能污染新代次', () async {
     final ready = await open();
-    final first = ready.owner.lease('thread')!;
+    final first = ready.owner.display('thread')!;
     final page = Completer<StudioTimelinePage>();
     ready.connection.pageResult = page;
     final loading = ready.owner.loadOlder(
       'thread',
-      generation: ready.owner.lease('thread')!.generation,
+      ready.owner.display('thread')!.generation,
     );
-    expect(ready.owner.source.value!.isLoadingOlder, isTrue);
+    expect(ready.owner.value!.olderLoading, isTrue);
 
     ready.transport.holdNextOpen = true;
-    final switching = ready.owner.returnToLive('thread');
-    await ready.owner.source.waitFor((state) => state!.isPreparingLive);
+    final switching = ready.owner.returnLive('thread');
+    await waitForTimeline(ready.owner, (state) => state!.preparingLive);
     page.complete(
       StudioTimelinePage(
         items: [text('stale', 1)],
@@ -1180,10 +1236,10 @@ void main() {
     ready.transport.completeOpen(version: 21);
     await switching;
 
-    final view = ready.owner.source.value!;
-    expect(view.isLoadingOlder, isFalse, reason: '新代次不得继承旧代次的 loading');
+    final view = ready.owner.value!;
+    expect(view.olderLoading, isFalse, reason: '新代次不得继承旧代次的 loading');
     expect(view.olderError, isNull);
-    final second = ready.owner.lease('thread')!;
+    final second = ready.owner.display('thread')!;
     expect(second, isNot(same(first)));
 
     // 新代次可以继续分页，并且不被旧代次的迟到回包影响。
@@ -1192,9 +1248,9 @@ void main() {
     secondConnection.pageResult = nextPage;
     final loadingSecond = ready.owner.loadOlder(
       'thread',
-      generation: ready.owner.lease('thread')!.generation,
+      ready.owner.display('thread')!.generation,
     );
-    expect(ready.owner.source.value!.isLoadingOlder, isTrue);
+    expect(ready.owner.value!.olderLoading, isTrue);
     nextPage.complete(
       StudioTimelinePage(
         items: [item(id: 'older', revision: 1, ordinal: 0, body: 'body-older')],
@@ -1203,24 +1259,24 @@ void main() {
       ),
     );
     await loadingSecond;
-    expect(ready.owner.source.value!.isLoadingOlder, isFalse);
-    expect(ready.owner.source.value!.olderCursor, 'tlp1.older');
+    expect(ready.owner.value!.olderLoading, isFalse);
+    expect(ready.owner.value!.olderCursor, 'tlp1.older');
     expect(
-      [for (final message in second.controller.messages) message.id],
+      [for (final message in second.canvas.chatController.messages) message.id],
       ['older', 'a', 'b'],
     );
   });
 
   test('同连接重同步基线在 Live 也建立新代次并归零分页状态', () async {
     final ready = await open();
-    final first = ready.owner.lease('thread')!;
+    final first = ready.owner.display('thread')!;
     final page = Completer<StudioTimelinePage>();
     ready.connection.pageResult = page;
     final loading = ready.owner.loadOlder(
       'thread',
-      generation: ready.owner.lease('thread')!.generation,
+      ready.owner.display('thread')!.generation,
     );
-    expect(ready.owner.source.value!.isLoadingOlder, isTrue);
+    expect(ready.owner.value!.olderLoading, isTrue);
 
     ready.connection.emit(
       StudioTimelineResync(
@@ -1238,7 +1294,7 @@ void main() {
         ),
       ),
     );
-    await _until(() => ready.owner.lease('thread') != first);
+    await _until(() => ready.owner.display('thread') != first);
     page.complete(
       StudioTimelinePage(
         items: [text('stale', 1)],
@@ -1247,10 +1303,10 @@ void main() {
       ),
     );
     await loading;
-    final view = ready.owner.source.value!;
-    expect(view.isLoadingOlder, isFalse);
+    final view = ready.owner.value!;
+    expect(view.olderLoading, isFalse);
     expect(view.olderError, isNull);
-    final second = ready.owner.lease('thread')!;
+    final second = ready.owner.display('thread')!;
     expect(second.appliedVersion, 30);
     expect(view.olderCursor, 'tlp1.resync');
 
@@ -1258,7 +1314,7 @@ void main() {
     ready.connection.pageResult = nextPage;
     final loadingSecond = ready.owner.loadOlder(
       'thread',
-      generation: ready.owner.lease('thread')!.generation,
+      ready.owner.display('thread')!.generation,
     );
     nextPage.complete(
       StudioTimelinePage(
@@ -1269,7 +1325,7 @@ void main() {
     );
     await loadingSecond;
     expect(
-      [for (final message in second.controller.messages) message.id],
+      [for (final message in second.canvas.chatController.messages) message.id],
       ['resync-older', 'a', 'b'],
     );
   });
@@ -1281,7 +1337,7 @@ void main() {
         item(id: 'b', revision: 2, ordinal: 6, body: 'body-b'),
       ],
     );
-    final lease = ready.owner.lease('thread')!;
+    final lease = ready.owner.display('thread')!;
     final applied = lease.appliedVersion!;
     // 尾部先到一条更早的新身份：落在已覆盖范围之外，先忽略（不插入、不缓存正文）。
     ready.connection.emit(
@@ -1299,7 +1355,7 @@ void main() {
     );
     await _until(() => lease.appliedVersion == applied + 1);
     expect(
-      [for (final message in lease.controller.messages) message.id],
+      [for (final message in lease.canvas.chatController.messages) message.id],
       ['a', 'b'],
     );
 
@@ -1309,7 +1365,7 @@ void main() {
     ready.connection.pageResult = page;
     final loading = ready.owner.loadOlder(
       'thread',
-      generation: ready.owner.lease('thread')!.generation,
+      ready.owner.display('thread')!.generation,
     );
     page.complete(
       StudioTimelinePage(
@@ -1320,8 +1376,8 @@ void main() {
     );
     await loading;
     await _until(() => ready.transport.opens == 2);
-    await _until(() => ready.owner.lease('thread') != lease);
-    expect(ready.owner.lease('thread'), isNot(same(lease)));
+    await _until(() => ready.owner.display('thread') != lease);
+    expect(ready.owner.display('thread'), isNot(same(lease)));
   });
 
   test('页快照交付了被忽略的更早身份时正常合并', () async {
@@ -1331,7 +1387,7 @@ void main() {
         item(id: 'b', revision: 2, ordinal: 6, body: 'body-b'),
       ],
     );
-    final lease = ready.owner.lease('thread')!;
+    final lease = ready.owner.display('thread')!;
     final applied = lease.appliedVersion!;
     ready.connection.emit(
       StudioTimelinePatch(
@@ -1352,7 +1408,7 @@ void main() {
     ready.connection.pageResult = page;
     final loading = ready.owner.loadOlder(
       'thread',
-      generation: ready.owner.lease('thread')!.generation,
+      ready.owner.display('thread')!.generation,
     );
     page.complete(
       StudioTimelinePage(
@@ -1366,17 +1422,17 @@ void main() {
     );
     await loading;
     expect(
-      [for (final message in lease.controller.messages) message.id],
+      [for (final message in lease.canvas.chatController.messages) message.id],
       ['y', 'x', 'a', 'b'],
       reason: '页回包补齐被忽略的身份后按 canonical 顺序前插',
     );
     expect(
-      timelinePayloadOf(lease.controller.messages[1])!.revision,
+      timelinePayloadOf(lease.canvas.chatController.messages[1])!.revision,
       7,
       reason: '页读取当时的权威值',
     );
     expect(ready.transport.opens, 1);
-    expect(ready.owner.lease('thread'), same(lease));
+    expect(ready.owner.display('thread'), same(lease));
   });
 
   test('History 下纯保存确认与空批次不制造新输出提示', () async {
@@ -1399,11 +1455,11 @@ void main() {
         ),
       ],
     );
-    final lease = ready.owner.lease('thread')!;
-    final frozen = [...lease.controller.messages];
+    final lease = ready.owner.display('thread')!;
+    final frozen = [...lease.canvas.chatController.messages];
     final watermark = lease.appliedVersion!;
-    await ready.owner.dispatch('thread', const TimelineEnterHistory());
-    expect(ready.owner.source.value!.hasNewOutput, isFalse);
+    ready.owner.enterHistory('thread');
+    expect(ready.owner.value!.hasNewOutput, isFalse);
 
     // 空批次：只是水位推进。
     ready.connection.emit(
@@ -1416,7 +1472,7 @@ void main() {
       ),
     );
     await _until(() => ready.connection.nextCalls >= 2);
-    expect(ready.owner.source.value!.hasNewOutput, isFalse);
+    expect(ready.owner.value!.hasNewOutput, isFalse);
 
     // 纯保存确认：同 revision、字段 Unchanged 且总长未变。
     ready.connection.emit(
@@ -1446,13 +1502,9 @@ void main() {
       ),
     );
     await _until(() => ready.connection.nextCalls >= 3);
+    expect(ready.owner.value!.hasNewOutput, isFalse, reason: '单独的保存确认不是新内容');
     expect(
-      ready.owner.source.value!.hasNewOutput,
-      isFalse,
-      reason: '单独的保存确认不是新内容',
-    );
-    expect(
-      lease.controller.messages,
+      lease.canvas.chatController.messages,
       frozen,
       reason: 'History 的 Message（含 saved）保持冻结',
     );
@@ -1485,20 +1537,20 @@ void main() {
         priority: StudioTimelinePriority.immediate,
       ),
     );
-    await ready.owner.source.waitFor((state) => state!.hasNewOutput);
-    expect(lease.controller.messages, frozen);
+    await waitForTimeline(ready.owner, (state) => state!.hasNewOutput);
+    expect(lease.canvas.chatController.messages, frozen);
   });
 
   test('页查询在途时到达的尾部新身份与页结果按 canonical 顺序合并', () async {
     final ready = await open();
-    final lease = ready.owner.lease('thread')!;
+    final lease = ready.owner.display('thread')!;
     final page = Completer<StudioTimelinePage>();
     ready.connection.pageResult = page;
     final loading = ready.owner.loadOlder(
       'thread',
-      generation: ready.owner.lease('thread')!.generation,
+      ready.owner.display('thread')!.generation,
     );
-    expect(ready.owner.source.value!.isLoadingOlder, isTrue);
+    expect(ready.owner.value!.olderLoading, isTrue);
 
     // 页回包之前，尾部先交付一条更新身份（落在已覆盖范围之后）。
     final applied = lease.appliedVersion!;
@@ -1517,7 +1569,7 @@ void main() {
     );
     await _until(() => lease.appliedVersion == applied + 1);
     expect(
-      [for (final message in lease.controller.messages) message.id],
+      [for (final message in lease.canvas.chatController.messages) message.id],
       ['a', 'b', 'tail'],
     );
 
@@ -1530,18 +1582,18 @@ void main() {
     );
     await loading;
     expect(
-      [for (final message in lease.controller.messages) message.id],
+      [for (final message in lease.canvas.chatController.messages) message.id],
       ['older', 'a', 'b', 'tail'],
       reason: '页前插与尾部插入互不覆盖，都保持 canonical 顺序',
     );
     expect(ready.transport.opens, 1, reason: '这条交错可以证明连续，不需要重同步');
-    expect(ready.owner.lease('thread'), same(lease));
-    expect(ready.owner.source.value!.isLoadingOlder, isFalse);
+    expect(ready.owner.display('thread'), same(lease));
+    expect(ready.owner.value!.olderLoading, isFalse);
   });
 
   test('同 revision 的权威 Add 即使正文相同也应用 Turn 与元数据变化', () async {
     final ready = await open();
-    final lease = ready.owner.lease('thread')!;
+    final lease = ready.owner.display('thread')!;
     final applied = lease.appliedVersion!;
     final incoming = item(
       id: 'a',
@@ -1560,7 +1612,7 @@ void main() {
             StudioTimelineItem(
               item: incoming.item.copyWith(
                 turnId: 'turn-rebound',
-                updatedAt: DateTime.utc(2027),
+                updatedAt: (DateTime.utc(2027).millisecondsSinceEpoch ~/ 1000),
               ),
               saved: incoming.saved,
               lifecycle: incoming.lifecycle,
@@ -1574,13 +1626,18 @@ void main() {
     );
     await _until(() => lease.appliedVersion == applied + 1);
     expect(
-      [for (final message in lease.controller.messages) message.id],
+      [for (final message in lease.canvas.chatController.messages) message.id],
       ['a', 'b'],
       reason: '稳定身份与位置不变',
     );
-    final payload = timelinePayloadOf(lease.controller.messages.first)!;
+    final payload = timelinePayloadOf(
+      lease.canvas.chatController.messages.first,
+    )!;
     expect(payload.item.turnId, 'turn-rebound');
-    expect(payload.item.updatedAt, DateTime.utc(2027));
+    expect(
+      payload.item.updatedAt,
+      (DateTime.utc(2027).millisecondsSinceEpoch ~/ 1000),
+    );
     expect((payload.item.state as ThreadTextItemStateView).text, 'body-a');
   });
 
@@ -1591,15 +1648,17 @@ void main() {
       turnId: 'turn',
       ordinal: 4,
       revision: 3,
-      createdAt: DateTime.utc(2026),
-      updatedAt: DateTime.utc(2026),
+      createdAt: (DateTime.utc(2026).millisecondsSinceEpoch ~/ 1000),
+      updatedAt: (DateTime.utc(2026).millisecondsSinceEpoch ~/ 1000),
       executionTerminal: true,
       saved: true,
       state: ThreadTextItemStateView(
         channel: ThreadTextChannel.finalAnswer,
         text: 'abc',
         attachments: const [],
-        lifecycle: CompletedThreadContentView(DateTime.utc(2026)),
+        lifecycle: CompletedThreadContentView(
+          (DateTime.utc(2026).millisecondsSinceEpoch ~/ 1000),
+        ),
       ),
     );
     final ready = await open(
@@ -1613,7 +1672,7 @@ void main() {
         ),
       ],
     );
-    final lease = ready.owner.lease('thread')!;
+    final lease = ready.owner.display('thread')!;
     final applied = lease.appliedVersion!;
     ready.connection.emit(
       StudioTimelinePatch(
@@ -1629,10 +1688,11 @@ void main() {
       ),
     );
     await _until(() => ready.transport.opens == 2);
-    final replacement = ready.owner.lease('thread')!;
+    final replacement = ready.owner.display('thread')!;
     expect(replacement, isNot(same(lease)));
     expect(
-      timelinePayloadOf(replacement.controller.messages.single)!.terminal,
+      timelinePayloadOf(replacement.canvas.chatController.messages.single)!
+          .terminal,
       isTrue,
       reason: '显式重同步建立的新基线仍保持终态',
     );
@@ -1801,34 +1861,34 @@ void main() {
 
   test('退役但未释放的代次接受迟到真实挂载，已释放则明确拒绝', () async {
     final ready = await open();
-    final lease = ready.owner.lease('thread')!;
+    final lease = ready.owner.display('thread')!;
     final page = Completer<StudioTimelinePage>();
     ready.connection.pageResult = page;
     final loading = ready.owner.loadOlder(
       'thread',
-      generation: ready.owner.lease('thread')!.generation,
+      ready.owner.display('thread')!.generation,
     );
     final report = await ready.owner.close(
       deadline: DateTime.now().add(const Duration(milliseconds: 40)),
     );
     expect(report.complete, isFalse);
     // 关闭已发布无展示，但真实旧子树可能还没卸载：迟到挂载必须计入等待。
-    lease.bind();
-    expect(lease.isMounted, isTrue);
-    page.complete(
-      const StudioTimelinePage(items: [], before: null, hasOlder: false),
-    );
+    final mount = lease.canvas.mount();
+    expect(lease.isReleased, isFalse, reason: '真实 mount 仍借用控制器');
+    page.complete(StudioTimelinePage(items: [], before: null, hasOlder: false));
     await loading;
     expect(lease.isReleased, isFalse, reason: '真实子树仍持有控制器');
-    await lease.unbind();
-    await lease.released;
+    mount.unmount();
+    await lease.observeRelease(
+      deadline: DateTime.now().add(const Duration(seconds: 3)),
+    );
     expect(lease.isReleased, isTrue);
-    expect(lease.bind, throwsStateError);
+    expect(lease.canvas.mount, throwsA(isA<StudioFailure>()));
   });
 
   test('同 revision 预览被预算挤短时显式重同步而不是静默应用', () async {
     final ready = await open();
-    final lease = ready.owner.lease('thread')!;
+    final lease = ready.owner.display('thread')!;
     final applied = lease.appliedVersion!;
     // 同 revision、原文长度不变，但预览字节退回：只能是预算重新分配，无法证明连续。
     ready.connection.emit(
@@ -1858,7 +1918,7 @@ void main() {
       ),
     );
     await _until(() => ready.transport.opens == 2);
-    expect(ready.owner.lease('thread'), isNot(same(lease)));
+    expect(ready.owner.display('thread'), isNot(same(lease)));
   });
 
   test('更高 revision 原文确实变短时仍原位权威替换，不误判预算缩减', () async {
@@ -1881,7 +1941,7 @@ void main() {
         ),
       ],
     );
-    final lease = ready.owner.lease('thread')!;
+    final lease = ready.owner.display('thread')!;
     final applied = lease.appliedVersion!;
     ready.connection.emit(
       StudioTimelinePatch(
@@ -1911,7 +1971,9 @@ void main() {
     );
     await _until(() => lease.appliedVersion == applied + 1);
     expect(ready.transport.opens, 1, reason: '权威缩短不能被当成预算缩减拒绝');
-    final payload = timelinePayloadOf(lease.controller.messages.single)!;
+    final payload = timelinePayloadOf(
+      lease.canvas.chatController.messages.single,
+    )!;
     expect((payload.item.state as ThreadTextItemStateView).text, 'abc');
     expect(payload.revision, 2);
     expect(payload.detailFor(const ThreadTextFieldView())!.totalBytes, 3);
@@ -1924,13 +1986,15 @@ void main() {
       turnId: 'turn',
       ordinal: 3,
       revision: 5,
-      createdAt: DateTime.utc(2026),
-      updatedAt: DateTime.utc(2026),
+      createdAt: (DateTime.utc(2026).millisecondsSinceEpoch ~/ 1000),
+      updatedAt: (DateTime.utc(2026).millisecondsSinceEpoch ~/ 1000),
       executionTerminal: true,
       state: ThreadThinkingItemStateView(
         summary: const [],
         content: const ['第一段', '第二段'],
-        lifecycle: CompletedThreadContentView(DateTime.utc(2026)),
+        lifecycle: CompletedThreadContentView(
+          (DateTime.utc(2026).millisecondsSinceEpoch ~/ 1000),
+        ),
       ),
     );
     final ready = await open(
@@ -1957,7 +2021,7 @@ void main() {
         ),
       ],
     );
-    final lease = ready.owner.lease('thread')!;
+    final lease = ready.owner.display('thread')!;
     var revision = 5;
     for (var round = 0; round < 3; round++) {
       final applied = lease.appliedVersion!;
@@ -1991,7 +2055,9 @@ void main() {
       revision += 1;
       await _until(() => lease.appliedVersion == applied + 1);
     }
-    final payload = timelinePayloadOf(lease.controller.messages.single)!;
+    final payload = timelinePayloadOf(
+      lease.canvas.chatController.messages.single,
+    )!;
     expect(payload.details.length, 2, reason: '同值字段必须复用同一条详情引用，不能随帧增长');
     final ref0 = payload.detailFor(ThreadThinkingContentFieldView(0))!;
     expect(ref0.revision, 8);
@@ -2003,7 +2069,7 @@ void main() {
     );
 
     // 真实按需读取：未变化的 chunk 与被更新的 chunk 都必须能用自己的 ref 读到正文。
-    final scope = lease.queries!;
+    final scope = lease;
     final unchanged = payload.detailFor(ThreadThinkingContentFieldView(1))!;
     final changed = payload.detailFor(ThreadThinkingContentFieldView(0))!;
     final unchangedChunk = await scope.readDetail(
@@ -2053,7 +2119,9 @@ void main() {
       ),
     );
     await _until(() => lease.appliedVersion == applied + 1);
-    final afterRemoval = timelinePayloadOf(lease.controller.messages.single)!;
+    final afterRemoval = timelinePayloadOf(
+      lease.canvas.chatController.messages.single,
+    )!;
     expect(afterRemoval.details.length, 1);
     expect(afterRemoval.detailFor(ThreadThinkingContentFieldView(1)), isNull);
   });
@@ -2065,8 +2133,8 @@ void main() {
       turnId: 'turn',
       ordinal: 4,
       revision: 2,
-      createdAt: DateTime.utc(2026),
-      updatedAt: DateTime.utc(2026),
+      createdAt: (DateTime.utc(2026).millisecondsSinceEpoch ~/ 1000),
+      updatedAt: (DateTime.utc(2026).millisecondsSinceEpoch ~/ 1000),
       executionTerminal: true,
       state: ThreadToolItemStateView(
         invocation: const ThreadToolInvocationView(
@@ -2075,16 +2143,12 @@ void main() {
           arguments: '{}',
         ),
         lifecycle: SucceededThreadToolView(
-          DateTime.utc(2026),
-          const ThreadToolOutputView(
-            result: 'ok',
-            attachments: [],
-            outputArtifacts: [],
-          ),
+          (DateTime.utc(2026).millisecondsSinceEpoch ~/ 1000),
+          ThreadToolOutput(result: 'ok', attachments: [], outputArtifacts: []),
         ),
         userInput: ThreadToolUserInputView(
           interactionId: 'interaction-1',
-          questions: const [
+          questions: [
             UserQuestionView(
               id: 'q1',
               header: '确认',
@@ -2121,7 +2185,7 @@ void main() {
         ),
       ],
     );
-    final lease = ready.owner.lease('thread')!;
+    final lease = ready.owner.display('thread')!;
     final applied = lease.appliedVersion!;
     ready.connection.emit(
       StudioTimelinePatch(
@@ -2153,7 +2217,9 @@ void main() {
       ),
     );
     await _until(() => lease.appliedVersion == applied + 1);
-    final payload = timelinePayloadOf(lease.controller.messages.single)!;
+    final payload = timelinePayloadOf(
+      lease.canvas.chatController.messages.single,
+    )!;
     expect(payload.details.length, 1, reason: '同一子字段不能新增一条引用');
     final ref = payload.detailFor(
       ThreadToolUserInputFieldView(
@@ -2166,81 +2232,89 @@ void main() {
   });
 
   test('发送准备期间切换选择不悬挂，仍提交冻结的 A 目标', () async {
-    final ready = await open(threads: [_thread(), _thread('other')]);
-    final client = ready.client;
-    final owner = ready.owner;
-    // B 先有可发送的 session 快照，切换后它自己的展示代次不受 A 的准备影响。
-    client.session('other').applySnapshot(workspaceFor('other'));
-    client.session('thread').applySnapshot(workspaceFor('thread'));
-    final composer = client.composer('thread');
-    composer.updateDraft('frozen text');
-
-    // A 的展示准备会新建订阅：把它挂起，模拟“首帧未到”期间用户切换选择。
-    ready.transport.holdNextOpen = true;
-    final submitting = composer.submit(
-      beforeSubmit: () => owner.prepareSend('thread'),
+    final fixture = await openTimelineDraftsEnvironment();
+    final owner = TimelineCoordinator(
+      conversations: fixture.conversations.repository,
     );
-    await owner.source.waitFor((state) => state!.isPreparingLive);
+    addTearDown(owner.close);
+    final composer = await fixture.composer(routeRevision: 1);
+    final original = fixture.conversations.repository.active.value!;
+    final first = _ScriptedConnection(null);
+    (await fixture.conversations.timeline.opened(0)).result.complete(first);
+    await waitForTimeline(owner, (state) => state?.ready == true);
+    composer.setText('frozen text');
 
-    client.workspace.selectThread('other', projectId: 'project');
-    await _until(() => owner.lease('other') != null);
-    final otherLease = owner.lease('other')!;
-    final otherGeneration = otherLease.generation;
+    final submitting = composer.submit(
+      preparePresentation: () => owner.prepareSend(original),
+    );
+    await waitForTimeline(owner, (state) => state!.preparingLive);
+    final held = await fixture.conversations.timeline.opened(1);
+    fixture.conversations.select('other');
+    final other = _ScriptedConnection(null, threadId: 'other');
+    (await fixture.conversations.timeline.opened(2)).result.complete(other);
+    await waitForTimeline(
+      owner,
+      (state) => state?.threadId == 'other' && state!.ready,
+    );
+    final otherDisplay = owner.display('other')!;
+    final otherGeneration = otherDisplay.generation;
 
-    // 前置被 typed 取消，但冻结的发送继续：后端收到的是 A 的冻结 payload 与 route。
-    final entered = await ready.transport.promptEntered.future;
+    final entered = await fixture.commands.prompts.at(0);
+    expect(entered.threadId, 'thread');
     expect(entered.input.text, 'frozen text');
     expect(entered.routeRevision, 1);
     expect(entered.input.inputId, isNotEmpty);
 
-    // A 的迟到首帧不得发布到已经切换后的展示。
-    final otherLeaseBefore = owner.lease('other');
-    ready.transport.completeOpen(version: 77);
-    await Future<void>.delayed(Duration.zero);
-    expect(owner.lease('thread'), isNull);
-    expect(owner.lease('other'), same(otherLeaseBefore));
-    expect(owner.lease('other')!.generation, otherGeneration);
+    final late = _ScriptedConnection(null)..baselineVersion = 77;
+    held.result.complete(late);
+    await _until(() => late.closed);
+    expect(owner.display('thread'), isNull);
+    expect(owner.display('other'), same(otherDisplay));
+    expect(owner.display('other')!.generation, otherGeneration);
 
-    ready.transport.promptReply.complete(
-      SubmitPromptReceipt(
-        threadId: 'thread',
-        inputId: entered.input.inputId,
-        cursor: 7,
-      ),
-    );
-    await submitting;
-    expect(composer.state.draft.trim(), isEmpty, reason: '冻结发送正常收束');
+    entered.reply.complete(fixture.receipt(entered));
     expect(
-      composer.state,
-      isA<IdleComposerThreadState>(),
+      await submitting.result,
+      isA<AcknowledgedCommandResult<SubmitPromptReceipt>>(),
+    );
+    expect(composer.state.value.text.trim(), isEmpty, reason: '冻结发送正常收束');
+    expect(
+      composer.state.value.submission,
+      isA<IdleDraftSubmission>(),
       reason: '正常收束，不进入未知结果封存',
     );
+    // History evidence remains an owned read after command acknowledgement.
+    // Settle the original call so fixture.close can truly join it.
+    final evidence = await fixture.commands.acceptances.at(0);
+    evidence.reply.complete(null);
   });
 
   test('普通回实时期间切换选择以 typed 取消结束', () async {
-    final ready = await open(threads: [_thread(), _thread('other')]);
-    ready.client.session('other');
+    final ready = await open();
+    ready.environment.conversations.session('other');
     ready.transport.holdNextOpen = true;
-    final switching = ready.owner.returnToLive('thread');
-    await ready.owner.source.waitFor((state) => state!.isPreparingLive);
-    ready.client.workspace.selectThread('other', projectId: 'project');
+    final switching = ready.owner.returnLive('thread');
+    await waitForTimeline(ready.owner, (state) => state!.preparingLive);
+    ready.environment.select('other');
     await expectLater(
       switching,
-      throwsA(isA<TimelinePreparationCancelled>()),
+      throwsA(isA<TimelineSelectionChanged>()),
       reason: '展示动作因选择变化被 typed 取消，而不是永久 pending',
     );
-    expect(ready.owner.source.value!.isPreparingLive, isFalse);
+    expect(ready.owner.value!.preparingLive, isFalse);
+    // 真实 native open 没有取消接口，必须放行首帧才能在 teardown 时真正 join。
+    ready.transport.completeOpen(version: 12);
   });
 
   test('关闭等待真实受理的页查询，native close 已返回也不提前释放', () async {
     final ready = await open();
-    final lease = ready.owner.lease('thread')!;
-    final budget = ready.client.session('thread').timeline.budget;
+    final lease = ready.owner.display('thread')!;
+    final budget = ready.environment.budget;
     final page = Completer<StudioTimelinePage>();
     ready.connection.pageResult = page;
     final loading = ready.owner.loadOlder(
       'thread',
-      generation: ready.owner.lease('thread')!.generation,
+      ready.owner.display('thread')!.generation,
     );
     expect(budget.used(ResourceKind.pendingOperation), 1);
 
@@ -2251,23 +2325,23 @@ void main() {
     expect(lease.isReleased, isFalse);
     expect(budget.used(ResourceKind.pendingOperation), 1);
 
-    page.complete(
-      const StudioTimelinePage(items: [], before: null, hasOlder: false),
-    );
+    page.complete(StudioTimelinePage(items: [], before: null, hasOlder: false));
     await loading;
-    await lease.released;
+    await lease.observeRelease(
+      deadline: DateTime.now().add(const Duration(seconds: 3)),
+    );
     expect(lease.isReleased, isTrue);
     expect(budget.used(ResourceKind.pendingOperation), 0);
   });
 
   test('close publishes no display and waits for the real unmount', () async {
     final ready = await open();
-    final lease = ready.owner.lease('thread')!;
-    lease.bind();
+    final lease = ready.owner.display('thread')!;
+    final mount = lease.canvas.mount();
     final closing = ready.owner.close(
       deadline: DateTime.now().add(const Duration(milliseconds: 30)),
     );
-    expect(ready.owner.source.value, isNull);
+    expect(ready.owner.value, isNull);
     expect(ready.owner.close(), same(closing));
     final report = await closing;
     expect(
@@ -2276,7 +2350,7 @@ void main() {
       reason: 'the real subtree still borrows the controller',
     );
     expect(report.unresolved.single.owner, 'timeline-display:thread');
-    await lease.unbind();
+    mount.unmount();
     expect(lease.isReleased, isTrue);
   });
 
@@ -2284,7 +2358,7 @@ void main() {
     'an unmounted display releases without waiting for widget callbacks',
     () async {
       final ready = await open();
-      final lease = ready.owner.lease('thread')!;
+      final lease = ready.owner.display('thread')!;
       final report = await ready.owner.close(
         deadline: DateTime.now().add(const Duration(seconds: 1)),
       );
@@ -2304,23 +2378,11 @@ Future<void> _until(bool Function() predicate) async {
   }
 }
 
-StudioThread _thread([String id = 'thread']) => StudioThread(
-  id: id,
-  projectId: 'project',
-  title: 'Thread $id',
-  mode: ThreadModeId.simple,
-  delegationMode: DelegationMode.profile,
-  delegationPreference: DelegationPreference.balanced,
-  updatedAt: DateTime.utc(2026),
-  workspacePath: '/project',
-);
-
-final class _ScriptedTransport implements StudioTransport {
+final class _ScriptedTransport implements TimelineTransport {
   final List<_ScriptedConnection> connections = [];
 
   /// 非空时所有连接都用它作为首帧条目。
   List<StudioTimelineItem>? baselineItems;
-  final List<StreamController<ThreadStreamFrame>> _bindings = [];
   int opens = 0;
 
   /// 非空时下一次打开保持挂起，用于观察“新订阅已请求但首帧未到”的中间状态。
@@ -2329,39 +2391,12 @@ final class _ScriptedTransport implements StudioTransport {
   /// 非空时所有打开都以该错误收束（含重试），用于让内容连接真的失败。
   Object? failOpens;
 
-  /// 冻结提交实际到达后端的输入与 route revision（真实 `submitComposer` 路径）。
-  final Completer<({StudioPromptInput input, int routeRevision})>
-  promptEntered = Completer();
-  final Completer<SubmitPromptReceipt> promptReply = Completer();
-
-  @override
-  Future<SubmitPromptReceipt> submitPrompt(
-    String threadId,
-    StudioPromptInput input, {
-    required int expectedModelRouteRevision,
-  }) {
-    if (!promptEntered.isCompleted) {
-      promptEntered.complete((
-        input: input,
-        routeRevision: expectedModelRouteRevision,
-      ));
-    }
-    return promptReply.future;
-  }
-
-  @override
-  Stream<ThreadStreamFrame> subscribeThread(String threadId) {
-    final controller = StreamController<ThreadStreamFrame>.broadcast();
-    _bindings.add(controller);
-    return controller.stream;
-  }
-
   @override
   Future<StudioTimelineConnection> openTimeline(String threadId) {
     opens++;
     final failure = failOpens;
     if (failure != null) return Future.error(failure);
-    final connection = _ScriptedConnection(baselineItems);
+    final connection = _ScriptedConnection(baselineItems, threadId: threadId);
     connections.add(connection);
     if (holdNextOpen) {
       holdNextOpen = false;
@@ -2394,10 +2429,14 @@ final class _ScriptedTransport implements StudioTransport {
 }
 
 final class _ScriptedConnection implements StudioTimelineConnection {
-  _ScriptedConnection(this.scriptedItems);
+  _ScriptedConnection(this.scriptedItems, {this.threadId = 'thread'});
+
+  /// 该连接所服务的 Thread：条目必须与它同源，否则真实准入会拒绝异 Thread 输入。
+  final String threadId;
 
   final Completer<StudioTimelineConnection> opened = Completer();
-  final List<Completer<StudioTimelineUpdate?>> frames = [];
+  final StreamController<StudioTimelineFeedFrame> _frames =
+      StreamController<StudioTimelineFeedFrame>();
   Completer<StudioTimelinePage>? pageResult;
   final List<({String itemId, StudioTimelineDetailQuery query})>
   detailRequests = [];
@@ -2409,35 +2448,57 @@ final class _ScriptedConnection implements StudioTimelineConnection {
   int nextCalls = 0;
   int closeCalls = 0;
   bool closed = false;
+  bool _claimed = false;
+  int _nextSequence = 1;
 
   @override
-  Future<StudioTimelineBaseline> initial() async {
+  Stream<StudioTimelineFeedFrame> get events {
+    if (_claimed) {
+      throw const StudioFailure(
+        code: StudioFailureCode.conflict,
+        message: 'The scripted feed stream was already claimed',
+        retryable: false,
+        correlationId: 'scripted-stream-conflict',
+      );
+    }
+    _claimed = true;
     initialCalls++;
-    return StudioTimelineBaseline(
-      subscriptionId: 'sub-$baselineVersion',
-      version: baselineVersion,
-      items:
-          scriptedItems ??
-          [
-            for (final entry in [('a', 1), ('b', 2)]) _item(entry.$1, entry.$2),
-          ],
-      before: 'tlp1.b',
-      hasOlder: true,
+    _frames.add(
+      StudioTimelineFeedFrame.data(
+        deliverySequence: _nextSequence++,
+        event: StudioTimelineFeedEvent.baseline(
+          baseline: StudioTimelineBaseline(
+            subscriptionId: 'sub-$baselineVersion',
+            version: baselineVersion,
+            items:
+                scriptedItems ??
+                [
+                  for (final entry in [('a', 1), ('b', 2)])
+                    _item(entry.$1, entry.$2),
+                ],
+            before: 'tlp1.b',
+            hasOlder: true,
+          ),
+        ),
+      ),
     );
+    return _frames.stream;
   }
 
   @override
-  Future<StudioTimelineUpdate?> next() {
-    if (closed) return Future.value(null);
+  Future<void> ackThrough(int deliverySequence) async {
+    // 每帧处理完成后的确认：作为测试里的“已消费帧数”进度。
     nextCalls++;
-    final pending = Completer<StudioTimelineUpdate?>();
-    frames.add(pending);
-    return pending.future;
   }
 
   void emit(StudioTimelineUpdate update) {
-    if (frames.isEmpty) throw StateError('No pending content read');
-    frames.removeAt(0).complete(update);
+    if (closed) return;
+    _frames.add(
+      StudioTimelineFeedFrame.data(
+        deliverySequence: _nextSequence++,
+        event: StudioTimelineFeedEvent.update(update: update),
+      ),
+    );
   }
 
   @override
@@ -2445,7 +2506,7 @@ final class _ScriptedConnection implements StudioTimelineConnection {
     final result = pageResult;
     if (result == null) {
       return Future.value(
-        const StudioTimelinePage(items: [], before: null, hasOlder: false),
+        StudioTimelinePage(items: [], before: null, hasOlder: false),
       );
     }
     return result.future;
@@ -2470,33 +2531,40 @@ final class _ScriptedConnection implements StudioTimelineConnection {
 
   @override
   void requestClose() {
+    if (closed) return;
     closed = true;
-    for (final pending in frames) {
-      if (!pending.isCompleted) pending.complete(null);
-    }
-    frames.clear();
+    if (!_frames.isClosed) scheduleMicrotask(_frames.close);
   }
 
   @override
-  Future<void> close() async {
+  Future<FeedCloseReport> retryClose() => close();
+
+  @override
+  Future<FeedCloseReport> close() async {
     closeCalls++;
     requestClose();
+    return FeedCloseReport(
+      feedId: 'sub-$baselineVersion',
+      outcome: const FeedCloseOutcome.clean(),
+    );
   }
 
   StudioTimelineItem _item(String id, int revision) => StudioTimelineItem(
     item: ThreadItemView(
       id: id,
-      threadId: 'thread',
+      threadId: threadId,
       turnId: 'turn',
       ordinal: revision,
       revision: revision,
-      createdAt: DateTime.utc(2026),
-      updatedAt: DateTime.utc(2026),
+      createdAt: (DateTime.utc(2026).millisecondsSinceEpoch ~/ 1000),
+      updatedAt: (DateTime.utc(2026).millisecondsSinceEpoch ~/ 1000),
       state: ThreadTextItemStateView(
         channel: ThreadTextChannel.finalAnswer,
         text: 'body-$id',
         attachments: const [],
-        lifecycle: CompletedThreadContentView(DateTime.utc(2026)),
+        lifecycle: CompletedThreadContentView(
+          (DateTime.utc(2026).millisecondsSinceEpoch ~/ 1000),
+        ),
       ),
     ),
     saved: false,
@@ -2505,3 +2573,14 @@ final class _ScriptedConnection implements StudioTimelineConnection {
     details: const [],
   );
 }
+
+Future<TimelineViewState?> waitForTimeline(
+  TimelineCoordinator owner,
+  bool Function(TimelineViewState?) matches,
+) {
+  if (matches(owner.value)) return Future.value(owner.value);
+  return owner.changes.firstWhere(matches);
+}
+
+int itemCount(TimelineDisplayBinding display) =>
+    display.canvas.chatController.messages.expand(timelinePayloadsOf).length;

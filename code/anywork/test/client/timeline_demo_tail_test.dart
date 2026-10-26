@@ -1,7 +1,9 @@
+import 'dart:async';
 import 'dart:convert';
 
-import 'package:anywork/src/infrastructure/frb/studio_api.dart';
-import 'package:anywork_client/studio_client.dart';
+import 'package:anywork/src/infrastructure/frb/demo/demo_timeline_content.dart';
+import 'package:anywork_client/conversation_ports.dart';
+import 'package:anywork_client/resources.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 /// demo 内容连接遵守同一「一致小页基线 + 有界尾部」契约：首帧只给最新 32 条，之后按
@@ -19,13 +21,15 @@ void main() {
     turnId: 'turn-seed',
     ordinal: ordinal,
     revision: revision,
-    createdAt: DateTime.utc(2026),
-    updatedAt: DateTime.utc(2026),
+    createdAt: (DateTime.utc(2026).millisecondsSinceEpoch ~/ 1000),
+    updatedAt: (DateTime.utc(2026).millisecondsSinceEpoch ~/ 1000),
     state: ThreadTextItemStateView(
       channel: ThreadTextChannel.finalAnswer,
       text: body,
       attachments: const [],
-      lifecycle: CompletedThreadContentView(DateTime.utc(2026)),
+      lifecycle: CompletedThreadContentView(
+        (DateTime.utc(2026).millisecondsSinceEpoch ~/ 1000),
+      ),
     ),
   );
 
@@ -42,20 +46,19 @@ void main() {
     turnId: 'turn-seed',
     ordinal: ordinal,
     revision: revision,
-    createdAt: DateTime.utc(2026),
-    updatedAt: DateTime.utc(2026),
+    createdAt: (DateTime.utc(2026).millisecondsSinceEpoch ~/ 1000),
+    updatedAt: (DateTime.utc(2026).millisecondsSinceEpoch ~/ 1000),
     state: ThreadRawItemStateView(
       payloads,
       notice,
-      DateTime.utc(2026),
+      (DateTime.utc(2026).millisecondsSinceEpoch ~/ 1000),
       origin: ThreadRawItemOrigin.stored,
     ),
   );
 
-  Future<DemoStudioTransport> seeded({int count = 150}) async {
-    final transport = DemoStudioTransport();
-    await transport.readBootstrap();
-    transport.seedTimelineItems('thread-main', [
+  Future<DemoTimelineContent> seeded({int count = 150}) async {
+    final transport = DemoTimelineContent();
+    transport.seedItems('thread-main', [
       for (var index = 0; index < count; index++)
         text(id: 'seed-$index', ordinal: 1000 + index, body: 'seed 正文 $index'),
     ]);
@@ -66,8 +69,9 @@ void main() {
     final transport = await seeded();
     final connection = await transport.openTimeline('thread-main');
     addTearDown(connection.close);
+    final tail = _Tail(connection);
 
-    final baseline = await connection.initial();
+    final baseline = await tail.baseline();
     expect(baseline.items.length, 32);
     expect(baseline.items.last.id, 'seed-149');
     expect(baseline.items.first.id, 'seed-118');
@@ -75,12 +79,52 @@ void main() {
     expect(baseline.before, isNotNull);
   });
 
-  test('首帧未消费时 next 返回 typed Conflict', () async {
+  test('投送窗口满 2 帧后只保留一个 staged 结果，ACK 后按连续性恢复', () async {
     final transport = await seeded(count: 3);
     final connection = await transport.openTimeline('thread-main');
     addTearDown(connection.close);
-    await expectLater(
-      connection.next(),
+    final iterator = StreamIterator<StudioTimelineFeedFrame>(connection.events);
+    addTearDown(iterator.cancel);
+    expect(await iterator.moveNext(), isTrue);
+    final first = iterator.current as StudioTimelineFeedData;
+    expect(first.deliverySequence, 1);
+
+    // 不 ACK：基线占 1 个未确认额度，第一条变化仍可投送（2 未确认）。
+    transport.seedItems('thread-main', [text(id: 'w-1', ordinal: 100)]);
+    expect(await iterator.moveNext(), isTrue);
+    expect((iterator.current as StudioTimelineFeedData).deliverySequence, 2);
+
+    // 窗口已满：后续变化不排队、不隐藏待发队列，只保留唯一 staged 标记。
+    transport.seedItems('thread-main', [text(id: 'w-2', ordinal: 101)]);
+    transport.seedItems('thread-main', [text(id: 'w-3', ordinal: 102)]);
+    var delivered = false;
+    final raced = iterator.moveNext().then((value) => delivered = value);
+    await pumpEventQueue();
+    expect(delivered, isFalse, reason: '满 2 额度只持一个 staged 结果，不再投送');
+
+    // ACK 释放窗口后恢复：跨过的多次变化无法证明连续，显式重同步。
+    await connection.ackThrough(1);
+    await connection.ackThrough(2);
+    expect(await raced, isTrue);
+    final third =
+        ((iterator.current as StudioTimelineFeedData).event
+                as StudioTimelineFeedUpdate)
+            .update;
+    expect(third, isA<StudioTimelineResync>(), reason: '跨过的多次变化只能显式重同步');
+    await connection.ackThrough(3);
+  });
+
+  test('推送流只允许一次订阅：getter 不认领，第二次实际 listen 是 typed Conflict', () async {
+    final transport = await seeded(count: 3);
+    final connection = await transport.openTimeline('thread-main');
+    addTearDown(connection.close);
+    // getter 只是视图：多次读取既不认领也不建立第二条流。
+    expect(connection.events, isA<Stream<StudioTimelineFeedFrame>>());
+    expect(() => connection.events, returnsNormally);
+    final tail = _Tail(connection);
+    await tail.baseline();
+    expect(
+      () => connection.events.listen((_) {}),
       throwsA(
         isA<StudioFailure>().having(
           (failure) => failure.code,
@@ -88,17 +132,19 @@ void main() {
           StudioFailureCode.conflict,
         ),
       ),
+      reason: '首次实际 listen 才认领；第二个实际订阅是 typed Conflict，不另开第二条流',
     );
   });
 
   test('关闭后调用以 Cancelled 优先', () async {
     final transport = await seeded(count: 3);
     final connection = await transport.openTimeline('thread-main');
-    await connection.initial();
+    final tail = _Tail(connection);
+    await tail.baseline();
     await connection.close();
     for (final call in <Future<Object?> Function()>[
-      connection.initial,
-      connection.next,
+      () => connection.ackThrough(1),
+      () async => connection.events,
       () => connection.page(),
       () => connection.readDetail(
         itemId: 'seed-0',
@@ -109,7 +155,7 @@ void main() {
       ),
     ]) {
       await expectLater(
-        call(),
+        Future<Object?>.sync(call),
         throwsA(
           isA<StudioFailure>().having(
             (failure) => failure.code,
@@ -125,13 +171,14 @@ void main() {
     final transport = await seeded();
     final connection = await transport.openTimeline('thread-main');
     addTearDown(connection.close);
-    final baseline = await connection.initial();
+    final tail = _Tail(connection);
+    final baseline = await tail.baseline();
 
-    final pending = connection.next();
-    transport.seedTimelineItems('thread-main', [
+    final pending = tail.update();
+    transport.seedItems('thread-main', [
       text(id: 'live-1', ordinal: 1150, body: '新的一条'),
     ]);
-    final patch = (await pending)! as StudioTimelinePatch;
+    final patch = (await pending) as StudioTimelinePatch;
     expect(patch.from, baseline.version);
     expect(patch.changes.length, 1, reason: '不把更早的历史重新作为 Adds 交付');
     expect((patch.changes.single as StudioTimelineAdd).item.id, 'live-1');
@@ -142,14 +189,15 @@ void main() {
     final transport = await seeded();
     final connection = await transport.openTimeline('thread-main');
     addTearDown(connection.close);
-    await connection.initial();
+    final tail = _Tail(connection);
+    await tail.baseline();
 
-    final pending = connection.next();
-    transport.seedTimelineItems('thread-main', [
+    final pending = tail.update();
+    transport.seedItems('thread-main', [
       text(id: 'burst-1', ordinal: 1150),
       text(id: 'burst-2', ordinal: 1151),
     ]);
-    final update = (await pending)! as StudioTimelineResync;
+    final update = (await pending) as StudioTimelineResync;
     expect(update.reason, StudioTimelineResyncReason.lagging);
     expect(update.baseline.items.length, 32, reason: '重同步也只给有界小页');
   });
@@ -158,13 +206,12 @@ void main() {
     final transport = await seeded();
     final connection = await transport.openTimeline('thread-main');
     addTearDown(connection.close);
-    await connection.initial();
+    final tail = _Tail(connection);
+    await tail.baseline();
 
-    final pending = connection.next();
-    transport.seedTimelineItems('thread-main', [
-      text(id: 'insert-mid', ordinal: 1130),
-    ]);
-    final update = (await pending)! as StudioTimelineResync;
+    final pending = tail.update();
+    transport.seedItems('thread-main', [text(id: 'insert-mid', ordinal: 1130)]);
+    final update = (await pending) as StudioTimelineResync;
     expect(update.reason, StudioTimelineResyncReason.lagging);
     expect(update.baseline.items.length, 32);
   });
@@ -173,13 +220,14 @@ void main() {
     final transport = await seeded();
     final connection = await transport.openTimeline('thread-main');
     addTearDown(connection.close);
-    final baseline = await connection.initial();
+    final tail = _Tail(connection);
+    final baseline = await tail.baseline();
 
-    final pending = connection.next();
-    transport.seedTimelineItems('thread-main', [
+    final pending = tail.update();
+    transport.seedItems('thread-main', [
       text(id: 'insert-old', ordinal: 0, body: '更早的正文'),
     ]);
-    final patch = (await pending)! as StudioTimelinePatch;
+    final patch = (await pending) as StudioTimelinePatch;
     expect(patch.changes, isEmpty, reason: '更早范围不借尾部提前插入，也不制造分页空洞');
     expect(patch.from, baseline.version);
 
@@ -201,12 +249,13 @@ void main() {
     final transport = await seeded();
     final connection = await transport.openTimeline('thread-main');
     addTearDown(connection.close);
-    final baseline = await connection.initial();
+    final tail = _Tail(connection);
+    final baseline = await tail.baseline();
 
     // 34 号早于已交付的 32 条，从未交付给这个连接。
-    final pending = connection.next();
-    transport.retractTimelineItem('thread-main', 'seed-0');
-    final patch = (await pending)! as StudioTimelinePatch;
+    final pending = tail.update();
+    transport.retractItem('thread-main', 'seed-0');
+    final patch = (await pending) as StudioTimelinePatch;
     expect(
       patch.changes.single,
       isA<StudioTimelineRemove>().having(
@@ -219,9 +268,9 @@ void main() {
 
     // 已交付身份被撤下同样按身份交付删除，并退出本连接副本。
     final delivered = baseline.items.first.id;
-    final pendingSecond = connection.next();
-    transport.retractTimelineItem('thread-main', delivered);
-    final second = (await pendingSecond)! as StudioTimelinePatch;
+    final pendingSecond = tail.update();
+    transport.retractItem('thread-main', delivered);
+    final second = (await pendingSecond) as StudioTimelinePatch;
     expect((second.changes.single as StudioTimelineRemove).itemId, delivered);
   });
 
@@ -229,17 +278,18 @@ void main() {
     final transport = await seeded(count: 40);
     final connection = await transport.openTimeline('thread-main');
     addTearDown(connection.close);
-    final baseline = await connection.initial();
+    final tail = _Tail(connection);
+    final baseline = await tail.baseline();
     expect(baseline.items.length, 32);
 
     final addedIds = <String>{};
     for (var index = 0; index < 105; index++) {
       final id = 'stream-$index';
-      final pending = connection.next();
-      transport.seedTimelineItems('thread-main', [
+      final pending = tail.update();
+      transport.seedItems('thread-main', [
         text(id: id, ordinal: 2000 + index, body: '流式正文 $index'),
       ]);
-      final patch = (await pending)! as StudioTimelinePatch;
+      final patch = (await pending) as StudioTimelinePatch;
       expect(patch.changes.whereType<StudioTimelineRemove>(), isEmpty);
       final adds = patch.changes.whereType<StudioTimelineAdd>().toList();
       expect(adds.map((add) => add.item.id), [id]);
@@ -247,28 +297,30 @@ void main() {
     }
     expect(addedIds.length, 105);
     // 副本有界：滑出只影响本地连续性副本，后续变化仍按单条差量交付。
-    final pending = connection.next();
-    transport.seedTimelineItems('thread-main', [
+    final pending = tail.update();
+    transport.seedItems('thread-main', [
       text(id: 'stream-tail', ordinal: 2200),
     ]);
-    final tail = (await pending)! as StudioTimelinePatch;
+    final tailPatch = await pending as StudioTimelinePatch;
     expect(
-      tail.changes.whereType<StudioTimelineAdd>().map((add) => add.item.id),
+      tailPatch.changes.whereType<StudioTimelineAdd>().map(
+        (add) => add.item.id,
+      ),
       ['stream-tail'],
     );
-    expect(tail.changes.whereType<StudioTimelineRemove>(), isEmpty);
+    expect(tailPatch.changes.whereType<StudioTimelineRemove>(), isEmpty);
   });
 
   test('预览按产品预算封顶，完整正文仍由详情读取', () async {
-    final transport = DemoStudioTransport();
-    await transport.readBootstrap();
+    final transport = DemoTimelineContent();
     final body = 'x' * 40000;
-    transport.seedTimelineItems('thread-main', [
+    transport.seedItems('thread-main', [
       text(id: 'big', ordinal: 5000, body: body),
     ]);
     final connection = await transport.openTimeline('thread-main');
     addTearDown(connection.close);
-    final baseline = await connection.initial();
+    final tail = _Tail(connection);
+    final baseline = await tail.baseline();
     final big = baseline.items.singleWhere((item) => item.id == 'big');
     expect(big.id, 'big');
     final preview = big.item.state as ThreadTextItemStateView;
@@ -290,8 +342,7 @@ void main() {
   });
 
   test('工具产物与 typed 问答共同计入 32 KiB 预算，完整原文只经详情读取', () async {
-    final transport = DemoStudioTransport();
-    await transport.readBootstrap();
+    final transport = DemoTimelineContent();
     final artifacts = [
       for (var index = 0; index < 60; index++)
         {'name': 'artifact-$index', 'path': '/tmp/artifact-$index.bin'},
@@ -304,8 +355,8 @@ void main() {
       turnId: 'turn-seed',
       ordinal: 6000,
       revision: 1,
-      createdAt: DateTime.utc(2026),
-      updatedAt: DateTime.utc(2026),
+      createdAt: (DateTime.utc(2026).millisecondsSinceEpoch ~/ 1000),
+      updatedAt: (DateTime.utc(2026).millisecondsSinceEpoch ~/ 1000),
       executionTerminal: true,
       state: ThreadToolItemStateView(
         invocation: const ThreadToolInvocationView(
@@ -314,11 +365,14 @@ void main() {
           arguments: '{}',
         ),
         lifecycle: SucceededThreadToolView(
-          DateTime.utc(2026),
-          ThreadToolOutputView(
+          (DateTime.utc(2026).millisecondsSinceEpoch ~/ 1000),
+          ThreadToolOutput(
             result: 'ok',
             attachments: const [],
-            outputArtifacts: artifacts,
+            outputArtifacts: [
+              for (final artifact in artifacts)
+                OpaqueArtifactJson(json: jsonEncode(artifact)),
+            ],
           ),
         ),
         userInput: ThreadToolUserInputView(
@@ -341,10 +395,11 @@ void main() {
         ),
       ),
     );
-    transport.seedTimelineItems('thread-main', [toolItem]);
+    transport.seedItems('thread-main', [toolItem]);
     final connection = await transport.openTimeline('thread-main');
     addTearDown(connection.close);
-    final baseline = await connection.initial();
+    final tail = _Tail(connection);
+    final baseline = await tail.baseline();
     final item = baseline.items.singleWhere((entry) => entry.id == 'tool-big');
 
     // 产物：预览数组为空（不把大载荷塞进 Message.metadata），详情引用保真实总长。
@@ -421,8 +476,7 @@ void main() {
   });
 
   test('推理分块额度耗尽不是伪删除：保留身份与详情，只有 canonical 消失才 Remove', () async {
-    final transport = DemoStudioTransport();
-    await transport.readBootstrap();
+    final transport = DemoTimelineContent();
     final firstChunk = 'x' * (32 * 1024);
     final secondChunk = 'y' * 100;
     ThreadItemView reasoning({
@@ -434,22 +488,25 @@ void main() {
       turnId: 'turn-seed',
       ordinal: 6001,
       revision: revision,
-      createdAt: DateTime.utc(2026),
-      updatedAt: DateTime.utc(2026),
+      createdAt: (DateTime.utc(2026).millisecondsSinceEpoch ~/ 1000),
+      updatedAt: (DateTime.utc(2026).millisecondsSinceEpoch ~/ 1000),
       executionTerminal: true,
       state: ThreadThinkingItemStateView(
         summary: const [],
         content: content,
-        lifecycle: CompletedThreadContentView(DateTime.utc(2026)),
+        lifecycle: CompletedThreadContentView(
+          (DateTime.utc(2026).millisecondsSinceEpoch ~/ 1000),
+        ),
       ),
     );
 
-    transport.seedTimelineItems('thread-main', [
+    transport.seedItems('thread-main', [
       reasoning(content: [firstChunk, secondChunk]),
     ]);
     final connection = await transport.openTimeline('thread-main');
     addTearDown(connection.close);
-    final baseline = await connection.initial();
+    final tail = _Tail(connection);
+    final baseline = await tail.baseline();
     final item = baseline.items.singleWhere((entry) => entry.id == 'reasoning');
     final state = item.item.state as ThreadThinkingItemStateView;
     final ref0 = item.detailFor(const ThreadThinkingContentFieldView(0))!;
@@ -461,11 +518,11 @@ void main() {
     expect(item.omittedBytes, 100);
 
     // chunk0 继续增长：只推进元数据，chunk1 仍然存在，绝不产生 Remove。
-    final pending = connection.next();
-    transport.seedTimelineItems('thread-main', [
+    final pending = tail.update();
+    transport.seedItems('thread-main', [
       reasoning(revision: 2, content: ['$firstChunk more', secondChunk]),
     ]);
-    final patch = (await pending)! as StudioTimelinePatch;
+    final patch = (await pending) as StudioTimelinePatch;
     expect(patch.changes.whereType<StudioTimelineRemove>(), isEmpty);
     final update = patch.changes.single as StudioTimelineUpdateItem;
     final chunk0Field = update.fields.where(
@@ -488,11 +545,11 @@ void main() {
     );
 
     // canonical 真的少了一段才发 Remove。
-    final pendingRemoval = connection.next();
-    transport.seedTimelineItems('thread-main', [
+    final pendingRemoval = tail.update();
+    transport.seedItems('thread-main', [
       reasoning(revision: 3, content: [firstChunk]),
     ]);
-    final removal = (await pendingRemoval)! as StudioTimelinePatch;
+    final removal = await pendingRemoval as StudioTimelinePatch;
     final removedField = removal.changes
         .whereType<StudioTimelineUpdateItem>()
         .single
@@ -502,29 +559,31 @@ void main() {
   });
 
   test('参数化字段详情按绑定 token 逐块读取，跨 scope/版本复用被拒', () async {
-    final transport = DemoStudioTransport();
-    await transport.readBootstrap();
+    final transport = DemoTimelineContent();
     final bigChunk = 'z' * (3 * 64 * 1024);
-    transport.seedTimelineItems('thread-main', [
+    transport.seedItems('thread-main', [
       ThreadItemView(
         id: 'reason-chunks',
         threadId: 'thread-main',
         turnId: 'turn-seed',
         ordinal: 6100,
         revision: 1,
-        createdAt: DateTime.utc(2026),
-        updatedAt: DateTime.utc(2026),
+        createdAt: (DateTime.utc(2026).millisecondsSinceEpoch ~/ 1000),
+        updatedAt: (DateTime.utc(2026).millisecondsSinceEpoch ~/ 1000),
         executionTerminal: true,
         state: ThreadThinkingItemStateView(
           summary: const [],
           content: [bigChunk, 'tail'],
-          lifecycle: CompletedThreadContentView(DateTime.utc(2026)),
+          lifecycle: CompletedThreadContentView(
+            (DateTime.utc(2026).millisecondsSinceEpoch ~/ 1000),
+          ),
         ),
       ),
     ]);
     final connection = await transport.openTimeline('thread-main');
     addTearDown(connection.close);
-    final baseline = await connection.initial();
+    final tail = _Tail(connection);
+    final baseline = await tail.baseline();
     final item = baseline.items.singleWhere(
       (entry) => entry.id == 'reason-chunks',
     );
@@ -632,8 +691,7 @@ void main() {
   });
 
   test('详情 token 绑定 Thread 与 item：跨身份/跨连接复用一律拒绝', () async {
-    final transport = DemoStudioTransport();
-    await transport.readBootstrap();
+    final transport = DemoTimelineContent();
     final body = 'q' * (200 * 1024);
     ThreadItemView wide(String id, int ordinal) => ThreadItemView(
       id: id,
@@ -641,26 +699,30 @@ void main() {
       turnId: 'turn-seed',
       ordinal: ordinal,
       revision: 1,
-      createdAt: DateTime.utc(2026),
-      updatedAt: DateTime.utc(2026),
+      createdAt: (DateTime.utc(2026).millisecondsSinceEpoch ~/ 1000),
+      updatedAt: (DateTime.utc(2026).millisecondsSinceEpoch ~/ 1000),
       state: ThreadTextItemStateView(
         channel: ThreadTextChannel.finalAnswer,
         text: body,
         attachments: const [],
-        lifecycle: CompletedThreadContentView(DateTime.utc(2026)),
+        lifecycle: CompletedThreadContentView(
+          (DateTime.utc(2026).millisecondsSinceEpoch ~/ 1000),
+        ),
       ),
     );
-    transport.seedTimelineItems('thread-main', [
+    transport.seedItems('thread-main', [
       wide('item-a', 7000),
       wide('item-b', 7001),
     ]);
-    transport.seedTimelineItems('thread-alt', [wide('item-a', 7100)]);
+    transport.seedItems('thread-alt', [wide('item-a', 7100)]);
     final main = await transport.openTimeline('thread-main');
     final alt = await transport.openTimeline('thread-alt');
     addTearDown(main.close);
     addTearDown(alt.close);
-    final baseline = await main.initial();
-    final altBaseline = await alt.initial();
+    final mainTail = _Tail(main);
+    final altTail = _Tail(alt);
+    final baseline = await mainTail.baseline();
+    final altBaseline = await altTail.baseline();
     final item = baseline.items.singleWhere((entry) => entry.id == 'item-a');
     final firstBlock = await main.readDetail(
       itemId: 'item-a',
@@ -716,14 +778,14 @@ void main() {
   });
 
   test('落在 UTF-8 续字节上的详情游标被判非法，不泄漏解码异常', () async {
-    final transport = DemoStudioTransport();
-    await transport.readBootstrap();
-    transport.seedTimelineItems('thread-main', [
+    final transport = DemoTimelineContent();
+    transport.seedItems('thread-main', [
       text(id: 'wide', ordinal: 7200, body: '汉' * 40),
     ]);
     final connection = await transport.openTimeline('thread-main');
     addTearDown(connection.close);
-    final baseline = await connection.initial();
+    final tail = _Tail(connection);
+    final baseline = await tail.baseline();
     final item = baseline.items.singleWhere((entry) => entry.id == 'wide');
     final firstBlock = await connection.readDetail(
       itemId: 'wide',
@@ -763,8 +825,7 @@ void main() {
   });
 
   test('预算重新分配挤掉已交付预览时显式重同步，不伪装连续', () async {
-    final transport = DemoStudioTransport();
-    await transport.readBootstrap();
+    final transport = DemoTimelineContent();
     final first = 'a' * (16 * 1024);
     final second = 'b' * (16 * 1024);
     ThreadItemView reasoning({
@@ -776,22 +837,25 @@ void main() {
       turnId: 'turn-seed',
       ordinal: 6200,
       revision: revision,
-      createdAt: DateTime.utc(2026),
-      updatedAt: DateTime.utc(2026),
+      createdAt: (DateTime.utc(2026).millisecondsSinceEpoch ~/ 1000),
+      updatedAt: (DateTime.utc(2026).millisecondsSinceEpoch ~/ 1000),
       executionTerminal: true,
       state: ThreadThinkingItemStateView(
         summary: const [],
         content: content,
-        lifecycle: CompletedThreadContentView(DateTime.utc(2026)),
+        lifecycle: CompletedThreadContentView(
+          (DateTime.utc(2026).millisecondsSinceEpoch ~/ 1000),
+        ),
       ),
     );
 
-    transport.seedTimelineItems('thread-main', [
+    transport.seedItems('thread-main', [
       reasoning(content: [first, second]),
     ]);
     final connection = await transport.openTimeline('thread-main');
     addTearDown(connection.close);
-    final baseline = await connection.initial();
+    final tail = _Tail(connection);
+    final baseline = await tail.baseline();
     final item = baseline.items.singleWhere(
       (entry) => entry.id == 'reason-budget',
     );
@@ -802,11 +866,11 @@ void main() {
     );
 
     // 前一段增长吃掉整份额度：后一段预览被挤空而原文没有变短 → 无法证明连续。
-    final pending = connection.next();
-    transport.seedTimelineItems('thread-main', [
+    final pending = tail.update();
+    transport.seedItems('thread-main', [
       reasoning(revision: 2, content: ['$first${'a' * 2048}', second]),
     ]);
-    final update = (await pending)!;
+    final update = await pending;
     expect(
       update,
       isA<StudioTimelineResync>(),
@@ -828,20 +892,20 @@ void main() {
   });
 
   test('更高 revision 的原文确实变短时原位替换，不当作预算缩减', () async {
-    final transport = DemoStudioTransport();
-    await transport.readBootstrap();
-    transport.seedTimelineItems('thread-main', [
+    final transport = DemoTimelineContent();
+    transport.seedItems('thread-main', [
       text(id: 'shrink', ordinal: 6300, body: 'body-long-value'),
     ]);
     final connection = await transport.openTimeline('thread-main');
     addTearDown(connection.close);
-    await connection.initial();
+    final tail = _Tail(connection);
+    await tail.baseline();
 
-    final pending = connection.next();
-    transport.seedTimelineItems('thread-main', [
+    final pending = tail.update();
+    transport.seedItems('thread-main', [
       text(id: 'shrink', ordinal: 6300, revision: 2, body: 'abc'),
     ]);
-    final patch = (await pending)!;
+    final patch = await pending;
     expect(patch, isA<StudioTimelinePatch>(), reason: '权威缩短是合法修订');
     final update =
         (patch as StudioTimelinePatch).changes.single
@@ -852,17 +916,16 @@ void main() {
   });
 
   test('短/空字段不耗光共享预算，问答全部可显示且无省略', () async {
-    final transport = DemoStudioTransport();
-    await transport.readBootstrap();
-    transport.seedTimelineItems('thread-main', [
+    final transport = DemoTimelineContent();
+    transport.seedItems('thread-main', [
       ThreadItemView(
         id: 'ask-short',
         threadId: 'thread-main',
         turnId: 'turn-seed',
         ordinal: 6400,
         revision: 1,
-        createdAt: DateTime.utc(2026),
-        updatedAt: DateTime.utc(2026),
+        createdAt: (DateTime.utc(2026).millisecondsSinceEpoch ~/ 1000),
+        updatedAt: (DateTime.utc(2026).millisecondsSinceEpoch ~/ 1000),
         executionTerminal: true,
         state: ThreadToolItemStateView(
           invocation: const ThreadToolInvocationView(
@@ -871,16 +934,12 @@ void main() {
             arguments: '',
           ),
           lifecycle: SucceededThreadToolView(
-            DateTime.utc(2026),
-            const ThreadToolOutputView(
-              result: '',
-              attachments: [],
-              outputArtifacts: [],
-            ),
+            (DateTime.utc(2026).millisecondsSinceEpoch ~/ 1000),
+            ThreadToolOutput(result: '', attachments: [], outputArtifacts: []),
           ),
           userInput: ThreadToolUserInputView(
             interactionId: 'interaction-short',
-            questions: const [
+            questions: [
               UserQuestionView(
                 id: 'q1',
                 header: '',
@@ -901,7 +960,8 @@ void main() {
     ]);
     final connection = await transport.openTimeline('thread-main');
     addTearDown(connection.close);
-    final baseline = await connection.initial();
+    final tail = _Tail(connection);
+    final baseline = await tail.baseline();
     final item = baseline.items.singleWhere((entry) => entry.id == 'ask-short');
     final input = (item.item.state as ThreadToolItemStateView).userInput!;
     expect(input.questionText(0), 'Hi');
@@ -914,8 +974,7 @@ void main() {
   });
 
   test('计划确认的权威决定标记不被正文预算截掉', () async {
-    final transport = DemoStudioTransport();
-    await transport.readBootstrap();
+    final transport = DemoTimelineContent();
     // 问题正文先占一部分额度，剩余额度仍要能交付非空反馈。
     final longPlan = '# 计划标题\n\n${'正文' * 4000}';
     final feedback = '反馈' * 8000;
@@ -925,8 +984,8 @@ void main() {
       turnId: 'turn-seed',
       ordinal: 6500,
       revision: 1,
-      createdAt: DateTime.utc(2026),
-      updatedAt: DateTime.utc(2026),
+      createdAt: (DateTime.utc(2026).millisecondsSinceEpoch ~/ 1000),
+      updatedAt: (DateTime.utc(2026).millisecondsSinceEpoch ~/ 1000),
       executionTerminal: true,
       state: ThreadToolItemStateView(
         invocation: const ThreadToolInvocationView(
@@ -935,12 +994,8 @@ void main() {
           arguments: '{}',
         ),
         lifecycle: SucceededThreadToolView(
-          DateTime.utc(2026),
-          const ThreadToolOutputView(
-            result: 'ok',
-            attachments: [],
-            outputArtifacts: [],
-          ),
+          (DateTime.utc(2026).millisecondsSinceEpoch ~/ 1000),
+          ThreadToolOutput(result: 'ok', attachments: [], outputArtifacts: []),
         ),
         userInput: ThreadToolUserInputView(
           interactionId: 'interaction-plan',
@@ -969,9 +1024,10 @@ void main() {
       agentSessionPlanReviseAnswer:
           PlanConfirmationDecisionView.revisionRequested,
     }.entries) {
-      transport.seedTimelineItems('thread-main', [plan(decision: entry.key)]);
+      transport.seedItems('thread-main', [plan(decision: entry.key)]);
       final connection = await transport.openTimeline('thread-main');
-      final baseline = await connection.initial();
+      final tail = _Tail(connection);
+      final baseline = await tail.baseline();
       final item = baseline.items.singleWhere((e) => e.id == 'plan-ask');
       final input = (item.item.state as ThreadToolItemStateView).userInput!;
       expect(
@@ -1013,7 +1069,8 @@ void main() {
     final transport = await seeded();
     final connection = await transport.openTimeline('thread-main');
     addTearDown(connection.close);
-    final baseline = await connection.initial();
+    final tail = _Tail(connection);
+    final baseline = await tail.baseline();
 
     final page = await connection.page(before: baseline.before, limit: 32);
     expect(page.items.length, 32);
@@ -1034,30 +1091,32 @@ void main() {
   });
 
   test('空字段声明不是免费结构：不可缩结构超单条上限时 typed Overloaded', () async {
-    final transport = DemoStudioTransport();
-    await transport.readBootstrap();
+    final transport = DemoTimelineContent();
     // 一万多个空分块：正文全是空串，但每个分块都有自己的身份、字段声明与容器成本。
-    transport.seedTimelineItems('thread-main', [
+    transport.seedItems('thread-main', [
       ThreadItemView(
         id: 'reason-empty',
         threadId: 'thread-main',
         turnId: 'turn-seed',
         ordinal: 8000,
         revision: 1,
-        createdAt: DateTime.utc(2026),
-        updatedAt: DateTime.utc(2026),
+        createdAt: (DateTime.utc(2026).millisecondsSinceEpoch ~/ 1000),
+        updatedAt: (DateTime.utc(2026).millisecondsSinceEpoch ~/ 1000),
         executionTerminal: true,
         state: ThreadThinkingItemStateView(
           summary: const [],
           content: List.filled(12000, ''),
-          lifecycle: CompletedThreadContentView(DateTime.utc(2026)),
+          lifecycle: CompletedThreadContentView(
+            (DateTime.utc(2026).millisecondsSinceEpoch ~/ 1000),
+          ),
         ),
       ),
     ]);
     final connection = await transport.openTimeline('thread-main');
     addTearDown(connection.close);
+    final tail = _Tail(connection);
     await expectLater(
-      connection.initial(),
+      tail.baseline(),
       throwsA(
         isA<StudioFailure>()
             .having(
@@ -1069,24 +1128,41 @@ void main() {
       ),
       reason: '空正文的字段声明仍有结构性成本，不能被当成免费内容',
     );
-    // 首帧已经消费：失败不把同一连接变成“再拿一页”的入口，也不半发布副本。
-    await expectLater(
-      connection.initial(),
+    // 首帧失败即封本连接准入：再次订阅是 typed Cancelled（关闭优先于重复
+    // 消费者的 Conflict），失败不把同一连接变成“再拿一页”的入口。
+    expect(
+      () => connection.events.listen((_) {}),
       throwsA(
         isA<StudioFailure>().having(
           (failure) => failure.code,
           'code',
-          StudioFailureCode.conflict,
+          StudioFailureCode.cancelled,
         ),
       ),
+    );
+    // 源仍超限：旧 feed 的失败不被当成“源已修好”，恢复只能新 open 取新基线，
+    // 新连接重新计量同一事实并再次 typed Overloaded。
+    final reopened = await transport.openTimeline('thread-main');
+    addTearDown(reopened.close);
+    await expectLater(
+      _Tail(reopened).baseline(),
+      throwsA(
+        isA<StudioFailure>()
+            .having(
+              (failure) => failure.code,
+              'code',
+              StudioFailureCode.overloaded,
+            )
+            .having((failure) => failure.retryable, 'retryable', isFalse),
+      ),
+      reason: '新 open 的新 baseline 仍按同一预算计量，不因旧 feed 失败而放宽',
     );
   });
 
   test('Raw.notice 是不可缩静态结构：超限 typed Overloaded，不被裁空', () async {
-    final transport = DemoStudioTransport();
-    await transport.readBootstrap();
+    final transport = DemoTimelineContent();
     final notice = 'n' * (300 * 1024);
-    transport.seedTimelineItems('thread-main', [
+    transport.seedItems('thread-main', [
       raw(
         id: 'raw-huge',
         ordinal: 8010,
@@ -1096,8 +1172,9 @@ void main() {
     ]);
     final connection = await transport.openTimeline('thread-main');
     addTearDown(connection.close);
+    final tail = _Tail(connection);
     await expectLater(
-      connection.initial(),
+      tail.baseline(),
       throwsA(
         isA<StudioFailure>()
             .having(
@@ -1109,9 +1186,12 @@ void main() {
       ),
       reason: 'static 原文超结构上限时明确报告资源限制，不回退完整载荷也不伪装 EOF',
     );
-    // 页查询同样 typed 失败，而不是静默丢掉该条或返回空页。
+    // 页查询同样 typed 失败，而不是静默丢掉该条或返回空页：首帧失败已封旧
+    // feed 准入，因此该风险用独立未终止的连接验证。
+    final pageConnection = await transport.openTimeline('thread-main');
+    addTearDown(pageConnection.close);
     await expectLater(
-      connection.page(limit: 32),
+      pageConnection.page(limit: 32),
       throwsA(
         isA<StudioFailure>().having(
           (failure) => failure.code,
@@ -1123,11 +1203,10 @@ void main() {
   });
 
   test('结构挤占正文额度：预览变短但保真实总长、详情入口与静态原文', () async {
-    final transport = DemoStudioTransport();
-    await transport.readBootstrap();
+    final transport = DemoTimelineContent();
     final notice = 'n' * (245 * 1024);
     final body = 'b' * 40000;
-    transport.seedTimelineItems('thread-main', [
+    transport.seedItems('thread-main', [
       raw(
         id: 'raw-budget',
         ordinal: 8020,
@@ -1137,7 +1216,8 @@ void main() {
     ]);
     final connection = await transport.openTimeline('thread-main');
     addTearDown(connection.close);
-    final baseline = await connection.initial();
+    final tail = _Tail(connection);
+    final baseline = await tail.baseline();
     final item = baseline.items.singleWhere(
       (entry) => entry.id == 'raw-budget',
     );
@@ -1169,17 +1249,17 @@ void main() {
   });
 
   test('页预算 2 MiB 提前截页：游标连续覆盖更早条目，不伪造 EOF', () async {
-    final transport = DemoStudioTransport();
-    await transport.readBootstrap();
+    final transport = DemoTimelineContent();
     final notice = 'n' * (200 * 1024);
     const total = 60;
-    transport.seedTimelineItems('thread-main', [
+    transport.seedItems('thread-main', [
       for (var index = 0; index < total; index++)
         raw(id: 'big-$index', ordinal: 1000 + index, notice: notice),
     ]);
     final connection = await transport.openTimeline('thread-main');
     addTearDown(connection.close);
-    final baseline = await connection.initial();
+    final tail = _Tail(connection);
+    final baseline = await tail.baseline();
     expect(
       baseline.items.length,
       lessThan(32),
@@ -1235,8 +1315,7 @@ void main() {
   });
 
   test('连续性副本按 8 MiB 而非仅 100 条淘汰：被淘汰身份显式重同步', () async {
-    final transport = DemoStudioTransport();
-    await transport.readBootstrap();
+    final transport = DemoTimelineContent();
     // 每条的结构与正文合计接近单条上限：8 MiB 副本只能容纳约 32 条，远少于 100 条。
     final notice = 'n' * (240 * 1024);
     final body = 'b' * 40000;
@@ -1254,18 +1333,19 @@ void main() {
         ),
       );
     }
-    transport.seedTimelineItems('thread-main', seeds);
+    transport.seedItems('thread-main', seeds);
     final connection = await transport.openTimeline('thread-main');
     addTearDown(connection.close);
-    final baseline = await connection.initial();
+    final tail = _Tail(connection);
+    final baseline = await tail.baseline();
     expect(baseline.items.length, lessThanOrEqualTo(8));
     expect(baseline.items.first.id, 'seed-big-0', reason: '首帧是这 8 条的小页');
 
     for (var index = 0; index < 34; index++) {
       final id = 'stream-big-$index';
       ordinals[id] = 2000 + index;
-      final pending = connection.next();
-      transport.seedTimelineItems('thread-main', [
+      final pending = tail.update();
+      transport.seedItems('thread-main', [
         raw(
           id: id,
           ordinal: 2000 + index,
@@ -1273,7 +1353,7 @@ void main() {
           payloads: [RawHistoryPayload('json', 1, body)],
         ),
       ]);
-      final patch = (await pending)! as StudioTimelinePatch;
+      final patch = (await pending) as StudioTimelinePatch;
       expect(patch.changes.whereType<StudioTimelineRemove>(), isEmpty);
     }
     expect(
@@ -1284,8 +1364,8 @@ void main() {
 
     // 首帧里最早的一条此刻已被字节预算淘汰：它的后续事实变化无法用差量证明。
     final evicted = baseline.items.first.id;
-    final pending = connection.next();
-    transport.seedTimelineItems('thread-main', [
+    final pending = tail.update();
+    transport.seedItems('thread-main', [
       raw(
         id: evicted,
         ordinal: ordinals[evicted]!,
@@ -1294,7 +1374,7 @@ void main() {
         payloads: [RawHistoryPayload('json', 1, '$body-2')],
       ),
     ]);
-    final update = (await pending)!;
+    final update = await pending;
     expect(
       update,
       isA<StudioTimelineResync>(),
@@ -1310,61 +1390,77 @@ void main() {
     );
   });
 
-  test('next 的预算错误是 typed 且不推进已交付水位：修好后仍需显式重同步', () async {
-    final transport = DemoStudioTransport();
-    await transport.readBootstrap();
-    transport.seedTimelineItems('thread-main', [
+  test('推送预算错误终止旧 feed：源修好后只能由新 baseline 恢复', () async {
+    final transport = DemoTimelineContent();
+    transport.seedItems('thread-main', [
       text(id: 'small-1', ordinal: 100),
       text(id: 'small-2', ordinal: 101),
     ]);
     final connection = await transport.openTimeline('thread-main');
     addTearDown(connection.close);
-    final baseline = await connection.initial();
+    final iterator = StreamIterator<StudioTimelineFeedFrame>(connection.events);
+    addTearDown(iterator.cancel);
+    expect(await iterator.moveNext(), isTrue);
+    final first = iterator.current as StudioTimelineFeedData;
+    expect(first.deliverySequence, 1);
+    final baseline = (first.event as StudioTimelineFeedBaseline).baseline;
+    await connection.ackThrough(1);
 
-    final pending = connection.next();
-    transport.seedTimelineItems('thread-main', [
+    // 一条无法计量的巨大条目：投送失败是 typed Failure，不被吞成空差量或 EOF。
+    transport.seedItems('thread-main', [
       raw(id: 'huge', ordinal: 200, notice: 'n' * (300 * 1024)),
     ]);
+    expect(await iterator.moveNext(), isTrue);
+    final terminal = iterator.current as StudioTimelineFeedFailure;
+    expect(terminal.error.code, StudioFailureCode.overloaded);
+    expect(terminal.error.retryable, isFalse);
+
+    // 旧 feed 已终态：即使源被修好，同一连接也不再交付 Data——失败不被当成
+    // “可继续的水位”，也不静默恢复成正常流。
+    transport.retractItem('thread-main', 'huge');
+    await pumpEventQueue();
+    expect(
+      await iterator.moveNext(),
+      isFalse,
+      reason: '源恢复不能复活旧 feed：终态之后没有任何 Data 帧',
+    );
     await expectLater(
-      pending,
+      Future<void>.sync(() => connection.ackThrough(1)),
       throwsA(
-        isA<StudioFailure>()
-            .having(
-              (failure) => failure.code,
-              'code',
-              StudioFailureCode.overloaded,
-            )
-            .having((failure) => failure.retryable, 'retryable', isFalse),
+        isA<StudioFailure>().having(
+          (failure) => failure.code,
+          'code',
+          StudioFailureCode.cancelled,
+        ),
       ),
-      reason: '无法计量的条目不能被吞成空差量或 EOF',
+      reason: '终态后准入已封，ACK 同样是 typed Cancelled',
     );
 
-    // 撤下无法预览的条目后，跨越的变化只能显式重同步：失败的重试没有推进成功水位。
-    final retry = connection.next();
-    transport.retractTimelineItem('thread-main', 'huge');
-    final update = (await retry)!;
+    // 恢复只能新 open 取新 baseline：版本按 canonical 真实推进（新增 + 撤回），
+    // 超限条目不再进入新事实。
+    final recovered = await transport.openTimeline('thread-main');
+    addTearDown(recovered.close);
+    final recoveredBaseline = await _Tail(recovered).baseline();
     expect(
-      update,
-      isA<StudioTimelineResync>(),
-      reason: '预算失败的 next 不推进 delivered 水位，不能把跨过的事实当作单条连续差量',
+      recoveredBaseline.version,
+      greaterThan(baseline.version),
+      reason: '两次 canonical 变化都真实推进新连接的基线版本',
     );
-    final resync = (update as StudioTimelineResync).baseline;
-    expect(resync.version, greaterThan(baseline.version));
-    final ids = resync.items.map((item) => item.id).toList();
+    final ids = recoveredBaseline.items.map((item) => item.id).toList();
     expect(ids, containsAllInOrder(['small-1', 'small-2']));
     expect(ids, isNot(contains('huge')));
   });
 
   test('详情默认块大小是 64 KiB：首块恰好 65536 字节并可继续读到末尾', () async {
-    final transport = DemoStudioTransport();
-    await transport.readBootstrap();
+    final transport = DemoTimelineContent();
     final body = 'a' * 70000;
-    transport.seedTimelineItems('thread-main', [
+    transport.seedItems('thread-main', [
       text(id: 'detail-default', ordinal: 8030, body: body),
     ]);
     final connection = await transport.openTimeline('thread-main');
     addTearDown(connection.close);
-    final baseline = await connection.initial();
+    final tail = _Tail(connection);
+    final baseline = await tail.baseline();
     final item = baseline.items.singleWhere(
       (entry) => entry.id == 'detail-default',
     );
@@ -1394,21 +1490,20 @@ void main() {
   });
 
   test('产物预览数组不随原始元素数计费：多元素合法 JSON 仍给有界预览与完整详情', () async {
-    final transport = DemoStudioTransport();
-    await transport.readBootstrap();
+    final transport = DemoTimelineContent();
     // 两万个完全合法的小 JSON 元素：动态原文只经字段与详情交付，预览数组恒为空。
     final artifacts = [
       for (var index = 0; index < 20000; index++) {'n': index},
     ];
-    transport.seedTimelineItems('thread-main', [
+    transport.seedItems('thread-main', [
       ThreadItemView(
         id: 'tool-artifacts',
         threadId: 'thread-main',
         turnId: 'turn-seed',
         ordinal: 8040,
         revision: 1,
-        createdAt: DateTime.utc(2026),
-        updatedAt: DateTime.utc(2026),
+        createdAt: (DateTime.utc(2026).millisecondsSinceEpoch ~/ 1000),
+        updatedAt: (DateTime.utc(2026).millisecondsSinceEpoch ~/ 1000),
         executionTerminal: true,
         state: ThreadToolItemStateView(
           invocation: const ThreadToolInvocationView(
@@ -1417,11 +1512,14 @@ void main() {
             arguments: '{"a":1}',
           ),
           lifecycle: SucceededThreadToolView(
-            DateTime.utc(2026),
-            ThreadToolOutputView(
+            (DateTime.utc(2026).millisecondsSinceEpoch ~/ 1000),
+            ThreadToolOutput(
               result: 'ok',
               attachments: const [],
-              outputArtifacts: artifacts,
+              outputArtifacts: [
+                for (final artifact in artifacts)
+                  OpaqueArtifactJson(json: jsonEncode(artifact)),
+              ],
             ),
           ),
         ),
@@ -1429,8 +1527,9 @@ void main() {
     ]);
     final connection = await transport.openTimeline('thread-main');
     addTearDown(connection.close);
+    final tail = _Tail(connection);
 
-    final baseline = await connection.initial();
+    final baseline = await tail.baseline();
     final item = baseline.items.singleWhere(
       (entry) => entry.id == 'tool-artifacts',
     );
@@ -1482,55 +1581,54 @@ void main() {
   test(
     'Turn 失败/回滚的任意 String 元数据计入不可缩结构：initial/page 均 typed Overloaded',
     () async {
-      // 每个失败分类字段各 100 KiB：三项合计 300 KiB 才超单条上限，漏计任意一项
-      // 只剩 200 KiB 不会超限，因此这一个场景独特地咬住三项都被计入。
-      final part = 'x' * (100 * 1024);
+      // 新 schema 将 category/providerKind 封闭为枚举；仍可任意增长的 code
+      // 和 message 各 150 KiB。漏计任一 String 域都会错误地落回单条上限内。
+      final part = 'x' * (150 * 1024);
       // 两种情况都让 reason 保持很短，只有另外的任意 String 原文超限。
-      final states = <String, StudioTurnState>{
-        'failure-metadata': FailedStudioTurnState(
+      final states = <String, TurnState>{
+        'failure-metadata': FailedTurn(
           startedAt: 1,
           completedAt: 2,
-          failure: StudioTurnFailureView(
-            category: part,
-            providerKind: part,
+          failure: TurnFailure(
+            category: TurnFailureCategory.provider,
+            providerKind: ProviderFailureKind.protocol,
             code: part,
             httpStatus: 500,
-            message: 'boom',
-            retryable: true,
-            retryAfterMs: 1000,
+            message: part,
+            retry: const RetryDisposition.retryable(retryAfterMs: 1000),
           ),
         ),
-        'rollover-error': BudgetLimitedStudioTurnState(
+        'rollover-error': BudgetLimitedTurn(
           startedAt: 1,
           completedAt: 2,
-          limit: const StudioTurnBudgetLimit(
-            kind: StudioTurnBudgetLimitKind.modelStep,
-            usage: StudioTurnBudgetUsage(
+          limit: const BudgetLimitSnapshot(
+            kind: BudgetLimitKind.modelStep,
+            usage: BudgetUsage(
               modelSteps: 1,
               toolCalls: 0,
               waitCalls: 0,
               elapsedMs: 1,
             ),
           ),
-          rollover: RolloverFailed(error: 'y' * (300 * 1024)),
+          rollover: TurnRolloverFailed(error: 'y' * (300 * 1024)),
         ),
       };
       for (final entry in states.entries) {
-        final transport = DemoStudioTransport();
-        await transport.readBootstrap();
-        transport.seedTimelineItems('thread-main', [
+        final transport = DemoTimelineContent();
+        transport.seedItems('thread-main', [
           ThreadItemView(
             id: 'turn-${entry.key}',
             threadId: 'thread-main',
             turnId: 'turn-seed',
             ordinal: 9000,
             revision: 1,
-            createdAt: DateTime.utc(2026),
-            updatedAt: DateTime.utc(2026),
+            createdAt: (DateTime.utc(2026).millisecondsSinceEpoch ~/ 1000),
+            updatedAt: (DateTime.utc(2026).millisecondsSinceEpoch ~/ 1000),
             state: ThreadTurnItemStateView(entry.value),
           ),
         ]);
         final connection = await transport.openTimeline('thread-main');
+        final tail = _Tail(connection);
         final overloaded = throwsA(
           isA<StudioFailure>()
               .having(
@@ -1541,11 +1639,14 @@ void main() {
               .having((failure) => failure.retryable, 'retryable', isFalse),
         );
         await expectLater(
-          connection.initial(),
+          tail.baseline(),
           overloaded,
           reason: '${entry.key} 的任意 String 原文不能被固定壳豁免',
         );
-        await expectLater(connection.page(limit: 32), overloaded);
+        // 首帧失败已封旧 feed 准入：页查询的同一风险用独立未终止连接验证。
+        final pageConnection = await transport.openTimeline('thread-main');
+        await expectLater(pageConnection.page(limit: 32), overloaded);
+        await pageConnection.close();
         await connection.close();
       }
     },
@@ -1558,8 +1659,8 @@ void main() {
       turnId: 'turn-seed',
       ordinal: 9100,
       revision: 1,
-      createdAt: DateTime.utc(2026),
-      updatedAt: DateTime.utc(2026),
+      createdAt: (DateTime.utc(2026).millisecondsSinceEpoch ~/ 1000),
+      updatedAt: (DateTime.utc(2026).millisecondsSinceEpoch ~/ 1000),
       executionTerminal: true,
       state: ThreadToolItemStateView(
         invocation: const ThreadToolInvocationView(
@@ -1568,16 +1669,12 @@ void main() {
           arguments: '{}',
         ),
         lifecycle: SucceededThreadToolView(
-          DateTime.utc(2026),
-          const ThreadToolOutputView(
-            result: 'ok',
-            attachments: [],
-            outputArtifacts: [],
-          ),
+          (DateTime.utc(2026).millisecondsSinceEpoch ~/ 1000),
+          ThreadToolOutput(result: 'ok', attachments: [], outputArtifacts: []),
         ),
         userInput: ThreadToolUserInputView(
           interactionId: 'interaction-orphan',
-          questions: const [
+          questions: [
             UserQuestionView(
               id: 'q1',
               header: '确认',
@@ -1588,7 +1685,7 @@ void main() {
             ),
           ],
           state: ResolvedThreadToolUserInputView([
-            const ThreadUserInputAnswerView(questionId: 'q1', answers: ['yes']),
+            ThreadUserInputAnswerView(questionId: 'q1', answers: ['yes']),
             // 找不到对应问题的答案：既没有内容字段，也无法按字段读详情。
             ThreadUserInputAnswerView(
               questionId: 'orphan-q',
@@ -1600,14 +1697,12 @@ void main() {
     );
 
     // 短值：原样保留在 typed 结构里，可寻址字段照常交付、不受影响。
-    final shortTransport = DemoStudioTransport();
-    await shortTransport.readBootstrap();
-    shortTransport.seedTimelineItems('thread-main', [
-      ask(orphanAnswer: 'ghost'),
-    ]);
+    final shortTransport = DemoTimelineContent();
+    shortTransport.seedItems('thread-main', [ask(orphanAnswer: 'ghost')]);
     final shortConnection = await shortTransport.openTimeline('thread-main');
     addTearDown(shortConnection.close);
-    final baseline = await shortConnection.initial();
+    final shortTail = _Tail(shortConnection);
+    final baseline = await shortTail.baseline();
     final item = baseline.items.singleWhere(
       (entry) => entry.id == 'ask-orphan',
     );
@@ -1630,13 +1725,13 @@ void main() {
     expect(item.omittedBytes, 0);
 
     // 巨值：没有字段与详情入口可供按需读取，只能按实际字节计入不可缩结构。
-    final longTransport = DemoStudioTransport();
-    await longTransport.readBootstrap();
-    longTransport.seedTimelineItems('thread-main', [
+    final longTransport = DemoTimelineContent();
+    longTransport.seedItems('thread-main', [
       ask(orphanAnswer: 'g' * (300 * 1024)),
     ]);
     final longConnection = await longTransport.openTimeline('thread-main');
     addTearDown(longConnection.close);
+    final longTail = _Tail(longConnection);
     final overloaded = throwsA(
       isA<StudioFailure>()
           .having(
@@ -1647,11 +1742,14 @@ void main() {
           .having((failure) => failure.retryable, 'retryable', isFalse),
     );
     await expectLater(
-      longConnection.initial(),
+      longTail.baseline(),
       overloaded,
       reason: '任意 String 不能因为找不到问题就被固定壳豁免',
     );
-    await expectLater(longConnection.page(limit: 32), overloaded);
+    // 首帧失败已封旧 feed 准入：页查询的同一风险用独立未终止连接验证。
+    final longPageConnection = await longTransport.openTimeline('thread-main');
+    addTearDown(longPageConnection.close);
+    await expectLater(longPageConnection.page(limit: 32), overloaded);
   });
 }
 
@@ -1661,4 +1759,47 @@ String _withOffset(String token, int offset) {
       jsonDecode(utf8.decode(base64Url.decode(token))) as Map<String, Object?>;
   payload['o'] = offset;
   return base64Url.encode(utf8.encode(jsonEncode(payload)));
+}
+
+/// 逐帧读取 demo 推送的测试 helper：每帧读出后立即按生产口径 ACK，保持两额度窗口
+/// 可用；typed Failure 帧按原错误抛出，与旧 pump 语义一致。
+final class _Tail {
+  _Tail(this.connection)
+    : _iterator = StreamIterator<StudioTimelineFeedFrame>(connection.events);
+
+  final StudioTimelineConnection connection;
+  final StreamIterator<StudioTimelineFeedFrame> _iterator;
+
+  Future<StudioTimelineFeedData> _data() async {
+    if (!await _iterator.moveNext()) {
+      throw StateError('The demo tail feed ended');
+    }
+    final frame = _iterator.current;
+    if (frame is StudioTimelineFeedFailure) {
+      throw frame.error;
+    }
+    if (frame is! StudioTimelineFeedData) {
+      throw StateError('Unexpected feed frame: $frame');
+    }
+    await connection.ackThrough(frame.deliverySequence);
+    return frame;
+  }
+
+  Future<StudioTimelineBaseline> baseline() async {
+    final frame = await _data();
+    final event = frame.event;
+    if (event is! StudioTimelineFeedBaseline) {
+      throw StateError('Unexpected feed event: $event');
+    }
+    return event.baseline;
+  }
+
+  Future<StudioTimelineUpdate> update() async {
+    final frame = await _data();
+    final event = frame.event;
+    if (event is! StudioTimelineFeedUpdate) {
+      throw StateError('Unexpected feed event: $event');
+    }
+    return event.update;
+  }
 }

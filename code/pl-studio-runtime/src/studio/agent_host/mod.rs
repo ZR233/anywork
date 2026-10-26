@@ -2,4 +2,6 @@
 mod repository;
 pub(in crate::studio) mod workspace_preparation;
 pub(in crate::studio) mod worktree_lease;
-pub(in crate::studio) use repository::ThreadWriteBehindWriter;
+pub(in crate::studio) use repository::{
+    ThreadWriteBehindWriter, WriteBehindFlushFailure, WriteBehindRetryFailure, WriterHealth,
+};

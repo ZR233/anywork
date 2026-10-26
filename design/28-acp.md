@@ -103,7 +103,7 @@ ZIP 内容完整性以中央目录（Central Directory）声明与实际解压�
 
 配置模式版本 `24 → 25` 执行显式迁移：保留旧 ACP 账号的 `accountId`、`provider` 与显示名称，剥离旧版 `program` 与 `args` 字段的执行语义（旧字段仅在迁移解码边界读取，同时保留备份与恢复材料，不删除旧目录或官方凭据，也不在迁移期间静默发起网络下载）。迁移后若本地尚无匹配的 `1.4.1` 受管安装，则保留账号并在界面提示用户执行准备；若本地已有同描述符的完整受管安装，则校验通过后直接复用。修改账号显示名称不触发重新下载、重新认证或连接代次变更。自动后台升级、一键卸载及历史版本清理不在当前版本范围内。
 
-### 跨层接口收敛清单
+### 28.8.1 跨层接口收敛清单
 
 - **`AcpAccountUpdate` 与 `AcpAccountSettings`**：更新请求仅含 `accountId`、`name`、`provider`；设置快照另含单调递增的 `connectionRevision`。
 - **`AcpAccountTemplate`**：以 `supportedVersion` 取代旧的 `defaultArgs`，保留宿主平台安装支持标记及官方说明／条款链接。

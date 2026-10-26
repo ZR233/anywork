@@ -20,6 +20,14 @@
 // （`screenshot-`/`snapshot-`/`tree-<phase>-<ordinal>-<name>`）都带 phase 段，
 // 后一阶段不会覆盖前一阶段的产物；captures 同时用 `file`/`snapshotFile`/
 // `treeFile` 显式给出引用，消费者不需要从文件名猜快照。
+//
+// 分层重构后的取数契约：所有事实来自当前只读 Driver 投影
+// `settings.acpAuthLoaded`（布尔的已加载标记）、
+// `settings.acpAuth{loaded,revision,updatedAt,accounts[]}`（逐账号认证观察）、
+// `settings.acpAccounts[]`（ACP 接入配置身份）、
+// `settings.acpInstall{loaded,revision,installations[]}`（准备阶段、进度、发行描述符、
+// 失败类别与就绪结果）与 `settings.accounts`/`settings.nativeTemplates`（Native 对照）。
+// 旅程只轮询该投影，不订阅、不占用预算 permit、不启动检查/安装，也不直接改仓储。
 import 'dart:async';
 import 'dart:convert';
 import 'dart:ffi';
@@ -496,6 +504,36 @@ Map<String, Map<String, Object?>> acpAccountsView(
   return view;
 }
 
+/// `acpAuthLoaded`（扁平布尔）与 `acpAuth.loaded`（账号级盒子的加载标记）必须一致。
+///
+/// 两者是同一 canonical 镜像的两种读法；不一致说明投影自相矛盾，不能拿其中任一个
+/// 继续判断“未加载 / revision 0 已加载 / 已加载但无账号”这三种不同事实。
+void requireAcpAuthLoadedConsistent(Map<String, dynamic> snapshot) {
+  final settings = snapshot['settings'];
+  if (settings is! Map) throw StateError('settings snapshot is missing');
+  final flag = settings['acpAuthLoaded'];
+  final auth = settings['acpAuth'];
+  final loaded = auth is Map ? auth['loaded'] : null;
+  if (flag is! bool || loaded is! bool || flag != loaded) {
+    throw StateError(
+      'acpAuthLoaded=$flag disagrees with acpAuth.loaded=$loaded',
+    );
+  }
+  if (flag) {
+    final revision = auth is Map ? auth['revision'] : null;
+    if (revision is! int) {
+      throw StateError('loaded acpAuth must publish an int revision');
+    }
+    final accounts = auth is Map ? auth['accounts'] : null;
+    if (accounts is! List) {
+      throw StateError('loaded acpAuth must publish an accounts list');
+    }
+  } else if (auth is Map &&
+      (auth['revision'] != null || auth['accounts'] != null)) {
+    throw StateError('unloaded acpAuth must not fabricate revision/accounts');
+  }
+}
+
 /// 两份 canonical 配置是否一致；列表顺序与认证到达顺序不改变配置事实。
 bool acpAccountsEqual(
   Map<String, Map<String, Object?>> left,
@@ -948,6 +986,9 @@ class _Journey {
   Future<Map<String, dynamic>> _snapshot() async {
     final snapshot = await driver.readSnapshot();
     _lastSnapshot = snapshot;
+    // 每次观察都核对扁平标记与账号级盒子一致：两者不一致时，“未加载 / revision 0
+    // 已加载 / 已加载但无账号”三类事实无法区分，不能再继续消费这份快照。
+    requireAcpAuthLoadedConsistent(snapshot);
     if (_accountsBaselineReady) {
       final accounts = _accounts(snapshot);
       if (_savingNewAccount) {

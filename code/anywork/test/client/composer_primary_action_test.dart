@@ -1,14 +1,14 @@
-import 'package:anywork/src/domain/models/composer_primary_action.dart';
-import 'package:anywork_client/models.dart';
+import 'package:anywork/src/features/conversation/state/composer_primary_action.dart';
+import 'package:anywork_client/conversation.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-const _execution = AgentExecutionView(
+const _execution = AgentExecution(
   id: 'exec-1',
   phase: AgentExecutionPhase.running,
   turnId: 'turn-1',
 );
 
-const _stopping = AgentExecutionView(
+const _stopping = AgentExecution(
   id: 'exec-1',
   phase: AgentExecutionPhase.stopping,
   turnId: 'turn-1',
@@ -18,7 +18,7 @@ final _continuation = ContinuationView(
   id: 'continuation-1',
   sourceTurnId: 'turn-1',
   reason: ContinuationReason.userStop,
-  createdAt: DateTime.utc(2026, 1, 1),
+  createdAt: 1767225600,
   claimed: false,
 );
 
@@ -26,13 +26,13 @@ final _claimed = ContinuationView(
   id: 'continuation-1',
   sourceTurnId: 'turn-1',
   reason: ContinuationReason.userStop,
-  createdAt: DateTime.utc(2026, 1, 1),
+  createdAt: 1767225600,
   claimed: true,
 );
 
 ComposerPrimaryAction _resolve({
   bool isChild = false,
-  AgentExecutionView? execution,
+  AgentExecution? execution,
   ContinuationView? continuation,
   bool hasContent = false,
   bool submissionPending = false,
@@ -77,7 +77,7 @@ void main() {
         AgentExecutionPhase.awaitingAdmission,
       ]) {
         final action = _resolve(
-          execution: AgentExecutionView(id: 'exec-1', phase: phase),
+          execution: AgentExecution(id: 'exec-1', phase: phase, turnId: null),
         );
         expect(action.kind, ComposerPrimaryActionKind.stop, reason: '$phase');
         expect(action.enabled, isTrue, reason: '$phase');

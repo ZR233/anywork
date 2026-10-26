@@ -620,6 +620,272 @@ as int,
 }
 
 /// @nodoc
+mixin _$BridgeFeedCloseOutcome {
+
+
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeFeedCloseOutcome);
+}
+
+
+@override
+int get hashCode => runtimeType.hashCode;
+
+@override
+String toString() {
+    return 'BridgeFeedCloseOutcome()';
+}
+
+
+}
+
+/// @nodoc
+class $BridgeFeedCloseOutcomeCopyWith<$Res>  {
+$BridgeFeedCloseOutcomeCopyWith(BridgeFeedCloseOutcome _, $Res Function(BridgeFeedCloseOutcome) __);
+}
+
+
+/// Adds pattern-matching-related methods to [BridgeFeedCloseOutcome].
+extension BridgeFeedCloseOutcomePatterns on BridgeFeedCloseOutcome {
+/// A variant of `map` that fallback to returning `orElse`.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case _:
+///     return orElse();
+/// }
+/// ```
+
+@optionalTypeArgs TResult maybeMap<TResult extends Object?>({TResult Function( BridgeFeedCloseOutcome_Clean value)?  clean,TResult Function( BridgeFeedCloseOutcome_Unresolved value)?  unresolved,required TResult orElse(),}){
+final _that = this;
+switch (_that) {
+case BridgeFeedCloseOutcome_Clean() when clean != null:
+return clean(_that);case BridgeFeedCloseOutcome_Unresolved() when unresolved != null:
+return unresolved(_that);case _:
+  return orElse();
+
+}
+}
+/// A `switch`-like method, using callbacks.
+///
+/// Callbacks receives the raw object, upcasted.
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case final Subclass2 value:
+///     return ...;
+/// }
+/// ```
+
+@optionalTypeArgs TResult map<TResult extends Object?>({required TResult Function( BridgeFeedCloseOutcome_Clean value)  clean,required TResult Function( BridgeFeedCloseOutcome_Unresolved value)  unresolved,}){
+final _that = this;
+switch (_that) {
+case BridgeFeedCloseOutcome_Clean():
+return clean(_that);case BridgeFeedCloseOutcome_Unresolved():
+return unresolved(_that);}
+}
+/// A variant of `map` that fallback to returning `null`.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case _:
+///     return null;
+/// }
+/// ```
+
+@optionalTypeArgs TResult? mapOrNull<TResult extends Object?>({TResult? Function( BridgeFeedCloseOutcome_Clean value)?  clean,TResult? Function( BridgeFeedCloseOutcome_Unresolved value)?  unresolved,}){
+final _that = this;
+switch (_that) {
+case BridgeFeedCloseOutcome_Clean() when clean != null:
+return clean(_that);case BridgeFeedCloseOutcome_Unresolved() when unresolved != null:
+return unresolved(_that);case _:
+  return null;
+
+}
+}
+/// A variant of `when` that fallback to an `orElse` callback.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case _:
+///     return orElse();
+/// }
+/// ```
+
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function()?  clean,TResult Function( List<BridgeFeedCloseIssue> issues)?  unresolved,required TResult orElse(),}) {final _that = this;
+switch (_that) {
+case BridgeFeedCloseOutcome_Clean() when clean != null:
+return clean();case BridgeFeedCloseOutcome_Unresolved() when unresolved != null:
+return unresolved(_that.issues);case _:
+  return orElse();
+
+}
+}
+/// A `switch`-like method, using callbacks.
+///
+/// As opposed to `map`, this offers destructuring.
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case Subclass2(:final field2):
+///     return ...;
+/// }
+/// ```
+
+@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function()  clean,required TResult Function( List<BridgeFeedCloseIssue> issues)  unresolved,}) {final _that = this;
+switch (_that) {
+case BridgeFeedCloseOutcome_Clean():
+return clean();case BridgeFeedCloseOutcome_Unresolved():
+return unresolved(_that.issues);}
+}
+/// A variant of `when` that fallback to returning `null`
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case _:
+///     return null;
+/// }
+/// ```
+
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function()?  clean,TResult? Function( List<BridgeFeedCloseIssue> issues)?  unresolved,}) {final _that = this;
+switch (_that) {
+case BridgeFeedCloseOutcome_Clean() when clean != null:
+return clean();case BridgeFeedCloseOutcome_Unresolved() when unresolved != null:
+return unresolved(_that.issues);case _:
+  return null;
+
+}
+}
+
+}
+
+/// @nodoc
+
+
+class BridgeFeedCloseOutcome_Clean extends BridgeFeedCloseOutcome {
+  const BridgeFeedCloseOutcome_Clean(): super._();
+
+
+
+
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeFeedCloseOutcome_Clean);
+}
+
+
+@override
+int get hashCode => runtimeType.hashCode;
+
+@override
+String toString() {
+    return 'BridgeFeedCloseOutcome.clean()';
+}
+
+
+}
+
+
+
+
+/// @nodoc
+
+
+class BridgeFeedCloseOutcome_Unresolved extends BridgeFeedCloseOutcome {
+  const BridgeFeedCloseOutcome_Unresolved({required  List<BridgeFeedCloseIssue> issues}): _issues = issues,super._();
+
+
+ final  List<BridgeFeedCloseIssue> _issues;
+ List<BridgeFeedCloseIssue> get issues {
+  if (_issues is EqualUnmodifiableListView) return _issues;
+  // ignore: implicit_dynamic_type
+  return EqualUnmodifiableListView(_issues);
+}
+
+
+/// Create a copy of BridgeFeedCloseOutcome
+/// with the given fields replaced by the non-null parameter values.
+@JsonKey(includeFromJson: false, includeToJson: false)
+@pragma('vm:prefer-inline')
+$BridgeFeedCloseOutcome_UnresolvedCopyWith<BridgeFeedCloseOutcome_Unresolved> get copyWith => _$BridgeFeedCloseOutcome_UnresolvedCopyWithImpl<BridgeFeedCloseOutcome_Unresolved>(this, _$identity);
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeFeedCloseOutcome_Unresolved&&const DeepCollectionEquality().equals(other.issues, _issues));
+}
+
+
+@override
+int get hashCode {
+    return Object.hash(runtimeType,const DeepCollectionEquality().hash(_issues));
+}
+
+@override
+String toString() {
+    return 'BridgeFeedCloseOutcome.unresolved(issues: $issues)';
+}
+
+
+}
+
+/// @nodoc
+abstract mixin class $BridgeFeedCloseOutcome_UnresolvedCopyWith<$Res> implements $BridgeFeedCloseOutcomeCopyWith<$Res> {
+  factory $BridgeFeedCloseOutcome_UnresolvedCopyWith(BridgeFeedCloseOutcome_Unresolved value, $Res Function(BridgeFeedCloseOutcome_Unresolved) _then) = _$BridgeFeedCloseOutcome_UnresolvedCopyWithImpl;
+@useResult
+$Res call({
+ List<BridgeFeedCloseIssue> issues
+});
+
+
+
+
+}
+/// @nodoc
+class _$BridgeFeedCloseOutcome_UnresolvedCopyWithImpl<$Res>
+    implements $BridgeFeedCloseOutcome_UnresolvedCopyWith<$Res> {
+  _$BridgeFeedCloseOutcome_UnresolvedCopyWithImpl(this._self, this._then);
+
+  final BridgeFeedCloseOutcome_Unresolved _self;
+  final $Res Function(BridgeFeedCloseOutcome_Unresolved) _then;
+
+/// Create a copy of BridgeFeedCloseOutcome
+/// with the given fields replaced by the non-null parameter values.
+@pragma('vm:prefer-inline') $Res call({Object? issues = null,}) {
+  return _then(BridgeFeedCloseOutcome_Unresolved(
+issues: null == issues ? _self._issues : issues // ignore: cast_nullable_to_non_nullable
+as List<BridgeFeedCloseIssue>,
+  ));
+}
+
+
+}
+
+/// @nodoc
 mixin _$BridgeThreadUserInputFieldPart {
 
 
@@ -1457,6 +1723,311 @@ as String,
 }
 
 /// @nodoc
+mixin _$BridgeTimelineEvent {
+
+
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeTimelineEvent);
+}
+
+
+@override
+int get hashCode => runtimeType.hashCode;
+
+@override
+String toString() {
+    return 'BridgeTimelineEvent()';
+}
+
+
+}
+
+/// @nodoc
+class $BridgeTimelineEventCopyWith<$Res>  {
+$BridgeTimelineEventCopyWith(BridgeTimelineEvent _, $Res Function(BridgeTimelineEvent) __);
+}
+
+
+/// Adds pattern-matching-related methods to [BridgeTimelineEvent].
+extension BridgeTimelineEventPatterns on BridgeTimelineEvent {
+/// A variant of `map` that fallback to returning `orElse`.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case _:
+///     return orElse();
+/// }
+/// ```
+
+@optionalTypeArgs TResult maybeMap<TResult extends Object?>({TResult Function( BridgeTimelineEvent_Baseline value)?  baseline,TResult Function( BridgeTimelineEvent_Update value)?  update,required TResult orElse(),}){
+final _that = this;
+switch (_that) {
+case BridgeTimelineEvent_Baseline() when baseline != null:
+return baseline(_that);case BridgeTimelineEvent_Update() when update != null:
+return update(_that);case _:
+  return orElse();
+
+}
+}
+/// A `switch`-like method, using callbacks.
+///
+/// Callbacks receives the raw object, upcasted.
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case final Subclass2 value:
+///     return ...;
+/// }
+/// ```
+
+@optionalTypeArgs TResult map<TResult extends Object?>({required TResult Function( BridgeTimelineEvent_Baseline value)  baseline,required TResult Function( BridgeTimelineEvent_Update value)  update,}){
+final _that = this;
+switch (_that) {
+case BridgeTimelineEvent_Baseline():
+return baseline(_that);case BridgeTimelineEvent_Update():
+return update(_that);}
+}
+/// A variant of `map` that fallback to returning `null`.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case _:
+///     return null;
+/// }
+/// ```
+
+@optionalTypeArgs TResult? mapOrNull<TResult extends Object?>({TResult? Function( BridgeTimelineEvent_Baseline value)?  baseline,TResult? Function( BridgeTimelineEvent_Update value)?  update,}){
+final _that = this;
+switch (_that) {
+case BridgeTimelineEvent_Baseline() when baseline != null:
+return baseline(_that);case BridgeTimelineEvent_Update() when update != null:
+return update(_that);case _:
+  return null;
+
+}
+}
+/// A variant of `when` that fallback to an `orElse` callback.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case _:
+///     return orElse();
+/// }
+/// ```
+
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function( BridgeTimelineBaseline baseline)?  baseline,TResult Function( BridgeTimelineUpdate update)?  update,required TResult orElse(),}) {final _that = this;
+switch (_that) {
+case BridgeTimelineEvent_Baseline() when baseline != null:
+return baseline(_that.baseline);case BridgeTimelineEvent_Update() when update != null:
+return update(_that.update);case _:
+  return orElse();
+
+}
+}
+/// A `switch`-like method, using callbacks.
+///
+/// As opposed to `map`, this offers destructuring.
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case Subclass2(:final field2):
+///     return ...;
+/// }
+/// ```
+
+@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function( BridgeTimelineBaseline baseline)  baseline,required TResult Function( BridgeTimelineUpdate update)  update,}) {final _that = this;
+switch (_that) {
+case BridgeTimelineEvent_Baseline():
+return baseline(_that.baseline);case BridgeTimelineEvent_Update():
+return update(_that.update);}
+}
+/// A variant of `when` that fallback to returning `null`
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case _:
+///     return null;
+/// }
+/// ```
+
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function( BridgeTimelineBaseline baseline)?  baseline,TResult? Function( BridgeTimelineUpdate update)?  update,}) {final _that = this;
+switch (_that) {
+case BridgeTimelineEvent_Baseline() when baseline != null:
+return baseline(_that.baseline);case BridgeTimelineEvent_Update() when update != null:
+return update(_that.update);case _:
+  return null;
+
+}
+}
+
+}
+
+/// @nodoc
+
+
+class BridgeTimelineEvent_Baseline extends BridgeTimelineEvent {
+  const BridgeTimelineEvent_Baseline({required this.baseline}): super._();
+
+
+ final  BridgeTimelineBaseline baseline;
+
+/// Create a copy of BridgeTimelineEvent
+/// with the given fields replaced by the non-null parameter values.
+@JsonKey(includeFromJson: false, includeToJson: false)
+@pragma('vm:prefer-inline')
+$BridgeTimelineEvent_BaselineCopyWith<BridgeTimelineEvent_Baseline> get copyWith => _$BridgeTimelineEvent_BaselineCopyWithImpl<BridgeTimelineEvent_Baseline>(this, _$identity);
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeTimelineEvent_Baseline&&(identical(other.baseline, baseline) || other.baseline == baseline));
+}
+
+
+@override
+int get hashCode {
+    return Object.hash(runtimeType,baseline);
+}
+
+@override
+String toString() {
+    return 'BridgeTimelineEvent.baseline(baseline: $baseline)';
+}
+
+
+}
+
+/// @nodoc
+abstract mixin class $BridgeTimelineEvent_BaselineCopyWith<$Res> implements $BridgeTimelineEventCopyWith<$Res> {
+  factory $BridgeTimelineEvent_BaselineCopyWith(BridgeTimelineEvent_Baseline value, $Res Function(BridgeTimelineEvent_Baseline) _then) = _$BridgeTimelineEvent_BaselineCopyWithImpl;
+@useResult
+$Res call({
+ BridgeTimelineBaseline baseline
+});
+
+
+
+
+}
+/// @nodoc
+class _$BridgeTimelineEvent_BaselineCopyWithImpl<$Res>
+    implements $BridgeTimelineEvent_BaselineCopyWith<$Res> {
+  _$BridgeTimelineEvent_BaselineCopyWithImpl(this._self, this._then);
+
+  final BridgeTimelineEvent_Baseline _self;
+  final $Res Function(BridgeTimelineEvent_Baseline) _then;
+
+/// Create a copy of BridgeTimelineEvent
+/// with the given fields replaced by the non-null parameter values.
+@pragma('vm:prefer-inline') $Res call({Object? baseline = null,}) {
+  return _then(BridgeTimelineEvent_Baseline(
+baseline: null == baseline ? _self.baseline : baseline // ignore: cast_nullable_to_non_nullable
+as BridgeTimelineBaseline,
+  ));
+}
+
+
+}
+
+/// @nodoc
+
+
+class BridgeTimelineEvent_Update extends BridgeTimelineEvent {
+  const BridgeTimelineEvent_Update({required this.update}): super._();
+
+
+ final  BridgeTimelineUpdate update;
+
+/// Create a copy of BridgeTimelineEvent
+/// with the given fields replaced by the non-null parameter values.
+@JsonKey(includeFromJson: false, includeToJson: false)
+@pragma('vm:prefer-inline')
+$BridgeTimelineEvent_UpdateCopyWith<BridgeTimelineEvent_Update> get copyWith => _$BridgeTimelineEvent_UpdateCopyWithImpl<BridgeTimelineEvent_Update>(this, _$identity);
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeTimelineEvent_Update&&(identical(other.update, update) || other.update == update));
+}
+
+
+@override
+int get hashCode {
+    return Object.hash(runtimeType,update);
+}
+
+@override
+String toString() {
+    return 'BridgeTimelineEvent.update(update: $update)';
+}
+
+
+}
+
+/// @nodoc
+abstract mixin class $BridgeTimelineEvent_UpdateCopyWith<$Res> implements $BridgeTimelineEventCopyWith<$Res> {
+  factory $BridgeTimelineEvent_UpdateCopyWith(BridgeTimelineEvent_Update value, $Res Function(BridgeTimelineEvent_Update) _then) = _$BridgeTimelineEvent_UpdateCopyWithImpl;
+@useResult
+$Res call({
+ BridgeTimelineUpdate update
+});
+
+
+$BridgeTimelineUpdateCopyWith<$Res> get update;
+
+}
+/// @nodoc
+class _$BridgeTimelineEvent_UpdateCopyWithImpl<$Res>
+    implements $BridgeTimelineEvent_UpdateCopyWith<$Res> {
+  _$BridgeTimelineEvent_UpdateCopyWithImpl(this._self, this._then);
+
+  final BridgeTimelineEvent_Update _self;
+  final $Res Function(BridgeTimelineEvent_Update) _then;
+
+/// Create a copy of BridgeTimelineEvent
+/// with the given fields replaced by the non-null parameter values.
+@pragma('vm:prefer-inline') $Res call({Object? update = null,}) {
+  return _then(BridgeTimelineEvent_Update(
+update: null == update ? _self.update : update // ignore: cast_nullable_to_non_nullable
+as BridgeTimelineUpdate,
+  ));
+}
+
+/// Create a copy of BridgeTimelineEvent
+/// with the given fields replaced by the non-null parameter values.
+@override
+@pragma('vm:prefer-inline')
+$BridgeTimelineUpdateCopyWith<$Res> get update {
+
+  return $BridgeTimelineUpdateCopyWith<$Res>(_self.update, (value) {
+    return _then(_self.copyWith(update: value));
+  });
+}
+}
+
+/// @nodoc
 mixin _$BridgeTimelineFieldChange {
 
 
@@ -1820,6 +2391,351 @@ int get hashCode => runtimeType.hashCode;
 @override
 String toString() {
     return 'BridgeTimelineFieldChange.remove()';
+}
+
+
+}
+
+
+
+
+/// @nodoc
+mixin _$BridgeTimelineFrame {
+
+
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeTimelineFrame);
+}
+
+
+@override
+int get hashCode => runtimeType.hashCode;
+
+@override
+String toString() {
+    return 'BridgeTimelineFrame()';
+}
+
+
+}
+
+/// @nodoc
+class $BridgeTimelineFrameCopyWith<$Res>  {
+$BridgeTimelineFrameCopyWith(BridgeTimelineFrame _, $Res Function(BridgeTimelineFrame) __);
+}
+
+
+/// Adds pattern-matching-related methods to [BridgeTimelineFrame].
+extension BridgeTimelineFramePatterns on BridgeTimelineFrame {
+/// A variant of `map` that fallback to returning `orElse`.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case _:
+///     return orElse();
+/// }
+/// ```
+
+@optionalTypeArgs TResult maybeMap<TResult extends Object?>({TResult Function( BridgeTimelineFrame_Data value)?  data,TResult Function( BridgeTimelineFrame_Failure value)?  failure,TResult Function( BridgeTimelineFrame_Closed value)?  closed,required TResult orElse(),}){
+final _that = this;
+switch (_that) {
+case BridgeTimelineFrame_Data() when data != null:
+return data(_that);case BridgeTimelineFrame_Failure() when failure != null:
+return failure(_that);case BridgeTimelineFrame_Closed() when closed != null:
+return closed(_that);case _:
+  return orElse();
+
+}
+}
+/// A `switch`-like method, using callbacks.
+///
+/// Callbacks receives the raw object, upcasted.
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case final Subclass2 value:
+///     return ...;
+/// }
+/// ```
+
+@optionalTypeArgs TResult map<TResult extends Object?>({required TResult Function( BridgeTimelineFrame_Data value)  data,required TResult Function( BridgeTimelineFrame_Failure value)  failure,required TResult Function( BridgeTimelineFrame_Closed value)  closed,}){
+final _that = this;
+switch (_that) {
+case BridgeTimelineFrame_Data():
+return data(_that);case BridgeTimelineFrame_Failure():
+return failure(_that);case BridgeTimelineFrame_Closed():
+return closed(_that);}
+}
+/// A variant of `map` that fallback to returning `null`.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case _:
+///     return null;
+/// }
+/// ```
+
+@optionalTypeArgs TResult? mapOrNull<TResult extends Object?>({TResult? Function( BridgeTimelineFrame_Data value)?  data,TResult? Function( BridgeTimelineFrame_Failure value)?  failure,TResult? Function( BridgeTimelineFrame_Closed value)?  closed,}){
+final _that = this;
+switch (_that) {
+case BridgeTimelineFrame_Data() when data != null:
+return data(_that);case BridgeTimelineFrame_Failure() when failure != null:
+return failure(_that);case BridgeTimelineFrame_Closed() when closed != null:
+return closed(_that);case _:
+  return null;
+
+}
+}
+/// A variant of `when` that fallback to an `orElse` callback.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case _:
+///     return orElse();
+/// }
+/// ```
+
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function( BigInt deliverySequence,  BridgeTimelineEvent event)?  data,TResult Function( BridgeError error)?  failure,TResult Function()?  closed,required TResult orElse(),}) {final _that = this;
+switch (_that) {
+case BridgeTimelineFrame_Data() when data != null:
+return data(_that.deliverySequence,_that.event);case BridgeTimelineFrame_Failure() when failure != null:
+return failure(_that.error);case BridgeTimelineFrame_Closed() when closed != null:
+return closed();case _:
+  return orElse();
+
+}
+}
+/// A `switch`-like method, using callbacks.
+///
+/// As opposed to `map`, this offers destructuring.
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case Subclass2(:final field2):
+///     return ...;
+/// }
+/// ```
+
+@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function( BigInt deliverySequence,  BridgeTimelineEvent event)  data,required TResult Function( BridgeError error)  failure,required TResult Function()  closed,}) {final _that = this;
+switch (_that) {
+case BridgeTimelineFrame_Data():
+return data(_that.deliverySequence,_that.event);case BridgeTimelineFrame_Failure():
+return failure(_that.error);case BridgeTimelineFrame_Closed():
+return closed();}
+}
+/// A variant of `when` that fallback to returning `null`
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case _:
+///     return null;
+/// }
+/// ```
+
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function( BigInt deliverySequence,  BridgeTimelineEvent event)?  data,TResult? Function( BridgeError error)?  failure,TResult? Function()?  closed,}) {final _that = this;
+switch (_that) {
+case BridgeTimelineFrame_Data() when data != null:
+return data(_that.deliverySequence,_that.event);case BridgeTimelineFrame_Failure() when failure != null:
+return failure(_that.error);case BridgeTimelineFrame_Closed() when closed != null:
+return closed();case _:
+  return null;
+
+}
+}
+
+}
+
+/// @nodoc
+
+
+class BridgeTimelineFrame_Data extends BridgeTimelineFrame {
+  const BridgeTimelineFrame_Data({required this.deliverySequence, required this.event}): super._();
+
+
+ final  BigInt deliverySequence;
+ final  BridgeTimelineEvent event;
+
+/// Create a copy of BridgeTimelineFrame
+/// with the given fields replaced by the non-null parameter values.
+@JsonKey(includeFromJson: false, includeToJson: false)
+@pragma('vm:prefer-inline')
+$BridgeTimelineFrame_DataCopyWith<BridgeTimelineFrame_Data> get copyWith => _$BridgeTimelineFrame_DataCopyWithImpl<BridgeTimelineFrame_Data>(this, _$identity);
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeTimelineFrame_Data&&(identical(other.deliverySequence, deliverySequence) || other.deliverySequence == deliverySequence)&&(identical(other.event, event) || other.event == event));
+}
+
+
+@override
+int get hashCode {
+    return Object.hash(runtimeType,deliverySequence,event);
+}
+
+@override
+String toString() {
+    return 'BridgeTimelineFrame.data(deliverySequence: $deliverySequence, event: $event)';
+}
+
+
+}
+
+/// @nodoc
+abstract mixin class $BridgeTimelineFrame_DataCopyWith<$Res> implements $BridgeTimelineFrameCopyWith<$Res> {
+  factory $BridgeTimelineFrame_DataCopyWith(BridgeTimelineFrame_Data value, $Res Function(BridgeTimelineFrame_Data) _then) = _$BridgeTimelineFrame_DataCopyWithImpl;
+@useResult
+$Res call({
+ BigInt deliverySequence, BridgeTimelineEvent event
+});
+
+
+$BridgeTimelineEventCopyWith<$Res> get event;
+
+}
+/// @nodoc
+class _$BridgeTimelineFrame_DataCopyWithImpl<$Res>
+    implements $BridgeTimelineFrame_DataCopyWith<$Res> {
+  _$BridgeTimelineFrame_DataCopyWithImpl(this._self, this._then);
+
+  final BridgeTimelineFrame_Data _self;
+  final $Res Function(BridgeTimelineFrame_Data) _then;
+
+/// Create a copy of BridgeTimelineFrame
+/// with the given fields replaced by the non-null parameter values.
+@pragma('vm:prefer-inline') $Res call({Object? deliverySequence = null,Object? event = null,}) {
+  return _then(BridgeTimelineFrame_Data(
+deliverySequence: null == deliverySequence ? _self.deliverySequence : deliverySequence // ignore: cast_nullable_to_non_nullable
+as BigInt,event: null == event ? _self.event : event // ignore: cast_nullable_to_non_nullable
+as BridgeTimelineEvent,
+  ));
+}
+
+/// Create a copy of BridgeTimelineFrame
+/// with the given fields replaced by the non-null parameter values.
+@override
+@pragma('vm:prefer-inline')
+$BridgeTimelineEventCopyWith<$Res> get event {
+
+  return $BridgeTimelineEventCopyWith<$Res>(_self.event, (value) {
+    return _then(_self.copyWith(event: value));
+  });
+}
+}
+
+/// @nodoc
+
+
+class BridgeTimelineFrame_Failure extends BridgeTimelineFrame {
+  const BridgeTimelineFrame_Failure({required this.error}): super._();
+
+
+ final  BridgeError error;
+
+/// Create a copy of BridgeTimelineFrame
+/// with the given fields replaced by the non-null parameter values.
+@JsonKey(includeFromJson: false, includeToJson: false)
+@pragma('vm:prefer-inline')
+$BridgeTimelineFrame_FailureCopyWith<BridgeTimelineFrame_Failure> get copyWith => _$BridgeTimelineFrame_FailureCopyWithImpl<BridgeTimelineFrame_Failure>(this, _$identity);
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeTimelineFrame_Failure&&(identical(other.error, error) || other.error == error));
+}
+
+
+@override
+int get hashCode {
+    return Object.hash(runtimeType,error);
+}
+
+@override
+String toString() {
+    return 'BridgeTimelineFrame.failure(error: $error)';
+}
+
+
+}
+
+/// @nodoc
+abstract mixin class $BridgeTimelineFrame_FailureCopyWith<$Res> implements $BridgeTimelineFrameCopyWith<$Res> {
+  factory $BridgeTimelineFrame_FailureCopyWith(BridgeTimelineFrame_Failure value, $Res Function(BridgeTimelineFrame_Failure) _then) = _$BridgeTimelineFrame_FailureCopyWithImpl;
+@useResult
+$Res call({
+ BridgeError error
+});
+
+
+
+
+}
+/// @nodoc
+class _$BridgeTimelineFrame_FailureCopyWithImpl<$Res>
+    implements $BridgeTimelineFrame_FailureCopyWith<$Res> {
+  _$BridgeTimelineFrame_FailureCopyWithImpl(this._self, this._then);
+
+  final BridgeTimelineFrame_Failure _self;
+  final $Res Function(BridgeTimelineFrame_Failure) _then;
+
+/// Create a copy of BridgeTimelineFrame
+/// with the given fields replaced by the non-null parameter values.
+@pragma('vm:prefer-inline') $Res call({Object? error = null,}) {
+  return _then(BridgeTimelineFrame_Failure(
+error: null == error ? _self.error : error // ignore: cast_nullable_to_non_nullable
+as BridgeError,
+  ));
+}
+
+
+}
+
+/// @nodoc
+
+
+class BridgeTimelineFrame_Closed extends BridgeTimelineFrame {
+  const BridgeTimelineFrame_Closed(): super._();
+
+
+
+
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeTimelineFrame_Closed);
+}
+
+
+@override
+int get hashCode => runtimeType.hashCode;
+
+@override
+String toString() {
+    return 'BridgeTimelineFrame.closed()';
 }
 
 

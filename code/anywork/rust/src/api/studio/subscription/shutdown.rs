@@ -44,7 +44,7 @@ pub async fn subscribe_shutdown_progress() -> Result<BridgeEventSubscription, Br
             thread_receiver: tokio::sync::Mutex::new(None),
             product_topic_receiver: tokio::sync::Mutex::new(None),
             shutdown_receiver: tokio::sync::Mutex::new(Some(events)),
-            startup_receiver: tokio::sync::Mutex::new(None),
+
             facts: Arc::new(SubscriptionCompletionFacts::default()),
         }),
     })

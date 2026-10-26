@@ -42,6 +42,8 @@ use topics::TopicChannels;
 pub struct ProductEventBus {
     store: StudioStore,
     writer: ThreadWriteBehindWriter,
+    persistence_source: Arc<super::runtime::persistence::PersistenceSource>,
+    persistence_queue_source: Arc<super::runtime::persistence::PersistenceQueueSource>,
     /// runtime 内部消费者的显式混合通道；不面向 GUI transport。
     internal: broadcast::Sender<StudioProductEventEnvelope>,
     topics: Arc<std::sync::Mutex<TopicChannels>>,
@@ -80,11 +82,18 @@ struct PersistenceQueuePublication {
 }
 
 impl ProductEventBus {
-    pub(in crate::studio) fn new(store: StudioStore, writer: ThreadWriteBehindWriter) -> Self {
+    pub(in crate::studio) fn new(
+        store: StudioStore,
+        writer: ThreadWriteBehindWriter,
+        persistence_source: Arc<super::runtime::persistence::PersistenceSource>,
+        persistence_queue_source: Arc<super::runtime::persistence::PersistenceQueueSource>,
+    ) -> Self {
         let (internal, _) = broadcast::channel(256);
         Self {
             store,
             writer,
+            persistence_source,
+            persistence_queue_source,
             internal,
             topics: Arc::new(std::sync::Mutex::new(TopicChannels::default())),
             sequence: Arc::new(AtomicU64::new(0)),

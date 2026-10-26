@@ -57,3 +57,19 @@ pub struct ThreadModeCommandReply {
 pub struct StudioCommandRequest {
     pub operation_id: String,
 }
+
+/// Durable evidence from the original input identity index, not a Turn saved marker.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct InputAcceptanceEvidence {
+    pub accepted_sequence: u64,
+    pub request_digest: Option<String>,
+    pub disposition: PersistedInputDisposition,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum PersistedInputDisposition {
+    Consumed,
+    Discarded,
+}

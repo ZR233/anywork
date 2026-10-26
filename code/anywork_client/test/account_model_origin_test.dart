@@ -1,258 +1,189 @@
-import 'dart:async';
-
-import 'package:anywork_client/studio_client.dart';
+import 'package:anywork_client/configuration_ports.dart';
+import 'package:anywork_client/models.dart';
+import 'package:anywork_client/operations_ports.dart';
+import 'package:anywork_client/resources_ports.dart';
 import 'package:test/test.dart';
 
-const _online = AccountModelView(
-  modelId: 'online-model',
-  displayName: 'Online',
-  reasoningEfforts: [],
-  origin: ModelOrigin.online,
-);
-const _bundled = AccountModelView(
-  modelId: 'bundled-model',
-  displayName: 'Bundled',
-  reasoningEfforts: [],
-  origin: ModelOrigin.bundled,
-);
-const _manual = AccountModelView(
-  modelId: 'manual-model',
-  displayName: 'Manual',
-  reasoningEfforts: [],
-  origin: ModelOrigin.manual,
-);
+import 'support/configuration_fixture.dart';
 
-AccountSettingsView _account({
-  List<AccountModelView> models = const [_online, _bundled, _manual],
-  Map<String, String> connections = const {'manual-model': 'http'},
-  Map<String, AccountModelAutoCompactView>? limits,
-}) {
-  return AccountSettingsView(
-    id: 'fixture',
-    name: 'Fixture',
-    baseUrl: 'http://fixture.invalid',
-    defaultModelId: 'manual-model',
-    status: 'ready',
-    usageLabel: '',
-    models: models,
-    modelConnectionModes: connections,
-    autoCompactLimits:
-        limits ??
-        {
-          'manual-model': AccountModelAutoCompactView(
-            modelId: _manual.modelId,
-            overrideLimit: 111,
-          ),
-          'online-model': AccountModelAutoCompactView(modelId: _online.modelId),
-        },
-  );
-}
-
-SettingsStateSnapshot _snapshot(
-  int revision,
-  AccountSettingsView account, {
-  int modelCatalogRevision = 0,
-}) => SettingsStateSnapshot(
-  revision: revision,
-  modelCatalogRevision: modelCatalogRevision,
-  accounts: [account],
-);
-
-class _RemoveCall {
-  _RemoveCall(this.revision, this.accountId, this.modelId, this.operationId);
-  final int revision;
-  final String accountId;
-  final String modelId;
-  final OperationId operationId;
-  final reply = Completer<SettingsCommandReply>();
-}
-
-class _Transport implements StudioTransport {
-  final calls = StreamController<_RemoveCall>();
-  SettingsStateSnapshot? refreshed;
-  int refreshes = 0;
-
-  @override
-  Stream<ProductTopicFrame> subscribeProductTopic(ProductTopic topic) =>
-      const Stream.empty();
-
-  @override
-  Future<SettingsStateSnapshot> readSettingsState() async {
-    refreshes++;
-    return refreshed!;
-  }
-
-  @override
-  Future<SettingsCommandReply> removeAccountModel(
-    int revision,
-    String accountId,
-    String modelId, {
-    required OperationId operationId,
-  }) {
-    final call = _RemoveCall(revision, accountId, modelId, operationId);
-    calls.add(call);
-    return call.reply.future;
-  }
-
-  @override
-  dynamic noSuchMethod(Invocation invocation) =>
-      throw UnsupportedError('Unused: ${invocation.memberName}');
-}
-
-AnyworkClient _client(_Transport transport, AccountSettingsView account) {
-  final client = AnyworkClient(transport: transport, clientId: 'origin-client');
-  client.applyBootstrap(
-    StudioBootstrap(
-      ownerEpoch: 'origin-owner',
-      projectDirectory: ProjectDirectoryState(values: const [], revision: 1),
-      threadDirectory: ThreadDirectoryWindow(threads: const [], revision: 1),
-      agentDirectory: AgentDirectoryState(revision: 1),
-      settingsState: _snapshot(7, account, modelCatalogRevision: 1),
-      recoveryState: RecoveryStateSnapshot(revision: 1),
-      mcpState: McpStateSnapshot(revision: 1),
-      lspState: LspStateSnapshot(revision: 1),
-      skillsByProject: const {},
-      threadModeCatalog: const ThreadModeCatalogView(),
-      accountUsageState: AccountUsageStateSnapshot(revision: 1),
-      updaterState: DisabledUpdaterStateSnapshot(
-        revision: 1,
-        updatedAt: DateTime.utc(2026),
+/// 模型来源（online/bundled/manual）与类型支持现在是原生目录数据：
+/// Rust 在 `ModelDescriptor`/`AccountCatalogEntry.effectiveModels` 上给出
+/// `origin` 与 `typeSupport`，前端 `account_details_view` 只按 origin 分组显示。
+/// 客户端因此不再派生 online/bundled 分组，也不把设置帧回写进目录字段；
+/// 它只保留“manual 自定义模型”这一条 canonical 列表，并把窄删除命令的
+/// canonical revision 送到原生。
+ModelDescriptor _descriptor(String modelId, ModelOrigin origin) =>
+    ModelDescriptor(
+      modelId: modelId,
+      enabled: true,
+      typeSupport: [
+        ModelTypeSupport(modelType: ModelType.text, exclusions: const []),
+      ],
+      origin: origin,
+      displayName: modelId,
+      description: null,
+      contextWindow: 4096,
+      maxContextWindow: 4096,
+      context: const ModelContextResolution(
+        unavailable: null,
+        contextWindow: 4096,
+        inputTokenLimit: 3072,
+        autoCompactLimit: 2048,
+        adjustment: null,
       ),
-      persistenceState: const PersistenceStateSnapshot.ready(),
-    ),
-  );
-  addTearDown(client.close);
-  addTearDown(transport.calls.close);
-  return client;
+      maxOutputTokens: 1024,
+      transport: ModelTransportDescriptor(
+        protocol: 'openai',
+        connectionModes: const [],
+        defaultConnectionMode: 'http',
+      ),
+      capabilities: ModelCapabilities(
+        input: const [],
+        output: const [],
+        streaming: true,
+        temperature: false,
+        reasoning: false,
+        webSearch: false,
+        functionCalling: false,
+        parallelToolCalls: false,
+        customTools: false,
+        freeformTools: false,
+        instructionSnapshotOverrides: false,
+        nativeContextFamily: null,
+      ),
+      reasoning: null,
+      pricing: null,
+    );
+
+AccountConfiguration _account() => AccountConfiguration(
+  accountId: 'fixture',
+  templateId: 'template-a',
+  protocol: 'openai',
+  name: 'Fixture',
+  baseUrl: 'http://fixture.invalid',
+  hasBearerToken: true,
+  bearerTokenEnv: null,
+  billingKind: BillingKind.metered,
+  billingKindOverride: null,
+  disabledModels: const [],
+  usageQueryRevision: 7,
+  catalogId: 'catalog',
+  // Manual declarations are the only models the settings side owns.
+  customModels: [customModel('manual-model', contextWindow: 512)],
+  modelConnectionModes: const [
+    ModelConnection(modelId: 'manual-model', connectionMode: 'http'),
+  ],
+  modelAutoCompactLimits: const [
+    ModelAutoCompact(modelId: 'manual-model', overrideLimit: 111),
+  ],
+);
+
+const _nativeRefusal = StudioFailure(
+  code: StudioFailureCode.conflict,
+  message: 'The scripted native boundary declined this narrow removal',
+  retryable: false,
+  correlationId: 'origin-native-refusal',
+);
+
+Future<ConfigurationFixture> _fixture() async {
+  final fixture = ConfigurationFixture();
+  await fixture.establish(_account());
+  addTearDown(() async {
+    final deadline = DateTime.now().add(const Duration(seconds: 3));
+    final reports = await Future.wait([
+      fixture.repository.close(deadline: deadline),
+      fixture.models.close(deadline: deadline),
+    ]);
+    expect(reports.expand((CloseReport report) => report.unresolved), isEmpty);
+    expect(fixture.budget.usage, isEmpty);
+  });
+  return fixture;
 }
 
 void main() {
-  test(
-    'accountWithCatalogMetadata projects origin groups without modelId diffs',
-    () {
-      final joined = accountWithCatalogMetadata(
-        _account(),
-        const AccountCatalogView.empty(),
-      );
-      expect(joined.onlineModels.map((model) => model.modelId), [
-        'online-model',
-      ]);
-      expect(joined.bundledModels.map((model) => model.modelId), [
-        'bundled-model',
-      ]);
-      expect(joined.customModels.map((model) => model.modelId), [
-        'manual-model',
-      ]);
-      expect(joined.models.map((model) => model.origin), [
-        ModelOrigin.online,
-        ModelOrigin.bundled,
-        ModelOrigin.manual,
-      ]);
-    },
-  );
-
-  test(
-    'removeAccountModel uses canonical revision and merges returned snapshot',
-    () async {
-      final transport = _Transport();
-      final client = _client(transport, _account());
-      final pending = client.settingsCommands.removeAccountModel(
-        'fixture',
-        'manual-model',
-      );
-      final call = await transport.calls.stream.first;
-      expect(call.revision, 7);
-      expect(call.accountId, 'fixture');
-      expect(call.modelId, 'manual-model');
-      expect(
-        call.operationId,
-        client.mutations
-            .latest('settings:account-model:7:fixture:manual-model')!
-            .id,
-      );
-      final remaining = _account(
-        models: const [_online, _bundled],
-        connections: const {},
-        limits: {
-          'online-model': AccountModelAutoCompactView(modelId: _online.modelId),
-        },
-      );
-      call.reply.complete(
-        SettingsCommandReply(
-          snapshot: _snapshot(8, remaining, modelCatalogRevision: 2),
-          receipt: StudioCommandReceipt(
-            operationId: call.operationId,
-            disposition: CommitDisposition.applied,
-            targets: [
-              ResourceStamp(
-                resourceKey: 'settings',
-                ownerEpoch: 'origin-owner',
-                revision: 8,
-              ),
-            ],
-            effect: EffectPoint.immediate,
-            effective: true,
-            durable: true,
-          ),
-        ),
-      );
-      final snapshot = await pending;
-      expect(snapshot.revision, 8);
-      final account = client.settings.state.canonical!.accounts.single;
-      expect(account.models.map((model) => model.modelId), [
-        'online-model',
-        'bundled-model',
-      ]);
-      expect(account.customModels, isEmpty);
-      expect(account.modelConnectionModes.containsKey('manual-model'), isFalse);
-      expect(account.autoCompactLimits.containsKey('manual-model'), isFalse);
-    },
-  );
-
-  test('a newer config response cannot roll back type support and parameter defaults', () {
-    final transport = _Transport();
-    final subscription = transport.calls.stream.listen((_) {});
-    addTearDown(subscription.cancel);
-    final client = _client(transport, _account());
-    final updated = _online.copyWith(
-      typeSupport: const [ModelTypeSupportView(modelType: ModelType.text)],
-      contextWindow: 4096,
-      reasoningEfforts: const ['low', 'high'],
-      defaultReasoningEffort: 'high',
-    );
-    client.settings.merge(
-      _snapshot(7, _account(models: [updated]), modelCatalogRevision: 4),
-    );
-    client.settings.merge(
-      _snapshot(8, _account(models: const [_online]), modelCatalogRevision: 2),
-    );
-    final merged = client.settings.state.canonical!;
-    expect(merged.revision, 8);
-    expect(merged.modelCatalogRevision, 4);
-    final model = merged.accounts.single.modelsFor(type: ModelType.text).single;
-    expect(model.modelId, 'online-model');
-    expect(model.defaultReasoningEffort, 'high');
-    expect(model.reasoningEfforts, ['low', 'high']);
-    final excluded = updated.copyWith(
-      typeSupport: const [
-        ModelTypeSupportView(
-          modelType: ModelType.text,
-          exclusions: [ModelTypeExclusion.contextWindowUnknown],
-        ),
+  test('origin and type support belong to the native catalog, not to a client projection', () {
+    final catalog = AccountCatalogEntry(
+      accountId: 'fixture',
+      credentialRequired: true,
+      capabilitySource: 'template',
+      hostedWebSearch: true,
+      hostedWebSearchDialect: 'responses',
+      standaloneWebSearch: null,
+      promptCacheDialect: 'openai',
+      responsesProgrammaticToolCalling: true,
+      defaultModelId: 'manual-model',
+      effectiveModels: [
+        _descriptor('online-model', ModelOrigin.online),
+        _descriptor('bundled-model', ModelOrigin.bundled),
+        _descriptor('manual-model', ModelOrigin.manual),
       ],
-    );
-    client.settings.merge(
-      _snapshot(8, _account(models: [excluded]), modelCatalogRevision: 5),
-    );
-    expect(
-      client.settings.state.canonical!.accounts.single.modelsFor(
-        type: ModelType.text,
+      modelCatalog: const ModelCatalogStatus(
+        supported: true,
+        source: ModelCatalogSource.cached,
+        probing: false,
+        lastSuccessAt: 1,
+        checkedAt: 1,
+        error: null,
+        cacheWarning: null,
       ),
-      isEmpty,
+    );
+    // The catalog list is native order and native origin; the client never
+    // splits it into derived online/bundled collections.
+    expect(
+      catalog.effectiveModels.map((ModelDescriptor model) => model.origin),
+      [ModelOrigin.online, ModelOrigin.bundled, ModelOrigin.manual],
     );
     expect(
-      client.settings.state.canonical!.accounts.single.models.single.modelId,
-      'online-model',
+      catalog.effectiveModels.map((ModelDescriptor model) => model.modelId),
+      ['online-model', 'bundled-model', 'manual-model'],
     );
+    // Type support (including exclusions) is carried by the descriptor itself.
+    final descriptor = catalog.effectiveModels.first;
+    expect(descriptor.typeSupport.single.modelType, ModelType.text);
+    expect(descriptor.typeSupport.single.exclusions, isEmpty);
+    // The settings-side account keeps only its own manual declarations.
+    final settings = _account();
+    expect(
+      settings.customModels.map(
+        (CustomModelConfiguration model) => model.modelId,
+      ),
+      ['manual-model'],
+    );
+    expect(settings.modelConnectionModes.single.modelId, 'manual-model');
+    expect(settings.modelAutoCompactLimits.single.modelId, 'manual-model');
+  });
+
+  test('narrow removal uses the canonical revision and a rejection leaves canonical intact', () async {
+    final fixture = await _fixture();
+    final ticket = fixture.repository.removeAccountModel(
+      'fixture',
+      'manual-model',
+    );
+    final call = await fixture.port.removed(0);
+    expect(call.request.expectedRevision, 1);
+    expect(call.request.accountId, 'fixture');
+    expect(call.request.modelId, 'manual-model');
+    // Removal never becomes a whole-account write that could resurrect
+    // unrelated catalog or override state.
+    expect(fixture.port.saves, isEmpty);
+
+    await call.native.resultRead(0);
+    call.native
+        .resultAt(0)
+        .reply
+        .completeError(
+          const CommandDispatchFailure.rejected(failure: _nativeRefusal),
+        );
+    final result = await ticket.result;
+    expect(result, isA<RejectedCommandResult<Unit>>());
+    final closing = await call.native.closed(0);
+    closing.reply.complete(
+      FeedCloseReport(
+        feedId: call.native.callId,
+        outcome: const FeedCloseOutcome.clean(),
+      ),
+    );
+    // No optimistic canonical edit: the manual model and its overrides stay.
+    expect(await fixture.repository.loadAccount('fixture'), _account());
   });
 }

@@ -8,15 +8,21 @@ part of 'statistics_view_model.dart';
 
 // GENERATED CODE - DO NOT MODIFY BY HAND
 // ignore_for_file: type=lint, type=warning
-/// Owns statistics filters and their immutable presentation projection.
+/// Owns the statistics page's visibility demand, its observation and its
+/// filters. Every collection, page and read identity stays inside the
+/// Repository; this ViewModel never pages, merges or fabricates a snapshot.
 
 @ProviderFor(StatisticsViewModel)
 final statisticsViewModelProvider = StatisticsViewModelProvider._();
 
-/// Owns statistics filters and their immutable presentation projection.
+/// Owns the statistics page's visibility demand, its observation and its
+/// filters. Every collection, page and read identity stays inside the
+/// Repository; this ViewModel never pages, merges or fabricates a snapshot.
 final class StatisticsViewModelProvider
-    extends $NotifierProvider<StatisticsViewModel, StatisticsViewState> {
-  /// Owns statistics filters and their immutable presentation projection.
+    extends $AsyncNotifierProvider<StatisticsViewModel, StatisticsViewState> {
+  /// Owns the statistics page's visibility demand, its observation and its
+  /// filters. Every collection, page and read identity stays inside the
+  /// Repository; this ViewModel never pages, merges or fabricates a snapshot.
   StatisticsViewModelProvider._()
     : super(
         from: null,
@@ -34,32 +40,28 @@ final class StatisticsViewModelProvider
   @$internal
   @override
   StatisticsViewModel create() => StatisticsViewModel();
-
-  /// {@macro riverpod.override_with_value}
-  Override overrideWithValue(StatisticsViewState value) {
-    return $ProviderOverride(
-      origin: this,
-      providerOverride: $SyncValueProvider<StatisticsViewState>(value),
-    );
-  }
 }
 
 String _$statisticsViewModelHash() =>
-    r'94d635a90ee6da8ce3ccc2f74b2ad0d44e6cef3b';
+    r'f2ffc031106ec6e44c365e33864c2f0395747162';
 
-/// Owns statistics filters and their immutable presentation projection.
+/// Owns the statistics page's visibility demand, its observation and its
+/// filters. Every collection, page and read identity stays inside the
+/// Repository; this ViewModel never pages, merges or fabricates a snapshot.
 
-abstract class _$StatisticsViewModel extends $Notifier<StatisticsViewState> {
-  StatisticsViewState build();
+abstract class _$StatisticsViewModel
+    extends $AsyncNotifier<StatisticsViewState> {
+  FutureOr<StatisticsViewState> build();
   @$mustCallSuper
   @override
   WhenComplete runBuild() {
-    final ref = this.ref as $Ref<StatisticsViewState, StatisticsViewState>;
+    final ref =
+        this.ref as $Ref<AsyncValue<StatisticsViewState>, StatisticsViewState>;
     final element =
         ref.element
             as $ClassProviderElement<
-              AnyNotifier<StatisticsViewState, StatisticsViewState>,
-              StatisticsViewState,
+              AnyNotifier<AsyncValue<StatisticsViewState>, StatisticsViewState>,
+              AsyncValue<StatisticsViewState>,
               Object?,
               Object?
             >;

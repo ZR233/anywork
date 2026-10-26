@@ -1,242 +1,182 @@
-part of 'studio_shell.dart';
+import 'package:anywork_client/models.dart';
+import 'package:anywork_client/modes.dart';
+import 'package:anywork_client/workspace.dart';
+import 'package:flutter/material.dart';
+import 'package:flutter/widget_previews.dart';
+
+import '../../app/theme/material3_theme.dart';
+import '../../l10n/app_localizations.dart';
+import '../../l10n/studio_l10n.dart';
+import '../workspace/views/workspace_header_view.dart';
+import 'sidebar_entries.dart';
+import 'studio_shell.dart';
+import 'views/thread_status_indicator.dart';
+
+@Preview(name: 'Root shell', group: 'Application shell', size: Size(1280, 800))
+Widget previewRootShell() => _sampleShell();
+
+@Preview(name: 'Child shell', group: 'Application shell', size: Size(1280, 800))
+Widget previewChildShell() => _sampleShell(child: true);
 
 @Preview(
-  name: 'Root workspace',
-  group: 'Agent Workspace',
+  name: 'Unknown directory',
+  group: 'Application shell',
   size: Size(1280, 800),
-  brightness: Brightness.light,
 )
-Widget agentWorkspaceRootPreview() {
-  return _agentWorkspacePreview(_agentWorkspacePreviewState());
-}
+Widget previewLoadingShell() => _sampleShell(child: true, loading: true);
 
 @Preview(
-  name: 'Child workspace',
-  group: 'Agent Workspace',
-  size: Size(1280, 800),
-  brightness: Brightness.light,
+  name: 'Compact shell',
+  group: 'Application shell',
+  size: Size(640, 600),
 )
-Widget agentWorkspaceChildPreview() {
-  return _agentWorkspacePreview(_agentWorkspacePreviewState(selectChild: true));
-}
+Widget previewCompactShell() => _sampleShell(child: true);
 
-@Preview(
-  name: 'Child workspace loading',
-  group: 'Agent Workspace',
-  size: Size(1280, 800),
-  brightness: Brightness.light,
-)
-Widget agentWorkspaceLoadingPreview() {
-  return _agentWorkspacePreview(
-    _agentWorkspacePreviewState(selectChild: true, childLoading: true),
+/// Static development props only. No ProviderScope, Repository, transport or
+/// Session is instantiated; these fixtures cannot be mistaken for runtime facts.
+Widget _sampleShell({bool child = false, bool loading = false}) {
+  const project = ProjectRecord(
+    id: 'sample-project',
+    name: 'Application shell',
+    path: '/workspace/example',
+    sshAlias: null,
+    updatedAt: 1,
   );
-}
-
-/// Development previews render immutable props and never attach a Client owner.
-Widget _agentWorkspacePreview(StudioState state) {
-  final workspace = state.selectedAgentWorkspace;
+  final root = WorkspaceThreadRecord(
+    id: 'sample-root',
+    projectId: project.id,
+    title: 'Implement the workspace boundary',
+    mode: ThreadModeId.task,
+    delegationMode: DelegationMode.profile,
+    delegationPreference: DelegationPreference.balanced,
+    frozenModel: null,
+    workspaceMode: ThreadWorkspaceMode.local,
+    workspacePath: project.path,
+    rootThreadId: 'sample-root',
+    parentThreadId: null,
+    role: 'planner',
+    agentPath: 'root',
+    status: ThreadStatus.idle,
+    createdAt: 1,
+    updatedAt: 1,
+    lastUserMessageAt: null,
+    archived: false,
+  );
+  final agents = [
+    AgentDirectoryEntry(
+      id: 'sample-main',
+      threadId: root.id,
+      rootThreadId: root.id,
+      path: 'root',
+      parentPath: null,
+      role: 'planner',
+      delegationMode: root.delegationMode,
+      delegationPreference: root.delegationPreference,
+      frozenModel: null,
+      task: root.title,
+      summary: null,
+      depth: 0,
+      state: const AgentState.idle(budgetPause: null),
+      updatedAt: 1,
+    ),
+    AgentDirectoryEntry(
+      id: 'sample-review',
+      threadId: 'sample-child',
+      rootThreadId: root.id,
+      path: 'root/review',
+      parentPath: 'root',
+      role: 'reviewer',
+      delegationMode: root.delegationMode,
+      delegationPreference: root.delegationPreference,
+      frozenModel: const ModelSelection(
+        model: AccountModelKey(
+          accountId: 'sample-account',
+          modelId: 'review-model',
+        ),
+        effort: 'high',
+      ),
+      task: 'Review ownership and cancellation',
+      summary: null,
+      depth: 1,
+      state: const AgentState.running(turnId: 'sample-turn'),
+      updatedAt: 1,
+    ),
+  ];
   return MaterialApp(
     debugShowCheckedModeBanner: false,
     theme: pureStudioTheme(),
-    themeMode: ThemeMode.light,
     localizationsDelegates: AppLocalizations.localizationsDelegates,
     supportedLocales: AppLocalizations.supportedLocales,
-    builder: (context, child) => Theme(
+    builder: (context, content) => Theme(
       data: pureStudioTheme(locale: Localizations.localeOf(context)),
-      child: child ?? const SizedBox(),
+      child: content ?? const SizedBox.shrink(),
     ),
-    home: Scaffold(
-      body:
-          workspace == null ||
-              workspace.syncState == AgentWorkspaceSyncState.loading
-          ? const Center(child: CircularProgressIndicator())
-          : TimelinePreview(threadId: workspace.threadId),
-    ),
-  );
-}
-
-StudioState _agentWorkspacePreviewState({
-  bool selectChild = false,
-  bool childLoading = false,
-}) {
-  const project = StudioProject(
-    id: 'preview-project',
-    name: 'Agent Workspace Preview',
-    path: '.',
-  );
-  final timestamp = DateTime.fromMillisecondsSinceEpoch(1000);
-  final root = StudioThread(
-    id: 'preview-root',
-    projectId: project.id,
-    title: 'Main agent workspace',
-    mode: ThreadModeId.task,
-    delegationMode: DelegationMode.profile,
-    delegationPreference: DelegationPreference.balanced,
-    createdAt: timestamp,
-    updatedAt: timestamp,
-    rootThreadId: 'preview-root',
-    role: 'planner',
-    workspacePath: project.path,
-  );
-  final child = StudioThread(
-    id: 'preview-child',
-    projectId: project.id,
-    title: 'Reviewer workspace',
-    mode: ThreadModeId.task,
-    delegationMode: DelegationMode.profile,
-    delegationPreference: DelegationPreference.balanced,
-    createdAt: timestamp.add(const Duration(seconds: 1)),
-    updatedAt: timestamp.add(const Duration(seconds: 1)),
-    parentThreadId: root.id,
-    rootThreadId: root.id,
-    agentPath: 'preview-reviewer',
-    role: 'reviewer',
-    status: ThreadStatusView.running,
-    workspacePath: project.path,
-  );
-  final selected = selectChild ? child : root;
-  final runtime = ThreadRuntimeView(
-    modelId: selectChild ? 'reviewer/model' : 'planner/model',
-    contextTokens: selectChild ? 4800 : 12800,
-    contextWindow: 128000,
-    totalTokens: selectChild ? 7200 : 19200,
-    costLabel: selectChild ? '￥0.05' : '￥0.16',
-    activeSkills: selectChild ? const ['review-skill'] : const ['planning'],
-    activeMcpServers: const ['dart'],
-    activeLspServers: const ['rust-analyzer'],
-  );
-  return StudioState(
-    projectDirectory: ProjectDirectoryState.fromState(
-      state: ReadyObservedResource(
-        revision: 1,
-        updatedAt: timestamp.millisecondsSinceEpoch ~/ 1000,
-        lastCheckedAt: null,
-        value: const [project],
-      ),
-    ),
-    threadDirectory: ThreadDirectoryWindow(threads: [root, child]),
-    agentDirectory: AgentDirectoryState.fromState(
-      state: UninitializedObservedResource(
-        updatedAt: timestamp.millisecondsSinceEpoch ~/ 1000,
-      ),
-    ),
-    settingsState: SettingsStateSnapshot.fromState(
-      state: ReadyObservedResource(
-        revision: 1,
-        updatedAt: timestamp.millisecondsSinceEpoch ~/ 1000,
-        lastCheckedAt: null,
-        value: const SettingsStateData(
-          accounts: [
-            AccountSettingsView(
-              id: 'preview-account',
-              templateId: 'openai',
-              protocol: 'open_ai',
-              name: 'Preview Account',
-              baseUrl: '',
-              defaultModelId: 'planner/model',
-              models: [
-                AccountModelView(
-                  modelId: 'planner/model',
-                  displayName: 'Main agent model',
-                  reasoningEfforts: ['high'],
-                  wireApi: 'responses',
-                  supportedConnectionModes: ['web_socket', 'http'],
-                  defaultConnectionMode: 'web_socket',
-                  connectionMode: 'web_socket',
+    home: Builder(
+      builder: (context) => AppShell(
+        navigation: ShellNavigationView(
+          projectDirectory: ListView(
+            children: [
+              ListTile(
+                leading: const Icon(Icons.folder_outlined),
+                title: Text(project.name),
+                subtitle: Text(project.path),
+              ),
+              ListTile(
+                leading: const Icon(Icons.chat_bubble_outline),
+                title: Text(root.title),
+                selected: !child,
+                trailing: const ShellThreadStatusIndicator(
+                  status: ThreadStatus.idle,
                 ),
-              ],
-              status: 'ready',
-              usageLabel: '',
-            ),
-          ],
-          roles: [
-            RoleSettingsView(
-              key: 'planner',
-              accountId: 'preview-account',
-              modelId: 'planner/model',
-              effort: 'high',
-            ),
-            RoleSettingsView(
-              key: 'executor',
-              accountId: 'preview-account',
-              modelId: 'planner/model',
-              effort: 'high',
-            ),
-          ],
-          permissionMode: PermissionMode.requestApproval,
+              ),
+            ],
+          ),
         ),
-      ),
-    ),
-    recoveryState: RecoveryStateSnapshot.fromState(
-      state: UninitializedObservedResource(
-        updatedAt: timestamp.millisecondsSinceEpoch ~/ 1000,
-      ),
-    ),
-    mcpState: McpStateSnapshot.fromState(
-      state: UninitializedObservedResource(
-        updatedAt: timestamp.millisecondsSinceEpoch ~/ 1000,
-      ),
-    ),
-    lspState: LspStateSnapshot.fromState(
-      state: UninitializedObservedResource(
-        updatedAt: timestamp.millisecondsSinceEpoch ~/ 1000,
-      ),
-    ),
-    skillsByProject: const {},
-    accountUsageState: AccountUsageStateSnapshot.fromState(
-      state: UninitializedObservedResource(
-        updatedAt: timestamp.millisecondsSinceEpoch ~/ 1000,
-      ),
-    ),
-    updaterState: UpdaterStateSnapshot.idle(
-      revision: 0,
-      updatedAt: DateTime.fromMillisecondsSinceEpoch(0),
-    ),
-    workspacesByThread: childLoading
-        ? const {}
-        : {
-            selected.id: ThreadWorkspace(
-              thread: selected,
-              revision: 1,
-              interactions: const [],
-              runtime: runtime,
-              activeTurn: !selectChild
-                  ? null
-                  : StudioTurnView(
-                      turnId: '${selected.id}-turn',
-                      threadId: selected.id,
-                      revision: 1,
-                      state: RunningStudioTurnState(
-                        startedAt: timestamp.millisecondsSinceEpoch ~/ 1000,
-                        activity: StudioTurnActivity.responding,
-                      ),
-                      updatedAt: timestamp,
+        // The single header implementation, shared with the live shell.
+        chrome: WorkspaceHeaderView(
+          project: project,
+          root: loading ? null : root,
+        ),
+        notices: const SizedBox.shrink(),
+        workspace: loading
+            ? const Center(child: CircularProgressIndicator())
+            : Padding(
+                padding: const EdgeInsets.all(24),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      child ? agents.last.task : root.title,
+                      style: Theme.of(context).textTheme.titleLarge,
                     ),
-              todo: const TimelineTodoListUpdate(
-                callId: 'preview-todo',
-                explanation: 'Workspace checklist',
-                items: [
-                  TimelineTodoItem(
-                    step: 'Keep every panel on one Thread',
-                    status: 'inProgress',
-                  ),
-                ],
+                    const SizedBox(height: 16),
+                    Text(
+                      child
+                          ? context.l10n.timelineAgentSubagent
+                          : context.l10n.delegationFrozen,
+                    ),
+                    const Spacer(),
+                    Row(
+                      children: [
+                        ShellThreadStatusIndicator(
+                          status: child
+                              ? ThreadStatus.running
+                              : ThreadStatus.idle,
+                        ),
+                        const SizedBox(width: 8),
+                        const Text('Preview · no live Session'),
+                      ],
+                    ),
+                  ],
+                ),
               ),
-            ),
-          },
-    workspaceUiByThread: {
-      selected.id: WorkspaceUiState(
-        syncState: childLoading
-            ? AgentWorkspaceSyncState.loading
-            : AgentWorkspaceSyncState.ready,
-        composer: selectChild
-            ? const ComposerThreadState.idle()
-            : const ComposerThreadState.idle(
-                draft: 'Refine the implementation plan',
-              ),
+        canonicalSidebarWidth: 336,
+        widthDraft: null,
+        onResizeWidth: (_, _, _) {},
+        onResetWidth: () {},
+        onCommitWidth: () async {},
+        onCancelWidth: () {},
       ),
-    },
-    selectedProjectId: project.id,
-    selectedThreadId: selected.id,
+    ),
   );
 }

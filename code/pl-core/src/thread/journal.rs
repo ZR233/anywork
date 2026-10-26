@@ -251,6 +251,9 @@ impl ThreadEffectBatch {
         let discovered_tools = (previous.discovered_tools != current.discovered_tools)
             .then(|| current.discovered_tools.clone());
         let lifecycle = (previous.lifecycle != current.lifecycle).then_some(current.lifecycle);
+        // A checkpoint-only execution/continuation transition still owes a durable commit, even
+        // when no Turn was ever created. Its body-less effect gives that checkpoint the same atomic
+        // history fence as every other state commit; recovery never replays these effects.
         if context.is_none()
             && private_context.is_none()
             && attempt.is_none()
@@ -269,6 +272,10 @@ impl ThreadEffectBatch {
             && wake_messages_through.is_none()
             && permissions.is_empty()
             && interactions.is_empty()
+            && previous.execution == current.execution
+            && previous.execution_sequence == current.execution_sequence
+            && previous.continuation == current.continuation
+            && previous.required_durable_sequence == current.required_durable_sequence
         {
             return None;
         }

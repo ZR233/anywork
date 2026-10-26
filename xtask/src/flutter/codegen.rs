@@ -1,5 +1,6 @@
 use super::{
-    DemoMode, ensure_flutter_dependencies, print_context, run_flutter, run_os_tool, run_tool,
+    DemoMode, ensure_flutter_dependencies_for_build, print_context, run_flutter, run_os_tool,
+    run_tool,
 };
 use anyhow::{Context, Result, bail};
 use pl_dev_support::paths;
@@ -13,56 +14,49 @@ const FRB_CODEGEN_VERSION: &str = "2.13.0";
 // build_runner 2.7+ always removes conflicting outputs. The former
 // --delete-conflicting-outputs option is removed and only emits a warning.
 const BUILD_RUNNER_ARGS: &[&str] = &["run", "build_runner", "build"];
-const GENERATED_OUTPUTS: &[GeneratedOutput] = &[
-    GeneratedOutput::dart(GeneratedDartPath::FileSuffix(".g.dart")),
-    GeneratedOutput::dart(GeneratedDartPath::FileSuffix(".freezed.dart")),
-    GeneratedOutput::dart(GeneratedDartPath::L10n),
-    GeneratedOutput::dart(GeneratedDartPath::Directory("src/rust")),
-    GeneratedOutput::other("code/anywork/rust/src/frb_generated.rs"),
-];
+const BUILD_RUNNER_SUFFIXES: &[&str] = &[".g.dart", ".freezed.dart"];
+const CLIENT_PACKAGE: GeneratedDartPackage = GeneratedDartPackage {
+    workspace_path: "code/anywork_client",
+    extra_outputs: &[],
+};
+const APP_PACKAGE: GeneratedDartPackage = GeneratedDartPackage {
+    workspace_path: "code/anywork",
+    extra_outputs: &[
+        GeneratedDartPath::L10n,
+        GeneratedDartPath::Directory("src/rust"),
+    ],
+};
+const GENERATED_DART_PACKAGES: &[GeneratedDartPackage] = &[CLIENT_PACKAGE, APP_PACKAGE];
+const GENERATED_OTHER_OUTPUTS: &[&str] = &["code/anywork/rust/src/frb_generated.rs"];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum GeneratedDartPath {
-    FileSuffix(&'static str),
     Directory(&'static str),
     L10n,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct GeneratedOutput {
-    workspace_path: Option<&'static str>,
-    dart_path: Option<GeneratedDartPath>,
+struct GeneratedDartPackage {
+    workspace_path: &'static str,
+    extra_outputs: &'static [GeneratedDartPath],
 }
 
-impl GeneratedOutput {
-    const fn dart(dart_path: GeneratedDartPath) -> Self {
-        Self {
-            workspace_path: None,
-            dart_path: Some(dart_path),
-        }
-    }
-
-    const fn other(workspace_path: &'static str) -> Self {
-        Self {
-            workspace_path: Some(workspace_path),
-            dart_path: None,
-        }
-    }
-
+impl GeneratedDartPackage {
     fn matches_dart_path(self, relative: &Path, file_name: &str) -> bool {
-        match self.dart_path {
-            Some(GeneratedDartPath::FileSuffix(suffix)) => file_name.ends_with(suffix),
-            Some(GeneratedDartPath::Directory(directory)) => {
-                relative.starts_with(Path::new(directory))
-                    && relative.extension().and_then(|value| value.to_str()) == Some("dart")
-            }
-            Some(GeneratedDartPath::L10n) => {
-                relative.parent() == Some(Path::new("src").join("l10n").as_path())
-                    && file_name.starts_with("app_localizations")
-                    && relative.extension().and_then(|value| value.to_str()) == Some("dart")
-            }
-            None => false,
-        }
+        BUILD_RUNNER_SUFFIXES
+            .iter()
+            .any(|suffix| file_name.ends_with(suffix))
+            || self.extra_outputs.iter().any(|output| match output {
+                GeneratedDartPath::Directory(directory) => {
+                    relative.starts_with(Path::new(directory))
+                        && relative.extension().and_then(|value| value.to_str()) == Some("dart")
+                }
+                GeneratedDartPath::L10n => {
+                    relative.parent() == Some(Path::new("src").join("l10n").as_path())
+                        && file_name.starts_with("app_localizations")
+                        && relative.extension().and_then(|value| value.to_str()) == Some("dart")
+                }
+            })
     }
 }
 
@@ -83,26 +77,28 @@ pub(super) fn check_gui_generated() -> Result<()> {
 }
 
 pub(super) fn check_gui_generated_sources(workspace_root: &Path, app_dir: &Path) -> Result<()> {
-    let before = generated_sources_snapshot(workspace_root, app_dir)?;
+    let before = generated_sources_snapshot(workspace_root)?;
     generate_gui_sources(workspace_root, app_dir)?;
-    let after = generated_sources_snapshot(workspace_root, app_dir)?;
+    let after = generated_sources_snapshot(workspace_root)?;
     ensure_generated_sources_are_stable(&before, &after)
 }
 
-/// Checks generated sources using the package configuration materialized by
-/// the Flutter dependency command run by the caller.
+/// Uses the application's locked package configuration prepared by the build
+/// caller, and materializes SDK dev tools from their own reviewed lockfile.
 pub(super) fn check_gui_generated_sources_for_build(
     workspace_root: &Path,
     app_dir: &Path,
 ) -> Result<()> {
-    let before = generated_sources_snapshot(workspace_root, app_dir)?;
+    let before = generated_sources_snapshot(workspace_root)?;
+    crate::client::ensure_locked_dependencies(&workspace_root.join(CLIENT_PACKAGE.workspace_path))?;
     generate_gui_sources_from_existing_dependencies(workspace_root, app_dir)?;
-    let after = generated_sources_snapshot(workspace_root, app_dir)?;
+    let after = generated_sources_snapshot(workspace_root)?;
     ensure_generated_sources_are_stable(&before, &after)
 }
 
 fn generate_gui_sources(workspace_root: &Path, app_dir: &Path) -> Result<()> {
-    ensure_flutter_dependencies(workspace_root, app_dir)?;
+    crate::client::ensure_locked_dependencies(&workspace_root.join(CLIENT_PACKAGE.workspace_path))?;
+    ensure_flutter_dependencies_for_build(workspace_root, app_dir)?;
     generate_gui_sources_from_existing_dependencies(workspace_root, app_dir)
 }
 
@@ -110,25 +106,38 @@ fn generate_gui_sources_from_existing_dependencies(
     workspace_root: &Path,
     app_dir: &Path,
 ) -> Result<()> {
+    generate_build_runner_sources(workspace_root, CLIENT_PACKAGE)?;
     run_flutter(workspace_root, app_dir, &["gen-l10n"], DemoMode::Native)?;
     ensure_frb_codegen_version()?;
     run_frb_codegen(workspace_root, app_dir)?;
-    remove_orphaned_build_runner_outputs(&app_dir.join("lib"))?;
-    run_build_runner(app_dir)?;
-    let generated_dart_files = normalize_generated_dart_files(&app_dir.join("lib"))?;
-    format_generated_dart_files(app_dir, &generated_dart_files)?;
+    generate_build_runner_sources(workspace_root, APP_PACKAGE)?;
     format_generated_rust_file(workspace_root, app_dir)
+}
+
+fn generate_build_runner_sources(
+    workspace_root: &Path,
+    package: GeneratedDartPackage,
+) -> Result<()> {
+    let package_dir = workspace_root.join(package.workspace_path);
+    let lib_dir = package_dir.join("lib");
+    remove_orphaned_build_runner_outputs(&lib_dir, package)?;
+    run_build_runner(&package_dir)?;
+    let generated_dart_files = normalize_generated_dart_files(&lib_dir, package)?;
+    format_generated_dart_files(&package_dir, &generated_dart_files)
 }
 
 /// Moving/removing a handwritten library must remove its generated part through
 /// the same canonical entrypoint. A clean checkout has no build_runner cache
 /// from which to discover outputs belonging to deleted inputs.
-fn remove_orphaned_build_runner_outputs(root: &Path) -> Result<()> {
-    for path in generated_dart_files(root)? {
+fn remove_orphaned_build_runner_outputs(root: &Path, package: GeneratedDartPackage) -> Result<()> {
+    for path in generated_dart_files(root, package)? {
         let Some(name) = path.file_name().and_then(|value| value.to_str()) else {
             continue;
         };
-        let Some(stem) = name.strip_suffix(".g.dart") else {
+        let Some(stem) = BUILD_RUNNER_SUFFIXES
+            .iter()
+            .find_map(|suffix| name.strip_suffix(suffix))
+        else {
             continue;
         };
         let content = fs::read_to_string(&path)?;
@@ -151,12 +160,15 @@ fn remove_orphaned_build_runner_outputs(root: &Path) -> Result<()> {
     Ok(())
 }
 
-fn run_build_runner(app_dir: &Path) -> Result<()> {
-    run_tool("dart", BUILD_RUNNER_ARGS, app_dir)
+fn run_build_runner(package_dir: &Path) -> Result<()> {
+    run_tool("dart", BUILD_RUNNER_ARGS, package_dir)
 }
 
-fn normalize_generated_dart_files(root: &Path) -> Result<Vec<PathBuf>> {
-    let files = generated_dart_files(root)?;
+fn normalize_generated_dart_files(
+    root: &Path,
+    package: GeneratedDartPackage,
+) -> Result<Vec<PathBuf>> {
+    let files = generated_dart_files(root, package)?;
     for path in &files {
         let content = fs::read_to_string(path)
             .with_context(|| format!("failed to read {}", path.display()))?;
@@ -169,7 +181,7 @@ fn normalize_generated_dart_files(root: &Path) -> Result<Vec<PathBuf>> {
     Ok(files)
 }
 
-fn generated_dart_files(root: &Path) -> Result<Vec<PathBuf>> {
+fn generated_dart_files(root: &Path, package: GeneratedDartPackage) -> Result<Vec<PathBuf>> {
     let mut files = Vec::new();
     let mut directories = vec![root.to_path_buf()];
     while let Some(directory) = directories.pop() {
@@ -187,7 +199,7 @@ fn generated_dart_files(root: &Path) -> Result<Vec<PathBuf>> {
                 directories.push(path);
                 continue;
             }
-            if !is_generated_dart_path(root, &path) {
+            if !is_generated_dart_path(root, &path, package) {
                 continue;
             }
             files.push(path);
@@ -197,22 +209,22 @@ fn generated_dart_files(root: &Path) -> Result<Vec<PathBuf>> {
     Ok(files)
 }
 
-fn format_generated_dart_files(app_dir: &Path, files: &[PathBuf]) -> Result<()> {
+fn format_generated_dart_files(package_dir: &Path, files: &[PathBuf]) -> Result<()> {
     if files.is_empty() {
         return Ok(());
     }
     let mut args = vec![OsString::from("format")];
     for path in files {
-        let relative = path.strip_prefix(app_dir).with_context(|| {
+        let relative = path.strip_prefix(package_dir).with_context(|| {
             format!(
                 "generated Dart file {} is outside {}",
                 path.display(),
-                app_dir.display()
+                package_dir.display()
             )
         })?;
         args.push(relative.as_os_str().to_owned());
     }
-    run_os_tool("dart", &args, app_dir)
+    run_os_tool("dart", &args, package_dir)
 }
 
 fn format_generated_rust_file(workspace_root: &Path, app_dir: &Path) -> Result<()> {
@@ -232,16 +244,14 @@ fn format_generated_rust_file(workspace_root: &Path, app_dir: &Path) -> Result<(
     run_os_tool("rustfmt", &args, workspace_root)
 }
 
-fn is_generated_dart_path(root: &Path, path: &Path) -> bool {
+fn is_generated_dart_path(root: &Path, path: &Path, package: GeneratedDartPackage) -> bool {
     let Ok(relative) = path.strip_prefix(root) else {
         return false;
     };
     let Some(file_name) = relative.file_name().and_then(|value| value.to_str()) else {
         return false;
     };
-    GENERATED_OUTPUTS
-        .iter()
-        .any(|output| output.matches_dart_path(relative, file_name))
+    package.matches_dart_path(relative, file_name)
 }
 
 fn normalize_generated_text(content: &str) -> String {
@@ -282,18 +292,15 @@ fn ensure_frb_codegen_version() -> Result<()> {
 
 type GeneratedSourcesSnapshot = BTreeMap<PathBuf, Vec<u8>>;
 
-fn generated_sources_snapshot(
-    workspace_root: &Path,
-    app_dir: &Path,
-) -> Result<GeneratedSourcesSnapshot> {
+fn generated_sources_snapshot(workspace_root: &Path) -> Result<GeneratedSourcesSnapshot> {
     let mut snapshot = GeneratedSourcesSnapshot::new();
-    for path in generated_dart_files(&app_dir.join("lib"))? {
-        capture_generated_file(workspace_root, &path, &mut snapshot)?;
+    for &package in GENERATED_DART_PACKAGES {
+        let lib_dir = workspace_root.join(package.workspace_path).join("lib");
+        for path in generated_dart_files(&lib_dir, package)? {
+            capture_generated_file(workspace_root, &path, &mut snapshot)?;
+        }
     }
-    for workspace_path in GENERATED_OUTPUTS
-        .iter()
-        .filter_map(|output| output.workspace_path)
-    {
+    for workspace_path in GENERATED_OTHER_OUTPUTS {
         let path = workspace_root.join(workspace_path);
         if path
             .try_exists()

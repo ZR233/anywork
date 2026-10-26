@@ -396,23 +396,41 @@ impl StudioRuntime {
             .commit_observed_thread(directory)
             .await;
         let result = match (binding_error, directory_commit) {
-            (None, Ok(directory_commit)) => self
-                .thread_directory_stamp(&directory_commit)
-                .map(|directory_stamp| pl_protocol::studio::ThreadModeCommandReply {
-                    receipt: self.command_receipt(
-                        operation_id,
-                        true,
-                        vec![
-                            self.resource_stamp(
-                                format!("thread-state:{thread_id}"),
-                                committed.commit_sequence,
+            (None, Ok(directory_commit)) => {
+                // Even selecting an identical mode rebuilds an instruction snapshot; the receipt
+                // publishes the committed Mode binding revision that the configuration
+                // projection observes as `modeBindingRevision`.
+                let mode_binding_revision = committed
+                    .extensions
+                    .get("studio.mode")
+                    .map(|record| record.revision);
+                match (
+                    mode_binding_revision,
+                    self.thread_directory_stamp(&directory_commit),
+                ) {
+                    (Some(binding_revision), Ok(directory_stamp)) => {
+                        Ok(pl_protocol::studio::ThreadModeCommandReply {
+                            receipt: self.command_receipt(
+                                operation_id,
+                                true,
+                                vec![
+                                    self.resource_stamp(
+                                        format!("thread-mode:{thread_id}"),
+                                        binding_revision,
+                                    ),
+                                    directory_stamp,
+                                ],
+                                pl_protocol::studio::CommandEffectPoint::Immediate,
+                                false,
                             ),
-                            directory_stamp,
-                        ],
-                        pl_protocol::studio::CommandEffectPoint::Immediate,
-                        false,
-                    ),
-                }),
+                        })
+                    }
+                    (None, _) => Err(anyhow::anyhow!(
+                        "committed mode reconfiguration has no mode binding"
+                    )),
+                    (Some(_), Err(error)) => Err(error),
+                }
+            }
             (Some(binding), Ok(_)) => Err(binding.context("Mode binding repair was requested")),
             (None, Err(storage)) => Err(storage.context(
                 "directory Mode fact is retained by write-behind for persistence retry",

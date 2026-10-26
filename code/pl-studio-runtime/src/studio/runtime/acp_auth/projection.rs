@@ -8,11 +8,11 @@
 use anyhow::Result;
 use pl_protocol::studio::{
     AcpAccountCatalog, AcpAccountSettings, AcpAccountTemplate, AcpProvider as AcpProviderWire,
-    StudioErrorCode,
+    StudioError, StudioErrorCode,
 };
 
 use super::admission::AcpAuthRuntime;
-use super::mapping::acp_error;
+use super::registry::AcpAuthInner;
 use super::registry::ConnectionIdentity;
 use crate::config::{AcpProvider, StudioConfig};
 
@@ -47,17 +47,32 @@ impl AcpAuthRuntime {
         settings_revision: u64,
         config: &StudioConfig,
     ) -> Result<Vec<AcpAccountSettings>> {
-        let registry = self.inner.lock();
+        Ok(self.inner.settings_directory(settings_revision, config)?)
+    }
+}
+
+impl AcpAuthInner {
+    /// 与已提交 Settings revision 严格相符的不可变目录投影。
+    ///
+    /// Settings 提交观察边界专用：身份同步与目录捕获在同一 registry 锁序列内完成，因此返回
+    /// 的行只描述该 revision 的连接代次；任何缺失、退役或身份不符都是陈旧快照，返回类型化
+    /// `StaleRevision`，绝不由投影补造条目或借用其它 revision 的代次。
+    pub(super) fn settings_directory(
+        &self,
+        settings_revision: u64,
+        config: &StudioConfig,
+    ) -> std::result::Result<Vec<AcpAccountSettings>, StudioError> {
+        let registry = self.lock();
         if registry.settings_revision != settings_revision {
-            return Err(stale_settings_error());
+            return Err(stale_settings_studio_error());
         }
         let mut accounts = Vec::with_capacity(config.acp.accounts.len());
         for (account_id, account) in &config.acp.accounts {
             let Some(slot) = registry.slots.get(account_id) else {
-                return Err(stale_settings_error());
+                return Err(stale_settings_studio_error());
             };
             if slot.retired || slot.identity != ConnectionIdentity::of(account) {
-                return Err(stale_settings_error());
+                return Err(stale_settings_studio_error());
             }
             accounts.push(AcpAccountSettings {
                 account_id: account_id.clone(),
@@ -70,8 +85,8 @@ impl AcpAuthRuntime {
     }
 }
 
-fn stale_settings_error() -> anyhow::Error {
-    acp_error(
+fn stale_settings_studio_error() -> StudioError {
+    StudioError::new(
         StudioErrorCode::StaleRevision,
         "ACP 设置投影已过期，请重新读取设置",
         true,

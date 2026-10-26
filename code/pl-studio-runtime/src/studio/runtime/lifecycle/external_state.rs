@@ -9,7 +9,18 @@ impl StudioRuntime {
     }
 
     pub async fn check_account_usage(&self, account_id: &str) -> Result<AccountUsageStateSnapshot> {
-        self.account_usage.check(account_id).await
+        let id = crate::config::AccountId::new(account_id)?;
+        let revision = self
+            .config_runtime
+            .read()?
+            .usage_query_revision(&id)
+            .ok_or_else(|| {
+                pl_protocol::studio::StudioError::invalid_argument("Provider does not exist")
+            })?;
+        self.account_usage
+            .check_expected(account_id, revision)
+            .await
+            .map(|material| material.value.clone())
     }
 
     pub async fn apply_account_config(&self) -> Result<AccountUsageStateSnapshot> {
@@ -24,7 +35,10 @@ impl StudioRuntime {
         &self,
         cancellation: &crate::StudioUpdateCancellation,
     ) -> Result<StudioUpdateStateSnapshot> {
-        self.updater.check_cancellable(cancellation).await
+        self.updater
+            .check_cancellable(cancellation, crate::studio::new_id("update-check"))
+            .await
+            .map(|material| material.snapshot().clone())
     }
 
     /// 桌面后台更新：一次检测和可信准备，不关闭运行时。调用方拥有取消与完成观察。
@@ -32,8 +46,12 @@ impl StudioRuntime {
         &self,
         cancellation: crate::StudioUpdateCancellation,
     ) -> Result<()> {
-        let state = match self.updater.check_cancellable(&cancellation).await {
-            Ok(state) => state,
+        let state = match self
+            .updater
+            .check_cancellable(&cancellation, crate::studio::new_id("automatic-update"))
+            .await
+        {
+            Ok(material) => material.snapshot().clone(),
             Err(error)
                 if error
                     .downcast_ref::<crate::StudioUpdateError>()
@@ -99,6 +117,7 @@ impl StudioRuntime {
         self.updater
             .prepare(update, cancellation, Some(progress))
             .await
+            .map(|_| ())
     }
 
     pub async fn read_lsp_state(&self) -> crate::StudioLspStateSnapshot {

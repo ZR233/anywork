@@ -117,6 +117,7 @@ fn settings_view(
                 name: account.name.clone(),
                 base_url: account.base_url.clone(),
                 has_bearer_token: account.resolved_bearer_token().is_some(),
+                bearer_token_env: account.bearer_token_env.clone(),
                 usage_query_revision: state
                     .usage_query_revision(id)
                     .context("account usage query identity is missing")?,

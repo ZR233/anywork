@@ -70,13 +70,27 @@ struct DetachGuard {
     store: StudioStore,
     thread_id: String,
     owner: usize,
+    /// Whether a cancelled preparation still has to release this incarnation.
+    ///
+    /// Disarmed once the incarnation's real tasks are registered: from then on only
+    /// `ThreadPersistenceCoordinator::finish_incarnation` stops the incarnation, and only after those
+    /// tasks really joined.
+    armed: bool,
 }
 
 impl Drop for DetachGuard {
     fn drop(&mut self) {
+        if self.armed {
         self.store
             .thread_persistence()
             .detach(&self.thread_id, self.owner);
+    }
+}
+}
+
+impl DetachGuard {
+    fn disarm(&mut self) {
+        self.armed = false;
     }
 }
 
@@ -784,6 +798,9 @@ impl ThreadStorageSink {
             thread.id
         );
         let (call_observer_stop, mut stop_observer) = tokio::sync::watch::channel(false);
+        // A second receiver for the watchdog: it must end through this same stop signal instead of
+        // waiting out its own tick, and reusing that signal adds no timer of its own.
+        let mut stop_watchdog = call_observer_stop.subscribe();
         let owner = NEXT_WRITER_INCARNATION.fetch_add(1, Ordering::Relaxed);
         let inner = Arc::new(Inner {
             store,
@@ -795,6 +812,14 @@ impl ThreadStorageSink {
             channel: channel.clone(),
             call_observer_stop,
         });
+        // Claim precedes asynchronous accounting initialization. Keep its original detach guard
+        // here so cancelling preparation cannot leave a runnable-looking orphan incarnation.
+        let mut detach = DetachGuard {
+            store: inner.store.clone(),
+            thread_id: inner.thread.id.clone(),
+            owner,
+            armed: true,
+        };
         // Bind this incarnation before it reports anything: a superseded writer must never clear or
         // fail the watermarks of the writer that replaced it, and this one must be freed from the
         // queue its predecessor left behind.
@@ -816,7 +841,7 @@ impl ThreadStorageSink {
         drop(writer_lease);
         let observer = Arc::downgrade(&inner);
         let calls = inner.store.calls().clone();
-        tokio::spawn(async move {
+        let observer_task = tokio::spawn(async move {
             let mut durable_tickets = calls.subscribe_durable_ticket();
             loop {
                 tokio::select! {
@@ -835,23 +860,27 @@ impl ThreadStorageSink {
                 }
             }
         });
-        let detach = DetachGuard {
-            store: inner.store.clone(),
-            thread_id: inner.thread.id.clone(),
-            owner,
-        };
         let worker = inner.clone();
         let watchdog = Arc::downgrade(&inner);
-        tokio::spawn(async move {
-            while let Some(inner) = watchdog.upgrade() {
+        let watchdog_task = tokio::spawn(async move {
+            let mut running = true;
+            while running {
+                let Some(inner) = watchdog.upgrade() else {
+                    break;
+                };
                 inner.channel.detect_stall();
                 drop(inner);
-                tokio::time::sleep(Duration::from_secs(10)).await;
+                running = wait_for_watchdog_tick(&mut stop_watchdog).await;
             }
         });
-        tokio::spawn(async move {
+        // No await separates this handoff from spawning the worker and the supervisor that owns
+        // `detach`, so cancelling preparation cannot leave a runnable-looking orphan incarnation.
+        inner
+            .store
+            .thread_persistence()
+            .start_writer(&inner.thread.id, owner);
+        let worker_task = tokio::spawn(async move {
             let inner = worker;
-            let _detach = detach;
             // 连续可重试失败的起点；任何一次成功的推进都清零。只有持续超过窗口才升级上报。
             let mut retrying_since: Option<Instant> = None;
             loop {
@@ -918,8 +947,127 @@ impl ThreadStorageSink {
                 }
             }
         });
+        // Each task's real completion is registered next to the incarnation's watermarks, so a
+        // supervisor that dies can never take an unjoined task with it.
+        let coordinator = inner.store.thread_persistence().clone();
+        let supervisor_thread = inner.thread.id.clone();
+        let worker_tasks = task_completion(worker_task, &supervisor_thread, "writer worker");
+        let observer_tasks = task_completion(observer_task, &supervisor_thread, "call observer");
+        let watchdog_tasks = task_completion(watchdog_task, &supervisor_thread, "writer watchdog");
+        let supervisor = {
+            let stop = inner.call_observer_stop.clone();
+            // Test-only: this install's supervisor waits on a gate owned by the coordinator, so the
+            // real drain can pass first and only then does the supervisor fail with helpers running.
+                #[cfg(test)]
+            let supervisor_gate = inner.store.thread_persistence().take_supervisor_failure_gate();
+            let (worker, observer, watchdog) =
+                (worker_tasks.clone(), observer_tasks.clone(), watchdog_tasks.clone());
+            tokio::spawn(async move {
+                #[cfg(test)]
+                if let Some(gate) = supervisor_gate {
+                    // The supervisor itself fails: it never asks the helpers to stop, which is the
+                    // abnormal path this install must survive.
+                    let _ = gate.await;
+                    panic!("writer supervisor failed");
+                }
+                // The worker decides on its own to end; asking the helpers to stop here covers the
+                // paths where it returned early, failed or panicked and could not signal them.
+                let worker = worker.await;
+                stop.send_replace(true);
+                let observer = observer.await;
+                let watchdog = watchdog.await;
+                worker.and(observer).and(watchdog)
+            })
+        };
+        let supervisor_tasks = task_completion(supervisor, &supervisor_thread, "writer supervisor");
+        let completion = {
+            // A supervisor that died before asking them to stop must not leave the helpers running:
+            // this aggregate sends the same stop signal itself before awaiting them.
+            let fallback_stop = inner.call_observer_stop.clone();
+            let (supervisor, worker, observer, watchdog) = (
+                supervisor_tasks,
+                worker_tasks,
+                observer_tasks,
+                watchdog_tasks,
+        );
+            async move {
+                // The supervisor's own end is observed first. If it died, the three task completions
+                // are still owned here and are driven to their real end instead of being lost.
+                let supervisor = supervisor.await;
+                if supervisor.is_err() {
+                    fallback_stop.send_replace(true);
+                }
+                let worker = worker.await;
+                let observer = observer.await;
+                let watchdog = watchdog.await;
+                supervisor.and(worker).and(observer).and(watchdog)
+            }
+            .boxed()
+            .shared()
+        };
+        coordinator.register_writer_tasks(
+            &supervisor_thread,
+            owner,
+            std::sync::Arc::new(crate::studio::storage::coordinator::WriterTasks::new(
+                completion.clone(),
+            )),
+        );
+        {
+            // Only a prompt: if this task never runs, `wait_for_writers_end` drives the very same
+            // completion and finishes the incarnation, so nothing depends on it surviving.
+            let coordinator = coordinator.clone();
+            let thread_id = supervisor_thread.clone();
+            tokio::spawn(async move {
+                let outcome = completion.await;
+                coordinator.finish_incarnation(&thread_id, owner, outcome);
+            });
+        }
+        // From here the coordinator owns this incarnation's end; the guard only covers a preparation
+        // that is cancelled before those tasks exist.
+        detach.disarm();
         Ok(Self(inner))
     }
+}
+
+/// Waits one watchdog tick, or returns `false` as soon as this incarnation asks it to stop.
+///
+/// The tick itself is the existing one; only the stop signal is new, so nothing has to wait it out.
+async fn wait_for_watchdog_tick(stop: &mut tokio::sync::watch::Receiver<bool>) -> bool {
+    tokio::select! {
+        biased;
+        _ = stop.changed() => false,
+        () = tokio::time::sleep(Duration::from_secs(10)) => true,
+    }
+}
+
+/// Wraps one real task handle into the completion the incarnation row keeps.
+///
+/// The `JoinHandle` is awaited inside this completion exactly once, so its terminal state — including
+/// a panic — is observed by whoever drives it, and never polled twice.
+fn task_completion(
+    handle: tokio::task::JoinHandle<()>,
+    thread_id: &str,
+    stage: &'static str,
+) -> futures::future::Shared<
+    futures::future::BoxFuture<
+        'static,
+        Result<(), std::sync::Arc<crate::studio::storage::coordinator::WriterTaskFailure>>,
+    >,
+> {
+    use crate::studio::storage::coordinator::WriterTaskFailure;
+    let thread_id = thread_id.to_owned();
+    async move {
+        match handle.await {
+            Ok(()) => Ok(()),
+            Err(source) => Err(std::sync::Arc::new(WriterTaskFailure::Join {
+                thread_id,
+                stage,
+                source: std::sync::Arc::new(source),
+            })),
+        }
+}
+    .boxed()
+    .shared()
 }
 
 async fn refresh_call_watermark(
@@ -1333,6 +1481,9 @@ impl ColdStore for ThreadStorageSink {
     fn pressure(&self, thread_id: &str) -> StoragePressure {
         if thread_id != self.0.thread.id {
             return StoragePressure {
+                // A mismatched ticket cannot be judged healthy: this sink never reports an owner it
+                // cannot read as owing nothing, so an idle close cannot mistake it for clean.
+                has_uncommitted_work: true,
                 error: Some(storage_error("Thread persistence owner mismatch")),
                 ..Default::default()
             };
@@ -1361,6 +1512,19 @@ impl ColdStore for ThreadStorageSink {
             .saturating_add(reserved);
         StoragePressure {
             thread_bytes: bytes,
+            // Typed readiness for an idle close, deliberately independent of the byte counts here:
+            // those report how much memory this Thread keeps, this reports whether closing the
+            // backend would lose a fact. Exactly two of the terms behind those bytes are unfinished
+            // responsibility. One is an effect still in the reliable queue: the projection owner's
+            // prepared batch attaches to that same entry (`QueuedEffect::prepared`), so the queue
+            // also covers a projection that is done but whose save is not, and a queued entry that is
+            // still being prepared. The other is an output reservation that has not been released:
+            // a live call owns it from the moment it reserves, and the byte counts cannot show it
+            // while it has accepted no bytes yet. The projection gauge is not unfinished
+            // responsibility: those bodies are reconstructed from durable history, so keeping them
+            // cannot hold an otherwise idle Thread resident.
+            has_uncommitted_work: !progress.effects.is_empty()
+                || !progress.operation_output.is_empty(),
             store_bytes: self.0.channel.process_bytes.load(Ordering::Acquire),
             // Typed durability receipt: the owner releases the live effect window from this at a
             // storage safety point instead of waiting for an explicit `flush` command.
@@ -3245,9 +3409,154 @@ mod storage_fault_tests {
         sink.0.channel.set_projection_bytes(8192);
         assert_eq!(sink.pressure("projection-budget").thread_bytes, 8192);
         assert_eq!(sink.0.channel.subscribe().borrow().queued_bytes, 8192);
+        // The same gauge is retained memory, not unfinished persistence: those bodies are
+        // reconstructed from durable history, so an idle close must not be blocked by them. This is
+        // the one direction a byte-only decision gets wrong in production.
+        assert!(!sink.pressure("projection-budget").has_uncommitted_work);
         sink.0.channel.set_projection_bytes(0);
         assert_eq!(sink.pressure("projection-budget").thread_bytes, 0);
         assert_eq!(sink.0.channel.subscribe().borrow().queued_bytes, 0);
+        assert!(!sink.pressure("projection-budget").has_uncommitted_work);
+        // A reservation that has accepted no bytes yet still owns work: the call is live, so
+        // closing now would drop an acceptance the owner already carries while the byte counts
+        // read zero.
+        let channel = &sink.0.channel;
+        assert_eq!(
+            channel.reserve_operation_output("zero-accepted", 4096),
+            Some(4096)
+        );
+        let reserved = sink.pressure("projection-budget");
+        assert_eq!(reserved.thread_bytes, 0);
+        assert!(reserved.has_uncommitted_work);
+        channel.release_operation_output("zero-accepted");
+        assert!(!sink.pressure("projection-budget").has_uncommitted_work);
+        // An admitted effect is unfinished from the instant it is accepted, with or without its
+        // prepared batch: both live on one queue entry. This single-threaded test runtime yields
+        // nothing between `admit` and this report, so the fact is still owed here. The projection
+        // worker this fixture starts prepares it and the writer saves it, so the tail joins that
+        // real work on the ticket's own durable watermark instead of resetting the queue or
+        // forcing a pop.
+        sink.admit("projection-budget", ticket("projection-budget", 1))?;
+        let queued = sink.pressure("projection-budget");
+        assert!(queued.thread_bytes > 0);
+        assert!(queued.has_uncommitted_work);
+        // The responsibility ends only once the fact really landed: the same reliable path this
+        // fixture already uses (`admit` then `flush` on the ticket) is the join, and a failed
+        // producer surfaces here as its typed error rather than as an aborted runtime.
+        tokio::time::timeout(Duration::from_secs(5), sink.flush("projection-budget", 1)).await??;
+        let saved = sink.pressure("projection-budget");
+        assert!(saved.durable_sequence >= 1);
+        assert!(!saved.has_uncommitted_work);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn an_abnormal_task_still_joins_its_helper_and_never_reads_as_clean() -> Result<()> {
+        let id = "writer-task-abnormal";
+        let temp = tempfile::tempdir()?;
+        let store = StudioStore::open(temp.path().join("studio/v2/studio.sqlite")).await?;
+        let thread = test_thread(id);
+        register_test_thread(&store, &thread).await?;
+        let coordinator = store.thread_persistence().clone();
+        let owner = 11_usize;
+        coordinator.claim(id, owner);
+        coordinator.start_writer(id, owner);
+        // The helper is really in flight and only ends when this test lets it.
+        let (gate, wait) = tokio::sync::oneshot::channel::<()>();
+        let helper_done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let flag = helper_done.clone();
+        let helper = task_completion(
+            tokio::spawn(async move {
+                let _ = wait.await;
+                flag.store(true, std::sync::atomic::Ordering::Release);
+            }),
+            id,
+            "call observer",
+        );
+        let worker = task_completion(
+            tokio::spawn(async {
+                panic!("writer worker failed");
+            }),
+            id,
+            "writer worker",
+        );
+        let completion = async move {
+            let worker = worker.await;
+            let helper = helper.await;
+            worker.and(helper)
+    }
+        .boxed()
+        .shared();
+        coordinator.register_writer_tasks(
+            id,
+            owner,
+            std::sync::Arc::new(crate::studio::storage::coordinator::WriterTasks::new(
+                completion,
+            )),
+        );
+        // No supervisor observes this duty: the waiter has to drive it itself, and it must not report
+        // an end while a helper is still in flight.
+        let waited = tokio::spawn({
+            let coordinator = coordinator.clone();
+            async move { coordinator.wait_for_writers_end(Some(id)).await }
+        });
+        for _ in 0..64 {
+            if waited.is_finished() {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        assert!(!waited.is_finished(), "an end was reported while a helper was in flight");
+        assert!(!helper_done.load(std::sync::atomic::Ordering::Acquire));
+        gate.send(()).expect("the helper gate is still open");
+        waited.await??;
+        assert!(
+            helper_done.load(std::sync::atomic::Ordering::Acquire),
+            "the waiter returned only after the real join"
+        );
+        // The panic is this incarnation's terminal failure: the drain keeps failing.
+        assert!(
+            coordinator.wait_for_writers_end(Some(id)).await.is_err(),
+            "the recorded task failure keeps failing the close"
+        );
+        assert!(
+            coordinator.wait_for_drain().await.is_err(),
+            "a panicked writer must not read as a clean drain"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn an_installed_supervisor_failure_joins_its_helpers_and_fails_the_close() -> Result<()> {
+        let id = "installed-supervisor-failure";
+        let temp = tempfile::tempdir()?;
+        let store = StudioStore::open(temp.path().join("studio/v2/studio.sqlite")).await?;
+        let thread = test_thread(id);
+        register_test_thread(&store, &thread).await?;
+        // The next real install gets a supervisor that stays paused (helpers running) until this
+        // test opens the gate, so the real drain can pass first.
+        let (gate, wait) = tokio::sync::oneshot::channel::<()>();
+        store.thread_persistence().arm_supervisor_failure(wait);
+        let sink = ThreadStorageSink::new(store.clone(), thread, None).await?;
+        let coordinator = store.thread_persistence().clone();
+        assert!(
+            coordinator.wait_for_drain().await.is_ok(),
+            "the real drain passes before the supervisor fails"
+        );
+        drop(sink);
+        gate.send(()).expect("the supervisor gate is still open");
+        // The waiter drives the very completion that install registered: the failing supervisor
+        // cannot lose an unjoined helper, and its end must not read as a clean close.
+        assert!(
+            coordinator.wait_for_writers_end(Some(id)).await.is_err(),
+            "an abnormal supervisor must fail the close"
+        );
+        // Asking again is equally a failure: the typed reason lives in the canonical row.
+        assert!(
+            coordinator.wait_for_writers_end(Some(id)).await.is_err(),
+            "a stopped-but-failed incarnation keeps failing the close"
+        );
+        assert!(coordinator.wait_for_drain().await.is_err());
         Ok(())
     }
 

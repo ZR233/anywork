@@ -1,214 +1,440 @@
-import 'dart:async';
-
-import 'package:anywork_client/studio_client.dart';
+import 'package:anywork_client/configuration_ports.dart';
+import 'package:anywork_client/models_ports.dart';
+import 'package:anywork_client/operations_ports.dart';
+import 'package:anywork_client/resources_ports.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-import 'support/recording_demo_transport.dart';
+import '../../../anywork_client/test/support/configuration_command_fixture.dart';
+import '../../../anywork_client/test/support/configuration_fixture.dart';
+import '../../../anywork_client/test/support/profile_model_port.dart';
+import 'support/settings_accounts_fixture.dart';
 
-class _SettingsTransport extends RecordingDemoTransport {
-  final entered = <OperationId, Completer<void>>{};
-  final released = <OperationId, Completer<void>>{};
-  final calls = <OperationId>[];
+ConfigurationCommandReply _reply(
+  OperationId id,
+  ProductReadOrigin origin,
+  int revision,
+  ModelCatalogReadTarget catalog,
+) => ConfigurationCommandReply(
+  receipt: CommitReceipt(
+    operationId: id,
+    disposition: CommitDisposition.applied,
+    targets: [
+      ResourceStamp(
+        resourceKey: 'settings',
+        ownerEpoch: origin.ownerEpoch,
+        revision: revision,
+      ),
+    ],
+    effect: EffectPoint.futureSession,
+    effective: false,
+    durable: true,
+  ),
+  configuration: ConfigurationReadTarget(
+    origin: origin,
+    reference: ConfigurationReadRef(entry: 1, revision: revision),
+  ),
+  models: catalog,
+);
 
-  Completer<void> entry(OperationId id) =>
-      entered.putIfAbsent(id, Completer<void>.new);
-  Completer<void> release(OperationId id) =>
-      released.putIfAbsent(id, Completer<void>.new);
-
-  @override
-  Future<SettingsCommandReply> applySettingsField(
-    int revision,
-    SettingsFieldCommand command, {
-    required OperationId operationId,
-  }) async {
-    calls.add(operationId);
-    entry(operationId).complete();
-    await release(operationId).future;
-    return super.applySettingsField(
-      revision,
-      command,
-      operationId: operationId,
-    );
-  }
+Future<void> _finish<T>(
+  RecordedConfigurationCall<T> call,
+  OperationTicket<Unit> ticket,
+  ConfigurationCommandReply reply,
+  Future<void> Function() publish,
+) async {
+  await call.native.resultRead(0);
+  call.native.resultAt(0).reply.complete(reply);
+  await publish();
+  expect(await ticket.result, isA<CommittedCommandResult<Unit>>());
+  final close = await call.native.closed(0);
+  close.reply.complete(
+    FeedCloseReport(
+      feedId: call.native.callId,
+      outcome: const FeedCloseOutcome.clean(),
+    ),
+  );
 }
 
-void main() {
-  test('created no-charge account clears to automatic without replaying an override', () async {
-    final client = AnyworkClient(
-      transport: RecordingDemoTransport(),
-      clientId: 'created-billing',
-    );
-    addTearDown(client.close);
-    await client.bootstrap();
-    const id = 'created-no-charge';
-    final catalog = client.settings.state.accountCatalog;
-    final template = catalog.templates.first;
-    final draft = template.createAccount(
-      id,
-      catalog.modelsFor(template.modelCatalogId),
-    );
-    await client.settingsCommands.saveAccount(
-      AccountCommandBuilder.buildAccount(
-        draft,
-        initialBillingKind: BillingKind.noCharge,
-      ),
-    );
-    AccountSettingsView current() => client.settings.state.canonical!.accounts
-        .singleWhere((account) => account.id == id);
-    expect(current().billingKind, BillingKind.noCharge);
-    expect(current().billingKindOverride, BillingKind.noCharge);
-    // An ordinary endpoint edit preserves the explicit initial intent.
-    await client.settingsCommands.saveAccount(
-      AccountCommandBuilder.buildAccount(
-        draft.copyWith(
-          name: 'Edited connection',
-          baseUrl: 'https://changed.example/v1',
-        ),
-      ),
-    );
-    expect(current().billingKind, BillingKind.noCharge);
-    expect(current().billingKindOverride, BillingKind.noCharge);
-    await client.settingsCommands.setAccountBillingKind(id, null);
-    // Demo templates are synthetic and supply no canonical native billing facts.
-    expect(current().billingKind, BillingKind.unknown);
-    expect(current().billingKindOverride, isNull);
-    // Stale connection drafts cannot restore the cleared no-charge override.
-    await client.settingsCommands.saveAccount(
-      AccountCommandBuilder.buildAccount(
-        draft.copyWith(
-          billingKind: BillingKind.noCharge,
-          billingKindOverride: BillingKind.noCharge,
-        ),
-      ),
-    );
-    expect(current().billingKind, BillingKind.unknown);
-    expect(current().billingKindOverride, isNull);
-    await client.settingsCommands.setAccountBillingKind(
-      id,
-      BillingKind.subscription,
-    );
-    await client.settingsCommands.saveAccount(
-      AccountCommandBuilder.buildAccount(draft),
-    );
-    expect(current().billingKind, BillingKind.subscription);
-    expect(current().billingKindOverride, BillingKind.subscription);
-    await client.settingsCommands.removeAccount(id);
-    // Reusing an ID is a new resource, not an old inferred-category cache hit.
-    await client.settingsCommands.saveAccount(
-      AccountCommandBuilder.buildAccount(draft),
-    );
-    expect(current().billingKind, BillingKind.unknown);
-    expect(current().billingKindOverride, isNull);
-    await client.settingsCommands.setAccountBillingKind(
-      id,
-      BillingKind.noCharge,
-    );
-    await client.settingsCommands.setAccountBillingKind(id, null);
-    expect(current().billingKind, BillingKind.unknown);
-  });
+AccountConfiguration _account() => AccountConfiguration(
+  accountId: 'account',
+  templateId: null,
+  protocol: 'openai',
+  name: 'Account',
+  baseUrl: 'https://settings.invalid',
+  hasBearerToken: false,
+  billingKind: BillingKind.subscription,
+  bearerTokenEnv: null,
+  billingKindOverride: null,
+  disabledModels: const [],
+  usageQueryRevision: 1,
+  catalogId: null,
+  customModels: const [],
+  modelConnectionModes: const [],
+  modelAutoCompactLimits: const [],
+);
 
+void main() {
   test('model enabled command accepts its own canonical receipt', () async {
-    final transport = RecordingDemoTransport();
-    final client = AnyworkClient(
-      transport: transport,
-      clientId: 'enabled-receipt',
+    const origin = ProductReadOrigin(
+      ownerEpoch: 'enabled-catalog',
+      incarnation: 1,
     );
-    addTearDown(client.close);
-    await client.bootstrap();
-    final account = client.settings.state.canonical!.accounts.first;
-    final model = account.models.first;
-    final key = accountModelEnabledMutationKey(account.id, model.modelId);
-    await client.settingsCommands.setAccountModelEnabled(
-      account.id,
-      model.modelId,
+    const catalog = ModelCatalogReadTarget(
+      origin: origin,
+      reference: ModelCatalogReadRef(entry: 1, revision: 1),
+    );
+    final modelPort = ProfileModelsPort(
+      origin: origin,
+      accounts: const [],
+      textEligibleAccounts: const {},
+    );
+    final fixture = ConfigurationFixture(modelsPort: modelPort);
+    var canonical = _account();
+    await fixture.establish(canonical);
+    addTearDown(() async {
+      final reports = await Future.wait([
+        fixture.repository.close(),
+        fixture.models.close(),
+      ]);
+      expect(reports.expand((report) => report.unresolved), isEmpty);
+      expect(fixture.budget.usage, isEmpty);
+    });
+    final repository = fixture.repository;
+    final enabled = repository.setAccountModelEnabled(
+      'account',
+      'online',
       false,
     );
-    expect(
-      client.settings.state.canonical!.accounts.first.models.first.enabled,
-      isFalse,
+    final enabledCall = await fixture.port.enabledChanged(0);
+    canonical = canonical.copyWith(disabledModels: ['online']);
+    final finishing = _finish(
+      enabledCall,
+      enabled,
+      _reply(enabled.id, configurationFixtureOrigin, 2, catalog),
+      () => fixture.port.publishAccount(2, canonical),
     );
-    expect(client.settings.state.commands[key]?.isPending ?? false, isFalse);
-    expect(client.settings.state.commands[key]?.error, isNull);
-    await client.settingsCommands.setAccountBillingKind(
-      account.id,
-      BillingKind.noCharge,
+    await modelPort.feed.listened.future;
+    modelPort.baseline();
+    await finishing;
+    expect(
+      (await repository.loadAccount('account')).disabledModels,
+      contains('online'),
+    );
+    expect(enabled.state.value.isPending, isFalse);
+    expect(enabled.state.value.error, isNull);
+
+    final billing = repository.setAccountBillingKind(
+      'account',
+      BillingKind.unknown,
+    );
+    final billingCall = await fixture.port.billingChanged(0);
+    expect(
+      (await repository.loadAccount('account')).billingKind,
+      BillingKind.subscription,
+      reason: 'No optimistic billing success',
+    );
+    canonical = canonical.copyWith(
+      billingKind: BillingKind.unknown,
+      billingKindOverride: BillingKind.unknown,
+    );
+    await _finish(
+      billingCall,
+      billing,
+      _reply(billing.id, configurationFixtureOrigin, 3, catalog),
+      () => fixture.port.publishAccount(3, canonical),
     );
     expect(
-      client.settings.state.canonical!.accounts.first.billingKindOverride,
-      BillingKind.noCharge,
+      (await repository.loadAccount('account')).billingKindOverride,
+      BillingKind.unknown,
+    );
+    final clearing = repository.setAccountBillingKind('account', null);
+    final clearCall = await fixture.port.billingChanged(1);
+    canonical = canonical.copyWith(
+      billingKind: BillingKind.subscription,
+      billingKindOverride: null,
+    );
+    await _finish(
+      clearCall,
+      clearing,
+      _reply(clearing.id, configurationFixtureOrigin, 4, catalog),
+      () => fixture.port.publishAccount(4, canonical),
     );
     expect(
-      client.settings.state.canonical!.accounts.first.billingKind,
-      BillingKind.noCharge,
-    );
-    await client.settingsCommands.setAccountBillingKind(account.id, null);
-    expect(
-      client.settings.state.canonical!.accounts.first.billingKindOverride,
+      (await repository.loadAccount('account')).billingKindOverride,
       isNull,
     );
-    final current = client.settings.state.canonical!.accounts.first;
-    await client.settingsCommands.saveAccount(
-      AccountCommandBuilder.buildAccount(
-        current.copyWith(
-          models: [
-            ...current.models,
-            const AccountModelView(
-              modelId: 'manual-receipt',
-              displayName: 'Manual',
-              reasoningEfforts: [],
+
+    final saving = repository.saveAccount(
+      AccountEdit(
+        accountId: 'account',
+        create: false,
+        rebuildModelConfiguration: false,
+        templateId: const FieldEdit.keep(),
+        protocol: const FieldEdit.keep(),
+        name: const FieldEdit.keep(),
+        baseUrl: const FieldEdit.keep(),
+        secret: const AccountSecretUpdate.preserve(),
+        // 编辑既有账号：不提交初始计费类别（类别只由窄命令改写）。
+        initialBillingKind: null,
+        customModels: [
+          CustomModelChange.upsert(
+            originalModelId: null,
+            value: modelUpdate(
+              'manual-receipt',
               contextWindow: 1000,
               maxOutputTokens: 100,
-              origin: ModelOrigin.manual,
             ),
-          ],
-        ),
-        secret: const AccountSecretCommand.preserve(),
+          ),
+        ],
+        connections: const [],
+        autoCompactLimits: const [],
       ),
     );
-    await client.settingsCommands.removeAccountModel(
-      account.id,
-      'manual-receipt',
+    final saved = await fixture.port.saved(0);
+    canonical = canonical.copyWith(
+      customModels: [
+        customModel(
+          'manual-receipt',
+          contextWindow: 1000,
+          maxOutputTokens: 100,
+        ),
+      ],
+    );
+    await _finish(
+      saved,
+      saving,
+      _reply(saving.id, configurationFixtureOrigin, 5, catalog),
+      () => fixture.port.publishAccount(5, canonical),
     );
     expect(
-      client.settings.state.canonical!.accounts.first.models.any(
-        (m) => m.modelId == 'manual-receipt',
-      ),
+      (await repository.loadAccount('account')).customModels.single.modelId,
+      'manual-receipt',
+    );
+    final removing = repository.removeAccountModel('account', 'manual-receipt');
+    final removed = await fixture.port.removed(0);
+    canonical = canonical.copyWith(customModels: []);
+    await _finish(
+      removed,
+      removing,
+      _reply(removing.id, configurationFixtureOrigin, 6, catalog),
+      () => fixture.port.publishAccount(6, canonical),
+    );
+    expect(
+      (await repository.loadAccount('account')).customModels
+          .any((model) => model.modelId == 'manual-receipt'),
       isFalse,
     );
   });
 
   test(
-    'old Settings ACK cannot clear newer intent and never rereads bootstrap',
+    'old Settings ACK cannot clear newer intent and never reopens the baseline',
     () async {
-      final transport = _SettingsTransport();
-      final client = AnyworkClient(transport: transport, clientId: 'settings');
-      await client.bootstrap();
-      final commands = client.settingsCommands;
-      final first = commands.applySettingsField(
-        const GeneralFollowActiveTurnCommand(false),
-        mutationKey: 'follow',
+      final fixture = SettingsAccountsFixture();
+      // 本用例不涉及 ACP 目录：先声明真实空目录并委托 base 的原生账号实体，
+      // 再读取 Settings（未声明的目标不会回退成伪空目录）。
+      fixture.configurationPort.declareAcpMaterial(
+        revision: 1,
+        rows: const [],
+        delegateBase: true,
       );
-      final x = client.mutations.latest('settings:follow')!;
-      final second = commands.applySettingsField(
-        const GeneralFollowActiveTurnCommand(true),
-        mutationKey: 'follow',
+      await fixture.establish();
+      addTearDown(() async {
+        expect((await fixture.close()).unresolved, isEmpty);
+        expect(fixture.budget.usage, isEmpty);
+      });
+      final repository = fixture.configuration;
+      final first = repository.applyField(
+        const SettingsFieldUpdate.generalFollowActiveTurn(value: false),
       );
-      final y = client.mutations.latest('settings:follow')!;
-      expect(x.id, isNot(y.id));
-      await transport.entry(x.id).future;
-      transport.release(x.id).complete();
-      await first;
-      await transport.entry(y.id).future;
-      expect(x.state.value.observed, isTrue);
-      expect(client.settings.state.commands['follow']?.isPending, isTrue);
-      expect(client.mutations.latest('settings:follow')?.id, y.id);
-      transport.release(y.id).complete();
-      await second;
-      expect(y.state.value.observed, isTrue);
-      expect(client.settings.state.commands.containsKey('follow'), isFalse);
-      expect(transport.bootstrapCalls, 1);
-      expect(transport.calls, [x.id, y.id]);
-      expect((await client.close()).complete, isTrue);
+      final x = await fixture.configurationPort.field(0);
+      final second = repository.applyField(
+        const SettingsFieldUpdate.generalFollowActiveTurn(value: true),
+      );
+      final observations = fixture.operations.observations;
+      expect(first.id, isNot(second.id));
+      x.accept();
+      fixture.configurationPort.followAt[2] = false;
+      const catalog = ModelCatalogReadTarget(
+        origin: SettingsAccountsFixture.origin,
+        reference: ModelCatalogReadRef(entry: 1, revision: 1),
+      );
+      // 水位 2 的 ACP 材料必须先声明：写入回执与 Settings 事件都可能先读取该目标，
+      // 读不到材料时不得补成伪空目录。
+      fixture.configurationPort.declareAcpMaterial(
+        revision: 2,
+        rows: const [],
+        delegateBase: true,
+      );
+      await _finish(
+        x,
+        first,
+        _reply(first.id, SettingsAccountsFixture.origin, 2, catalog),
+        () => fixture.configurationPort.base.publishSettings(2),
+      );
+      final y = await fixture.configurationPort.field(1);
+      expect(first.state.value.observed, isTrue);
+      expect(second.state.value.isPending, isTrue);
+      expect(observations.latest(first.state.value.target)?.id, second.id);
+      expect(y.request.expectedRevision, 2);
+      y.accept();
+      fixture.configurationPort.followAt[3] = true;
+      fixture.configurationPort.declareAcpMaterial(
+        revision: 3,
+        rows: const [],
+        delegateBase: true,
+      );
+      await _finish(
+        y,
+        second,
+        _reply(second.id, SettingsAccountsFixture.origin, 3, catalog),
+        () => fixture.configurationPort.base.publishSettings(3),
+      );
+      expect(second.state.value.observed, isTrue);
+      expect(second.state.value.isPending, isFalse);
+      expect(fixture.configurationPort.base.configurationOpens, hasLength(1));
+      expect(
+        fixture.configurationPort.fields.map(
+          (call) => call.request.operationId,
+        ),
+        [first.id, second.id],
+      );
+      expect((await repository.loadGeneralSettings()).followActiveTurn, isTrue);
     },
   );
+
+  test('an explicit no-charge account keeps the category until the override is cleared and a stale draft cannot replay it', () async {
+    const origin = ProductReadOrigin(
+      ownerEpoch: 'no-charge-catalog',
+      incarnation: 1,
+    );
+    const catalog = ModelCatalogReadTarget(
+      origin: origin,
+      reference: ModelCatalogReadRef(entry: 1, revision: 1),
+    );
+    final modelPort = ProfileModelsPort(
+      origin: origin,
+      accounts: const [],
+      textEligibleAccounts: const {},
+    );
+    final fixture = ConfigurationFixture(modelsPort: modelPort);
+    // The account was created with an explicit no-charge category.
+    var canonical = _account().copyWith(
+      billingKind: BillingKind.noCharge,
+      billingKindOverride: BillingKind.noCharge,
+    );
+    await fixture.establish(canonical);
+    addTearDown(() async {
+      final reports = await Future.wait([
+        fixture.repository.close(),
+        fixture.models.close(),
+      ]);
+      expect(reports.expand((report) => report.unresolved), isEmpty);
+      expect(fixture.budget.usage, isEmpty);
+    });
+    final repository = fixture.repository;
+    Future<AccountConfiguration> current() => repository.loadAccount('account');
+
+    // An ordinary endpoint edit preserves the explicit initial category: the
+    // account write carries no billing intent at all.
+    final saving = repository.saveAccount(
+      AccountEdit(
+        accountId: 'account',
+        create: false,
+        rebuildModelConfiguration: false,
+        templateId: const FieldEdit.keep(),
+        protocol: const FieldEdit.keep(),
+        name: const FieldEdit.set('Edited connection'),
+        baseUrl: const FieldEdit.set('https://changed.example/v1'),
+        secret: const AccountSecretUpdate.preserve(),
+        // 编辑既有账号：普通连接编辑不回传也不改写计费类别。
+        initialBillingKind: null,
+        customModels: const [],
+        connections: const [],
+        autoCompactLimits: const [],
+      ),
+    );
+    final saved = await fixture.port.saved(0);
+    expect(
+      fixture.port.billingChanges,
+      isEmpty,
+      reason: 'An ordinary connection edit must not replay billing intent',
+    );
+    canonical = canonical.copyWith(
+      name: 'Edited connection',
+      baseUrl: 'https://changed.example/v1',
+    );
+    final finishing = _finish(
+      saved,
+      saving,
+      _reply(saving.id, configurationFixtureOrigin, 2, catalog),
+      () => fixture.port.publishAccount(2, canonical),
+    );
+    await modelPort.feed.listened.future;
+    modelPort.baseline();
+    await finishing;
+    expect((await current()).billingKind, BillingKind.noCharge);
+    expect((await current()).billingKindOverride, BillingKind.noCharge);
+
+    // Turning no charge off writes a null intent and restores automatic
+    // inference; it never replays the effective category as an override.
+    final clearing = repository.setAccountBillingKind('account', null);
+    final clearCall = await fixture.port.billingChanged(0);
+    expect(
+      clearCall.request.billingKind,
+      isNull,
+      reason: 'Turning no charge off must clear, not replay the effective kind',
+    );
+    expect(
+      (await current()).billingKind,
+      BillingKind.noCharge,
+      reason: 'No optimistic billing success',
+    );
+    canonical = canonical.copyWith(
+      billingKind: BillingKind.unknown,
+      billingKindOverride: null,
+    );
+    await _finish(
+      clearCall,
+      clearing,
+      _reply(clearing.id, configurationFixtureOrigin, 3, catalog),
+      () => fixture.port.publishAccount(3, canonical),
+    );
+    expect((await current()).billingKind, BillingKind.unknown);
+    expect((await current()).billingKindOverride, isNull);
+
+    // A stale connection draft cannot restore the cleared override: an
+    // account save never carries a category, so only canonical decides.
+    final stale = repository.saveAccount(
+      AccountEdit(
+        accountId: 'account',
+        create: false,
+        rebuildModelConfiguration: false,
+        templateId: const FieldEdit.keep(),
+        protocol: const FieldEdit.keep(),
+        name: const FieldEdit.set('Stale draft'),
+        baseUrl: const FieldEdit.keep(),
+        secret: const AccountSecretUpdate.preserve(),
+        // 编辑既有账号：陈旧草稿同样不能携带初始类别。
+        initialBillingKind: null,
+        customModels: const [],
+        connections: const [],
+        autoCompactLimits: const [],
+      ),
+    );
+    final staleCall = await fixture.port.saved(1);
+    expect(
+      fixture.port.billingChanges,
+      hasLength(1),
+      reason: 'Only the explicit narrow command may change the category',
+    );
+    canonical = canonical.copyWith(name: 'Stale draft');
+    await _finish(
+      staleCall,
+      stale,
+      _reply(stale.id, configurationFixtureOrigin, 4, catalog),
+      () => fixture.port.publishAccount(4, canonical),
+    );
+    expect((await current()).billingKind, BillingKind.unknown);
+    expect((await current()).billingKindOverride, isNull);
+  });
 }

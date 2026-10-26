@@ -4,6 +4,7 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::io::{ErrorKind, Read};
 use std::path::Path;
+use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use pl_protocol::{
@@ -13,8 +14,9 @@ use pl_protocol::{
 
 use crate::config::{ConfigPaths, ConfigRuntimeError};
 use crate::mode::{
-    MAX_MODE_DOCUMENT_BYTES, ThreadModeManager, ThreadModeSource, ThreadModeSourceId,
-    ThreadModeSourceKind, validate_mode_document,
+    MAX_MODE_DOCUMENT_BYTES, ModeRegistryPublication, ThreadModeManager,
+    ThreadModeRegistrySnapshot, ThreadModeSource, ThreadModeSourceId, ThreadModeSourceKind,
+    validate_mode_document,
 };
 
 use super::ConfigRuntime;
@@ -40,7 +42,10 @@ pub(super) fn initialize(
         crate::PureError::ConfigError(format!("failed to register built-in Thread Modes: {error}"))
     })?;
     let documents = load_documents(paths)?;
-    publish_documents(&manager, &documents)?;
+    let (_, publication) = publish_documents(&manager, &documents)?;
+    if let Some(publication) = publication {
+        publication.notify();
+    }
     Ok((manager, documents))
 }
 
@@ -148,20 +153,23 @@ impl ConfigRuntime {
                 }),
             });
         }
-        if let Err(error) = self.replace_user_modes(&documents) {
-            if let Err(restore) = restore_file(&path, previous.as_deref()) {
-                return Err(restore.context(format!(
-                    "failed to restore Thread Mode file after publish error: {error}"
-                )));
+        let (snapshot, publication) = match self.replace_user_modes(&documents) {
+            Ok(published) => published,
+            Err(error) => {
+                if let Err(restore) = restore_file(&path, previous.as_deref()) {
+                    return Err(restore.context(format!(
+                        "failed to restore Thread Mode file after publish error: {error}"
+                    )));
+                }
+                return Err(error);
             }
-            return Err(error);
-        }
+        };
         *self
             .mode_documents
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = documents;
-        let catalog = self.modes.snapshot().catalog().clone();
-        Ok(ModeDefinitionCommandOutcome {
+        let catalog = snapshot.catalog().clone();
+        let outcome = ModeDefinitionCommandOutcome {
             changed: true,
             definition: Some(ThreadModeDefinitionSnapshot {
                 revision: catalog.revision,
@@ -169,7 +177,12 @@ impl ConfigRuntime {
                 read_only: false,
             }),
             catalog,
-        })
+        };
+        drop(_command);
+        if let Some(publication) = publication {
+            publication.notify();
+        }
+        Ok(outcome)
     }
 
     pub(crate) fn delete_thread_mode_definition(
@@ -210,23 +223,31 @@ impl ConfigRuntime {
             Err(error) if error.kind() == ErrorKind::NotFound => {}
             Err(error) => return Err(error.into()),
         }
-        if let Err(error) = self.replace_user_modes(&documents) {
-            if let Err(restore) = restore_file(&path, previous.as_deref()) {
-                return Err(restore.context(format!(
-                    "failed to restore Thread Mode file after publish error: {error}"
-                )));
+        let (snapshot, publication) = match self.replace_user_modes(&documents) {
+            Ok(published) => published,
+            Err(error) => {
+                if let Err(restore) = restore_file(&path, previous.as_deref()) {
+                    return Err(restore.context(format!(
+                        "failed to restore Thread Mode file after publish error: {error}"
+                    )));
+                }
+                return Err(error);
             }
-            return Err(error);
-        }
+        };
         *self
             .mode_documents
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = documents;
-        Ok(ModeDefinitionCommandOutcome {
+        let outcome = ModeDefinitionCommandOutcome {
             changed: true,
-            catalog: self.modes.snapshot().catalog().clone(),
+            catalog: snapshot.catalog().clone(),
             definition: None,
-        })
+        };
+        drop(_command);
+        if let Some(publication) = publication {
+            publication.notify();
+        }
+        Ok(outcome)
     }
 
     pub(crate) fn reload_thread_mode_definitions(
@@ -255,16 +276,21 @@ impl ConfigRuntime {
                 definition: None,
             });
         }
-        self.replace_user_modes(&documents)?;
+        let (snapshot, publication) = self.replace_user_modes(&documents)?;
         *self
             .mode_documents
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = documents;
-        Ok(ModeDefinitionCommandOutcome {
+        let outcome = ModeDefinitionCommandOutcome {
             changed: true,
-            catalog: self.modes.snapshot().catalog().clone(),
+            catalog: snapshot.catalog().clone(),
             definition: None,
-        })
+        };
+        drop(_command);
+        if let Some(publication) = publication {
+            publication.notify();
+        }
+        Ok(outcome)
     }
 
     fn ensure_mode_command_open(&self) -> Result<()> {
@@ -281,7 +307,10 @@ impl ConfigRuntime {
     fn replace_user_modes(
         &self,
         documents: &BTreeMap<ThreadModeId, ThreadModeDocument>,
-    ) -> Result<()> {
+    ) -> Result<(
+        Arc<ThreadModeRegistrySnapshot>,
+        Option<ModeRegistryPublication>,
+    )> {
         publish_documents(&self.modes, documents)
     }
 }
@@ -289,14 +318,16 @@ impl ConfigRuntime {
 fn publish_documents(
     manager: &ThreadModeManager,
     documents: &BTreeMap<ThreadModeId, ThreadModeDocument>,
-) -> Result<()> {
+) -> Result<(
+    Arc<ThreadModeRegistrySnapshot>,
+    Option<ModeRegistryPublication>,
+)> {
     let source_id = ThreadModeSourceId::new(USER_MODE_SOURCE_ID)?;
     if documents.is_empty() {
-        manager.remove_source(&source_id);
-        return Ok(());
+        return Ok(manager.remove_source_deferred(&source_id));
     }
-    manager
-        .replace_source(
+    let (snapshot, publication) = manager
+        .replace_source_deferred(
             ThreadModeSource {
                 id: source_id,
                 kind: ThreadModeSourceKind::External,
@@ -306,7 +337,7 @@ fn publish_documents(
                 .map(|document| document.definition.clone()),
         )
         .context("failed to publish user Thread Modes")?;
-    Ok(())
+    Ok((snapshot, Some(publication)))
 }
 
 fn load_documents(paths: &ConfigPaths) -> Result<BTreeMap<ThreadModeId, ThreadModeDocument>> {
@@ -418,7 +449,7 @@ fn validation_error(issues: Vec<ThreadModeValidationIssue>) -> anyhow::Error {
         "Thread Mode definition is invalid",
         false,
     )
-    .with_details(serde_json::json!({ "issues": issues }))
+    .with_details(pl_protocol::studio::StudioErrorDetails::Validation { issues })
     .into()
 }
 

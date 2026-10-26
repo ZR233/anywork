@@ -283,7 +283,7 @@ impl Owner {
         }
     }
 
-    /// Releases the live execution identity on every exit path of its Turn.
+    /// Releases the execution after its future and cleanup have ended, before the terminal commit.
     ///
     /// The owner is serial and owns at most one execution, so the execution this Turn ran is the one
     /// that either already names the Turn or is still preparing for it.
@@ -293,7 +293,6 @@ impl Owner {
         });
         if owned {
             self.state.execution = None;
-            self.publish_snapshot();
         }
     }
 

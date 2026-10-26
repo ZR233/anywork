@@ -7,38 +7,13 @@ import '../../../frb_generated.dart';
 import '../types/acp.dart';
 import '../types/acp_install.dart';
 import '../types/command.dart';
-import '../types/delegation.dart';
 import '../types/error.dart';
-import '../types/response.dart';
-import '../types/settings.dart';
 
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
 /// 读取 ACP 接入模板目录；纯读取默认值，不启动程序。
 Future<BridgeAcpAccountCatalog> loadAcpAccountCatalog() =>
     RustLib.instance.api.crateApiStudioHandlersAcpLoadAcpAccountCatalog();
-
-/// 保存（新增或更新）一条 ACP 接入。
-Future<BridgeSettingsCommandReply> saveAcpAccount({
-  required String operationId,
-  required BigInt expectedSettingsRevision,
-  required BridgeAcpAccountUpdate account,
-}) => RustLib.instance.api.crateApiStudioHandlersAcpSaveAcpAccount(
-  operationId: operationId,
-  expectedSettingsRevision: expectedSettingsRevision,
-  account: account,
-);
-
-/// 删除一条 ACP 接入；不注销官方账号、不删除其凭据。
-Future<BridgeSettingsCommandReply> removeAcpAccount({
-  required String operationId,
-  required BigInt expectedSettingsRevision,
-  required String accountId,
-}) => RustLib.instance.api.crateApiStudioHandlersAcpRemoveAcpAccount(
-  operationId: operationId,
-  expectedSettingsRevision: expectedSettingsRevision,
-  accountId: accountId,
-);
 
 /// 当前 canonical ACP 认证快照；纯读取，不启动程序。
 Future<BridgeAcpAuthSnapshot> readAcpAuthState() =>

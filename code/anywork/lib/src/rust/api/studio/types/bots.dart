@@ -662,25 +662,29 @@ class BridgeBotSnapshot {
 }
 
 class BridgeBotsCommandReply {
-  final BridgeBotsStateSnapshot snapshot;
+  final BridgeBotSnapshot? bot;
+  final BridgeBotRegistrationAttempt? registration;
   final BridgeStudioCommandReceipt receipt;
   final BridgeResourceStamp? stamp;
 
   const BridgeBotsCommandReply({
-    required this.snapshot,
+    this.bot,
+    this.registration,
     required this.receipt,
     this.stamp,
   });
 
   @override
-  int get hashCode => snapshot.hashCode ^ receipt.hashCode ^ stamp.hashCode;
+  int get hashCode =>
+      bot.hashCode ^ registration.hashCode ^ receipt.hashCode ^ stamp.hashCode;
 
   @override
   bool operator ==(Object other) =>
       identical(this, other) ||
       other is BridgeBotsCommandReply &&
           runtimeType == other.runtimeType &&
-          snapshot == other.snapshot &&
+          bot == other.bot &&
+          registration == other.registration &&
           receipt == other.receipt &&
           stamp == other.stamp;
 }

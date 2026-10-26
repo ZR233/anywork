@@ -1,18 +1,28 @@
-//! Canonical model-performance domain values and the bounded GUI read feed.
+//! Canonical model-performance values and product statistics APIs.
 //!
-//! The statistics owner publishes immutable material. HTTP product consumers retain their
-//! existing complete projection, while native GUI consumers use feed identities and scoped pages.
+//! Desktop and HTTP consumers use these same product-domain feeds and bounded reads. Their
+//! private runtime implementation owns one projection; no transport-specific publisher mirrors it.
 
-mod feed;
-mod models;
-
-pub use feed::{
-    StatisticsEffortPage, StatisticsError, StatisticsFeed, StatisticsFeedHeader,
-    StatisticsHistoryPage, StatisticsReadScope, StatisticsSummary, StatisticsSummaryPage,
+pub use crate::studio::statistics::{
+    FeedCloseReport, PerformanceCounters, PerformanceEffortIdentityRead,
+    PerformanceEffortIdentityRef, PerformanceEffortRead, PerformanceEffortReadPage,
+    PerformanceHistoryEntityRead, PerformanceHistoryEntryPage, PerformanceHistoryFrame,
+    PerformanceHistoryReadHeader, PerformanceHistoryReadRef, PerformanceSampleCounters,
+    PerformanceSampleIdentityRead, PerformanceSampleIdentityRef, PerformanceSampleRead,
+    PerformanceSampleReadPage, PerformanceSummariesEntityRead, PerformanceSummariesEntryPage,
+    PerformanceSummariesFrame, PerformanceSummariesReadHeader, PerformanceSummariesReadRef,
+    PerformanceSummaryIdentityRead, PerformanceSummaryIdentityRef, PerformanceSummaryRead,
+    PerformanceSummaryReadPage, ProductEntityRef, ProductFeedIdentity, ProductReadOrigin,
+    ProductReadScopeIdentity, PurposeCostRead, PurposeCostReadPage, RuntimeCostRead,
+    RuntimeCostReadPage, SessionCostRead, SessionCostsFrame, SessionCostsReadHeader,
+    SessionCostsReadRef, StudioError, StudioPerformanceEffortIdentityRead,
+    StudioPerformanceHistoryFeed, StudioPerformanceHistoryRead, StudioPerformanceSampleIdentityRead,
+    StudioPerformanceSummariesFeed, StudioPerformanceSummariesRead,
+    StudioPerformanceSummaryIdentityRead, StudioSessionCostsFeed, StudioSessionCostsRead, TextChunk,
 };
+
+mod models;
 pub use models::{
     StudioModelPerformanceEffortSummary, StudioModelPerformanceSample,
     StudioModelPerformanceSnapshot, StudioModelPerformanceSummary,
 };
-
-pub(crate) use feed::StatisticsPublisher;

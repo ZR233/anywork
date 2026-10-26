@@ -1,0 +1,305 @@
+//! PerformanceHistory has one original native pending/ACK window; the existing bridge owns its task.
+use futures::FutureExt;
+use pl_protocol::studio::{StudioError, StudioErrorCode};
+use pl_studio_runtime::statistics::{PerformanceHistoryFrame, StudioPerformanceHistoryFeed};
+use std::sync::{Arc, Mutex};
+use tokio::sync::{Notify, oneshot};
+
+use super::super::identity::BridgeProductFeedIdentity;
+use super::performance_history::BridgePerformanceHistoryFrame;
+use crate::api::studio::bridge_runtime::installed_bridge;
+use crate::api::studio::subscription::BridgeTaskRegistry;
+use crate::api::studio::subscription::typed_feed::{TypedFeedResource, TypedFeedTask, closed};
+use crate::api::studio::types::{BridgeError, BridgeFeedCloseOutcome, BridgeFeedCloseReport};
+use crate::frb_generated::StreamSink;
+
+struct PerformanceHistoryOwner {
+    task: Arc<TypedFeedTask>,
+    feed: Mutex<Option<Arc<StudioPerformanceHistoryFeed>>>,
+    sink: Mutex<Option<StreamSink<BridgePerformanceHistoryFrame>>>,
+    changed: Notify,
+}
+#[flutter_rust_bridge::frb(opaque)]
+pub struct BridgePerformanceHistoryFeed {
+    owner: Arc<PerformanceHistoryOwner>,
+    registry: &'static BridgeTaskRegistry,
+    identity: BridgeProductFeedIdentity,
+}
+struct Opening(Option<Arc<PerformanceHistoryOwner>>);
+impl Drop for Opening {
+    fn drop(&mut self) {
+        if let Some(owner) = &self.0 {
+            owner.request_close();
+        }
+    }
+}
+
+pub async fn open_performance_history() -> Result<BridgePerformanceHistoryFeed, BridgeError> {
+    let bridge = installed_bridge()?;
+    let task = TypedFeedTask::new(
+        bridge.subscriptions.next_id(),
+        bridge.shutdown.child_token(),
+    );
+    let owner = Arc::new(PerformanceHistoryOwner {
+        task: task.clone(),
+        feed: Mutex::new(None),
+        sink: Mutex::new(None),
+        changed: Notify::new(),
+    });
+    bridge.subscriptions.register_typed(&task, &owner)?;
+    let mut opening = Opening(Some(owner.clone()));
+    let (opened, ready) = oneshot::channel();
+    let producer = owner.clone();
+    if let Err(error) = task.start(async move {
+        let feed = match bridge.studio.open_performance_history().await {
+            Ok(feed) => Arc::new(feed),
+            Err(error) => {
+                producer.request_close();
+                let _ = opened.send(Err(BridgeError::from(error)));
+                return;
+            }
+        };
+        *producer
+            .feed
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(feed.clone());
+        let installed = producer.task.admit(|| {
+            feed.ensure_open()?;
+            Ok(feed.identity())
+        });
+        match installed {
+            Ok(identity) => {
+                if opened.send(Ok(identity)).is_err() {
+                    producer.request_close();
+                }
+            }
+            Err(error) => {
+                producer.request_close();
+                let _ = opened.send(Err(error));
+            }
+        }
+        if !producer.wait_sink(&feed).await {
+            feed.request_close();
+            return;
+        }
+        let outcome = std::panic::AssertUnwindSafe(run(&producer, &feed))
+            .catch_unwind()
+            .await;
+        if let Err(panic) = outcome {
+            if let Err(error) =
+                feed.send_failure(StudioError::internal(), |frame| producer.send(frame))
+            {
+                producer.task.record_failure(error.into());
+            }
+            std::panic::resume_unwind(panic);
+        }
+    }) {
+        owner.request_close();
+        return Err(error);
+    }
+    let identity = match ready.await {
+        Ok(result) => result?,
+        Err(_) => {
+            owner.request_close();
+            return Err(StudioError::internal().into());
+        }
+    };
+    let handle = BridgePerformanceHistoryFeed {
+        owner,
+        registry: &bridge.subscriptions,
+        identity: identity.into(),
+    };
+    opening.0.take();
+    Ok(handle)
+}
+
+impl BridgePerformanceHistoryFeed {
+    #[flutter_rust_bridge::frb(sync)]
+    pub fn identity(&self) -> BridgeProductFeedIdentity {
+        self.identity.clone()
+    }
+    pub async fn stream(
+        &self,
+        sink: StreamSink<BridgePerformanceHistoryFrame>,
+    ) -> Result<(), BridgeError> {
+        self.owner.task.admit(|| {
+            self.owner.feed()?.claim()?;
+            *self
+                .owner
+                .sink
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(sink);
+            Ok(())
+        })?;
+        self.owner.changed.notify_waiters();
+        Ok(())
+    }
+    pub async fn ack_through(&self, delivery_sequence: u64) -> Result<(), BridgeError> {
+        self.owner
+            .task
+            .admit(|| Ok(self.owner.feed()?.ack_through(delivery_sequence)?))?;
+        self.owner.changed.notify_waiters();
+        Ok(())
+    }
+    #[flutter_rust_bridge::frb(sync)]
+    pub fn request_close(&self) {
+        self.owner.request_close();
+    }
+    pub async fn close(&self) -> Result<BridgeFeedCloseReport, BridgeError> {
+        self.request_close();
+        let outcome = if self.owner.task.wait_stopped().await.is_ok() {
+            self.registry.unregister_typed(self.owner.task.id);
+            BridgeFeedCloseOutcome::Clean
+        } else {
+            BridgeFeedCloseOutcome::Unresolved {
+                issues: self.owner.task.close_issues(),
+            }
+        };
+        Ok(BridgeFeedCloseReport {
+            feed_id: self.identity.feed_id.clone(),
+            outcome,
+        })
+    }
+    pub async fn retry_close(&self) -> Result<BridgeFeedCloseReport, BridgeError> {
+        self.close().await
+    }
+}
+impl Drop for BridgePerformanceHistoryFeed {
+    fn drop(&mut self) {
+        self.request_close();
+    }
+}
+
+impl PerformanceHistoryOwner {
+    fn feed(&self) -> Result<Arc<StudioPerformanceHistoryFeed>, BridgeError> {
+        self.feed
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+            .ok_or_else(closed)
+    }
+    fn request_close(&self) {
+        self.task.signal_cancel();
+        if let Some(feed) = self
+            .feed
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+        {
+            feed.request_close();
+        }
+    }
+    async fn wait_sink(&self, feed: &StudioPerformanceHistoryFeed) -> bool {
+        loop {
+            let changed = self.changed.notified();
+            tokio::pin!(changed);
+            changed.as_mut().enable();
+            if self.task.cancel().is_cancelled() || feed.is_closing() {
+                return self.finish_wait_sink();
+            }
+            if self
+                .sink
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .is_some()
+            {
+                return true;
+            }
+            tokio::select! { biased;
+                () = self.task.cancel().cancelled() => return self.finish_wait_sink(),
+                () = feed.cancelled() => return self.finish_wait_sink(),
+                result = feed.changed() => if let Err(error) = result {
+                    if error.code != StudioErrorCode::Cancelled { self.task.record_failure(error.into()); }
+                    feed.request_close(); return self.finish_wait_sink();
+                },
+                () = changed => {},
+            }
+        }
+    }
+    fn finish_wait_sink(&self) -> bool {
+        self.task.signal_cancel();
+        self.sink
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .is_some()
+    }
+    fn send(&self, frame: PerformanceHistoryFrame) -> Result<(), StudioError> {
+        self.sink
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .ok_or_else(transport_failed)
+            .and_then(|sink| sink.add(frame.into()).map_err(|_| transport_failed()))
+    }
+}
+#[flutter_rust_bridge::frb(ignore)]
+impl TypedFeedResource for PerformanceHistoryOwner {
+    fn release_after_join(&self) {
+        self.sink
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        self.feed
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+    }
+}
+async fn run(owner: &PerformanceHistoryOwner, feed: &StudioPerformanceHistoryFeed) {
+    loop {
+        let changed = owner.changed.notified();
+        tokio::pin!(changed);
+        changed.as_mut().enable();
+        if owner.task.cancel().is_cancelled() || feed.is_closing() {
+            if let Err(error) = feed.send_closed(|frame| owner.send(frame)) {
+                owner.task.record_failure(error.into());
+            }
+            return;
+        }
+        // The admission guard holds task state. Never record a sink error recursively inside
+        // that guard: remember this synchronous send's failure and publish it after unlock.
+        let mut delivery_failure = None;
+        let result = owner.task.admit_studio(|| {
+            feed.send_pending(|frame| {
+                let result = owner.send(frame);
+                if let Err(error) = &result {
+                    delivery_failure = Some(error.clone());
+                }
+                result
+            })
+        });
+        if let Some(error) = delivery_failure {
+            owner.task.record_failure(error.into());
+        }
+        if let Err(error) = result {
+            finish(owner, feed, error);
+            return;
+        }
+        tokio::select! { biased;
+            () = owner.task.cancel().cancelled() => {}, () = feed.cancelled() => {},
+            result = feed.changed() => if let Err(error) = result { finish(owner, feed, error); return; },
+            () = changed => {},
+        }
+    }
+}
+fn finish(
+    owner: &PerformanceHistoryOwner,
+    feed: &StudioPerformanceHistoryFeed,
+    error: StudioError,
+) {
+    let result = if error.code == StudioErrorCode::Cancelled {
+        feed.send_closed(|frame| owner.send(frame))
+    } else {
+        feed.send_failure(error, |frame| owner.send(frame))
+    };
+    if let Err(error) = result {
+        owner.task.record_failure(error.into());
+    }
+}
+fn transport_failed() -> StudioError {
+    StudioError::new(
+        StudioErrorCode::Unavailable,
+        "PerformanceHistory stream sink is unavailable",
+        false,
+    )
+}

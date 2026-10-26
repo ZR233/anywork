@@ -6,6 +6,9 @@ use std::{
 };
 
 use crate::studio::runtime::chat_item::typed_item;
+use crate::studio::storage::coordinator::history_close::{
+    HistoryCloseOwner, HistoryConnectionRole, HistoryStateLease,
+};
 use anyhow::{Context, Result, ensure};
 use pl_core::chat::{ChatCursor, ChatError, ChatHistory, ChatHistoryPage, ChatItem};
 use pl_protocol::thread::TimelineCursor;
@@ -17,6 +20,16 @@ use sea_orm::{
 };
 
 const HISTORY_SCHEMA_VERSION: i64 = 8;
+
+/// Typed context for read failures. The original SQL/decoder cause remains in the anyhow chain;
+/// adapters distinguish storage IO from an incompatible persisted fact without parsing messages.
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum HistoryReadFailure {
+    #[error("history storage read failed")]
+    Storage,
+    #[error("history read contains incompatible protocol data")]
+    Protocol,
+}
 
 mod checkpoint;
 mod schema;
@@ -67,6 +80,12 @@ impl std::fmt::Debug for HistoryStoreShare {
 struct HistoryStoreState {
     path: PathBuf,
     thread_id: String,
+    /// This state's lifetime token, and the owner that closes its connections afterwards.
+    ///
+    /// The token keeps this state's existence observable, so "a legitimate holder still exists" is
+    /// something the final close waits on. Its last `Drop` ends the lifetime and hands the still-open
+    /// connections over inside that same boundary.
+    lease: HistoryStateLease,
     /// The single writer connection, opened on the first write.
     ///
     /// Effect batches use one connection for short single-writer transactions. The Session owns
@@ -98,6 +117,22 @@ struct HistoryStoreState {
     reader_before_init: tokio::sync::Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
 }
 
+impl Drop for HistoryStoreState {
+    fn drop(&mut self) {
+        // Only connections that were really opened are owed a close: opening one here would create
+        // the very resource this drop exists to release. Both slots are taken so the state leaves
+        // nothing behind, while the lease keeps each connection until its close truly succeeded.
+        let mut connections = Vec::new();
+        if let Some(writer) = self.writer.take() {
+            connections.push((HistoryConnectionRole::Writer, writer.db));
+        }
+        if let Some(reader) = self.reader.take() {
+            connections.push((HistoryConnectionRole::Reader, reader.db));
+        }
+        self.lease.finish(connections);
+    }
+}
+
 /// One live connection plus the database identity it validated.
 struct HistoryConnection {
     db: DatabaseConnection,
@@ -126,6 +161,7 @@ pub(crate) struct InputIdentityReceipt {
 /// `payload` is the canonical record the effect committed, so a repeated command can be answered
 /// with the same receipt instead of minting a new revision or a new execution grant.
 pub(crate) struct FactReceipt {
+    pub revision: u64,
     pub kind: String,
     pub payload: String,
 }
@@ -199,15 +235,31 @@ impl HistoryStore {
     /// The first write creates the directory/database and initializes/upgrades the schema; reads
     /// only ever observe an existing database (or an explicitly empty history) and never mutate a
     /// byte, so an absent or damaged store cannot be resurrected by pagination or `read_item`.
+    /// Test-only fixture: opens a handle whose close responsibility dies with the test.
+    ///
+    /// Production construction always supplies the coordinator's owner; this keeps single-file
+    /// storage tests from having to build one without giving production an owner-less escape hatch.
+    #[cfg(test)]
     pub(crate) async fn open(path: &Path, thread_id: &str) -> Result<Self> {
+        Self::open_with(path, thread_id, HistoryCloseOwner::new()).await
+    }
+
+    /// Binds one Thread history database path and the owner that closes its connections.
+    pub(crate) async fn open_with(
+        path: &Path,
+        thread_id: &str,
+        close_owner: HistoryCloseOwner,
+    ) -> Result<Self> {
         ensure!(
             !thread_id.is_empty(),
             "history Thread identity must not be empty"
         );
+        let lease = close_owner.register_state(thread_id)?;
         Ok(Self {
             state: std::sync::Arc::new(HistoryStoreState {
                 path: path.to_owned(),
                 thread_id: thread_id.to_owned(),
+                lease,
                 writer: tokio::sync::OnceCell::new(),
                 reader: tokio::sync::OnceCell::new(),
                 init: tokio::sync::RwLock::new(()),
@@ -298,7 +350,9 @@ impl HistoryStore {
             .state
             .reader
             .get_or_try_init(|| async {
-                let db = connect_read_only(&self.state.path).await?;
+                let db = connect_read_only(&self.state.path)
+                    .await
+                    .context(HistoryReadFailure::Storage)?;
                 let (database_id, schema_version) =
                     validate_existing(&db, &self.state.thread_id).await?;
                 Ok::<HistoryConnection, anyhow::Error>(HistoryConnection {
@@ -632,10 +686,6 @@ impl HistoryStore {
             .collect()
     }
 
-    /// Reads the minimal identity of a previously admitted input, if the durable index knows it.
-    ///
-    /// This is the cross-restart idempotency lookup for `submitPrompt`: the returned record lets
-    /// the runtime rebuild the original receipt without re-admitting the input or replaying history.
     /// Reads the newest durable receipt of one interaction/permission identity.
     ///
     /// This is the cross-window/cross-restart authority for a repeated terminal interaction
@@ -656,14 +706,51 @@ impl HistoryStore {
                  WHERE item_id=? ORDER BY revision DESC LIMIT 1",
                 vec![item_id.to_owned().into()],
             ))
-            .await?;
+            .await
+            .context(HistoryReadFailure::Storage)?;
         let Some(row) = row else {
             return Ok(None);
         };
-        Ok(Some(FactReceipt {
-            kind: row.try_get("", "kind")?,
-            payload: row.try_get("", "payload")?,
-        }))
+        (|| -> Result<_> {
+            Ok(Some(FactReceipt {
+                revision: u64::try_from(row.try_get::<i64>("", "revision")?)
+                    .context("durable fact receipt has an invalid revision")?,
+                kind: row.try_get("", "kind")?,
+                payload: row.try_get("", "payload")?,
+            }))
+        })()
+        .context(HistoryReadFailure::Protocol)
+    }
+
+    /// Reads exactly the original fact revision. Never substitutes the latest saved decision.
+    pub(crate) async fn fact_receipt_at(
+        &self,
+        item_id: &str,
+        revision: u64,
+    ) -> Result<Option<FactReceipt>> {
+        let revision = i64::try_from(revision)
+            .context("fact revision exceeds SQLite range")
+            .context(HistoryReadFailure::Protocol)?;
+        let Some(connection) = self.reader().await? else {
+            return Ok(None);
+        };
+        let row = connection
+            .db
+            .query_one_raw(statement(
+                "SELECT revision,kind,payload FROM history_fact_receipts WHERE item_id=? AND revision=?",
+                vec![item_id.to_owned().into(), revision.into()],
+            ))
+            .await.context(HistoryReadFailure::Storage)?;
+        row.map(|row| {
+            Ok::<_, anyhow::Error>(FactReceipt {
+                revision: u64::try_from(row.try_get::<i64>("", "revision")?)
+                    .context("durable fact receipt has an invalid revision")?,
+                kind: row.try_get("", "kind")?,
+                payload: row.try_get("", "payload")?,
+            })
+        })
+        .transpose()
+        .context(HistoryReadFailure::Protocol)
     }
 
     /// The newest durable receipt of every decision identity this Thread ever committed.
@@ -699,6 +786,7 @@ impl HistoryStore {
             .collect()
     }
 
+    /// Reads an existing durable input identity without preparing or migrating storage.
     pub(crate) async fn input_identity(
         &self,
         input_id: &str,
@@ -706,20 +794,54 @@ impl HistoryStore {
         let Some(connection) = self.reader().await? else {
             return Ok(None);
         };
+        // Supported cold schemas are 2..=8. request_digest is an independent additive column,
+        // installed by writer initialization rather than by a dedicated schema-version step.
+        // Inspect only this known table's columns: version alone cannot prove column presence,
+        // and a pure evidence read must not call writer()/prepare_activation() to add it.
+        let columns = connection
+            .db
+            .query_all_raw(statement(
+                "PRAGMA table_info(history_input_identities)",
+                vec![],
+            ))
+            .await
+            .context(HistoryReadFailure::Storage)?;
+        let columns = columns
+            .iter()
+            .map(|row| {
+                row.try_get::<String>("", "name")
+                    .context(HistoryReadFailure::Protocol)
+            })
+            .collect::<Result<std::collections::BTreeSet<_>>>()?;
+        ensure!(
+            columns.contains("item_id") && columns.contains("payload"),
+            HistoryReadFailure::Protocol
+        );
+        let has_request_digest = columns.contains("request_digest");
+        let sql = if has_request_digest {
+            "SELECT payload,request_digest FROM history_input_identities WHERE item_id=?"
+        } else {
+            "SELECT payload FROM history_input_identities WHERE item_id=?"
+        };
         let row = connection
             .db
-            .query_one_raw(statement(
-                "SELECT payload,request_digest FROM history_input_identities WHERE item_id=?",
-                vec![input_id.into()],
-            ))
-            .await?;
-        match row {
-            Some(row) => Ok(Some(InputIdentityReceipt {
-                entry: serde_json::from_str(&row.try_get::<String>("", "payload")?)?,
-                request_digest: row.try_get::<Option<String>>("", "request_digest")?,
-            })),
-            None => Ok(None),
-        }
+            .query_one_raw(statement(sql, vec![input_id.into()]))
+            .await
+            .context(HistoryReadFailure::Storage)?;
+        (|| -> Result<_> {
+            match row {
+                Some(row) => Ok(Some(InputIdentityReceipt {
+                    entry: serde_json::from_str(&row.try_get::<String>("", "payload")?)?,
+                    request_digest: if has_request_digest {
+                        row.try_get::<Option<String>>("", "request_digest")?
+                    } else {
+                        None
+                    },
+                })),
+                None => Ok(None),
+            }
+        })()
+        .context(HistoryReadFailure::Protocol)
     }
 
     /// Upgrades existing history before an active owner seeds its canonical projection.
@@ -1778,24 +1900,28 @@ async fn validate_existing(db: &impl ConnectionTrait, thread_id: &str) -> Result
             vec![],
         ))
         .await
-        .context("history database has no readable identity table")?;
-    let row = row.context("history database identity row is missing")?;
-    let version: i64 = row.try_get("", "schema_version")?;
-    ensure!(
-        (2..=HISTORY_SCHEMA_VERSION).contains(&version),
-        "unsupported history schema {version}; existing data preserved"
-    );
-    let owner: String = row.try_get("", "thread_id")?;
-    ensure!(
-        owner == thread_id,
-        "history database belongs to another Thread"
-    );
-    let database_id: String = row.try_get("", "database_id")?;
-    ensure!(
-        !database_id.is_empty(),
-        "history database identity is empty"
-    );
-    Ok((database_id, version))
+        .context("history database has no readable identity table")
+        .context(HistoryReadFailure::Storage)?;
+    (|| -> Result<_> {
+        let row = row.context("history database identity row is missing")?;
+        let version: i64 = row.try_get("", "schema_version")?;
+        ensure!(
+            (2..=HISTORY_SCHEMA_VERSION).contains(&version),
+            "unsupported history schema {version}; existing data preserved"
+        );
+        let owner: String = row.try_get("", "thread_id")?;
+        ensure!(
+            owner == thread_id,
+            "history database belongs to another Thread"
+        );
+        let database_id: String = row.try_get("", "database_id")?;
+        ensure!(
+            !database_id.is_empty(),
+            "history database identity is empty"
+        );
+        Ok((database_id, version))
+    })()
+    .context(HistoryReadFailure::Protocol)
 }
 
 async fn write_tool_task(
@@ -2945,6 +3071,7 @@ mod storage_fault_tests {
         assert!(save_receipt(&store, 2, "second").await.is_err());
         assert_eq!(store.watermark().await?, 1);
         assert!(store.latest_fact_receipt("second").await?.is_none());
+        assert!(store.fact_receipt_at("second", 2).await?.is_none());
         store
             .writer()
             .await?
@@ -2962,6 +3089,25 @@ mod storage_fault_tests {
                 .payload,
             "{}"
         );
+        save_receipt(&store, 3, "second").await?;
+        let exact = store
+            .fact_receipt_at("second", 2)
+            .await?
+            .context("missing exact receipt")?;
+        assert_eq!(
+            exact.revision, 2,
+            "a newer saved fact must not replace the requested revision"
+        );
+        assert_eq!(exact.kind, "interaction");
+        assert_eq!(
+            store
+                .latest_fact_receipt("second")
+                .await?
+                .context("missing latest receipt")?
+                .revision,
+            3
+        );
+        assert!(store.fact_receipt_at("second", 4).await?.is_none());
         Ok(())
     }
 
@@ -3809,6 +3955,64 @@ mod storage_fault_tests {
                 .state_revision,
             imported.state_revision
         );
+        Ok(())
+    }
+
+    /// 冷加载的 fail-closed 判据：没有 checkpoint 却已有写入水位，且没有任何 legacy 来源时，
+    /// 判据必须明确失败，并完整保留现场（不补写 checkpoint、不清零水位、不生成 legacy 文件）。
+    ///
+    /// 故障形态由测试私有的 writer 注入：正常提交会在同一事务里写 checkpoint，因此"水位已前进、
+    /// checkpoint 行缺失"只能来自损坏或半初始化的库。计数只用同一 writer 的真实读查询，不复制
+    /// 被测判据本身。
+    #[tokio::test]
+    async fn cold_load_without_a_checkpoint_fails_closed_and_preserves_the_store() -> Result<()> {
+        async fn rows(history: &HistoryStore, sql: &'static str) -> Result<i64> {
+            let row = history
+                .writer()
+                .await?
+                .db
+                .query_one_raw(statement(sql, vec![]))
+                .await?
+                .context("count row")?;
+            Ok(row.try_get("", "rows")?)
+        }
+
+        let directory = tempfile::tempdir()?;
+        let history =
+            HistoryStore::open(&directory.path().join("history.sqlite"), "unordered").await?;
+        history
+            .writer()
+            .await?
+            .db
+            .execute_unprepared("UPDATE history_meta SET applied_write_seq=1")
+            .await?;
+        let checkpoints = "SELECT COUNT(*) AS rows FROM session_checkpoint";
+        let turns = "SELECT COUNT(*) AS rows FROM history_turns";
+        // 前置现场：当前 schema、没有 checkpoint、没有已提交 Turn、也没有 legacy 文件。
+        assert_eq!(rows(&history, checkpoints).await?, 0);
+        assert_eq!(rows(&history, turns).await?, 0);
+        assert!(!tokio::fs::try_exists(directory.path().join("state.toml")).await?);
+        assert!(!tokio::fs::try_exists(directory.path().join("state.prev.toml")).await?);
+
+        let state = super::super::state::StateStore::new(directory.path().to_owned(), "unordered");
+        let error = state
+            .load_read_only(&history)
+            .await
+            .expect_err("a missing checkpoint with a committed watermark must fail closed");
+        assert!(
+            error
+                .to_string()
+                .contains("history exists without a recovery checkpoint"),
+            "unexpected failure: {error}"
+        );
+
+        // 现场保持：checkpoint 仍缺失（且没有被补写）、水位没有被清零或改写、仍没有 legacy 文件。
+        assert_eq!(rows(&history, checkpoints).await?, 0);
+        assert_eq!(rows(&history, turns).await?, 0);
+        assert!(history.checkpoint().await?.is_none());
+        assert_eq!(history.watermark().await?, 1);
+        assert!(!tokio::fs::try_exists(directory.path().join("state.toml")).await?);
+        assert!(!tokio::fs::try_exists(directory.path().join("state.prev.toml")).await?);
         Ok(())
     }
 
@@ -5146,4 +5350,164 @@ mod storage_fault_tests {
         );
         Ok(())
     }
+
+    /// A borrowed pool really blocks the close; both opened pools then close on their own duty.
+    #[tokio::test]
+    async fn history_pools_close_only_when_their_connection_is_free() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("history.sqlite");
+        let owner = HistoryCloseOwner::new();
+        // Two really opened pools over one file: the writer connection of one state and the read-only
+        // connection of another. Both name the Thread the database itself was initialized for.
+        let writer_state = HistoryStore::open_with(&path, "close-pools", owner.clone()).await?;
+        writer_state.commit(1, &[], &[]).await?;
+        let reader_state = HistoryStore::open_with(&path, "close-pools", owner.clone()).await?;
+        assert_eq!(reader_state.watermark().await?, 1);
+        // Hold the writer pool's only permit, so its close really has to wait for it.
+        let transaction = {
+            let connection = writer_state.writer().await?;
+            begin_write(&connection.db).await?
+        };
+        drop(writer_state);
+        drop(reader_state);
+        assert_eq!(owner.outstanding(), 2, "both opened pools are owed a close");
+        for _ in 0..64 {
+            if owner.completed() > 0 {
+                break;
+}
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(owner.completed(), 1, "only the pool with a free connection closed");
+        assert_eq!(owner.outstanding(), 1, "the borrowed pool is still owed its close");
+        // Releasing the permit lets the very same duty (no second pool) close.
+        transaction.commit().await?;
+        owner.settle().await?;
+        assert_eq!(owner.outstanding(), 0);
+        assert_eq!(owner.completed(), 2, "both real pools are closed");
+        // Closing connections leaves the database itself intact and readable.
+        let reopened = HistoryStore::open_with(&path, "close-pools", owner.clone()).await?;
+        assert_eq!(reopened.watermark().await?, 1);
+        drop(reopened);
+        Ok(())
+    }
+
+    /// A holder that outlived the seal keeps the close pending until it is really released.
+    #[tokio::test]
+    async fn a_holder_that_outlived_the_seal_keeps_the_close_pending() -> Result<()> {
+        use std::future::Future as _;
+
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("history.sqlite");
+        let owner = HistoryCloseOwner::new();
+        let history = HistoryStore::open_with(&path, "sealed", owner.clone()).await?;
+        history.commit(1, &[], &[]).await?;
+        owner.seal();
+        // Poll the real wait once: it must be pending while a holder is alive, and dropping it must
+        // leave the state responsibility exactly where it was.
+        let mut waiting = std::pin::pin!(owner.settle_when_no_state_is_left());
+        std::future::poll_fn(|cx| {
+        assert!(
+                waiting.as_mut().poll(cx).is_pending(),
+                "a live holder must keep the close pending"
+        );
+            std::task::Poll::Ready(())
+        })
+        .await;
+        drop(waiting);
+        assert_eq!(
+            owner.live_states(),
+            1,
+            "cancelling the wait keeps the state responsibility"
+        );
+        drop(history);
+        // Releasing the holder lets a later wait join the same responsibility to its real end.
+        assert_eq!(owner.live_states(), 0);
+        owner.settle_when_no_state_is_left().await?;
+        assert_eq!(
+            owner.outstanding(),
+            0,
+            "the connection is still really closed, never silently dropped"
+        );
+        assert_eq!(owner.completed(), 1);
+        // The database itself stays readable after its connection really closed.
+        // The sealed owner refuses new states, so this check uses a fresh unsealed owner over the
+        // same Thread identity and path, then closes it too.
+        let reopened_owner = HistoryCloseOwner::new();
+        let reopened =
+            HistoryStore::open_with(&path, "sealed", reopened_owner.clone()).await?;
+        assert_eq!(reopened.watermark().await?, 1);
+        drop(reopened);
+        reopened_owner.seal();
+        reopened_owner.settle_when_no_state_is_left().await?;
+        Ok(())
+    }
+
+    /// A controlled close failure keeps the same connection for the next attempt, and the late
+    /// observer of the failed attempt can neither drop nor overwrite the newer one.
+    #[tokio::test]
+    async fn a_failed_close_is_retried_on_the_same_connection() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("history.sqlite");
+        let owner = HistoryCloseOwner::new();
+        let history = HistoryStore::open_with(&path, "retry-close", owner.clone()).await?;
+        history.commit(1, &[], &[]).await?;
+        // The first attempt fails with a typed database error and its observer is delayed.
+        owner.arm_close_failure();
+        let (gate, wait) = tokio::sync::oneshot::channel::<()>();
+        owner.arm_observer_delay(wait);
+        drop(history);
+        let first = owner.settle().await;
+        assert!(first.is_err(), "the controlled close failure must be reported");
+        assert_eq!(
+            owner.outstanding(),
+            1,
+            "the original connection is kept for another attempt"
+        );
+        // The next entry re-arms it and closes the very same connection for real.
+        owner.settle().await?;
+        assert_eq!(owner.outstanding(), 0);
+        assert_eq!(owner.completed(), 1);
+        // The late observer of attempt 1 arrives after attempt 2 already succeeded: it must change
+        // nothing — no new task, no failure, no duplicate close.
+        gate.send(()).expect("the observer gate is still open");
+        for _ in 0..64 {
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(owner.outstanding(), 0);
+        assert_eq!(owner.completed(), 1);
+        // Same Thread identity and path; this owner is not sealed, and it is closed before returning.
+        let reopened_owner = HistoryCloseOwner::new();
+        let reopened = HistoryStore::open_with(&path, "retry-close", reopened_owner.clone()).await?;
+        assert_eq!(reopened.watermark().await?, 1);
+        drop(reopened);
+        reopened_owner.seal();
+        reopened_owner.settle_when_no_state_is_left().await?;
+        Ok(())
+    }
+
+    /// A close that never started is a real responsibility the next entry still settles.
+    #[tokio::test]
+    async fn an_unstarted_close_is_retried_on_the_same_connection() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("history.sqlite");
+        let owner = HistoryCloseOwner::new();
+        let history = HistoryStore::open_with(&path, "no-runtime", owner.clone()).await?;
+        history.commit(1, &[], &[]).await?;
+        // Released on a plain OS thread: no runtime can close it there.
+        std::thread::spawn(move || drop(history))
+            .join()
+            .expect("the holder thread must end");
+        assert_eq!(owner.outstanding(), 1, "an unstarted close is still owed");
+        owner.settle().await?;
+        assert_eq!(owner.outstanding(), 0);
+        assert_eq!(owner.completed(), 1);
+        let reopened_owner = HistoryCloseOwner::new();
+        let reopened =
+            HistoryStore::open_with(&path, "no-runtime", reopened_owner.clone()).await?;
+        assert_eq!(reopened.watermark().await?, 1);
+        drop(reopened);
+        reopened_owner.seal();
+        reopened_owner.settle_when_no_state_is_left().await?;
+        Ok(())
+}
 }

@@ -1,4 +1,4 @@
-//! runtime 持有的后台转发任务：Agent Profiles 配置 watch。
+//! runtime 持有的后台转发任务：Agent Profiles 配置 watch 与调用库统计进度 follower。
 //!
 //! 转发任务有明确 owner（runtime 的 `BackgroundTaskSlot`）：shutdown 先在 `broadcast_cancel`
 //! 向该槽广播 abort，再在 `run_shutdown_stages` 的独立资源组以同一首次期限有界 join
@@ -50,5 +50,29 @@ impl StudioRuntime {
         background_task::stop(&self.profiles_forwarder)
             .await
             .context("failed to join Agent Profiles forwarder")
+    }
+
+    /// 启动调用库统计进度 follower：统计事实的受理 / 落库 / 缺口 watch 驱动同一 owner 的投影发布。
+    ///
+    /// 任务只持 `ModelPerformanceOwner` 与调用库句柄，不持整个 runtime；slot 内已有存活任务时
+    /// 幂等 no-op，initialize 重入安全。订阅后先按当前水位收敛一次，因此启动窗口内已发生的受理
+    /// 不会丢失；水位未前进时只推进轻量状态，不与 `initialize_projection` 重复发布。
+    pub(super) async fn start_statistics_follower(&self) {
+        let mut slot = self.statistics_follower.lock().await;
+        if slot.as_ref().is_some_and(|task| !task.is_finished()) {
+            return;
+        }
+        let owner = self.model_performance.clone();
+        let task = tokio::spawn(async move {
+            owner.follow_statistics_progress().await;
+        });
+        *slot = Some(BackgroundTask::new(task));
+    }
+
+    /// 停止并等待统计进度 follower；abort 可打断 watch 等待。
+    pub(super) async fn stop_statistics_follower(&self) -> anyhow::Result<()> {
+        background_task::stop(&self.statistics_follower)
+            .await
+            .context("failed to join statistics progress follower")
     }
 }

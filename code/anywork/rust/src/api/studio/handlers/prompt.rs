@@ -1,11 +1,10 @@
 use crate::api::studio::bridge_runtime::active_bridge;
 use crate::api::studio::convert::commands::command_receipt;
-use crate::api::studio::convert::thread_stream::{bridge_child_interaction, bridge_interaction};
+use crate::api::studio::convert::thread_stream::bridge_interaction;
 use crate::api::studio::types::{
-    BridgeChildInteractionSummary, BridgeContinuationOperationState,
-    BridgeContinuationOperationView, BridgeContinueThreadReply, BridgeError,
-    BridgeInteractionCommandReply, BridgeInteractionResolution, BridgeStopThreadReply,
-    BridgeStudioPromptInput, BridgeToolApprovalResolution, SubmitPromptResponse,
+    BridgeContinuationOperationState, BridgeContinuationOperationView, BridgeContinueThreadReply,
+    BridgeError, BridgeInteractionCommandReply, BridgeInteractionResolution, BridgeStopThreadReply,
+    BridgeToolApprovalResolution,
 };
 use pl_protocol::{
     InteractionResolution, ToolApprovalResolution, ToolApprovalResolutionPayload, UserInputAnswer,
@@ -14,27 +13,27 @@ use pl_protocol::{
 use std::collections::HashMap;
 // ── Prompt / Interaction ──
 
-pub async fn submit_prompt(
+pub async fn read_input_acceptance(
     thread_id: String,
-    input: BridgeStudioPromptInput,
-    expected_model_route_revision: u64,
-) -> Result<SubmitPromptResponse, BridgeError> {
+    input_id: String,
+) -> Result<Option<crate::api::studio::types::BridgeInputAcceptanceEvidence>, BridgeError> {
+    use crate::api::studio::types::{
+        BridgeInputAcceptanceEvidence, BridgePersistedInputDisposition,
+    };
+    use pl_protocol::studio::PersistedInputDisposition;
     let bridge = active_bridge().await?;
-    let response = bridge
+    Ok(bridge
         .studio
-        .submit_prompt_command(
-            thread_id,
-            pl_protocol::studio::SubmitPromptRequest {
-                input: input.into(),
-                expected_model_route_revision,
+        .read_input_acceptance(thread_id, input_id)
+        .await?
+        .map(|evidence| BridgeInputAcceptanceEvidence {
+            accepted_sequence: evidence.accepted_sequence,
+            request_digest: evidence.request_digest,
+            disposition: match evidence.disposition {
+                PersistedInputDisposition::Consumed => BridgePersistedInputDisposition::Consumed,
+                PersistedInputDisposition::Discarded => BridgePersistedInputDisposition::Discarded,
             },
-        )
-        .await?;
-    Ok(SubmitPromptResponse {
-        thread_id: response.thread_id,
-        input_id: response.input_id,
-        revision: response.cursor,
-    })
+        }))
 }
 
 pub async fn stop_thread(
@@ -117,20 +116,6 @@ pub async fn read_continuation_operation(
         continuation_id: view.continuation_id,
         receipt: command_receipt(view.receipt),
     })
-}
-
-/// 主会话可见的子任务待决交互只读摘要；列举不激活任何子会话。
-pub async fn read_child_interactions(
-    thread_id: String,
-) -> Result<Vec<BridgeChildInteractionSummary>, BridgeError> {
-    let bridge = active_bridge().await?;
-    Ok(bridge
-        .studio
-        .read_child_interactions(&thread_id)
-        .await?
-        .into_iter()
-        .map(bridge_child_interaction)
-        .collect::<anyhow::Result<Vec<_>>>()?)
 }
 
 pub async fn respond_interaction(

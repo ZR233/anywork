@@ -1354,37 +1354,17 @@ impl BotRuntime {
             })
     }
 
-    pub(crate) async fn reply(
-        &self,
-        operation_id: String,
-        changed: bool,
-        owner_epoch: &str,
+    pub(crate) fn reply(
+        bot: Option<BotSnapshot>,
+        registration: Option<BotRegistrationAttempt>,
+        stamp: ResourceStamp,
+        receipt: StudioCommandReceipt,
     ) -> BotsCommandReply {
-        let snapshot = self.snapshot().await;
         BotsCommandReply {
-            stamp: Some(ResourceStamp {
-                resource_key: "bots".to_string(),
-                owner_epoch: owner_epoch.to_string(),
-                revision: snapshot.revision,
-            }),
-            receipt: StudioCommandReceipt {
-                operation_id,
-                disposition: if changed {
-                    CommandDisposition::Applied
-                } else {
-                    CommandDisposition::NoChange
-                },
-                targets: vec![ResourceStamp {
-                    resource_key: "bots".to_string(),
-                    owner_epoch: owner_epoch.to_string(),
-                    revision: snapshot.revision,
-                }],
-                effect: CommandEffectPoint::Immediate,
-                effective: true,
-                durable: true,
-                requires_identity_observation: false,
-            },
-            snapshot,
+            receipt,
+            stamp: Some(stamp),
+            bot,
+            registration,
         }
     }
 

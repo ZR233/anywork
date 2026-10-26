@@ -5,15 +5,20 @@
 
 import '../../../frb_generated.dart';
 import 'attachment.dart';
+import 'error.dart';
 
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 import 'package:freezed_annotation/freezed_annotation.dart' hide protected;
 
+import 'shutdown.dart';
 import 'thread_stream.dart';
 import 'thread_stream/item.dart';
+import 'turn_failure.dart';
 part 'chat.freezed.dart';
 
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`
+
+enum BridgeCleanupRecovery { awaitCompletion, retryClose, terminal }
 
 @freezed
 sealed class BridgeContentField with _$BridgeContentField {
@@ -41,6 +46,56 @@ sealed class BridgeContentField with _$BridgeContentField {
   /// 原始记录的一段正文：它在原记录里的顺序。
   const factory BridgeContentField.rawPayload({required int payloadIndex}) =
       BridgeContentField_RawPayload;
+}
+
+class BridgeFeedCloseIssue {
+  final BridgeShutdownIssue diagnostic;
+  final BridgeCleanupRecovery recovery;
+
+  const BridgeFeedCloseIssue({
+    required this.diagnostic,
+    required this.recovery,
+  });
+
+  @override
+  int get hashCode => diagnostic.hashCode ^ recovery.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is BridgeFeedCloseIssue &&
+          runtimeType == other.runtimeType &&
+          diagnostic == other.diagnostic &&
+          recovery == other.recovery;
+}
+
+@freezed
+sealed class BridgeFeedCloseOutcome with _$BridgeFeedCloseOutcome {
+  const BridgeFeedCloseOutcome._();
+
+  const factory BridgeFeedCloseOutcome.clean() = BridgeFeedCloseOutcome_Clean;
+  const factory BridgeFeedCloseOutcome.unresolved({
+    required List<BridgeFeedCloseIssue> issues,
+  }) = BridgeFeedCloseOutcome_Unresolved;
+}
+
+/// 一次 Timeline feed 关闭的真实 join 报告。
+class BridgeFeedCloseReport {
+  final String feedId;
+  final BridgeFeedCloseOutcome outcome;
+
+  const BridgeFeedCloseReport({required this.feedId, required this.outcome});
+
+  @override
+  int get hashCode => feedId.hashCode ^ outcome.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is BridgeFeedCloseReport &&
+          runtimeType == other.runtimeType &&
+          feedId == other.feedId &&
+          outcome == other.outcome;
 }
 
 @freezed
@@ -246,6 +301,18 @@ class BridgeTimelineDetailRef {
 }
 
 @freezed
+sealed class BridgeTimelineEvent with _$BridgeTimelineEvent {
+  const BridgeTimelineEvent._();
+
+  const factory BridgeTimelineEvent.baseline({
+    required BridgeTimelineBaseline baseline,
+  }) = BridgeTimelineEvent_Baseline;
+  const factory BridgeTimelineEvent.update({
+    required BridgeTimelineUpdate update,
+  }) = BridgeTimelineEvent_Update;
+}
+
+@freezed
 sealed class BridgeTimelineFieldChange with _$BridgeTimelineFieldChange {
   const BridgeTimelineFieldChange._();
 
@@ -300,6 +367,19 @@ class BridgeTimelineFieldUpdate {
           change == other.change &&
           totalBytes == other.totalBytes &&
           previewBytes == other.previewBytes;
+}
+
+@freezed
+sealed class BridgeTimelineFrame with _$BridgeTimelineFrame {
+  const BridgeTimelineFrame._();
+
+  const factory BridgeTimelineFrame.data({
+    required BigInt deliverySequence,
+    required BridgeTimelineEvent event,
+  }) = BridgeTimelineFrame_Data;
+  const factory BridgeTimelineFrame.failure({required BridgeError error}) =
+      BridgeTimelineFrame_Failure;
+  const factory BridgeTimelineFrame.closed() = BridgeTimelineFrame_Closed;
 }
 
 /// 一条时间线条目的预览值。

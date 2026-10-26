@@ -23,12 +23,14 @@ pub(in crate::studio) use live::{
 #[cfg(test)]
 pub(in crate::studio) use live::LIVE_ITEM_WINDOW;
 mod runtime;
-pub(in crate::studio) use runtime::{fold_effect_accounting, project_runtime};
+pub(in crate::studio) use runtime::{
+    fold_effect_accounting, project_continuation, project_execution, project_runtime,
+};
 mod snapshot;
 pub(in crate::studio) use snapshot::{project_snapshot, saved_mode, status, storage_state};
 pub(in crate::studio) mod order;
 mod tool_media;
-pub(crate) use tool_media::{delivery_attachments, read_persisted_media};
+pub(crate) use tool_media::{delivery_attachments, persisted_reference};
 mod inputs;
 mod responses;
 mod tools;

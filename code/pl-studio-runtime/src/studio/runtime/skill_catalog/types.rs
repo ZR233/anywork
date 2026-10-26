@@ -23,6 +23,7 @@ pub struct SkillCatalogRuntime {
     pub(super) command_lock: Arc<Mutex<()>>,
     pub(super) states: Arc<RwLock<BTreeMap<String, SkillsStateSnapshot>>>,
     pub(super) events: Option<crate::ProductEventBus>,
+    pub(super) product_source: Option<Arc<super::super::skills::sources::SkillsSources>>,
     pub(super) system_skills_dir: Option<Arc<PathBuf>>,
     pub(super) registry: SkillRegistry,
     _provider_registrations: Vec<Arc<SkillProviderRegistration>>,
@@ -60,12 +61,17 @@ impl SkillsStateSnapshot {
 
 impl SkillCatalogRuntime {
     /// Creates the Studio catalog owner with its product-owned system Skills directory.
-    pub fn new(events: crate::ProductEventBus, system_skills_dir: PathBuf) -> Self {
+    pub(in crate::studio::runtime) fn new(
+        events: crate::ProductEventBus,
+        system_skills_dir: PathBuf,
+        product_source: Arc<super::super::skills::sources::SkillsSources>,
+    ) -> Self {
         let (registry, provider_registrations) = local_registry(Some(&system_skills_dir));
         Self {
             command_lock: Arc::new(Mutex::new(())),
             states: Arc::new(RwLock::new(BTreeMap::new())),
             events: Some(events),
+            product_source: Some(product_source),
             system_skills_dir: Some(Arc::new(system_skills_dir)),
             registry,
             _provider_registrations: provider_registrations,
@@ -98,6 +104,7 @@ impl Default for SkillCatalogRuntime {
             command_lock: Arc::new(Mutex::new(())),
             states: Arc::new(RwLock::new(BTreeMap::new())),
             events: None,
+            product_source: None,
             system_skills_dir: None,
             registry,
             _provider_registrations: provider_registrations,

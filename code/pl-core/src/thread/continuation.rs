@@ -311,8 +311,8 @@ impl Owner {
             // The owner cancels its own preparing generation here and remembers the stop generation that
             // cancellation produced. Any later stop makes the count differ, so an external stop is never
             // read as the replacement it did not cause.
-            self.interrupt.interrupt();
-            self.superseded_batch = Some((turn, self.interrupt.stops()));
+            let (_, generation) = self.interrupt.interrupt_generation();
+            self.superseded_batch = Some((turn, generation));
             return Ok(());
         }
         // Only a body-less control may join a batch that is already running: seating real content in a

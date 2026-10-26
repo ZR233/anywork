@@ -1,18 +1,21 @@
 import 'dart:async';
 import 'dart:convert';
 
-import 'package:anywork/src/infrastructure/frb/studio_api.dart';
-import 'package:anywork/src/presentation/view_models/timeline_session_owner.dart';
+import 'package:anywork/src/infrastructure/frb/products/bots/state_values.dart';
+import 'package:anywork/src/rust/api/studio/products/identity.dart'
+    as frb_identity;
+import 'package:anywork/src/rust/api/studio/products/read/bots.dart'
+    as frb_feed;
+import 'package:anywork/src/rust/api/studio/products/source.dart' as frb_source;
 import 'package:anywork/src/rust/api/studio/types/bots.dart' as frb_bots;
-import 'package:anywork/src/rust/api/studio/types/event.dart' as frb_event;
-import 'package:anywork/src/rust/api/studio/types/product_topic.dart'
-    as frb_topic;
-import 'package:anywork/src/shared/studio_driver_projection.dart';
-import 'package:anywork/src/shared/studio_driver_state.dart';
-import 'package:anywork_client/studio_client.dart';
+import 'package:anywork/src/shared/driver_bots_projection.dart';
+import 'package:anywork/src/shared/driver_snapshot_json.dart';
+import 'package:anywork_client/bots_ports.dart';
+import 'package:anywork_client/operations_ports.dart';
+import 'package:anywork_client/resources_ports.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-import 'support/recording_demo_transport.dart';
+import '../../../anywork_client/test/support/scripted_feed.dart';
 
 // These tests execute the production FRB envelope mapper with real generated
 // DTOs, the Client canonical reducer and the Driver projection. The fake
@@ -101,27 +104,59 @@ frb_bots.BridgeBotsStateSnapshot _frbSnapshot({
   );
 }
 
-frb_topic.BridgeProductTopicStreamEnvelope _baselineEnvelope(
+frb_identity.BridgeProductProjectionStamp _stamp(BigInt revision) =>
+    frb_identity.BridgeProductProjectionStamp(
+      ownerEpoch: 'bots-native',
+      incarnation: BigInt.one,
+      revision: revision,
+    );
+
+frb_feed.BridgeBotsHeader _header(frb_bots.BridgeBotsStateSnapshot snapshot) =>
+    frb_feed.BridgeBotsHeader(
+      source: frb_source.BridgeObservedHeader(
+        brief: frb_source.BridgeObservedBrief.ready(
+          revision: snapshot.revision,
+          updatedAt: snapshot.updatedAt,
+        ),
+        status: frb_identity.BridgeProductSourceStatusRef(
+          entry: BigInt.one,
+          revision: snapshot.revision,
+        ),
+      ),
+      botsRevision: snapshot.revision,
+      updatedAt: snapshot.updatedAt,
+    );
+
+frb_feed.BridgeBotsFrame _baselineEnvelope(
   frb_bots.BridgeBotsStateSnapshot snapshot,
 ) {
-  return frb_topic.BridgeProductTopicStreamEnvelope.baseline(
-    topic: const frb_topic.BridgeProductTopic.bots(),
-    revision: snapshot.revision,
-    state: frb_topic.BridgeProductBaseline.bots(snapshot),
+  return frb_feed.BridgeBotsFrame.data(
+    deliverySequence: BigInt.one,
+    event: frb_feed.BridgeBotsEvent.baseline(
+      identity: frb_identity.BridgeProductFeedIdentity(
+        feedId: 'bots-frb-feed',
+        ownerEpoch: 'bots-native',
+        incarnation: BigInt.one,
+        resource: frb_identity.BridgeProductResource.bots,
+      ),
+      stamp: _stamp(snapshot.revision),
+      header: _header(snapshot),
+      state: snapshot,
+    ),
   );
 }
 
-frb_topic.BridgeProductTopicStreamEnvelope _dataEnvelope(
-  String eventId,
+frb_feed.BridgeBotsFrame _dataEnvelope(
   BigInt sequence,
   frb_bots.BridgeBotsStateSnapshot snapshot,
 ) {
-  return frb_topic.BridgeProductTopicStreamEnvelope.data(
-    event: frb_event.BridgeProductEventEnvelope(
-      eventId: eventId,
-      sequence: sequence,
-      createdAt: 1718000100,
-      payload: frb_event.BridgeProductEventPayload.botsStateChanged(snapshot),
+  return frb_feed.BridgeBotsFrame.data(
+    deliverySequence: sequence,
+    event: frb_feed.BridgeBotsEvent.stateChanged(
+      stamp: _stamp(snapshot.revision),
+      baseRevision: snapshot.revision - BigInt.one,
+      header: _header(snapshot),
+      state: snapshot,
     ),
   );
 }
@@ -129,33 +164,33 @@ frb_topic.BridgeProductTopicStreamEnvelope _dataEnvelope(
 /// Maps real FRB envelopes for the bots topic through the production public
 /// mapper. Other topics keep the demo behavior; the bots stream stays open
 /// because only the registry owns cancellation.
-final class _FrbEnvelopeBotsTransport extends RecordingDemoTransport {
+final class _FrbEnvelopeBotsTransport implements BotsPort {
   _FrbEnvelopeBotsTransport(this.baseline);
 
-  final frb_topic.BridgeProductTopicStreamEnvelope baseline;
-  StreamController<ProductTopicFrame>? _bots;
+  final frb_feed.BridgeBotsFrame baseline;
+  final feed = ScriptedFeed<BotsFrame>(
+    feedId: 'bots-frb-feed',
+    sequenceOf: (frame) => frame is BotsData ? frame.deliverySequence : null,
+    isTerminal: (frame) => frame is! BotsData,
+  );
 
   @override
-  Stream<ProductTopicFrame> subscribeProductTopic(ProductTopic topic) {
-    if (topic == const BotsTopic()) {
-      late final StreamController<ProductTopicFrame> controller;
-      controller = StreamController<ProductTopicFrame>(
-        onListen: () {
-          controller.add(productTopicFrameFromEnvelope(topic, baseline)!);
-        },
-      );
-      _bots = controller;
-      return controller.stream;
-    }
-    return super.subscribeProductTopic(topic);
+  Future<FeedConnection<BotsFrame>> openBots() async {
+    unawaited(
+      feed.listened.future.then(
+        (_) => feed.emit(botsFrameFromBridge(baseline)),
+      ),
+    );
+    return feed;
   }
 
-  void emitBots(frb_topic.BridgeProductTopicStreamEnvelope envelope) {
-    final frame = productTopicFrameFromEnvelope(const BotsTopic(), envelope);
-    if (frame != null) {
-      _bots?.add(frame);
-    }
-  }
+  void emitBots(frb_feed.BridgeBotsFrame envelope) =>
+      feed.emit(botsFrameFromBridge(envelope));
+
+  @override
+  Never noSuchMethod(Invocation invocation) => throw UnsupportedError(
+    'Unscripted Bots capability: ${invocation.memberName}',
+  );
 }
 
 void main() {
@@ -164,8 +199,7 @@ void main() {
   test(
     'FRB baseline envelope maps bot config, connection, credential and pending',
     () {
-      final frame = productTopicFrameFromEnvelope(
-        const BotsTopic(),
+      final frame = botsFrameFromBridge(
         _baselineEnvelope(
           _frbSnapshot(
             revision: BigInt.from(7),
@@ -176,15 +210,26 @@ void main() {
                 ),
           ),
         ),
-      )!;
+      );
 
-      expect(frame, isA<ProductTopicBaselineFrame>());
-      final baseline = frame as ProductTopicBaselineFrame;
-      expect(baseline.topic, const BotsTopic());
-      expect(baseline.revision, 7);
-      final state = baseline.state;
+      expect(frame, isA<BotsData>());
+      final data = frame as BotsData;
+      expect(data.deliverySequence, 1);
+      final state = data.event;
       expect(state, isA<BotsBaseline>());
-      final snapshot = (state as BotsBaseline).state;
+      final baseline = state as BotsBaseline;
+      expect(baseline.identity.resource, ProductResource.bots);
+      expect(baseline.identity.ownerEpoch, 'bots-native');
+      expect(baseline.identity.incarnation, 1);
+      expect(
+        baseline.stamp,
+        const ProductProjectionStamp(
+          ownerEpoch: 'bots-native',
+          incarnation: 1,
+          revision: 7,
+        ),
+      );
+      final snapshot = baseline.state!;
       expect(snapshot.revision, 7);
       expect(snapshot.updatedAt, 1718000000);
 
@@ -240,18 +285,16 @@ void main() {
       expect(committing, isA<BotRegistrationCommitting>());
       expect((committing as BotRegistrationCommitting).botId, 'bot-frb-1');
       // Committing carries no URL material; the safe bot id must survive.
-      expect(committing.verificationUrl, isNull);
+      expect(_verificationOf(committing), isNull);
     },
   );
 
   test(
     'FRB data envelopes keep the waiting URL typed and terminal identity',
     () {
-      final waitingFrame = productTopicFrameFromEnvelope(
-        const BotsTopic(),
+      final waitingFrame = botsFrameFromBridge(
         _dataEnvelope(
-          'evt-wait',
-          BigInt.one,
+          BigInt.two,
           _frbSnapshot(
             revision: BigInt.from(8),
             registrationStatus:
@@ -263,21 +306,28 @@ void main() {
                 ),
           ),
         ),
-      )!;
-
-      expect(waitingFrame, isA<ProductTopicDataFrame>());
-      final waitingData = waitingFrame as ProductTopicDataFrame;
-      // The topic is derived from the typed payload, not from a string label.
-      expect(waitingData.topic, const BotsTopic());
-      expect(waitingData.event.eventId, 'evt-wait');
-      expect(waitingData.event.sequence, BigInt.one);
-      expect(
-        waitingData.event.createdAt,
-        DateTime.fromMillisecondsSinceEpoch(1718000100 * 1000),
       );
-      final waitingPayload = waitingData.event.payload;
+
+      expect(waitingFrame, isA<BotsData>());
+      final waitingData = waitingFrame as BotsData;
+      // Typed domain frames replace generic topic/event metadata. Baseline also
+      // consumes one delivery; projection identity and ordering remain exact.
+      expect(waitingData.deliverySequence, 2);
+      final waitingPayload = waitingData.event;
       expect(waitingPayload, isA<BotsStateChangedPayload>());
-      final waitingState = (waitingPayload as BotsStateChangedPayload).state;
+      final change = waitingPayload as BotsStateChangedPayload;
+      expect(
+        change.stamp,
+        const ProductProjectionStamp(
+          ownerEpoch: 'bots-native',
+          incarnation: 1,
+          revision: 8,
+        ),
+      );
+      expect(change.baseRevision, 7);
+      expect(change.header.botsRevision, 8);
+      final waitingState = change.state!;
+      expect(waitingState.revision, 8);
       final waiting = waitingState.registration!.status;
       expect(waiting, isA<BotRegistrationWaiting>());
       // The URL stays available as typed in-memory data for the QR surface.
@@ -295,11 +345,9 @@ void main() {
         isNot(contains('FRB-SECRET-9f2')),
       );
 
-      final terminalFrame = productTopicFrameFromEnvelope(
-        const BotsTopic(),
+      final terminalFrame = botsFrameFromBridge(
         _dataEnvelope(
-          'evt-done',
-          BigInt.two,
+          BigInt.from(3),
           _frbSnapshot(
             revision: BigInt.from(9),
             registrationStatus:
@@ -309,14 +357,24 @@ void main() {
             completedBotId: 'bot-frb-1',
           ),
         ),
-      )!;
+      );
       final terminalPayload =
-          (terminalFrame as ProductTopicDataFrame).event.payload
-              as BotsStateChangedPayload;
-      final terminal = terminalPayload.state.registration!;
+          (terminalFrame as BotsData).event as BotsStateChangedPayload;
+      expect(terminalFrame.deliverySequence, 3);
+      expect(
+        terminalPayload.stamp,
+        const ProductProjectionStamp(
+          ownerEpoch: 'bots-native',
+          incarnation: 1,
+          revision: 9,
+        ),
+      );
+      expect(terminalPayload.baseRevision, 8);
+      expect(terminalPayload.state!.revision, 9);
+      final terminal = terminalPayload.state!.registration!;
       expect(terminal.status, isA<BotRegistrationCompleted>());
       // Terminal states clear the URL but keep the safe completed identity.
-      expect(terminal.status.verificationUrl, isNull);
+      expect(_verificationOf(terminal.status), isNull);
       expect(terminal.completedBotId, 'bot-frb-1');
     },
   );
@@ -336,28 +394,30 @@ void main() {
           ),
         ),
       );
-      final client = AnyworkClient(
-        transport: transport,
+      final budget = ResourceBudget();
+      final operations = OperationRegistry(
         clientId: 'bots-frb-driver',
+        budget: budget,
       );
-      addTearDown(client.close);
-      await client.bootstrap();
-      final scope = client.channels.acquireSettingsScope(
-        BridgeSettingsScopeKind.bots,
-        null,
+      final bots = createBotsRepository(
+        port: transport,
+        budget: budget,
+        operations: operations,
       );
-      addTearDown(scope.release);
-      await client.bots.source.waitFor(
-        (clock) => clock.loaded && clock.revision == 7,
-      );
-
-      final timeline = TimelineSessionOwner(client: client);
-      addTearDown(timeline.close);
+      addTearDown(() async {
+        expect((await bots.close()).complete, isTrue);
+        operations.seal();
+        expect(budget.usage, isEmpty);
+      });
+      await bots.synchronize();
+      await transport.feed.acknowledged(1);
+      expect(bots.state.value.projection.stamp!.revision, 7);
+      expect(transport.feed.acknowledgements, [1]);
 
       Map<String, dynamic> driverJson() => jsonDecode(
-        StudioDriverState.snapshotJson(
-          observed: queryStudioDriverFacts(client, timeline: timeline),
-        ),
+        jsonEncode({
+          'bots': botsDiagnostic(projectBotsState(bots.state.value)),
+        }),
       ) as Map<String, dynamic>;
 
       final committingJson = driverJson();
@@ -386,8 +446,7 @@ void main() {
 
       transport.emitBots(
         _dataEnvelope(
-          'evt-wait',
-          BigInt.one,
+          BigInt.two,
           _frbSnapshot(
             revision: BigInt.from(8),
             registrationStatus:
@@ -400,7 +459,9 @@ void main() {
           ),
         ),
       );
-      await client.bots.source.waitFor((clock) => clock.revision == 8);
+      await transport.feed.acknowledged(2);
+      expect(bots.state.value.projection.stamp!.revision, 8);
+      expect(transport.feed.acknowledgements, [1, 2]);
       final waitingJson = driverJson();
       final waitingBots = waitingJson['bots'] as Map<String, dynamic>;
       expect(waitingBots['registrationKind'], 'waiting');
@@ -411,14 +472,13 @@ void main() {
       expect(waitingEncoded, isNot(contains('verificationUrl')));
       // Typed memory still holds the URL for the local QR surface only.
       final waitingStatus =
-          client.bots.state.value!.registration!.status
+          bots.state.value.snapshot!.value.registration!.status
               as BotRegistrationWaiting;
       expect(waitingStatus.verificationUrl, _verificationUrl);
 
       transport.emitBots(
         _dataEnvelope(
-          'evt-done',
-          BigInt.two,
+          BigInt.from(3),
           _frbSnapshot(
             revision: BigInt.from(9),
             registrationStatus:
@@ -429,15 +489,25 @@ void main() {
           ),
         ),
       );
-      await client.bots.source.waitFor((clock) => clock.revision == 9);
+      await transport.feed.acknowledged(3);
+      expect(bots.state.value.projection.stamp!.revision, 9);
+      expect(transport.feed.acknowledgements, [1, 2, 3]);
       final completedBots = driverJson()['bots'] as Map<String, dynamic>;
       expect(completedBots['registrationKind'], 'completed');
       expect(completedBots['completedBotId'], 'bot-frb-1');
       // Terminal states drop the URL material from typed state as well.
       expect(
-        client.bots.state.value!.registration!.status.verificationUrl,
+        _verificationOf(bots.state.value.snapshot!.value.registration!.status),
         isNull,
       );
     },
   );
 }
+
+// Authorization material exists only on these two typed variants. In
+// particular Committing and every terminal variant cannot retain a URL field.
+String? _verificationOf(BotRegistrationStatus value) => switch (value) {
+  BotRegistrationWaiting(:final verificationUrl) ||
+  BotRegistrationSlowDown(:final verificationUrl) => verificationUrl,
+  _ => null,
+};

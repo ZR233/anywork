@@ -1,478 +1,339 @@
-import 'dart:async';
-
-import 'package:anywork_client/studio_client.dart';
+import 'package:anywork_client/configuration_ports.dart';
+import 'package:anywork_client/models.dart' show BillingKind;
+import 'package:anywork_client/operations_ports.dart';
+import 'package:anywork_client/resources_ports.dart';
 import 'package:test/test.dart';
 
-const _alpha = AccountModelView(
-  modelId: 'alpha',
-  displayName: 'Alpha',
-  reasoningEfforts: [],
-  contextWindow: 1000,
-  maxContextWindow: 4000,
-  context: ModelContextView(
-    unavailable: null,
-    contextWindow: 1000,
-    inputTokenLimit: 900,
-    autoCompactLimit: 200,
-  ),
-);
-const _beta = AccountModelView(
-  modelId: 'beta',
-  displayName: 'Beta',
-  reasoningEfforts: [],
-  maxContextWindow: 2000,
-);
-const _orphan = AccountModelAutoCompactView(
-  modelId: 'temporarily-unlisted',
-  overrideLimit: 777,
-);
-final _account = AccountSettingsView(
-  id: 'fixture',
-  name: 'Fixture',
+import 'support/configuration_command_fixture.dart';
+import 'support/configuration_fixture.dart';
+
+/// Automatic-compaction overrides are native-canonical values with their own
+/// identity per model. The layered client does not merge settings/catalog
+/// watermarks or reconstruct backend context policy; it forwards the explicit
+/// intent and adopts exactly the projection Rust publishes.
+AccountConfiguration _account({
+  List<CustomModelConfiguration>? customModels,
+  List<ModelAutoCompact> limits = const [
+    ModelAutoCompact(modelId: 'beta', overrideLimit: 250),
+    ModelAutoCompact(modelId: 'temporarily-unlisted', overrideLimit: 777),
+  ],
+  String name = 'Fixture',
+  BillingKind billingKind = BillingKind.metered,
+  BillingKind? billingKindOverride,
+}) => AccountConfiguration(
+  accountId: 'fixture',
+  templateId: 'template-a',
+  protocol: 'openai',
+  name: name,
   baseUrl: 'http://fixture.invalid',
-  defaultModelId: 'alpha',
-  status: 'ready',
-  usageLabel: '',
-  models: const [_alpha, _beta],
-  autoCompactLimits: {
-    'alpha': AccountModelAutoCompactView(modelId: _alpha.modelId),
-    'beta': AccountModelAutoCompactView(
-      modelId: _beta.modelId,
-      overrideLimit: 250,
-    ),
-    _orphan.modelId: _orphan,
-  },
+  hasBearerToken: true,
+  bearerTokenEnv: null,
+  billingKind: billingKind,
+  billingKindOverride: billingKindOverride,
+  disabledModels: const [],
+  usageQueryRevision: 7,
+  catalogId: 'catalog',
+  customModels:
+      customModels ??
+      [customModel('alpha', contextWindow: 1000), customModel('beta')],
+  modelConnectionModes: const [],
+  modelAutoCompactLimits: limits,
 );
 
-SettingsStateSnapshot _snapshot(int revision, AccountSettingsView account) =>
-    SettingsStateSnapshot(revision: revision, accounts: [account]);
-
-class _SaveCall {
-  _SaveCall(this.revision, this.command, this.id);
-  final int revision;
-  final AccountCommand command;
-  final OperationId id;
-  final reply = Completer<SettingsCommandReply>();
-
-  void complete(int revision, AccountSettingsView account) {
-    reply.complete(
-      SettingsCommandReply(
-        snapshot: _snapshot(revision, account),
-        receipt: StudioCommandReceipt(
-          operationId: id,
-          disposition: CommitDisposition.applied,
-          targets: [
-            ResourceStamp(
-              resourceKey: 'settings',
-              ownerEpoch: 'fixture-owner',
-              revision: revision,
-            ),
-          ],
-          effect: EffectPoint.immediate,
-          effective: true,
-          durable: true,
-        ),
-      ),
-    );
-  }
-}
-
-/// 只脚本化远端 CAS/响应，不实现命令构造、解析、lane 或 reducer。
-class _Transport implements StudioTransport {
-  final calls = StreamController<_SaveCall>();
-  SettingsStateSnapshot? refreshed;
-  int refreshes = 0;
-
-  @override
-  Stream<ProductTopicFrame> subscribeProductTopic(ProductTopic topic) =>
-      const Stream.empty();
-
-  @override
-  Future<SettingsStateSnapshot> readSettingsState() async {
-    refreshes++;
-    return refreshed!;
-  }
-
-  @override
-  Future<SettingsCommandReply> saveAccount(
-    int revision,
-    AccountCommand command, {
-    required OperationId operationId,
-  }) {
-    final call = _SaveCall(revision, command, operationId);
-    calls.add(call);
-    return call.reply.future;
-  }
-
-  @override
-  dynamic noSuchMethod(Invocation invocation) =>
-      throw UnsupportedError('Unused: ${invocation.memberName}');
-}
-
-AnyworkClient _client(_Transport transport) {
-  final client = AnyworkClient(
-    transport: transport,
-    clientId: 'fixture-client',
-  );
-  client.applyBootstrap(
-    StudioBootstrap(
-      ownerEpoch: 'fixture-owner',
-      projectDirectory: ProjectDirectoryState(values: const [], revision: 1),
-      threadDirectory: ThreadDirectoryWindow(threads: const [], revision: 1),
-      agentDirectory: AgentDirectoryState(revision: 1),
-      settingsState: _snapshot(1, _account),
-      recoveryState: RecoveryStateSnapshot(revision: 1),
-      mcpState: McpStateSnapshot(revision: 1),
-      lspState: LspStateSnapshot(revision: 1),
-      skillsByProject: const {},
-      threadModeCatalog: const ThreadModeCatalogView(),
-      accountUsageState: AccountUsageStateSnapshot(revision: 1),
-      updaterState: DisabledUpdaterStateSnapshot(
-        revision: 1,
-        updatedAt: DateTime.utc(2026),
-      ),
-      persistenceState: const PersistenceStateSnapshot.ready(),
-    ),
-  );
-  addTearDown(client.close);
-  addTearDown(transport.calls.close);
-  return client;
-}
-
-Map<String, int> _limits(AccountCommand command) => {
-  for (final item in command.modelAutoCompactLimits) item.modelId: item.limit,
+Map<String, int?> _limits(AccountEdit edit) => {
+  for (final change in edit.autoCompactLimits)
+    change.modelId: change.overrideLimit,
+};
+Map<String, int?> _dispatchedLimits(AccountSettingsUpdate update) => {
+  for (final item in update.modelAutoCompactLimits) item.modelId: item.limit,
 };
 
+const _nativeRefusal = StudioFailure(
+  code: StudioFailureCode.invalidArgument,
+  message: 'The scripted native boundary declined this prepared write',
+  retryable: false,
+  correlationId: 'auto-compact-native-refusal',
+);
+
+Future<ConfigurationFixture> _fixture({AccountConfiguration? account}) async {
+  final fixture = ConfigurationFixture();
+  await fixture.establish(account ?? _account());
+  addTearDown(() async {
+    final deadline = DateTime.now().add(const Duration(seconds: 3));
+    final reports = await Future.wait([
+      fixture.repository.close(deadline: deadline),
+      fixture.models.close(deadline: deadline),
+    ]);
+    expect(reports.expand((CloseReport report) => report.unresolved), isEmpty);
+    expect(fixture.budget.usage, isEmpty);
+  });
+  return fixture;
+}
+
+Future<void> _reject(
+  RecordedConfigurationCall<UpdateAccountRequest> call,
+  OperationTicket<Unit> ticket,
+) async {
+  await call.native.resultRead(0);
+  call.native
+      .resultAt(0)
+      .reply
+      .completeError(
+        const CommandDispatchFailure.rejected(failure: _nativeRefusal),
+      );
+  final result = await ticket.result;
+  expect(result, isA<RejectedCommandResult<Unit>>());
+  final closing = await call.native.closed(0);
+  closing.reply.complete(
+    FeedCloseReport(
+      feedId: call.native.callId,
+      outcome: const FeedCloseOutcome.clean(),
+    ),
+  );
+}
+
 void main() {
-  test('one catalog revision updates shared metadata across routes and rejects older responses', () {
-    SettingsStateSnapshot frame(int settings, int catalog, int context) =>
-        SettingsStateSnapshot(
-          revision: settings,
-          modelCatalogRevision: catalog,
-          accounts: [
-            for (final id in ['first', 'second'])
-              AccountSettingsView(
-                id: id,
-                name: id,
-                baseUrl: '',
-                defaultModelId: 'shared',
-                status: '',
-                usageLabel: '',
-                models: [
-                  AccountModelView(
-                    modelId: 'shared',
-                    displayName: 'Shared',
-                    reasoningEfforts: const [],
-                    contextWindow: context,
-                  ),
-                ],
-              ),
-          ],
-        );
-    var state = mergeSettingsProjection(
-      const SettingsProjectionState(),
-      frame(1, 1, 1000),
+  test('one projection carries shared metadata across accounts and an older response never rolls it back', () async {
+    final fixture = await _fixture();
+    final canonical = await fixture.repository.loadAccount('fixture');
+    expect(canonical.customModels.first.contextWindow, 1000);
+
+    // Both accounts' shared model metadata arrives with one native projection.
+    await fixture.port.publishAccount(
+      2,
+      _account(
+        name: 'catalog',
+        customModels: [
+          customModel('alpha', contextWindow: 2000),
+          customModel('shared', contextWindow: 2000),
+        ],
+      ),
     );
-    state = mergeSettingsProjection(
-      state,
-      frame(1, 2, 2000),
-      scope: SettingsMergeScope.catalogOnly,
-    );
+    final updated = await fixture.repository.loadAccount('fixture');
+    expect(updated.name, 'catalog');
     expect(
-      state.canonical!.accounts.map(
-        (account) => account.models.single.contextWindow,
+      updated.customModels.map(
+        (CustomModelConfiguration model) => model.contextWindow,
       ),
       [2000, 2000],
     );
-    state = mergeSettingsProjection(state, frame(2, 1, 1000));
-    expect(state.settingsRevision, 2);
-    expect(state.modelCatalogRevision, 2);
-    expect(
-      state.canonical!.accounts.map(
-        (account) => account.models.single.contextWindow,
+    // The projection the client holds is the native one, not a local merge of
+    // an older settings response: the guard against a non-advancing or older
+    // product frame lives in the shared feed owner (see
+    // bots_client_lifecycle_test.dart "canonical bots snapshot rejects older
+    // revisions and late owner frames").
+    expect(fixture.repository.state.value.projection.stamp!.revision, 2);
+  });
+
+  test('override limits and catalog context stay independent facts', () async {
+    final fixture = await _fixture(
+      account: _account(
+        limits: const [ModelAutoCompact(modelId: 'alpha', overrideLimit: 150)],
       ),
-      [2000, 2000],
     );
-    expect(mergeSettingsProjection(state, frame(1, 1, 1000)), same(state));
+    Future<AccountConfiguration> current() =>
+        fixture.repository.loadAccount('fixture');
+
+    expect((await current()).modelAutoCompactLimits, const [
+      ModelAutoCompact(modelId: 'alpha', overrideLimit: 150),
+    ]);
+    // The explicit override never rewrites the backend's context window.
+    expect((await current()).customModels.first.contextWindow, 1000);
+
+    await fixture.port.publishAccount(
+      2,
+      _account(
+        limits: const [ModelAutoCompact(modelId: 'alpha', overrideLimit: 150)],
+        customModels: [customModel('alpha'), customModel('beta')],
+      ),
+    );
+    expect((await current()).modelAutoCompactLimits, const [
+      ModelAutoCompact(modelId: 'alpha', overrideLimit: 150),
+    ]);
+    expect(
+      (await current()).customModels.first.contextWindow,
+      isNull,
+      reason: 'backend policy is not reconstructed from capacity or override',
+    );
+
+    // A withdrawn catalog member keeps its explicit override.
+    await fixture.port.publishAccount(
+      3,
+      _account(
+        limits: const [
+          ModelAutoCompact(modelId: 'alpha', overrideLimit: 150),
+          ModelAutoCompact(modelId: 'temporarily-unlisted', overrideLimit: 777),
+        ],
+        customModels: [customModel('beta')],
+      ),
+    );
+    final limits = {
+      for (final item in (await current()).modelAutoCompactLimits)
+        item.modelId: item.overrideLimit,
+    };
+    expect(limits, {'alpha': 150, 'temporarily-unlisted': 777});
+  });
+
+  test('payload preserves raw intent and unknown manual capacities', () async {
+    final fixture = await _fixture();
+    final ticket = fixture.repository.saveAccount(
+      AccountEdit(
+        accountId: 'fixture',
+        create: false,
+        templateId: const FieldEdit.keep(),
+        protocol: const FieldEdit.keep(),
+        name: const FieldEdit.keep(),
+        baseUrl: const FieldEdit.keep(),
+        secret: const AccountSecretUpdate.preserve(),
+        initialBillingKind: null,
+        rebuildModelConfiguration: false,
+        customModels: const [
+          CustomModelChange.upsert(
+            originalModelId: null,
+            value: AccountModelUpdate(
+              modelId: 'unknown',
+              displayName: '',
+              wireApi: 'chat',
+              contextWindow: null,
+              maxOutputTokens: null,
+            ),
+          ),
+        ],
+        connections: const [],
+        // An override equal to a backend default is still raw intent: only the
+        // backend normalizes it.
+        autoCompactLimits: const [
+          ModelLimitChange(modelId: 'alpha', overrideLimit: 200),
+        ],
+      ),
+    );
+    final call = await fixture.port.saved(0);
+    final update = call.request.account;
+    expect(_dispatchedLimits(update), {
+      'beta': 250,
+      'temporarily-unlisted': 777,
+      'alpha': 200,
+    });
+    final added = update.customModels.singleWhere(
+      (AccountModelUpdate model) => model.modelId == 'unknown',
+    );
+    // Unknown manual capacities stay null; no capacity is synthesized.
+    expect(added.contextWindow, isNull);
+    expect(added.maxOutputTokens, isNull);
+    await _reject(call, ticket);
+    // A refused write leaves the canonical overrides untouched.
+    final retained = await fixture.repository.loadAccount('fixture');
+    expect(
+      {
+        for (final item in retained.modelAutoCompactLimits)
+          item.modelId: item.overrideLimit,
+      },
+      {'beta': 250, 'temporarily-unlisted': 777},
+    );
   });
 
   test(
-    'catalog policy is passed through unchanged across independent watermarks',
-    () {
-      final configured = _account.withAutoCompactLimit(
-        const AccountModelAutoCompactView(modelId: 'alpha', overrideLimit: 150),
+    'an explicit null removes one override without dropping siblings',
+    () async {
+      final fixture = await _fixture();
+      final intent = AccountEdit(
+        accountId: 'fixture',
+        create: false,
+        templateId: const FieldEdit.keep(),
+        protocol: const FieldEdit.keep(),
+        name: const FieldEdit.keep(),
+        baseUrl: const FieldEdit.keep(),
+        secret: const AccountSecretUpdate.preserve(),
+        initialBillingKind: null,
+        rebuildModelConfiguration: false,
+        customModels: const [],
+        connections: const [],
+        autoCompactLimits: const [
+          ModelLimitChange(modelId: 'beta', overrideLimit: null),
+        ],
       );
-      var state = mergeSettingsProjection(
-        const SettingsProjectionState(),
-        _snapshot(1, configured),
-      );
-      AccountSettingsView current() => state.canonical!.accounts.single;
-      AccountModelAutoCompactView limit() => current().autoCompactLimitFor(
-        current().models
-                .where((model) => model.modelId == 'alpha')
-                .firstOrNull ??
-            const AccountModelView(
-              modelId: 'alpha',
-              displayName: '',
-              reasoningEfforts: [],
-            ),
-      );
-      SettingsStateSnapshot frame(
-        int revision,
-        List<AccountModelView> models,
-      ) => SettingsStateSnapshot(
-        revision: 999,
-        modelCatalogRevision: revision,
-        accounts: [_account.copyWith(name: 'catalog', models: models)],
-      );
-      const backendPolicy = ModelContextView(
-        unavailable: null,
-        contextWindow: 2000,
-        inputTokenLimit: 1500,
-        autoCompactLimit: 137,
-        adjustment: ModelContextAdjustment.safetyLimit,
-      );
-      state = mergeSettingsProjection(
-        state,
-        frame(2, [
-          _alpha.copyWith(contextWindow: 2000, context: backendPolicy),
-          _beta,
-        ]),
-        scope: SettingsMergeScope.catalogOnly,
-      );
-      expect(state.settingsRevision, 1);
-      expect(current().name, 'Fixture');
-      expect(limit().overrideLimit, 150);
-      expect(
-        limit().context,
-        same(backendPolicy),
-        reason: 'backend policy is not reconstructed from capacity or override',
-      );
-      state = mergeSettingsProjection(
-        state,
-        frame(3, [
-          const AccountModelView(
-            modelId: 'alpha',
-            displayName: '',
-            reasoningEfforts: [],
-          ),
-          _beta,
-        ]),
-        scope: SettingsMergeScope.catalogOnly,
-      );
-      expect(limit().overrideLimit, 150);
-      expect(limit().context.autoCompactLimit, isNull);
-      state = mergeSettingsProjection(
-        state,
-        frame(4, [_beta]),
-        scope: SettingsMergeScope.catalogOnly,
-      );
-      expect(current().autoCompactLimits['alpha']?.overrideLimit, 150);
-      expect(current().autoCompactLimits[_orphan.modelId]?.overrideLimit, 777);
-      state = mergeSettingsProjection(
-        state,
-        frame(5, [_alpha.copyWith(context: backendPolicy), _beta]),
-        scope: SettingsMergeScope.catalogOnly,
-      );
-      final reply = configured.withAutoCompactLimit(
-        const AccountModelAutoCompactView(modelId: 'alpha', overrideLimit: 300),
-      );
-      state = mergeSettingsProjection(
-        state,
-        _snapshot(2, reply),
-        scope: SettingsMergeScope.configOnly,
-      );
-      expect(state.modelCatalogRevision, 5);
-      expect(limit().overrideLimit, 300);
-      expect(
-        limit().context,
-        same(backendPolicy),
-        reason: 'old config replies cannot roll back final catalog policy',
-      );
-      expect(_limits(AccountCommandBuilder.buildAccount(current())), {
-        'alpha': 300,
-        'beta': 250,
-        _orphan.modelId: 777,
+      expect(_limits(intent), {'beta': null});
+      final ticket = fixture.repository.saveAccount(intent);
+      final call = await fixture.port.saved(0);
+      expect(_dispatchedLimits(call.request.account), {
+        'temporarily-unlisted': 777,
       });
-      expect(
-        mergeSettingsProjection(state, _snapshot(1, configured)),
-        same(state),
-      );
+      await _reject(call, ticket);
     },
   );
 
-  test('payload preserves raw intent and unknown manual capacities', () {
-    final selected = _account.withAutoCompactLimit(
-      const AccountModelAutoCompactView(modelId: 'alpha', overrideLimit: 200),
+  test('a non-positive override is refused before dispatch', () async {
+    final fixture = await _fixture();
+    AccountEdit intent(int? limit) => AccountEdit(
+      accountId: 'fixture',
+      create: false,
+      templateId: const FieldEdit.keep(),
+      protocol: const FieldEdit.keep(),
+      name: const FieldEdit.keep(),
+      baseUrl: const FieldEdit.keep(),
+      secret: const AccountSecretUpdate.preserve(),
+      initialBillingKind: null,
+      rebuildModelConfiguration: false,
+      customModels: const [],
+      connections: const [],
+      autoCompactLimits: [
+        ModelLimitChange(modelId: 'alpha', overrideLimit: limit),
+      ],
     );
-    final command = AccountCommandBuilder.buildAccount(selected);
-    expect(_limits(command), {
-      'alpha': 200,
-      'beta': 250,
-      _orphan.modelId: 777,
-    }, reason: 'only the backend normalizes an equal default');
-    final unknown = AccountModelView(
-      modelId: 'unknown',
-      displayName: '',
-      reasoningEfforts: const [],
-      origin: ModelOrigin.manual,
-    );
-    final saved = AccountCommandBuilder.buildAccount(
-      selected.copyWith(models: [unknown]),
-    );
-    expect(saved.customModels.single.contextWindow, isNull);
-    expect(saved.customModels.single.maxOutputTokens, isNull);
-  });
-
-  test('inline intents rebuild at lane entry and every CAS retry without dropping siblings or unavailable overrides', () async {
-    final transport = _Transport();
-    final client = _client(transport);
-    final calls = StreamIterator(transport.calls.stream);
-    addTearDown(calls.cancel);
-    final commands = client.settingsCommands;
-    final first = commands.setModelAutoCompactLimit('fixture', 'alpha', 100);
-    await calls.moveNext();
-    final initial = calls.current;
-    expect(initial.revision, 1);
-    expect(initial.command.secret.action, AccountSecretAction.preserve);
-    expect(initial.command.id, 'fixture');
-    final second = commands.setModelAutoCompactLimit('fixture', 'alpha', 150);
-    final reset = commands.setModelAutoCompactLimit('fixture', 'beta', null);
-    final alphaKey = 'model-auto-compact:7:fixture:alpha';
-    final latest = client.mutations.latest('settings:$alphaKey')!;
-    final external = _account
-        .copyWith(
-          name: 'External name',
-          baseUrl: 'http://changed.invalid',
-          billingKind: BillingKind.noCharge,
-          billingKindOverride: BillingKind.noCharge,
-        )
-        .withAutoCompactLimit(
-          AccountModelAutoCompactView(
-            modelId: _beta.modelId,
-            overrideLimit: 400,
+    for (final limit in [0, -1]) {
+      expect(
+        () => fixture.repository.saveAccount(intent(limit)),
+        throwsA(
+          isA<StudioFailure>().having(
+            (StudioFailure error) => error.code,
+            'code',
+            StudioFailureCode.invalidArgument,
           ),
-        );
-    transport.refreshed = _snapshot(2, external);
-    initial.reply.completeError(
-      const StudioFailure(
-        code: StudioFailureCode.conflict,
-        message: 'External write',
-        retryable: true,
-        correlationId: 'fixture',
-      ),
-    );
-    await calls.moveNext();
-    final retried = calls.current;
-    expect(retried.id, initial.id);
-    expect(retried.revision, 2);
-    expect(retried.command.name, 'External name');
-    expect(retried.command.baseUrl, 'http://changed.invalid');
-    expect(retried.command.initialBillingKind, isNull);
-    expect(_limits(retried.command), {
-      'alpha': 100,
-      'beta': 400,
-      _orphan.modelId: 777,
-    });
-    final afterFirst = external.withAutoCompactLimit(
-      AccountModelAutoCompactView(modelId: _alpha.modelId, overrideLimit: 100),
-    );
-    retried.complete(3, afterFirst);
-    await first;
-    await calls.moveNext();
-    expect(client.mutations.latest('settings:$alphaKey')?.id, latest.id);
-    expect(
-      client.settings.state.commands[alphaKey]?.isPending,
-      isTrue,
-      reason: 'old ACK cannot clear newer intent',
-    );
-    expect(
-      client
-          .settings
-          .state
-          .canonical!
-          .accounts
-          .single
-          .autoCompactLimits['alpha']!
-          .overrideLimit,
-      100,
-      reason: 'no optimistic canonical',
-    );
-    final next = calls.current;
-    expect(next.revision, 3);
-    expect(_limits(next.command), {
-      'alpha': 150,
-      'beta': 400,
-      _orphan.modelId: 777,
-    });
-    final afterSecond = external.withAutoCompactLimit(
-      AccountModelAutoCompactView(modelId: _alpha.modelId, overrideLimit: 150),
-    );
-    next.complete(4, afterSecond);
-    await second;
-    await calls.moveNext();
-    final restoring = calls.current;
-    expect(restoring.revision, 4);
-    expect(_limits(restoring.command), {'alpha': 150, _orphan.modelId: 777});
-    var joined = false;
-    final closing = commands.close().then((_) => joined = true);
-    await Future<void>.delayed(Duration.zero);
-    expect(
-      joined,
-      isFalse,
-      reason: 'settings owner waits for the in-flight response',
-    );
-    restoring.complete(
-      5,
-      afterSecond.withAutoCompactLimit(
-        AccountModelAutoCompactView(modelId: _beta.modelId),
-      ),
-    );
-    await reset;
-    await closing;
-    expect(joined, isTrue, reason: 'Client settings owner joins queued writes');
-    expect(transport.refreshes, 1);
+        ),
+      );
+    }
+    expect(fixture.port.saves, isEmpty);
   });
 
-  test('old failed intent cannot erase newer pending edit; latest failure can be explicitly retried', () async {
-    final transport = _Transport();
-    final client = _client(transport);
-    final calls = StreamIterator(transport.calls.stream);
-    addTearDown(calls.cancel);
-    final commands = client.settingsCommands;
-    final first = commands.setModelAutoCompactLimit('fixture', 'alpha', 100);
-    final firstFailure = expectLater(first, throwsA(isA<StudioFailure>()));
-    await calls.moveNext();
-    final older = calls.current;
-    final second = commands.setModelAutoCompactLimit('fixture', 'alpha', 150);
-    final secondFailure = expectLater(second, throwsA(isA<StudioFailure>()));
-    const key = 'model-auto-compact:7:fixture:alpha';
-    const error = StudioFailure(
-      code: StudioFailureCode.invalidArgument,
-      message: 'Rejected by owner',
-      retryable: false,
-      correlationId: 'fixture',
-    );
-    older.reply.completeError(error);
-    await firstFailure;
-    await calls.moveNext();
-    expect(client.settings.state.commands[key]?.isPending, isTrue);
-    calls.current.reply.completeError(error);
-    await secondFailure;
-    expect(client.settings.state.commands[key]?.phase, CommandPhase.failed);
-    final retry = commands.setModelAutoCompactLimit('fixture', 'alpha', 150);
-    await calls.moveNext();
-    expect(_limits(calls.current.command)['alpha'], 150);
-    calls.current.complete(
+  test('an external billing rewrite is adopted and an unrelated limit edit never replays it', () async {
+    final fixture = await _fixture();
+    // Another writer (or a native settings refresh) turned the account into an
+    // explicit no-charge one between the two writes.
+    await fixture.port.publishAccount(
       2,
-      _account.withAutoCompactLimit(
-        AccountModelAutoCompactView(
-          modelId: _alpha.modelId,
-          overrideLimit: 150,
-        ),
+      _account(
+        billingKind: BillingKind.noCharge,
+        billingKindOverride: BillingKind.noCharge,
       ),
     );
-    await retry;
-    expect(client.settings.state.commands.containsKey(key), isFalse);
+    var current = await fixture.repository.loadAccount('fixture');
+    expect(current.billingKind, BillingKind.noCharge);
+    expect(current.billingKindOverride, BillingKind.noCharge);
+
+    // An auto-compact edit is not billing intent: the prepared account write
+    // carries no category at all, so it cannot restore a stale inference or
+    // clear the explicit no-charge the native surface reports.
+    final ticket = fixture.repository.saveAccount(
+      accountEdit(
+        limits: const [ModelLimitChange(modelId: 'alpha', overrideLimit: 100)],
+      ),
+    );
+    final call = await fixture.port.saved(0);
+    expect(call.request.account.accountId, 'fixture');
+    expect(_dispatchedLimits(call.request.account)['alpha'], 100);
+    expect(
+      fixture.port.billingChanges,
+      isEmpty,
+      reason: 'an ordinary edit must not replay billing intent',
+    );
+    await _reject(call, ticket);
+
+    current = await fixture.repository.loadAccount('fixture');
+    expect(current.billingKind, BillingKind.noCharge);
+    expect(current.billingKindOverride, BillingKind.noCharge);
+    expect(current.modelAutoCompactLimits, const [
+      ModelAutoCompact(modelId: 'beta', overrideLimit: 250),
+      ModelAutoCompact(modelId: 'temporarily-unlisted', overrideLimit: 777),
+    ]);
   });
 }

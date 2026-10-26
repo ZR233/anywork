@@ -1,138 +1,138 @@
-import 'support/test_statistics_feed.dart';
-
-import 'dart:async';
-
-import 'package:anywork/src/app/app_graph.dart';
 import 'package:anywork/src/app/theme/material3_theme.dart';
-import 'package:anywork/src/features/shell/studio_shell.dart';
+import 'package:anywork/src/diagnostics/studio_driver_keys.dart';
+import 'package:anywork/src/features/workspace/view_models/sidebar_view_model.dart';
+import 'package:anywork/src/features/workspace/view_models/workspace_view_model.dart';
+import 'package:anywork/src/features/workspace/workspace_screen.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
-import 'package:anywork/src/shared/studio_driver_keys.dart';
-import 'package:anywork_client/studio_client.dart';
+import 'package:anywork_client/resources.dart';
+import 'package:anywork_client/workspace.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import '../../../anywork_client/test/support/timeline_transport.dart';
 import 'support/pump_client_future.dart';
-import 'support/recording_demo_transport.dart';
+import 'support/selector_workspace_environment.dart';
 
 void main() {
-  testWidgets(
-    'closing the selected thread does not reopen content from shell',
-    (tester) async {
-      final transport = RecordingDemoTransport();
-      final graph = AppGraph(
-        statisticsFeed: const TestStatisticsFeedPort(),
-        transport: transport,
-        clientId: 'closing-shell',
-      );
-      addTearDown(() async {
-        await tester.pumpWidget(const SizedBox.shrink());
-        await pumpClientFuture(
-          tester,
-          graph.close(deadline: DateTime.now().add(const Duration(seconds: 5))),
-          'closing shell teardown',
+  TestWidgetsFlutterBinding.ensureInitialized();
+  const hostChannel = MethodChannel('io.github.zr233.anywork/host_lifecycle');
+  setUp(() {
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(
+          hostChannel,
+          (call) async => call.method == 'beginExit' ? 30000 : null,
         );
-      });
+  });
+  tearDown(
+    () => TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(hostChannel, null),
+  );
+
+  Widget harness(SelectorWorkspaceEnvironment env) => UncontrolledProviderScope(
+    container: env.container,
+    child: MaterialApp(
+      theme: pureStudioTheme(),
+      localizationsDelegates: AppLocalizations.localizationsDelegates,
+      supportedLocales: AppLocalizations.supportedLocales,
+      home: WorkspaceScreen(onAddProject: () {}, onNavigate: (_) {}),
+    ),
+  );
+
+  Future<SelectorWorkspaceEnvironment> fixture(WidgetTester tester) async {
+    late final SelectorWorkspaceEnvironment env;
+    tester.view.physicalSize = const Size(1280, 900);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    addTearDown(() async {
+      await tester.pumpWidget(const SizedBox.shrink());
+      await pumpClientFuture(tester, env.close(), 'Workspace owner cleanup');
+    });
+    // Owners and their scripted native feeds must be created in the real async
+    // zone: a Completer created inside the fake-async zone only propagates to
+    // its listeners on pump(), which cannot happen while establish() itself
+    // runs inside runAsync.
+    await tester.runAsync(() async {
+      env = SelectorWorkspaceEnvironment();
+      await env.establish();
+    });
+    return env;
+  }
+
+  testWidgets(
+    'closing the selected thread does not reopen content from workspace',
+    (tester) async {
+      final env = await fixture(tester);
       await pumpClientFuture(
         tester,
-        graph.client.bootstrap(),
-        'shell bootstrap',
-      );
-      await pumpClientFuture(
-        tester,
-        graph.client.directoryCommands.selectThread('thread-main'),
+        env.core.selectThread('thread-main'),
         'select closing thread',
       );
-      await tester.pumpWidget(
-        ProviderScope(
-          overrides: [appGraphProvider.overrideWithValue(graph)],
-          child: MaterialApp(
-            theme: pureStudioTheme(),
-            localizationsDelegates: AppLocalizations.localizationsDelegates,
-            supportedLocales: AppLocalizations.supportedLocales,
-            home: const StudioShell(),
-          ),
-        ),
-      );
-      await pumpClientUntil(
+      final opening = await pumpClientFuture(
         tester,
-        () =>
-            graph.client
-                .existingSession('thread-main')!
-                .timeline
-                .lastDeliveredFrame !=
-            null,
-        'Client delivers the initial content baseline',
+        env.core.timeline.opened(0),
+        'original Timeline open',
       );
-      await tester.pumpAndSettle();
-      final openedWindows = transport.timelines.length;
+      final native = TestTimelineConnection(
+        initial: baseline(1, items: [timelineItem(1, threadId: 'thread-main')]),
+      );
+      opening.result.complete(native);
+      await tester.pumpWidget(harness(env));
       await pumpClientFuture(
         tester,
-        graph.close(deadline: DateTime.now().add(const Duration(seconds: 5))),
-        'close while shell remains mounted',
+        env.core.conversations.active.value!.timeline.ready,
+        'initial content baseline',
       );
+      final openedWindows = env.core.timeline.requests.length;
+      final closing = env.exit.exit(ExitIntent.exit);
+      final report = await pumpClientFuture(
+        tester,
+        closing,
+        'close while WorkspaceScreen remains mounted',
+      );
+      expect(report.shutdown.outcome, ShutdownOutcome.clean);
       for (var frame = 0; frame < 4; frame++) {
         await tester.pump(const Duration(milliseconds: 16));
         expect(tester.takeException(), isNull);
       }
-      expect(transport.timelines, hasLength(openedWindows));
+      expect(env.core.timeline.requests, hasLength(openedWindows));
       expect(
-        transport.timelines.every((entry) => entry.joined.isCompleted),
-        isTrue,
+        native.closeCalls + native.retryCloseCalls,
+        greaterThanOrEqualTo(1),
+        reason: '退出必须 join 原 Timeline handle，不得由页面销毁伪造完成',
       );
+      expect(env.core.budget.usage, isEmpty);
     },
   );
 
   testWidgets(
-    'directory failure retains the shell and explicitly retries its topic',
+    'directory failure retains the workspace and explicitly retries its typed feed',
     (tester) async {
-      final transport = _DirectoryFailureTransport();
-      final graph = AppGraph(
-        statisticsFeed: const TestStatisticsFeedPort(),
-        transport: transport,
-        clientId: 'directory-recovery',
-      );
-      await graph.client.bootstrap();
-      tester.view.physicalSize = const Size(1280, 900);
-      tester.view.devicePixelRatio = 1;
-      addTearDown(tester.view.resetPhysicalSize);
-      addTearDown(tester.view.resetDevicePixelRatio);
-      addTearDown(() async {
-        await tester.pumpWidget(const SizedBox.shrink());
-        await pumpClientFuture(
-          tester,
-          graph.close(deadline: DateTime.now().add(const Duration(seconds: 5))),
-          'directory recovery close',
-        );
-      });
-      await tester.pumpWidget(
-        ProviderScope(
-          overrides: [appGraphProvider.overrideWithValue(graph)],
-          child: MaterialApp(
-            theme: pureStudioTheme(),
-            localizationsDelegates: AppLocalizations.localizationsDelegates,
-            supportedLocales: AppLocalizations.supportedLocales,
-            home: const StudioShell(),
-          ),
-        ),
+      final env = await fixture(tester);
+      await tester.runAsync(env.core.selectStart);
+      await tester.pumpWidget(harness(env));
+      await pumpClientUntil(
+        tester,
+        () => find.byKey(StudioDriverKeys.composerInput).evaluate().length == 1,
+        'Start input',
       );
       await tester.pumpAndSettle();
       final input = find.byKey(StudioDriverKeys.composerInput);
       await tester.enterText(input, 'draft survives directory outage');
-      final project = graph.client.selection.state.selectedProjectId;
-      transport.fail();
-      // Release the production retry timers using Flutter's virtual clock.
-      for (var attempt = 0; attempt < 8; attempt++) {
-        if (graph.client.project.state.projectSync.phase ==
-            DomainSyncPhase.failed) {
-          break;
-        }
-        await tester.pump(const Duration(seconds: 5));
-        await tester.runAsync(() async {});
-      }
+      final project = env.core.workspace.state.value.selection.projectId;
+      env.core.directory.failProjects();
+      final notice = find.byKey(const ValueKey('project-directory-failure'));
+      // 目录 feed 的失败状态由 shell 通知区投影到 UI，等待该投影而不是只等 repository。
+      await pumpClientUntil(
+        tester,
+        () => notice.evaluate().length == 1,
+        'typed project-directory failure',
+      );
       expect(
-        graph.client.project.state.projectSync.phase,
-        DomainSyncPhase.failed,
+        env.core.workspace.projects.value.projection.sync.phase,
+        ResourceSyncPhase.failed,
       );
       expect(find.byKey(StudioDriverKeys.startPage), findsOneWidget);
       expect(find.byKey(const ValueKey('studio-startup')), findsNothing);
@@ -140,59 +140,65 @@ void main() {
         tester.widget<TextField>(input).controller!.text,
         'draft survives directory outage',
       );
-      expect(graph.client.selection.state.selectedProjectId, project);
+      expect(env.core.workspace.state.value.selection.projectId, project);
+      // 项目目录 feed 失败的 canonical 提示与显式重试入口属于 shell 通知区。
+      expect(notice, findsOneWidget);
+      expect(
+        find.descendant(of: notice, matching: find.text('directory offline')),
+        findsOneWidget,
+        reason: '提示展示的是该 feed 的 typed failure',
+      );
       final retry = find.byKey(const ValueKey('project-directory-retry'));
       expect(retry, findsOneWidget);
-      transport.unavailable = false;
+      env.core.directory.projectUnavailable = false;
       await tester.tap(retry);
       await pumpClientUntil(
         tester,
-        () => graph.client.project.state.projectSync.isReady,
-        'project topic baseline after explicit retry',
+        () =>
+            env.core.workspace.projects.value.projection.sync.phase ==
+            ResourceSyncPhase.ready,
+        'project-directory fresh baseline after explicit retry',
       );
       await tester.pumpAndSettle();
-      expect(retry, findsNothing);
+      expect(notice, findsNothing);
       expect(
         tester.widget<TextField>(input).controller!.text,
         'draft survives directory outage',
       );
-      expect(transport.bootstrapCalls, 1);
+      expect(env.core.workspace.state.value.selection.projectId, project);
+      expect(
+        env.startupPort.base.attempts,
+        hasLength(1),
+        reason: 'topic 重试不能重新 bootstrap',
+      );
+      expect(env.core.directory.projectFeeds, hasLength(2));
+      expect(
+        env.container
+            .read(workspaceViewModelProvider)
+            .requireValue
+            .workspace
+            .selection
+            .projectId,
+        project,
+      );
+      expect(
+        env.container
+            .read(sidebarViewModelProvider)
+            .requireValue
+            .projects
+            .projection
+            .sync
+            .phase,
+        ResourceSyncPhase.ready,
+      );
       expect(tester.takeException(), isNull);
       await tester.pumpWidget(const SizedBox.shrink());
-      await pumpClientFuture(
+      final closed = await pumpClientFuture(
         tester,
-        graph.close(deadline: DateTime.now().add(const Duration(seconds: 5))),
-        'explicit directory recovery close',
+        env.exit.exit(ExitIntent.exit),
+        'directory recovery application exit',
       );
+      expect(closed.shutdown.outcome, ShutdownOutcome.clean);
     },
   );
-}
-
-final class _DirectoryFailureTransport extends RecordingDemoTransport {
-  bool unavailable = false;
-  MultiStreamController<ProductTopicFrame>? _directory;
-
-  void fail() {
-    unavailable = true;
-    _directory!.addErrorSync(StateError('directory offline'));
-  }
-
-  @override
-  Stream<ProductTopicFrame> subscribeProductTopic(ProductTopic topic) {
-    if (topic is! ProjectDirectoryTopic) {
-      return super.subscribeProductTopic(topic);
-    }
-    if (unavailable) return Stream.error(StateError('directory offline'));
-    return Stream<ProductTopicFrame>.multi((controller) {
-      _directory = controller;
-      final source = super
-          .subscribeProductTopic(topic)
-          .listen(
-            controller.addSync,
-            onError: controller.addErrorSync,
-            onDone: controller.closeSync,
-          );
-      controller.onCancel = source.cancel;
-    });
-  }
 }

@@ -1,4 +1,5 @@
-import 'package:anywork_client/studio_client.dart';
+import 'package:anywork_client/conversation.dart';
+import 'package:anywork_client/resources.dart';
 import 'package:test/test.dart';
 
 /// 结构化失败原因的 canonical 标签契约。
@@ -31,8 +32,7 @@ void main() {
       message: 'Archived Thread is read-only',
       retryable: false,
       correlationId: 'archived-thread',
-      detailsJson: '{"reason":"threadArchived","threadId":"thread"}',
-      reason: StudioFailureReason.threadArchived,
+      details: StudioFailureDetails.reason(reason: 'threadArchived'),
     );
     expect(studioFailureReason(failure), StudioFailureReason.threadArchived);
   });
@@ -42,5 +42,18 @@ void main() {
     expect(StudioFailureReason.fromLabel(''), isNull);
     expect(StudioFailureReason.fromLabel('ThreadArchived'), isNull);
     expect(StudioFailureReason.fromLabel('someFutureReason'), isNull);
+  });
+
+  test('Control and legacy Reason preserve the typed noExecution and continuationAccepted labels', () {
+    const absent = StudioFailure(code: StudioFailureCode.conflict, message: 'No execution', retryable: false,
+      correlationId: 'no-execution', details: StudioFailureDetails.control(reason: 'noExecution',
+        facts: ControlFailureFacts.expectedExecution(threadId: 'thread', expectedExecutionId: 'ended')));
+    const accepted = StudioFailure(code: StudioFailureCode.busy, message: 'Accepted while saving', retryable: true,
+      correlationId: 'accepted', details: StudioFailureDetails.control(reason: 'continuationAccepted',
+        facts: ControlFailureFacts.continuationAccepted(threadId: 'thread', operationId: 'original-op', accepted: true)));
+    expect(studioFailureReason(absent), StudioFailureReason.noExecution);
+    expect(studioFailureReason(accepted), StudioFailureReason.continuationAccepted);
+    expect(studioFailureReason(accepted.copyWith(details: const StudioFailureDetails.reason(reason: 'continuationAccepted'))), StudioFailureReason.continuationAccepted);
+    expect(studioFailureReason(accepted.copyWith(details: const StudioFailureDetails.control(reason: 'futureReason', facts: ControlFailureFacts.unspecified()))), isNull);
   });
 }

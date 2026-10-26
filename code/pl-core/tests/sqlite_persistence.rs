@@ -75,12 +75,12 @@ async fn sqlite_v10_context_migration_preserves_history_and_marks_unknown_usage_
         .try_get::<i64>("", "user_version")
         .unwrap();
     assert_eq!(
-        version, 12,
-        "the preceding task-index step committed independently"
+        version, 10,
+        "a corrupt source checkpoint must fail before migration bookkeeping"
     );
     assert!(db.query_one_raw(Statement::from_string(DatabaseBackend::Sqlite,
-        "SELECT version FROM seaql_migrations WHERE version='m20261026_000007_core_checkpoint_v5'"))
-        .await.unwrap().is_none(), "a failed checkpoint conversion cannot publish its completion record");
+        "SELECT name FROM sqlite_schema WHERE type='table' AND name='seaql_migrations'"))
+        .await.unwrap().is_none(), "a corrupt source cannot create a migration ledger");
     let row = db
         .query_one_raw(Statement::from_string(
             DatabaseBackend::Sqlite,

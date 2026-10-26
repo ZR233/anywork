@@ -603,7 +603,23 @@ pub struct ProjectDto {
 pub struct SubmitPromptResponse {
     pub thread_id: String,
     pub input_id: String,
-    pub revision: u64,
+    pub cursor: u64,
+    pub request_digest: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct BridgeInputAcceptanceEvidence {
+    pub accepted_sequence: u64,
+    pub request_digest: Option<String>,
+    pub disposition: BridgePersistedInputDisposition,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum BridgePersistedInputDisposition {
+    Consumed,
+    Discarded,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

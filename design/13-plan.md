@@ -29,13 +29,13 @@ revisionRequested -> drafting                plan_restart（清空旧计划重�
 
 ## 13.3 持久化扩展、CAS 校验与冷恢复
 
-### 线程扩展与父子会话隔离
+### 13.3.1 线程扩展与父子会话隔离
 
 每个根线程通过 `studio.plan` 线程扩展保存有界的计划状态：状态修订号（`revision`）、当前生命周期状态、计划 Markdown 正文及其内容散列值、文档版本号、待决交互 ID、最近一次用户修改意见、有界转换历史以及最近的操作回执（operation receipts）。未初始化 `studio.plan` 扩展的线程等价于处于 `revision = 0` 的 `drafting` 状态（只读查询不会为物化默认值而产生写操作）。
 
 计划状态严格限制在根线程内部，绝不跨线程共享：仅根线程挂载 `plan_*` 工具与用户确认界面；子智能体（`child`）拥有独立上下文，不继承父线程的计划状态机或句柄，父智能体必须将子智能体执行所需的已批准计划基线显式写入 `spawn_agent.message`。
 
-### 比较并交换（CAS）与原子确认决议
+### 13.3.2 比较并交换（CAS）与原子确认决议
 
 所有计划状态写操作均以当前计划修订号执行 CAS 校验：
 - **工具调用幂等**：模型工具的操作身份由 `(sessionId, turnId, callId)` 与规范参数散列值共同构成；交互决议操作身份由 `(interactionId, planRevision, resolutionHash)` 构成。完全相同的重放直接返回 `alreadyApplied`，同一操作身份携带不同参数则返回 `operationIdentityConflict`。
@@ -57,11 +57,11 @@ revisionRequested -> drafting                plan_restart（清空旧计划重�
 
 ## 13.5 与任务模式、提示词及桌面界面的协作边界
 
-### 任务模式规划阶段门控
+### 13.5.1 任务模式规划阶段门控
 
 在任务模式（`mode.task`）的 `planning` 阶段，根智能体可进行多轮需求澄清、计划提交与根据反馈修订，期间工作流阶段始终保持为 `planning`（状态栏同样持续显示 `planning`）。仅当 `plan_current` 的状态已变为 `approved` 后，根智能体才可将任务工作流从 `planning` 转换至 `editing_documents`。
 
-### 桌面界面展示与专用反馈栏
+### 13.5.2 桌面界面展示与专用反馈栏
 
 桌面界面不维护独立的计划状态机或本地正文缓存，其只读展示严格取自两个互斥的数据源：待确认期间取自待决 `UserInput` 中稳定 ID 为 `plan_confirmation` 的交互问题；批准后取自线程运行时快照（runtime snapshot）中的计划投影（当前状态、修订号与计划正文）：
 

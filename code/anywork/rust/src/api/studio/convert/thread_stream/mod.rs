@@ -2,7 +2,6 @@ mod activity;
 mod interaction;
 
 pub(crate) use activity::activity_detail as bridge_activity_detail;
-pub(crate) use interaction::child_interaction as bridge_child_interaction;
 pub(crate) use interaction::interaction as bridge_interaction;
 
 use anyhow::Result;
@@ -235,15 +234,12 @@ fn turn_budget_limit(value: BudgetLimitSnapshot) -> BridgeTurnBudgetLimit {
 
 fn bridge_turn_failure(value: pl_protocol::TurnFailure) -> BridgeTurnFailureDto {
     BridgeTurnFailureDto {
-        category: format!("{:?}", value.category).to_ascii_lowercase(),
-        provider_kind: value
-            .provider_kind
-            .map(|kind| format!("{kind:?}").to_ascii_lowercase()),
+        category: value.category.into(),
+        provider_kind: value.provider_kind.map(Into::into),
         code: value.code,
         http_status: value.http_status,
         message: value.message,
-        retryable: value.retry.is_retryable(),
-        retry_after_ms: value.retry.retry_after_ms(),
+        retry: value.retry.into(),
     }
 }
 
@@ -643,7 +639,15 @@ pub(crate) fn runtime_snapshot(value: ThreadRuntimeSnapshot) -> BridgeThreadRunt
         mcp_health: value.mcp_health.map(mcp_health),
         workflow: value.workflow.map(workflow_runtime_snapshot),
         plan: value.plan.map(plan_runtime_snapshot),
-        execution: value.execution.map(|execution| BridgeAgentExecution {
+        execution: value.execution.map(Into::into),
+        continuation: value.continuation.map(Into::into),
+        updated_at: value.updated_at,
+    }
+}
+
+impl From<pl_protocol::AgentExecution> for BridgeAgentExecution {
+    fn from(execution: pl_protocol::AgentExecution) -> Self {
+        BridgeAgentExecution {
             turn_id: execution.turn_id().map(str::to_owned),
             phase: match execution.phase() {
                 pl_protocol::AgentExecutionPhase::Preparing => BridgeAgentExecutionPhase::Preparing,
@@ -657,10 +661,13 @@ pub(crate) fn runtime_snapshot(value: ThreadRuntimeSnapshot) -> BridgeThreadRunt
                 pl_protocol::AgentExecutionPhase::Stopping => BridgeAgentExecutionPhase::Stopping,
             },
             id: execution.id().to_owned(),
-        }),
-        continuation: value
-            .continuation
-            .map(|continuation| BridgeContinuationView {
+        }
+    }
+}
+
+impl From<pl_protocol::ContinuationView> for BridgeContinuationView {
+    fn from(continuation: pl_protocol::ContinuationView) -> Self {
+        BridgeContinuationView {
                 id: continuation.id().to_owned(),
                 source_turn_id: continuation.source_turn_id().map(str::to_owned),
                 reason: continuation.reason().map(|reason| match reason {
@@ -680,8 +687,7 @@ pub(crate) fn runtime_snapshot(value: ThreadRuntimeSnapshot) -> BridgeThreadRunt
                 }),
                 created_at: continuation.created_at(),
                 claimed: continuation.claimed(),
-            }),
-        updated_at: value.updated_at,
+            }
     }
 }
 

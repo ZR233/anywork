@@ -16,6 +16,7 @@
 //! （见 design/28 §28.2–28.4、design/18 §18.2）。
 
 mod admission;
+mod feed;
 mod mapping;
 mod operation;
 mod projection;
@@ -23,4 +24,6 @@ mod registry;
 mod worker;
 
 pub(crate) use admission::AcpAuthRuntime;
+pub use feed::StudioAcpAuthFeed;
+pub use pl_protocol::products::feed::acp_auth::AcpAuthFrame;
 pub(crate) use projection::acp_account_catalog;

@@ -1,11 +1,14 @@
-import 'package:anywork_client/anywork_client.dart';
-import 'package:anywork_client/models.dart';
+import 'dart:async';
+
+import 'package:anywork_client/conversation.dart';
+import 'package:anywork_client/resources.dart';
 import 'package:test/test.dart';
 
 import 'support/timeline_transport.dart';
+import 'support/timeline_tail_fixture.dart';
 
 typedef _Ready = ({
-  StudioTimelineChannel channel,
+  TimelineTailFixture channel,
   TestTimelineConnection connection,
 });
 
@@ -15,27 +18,29 @@ void main() {
   Future<_Ready> open(
     TestTimelineTransport transport, {
     StudioTimelineBaseline? initial,
-    StudioTimelineChannel? channel,
+    TimelineTailFixture? channel,
   }) async {
-    final owner = channel ?? timelineChannel(transport);
-    owner.start();
+    final owner = channel ?? TimelineTailFixture(transport);
+    owner.timeline.attachConsumer(owner.record);
+    await owner.start();
     final connection = TestTimelineConnection(initial: initial ?? baseline(3));
     transport.opens.single.complete(connection);
-    await owner.ready;
-    await connection.nextStarted.future;
+    await owner.timeline.ready;
+    // 基线 ACK 是发布后的微任务：等队列收束再开始脚本化后续帧。
+    await pumpEventQueue();
     return (channel: owner, connection: connection);
   }
 
-  Future<Object> nextFailure(
-    StudioTimelineChannel channel,
+  Future<StudioFailure> nextFailure(
+    TimelineTailFixture channel,
     TestTimelineConnection connection,
     StudioTimelineUpdate? update,
   ) async {
-    final failed = channel.state.waitFor(
-      (state) => state is ChatFailed<StudioTimelineFrame>,
+    final failed = channel.timeline.state.waitFor(
+      (state) => state.phase == TimelineConnectionPhase.failed,
     );
     connection.emit(update);
-    return ((await failed) as ChatFailed<StudioTimelineFrame>).error;
+    return (await failed).error!;
   }
 
   test('patch 必须从已交付版本继续', () async {
@@ -43,9 +48,13 @@ void main() {
     final ready = await open(transport);
     expect(
       await nextFailure(ready.channel, ready.connection, patch(9, 10)),
-      isA<TimelineContinuityError>(),
+      isA<StudioFailure>().having(
+        (error) => error.code,
+        'continuity failure',
+        StudioFailureCode.protocol,
+      ),
     );
-    await ready.channel.close();
+    await ready.channel.repository.close();
   });
 
   test('patch 版本必须前进', () async {
@@ -53,9 +62,13 @@ void main() {
     final ready = await open(transport);
     expect(
       await nextFailure(ready.channel, ready.connection, patch(3, 3)),
-      isA<TimelineContinuityError>(),
+      isA<StudioFailure>().having(
+        (error) => error.code,
+        'continuity failure',
+        StudioFailureCode.protocol,
+      ),
     );
-    await ready.channel.close();
+    await ready.channel.repository.close();
   });
 
   test('跨订阅身份的 patch 不能被当作连续增量', () async {
@@ -67,9 +80,13 @@ void main() {
         ready.connection,
         patch(3, 4, subscriptionId: 'other'),
       ),
-      isA<TimelineContinuityError>(),
+      isA<StudioFailure>().having(
+        (error) => error.code,
+        'continuity failure',
+        StudioFailureCode.protocol,
+      ),
     );
-    await ready.channel.close();
+    await ready.channel.repository.close();
   });
 
   test('同 item 的 expectedRevision 不匹配即重同步', () async {
@@ -98,9 +115,13 @@ void main() {
           ],
         ),
       ),
-      isA<TimelineContinuityError>(),
+      isA<StudioFailure>().having(
+        (error) => error.code,
+        'continuity failure',
+        StudioFailureCode.protocol,
+      ),
     );
-    await ready.channel.close();
+    await ready.channel.repository.close();
   });
 
   test('同 revision 的预览补齐经生产 channel 与真实 applier 生效', () async {
@@ -112,8 +133,8 @@ void main() {
       turnId: 'turn',
       ordinal: 7,
       revision: 3,
-      createdAt: DateTime.utc(2026),
-      updatedAt: DateTime.utc(2026),
+      createdAt: 1767225600,
+      updatedAt: 1767225600,
       bodyOmittedUnits: 4,
       // 预览尚未保存；权威帧的 saved 不得在展示侧凭空回退。
       saved: false,
@@ -139,9 +160,9 @@ void main() {
         ],
       ),
     );
-    final attempt = ready.channel.currentAttemptId;
-    final delivered = ready.channel.state.waitFor(
-      (state) => state.snapshot is StudioTimelinePatchFrame,
+    final attempt = ready.channel.timeline.state.value.attemptId;
+    final delivered = ready.channel.nextFrame(
+      (frame) => frame is StudioTimelinePatchFrame,
     );
     // core 允许预览被权威完整正文在同 revision 补齐：差量可以是 Append。
     ready.connection.emit(
@@ -168,9 +189,9 @@ void main() {
         ],
       ),
     );
-    final frame = (await delivered).snapshot! as StudioTimelinePatchFrame;
+    final frame = (await delivered) as StudioTimelinePatchFrame;
     // 只是尾部版本前进，不是重连：同一 attempt、没有连接关闭。
-    expect(ready.channel.currentAttemptId, same(attempt));
+    expect(ready.channel.timeline.state.value.attemptId, same(attempt));
     expect(ready.connection.closeCalls, 0);
     expect(frame.patch.from, 3);
     expect(frame.patch.to, 4);
@@ -197,7 +218,7 @@ void main() {
     expect(applied.ordinal, 7);
     expect(change.fields.single.totalBytes, 8);
     expect(change.fields.single.previewBytes, 8);
-    await ready.channel.close();
+    await ready.channel.repository.close();
   });
 
   test('终态身份接受可靠权威的更高 revision 修订，但不回退终态', () async {
@@ -208,15 +229,15 @@ void main() {
       turnId: 'turn-a',
       ordinal: 7,
       revision: 5,
-      createdAt: DateTime.utc(2026),
-      updatedAt: DateTime.utc(2026),
+      createdAt: 1767225600,
+      updatedAt: 1767225600,
       executionTerminal: true,
       saved: true,
       state: ThreadTextItemStateView(
         channel: ThreadTextChannel.finalAnswer,
         text: 'abc',
         attachments: const [],
-        lifecycle: CompletedThreadContentView(DateTime.utc(2026)),
+        lifecycle: CompletedThreadContentView(1767225600),
       ),
     );
     final ready = await open(
@@ -234,8 +255,8 @@ void main() {
         ],
       ),
     );
-    final delivered = ready.channel.state.waitFor(
-      (state) => state.snapshot is StudioTimelinePatchFrame,
+    final delivered = ready.channel.nextFrame(
+      (frame) => frame is StudioTimelinePatchFrame,
     );
     // 可靠权威 terminal 修订：仍然终态，正文扩展，Turn 关联重新绑定（Turn 不是 identity）。
     ready.connection.emit(
@@ -263,7 +284,7 @@ void main() {
         ],
       ),
     );
-    final frame = (await delivered).snapshot! as StudioTimelinePatchFrame;
+    final frame = (await delivered) as StudioTimelinePatchFrame;
     final change = frame.patch.changes.single as StudioTimelineUpdateItem;
     final applied = terminalItem.applyFieldUpdates(
       fields: [
@@ -294,7 +315,7 @@ void main() {
     )!;
     expect(confirm.saved, isTrue);
     expect(confirm.revision, 6);
-    await ready.channel.close();
+    await ready.channel.repository.close();
   });
 
   test('终态回退成 streaming、错 expectedRev 与版本倒退仍被拒', () async {
@@ -304,15 +325,15 @@ void main() {
       turnId: 'turn',
       ordinal: 7,
       revision: 5,
-      createdAt: DateTime.utc(2026),
-      updatedAt: DateTime.utc(2026),
+      createdAt: 1767225600,
+      updatedAt: 1767225600,
       executionTerminal: true,
       saved: true,
       state: ThreadTextItemStateView(
         channel: ThreadTextChannel.finalAnswer,
         text: 'abc',
         attachments: const [],
-        lifecycle: CompletedThreadContentView(DateTime.utc(2026)),
+        lifecycle: CompletedThreadContentView(1767225600),
       ),
     );
     // terminal -> streaming。
@@ -383,8 +404,8 @@ void main() {
       transport,
       initial: baseline(3, items: [timelineItem(7, id: 'stable')]),
     );
-    final delivered = ready.channel.state.waitFor(
-      (state) => state.snapshot is StudioTimelinePatchFrame,
+    final delivered = ready.channel.nextFrame(
+      (frame) => frame is StudioTimelinePatchFrame,
     );
     // 保存确认不伪造正文 revision：expected == 已知 7，revision 仍前进到 8 但字段全部
     // Unchanged；这里是「仅版本推进」的合法形状。
@@ -412,11 +433,11 @@ void main() {
         ],
       ),
     );
-    final frame = (await delivered).snapshot! as StudioTimelinePatchFrame;
+    final frame = (await delivered) as StudioTimelinePatchFrame;
     final change = frame.patch.changes.single as StudioTimelineUpdateItem;
     expect(change.saved, isTrue);
     expect(change.fields.single.totalBytes, 4);
-    await ready.channel.close();
+    await ready.channel.repository.close();
   });
 
   test('真实 remove 即使不在连续性副本里也必须交付', () async {
@@ -425,26 +446,24 @@ void main() {
       transport,
       initial: baseline(3, items: [timelineItem(1, id: 'kept')]),
     );
-    final delivered = ready.channel.state.waitFor(
-      (state) => state.snapshot is StudioTimelinePatchFrame,
+    final delivered = ready.channel.nextFrame(
+      (frame) => frame is StudioTimelinePatchFrame,
     );
     // 该身份从未出现在本连接的基线里（消费者可能通过页查询加载过它）。
     ready.connection.emit(
       patch(3, 4, changes: const [StudioTimelineRemove('paged-only')]),
     );
-    final frame = (await delivered).snapshot! as StudioTimelinePatchFrame;
+    final frame = (await delivered) as StudioTimelinePatchFrame;
     final change = frame.patch.changes.single as StudioTimelineRemove;
     expect(change.itemId, 'paged-only');
-    await ready.channel.close();
+    await ready.channel.repository.close();
   });
 
   test('同连接重同步保留订阅身份并交付新基线', () async {
     final transport = TestTimelineTransport();
     final ready = await open(transport);
-    final delivered = ready.channel.state.waitFor(
-      (state) =>
-          state.snapshot is StudioTimelineBaselineFrame &&
-          (state.snapshot! as StudioTimelineBaselineFrame).isResync,
+    final delivered = ready.channel.nextFrame(
+      (frame) => frame is StudioTimelineBaselineFrame && frame.isResync,
     );
     ready.connection.emit(
       StudioTimelineResync(
@@ -453,21 +472,21 @@ void main() {
         baseline: baseline(11, items: [timelineItem(11, id: 'fresh')]),
       ),
     );
-    final frame = (await delivered).snapshot! as StudioTimelineBaselineFrame;
+    final frame = (await delivered) as StudioTimelineBaselineFrame;
     expect(frame.baseline.version, 11);
     expect(frame.baseline.items.single.id, 'fresh');
     expect(frame.resyncReason, StudioTimelineResyncReason.lagging);
     // 重同步后的补丁以新基线版本为 from。
-    final next = ready.channel.state.waitFor(
-      (state) => state.snapshot is StudioTimelinePatchFrame,
+    final next = ready.channel.nextFrame(
+      (frame) => frame is StudioTimelinePatchFrame,
     );
     ready.connection.emit(
       patch(11, 12, changes: [StudioTimelineAdd(timelineItem(1, id: 'added'))]),
     );
-    final patchFrame = (await next).snapshot! as StudioTimelinePatchFrame;
+    final patchFrame = (await next) as StudioTimelinePatchFrame;
     expect(patchFrame.patch.from, 11);
     expect(patchFrame.patch.to, 12);
-    await ready.channel.close();
+    await ready.channel.repository.close();
   });
 
   test('新基线不能替换旧订阅身份', () async {
@@ -483,22 +502,26 @@ void main() {
           baseline: baseline(2, subscriptionId: 'other'),
         ),
       ),
-      isA<TimelineContinuityError>(),
+      isA<StudioFailure>().having(
+        (error) => error.code,
+        'continuity failure',
+        StudioFailureCode.protocol,
+      ),
     );
-    await ready.channel.close();
+    await ready.channel.repository.close();
   });
 
   test('空批次也推进交付版本', () async {
     final transport = TestTimelineTransport();
     final ready = await open(transport);
-    final delivered = ready.channel.state.waitFor(
-      (state) => state.snapshot is StudioTimelinePatchFrame,
+    final delivered = ready.channel.nextFrame(
+      (frame) => frame is StudioTimelinePatchFrame,
     );
     ready.connection.emit(patch(3, 4));
-    final frame = (await delivered).snapshot! as StudioTimelinePatchFrame;
+    final frame = (await delivered) as StudioTimelinePatchFrame;
     expect(frame.patch.changes, isEmpty);
     expect(frame.patch.to, 4);
-    await ready.channel.close();
+    await ready.channel.repository.close();
   });
 
   test('EOF 不是正常结束，错误不会被吞成失败以外的形态', () async {
@@ -506,21 +529,413 @@ void main() {
     final ready = await open(transport);
     expect(
       await nextFailure(ready.channel, ready.connection, null),
-      isA<TimelineStreamEnded>(),
+      isA<StudioFailure>().having(
+        (error) => error.code,
+        'unexpected EOF',
+        StudioFailureCode.unavailable,
+      ),
     );
-    await ready.channel.close();
+    await ready.channel.repository.close();
   });
 
   test('transport 抛出的错误保持原样到达观察者', () async {
     final transport = TestTimelineTransport();
     final ready = await open(transport);
-    final failed = ready.channel.state.waitFor(
-      (state) => state is ChatFailed<StudioTimelineFrame>,
+    final failed = ready.channel.timeline.state.waitFor(
+      (state) => state.phase == TimelineConnectionPhase.failed,
     );
     final error = StateError('bridge failure');
-    ready.connection.emitError(error);
-    final state = (await failed) as ChatFailed<StudioTimelineFrame>;
-    expect(state.error, same(error));
-    await ready.channel.close();
+    ready.connection.emitOriginalStreamError(error);
+    final state = (await failed);
+    expect(ready.channel.timeline.failure!.failure, same(state.error));
+    expect(ready.channel.timeline.failure!.isOriginal(error), isTrue);
+    expect(
+      ready.channel.timeline.failure!.isOriginal(StateError('bridge failure')),
+      isFalse,
+    );
+    await ready.channel.repository.close();
+  });
+
+  test('消费 gate 前 ACK 不发生，成功后才确认投送序号', () async {
+    final transport = TestTimelineTransport();
+    final channel = TimelineTailFixture(transport);
+    final frames = <StudioTimelineFrame>[];
+    final gate = Completer<void>();
+    channel.timeline.attachConsumer((frame) async {
+      frames.add(frame);
+      await gate.future;
+    });
+    await channel.start();
+    final connection = TestTimelineConnection(initial: baseline(3));
+    transport.opens.single.complete(connection);
+    await channel.timeline.ready;
+    await pumpEventQueue();
+    // 基线已交付消费者，但 gate 未放行：不 ACK。
+    expect(frames.single, isA<StudioTimelineBaselineFrame>());
+    expect(connection.acks, isEmpty);
+    gate.complete();
+    await pumpEventQueue();
+    expect(connection.acks, [1]);
+    await channel.repository.close();
+  });
+
+  test('消费者错误不 ACK 且不自动重试，typed cause 保留', () async {
+    final transport = TestTimelineTransport();
+    final channel = TimelineTailFixture(transport);
+    final failure = StateError('controller write failed');
+    channel.timeline.attachConsumer((frame) async {
+      throw failure;
+    });
+    await channel.start();
+    final connection = TestTimelineConnection(initial: baseline(3));
+    transport.opens.single.complete(connection);
+    final failed = channel.timeline.state.waitFor(
+      (state) => state.phase == TimelineConnectionPhase.failed,
+    );
+    final state = (await failed);
+    expect(channel.timeline.failure!.failure, same(state.error));
+    expect(channel.timeline.failure!.isOriginal(failure), isTrue);
+    expect(
+      channel.timeline.failure!.isOriginal(
+        StateError('controller write failed'),
+      ),
+      isFalse,
+    );
+    expect(connection.acks, isEmpty);
+    // 消费者错误不进入观察重试：没有第二次 open。
+    await pumpEventQueue();
+    expect(transport.opens, hasLength(1));
+    await channel.repository.close();
+    expect(
+      connection.nativeJoinCalls,
+      1,
+      reason: 'Stream cancellation and explicit owner close must share one original native join',
+    );
+  });
+
+  test('第二个活动消费者是 typed Conflict，不覆盖原回调', () async {
+    final transport = TestTimelineTransport();
+    final channel = TimelineTailFixture(transport);
+    final first = channel.timeline.attachConsumer((_) {});
+    expect(
+      () => channel.timeline.attachConsumer((_) {}),
+      throwsA(
+        isA<StudioFailure>().having(
+          (failure) => failure.code,
+          'code',
+          StudioFailureCode.conflict,
+        ),
+      ),
+    );
+    // 旧 lease 仍活动；关闭后可重新登记。
+    first.requestClose();
+    final second = channel.timeline.attachConsumer((_) {});
+    second.requestClose();
+  });
+
+  test('同步 Ready 观察者重绑不会把旧 attempt 正文交给新消费者', () async {
+    final transport = TestTimelineTransport();
+    final channel = TimelineTailFixture(transport);
+    final frames = <StudioTimelineFrame>[];
+    final previousConsumer = channel.timeline.attachConsumer(channel.record);
+    TimelineConsumerLease? lease;
+    final observation = channel.timeline.state.watch((state) {
+      // LatestValue.publish 同步调用观察者：attach 在 Ready 发布内重入。
+      if (state.phase == TimelineConnectionPhase.ready && lease == null) {
+        previousConsumer.requestClose();
+        lease = channel.timeline.attachConsumer(frames.add);
+      }
+    });
+    addTearDown(() async {
+      observation.cancel();
+      for (final opening in transport.opens) {
+        if (!opening.isCompleted) {
+          opening.complete(
+            TestTimelineConnection(
+              initial: baseline(2, subscriptionId: 'new-attempt'),
+            ),
+          );
+        }
+      }
+      final closing = channel.repository.close();
+      lease?.requestClose();
+      await closing;
+    });
+
+    await channel.start();
+    final first = TestTimelineConnection(
+      initial: baseline(1, subscriptionId: 'old-attempt'),
+    );
+    transport.opens.single.complete(first);
+    await first.subscribed.future;
+    await pumpEventQueue();
+
+    expect(
+      transport.opens,
+      hasLength(2),
+      reason: '重入 attach 必须退役已在消费的 attempt 并刷新',
+    );
+    expect(
+      frames,
+      isEmpty,
+      reason: '新消费者必须等待自己的新 opening 基线，不能收到退役 attempt 的正文',
+    );
+  });
+
+  test('镜像监听者同步关闭后，本帧不给 closing handle ACK', () async {
+    final transport = TestTimelineTransport();
+    final channel = TimelineTailFixture(transport);
+    final observation = channel.timeline.state.watch((state) {
+      if (state.phase == TimelineConnectionPhase.ready) {
+        unawaited(channel.repository.close());
+      }
+    });
+    addTearDown(observation.cancel);
+    await channel.start();
+    final connection = TestTimelineConnection(initial: baseline(1));
+    transport.opens.single.complete(connection);
+    await channel.timeline.state.waitFor(
+      (state) => state.phase == TimelineConnectionPhase.closed,
+    );
+    await pumpEventQueue();
+    // 关闭在镜像发布内同步发生：返回后的正文/ACK 准入必须重新核对 attempt。
+    expect(connection.acks, isEmpty, reason: 'closing handle 不再收到 ACK');
+    expect(connection.requestCloseCalls, greaterThan(0));
+  });
+
+  test('镜像监听者同步 setDemand(false) 后，本帧不给已暂停 handle ACK', () async {
+    final transport = TestTimelineTransport();
+    final channel = TimelineTailFixture(transport);
+    final observation = channel.timeline.state.watch((state) {
+      if (state.phase == TimelineConnectionPhase.ready) {
+        channel.deselect();
+      }
+    });
+    addTearDown(observation.cancel);
+    await channel.start();
+    final connection = TestTimelineConnection(initial: baseline(1));
+    transport.opens.single.complete(connection);
+    await pumpEventQueue();
+    expect(connection.acks, isEmpty, reason: 'demand 已在发布内同步移除，本帧不能继续 ACK');
+    await channel.repository.close();
+  });
+
+  test('首基线未被消费时 attach 承接同一 opening，不重复 open', () async {
+    final transport = TestTimelineTransport();
+    final channel = TimelineTailFixture(transport);
+    final frames = <StudioTimelineFrame>[];
+    await channel.start();
+    // open 已登记但尚未完成：attach 不制造第二个 open，也不另造平行句柄。
+    channel.timeline.attachConsumer(frames.add);
+    expect(transport.opens, hasLength(1));
+    final connection = TestTimelineConnection(initial: baseline(3));
+    transport.opens.single.complete(connection);
+    await channel.timeline.ready;
+    await pumpEventQueue();
+    // 消费者直接收到该 opening 的首个基线，并按序确认。
+    expect(frames, hasLength(1));
+    expect(frames.single, isA<StudioTimelineBaselineFrame>());
+    expect(connection.acks, [1]);
+    expect(transport.opens, hasLength(1));
+    await channel.repository.close();
+  });
+
+  test('非 retryable typed 失败不进入观察重试：没有第二次 open', () async {
+    final transport = TestTimelineTransport();
+    final channel = TimelineTailFixture(transport);
+    channel.timeline.attachConsumer(channel.record);
+    await channel.start();
+    final connection = TestTimelineConnection(initial: baseline(3));
+    transport.opens.single.complete(connection);
+    await channel.timeline.ready;
+    await connection.acknowledged(1);
+    final failed = channel.timeline.state.waitFor(
+      (state) => state.phase == TimelineConnectionPhase.failed,
+    );
+    connection.emitFailure(
+      const StudioFailure(
+        code: StudioFailureCode.invalidArgument,
+        message: 'native rejected the observation',
+        retryable: false,
+        correlationId: 'nonretryable-regression',
+      ),
+    );
+    final state = (await failed);
+    expect(
+      (state.error as StudioFailure).code,
+      StudioFailureCode.invalidArgument,
+    );
+    expect(state.lastStamp?.version, 3, reason: 'last-known 保留');
+    expect(
+      channel.frames.single,
+      isA<StudioTimelineBaselineFrame>(),
+      reason: 'The original body stays with the actual consumer, not in Latest metadata',
+    );
+    // Duration.zero 重试若被错误调度会立即 open：等待真实 timer 轮转后仍只有一次。
+    await Future<void>.delayed(Duration.zero);
+    await pumpEventQueue();
+    expect(
+      transport.opens,
+      hasLength(1),
+      reason: '非 retryable typed 失败绝不自动循环（错误矩阵）',
+    );
+    await channel.repository.close();
+  });
+
+  test('closing/closed 拒绝新 consumer lease：Cancelled 优先于 Conflict', () async {
+    final transport = TestTimelineTransport();
+    final channel = TimelineTailFixture(transport);
+    await channel.start();
+    final connection = TestTimelineConnection(initial: baseline(3));
+    transport.opens.single.complete(connection);
+    // opening 阶段（首基线未消费）attach 不触发刷新；关闭准入仍然优先。
+    final active = channel.timeline.attachConsumer((_) {});
+    final closing = channel.repository.close();
+    expect(
+      () => channel.timeline.attachConsumer((_) {}),
+      throwsA(
+        isA<StudioFailure>().having(
+          (failure) => failure.code,
+          'code',
+          StudioFailureCode.cancelled,
+        ),
+      ),
+      reason: 'closing 中拒绝新 lease',
+    );
+    await closing;
+    expect(
+      () => channel.timeline.attachConsumer((_) {}),
+      throwsA(
+        isA<StudioFailure>().having(
+          (failure) => failure.code,
+          'code',
+          StudioFailureCode.cancelled,
+        ),
+      ),
+      reason: 'closed 后拒绝新 lease',
+    );
+    await active.close();
+  });
+
+  test('后续消费者回调在途时 retryCleanup 不释放许可，gate 放行后才 Clean', () async {
+    final transport = TestTimelineTransport();
+    final channel = TimelineTailFixture(transport);
+    final releaseSecond = Completer<void>();
+    var deliveries = 0;
+
+    await channel.start();
+    final connection = TestTimelineConnection(initial: baseline(1));
+    transport.opens.single.complete(connection);
+    channel.timeline.attachConsumer((frame) async {
+      deliveries++;
+      // 首帧回调立即完成；第二帧回调挂起，模拟真实 controller 写入屏障。
+      if (deliveries == 2) await releaseSecond.future;
+    });
+    await channel.timeline.ready;
+    await pumpEventQueue();
+    expect(connection.acks, [1]);
+
+    connection.emit(patch(1, 2));
+    await pumpEventQueue();
+    // 第二帧回调在途：ACK 未发生，首个 handoff 已完成并让位。
+    expect(connection.acks, [1]);
+
+    // requestClose 同步抛出（port 不保证不抛）：close 同步退役路径把它记为
+    // cleanupError，真实 join 仍继续。close 等待任务时短暂超时，attempt 留存。
+    connection.requestCloseFailure = const StudioFailure(
+      code: StudioFailureCode.internal,
+      message: 'request close rejected',
+      retryable: false,
+      correlationId: 'b4-request-close-throws',
+    );
+    final closing = channel.repository.close(
+      deadline: DateTime.now().add(const Duration(milliseconds: 5)),
+    );
+    await closing;
+    expect(connection.requestCloseCalls, greaterThan(0));
+
+    // 外部只重试原生收束：后续（非首个）消费者回调仍在途时不得释放许可。
+    final retrying = channel.repository.retryCleanup();
+    await pumpEventQueue();
+    expect(
+      channel.timeline.lifecycle.ownedAttemptCount,
+      greaterThan(0),
+      reason: '在途消费者回调真实结束前，chatHandle 许可仍由原 attempt 持有',
+    );
+
+    releaseSecond.complete();
+    final retryReport = await retrying;
+    expect(
+      channel.timeline.lifecycle.ownedAttemptCount,
+      0,
+      reason: '回调收束且 join Clean 后释放',
+    );
+    expect(
+      (await closing).unresolved,
+      isNotEmpty,
+      reason: 'deadline 超时时在途回调尚未收束，close 报告保留 unresolved',
+    );
+    expect(retryReport.unresolved, isEmpty);
+  });
+
+  test('已有 demand 时重绑消费者强制新 attempt 与新 baseline', () async {
+    final transport = TestTimelineTransport();
+    final channel = TimelineTailFixture(transport);
+    final previous = channel.timeline.attachConsumer(channel.record);
+    await channel.start();
+    final first = TestTimelineConnection(
+      initial: baseline(3, subscriptionId: 'sub-1'),
+    );
+    transport.opens.single.complete(first);
+    await channel.timeline.ready;
+    await first.acknowledged(1);
+    expect(first.acks, [1]);
+
+    final frames = <StudioTimelineFrame>[];
+    previous.requestClose();
+    channel.timeline.attachConsumer(frames.add);
+    // attach 时当前 attempt 已交付基线：必须刷新为新订阅。
+    await channel.timeline.state.waitFor(
+      (state) => state.phase == TimelineConnectionPhase.opening,
+    );
+    final second = TestTimelineConnection(
+      initial: baseline(5, subscriptionId: 'sub-2'),
+    );
+    transport.opens[1].complete(second);
+    await channel.timeline.ready;
+    await pumpEventQueue();
+    expect(frames.single, isA<StudioTimelineBaselineFrame>());
+    expect(
+      (frames.single as StudioTimelineBaselineFrame).baseline.subscriptionId,
+      'sub-2',
+    );
+    expect(second.acks, [1]);
+    await channel.repository.close();
+    await first.closeCompleted.future;
+  });
+
+  test('暂停 latest 观察不影响正文消费者顺序', () async {
+    final transport = TestTimelineTransport();
+    final channel = TimelineTailFixture(transport);
+    final received = <int>[];
+    channel.timeline.attachConsumer((frame) {
+      if (frame is StudioTimelinePatchFrame) received.add(frame.patch.to);
+    });
+    await channel.start();
+    final connection = TestTimelineConnection(
+      initial: baseline(3, items: [timelineItem(1, id: 'kept')]),
+    );
+    transport.opens.single.complete(connection);
+    await channel.timeline.ready;
+    await connection.acknowledged(1);
+    final stateObservation = channel.timeline.state.watch((_) {});
+    stateObservation.pause();
+    connection.emit(patch(3, 4, changes: const []));
+    connection.emit(patch(4, 5, changes: const []));
+    connection.emit(patch(5, 6, changes: const []));
+    await connection.acknowledged(4);
+    expect(received, [4, 5, 6]);
+    stateObservation.cancel();
+    await channel.repository.close();
   });
 }

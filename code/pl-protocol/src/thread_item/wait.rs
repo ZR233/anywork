@@ -124,6 +124,7 @@ impl ThreadWaitTarget {
 /// Real scheduler status of a selected task; absence means the fact was not available.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
+#[derive(utoipa::ToSchema)]
 pub enum ThreadWaitTargetStatus {
     Running,
     Succeeded,
@@ -135,6 +136,7 @@ pub enum ThreadWaitTargetStatus {
 /// Result of this wait/sleep call. `timedOut` is not a tool failure.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
+#[derive(utoipa::ToSchema)]
 pub enum ThreadWaitState {
     Waiting,
     Ready,

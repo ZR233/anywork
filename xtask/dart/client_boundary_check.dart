@@ -3,9 +3,13 @@
 // and adapter suites, rather than inferred from identifier spelling.
 import 'dart:io';
 
+import 'package:analyzer/dart/analysis/results.dart';
 import 'package:analyzer/dart/analysis/utilities.dart';
 import 'package:analyzer/dart/ast/ast.dart';
 import 'package:analyzer/dart/ast/visitor.dart';
+
+import 'feature_boundary_rules.dart';
+import 'json_boundary_rules.dart';
 
 void main(List<String> arguments) {
   if (arguments.length != 1) {
@@ -19,7 +23,10 @@ void main(List<String> arguments) {
   final client = Directory('${root.path}/code/anywork_client/lib');
   final app = Directory('${root.path}/code/anywork/lib');
   final diagnostics = <String>[];
+  final valueTypes = <String>{};
+  final uiTypes = <String>{};
   var checked = 0;
+  final sources = <({String relative, String source})>[];
   for (final directory in [client, app]) {
     if (!directory.existsSync()) {
       diagnostics.add(
@@ -35,17 +42,40 @@ void main(List<String> arguments) {
             .toList()
           ..sort((a, b) => a.path.compareTo(b.path));
     for (final file in files) {
-      final source = file.readAsStringSync();
       final relative = _normalized(file.absolute.path)
           .substring(_normalized(root.path).length + 1);
-      diagnostics.addAll(
-        checkClientSource(
-          path: relative,
-          source: source,
-        ).map((diagnostic) => diagnostic.toString()),
-      );
-      checked++;
+      sources.add((relative: relative, source: file.readAsStringSync()));
     }
+  }
+  // Owner classification needs declarations from every analysed file: a value
+  // type or a UI-layer prop is only recognisable where it is declared.
+  final parsed = <String, ParseStringResult>{
+    for (final entry in sources)
+      entry.relative: parseString(
+        content: entry.source,
+        path: entry.relative,
+        throwIfDiagnostics: false,
+      ),
+  };
+  for (final entry in sources) {
+    collectBoundaryDeclarations(
+      unit: parsed[entry.relative]!.unit,
+      path: entry.relative,
+      valueTypes: valueTypes,
+      uiTypes: uiTypes,
+    );
+  }
+  for (final entry in sources) {
+    diagnostics.addAll(
+      checkParsedSource(
+        path: entry.relative,
+        source: entry.source,
+        parsed: parsed[entry.relative]!,
+        valueTypes: valueTypes,
+        uiTypes: uiTypes,
+      ).map((diagnostic) => diagnostic.toString()),
+    );
+    checked++;
   }
   if (checked == 0) {
     diagnostics.add('Client boundary check discovered no Dart source files');
@@ -67,13 +97,29 @@ void main(List<String> arguments) {
 List<ClientBoundaryDiagnostic> checkClientSource({
   required String path,
   required String source,
+  Set<String> valueTypes = const <String>{},
+  Set<String> uiTypes = const <String>{},
 }) {
   path = _normalized(path);
-  final parsed = parseString(
-    content: source,
+  return checkParsedSource(
     path: path,
-    throwIfDiagnostics: false,
+    source: source,
+    parsed: parseString(content: source, path: path, throwIfDiagnostics: false),
+    valueTypes: valueTypes,
+    uiTypes: uiTypes,
   );
+}
+
+/// Same rules as [checkClientSource], reusing a unit the caller already parsed
+/// together with the workspace declaration index.
+List<ClientBoundaryDiagnostic> checkParsedSource({
+  required String path,
+  required String source,
+  required ParseStringResult parsed,
+  Set<String> valueTypes = const <String>{},
+  Set<String> uiTypes = const <String>{},
+}) {
+  path = _normalized(path);
   final diagnostics = <ClientBoundaryDiagnostic>[];
   void report(int offset, String rule, String message) {
     final location = parsed.lineInfo.getLocation(offset);
@@ -99,6 +145,14 @@ List<ClientBoundaryDiagnostic> checkClientSource({
       isClient: path.startsWith('code/anywork_client/lib/'),
     ),
   );
+  checkFeatureBoundaries(
+    unit: parsed.unit,
+    path: path,
+    report: report,
+    valueTypes: valueTypes,
+    uiTypes: uiTypes,
+  );
+  checkJsonBoundaries(unit: parsed.unit, path: path, report: report);
   return List.unmodifiable(diagnostics);
 }
 
@@ -128,7 +182,8 @@ bool _isHandwrittenDart(String path) {
       !path.endsWith('.g.dart') &&
       !path.endsWith('.freezed.dart') &&
       !path.contains('/lib/src/rust/') &&
-      !path.contains('/lib/l10n/app_localizations');
+      !path.contains('/lib/l10n/app_localizations') &&
+      !path.contains('/lib/src/l10n/app_localizations');
 }
 
 typedef _Report = void Function(int offset, String rule, String message);
@@ -149,10 +204,8 @@ final class _BoundaryVisitor extends RecursiveAstVisitor<void> {
 
   bool get isFeature => path.startsWith('code/anywork/lib/src/features/');
   bool get isProvider =>
-      path.startsWith('code/anywork/lib/src/presentation/providers/');
-  bool get isCommand =>
-      path.contains('/commands/') || path.endsWith('_commands.dart');
-
+      path.startsWith('code/anywork/lib/src/presentation/providers/') ||
+      isFeature && path.contains('/view_models/');
   @override
   void visitImportDirective(ImportDirective node) {
     _checkUri(node.uri);
@@ -177,11 +230,12 @@ final class _BoundaryVisitor extends RecursiveAstVisitor<void> {
     final resolved = Uri(path: path).resolve(uri).toString();
     if (isClient &&
         uri.startsWith('package:') &&
-        !uri.startsWith('package:anywork_client/')) {
+        !uri.startsWith('package:anywork_client/') &&
+        uri != 'package:freezed_annotation/freezed_annotation.dart') {
       report(
         literal.offset,
         'OWN-01',
-        'Client may only import Dart SDK or itself: $uri',
+        'Client may only import Dart SDK, itself or the public Freezed annotation entrypoint: $uri',
       );
     }
     if (!isClient && uri.contains('package:anywork_client/src/')) {
@@ -197,8 +251,7 @@ final class _BoundaryVisitor extends RecursiveAstVisitor<void> {
             resolved.contains('/infrastructure/') ||
             resolved.contains('/src/rust/') ||
             uri.startsWith('package:flutter_rust_bridge/') ||
-            uri.endsWith('/transport_ports.dart') ||
-            uri.endsWith('/studio_ports.dart'))) {
+            uri.endsWith('_ports.dart'))) {
       report(
         literal.offset,
         'OWN-01',
@@ -279,11 +332,15 @@ final class _BoundaryVisitor extends RecursiveAstVisitor<void> {
             'StudioClient',
             'AnyworkClient',
             'AppGraph',
-          }.contains(constructor)) {
+          }.contains(constructor) ||
+          typeName.endsWith('Repository') ||
+          typeName.endsWith('Registry') ||
+          (constructor?.endsWith('Repository') ?? false) ||
+          (constructor?.endsWith('Registry') ?? false)) {
         report(
           variable.offset,
           'LIFE-01',
-          'Construct Client/AppGraph at the app composition root, not as a singleton',
+          'Construct repositories/registries at the app composition root, not as a singleton',
         );
       }
     }
@@ -300,21 +357,21 @@ final class _BoundaryVisitor extends RecursiveAstVisitor<void> {
   void visitMethodInvocation(MethodInvocation node) {
     final name = node.methodName.name;
     if (isProvider &&
-        (node.target != null || node.isCascaded) &&
         const {
           'session',
           'composer',
           'skills',
           'sessionCosts',
         }.contains(name)) {
-      report(
-        node.offset,
-        'LIFE-03',
-        'Provider observation cannot admit a Client owner; observe existing owners created by logical demand',
-      );
+      if (_clientFacadeReceivers.contains(_receiverName(node))) {
+        report(
+          node.offset,
+          'LIFE-03',
+          'Provider observation cannot admit a Client owner; observe existing owners created by logical demand',
+        );
+      }
     }
-    if (isCommand &&
-        const {'readStudioState', '_reloadProduct'}.contains(name)) {
+    if (const {'readStudioState', '_reloadProduct'}.contains(name)) {
       report(
         node.offset,
         'CMD-02',
@@ -324,20 +381,19 @@ final class _BoundaryVisitor extends RecursiveAstVisitor<void> {
     if (const {'onCancel', 'onResume', 'onDispose'}.contains(name) &&
         node.target?.toSource() == 'ref') {
       for (final argument in node.argumentList.arguments) {
-        final calls = _LifecycleCalls();
-        argument.accept(calls);
-        final unsafeCalls = calls.names
+        final actions = _LifecycleActions();
+        argument.accept(actions);
+        final business = actions.actions
             .where(_changesBusinessResource)
-            .toList();
-        final argumentSource = argument.toSource();
-        if (unsafeCalls.isNotEmpty ||
-            RegExp(r'clearHistory\s*:\s*true').hasMatch(argumentSource) ||
-            (argument is! FunctionExpression &&
-                _changesBusinessResource(argumentSource))) {
+            .map((action) => action.name)
+            .toList(growable: false);
+        if (business.isNotEmpty ||
+            RegExp(r'clearHistory\s*:\s*true').hasMatch(argument.toSource())) {
           report(
             argument.offset,
             'LIFE-02',
-            'Provider lifecycle may only detach its own read-only observation',
+            'Provider lifecycle may only detach its own read-only observation; '
+                'it cannot ${business.isEmpty ? 'clearHistory' : business.join('/')}',
           );
         }
       }
@@ -407,17 +463,113 @@ String? _constructorType(Expression? expression) => switch (expression) {
   _ => null,
 };
 
-bool _changesBusinessResource(String name) => RegExp(
-  r'(?:close|dispose|clear|reset|delete|remove|releaseOrphans|releaseNewThreadOrphans|releaseAll|setDemand|openChatWindow|attachThread)',
-  caseSensitive: false,
-).hasMatch(name);
+/// Named business actions that end a Session, draft, demand or accepted work.
+///
+/// Generic teardown of the provider's own bookkeeping (`cancel`, `clear`,
+/// `dispose`, `retire`) is not a business action: a ViewModel must detach its
+/// own observations, timers and coalescing helpers when it is disposed.
+bool _changesBusinessResource(({String name, String receiver}) action) {
+  if (_ownRetentionReceivers.contains(action.receiver)) return false;
+  return const {
+    'close',
+    'closeSession',
+    'closeThread',
+    'discard',
+    'discardDraft',
+    'abandonDraft',
+    'archiveProject',
+    'clearHistory',
+    'removeProject',
+    'deleteThread',
+    'releaseOrphans',
+    'releaseNewThreadOrphans',
+    'releaseAll',
+    'setDemand',
+    'attachThread',
+    'openChatWindow',
+    'cancelOperation',
+    'disposeSession',
+    'disposeOwner',
+  }.contains(action.name);
+}
 
-final class _LifecycleCalls extends RecursiveAstVisitor<void> {
-  final names = <String>[];
+/// Closing the provider's own keep-alive link only ends this provider's own
+/// retention; it never closes a Session, draft or accepted operation.
+const _ownRetentionReceivers = {'keepalive', 'keepalivelink'};
+
+/// The removed Client facade and transport bindings. Repository queries such as
+/// `DraftsRepository.composer(id)` are the design's public domain entry points.
+const _clientFacadeReceivers = {
+  'client',
+  'studioclient',
+  'anyworkclient',
+  'studio',
+  'transport',
+  'bridge',
+  'anywork',
+};
+
+/// Receiver of one call, including the target of an enclosing cascade.
+String _receiverName(MethodInvocation node) {
+  final target = node.target;
+  if (target != null) return _receiverSegment(target.toSource());
+  if (!node.isCascaded) return '';
+  AstNode? current = node.parent;
+  while (current != null && current is! CascadeExpression) {
+    current = current.parent;
+  }
+  if (current is! CascadeExpression) return '';
+  return _receiverSegment(current.target.toSource());
+}
+
+String _receiverSegment(String source) {
+  final segment = source.split('.').last.trim();
+  return segment.replaceFirst(RegExp(r'^_+'), '').toLowerCase();
+}
+
+/// Collects the call and tear-off names used inside one `ref` lifecycle
+/// argument, so `session.close()` and `session.close` are both inspected.
+final class _LifecycleActions extends RecursiveAstVisitor<void> {
+  final actions = <({String name, String receiver})>[];
 
   @override
   void visitMethodInvocation(MethodInvocation node) {
-    names.add(node.methodName.name);
+    actions.add((
+      name: node.methodName.name,
+      receiver: _receiverSegment(node.target?.toSource() ?? ''),
+    ));
     super.visitMethodInvocation(node);
+  }
+
+  @override
+  void visitPrefixedIdentifier(PrefixedIdentifier node) {
+    actions.add((
+      name: node.identifier.name,
+      receiver: _receiverSegment(node.prefix.name),
+    ));
+    super.visitPrefixedIdentifier(node);
+  }
+
+  @override
+  void visitPropertyAccess(PropertyAccess node) {
+    actions.add((
+      name: node.propertyName.name,
+      receiver: _receiverSegment(node.target?.toSource() ?? ''),
+    ));
+    super.visitPropertyAccess(node);
+  }
+
+  @override
+  void visitSimpleIdentifier(SimpleIdentifier node) {
+    final parent = node.parent;
+    if (parent is MethodInvocation && parent.methodName == node ||
+        parent is PropertyAccess && parent.propertyName == node ||
+        parent is PrefixedIdentifier) {
+      // Member accesses are recorded with their receiver instead.
+      super.visitSimpleIdentifier(node);
+      return;
+    }
+    actions.add((name: node.name, receiver: ''));
+    super.visitSimpleIdentifier(node);
   }
 }

@@ -1,24 +1,16 @@
-// Driver-only 故障注入复用既有 @visibleForTesting 初始化 override，不新增生产 fault API。
-// ignore_for_file: invalid_use_of_visible_for_testing_member
-
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
-import 'package:anywork/main.dart' as studio;
-import 'package:anywork_client/studio_client.dart';
-import 'package:anywork_client/statistics.dart';
+import 'package:anywork/main.dart' as entry;
+import 'package:anywork/src/app/composition/application_container.dart';
 import 'package:anywork/src/app/app_graph.dart';
-import 'package:anywork/src/app/studio_host_lifecycle.dart';
-import 'package:anywork/src/app/studio_shutdown.dart';
-import 'package:anywork/src/features/settings/statistics/view_models/statistics_repository_provider.dart';
-import 'package:anywork/src/infrastructure/frb/studio_api.dart';
-import 'package:anywork/src/l10n/studio_l10n.dart';
-
+import 'package:anywork/src/app/app_bindings.dart';
+import 'package:anywork/src/app/lifecycle/exit_participant.dart';
+import 'package:anywork_client/workspace.dart';
 import 'package:anywork/src/platform/error_log.dart';
-import 'package:anywork/src/shared/studio_driver_key_values.dart';
-import 'package:anywork/src/shared/studio_driver_projection.dart';
-import 'package:anywork/src/shared/studio_driver_state.dart';
+import 'package:anywork/src/diagnostics/studio_driver_key_values.dart';
+import 'package:anywork/src/shared/driver_snapshot_json.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart' show SelectableText;
 import 'package:flutter/rendering.dart';
@@ -37,20 +29,83 @@ import 'tool_probe_extension.dart';
 import 'runtime_event_evidence.dart';
 import 'page_switch_extension.dart';
 import 'pointer_hover_extension.dart';
+import 'driver_binding.dart';
+import 'driver_inspection.dart';
+import 'driver_startup_fault.dart';
+import 'driver_product_requests.dart';
 
 /// Native-only Driver entrypoint. Product and release builds use lib/main.dart.
-void main() {
+Future<void> main() => runDriver();
+
+Future<void> runDriver({
+  List<ApplicationCloseParticipant> additionalParticipants = const [],
+}) async {
   if (const bool.fromEnvironment('dart.vm.product')) {
     throw StateError('Flutter Driver mode is unavailable in product builds');
   }
+  // Top-level Dart finals are lazy: construct explicitly before graph assembly,
+  // not on the first Driver start command. No Session is borrowed here.
+  _runtimeEvidence = RuntimeEventEvidenceRecorder();
+  var firstAttempt = true;
+  entry.runApplication(
+    () {
+      // Startup admits this only after the previous owners actually joined. A
+      // successfully cleaned recorder is sealed and cannot serve the new graph.
+      if (!firstAttempt) _runtimeEvidence = RuntimeEventEvidenceRecorder();
+      firstAttempt = false;
+      final evidence = _runtimeEvidence;
+      return entry.createApplicationForLaunch(
+        driver: true,
+        decorateStartup: decorateDriverStartup,
+        additionalParticipants: [
+          ApplicationCloseParticipant(
+            name: 'driver-runtime-evidence',
+            seal: evidence.seal,
+            close: evidence.close,
+            retryCleanup: evidence.retryCleanup,
+          ),
+          ...additionalParticipants,
+        ],
+      );
+    },
+    createContainer: (application) {
+      final graph = application.graph;
+      final container = createApplicationContainer(graph);
+      try {
+        final inspection = DriverInspection(
+          graph: graph,
+          container: container,
+          bots: application.bots,
+        );
+        final products = DriverProductRequests(graph);
+        _graph = graph;
+        _container = container;
+        _inspection = inspection;
+        driverInspection = inspection;
+        _products = products;
+        _shutdownTask = null;
+        return container;
+      } on Object {
+        // Until the callback returns, launch cannot see this newly allocated
+        // container. The callback still owns its synchronous failure cleanup.
+        container.dispose();
+        rethrow;
+      }
+    },
+    beforeRun: _enableDriverCommands,
+  );
+}
+
+void _enableDriverCommands() {
   enableFlutterDriverExtension(
     handler: _handleDriverData,
     commands: <CommandExtension>[
       RawTapCommandExtension(),
       PointerHoverCommandExtension(),
       PageSwitchCommandExtension(
-        client: () => _client,
-        owner: () => _container.read(appGraphProvider).timeline,
+        workspace: () => _container.read(workspaceRepositoryProvider),
+        conversations: () => _container.read(conversationRepositoryProvider),
+        owner: () => _container.read(timelineCoordinatorProvider),
       ),
       PointerScrollCommandExtension(),
       PointerDragCommandExtension(),
@@ -60,133 +115,23 @@ void main() {
     ],
   );
   SchedulerBinding.instance.addTimingsCallback(_recordFrameTimings);
-  final graph = const bool.fromEnvironment('ANYWORK_DEMO')
-      ? AppGraph.demo(driver: true)
-      : AppGraph.production();
-  _container = ProviderContainer(
-    overrides: [
-      appGraphProvider.overrideWithValue(graph),
-      statisticsRepositoryProvider.overrideWithValue(
-        graph.statisticsRepository,
-      ),
-    ],
-  );
-  // Driver 只借用当前 AppGraph 的 Client 与展示 owner；绑定不建立内容订阅。
-  bindStudioDriver(graph.client, timeline: graph.timeline);
-  _applyShutdownFaultOverride();
-  studio.bootstrapStudio(container: _container);
-  // 生产 widget（`_StudioLifecycleCoordinator.initState`）会在**首帧构建时**安装它
-  // 自己的协调器（同一 `graph.close`），覆盖任何更早的安装。Driver 取证必须观察
-  // 实际 active 的那一次收束，因此把同一 graph / 同一预算 / 同一进度接口的 Driver
-  // 绑定放到首帧之后安装一次：不循环抢 active、不改生产入口、不新增 production getter。
-  WidgetsBinding.instance.addPostFrameCallback((_) {
-    _installDriverExitCoordinator(graph);
-  });
+  // 退出协调器只有一份：生产装配（`assembleApplication`）在启动时构造唯一的
+  // `ApplicationExitCoordinator`，Driver 直接借用同一实例
+  // （`_graph.exitCoordinator.requestHostExit` / `exit`）。因此不再需要首帧后
+  // 抢占 active 的安装，也不存在"首帧覆盖更早安装"的第二份协调器；既有 close
+  // 报告的 unresolved 资源由协调器状态暴露（`driver_inspection.dart` 的
+  // `exit-status` → `unresolvedClientResources` / `clientResources`）。
 }
 
-/// 只安装一次 Driver 专用的退出协调器绑定（同一 AppGraph、同一 shutdown 进度接口）。
-///
-/// 与托盘退出共用同一条 `StudioExitCoordinator`：native -> Dart 的 requestExit 也进入它。
-void _installDriverExitCoordinator(AppGraph graph) {
-  StudioExitCoordinator.install(
-    StudioExitCoordinator(
-      graph.client.transport,
-      _container.read(studioShutdownProgressStateProvider.notifier).update,
-      readyUpdateVersion: () =>
-          graph.client.updates.state is ReadyUpdaterStateSnapshot
-          ? graph.client.updates.state.update?.version
-          : null,
-      onBeginExit: _container
-          .read(studioShutdownProgressStateProvider.notifier)
-          .beginExit,
-      // 退出（含失败取消）在 `graph.close` 之前取消 runtime 取证观察：共享 Session／
-      // Client 仍由既有 owner 关闭，记录器不改变任何 business demand。
-      closeClient: (deadline) async {
-        _runtimeEvidence?.cancelForShutdown();
-        // 只**观察**既有 close 的结果：等这一次 memoized close，投影其
-        // CloseReport.unresolved 供验收定位，然后原样返回同一报告。
-        // 不重复 close / 不 retryCleanup / 不改清理与 Degraded 语义。
-        final report = await graph.close(deadline: deadline);
-        _clientCloseObserved = true;
-        _clientCloseResources = _clientCloseResourcesJson(report);
-        return report;
-      },
-    ),
-  );
-}
+late ProviderContainer _container;
+late AppGraph _graph;
+Future<StudioExitReport>? _shutdownTask;
+late DriverInspection _inspection;
+late DriverProductRequests _products;
 
-/// Driver-only 初始化故障注入：`ANYWORK_DRIVER_SHUTDOWN_FAULT` 取值
-/// `pending-init`（初始化永久挂住）或 `bridge-load-error`（初始化显式抛错）。
-///
-/// 复用既有 [FrbStudioTransport.debugOverrideInitialization]，不新增生产 fault 接口；订阅
-/// 故障由验收侧独立 Driver 入口/装饰器提供（见 ui-handoff-r3.txt）。
-void _applyShutdownFaultOverride() {
-  final fault = Platform.environment['ANYWORK_DRIVER_SHUTDOWN_FAULT'];
-  if (fault == 'pending-init') {
-    FrbStudioTransport.debugOverrideInitialization(
-      () => Completer<void>().future,
-    );
-  } else if (fault == 'bridge-load-error') {
-    FrbStudioTransport.debugOverrideInitialization(() async {
-      throw StateError('driver-injected bridge load failure');
-    });
-  }
-}
-
-late final ProviderContainer _container;
-AnyworkClient get _client => _container.read(appGraphProvider).client;
-Future<StudioShutdownReport>? _shutdownTask;
-
-Future<StatisticsSnapshot> _awaitStatisticsSnapshot() async {
-  final repository = _container.read(appGraphProvider).statisticsRepository;
-  final demand = repository.acquireVisibleDemand();
-  try {
-    final current = repository.state;
-    if (current.snapshot != null &&
-        current.connection.phase == StatisticsConnectionPhase.ready) {
-      return current.snapshot!;
-    }
-
-    final ready = Completer<StatisticsSnapshot>();
-    void consider(StatisticsRepositoryState state) {
-      final snapshot = state.snapshot;
-      if (snapshot != null &&
-          state.connection.phase == StatisticsConnectionPhase.ready) {
-        if (!ready.isCompleted) ready.complete(snapshot);
-      } else if (snapshot == null &&
-          state.connection.phase == StatisticsConnectionPhase.failed) {
-        if (!ready.isCompleted) {
-          ready.completeError(
-            StateError(
-              'statistics repository failed before a complete owner snapshot',
-            ),
-          );
-        }
-      }
-    }
-
-    final observation = repository.observe(consider);
-    consider(observation.initialState);
-    try {
-      return await ready.future.timeout(const Duration(seconds: 30));
-    } finally {
-      observation.cancel();
-    }
-  } finally {
-    demand.release();
-  }
-}
-
-/// Driver-only 只读证据：既有 `graph.close` 报告是否真的观察到，及其 unresolved
-/// 资源投影。未观察时 `clientCloseObserved=false` 且资源为 `null`（**不**用空集合
-/// 冒充“没有资源”）。
-bool _clientCloseObserved = false;
-List<Map<String, Object?>>? _clientCloseResources;
-Future<void>? _driverFixtureClipboardImageTask;
-
-/// Driver-only runtime 发布取证记录器：借用当前 Client 已存在的 Session 观察公开
-/// runtime read-model 发布，不创建 Session、不建立 transport 订阅、不改变 demand。
-RuntimeEventEvidenceRecorder? _runtimeEvidence;
+/// Constructed before graph assembly; start borrows this graph's real Session.
+/// It creates no Session, transport subscription or business demand.
+late RuntimeEventEvidenceRecorder _runtimeEvidence;
 bool _recordingFrames = false;
 int _frameCount = 0;
 int _slowFrames = 0;
@@ -240,65 +185,13 @@ Future<String> _handleDriverData(String? message) async {
         'samples': _frameSamples,
       });
     case 'snapshot':
-      return _driverSnapshotJson();
+      return _inspection.snapshotJson();
     case 'updater-state':
-      // Read-only Client/canonical facts, including the request that survives routes.
-      final updater = _client.updates.state;
-      final request = _client.updates.request.value;
-      return jsonEncode({
-        'state': updater.runtimeType.toString(),
-        'revision': updater.revision,
-        'version': updater.update?.version,
-        'request': request.phase.name,
-        'pending': request.pending,
-        if (updater is DownloadingUpdaterStateSnapshot)
-          'downloaded': updater.downloaded,
-        if (updater is DownloadingUpdaterStateSnapshot) 'total': updater.total,
-        if (updater is InstallFailedUpdaterStateSnapshot)
-          'error': updater.error.code,
-      });
+      return jsonEncode(updatesDiagnostic(_graph.updates.state.value));
     case 'mode-editor-state':
-      final editor = _client.modeEditor.state;
-      final catalog = _client.modeCatalog.state;
-      final threadId = _client.selection.state.selectedThreadId;
-      final session = threadId == null ? null : _client.sessionState(threadId);
-      final run = session?.runtime?.workflow?.currentRun;
-      return jsonEncode({
-        'document': editor.document?.toJson(),
-        'jsonText': editor.jsonText,
-        'dirty': editor.dirty,
-        'readOnly': editor.readOnly,
-        'busy': editor.busy,
-        'canUndo': editor.canUndo,
-        'canRedo': editor.canRedo,
-        'error': editor.error,
-        'issues': [for (final issue in editor.issues) issue.toJson()],
-        'preview': editor.preview?.toJson(),
-        'catalogRevision': catalog.revision,
-        'catalog': [
-          for (final mode
-              in catalog.value?.modes ?? <ThreadModeDescriptorView>[])
-            {
-              'id': mode.id,
-              'displayName': mode.displayName,
-              'readOnly': mode.readOnly,
-            },
-        ],
-        'threadId': threadId,
-        'run': run == null
-            ? null
-            : {
-                'runId': run.runId,
-                'lineageId': run.lineageId,
-                'graphHash': run.graphHash,
-                'currentStateId': run.currentStateId,
-                'currentStateTitle': run.currentStateTitle,
-                'modeDisplayName': run.modeDisplayName,
-                'modeDeleted': run.modeDeleted,
-              },
-      });
+      return jsonEncode(_inspection.modeEditor());
     case 'driver-diagnostics':
-      return jsonEncode(_driverDiagnostics());
+      return jsonEncode(_inspection.diagnostics());
     case 'driver-fixture-clipboard-image':
       // This is deliberately not a system clipboard operation. There is no
       // Driver-only ClipboardImageReader override in the current app, so the
@@ -306,120 +199,76 @@ Future<String> _handleDriverData(String? message) async {
       // without awaiting its preview continuation. The follow-up
       // `driver-fixture-clipboard-image-preview` request awaits that typed
       // Driver-only stage.
-      return _startDriverFixtureClipboardImage();
+      return _products.admitFixtureImage();
     case 'driver-fixture-clipboard-image-preview':
-      return _finishDriverFixtureClipboardImage();
+      return _products.fixtureImageOutcome();
     case 'pid':
       // Acceptance locates the X11 window by `_NET_WM_PID`, so the driver must
       // expose its own process id. Product builds use lib/main.dart, so this
       // stays inside the Driver-only entrypoint.
       return jsonEncode({'pid': pid});
     case 'statistics':
-      final performance = await _awaitStatisticsSnapshot();
-      return jsonEncode({
-        'ownerEpoch': performance.ownerEpoch,
-        'feedId': performance.feedId,
-        'revision': performance.publicationRevision,
-        'summariesRevision': performance.summariesRevision,
-        'historyRevision': performance.historyRevision,
-        'statisticsPending': performance.statisticsPending,
-        'statisticsGap': performance.statisticsGap,
-        'readFailed': performance.readFailed,
-        'summaries': [
-          for (final summary in performance.summaries)
-            {
-              'accountId': summary.accountId,
-              'accountDisplayName': summary.accountDisplayName,
-              'modelId': summary.modelId,
-              'samples': summary.sampleCount,
-              'tokens': summary.completionTokens,
-              'tokensPerSecond': summary.tokensPerSecond,
-              'ttftSampleCount': summary.ttftSampleCount,
-              'averageTtftMillis': summary.averageTtftMillis,
-              'effortBreakdowns': [
-                for (final effort in summary.effortBreakdowns)
-                  {
-                    'effort': effort.effort,
-                    'samples': effort.sampleCount,
-                    'tokens': effort.completionTokens,
-                    'tokensPerSecond': effort.tokensPerSecond,
-                    'ttftSampleCount': effort.ttftSampleCount,
-                    'averageTtftMillis': effort.averageTtftMillis,
-                  },
-              ],
-            },
-        ],
-        'history': [
-          for (final sample in performance.history)
-            {
-              'accountId': sample.accountId,
-              'accountDisplayName': sample.accountDisplayName,
-              'modelId': sample.modelId,
-              'sentModel': sample.sentModel,
-              'reportedModel': sample.reportedModel,
-              'matchState': sample.modelMatchState.name,
-              'effort': sample.effort,
-              'tokens': sample.completionTokens,
-              'ttftMillis': sample.ttftMillis,
-              'decodeMillis': sample.decodeMillis,
-              'responseMillis': sample.totalResponseMillis,
-              'tokensPerSecond': sample.tokensPerSecond,
-            },
-        ],
-      });
+      return _products.statistics();
     case 'thread-current':
-      final threadId = _client.selection.state.selectedThreadId;
-      if (threadId == null) return jsonEncode({'outputTokens': null});
-      final snapshot = _client.sessionState(threadId)?.workspace;
+      final snapshot = _inspection.capture();
       return jsonEncode({
-        'outputTokens': snapshot?.runtime.completionTokens,
-        'revision': snapshot?.revision,
+        'outputTokens':
+            snapshot.metrics?.value?.live?.completionTokens ??
+            snapshot.metrics?.value?.authoritative?.completionTokens,
+        'revision': snapshot.metrics?.stamp?.revision,
       });
     case 'persistence-queue':
-      // Driver 通过显式 topic lease 读取事件缓存，避免恢复已删除的 GUI 周期查询。
-      final queue = _client.persistence.state.queue?.queue;
-      return jsonEncode({
-        'pendingOperations': queue?.pendingOperations,
-        'threads': [
-          for (final thread in queue?.threads ?? const [])
-            {
-              'fault': thread.fault,
-              'generation': thread.faultGeneration,
-              'stateDirty': thread.stateDirtyRevision,
-              'stateDurable': thread.stateDurableRevision,
-              'historyAdmitted': thread.historyAdmittedSequence,
-              'historyDurable': thread.historyDurableSequence,
-              'pending': thread.pendingOperations,
-              'error': thread.lastError,
-            },
-        ],
-      });
+      return jsonEncode(_inspection.persistenceQueue());
     // Timeline 展示意图：与界面按钮共用同一个 owner 动作，没有旧 window/focus 入口。
     // 这些命令只转发真实用户动作，不代替滚轮产生阅读意图（进入 History 只由真实
     // 用户滚动触发）。
     case 'load-older':
-      final threadId = _client.selection.state.selectedThreadId;
+      final threadId = _graph.workspace.state.value.selection.threadId;
       if (threadId == null) return jsonEncode({'loaded': false});
-      final owner = _container.read(appGraphProvider).timeline;
-      await owner.loadOlder(
-        threadId,
-        generation: owner.lease(threadId)?.generation ?? 0,
-      );
-      return jsonEncode({'loaded': true});
+      final owner = _graph.timeline;
+      final display = owner.display(threadId);
+      if (display == null) {
+        return jsonEncode({'loaded': false, 'reason': 'noCurrentDisplay'});
+      }
+      final before = _graph.timelineDiagnostics
+          .capture()
+          .timeline
+          ?.items
+          .length;
+      await owner.loadOlder(threadId, display.generation);
+      final after = _graph.timelineDiagnostics.capture().timeline?.items.length;
+      return jsonEncode({
+        'loaded': before != null && after != null && after > before,
+      });
     case 'timeline-retry-older':
-      final threadId = _client.selection.state.selectedThreadId;
+      final threadId = _graph.workspace.state.value.selection.threadId;
       if (threadId == null) return jsonEncode({'loaded': false});
-      final owner = _container.read(appGraphProvider).timeline;
-      await owner.retryOlder(
-        threadId,
-        generation: owner.lease(threadId)?.generation ?? 0,
-      );
-      return jsonEncode({'loaded': true});
+      final owner = _graph.timeline;
+      final display = owner.display(threadId);
+      if (display == null) {
+        return jsonEncode({'loaded': false, 'reason': 'noCurrentDisplay'});
+      }
+      final before = _graph.timelineDiagnostics
+          .capture()
+          .timeline
+          ?.items
+          .length;
+      await owner.loadOlder(threadId, display.generation, retry: true);
+      final after = _graph.timelineDiagnostics.capture().timeline?.items.length;
+      return jsonEncode({
+        'loaded': before != null && after != null && after > before,
+      });
     case 'timeline-return-live':
-      final threadId = _client.selection.state.selectedThreadId;
+      final threadId = _graph.workspace.state.value.selection.threadId;
       if (threadId == null) return jsonEncode({'switched': false});
-      await _container.read(appGraphProvider).timeline.returnToLive(threadId);
-      return jsonEncode({'switched': true});
+      await _graph.timeline.returnLive(threadId);
+      final display = _graph.timeline.value;
+      return jsonEncode({
+        'switched':
+            display?.threadId == threadId &&
+            display?.displayMode.name == 'live' &&
+            display?.ready == true,
+      });
     case 'selection-body':
       // Read-only: the rendered split of the long assistant body.
       return jsonEncode(<String, Object?>{'ok': true, ...?_renderedLongBody()});
@@ -432,18 +281,22 @@ Future<String> _handleDriverData(String? message) async {
     case 'selection-state':
       return _handleSelectionState();
     case 'search-settings':
-      return _handleSearchSettings();
+      return jsonEncode(_inspection.searchSettings());
     case 'search-mcp-state':
-      return _handleSearchMcpState();
+      return _products.mcp();
     case 'account-usage-state':
-      return _accountUsageStateJson();
+      return _products.accountUsage(labelsContext: _localizedDriverContext());
     case 'shutdown':
       try {
-        final report = await (_shutdownTask ??= _runShutdown());
+        final report = await (_shutdownTask ??= _graph.exitCoordinator.exit(
+          ExitIntent.exit,
+        ));
         // typed 清理 ack：成功才返 completed；degraded 如实上报，绝不伪 Stopped。
         return jsonEncode({
-          'shutdown': report.allowsCleanExit ? 'completed' : 'degraded',
-          ..._shutdownReportJson(report),
+          'shutdown': report.shutdown.outcome == ShutdownOutcome.degraded
+              ? 'degraded'
+              : 'completed',
+          ...shutdownDiagnostic(report.shutdown),
         });
       } on Object catch (error, stackTrace) {
         // 失败与堆栈不能只 debugPrint：落盘到 canonical 诊断日志。
@@ -453,17 +306,14 @@ Future<String> _handleDriverData(String? message) async {
       }
     case 'request-app-exit':
       // 先回复 exit_requested，再调度同一中央退出（arm deadline + 有界清理 + finishExit）。
-      StudioDriverState.markExitRequested();
       Timer.run(() {
-        unawaited(
-          StudioExitCoordinator.requestExit().catchError((Object _) {}),
-        );
+        unawaited(_requestHostExit());
       });
       return jsonEncode({'exit': 'exit_requested'});
     case 'arm-exit':
       // Driver-only：只固定 native 首次期限（beginExit），不清理、不退出。用于第一次
       // arm 后隔 5s 再 begin/repeat 再 hang，核对第一次 deadline 未被刷新。
-      final armExitRemainingMs = await StudioHostLifecycle.beginExit();
+      final armExitRemainingMs = await _observeNativeArm();
       return jsonEncode({
         'armed': true,
         'remainingMs': armExitRemainingMs,
@@ -472,14 +322,10 @@ Future<String> _handleDriverData(String? message) async {
     case 'request-app-exit-twice':
       // 先武装 native 单期限并回报剩余，再间隔触发两次同一中央退出请求：第一次锚定
       // Dart 期限，第二次只复用同一 shared future；remaining 只减不增即证明不刷新。
-      final twiceArmedRemainingMs = await StudioHostLifecycle.beginExit();
-      StudioDriverState.markExitRequested();
-      unawaited(StudioExitCoordinator.requestExit().catchError((Object _) {}));
+      final twiceArmedRemainingMs = await _observeNativeArm();
+      unawaited(_requestHostExit());
       Timer(const Duration(milliseconds: 500), () {
-        StudioDriverState.markExitRequested();
-        unawaited(
-          StudioExitCoordinator.requestExit().catchError((Object _) {}),
-        );
+        unawaited(_requestHostExit());
       });
       return jsonEncode({
         'exit': 'exit_requested_twice',
@@ -489,10 +335,14 @@ Future<String> _handleDriverData(String? message) async {
       // 仅 Driver 构建：先 arm deadline 并更新阶段，再阻塞 Dart isolate 并不返回 ack，
       // 验证 native 期限线程不依赖 Dart/bridge/mainloop 也能在到期强制结束本进程。
       // 验收以 OS pid 在 ~30s 内消失为证据，不依赖 requestData 是否拿到回复。
-      await StudioHostLifecycle.beginExit();
-      await StudioHostLifecycle.updateExitDiagnostics(stage: 'driver-hang');
-      await StudioHostLifecycle.updateExitDiagnostics(
+      await _observeNativeArm();
+      await _graph.host.updateDiagnostics(
+        stage: 'driver-hang',
+        remaining: const Duration(seconds: 1),
+      );
+      await _graph.host.updateDiagnostics(
         stage: 'driver-hang-blocked',
+        remaining: const Duration(seconds: 1),
       );
       sleep(const Duration(minutes: 5));
       return jsonEncode({'shutdown': 'hang-finished-unexpectedly'});
@@ -500,28 +350,7 @@ Future<String> _handleDriverData(String? message) async {
       // Driver-only 只读：暴露 native 剩余期限/清理预算/退出请求次数、typed 报告与
       // 已观察阶段、typed startup 状态/失败 code/correlation，供验收对齐 remaining/stage
       // 与 second-instance busy 判定，不触发任何退出动作。
-      final diagnostics = StudioDriverState.exitDiagnosticsJson();
-      final startup = diagnostics['startup'];
-      return jsonEncode({
-        ...diagnostics,
-        'clientResources': [
-          for (final resource in _client.budget.usage)
-            {
-              'kind': resource.kind.name,
-              'owner': resource.owner,
-              'phase': resource.phase.name,
-            },
-        ],
-        'unresolvedClientResources': [
-          for (final resource in _client.unresolvedResources)
-            {'owner': resource.owner, 'reason': resource.reason.toString()},
-        ],
-        'startup': {
-          if (startup is Map<String, Object?>) ...startup,
-          'phase': FrbStudioTransport.startupProgress.value.name,
-          'ownerPresent': FrbStudioTransport.runtimeOwnerPresent,
-        },
-      });
+      return jsonEncode(_inspection.exitStatus());
     default:
       return jsonEncode({'error': 'unsupported driver request'});
   }
@@ -621,22 +450,20 @@ Future<String> _handleJsonDriverCommand(String raw) async {
           'error': 'targetMustBeStrings',
         });
       }
-      _runtimeEvidence ??= RuntimeEventEvidenceRecorder(_client);
       return jsonEncode(
-        _runtimeEvidence!.start(threadId: threadId, turnId: turnId),
+        await _runtimeEvidence.start(
+          conversations: _container.read(conversationRepositoryProvider),
+          threadId: threadId,
+          turnId: turnId,
+        ),
       );
     case 'runtime-evidence-stop':
-      // 同步取消本记录器自己的观察并返回不可变结果；未开始或重复停止明确失败。
-      final recorder = _runtimeEvidence;
-      if (recorder == null) {
-        return jsonEncode(<String, Object?>{
-          'ok': false,
-          'cmd': 'runtime-evidence-stop',
-          'source': RuntimeEventEvidenceRecorder.source,
-          'error': 'notStarted',
-        });
-      }
-      return jsonEncode(recorder.stop());
+      // Await real accepted reads and scope close, not just observation cancel.
+      return jsonEncode(
+        await _runtimeEvidence.stop(
+          deadline: DateTime.now().add(const Duration(seconds: 15)),
+        ),
+      );
     default:
       return jsonEncode(<String, Object?>{
         'ok': false,
@@ -812,8 +639,8 @@ RenderBox? _timelineScrollableBox() {
 /// 分页在途 + 滚轮交叠的复合 Driver 场景（只在验收侧使用，不进入产品）。
 ///
 /// 事实来源全部是应用自身：`TimelineSessionOwner.source`（真实发布状态）与当前
-/// `TimelineDisplayLease`（同一个 controller 的已加载条目数、标准 `ScrollController`
-/// 几何）。只有应用真的受理了分页（同步发布 `isLoadingOlder == true`）才经标准
+/// `TimelineDisplayBinding`（同一个 controller 的已加载条目数、标准 `ScrollController`
+/// 几何）。只有应用真的受理了分页（同步发布 `olderLoading == true`）才经标准
 /// 指针信号路由派发输入；所有接受的 Future 都 await 到终态，错误只记录为证据，
 /// 不抛未处理异步异常。宿主命令往返与 future 先后不再参与交叠判定。
 /// 输入有效性用同一同步块内标准 `ScrollController` 的 pixels 变化证明（不靠 frame
@@ -824,8 +651,8 @@ Future<Map<String, Object?>> _loadOlderOverlap({
   required int inputs,
   required double dy,
 }) async {
-  final owner = _container.read(appGraphProvider).timeline;
-  final selected = _client.selection.state.selectedThreadId;
+  final owner = _graph.timeline;
+  final selected = _graph.workspace.state.value.selection.threadId;
   final target = threadId ?? selected;
   final evidence = <String, Object?>{
     'inputs': inputs,
@@ -840,18 +667,18 @@ Future<Map<String, Object?>> _loadOlderOverlap({
   if (inputs <= 0) return failure('inputsMustBePositive');
   if (target == null) return failure('noSelectedThread');
   if (selected != target) return failure('selectedThreadMismatch');
-  final view = owner.source.value;
-  final lease = owner.lease(target);
+  final view = owner.value;
+  final lease = owner.display(target);
   if (view == null || view.threadId != target) {
     return failure('noCurrentDisplay', <String, Object?>{
       'viewThreadId': view?.threadId,
     });
   }
   if (lease == null) return failure('noCurrentLease');
-  evidence['connectionBefore'] = view.connection.name;
-  if (view.mode.name != 'history') {
+  evidence['connectionBefore'] = view.connectionPhase.name;
+  if (view.displayMode.name != 'history') {
     return failure('modeIsNotHistory', <String, Object?>{
-      'mode': view.mode.name,
+      'mode': view.displayMode.name,
     });
   }
   if (generation != null && lease.generation != generation) {
@@ -859,39 +686,44 @@ Future<Map<String, Object?>> _loadOlderOverlap({
       'generation': lease.generation,
     });
   }
-  if (!lease.hasOlder) {
+  if (!view.hasOlder) {
     return failure('noOlderPage', <String, Object?>{
       'generation': lease.generation,
     });
   }
-  if (view.isLoadingOlder) return failure('alreadyLoadingOlder');
+  if (view.olderLoading) return failure('alreadyLoadingOlder');
   final box = _timelineScrollableBox();
   if (box == null) return failure('scrollableNotMounted');
   final center = box.localToGlobal(box.size.center(Offset.zero));
   final geometryBefore = _timelineGeometry();
   final generationBefore = lease.generation;
-  final countBefore = lease.controller.messages.length;
+  final countBefore = lease.canvas.chatController.messages.length;
   var dispatchedInputs = 0;
   var completedAfterInputs = -1;
   Object? pageError;
 
   Map<String, Object?> read({required int index, required bool afterInput}) {
-    final nowView = owner.source.value;
-    final nowLease = owner.lease(target);
-    final position = nowLease != null && nowLease.scrollController.hasClients
-        ? nowLease.scrollController.position
+    final nowView = owner.value;
+    final nowLease = owner.display(target);
+    final position =
+        nowLease != null && nowLease.canvas.scrollController.hasClients
+        ? nowLease.canvas.scrollController.position
         : null;
     return <String, Object?>{
       'index': index,
       'afterInput': afterInput,
-      'loadingOlder': nowView?.isLoadingOlder,
-      'mode': nowView?.mode.name,
+      'loadingOlder': nowView?.olderLoading,
+      'mode': nowView?.displayMode.name,
       'generation': nowLease?.generation,
       'hasOlder': nowView?.hasOlder,
       'olderCursor': nowView?.olderCursor,
       'olderError': nowView?.olderError?.toString(),
-      'itemCount': nowLease?.controller.messages.length,
-      'loadedCount': nowLease?.loadedCount,
+      'itemCount': nowLease?.canvas.chatController.messages.length,
+      'loadedCount': _graph.timelineDiagnostics
+          .capture()
+          .timeline
+          ?.items
+          .length,
       'pixels': position?.pixels,
       'minScrollExtent': position?.minScrollExtent,
       'maxScrollExtent': position?.maxScrollExtent,
@@ -902,10 +734,7 @@ Future<Map<String, Object?>> _loadOlderOverlap({
   }
 
   // 产品自己的分页动作：同步发布 loading 后 await 真实查询。
-  final page = owner.loadOlder(
-    target,
-    generation: owner.lease(target)?.generation ?? 0,
-  );
+  final page = owner.loadOlder(target, lease.generation);
   final tracked = page.then<void>(
     (_) {
       if (completedAfterInputs < 0) completedAfterInputs = dispatchedInputs;
@@ -916,7 +745,7 @@ Future<Map<String, Object?>> _loadOlderOverlap({
     },
   );
   // 只认应用真实发布的受理事实：host future 先后不能证明在途。
-  final loadingAfterAction = owner.source.value?.isLoadingOlder;
+  final loadingAfterAction = owner.value?.olderLoading;
   evidence['loadingOlderAfterAction'] = loadingAfterAction;
   // 从 `tracked` 成立起，本次已受理的分页必须在**所有**出口真正收束：正常完成、
   // 提前 return、输入/几何/框架异常都走同一 join。`tracked` 已用 onError 归一页
@@ -938,8 +767,8 @@ Future<Map<String, Object?>> _loadOlderOverlap({
       return failure('loadOlderNotAccepted', <String, Object?>{
         'pageError': pageError?.toString(),
         'pageCompletedAfterInputs': completedAfterInputs,
-        'olderError': owner.source.value?.olderError?.toString(),
-        'hasOlder': owner.source.value?.hasOlder,
+        'olderError': owner.value?.olderError?.toString(),
+        'hasOlder': owner.value?.hasOlder,
       });
     }
     final inputsLog = <Map<String, Object?>>[];
@@ -1086,761 +915,39 @@ Map<String, Object?> _timelineDetailText() {
   };
 }
 
-Future<StudioShutdownReport> _runShutdown() async {
-  // arm native 首次期限并执行 typed 清理，返回真实报告；不结束进程。
-  return StudioExitCoordinator.cleanupActive();
+Future<int> _observeNativeArm() async {
+  final remaining = await _graph.host.beginExit();
+  _inspection.observeNativeArm(remaining);
+  return remaining;
 }
 
-/// 既有 `CloseReport.unresolved` 的稳定公开投影。
+/// 本地化上下文只用于把 label 解析到当前 Locale，不读取任何业务值。
 ///
-/// 只保留 owner 名字、attempt 的公开值和安全 reason 分类；不输出
-/// `reason.toString()`、异常消息或任何凭据/路径细节，未知类型只给 runtimeType 名。
-List<Map<String, Object?>> _clientCloseResourcesJson(CloseReport report) => [
-  for (final resource in report.unresolved)
-    {
-      'owner': resource.owner,
-      'attemptId': resource.attemptId.value,
-      'reasonKind': _clientCloseReasonKind(resource.reason),
-    },
-];
-
-String _clientCloseReasonKind(Object reason) => switch (reason) {
-  TimeoutException() => 'timeout',
-  StateError() => 'stateError',
-  StudioFailure(:final code) => 'studioFailure:${code.name}',
-  _ => 'unknown:${reason.runtimeType}',
-};
-
-Map<String, Object?> _shutdownReportJson(StudioShutdownReport report) {
-  return {
-    // Driver-only：同一次既有 close 是否观察到，以及其 unresolved 资源
-    // （owner / attempt 公开值 / 安全 reasonKind）。未观察到即 null，不是空集合。
-    'clientCloseObserved': _clientCloseObserved,
-    'clientCloseResources': _clientCloseResources,
-    'outcome': report.outcome.name,
-    'persistence': switch (report.persistence) {
-      UnknownStudioPendingPersistence() => 'unknown',
-      PendingStudioPendingPersistence(:final count) => 'pending:$count',
-      DrainedStudioPendingPersistence() => 'drained',
-    },
-    'issues': [
-      for (final issue in report.issues)
-        {
-          'stage': issue.stage,
-          'code': issue.code,
-          'message': issue.message,
-          'retryable': issue.retryable,
-          'correlationId': issue.correlationId,
-        },
-    ],
-  };
-}
-
-/// Extends the existing Driver snapshot without changing any of its legacy
-/// keys. The legacy snapshot shape is a deliberate backward-compatibility
-/// exception for existing manual-gui consumers. `driverDiagnostics` is the new
-/// acceptance-only surface and exposes only typed, de-identified fields; it is
-/// assembled in this Driver entrypoint rather than in the production snapshot
-/// owner and is not part of the production protocol.
-String _driverSnapshotJson() {
-  final facts = StudioDriverState.readFacts();
-  final decoded = jsonDecode(StudioDriverState.snapshotJson(observed: facts));
-  if (decoded is! Map) {
-    throw const FormatException('driver snapshot must be a JSON object');
-  }
-  final snapshot = decoded.cast<String, dynamic>();
-  snapshot['driverDiagnostics'] = _driverDiagnostics(observed: facts);
-  snapshot['delegation'] = _delegationSnapshot(facts);
-  return jsonEncode(snapshot);
-}
-
-/// Read-only Client facts for delegation acceptance; no hidden UI-bypassing writes.
-Map<String, Object?> _delegationSnapshot(StudioDriverFacts facts) {
-  final store = _client.settings.state;
-  final defaults = store.configLoaded ? store.canonical?.delegation : null;
-  final drafts = _client.startDraft.state;
-  final directory = _client.threadDirectory.state;
-  final threads = <String, StudioThread>{
-    for (final thread in [
-      ...directory.window.threads,
-      ...directory.overlayThreads,
-    ])
-      thread.id: thread,
-    for (final workspace in facts.workspacesByThread.values)
-      workspace.thread.id: workspace.thread,
-  };
-  Map<String, Object?>? route(NewThreadModelRoute? value) => value == null
-      ? null
-      : {
-          'accountId': value.accountId,
-          'modelId': value.modelId,
-          'effort': value.effort,
-        };
-  return {
-    'defaults': defaults == null
-        ? null
-        : {'mode': defaults.mode.name, 'preference': defaults.preference.name},
-    'settingsRevision': store.settingsRevision,
-    'catalogRevision': store.modelCatalogRevision,
-    'accountModels': [
-      for (final account
-          in store.canonical?.accounts ?? const <AccountSettingsView>[])
-        for (final model in account.models)
-          {
-            'accountId': account.id,
-            'modelId': model.modelId,
-            'enabled': model.enabled,
-            'textEligible': model.matchesType(ModelType.text),
-            'pending':
-                store
-                    .commands[accountModelEnabledMutationKey(
-                      account.id,
-                      model.modelId,
-                    )]
-                    ?.isPending ==
-                true,
-            'pendingEnabled':
-                store
-                        .commands[accountModelEnabledMutationKey(
-                          account.id,
-                          model.modelId,
-                        )]
-                        ?.isPending ==
-                    true
-                ? store
-                      .commands[accountModelEnabledMutationKey(
-                        account.id,
-                        model.modelId,
-                      )]
-                      ?.target
-                      .enabled
-                : null,
-            'error': store
-                .commands[accountModelEnabledMutationKey(
-                  account.id,
-                  model.modelId,
-                )]
-                ?.error
-                ?.message,
-            'billingKind': account.billingKind.name,
-            'billingKindOverride': account.billingKindOverride?.name,
-          },
-    ],
-    'drafts': [
-      for (final id in {
-        ...drafts.projects.keys,
-        if (facts.selectedProjectId != null) facts.selectedProjectId!,
-      })
-        {
-          'projectId': id,
-          'modeOverride': drafts.forProject(id).delegationModeOverride?.name,
-          'preferenceOverride': drafts
-              .forProject(id)
-              .delegationPreferenceOverride
-              ?.name,
-          'effectiveMode': defaults == null
-              ? null
-              : drafts.forProject(id).resolveDelegation(defaults).mode.name,
-          'effectivePreference': defaults == null
-              ? null
-              : drafts
-                    .forProject(id)
-                    .resolveDelegation(defaults)
-                    .preference
-                    .name,
-          'workspaceMode': drafts.forProject(id).workspaceMode.id,
-          'submitting': drafts.submitting,
-        },
-    ],
-    'threads': [
-      for (final thread in threads.values)
-        {
-          'threadId': thread.id,
-          'mode': thread.delegationMode.name,
-          'preference': thread.delegationPreference.name,
-          'frozenModel': route(thread.frozenModel),
-        },
-    ],
-    'agents': [
-      for (final agent
-          in _client.project.state.agents?.values ?? const <StudioAgentView>[])
-        {
-          'threadId': agent.threadId,
-          'taskSummary': agent.task,
-          'role': agent.role,
-          'state': agent.status,
-          'mode': agent.delegationMode.name,
-          'preference': agent.delegationPreference.name,
-          'frozenModel': route(agent.frozenModel),
-        },
-    ],
-    // Only open, explicitly queried details. Never copy evaluations into the directory.
-    'modelDetails': [
-      for (final entry in _client.modelDetailQueries.state.entries)
-        {
-          'accountId': entry.key.accountId,
-          'modelId': entry.key.modelId,
-          'loading': entry.value.loading,
-          'error': entry.value.error?.message,
-          'errorCode': entry.value.error?.code.name,
-          'available': entry.value.value?.available,
-          'evaluationCount': entry.value.value?.recentEvaluations.length,
-          'evaluations': [
-            for (final evaluation
-                in entry.value.value?.recentEvaluations ??
-                    const <AgentEvaluation>[])
-              {
-                'agentId': evaluation.agentId,
-                'turnId': evaluation.turnId,
-                'revision': evaluation.revision,
-                'model': route(evaluation.model),
-                'outcome': evaluation.outcome.name,
-                'comment': evaluation.comment,
-                'updatedAt': evaluation.updatedAt,
-              },
-          ],
-        },
-    ],
-  };
-}
-
-Map<String, Object?> _driverDiagnostics({StudioDriverFacts? observed}) {
-  final facts = observed ?? StudioDriverState.readFacts();
-  final workspace = facts.workspace;
-  final runtime = workspace?.runtime;
-  final liveUsage = runtime?.liveUsage;
-  final observedUsage =
-      liveUsage != null &&
-          liveUsage.turnId.isNotEmpty &&
-          liveUsage.attemptId.isNotEmpty &&
-          liveUsage.observationSequence >= 0
-      ? liveUsage
-      : null;
-  final usageState = observedUsage?.state.name ?? 'unknown';
-  final metricsAvailable =
-      observedUsage != null &&
-      (usageState == 'live' || usageState == 'authoritative');
-
-  // ThreadRuntimeView stores these counters as non-nullable ints, while its
-  // default constructor and FRB's unavailable context window both use zero.
-  // That schema cannot distinguish an explicit zero from the default, so a
-  // zero from those fields is conservatively unknown/null. The nullable live
-  // usage fields do carry presence provenance; their explicit zero is kept.
-  int? defaultProneCount(int? value) =>
-      !metricsAvailable || value == null || value <= 0 ? null : value;
-  int? explicitUsageCount(int? value) => metricsAvailable ? value : null;
-  final contextTokens =
-      explicitUsageCount(observedUsage?.latestContextTokens) ??
-      defaultProneCount(runtime?.contextTokens);
-  final contextWindow = defaultProneCount(runtime?.contextWindow);
-  final totalTokens = defaultProneCount(runtime?.totalTokens);
-  final inputTokens = defaultProneCount(runtime?.promptTokens);
-  final outputTokens = defaultProneCount(runtime?.completionTokens);
-  final reasoningTokens = defaultProneCount(runtime?.reasoningTokens);
-  final liveOutputTokens = explicitUsageCount(observedUsage?.completionTokens);
-  final liveResponseMillis = explicitUsageCount(observedUsage?.responseMillis);
-  final throughputSource = runtime == null
-      ? null
-      : ModelRouteQueries.throughputSource(runtime);
-  // Preserve source counters for diagnostics, but only derive throughput from
-  // a complete output/response pair chosen by the canonical Client query.
-  final turnOutputTokens = throughputSource?.outputTokens;
-  final responseMillis = throughputSource?.responseMillis;
-  final tokensPerSecond = throughputSource?.tokensPerSecond;
-  return <String, Object?>{
-    'schemaVersion': 1,
-    'runtime': <String, Object?>{
-      'availability': workspace == null ? 'unavailable' : 'available',
-      // Null is an unknown/unavailable value. It is never replaced with a
-      // zero-valued ThreadRuntimeView default merely to make the JSON shape
-      // convenient. A usage state without a complete identity is downgraded
-      // to unknown and all usage counters remain null.
-      'usageState': usageState,
-      'turnId': metricsAvailable ? observedUsage.turnId : null,
-      'attemptId': metricsAvailable ? observedUsage.attemptId : null,
-      'observationSequence': metricsAvailable
-          ? observedUsage.observationSequence
-          : null,
-      // 当前展示代次已经应用的内容版本（design/26 §26.9）；没有展示时为 null，
-      // 不用 0 或旧 workspace revision 冒充。
-      'revision': facts.timeline?.appliedVersion,
-      'contextTokens': contextTokens,
-      'contextWindow': contextWindow,
-      'totalTokens': totalTokens,
-      'inputTokens': inputTokens,
-      'outputTokens': outputTokens,
-      'reasoningTokens': reasoningTokens,
-      'liveOutputTokens': liveOutputTokens,
-      'liveResponseMillis': liveResponseMillis,
-      'turnOutputTokens': turnOutputTokens,
-      'responseMillis': responseMillis,
-      'tokensPerSecond': tokensPerSecond,
-      // 当前 Thread runtime 快照声明的技能激活列表：直接读 Client runtime
-      // read-model 的 typed 字段，不另建 Driver 状态，也不从历史 Skill 条目推断。
-      // 没有选中 Thread 的 workspace 时为 null，与其它 runtime 事实一致。
-      'activeSkills': runtime?.activeSkills,
-      // Keep throughput as an explicit typed group only when both source
-      // counters are known; an unknown group is represented by null.
-      'throughput': tokensPerSecond == null
-          ? null
-          : <String, Object?>{
-              'outputTokens': turnOutputTokens,
-              'responseMillis': responseMillis,
-              'tokensPerSecond': tokensPerSecond,
-            },
-    },
-    'skills': _driverSkillsDiagnostics(),
-    'composer': <String, Object?>{
-      'newThread': _driverComposerDiagnostics(facts.newThreadComposer),
-      'thread': _driverComposerDiagnostics(facts.threadComposer),
-    },
-    'accounts': _driverProviderDiagnostics(facts),
-    'topics': studioDriverTopicDiagnostics(_client),
-    'seams': <String, Object?>{
-      // No production ClipboardImageReader override/fixture is present in this
-      // Driver entrypoint. The fixture request below therefore does not claim
-      // to prove a real OS paste operation.
-      'clipboardImageReaderOverride': false,
-      'pasteObservation': 'unavailable',
-      'fixtureHook': 'driver-fixture-clipboard-image',
-      'fixtureAdmissionHook': 'driver-fixture-clipboard-image',
-      'fixturePreviewHook': 'driver-fixture-clipboard-image-preview',
-      'fixturePreviewStage': 'typed-driver-only-follow-up',
-      'fixtureAwaitsPreviewInAdmissionHook': false,
-      'runtimeEventEndpoint': 'unsupported',
-      'systemClipboardTouched': false,
-    },
-  };
-}
-
-/// Project Skill discovery as the GUI's own Client read-model reports it.
-///
-/// The native acceptance seeds synthetic Skills into the isolated home, so this
-/// Driver-only group carries the canonical discovered names, warnings and typed
-/// state. Its `config` member is the read-only projection of the canonical Skill
-/// directories the runtime was configured with; nothing here reads a file or a
-/// Skill body, and no second Driver-side fact source is introduced.
-Map<String, Object?> _driverSkillsDiagnostics() {
-  final projectId = _client.selection.state.selectedProjectId;
-  final snapshot = projectId == null
-      ? null
-      : _client.existingSkills(projectId)?.state.value;
-  if (projectId == null || snapshot == null) {
-    return <String, Object?>{
-      'projectId': projectId,
-      'status': null,
-      'catalogRevision': null,
-      'skills': null,
-      'warnings': null,
-      'error': null,
-    };
-  }
-  final resource = snapshot.state;
-  return <String, Object?>{
-    'projectId': projectId,
-    'status': switch (resource) {
-      UninitializedObservedResource() => 'uninitialized',
-      LoadingObservedResource() => 'loading',
-      ReadyObservedResource() => 'ready',
-      RefreshingObservedResource() => 'refreshing',
-      StaleObservedResource() => 'stale',
-      DegradedObservedResource() => 'degraded',
-      FailedObservedResource() => 'failed',
-      StoppedObservedResource() => 'stopped',
-    },
-    'catalogRevision': resource.value?.catalogRevision,
-    'skills': List<String>.of(snapshot.skills),
-    'warnings': List<String>.of(snapshot.warnings),
-    'error': switch (resource) {
-      DegradedObservedResource(:final error) => error.message,
-      FailedObservedResource(:final error) => error.message,
-      _ => null,
-    },
-    'config': _driverSkillsConfigDiagnostics(),
-  };
-}
-
-/// The Skill directories the runtime is configured to scan.
-///
-/// Discovery can only find a seeded Skill when this configuration points at the
-/// isolated user directory, so the acceptance records it next to the discovered
-/// names instead of inferring the cause from an empty list.
-Map<String, Object?> _driverSkillsConfigDiagnostics() {
-  final skills = _client.settings.state.canonical?.skills;
-  if (skills == null) {
-    return <String, Object?>{'availability': 'unavailable'};
-  }
-  return <String, Object?>{
-    'availability': 'available',
-    'enabled': skills.enabled,
-    'systemEnabled': skills.systemEnabled,
-    'projectDir': skills.projectDir,
-    'userDir': skills.userDir,
-    'externalDirs': List<String>.of(skills.externalDirs),
-    'disabledCount': skills.disabled.length,
-  };
-}
-
-Map<String, Object?>? _driverComposerDiagnostics(
-  ComposerThreadState? composer,
-) {
-  if (composer == null) return null;
-  final attachments = composer.attachments;
-  return <String, Object?>{
-    'present': attachments.isNotEmpty,
-    'previewReady':
-        attachments.isNotEmpty &&
-        attachments.every(
-          (attachment) => attachment.previewBytes?.isNotEmpty == true,
-        ),
-    'attachmentGeneration': composer.attachmentGeneration,
-    'submissionPending': composer.isSubmissionPending,
-    // Do not expose the error text: it can contain account/path details. The
-    // typed failure fact is sufficient for a Driver regression assertion.
-    'failed': composer.error != null,
-    'attachments': [
-      for (final attachment in attachments)
-        <String, Object?>{
-          'id': attachment.id,
-          'name': attachment.filename,
-          'filename': attachment.filename,
-          'modality': attachment.modality.name,
-          'byteSize': attachment.byteSize,
-          'previewReady': attachment.previewBytes?.isNotEmpty == true,
-        },
-    ],
-  };
-}
-
-Map<String, Object?> _driverProviderDiagnostics(StudioDriverFacts facts) {
-  final settingsAvailable = facts.settingsReady;
-  if (!settingsAvailable) {
-    return <String, Object?>{
-      'availability': 'unavailable',
-      'list': null,
-      'details': null,
-    };
-  }
-  final accounts = facts.accounts;
-  return <String, Object?>{
-    'availability': 'available',
-    // The list projection deliberately contains count/status metadata only.
-    // Model model_ids are retained in the detail projection below.
-    'list': [
-      for (final account in accounts)
-        <String, Object?>{
-          'id': account.id,
-          'status': account.status,
-          'modelCount': account.models.length,
-          'defaultModelConfigured': account.defaultModelId.isNotEmpty,
-        },
-    ],
-    'details': [
-      for (final account in accounts)
-        <String, Object?>{
-          'id': account.id,
-          'models': [
-            for (final model in account.models)
-              <String, Object?>{
-                'modelId': model.modelId,
-                'name': model.displayName,
-                'origin': model.origin.name,
-                'contextWindow': model.contextWindow,
-                'maxOutputTokens': model.maxOutputTokens,
-                'reasoningEfforts': model.reasoningEfforts,
-                'inputCapabilities': [
-                  for (final capability in model.inputCapabilities)
-                    capability.modality.name,
-                ],
-              },
-          ],
-        },
-    ],
-  };
-}
-
-Future<String> _startDriverFixtureClipboardImage() async {
-  final fixtureCandidates = [
-    File('test_driver/fixtures/tool-image.png'),
-    File('code/anywork/test_driver/fixtures/tool-image.png'),
-  ];
-  File? fixture;
-  for (final candidate in fixtureCandidates) {
-    if (await candidate.exists()) {
-      fixture = candidate;
-      break;
-    }
-  }
-  if (fixture == null) {
-    return jsonEncode(<String, Object?>{
-      'ok': false,
-      'hook': 'driver-fixture-clipboard-image',
-      'pasteSeam': 'unavailable',
-      'systemClipboardTouched': false,
-      'reason': 'fixture-not-found',
-    });
-  }
-
-  final selection = _client.selection.state;
-  final projectId = selection.selectedProjectId;
-  if (projectId == null) {
-    return jsonEncode(<String, Object?>{
-      'ok': false,
-      'hook': 'driver-fixture-clipboard-image',
-      'pasteSeam': 'unavailable',
-      'systemClipboardTouched': false,
-      'reason': 'composer-not-ready',
-    });
-  }
-  final bytes = await fixture.readAsBytes();
-  final threadId = selection.selectedThreadId;
-  final Future<void> task;
-  if (threadId != null) {
-    if (_client.composerState(threadId) == null) {
-      return jsonEncode(<String, Object?>{
-        'ok': false,
-        'hook': 'driver-fixture-clipboard-image',
-        'pasteSeam': 'unavailable',
-        'systemClipboardTouched': false,
-        'reason': 'composer-not-ready',
-      });
-    }
-    task = _client.composer(threadId).addClipboardImage(bytes);
-  } else {
-    final mode = _client.startDraft.state.forProject(projectId).mode;
-    task = _client.attachments.addNewThreadClipboard(
-      projectId: projectId,
-      mode: mode,
-      pngBytes: bytes,
-    );
-  }
-  _driverFixtureClipboardImageTask = task;
-  // The admission hook is intentionally fire-and-observe: it does not await
-  // the controller's preview Future.wait. The journey observes the admitted
-  // metadata first, then invokes the typed preview hook below.
-  unawaited(
-    task.then<void>((_) {}, onError: (Object _, StackTrace stackTrace) {}),
-  );
-  return jsonEncode(<String, Object?>{
-    'ok': true,
-    'hook': 'driver-fixture-clipboard-image',
-    'stage': 'admission-started',
-    'pasteSeam': 'unavailable',
-    'systemClipboardTouched': false,
-    'previewPending': true,
-  });
-}
-
-Future<String> _finishDriverFixtureClipboardImage() async {
-  final task = _driverFixtureClipboardImageTask;
-  if (task == null) {
-    return jsonEncode(<String, Object?>{
-      'ok': false,
-      'hook': 'driver-fixture-clipboard-image-preview',
-      'stage': 'preview-unavailable',
-      'pasteSeam': 'unavailable',
-      'systemClipboardTouched': false,
-      'reason': 'admission-not-started',
-    });
-  }
-  try {
-    await task;
-    return jsonEncode(<String, Object?>{
-      'ok': true,
-      'hook': 'driver-fixture-clipboard-image-preview',
-      'stage': 'preview-complete',
-      'pasteSeam': 'unavailable',
-      'systemClipboardTouched': false,
-    });
-  } catch (_) {
-    // Do not expose raw account/path errors through the Driver endpoint.
-    return jsonEncode(<String, Object?>{
-      'ok': false,
-      'hook': 'driver-fixture-clipboard-image-preview',
-      'stage': 'preview-failed',
-      'pasteSeam': 'unavailable',
-      'systemClipboardTouched': false,
-    });
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Web-search + MCP acceptance projection.
-//
-// Driver-only read-only view over the canonical settings/MCP state, so the
-// web-search acceptance can prove the two search cards and the MCP health from
-// typed fields instead of scraping widget text or the account-only snapshot.
-// Nothing here mutates product state and no credential is read: the endpoint is
-// reduced to scheme/host/path.
-
-Future<String> _handleSearchSettings() async {
-  final settings = _client.settings.state.canonical;
-  if (settings == null) {
-    return jsonEncode(<String, Object?>{
-      'ok': false,
-      'reason': 'studio state not ready',
-    });
-  }
-  final web = settings.webSearch;
-  final deep = settings.deepSeekWebSearch;
-  return jsonEncode(<String, Object?>{
-    'ok': true,
-    'revision': settings.revision,
-    'webSearch': <String, Object?>{
-      'configuredMode': web.configuredMode,
-      'effectiveMode': web.effectiveMode,
-      'availability': web.availability,
-      'contextSize': web.contextSize,
-      'allowedDomains': web.allowedDomains,
-      'country': web.country,
-      'region': web.region,
-      'city': web.city,
-      'timezone': web.timezone,
-      'accountId': web.accountId,
-      'modelId': web.modelId,
-    },
-    'deepSeekWebSearch': <String, Object?>{
-      'configuredEnabled': deep.configuredEnabled,
-      'effectiveEnabled': deep.effectiveEnabled,
-      'configuredFetchEnabled': deep.configuredFetchEnabled,
-      'effectiveFetchEnabled': deep.effectiveFetchEnabled,
-      'availability': deep.availability,
-      'accountId': deep.accountId,
-    },
-  });
-}
-
-/// Read-only typed Client projection; no request, reducer or test write path.
-String _accountUsageStateJson() {
-  BuildContext? settingsContext;
+/// 旧的 Driver 专用投影（`_shutdownReportJson`、`_accountUsageStateJson`、
+/// `_clientCloseResourcesJson` 等）已随旧 Client facade 一起移除，事实来源改为
+/// 真实 owner 的 typed 投影：退出报告/未收束资源见 `driver_inspection.dart` 的
+/// `exit-status`，账号用量见 `driver_product_requests.dart` 的
+/// `account-usage-state`。
+BuildContext? _localizedDriverContext() {
   final root = WidgetsBinding.instance.rootElement;
-  if (root != null) {
-    _visitElements(root, (element) {
-      if (element.widget.runtimeType.toString() == 'AccountList' ||
-          element.widget.runtimeType.toString() == 'AccountEditor') {
-        settingsContext = element;
-      }
-    });
-  }
-  final labels = settingsContext?.l10n;
-  final usage = _client.accountUsage.state.value;
-  final queries = _client.accountUsageQueries.state;
-  return jsonEncode({
-    'accounts': [
-      for (final account
-          in _client.settings.state.canonical?.accounts ??
-              const <AccountSettingsView>[])
-        {
-          'id': account.id,
-          'name': account.name,
-          'templateId': account.templateId,
-          'protocol': account.protocol,
-          'usageQueryRevision': account.usageQueryRevision,
-          'hasBearerToken': account.hasBearerToken,
-        },
-    ],
-    'revision': usage?.revision,
-    'usages': [
-      for (final record in usage?.usages ?? const <AccountUsageView>[])
-        {'id': record.accountId, ..._accountUsageJson(record.state)},
-    ],
-    'loadingAccountIds': queries.loadingAccountIds.toList(),
-    'errorsByAccountId': queries.errorsByAccountId,
-    if (labels != null)
-      'labels': {
-        'displayName': labels.settingsDisplayName,
-        'delete': labels.settingsDeleteAccount,
-        'setDefault': labels.settingsSetAsDefaultAccount,
-      },
+  if (root == null) return null;
+  BuildContext? context;
+  _visitElements(root, (element) {
+    if (context == null && Localizations.maybeLocaleOf(element) != null) {
+      context = element;
+    }
   });
+  return context;
 }
 
-Map<String, Object?> _accountUsageJson(AccountUsageStateView state) =>
-    switch (state) {
-      UnsupportedAccountUsageView() => {'kind': 'unsupported'},
-      MissingCredentialAccountUsageView() => {'kind': 'missingCredential'},
-      FailedAccountUsageView(:final code, :final retryable) => {
-        'kind': 'failed',
-        'code': code,
-        'retryable': retryable,
-      },
-      ReadyAccountUsageView(:final data) => {
-        'kind': 'ready',
-        ...switch (data) {
-          DeepSeekBalanceAccountUsageView(:final balance) => {
-            'balances': [
-              for (final balance in balance.balances) balance.totalBalance,
-            ],
-          },
-          ZhipuCodingPlanAccountUsageView(:final codingPlan) => {
-            'windows': [for (final limit in codingPlan.limits) limit.window],
-          },
-        },
-      },
-    };
-
-Future<String> _handleSearchMcpState() async {
-  final mcp = _client.mcp.state.value;
-  if (mcp == null) {
-    return jsonEncode(<String, Object?>{
-      'ok': false,
-      'reason': 'studio state not ready',
-    });
+Future<void> _requestHostExit() async {
+  try {
+    _inspection.exitRequests++;
+    await _graph.exitCoordinator.requestHostExit(ExitIntent.exit);
+  } on Object catch (error, stack) {
+    recordDartError(error, stack, stage: 'driver-host-exit');
+    rethrow;
   }
-  return jsonEncode(<String, Object?>{
-    'ok': true,
-    'revision': mcp.revision,
-    'desiredConfigFingerprint': mcp.desiredConfigFingerprint,
-    'appliedConfigFingerprint': mcp.appliedConfigFingerprint,
-    'activeServers': mcp.activeServers,
-    'servers': [
-      for (final server in mcp.servers)
-        <String, Object?>{
-          'id': server.id,
-          'transport': server.transport,
-          'endpoint': _redactEndpoint(server.endpoint),
-          'sourceKind': server.sourceKind,
-          'mutationPolicy': server.mutationPolicy,
-          'state': _mcpServerStateJson(server.state),
-        },
-    ],
-  });
-}
-
-Map<String, Object?> _mcpServerStateJson(
-  McpServerState state,
-) => switch (state) {
-  McpDisabledState(:final message) => {'kind': 'disabled', 'message': message},
-  McpMissingCredentialState(:final message) => {
-    'kind': 'missingCredential',
-    'message': message,
-  },
-  McpCheckingState(:final message) => {'kind': 'checking', 'message': message},
-  McpAvailableState(:final checkedAt, :final toolCount) => {
-    'kind': 'available',
-    'checkedAt': checkedAt,
-    'toolCount': toolCount,
-  },
-  McpUnavailableState(
-    :final checkedAt,
-    :final code,
-    :final message,
-    :final retryable,
-  ) =>
-    {
-      'kind': 'unavailable',
-      'checkedAt': checkedAt,
-      'code': code,
-      'message': message,
-      'retryable': retryable,
-    },
-};
-
-/// Drops userinfo, query and fragment so only scheme/host/path leave the VM.
-String _redactEndpoint(String endpoint) {
-  final uri = Uri.tryParse(endpoint);
-  if (uri == null) return endpoint;
-  return uri.replace(userInfo: '', query: '', fragment: '').toString();
 }
 
 // ---------------------------------------------------------------------------

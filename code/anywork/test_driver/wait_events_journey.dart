@@ -83,7 +83,9 @@ Future<void> main(List<String> args) async {
   } catch (error, stackTrace) {
     try {
       await driver.close().timeout(const Duration(seconds: 5));
-    } catch (_) {}
+    } catch (error, stack) {
+      stderr.writeln('Driver evidence/cleanup failed: $error\n$stack');
+    }
     await _recordConnectFailure(output, coord, error);
     Error.throwWithStackTrace(error, stackTrace);
   }
@@ -141,6 +143,8 @@ Future<void> main(List<String> args) async {
 }
 
 Future<void> _shutdown(FlutterDriverSession driver) async {
+  Object? failure;
+  StackTrace? failureStack;
   try {
     final result = jsonDecode(
       await driver
@@ -150,11 +154,17 @@ Future<void> _shutdown(FlutterDriverSession driver) async {
     if (result is! Map || result['shutdown'] != 'completed') {
       throw StateError('native GUI shutdown did not report completion');
     }
-  } finally {
-    try {
-      await driver.close().timeout(const Duration(seconds: 5));
-    } catch (_) {}
+  } catch (error, stack) {
+    failure = error;
+    failureStack = stack;
   }
+  try {
+    await driver.close().timeout(const Duration(seconds: 5));
+  } catch (error, stack) {
+    if (failure == null) Error.throwWithStackTrace(error, stack);
+    stderr.writeln('Driver cleanup also failed: $error\n$stack');
+  }
+  if (failure != null) Error.throwWithStackTrace(failure, failureStack!);
 }
 
 Future<void> _recordConnectFailure(
@@ -181,7 +191,9 @@ Future<void> _recordConnectFailure(
     await File(
       '${output.path}/wait-events-summary.json',
     ).writeAsString('${const JsonEncoder.withIndent('  ').convert(summary)}\n');
-  } catch (_) {}
+  } catch (error, stack) {
+    stderr.writeln('Driver evidence/cleanup failed: $error\n$stack');
+  }
 }
 
 class WaitEventsJourney {
@@ -293,7 +305,9 @@ class WaitEventsJourney {
   Future<void> captureFailure() async {
     try {
       await capture('failure', tree: true);
-    } catch (_) {}
+    } catch (error, stack) {
+      stderr.writeln('Driver evidence/cleanup failed: $error\n$stack');
+    }
   }
 
   Future<void> _openProject() async {

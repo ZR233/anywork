@@ -5,6 +5,8 @@ use pl_protocol::{InteractionRequest, InteractionResolution, InteractionStatus};
 #[derive(Debug, thiserror::Error)]
 pub enum StudioInteractionError {
     #[error(transparent)]
+    Response(#[from] pl_protocol::studio::StudioError),
+    #[error(transparent)]
     Key(#[from] super::InteractionKeyError),
     #[error(transparent)]
     Permission(#[from] super::PermissionProjectionError),
@@ -14,6 +16,33 @@ pub enum StudioInteractionError {
     User(#[from] super::UserInteractionError),
     #[error("interaction identity is missing, ambiguous or incompatible with the response")]
     Identity,
+}
+
+/// Validates the frozen UI revision before either returning a terminal fact or entering core CAS.
+pub(crate) fn validate_interaction_response(
+    current: &InteractionRequest,
+    expected_revision: u64,
+    response: &InteractionResolution,
+) -> Result<(), pl_protocol::studio::StudioError> {
+    use pl_protocol::studio::{StudioError, StudioErrorCode};
+    let pending = current.status() == InteractionStatus::Pending;
+    if !pending && current.resolution().as_ref() != Some(response) {
+        return Err(StudioError::new(
+            StudioErrorCode::Conflict,
+            "The interaction already has an incompatible terminal decision",
+            false,
+        ));
+    }
+    let revision_matches = current.revision == expected_revision
+        || (!pending && expected_revision.checked_add(1) == Some(current.revision));
+    if !revision_matches {
+        return Err(StudioError::new(
+            StudioErrorCode::StaleRevision,
+            "The interaction changed after the response was prepared",
+            true,
+        ));
+    }
+    Ok(())
 }
 
 /// Projects one interaction from live or cold replay facts without activating execution.
@@ -77,18 +106,16 @@ impl StudioThreadAssembler {
     pub async fn resolve_product_interaction(
         &self,
         wire_id: &str,
+        expected_revision: u64,
         operation_id: &str,
         response: InteractionResolution,
     ) -> Result<InteractionRequest, StudioInteractionError> {
         let current = self
             .read_product_interaction(wire_id)?
             .ok_or(StudioInteractionError::Identity)?;
+        validate_interaction_response(&current, expected_revision, &response)?;
         if current.status() != InteractionStatus::Pending {
-            return if current.resolution().as_ref() == Some(&response) {
-                Ok(current)
-            } else {
-                Err(StudioInteractionError::Identity)
-            };
+            return Ok(current);
         }
         let operation_id = operation_id.to_owned();
         let resolved_at = crate::studio::unix_seconds();
@@ -101,7 +128,7 @@ impl StudioThreadAssembler {
                         &current.scope.thread_id,
                         pl_protocol::ResolveToolApproval {
                             interaction_id: wire_id.into(),
-                            expected_revision: current.revision,
+                            expected_revision,
                             operation_id,
                             resolved_at,
                             decision: response.decision,
@@ -115,7 +142,7 @@ impl StudioThreadAssembler {
             {
                 let command = pl_protocol::ResolveUserInput {
                     interaction_id: wire_id.into(),
-                    expected_revision: current.revision,
+                    expected_revision,
                     operation_id,
                     resolved_at,
                     answers: response.answers,

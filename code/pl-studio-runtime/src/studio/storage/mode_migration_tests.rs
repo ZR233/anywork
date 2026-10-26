@@ -2684,10 +2684,35 @@ async fn cold_child_open_and_parent_recovery_prepare_checkpoint_envelopes() -> R
             runtime.subscribe_thread(pl_protocol::ThreadSubscriptionRequest {
                 thread_id: root.id.clone(),
             }),
-            runtime.read_child_interactions(&root.id),
+            runtime.open_thread_execution(
+                root.id.clone(),
+                pl_protocol::thread_facets::identity::ThreadObservationMode::Live,
+            ),
         );
         let mut subscription = subscription?;
-        interactions?;
+        let execution = interactions?;
+        execution.claim()?;
+        loop {
+            use crate::thread_execution::DeliveryStep;
+            match execution.send_next(|frame| {
+                if !matches!(frame, pl_protocol::thread_facets::execution::ExecutionFrame::Data { .. }) {
+                    return Err(pl_protocol::studio::StudioError::invalid_argument(
+                        "missing hosted execution baseline",
+                    ));
+                }
+                Ok(())
+            })? {
+                DeliveryStep::Waiting => execution.ready().await,
+                DeliveryStep::Data => break,
+                DeliveryStep::Terminal => anyhow::bail!("execution source ended before its baseline"),
+            }
+        }
+        execution.request_close();
+        let report = execution.close().await;
+        anyhow::ensure!(
+            matches!(report.outcome, pl_protocol::studio::FeedCloseOutcome::Clean),
+            "execution feed did not close"
+        );
         anyhow::ensure!(
             subscription.recv().await?.is_some(),
             "missing root baseline"
@@ -3399,10 +3424,15 @@ async fn shared_history_checkpoint_waits_for_identity_and_keeps_cold_reads_empty
             .await
             .expect_err("损坏 identity 必须失败闭锁");
     assert!(
-        error
-            .to_string()
-            .contains("history database identity row is missing"),
-        "{error}"
+        matches!(
+            error.downcast_ref::<crate::studio::HistoryReadFailure>(),
+            Some(crate::studio::HistoryReadFailure::Protocol)
+        ),
+        "{error:#}"
+    );
+    assert!(
+        format!("{error:#}").contains("history database identity row is missing"),
+        "{error:#}"
     );
     Ok(())
 }
@@ -3531,8 +3561,13 @@ async fn studio_databases_adopt_current_files_and_refuse_future_writes() -> Resu
     use crate::studio::{StudioStore, paths::StudioPaths, storage::calls::CallsStore};
     use sea_orm::{DatabaseBackend, Statement};
     for family in ["product", "history", "calls"] {
-        for fault in ["format", "migration", "missing_table", "checkpoint"] {
+        for fault in [
+            "format", "migration", "missing_table", "checkpoint", "trigger", "view", "unversioned_view",
+        ] {
             if fault == "checkpoint" && family != "history" {
+                continue;
+            }
+            if matches!(fault, "trigger" | "view" | "unversioned_view") && family != "product" {
                 continue;
             }
             let directory = tempfile::tempdir()?;
@@ -3581,6 +3616,22 @@ async fn studio_databases_adopt_current_files_and_refuse_future_writes() -> Resu
                     _ => "DROP TABLE seaql_migrations; DROP TABLE history_items",
                 })
                 .await?;
+            } else if fault == "trigger" {
+                db.execute_unprepared(
+                    "DELETE FROM seaql_migrations;
+                     CREATE TRIGGER unexpected_ledger_write AFTER INSERT ON seaql_migrations
+                     BEGIN DELETE FROM studio_objects; END;",
+                ).await?;
+            } else if fault == "view" {
+                db.execute_unprepared(
+                    "DROP TABLE seaql_migrations; CREATE VIEW unexpected_view AS SELECT id FROM threads",
+                ).await?;
+            } else if fault == "unversioned_view" {
+                db.execute_unprepared(
+                    "DROP TABLE seaql_migrations; DROP TABLE agent_evaluations; DROP TABLE threads;
+                     DROP TABLE studio_objects; DROP TABLE app_settings; DROP TABLE projects;
+                     CREATE VIEW unexpected_view AS SELECT 1 AS retained; PRAGMA user_version=0;",
+                ).await?;
             } else if fault == "checkpoint" {
                 let mut checkpoint =
                     ThreadCheckpoint::capture("adoption".into(), 0, ThreadSnapshot::default());

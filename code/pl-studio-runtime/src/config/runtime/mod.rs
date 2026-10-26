@@ -1,6 +1,18 @@
 mod catalog;
+mod configuration_projection;
 mod mode_definitions;
+mod model_projection;
+mod profile_commands;
+pub(crate) use configuration_projection::{
+    ConfigurationCaptureFailure, ConfigurationMaterial, ConfigurationPair, ConfigurationSnapshot,
+    ConfigurationSource, ConfigurationStatusMaterial,
+};
 pub(crate) use mode_definitions::ModeDefinitionCommandOutcome;
+pub(crate) use model_projection::{
+    ModelCaptureFailure, ModelCatalogMaterial, ModelCatalogSource, ModelSourceStatusFailure,
+    ModelSourceStatusMaterial, ModelsSnapshot,
+};
+pub(crate) use profile_commands::ProfileMutationFailure;
 
 use std::sync::{Arc, Mutex, RwLock};
 
@@ -8,6 +20,7 @@ use crate::studio::unix_seconds;
 use crate::{PureError, Result};
 
 use super::model_catalog::{self, Observation};
+use super::{AgentProfilesEvidence, AgentProfilesPublication, ProfilesSource};
 use super::{AgentProfilesResource, AgentProfilesSnapshot, ConfigStore, StudioConfig};
 use crate::mode::ThreadModeManager;
 use pl_model::config::AccountId;
@@ -24,6 +37,7 @@ pub struct ConfigRuntime {
     command_lock: Arc<Mutex<()>>,
     state: Arc<RwLock<RuntimeState>>,
     catalog_updates: tokio::sync::broadcast::Sender<CatalogChange>,
+    projection_updates: tokio::sync::watch::Sender<pl_protocol::studio::ConfigProjectionStamp>,
     /// canonical Settings 提交的同步观察者（当前由 ACP 身份 owner 使用）。
     ///
     /// 配置 owner 强持有该观察者，观察者自身只以 `Weak` 引用运行时 owner，因此不会形成
@@ -41,24 +55,72 @@ struct RuntimeState {
     desired: StudioConfig,
     snapshot: ConfigRuntimeSnapshot,
     catalog: ModelCatalogRuntimeSnapshot,
+    models_status: model_projection::ModelSourceMetadata,
     observations: BTreeMap<AccountId, Observation>,
+    models_sources: BTreeMap<String, std::sync::Weak<ModelCatalogSource>>,
+    configuration_sources: BTreeMap<String, std::sync::Weak<ConfigurationSource>>,
+    configuration_status: configuration_projection::ConfigurationMetadata,
+    /// 与 `snapshot.revision` 严格相符的 ACP 目录捕获值。
+    ///
+    /// 只保存 Settings 提交观察边界取得的不可变值；配置所有者不管理认证任务，也不分配连接代次。
+    acp_directory: Option<AcpDirectoryCapture>,
     closing: bool,
+}
+
+/// 一次 Settings 提交观察捕获的 ACP 目录事实。
+///
+/// 失败保留类型化诊断：来源未就绪或投影与设置版本不符都显式可见，绝不用空列表或零连接代次补齐。
+#[derive(Clone)]
+struct AcpDirectoryCapture {
+    settings_revision: u64,
+    accounts: std::result::Result<
+        Arc<[pl_protocol::studio::AcpAccountSettings]>,
+        Arc<pl_protocol::studio::StudioError>,
+    >,
+}
+
+/// 一次 Settings 提交观察返回的不可变 ACP 目录投影。
+pub(crate) struct SettingsCommitProjection {
+    pub(crate) settings_revision: u64,
+    pub(crate) accounts: Arc<[pl_protocol::studio::AcpAccountSettings]>,
 }
 
 /// canonical Settings 提交的同步观察者。
 ///
-/// 在 Settings command 锁内、状态发布之后被调用：实现必须是同步、非阻塞的，不得等待 IO、
+/// 在 Settings command 锁内、配置材料捕获之前被调用：实现必须是同步、非阻塞的，不得等待 IO、
 /// 用户输入或进程退出，也不得重入配置 owner。它把"已提交的 canonical revision"交给需要与该
-/// revision 严格对齐的 owner（例如 ACP 接入身份），因此同一 revision 的读取与准入不会与提交
-/// 交错。
+/// revision 严格对齐的 owner（例如 ACP 接入身份），并回传同一 revision 的不可变目录投影，
+/// 因此同一 revision 的身份同步、目录捕获与配置材料发布不会与提交交错。
 pub(crate) trait SettingsCommitObserver: Send + Sync {
-    /// 已提交的 canonical 设置 revision 与其内容。
-    fn settings_committed(&self, revision: u64, config: &StudioConfig);
+    /// 已提交的 canonical 设置 revision 与其内容；返回同一 revision 的不可变 ACP 目录投影。
+    ///
+    /// 在配置材料捕获**之前**调用：实现同步 ACP 身份并返回该 revision 的目录，调用方随后才在
+    /// 原状态发布边界采用配置材料，因此不存在"已发布配置 + 旧目录"的窗口。实现不得 I/O、
+    /// await 或重入配置 owner，也不得在持有配置状态锁时被调用。
+    fn settings_committed(
+        &self,
+        revision: u64,
+        config: &StudioConfig,
+    ) -> std::result::Result<SettingsCommitProjection, pl_protocol::studio::StudioError>;
 }
 
 #[derive(Clone)]
 pub(crate) struct CatalogChange {
     pub affected: Vec<AccountId>,
+}
+
+/// Only notification responsibility escapes the canonical guard, never mutable source inputs.
+struct ProjectionPublication {
+    stamp: pl_protocol::studio::ConfigProjectionStamp,
+    models: Vec<Arc<ModelCatalogSource>>,
+    configuration: Vec<Arc<ConfigurationSource>>,
+    configuration_captures: BTreeMap<
+        String,
+        std::result::Result<Arc<ConfigurationSnapshot>, pl_protocol::studio::StudioError>,
+    >,
+    catalog: ModelCatalogRuntimeSnapshot,
+    catalog_change: Option<CatalogChange>,
+    profiles: Option<AgentProfilesPublication>,
 }
 
 /// 已校验 Studio 配置及其单调 revision。
@@ -94,6 +156,64 @@ pub struct ModelCatalogRuntimeSnapshot {
     pub revision: u64,
     pub updated_at: i64,
     pub catalogs: BTreeMap<AccountId, StudioModelCatalogStatus>,
+}
+
+/// Registration and its compatible baseline are taken under the same canonical state guard.
+pub(crate) struct ConfigProjectionObservation {
+    pub current: (ConfigRuntimeSnapshot, ModelCatalogRuntimeSnapshot),
+    pub stamp: pl_protocol::studio::ConfigProjectionStamp,
+    pub updates: tokio::sync::watch::Receiver<pl_protocol::studio::ConfigProjectionStamp>,
+}
+
+/// Captured before releasing the original command/adopt-scan boundary.
+pub struct ConfigProfileCommandResult {
+    pub configuration: ConfigRuntimeSnapshot,
+    pub catalog: ModelCatalogRuntimeSnapshot,
+    pub profiles: AgentProfilesSnapshot,
+    pub changed: bool,
+    pub(crate) _evidence: ConfigMutationEvidence,
+}
+
+pub struct ConfigReloadResult {
+    pub configuration: ConfigRuntimeSnapshot,
+    pub catalog: ModelCatalogRuntimeSnapshot,
+    pub profiles: AgentProfilesSnapshot,
+    pub(crate) evidence: ConfigMutationEvidence,
+}
+
+/// Exact command publication, captured before releasing the original commit guard. Capturing
+/// can fail after a successful durable save; that failure never changes the commit into rejection.
+pub(crate) struct ConfigMutationEvidence {
+    pub(crate) configuration: ConfigRuntimeSnapshot,
+    pub(crate) catalog: ModelCatalogRuntimeSnapshot,
+    pub(crate) captures: BTreeMap<
+        String,
+        std::result::Result<Arc<ConfigurationSnapshot>, pl_protocol::studio::StudioError>,
+    >,
+    pub(crate) profiles: AgentProfilesEvidence,
+}
+
+/// Private save-stage evidence: Profile calls can distinguish a confirmed save lacking a usable
+/// receipt. The original eight command outcomes conservatively keep their existing Unknown
+/// classification for both durable-error cases; legacy callers receive the original error.
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum ConfigMutationFailure {
+    #[error("Configuration command was rejected before commit")]
+    Preflight(#[source] ConfigRuntimeError),
+    #[error("Configuration command durable outcome is unknown")]
+    Commit(#[source] ConfigRuntimeError),
+    #[error("Configuration save succeeded but no usable state receipt was captured")]
+    Confirmed(#[source] ConfigRuntimeError),
+}
+
+impl From<ConfigMutationFailure> for ConfigRuntimeError {
+    fn from(failure: ConfigMutationFailure) -> Self {
+        match failure {
+            ConfigMutationFailure::Preflight(error)
+            | ConfigMutationFailure::Commit(error)
+            | ConfigMutationFailure::Confirmed(error) => error,
+        }
+    }
 }
 
 /// Parameters resolved from one configuration revision for a newly created product Agent.
@@ -153,6 +273,43 @@ impl From<ConfigRuntimeError> for PureError {
 }
 
 impl ConfigRuntime {
+    /// Builder-only registration using a separately issued Profiles incarnation.
+    pub(crate) fn attach_profiles_source(
+        &self,
+        origin: pl_protocol::products::identity::ProductReadOrigin,
+    ) -> anyhow::Result<Arc<ProfilesSource>> {
+        let _command = self
+            .command_lock
+            .lock()
+            .map_err(|_| config_runtime_poisoned())?;
+        let state = self.state.read().map_err(|_| config_runtime_poisoned())?;
+        if state.closing {
+            return Err(pl_protocol::studio::StudioError::new(
+                pl_protocol::studio::StudioErrorCode::Cancelled,
+                "Configuration owner is closing",
+                false,
+            )
+            .into());
+        }
+        if state
+            .configuration_sources
+            .values()
+            .filter_map(std::sync::Weak::upgrade)
+            .any(|source| source.origin() == &origin)
+            || state
+                .models_sources
+                .values()
+                .filter_map(std::sync::Weak::upgrade)
+                .any(|source| source.origin() == &origin)
+        {
+            return Err(pl_protocol::studio::StudioError::invalid_argument(
+                "Profiles requires its own native-issued incarnation",
+            )
+            .into());
+        }
+        Ok(self.profiles.attach_source(origin)?)
+    }
+
     /// 从磁盘加载并校验初始 desired config。
     pub fn initialize(store: ConfigStore) -> ConfigRuntimeResult<Self> {
         crate::agent::catalog::validate_startup_entries()
@@ -166,18 +323,26 @@ impl ConfigRuntime {
         let profiles = AgentProfilesResource::new(store.paths(), &config);
         let (modes, mode_documents) = mode_definitions::initialize(store.paths())
             .map_err(ConfigRuntimeError::ModeDefinitions)?;
+        let initialized_at = unix_seconds();
         let (catalog_updates, _) = tokio::sync::broadcast::channel(64);
+        let (projection_updates, _) =
+            tokio::sync::watch::channel(pl_protocol::studio::ConfigProjectionStamp {
+                settings_revision: 1,
+                model_catalog_revision: 1,
+                closing: false,
+            });
         Ok(Self {
             store,
             command_lock: Arc::new(Mutex::new(())),
             catalog_updates,
+            projection_updates,
             settings_observer: Arc::new(Mutex::new(None)),
             state: Arc::new(RwLock::new(RuntimeState {
                 desired: desired.clone(),
                 closing: false,
                 snapshot: ConfigRuntimeSnapshot {
                     revision: 1,
-                    updated_at: unix_seconds(),
+                    updated_at: initialized_at,
                     config: config.clone(),
                     usage_query_revisions: config
                         .models
@@ -190,10 +355,26 @@ impl ConfigRuntime {
                 },
                 catalog: ModelCatalogRuntimeSnapshot {
                     revision: 1,
-                    updated_at: unix_seconds(),
+                    updated_at: initialized_at,
                     catalogs: statuses(&observations),
                 },
+                // Successful validated initialization is the sole initial Ready publication.
+                // This counter is not borrowed from either business snapshot's waterline.
+                models_status: Ok(Arc::new(pl_protocol::ObservedResource::ready(
+                    1,
+                    initialized_at,
+                    (),
+                ))),
                 observations,
+                models_sources: BTreeMap::new(),
+                configuration_sources: BTreeMap::new(),
+                configuration_status: Ok(Arc::new(pl_protocol::ObservedResource::ready(
+                    1,
+                    initialized_at,
+                    (),
+                ))),
+                // 尚无 Settings 提交观察者；首次安装观察者后才取得同版本的 ACP 目录捕获值。
+                acp_directory: None,
             })),
             profiles,
             modes,
@@ -217,9 +398,69 @@ impl ConfigRuntime {
         Ok((state.snapshot.clone(), state.catalog.clone()))
     }
 
+    pub(crate) fn observe_projection_sources(
+        &self,
+    ) -> ConfigRuntimeResult<ConfigProjectionObservation> {
+        let state = self.state.read().map_err(|_| config_runtime_poisoned())?;
+        Ok(ConfigProjectionObservation {
+            current: (state.snapshot.clone(), state.catalog.clone()),
+            stamp: projection_stamp(&state),
+            updates: self.projection_updates.subscribe(),
+        })
+    }
+
+    fn publish_projection_locked(&self, state: &mut RuntimeState) -> ProjectionPublication {
+        let models = self.publish_models_locked(state);
+        let configuration = self.publish_configuration_locked(state);
+        let configuration_captures = configuration
+            .iter()
+            .map(|source| (source.origin().owner_epoch.clone(), source.current()))
+            .collect();
+        ProjectionPublication {
+            models,
+            configuration,
+            configuration_captures,
+            catalog: state.catalog.clone(),
+            stamp: projection_stamp(state),
+            catalog_change: None,
+            profiles: None,
+        }
+    }
+
+    /// Wakers may re-enter this owner; call only after releasing state and command guards.
+    fn notify_projection(&self, publication: ProjectionPublication) {
+        self.projection_updates.send_if_modified(|published| {
+            let next = &publication.stamp;
+            // Another command can publish and notify after our locks are released. A delayed
+            // notification must not roll the retained compatible stamp back to an older pair.
+            if published.settings_revision > next.settings_revision
+                || published.model_catalog_revision > next.model_catalog_revision
+                || (published.closing && !next.closing)
+                || *published == *next
+            {
+                return false;
+            }
+            *published = *next;
+            true
+        });
+        for source in publication.models {
+            source.notify();
+        }
+        for source in publication.configuration {
+            source.notify();
+        }
+        if let Some(profiles) = publication.profiles {
+            profiles.notify();
+        }
+        if let Some(change) = publication.catalog_change {
+            let _ = self.catalog_updates.send(change);
+        }
+    }
+
     /// 安装 Settings 提交观察者，并在同一 command 边界内立即观察当前 canonical 快照。
     ///
     /// 安装与首次观察都在 command 锁内完成，因此不会出现"提交已发生但观察者还没装上"的缺口。
+    /// 观察同时返回当前 revision 的 ACP 目录捕获值，供随后建立的配置材料直接使用。
     pub(crate) fn install_settings_observer(
         &self,
         observer: Arc<dyn SettingsCommitObserver>,
@@ -228,16 +469,60 @@ impl ConfigRuntime {
             .command_lock
             .lock()
             .map_err(|_| config_runtime_poisoned())?;
-        let (revision, desired) = {
+        let snapshot = {
             let state = self.state.read().map_err(|_| config_runtime_poisoned())?;
-            (state.snapshot.revision, state.desired.clone())
+            state.snapshot.clone()
         };
         *self
             .settings_observer
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Arc::clone(&observer));
-        observer.settings_committed(revision, &desired);
+        // 观察者可能同步回调其它 owner；此处不持有配置状态锁。
+        let capture = self.observe_settings_commit(&snapshot);
+        self.state
+            .write()
+            .map_err(|_| config_runtime_poisoned())?
+            .acp_directory = Some(capture);
         Ok(())
+    }
+
+    /// 在当前 command 边界内取得与 `snapshot.revision` 严格相符的 ACP 目录捕获值。
+    ///
+    /// 调用方必须持有 command 锁且不持有配置状态锁。只有观察者在同一 revision 成功返回捕获时
+    /// 才形成目录事实（其中可以就是空列表）；观察者未安装或返回错误都保留显式诊断，绝不以
+    /// canonical 的空集合伪装已确认空目录。
+    fn observe_settings_commit(&self, snapshot: &ConfigRuntimeSnapshot) -> AcpDirectoryCapture {
+        let observer = self
+            .settings_observer
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .cloned();
+        let accounts = match observer {
+            Some(observer) => {
+                match observer.settings_committed(snapshot.revision, snapshot.canonical_config()) {
+                    Ok(projection) if projection.settings_revision == snapshot.revision => {
+                        Ok(projection.accounts)
+                    }
+                    Ok(_) => Err(Arc::new(pl_protocol::studio::StudioError::new(
+                        pl_protocol::studio::StudioErrorCode::Protocol,
+                        "ACP directory projection does not match the committed Settings revision",
+                        false,
+                    ))),
+                    Err(error) => Err(Arc::new(error)),
+                }
+            }
+            // 未安装观察者即来源未就绪：保留显式错误，绝不把"没有观察者"当成已确认空目录。
+            None => Err(Arc::new(pl_protocol::studio::StudioError::new(
+                pl_protocol::studio::StudioErrorCode::Unavailable,
+                "ACP directory projection is not prepared: the settings commit observer is not installed",
+                true,
+            ))),
+        };
+        AcpDirectoryCapture {
+            settings_revision: snapshot.revision,
+            accounts,
+        }
     }
 
     /// 在 Settings command 串行边界内取得 canonical 快照并执行同步 closure。
@@ -272,19 +557,6 @@ impl ConfigRuntime {
         Ok(run(&snapshot, &catalog))
     }
 
-    /// 在 command 锁内同步通知已提交的 canonical revision。
-    fn notify_settings_committed(&self, snapshot: &ConfigRuntimeSnapshot) {
-        let observer = self
-            .settings_observer
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .as_ref()
-            .cloned();
-        if let Some(observer) = observer {
-            observer.settings_committed(snapshot.revision, snapshot.canonical_config());
-        }
-    }
-
     /// Commits an in-memory observation at the same boundary as input invalidation.
     /// The callback must not await, perform IO, or re-enter this config owner.
     pub(crate) fn if_usage_query_current(
@@ -309,6 +581,8 @@ impl ConfigRuntime {
             .map_err(|_| config_runtime_poisoned())
     }
 
+    #[allow(dead_code)]
+    // 保留：关闭/停机诊断事实，报告投影的读取方尚未接回；删除会丢失去噪证据。
     /// Scalar qualification waterline for hot projections; never clones catalog/config payloads.
     pub(crate) fn model_catalog_revision(&self) -> ConfigRuntimeResult<u64> {
         self.state
@@ -444,35 +718,9 @@ impl ConfigRuntime {
         expected_revision: u64,
         profile_id: &str,
         profile: &super::UserAgentProfile,
-    ) -> ConfigRuntimeResult<(ConfigRuntimeSnapshot, bool)> {
-        let _command = self
-            .command_lock
-            .lock()
-            .map_err(|_| config_runtime_poisoned())?;
-        let current = self.read()?;
-        ensure_revision(expected_revision, current.revision)?;
-        let mut state = self.state.write().map_err(|_| config_runtime_poisoned())?;
-        let changed = super::save_user_agent_profile(
-            self.store.paths(),
-            profile_id,
-            profile,
-            &current.config,
-        )?;
-        let next = ConfigRuntimeSnapshot {
-            revision: current.revision.saturating_add(1),
-            updated_at: unix_seconds(),
-            config: current.config,
-            canonical_config: current.canonical_config,
-            usage_query_revisions: current.usage_query_revisions,
-        };
-        state.snapshot = next.clone();
-        drop(state);
-        // 配置命令采用一次新的目录扫描；资源未变化时不提升 revision、不通知观察者。
-        // scan 不持有 state 写锁（与 `update` / `reload_from_disk` 一致）。
-        self.profiles.adopt_scan(self.store.paths(), &next.config);
-        // 同一 command 边界内同步通知身份 owner，随后才释放 command 锁。
-        self.notify_settings_committed(&next);
-        Ok((next, changed))
+    ) -> ConfigRuntimeResult<ConfigProfileCommandResult> {
+        self.save_user_agent_profile_phased(expected_revision, profile_id, profile)
+            .map_err(ConfigRuntimeError::from)
     }
 
     /// 使用 expected revision 原子保存完整 desired config。
@@ -501,31 +749,110 @@ impl ConfigRuntime {
         expected_revision: u64,
         edit: impl FnOnce(&StudioConfig, &StudioConfig) -> Result<StudioConfig>,
     ) -> ConfigRuntimeResult<ConfigRuntimeSnapshot> {
-        let _command = self
+        let command = self
             .command_lock
             .lock()
             .map_err(|_| config_runtime_poisoned())?;
-        let (current, current_catalog) = self.read_with_catalog()?;
-        ensure_revision(expected_revision, current.revision)?;
-        let (desired, observations) = {
-            let state = self.state.read().map_err(|_| config_runtime_poisoned())?;
-            if state.closing {
-                return Err(PureError::ConfigError("settings owner is closing".into()).into());
-            }
-            (state.desired.clone(), state.observations.clone())
+        let (snapshot, publication, _) =
+            self.update_with_effective_locked(expected_revision, edit)?;
+        drop(command);
+        self.notify_projection(publication);
+        Ok(snapshot)
+    }
+
+    pub(crate) fn update_evidence(
+        &self,
+        expected_revision: u64,
+        edit: impl FnOnce(&StudioConfig) -> Result<StudioConfig>,
+    ) -> anyhow::Result<ConfigMutationEvidence> {
+        self.update_with_effective_evidence(expected_revision, |desired, _| edit(desired))
+    }
+
+    pub(crate) fn replace_evidence(
+        &self,
+        expected_revision: u64,
+        config: StudioConfig,
+    ) -> anyhow::Result<ConfigMutationEvidence> {
+        self.update_evidence(expected_revision, |_| Ok(config))
+    }
+
+    pub(crate) fn update_with_effective_evidence(
+        &self,
+        expected_revision: u64,
+        edit: impl FnOnce(&StudioConfig, &StudioConfig) -> Result<StudioConfig>,
+    ) -> anyhow::Result<ConfigMutationEvidence> {
+        let _command = self
+            .command_lock
+            .lock()
+            .map_err(|_| ConfigMutationFailure::Preflight(config_runtime_poisoned()))?;
+        let (snapshot, publication, profiles) =
+            self.update_with_effective_locked(expected_revision, edit)?;
+        let evidence = ConfigMutationEvidence {
+            configuration: snapshot,
+            catalog: publication.catalog.clone(),
+            captures: publication.configuration_captures.clone(),
+            profiles,
         };
-        let mut next_config = edit(&desired, &current.config)?;
-        for account in next_config.models.accounts.values_mut() {
-            account.clear_model_catalog_overlay();
-        }
-        let next_observations =
-            model_catalog::reconcile(self.store.paths(), &next_config, &observations)?;
-        let effective = effective_runtime_config(&next_config, &next_observations)?;
-        effective.validate_declarations()?;
-        validate_changed_selections(&desired, &effective)?;
+        drop(_command);
+        self.notify_projection(publication);
+        Ok(evidence)
+    }
+
+    fn update_with_effective_locked(
+        &self,
+        expected_revision: u64,
+        edit: impl FnOnce(&StudioConfig, &StudioConfig) -> Result<StudioConfig>,
+    ) -> std::result::Result<
+        (
+            ConfigRuntimeSnapshot,
+            ProjectionPublication,
+            AgentProfilesEvidence,
+        ),
+        ConfigMutationFailure,
+    > {
+        let prepared = (|| -> ConfigRuntimeResult<_> {
+            let (current, current_catalog) = self.read_with_catalog()?;
+            ensure_revision(expected_revision, current.revision)?;
+            let (desired, observations) = {
+                let state = self.state.read().map_err(|_| config_runtime_poisoned())?;
+                if state.closing {
+                    return Err(PureError::ConfigError("settings owner is closing".into()).into());
+                }
+                (state.desired.clone(), state.observations.clone())
+            };
+            let mut next_config = edit(&desired, &current.config)?;
+            for account in next_config.models.accounts.values_mut() {
+                account.clear_model_catalog_overlay();
+            }
+            let next_observations =
+                model_catalog::reconcile(self.store.paths(), &next_config, &observations)?;
+            let effective = effective_runtime_config(&next_config, &next_observations)?;
+            effective.validate_declarations()?;
+            validate_changed_selections(&desired, &effective)?;
+            Ok((
+                current,
+                current_catalog,
+                desired,
+                observations,
+                next_config,
+                next_observations,
+                effective,
+            ))
+        })();
+        let (
+            current,
+            current_catalog,
+            desired,
+            observations,
+            next_config,
+            next_observations,
+            effective,
+        ) = prepared.map_err(ConfigMutationFailure::Preflight)?;
 
         // 文件和 credential IO 不持有 state lock；command lock 只负责串行化 Settings 命令。
-        self.store.save(&next_config)?;
+        self.store
+            .save(&next_config)
+            .map_err(|error| ConfigMutationFailure::Commit(error.into()))?;
 
         let next = ConfigRuntimeSnapshot {
             revision: current.revision.saturating_add(1),
@@ -534,8 +861,15 @@ impl ConfigRuntime {
             canonical_config: next_config.clone(),
             usage_query_revisions: next_usage_query_revisions(&current, &effective),
         };
+        // 目录投影必须在配置材料捕获之前取得：持久化已确定，观察与发布失败都不改动提交结论，
+        // 只作为提交后的观察失败保留类型化诊断。此处不持有配置状态锁。
+        let acp_directory = self.observe_settings_commit(&next);
         let catalog_changed = statuses(&next_observations) != current_catalog.catalogs
             || effective.models.accounts != current.config.models.accounts;
+        let models_inputs_changed = catalog_changed
+            || next_config.models != desired.models
+            || next_config.web_search != desired.web_search
+            || next_config.deepseek_web_search != desired.deepseek_web_search;
         let catalog = ModelCatalogRuntimeSnapshot {
             revision: current_catalog
                 .revision
@@ -544,30 +878,59 @@ impl ConfigRuntime {
             catalogs: statuses(&next_observations),
         };
         invalidate_observations(&observations, &next_observations);
-        let mut state = self.state.write().map_err(|_| config_runtime_poisoned())?;
+        let mut state = self
+            .state
+            .write()
+            .map_err(|_| ConfigMutationFailure::Confirmed(config_runtime_poisoned()))?;
+        state.acp_directory = Some(acp_directory);
         state.desired = next_config;
         state.observations = next_observations;
         state.snapshot = next.clone();
         state.catalog = catalog;
+        if models_inputs_changed {
+            let observed_at = state.catalog.updated_at;
+            model_projection::observe_source(&mut state.models_status, observed_at);
+        }
+        let publication = self.publish_projection_locked(&mut state);
         drop(state);
-        // 配置命令采用一次新的目录扫描；资源未变化时不提升 revision、不通知观察者。
-        self.profiles.adopt_scan(self.store.paths(), &next.config);
-        // 同一 command 边界内同步通知身份 owner，随后才释放 command 锁。
-        self.notify_settings_committed(&next);
-        Ok(next)
+        // Capture the original adoption, not a later read/watch. Notify after command unlock.
+        let adopted = self
+            .profiles
+            .adopt_scan_captured(self.store.paths(), &next.config);
+        let evidence = adopted.evidence.clone();
+        let mut publication = publication;
+        publication.profiles = Some(adopted);
+        Ok((next, publication, evidence))
     }
 
     /// 显式从磁盘重新加载配置；普通 read 永不调用此方法。
     pub fn reload_from_disk(
         &self,
         expected_revision: u64,
-    ) -> ConfigRuntimeResult<ConfigRuntimeSnapshot> {
+    ) -> ConfigRuntimeResult<ConfigReloadResult> {
         let _command = self
             .command_lock
             .lock()
             .map_err(|_| config_runtime_poisoned())?;
         let (current, current_catalog) = self.read_with_catalog()?;
         ensure_revision(expected_revision, current.revision)?;
+        if self
+            .state
+            .read()
+            .map_err(|_| config_runtime_poisoned())?
+            .closing
+        {
+            return Err(PureError::ConfigError("settings owner is closing".into()).into());
+        }
+        // Explicit reload must not adopt using a saturated, reused business watermark.
+        let settings_revision = current
+            .revision
+            .checked_add(1)
+            .ok_or_else(|| PureError::ConfigError("settings revision is exhausted".into()))?;
+        let catalog_revision = current_catalog
+            .revision
+            .checked_add(1)
+            .ok_or_else(|| PureError::ConfigError("model catalog revision is exhausted".into()))?;
         let desired = self.store.load_or_default()?;
         let observations = self
             .state
@@ -581,29 +944,96 @@ impl ConfigRuntime {
         config.validate_declarations()?;
         super::AgentProfileCatalog::validate_for_startup(self.store.paths())?;
         let next = ConfigRuntimeSnapshot {
-            revision: current.revision.saturating_add(1),
+            revision: settings_revision,
             updated_at: unix_seconds(),
             config: config.clone(),
             canonical_config: desired.clone(),
             usage_query_revisions: next_usage_query_revisions(&current, &config),
         };
+        // 重载同样先取得同版本的不可变 ACP 目录，再在原状态发布边界采用配置材料。
+        let acp_directory = self.observe_settings_commit(&next);
         let catalog = ModelCatalogRuntimeSnapshot {
-            revision: current_catalog.revision.saturating_add(1),
+            revision: catalog_revision,
             updated_at: unix_seconds(),
             catalogs: statuses(&next_observations),
         };
         invalidate_observations(&observations, &next_observations);
         let mut state = self.state.write().map_err(|_| config_runtime_poisoned())?;
+        state.acp_directory = Some(acp_directory);
         state.desired = desired;
         state.observations = next_observations;
         state.snapshot = next.clone();
         state.catalog = catalog;
+        let observed_at = state.catalog.updated_at;
+        model_projection::observe_source(&mut state.models_status, observed_at);
+        let publication = self.publish_projection_locked(&mut state);
+        let catalog = state.catalog.clone();
         drop(state);
         // 显式重扫；目录未变化时不提升 revision。
-        self.profiles.adopt_scan(self.store.paths(), &next.config);
-        // 同一 command 边界内同步通知身份 owner，随后才释放 command 锁。
-        self.notify_settings_committed(&next);
-        Ok(next)
+        let adopted = self
+            .profiles
+            .adopt_scan_captured(self.store.paths(), &next.config);
+        let result = ConfigReloadResult {
+            evidence: ConfigMutationEvidence {
+                configuration: next.clone(),
+                catalog: catalog.clone(),
+                captures: publication.configuration_captures.clone(),
+                profiles: adopted.evidence.clone(),
+            },
+            configuration: next,
+            catalog,
+            profiles: adopted.evidence.snapshot.clone(),
+        };
+        drop(_command);
+        adopted.notify();
+        self.notify_projection(publication);
+        Ok(result)
+    }
+
+    pub(crate) fn set_system_agent_enabled(
+        &self,
+        expected_revision: u64,
+        profile_id: &str,
+        enabled: bool,
+    ) -> ConfigRuntimeResult<ConfigProfileCommandResult> {
+        self.set_system_agent_enabled_phased(expected_revision, profile_id, enabled)
+            .map_err(ConfigRuntimeError::from)
+    }
+}
+
+/// 与 `revision` 严格相符的 ACP 目录事实。
+///
+/// 只有同一 revision 的成功捕获才可交付（其行集可以就是空列表，即已确认空目录）；捕获值缺失、
+/// 跨版本或捕获失败一律返回显式类型化失败，绝不补空列表或零连接代次。
+fn acp_directory(
+    revision: u64,
+    capture: Option<&AcpDirectoryCapture>,
+) -> std::result::Result<
+    Arc<[pl_protocol::studio::AcpAccountSettings]>,
+    Arc<pl_protocol::studio::StudioError>,
+> {
+    // 先要求匹配的同 revision 捕获并传播其错误；只有成功捕获（其中可以就是空列表）才构成该
+    // 版本的目录事实。canonical 的空集合不能替代捕获，否则会把"来源未就绪/失败"伪造成已知空。
+    match capture {
+        Some(capture) if capture.settings_revision == revision => capture.accounts.clone(),
+        Some(_) => Err(Arc::new(pl_protocol::studio::StudioError::new(
+            pl_protocol::studio::StudioErrorCode::Protocol,
+            "ACP directory projection does not match the committed Settings revision",
+            false,
+        ))),
+        None => Err(Arc::new(pl_protocol::studio::StudioError::new(
+            pl_protocol::studio::StudioErrorCode::Unavailable,
+            "ACP directory projection is not prepared for this Settings revision",
+            true,
+        ))),
+    }
+}
+
+fn projection_stamp(state: &RuntimeState) -> pl_protocol::studio::ConfigProjectionStamp {
+    pl_protocol::studio::ConfigProjectionStamp {
+        settings_revision: state.snapshot.revision,
+        model_catalog_revision: state.catalog.revision,
+        closing: state.closing,
     }
 }
 

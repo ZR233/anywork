@@ -352,7 +352,8 @@ pub struct BridgeSetBotTrustedChatRequest {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BridgeBotsCommandReply {
-    pub snapshot: BridgeBotsStateSnapshot,
+    pub bot: Option<BridgeBotSnapshot>,
+    pub registration: Option<BridgeBotRegistrationAttempt>,
     pub receipt: BridgeStudioCommandReceipt,
     pub stamp: Option<BridgeResourceStamp>,
 }

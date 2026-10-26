@@ -371,14 +371,25 @@ pub(super) enum PublishRejection {
 pub(super) struct AcpInstallInner {
     pub(super) store: crate::studio::StudioStore,
     events: ProductEventBus,
+    /// Feed 身份来源：owner epoch 与观测代次，与 `resource_stamp("acp-install", revision)` 同源。
+    origin: pl_protocol::products::identity::ProductReadOrigin,
+    /// Feed 唤醒通道：只表示 canonical 快照已变化；事实仍在 `registry`。
+    updates: tokio::sync::watch::Sender<()>,
     registry: Mutex<Registry>,
 }
 
 impl AcpInstallInner {
-    pub(super) fn new(store: crate::studio::StudioStore, events: ProductEventBus) -> Self {
+    pub(super) fn new(
+        store: crate::studio::StudioStore,
+        events: ProductEventBus,
+        origin: pl_protocol::products::identity::ProductReadOrigin,
+    ) -> Self {
+        let (updates, _) = tokio::sync::watch::channel(());
         Self {
             store,
             events,
+            origin,
+            updates,
             registry: Mutex::new(Registry::default()),
         }
     }
@@ -392,6 +403,44 @@ impl AcpInstallInner {
             .emit(crate::StudioProductEventKind::AcpInstallStateChanged(
                 Box::new(snapshot),
             ));
+        // 同一次 canonical 发布同时唤醒 typed feed；不产生第二份事实或第二个 revision。
+        self.updates.send_replace(());
+    }
+
+    pub(super) fn origin(&self) -> &pl_protocol::products::identity::ProductReadOrigin {
+        &self.origin
+    }
+
+    /// Feed 打开：当前 canonical 快照与后续变更唤醒；关闭闸门封闭后不再授予新 feed。
+    pub(super) fn observe(
+        &self,
+    ) -> Result<
+        (AcpInstallSnapshot, tokio::sync::watch::Receiver<()>),
+        pl_protocol::studio::StudioError,
+    > {
+        let updates = self.updates.subscribe();
+        let registry = self.lock();
+        if registry.closed {
+            return Err(feed_closed());
+        }
+        Ok((registry.snapshot(), updates))
+    }
+
+    /// Feed 每次发送前读取的当前快照；封闭后拒绝，迟到的读取不会复活 feed。
+    pub(super) fn current(&self) -> Result<AcpInstallSnapshot, pl_protocol::studio::StudioError> {
+        let registry = self.lock();
+        if registry.closed {
+            return Err(feed_closed());
+        }
+        Ok(registry.snapshot())
+    }
+
+    pub(super) fn ensure_open(&self) -> Result<(), pl_protocol::studio::StudioError> {
+        if self.lock().closed {
+            Err(feed_closed())
+        } else {
+            Ok(())
+        }
     }
 
     /// 在当前操作代次内应用一次状态转换；任何代次不匹配都是迟到结果，直接丢弃。
@@ -731,4 +780,12 @@ impl AcpInstallInner {
     pub(super) fn residue_providers(&self) -> Vec<AcpProvider> {
         self.lock().residue.keys().copied().collect()
     }
+}
+
+fn feed_closed() -> pl_protocol::studio::StudioError {
+    pl_protocol::studio::StudioError::new(
+        pl_protocol::studio::StudioErrorCode::Cancelled,
+        "Original acpInstall owner is closing or replaced",
+        false,
+    )
 }

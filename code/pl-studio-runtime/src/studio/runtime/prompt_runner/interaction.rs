@@ -2,7 +2,9 @@
 
 use anyhow::{Context, Result};
 
+use crate::studio::storage::history::HistoryReadFailure;
 use crate::{InteractionRequest, InteractionResolution, InteractionStatus};
+use pl_protocol::studio::{StudioError, StudioErrorCode};
 
 use super::super::{StudioResolveInteractionResponse, StudioRuntime};
 use super::{UserThreadAction, ensure_thread_not_archived};
@@ -58,6 +60,11 @@ impl StudioRuntime {
         // An archived Thread is read-only. The check runs before every bypass below, so a stored
         // terminal decision cannot be replayed into a Thread the user has archived.
         ensure_thread_not_archived(&owner, UserThreadAction::Respond)?;
+        crate::thread_assembler::validate_interaction_response(
+            &interaction,
+            expected_revision,
+            &resolution,
+        )?;
         // A Plan confirmation is a main-session capability. A child record stays a diagnostic and is
         // rejected here, before every bypass below — a terminal child Plan record must not be able to
         // notify the host either.
@@ -72,10 +79,7 @@ impl StudioRuntime {
                 )
                 .with_reason(
                     pl_protocol::studio::StudioErrorReason::InteractionNotHosted,
-                    serde_json::json!({
-                        "interactionId": interaction.interaction_id,
-                        "interactionThreadId": thread_id,
-                    }),
+                    pl_protocol::studio::ControlFailureFacts::ChildInteraction { interaction_id: interaction.interaction_id .to_owned(), interaction_thread_id: thread_id .to_owned() },
                 ),
             ));
         }
@@ -93,11 +97,7 @@ impl StudioRuntime {
                 )
                 .with_reason(
                     pl_protocol::studio::StudioErrorReason::StaleInteraction,
-                    serde_json::json!({
-                        "interactionId": interaction.interaction_id,
-                        "expectedRevision": expected_revision,
-                        "currentRevision": interaction.revision,
-                    }),
+                    pl_protocol::studio::ControlFailureFacts::InteractionRevision { interaction_id: interaction.interaction_id .to_owned(), expected_revision: expected_revision, current_revision: interaction.revision },
                 ),
             ));
         }
@@ -117,10 +117,7 @@ impl StudioRuntime {
                     )
                     .with_reason(
                         pl_protocol::studio::StudioErrorReason::StaleInteraction,
-                        serde_json::json!({
-                            "interactionId": interaction.interaction_id,
-                            "currentRevision": interaction.revision,
-                        }),
+                        pl_protocol::studio::ControlFailureFacts::InteractionTerminal { interaction_id: interaction.interaction_id .to_owned(), current_revision: interaction.revision },
                     ),
                 ));
             }
@@ -167,7 +164,7 @@ impl StudioRuntime {
         let user_answered = matches!(resolution, InteractionResolution::UserInput(_));
         let interaction = self
             .threads
-            .resolve_product_interaction(&interaction_id, &operation_id, resolution)
+            .resolve_product_interaction(&interaction_id, expected_revision, &operation_id, resolution)
             .await
             .map_err(interaction_error)?;
         if user_answered {
@@ -440,10 +437,7 @@ impl StudioRuntime {
             )
             .with_reason(
                 pl_protocol::studio::StudioErrorReason::StaleInteraction,
-                serde_json::json!({
-                    "operationId": operation_id,
-                    "interactionId": format!("{thread_id}:{other}"),
-                }),
+                pl_protocol::studio::ControlFailureFacts::InteractionOperation { operation_id: operation_id .to_owned(), interaction_id: format!("{thread_id}:{other}") },
             ),
         ))
     }
@@ -560,7 +554,7 @@ impl StudioRuntime {
                 )
                 .with_reason(
                     StudioErrorReason::InteractionNotHosted,
-                    serde_json::json!({ "hostThreadId": host.id, "hostIsChild": true }),
+                    pl_protocol::studio::ControlFailureFacts::ChildHost { host_thread_id: host.id .to_owned(), host_is_child: true },
                 ),
             ));
         }
@@ -576,6 +570,7 @@ impl StudioRuntime {
     ) -> Result<crate::studio::ThreadRecord> {
         use pl_protocol::studio::{StudioError, StudioErrorCode, StudioErrorReason};
         let host = self.ensure_root_host(host_thread_id).await?;
+        ensure_thread_not_archived(&host, UserThreadAction::Respond)?;
         let owner = self.read_owned_thread(&interaction.scope.thread_id).await?;
         if owner.id != host.id && owner.parent_thread_id.as_deref() != Some(host.id.as_str()) {
             return Err(anyhow::Error::new(
@@ -586,10 +581,7 @@ impl StudioRuntime {
                 )
                 .with_reason(
                     StudioErrorReason::InteractionNotHosted,
-                    serde_json::json!({
-                        "hostThreadId": host.id,
-                        "interactionThreadId": owner.id,
-                    }),
+                    pl_protocol::studio::ControlFailureFacts::InteractionHost { host_thread_id: host.id .to_owned(), interaction_thread_id: owner.id .to_owned() },
                 ),
             ));
         }
@@ -640,29 +632,53 @@ impl StudioRuntime {
             else {
                 continue;
             };
-            let mut state = pl_core::thread::ThreadSnapshot::default();
-            match receipt.kind.as_str() {
-                "interaction" => {
-                    state
-                        .interactions
-                        .insert(local_id.to_owned(), serde_json::from_str(&receipt.payload)?);
-                }
-                "permission" => {
-                    state
-                        .permissions
-                        .insert(local_id.to_owned(), serde_json::from_str(&receipt.payload)?);
-                }
-                _ => continue,
-            }
-            let projected =
-                crate::thread_assembler::project_thread_interaction(thread_id, local_id, &state)?
-                    .context("durable interaction receipt cannot be projected")?;
+            anyhow::ensure!(
+                receipt.kind == kind,
+                StudioError::new(
+                    StudioErrorCode::Protocol,
+                    "Durable interaction receipt kind is inconsistent",
+                    false
+                )
+            );
+            let projected = Self::project_interaction_receipt(thread_id, local_id, receipt)
+                .context(HistoryReadFailure::Protocol)?;
             return Ok(Some(InteractionForResolve {
                 interaction: projected,
                 durable: true,
             }));
         }
         Ok(None)
+    }
+
+    pub(in crate::studio::runtime) fn project_interaction_receipt(
+        thread_id: &str,
+        local_id: &str,
+        receipt: crate::studio::storage::history::FactReceipt,
+    ) -> Result<InteractionRequest> {
+        let mut state = pl_core::thread::ThreadSnapshot::default();
+        match receipt.kind.as_str() {
+            "interaction" => {
+                state
+                    .interactions
+                    .insert(local_id.to_owned(), serde_json::from_str(&receipt.payload)?);
+            }
+            "permission" => {
+                state
+                    .permissions
+                    .insert(local_id.to_owned(), serde_json::from_str(&receipt.payload)?);
+            }
+            _ => anyhow::bail!("durable interaction receipt has an incompatible kind"),
+        }
+        let projected =
+            crate::thread_assembler::project_thread_interaction(thread_id, local_id, &state)?
+                .context("durable interaction receipt cannot be projected")?;
+        let (owner, local) =
+            crate::thread_assembler::decode_interaction_key(&projected.interaction_id)?;
+        anyhow::ensure!(
+            owner == thread_id && local == local_id && projected.revision == receipt.revision,
+            "durable interaction receipt has contradictory identity or revision"
+        );
+        Ok(projected)
     }
 
     /// 内存优先读取交互：pending 交互必须来自驻留 actor 的权威快照；
@@ -890,10 +906,7 @@ pub(super) fn child_decision_not_saved(interaction: &InteractionRequest) -> anyh
         )
         .with_reason(
             pl_protocol::studio::StudioErrorReason::InteractionNotHosted,
-            serde_json::json!({
-                "interactionId": interaction.interaction_id,
-                "decisionSaved": false,
-            }),
+            pl_protocol::studio::ControlFailureFacts::DecisionDurability { interaction_id: interaction.interaction_id .to_owned(), decision_saved: false },
         ),
     )
 }
@@ -913,10 +926,7 @@ fn unreadable_decision(thread_id: &str, local_id: &str) -> anyhow::Error {
         )
         .with_reason(
             pl_protocol::studio::StudioErrorReason::StaleInteraction,
-            serde_json::json!({
-                "threadId": thread_id,
-                "interactionId": local_id,
-            }),
+            pl_protocol::studio::ControlFailureFacts::UnreadableDecision { thread_id: thread_id .to_owned(), interaction_id: local_id .to_owned() },
         ),
     )
 }
@@ -934,11 +944,7 @@ fn decision_identity_unrecorded(interaction: &InteractionRequest) -> anyhow::Err
         )
         .with_reason(
             pl_protocol::studio::StudioErrorReason::StaleInteraction,
-            serde_json::json!({
-                "interactionId": interaction.interaction_id,
-                "currentRevision": interaction.revision,
-                "operationIdentityRecorded": false,
-            }),
+            pl_protocol::studio::ControlFailureFacts::DecisionIdentity { interaction_id: interaction.interaction_id .to_owned(), current_revision: interaction.revision, operation_identity_recorded: false },
         ),
     )
 }
@@ -1033,7 +1039,7 @@ fn interaction_error(error: crate::thread_assembler::StudioInteractionError) -> 
                 "The interaction identity, revision or kind does not match its record",
                 false,
             )
-            .with_reason(StudioErrorReason::StaleInteraction, serde_json::json!({})),
+            .with_reason(StudioErrorReason::StaleInteraction, pl_protocol::studio::ControlFailureFacts::Unspecified),
         ),
         Source::Plan(crate::thread_assembler::PlanInteractionError::NotRoot) => anyhow::Error::new(
             StudioError::new(
@@ -1043,7 +1049,7 @@ fn interaction_error(error: crate::thread_assembler::StudioInteractionError) -> 
             )
             .with_reason(
                 StudioErrorReason::InteractionNotHosted,
-                serde_json::json!({}),
+                pl_protocol::studio::ControlFailureFacts::Unspecified,
             ),
         ),
         other => anyhow::Error::new(other),

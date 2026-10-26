@@ -1,21 +1,39 @@
 use crate::api::studio::bridge_runtime::active_bridge;
+use crate::api::studio::convert::commands::command_receipt;
 use crate::api::studio::convert::runtime::{
-    bridge_bots_command_reply, bridge_bots_state, bridge_conversation_page,
-    bridge_conversation_thread_reply, bridge_message_page, bridge_send_result,
-    protocol_cancel_registration, protocol_create_thread, protocol_list_conversations,
-    protocol_read_messages, protocol_retry_connection, protocol_save_bot, protocol_send_message,
-    protocol_set_enabled, protocol_set_trusted_chat, protocol_set_trusted_user,
-    protocol_start_registration,
+    bridge_bot_snapshot, bridge_bots_state, bridge_conversation_page,
+    bridge_conversation_thread_reply, bridge_message_page, bridge_registration_attempt,
+    bridge_send_result, protocol_cancel_registration, protocol_create_thread,
+    protocol_list_conversations, protocol_read_messages, protocol_retry_connection,
+    protocol_save_bot, protocol_send_message, protocol_set_enabled, protocol_set_trusted_chat,
+    protocol_set_trusted_user, protocol_start_registration,
 };
 use crate::api::studio::types::{
     BridgeBotConversationPage, BridgeBotConversationThreadReply, BridgeBotMessagePage,
     BridgeBotSendResult, BridgeBotsCommandReply, BridgeBotsStateSnapshot,
     BridgeCancelBotRegistrationRequest, BridgeCreateBotConversationThreadRequest, BridgeError,
-    BridgeListBotConversationsRequest, BridgeReadBotMessagesRequest,
+    BridgeListBotConversationsRequest, BridgeReadBotMessagesRequest, BridgeResourceStamp,
     BridgeRetryBotConnectionRequest, BridgeSaveBotRequest, BridgeSendBotMessageRequest,
     BridgeSetBotEnabledRequest, BridgeSetBotTrustedChatRequest, BridgeSetBotTrustedUserRequest,
     BridgeStartBotRegistrationRequest,
 };
+
+/// Material is exclusively the original command's captured result. This conversion never reads
+/// BotRuntime, a topic baseline, or latest state to guess which bot/attempt was affected.
+fn bridge_bots_command_reply(
+    value: pl_protocol::studio::BotsCommandReply,
+) -> BridgeBotsCommandReply {
+    BridgeBotsCommandReply {
+        receipt: command_receipt(value.receipt),
+        stamp: value.stamp.map(|stamp| BridgeResourceStamp {
+            resource_key: stamp.resource_key,
+            owner_epoch: stamp.owner_epoch,
+            revision: stamp.revision,
+        }),
+        bot: value.bot.map(bridge_bot_snapshot),
+        registration: value.registration.map(bridge_registration_attempt),
+    }
+}
 
 pub async fn read_bots() -> Result<BridgeBotsStateSnapshot, BridgeError> {
     let bridge = active_bridge().await?;

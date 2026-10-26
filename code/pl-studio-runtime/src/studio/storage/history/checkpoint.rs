@@ -8,6 +8,16 @@ use pl_core::{
 };
 use sea_orm::{ConnectionTrait, TransactionTrait};
 
+/// 一次只读快照里取得的恢复判据：checkpoint 有无与历史写入水位。
+///
+/// 两者必须同源：冷启动判定"没有 checkpoint 却已有写入水位"时，绝不把提交前读到的
+/// `None` 与提交后读到的非零水位拼在一起，否则真实提交中的初始化会被误判为损坏。
+pub(crate) struct CheckpointSnapshot {
+    pub(crate) checkpoint: Option<ThreadCheckpoint>,
+    /// 同一快照内的 `history_meta.applied_write_seq`。
+    pub(crate) watermark: u64,
+}
+
 impl HistoryStore {
     /// Reads canonical recovery facts and the latest admitted Turn in one strictly read-only
     /// snapshot, even if a timeline observer still retains this owner's initialized writer.
@@ -56,6 +66,40 @@ impl HistoryStore {
         let result = read(&tx, &self.state.thread_id).await?;
         tx.commit().await?;
         Ok(result)
+    }
+
+    /// One read-only snapshot of the facts a cold load must decide on.
+    ///
+    /// Checkpoint presence, the history write watermark, the database identity and the schema
+    /// version are all read inside the same `BEGIN … COMMIT` transaction, so a concurrent commit
+    /// can never be observed as "no checkpoint yet, but already a non-zero watermark". Reads only:
+    /// a missing database stays missing (reported as `None`), nothing is created, written,
+    /// flushed or replayed, and `read` keeps its existing identity/hash/fence validation.
+    pub(crate) async fn checkpoint_snapshot(&self) -> Result<Option<CheckpointSnapshot>> {
+        let Some(connection) = self.reader().await? else {
+            return Ok(None);
+        };
+        let tx = connection.db.begin().await?;
+        let (database_id, schema_version) =
+            super::validate_existing(&tx, &self.state.thread_id).await?;
+        ensure!(
+            database_id == connection.database_id,
+            "canonical history identity changed"
+        );
+        // A pre-v5 layout without an initialized writer has no decodable checkpoint; the watermark
+        // still comes from this same snapshot, so the corruption judgement keeps its old strength.
+        let checkpoint = if schema_version < 5 && self.state.writer.get().is_none() {
+            None
+        } else {
+            read(&tx, &self.state.thread_id).await?
+        };
+        let watermark = u64::try_from(applied_write_seq(&tx).await?)
+            .context("negative history write sequence")?;
+        tx.commit().await?;
+        Ok(Some(CheckpointSnapshot {
+            checkpoint,
+            watermark,
+        }))
     }
 
     /// Advances the same Migrator after the v2 TOML import boundary has finished.

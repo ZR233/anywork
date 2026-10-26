@@ -1,28 +1,23 @@
 use axum::Json;
-use axum::body::Bytes;
-use axum::extract::DefaultBodyLimit;
 use axum::extract::rejection::JsonRejection;
 use axum::extract::rejection::QueryRejection;
-use axum::extract::{FromRequest, FromRequestParts, Multipart, Path, Query, Request, State};
+use axum::extract::{FromRequest, FromRequestParts, Path, Query, Request, State};
+use axum::http::StatusCode;
 use axum::http::request::Parts;
-use axum::http::{StatusCode, header};
 use axum::response::IntoResponse;
 use pl_protocol::ThreadActivityDetailQuery;
 use pl_protocol::studio::{
     AcpAccountCatalog, AcpAuthCommandReply, AcpAuthSnapshot, AcpInstallCommandReply,
-    AcpInstallSnapshot, AdmitAttachmentDraftsRequest, AdmitAttachmentDraftsResponse,
-    CancelAcpAuthRequest, CancelAcpInstallRequest, ContinuationOperationView,
-    ContinueThreadRequest, ContinueThreadResponse, CreateThreadRequest, ExpectedRevisionRequest,
+    AcpInstallSnapshot, CancelAcpAuthRequest, CancelAcpInstallRequest, ContinuationOperationView,
+    ContinueThreadRequest, ContinueThreadResponse, ExpectedRevisionRequest,
     HealthResponse, LspResetRequest, McpResetRequest, OpenProjectRequest,
     RemoveAccountModelRequest, RemoveAccountRequest, RemoveAcpAccountRequest, RenameThreadRequest,
     ResolveInteractionRequest, SearchSkillsRequest, SetAccountBillingKindRequest,
     SetAccountModelEnabledRequest, SetDefaultAccountRequest, SetThreadModeRequest,
     SetThreadModelRouteRequest, SettingsCommandReply, SettingsStateResponse, StartAcpAuthRequest,
-    StartAcpInstallRequest, StopThreadRequest, StopThreadResponse,
-    StudioAttachmentAdmissionContext, StudioAttachmentDraftSource, StudioCommandRequest,
-    StudioError, SubmitPromptRequest, ThreadModelRouteCommandReply, ThreadPageQuery,
-    UpdateAccountRequest, UpdateAcpAccountRequest, UpdatePermissionSettingsRequest,
-    UpdateSettingsFieldRequest,
+    StartAcpInstallRequest, StopThreadRequest, StopThreadResponse, StudioCommandRequest, StudioError, SubmitPromptRequest,
+    ThreadModelRouteCommandReply, ThreadPageQuery, UpdateAccountRequest, UpdateAcpAccountRequest,
+    UpdatePermissionSettingsRequest, UpdateSettingsFieldRequest,
 };
 use pl_protocol::{
     DelegationModelDetail, DelegationModelList, GetDelegationModelRequest,
@@ -30,7 +25,6 @@ use pl_protocol::{
 };
 use pl_protocol::{ThreadModeDocument, ThreadModeId, WorkflowPreviewRequest};
 use pl_protocol::{TimelineDetailQuery, TimelinePageQuery};
-use tokio::io::AsyncWriteExt;
 use utoipa::{IntoResponses, OpenApi};
 use utoipa_axum::{router::OpenApiRouter, routes};
 
@@ -48,10 +42,6 @@ use crate::sse;
     components(schemas(StudioError))
 )]
 struct StudioApi;
-
-const MAX_MULTIPART_BODY_BYTES: usize = 200 * 1024 * 1024;
-const MAX_MULTIPART_FILE_BYTES: usize = 50 * 1024 * 1024;
-const MAX_MULTIPART_FILES: usize = 16;
 
 #[derive(Debug, serde::Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -97,7 +87,7 @@ pub(crate) enum StudioApiErrors {
     Internal(StudioError),
 }
 
-pub(crate) struct ApiJson<T>(pub T);
+pub(crate) struct ApiJson<T>(pub(crate) T);
 
 impl<S, T> FromRequest<S> for ApiJson<T>
 where
@@ -120,6 +110,24 @@ fn json_rejection(rejection: JsonRejection) -> ApiError {
 }
 
 pub(crate) struct ApiQuery<T>(pub(crate) T);
+
+/// Keep path decoding failures in the same typed error boundary as JSON/query failures.
+pub(crate) struct ApiPath<T>(pub(crate) T);
+
+impl<S, T> FromRequestParts<S> for ApiPath<T>
+where
+    S: Send + Sync,
+    T: serde::de::DeserializeOwned + Send,
+{
+    type Rejection = ApiError;
+
+    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
+        Path::<T>::from_request_parts(parts, state)
+            .await
+            .map(|Path(value)| Self(value))
+            .map_err(|_| ApiError(StudioError::invalid_argument("invalid path parameters")))
+    }
+}
 
 impl<S, T> FromRequestParts<S> for ApiQuery<T>
 where
@@ -219,9 +227,6 @@ pub(crate) fn parse_product_topic(
 }
 
 pub(crate) fn api_router() -> OpenApiRouter<AppState> {
-    let attachment_upload = OpenApiRouter::new()
-        .routes(routes!(upload_attachment_drafts))
-        .layer(DefaultBodyLimit::max(MAX_MULTIPART_BODY_BYTES));
     OpenApiRouter::with_openapi(StudioApi::openapi())
         .routes(routes!(health))
         .routes(routes!(read_state))
@@ -231,7 +236,6 @@ pub(crate) fn api_router() -> OpenApiRouter<AppState> {
         .routes(routes!(archive_project))
         .routes(routes!(rename_project))
         .routes(routes!(list_threads))
-        .routes(routes!(create_thread))
         .routes(routes!(read_thread))
         .routes(routes!(read_thread_activity_detail))
         .routes(routes!(archive_thread))
@@ -251,10 +255,7 @@ pub(crate) fn api_router() -> OpenApiRouter<AppState> {
         .routes(routes!(list_thread_timeline))
         .routes(routes!(read_thread_timeline_detail))
         .routes(routes!(submit_prompt))
-        .routes(routes!(admit_attachment_drafts))
         .routes(routes!(remove_attachment_draft))
-        .routes(routes!(read_attachment_draft))
-        .routes(routes!(read_thread_attachment))
         .routes(routes!(resolve_interaction))
         .routes(routes!(continue_thread))
         .routes(routes!(stop_thread))
@@ -283,7 +284,8 @@ pub(crate) fn api_router() -> OpenApiRouter<AppState> {
         .routes(routes!(read_acp_install))
         .routes(routes!(start_acp_install))
         .routes(routes!(cancel_acp_install))
-        .routes(routes!(read_recovery, retry_recovery))
+        .routes(routes!(read_recovery))
+        .routes(routes!(retry_recovery))
         .routes(routes!(retry_persistence))
         .routes(routes!(retry_thread_history))
         .routes(routes!(resume_thread_history))
@@ -303,7 +305,14 @@ pub(crate) fn api_router() -> OpenApiRouter<AppState> {
         .routes(routes!(sse::thread_events))
         .routes(routes!(sse::thread_timeline_events))
         .merge(crate::bots::bot_routes())
-        .merge(attachment_upload)
+        .merge(crate::templates::router())
+        .merge(crate::models::router())
+        .merge(crate::configuration::router())
+        .merge(crate::attachment_reads::router())
+        .merge(crate::thread_transport::router())
+        .merge(crate::thread_transport::authoring_router())
+        .merge(crate::draft_commands::router())
+        .merge(crate::draft_commands::upload_router())
 }
 
 #[utoipa::path(get, path = "/health", operation_id = "health", responses(StudioApiErrors, (status = 200, body = HealthResponse)))]
@@ -440,21 +449,6 @@ async fn restore_thread(
         state
             .runtime
             .restore_thread(thread_id)
-            .await
-            .map_err(ApiError::from)?,
-    ))
-}
-
-#[utoipa::path(post, path = "/api/v1/projects/{project_id}/threads", operation_id = "thread.create", params(("project_id" = String, Path)), request_body = CreateThreadRequest, responses(StudioApiErrors, (status = 200)))]
-async fn create_thread(
-    State(state): State<AppState>,
-    Path(project_id): Path<String>,
-    ApiJson(request): ApiJson<CreateThreadRequest>,
-) -> Result<impl IntoResponse, ApiError> {
-    Ok(Json(
-        state
-            .runtime
-            .create_thread_command(project_id, request, None)
             .await
             .map_err(ApiError::from)?,
     ))
@@ -755,195 +749,17 @@ async fn read_continuation_operation(
     ))
 }
 
-#[utoipa::path(post, path = "/api/v1/attachments/drafts", operation_id = "attachment.admit", request_body = AdmitAttachmentDraftsRequest, responses(StudioApiErrors, (status = 200, body = AdmitAttachmentDraftsResponse)))]
-async fn admit_attachment_drafts(
-    State(state): State<AppState>,
-    ApiJson(request): ApiJson<AdmitAttachmentDraftsRequest>,
-) -> Result<impl IntoResponse, ApiError> {
-    if request
-        .sources
-        .iter()
-        .any(|source| !matches!(source, StudioAttachmentDraftSource::RemoteUrl { .. }))
-    {
-        return Err(ApiError(StudioError::invalid_argument(
-            "JSON attachment admission accepts only remoteUrl sources; local files use multipart upload",
-        )));
-    }
-    Ok(Json(
-        state
-            .runtime
-            .admit_attachment_drafts(request)
-            .await
-            .map_err(ApiError::from)?,
-    ))
-}
-
-#[utoipa::path(post, path = "/api/v1/attachments/drafts/upload", operation_id = "attachment.upload", responses(StudioApiErrors, (status = 200, body = AdmitAttachmentDraftsResponse)))]
-async fn upload_attachment_drafts(
-    State(state): State<AppState>,
-    mut multipart: Multipart,
-) -> Result<impl IntoResponse, ApiError> {
-    let upload_dir = tempfile::Builder::new()
-        .prefix("anywork-http-attachments-")
-        .tempdir()
-        .map_err(anyhow::Error::from)
-        .map_err(ApiError::from)?;
-    let mut context = None;
-    let mut sources = Vec::new();
-
-    while let Some(mut field) = multipart
-        .next_field()
-        .await
-        .map_err(|_| invalid_multipart())?
-    {
-        match field.name() {
-            Some("context") => {
-                if context.is_some() || !sources.is_empty() {
-                    return Err(invalid_multipart());
-                }
-                let text = field.text().await.map_err(|_| invalid_multipart())?;
-                context = Some(
-                    serde_json::from_str::<StudioAttachmentAdmissionContext>(&text)
-                        .map_err(|_| invalid_multipart())?,
-                );
-            }
-            Some("file") => {
-                let admission_context = context.clone().ok_or_else(invalid_multipart)?;
-                if sources.len() >= MAX_MULTIPART_FILES {
-                    return Err(ApiError(StudioError::invalid_argument(
-                        "multipart attachment file count exceeds the server limit",
-                    )));
-                }
-                let filename = field
-                    .file_name()
-                    .and_then(safe_upload_filename)
-                    .ok_or_else(invalid_multipart)?;
-                let path = upload_dir
-                    .path()
-                    .join(format!("{:02}-{filename}", sources.len()));
-                let source = StudioAttachmentDraftSource::LocalFile {
-                    path: path.to_string_lossy().to_string(),
-                };
-                let mut predicted = sources.clone();
-                predicted.push(source.clone());
-                state
-                    .runtime
-                    .preflight_attachment_drafts(&AdmitAttachmentDraftsRequest {
-                        context: admission_context,
-                        sources: predicted,
-                    })
-                    .await
-                    .map_err(ApiError::from)?;
-
-                let mut file = tokio::fs::File::create(&path)
-                    .await
-                    .map_err(anyhow::Error::from)
-                    .map_err(ApiError::from)?;
-                let mut written = 0_usize;
-                while let Some(chunk) = field.chunk().await.map_err(|_| invalid_multipart())? {
-                    written = written.saturating_add(chunk.len());
-                    if written > MAX_MULTIPART_FILE_BYTES {
-                        return Err(ApiError(StudioError::invalid_argument(
-                            "multipart attachment file exceeds the server limit",
-                        )));
-                    }
-                    file.write_all(&chunk)
-                        .await
-                        .map_err(anyhow::Error::from)
-                        .map_err(ApiError::from)?;
-                }
-                file.flush()
-                    .await
-                    .map_err(anyhow::Error::from)
-                    .map_err(ApiError::from)?;
-                sources.push(source);
-            }
-            _ => return Err(invalid_multipart()),
-        }
-    }
-
-    let request = AdmitAttachmentDraftsRequest {
-        context: context.ok_or_else(invalid_multipart)?,
-        sources,
-    };
-    Ok(Json(
-        state
-            .runtime
-            .admit_attachment_drafts(request)
-            .await
-            .map_err(ApiError::from)?,
-    ))
-}
-
 #[utoipa::path(delete, path = "/api/v1/attachments/drafts/{draft_id}", operation_id = "attachment.removeDraft", params(("draft_id" = String, Path)), responses(StudioApiErrors, (status = 204)))]
 async fn remove_attachment_draft(
     State(state): State<AppState>,
     Path(draft_id): Path<String>,
 ) -> Result<StatusCode, ApiError> {
-    if !state
+    state
         .runtime
         .remove_attachment_draft(draft_id)
         .await
-        .map_err(ApiError::from)?
-    {
-        return Err(ApiError(StudioError::not_found("AttachmentDraft")));
-    }
+        .map_err(ApiError::from)?;
     Ok(StatusCode::NO_CONTENT)
-}
-
-#[utoipa::path(get, path = "/api/v1/attachments/drafts/{draft_id}", operation_id = "attachment.readDraft", params(("draft_id" = String, Path)), responses(StudioApiErrors, (status = 200, content_type = "application/octet-stream")))]
-async fn read_attachment_draft(
-    State(state): State<AppState>,
-    Path(draft_id): Path<String>,
-) -> Result<impl IntoResponse, ApiError> {
-    let bytes = state
-        .runtime
-        .read_attachment_draft(draft_id)
-        .await
-        .map_err(ApiError::from)?;
-    Ok((
-        [(header::CONTENT_TYPE, "application/octet-stream")],
-        Bytes::from(bytes),
-    ))
-}
-
-#[utoipa::path(get, path = "/api/v1/threads/{thread_id}/attachments/{attachment_id}", operation_id = "attachment.readThread", params(("thread_id" = String, Path), ("attachment_id" = String, Path)), responses(StudioApiErrors, (status = 200, content_type = "application/octet-stream")))]
-async fn read_thread_attachment(
-    State(state): State<AppState>,
-    Path((thread_id, attachment_id)): Path<(String, String)>,
-) -> Result<impl IntoResponse, ApiError> {
-    let bytes = state
-        .runtime
-        .read_thread_attachment(thread_id, attachment_id)
-        .await
-        .map_err(ApiError::from)?;
-    Ok((
-        [(header::CONTENT_TYPE, "application/octet-stream")],
-        Bytes::from(bytes),
-    ))
-}
-
-fn invalid_multipart() -> ApiError {
-    ApiError(StudioError::invalid_argument(
-        "invalid multipart attachment admission body",
-    ))
-}
-
-fn safe_upload_filename(filename: &str) -> Option<String> {
-    let filename = std::path::Path::new(filename).file_name()?.to_str()?;
-    let sanitized = filename
-        .chars()
-        .take(120)
-        .map(|character| {
-            if character.is_alphanumeric() || matches!(character, '.' | '-' | '_' | ' ') {
-                character
-            } else {
-                '_'
-            }
-        })
-        .collect::<String>();
-    let sanitized = sanitized.trim().trim_matches('.');
-    (!sanitized.is_empty()).then(|| sanitized.to_string())
 }
 
 #[utoipa::path(put, path = "/api/v1/interactions/{interaction_id}/resolution", operation_id = "interaction.respond", params(("interaction_id" = String, Path)), request_body = ResolveInteractionRequest, responses(StudioApiErrors, (status = 200)))]

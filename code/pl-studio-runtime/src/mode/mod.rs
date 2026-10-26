@@ -16,6 +16,7 @@ pub use compiler::{
 pub use context::workflow_model_context_section;
 pub(crate) use editor::MAX_MODE_DOCUMENT_BYTES;
 pub use editor::{mode_document_schema, validate_mode_document, validate_mode_json};
+pub(crate) use manager::ModeRegistryPublication;
 pub use manager::{
     RegisteredThreadMode, ThreadModeManager, ThreadModeManagerError, ThreadModeRegistrySnapshot,
     ThreadModeSource, ThreadModeSourceId, ThreadModeSourceKind,

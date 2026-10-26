@@ -104,6 +104,7 @@ pub async fn browse_remote_directories(
                 name: entry.name,
                 path: entry.path,
                 is_directory: entry.is_directory,
+                is_symlink: entry.is_symlink,
             })
             .collect(),
     })

@@ -111,23 +111,10 @@ impl StudioStore {
         self.materialize_attachment_records(records).await
     }
 
-    pub(crate) async fn read_attachment_bytes(
+    pub(in crate::studio) fn attachment_host_path(
         &self,
-        thread_id: &str,
-        attachment_id: &str,
-    ) -> Result<Vec<u8>> {
-        let record = self
-            .load_attachments(thread_id, &[attachment_id.to_string()])
-            .await?
-            .into_iter()
-            .next()
-            .context("attachment is unavailable")?;
-        tokio::fs::read(self.attachment_host_path(&record)?)
-            .await
-            .with_context(|| format!("failed to load attachment {attachment_id}"))
-    }
-
-    fn attachment_host_path(&self, record: &AttachmentRecord) -> Result<PathBuf> {
+        record: &AttachmentRecord,
+    ) -> Result<PathBuf> {
         let session = self.registered_session_paths(&record.thread_id)?;
         resolve_attachment_host_path(&session, &record.blob_relative_path)
     }

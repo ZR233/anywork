@@ -1,90 +1,33 @@
-import '../../lifecycle/resource_budget.dart' show CloseReport;
-import 'statistics_failure.dart';
-import 'statistics_models.dart';
+import '../../../resources.dart';
+import 'statistics_state.dart';
 
-enum StatisticsConnectionPhase {
-  idle,
-  connecting,
-  ready,
-  reconnecting,
-  failed,
-  closing,
-}
-
-final class StatisticsConnectionState {
-  const StatisticsConnectionState({
-    this.phase = StatisticsConnectionPhase.idle,
-    this.failure,
-  });
-
-  final StatisticsConnectionPhase phase;
-  final StatisticsFailure? failure;
-
-  @override
-  bool operator ==(Object other) =>
-      identical(this, other) ||
-      other is StatisticsConnectionState &&
-          phase == other.phase &&
-          failure == other.failure;
-
-  @override
-  int get hashCode => Object.hash(phase, failure);
-}
-
-/// Last complete materialized snapshot and the current feed connection state.
+/// The only public canonical statistics mirror for one application instance.
 ///
-/// During refresh or a failed read, `snapshot` remains the previous complete value while the
-/// connection phase explains why it is not a ready value from the current feed.
-final class StatisticsRepositoryState {
-  const StatisticsRepositoryState({
-    this.snapshot,
-    this.connection = const StatisticsConnectionState(),
-  });
-
-  final StatisticsSnapshot? snapshot;
-  final StatisticsConnectionState connection;
-
-  bool get hasSnapshot => snapshot != null;
-
-  @override
-  bool operator ==(Object other) =>
-      identical(this, other) ||
-      other is StatisticsRepositoryState &&
-          snapshot == other.snapshot &&
-          connection == other.connection;
-
-  @override
-  int get hashCode => Object.hash(snapshot, connection);
-}
-
-/// Synchronous observation registration. Cancelling it never closes a statistics feed.
-abstract interface class StatisticsObservation {
-  StatisticsRepositoryState get initialState;
-  void cancel();
-}
-
-/// Independent visible-demand lease. Its lifetime is not tied to listener count.
-abstract interface class StatisticsVisibilityLease {
-  bool get isReleased;
-  void release();
-}
-
-/// The only public canonical statistics reducer for one AppGraph instance.
+/// Observation is synchronous registration over [state]; a visible demand is a
+/// separate lease and is the only reason to open the two statistics feeds.
 abstract interface class StatisticsRepository {
-  StatisticsRepositoryState get state;
+  ReadonlyLatestValue<StatisticsState> get state;
 
-  StatisticsObservation observe(
-    void Function(StatisticsRepositoryState state) listener,
-  );
-
+  /// Registers one visible demand. The first demand opens both statistics
+  /// feeds; a hidden build never creates a demand.
   StatisticsVisibilityLease acquireVisibleDemand();
 
-  /// Bounded cleanup joins existing resources; failure retains their owners for retry.
+  /// Awaits one complete publication of the current attempt, or its typed
+  /// failure. It never creates a demand and never opens a hidden feed.
+  Future<void> synchronize();
+
+  /// Explicitly retries a failed attempt after its original resources are
+  /// joined. Unresolved cleanup is reported instead of being hidden behind a
+  /// second feed.
+  Future<void> retrySync();
+
+  void seal();
   Future<CloseReport> close({DateTime? deadline});
-
-  /// Retries cleanup of the same unresolved feed/scope; never opens a replacement to mask it.
   Future<CloseReport> retryCleanup({DateTime? deadline});
+}
 
-  /// Explicitly restarts a bounded, failed connection attempt while demand remains visible.
-  void retry();
+/// One concrete visible demand, not a Freezed value or a listener count.
+/// Releasing is idempotent; cancelling an observer never releases a demand.
+abstract interface class StatisticsVisibilityLease {
+  void release();
 }

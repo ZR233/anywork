@@ -7,7 +7,10 @@
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, PoisonError};
 
-use pl_protocol::studio::{AcpAuthAccount, AcpAuthFailure, AcpAuthSnapshot, AcpAuthState};
+use pl_protocol::products::identity::ProductReadOrigin;
+use pl_protocol::studio::{
+    AcpAuthAccount, AcpAuthFailure, AcpAuthSnapshot, AcpAuthState, StudioError, StudioErrorCode,
+};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
@@ -134,6 +137,10 @@ pub(super) struct AcpAuthInner {
     pub(super) config: ConfigRuntime,
     events: ProductEventBus,
     pub(super) workers: WorkerSource,
+    /// Feed 身份来源：owner epoch 与本 runtime 的观测代次，与命令回执同源。
+    origin: ProductReadOrigin,
+    /// Feed 唤醒通道：只表示 canonical 快照已变化；事实仍在 `registry`。
+    updates: tokio::sync::watch::Sender<()>,
     registry: Mutex<Registry>,
 }
 
@@ -143,12 +150,16 @@ impl AcpAuthInner {
         config: ConfigRuntime,
         events: ProductEventBus,
         workers: WorkerSource,
+        origin: ProductReadOrigin,
     ) -> Self {
+        let (updates, _) = tokio::sync::watch::channel(());
         Self {
             store,
             config,
             events,
             workers,
+            origin,
+            updates,
             registry: Mutex::new(Registry::default()),
         }
     }
@@ -162,6 +173,41 @@ impl AcpAuthInner {
             .emit(crate::StudioProductEventKind::AcpAuthStateChanged(
                 Box::new(snapshot),
             ));
+        // 同一次 canonical 发布同时唤醒 typed feed；不产生第二份事实或第二个 revision。
+        self.updates.send_replace(());
+    }
+
+    pub(super) fn origin(&self) -> &ProductReadOrigin {
+        &self.origin
+    }
+
+    /// Feed 打开：当前 canonical 快照与后续变更唤醒；关闭闸门封闭后不再授予新 feed。
+    pub(super) fn observe(
+        &self,
+    ) -> Result<(AcpAuthSnapshot, tokio::sync::watch::Receiver<()>), StudioError> {
+        let updates = self.updates.subscribe();
+        let registry = self.lock();
+        if registry.closed {
+            return Err(feed_closed());
+        }
+        Ok((registry.snapshot(), updates))
+    }
+
+    /// Feed 每次发送前读取的当前快照；封闭后拒绝，迟到的读取不会复活 feed。
+    pub(super) fn current(&self) -> Result<AcpAuthSnapshot, StudioError> {
+        let registry = self.lock();
+        if registry.closed {
+            return Err(feed_closed());
+        }
+        Ok(registry.snapshot())
+    }
+
+    pub(super) fn ensure_open(&self) -> Result<(), StudioError> {
+        if self.lock().closed {
+            Err(feed_closed())
+        } else {
+            Ok(())
+        }
     }
 
     /// 与已提交的 canonical Settings 对齐连接身份：新接入登记、身份变化撤旧代次、删除标记退役。
@@ -420,4 +466,12 @@ impl AcpAuthInner {
         };
         self.emit(snapshot);
     }
+}
+
+fn feed_closed() -> StudioError {
+    StudioError::new(
+        StudioErrorCode::Cancelled,
+        "Original acpAuth owner is closing or replaced",
+        false,
+    )
 }

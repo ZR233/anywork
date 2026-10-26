@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter_driver/flutter_driver.dart';
@@ -17,12 +18,26 @@ Future<void> main(List<String> arguments) async {
     printCommunication: false,
     logCommunicationToFile: false,
   ).timeout(const Duration(seconds: 15));
+  var shutdownFailed = false;
+  late final String response;
   try {
-    final response = await driver
+    response = await driver
         .requestData('shutdown')
         .timeout(const Duration(seconds: 30));
-    stdout.writeln(response);
+    final report = jsonDecode(response);
+    if (report is! Map || report['shutdown'] != 'completed') {
+      throw StateError('native GUI shutdown did not complete: $response');
+    }
+  } on Object {
+    shutdownFailed = true;
+    rethrow;
   } finally {
-    await driver.close().timeout(const Duration(seconds: 10));
+    try {
+      await driver.close().timeout(const Duration(seconds: 10));
+    } on Object catch (error) {
+      if (!shutdownFailed) rethrow;
+      stderr.writeln('Driver connection cleanup failed: ${error.runtimeType}');
+    }
   }
+  stdout.writeln(response);
 }

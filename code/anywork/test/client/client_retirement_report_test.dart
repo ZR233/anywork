@@ -1,40 +1,19 @@
 import 'dart:async';
 
-import 'package:anywork_client/studio_client.dart';
+import 'package:anywork_client/conversation_ports.dart';
+import 'package:anywork_client/resources_ports.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-import 'support/recording_demo_transport.dart';
+import '../../../anywork_client/test/support/timeline_transport.dart';
+import 'support/timeline_environment.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
   test('late A1 retirement cannot erase A2 unresolved close ownership', () async {
-    final transport = RecordingDemoTransport();
-    final releaseFirst = Completer<void>();
-    final firstCreated = Completer<RecordingTimelineConnection>();
-    final secondCreated = Completer<_FailingCloseConnection>();
-    var mainOpens = 0;
-    transport.timelineFactory = (threadId, inner) async {
-      if (threadId != 'thread-main') return inner;
-      mainOpens++;
-      if (mainOpens == 1) {
-        final first = RecordingTimelineConnection(
-          threadId: threadId,
-          inner: inner,
-        );
-        firstCreated.complete(first);
-        await releaseFirst.future;
-        return first;
-      }
-      final second = _FailingCloseConnection(threadId: threadId, inner: inner)
-        ..failure = StateError('A2 close acknowledgement failed');
-      secondCreated.complete(second);
-      return second;
-    };
-    // A1 opening, B retiring and A2 opening are independent live resources.
-    final client = AnyworkClient(
-      transport: transport,
-      clientId: 'retirement-report',
+    final transport = _RetirementTransport();
+    final environment = TimelineTestEnvironment(
+      timeline: transport,
       budget: ResourceBudget(
         capacities: {
           ResourceKind.chatHandle: 3,
@@ -46,105 +25,157 @@ void main() {
         },
       ),
     );
+    final repository = environment.conversations;
+    final first = TestTimelineConnection(
+      initial: baseline(
+        1,
+        subscriptionId: 'a1',
+        items: [timelineItem(1, threadId: 'thread-main')],
+      ),
+    );
+    final second =
+        TestTimelineConnection(
+            initial: baseline(
+              1,
+              subscriptionId: 'a2',
+              items: [timelineItem(1, threadId: 'thread-main')],
+            ),
+          )
+          ..closeFailure = const StudioFailure(
+            code: StudioFailureCode.unavailable,
+            message: 'A2 close acknowledgement failed',
+            retryable: true,
+            correlationId: 'a2-close',
+          );
     addTearDown(() async {
-      if (!releaseFirst.isCompleted) releaseFirst.complete();
-      if (secondCreated.isCompleted) {
-        (await secondCreated.future).failure = null;
+      for (final opening in transport.opens) {
+        if (!opening.reply.isCompleted) opening.reply.complete(first);
       }
-      await client.close(deadline: _deadline());
-      await client.retryCleanup(deadline: _deadline());
+      second.closeFailure = null;
+      await repository.close(deadline: _deadline());
+      await repository.retryCleanup(deadline: _deadline());
+      environment.operations.seal();
     });
-    await client.bootstrap();
-    await client.directoryCommands.selectThread('thread-main');
-    final first = await firstCreated.future;
-    final owner = client.existingSession('thread-main')!;
-    final firstAttempt = owner.timeline.currentAttemptId!;
-    await client.directoryCommands.selectThread('thread-alt');
-    await client
-        .existingSession('thread-alt')!
-        .timeline
-        .state
-        .waitFor((state) => state.snapshot is StudioTimelineBaselineFrame);
-    await client.directoryCommands.selectThread('thread-main');
-    final second = await secondCreated.future;
-    await second.nextEntered.future;
-    final secondAttempt = owner.timeline.currentAttemptId!;
+
+    environment.select('thread-main');
+    final a1 = await transport.opened(0);
+    final firstOwner = repository.existingSession('thread-main')!;
+    final firstAttempt = firstOwner.timeline.state.value.attemptId!;
+    environment.select('thread-alt');
+    final b = await transport.opened(1);
+    b.reply.complete(
+      TestTimelineConnection(
+        initial: baseline(
+          1,
+          subscriptionId: 'b',
+          items: [timelineItem(1, threadId: 'thread-alt')],
+        ),
+      ),
+    );
+    await repository.active.value!.timeline.ready;
+    environment.select('thread-main');
+    final a2 = await transport.opened(2);
+    a2.reply.complete(second);
+    final owner = repository.existingSession('thread-main')!;
+    await owner.timeline.ready;
+    await second.subscribed.future;
+    final secondAttempt = owner.timeline.state.value.attemptId!;
     expect(secondAttempt, isNot(firstAttempt));
 
-    // An expired deadline reports both the blocked A1 open and A2's real close
-    // failure without waiting on wall-clock delays or abandoning either permit.
-    final closing = client.close(deadline: DateTime.utc(2000));
-    await second.closeFailed.future;
+    // An expired deadline reports the blocked A1 open and A2's close ownership.
+    // No timer or dropped Future is used as evidence that A1 has joined.
+    final closing = repository.close(deadline: DateTime.utc(2000));
+    await second.closeCompleted.future;
     final report = await closing;
     expect(
       report.unresolved.any(
         (entry) =>
-            entry.owner == 'thread-main' && entry.attemptId == secondAttempt,
+            entry.owner == 'timeline:thread-main' &&
+            entry.attemptId == secondAttempt,
       ),
       isTrue,
     );
     expect(first.closeCalls, 0);
 
-    releaseFirst.complete();
-    await first.joined.future;
-    // This public join shares the retired pump tasks with the earlier A1
-    // retirement. Its completion is a lifecycle barrier, not a timer flush.
-    await owner.retire();
-    expect(first.initialCalls, 0);
-    expect(client.budget.used(ResourceKind.chatHandle), 1);
+    a1.reply.complete(first);
+    await first.closeCompleted.future;
+    // Observe the original A1 retirement only, without re-closing A2 by ID.
     expect(
-      client.unresolvedResources.any(
+      (await firstOwner.timeline.lifecycle.observeRetired(
+        deadline: _deadline(),
+      )).complete,
+      isTrue,
+    );
+    expect(first.wasSubscribed, isFalse);
+    expect(environment.budget.used(ResourceKind.chatHandle), 1);
+    final retriesBeforeObservation = second.retryCloseCalls;
+    final retained = await owner.timeline.lifecycle.observeRetired(
+      deadline: _deadline(),
+    );
+    expect(
+      retained.unresolved.any(
         (entry) =>
-            entry.owner == 'thread-main' && entry.attemptId == secondAttempt,
+            entry.owner == 'timeline:thread-main' &&
+            entry.attemptId == secondAttempt,
       ),
       isTrue,
       reason:
           'the old successful retirement must not replace A2 close evidence',
     );
+    expect(
+      second.retryCloseCalls,
+      retriesBeforeObservation,
+      reason: 'the evidence read cannot repair or recreate A2 close ownership',
+    );
 
-    second.failure = null;
-    expect((await client.retryCleanup(deadline: _deadline())).complete, isTrue);
-    expect(client.budget.used(ResourceKind.chatHandle), 0);
-    expect(mainOpens, 2, reason: 'cleanup never reopens a timeline connection');
-    // These are Client ownership contracts over Demo, not native FRB evidence.
+    second.closeFailure = null;
+    expect(
+      (await repository.retryCleanup(deadline: _deadline())).complete,
+      isTrue,
+    );
+    expect(environment.budget.used(ResourceKind.chatHandle), 0);
+    expect(
+      transport.opens.where((open) => open.threadId == 'thread-main'),
+      hasLength(2),
+      reason: 'cleanup never reopens a timeline connection',
+    );
+    expect(environment.budget.usage, isEmpty);
+    // These are public Conversation ownership contracts, not native FRB evidence.
   });
 
   test(
     'cleanup retry leaves a healthy active timeline out of unresolved',
     () async {
-      final transport = RecordingDemoTransport();
-      final client = AnyworkClient(
-        transport: transport,
-        clientId: 'healthy-cleanup',
+      final transport = _RetirementTransport();
+      final environment = TimelineTestEnvironment(timeline: transport);
+      addTearDown(environment.close);
+      environment.select('thread-main');
+      final opening = await transport.opened(0);
+      final connection = TestTimelineConnection(
+        initial: baseline(1, items: [timelineItem(1, threadId: 'thread-main')]),
       );
-      addTearDown(() => client.close(deadline: _deadline()));
-      await client.bootstrap();
-      await client.directoryCommands.selectThread('thread-main');
-      final owner = client.existingSession('thread-main')!;
-      await owner.timeline.state.waitFor(
-        (state) => state.snapshot is StudioTimelineBaselineFrame,
-      );
-      final connection = transport.timelines.single;
-      await connection.nextEntered.future;
-      final attempt = owner.timeline.currentAttemptId;
-      final delivered = owner.timeline.lastDeliveredFrame;
+      opening.reply.complete(connection);
+      final owner = environment.conversations.existingSession('thread-main')!;
+      final delivered = await owner.timeline.ready;
+      await connection.subscribed.future;
+      final attempt = owner.timeline.state.value.attemptId;
 
-      final report = await client.retryCleanup(deadline: _deadline());
+      final report = await environment.conversations.retryCleanup(
+        deadline: _deadline(),
+      );
 
       expect(report.complete, isTrue);
-      expect(client.unresolvedResources, isEmpty);
-      expect(owner.timeline.currentAttemptId, attempt);
-      // demo 在会话打开后仍会推进真实内容：cleanup 重试不得替换连接，
-      // 因此比较订阅身份而不是某一帧对象。
+      expect(report.unresolved, isEmpty);
+      expect(owner.timeline.state.value.attemptId, attempt);
       expect(
-        _subscriptionOf(owner.timeline.lastDeliveredFrame!),
-        _subscriptionOf(delivered!),
+        (await owner.timeline.ready).baseline.subscriptionId,
+        delivered.baseline.subscriptionId,
       );
       expect(connection.requestCloseCalls, 0);
       expect(connection.closeCalls, 0);
-      expect(transport.timelines, hasLength(1));
+      expect(transport.opens, hasLength(1));
       expect(
-        client.budget.used(ResourceKind.chatHandle),
+        environment.budget.used(ResourceKind.chatHandle),
         1,
         reason: 'a healthy active view keeps its real owner permit',
       );
@@ -152,26 +183,28 @@ void main() {
   );
 }
 
-final class _FailingCloseConnection extends RecordingTimelineConnection {
-  _FailingCloseConnection({required super.threadId, required super.inner});
-
-  Object? failure;
-  final closeFailed = Completer<void>();
-
-  @override
-  Future<void> close() async {
-    final error = failure;
-    if (error == null) return super.close();
-    closeCalls++;
-    await inner.close();
-    if (!closeFailed.isCompleted) closeFailed.complete();
-    throw error;
-  }
+final class _TimelineOpening {
+  _TimelineOpening(this.threadId);
+  final String threadId;
+  final reply = Completer<StudioTimelineConnection>();
 }
 
-String _subscriptionOf(StudioTimelineFrame frame) => switch (frame) {
-  StudioTimelineBaselineFrame(:final baseline) => baseline.subscriptionId,
-  StudioTimelinePatchFrame(:final patch) => patch.subscriptionId,
-};
+/// Native opening gates only. Attempt identity, retirement and reporting are
+/// all owned by the actual Conversation Repository and Timeline owner.
+final class _RetirementTransport implements TimelineTransport {
+  final opens = <_TimelineOpening>[];
+  final _waiters = <int, Completer<_TimelineOpening>>{};
+  @override
+  Future<StudioTimelineConnection> openTimeline(String threadId) {
+    final opening = _TimelineOpening(threadId);
+    opens.add(opening);
+    _waiters.remove(opens.length - 1)?.complete(opening);
+    return opening.reply.future;
+  }
+
+  Future<_TimelineOpening> opened(int index) => index < opens.length
+      ? Future.value(opens[index])
+      : _waiters.putIfAbsent(index, Completer<_TimelineOpening>.new).future;
+}
 
 DateTime _deadline() => DateTime.now().add(const Duration(seconds: 5));

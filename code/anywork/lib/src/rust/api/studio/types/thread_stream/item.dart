@@ -6,6 +6,7 @@
 import '../../../../frb_generated.dart';
 import '../attachment.dart';
 import '../thread_stream.dart';
+import '../turn_failure.dart';
 
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 import 'package:freezed_annotation/freezed_annotation.dart' hide protected;

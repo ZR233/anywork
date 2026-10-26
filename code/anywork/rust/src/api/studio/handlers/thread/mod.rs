@@ -1,7 +1,5 @@
 use crate::api::studio::convert::commands::command_receipt;
-use crate::frb_generated::StreamSink;
 use anyhow::Context;
-use std::sync::Arc;
 
 use crate::api::studio::bridge_runtime::active_bridge;
 use crate::api::studio::convert::records::thread_from_record;
@@ -10,91 +8,14 @@ use crate::api::studio::convert::{
     thread_stream::{bridge_thread, runtime_snapshot},
 };
 use crate::api::studio::types::{
-    ArchiveThreadResult, BridgeArchiveThreadCommandReply, BridgeError, BridgeNewThreadStartEvent,
-    BridgeRenameThreadCommandReply, BridgeStartNewThreadRequest, BridgeThread,
-    BridgeThreadModeCommandReply, BridgeThreadModelRouteCommandReply, StartNewThreadResponse,
-    SubmitPromptResponse,
+    ArchiveThreadResult, BridgeArchiveThreadCommandReply, BridgeError,
+    BridgeRenameThreadCommandReply, BridgeThread, BridgeThreadModeCommandReply,
+    BridgeThreadModelRouteCommandReply,
 };
 use pl_studio_runtime::ThreadModeId;
 
 fn thread_mode(mode: String) -> Result<ThreadModeId, BridgeError> {
     ThreadModeId::new(mode).map_err(|error| anyhow::anyhow!(error).into())
-}
-
-/// Streams preparation and one terminal outcome while creating a root Thread.
-///
-/// Creation errors are carried by `Failed` after the normal resource settlement;
-/// losing the sink does not cancel creation. `Succeeded` confirms acceptance of the
-/// first input, independently of its later model execution or history persistence.
-pub async fn start_new_thread(
-    request: BridgeStartNewThreadRequest,
-    sink: StreamSink<BridgeNewThreadStartEvent>,
-) -> Result<(), BridgeError> {
-    let BridgeStartNewThreadRequest {
-        project_id,
-        input,
-        mode,
-        account_id,
-        model_id,
-        effort,
-        workspace_mode,
-        delegation_mode,
-        delegation_preference,
-    } = request;
-    // One invocation owns both observation and the final command outcome. A closed sink
-    // only loses observation; the existing creation owner still settles all resources.
-    let progress_sink = sink.clone();
-    let response: Result<StartNewThreadResponse, BridgeError> = async {
-        let mode = thread_mode(mode)?;
-        let workspace_mode = match workspace_mode.as_deref().map(str::trim) {
-            None | Some("") | Some("local") => pl_protocol::ThreadWorkspaceMode::Local,
-            Some("worktree") => pl_protocol::ThreadWorkspaceMode::Worktree,
-            Some(other) => {
-                return Err(anyhow::anyhow!(
-                    "workspaceMode must be local or worktree, received {other:?}"
-                )
-                .into());
-            }
-        };
-        let bridge = active_bridge().await?;
-        let response = bridge
-            .studio
-            .create_thread_command(
-                project_id,
-                pl_protocol::studio::CreateThreadRequest {
-                    title: None,
-                    input: input.into(),
-                    mode: mode.label().to_string(),
-                    route: pl_protocol::studio::NewThreadModelRoute {
-                        account_id,
-                        model_id,
-                        effort,
-                    },
-                    workspace_mode,
-                    delegation_mode: Some(delegation_mode.into()),
-                    delegation_preference: Some(delegation_preference.into()),
-                },
-                Some(Arc::new(move |progress| {
-                    let _ = progress_sink.add(BridgeNewThreadStartEvent::Progress(progress.into()));
-                })),
-            )
-            .await?;
-        Ok(StartNewThreadResponse {
-            thread: bridge_thread(thread_from_record(response.thread)),
-            receipt: SubmitPromptResponse {
-                thread_id: response.submission.thread_id,
-                input_id: response.submission.input_id,
-                revision: response.submission.cursor,
-            },
-        })
-    }
-    .await;
-    let event = match response {
-        Ok(response) => BridgeNewThreadStartEvent::Succeeded(Box::new(response)),
-        Err(error) => BridgeNewThreadStartEvent::Failed(error),
-    };
-    let _ = sink.add(event);
-    Ok(())
 }
 
 /// Renames a root Thread and returns its canonical directory record.

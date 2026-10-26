@@ -98,10 +98,11 @@ pub(super) fn run(context: &WaitEventsScenario<'_>, mut fixture: OwnedProcess) -
     if gui_log_path.is_file() {
         write_sanitized_log(&gui_log_path, &output.join("wait-events-gui.log"))?;
     }
-    write_realtime_driver_evidence(
+    write_process_evidence(
         &stage.with_extension("driver.log"),
         output,
         "wait-events",
+        "driver",
         driver_exit,
         journey.as_ref().err(),
         &[

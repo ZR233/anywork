@@ -4,7 +4,6 @@
 // ignore_for_file: invalid_use_of_internal_member, unused_import, unnecessary_import
 
 import '../../../frb_generated.dart';
-import '../types/attachment.dart';
 import '../types/command.dart';
 import '../types/error.dart';
 import '../types/response.dart';
@@ -14,14 +13,12 @@ import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
 // These functions are ignored because they are not marked as `pub`: `interaction_resolution`
 
-Future<SubmitPromptResponse> submitPrompt({
+Future<BridgeInputAcceptanceEvidence?> readInputAcceptance({
   required String threadId,
-  required BridgeStudioPromptInput input,
-  required BigInt expectedModelRouteRevision,
-}) => RustLib.instance.api.crateApiStudioHandlersPromptSubmitPrompt(
+  required String inputId,
+}) => RustLib.instance.api.crateApiStudioHandlersPromptReadInputAcceptance(
   threadId: threadId,
-  input: input,
-  expectedModelRouteRevision: expectedModelRouteRevision,
+  inputId: inputId,
 );
 
 Future<BridgeStopThreadReply> stopThread({
@@ -67,11 +64,13 @@ Future<BridgeInteractionCommandReply> respondInteraction({
   required String hostThreadId,
   required BigInt expectedRevision,
   required String interactionId,
+  required BigInt expectedInteractionRevision,
   required BridgeInteractionResolution resolution,
 }) => RustLib.instance.api.crateApiStudioHandlersPromptRespondInteraction(
   operationId: operationId,
   hostThreadId: hostThreadId,
   expectedRevision: expectedRevision,
   interactionId: interactionId,
+  expectedInteractionRevision: expectedInteractionRevision,
   resolution: resolution,
 );

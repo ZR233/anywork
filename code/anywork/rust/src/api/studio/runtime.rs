@@ -127,6 +127,8 @@ pub(crate) fn current_bridge() -> Option<&'static BridgeRuntime> {
 pub(crate) struct BridgeRuntime {
     pub(crate) studio: StudioRuntime,
     pub(crate) subscriptions: BridgeTaskRegistry,
+    pub(crate) configuration_commands:
+        super::products::read::configuration_command_registry::ConfigurationCommandRegistry,
     pub(crate) shutdown: CancellationToken,
 }
 
@@ -139,6 +141,7 @@ impl BridgeRuntime {
             )
             .await?,
             subscriptions: BridgeTaskRegistry::new(),
+            configuration_commands: Default::default(),
             shutdown: CancellationToken::new(),
         })
     }

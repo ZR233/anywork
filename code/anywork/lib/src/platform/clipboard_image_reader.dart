@@ -1,7 +1,6 @@
 import 'dart:io';
 import 'dart:ui' as ui;
 
-import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:pasteboard/pasteboard.dart';
@@ -45,11 +44,7 @@ final class SystemClipboardImageStager implements ClipboardImageStager {
       return StagedClipboardImage(
         path: image.path,
         dispose: () async {
-          try {
-            await directory.delete(recursive: true);
-          } catch (error) {
-            debugPrint('failed to remove clipboard image directory: $error');
-          }
+          await directory.delete(recursive: true);
         },
       );
     } catch (_) {

@@ -297,15 +297,16 @@ impl ThreadHandle {
 
     /// Stops exactly the named execution, including one that is still preparing.
     ///
-    /// The owner compares the identity with the execution it really owns, so a superseded identity
+    /// The owner compares the identity with the execution it really owns, so a different live identity
     /// answers [`ThreadError::InvalidIdentity`] instead of stopping whatever runs now. Accepting the
     /// stop pauses the queue and forms the continuation point the settled execution leaves behind;
     /// the receipt only proves the stop was accepted, and a caller that needs completion observes the
     /// execution leaving the snapshot.
     ///
     /// # Errors
-    /// Returns `InvalidIdentity` when no execution carries the identity, or `Closed` when the owner
-    /// is no longer reachable.
+    /// Returns [`ThreadError::NoExecution`] when the owner has no active execution at its decision
+    /// boundary, [`ThreadError::InvalidIdentity`] for an empty identity or a different active execution,
+    /// or [`ThreadError::Closed`] when the owner is no longer reachable.
     pub async fn interrupt_execution(
         &self,
         expected_execution_id: String,

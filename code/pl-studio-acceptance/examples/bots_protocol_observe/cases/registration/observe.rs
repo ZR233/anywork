@@ -211,6 +211,19 @@ pub(super) fn ensure_attempt(
     Ok(())
 }
 
+/// 命令回执只携带该命令精确针对的 registration attempt（不是聚合快照）。
+pub(super) fn ensure_reply_attempt(
+    registration: Option<&BotRegistrationAttempt>,
+    attempt_id: &str,
+    predicate: impl Fn(&BotRegistrationAttempt) -> bool,
+    message: &str,
+) -> Result<()> {
+    let attempt = registration.context("command reply registration missing")?;
+    ensure!(attempt.attempt_id == attempt_id, "{message}");
+    ensure!(predicate(attempt), "{message}");
+    Ok(())
+}
+
 pub(super) fn ensure_committing_then_completed(
     committing: &BotRegistrationAttempt,
     completed: &BotRegistrationAttempt,

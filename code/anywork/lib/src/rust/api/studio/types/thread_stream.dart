@@ -12,6 +12,7 @@ import 'package:freezed_annotation/freezed_annotation.dart' hide protected;
 import 'runtime.dart';
 import 'thread_activity.dart';
 import 'thread_stream/item.dart';
+import 'turn_failure.dart';
 part 'thread_stream.freezed.dart';
 
 // These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`
@@ -1192,13 +1193,12 @@ sealed class BridgeTurnCancellationCause with _$BridgeTurnCancellationCause {
 enum BridgeTurnCompletion { normal, interactionRequested }
 
 class BridgeTurnFailureDto {
-  final String category;
-  final String? providerKind;
+  final BridgeTurnFailureCategory category;
+  final BridgeProviderFailureKind? providerKind;
   final String? code;
   final int? httpStatus;
   final String message;
-  final bool retryable;
-  final BigInt? retryAfterMs;
+  final BridgeRetryDisposition retry;
 
   const BridgeTurnFailureDto({
     required this.category,
@@ -1206,8 +1206,7 @@ class BridgeTurnFailureDto {
     this.code,
     this.httpStatus,
     required this.message,
-    required this.retryable,
-    this.retryAfterMs,
+    required this.retry,
   });
 
   @override
@@ -1217,8 +1216,7 @@ class BridgeTurnFailureDto {
       code.hashCode ^
       httpStatus.hashCode ^
       message.hashCode ^
-      retryable.hashCode ^
-      retryAfterMs.hashCode;
+      retry.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -1230,8 +1228,7 @@ class BridgeTurnFailureDto {
           code == other.code &&
           httpStatus == other.httpStatus &&
           message == other.message &&
-          retryable == other.retryable &&
-          retryAfterMs == other.retryAfterMs;
+          retry == other.retry;
 }
 
 enum BridgeTurnPhase {

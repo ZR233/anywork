@@ -40,6 +40,10 @@ impl SkillCatalogRuntime {
             "skill search limit must be between 1 and 50"
         );
         let snapshot = self.read(project_id).await;
+        anyhow::ensure!(
+            matches!(&snapshot.state, pl_protocol::ObservedResource::Ready(_)),
+            "skills catalog is not currently Ready; discover it explicitly"
+        );
         let data = snapshot
             .state
             .value()

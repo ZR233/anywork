@@ -395,6 +395,8 @@ pub struct BridgeAccountSettingsDto {
     pub name: String,
     pub base_url: String,
     pub has_bearer_token: bool,
+    /// 凭据来源环境变量名（非凭据值）；`None` 表示该账号不使用环境变量凭据。
+    pub bearer_token_env: Option<String>,
     pub usage_query_revision: u64,
     pub credential_required: bool,
     pub capability_source: String,

@@ -5,7 +5,7 @@ use crate::{
     storage::{SessionEntry, SessionEntryChange},
     thread::ThreadEffectBatch,
 };
-use sea_orm::{ConnectionTrait, Database, DatabaseConnection, DbErr};
+use sea_orm::{ConnectionTrait, Database, DatabaseConnection, DbErr, TransactionTrait};
 use sea_orm_migration::{MigrationName, MigrationTrait, MigratorTraitSelf, SchemaManager};
 use std::sync::Arc;
 
@@ -163,29 +163,13 @@ async fn preflight(db: &DatabaseConnection, allow_legacy: bool) -> Result<(), Se
             supported: super::SESSION_SCHEMA_VERSION,
         });
     }
+    validate_existing_tables(db, found).await?;
     if SchemaManager::new(db).has_table("thread_checkpoints").await?
         && db.query_one_raw(sqlite::statement(
             "SELECT 1 FROM thread_checkpoints WHERE schema_version NOT BETWEEN 1 AND 5 OR json_extract(envelope,'$.schemaVersion') NOT BETWEEN 1 AND 5 LIMIT 1", vec![]
         )).await?.is_some()
     {
         return Err(SessionStoreError::Invalid("unsupported checkpoint schema; existing data preserved".into()));
-    }
-    if found == 12 {
-        let manager = SchemaManager::new(db);
-        for table in [
-            "session_entries",
-            "session_entry_history",
-            "session_history_heads",
-            "thread_checkpoints",
-            "thread_tool_tasks",
-            "thread_tool_task_resources",
-        ] {
-            if !manager.has_table(table).await? {
-                return Err(SessionStoreError::Invalid(format!(
-                    "current session table {table} is missing; existing data preserved"
-                )));
-            }
-        }
     }
     for row in db
         .query_all_raw(sqlite::statement("PRAGMA quick_check", vec![]))
@@ -213,6 +197,13 @@ async fn preflight(db: &DatabaseConnection, allow_legacy: bool) -> Result<(), Se
         transform: Arc::new(|_: &mut ThreadEffectBatch| Ok(())),
     };
     let pending = migrator.get_pending_migrations_read_only(db).await?;
+    if found != 0 && (allow_legacy || !pending.is_empty()) {
+        // Fully adopted ordinary opens retain their existing lazy read-validation boundary. Any
+        // adoption or actual migration must verify the complete source before `up` can write a ledger.
+        let tx = db.begin().await?;
+        super::migration_source::validate(&tx, found).await?;
+        tx.commit().await?;
+    }
     if pending.is_empty() && found != super::SESSION_SCHEMA_VERSION {
         return Err(SessionStoreError::Invalid(
             "session format conflicts with completed migrations; existing data preserved".into(),
@@ -227,6 +218,64 @@ async fn preflight(db: &DatabaseConnection, allow_legacy: bool) -> Result<(), Se
         return Err(SessionStoreError::Invalid(
             "session schema is missing; existing data preserved".into(),
         ));
+    }
+    Ok(())
+}
+
+/// Checks the minimum source shape before SeaORM creates any migration bookkeeping.
+///
+/// Legacy versions only describe the source we are taking over, not a second migration schedule.
+/// The fixed column lists make SQLite validate names without reading or decoding stored bodies.
+async fn validate_existing_tables(
+    db: &DatabaseConnection,
+    found: i64,
+) -> Result<(), SessionStoreError> {
+    let manager = SchemaManager::new(db);
+    for (introduced, table, columns) in [
+        (
+            6,
+            "session_entries",
+            "session_id,id,type_id,ordinal,turn_id,envelope,payload_hash",
+        ),
+        (
+            6,
+            "session_entry_history",
+            "session_id,sequence,envelope,payload_hash",
+        ),
+        (
+            6,
+            "session_history_heads",
+            "session_id,sequence,payload_hash",
+        ),
+        (
+            8,
+            "thread_checkpoints",
+            "thread_id,schema_version,state_revision,history_fence,envelope,payload_hash",
+        ),
+        (
+            12,
+            "thread_tool_tasks",
+            "thread_id,task_id,call_id,task_envelope,task_hash,delivery_sequence,delivery_position",
+        ),
+        (
+            12,
+            "thread_tool_task_resources",
+            "thread_id,call_id,reference_hash,reference_envelope",
+        ),
+    ] {
+        if found < introduced {
+            continue;
+        }
+        if !manager.has_table(table).await? {
+            return Err(SessionStoreError::Invalid(format!(
+                "session format {found} table {table} is missing; existing data preserved"
+            )));
+        }
+        db.query_all_raw(sqlite::statement(
+            &format!("SELECT {columns} FROM {table} LIMIT 0"),
+            vec![],
+        ))
+        .await?;
     }
     Ok(())
 }
@@ -753,7 +802,7 @@ async fn backfill_attempt_identity(tx: &impl ConnectionTrait) -> Result<(), Sess
     Ok(())
 }
 
-fn convert(
+pub(super) fn convert(
     entry: &mut SessionEntry,
     transform: &impl Fn(&mut ThreadEffectBatch) -> Result<(), SessionStoreError>,
 ) -> Result<(), SessionStoreError> {

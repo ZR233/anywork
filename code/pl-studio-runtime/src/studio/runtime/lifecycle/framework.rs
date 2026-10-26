@@ -97,36 +97,105 @@ impl StudioRuntime {
     }
 
     pub(super) async fn shutdown_agent_framework(&self) -> Result<()> {
-        // Shutdown already owns lifecycle admission; an accepted archive/cleanup releases it only after
-        // its full operation and terminal commit conclude. Join the retained task before storage stops.
-        let lifecycle = background_task::finish(&self.thread_lifecycle_task).await;
-        self.thread_lifecycle_task.lock().await.take();
-        lifecycle.context("failed to join Thread lifecycle operation")?;
-        let thread_failures = self.threads.close_all().await;
-        if !thread_failures.is_empty() {
-            return Err(ThreadCloseFailures(thread_failures).into());
+        // Accepted draft commands may still initialize/submit on the original Thread/SSH owners.
+        // Join them before closing those dependencies, never abort them as observation feeds.
+        let command_issues = self.draft_commands.close().await;
+        let framework: Result<()> = async {
+            // Archive and safe cleanup retain the same lifecycle slot through their real terminal
+            // commit, even after the original caller stops waiting. Join before storage stops.
+            let archive = background_task::finish(&self.thread_lifecycle_task).await;
+            self.thread_lifecycle_task.lock().await.take();
+            let archive = archive.err().map(anyhow::Error::new);
+            let thread_failures = self.threads.close_all().await;
+            // A failed Thread must keep its observation/writer dependency. Do not wait for an
+            // observation final state that that owner has not produced yet.
+            let observation = if thread_failures.is_empty() {
+                self.thread_observations.finish().await.err()
+            } else {
+                None
+            };
+            let retained = self.threads.observed_threads();
+            let retry_close = archive.is_none()
+                && observation.is_none()
+                && !thread_failures.is_empty()
+                && thread_failures.iter().all(|(id, error)| {
+                    retained.iter().any(|(retained, _)| retained == id)
+                        && retryable_thread_close(error)
+                });
+            let threads = thread_failures
+                .into_iter()
+                .map(|(id, error)| (id, anyhow::Error::new(error)))
+                .collect::<Vec<_>>();
+            if archive.is_some() || observation.is_some() || !threads.is_empty() {
+                Err(FrameworkShutdownFailure {
+                    archive,
+                    threads,
+                    observation,
+                    retry_close,
+                }
+                .into())
+            } else {
+                Ok(())
+            }
         }
-        self.thread_observations.finish().await?;
-        Ok(())
+        .await;
+        if !command_issues.is_empty() {
+            return Err(super::super::draft_commands::DraftCommandsCloseFailure {
+                issues: command_issues,
+                source: framework.err(),
+            }
+            .into());
+        }
+        framework
     }
 
-    /// 排空 agent framework 的 write-behind 队列并停止 writer。
+    /// 排空当前 write-behind 工作，保留 writer 接收后续 Thread 关闭产生的可靠写入。
     pub(super) async fn flush_persistence(&self) -> Result<()> {
-        self.store.thread_persistence().wait_for_drain().await?;
+        self.store
+            .thread_persistence()
+            .wait_for_drain()
+            .await
+            .map_err(PersistenceShutdownFailure::Drain)?;
         let repository = self.agent_facility.persistence.lock().await.clone();
         if let Some(repository) = repository {
             repository
                 .flush()
                 .await
-                .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+                .map_err(|error| PersistenceShutdownFailure::Flush(anyhow::Error::new(error)))?;
+        }
+        Ok(())
+    }
+
+    /// 只有原生产者全部收束后，最终 persistence 阶段才停止 writer。
+    pub(super) async fn shutdown_persistence(&self) -> Result<()> {
+        self.flush_persistence().await?;
+        // A drained queue only means the admitted facts are durable. The writer task and its two
+        // helpers own the same Thread separately, so their real end is waited for here: before the
+        // persistence owner is released, and while the global recorder can still take their last
+        // report.
+        let writers = self.store.thread_persistence().wait_for_writers_end(None).await;
+        writers.map_err(PersistenceShutdownFailure::Writers)?;
+        let repository = self.agent_facility.persistence.lock().await.clone();
+        if let Some(repository) = repository {
             repository
                 .shutdown()
                 .await
-                .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+                .map_err(|error| PersistenceShutdownFailure::Shutdown(anyhow::Error::new(error)))?;
             self.agent_facility.persistence.lock().await.take();
         }
         // Call statistics are a lossy projection; they never hold up authoritative history.
         self.store.calls().stop_best_effort();
+        // History connections outlive their Thread: their last holder handed them to the coordinator
+        // instead of leaving them to an unobservable drop. Sealing takes the same admission boundary
+        // the handle construction uses, so after it returns no new holder can appear; every
+        // producer, reader and session owner was already joined above. Settling then joins those
+        // original connections and keeps every real failure.
+        let persistence = self.store.thread_persistence();
+        persistence.seal_history().await;
+        persistence
+            .settle_history()
+            .await
+            .map_err(|group| PersistenceShutdownFailure::History(anyhow::Error::new(group)))?;
         Ok(())
     }
 
@@ -152,20 +221,58 @@ impl Drop for ThreadResidencyPin {
 }
 
 #[derive(Debug)]
-struct ThreadCloseFailures(Vec<(String, crate::thread_assembler::ThreadAssemblyError)>);
-impl std::fmt::Display for ThreadCloseFailures {
+pub(super) struct FrameworkShutdownFailure {
+    pub(super) archive: Option<anyhow::Error>,
+    pub(super) threads: Vec<(String, anyhow::Error)>,
+    pub(super) observation: Option<anyhow::Error>,
+    pub(super) retry_close: bool,
+}
+
+fn retryable_thread_close(error: &crate::thread_assembler::ThreadAssemblyError) -> bool {
+    use crate::thread_assembler::ThreadAssemblyError;
+    if let ThreadAssemblyError::Resource { source, .. } = error
+        && let Some(failure) = source.downcast_ref::<crate::thread_assembler::ThreadCloseFailure>()
+    {
+        // The assembler retains the exact close phase and its original dependencies. Only that
+        // owner's recovery contract (not a generic Resource error) permits another close attempt.
+        return failure.can_resume_original() || failure.original_is_complete();
+    }
+    matches!(
+        error,
+        ThreadAssemblyError::Preparing(_)
+            | ThreadAssemblyError::Descendant(_)
+            | ThreadAssemblyError::Thread(pl_core::thread::ThreadError::Tool(_))
+            | ThreadAssemblyError::Thread(pl_core::thread::ThreadError::Storage(_))
+    )
+}
+
+/// A consumed writer shutdown handle is not the same recovery operation as drain/flush.
+#[derive(Debug, thiserror::Error)]
+pub(super) enum PersistenceShutdownFailure {
+    #[error("history drain did not complete")]
+    Drain(#[source] anyhow::Error),
+    #[error("writer tasks did not end")]
+    Writers(#[source] anyhow::Error),
+    #[error("write-behind flush did not complete")]
+    Flush(#[source] anyhow::Error),
+    #[error("write-behind shutdown did not complete")]
+    Shutdown(#[source] anyhow::Error),
+    #[error("history connections were not closed")]
+    History(#[source] anyhow::Error),
+}
+
+impl std::fmt::Display for FrameworkShutdownFailure {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str("Thread shutdown failures")?;
-        for (id, error) in &self.0 {
-            write!(formatter, "; {id}: {error}")?;
-        }
-        Ok(())
+        formatter.write_str("agent framework shutdown retained failed original owners")
     }
 }
-impl std::error::Error for ThreadCloseFailures {
+
+impl std::error::Error for FrameworkShutdownFailure {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        self.0
-            .first()
-            .map(|(_, error)| error as &(dyn std::error::Error + 'static))
+        self.archive
+            .as_ref()
+            .or_else(|| self.threads.first().map(|(_, error)| error))
+            .or(self.observation.as_ref())
+            .map(|error| error.as_ref())
     }
 }

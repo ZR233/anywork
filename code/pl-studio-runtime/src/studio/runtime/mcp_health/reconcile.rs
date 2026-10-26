@@ -116,7 +116,10 @@ impl StudioRuntime {
         }
     }
 
-    pub async fn reset_mcp(&self, request: pl_protocol::studio::McpResetRequest) -> Result<()> {
+    pub async fn reset_mcp(
+        &self,
+        request: pl_protocol::studio::McpResetRequest,
+    ) -> Result<std::sync::Arc<super::super::mcp::McpSnapshot>> {
         let scope = match request {
             pl_protocol::studio::McpResetRequest::Server { server_id } => {
                 pl_tool::mcp::McpResetScope::Server { server_id }
@@ -142,8 +145,7 @@ impl StudioRuntime {
                     .applied_effective_fingerprint
                     .write()
                     .await = Some(effective_fingerprint);
-                self.publish_mcp_ready(desired_public_fingerprint).await?;
-                Ok(())
+                self.publish_mcp_ready(desired_public_fingerprint).await
             }
             Err(error) => {
                 self.publish_mcp_failed(&error).await?;
@@ -221,7 +223,7 @@ impl StudioRuntime {
         let snapshot = StudioMcpStateSnapshot {
             state: previous.state.decide(command)?.next_state,
         };
-        self.publish_mcp(snapshot).await;
+        self.publish_mcp(snapshot).await?;
         Ok(())
     }
 

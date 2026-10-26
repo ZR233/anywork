@@ -33,46 +33,11 @@ pub(super) async fn convert_checkpoints(
                 continue;
             }
             let envelope: String = row.try_get("", "envelope")?;
-            let hash: String = row.try_get("", "payload_hash")?;
-            if crate::context::content_hash(envelope.as_bytes()) != hash {
-                return Err(SessionStoreError::Invalid(format!(
-                    "Thread {thread_id} checkpoint integrity check failed"
-                )));
-            }
-            let header: serde_json::Value = serde_json::from_str(&envelope)?;
-            if header
-                .get("schemaVersion")
-                .and_then(serde_json::Value::as_i64)
-                != Some(indexed)
-            {
-                return Err(SessionStoreError::Invalid(
-                    "checkpoint schema index/envelope mismatch".into(),
-                ));
-            }
-            let checkpoint =
-                crate::thread::ThreadCheckpoint::decode_legacy(&envelope).map_err(|error| {
-                    SessionStoreError::Invalid(format!(
-                        "Thread {thread_id} legacy checkpoint conversion failed: {error}"
-                    ))
-                })?;
-            if checkpoint.thread_id != thread_id
-                || i64::try_from(checkpoint.state_revision).ok()
-                    != Some(row.try_get::<i64>("", "state_revision")?)
-                || i64::try_from(checkpoint.history_fence).ok()
-                    != Some(row.try_get::<i64>("", "history_fence")?)
-                || checkpoint.state_revision != checkpoint.state.commit_sequence
-                || checkpoint.history_fence > checkpoint.state_revision
-                || checkpoint.state.usage_summary.applied_sequence > checkpoint.state_revision
-                || !checkpoint.external_bodies.is_empty()
-            {
-                return Err(SessionStoreError::Invalid(
-                    "checkpoint ownership or fence mismatch".into(),
-                ));
-            }
+            let checkpoint = super::thread_checkpoint::decode_migration_checkpoint(row, &thread_id)?;
             let encoded = if indexed == 4 {
                 // Schema 5 only adds fields with explicit defaults. Preserve every saved field,
                 // including producer extensions, instead of reserializing through a moving model.
-                let mut migrated = header;
+                let mut migrated: serde_json::Value = serde_json::from_str(&envelope)?;
                 migrated["schemaVersion"] = serde_json::json!(5);
                 serde_json::to_string(&migrated)?
             } else {
@@ -97,6 +62,9 @@ pub(super) async fn convert_checkpoints(
 pub(super) async fn backfill_task_index(
     tx: &impl ConnectionTrait,
 ) -> Result<(), SessionStoreError> {
+    // Earlier named steps have converted entries and backfilled usage. Recheck the complete source
+    // inside this atomic step as well as before ledger adoption, including checkpoint-only Threads.
+    super::migration_source::validate(tx, super::SESSION_SCHEMA_VERSION).await?;
     tx.execute_unprepared(include_str!("task_index_v12.sql"))
         .await?;
     let mut after_thread = String::new();

@@ -1,30 +1,18 @@
 import 'dart:async';
 
-import 'package:anywork/src/infrastructure/frb/studio_api.dart';
+import 'package:anywork/src/infrastructure/frb/shared/adapter_failure.dart';
+import 'package:anywork/src/infrastructure/frb/shared/feed_connection.dart';
+import 'package:anywork_client/conversation_ports.dart';
+import 'package:anywork_client/resources.dart';
 
-/// Uses Demo's real directory/runtime/content behavior. Only resource ownership
-/// is recorded; this fixture never claims to exercise a native FRB handle.
-class RecordingDemoTransport extends DemoStudioTransport {
-  RecordingDemoTransport() : super(lspActivityLoop: false);
+/// A recording decorator for the demo's concrete Timeline port, not a fake
+/// Studio facade. Composition supplies the demo content owner explicitly.
+final class RecordingDemoTransport implements TimelineTransport {
+  RecordingDemoTransport({required this.timeline});
 
-  /// 本传输打开过的内容连接（按打开顺序）。
+  final TimelineTransport timeline;
   final List<RecordingTimelineConnection> timelines = [];
-  final bootstrapDelivered = Completer<void>();
-  int bootstrapCalls = 0;
-
-  /// 非空时下一次打开的内容连接首帧失败（消费一次）。
   Object? failNextInitial;
-
-  @override
-  Duration get shutdownPhaseDelay => Duration.zero;
-
-  @override
-  Future<StudioBootstrap> readBootstrap() async {
-    bootstrapCalls++;
-    final result = await super.readBootstrap();
-    if (!bootstrapDelivered.isCompleted) bootstrapDelivered.complete();
-    return result;
-  }
 
   @override
   Future<StudioTimelineConnection> openTimeline(String threadId) async {
@@ -32,7 +20,7 @@ class RecordingDemoTransport extends DemoStudioTransport {
     failNextInitial = null;
     final connection = RecordingTimelineConnection(
       threadId: threadId,
-      inner: await super.openTimeline(threadId),
+      inner: await timeline.openTimeline(threadId),
       initialFailure: failure,
     );
     timelines.add(connection);
@@ -40,110 +28,162 @@ class RecordingDemoTransport extends DemoStudioTransport {
   }
 }
 
-/// 记录一条内容连接的生命周期事实：打开、首帧、取帧、查询、取消与真实 join。
-///
-/// 它只替换故障点/门槛，不实现业务内容：正文仍由 demo 的 [`DemoStudioTransport`] 提供。
-class RecordingTimelineConnection implements StudioTimelineConnection {
+/// Injects only transport gates/failures. The inner demo remains the sole
+/// source of content; real native FRB behavior is not claimed by this fixture.
+final class RecordingTimelineConnection implements StudioTimelineConnection {
   RecordingTimelineConnection({
     required this.threadId,
     required this.inner,
     this.initialFailure,
-  });
+    this.onFirstFrameHeld,
+  }) {
+    _connection =
+        AdapterFeedConnection<StudioTimelineFeedFrame, StudioTimelineFeedFrame>(
+          resource: 'recording-timeline',
+          openNativeStream: _openRecordedStream,
+          convert: (frame) => frame,
+          failureFrame: (failure) =>
+              StudioTimelineFeedFrame.failure(error: failure),
+          isTerminal: (frame) => frame is! StudioTimelineFeedData,
+          identity: (frame) => switch (frame) {
+            StudioTimelineFeedData(
+              event: StudioTimelineFeedBaseline(:final baseline),
+            ) =>
+              baseline.subscriptionId,
+            _ => null,
+          },
+          acknowledgeNative: (sequence) async {
+            final value = sequence.toInt();
+            // AdapterFeedConnection already verified this exact int on admission.
+            await inner.ackThrough(value);
+            acks.add(value);
+          },
+          requestNativeClose: inner.requestClose,
+          closeNative: inner.close,
+          retryNativeClose: inner.retryClose,
+          // The inner connection disposes its own native handle after its Clean.
+          disposeNative: () {},
+          mapFailure: _recordingFailure,
+        );
+  }
 
   final String threadId;
   final StudioTimelineConnection inner;
-
-  /// 非空时首帧以该错误收束（消费一次），用于故障注入。
+  late final AdapterFeedConnection<
+    StudioTimelineFeedFrame,
+    StudioTimelineFeedFrame
+  >
+  _connection;
   Object? initialFailure;
+  void Function(Completer<void> gate)? onFirstFrameHeld;
+  Completer<void>? initialGate;
   final nextEntered = Completer<void>();
   final joined = Completer<void>();
-
-  /// 非空时首帧被挂起，用于观察“连接已打开但首帧未到”的中间状态。
-  Completer<void>? initialGate;
-
   int initialCalls = 0;
-  int nextCalls = 0;
   int pageCalls = 0;
   int detailCalls = 0;
   int requestCloseCalls = 0;
   int closeCalls = 0;
-  bool _closed = false;
-
-  /// 非空时由测试脚本提供尾部帧（仍走 production 的唯一内容泵）。
-  bool scriptFrames = false;
-  final List<Completer<StudioTimelineUpdate?>> _scriptedFrames = [];
-
-  /// 非空时由测试脚本提供页结果，用于观察分页在途/失败/去重。
+  int retryCloseCalls = 0;
+  final List<int> acks = [];
   Completer<StudioTimelinePage>? scriptedPage;
 
+  int get nextCalls => acks.length;
+  bool get wasSubscribed => nextEntered.isCompleted;
+
   @override
-  Future<StudioTimelineBaseline> initial() async {
+  Stream<StudioTimelineFeedFrame> get events => _connection.events;
+
+  Stream<StudioTimelineFeedFrame> _openRecordedStream() {
     initialCalls++;
-    await initialGate?.future;
-    final failure = initialFailure;
-    if (failure != null) {
-      initialFailure = null;
-      throw failure;
-    }
-    return inner.initial();
+    final controller = StreamController<StudioTimelineFeedFrame>();
+    final openingSettled = Completer<void>();
+    StreamSubscription<StudioTimelineFeedFrame>? source;
+    controller.onListen = () {
+      nextEntered.complete();
+      // Async setup is a resource responsibility, not a detached callback.
+      // Cancellation below waits its settlement even when the first gate is held.
+      unawaited(
+        Future<void>.sync(() async {
+          try {
+            final gate = initialGate;
+            if (gate != null) {
+              onFirstFrameHeld?.call(gate);
+              await gate.future;
+            }
+            if (_connection.owner.isClosing) return;
+            final failure = initialFailure;
+            initialFailure = null;
+            if (failure != null) throw failure;
+            source = inner.events.listen(
+              controller.add,
+              onError: controller.addError,
+              onDone: () {
+                if (!controller.isClosed) unawaited(controller.close());
+              },
+            );
+          } on Object catch (error, stack) {
+            if (!_connection.owner.isClosing) {
+              controller.addError(_recordingFailure(error), stack);
+              if (!controller.isClosed) unawaited(controller.close());
+            }
+          } finally {
+            openingSettled.complete();
+          }
+        }),
+      );
+    };
+    controller.onCancel = () async {
+      await openingSettled.future;
+      await source?.cancel();
+    };
+    return controller.stream;
   }
 
   @override
-  Future<StudioTimelineUpdate?> next() {
-    nextCalls++;
-    if (!nextEntered.isCompleted) nextEntered.complete();
-    if (scriptFrames) {
-      final pending = Completer<StudioTimelineUpdate?>();
-      _scriptedFrames.add(pending);
-      return pending.future;
-    }
-    return inner.next();
-  }
-
-  void emit(StudioTimelineUpdate? update) {
-    if (_scriptedFrames.isEmpty) throw StateError('No pending content read');
-    _scriptedFrames.removeAt(0).complete(update);
-  }
-
-  void emitError(Object error) {
-    if (_scriptedFrames.isEmpty) throw StateError('No pending content read');
-    _scriptedFrames.removeAt(0).completeError(error);
-  }
+  Future<void> ackThrough(int deliverySequence) =>
+      _connection.ackThrough(deliverySequence);
 
   @override
-  Future<StudioTimelinePage> page({String? before, int? limit}) {
-    pageCalls++;
-    final scripted = scriptedPage;
-    if (scripted != null) return scripted.future;
-    return inner.page(before: before, limit: limit);
-  }
+  Future<StudioTimelinePage> page({String? before, int? limit}) =>
+      _connection.owner.query(() {
+        pageCalls++;
+        return scriptedPage?.future ?? inner.page(before: before, limit: limit);
+      });
 
   @override
   Future<StudioTimelineDetailChunk> readDetail({
     required String itemId,
     required StudioTimelineDetailQuery query,
-  }) {
+  }) => _connection.owner.query(() {
     detailCalls++;
     return inner.readDetail(itemId: itemId, query: query);
-  }
+  });
 
   @override
   void requestClose() {
     requestCloseCalls++;
-    if (_closed) return;
-    _closed = true;
-    inner.requestClose();
-    for (final pending in _scriptedFrames) {
-      if (!pending.isCompleted) pending.complete(null);
-    }
-    _scriptedFrames.clear();
+    _connection.requestClose();
   }
 
   @override
-  Future<void> close() async {
+  Future<FeedCloseReport> close() {
     closeCalls++;
-    requestClose();
-    await inner.close();
-    if (!joined.isCompleted) joined.complete();
+    return _observeJoined(_connection.close());
   }
+
+  @override
+  Future<FeedCloseReport> retryClose() {
+    retryCloseCalls++;
+    return _observeJoined(_connection.retryClose());
+  }
+
+  Future<FeedCloseReport> _observeJoined(Future<FeedCloseReport> result) =>
+      result.then((report) {
+        if (!joined.isCompleted) joined.complete();
+        return report;
+      });
 }
+
+StudioFailure _recordingFailure(Object error) =>
+    adapterFailure(error, operation: 'recording-timeline');

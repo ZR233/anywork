@@ -2,17 +2,13 @@ use crate::api::studio::bridge_runtime::{
     active_bridge, arm_exit_latch, fix_exit_deadline, install_bridge_runtime, installed_bridge,
     late_install_refused, lifecycle_gate, remaining_until,
 };
-use crate::api::studio::convert::runtime::{
-    bridge_shutdown_report, runtime_shutdown_issue, runtime_snapshot,
-};
+use crate::api::studio::convert::runtime::{bridge_shutdown_report, runtime_shutdown_issue};
 use crate::api::studio::types::{
     BridgeError, BridgeExitIntent, BridgeExitReport, BridgePendingPersistence, BridgeShutdownIssue,
     BridgeShutdownOutcome, BridgeShutdownReport, BridgeStateError, BridgeUpdateHandoff, ProjectDto,
-    RuntimeSnapshot,
 };
 use anyhow::Context;
 use flutter_rust_bridge::frb;
-use pl_studio_runtime::StudioRuntimeStateKind;
 use std::time::Instant;
 
 use super::updater::{
@@ -73,38 +69,45 @@ pub async fn prepare_startup_attempt() -> Result<u64, BridgeError> {
 /// 明确失败而不是虚报快照；不重开 runtime、不虚发 `OpeningStorage`，进度流保持
 /// `Ready` 终态。start 在途的失败与任务取消都把本尝试落为 `Failed` 终态，不会永久
 /// 卡在 in-progress。
-pub async fn start_studio_runtime(attempt: u64) -> Result<RuntimeSnapshot, BridgeError> {
+pub async fn start_studio_runtime(
+    attempt: u64,
+) -> Result<super::super::products::read::startup::BridgeRuntimeReady, BridgeError> {
     match STARTUP.begin_start(attempt)? {
         StartClaim::AlreadyReady => {
             let bridge = installed_bridge()?;
-            // 幂等窗口必须锚定真实 runtime：shutdown 在途/完成后不得返回假成功。
             if bridge.shutdown.is_cancelled() {
                 return Err(BridgeError::runtime_stopped());
             }
-            let snapshot = bridge.studio.runtime_snapshot().await?;
-            if snapshot.state.kind() != StudioRuntimeStateKind::Ready
-                || bridge.shutdown.is_cancelled()
-            {
+            let ready = bridge.studio.runtime_ready(attempt).await?;
+            if bridge.shutdown.is_cancelled() || !STARTUP.attempt_active(attempt) {
                 return Err(BridgeError::runtime_stopped());
             }
-            Ok(runtime_snapshot(snapshot))
+            Ok(ready.into())
         }
         StartClaim::Execute => {
             let mut demote = StartupDemote::new(attempt);
             let bridge = match install_bridge_runtime().await {
                 Ok(bridge) => bridge,
-                // 安装失败也是启动失败：守卫降级把进度流推到 Failed 终态。
-                Err(error) => return Err(error.into()),
+                Err(error) => {
+                    let error = pl_studio_runtime::studio_error_from_anyhow(error);
+                    STARTUP.fail_start_with(attempt, error.clone());
+                    return Err(error.into());
+                }
             };
-            // main 的唯一初始化入口已在安装时返回 Ready runtime：这里只读取 canonical 快照，
-            // 不再调用第二套 start。
-            let snapshot = bridge.studio.runtime_snapshot().await?;
+            let ready = match bridge.studio.runtime_ready(attempt).await {
+                Ok(ready) => ready,
+                Err(error) => {
+                    let error = pl_studio_runtime::studio_error_from_anyhow(error);
+                    STARTUP.fail_start_with(attempt, error.clone());
+                    return Err(error.into());
+                }
+            };
             if bridge.shutdown.is_cancelled() || !STARTUP.attempt_active(attempt) {
                 return Err(BridgeError::runtime_stopped());
             }
             demote.disarm();
             STARTUP.finish_start(attempt);
-            Ok(runtime_snapshot(snapshot))
+            Ok(ready.into())
         }
     }
 }
@@ -146,6 +149,7 @@ pub async fn begin_runtime_exit(remaining_ms: u32) -> Result<(), BridgeError> {
     // installed, so a later `start_studio_runtime` attempt can never publish.
     STARTUP.begin_shutdown();
     if let Some(bridge) = bridge {
+        bridge.configuration_commands.seal();
         // Broadcast native subscription cancellation early (a synchronous token cancel with no
         // await/join): the content streams wind down so Dart's later cancel ACK completes faster.
         // The shutdown-progress stream uses its own token and is deliberately left running until
@@ -191,6 +195,9 @@ pub async fn shutdown_runtime(
     // Invalidate the startup token and wake a pre-active observer before the first await (the
     // bounded lifecycle-gate lock below): once exit has begun no attempt may still publish.
     STARTUP.begin_shutdown();
+    if let Some(bridge) = bridge {
+        bridge.configuration_commands.seal();
+    }
     let started = Instant::now();
 
     // Bounded observation of the lifecycle gate: if initialization is still in flight we give up
@@ -199,7 +206,8 @@ pub async fn shutdown_runtime(
         .await
         .is_ok();
 
-    let mut bridge_issues: Vec<BridgeShutdownIssue> = Vec::new();
+    let mut bridge_issues =
+        super::super::products::feed::startup_transport::close_for_exit(deadline).await;
     let mut owner_id: Option<String> = None;
     let mut save_watermark: Option<u64> = None;
     let external_issues_present = !external_issues.is_empty();
@@ -217,18 +225,22 @@ pub async fn shutdown_runtime(
             bridge.shutdown.cancel();
             let pending_subscriptions = bridge.subscriptions.broadcast_cancel(deadline).await;
             let pending_updates = collect_cancel_update_operations(true).await;
-            // Two independent owner groups (bridge-owned subscriptions and update operations) are
+            // Independent subscriptions, updates and retained configuration calls are
             // observed **concurrently** under the same first deadline: a slow join of one group must
             // not consume the budget before the other group has been observed. Broadcast already
             // happened above, so this is join-only.
-            let (subscription_issues, update_issues) = futures::join!(
+            let (subscription_issues, update_issues, configuration_issues) = futures::join!(
                 bridge
                     .subscriptions
                     .join_cancelled(pending_subscriptions, deadline),
                 observe_update_operations(pending_updates, deadline),
+                bridge
+                    .configuration_commands
+                    .close_for_exit(&bridge.subscriptions, deadline),
             );
             bridge_issues.extend(subscription_issues);
             bridge_issues.extend(update_issues);
+            bridge_issues.extend(configuration_issues);
             // Fold the caller-observed external failures, the early-exit bridge broadcast failures
             // and the bridge-owned ones into the runtime orchestration itself. The runtime finalizer
             // treats any of them as a failed success precondition, so `Clean` (and therefore
@@ -279,7 +291,11 @@ pub async fn shutdown_runtime(
             }
             report
         }
-        None if gate_acquired && !late_install_refused() && !external_issues_present => {
+        None if gate_acquired
+            && !late_install_refused()
+            && !external_issues_present
+            && bridge_issues.is_empty() =>
+        {
             BridgeShutdownReport::not_started()
         }
         None => {
@@ -288,6 +304,7 @@ pub async fn shutdown_runtime(
             // owner. None of these may masquerade as `NotStarted`.
             let mut issues = external_issues;
             issues.extend(take_bridge_early_issues());
+            issues.append(&mut bridge_issues);
             issues.push(bridge_issue(
                 "installation",
                 "deadlineExceeded",
@@ -431,15 +448,9 @@ pub async fn rename_project(project_id: String, name: String) -> Result<ProjectD
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, MutexGuard};
 
-/// 启动进度帧：阶段只归属其 attempt；旧订阅者据此终止而不是接收新一代阶段。
-pub(crate) struct StartupFrame {
-    pub(crate) attempt: u64,
-    pub(crate) stage: super::super::types::BridgeStartupStage,
-}
-
 /// 单一启动 owner：同一时刻至多一个活跃尝试令牌。
 struct StartupOwner {
-    sender: tokio::sync::watch::Sender<StartupFrame>,
+    source: Mutex<Option<std::sync::Arc<pl_studio_runtime::startup::StartupProgressSource>>>,
     phase: Mutex<StartupPhase>,
     next_attempt: AtomicU64,
 }
@@ -491,12 +502,8 @@ static STARTUP: std::sync::LazyLock<StartupOwner> = std::sync::LazyLock::new(Sta
 
 impl StartupOwner {
     fn new() -> Self {
-        let (sender, _) = tokio::sync::watch::channel(StartupFrame {
-            attempt: 0,
-            stage: super::super::types::BridgeStartupStage::OpeningStorage,
-        });
         Self {
-            sender,
+            source: Mutex::new(None),
             phase: Mutex::new(StartupPhase::Initial),
             next_attempt: AtomicU64::new(1),
         }
@@ -521,59 +528,59 @@ impl StartupOwner {
                 "Studio runtime has been shut down; same-process restart is not supported",
             )),
             StartupPhase::Initial | StartupPhase::Prepared { .. } | StartupPhase::Failed { .. } => {
-                let attempt = self.next_attempt.fetch_add(1, Ordering::Relaxed);
+                let attempt = self
+                    .next_attempt
+                    .try_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
+                        value.checked_add(1)
+                    })
+                    .map_err(|_| {
+                        BridgeError::from(pl_protocol::studio::StudioError::new(
+                            pl_protocol::studio::StudioErrorCode::Overloaded,
+                            "Startup attempt identity exhausted",
+                            false,
+                        ))
+                    })?;
                 *phase = StartupPhase::Prepared { attempt };
-                // 新尝试的站立阶段：订阅首帧是本尝试的真实阶段，绝不会先拿到旧终态。
-                self.sender.send_replace(StartupFrame {
+                let mut source = self
+                    .source
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                if let Some(previous) = source.take() {
+                    previous.replaced();
+                }
+                *source = Some(pl_studio_runtime::startup::StartupProgressSource::new(
                     attempt,
-                    stage: super::super::types::BridgeStartupStage::OpeningStorage,
-                });
+                ));
                 Ok(attempt)
             }
         }
     }
 
-    fn subscribe(
+    fn progress_source(
         &self,
         attempt: u64,
-    ) -> Result<tokio::sync::watch::Receiver<StartupFrame>, BridgeError> {
+    ) -> Result<std::sync::Arc<pl_studio_runtime::startup::StartupProgressSource>, BridgeError>
+    {
         let phase = self.lock();
         let current = match *phase {
-            StartupPhase::Initial => {
-                return Err(BridgeError::invalid_argument(
-                    "prepare a startup attempt before subscribing to startup progress",
-                ));
-            }
-            StartupPhase::Prepared { attempt: current }
-            | StartupPhase::Starting { attempt: current }
-            | StartupPhase::Ready { attempt: current } => current,
-            StartupPhase::Failed { attempt: current } => {
-                if attempt == current {
-                    return Err(BridgeError::invalid_argument(
-                        "startup attempt already finished; prepare a new attempt to retry",
-                    ));
-                }
-                return Err(BridgeError::invalid_argument(
-                    "unknown or expired startup attempt",
-                ));
-            }
-            StartupPhase::Stopped { attempt: current } => {
-                if attempt == current {
-                    return Err(BridgeError::invalid_argument(
-                        "startup attempt stopped with the runtime shutdown; same-process restart is not supported",
-                    ));
-                }
-                return Err(BridgeError::invalid_argument(
-                    "unknown or expired startup attempt",
-                ));
+            StartupPhase::Prepared { attempt }
+            | StartupPhase::Starting { attempt }
+            | StartupPhase::Ready { attempt }
+            | StartupPhase::Failed { attempt } => attempt,
+            StartupPhase::Initial | StartupPhase::Stopped { .. } => {
+                return Err(BridgeError::runtime_stopped());
             }
         };
-        if attempt != current {
+        if current != attempt {
             return Err(BridgeError::invalid_argument(
-                "unknown or expired startup attempt",
+                "Unknown or expired startup attempt",
             ));
         }
-        Ok(self.sender.subscribe())
+        self.source
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+            .ok_or_else(BridgeError::not_initialized)
     }
 
     fn begin_start(&self, attempt: u64) -> Result<StartClaim, BridgeError> {
@@ -614,22 +621,40 @@ impl StartupOwner {
         let mut phase = self.lock();
         if matches!(*phase, StartupPhase::Starting { attempt: current } if current == attempt) {
             *phase = StartupPhase::Ready { attempt };
-            self.sender.send_replace(StartupFrame {
-                attempt,
-                stage: super::super::types::BridgeStartupStage::Ready,
-            });
+            if let Some(source) = self
+                .source
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .as_ref()
+            {
+                source.complete();
+            }
         }
     }
 
     /// start 失败或被取消：本尝试落 Failed 终态，重新启动需要新的 prepare。
     fn fail_start(&self, attempt: u64) {
+        self.fail_start_with(
+            attempt,
+            pl_protocol::studio::StudioError::new(
+                pl_protocol::studio::StudioErrorCode::Cancelled,
+                "Startup attempt was cancelled",
+                false,
+            ),
+        );
+    }
+    fn fail_start_with(&self, attempt: u64, error: pl_protocol::studio::StudioError) {
         let mut phase = self.lock();
         if matches!(*phase, StartupPhase::Starting { attempt: current } if current == attempt) {
             *phase = StartupPhase::Failed { attempt };
-            self.sender.send_replace(StartupFrame {
-                attempt,
-                stage: super::super::types::BridgeStartupStage::Failed,
-            });
+            if let Some(source) = self
+                .source
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .as_ref()
+            {
+                source.fail(error);
+            }
         }
     }
 
@@ -646,10 +671,14 @@ impl StartupOwner {
             | StartupPhase::Stopped { attempt } => {
                 *phase = StartupPhase::Stopped { attempt };
                 // 唤醒尚未读到终态的 pre-active 观察者；它们不依赖 runtime 订阅注册表取消。
-                self.sender.send_replace(StartupFrame {
-                    attempt,
-                    stage: super::super::types::BridgeStartupStage::Failed,
-                });
+                if let Some(source) = self
+                    .source
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .as_ref()
+                {
+                    source.runtime_stopped();
+                }
             }
         }
     }
@@ -669,11 +698,15 @@ impl StartupOwner {
     /// runtime 阶段回调只归属当前在途尝试；其他世代来源的阶段不发布。
     fn publish_stage(&self, stage: pl_studio_runtime::StudioStartupStage) {
         let phase = self.lock();
-        if let StartupPhase::Starting { attempt } = *phase {
-            self.sender.send_replace(StartupFrame {
-                attempt,
-                stage: bridge_startup_stage(stage),
-            });
+        if let StartupPhase::Starting { attempt } = *phase
+            && let Some(source) = self
+                .source
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .as_ref()
+            && source.attempt_id() == attempt
+        {
+            source.publish(stage);
         }
     }
 }
@@ -683,51 +716,9 @@ pub(crate) fn publish_startup_stage(stage: pl_studio_runtime::StudioStartupStage
     STARTUP.publish_stage(stage);
 }
 
-/// 启动进度 watch 的订阅入口；`RustLib.init` 后、runtime 安装前即可使用。
-pub(crate) fn subscribe_startup_attempt(
+/// Returns the exact native source owned by the original attempt coordinator.
+pub(crate) fn startup_progress_source(
     attempt: u64,
-) -> Result<tokio::sync::watch::Receiver<StartupFrame>, BridgeError> {
-    STARTUP.subscribe(attempt)
-}
-
-/// startup 进度流在交付 `Ready` 终态前核对令牌仍有效（shutdown 开始即失效）。
-pub(crate) fn startup_attempt_active(attempt: u64) -> bool {
-    STARTUP.attempt_active(attempt)
-}
-
-fn bridge_startup_stage(
-    stage: pl_studio_runtime::StudioStartupStage,
-) -> super::super::types::BridgeStartupStage {
-    use super::super::types::BridgeStartupStage as Target;
-    use pl_studio_runtime::StudioStartupStage as Source;
-    match stage {
-        Source::Preparing => Target::Preparing,
-        Source::WaitingForSteps => Target::WaitingForSteps,
-        Source::ClosingResources => Target::ClosingResources,
-        Source::BackingUp => Target::BackingUp,
-        Source::Resetting => Target::Resetting,
-        Source::StartingServices => Target::StartingServices,
-        Source::OpeningStorage => Target::OpeningStorage,
-        Source::LoadingConfiguration => Target::LoadingConfiguration,
-        Source::ReadingProjects => Target::ReadingProjects,
-        Source::PreparingResources => Target::PreparingResources,
-        Source::Ready => Target::Ready,
-        Source::Failed => Target::Failed,
-    }
-}
-
-pub async fn read_recovery_state()
--> Result<super::super::types::BridgeRecoveryStateSnapshot, BridgeError> {
-    let bridge = active_bridge().await?;
-    Ok(super::super::convert::runtime::bridge_recovery_state(
-        bridge.studio.read_recovery_state().state,
-    ))
-}
-
-pub async fn retry_recovery()
--> Result<super::super::types::BridgeRecoveryStateSnapshot, BridgeError> {
-    let bridge = active_bridge().await?;
-    Ok(super::super::convert::runtime::bridge_recovery_state(
-        bridge.studio.retry_recovery().await?.state,
-    ))
+) -> Result<std::sync::Arc<pl_studio_runtime::startup::StartupProgressSource>, BridgeError> {
+    STARTUP.progress_source(attempt)
 }

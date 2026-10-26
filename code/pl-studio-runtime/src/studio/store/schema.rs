@@ -5,10 +5,25 @@ use sea_orm_migration::{MigrationName, MigrationTrait, MigratorTrait, SchemaMana
 
 pub(in crate::studio) const STUDIO_DATABASE_SCHEMA_VERSION: i64 = 25;
 
+// The framework owns only its ledger table and SQLite's implicit indexes. An attached user
+// trigger or a user-created index/view is not bookkeeping, even when tbl_name names the ledger.
+pub(super) const USER_SCHEMA_OBJECTS: &str = "name NOT LIKE 'sqlite_%'
+    AND type IN ('table', 'index', 'view', 'trigger')
+    AND NOT (type = 'table' AND name = 'seaql_migrations')
+    AND sql IS NOT NULL";
+
 pub(super) async fn preflight(db: &DatabaseConnection) -> Result<()> {
     let version = version(db).await?;
     if version == 0 {
-        ensure!(db.query_one_raw(Statement::from_string(DatabaseBackend::Sqlite, "SELECT 1 FROM sqlite_schema WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name<>'seaql_migrations' LIMIT 1")).await?.is_none(), "unversioned nonempty Studio database; existing data preserved");
+        ensure!(
+            db.query_one_raw(Statement::from_string(
+                DatabaseBackend::Sqlite,
+                format!("SELECT 1 FROM sqlite_schema WHERE {USER_SCHEMA_OBJECTS} LIMIT 1"),
+            ))
+            .await?
+            .is_none(),
+            "unversioned nonempty Studio database; existing data preserved"
+        );
         ensure!(
             Migrator::get_applied_migrations_read_only(db)
                 .await?
@@ -37,6 +52,11 @@ pub(super) async fn preflight(db: &DatabaseConnection) -> Result<()> {
         !pending.is_empty() || version == STUDIO_DATABASE_SCHEMA_VERSION,
         "Studio format conflicts with completed migrations; existing data preserved"
     );
+    if version != 0 {
+        // Validate the original format before Migrator::up can create its ledger or commit a
+        // pending step. The same validator checks current files and their historical structures.
+        return super::project::validate_database_version(db, version).await;
+    }
     for row in db
         .query_all_raw(Statement::from_string(
             DatabaseBackend::Sqlite,
@@ -48,6 +68,30 @@ pub(super) async fn preflight(db: &DatabaseConnection) -> Result<()> {
             row.try_get_by_index::<String>(0)? == "ok",
             "Studio database integrity check failed"
         );
+    }
+    Ok(())
+}
+
+/// Builds a validation reference only in the caller's new, isolated memory database.
+/// Published historical fingerprints must not depend on the future production migration list.
+pub(super) async fn create_reference_schema(db: &DatabaseConnection, version: i64) -> Result<()> {
+    const DIRECTORY: &str = "ALTER TABLE threads DROP COLUMN last_user_message_at";
+    const DELEGATION: &str = "ALTER TABLE threads DROP COLUMN delegation_mode;
+        ALTER TABLE threads DROP COLUMN delegation_preference;
+        ALTER TABLE threads DROP COLUMN frozen_model_json;
+        DROP TABLE agent_evaluations;";
+    const EXPLICIT_CLOSE: &str = "ALTER TABLE threads DROP COLUMN explicitly_closed";
+    let historical: &[&str] = match version {
+        22 => &[DIRECTORY, DELEGATION, EXPLICIT_CLOSE],
+        23 => &[DELEGATION, EXPLICIT_CLOSE],
+        24 => &[EXPLICIT_CLOSE],
+        25 => &[],
+        _ => anyhow::bail!("unsupported Studio schema reference version {version}"),
+    };
+    db.execute_unprepared(include_str!("product_schema.sql")).await?;
+    db.execute_unprepared(include_str!("agent_evaluations.sql")).await?;
+    for sql in historical {
+        db.execute_unprepared(sql).await?;
     }
     Ok(())
 }
@@ -82,7 +126,7 @@ async fn version(db: &impl ConnectionTrait) -> Result<i64, DbErr> {
     .try_get_by_index(0)
 }
 
-struct Migrator;
+pub(super) struct Migrator;
 impl MigratorTrait for Migrator {
     fn migrations() -> Vec<Box<dyn MigrationTrait>> {
         vec![

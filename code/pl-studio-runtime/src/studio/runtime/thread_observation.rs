@@ -8,24 +8,32 @@
 //! nor waits for the disk. Durable history is read back once when the projection is installed on a
 //! Thread whose work started earlier, and by the explicit cold recovery of an unloaded child.
 mod billing;
+mod close;
 mod directory;
+mod failure;
+mod fences;
+mod hosted;
 mod reports;
 
+pub(crate) use failure::ObservationCloseFailure;
+pub(super) use failure::{ProgressFailure, RetryPoint};
+use fences::{HistoryFence, ObservationFence, ProjectionFences, WriteFence};
+
+use super::background_task::BackgroundTask;
 use super::{ModelPerformanceOwner, StudioRuntime};
 use crate::studio::{ProductEventBus, StudioStore};
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result};
 use pl_core::chat::Session;
 use pl_core::thread::{
     ThreadHandle, ThreadLifecycle, ThreadSnapshot, UsageSummary, cold::ThreadWrite,
 };
 use std::{
     collections::BTreeMap,
+    num::NonZeroU64,
     sync::{Arc, Mutex},
 };
-use tokio::{
-    sync::{Notify, broadcast, watch},
-    task::JoinHandle,
-};
+use tokio::sync::{Notify, broadcast, watch};
+pub(in crate::studio::runtime) mod facets;
 
 use crate::studio::storage::thread_writer::HistoryChannel;
 use crate::studio::thread_projection::{LiveEvent, LiveProjection, storage_state};
@@ -74,6 +82,8 @@ pub(in crate::studio) enum ThreadLiveEvent {
 /// session at the same time. Subscribers therefore forward typed events and never project, publish
 /// or read the effect window themselves.
 pub(in crate::studio) struct ThreadLiveFeed {
+    mode: pl_protocol::thread_facets::identity::ThreadObservationMode,
+    facets: Result<Arc<facets::ThreadFacetSources>, pl_protocol::studio::StudioError>,
     events: broadcast::Sender<ThreadLiveEvent>,
     /// The Thread's authoritative typed storage state, published by this owner only.
     ///
@@ -97,11 +107,19 @@ pub(in crate::studio) struct ThreadLiveFeed {
 }
 
 impl ThreadLiveFeed {
-    fn new(storage: Option<pl_protocol::ThreadStorageState>) -> Self {
+    fn new(
+        storage: Option<pl_protocol::ThreadStorageState>,
+        ids: &super::observation_ids::ObservationIds,
+        mode: pl_protocol::thread_facets::identity::ThreadObservationMode,
+        reads: &super::thread_reads::lifetime::ThreadReadRegistry,
+        thread_id: &str,
+    ) -> Self {
         let (events, _) = broadcast::channel(LIVE_FEED_FRAMES);
         let (storage, _) = watch::channel(storage);
         let (last_turn, _) = watch::channel(None);
         Self {
+            mode,
+            facets: facets::ThreadFacetSources::new(ids, reads, thread_id),
             events,
             storage,
             last_turn,
@@ -162,27 +180,42 @@ impl ThreadLiveFeed {
 
     /// Tells every subscriber that the owner re-seeded and continuity is no longer provable.
     fn rebase(&self, dropped: u64) {
+        if let Ok(facets) = &self.facets {
+            facets
+                .execution
+                .resync(pl_protocol::thread_facets::identity::ResyncReason::SourceLagged);
+            facets
+                .authoring
+                .resync(pl_protocol::thread_facets::identity::ResyncReason::SourceLagged);
+            facets
+                .configuration
+                .resync(pl_protocol::thread_facets::identity::ResyncReason::SourceLagged);
+            facets
+                .context
+                .resync(pl_protocol::thread_facets::identity::ResyncReason::SourceLagged);
+        }
         self.publish(ThreadLiveEvent::Rebase { dropped });
     }
 }
 
-#[derive(Clone, Default)]
-struct Progress {
-    initialized: bool,
-    applied: u64,
+#[derive(Debug, Clone, Default)]
+pub(in crate::studio::runtime) struct Progress {
+    pub(in crate::studio::runtime) initialized: bool,
+    pub(in crate::studio::runtime) applied: u64,
     /// Newest commit this projection owner had handed over when it applied `applied`.
     ///
     /// The durable barrier of a settled observation waits for exactly this ticket. It is not the
     /// absolute commit watermark: a Thread re-activated in this process starts from a fresh reliable
     /// channel whose commits are already durable, so waiting for the checkpoint's sequence would wait
     /// for a watermark that can never move.
-    handoff: u64,
-    error: Option<Arc<anyhow::Error>>,
-    finished: bool,
+    pub(in crate::studio::runtime) handoff: u64,
+    pub(in crate::studio::runtime) error: Option<Arc<ProgressFailure>>,
+    pub(in crate::studio::runtime) finished: bool,
 }
 struct WorkerState {
     progress: watch::Sender<Progress>,
     retry: Notify,
+    fence: Mutex<Option<Arc<ObservationFence>>>,
     /// The Thread's reliable admission channel, shared with its history writer.
     ///
     /// A settled observation reads a finished Turn back from history, and its own barrier has to ask
@@ -194,28 +227,27 @@ struct WorkerState {
 struct Observation {
     thread: ThreadHandle,
     state: Arc<WorkerState>,
-    task: Mutex<Option<JoinHandle<()>>>,
+    feed: Arc<ThreadLiveFeed>,
+    task: Arc<BackgroundTask>,
 }
 impl Drop for Observation {
     fn drop(&mut self) {
-        if let Some(task) = self
-            .task
-            .get_mut()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .take()
-        {
-            task.abort();
-        }
+        self.task.signal();
     }
 }
 #[derive(Clone)]
 pub(super) struct ObservationServices {
+    /// Invalidates hosted indexes only; all interaction facts stay in their original core owner.
+    pub(super) hosted_updates: tokio::sync::watch::Sender<()>,
     pub(super) config: crate::config::ConfigRuntime,
+    pub(super) thread_modes: crate::mode::ThreadModeManager,
+    pub(super) observation_ids: super::observation_ids::ObservationIds,
     pub(super) recovery: crate::studio::StudioRecoveryRegistry,
     pub(super) store: StudioStore,
     pub(super) events: ProductEventBus,
     pub(super) performance: ModelPerformanceOwner,
-    pub(super) threads: crate::thread_assembler::StudioThreadAssembler,
+    pub(super) threads: crate::thread_assembler::WeakStudioThreadAssembler,
+    pub(super) thread_factory: crate::studio::thread_factory::StudioThreadFactory,
     pub(super) writer: crate::studio::agent_host::ThreadWriteBehindWriter,
 }
 struct Shared {
@@ -223,17 +255,139 @@ struct Shared {
     observations: Mutex<BTreeMap<String, Vec<Arc<Observation>>>>,
     /// One feed per currently observed Thread; removed when the Thread is drained.
     live: Mutex<BTreeMap<String, Arc<ThreadLiveFeed>>>,
+    /// Frozen checkpoint projections never borrow or replace a live execution projection. They
+    /// own a separate read incarnation, but no Thread handle, writer or observation worker.
+    cold: Mutex<BTreeMap<String, ColdEntry>>,
+    reads: super::thread_reads::lifetime::ThreadReadRegistry,
+    empty_fence: Mutex<Option<Arc<WriteFence>>>,
 }
 #[derive(Clone)]
 pub(super) struct ThreadObservations(Arc<Shared>);
 
+impl ObservationCloseFailure {
+    /// After this exact drain request resumes successfully, finish its original callback's
+    /// remaining binding retirement. Caller retains the original Thread operation/cleanup gates.
+    pub(crate) fn finish_original_drain(&self, thread_id: &str) {
+        self.request
+            .owner()
+            .0
+            .projector
+            .thread_factory
+            .forget_tool_binding(thread_id);
+    }
+}
+
+struct ColdEntry {
+    facets: Arc<facets::ThreadFacetSources>,
+    /// Registered logical borrows, including admission guards. Arc clones are only memory
+    /// references and never decide whether this checkpoint generation remains reusable.
+    borrows: NonZeroU64,
+}
+
+/// Source acquisition and a final Cold borrow's retirement share the Cold registry guard. A lease
+/// is moved into the accepted feed/scope, or rolls back on every failed admission path.
+/// It is intentionally not Clone; feed samples may share an Arc of the same registered lease.
+pub(super) struct ThreadFacetLease {
+    owner: std::sync::Weak<Shared>,
+    thread_id: String,
+    facets: Arc<facets::ThreadFacetSources>,
+    mode: pl_protocol::thread_facets::identity::ThreadObservationMode,
+}
+
+impl ThreadFacetLease {
+    pub(super) fn source(&self) -> &facets::ThreadFacetSources {
+        &self.facets
+    }
+    pub(super) fn thread_id(&self) -> &str {
+        &self.thread_id
+    }
+    pub(super) fn mode(&self) -> pl_protocol::thread_facets::identity::ThreadObservationMode {
+        self.mode
+    }
+
+    pub(super) fn open_read<M: Send + Sync + 'static>(
+        self,
+        revision: u64,
+        material: impl FnOnce(pl_protocol::thread_facets::identity::ReadScopeIdentity) -> M,
+        residency: super::residency::ThreadResidencyPins,
+    ) -> Result<
+        (
+            Arc<super::thread_reads::lifetime::ThreadReadOwner>,
+            Arc<super::thread_reads::lifetime::PinnedMaterial<M>>,
+        ),
+        pl_protocol::studio::StudioError,
+    > {
+        // Keep the receiver's allocation alive while moving the actual borrow into the scope.
+        // On refusal, Group.open drops this lease after its admission locks; this Arc is not a
+        // logical borrow and cannot suppress retirement when that rollback is the last lease.
+        let facets = self.facets.clone();
+        facets.reads.open(revision, material, self, residency)
+    }
+}
+
+impl Drop for ThreadFacetLease {
+    fn drop(&mut self) {
+        if self.mode == pl_protocol::thread_facets::identity::ThreadObservationMode::Cold
+            && let Some(owner) = self.owner.upgrade()
+        {
+            ThreadObservations(owner).release_cold_lease(self);
+        }
+    }
+}
+
 impl ThreadObservations {
-    pub(super) fn new(projector: ObservationServices) -> Self {
+    pub(super) async fn cold_hosted_interactions(
+        &self,
+        host: &str,
+    ) -> Result<Vec<Arc<pl_protocol::InteractionRequest>>> {
+        Ok(hosted::collect(&self.0.projector, host, &[]).await?.0)
+    }
+
+    pub(super) fn new(
+        projector: ObservationServices,
+        reads: super::read_scopes::ReadScopeRegistry,
+    ) -> Self {
         Self(Arc::new(Shared {
             projector,
             observations: Mutex::new(BTreeMap::new()),
             live: Mutex::new(BTreeMap::new()),
+            cold: Mutex::new(BTreeMap::new()),
+            reads: super::thread_reads::lifetime::ThreadReadRegistry::new(reads),
+            empty_fence: Mutex::new(None),
         }))
+    }
+
+    fn live_lease(
+        &self,
+        thread_id: &str,
+        facets: Arc<facets::ThreadFacetSources>,
+    ) -> ThreadFacetLease {
+        ThreadFacetLease {
+            owner: Arc::downgrade(&self.0),
+            thread_id: thread_id.to_owned(),
+            facets,
+            mode: pl_protocol::thread_facets::identity::ThreadObservationMode::Live,
+        }
+    }
+
+    /// Called only with the Cold registry held, before the source can escape to a reader.
+    fn borrow_cold(&self, thread_id: &str, entry: &mut ColdEntry) -> Result<ThreadFacetLease> {
+        let thread_id = thread_id.to_owned();
+        let next = entry.borrows.checked_add(1).ok_or_else(|| {
+            pl_protocol::studio::StudioError::new(
+                pl_protocol::studio::StudioErrorCode::Overloaded,
+                "Cold projection borrow counter is exhausted",
+                false,
+            )
+        })?;
+        let lease = ThreadFacetLease {
+            owner: Arc::downgrade(&self.0),
+            thread_id,
+            facets: entry.facets.clone(),
+            mode: pl_protocol::thread_facets::identity::ThreadObservationMode::Cold,
+        };
+        entry.borrows = next;
+        Ok(lease)
     }
 
     /// The live feed of one observed Thread, if its projection owner was installed.
@@ -243,25 +397,333 @@ impl ThreadObservations {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .get(id)
+            .filter(|feed| {
+                feed.mode == pl_protocol::thread_facets::identity::ThreadObservationMode::Live
+            })
             .cloned()
+    }
+
+    pub(super) fn live_facet_lease(&self, id: &str) -> Result<Option<ThreadFacetLease>> {
+        self.0
+            .live
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(id)
+            .map(|feed| {
+                feed.facets
+                    .as_ref()
+                    .map(|facets| self.live_lease(id, facets.clone()))
+                    .map_err(|error| anyhow::Error::new(error.clone()))
+            })
+            .transpose()
+    }
+
+    /// Match the concrete physical handle captured by assembly, not a later current Thread ID.
+    pub(super) fn execution_lease_for(&self, handle: &ThreadHandle) -> Result<ThreadFacetLease> {
+        let observations = self
+            .0
+            .observations
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        for (id, entries) in observations.iter() {
+            if let Some(observation) = entries
+                .iter()
+                .rev()
+                .find(|entry| entry.thread.same_instance(handle))
+            {
+                let facets = observation
+                    .feed
+                    .facets
+                    .as_ref()
+                    .map_err(|error| anyhow::Error::new(error.clone()))?;
+                facets.execution.ensure_open()?;
+                return Ok(self.live_lease(id, facets.clone()));
+            }
+        }
+        Err(pl_protocol::studio::StudioError::new(
+            pl_protocol::studio::StudioErrorCode::Unavailable,
+            "The original Thread execution observation is not installed",
+            true,
+        )
+        .into())
+    }
+
+    pub(super) fn execution_sources_at(
+        &self,
+        id: &str,
+        origin: &pl_protocol::thread_facets::identity::ThreadFacetStamp,
+    ) -> Result<Option<ThreadFacetLease>> {
+        let live = self
+            .0
+            .live
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(id)
+            .and_then(|feed| match &feed.facets {
+                Ok(facets) if facets.execution.matches_origin(origin) => {
+                    Some(self.live_lease(id, facets.clone()))
+                }
+                Ok(_) | Err(_) => None,
+            });
+        if live.is_some() {
+            return Ok(live);
+        }
+        let mut entries = self
+            .0
+            .cold
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        match entries.get_mut(id) {
+            Some(entry) if entry.facets.execution.matches_origin(origin) => {
+                entry.facets.execution.ensure_open()?;
+                self.borrow_cold(id, entry).map(Some)
+            }
+            Some(_) | None => Ok(None),
+        }
+    }
+
+    /// Authoring reads resolve the original live/cold incarnation, not an ID's newer current entry.
+    pub(super) fn authoring_sources_at(
+        &self,
+        id: &str,
+        origin: &pl_protocol::thread_facets::identity::ThreadFacetStamp,
+    ) -> Result<Option<ThreadFacetLease>> {
+        let live = self
+            .0
+            .live
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(id)
+            .and_then(|feed| match &feed.facets {
+                Ok(facets) if facets.authoring.matches_origin(origin) => {
+                    Some(self.live_lease(id, facets.clone()))
+                }
+                Ok(_) | Err(_) => None,
+            });
+        if live.is_some() {
+            return Ok(live);
+        }
+        let mut entries = self
+            .0
+            .cold
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        match entries.get_mut(id) {
+            Some(entry) if entry.facets.authoring.matches_origin(origin) => {
+                entry.facets.authoring.ensure_open()?;
+                self.borrow_cold(id, entry).map(Some)
+            }
+            Some(_) | None => Ok(None),
+        }
+    }
+
+    /// Configuration details resolve only the original live/cold entry; never load current by ID.
+    pub(super) fn configuration_sources_at(
+        &self,
+        id: &str,
+        origin: &pl_protocol::thread_facets::identity::ThreadFacetStamp,
+    ) -> Result<Option<ThreadFacetLease>> {
+        let live = self
+            .0
+            .live
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(id)
+            .and_then(|feed| match &feed.facets {
+                Ok(facets) if facets.configuration.matches_origin(origin) => {
+                    Some(self.live_lease(id, facets.clone()))
+                }
+                Ok(_) | Err(_) => None,
+            });
+        if live.is_some() {
+            return Ok(live);
+        }
+        let mut entries = self
+            .0
+            .cold
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        match entries.get_mut(id) {
+            Some(entry) if entry.facets.configuration.matches_origin(origin) => {
+                entry.facets.configuration.ensure_open()?;
+                self.borrow_cold(id, entry).map(Some)
+            }
+            Some(_) | None => Ok(None),
+        }
+    }
+
+    /// Context uses its original observation incarnation, including checkpoint-backed Cold reads.
+    pub(super) fn context_sources_at(
+        &self,
+        id: &str,
+        origin: &pl_protocol::thread_facets::identity::ThreadFacetStamp,
+    ) -> Result<Option<ThreadFacetLease>> {
+        let live = self
+            .0
+            .live
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(id)
+            .and_then(|feed| match &feed.facets {
+                Ok(facets) if facets.context.matches_origin(origin) => {
+                    Some(self.live_lease(id, facets.clone()))
+                }
+                Ok(_) | Err(_) => None,
+            });
+        if live.is_some() {
+            return Ok(live);
+        }
+        let mut entries = self
+            .0
+            .cold
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        match entries.get_mut(id) {
+            Some(entry) if entry.facets.context.matches_origin(origin) => {
+                entry.facets.context.ensure_open()?;
+                self.borrow_cold(id, entry).map(Some)
+            }
+            Some(_) | None => Ok(None),
+        }
+    }
+
+    /// A ref resolves only its original metrics incarnation, even when both modes coexist. An
+    /// unrelated failed Live allocation must not hide a valid checkpoint-backed Cold origin.
+    /// The returned admission lease is registered before identity validation or scope budgeting.
+    pub(super) fn metrics_sources_at(
+        &self,
+        id: &str,
+        origin: &pl_protocol::thread_facets::identity::ThreadFacetStamp,
+    ) -> Result<Option<ThreadFacetLease>> {
+        let live = self
+            .0
+            .live
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(id)
+            .and_then(|feed| match &feed.facets {
+                Ok(facets) if facets.metrics.matches_origin(origin) => {
+                    Some(self.live_lease(id, facets.clone()))
+                }
+                Ok(_) | Err(_) => None,
+            });
+        if live.is_some() {
+            return Ok(live);
+        }
+        let mut entries = self
+            .0
+            .cold
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        match entries.get_mut(id) {
+            Some(entry) if entry.facets.metrics.matches_origin(origin) => {
+                entry.facets.metrics.ensure_open()?;
+                self.borrow_cold(id, entry).map(Some)
+            }
+            Some(_) | None => Ok(None),
+        }
+    }
+
+    /// Reserve the unique cold entry before its first storage await. A concurrent caller reuses
+    /// that Pending source; only its opening owner performs the immutable checkpoint read.
+    pub(super) fn cold_facet_sources(&self, id: &str) -> Result<(ThreadFacetLease, bool)> {
+        let mut entries = self
+            .0
+            .cold
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(entry) = entries.get_mut(id) {
+            entry.facets.metrics.ensure_open()?;
+            return Ok((self.borrow_cold(id, entry)?, false));
+        }
+        let facets =
+            facets::ThreadFacetSources::new(&self.0.projector.observation_ids, &self.0.reads, id)?;
+        let lease = ThreadFacetLease {
+            owner: Arc::downgrade(&self.0),
+            thread_id: id.to_owned(),
+            facets: facets.clone(),
+            mode: pl_protocol::thread_facets::identity::ThreadObservationMode::Cold,
+        };
+        entries.insert(
+            id.to_owned(),
+            ColdEntry {
+                facets,
+                borrows: NonZeroU64::MIN,
+            },
+        );
+        Ok((lease, true))
+    }
+
+    /// A failed opening published no baseline. Later retry gets a new original incarnation,
+    /// rather than retaining an unchangeable transient read failure as the current cold owner.
+    pub(super) fn discard_cold_sources(&self, lease: &ThreadFacetLease) {
+        let entries = self
+            .0
+            .cold
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(entry) = entries.get(&lease.thread_id)
+            && Arc::ptr_eq(&entry.facets, &lease.facets)
+        {
+            // Seal this failed generation, but keep its admission bookkeeping until all guards
+            // roll back. No failed opening can detach a still-registered borrow from its entry.
+            entry
+                .facets
+                .close(pl_protocol::thread_facets::identity::FeedClosedReason::OwnerReplaced);
+        }
+    }
+
+    fn release_cold_lease(&self, lease: &ThreadFacetLease) {
+        let retired = {
+            let mut entries = self
+                .0
+                .cold
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let remove = match entries.get_mut(&lease.thread_id) {
+                Some(entry) if Arc::ptr_eq(&entry.facets, &lease.facets) => {
+                    // A stored entry always has at least one registered lease. Removal, rather
+                    // than publishing zero, linearizes against every new Cold acquisition.
+                    match NonZeroU64::new(entry.borrows.get() - 1) {
+                        Some(remaining) => {
+                            entry.borrows = remaining;
+                            false
+                        }
+                        None => true,
+                    }
+                }
+                Some(_) | None => false,
+            };
+            if remove {
+                entries.remove(&lease.thread_id).map(|entry| entry.facets)
+            } else {
+                None
+            }
+        };
+        if let Some(facets) = retired {
+            // Close only the removed generation, outside the registry lock. A new incarnation
+            // may already be registered; neither its lease count nor its source is touched here.
+            facets.close(pl_protocol::thread_facets::identity::FeedClosedReason::Requested);
+        }
     }
 
     pub(super) fn install(
         &self,
-        thread_factory: crate::studio::thread_factory::StudioThreadFactory,
         rejected_tools: super::rejected_tools::RejectedToolOwners,
     ) -> Result<()> {
+        let thread_factory = self.0.projector.thread_factory.clone();
         let owner = Arc::downgrade(&self.0);
         let draining = owner.clone();
         let message_store = self.0.projector.store.clone();
         let closing_factory = thread_factory.clone();
-        self.0.projector.threads.observe_assembly(
+        let threads = self.0.projector.threads.upgrade()?;
+        threads.observe_assembly(
             move |id, thread| {
                 if let Some(owner) = owner.upgrade() {
                     ThreadObservations(owner).observe(id, thread);
                 }
             },
-            move |id| {
+            move |id: String| {
                 let owner = draining.clone();
                 let thread_factory = thread_factory.clone();
                 Box::pin(async move {
@@ -270,16 +732,15 @@ impl ThreadObservations {
                         .ok_or(crate::thread_assembler::ThreadAssemblyError::Closed)?;
                     let observations = ThreadObservations(owner);
                     observations
-                        .synchronize(Some(&id))
+                        .drain(&id)
                         .await
                         .map_err(|source| {
                             crate::thread_assembler::ThreadAssemblyError::Resource {
                                 operation: "drain Thread product observation",
-                                source: source.into_boxed_dyn_error(),
+                                source: source.into(),
                             }
                         })?;
                     thread_factory.forget_tool_binding(&id);
-                    observations.drain(&id);
                     Ok(())
                 })
             },
@@ -326,7 +787,7 @@ impl ThreadObservations {
                     ))
                 })
             })),
-            move |id, thread| {
+            move |id: String, thread: ThreadHandle| {
                 // Cancellation is synchronous, so no new preparation can pass the gate.
                 let gate = closing_factory.stop_tool_operation(&id);
                 let rejected = rejected_tools.clone();
@@ -347,19 +808,10 @@ impl ThreadObservations {
     /// registry released the owner would keep every session that was ever activated resident. The
     /// entry is removed once its final projection is durable, so a later re-activation installs a
     /// fresh observation instead of reusing the released handle.
-    fn drain(&self, id: &str) {
-        let mut all = self
-            .0
-            .observations
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        all.remove(id);
-        drop(all);
-        self.0
-            .live
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .remove(id);
+    async fn drain(&self, id: &str) -> Result<(), ObservationCloseFailure> {
+        let entries = self.observations(Some(id));
+        let request = self.close_request(close::CloseKind::Drain, &entries);
+        self.execute_close_request(request, None).await
     }
 
     fn observe(&self, id: String, thread: ThreadHandle) {
@@ -379,6 +831,7 @@ impl ThreadObservations {
         let state = Arc::new(WorkerState {
             progress,
             retry: Notify::new(),
+            fence: Mutex::new(None),
             channel,
         });
         // Seed the feed with the newest typed storage state the coordinator already reports, so a
@@ -394,31 +847,69 @@ impl ThreadObservations {
             .iter()
             .find(|detail| detail.thread_id == id)
             .map(|detail| storage_state(&thread.snapshot(), detail));
-        let feed = Arc::new(ThreadLiveFeed::new(initial_storage));
-        self.0
+        let feed = Arc::new(ThreadLiveFeed::new(
+            initial_storage,
+            &self.0.projector.observation_ids,
+            pl_protocol::thread_facets::identity::ThreadObservationMode::Live,
+            &self.0.reads,
+            &id,
+        ));
+        let previous = self
+            .0
             .live
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .insert(id.clone(), feed.clone());
+        if let Some(previous) = previous
+            && let Ok(facets) = &previous.facets
+        {
+            facets.close(pl_protocol::thread_facets::identity::FeedClosedReason::OwnerReplaced);
+        }
         let worker_state = state.clone();
         let projector = self.0.projector.clone();
         let worker_thread = thread.clone();
         let worker_id = id.clone();
+        let worker_feed = feed.clone();
         let task = tokio::spawn(async move {
-            run(
+            use futures::FutureExt;
+            let failure_feed = worker_feed.clone();
+            let result = std::panic::AssertUnwindSafe(run(
                 projector,
                 worker_id,
                 worker_thread,
                 worker_state,
                 recovered_through,
-                feed,
-            )
+                worker_feed,
+            ))
+            .catch_unwind()
             .await;
+            if let Err(panic) = result {
+                if let Ok(facets) = &failure_feed.facets {
+                    facets
+                        .metrics
+                        .fail(pl_protocol::studio::StudioError::internal());
+                    facets
+                        .execution
+                        .fail(pl_protocol::studio::StudioError::internal());
+                    facets
+                        .authoring
+                        .fail(pl_protocol::studio::StudioError::internal());
+                    facets
+                        .configuration
+                        .fail(pl_protocol::studio::StudioError::internal());
+                    facets
+                        .context
+                        .fail(pl_protocol::studio::StudioError::internal());
+                }
+                // Publish the facet's failure, but preserve the real failed join for drain/exit.
+                std::panic::resume_unwind(panic);
+            }
         });
         let observation = Arc::new(Observation {
             thread,
             state,
-            task: Mutex::new(Some(task)),
+            feed,
+            task: BackgroundTask::new(task),
         });
         let mut all = self
             .0
@@ -426,71 +917,32 @@ impl ThreadObservations {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let previous = all.entry(id).or_default();
-        previous.retain(|entry| {
-            let progress = entry.state.progress.borrow();
-            !progress.finished || progress.error.is_some()
-        });
+        // A final frame and successful task alone do not settle the original history/read
+        // obligations. Only exact-Arc drain after all its fences/scopes are Clean retires it.
         previous.push(observation);
     }
 
     async fn synchronize(&self, id: Option<&str>) -> Result<()> {
-        self.0.projector.writer.retry_now();
-        let observations: Vec<_> = self
-            .0
+        let observations = self.observations(id);
+        self.synchronize_entries(&observations).await
+    }
+
+    fn observations(&self, id: Option<&str>) -> Vec<(String, Arc<Observation>)> {
+        self.0
             .observations
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .iter()
             .filter(|(key, _)| id.is_none_or(|id| id == key.as_str()))
             .flat_map(|(id, entries)| entries.iter().map(|entry| (id.clone(), entry.clone())))
-            .collect();
-        for (id, observation) in observations {
-            let target_snapshot = observation.thread.snapshot();
-            let target = target_snapshot.commit_sequence;
-            let mut progress = observation.state.progress.subscribe();
-            observation.state.progress.send_modify(|progress| {
-                if !progress.finished {
-                    progress.error = None;
-                }
-            });
-            observation.state.retry.notify_one();
-            let durable_through = loop {
-                let state = progress.borrow().clone();
-                if let Some(error) = state.error {
-                    bail!("Thread {id} product observation failed: {error:#}");
-                }
-                if state.initialized
-                    && state.applied >= target
-                    && (target_snapshot.lifecycle != ThreadLifecycle::Closed || state.finished)
-                {
-                    break state.handoff;
-                }
-                if state.finished {
-                    bail!("Thread {id} product observer ended before commit {target}");
-                }
-                progress
-                    .changed()
-                    .await
-                    .context("Thread product observer progress closed")?;
-            };
-            // A settled observation is also durable. Observation no longer flushes history per batch,
-            // so this barrier is what keeps "the observer applied commit N" meaning "history holds
-            // commit N": cold reads (an unloaded child's terminal repair, a restored Turn) read a
-            // Turn's items straight from history after this. The wait is for the handoff ticket the
-            // projection had reached when it applied `target` — every commit up to `target` it owns —
-            // so it neither waits on the owner's command queue nor on a later, unprojected commit, and
-            // it never asks for a watermark a channel created by a re-activation cannot move.
-            await_history_durable(&observation.state.channel, &id, durable_through)
-                .await
-                .with_context(|| format!("Thread {id} product observation barrier"))?;
-        }
-        // The observation worker no longer waits on disk for each projected batch, so the explicit
-        // sync barrier carries the durability: every product write admitted up to the watermark this
-        // barrier just waited for is drained before the caller observes a settled terminal state.
-        // The target is fixed at call time, so this never waits for unrelated later writes.
-        let target = self.0.projector.writer.admitted_ticket();
-        self.0.projector.writer.flush_through(target).await?;
-        Ok(())
+            .collect()
+    }
+
+    async fn synchronize_entries(&self, observations: &[(String, Arc<Observation>)]) -> Result<()> {
+        let request = self.close_request(close::CloseKind::Synchronize, observations);
+        self.execute_close_request(request, None)
+            .await
+            .map_err(anyhow::Error::new)
     }
 
     /// Explicit parent continuation repairs terminal notifications even for unloaded children.
@@ -502,7 +954,8 @@ impl ThreadObservations {
             if child.parent_thread_id.as_deref() != Some(parent) {
                 continue;
             }
-            if services.threads.thread(&child.id).is_some() {
+            let resident = services.threads.upgrade()?.thread(&child.id).is_some();
+            if resident {
                 self.synchronize(Some(&child.id)).await?;
                 continue;
             }
@@ -550,45 +1003,45 @@ impl ThreadObservations {
                 .await?;
             }
         }
+        services.hosted_updates.send_replace(());
+        Ok(())
+    }
+
+    /// Storage-only dependency before publishing a cold root owner. Its observation worker can
+    /// then read hosted child facts immediately; terminal reconciliation still happens afterwards
+    /// and can deliver to the now-published parent. Both use the same per-child history Migrator.
+    pub(super) async fn prepare_child_storage(&self, parent: &str) -> Result<()> {
+        let services = &self.0.projector;
+        for child in services.store.list_threads_for_root(parent).await? {
+            if child.parent_thread_id.as_deref() == Some(parent)
+                && services.threads.upgrade()?.thread(&child.id).is_none()
+            {
+                crate::studio::thread_factory::recovery::load_checkpoint_for_recovery(
+                    &services.store, &pl_protocol::Thread::from(child),
+                ).await?;
+            }
+        }
         Ok(())
     }
 
     pub(super) async fn finish(&self) -> Result<()> {
-        self.synchronize(None).await?;
-        let observations: Vec<_> = self
+        // Cold has no worker dependency: seal its original scopes before the first await.
+        let cold: Vec<_> = self
             .0
-            .observations
+            .cold
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .values()
-            .flatten()
-            .cloned()
+            .map(|entry| entry.facets.clone())
             .collect();
-        for observation in observations {
-            let mut progress = observation.state.progress.subscribe();
-            loop {
-                let state = progress.borrow().clone();
-                if let Some(error) = state.error {
-                    bail!("Thread product observer failed: {error:#}");
-                }
-                if state.finished {
-                    break;
-                }
-                progress
-                    .changed()
-                    .await
-                    .context("Thread product observer ended without final state")?;
-            }
-            let task = observation
-                .task
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .take();
-            if let Some(task) = task {
-                task.await.context("Thread product observer join failed")?;
-            }
+        for facets in cold {
+            facets.close(pl_protocol::thread_facets::identity::FeedClosedReason::RuntimeStopped);
         }
-        Ok(())
+        let entries = self.observations(None);
+        let request = self.close_request(close::CloseKind::Finish, &entries);
+        self.execute_close_request(request, None)
+            .await
+            .map_err(anyhow::Error::new)
     }
 }
 
@@ -608,21 +1061,24 @@ impl StudioRuntime {
 /// batch is handed to the Thread's reliable admission channel, so the history writer commits the
 /// content this owner published instead of projecting the effect a second time.
 struct LiveOwner {
+    hosted_updates: tokio::sync::watch::Sender<()>,
     config: crate::config::ConfigRuntime,
-    qualification_revision: u64,
+    thread_modes: crate::mode::ThreadModeManager,
+    configuration_inputs: facets::configuration::ConfigurationInputs,
     projection: LiveProjection,
     /// The Thread's only activity projection: the same owner derives it from the snapshot it just
     /// published, so activity never becomes a second fact source and never reads SQL.
     activity: crate::studio::thread_projection::ActivityProjection,
     /// Last activity already broadcast, so an unchanged projection does not produce a frame.
-    activity_published: Option<pl_protocol::ThreadActivity>,
+    activity_published: Option<Arc<pl_protocol::ThreadActivity>>,
     runtime_published: Option<pl_protocol::ThreadRuntimeSnapshot>,
     /// Last typed storage state this owner published to its feed.
     ///
     /// The owner derives it from the owner snapshot plus the coordinator's typed watch, so a
     /// subscriber mirrors the value instead of recomputing it from its own copies. It is kept as one
     /// value so a change of fault kind, generation, watermark or phase is all one comparison.
-    storage_published: Option<pl_protocol::ThreadStorageState>,
+    storage_published: Option<Arc<pl_protocol::ThreadStorageState>>,
+    persistence: Option<pl_protocol::ThreadPersistenceSnapshot>,
     /// The Thread's reliable admission channel, shared with the history writer.
     channel: Arc<HistoryChannel>,
     chat: Session,
@@ -644,6 +1100,10 @@ impl LiveOwner {
         let id = thread.id.as_str();
         let chat = projector.store.chat_session(id).await?;
         let usage = live_usage(projector, id, snapshot);
+        if let Ok(facets) = &feed.facets {
+            facets.metrics.observe(snapshot, &usage);
+            facets.authoring.seed(snapshot);
+        }
         // The one cold read of a projection: the durable facts of work that already started before
         // this owner existed. Everything the commit and preview paths resolve afterwards comes from
         // these tables, so a re-activated Thread never waits on a history reader mid-Turn.
@@ -655,11 +1115,11 @@ impl LiveOwner {
         // Seed the activity projection from the very snapshot this owner was installed on, so a
         // subscriber that opens mid-Turn immediately sees the authoritative current activity.
         let mut activity = crate::studio::thread_projection::ActivityProjection::default();
-        let activity_published = activity.observe(id, snapshot);
+        let activity_published = activity.observe(id, snapshot).map(Arc::new);
         // The owner is the single source of the typed storage state: publish the value it was
         // installed with, so a subscriber that opened before this first pass sees the authoritative
         // fact instead of an unset placeholder.
-        let storage_published = persistence.map(|detail| storage_state(snapshot, detail));
+        let storage_published = persistence.map(|detail| Arc::new(storage_state(snapshot, detail)));
         // Seed the runtime baseline from the same snapshot and cumulative usage that the first
         // stream pass will project. This prevents owner activation itself from emitting a duplicate
         // runtime frame; subsequent frames still advance only when the typed projection changes.
@@ -669,18 +1129,44 @@ impl LiveOwner {
             thread.updated_at,
             &usage,
         )?;
-        let (config, catalog) = projector.config.read_with_catalog()?;
+        let (configuration_inputs, config) = facets::configuration::ConfigurationInputs::observe(
+            &projector.config,
+            &projector.thread_modes,
+        )?;
         crate::studio::model_route::annotate_availability(&mut runtime, &thread, &config.config)?;
+        if let Ok(facets) = &feed.facets {
+            facets.configuration.observe(
+                &runtime,
+                configuration_inputs.stamp,
+                configuration_inputs.mode_revision(),
+                snapshot
+                    .extensions
+                    .get("studio.mode")
+                    .map(|record| record.revision),
+            )?;
+            let policy = facets::context::current_policy(
+                &config.config,
+                runtime.model_route.as_ref(),
+                configuration_inputs.stamp,
+                configuration_inputs.mode_revision(),
+            )?;
+            facets
+                .context
+                .observe(&runtime, policy, facets.metrics.snapshot()?)?;
+        }
         let runtime_published = Some(runtime);
-        feed.publish_storage(storage_published.clone());
+        feed.publish_storage(storage_published.as_deref().cloned());
         let owner = Self {
+            hosted_updates: projector.hosted_updates.clone(),
             config: projector.config.clone(),
-            qualification_revision: catalog.revision,
+            thread_modes: projector.thread_modes.clone(),
+            configuration_inputs,
             projection,
             activity,
             activity_published,
             runtime_published,
             storage_published,
+            persistence: persistence.cloned(),
             channel,
             chat,
             thread,
@@ -813,6 +1299,13 @@ impl LiveOwner {
         }) {
             self.feed.publish_last_turn(Arc::new(turn.clone()));
         }
+        self.observe_activity(&write.checkpoint.state);
+        let persistence = self.persistence.clone();
+        self.observe_storage(&write.checkpoint.state, persistence.as_ref());
+        self.publish_execution(&write.checkpoint.state, &changes);
+        if let Ok(facets) = &self.feed.facets {
+            facets.authoring.observe(write);
+        }
         self.feed.publish(ThreadLiveEvent::Committed {
             sequence: effect.sequence,
             changes,
@@ -865,6 +1358,9 @@ impl LiveOwner {
     /// The preview is written into the shared session — the one content window — and emits no
     /// content frame; current activity and runtime facts are published separately.
     async fn stream(&mut self, snapshot: &ThreadSnapshot) -> Result<()> {
+        if let Ok(facets) = &self.feed.facets {
+            facets.metrics.observe(snapshot, &self.usage);
+        }
         self.projection
             .stream(&self.chat, &self.thread, snapshot, snapshot.commit_sequence)
             .await
@@ -889,6 +1385,9 @@ impl LiveOwner {
             at,
             &self.usage,
         )?;
+        let mut policy = self
+            .configuration_inputs
+            .refresh(&self.config, &self.thread_modes)?;
         let same_identity = match (
             self.runtime_published
                 .as_ref()
@@ -904,24 +1403,54 @@ impl LiveOwner {
             (None, None) => true,
             _ => false,
         };
-        if self.config.model_catalog_revision()? == self.qualification_revision && same_identity {
-            if let (Some(previous), Some(current)) = (
-                self.runtime_published
-                    .as_ref()
-                    .and_then(|runtime| runtime.model_route.as_ref()),
-                runtime.model_route.as_mut(),
-            ) {
-                current.available = previous.available;
-                current.unavailable_reason = previous.unavailable_reason.clone();
-            }
-        } else {
-            let (config, catalog) = self.config.read_with_catalog()?;
+        if policy.is_none() && !same_identity && !self.configuration_inputs.stamp.closing {
+            policy = Some(self.configuration_inputs.read_policy(&self.config)?);
+        }
+        if let Some(config) = &policy {
             crate::studio::model_route::annotate_availability(
                 &mut runtime,
                 &self.thread,
                 &config.config,
             )?;
-            self.qualification_revision = catalog.revision;
+        } else if same_identity
+            && let (Some(previous), Some(current)) = (
+                self.runtime_published
+                    .as_ref()
+                    .and_then(|runtime| runtime.model_route.as_ref()),
+                runtime.model_route.as_mut(),
+            )
+        {
+            current.available = previous.available;
+            current.unavailable_reason = previous.unavailable_reason.clone();
+        }
+        if let Ok(facets) = &self.feed.facets {
+            facets.configuration.observe(
+                &runtime,
+                self.configuration_inputs.stamp,
+                self.configuration_inputs.mode_revision(),
+                snapshot
+                    .extensions
+                    .get("studio.mode")
+                    .map(|record| record.revision),
+            )?;
+            let context_policy = if let Some(config) = &policy {
+                facets::context::current_policy(
+                    &config.config,
+                    runtime.model_route.as_ref(),
+                    self.configuration_inputs.stamp,
+                    self.configuration_inputs.mode_revision(),
+                )?
+            } else if same_identity {
+                facets.context.current_policy().map(|mut value| {
+                    value.mode_revision = self.configuration_inputs.mode_revision();
+                    value
+                })
+            } else {
+                None
+            };
+            facets
+                .context
+                .observe(&runtime, context_policy, facets.metrics.snapshot()?)?;
         }
         if self.runtime_published.as_ref() == Some(&runtime) {
             return Ok(());
@@ -942,15 +1471,16 @@ impl LiveOwner {
     /// Only a real change is broadcast, so a streaming body update does not cost a second status
     /// frame and no subscriber ever has to project the activity itself.
     fn observe_activity(&mut self, snapshot: &ThreadSnapshot) {
-        let activity = self.activity.observe(&self.thread.id, snapshot);
+        let activity = self
+            .activity
+            .observe(&self.thread.id, snapshot)
+            .map(Arc::new);
         if activity == self.activity_published {
             return;
         }
         self.activity_published = activity.clone();
         // One shared handle per published change: every subscriber clones that handle, never the body.
-        self.feed.publish(ThreadLiveEvent::Activity {
-            activity: activity.map(Arc::new),
-        });
+        self.feed.publish(ThreadLiveEvent::Activity { activity });
     }
 
     /// Republishes the typed storage state this owner derives, only when it really changed.
@@ -964,12 +1494,33 @@ impl LiveOwner {
         snapshot: &ThreadSnapshot,
         persistence: Option<&pl_protocol::ThreadPersistenceSnapshot>,
     ) {
-        let storage = persistence.map(|detail| storage_state(snapshot, detail));
+        let storage = persistence.map(|detail| Arc::new(storage_state(snapshot, detail)));
         if storage == self.storage_published {
             return;
         }
         self.storage_published = storage.clone();
-        self.feed.publish_storage(storage);
+        self.feed.publish_storage(storage.as_deref().cloned());
+    }
+
+    fn publish_execution(&self, snapshot: &ThreadSnapshot, effects: &[LiveEvent]) {
+        if let Ok(facets) = &self.feed.facets {
+            let before = facets.execution.interaction_revision();
+            facets.execution.observe(
+                &self.thread.id,
+                self.thread.updated_at,
+                snapshot,
+                self.feed.last_turn.borrow().clone(),
+                self.activity_published.clone(),
+                self.storage_published.clone(),
+                effects,
+                None,
+            );
+            if self.thread.parent_thread_id.is_some()
+                && before != facets.execution.interaction_revision()
+            {
+                self.hosted_updates.send_replace(());
+            }
+        }
     }
 }
 
@@ -1141,6 +1692,7 @@ async fn run(
     // change with no owner frame and no handoff, so without this arm the owner would only publish
     // the fault when something unrelated happened to arrive.
     let mut persistence = projector.store.thread_persistence().subscribe();
+    let mut hosted_updates = projector.hosted_updates.subscribe();
     let mut current = thread.snapshot();
     let mut worker = ProjectionWorker {
         services: projector,
@@ -1150,11 +1702,42 @@ async fn run(
         recovered_through,
         feed,
         live: None,
+        pass: None,
+        fences: ProjectionFences::default(),
+        final_write: None,
+        hosted_dirty: true,
     };
     // Product facts are projected once per committed revision; the live projection additionally
     // follows every owner snapshot so streaming previews reach the same single publisher.
     let mut projected = None;
     loop {
+        // The retained notification contains no facts. Subscribe-before-read plus the watch
+        // version prevents an invalidation during a projection pass from being lost.
+        if hosted_updates.has_changed().unwrap_or(false) {
+            worker.hosted_dirty = true;
+        }
+        hosted_updates.borrow_and_update();
+        if let Some(fence) = &worker.final_write {
+            match fence.wait().await {
+                Ok(()) => {
+                    worker.state.progress.send_modify(|progress| {
+                        progress.error = None;
+                        progress.finished = true;
+                    });
+                    return;
+                }
+                Err(error) => {
+                    worker.state.progress.send_modify(|progress| {
+                        progress.error = Some(Arc::new(ProgressFailure::FinalWriteBehind(error)));
+                    });
+                }
+            }
+            tokio::select! {
+                () = worker.state.retry.notified() => {}
+                _ = handoff.changed() => {}
+            }
+            continue;
+        }
         let issue_id = format!("tool-cleanup:{}", worker.id);
         let issue = (!current.tool_cleanup.failures.is_empty()).then(|| {
             crate::studio::StudioRecoveryIssue {
@@ -1178,12 +1761,11 @@ async fn run(
             &issue_id,
             issue,
             || {
-                worker
-                    .services
-                    .threads
-                    .observed_threads()
-                    .iter()
-                    .any(|(id, thread)| id == &worker.id && thread.same_instance(&worker.thread))
+                worker.services.threads.upgrade().is_ok_and(|threads| {
+                    threads.observed_threads().iter().any(|(id, thread)| {
+                        id == &worker.id && thread.same_instance(&worker.thread)
+                    })
+                })
             },
             |issues| {
                 worker.services.events.emit_recovery_state(issues);
@@ -1198,55 +1780,101 @@ async fn run(
             .iter()
             .find(|detail| detail.thread_id == worker.id)
             .cloned();
+        let resumed_pass = worker.pass.is_some();
         // The projection stays isolated behind `catch_unwind`, so a panicking projection is
         // still reported as an error instead of taking down the observation worker.
         let result =
-            std::panic::AssertUnwindSafe(worker.project(&current, products, detail.as_ref()))
+            match std::panic::AssertUnwindSafe(worker.project(&current, products, detail.as_ref()))
                 .catch_unwind()
                 .await
-                .unwrap_or_else(|_| Err(anyhow::anyhow!("Thread product projection panicked")));
-        match result {
-            Ok(()) => {
-                if products {
-                    projected = Some((current.commit_sequence, current.lifecycle));
+            {
+                Ok(result) => result,
+                Err(_) => {
+                    worker.state.progress.send_modify(|progress| {
+                        progress.error = Some(Arc::new(ProgressFailure::ProjectionPanicked));
+                        progress.finished = true;
+                    });
+                    worker.feed.rebase(0);
+                    if let Ok(facets) = &worker.feed.facets {
+                        facets
+                            .metrics
+                            .fail(pl_protocol::studio::StudioError::internal());
+                        facets
+                            .execution
+                            .fail(pl_protocol::studio::StudioError::internal());
+                        facets
+                            .authoring
+                            .fail(pl_protocol::studio::StudioError::internal());
+                        facets
+                            .configuration
+                            .fail(pl_protocol::studio::StudioError::internal());
+                        facets
+                            .context
+                            .fail(pl_protocol::studio::StudioError::internal());
+                    }
+                    // A partially panicked projection is terminal. Never replay its producer to
+                    // disguise the failure as a cleanup retry.
+                    return;
                 }
-                let finished = current.lifecycle == ThreadLifecycle::Closed;
+            };
+        match result {
+            Ok(completed) => {
+                if let Ok(facets) = &worker.feed.facets {
+                    facets
+                        .authoring
+                        .confirm_caught_up(completed.commit_sequence);
+                }
+                if products {
+                    projected = Some((completed.commit_sequence, completed.lifecycle));
+                }
+                let finished = completed.lifecycle == ThreadLifecycle::Closed;
                 worker.state.progress.send_replace(Progress {
                     initialized: true,
-                    applied: current.commit_sequence,
+                    applied: completed.commit_sequence,
                     handoff: worker.state.channel.handoff_ticket(),
                     error: None,
                     finished: false,
                 });
                 if finished {
-                    // 固定目标 ticket：只等待本次观察已受理的产品写入，不等待整个系统空闲。
-                    let target = worker.services.writer.admitted_ticket();
-                    match worker.services.writer.flush_through(target).await {
-                        Ok(()) => {
-                            worker
-                                .state
-                                .progress
-                                .send_modify(|progress| progress.finished = true);
-                            return;
-                        }
-                        Err(error) => {
-                            worker.state.progress.send_modify(|progress| {
-                                progress.error = Some(Arc::new(anyhow::Error::new(error)));
-                                progress.finished = false;
-                            });
-                        }
-                    }
+                    worker.final_write = Some(WriteFence::capture(&worker.services.writer));
+                    continue;
+                }
+                if resumed_pass
+                    || (completed.commit_sequence, completed.lifecycle)
+                        != (current.commit_sequence, current.lifecycle)
+                {
+                    // A failed pass kept its original snapshot. Catch up the already observed
+                    // successor only after every phase of that original pass really completed.
+                    // Previews/storage can change without a commit: the next fresh pass consumes
+                    // them once, rather than sleeping after their wake was already consumed.
+                    continue;
                 }
             }
             Err(error) => {
-                // A fact this owner could not project leaves the committed stream discontinuous for
-                // every subscriber, so the feed tells them to resynchronize from the durable window
-                // instead of letting the client splice a hole; the worker retries the same watermark.
-                worker.feed.rebase(0);
+                let error = Arc::new(error);
+                let failure = Arc::new(ProgressFailure::Retry {
+                    point: RetryPoint::Projection,
+                    cause: error.clone(),
+                });
+                // Preserve the actual business failure before any facet/diagnostic callback can
+                // cause an independent outer panic. The projection pass retains its phase.
                 worker
                     .state
                     .progress
-                    .send_modify(|progress| progress.error = Some(Arc::new(error)));
+                    .send_modify(|progress| progress.error = Some(failure));
+                worker.feed.rebase(0);
+                if let Ok(facets) = &worker.feed.facets {
+                    facets
+                        .execution
+                        .capture_failed(crate::studio_error_from_anyhow_ref(error.as_ref()));
+                    facets.authoring.capture_failed(error.clone());
+                    facets
+                        .configuration
+                        .capture_failed(crate::studio_error_from_anyhow_ref(error.as_ref()));
+                    facets
+                        .context
+                        .capture_failed(crate::studio_error_from_anyhow_ref(error.as_ref()));
+                }
             }
         }
         if current.lifecycle == ThreadLifecycle::Closed {
@@ -1258,17 +1886,39 @@ async fn run(
             continue;
         }
         tokio::select! {
+            _ = hosted_updates.changed() => {
+                worker.hosted_dirty = true;
+                current = worker.thread.snapshot();
+            },
             () = worker.state.retry.notified() => current = worker.thread.snapshot(),
+            () = async {
+                match worker.live.as_mut() {
+                    Some(owner) => owner.configuration_inputs.changed().await,
+                    None => std::future::pending().await,
+                }
+            } => current = worker.thread.snapshot(),
             // A handoff the writer is waiting for may be the only reason this worker still has work
             // to do; re-run the projection so a deferred admission is taken over and saved.
             _ = handoff.changed() => current = worker.thread.snapshot(),
             // A typed storage change with no owner frame still has to reach subscribers; re-run the
             // pass so the owner republishes the state it just read.
-            _ = persistence.changed() => current = worker.thread.snapshot(),
+            _ = persistence.changed() => {
+                // A decided cold child may leave the compact state before its receipt can be
+                // read. Saved progress rechecks only an already-populated hosted index.
+                if let Ok(facets) = &worker.feed.facets {
+                    worker.hosted_dirty |= !facets.execution.hosted_pending(&worker.id).is_empty();
+                }
+                current = worker.thread.snapshot();
+            },
             update = updates.next() => match update {
                 Some(snapshot) => current = snapshot,
                 None => {
-                    worker.state.progress.send_modify(|progress| progress.error = Some(Arc::new(anyhow::anyhow!("Thread subscription ended before its final projection"))));
+                    worker.state.progress.send_modify(|progress| {
+                        progress.error = Some(Arc::new(ProgressFailure::Retry {
+                            point: RetryPoint::SubscriptionEnded,
+                            cause: Arc::new(anyhow::anyhow!("Thread subscription ended before its final projection")),
+                        }));
+                    });
                     tokio::select! {
                         () = worker.state.retry.notified() => {}
                         _ = handoff.changed() => {}
@@ -1288,6 +1938,7 @@ async fn run(
 /// independent arguments through every call; the live projection above stays a pure function of one
 /// effect.
 struct ProjectionWorker {
+    hosted_dirty: bool,
     services: ObservationServices,
     id: String,
     thread: ThreadHandle,
@@ -1297,6 +1948,9 @@ struct ProjectionWorker {
     recovered_through: u64,
     feed: Arc<ThreadLiveFeed>,
     live: Option<LiveOwner>,
+    pass: Option<fences::ProjectionPass>,
+    fences: ProjectionFences,
+    final_write: Option<Arc<WriteFence>>,
 }
 
 /// The report facts of one finished Turn: the live projection's bounded accumulator when it folded
@@ -1312,57 +1966,35 @@ async fn turn_result(
     services: &ObservationServices,
     live: &LiveOwner,
     turn_id: &str,
+    fences: &mut ProjectionFences,
 ) -> Result<crate::studio::thread_projection::TurnResult> {
-    if let Some(result) = live.projection.turn_result(turn_id) {
-        return Ok(result.clone());
+    if fences.turn.is_none() {
+        if let Some(result) = live.projection.turn_result(turn_id) {
+            return Ok(result.clone());
+        }
+        fences.turn = Some((
+            turn_id.to_owned(),
+            HistoryFence {
+                channel: live.channel.clone(),
+                through: live.channel.handoff_ticket(),
+            },
+        ));
     }
-    await_history_durable(
-        &live.channel,
-        &live.thread.id,
-        live.channel.handoff_ticket(),
-    )
-    .await?;
+    let (original_turn, fence) = fences.turn.as_ref().expect("original Turn fence installed");
+    anyhow::ensure!(
+        original_turn == turn_id,
+        "original observation Turn fence changed identity"
+    );
+    fence.wait(&live.thread.id).await?;
     let items = services
         .store
         .history(&live.thread.id)
         .await?
         .items_for_turn(turn_id)
         .await?;
-    Ok(crate::studio::thread_projection::TurnResult::from_items(
-        &items,
-    ))
-}
-
-/// Waits until the history writer's durable watermark covers the handoff ticket `sequence`.
-///
-/// This deliberately does not use `Thread::flush`. That barrier targets *every commit the owner has
-/// admitted*, including ones this projection has not handed over yet, and the writer refuses to save
-/// a fact no projection holds — so an observer waiting on it would wait for its own next step, and
-/// the request itself travels through the owner's command queue, which a running Turn only reaches at
-/// its own safety points. Waiting for this projection's own handoff ticket asks for exactly the
-/// commits it already prepared, in the order they were prepared, so it always completes, and a
-/// channel that never saw a handoff (`0`) is trivially durable instead of waiting for a watermark a
-/// re-activated Thread's fresh channel can no longer move.
-///
-/// The writer publishes its terminal diagnostic on the same channel, so a storage failure ends this
-/// barrier with the real reason instead of hanging on a watermark that can no longer advance.
-async fn await_history_durable(channel: &HistoryChannel, id: &str, sequence: u64) -> Result<()> {
-    let mut status = channel.subscribe();
-    loop {
-        {
-            let status = status.borrow_and_update();
-            if status.committed_sequence >= sequence {
-                return Ok(());
-            }
-            if let Some(error) = &status.error {
-                bail!("Thread {id} history did not become durable through {sequence}: {error}");
-            }
-        }
-        status
-            .changed()
-            .await
-            .context("Thread history progress channel closed")?;
-    }
+    let result = crate::studio::thread_projection::TurnResult::from_items(&items);
+    fences.turn = None;
+    Ok(result)
 }
 
 /// The Thread's product association, from the resident directory entry or from durable storage.
@@ -1374,17 +2006,26 @@ async fn await_history_durable(channel: &HistoryChannel, id: &str, sequence: u64
 async fn product_association(
     services: &ObservationServices,
     id: &str,
+    fences: &mut ProjectionFences,
 ) -> Result<pl_protocol::Thread> {
-    if let Some(thread) = services.events.thread_snapshot(id) {
-        return Ok(thread);
+    if fences.association.is_none() {
+        if let Some(thread) = services.events.thread_snapshot(id) {
+            return Ok(thread);
+        }
+        fences.association = Some(WriteFence::capture(&services.writer));
     }
-    let target = services.writer.admitted_ticket();
-    services.writer.flush_through(target).await?;
+    fences
+        .association
+        .as_ref()
+        .expect("original association fence installed")
+        .wait()
+        .await?;
     let association = services
         .store
         .read_thread_association(id)
         .await?
         .context("observed Thread has no product association")?;
+    fences.association = None;
     Ok(pl_protocol::Thread::from(association))
 }
 
@@ -1409,7 +2050,8 @@ impl ProjectionWorker {
         snapshot: &ThreadSnapshot,
         products: bool,
         persistence: Option<&pl_protocol::ThreadPersistenceSnapshot>,
-    ) -> Result<()> {
+    ) -> Result<Arc<ThreadSnapshot>> {
+        use fences::{EffectPhase, PendingEffect, ProjectionPass, ProjectionPhase};
         let Self {
             services,
             id,
@@ -1418,100 +2060,1063 @@ impl ProjectionWorker {
             recovered_through,
             feed,
             live,
+            pass,
+            fences,
+            hosted_dirty,
             ..
         } = self;
-        let recovered_through = *recovered_through;
-        if live.is_none() {
-            // The product association is resolved once, when this projection owner is installed.
-            // A Thread re-activated after its directory entry left memory reads it from SQLite here.
-            let product = product_association(services, id).await?;
-            *live = Some(
-                LiveOwner::open(
-                    services,
-                    thread,
-                    snapshot,
-                    product,
-                    Arc::clone(feed),
-                    Arc::clone(&state.channel),
-                    persistence,
-                )
-                .await?,
-            );
+        if pass.is_none() {
+            *pass = Some(ProjectionPass::new(Arc::new(snapshot.clone()), products));
         }
-        let live = live
-            .as_mut()
-            .expect("live projection owner was just installed");
-        // The projection owner is the single producer of realtime content: it folds every admitted
-        // fact exactly once, publishes it into the shared session and broadcasts the typed change,
-        // whether or not a GUI is open.
-        //
-        // The association the owner was installed with is what identifies a parent or a billing
-        // root; it never changes for a Thread, so a commit does not re-read the directory DTO for it.
-        let owner_product = live.thread.clone();
-        let mut newest_commit_at = 0_i64;
-        while let Some(write) = live.channel.next_unprojected() {
-            let sequence = write.effect.sequence;
-            if sequence <= recovered_through {
-                // A fact the owner committed before this projection existed: it is already part of
-                // the snapshot the projection was seeded from, so it is folded for durability only.
-                live.prepare_behind(services, id.as_str(), &write).await?;
-                continue;
+        let original = pass.as_mut().expect("original projection pass installed");
+        // Persistence is a current owner fact, not one of the pass's fixed durability tickets.
+        // Retrying a phase must not replace a newer storage observation with its old diagnostic.
+        if let Some(owner) = live.as_mut() {
+            owner.persistence = persistence.cloned();
+            owner.observe_storage(snapshot, persistence);
+        }
+        loop {
+            match original.phase {
+                ProjectionPhase::Initialize => {
+                    if live.is_none() {
+                        if original.product.is_none() {
+                            original.product =
+                                Some(product_association(services, id, fences).await?);
+                        }
+                        let product = original
+                            .product
+                            .as_ref()
+                            .expect("original association retained")
+                            .clone();
+                        *live = Some(
+                            LiveOwner::open(
+                                services,
+                                thread,
+                                &original.snapshot,
+                                product,
+                                feed.clone(),
+                                state.channel.clone(),
+                                persistence,
+                            )
+                            .await?,
+                        );
+                        original.product = None;
+                    }
+                    let owner = live.as_mut().expect("live owner installed");
+                    owner.persistence = persistence.cloned();
+                    owner.observe_storage(snapshot, persistence);
+                    original.phase = ProjectionPhase::Effects;
+                }
+                ProjectionPhase::Effects => {
+                    let owner = live.as_mut().expect("original live owner retained");
+                    if original.effect.is_none() {
+                        original.effect =
+                            owner.channel.next_unprojected().map(|write| PendingEffect {
+                                write,
+                                phase: EffectPhase::Project,
+                                result: None,
+                            });
+                    }
+                    let Some(effect) = original.effect.as_mut() else {
+                        original.phase = ProjectionPhase::Stream;
+                        continue;
+                    };
+                    let write = &effect.write;
+                    let sequence = write.effect.sequence;
+                    match effect.phase {
+                        EffectPhase::Project => {
+                            if sequence <= *recovered_through {
+                                owner.prepare_behind(services, id, write).await?;
+                                original.effect = None;
+                                continue;
+                            }
+                            owner.advance(services, id, write).await?;
+                            effect.phase = EffectPhase::Billing;
+                        }
+                        EffectPhase::Billing => {
+                            billing::record(
+                                &services.performance,
+                                &owner.thread.root_thread_id,
+                                &write.effect,
+                            )?;
+                            original.newest_commit_at =
+                                original.newest_commit_at.max(write.effect.committed_at);
+                            effect.phase = EffectPhase::Result;
+                        }
+                        EffectPhase::Result => {
+                            if let Some(turn) =
+                                write.effect.turn.as_ref().filter(|turn| {
+                                    turn.state != pl_core::thread::TurnState::Running
+                                })
+                            {
+                                let result = Arc::new(
+                                    turn_result(services, owner, &turn.turn_id, fences).await?,
+                                );
+                                if original
+                                    .snapshot
+                                    .turns
+                                    .last()
+                                    .is_some_and(|last| last.turn_id == turn.turn_id)
+                                {
+                                    original.summary_result = Some(result.clone());
+                                }
+                                effect.result = Some(result);
+                                effect.phase = EffectPhase::Report;
+                            } else {
+                                original.effect = None;
+                            }
+                        }
+                        EffectPhase::Report => {
+                            let turn = write
+                                .effect
+                                .turn
+                                .as_ref()
+                                .expect("original terminal Turn retained");
+                            let result = effect
+                                .result
+                                .as_ref()
+                                .expect("original Turn result retained");
+                            reports::publish_terminal(
+                                services,
+                                &owner.thread,
+                                &original.snapshot,
+                                turn,
+                                sequence,
+                                sequence > *recovered_through,
+                                result,
+                            )
+                            .await?;
+                            // prepare() already handed this write over. Retaining the phase until
+                            // this acknowledgement is what prevents either losing or replaying it.
+                            original.effect = None;
+                        }
+                    }
+                }
+                ProjectionPhase::Stream => {
+                    let owner = live.as_mut().expect("original live owner retained");
+                    owner.stream(&original.snapshot).await?;
+                    owner.observe_storage(snapshot, persistence);
+                    owner.publish_execution(&original.snapshot, &[]);
+                    if *hosted_dirty && owner.thread.parent_thread_id.is_none() {
+                        if let Ok(facets) = &owner.feed.facets {
+                            let previous = facets.execution.hosted_pending(&owner.thread.id);
+                            let (pending, terminal) = hosted::collect(services, &owner.thread.id, &previous).await?;
+                            facets.execution.observe(
+                                &owner.thread.id,
+                                owner.thread.updated_at,
+                                &original.snapshot,
+                                owner.feed.last_turn.borrow().clone(),
+                                owner.activity_published.clone(),
+                                owner.storage_published.clone(),
+                                &terminal,
+                                Some(&pending),
+                            );
+                        }
+                        *hosted_dirty = false;
+                    }
+                    if !original.products {
+                        let snapshot = original.snapshot.clone();
+                        *pass = None;
+                        return Ok(snapshot);
+                    }
+                    original.phase = ProjectionPhase::Product;
+                }
+                ProjectionPhase::Product => {
+                    let mut product = product_association(services, id, fences).await?;
+                    product.status = crate::studio::thread_projection::status(&original.snapshot);
+                    product.updated_at = product.updated_at.max(original.newest_commit_at);
+                    original.product = Some(product);
+                    original.phase = ProjectionPhase::Summary;
+                }
+                ProjectionPhase::Summary => {
+                    let owner = live.as_mut().expect("original live owner retained");
+                    original.summary = if let Some(turn) = original
+                        .snapshot
+                        .turns
+                        .last()
+                        .filter(|turn| turn.state != pl_core::thread::TurnState::Running)
+                    {
+                        if original.summary_result.is_none() {
+                            let result =
+                                turn_result(services, owner, &turn.turn_id, fences).await?;
+                            original.summary_result = Some(Arc::new(result));
+                        }
+                        original
+                            .summary_result
+                            .as_ref()
+                            .and_then(|result| result.final_text())
+                    } else {
+                        None
+                    };
+                    original.phase = ProjectionPhase::Directory;
+                }
+                ProjectionPhase::Directory => {
+                    directory::publish(
+                        services,
+                        original
+                            .product
+                            .as_ref()
+                            .expect("original product retained")
+                            .clone(),
+                        &original.snapshot,
+                        original.summary.clone(),
+                    )
+                    .await?;
+                    if original.product.as_ref().is_some_and(|thread| thread.parent_thread_id.is_some()) {
+                        // Admission may publish the pending fact before the child's directory row.
+                        // Recheck after association publication as well, without copying the fact.
+                        services.hosted_updates.send_replace(());
+                    }
+                    let snapshot = original.snapshot.clone();
+                    *pass = None;
+                    return Ok(snapshot);
+                }
             }
-            live.advance(services, id.as_str(), &write).await?;
-            billing::record(
-                &services.performance,
-                &owner_product.root_thread_id,
-                &write.effect,
-            )?;
-            newest_commit_at = newest_commit_at.max(write.effect.committed_at);
-            if let Some(turn) = write
-                .effect
-                .turn
-                .as_ref()
-                .filter(|turn| turn.state != pl_core::thread::TurnState::Running)
-            {
-                // The terminal report carries the whole Turn from the reliable in-memory projection:
-                // a long Turn commits its text and tool facts over many effects, so reporting only
-                // the effect that finished it would drop the earlier visible output.
-                let result = turn_result(services, live, &turn.turn_id).await?;
-                reports::publish_terminal(
-                    services,
-                    &owner_product,
-                    snapshot,
-                    turn,
-                    sequence,
-                    sequence > recovered_through,
-                    &result,
-                )
-                .await?;
-            }
         }
-        // Streaming previews change without a commit and belong to the same publisher.
-        live.stream(snapshot).await?;
-        // The typed storage state is one owner fact: it is republished here whether this pass was
-        // triggered by a commit, a preview or the coordinator's own typed status changing.
-        live.observe_storage(snapshot, persistence);
-        if !products {
-            return Ok(());
+    }
+}
+
+#[cfg(test)]
+mod context_contract_tests {
+    use super::super::thread_reads::context::ContextMaterial;
+    use super::*;
+    use facets::context::{ContextDelivery, DeliveryStep};
+    use pl_protocol::studio::{ConfigProjectionStamp, ReadText, StudioError, StudioErrorCode};
+    use pl_protocol::thread_facets::context::{ContextEvent, ContextFrame, CurrentContextPolicy};
+    use pl_protocol::thread_facets::identity::{
+        FeedClosedReason, MetricsIdentityRef, ThreadFacet, ThreadFacetStamp, ThreadObservationMode,
+    };
+
+    fn sources() -> Result<(
+        Arc<facets::ThreadFacetSources>,
+        super::super::read_scopes::ReadScopeRegistry,
+    )> {
+        let registry = super::super::read_scopes::ReadScopeRegistry::default();
+        let reads = super::super::thread_reads::lifetime::ThreadReadRegistry::new(registry.clone());
+        let ids = super::super::observation_ids::ObservationIds::new("context-contract".into());
+        Ok((
+            facets::ThreadFacetSources::new(&ids, &reads, "thread-context")?,
+            registry,
+        ))
+    }
+
+    fn runtime() -> Result<pl_protocol::ThreadRuntimeSnapshot> {
+        let snapshot = ThreadSnapshot::default();
+        Ok(crate::studio::thread_projection::project_runtime(
+            "thread-context",
+            &snapshot,
+            1,
+            &snapshot.usage_summary,
+        )?)
+    }
+
+    fn policy() -> CurrentContextPolicy {
+        CurrentContextPolicy {
+            sources: ConfigProjectionStamp {
+                settings_revision: 2,
+                model_catalog_revision: 3,
+                closing: false,
+            },
+            mode_revision: 4,
+            route_revision: 5,
+            context_window: Some(32_000),
+            max_context_window: Some(32_000),
+            input_token_limit: Some(27_904),
+            auto_compact_limit: Some(27_904),
+            unavailable: None,
+            adjustment: None,
         }
-        // The directory DTO is re-read for a product refresh, because a concurrent title, mode or
-        // archive operation owns those fields and a preview-only pass must not pay for the lookup.
-        let mut product = product_association(services, id).await?;
-        product.status = crate::studio::thread_projection::status(snapshot);
-        product.updated_at = product.updated_at.max(newest_commit_at);
-        // The directory summary is derived from the same reliable owner as the terminal report: the
-        // in-memory projection on the hot path, and durable history only for a Turn it never saw.
-        let summary = match snapshot
-            .turns
-            .last()
-            .filter(|turn| turn.state != pl_core::thread::TurnState::Running)
-        {
-            Some(turn) => turn_result(services, live, &turn.turn_id)
-                .await?
-                .final_text(),
-            None => None,
+    }
+
+    fn sample(completion_tokens: u64) -> Arc<facets::metrics::MetricsSnapshot> {
+        Arc::new(facets::metrics::MetricsSnapshot {
+            stamp: ThreadFacetStamp {
+                runtime_epoch: "context-contract".into(),
+                incarnation: 1,
+                facet: ThreadFacet::Metrics,
+                revision: completion_tokens,
+            },
+            value: pl_protocol::thread_facets::metrics::MetricsValue {
+                live: Some(pl_protocol::thread_facets::metrics::LiveTurnMetrics {
+                    identity: MetricsIdentityRef { entry: 77 },
+                    completion_tokens: Some(completion_tokens),
+                    response_millis: Some(completion_tokens * 10),
+                    state: pl_protocol::ThreadRuntimeUsageState::Live,
+                    observation_sequence: completion_tokens,
+                }),
+                authoritative: None,
+            },
+            identities: Vec::new(),
+        })
+    }
+
+    fn receive(delivery: &ContextDelivery) -> Result<ContextFrame> {
+        let mut frame = None;
+        delivery.send_next(|value| {
+            frame = Some(value);
+            Ok(())
+        })?;
+        frame.context("Context frame was not delivered")
+    }
+
+    #[tokio::test]
+    async fn context_versions_track_context_not_speed_and_keep_frozen_usage_separate() -> Result<()>
+    {
+        let (facets, _registry) = sources()?;
+        let mut runtime = runtime()?;
+        runtime.usage.model_id = "frozen-model".into();
+        runtime.usage.context_window = Some(8_000);
+        runtime.usage.max_context_window = Some(16_000);
+        runtime.usage.auto_compact_limit = Some(7_000);
+        runtime.live_usage = Some(pl_protocol::ThreadRuntimeLiveUsage {
+            turn_id: "turn-1".into(),
+            attempt_id: "attempt-1".into(),
+            completion_tokens: Some(10),
+            response_millis: Some(100),
+            latest_context_tokens: Some(200),
+            state: pl_protocol::ThreadRuntimeUsageState::Live,
+            observation_sequence: 10,
+        });
+        facets
+            .context
+            .observe(&runtime, Some(policy()), Some(sample(10)))?;
+        let delivery = facets.context.subscribe(ThreadObservationMode::Live)?;
+        delivery.claim()?;
+        let mut attempted = None;
+        assert!(
+            delivery
+                .send_next(|frame| {
+                    attempted = Some(frame);
+                    Err(StudioError::new(
+                        StudioErrorCode::Unavailable,
+                        "synthetic failed post",
+                        false,
+                    ))
+                })
+                .is_err()
+        );
+        let Some(ContextFrame::Data { event, .. }) = attempted else {
+            anyhow::bail!("Context baseline was not attempted");
         };
-        directory::publish(services, product, snapshot, summary).await?;
+        let ContextEvent::Baseline {
+            stamp: origin,
+            value,
+            ..
+        } = *event
+        else {
+            anyhow::bail!("Context baseline was not attempted");
+        };
+        assert!(facets.context.material_at(value.details, &origin).is_err());
+        assert_eq!(
+            receive(&delivery)?,
+            ContextFrame::Data {
+                delivery_sequence: 1,
+                event: Box::new(ContextEvent::Baseline {
+                    identity: delivery.identity(),
+                    stamp: origin.clone(),
+                    value: value.clone()
+                })
+            }
+        );
+        assert_eq!(origin.facet, ThreadFacet::Context);
+        assert_eq!(
+            value.usage.as_ref().and_then(|usage| usage.context_window),
+            Some(8_000)
+        );
+        assert_eq!(
+            value
+                .current_policy
+                .as_ref()
+                .and_then(|policy| policy.context_window),
+            Some(32_000)
+        );
+        assert_eq!(
+            value.live_context.as_ref().map(|live| live.identity.entry),
+            Some(77)
+        );
+
+        runtime.live_usage.as_mut().unwrap().completion_tokens = Some(20);
+        runtime.live_usage.as_mut().unwrap().response_millis = Some(200);
+        runtime.live_usage.as_mut().unwrap().observation_sequence = 20;
+        runtime.usage.updated_at += 10;
+        facets
+            .context
+            .observe(&runtime, Some(policy()), Some(sample(20)))?;
+        assert!(matches!(
+            delivery.send_next(|_| panic!("speed-only sample advanced Context"))?,
+            DeliveryStep::Waiting
+        ));
+
+        let mut next_policy = policy();
+        next_policy.context_window = Some(64_000);
+        facets
+            .context
+            .observe(&runtime, Some(next_policy.clone()), Some(sample(20)))?;
+        let ContextFrame::Data {
+            delivery_sequence: 2,
+            event,
+        } = receive(&delivery)?
+        else {
+            anyhow::bail!("current policy did not produce Context Replace");
+        };
+        let ContextEvent::Replace {
+            stamp: next_origin,
+            value: next,
+        } = *event
+        else {
+            anyhow::bail!("current policy did not produce Context Replace");
+        };
+        assert_eq!(next_origin.revision, origin.revision + 1);
+        assert_eq!(next.details, value.details);
+        assert_eq!(next.usage, value.usage);
+        assert!(
+            facets
+                .context
+                .material_at(value.details, &next_origin)
+                .is_ok()
+        );
+        runtime.live_usage.as_mut().unwrap().latest_context_tokens = Some(300);
+        facets
+            .context
+            .observe(&runtime, Some(next_policy), Some(sample(20)))?;
+        assert!(matches!(
+            delivery.send_next(|_| panic!("third Context frame exceeded ACK window"))?,
+            DeliveryStep::Waiting
+        ));
+        assert_eq!(
+            delivery.ack(3).err().map(|error| error.code),
+            Some(StudioErrorCode::Protocol)
+        );
+        delivery.ack(1)?;
+        let ContextFrame::Data {
+            delivery_sequence: 3,
+            event,
+        } = receive(&delivery)?
+        else {
+            anyhow::bail!("expected a third Context data frame");
+        };
+        assert!(matches!(
+            *event,
+            ContextEvent::Replace {
+                value: pl_protocol::thread_facets::context::ContextValue {
+                    live_context: Some(pl_protocol::thread_facets::context::LiveContext {
+                        latest_context_tokens: Some(300),
+                        ..
+                    }),
+                    ..
+                },
+                ..
+            }
+        ));
+        delivery.ack(2)?;
+        delivery.ack(2)?;
+        let mut wrong = next_origin.clone();
+        wrong.facet = ThreadFacet::Configuration;
+        assert!(facets.context.material_at(value.details, &wrong).is_err());
+        facets.close(FeedClosedReason::OwnerReplaced);
+        assert_eq!(
+            receive(&delivery)?,
+            ContextFrame::Closed {
+                identity: delivery.identity(),
+                reason: FeedClosedReason::OwnerReplaced
+            }
+        );
+        delivery.close();
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn context_details_pin_original_costs_and_share_thread_read_budget() -> Result<()> {
+        let (facets, _registry) = sources()?;
+        let mut runtime = runtime()?;
+        let currency = "币🦀\n\"".repeat(20_000);
+        runtime.usage.estimated_costs = vec![pl_protocol::RuntimeCostAmount {
+            currency: currency.clone(),
+            amount: 1.25,
+        }];
+        runtime.usage.estimated_cache_savings = vec![pl_protocol::RuntimeCostAmount {
+            currency: "USD".into(),
+            amount: 0.5,
+        }];
+        facets.context.observe(&runtime, Some(policy()), None)?;
+        let delivery = facets.context.subscribe(ThreadObservationMode::Cold)?;
+        delivery.claim()?;
+        let ContextFrame::Data { event, .. } = receive(&delivery)? else {
+            anyhow::bail!("missing Context baseline");
+        };
+        let ContextEvent::Baseline {
+            stamp: origin,
+            value,
+            ..
+        } = *event
+        else {
+            anyhow::bail!("missing Context baseline");
+        };
+        let source = facets.context.material_at(value.details, &origin)?;
+        let residency = super::super::residency::ThreadResidency::new();
+        let mut scopes = Vec::new();
+        for _ in 0..8 {
+            let lease = ThreadFacetLease {
+                owner: std::sync::Weak::new(),
+                thread_id: "thread-context".into(),
+                facets: facets.clone(),
+                mode: ThreadObservationMode::Live,
+            };
+            scopes.push(lease.open_read(
+                source.revision,
+                |identity| ContextMaterial::new(identity, source.clone()),
+                residency.pin_many(["thread-context".into()]),
+            )?);
+        }
+        let lease = ThreadFacetLease {
+            owner: std::sync::Weak::new(),
+            thread_id: "thread-context".into(),
+            facets: facets.clone(),
+            mode: ThreadObservationMode::Live,
+        };
+        assert_eq!(
+            lease
+                .open_read(
+                    source.revision,
+                    |_| (),
+                    residency.pin_many(["thread-context".into()])
+                )
+                .err()
+                .map(|error| error.code),
+            Some(StudioErrorCode::Overloaded)
+        );
+        let (owner, pinned) = &scopes[0];
+        let header = pinned.read(|material| material.as_ref().map_err(Clone::clone)?.header())?;
+        assert_eq!(header.scope, owner.identity());
+        assert_eq!(
+            header.frozen_model_id, None,
+            "current policy cannot fill an unknown frozen model"
+        );
+        let page = pinned.read(|material| material.as_ref().map_err(Clone::clone)?.costs(0, 1))?;
+        assert_eq!(page.scope, owner.identity());
+        assert_eq!(page.items[0].amount, 1.25);
+        let ReadText::Deferred {
+            field_id,
+            utf8_bytes,
+        } = page.items[0].currency
+        else {
+            anyhow::bail!("large currency was not deferred");
+        };
+        assert_eq!(utf8_bytes, currency.len() as u64);
+        let savings =
+            pinned.read(|material| material.as_ref().map_err(Clone::clone)?.cache_savings(0, 1))?;
+        assert_eq!(
+            savings.items[0].currency,
+            ReadText::Inline { text: "USD".into() }
+        );
+        assert_eq!(savings.items[0].amount, 0.5);
+        runtime.usage.estimated_costs[0].amount = 7.5;
+        facets.context.observe(&runtime, Some(policy()), None)?;
+        let ContextFrame::Data { event, .. } = receive(&delivery)? else {
+            anyhow::bail!("cost change did not replace details");
+        };
+        let ContextEvent::Replace {
+            stamp: next_origin,
+            value: next,
+        } = *event
+        else {
+            anyhow::bail!("cost change did not replace details");
+        };
+        assert_ne!(value.details, next.details);
+        assert!(facets.context.material_at(next.details, &origin).is_err());
+        assert!(
+            facets
+                .context
+                .material_at(value.details, &next_origin)
+                .is_err()
+        );
+        assert!(
+            pinned
+                .read(|material| material
+                    .as_ref()
+                    .map_err(Clone::clone)?
+                    .text(field_id, 1, 65536))
+                .is_err()
+        );
+        assert!(
+            pinned
+                .read(|material| material
+                    .as_ref()
+                    .map_err(Clone::clone)?
+                    .text(field_id, 0, 262145))
+                .is_err()
+        );
+        delivery.close();
+        let mut text = String::new();
+        let mut offset = 0;
+        loop {
+            let chunk = pinned.read(|material| {
+                material
+                    .as_ref()
+                    .map_err(Clone::clone)?
+                    .text(field_id, offset, 65536)
+            })?;
+            assert_eq!(chunk.offset, offset);
+            assert!(chunk.text.len() <= 65536);
+            assert!(super::super::read_budget::json_bytes(&chunk)? <= 256 * 1024);
+            text.push_str(&chunk.text);
+            match chunk.next_offset {
+                Some(next) => {
+                    assert!(next > offset);
+                    offset = next;
+                }
+                None => break,
+            }
+        }
+        assert_eq!(text, currency);
+        assert_eq!(
+            pinned
+                .read(|material| material.as_ref().map_err(Clone::clone)?.costs(0, 1))?
+                .items[0]
+                .amount,
+            1.25
+        );
+        assert!(matches!(
+            owner.close().await.outcome,
+            pl_protocol::studio::FeedCloseOutcome::Clean
+        ));
+        assert!(
+            pinned
+                .read(|material| material.as_ref().map_err(Clone::clone)?.header())
+                .is_err()
+        );
+        facets.close(FeedClosedReason::Requested);
+        assert!(facets.reads.close().await.is_empty());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn context_terminal_does_not_wait_for_full_pending_or_ack_windows() -> Result<()> {
+        let (facets, _registry) = sources()?;
+        let mut runtime = runtime()?;
+        facets.context.observe(&runtime, None, None)?;
+        let delivery = facets.context.subscribe(ThreadObservationMode::Live)?;
+        delivery.claim()?;
+        receive(&delivery)?;
+        for tokens in 1..=66 {
+            runtime.usage.latest_context_tokens = tokens;
+            facets.context.observe(&runtime, None, None)?;
+            if tokens == 1 {
+                receive(&delivery)?;
+            }
+        }
+        assert!(matches!(
+            receive(&delivery)?,
+            ContextFrame::ResyncRequired {
+                reason: pl_protocol::thread_facets::identity::ResyncReason::ReliableQueueFull,
+                ..
+            }
+        ));
+        delivery.ack(2)?;
+        assert!(matches!(
+            delivery.send_next(|_| panic!("Context terminal was sent twice"))?,
+            DeliveryStep::Terminal
+        ));
+        let closing = facets.context.subscribe(ThreadObservationMode::Live)?;
+        closing.claim()?;
+        receive(&closing)?;
+        runtime.usage.latest_context_tokens += 1;
+        facets.context.observe(&runtime, None, None)?;
+        receive(&closing)?;
+        facets.close(FeedClosedReason::OwnerReplaced);
+        closing.ready().await;
+        assert_eq!(
+            receive(&closing)?,
+            ContextFrame::Closed {
+                identity: closing.identity(),
+                reason: FeedClosedReason::OwnerReplaced
+            }
+        );
+        closing.close();
+        delivery.close();
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod configuration_contract_tests {
+    use super::super::thread_reads::configuration::ConfigurationMaterial;
+    use super::*;
+    use facets::configuration::{ConfigurationDelivery, DeliveryStep};
+    use pl_protocol::studio::{ConfigProjectionStamp, ReadText, StudioError, StudioErrorCode};
+    use pl_protocol::thread_facets::configuration::{ConfigurationEvent, ConfigurationFrame};
+    use pl_protocol::thread_facets::identity::{
+        FeedClosedReason, ThreadFacet, ThreadObservationMode,
+    };
+
+    fn sources() -> Result<(
+        Arc<facets::ThreadFacetSources>,
+        super::super::read_scopes::ReadScopeRegistry,
+    )> {
+        let registry = super::super::read_scopes::ReadScopeRegistry::default();
+        let reads = super::super::thread_reads::lifetime::ThreadReadRegistry::new(registry.clone());
+        let ids =
+            super::super::observation_ids::ObservationIds::new("configuration-contract".into());
+        Ok((
+            facets::ThreadFacetSources::new(&ids, &reads, "thread-original")?,
+            registry,
+        ))
+    }
+
+    fn runtime() -> Result<pl_protocol::ThreadRuntimeSnapshot> {
+        let snapshot = ThreadSnapshot::default();
+        let mut runtime = crate::studio::thread_projection::project_runtime(
+            "thread-original",
+            &snapshot,
+            1,
+            &snapshot.usage_summary,
+        )?;
+        runtime.model_route = Some(pl_protocol::ThreadModelRouteSnapshot {
+            bot_id: Some("original-bot".into()),
+            account_id: "original-account".into(),
+            model_id: "original-model".into(),
+            effort: Some("high".into()),
+            revision: 7,
+            available: true,
+            unavailable_reason: None,
+        });
+        runtime.active_skills = vec!["original-skill".into()];
+        Ok(runtime)
+    }
+
+    fn stamp(revision: u64) -> ConfigProjectionStamp {
+        ConfigProjectionStamp {
+            settings_revision: revision,
+            model_catalog_revision: 2,
+            closing: false,
+        }
+    }
+
+    fn receive(delivery: &ConfigurationDelivery) -> Result<ConfigurationFrame> {
+        let mut received = None;
+        delivery.send_next(|frame| {
+            received = Some(frame);
+            Ok(())
+        })?;
+        received.context("configuration frame was not delivered")
+    }
+
+    #[tokio::test]
+    async fn configuration_delivery_exposes_only_sent_refs_and_retires_the_acked_prefix()
+    -> Result<()> {
+        let (facets, _registry) = sources()?;
+        let projection = &facets.configuration;
+        let mut runtime = runtime()?;
+        projection.observe(&runtime, stamp(3), 4, Some(5))?;
+        let delivery = projection.subscribe(ThreadObservationMode::Live)?;
+        delivery.claim()?;
+        assert_eq!(
+            delivery.claim().err().map(|error| error.code),
+            Some(StudioErrorCode::Conflict)
+        );
+        let mut attempted = None;
+        assert!(
+            delivery
+                .send_next(|frame| {
+                    attempted = Some(frame);
+                    Err(StudioError::new(
+                        StudioErrorCode::Unavailable,
+                        "synthetic failed post",
+                        false,
+                    ))
+                })
+                .is_err()
+        );
+        let Some(ConfigurationFrame::Data {
+            event:
+                ConfigurationEvent::Baseline {
+                    stamp: origin,
+                    value,
+                    ..
+                },
+            ..
+        }) = attempted
+        else {
+            anyhow::bail!("first attempt was not a baseline");
+        };
+        assert!(projection.material_at(value.details, &origin).is_err());
+        assert_eq!(
+            receive(&delivery)?,
+            ConfigurationFrame::Data {
+                delivery_sequence: 1,
+                event: ConfigurationEvent::Baseline {
+                    identity: delivery.identity(),
+                    stamp: origin.clone(),
+                    value: value.clone()
+                }
+            }
+        );
+        assert_eq!(origin.facet, ThreadFacet::Configuration);
+        assert_eq!(origin.revision, 0);
+        assert_eq!(
+            projection.material_at(value.details, &origin)?.route,
+            runtime.model_route
+        );
+        projection.observe(&runtime, stamp(3), 4, Some(5))?;
+        assert!(matches!(
+            delivery.send_next(|_| panic!("unchanged configuration was published"))?,
+            DeliveryStep::Waiting
+        ));
+
+        runtime.model_route.as_mut().unwrap().bot_id = Some("replacement-bot".into());
+        projection.observe(&runtime, stamp(4), 4, Some(5))?;
+        let ConfigurationFrame::Data {
+            delivery_sequence: 2,
+            event:
+                ConfigurationEvent::Replace {
+                    stamp: next_origin,
+                    value: next,
+                },
+        } = receive(&delivery)?
+        else {
+            anyhow::bail!("configuration update was not the second Replace");
+        };
+        assert_eq!(next_origin.revision, 1);
+        assert_eq!(next_origin.runtime_epoch, origin.runtime_epoch);
+        assert_eq!(next_origin.incarnation, origin.incarnation);
+        assert!(projection.material_at(next.details, &origin).is_err());
+        assert!(projection.material_at(value.details, &next_origin).is_err());
+        let mut wrong = origin.clone();
+        wrong.facet = ThreadFacet::Authoring;
+        assert!(projection.material_at(value.details, &wrong).is_err());
+        wrong = origin.clone();
+        wrong.incarnation += 1;
+        assert!(projection.material_at(value.details, &wrong).is_err());
+
+        projection.observe(&runtime, stamp(5), 4, Some(5))?;
+        assert!(matches!(
+            delivery.send_next(|_| panic!("third frame exceeded the ACK window"))?,
+            DeliveryStep::Waiting
+        ));
+        assert_eq!(
+            delivery.ack(3).err().map(|error| error.code),
+            Some(StudioErrorCode::Protocol)
+        );
+        delivery.ack(0)?;
+        assert!(projection.material_at(value.details, &origin).is_ok());
+        delivery.ack(1)?;
+        delivery.ack(1)?;
+        assert!(projection.material_at(value.details, &origin).is_err());
+        assert!(matches!(
+            receive(&delivery)?,
+            ConfigurationFrame::Data {
+                delivery_sequence: 3,
+                event: ConfigurationEvent::Replace { .. }
+            }
+        ));
+        assert!(projection.material_at(next.details, &next_origin).is_ok());
+        delivery.close();
+        assert!(projection.material_at(next.details, &next_origin).is_err());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn configuration_details_share_thread_scope_budget_and_chunk_original_text() -> Result<()>
+    {
+        let (facets, _registry) = sources()?;
+        let mut runtime = runtime()?;
+        let original = "机器人🦀\n\"".repeat(20_000);
+        runtime.model_route.as_mut().unwrap().bot_id = Some(original.clone());
+        runtime.active_skills.push("skill🦀".repeat(2_000));
+        facets.configuration.observe(&runtime, stamp(3), 4, None)?;
+        let delivery = facets
+            .configuration
+            .subscribe(ThreadObservationMode::Cold)?;
+        delivery.claim()?;
+        let ConfigurationFrame::Data {
+            event:
+                ConfigurationEvent::Baseline {
+                    stamp: origin,
+                    value,
+                    ..
+                },
+            ..
+        } = receive(&delivery)?
+        else {
+            anyhow::bail!("missing configuration baseline");
+        };
+        let source = facets.configuration.material_at(value.details, &origin)?;
+        let residency = super::super::residency::ThreadResidency::new();
+        let mut scopes = Vec::new();
+        for _ in 0..8 {
+            let lease = ThreadFacetLease {
+                owner: std::sync::Weak::new(),
+                thread_id: "thread-original".into(),
+                facets: facets.clone(),
+                mode: ThreadObservationMode::Live,
+            };
+            scopes.push(lease.open_read(
+                source.revision,
+                |identity| ConfigurationMaterial::new(identity, source.clone()),
+                residency.pin_many(["thread-original".into()]),
+            )?);
+        }
+        let lease = ThreadFacetLease {
+            owner: std::sync::Weak::new(),
+            thread_id: "thread-original".into(),
+            facets: facets.clone(),
+            mode: ThreadObservationMode::Live,
+        };
+        let refused = lease.open_read(
+            source.revision,
+            |_| (),
+            residency.pin_many(["thread-original".into()]),
+        );
+        assert_eq!(
+            refused.err().map(|error| error.code),
+            Some(StudioErrorCode::Overloaded)
+        );
+
+        let (owner, pinned) = &scopes[0];
+        let header = pinned.read(|material| material.as_ref().map_err(Clone::clone)?.header())?;
+        assert_eq!(header.scope, owner.identity());
+        let Some(route) = header.route else {
+            anyhow::bail!("missing original route");
+        };
+        let Some(ReadText::Deferred {
+            field_id,
+            utf8_bytes,
+        }) = route.bot_id
+        else {
+            anyhow::bail!("long bot ID was not deferred");
+        };
+        assert_eq!(utf8_bytes, original.len() as u64);
+        assert_eq!(
+            route.account_id,
+            ReadText::Inline {
+                text: "original-account".into()
+            }
+        );
+        let skills =
+            pinned.read(|material| material.as_ref().map_err(Clone::clone)?.active_skills(1, 1))?;
+        assert_eq!(skills.total, 2);
+        assert!(matches!(skills.items[0].name, ReadText::Deferred { .. }));
+        assert!(
+            pinned
+                .read(|material| material
+                    .as_ref()
+                    .map_err(Clone::clone)?
+                    .text(field_id, 1, 65536))
+                .is_err()
+        );
+        assert!(
+            pinned
+                .read(|material| material
+                    .as_ref()
+                    .map_err(Clone::clone)?
+                    .text(field_id, 0, 262145))
+                .is_err()
+        );
+
+        delivery.close();
+        let mut reconstructed = String::new();
+        let mut offset = 0;
+        loop {
+            let chunk = pinned.read(|material| {
+                material
+                    .as_ref()
+                    .map_err(Clone::clone)?
+                    .text(field_id, offset, 65536)
+            })?;
+            assert_eq!(chunk.field_id, field_id);
+            assert_eq!(chunk.offset, offset);
+            assert!(chunk.text.len() <= 65536);
+            assert!(super::super::read_budget::json_bytes(&chunk)? <= 256 * 1024);
+            reconstructed.push_str(&chunk.text);
+            match chunk.next_offset {
+                Some(next) => {
+                    assert!(next > offset);
+                    offset = next;
+                }
+                None => break,
+            }
+        }
+        assert_eq!(reconstructed, original);
+        assert!(matches!(
+            owner.close().await.outcome,
+            pl_protocol::studio::FeedCloseOutcome::Clean
+        ));
+        assert!(
+            pinned
+                .read(|material| material.as_ref().map_err(Clone::clone)?.header())
+                .is_err()
+        );
+        facets.close(FeedClosedReason::OwnerReplaced);
+        assert!(facets.reads.close().await.is_empty());
+        assert!(
+            facets
+                .configuration
+                .material_at(
+                    pl_protocol::thread_facets::identity::ConfigurationReadRef {
+                        entry: 1,
+                        revision: 0
+                    },
+                    &origin
+                )
+                .is_err()
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn configuration_resync_and_close_bypass_a_full_ack_window() -> Result<()> {
+        let (facets, _registry) = sources()?;
+        let runtime = runtime()?;
+        facets.configuration.observe(&runtime, stamp(0), 0, None)?;
+        let delivery = facets
+            .configuration
+            .subscribe(ThreadObservationMode::Live)?;
+        delivery.claim()?;
+        receive(&delivery)?;
+        facets.configuration.observe(&runtime, stamp(1), 0, None)?;
+        receive(&delivery)?;
+        for revision in 2..=66 {
+            facets
+                .configuration
+                .observe(&runtime, stamp(revision), 0, None)?;
+        }
+        assert!(matches!(
+            receive(&delivery)?,
+            ConfigurationFrame::ResyncRequired {
+                reason: pl_protocol::thread_facets::identity::ResyncReason::ReliableQueueFull,
+                ..
+            }
+        ));
+        delivery.ack(2)?;
+        assert!(matches!(
+            delivery.send_next(|_| panic!("terminal was sent twice"))?,
+            DeliveryStep::Terminal
+        ));
+
+        let closing = facets
+            .configuration
+            .subscribe(ThreadObservationMode::Live)?;
+        closing.claim()?;
+        receive(&closing)?;
+        facets.configuration.observe(&runtime, stamp(67), 0, None)?;
+        receive(&closing)?;
+        facets.close(FeedClosedReason::OwnerReplaced);
+        closing.ready().await;
+        assert_eq!(
+            receive(&closing)?,
+            ConfigurationFrame::Closed {
+                identity: closing.identity(),
+                reason: FeedClosedReason::OwnerReplaced
+            }
+        );
+        assert!(
+            facets
+                .configuration
+                .subscribe(ThreadObservationMode::Live)
+                .is_err()
+        );
+        closing.close();
+        delivery.close();
         Ok(())
     }
 }

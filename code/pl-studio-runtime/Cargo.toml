@@ -49,6 +49,9 @@ rust-embed = { workspace = true }
 dunce = { workspace = true }
 zstd = { workspace = true }
 
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
+
 [target.'cfg(windows)'.dependencies]
 windows-sys = { workspace = true }
 

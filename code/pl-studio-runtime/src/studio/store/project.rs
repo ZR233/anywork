@@ -7,7 +7,7 @@ use sea_orm::{
     ConnectOptions, ConnectionTrait, Database, DatabaseBackend, DatabaseConnection, Statement,
 };
 
-use super::schema::{STUDIO_DATABASE_SCHEMA_VERSION, migrate};
+use super::schema::{STUDIO_DATABASE_SCHEMA_VERSION, USER_SCHEMA_OBJECTS, migrate};
 use crate::studio::catalog::CatalogStore;
 use crate::studio::paths::{SqliteFileMode, StudioPaths, default_db_path, sqlite_file_options};
 use crate::studio::records::ProjectRecord;
@@ -429,7 +429,8 @@ async fn inspect_database(path: &Path) -> Result<()> {
     }
     .await;
     let validation = match version {
-        Ok(STUDIO_DATABASE_SCHEMA_VERSION) => validate_database(&database).await,
+        // Preflight has already checked the corresponding complete schema while still read-only.
+        Ok(STUDIO_DATABASE_SCHEMA_VERSION) => Ok(()),
         // 上一个大版本的 v2 库可以在打开后原地升级；更早的 dev 版本仍交给启动入口。
         Ok(0 | UPGRADEABLE_STUDIO_DATABASE_SCHEMA_VERSION..=24) => Ok(()),
         Ok(19..=21) => Err(StudioDatabaseError::StorageMigrationRequired.into()),
@@ -455,7 +456,10 @@ async fn validate_database(db: &DatabaseConnection) -> Result<()> {
     validate_database_version(db, STUDIO_DATABASE_SCHEMA_VERSION).await
 }
 
-async fn validate_database_version(db: &DatabaseConnection, expected_version: i64) -> Result<()> {
+pub(super) async fn validate_database_version(
+    db: &DatabaseConnection,
+    expected_version: i64,
+) -> Result<()> {
     let version = database_schema_version(db).await?;
     if version != expected_version {
         return Err(StudioDatabaseError::UnsupportedSchema {
@@ -483,7 +487,7 @@ async fn validate_database_version(db: &DatabaseConnection, expected_version: i6
     }
 
     let actual = schema_fingerprint(db).await?;
-    let expected = expected_schema_fingerprint().await?;
+    let expected = expected_schema_fingerprint(expected_version).await?;
     if actual != expected {
         return Err(StudioDatabaseError::CorruptDatabase {
             reason: "incompatible schema fingerprint".into(),
@@ -504,12 +508,22 @@ async fn database_schema_version(db: &impl sea_orm::ConnectionTrait) -> Result<i
     Ok(row.try_get("", "user_version")?)
 }
 
-async fn expected_schema_fingerprint() -> Result<String> {
+async fn expected_schema_fingerprint(version: i64) -> Result<String> {
     let database = connect_memory().await?;
-    migrate(&database).await?;
-    let fingerprint = schema_fingerprint(&database).await;
-    database.close().await?;
-    fingerprint
+    let fingerprint = async {
+        super::schema::create_reference_schema(&database, version).await?;
+        schema_fingerprint(&database).await
+    }
+    .await;
+    let close = database.close().await;
+    match (fingerprint, close) {
+        (Ok(value), Ok(())) => Ok(value),
+        (Err(error), Ok(())) => Err(error),
+        (Ok(_), Err(error)) => Err(error).context("failed to close Studio schema reference"),
+        (Err(error), Err(close_error)) => {
+            Err(crate::studio::startup::cleanup_error(close_error).context(error))
+        }
+    }
 }
 
 async fn schema_fingerprint(db: &DatabaseConnection) -> Result<String> {
@@ -523,10 +537,7 @@ async fn schema_fingerprint_where(db: &DatabaseConnection, predicate: &str) -> R
             format!(
                 "SELECT type, name, tbl_name, sql
              FROM sqlite_schema
-             WHERE name NOT LIKE 'sqlite_%'
-               AND tbl_name <> 'seaql_migrations'
-               AND type IN ('table', 'index')
-               AND sql IS NOT NULL
+             WHERE {USER_SCHEMA_OBJECTS}
                AND {predicate}
              ORDER BY type, name"
             ),
@@ -654,8 +665,10 @@ mod major_version_storage_tests {
 #[cfg(test)]
 mod v2_schema_upgrade_tests {
     use super::super::directory::{DirectoryDelta, ProjectDirectoryRecord, apply_directory_delta};
+    use super::super::schema::Migrator;
     use super::*;
     use sea_orm::TransactionTrait;
+    use sea_orm_migration::MigratorTrait;
 
     #[tokio::test]
     async fn schema_24_catalog_3_closed_child_does_not_invent_close_intent() -> Result<()> {
@@ -986,11 +999,25 @@ mod v2_schema_upgrade_tests {
             .execute_unprepared("CREATE TABLE agent_evaluations(unrelated INTEGER)")
             .await?;
         store.close().await?;
+        let before = tokio::fs::read(&database).await?;
         let failure = match StudioStore::open(&database).await {
             Ok(_) => anyhow::bail!("conflicting legacy DDL was accepted"),
             Err(error) => error,
         };
-        assert!(format!("{failure:#}").contains("m20261026_000003_product_delegation"));
+        assert!(format!("{failure:#}").contains("incompatible schema fingerprint"));
+        assert_eq!(tokio::fs::read(&database).await?, before);
+        // Preflight now rejects this damaged historical schema before ledger creation. Exercise
+        // the official step runner directly to retain the independent rollback/retry proof.
+        let probe = connect_sqlite(
+            sqlite_file_options(&database, SqliteFileMode::ReadWrite, |options| options).await?,
+            1,
+        )
+        .await?;
+        let failure = Migrator::up(&probe, None)
+            .await
+            .expect_err("conflicting delegation DDL must roll back its official step");
+        assert!(format!("{failure:#}").contains("agent_evaluations"));
+        probe.close().await?;
         let probe = connect_read_only_database(&database).await?;
         assert_eq!(database_schema_version(&probe).await?, 23);
         assert!(

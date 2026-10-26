@@ -7,20 +7,21 @@ use anyhow::{Context, Result, ensure};
 use pl_dev_support::{paths, process};
 use serde::Deserialize;
 
+const FREEZED_ANNOTATION_VERSION: &str = "3.1.0";
+
 /// Both suites are mandatory: a missing package or adapter suite is an
 /// incomplete migration, rather than a reason to turn this gate green.
 pub(crate) fn verify() -> Result<()> {
     let workspace_root = paths::workspace_root()?;
     let client_dir = workspace_root.join("code/anywork_client");
     let app_dir = paths::studio_app_dir(&workspace_root);
-    ensure_client_manifest(&client_dir)?;
     ensure_locked_suite(&client_dir, Path::new("test"))?;
     ensure_locked_suite(&app_dir, Path::new("test/client"))?;
 
     println!("Client package: {}", client_dir.display());
     println!("Client adapters: {}", app_dir.join("test/client").display());
 
-    run("dart", &["pub", "get", "--enforce-lockfile"], &client_dir)?;
+    ensure_locked_dependencies(&client_dir)?;
     run("flutter", &["pub", "get", "--enforce-lockfile"], &app_dir)?;
     run(
         "dart",
@@ -58,6 +59,16 @@ struct ClientManifest {
     name: String,
     #[serde(default)]
     dependencies: BTreeMap<String, serde_norway::Value>,
+    #[serde(default)]
+    dependency_overrides: BTreeMap<String, serde_norway::Value>,
+}
+
+/// Materializes the SDK package's own generator dependencies from its reviewed
+/// lockfile. The application's path dependency does not include SDK dev tools.
+pub(crate) fn ensure_locked_dependencies(client_dir: &Path) -> Result<()> {
+    ensure_client_manifest(client_dir)?;
+    ensure_lockfile(client_dir)?;
+    run("dart", &["pub", "get", "--enforce-lockfile"], client_dir)
 }
 
 fn ensure_client_manifest(client_dir: &Path) -> Result<()> {
@@ -72,25 +83,25 @@ fn ensure_client_manifest(client_dir: &Path) -> Result<()> {
         manifest_path.display()
     );
     ensure!(
-        manifest.dependencies.is_empty(),
-        "anywork_client runtime dependencies must be Dart SDK only; remove: {}",
-        manifest
-            .dependencies
-            .keys()
-            .cloned()
-            .collect::<Vec<_>>()
-            .join(", ")
+        manifest.dependencies.len() == 1
+            && manifest
+                .dependencies
+                .get("freezed_annotation")
+                .and_then(serde_norway::Value::as_str)
+                == Some(FREEZED_ANNOTATION_VERSION),
+        "anywork_client must declare only freezed_annotation: {FREEZED_ANNOTATION_VERSION} as a runtime dependency: {}",
+        manifest_path.display()
+    );
+    ensure!(
+        manifest.dependency_overrides.is_empty(),
+        "anywork_client must not override its reviewed dependencies: {}",
+        manifest_path.display()
     );
     Ok(())
 }
 
 fn ensure_locked_suite(package_dir: &Path, suite: &Path) -> Result<()> {
-    let lockfile = package_dir.join("pubspec.lock");
-    ensure!(
-        lockfile.is_file(),
-        "required lockfile is missing: {}; resolve and review dependencies before verify-client",
-        lockfile.display()
-    );
+    ensure_lockfile(package_dir)?;
     let suite_dir = package_dir.join(suite);
     ensure!(
         suite_dir.is_dir(),
@@ -101,6 +112,16 @@ fn ensure_locked_suite(package_dir: &Path, suite: &Path) -> Result<()> {
         contains_test(&suite_dir)?,
         "required Client contract test suite has no *_test.dart files: {}",
         suite_dir.display()
+    );
+    Ok(())
+}
+
+fn ensure_lockfile(package_dir: &Path) -> Result<()> {
+    let lockfile = package_dir.join("pubspec.lock");
+    ensure!(
+        lockfile.is_file(),
+        "required lockfile is missing: {}; resolve and review dependencies before verification or generation",
+        lockfile.display()
     );
     Ok(())
 }

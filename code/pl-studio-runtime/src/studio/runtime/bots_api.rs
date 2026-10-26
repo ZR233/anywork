@@ -21,13 +21,34 @@ impl StudioRuntime {
         let _guard = self.lifecycle_lock.lock().await;
         let thread = self.ensure_thread_owner(thread_id).await?;
         self.reconcile_bot_model(thread_id, &thread).await?;
-        self.admit_attachment_drafts(pl_protocol::studio::AdmitAttachmentDraftsRequest {
-            context: pl_protocol::studio::StudioAttachmentAdmissionContext::ExistingThread {
-                thread_id: thread_id.into(),
+        let job = self.begin_attachment_admission(
+            crate::studio::new_id("bot-attachment-admission"),
+            pl_protocol::studio::AdmitAttachmentDraftsRequest {
+                context: pl_protocol::studio::StudioAttachmentAdmissionContext::ExistingThread {
+                    thread_id: thread_id.into(),
+                },
+                sources,
             },
-            sources,
-        })
-        .await
+        )?;
+        let outcome = job.result().await;
+        let closed = job.close().await;
+        match outcome {
+            // Cleanup is a separate native-owner responsibility; it cannot erase known drafts.
+            pl_protocol::studio::AttachmentAdmissionOutcome::Returned { value } => Ok(value),
+            pl_protocol::studio::AttachmentAdmissionOutcome::Rejected { error }
+            | pl_protocol::studio::AttachmentAdmissionOutcome::UnknownOutcome { error } => {
+                match closed.outcome {
+                    pl_protocol::studio::FeedCloseOutcome::Clean => Err(error.into()),
+                    pl_protocol::studio::FeedCloseOutcome::Unresolved { issues } => {
+                        Err(super::draft_commands::DraftCommandsCloseFailure {
+                            issues,
+                            source: Some(error.into()),
+                        }
+                        .into())
+                    }
+                }
+            }
+        }
     }
 
     /// Called under the existing lifecycle admission lock before a new user input is accepted.

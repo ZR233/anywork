@@ -41,7 +41,10 @@ impl ConfigRuntime {
                     observation.status.error = Some(error);
                     observation.status.checked_at = Some(unix_seconds());
                 }
-                self.publish_catalog_locked(&mut state, Vec::new());
+                let publication = self.publish_catalog_locked(&mut state, Vec::new());
+                drop(state);
+                drop(_command);
+                self.notify_projection(publication);
                 return Ok(None);
             }
         };
@@ -73,7 +76,10 @@ impl ConfigRuntime {
             query,
             cancellation: observation.cancellation.child_token(),
         };
-        self.publish_catalog_locked(&mut state, Vec::new());
+        let publication = self.publish_catalog_locked(&mut state, Vec::new());
+        drop(state);
+        drop(_command);
+        self.notify_projection(publication);
         Ok(Some(probe))
     }
 
@@ -104,57 +110,58 @@ impl ConfigRuntime {
         {
             return Ok(());
         }
+        let minimum = match &result {
+            Ok(ModelCatalogQueryResult::Updated { identity, .. })
+            | Ok(ModelCatalogQueryResult::NotModified { identity, .. })
+                if identity.as_str() != probe.query.identity() =>
+            {
+                return Ok(());
+            }
+            Ok(ModelCatalogQueryResult::Updated { .. }) => state
+                .observations
+                .values()
+                .filter_map(|observation| observation.cache.as_ref())
+                .flat_map(|cache| &cache.models)
+                .filter_map(|model| model.observation.as_ref())
+                .map(pl_model::model::ModelObservation::latest_order)
+                .max()
+                .unwrap_or(0),
+            Ok(ModelCatalogQueryResult::NotModified { .. }) | Err(_) => 0,
+        };
+        // Freeze this adoption's inputs before sequence/cache IO, while the command guard
+        // still serializes durable work with input invalidation and the closing gate.
+        let mut next_observations = state.observations.clone();
+        let desired = state.desired.clone();
+        let current_accounts = state.snapshot.config.models.accounts.clone();
+        drop(state);
         let cache = match result {
             Ok(ModelCatalogQueryResult::Updated {
                 identity,
                 etag,
                 mut models,
-            }) => {
-                if identity != probe.query.identity() {
-                    return Ok(());
-                }
-                let minimum = state
-                    .observations
-                    .values()
-                    .filter_map(|observation| observation.cache.as_ref())
-                    .flat_map(|cache| &cache.models)
-                    .filter_map(|model| model.observation.as_ref())
-                    .map(pl_model::model::ModelObservation::latest_order)
-                    .max()
-                    .unwrap_or(0);
-                match model_catalog::next_observation_order(self.store.paths(), minimum) {
-                    Ok(order) => {
-                        for model in &mut models {
-                            if let Some(observation) = &mut model.observation {
-                                observation.commit(order);
-                            }
+            }) => match model_catalog::next_observation_order(self.store.paths(), minimum) {
+                Ok(order) => {
+                    for model in &mut models {
+                        if let Some(observation) = &mut model.observation {
+                            observation.commit(order);
                         }
-                        Ok(SuccessCache::new(
-                            &probe.account,
-                            &identity,
-                            etag,
-                            models,
-                            unix_seconds(),
-                        ))
                     }
-                    Err(_) => Err(StudioModelCatalogError::CacheWrite),
+                    Ok(SuccessCache::new(
+                        &probe.account,
+                        &identity,
+                        etag,
+                        models,
+                        unix_seconds(),
+                    ))
                 }
-            }
-            Ok(ModelCatalogQueryResult::NotModified { identity, etag }) => {
-                if identity != probe.query.identity() {
-                    return Ok(());
-                }
-                match &old.cache {
-                    Some(cache) => Ok(cache.not_modified(etag)),
-                    None => Err(StudioModelCatalogError::UnexpectedNotModified),
-                }
-            }
+                Err(_) => Err(StudioModelCatalogError::CacheWrite),
+            },
+            Ok(ModelCatalogQueryResult::NotModified { etag, .. }) => match &old.cache {
+                Some(cache) => Ok(cache.not_modified(etag)),
+                None => Err(StudioModelCatalogError::UnexpectedNotModified),
+            },
             Err(error) => Err(model_catalog::query_error(error)?),
         };
-        let mut next_observations = state.observations.clone();
-        let desired = state.desired.clone();
-        let current_accounts = state.snapshot.config.models.accounts.clone();
-        drop(state);
         let next = next_observations
             .get_mut(&probe.account)
             .ok_or_else(|| PureError::ConfigError("model observation is missing".into()))?;
@@ -211,21 +218,30 @@ impl ConfigRuntime {
             state.snapshot.config = config;
         }
         state.observations = next_observations;
-        self.publish_catalog_locked(&mut state, affected);
+        let publication = self.publish_catalog_locked(&mut state, affected);
         drop(state);
         // Model withdrawal/recovery changes whether an otherwise enabled child Profile can run.
         // Publish that availability through the existing Profile owner and generation channel.
         if let Some(config) = profiles_config {
             self.profiles.adopt_scan(self.store.paths(), &config);
         }
+        drop(_command);
+        self.notify_projection(publication);
         Ok(())
     }
 
-    fn publish_catalog_locked(&self, state: &mut RuntimeState, affected: Vec<AccountId>) {
+    fn publish_catalog_locked(
+        &self,
+        state: &mut RuntimeState,
+        affected: Vec<AccountId>,
+    ) -> ProjectionPublication {
         state.catalog.revision = state.catalog.revision.saturating_add(1);
         state.catalog.updated_at = unix_seconds();
         state.catalog.catalogs = statuses(&state.observations);
-        let _ = self.catalog_updates.send(CatalogChange { affected });
+        model_projection::observe_source(&mut state.models_status, state.catalog.updated_at);
+        let mut publication = self.publish_projection_locked(state);
+        publication.catalog_change = Some(CatalogChange { affected });
+        publication
     }
 
     /// Serializes with commit, prevents new publication, and cancels outstanding network futures.
@@ -235,15 +251,35 @@ impl ConfigRuntime {
             .lock()
             .map_err(|_| config_runtime_poisoned())?;
         let mut state = self.state.write().map_err(|_| config_runtime_poisoned())?;
+        if state.closing {
+            return Ok(());
+        }
         state.closing = true;
+        let stopped_at = unix_seconds();
+        model_projection::stop_source(&mut state.models_status, stopped_at);
+        let previous = state.catalog.catalogs.clone();
+        let mut cancellations = Vec::with_capacity(state.observations.len());
         for observation in state.observations.values_mut() {
-            observation.cancellation.cancel();
+            cancellations.push(observation.cancellation.clone());
             if observation.status.probing {
                 observation.status.probing = false;
                 observation.status.error = Some(StudioModelCatalogError::Closing);
             }
         }
         state.catalog.catalogs = statuses(&state.observations);
+        if previous != state.catalog.catalogs {
+            state.catalog.revision = state.catalog.revision.saturating_add(1);
+            state.catalog.updated_at = stopped_at;
+        }
+        let publication = self.publish_projection_locked(&mut state);
+        drop(state);
+        let profiles = self.profiles.stop_captured();
+        drop(_command);
+        for cancellation in cancellations {
+            cancellation.cancel();
+        }
+        profiles.notify();
+        self.notify_projection(publication);
         Ok(())
     }
 }

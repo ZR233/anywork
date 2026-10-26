@@ -1,6 +1,5 @@
 import 'dart:convert';
 
-import 'package:anywork/src/shared/studio_driver_state.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
@@ -10,6 +9,7 @@ import 'package:flutter_driver/flutter_driver.dart' hide find;
 import 'package:flutter_test/flutter_test.dart';
 
 import 'tool_probe.dart';
+import 'driver_binding.dart';
 
 class ToolProbeExtension extends CommandExtension {
   static const _mouseDevice = 901;
@@ -86,7 +86,7 @@ class ToolProbeExtension extends CommandExtension {
         expanded =
             (expansibles.first.widget as Expansible).controller.isExpanded;
       }
-      final production = jsonDecode(StudioDriverState.snapshotJson());
+      final production = jsonDecode(captureDriverJson());
       final scroll = production is Map ? production['timelineScroll'] : null;
       final timeline = production is Map ? production['timeline'] : null;
       Element? presentation;

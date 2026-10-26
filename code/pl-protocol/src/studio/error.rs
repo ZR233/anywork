@@ -4,7 +4,6 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use utoipa::ToSchema;
 
 static NEXT_CORRELATION_ID: AtomicU64 = AtomicU64::new(1);
@@ -21,6 +20,7 @@ pub enum StudioErrorCode {
     Busy,
     Conflict,
     StaleRevision,
+    Superseded,
     PermissionDenied,
     Cancelled,
     CancellationTooLate,
@@ -44,6 +44,7 @@ impl StudioErrorCode {
             Self::Busy => "busy",
             Self::Conflict => "conflict",
             Self::StaleRevision => "staleRevision",
+            Self::Superseded => "superseded",
             Self::PermissionDenied => "permissionDenied",
             Self::Cancelled => "cancelled",
             Self::CancellationTooLate => "cancellationTooLate",
@@ -69,12 +70,16 @@ pub enum StudioErrorReason {
     ChildThreadRequiresParentScheduling,
     /// 目标会话当前没有可认领的继续点。
     ContinuationUnavailable,
+    /// 原继续操作已受理，但其回执当前尚不可读。
+    ContinuationAccepted,
     /// 目标继续点已被另一次受理认领。
     ContinuationClaimed,
     /// 调用方冻结的继续点已经不是当前继续点。
     StaleContinuation,
     /// 调用方冻结的执行编号不是当前执行。
     StaleExecution,
+    /// 执行所有者裁决时已无当前执行。
+    NoExecution,
     /// 该会话仍有当前执行或正在清理，不能开始新的轮次。
     ExecutionInProgress,
     /// 交互不允许由主会话转交处理。
@@ -91,15 +96,115 @@ impl StudioErrorReason {
         match self {
             Self::ChildThreadRequiresParentScheduling => "childThreadRequiresParentScheduling",
             Self::ContinuationUnavailable => "continuationUnavailable",
+            Self::ContinuationAccepted => "continuationAccepted",
             Self::ContinuationClaimed => "continuationClaimed",
             Self::StaleContinuation => "staleContinuation",
             Self::StaleExecution => "staleExecution",
+            Self::NoExecution => "noExecution",
             Self::ExecutionInProgress => "executionInProgress",
             Self::InteractionNotHosted => "interactionNotHosted",
             Self::StaleInteraction => "staleInteraction",
             Self::ThreadArchived => "threadArchived",
         }
     }
+}
+
+/// Exact, non-sensitive facts carried by stop/continue/hosted-interaction rejections.
+/// The discriminator preserves the difference between rejection and accepted-but-not-durable.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
+#[serde(tag = "kind", content = "data", rename_all = "camelCase", rename_all_fields = "camelCase", deny_unknown_fields)]
+pub enum ControlFailureFacts {
+    Unspecified,
+    ChildThreadAction {
+        thread_id: String,
+        action: String,
+        parent_thread_id: Option<String>,
+    },
+    ThreadAction {
+        thread_id: String,
+        action: String,
+    },
+    ExpectedExecution {
+        thread_id: String,
+        expected_execution_id: String,
+    },
+    Executing {
+        thread_id: String,
+        execution_id: String,
+        phase: String,
+    },
+    ExpectedContinuation {
+        thread_id: String,
+        expected_continuation_id: String,
+    },
+    ContinuationAccepted {
+        thread_id: String,
+        operation_id: String,
+        accepted: bool,
+    },
+    ContinuationOperation {
+        thread_id: String,
+        operation_id: String,
+    },
+    ContinuationPointConflict {
+        thread_id: String,
+        operation_id: String,
+        expected_continuation_id: String,
+        accepted_continuation_id: String,
+    },
+    ContinuationRouteConflict {
+        thread_id: String,
+        operation_id: String,
+        expected_model_route_revision: u64,
+        accepted_model_route_revision: u64,
+    },
+    StaleContinuation {
+        thread_id: String,
+        expected_continuation_id: String,
+        current_continuation_id: String,
+    },
+    ClaimedContinuation {
+        thread_id: String,
+        continuation_id: String,
+    },
+    ChildInteraction {
+        interaction_id: String,
+        interaction_thread_id: String,
+    },
+    InteractionRevision {
+        interaction_id: String,
+        expected_revision: u64,
+        current_revision: u64,
+    },
+    InteractionTerminal {
+        interaction_id: String,
+        current_revision: u64,
+    },
+    InteractionOperation {
+        operation_id: String,
+        interaction_id: String,
+    },
+    ChildHost {
+        host_thread_id: String,
+        host_is_child: bool,
+    },
+    InteractionHost {
+        host_thread_id: String,
+        interaction_thread_id: String,
+    },
+    DecisionDurability {
+        interaction_id: String,
+        decision_saved: bool,
+    },
+    UnreadableDecision {
+        thread_id: String,
+        interaction_id: String,
+    },
+    DecisionIdentity {
+        interaction_id: String,
+        current_revision: u64,
+        operation_identity_recorded: bool,
+    },
 }
 
 /// A redacted API error. Internal diagnostics are correlated through `correlation_id` only.
@@ -111,10 +216,78 @@ pub struct StudioError {
     pub message: String,
     pub retryable: bool,
     pub correlation_id: String,
-    /// 动态详情；装箱后错误返回值保持窄小，JSON 形状不变（见 design/18 §18.2）。
-    #[schema(value_type = Object)]
+    /// 装箱避免错误类型本身过大（`clippy::result_large_err`）；`serde` 表示不变。
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub details: Option<Box<Value>>,
+    pub details: Option<Box<StudioErrorDetails>>,
+}
+
+/// Stable diagnostic fields. Arbitrary JSON is not part of the error contract.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
+#[serde(
+    tag = "kind",
+    content = "data",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum StudioErrorDetails {
+    Startup {
+        step: String,
+        kind: StartupFailureKind,
+    },
+    Revision {
+        expected: u64,
+        actual: u64,
+    },
+    SshAuthentication {
+        password_offered: Option<bool>,
+    },
+    Reason {
+        reason: String,
+    },
+    Control {
+        reason: String,
+        facts: ControlFailureFacts,
+    },
+    Identity {
+        identity: String,
+    },
+    TimelineRevision {
+        item_id: String,
+        field: String,
+        revision: u64,
+    },
+    Validation {
+        issues: Vec<crate::ThreadModeValidationIssue>,
+    },
+    Thread {
+        thread_id: String,
+    },
+    ResourceLimit {
+        resource: String,
+        capacity: u64,
+    },
+    /// Bot provider diagnostic: only stable published fields, never arbitrary JSON.
+    Bot {
+        code: String,
+        platform_code: Option<String>,
+        guidance: Option<String>,
+    },
+    /// A stale delegation/statistics cursor bound to the catalog revision it was issued for.
+    CatalogRevision {
+        revision: u64,
+    },
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum StartupFailureKind {
+    ModeDefinitions,
+    Migration,
+    PersistentData,
+    Environment,
+    Cancelled,
+    Internal,
 }
 
 impl StudioError {
@@ -128,33 +301,24 @@ impl StudioError {
         }
     }
 
-    pub fn with_details(mut self, details: Value) -> Self {
+    pub fn with_details(mut self, details: StudioErrorDetails) -> Self {
         self.details = Some(Box::new(details));
         self
     }
 
-    /// Attaches the stable reason label and any extra structured facts.
-    ///
-    /// Only identities and reasons are carried: never prompt text, tool arguments or model output.
-    pub fn with_reason(mut self, reason: StudioErrorReason, extra: Value) -> Self {
-        let mut details = match extra {
-            Value::Object(details) => details,
-            _ => serde_json::Map::new(),
-        };
-        details.insert(
-            "reason".to_owned(),
-            Value::String(reason.label().to_owned()),
-        );
-        self.details = Some(Box::new(Value::Object(details)));
-        self
+    /// Attaches non-sensitive, typed facts without changing admission or execution state.
+    pub fn with_reason(self, reason: StudioErrorReason, facts: ControlFailureFacts) -> Self {
+        self.with_details(StudioErrorDetails::Control {
+            reason: reason.label().to_owned(),
+            facts,
+        })
     }
 
-    /// The stable reason label this error carries, when it has one.
     pub fn reason(&self) -> Option<&str> {
-        self.details
-            .as_ref()
-            .and_then(|details| details.get("reason"))
-            .and_then(Value::as_str)
+        match self.details.as_deref() {
+            Some(StudioErrorDetails::Reason { reason } | StudioErrorDetails::Control { reason, .. }) => Some(reason),
+            _ => None,
+        }
     }
 
     pub fn invalid_argument(message: impl Into<String>) -> Self {

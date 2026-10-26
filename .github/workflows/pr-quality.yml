@@ -168,6 +168,9 @@ jobs:
       - name: Test pl-core public API
         run: cargo test -p pl-core --features sqlite
 
+      - name: Test Studio bridge feed and lifecycle contracts
+        run: cargo test -p pl-studio-bridge --lib
+
   studio-server-linux:
     name: Studio server (Linux)
     runs-on: ubuntu-latest

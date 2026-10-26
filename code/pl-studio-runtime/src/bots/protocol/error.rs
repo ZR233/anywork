@@ -120,11 +120,11 @@ impl FeishuError {
             _ => StudioErrorCode::Unavailable,
         };
         StudioError::new(code, diagnostic.message, self.retryable()).with_details(
-            serde_json::json!({
-                "botError": diagnostic.code,
-                "platformCode": diagnostic.platform_code,
-                "guidance": diagnostic.guidance,
-            }),
+            pl_protocol::studio::StudioErrorDetails::Bot {
+                code: diagnostic.code,
+                platform_code: diagnostic.platform_code,
+                guidance: diagnostic.guidance,
+            },
         )
     }
 }

@@ -172,10 +172,11 @@ pub(super) fn run(context: &SkillActivityScenario<'_>, mut fixture: OwnedProcess
         (seeds.path().to_string_lossy().into_owned(), "<synthetic>"),
     ];
     for phase in ["first", "reopen"] {
-        write_realtime_driver_evidence(
+        write_process_evidence(
             &working.join(format!("skill-activity-{phase}-driver.log")),
             output,
             &format!("skill-activity-{phase}"),
+            "driver",
             driver_exits.get(phase).copied().flatten(),
             journey.as_ref().err(),
             &redactions,

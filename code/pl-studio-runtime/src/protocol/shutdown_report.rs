@@ -30,20 +30,7 @@ pub enum StudioPendingPersistence {
     Drained,
 }
 
-/// 单个关闭阶段的聚合诊断。
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct StudioShutdownIssue {
-    /// 已知阶段的稳定诊断标签；只用于诊断边界，不替代既有 typed progress。
-    pub stage: String,
-    /// 稳定诊断码（字符串）。
-    pub code: String,
-    /// 脱敏后的可读说明；不包含凭据或正文。
-    pub message: String,
-    pub retryable: bool,
-    /// 关联同步日志与临时应急诊断。
-    pub correlation_id: String,
-}
+pub use pl_protocol::studio::StudioShutdownIssue;
 
 /// 应用退出的最小关闭报告。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

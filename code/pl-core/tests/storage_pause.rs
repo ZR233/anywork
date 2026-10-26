@@ -58,6 +58,8 @@ struct StoreState {
     /// `None` grants the caller's request unchanged, so every other test still exercises the plain
     /// "no reliable budget" backend.
     operation_limit: Option<u64>,
+    /// Valid quotas remain unfinished responsibility even before they retain output bytes.
+    output_reservations: BTreeSet<String>,
     /// Typed fault kind this fake reports while it is failing.
     ///
     /// `None` keeps the plain "error text only, no named generation" backend every other test uses,
@@ -93,6 +95,7 @@ impl GatedStore {
                 accepted: BTreeSet::new(),
                 durable: 0,
                 operation_limit: None,
+                output_reservations: BTreeSet::new(),
                 typed_fault: None,
                 reported_generation: 0,
                 verified_generation: None,
@@ -159,15 +162,12 @@ impl ColdStore for GatedStore {
     fn reserve_operation_output(
         &self,
         _thread_id: &str,
-        _operation_id: &str,
+        operation_id: &str,
         max_bytes: u64,
     ) -> Result<u64, ColdStoreError> {
-        Ok(self
-            .state
-            .lock()
-            .unwrap()
-            .operation_limit
-            .unwrap_or(max_bytes))
+        let mut state = self.state.lock().unwrap();
+        state.output_reservations.insert(operation_id.to_owned());
+        Ok(state.operation_limit.unwrap_or(max_bytes))
     }
 
     fn charge_operation_output(
@@ -183,12 +183,23 @@ impl ColdStore for GatedStore {
         Ok(())
     }
 
-    fn release_operation_output(&self, _thread_id: &str, _operation_id: &str) {}
+    fn release_operation_output(&self, _thread_id: &str, operation_id: &str) {
+        self.state
+            .lock()
+            .unwrap()
+            .output_reservations
+            .remove(operation_id);
+    }
 
     fn pressure(&self, _thread_id: &str) -> StoragePressure {
         let state = self.state.lock().unwrap();
         let active = state.active;
         StoragePressure {
+            has_uncommitted_work: !state.output_reservations.is_empty()
+                || state
+                    .accepted
+                    .iter()
+                    .any(|sequence| *sequence > state.durable),
             thread_bytes: if active && self.failure == Failure::QueueFull {
                 64 * 1024 * 1024
             } else {
@@ -239,15 +250,19 @@ impl ColdStore for GatedStore {
     }
 
     async fn flush(&self, _thread_id: &str, sequence: u64) -> Result<(), ColdStoreError> {
-        let state = self.state.lock().unwrap();
+        let mut state = self.state.lock().unwrap();
         if state.active && self.failure == Failure::Admission {
             return Err(storage_error());
         }
-        if (1..=sequence).all(|number| state.accepted.contains(&number)) {
-            Ok(())
-        } else {
-            Err(storage_error())
+        if !(1..=sequence).all(|number| state.accepted.contains(&number)) {
+            return Err(storage_error());
         }
+        // An explicit successful barrier saves its accepted target synchronously. The receipt and
+        // unfinished-work report must agree with that promise; admission alone still saves nothing.
+        state.durable = state.durable.max(sequence);
+        drop(state);
+        self.changed.send_replace(());
+        Ok(())
     }
 }
 
@@ -609,6 +624,10 @@ async fn a_typed_fault_needs_its_own_verified_recovery_before_the_continue_is_of
         ready.persistence.resume_required,
         "readiness is a hint for the caller; it never releases the latch by itself"
     );
+    // The backend has no outstanding writes now, but the paused Turn is still active. An empty
+    // reliable queue must not bypass the owner's original activity gates.
+    assert!(!store.pressure("verified").has_uncommitted_work);
+    assert!(!within(thread.close_if_idle()).await.unwrap());
     within(thread.resume_storage(1)).await.unwrap();
 
     let completed = tokio::time::timeout(Duration::from_secs(5), runner)
@@ -626,9 +645,10 @@ async fn a_typed_fault_needs_its_own_verified_recovery_before_the_continue_is_of
 
 /// A Thread parked between Turns learns about a verified recovery from the backend itself.
 ///
-/// Nothing here issues a command after the Turn ended: the owner's storage watch is the only
-/// wake-up, and the readiness it publishes is recomputed from its own typed facts — exactly what the
-/// continue command re-applies. The latch itself is never released by that notification.
+/// No command is issued between the Turn ending and the first verified recovery: the owner's
+/// storage watch is the only wake-up, and the readiness it publishes is recomputed from its own typed
+/// facts — exactly what the continue command re-applies. The latch itself is never released by that
+/// notification.
 #[tokio::test]
 async fn an_idle_owner_publishes_a_verified_recovery_without_a_command() {
     let store = GatedStore::new(Failure::Admission);
@@ -682,6 +702,16 @@ async fn an_idle_owner_publishes_a_verified_recovery_without_a_command() {
     store.commit_durable();
     let ready = await_snapshot(&thread, |snapshot| snapshot.persistence.resume_ready).await;
     assert!(ready.persistence.resume_required);
+
+    // Even with every accepted fact durable and no active Turn, a backend error still prevents
+    // idle close. The lifecycle predicate is not an alternative to the original error gates.
+    assert!(!store.pressure("idle").has_uncommitted_work);
+    store.fail_now();
+    await_snapshot(&thread, |snapshot| snapshot.persistence.error.is_some()).await;
+    assert!(!store.pressure("idle").has_uncommitted_work);
+    assert!(!within(thread.close_if_idle()).await.unwrap());
+    store.repair();
+    await_snapshot(&thread, |snapshot| snapshot.persistence.resume_ready).await;
 
     // The continue the caller now issues is the same verdict, revalidated at the command.
     within(thread.resume_storage(1)).await.unwrap();
@@ -1701,10 +1731,21 @@ async fn flush_remains_reachable_during_a_storage_pause() {
     });
     paused(&thread).await;
     assert!(!runner.is_finished());
-    // The paused owner still services the flush at its safety point: the admitted watermark is
-    // already durable in this fake, so the fixed-target barrier resolves instead of waiting on a
-    // Turn that cannot end on its own.
+    // The paused owner still services the flush at its safety point. The fake saves the accepted
+    // target synchronously, and its pressure report must agree with that successful barrier.
+    let target = thread.snapshot().persistence.admitted_sequence;
+    let before = store.pressure("flushed");
+    assert!(before.has_uncommitted_work);
+    assert!(before.durable_sequence < target);
     within(thread.flush()).await.unwrap();
+    let saved = store.pressure("flushed");
+    assert_eq!(saved.durable_sequence, target);
+    assert!(!saved.has_uncommitted_work);
+    assert_eq!(
+        thread.snapshot().persistence.durable_sequence,
+        saved.durable_sequence
+    );
+    assert!(thread.snapshot().persistence.pressure_paused);
     assert_eq!(requests.lock().unwrap().len(), 1);
     assert!(executions.lock().unwrap().is_empty());
     assert!(!runner.is_finished(), "a flush must not resume the Turn");

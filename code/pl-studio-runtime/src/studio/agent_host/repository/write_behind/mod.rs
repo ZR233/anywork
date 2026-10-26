@@ -14,15 +14,21 @@
 //! - `worker`: supervisor 与 writer 主循环（取批、应用、重试、恢复）;
 //! - `apply`: 批次的 SQLite 事务应用与错误分类;
 //! - `state`: PersistenceState 的计算与发布。
+//! - `failure`: 原 producer/task 与固定 ticket 的私有失败事实;
+//! - `task`: 原 supervisor 槽位及可重等的真实 completion。
 //!
 //! 模型调用/计费事实不属于本 writer 的事实源：它们只在 `storage::calls::CallsStore` 的唯一
 //! 逻辑 writer 队列中落库，本 writer 只承载目录事实与 worktree lease。性能投影通过调用库查询
 //! 结果刷新，不再经本队列持久化第二份事实。
 
 mod apply;
+mod failure;
 mod handle;
 mod queue;
 mod state;
+mod task;
 mod worker;
 
+pub(in crate::studio) use failure::{WriteBehindFlushFailure, WriteBehindRetryFailure};
 pub(in crate::studio) use handle::ThreadWriteBehindWriter;
+pub(in crate::studio) use state::WriterHealth;

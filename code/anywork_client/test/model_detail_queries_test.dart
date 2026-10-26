@@ -1,159 +1,161 @@
 import 'dart:async';
 
-import 'package:anywork_client/studio_client.dart';
+import 'package:anywork_client/models_ports.dart';
+import 'package:anywork_client/resources_ports.dart';
 import 'package:test/test.dart';
 
-const _a = DelegationModelKey(accountId: 'a', modelId: 'shared');
-const _b = DelegationModelKey(accountId: 'b', modelId: 'shared');
-const _model = AccountModelView(
-  modelId: 'shared',
-  displayName: 'Shared',
-  reasoningEfforts: [],
-);
+import 'support/models_exact_read_fixture.dart';
 
-SettingsStateSnapshot _settings(int revision) => SettingsStateSnapshot(
-  revision: revision,
-  modelCatalogRevision: revision,
-  accounts: [
-    for (final id in ['a', 'b'])
-      AccountSettingsView(
-        id: id,
-        name: id,
-        baseUrl: '',
-        defaultModelId: 'shared',
-        models: const [_model],
-        status: '',
-        usageLabel: '',
-      ),
-  ],
-);
-
-DelegationModelDetail _detail(DelegationModelKey key) => DelegationModelDetail(
-  key: key,
-  accountName: key.accountId,
-  descriptor: _model,
-  available: true,
-  billingKind: BillingKind.unknown,
-  performance: const LocalModelPerformanceSummary(
-    sampleCount: 55,
-    ttftSampleCount: 31,
-    tokensPerSecond: 12.5,
-    averageTtftMillis: 250,
-  ),
-  evaluations: const AgentEvaluationSummary(
-    window: 10,
-    ratedSamples: 0,
-    passed: 0,
-    failed: 0,
-    notRated: 0,
-  ),
-  recentEvaluations: const [],
-);
-
-class _Transport implements StudioTransport {
-  final calls = <(DelegationModelKey, Completer<DelegationModelDetail>)>[];
-  @override
-  Future<DelegationModelDetail> getDelegationModel(DelegationModelKey key) {
-    final reply = Completer<DelegationModelDetail>();
-    calls.add((key, reply));
-    return reply.future;
+/// Exact account/model detail reads. The client keeps no detail cache: only
+/// still-pending identical queries coalesce, every explicit query captures its
+/// own native reference window, and the returned value keeps its original
+/// value identity after the handle is gone.
+final class _DetailsFixture {
+  _DetailsFixture() {
+    models = createModelsRepository(port: port, budget: budget).repository;
   }
 
-  @override
-  dynamic noSuchMethod(Invocation invocation) =>
-      throw UnsupportedError('Unexpected ${invocation.memberName}');
-}
+  final port = ExactModelsPort();
+  final budget = ResourceBudget();
+  late final ModelsRepository models;
+  final scopes = <ExactModelScope>[];
 
-AnyworkClient _client(_Transport transport) {
-  final client = AnyworkClient(transport: transport, clientId: 'details');
-  client.settings.merge(_settings(1));
-  addTearDown(client.close);
-  return client;
+  int _nextOpen = 0;
+
+  Future<ExactModelScope> opened() async {
+    final opening = await port.openAt(_nextOpen++);
+    expect(opening.target, exactModelTarget);
+    final scope = ExactModelScope();
+    scopes.add(scope);
+    opening.reply.complete(scope);
+    return scope;
+  }
+
+  Future<void> tearDown() async {
+    port.refusePendingOpensForTeardown();
+    for (final scope in scopes) {
+      scope.releaseResponsesForTeardown();
+    }
+    final report = await models.retryCleanup();
+    expect(report.unresolved, isEmpty);
+    expect(budget.usage, isEmpty);
+  }
 }
 
 void main() {
-  test('exact account/model queries dedupe and never substitute stale or other-account details', () async {
-    final transport = _Transport();
-    final client = _client(transport);
-    final owner = client.modelDetailQueries;
-    final a = owner.refresh(_a);
-    expect(identical(owner.refresh(_a), a), isTrue);
-    final b = owner.refresh(_b);
-    expect(transport.calls.map((call) => call.$1), [_a, _b]);
-    transport.calls[1].$2.complete(_detail(_b));
-    await b;
-    expect(owner.state[_b]?.value?.key, _b);
-    expect(owner.state[_a]?.loading, isTrue);
-    client.settings.merge(_settings(2));
+  test('pending exact queries dedupe while each explicit query opens a fresh window', () async {
+    final fixture = _DetailsFixture();
+    addTearDown(fixture.tearDown);
+
+    final first = fixture.models.loadDelegationModel(exactModelTarget);
     expect(
-      owner.state[_b]?.value,
-      isNull,
-      reason: 'Previously cached data must invalidate immediately',
+      identical(fixture.models.loadDelegationModel(exactModelTarget), first),
+      isTrue,
+      reason: 'Only a still-pending identical query may be joined',
     );
-    expect(owner.state[_b]?.error?.code, StudioFailureCode.staleRevision);
-    final stale = expectLater(
-      a,
-      throwsA(
-        isA<StudioFailure>().having(
-          (e) => e.message,
-          'identity',
-          contains('a/shared'),
-        ),
-      ),
-    );
-    transport.calls[0].$2.complete(_detail(_a));
-    await stale;
-    expect(owner.state[_a]?.value, isNull);
-    final wrong = owner.refresh(_a);
-    final rejected = expectLater(
-      wrong,
-      throwsA(
-        isA<StudioFailure>().having(
-          (e) => e.code,
-          'code',
-          StudioFailureCode.staleRevision,
-        ),
-      ),
-    );
-    transport.calls[2].$2.complete(_detail(_b));
-    await rejected;
-    expect(owner.state[_a]?.value, isNull);
-    expect(
-      owner.state[_b]?.value,
-      isNull,
-      reason: 'Wrong-account return must not populate another key',
-    );
-    final latest = owner.refresh(_a);
-    transport.calls[3].$2.complete(_detail(_a));
-    await latest;
-    expect(owner.state[_a]?.value?.performance.averageTtftMillis, 250);
-    expect(
-      owner.state[_a]?.value?.recentEvaluations,
-      isEmpty,
-      reason: '55 call samples cannot become task evaluations',
-    );
-    owner.forget(_a);
-    expect(owner.state.containsKey(_a), isFalse);
+    final scope = await fixture.opened();
+    await scope.identityEntered.future;
+    scope.headerReply.complete(exactModelHeader);
+    final detail = await first;
+    expect(detail.target, exactModelTarget);
+    expect(detail.accountName, 'Original exact account');
+    expect(detail.descriptor.modelId, exactModelTarget.model.modelId);
+    expect(detail.performance.sampleCount, 7);
+    expect(detail.performance.averageTtftMillis, 250);
+    // 55 call samples cannot become task evaluations.
+    expect(detail.recentEvaluations, isEmpty);
+    expect(detail.evaluations.window, 10);
+    expect(fixture.port.opens, hasLength(1));
+
+    // The native handle is still the client's until it really joins.
+    final closing = await scope.closed(0);
+    expect(fixture.budget.used(ResourceKind.readModel), 1);
+    closing.completeClean();
+
+    // A settled query is not a cache: the next query captures a new window.
+    final second = fixture.models.loadDelegationModel(exactModelTarget);
+    expect(identical(second, first), isFalse);
+    final replacement = await fixture.opened();
+    await replacement.identityEntered.future;
+    replacement.headerReply.complete(exactModelHeader);
+    final again = await second;
+    expect(again.target, exactModelTarget);
+    expect(fixture.port.opens, hasLength(2));
+    final replacementClose = await replacement.closed(0);
+    replacementClose.completeClean();
+    // The real permits are released by the owner's own join, which teardown
+    // asserts after retryCleanup.
+    await Future<void>.delayed(Duration.zero);
+    expect(fixture.budget.usage, isEmpty);
   });
 
-  test('dismissed and closed detail queries remain owned until their real futures settle', () async {
-    final transport = _Transport();
-    final client = _client(transport);
-    final owner = client.modelDetailQueries;
-    final pending = owner.refresh(_a);
-    owner.forget(_a);
-    var joined = false;
-    final closing = owner.close().then((_) => joined = true);
-    await Future<void>.value();
-    expect(
-      joined,
-      isFalse,
-      reason: 'Forget must not drop ownership of in-flight queries',
+  test('a native detail for another model is refused and materializes nothing', () async {
+    final fixture = _DetailsFixture();
+    addTearDown(fixture.tearDown);
+
+    final reading = fixture.models.loadDelegationModel(exactModelTarget);
+    final scope = await fixture.opened();
+    await scope.identityEntered.future;
+    final refused = expectLater(
+      reading,
+      throwsA(
+        isA<StudioFailure>().having(
+          (StudioFailure failure) => failure.code,
+          'code',
+          StudioFailureCode.protocol,
+        ),
+      ),
     );
-    transport.calls.single.$2.complete(_detail(_a));
-    await pending;
-    await closing;
-    expect(owner.state, isEmpty);
-    expect(owner.refresh(_b), throwsStateError);
+    scope.headerReply.complete(
+      exactModelHeader.copyWith(
+        descriptor: exactModelHeader.descriptor.copyWith(
+          modelId: ReadText.inline(text: 'another-model'),
+        ),
+      ),
+    );
+    await refused;
+    final closing = await scope.closed(0);
+    closing.completeClean();
+    // A wrong-account/model return never materializes a value: the client keeps
+    // no detail cache, so the refused query leaves nothing to substitute.
+    expect(fixture.port.opens, hasLength(1));
   });
+
+  test(
+    'close joins an in-flight detail query and refuses later ones',
+    () async {
+      final fixture = _DetailsFixture();
+      addTearDown(fixture.tearDown);
+
+      final reading = fixture.models.loadDelegationModel(exactModelTarget);
+      final scope = await fixture.opened();
+      await scope.identityEntered.future;
+      final closed = fixture.models.close();
+      var joined = false;
+      unawaited(closed.then((_) => joined = true));
+      await Future<void>.delayed(Duration.zero);
+      // Dismissing a query never drops ownership of its real native read.
+      expect(joined, isFalse);
+      expect(fixture.budget.used(ResourceKind.readModel), 1);
+
+      final failure = expectLater(reading, throwsA(isA<StudioFailure>()));
+      scope.headerReply.complete(exactModelHeader);
+      await failure;
+      final closing = await scope.closed(0);
+      closing.completeClean();
+      final report = await closed;
+      expect(report.unresolved, isEmpty);
+      expect(joined, isTrue);
+      expect(
+        () => fixture.models.loadDelegationModel(exactModelTarget),
+        throwsA(
+          isA<StudioFailure>().having(
+            (StudioFailure error) => error.code,
+            'code',
+            StudioFailureCode.cancelled,
+          ),
+        ),
+      );
+    },
+  );
 }

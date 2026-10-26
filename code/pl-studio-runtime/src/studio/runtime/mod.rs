@@ -14,27 +14,48 @@ pub use pl_protocol::studio::{ThreadPreparationProgress, ThreadPreparationStage}
 pub type ThreadPreparationObserver =
     std::sync::Arc<dyn Fn(ThreadPreparationProgress) + Send + Sync>;
 
-mod account_usage;
-mod acp_auth;
-mod acp_install;
+pub mod account_usage;
+pub mod acp_auth;
+pub mod acp_install;
+pub mod attachment_binary;
 mod attachment_drafts;
 mod background_task;
+pub mod bots;
 mod bots_api;
 mod bots_recovery;
 pub(crate) mod chat_item;
 mod command_receipts;
+pub mod configuration;
 mod delegation_models;
+pub mod draft_commands;
 mod history;
 mod lifecycle;
+pub mod lsp;
 mod lsp_state;
+pub mod mcp;
 mod mcp_health;
 mod mode_definitions;
 mod model_catalog;
 mod model_performance;
 mod model_refresh;
+pub mod models;
+pub mod modes;
+mod observation_ids;
+pub mod persistence;
 mod product_subscription;
 mod prompt_runner;
+mod read_budget;
+mod read_calls;
+mod read_scopes;
+pub mod recovery;
 mod rejected_tools;
+pub mod remote_directory;
+pub mod skills;
+pub mod startup;
+pub mod statistics;
+pub mod updates;
+pub mod workspace;
+pub(crate) use rejected_tools::RejectedToolsCloseFailure;
 mod residency;
 pub(crate) mod session_tools;
 mod settings_api;
@@ -42,6 +63,16 @@ mod shutdown_progress;
 mod skill_catalog;
 mod ssh;
 mod state_query;
+pub mod thread_authoring;
+pub mod thread_authoring_read;
+pub mod thread_configuration;
+pub mod thread_configuration_read;
+pub mod thread_context;
+pub mod thread_context_read;
+pub mod thread_execution;
+pub mod thread_execution_read;
+mod thread_metrics;
+mod thread_metrics_read;
 mod thread_mode;
 mod thread_service;
 mod thread_stream;
@@ -49,9 +80,15 @@ pub(in crate::studio) mod timeline;
 pub(crate) mod timeline_content;
 mod tool_refresh;
 pub use product_subscription::StudioProductTopicSubscription;
+pub use thread_metrics::{
+    StudioMetricsSample, StudioMetricsSourceEvent, StudioThreadMetricsSource,
+};
+pub use thread_metrics_read::StudioMetricsIdentityRead;
 pub use thread_stream::StudioThreadSubscription;
 pub use timeline_content::{TimelineContentReader, TimelineTailStream};
 mod thread_observation;
+pub(crate) use thread_observation::ObservationCloseFailure;
+mod thread_reads;
 mod thread_title;
 mod updater;
 
@@ -107,6 +144,7 @@ pub struct StudioSubmitPromptResponse {
     pub thread_id: String,
     pub input_id: String,
     pub cursor: u64,
+    pub request_digest: String,
 }
 
 /// Result of creating a root Thread and accepting its first Turn.
@@ -160,6 +198,27 @@ pub(in crate::studio::runtime) const ARCHIVE_TREE_SETTLE_TIMEOUT: std::time::Dur
 #[derive(Clone)]
 pub struct StudioRuntime {
     owner_epoch: String,
+    read_calls: read_calls::ReadCalls,
+    read_scopes: read_scopes::ReadScopeRegistry,
+    observation_ids: observation_ids::ObservationIds,
+    models_source: std::sync::Arc<crate::config::ModelCatalogSource>,
+    configuration_source: std::sync::Arc<crate::config::ConfigurationSource>,
+    mcp_source: std::sync::Arc<mcp::source::McpSource>,
+    lsp_source: std::sync::Arc<lsp::source::LspSource>,
+    skills_source: std::sync::Arc<skills::sources::SkillsSources>,
+    profiles_source: std::sync::Arc<crate::config::ProfilesSource>,
+    templates_source: std::sync::Arc<models::TemplatesSource>,
+    bots_source: std::sync::Arc<bots::BotsSource>,
+    workspace_source: std::sync::Arc<workspace::WorkspaceProductSource>,
+    startup_source: std::sync::Arc<startup::StartupSource>,
+    recovery_source: std::sync::Arc<recovery::RecoverySource>,
+    persistence_source: std::sync::Arc<persistence::PersistenceSource>,
+    persistence_queue_source: std::sync::Arc<persistence::PersistenceQueueSource>,
+    remote_directory_source: std::sync::Arc<remote_directory::RemoteDirectorySource>,
+    modes_source: std::sync::Arc<modes::ModesSource>,
+    usage_source: std::sync::Arc<account_usage::UsageSource>,
+    statistics_source: std::sync::Arc<statistics::StatisticsSource>,
+    updates_source: std::sync::Arc<updates::UpdatesSource>,
     startup_recovery: Option<crate::StudioStartupRecovery>,
     persistence_observer: background_task::BackgroundTaskSlot,
     thread_observations: thread_observation::ThreadObservations,
@@ -190,24 +249,28 @@ pub struct StudioRuntime {
     /// 官方 server 准备 owner：与认证、Settings 相互独立的共享资产 owner。
     acp_install: acp_install::AcpInstallRuntime,
     model_performance: ModelPerformanceOwner,
+    /// 统计进度 follower：调用库的统计受理/落库/缺口 watch → 同一 owner 的投影发布任务。
+    ///
+    /// runtime 持有该任务（`BackgroundTaskSlot`）：shutdown 先广播取消、再在独立资源组以同一
+    /// 首次期限有界 join；超时不丢句柄，slot 的 Drop 只 abort 不 join。
+    statistics_follower: background_task::BackgroundTaskSlot,
     updater: StudioUpdateRuntime,
     activation: ProjectActivationRuntime,
     attachment_drafts: attachment_drafts::AttachmentDraftRuntime,
+    draft_commands: draft_commands::DraftCommandRegistry,
     ssh_manager: std::sync::Arc<pl_tool::remote::SshManager>,
     /// Linux 本地工作区按需物化受监督 worker（本地工具执行与本地 LSP 宿主）时保留的 remote
     /// helper 来源；其他平台没有本地 worker 物化路径（Windows 本地执行走原生 Job 监督、远端
     /// helper 分发走 `ssh_manager`），因此不保留该字段。
     #[cfg(target_os = "linux")]
     helper_source: crate::worker_assets::RemoteHelperSource,
-    /// 外部服务（MCP/LSP/SSH）关闭 job 的常驻槽位；跨阶段与跨重试保留，超时不丢句柄。
-    service_stops: lifecycle::shutdown::ServiceStopSlots,
     /// An archive or worktree cleanup owns lifecycle admission through its real terminal commit,
     /// independent of its caller. The shared slot retains completion for retry/shutdown.
     thread_lifecycle_task: background_task::BackgroundTaskSlot,
     lifecycle_lock: std::sync::Arc<tokio::sync::Mutex<()>>,
     /// 单向关闭终止闩：commit 后拒绝迟到安装。
     shutdown_latch: lifecycle::shutdown::ShutdownLatch,
-    /// 退出关闭运行的共享完成句柄；反复退出只 join 同一后台任务。
+    /// 原关闭协调器：跨 strict/exit 持有阶段 completion、首个退出前置与最终成功许可。
     shutdown_run: lifecycle::shutdown::ShutdownRun,
     /// native 首次 close 触发的早期退出封闭所观测到的诊断；由随后同一 `execute_shutdown`
     /// 播种为成功前置条件，不吞、不伪成功。std `Mutex`，只在无 await 的短临界区内持有。
@@ -255,11 +318,6 @@ struct ProjectActivation {
 }
 
 impl StudioRuntime {
-    /// Opens a native latest-value statistics feed from this runtime's existing statistics owner.
-    pub fn open_statistics_feed(&self) -> crate::statistics::StatisticsFeed {
-        self.model_performance.subscribe_statistics()
-    }
-
     /// 归档前结束会话树活动工作的有界等待上界。
     fn archive_settle_timeout(&self) -> std::time::Duration {
         ARCHIVE_TREE_SETTLE_TIMEOUT
@@ -282,18 +340,23 @@ impl StudioRuntime {
         profile: &crate::config::UserAgentProfile,
     ) -> Result<pl_protocol::studio::SettingsCommandReply> {
         Self::validate_operation_id(&operation_id)?;
-        let (state, changed) = self.config_runtime.save_user_agent_profile(
+        let committed = self.config_runtime.save_user_agent_profile(
             expected_settings_revision,
             profile_id,
             profile,
         )?;
         self.publish_settings_state()?;
-        self.settings_command_reply(
+        let mut reply = self.settings_command_reply(
             operation_id,
-            &state,
-            changed,
+            &committed.configuration,
+            committed.changed,
             pl_protocol::studio::CommandEffectPoint::FutureSession,
-        )
+        )?;
+        reply
+            .receipt
+            .targets
+            .push(self.resource_stamp("agent-profiles", committed.profiles.revision));
+        Ok(reply)
     }
 
     /// 启用或禁用不可编辑、不可删除的系统 Agent Profile。
@@ -308,37 +371,23 @@ impl StudioRuntime {
         if !crate::config::is_system_profile_id(profile_id)? {
             anyhow::bail!("`{profile_id}` is not a system Agent Profile");
         }
-        let profile_id = profile_id.to_string();
-        let mut changed = false;
-        let state = self
-            .config_runtime
-            .update(expected_settings_revision, |config| {
-                let mut config = config.clone();
-                if enabled {
-                    changed = config.disabled_system_agents.remove(&profile_id);
-                } else {
-                    changed = config.disabled_system_agents.insert(profile_id.clone());
-                }
-                Ok(config)
-            })?;
+        let committed = self.config_runtime.set_system_agent_enabled(
+            expected_settings_revision,
+            profile_id,
+            enabled,
+        )?;
         self.publish_settings_state()?;
-        self.settings_command_reply(
+        let mut reply = self.settings_command_reply(
             operation_id,
-            &state,
-            changed,
+            &committed.configuration,
+            committed.changed,
             pl_protocol::studio::CommandEffectPoint::FutureSession,
-        )
-    }
-
-    /// 立即重试待落库事实；查询和停止路径不需要调用本命令。
-    pub async fn retry_persistence(&self) -> Result<crate::PersistenceStateSnapshot> {
-        let persistence = self.agent_facility.persistence.lock().await.clone();
-        let Some(persistence) = persistence else {
-            return Ok(self.agent_facility.product_events.persistence_state());
-        };
-        persistence.retry_now();
-        self.store.thread_persistence().retry_now();
-        Ok(self.agent_facility.product_events.persistence_state())
+        )?;
+        reply
+            .receipt
+            .targets
+            .push(self.resource_stamp("agent-profiles", committed.profiles.revision));
+        Ok(reply)
     }
 
     /// Does not alter the independent product-directory write-behind retry.

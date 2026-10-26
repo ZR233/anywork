@@ -32,6 +32,7 @@ import 'dart:io';
 import 'package:flutter_driver/flutter_driver.dart';
 
 import 'flutter_driver_session.dart';
+import 'conversation_status_observation.dart';
 import 'realtime_journey.dart'
     show isDurableSettled, timelineRows, turnId, turnStatus, workspaceOf;
 
@@ -1312,7 +1313,10 @@ class _Probe {
     await _leaveSettings();
     await _submit('$_markSlow cancel probe');
     await _waitUntil(
-      (state) => workspaceOf(state)?['isBusy'] == true,
+      (state) {
+        final execution = driverExecutionObservation(state);
+        return execution.hasExecution && execution.execution?['turnId'] != null;
+      },
       'slow-turn-running',
       timeout: const Duration(seconds: 60),
     );

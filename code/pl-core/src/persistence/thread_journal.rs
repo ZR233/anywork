@@ -52,6 +52,7 @@ impl ColdStore for SqliteSessionStore {
     fn pressure(&self, thread_id: &str) -> crate::thread::cold::StoragePressure {
         let (thread_bytes, store_bytes) = self.pending_bytes(thread_id);
         crate::thread::cold::StoragePressure {
+            has_uncommitted_work: self.has_pending_work(thread_id),
             thread_bytes,
             store_bytes,
             // Typed durability receipt: the plain SQLite backend reports how far this Thread's

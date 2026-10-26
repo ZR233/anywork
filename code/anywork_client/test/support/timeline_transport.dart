@@ -1,9 +1,11 @@
 import 'dart:async';
 
-import 'package:anywork_client/anywork_client.dart';
-import 'package:anywork_client/models.dart';
+import 'package:anywork_client/conversation_ports.dart';
+import 'package:anywork_client/resources.dart';
 
-/// 一条 timeline 条目在测试里的最小预览值（正文用 [body] 承载）。
+final _fixtureUnixSeconds =
+    DateTime.utc(2026).millisecondsSinceEpoch ~/ Duration.millisecondsPerSecond;
+
 StudioTimelineItem timelineItem(
   int revision, {
   String id = 'item',
@@ -21,17 +23,17 @@ StudioTimelineItem timelineItem(
     turnId: 'turn',
     ordinal: ordinal,
     revision: revision,
-    createdAt: DateTime.utc(2026),
-    updatedAt: DateTime.utc(2026),
+    createdAt: _fixtureUnixSeconds,
+    updatedAt: _fixtureUnixSeconds,
+    saved: saved,
     state: ThreadTextItemStateView(
       channel: ThreadTextChannel.finalAnswer,
       text: body,
       attachments: const <ThreadAttachmentView>[],
       lifecycle: lifecycle == StudioTimelineLifecycle.terminal
-          ? CompletedThreadContentView(DateTime.utc(2026))
+          ? CompletedThreadContentView(_fixtureUnixSeconds)
           : const StreamingThreadContentView(),
     ),
-    saved: saved,
   ),
   saved: saved,
   lifecycle: lifecycle,
@@ -66,84 +68,322 @@ StudioTimelinePatch patch(
   priority: StudioTimelinePriority.coalesced,
 );
 
-/// 记录 open/initial/next/page/readDetail/close 的测试替身。
-///
-/// 它只模拟生命周期交错，不实现业务内容：所有返回值都由测试显式给出。
+/// Scripts environment/transport interleavings, never a second content reducer.
 final class TestTimelineTransport implements TimelineTransport {
   final List<Completer<TestTimelineConnection>> opens = [];
+  final _openWaiters = <int, Completer<void>>{};
+
+  Future<void> requested(int index) => index < opens.length
+      ? Future.value()
+      : _openWaiters.putIfAbsent(index, Completer<void>.new).future;
 
   @override
   Future<TestTimelineConnection> openTimeline(String threadId) {
     final pending = Completer<TestTimelineConnection>();
     opens.add(pending);
+    _openWaiters.remove(opens.length - 1)?.complete();
     return pending.future;
   }
 }
 
-final class TestTimelineConnection implements StudioTimelineConnection {
-  TestTimelineConnection({StudioTimelineBaseline? initial}) {
-    if (initial != null) initialResult.complete(initial);
+/// One real native close/retry join, recorded in call order.
+///
+/// The fake only records what the test scripted for this attempt and what the
+/// attempt really produced; it never decides when an attempt advances.
+final class TimelineCloseAttempt {
+  TimelineCloseAttempt({required this.index, required this.retry});
+  final int index;
+  final bool retry;
+
+  /// Completed when a scripted attempt starts awaiting its frozen native reply.
+  /// An attempt that reuses already native state never reaches one.
+  final entered = Completer<void>();
+
+  /// The report this attempt really produced, frozen per attempt.
+  final settled = Completer<FeedCloseReport>();
+
+  void markEntered() {
+    if (!entered.isCompleted) entered.complete();
   }
 
-  final Completer<StudioTimelineBaseline> initialResult = Completer();
-  final Completer<void> initialStarted = Completer();
-  final Completer<void> nextStarted = Completer();
-  final Completer<void> closeCompleted = Completer();
-  final Completer<void> closeStarted = Completer();
+  void settle(FeedCloseReport report) {
+    if (!settled.isCompleted) settled.complete(report);
+  }
+}
+
+final class TestTimelineConnection implements StudioTimelineConnection {
+  TestTimelineConnection({StudioTimelineBaseline? initial})
+    : _initial = initial,
+      _feedId = initial?.subscriptionId ?? 'test-feed';
+
+  static const _conflict = StudioFailure(
+    code: StudioFailureCode.conflict,
+    message: 'The timeline stream is claimed',
+    retryable: false,
+    correlationId: 'test-timeline-conflict',
+  );
+  static const _cancelled = StudioFailure(
+    code: StudioFailureCode.cancelled,
+    message: 'The timeline is closing',
+    retryable: false,
+    correlationId: 'test-timeline-cancelled',
+  );
+  final subscribed = Completer<void>();
+  final closeCompleted = Completer<void>();
+  final closeStarted = Completer<void>();
+
+  /// Completes when `retryClose()` is requested on this handle. This is a
+  /// request entry, not a completion: an attempt's real result is
+  /// [TimelineCloseAttempt.settled].
+  final retryEntered = Completer<void>();
+
+  /// Scripted native replies by join attempt index. An attempt with an entry
+  /// awaits exactly that frozen reply and never reinterprets it; an attempt
+  /// without one keeps using [closeGate]/[closeFailure]/[closeReport].
+  final Map<int, Completer<FeedCloseReport>> scriptedCloseReplies = {};
+
+  /// Every real native close/retry join, in call order.
+  final List<TimelineCloseAttempt> closeAttempts = [];
   Completer<void>? closeGate;
-  Completer<StudioTimelinePage>? pageResult;
+  FeedCloseReport? closeReport;
+  Object? closeFailure;
+  Object? requestCloseFailure;
+  Completer<void>? streamCancelGate;
+  Object? streamCancelFailure;
   final List<({String? before, int? limit})> pageRequests = [];
   final List<({String itemId, StudioTimelineDetailQuery query})>
   detailRequests = [];
+  Completer<StudioTimelinePage>? pageResult;
   Completer<StudioTimelineDetailChunk>? detailResult;
-  Completer<StudioTimelineUpdate?>? _pending;
-  bool _closed = false;
-  int initialCalls = 0;
-  int nextCalls = 0;
+  final List<int> acks = [];
+  final _ackWaiters = <int, Completer<void>>{};
   int closeCalls = 0;
+  int retryCloseCalls = 0;
   int requestCloseCalls = 0;
-  Object? closeFailure;
+  int streamCancelCalls = 0;
+  int disposeCalls = 0;
+  int nativeJoinCalls = 0;
 
-  @override
-  Future<StudioTimelineBaseline> initial() {
-    initialCalls++;
-    if (!initialStarted.isCompleted) initialStarted.complete();
-    return initialResult.future;
+  StudioTimelineBaseline? _initial;
+  String _feedId;
+  StreamController<StudioTimelineFeedFrame>? _frames;
+  StudioTimelineFeedEvent? _pending;
+  StudioTimelineFeedFrame? _pendingTerminal;
+  (StudioFailure, StackTrace?)? _pendingError;
+  final Set<Future<void>> _queries = {};
+  int _sent = 0;
+  int _acked = 0;
+  bool _closed = false;
+  bool _claimed = false;
+  bool _started = false;
+  bool _terminal = false;
+  bool _joining = false;
+  Future<FeedCloseReport>? _closing;
+  FeedCloseReport? _nativeReport;
+  FeedCloseReport? _currentReport;
+  final Map<String, (Object, StackTrace)> _causes = {};
+  Future<void>? _streamCancellation;
+  FeedCloseIssue? _streamCancellationIssue;
+  final List<FeedCloseIssue> _terminalNativeIssues = [];
+  final _attemptWaiters = <int, Completer<TimelineCloseAttempt>>{};
+
+  bool get wasSubscribed => subscribed.isCompleted;
+  int get ackedThrough => _acked;
+
+  /// The scope identity this handle reports; a scripted reply must match it.
+  String get feedId => _feedId;
+
+  Future<void> acknowledged(int prefix) => _acked >= prefix
+      ? Future.value()
+      : _ackWaiters.putIfAbsent(prefix, Completer<void>.new).future;
+
+  /// Awaits the [index]-th real join attempt without polling or guessing turns.
+  Future<TimelineCloseAttempt> closeAttempt(int index) {
+    if (index < closeAttempts.length) return Future.value(closeAttempts[index]);
+    return _attemptWaiters
+        .putIfAbsent(index, Completer<TimelineCloseAttempt>.new)
+        .future;
+  }
+
+  void _ensureOpen() {
+    if (_closed) throw _cancelled;
   }
 
   @override
-  Future<StudioTimelineUpdate?> next() {
-    if (_closed) return Future.value(null);
-    if (_pending != null) throw StateError('Two concurrent next calls');
-    nextCalls++;
-    final pending = Completer<StudioTimelineUpdate?>();
-    _pending = pending;
-    if (!nextStarted.isCompleted) nextStarted.complete();
-    return pending.future;
+  Stream<StudioTimelineFeedFrame> get events {
+    _ensureOpen();
+    return _TestTimelineStream(_listen);
+  }
+
+  StreamSubscription<StudioTimelineFeedFrame> _listen(
+    void Function(StudioTimelineFeedFrame)? onData, {
+    Function? onError,
+    void Function()? onDone,
+    bool? cancelOnError,
+  }) {
+    _ensureOpen();
+    if (_claimed) throw _conflict;
+    _claimed = true;
+    _frames = StreamController<StudioTimelineFeedFrame>();
+    _frames!.onCancel = () async {
+      // Output detachment is not native Clean. close/retryClose retain the
+      // same attempt's unresolved native/raw cancellation issues and causes.
+      // Do not turn that report into a second terminal output cancel failure.
+      await close();
+    };
+    final subscription = _frames!.stream.listen(
+      onData,
+      onError: onError,
+      onDone: onDone,
+      cancelOnError: cancelOnError,
+    );
+    subscribed.complete();
+    scheduleMicrotask(() {
+      if (_closed) return;
+      if (_pendingError case final error?) {
+        _pendingError = null;
+        _frames!.addError(error.$1, error.$2);
+        requestClose();
+      } else if (_pendingTerminal case final terminal?) {
+        _pendingTerminal = null;
+        _frames!.add(terminal);
+        requestClose();
+      } else {
+        _started = true;
+        final initial = _initial;
+        _initial = null;
+        if (initial != null) _pushBaseline(initial);
+        _drain();
+      }
+    });
+    return subscription;
+  }
+
+  void _data(StudioTimelineFeedEvent event) {
+    if (_closed || _terminal) return;
+    final controller = _frames;
+    if (controller == null || !_started || _sent - _acked >= 2) {
+      if (_pending == null) {
+        _pending = event;
+      } else {
+        // No fake resync computation or unbounded replay queue.
+        emitFailure(
+          const StudioFailure(
+            code: StudioFailureCode.overloaded,
+            message: 'The scripted timeline pending-frame budget is exhausted',
+            retryable: false,
+            correlationId: 'test-timeline-budget',
+          ),
+        );
+      }
+      return;
+    }
+    controller.add(
+      StudioTimelineFeedFrame.data(deliverySequence: ++_sent, event: event),
+    );
+  }
+
+  void _drain() {
+    if (_closed || _terminal || _sent - _acked >= 2) return;
+    final pending = _pending;
+    _pending = null;
+    if (pending != null) _data(pending);
+  }
+
+  void _pushBaseline(StudioTimelineBaseline value) {
+    if (_closed || _terminal) return;
+    if (_sent == 0) _feedId = value.subscriptionId;
+    _data(StudioTimelineFeedEvent.baseline(baseline: value));
   }
 
   void emit(StudioTimelineUpdate? update) {
-    final pending = _pending;
-    if (pending == null) throw StateError('No pending content read');
-    _pending = null;
-    pending.complete(update);
+    if (update == null) {
+      emitClosed();
+    } else {
+      _data(StudioTimelineFeedEvent.update(update: update));
+    }
   }
 
-  void emitError(Object error, [StackTrace? stackTrace]) {
-    final pending = _pending;
-    if (pending == null) throw StateError('No pending content read');
+  void emitBaseline(StudioTimelineBaseline value) => _pushBaseline(value);
+  void emitFailure(StudioFailure error) =>
+      _control(StudioTimelineFeedFrame.failure(error: error));
+  void emitClosed() => _control(const StudioTimelineFeedFrame.closed());
+
+  void _control(StudioTimelineFeedFrame frame) {
+    if (_closed || _terminal) return;
+    _terminal = true;
     _pending = null;
-    pending.completeError(error, stackTrace);
+    final controller = _frames;
+    if (controller == null) {
+      _pendingTerminal = frame;
+    } else {
+      controller.add(frame);
+      requestClose();
+    }
+  }
+
+  void emitStreamError(Object error, [StackTrace? stackTrace]) {
+    if (_closed || _terminal) return;
+    _terminal = true;
+    _pending = null;
+    final failure = _typedFailure(error);
+    final controller = _frames;
+    if (controller == null) {
+      _pendingError = (failure, stackTrace);
+    } else {
+      controller.addError(failure, stackTrace);
+      requestClose();
+    }
+  }
+
+  /// A Dart Stream may fail before an adapter has a typed failure. Unlike the
+  /// typed-boundary helper above, this supplies the actual original object.
+  void emitOriginalStreamError(Object error) {
+    if (_closed || _terminal) return;
+    final controller = _frames;
+    if (controller == null)
+      throw StateError('The original stream must be listening');
+    _terminal = true;
+    _pending = null;
+    controller.addError(error, StackTrace.current);
+    requestClose();
+  }
+
+  @override
+  Future<void> ackThrough(int deliverySequence) {
+    _ensureOpen();
+    if (deliverySequence < 0) {
+      throw const StudioFailure(
+        code: StudioFailureCode.invalidArgument,
+        message: 'ACK must be nonnegative',
+        retryable: false,
+        correlationId: 'test-timeline-ack-argument',
+      );
+    }
+    if (deliverySequence > _sent) {
+      throw const StudioFailure(
+        code: StudioFailureCode.protocol,
+        message: 'ACK exceeds the sent prefix',
+        retryable: false,
+        correlationId: 'test-timeline-ack-prefix',
+      );
+    }
+    acks.add(deliverySequence);
+    if (deliverySequence > _acked) _acked = deliverySequence;
+    for (final prefix in _ackWaiters.keys.toList()) {
+      if (prefix <= _acked) _ackWaiters.remove(prefix)!.complete();
+    }
+    _drain();
+    return Future<void>.value();
   }
 
   @override
   Future<StudioTimelinePage> page({String? before, int? limit}) {
+    _ensureOpen();
     pageRequests.add((before: before, limit: limit));
-    // 每次页调用都是一次独立 RPC：复用同一个 Completer 会让第二次调用直接
-    // 卡在已完成的 future 上（或抛 Future already completed）。
     final result = Completer<StudioTimelinePage>();
     pageResult = result;
-    return result.future;
+    return _query(result.future);
   }
 
   @override
@@ -151,42 +391,290 @@ final class TestTimelineConnection implements StudioTimelineConnection {
     required String itemId,
     required StudioTimelineDetailQuery query,
   }) {
+    _ensureOpen();
     detailRequests.add((itemId: itemId, query: query));
-    // 每次详情读取都是一次独立 RPC：复用同一个 Completer 会让按块续读直接崩。
     final result = Completer<StudioTimelineDetailChunk>();
     detailResult = result;
-    return result.future;
+    return _query(result.future);
+  }
+
+  Future<T> _query<T>(Future<T> result) {
+    final settled = Completer<void>();
+    _queries.add(settled.future);
+    return result
+        .then<T>(
+          (value) {
+            _ensureOpen();
+            return value;
+          },
+          onError: (Object error, StackTrace stack) {
+            Error.throwWithStackTrace(
+              _closed ? _cancelled : _typedFailure(error),
+              stack,
+            );
+          },
+        )
+        .whenComplete(() {
+          _queries.remove(settled.future);
+          settled.complete();
+        });
   }
 
   @override
   void requestClose() {
     requestCloseCalls++;
     _closed = true;
-    if (initialCalls > 0 && !initialResult.isCompleted) {
-      initialResult.completeError(const StaleTimelineAttempt());
-    }
-    final pending = _pending;
+    _terminal = true;
+    _initial = null;
     _pending = null;
-    pending?.complete(null);
+    _pendingTerminal = null;
+    _pendingError = null;
+    final failure = requestCloseFailure;
+    requestCloseFailure = null;
+    if (_frames case final controller?) {
+      if (!controller.isClosed) unawaited(_frames!.close());
+    }
+    if (failure != null) throw _typedFailure(failure);
+  }
+
+  void _requestForJoin() {
+    try {
+      requestClose();
+    } on Object catch (error, stack) {
+      // The independent native join proves whether the original request settled.
+      _causes['request-close'] = (error, stack);
+    }
   }
 
   @override
-  Future<void> close() async {
+  Future<FeedCloseReport> close() {
     closeCalls++;
-    requestClose();
+    _requestForJoin();
+    return _closing ?? _startJoin(retry: false);
+  }
+
+  @override
+  Future<FeedCloseReport> retryClose() {
+    retryCloseCalls++;
+    if (!retryEntered.isCompleted) retryEntered.complete();
+    _requestForJoin();
+    if (_joining) return _closing!;
+    if (disposeCalls != 0) return Future.value(_currentReport!);
+    return _startJoin(retry: true);
+  }
+
+  Future<FeedCloseReport> _startJoin({required bool retry}) {
+    nativeJoinCalls++;
+    final attempt = TimelineCloseAttempt(
+      index: closeAttempts.length,
+      retry: retry,
+    );
+    closeAttempts.add(attempt);
+    _attemptWaiters.remove(attempt.index)?.complete(attempt);
+    final completion = Completer<FeedCloseReport>();
+    _closing = completion.future;
+    _joining = true;
+    unawaited(
+      _join(retry: retry, attempt: attempt).then<void>(
+        (value) {
+          attempt.settle(value);
+          completion.complete(value);
+        },
+        onError: (Object error, StackTrace stack) {
+          attempt.settle(_failedJoinReport(error));
+          completion.completeError(error, stack);
+        },
+      ),
+    );
+    return completion.future;
+  }
+
+  /// A failed join recorded as a fact, so a watcher of the attempt never waits
+  /// on a result that cannot arrive. The error still reaches the join future.
+  FeedCloseReport _failedJoinReport(Object error) => FeedCloseReport(
+    feedId: _feedId,
+    outcome: FeedCloseOutcome.unresolved(
+      issues: [
+        _issue(
+          _typedFailure(error),
+          'test-timeline-native-join',
+          CleanupRecovery.terminal,
+        ),
+      ],
+    ),
+  );
+
+  Future<void> _cancelStreamOnce() => _streamCancellation ??=
+      Future<void>.sync(() async {
+        if (!_claimed) return;
+        streamCancelCalls++;
+        await streamCancelGate?.future;
+        if (streamCancelFailure case final error?) throw error;
+      }).then<void>(
+        (_) {},
+        onError: (Object error, StackTrace stack) {
+          _causes['stream-cancel'] = (error, stack);
+          _streamCancellationIssue = _issue(
+            _typedFailure(error),
+            'test-timeline-stream-cancel',
+            CleanupRecovery.terminal,
+          );
+        },
+      );
+
+  Future<FeedCloseReport> _join({
+    required bool retry,
+    required TimelineCloseAttempt attempt,
+  }) async {
+    _joining = true;
     if (!closeStarted.isCompleted) closeStarted.complete();
-    await closeGate?.future;
-    if (closeFailure case final error?) throw error;
-    if (!closeCompleted.isCompleted) closeCompleted.complete();
+    try {
+      var report = _nativeReport;
+      final previous = report?.outcome;
+      final recoverable =
+          previous is UnresolvedFeedCloseOutcome &&
+          previous.issues.any(
+            (issue) => issue.recovery != CleanupRecovery.terminal,
+          );
+      final join = report == null || retry && recoverable
+          ? Future<void>.sync(() async {
+              final scripted = scriptedCloseReplies[attempt.index];
+              final FeedCloseReport? reply;
+              if (scripted != null) {
+                attempt.markEntered();
+                reply = await scripted.future;
+              } else {
+                final gate = closeGate;
+                if (gate != null) await gate.future;
+                final failure = closeFailure;
+                if (failure != null) throw failure;
+                reply = closeReport;
+              }
+              report =
+                  reply ??
+                  FeedCloseReport(
+                    feedId: _feedId,
+                    outcome: const FeedCloseOutcome.clean(),
+                  );
+              final value = report!;
+              final outcome = value.outcome;
+              if (value.feedId.isEmpty ||
+                  value.feedId != _feedId ||
+                  outcome is UnresolvedFeedCloseOutcome &&
+                      outcome.issues.isEmpty) {
+                throw _cleanupFailure;
+              }
+              if (outcome case UnresolvedFeedCloseOutcome(:final issues)) {
+                for (final issue in issues) {
+                  if (issue.recovery == CleanupRecovery.terminal &&
+                      !_terminalNativeIssues.contains(issue)) {
+                    _terminalNativeIssues.add(issue);
+                  }
+                }
+              }
+            }).then<void>(
+              (_) {},
+              onError: (Object error, StackTrace stack) {
+                _causes['native-close'] = (error, stack);
+                report = FeedCloseReport(
+                  feedId: _feedId,
+                  outcome: FeedCloseOutcome.unresolved(
+                    issues: [
+                      if (_nativeReport?.outcome
+                          case UnresolvedFeedCloseOutcome(:final issues))
+                        ...issues,
+                      _issue(
+                        _typedFailure(error),
+                        'test-timeline-native-close',
+                        CleanupRecovery.retryClose,
+                      ),
+                    ],
+                  ),
+                );
+              },
+            )
+          : Future<void>.value();
+      final cancellation = _cancelStreamOnce();
+      final queries = Future.wait<void>(_queries.toList(growable: false));
+      await Future.wait<void>([join, cancellation, queries]);
+      _nativeReport = report;
+      final outcome = report!.outcome;
+      final issues = <FeedCloseIssue>[
+        if (outcome case UnresolvedFeedCloseOutcome(:final issues)) ...issues,
+        if (_streamCancellationIssue case final issue?) issue,
+      ];
+      for (final terminal in _terminalNativeIssues) {
+        if (!issues.contains(terminal)) issues.add(terminal);
+      }
+      final result = FeedCloseReport(
+        feedId: report!.feedId,
+        outcome: issues.isEmpty
+            ? const FeedCloseOutcome.clean()
+            : FeedCloseOutcome.unresolved(issues: issues),
+      );
+      _currentReport = result;
+      if (issues.isEmpty && disposeCalls == 0) {
+        disposeCalls++;
+        _causes.clear();
+      }
+      if (!closeCompleted.isCompleted) closeCompleted.complete();
+      return result;
+    } finally {
+      _joining = false;
+    }
   }
 }
 
-StudioTimelineChannel timelineChannel(
-  TestTimelineTransport transport, {
-  ResourceBudget? budget,
-}) => StudioTimelineChannel(
-  threadId: 'thread',
-  transport: transport,
-  retryPolicy: const RetryPolicy(delays: []),
-  budget: budget,
+const _cleanupFailure = StudioFailure(
+  code: StudioFailureCode.protocol,
+  message: 'The scripted timeline cleanup is unresolved',
+  retryable: false,
+  correlationId: 'test-timeline-cleanup',
 );
+
+StudioFailure _typedFailure(Object error) => error is StudioFailure
+    ? error
+    : const StudioFailure(
+        code: StudioFailureCode.protocol,
+        message: 'A scripted timeline operation failed',
+        retryable: false,
+        correlationId: 'test-timeline-operation',
+      );
+
+FeedCloseIssue _issue(
+  StudioFailure failure,
+  String stage,
+  CleanupRecovery recovery,
+) => FeedCloseIssue(
+  diagnostic: StudioShutdownIssue(
+    stage: stage,
+    code: failure.code.name,
+    message: failure.message,
+    retryable: failure.retryable,
+    correlationId: failure.correlationId,
+  ),
+  recovery: recovery,
+);
+
+final class _TestTimelineStream extends Stream<StudioTimelineFeedFrame> {
+  _TestTimelineStream(this._listen);
+  final StreamSubscription<StudioTimelineFeedFrame> Function(
+    void Function(StudioTimelineFeedFrame)?, {
+    Function? onError,
+    void Function()? onDone,
+    bool? cancelOnError,
+  })
+  _listen;
+  @override
+  StreamSubscription<StudioTimelineFeedFrame> listen(
+    void Function(StudioTimelineFeedFrame)? onData, {
+    Function? onError,
+    void Function()? onDone,
+    bool? cancelOnError,
+  }) => _listen(
+    onData,
+    onError: onError,
+    onDone: onDone,
+    cancelOnError: cancelOnError,
+  );
+}

@@ -8,7 +8,7 @@ use std::collections::BTreeSet;
 use anyhow::{Result, anyhow};
 use pl_core::chat::{CHAT_ITEM_PREVIEW_BYTES, ChatError, ChatField, ChatItem, ChatLifecycle};
 use pl_protocol::{
-    AGENT_SESSION_PLAN_CONFIRMATION_QUESTION_ID, TimelineDetailRef, TimelineItem,
+    AGENT_SESSION_PLAN_CONFIRMATION_QUESTION_ID, ThreadItem, TimelineDetailRef, TimelineItem,
     TimelineLifecycle, studio::StudioError, studio::StudioErrorCode,
 };
 
@@ -220,6 +220,22 @@ fn field_cap(field: &ChatField) -> usize {
         }
         _ => PRODUCT_PREVIEW_BYTES,
     }
+}
+
+/// Materialize only this update's captured, already bounded target. Check the static identity
+/// before canonical_item replaces its id/order/revision with the ChatItem's authoritative values.
+pub(super) fn update_shell(thread_id: &str, item: &ChatItem) -> Result<ThreadItem> {
+    let shell = item_shell(&item.meta, item.revision)?;
+    if shell.id != item.item_id || shell.thread_id != thread_id || shell.ordinal != item.order {
+        return Err(anyhow!(StudioError::new(
+            StudioErrorCode::Protocol,
+            "timeline preview metadata identity does not match its captured item",
+            false,
+        )));
+    }
+    // Reuse the same dynamic-field materialization as Add/page/baseline. Incomplete artifact JSON
+    // remains an omitted preview with its original detail lengths; it is never parsed as a prefix.
+    canonical_item(item)
 }
 
 /// 一条 core 条目 → wire 预览值（含逐字段详情引用）。

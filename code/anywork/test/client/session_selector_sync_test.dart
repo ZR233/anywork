@@ -1,1020 +1,856 @@
-import 'support/test_statistics_feed.dart';
+import 'dart:async';
 
-import 'package:anywork/src/presentation/providers/client_provider.dart';
+import 'package:anywork/src/diagnostics/studio_driver_keys.dart';
+import 'package:anywork/src/features/conversation/presentation/model_route_presentation.dart';
+import 'package:anywork/src/features/conversation/view_models/conversation_view_model.dart';
+import 'package:anywork/src/features/conversation/view_models/thread_status_view_model.dart';
+import 'package:anywork/src/features/interaction/connectors/conversation_input_connector.dart';
+import 'package:anywork/src/features/interaction/connectors/start_input_connector.dart';
+import 'package:anywork/src/features/interaction/view_models/session_options_view_model.dart';
+import 'package:anywork/src/features/status/status.dart';
+import 'package:anywork/src/l10n/app_localizations.dart';
+import 'package:anywork/src/l10n/studio_l10n.dart';
+import 'package:anywork/src/features/interaction/views/input_model_controls_view.dart';
+import 'package:anywork_client/configuration.dart';
+import 'package:anywork_client/conversation.dart';
+import 'package:anywork_client/conversation_ports.dart' show StopExecutionReply;
+import 'package:anywork_client/drafts.dart';
+import 'package:anywork_client/models.dart';
+import 'package:anywork_client/modes.dart';
+import 'package:anywork_client/operations.dart';
+import 'package:anywork_client/resources.dart';
+import 'package:anywork_client/workspace.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-import 'package:anywork/src/app/app_graph.dart';
-import 'package:anywork/src/infrastructure/frb/studio_api.dart';
-import 'package:anywork/src/presentation/providers/selection_store.dart';
-import 'package:anywork/src/presentation/providers/settings_store.dart';
-import 'package:anywork/src/domain/models/studio_models.dart';
-import 'package:anywork/src/features/interaction/composer_dock.dart';
-import 'package:anywork/src/features/interaction/composer_view.dart';
-import 'package:anywork/src/presentation/providers/start_session_controller.dart';
-import 'package:anywork/src/features/status/session_selectors.dart';
-import 'package:anywork/src/l10n/app_localizations.dart';
-import 'package:anywork/src/l10n/studio_l10n.dart';
-import 'package:anywork/src/shared/studio_driver_keys.dart';
-
+import '../../../anywork_client/test/support/configuration_start_fixture.dart'
+    show ConfigurationStartResolve;
 import 'support/pump_client_future.dart';
+import 'support/selector_command_reply.dart';
+import 'support/selector_configuration_port.dart';
+import 'support/selector_conversation_port.dart';
+import 'support/selector_environment.dart';
 
-import 'package:anywork_client/studio_client.dart'
-    show
-        ModelRouteQueries,
-        ProductTopicBaselineFrame,
-        ProductTopicDataFrame,
-        ProductTopicEventEnvelope,
-        ProductTopicFrame,
-        StudioBootstrap,
-        ThreadDirectoryBaseline,
-        ThreadDirectoryChangedPayload,
-        ThreadDirectoryPage,
-        ThreadDirectoryTopic,
-        ThreadDirectoryWindow,
-        ThreadRuntimeUpdate,
-        ThreadStreamFrame;
-
-/// 用户可见症状的回归证据：主界面（起始页）的会话模式与思考强度选择器必须在不发生
-/// 任何页面跳转的情况下显示新值，菜单行的选中态也必须随同一事实移动。
-///
-/// 起始页事实是 Client 持有的逻辑草稿，经 [startPageComposerViewProvider] 组合显示：
-/// 选中即所见，不依赖设置页往返，也不把草稿写回 settings canonical。真实 Rust
-/// bridge/native 的语义另由 `cargo xtask manual-gui` 验收，不能由这里的 Demo 代替。
+/// Production Smart connectors + generated VMs + real domain owners. Only
+/// native material/receipts are scripted; no widget owns a canonical copy.
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
+  late SelectorEnvironment env;
 
-  late ProviderContainer container;
-  late AppGraph graph;
-
-  setUp(() async {
-    final api = DemoStudioTransport(lspActivityLoop: false);
-    graph = AppGraph(
-      statisticsFeed: const TestStatisticsFeedPort(),
-      transport: api,
-      clientId: 'selector-test',
-    );
-    container = ProviderContainer(
-      overrides: [appGraphProvider.overrideWithValue(graph)],
-    );
-    await graph.client.bootstrap();
-    await graph.client.directoryCommands.beginNewThread();
-    final selection = container.read(selectionStoreProvider);
-    expect(selection.selectedProjectId, isNotNull);
-    expect(selection.selectedThreadId, isNull, reason: '起始页草稿不绑定已有会话');
+  setUp(() {
+    env = SelectorEnvironment();
+  });
+  Future<void> initialize(WidgetTester tester) async {
+    await tester.runAsync(() async {
+      await env.establish();
+      await env.selectStart();
+    });
+    expect(env.workspace.state.value.selection.projectId, 'project');
     expect(
-      container.read(settingsStoreProvider).canonical?.modeModelRoutes,
-      isNotEmpty,
+      env.workspace.state.value.selection.threadId,
+      isNull,
+      reason: '起始页草稿不绑定已有会话',
     );
-  });
+    expect(
+      env.configuration.state.value.modeRoutes,
+      isA<ReadyReadValue<List<ModeModelRoute>, ConfigurationReadRef>>(),
+    );
+  }
 
-  tearDown(() async {
-    container.dispose();
-    await graph.close(deadline: DateTime.now().add(const Duration(seconds: 5)));
-  });
+  tearDown(() => env.close());
 
   Widget harness(Widget child) => UncontrolledProviderScope(
-    container: container,
+    container: env.container,
     child: MaterialApp(
       locale: const Locale('zh'),
       localizationsDelegates: AppLocalizations.localizationsDelegates,
       supportedLocales: AppLocalizations.supportedLocales,
-      home: Scaffold(body: Center(child: child)),
+      home: Scaffold(
+        body: Center(child: SizedBox(width: 760, child: child)),
+      ),
     ),
   );
 
-  /// 命中“被标记为选中”的菜单行：选中态由行自身的 `Semantics.selected` 表达，
-  /// 而该 `Semantics` 位于行键（`KeyedSubtree`）之内。
+  Future<void> finish(WidgetTester tester) async {
+    await tester.pumpWidget(const SizedBox.shrink());
+    await pumpClientFuture(tester, env.close(), 'selector owners close');
+  }
+
   Finder selectedRow(Key itemKey) => find.descendant(
     of: find.byKey(itemKey),
     matching: find.byWidgetPredicate(
       (widget) => widget is Semantics && widget.properties.selected == true,
     ),
   );
+  Finder trigger(Key key) =>
+      find.descendant(of: find.byKey(key), matching: find.byType(TextButton));
+  StartDraftState start() => env.drafts.start('project').state.value;
+  ModelSelection prepared() {
+    final preparation = start().routePreparation;
+    expect(
+      preparation,
+      isA<ReadyStartRoutePreparation>(),
+      reason:
+          'Native route calls: ${[
+            for (final opening in env.configurationPort.opens) [for (final call in opening.native?.calls ?? []) '${call.query.runtimeType}:completed=${call.reply.isCompleted}'],
+          ]}',
+    );
+    return (preparation as ReadyStartRoutePreparation).result.route;
+  }
+
+  Future<void> settleStart(WidgetTester tester, ModelSelection route) async {
+    await pumpClientFuture(
+      tester,
+      env.prepareStart(route: route),
+      'original native Start query',
+    );
+    await tester.pumpAndSettle();
+    // The visible reader can request the normalized intent after a model
+    // suggestion. Complete that actual second native read, rather than calling
+    // prepareRoute() again and introducing another test-owned read intent.
+    // At most the already-queued suggestion and its normalized resolve remain;
+    // these are distinct native queries, not retries or business resubmission.
+    for (
+      var nativeStage = 0;
+      nativeStage < 2 &&
+          start().routePreparation is LoadingStartRoutePreparation;
+      nativeStage++
+    ) {
+      final opening = env.configurationPort.opens.last;
+      final pin = opening.native!;
+      final pending =
+          pin.calls.where((call) => !call.reply.isCompleted).firstOrNull ??
+          await pumpClientFuture<ConfigurationStartResolve>(
+            tester,
+            pin.called(pin.calls.length),
+            'visible normalized route query',
+          );
+      final query = pending.query;
+      pending.reply.complete(
+        StartRouteRead.ready(
+          sources: opening.sources,
+          query: query,
+          intent: query is SelectModelStartRouteQuery
+              ? query.intent.copyWith(
+                  model: query.selected,
+                  effort: route.effort,
+                )
+              : query.intent,
+          route: route,
+          defaults: selectorDefaults,
+        ),
+      );
+      await pumpClientUntil(
+        tester,
+        () =>
+            start().routePreparation is ReadyStartRoutePreparation ||
+            pin.calls.any((call) => !call.reply.isCompleted),
+        'next visible native route stage',
+      );
+      await tester.pumpAndSettle();
+    }
+    await pumpClientUntil(
+      tester,
+      () => start().routePreparation is ReadyStartRoutePreparation,
+      'visible normalized route material',
+    );
+  }
+
+  Future<void> mountStart(WidgetTester tester) async {
+    await tester.pumpWidget(
+      harness(const StartInputConnector(projectId: 'project')),
+    );
+    await settleStart(tester, selectorInitialRoute);
+  }
 
   testWidgets('切换会话模式后触发器与菜单选中态立即更新，无需页面往返', (tester) async {
+    await initialize(tester);
     final simpleKey = StudioDriverKeys.sessionModeOption(
-      ThreadModeId.simple.name,
+      ThreadModeId.simple.id,
     );
-    final taskKey = StudioDriverKeys.sessionModeOption(ThreadModeId.task.name);
-
-    await tester.pumpWidget(harness(const _ModeSelectorHost()));
-    await tester.pumpAndSettle();
-
-    expect(find.text('简洁'), findsOneWidget, reason: '起始页默认模式是 simple');
+    final taskKey = StudioDriverKeys.sessionModeOption(ThreadModeId.task.id);
+    await mountStart(tester);
+    expect(find.text('简洁'), findsOneWidget);
     expect(find.text('任务'), findsNothing);
-
     await tester.tap(find.byKey(StudioDriverKeys.sessionMode));
     await tester.pumpAndSettle();
-    expect(selectedRow(simpleKey), findsOneWidget, reason: '打开菜单时当前模式行是选中行');
+    expect(selectedRow(simpleKey), findsOneWidget);
     expect(selectedRow(taskKey), findsNothing);
-
     await tester.tap(find.byKey(taskKey));
-    await tester.pumpAndSettle();
-
+    await settleStart(tester, selectorInitialRoute);
     expect(find.byType(MenuItemButton), findsNothing, reason: '选择菜单项后官方菜单必须关闭');
-    final modeTrigger = find.descendant(
-      of: find.byKey(StudioDriverKeys.sessionMode),
-      matching: find.byType(TextButton),
-    );
     expect(
-      tester.widget<TextButton>(modeTrigger).focusNode?.hasPrimaryFocus,
+      tester
+          .widget<TextButton>(trigger(StudioDriverKeys.sessionMode))
+          .focusNode
+          ?.hasPrimaryFocus,
       isTrue,
-      reason: '选择菜单项后焦点必须回到官方 TextButton 触发器',
+      reason: '焦点必须回到官方 TextButton 触发器',
     );
-
-    expect(find.text('任务'), findsOneWidget, reason: '选中的模式必须立即出现在触发器上');
-    expect(find.text('简洁'), findsNothing, reason: '旧模式不得残留');
-    expect(
-      container.read(startPageComposerViewProvider).mode,
-      ThreadModeId.task,
-      reason: '触发器与起始页草稿是同一事实，不能停在本地副本',
-    );
-
+    expect(find.text('任务'), findsOneWidget);
+    expect(find.text('简洁'), findsNothing);
+    expect(start().mode, ThreadModeId.task, reason: '触发器与逻辑草稿是同一事实');
     await tester.tap(find.byKey(StudioDriverKeys.sessionMode));
     await tester.pumpAndSettle();
-    expect(selectedRow(taskKey), findsOneWidget, reason: '菜单选中态必须随草稿事实移动');
-    expect(selectedRow(simpleKey), findsNothing, reason: '旧选中行不得保持深色选中态');
+    expect(selectedRow(taskKey), findsOneWidget);
+    expect(selectedRow(simpleKey), findsNothing);
+    await finish(tester);
   });
 
   testWidgets('修改思考强度后选择器立即显示新值，无需页面往返', (tester) async {
-    await tester.pumpWidget(harness(const _EffortSelectorHost()));
-    await tester.pumpAndSettle();
-
-    final before = _currentEffort(container);
+    await initialize(tester);
+    await mountStart(tester);
+    final before = prepared().effort;
     expect(before, isNotNull);
     expect(find.text(before!), findsOneWidget);
-
-    final nextEffort = _otherEffort(container, before);
-    expect(nextEffort, isNotNull, reason: '模型需要至少两个思考强度候选');
-
+    const next = 'high';
+    final catalog = env.container
+        .read(selectorCatalogViewModelProvider)
+        .requireValue;
+    final model = selectedDescriptor(catalog.models, 'account-0', 'text');
+    expect(model, isNotNull);
+    expect(model!.reasoning!.candidates, contains(next));
     await tester.tap(find.byKey(StudioDriverKeys.reasoningEffort));
     await tester.pumpAndSettle();
     expect(
       selectedRow(StudioDriverKeys.reasoningEffortOption(before)),
       findsOneWidget,
-      reason: '打开菜单时当前强度行是选中行',
     );
-
-    await tester.tap(
-      find.byKey(StudioDriverKeys.reasoningEffortOption(nextEffort!)),
-    );
-    await tester.pumpAndSettle();
-
-    expect(find.byType(MenuItemButton), findsNothing, reason: '选择菜单项后官方菜单必须关闭');
-    final effortTrigger = find.descendant(
-      of: find.byKey(StudioDriverKeys.reasoningEffort),
-      matching: find.byType(TextButton),
-    );
+    await tester.tap(find.byKey(StudioDriverKeys.reasoningEffortOption(next)));
+    await tester.pump();
+    await tester.pump();
+    final disabledDuringRead =
+        tester
+            .widget<TextButton>(trigger(StudioDriverKeys.reasoningEffort))
+            .onPressed ==
+        null;
+    await settleStart(tester, selectorInitialRoute.copyWith(effort: next));
+    expect(find.byType(MenuItemButton), findsNothing);
     expect(
-      tester.widget<TextButton>(effortTrigger).focusNode?.hasPrimaryFocus,
+      tester
+          .widget<TextButton>(trigger(StudioDriverKeys.reasoningEffort))
+          .focusNode
+          ?.hasPrimaryFocus,
       isTrue,
-      reason: '选择菜单项后焦点必须回到官方 TextButton 触发器',
+      reason:
+          'The official trigger must regain focus; disabled during native read=$disabledDuringRead',
     );
-
-    expect(
-      _currentEffort(container),
-      nextEffort,
-      reason: '起始页显示值必须在没有任何页面跳转的情况下立即收敛到草稿',
-    );
-    expect(find.text(nextEffort), findsOneWidget, reason: '选择器必须显示新强度');
-    expect(find.text(before), findsNothing, reason: '旧强度不得回落到触发器上');
-
+    expect(env.drafts.startRoutes.value.efforts[ThreadModeId.simple.id], next);
+    expect(prepared().effort, next);
+    expect(find.text(next), findsOneWidget);
+    expect(find.text(before), findsNothing);
     await tester.tap(find.byKey(StudioDriverKeys.reasoningEffort));
     await tester.pumpAndSettle();
     expect(
-      selectedRow(StudioDriverKeys.reasoningEffortOption(nextEffort)),
+      selectedRow(StudioDriverKeys.reasoningEffortOption(next)),
       findsOneWidget,
-      reason: '菜单选中态必须随草稿事实移动',
     );
     expect(
       selectedRow(StudioDriverKeys.reasoningEffortOption(before)),
       findsNothing,
-      reason: '旧选中行不得保持深色选中态',
     );
+    await finish(tester);
   });
 
   testWidgets('切换模型后触发器与菜单选中态立即更新，无需页面往返', (tester) async {
-    final initial = container.read(startPageComposerViewProvider);
-    final route = initial.displayRoute(initial.mode);
-    expect(route, isNotNull);
-    final options = modelOptions(initial.accounts);
-    expect(options.length, greaterThan(1), reason: '模型目录需要至少两个候选');
+    await initialize(tester);
+    final initial = prepared();
+    final catalog = env.container
+        .read(selectorCatalogViewModelProvider)
+        .requireValue;
+    final options = selectorModels(catalog);
+    expect(options.length, greaterThan(1));
     final current = options.firstWhere(
-      (option) =>
-          option.accountId == route!.accountId &&
-          option.modelId == route.modelId,
+      (item) => item.accountId == initial.model.accountId,
     );
     final next = options.firstWhere(
-      (option) =>
-          option.accountId != route!.accountId ||
-          option.modelId != route.modelId,
+      (item) => item.accountId != initial.model.accountId,
     );
-
-    await tester.pumpWidget(harness(const _ModelSelectorHost()));
-    await tester.pumpAndSettle();
-
-    final trigger = find.byKey(StudioDriverKeys.model);
-    final before = current.displayName;
-    expect(find.text(before), findsOneWidget);
-    await tester.tap(trigger);
-    await tester.pumpAndSettle();
+    await mountStart(tester);
+    expect(find.text(current.displayName), findsOneWidget);
+    final modelTrigger = find.byKey(StudioDriverKeys.model);
     final nextKey = StudioDriverKeys.modelOption(next.accountId, next.modelId);
-    expect(selectedRow(nextKey), findsNothing);
-
-    await tester.tap(find.byKey(nextKey));
-    await tester.pumpAndSettle();
-
-    expect(find.byType(MenuItemButton), findsNothing, reason: '选择模型后官方菜单必须关闭');
-    expect(find.text(next.displayName), findsOneWidget);
-    expect(find.text(before), findsNothing);
-    final after = container
-        .read(startPageComposerViewProvider)
-        .displayRoute(initial.mode);
-    expect(after?.accountId, next.accountId);
-    expect(after?.modelId, next.modelId);
-    final expectedEffort = ModelRouteQueries.effortAfterModelSelection(
-      next.descriptor,
-      null,
-    );
-    expect(expectedEffort, isNotNull, reason: 'next 模型需要可归一化的思考强度');
-    expect(after?.effort, expectedEffort);
-    expect(find.text('缺失（不可用）'), findsNothing);
-    expect(
-      find.text(expectedEffort!),
-      findsOneWidget,
-      reason: '思考强度必须立即显示新模型的归一化候选，而不是空值',
-    );
-
-    await tester.tap(trigger);
-    await tester.pumpAndSettle();
-    expect(selectedRow(nextKey), findsOneWidget, reason: '模型选中态必须随草稿事实移动');
-  });
-
-  testWidgets('未打开项目时输入禁用，会话选择器仍可先定好草稿路由', (tester) async {
-    graph.client.selection.restoreStartup(
-      projectId: null,
-      threadId: null,
-      needsOpen: false,
-    );
-
-    await tester.pumpWidget(harness(const StartPageComposerDock()));
-    await tester.pumpAndSettle();
-
-    final input = tester.widget<TextField>(
-      find.byKey(StudioDriverKeys.composerInput),
-    );
-    expect(input.enabled, isFalse, reason: '未打开项目不能提交新会话');
-
-    final accounts = container.read(settingsStoreProvider).canonical!.accounts;
-    final before = container.read(startPageComposerViewProvider);
-    final routeBefore = before.displayRoute(before.mode)!;
-    // 选一个与当前路由不同、且带有多个强度候选的模型：证明选择真的落到草稿上。
-    final candidates = modelOptions(accounts)
-        .where(
-          (option) =>
-              option.accountId != routeBefore.accountId ||
-              option.modelId != routeBefore.modelId,
-        )
-        .toList();
-    final next = candidates.firstWhere(
-      (option) => option.reasoningEfforts.length > 1,
-      orElse: () => candidates.first,
-    );
-
-    final modelTrigger = find.descendant(
-      of: find.byKey(StudioDriverKeys.model),
-      matching: find.byType(TextButton),
-    );
-    expect(tester.widget<TextButton>(modelTrigger).onPressed, isNotNull);
     await tester.tap(modelTrigger);
     await tester.pumpAndSettle();
-    final modelRow = find.byKey(
-      StudioDriverKeys.modelOption(next.accountId, next.modelId),
+    expect(selectedRow(nextKey), findsNothing);
+    await tester.tap(find.byKey(nextKey));
+    final target = ModelSelection(
+      model: AccountModelKey(accountId: next.accountId, modelId: next.modelId),
+      effort: 'high',
     );
-    expect(modelRow, findsOneWidget, reason: '模型与强度可以在选项目之前先定草稿路由');
-    await tester.tap(modelRow);
+    await settleStart(tester, target);
+    expect(find.byType(MenuItemButton), findsNothing);
+    expect(find.text(next.displayName), findsOneWidget);
+    expect(find.text(current.displayName), findsNothing);
+    expect(prepared().model.accountId, next.accountId);
+    expect(prepared().model.modelId, next.modelId);
+    expect(prepared().effort, 'high', reason: 'native 归一化结果不能丢失或被本地猜测替代');
+    expect(find.text('缺失（不可用）'), findsNothing);
+    expect(find.text('high'), findsOneWidget);
+    await tester.tap(modelTrigger);
     await tester.pumpAndSettle();
-
-    final afterModel = container.read(startPageComposerViewProvider);
-    final modelRoute = afterModel.displayRoute(afterModel.mode)!;
-    expect(modelRoute.accountId, next.accountId, reason: '草稿路由真的换了账号');
-    expect(modelRoute.modelId, next.modelId, reason: '草稿路由真的换了模型');
-    expect(
-      find.byKey(StudioDriverKeys.modelOption(next.accountId, next.modelId)),
-      findsNothing,
-      reason: '菜单必须真正收起，而不是只把标签改成同一个名字',
-    );
-    expect(
-      tester
-          .widget<TextField>(find.byKey(StudioDriverKeys.composerInput))
-          .enabled,
-      isFalse,
-      reason: '选了路由不等于能提交：没有项目仍然不能发送',
-    );
-
-    if (next.reasoningEfforts.length > 1) {
-      final nextEffort = next.reasoningEfforts.firstWhere(
-        (effort) => effort != modelRoute.effort,
-        orElse: () => next.reasoningEfforts.last,
-      );
-      await tester.tap(find.byKey(StudioDriverKeys.reasoningEffort));
-      await tester.pumpAndSettle();
-      await tester.tap(
-        find.byKey(StudioDriverKeys.reasoningEffortOption(nextEffort)),
-      );
-      await tester.pumpAndSettle();
-      final afterEffort = container.read(startPageComposerViewProvider);
-      expect(
-        afterEffort.displayRoute(afterEffort.mode)!.effort,
-        nextEffort,
-        reason: '思考强度同样能在选项目之前定下来',
-      );
-    }
-
-    // 会话模式按项目保存：没有项目就明确禁用并解释，绝不静默丢掉选择。
-    final modeTrigger = find.descendant(
-      of: find.byKey(StudioDriverKeys.sessionMode),
-      matching: find.byType(TextButton),
-    );
-    expect(
-      tester.widget<TextButton>(modeTrigger).onPressed,
-      isNotNull,
-      reason: '锁定也必须能解释',
-    );
-    await tester.tap(modeTrigger);
-    await tester.pumpAndSettle();
-    expect(
-      find.text(
-        tester
-            .element(find.byKey(StudioDriverKeys.sessionMode))
-            .l10n
-            .statusModeNeedsProject,
-      ),
-      findsOneWidget,
-    );
-    expect(
-      find.byKey(StudioDriverKeys.sessionModeOption(ThreadModeId.simple.name)),
-      findsNothing,
-      reason: '禁用状态下不展开菜单',
-    );
-    expect(
-      find.byKey(StudioDriverKeys.sessionWorkspaceMode),
-      findsNothing,
-      reason:
-          'Workspace is only inside session settings, not a duplicate shortcut',
-    );
-    expect(
-      find.byKey(StudioDriverKeys.sessionSettings),
-      findsNothing,
-      reason: 'There is no project-scoped settings menu before a project is selected',
-    );
+    expect(selectedRow(nextKey), findsOneWidget);
+    await finish(tester);
   });
 
-  testWidgets('选择器被锁定时点击给出可见原因，不静默吞掉点击', (tester) async {
-    final accounts = container.read(settingsStoreProvider).canonical!.accounts;
-    final option = modelOptions(accounts).first;
-
-    await tester.pumpWidget(
-      harness(
-        ModelRoleSelector(
-          accounts: accounts,
-          accountId: option.accountId,
-          modelId: option.modelId,
-          effort: null,
-          enabled: false,
-        ),
-      ),
-    );
+  testWidgets('未打开项目时输入禁用，模型和强度仍能先选；Mode锁定有可见原因', (tester) async {
+    await tester.runAsync(() => env.establish());
+    env.workspace.restoreSelection(const WorkspaceSelection(projectId: null, threadId: null, needsOpen: false));
+    final startRoutes = env.drafts.startRoutes;
+    final baselineObservers = startRoutes.observerCount;
+    final optionsProvider = sessionOptionsViewModelProvider(null);
+    expect(env.container.exists(optionsProvider), isFalse);
+    await tester.pumpWidget(harness(const StartInputConnector(projectId: null)));
+    await tester.pump();
+    expect(env.container.exists(optionsProvider), isTrue);
+    expect(startRoutes.observerCount, baselineObservers + 1,
+      reason: '真实挂载的无项目VM仅借用一份原Start偏好观察');
+    final input = tester.widget<TextField>(find.byKey(StudioDriverKeys.composerInput));
+    expect(input.enabled, isFalse, reason: '未打开项目不能发送');
+    final controls = tester.widget<InputModelControlsView>(find.byType(InputModelControlsView));
+    final next = controls.models.firstWhere((option) => (option.descriptor.reasoning?.candidates.length ?? 0) > 1);
+    final modelTrigger = trigger(StudioDriverKeys.model);
+    expect(tester.widget<TextButton>(modelTrigger).onPressed, isNotNull, reason: '保留main：选项目之前可先选模型');
+    await tester.tap(modelTrigger);
     await tester.pumpAndSettle();
-
-    final trigger = find.descendant(
-      of: find.byKey(StudioDriverKeys.model),
-      matching: find.byType(TextButton),
-    );
-    expect(
-      tester.widget<TextButton>(trigger).onPressed,
-      isNotNull,
-      reason: '被锁定也必须能解释，而不是吞掉点击',
-    );
-
-    await tester.tap(trigger);
+    await tester.tap(find.byKey(StudioDriverKeys.modelOption(next.accountId, next.modelId)));
     await tester.pumpAndSettle();
-    final reason = tester
-        .element(find.byKey(StudioDriverKeys.model))
-        .l10n
-        .statusSelectorsNotReady;
-    expect(find.text(reason), findsOneWidget);
+    final selected = tester.widget<InputModelControlsView>(find.byType(InputModelControlsView));
+    expect((selected.accountId, selected.modelId), (next.accountId, next.modelId));
+    expect(env.drafts.startRoutes.value.models[ThreadModeId.simple.id],
+      StartModelIntent(accountId: next.accountId, modelId: next.modelId));
+    final effort = next.descriptor.reasoning!.candidates.firstWhere((effort) => effort != selected.effort);
+    await tester.tap(trigger(StudioDriverKeys.reasoningEffort));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(StudioDriverKeys.reasoningEffortOption(effort)));
+    await tester.pumpAndSettle();
+    expect(tester.widget<InputModelControlsView>(find.byType(InputModelControlsView)).effort, effort);
+    expect(env.drafts.startRoutes.value.efforts[ThreadModeId.simple.id], effort);
+    expect(tester.widget<TextField>(find.byKey(StudioDriverKeys.composerInput)).enabled, isFalse);
+    final mode = trigger(StudioDriverKeys.sessionMode);
+    expect(tester.widget<TextButton>(mode).onPressed, isNotNull);
+    await tester.tap(mode);
+    await tester.pumpAndSettle();
+    expect(find.text(tester.element(mode).l10n.statusModeNeedsProject), findsOneWidget);
+    expect(find.byKey(StudioDriverKeys.sessionModeOption(ThreadModeId.simple.id)), findsNothing);
+    expect(find.byKey(StudioDriverKeys.sessionWorkspaceMode), findsNothing);
+    expect(find.byKey(StudioDriverKeys.sessionSettings), findsNothing);
+    await tester.pumpWidget(harness(const SizedBox.shrink()));
+    await pumpClientFuture(tester, env.container.pump(), 'projectless options provider disposal');
+    expect(env.container.exists(optionsProvider), isFalse);
+    expect(startRoutes.observerCount, baselineObservers,
+      reason: '仓储仍开启，页面provider真实销毁后仅释放自己的观察');
+    await tester.pumpWidget(harness(const StartInputConnector(projectId: null)));
+    await tester.pumpAndSettle();
+    expect(env.container.exists(optionsProvider), isTrue);
+    expect(startRoutes.observerCount, baselineObservers + 1,
+      reason: '重挂只新增当前页的一份观察，不遗留旧VM');
+    final remounted = tester.widget<InputModelControlsView>(find.byType(InputModelControlsView));
+    expect((remounted.accountId, remounted.modelId, remounted.effort),
+      (next.accountId, next.modelId, effort), reason: '预选来自真实Drafts偏好，不靠页面内第二份选择状态');
+    expect(remounted.mode, ThreadModeId.simple);
+    expect(env.workspace.state.value.selection.projectId, isNull);
+    expect(env.workspace.state.value.selection.threadId, isNull);
+    expect(env.conversations.active.value, isNull);
+    expect(env.directory.activations, isEmpty);
+    expect(env.configurationPort.opens, isEmpty, reason: '无项目预选不创建假项目草稿或项目路由读取');
+    expect(env.creations.begins.values, isEmpty);
+    expect(env.commands.prompts.values, isEmpty);
+    await tester.pumpWidget(harness(const SizedBox.shrink()));
+    await pumpClientFuture(tester, env.container.pump(), 'remounted projectless options provider disposal');
+    expect(env.container.exists(optionsProvider), isFalse);
+    expect(startRoutes.observerCount, baselineObservers,
+      reason: '再次卸载也须在关闭整个repository之前归还观察');
+    expect(startRoutes.value.models[ThreadModeId.simple.id],
+      StartModelIntent(accountId: next.accountId, modelId: next.modelId));
+    expect(startRoutes.value.efforts[ThreadModeId.simple.id], effort);
+    await finish(tester);
+  });
+
+  testWidgets('选择器锁定点击有可见原因且不打开菜单', (tester) async {
+    await initialize(tester);
+    String? explanation;
+    await tester.pumpWidget(harness(StatefulBuilder(builder: (context, update) => InputModelControlsView(
+      modes: const [], models: const [], efforts: const [], mode: ThreadModeId.simple,
+      workspaceMode: ThreadWorkspaceMode.local, accountId: '', modelId: '', effort: null,
+      enabled: false, showWorkspace: false, blockedReason: context.l10n.statusSelectorsNotReady,
+      explanation: explanation, onExplain: (reason) => update(() => explanation = reason),
+    ))));
+    await tester.pump();
+    final model = trigger(StudioDriverKeys.model);
+    expect(tester.widget<TextButton>(model).onPressed, isNotNull);
+    await tester.tap(model);
+    await tester.pump();
+    expect(find.byKey(const ValueKey('input-model-explanation')), findsOneWidget);
+    expect(find.text(tester.element(model).l10n.statusSelectorsNotReady), findsOneWidget);
+    await finish(tester);
   });
 
   testWidgets('打开项目后原生输入框与工作区选择都更新新会话草稿', (tester) async {
-    final projectId = container.read(selectionStoreProvider).selectedProjectId!;
-
-    await tester.pumpWidget(harness(const StartPageComposerDock()));
-    await tester.pumpAndSettle();
-
+    await initialize(tester);
+    await mountStart(tester);
     final input = find.byKey(StudioDriverKeys.composerInput);
     expect(tester.widget<TextField>(input).enabled, isTrue);
     await tester.tap(input);
     await tester.enterText(input, '新会话正文');
     await tester.pumpAndSettle();
+    expect(start().text, '新会话正文');
     expect(
-      container.read(startSessionControllerProvider).forProject(projectId).text,
-      '新会话正文',
-    );
-
-    final settingsTrigger = tester.widget<IconButton>(
-      find.byKey(StudioDriverKeys.sessionSettings),
-    );
-    expect(
-      settingsTrigger.onPressed,
+      tester
+          .widget<IconButton>(find.byKey(StudioDriverKeys.sessionSettings))
+          .onPressed,
       isNotNull,
-      reason:
-          'Demo must deliver the canonical mode catalog to enable selectors',
+      reason: '真实 catalog/material 必须交付后才能编辑',
     );
-    await tester.tap(find.byKey(StudioDriverKeys.sessionSettings));
-    await tester.pumpAndSettle();
+    // Workspace is now its own official selector in InputModelControlsView.
     await tester.tap(find.byKey(StudioDriverKeys.sessionWorkspaceMode));
     await tester.pumpAndSettle();
-    final worktreeKey = StudioDriverKeys.sessionWorkspaceModeOption(
-      ThreadWorkspaceMode.worktree.id,
+    await tester.tap(
+      find.byKey(
+        StudioDriverKeys.sessionWorkspaceModeOption(
+          ThreadWorkspaceMode.worktree.name,
+        ),
+      ),
     );
-    await tester.tap(find.byKey(worktreeKey));
     await tester.pumpAndSettle();
-    expect(
-      container
-          .read(startSessionControllerProvider)
-          .forProject(projectId)
-          .workspaceMode,
-      ThreadWorkspaceMode.worktree,
-    );
+    expect(start().workspaceMode, ThreadWorkspaceMode.worktree);
+    await finish(tester);
   });
 
   testWidgets(
     'composer keeps Shift+Enter editing and official Enter submission',
     (tester) async {
-      await tester.pumpWidget(harness(const StartPageComposerDock()));
-      await tester.pumpAndSettle();
-
+      await initialize(tester);
+      await mountStart(tester);
       final input = find.byKey(StudioDriverKeys.composerInput);
       await tester.tap(input);
       await tester.enterText(input, '第一行');
       await tester.pump();
+      Future<void> shiftEnter(TextEditingValue nativeEdit) async {
+        await tester.sendKeyDownEvent(LogicalKeyboardKey.shiftLeft);
+        expect(
+          await tester.sendKeyEvent(LogicalKeyboardKey.enter),
+          isFalse,
+          reason: 'Shift+Enter must remain delegated to the native multiline editor',
+        );
+        await tester.sendKeyUpEvent(LogicalKeyboardKey.shiftLeft);
+        tester.testTextInput.updateEditingValue(nativeEdit);
+        await tester.testTextInput.receiveAction(TextInputAction.newline);
+        await tester.pump();
+      }
 
-      await tester.sendKeyDownEvent(LogicalKeyboardKey.shiftLeft);
-      await tester.sendKeyEvent(LogicalKeyboardKey.enter);
-      await tester.sendKeyUpEvent(LogicalKeyboardKey.shiftLeft);
-      await tester.pump();
-
-      expect(
-        container.read(anyworkClientProvider).startDraft.state.submitting,
-        isFalse,
-        reason:
-            'Shift+Enter must remain an editing action, not submit the draft',
+      await shiftEnter(
+        const TextEditingValue(
+          text: '第一行\n',
+          selection: TextSelection.collapsed(offset: 4),
+        ),
       );
-      expect(
-        tester.widget<TextField>(input).controller!.text,
-        '第一行\n',
-        reason: 'Shift+Enter inserts the line break through the local editing action',
-      );
-
-      // 标准编辑语义：Shift+Enter 用换行替换当前选区，光标落到换行之后。
+      expect(start().submission, isA<IdleDraftSubmission>());
+      expect(tester.widget<TextField>(input).controller!.text, '第一行\n');
       final controller = tester.widget<TextField>(input).controller!;
       final beforeSelection = controller.text;
       controller.selection = const TextSelection(
         baseOffset: 0,
         extentOffset: 3,
       );
-      await tester.sendKeyDownEvent(LogicalKeyboardKey.shiftLeft);
-      await tester.sendKeyEvent(LogicalKeyboardKey.enter);
-      await tester.sendKeyUpEvent(LogicalKeyboardKey.shiftLeft);
-      await tester.pump();
-      expect(
-        controller.text,
-        '\n${beforeSelection.substring(3)}',
-        reason: 'Shift+Enter 必须以换行替换选区，而不是保留选中文本再追加换行',
+      await shiftEnter(
+        const TextEditingValue(
+          text: '\n\n',
+          selection: TextSelection.collapsed(offset: 1),
+        ),
       );
-      expect(
-        controller.selection,
-        const TextSelection.collapsed(offset: 1),
-        reason: '插入后光标落在新行起点',
-      );
-      expect(
-        container.read(anyworkClientProvider).startDraft.state.submitting,
-        isFalse,
-        reason: '替换选区仍是编辑动作，不是提交',
-      );
+      expect(controller.text, '\n${beforeSelection.substring(3)}');
+      expect(controller.selection, const TextSelection.collapsed(offset: 1));
+      expect(start().submission, isA<IdleDraftSubmission>());
       await tester.enterText(input, '最后一行');
       await tester.pump();
-
-      // The engine translates Enter into the field's text input action; sending
-      // that action is the real Enter submission path shared with the button.
       await tester.testTextInput.receiveAction(TextInputAction.send);
       await tester.pump();
       expect(
-        container.read(anyworkClientProvider).startDraft.state.submitting,
-        isTrue,
-        reason:
-            'an unmodified Enter must share the send button submission path',
+        start().submission,
+        isA<SubmittingDraft>(),
+        reason: 'Enter 与发送按钮共用同一提交入口',
       );
+      expect(env.creations.begins.values, hasLength(1));
+      await finish(tester);
     },
   );
 
   group('已建根会话：Turn 空闲后 workflow active 不再阻塞模型路由切换', () {
     const threadId = 'thread-main';
-
-    late _WorkflowScenarioTransport transport;
-    late AppGraph graph;
-    late ProviderContainer workflowContainer;
-    late ProviderSubscription<Object?> composerHold;
-
-    Future<void> openScenario({
-      ThreadStatusView status = ThreadStatusView.idle,
+    Future<void> openScenario(
+      WidgetTester tester, {
+      ThreadStatus status = ThreadStatus.idle,
     }) async {
-      transport = _WorkflowScenarioTransport(threadStatus: status);
-      graph = AppGraph(
-        statisticsFeed: const TestStatisticsFeedPort(),
-        transport: transport,
-        clientId: 'workflow-route-test',
-      );
-      workflowContainer = ProviderContainer(
-        overrides: [appGraphProvider.overrideWithValue(graph)],
-      );
-      await graph.client.bootstrap();
-      await graph.client.directoryCommands.selectThread(threadId);
-      // ComposerDock 只在 Client 已持有该会话草稿时渲染输入区。
-      graph.client.composer(threadId);
-      composerHold = workflowContainer.listen(
-        composerDockViewProvider(threadId),
-        (_, _) {},
-      );
-      await graph.client
-          .session(threadId)
-          .source
-          .waitFor((state) => state.hasSnapshot);
-    }
-
-    /// testWidgets 在测试体结束前检查未完成定时器：成功路径在这里关闭 owner。
-    Future<void> closeScenario(WidgetTester tester) async {
-      await tester.pumpWidget(const SizedBox.shrink());
-      await pumpClientFuture(
-        tester,
-        graph.close(deadline: DateTime.now().add(const Duration(seconds: 5))),
-        'workflow route scenario close',
-      );
-      composerHold.close();
-      workflowContainer.dispose();
-    }
-
-    Future<void> pumpDock(WidgetTester tester) async {
+      await initialize(tester);
+      env.conversationPort.initialStatus = status;
+      env.conversationPort.activeWorkflow = true;
+      await pumpClientFuture(tester, env.selectThread(threadId), 'select root');
       await tester.pumpWidget(
-        UncontrolledProviderScope(
-          container: workflowContainer,
-          child: MaterialApp(
-            locale: const Locale('zh'),
-            localizationsDelegates: AppLocalizations.localizationsDelegates,
-            supportedLocales: AppLocalizations.supportedLocales,
-            home: const Scaffold(
-              body: Center(child: ComposerDock(threadId: threadId)),
-            ),
-          ),
-        ),
+        harness(const _LiveInputHost(threadId: threadId)),
+      );
+      await pumpClientUntil(
+        tester,
+        () =>
+            env.container
+                .read(threadStatusViewModelProvider(threadId))
+                .value
+                ?.configurationRead
+                .header !=
+            null,
+        'original route material',
       );
       await tester.pumpAndSettle();
     }
 
-    int routeRevision() =>
-        workflowContainer
-            .read(composerDockViewProvider(threadId))
-            .modelRoute
-            ?.revision ??
-        -1;
-
-    testWidgets('运行中的根会话点击模型或强度选择器不打开菜单、不发命令', (tester) async {
-      await openScenario(status: ThreadStatusView.running);
-      await pumpDock(tester);
-
-      final view = workflowContainer.read(composerDockViewProvider(threadId));
-      expect(view.hasActiveWorkflow, isTrue, reason: '场景前提：workflow active');
-      expect(view.thread?.status, ThreadStatusView.running);
-      final revisionBefore = routeRevision();
-
+    ConversationModelRouteProps props() => env.container
+        .read(threadStatusViewModelProvider(threadId).notifier)
+        .modelRouteProps(
+          env.container
+              .read(conversationViewModelProvider(threadId))
+              .value
+              ?.metadata,
+        );
+    ThreadModelRoute route() => props().route!;
+    Object? run() => env.container
+        .read(threadStatusViewModelProvider(threadId))
+        .requireValue
+        .workflowRead
+        .header
+        ?.currentRun
+        ?.runId;
+    bool pending() => env.operations.observations.records.value.any(
+      (record) => record.isPending,
+    );
+    Future<void> changeModel(WidgetTester tester) async {
+      final options = selectorModels(
+        env.container.read(selectorCatalogViewModelProvider).requireValue,
+      );
+      final next = options.firstWhere(
+        (item) => item.accountId != route().accountId,
+      );
+      final before = route();
       await tester.tap(find.byKey(StudioDriverKeys.model));
       await tester.pumpAndSettle();
-      expect(find.byType(MenuItemButton), findsNothing, reason: '运行中不得打开模型菜单');
+      final key = StudioDriverKeys.modelOption(next.accountId, next.modelId);
+      expect(find.byKey(key), findsOneWidget);
+      await tester.tap(find.byKey(key));
+      await tester.pump();
+      final call = await pumpClientFuture(
+        tester,
+        env.commands.routes.at(env.commands.routes.values.length - 1),
+        'native route command',
+      );
+      expect(call.routeRevision, before.revision);
+      expect(call.settingsRevision, 1);
+      expect(route(), before, reason: '命令不能乐观改写 canonical');
+      final target = before.copyWith(
+        accountId: next.accountId,
+        modelId: next.modelId,
+        effort: 'low',
+        revision: before.revision + 1,
+      );
+      call.reply.complete(selectorRouteReply(call, target));
+      await pumpClientFuture(
+        tester,
+        env.conversationPort.publishRoute(target),
+        'route facet change',
+      );
+      await pumpClientUntil(
+        tester,
+        () => route().revision == target.revision && !pending(),
+        'route convergence',
+      );
+      await tester.pumpAndSettle();
+      expect(route().accountId, next.accountId);
+      expect(route().modelId, next.modelId);
+      expect(route().revision, before.revision + 1);
+      expect(pending(), isFalse);
+      expect(find.text(next.displayName), findsOneWidget);
+    }
+
+    testWidgets('运行中的根会话点击模型或强度选择器不打开菜单、不发命令', (tester) async {
+      await openScenario(tester, status: ThreadStatus.running);
+      final view = env.container
+          .read(threadStatusViewModelProvider(threadId))
+          .requireValue;
+      expect(view.workflow?.lifecycle, WorkflowLifecycle.active);
+      expect(view.execution?.value?.status, ThreadStatus.running);
+      final revisionBefore = route().revision;
+      await tester.tap(find.byKey(StudioDriverKeys.model));
+      await tester.pumpAndSettle();
+      expect(find.byType(MenuItemButton), findsNothing);
       await tester.tap(find.byKey(StudioDriverKeys.reasoningEffort));
       await tester.pumpAndSettle();
-      expect(find.byType(MenuItemButton), findsNothing, reason: '运行中不得打开强度菜单');
+      expect(find.byType(MenuItemButton), findsNothing);
       expect(
         find.text('会话正在执行或等待处理，暂时无法切换模型。请停止当前执行或等待完成后重试。'),
         findsOneWidget,
-        reason: '阻塞原因必须解释为运行中，而不是 workflow active',
       );
-      expect(routeRevision(), revisionBefore, reason: '不得发出路由命令');
-      await closeScenario(tester);
+      expect(route().revision, revisionBefore);
+      expect(env.commands.routes.values, isEmpty);
+      await finish(tester);
     });
 
     testWidgets('Turn 空闲且 workflow active：模型与强度可切换并经 canonical 收敛', (
       tester,
     ) async {
-      await openScenario();
-      await pumpDock(tester);
-
-      final initial = workflowContainer.read(
-        composerDockViewProvider(threadId),
-      );
-      expect(initial.hasActiveWorkflow, isTrue);
-      expect(initial.thread?.status, ThreadStatusView.idle);
-      final workflowRunBefore = initial.workflow?.currentRun?.runId;
+      await openScenario(tester);
+      final initial = env.container
+          .read(threadStatusViewModelProvider(threadId))
+          .requireValue;
+      expect(initial.workflow?.lifecycle, WorkflowLifecycle.active);
+      expect(initial.execution?.value?.status, ThreadStatus.idle);
+      final workflowRunBefore = run();
       expect(workflowRunBefore, isNotNull);
-
-      final modeTrigger = tester.widget<TextButton>(
-        find.descendant(
-          of: find.byKey(StudioDriverKeys.sessionMode),
-          matching: find.byType(TextButton),
-        ),
-      );
       expect(
-        modeTrigger.onPressed,
-        isNotNull,
-        reason: '锁定不是静默：点击要给出原因，而不是什么都不发生',
+        tester
+            .widget<TextButton>(trigger(StudioDriverKeys.sessionMode))
+            .onPressed,
+        isNull,
+        reason: 'Mode 仍冻结，不能跟随 live 模型编辑放开',
       );
-      await tester.tap(find.byKey(StudioDriverKeys.sessionMode));
-      await tester.pumpAndSettle();
-      expect(
-        find.byKey(
-          StudioDriverKeys.sessionModeOption(ThreadModeId.simple.name),
-        ),
-        findsNothing,
-        reason: 'workflow active 期间 Mode 仍冻结，不得随本次修复放开',
-      );
-
-      final options = modelOptions(initial.accounts);
-      expect(options.length, greaterThan(1), reason: '模型目录需要至少两个候选');
-      final route = initial.displayRoute!;
-      final next = options.firstWhere(
-        (option) =>
-            option.accountId != route.accountId ||
-            option.modelId != route.modelId,
-      );
-      final revisionBefore = routeRevision();
-
-      await tester.tap(find.byKey(StudioDriverKeys.model));
-      await tester.pumpAndSettle();
-      final nextKey = StudioDriverKeys.modelOption(
-        next.accountId,
-        next.modelId,
-      );
-      expect(find.byKey(nextKey), findsOneWidget, reason: '空闲会话必须能打开模型菜单');
-      await tester.tap(find.byKey(nextKey));
-      await tester.pumpAndSettle();
-
-      final settled = workflowContainer.read(
-        composerDockViewProvider(threadId),
-      );
-      expect(settled.modelRoute?.accountId, next.accountId);
-      expect(settled.modelRoute?.modelId, next.modelId);
-      expect(settled.modelRoute?.revision, revisionBefore + 1);
-      expect(settled.routePending, isFalse, reason: '收敛后不得停在乐观目标值');
-      expect(
-        settled.workflow?.currentRun?.runId,
-        workflowRunBefore,
-        reason: '切换路由不得重置 workflow run',
-      );
-      expect(
-        find.text(next.displayName),
-        findsOneWidget,
-        reason: '选择器必须显示收敛后的新模型',
-      );
-
-      final model = modelForRoute(
-        settled.accounts,
-        next.accountId,
-        next.modelId,
+      await changeModel(tester);
+      expect(run(), workflowRunBefore);
+      final settled = route();
+      final descriptor = selectedDescriptor(
+        env.models.state.value,
+        settled.accountId,
+        settled.modelId,
       )!;
-      final targetEffort = model.reasoningEfforts
-          .where((effort) => effort != settled.modelRoute!.effort)
+      final targetEffort = descriptor.reasoning!.candidates
+          .where((effort) => effort != settled.effort)
           .firstOrNull;
-      expect(targetEffort, isNotNull, reason: '模型需要至少两个思考强度候选');
-
+      expect(targetEffort, isNotNull);
       await tester.tap(find.byKey(StudioDriverKeys.reasoningEffort));
       await tester.pumpAndSettle();
       await tester.tap(
         find.byKey(StudioDriverKeys.reasoningEffortOption(targetEffort!)),
       );
+      await tester.pump();
+      final call = await pumpClientFuture(
+        tester,
+        env.commands.routes.at(1),
+        'native effort command',
+      );
+      expect(route(), settled, reason: '只有 canonical feed 可改变显示值');
+      final target = settled.copyWith(
+        effort: targetEffort,
+        revision: settled.revision + 1,
+      );
+      call.reply.complete(selectorRouteReply(call, target));
+      await pumpClientFuture(
+        tester,
+        env.conversationPort.publishRoute(target),
+        'effort facet',
+      );
+      await pumpClientUntil(
+        tester,
+        () => route().effort == targetEffort && !pending(),
+        'effort convergence',
+      );
       await tester.pumpAndSettle();
-
-      final afterEffort = workflowContainer.read(
-        composerDockViewProvider(threadId),
-      );
-      expect(afterEffort.modelRoute?.effort, targetEffort);
-      expect(afterEffort.routePending, isFalse);
-      expect(
-        afterEffort.workflow?.currentRun?.runId,
-        workflowRunBefore,
-        reason: '调整强度同样不得重置 workflow run',
-      );
-      await closeScenario(tester);
+      expect(route().effort, targetEffort);
+      expect(pending(), isFalse);
+      expect(run(), workflowRunBefore, reason: '强度编辑不得重置 workflow run');
+      await finish(tester);
     });
 
     testWidgets('提交后停止：Turn 终态收敛后仍可在 active workflow 上切换路由', (tester) async {
-      await openScenario();
-      await pumpDock(tester);
-
+      await openScenario(tester);
       final input = find.byKey(StudioDriverKeys.composerInput);
       await tester.tap(input);
       await tester.enterText(input, '第一轮任务');
       await tester.pump();
       await tester.testTextInput.receiveAction(TextInputAction.send);
-      // 只推进到提交受理后、Demo Turn 完成脚本（120ms 起）之前，保持运行中可停止。
-      await tester.pump(const Duration(milliseconds: 50));
-
-      final running = workflowContainer.read(
-        composerDockViewProvider(threadId),
+      await tester.pump();
+      final prompt = await pumpClientFuture(
+        tester,
+        env.commands.prompts.at(0),
+        'prompt native dispatch',
       );
-      expect(running.isBusy, isTrue, reason: '提交受理后 Turn 进入运行态');
-      final stopButton = find.byKey(StudioDriverKeys.composerStop);
-      expect(stopButton, findsOneWidget, reason: '草稿清空后停止按钮必须出现');
-
-      await tester.tap(stopButton);
+      prompt.reply.complete(
+        SubmitPromptReceipt(
+          threadId: threadId,
+          inputId: prompt.input.inputId,
+          cursor: 1,
+          requestDigest: 'sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
+        ),
+      );
+      await tester.pump();
+      final acceptance = await pumpClientFuture(
+        tester,
+        env.commands.acceptances.at(0),
+        'input acceptance',
+      );
+      acceptance.reply.complete(
+        const InputAcceptanceEvidence(
+          acceptedSequence: 1,
+          disposition: PersistedInputDisposition.consumed,
+          requestDigest: 'sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
+        ),
+      );
+      const turnRef = TurnReadRef(entry: 40, revision: 1);
+      final brief = TurnBrief(
+        reference: turnRef,
+        revision: 1,
+        updatedAt: 1,
+        state: const TurnBriefState.running(
+          startedAt: 1,
+          phase: TurnPhase.thinking,
+        ),
+      );
+      env.conversationPort.turn = TurnReadHeader(
+        scope: selectorScope(
+          selectorFacet(ThreadFacet.execution, 2),
+          'turn',
+        ).copyWith(sourceRevision: turnRef.revision),
+        inputId: ReadText.inline(text: prompt.input.inputId),
+        id: const ReadText.inline(text: 'turn-1'),
+        threadId: const ReadText.inline(text: threadId),
+        revision: 1,
+        updatedAt: 1,
+        state: const TurnReadState.running(
+          startedAt: 1,
+          phase: TurnPhase.thinking,
+        ),
+      );
+      final runningDelivery = env.conversationPort.publishExecution(
+        selectorExecution(status: ThreadStatus.running, active: brief, execution: const AgentExecution(id: 'execution-1', phase: AgentExecutionPhase.running, turnId: 'turn-1')),
+      );
       await tester.pumpAndSettle();
-
-      final stopped = workflowContainer.read(
-        composerDockViewProvider(threadId),
-      );
-      expect(stopped.isBusy, isFalse, reason: '停止必须等到 canonical 终态，不是 ACK');
+      final nativeExecution = env.conversations.active.value!.execution.value;
       expect(
-        stopped.hasActiveWorkflow,
+        nativeExecution.sync.phase,
+        FacetSyncPhase.ready,
+        reason: 'running frame error=${nativeExecution.sync.error?.message}',
+      );
+      await pumpClientFuture(tester, runningDelivery, 'running Turn');
+      await tester.pumpAndSettle();
+      final execution = env.container
+          .read(conversationViewModelProvider(threadId))
+          .requireValue
+          .execution;
+      expect(
+        env.container
+            .read(conversationViewModelProvider(threadId))
+            .requireValue
+            .running,
         isTrue,
-        reason: '停止 Turn 不得结束 workflow',
+        reason:
+            'execution phase=${execution?.sync.phase}; error=${execution?.sync.error?.message}; '
+            'active=${execution?.value?.activeTurn?.state.runtimeType}; '
+            'session phase=${env.conversations.active.value?.execution.value.sync.phase}; '
+            'session error=${env.conversations.active.value?.execution.value.sync.error?.message}',
       );
-
-      final initial = workflowContainer.read(
-        composerDockViewProvider(threadId),
+      final stopButton = find.byKey(StudioDriverKeys.composerStop);
+      expect(stopButton, findsOneWidget);
+      await tester.tap(stopButton);
+      await tester.pump();
+      final interrupt = await pumpClientFuture(
+        tester,
+        env.commands.interrupts.at(0),
+        'exact Turn stop',
       );
-      final options = modelOptions(initial.accounts);
-      final route = initial.displayRoute!;
-      final next = options.firstWhere(
-        (option) =>
-            option.accountId != route.accountId ||
-            option.modelId != route.modelId,
+      interrupt.reply.complete(
+        StopExecutionReply(
+          threadId: threadId,
+          executionId: interrupt.executionId,
+          stopped: true,
+          receipt: CommitReceipt(
+            operationId: interrupt.operationId,
+            disposition: CommitDisposition.applied,
+            targets: const [],
+            effect: EffectPoint.immediate,
+            requiresIdentityObservation: true,
+          ),
+        ),
       );
-      await tester.tap(find.byKey(StudioDriverKeys.model));
+      await tester.pump();
+      expect(
+        env.container
+            .read(conversationViewModelProvider(threadId))
+            .requireValue
+            .running,
+        isTrue,
+        reason: 'ACK 不等于 canonical Turn 终态',
+      );
+      await pumpClientFuture(
+        tester,
+        env.conversationPort.publishExecution(
+          selectorExecution(
+            terminal: brief.copyWith(
+              reference: turnRef.copyWith(revision: 2),
+              revision: 2,
+              state: const TurnBriefState.cancelled(
+                startedAt: 1,
+                requestedAt: 2,
+                completedAt: 3,
+                cause: TurnCancellationKind.userRequested,
+              ),
+            ),
+          ),
+        ),
+        'terminal Turn',
+      );
       await tester.pumpAndSettle();
-      await tester.tap(
-        find.byKey(StudioDriverKeys.modelOption(next.accountId, next.modelId)),
+      expect(
+        env.container
+            .read(conversationViewModelProvider(threadId))
+            .requireValue
+            .running,
+        isFalse,
       );
-      await tester.pumpAndSettle();
-
-      final settled = workflowContainer.read(
-        composerDockViewProvider(threadId),
+      expect(
+        env.container
+            .read(threadStatusViewModelProvider(threadId))
+            .requireValue
+            .workflow
+            ?.lifecycle,
+        WorkflowLifecycle.active,
       );
-      expect(settled.modelRoute?.modelId, next.modelId);
-      expect(settled.routePending, isFalse);
-      expect(settled.hasActiveWorkflow, isTrue);
-      await closeScenario(tester);
+      await changeModel(tester);
+      expect(pending(), isFalse);
+      expect(
+        env.container
+            .read(threadStatusViewModelProvider(threadId))
+            .requireValue
+            .workflow
+            ?.lifecycle,
+        WorkflowLifecycle.active,
+      );
+      await finish(tester);
     });
   });
 }
 
-class _ModeSelectorHost extends ConsumerWidget {
-  const _ModeSelectorHost();
-
+class _LiveInputHost extends ConsumerStatefulWidget {
+  const _LiveInputHost({required this.threadId});
+  final String threadId;
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final page = ref.watch(startPageComposerViewProvider);
-    final projectId = page.project?.id;
-    return SessionModeSelector(
-      mode: page.mode,
-      onSelected: (mode) {
-        if (projectId == null) return;
-        ref.read(anyworkClientProvider).startDraft.setMode(projectId, mode);
-      },
-    );
-  }
+  ConsumerState<_LiveInputHost> createState() => _LiveInputHostState();
 }
 
-class _EffortSelectorHost extends ConsumerWidget {
-  const _EffortSelectorHost();
-
+class _LiveInputHostState extends ConsumerState<_LiveInputHost> {
+  late final page = ConversationStopPage(isCurrent: () => mounted);
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final page = ref.watch(startPageComposerViewProvider);
-    final route = page.displayRoute(page.mode);
-    if (route == null) return const SizedBox.shrink();
-    return ReasoningEffortSelector(
-      accounts: page.accounts,
-      accountId: route.accountId,
-      modelId: route.modelId,
-      effort: route.effort,
-      onEffortSelected: (effort) {
-        ref
-            .read(anyworkClientProvider)
-            .startDraft
-            .setEffortIntent(page.mode, effort);
-      },
-    );
-  }
-}
-
-class _ModelSelectorHost extends ConsumerWidget {
-  const _ModelSelectorHost();
-
-  @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final page = ref.watch(startPageComposerViewProvider);
-    final route = page.displayRoute(page.mode);
-    if (route == null) return const SizedBox.shrink();
-    return Wrap(
-      children: [
-        ModelRoleSelector(
-          accounts: page.accounts,
-          accountId: route.accountId,
-          modelId: route.modelId,
-          effort: route.effort,
-          onModelSelected: (accountId, model) {
-            ref
-                .read(anyworkClientProvider)
-                .startDraft
-                .setModelIntent(page.mode, accountId, model);
-          },
-        ),
-        ReasoningEffortSelector(
-          accounts: page.accounts,
-          accountId: route.accountId,
-          modelId: route.modelId,
-          effort: route.effort,
-          onEffortSelected: (effort) {
-            ref
-                .read(anyworkClientProvider)
-                .startDraft
-                .setEffortIntent(page.mode, effort);
-          },
-        ),
-      ],
-    );
-  }
-}
-
-String? _currentEffort(ProviderContainer container) {
-  final page = container.read(startPageComposerViewProvider);
-  return page.displayRoute(page.mode)?.effort;
-}
-
-/// 当前显示路由模型声明的、与 [current] 不同的思考强度候选。
-String? _otherEffort(ProviderContainer container, String current) {
-  final page = container.read(startPageComposerViewProvider);
-  final route = page.displayRoute(page.mode);
-  if (route == null) return null;
-  final model = modelForRoute(page.accounts, route.accountId, route.modelId);
-  return model?.reasoningEfforts
-      .where((effort) => effort != current)
-      .firstOrNull;
-}
-
-/// 已建根会话的 workflow 场景注入：Demo transport 不产生 workflow runtime，也不随
-/// 提交推进 Thread 目录 status；这里只在 canonical 帧上补齐这两类环境事实（active
-/// workflow run 与目录 status），命令、CAS 与帧收敛全部走真实 Demo transport 与
-/// Client，不在测试内复刻任何业务判定。
-class _WorkflowScenarioTransport extends DemoStudioTransport {
-  _WorkflowScenarioTransport({this.threadStatus = ThreadStatusView.idle})
-    : super(lspActivityLoop: false);
-
-  final ThreadStatusView threadStatus;
-
-  WorkflowRuntimeView _workflow(ThreadRuntimeView runtime) {
-    return WorkflowRuntimeView(
-      revision: runtime.workflow?.revision ?? 1,
-      currentRun: WorkflowRunView(
-        lineageId: 'demo-workflow-lineage',
-        runId: 'demo-workflow-run',
-        modeId: 'mode.task',
-        graphRevision: 1,
-        graphHash: 'demo-workflow-graph',
-        currentStateId: 'implement',
-        currentStateTitle: '实现',
-        terminal: false,
-        startedAt: DateTime.fromMillisecondsSinceEpoch(0),
-        updatedAt: DateTime.fromMillisecondsSinceEpoch(0),
-      ),
-    );
-  }
-
-  ThreadRuntimeView _runtime(ThreadRuntimeView runtime) =>
-      runtime.copyWith(workflow: _workflow(runtime));
-
-  StudioThread _thread(StudioThread thread) =>
-      thread.id == 'thread-main' && thread.status != threadStatus
-      ? thread.copyWith(status: threadStatus)
-      : thread;
-
-  /// Bootstrap 直接用返回的目录窗口初始化 store，不经 topic 流；这里同样注入
-  /// thread-main 的目录 status，保证初始事实与后续增量一致。
-  @override
-  Future<StudioBootstrap> readBootstrap() async {
-    final snapshot = await super.readBootstrap();
-    return StudioBootstrap(
-      ownerEpoch: snapshot.ownerEpoch,
-      projectDirectory: snapshot.projectDirectory,
-      threadDirectory: _window(snapshot.threadDirectory),
-      agentDirectory: snapshot.agentDirectory,
-      settingsState: snapshot.settingsState,
-      recoveryState: snapshot.recoveryState,
-      mcpState: snapshot.mcpState,
-      lspState: snapshot.lspState,
-      skillsByProject: snapshot.skillsByProject,
-      threadModeCatalog: snapshot.threadModeCatalog,
-      accountUsageState: snapshot.accountUsageState,
-      updaterState: snapshot.updaterState,
-      persistenceState: snapshot.persistenceState,
-      persistenceQueueState: snapshot.persistenceQueueState,
-      agentProfilesState: snapshot.agentProfilesState,
-      sessionCostsByRoot: snapshot.sessionCostsByRoot,
-      selectedProjectId: snapshot.selectedProjectId,
-      selectedThreadId: snapshot.selectedThreadId,
-    );
-  }
-
-  ThreadDirectoryWindow _window(ThreadDirectoryWindow window) =>
-      window.copyWith(
-        threads: [for (final thread in window.threads) _thread(thread)],
-      );
-
-  @override
-  Stream<ThreadStreamFrame> subscribeThread(String threadId) {
-    return super
-        .subscribeThread(threadId)
-        .map(
-          (frame) => switch (frame) {
-            ThreadSnapshotFrame(:final workspace) => ThreadSnapshotFrame(
-              workspace: workspace.copyWith(
-                runtime: _runtime(workspace.runtime),
-              ),
-            ),
-            ThreadNotificationFrame() => switch (frame.update) {
-              ThreadRuntimeUpdate(:final runtime, :final todo) =>
-                ThreadNotificationFrame(
-                  threadId: frame.threadId,
-                  revision: frame.revision,
-                  epoch: frame.epoch,
-                  baseRevision: frame.baseRevision,
-                  update: ThreadRuntimeUpdate(
-                    runtime: _runtime(runtime),
-                    todo: todo,
-                  ),
-                ),
-              _ => frame,
-            },
-            _ => frame,
-          },
-        );
+  void dispose() {
+    page.retire();
+    super.dispose();
   }
 
   @override
-  Stream<ProductTopicFrame> subscribeProductTopic(ProductTopic topic) {
-    final stream = super.subscribeProductTopic(topic);
-    if (topic != const ThreadDirectoryTopic()) return stream;
-    return stream.map(
-      (frame) => switch (frame) {
-        ProductTopicBaselineFrame() => switch (frame.state) {
-          ThreadDirectoryBaseline(:final page) => ProductTopicBaselineFrame(
-            topic: frame.topic,
-            revision: frame.revision,
-            state: ThreadDirectoryBaseline(_page(page)),
-          ),
-          _ => frame,
-        },
-        ProductTopicDataFrame() => switch (frame.event.payload) {
-          ThreadDirectoryChangedPayload(
-            :final revision,
-            :final upserted,
-            :final removed,
-          ) =>
-            ProductTopicDataFrame(
-              topic: frame.topic,
-              event: ProductTopicEventEnvelope(
-                eventId: frame.event.eventId,
-                sequence: frame.event.sequence,
-                createdAt: frame.event.createdAt,
-                payload: ThreadDirectoryChangedPayload(
-                  revision: revision,
-                  upserted: [for (final thread in upserted) _thread(thread)],
-                  removed: removed,
-                ),
-              ),
-            ),
-          _ => frame,
-        },
-        _ => frame,
-      },
+  Widget build(BuildContext context) {
+    final provider = conversationViewModelProvider(widget.threadId);
+    ref.watch(provider);
+    final vm = ref.read(provider.notifier);
+    final stop = vm.captureStop(page);
+    return ConversationInputConnector(
+      threadId: widget.threadId,
+      onStop: stop == null ? null : () => unawaited(stop()),
+      stopState: vm.stopStateFor(page),
     );
   }
-
-  ThreadDirectoryPage _page(ThreadDirectoryPage page) => ThreadDirectoryPage(
-    threads: [for (final thread in page.threads) _thread(thread)],
-    nextCursor: page.nextCursor,
-    revision: page.revision,
-  );
 }

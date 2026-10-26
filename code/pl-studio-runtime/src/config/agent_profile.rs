@@ -194,6 +194,16 @@ pub fn save_user_agent_profile(
     profile: &UserAgentProfile,
     config: &StudioConfig,
 ) -> Result<bool> {
+    prepare_user_agent_profile(paths, profile_id, profile, config)?.write()
+}
+
+/// All validation, TOML encoding and preparation precede the possibly replacing writer.
+pub(in crate::config) fn prepare_user_agent_profile(
+    paths: &ConfigPaths,
+    profile_id: &str,
+    profile: &UserAgentProfile,
+    config: &StudioConfig,
+) -> Result<PreparedUserAgentProfile> {
     validate_user_agent_profile_id(profile_id)?;
     validate_user_profile(profile_id, profile, config)?;
     let content = toml::to_string_pretty(profile).map_err(|error| {
@@ -211,8 +221,24 @@ pub fn save_user_agent_profile(
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => true,
         Err(error) => return Err(error.into()),
     };
-    pl_tool::workspace::write_file_atomically(&path, content.as_bytes())?;
-    Ok(changed)
+    Ok(PreparedUserAgentProfile {
+        path,
+        content,
+        changed,
+    })
+}
+
+pub(in crate::config) struct PreparedUserAgentProfile {
+    path: PathBuf,
+    content: String,
+    changed: bool,
+}
+impl PreparedUserAgentProfile {
+    /// Any error after entering this call may follow replacement or parent directory sync.
+    pub(in crate::config) fn write(self) -> Result<bool> {
+        pl_tool::workspace::write_file_atomically(&self.path, self.content.as_bytes())?;
+        Ok(self.changed)
+    }
 }
 
 pub fn is_system_profile_id(profile_id: &str) -> Result<bool> {

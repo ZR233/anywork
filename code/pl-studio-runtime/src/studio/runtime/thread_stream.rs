@@ -654,13 +654,12 @@ impl StudioRuntime {
         let _lifecycle_guard = self.lifecycle_lock.lock().await;
         let residency_pin = self.residency.pin_many([request.thread_id.clone()]);
         let thread = self.read_protocol_thread(&request.thread_id).await?;
-        // Opening is the explicit storage-preparation boundary, including for a retired child.
-        // Prepare before reading its seal: that read itself requires the current checkpoint.
-        self.store
-            .history(&request.thread_id)
-            .await?
-            .prepare_activation()
-            .await?;
+        // The same explicit preparation gate serves all five domains and the retired-history
+        // projection. It finishes schema, legacy-file import and model-access before seal reads.
+        self.thread_observation_mode(
+            &thread,
+            pl_protocol::thread_facets::identity::ThreadObservationMode::Live,
+        ).await?;
         let explicitly_closed = thread.parent_thread_id.is_some()
             && crate::studio::agent_close::is_explicitly_closed(
                 &self.read_thread_state(&request.thread_id).await?,

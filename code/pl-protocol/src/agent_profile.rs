@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 /// 子 Agent 使用的工作区执行模式。
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub enum AgentWorkspaceMode {
     /// 不增加 Profile 级路径限制；宿主权限模式仍然生效。

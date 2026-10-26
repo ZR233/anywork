@@ -67,22 +67,48 @@ impl StudioRuntime {
         };
         let owner = self.config_runtime.clone();
         let close = tokio::task::spawn_blocking(move || owner.close_model_catalogs()).await;
-        let mut failure = None;
-        for task in handles.into_values() {
+        let mut probes = Vec::new();
+        for (account, task) in handles {
             match task.handle.await {
                 Ok(Ok(())) => {}
                 Ok(Err(error)) => {
-                    failure.get_or_insert(error);
+                    probes.push((account, error));
                 }
                 Err(error) => {
-                    failure.get_or_insert_with(|| anyhow::Error::new(error));
+                    probes.push((account, anyhow::Error::new(error)));
                 }
             }
         }
-        close??;
-        if let Some(error) = failure {
-            return Err(error);
+        let close = match close {
+            Ok(Ok(())) => None,
+            Ok(Err(error)) => Some(anyhow::Error::new(error)),
+            Err(join) => Some(anyhow::Error::new(join)),
+        };
+        if close.is_some() || !probes.is_empty() {
+            return Err(CatalogStopFailure { close, probes }.into());
         }
         Ok(())
+    }
+}
+
+/// Closing the source and every admitted probe are independent error obligations.
+#[derive(Debug)]
+pub(in crate::studio::runtime) struct CatalogStopFailure {
+    pub(in crate::studio::runtime) close: Option<anyhow::Error>,
+    pub(in crate::studio::runtime) probes: Vec<(AccountId, anyhow::Error)>,
+}
+
+impl std::fmt::Display for CatalogStopFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("model catalog shutdown retained failed source/probe completions")
+    }
+}
+
+impl std::error::Error for CatalogStopFailure {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.close
+            .as_ref()
+            .or_else(|| self.probes.first().map(|(_, error)| error))
+            .map(|error| error.as_ref())
     }
 }
