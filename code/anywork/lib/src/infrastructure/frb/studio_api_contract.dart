@@ -2253,9 +2253,13 @@ class FrbStudioTransport implements StudioTransport, PersistenceQueueReader {
                 .BridgeAttachmentAdmissionContext.existingThread(
               threadId: threadId,
             ),
-          NewThreadAttachmentAdmissionContext(:final mode) =>
+          NewThreadAttachmentAdmissionContext(:final route) =>
             frb_attachment_types.BridgeAttachmentAdmissionContext.newThread(
-              mode: mode.id,
+              route: frb.BridgeNewThreadModelRoute(
+                accountId: route.accountId,
+                modelId: route.modelId,
+                effort: route.effort.isEmpty ? null : route.effort,
+              ),
             ),
         },
         sources: [

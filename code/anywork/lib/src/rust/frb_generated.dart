@@ -9052,7 +9052,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         );
       case 1:
         return BridgeAttachmentAdmissionContext_NewThread(
-          mode: dco_decode_String(raw[1]),
+          route: dco_decode_box_autoadd_bridge_new_thread_model_route(raw[1]),
         );
       default:
         throw Exception("unreachable");
@@ -20283,8 +20283,10 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           threadId: var_threadId,
         );
       case 1:
-        var var_mode = sse_decode_String(deserializer);
-        return BridgeAttachmentAdmissionContext_NewThread(mode: var_mode);
+        var var_route = sse_decode_box_autoadd_bridge_new_thread_model_route(
+          deserializer,
+        );
+        return BridgeAttachmentAdmissionContext_NewThread(route: var_route);
       default:
         throw UnimplementedError('');
     }
@@ -33946,9 +33948,9 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       ):
         sse_encode_i_32(0, serializer);
         sse_encode_String(threadId, serializer);
-      case BridgeAttachmentAdmissionContext_NewThread(mode: final mode):
+      case BridgeAttachmentAdmissionContext_NewThread(route: final route):
         sse_encode_i_32(1, serializer);
-        sse_encode_String(mode, serializer);
+        sse_encode_box_autoadd_bridge_new_thread_model_route(route, serializer);
     }
   }
 

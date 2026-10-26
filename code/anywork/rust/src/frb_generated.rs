@@ -7804,8 +7804,11 @@ impl SseDecode for crate::api::studio::types::attachment::BridgeAttachmentAdmiss
                 return crate::api::studio::types::attachment::BridgeAttachmentAdmissionContext::ExistingThread{thread_id: var_threadId};
             }
             1 => {
-                let mut var_mode = <String>::sse_decode(deserializer);
-                return crate::api::studio::types::attachment::BridgeAttachmentAdmissionContext::NewThread{mode: var_mode};
+                let mut var_route =
+                    <crate::api::studio::types::delegation::BridgeNewThreadModelRoute>::sse_decode(
+                        deserializer,
+                    );
+                return crate::api::studio::types::attachment::BridgeAttachmentAdmissionContext::NewThread{route: var_route};
             }
             _ => {
                 unimplemented!("");
@@ -21527,8 +21530,8 @@ impl flutter_rust_bridge::IntoDart
     fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
         match self {crate::api::studio::types::attachment::BridgeAttachmentAdmissionContext::ExistingThread{thread_id} => { [0.into_dart(),
 thread_id.into_into_dart().into_dart()].into_dart() }
-crate::api::studio::types::attachment::BridgeAttachmentAdmissionContext::NewThread{mode} => { [1.into_dart(),
-mode.into_into_dart().into_dart()].into_dart() }
+crate::api::studio::types::attachment::BridgeAttachmentAdmissionContext::NewThread{route} => { [1.into_dart(),
+route.into_into_dart().into_dart()].into_dart() }
  _ => { unimplemented!(""); }}
     }
 }
@@ -34412,7 +34415,7 @@ impl SseEncode for crate::api::studio::types::attachment::BridgeAttachmentAdmiss
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
         match self {crate::api::studio::types::attachment::BridgeAttachmentAdmissionContext::ExistingThread{thread_id} => { <i32>::sse_encode(0, serializer); <String>::sse_encode(thread_id, serializer);
  }
-crate::api::studio::types::attachment::BridgeAttachmentAdmissionContext::NewThread{mode} => { <i32>::sse_encode(1, serializer); <String>::sse_encode(mode, serializer);
+crate::api::studio::types::attachment::BridgeAttachmentAdmissionContext::NewThread{route} => { <i32>::sse_encode(1, serializer); <crate::api::studio::types::delegation::BridgeNewThreadModelRoute>::sse_encode(route, serializer);
  }
  _ => { unimplemented!(""); }}
     }
