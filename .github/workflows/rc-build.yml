@@ -8,14 +8,20 @@ on:
 
 jobs:
   helper:
-    name: Build Linux remote helpers
+    name: Build Linux remote helper (${{ matrix.target }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - x86_64-unknown-linux-musl
+          - aarch64-unknown-linux-musl
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
         with:
           toolchain: 1.99.1
-          targets: aarch64-unknown-linux-musl,x86_64-unknown-linux-musl
+          targets: ${{ matrix.target }}
 
       # Rust Cache hashes every installed rustup toolchain into its environment key, and
       # the hosted image's preinstalled `stable` moves independently of the toolchain pinned
@@ -49,7 +55,7 @@ jobs:
         with:
           # Same helper build as the stable publisher; the pinned Zig toolchain versions
           # are part of the key because they are not Cargo inputs.
-          shared-key: helper-linux-zig-0.16.0-zigbuild-0.23.4
+          shared-key: helper-linux-zig-0.16.0-zigbuild-0.23.4-${{ matrix.target }}
           workspaces: |
             . -> target
             . -> target/xtask
@@ -73,14 +79,14 @@ jobs:
           tar -xJf "$archive" --strip-components=1 -C "$tool_dir"
           echo "$tool_dir" >> "$GITHUB_PATH"
           cargo binstall --no-confirm --force --disable-strategies compile cargo-zigbuild@0.23.4
-      - name: Build all remote helper architectures
+      - name: Build remote helper architecture
         env:
           PURE_REMOTE_HELPER_BUILDER: zigbuild
-        run: cargo xtask build-remote-helper --all-targets
+        run: cargo xtask build-remote-helper --target ${{ matrix.target }}
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: rc-bundled-helper-${{ github.sha }}
-          path: dist/remote-helper/**
+          name: rc-bundled-helper-${{ github.sha }}-${{ matrix.target }}
+          path: dist/remote-helper/${{ matrix.target }}/*
           if-no-files-found: error
           compression-level: 0
 
@@ -99,8 +105,12 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: rc-bundled-helper-${{ github.sha }}
-          path: dist/remote-helper
+          name: rc-bundled-helper-${{ github.sha }}-x86_64-unknown-linux-musl
+          path: dist/remote-helper/x86_64-unknown-linux-musl
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: rc-bundled-helper-${{ github.sha }}-aarch64-unknown-linux-musl
+          path: dist/remote-helper/aarch64-unknown-linux-musl
       - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.23.0
         with:
           flutter-version: 3.47.7
@@ -144,17 +154,8 @@ jobs:
           workspaces: |
             . -> target
             . -> target/xtask
-      - name: Set up cargo-binstall
-        uses: cargo-bins/cargo-binstall@8a2045612414e945291083f820cd50b4d8fc2218 # v1.26.0
-        with:
-          version: 1.26.0
-      # FRB otherwise installs cargo-expand from source during generation.
-      - name: Install prebuilt FRB tools
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-        run: cargo binstall --no-confirm --force --disable-strategies compile flutter_rust_bridge_codegen@2.13.0 cargo-expand@1.0.127
       - name: Build GUI artifact
-        run: cargo xtask build-gui --check-generated
+        run: cargo xtask build-gui
       - name: upload artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:

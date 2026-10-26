@@ -15,6 +15,7 @@ abstract class RecoveryReadHeader with _$RecoveryReadHeader {
 @Freezed(toStringOverride: false)
 abstract class WorktreeRecoveryPreviewRead with _$WorktreeRecoveryPreviewRead {
   const factory WorktreeRecoveryPreviewRead({
+    required WorktreeInspection inspection,
     required WorktreeOwner ownerKind,
     required ReadText ownerThreadId,
     required int leaseRevision,
@@ -24,8 +25,8 @@ abstract class WorktreeRecoveryPreviewRead with _$WorktreeRecoveryPreviewRead {
     required ReadText branch,
     required ReadText baseCommit,
     required ReadText? headCommit,
-    required bool dirty,
-    required TypedListRef changedFiles,
+    required bool? dirty,
+    required TypedListRef? changedFiles,
   }) = _WorktreeRecoveryPreviewRead;
 }
 
@@ -35,7 +36,7 @@ abstract class RecoveryIssueRead with _$RecoveryIssueRead {
     required ReadText id,
     required RecoveryScope scope,
     required RecoveryCategory category,
-    required RecoveryAction action,
+    required List<RecoveryAction> availableActions,
     required ReadText? projectId,
     required ReadText? threadId,
     required ReadText message,

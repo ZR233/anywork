@@ -26,7 +26,8 @@ class AgentProfilesView extends StatelessWidget {
     required this.roleReadErrors,
     required this.errors,
     required this.profileErrors,
-    required this.worktrees,
+    required this.worktreeIssues,
+    required this.actionableWorktreeIssueIds,
     required this.worktreeErrors,
     required this.checkingRecovery,
     required this.recoveryError,
@@ -40,6 +41,7 @@ class AgentProfilesView extends StatelessWidget {
     required this.onMore,
     required this.onRetry,
     required this.onCleanup,
+    required this.onRetryWorktree,
     required this.onRetryRecovery,
     super.key,
   });
@@ -50,7 +52,8 @@ class AgentProfilesView extends StatelessWidget {
   final Map<String, String> roleReadErrors;
   final List<String> errors;
   final Map<String, List<String>> profileErrors;
-  final List<WorktreeRecoveryPreview> worktrees;
+  final List<RecoveryIssue> worktreeIssues;
+  final Set<String> actionableWorktreeIssueIds;
   final Map<(WorktreeOwner, String, int), List<String>> worktreeErrors;
   final bool checkingRecovery;
   final String? recoveryError;
@@ -63,7 +66,8 @@ class AgentProfilesView extends StatelessWidget {
   final void Function(String role, String? effort) onEffort;
   final VoidCallback onMore;
   final VoidCallback onRetry;
-  final ValueChanged<WorktreeRecoveryPreview> onCleanup;
+  final ValueChanged<RecoveryIssue> onCleanup;
+  final ValueChanged<RecoveryIssue> onRetryWorktree;
   final VoidCallback? onRetryRecovery;
 
   @override
@@ -143,27 +147,32 @@ class AgentProfilesView extends StatelessWidget {
               ),
             ),
           if (state.editor != null) const SizedBox(height: 8),
-          if (worktrees.isNotEmpty)
+          if (worktreeIssues.isNotEmpty)
             SettingsSectionPanel(
               title: context.l10n.settingsAgentsRecoveryTitle,
               children: [
-                for (final worktree in worktrees)
+                for (final issue in worktreeIssues)
                   WorktreeRecoveryView(
-                    worktree: worktree,
+                    worktree: issue.worktree!,
+                    availableActions: issue.availableActions,
+                    message: issue.message,
+                    enabled: actionableWorktreeIssueIds.contains(issue.id),
                     action:
                         state.cleanupActions[(
-                          worktree.ownerKind,
-                          worktree.ownerThreadId,
-                          worktree.leaseRevision,
+                          issue.worktree!.ownerKind,
+                          issue.worktree!.ownerThreadId,
+                          issue.worktree!.leaseRevision,
                         )],
+                    retryAction: state.retryRecoveryAction,
                     errors:
                         worktreeErrors[(
-                          worktree.ownerKind,
-                          worktree.ownerThreadId,
-                          worktree.leaseRevision,
+                          issue.worktree!.ownerKind,
+                          issue.worktree!.ownerThreadId,
+                          issue.worktree!.leaseRevision,
                         )] ??
                         [],
-                    onCleanup: () => onCleanup(worktree),
+                    onCleanup: () => onCleanup(issue),
+                    onRetry: () => onRetryWorktree(issue),
                   ),
               ],
             ),

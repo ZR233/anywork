@@ -4,14 +4,14 @@
 
 use tokio::sync::watch;
 
+use crate::statistics::StudioModelPerformanceSnapshot;
 use crate::{
     AccountUsageStateSnapshot, PersistenceStateSnapshot, SkillsStateSnapshot,
     StudioAgentDirectoryData, StudioAgentDirectoryEntry, StudioAgentDirectoryState,
     StudioAgentProfilesStateSnapshot, StudioLspStateSnapshot, StudioMcpStateSnapshot,
-    StudioModelCatalogStateSnapshot, StudioModelPerformanceSnapshot,
-    StudioPersistenceQueueStateSnapshot, StudioProductEventEnvelope, StudioProductEventKind,
-    StudioRecoveryStateSnapshot, StudioSessionCostsState, StudioSettingsConfigStateSnapshot,
-    StudioUpdateStateSnapshot,
+    StudioModelCatalogStateSnapshot, StudioPersistenceQueueStateSnapshot,
+    StudioProductEventEnvelope, StudioProductEventKind, StudioRecoveryStateSnapshot,
+    StudioSessionCostsState, StudioSettingsConfigStateSnapshot, StudioUpdateStateSnapshot,
 };
 
 use super::ProductEventBus;
@@ -49,6 +49,12 @@ impl ProductEventBus {
                         summary: None,
                         depth: 1,
                         state,
+                        // A cold directory row owns no live execution: the observation projection is
+                        // the only source of a stoppable identity, so nothing is fabricated here.
+                        execution: None,
+                        can_stop: false,
+                        // 冷目录行没有任何 continue 事实可读，不据旧运行摘要虚构“等待调度”。
+                        awaiting_scheduling: false,
                         delegation_mode: entry.delegation_mode,
                         delegation_preference: entry.delegation_preference,
                         frozen_model: entry.frozen_model,
@@ -91,10 +97,20 @@ impl ProductEventBus {
     pub async fn update_agent_directory(
         &self,
         agent: StudioAgentDirectoryEntry,
-    ) -> StudioProductEventEnvelope {
-        self.agents.lock().await.insert(agent.id.clone(), agent);
+    ) -> Option<StudioProductEventEnvelope> {
+        {
+            let mut agents = self.agents.lock().await;
+            // A cold reconciliation or a redundant activation recomputes the very same row. Publishing
+            // it again would bump the directory revision and wake every observer for a fact that did
+            // not change, so an identical row is dropped here: revision and event mean "the directory
+            // really changed".
+            if agents.get(&agent.id) == Some(&agent) {
+                return None;
+            }
+            agents.insert(agent.id.clone(), agent);
+        }
         self.bump(&self.revisions.agent);
-        self.emit_agent_directory(self.read_agent_directory().await)
+        Some(self.emit_agent_directory(self.read_agent_directory().await))
     }
 
     pub fn emit_settings_config_state(

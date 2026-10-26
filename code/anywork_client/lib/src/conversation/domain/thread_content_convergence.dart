@@ -75,6 +75,7 @@ ThreadItemStateView? convergeThreadState(
         wait: b.wait ?? a.wait,
       );
     case (ThreadRawItemStateView a, ThreadRawItemStateView b):
+      if (a.origin != b.origin) return null;
       final common = a.payloads.length < b.payloads.length
           ? a.payloads.length
           : b.payloads.length;

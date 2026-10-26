@@ -12,6 +12,7 @@ import 'package:anywork_client/workspace.dart';
 
 import '../diagnostics/contracts/timeline_diagnostics.dart';
 import '../features/conversation/state/conversation_view_state.dart';
+import '../features/conversation/state/interaction_view_state.dart';
 import '../features/conversation/state/plan_view_state.dart';
 import '../features/conversation/state/thread_status_state.dart';
 
@@ -47,12 +48,16 @@ final class DriverSnapshot {
     required this.status,
     required this.plan,
     required this.bots,
+    List<InteractionViewState>? interactionEditors,
     this.acpAuth,
     this.acpInstall,
     this.acpAccounts,
     this.templates,
   }) : directory = directory == null ? null : List.unmodifiable(directory),
        agents = agents == null ? null : List.unmodifiable(agents),
+       interactionEditors = interactionEditors == null
+           ? null
+           : List.unmodifiable(interactionEditors),
        operations = List.unmodifiable(operations);
 
   final WorkspaceSelection selection;
@@ -80,6 +85,10 @@ final class DriverSnapshot {
   final StartupState startup;
   final TimelineDiagnosticsSnapshot display;
   final ConversationViewState? conversation;
+
+  /// Already mounted, current editor values; null is not a loaded empty index.
+  final List<InteractionViewState>? interactionEditors;
+
   final ThreadStatusViewState? status;
   final PlanViewState? plan;
   final DriverBotsObservation bots;

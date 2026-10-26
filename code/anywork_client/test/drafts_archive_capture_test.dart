@@ -61,6 +61,7 @@ void main() {
   test('factory Project capture includes only its own Start while another Project route read stays pending', () async {
     final fixture = await draftsFixture();
     final own = fixture.repository.start('project')..setText('owned');
+    await fixture.prepare(own);
     await fixture.admit(own.addLocalFiles(['/declared/project']), [
       draftFile('project-file'),
     ]);
@@ -151,6 +152,7 @@ void main() {
     final root = fixture.repository.composer('root')..setText('root');
     final outside = fixture.repository.composer('outside')..setText('outside');
     final unrelated = fixture.repository.start('other')..setText('unrelated');
+    await fixture.prepare(unrelated);
     await fixture.admit(root.addLocalFiles(['/declared/root']), [
       draftFile('root'),
     ]);

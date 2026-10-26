@@ -500,6 +500,68 @@ void main() {
       [sibling.id],
     );
   });
+
+  test('the agent directory publishes execution, stop qualification and scheduling independently; a late old read cannot replace them', () async {
+    final fixture = await _fixture();
+    final env = fixture.env;
+    final row = env.directory.agents.firstWhere(
+      (agent) => agent.threadId == fixture.child.id,
+    );
+    const execution = AgentExecution(
+      id: 'child-execution',
+      phase: AgentExecutionPhase.preparing,
+      turnId: null,
+    );
+    final published = row.copyWith(
+      execution: execution,
+      canStop: true,
+      awaitingScheduling: true,
+    );
+    List<AgentDirectoryEntry> rows(AgentDirectoryEntry child) => [
+      for (final agent in env.directory.agents)
+        agent.threadId == child.threadId ? child : agent,
+    ];
+    await env.directory.publishAgents(rows(published));
+    await env.workspace.loadAgents();
+    AgentDirectoryEntry current() => AgentDirectoryQueries.forRoot(
+      rootThreadId: fixture.root.id,
+      directory: env.workspace.agents.value,
+    ).firstWhere((agent) => agent.threadId == fixture.child.id);
+    expect(current().execution, execution);
+    expect(current().canStop, isTrue);
+    expect(current().awaitingScheduling, isTrue);
+    expect(current().state, row.state, reason: 'The member state is not derived from execution');
+    expect(current(), isNot(row), reason: 'All three canonical row facts participate in equality');
+
+    final oldReadEntered = Completer<void>();
+    final releaseOldRead = Completer<void>();
+    final oldReadReturned = Completer<void>();
+    env.directory.beforeAgentEntity = (revision) async {
+      if (revision != 3) return;
+      if (!oldReadEntered.isCompleted) oldReadEntered.complete();
+      await releaseOldRead.future;
+      if (!oldReadReturned.isCompleted) oldReadReturned.complete();
+    };
+    addTearDown(() {
+      if (!releaseOldRead.isCompleted) releaseOldRead.complete();
+    });
+    await env.directory.publishAgents(rows(row));
+    final oldLoading = env.workspace.loadAgents();
+    await oldReadEntered.future;
+    final scheduled = published.copyWith(awaitingScheduling: false);
+    await env.directory.publishAgents(rows(scheduled));
+    await env.workspace.loadAgents();
+    expect(current().execution, execution);
+    expect(current().canStop, isTrue, reason: 'Scheduling never derives stop qualification');
+    expect(current().awaitingScheduling, isFalse);
+    releaseOldRead.complete();
+    await oldReadReturned.future;
+    await oldLoading;
+    expect(current(), scheduled, reason: 'The retired original read must not roll back revision 4');
+    expect(fixture.sessions, isEmpty, reason: 'Listing does not open members');
+    expect(env.workspace.state.value.selection.threadId, fixture.root.id);
+  });
+
 }
 
 Future<void> _expectLatestQueuedColdSelection({

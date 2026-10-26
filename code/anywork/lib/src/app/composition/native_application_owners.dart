@@ -244,6 +244,7 @@ Future<NativeApplication> createNativeApplicationOwners({
       timeline: timelinePort,
       budget: budget,
       operations: operations,
+      agentDirectory: () => workspace.repository.agents,
     );
     constructing.retain(
       'conversation',

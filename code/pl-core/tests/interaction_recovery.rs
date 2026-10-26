@@ -11,7 +11,7 @@ use pl_core::context::OpaquePayload;
 use pl_core::model::DynModelSession;
 use pl_core::thread::{
     StepInput, ThreadError, ThreadHandle, ToolDispatch,
-    input::ThreadInput,
+    input::{InputPurpose, ThreadInput},
     interactions::{
         InteractionCancellation, InteractionRequest, InteractionResolution, InteractionResponse,
         InteractionState,
@@ -120,6 +120,7 @@ async fn a_recovered_interaction_resolves_once_and_repeated_answers_stay_idempot
     let resolution = InteractionResolution {
         continuation: Some(ThreadInput {
             id: "interaction:plan-1:continuation".into(),
+            purpose: InputPurpose::Message,
             payload: OpaquePayload::text("continue with the approved plan"),
             context: vec![text("continue")],
         }),

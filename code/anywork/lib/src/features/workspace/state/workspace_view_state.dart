@@ -5,6 +5,8 @@ import 'package:anywork_client/resources.dart';
 import 'package:anywork_client/workspace.dart';
 import 'package:freezed_annotation/freezed_annotation.dart';
 
+import 'agent_list_stop.dart';
+
 part 'workspace_view_state.freezed.dart';
 
 enum WorkspaceNavigationDestination { workspace, settings }
@@ -29,6 +31,7 @@ abstract class WorkspaceActionPresentation with _$WorkspaceActionPresentation {
     required OperationState? operation,
     required StudioFailure? admissionError,
     StudioFailure? observationError,
+    AgentListStopTarget? directoryStopTarget,
   }) = _WorkspaceActionPresentation;
 }
 

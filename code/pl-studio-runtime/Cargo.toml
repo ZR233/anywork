@@ -19,6 +19,7 @@ pl-trace = { workspace = true }
 pl-lsp = { workspace = true }
 anyhow = { workspace = true }
 sea-orm = { workspace = true }
+sea-orm-migration = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 prost = { workspace = true }
@@ -47,6 +48,9 @@ fs4 = { workspace = true }
 rust-embed = { workspace = true }
 dunce = { workspace = true }
 zstd = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { workspace = true }

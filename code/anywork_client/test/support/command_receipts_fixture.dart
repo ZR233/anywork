@@ -78,16 +78,50 @@ final class ReceiptCompactCall {
 }
 
 final class ReceiptInteractionCall {
-  ReceiptInteractionCall(this.id, this.interactionId, this.resolution);
+  ReceiptInteractionCall(this.id, this.interactionId, this.resolution, {this.hostThreadId = 'thread', this.revision = 1});
   final OperationId id;
   final String interactionId;
   final InteractionResolutionCommand resolution;
+  final String hostThreadId;
+  final int revision;
   final reply = Completer<InteractionCommandReply>();
+}
+
+final class ContinueCall {
+  ContinueCall(this.threadId, this.id, this.continuationId, this.routeRevision);
+  final String threadId;
+  final OperationId id;
+  final String continuationId;
+  final int routeRevision;
+  final reply = Completer<ContinueThreadReply>();
+}
+final class ContinuationReadCall {
+  ContinuationReadCall(this.threadId, this.id);
+  final String threadId;
+  final OperationId id;
+  final reply = Completer<ContinuationOperationView?>();
 }
 
 /// External command results only. The real Session freezes commands, allocates
 /// tickets, serializes lanes and joins canonical evidence independently.
 final class ReceiptCommands extends UnscriptedConversationCommands {
+  final continuations = DraftCalls<ContinueCall>();
+  final continuationReads = DraftCalls<ContinuationReadCall>();
+  @override
+  Future<ContinueThreadReply> continueThread(String threadId, {
+    required OperationId operationId, required String expectedContinuationId,
+    required int expectedModelRouteRevision,
+  }) {
+    final call = ContinueCall(threadId, operationId, expectedContinuationId, expectedModelRouteRevision);
+    continuations.add(call);
+    return call.reply.future;
+  }
+  @override
+  Future<ContinuationOperationView?> readContinuationOperation(String threadId, OperationId operationId) {
+    final call = ContinuationReadCall(threadId, operationId);
+    continuationReads.add(call);
+    return call.reply.future;
+  }
   final modes = DraftCalls<ReceiptModeCall>();
   final routes = DraftCalls<ReceiptRouteCall>();
   final compactions = DraftCalls<ReceiptCompactCall>();
@@ -101,7 +135,8 @@ final class ReceiptCommands extends UnscriptedConversationCommands {
     required InteractionResolutionCommand resolution,
   }) {
     expect((threadId, expectedInteractionRevision), ('thread', 1));
-    final call = ReceiptInteractionCall(operationId, interactionId, resolution);
+    final call = ReceiptInteractionCall(operationId, interactionId, resolution,
+      hostThreadId: threadId, revision: expectedInteractionRevision);
     interactions.add(call);
     return call.reply.future;
   }
@@ -318,6 +353,12 @@ final class ReceiptFixture {
 
   Future<void> close() async {
     final closing = owner.repository.close();
+    for (final call in commands.continuations.values) {
+      if (!call.reply.isCompleted) call.reply.completeError(const CommandDispatchFailure.rejected(failure: receiptConflict));
+    }
+    for (final call in commands.continuationReads.values) {
+      if (!call.reply.isCompleted) call.reply.completeError(receiptConflict);
+    }
     for (final opening in owner.timeline.requests) {
       if (!opening.result.isCompleted)
         opening.result.complete(TestTimelineConnection(initial: baseline(1)));
@@ -376,10 +417,12 @@ final class ReceiptConfigurationPin
 }
 
 final class ReceiptInteractionPin implements InteractionReadConnection {
-  ReceiptInteractionPin(this.id, this.revision, this.origin);
+  ReceiptInteractionPin(this.id, this.revision, this.origin, {this.targetThreadId = 'thread', this.purpose = const InteractionPurposeRead.general()});
   final String id;
   final int revision;
   final ThreadFacetStamp origin;
+  final String targetThreadId;
+  final InteractionPurposeRead purpose;
   @override
   Future<InteractionReadHeader> header() async => InteractionReadHeader(
     scope: ReadScopeIdentity(
@@ -389,13 +432,13 @@ final class ReceiptInteractionPin implements InteractionReadConnection {
       sourceRevision: revision,
     ),
     interactionId: ReadText.inline(text: id),
-    threadId: const ReadText.inline(text: 'thread'),
+    threadId: ReadText.inline(text: targetThreadId),
     turnId: const ReadText.inline(text: 'turn'),
     itemId: null,
     toolId: null,
     agentPath: null,
     revision: revision,
-    purpose: const InteractionPurposeRead.general(),
+    purpose: purpose,
     continuation: null,
     createdAt: 1,
     updatedAt: revision,
@@ -425,12 +468,12 @@ final class ReceiptInteractionPin implements InteractionReadConnection {
   );
 }
 
-InteractionCommandReply receiptInteractionReply(ReceiptInteractionCall call) =>
+InteractionCommandReply receiptInteractionReply(ReceiptInteractionCall call, {String targetThreadId = 'thread'}) =>
     InteractionCommandReply(
       interaction: InteractionSnapshot(
         interactionId: call.interactionId,
-        scope: const InteractionScope(
-          threadId: 'thread',
+        scope: InteractionScope(
+          threadId: targetThreadId,
           turnId: 'turn',
           itemId: null,
           toolId: null,

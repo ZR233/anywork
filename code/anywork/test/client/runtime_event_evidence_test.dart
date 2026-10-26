@@ -16,6 +16,7 @@ import '../../test_driver/runtime_evidence_observation.dart';
 import '../../test_driver/conversation_status_observation.dart';
 import '../../../anywork_client/test/support/conversation_fixture.dart';
 import '../../../anywork_client/test/support/timeline_transport.dart';
+import 'support/conversation_workspace_fixture.dart';
 
 const _epoch = 'metrics-recorder-test';
 const _live = LiveTurnMetrics(
@@ -143,17 +144,25 @@ final class _Pin implements MetricsIdentityReadConnection {
 
 final class _Fixture {
   _Fixture({this.terminal = false}) {
+    operations = OperationRegistry(clientId: 'metrics-test', budget: budget);
     final assembly = createConversationRepository(
       port: port,
       context: FixtureConversationContext(),
       commands: const UnscriptedConversationCommands(),
       timeline: timeline,
       budget: budget,
-      operations: OperationRegistry(clientId: 'metrics-test', budget: budget),
+      operations: operations,
+      agentDirectory: () => workspaceOwner.workspace.agents,
     );
     repository = assembly.repository;
     demand = assembly.demand;
+    workspaceOwner = ConversationWorkspaceFixture(
+      budget: budget,
+      operations: operations,
+      archive: assembly.archive,
+    );
     addTearDown(() async {
+      await workspaceOwner.close();
       final report = await repository.close(
         deadline: DateTime.now().add(const Duration(seconds: 3)),
       );
@@ -179,6 +188,8 @@ final class _Fixture {
   final budget = ResourceBudget();
   final port = _Port();
   final timeline = TimelineOpenQueue();
+  late final OperationRegistry operations;
+  late final ConversationWorkspaceFixture workspaceOwner;
   late final ConversationRepository repository;
   late final ConversationDemand demand;
   late ConversationSession session;

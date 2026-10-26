@@ -215,13 +215,19 @@ pub enum ThreadAssemblyError {
     },
 }
 
+#[derive(Clone, Copy)]
+enum PublishedWorkspaceRetirement {
+    Retain,
+    ApplyExplicitClose,
+}
+
 #[derive(Debug)]
 struct Entry {
     /// A close-only cold owner retains its sink until attachment actually succeeds.
     close_storage: Option<ColdStoreHandle>,
     published_resources_closed: bool,
     // Studio publishes Some only after the explicit-close marker is durable. Normal retirement
-    // keeps None and consumes the default Preserve without freezing an explicit parent's policy.
+    // keeps None and never opens the physical workspace backend.
     workspace_disposition: Option<pl_tool::collaboration::thread::AgentWorkspaceDisposition>,
     cleanup: Arc<child_resources::CleanupGate>,
     execution: pl_core::thread::input::InputDriverOptions,
@@ -784,11 +790,16 @@ impl StudioThreadAssembler {
     /// Returns in-progress assembly or the actual Thread shutdown failure.
     pub async fn close(&self, id: &str) -> Result<(), ThreadAssemblyError> {
         let _operation = self.agent_operation(id).await;
-        self.close_with_permit(id).await
+        self.close_with_permit(id, PublishedWorkspaceRetirement::Retain)
+            .await
     }
 
     /// The caller retains this identity's operation permit, including cold close restoration.
-    async fn close_with_permit(&self, id: &str) -> Result<(), ThreadAssemblyError> {
+    async fn close_with_permit(
+        &self,
+        id: &str,
+        workspace: PublishedWorkspaceRetirement,
+    ) -> Result<(), ThreadAssemblyError> {
         let _seal = self.seal_agent_operation(id);
         self.join_root_operations(id)
             .await
@@ -813,15 +824,19 @@ impl StudioThreadAssembler {
         if self.0.state().unpublished_children.contains_key(id) {
             self.discard_child_resources_with_permit(id).await
         } else {
-            self.close_thread(id).await
+            self.close_thread(id, workspace).await
         }
     }
 
-    async fn close_thread(&self, id: &str) -> Result<(), ThreadAssemblyError> {
+    async fn close_thread(
+        &self,
+        id: &str,
+        workspace: PublishedWorkspaceRetirement,
+    ) -> Result<(), ThreadAssemblyError> {
         let Some((incarnation, thread, cleanup)) = self.prepare_entry_close(id).await? else {
             return Ok(());
         };
-        self.close_entry_original(id, incarnation, thread, cleanup)
+        self.close_entry_original(id, incarnation, thread, cleanup, workspace)
             .await
     }
 

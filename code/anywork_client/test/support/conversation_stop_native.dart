@@ -40,12 +40,14 @@ CommitReceipt stopReceipt(
   durable: false,
 );
 
+AgentExecution stopExecutionValue(int entry, {AgentExecutionPhase phase = AgentExecutionPhase.running, String? turnId}) => AgentExecution(id: 'execution-$entry', phase: phase, turnId: turnId);
+
 final class StopInterrupt {
-  StopInterrupt(this.threadId, this.turnId, this.operationId);
+  StopInterrupt(this.threadId, this.executionId, this.operationId);
   final String threadId;
-  final String turnId;
+  final String executionId;
   final OperationId operationId;
-  final reply = Completer<InterruptTurnReply>();
+  final reply = Completer<StopExecutionReply>();
 }
 
 /// Only the native dispatch boundary. No receipt classification, retry,
@@ -53,12 +55,12 @@ final class StopInterrupt {
 final class StopCommands extends UnscriptedConversationCommands {
   final interrupts = DraftCalls<StopInterrupt>();
   @override
-  Future<InterruptTurnReply> interruptTurn(
+  Future<StopExecutionReply> stopExecution(
     String threadId,
-    String turnId, {
+    String executionId, {
     required OperationId operationId,
   }) {
-    final call = StopInterrupt(threadId, turnId, operationId);
+    final call = StopInterrupt(threadId, executionId, operationId);
     interrupts.add(call);
     return call.reply.future;
   }
@@ -100,7 +102,7 @@ final class StopSource {
     mode: opening.mode,
   );
 
-  int send({required TurnBrief? active, required ThreadStatus status}) {
+  int send({required TurnBrief? active, required ThreadStatus status, AgentExecution? execution}) {
     final previous = revision++;
     if (previous == 0) {
       opening.feed.emit(
@@ -111,6 +113,7 @@ final class StopSource {
             stamp: stamp,
             value: ThreadExecutionBaseline(
               status: status,
+              execution: execution,
               activeTurn: active,
               recentTerminalTurn: null,
               interactions: const InteractionIndexHeader(
@@ -133,6 +136,7 @@ final class StopSource {
             baseRevision: previous,
             value: ThreadExecutionChange(
               status: status,
+              execution: ExecutionReplacement.replace(value: execution),
               turns: TurnsReplacement(
                 activeTurn: active,
                 recentTerminalTurn: null,
@@ -151,8 +155,9 @@ final class StopSource {
   Future<void> deliver({
     required TurnBrief? active,
     required ThreadStatus status,
+    AgentExecution? execution,
   }) async {
-    final sequence = send(active: active, status: status);
+    final sequence = send(active: active, status: status, execution: execution);
     await opening.feed.acknowledged(sequence);
   }
 }
@@ -196,6 +201,7 @@ final class StopFixture {
     final source = StopSource(session, opening, incarnation);
     await source.deliver(
       active: active ?? stopTurn(7),
+      execution: stopExecutionValue(7),
       status: ThreadStatus.running,
     );
     return source;

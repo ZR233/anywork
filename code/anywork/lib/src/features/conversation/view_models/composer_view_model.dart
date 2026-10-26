@@ -10,8 +10,10 @@ import 'package:anywork_client/workspace.dart';
 import 'package:riverpod_annotation/riverpod_annotation.dart';
 
 import '../../../app/app_bindings.dart';
+import '../state/composer_primary_action.dart';
 import '../state/composer_view_state.dart';
 import '../state/editor_keys.dart';
+import 'conversation_view_model.dart';
 
 part 'composer_view_model.g.dart';
 
@@ -20,11 +22,13 @@ class ComposerViewModel extends _$ComposerViewModel {
   late DraftsRepository _drafts;
   ComposerDraft? _draft;
   StartDraft? _start;
+  ConversationSession? _session;
   Object? _lifetime;
   final List<Observation> _observations = [];
   Observation? _operationObservation;
   int _platformReads = 0;
   int _platformAttempt = 0;
+  bool _commandBoundary = false;
 
   @override
   FutureOr<ComposerViewState> build(ComposerKey target) {
@@ -35,6 +39,7 @@ class ComposerViewModel extends _$ComposerViewModel {
     _drafts = ref.read(draftsRepositoryProvider);
     _draft = null;
     _start = null;
+    _session = null;
     ref.onDispose(() {
       if (identical(_lifetime, lifetime)) _lifetime = null;
       for (final observation in _observations) {
@@ -67,6 +72,7 @@ class ComposerViewModel extends _$ComposerViewModel {
             correlationId: 'composer-session-unavailable',
           );
         }
+        _session = session;
         final draft = _draft = _drafts.composer(threadId);
         final watch = draft.state.watchLatest((value) {
           if (ref.mounted && state.hasValue) {
@@ -172,8 +178,7 @@ class ComposerViewModel extends _$ComposerViewModel {
   /// No await before D1's non-async submit admission/freeze.
   Future<void> send() {
     final view = state.requireValue;
-    if (view.pending ||
-        view.platformPending ||
+    if (_commandBoundary || view.pending || view.platformPending ||
         view.submission is SubmittingDraft ||
         view.submission is UnknownDraftSubmission) {
       return Future<void>.value();
@@ -194,10 +199,9 @@ class ComposerViewModel extends _$ComposerViewModel {
     if (draft != null) {
       // Borrow at this intent's synchronous freeze boundary, not VM build time:
       // the repository may have replaced a Session while retaining the same ID.
-      final session = ref
-          .read(conversationRepositoryProvider)
-          .existingSession(draft.threadId);
-      if (session == null) {
+      final session = _session;
+      final repository = ref.read(conversationRepositoryProvider);
+      if (session == null || !identical(repository.existingSession(draft.threadId), session)) {
         state = AsyncData(
           view.copyWith(
             error: const StudioFailure(
@@ -212,7 +216,14 @@ class ComposerViewModel extends _$ComposerViewModel {
       }
       final prepare = ref.read(prepareConversationPresentationProvider);
       final execution = session.execution.value;
+      final configuration = session.configuration.value;
+      final action = ref.read(conversationViewModelProvider(draft.threadId).notifier)
+          .primaryAction(hasContent: view.hasInput,
+              submissionPending: view.platformPending || view.submission is SubmittingDraft ||
+                  view.submission is UnknownDraftSubmission);
       if (execution.sync.phase != FacetSyncPhase.ready ||
+          !session.acceptsUserInput ||
+          !action.enterSubmits ||
           execution.value == null ||
           const {
             ThreadStatus.closing,
@@ -232,7 +243,19 @@ class ComposerViewModel extends _$ComposerViewModel {
         return Future<void>.value();
       }
       return _perform(
-        () => draft.submit(preparePresentation: () => prepare(session)),
+        () {
+          // _perform may notify UI observers synchronously. The SDK freeze
+          // immediately below must still borrow this exact original source,
+          // execution/point and route, not a same-ID replacement Session.
+          if (!identical(repository.existingSession(draft.threadId), session) ||
+              session.execution.value != execution ||
+              session.configuration.value != configuration) {
+            throw const StudioFailure(code: StudioFailureCode.superseded,
+              message: 'The original composer source changed before dispatch',
+              retryable: false, correlationId: 'composer-source-replaced');
+          }
+          return draft.submit(preparePresentation: () => prepare(session));
+        },
       );
     }
     final start = _start!;
@@ -290,19 +313,20 @@ class ComposerViewModel extends _$ComposerViewModel {
 
   Future<void> _perform<T>(OperationTicket<T> Function() command) {
     final view = state.requireValue;
-    if (view.closing) return Future<void>.value();
+    if (view.closing || _commandBoundary) return Future<void>.value();
     final intent = view.latestIntent + 1;
-    _operationObservation?.cancel();
-    _operationObservation = null;
-    state = AsyncData(
-      view.copyWith(
-        latestIntent: intent,
-        pending: true,
-        error: null,
-        inputIssue: null,
-      ),
-    );
+    _commandBoundary = true;
     try {
+      _operationObservation?.cancel();
+      _operationObservation = null;
+      state = AsyncData(
+        state.requireValue.copyWith(
+          latestIntent: intent,
+          pending: true,
+          error: null,
+          inputIssue: null,
+        ),
+      );
       final ticket = command();
       final watch = ticket.state.watchLatest((record) {
         if (_current(intent)) {
@@ -319,6 +343,8 @@ class ComposerViewModel extends _$ComposerViewModel {
         );
       }
       return Future<void>.value();
+    } finally {
+      _commandBoundary = false;
     }
   }
 

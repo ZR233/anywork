@@ -64,6 +64,7 @@ final class SelectorEnvironment {
       timeline: timeline,
       budget: budget,
       operations: operations,
+      agentDirectory: () => workspace.agents,
     );
     conversations = conversationAssembly.repository;
     demand = conversationAssembly.demand;
@@ -300,6 +301,15 @@ final class SelectorEnvironment {
     }
     for (final call in commands.modes.values) {
       if (!call.reply.isCompleted) call.reply.completeError(failure);
+    }
+    for (final call in commands.interrupts.values) {
+      if (!call.reply.isCompleted) call.reply.completeError(failure);
+    }
+    for (final call in commands.continues.values) {
+      if (!call.reply.isCompleted) call.reply.completeError(CommandDispatchFailure.rejected(failure: failure));
+    }
+    for (final call in commands.continuationReads.values) {
+      if (!call.reply.isCompleted) call.reply.complete(null);
     }
     for (final call in commands.prompts.values) {
       if (!call.reply.isCompleted) call.reply.completeError(failure);

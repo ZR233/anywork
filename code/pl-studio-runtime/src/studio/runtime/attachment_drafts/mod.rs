@@ -9,10 +9,10 @@ pub(super) use runtime::AttachmentDraftRuntime;
 
 use anyhow::{Context, Result};
 use pl_model::model::ModelInfo;
-use pl_protocol::studio::{AdmitAttachmentDraftsRequest, StudioAttachmentAdmissionContext};
+use pl_protocol::studio::{AdmitAttachmentDraftsRequest, StudioAttachmentAdmissionContext, StudioError};
 
 use super::StudioRuntime;
-use validate::{admission_rejection, preflight_sources};
+use validate::preflight_sources;
 
 impl StudioRuntime {
     pub async fn preflight_attachment_drafts(
@@ -20,9 +20,7 @@ impl StudioRuntime {
         request: &AdmitAttachmentDraftsRequest,
     ) -> Result<()> {
         let model = self.attachment_model_for_context(&request.context).await?;
-        preflight_sources(&request.sources, &model)
-            .map(|_| ())
-            .map_err(admission_rejection)
+        preflight_sources(&request.sources, &model).map(|_| ())
     }
 
     pub(in crate::studio::runtime) async fn attachment_model_for_context(
@@ -46,10 +44,24 @@ impl StudioRuntime {
                 };
                 config.config.models.resolve_route(role, &selector)?
             }
-            StudioAttachmentAdmissionContext::NewThread { mode } => {
-                let mode = pl_protocol::ThreadModeId::from_label(mode)
-                    .map_err(|_| anyhow::anyhow!("mode must be an available mode.* id"))?;
-                config.config.resolve_mode_model_route(&mode)?
+            StudioAttachmentAdmissionContext::NewThread { route } => {
+                let selector = super::settings_api::validated_route(
+                    &config.config,
+                    "attachment",
+                    &route.account_id,
+                    &route.model_id,
+                    route.effort.as_deref(),
+                )
+                .context(StudioError::invalid_argument(
+                    "附件所选模型不可用，请重新选择模型。",
+                ))?;
+                config
+                    .config
+                    .models
+                    .resolve_route(crate::config::root_agent_route_id(), &selector)
+                    .context(StudioError::invalid_argument(
+                        "附件所选模型不可用，请重新选择模型。",
+                    ))?
             }
         };
         Ok(route.model)

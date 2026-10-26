@@ -353,7 +353,7 @@ final class _ProjectArchive extends _ArchiveWork {
       Future<void>.sync(() => local.prepareProject(id)),
       Future<void>.sync(() => leaf!.prepare(original)),
     ]);
-    access.project(id);
+    access.archiveProject(id);
     final result = await scope.invoke(
       () => directories.port.archiveProject(id),
     );
@@ -415,7 +415,7 @@ final class _ThreadArchive extends _ArchiveWork {
         correlationId: 'workspace',
       );
     await leaf!.prepare(original);
-    access.thread(id);
+    access.archiveThread(id);
     final epoch = owner.mirror.current?.origin.ownerEpoch;
     if (epoch == null)
       throw const StudioFailure(

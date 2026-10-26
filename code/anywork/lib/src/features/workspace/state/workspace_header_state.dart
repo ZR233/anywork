@@ -10,6 +10,7 @@ abstract class WorkspaceHeaderState with _$WorkspaceHeaderState {
   const factory WorkspaceHeaderState({
     required ThreadMetadataState root,
     required AgentDirectoryState agents,
+    AgentDirectoryState? lastReadyAgents,
     required SessionCostsState costs,
     required Set<String> reading,
     required Map<String, StudioFailure> readErrors,

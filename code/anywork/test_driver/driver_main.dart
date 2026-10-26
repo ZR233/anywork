@@ -208,7 +208,7 @@ Future<String> _handleDriverData(String? message) async {
       // stays inside the Driver-only entrypoint.
       return jsonEncode({'pid': pid});
     case 'statistics':
-      return jsonEncode(_inspection.statistics());
+      return _products.statistics();
     case 'thread-current':
       final snapshot = _inspection.capture();
       return jsonEncode({

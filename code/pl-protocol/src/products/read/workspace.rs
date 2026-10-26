@@ -142,6 +142,9 @@ pub struct AgentDirectoryEntryRead {
     pub frozen_model: Option<FrozenModelSelectionRead>,
     pub depth: u32,
     pub state: AgentStateRead,
+    pub execution: Option<crate::AgentExecution>,
+    pub can_stop: bool,
+    pub awaiting_scheduling: bool,
     pub updated_at: i64,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

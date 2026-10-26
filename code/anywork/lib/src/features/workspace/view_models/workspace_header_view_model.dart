@@ -55,7 +55,16 @@ class WorkspaceHeaderViewModel extends _$WorkspaceHeaderViewModel {
       final agentWatch = workspace.agents.watchLatest((value) {
         if (!_alive || _initializing) return;
         final previous = state.requireValue.agents.projection;
-        state = AsyncData(state.requireValue.copyWith(agents: value));
+        state = AsyncData(
+          state.requireValue.copyWith(
+            agents: value,
+            lastReadyAgents: _readyAgentDirectory(
+              rootThreadId,
+              value,
+              state.requireValue.lastReadyAgents,
+            ),
+          ),
+        );
         if ((previous.stamp?.origin, previous.header?.source.status) !=
             (
               value.projection.stamp?.origin,
@@ -68,6 +77,11 @@ class WorkspaceHeaderViewModel extends _$WorkspaceHeaderViewModel {
       final initial = WorkspaceHeaderState(
         root: root.state.value,
         agents: workspace.agents.value,
+        lastReadyAgents: _readyAgentDirectory(
+          rootThreadId,
+          workspace.agents.value,
+          null,
+        ),
         costs: costs.state.value,
         reading: const {},
         readErrors: const {},
@@ -83,6 +97,26 @@ class WorkspaceHeaderViewModel extends _$WorkspaceHeaderViewModel {
     } catch (error, stack) {
       _disposeBindings();
       Error.throwWithStackTrace(error, stack);
+    }
+  }
+
+  AgentDirectoryState? _readyAgentDirectory(
+    String rootThreadId,
+    AgentDirectoryState current,
+    AgentDirectoryState? previous,
+  ) {
+    if (current.projection.header?.source.brief is! ReadyObservedBrief) {
+      return previous;
+    }
+    try {
+      AgentDirectoryQueries.forRoot(
+        rootThreadId: rootThreadId,
+        directory: current,
+      );
+      return current;
+    } on StudioFailure {
+      // Last-known presentation keeps its original source, never admission.
+      return previous;
     }
   }
 

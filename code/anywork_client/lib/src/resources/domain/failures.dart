@@ -32,6 +32,104 @@ enum StartupFailureKind {
   internal,
 }
 
+/// Immutable control diagnostics, mirroring the native closed facts contract.
+/// These values carry evidence only; they do not own or retry an operation.
+@Freezed(toStringOverride: false)
+sealed class ControlFailureFacts with _$ControlFailureFacts {
+  const factory ControlFailureFacts.unspecified() =
+      UnspecifiedControlFailureFacts;
+  const factory ControlFailureFacts.childThreadAction({
+    required String threadId,
+    required String action,
+    required String? parentThreadId,
+  }) = ChildThreadActionControlFailureFacts;
+  const factory ControlFailureFacts.threadAction({
+    required String threadId,
+    required String action,
+  }) = ThreadActionControlFailureFacts;
+  const factory ControlFailureFacts.expectedExecution({
+    required String threadId,
+    required String expectedExecutionId,
+  }) = ExpectedExecutionControlFailureFacts;
+  const factory ControlFailureFacts.executing({
+    required String threadId,
+    required String executionId,
+    required String phase,
+  }) = ExecutingControlFailureFacts;
+  const factory ControlFailureFacts.expectedContinuation({
+    required String threadId,
+    required String expectedContinuationId,
+  }) = ExpectedContinuationControlFailureFacts;
+  const factory ControlFailureFacts.continuationAccepted({
+    required String threadId,
+    required String operationId,
+    required bool accepted,
+  }) = ContinuationAcceptedControlFailureFacts;
+  const factory ControlFailureFacts.continuationOperation({
+    required String threadId,
+    required String operationId,
+  }) = ContinuationOperationControlFailureFacts;
+  const factory ControlFailureFacts.continuationPointConflict({
+    required String threadId,
+    required String operationId,
+    required String expectedContinuationId,
+    required String acceptedContinuationId,
+  }) = ContinuationPointConflictControlFailureFacts;
+  const factory ControlFailureFacts.continuationRouteConflict({
+    required String threadId,
+    required String operationId,
+    required int expectedModelRouteRevision,
+    required int acceptedModelRouteRevision,
+  }) = ContinuationRouteConflictControlFailureFacts;
+  const factory ControlFailureFacts.staleContinuation({
+    required String threadId,
+    required String expectedContinuationId,
+    required String currentContinuationId,
+  }) = StaleContinuationControlFailureFacts;
+  const factory ControlFailureFacts.claimedContinuation({
+    required String threadId,
+    required String continuationId,
+  }) = ClaimedContinuationControlFailureFacts;
+  const factory ControlFailureFacts.childInteraction({
+    required String interactionId,
+    required String interactionThreadId,
+  }) = ChildInteractionControlFailureFacts;
+  const factory ControlFailureFacts.interactionRevision({
+    required String interactionId,
+    required int expectedRevision,
+    required int currentRevision,
+  }) = InteractionRevisionControlFailureFacts;
+  const factory ControlFailureFacts.interactionTerminal({
+    required String interactionId,
+    required int currentRevision,
+  }) = InteractionTerminalControlFailureFacts;
+  const factory ControlFailureFacts.interactionOperation({
+    required String operationId,
+    required String interactionId,
+  }) = InteractionOperationControlFailureFacts;
+  const factory ControlFailureFacts.childHost({
+    required String hostThreadId,
+    required bool hostIsChild,
+  }) = ChildHostControlFailureFacts;
+  const factory ControlFailureFacts.interactionHost({
+    required String hostThreadId,
+    required String interactionThreadId,
+  }) = InteractionHostControlFailureFacts;
+  const factory ControlFailureFacts.decisionDurability({
+    required String interactionId,
+    required bool decisionSaved,
+  }) = DecisionDurabilityControlFailureFacts;
+  const factory ControlFailureFacts.unreadableDecision({
+    required String threadId,
+    required String interactionId,
+  }) = UnreadableDecisionControlFailureFacts;
+  const factory ControlFailureFacts.decisionIdentity({
+    required String interactionId,
+    required int currentRevision,
+    required bool operationIdentityRecorded,
+  }) = DecisionIdentityControlFailureFacts;
+}
+
 @Freezed(toStringOverride: false)
 abstract class ValidationIssue with _$ValidationIssue {
   const factory ValidationIssue({
@@ -58,6 +156,10 @@ sealed class StudioFailureDetails with _$StudioFailureDetails {
   }) = SshAuthenticationFailureDetails;
   const factory StudioFailureDetails.reason({required String reason}) =
       ReasonFailureDetails;
+  const factory StudioFailureDetails.control({
+    required String reason,
+    required ControlFailureFacts facts,
+  }) = ControlFailureDetails;
   const factory StudioFailureDetails.identity({required String identity}) =
       IdentityFailureDetails;
   const factory StudioFailureDetails.timelineRevision({

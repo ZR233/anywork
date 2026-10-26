@@ -133,6 +133,9 @@ Future<AgentDirectoryEntry> readAgentDirectoryEntry(
         : await materializeReadText(value.summary!, read: read),
     depth: value.depth,
     state: await _state(value.state, read),
+    execution: value.execution,
+    canStop: value.canStop,
+    awaitingScheduling: value.awaitingScheduling,
     updatedAt: value.updatedAt,
   );
 }

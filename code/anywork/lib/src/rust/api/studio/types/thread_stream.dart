@@ -9,12 +9,13 @@ import 'delegation.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 import 'package:freezed_annotation/freezed_annotation.dart' hide protected;
 
+import 'runtime.dart';
 import 'thread_activity.dart';
 import 'thread_stream/item.dart';
 import 'turn_failure.dart';
 part 'thread_stream.freezed.dart';
 
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`
 
 /// FRB mirror of the canonical prompt cache effective-usage summary.
 class BridgeCacheUsageSummary {
@@ -49,6 +50,86 @@ class BridgeCacheUsageSummary {
           cacheReadTokens == other.cacheReadTokens &&
           hitRate == other.hitRate &&
           hasIncompleteUsage == other.hasIncompleteUsage;
+}
+
+/// 主会话中的一条子任务待决交互摘要：只读投影，决定仍回到原交互身份。
+class BridgeChildInteractionSummary {
+  final String childThreadId;
+  final String interactionId;
+  final String kind;
+  final BigInt revision;
+  final BridgeInteractionRequest interaction;
+
+  const BridgeChildInteractionSummary({
+    required this.childThreadId,
+    required this.interactionId,
+    required this.kind,
+    required this.revision,
+    required this.interaction,
+  });
+
+  @override
+  int get hashCode =>
+      childThreadId.hashCode ^
+      interactionId.hashCode ^
+      kind.hashCode ^
+      revision.hashCode ^
+      interaction.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is BridgeChildInteractionSummary &&
+          runtimeType == other.runtimeType &&
+          childThreadId == other.childThreadId &&
+          interactionId == other.interactionId &&
+          kind == other.kind &&
+          revision == other.revision &&
+          interaction == other.interaction;
+}
+
+enum BridgeContinuationReason {
+  userStop,
+  hostShutdown,
+  processInterrupted,
+  stepLimit,
+  executionFailed,
+}
+
+/// 继续点的只读投影：`claimed` 区分「可以继续」与「继续已受理、仍在准备」。
+class BridgeContinuationView {
+  final String id;
+  final String? sourceTurnId;
+  final BridgeContinuationReason? reason;
+  final PlatformInt64 createdAt;
+  final bool claimed;
+
+  const BridgeContinuationView({
+    required this.id,
+    this.sourceTurnId,
+    this.reason,
+    required this.createdAt,
+    required this.claimed,
+  });
+
+  @override
+  int get hashCode =>
+      id.hashCode ^
+      sourceTurnId.hashCode ^
+      reason.hashCode ^
+      createdAt.hashCode ^
+      claimed.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is BridgeContinuationView &&
+          runtimeType == other.runtimeType &&
+          id == other.id &&
+          sourceTurnId == other.sourceTurnId &&
+          reason == other.reason &&
+          createdAt == other.createdAt &&
+          claimed == other.claimed;
 }
 
 @freezed
@@ -620,6 +701,12 @@ class BridgeThreadRuntimeSnapshot {
   final BridgeThreadMcpHealthSnapshot? mcpHealth;
   final BridgeWorkflowRuntimeSnapshot? workflow;
   final BridgePlanRuntimeSnapshot? plan;
+
+  /// 主会话自己的当前执行身份；精确停止的目标来自它，而不是当前轮次投影。
+  final BridgeAgentExecution? execution;
+
+  /// 该会话当前仍然欠着的继续点；继续命令的 expectedContinuationId 只能来自它。
+  final BridgeContinuationView? continuation;
   final PlatformInt64 updatedAt;
 
   const BridgeThreadRuntimeSnapshot({
@@ -637,6 +724,8 @@ class BridgeThreadRuntimeSnapshot {
     this.mcpHealth,
     this.workflow,
     this.plan,
+    this.execution,
+    this.continuation,
     required this.updatedAt,
   });
 
@@ -656,6 +745,8 @@ class BridgeThreadRuntimeSnapshot {
       mcpHealth.hashCode ^
       workflow.hashCode ^
       plan.hashCode ^
+      execution.hashCode ^
+      continuation.hashCode ^
       updatedAt.hashCode;
 
   @override
@@ -677,6 +768,8 @@ class BridgeThreadRuntimeSnapshot {
           mcpHealth == other.mcpHealth &&
           workflow == other.workflow &&
           plan == other.plan &&
+          execution == other.execution &&
+          continuation == other.continuation &&
           updatedAt == other.updatedAt;
 }
 

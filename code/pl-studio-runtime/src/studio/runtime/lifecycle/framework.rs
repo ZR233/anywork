@@ -29,7 +29,11 @@ impl StudioRuntime {
         }
         // 冷数据回源：未驻留 Thread 的目录元数据只从 `catalog.toml` 读取。
         let Some(record) = self.store.read_thread(thread_id).await? else {
-            return Err(anyhow::anyhow!("selected Thread not found"));
+            // An unknown Thread is an API-visible rejection: answering it as an internal failure
+            // would hide a deleted or foreign identity behind a redacted 500.
+            return Err(anyhow::Error::new(
+                pl_protocol::studio::StudioError::not_found("session"),
+            ));
         };
         Ok(pl_protocol::Thread::from(record))
     }
@@ -97,10 +101,10 @@ impl StudioRuntime {
         // Join them before closing those dependencies, never abort them as observation feeds.
         let command_issues = self.draft_commands.close().await;
         let framework: Result<()> = async {
-            // Shutdown already owns lifecycle admission; an accepted archive released it only
-            // after its full close/commit continuation concluded. Join it before storage stops.
-            let archive = background_task::finish(&self.archive_task).await;
-            self.archive_task.lock().await.take();
+            // Archive and safe cleanup retain the same lifecycle slot through their real terminal
+            // commit, even after the original caller stops waiting. Join before storage stops.
+            let archive = background_task::finish(&self.thread_lifecycle_task).await;
+            self.thread_lifecycle_task.lock().await.take();
             let archive = archive.err().map(anyhow::Error::new);
             let thread_failures = self.threads.close_all().await;
             // A failed Thread must keep its observation/writer dependency. Do not wait for an

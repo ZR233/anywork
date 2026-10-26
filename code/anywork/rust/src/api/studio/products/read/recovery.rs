@@ -24,6 +24,7 @@ impl From<protocol::RecoveryReadHeader> for BridgeRecoveryReadHeader {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BridgeWorktreeRecoveryPreviewRead {
+    pub inspection: crate::api::studio::types::BridgeWorktreeInspection,
     pub owner_kind: BridgeWorktreeOwner,
     pub owner_thread_id: BridgeReadText,
     pub lease_revision: u64,
@@ -33,13 +34,19 @@ pub struct BridgeWorktreeRecoveryPreviewRead {
     pub branch: BridgeReadText,
     pub base_commit: BridgeReadText,
     pub head_commit: Option<BridgeReadText>,
-    pub dirty: bool,
-    pub changed_files: BridgeTypedListRef,
+    pub dirty: Option<bool>,
+    pub changed_files: Option<BridgeTypedListRef>,
 }
 
 impl From<protocol::WorktreeRecoveryPreviewRead> for BridgeWorktreeRecoveryPreviewRead {
     fn from(value: protocol::WorktreeRecoveryPreviewRead) -> Self {
         Self {
+            inspection: match value.inspection {
+                protocol::WorktreeInspection::Available => crate::api::studio::types::BridgeWorktreeInspection::Available,
+                protocol::WorktreeInspection::Missing => crate::api::studio::types::BridgeWorktreeInspection::Missing,
+                protocol::WorktreeInspection::IdentityMismatch => crate::api::studio::types::BridgeWorktreeInspection::IdentityMismatch,
+                protocol::WorktreeInspection::Unavailable => crate::api::studio::types::BridgeWorktreeInspection::Unavailable,
+            },
             owner_kind: value.owner_kind.into(),
             owner_thread_id: value.owner_thread_id.into(),
             lease_revision: value.lease_revision,
@@ -50,7 +57,7 @@ impl From<protocol::WorktreeRecoveryPreviewRead> for BridgeWorktreeRecoveryPrevi
             base_commit: value.base_commit.into(),
             head_commit: value.head_commit.map(Into::into),
             dirty: value.dirty,
-            changed_files: value.changed_files.into(),
+            changed_files: value.changed_files.map(Into::into),
         }
     }
 }
@@ -60,7 +67,7 @@ pub struct BridgeRecoveryIssueRead {
     pub id: BridgeReadText,
     pub scope: BridgeRecoveryScope,
     pub category: BridgeRecoveryCategory,
-    pub action: BridgeRecoveryAction,
+    pub available_actions: Vec<BridgeRecoveryAction>,
     pub project_id: Option<BridgeReadText>,
     pub thread_id: Option<BridgeReadText>,
     pub message: BridgeReadText,
@@ -73,7 +80,7 @@ impl From<protocol::RecoveryIssueRead> for BridgeRecoveryIssueRead {
             id: value.id.into(),
             scope: value.scope.into(),
             category: value.category.into(),
-            action: value.action.into(),
+            available_actions: value.available_actions.into_iter().map(Into::into).collect(),
             project_id: value.project_id.map(Into::into),
             thread_id: value.thread_id.map(Into::into),
             message: value.message.into(),

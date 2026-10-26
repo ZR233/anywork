@@ -3,17 +3,19 @@ import 'dart:convert';
 
 import 'package:anywork/src/features/conversation/state/timeline_view_state.dart';
 import 'package:anywork/src/features/conversation/view_models/conversation_view_model.dart';
-import 'package:anywork/src/features/conversation/view_models/thread_status_view_model.dart';
 import 'package:anywork/src/features/workspace/view_models/sidebar_view_model.dart';
 import 'package:anywork/src/features/workspace/view_models/workspace_view_model.dart';
-import 'package:anywork/src/shared/driver_projection.dart';
+import 'package:anywork/src/shared/driver_projection.dart' show currentDriverRows;
 import 'package:anywork/src/shared/driver_snapshot.dart';
 import 'package:anywork/src/shared/driver_snapshot_json.dart';
 import 'package:anywork_client/conversation.dart';
 import 'package:anywork_client/resources.dart';
 import 'package:anywork_client/workspace_ports.dart';
+import 'package:anywork_client/statistics_ports.dart';
+import 'package:anywork_client/recovery_ports.dart';
 
 import '../../../../anywork_client/test/support/timeline_transport.dart';
+import '../../../test_driver/driver_inspection.dart';
 import 'application_environment.dart';
 import 'selector_directory_port.dart';
 import 'selector_environment.dart' show waitLatest;
@@ -22,12 +24,15 @@ import 'selector_environment.dart' show waitLatest;
 /// facts below are captured by the production Driver projection, never a
 /// replacement Client facade or a test-maintained business mirror.
 final class DriverTestEnvironment {
-  final application = ApplicationTestEnvironment()..installHost();
+  DriverTestEnvironment({StatisticsPort? statisticsPort})
+    : application = ApplicationTestEnvironment(statisticsPort: statisticsPort)..installHost();
+  final ApplicationTestEnvironment application;
   final _subscriptions = <void Function()>[];
 
   Future<void> establish({
     required List<WorkspaceThreadRecord> threads,
     List<AgentDirectoryEntry>? agents,
+    List<RecoveryIssueRead> recoveryIssues = const [],
   }) async {
     final native = application.domains.directory;
     native.threads
@@ -39,6 +44,7 @@ final class DriverTestEnvironment {
           for (final thread in threads)
             SelectorDirectoryPort.agentEntry(thread),
         ];
+    application.domains.recoveryPort.preparedIssues = recoveryIssues;
     await application.domains.establish(catalog: false);
     await application.graph.workspace.loadAgents();
   }
@@ -94,35 +100,10 @@ final class DriverTestEnvironment {
     return result.future.whenComplete(observation.cancel);
   }
 
-  DriverSnapshot capture() {
-    final graph = application.graph;
-    final container = application.container;
-    final selected = graph.workspace.state.value.selection.threadId;
-    // exists() never instantiates an owner. Reading the values of the already
-    // mounted owners is exactly the production Driver request boundary.
-    return captureDriverSnapshot(
-      graph,
-      visible: DriverViewFacts(
-        workspace: container.exists(workspaceViewModelProvider)
-            ? container.read(workspaceViewModelProvider).value
-            : null,
-        sidebar: container.exists(sidebarViewModelProvider)
-            ? container.read(sidebarViewModelProvider).value
-            : null,
-        conversation:
-            selected != null &&
-                container.exists(conversationViewModelProvider(selected))
-            ? container.read(conversationViewModelProvider(selected)).value
-            : null,
-        status:
-            selected != null &&
-                container.exists(threadStatusViewModelProvider(selected))
-            ? container.read(threadStatusViewModelProvider(selected)).value
-            : null,
-      ),
-      bots: const DriverBotsUnknown('Bots not mounted in this scenario'),
-    );
-  }
+  DriverSnapshot capture() => DriverInspection(
+    graph: application.graph,
+    container: application.container,
+  ).capture();
 
   String snapshotJson() => jsonEncode(capture().toJson());
 

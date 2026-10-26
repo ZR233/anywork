@@ -5,6 +5,7 @@ import 'package:anywork_client/resources.dart';
 
 import '../../../diagnostics/contracts/timeline_diagnostics.dart';
 import '../../../diagnostics/studio_driver_key_values.dart';
+import '../state/plan_confirmation_ownership.dart';
 import '../state/timeline_view_state.dart';
 import 'coordinator.dart';
 import 'presentation_item.dart';
@@ -142,7 +143,7 @@ TimelineItemFacts _itemFacts(TimelineMessagePayload payload) {
   final item = payload.item;
   final tool = item.tool;
   final input = tool?.userInput;
-  final plan = input?.planReceipt;
+  final plan = ownsPlanConfirmation(tool?.name) ? input?.planReceipt : null;
   return TimelineItemFacts(
     id: item.id,
     ordinal: item.ordinal,

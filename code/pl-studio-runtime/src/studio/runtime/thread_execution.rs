@@ -356,17 +356,7 @@ impl StudioRuntime {
             }
             let residency = Arc::new(runtime.residency.pin_many([thread_id.clone()]));
             let thread = runtime.read_protocol_thread(&thread_id).await?;
-            let mode = if thread.parent_thread_id.is_some()
-                && (thread.role == "planner"
-                    || (runtime.threads.observed_thread(&thread_id).is_none()
-                        && crate::studio::agent_close::is_explicitly_closed(
-                            &runtime.read_thread_state(&thread_id).await?,
-                        )?))
-            {
-                ThreadObservationMode::Cold
-            } else {
-                mode
-            };
+            let mode = runtime.thread_observation_mode(&thread, mode).await?;
             let lease = match mode {
                 ThreadObservationMode::Live => {
                     runtime.ensure_thread_owner(&thread_id).await?;
@@ -391,7 +381,7 @@ impl StudioRuntime {
                                 .source()
                                 .cold_checkpoint
                                 .get_or_try_init(|| async {
-                                    crate::studio::thread_factory::recovery::load_checkpoint(
+                                    crate::studio::thread_factory::recovery::load_checkpoint_read_only(
                                         &runtime.store,
                                         &thread,
                                     )
@@ -435,6 +425,11 @@ impl StudioRuntime {
                                             &detail,
                                         ))
                                     });
+                            let hosted = if thread.parent_thread_id.is_none() {
+                                runtime.thread_observations.cold_hosted_interactions(&thread_id).await?
+                            } else {
+                                Vec::new()
+                            };
                             lease.source().execution.observe(
                                 &thread_id,
                                 thread.updated_at,
@@ -443,6 +438,7 @@ impl StudioRuntime {
                                 activity,
                                 storage,
                                 &[],
+                                Some(&hosted),
                             );
                             lease.source().execution.ensure_open()?;
                             Ok::<_, anyhow::Error>(())

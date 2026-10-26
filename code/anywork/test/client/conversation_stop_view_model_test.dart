@@ -35,8 +35,10 @@ void main() {
     expect(fixture.stop.commands.interrupts.values, isEmpty);
 
     final action = await fixture.dispatch(page);
-    expect(fixture.stop.reads.values.single.origin, replacement.stamp);
-    expect(fixture.stop.reads.values.single.reference, stopTurn(7).reference);
+    expect(action.call.threadId, 'A');
+    expect(action.call.executionId, 'execution-7');
+    expect(fixture.state.stop!.origin, replacement.stamp);
+    expect(fixture.stop.reads.values, isEmpty);
     acceptStop(action.call);
     await action.operation.state.waitFor((state) => state.receipt != null);
     await replacement.deliver(active: null, status: ThreadStatus.idle);
@@ -119,7 +121,42 @@ void main() {
       isNull,
       reason: 'Returning observes the same ticket even though the Turn is no longer busy',
     );
-    expect(fixture.stop.reads.values, hasLength(1));
+    expect(fixture.stop.reads.values, isEmpty);
+    expect(fixture.stop.commands.interrupts.values, hasLength(1));
+  });
+
+  test('a rendered Stop losing its execution is a zero-request zero-local-action no-op, not fake success', () async {
+    final fixture = await ConversationStopViewModelFixture.create();
+    final page = ConversationStopPage(isCurrent: () => true);
+    fixture.vm.deferStopPage(page);
+    final captured = fixture.vm.captureStop(page)!;
+    await fixture.initial.deliver(active: null, status: ThreadStatus.idle);
+    final before = fixture.stop.budget.used(ResourceKind.pendingOperation);
+    await captured();
+    expect(fixture.stop.commands.interrupts.values, isEmpty);
+    expect(fixture.stop.budget.used(ResourceKind.pendingOperation), before);
+    expect(fixture.stop.owner.operations.observations.latest('stop:A'), isNull);
+    expect(fixture.vm.stopStateFor(page), isNull);
+    expect(fixture.state.stop, isNull);
+  });
+
+  test('late Stop ACK after A-to-B only settles original A and cannot stop or lock B', () async {
+    final fixture = await ConversationStopViewModelFixture.create();
+    final page = ConversationStopPage(isCurrent: () => true);
+    fixture.vm.deferStopPage(page);
+    final action = await fixture.dispatch(page);
+    final other = await fixture.stop.select(threadId: 'B');
+    final originalB = other.session.execution.value;
+    expect(fixture.stop.owner.repository.active.value, same(other.session));
+    acceptStop(action.call);
+    await fixture.initial.deliver(active: null, status: ThreadStatus.idle);
+    await action.operation.state.waitFor((state) => state.observed && state.effective);
+    await action.settled;
+    expect(action.call.threadId, 'A');
+    expect(other.session.execution.value, originalB);
+    expect(other.session.execution.value.value!.execution!.id, 'execution-7');
+    expect(fixture.vm.stopStateFor(page), isNull);
+    expect(fixture.vm.captureStop(page), isNull);
     expect(fixture.stop.commands.interrupts.values, hasLength(1));
   });
 

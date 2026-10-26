@@ -132,6 +132,8 @@ pub struct BridgeStorageBrief {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BridgeExecutionBaseline {
     pub status: BridgeThreadStatus,
+    pub execution: Option<crate::api::studio::types::BridgeAgentExecution>,
+    pub continuation: Option<crate::api::studio::types::BridgeContinuationView>,
     pub active_turn: Option<BridgeTurnBrief>,
     pub recent_terminal_turn: Option<BridgeTurnBrief>,
     pub interactions: BridgeInteractionIndexHeader,
@@ -142,6 +144,8 @@ pub struct BridgeExecutionBaseline {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BridgeExecutionChange {
     pub status: Option<BridgeThreadStatus>,
+    pub execution: BridgeExecutionReplacement,
+    pub continuation: BridgeContinuationReplacement,
     pub turns: Option<BridgeTurnsReplacement>,
     pub interactions: Option<BridgeInteractionDelta>,
     pub activity: BridgeActivityReplacement,
@@ -152,6 +156,18 @@ pub struct BridgeExecutionChange {
 pub struct BridgeTurnsReplacement {
     pub active_turn: Option<BridgeTurnBrief>,
     pub recent_terminal_turn: Option<BridgeTurnBrief>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BridgeExecutionReplacement {
+    Unchanged,
+    Replace { value: Option<crate::api::studio::types::BridgeAgentExecution> },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BridgeContinuationReplacement {
+    Unchanged,
+    Replace { value: Option<crate::api::studio::types::BridgeContinuationView> },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

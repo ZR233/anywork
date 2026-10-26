@@ -9,6 +9,12 @@ pub(super) struct InterruptHandle(Arc<Mutex<InterruptState>>);
 struct InterruptState {
     active: Option<CancellationToken>,
     closing: bool,
+    /// Monotonic count of stop requests issued against this Thread.
+    ///
+    /// A replacement cancels the preparing generation itself and remembers the count it produced, so
+    /// any later stop — the public interrupt, a Turn stop, an execution stop — makes the count differ
+    /// and is never mistaken for the replacement it did not cause.
+    stops: u64,
 }
 
 impl InterruptHandle {
@@ -73,18 +79,42 @@ impl InterruptHandle {
     }
 
     pub(super) fn interrupt(&self) -> bool {
-        let token = self
-            .0
+        self.interrupt_generation().0
+    }
+
+    /// Cancels the active generation and returns the exact stop generation it produced.
+    ///
+    /// The counter and the token snapshot are taken under one lock acquisition, so an internal caller
+    /// (a replacement cancelling its own preparing generation) records a generation that is provably its
+    /// own: a concurrent external stop can only ever produce a *later* number, which is what keeps the two
+    /// cancellations distinguishable without a second read that another thread could slip between.
+    pub(super) fn interrupt_generation(&self) -> (bool, u64) {
+        let (token, generation) = {
+            let mut state = self
+                .0
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            state.stops = state.stops.saturating_add(1);
+            (state.active.clone(), state.stops)
+        };
+        match token {
+            Some(token) => {
+                token.cancel();
+                (true, generation)
+            }
+            None => (false, generation),
+        }
+    }
+
+    /// Monotonic count of stop requests issued against this Thread.
+    ///
+    /// It is the observable "an external stop happened" state: a caller that cancels for its own reason
+    /// records the count its cancellation produced, and any later stop makes the count differ.
+    pub(super) fn stops(&self) -> u64 {
+        self.0
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .active
-            .clone();
-        if let Some(token) = token {
-            token.cancel();
-            true
-        } else {
-            false
-        }
+            .stops
     }
 }
 

@@ -8,10 +8,10 @@ use super::{
     BridgeAccountUsageStateSnapshot, BridgeAcpAuthSnapshot, BridgeAcpInstallSnapshot,
     BridgeAgentDirectoryState, BridgeAgentProfilesStateSnapshot, BridgeBotsStateSnapshot,
     BridgeLspStateSnapshot, BridgeMcpStateSnapshot, BridgeModelCatalogStateSnapshot,
-    BridgeModelPerformanceSnapshot, BridgePersistenceQueueStateSnapshot,
-    BridgePersistenceStateSnapshot, BridgeProjectDirectoryState, BridgeRecoveryStateSnapshot,
-    BridgeSessionCostsState, BridgeSettingsConfigStateSnapshot, BridgeSkillsStateSnapshot,
-    BridgeThreadDirectoryPage, BridgeThreadModeCatalogSnapshot, BridgeUpdaterStateSnapshot,
+    BridgePersistenceQueueStateSnapshot, BridgePersistenceStateSnapshot,
+    BridgeProjectDirectoryState, BridgeRecoveryStateSnapshot, BridgeSessionCostsState,
+    BridgeSettingsConfigStateSnapshot, BridgeSkillsStateSnapshot, BridgeThreadDirectoryPage,
+    BridgeThreadModeCatalogSnapshot, BridgeUpdaterStateSnapshot,
 };
 
 /// 产品订阅 topic；带 payload 的变体表达作用域，不存在无作用域组合形式。
@@ -31,7 +31,6 @@ pub enum BridgeProductTopic {
     AccountUsage,
     AcpAuth,
     AcpInstall,
-    ModelPerformance,
     SessionCosts { root_thread_id: String },
     Updater,
     Persistence,
@@ -71,7 +70,6 @@ impl BridgeProductTopic {
             Self::AccountUsage => StudioProductTopic::AccountUsage,
             Self::AcpAuth => StudioProductTopic::AcpAuth,
             Self::AcpInstall => StudioProductTopic::AcpInstall,
-            Self::ModelPerformance => StudioProductTopic::ModelPerformance,
             Self::SessionCosts { root_thread_id } => {
                 StudioProductTopic::SessionCosts { root_thread_id }
             }
@@ -101,7 +99,6 @@ pub enum BridgeProductBaseline {
     AccountUsage(BridgeAccountUsageStateSnapshot),
     AcpAuth(Box<BridgeAcpAuthSnapshot>),
     AcpInstall(Box<BridgeAcpInstallSnapshot>),
-    ModelPerformance(BridgeModelPerformanceSnapshot),
     SessionCosts(Box<BridgeSessionCostsState>),
     Updater(BridgeUpdaterStateSnapshot),
     Persistence(BridgePersistenceStateSnapshot),

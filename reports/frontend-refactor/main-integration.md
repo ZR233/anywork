@@ -8,7 +8,7 @@
 - 本轮重新 fetch 后冻结主线：`7aa6ee04bb60551ccaf0e7de345803f9d30b9230`，新增 #177；以下以该版本为合流目标。
 - 批准计划 revision 2 持续有效。用户要求先解决冲突，原 history-close 返修暂停；合流保留原关闭责任实现及已发现问题，不用 main 覆盖掩盖问题。
 - 本文件是实施与证据清单，不是设计权威源。设计见 `design/12`、`14`—`19`、`22`—`26`。
-- 当前阶段：设计同步完成、准备真实合并。下表“待迁移/待验证”均不表示通过。无冲突标记或 Git 已暂存不等于语义保全或验收完成。
+- 当前阶段：设计先行提交为 `420c4fe87476b9b0664d81973f58a6f35413c0a8`，已实际合并冻结主线并进入冲突处理，`MERGE_HEAD` 为 `7aa6ee04`。下表“待迁移/待验证”均不表示通过。无冲突标记或 Git 已暂存不等于语义保全或验收完成。
 
 ## 逐提交保全矩阵
 
@@ -32,7 +32,7 @@
 2. SDK Session 将旧 `stopTurn(origin, TurnReadRef)` 替换为 execution 身份停止；继续冻结原 Session/incarnation、continuationId、operationId、modelRouteRevision。目录停止归 ConversationRepository，输入同时包含原 agentDirectory 来源、原行成员与 executionId，不临时选择 Session 或创建草稿。两条入口复用同一 native stop 与既有操作登记/预算/close owner；来源不同不是两个业务事实源。
 3. 主会话现有有界交互索引可投影自身与直接 child 的请求。read ref 仍绑定 host 的原 execution 来源；详情增加目标 thread 身份，回应具名能力同时验证 host 来源和原请求身份。后端验证直接父子归属、交互 revision、typed resolution；不是删掉同 Session 校验后放任任意 target。child Plan 只诊断，不可由 root 确认。禁止恢复全局 ChildInteractionStore。
 4. 继续控制有独立 pending 可查的操作身份索引；普通 `read_input_acceptance` 的既有非 Pending 规则不能冒充继续保存证明。`accepted=true` 的忙碌结果保留提交事实，Unknown 与 CommittedButUnobserved 不折叠成 Rejected；回查使用原 operation。
-5. 附件新建准入传现有 `ModelSelection`，从当前 Ready route preparation 同步冻结。未 Ready 按现有提交的 unavailable 语义明确拒绝，不回退 mode 默认。已有会话用后端 route；提交再校验。fixture 仅 gui preset 补 File（PDF/ResponsesInputFile/DataUrl），不扩大其它模型能力。
+5. 附件新建准入传现有 `ModelSelection`，从当前 Ready route preparation 同步冻结。未 Ready 按现有提交的 unavailable 语义明确拒绝，不回退 mode 默认。已有会话用后端 route；提交再校验。fixture 保主线仅在 gui preset 增加 Image 与 File（PDF/ResponsesInputFile/DataUrl），不扩大其它模型能力。先前调查把仅 tool-scroll 场景的 Image 当成 gui 基础模型已有能力；root 已核对 `fixture_config` 与 `ModelInfo::compatible` 的 text-only 默认，纠正该判断，不删除主线 gui preset 所需的 Image。
 6. root 先裁决共享 protocol/SDK 接口；Rust runtime/control/facets 与 storage/history 重叠处必须单 writer。core 可独立处理其 crate 的合流，包含 #171 core SQLite，不与另一个 writer 共享 core migration 文件。下游适配与 UI 按已冻结接口推进。生成物最后统一生成，禁止手工拼接。
 
 ## 关键不变量与定向证据
@@ -67,6 +67,23 @@
 - 订阅创建失败先发布创建决定再等取消，不以跳过取消/预算释放/隐藏错误解决互等。
 
 ## 生成、验证与剩余原任务
+
+### 合流进度检查点的边界
+
+用户要求先完成冲突登记并推送当前进度，再集中进行整体审查。该进度检查点不代表实现或验收完成：
+
+- 手写合流和消费者迁移保存当前候选，实施者暂停写入后统一记录，不能把未完成的测试迁移或未审候选记为通过。
+- 发生文本冲突的生成文件采用本分支已提交版本，未手工拼接生成逻辑；这只是进度快照，后续必须统一 `generate-gui`，当前生成物不保证与新输入一致。
+- 原历史关闭编译问题、Native 资源接续及恢复公开面收尾、未选项目时的模型预选、消费者迁移检查和各目录待审项继续保留，不以消除 Git 冲突标记替代处理。
+- 本检查点未运行本轮完整工具链、原生 GUI 或 CI 验收；后续只有当前最终代码的真实门禁与集成结果才能支持完成声明。
+
+### 本轮目录汇合记录（仅源码证据）
+
+- A1 执行/命令/交互及错误适配、A2 目录/Recovery/附件路由、U1 Conversation、U2 Workspace/Recovery 已获得对应内容版本的独立静态批准；SDK 停止准入、Native 控制与存储/附件返修仍在进行。C1 测试目录与 C2 Driver/诊断目录互斥并行，尚未统一生成或运行门禁。
+- 原 shell 两文件的 main 增量分别是归档不受工作树故障阻塞与抽取智能体菜单；这些目的已由 U2 的 `sidebar_rows.dart` 和 `workspace_agent_menu.dart` 承担。两份 shell 冲突恢复为原 PR120 纯视图实现，内容对象与 `420c4fe8` 一致，而不是复活旧容器。
+- 删除经引用核对确认无活跃入口的旧 StudioState、旧 interaction/timeline/settings 面板、误置的目录停止模型、旧 FRB `studio_api.dart` parts、旧 Driver 投影/状态与 SDK 产品聚合。保留当前 `features/interaction/connectors`、view_models、views；当前配置公开出口仍为 `configuration.dart` 的具名领域值，演示模式沿现生产装配替换内容端口，不恢复旧 demo facade。
+- 两语言 ARB 均可按严格 JSON 解码，无重复键，业务键均为 1617 且集合一致；新增无执行与继续已受理原因齐全。此检查不代替 l10n 生成或应用测试。
+- Native 原预算回归需要可控 Tokio 时钟，runtime 仅在 dev-dependencies 启用现有 `test-util`，生产 feature 与锁文件未改变。所有生成与运行验证仍由 root 汇合后统一承担。
 
 当前 children 仅源码、只读 Git、diffcheck/hash；所有 Cargo、格式、分析、测试、生成及 GUI 由 root 串行承担。迁移与静态审查就绪后统一 `cargo xtask generate-gui`，再依批准计划执行全量门禁、真实迁移与 Linux Driver 验收。旧 435/455 Client、226 runtime 或之前 workspace 绿色均不覆盖本轮合流。
 

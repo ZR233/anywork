@@ -645,14 +645,34 @@ class AgentProfilesViewModel extends _$AgentProfilesViewModel {
             null;
   }
 
-  Future<void> cleanup(WorktreeRecoveryPreview worktree) async {
-    if (!_alive) return;
+  bool _currentRecoveryIssue(RecoveryIssue issue) {
+    final source = _recovery.state.value;
+    return source.projection.sync.phase == ResourceSyncPhase.ready &&
+        source.projection.header?.source.brief is ReadyObservedBrief &&
+        currentCollectionRow(
+              source.issues,
+              source.projection.stamp?.origin,
+              (current) => current.id == issue.id && current == issue,
+            ) !=
+            null;
+  }
+
+  Future<void> cleanup(RecoveryIssue issue) async {
+    if (!_alive ||
+        !issue.availableActions.contains(RecoveryAction.cleanupWorktree) ||
+        !_currentRecoveryIssue(issue)) {
+      return;
+    }
+    final worktree = issue.worktree;
+    if (worktree == null) return;
+    final recovery = _recovery;
     final key = (
       worktree.ownerKind,
       worktree.ownerThreadId,
       worktree.leaseRevision,
     );
-    if (state.requireValue.cleanupActions[key]?.preventsResubmission ?? false) {
+    if ((state.requireValue.cleanupActions[key]?.preventsResubmission ?? false) ||
+        (state.requireValue.retryRecoveryAction?.preventsResubmission ?? false)) {
       return;
     }
     final lifetime = _lifetime;
@@ -671,7 +691,7 @@ class AgentProfilesViewModel extends _$AgentProfilesViewModel {
         state.requireValue.cleanupActions[key]?.intent == intent;
     _cleanupObservations.remove(key)?.cancel();
     await _run<Unit>(
-      () => _recovery.cleanupWorktree(key.$1, key.$2, key.$3),
+      () => recovery.cleanupWorktree(key.$1, key.$2, key.$3),
       intent,
       owns,
       (action) {
@@ -690,12 +710,30 @@ class AgentProfilesViewModel extends _$AgentProfilesViewModel {
     );
   }
 
+  Future<void> retryWorktree(RecoveryIssue issue) {
+    if (!_alive || !issue.canRetry || !_currentRecoveryIssue(issue)) {
+      return Future<void>.value();
+    }
+    final worktree = issue.worktree;
+    if (worktree == null ||
+        state.requireValue.cleanupActions[(
+              worktree.ownerKind,
+              worktree.ownerThreadId,
+              worktree.leaseRevision,
+            )]?.preventsResubmission ==
+            true) {
+      return Future<void>.value();
+    }
+    return retryRecovery();
+  }
+
   Future<void> retryRecovery() async {
     if (!_alive ||
         (state.requireValue.retryRecoveryAction?.preventsResubmission ??
             false)) {
       return;
     }
+    final recovery = _recovery;
     final lifetime = _lifetime;
     final intent = state.requireValue.latestIntent + 1;
     state = AsyncData(
@@ -708,7 +746,7 @@ class AgentProfilesViewModel extends _$AgentProfilesViewModel {
         _owns(lifetime) &&
         state.requireValue.retryRecoveryAction?.intent == intent;
     _retryObservation?.cancel();
-    await _run<RecoveryReadTarget>(_recovery.retry, intent, owns, (action) {
+    await _run<RecoveryReadTarget>(recovery.retry, intent, owns, (action) {
       if (owns()) {
         state = AsyncData(
           state.requireValue.copyWith(retryRecoveryAction: action),

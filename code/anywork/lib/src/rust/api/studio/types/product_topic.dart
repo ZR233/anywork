@@ -64,9 +64,6 @@ sealed class BridgeProductBaseline with _$BridgeProductBaseline {
   const factory BridgeProductBaseline.acpInstall(
     BridgeAcpInstallSnapshot field0,
   ) = BridgeProductBaseline_AcpInstall;
-  const factory BridgeProductBaseline.modelPerformance(
-    BridgeModelPerformanceSnapshot field0,
-  ) = BridgeProductBaseline_ModelPerformance;
   const factory BridgeProductBaseline.sessionCosts(
     BridgeSessionCostsState field0,
   ) = BridgeProductBaseline_SessionCosts;
@@ -111,8 +108,6 @@ sealed class BridgeProductTopic with _$BridgeProductTopic {
       BridgeProductTopic_AccountUsage;
   const factory BridgeProductTopic.acpAuth() = BridgeProductTopic_AcpAuth;
   const factory BridgeProductTopic.acpInstall() = BridgeProductTopic_AcpInstall;
-  const factory BridgeProductTopic.modelPerformance() =
-      BridgeProductTopic_ModelPerformance;
   const factory BridgeProductTopic.sessionCosts({
     required String rootThreadId,
   }) = BridgeProductTopic_SessionCosts;

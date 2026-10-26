@@ -116,8 +116,6 @@ final class ConversationStopViewModelFixture {
     final callback = vm.captureStop(page);
     expect(callback, isNotNull);
     final settled = callback!();
-    await stop.reads.at(0);
-    await stop.acceptRead(0);
     await Future.any<void>([
       stop.commands.interrupts.at(0).then<void>((_) {}),
       settled.then<void>(
@@ -163,10 +161,10 @@ final class ConversationStopViewModelFixture {
 
 void acceptStop(StopInterrupt call) {
   call.reply.complete(
-    InterruptTurnReply(
+    StopExecutionReply(
       threadId: call.threadId,
-      turnId: call.turnId,
-      interrupted: true,
+      executionId: call.executionId,
+      stopped: true,
       receipt: stopReceipt(call.operationId),
     ),
   );

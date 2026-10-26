@@ -129,7 +129,7 @@ impl StudioThreadAssembler {
         id: String,
         owner: super::close_failure::EntryCloseOwner,
     ) -> Result<(), ThreadAssemblyError> {
-        if !owner.published {
+        if !owner.published || owner.disposition.is_none() {
             return Ok(());
         }
         let cleanup = owner
@@ -162,9 +162,9 @@ impl StudioThreadAssembler {
         if completed {
             return Ok(());
         }
-        if let Some(factory) = owner.factory {
+        if let (Some(factory), Some(disposition)) = (owner.factory, owner.disposition) {
             factory
-                .close_published(&id, owner.disposition.unwrap_or_default())
+                .close_published(&id, disposition)
                 .await?;
         }
         let registry = registry

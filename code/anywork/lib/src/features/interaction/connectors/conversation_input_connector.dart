@@ -49,7 +49,10 @@ class ConversationInputConnector extends ConsumerWidget {
         stopControl: ConversationStopControl(
           state: stopState,
           onStop: state.retiredPlanner ? null : onStop,
-          showButton: state.running || stopState != null,
+          primaryAction: vm.primaryAction(
+            hasContent: false,
+            submissionPending: false,
+          ),
         ),
         composer: Column(
           mainAxisSize: MainAxisSize.min,

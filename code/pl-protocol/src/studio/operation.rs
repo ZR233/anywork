@@ -25,7 +25,9 @@ pub enum StudioOperation {
     ListThreadTimeline,
     ReadThreadTimelineItem,
     SubmitPrompt,
-    InterruptTurn,
+    ContinueThread,
+    StopThread,
+    ReadContinuationOperation,
     AdmitAttachmentDrafts,
     UploadAttachmentDrafts,
     RemoveAttachmentDraft,
@@ -130,7 +132,7 @@ pub enum StudioOperation {
 }
 
 impl StudioOperation {
-    pub const ALL: [Self; 120] = [
+    pub const ALL: [Self; 122] = [
         Self::ReadState,
         Self::OpenProject,
         Self::RenameProject,
@@ -149,7 +151,9 @@ impl StudioOperation {
         Self::ListThreadTimeline,
         Self::ReadThreadTimelineItem,
         Self::SubmitPrompt,
-        Self::InterruptTurn,
+        Self::ContinueThread,
+        Self::StopThread,
+        Self::ReadContinuationOperation,
         Self::AdmitAttachmentDrafts,
         Self::UploadAttachmentDrafts,
         Self::RemoveAttachmentDraft,
@@ -273,7 +277,9 @@ impl StudioOperation {
             Self::ListThreadTimeline => "thread.listTimeline",
             Self::ReadThreadTimelineItem => "thread.readTimelineItem",
             Self::SubmitPrompt => "prompt.submit",
-            Self::InterruptTurn => "turn.interrupt",
+            Self::ContinueThread => "thread.continue",
+            Self::StopThread => "thread.stop",
+            Self::ReadContinuationOperation => "thread.readContinuation",
             Self::AdmitAttachmentDrafts => "attachment.admit",
             Self::UploadAttachmentDrafts => "attachment.upload",
             Self::RemoveAttachmentDraft => "attachment.removeDraft",

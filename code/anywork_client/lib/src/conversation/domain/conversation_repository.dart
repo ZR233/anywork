@@ -3,12 +3,14 @@ import '../../../resources.dart';
 import 'authoring_values.dart';
 import 'conversation_activation_failure.dart';
 import 'conversation_timeline.dart';
+import 'continuation_values.dart';
 import 'facet_state.dart';
 import 'interaction_index_state.dart';
 import 'interaction_values.dart';
 import 'read_scopes.dart';
 import 'thread_command_reply.dart';
 import 'thread_identity.dart';
+import 'stop_execution_result.dart';
 
 abstract interface class ConversationRepository {
   ReadonlyLatestValue<ConversationSession?> get active;
@@ -19,6 +21,13 @@ abstract interface class ConversationRepository {
   });
   ConversationSession? existingSession(String threadId);
   ConversationSession session(String threadId);
+  /// Freezes the original complete AgentDirectory source and delivered member.
+  /// Does not select, activate, create a Session or acquire a draft.
+  StopExecutionResult stopDirectoryExecution({
+    required ProductProjectionStamp origin,
+    required ProductEntityRef member,
+    required String executionId,
+  });
   void seal();
   Future<CloseReport> close({DateTime? deadline});
 
@@ -30,6 +39,8 @@ abstract interface class ConversationRepository {
 /// A runtime owner, not a Freezed value. A borrower cannot close the Session.
 abstract interface class ConversationSession {
   String get threadId;
+  /// False until canonical metadata proves this is a user-addressable root.
+  bool get acceptsUserInput;
   ReadonlyLatestValue<ThreadExecutionState> get execution;
   ReadonlyLatestValue<ThreadMetricsState> get metrics;
   ReadonlyLatestValue<ThreadContextState> get context;
@@ -80,10 +91,32 @@ abstract interface class ConversationSession {
     required int expectedInteractionRevision,
     required InteractionResolutionCommand resolution,
   });
-  OperationTicket<Unit> stopTurn({
+  OperationTicket<InteractionCommandReply> respondHostedInteraction({
     required ThreadFacetStamp origin,
-    required TurnReadRef target,
+    required InteractionReadRef reference,
+    required String targetThreadId,
+    OperationId? operationId,
+    required String interactionId,
+    required int expectedInteractionRevision,
+    required InteractionResolutionCommand resolution,
   });
+  Future<InteractionReadScope> openHostedInteraction({
+    required ThreadFacetStamp origin,
+    required InteractionReadRef reference,
+    required String targetThreadId,
+  });
+  StopExecutionResult stopExecution({
+    required ThreadFacetStamp origin,
+    required String executionId,
+  });
+  OperationTicket<ContinueThreadReply> continueThread({
+    required ThreadFacetStamp origin,
+    OperationId? operationId,
+    required String continuationId,
+    required int expectedModelRouteRevision,
+  });
+  /// Queries only a continuation admitted by this exact Session. Never resends.
+  Future<ContinuationOperationView?> readContinuationOperation(OperationId operationId);
   Future<TurnReadScope> openTurn(
     TurnReadRef reference, {
     required ThreadFacetStamp origin,

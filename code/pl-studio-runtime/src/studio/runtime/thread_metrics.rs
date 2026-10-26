@@ -151,11 +151,7 @@ impl StudioRuntime {
             }
             let residency = runtime.residency.pin_many([thread_id.clone()]);
             let thread = runtime.read_protocol_thread(&thread_id).await?;
-            let mode = if thread.parent_thread_id.is_some() && thread.role == "planner" {
-                ThreadObservationMode::Cold
-            } else {
-                mode
-            };
+            let mode = runtime.thread_observation_mode(&thread, mode).await?;
             let lease = if mode == ThreadObservationMode::Live {
                 runtime.ensure_thread_owner(&thread_id).await?;
                 runtime
@@ -176,7 +172,7 @@ impl StudioRuntime {
                         .source()
                         .cold_checkpoint
                         .get_or_try_init(|| async {
-                            crate::studio::thread_factory::recovery::load_checkpoint(
+                            crate::studio::thread_factory::recovery::load_checkpoint_read_only(
                                 &runtime.store,
                                 &thread,
                             )

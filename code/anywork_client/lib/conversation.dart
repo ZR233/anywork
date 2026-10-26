@@ -5,6 +5,7 @@ export 'src/conversation/domain/activity_read_values.dart';
 export 'src/conversation/domain/authoring_values.dart';
 export 'src/conversation/domain/configuration_values.dart';
 export 'src/conversation/domain/context_values.dart';
+export 'src/conversation/domain/continuation_values.dart';
 export 'src/conversation/domain/conversation_repository.dart'
     show ConversationRepository, ConversationSession;
 export 'src/conversation/domain/conversation_activation_failure.dart'
@@ -24,6 +25,8 @@ export 'src/conversation/domain/conversation_timeline.dart'
         timelineDetailMaxBytes;
 export 'src/conversation/domain/execution_values.dart';
 export 'src/conversation/domain/facet_state.dart';
+export 'src/conversation/domain/failure_reasons.dart';
+export 'src/conversation/domain/stop_execution_result.dart';
 export 'src/conversation/domain/interaction_index_state.dart';
 export 'src/conversation/domain/interaction_values.dart';
 export 'src/conversation/domain/interaction_snapshot.dart'

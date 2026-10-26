@@ -5,6 +5,8 @@ import '../../workspace/domain/directory_values.dart';
 import 'thread_identity.dart';
 import 'turn_values.dart';
 
+export '../../workspace/domain/agent_execution.dart';
+
 part 'execution_values.freezed.dart';
 
 enum InteractionKind { userInput, toolApproval }
@@ -96,6 +98,8 @@ abstract class StorageBrief with _$StorageBrief {
 abstract class ThreadExecutionBaseline with _$ThreadExecutionBaseline {
   const factory ThreadExecutionBaseline({
     required ThreadStatus status,
+    AgentExecution? execution,
+    ContinuationView? continuation,
     required TurnBrief? activeTurn,
     required TurnBrief? recentTerminalTurn,
     required InteractionIndexHeader interactions,
@@ -110,6 +114,20 @@ abstract class TurnsReplacement with _$TurnsReplacement {
     required TurnBrief? activeTurn,
     required TurnBrief? recentTerminalTurn,
   }) = _TurnsReplacement;
+}
+
+@freezed
+sealed class ExecutionReplacement with _$ExecutionReplacement {
+  const factory ExecutionReplacement.unchanged() = UnchangedExecution;
+  const factory ExecutionReplacement.replace({required AgentExecution? value}) =
+      ReplacedExecution;
+}
+
+@freezed
+sealed class ContinuationReplacement with _$ContinuationReplacement {
+  const factory ContinuationReplacement.unchanged() = UnchangedContinuation;
+  const factory ContinuationReplacement.replace({required ContinuationView? value}) =
+      ReplacedContinuation;
 }
 
 @freezed
@@ -130,6 +148,8 @@ sealed class StorageReplacement with _$StorageReplacement {
 abstract class ThreadExecutionChange with _$ThreadExecutionChange {
   const factory ThreadExecutionChange({
     required ThreadStatus? status,
+    @Default(ExecutionReplacement.unchanged()) ExecutionReplacement execution,
+    @Default(ContinuationReplacement.unchanged()) ContinuationReplacement continuation,
     required TurnsReplacement? turns,
     required InteractionDelta? interactions,
     required ActivityReplacement activity,

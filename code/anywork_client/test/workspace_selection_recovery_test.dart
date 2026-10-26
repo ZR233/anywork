@@ -28,6 +28,26 @@ Matcher _failure(StudioFailureCode code) =>
     isA<StudioFailure>().having((error) => error.code, 'code', code);
 
 void main() {
+  test('unarchive changes visibility only and cannot open/select or grant execution on a preserved worktree', () async {
+    final fixture = _fixture();
+    fixture.workspace.restoreSelection(_cold);
+    final selection = fixture.workspace.state.value.selection;
+    final ticket = fixture.workspace.restoreThread('archived-root');
+    final call = await fixture.directory.native.restoreOpened(0);
+    call.reply.complete(fixtureThread('archived-root').copyWith(
+      workspaceMode: ThreadWorkspaceMode.worktree, workspacePath: '/preserved-or-missing'));
+    final result = await ticket.result;
+    expect(result, isA<AcknowledgedCommandResult<WorkspaceSelectionResult>>());
+    expect((result as AcknowledgedCommandResult<WorkspaceSelectionResult>).value.selection, selection);
+    expect(fixture.workspace.state.value.selection, selection);
+    expect(fixture.conversations.repository.active.value, isNull);
+    expect(fixture.directory.activations, isEmpty);
+    expect(fixture.directory.threadOpens.values, isEmpty);
+    expect(fixture.directory.projectOpens.values, isEmpty);
+    expect(fixture.conversations.context.metadataRequests, isEmpty);
+    expect(fixture.conversations.facets.execution, isEmpty);
+    expect(fixture.conversations.timeline.requests, isEmpty);
+  });
   test('cold restoration is synchronous and pure; only explicit open reads the original target', () async {
     final fixture = _fixture();
     final workspace = fixture.workspace;

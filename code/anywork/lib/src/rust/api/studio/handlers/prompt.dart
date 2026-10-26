@@ -21,23 +21,55 @@ Future<BridgeInputAcceptanceEvidence?> readInputAcceptance({
   inputId: inputId,
 );
 
-Future<BridgeInterruptTurnCommandReply> interruptTurn({
+Future<BridgeStopThreadReply> stopThread({
   required String operationId,
   required String threadId,
-  required String turnId,
-}) => RustLib.instance.api.crateApiStudioHandlersPromptInterruptTurn(
+  required String expectedExecutionId,
+}) => RustLib.instance.api.crateApiStudioHandlersPromptStopThread(
   operationId: operationId,
   threadId: threadId,
-  turnId: turnId,
+  expectedExecutionId: expectedExecutionId,
+);
+
+Future<BridgeContinueThreadReply> continueThread({
+  required String operationId,
+  required String threadId,
+  required String expectedContinuationId,
+  required BigInt expectedModelRouteRevision,
+}) => RustLib.instance.api.crateApiStudioHandlersPromptContinueThread(
+  operationId: operationId,
+  threadId: threadId,
+  expectedContinuationId: expectedContinuationId,
+  expectedModelRouteRevision: expectedModelRouteRevision,
+);
+
+Future<BridgeContinuationOperationView> readContinuationOperation({
+  required String threadId,
+  required String operationId,
+}) =>
+    RustLib.instance.api.crateApiStudioHandlersPromptReadContinuationOperation(
+      threadId: threadId,
+      operationId: operationId,
+    );
+
+/// 主会话可见的子任务待决交互只读摘要；列举不激活任何子会话。
+Future<List<BridgeChildInteractionSummary>> readChildInteractions({
+  required String threadId,
+}) => RustLib.instance.api.crateApiStudioHandlersPromptReadChildInteractions(
+  threadId: threadId,
 );
 
 Future<BridgeInteractionCommandReply> respondInteraction({
   required String operationId,
+  required String hostThreadId,
+  required BigInt expectedRevision,
   required String interactionId,
   required BigInt expectedInteractionRevision,
   required BridgeInteractionResolution resolution,
 }) => RustLib.instance.api.crateApiStudioHandlersPromptRespondInteraction(
   operationId: operationId,
+  hostThreadId: hostThreadId,
+  expectedRevision: expectedRevision,
   interactionId: interactionId,
   expectedInteractionRevision: expectedInteractionRevision,
   resolution: resolution,

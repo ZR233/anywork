@@ -22,6 +22,8 @@ fn storage_fault_kind(error: &super::SessionStoreError) -> crate::thread::cold::
         | SessionStoreError::Replay(_)
         | SessionStoreError::Invalid(_)
         | SessionStoreError::UnsupportedSchema { .. }
+        | SessionStoreError::MigrationRequired
+        | SessionStoreError::Migration { .. }
         | SessionStoreError::InitializationCleanup { .. }
         | SessionStoreError::MaintenanceShutdown(_) => StorageFaultKind::WriteFailed,
     }

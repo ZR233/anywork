@@ -227,6 +227,18 @@ pub struct ThreadRuntimeSnapshot {
     /// 派生自 canonical `studio.plan` Thread 扩展，仅供 GUI 只读展示。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub plan: Option<crate::AgentSessionPlanRuntimeSnapshot>,
+    /// 该会话当前拥有的执行身份与阶段；`None` 表示没有当前执行。
+    ///
+    /// 停止命令的目标来自这里，而不是 `activeTurn` 的可空投影：准备、等待保存、等待准入与
+    /// 清理阶段同样有身份，轮次编号只是它在进入轮次后补充的事实。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution: Option<crate::AgentExecution>,
+    /// 该会话当前仍然欠着的继续点；`None` 表示没有可继续的工作。
+    ///
+    /// 继续命令的 `expectedContinuationId` 只能来自这里：它是执行事实的投影，客户端不能猜、
+    /// 不能本地生成。`claimed` 为真表示已有操作认领该点（继续已受理、可能仍在准备）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub continuation: Option<crate::ContinuationView>,
     pub updated_at: i64,
 }
 

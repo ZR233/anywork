@@ -21,6 +21,31 @@ impl ThreadHandle {
         response.await.map_err(|_| ThreadError::Closed)?
     }
 
+    /// Continues already owed work with a body-less control input.
+    ///
+    /// `input_id` is the operation identity, so a repeated call answers with the original receipt
+    /// instead of claiming the continuation again or waking execution a second time. The control
+    /// input is built by this trusted entry point, so it can never be confused with a user message,
+    /// and it carries no user content of its own.
+    ///
+    /// # Errors
+    /// Rejects a Thread that owes no claimable continuation, a pending interaction or permission, a
+    /// closing owner and a storage fault or pressure, without consuming or claiming anything.
+    pub async fn continue_thread(
+        &self,
+        input_id: String,
+        options: input::InputDriverOptions,
+    ) -> Result<input::InputRecord, ThreadError> {
+        let (reply, response) = oneshot::channel();
+        self.mailbox
+            .send(crate::thread::mailbox::MailboxCommand::ContinueThread(
+                input_id, options, reply,
+            ))
+            .await
+            .map_err(|_| ThreadError::Closed)?;
+        response.await.map_err(|_| ThreadError::Closed)?
+    }
+
     /// Enables actor-owned serial execution of queued inputs. Recovery leaves this disabled.
     /// Failures and interaction/step-limit stops pause execution until explicitly resumed.
     /// Enabling execution does not bypass a held Turn admission gate: the next Turn stays pending

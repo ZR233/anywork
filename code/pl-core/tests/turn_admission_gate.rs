@@ -19,7 +19,7 @@ use pl_core::thread::{
     ModelStepLimit, ThreadHandle, ThreadLifecycle, TurnOutcome,
     admission::TurnAdmissionGate,
     inbox::ThreadMessage,
-    input::{InputDriverOptions, InputExecution, InputState, ThreadInput},
+    input::{InputDriverOptions, InputExecution, InputPurpose, InputState, ThreadInput},
 };
 use tokio::sync::oneshot;
 
@@ -28,6 +28,7 @@ use support::{ScriptedModel, response, text, turn};
 fn queued_input(id: &str) -> ThreadInput {
     ThreadInput {
         id: id.into(),
+        purpose: InputPurpose::Message,
         payload: OpaquePayload::text("queued request"),
         context: vec![text("Please handle this request")],
     }

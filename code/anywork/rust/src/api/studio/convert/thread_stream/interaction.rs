@@ -1,7 +1,8 @@
 use anyhow::Result;
 use pl_protocol::{
-    CancelledInteractionState, ExpiredInteractionState, InteractionContent, InteractionRequest,
-    ToolApprovalResolution, ToolApprovalState, UserInputState, UserQuestion,
+    CancelledInteractionState, ExpiredInteractionState,
+    InteractionContent, InteractionRequest, ToolApprovalResolution, ToolApprovalState,
+    UserInputState, UserQuestion,
 };
 
 use crate::api::studio::types::*;

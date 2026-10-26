@@ -8,12 +8,15 @@ import 'acp.dart';
 import 'delegation.dart';
 
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
+import 'package:freezed_annotation/freezed_annotation.dart' hide protected;
 
 import 'response.dart';
+import 'runtime.dart';
 import 'settings.dart';
 import 'thread_stream.dart';
+part 'command.freezed.dart';
 
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`
 
 class BridgeArchiveThreadCommandReply {
   final ArchiveThreadResult result;
@@ -40,6 +43,104 @@ enum BridgeCommandDisposition { applied, noChange }
 
 enum BridgeCommandEffectPoint { immediate, nextTurn, futureSession }
 
+@freezed
+sealed class BridgeContinuationOperationState
+    with _$BridgeContinuationOperationState {
+  const BridgeContinuationOperationState._();
+
+  const factory BridgeContinuationOperationState.pending() =
+      BridgeContinuationOperationState_Pending;
+  const factory BridgeContinuationOperationState.consumed({
+    required String turnId,
+  }) = BridgeContinuationOperationState_Consumed;
+  const factory BridgeContinuationOperationState.discarded() =
+      BridgeContinuationOperationState_Discarded;
+}
+
+/// 继续操作的只读回查结果；查询本身不激活执行。
+class BridgeContinuationOperationView {
+  final String threadId;
+  final String operationId;
+  final String inputId;
+  final String continuationId;
+  final BigInt acceptedSequence;
+  final BridgeContinuationOperationState state;
+  final bool durable;
+  final BridgeStudioCommandReceipt receipt;
+
+  const BridgeContinuationOperationView({
+    required this.threadId,
+    required this.operationId,
+    required this.inputId,
+    required this.continuationId,
+    required this.acceptedSequence,
+    required this.state,
+    required this.durable,
+    required this.receipt,
+  });
+
+  @override
+  int get hashCode =>
+      threadId.hashCode ^
+      operationId.hashCode ^
+      inputId.hashCode ^
+      continuationId.hashCode ^
+      acceptedSequence.hashCode ^
+      state.hashCode ^
+      durable.hashCode ^
+      receipt.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is BridgeContinuationOperationView &&
+          runtimeType == other.runtimeType &&
+          threadId == other.threadId &&
+          operationId == other.operationId &&
+          inputId == other.inputId &&
+          continuationId == other.continuationId &&
+          acceptedSequence == other.acceptedSequence &&
+          state == other.state &&
+          durable == other.durable &&
+          receipt == other.receipt;
+}
+
+/// 无内容继续的受理回执：控制输入、继续点与受理序号，不含尚未存在的轮次编号。
+class BridgeContinueThreadReply {
+  final String threadId;
+  final String inputId;
+  final String continuationId;
+  final BigInt cursor;
+  final BridgeStudioCommandReceipt receipt;
+
+  const BridgeContinueThreadReply({
+    required this.threadId,
+    required this.inputId,
+    required this.continuationId,
+    required this.cursor,
+    required this.receipt,
+  });
+
+  @override
+  int get hashCode =>
+      threadId.hashCode ^
+      inputId.hashCode ^
+      continuationId.hashCode ^
+      cursor.hashCode ^
+      receipt.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is BridgeContinueThreadReply &&
+          runtimeType == other.runtimeType &&
+          threadId == other.threadId &&
+          inputId == other.inputId &&
+          continuationId == other.continuationId &&
+          cursor == other.cursor &&
+          receipt == other.receipt;
+}
+
 class BridgeInteractionCommandReply {
   final BridgeInteractionRequest interaction;
   final BridgeStudioCommandReceipt receipt;
@@ -58,37 +159,6 @@ class BridgeInteractionCommandReply {
       other is BridgeInteractionCommandReply &&
           runtimeType == other.runtimeType &&
           interaction == other.interaction &&
-          receipt == other.receipt;
-}
-
-class BridgeInterruptTurnCommandReply {
-  final String threadId;
-  final String turnId;
-  final bool interrupted;
-  final BridgeStudioCommandReceipt receipt;
-
-  const BridgeInterruptTurnCommandReply({
-    required this.threadId,
-    required this.turnId,
-    required this.interrupted,
-    required this.receipt,
-  });
-
-  @override
-  int get hashCode =>
-      threadId.hashCode ^
-      turnId.hashCode ^
-      interrupted.hashCode ^
-      receipt.hashCode;
-
-  @override
-  bool operator ==(Object other) =>
-      identical(this, other) ||
-      other is BridgeInterruptTurnCommandReply &&
-          runtimeType == other.runtimeType &&
-          threadId == other.threadId &&
-          turnId == other.turnId &&
-          interrupted == other.interrupted &&
           receipt == other.receipt;
 }
 
@@ -156,6 +226,38 @@ class BridgeSettingsCommandReply {
       other is BridgeSettingsCommandReply &&
           runtimeType == other.runtimeType &&
           snapshot == other.snapshot &&
+          receipt == other.receipt;
+}
+
+/// 精确停止的受理回执：`stopped` 只说明请求已被接受。
+class BridgeStopThreadReply {
+  final String threadId;
+  final String executionId;
+  final bool stopped;
+  final BridgeStudioCommandReceipt receipt;
+
+  const BridgeStopThreadReply({
+    required this.threadId,
+    required this.executionId,
+    required this.stopped,
+    required this.receipt,
+  });
+
+  @override
+  int get hashCode =>
+      threadId.hashCode ^
+      executionId.hashCode ^
+      stopped.hashCode ^
+      receipt.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is BridgeStopThreadReply &&
+          runtimeType == other.runtimeType &&
+          threadId == other.threadId &&
+          executionId == other.executionId &&
+          stopped == other.stopped &&
           receipt == other.receipt;
 }
 

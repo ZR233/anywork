@@ -10,7 +10,14 @@ final class WorkspaceAccess {
   void project(String id) => _check(RecoveryScope.project, id);
   void thread(String id) => _check(RecoveryScope.thread, id);
 
-  void _check(RecoveryScope scope, String id) {
+  /// Archive changes directory visibility; it neither opens nor cleans a worktree.
+  /// Source/window/identity validation is still mandatory for this capability.
+  void archiveProject(String id) =>
+      _check(RecoveryScope.project, id, archiving: true);
+  void archiveThread(String id) =>
+      _check(RecoveryScope.thread, id, archiving: true);
+
+  void _check(RecoveryScope scope, String id, {bool archiving = false}) {
     final state = recovery.value;
     final issues = state.issues;
     final projection = state.projection;
@@ -39,6 +46,7 @@ final class WorkspaceAccess {
         throw _unknown;
       final issue = row.current.value;
       if (issue.blocksAccess &&
+          !(archiving && issue.category == RecoveryCategory.repository && issue.worktree != null) &&
           issue.scope == scope &&
           (scope == RecoveryScope.project
               ? issue.projectId == id

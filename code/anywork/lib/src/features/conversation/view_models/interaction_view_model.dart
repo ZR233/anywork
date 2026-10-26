@@ -57,9 +57,29 @@ class InteractionViewModel extends _$InteractionViewModel {
     final repository = ref.read(conversationRepositoryProvider);
     _repository = repository;
     _submission = null;
-    _session =
-        repository.existingSession(key.threadId) ??
-        repository.session(key.threadId);
+    final session = repository.existingSession(key.threadId);
+    if (session == null) {
+      throw const StudioFailure(code: StudioFailureCode.unavailable,
+        message: 'The original interaction Session is not available',
+        retryable: true, correlationId: 'interaction-session-unavailable');
+    }
+    _session = session;
+    final stamp = session.execution.value.stamp;
+    if (stamp != null && (stamp.runtimeEpoch != key.runtimeEpoch ||
+        stamp.incarnation != key.incarnation)) {
+      throw const StudioFailure(code: StudioFailureCode.superseded,
+        message: 'The original interaction source has changed',
+        retryable: false, correlationId: 'interaction-source-replaced');
+    }
+    if (key.isHosted && (key.hostedReference == null || key.hostedOrigin == null ||
+        key.hostedOrigin?.runtimeEpoch != key.runtimeEpoch ||
+        key.hostedOrigin?.incarnation != key.incarnation ||
+        key.hostedOrigin?.facet != ThreadFacet.execution ||
+        key.hostedReference?.revision != key.revision)) {
+      throw const StudioFailure(code: StudioFailureCode.protocol,
+        message: 'The hosted interaction key has no matching original reference',
+        retryable: false, correlationId: 'interaction-hosted-key');
+    }
     final initial = InteractionViewState(key: key, enabled: _enabled);
     _createReader(initial);
     final execution = _session.execution.watchLatest(_executionChanged);
@@ -120,6 +140,7 @@ class InteractionViewModel extends _$InteractionViewModel {
 
   bool _sourceEligible(InteractionViewState value) {
     if (_reader.active == false ||
+        !_session.acceptsUserInput ||
         value.closing ||
         !identical(_repository.existingSession(value.key.threadId), _session)) {
       return false;
@@ -136,12 +157,18 @@ class InteractionViewModel extends _$InteractionViewModel {
         execution.stamp?.incarnation != current.origin.incarnation ||
         execution.value?.interactions.reference != current.index.reference ||
         current.origin.incarnation != value.key.incarnation ||
+        current.origin.runtimeEpoch != value.key.runtimeEpoch ||
         header.scope.runtimeEpoch != current.origin.runtimeEpoch) {
       return false;
     }
     return current.items.any(
       (item) =>
           item.interactionId == value.key.interactionId &&
+          item.targetThreadId == value.key.target &&
+          (!value.key.isHosted || item.reference == value.key.hostedReference &&
+              value.key.hostedOrigin?.runtimeEpoch == current.origin.runtimeEpoch &&
+              value.key.hostedOrigin?.incarnation == current.origin.incarnation &&
+              header.purpose is! PlanConfirmationPurposeRead) &&
           item.revision == value.key.revision &&
           item.status == InteractionStatus.pending,
     );
@@ -335,7 +362,8 @@ class InteractionViewModel extends _$InteractionViewModel {
     }
     // No read, retry, lookup by ID or await may replace these captured values.
     final session = _session;
-    final origin = session.execution.value.stamp!;
+    final origin = value.key.isHosted
+        ? value.key.hostedOrigin! : session.execution.value.stamp!;
     final key = value.key;
     final intent = value.latestIntent + 1;
     try {
@@ -353,18 +381,35 @@ class InteractionViewModel extends _$InteractionViewModel {
       _submission = submission;
       _publish(value.copyWith(latestIntent: intent, submissionError: null));
       try {
-        final ticket = session.respondInteraction(
+        final ticket = key.isHosted
+            ? session.respondHostedInteraction(
+                origin: origin,
+                reference: key.hostedReference!,
+                targetThreadId: key.target,
+                interactionId: key.interactionId,
+                expectedInteractionRevision: key.revision,
+                resolution: resolution,
+              )
+            : session.respondInteraction(
           origin: origin,
           interactionId: key.interactionId,
           expectedInteractionRevision: key.revision,
           resolution: resolution,
         );
         submission.ticket = ticket;
+        var delivered = false;
         final watch = ticket.state.watchLatest(
-          (operation) => _submissionChanged(submission, operation),
+          (operation) {
+            delivered = true;
+            _submissionChanged(submission, operation);
+          },
         );
         submission.observation = watch.observation;
-        _submissionChanged(submission, watch.value);
+        if (!delivered) _submissionChanged(submission, watch.value);
+        if (!_isOriginalSubmission(submission)) {
+          watch.observation.cancel();
+          submission.observation = null;
+        }
         return _settleSubmission(submission, ticket);
       } catch (error, trace) {
         _submissionFailed(submission, error, trace);

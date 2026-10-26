@@ -178,24 +178,6 @@ pub struct ArchiveThreadCommandReply {
     pub receipt: pl_protocol::studio::StudioCommandReceipt,
 }
 
-/// Studio UI 请求停止当前 Thread Turn 后的结果。
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct StudioStopPromptResponse {
-    pub thread_id: String,
-    pub stopped: bool,
-}
-
-/// Result of validating and interrupting the expected active Turn.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct StudioInterruptPromptResponse {
-    pub thread_id: String,
-    pub turn_id: String,
-    pub interrupted: bool,
-    pub receipt: pl_protocol::studio::StudioCommandReceipt,
-}
-
 /// Studio UI resolve interaction 后的核心响应。
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -282,9 +264,9 @@ pub struct StudioRuntime {
     /// helper 分发走 `ssh_manager`），因此不保留该字段。
     #[cfg(target_os = "linux")]
     helper_source: crate::worker_assets::RemoteHelperSource,
-    /// One archive owns lifecycle admission through close and directory commit, even if its
-    /// caller disconnects. The bounded slot retains its actual completion for retry/shutdown.
-    archive_task: background_task::BackgroundTaskSlot,
+    /// An archive or worktree cleanup owns lifecycle admission through its real terminal commit,
+    /// independent of its caller. The shared slot retains completion for retry/shutdown.
+    thread_lifecycle_task: background_task::BackgroundTaskSlot,
     lifecycle_lock: std::sync::Arc<tokio::sync::Mutex<()>>,
     /// 单向关闭终止闩：commit 后拒绝迟到安装。
     shutdown_latch: lifecycle::shutdown::ShutdownLatch,

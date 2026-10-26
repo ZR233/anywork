@@ -14,6 +14,7 @@ import 'package:test/test.dart';
 import 'support/configuration_start_fixture.dart';
 import 'support/drafts_fixture.dart';
 import 'support/drafts_native_fixture.dart';
+import 'support/thread_metadata_fixture.dart';
 
 Future<void> _acknowledge(
   DraftsFixture fixture,
@@ -90,6 +91,91 @@ Future<DraftCreationJob> _acceptedCreation(
 }
 
 void main() {
+  test('child submission is rejected with its typed reason before preparation or dispatch, preserving the draft', () async {
+    final fixture = await draftsFixture();
+    fixture.conversations.context.metadata = (id) => ScriptedThreadMetadata(id,
+      initial: metadataState(record: draftThread(id, root: 'root')));
+    final composer = await fixture.composer(threadId: 'child');
+    composer.setText('keep child draft');
+    var prepared = false;
+    final ticket = composer.submit(preparePresentation: () async { prepared = true; });
+    final result = await ticket.result;
+    expect(result, isA<RejectedCommandResult<SubmitPromptReceipt>>());
+    final failure = (result as RejectedCommandResult<SubmitPromptReceipt>).error;
+    expect(studioFailureReason(failure), StudioFailureReason.childThreadRequiresParentScheduling);
+    expect(prepared, isFalse);
+    expect(fixture.commands.prompts.values, isEmpty);
+    expect(fixture.attachments.begins.values, isEmpty);
+    expect(composer.state.value.text, 'keep child draft');
+    expect(ticket.state.value.failurePhase, OperationFailurePhase.rejected);
+  });
+  test('all attachment sources freeze beta before staging/queueing; known rejection preserves draft, prior files and budget', () async {
+    final staged = Completer<String?>();
+    final cleaned = <String>[];
+    final fixture = await draftsFixture(stageImage: (_) => staged.future,
+      cleanupImage: (path) async { cleaned.add(path); });
+    final start = fixture.repository.start('project')..setText('keep this draft');
+    fixture.repository.setStartModel(ThreadModeId.simple, 'account', 'beta');
+    const beta = ModelSelection(model: AccountModelKey(accountId: 'account', modelId: 'beta'), effort: 'high');
+    await fixture.prepare(start, route: beta);
+    final local = start.addLocalFiles(['/declared/first.bin']);
+    final url = start.addRemoteUrl('https://attachment.invalid/second.bin');
+    final clipboard = start.addClipboardImage(Uint8List.fromList([1, 2, 3]));
+    fixture.repository.setStartModel(ThreadModeId.simple, 'account', 'alpha');
+    await fixture.admit(local, [draftFile('local')]);
+    await fixture.admit(url, [draftFile('url')]);
+    staged.complete('/declared/clipboard.png');
+    await fixture.admit(clipboard, [draftFile('clipboard')]);
+    expect(fixture.attachments.begins.values.map((call) => (call.context as NewThreadAttachmentAdmissionContext).route), [beta, beta, beta]);
+    expect(cleaned, ['/declared/clipboard.png']);
+    final previous = start.state.value.attachments;
+    expect(fixture.budget.used(ResourceKind.attachment), 3);
+    const alpha = ModelSelection(model: AccountModelKey(accountId: 'account', modelId: 'alpha'), effort: 'low');
+    await fixture.prepare(start, route: alpha);
+    const refusal = StudioFailure(code: StudioFailureCode.invalidArgument,
+      message: 'Unsupported file media type', retryable: false, correlationId: 'unsupported-file');
+    final rejected = start.addLocalFiles(['/declared/unsupported.bin']);
+    final failedBegin = await fixture.attachments.begins.at(3);
+    final failedJob = DraftAdmissionJob(failedBegin.id);
+    failedBegin.reply.complete(failedJob);
+    (await failedJob.reads.at(0)).completeError(const CommandDispatchFailure.rejected(failure: refusal));
+    (await failedJob.closes.at(0)).reply.complete(FeedCloseReport(feedId: failedJob.id.value, outcome: const FeedCloseOutcome.clean()));
+    final failure = await rejected.result;
+    expect(failure, isA<RejectedCommandResult<Unit>>());
+    expect((failure as RejectedCommandResult<Unit>).error, refusal);
+    expect(start.state.value.attachments, previous);
+    expect(start.state.value.text, 'keep this draft');
+    expect(fixture.budget.used(ResourceKind.attachment), 3);
+    final legal = start.addLocalFiles(['/declared/supported.bin']);
+    final begin = await fixture.attachments.begins.at(4);
+    expect((begin.context as NewThreadAttachmentAdmissionContext).route, alpha);
+    final job = DraftAdmissionJob(begin.id);
+    begin.reply.complete(job);
+    (await job.reads.at(0)).complete([draftFile('legal')]);
+    (await job.closes.at(0)).reply.complete(FeedCloseReport(feedId: job.id.value, outcome: const FeedCloseOutcome.clean()));
+    expect(await legal.result, isA<AcknowledgedCommandResult<Unit>>());
+    expect(start.state.value.attachments, [...previous, draftFile('legal')]);
+    expect(fixture.configuration.owner.port.saves, isEmpty, reason: 'Admission never saves mode defaults or Settings.');
+    final discard = start.discard();
+    for (var index = 0; index < 4; index++) { (await fixture.attachments.removals.at(index)).reply.complete(true); }
+    await discard.result;
+    expect(fixture.budget.used(ResourceKind.attachment), 0);
+  });
+
+  test('unprepared Start route rejects attachment intent before native entry, clipboard staging or reservation', () async {
+    var staged = false;
+    final fixture = await draftsFixture(stageImage: (_) async { staged = true; return '/declared/unused'; });
+    final start = fixture.repository.start('project')..setText('preserve');
+    for (final ticket in [start.addLocalFiles(['/declared/file']), start.addRemoteUrl('https://attachment.invalid/file'), start.addClipboardImage(Uint8List.fromList([1]))]) {
+      final result = await ticket.result;
+      expect(result, isA<RejectedCommandResult<Unit>>());
+      expect((result as RejectedCommandResult<Unit>).error.code, StudioFailureCode.unavailable);
+    }
+    expect(staged, isFalse);
+    expect(fixture.attachments.begins.values, isEmpty);
+    expect(fixture.budget.used(ResourceKind.attachment), 0);
+    expect(start.state.value.text, 'preserve');
+  });
   test('public factory and borrowed handles do not open IO, Sessions or native commands', () async {
     final fixture = DraftsFixture();
     addTearDown(fixture.close);
@@ -178,9 +264,6 @@ void main() {
     start.setDelegationMode(DelegationMode.profile);
     start.setDelegationPreference(DelegationPreference.fast);
     start.setText(' frozen creation ');
-    await fixture.admit(start.addLocalFiles(['/declared/start']), [
-      draftFile('start-file'),
-    ]);
     final rejected = start.submit();
     expect(
       await rejected.result,
@@ -196,6 +279,7 @@ void main() {
       effort: 'raw effort',
     );
     await fixture.prepare(start, route: route);
+    await fixture.admit(start.addLocalFiles(['/declared/start']), [draftFile('start-file')]);
     final ready =
         start.state.value.routePreparation as ReadyStartRoutePreparation;
     expect(ready.result.sources, startSources());
@@ -405,10 +489,10 @@ void main() {
     final fixture = await draftsFixture();
     await fixture.selectStart();
     final start = fixture.repository.start('project')..setText('original');
+    await fixture.prepare(start);
     await fixture.admit(start.addLocalFiles(['/declared/preparation']), [
       draftFile('preparation'),
     ]);
-    await fixture.prepare(start);
     final ticket = start.submit();
     final begin = await fixture.creations.begins.at(0);
     final job = DraftCreationJob(

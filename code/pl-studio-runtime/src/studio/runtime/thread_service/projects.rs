@@ -124,8 +124,10 @@ impl StudioRuntime {
     pub async fn archive_project(&self, project_id: &str) -> Result<Option<ProjectRecord>> {
         let runtime = self.clone();
         let project_id = project_id.to_owned();
-        self.run_archive(async move { runtime.archive_project_owned(&project_id).await })
-            .await
+        self.run_thread_lifecycle_operation(async move {
+            runtime.archive_project_owned(&project_id).await
+        })
+        .await
     }
 
     /// The retained archive worker owns lifecycle admission throughout this operation.

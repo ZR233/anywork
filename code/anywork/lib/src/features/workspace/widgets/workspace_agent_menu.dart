@@ -1,3 +1,4 @@
+import 'package:anywork_client/operations.dart';
 import 'package:anywork_client/resources.dart';
 import 'package:anywork_client/workspace.dart';
 import 'package:flutter/material.dart';
@@ -5,6 +6,9 @@ import 'package:flutter/material.dart';
 import '../../../app/theme/studio_tokens.dart';
 import '../../../diagnostics/studio_driver_keys.dart';
 import '../../../l10n/studio_l10n.dart';
+import '../state/agent_list_stop.dart';
+import '../state/agent_membership.dart';
+import '../state/workspace_view_state.dart';
 
 class WorkspaceAgentMenu extends StatefulWidget {
   const WorkspaceAgentMenu({
@@ -16,8 +20,12 @@ class WorkspaceAgentMenu extends StatefulWidget {
     required this.enabled,
     required this.onSelect,
     required this.onLoadMore,
+    required this.onStop,
+    this.threads = const {},
+    this.stopActions = const {},
     super.key,
   });
+
   final List<AgentDirectoryEntry> agents;
   final bool complete;
   final bool loading;
@@ -26,6 +34,9 @@ class WorkspaceAgentMenu extends StatefulWidget {
   final String? selectedThreadId;
   final ValueChanged<String> onSelect;
   final VoidCallback onLoadMore;
+  final ValueChanged<AgentDirectoryEntry> onStop;
+  final Map<String, WorkspaceThreadRecord> threads;
+  final Map<String, WorkspaceActionPresentation> stopActions;
 
   @override
   State<WorkspaceAgentMenu> createState() => _WorkspaceAgentMenuState();
@@ -36,13 +47,7 @@ class _WorkspaceAgentMenuState extends State<WorkspaceAgentMenu> {
 
   @override
   Widget build(BuildContext context) {
-    final indexed =
-        [for (var i = 0; i < widget.agents.length; i++) (i, widget.agents[i])]
-          ..sort((a, b) {
-            final priority = _priority(a.$2.state)
-                .compareTo(_priority(b.$2.state));
-            return priority == 0 ? a.$1.compareTo(b.$1) : priority;
-          });
+    final agents = AgentDirectoryQueries.menuOrder(widget.agents);
     final viewport = MediaQuery.sizeOf(context);
     final available = (viewport.width - 24)
         .clamp(0.0, double.infinity)
@@ -75,7 +80,7 @@ class _WorkspaceAgentMenuState extends State<WorkspaceAgentMenu> {
       ),
       alignmentOffset: const Offset(6, 6),
       menuChildren: [
-        for (final entry in indexed) _row(context, entry.$2),
+        for (final agent in agents) _row(context, agent, width),
         if (widget.agents.isEmpty && widget.complete)
           MenuItemButton(child: Text(context.l10n.statusAgentsCount(0))),
         if (widget.loading)
@@ -99,7 +104,7 @@ class _WorkspaceAgentMenuState extends State<WorkspaceAgentMenu> {
             Icon(Icons.circle, size: 6, color: aggregate),
             const SizedBox(width: 8),
             Text(
-              '${context.l10n.statusAgentsCount(widget.agents.length)}${widget.complete ? '' : '…'}',
+              '${context.l10n.statusAgentsCount(AgentDirectoryQueries.activeCount(agents))}${widget.complete ? '' : '…'}',
             ),
             const SizedBox(width: 4),
             const Icon(Icons.keyboard_arrow_down, size: 14),
@@ -109,11 +114,18 @@ class _WorkspaceAgentMenuState extends State<WorkspaceAgentMenu> {
     );
   }
 
-  Widget _row(BuildContext context, AgentDirectoryEntry agent) {
+  Widget _row(
+    BuildContext context,
+    AgentDirectoryEntry agent,
+    double menuWidth,
+  ) {
     final error = _error(agent.state);
-    final retired = agent.parentPath != null && agent.role == 'planner';
+    final retired = isRetiredAgentRow(agent);
+    final thread = widget.threads[agent.threadId];
     final task = agent.task.trim();
-    final summary = task.isNotEmpty
+    final summary = thread?.title.trim().isNotEmpty == true
+        ? thread!.title
+        : task.isNotEmpty
         ? task
         : retired
         ? agent.threadId
@@ -122,9 +134,42 @@ class _WorkspaceAgentMenuState extends State<WorkspaceAgentMenu> {
         ? context.threadStatusLabel(_status(agent.state))
         : '${error.message}\n${error.code}';
     final selected = widget.selectedThreadId == agent.threadId;
+    final action = widget.stopActions[agent.threadId];
+    final operation = action?.operation;
+    final accepted =
+        operation?.receipt != null || operation?.acknowledged == true;
+    final stop = AgentListStopState.resolve(
+      agent: agent,
+      acceptedExecutionId: accepted && operation?.effective != true
+          ? action?.directoryStopTarget?.executionId
+          : null,
+    );
+    final frozen = agent.frozenModel ?? thread?.frozenModel;
+    final model = frozen?.modelId ?? context.l10n.delegationModelNotRecorded;
+    final modelTooltip = frozen == null
+        ? model
+        : '$model\n${frozen.accountId} / ${frozen.modelId}\n${context.l10n.statusReasoningEffort}: ${frozen.effort ?? context.l10n.statisticsReasoningEffortUnspecified}';
+    final role = retired
+        ? context.l10n.agentRoleRetired
+        : context.roleLabel(agent.role);
+    final indent = (agent.depth * 12.0)
+        .clamp(0.0, (menuWidth - 208).clamp(0.0, menuWidth))
+        .toDouble();
+    final rowWidth = (menuWidth - 88 - indent).clamp(0.0, menuWidth).toDouble();
+    final statusGap = rowWidth.clamp(0.0, 12.0).toDouble();
+    final statusWidth = (rowWidth - statusGap).clamp(0.0, 84.0).toDouble();
     final secondary = context.text.labelSmall?.copyWith(
       color: context.colors.onSurfaceVariant,
     );
+    final failures = <StudioFailure>{
+      ?action?.admissionError,
+      ?operation?.error,
+      ?operation?.evidenceError,
+      ?action?.observationError,
+    };
+    final failureText = failures.map(_failureText).join('\n');
+    final rejected = action?.admissionError != null ||
+        operation?.failurePhase == OperationFailurePhase.rejected;
     return MenuItemButton(
       key: StudioDriverKeys.agentRow(agent.threadId),
       onPressed: widget.enabled && widget.current
@@ -134,7 +179,7 @@ class _WorkspaceAgentMenuState extends State<WorkspaceAgentMenu> {
         backgroundColor: selected ? context.colors.surfaceContainerHigh : null,
       ),
       leadingIcon: Padding(
-        padding: EdgeInsetsDirectional.only(start: agent.depth * 12.0),
+        padding: EdgeInsetsDirectional.only(start: indent),
         child: Icon(
           error != null ? Icons.error_outline : Icons.circle,
           size: error != null ? 16 : 9,
@@ -149,60 +194,160 @@ class _WorkspaceAgentMenuState extends State<WorkspaceAgentMenu> {
               : context.statusColors.success,
         ),
       ),
-      trailingIcon: Visibility(
-        visible: selected,
-        maintainSize: true,
-        maintainAnimation: true,
-        maintainState: true,
-        child: const Icon(Icons.check, size: 18),
-      ),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+      trailingIcon: Row(
+        mainAxisSize: MainAxisSize.min,
         children: [
-          Flexible(
-            flex: 2,
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
+          _stopControl(context, agent, stop, action, summary),
+          Visibility(
+            visible: selected,
+            maintainSize: true,
+            maintainAnimation: true,
+            maintainState: true,
+            child: const Icon(Icons.check, size: 18),
+          ),
+        ],
+      ),
+      child: SizedBox(
+        width: rowWidth,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
               children: [
-                Tooltip(
-                  message: summary,
-                  child: Text(
-                    summary,
-                    key: StudioDriverKeys.agentTaskSummary(agent.threadId),
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
+                Expanded(
+                  child: Tooltip(
+                    message: summary,
+                    child: Text(
+                      summary,
+                      key: StudioDriverKeys.agentTaskSummary(agent.threadId),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
                   ),
                 ),
-                if (agent.role.trim().isNotEmpty)
-                  Text(
-                    retired
-                        ? context.l10n.agentRoleRetired
-                        : context.roleLabel(agent.role),
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: secondary,
+                SizedBox(width: statusGap),
+                SizedBox(
+                  width: statusWidth,
+                  child: Tooltip(
+                    message: status,
+                    child: Text(
+                      status,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: secondary,
+                    ),
                   ),
+                ),
               ],
             ),
-          ),
-          const SizedBox(width: 12),
-          Flexible(
-            child: Tooltip(
-              message: status,
+            Tooltip(
+              message: modelTooltip,
               child: Text(
-                status,
+                '${agent.role.trim().isEmpty ? '' : '$role · '}$model',
+                key: StudioDriverKeys.agentModel(agent.threadId),
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
                 style: secondary,
               ),
             ),
-          ),
-        ],
+            if (stop.action == AgentListStopAction.stopping ||
+                stop.action == AgentListStopAction.stoppedWaitingScheduling)
+              Text(
+                stop.action == AgentListStopAction.stopping
+                    ? context.l10n.agentStopping
+                    : context.l10n.agentStopWaitingScheduling,
+                key: StudioDriverKeys.agentStopNote(agent.threadId),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: secondary,
+              ),
+            if (_progress(context, action) case final progress?)
+              Text(
+                progress,
+                key: operation?.failurePhase == OperationFailurePhase.unknownOutcome
+                    ? ValueKey('agent-stop-unconfirmed-${agent.threadId}')
+                    : ValueKey('agent-stop-progress-${agent.threadId}'),
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                style: secondary,
+              ),
+            if (failures.isNotEmpty)
+              Tooltip(
+                message: failureText,
+                child: Text(
+                  rejected
+                      ? context.l10n.agentStopFailed(failureText)
+                      : context.l10n.conversationStopError(failureText),
+                  key: ValueKey('agent-stop-failure-${agent.threadId}'),
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: secondary?.copyWith(color: context.colors.error),
+                ),
+              ),
+          ],
+        ),
       ),
     );
   }
+
+  Widget _stopControl(
+    BuildContext context,
+    AgentDirectoryEntry agent,
+    AgentListStopState stop,
+    WorkspaceActionPresentation? action,
+    String summary,
+  ) {
+    if (!stop.canStop) return const SizedBox.shrink();
+    final operation = action?.operation;
+    final pending =
+        action?.waiting == true ||
+        operation?.isPending == true ||
+        operation?.failurePhase == OperationFailurePhase.syncFailed ||
+        ((operation?.receipt != null || operation?.acknowledged == true) &&
+            operation?.effective != true);
+    return IconButton(
+      key: StudioDriverKeys.agentStop(agent.threadId),
+      iconSize: 18,
+      visualDensity: VisualDensity.compact,
+      tooltip: context.l10n.agentStopSemantics(summary),
+      onPressed: widget.enabled && widget.current && !pending
+          ? () => widget.onStop(agent)
+          : null,
+      icon: pending
+          ? const SizedBox.square(
+              dimension: 14,
+              child: CircularProgressIndicator(strokeWidth: 2),
+            )
+          : const Icon(Icons.stop_circle_outlined),
+    );
+  }
+
+  String? _progress(
+    BuildContext context,
+    WorkspaceActionPresentation? action,
+  ) {
+    final operation = action?.operation;
+    if (operation?.failurePhase == OperationFailurePhase.unknownOutcome) {
+      return context.l10n.conversationStopUnknown;
+    }
+    if (operation?.effective == true) {
+      return context.l10n.conversationStopEffective;
+    }
+    if (operation?.observed == true) {
+      return context.l10n.conversationStopObserved;
+    }
+    if (operation?.receipt != null || operation?.acknowledged == true) {
+      return context.l10n.conversationStopAwaitingObservation;
+    }
+    return action?.waiting == true
+        ? context.l10n.conversationStopRequesting
+        : null;
+  }
 }
+
+String _failureText(StudioFailure failure) =>
+    '${failure.message}\n${failure.code.name} · ${failure.correlationId}';
 
 int _priority(AgentState state) => switch (state) {
   QueuedAgentState() ||

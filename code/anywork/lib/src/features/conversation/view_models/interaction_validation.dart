@@ -23,6 +23,9 @@ InteractionSubmitBlock? interactionSubmitBlock(InteractionViewState state) {
   }
   final header = state.header;
   if (header == null) return InteractionSubmitBlock.readIncomplete;
+  if (state.key.isHosted && header.purpose is PlanConfirmationPurposeRead) {
+    return InteractionSubmitBlock.disabled;
+  }
   if (header.state is! PendingInteractionRead) {
     return InteractionSubmitBlock.noLongerPending;
   }
@@ -36,8 +39,9 @@ InteractionSubmitBlock? interactionSubmitBlock(InteractionViewState state) {
     return InteractionSubmitBlock.readIncomplete;
   }
   if (state.textOf(header.interactionId) != state.key.interactionId ||
-      state.textOf(header.threadId) != state.key.threadId ||
+      state.textOf(header.threadId) != state.key.target ||
       header.revision != state.key.revision ||
+      header.scope.runtimeEpoch != state.key.runtimeEpoch ||
       header.scope.incarnation != state.key.incarnation) {
     return InteractionSubmitBlock.sourceChanged;
   }

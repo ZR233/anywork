@@ -4,8 +4,10 @@ import 'dart:math' as math;
 import 'package:anywork/src/app/app_graph.dart';
 import 'package:anywork/src/diagnostics/conversation_status_diagnostics.dart';
 import 'package:anywork/src/features/conversation/state/editor_keys.dart';
+import 'package:anywork/src/features/conversation/state/interaction_view_state.dart';
 import 'package:anywork/src/features/conversation/view_models/composer_view_model.dart';
 import 'package:anywork/src/features/conversation/view_models/conversation_view_model.dart';
+import 'package:anywork/src/features/conversation/view_models/interaction_view_model.dart';
 import 'package:anywork/src/features/conversation/view_models/plan_view_model.dart';
 import 'package:anywork/src/features/conversation/view_models/thread_status_view_model.dart';
 import 'package:anywork/src/features/settings/modes/view_models/mode_editor_view_model.dart';
@@ -20,10 +22,11 @@ import 'package:anywork/src/features/workspace/view_models/sidebar_view_model.da
 import 'package:anywork/src/features/workspace/view_models/workspace_view_model.dart';
 import 'package:anywork_client/bots.dart';
 import 'package:anywork_client/configuration.dart';
+import 'package:anywork_client/conversation.dart';
 import 'package:anywork_client/drafts.dart';
 import 'package:anywork_client/models.dart';
+import 'package:anywork_client/operations.dart';
 import 'package:anywork_client/resources.dart';
-import 'package:anywork_client/statistics.dart';
 import 'package:anywork_client/workspace.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -89,6 +92,19 @@ final class DriverInspection {
         ? null
         : threadStatusViewModelProvider(thread);
     final plan = thread == null ? null : planViewModelProvider(thread);
+    final conversationValue = conversation != null && container.exists(conversation)
+        ? container.read(conversation).asData?.value
+        : null;
+    List<InteractionViewState>? interactionEditors;
+    if (conversationValue != null) {
+      interactionEditors = <InteractionViewState>[];
+      for (final key in conversationValue.currentEditors) {
+        final provider = interactionViewModelProvider(key);
+        if (!container.exists(provider)) continue;
+        final editor = container.read(provider).asData?.value;
+        if (editor != null) interactionEditors.add(editor);
+      }
+    }
     return captureDriverSnapshot(
       graph,
       visible: DriverViewFacts(
@@ -104,9 +120,10 @@ final class DriverInspection {
         threadComposer: composer != null && container.exists(composer)
             ? container.read(composer).asData?.value
             : null,
-        conversation: conversation != null && container.exists(conversation)
-            ? container.read(conversation).asData?.value
-            : null,
+        conversation: conversationValue,
+        // Borrow only existing editors by their complete original keys. Shared
+        // capture validates current host/target/source before serialization.
+        interactionEditors: interactionEditors,
         status: status != null && container.exists(status)
             ? container.read(status).asData?.value
             : null,
@@ -236,6 +253,8 @@ final class DriverInspection {
             ? active
             : null,
       ),
+      'conversationControls': _conversationControls(values),
+      'interactionIndex': _interactionIndex(values),
       'skills': skills(),
       'composer': {'newThread': composer(true), 'thread': composer(false)},
       'accounts': {
@@ -308,6 +327,98 @@ final class DriverInspection {
         'runtimeEventEndpoint': 'typed-session-observation',
         'systemClipboardTouched': false,
       },
+    };
+  }
+
+  /// The mounted VM already owns these tickets and original-operation queries.
+  /// Reading them neither sends a command nor starts a continuation recheck.
+  Map<String, Object?>? _conversationControls(DriverSnapshot values) {
+    final view = values.conversation;
+    if (view == null) return null;
+    final stop = view.stop;
+    final continuation = view.continuation;
+    final recovered = continuation?.recovered;
+    return {
+      'threadId': view.threadId,
+      'stop': stop == null
+          ? null
+          : {
+              'origin': _threadStamp(stop.origin),
+              'executionId': stop.executionId,
+              'pending': stop.pending,
+              'accepted': stop.accepted,
+              'unknown': stop.unknown,
+              'operation': _operationEvidence(stop.operation),
+              'error': stop.failure?.code.name,
+              'observationError': stop.observationError?.code.name,
+            },
+      'continuation': continuation == null
+          ? null
+          : {
+              'origin': _threadStamp(continuation.origin),
+              'continuationId': continuation.continuationId,
+              'modelRouteRevision': continuation.modelRouteRevision,
+              'pending': continuation.pending,
+              'accepted': continuation.accepted,
+              'unknown': continuation.unknown,
+              'inProgress': continuation.inProgress,
+              'reading': continuation.reading,
+              'error': continuation.error?.code.name,
+              'operation': _operationEvidence(continuation.operation),
+              'recovered': recovered == null
+                  ? null
+                  : {
+                      'threadId': recovered.threadId,
+                      'operationId': recovered.operationId.value,
+                      'inputId': recovered.inputId,
+                      'continuationId': recovered.continuationId,
+                      'acceptedSequence': recovered.acceptedSequence,
+                      'state': switch (recovered.state) {
+                        PendingContinuation() => 'pending',
+                        ConsumedContinuation() => 'consumed',
+                        DiscardedContinuation() => 'discarded',
+                      },
+                      'turnId': switch (recovered.state) {
+                        ConsumedContinuation(:final turnId) => turnId,
+                        _ => null,
+                      },
+                      // Pending may be durable without being consumed/effective.
+                      'durable': recovered.durable,
+                      'effective': recovered.receipt.effective,
+                    },
+            },
+    };
+  }
+
+  /// Only the existing bounded index is borrowed. Its refs belong to the host,
+  /// while each item's target remains the actual child/root Thread identity.
+  Map<String, Object?>? _interactionIndex(DriverSnapshot values) {
+    final view = values.conversation;
+    final index = view?.interactions?.current;
+    if (index == null ||
+        values.execution?.sync.phase != FacetSyncPhase.ready ||
+        index.origin != values.execution?.stamp) {
+      return null;
+    }
+    return {
+      'hostThreadId': view!.threadId,
+      'origin': _threadStamp(index.origin),
+      'complete': index.complete,
+      'nextOffset': index.nextOffset,
+      'items': [
+        for (final item in index.items)
+          {
+            'reference': {
+              'entry': item.reference.entry,
+              'revision': item.reference.revision,
+            },
+            'interactionId': item.interactionId,
+            'targetThreadId': item.targetThreadId,
+            'revision': item.revision,
+            'kind': item.kind.name,
+            'status': item.status.name,
+          },
+      ],
     };
   }
 
@@ -449,64 +560,6 @@ final class DriverInspection {
             ],
       'threadId': graph.workspace.state.value.selection.threadId,
       'run': workflow is Map<String, Object?> ? workflow['currentRun'] : null,
-    };
-  }
-
-  Map<String, Object?> statistics() {
-    final state = graph.statistics.state.value;
-    final snapshot = state.snapshot;
-    final summaryRows = snapshot?.summaries;
-    final historyRows = snapshot?.history;
-    return {
-      'loaded': snapshot != null,
-      'syncPhase': state.sync.phase.name,
-      'syncError': state.sync.error == null
-          ? null
-          : {
-              'code': state.sync.error!.code.name,
-              'retryable': state.sync.error!.retryable,
-            },
-      'revision': snapshot?.revision,
-      'statisticsPending': snapshot?.statisticsPending,
-      'statisticsGap': snapshot?.statisticsGap,
-      'readFailed': snapshot?.readFailed,
-      'summaries': summaryRows == null
-          ? null
-          : [
-              for (final summary in summaryRows)
-                {
-                  'accountId': summary.identity.accountId,
-                  'accountDisplayName': summary.identity.accountDisplayName,
-                  'modelId': summary.identity.modelId,
-                  ..._counters(summary.counters),
-                  'effortBreakdowns': [
-                    for (final effort in summary.effortBreakdowns)
-                      {
-                        'effort': effort.identity.effort,
-                        ..._counters(effort.counters),
-                      },
-                  ],
-                },
-            ],
-      'history': historyRows == null
-          ? null
-          : [
-              for (final sample in historyRows)
-                {
-                  'accountId': sample.identity.accountId,
-                  'accountDisplayName': sample.identity.accountDisplayName,
-                  'modelId': sample.identity.modelId,
-                  'sentModel': sample.identity.sentModel,
-                  'reportedModel': sample.identity.reportedModel,
-                  'matchState': sample.identity.modelMatchState.name,
-                  'effort': sample.identity.effort,
-                  'tokens': sample.counters.completionTokens,
-                  'ttftMillis': sample.counters.ttftMillis,
-                  'decodeMillis': sample.counters.decodeMillis,
-                  'responseMillis': sample.counters.totalResponseMillis,
-                  'tokensPerSecond': sample.counters.tokensPerSecond,
-                },
-            ],
     };
   }
 
@@ -675,10 +728,26 @@ Map<String, Object?>? _selection(ModelSelection? selection) => selection == null
         'effort': selection.effort,
       };
 
-Map<String, Object?> _counters(PerformanceCounters counters) => {
-  'samples': counters.sampleCount,
-  'tokens': counters.completionTokens,
-  'tokensPerSecond': counters.tokensPerSecond,
-  'ttftSampleCount': counters.ttftSampleCount,
-  'averageTtftMillis': counters.averageTtftMillis,
-};
+Map<String, Object?>? _threadStamp(ThreadFacetStamp? stamp) => stamp == null
+    ? null
+    : {
+        'runtimeEpoch': stamp.runtimeEpoch,
+        'incarnation': stamp.incarnation,
+        'facet': stamp.facet.name,
+        'revision': stamp.revision,
+      };
+
+Map<String, Object?>? _operationEvidence(OperationState? operation) =>
+    operation == null
+    ? null
+    : {
+        'operationId': operation.id.value,
+        'acknowledged': operation.acknowledged,
+        'hasReceipt': operation.receipt != null,
+        'observed': operation.observed,
+        'effective': operation.effective,
+        'durable': operation.durable,
+        'failurePhase': operation.failurePhase?.name,
+        'error': operation.error?.code.name,
+        'evidenceError': operation.evidenceError?.code.name,
+      };

@@ -190,9 +190,13 @@ final class InteractionScopeOwner
     required super.expectedRevision,
     required this.expectedThreadId,
     this.expectedInteractionId,
+    this.expectedTargetThreadId,
+    this.allowHostedTarget = false,
   });
   final String expectedThreadId;
   final String? expectedInteractionId;
+  final String? expectedTargetThreadId;
+  final bool allowHostedTarget;
   @override
   Future<InteractionReadHeader> header() => readHeader((c) async {
     final h = await c.header();
@@ -201,7 +205,9 @@ final class InteractionScopeOwner
       throw readProtocol(
         'The Interaction header replaced its requested revision.',
       );
-    if (await readPinnedIdentity(owner, c, h.threadId) != expectedThreadId ||
+    if ((!allowHostedTarget && await readPinnedIdentity(owner, c, h.threadId) != expectedThreadId) ||
+        (expectedTargetThreadId != null &&
+            await readPinnedIdentity(owner, c, h.threadId) != expectedTargetThreadId) ||
         (expectedInteractionId != null &&
             await readPinnedIdentity(owner, c, h.interactionId) !=
                 expectedInteractionId)) {

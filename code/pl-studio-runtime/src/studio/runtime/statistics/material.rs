@@ -38,13 +38,13 @@ impl StatisticsReadMaterial {
         }
     }
     /// 固定读取数据只来自材料本身；发布状态不在材料里，读取不暴露它。
-    fn summary_values(&self) -> Result<&[crate::StudioModelPerformanceSummary], StudioError> {
+    fn summary_values(&self) -> Result<&[crate::statistics::StudioModelPerformanceSummary], StudioError> {
         match &self.source.root {
             Root::Summaries(summaries) => Ok(summaries),
             Root::History { .. } | Root::Costs(_) => Err(wrong()),
         }
     }
-    fn sample_values(&self) -> Result<&[crate::StudioModelPerformanceSample], StudioError> {
+    fn sample_values(&self) -> Result<&[crate::statistics::StudioModelPerformanceSample], StudioError> {
         match &self.source.root {
             Root::History { samples, .. } => Ok(samples),
             Root::Summaries(_) | Root::Costs(_) => Err(wrong()),
@@ -602,8 +602,8 @@ macro_rules! counters {
         }
     };
 }
-counters!(crate::StudioModelPerformanceSummary);
-counters!(crate::StudioModelPerformanceEffortSummary);
+counters!(crate::statistics::StudioModelPerformanceSummary);
+counters!(crate::statistics::StudioModelPerformanceEffortSummary);
 fn wrong() -> StudioError {
     StudioError::invalid_argument("Unknown field, list or variant in this Statistics scope")
 }

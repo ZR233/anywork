@@ -3,7 +3,8 @@ import '../../../drafts.dart'
 import '../../../operations.dart' show CommitReceipt;
 import '../../../resources.dart' show OperationId;
 import '../domain/interaction_values.dart';
-import '../domain/interrupt_turn_reply.dart';
+import '../domain/continuation_values.dart';
+import '../domain/stop_execution_reply.dart';
 import '../domain/thread_command_reply.dart';
 
 /// Adapter-only methods with a fully closed contract. Unspecified mutation replies
@@ -33,7 +34,7 @@ abstract interface class ConversationCommandPort {
     required int expectedSettingsRevision,
   });
   Future<InteractionCommandReply> respondInteraction(
-    String threadId,
+    String hostThreadId,
     String interactionId, {
     required OperationId operationId,
     required int expectedInteractionRevision,
@@ -48,12 +49,27 @@ abstract interface class ConversationCommandPort {
     String threadId,
     String inputId,
   );
+  /// Adapter dispatch boundary for native Control/ContinuationAccepted facts.
+  /// accepted=true with these exact Thread/operation IDs is confirmed acceptance,
+  /// even when the native error code is Busy. With no usable native receipt map
+  /// it to CommandDispatchFailure.confirmedWithoutUsableReceipt, never Rejected
+  /// and never a fabricated CommitReceipt. The owner queries this same operation.
+  Future<ContinueThreadReply> continueThread(
+    String threadId, {
+    required OperationId operationId,
+    required String expectedContinuationId,
+    required int expectedModelRouteRevision,
+  });
+  Future<ContinuationOperationView?> readContinuationOperation(
+    String threadId,
+    OperationId operationId,
+  );
 
   /// Ordinary errors do not prove non-dispatch. Only an actual named dispatch
   /// failure may report rejection/confirmation; this exact command is not replayed.
-  Future<InterruptTurnReply> interruptTurn(
+  Future<StopExecutionReply> stopExecution(
     String threadId,
-    String turnId, {
+    String executionId, {
     required OperationId operationId,
   });
 }

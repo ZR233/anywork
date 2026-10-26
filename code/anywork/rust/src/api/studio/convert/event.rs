@@ -6,10 +6,10 @@ use pl_studio_runtime::{
 
 use super::runtime::{
     bridge_account_usage_state, bridge_agent_directory, bridge_agent_profiles, bridge_bots_state,
-    bridge_lsp_state, bridge_mcp_state, bridge_model_catalog_state, bridge_model_performance,
-    bridge_persistence_queue_state, bridge_persistence_state, bridge_project_directory,
-    bridge_recovery_state, bridge_session_costs_state, bridge_settings_config_state,
-    bridge_skills_state, bridge_thread_mode_catalog, bridge_update_state,
+    bridge_lsp_state, bridge_mcp_state, bridge_model_catalog_state, bridge_persistence_queue_state,
+    bridge_persistence_state, bridge_project_directory, bridge_recovery_state,
+    bridge_session_costs_state, bridge_settings_config_state, bridge_skills_state,
+    bridge_thread_mode_catalog, bridge_update_state,
 };
 use super::thread_stream::bridge_thread;
 use crate::api::studio::types::*;
@@ -82,10 +82,8 @@ pub(crate) fn bridge_product_event(
                     super::acp_install::bridge_acp_install_snapshot(*state),
                 ))
             }
-            StudioProductEventKind::ModelPerformanceStateChanged(state) => {
-                BridgeProductEventPayload::ModelPerformanceStateChanged(bridge_model_performance(
-                    state,
-                ))
+            StudioProductEventKind::ModelPerformanceStateChanged(_) => {
+                anyhow::bail!("model performance events use the dedicated statistics feed")
             }
             StudioProductEventKind::SessionCostsChanged(state) => {
                 BridgeProductEventPayload::SessionCostsChanged(Box::new(
@@ -164,8 +162,8 @@ pub(crate) fn bridge_product_baseline(
         StudioProductBaselineState::AcpInstall(state) => BridgeProductBaseline::AcpInstall(
             Box::new(super::acp_install::bridge_acp_install_snapshot(*state)),
         ),
-        StudioProductBaselineState::ModelPerformance(state) => {
-            BridgeProductBaseline::ModelPerformance(bridge_model_performance(*state))
+        StudioProductBaselineState::ModelPerformance(_) => {
+            anyhow::bail!("model performance baselines use the dedicated statistics feed")
         }
         StudioProductBaselineState::SessionCosts(state) => {
             BridgeProductBaseline::SessionCosts(Box::new(bridge_session_costs_state(*state)))

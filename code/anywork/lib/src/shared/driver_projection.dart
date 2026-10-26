@@ -1,4 +1,5 @@
 import 'package:anywork_client/configuration.dart';
+import 'package:anywork_client/conversation.dart';
 import 'package:anywork_client/models.dart';
 import 'package:anywork_client/resources.dart';
 import 'package:anywork_client/workspace.dart';
@@ -8,6 +9,7 @@ import '../diagnostics/contracts/timeline_diagnostics.dart';
 import '../features/conversation/state/composer_view_state.dart';
 import '../features/conversation/state/conversation_view_state.dart';
 import '../features/conversation/state/editor_keys.dart';
+import '../features/conversation/state/interaction_view_state.dart';
 import '../features/conversation/state/plan_view_state.dart';
 import '../features/conversation/state/thread_status_state.dart';
 import '../features/workspace/state/sidebar_view_state.dart';
@@ -24,6 +26,7 @@ final class DriverViewFacts {
     this.startComposer,
     this.threadComposer,
     this.conversation,
+    this.interactionEditors,
     this.status,
     this.plan,
     this.acpAccounts,
@@ -34,6 +37,7 @@ final class DriverViewFacts {
   final ComposerViewState? startComposer;
   final ComposerViewState? threadComposer;
   final ConversationViewState? conversation;
+  final List<InteractionViewState>? interactionEditors;
   final ThreadStatusViewState? status;
   final PlanViewState? plan;
 
@@ -60,6 +64,14 @@ DriverSnapshot captureDriverSnapshot(
   final active = graph.conversation.active.value;
   final session = !selection.needsOpen && active?.threadId == selected
       ? active
+      : null;
+  final execution = session?.execution.value;
+  final interactions = session?.interactions.value;
+  final conversation =
+      session != null &&
+          visible.conversation?.threadId == selected &&
+          visible.conversation?.execution?.stamp == execution?.stamp
+      ? visible.conversation
       : null;
   final metadata = visible.workspace?.selectedMetadata;
   final thread = metadata?.projection.sync.phase == ResourceSyncPhase.ready
@@ -109,12 +121,12 @@ DriverSnapshot captureDriverSnapshot(
         : null,
     agents: agents,
     agentDirectoryError: directoryError,
-    execution: session?.execution.value,
+    execution: execution,
     metrics: session?.metrics.value,
     context: session?.context.value,
     threadConfiguration: session?.configuration.value,
     authoring: session?.authoring.value,
-    interactions: session?.interactions.value,
+    interactions: interactions,
     startDraft:
         selection.projectId != null &&
             visible.startComposer?.key ==
@@ -140,13 +152,14 @@ DriverSnapshot captureDriverSnapshot(
             timeline: null,
             timelineScroll: null,
           ),
-    conversation:
-        session != null &&
-            visible.conversation?.threadId == selected &&
-            visible.conversation?.execution?.stamp ==
-                session.execution.value.stamp
-        ? visible.conversation
-        : null,
+    conversation: conversation,
+    interactionEditors: _currentInteractionEditors(
+      visible.interactionEditors,
+      hostThreadId: session?.threadId,
+      conversation: conversation,
+      execution: execution,
+      interactions: interactions,
+    ),
     status:
         session != null &&
             visible.status?.threadId == selected &&
@@ -173,6 +186,83 @@ DriverSnapshot captureDriverSnapshot(
     acpAccounts: currentAcpAccounts(visible.acpAccounts, configurationState),
     templates: visible.templates,
   );
+}
+
+/// Borrow only the current host's mounted material, in the Conversation VM's
+/// editor order. Full key equality includes sourceGeneration and hosted refs;
+/// matching an interaction ID alone must never revive a retired editor.
+List<InteractionViewState>? _currentInteractionEditors(
+  List<InteractionViewState>? editors, {
+  required String? hostThreadId,
+  required ConversationViewState? conversation,
+  required ThreadExecutionState? execution,
+  required InteractionIndexReadState? interactions,
+}) {
+  final origin = execution?.stamp;
+  final index = conversation?.interactions;
+  final current = interactions?.current;
+  if (editors == null ||
+      conversation == null ||
+      hostThreadId == null ||
+      execution?.sync.phase != FacetSyncPhase.ready ||
+      execution?.value == null ||
+      origin == null ||
+      origin.facet != ThreadFacet.execution ||
+      conversation.indexError != null ||
+      index?.error != null ||
+      interactions?.error != null ||
+      current == null ||
+      index?.current?.origin != current.origin ||
+      index?.current?.index.reference != current.index.reference ||
+      current.origin.runtimeEpoch != origin.runtimeEpoch ||
+      current.origin.incarnation != origin.incarnation ||
+      current.index.reference != execution?.value?.interactions.reference) {
+    return null;
+  }
+  final values = <InteractionViewState>[];
+  for (final key in conversation.currentEditors) {
+    final matches = editors.where((editor) => editor.key == key).toList();
+    if (matches.length != 1) continue;
+    final editor = matches.single;
+    final header = editor.header;
+    final scope = editor.scope;
+    if (key.threadId != hostThreadId ||
+        key.runtimeEpoch != origin.runtimeEpoch ||
+        key.incarnation != origin.incarnation ||
+        !editor.sourceCurrent ||
+        editor.closing ||
+        editor.readIssues.isNotEmpty ||
+        editor.texts.values.any((text) => text.error != null) ||
+        editor.questions.values.any((question) => question.optionsError != null) ||
+        header == null ||
+        scope == null ||
+        scope != header.scope ||
+        scope.runtimeEpoch != origin.runtimeEpoch ||
+        scope.incarnation != origin.incarnation ||
+        scope.sourceRevision != key.revision ||
+        header.revision != key.revision ||
+        editor.textOf(header.interactionId) != key.interactionId ||
+        // The header belongs to the actual target; its scope still belongs to
+        // the host index owner, including for hosted child interactions.
+        editor.textOf(header.threadId) != key.target ||
+        header.state is! PendingInteractionRead ||
+        (key.isHosted &&
+            (key.hostedReference?.revision != key.revision ||
+                key.hostedOrigin?.facet != ThreadFacet.execution ||
+                key.hostedOrigin?.runtimeEpoch != origin.runtimeEpoch ||
+                key.hostedOrigin?.incarnation != origin.incarnation ||
+                header.purpose is PlanConfirmationPurposeRead))) {
+      continue;
+    }
+    values.add(editor);
+  }
+  // An unopened, failed or stale editor is Unknown, not an empty interaction
+  // collection. A nonempty result may be only the mounted part of the index.
+  if (values.isEmpty &&
+      (conversation.currentEditors.isNotEmpty || !current.complete)) {
+    return null;
+  }
+  return values;
 }
 
 /// ACP 接入目录只有在仍属于**当前** Settings 快照时才允许作为 current 事实。

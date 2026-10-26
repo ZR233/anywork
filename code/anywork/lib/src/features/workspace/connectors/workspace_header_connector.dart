@@ -9,8 +9,10 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../l10n/studio_l10n.dart';
 import '../../../platform/studio_platform.dart';
 import '../state/collection_presentation.dart';
+import '../state/sidebar_view_state.dart';
 import '../state/workspace_header_state.dart';
 import '../state/workspace_view_state.dart';
+import '../view_models/sidebar_view_model.dart';
 import '../view_models/workspace_header_view_model.dart';
 import '../view_models/workspace_view_model.dart';
 import '../views/workspace_header_view.dart';
@@ -108,10 +110,32 @@ class WorkspaceHeaderConnector extends ConsumerWidget {
         : null;
     final project = workspace.selectedProject;
     final window = presentWindow(header.agents.agents);
-    final current =
+    final sourceCurrent =
         header.agents.agents is CurrentCollectionMirror<AgentDirectoryEntry> &&
         header.agents.projection.sync.phase == ResourceSyncPhase.ready &&
-        header.agents.projection.header?.source.brief is ReadyObservedBrief;
+        header.agents.projection.header?.source.brief is ReadyObservedBrief &&
+        window?.loading == false &&
+        window?.error == null;
+    List<AgentDirectoryEntry> threadAgents = const [];
+    var renderedDirectory = header.agents;
+    StudioFailure? membershipError;
+    try {
+      threadAgents = AgentDirectoryQueries.forRoot(
+        rootThreadId: rootId,
+        directory: header.agents,
+      );
+    } on StudioFailure catch (error) {
+      membershipError = error;
+      final previous = header.lastReadyAgents;
+      if (previous != null) {
+        renderedDirectory = previous;
+        threadAgents = AgentDirectoryQueries.forRoot(
+          rootThreadId: rootId,
+          directory: previous,
+        );
+      }
+    }
+    final current = sourceCurrent && membershipError == null;
     final complete = current && window?.complete == true;
     final apps = watchWorkspaceHostApps(ref);
     final source = presentReadValue(header.agents.sourceStatus);
@@ -132,15 +156,31 @@ class WorkspaceHeaderConnector extends ConsumerWidget {
     final cost = presentReadValue<SessionCost?, SessionCostsReadRef>(
       header.costs.cost,
     );
-    // Baseline header shows its action strip only for a Thread that actually
-    // has directory entries; an empty directory keeps the heading alone.
-    final threadAgents = presentRows(header.agents.agents)
-        .where((agent) => agent.rootThreadId == rootId)
-        .toList();
+    final stopActions = <String, WorkspaceActionPresentation>{};
+    for (final agent in threadAgents) {
+      final action = workspace.actions['directory-stop:${agent.threadId}'];
+      if (action?.directoryStopTarget?.belongsTo(renderedDirectory, agent) == true) {
+        stopActions[agent.threadId] = action!;
+      }
+    }
+    // Metadata supplements presentation only; it never supplies membership or
+    // forces cold members to open merely to show a title/frozen model.
+    final selected = presentReadValue(workspace.selectedMetadata?.value);
+    final pages = ref.watch(
+      sidebarViewModelProvider.select((value) => value.asData?.value.pages),
+    );
+    final threads = <String, WorkspaceThreadRecord>{
+      for (final page in pages?.values ?? const <SidebarProjectPage>[])
+        if (page.directory case final directory?)
+          for (final thread in presentRows(directory.threads))
+            thread.id: thread,
+      if (root != null) root.id: root,
+      if (selected != null) selected.id: selected,
+    };
     return WorkspaceHeaderView(
       project: project,
       root: root,
-      actions: threadAgents.isEmpty
+      actions: threadAgents.isEmpty && complete
           ? null
           : OverflowBar(
               spacing: 8,
@@ -156,6 +196,13 @@ class WorkspaceHeaderConnector extends ConsumerWidget {
                   current: current,
                   enabled: !workspace.workspace.sealed,
                   selectedThreadId: workspace.workspace.selection.threadId,
+                  threads: threads,
+                  stopActions: stopActions,
+                  onStop: (agent) => unawaited(
+                    ref
+                        .read(workspaceViewModelProvider.notifier)
+                        .stopDirectoryExecution(header.agents, agent),
+                  ),
                   onSelect: (id) => unawaited(
                     ref
                         .read(workspaceViewModelProvider.notifier)
@@ -204,6 +251,13 @@ class WorkspaceHeaderConnector extends ConsumerWidget {
           if (window?.error case final error?)
             WorkspaceFailureNotice(
               failure: error,
+              onRetry: () => unawaited(vm.loadAgents()),
+            ),
+          if (sourceCurrent &&
+              window?.complete == true &&
+              membershipError != null)
+            WorkspaceFailureNotice(
+              failure: membershipError,
               onRetry: () => unawaited(vm.loadAgents()),
             ),
           for (final row

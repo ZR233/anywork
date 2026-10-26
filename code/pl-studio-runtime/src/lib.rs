@@ -30,6 +30,7 @@ mod first_run;
 mod instruction;
 mod protocol;
 pub mod resource_store;
+pub mod statistics;
 mod studio;
 pub mod thread_assembler;
 mod updater;
@@ -61,15 +62,13 @@ pub use protocol::{
     StudioAgentDirectoryState, StudioLspHealth, StudioLspServer, StudioLspServerState,
     StudioLspStateSnapshot, StudioMcpHealth, StudioMcpServer, StudioMcpServerState,
     StudioMcpStateData, StudioMcpStateSnapshot, StudioModelCatalogStateSnapshot,
-    StudioModelPerformanceEffortSummary, StudioModelPerformanceSample,
-    StudioModelPerformanceSnapshot, StudioModelPerformanceSummary, StudioPendingPersistence,
-    StudioProductBaseline, StudioProductBaselineState, StudioProductEventEnvelope,
-    StudioProductEventKind, StudioProductFrame, StudioProductTopic, StudioProductTopicScopeError,
-    StudioProjectDirectoryData, StudioProjectDirectoryState, StudioPurposeCostSnapshot,
-    StudioRecoveryStateSnapshot, StudioSessionCostSnapshot, StudioSessionCostsState,
-    StudioSettingsConfigStateSnapshot, StudioShutdownIssue, StudioShutdownOutcome,
-    StudioShutdownProgress, StudioShutdownReport, StudioSkillsStateSnapshot, StudioStartupStage,
-    StudioStateSnapshot, StudioThreadDirectoryData, StudioThreadDirectoryDelta,
+    StudioPendingPersistence, StudioProductBaseline, StudioProductBaselineState,
+    StudioProductEventEnvelope, StudioProductEventKind, StudioProductFrame, StudioProductTopic,
+    StudioProductTopicScopeError, StudioProjectDirectoryData, StudioProjectDirectoryState,
+    StudioPurposeCostSnapshot, StudioRecoveryStateSnapshot, StudioSessionCostSnapshot,
+    StudioSessionCostsState, StudioSettingsConfigStateSnapshot, StudioShutdownIssue,
+    StudioShutdownOutcome, StudioShutdownProgress, StudioShutdownReport, StudioSkillsStateSnapshot,
+    StudioStartupStage, StudioStateSnapshot, StudioThreadDirectoryData, StudioThreadDirectoryDelta,
     StudioThreadDirectoryPage, StudioThreadDirectoryPageData, StudioThreadDirectoryState,
 };
 
@@ -109,7 +108,7 @@ pub use studio::thread_execution;
 pub use studio::thread_execution_read;
 pub use studio::workspace;
 pub use studio::{acp_auth, acp_install, lsp, mcp, skills};
-pub use studio::{modes, statistics, updates};
+pub use studio::{modes, updates};
 pub use studio::{
     persistence_products as persistence, recovery, remote_directory, startup_products as startup,
 };
@@ -126,7 +125,8 @@ pub use studio::{
     StudioRuntimeLifecycleState, StudioRuntimeOptions, StudioRuntimeSnapshot,
     StudioRuntimeStateKind, StudioStartNewThreadResponse, StudioStartupError,
     StudioStartupErrorKind, StudioStartupRecovery, StudioStore, StudioThreadMetricsSource,
-    StudioThreadSubscription, StudioUpdateStateSnapshot, StudioWorktreeRecoveryPreview,
+    StudioUpdateStateSnapshot, StudioWorktreeInspection, StudioWorktreeRecoveryPreview,
+    StudioThreadSubscription,
     ThreadPreparationObserver, ThreadPreparationProgress, ThreadPreparationStage, ThreadRecord,
     TimelineContentReader, TimelineTailStream,
 };

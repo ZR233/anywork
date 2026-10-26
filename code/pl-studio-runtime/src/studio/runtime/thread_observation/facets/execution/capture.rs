@@ -18,9 +18,10 @@ impl ExecutionProjection {
         activity: Option<Arc<ThreadActivity>>,
         storage: Option<Arc<ThreadStorageState>>,
         effects: &[LiveEvent],
+        hosted: Option<&[Arc<pl_protocol::InteractionRequest>]>,
     ) {
         let result = self.capture(
-            thread_id, updated_at, snapshot, recent, activity, storage, effects,
+            thread_id, updated_at, snapshot, recent, activity, storage, effects, hosted,
         );
         if let Err(error) = result {
             self.fail(error);
@@ -37,6 +38,7 @@ impl ExecutionProjection {
         activity: Option<Arc<ThreadActivity>>,
         storage: Option<Arc<ThreadStorageState>>,
         effects: &[LiveEvent],
+        hosted: Option<&[Arc<pl_protocol::InteractionRequest>]>,
     ) -> Result<(), StudioError> {
         let mut state = self
             .state
@@ -70,6 +72,9 @@ impl ExecutionProjection {
             if let Some(previous) = &previous {
                 for fact in &previous.facts {
                     if let Material::Interaction(value) = &*fact.material {
+                        if value.scope.thread_id != thread_id {
+                            continue;
+                        }
                         facts.push(fact.clone());
                         entries.push(interaction_brief(fact, value));
                     }
@@ -95,6 +100,27 @@ impl ExecutionProjection {
                 entries.push(interaction_brief(&fact, &value));
                 facts.push(fact);
             }
+        }
+        // The host's existing index is the sole projection owner. Child facts keep their real
+        // target identity; refs are still issued by this host incarnation and its bounded index.
+        let hosted = hosted.map_or_else(
+            || previous.as_ref().map_or_else(Vec::new, |previous| {
+                previous.facts.iter().filter_map(|fact| match &*fact.material {
+                    Material::Interaction(value) if value.scope.thread_id != thread_id => Some(value.clone()),
+                    _ => None,
+                }).collect()
+            }),
+            <[_]>::to_vec,
+        );
+        for value in hosted {
+            let fact = register(
+                &mut state,
+                Key::Interaction(value.interaction_id.clone()),
+                value.revision,
+                Material::Interaction(value.clone()),
+            )?;
+            entries.push(interaction_brief(&fact, &value));
+            facts.push(fact);
         }
         entries.sort_by_key(|entry| entry.reference.entry);
         let previous_index = previous.as_ref().and_then(|previous| {
@@ -211,6 +237,8 @@ impl ExecutionProjection {
         }
         let value = ExecutionBaseline {
             status,
+            execution: crate::studio::thread_projection::project_execution(snapshot),
+            continuation: crate::studio::thread_projection::project_continuation(snapshot),
             active_turn,
             recent_terminal_turn,
             interactions,
@@ -507,6 +535,16 @@ fn delta(
         old.stamp.revision,
         ExecutionChange {
             status: (old.value.status != next.value.status).then_some(next.value.status),
+            execution: if old.value.execution == next.value.execution {
+                ExecutionReplacement::Unchanged
+            } else {
+                ExecutionReplacement::Replace { value: next.value.execution.clone() }
+            },
+            continuation: if old.value.continuation == next.value.continuation {
+                ContinuationReplacement::Unchanged
+            } else {
+                ContinuationReplacement::Replace { value: next.value.continuation.clone() }
+            },
             turns: (old.value.active_turn != next.value.active_turn
                 || old.value.recent_terminal_turn != next.value.recent_terminal_turn)
                 .then(|| TurnsReplacement {
@@ -677,4 +715,107 @@ fn prune(state: &mut State) {
     let retained: std::collections::BTreeSet<_> =
         state.locators.keys().map(|(entry, _)| *entry).collect();
     state.keys.retain(|_, entry| retained.contains(entry));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use anyhow::{Context, Result};
+    use pretty_assertions::assert_eq;
+
+    #[test]
+    fn execution_controls_and_hosted_refs_keep_their_original_facts() -> Result<()> {
+        let projection = Arc::new(ExecutionProjection::new("host-epoch".into(), 7));
+        let mut snapshot = ThreadSnapshot::default();
+        snapshot.execution = Some(pl_core::thread::ActiveExecution {
+            id: "preparing-execution".into(),
+            phase: pl_core::thread::ExecutionPhase::Preparing,
+            turn_id: None,
+        });
+        snapshot.continuation = Some(pl_core::thread::ContinuationPoint {
+            id: "owed-work".into(),
+            source_turn_id: None,
+            reason: Some(pl_core::thread::ContinuationReason::UserStop),
+            created_at: 1,
+            claim: None,
+        });
+        let child = Arc::new(pl_protocol::InteractionRequest::user_input(
+            "studio-interaction:5:childquestion",
+            pl_protocol::InteractionScope {
+                thread_id: "child".into(),
+                turn_id: "child-turn".into(),
+                item_id: None,
+                tool_id: None,
+                agent_path: Some("root/child".into()),
+                purpose: Default::default(),
+            },
+            Vec::new(),
+            1,
+        ));
+        projection.capture("root", 1, &snapshot, None, None, None, &[], Some(&[child.clone()]))?;
+        let delivery = projection.subscribe(ThreadObservationMode::Live)?;
+        delivery.claim()?;
+        let mut frame = None;
+        delivery.send_next(|value| { frame = Some(value); Ok(()) })?;
+        let ExecutionFrame::Data { event, delivery_sequence } = frame.context("baseline")? else {
+            anyhow::bail!("missing execution baseline");
+        };
+        let ExecutionEvent::Baseline { stamp, value, .. } = *event else {
+            anyhow::bail!("first execution event is not a baseline");
+        };
+        assert_eq!(value.execution, Some(pl_protocol::AgentExecution::new(
+            "preparing-execution", pl_protocol::AgentExecutionPhase::Preparing, None,
+        )));
+        assert_eq!(value.continuation, Some(pl_protocol::ContinuationView::new(
+            "owed-work", None, Some(pl_protocol::ContinuationReason::UserStop), 1, false,
+        )));
+        assert!(value.active_turn.is_none(), "preparation must not fabricate a Turn");
+        let index_material = projection.material_at(
+            value.interactions.reference.entry,
+            value.interactions.reference.revision,
+            &stamp,
+        )?;
+        let Material::Index(index) = &*index_material else {
+            anyhow::bail!("host index material is missing");
+        };
+        assert_eq!(index.entries.len(), 1);
+        let reference = &index.entries[0].reference;
+        let child_material = projection.material_at(reference.entry, reference.revision, &stamp)?;
+        let Material::Interaction(value) = &*child_material else {
+            anyhow::bail!("host ref did not resolve its original child");
+        };
+        assert_eq!(value, &child);
+        delivery.ack(delivery_sequence)?;
+
+        snapshot.commit_sequence += 1;
+        snapshot.execution = None;
+        snapshot.continuation = None;
+        projection.capture("root", 2, &snapshot, None, None, None, &[], None)?;
+        let mut frame = None;
+        delivery.send_next(|value| { frame = Some(value); Ok(()) })?;
+        let ExecutionFrame::Data { event, delivery_sequence } = frame.context("control clearing")? else {
+            anyhow::bail!("missing execution change");
+        };
+        let ExecutionEvent::Change { value, .. } = *event else {
+            anyhow::bail!("control clearing is not an execution change");
+        };
+        assert_eq!(value.execution, ExecutionReplacement::Replace { value: None });
+        assert_eq!(value.continuation, ContinuationReplacement::Replace { value: None });
+        assert!(value.interactions.is_none(), "an own-state update must retain hosted facts");
+        delivery.ack(delivery_sequence)?;
+
+        projection.capture("root", 3, &snapshot, None, None, None, &[], Some(&[]))?;
+        let mut frame = None;
+        delivery.send_next(|value| { frame = Some(value); Ok(()) })?;
+        let ExecutionFrame::Data { event, .. } = frame.context("child removal")? else {
+            anyhow::bail!("missing child removal change");
+        };
+        let ExecutionEvent::Change { value, .. } = *event else {
+            anyhow::bail!("child removal is not an execution change");
+        };
+        let interactions = value.interactions.context("interaction delta")?;
+        assert_eq!(interactions.removed_entries, vec![reference.entry]);
+        assert!(interactions.terminal_facts.is_empty(), "removal cannot fabricate a decision");
+        Ok(())
+    }
 }

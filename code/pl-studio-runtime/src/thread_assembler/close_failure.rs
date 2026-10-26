@@ -255,6 +255,7 @@ impl StudioThreadAssembler {
         incarnation: &Arc<()>,
         thread: &ThreadHandle,
         cleanup: &Arc<CleanupGate>,
+        workspace: super::PublishedWorkspaceRetirement,
     ) -> Result<Arc<ThreadCloseRun>, ThreadAssemblyError> {
         let operation = self.close_operation_gate(id);
         let owner = {
@@ -275,7 +276,8 @@ impl StudioThreadAssembler {
                 storage: entry.close_storage.clone(),
                 factory: state.child_factory.clone(),
                 disposition: entry.workspace_disposition,
-                published: entry.parent_id.is_some()
+                published: matches!(workspace, super::PublishedWorkspaceRetirement::ApplyExplicitClose)
+                    && entry.parent_id.is_some()
                     && !state.unpublished_children.contains_key(id),
             }
         };
@@ -307,8 +309,9 @@ impl StudioThreadAssembler {
         incarnation: Arc<()>,
         thread: ThreadHandle,
         cleanup: Arc<CleanupGate>,
+        workspace: super::PublishedWorkspaceRetirement,
     ) -> Result<(), ThreadAssemblyError> {
-        let run = self.capture_entry_close(id, &incarnation, &thread, &cleanup)?;
+        let run = self.capture_entry_close(id, &incarnation, &thread, &cleanup, workspace)?;
         run.drive(run.grant())
             .await
             .map_err(ThreadCloseFailure::into_resource)
@@ -349,7 +352,10 @@ impl StudioThreadAssembler {
         let entry = self.prepare_entry_close(id).await?;
         let entry = entry
             .map(|(incarnation, thread, cleanup)| {
-                self.capture_entry_close(id, &incarnation, &thread, &cleanup)
+                self.capture_entry_close(
+                    id, &incarnation, &thread, &cleanup,
+                    super::PublishedWorkspaceRetirement::Retain,
+                )
             })
             .transpose()?;
         let run = {

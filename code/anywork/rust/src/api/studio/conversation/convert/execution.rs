@@ -184,6 +184,8 @@ impl From<protocol::ExecutionBaseline> for bridge::BridgeExecutionBaseline {
     fn from(value: protocol::ExecutionBaseline) -> Self {
         Self {
             status: value.status.into(),
+            execution: value.execution.map(Into::into),
+            continuation: value.continuation.map(Into::into),
             active_turn: value.active_turn.map(Into::into),
             recent_terminal_turn: value.recent_terminal_turn.map(Into::into),
             interactions: value.interactions.into(),
@@ -228,6 +230,18 @@ impl From<protocol::ExecutionChange> for bridge::BridgeExecutionChange {
     fn from(value: protocol::ExecutionChange) -> Self {
         Self {
             status: value.status.map(Into::into),
+            execution: match value.execution {
+                protocol::ExecutionReplacement::Unchanged => bridge::BridgeExecutionReplacement::Unchanged,
+                protocol::ExecutionReplacement::Replace { value } => bridge::BridgeExecutionReplacement::Replace {
+                    value: value.map(Into::into),
+                },
+            },
+            continuation: match value.continuation {
+                protocol::ContinuationReplacement::Unchanged => bridge::BridgeContinuationReplacement::Unchanged,
+                protocol::ContinuationReplacement::Replace { value } => bridge::BridgeContinuationReplacement::Replace {
+                    value: value.map(Into::into),
+                },
+            },
             turns: value.turns.map(Into::into),
             interactions: value.interactions.map(Into::into),
             activity: value.activity.into(),

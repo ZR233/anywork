@@ -99,10 +99,15 @@ impl StudioThreadAssembler {
     ///
     /// # Errors
     /// Rejects wrong response kinds, stale records and failed canonical state transitions.
+    /// Commits one decision for `wire_id` under the caller's operation identity.
+    ///
+    /// The identity is stored inside the decision fact itself, so a repeat is answered from the same
+    /// record instead of needing a second operation table.
     pub async fn resolve_product_interaction(
         &self,
         wire_id: &str,
         expected_revision: u64,
+        operation_id: &str,
         response: InteractionResolution,
     ) -> Result<InteractionRequest, StudioInteractionError> {
         let current = self
@@ -112,7 +117,7 @@ impl StudioThreadAssembler {
         if current.status() != InteractionStatus::Pending {
             return Ok(current);
         }
-        let operation_id = format!("resolve:{wire_id}");
+        let operation_id = operation_id.to_owned();
         let resolved_at = crate::studio::unix_seconds();
         match response {
             InteractionResolution::ToolApproval(response)

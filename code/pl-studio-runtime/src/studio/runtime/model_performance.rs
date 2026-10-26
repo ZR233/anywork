@@ -15,7 +15,7 @@
 //! 历史与费用材料；纯待写、统计缺口与读取失败状态只推进轻量状态并保留上一次读取的不可变
 //! 材料，既有读取作用域继续有效。全局性能与逐 root 会话费用由同一计费 owner 分别发布
 //! （作用域 revision 按 root 独立单调，含清除与淘汰）；查询
-//! （snapshot/snapshot_and_costs/session_costs_snapshot）只读已发布值：不写库、
+//! （snapshot/published_session_costs/session_costs_snapshot）只读已发布值：不写库、
 //! 不推进 revision、不扫描补建作用域、不发事件。
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
@@ -26,17 +26,17 @@ use pl_protocol::{InferenceBillingRecord, InferenceModelObservation, ModelMatchS
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+use crate::statistics::{
+    StudioModelPerformanceEffortSummary,
+    StudioModelPerformanceSample, StudioModelPerformanceSnapshot, StudioModelPerformanceSummary,
+};
 use crate::studio::storage::calls::{
     CallRetention, CallStatus, PerformanceSampleRow, PerformanceSummaryRow, PurposeCostRollup,
     SessionCostRollup,
 };
 use crate::studio::store::object::{PersistedStudioObject, load_object, put_object};
 use crate::studio::{ProductEventBus, StudioStore, unix_seconds};
-use crate::{
-    PureError, StudioModelPerformanceEffortSummary, StudioModelPerformanceSample,
-    StudioModelPerformanceSnapshot, StudioModelPerformanceSummary, StudioSessionCostSnapshot,
-    StudioSessionCostsState,
-};
+use crate::{PureError, StudioSessionCostSnapshot, StudioSessionCostsState};
 
 pub(in crate::studio) const MODEL_PERFORMANCE_OWNER_ID: &str = "global";
 const CACHE_VERSION: u32 = 4;
@@ -318,22 +318,17 @@ impl ModelPerformanceOwner {
         Ok(())
     }
 
-    /// 产品快照：仅返回 owner 已发布的当前展示投影。
+    /// Returns only the owner-published scoped costs required by the GUI bootstrap.
     ///
-    /// 纯读（design/18 §18.2.1/18.4）：不写库、不推进 revision、不扫描补建作用域、
-    /// 不发事件。全局性能与逐 root 费用来自同一次发布，读取端看到一致的成对值。
-    pub(crate) async fn snapshot_and_costs(
-        &self,
-    ) -> (StudioModelPerformanceSnapshot, Vec<StudioSessionCostsState>) {
+    /// This narrow read does not clone the global summaries or retained history and does not
+    /// mutate revisions, scan calls storage, or publish events.
+    pub(crate) async fn published_session_costs(&self) -> Vec<StudioSessionCostsState> {
         let published = self.published.lock().await;
-        (
-            published.global.clone(),
-            published
-                .scoped
-                .iter()
-                .map(|(root, entry)| entry.state(root))
-                .collect(),
-        )
+        published
+            .scoped
+            .iter()
+            .map(|(root, entry)| entry.state(root))
+            .collect()
     }
 
     /// 全局模型性能快照（已发布值；不含按 root 会话费用）。
@@ -917,8 +912,7 @@ impl ModelPerformanceOwner {
 
     /// 读取、在同一次 `published` 锁内原子采用、再在锁外按 typed topics 发布变化事实。
     ///
-    /// 全局与作用域在同一次锁内成对采用：`snapshot_and_costs` 不会观察到新 global 搭配
-    /// 旧 scoped 的撕裂组合；锁内不 send/await，发布事实全部在锁外发出。
+    /// 全局与作用域在同一次锁内采用；锁内不 send/await，发布事实全部在锁外发出。
     async fn publish_locked_projection(&self) {
         match self.read_projection().await {
             Ok(projection) => {

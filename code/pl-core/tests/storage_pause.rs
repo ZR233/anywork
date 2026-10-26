@@ -23,7 +23,7 @@ use pl_core::{
             OutputRetryObligation, OutputRetryOutcome, OutputStorageFault, StorageExecutionPhase,
             StorageFaultKind, StoragePressure, ThreadWrite,
         },
-        input::ThreadInput,
+        input::{InputPurpose, ThreadInput},
         task::TaskStatus,
     },
     tool::{
@@ -250,15 +250,19 @@ impl ColdStore for GatedStore {
     }
 
     async fn flush(&self, _thread_id: &str, sequence: u64) -> Result<(), ColdStoreError> {
-        let state = self.state.lock().unwrap();
+        let mut state = self.state.lock().unwrap();
         if state.active && self.failure == Failure::Admission {
             return Err(storage_error());
         }
-        if (1..=sequence).all(|number| state.accepted.contains(&number)) {
-            Ok(())
-        } else {
-            Err(storage_error())
+        if !(1..=sequence).all(|number| state.accepted.contains(&number)) {
+            return Err(storage_error());
         }
+        // An explicit successful barrier saves its accepted target synchronously. The receipt and
+        // unfinished-work report must agree with that promise; admission alone still saves nothing.
+        state.durable = state.durable.max(sequence);
+        drop(state);
+        self.changed.send_replace(());
+        Ok(())
     }
 }
 
@@ -470,6 +474,7 @@ async fn paused_turn_resumes_without_replaying_model_or_tool(failure: Failure) {
     }
     let fresh = ThreadInput {
         id: "blocked-input".into(),
+        purpose: InputPurpose::Message,
         payload: OpaquePayload::text("blocked"),
         context: vec![text("blocked")],
     };
@@ -1726,10 +1731,21 @@ async fn flush_remains_reachable_during_a_storage_pause() {
     });
     paused(&thread).await;
     assert!(!runner.is_finished());
-    // The paused owner still services the flush at its safety point: the admitted watermark is
-    // already durable in this fake, so the fixed-target barrier resolves instead of waiting on a
-    // Turn that cannot end on its own.
+    // The paused owner still services the flush at its safety point. The fake saves the accepted
+    // target synchronously, and its pressure report must agree with that successful barrier.
+    let target = thread.snapshot().persistence.admitted_sequence;
+    let before = store.pressure("flushed");
+    assert!(before.has_uncommitted_work);
+    assert!(before.durable_sequence < target);
     within(thread.flush()).await.unwrap();
+    let saved = store.pressure("flushed");
+    assert_eq!(saved.durable_sequence, target);
+    assert!(!saved.has_uncommitted_work);
+    assert_eq!(
+        thread.snapshot().persistence.durable_sequence,
+        saved.durable_sequence
+    );
+    assert!(thread.snapshot().persistence.pressure_paused);
     assert_eq!(requests.lock().unwrap().len(), 1);
     assert!(executions.lock().unwrap().is_empty());
     assert!(!runner.is_finished(), "a flush must not resume the Turn");

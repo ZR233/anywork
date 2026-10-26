@@ -21,6 +21,8 @@ pub enum UserInteractionError {
     Key(#[from] super::InteractionKeyError),
     #[error("unsupported user interaction payload {format} version {version}")]
     Unsupported { format: String, version: u32 },
+    #[error("user interaction question id {id} is reserved for plan confirmation")]
+    ReservedQuestion { id: String },
     #[error("user interaction payload is invalid")]
     Decode(#[from] serde_json::Error),
     #[error("user interaction identity or revision does not match")]
@@ -57,6 +59,16 @@ pub fn project_user_input(
 ) -> Result<InteractionRequest, UserInteractionError> {
     let questions: Vec<pl_protocol::UserQuestion> =
         decode(&record.request.payload, "pl.tool.user-input")?;
+    // 计划确认的问题身份是保留标识：普通提问不得占用它。否则界面无法仅凭该身份把子会话的
+    // 计划诊断与普通问题区分开，普通问题也会被误当作诊断事实隐藏。
+    if let Some(reserved) = questions
+        .iter()
+        .find(|question| question.id == pl_protocol::AGENT_SESSION_PLAN_CONFIRMATION_QUESTION_ID)
+    {
+        return Err(UserInteractionError::ReservedQuestion {
+            id: reserved.id.clone(),
+        });
+    }
     let wire_id = super::interaction_key::encode(thread_id, &record.request.id);
     let mut projected = InteractionRequest::user_input(
         wire_id.clone(),
@@ -127,7 +139,11 @@ fn prepare_resolution(
         .iter()
         .map(|(id, answer)| (id.as_str(), answer))
         .collect::<BTreeMap<_, _>>();
-    let encoded = serde_json::to_string(&serde_json::json!({"answers":answers}))?;
+    // The operation identity is part of the frozen decision, so the same operation is answered from
+    // this record and a different one under the same id is visibly a conflict.
+    let encoded = serde_json::to_string(
+        &serde_json::json!({"answers":answers,"operationId":resolution.operation_id}),
+    )?;
     let payload = OpaquePayload::new("pl.studio.user-answer", 1, encoded.clone())?;
     let continuation_metadata = OpaquePayload::new(
         "pl.studio.interaction-continuation",
@@ -147,6 +163,7 @@ fn prepare_resolution(
             }],
         },
         continuation: Some(ThreadInput {
+            purpose: pl_core::thread::input::InputPurpose::Message,
             id: format!("interaction:{}:continuation", record.request.id),
             payload: continuation_metadata,
             context: vec![ContextContent::Text {
@@ -157,7 +174,12 @@ fn prepare_resolution(
 }
 
 impl StudioThreadAssembler {
-    /// Validates an answer, commits it with its continuation, then resumes this Thread.
+    /// Validates an answer and commits it with its continuation.
+    ///
+    /// Only the main session resumes its own queue: the answer is a user decision, so its own work
+    /// continues exactly like before. A child answer is a decision fact for its parent to act on, so
+    /// the child keeps the decision and its pending continuation input and is not started here; the
+    /// parent agent decides whether and how to schedule that member again.
     ///
     /// # Errors
     /// Rejects unknown owners, stale questions, invalid answers and failed core admission.
@@ -169,12 +191,14 @@ impl StudioThreadAssembler {
         let thread_id = thread_id.to_owned();
         resolution.interaction_id = local_id.to_owned();
         let _operation = self.agent_operation(&thread_id).await;
-        let (thread, execution) = {
-            self.0
-                .state()
-                .entries
-                .get(&thread_id)
-                .map(|entry| (entry.thread.clone(), entry.execution))
+        let (thread, execution, is_root) = {
+            self.0.state().entries.get(&thread_id).map(|entry| {
+                (
+                    entry.thread.clone(),
+                    entry.execution,
+                    entry.parent_id.is_none(),
+                )
+            })
         }
         .ok_or(UserInteractionError::Identity)?;
         let snapshot = thread.snapshot();
@@ -196,7 +220,9 @@ impl StudioThreadAssembler {
         let committed = thread
             .resolve_interaction(prepare_resolution(&thread_id, current, resolution)?)
             .await?;
-        thread.resume_inputs(execution).await?;
+        if is_root {
+            thread.resume_inputs(execution).await?;
+        }
         project_user_input(&thread_id, &committed)
     }
 }

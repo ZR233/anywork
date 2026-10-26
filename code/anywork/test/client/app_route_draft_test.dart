@@ -128,7 +128,15 @@ void main() {
       await pumpClientFuture(
         tester,
         domains.conversationPort.publishExecution(
-          selectorExecution(status: ThreadStatus.running, active: running),
+          selectorExecution(
+            status: ThreadStatus.running,
+            active: running,
+            execution: const AgentExecution(
+              id: 'settings-route-execution',
+              phase: AgentExecutionPhase.running,
+              turnId: 'settings-route-turn',
+            ),
+          ),
         ),
         'running Turn publication',
       );
@@ -136,6 +144,12 @@ void main() {
         tester,
         () => session.execution.value.value?.activeTurn == running,
         'running Turn before Settings',
+      );
+      // 停止入口只以 canonical 执行身份为目标：轮次运行同时发布该执行身份。
+      await pumpClientUntil(
+        tester,
+        () => session.execution.value.value?.execution?.id == 'settings-route-execution',
+        'running execution identity',
       );
       await tester.pump();
       expect(find.byKey(StudioDriverKeys.composerStop), findsOneWidget);
@@ -190,6 +204,12 @@ void main() {
                     completed &&
                 session.execution.value.value?.activeTurn == null,
             'completed Turn while Settings hides the workspace',
+          );
+          // 轮次结束即执行结束；停止入口与发送语义随之回到普通发送。
+          await pumpClientUntil(
+            tester,
+            () => session.execution.value.value?.execution == null,
+            'execution ended with the Turn',
           );
           expect(find.byKey(StudioDriverKeys.settingsPage), findsOneWidget);
           expect(find.byKey(StudioDriverKeys.composerInput), findsNothing);

@@ -132,7 +132,9 @@ impl RecoveryMaterial {
             .get(issue)
             .and_then(|issue| issue.worktree.as_ref())
             .ok_or_else(wrong)?
-            .changed_files;
+            .changed_files
+            .as_ref()
+            .ok_or_else(wrong)?;
         let (start, end, _) = range(values.len(), offset, limit)?;
         let mut page = TextReadPage {
             list_id,
@@ -180,6 +182,12 @@ impl RecoveryMaterial {
             .as_ref()
             .map(|tree| -> Result<_, StudioError> {
                 Ok(WorktreeRecoveryPreviewRead {
+                    inspection: match tree.inspection {
+                        crate::StudioWorktreeInspection::Available => WorktreeInspection::Available,
+                        crate::StudioWorktreeInspection::Missing => WorktreeInspection::Missing,
+                        crate::StudioWorktreeInspection::IdentityMismatch => WorktreeInspection::IdentityMismatch,
+                        crate::StudioWorktreeInspection::Unavailable => WorktreeInspection::Unavailable,
+                    },
                     owner_kind: match tree.owner_kind {
                         crate::StudioRecoveryWorktreeOwner::Session => WorktreeOwner::Session,
                         crate::StudioRecoveryWorktreeOwner::Child => WorktreeOwner::Child,
@@ -197,10 +205,12 @@ impl RecoveryMaterial {
                         .map(|_| self.read(Text::Head(index), inline))
                         .transpose()?,
                     dirty: tree.dirty,
-                    changed_files: TypedListRef {
+                    changed_files: tree.changed_files.as_ref().map(|files| {
+                        Ok::<_, StudioError>(TypedListRef {
                         list_id: self.lists.register(List::Changed(index))?,
-                        total: count(tree.changed_files.len())?,
-                    },
+                            total: count(files.len())?,
+                        })
+                    }).transpose()?,
                 })
             })
             .transpose()?;
@@ -217,13 +227,13 @@ impl RecoveryMaterial {
                 crate::StudioRecoveryIssueCategory::Repository => RecoveryCategory::Repository,
                 crate::StudioRecoveryIssueCategory::Storage => RecoveryCategory::Storage,
             },
-            action: match value.action {
-                crate::StudioRecoveryIssueAction::None => RecoveryAction::None,
-                crate::StudioRecoveryIssueAction::Retry => RecoveryAction::Retry,
-                crate::StudioRecoveryIssueAction::CleanupThread => RecoveryAction::CleanupThread,
-                crate::StudioRecoveryIssueAction::RemoveProject => RecoveryAction::RemoveProject,
+            available_actions: match value.action {
+                crate::StudioRecoveryIssueAction::None => Vec::new(),
+                crate::StudioRecoveryIssueAction::Retry => vec![RecoveryAction::Retry],
+                crate::StudioRecoveryIssueAction::CleanupThread => vec![RecoveryAction::CleanupThread],
+                crate::StudioRecoveryIssueAction::RemoveProject => vec![RecoveryAction::RemoveProject],
                 crate::StudioRecoveryIssueAction::CleanupWorktree => {
-                    RecoveryAction::CleanupWorktree
+                    vec![RecoveryAction::Retry, RecoveryAction::CleanupWorktree]
                 }
             },
             project_id: value
@@ -273,6 +283,8 @@ impl RecoveryMaterial {
                     Text::Head(_) => tree.head_commit.as_deref().ok_or_else(wrong),
                     Text::Changed(_, index) => tree
                         .changed_files
+                        .as_ref()
+                        .ok_or_else(wrong)?
                         .get(index)
                         .map(String::as_str)
                         .ok_or_else(wrong),
@@ -307,5 +319,65 @@ fn next(end: usize, total: usize) -> Result<Option<u64>, StudioError> {
         Ok(Some(count(end)?))
     } else {
         Ok(None)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use super::super::source::RecoverySource;
+    use crate::{
+        StudioRecoveryIssue, StudioRecoveryIssueAction, StudioRecoveryIssueCategory,
+        StudioRecoveryIssueScope, StudioRecoveryWorktreeOwner, StudioWorktreeInspection,
+        StudioWorktreeRecoveryPreview,
+    };
+    use pl_protocol::ObservedResource;
+    use pl_protocol::products::identity::ProductReadOrigin;
+
+    #[test]
+    fn worktree_read_preserves_only_producer_granted_actions() -> Result<(), StudioError> {
+        for (action, expected) in [
+            (StudioRecoveryIssueAction::None, Vec::new()),
+            (StudioRecoveryIssueAction::Retry, vec![RecoveryAction::Retry]),
+            (
+                StudioRecoveryIssueAction::CleanupWorktree,
+                vec![RecoveryAction::Retry, RecoveryAction::CleanupWorktree],
+            ),
+        ] {
+            let source = RecoverySource::new(ProductReadOrigin {
+                owner_epoch: "recovery-test".into(),
+                incarnation: 1,
+            });
+            source.publish(ObservedResource::ready(1, 1, vec![StudioRecoveryIssue {
+                id: "worktree-issue".into(),
+                scope: StudioRecoveryIssueScope::Thread,
+                category: StudioRecoveryIssueCategory::Repository,
+                action,
+                project_id: Some("project".into()),
+                thread_id: Some("owner".into()),
+                message: "Retained worktree".into(),
+                worktree: Some(StudioWorktreeRecoveryPreview {
+                    inspection: StudioWorktreeInspection::Available,
+                    owner_kind: StudioRecoveryWorktreeOwner::Session,
+                    owner_thread_id: "owner".into(),
+                    lease_revision: 1,
+                    state: "retained".into(),
+                    repository_root: "/repository".into(),
+                    path: "/worktree".into(),
+                    branch: "retained-branch".into(),
+                    base_commit: "base".into(),
+                    head_commit: Some("head".into()),
+                    dirty: Some(false),
+                    changed_files: Some(Vec::new()),
+                }),
+            }]));
+            let material = RecoveryMaterial::new(source.current()?);
+            let header = material.header()?;
+            let page = material.issues(header.issues.list_id, 0, 1)?;
+            assert_eq!(page.items.len(), 1);
+            assert!(page.items[0].worktree.is_some());
+            assert_eq!(page.items[0].available_actions, expected);
+        }
+        Ok(())
     }
 }

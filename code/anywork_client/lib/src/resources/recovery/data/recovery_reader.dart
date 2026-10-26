@@ -15,7 +15,7 @@ final class RecoveryReader {
     id: await materializeReadText(value.id, read: _readText),
     scope: value.scope,
     category: value.category,
-    action: value.action,
+    availableActions: List.unmodifiable(value.availableActions),
     projectId: value.projectId == null
         ? null
         : await materializeReadText(value.projectId!, read: _readText),
@@ -29,6 +29,7 @@ final class RecoveryReader {
   Future<WorktreeRecoveryPreview> worktree(
     WorktreeRecoveryPreviewRead value,
   ) async => WorktreeRecoveryPreview(
+    inspection: value.inspection,
     ownerKind: value.ownerKind,
     ownerThreadId: await materializeReadText(
       value.ownerThreadId,
@@ -47,7 +48,9 @@ final class RecoveryReader {
         ? null
         : await materializeReadText(value.headCommit!, read: _readText),
     dirty: value.dirty,
-    changedFiles: await changedFiles(value.changedFiles),
+    changedFiles: value.changedFiles == null
+        ? null
+        : await changedFiles(value.changedFiles!),
   );
 
   Future<List<String>> changedFiles(TypedListRef reference) async {

@@ -6,15 +6,16 @@ import 'conversation_status_observation.dart';
 import 'timeline_observation.dart';
 
 Future<void> main(List<String> args) async {
-  if (args.length != 2) {
+  if (args.length != 2 && !(args.length == 3 && args[2] == '--exit')) {
     stderr.writeln(
-      'usage: dart --packages=.dart_tool/package_config.json test_driver/manual_capture.dart VM_URL OUTPUT_DIR',
+      'usage: dart --packages=.dart_tool/package_config.json test_driver/manual_capture.dart VM_URL OUTPUT_DIR [--exit]',
     );
     exitCode = 64;
     return;
   }
   final output = Directory(args[1]);
   final driver = await FlutterDriverSession.connect(vmServiceUrl: args[0]);
+  var captureFailed = false;
   try {
     Future<void> stage(String value) =>
         File('${output.path}/capture-stage.txt').writeAsString(value);
@@ -33,25 +34,54 @@ Future<void> main(List<String> args) async {
             .timeout(const Duration(seconds: 65)),
       );
     } catch (_) {
-      await stage('shutdown_request_failed');
+      try {
+        await stage('shutdown_request_failed');
+      } on Object catch (error) {
+        stderr.writeln(
+          'Shutdown failure evidence write failed: ${error.runtimeType}',
+        );
+      }
       rethrow;
     }
     await File('${output.path}/shutdown-report.json').writeAsString(
       '${const JsonEncoder.withIndent('  ').convert(shutdown)}\n',
     );
     if (shutdown is! Map || shutdown['shutdown'] != 'completed') {
-      await stage('shutdown_rejected');
+      try {
+        await stage('shutdown_rejected');
+      } on Object catch (error) {
+        stderr.writeln(
+          'Shutdown rejection evidence write failed: ${error.runtimeType}',
+        );
+      }
       throw StateError('native GUI shutdown did not complete');
     }
     await stage('shutdown_completed');
-    stdout.writeln('Evidence captured; human verdict pending.');
+    if (args.length == 3) {
+      final exit = jsonDecode(
+        await driver.requestData(
+          'request-app-exit',
+          timeout: const Duration(seconds: 10),
+        ),
+      );
+      if (exit is! Map || exit['exit'] != 'exit_requested') {
+        throw StateError('native GUI exit request was not acknowledged');
+      }
+    }
+  } on Object {
+    captureFailed = true;
+    rethrow;
   } finally {
     try {
       await driver.close().timeout(const Duration(seconds: 5));
-    } catch (_) {
-      // A completed shutdown must not keep the acceptance process open.
+    } on Object catch (error) {
+      if (!captureFailed) rethrow;
+      // Preserve the original capture/shutdown/exit failure and still report
+      // that its independent connection cleanup did not complete.
+      stderr.writeln('Driver connection cleanup failed: ${error.runtimeType}');
     }
   }
+  stdout.writeln('Evidence captured; human verdict pending.');
 }
 
 Map<String, Object?> _summary(Map<String, dynamic> snapshot) {
@@ -64,6 +94,7 @@ Map<String, Object?> _summary(Map<String, dynamic> snapshot) {
   final persistenceDetails = persistence is Map ? persistence : const {};
   final composer = details['composer'];
   final composerDetails = composer is Map ? composer : const {};
+  final diagnostics = snapshot['driverDiagnostics'];
   return {
     'projectOpened': snapshot['project'] != null,
     // Pure geometry/identity so the integrated timeline scroll contract can be
@@ -81,6 +112,13 @@ Map<String, Object?> _summary(Map<String, dynamic> snapshot) {
       'needsAttention': persistenceDetails['needsAttention'],
     },
     'context': context.toJson(),
+    'execution': driverExecutionObservation(snapshot).toJson(),
+    'conversationControls': diagnostics is Map
+        ? diagnostics['conversationControls']
+        : null,
+    'interactionIndex': diagnostics is Map
+        ? diagnostics['interactionIndex']
+        : null,
     'workspace': workspace == null
         ? null
         : {

@@ -11,6 +11,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 pub(super) mod card;
+mod schema;
 
 const BOT_STATE_SCHEMA_VERSION: i64 = 6;
 const PAIRING_LIMIT: i64 = 32;
@@ -1704,7 +1705,7 @@ pub(crate) fn verify_send_identity(
 fn storage(error: impl std::fmt::Display) -> FeishuError {
     FeishuError::new(
         FeishuErrorKind::Unavailable,
-        format!("bot state failed: {error}"),
+        format!("bot state failed: {error:#}"),
         true,
         None,
     )
@@ -1857,6 +1858,7 @@ async fn count_rows(db: &DatabaseConnection, sql: &str) -> Result<i64, FeishuErr
 }
 
 async fn open_bot_state(path: &Path) -> Result<DatabaseConnection, FeishuError> {
+    schema::inspect_existing(path).await.map_err(storage)?;
     if let Some(parent) = path.parent() {
         tokio::fs::create_dir_all(parent).await.map_err(storage)?;
     }
@@ -1876,319 +1878,15 @@ async fn open_bot_state(path: &Path) -> Result<DatabaseConnection, FeishuError> 
         .acquire_timeout(Duration::from_secs(8))
         .sqlx_logging(false);
     let db = Database::connect(options).await.map_err(storage)?;
-    initialize(&db).await.map_err(storage)?;
+    if let Err(error) = schema::initialize(&db).await {
+        if let Err(cleanup) = db.close().await {
+            return Err(storage(
+                error.context(format!("bot ledger cleanup failed: {cleanup}")),
+            ));
+        }
+        return Err(storage(error));
+    }
     Ok(db)
-}
-
-async fn initialize(db: &DatabaseConnection) -> anyhow::Result<()> {
-    let tx = db.begin().await?;
-    tx.execute_unprepared(
-        "CREATE TABLE IF NOT EXISTS bot_meta (
-            id INTEGER PRIMARY KEY CHECK (id = 1),
-            schema_version INTEGER NOT NULL
-        )",
-    )
-    .await?;
-    tx.execute_unprepared(
-        "CREATE TABLE IF NOT EXISTS inbound_identities (
-            identity TEXT PRIMARY KEY,
-            bot_id TEXT NOT NULL DEFAULT '',
-            message_id TEXT NOT NULL,
-            chat_id TEXT NOT NULL,
-            content_hash TEXT NOT NULL,
-            admitted_at INTEGER NOT NULL
-        )",
-    )
-    .await?;
-    tx.execute_unprepared(
-        "CREATE TABLE IF NOT EXISTS inbound_work (
-            identity TEXT PRIMARY KEY,
-            bot_id TEXT NOT NULL DEFAULT '',
-            chat_id TEXT NOT NULL DEFAULT '',
-            message_id TEXT NOT NULL DEFAULT '',
-            content_hash TEXT NOT NULL DEFAULT '',
-            text TEXT NOT NULL DEFAULT '',
-            open_id TEXT NOT NULL DEFAULT '',
-            chat_kind TEXT NOT NULL DEFAULT '',
-            generation INTEGER NOT NULL DEFAULT 0,
-            app_id TEXT NOT NULL DEFAULT '',
-            project_id TEXT NOT NULL DEFAULT '',
-            creation_id TEXT NOT NULL DEFAULT '',
-            binding_revision INTEGER NOT NULL DEFAULT 0,
-            status TEXT NOT NULL,
-            diagnostic TEXT NOT NULL,
-            claimed_by TEXT NOT NULL DEFAULT '',
-            claimed_at INTEGER NOT NULL DEFAULT 0,
-            updated_at INTEGER NOT NULL
-        )",
-    )
-    .await?;
-    tx.execute_unprepared(
-        "CREATE TABLE IF NOT EXISTS thread_bindings (
-            chat_id TEXT PRIMARY KEY,
-            thread_id TEXT NOT NULL,
-            status TEXT NOT NULL DEFAULT 'bound',
-            creation_id TEXT NOT NULL DEFAULT '',
-            project_id TEXT NOT NULL DEFAULT '',
-            revision INTEGER NOT NULL DEFAULT 0,
-            generation INTEGER NOT NULL DEFAULT 0,
-            diagnostic TEXT NOT NULL DEFAULT '',
-            created_at INTEGER NOT NULL,
-            updated_at INTEGER NOT NULL DEFAULT 0
-        )",
-    )
-    .await?;
-    tx.execute_unprepared(
-        "CREATE TABLE IF NOT EXISTS observed_directs (
-            chat_id TEXT PRIMARY KEY,
-            open_id TEXT NOT NULL,
-            name TEXT NOT NULL,
-            last_observed_at INTEGER NOT NULL
-        )",
-    )
-    .await?;
-    tx.execute_unprepared(
-        "CREATE TABLE IF NOT EXISTS pairing_requests (
-            request_id TEXT PRIMARY KEY,
-            open_id TEXT NOT NULL,
-            display_name TEXT NOT NULL,
-            created_at INTEGER NOT NULL
-        )",
-    )
-    .await?;
-    tx.execute_unprepared(
-        "CREATE TABLE IF NOT EXISTS send_operations (
-            operation_id TEXT PRIMARY KEY,
-            bot_id TEXT NOT NULL DEFAULT '',
-            chat_id TEXT NOT NULL,
-            content_hash TEXT NOT NULL,
-            status TEXT NOT NULL,
-            platform_message_ids TEXT NOT NULL,
-            updated_at INTEGER NOT NULL
-        )",
-    )
-    .await?;
-    tx.execute_unprepared(
-        "CREATE TABLE IF NOT EXISTS binding_operations (
-            operation_id TEXT PRIMARY KEY,
-            bot_id TEXT NOT NULL,
-            chat_id TEXT NOT NULL,
-            content_hash TEXT NOT NULL,
-            expected_revision INTEGER NOT NULL,
-            creation_id TEXT NOT NULL,
-            thread_id TEXT NOT NULL DEFAULT '',
-            updated_at INTEGER NOT NULL
-        )",
-    )
-    .await?;
-    migrate(&tx).await?;
-    tx.commit().await?;
-    Ok(())
-}
-
-async fn migrate<C: ConnectionTrait>(db: &C) -> anyhow::Result<()> {
-    let version = db
-        .query_one_raw(statement(
-            "SELECT schema_version FROM bot_meta WHERE id=1",
-            vec![],
-        ))
-        .await?;
-    if let Some(version) = version {
-        let version: i64 = version.try_get("", "schema_version")?;
-        anyhow::ensure!(
-            version <= BOT_STATE_SCHEMA_VERSION,
-            "unsupported future bot state schema"
-        );
-    }
-    card::migrate(db).await?;
-    db.execute_unprepared(
-        "CREATE UNIQUE INDEX IF NOT EXISTS pairing_open_id ON pairing_requests(open_id)",
-    )
-    .await?;
-    ensure_column(
-        db,
-        "inbound_identities",
-        "bot_id",
-        "TEXT NOT NULL DEFAULT ''",
-    )
-    .await?;
-    ensure_column(db, "inbound_work", "bot_id", "TEXT NOT NULL DEFAULT ''").await?;
-    ensure_column(db, "inbound_work", "chat_id", "TEXT NOT NULL DEFAULT ''").await?;
-    ensure_column(db, "inbound_work", "message_id", "TEXT NOT NULL DEFAULT ''").await?;
-    ensure_column(
-        db,
-        "inbound_work",
-        "content_hash",
-        "TEXT NOT NULL DEFAULT ''",
-    )
-    .await?;
-    ensure_column(db, "inbound_work", "text", "TEXT NOT NULL DEFAULT ''").await?;
-    ensure_column(
-        db,
-        "inbound_work",
-        "attachments",
-        "TEXT NOT NULL DEFAULT '[]'",
-    )
-    .await?;
-    ensure_column(db, "inbound_work", "open_id", "TEXT NOT NULL DEFAULT ''").await?;
-    ensure_column(db, "inbound_work", "chat_kind", "TEXT NOT NULL DEFAULT ''").await?;
-    ensure_column(
-        db,
-        "inbound_work",
-        "generation",
-        "INTEGER NOT NULL DEFAULT 0",
-    )
-    .await?;
-    ensure_column(db, "inbound_work", "app_id", "TEXT NOT NULL DEFAULT ''").await?;
-    ensure_column(db, "inbound_work", "project_id", "TEXT NOT NULL DEFAULT ''").await?;
-    ensure_column(
-        db,
-        "inbound_work",
-        "creation_id",
-        "TEXT NOT NULL DEFAULT ''",
-    )
-    .await?;
-    ensure_column(
-        db,
-        "inbound_work",
-        "binding_revision",
-        "INTEGER NOT NULL DEFAULT 0",
-    )
-    .await?;
-    ensure_column(db, "inbound_work", "claimed_by", "TEXT NOT NULL DEFAULT ''").await?;
-    ensure_column(
-        db,
-        "inbound_work",
-        "claimed_at",
-        "INTEGER NOT NULL DEFAULT 0",
-    )
-    .await?;
-    ensure_column(
-        db,
-        "inbound_work",
-        "watch_input",
-        "TEXT NOT NULL DEFAULT ''",
-    )
-    .await?;
-    ensure_column(
-        db,
-        "inbound_work",
-        "attempt_count",
-        "INTEGER NOT NULL DEFAULT 0",
-    )
-    .await?;
-    ensure_column(
-        db,
-        "inbound_work",
-        "next_attempt_at",
-        "INTEGER NOT NULL DEFAULT 0",
-    )
-    .await?;
-    ensure_column(
-        db,
-        "thread_bindings",
-        "status",
-        "TEXT NOT NULL DEFAULT 'bound'",
-    )
-    .await?;
-    ensure_column(
-        db,
-        "thread_bindings",
-        "creation_id",
-        "TEXT NOT NULL DEFAULT ''",
-    )
-    .await?;
-    ensure_column(
-        db,
-        "thread_bindings",
-        "project_id",
-        "TEXT NOT NULL DEFAULT ''",
-    )
-    .await?;
-    ensure_column(
-        db,
-        "thread_bindings",
-        "revision",
-        "INTEGER NOT NULL DEFAULT 0",
-    )
-    .await?;
-    ensure_column(
-        db,
-        "thread_bindings",
-        "generation",
-        "INTEGER NOT NULL DEFAULT 0",
-    )
-    .await?;
-    ensure_column(
-        db,
-        "thread_bindings",
-        "diagnostic",
-        "TEXT NOT NULL DEFAULT ''",
-    )
-    .await?;
-    ensure_column(
-        db,
-        "thread_bindings",
-        "updated_at",
-        "INTEGER NOT NULL DEFAULT 0",
-    )
-    .await?;
-    ensure_column(db, "send_operations", "bot_id", "TEXT NOT NULL DEFAULT ''").await?;
-    ensure_column(
-        db,
-        "send_operations",
-        "segment_facts",
-        "TEXT NOT NULL DEFAULT ''",
-    )
-    .await?;
-    // 旧 pending 与“creating 但缺创建身份”的行一律规范为 needs_attention：
-    // 不从 thread_id 反推创建身份，运行时也不再重新兼容这两种值。
-    db.execute_unprepared(
-        "UPDATE thread_bindings
-         SET status='needs_attention',
-             diagnostic='legacy pending binding requires local recreate',
-             revision=CASE WHEN revision=0 THEN 1 ELSE revision END
-         WHERE thread_id='pending' OR status='pending' OR (status='creating' AND creation_id='')",
-    )
-    .await?;
-    db.execute_unprepared(
-        "UPDATE inbound_work
-         SET status='needs_attention',
-             diagnostic='legacy inbound lacks frozen binding identity'
-         WHERE status IN ('pending','claimed','failed')
-           AND (creation_id='' OR app_id='' OR project_id='')",
-    )
-    .await?;
-    db.execute_unprepared(
-        "UPDATE thread_bindings SET revision=1, generation=1 WHERE revision=0 AND status='bound'",
-    )
-    .await?;
-    db.execute_raw(statement(
-        "INSERT INTO bot_meta(id, schema_version) VALUES(1, ?)
-         ON CONFLICT(id) DO UPDATE SET schema_version=excluded.schema_version",
-        vec![BOT_STATE_SCHEMA_VERSION.into()],
-    ))
-    .await?;
-    Ok(())
-}
-
-async fn ensure_column<C: ConnectionTrait>(
-    db: &C,
-    table: &str,
-    column: &str,
-    decl: &str,
-) -> anyhow::Result<()> {
-    let columns = db
-        .query_all_raw(statement(&format!("PRAGMA table_info({table})"), vec![]))
-        .await?;
-    let present = columns
-        .iter()
-        .any(|row| row.try_get::<String>("", "name").ok().as_deref() == Some(column));
-    if !present {
-        db.execute_unprepared(&format!("ALTER TABLE {table} ADD COLUMN {column} {decl}"))
-            .await?;
-    }
-    Ok(())
 }
 
 #[cfg(test)]
@@ -2283,7 +1981,61 @@ mod tests {
         let directory = tempfile::tempdir()?;
         let path = directory.path().join("bot-state.sqlite");
         let legacy = v3_database(&path).await;
-        drop(legacy);
+        legacy.execute_unprepared("CREATE TRIGGER reject_ledger_migration BEFORE UPDATE ON bot_meta BEGIN SELECT RAISE(ABORT,'injected ledger migration failure'); END").await?;
+        legacy.close().await?;
+
+        let failed = BotStateStore::new(path.clone());
+        let failure = failed
+            .list_due_inbound("legacy")
+            .await
+            .expect_err("ledger migration must fail");
+        assert!(
+            failure
+                .to_string()
+                .contains("m20261026_000001_bot_ledger_schema")
+        );
+        assert!(
+            failure
+                .to_string()
+                .contains("injected ledger migration failure")
+        );
+        drop(failed);
+        let probe = Database::connect(
+            sqlite_file_options(&path, SqliteFileMode::ReadWrite, |options| options).await?,
+        )
+        .await?;
+        assert_eq!(
+            probe
+                .query_one_raw(statement(
+                    "SELECT schema_version FROM bot_meta WHERE id=1",
+                    vec![]
+                ))
+                .await?
+                .unwrap()
+                .try_get::<i64>("", "schema_version")?,
+            3
+        );
+        assert!(
+            probe
+                .query_one_raw(statement("SELECT version FROM seaql_migrations", vec![]))
+                .await?
+                .is_none()
+        );
+        assert_eq!(
+            probe
+                .query_one_raw(statement(
+                    "SELECT text FROM inbound_work WHERE identity='legacy:chat:m1'",
+                    vec![]
+                ))
+                .await?
+                .unwrap()
+                .try_get::<String>("", "text")?,
+            "question"
+        );
+        probe
+            .execute_unprepared("DROP TRIGGER reject_ledger_migration")
+            .await?;
+        probe.close().await?;
 
         let store = BotStateStore::new(path.clone());
         // 旧 claimed 行与绑定、发送事实仍在，schema 升到当前版本。
@@ -2671,5 +2423,40 @@ mod tests {
         state.lifecycle = lifecycle;
         state.confirmed_sequence = state.sequence;
         state.last_operation.as_mut().unwrap().status = card::CardOperationStatus::Confirmed;
+    }
+    #[tokio::test]
+    async fn ledger_adopts_current_file_and_refuses_future_writes() -> anyhow::Result<()> {
+        for fault in ["format", "migration", "missing_table"] {
+            let directory = tempfile::tempdir()?;
+            let path = directory.path().join("ledger.sqlite");
+            let original = open_bot_state(&path).await?;
+            original
+                .execute_unprepared("DROP TABLE seaql_migrations")
+                .await?;
+            original.close().await?;
+            let adopted = open_bot_state(&path).await?;
+            assert!(
+                adopted
+                    .query_one_raw(statement("SELECT version FROM seaql_migrations", vec![]))
+                    .await?
+                    .is_some()
+            );
+            if fault == "format" {
+                adopted
+                    .execute_unprepared("UPDATE bot_meta SET schema_version=999")
+                    .await?;
+            } else if fault == "missing_table" {
+                adopted
+                    .execute_unprepared("DROP TABLE seaql_migrations; DROP TABLE inbound_work")
+                    .await?;
+            } else {
+                adopted.execute_unprepared("INSERT INTO seaql_migrations(version,applied_at) VALUES('m99999999_future',1)").await?;
+            }
+            adopted.close().await?;
+            let before = tokio::fs::read(&path).await?;
+            assert!(open_bot_state(&path).await.is_err());
+            assert_eq!(tokio::fs::read(&path).await?, before);
+        }
+        Ok(())
     }
 }

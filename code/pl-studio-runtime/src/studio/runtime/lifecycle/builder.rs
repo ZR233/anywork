@@ -23,6 +23,7 @@ impl StudioRuntime {
         system_skills_dir: std::path::PathBuf,
         helper_source: crate::worker_assets::RemoteHelperSource,
     ) -> Result<Self> {
+        let owner_epoch = crate::studio::ids::new_id("runtime");
         let (settings_updates, _) = tokio::sync::watch::channel(config_runtime.read()?);
         // Resolve the supervised local worker *before* creating any store-derived owner, so a
         // helper resolution failure can never leave partially-constructed owners (writer, updater,
@@ -266,6 +267,7 @@ impl StudioRuntime {
         let read_scopes = super::super::read_scopes::ReadScopeRegistry::default();
         let thread_observations = super::super::thread_observation::ThreadObservations::new(
             super::super::thread_observation::ObservationServices {
+                hosted_updates: tokio::sync::watch::channel(()).0,
                 config: config_runtime.clone(),
                 thread_modes: thread_modes.clone(),
                 observation_ids: observation_ids.clone(),
@@ -351,7 +353,7 @@ impl StudioRuntime {
             attachment_drafts,
             draft_commands: Default::default(),
             ssh_manager,
-            archive_task: Default::default(),
+            thread_lifecycle_task: Default::default(),
             lifecycle_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
             shutdown_latch: Default::default(),
             shutdown_run: Default::default(),
@@ -365,6 +367,19 @@ impl StudioRuntime {
         let keep = std::sync::Arc::new(runtime.clone());
         runtime.bots.attach_host(std::sync::Arc::downgrade(&keep));
         runtime.bot_host = Some(keep);
+        // An internal scheduling activation reports its failure through the runtime's single Recovery
+        // registry, exactly like an explicit activation does.
+        let recovering = runtime.clone();
+        runtime
+            .threads
+            .set_workspace_recovery(Some(std::sync::Arc::new(move |thread, error| {
+                let recovering = recovering.clone();
+                Box::pin(async move {
+                    recovering
+                        .publish_session_workspace_issue(&thread, &error)
+                        .await;
+                })
+            })))?;
         Ok(runtime)
     }
 }

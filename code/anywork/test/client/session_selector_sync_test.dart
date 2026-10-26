@@ -8,9 +8,11 @@ import 'package:anywork/src/features/interaction/connectors/conversation_input_c
 import 'package:anywork/src/features/interaction/connectors/start_input_connector.dart';
 import 'package:anywork/src/features/status/status.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
+import 'package:anywork/src/l10n/studio_l10n.dart';
+import 'package:anywork/src/features/interaction/views/input_model_controls_view.dart';
 import 'package:anywork_client/configuration.dart';
 import 'package:anywork_client/conversation.dart';
-import 'package:anywork_client/conversation_ports.dart' show InterruptTurnReply;
+import 'package:anywork_client/conversation_ports.dart' show StopExecutionReply;
 import 'package:anywork_client/drafts.dart';
 import 'package:anywork_client/models.dart';
 import 'package:anywork_client/modes.dart';
@@ -292,39 +294,57 @@ void main() {
     await finish(tester);
   });
 
-  testWidgets('未打开项目时输入与会话选择器按同一准入状态禁用', (tester) async {
+  testWidgets('未打开项目时输入禁用，模型和强度仍能先选；Mode锁定有可见原因', (tester) async {
     await initialize(tester);
-    env.workspace.restoreSelection(
-      const WorkspaceSelection(
-        projectId: null,
-        threadId: null,
-        needsOpen: false,
-      ),
-    );
-    await tester.pumpWidget(
-      harness(const StartInputConnector(projectId: null)),
-    );
+    env.workspace.restoreSelection(const WorkspaceSelection(projectId: null, threadId: null, needsOpen: false));
+    await tester.pumpWidget(harness(const StartInputConnector(projectId: null)));
+    await tester.pump();
+    final input = tester.widget<TextField>(find.byKey(StudioDriverKeys.composerInput));
+    expect(input.enabled, isFalse, reason: '未打开项目不能发送');
+    final controls = tester.widget<InputModelControlsView>(find.byType(InputModelControlsView));
+    final next = controls.models.firstWhere((option) => (option.descriptor.reasoning?.candidates.length ?? 0) > 1);
+    final modelTrigger = trigger(StudioDriverKeys.model);
+    expect(tester.widget<TextButton>(modelTrigger).onPressed, isNotNull, reason: '保留main：选项目之前可先选模型');
+    await tester.tap(modelTrigger);
     await tester.pumpAndSettle();
-    expect(
-      tester
-          .widget<TextField>(find.byKey(StudioDriverKeys.composerInput))
-          .enabled,
-      isFalse,
-    );
-    for (final key in [StudioDriverKeys.sessionMode, StudioDriverKeys.model]) {
-      expect(trigger(key), findsOneWidget, reason: '选择器仍应使用官方 TextButton');
-      expect(tester.widget<TextButton>(trigger(key)).onPressed, isNull);
-    }
-    expect(
-      find.byKey(StudioDriverKeys.sessionWorkspaceMode),
-      findsNothing,
-      reason: '没有项目时不得创建工作区草稿控件',
-    );
-    expect(
-      find.byKey(StudioDriverKeys.sessionSettings),
-      findsNothing,
-      reason: '没有项目时不得出现 project-scoped settings',
-    );
+    await tester.tap(find.byKey(StudioDriverKeys.modelOption(next.accountId, next.modelId)));
+    await tester.pumpAndSettle();
+    final selected = tester.widget<InputModelControlsView>(find.byType(InputModelControlsView));
+    expect((selected.accountId, selected.modelId), (next.accountId, next.modelId));
+    final effort = next.descriptor.reasoning!.candidates.firstWhere((effort) => effort != selected.effort);
+    await tester.tap(trigger(StudioDriverKeys.reasoningEffort));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(StudioDriverKeys.reasoningEffortOption(effort)));
+    await tester.pumpAndSettle();
+    expect(tester.widget<InputModelControlsView>(find.byType(InputModelControlsView)).effort, effort);
+    expect(tester.widget<TextField>(find.byKey(StudioDriverKeys.composerInput)).enabled, isFalse);
+    final mode = trigger(StudioDriverKeys.sessionMode);
+    expect(tester.widget<TextButton>(mode).onPressed, isNotNull);
+    await tester.tap(mode);
+    await tester.pumpAndSettle();
+    expect(find.text(tester.element(mode).l10n.statusModeNeedsProject), findsOneWidget);
+    expect(find.byKey(StudioDriverKeys.sessionModeOption(ThreadModeId.simple.name)), findsNothing);
+    expect(find.byKey(StudioDriverKeys.sessionWorkspaceMode), findsNothing);
+    expect(find.byKey(StudioDriverKeys.sessionSettings), findsNothing);
+    await finish(tester);
+  });
+
+  testWidgets('选择器锁定点击有可见原因且不打开菜单', (tester) async {
+    await initialize(tester);
+    String? explanation;
+    await tester.pumpWidget(harness(StatefulBuilder(builder: (context, update) => InputModelControlsView(
+      modes: const [], models: const [], efforts: const [], mode: ThreadModeId.simple,
+      workspaceMode: ThreadWorkspaceMode.local, accountId: '', modelId: '', effort: null,
+      enabled: false, showWorkspace: false, blockedReason: context.l10n.statusSelectorsNotReady,
+      explanation: explanation, onExplain: (reason) => update(() => explanation = reason),
+    ))));
+    await tester.pump();
+    final model = trigger(StudioDriverKeys.model);
+    expect(tester.widget<TextButton>(model).onPressed, isNotNull);
+    await tester.tap(model);
+    await tester.pump();
+    expect(find.byKey(const ValueKey('input-model-explanation')), findsOneWidget);
+    expect(find.text(tester.element(model).l10n.statusSelectorsNotReady), findsOneWidget);
     await finish(tester);
   });
 
@@ -658,7 +678,7 @@ void main() {
         ),
       );
       final runningDelivery = env.conversationPort.publishExecution(
-        selectorExecution(status: ThreadStatus.running, active: brief),
+        selectorExecution(status: ThreadStatus.running, active: brief, execution: const AgentExecution(id: 'execution-1', phase: AgentExecutionPhase.running, turnId: 'turn-1')),
       );
       await tester.pumpAndSettle();
       final nativeExecution = env.conversations.active.value!.execution.value;
@@ -695,20 +715,14 @@ void main() {
         'exact Turn stop',
       );
       interrupt.reply.complete(
-        InterruptTurnReply(
+        StopExecutionReply(
           threadId: threadId,
-          turnId: 'turn-1',
-          interrupted: true,
+          executionId: interrupt.executionId,
+          stopped: true,
           receipt: CommitReceipt(
             operationId: interrupt.operationId,
             disposition: CommitDisposition.applied,
-            targets: [
-              const ResourceStamp(
-                resourceKey: 'thread-turn:thread-main:turn-1',
-                ownerEpoch: 'selector-native',
-                revision: 2,
-              ),
-            ],
+            targets: const [],
             effect: EffectPoint.immediate,
             requiresIdentityObservation: true,
           ),

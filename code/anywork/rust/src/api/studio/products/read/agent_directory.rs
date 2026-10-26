@@ -196,6 +196,9 @@ pub struct BridgeAgentDirectoryEntryRead {
     pub frozen_model: Option<BridgeFrozenModelSelectionRead>,
     pub depth: u32,
     pub state: BridgeAgentStateRead,
+    pub execution: Option<crate::api::studio::types::BridgeAgentExecution>,
+    pub can_stop: bool,
+    pub awaiting_scheduling: bool,
     pub updated_at: i64,
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -316,6 +319,9 @@ impl From<protocol::AgentDirectoryEntryRead> for BridgeAgentDirectoryEntryRead {
             frozen_model: value.frozen_model.map(Into::into),
             depth: value.depth,
             state: value.state.into(),
+            execution: value.execution.map(Into::into),
+            can_stop: value.can_stop,
+            awaiting_scheduling: value.awaiting_scheduling,
             updated_at: value.updated_at,
         }
     }

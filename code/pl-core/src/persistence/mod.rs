@@ -2,6 +2,7 @@
 
 mod history;
 pub mod migration;
+mod migration_source;
 mod repository;
 mod session_delete;
 mod sqlite;

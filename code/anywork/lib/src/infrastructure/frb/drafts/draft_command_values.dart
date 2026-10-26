@@ -19,8 +19,14 @@ attachment.BridgeAttachmentAdmissionContext admissionContextToBridge(
     attachment.BridgeAttachmentAdmissionContext.existingThread(
       threadId: threadId,
     ),
-  NewThreadAttachmentAdmissionContext(:final mode) =>
-    attachment.BridgeAttachmentAdmissionContext.newThread(mode: mode.id),
+  NewThreadAttachmentAdmissionContext(:final route) =>
+    attachment.BridgeAttachmentAdmissionContext.newThread(
+      route: delegation.BridgeNewThreadModelRoute(
+        accountId: route.model.accountId,
+        modelId: route.model.modelId,
+        effort: route.effort,
+      ),
+    ),
 };
 
 attachment.BridgeAttachmentDraftSource draftSourceToBridge(

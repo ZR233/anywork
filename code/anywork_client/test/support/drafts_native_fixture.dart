@@ -134,7 +134,7 @@ final class DraftCommands extends UnscriptedConversationCommands {
   final prompts = DraftCalls<DraftPromptCall>();
   final acceptances = DraftCalls<DraftAcceptanceCall>();
   @override
-  Future<InterruptTurnReply> interruptTurn(
+  Future<StopExecutionReply> stopExecution(
     String threadId,
     String turnId, {
     required OperationId operationId,

@@ -110,9 +110,12 @@ final class _ConversationCommands {
     int expectedRevision,
     InteractionResolutionCommand resolution, {
     OperationId? operationId,
+    InteractionReadRef? hostedReference,
+    String? targetThreadId,
   }) => _run<InteractionCommandReply>(
     operationId: operationId,
-    retryIntent: (interactionId, resolution),
+    retryIntent: (interactionId, resolution, hostedReference, targetThreadId),
+    interactionReference: hostedReference,
     origin: origin,
     facet: ThreadFacet.execution,
     target: 'interaction:$interactionId',
@@ -120,8 +123,11 @@ final class _ConversationCommands {
     // Native accepts a globally-addressed interaction ID, not a Thread. Verify
     // the original immutable read before sending, not after a foreign write.
     prepare: () async {
+      if (!session.acceptsUserInput) throw _childRequiresParent;
       _revision(expectedRevision);
-      await _readInteraction(origin, interactionId, expectedRevision);
+      if (hostedReference != null && hostedReference.revision != expectedRevision) throw _continuationConflict;
+      await _readInteraction(origin, interactionId, expectedRevision,
+        hostedReference: hostedReference, targetThreadId: targetThreadId, rejectChildPlan: true);
     },
     dispatch: (id) => session._commands.respondInteraction(
       session.threadId,
@@ -135,7 +141,7 @@ final class _ConversationCommands {
       final interaction = value.interaction;
       _targets(receipt!, origin, {'interaction:$interactionId'});
       if (interaction.interactionId != interactionId ||
-          interaction.scope.threadId != session.threadId ||
+          interaction.scope.threadId != (targetThreadId ?? session.threadId) ||
           interaction.revision < expectedRevision ||
           interaction.revision !=
               _target(receipt, 'interaction:$interactionId').revision ||
@@ -147,17 +153,37 @@ final class _ConversationCommands {
       }
     },
     observe: (value, owner) async {
+      // Native locators cannot be upgraded at an old, unexposed source revision.
+      // Only this registered command waits for its original entry's reliable
+      // fact; public hosted membership is never relaxed for a reply DTO.
+      final readOrigin = hostedReference == null || value.interaction.revision == hostedReference.revision
+          ? origin
+          : await owner.waitForInteractionReceipt(value.interaction.revision);
       await _readInteraction(
-        origin,
+        readOrigin,
         interactionId,
         value.interaction.revision,
         expected: value,
+        hostedReference: hostedReference == null ? null : hostedReference.copyWith(revision: value.interaction.revision),
+        targetThreadId: targetThreadId,
       );
       // Only this real original-version read supplies canonical evidence, not
       // the command's DTO, local revision arithmetic or a fabricated read scope.
       session._operations.observe(value.receipt.targets.single);
     },
   );
+
+  void observeExecution(ThreadFacetStamp stamp, InteractionDelta? delta) {
+    if (delta == null) return;
+    for (final work in List.of(_work.values)) {
+      if (work is _ConversationCommand && !_sameProjection(work.origin, stamp)) continue;
+      if (work is _ConversationCommand) {
+        for (final fact in [...delta.upserted, ...delta.terminalFacts]) {
+          work.observeInteraction(stamp, fact);
+        }
+      }
+    }
+  }
 
   void _check(ThreadFacetStamp origin, ThreadFacet facet) {
     lifetime.admit();
@@ -188,6 +214,7 @@ final class _ConversationCommands {
     required ThreadFacet facet,
     OperationId? operationId,
     Object? retryIntent,
+    InteractionReadRef? interactionReference,
     required String target,
     required String lane,
     required Future<T> Function(OperationId) dispatch,
@@ -265,6 +292,7 @@ final class _ConversationCommands {
       validate,
       observe,
       retryIntent: retryIntent,
+      interactionReference: interactionReference,
     );
     _work[owner.attempt] = owner;
     _lanes[lane] = owner.dispatchDone.future;
@@ -318,17 +346,49 @@ final class _ConversationCommands {
     String id,
     int revision, {
     InteractionCommandReply? expected,
+    InteractionReadRef? hostedReference,
+    String? targetThreadId,
+    bool rejectChildPlan = false,
   }) async {
     session.requireOrigin(origin);
-    final scope = await session.openInteraction(
+    final scope = hostedReference == null ? await session.openInteraction(
       interactionId: id,
       expectedRevision: revision,
       expectedIncarnation: origin.incarnation,
-    );
+    ) : rejectChildPlan
+        ? await session.openHostedInteraction(origin: origin, reference: hostedReference,
+            targetThreadId: targetThreadId ?? session.threadId)
+        : expected != null
+            ? await session.openInteractionReference(origin, hostedReference)
+            : throw readProtocol('Only a validated hosted receipt may use the internal observation read.');
     Object? primaryFailure;
     try {
       session.requireOrigin(origin);
       final header = await scope.header();
+      final readText = (int fieldId, int offset) => scope.text(fieldId, offset: offset, maxBytes: 65536);
+      final actualTarget = await materializeReadText(header.threadId, read: readText);
+      if (actualTarget != (targetThreadId ?? session.threadId) ||
+          await materializeReadText(header.interactionId, read: readText) != id) {
+        throw readProtocol('The hosted interaction reference does not identify its original target.');
+      }
+      if (rejectChildPlan && actualTarget != session.threadId && header.purpose is PlanConfirmationPurposeRead) throw _childRequiresParent;
+      if (rejectChildPlan && header.content is UserInputContentRead &&
+          header.purpose is GeneralInteractionPurposeRead) {
+        var offset = 0;
+        final count = (header.content as UserInputContentRead).questionCount;
+        while (offset < count) {
+          final page = await scope.questions(offset: offset, limit: 32);
+          for (final question in page.items) {
+            if (await materializeReadText(question.id, read: readText) == 'plan_confirmation') {
+              throw const StudioFailure(code: StudioFailureCode.invalidArgument,
+                message: 'The plan_confirmation question identity is reserved for the Plan command.',
+                retryable: false, correlationId: 'reserved-plan-question');
+            }
+          }
+          if (page.nextOffset == null) break;
+          offset = page.nextOffset!;
+        }
+      }
       if (expected != null) {
         final status = switch (header.state) {
           PendingInteractionRead() => InteractionStatus.pending,
@@ -446,8 +506,55 @@ final class _ConversationCommand<T> extends _ConversationCommandOwner {
     this.validate,
     this.observe, {
     this.retryIntent,
+    this.interactionReference,
   });
   final Object? retryIntent;
+  final InteractionReadRef? interactionReference;
+  ThreadFacetStamp? _interactionOrigin;
+  int _interactionRevision = -1;
+  Completer<void> _interactionChanged = Completer<void>();
+
+  void observeInteraction(ThreadFacetStamp source, InteractionBrief fact) {
+    if (interactionReference?.entry != fact.reference.entry ||
+        !_sameProjection(origin, source) ||
+        fact.status == InteractionStatus.pending ||
+        fact.reference.revision != fact.revision ||
+        fact.revision < _interactionRevision) return;
+    _interactionOrigin = source;
+    _interactionRevision = fact.revision;
+    final changed = _interactionChanged;
+    _interactionChanged = Completer<void>();
+    changed.complete();
+  }
+
+  Future<ThreadFacetStamp> waitForInteractionReceipt(int revision) async {
+    final failed = Completer<void>();
+    failed.future.ignore();
+    void check(ThreadExecutionState state) {
+      if (failed.isCompleted) return;
+      final stamp = state.stamp;
+      final error = stamp != null && !_sameProjection(stamp, origin)
+          ? _submissionSuperseded
+          : state.sync.error;
+      if (error != null) failed.completeError(error);
+    }
+    final watching = actions.session.execution.watchLatest(check);
+    check(watching.value);
+    try {
+      while (_interactionRevision < revision || _interactionOrigin == null) {
+        if (_closing.isCompleted) throw conversationCancelled;
+        await Future.any([
+          _interactionChanged.future,
+          failed.future,
+          _closing.future.then<void>((_) => throw conversationCancelled),
+        ]);
+      }
+      _settle();
+      return _interactionOrigin!;
+    } finally {
+      watching.observation.cancel();
+    }
+  }
   bool retryConsumed = false;
   bool get canRetry =>
       retryIntent != null &&

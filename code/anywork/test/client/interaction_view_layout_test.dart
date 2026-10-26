@@ -149,6 +149,8 @@ Future<void> _pumpPlan(
 const _planState = InteractionViewState(
   key: InteractionEditorKey(
     threadId: 'layout-thread',
+    runtimeEpoch: 'layout-epoch',
+    sourceGeneration: 1,
     incarnation: 1,
     interactionId: 'layout-plan',
     revision: 1,

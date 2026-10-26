@@ -10,12 +10,12 @@ enum _StopOutcome {
 
 /// One exact Stop invocation in the Session's original evidence collection.
 /// There is no FIFO, second feed, retry-send or lookup by current Thread ID.
-final class _StopTurnWork extends _ExecutionEvidenceOwner {
-  _StopTurnWork({
+final class _StopExecutionWork extends _ExecutionEvidenceOwner {
+  _StopExecutionWork({
     required this.session,
     required this.writer,
     required this.origin,
-    required this.target,
+    required this.executionId,
     required CreatedInputExecutionBinding? binding,
     required AttemptId? originalAttempt,
   }) : super(
@@ -34,7 +34,7 @@ final class _StopTurnWork extends _ExecutionEvidenceOwner {
   final ConversationSessionOwner session;
   final OperationWriter<Unit> writer;
   final ThreadFacetStamp origin;
-  final TurnReadRef target;
+  final String executionId;
   final Completer<void> _taskDone = Completer<void>();
   final Map<String, FeedCloseIssue> _issues = {};
   final Map<String, ({Object cause, StackTrace stack})> _causes = {};
@@ -47,8 +47,7 @@ final class _StopTurnWork extends _ExecutionEvidenceOwner {
   _StopOutcome? _outcome;
   StudioFailure? _outcomeFailure;
   CommitReceipt? _receipt;
-  InterruptTurnReply? _reply;
-  String? _turnId;
+  StopExecutionReply? _reply;
   int _observedRevision = -1;
   int _dispatchRevision = -1;
   bool _authoritative = false;
@@ -99,6 +98,7 @@ final class _StopTurnWork extends _ExecutionEvidenceOwner {
   }
 
   void _checkInitialTarget() {
+    if (!session.acceptsUserInput) throw _childRequiresParent;
     if (session._sealed ||
         session._stopAdmissionRetired ||
         session.readAdmissionClosed ||
@@ -106,16 +106,13 @@ final class _StopTurnWork extends _ExecutionEvidenceOwner {
       throw conversationCancelled;
     session.requireOrigin(origin);
     final stamp = session._readyExecutionStamp;
-    final active = execution.value.value?.activeTurn;
+    final active = execution.value.value?.execution;
     if (stamp == null ||
         origin.facet != ThreadFacet.execution ||
         origin.revision < 0 ||
-        target.entry < 0 ||
-        target.revision < 0 ||
+        executionId.isEmpty ||
         active == null ||
-        active.reference != target ||
-        active.revision != target.revision ||
-        !_busy(active))
+        active.id != executionId)
       throw _stopStaleTarget;
     if (_sourceAttempt == null ||
         _sourceAttempt != session._feeds.executionAttemptId ||
@@ -132,7 +129,7 @@ final class _StopTurnWork extends _ExecutionEvidenceOwner {
   ThreadFacetStamp _checkActive() {
     final state = execution.value;
     final stamp = state.stamp;
-    final active = state.value?.activeTurn;
+    final active = state.value?.execution;
     if (_closing || session._sealed || _abandoned) throw conversationCancelled;
     if (!_authoritative ||
         stamp == null ||
@@ -143,66 +140,21 @@ final class _StopTurnWork extends _ExecutionEvidenceOwner {
         !identical(_created?.source, session._executionBinding?.source) ||
         stamp.revision < _observedRevision ||
         active == null ||
-        active.reference.entry != target.entry ||
-        !_busy(active)) {
+        active.id != executionId) {
       throw _stopStaleTarget;
     }
     return stamp;
   }
 
   Future<void> _run() async {
-    TurnReadScope? scope;
     try {
-      _checkActive();
-      scope = await _readOwners.openExecutionTurn(
-        evidence: this,
-        origin: origin,
-        reference: target,
-        accepts: () =>
-            !_closing && !session._sealed && !_abandoned && !_turnReadsClosed,
-        open: () =>
-            _observationPort.openTurnRead(threadId, target, origin: origin),
-      );
-      final header = await scope.header();
-      final originalThread = await _readIdentity(scope, header.threadId);
-      final originalTurn = await _readIdentity(scope, header.id);
-      if (originalThread != threadId ||
-          header.revision != target.revision ||
-          !_busyHeader(header)) {
-        throw readProtocol(
-          'The frozen Stop read does not identify its original busy Turn.',
-        );
-      }
-      _turnId = originalTurn;
-    } catch (error, stack) {
-      _chooseFailure(error, stack);
-    } finally {
-      if (scope != null) {
-        try {
-          scope.requestClose();
-          final report = await scope.close();
-          if (!report.complete)
-            throw const StudioFailure(
-              code: StudioFailureCode.unavailable,
-              message:
-                  'The original Stop identity read has unresolved cleanup.',
-              retryable: true,
-              correlationId: 'stop-read-cleanup',
-            );
-        } catch (error, stack) {
-          _chooseFailure(error, stack);
-        }
-      }
-    }
-    if (_outcome != null) return;
-    try {
-      // Same entry may progress through revisions while the frozen read is in
-      // flight. Never replace that read ref or dispatch to a different entry.
+      // Execution identity exists before a Turn/read ref and never changes
+      // when preparation enters a Turn. No identity read or activation needed.
       _dispatchRevision = _checkActive().revision;
       _dispatched = true;
-      final reply = await session._commands.interruptTurn(
+      final reply = await session._commands.stopExecution(
         threadId,
-        _turnId!,
+        executionId,
         operationId: writer.ticket.id,
       );
       _reply = reply;
@@ -220,52 +172,17 @@ final class _StopTurnWork extends _ExecutionEvidenceOwner {
     }
   }
 
-  Future<String> _readIdentity(TurnReadScope scope, ReadText value) async {
-    if (value is InlineReadText) return value.text;
-    final field = value as DeferredReadText;
-    if (field.fieldId < 0 || field.utf8Bytes < 0)
-      throw readProtocol('The Stop identity text descriptor is invalid.');
-    var offset = 0;
-    final text = StringBuffer();
-    while (offset < field.utf8Bytes) {
-      if (_closing || session._sealed || _abandoned)
-        throw conversationCancelled;
-      final chunk = await scope.text(
-        field.fieldId,
-        offset: offset,
-        maxBytes: 65536,
-      );
-      final bytes = utf8.encode(chunk.text).length;
-      final end = offset + bytes;
-      if (chunk.fieldId != field.fieldId ||
-          chunk.offset != offset ||
-          bytes == 0 ||
-          bytes > 65536 ||
-          end > field.utf8Bytes ||
-          (chunk.nextOffset == null
-              ? end != field.utf8Bytes
-              : end == field.utf8Bytes || chunk.nextOffset != end)) {
-        throw readProtocol(
-          'The original Stop identity did not make exact UTF-8 progress.',
-        );
-      }
-      text.write(chunk.text);
-      offset = end;
-    }
-    return text.toString();
-  }
-
   StudioFailure? _validateReply() {
     final reply = _reply!;
     if (reply.threadId != threadId ||
-        reply.turnId != _turnId ||
+        reply.executionId != executionId ||
         !_validReceipt(reply.receipt) ||
         reply.receipt.disposition !=
-            (reply.interrupted
+            (reply.stopped
                 ? CommitDisposition.applied
                 : CommitDisposition.noChange)) {
       return readProtocol(
-        'The Stop reply contradicts its original operation, Thread, Turn or receipt contract.',
+        'The Stop reply contradicts its original operation, Thread, execution or receipt contract.',
       );
     }
     return null;
@@ -382,11 +299,10 @@ final class _StopTurnWork extends _ExecutionEvidenceOwner {
     if (stamp.revision < _observedRevision) throw _stopStaleTarget;
     _observedRevision = stamp.revision;
     _authoritative = true;
+    final original = execution.value.value?.execution;
     if (_dispatched &&
         stamp.revision > _dispatchRevision &&
-        (active == null ||
-            active.reference.entry != target.entry ||
-            !_busy(active))) {
+        original?.id != executionId) {
       _terminalProof = true;
       _settle(<String>{});
       _scheduleCleanup();
@@ -650,13 +566,10 @@ final class _StopTurnWork extends _ExecutionEvidenceOwner {
   }
 }
 
-bool _busy(TurnBrief turn) =>
-    turn.state is QueuedTurnBrief || turn.state is RunningTurnBrief;
-bool _busyHeader(TurnReadHeader turn) =>
-    turn.state is QueuedTurnRead || turn.state is RunningTurnRead;
 const _stopStaleTarget = StudioFailure(
   code: StudioFailureCode.superseded,
-  message: 'Stop requires the originally delivered active queued or running Turn on this exact Session source.',
+  message: 'Stop requires the originally delivered execution on this exact Session source.',
   retryable: false,
   correlationId: 'stop-original-target',
+  details: StudioFailureDetails.reason(reason: 'staleExecution'),
 );

@@ -45,6 +45,13 @@ OperationTicket<SubmitPromptReceipt> _submitComposer(
         StudioFailureCode.unavailable,
         'The original Thread Session is not ready.',
       );
+    if (!exact.acceptsUserInput)
+      throw const StudioFailure(
+        code: StudioFailureCode.permissionDenied,
+        message: 'A child agent is continued and instructed by the main session, not by the user',
+        retryable: false, correlationId: 'child-requires-parent-scheduling',
+        details: StudioFailureDetails.reason(reason: 'childThreadRequiresParentScheduling'),
+      );
     final origin = execution?.stamp;
     final route = config?.value?.modelRoute;
     if (execution == null ||
@@ -160,15 +167,7 @@ OperationTicket<StartNewThreadResult> _submitStart(
         StudioFailureCode.busy,
         'The original creation has not actually settled.',
       );
-    final prepared = frozen.routePreparation;
-    if (prepared is! ReadyStartRoutePreparation ||
-        prepared.result.sources != _routeSources(repo) ||
-        prepared.result.intent != _routeIntent(repo, frozen.mode)) {
-      throw _draftFailure(
-        StudioFailureCode.unavailable,
-        'Explicitly prepare the current Start route before submitting.',
-      );
-    }
+    final prepared = _readyStartRoute(repo, frozen);
     references = repo.ledger.freeze(
       handle.record,
       expectedStamp: frozen.stamp,
@@ -183,13 +182,13 @@ OperationTicket<StartNewThreadResult> _submitStart(
       projectId: handle.projectId,
       input: input,
       mode: frozen.mode,
-      route: prepared.result.route,
+      route: prepared.route,
       workspaceMode: frozen.workspaceMode,
       delegationMode:
-          frozen.delegationModeOverride ?? prepared.result.defaults.mode,
+          frozen.delegationModeOverride ?? prepared.defaults.mode,
       delegationPreference:
           frozen.delegationPreferenceOverride ??
-          prepared.result.defaults.preference,
+          prepared.defaults.preference,
     );
     work = _CreateWork(
       repo,

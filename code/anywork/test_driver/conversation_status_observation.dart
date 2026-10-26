@@ -1,3 +1,99 @@
+/// Passive execution identity from the original Session's canonical facet.
+/// It never interprets Turn state as execution, consumption or saved evidence.
+final class DriverExecutionObservation {
+  const DriverExecutionObservation({
+    required this.threadId,
+    required this.stamp,
+    required this.syncPhase,
+    required this.loaded,
+    required this.execution,
+    required this.continuation,
+  });
+  final String? threadId, syncPhase;
+  final Map<String, Object?>? stamp, execution, continuation;
+  final bool loaded;
+  bool get ready => syncPhase == 'ready' && loaded;
+  bool get hasExecution => ready && execution != null;
+
+  /// No execution is not evidence of a terminal or durable Turn.
+  bool get readyWithoutExecution => ready && execution == null;
+  String? get executionId => execution?['id'] as String?;
+  bool sameSource(DriverExecutionObservation other) =>
+      threadId != null &&
+      threadId == other.threadId &&
+      stamp != null &&
+      other.stamp != null &&
+      stamp!['runtimeEpoch'] == other.stamp!['runtimeEpoch'] &&
+      stamp!['incarnation'] == other.stamp!['incarnation'];
+  Map<String, Object?> toJson() => {
+    'threadId': threadId,
+    'stamp': stamp,
+    'syncPhase': syncPhase,
+    'loaded': loaded,
+    'execution': execution,
+    'continuation': continuation,
+  };
+}
+
+DriverExecutionObservation driverExecutionObservation(
+  Map<String, dynamic> snapshot,
+) {
+  final group = _group(_diagnostics(snapshot), 'execution');
+  _required(group, {
+    'threadId',
+    'stamp',
+    'sync',
+    'loaded',
+    'execution',
+    'continuation',
+  });
+  final stamp = _stamp(group['stamp'], 'execution');
+  final sync = _optionalMap(group['sync']);
+  final execution = _optionalMap(group['execution']);
+  final continuation = _optionalMap(group['continuation']);
+  final loaded = _bool(group['loaded']);
+  if (loaded == null) throw StateError('Missing execution loaded fact');
+  if (!loaded && (execution != null || continuation != null)) {
+    throw StateError('Execution facts require a canonical baseline');
+  }
+  if (sync != null) _required(sync, {'phase'});
+  if (sync?['phase'] == 'ready' &&
+      (stamp == null || !loaded || _text(group['threadId']) == null)) {
+    throw StateError('Ready execution requires its original stamp and value');
+  }
+  if (execution != null) {
+    _required(execution, {'id', 'phase', 'turnId'});
+    if (_text(execution['id']) == null || _text(execution['phase']) == null) {
+      throw StateError('Invalid canonical execution identity');
+    }
+    _text(execution['turnId']);
+  }
+  if (continuation != null) {
+    _required(continuation, {
+      'id',
+      'sourceTurnId',
+      'reason',
+      'createdAt',
+      'claimed',
+    });
+    if (_text(continuation['id']) == null ||
+        continuation['createdAt'] is! int ||
+        _bool(continuation['claimed']) == null) {
+      throw StateError('Invalid canonical continuation');
+    }
+    _text(continuation['sourceTurnId']);
+    _text(continuation['reason']);
+  }
+  return DriverExecutionObservation(
+    threadId: _text(group['threadId']),
+    stamp: stamp == null ? null : Map.unmodifiable(stamp),
+    syncPhase: _text(sync?['phase']),
+    loaded: loaded,
+    execution: execution == null ? null : Map.unmodifiable(execution),
+    continuation: continuation == null ? null : Map.unmodifiable(continuation),
+  );
+}
+
 /// Passive request-time readiness only. Identity/ordering proof belongs to the
 /// asynchronous Metrics recorder, never to a numeric reference in this group.
 final class DriverMetricsObservation {

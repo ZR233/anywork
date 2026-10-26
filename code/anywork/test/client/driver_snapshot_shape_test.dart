@@ -29,6 +29,8 @@ void main() {
       sync: FacetSyncState(phase: FacetSyncPhase.ready),
       value: ThreadExecutionBaseline(
         status: ThreadStatus.running,
+        execution: AgentExecution(id: 'shape-execution', phase: AgentExecutionPhase.running, turnId: null),
+        continuation: null,
         activeTurn: null,
         recentTerminalTurn: null,
         interactions: InteractionIndexHeader(
@@ -52,6 +54,17 @@ void main() {
       isNull,
       reason: 'Execution cannot reconstruct unavailable directory metadata.',
     );
+
+    final waiting = execution.copyWith(value: execution.value!.copyWith(
+      status: ThreadStatus.waitingInteraction, execution: null,
+    ));
+    final waitingJson = _json(_snapshot(thread: thread, execution: waiting));
+    expect((waitingJson['workspace'] as Map)['isBusy'], isFalse,
+      reason: 'Only a ready execution identity, not waitingInteraction status, means busy');
+    final stale = waiting.copyWith(sync: const FacetSyncState(phase: FacetSyncPhase.reconnecting));
+    expect(stale.value, waiting.value, reason: 'The source retains its actual last-good material');
+    expect((_json(_snapshot(thread: thread, execution: stale))['workspace'] as Map)['isBusy'], isNull,
+      reason: 'A stale retained value cannot be promoted to a current busy=false fact');
   });
 
   test(

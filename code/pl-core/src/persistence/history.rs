@@ -90,6 +90,22 @@ pub(super) async fn read(
     session_id: &str,
     through: Option<u64>,
 ) -> Result<Vec<SessionEntryCommit>, SessionStoreError> {
+    let mut history = Vec::new();
+    visit(db, session_id, through, |commit| {
+        history.push(commit);
+        Ok(())
+    })
+    .await?;
+    Ok(history)
+}
+
+/// Visits validated history in bounded pages, retaining the original head/digest/order checks.
+pub(super) async fn visit(
+    db: &impl ConnectionTrait,
+    session_id: &str,
+    through: Option<u64>,
+    mut visitor: impl FnMut(SessionEntryCommit) -> Result<(), SessionStoreError> + Send,
+) -> Result<(), SessionStoreError> {
     let limit = through
         .map(i64::try_from)
         .transpose()
@@ -117,31 +133,43 @@ pub(super) async fn read(
         ));
     }
     let mut last_digest = None;
-    let rows = db.query_all_raw(sqlite::statement(
-        "SELECT sequence,envelope,payload_hash FROM session_entry_history WHERE session_id=? AND (? IS NULL OR sequence<=?) ORDER BY sequence",
-        vec![session_id.into(), limit.into(), limit.into()],
-    )).await?;
-    let mut history = Vec::with_capacity(rows.len());
-    for row in rows {
-        let envelope: String = row.try_get("", "envelope")?;
-        let digest: String = row.try_get("", "payload_hash")?;
-        if crate::context::content_hash(envelope.as_bytes()) != digest {
-            return Err(SessionStoreError::Invalid(
-                "history content digest mismatch".into(),
-            ));
+    let mut after: Option<i64> = None;
+    let mut seen = 0_u64;
+    loop {
+        let rows = db
+            .query_all_raw(sqlite::statement(
+                "SELECT sequence,envelope,payload_hash FROM session_entry_history WHERE session_id=? AND (? IS NULL OR sequence>?) AND (? IS NULL OR sequence<=?) ORDER BY sequence LIMIT 128",
+                vec![session_id.into(), after.into(), after.into(), limit.into(), limit.into()],
+            ))
+            .await?;
+        if rows.is_empty() {
+            break;
         }
-        let commit: SessionEntryCommit = serde_json::from_str(&envelope)?;
-        let sequence: i64 = row.try_get("", "sequence")?;
-        if u64::try_from(sequence).ok() != Some(commit.sequence) {
-            return Err(SessionStoreError::Invalid(
-                "history sequence/index mismatch".into(),
-            ));
+        for row in rows {
+            let envelope: String = row.try_get("", "envelope")?;
+            let digest: String = row.try_get("", "payload_hash")?;
+            if crate::context::content_hash(envelope.as_bytes()) != digest {
+                return Err(SessionStoreError::Invalid(
+                    "history content digest mismatch".into(),
+                ));
+            }
+            let commit: SessionEntryCommit = serde_json::from_str(&envelope)?;
+            let sequence: i64 = row.try_get("", "sequence")?;
+            if u64::try_from(sequence).ok() != Some(commit.sequence) {
+                return Err(SessionStoreError::Invalid(
+                    "history sequence/index mismatch".into(),
+                ));
+            }
+            seen = seen.checked_add(1).ok_or_else(|| {
+                SessionStoreError::Invalid("history sequence overflow".into())
+            })?;
+            validate_commit(&commit, session_id, seen)?;
+            last_digest = Some(digest);
+            after = Some(sequence);
+            visitor(commit)?;
         }
-        validate_commit(&commit, session_id, history.len() as u64 + 1)?;
-        last_digest = Some(digest);
-        history.push(commit);
     }
-    if history.len() as u64 != expected {
+    if seen != expected {
         return Err(SessionStoreError::Invalid(
             "history watermark is not committed".into(),
         ));
@@ -153,5 +181,5 @@ pub(super) async fn read(
             "history head digest mismatch".into(),
         ));
     }
-    Ok(history)
+    Ok(())
 }

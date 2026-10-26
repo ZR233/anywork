@@ -1,10 +1,11 @@
 import 'package:anywork_client/conversation.dart';
 
-/// Request-local projections of two independent canonical facets. They do not
+/// Request-local projections of independent canonical facets. They do not
 /// share a publication watermark, create demand or materialize an identity ref.
 Map<String, Object?> conversationStatusDiagnostics(
   ConversationSession? session,
 ) {
+  final execution = session?.execution.value;
   final metrics = session?.metrics.value;
   final context = session?.context.value;
   final live = metrics?.value?.live;
@@ -12,6 +13,23 @@ Map<String, Object?> conversationStatusDiagnostics(
   final liveContext = context?.value?.liveContext;
   final usage = context?.value?.usage;
   return Map.unmodifiable({
+    'execution': Map<String, Object?>.unmodifiable({
+      'threadId': session?.threadId,
+      'stamp': _stamp(execution?.stamp),
+      'sync': _sync(execution?.sync),
+      'loaded': execution?.value != null,
+      'execution': agentExecutionDiagnostic(execution?.value?.execution),
+      'continuation': switch (execution?.value?.continuation) {
+        null => null,
+        final point => Map<String, Object?>.unmodifiable({
+          'id': point.id,
+          'sourceTurnId': point.sourceTurnId,
+          'reason': point.reason?.name,
+          'createdAt': point.createdAt,
+          'claimed': point.claimed,
+        }),
+      },
+    }),
     'metrics': Map<String, Object?>.unmodifiable({
       'threadId': session?.threadId,
       'stamp': _stamp(metrics?.stamp),
@@ -72,6 +90,15 @@ Map<String, Object?> conversationStatusDiagnostics(
     }),
   });
 }
+
+Map<String, Object?>? agentExecutionDiagnostic(AgentExecution? execution) =>
+    execution == null
+    ? null
+    : Map<String, Object?>.unmodifiable({
+        'id': execution.id,
+        'phase': execution.phase.name,
+        'turnId': execution.turnId,
+      });
 
 Map<String, Object?>? _stamp(ThreadFacetStamp? stamp) => stamp == null
     ? null

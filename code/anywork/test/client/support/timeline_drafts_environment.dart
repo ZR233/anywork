@@ -143,6 +143,8 @@ final class TimelineDraftsEnvironment {
                 baseRevision: revision - 1,
                 value: ThreadExecutionChange(
                   status: value.status,
+                  execution: ExecutionReplacement.replace(value: value.execution),
+                  continuation: ContinuationReplacement.replace(value: value.continuation),
                   turns: TurnsReplacement(
                     activeTurn: value.activeTurn,
                     recentTerminalTurn: value.recentTerminalTurn,
@@ -209,10 +211,14 @@ ThreadFeedIdentity draftFeed(
 
 ThreadExecutionBaseline draftExecution({
   int? durable,
+  AgentExecution? execution,
+  ContinuationView? continuation,
   TurnBrief? active,
   ThreadStatus status = ThreadStatus.idle,
 }) => ThreadExecutionBaseline(
   status: status,
+  execution: execution,
+  continuation: continuation,
   activeTurn: active,
   recentTerminalTurn: null,
   interactions: const InteractionIndexHeader(

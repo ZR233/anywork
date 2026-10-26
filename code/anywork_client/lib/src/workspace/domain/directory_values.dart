@@ -5,10 +5,15 @@ import 'package:anywork_client/resources.dart';
 import '../../models/domain/model_values.dart';
 import '../../modes/domain/delegation_values.dart';
 import '../../modes/domain/mode_values.dart';
+import 'agent_execution.dart';
+
+export 'agent_execution.dart';
 
 part 'directory_values.freezed.dart';
 
 enum ThreadWorkspaceMode { local, worktree }
+
+bool isRetiredAgentRole(String role) => role.trim() == 'planner';
 
 enum ThreadStatus {
   idle,
@@ -81,6 +86,8 @@ abstract class WorkspaceThreadRecord with _$WorkspaceThreadRecord {
   }) = _WorkspaceThreadRecord;
 
   bool get isRoot => parentThreadId == null;
+  bool get isAgent => !isRoot;
+  bool get isRetiredAgent => isAgent && isRetiredAgentRole(role);
   int get directorySortTime => lastUserMessageAt ?? createdAt;
 }
 
@@ -146,6 +153,9 @@ abstract class AgentDirectoryEntry with _$AgentDirectoryEntry {
     required String? summary,
     required int depth,
     required AgentState state,
+    AgentExecution? execution,
+    @Default(false) bool canStop,
+    @Default(false) bool awaitingScheduling,
     required int updatedAt,
   }) = _AgentDirectoryEntry;
 }

@@ -91,7 +91,12 @@ class InteractionView extends StatelessWidget {
         state.submission?.failurePhase == OperationFailurePhase.unknownOutcome;
     final content = header?.content;
     final isPlan = header?.purpose is PlanConfirmationPurposeRead;
+    // Keep the typed header in its original VM for diagnostics; a child plan
+    // is never a decision card in the root and has no approval/answer surface.
+    if (state.key.isHosted && isPlan) return const SizedBox.shrink();
     final isApproval = content is ToolApprovalContentRead;
+    final hostedSaved = state.key.isHosted && decisionConfirmed &&
+        state.submission?.observed == true;
     final questionCount = content is UserInputContentRead
         ? content.questionCount
         : 0;
@@ -143,7 +148,7 @@ class InteractionView extends StatelessWidget {
             ? context.l10n.interactionSubmitEmptyAnswersHint
             : context.l10n.interactionAnsweredPendingHint(answered, unanswered),
     };
-    final footer = pendingEditor
+    final footer = pendingEditor && !hostedSaved
         ? DockActions(
             children: [
               if (isPlan) ...[
@@ -232,9 +237,14 @@ class InteractionView extends StatelessWidget {
           )
         : null;
     return InteractionDockShell(
+      key: state.key.isHosted
+          ? StudioDriverKeys.childInteractionCard(state.key.interactionId) : null,
       kind: kind,
       title: title,
-      subtitle: subtitle,
+      subtitle: state.key.isHosted
+          ? context.l10n.childInteractionFrom(
+              state.textOf(header?.agentPath) ?? state.key.target)
+          : subtitle,
       footerHint: footerHint,
       trailing: trailing,
       footer: footer,
@@ -242,7 +252,12 @@ class InteractionView extends StatelessWidget {
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          if (header == null)
+          if (state.key.isHosted)
+            Text(context.l10n.childInteractionRevision(state.key.revision)),
+          if (hostedSaved)
+            Text(isApproval ? context.l10n.childInteractionApprovalResolved
+                : context.l10n.childInteractionAnswerSaved)
+          else if (header == null)
             const LinearProgressIndicator()
           else if (header.purpose is PlanConfirmationPurposeRead &&
               pendingEditor) ...[
@@ -356,6 +371,8 @@ class InteractionView extends StatelessWidget {
           // “已受理但尚未被 canonical 观察”会持续到交互被移除，视觉上不能让
           // 用户一直看到不确定进度动画。
           if (unknown) Text(context.l10n.settingsBotsSendUnknown),
+          if (state.key.isHosted && decisionConfirmed && !hostedSaved)
+            Text(context.l10n.childInteractionDecisionAccepted),
           if (state.submissionError != null)
             // The real command failure keeps its own line with an error mark and
             // body text; the draft above stays untouched so it can be edited and
@@ -371,7 +388,10 @@ class InteractionView extends StatelessWidget {
                 const SizedBox(width: 6),
                 Expanded(
                   child: Text(
-                    state.submissionError!.message,
+                    switch (studioFailureReason(state.submissionError)) {
+                      final reason? => context.composerFailureReasonLabel(reason),
+                      null => state.submissionError!.message,
+                    },
                     key: header?.purpose is PlanConfirmationPurposeRead
                         ? StudioDriverKeys.planFeedbackError
                         : null,

@@ -40,10 +40,14 @@ ReadScopeIdentity selectorScope(ThreadFacetStamp origin, String name) =>
     );
 ThreadExecutionBaseline selectorExecution({
   ThreadStatus status = ThreadStatus.idle,
+  AgentExecution? execution,
+  ContinuationView? continuation,
   TurnBrief? active,
   TurnBrief? terminal,
 }) => ThreadExecutionBaseline(
   status: status,
+  execution: execution,
+  continuation: continuation,
   activeTurn: active,
   recentTerminalTurn: terminal,
   interactions: const InteractionIndexHeader(
@@ -61,6 +65,9 @@ ThreadExecutionBaseline selectorExecution({
 final class SelectorConversationPort implements ConversationObservationPort {
   final facets = FixtureConversationPort();
   ThreadStatus initialStatus = ThreadStatus.idle;
+  ThreadExecutionBaseline? initialExecution;
+  List<InteractionBrief> indexBriefs = const [];
+  final _indexRevisions = <String, int>{};
   bool activeWorkflow = false;
   final routes = <int, ThreadModelRoute>{
     1: const ThreadModelRoute(
@@ -93,6 +100,7 @@ final class SelectorConversationPort implements ConversationObservationPort {
     final result = facets.openThreadExecution(threadId, mode: mode);
     final opening = facets.execution.last;
     executionRevisions[opening.feed.feedId] = 1;
+    _indexRevisions[opening.feed.feedId] = initialExecution?.interactions.reference.revision ?? 1;
     unawaited(
       opening.feed.listened.future.then(
         (_) => opening.feed.emit(
@@ -101,7 +109,7 @@ final class SelectorConversationPort implements ConversationObservationPort {
             event: ThreadExecutionEvent.baseline(
               identity: selectorFeed(opening, ThreadFacet.execution),
               stamp: selectorFacet(ThreadFacet.execution, 1),
-              value: selectorExecution(
+              value: initialExecution ?? selectorExecution(
                 status: mode == ThreadObservationMode.cold
                     ? ThreadStatus.closed
                     : initialStatus,
@@ -149,8 +157,8 @@ final class SelectorConversationPort implements ConversationObservationPort {
     modeBindingRevision: modeBindingRevision,
     modelRoute: ModelRouteBrief(
       revision: routes[revision]!.revision,
-      available: true,
-      hasUnavailableReason: false,
+      available: routes[revision]!.available,
+      hasUnavailableReason: routes[revision]!.unavailableReason != null,
     ),
     activeSkillCount: 0,
     activeMcp: ThreadCapabilitySupport.unsupported,
@@ -197,6 +205,8 @@ final class SelectorConversationPort implements ConversationObservationPort {
           baseRevision: revision - 1,
           value: ThreadExecutionChange(
             status: value.status,
+            execution: ExecutionReplacement.replace(value: value.execution),
+            continuation: ContinuationReplacement.replace(value: value.continuation),
             turns: TurnsReplacement(
               activeTurn: value.activeTurn,
               recentTerminalTurn: value.recentTerminalTurn,
@@ -208,6 +218,31 @@ final class SelectorConversationPort implements ConversationObservationPort {
         ),
       ),
     );
+    await opening.feed.acknowledged(revision);
+  }
+
+  Future<void> publishInteractionIndex(List<InteractionBrief> entries) async {
+    final opening = facets.execution.last;
+    final previous = executionRevisions[opening.feed.feedId]!;
+    final revision = previous + 1;
+    executionRevisions[opening.feed.feedId] = revision;
+    final previousIndex = _indexRevisions[opening.feed.feedId]!;
+    final indexRevision = previousIndex + 1;
+    _indexRevisions[opening.feed.feedId] = indexRevision;
+    final removed = [for (final previous in indexBriefs)
+      if (!entries.any((entry) => entry.reference.entry == previous.reference.entry)) previous.reference.entry];
+    indexBriefs = List.unmodifiable(entries);
+    opening.feed.emit(ThreadExecutionFrame.data(
+      deliverySequence: revision,
+      event: ThreadExecutionEvent.change(
+        stamp: selectorFacet(ThreadFacet.execution, revision), baseRevision: previous,
+        value: ThreadExecutionChange(status: null, turns: null,
+          interactions: InteractionDelta(baseIndexRevision: previousIndex,
+            index: InteractionIndexHeader(reference: InteractionIndexRef(entry: 10, revision: indexRevision), total: entries.length, pending: entries.where((entry) => entry.status == InteractionStatus.pending).length),
+            upserted: entries, removedEntries: removed, terminalFacts: const []),
+          activity: const ActivityReplacement.unchanged(), storage: const StorageReplacement.unchanged()),
+      ),
+    ));
     await opening.feed.acknowledged(revision);
   }
 
@@ -282,7 +317,17 @@ final class SelectorConversationPort implements ConversationObservationPort {
     String threadId,
     InteractionIndexRef reference, {
     required ThreadFacetStamp origin,
-  }) async => _IndexPin(selectorScope(origin, 'interactions'));
+  }) {
+    final scripted = facets.interactionIndexOpen;
+    if (scripted != null) return scripted(threadId, reference, origin);
+    return Future.value(_IndexPin(selectorScope(origin, 'interactions').copyWith(sourceRevision: reference.revision), indexBriefs));
+  }
+  @override
+  Future<InteractionReadRef> resolveInteractionReadRef(String threadId, String interactionId, {required int revision, required ThreadFacetStamp origin}) => facets.resolveInteractionReadRef(threadId, interactionId, revision: revision, origin: origin);
+  @override
+  Future<InteractionReadConnection> openInteractionRead(
+    String threadId, InteractionReadRef reference, {required ThreadFacetStamp origin}
+  ) => facets.openInteractionRead(threadId, reference, origin: origin);
   @override
   Future<TurnReadConnection> openTurnRead(
     String threadId,
@@ -327,25 +372,54 @@ final class SelectorCommands extends UnscriptedConversationCommands {
       DraftCalls<
         ({
           String threadId,
-          String turnId,
+          String executionId,
           OperationId operationId,
-          Completer<InterruptTurnReply> reply,
+          Completer<StopExecutionReply> reply,
         })
       >();
   @override
-  Future<InterruptTurnReply> interruptTurn(
+  Future<StopExecutionReply> stopExecution(
     String threadId,
-    String turnId, {
+    String executionId, {
     required OperationId operationId,
   }) {
-    final reply = Completer<InterruptTurnReply>();
+    final reply = Completer<StopExecutionReply>();
     interrupts.add((
       threadId: threadId,
-      turnId: turnId,
+      executionId: executionId,
       operationId: operationId,
       reply: reply,
     ));
     return reply.future;
+  }
+
+  final continues = DraftCalls<SelectorContinueCall>();
+  final continuationReads = DraftCalls<SelectorContinuationRead>();
+  Future<ContinuationOperationView?> Function(String, OperationId)? continuationQuery;
+
+  @override
+  Future<ContinueThreadReply> continueThread(
+    String threadId, {
+    required OperationId operationId,
+    required String expectedContinuationId,
+    required int expectedModelRouteRevision,
+  }) {
+    final call = SelectorContinueCall(
+      threadId, operationId, expectedContinuationId, expectedModelRouteRevision,
+    );
+    continues.add(call);
+    return call.reply.future;
+  }
+
+  @override
+  Future<ContinuationOperationView?> readContinuationOperation(
+    String threadId,
+    OperationId operationId,
+  ) {
+    if (continuationQuery case final query?) return query(threadId, operationId);
+    final call = SelectorContinuationRead(threadId, operationId);
+    continuationReads.add(call);
+    return call.reply.future;
   }
 
   @override
@@ -403,6 +477,22 @@ final class SelectorCommands extends UnscriptedConversationCommands {
     modes.add(call);
     return call.reply.future;
   }
+}
+
+final class SelectorContinueCall {
+  SelectorContinueCall(this.threadId, this.operationId, this.continuationId, this.routeRevision);
+  final String threadId;
+  final OperationId operationId;
+  final String continuationId;
+  final int routeRevision;
+  final reply = Completer<ContinueThreadReply>();
+}
+
+final class SelectorContinuationRead {
+  SelectorContinuationRead(this.threadId, this.operationId);
+  final String threadId;
+  final OperationId operationId;
+  final reply = Completer<ContinuationOperationView?>();
 }
 
 final class _ConfigurationPin extends ProfileNativePin
@@ -465,11 +555,12 @@ final class _WorkflowPin extends ProfileNativePin
 
 final class _IndexPin extends ProfileNativePin
     implements InteractionIndexReadConnection {
-  _IndexPin(this.scope) : super(scope.scopeId);
+  _IndexPin(this.scope, this.briefs) : super(scope.scopeId);
   final ReadScopeIdentity scope;
+  final List<InteractionBrief> briefs;
   @override
   Future<InteractionIndexReadHeader> header() async =>
-      InteractionIndexReadHeader(scope: scope, total: 0, pending: 0);
+      InteractionIndexReadHeader(scope: scope, total: briefs.length, pending: briefs.where((brief) => brief.status == InteractionStatus.pending).length);
   @override
   Future<InteractionBriefPage> entries({
     int offset = 0,
@@ -477,8 +568,8 @@ final class _IndexPin extends ProfileNativePin
   }) async => InteractionBriefPage(
     scope: scope,
     offset: offset,
-    total: 0,
-    items: const [],
+    total: briefs.length,
+    items: briefs.skip(offset).take(limit).toList(),
     nextOffset: null,
   );
 }

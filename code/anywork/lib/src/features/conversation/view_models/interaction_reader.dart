@@ -19,7 +19,13 @@ final class InteractionReader {
   }) : _read = read {
     final key = read().key;
     _borrow = ReadScopeBorrow<InteractionReadScope>(
-      open: () => session.openInteraction(
+      open: () => key.isHosted
+          ? session.openHostedInteraction(
+              origin: key.hostedOrigin!,
+              reference: key.hostedReference!,
+              targetThreadId: key.target,
+            )
+          : session.openInteraction(
         interactionId: key.interactionId,
         expectedRevision: key.revision,
         expectedIncarnation: key.incarnation,
@@ -47,7 +53,8 @@ final class InteractionReader {
     final header = await scope.header();
     if (!active) return;
     final key = _read().key;
-    if (header.scope.incarnation != key.incarnation ||
+    if (header.scope.runtimeEpoch != key.runtimeEpoch ||
+        header.scope.incarnation != key.incarnation ||
         header.revision != key.revision) {
       throw readProtocol('interaction-key');
     }

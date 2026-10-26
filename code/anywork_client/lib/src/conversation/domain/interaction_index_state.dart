@@ -11,6 +11,7 @@ abstract class InteractionListItem with _$InteractionListItem {
   const factory InteractionListItem({
     required InteractionReadRef reference,
     required String interactionId,
+    required String targetThreadId,
     required int revision,
     required InteractionKind kind,
     required InteractionStatus status,

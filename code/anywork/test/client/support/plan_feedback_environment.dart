@@ -12,6 +12,7 @@ import 'package:flutter_test/flutter_test.dart';
 
 import '../../../../anywork_client/test/support/conversation_fixture.dart';
 import '../../../../anywork_client/test/support/profile_native_pin.dart';
+import 'conversation_workspace_fixture.dart';
 
 const planTestMarkdown =
     '# Delivery Blueprint\n\n## Steps\n\n1. Keep it readable.';
@@ -20,6 +21,8 @@ const planTestRuntime = 'plan-feedback-native';
 InteractionEditorKey planTestKey(String threadId, {String suffix = ''}) =>
     InteractionEditorKey(
       threadId: threadId,
+      runtimeEpoch: planTestRuntime,
+      sourceGeneration: 1,
       incarnation: 1,
       interactionId: 'interaction-plan$suffix',
       revision: 1,
@@ -39,9 +42,15 @@ final class PlanFeedbackEnvironment {
       timeline: DemoTimelineContent(seedDemoConversations: false),
       budget: budget,
       operations: operations,
+      agentDirectory: () => workspaceOwner.workspace.agents,
     );
     conversations = assembly.repository;
     demand = assembly.demand;
+    workspaceOwner = ConversationWorkspaceFixture(
+      budget: budget,
+      operations: operations,
+      archive: assembly.archive,
+    );
     container = ProviderContainer(
       overrides: [
         conversationRepositoryProvider.overrideWithValue(conversations),
@@ -49,6 +58,7 @@ final class PlanFeedbackEnvironment {
     );
   }
   final budget = ResourceBudget();
+  late final ConversationWorkspaceFixture workspaceOwner;
   late final PlanFeedbackPort native;
   late final PlanFeedbackCommands commands;
   late final OperationRegistry operations;
@@ -120,6 +130,7 @@ final class PlanFeedbackEnvironment {
   }
 
   Future<void> close() async {
+    await workspaceOwner.close();
     if (!native.terminalProof.isCompleted) native.terminalProof.complete();
     container.dispose();
     // 该 close() 在 pumpClientFuture 的受保护异步区间内运行，

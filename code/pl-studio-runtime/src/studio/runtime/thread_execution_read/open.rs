@@ -215,15 +215,20 @@ impl StudioRuntime {
         let (owner, local) = crate::thread_assembler::decode_interaction_key(id)
             .map_err(|_| StudioError::invalid_argument("Interaction identity is malformed"))?;
         if owner != thread_id {
+            let host = self.read_owned_thread(thread_id).await?;
+            let target = self.read_owned_thread(owner).await?;
+            if host.parent_thread_id.is_some()
+                || target.parent_thread_id.as_deref() != Some(thread_id)
+            {
             return Err(StudioError::invalid_argument(
-                "Interaction does not belong to the original Thread",
-            )
-            .into());
+                    "Interaction is not owned by the original host or its direct child",
+                ).into());
+            }
         }
         if expected.is_some_and(|identity| identity.wire_id != id || identity.local_id != local) {
             return Err(wrong().into());
         }
-        let history = self.store.history(thread_id).await?;
+        let history = self.store.history(owner).await?;
         let mut exact = None;
         let mut known = expected.is_some();
         let mut source_kind = None;
@@ -246,7 +251,7 @@ impl StudioRuntime {
                     )
                     .into());
                 }
-                let value = Self::project_interaction_receipt(thread_id, local, receipt)
+                let value = Self::project_interaction_receipt(owner, local, receipt)
                     .context(crate::studio::storage::history::HistoryReadFailure::Protocol)?;
                 if value.interaction_id != id || value.revision != revision {
                     return Err(StudioError::new(
@@ -255,6 +260,13 @@ impl StudioRuntime {
                         false,
                     )
                     .into());
+                }
+                if owner != thread_id
+                    && !matches!(value.scope.purpose, pl_protocol::InteractionPurpose::General)
+                {
+                    return Err(StudioError::invalid_argument(
+                        "Child Plan confirmations are diagnostics, not hosted decisions",
+                    ).into());
                 }
                 if exact.replace(value).is_some() {
                     return Err(StudioError::new(

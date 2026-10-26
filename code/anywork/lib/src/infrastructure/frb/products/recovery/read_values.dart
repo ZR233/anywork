@@ -18,6 +18,16 @@ WorktreeOwner worktreeOwnerFromBridge(runtime.BridgeWorktreeOwner value) =>
       runtime.BridgeWorktreeOwner.child => WorktreeOwner.child,
     };
 
+WorktreeInspection worktreeInspectionFromBridge(
+  runtime.BridgeWorktreeInspection value,
+) => switch (value) {
+  runtime.BridgeWorktreeInspection.available => WorktreeInspection.available,
+  runtime.BridgeWorktreeInspection.missing => WorktreeInspection.missing,
+  runtime.BridgeWorktreeInspection.identityMismatch =>
+    WorktreeInspection.identityMismatch,
+  runtime.BridgeWorktreeInspection.unavailable => WorktreeInspection.unavailable,
+};
+
 RecoveryScope recoveryScopeFromBridge(native.BridgeRecoveryScope value) =>
     switch (value) {
       native.BridgeRecoveryScope.application => RecoveryScope.application,
@@ -51,6 +61,7 @@ RecoveryReadHeader recoveryReadHeaderFromBridge(
 WorktreeRecoveryPreviewRead worktreePreviewFromBridge(
   native.BridgeWorktreeRecoveryPreviewRead value,
 ) => WorktreeRecoveryPreviewRead(
+  inspection: worktreeInspectionFromBridge(value.inspection),
   ownerKind: worktreeOwnerFromBridge(value.ownerKind),
   ownerThreadId: readTextFromBridge(value.ownerThreadId),
   leaseRevision: exactU64(value.leaseRevision, 'worktree lease revision'),
@@ -61,7 +72,9 @@ WorktreeRecoveryPreviewRead worktreePreviewFromBridge(
   baseCommit: readTextFromBridge(value.baseCommit),
   headCommit: nullableReadText(value.headCommit),
   dirty: value.dirty,
-  changedFiles: typedListFromBridge(value.changedFiles),
+  changedFiles: value.changedFiles == null
+      ? null
+      : typedListFromBridge(value.changedFiles!),
 );
 
 RecoveryIssueRead recoveryIssueFromBridge(
@@ -70,7 +83,9 @@ RecoveryIssueRead recoveryIssueFromBridge(
   id: readTextFromBridge(value.id),
   scope: recoveryScopeFromBridge(value.scope),
   category: recoveryCategoryFromBridge(value.category),
-  action: recoveryActionFromBridge(value.action),
+  availableActions: value.availableActions
+      .map(recoveryActionFromBridge)
+      .toList(growable: false),
   projectId: nullableReadText(value.projectId),
   threadId: nullableReadText(value.threadId),
   message: readTextFromBridge(value.message),

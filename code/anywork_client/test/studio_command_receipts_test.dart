@@ -313,29 +313,25 @@ void main() {
   for (final framesFirst in [false, true]) {
     for (final interrupted in [false, true]) {
       test(
-        'actual stop waits for its captured Turn (framesFirst=$framesFirst, interrupted=$interrupted)',
+        'actual stop waits for its captured execution (framesFirst=$framesFirst, interrupted=$interrupted)',
         () async {
           final fixture = await stopFixture();
           final source = await fixture.select();
           await source.session.timeline.ready;
           final baselineObservers = fixture.budget.used(ResourceKind.observer);
-          final operation = source.session.stopTurn(
+          final operation = (source.session.stopExecution(
             origin: source.stamp,
-            target: stopTurn(7).reference,
-          );
+            executionId: 'execution-7',
+          ) as StopExecutionOperation).ticket;
           expect(
             operation.state.value.receipt,
             isNull,
             reason: 'The operation exists before the command first awaits',
           );
-          await fixture.acceptRead(
-            0,
-            turnId: const ReadText.inline(text: 'turn'),
-          );
           final call = await fixture.commands.interrupts.at(0);
           expect(
-            (call.operationId, call.threadId, call.turnId),
-            (operation.id, 'thread', 'turn'),
+            (call.operationId, call.threadId, call.executionId),
+            (operation.id, 'thread', 'execution-7'),
           );
           expect(
             fixture.budget.usage.where(
@@ -366,10 +362,10 @@ void main() {
           if (framesFirst)
             await source.deliver(active: null, status: ThreadStatus.idle);
           call.reply.complete(
-            InterruptTurnReply(
+            StopExecutionReply(
               threadId: call.threadId,
-              turnId: call.turnId,
-              interrupted: interrupted,
+              executionId: call.executionId,
+              stopped: interrupted,
               receipt: stopReceipt(
                 call.operationId,
                 disposition: interrupted
@@ -390,7 +386,7 @@ void main() {
             expect(
               operation.state.value.effective,
               isFalse,
-              reason: 'An interrupt ACK does not prove the Turn ended',
+              reason: 'An interrupt ACK does not prove the execution ended',
             );
             expect(
               fixture.owner.operations.observations
@@ -402,12 +398,13 @@ void main() {
             );
             await source.deliver(
               active: stopTurn(7, revision: 2),
+              execution: stopExecutionValue(7),
               status: ThreadStatus.running,
             );
             expect(
               operation.state.value.observed,
               isFalse,
-              reason: 'Unrelated owner facts do not confirm the captured Turn',
+              reason: 'Unrelated owner facts do not confirm the captured execution',
             );
             source.send(active: null, status: ThreadStatus.idle);
           }

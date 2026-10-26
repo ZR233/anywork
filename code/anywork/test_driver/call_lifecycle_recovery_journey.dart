@@ -15,12 +15,30 @@ class CallLifecycleRecoveryJourney extends WebSocketRecoveryJourney {
 
   final String home;
 
-  bool catalogIssue(Map<String, dynamic> snapshot) =>
-      (snapshot['recoveryIssues'] as List? ?? const []).any(
-        (issue) =>
-            issue['category'] == 'toolCatalog' &&
-            (issue['actions'] as List).contains('retry'),
-      );
+  bool? catalogIssue(Map<String, dynamic> snapshot) {
+    if (!snapshot.containsKey('recoveryIssues')) {
+      throw StateError('Missing canonical recovery issues');
+    }
+    final issues = snapshot['recoveryIssues'];
+    if (issues == null) return null;
+    if (issues is! List) throw StateError('Invalid recovery issues');
+    var found = false;
+    for (final issue in issues) {
+      if (issue is! Map ||
+          issue['category'] is! String ||
+          issue['availableActions'] is! List) {
+        throw StateError('Missing canonical recovery action set');
+      }
+      final actions = issue['availableActions'] as List;
+      if (actions.any((action) => action is! String)) {
+        throw StateError('Invalid recovery action set');
+      }
+      if (issue['category'] == 'toolCatalog' && actions.contains('retry')) {
+        found = true;
+      }
+    }
+    return found;
+  }
 
   @override
   Future<void> run() async {
@@ -54,7 +72,7 @@ class CallLifecycleRecoveryJourney extends WebSocketRecoveryJourney {
     await tap('settings-open');
     await tap('settings-tab-skills');
     await tap('skills-discover');
-    await waitFor(catalogIssue, 'catalog-failed');
+    await waitFor((s) => catalogIssue(s) == true, 'catalog-failed');
     await tap('settings-back');
     final selected =
         workspaceOf(await driver.readSnapshot())?['threadId'] as String;
@@ -87,7 +105,7 @@ class CallLifecycleRecoveryJourney extends WebSocketRecoveryJourney {
     final revision = (await driver.readSnapshot())['settings']['revision'];
     await tap('thread-menu-$selected');
     await tap('recovery-retry-tool-refresh:$selected');
-    await waitFor((s) => !catalogIssue(s), 'catalog-retried');
+    await waitFor((s) => catalogIssue(s) == false, 'catalog-retried');
     if ((await driver.readSnapshot())['settings']['revision'] != revision) {
       throw StateError('explicit retry depended on a settings revision');
     }

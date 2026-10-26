@@ -9,6 +9,7 @@ import 'package:anywork_client/account_usage.dart';
 import 'package:anywork_client/mcp.dart';
 import 'package:anywork_client/operations.dart';
 import 'package:anywork_client/resources.dart';
+import 'package:anywork_client/statistics.dart';
 import 'package:flutter/widgets.dart';
 
 /// Explicit Driver actions and request-local product whitelists. No transport,
@@ -17,6 +18,49 @@ final class DriverProductRequests {
   DriverProductRequests(this.graph);
   final AppGraph graph;
   Future<CommandResult<Unit>>? _fixtureAdmission;
+
+  /// An explicit request owns one visibility lease and one passive observation.
+  /// Ordinary snapshots never acquire this demand or synchronize the domain.
+  Future<String> statistics() async {
+    final repository = graph.statistics;
+    final demand = repository.acquireVisibleDemand();
+    Observation? observation;
+    try {
+      final ready = Completer<StatisticsSnapshot>();
+      void consider(StatisticsState state) {
+        if (ready.isCompleted) return;
+        if (state.sync.phase == ResourceSyncPhase.failed) {
+          // A retained last-good snapshot cannot hide this attempt's failure.
+          ready.completeError(
+            state.sync.error ??
+                StateError('statistics failed without a typed failure'),
+          );
+        } else if (state.sync.phase == ResourceSyncPhase.closed) {
+          ready.completeError(
+            StateError('statistics closed before a complete ready snapshot'),
+          );
+        } else if (state.sync.phase == ResourceSyncPhase.ready) {
+          final snapshot = state.snapshot;
+          if (snapshot != null) ready.complete(snapshot);
+        }
+      }
+
+      final watch = repository.state.watchLatest(consider);
+      observation = watch.observation;
+      consider(watch.value);
+      final snapshot = await ready.future.timeout(const Duration(seconds: 30));
+      return jsonEncode(_statisticsSnapshot(snapshot));
+    } finally {
+      try {
+        observation?.cancel();
+      } finally {
+        // Release only this request's demand. The repository retires the last
+        // shared demand's attempt and supervises its feed/read-scope join;
+        // this request must not close an owner still used by another page.
+        demand.release();
+      }
+    }
+  }
 
   Future<String> admitFixtureImage() async {
     final selection = graph.workspace.state.value.selection;
@@ -249,6 +293,67 @@ String _fixtureFailure(String reason) => jsonEncode({
   'pasteSeam': 'unavailable',
   'systemClipboardTouched': false,
 });
+
+Map<String, Object?> _statisticsSnapshot(StatisticsSnapshot snapshot) => {
+  'loaded': true,
+  'syncPhase': ResourceSyncPhase.ready.name,
+  'syncError': null,
+  'ownerEpoch': snapshot.origin.ownerEpoch,
+  'incarnation': snapshot.origin.incarnation,
+  'revision': snapshot.revision,
+  'summariesReference': {
+    'entry': snapshot.summariesReference.entry,
+    'revision': snapshot.summariesReference.revision,
+  },
+  'historyReference': {
+    'entry': snapshot.historyReference.entry,
+    'revision': snapshot.historyReference.revision,
+  },
+  'statisticsPending': snapshot.statisticsPending,
+  'statisticsGap': snapshot.statisticsGap,
+  'readFailed': snapshot.readFailed,
+  'summaries': [
+    for (final summary in snapshot.summaries)
+      {
+        'accountId': summary.identity.accountId,
+        'accountDisplayName': summary.identity.accountDisplayName,
+        'modelId': summary.identity.modelId,
+        ..._performanceCounters(summary.counters),
+        'effortBreakdowns': [
+          for (final effort in summary.effortBreakdowns)
+            {
+              'effort': effort.identity.effort,
+              ..._performanceCounters(effort.counters),
+            },
+        ],
+      },
+  ],
+  'history': [
+    for (final sample in snapshot.history)
+      {
+        'accountId': sample.identity.accountId,
+        'accountDisplayName': sample.identity.accountDisplayName,
+        'modelId': sample.identity.modelId,
+        'sentModel': sample.identity.sentModel,
+        'reportedModel': sample.identity.reportedModel,
+        'matchState': sample.identity.modelMatchState.name,
+        'effort': sample.identity.effort,
+        'tokens': sample.counters.completionTokens,
+        'ttftMillis': sample.counters.ttftMillis,
+        'decodeMillis': sample.counters.decodeMillis,
+        'responseMillis': sample.counters.totalResponseMillis,
+        'tokensPerSecond': sample.counters.tokensPerSecond,
+      },
+  ],
+};
+
+Map<String, Object?> _performanceCounters(PerformanceCounters counters) => {
+  'samples': counters.sampleCount,
+  'tokens': counters.completionTokens,
+  'tokensPerSecond': counters.tokensPerSecond,
+  'ttftSampleCount': counters.ttftSampleCount,
+  'averageTtftMillis': counters.averageTtftMillis,
+};
 
 String? _endpoint(String value) {
   final uri = Uri.tryParse(value);

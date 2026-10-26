@@ -140,6 +140,14 @@ final class ThreadMirrors {
         stamp = source;
         value = previous.copyWith(
           status: change.status ?? previous.status,
+          execution: switch (change.execution) {
+            UnchangedExecution() => previous.execution,
+            ReplacedExecution(:final value) => value,
+          },
+          continuation: switch (change.continuation) {
+            UnchangedContinuation() => previous.continuation,
+            ReplacedContinuation(:final value) => value,
+          },
           activeTurn: change.turns == null
               ? previous.activeTurn
               : change.turns!.activeTurn,

@@ -1,8 +1,8 @@
 use super::super::model_performance::PerformanceSampleSource;
-use crate::{
+use crate::statistics::{
     StudioModelPerformanceSample, StudioModelPerformanceSnapshot, StudioModelPerformanceSummary,
-    StudioSessionCostSnapshot, StudioSessionCostsState,
 };
+use crate::{StudioSessionCostSnapshot, StudioSessionCostsState};
 use pl_protocol::products::identity::{ProductCollectionRef, ProductEntityRef, ProductReadOrigin};
 use pl_protocol::studio::{StudioError, StudioErrorCode};
 use std::collections::BTreeMap;

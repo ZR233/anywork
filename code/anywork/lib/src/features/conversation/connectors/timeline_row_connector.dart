@@ -8,6 +8,7 @@ import '../../../l10n/studio_l10n.dart';
 import '../../../ui/content/studio_code_block.dart';
 import '../presentation/artifact_links.dart';
 import '../presentation/timeline_labels.dart';
+import '../state/plan_confirmation_ownership.dart';
 import '../timeline/display_binding.dart';
 import '../timeline/presentation_item.dart';
 import '../views/timeline_activity_section.dart';
@@ -224,7 +225,19 @@ class _TimelineMemberConnector extends StatelessWidget {
                 icon: Icons.psychology_alt_outlined,
                 child: body,
               );
-      case ThreadRawItemStateView(:final notice, :final payloads):
+      case ThreadRawItemStateView(:final notice, :final payloads, :final origin):
+        if (origin == ThreadRawItemOrigin.runtimeControl) {
+          return Padding(
+            padding: const EdgeInsets.only(bottom: 8),
+            child: TimelineActivityRow(
+              key: ValueKey('runtime-notice-${item.id}'),
+              icon: Icons.info_outline,
+              label: context.l10n.timelineRuntimeNotice,
+              tooltip: context.l10n.timelineRuntimeNoticeDetail,
+              expandable: false,
+            ),
+          );
+        }
         return _section(
           payload,
           label: context.l10n.timelineRawRecord,
@@ -246,7 +259,7 @@ class _TimelineMemberConnector extends StatelessWidget {
       case ThreadToolItemStateView(:final userInput, :final lifecycle):
         final history = userInput ?? item.tool?.userInput;
         if (history != null) {
-          final receipt = history.planReceipt;
+          final receipt = ownsPlanConfirmation(item.tool?.name) ? history.planReceipt : null;
           if (receipt != null) {
             if (!receipt.isResolved) return null;
             return Column(

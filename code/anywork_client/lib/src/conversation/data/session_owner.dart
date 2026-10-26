@@ -1,15 +1,16 @@
 import 'dart:async';
-import 'dart:convert';
 
 import '../../../drafts.dart' show SubmitPromptReceipt;
 import '../../../operations_ports.dart';
 import '../../../resources_ports.dart';
 import '../../../workspace.dart' show ThreadStatus, WorkspaceThreadRecord;
 import '../domain/execution_values.dart';
+import '../domain/continuation_values.dart';
 import '../domain/facet_state.dart';
 import '../domain/interaction_index_state.dart';
 import '../domain/interaction_values.dart';
-import '../domain/interrupt_turn_reply.dart';
+import '../domain/stop_execution_reply.dart';
+import '../domain/stop_execution_result.dart';
 import '../domain/read_scopes.dart';
 import '../domain/thread_command_reply.dart';
 import '../domain/thread_identity.dart';
@@ -32,6 +33,7 @@ import 'timeline_port.dart';
 
 part 'session_stop_work.dart';
 part 'session_commands.dart';
+part 'session_continuation_work.dart';
 
 /// One specific Session, including metadata opens which have not returned yet.
 final class ConversationSessionOwner extends ConversationScopeAccess {
@@ -120,6 +122,8 @@ final class ConversationSessionOwner extends ConversationScopeAccess {
   late final ConversationSessionMetadata _metadata;
   late final _ConversationCommands _commandActions;
   final Set<_ExecutionEvidenceOwner> _evidence = {};
+  final Map<OperationId, _ContinueThreadWork> _continuations = {};
+  bool _continuationAdmitting = false;
   ConversationContextTask? _contextTask;
   ConversationUiDemand? _uiDemand;
   Completer<void>? _evidenceReleased;
@@ -170,6 +174,8 @@ final class ConversationSessionOwner extends ConversationScopeAccess {
   bool get hasEvidenceDemand => _evidence.isNotEmpty;
   bool get isSelected => _selected;
   WorkspaceThreadRecord? get frozenThread => _thread;
+  @override
+  bool get acceptsUserInput => _thread?.isRoot == true;
   bool get isDisposed => _disposed;
   ConversationUiDemand? get uiDemand => _uiDemand;
   ConversationMetadataBorrow? reserveArchiveMetadata() =>
@@ -317,7 +323,7 @@ final class ConversationSessionOwner extends ConversationScopeAccess {
     // Root Threads and running children stay live.
     _mode =
         thread.parentThreadId != null &&
-            (thread.role == 'planner' || thread.status == ThreadStatus.closed)
+            (thread.isRetiredAgent || thread.status == ThreadStatus.closed)
         ? ThreadObservationMode.cold
         : ThreadObservationMode.live;
     _contextAllowed = true;
@@ -437,28 +443,115 @@ final class ConversationSessionOwner extends ConversationScopeAccess {
   );
 
   @override
-  OperationTicket<Unit> stopTurn({
+  OperationTicket<InteractionCommandReply> respondHostedInteraction({
     required ThreadFacetStamp origin,
-    required TurnReadRef target,
+    required InteractionReadRef reference,
+    required String targetThreadId,
+    OperationId? operationId,
+    required String interactionId,
+    required int expectedInteractionRevision,
+    required InteractionResolutionCommand resolution,
+  }) => _commandActions.respond(origin, interactionId, expectedInteractionRevision, resolution,
+    operationId: operationId, hostedReference: reference, targetThreadId: targetThreadId);
+
+  @override
+  StopExecutionResult stopExecution({
+    required ThreadFacetStamp origin,
+    required String executionId,
   }) {
+    // Validate the original page/owner/source before treating absence as a
+    // harmless no-op. In particular, a stale same-ID owner cannot borrow this.
+    if (_sealed || _stopAdmissionRetired || readAdmissionClosed || !_selected)
+      throw conversationCancelled;
+    if (!acceptsUserInput) throw _childRequiresParent;
+    requireOrigin(origin);
+    final stamp = _readyExecutionStamp;
+    if (stamp == null || origin.facet != ThreadFacet.execution ||
+        _feeds.executionAttemptId == null) throw _stopStaleTarget;
+    final current = execution.value.value!.execution;
+    if (executionId.isEmpty || current != null && current.id != executionId) throw _stopStaleTarget;
+    for (final work in _evidence.whereType<_StopExecutionWork>()) {
+      if (_sameProjection(work.origin, origin) && work.executionId == executionId &&
+          !work._released) return StopExecutionOperation(ticket: work.writer.ticket);
+    }
+    if (current == null) return StopNoExecution(threadId);
     final binding = _executionBinding;
     final originalAttempt = _feeds.executionAttemptId;
     final writer = _operations.begin<Unit>(
       target: 'stop:$threadId',
       requireIdentityObservation: true,
     );
-    final work = _StopTurnWork(
+    final work = _StopExecutionWork(
       session: this,
       writer: writer,
       origin: origin,
-      target: target,
+      executionId: executionId,
       binding: binding,
       originalAttempt: originalAttempt,
     );
     if (_evidence.isEmpty) _evidenceReleased = Completer<void>();
     _evidence.add(work);
     work.start();
+    return StopExecutionOperation(ticket: writer.ticket);
+  }
+
+  @override
+  OperationTicket<ContinueThreadReply> continueThread({
+    required ThreadFacetStamp origin,
+    OperationId? operationId,
+    required String continuationId,
+    required int expectedModelRouteRevision,
+  }) {
+    requireOrigin(origin);
+    if (_continuationAdmitting) throw _continuationConflict;
+    if (!acceptsUserInput) throw _childRequiresParent;
+    for (final work in _continuations.values) {
+      if (operationId == work.writer.ticket.id ||
+          operationId == null && !work.released &&
+              work.continuationId == continuationId &&
+              work.routeRevision == expectedModelRouteRevision) {
+        if (work.continuationId != continuationId ||
+            work.routeRevision != expectedModelRouteRevision ||
+            !_sameProjection(work.origin, origin)) throw _continuationConflict;
+        return work.writer.ticket;
+      }
+    }
+    if (operationId != null) throw _continuationConflict;
+    if (_continuations.values.any((work) => !work.released)) throw _continuationConflict;
+    final current = execution.value.value?.continuation;
+    final config = configuration.value;
+    final route = config.value?.modelRoute;
+    if (origin.facet != ThreadFacet.execution || continuationId.isEmpty ||
+        current?.id != continuationId || current!.claimed ||
+        config.sync.phase != FacetSyncPhase.ready || config.stamp == null ||
+        !_sameProjection(origin, config.stamp!) || route?.available != true ||
+        route!.revision != expectedModelRouteRevision || expectedModelRouteRevision < 0) throw _continuationConflict;
+    final work = _ContinueThreadWork(this, origin, continuationId, expectedModelRouteRevision);
+    _commandActions.lifetime.register(work);
+    _continuationAdmitting = true;
+    try {
+      work.retain();
+    final writer = _operations.begin<ContinueThreadReply>(
+      target: 'continue:$threadId', requireIdentityObservation: true,
+    );
+    work.writer = writer;
+      work.writerAssigned = true;
+    _continuations[writer.ticket.id] = work;
+    work.start();
     return writer.ticket;
+    } catch (_) {
+      work.notStarted();
+      rethrow;
+    } finally {
+      _continuationAdmitting = false;
+    }
+  }
+
+  @override
+  Future<ContinuationOperationView?> readContinuationOperation(OperationId operationId) {
+    final work = _continuations[operationId];
+    if (work == null) throw _continuationConflict;
+    return work.query();
   }
 
   SubmissionExecutionLease retainForSubmission({
@@ -631,6 +724,7 @@ final class ConversationSessionOwner extends ConversationScopeAccess {
     List<TurnBrief> turns,
   ) async {
     _index.adopt(stamp, index, delta);
+    _commandActions.observeExecution(stamp, delta);
     // Every admitted consumer registers its work synchronously in its original
     // lease. A sibling/history completion cannot release an in-flight handoff.
     try {
@@ -764,7 +858,7 @@ final class ConversationSessionOwner extends ConversationScopeAccess {
     if (_sealed) return close(deadline: deadline, retry: true);
     final demand = _uiDemand;
     final stops = _evidence
-        .whereType<_StopTurnWork>()
+        .whereType<_StopExecutionWork>()
         .where((work) => work._canFinish)
         .toList();
     // Cleanup admission comes from the original owners, not from the current
@@ -792,7 +886,7 @@ final class ConversationSessionOwner extends ConversationScopeAccess {
   Future<CloseReport> close({DateTime? deadline, bool retry = false}) async {
     seal();
     final stops = List.of(_evidence)
-        .whereType<_StopTurnWork>()
+        .whereType<_StopExecutionWork>()
         .toList(growable: false);
     final closing = Future.wait([
       _commandActions.close(deadline: deadline, retry: retry),

@@ -16,9 +16,12 @@ enum RecoveryAction {
 
 enum WorktreeOwner { session, child }
 
+enum WorktreeInspection { available, missing, identityMismatch, unavailable }
+
 @Freezed(toStringOverride: false)
 abstract class WorktreeRecoveryPreview with _$WorktreeRecoveryPreview {
   const factory WorktreeRecoveryPreview({
+    required WorktreeInspection inspection,
     required WorktreeOwner ownerKind,
     required String ownerThreadId,
     required int leaseRevision,
@@ -28,8 +31,8 @@ abstract class WorktreeRecoveryPreview with _$WorktreeRecoveryPreview {
     required String branch,
     required String baseCommit,
     required String? headCommit,
-    required bool dirty,
-    required List<String> changedFiles,
+    required bool? dirty,
+    required List<String>? changedFiles,
   }) = _WorktreeRecoveryPreview;
 }
 
@@ -41,7 +44,7 @@ abstract class RecoveryIssue with _$RecoveryIssue {
     required String id,
     required RecoveryScope scope,
     required RecoveryCategory category,
-    required RecoveryAction action,
+    required List<RecoveryAction> availableActions,
     required String? projectId,
     required String? threadId,
     required String message,
@@ -49,9 +52,9 @@ abstract class RecoveryIssue with _$RecoveryIssue {
   }) = _RecoveryIssue;
 
   bool get blocksAccess => category != RecoveryCategory.toolCatalog;
-  bool get canRetry => action == RecoveryAction.retry;
+  bool get canRetry => availableActions.contains(RecoveryAction.retry);
   bool get canCleanup =>
-      action == RecoveryAction.cleanupThread ||
-      action == RecoveryAction.removeProject ||
-      action == RecoveryAction.cleanupWorktree;
+      availableActions.contains(RecoveryAction.cleanupThread) ||
+      availableActions.contains(RecoveryAction.removeProject) ||
+      availableActions.contains(RecoveryAction.cleanupWorktree);
 }

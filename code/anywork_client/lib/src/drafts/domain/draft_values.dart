@@ -1,6 +1,7 @@
 import 'package:freezed_annotation/freezed_annotation.dart';
 
 import '../../../modes.dart';
+import '../../../models.dart' show ModelSelection;
 import '../../../resources.dart';
 import '../../../workspace.dart';
 import '../../configuration/domain/configuration_state.dart';
@@ -27,7 +28,7 @@ abstract class AttachmentMetadata with _$AttachmentMetadata {
 sealed class AttachmentAdmissionContext with _$AttachmentAdmissionContext {
   const factory AttachmentAdmissionContext.existingThread(String threadId) =
       ExistingThreadAttachmentAdmissionContext;
-  const factory AttachmentAdmissionContext.newThread(ThreadModeId mode) =
+  const factory AttachmentAdmissionContext.newThread({required ModelSelection route}) =
       NewThreadAttachmentAdmissionContext;
 }
 

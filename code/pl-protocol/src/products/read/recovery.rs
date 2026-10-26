@@ -33,6 +33,14 @@ pub enum WorktreeOwner {
     Session,
     Child,
 }
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub enum WorktreeInspection {
+    Available,
+    Missing,
+    IdentityMismatch,
+    Unavailable,
+}
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RecoveryReadHeader {
@@ -41,6 +49,7 @@ pub struct RecoveryReadHeader {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct WorktreeRecoveryPreviewRead {
+    pub inspection: WorktreeInspection,
     pub owner_kind: WorktreeOwner,
     pub owner_thread_id: ReadText,
     pub lease_revision: u64,
@@ -50,8 +59,8 @@ pub struct WorktreeRecoveryPreviewRead {
     pub branch: ReadText,
     pub base_commit: ReadText,
     pub head_commit: Option<ReadText>,
-    pub dirty: bool,
-    pub changed_files: TypedListRef,
+    pub dirty: Option<bool>,
+    pub changed_files: Option<TypedListRef>,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -59,7 +68,7 @@ pub struct RecoveryIssueRead {
     pub id: ReadText,
     pub scope: RecoveryScope,
     pub category: RecoveryCategory,
-    pub action: RecoveryAction,
+    pub available_actions: Vec<RecoveryAction>,
     pub project_id: Option<ReadText>,
     pub thread_id: Option<ReadText>,
     pub message: ReadText,

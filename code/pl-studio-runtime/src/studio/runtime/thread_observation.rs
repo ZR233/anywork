@@ -12,6 +12,7 @@ mod close;
 mod directory;
 mod failure;
 mod fences;
+mod hosted;
 mod reports;
 
 pub(crate) use failure::ObservationCloseFailure;
@@ -236,6 +237,8 @@ impl Drop for Observation {
 }
 #[derive(Clone)]
 pub(super) struct ObservationServices {
+    /// Invalidates hosted indexes only; all interaction facts stay in their original core owner.
+    pub(super) hosted_updates: tokio::sync::watch::Sender<()>,
     pub(super) config: crate::config::ConfigRuntime,
     pub(super) thread_modes: crate::mode::ThreadModeManager,
     pub(super) observation_ids: super::observation_ids::ObservationIds,
@@ -333,6 +336,13 @@ impl Drop for ThreadFacetLease {
 }
 
 impl ThreadObservations {
+    pub(super) async fn cold_hosted_interactions(
+        &self,
+        host: &str,
+    ) -> Result<Vec<Arc<pl_protocol::InteractionRequest>>> {
+        Ok(hosted::collect(&self.0.projector, host, &[]).await?.0)
+    }
+
     pub(super) fn new(
         projector: ObservationServices,
         reads: super::read_scopes::ReadScopeRegistry,
@@ -950,6 +960,8 @@ impl ThreadObservations {
                 continue;
             }
             let child = pl_protocol::Thread::from(child);
+            // Parent recovery explicitly prepares its cold children's storage before projecting
+            // their facts. It never activates a child, rebuilds its workspace or asks a model.
             let Some(checkpoint) =
                 crate::studio::thread_factory::recovery::load_checkpoint_for_recovery(
                     &services.store,
@@ -959,6 +971,10 @@ impl ThreadObservations {
             else {
                 continue;
             };
+            // A cold child's interruption is a fact the list must publish: a restart otherwise loses
+            // "stopped, waiting for the main agent" for every member that is not loaded again. This
+            // reads only the saved checkpoint — no activation, no workspace, no model request.
+            directory::publish_cold_scheduling_state(services, &child, &checkpoint.state).await?;
             if let Some(turn) = checkpoint
                 .state
                 .turns
@@ -985,6 +1001,24 @@ impl ThreadObservations {
                     &crate::studio::thread_projection::TurnResult::from_items(&items),
                 )
                 .await?;
+            }
+        }
+        services.hosted_updates.send_replace(());
+        Ok(())
+    }
+
+    /// Storage-only dependency before publishing a cold root owner. Its observation worker can
+    /// then read hosted child facts immediately; terminal reconciliation still happens afterwards
+    /// and can deliver to the now-published parent. Both use the same per-child history Migrator.
+    pub(super) async fn prepare_child_storage(&self, parent: &str) -> Result<()> {
+        let services = &self.0.projector;
+        for child in services.store.list_threads_for_root(parent).await? {
+            if child.parent_thread_id.as_deref() == Some(parent)
+                && services.threads.upgrade()?.thread(&child.id).is_none()
+            {
+                crate::studio::thread_factory::recovery::load_checkpoint_for_recovery(
+                    &services.store, &pl_protocol::Thread::from(child),
+                ).await?;
             }
         }
         Ok(())
@@ -1027,6 +1061,7 @@ impl StudioRuntime {
 /// batch is handed to the Thread's reliable admission channel, so the history writer commits the
 /// content this owner published instead of projecting the effect a second time.
 struct LiveOwner {
+    hosted_updates: tokio::sync::watch::Sender<()>,
     config: crate::config::ConfigRuntime,
     thread_modes: crate::mode::ThreadModeManager,
     configuration_inputs: facets::configuration::ConfigurationInputs,
@@ -1122,6 +1157,7 @@ impl LiveOwner {
         let runtime_published = Some(runtime);
         feed.publish_storage(storage_published.as_deref().cloned());
         let owner = Self {
+            hosted_updates: projector.hosted_updates.clone(),
             config: projector.config.clone(),
             thread_modes: projector.thread_modes.clone(),
             configuration_inputs,
@@ -1468,6 +1504,7 @@ impl LiveOwner {
 
     fn publish_execution(&self, snapshot: &ThreadSnapshot, effects: &[LiveEvent]) {
         if let Ok(facets) = &self.feed.facets {
+            let before = facets.execution.interaction_revision();
             facets.execution.observe(
                 &self.thread.id,
                 self.thread.updated_at,
@@ -1476,7 +1513,13 @@ impl LiveOwner {
                 self.activity_published.clone(),
                 self.storage_published.clone(),
                 effects,
+                None,
             );
+            if self.thread.parent_thread_id.is_some()
+                && before != facets.execution.interaction_revision()
+            {
+                self.hosted_updates.send_replace(());
+            }
         }
     }
 }
@@ -1649,6 +1692,7 @@ async fn run(
     // change with no owner frame and no handoff, so without this arm the owner would only publish
     // the fault when something unrelated happened to arrive.
     let mut persistence = projector.store.thread_persistence().subscribe();
+    let mut hosted_updates = projector.hosted_updates.subscribe();
     let mut current = thread.snapshot();
     let mut worker = ProjectionWorker {
         services: projector,
@@ -1661,11 +1705,18 @@ async fn run(
         pass: None,
         fences: ProjectionFences::default(),
         final_write: None,
+        hosted_dirty: true,
     };
     // Product facts are projected once per committed revision; the live projection additionally
     // follows every owner snapshot so streaming previews reach the same single publisher.
     let mut projected = None;
     loop {
+        // The retained notification contains no facts. Subscribe-before-read plus the watch
+        // version prevents an invalidation during a projection pass from being lost.
+        if hosted_updates.has_changed().unwrap_or(false) {
+            worker.hosted_dirty = true;
+        }
+        hosted_updates.borrow_and_update();
         if let Some(fence) = &worker.final_write {
             match fence.wait().await {
                 Ok(()) => {
@@ -1835,6 +1886,10 @@ async fn run(
             continue;
         }
         tokio::select! {
+            _ = hosted_updates.changed() => {
+                worker.hosted_dirty = true;
+                current = worker.thread.snapshot();
+            },
             () = worker.state.retry.notified() => current = worker.thread.snapshot(),
             () = async {
                 match worker.live.as_mut() {
@@ -1847,7 +1902,14 @@ async fn run(
             _ = handoff.changed() => current = worker.thread.snapshot(),
             // A typed storage change with no owner frame still has to reach subscribers; re-run the
             // pass so the owner republishes the state it just read.
-            _ = persistence.changed() => current = worker.thread.snapshot(),
+            _ = persistence.changed() => {
+                // A decided cold child may leave the compact state before its receipt can be
+                // read. Saved progress rechecks only an already-populated hosted index.
+                if let Ok(facets) = &worker.feed.facets {
+                    worker.hosted_dirty |= !facets.execution.hosted_pending(&worker.id).is_empty();
+                }
+                current = worker.thread.snapshot();
+            },
             update = updates.next() => match update {
                 Some(snapshot) => current = snapshot,
                 None => {
@@ -1876,6 +1938,7 @@ async fn run(
 /// independent arguments through every call; the live projection above stays a pure function of one
 /// effect.
 struct ProjectionWorker {
+    hosted_dirty: bool,
     services: ObservationServices,
     id: String,
     thread: ThreadHandle,
@@ -1999,6 +2062,7 @@ impl ProjectionWorker {
             live,
             pass,
             fences,
+            hosted_dirty,
             ..
         } = self;
         if pass.is_none() {
@@ -2133,6 +2197,23 @@ impl ProjectionWorker {
                     owner.stream(&original.snapshot).await?;
                     owner.observe_storage(snapshot, persistence);
                     owner.publish_execution(&original.snapshot, &[]);
+                    if *hosted_dirty && owner.thread.parent_thread_id.is_none() {
+                        if let Ok(facets) = &owner.feed.facets {
+                            let previous = facets.execution.hosted_pending(&owner.thread.id);
+                            let (pending, terminal) = hosted::collect(services, &owner.thread.id, &previous).await?;
+                            facets.execution.observe(
+                                &owner.thread.id,
+                                owner.thread.updated_at,
+                                &original.snapshot,
+                                owner.feed.last_turn.borrow().clone(),
+                                owner.activity_published.clone(),
+                                owner.storage_published.clone(),
+                                &terminal,
+                                Some(&pending),
+                            );
+                        }
+                        *hosted_dirty = false;
+                    }
                     if !original.products {
                         let snapshot = original.snapshot.clone();
                         *pass = None;
@@ -2181,6 +2262,11 @@ impl ProjectionWorker {
                         original.summary.clone(),
                     )
                     .await?;
+                    if original.product.as_ref().is_some_and(|thread| thread.parent_thread_id.is_some()) {
+                        // Admission may publish the pending fact before the child's directory row.
+                        // Recheck after association publication as well, without copying the fact.
+                        services.hosted_updates.send_replace(());
+                    }
                     let snapshot = original.snapshot.clone();
                     *pass = None;
                     return Ok(snapshot);
@@ -3363,7 +3449,9 @@ mod storage_fault_tests {
             elapsed_ms: None,
         };
         let input = InputRecord {
+            continuation: None,
             input: ThreadInput {
+                purpose: pl_core::thread::input::InputPurpose::Message,
                 id: input_id.into(),
                 payload: OpaquePayload::new(
                     "pl.studio.interaction-continuation",

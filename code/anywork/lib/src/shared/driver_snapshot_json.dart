@@ -4,11 +4,14 @@ import 'package:anywork_client/conversation.dart';
 import 'package:anywork_client/drafts.dart';
 import 'package:anywork_client/models.dart';
 import 'package:anywork_client/persistence.dart';
+import 'package:anywork_client/recovery.dart';
 import 'package:anywork_client/resources.dart';
 import 'package:anywork_client/updates.dart';
 import 'package:anywork_client/workspace.dart';
 
+import '../diagnostics/conversation_status_diagnostics.dart';
 import '../diagnostics/timeline_diagnostics_json.dart';
+import '../features/conversation/state/interaction_view_state.dart';
 import '../features/conversation/state/read_material.dart';
 import 'driver_projection.dart';
 import 'driver_snapshot.dart';
@@ -53,6 +56,12 @@ extension DriverSnapshotJson on DriverSnapshot {
         recovery.projection.sync.phase == ResourceSyncPhase.ready
         ? currentDriverRows(recovery.issues, recovery.projection.stamp?.origin)
         : null;
+    final activeInteractions = interactionEditors == null
+        ? null
+        : [
+            for (final editor in interactionEditors!)
+              _interactionDiagnostic(editor),
+          ];
     return {
       ...display.toJson(),
       'availability': {
@@ -111,16 +120,11 @@ extension DriverSnapshotJson on DriverSnapshot {
               'threadStatus': thread?.status.name,
               'syncState': execution?.sync.phase.name,
               'loadError': execution?.sync.error?.code.name,
-              'isBusy': execution?.value == null
-                  ? null
-                  : switch (execution!.value!.status) {
-                      ThreadStatus.queued ||
-                      ThreadStatus.running ||
-                      ThreadStatus.waitingTool ||
-                      ThreadStatus.waitingInteraction ||
-                      ThreadStatus.cancelling => true,
-                      _ => false,
-                    },
+              'isBusy':
+                  execution?.sync.phase == FacetSyncPhase.ready &&
+                      execution?.value != null
+                  ? execution!.value!.execution != null
+                  : null,
               'model': modelId,
               'modelRoute': route == null
                   ? null
@@ -185,23 +189,15 @@ extension DriverSnapshotJson on DriverSnapshot {
                       attachment.toJson(),
               ],
               'interactionCount': execution?.value?.interactions.pending,
-              // ConversationVM is the existing public interaction selection projection.
-              // Index refs are not command IDs, titles or unredacted question bodies.
-              'activeInteraction': conversation?.currentEditors.length != 1
-                  ? null
-                  : {
-                      'id': conversation!.currentEditors.single.interactionId,
-                      'turnId': null,
-                      'kind': null,
-                      'title': null,
-                      'body': null,
-                    },
-              'activeInteractions': conversation == null
-                  ? null
-                  : [
-                      for (final editor in conversation!.currentEditors)
-                        {'id': editor.interactionId},
-                    ],
+              // Partial mounted facts cannot establish a unique active target.
+              // The full index and its single current editor must both agree.
+              'activeInteraction':
+                  conversation?.interactions?.current?.complete == true &&
+                      conversation?.currentEditors.length == 1 &&
+                      activeInteractions?.length == 1
+                  ? activeInteractions!.single
+                  : null,
+              'activeInteractions': activeInteractions,
               'turn': turnDiagnostic(
                 execution?.value?.activeTurn,
                 material: status?.turnRead,
@@ -286,9 +282,12 @@ extension DriverSnapshotJson on DriverSnapshot {
                 {
                   'id': issue.id,
                   'category': issue.category.name,
-                  'actions': [issue.action.name],
+                  'availableActions': [
+                    for (final action in issue.availableActions) action.name,
+                  ],
                   'threadId': issue.threadId,
                   'detail': issue.message,
+                  'worktree': _worktreeRecoveryDiagnostic(issue.worktree),
                 },
             ],
       'updates': updatesDiagnostic(updates),
@@ -339,6 +338,9 @@ Map<String, Object?> agentDiagnostic(AgentDirectoryEntry agent) => {
   'parentPath': agent.parentPath,
   'role': agent.role,
   'task': agent.task,
+  'execution': agentExecutionDiagnostic(agent.execution),
+  'canStop': agent.canStop,
+  'awaitingScheduling': agent.awaitingScheduling,
   'status': switch (agent.state) {
     IdleAgentState() => 'idle',
     QueuedAgentState() => 'queued',
@@ -356,6 +358,120 @@ Map<String, Object?> agentDiagnostic(AgentDirectoryEntry agent) => {
     _ => null,
   },
 };
+
+Map<String, Object?> _interactionDiagnostic(InteractionViewState editor) {
+  final header = editor.header!;
+  final content = header.content;
+  final questions = editor.questions.values.toList()
+    ..sort((left, right) => left.question.index.compareTo(right.question.index));
+  return {
+    'id': editor.textOf(header.interactionId),
+    'threadId': editor.textOf(header.threadId),
+    'hostThreadId': editor.key.threadId,
+    'turnId': editor.textOf(header.turnId),
+    'revision': header.revision,
+    'kind': switch (content) {
+      UserInputContentRead() => 'userInput',
+      ToolApprovalContentRead() => 'toolApproval',
+    },
+    'title': switch (content) {
+      UserInputContentRead() =>
+        editor.textOf(editor.questions[0]?.question.header),
+      ToolApprovalContentRead(:final name) => editor.textOf(name),
+    },
+    'body': switch (content) {
+      UserInputContentRead(:final questionCount) =>
+        _interactionQuestionBody(editor, questionCount),
+      ToolApprovalContentRead(:final arguments) => editor.textOf(arguments),
+    },
+    'purpose': switch (header.purpose) {
+      GeneralInteractionPurposeRead() => {'kind': 'general'},
+      PlanConfirmationPurposeRead(
+        :final expectedRevision,
+        :final operationId,
+        :final argumentHash,
+        :final planHash,
+      ) => {
+        'kind': 'planConfirmation',
+        'expectedRevision': expectedRevision,
+        'operationId': editor.textOf(operationId),
+        'argumentHash': editor.textOf(argumentHash),
+        'planHash': editor.textOf(planHash),
+      },
+    },
+    'state': switch (header.state) {
+      PendingInteractionRead() => 'pending',
+      ResolvedUserInputRead() || ResolvedApprovalRead() => 'resolved',
+      CancelledInteractionRead() => 'cancelled',
+      ExpiredInteractionRead() => 'expired',
+    },
+    'content': switch (content) {
+      UserInputContentRead(:final questionCount) => {
+        'questionCount': questionCount,
+        'questions': [
+          for (final progress in questions)
+            {
+              'index': progress.question.index,
+              'id': editor.textOf(progress.question.id),
+              'header': editor.textOf(progress.question.header),
+              'question': editor.textOf(progress.question.question),
+              'isOther': progress.question.isOther,
+              'isSecret': progress.question.isSecret,
+            },
+        ],
+      },
+      ToolApprovalContentRead(
+        :final name,
+        :final arguments,
+        :final workingDirectory,
+        :final parentAgentId,
+      ) => {
+        'name': editor.textOf(name),
+        'arguments': editor.textOf(arguments),
+        'workingDirectory': editor.textOf(workingDirectory),
+        'parentAgentId': editor.textOf(parentAgentId),
+      },
+    },
+  };
+}
+
+/// Preserve the original Driver body shape without mistaking a partial page or
+/// a deferred text prefix for the complete question/Plan document.
+String? _interactionQuestionBody(InteractionViewState editor, int count) {
+  if (count == 0 ||
+      editor.nextQuestionOffset != null ||
+      editor.questions.length != count) {
+    return null;
+  }
+  final parts = <String>[];
+  for (var index = 0; index < count; index++) {
+    final question = editor.questions[index]?.question;
+    if (question == null || question.index != index) return null;
+    final body = editor.textOf(question.question);
+    if (body == null) return null;
+    if (body.isNotEmpty) parts.add(body);
+  }
+  return parts.join('\n');
+}
+
+Map<String, Object?>? _worktreeRecoveryDiagnostic(
+  WorktreeRecoveryPreview? worktree,
+) => worktree == null
+    ? null
+    : {
+        'inspection': worktree.inspection.name,
+        'ownerKind': worktree.ownerKind.name,
+        'ownerThreadId': worktree.ownerThreadId,
+        'leaseRevision': worktree.leaseRevision,
+        'state': worktree.state,
+        'repositoryRoot': worktree.repositoryRoot,
+        'path': worktree.path,
+        'branch': worktree.branch,
+        'baseCommit': worktree.baseCommit,
+        'headCommit': worktree.headCommit,
+        'dirty': worktree.dirty,
+        'changedFiles': worktree.changedFiles,
+      };
 
 Map<String, Object?>? turnDiagnostic(
   TurnBrief? turn, {

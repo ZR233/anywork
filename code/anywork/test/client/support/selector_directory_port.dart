@@ -60,6 +60,10 @@ final class SelectorDirectoryPort implements WorkspacePort {
   final metadataReads = <String>[];
   final activations = <String>[];
   final restores = <String>[];
+  Future<WorkspaceThreadRecord> Function(String)? onRestore;
+  Future<ArchiveThreadCommandReply> Function(String, OperationId)? onArchiveThread;
+  final archivedThreads = <String>[];
+  final renamedThreads = <String>[];
   final archives = <String>[];
   final archiveReply = Completer<ProjectRecord>();
   final archiveEntered = Completer<void>();
@@ -67,6 +71,7 @@ final class SelectorDirectoryPort implements WorkspacePort {
   final _projectMaterials = <int, List<ProjectRecord>>{};
   final _projectEntries = <String, int>{};
   final _agentMaterials = <int, List<AgentDirectoryEntry>>{};
+  Future<void> Function(int revision)? beforeAgentEntity;
   final _threadSequences = <String, int>{};
   Future<WorkspaceThreadRecord> Function(String)? respond;
   Future<void> Function(String)? onActivate;
@@ -422,7 +427,7 @@ final class SelectorDirectoryPort implements WorkspacePort {
     AgentDirectoryReadRef reference, {
     required ProductReadOrigin origin,
   }) async =>
-      _AgentPin(_agentMaterials[reference.revision]!, reference.revision);
+      _AgentPin(_agentMaterials[reference.revision]!, reference.revision, beforeAgentEntity);
   @override
   Future<ProductSourceStatusReadConnection> openSourceStatus(
     ProductSourceStatusRef reference, {
@@ -442,6 +447,7 @@ final class SelectorDirectoryPort implements WorkspacePort {
   @override
   Future<WorkspaceThreadRecord> restoreThread(String threadId) async {
     restores.add(threadId);
+    if (onRestore case final restore?) return restore(threadId);
     throw const StudioFailure(
       code: StudioFailureCode.storage,
       message: 'restore failed',
@@ -455,6 +461,20 @@ final class SelectorDirectoryPort implements WorkspacePort {
     archives.add(projectId);
     if (!archiveEntered.isCompleted) archiveEntered.complete();
     return archiveReply.future;
+  }
+
+  @override
+  Future<ArchiveThreadCommandReply> archiveThread(String threadId, {required OperationId operationId}) {
+    archivedThreads.add(threadId);
+    final action = onArchiveThread;
+    if (action == null) throw UnsupportedError('Unscripted native Thread archive');
+    return action(threadId, operationId);
+  }
+
+  @override
+  Future<RenameThreadCommandReply> renameThread(String threadId, String title, {required OperationId operationId}) {
+    renamedThreads.add(threadId);
+    throw UnsupportedError('Unscripted native Thread rename');
   }
 
   @override
@@ -565,9 +585,10 @@ final class _ThreadPin extends ProfileNativePin
 
 final class _AgentPin extends ProfileNativePin
     implements AgentDirectoryReadConnection {
-  _AgentPin(this.values, this.revision) : super('selector-agent-pin');
+  _AgentPin(this.values, this.revision, this.beforeEntity) : super('selector-agent-pin');
   final List<AgentDirectoryEntry> values;
   final int revision;
+  final Future<void> Function(int revision)? beforeEntity;
   @override
   Future<AgentDirectoryReadHeader> header() async => AgentDirectoryReadHeader(
     agents: TypedListRef(listId: 1, total: values.length),
@@ -586,7 +607,8 @@ final class _AgentPin extends ProfileNativePin
     nextOffset: null,
   );
   @override
-  Future<AgentDirectoryEntityRead> entity(ProductEntityRef reference) async {
+  Future<AgentDirectoryEntityRead> entity(ProductEntityRef reference) => reply(Future<AgentDirectoryEntityRead>.sync(() async {
+    await beforeEntity?.call(revision);
     final value = values[reference.entry - 10];
     ReadText text(String value) => ReadText.inline(text: value);
     ReadText? optional(String? value) => value == null ? null : text(value);
@@ -660,6 +682,9 @@ final class _AgentPin extends ProfileNativePin
         task: ReadText.inline(text: value.task),
         summary: optional(value.summary),
         state: state,
+        execution: value.execution,
+        canStop: value.canStop,
+        awaitingScheduling: value.awaitingScheduling,
         delegationMode: value.delegationMode,
         delegationPreference: value.delegationPreference,
         frozenModel: frozen == null
@@ -672,5 +697,5 @@ final class _AgentPin extends ProfileNativePin
         updatedAt: value.updatedAt,
       ),
     );
-  }
+  }));
 }

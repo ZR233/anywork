@@ -321,6 +321,12 @@ class SidebarThreadRow extends StatelessWidget {
   Widget build(BuildContext context) {
     final issue = recovery;
     final blocked = issue?.blocksAccess ?? false;
+    // Only worktree diagnostics lose their archive veto. Other recovery
+    // blockers and the original Workspace action's admission remain intact.
+    final archiveBlocked =
+        blocked &&
+        !(issue?.category == RecoveryCategory.repository &&
+            issue?.worktree != null);
     final l10n = context.l10n;
     // 会话操作共享同一槽位与图标尺寸：桌面收紧视觉间距，触控仍保留
     // 44px 命中区；菜单触发器也复用同一尺寸，保持操作区密度一致。
@@ -412,7 +418,7 @@ class SidebarThreadRow extends StatelessWidget {
                 MenuItemButton(
                   key: ValueKey('thread-menu-archive-${thread.id}'),
                   overflowAxis: Axis.vertical,
-                  onPressed: blocked
+                  onPressed: archiveBlocked
                       ? null
                       : () => onAction(SidebarThreadAction.archive),
                   child: Text(l10n.sidebarArchiveSession),

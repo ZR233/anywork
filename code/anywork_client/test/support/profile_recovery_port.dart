@@ -8,6 +8,16 @@ import 'scripted_feed.dart';
 /// This supplies only read materials; it never implements Recovery operations,
 /// role policy or a Repository. Unexpected capabilities fail rather than fall back.
 final class ProfileRecoveryPort implements RecoveryPort {
+  List<RecoveryIssueRead> preparedIssues = const [];
+  List<RecoveryIssueRead> _publishedIssues = const [];
+  ProductCollectionRef get publishedCollection => ProductCollectionRef(entry: 2, revision: 1, total: _publishedIssues.length);
+  Future<void> Function(WorktreeOwner, String, int)? onCleanup;
+  @override
+  Future<void> cleanupWorktree(WorktreeOwner ownerKind, String ownerThreadId, int expectedLeaseRevision) {
+    final action = onCleanup;
+    if (action == null) throw UnsupportedError('Unscripted worktree cleanup');
+    return action(ownerKind, ownerThreadId, expectedLeaseRevision);
+  }
   static const origin = ProductReadOrigin(
     ownerEpoch: 'profile-role-recovery',
     incarnation: 1,
@@ -26,6 +36,7 @@ final class ProfileRecoveryPort implements RecoveryPort {
   );
 
   Future<void> establish(RecoveryRepository recovery) async {
+    _publishedIssues = List.unmodifiable(preparedIssues);
     final reading = recovery.loadIssuesPage();
     await feed.listened.future;
     feed.emit(
@@ -43,7 +54,7 @@ final class ProfileRecoveryPort implements RecoveryPort {
               source: profileSource(1),
               reference: reference,
             ),
-            collection: collection,
+            collection: publishedCollection,
           ),
         ),
       ),
@@ -63,7 +74,7 @@ final class ProfileRecoveryPort implements RecoveryPort {
         reference != ProfileRecoveryPort.reference) {
       throw StateError('Unscripted native Recovery version');
     }
-    return _EmptyRecoveryPin();
+    return _EmptyRecoveryPin(_publishedIssues, publishedCollection);
   }
 
   @override
@@ -86,11 +97,13 @@ final class ProfileRecoveryPort implements RecoveryPort {
 
 final class _EmptyRecoveryPin extends ProfileNativePin
     implements RecoveryReadConnection {
-  _EmptyRecoveryPin() : super('profile-role-recovery-read');
+  _EmptyRecoveryPin(this.items, this.collection) : super('profile-role-recovery-read');
+  final List<RecoveryIssueRead> items;
+  final ProductCollectionRef collection;
   @override
   Future<RecoveryReadHeader> header() async {
     admit();
-    return const RecoveryReadHeader(issues: TypedListRef(listId: 1, total: 0));
+    return RecoveryReadHeader(issues: TypedListRef(listId: 1, total: items.length));
   }
 
   @override
@@ -99,10 +112,17 @@ final class _EmptyRecoveryPin extends ProfileNativePin
     if (offset != 0 || limit < 1)
       throw StateError('Unscripted empty Recovery page');
     return RecoveryEntryPage(
-      collection: ProfileRecoveryPort.collection,
+      collection: collection,
       offset: 0,
-      items: const [],
+      items: [for (var index = 0; index < items.length; index++) ProductEntityRef(entry: index + 3, revision: 1)],
       nextOffset: null,
     );
   }
+
+  @override
+  Future<RecoveryEntityRead> entity(ProductEntityRef reference) async {
+    admit();
+    if (reference.revision != 1 || reference.entry < 3 || reference.entry >= items.length + 3) throw StateError('Unscripted Recovery entity');
+    return RecoveryEntityRead(reference: reference, value: items[reference.entry - 3]);
+}
 }

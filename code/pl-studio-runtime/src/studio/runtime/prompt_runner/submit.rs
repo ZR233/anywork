@@ -7,6 +7,7 @@ use crate::studio::ThreadRecord;
 use super::super::{
     StudioRuntime, StudioSubmitPromptOptions, StudioSubmitPromptRequest, StudioSubmitPromptResponse,
 };
+use super::{UserThreadAction, ensure_thread_not_archived, ensure_user_root_target};
 
 /// How one product admission treats a Turn that is already running on the same Thread.
 ///
@@ -136,6 +137,10 @@ impl StudioRuntime {
         // Serialize turn registration with the shared shutdown admission fence.
         let _lifecycle_guard = self.lifecycle_lock.lock().await;
         let thread_record = self.read_owned_thread(&request.thread_id).await?;
+        // The user-facing submission stops here for a child target: the trusted association proves
+        // the parent, so this runs before the owner is activated, before attachment drafts resolve
+        // and before any route or prompt work. Only the parent agent schedules child work.
+        ensure_user_root_target(&thread_record, UserThreadAction::Submit)?;
         self.submit_owned_prompt_with_admission(request, thread_record, mode, None)
             .await
     }
@@ -170,10 +175,7 @@ impl StudioRuntime {
         validate_prompt_content(&input)?;
         let request_digest =
             crate::studio::thread_projection::prompt_request_digest(&input, options.presentation);
-        anyhow::ensure!(
-            thread_record.visibility == crate::studio::ThreadVisibility::Active,
-            "archived Thread cannot accept input"
-        );
+        ensure_thread_not_archived(&thread_record, UserThreadAction::Submit)?;
         let thread = self.ensure_thread_owner(&thread_id).await?;
         if let Some(creation) = creation {
             creation.capture(self, &thread);
@@ -212,7 +214,7 @@ impl StudioRuntime {
         // 索引回答重复提交；只读取最小身份记录，不把历史实体搬回 core，也不重放 effect。
         // 幂等命中必须证明正文身份：索引里的 host 提交摘要与本次请求一致才是重放，不一致或
         // 索引无法给出摘要都按身份冲突拒绝，不能只凭 ID 返回旧回执。
-        let durable_receipt = match self.ensure_timeline_history(&thread_id).await {
+        let durable_receipt = match self.read_timeline_history(&thread_id).await {
             Ok(history) => history.input_identity(&input.input_id).await?,
             // 历史尚未追平 checkpoint fence 时退回普通受理：驻留队列仍然覆盖本 incarnation
             // 的重复提交，不能因为一次只读索引未就绪而拒绝新输入。
@@ -275,6 +277,10 @@ impl StudioRuntime {
             self.thread_observations
                 .reconcile_children(&thread_id)
                 .await?;
+            // A main-session send is the other explicit user turn, so the same idempotent
+            // reconciliation repairs any child decision notice that was never delivered. A failure is
+            // reported instead of swallowed; nothing has been admitted yet, so retrying is safe.
+            self.reconcile_child_interaction_notices(&thread_id).await?;
         }
         let original_request = input.clone();
         let pl_protocol::studio::StudioPromptInput {
@@ -363,6 +369,7 @@ impl StudioRuntime {
             creation.dispatching();
         }
         let thread_input = pl_core::thread::input::ThreadInput {
+            purpose: pl_core::thread::input::InputPurpose::Message,
             id: input_id,
             payload,
             context,

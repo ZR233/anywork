@@ -130,12 +130,25 @@ class AgentProfilesConnector extends ConsumerWidget {
                     ..._errors(state.actions[(profile.profileId, field)]),
                 ],
             },
-            worktrees: [
+            worktreeIssues: [
               for (final issue in displayCollectionRows(
                 state.recoverySource.issues,
               ))
-                ?issue.worktree,
+                if (issue.worktree != null) issue,
             ],
+            actionableWorktreeIssueIds: {
+              if (state.recoverySource.projection.sync.phase == ResourceSyncPhase.ready &&
+                  recoveryBrief is ReadyObservedBrief)
+                for (final issue in displayCollectionRows(
+                  state.recoverySource.issues,
+                ))
+                  if (currentCollectionRow(
+                        state.recoverySource.issues,
+                        state.recoverySource.projection.stamp?.origin,
+                        (current) => current == issue,
+                      ) != null)
+                    issue.id,
+            },
             worktreeErrors: {
               for (final entry in state.cleanupActions.entries)
                 entry.key: _errors(entry.value),
@@ -187,6 +200,7 @@ class AgentProfilesConnector extends ConsumerWidget {
             onMore: () => unawaited(vm.loadMore()),
             onRetry: vm.retryRead,
             onCleanup: (worktree) => unawaited(vm.cleanup(worktree)),
+            onRetryWorktree: (issue) => unawaited(vm.retryWorktree(issue)),
           );
         },
       );

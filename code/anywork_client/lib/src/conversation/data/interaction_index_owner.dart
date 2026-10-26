@@ -123,7 +123,7 @@ final class ConversationInteractionIndex {
           _overrides[brief.reference.entry] = brief;
           final known = _items[brief.reference.entry];
           if (known != null)
-            _items[brief.reference.entry] = _item(brief, known.interactionId);
+            _items[brief.reference.entry] = _item(brief, known.interactionId, known.targetThreadId);
         }
       }
     }
@@ -288,12 +288,13 @@ final class ConversationInteractionIndex {
         try {
           final header = await detail.header();
           final id = await readConversationText(detail, header.interactionId);
+          final target = await readConversationText(detail, header.threadId);
           if (!_current(generation)) throw conversationCancelled;
           if (header.revision != brief.revision)
             throw readProtocol('The interaction identity revision changed.');
           if (_overrides.containsKey(entry) && _overrides[entry] == null)
             continue;
-          _items[entry] = _item(_overrides[entry] ?? brief, id);
+          _items[entry] = _item(_overrides[entry] ?? brief, id, target);
         } finally {
           detail.requestClose();
           await detail.close();
@@ -312,10 +313,11 @@ final class ConversationInteractionIndex {
     }
   }
 
-  InteractionListItem _item(InteractionBrief brief, String id) =>
+  InteractionListItem _item(InteractionBrief brief, String id, String targetThreadId) =>
       InteractionListItem(
         reference: brief.reference,
         interactionId: id,
+        targetThreadId: targetThreadId,
         revision: brief.revision,
         kind: brief.kind,
         status: brief.status,

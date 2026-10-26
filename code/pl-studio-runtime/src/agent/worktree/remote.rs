@@ -10,7 +10,10 @@ use pl_tool::remote::{SshManager, normalize_remote_absolute_path};
 
 use pl_tool::git::GitPolicy;
 
-use super::backend::{changed_files, checked_output, non_empty_head};
+use super::backend::{
+    branch_args, changed_files, checked_output, current_branch, git_common_dir_args,
+    non_empty_head, worktree_list_args,
+};
 use super::{WorktreeBackend, WorktreeCreateFailure, WorktreeError, WorktreeStatus};
 
 const WORKTREE_GIT_TIMEOUT: Duration = Duration::from_secs(120);
@@ -26,13 +29,21 @@ trait RemoteWorktreeTransport: std::fmt::Debug + Send + Sync {
     fn run<'a>(
         &'a self,
         request: ExecutionRequest,
-    ) -> BoxFuture<'a, Result<ExecutionOutput, String>>;
+        git_args: &'a [String],
+    ) -> BoxFuture<'a, Result<ExecutionOutput, WorktreeError>>;
 
-    fn create_directory<'a>(&'a self, relative_path: String) -> BoxFuture<'a, Result<(), String>>;
+    fn create_directory<'a>(
+        &'a self,
+        relative_path: String,
+    ) -> BoxFuture<'a, Result<(), WorktreeError>>;
 
-    fn path_exists<'a>(&'a self, relative_path: String) -> BoxFuture<'a, Result<bool, String>>;
+    fn path_exists<'a>(
+        &'a self,
+        relative_path: String,
+    ) -> BoxFuture<'a, Result<bool, WorktreeError>>;
 
-    fn remove_path<'a>(&'a self, relative_path: String) -> BoxFuture<'a, Result<(), String>>;
+    fn remove_path<'a>(&'a self, relative_path: String)
+    -> BoxFuture<'a, Result<(), WorktreeError>>;
 }
 
 #[derive(Debug)]
@@ -43,11 +54,14 @@ struct SshRemoteWorktreeTransport {
 }
 
 impl SshRemoteWorktreeTransport {
-    async fn host(&self) -> Result<pl_tool::remote::RemoteWorkspaceHost, String> {
+    async fn host(&self) -> Result<pl_tool::remote::RemoteWorkspaceHost, WorktreeError> {
         self.ssh_manager
             .open_workspace_host(&self.server_id, self.repo_root.clone())
             .await
-            .map_err(|error| error.to_string())
+            .map_err(|source| WorktreeError::Remote {
+                operation: "SSH open workspace host",
+                source,
+            })
     }
 }
 
@@ -55,31 +69,41 @@ impl RemoteWorktreeTransport for SshRemoteWorktreeTransport {
     fn run<'a>(
         &'a self,
         request: ExecutionRequest,
-    ) -> BoxFuture<'a, Result<ExecutionOutput, String>> {
+        git_args: &'a [String],
+    ) -> BoxFuture<'a, Result<ExecutionOutput, WorktreeError>> {
         async move {
-            self.host()
-                .await?
-                .git
-                .run(request)
-                .await
-                .map_err(|error| error.to_string())
+            self.host().await?.git.run(request).await.map_err(|source| {
+                WorktreeError::RemoteExecution {
+                    args: git_args.join(" "),
+                    source,
+                }
+            })
         }
         .boxed()
     }
 
-    fn create_directory<'a>(&'a self, relative_path: String) -> BoxFuture<'a, Result<(), String>> {
+    fn create_directory<'a>(
+        &'a self,
+        relative_path: String,
+    ) -> BoxFuture<'a, Result<(), WorktreeError>> {
         async move {
             self.host()
                 .await?
                 .files
                 .create_directory(relative_path, None)
                 .await
-                .map_err(|error| error.to_string())
+                .map_err(|source| WorktreeError::RemoteFile {
+                    operation: "remote create directory",
+                    source,
+                })
         }
         .boxed()
     }
 
-    fn path_exists<'a>(&'a self, relative_path: String) -> BoxFuture<'a, Result<bool, String>> {
+    fn path_exists<'a>(
+        &'a self,
+        relative_path: String,
+    ) -> BoxFuture<'a, Result<bool, WorktreeError>> {
         async move {
             self.host()
                 .await?
@@ -87,19 +111,28 @@ impl RemoteWorktreeTransport for SshRemoteWorktreeTransport {
                 .stat_optional(relative_path, None)
                 .await
                 .map(|stat| stat.is_some())
-                .map_err(|error| error.to_string())
+                .map_err(|source| WorktreeError::Remote {
+                    operation: "remote stat worktree path",
+                    source,
+                })
         }
         .boxed()
     }
 
-    fn remove_path<'a>(&'a self, relative_path: String) -> BoxFuture<'a, Result<(), String>> {
+    fn remove_path<'a>(
+        &'a self,
+        relative_path: String,
+    ) -> BoxFuture<'a, Result<(), WorktreeError>> {
         async move {
             self.host()
                 .await?
                 .files
                 .remove_path(relative_path, None, true)
                 .await
-                .map_err(|error| error.to_string())
+                .map_err(|source| WorktreeError::RemoteFile {
+                    operation: "remote remove worktree leaf",
+                    source,
+                })
         }
         .boxed()
     }
@@ -140,18 +173,17 @@ impl RemoteWorktreeBackend {
         ];
         full_args.extend_from_slice(args);
         self.transport
-            .run(ExecutionRequest {
-                program: PathBuf::from("git"),
-                args: full_args,
-                cwd: PathBuf::from(cwd),
-                env: BTreeMap::new(),
-                timeout: Some(WORKTREE_GIT_TIMEOUT),
-            })
+            .run(
+                ExecutionRequest {
+                    program: PathBuf::from("git"),
+                    args: full_args,
+                    cwd: PathBuf::from(cwd),
+                    env: BTreeMap::from([("LC_ALL".into(), "C".into())]),
+                    timeout: Some(WORKTREE_GIT_TIMEOUT),
+                },
+                args,
+            )
             .await
-            .map_err(|stderr| WorktreeError::GitStatusUnknown {
-                args: args.join(" "),
-                stderr,
-            })
     }
 
     fn relative_path(&self, path: &Path) -> Result<String, WorktreeError> {
@@ -222,19 +254,12 @@ impl WorktreeBackend for RemoteWorktreeBackend {
             self.transport
                 .create_directory(self.relative_path_text(parent)?)
                 .await
-                .map_err(WorktreeError::Io)
         }
         .boxed()
     }
 
     fn path_exists<'a>(&'a self, path: &'a Path) -> BoxFuture<'a, Result<bool, WorktreeError>> {
-        async move {
-            self.transport
-                .path_exists(self.relative_path(path)?)
-                .await
-                .map_err(WorktreeError::Io)
-        }
-        .boxed()
+        async move { self.transport.path_exists(self.relative_path(path)?).await }.boxed()
     }
 
     fn remove_leaf<'a>(
@@ -246,7 +271,6 @@ impl WorktreeBackend for RemoteWorktreeBackend {
             self.transport
                 .remove_path(self.relative_path(target_path)?)
                 .await
-                .map_err(WorktreeError::Io)
         }
         .boxed()
     }
@@ -308,10 +332,15 @@ impl WorktreeBackend for RemoteWorktreeBackend {
                 "status".to_string(),
                 "--porcelain=v1".to_string(),
                 "--untracked-files=all".to_string(),
+                "--ignored=matching".to_string(),
             ];
             let output = checked_output(&args, self.run_git(worktree_path, &args).await?)?;
             Ok(WorktreeStatus {
                 head,
+                branch: current_branch(&checked_output(
+                    &branch_args(),
+                    self.run_git(worktree_path, &branch_args()).await?,
+                )?),
                 changed_files: changed_files(&output.stdout),
             })
         }
@@ -348,6 +377,30 @@ impl WorktreeBackend for RemoteWorktreeBackend {
             let args = vec!["branch".to_string(), "-D".to_string(), branch.to_string()];
             let output = self.run_git(repo_root, &args).await?;
             checked_output(&args, output).map(|_| ())
+        }
+        .boxed()
+    }
+
+    fn worktree_list<'a>(
+        &'a self,
+        repo_root: &'a Path,
+    ) -> BoxFuture<'a, Result<String, WorktreeError>> {
+        async move {
+            let args = worktree_list_args();
+            let output = self.run_git(repo_root, &args).await?;
+            checked_output(&args, output).map(|output| output.stdout)
+        }
+        .boxed()
+    }
+
+    fn git_common_dir<'a>(
+        &'a self,
+        path: &'a Path,
+    ) -> BoxFuture<'a, Result<String, WorktreeError>> {
+        async move {
+            let args = git_common_dir_args();
+            let output = self.run_git(path, &args).await?;
+            checked_output(&args, output).map(|output| output.stdout)
         }
         .boxed()
     }

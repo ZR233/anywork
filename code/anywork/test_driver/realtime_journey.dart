@@ -1576,6 +1576,7 @@ class RealtimeJourney {
       timeout: const Duration(seconds: 30),
     );
     await observe('cancel_streaming', streaming);
+    final stoppedExecution = driverExecutionObservation(streaming);
     await shot('cancel-streaming');
     await driver.waitFor(
       find.byValueKey('composer-stop'),
@@ -1584,7 +1585,10 @@ class RealtimeJourney {
     await _tap('composer-stop');
     final cancelled = await waitFor(
       (snapshot) =>
-          turnId(snapshot) == turn && turnStatus(snapshot) == 'cancelled',
+          turnId(snapshot) == turn &&
+          turnStatus(snapshot) == 'cancelled' &&
+          driverExecutionObservation(snapshot).readyWithoutExecution &&
+          stoppedExecution.sameSource(driverExecutionObservation(snapshot)),
       'cancel_cancelled',
       timeout: const Duration(seconds: 30),
     );
@@ -1596,6 +1600,8 @@ class RealtimeJourney {
       'terminalAt': cancelledAt,
       'terminalStatus': 'cancelled',
       'durableSettledAt': null,
+      'executionBeforeStop': stoppedExecution.toJson(),
+      'executionAfterStop': driverExecutionObservation(cancelled).toJson(),
     };
     checks['cancelSurfaced'] = true;
   }
@@ -2008,15 +2014,25 @@ class RealtimeJourney {
   Future<void> _activityLayoutContract(String label) async {
     final viewport = await _readRect('studio-shell');
     final composer = await _readRect('composer-input');
-    final actionKey = isBusy(await snapshot())
-        ? 'composer-stop'
-        : 'composer-submit';
-    final action = await _readRect(actionKey);
+    // Observe the actual rendered primary key, not a second reconstruction of
+    // the VM's stop/continue/content matrix from a busy flag.
+    DriverRect? action;
+    for (final key in const [
+      'composer-stop',
+      'composer-continue',
+      'composer-submit',
+      'composer-stopping-disabled',
+      'composer-continuing-disabled',
+      'composer-submit-disabled',
+    ]) {
+      action = await _readRect(key);
+      if (action != null) break;
+    }
     final details = await _readRect('conversation-activity-details');
     final evidence = <String, Object?>{
       'viewport': viewport?.toJson(),
       'composerInput': composer?.toJson(),
-      'actionButtonKey': actionKey,
+      'actionButtonKey': action?.key,
       'actionButton': action?.toJson(),
       'details': details?.toJson(),
       'detailsHeightCeiling': _maxActivityDetailsHeight,
@@ -3114,12 +3130,13 @@ int? outputTokens(Map<String, dynamic> snapshot) =>
     driverContextObservation(snapshot).completionTokens;
 
 bool isBusy(Map<String, dynamic> snapshot) =>
-    workspaceOf(snapshot)?['isBusy'] == true;
+    driverExecutionObservation(snapshot).hasExecution;
 
 bool isDurableSettled(Map<String, dynamic> snapshot) {
   final workspace = workspaceOf(snapshot);
   final persistence = snapshot['persistence'];
   return workspace != null &&
+      driverExecutionObservation(snapshot).readyWithoutExecution &&
       workspace['isBusy'] == false &&
       workspace['threadStatus'] == 'idle' &&
       workspace['syncState'] == 'ready' &&

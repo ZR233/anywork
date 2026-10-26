@@ -104,6 +104,7 @@ ModelRouteEditBlock? modelRouteEditBlock(
     return ModelRouteEditBlock.inactive;
   }
   if (execution?.value?.status != ThreadStatus.idle ||
+      execution?.value?.execution != null ||
       execution?.value?.activeTurn != null ||
       execution?.value?.interactions.pending != 0) {
     return ModelRouteEditBlock.running;

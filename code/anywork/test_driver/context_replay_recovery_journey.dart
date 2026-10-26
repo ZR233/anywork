@@ -5,6 +5,7 @@ import 'dart:io';
 import 'package:flutter_driver/flutter_driver.dart';
 
 import 'flutter_driver_session.dart';
+import 'conversation_status_observation.dart';
 import 'realtime_journey.dart';
 import 'sidebar_navigation.dart';
 
@@ -99,6 +100,7 @@ class ReplayRecoveryJourney {
     final workspace = workspaceOf(snapshot);
     final persistence = snapshot['persistence'];
     return workspace != null &&
+        driverExecutionObservation(snapshot).readyWithoutExecution &&
         workspace['isBusy'] == false &&
         workspace['syncState'] == 'ready' &&
         persistence is Map &&

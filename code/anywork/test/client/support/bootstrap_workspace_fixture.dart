@@ -87,6 +87,7 @@ final class BootstrapWorkspaceFixture {
       timeline: timeline,
       budget: budget,
       operations: operations,
+      agentDirectory: () => workspace.agents,
     );
     conversation = conversationAssembly.repository;
     recovery = createRecoveryRepository(

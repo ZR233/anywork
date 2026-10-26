@@ -1,7 +1,8 @@
 import 'package:freezed_annotation/freezed_annotation.dart';
 import 'package:anywork_client/resources.dart';
 
-import '../domain/directory_values.dart';
+import '../domain/directory_values.dart' hide AgentExecution;
+import '../domain/agent_execution.dart' show AgentExecution;
 import '../../modes/domain/delegation_values.dart';
 
 part 'directory_reads.freezed.dart';
@@ -117,6 +118,9 @@ abstract class AgentDirectoryEntryRead with _$AgentDirectoryEntryRead {
     required FrozenModelSelectionRead? frozenModel,
     required int depth,
     required AgentStateRead state,
+    required AgentExecution? execution,
+    required bool canStop,
+    required bool awaitingScheduling,
     required int updatedAt,
   }) = _AgentDirectoryEntryRead;
 }

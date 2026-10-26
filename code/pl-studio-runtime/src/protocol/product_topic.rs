@@ -6,13 +6,14 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::statistics::StudioModelPerformanceSnapshot;
 use crate::{
     AccountUsageStateSnapshot, PersistenceStateSnapshot, StudioAgentDirectoryState,
     StudioAgentProfilesStateSnapshot, StudioLspStateSnapshot, StudioMcpStateSnapshot,
-    StudioModelCatalogStateSnapshot, StudioModelPerformanceSnapshot,
-    StudioPersistenceQueueStateSnapshot, StudioProductEventKind, StudioProjectDirectoryState,
-    StudioRecoveryStateSnapshot, StudioSessionCostsState, StudioSettingsConfigStateSnapshot,
-    StudioSkillsStateSnapshot, StudioThreadDirectoryPage, StudioUpdateStateSnapshot,
+    StudioModelCatalogStateSnapshot, StudioPersistenceQueueStateSnapshot, StudioProductEventKind,
+    StudioProjectDirectoryState, StudioRecoveryStateSnapshot, StudioSessionCostsState,
+    StudioSettingsConfigStateSnapshot, StudioSkillsStateSnapshot, StudioThreadDirectoryPage,
+    StudioUpdateStateSnapshot,
 };
 
 /// 一个产品订阅 topic；带 payload 的变体表达作用域，不存在无作用域组合形式。

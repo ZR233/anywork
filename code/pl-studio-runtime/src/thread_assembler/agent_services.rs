@@ -10,6 +10,16 @@ use pl_protocol::{AgentSessionPage, AgentSessionReadDetail, AgentSessionReadOrde
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+/// Publishes (or refreshes) the Recovery diagnosis of a member whose workspace could not be used.
+///
+/// The runtime owns the single Recovery registry; the assembler only reports the failure, so an
+/// internal scheduling activation fails exactly like an explicit activation would.
+pub(crate) type WorkspaceRecoveryPublisher = std::sync::Arc<
+    dyn Fn(pl_protocol::Thread, anyhow::Error) -> futures::future::BoxFuture<'static, ()>
+        + Send
+        + Sync,
+>;
+
 #[derive(Clone)]
 pub(super) struct AgentServices {
     pub(super) factory: crate::studio::StudioThreadFactory,
@@ -18,6 +28,7 @@ pub(super) struct AgentServices {
     pub(super) events: crate::studio::ProductEventBus,
     pub(super) performance: crate::studio::ModelPerformanceOwner,
     pub(super) operations: super::agent_operations::AgentOperations,
+    pub(super) workspace_recovery: Option<WorkspaceRecoveryPublisher>,
 }
 impl std::fmt::Debug for AgentServices {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -234,15 +245,29 @@ impl AgentServices {
             "only an active direct child can be resumed"
         );
         self.events.warm_thread_index(vec![record.clone()]);
-        owner
+        let activated = owner
             .activate(
                 super::ThreadActivation {
-                    id: record.id,
-                    parent_id: record.parent_thread_id,
+                    id: record.id.clone(),
+                    parent_id: record.parent_thread_id.clone(),
                 },
                 self.factory.clone(),
             )
-            .await?;
+            .await;
+        if let Err(error) = activated {
+            // An internal scheduling activation is the same product fact as an explicit one, so its
+            // failure publishes the member's Recovery diagnosis instead of only returning an error;
+            // a missing workspace is never silently rebuilt on this path.
+            if let Some(publish) = self.workspace_recovery.clone() {
+                let failure = anyhow::Error::from(error);
+                // The publisher only observes the failure; the error itself is returned to the
+                // caller unchanged by message and cause.
+                let reported = anyhow::anyhow!("{failure:#}");
+                publish(record.clone(), reported).await;
+                return Err(failure);
+            }
+            return Err(error.into());
+        }
         Ok(())
     }
 
@@ -394,9 +419,27 @@ impl StudioThreadAssembler {
             events,
             performance,
             operations: Default::default(),
+            workspace_recovery: None,
         });
         Ok(())
     }
+    /// Installs the runtime's Recovery publisher for internal activation failures.
+    ///
+    /// Installed once, after the runtime owns its Recovery registry, so an internal scheduling
+    /// failure reports the same diagnosis an explicit activation would.
+    pub(crate) fn set_workspace_recovery(
+        &self,
+        publisher: Option<WorkspaceRecoveryPublisher>,
+    ) -> Result<(), ThreadAssemblyError> {
+        let mut state = self.0.state();
+        let services = state
+            .agent_services
+            .as_mut()
+            .ok_or(ThreadAssemblyError::Closed)?;
+        services.workspace_recovery = publisher;
+        Ok(())
+    }
+
     pub(super) fn agent_profiles_snapshot(
         &self,
     ) -> Result<crate::config::AgentProfilesSnapshot, ThreadAssemblyError> {

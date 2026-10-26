@@ -10,7 +10,13 @@
   "sidebarLoadError": "Failed to load more sessions",
   "shutdownTitle": "Shutting down safely",
   "shutdownUpdateTitle": "Installing update {version}",
-  "@shutdownUpdateTitle": {"placeholders": {"version": {"type": "String"}}},
+  "@shutdownUpdateTitle": {
+    "placeholders": {
+      "version": {
+        "type": "String"
+      }
+    }
+  },
   "shutdownUpdateSaving": "Stopping chats and saving data…",
   "shutdownUpdateRestartHint": "Installation progress will appear after saving. The app will reopen automatically.",
   "shutdownUpdateExitHint": "Installation progress will appear after saving. The app will stay closed.",
@@ -47,7 +53,7 @@
     }
   },
   "sidebarArchiveSessionConfirmTitle": "Archive session",
-  "sidebarArchiveSessionConfirmBody": "Archiving ends any running work, deletes this session tree's worktree along with any uncommitted or unmerged content, then moves the session out of the list. Continue?",
+  "sidebarArchiveSessionConfirmBody": "Archiving stops active work in this session and its child sessions, then moves them to the archived list. Session history, workspaces, branches, and uncommitted content are kept. Continue?",
   "sidebarArchiveSessionConfirmAction": "Archive",
   "sidebarRenameSession": "Rename session",
   "sidebarRenameSessionTitle": "Rename session",
@@ -310,7 +316,9 @@
   "settingsBotsPlatformCode": "Feishu error code: {code}",
   "@settingsBotsPlatformCode": {
     "placeholders": {
-      "code": { "type": "String" }
+      "code": {
+        "type": "String"
+      }
     }
   },
   "settingsBotsCopyLink": "Copy link",
@@ -464,13 +472,17 @@
   "composerSend": "Send",
   "composerStop": "Stop",
   "conversationStopRequesting": "Requesting stop…",
-  "conversationStopAwaitingObservation": "Stop request accepted. Waiting for the original turn to stop.",
-  "conversationStopObserved": "The original turn has stopped.",
+  "conversationStopAwaitingObservation": "Stop request accepted. Waiting for the original execution to end.",
+  "conversationStopObserved": "The original execution has ended.",
   "conversationStopEffective": "Stop took effect.",
   "conversationStopUnknown": "The stop outcome is unconfirmed. It will not be resent automatically.",
   "conversationStopError": "Stop: {message}",
   "@conversationStopError": {
-    "placeholders": {"message": {"type": "String"}}
+    "placeholders": {
+      "message": {
+        "type": "String"
+      }
+    }
   },
   "compileModeSimple": "Simple",
   "compileModeTask": "Task",
@@ -1509,7 +1521,7 @@
       }
     }
   },
-  "settingsWorktreeCleanup": "Clean up worktree and branch",
+  "settingsWorktreeCleanup": "Remove worktree (keep branch)",
   "settingsWorktreeOwnerSession": "Session worktree",
   "settingsWorktreeOwnerChild": "Child agent worktree",
   "settingsAgentProfileAddTitle": "Add user agent profile",
@@ -1616,7 +1628,7 @@
   "sidebarEmptyProject": "No sessions yet. Use + on this project to start",
   "sidebarEarlier": "Show earlier sessions",
   "sidebarArchived": "Archived",
-  "sidebarRestore": "Restore session",
+  "sidebarRestore": "Unarchive session",
   "sidebarPin": "Pin",
   "sidebarUnpin": "Unpin",
   "sidebarNavigation": "Project navigation",
@@ -2172,7 +2184,7 @@
     "placeholders": {
       "reason": {
         "type": "String"
-}
+      }
     }
   },
   "acpAccountSaveFailed": "Could not save this integration: {reason}",
@@ -2262,7 +2274,7 @@
       },
       "stage": {
         "type": "String"
-}
+      }
     }
   },
   "acpFailureCodeStartup": "Process start failed",
@@ -2329,7 +2341,11 @@
   "settingsSshNextPage": "Next page",
   "acpInstallUnsupportedPlatform": "No official managed build of {version} exists for this platform.",
   "@acpInstallUnsupportedPlatform": {
-    "placeholders": {"version": {"type": "String"}}
+    "placeholders": {
+      "version": {
+        "type": "String"
+      }
+    }
   },
   "acpFailureStagePrepare": "Preparing the managed server",
   "acpFailureCodePreparationRequired": "The managed server is not prepared yet",
@@ -2342,47 +2358,103 @@
   "acpInstallFactRetries": "Automatic retries",
   "acpInstallRetryValue": "{count, plural, =0{None} other{{count} times}}",
   "@acpInstallRetryValue": {
-    "placeholders": {"count": {"type": "int"}}
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
   },
   "acpInstallProgressDownloaded": "{done} of {total} downloaded",
   "@acpInstallProgressDownloaded": {
-    "placeholders": {"done": {"type": "String"}, "total": {"type": "String"}}
+    "placeholders": {
+      "done": {
+        "type": "String"
+      },
+      "total": {
+        "type": "String"
+      }
+    }
   },
   "acpInstallProgressUnknown": "{done} downloaded, total unknown",
   "@acpInstallProgressUnknown": {
-    "placeholders": {"done": {"type": "String"}}
+    "placeholders": {
+      "done": {
+        "type": "String"
+      }
+    }
   },
   "acpInstallProgressVerified": "{done} of {total} verified",
   "@acpInstallProgressVerified": {
-    "placeholders": {"done": {"type": "String"}, "total": {"type": "String"}}
+    "placeholders": {
+      "done": {
+        "type": "String"
+      },
+      "total": {
+        "type": "String"
+      }
+    }
   },
   "acpInstallProgressVerifiedUnknown": "{done} verified, total unknown",
   "@acpInstallProgressVerifiedUnknown": {
-    "placeholders": {"done": {"type": "String"}}
+    "placeholders": {
+      "done": {
+        "type": "String"
+      }
+    }
   },
   "acpInstallProgressExtracted": "{done} of {total} extracted",
   "@acpInstallProgressExtracted": {
-    "placeholders": {"done": {"type": "String"}, "total": {"type": "String"}}
+    "placeholders": {
+      "done": {
+        "type": "String"
+      },
+      "total": {
+        "type": "String"
+      }
+    }
   },
   "acpInstallProgressExtractedUnknown": "{done} extracted, total unknown",
   "@acpInstallProgressExtractedUnknown": {
-    "placeholders": {"done": {"type": "String"}}
+    "placeholders": {
+      "done": {
+        "type": "String"
+      }
+    }
   },
   "acpInstallProgressProcessed": "{done} of {total} processed",
   "@acpInstallProgressProcessed": {
-    "placeholders": {"done": {"type": "String"}, "total": {"type": "String"}}
+    "placeholders": {
+      "done": {
+        "type": "String"
+      },
+      "total": {
+        "type": "String"
+      }
+    }
   },
   "acpInstallProgressProcessedUnknown": "{done} processed, total unknown",
   "@acpInstallProgressProcessedUnknown": {
-    "placeholders": {"done": {"type": "String"}}
+    "placeholders": {
+      "done": {
+        "type": "String"
+      }
+    }
   },
   "acpInstallProgressPercent": "{percent}%",
   "@acpInstallProgressPercent": {
-    "placeholders": {"percent": {"type": "int"}}
+    "placeholders": {
+      "percent": {
+        "type": "int"
+      }
+    }
   },
   "acpInstallSpeed": "{speed}/s",
   "@acpInstallSpeed": {
-    "placeholders": {"speed": {"type": "String"}}
+    "placeholders": {
+      "speed": {
+        "type": "String"
+      }
+    }
   },
   "acpInstallStageResolve": "Reading the official manifest",
   "acpInstallStageWaitForLock": "Waiting for the install lock",
@@ -2399,7 +2471,14 @@
   "acpInstallUsePrepared": "Use prepared server",
   "acpInstallUsePreparedHint": "An existing prepared {version} ({target}) can be claimed for this account.",
   "@acpInstallUsePreparedHint": {
-    "placeholders": {"version": {"type": "String"}, "target": {"type": "String"}}
+    "placeholders": {
+      "version": {
+        "type": "String"
+      },
+      "target": {
+        "type": "String"
+      }
+    }
   },
   "acpInstallReadyTitle": "Server ready",
   "acpInstallReadyBody": "Preparing never saves an account or signs in.",
@@ -2409,11 +2488,22 @@
   "acpInstallPendingAdmission": "Accepting the preparation request…",
   "acpInstallCommandFailed": "The request was not accepted. {reason}",
   "@acpInstallCommandFailed": {
-    "placeholders": {"reason": {"type": "String"}}
+    "placeholders": {
+      "reason": {
+        "type": "String"
+      }
+    }
   },
   "acpInstallFailureSummary": "{reason} ({stage})",
   "@acpInstallFailureSummary": {
-    "placeholders": {"reason": {"type": "String"}, "stage": {"type": "String"}}
+    "placeholders": {
+      "reason": {
+        "type": "String"
+      },
+      "stage": {
+        "type": "String"
+      }
+    }
   },
   "acpInstallFailureCodeUnsupportedPlatform": "This platform is not supported",
   "acpInstallFailureCodeSourceRejected": "Source rejected",
@@ -2515,5 +2605,100 @@
   "resourceSourceStale": "Out of date",
   "resourceSourceDegraded": "Degraded",
   "resourceSourceLastKnown": "Last-known state",
-  "interactionDiscardAnswersBody": "Discard the answers and close this editor? This does not answer or cancel the interaction."
+  "interactionDiscardAnswersBody": "Discard the answers and close this editor? This does not answer or cancel the interaction.",
+  "statusSelectorsNotReady": "Session settings are not ready yet, or a submission is in flight; the selection is unavailable for now.",
+  "statusModeNeedsProject": "Choose a project before setting the session mode.",
+  "timelineRuntimeNotice": "Runtime notice",
+  "timelineRuntimeNoticeDetail": "This session continued after it was stopped. This entry is a runtime notice and carries no user input.",
+  "settingsWorktreeClean": "No uncommitted changes",
+  "settingsWorktreeDirtyUnknown": "Change status unknown",
+  "settingsWorktreeChangedFilesUnknown": "Changed files are not yet known. Retry the inspection.",
+  "settingsWorktreeInspectionAvailable": "Worktree verified",
+  "settingsWorktreeInspectionMissing": "Worktree missing",
+  "settingsWorktreeInspectionIdentityMismatch": "Worktree identity mismatch",
+  "settingsWorktreeInspectionUnavailable": "Inspection unavailable",
+  "settingsWorktreeRetry": "Retry inspection",
+  "composerContinue": "Continue",
+  "composerContinueTooltip": "Continue the interrupted work without new input",
+  "composerStopping": "Stopping",
+  "composerContinuing": "Continuing",
+  "composerContinueReasonUserStop": "Stopped by the user",
+  "composerContinueReasonHostShutdown": "The app exited while this session was still running",
+  "composerContinueReasonProcessInterrupted": "The process was interrupted",
+  "composerContinueReasonStepLimit": "The step budget ran out",
+  "composerContinueReasonExecutionFailed": "Execution failed",
+  "composerContinueReasonUnknown": "Execution was interrupted",
+  "composerBlockedStorage": "Saving has not finished yet, so continuing is unavailable.",
+  "composerBlockedModel": "The current model is unavailable, so continuing is unavailable.",
+  "composerBlockedWorkspace": "The session workspace is unavailable, so continuing is unavailable.",
+  "composerBlockedArchived": "This session is archived, so continuing is unavailable.",
+  "composerBlockerUnknown": "The last action could not be confirmed. Check the session state before retrying.",
+  "composerFailureChildRequiresParentScheduling": "A child agent is scheduled by the main agent.",
+  "composerFailureContinuationUnavailable": "There is no interrupted work left to continue.",
+  "composerFailureContinuationClaimed": "The continuation was already accepted and is being prepared.",
+  "composerFailureStaleContinuation": "The observed continuation point is out of date.",
+  "composerFailureStaleExecution": "The observed execution already ended or was replaced.",
+  "composerNoExecution": "No execution is currently active.",
+  "composerContinuationAccepted": "The continue request was accepted, but its original outcome cannot be confirmed yet.",
+  "composerFailureExecutionInProgress": "The session is still executing or settling.",
+  "composerFailureInteractionNotHosted": "This interaction is decided in the main session.",
+  "composerFailureStaleInteraction": "This interaction was already updated. Open it again.",
+  "agentStopSemantics": "Stop member {name}",
+  "@agentStopSemantics": {
+    "placeholders": {
+      "name": {
+        "type": "String"
+      }
+    }
+  },
+  "agentStopping": "Stopping",
+  "agentStopWaitingScheduling": "Stopped, waiting for the main agent to schedule",
+  "agentStopFailed": "Stop was not accepted: {message}",
+  "@agentStopFailed": {
+    "placeholders": {
+      "message": {
+        "type": "String"
+      }
+    }
+  },
+  "composerAgentReadOnlyTitle": "Child session (read-only)",
+  "composerAgentReadOnlyWaiting": "Waiting for the main agent to schedule this member.",
+  "composerAgentReadOnlyScope": "History, progress, model and workspace are shown for review only. Ask the main agent when this member should continue.",
+  "composerAgentReadOnlyPending": "A pending question or permission request is decided in the main session.",
+  "childInteractionFrom": "From {agent}",
+  "@childInteractionFrom": {
+    "placeholders": {
+      "agent": {
+        "type": "String"
+      }
+    }
+  },
+  "childInteractionRevision": "Revision {revision}",
+  "@childInteractionRevision": {
+    "placeholders": {
+      "revision": {
+        "type": "int"
+      }
+    }
+  },
+  "childInteractionAnswerSaved": "The answer is saved. The main agent decides whether this member continues.",
+  "childInteractionApprovalResolved": "The original permission wait is decided. The original call may continue when it was approved, and is not executed when it was denied.",
+  "childInteractionDecideFailed": "The decision was not accepted: {message}",
+  "@childInteractionDecideFailed": {
+    "placeholders": {
+      "message": {
+        "type": "String"
+      }
+    }
+  },
+  "childInteractionLoadFailed": "Child interactions could not be read: {message}",
+  "@childInteractionLoadFailed": {
+    "placeholders": {
+      "message": {
+        "type": "String"
+      }
+    }
+  },
+  "childInteractionRetry": "Reload",
+  "childInteractionDecisionAccepted": "The decision was accepted. Waiting for the session to confirm it."
 }

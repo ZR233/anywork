@@ -61,6 +61,36 @@ pub(super) fn decode_checkpoint(
     row: sea_orm::QueryResult,
     thread_id: &str,
 ) -> Result<ThreadCheckpoint, SessionStoreError> {
+    decode_checkpoint_at_schema(row, thread_id, ThreadCheckpoint::SCHEMA_VERSION)
+}
+
+/// Historical migrations validate their fixed envelope target rather than the live format.
+pub(super) fn decode_checkpoint_at_schema(
+    row: sea_orm::QueryResult,
+    thread_id: &str,
+    expected_schema: u32,
+) -> Result<ThreadCheckpoint, SessionStoreError> {
+    decode_checkpoint_row(row, thread_id, CheckpointLayout::Current(expected_schema))
+}
+
+/// Validates a migration source through the existing one-way legacy boundary, without writing it.
+pub(super) fn decode_migration_checkpoint(
+    row: sea_orm::QueryResult,
+    thread_id: &str,
+) -> Result<ThreadCheckpoint, SessionStoreError> {
+    decode_checkpoint_row(row, thread_id, CheckpointLayout::Migration)
+}
+
+enum CheckpointLayout {
+    Current(u32),
+    Migration,
+}
+
+fn decode_checkpoint_row(
+    row: sea_orm::QueryResult,
+    thread_id: &str,
+    layout: CheckpointLayout,
+) -> Result<ThreadCheckpoint, SessionStoreError> {
     let envelope: String = row.try_get("", "envelope")?;
     let hash: String = row.try_get("", "payload_hash")?;
     if crate::context::content_hash(envelope.as_bytes()) != hash {
@@ -74,18 +104,39 @@ pub(super) fn decode_checkpoint(
         .map_err(|_| SessionStoreError::Invalid("negative checkpoint revision".into()))?;
     let history_fence = u64::try_from(row.try_get::<i64>("", "history_fence")?)
         .map_err(|_| SessionStoreError::Invalid("negative checkpoint fence".into()))?;
-    let checkpoint: ThreadCheckpoint = serde_json::from_str(&envelope)?;
-    if stored_thread != thread_id || checkpoint.thread_id != thread_id {
+    #[derive(serde::Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct Header {
+        schema_version: u32,
+    }
+    let header: Header = serde_json::from_str(&envelope)?;
+    if i64::from(header.schema_version) != schema_version {
         return Err(SessionStoreError::Invalid(
-            "Thread checkpoint ownership mismatch".into(),
+            "Thread checkpoint schema index/envelope mismatch".into(),
         ));
     }
-    if !ThreadCheckpoint::supports_schema(checkpoint.schema_version)
-        || i64::from(checkpoint.schema_version) != schema_version
-    {
+    let checkpoint = match layout {
+        CheckpointLayout::Current(expected) if header.schema_version == expected => {
+            serde_json::from_str::<ThreadCheckpoint>(&envelope)?
+        }
+        CheckpointLayout::Migration if (1..=4).contains(&header.schema_version) => {
+            ThreadCheckpoint::decode_legacy(&envelope).map_err(|error| {
+                SessionStoreError::Invalid(format!("legacy checkpoint conversion failed: {error}"))
+            })?
+        }
+        CheckpointLayout::Migration if header.schema_version == 5 => {
+            serde_json::from_str::<ThreadCheckpoint>(&envelope)?
+        }
+        CheckpointLayout::Current(_) | CheckpointLayout::Migration => {
+            return Err(SessionStoreError::Invalid(format!(
+                "unsupported Thread checkpoint schema {}",
+                header.schema_version
+            )));
+        }
+    };
+    if stored_thread != thread_id || checkpoint.thread_id != thread_id {
         return Err(SessionStoreError::Invalid(format!(
-            "unsupported Thread checkpoint schema {}",
-            checkpoint.schema_version
+            "Thread checkpoint ownership mismatch for {thread_id}"
         )));
     }
     if checkpoint.state_revision != state_revision || checkpoint.history_fence != history_fence {

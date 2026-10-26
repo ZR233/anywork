@@ -7,8 +7,7 @@ use anyhow::{Context, Result, ensure};
 use pl_model::model::{
     MediaMixPolicy, MediaRepresentation, ModelInfo, ModelInputSource, ModelModality,
 };
-use pl_protocol::PureError;
-use pl_protocol::studio::{StudioAttachmentDraftSource, StudioAttachmentModality};
+use pl_protocol::studio::{StudioAttachmentDraftSource, StudioAttachmentModality, StudioError};
 use url::Url;
 
 use crate::studio::store::attachment::AttachmentDraftObject;
@@ -28,14 +27,12 @@ fn validate_predicted_counts(
         let capability = model
             .capabilities
             .input_capability(model_modality(modality))
-            .with_context(|| {
-                format!(
-                    "model {} does not support {:?} input",
-                    model.model_id, modality
-                )
-            })?;
+            .with_context(|| unsupported_modality(modality))?;
         if let Some(max_count) = capability.limits.max_count {
-            ensure!(count <= max_count, "attachment count exceeds model limit");
+            ensure!(
+                count <= max_count,
+                StudioError::invalid_argument("附件数量超过当前模型限制。")
+            );
         }
     }
     Ok(())
@@ -53,11 +50,11 @@ fn validate_total_bytes(model: &ModelInfo, drafts: &[AttachmentDraftObject]) -> 
         let capability = model
             .capabilities
             .input_capability(model_modality(modality))
-            .context("attachment modality is not enabled")?;
+            .with_context(|| unsupported_modality(modality))?;
         if let Some(max_total_bytes) = capability.limits.max_total_bytes {
             ensure!(
                 total <= max_total_bytes,
-                "attachment batch exceeds model total byte limit"
+                StudioError::invalid_argument("附件总大小超过当前模型限制。")
             );
         }
     }
@@ -68,23 +65,23 @@ pub(super) fn validate_actual_limits(model: &ModelInfo, source: &NormalizedSourc
     let capability = model
         .capabilities
         .input_capability(model_modality(source.modality))
-        .context("attachment modality is not enabled")?;
+        .with_context(|| unsupported_modality(source.modality))?;
     if let Some(max_bytes) = capability.limits.max_bytes {
         ensure!(
             source.bytes.len() as u64 <= max_bytes,
-            "attachment exceeds model byte limit"
+            StudioError::invalid_argument("附件大小超过当前模型限制。")
         );
     }
     if let Some(max_width) = capability.limits.max_width {
         ensure!(
             source.width.is_some_and(|width| width <= max_width),
-            "attachment image width exceeds model limit"
+            StudioError::invalid_argument("附件图片宽度超过当前模型限制。")
         );
     }
     if let Some(max_height) = capability.limits.max_height {
         ensure!(
             source.height.is_some_and(|height| height <= max_height),
-            "attachment image height exceeds model limit"
+            StudioError::invalid_argument("附件图片高度超过当前模型限制。")
         );
     }
     if !capability.limits.media_types.is_empty() {
@@ -94,7 +91,7 @@ pub(super) fn validate_actual_limits(model: &ModelInfo, source: &NormalizedSourc
                 .media_types
                 .iter()
                 .any(|media_type| media_type == &source.media_type),
-            "attachment media type is not supported by the model"
+            StudioError::invalid_argument("当前模型不支持该附件的媒体类型。")
         );
     }
     Ok(())
@@ -127,23 +124,23 @@ pub(super) fn validate_draft_batch(
         let capability = model
             .capabilities
             .input_capability(model_modality(draft.modality))
-            .context("attachment modality is not enabled")?;
+            .with_context(|| unsupported_modality(draft.modality))?;
         if let Some(max_bytes) = capability.limits.max_bytes {
             ensure!(
                 draft.byte_size <= max_bytes,
-                "attachment exceeds model byte limit"
+                StudioError::invalid_argument("附件大小超过当前模型限制。")
             );
         }
         if let Some(max_width) = capability.limits.max_width {
             ensure!(
                 draft.width.is_some_and(|width| width <= max_width),
-                "attachment image width exceeds model limit"
+                StudioError::invalid_argument("附件图片宽度超过当前模型限制。")
             );
         }
         if let Some(max_height) = capability.limits.max_height {
             ensure!(
                 draft.height.is_some_and(|height| height <= max_height),
-                "attachment image height exceeds model limit"
+                StudioError::invalid_argument("附件图片高度超过当前模型限制。")
             );
         }
         if !capability.limits.media_types.is_empty() {
@@ -153,7 +150,7 @@ pub(super) fn validate_draft_batch(
                     .media_types
                     .iter()
                     .any(|media_type| media_type == &source.media_type),
-                "attachment media type is not supported by the model"
+                StudioError::invalid_argument("当前模型不支持该附件的媒体类型。")
             );
         }
     }
@@ -164,7 +161,10 @@ pub(super) fn preflight_sources(
     sources: &[StudioAttachmentDraftSource],
     model: &ModelInfo,
 ) -> Result<Vec<(String, StudioAttachmentModality, DraftSourceKind)>> {
-    ensure!(!sources.is_empty(), "attachment source batch is empty");
+    ensure!(
+        !sources.is_empty(),
+        StudioError::invalid_argument("请选择要添加的附件。")
+    );
     let mut predicted = Vec::with_capacity(sources.len());
     for source in sources {
         let (filename, modality, source_kind) = predict_source(source)?;
@@ -176,10 +176,13 @@ pub(super) fn preflight_sources(
     Ok(predicted)
 }
 
-pub(super) fn admission_rejection(error: anyhow::Error) -> anyhow::Error {
-    anyhow::Error::new(PureError::ConfigError(format!(
-        "attachment admission rejected: {error:#}"
-    )))
+fn unsupported_modality(modality: StudioAttachmentModality) -> StudioError {
+    let label = match modality {
+        StudioAttachmentModality::Image => "图片",
+        StudioAttachmentModality::Video => "视频",
+        StudioAttachmentModality::File => "文件",
+    };
+    StudioError::invalid_argument(format!("当前模型不支持{label}附件。"))
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -198,19 +201,25 @@ fn predict_source(
                 .and_then(|name| name.to_str())
                 .map(sanitize_filename)
                 .filter(|name| !name.is_empty())
-                .context("attachment local file has no safe filename")?;
+                .context(StudioError::invalid_argument("附件文件名无效。"))?;
             let modality = modality_from_filename(&filename)?;
             Ok((filename, modality, DraftSourceKind::Local))
         }
         StudioAttachmentDraftSource::RemoteUrl { url, filename } => {
-            let parsed = validate_remote_url(Url::parse(url).context("invalid attachment URL")?)?;
+            let parsed =
+                Url::parse(url).context(StudioError::invalid_argument("附件 URL 无效。"))?;
+            let parsed = validate_remote_url(parsed).context(StudioError::invalid_argument(
+                "附件 URL 必须是无凭据、无片段的公网 HTTPS 地址。",
+            ))?;
             let filename = filename
                 .as_deref()
                 .map(sanitize_filename)
                 .filter(|name| !name.is_empty())
                 .or_else(|| parsed.path_segments()?.next_back().map(sanitize_filename))
                 .filter(|name| !name.is_empty())
-                .context("remote attachment URL needs a filename with an extension")?;
+                .context(StudioError::invalid_argument(
+                    "远端附件需要带扩展名的文件名。",
+                ))?;
             let modality = modality_from_filename(&filename)?;
             Ok((filename, modality, DraftSourceKind::RemoteUrl))
         }
@@ -226,41 +235,28 @@ pub(super) fn validate_model_source(
     let capability = model
         .capabilities
         .input_capability(model_modality)
-        .with_context(|| {
-            format!(
-                "model {} does not support {:?} input",
-                model.model_id, modality
-            )
-        })?;
+        .with_context(|| unsupported_modality(modality))?;
     let source = match source {
         DraftSourceKind::Local => ModelInputSource::Local,
         DraftSourceKind::RemoteUrl => ModelInputSource::RemoteUrl,
     };
     ensure!(
         capability.supports_source(source),
-        "model {} does not support {:?} {:?} input",
-        model.model_id,
-        source,
-        modality
+        StudioError::invalid_argument("当前模型不支持该附件来源。")
     );
     let profile = model
         .binding
         .request
         .media_profile(model_modality)
-        .with_context(|| {
-            format!(
-                "model {} has no {:?} request profile",
-                model.model_id, modality
-            )
-        })?;
+        .context(StudioError::invalid_argument(
+            "当前模型未配置该类附件的请求格式。",
+        ))?;
     ensure!(
         profile.replay.iter().any(|representation| matches!(
             representation,
             MediaRepresentation::DataUrl | MediaRepresentation::ProviderFile
         )),
-        "model {} cannot replay {:?} snapshots",
-        model.model_id,
-        modality
+        StudioError::invalid_argument("当前模型不支持重放该类附件。")
     );
     Ok(())
 }
@@ -275,8 +271,7 @@ fn validate_mix_policy(
     let unique = modalities.collect::<BTreeSet<_>>();
     ensure!(
         unique.len() <= 1,
-        "model {} accepts only one attachment modality per request",
-        model.model_id
+        StudioError::invalid_argument("当前模型每次请求只支持一种附件类型。")
     );
     Ok(())
 }
@@ -294,7 +289,7 @@ fn modality_from_filename(filename: &str) -> Result<StudioAttachmentModality> {
         .extension()
         .and_then(|extension| extension.to_str())
         .map(str::to_ascii_lowercase)
-        .context("attachment filename needs an extension")?;
+        .context(StudioError::invalid_argument("附件文件名需要扩展名。"))?;
     Ok(match extension.as_str() {
         "png" | "jpg" | "jpeg" | "gif" | "webp" => StudioAttachmentModality::Image,
         "mp4" | "mov" | "webm" | "mkv" => StudioAttachmentModality::Video,

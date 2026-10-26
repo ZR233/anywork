@@ -1,7 +1,7 @@
 import '../../../drafts.dart' show SubmitPromptReceipt;
 import '../../../operations_ports.dart';
 import '../../../resources_ports.dart';
-import '../../../workspace.dart' show WorkspaceState;
+import '../../../workspace.dart' show WorkspaceState, AgentDirectoryState;
 import '../../../workspace_ports.dart'
     show
         WorkspaceArchiveCapturePort,
@@ -10,12 +10,14 @@ import '../../../workspace_ports.dart'
 import '../domain/conversation_activation_failure.dart';
 import '../domain/conversation_repository.dart';
 import '../domain/thread_identity.dart';
+import '../domain/stop_execution_result.dart';
 import 'connection_owner.dart';
 import 'conversation_archive_capture.dart';
 import 'conversation_command_port.dart';
 import 'conversation_demand.dart';
 import 'conversation_mirror.dart';
 import 'conversation_observation_port.dart';
+import 'directory_execution_stops.dart';
 import 'session_owner.dart';
 import 'timeline_port.dart';
 
@@ -31,6 +33,7 @@ createConversationRepository({
   required TimelineTransport timeline,
   required ResourceBudget budget,
   required OperationRecorder operations,
+  required ReadonlyLatestValue<AgentDirectoryState> Function() agentDirectory,
 }) {
   final permit = budget.acquire(
     ResourceKind.readModel,
@@ -45,6 +48,7 @@ createConversationRepository({
       budget,
       operations,
       permit,
+      agentDirectory,
     );
     return (repository: owner, demand: owner, archive: owner);
   } catch (_) {
@@ -66,7 +70,9 @@ final class _ConversationRepository
     this.budget,
     this.operations,
     ResourcePermit permit,
+    ReadonlyLatestValue<AgentDirectoryState> Function() agentDirectory,
   ) : _permit = permit,
+      _directoryStops = DirectoryExecutionStops(agentDirectory, commands, operations, budget),
       _active = ConversationMirror(
         null,
         budget: budget,
@@ -84,6 +90,7 @@ final class _ConversationRepository
   final ResourceBudget budget;
   final OperationRecorder operations;
   final ResourcePermit _permit;
+  final DirectoryExecutionStops _directoryStops;
   final ConversationMirror<ConversationSession?> _active;
   final ConversationMirror<ConversationActivationFailure?> _activationFailure;
   ({ConversationActivationFailure failure, Object cause, StackTrace stack})?
@@ -105,6 +112,12 @@ final class _ConversationRepository
   AttemptId _nextAttempt() => AttemptId(++_attemptSequence);
   @override
   ConversationSession? existingSession(String threadId) => _current[threadId];
+  @override
+  StopExecutionResult stopDirectoryExecution({
+    required ProductProjectionStamp origin,
+    required ProductEntityRef member,
+    required String executionId,
+  }) => _directoryStops.stop(origin: origin, member: member, executionId: executionId);
   @override
   ConversationSession session(String threadId) {
     if (_sealed) throw conversationCancelled;
@@ -469,6 +482,7 @@ final class _ConversationRepository
   void seal() {
     if (_sealed) return;
     _sealed = true;
+    _directoryStops.lifetime.seal();
     _selected = null;
     _current.clear();
     for (final owner in List.of(_owned)) {
@@ -484,6 +498,7 @@ final class _ConversationRepository
   Future<CloseReport> close({DateTime? deadline}) async {
     seal();
     final reports = await Future.wait([
+      _directoryStops.lifetime.close(deadline: deadline),
       for (final owner in List.of(_owned)) owner.close(deadline: deadline),
     ]);
     return _finishCleanup(reports);
@@ -494,6 +509,9 @@ final class _ConversationRepository
     // A running Repository keeps its selection and healthy owners. Each
     // Session continues only cleanup whose admission was already retired.
     final reports = await Future.wait([
+      _sealed
+          ? _directoryStops.lifetime.close(deadline: deadline, retry: true)
+          : Future.value(_directoryStops.lifetime.snapshotReport()),
       for (final owner in List.of(_owned))
         owner.retryCleanup(deadline: deadline),
     ]);

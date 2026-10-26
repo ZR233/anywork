@@ -1,5 +1,18 @@
 part of 'drafts_repository.dart';
 
+ReadyStartRouteRead _readyStartRoute(_DraftsRepository repo, StartDraftState frozen) {
+  final prepared = frozen.routePreparation;
+  if (prepared is! ReadyStartRoutePreparation ||
+      prepared.result.sources != _routeSources(repo) ||
+      prepared.result.intent != _routeIntent(repo, frozen.mode)) {
+    throw _draftFailure(
+      StudioFailureCode.unavailable,
+      'Explicitly prepare the current Start route before submitting.',
+    );
+  }
+  return prepared.result;
+}
+
 ConfigurationRoleReadTarget? _routeSources(_DraftsRepository repo) {
   final projection = repo.configuration.state.value.projection;
   final pair = projection.header?.roleRead;

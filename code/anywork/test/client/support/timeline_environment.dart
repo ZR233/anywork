@@ -4,6 +4,7 @@ import 'package:anywork_client/resources_ports.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import '../../../../anywork_client/test/support/conversation_fixture.dart';
+import 'conversation_workspace_fixture.dart';
 
 /// Uses the actual domain owners; only their external native ports are scripted.
 /// No legacy Client, Session reducer or second Timeline implementation lives here.
@@ -24,9 +25,15 @@ final class TimelineTestEnvironment {
       timeline: timeline,
       budget: this.budget,
       operations: operations,
+      agentDirectory: () => workspaceOwner.workspace.agents,
     );
     conversations = assembly.repository;
     demand = assembly.demand;
+    workspaceOwner = ConversationWorkspaceFixture(
+      budget: this.budget,
+      operations: operations,
+      archive: assembly.archive,
+    );
   }
 
   final ResourceBudget budget;
@@ -35,6 +42,7 @@ final class TimelineTestEnvironment {
   late final OperationRegistry operations;
   late final ConversationRepository conversations;
   late final ConversationDemand demand;
+  late final ConversationWorkspaceFixture workspaceOwner;
   int _selectionGeneration = 0;
 
   ConversationSession? select(String threadId) {
@@ -47,6 +55,7 @@ final class TimelineTestEnvironment {
   }
 
   Future<void> close() async {
+    await workspaceOwner.close();
     final report = await conversations.close(
       deadline: DateTime.now().add(const Duration(seconds: 3)),
     );

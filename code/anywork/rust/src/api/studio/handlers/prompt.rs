@@ -2,8 +2,9 @@ use crate::api::studio::bridge_runtime::active_bridge;
 use crate::api::studio::convert::commands::command_receipt;
 use crate::api::studio::convert::thread_stream::bridge_interaction;
 use crate::api::studio::types::{
-    BridgeError, BridgeInteractionCommandReply, BridgeInteractionResolution,
-    BridgeInterruptTurnCommandReply, BridgeToolApprovalResolution,
+    BridgeContinuationOperationState, BridgeContinuationOperationView, BridgeContinueThreadReply,
+    BridgeError, BridgeInteractionCommandReply, BridgeInteractionResolution, BridgeStopThreadReply,
+    BridgeToolApprovalResolution,
 };
 use pl_protocol::{
     InteractionResolution, ToolApprovalResolution, ToolApprovalResolutionPayload, UserInputAnswer,
@@ -35,28 +36,93 @@ pub async fn read_input_acceptance(
         }))
 }
 
-pub async fn interrupt_turn(
+pub async fn stop_thread(
     operation_id: String,
     thread_id: String,
-    turn_id: String,
-) -> Result<BridgeInterruptTurnCommandReply, BridgeError> {
+    expected_execution_id: String,
+) -> Result<BridgeStopThreadReply, BridgeError> {
     let bridge = active_bridge().await?;
     let response = bridge
         .studio
-        .interrupt_prompt(operation_id, thread_id, turn_id)
+        .stop_thread(
+            thread_id,
+            pl_protocol::studio::StopThreadRequest {
+                operation_id,
+                expected_execution_id,
+            },
+        )
         .await?;
-    Ok(BridgeInterruptTurnCommandReply {
+    Ok(BridgeStopThreadReply {
         thread_id: response.thread_id,
-        turn_id: response.turn_id,
-        interrupted: response.interrupted,
+        execution_id: response.execution_id,
+        stopped: response.stopped,
         receipt: command_receipt(response.receipt),
+    })
+}
+
+pub async fn continue_thread(
+    operation_id: String,
+    thread_id: String,
+    expected_continuation_id: String,
+    expected_model_route_revision: u64,
+) -> Result<BridgeContinueThreadReply, BridgeError> {
+    let bridge = active_bridge().await?;
+    let response = bridge
+        .studio
+        .continue_thread(
+            thread_id,
+            pl_protocol::studio::ContinueThreadRequest {
+                operation_id,
+                expected_continuation_id,
+                expected_model_route_revision,
+            },
+        )
+        .await?;
+    Ok(BridgeContinueThreadReply {
+        cursor: response.cursor,
+        thread_id: response.thread_id,
+        input_id: response.input_id,
+        continuation_id: response.continuation_id,
+        receipt: command_receipt(response.receipt),
+    })
+}
+
+pub async fn read_continuation_operation(
+    thread_id: String,
+    operation_id: String,
+) -> Result<BridgeContinuationOperationView, BridgeError> {
+    let bridge = active_bridge().await?;
+    let view = bridge
+        .studio
+        .read_continuation_operation(thread_id, operation_id)
+        .await?;
+    Ok(BridgeContinuationOperationView {
+        accepted_sequence: view.accepted_sequence,
+        state: match view.state {
+            pl_protocol::studio::ContinuationOperationState::Pending => {
+                BridgeContinuationOperationState::Pending
+            }
+            pl_protocol::studio::ContinuationOperationState::Consumed { turn_id } => {
+                BridgeContinuationOperationState::Consumed { turn_id }
+            }
+            pl_protocol::studio::ContinuationOperationState::Discarded => {
+                BridgeContinuationOperationState::Discarded
+            }
+        },
+        durable: view.durable,
+        thread_id: view.thread_id,
+        operation_id: view.operation_id,
+        input_id: view.input_id,
+        continuation_id: view.continuation_id,
+        receipt: command_receipt(view.receipt),
     })
 }
 
 pub async fn respond_interaction(
     operation_id: String,
+    host_thread_id: String,
+    expected_revision: u64,
     interaction_id: String,
-    expected_interaction_revision: u64,
     resolution: BridgeInteractionResolution,
 ) -> Result<BridgeInteractionCommandReply, BridgeError> {
     let bridge = active_bridge().await?;
@@ -65,8 +131,9 @@ pub async fn respond_interaction(
         .studio
         .resolve_interaction(
             operation_id,
+            host_thread_id,
+            expected_revision,
             interaction_id,
-            expected_interaction_revision,
             resolution,
         )
         .await?;

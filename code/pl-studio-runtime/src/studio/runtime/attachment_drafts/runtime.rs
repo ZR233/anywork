@@ -8,7 +8,7 @@ use anyhow::{Context, Result, ensure};
 use pl_model::model::ModelInfo;
 use pl_protocol::studio::{
     AdmitAttachmentDraftsResponse, StudioAttachmentDraft, StudioAttachmentDraftSource,
-    StudioAttachmentModality,
+    StudioAttachmentModality, StudioError,
 };
 use sha2::{Digest, Sha256};
 
@@ -20,8 +20,8 @@ use super::source::{
     read_local_file,
 };
 use super::validate::{
-    admission_rejection, model_modality, preflight_sources, validate_actual_limits,
-    validate_draft_batch, validate_model_source,
+    model_modality, preflight_sources, validate_actual_limits, validate_draft_batch,
+    validate_model_source,
 };
 
 #[derive(Clone)]
@@ -48,7 +48,7 @@ impl AttachmentDraftRuntime {
         model: &ModelInfo,
         files: &super::super::draft_commands::AdmissionFiles,
     ) -> Result<AdmitAttachmentDraftsResponse> {
-        let predicted = preflight_sources(&sources, model).map_err(admission_rejection)?;
+        let predicted = preflight_sources(&sources, model)?;
 
         let mut admitted = Vec::with_capacity(sources.len());
         for (source, (filename, predicted_modality, source_kind)) in
@@ -67,27 +67,29 @@ impl AttachmentDraftRuntime {
             let result = async {
                 let loaded = match source {
                     StudioAttachmentDraftSource::LocalFile { path } => LoadedSource {
-                        bytes: read_local_file(Path::new(&path), max_bytes)
-                            .await
-                            .map_err(admission_rejection)?,
+                        bytes: read_local_file(Path::new(&path), max_bytes).await?,
                         initial_remote_url: None,
                     },
                     StudioAttachmentDraftSource::RemoteUrl { url, .. } => {
-                        fetch_remote_snapshot(&url, max_bytes)
-                            .await
-                            .map_err(admission_rejection)?
+                        fetch_remote_snapshot(&url, max_bytes).await.context(
+                            StudioError::invalid_argument(
+                                "无法下载附件，请检查 HTTPS 地址、访问权限与文件大小。",
+                            ),
+                        )?
                     }
                 };
-                let normalized = normalize_loaded_source(&filename, loaded.bytes)
-                    .map_err(admission_rejection)?;
+                let normalized = normalize_loaded_source(&filename, loaded.bytes).context(
+                    StudioError::invalid_argument(
+                        "附件内容无法解析，文件可能已损坏或格式不受支持。",
+                    ),
+                )?;
                 if normalized.modality != predicted_modality {
-                    return Err(admission_rejection(anyhow::anyhow!(
-                        "attachment content does not match its filename type"
-                    )));
+                    return Err(
+                        StudioError::invalid_argument("附件内容与文件名类型不匹配。").into(),
+                    );
                 }
-                validate_model_source(model, normalized.modality, source_kind)
-                    .map_err(admission_rejection)?;
-                validate_actual_limits(model, &normalized).map_err(admission_rejection)?;
+                validate_model_source(model, normalized.modality, source_kind)?;
+                validate_actual_limits(model, &normalized)?;
                 let draft_id = crate::studio::ids::new_id("attachment-draft");
                 let storage_path = self.root.join(&draft_id);
                 // Register before write: a partial file still belongs to this accepted job.
@@ -111,7 +113,7 @@ impl AttachmentDraftRuntime {
             admitted.push(draft);
         }
 
-        validate_draft_batch(model, &admitted).map_err(admission_rejection)?;
+        validate_draft_batch(model, &admitted)?;
         let response = AdmitAttachmentDraftsResponse {
             drafts: admitted.iter().map(public_draft).collect(),
         };

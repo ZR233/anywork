@@ -274,11 +274,19 @@ final class _DraftsRepository
     ensureOpen();
     final frozenSources = List<AttachmentDraftSource>.unmodifiable(sources);
     final bytes = image == null ? null : Uint8List.fromList(image);
-    final context = handle is _Composer
-        ? AttachmentAdmissionContext.existingThread(handle.threadId)
-        : AttachmentAdmissionContext.newThread(
-            (handle as _Start).record.state.value.mode,
-          );
+    AttachmentAdmissionContext? frozenContext;
+    Object? contextFailure;
+    StackTrace? contextStack;
+    try {
+      frozenContext = handle is _Composer
+          ? AttachmentAdmissionContext.existingThread(handle.threadId)
+          : AttachmentAdmissionContext.newThread(
+              route: _readyStartRoute(this, (handle as _Start).state.value).route,
+            );
+    } catch (error, stack) {
+      contextFailure = error;
+      contextStack = stack;
+    }
     _admitting = true;
     late final OperationWriter<Unit> writer;
     try {
@@ -288,11 +296,12 @@ final class _DraftsRepository
     }
     _AttachmentWork? work;
     try {
+      if (contextFailure != null) Error.throwWithStackTrace(contextFailure, contextStack!);
       work = _AttachmentWork(
         this,
         handle,
         writer,
-        context,
+        frozenContext!,
         frozenSources,
         bytes,
       );

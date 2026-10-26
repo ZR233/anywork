@@ -39,6 +39,10 @@ abstract final class StudioDriverKeyValues {
   static const modelDetailReload = 'model-detail-reload';
   static const modelDetailEvaluations = 'model-detail-evaluations';
   static String agentModel(String threadId) => 'agent-model-$threadId';
+  static String agentStop(String threadId) => 'agent-stop-$threadId';
+  static String agentStopNote(String threadId) => 'agent-stop-note-$threadId';
+  static String childInteractionCard(String interactionId) =>
+      'child-interaction-card-$interactionId';
   static const shell = 'studio-shell';
   static const startPage = 'studio-start-page';
   static const threadPreparation = 'thread-preparation';
@@ -53,6 +57,15 @@ abstract final class StudioDriverKeyValues {
   static const startPageSelectors = 'start-page-selectors';
   static const reasoningEffort = 'reasoning-effort-selector';
   static const reasoningEffortLabel = 'reasoning-effort-label';
+
+  /// 主输入区在中断、清理与阻塞态下的稳定入口。
+  static const composerContinue = 'composer-continue';
+  static const composerStopping = 'composer-stopping';
+  static const composerContinuing = 'composer-continuing';
+  static const composerBlocker = 'composer-blocker';
+
+  /// 子会话详情的只读说明（没有任何输入、停止、答题或审批控件）。
+  static const agentReadOnlyPanel = 'agent-readonly-panel';
 
   static String sessionModeOption(String mode) => 'session-mode-$mode';
 

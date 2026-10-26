@@ -32,6 +32,7 @@ pub(crate) enum HistoryReadFailure {
 }
 
 mod checkpoint;
+mod schema;
 /// 单页返回的总 payload 字节预算；达到预算即停止装入更多条目。
 const PAGE_BYTE_BUDGET: usize = 2 * 1024 * 1024;
 /// 单条预览预算必须小于整页预算，否则一条预览都无法落入一页。
@@ -161,6 +162,14 @@ pub(crate) struct InputIdentityReceipt {
 /// with the same receipt instead of minting a new revision or a new execution grant.
 pub(crate) struct FactReceipt {
     pub revision: u64,
+    pub kind: String,
+    pub payload: String,
+}
+
+/// One durable interaction/permission receipt together with the identity it was stored under.
+pub(crate) struct DecisionReceipt {
+    /// The stable receipt key, i.e. `order::receipt_id(kind, local_id)`.
+    pub item_id: String,
     pub kind: String,
     pub payload: String,
 }
@@ -376,6 +385,7 @@ impl HistoryStore {
         self.state
             .writer
             .get_or_try_init(|| async {
+                schema::inspect_existing(&self.state.path, &self.state.thread_id).await?;
                 let parent = self
                     .state
                     .path
@@ -388,7 +398,17 @@ impl HistoryStore {
                     let _ = entered.send(());
                     let _ = release.await;
                 }
-                let database_id = initialize(&db, &self.state.thread_id).await?;
+                let database_id = match schema::initialize(&db, &self.state.thread_id).await {
+                    Ok(id) => id,
+                    Err(error) => {
+                        if let Err(cleanup) = db.close().await {
+                            return Err(
+                                crate::studio::startup::cleanup_error(cleanup).context(error)
+                            );
+                        }
+                        return Err(error);
+                    }
+                };
                 Ok::<HistoryConnection, anyhow::Error>(HistoryConnection {
                     db,
                     database_id,
@@ -733,6 +753,39 @@ impl HistoryStore {
         .context(HistoryReadFailure::Protocol)
     }
 
+    /// The newest durable receipt of every decision identity this Thread ever committed.
+    ///
+    /// Canonical snapshots keep only pending decisions, so a settled question or approval leaves the
+    /// snapshot behind and the receipts become the only read-only source that can still prove it.
+    /// Operation identity reuse, a terminal replay and the hand-over reconciliation all read this one
+    /// source instead of a snapshot that has already dropped the record. A missing store or no
+    /// receipts returns an empty list; a storage fault is propagated.
+    pub(crate) async fn decision_receipts(&self) -> Result<Vec<DecisionReceipt>> {
+        let Some(connection) = self.reader().await? else {
+            return Ok(Vec::new());
+        };
+        let rows = connection
+            .db
+            .query_all_raw(statement(
+                "SELECT newest.item_id, newest.kind, newest.payload FROM history_fact_receipts newest \
+                 JOIN (SELECT item_id, MAX(revision) AS revision FROM history_fact_receipts \
+                       WHERE kind IN ('interaction','permission') GROUP BY item_id) latest \
+                   ON latest.item_id = newest.item_id AND latest.revision = newest.revision \
+                 WHERE newest.kind IN ('interaction','permission') ORDER BY newest.item_id",
+                Vec::new(),
+            ))
+            .await?;
+        rows.into_iter()
+            .map(|row| {
+                Ok(DecisionReceipt {
+                    item_id: row.try_get("", "item_id")?,
+                    kind: row.try_get("", "kind")?,
+                    payload: row.try_get("", "payload")?,
+                })
+            })
+            .collect()
+    }
+
     /// Reads an existing durable input identity without preparing or migrating storage.
     pub(crate) async fn input_identity(
         &self,
@@ -793,11 +846,9 @@ impl HistoryStore {
 
     /// Upgrades existing history before an active owner seeds its canonical projection.
     pub(crate) async fn prepare_activation(&self) -> Result<()> {
-        if self
-            .reader()
-            .await?
-            .is_some_and(|connection| connection.schema_version < HISTORY_SCHEMA_VERSION)
-        {
+        // Envelope migrations evolve independently from the table format. Every existing
+        // activation lets the official migrator decide which named steps remain pending.
+        if tokio::fs::try_exists(&self.state.path).await? {
             self.writer().await?;
         }
         Ok(())
@@ -2219,525 +2270,6 @@ async fn query_chat_ids(
 }
 
 /// Creates or validates the schema and returns the owning database identity.
-async fn initialize(db: &DatabaseConnection, thread_id: &str) -> Result<String> {
-    // Refuse future layouts before performing even additive schema writes.
-    if db
-        .query_one_raw(statement(
-            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='history_meta'",
-            vec![],
-        ))
-        .await?
-        .is_some()
-        && let Some(row) = db
-            .query_one_raw(statement(
-                "SELECT schema_version,thread_id FROM history_meta WHERE id=1",
-                vec![],
-            ))
-            .await?
-    {
-        let version: i64 = row.try_get("", "schema_version")?;
-        ensure!(
-            (1..=HISTORY_SCHEMA_VERSION).contains(&version),
-            "unsupported history schema {version}; existing data preserved"
-        );
-        ensure!(
-            row.try_get::<String>("", "thread_id")? == thread_id,
-            "history database belongs to another Thread"
-        );
-    }
-    db.execute_unprepared(
-        "CREATE TABLE IF NOT EXISTS history_meta (
-            id INTEGER PRIMARY KEY CHECK (id = 1),
-            schema_version INTEGER NOT NULL,
-            database_id TEXT NOT NULL,
-            thread_id TEXT NOT NULL,
-            applied_write_seq INTEGER NOT NULL
-        );
-        CREATE TABLE IF NOT EXISTS history_items (
-            ordinal INTEGER PRIMARY KEY,
-            item_id TEXT NOT NULL UNIQUE,
-            turn_id TEXT NOT NULL,
-            kind TEXT NOT NULL,
-            revision INTEGER NOT NULL,
-            lifecycle TEXT NOT NULL,
-            created_at INTEGER NOT NULL,
-            updated_at INTEGER NOT NULL,
-            payload TEXT NOT NULL CHECK (json_valid(payload)),
-            last_write_seq INTEGER NOT NULL
-        );
-        CREATE INDEX IF NOT EXISTS history_items_by_turn
-            ON history_items(turn_id, ordinal);
-        -- 最新终态按 ordinal 排序；缺口恢复另按原始 write_seq 范围读取。
-        CREATE INDEX IF NOT EXISTS history_items_by_kind_lifecycle
-            ON history_items(kind, lifecycle, ordinal);
-        CREATE INDEX IF NOT EXISTS history_terminal_turns_by_write_seq
-            ON history_items(last_write_seq,ordinal) WHERE kind='turn' AND lifecycle='terminal';
-        -- `agent_page` 的 text-only 稀疏过滤同样带 ordinal 方向，单独一条 (kind, ordinal) 索引
-        -- 才能同时满足过滤与排序。
-        CREATE INDEX IF NOT EXISTS history_items_by_kind
-            ON history_items(kind, ordinal);
-        CREATE TABLE IF NOT EXISTS history_turns (
-            turn_id TEXT PRIMARY KEY,
-            first_ordinal INTEGER NOT NULL,
-            last_ordinal INTEGER NOT NULL,
-            revision INTEGER NOT NULL,
-            payload TEXT NOT NULL CHECK (json_valid(payload)),
-            last_write_seq INTEGER NOT NULL
-        );
-        -- Turn 页是 `last_ordinal` 上的 keyset 倒序扫描；没有这条索引时深翻页会退化成全表
-        -- 扫描 + 排序。
-        CREATE INDEX IF NOT EXISTS history_turns_by_last_ordinal
-            ON history_turns(last_ordinal);
-        CREATE TABLE IF NOT EXISTS history_input_identities (
-            item_id TEXT PRIMARY KEY,
-            ordinal INTEGER NOT NULL,
-            revision INTEGER NOT NULL,
-            digest TEXT NOT NULL,
-            request_digest TEXT,
-            presentation TEXT CHECK (presentation IN ('visible','hidden')),
-            payload TEXT NOT NULL CHECK (json_valid(payload)),
-            last_write_seq INTEGER NOT NULL
-        );
-        CREATE TABLE IF NOT EXISTS history_fact_receipts (
-            item_id TEXT NOT NULL,
-            revision INTEGER NOT NULL,
-            kind TEXT NOT NULL,
-            digest TEXT NOT NULL,
-            payload TEXT NOT NULL CHECK (json_valid(payload)),
-            last_write_seq INTEGER NOT NULL,
-            PRIMARY KEY(item_id, revision)
-        );
-        -- 已受理消息的最小身份索引：原始消息 id、时间线条目身份、受理序号与正文摘要。
-        -- `digest` 可空，只用于迁移回填留下的“身份已知、正文不可验证”行（读取方 fail-closed）。
-        CREATE TABLE IF NOT EXISTS history_message_identities (
-            message_id TEXT PRIMARY KEY,
-            item_id TEXT NOT NULL,
-            sequence INTEGER NOT NULL,
-            digest TEXT,
-            last_write_seq INTEGER NOT NULL
-        );
-        CREATE TABLE IF NOT EXISTS session_checkpoint (
-            id INTEGER PRIMARY KEY CHECK(id=1),
-            revision INTEGER NOT NULL,
-            context_revision INTEGER NOT NULL,
-            context_count INTEGER NOT NULL,
-            payload TEXT NOT NULL,
-            payload_hash TEXT NOT NULL,
-            legacy_cleanup INTEGER NOT NULL DEFAULT 0
-        );
-        CREATE TABLE IF NOT EXISTS session_costs (
-            purpose TEXT NOT NULL,
-            currency TEXT NOT NULL,
-            amount REAL NOT NULL,
-            PRIMARY KEY(purpose,currency)
-        );
-        CREATE TABLE IF NOT EXISTS current_context (
-            ordinal INTEGER PRIMARY KEY,
-            record_id TEXT NOT NULL UNIQUE,
-            payload TEXT NOT NULL,
-            payload_hash TEXT NOT NULL
-        );
-        CREATE TABLE IF NOT EXISTS history_tool_tasks (
-            call_id TEXT PRIMARY KEY,
-            revision INTEGER NOT NULL,
-            task_payload TEXT NOT NULL CHECK (json_valid(task_payload)),
-            delivery_payload TEXT CHECK (delivery_payload IS NULL OR json_valid(delivery_payload)),
-            last_write_seq INTEGER NOT NULL
-        );",
-    )
-    .await?;
-    // 幂等身份索引的 host 提交摘要列是加法扩展：已存在的索引保留原行，只补上可空的列。
-    if let Err(error) = db
-        .execute_unprepared("ALTER TABLE history_input_identities ADD COLUMN request_digest TEXT")
-        .await
-    {
-        ensure!(
-            error.to_string().contains("duplicate column name"),
-            "history identity index cannot add its request digest column: {error}"
-        );
-    }
-    let row = db
-        .query_one_raw(statement(
-            "SELECT schema_version,database_id,thread_id FROM history_meta WHERE id=1",
-            vec![],
-        ))
-        .await?;
-    match row {
-        Some(row) => {
-            let version: i64 = row.try_get("", "schema_version")?;
-            ensure!(
-                (1..=HISTORY_SCHEMA_VERSION).contains(&version),
-                "unsupported history schema {version}; existing data preserved"
-            );
-            let owner: String = row.try_get("", "thread_id")?;
-            ensure!(
-                owner == thread_id,
-                "history database belongs to another Thread"
-            );
-            let database_id: String = row.try_get("", "database_id")?;
-            ensure!(
-                !database_id.is_empty(),
-                "history database identity is empty"
-            );
-            if version < HISTORY_SCHEMA_VERSION {
-                let tx = begin_write(db).await?;
-                if version < 3 {
-                    if let Err(error) = tx
-                        .execute_unprepared(
-                            "ALTER TABLE history_input_identities ADD COLUMN presentation TEXT \
-                         CHECK (presentation IN ('visible','hidden'))",
-                        )
-                        .await
-                    {
-                        ensure!(
-                            error.to_string().contains("duplicate column name"),
-                            "history identity index cannot add presentation: {error}"
-                        );
-                    }
-                    backfill_legacy_hidden_inputs(&tx).await?;
-                }
-                if version < 4 {
-                    migrate_unconsumed_input_bindings(&tx).await?;
-                }
-                if version < 6 {
-                    migrate_context_sources(&tx, thread_id).await?;
-                }
-                // schema 8 起，工具条目自带由 canonical 交互派生的 typed 问答历史：普通问答与
-                // plan_submit 的计划确认共用同一结构。更早的库只能从 durable 交互回执原位补齐，
-                // 同一函数覆盖两个产品格式，因此 v6 与 v7 库都在这里推进到最新结构。
-                if version < 8 {
-                    backfill_tool_user_input(&tx, thread_id).await?;
-                }
-                tx.execute_raw(statement(
-                    "UPDATE history_meta SET schema_version=? WHERE id=1 AND schema_version=?",
-                    vec![HISTORY_SCHEMA_VERSION.into(), version.into()],
-                ))
-                .await?;
-                tx.commit().await?;
-            }
-            Ok(database_id)
-        }
-        None => {
-            let database_id = crate::studio::new_id("history-db");
-            db.execute_raw(statement(
-                "INSERT INTO history_meta(
-                    id,schema_version,database_id,thread_id,applied_write_seq
-                 ) VALUES(1,?,?,?,0)",
-                vec![
-                    HISTORY_SCHEMA_VERSION.into(),
-                    database_id.clone().into(),
-                    thread_id.to_owned().into(),
-                ],
-            ))
-            .await?;
-            Ok(database_id)
-        }
-    }
-}
-
-/// Converts current context and its envelope atomically; history bodies remain byte-identical.
-async fn migrate_context_sources(tx: &impl ConnectionTrait, thread_id: &str) -> Result<()> {
-    use pl_core::{context::content_hash, thread::ThreadCheckpoint};
-    let Some(row) = tx
-        .query_one_raw(statement(
-            "SELECT payload,payload_hash FROM session_checkpoint WHERE id=1",
-            vec![],
-        ))
-        .await?
-    else {
-        return Ok(());
-    };
-    let payload: String = row.try_get("", "payload")?;
-    ensure!(
-        content_hash(payload.as_bytes()) == row.try_get::<String>("", "payload_hash")?,
-        "checkpoint migration hash mismatch"
-    );
-    let mut root: serde_json::Value = serde_json::from_str(&payload)?;
-    let rows = tx
-        .query_all_raw(statement(
-            "SELECT ordinal,record_id,payload,payload_hash FROM current_context ORDER BY ordinal",
-            vec![],
-        ))
-        .await?;
-    let mut records = Vec::new();
-    for (index, row) in rows.iter().enumerate() {
-        ensure!(
-            row.try_get::<i64>("", "ordinal")? == i64::try_from(index)?,
-            "context migration ordinal mismatch"
-        );
-        let bytes: String = row.try_get("", "payload")?;
-        ensure!(
-            content_hash(bytes.as_bytes()) == row.try_get::<String>("", "payload_hash")?,
-            "context migration hash mismatch"
-        );
-        let record: pl_core::context::ContextRecord = serde_json::from_str(&bytes)?;
-        ensure!(
-            record.id == row.try_get::<String>("", "record_id")?,
-            "context migration identity mismatch"
-        );
-        records.push(record);
-    }
-    root["state"]["context"]["records"] = serde_json::to_value(&records)?;
-    let mut checkpoint: ThreadCheckpoint =
-        if root["schemaVersion"].as_u64() == Some(u64::from(ThreadCheckpoint::SCHEMA_VERSION)) {
-            serde_json::from_value(root)?
-        } else {
-            ThreadCheckpoint::decode_legacy(&serde_json::to_string(&root)?)?
-        };
-    ensure!(
-        checkpoint.thread_id == thread_id
-            && checkpoint.state_revision == checkpoint.state.commit_sequence,
-        "checkpoint migration ownership mismatch"
-    );
-    crate::compaction::migrate_checkpoint_sources(&mut checkpoint)?;
-    for (index, record) in checkpoint.state.context.records.iter().enumerate() {
-        let encoded = serde_json::to_string(record)?;
-        tx.execute_raw(statement(
-            "UPDATE current_context SET payload=?,payload_hash=? WHERE ordinal=? AND record_id=?",
-            vec![
-                encoded.clone().into(),
-                content_hash(encoded.as_bytes()).into(),
-                i64::try_from(index)?.into(),
-                record.id.clone().into(),
-            ],
-        ))
-        .await?;
-    }
-    checkpoint.state.context.records = Default::default();
-    let encoded = serde_json::to_string(&checkpoint)?;
-    tx.execute_raw(statement(
-        "UPDATE session_checkpoint SET payload=?,payload_hash=? WHERE id=1",
-        vec![
-            encoded.clone().into(),
-            content_hash(encoded.as_bytes()).into(),
-        ],
-    ))
-    .await?;
-    Ok(())
-}
-
-/// The old projection inferred input bindings from running Turns before model admission. A Turn
-/// naming the input proves its identity; absence from the transactionally maintained terminal
-/// ledger proves it was not consumed or discarded at this durable watermark.
-async fn migrate_unconsumed_input_bindings(db: &impl ConnectionTrait) -> Result<()> {
-    let mut cursor = 0_i64;
-    loop {
-        let rows = db
-            .query_all_raw(statement(
-                "SELECT i.ordinal,i.payload,t.payload AS turn_payload FROM history_items i
-             JOIN history_items t ON t.turn_id=i.turn_id AND t.kind='turn'
-             LEFT JOIN history_input_identities identity ON identity.item_id=i.item_id
-             WHERE i.ordinal>? AND i.turn_id!='' AND i.kind!='turn' AND identity.item_id IS NULL
-             ORDER BY i.ordinal LIMIT 400",
-                vec![cursor.into()],
-            ))
-            .await?;
-        if rows.is_empty() {
-            break;
-        }
-        for row in rows {
-            cursor = row.try_get("", "ordinal")?;
-            let mut item: ThreadItem =
-                serde_json::from_str(&row.try_get::<String>("", "payload")?)?;
-            let turn_item: ThreadItem =
-                serde_json::from_str(&row.try_get::<String>("", "turn_payload")?)?;
-            let ThreadItemState::Turn(turn) = turn_item.state() else {
-                continue;
-            };
-            if turn.input_id() != Some(item.id.as_str()) {
-                continue;
-            }
-            let old_turn = std::mem::take(&mut item.turn_id);
-            item.revision = item
-                .revision
-                .checked_add(1)
-                .context("migrated input revision overflow")?;
-            db.execute_raw(statement(
-                "UPDATE history_items SET turn_id='',revision=?,payload=? WHERE item_id=?",
-                vec![
-                    integer(item.revision)?.into(),
-                    serde_json::to_string(&item)?.into(),
-                    item.id.into(),
-                ],
-            ))
-            .await?;
-            db.execute_raw(statement(
-                "UPDATE history_turns SET first_ordinal=(SELECT MIN(ordinal) FROM history_items WHERE turn_id=?) WHERE turn_id=?",
-                vec![old_turn.clone().into(), old_turn.into()],
-            )).await?;
-        }
-    }
-    Ok(())
-}
-
-/// Legacy v2 rows have no presentation. Only a resolved interaction receipt that names the
-/// continuation and records a hidden product option proves why its timeline row is absent.
-async fn backfill_legacy_hidden_inputs(db: &impl ConnectionTrait) -> Result<()> {
-    use pl_core::thread::interactions::{InteractionRecord, InteractionState};
-    let mut cursor = 0_i64;
-    loop {
-        let rows = db
-            .query_all_raw(statement(
-                "SELECT rowid,payload FROM history_fact_receipts \
-             WHERE kind='interaction' AND rowid>? ORDER BY rowid LIMIT 100",
-                vec![cursor.into()],
-            ))
-            .await?;
-        if rows.is_empty() {
-            break;
-        }
-        for row in rows {
-            cursor = row.try_get("", "rowid")?;
-            let record: InteractionRecord =
-                serde_json::from_str(&row.try_get::<String>("", "payload")?)
-                    .context("legacy interaction receipt cannot be decoded")?;
-            let Some(id) = record.continuation_id.as_deref() else {
-                continue;
-            };
-            ensure!(
-                id == format!("interaction:{}:continuation", record.request.id),
-                "legacy interaction continuation identity conflicts with its receipt"
-            );
-            if !matches!(record.state, InteractionState::Resolved(_))
-                || record.request.payload.version() != 1
-            {
-                continue;
-            }
-            let hidden = match record.request.payload.format() {
-                "pl.tool.user-input" => true,
-                crate::plan_tool::PLAN_CONFIRMATION_FORMAT => {
-                    let prompt: crate::plan_tool::PlanConfirmationPrompt =
-                        serde_json::from_str(record.request.payload.content())
-                            .context("legacy Plan confirmation cannot be decoded")?;
-                    prompt.presentation == pl_protocol::MessagePresentation::Hidden
-                }
-                _ => false,
-            };
-            if !hidden {
-                continue;
-            }
-            let identity = db
-                .query_one_raw(statement(
-                    "SELECT presentation FROM history_input_identities WHERE item_id=?",
-                    vec![id.to_owned().into()],
-                ))
-                .await?;
-            let Some(identity) = identity else {
-                continue;
-            };
-            let presentation: Option<String> = identity.try_get("", "presentation")?;
-            ensure!(
-                presentation
-                    .as_deref()
-                    .is_none_or(|value| value == "hidden"),
-                "legacy hidden continuation conflicts with its input identity"
-            );
-            ensure!(
-                db.query_one_raw(statement(
-                    "SELECT item_id FROM history_items WHERE item_id=?",
-                    vec![id.to_owned().into()],
-                ))
-                .await?
-                .is_none(),
-                "legacy hidden continuation has a visible timeline item"
-            );
-            db.execute_raw(statement(
-                "UPDATE history_input_identities SET presentation='hidden' WHERE item_id=?",
-                vec![id.to_owned().into()],
-            ))
-            .await?;
-        }
-    }
-    Ok(())
-}
-
-/// Attaches the accepted user-input history to the tool item that raised it in already-written
-/// history.
-///
-/// A version-7 or older database stored the questions and the answer only in the interaction fact,
-/// because the timeline row was written before the tool item carried a typed projection. That covers
-/// the ordinary question tool and the Plan confirmation a `plan_submit` call raises: both are the
-/// same canonical interaction fact on the call's own item. The receipts are the durable evidence of
-/// that fact, so the migration re-derives the projection from them and updates the calling item **in
-/// place**: the row keeps its `item_id`, ordinal, Turn binding, creation time, content revision and
-/// body, and only gains the typed history. Nothing is replayed, no tool runs again, no model context
-/// changes and the private answer receipt is never rewritten, so an already resolved question or
-/// Plan decision cannot be answered twice, lose an answer or be re-derived from the current Plan. A
-/// repeated open re-reads a database that already carries the projection and changes nothing.
-async fn backfill_tool_user_input(db: &impl ConnectionTrait, thread_id: &str) -> Result<()> {
-    use crate::studio::thread_projection::{
-        attach_tool_user_input, order, project_tool_user_input,
-    };
-    use pl_core::thread::interactions::InteractionRecord;
-
-    let mut cursor = 0_i64;
-    loop {
-        let rows = db
-            .query_all_raw(statement(
-                "SELECT rowid,item_id,payload FROM history_fact_receipts \
-             WHERE kind='interaction' AND rowid>? ORDER BY rowid LIMIT 100",
-                vec![cursor.into()],
-            ))
-            .await?;
-        if rows.is_empty() {
-            break;
-        }
-        for row in rows {
-            cursor = row.try_get("", "rowid")?;
-            let record: InteractionRecord =
-                serde_json::from_str(&row.try_get::<String>("", "payload")?)
-                    .context("legacy interaction receipt cannot be decoded")?;
-            let receipt: String = row.try_get("", "item_id")?;
-            ensure!(
-                receipt == order::receipt_id("interaction", &record.request.id),
-                "legacy interaction receipt identity conflicts with its payload"
-            );
-            let Some(user_input) = project_tool_user_input(thread_id, &record)? else {
-                continue;
-            };
-            // Receipts are appended per revision, so an identity's newest row is applied last and
-            // wins: the settled answer supersedes the pending projection, never the other way round.
-            let call_id =
-                pl_core::tool::opaque::interaction_tool_call_id(user_input.interaction_id())
-                    .context("user-input interaction names no tool call")?;
-            let tool_id = order::tool_id(call_id);
-            let row = db
-                .query_one_raw(statement(
-                    "SELECT revision,payload FROM history_items WHERE item_id=?",
-                    vec![tool_id.clone().into()],
-                ))
-                .await?
-                .with_context(|| {
-                    format!("user-input history `{tool_id}` has no durable tool item")
-                })?;
-            let stored_revision: i64 = row.try_get("", "revision")?;
-            let mut item: ThreadItem = serde_json::from_str(&row.try_get::<String>("", "payload")?)
-                .with_context(|| format!("tool item `{tool_id}` cannot be decoded"))?;
-            if item.tool().and_then(|tool| tool.user_input()) == Some(&user_input) {
-                continue;
-            }
-            attach_tool_user_input(&mut item, user_input)?;
-            // 迁移只原位改载荷，不推进内容版本：schema 升级在读基线之前完成，下一次内容变化仍由
-            // 既有版本机制推进一次。迁移自己推进 revision 会让紧接的提交撞上同一版本的不同载荷，
-            // 或把真实内容版本挤到迁移伪造的版本域之下。
-            ensure!(
-                integer(item.revision)? == stored_revision,
-                "tool item `{tool_id}` row and payload versions disagree"
-            );
-            db.execute_raw(statement(
-                "UPDATE history_items SET payload=? WHERE item_id=? AND revision=?",
-                vec![
-                    serde_json::to_string(&item)?.into(),
-                    item.id.clone().into(),
-                    stored_revision.into(),
-                ],
-            ))
-            .await?;
-        }
-    }
-    Ok(())
-}
-
 fn statement(sql: &str, values: Vec<Value>) -> Statement {
     Statement::from_sql_and_values(DatabaseBackend::Sqlite, sql, values)
 }
@@ -2757,10 +2289,10 @@ async fn write_input_identity(
     write_seq: i64,
     identity: &InputIdentityWrite,
 ) -> Result<()> {
-    let payload = serde_json::to_string(&identity.entry)?;
     let existing = db
         .query_one_raw(statement(
-            "SELECT digest,presentation FROM history_input_identities WHERE item_id=?",
+            "SELECT digest,presentation,request_digest,payload FROM history_input_identities
+             WHERE item_id=?",
             vec![identity.entry.id.clone().into()],
         ))
         .await?;
@@ -2779,23 +2311,44 @@ async fn write_input_identity(
             "input identity {} conflicts with its durable presentation",
             identity.entry.id
         );
+        // A control operation's request identity is the *first* admission, not whatever the current
+        // commit can recompute. These fields are insert-if-absent: once a row carries them, the newer
+        // commit can neither overwrite nor falsify them, so a later route change, a later consumption
+        // or a later state advance still answers with the original receipt.
+        let mut entry = identity.entry.clone();
+        let mut request_digest = identity.request_digest.clone();
+        if entry.purpose == pl_core::thread::input::InputPurpose::Continuation {
+            let stored_entry: crate::studio::storage::state::InputIdentityEntry =
+                serde_json::from_str(&row.try_get::<String>("", "payload")?)?;
+            entry.expected_model_route_revision = stored_entry
+                .expected_model_route_revision
+                .or(entry.expected_model_route_revision);
+            entry.continuation_admission_revision = stored_entry
+                .continuation_admission_revision
+                .or(entry.continuation_admission_revision);
+            request_digest = row
+                .try_get::<Option<String>>("", "request_digest")?
+                .or(request_digest);
+        }
+        let payload = serde_json::to_string(&entry)?;
         db.execute_raw(statement(
             "UPDATE history_input_identities
              SET ordinal=?,revision=?,request_digest=?,presentation=?,payload=?,last_write_seq=?
              WHERE item_id=?",
             vec![
-                integer(identity.entry.ordinal)?.into(),
-                integer(identity.entry.revision)?.into(),
-                identity.request_digest.clone().into(),
+                integer(entry.ordinal)?.into(),
+                integer(entry.revision)?.into(),
+                request_digest.into(),
                 presentation_label(identity.presentation).into(),
                 payload.into(),
                 write_seq.into(),
-                identity.entry.id.clone().into(),
+                entry.id.clone().into(),
             ],
         ))
         .await?;
         return Ok(());
     }
+    let payload = serde_json::to_string(&identity.entry)?;
     db.execute_raw(statement(
         "INSERT INTO history_input_identities(
             item_id,ordinal,revision,digest,request_digest,presentation,payload,last_write_seq
@@ -3070,9 +2623,11 @@ mod storage_fault_tests {
         interaction.updated_at = 2;
         interaction.continuation_id = Some(id.clone());
         let input = InputRecord {
+            continuation: None,
             accepted_sequence: 1,
             delivery: Default::default(),
             input: ThreadInput {
+                purpose: pl_core::thread::input::InputPurpose::Message,
                 id: id.clone(),
                 payload: OpaquePayload::new(
                     "pl.studio.interaction-continuation",
@@ -3146,7 +2701,7 @@ mod storage_fault_tests {
         .await?;
         db.execute_unprepared(
             "ALTER TABLE history_input_identities DROP COLUMN presentation; \
-             UPDATE history_meta SET schema_version=2",
+             DROP TABLE IF EXISTS seaql_migrations; UPDATE history_meta SET schema_version=2",
         )
         .await?;
         drop(db);
@@ -3257,6 +2812,8 @@ mod storage_fault_tests {
             &InputIdentityWrite {
                 entry: crate::studio::storage::state::InputIdentityEntry::new(
                     pl_core::thread::input::InputIdentity {
+                        purpose: Default::default(),
+                        continuation: None,
                         id: "consumed".into(),
                         ordinal: 3,
                         revision: 2,
@@ -3278,7 +2835,9 @@ mod storage_fault_tests {
             .writer()
             .await?
             .db
-            .execute_unprepared("UPDATE history_meta SET schema_version=3")
+            .execute_unprepared(
+                "DROP TABLE IF EXISTS seaql_migrations; UPDATE history_meta SET schema_version=3",
+            )
             .await?;
         drop(store);
         let migrated = HistoryStore::open(&path, "migration").await?;
@@ -4011,7 +3570,7 @@ mod storage_fault_tests {
             ],
         ))
         .await?;
-        db.execute_unprepared("UPDATE history_meta SET schema_version=5; CREATE TRIGGER reject_context_migration BEFORE UPDATE ON current_context BEGIN SELECT RAISE(ABORT,'injected context migration failure'); END;").await?;
+        db.execute_unprepared("DROP TABLE IF EXISTS seaql_migrations; UPDATE history_meta SET schema_version=5; CREATE TRIGGER reject_context_migration BEFORE UPDATE ON current_context BEGIN SELECT RAISE(ABORT,'injected context migration failure'); END;").await?;
         drop(store);
         let failed = HistoryStore::open(&path, "context-migration").await?;
         assert!(failed.prepare_activation().await.is_err());
@@ -4046,7 +3605,11 @@ mod storage_fault_tests {
             .checkpoint()
             .await?
             .context("migrated checkpoint")?;
-        assert_eq!(checkpoint.schema_version, 4);
+        // 迁移落点跟随核心当前的 checkpoint schema，而不是在测试里再抄一份版本号。
+        assert_eq!(
+            checkpoint.schema_version,
+            pl_core::thread::ThreadCheckpoint::SCHEMA_VERSION
+        );
         assert!(matches!(
             checkpoint.state.context.records[0].source,
             ContextSource::RuntimeFact { .. }
@@ -4316,7 +3879,7 @@ mod storage_fault_tests {
         let history =
             HistoryStore::open(&directory.path().join("history.sqlite"), "import").await?;
         assert!(
-            state.load(&history).await.is_err(),
+            state.prepare_recovery(&history).await.is_err(),
             "missing migration body must preserve source"
         );
         assert!(tokio::fs::try_exists(directory.path().join("state.toml")).await?);
@@ -4335,7 +3898,7 @@ mod storage_fault_tests {
         let future = toml::to_string(&legacy)?;
         tokio::fs::write(directory.path().join("state.toml"), &future).await?;
         assert!(
-            state.load(&history).await.is_err(),
+            state.prepare_recovery(&history).await.is_err(),
             "a valid backup must not hide an unknown primary version"
         );
         assert_eq!(
@@ -4344,7 +3907,7 @@ mod storage_fault_tests {
         );
         tokio::fs::write(directory.path().join("state.toml"), &original).await?;
         history.writer().await?.db.execute_unprepared("CREATE TRIGGER reject_import BEFORE INSERT ON session_checkpoint BEGIN SELECT RAISE(ABORT,'migration interrupted'); END;").await?;
-        assert!(state.load(&history).await.is_err());
+        assert!(state.prepare_recovery(&history).await.is_err());
         assert!(history.checkpoint().await?.is_none());
         assert!(tokio::fs::try_exists(directory.path().join("state.toml")).await?);
         history
@@ -4360,7 +3923,7 @@ mod storage_fault_tests {
             .execute_unprepared("UPDATE history_meta SET applied_write_seq=1")
             .await?;
         assert!(
-            state.load(&history).await.is_err(),
+            state.prepare_recovery(&history).await.is_err(),
             "mismatched history fence must preserve source"
         );
         assert!(tokio::fs::try_exists(directory.path().join("state.toml")).await?);
@@ -4370,7 +3933,10 @@ mod storage_fault_tests {
             .db
             .execute_unprepared("UPDATE history_meta SET applied_write_seq=0")
             .await?;
-        let imported = state.load(&history).await?.context("imported checkpoint")?;
+        let imported = state
+            .prepare_recovery(&history)
+            .await?
+            .context("imported checkpoint")?;
         assert_eq!(imported.state.context, checkpoint.state.context);
         assert!(imported.state.attempt_ids.contains_key("old-attempt"));
         assert_eq!(imported.state_revision, checkpoint.state_revision);
@@ -4383,7 +3949,7 @@ mod storage_fault_tests {
         );
         assert_eq!(
             state
-                .load(&history)
+                .prepare_recovery(&history)
                 .await?
                 .context("reopened")?
                 .state_revision,
@@ -4430,7 +3996,7 @@ mod storage_fault_tests {
 
         let state = super::super::state::StateStore::new(directory.path().to_owned(), "unordered");
         let error = state
-            .load(&history)
+            .load_read_only(&history)
             .await
             .expect_err("a missing checkpoint with a committed watermark must fail closed");
         assert!(
@@ -4846,11 +4412,12 @@ mod storage_fault_tests {
 
         // live 投影只剩放置元数据占位（真实正文已被回收）时同样报告 identity，绝不静默丢弃权威问答。
         let mut placeholder = question_tool_item("call-qa", &thread.id, 7);
-        placeholder = placeholder.with_state(ThreadItemState::Raw(pl_protocol::ThreadRawItem {
-            payloads: vec![],
-            notice: "This item's body is no longer resident in the live preview cache.".into(),
-            recorded_at: 111,
-        }));
+        placeholder =
+            placeholder.with_state(ThreadItemState::Raw(pl_protocol::ThreadRawItem::stored(
+                vec![],
+                "This item's body is no longer resident in the live preview cache.",
+                111,
+            )));
         let mut resident = std::collections::BTreeMap::new();
         resident.insert(placeholder.id.clone(), placeholder.clone());
         let without_body = crate::studio::thread_projection::project_effect_items(
@@ -4991,7 +4558,9 @@ mod storage_fault_tests {
             .writer()
             .await?
             .db
-            .execute_unprepared("UPDATE history_meta SET schema_version=6")
+            .execute_unprepared(
+                "DROP TABLE IF EXISTS seaql_migrations; UPDATE history_meta SET schema_version=6",
+            )
             .await?;
         drop(store);
 
@@ -5087,7 +4656,9 @@ mod storage_fault_tests {
             .writer()
             .await?
             .db
-            .execute_unprepared("UPDATE history_meta SET schema_version=6")
+            .execute_unprepared(
+                "DROP TABLE IF EXISTS seaql_migrations; UPDATE history_meta SET schema_version=6",
+            )
             .await?;
         drop(store);
 
@@ -5202,7 +4773,9 @@ mod storage_fault_tests {
             .writer()
             .await?
             .db
-            .execute_unprepared("UPDATE history_meta SET schema_version=6")
+            .execute_unprepared(
+                "DROP TABLE IF EXISTS seaql_migrations; UPDATE history_meta SET schema_version=6",
+            )
             .await?;
         drop(store);
 
@@ -5291,7 +4864,9 @@ mod storage_fault_tests {
             .writer()
             .await?
             .db
-            .execute_unprepared("UPDATE history_meta SET schema_version=7")
+            .execute_unprepared(
+                "DROP TABLE IF EXISTS seaql_migrations; UPDATE history_meta SET schema_version=7",
+            )
             .await?;
         drop(store);
 
@@ -5462,7 +5037,7 @@ mod storage_fault_tests {
             .await?
             .db
             .execute_unprepared(
-                "UPDATE history_meta SET schema_version=7; \
+                "DROP TABLE IF EXISTS seaql_migrations; UPDATE history_meta SET schema_version=7; \
                  CREATE TRIGGER reject_plan_history BEFORE UPDATE ON history_items \
                  BEGIN SELECT RAISE(ABORT,'injected plan history failure'); END;",
             )
@@ -5664,7 +5239,7 @@ mod storage_fault_tests {
                 .writer()
                 .await?
                 .db
-                .execute_unprepared("UPDATE history_meta SET schema_version=6")
+                .execute_unprepared("DROP TABLE IF EXISTS seaql_migrations; UPDATE history_meta SET schema_version=6")
                 .await?;
             drop(store);
 

@@ -6,6 +6,10 @@ import 'directory_values.dart';
 /// Pure views of the canonical *complete* AgentDirectory. A Thread page or hot
 /// Session set cannot create, remove or supply missing members for this query.
 abstract final class AgentDirectoryQueries {
+  /// Closed members remain in forRoot/menuOrder for read-only navigation.
+  static int activeCount(List<AgentDirectoryEntry> agents) =>
+      agents.where((agent) => agent.state is! ClosedAgentState).length;
+
   static String? rootThreadId({
     required String? threadId,
     required AgentDirectoryState directory,

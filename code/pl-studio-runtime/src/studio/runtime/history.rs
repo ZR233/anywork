@@ -25,7 +25,7 @@ impl StudioRuntime {
             // ordinary page budget and its oversize-first-item progress exception). This is a
             // page read, not a cross-page transaction snapshot or an execution activation.
             runtime
-                .ensure_timeline_history(&thread_id)
+                .read_timeline_history(&thread_id)
                 .await?
                 .turn_page(cursor.as_deref(), limit)
                 .await

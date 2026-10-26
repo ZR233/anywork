@@ -149,7 +149,12 @@ impl AgentServices {
             .project_child_close(record, &thread.snapshot())
             .await;
         // The durable seal is now independent of cleanup/projection failures or caller cancellation.
-        owner.close_with_permit(&record.id).await?;
+        owner
+            .close_with_permit(
+                &record.id,
+                super::PublishedWorkspaceRetirement::ApplyExplicitClose,
+            )
+            .await?;
         projection?;
         Ok(())
     }

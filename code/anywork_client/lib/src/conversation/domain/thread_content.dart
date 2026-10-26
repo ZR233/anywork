@@ -19,8 +19,9 @@ sealed class ThreadItemStateView with _$ThreadItemStateView {
   factory ThreadItemStateView.raw(
     List<RawHistoryPayload> payloads,
     String notice,
-    int recordedAt,
-  ) = ThreadRawItemStateView;
+    int recordedAt, {
+    ThreadRawItemOrigin origin = ThreadRawItemOrigin.stored,
+  }) = ThreadRawItemStateView;
   factory ThreadItemStateView.text({
     required ThreadTextChannel channel,
     required String text,
@@ -77,13 +78,17 @@ final class ThreadRawItemStateView extends ThreadItemStateView
   ThreadRawItemStateView(
     List<RawHistoryPayload> payloads,
     this.notice,
-    this.recordedAt,
-  ) : payloads = List.unmodifiable(payloads),
+    this.recordedAt, {
+    this.origin = ThreadRawItemOrigin.stored,
+  }) : payloads = List.unmodifiable(payloads),
       super._();
   final List<RawHistoryPayload> payloads;
   final String notice;
   final int recordedAt;
+  final ThreadRawItemOrigin origin;
 }
+
+enum ThreadRawItemOrigin { stored, runtimeControl }
 
 @Freezed(toStringOverride: false)
 final class ThreadTextItemStateView extends ThreadItemStateView

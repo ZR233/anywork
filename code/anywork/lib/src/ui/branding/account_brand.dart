@@ -3,10 +3,10 @@ import 'package:flutter_svg/flutter_svg.dart';
 
 import '../../app/theme/studio_tokens.dart';
 
-// Provider brand glyphs under assets/provider-logos/ originate from
-// cc-switch (https://github.com/farion1231/cc-switch, MIT) and remain
-// trademarks of their respective owners; they are bundled for account
-// identification only.
+// Except for Zhipu, provider glyphs under assets/provider-logos/ originate from
+// cc-switch (https://github.com/farion1231/cc-switch, MIT). The Zhipu Z symbol
+// comes from https://www.zhipuai.cn/logo.svg. All brand marks remain trademarks
+// of their respective owners and are bundled for account identification only.
 
 final class _AccountBrandAsset {
   const _AccountBrandAsset({required this.path, required this.color});
@@ -30,7 +30,7 @@ const _accountBrandAssets = <String, _AccountBrandAsset>{
   ),
   'zhipu': _AccountBrandAsset(
     path: 'assets/provider-logos/zhipu.svg',
-    color: Color(0xFF504AF4),
+    color: Color(0xFF000000),
   ),
   'mimo': _AccountBrandAsset(
     path: 'assets/provider-logos/mimo.svg',

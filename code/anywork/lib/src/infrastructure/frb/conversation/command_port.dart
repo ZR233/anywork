@@ -35,68 +35,6 @@ final class FrbConversationCommandPort
   final _unusableReplies = Expando<_UnusableSubmitReply>(
     'native-submit-evidence',
   );
-  final _unusableInterruptReplies = Expando<_UnusableInterruptReply>(
-    'native-interrupt-evidence',
-  );
-
-  @override
-  Future<InterruptTurnReply> interruptTurn(
-    String threadId,
-    String turnId, {
-    required OperationId operationId,
-  }) async {
-    final command.BridgeInterruptTurnCommandReply reply;
-    try {
-      reply = await queries.interruptTurn(
-        operationId: operationId.value,
-        threadId: threadId,
-        turnId: turnId,
-      );
-    } on Object catch (error, stack) {
-      // Even InvalidArgument can follow partial cancellation in the mailbox.
-      // A transport error provides no typed proof that the call was rejected.
-      Error.throwWithStackTrace(
-        CommandDispatchFailure.unknownOutcome(
-          failure: _interruptFailure(error),
-        ),
-        stack,
-      );
-    }
-    CommitReceipt? receipt;
-    try {
-      receipt = commitReceiptFromBridge(reply.receipt);
-      return InterruptTurnReply(
-        threadId: reply.threadId,
-        turnId: reply.turnId,
-        interrupted: reply.interrupted,
-        receipt: receipt,
-      );
-    } on Object catch (error, stack) {
-      final failure = _interruptFailure(error);
-      _unusableInterruptReplies[failure] = _UnusableInterruptReply(
-        reply,
-        error,
-        stack,
-      );
-      if (receipt != null &&
-          receipt.operationId == operationId &&
-          reply.threadId == threadId &&
-          reply.turnId == turnId) {
-        // The SDK still checks the original receipt's full effect/observation contract.
-        Error.throwWithStackTrace(
-          CommandDispatchFailure.committedButUnobserved(
-            receipt: receipt,
-            failure: failure,
-          ),
-          stack,
-        );
-      }
-      Error.throwWithStackTrace(
-        CommandDispatchFailure.confirmedWithoutUsableReceipt(failure: failure),
-        stack,
-      );
-    }
-  }
 
   @override
   Future<SubmitPromptReceipt> submitPrompt(
@@ -219,24 +157,6 @@ StudioFailure _failure(Object error) {
 final class _UnusableSubmitReply {
   _UnusableSubmitReply(this.outcome, this.cause, this.stack);
   final native.BridgeSubmitPromptOutcome outcome;
-  final Object cause;
-  final StackTrace stack;
-}
-
-StudioFailure _interruptFailure(Object error) {
-  try {
-    return bridgeFailure(error);
-  } on Object catch (mappingError) {
-    return adapterFailure(
-      mappingError,
-      operation: 'interrupt-error-conversion',
-    );
-  }
-}
-
-final class _UnusableInterruptReply {
-  _UnusableInterruptReply(this.reply, this.cause, this.stack);
-  final command.BridgeInterruptTurnCommandReply reply;
   final Object cause;
   final StackTrace stack;
 }

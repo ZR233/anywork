@@ -152,11 +152,11 @@ pub(in crate::studio) fn project_effect_items(
                 .state()
                 .clone()
             } else {
-                ThreadItemState::Raw(ThreadRawItem {
-                    payloads: vec![super::raw_payload(payload)],
-                    notice: "Unsupported saved parent message encoding".into(),
-                    recorded_at: created_at,
-                })
+                ThreadItemState::Raw(ThreadRawItem::stored(
+                    vec![super::raw_payload(payload)],
+                    "Unsupported saved parent message encoding",
+                    created_at,
+                ))
             };
             items.push(ThreadItem::new(
                 id,

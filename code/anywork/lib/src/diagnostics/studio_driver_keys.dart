@@ -232,6 +232,36 @@ abstract final class StudioDriverKeys {
   static const composerStop = ValueKey<String>('composer-stop');
   static const composerPending = ValueKey<String>('composer-pending');
   static const composerError = ValueKey<String>('composer-error');
+
+  /// 中断与清理态的主按钮，以及类型化阻塞说明。
+  static const composerContinue = ValueKey<String>(
+    StudioDriverKeyValues.composerContinue,
+  );
+  static const composerStopping = ValueKey<String>(
+    StudioDriverKeyValues.composerStopping,
+  );
+  static const composerContinuing = ValueKey<String>(
+    StudioDriverKeyValues.composerContinuing,
+  );
+  static const composerBlocker = ValueKey<String>(
+    StudioDriverKeyValues.composerBlocker,
+  );
+
+  /// 子会话详情的只读说明；它取代原来的子会话停止入口。
+  static const agentReadOnlyPanel = ValueKey<String>(
+    StudioDriverKeyValues.agentReadOnlyPanel,
+  );
+
+  /// 智能体列表行内的独立停止入口与等待调度说明。
+  static ValueKey<String> agentStop(String threadId) =>
+      ValueKey(StudioDriverKeyValues.agentStop(threadId));
+  static ValueKey<String> agentStopNote(String threadId) =>
+      ValueKey(StudioDriverKeyValues.agentStopNote(threadId));
+
+  /// 主会话里的子任务待决交互卡片。
+  static ValueKey<String> childInteractionCard(String interactionId) =>
+      ValueKey(StudioDriverKeyValues.childInteractionCard(interactionId));
+
   static const attachmentEntry = ValueKey<String>('composer-attachment-entry');
   static const attachmentLocal = ValueKey<String>('composer-attachment-local');
   static const attachmentUrl = ValueKey<String>('composer-attachment-url');

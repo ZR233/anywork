@@ -37,6 +37,7 @@ abstract interface class WorkspaceRepository {
   WorkspaceSelectionResult restoreSelection(WorkspaceSelection selection);
   OperationTicket<WorkspaceSelectionResult> openSelectedThread(String threadId);
   OperationTicket<WorkspaceSelectionResult> beginNewThread(String projectId);
+  /// Restores directory visibility only; does not select/open or rebuild worktrees.
   OperationTicket<WorkspaceSelectionResult> restoreThread(String threadId);
   OperationTicket<ProjectRecord> renameProject(String projectId, String name);
   OperationTicket<Unit> archiveProject(String projectId);

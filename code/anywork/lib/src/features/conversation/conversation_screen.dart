@@ -6,6 +6,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../l10n/studio_l10n.dart';
 import '../interaction/interaction.dart';
+import 'connectors/agent_read_only_connector.dart';
 import 'connectors/interaction_editor_close_connector.dart';
 import 'connectors/plan_connector.dart';
 import 'connectors/thread_context_connector.dart';
@@ -119,6 +120,7 @@ class _ConversationScreenState extends ConsumerState<ConversationScreen> {
       data: (state) {
         final page = _stopPage;
         final stop = page == null || state.retiredPlanner
+            || state.runtimeDriven
             ? null
             : vm.captureStop(page);
         final VoidCallback? onStop = stop == null
@@ -162,13 +164,15 @@ class _ConversationScreenState extends ConsumerState<ConversationScreen> {
             threadId: threadId,
             sideBySideFeasible: sideBySideFeasible,
           ),
-          composerBuilder: (compact) => ConversationInputConnector(
+          composerBuilder: (compact) => state.runtimeDriven
+              ? AgentReadOnlyConnector(threadId: threadId)
+              : ConversationInputConnector(
             threadId: threadId,
             onStop: onStop,
             stopState: stopState,
             compact: compact,
           ),
-          interactions: !hasInteractions
+          interactions: state.runtimeDriven || !hasInteractions
               ? null
               : ConstrainedBox(
                   constraints: BoxConstraints(

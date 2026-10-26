@@ -118,7 +118,7 @@ impl StudioThreadFactory {
                 .await
                 .map_err(|error| resource_error("open Mode recovery writer", error))?;
             *checkpoint = history
-                .migrate_recovery_checkpoint(checkpoint, |state| {
+                .prepare_execution_identity(|state| {
                     crate::mode::migrate_mode_snapshot(state, &self.services.thread_modes)?;
                     // A root's saved Mode identity is required evidence: without it neither the
                     // Mode nor the legacy Agent role can be attributed, so the original
@@ -237,6 +237,19 @@ impl StudioThreadFactory {
             thread_id: id.to_owned(),
             reason: error.to_string(),
         })?;
+        if workspace_mode == pl_protocol::ThreadWorkspaceMode::Worktree {
+            crate::studio::agent_host::workspace_preparation::verify_root_session_worktree(
+                &self.services.worktrees,
+                &self.services.ssh_manager,
+                &project,
+                &thread.root_thread_id,
+            )
+            .await
+            .map_err(|error| ThreadAssemblyError::Workspace {
+                thread_id: id.to_owned(),
+                reason: error.to_string(),
+            })?;
+        }
         let workspace = ToolWorkspace::new(match workspace_mode {
             pl_protocol::ThreadWorkspaceMode::Local => AgentWorkspace::local(&root),
             pl_protocol::ThreadWorkspaceMode::Worktree => {

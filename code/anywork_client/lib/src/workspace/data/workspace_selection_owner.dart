@@ -708,14 +708,12 @@ final class WorkspaceSelectionOwner implements WorkspaceSubmissionSelection {
           throw resourceProtocol(
             'Restore returned another or still archived root.',
           );
-        return adopt(
-          intent,
-          WorkspaceSelection(
-            projectId: thread.projectId,
-            threadId: id,
-            needsOpen: false,
-          ),
-          thread: thread,
+        // Unarchive changes directory visibility only. It is not an open,
+        // worktree recreation or a fresh permission to execute this Thread.
+        return WorkspaceSelectionResult(
+          intent: intent,
+          selection: source.value.selection,
+          disposition: SelectionDisposition.unchanged,
         );
       }, key: (kind: WorkspaceWriteKind.thread, id: id, path: null));
 

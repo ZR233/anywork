@@ -151,6 +151,8 @@ pub struct StorageBrief {
 #[derive(utoipa::ToSchema)]
 pub struct ExecutionBaseline {
     pub status: ThreadStatus,
+    pub execution: Option<crate::AgentExecution>,
+    pub continuation: Option<crate::ContinuationView>,
     pub active_turn: Option<TurnBrief>,
     pub recent_terminal_turn: Option<TurnBrief>,
     pub interactions: InteractionIndexHeader,
@@ -163,6 +165,8 @@ pub struct ExecutionBaseline {
 #[derive(utoipa::ToSchema)]
 pub struct ExecutionChange {
     pub status: Option<ThreadStatus>,
+    pub execution: ExecutionReplacement,
+    pub continuation: ContinuationReplacement,
     pub turns: Option<TurnsReplacement>,
     pub interactions: Option<InteractionDelta>,
     pub activity: ActivityReplacement,
@@ -175,6 +179,20 @@ pub struct ExecutionChange {
 pub struct TurnsReplacement {
     pub active_turn: Option<TurnBrief>,
     pub recent_terminal_turn: Option<TurnBrief>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
+#[serde(tag = "kind", content = "data", rename_all = "camelCase", deny_unknown_fields)]
+pub enum ExecutionReplacement {
+    Unchanged,
+    Replace { value: Option<crate::AgentExecution> },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
+#[serde(tag = "kind", content = "data", rename_all = "camelCase", deny_unknown_fields)]
+pub enum ContinuationReplacement {
+    Unchanged,
+    Replace { value: Option<crate::ContinuationView> },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

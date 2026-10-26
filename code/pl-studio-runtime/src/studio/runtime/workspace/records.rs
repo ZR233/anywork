@@ -180,6 +180,9 @@ impl DirectorySnapshot {
             frozen_model: self.frozen_model_read(index, inline)?,
             depth: row.depth,
             state: self.agent_state(index, inline)?,
+            execution: row.execution.clone(),
+            can_stop: row.can_stop,
+            awaiting_scheduling: row.awaiting_scheduling,
             updated_at: row.updated_at,
         })
     }

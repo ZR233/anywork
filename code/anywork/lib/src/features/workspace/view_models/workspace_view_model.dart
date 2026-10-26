@@ -1,7 +1,11 @@
 import 'dart:async';
 
 import 'package:anywork_client/conversation.dart'
-    show ConversationActivationFailure;
+    show
+        ConversationActivationFailure,
+        StopExecutionResult,
+        StopNoExecution,
+        StopExecutionOperation;
 import 'package:anywork_client/operations.dart';
 import 'package:anywork_client/remote.dart';
 import 'package:anywork_client/resources.dart';
@@ -9,6 +13,7 @@ import 'package:anywork_client/workspace.dart';
 import 'package:riverpod_annotation/riverpod_annotation.dart';
 
 import '../../../app/app_bindings.dart';
+import '../state/agent_list_stop.dart';
 import '../state/collection_presentation.dart';
 import '../state/workspace_view_state.dart';
 
@@ -377,6 +382,66 @@ class WorkspaceViewModel extends _$WorkspaceViewModel {
   Future<CommandResult<ArchiveThreadResult>?> archiveThread(String id) =>
       _run('thread:$id', () => _repository.archiveThread(id));
 
+  Future<CommandResult<Unit>?> stopDirectoryExecution(
+    AgentDirectoryState directory,
+    AgentDirectoryEntry agent,
+  ) {
+    if (!_alive || state.requireValue.workspace.sealed) {
+      return Future.value();
+    }
+    // Capture the rendered Ready row synchronously, before publishing pending
+    // or invoking any external callback. Never select/open the member here.
+    final target = AgentListStopTarget.capture(directory, agent);
+    if (target == null) return Future.value();
+    final previous = state.requireValue.actions['directory-stop:${target.threadId}'];
+    final pendingTarget = previous?.directoryStopTarget;
+    if (previous?.waiting == true &&
+        pendingTarget?.origin.origin == target.origin.origin &&
+        pendingTarget?.member.entry == target.member.entry &&
+        pendingTarget?.executionId == target.executionId) {
+      // UI admission only: retain the original observation while its ticket is
+      // in flight. Cross-observer deduplication remains the SDK's capability.
+      return Future.value();
+    }
+    final conversations = ref.read(conversationRepositoryProvider);
+    final StopExecutionResult admission;
+    try {
+      // The SDK makes this decision before a local pending presentation exists.
+      // NoExecution neither registers an operation nor implies a successful stop.
+      admission = conversations.stopDirectoryExecution(
+        origin: target.origin,
+        member: target.member,
+        executionId: target.executionId,
+    );
+    } on StudioFailure catch (error) {
+      // Invalid sources and different executions remain real rejections; only
+      // the explicit sealed NoExecution branch is the benign zero-request race.
+      if (_alive) {
+        final key = 'directory-stop:${target.threadId}';
+        _actions.remove(key)?.cancel();
+        _setAction(
+          key,
+          WorkspaceActionPresentation(
+            intent: ++_presentationIntent,
+            waiting: false,
+            operation: null,
+            admissionError: error,
+            directoryStopTarget: target,
+          ),
+        );
+  }
+      return Future.value();
+    }
+    return switch (admission) {
+      StopNoExecution() => Future.value(),
+      StopExecutionOperation(:final ticket) => _run(
+        'directory-stop:${target.threadId}',
+        () => ticket,
+        directoryStopTarget: target,
+      ),
+    };
+  }
+
   Future<void> openProject(String path) =>
       _open(() => _repository.openProject(path));
   Future<void> openRemoteProject(String alias, String path, {String? name}) =>
@@ -438,13 +503,16 @@ class WorkspaceViewModel extends _$WorkspaceViewModel {
 
   Future<CommandResult<T>?> _run<T>(
     String key,
-    OperationTicket<T> Function() create,
-  ) async {
+    OperationTicket<T> Function() create, {
+    AgentListStopTarget? directoryStopTarget,
+  }) async {
     final previous = state.requireValue;
     if (previous.workspace.sealed) return null;
     // New selection intents must reach D3 even while an older selection is
     // pending (including A→B→A). Other target-conflicting UI writes are gated.
-    if (key != 'selection' && previous.actions[key]?.waiting == true) {
+    if (key != 'selection' &&
+        directoryStopTarget == null &&
+        previous.actions[key]?.waiting == true) {
       return null;
     }
     final intent = ++_presentationIntent;
@@ -456,9 +524,13 @@ class WorkspaceViewModel extends _$WorkspaceViewModel {
         waiting: true,
         operation: null,
         admissionError: null,
+        directoryStopTarget: directoryStopTarget,
       ),
     );
+    if (!_currentAction(key, intent)) return null;
     try {
+      // Directory stops share the SDK's ticket/deduplication; this VM owns only
+      // a presentation observation, not another stop queue or replay policy.
       final ticket = create();
       try {
         final watched = ticket.state.watchLatest((operation) {

@@ -1,6 +1,8 @@
 import 'package:anywork_client/conversation.dart';
 
 import '../../../rust/api/studio/conversation/execution.dart' as native;
+import '../../../rust/api/studio/types/runtime.dart' as runtime;
+import '../../../rust/api/studio/types/thread_stream.dart' as stream;
 import '../shared/bridge_failure.dart';
 import '../shared/exact_numbers.dart';
 import '../shared/read_converters.dart';
@@ -217,10 +219,57 @@ StorageBrief storageBriefFromBridge(native.BridgeStorageBrief value) =>
       hasLastError: value.hasLastError,
     );
 
+AgentExecution agentExecutionFromBridge(runtime.BridgeAgentExecution value) =>
+    AgentExecution(
+      id: value.id,
+      phase: switch (value.phase) {
+        runtime.BridgeAgentExecutionPhase.preparing =>
+          AgentExecutionPhase.preparing,
+        runtime.BridgeAgentExecutionPhase.awaitingStorage =>
+          AgentExecutionPhase.awaitingStorage,
+        runtime.BridgeAgentExecutionPhase.awaitingAdmission =>
+          AgentExecutionPhase.awaitingAdmission,
+        runtime.BridgeAgentExecutionPhase.running => AgentExecutionPhase.running,
+        runtime.BridgeAgentExecutionPhase.stopping => AgentExecutionPhase.stopping,
+      },
+      turnId: value.turnId,
+    );
+
+ContinuationView continuationFromBridge(stream.BridgeContinuationView value) =>
+    ContinuationView(
+      id: value.id,
+      sourceTurnId: value.sourceTurnId,
+      reason: value.reason == null
+          ? null
+          : switch (value.reason!) {
+              stream.BridgeContinuationReason.userStop =>
+                ContinuationReason.userStop,
+              stream.BridgeContinuationReason.hostShutdown =>
+                ContinuationReason.hostShutdown,
+              stream.BridgeContinuationReason.processInterrupted =>
+                ContinuationReason.processInterrupted,
+              stream.BridgeContinuationReason.stepLimit =>
+                ContinuationReason.stepLimit,
+              stream.BridgeContinuationReason.executionFailed =>
+                ContinuationReason.executionFailed,
+            },
+      createdAt: exactI64(
+        BigInt.from(value.createdAt),
+        'continuation created Unix seconds',
+      ),
+      claimed: value.claimed,
+    );
+
 ThreadExecutionBaseline executionBaselineFromBridge(
   native.BridgeExecutionBaseline value,
 ) => ThreadExecutionBaseline(
   status: threadStatusFromBridge(value.status),
+  execution: value.execution == null
+      ? null
+      : agentExecutionFromBridge(value.execution!),
+  continuation: value.continuation == null
+      ? null
+      : continuationFromBridge(value.continuation!),
   activeTurn: value.activeTurn == null
       ? null
       : turnBriefFromBridge(value.activeTurn!),
@@ -240,6 +289,22 @@ ThreadExecutionChange executionChangeFromBridge(
   native.BridgeExecutionChange value,
 ) => ThreadExecutionChange(
   status: value.status == null ? null : threadStatusFromBridge(value.status!),
+  execution: switch (value.execution) {
+    native.BridgeExecutionReplacement_Unchanged() =>
+      const ExecutionReplacement.unchanged(),
+    native.BridgeExecutionReplacement_Replace(:final value) =>
+      ExecutionReplacement.replace(
+        value: value == null ? null : agentExecutionFromBridge(value),
+      ),
+  },
+  continuation: switch (value.continuation) {
+    native.BridgeContinuationReplacement_Unchanged() =>
+      const ContinuationReplacement.unchanged(),
+    native.BridgeContinuationReplacement_Replace(:final value) =>
+      ContinuationReplacement.replace(
+        value: value == null ? null : continuationFromBridge(value),
+      ),
+  },
   turns: value.turns == null
       ? null
       : TurnsReplacement(

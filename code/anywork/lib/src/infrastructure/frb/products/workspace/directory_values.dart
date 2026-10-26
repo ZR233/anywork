@@ -9,6 +9,7 @@ import '../../../../rust/api/studio/products/read/thread_directory.dart'
     as threads;
 import '../../../../rust/api/studio/types/delegation.dart' as delegation;
 import '../../../../rust/api/studio/types/response.dart' as response;
+import '../../../../rust/api/studio/types/runtime.dart' as runtime;
 import '../../conversation/scalar_converters.dart'
     show budgetLimitFromBridge, threadStatusFromBridge;
 import '../../shared/exact_numbers.dart';
@@ -143,11 +144,33 @@ AgentDirectoryEntryRead agentDirectoryReadFromBridge(
       : frozenSelectionReadFromBridge(value.frozenModel!),
   depth: value.depth,
   state: agentStateReadFromBridge(value.state),
+  execution: value.execution == null
+      ? null
+      : agentExecutionFromBridge(value.execution!),
+  canStop: value.canStop,
+  awaitingScheduling: value.awaitingScheduling,
   updatedAt: exactI64(
     BigInt.from(value.updatedAt),
     'Agent updated Unix seconds',
   ),
 );
+
+AgentExecution agentExecutionFromBridge(runtime.BridgeAgentExecution value) =>
+    AgentExecution(
+      id: value.id,
+      phase: switch (value.phase) {
+        runtime.BridgeAgentExecutionPhase.preparing =>
+          AgentExecutionPhase.preparing,
+        runtime.BridgeAgentExecutionPhase.awaitingStorage =>
+          AgentExecutionPhase.awaitingStorage,
+        runtime.BridgeAgentExecutionPhase.awaitingAdmission =>
+          AgentExecutionPhase.awaitingAdmission,
+        runtime.BridgeAgentExecutionPhase.running => AgentExecutionPhase.running,
+        runtime.BridgeAgentExecutionPhase.stopping =>
+          AgentExecutionPhase.stopping,
+      },
+      turnId: value.turnId,
+    );
 
 AgentStateRead agentStateReadFromBridge(agents.BridgeAgentStateRead value) =>
     switch (value) {

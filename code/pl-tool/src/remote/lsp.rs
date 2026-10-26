@@ -149,7 +149,11 @@ pub(crate) async fn resolve_lsp_query_path(
         .map_err(|()| crate::tool_error("lsp_query", "path escapes the remote workspace"))?;
     let mut candidate = relative.as_str();
     loop {
-        if let Some(stat) = files.stat_optional(candidate.to_owned(), None).await? {
+        if let Some(stat) = files
+            .stat_optional(candidate.to_owned(), None)
+            .await
+            .map_err(super::workspace::remote_file_error)?
+        {
             if operation.requires_file() && !stat.is_file {
                 return Err(crate::tool_error(
                     "lsp_query",

@@ -1,3 +1,4 @@
+import 'package:anywork_client/conversation_ports.dart' show ConversationCommandPort;
 import 'package:anywork_client/recovery_ports.dart';
 import 'package:anywork_client/resources_ports.dart';
 import 'package:anywork_client/workspace_ports.dart';
@@ -11,8 +12,9 @@ import 'timeline_transport.dart';
 /// Real selection, operations, Recovery and Conversation owners. Only native
 /// directory materials and facet/Timeline transports are supplied by fixtures.
 final class WorkspaceSelectionFixture {
-  WorkspaceSelectionFixture() {
-    conversations = ConversationFixture(budget: budget);
+  WorkspaceSelectionFixture({ConversationCommandPort? commands}) {
+    conversations = ConversationFixture(budget: budget, commands: commands,
+      agentDirectory: () => workspace.agents);
     recovery = createRecoveryRepository(
       port: recoveryPort,
       budget: budget,
