@@ -101,7 +101,7 @@
     }
   },
   "sidebarArchiveSessionConfirmTitle": "Archive session",
-  "sidebarArchiveSessionConfirmBody": "Archiving ends any running work, deletes this session tree's worktree along with any uncommitted or unmerged content, then moves the session out of the list. Continue?",
+  "sidebarArchiveSessionConfirmBody": "Archiving stops active work in this session and its child sessions, then moves them to the archived list. Session history, workspaces, branches, and uncommitted content are kept. Continue?",
   "sidebarArchiveSessionConfirmAction": "Archive",
   "sidebarRenameSession": "Rename session",
   "sidebarRenameSessionTitle": "Rename session",
@@ -851,6 +851,7 @@
   },
   "timelineViewImageReading": "Reading image",
   "timelineViewImageFailed": "Failed to read image",
+  "timelineViewImageStopped": "Stopped reading image",
   "timelineReadFileCompleted": "Read",
   "timelineReadFileReading": "Reading",
   "timelineReadFileFailed": "Unable to read",
@@ -939,6 +940,12 @@
   "timelineToolWaitSucceeded": "Waited",
   "timelineToolWaitRunning": "Waiting",
   "timelineToolWaitFailed": "Wait failed",
+  "timelineTurnStopped": "Turn stopped",
+  "timelineTurnCancelled": "Turn cancelled",
+  "timelineTurnRuntimeShutdown": "Runtime shut down; turn stopped",
+  "timelineTurnAgentClosed": "Agent closed; turn stopped",
+  "timelineTurnRecoveryStopped": "Turn stopped during recovery",
+  "timelineTurnCoalesced": "Turn merged into a later turn",
   "timelineToolCompleted": "{name} completed",
   "@timelineToolCompleted": {
     "placeholders": {
@@ -1013,7 +1020,7 @@
       }
     }
   },
-  "timelineToolInterrupted": "{name} interrupted",
+  "timelineToolInterrupted": "{name} stopped",
   "@timelineToolInterrupted": {
     "placeholders": {
       "name": {
@@ -1557,7 +1564,7 @@
       }
     }
   },
-  "settingsWorktreeCleanup": "Clean up worktree and branch",
+  "settingsWorktreeCleanup": "Remove worktree (keep branch)",
   "settingsWorktreeOwnerSession": "Session worktree",
   "settingsWorktreeOwnerChild": "Child agent worktree",
   "settingsAgentProfileAddTitle": "Add user agent profile",
@@ -1666,7 +1673,7 @@
   "sidebarEmptyProject": "No sessions yet. Use + on this project to start",
   "sidebarEarlier": "Show earlier sessions",
   "sidebarArchived": "Archived",
-  "sidebarRestore": "Restore session",
+  "sidebarRestore": "Unarchive session",
   "sidebarPin": "Pin",
   "sidebarUnpin": "Unpin",
   "sidebarNavigation": "Project navigation",
@@ -1780,6 +1787,14 @@
   "settingsWorktreeStateCleanupRequested": "Cleanup requested",
   "settingsWorktreeStateCleaned": "Cleaned",
   "settingsWorktreeDirty": "dirty",
+  "settingsWorktreeClean": "No uncommitted changes",
+  "settingsWorktreeDirtyUnknown": "Change status unknown",
+  "settingsWorktreeChangedFilesUnknown": "Changed files are not yet known. Retry the inspection.",
+  "settingsWorktreeInspectionAvailable": "Worktree verified",
+  "settingsWorktreeInspectionMissing": "Worktree missing",
+  "settingsWorktreeInspectionIdentityMismatch": "Worktree identity mismatch",
+  "settingsWorktreeInspectionUnavailable": "Inspection unavailable",
+  "settingsWorktreeRetry": "Retry inspection",
   "startupPreparing": "Preparing application…",
   "startupStorage": "Opening local data…",
   "startupConfiguration": "Loading configuration…",
@@ -2167,7 +2182,7 @@
   "timelineWaitTimedOut": "Wait timed out",
   "timelineWaitCancelled": "Wait cancelled",
   "timelineWaitFailed": "Wait failed",
-  "timelineWaitInterrupted": "Wait interrupted",
+  "timelineWaitInterrupted": "Wait stopped",
   "timelineWaitTargetCount": "{count, plural, =1{1 task} other{{count} tasks}}",
   "@timelineWaitTargetCount": {
     "placeholders": {
@@ -2201,7 +2216,7 @@
   "timelineWaitStatusSucceeded": "Succeeded",
   "timelineWaitStatusFailed": "Failed",
   "timelineWaitStatusCancelled": "Cancelled",
-  "timelineWaitStatusInterrupted": "Interrupted",
+  "timelineWaitStatusInterrupted": "Stopped",
   "conversationActivityWaitingTools": "Waiting for tools",
   "conversationActivityWaitingMessages": "Waiting for a subagent or new message",
   "conversationActivityWaitingTimer": "Timer",

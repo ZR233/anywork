@@ -22,7 +22,7 @@ pub use client::{
     RemoteClient, RemoteClientError, RemoteReply, RemoteRequestTiming, SshAuthFailure,
 };
 pub use command::RemoteCommandBackend;
-pub use execution::RemoteExecutionBackend;
+pub use execution::{RemoteExecutionBackend, RemoteExecutionError};
 pub use manager::{
     RemoteHelperAssets, RemoteHelperTarget, SshConnectionSnapshot, SshConnectionState, SshManager,
     SshServerProfile,

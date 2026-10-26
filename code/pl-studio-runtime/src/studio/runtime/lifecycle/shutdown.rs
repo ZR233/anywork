@@ -567,7 +567,7 @@ impl ShutdownCollector {
 /// 定位 SQLite / OS 失败原因。这里保留**结构性的事实**：typed `StudioError` 的稳定诊断码与
 /// 已脱敏 message、`std::io::Error` 的 kind 与原始 OS 错误码、`sea_orm::DbErr` 的失败分类与
 /// 可公开的 SQL 错误码；未知类型只保留规模。所有分支都不写正文或凭据。
-fn redacted_chain(error: &anyhow::Error) -> String {
+pub(super) fn redacted_chain(error: &anyhow::Error) -> String {
     let mut parts = Vec::new();
     for cause in error.chain() {
         if let Some(studio) = cause.downcast_ref::<pl_protocol::studio::StudioError>() {

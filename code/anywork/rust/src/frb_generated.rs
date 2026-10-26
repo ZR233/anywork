@@ -17368,6 +17368,20 @@ impl SseDecode for crate::api::studio::types::mode_editor::BridgeWorkflowTransit
     }
 }
 
+impl SseDecode for crate::api::studio::types::runtime::BridgeWorktreeInspection {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut inner = <i32>::sse_decode(deserializer);
+        return match inner {
+            0 => crate::api::studio::types::runtime::BridgeWorktreeInspection::Available,
+            1 => crate::api::studio::types::runtime::BridgeWorktreeInspection::Missing,
+            2 => crate::api::studio::types::runtime::BridgeWorktreeInspection::IdentityMismatch,
+            3 => crate::api::studio::types::runtime::BridgeWorktreeInspection::Unavailable,
+            _ => unreachable!("Invalid variant for BridgeWorktreeInspection: {}", inner),
+        };
+    }
+}
+
 impl SseDecode for crate::api::studio::types::runtime::BridgeWorktreeOwner {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
@@ -17383,6 +17397,10 @@ impl SseDecode for crate::api::studio::types::runtime::BridgeWorktreeOwner {
 impl SseDecode for crate::api::studio::types::runtime::BridgeWorktreeRecoveryPreviewDto {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_inspection =
+            <crate::api::studio::types::runtime::BridgeWorktreeInspection>::sse_decode(
+                deserializer,
+            );
         let mut var_ownerKind =
             <crate::api::studio::types::runtime::BridgeWorktreeOwner>::sse_decode(deserializer);
         let mut var_ownerThreadId = <String>::sse_decode(deserializer);
@@ -17393,9 +17411,10 @@ impl SseDecode for crate::api::studio::types::runtime::BridgeWorktreeRecoveryPre
         let mut var_branch = <String>::sse_decode(deserializer);
         let mut var_baseCommit = <String>::sse_decode(deserializer);
         let mut var_headCommit = <Option<String>>::sse_decode(deserializer);
-        let mut var_dirty = <bool>::sse_decode(deserializer);
-        let mut var_changedFiles = <Vec<String>>::sse_decode(deserializer);
+        let mut var_dirty = <Option<bool>>::sse_decode(deserializer);
+        let mut var_changedFiles = <Option<Vec<String>>>::sse_decode(deserializer);
         return crate::api::studio::types::runtime::BridgeWorktreeRecoveryPreviewDto {
+            inspection: var_inspection,
             owner_kind: var_ownerKind,
             owner_thread_id: var_ownerThreadId,
             lease_revision: var_leaseRevision,
@@ -19955,6 +19974,17 @@ impl SseDecode
             return Some(<Box<
                 crate::api::studio::types::thread_stream::item::BridgeThreadWaitPresentation,
             >>::sse_decode(deserializer));
+        } else {
+            return None;
+        }
+    }
+}
+
+impl SseDecode for Option<Vec<String>> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        if (<bool>::sse_decode(deserializer)) {
+            return Some(<Vec<String>>::sse_decode(deserializer));
         } else {
             return None;
         }
@@ -33921,6 +33951,31 @@ impl
     }
 }
 // Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart
+    for crate::api::studio::types::runtime::BridgeWorktreeInspection
+{
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        match self {
+            Self::Available => 0.into_dart(),
+            Self::Missing => 1.into_dart(),
+            Self::IdentityMismatch => 2.into_dart(),
+            Self::Unavailable => 3.into_dart(),
+            _ => unreachable!(),
+        }
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::api::studio::types::runtime::BridgeWorktreeInspection
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::api::studio::types::runtime::BridgeWorktreeInspection>
+    for crate::api::studio::types::runtime::BridgeWorktreeInspection
+{
+    fn into_into_dart(self) -> crate::api::studio::types::runtime::BridgeWorktreeInspection {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
 impl flutter_rust_bridge::IntoDart for crate::api::studio::types::runtime::BridgeWorktreeOwner {
     fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
         match self {
@@ -33947,6 +34002,7 @@ impl flutter_rust_bridge::IntoDart
 {
     fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
         [
+            self.inspection.into_into_dart().into_dart(),
             self.owner_kind.into_into_dart().into_dart(),
             self.owner_thread_id.into_into_dart().into_dart(),
             self.lease_revision.into_into_dart().into_dart(),
@@ -43396,6 +43452,24 @@ impl SseEncode for crate::api::studio::types::mode_editor::BridgeWorkflowTransit
     }
 }
 
+impl SseEncode for crate::api::studio::types::runtime::BridgeWorktreeInspection {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <i32>::sse_encode(
+            match self {
+                crate::api::studio::types::runtime::BridgeWorktreeInspection::Available => 0,
+                crate::api::studio::types::runtime::BridgeWorktreeInspection::Missing => 1,
+                crate::api::studio::types::runtime::BridgeWorktreeInspection::IdentityMismatch => 2,
+                crate::api::studio::types::runtime::BridgeWorktreeInspection::Unavailable => 3,
+                _ => {
+                    unimplemented!("");
+                }
+            },
+            serializer,
+        );
+    }
+}
+
 impl SseEncode for crate::api::studio::types::runtime::BridgeWorktreeOwner {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
@@ -43415,6 +43489,10 @@ impl SseEncode for crate::api::studio::types::runtime::BridgeWorktreeOwner {
 impl SseEncode for crate::api::studio::types::runtime::BridgeWorktreeRecoveryPreviewDto {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <crate::api::studio::types::runtime::BridgeWorktreeInspection>::sse_encode(
+            self.inspection,
+            serializer,
+        );
         <crate::api::studio::types::runtime::BridgeWorktreeOwner>::sse_encode(
             self.owner_kind,
             serializer,
@@ -43427,8 +43505,8 @@ impl SseEncode for crate::api::studio::types::runtime::BridgeWorktreeRecoveryPre
         <String>::sse_encode(self.branch, serializer);
         <String>::sse_encode(self.base_commit, serializer);
         <Option<String>>::sse_encode(self.head_commit, serializer);
-        <bool>::sse_encode(self.dirty, serializer);
-        <Vec<String>>::sse_encode(self.changed_files, serializer);
+        <Option<bool>>::sse_encode(self.dirty, serializer);
+        <Option<Vec<String>>>::sse_encode(self.changed_files, serializer);
     }
 }
 
@@ -45471,6 +45549,16 @@ impl SseEncode
         <bool>::sse_encode(self.is_some(), serializer);
         if let Some(value) = self {
             <Box<crate::api::studio::types::thread_stream::item::BridgeThreadWaitPresentation>>::sse_encode(value, serializer);
+        }
+    }
+}
+
+impl SseEncode for Option<Vec<String>> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <bool>::sse_encode(self.is_some(), serializer);
+        if let Some(value) = self {
+            <Vec<String>>::sse_encode(value, serializer);
         }
     }
 }

@@ -156,10 +156,14 @@ impl StudioThreadAssembler {
                         && Arc::ptr_eq(&entry.incarnation, incarnation)
                 })
                 .and_then(|entry| {
+                    // Ordinary retirement (archive or host shutdown) only stops/saves execution.
+                    // Published workspace disposition belongs to an explicit close_agent intent;
+                    // do not synthesize one here or even open the workspace backend.
+                    let disposition = entry.workspace_disposition?;
                     state
                         .child_factory
                         .clone()
-                        .map(|factory| (factory, entry.workspace_disposition.unwrap_or_default()))
+                        .map(|factory| (factory, disposition))
                 })
         };
         if let Some((factory, disposition)) = resource {

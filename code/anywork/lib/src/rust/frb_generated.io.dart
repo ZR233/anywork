@@ -2780,6 +2780,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   BridgeWorkflowTransition dco_decode_bridge_workflow_transition(dynamic raw);
 
   @protected
+  BridgeWorktreeInspection dco_decode_bridge_worktree_inspection(dynamic raw);
+
+  @protected
   BridgeWorktreeOwner dco_decode_bridge_worktree_owner(dynamic raw);
 
   @protected
@@ -3510,6 +3513,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   BridgeThreadWaitPresentation?
   dco_decode_opt_box_bridge_thread_wait_presentation(dynamic raw);
+
+  @protected
+  List<String>? dco_decode_opt_list_String(dynamic raw);
 
   @protected
   List<BridgeUserQuestionOption>?
@@ -6950,6 +6956,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  BridgeWorktreeInspection sse_decode_bridge_worktree_inspection(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   BridgeWorktreeOwner sse_decode_bridge_worktree_owner(
     SseDeserializer deserializer,
   );
@@ -7848,6 +7859,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   sse_decode_opt_box_bridge_thread_wait_presentation(
     SseDeserializer deserializer,
   );
+
+  @protected
+  List<String>? sse_decode_opt_list_String(SseDeserializer deserializer);
 
   @protected
   List<BridgeUserQuestionOption>?
@@ -11927,6 +11941,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_bridge_worktree_inspection(
+    BridgeWorktreeInspection self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_bridge_worktree_owner(
     BridgeWorktreeOwner self,
     SseSerializer serializer,
@@ -12951,6 +12971,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
     BridgeThreadWaitPresentation? self,
     SseSerializer serializer,
   );
+
+  @protected
+  void sse_encode_opt_list_String(List<String>? self, SseSerializer serializer);
 
   @protected
   void sse_encode_opt_list_bridge_user_question_option(

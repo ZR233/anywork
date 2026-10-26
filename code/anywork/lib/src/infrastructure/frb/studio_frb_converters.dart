@@ -1326,6 +1326,16 @@ StudioRecoveryIssue _recoveryIssueFromFrb(
     worktree: issue.worktree == null
         ? null
         : WorktreeRecoveryPreview(
+            inspection: switch (issue.worktree!.inspection) {
+              frb.BridgeWorktreeInspection.available =>
+                WorktreeInspection.available,
+              frb.BridgeWorktreeInspection.missing =>
+                WorktreeInspection.missing,
+              frb.BridgeWorktreeInspection.identityMismatch =>
+                WorktreeInspection.identityMismatch,
+              frb.BridgeWorktreeInspection.unavailable =>
+                WorktreeInspection.unavailable,
+            },
             ownerKind: switch (issue.worktree!.ownerKind) {
               frb.BridgeWorktreeOwner.session => WorktreeOwnerKind.session,
               frb.BridgeWorktreeOwner.child => WorktreeOwnerKind.child,

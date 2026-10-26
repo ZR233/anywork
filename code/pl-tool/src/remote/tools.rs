@@ -135,7 +135,8 @@ impl RemoteWorkspaceMutationTool {
         let stat = self
             .backend
             .stat_optional(input.path.clone(), None)
-            .await?
+            .await
+            .map_err(super::workspace::remote_file_error)?
             .ok_or_else(|| tool_error(self.name(), "path does not exist"))?;
         match (stat.is_dir, input.mode) {
             (false, DeleteMode::File)
@@ -172,9 +173,15 @@ impl RemoteWorkspaceMutationTool {
         let source = self
             .backend
             .stat_optional(input.from.clone(), None)
-            .await?
+            .await
+            .map_err(super::workspace::remote_file_error)?
             .ok_or_else(|| tool_error(self.name(), "source does not exist"))?;
-        if let Some(target) = self.backend.stat_optional(input.to.clone(), None).await? {
+        if let Some(target) = self
+            .backend
+            .stat_optional(input.to.clone(), None)
+            .await
+            .map_err(super::workspace::remote_file_error)?
+        {
             if matches!(input.collision, PathCollision::FailIfExists) {
                 return Err(tool_error(self.name(), "destination already exists"));
             }

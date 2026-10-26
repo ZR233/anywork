@@ -92,7 +92,8 @@ impl super::StudioThreadAssembler {
         if !self.0.state().unpublished_children.contains_key(id) {
             return Ok(());
         }
-        self.close_thread(id).await?;
+        self.close_thread(id, super::PublishedWorkspaceRetirement::Retain)
+            .await?;
         pending.factory.discard_unpublished(id).await?;
         self.0.state().unpublished_children.remove(id);
         Ok(())

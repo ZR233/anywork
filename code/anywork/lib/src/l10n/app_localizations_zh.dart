@@ -256,7 +256,7 @@ class AppLocalizationsZh extends AppLocalizations {
 
   @override
   String get sidebarArchiveSessionConfirmBody =>
-      '归档会先结束该会话正在运行的工作，并删除该会话树的工作树及其未提交、未整合的内容，然后将其从列表中移除。是否继续？';
+      '归档会停止该会话及其子会话的活动工作，并将它们移入已归档列表。会话历史、工作区、分支和未提交内容都会保留。是否继续？';
 
   @override
   String get sidebarArchiveSessionConfirmAction => '归档';
@@ -1708,6 +1708,9 @@ class AppLocalizationsZh extends AppLocalizations {
   String get timelineViewImageFailed => '读取图片失败';
 
   @override
+  String get timelineViewImageStopped => '已停止读取图片';
+
+  @override
   String get timelineReadFileCompleted => '已读取';
 
   @override
@@ -1878,6 +1881,24 @@ class AppLocalizationsZh extends AppLocalizations {
   String get timelineToolWaitFailed => '等待失败';
 
   @override
+  String get timelineTurnStopped => '本轮已停止';
+
+  @override
+  String get timelineTurnCancelled => '本轮已取消';
+
+  @override
+  String get timelineTurnRuntimeShutdown => '运行时已关闭，本轮已停止';
+
+  @override
+  String get timelineTurnAgentClosed => '代理已关闭，本轮已停止';
+
+  @override
+  String get timelineTurnRecoveryStopped => '恢复期间已停止本轮';
+
+  @override
+  String get timelineTurnCoalesced => '本轮已并入后续轮次';
+
+  @override
   String timelineToolCompleted(String name) {
     return '$name 已完成';
   }
@@ -1930,7 +1951,7 @@ class AppLocalizationsZh extends AppLocalizations {
 
   @override
   String timelineToolInterrupted(String name) {
-    return '$name 已中断';
+    return '$name 已停止';
   }
 
   @override
@@ -2925,7 +2946,7 @@ class AppLocalizationsZh extends AppLocalizations {
   }
 
   @override
-  String get settingsWorktreeCleanup => '显式清理工作树与分支';
+  String get settingsWorktreeCleanup => '清理工作树（保留分支）';
 
   @override
   String get settingsWorktreeOwnerSession => '会话工作树';
@@ -3256,7 +3277,7 @@ class AppLocalizationsZh extends AppLocalizations {
   String get sidebarArchived => '已归档';
 
   @override
-  String get sidebarRestore => '恢复会话';
+  String get sidebarRestore => '取消归档';
 
   @override
   String get sidebarPin => '置顶';
@@ -3455,6 +3476,30 @@ class AppLocalizationsZh extends AppLocalizations {
 
   @override
   String get settingsWorktreeDirty => '有改动';
+
+  @override
+  String get settingsWorktreeClean => '无未提交改动';
+
+  @override
+  String get settingsWorktreeDirtyUnknown => '改动状态未知';
+
+  @override
+  String get settingsWorktreeChangedFilesUnknown => '尚未确认变更文件，请重试检查。';
+
+  @override
+  String get settingsWorktreeInspectionAvailable => '工作树已核实';
+
+  @override
+  String get settingsWorktreeInspectionMissing => '工作树缺失';
+
+  @override
+  String get settingsWorktreeInspectionIdentityMismatch => '工作树身份不匹配';
+
+  @override
+  String get settingsWorktreeInspectionUnavailable => '暂时无法检查';
+
+  @override
+  String get settingsWorktreeRetry => '重试检查';
 
   @override
   String get startupPreparing => '正在准备应用…';
@@ -4263,7 +4308,7 @@ class AppLocalizationsZh extends AppLocalizations {
   String get timelineWaitFailed => '等待失败';
 
   @override
-  String get timelineWaitInterrupted => '等待已中断';
+  String get timelineWaitInterrupted => '等待已停止';
 
   @override
   String timelineWaitTargetCount(int count) {
@@ -4308,7 +4353,7 @@ class AppLocalizationsZh extends AppLocalizations {
   String get timelineWaitStatusCancelled => '已取消';
 
   @override
-  String get timelineWaitStatusInterrupted => '已中断';
+  String get timelineWaitStatusInterrupted => '已停止';
 
   @override
   String get conversationActivityWaitingTools => '等待工具完成';

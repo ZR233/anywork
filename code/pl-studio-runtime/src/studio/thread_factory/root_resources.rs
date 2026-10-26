@@ -237,6 +237,19 @@ impl StudioThreadFactory {
             thread_id: id.to_owned(),
             reason: error.to_string(),
         })?;
+        if workspace_mode == pl_protocol::ThreadWorkspaceMode::Worktree {
+            crate::studio::agent_host::workspace_preparation::verify_root_session_worktree(
+                &self.services.worktrees,
+                &self.services.ssh_manager,
+                &project,
+                &thread.root_thread_id,
+            )
+            .await
+            .map_err(|error| ThreadAssemblyError::Workspace {
+                thread_id: id.to_owned(),
+                reason: error.to_string(),
+            })?;
+        }
         let workspace = ToolWorkspace::new(match workspace_mode {
             pl_protocol::ThreadWorkspaceMode::Local => AgentWorkspace::local(&root),
             pl_protocol::ThreadWorkspaceMode::Worktree => {
