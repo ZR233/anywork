@@ -5,6 +5,13 @@ anywork release notes are generated from Conventional Commits by Release Please.
 以下已发布记录保留当时的名称与行为，不作为当前工程规范；当前架构演进规则见
 [AGENTS.md](AGENTS.md)，数据迁移契约及实现缺口见[存储设计](design/17-studio-storage.md)。
 
+## [6.30.0](https://github.com/ZR233/anywork/compare/v6.29.0...v6.30.0) (2026-10-27)
+
+
+### Features
+
+* **model:** 增加 GPT-6.1 Terra 支持 ([#181](https://github.com/ZR233/anywork/issues/181)) ([c51e572](https://github.com/ZR233/anywork/commit/c51e572425a63a2c1a43ca0287ae0a19292dbe93))
+
 ## [6.29.0](https://github.com/ZR233/anywork/compare/v6.28.0...v6.29.0) (2026-10-26)
 
 
