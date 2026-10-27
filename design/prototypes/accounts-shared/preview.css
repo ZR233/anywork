@@ -426,7 +426,17 @@ body { margin: 0; padding: 20px 24px 32px; background: #f3ede3; }
   color: rgb(var(--mdui-color-on-surface-variant));
   margin-top: 3px;
   overflow-wrap: anywhere;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
 }
+#aw-accounts .aw-copy-btn {
+  width: 24px;
+  height: 24px;
+  opacity: 0.72;
+}
+#aw-accounts .aw-copy-btn:hover { opacity: 1; }
+#aw-accounts .aw-copy-btn svg { width: 13px; height: 13px; }
 #aw-accounts .aw-balance-card {
   --shape-corner: 16px;
   padding: 20px 22px;
@@ -520,26 +530,88 @@ body { margin: 0; padding: 20px 24px 32px; background: #f3ede3; }
   flex-direction: column;
   gap: 14px;
 }
-#aw-accounts .aw-threshold-row {
+#aw-accounts .aw-threshold-block {
+  display: grid;
+  grid-template-columns: minmax(220px, 1.15fr) minmax(260px, 1fr);
+  gap: 16px;
+  align-items: start;
+  padding: 12px 14px;
+  border-radius: 10px;
+  background: rgb(var(--mdui-color-surface-container-low));
+}
+#aw-accounts .aw-threshold-info h4 {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
   display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 14px;
+  align-items: center;
+  gap: 8px;
   flex-wrap: wrap;
 }
-#aw-accounts .aw-threshold-row mdui-text-field { max-width: 280px; flex: 1; }
-#aw-accounts .aw-threshold-error { font-size: 11px; color: rgb(var(--mdui-color-error)); margin-top: -6px; }
+#aw-accounts .aw-threshold-info p {
+  font-size: 11.5px;
+  color: rgb(var(--mdui-color-on-surface-variant));
+  margin-top: 4px;
+  line-height: 1.5;
+}
+#aw-accounts .aw-threshold-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  align-items: flex-end;
+}
+#aw-accounts .aw-preset-chips {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+#aw-accounts .aw-preset-chips mdui-chip {
+  height: 26px;
+  font-size: 11px;
+  --shape-corner: 7px;
+}
+#aw-accounts .aw-threshold-input-wrap {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  max-width: 280px;
+}
+#aw-accounts .aw-threshold-input-wrap mdui-text-field { flex: 1; }
+#aw-accounts .aw-threshold-error { font-size: 11px; color: rgb(var(--mdui-color-error)); margin-top: 2px; }
 #aw-accounts .aw-model-config-bar {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
   flex-wrap: wrap;
-  padding-top: 10px;
-  border-top: 1px solid rgb(var(--mdui-color-outline-variant));
+  padding-top: 4px;
   font-size: 12px;
 }
+#aw-accounts .aw-conn-group {
+  height: 30px;
+  --mdui-typescale-label-large-size: 11.5px;
+}
+#aw-accounts .aw-conn-group mdui-segmented-button {
+  height: 30px;
+  padding: 0 10px;
+}
 #aw-accounts .aw-capabilities { display: flex; gap: 6px; flex-wrap: wrap; }
+#aw-accounts .aw-model-tools {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+}
+#aw-accounts .aw-model-search {
+  max-width: 240px;
+  flex: 1;
+  --shape-corner: 10px;
+}
 
 /* Notices, Empty & Muted Cards */
 #aw-accounts .aw-notice {
@@ -635,6 +707,32 @@ body { margin: 0; padding: 20px 24px 32px; background: #f3ede3; }
   margin-top: 4px;
   font-variant-numeric: tabular-nums;
 }
+#aw-accounts .aw-effort-table {
+  border-top: 1px solid rgb(var(--mdui-color-outline-variant));
+  background: rgb(var(--mdui-color-surface-container-lowest));
+  padding: 12px 22px 14px;
+}
+#aw-accounts .aw-effort-head, #aw-accounts .aw-effort-row {
+  display: grid;
+  grid-template-columns: 1.2fr 1fr 1fr 0.8fr;
+  gap: 12px;
+  align-items: center;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+#aw-accounts .aw-effort-head {
+  font-size: 11px;
+  font-weight: 600;
+  color: rgb(var(--mdui-color-on-surface-variant));
+  padding-bottom: 6px;
+  border-bottom: 1px solid rgba(var(--mdui-color-outline-variant), 0.7);
+}
+#aw-accounts .aw-effort-row {
+  padding: 7px 0;
+}
+#aw-accounts .aw-effort-row + .aw-effort-row {
+  border-top: 1px dashed rgba(var(--mdui-color-outline-variant), 0.7);
+}
 #aw-accounts .aw-pricing-card {
   background: rgb(var(--mdui-color-surface-container-lowest));
   --shape-corner: 12px;
@@ -649,6 +747,8 @@ body { margin: 0; padding: 20px 24px 32px; background: #f3ede3; }
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
 }
 #aw-accounts .aw-price-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 18px; }
 #aw-accounts .aw-price-grid strong {
@@ -664,6 +764,29 @@ body { margin: 0; padding: 20px 24px 32px; background: #f3ede3; }
   padding-left: 18px;
   border-left: 1px solid rgb(var(--mdui-color-outline-variant));
 }
+#aw-accounts .aw-estimator-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+#aw-accounts .aw-estimator-card {
+  padding: 14px 18px;
+  --shape-corner: 12px;
+  background: rgb(var(--mdui-color-surface-container-low));
+}
+#aw-accounts .aw-estimator-card h3 { font-size: 13px; margin-bottom: 3px; }
+#aw-accounts .aw-estimator-nums {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid rgb(var(--mdui-color-outline-variant));
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+#aw-accounts .aw-estimator-nums strong { font-size: 15px; font-weight: 600; }
 
 /* Reviews Summary & Cards */
 #aw-accounts .aw-review-summary {
@@ -707,15 +830,30 @@ body { margin: 0; padding: 20px 24px 32px; background: #f3ede3; }
 #aw-accounts .aw-review-summary-score .aw-stars { margin: 8px 0 4px; }
 #aw-accounts .aw-review-summary-score .aw-stars svg { width: 16px; height: 16px; }
 #aw-accounts .aw-review-summary-score > small { display: block; }
-#aw-accounts .aw-rating-bars { display: flex; flex-direction: column; gap: 6px; }
+#aw-accounts .aw-rating-bars { display: flex; flex-direction: column; gap: 4px; }
 #aw-accounts .aw-rating-line {
   display: grid;
-  grid-template-columns: 28px minmax(0, 1fr) 32px;
+  grid-template-columns: 32px minmax(0, 1fr) 36px;
   gap: 10px;
   align-items: center;
   font-size: 11px;
   color: rgb(var(--mdui-color-on-surface-variant));
   font-variant-numeric: tabular-nums;
+  padding: 2px 6px;
+  border-radius: 6px;
+  cursor: pointer;
+  border: 0;
+  background: transparent;
+  width: 100%;
+  text-align: left;
+}
+#aw-accounts .aw-rating-line:hover {
+  background: rgba(var(--mdui-color-on-surface), 0.05);
+}
+#aw-accounts .aw-rating-line.active {
+  background: rgb(var(--mdui-color-secondary-container));
+  color: rgb(var(--mdui-color-on-secondary-container));
+  font-weight: 600;
 }
 #aw-accounts .aw-rating-line span:last-child { text-align: right; }
 #aw-accounts .aw-rating-line mdui-linear-progress { height: 5px; background: rgb(var(--mdui-color-outline-variant)); }
@@ -730,6 +868,11 @@ body { margin: 0; padding: 20px 24px 32px; background: #f3ede3; }
   border-top: 1px solid rgb(var(--mdui-color-outline-variant));
 }
 #aw-accounts .aw-review-highlights { display: flex; gap: 6px; flex-wrap: wrap; }
+#aw-accounts .aw-review-highlights mdui-chip {
+  height: 26px;
+  font-size: 11px;
+  --shape-corner: 7px;
+}
 #aw-accounts .aw-review-controls {
   display: flex;
   align-items: center;
@@ -738,7 +881,7 @@ body { margin: 0; padding: 20px 24px 32px; background: #f3ede3; }
   margin: 16px 0 12px;
   flex-wrap: wrap;
 }
-#aw-accounts .aw-review-filters { display: flex; gap: 8px; flex-wrap: wrap; }
+#aw-accounts .aw-review-filters { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
 #aw-accounts .aw-review-sort { width: 146px; --mdui-typescale-body-large-size: 12px; --shape-corner: 8px; }
 #aw-accounts .aw-review-list { display: flex; flex-direction: column; gap: 12px; }
 #aw-accounts .aw-review-card {
@@ -828,15 +971,70 @@ body { margin: 0; padding: 20px 24px 32px; background: #f3ede3; }
 }
 #aw-accounts .aw-review-disclaimer svg { width: 13px; height: 13px; flex-shrink: 0; }
 
-/* Dialogs & Preview Footer */
-#aw-accounts .aw-dialog-form { display: flex; flex-direction: column; gap: 16px; padding: 6px 0; }
-#aw-accounts mdui-dialog { --max-width: 460px; }
+/* Dialogs, Template Picker & Preview Footer */
+#aw-accounts .aw-dialog-form { display: flex; flex-direction: column; gap: 14px; padding: 4px 0; }
+#aw-accounts mdui-dialog { --max-width: 560px; }
 #aw-accounts mdui-dialog .aw-dialog-copy {
-  font-size: 13px;
+  font-size: 12.5px;
   color: rgb(var(--mdui-color-on-surface-variant));
-  margin-bottom: 14px;
+  margin-bottom: 12px;
+  line-height: 1.55;
 }
 #aw-accounts .aw-dialog-form mdui-text-field, #aw-accounts .aw-dialog-form mdui-select { width: 100%; }
+#aw-accounts .aw-dialog-row-2 {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+#aw-accounts .aw-dialog-label {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: rgb(var(--mdui-color-on-surface-variant));
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: -6px;
+}
+#aw-accounts .aw-template-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+#aw-accounts .aw-template-card {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 11px;
+  border-radius: 10px;
+  border: 1px solid rgb(var(--mdui-color-outline-variant));
+  background: rgb(var(--mdui-color-surface-container-lowest));
+  color: inherit;
+  text-align: left;
+  transition: border-color 0.15s, background-color 0.15s;
+}
+#aw-accounts .aw-template-card:hover {
+  background: rgb(var(--mdui-color-surface-container-low));
+}
+#aw-accounts .aw-template-card.selected {
+  border-color: rgb(var(--mdui-color-primary));
+  background: rgb(var(--mdui-color-secondary-container));
+}
+#aw-accounts .aw-template-card .aw-logo { width: 32px; height: 32px; border-radius: 8px; }
+#aw-accounts .aw-template-card .aw-logo img { width: 19px; height: 19px; }
+#aw-accounts .aw-template-meta { min-width: 0; flex: 1; }
+#aw-accounts .aw-template-meta strong { display: block; font-size: 12.5px; font-weight: 600; line-height: 1.3; }
+#aw-accounts .aw-template-meta small { display: block; font-size: 10.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#aw-accounts .aw-acp-prep-box {
+  padding: 14px 16px;
+  border-radius: 12px;
+  background: rgb(var(--mdui-color-surface-container-low));
+  border: 1px solid rgb(var(--mdui-color-outline-variant));
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
 #aw-accounts .aw-preview-foot {
   display: flex;
   align-items: center;
@@ -910,6 +1108,12 @@ body { margin: 0; padding: 20px 24px 32px; background: #f3ede3; }
   #aw-accounts .aw-balance-card .aw-balance-item:first-child { grid-column: 1 / -1; }
   #aw-accounts .aw-balance-card .aw-balance-item:nth-child(2) { padding-left: 0; border-left: 0; }
   #aw-accounts .aw-model-body { margin: 0 14px; padding: 14px 0; }
+  #aw-accounts .aw-threshold-block,
+  #aw-accounts .aw-estimator-grid,
+  #aw-accounts .aw-template-grid,
+  #aw-accounts .aw-dialog-row-2 { grid-template-columns: 1fr; }
+  #aw-accounts .aw-threshold-controls,
+  #aw-accounts .aw-preset-chips { align-items: flex-start; justify-content: flex-start; }
   #aw-accounts .aw-review-summary-layout { grid-template-columns: 1fr; gap: 14px; }
   #aw-accounts .aw-review-summary-score { border: 0; padding: 0; }
   #aw-accounts .aw-price-grid, #aw-accounts .aw-model-performance { grid-template-columns: 1fr; gap: 12px; }
