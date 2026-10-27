@@ -180,7 +180,7 @@ impl ConfigStore {
                 |error| super::ConfigRuntimeError::Migration(self.config_path_error(error)),
             )?
         {
-            // 旧目标（23–25）的待续操作已按其原候选、摘要与提交步骤完成；这里从该**已提交版本**
+            // 旧目标（23–26）的待续操作已按其原候选、摘要与提交步骤完成；这里从该**已提交版本**
             // 继续升级到当前 schema，不改写旧目标、不伪造摘要，也不发布中间配置。
             return self.continue_resumed_migration(resumed);
         }
@@ -219,7 +219,7 @@ impl ConfigStore {
 
     /// 接续一个已完成的中断迁移操作。
     ///
-    /// 目标就是当前 schema 时只补凭据、不重做迁移；旧目标（23–25）表示该操作已按它自己的候选、
+    /// 目标就是当前 schema 时只补凭据、不重做迁移；旧目标（23–26）表示该操作已按它自己的候选、
     /// 摘要与步骤提交完成，此时从盘上的**已提交版本**继续升级到当前 schema——复用既有版本分派、
     /// 备份、候选校验与原子提交，不改写旧日志目标、不伪造摘要，也不返回中间版本。
     fn continue_resumed_migration(
@@ -279,7 +279,8 @@ impl ConfigStore {
             PureError::ConfigError(format!("invalid schema {source_version} UTF-8: {error}"))
         })?;
         // 18..22 先完成各自的既有转换，再统一执行 Provider/Preset → Account/AccountTemplate；
-        // 23 补出空 ACP 集合，24→25 退役 ACP 旧执行字段；25→26 退役账号估算开关。
+        // 23 补出空 ACP 集合，24→25 退役 ACP 旧执行字段；25→26 退役账号估算开关；
+        // 26→27 将模型禁用集合转换为明确关闭覆盖。
         // 所有路径保留计费覆盖、路由、Profile 与凭据关联，不把旧 disabled 解释成不计费。
         let mut inline_tokens = std::collections::BTreeMap::new();
         let rewritten = if source_version <= super::schema_migration::LEGACY_ACCOUNT_SCHEMA {
@@ -308,7 +309,7 @@ impl ConfigStore {
         }
         config.schema_version = super::STUDIO_CONFIG_SCHEMA_VERSION;
         // 23 及更早没有 delegation / 模型启用 / 计费类别意图：这些字段全部是 serde(default) 的可选
-        // 字段，缺失时按当前缺省解码（profile/balanced、空禁用集合、无计费覆盖）。这里**不能**
+        // 字段，缺失时按当前缺省解码（profile/balanced、空启用覆盖、无计费覆盖）。这里**不能**
         // 无条件写回 `DelegationSettings::default()`：那会把 24 及以上配置里显式保存的
         // mode/preference（以及未来可选字段）覆盖成默认值，属于字段级缺省替换显式意图。
         config.validate_declarations()?;
@@ -571,7 +572,7 @@ fn reject_retired_model_access_keys(content: &str) -> Result<()> {
             let Some(account) = account.as_table() else {
                 continue;
             };
-            for retired in ["preset", "adapter"] {
+            for retired in ["preset", "adapter", "disabled_models"] {
                 if account.contains_key(retired) {
                     return Err(retired_key(&format!("models.accounts.{id}.{retired}")));
                 }
@@ -1003,7 +1004,7 @@ mod tests {
                 .models
                 .accounts
                 .values()
-                .all(|account| account.disabled_models().is_empty()
+                .all(|account| account.model_enabled_overrides().is_empty()
                     && account.billing_kind.is_none())
         );
         assert_eq!(

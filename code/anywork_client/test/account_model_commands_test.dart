@@ -215,7 +215,7 @@ void main() {
     expect(retry.revision, 2);
     expect(retry.enabled, isFalse);
     final disabled = concurrent.copyWith(
-      disabledModels: const ['online'],
+      modelEnabledOverrides: const {'online': false},
       models: [_model.copyWith(enabled: false), _manual],
     );
     final secondCall = transport.calls.stream.first;
@@ -403,7 +403,10 @@ void main() {
     );
     call = await entered;
     call.complete(
-      _snapshot(99, _account.copyWith(disabledModels: const ['online'])),
+      _snapshot(
+        99,
+        _account.copyWith(modelEnabledOverrides: const {'online': false}),
+      ),
       foreignId: const OperationId('foreign'),
     );
     await rejected;

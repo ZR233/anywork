@@ -212,7 +212,7 @@ class BridgeAccountCatalogSnapshot {
 class BridgeAccountSettingsDto {
   final BridgeBillingKind billingKind;
   final BridgeBillingKind? billingKindOverride;
-  final List<String> disabledModels;
+  final Map<String, bool> modelEnabledOverrides;
   final String accountId;
 
   /// 可选的内置账号模板引用；完全自定义账号为 `None`。
@@ -242,7 +242,7 @@ class BridgeAccountSettingsDto {
   const BridgeAccountSettingsDto({
     required this.billingKind,
     this.billingKindOverride,
-    required this.disabledModels,
+    required this.modelEnabledOverrides,
     required this.accountId,
     this.templateId,
     required this.protocol,
@@ -268,7 +268,7 @@ class BridgeAccountSettingsDto {
   int get hashCode =>
       billingKind.hashCode ^
       billingKindOverride.hashCode ^
-      disabledModels.hashCode ^
+      modelEnabledOverrides.hashCode ^
       accountId.hashCode ^
       templateId.hashCode ^
       protocol.hashCode ^
@@ -296,7 +296,7 @@ class BridgeAccountSettingsDto {
           runtimeType == other.runtimeType &&
           billingKind == other.billingKind &&
           billingKindOverride == other.billingKindOverride &&
-          disabledModels == other.disabledModels &&
+          modelEnabledOverrides == other.modelEnabledOverrides &&
           accountId == other.accountId &&
           templateId == other.templateId &&
           protocol == other.protocol &&

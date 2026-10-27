@@ -584,7 +584,8 @@ impl ModelCatalogControl {
         }
     }
 
-    /// Inventory B: same as A with `fixture-model-old` withdrawn.
+    /// Inventory B withdraws online-only `fixture-model-old` and bundled `gpt-6.1-sol`.
+    /// Only the raw online inventory loses both; management retains the bundled member disabled.
     pub fn inventory_b() -> Self {
         let openai = ModelCatalogProviderControl {
             models: vec!["gpt-6-astra".into()],

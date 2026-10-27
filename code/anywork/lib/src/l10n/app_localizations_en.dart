@@ -5287,7 +5287,7 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get settingsModelEnabledHint =>
-      'Applies to all new model selections and subagent delegation. Running calls are not interrupted.';
+      'Applies to all new model selections and subagent delegation. Running calls are not interrupted. Bundled models absent from the online list can be enabled manually; the server determines actual availability.';
 
   @override
   String get settingsModelDisabled => 'Disabled for new selections';
