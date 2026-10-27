@@ -758,12 +758,16 @@ fn legacy_receipt(partial_progress: Value) -> ModelError {
     });
     ModelError {
         details: Some(Box::new(
-            OpaquePayload::new(
-                "pl.model.failure",
-                1,
-                serde_json::to_string(&payload).expect("legacy receipt encodes"),
+            pl_model::runtime::migration::migrate_payload(
+                &OpaquePayload::new(
+                    "pl.model.failure",
+                    1,
+                    serde_json::to_string(&payload).expect("legacy receipt encodes"),
+                )
+                .expect("static format and version are valid"),
             )
-            .expect("static format and version are valid"),
+            .expect("explicit migration succeeds")
+            .expect("old payload upgraded"),
         )),
         kind: ModelFailureKind::Unavailable,
         usage: Default::default(),

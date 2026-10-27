@@ -425,6 +425,11 @@ impl StateStore {
                     }
                 }
             }
+            // Metadata belongs to the old manifest and may be externalized. Upgrade only after
+            // restoring and verifying those bytes, before entering the current-only reader.
+            if let Some(current) = pl_model::runtime::migration::migrate_payload(&payload)? {
+                payload = current;
+            }
             let receipt = pl_model::runtime::model_request_receipt(&payload)?;
             return Ok(Some(pl_model::config::ModelRouteConfig {
                 account_id: pl_model::config::AccountId::new(receipt.binding.account_id)?,

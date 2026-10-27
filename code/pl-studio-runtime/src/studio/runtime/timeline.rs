@@ -9,6 +9,15 @@ use anyhow::Result;
 use pl_core::chat::Session;
 
 impl StudioRuntime {
+    /// Explicit access boundary, separate from strictly read-only projections and receipt queries.
+    /// Prepares only existing history content; never imports TOML or activates an execution owner.
+    pub(super) async fn prepare_timeline_history(&self, thread_id: &str) -> Result<HistoryStore> {
+        self.read_owned_thread(thread_id).await?;
+        let history = self.store.history(thread_id).await?;
+        history.prepare_history_access().await?;
+        self.read_timeline_history(thread_id).await
+    }
+
     /// Shares the same in-memory timeline with any live view or future producer.
     pub(in crate::studio::runtime) async fn chat_session(
         &self,

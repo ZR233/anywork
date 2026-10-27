@@ -313,7 +313,6 @@ fn validate_studio_home(path: PathBuf, source: &str) -> Result<PathBuf> {
 
 pub(crate) enum SqliteFileMode {
     ReadOnly,
-    #[cfg(test)]
     ReadWrite,
     Create,
 }

@@ -32,6 +32,12 @@ impl MigratorTraitSelf for Migrator {
             Box::new(CheckpointV5 {
                 thread_id: self.thread_id.clone(),
             }),
+            // This content-only step precedes the lifecycle-gated recovery steps. SeaORM
+            // preserves vector order and skips applied names, including on fully recovered v8 DBs.
+            Box::new(RetireOrdinals),
+            Box::new(ProducerPayloads {
+                thread_id: self.thread_id.clone(),
+            }),
             Box::new(ModelAccess {
                 thread_id: self.thread_id.clone(),
             }),
@@ -52,6 +58,8 @@ pub(super) enum Preparation {
 }
 const MODEL_ACCESS: &str = "m20261026_000007_history_model_access";
 pub(super) const EXECUTION_IDENTITY: &str = "m20261026_000008_history_execution_identity";
+const RETIRE_ORDINALS: &str = "m20261027_000001_history_retire_ordinals";
+const PRODUCER_PAYLOADS: &str = "m20261027_000002_history_producer_payloads";
 
 pub(super) async fn prepare(
     db: &DatabaseConnection,
@@ -73,7 +81,7 @@ pub(super) async fn prepare(
     let steps = match phase {
         Preparation::Schema => pending
             .iter()
-            .take_while(|step| step.name() < MODEL_ACCESS)
+            .take_while(|step| !matches!(step.name(), MODEL_ACCESS | EXECUTION_IDENTITY))
             .count(),
         Preparation::ModelAccess => pending
             .iter()
@@ -96,16 +104,11 @@ pub(super) async fn prepare(
     Ok(())
 }
 
-pub(super) async fn initialize(db: &DatabaseConnection, thread_id: &str) -> Result<String> {
+pub(super) async fn initialize(db: &DatabaseConnection, thread_id: &str) -> Result<(String, i64)> {
     prepare(db, thread_id, Preparation::Schema, None).await?;
-    Ok(db
-        .query_one_raw(statement(
-            "SELECT database_id FROM history_meta WHERE id=1",
-            vec![],
-        ))
-        .await?
-        .context("missing history identity after migration")?
-        .try_get("", "database_id")?)
+    // Publish only the actual identity/format verified after the content migrations, never an
+    // assumed current version derived from a successful (possibly zero-step) preparation.
+    validate_existing(db, thread_id).await
 }
 
 pub(super) async fn inspect_existing(path: &Path, thread_id: &str) -> Result<()> {
@@ -158,8 +161,11 @@ async fn preflight(db: &DatabaseConnection, thread_id: &str) -> Result<()> {
         (1..=HISTORY_SCHEMA_VERSION).contains(&version),
         "unsupported history schema {version}; existing data preserved"
     );
+    // RetireOrdinals is the content step that advances the marker to the current format.
+    // Once it is recorded, pending model/identity recovery cannot justify an older marker.
     ensure!(
-        !pending.is_empty() || version == HISTORY_SCHEMA_VERSION,
+        version == HISTORY_SCHEMA_VERSION
+            || pending.iter().any(|step| step.name() == RETIRE_ORDINALS),
         "history format conflicts with completed migrations; existing data preserved"
     );
     ensure!(
@@ -171,6 +177,8 @@ async fn preflight(db: &DatabaseConnection, thread_id: &str) -> Result<()> {
         "history database identity is empty"
     );
     if version == 8 {
+        // Keep the published v8 adoption contract: CreateHistory may still add its
+        // request_digest column when enrolling a pre-SeaORM file for the first time.
         let manager = SchemaManager::new(db);
         for table in [
             "history_items",
@@ -188,6 +196,8 @@ async fn preflight(db: &DatabaseConnection, thread_id: &str) -> Result<()> {
                 "current history table {table} is missing; existing data preserved"
             );
         }
+    } else if version == HISTORY_SCHEMA_VERSION {
+        validate_tables(db).await?;
     }
     if SchemaManager::new(db)
         .has_table("session_checkpoint")
@@ -219,7 +229,91 @@ async fn preflight(db: &DatabaseConnection, thread_id: &str) -> Result<()> {
     Ok(())
 }
 
-async fn version(db: &impl ConnectionTrait) -> Result<i64, DbErr> {
+/// Ordinary readers accept only the prepared content format; lifecycle migrations may remain
+/// pending until explicit recovery supplies model and execution identity facts.
+pub(super) async fn validate_current(db: &impl ConnectionTrait, thread_id: &str) -> Result<()> {
+    ensure!(
+        version(db).await? == HISTORY_SCHEMA_VERSION,
+        "history format is not current; existing data preserved"
+    );
+    validate_tables(db).await?;
+    let migrator = Migrator {
+        thread_id: thread_id.to_owned(),
+        execution_identity: None,
+    };
+    ensure!(
+        migrator
+            .get_pending_migrations_read_only(db)
+            .await?
+            .iter()
+            .all(|step| matches!(step.name(), MODEL_ACCESS | EXECUTION_IDENTITY)),
+        "history content requires explicit storage preparation; existing data preserved"
+    );
+    Ok(())
+}
+
+async fn validate_tables(db: &impl ConnectionTrait) -> Result<()> {
+    // Preparing each query validates required columns even on empty tables, without reading
+    // history bodies or repairing a damaged current database with CREATE IF NOT EXISTS.
+    for query in [
+        "SELECT applied_write_seq FROM history_meta LIMIT 0",
+        "SELECT ordinal,item_id,turn_id,kind,revision,lifecycle,created_at,updated_at,payload,last_write_seq FROM history_items LIMIT 0",
+        "SELECT turn_id,first_ordinal,last_ordinal,revision,payload,last_write_seq FROM history_turns LIMIT 0",
+        "SELECT item_id,ordinal,revision,digest,request_digest,presentation,payload,last_write_seq FROM history_input_identities LIMIT 0",
+        "SELECT item_id,revision,kind,digest,payload,last_write_seq FROM history_fact_receipts LIMIT 0",
+        "SELECT message_id,item_id,sequence,digest,last_write_seq FROM history_message_identities LIMIT 0",
+        "SELECT id,revision,context_revision,context_count,payload,payload_hash,legacy_cleanup FROM session_checkpoint LIMIT 0",
+        "SELECT purpose,currency,amount FROM session_costs LIMIT 0",
+        "SELECT ordinal,record_id,payload,payload_hash FROM current_context LIMIT 0",
+        "SELECT call_id,revision,task_payload,delivery_payload,last_write_seq FROM history_tool_tasks LIMIT 0",
+    ] {
+        db.query_all_raw(statement(query, vec![]))
+            .await
+            .context("history required table or column is missing; existing data preserved")?;
+    }
+    Ok(())
+}
+
+struct RetireOrdinals;
+struct ProducerPayloads {
+    thread_id: String,
+}
+impl MigrationName for ProducerPayloads {
+    fn name(&self) -> &str {
+        PRODUCER_PAYLOADS
+    }
+}
+#[sea_orm_migration::async_trait::async_trait]
+impl MigrationTrait for ProducerPayloads {
+    fn use_transaction(&self) -> Option<bool> {
+        Some(true)
+    }
+    async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        super::producer::migrate(manager.get_connection(), &self.thread_id)
+            .await
+            .map_err(conversion)
+    }
+}
+impl MigrationName for RetireOrdinals {
+    fn name(&self) -> &str {
+        RETIRE_ORDINALS
+    }
+}
+#[sea_orm_migration::async_trait::async_trait]
+impl MigrationTrait for RetireOrdinals {
+    fn use_transaction(&self) -> Option<bool> {
+        Some(true)
+    }
+    async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        let db = manager.get_connection();
+        validate_tables(db).await.map_err(conversion)?;
+        db.execute_unprepared("DROP TABLE IF EXISTS history_ordinals")
+            .await?;
+        set_version(db, 9).await
+    }
+}
+
+pub(super) async fn version(db: &impl ConnectionTrait) -> Result<i64, DbErr> {
     db.query_one_raw(statement(
         "SELECT schema_version FROM history_meta WHERE id=1",
         vec![],

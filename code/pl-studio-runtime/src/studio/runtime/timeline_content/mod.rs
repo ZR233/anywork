@@ -280,15 +280,13 @@ fn field_change(change: FieldChange) -> TimelineFieldChange {
 impl StudioRuntime {
     /// 打开一个 Thread 的内容句柄：捕获同一共享 `Session` 与 Thread 身份。
     ///
-    /// 建立句柄前先做一次**只读**的 durable checkpoint 栅栏校验，与 Turns 历史复用同一份抽象：栅栏未
+    /// 建立句柄前显式准备已有历史结构与检查点表示，再只读校验 durable checkpoint 栅栏：栅栏未
     /// 满足时类型化 `Busy` 失败闭锁，绝不返回落后行、也绝不因此激活 owner／flush writer／触发恢复。
     ///
     /// # Errors
     /// 未知 Thread 身份，或 history 落后于 durable checkpoint 栅栏（`Busy`）。
     pub async fn timeline_reader(&self, thread_id: &str) -> Result<TimelineContentReader> {
-        // Opening a content handle is a read: it never imports or deletes storage, only verifies that
-        // the durable watermark already covers the saved checkpoint fence.
-        self.read_timeline_history(thread_id).await?;
+        self.prepare_timeline_history(thread_id).await?;
         Ok(TimelineContentReader {
             thread_id: thread_id.to_owned(),
             session: self.chat_session(thread_id).await?,

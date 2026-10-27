@@ -3505,7 +3505,7 @@ async fn native_checkpoint_replay_requires_bound_origin_and_explicit_model_famil
     .to_string();
     let legacy_payload = OpaquePayload::new("pl.model.compaction", 2, legacy_content.clone())
         .expect("legacy payload is valid");
-    let legacy_context = ContextSnapshot {
+    let mut legacy_context = ContextSnapshot {
         revision: 3,
         records: vec![ContextRecord {
             id: "compaction:origin-attempt".into(),
@@ -3520,11 +3520,20 @@ async fn native_checkpoint_replay_requires_bound_origin_and_explicit_model_famil
         }]
         .into(),
     };
-    // A cold record is decoded in place; its bytes are not rewritten.
+    assert!(source.validate_context_origin(&legacy_context).is_err());
+    let ContextContent::Opaque { payload } =
+        &mut std::sync::Arc::make_mut(&mut legacy_context.records)[0].content[0]
+    else {
+        panic!("legacy native payload")
+    };
+    *payload = pl_model::runtime::migration::migrate_payload(payload)
+        .unwrap()
+        .unwrap();
+    // Explicit migration produces the only format accepted by normal request preparation.
     let before = legacy_context.records[0].content.clone();
     source.validate_context_origin(&legacy_context).unwrap();
     assert_eq!(legacy_context.records[0].content, before);
-    // The prepare path (not only validate) must consume the legacy checkpoint.
+    // The prepare path (not only validate) consumes the upgraded checkpoint.
     source
         .estimate_input(
             &ModelRequest {
@@ -3609,8 +3618,12 @@ async fn native_checkpoint_replay_requires_bound_origin_and_explicit_model_famil
                 source_id: "model.compaction".into(),
             },
             content: vec![ContextContent::Opaque {
-                payload: OpaquePayload::new("pl.model.compaction", 2, mismatched.to_string())
-                    .expect("mismatched payload is valid"),
+                payload: pl_model::runtime::migration::migrate_payload(
+                    &OpaquePayload::new("pl.model.compaction", 2, mismatched.to_string())
+                        .expect("mismatched payload is valid"),
+                )
+                .unwrap()
+                .unwrap(),
             }],
             tool_calls: vec![],
         }]

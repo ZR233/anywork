@@ -9,9 +9,9 @@
 //!   that call it. Per design/17 a child that is not loaded is migrated by its own single history
 //!   writer before anyone reads it.
 //! - **Must never migrate**: [`load_checkpoint_read_only`] and every projection — directory listing,
-//!   thread snapshot, timeline pages/content handles, Turn pages and interaction reads. Those report
-//!   only already-durable facts; an unsupported or still-legacy structure stays invisible and a
-//!   storage fault is returned as a typed error.
+//!   thread snapshot and interaction reads. Explicit content handles and Turn pages first prepare
+//!   existing SQLite content at their own entry, then use these read-only projections. Unsupported
+//!   or still-legacy SQLite structures fail explicitly, never masquerading as absent facts.
 
 use anyhow::Result;
 use pl_core::thread::ThreadCheckpoint;

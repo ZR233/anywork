@@ -28,6 +28,7 @@
 - **版本 `20 → 21`**：将 `models.providers.<id>.capabilities.web_search.standalone = "deep_seek_anthropic_messages"` 改写为 `"deep_seek_tools_api"`，并按版本默认值补齐 `[deepseek_web_search]` 的 `fetch_enabled`。
 - **版本 `21 → 22 → 23`**：`21 → 22` 将旧模型声明中的 `slug` 转换为 `model_id`；`22 → 23` 将模型接入领域的 `Provider/Preset` 统一迁移为 `Account/AccountTemplate`（`models.providers` 转为 `models.accounts`，账号 `preset` 转为 `template`、`adapter` 转为 `protocol`，角色、工作模式与用户智能体模板中的 `provider`/`model` 转为 `account_id`/`model_id`）。
 - **版本 `24 → 25`**：保留或补齐 ACP 账号集合，显式移除旧版 ACP 的自定义 `program`/`args` 字段，同时保留模型禁用集合（`disabled_models`）、计费类别覆盖（`billing_kind`）与子智能体分发默认设置（`[delegation]`）。
+- **版本 `25 → 26`**：退役账号 `pricing_mode`，计费意图统一由 `billing_kind` 表达；保留既有类别覆盖、参考价格、账号身份与凭据，不将旧的关闭估算状态推断为用户声明不计费，也不回写历史账单。
 
 所有设置变更命令（Settings command）均须携带 `expectedSettingsRevision`，成功后返回新的 `SettingsConfigSnapshot`；当模型目录发生变化时一并返回 `ModelCatalogSnapshot`，并分别发布 `SettingsConfigStateChanged` 与 `ModelCatalogStateChanged` 事件。直接响应结构 `SettingsStateResponse` 仅用于在单次调用中同时带回配置与目录两份独立资源，消费端仍按各自修订号幂等合并；CAS 冲突或校验失败时保留当前权威状态。
 
@@ -85,7 +86,7 @@
 本地 `config.toml` 字段统一采用 `snake_case` 命名（与 API 传输层的 `camelCase` 区分），精简示例如下：
 
 ```toml
-schema_version = 25
+# schema_version 使用当前程序生成的值，版本号以配置代码常量为准。
 
 disabled_system_agents = []
 

@@ -13,13 +13,9 @@ use pl_core::{
 };
 use std::collections::{BTreeMap, BTreeSet};
 
-const FRAME_FORMAT: &str = "pl.model.assistant";
+pub(super) const FRAME_FORMAT: &str = "pl.model.assistant";
 /// Current frozen assistant-frame version.
 pub const FRAME_VERSION: u32 = 4;
-/// Frame encoding before explicit no-charge accounting was introduced.
-const LEGACY_FRAME_VERSION_V3: u32 = 3;
-/// Frame version written before the account model-binding field migration.
-const LEGACY_FRAME_VERSION_V2: u32 = 2;
 
 #[derive(Clone, Copy)]
 enum ArgumentKind {
@@ -74,56 +70,19 @@ fn arguments(call: &ToolCall, kind: ArgumentKind) -> Result<OpaquePayload, Model
 
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct AssistantFrame {
-    receipt: super::receipt::ModelResponseReceipt,
-    bindings: Vec<ModelToolCall>,
+pub(super) struct AssistantFrame {
+    pub(super) receipt: super::receipt::ModelResponseReceipt,
+    pub(super) bindings: Vec<ModelToolCall>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    compatibility_family: Option<String>,
+    pub(super) compatibility_family: Option<String>,
 }
 
-/// Assistant frame written before the account model-binding field migration.
-#[derive(serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct LegacyAssistantFrameV2 {
-    receipt: super::receipt::LegacyModelResponseReceipt,
-    bindings: Vec<ModelToolCall>,
-    #[serde(default)]
-    compatibility_family: Option<String>,
-}
-
-/// Decode a producer-owned frame only at this explicit version boundary.
-///
-/// Current types carry no serde aliases. The legacy shape keeps the stored isolation namespace,
-/// tool bindings, frozen response and opaque vendor output unchanged while converting the
-/// binding field names.
 fn decode_frame(payload: &OpaquePayload) -> Result<AssistantFrame, ModelError> {
-    let unsupported = || invalid("unsupported or repeated model response receipt");
-    let frame = match payload.version() {
-        FRAME_VERSION | LEGACY_FRAME_VERSION_V3 => {
-            serde_json::from_str::<AssistantFrame>(payload.content())
-                .map_err(|source| failure(ModelFailureKind::UnsupportedContent, source))
-        }
-        LEGACY_FRAME_VERSION_V2 => {
-            let legacy: LegacyAssistantFrameV2 = serde_json::from_str(payload.content())
-                .map_err(|source| failure(ModelFailureKind::UnsupportedContent, source))?;
-            Ok(AssistantFrame {
-                receipt: legacy.receipt.migrate(),
-                bindings: legacy.bindings,
-                compatibility_family: legacy.compatibility_family,
-            })
-        }
-        _ => Err(unsupported()),
-    }?;
-    // v3 has the same field layout, but its Disabled outcome remains historical "not estimated".
-    // A new no-charge declaration must never be smuggled into an older producer version.
-    if payload.version() < FRAME_VERSION
-        && frame.receipt.response.accounting.pricing == pl_protocol::PricingOutcome::NoCharge
-    {
-        return Err(invalid(
-            "no-charge accounting requires model response receipt version 4",
-        ));
+    if payload.version() != FRAME_VERSION {
+        return Err(invalid("unsupported model response receipt"));
     }
-    Ok(frame)
+    serde_json::from_str(payload.content())
+        .map_err(|source| failure(ModelFailureKind::UnsupportedContent, source))
 }
 
 pub(super) fn receipt(

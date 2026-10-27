@@ -1,7 +1,7 @@
 //! schema 11→12：在维护租约与单事务内，从不可变 effect 回填任务身份索引。
 use sea_orm::ConnectionTrait;
 
-use super::{SessionStoreError, sqlite, thread_history, tool_task_index};
+use super::{SessionStoreError, effect_migration, sqlite, tool_task_index};
 
 /// Converts saved checkpoint envelopes to schema 5, in one transaction.
 ///
@@ -122,7 +122,7 @@ pub(super) async fn backfill_task_index(
                     break;
                 }
                 for row in rows {
-                    let effect = thread_history::decode_effect(row, &thread_id)?;
+                    let effect = effect_migration::decode_effect(row, &thread_id)?;
                     if effect.sequence != expected_sequence {
                         return Err(SessionStoreError::Invalid(format!(
                             "Thread {thread_id} effect 链在 {expected_sequence} 处不连续"

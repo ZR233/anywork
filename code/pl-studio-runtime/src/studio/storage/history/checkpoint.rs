@@ -24,15 +24,12 @@ impl HistoryStore {
         let tx = connection.db.begin().await?;
         // A shared read-only connection can predate an explicit writer upgrade. Validate the
         // current transaction's identity/schema, not a cached version or the writer fast path.
-        let (database_id, schema_version) =
-            super::validate_existing(&tx, &self.state.thread_id).await?;
+        let (database_id, _) = super::validate_existing(&tx, &self.state.thread_id).await?;
         ensure!(
             database_id == connection.database_id,
             "canonical history identity changed"
         );
-        let result = if schema_version < 5 {
-            None
-        } else if let Some(checkpoint) = read(&tx, &self.state.thread_id).await? {
+        let result = if let Some(checkpoint) = read(&tx, &self.state.thread_id).await? {
             let turn =
                 super::read_latest_turn_at(&tx, &self.state.thread_id, checkpoint.history_fence)
                     .await?;
@@ -49,9 +46,6 @@ impl HistoryStore {
         let Some(connection) = self.reader().await? else {
             return Ok(None);
         };
-        if connection.schema_version < 5 && self.state.writer.get().is_none() {
-            return Ok(None);
-        }
         let tx = connection.db.begin().await?;
         let result = read(&tx, &self.state.thread_id).await?;
         tx.commit().await?;
@@ -106,6 +100,11 @@ impl HistoryStore {
         checkpoint: &ThreadCheckpoint,
         legacy_costs: &[super::super::calls::PurposeUsageProjection],
     ) -> Result<()> {
+        // Schema preparation may have completed on the empty database before TOML is loaded.
+        // Normalize at this import boundary as well, using exactly the SQLite conversion rules.
+        let mut normalized = checkpoint.clone();
+        crate::studio::producer_migration::checkpoint(&mut normalized)?;
+        let checkpoint = &normalized;
         ensure!(
             checkpoint.thread_id == self.state.thread_id,
             "checkpoint belongs to another Thread"
@@ -220,9 +219,6 @@ impl HistoryStore {
         let Some(connection) = self.reader().await? else {
             return Ok(false);
         };
-        if connection.schema_version < 5 && self.state.writer.get().is_none() {
-            return Ok(false);
-        }
         let row = connection
             .db
             .query_one_raw(statement(
@@ -604,9 +600,6 @@ impl HistoryStore {
         let Some(connection) = self.reader().await? else {
             return Ok(None);
         };
-        if connection.schema_version < 5 && self.state.writer.get().is_none() {
-            return Ok(None);
-        }
         let tx = connection.db.begin().await?;
         let Some(row) = tx
             .query_one_raw(statement(
@@ -624,6 +617,11 @@ impl HistoryStore {
             "accounting checkpoint hash mismatch"
         );
         let checkpoint: ThreadCheckpoint = serde_json::from_str(&payload)?;
+        ensure!(
+            checkpoint.schema_version == ThreadCheckpoint::SCHEMA_VERSION
+                && checkpoint.thread_id == self.state.thread_id,
+            "accounting checkpoint requires explicit storage preparation or has a foreign identity"
+        );
         let mut purposes =
             std::collections::BTreeMap::<Option<String>, Vec<pl_protocol::RuntimeCostAmount>>::new(
             );
