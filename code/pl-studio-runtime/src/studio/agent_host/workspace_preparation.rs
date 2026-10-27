@@ -26,18 +26,6 @@ pub(in crate::studio) struct WorkspacePreparation<'a> {
     /// 根会话的工作区根；`local` 会话等于 canonical Project 路径，`worktree` 会话为
     /// 其自身 worktree。非 worktree child 的工作区根跟随该值。
     pub session_root: PathBuf,
-    /// review Profile 的被审目标；产品层完成关系与可用性校验后传入。
-    pub review_target: Option<ReviewWorkspaceTarget>,
-}
-
-/// review child 采用的被审目标工作区事实。
-///
-/// worktree 被审者的 lease 是 canonical 物理事实；非 worktree 被审者的工作区即会话
-/// 工作区根，由 `prepare_workspace` 从 `session_root` 派生。
-pub(in crate::studio) struct ReviewWorkspaceTarget {
-    pub agent_id: String,
-    /// 被审者的 worktree 收据；非 worktree 被审者为 `None`。
-    pub worktree: Option<AgentWorktreeSnapshot>,
 }
 
 pub(in crate::studio) async fn prepare_workspace(
@@ -69,23 +57,9 @@ pub(in crate::studio) async fn prepare_workspace(
             review_target: None,
         },
         AgentWorkspaceMode::Review => {
-            let target = request.review_target.ok_or_else(|| {
-                lifecycle_error("review workspace requires a reviewed agent workspace")
-            })?;
-            let (root, worktree) = match target.worktree {
-                Some(worktree) => (worktree.path.clone(), Some(worktree)),
-                None => (session_root_text.clone(), None),
-            };
-            AgentWorkspaceAssignmentSnapshot {
-                mode,
-                project_root: project_root_text,
-                root,
-                writable_paths: None,
-                worktree,
-                review_target: Some(pl_protocol::AgentReviewTargetSnapshot {
-                    agent_id: target.agent_id,
-                }),
-            }
+            return Err(lifecycle_error(
+                "review creation must consume its verified target assignment",
+            ));
         }
         AgentWorkspaceMode::Directory => {
             let writable_paths = writable_paths
@@ -442,21 +416,7 @@ pub(in crate::studio) async fn verify_root_session_worktree(
     let lease = worktrees.get(root_thread_id).ok_or_else(|| {
         WorktreeError::IdentityMismatch("owner: root session lease is missing".into())
     })?;
-    lease.validate_identity().map_err(anyhow::Error::from)?;
-    if lease.owner_kind != WorktreeLeaseOwnerKind::Session
-        || lease.owner_thread_id != root_thread_id
-        || lease.project_id != project.id
-        || lease.ssh_alias != project.ssh_alias
-        || matches!(
-            lease.state,
-            WorktreeLeaseState::Cleaned | WorktreeLeaseState::CleanupRequested
-        )
-    {
-        return Err(WorktreeError::IdentityMismatch(
-            "owner/project/remote target differs from the root lease".into(),
-        )
-        .into());
-    }
+    validate_root_session_lease(&lease, project, root_thread_id)?;
     let (repository_root, repository) = repository_manager(
         ssh_manager,
         project.ssh_alias.as_deref(),
@@ -480,6 +440,28 @@ pub(in crate::studio) async fn verify_root_session_worktree(
         })
         .await
         .map_err(anyhow::Error::from)?;
+    Ok(())
+}
+
+pub(in crate::studio) fn validate_root_session_lease(
+    lease: &WorktreeLease,
+    project: &ProjectRecord,
+    root_thread_id: &str,
+) -> std::result::Result<(), WorktreeError> {
+    lease.validate_identity()?;
+    if lease.owner_kind != WorktreeLeaseOwnerKind::Session
+        || lease.owner_thread_id != root_thread_id
+        || lease.project_id != project.id
+        || lease.ssh_alias != project.ssh_alias
+        || matches!(
+            lease.state,
+            WorktreeLeaseState::Cleaned | WorktreeLeaseState::CleanupRequested
+        )
+    {
+        return Err(WorktreeError::IdentityMismatch(
+            "owner/project/remote target differs from the root lease".into(),
+        ));
+    }
     Ok(())
 }
 

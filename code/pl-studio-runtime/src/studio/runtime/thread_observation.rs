@@ -29,6 +29,7 @@ use tokio::{
 
 use crate::studio::storage::thread_writer::HistoryChannel;
 use crate::studio::thread_projection::{LiveEvent, LiveProjection, storage_state};
+use crate::thread_assembler::agent_review::ReviewDeliverySource;
 
 /// Fixed bound on the frames one subscriber may fall behind the projection owner.
 ///
@@ -190,6 +191,9 @@ struct WorkerState {
     /// here, at observation time, so the barrier observes the very incarnation the writer admits
     /// into instead of a channel that a cleanly detached predecessor already released.
     channel: Arc<HistoryChannel>,
+    /// Explicit reconciliation is observation only, even when it catches a newly committed Turn.
+    reconciliation_through: std::sync::atomic::AtomicU64,
+    observed_before_execution: bool,
 }
 struct Observation {
     thread: ThreadHandle,
@@ -363,7 +367,22 @@ impl ThreadObservations {
     }
 
     fn observe(&self, id: String, thread: ThreadHandle) {
-        let recovered_through = thread.snapshot().commit_sequence;
+        let observed = thread.snapshot();
+        let recovered_through = observed.commit_sequence;
+        // Bootstrap facts/extensions can already have commits. The monotonic execution/call
+        // ledgers, not a zero commit fence, prove that no prior model Turn needs reconciliation.
+        let observed_before_execution = observed.lifecycle == ThreadLifecycle::Open
+            && observed.execution_sequence == 0
+            && observed.execution.is_none()
+            && observed.turns.is_empty()
+            && observed.attempts.is_empty()
+            && observed.attempt_ids.is_empty()
+            && observed.live_calls.is_empty()
+            && observed
+                .context
+                .records
+                .iter()
+                .all(|record| record.turn_id.is_none());
         let (progress, _) = watch::channel(Progress {
             applied: recovered_through,
             ..Progress::default()
@@ -380,6 +399,8 @@ impl ThreadObservations {
             progress,
             retry: Notify::new(),
             channel,
+            reconciliation_through: std::sync::atomic::AtomicU64::new(recovered_through),
+            observed_before_execution,
         });
         // Seed the feed with the newest typed storage state the coordinator already reports, so a
         // subscriber that opens before this owner's first pass mirrors a real fact instead of an
@@ -447,6 +468,10 @@ impl ThreadObservations {
         for (id, observation) in observations {
             let target_snapshot = observation.thread.snapshot();
             let target = target_snapshot.commit_sequence;
+            observation
+                .state
+                .reconciliation_through
+                .fetch_max(target, std::sync::atomic::Ordering::AcqRel);
             let mut progress = observation.state.progress.subscribe();
             observation.state.progress.send_modify(|progress| {
                 if !progress.finished {
@@ -522,13 +547,21 @@ impl ThreadObservations {
             // "stopped, waiting for the main agent" for every member that is not loaded again. This
             // reads only the saved checkpoint — no activation, no workspace, no model request.
             directory::publish_cold_scheduling_state(services, &child, &checkpoint.state).await?;
-            if let Some(turn) = checkpoint
-                .state
-                .turns
-                .iter()
-                .rev()
-                .find(|turn| turn.state != pl_core::thread::TurnState::Running)
+            if let Some(turn) = services
+                .store
+                .history(&child.id)
+                .await?
+                .latest_turn_at(checkpoint.history_fence)
+                .await?
+                .filter(|turn| turn.state.is_terminal())
             {
+                if services
+                    .threads
+                    .terminal_report_accepted(parent, &child.id, turn.revision)
+                    .await?
+                {
+                    continue;
+                }
                 // An unloaded child has no resident projection, so this repair reads the Turn's
                 // items from durable history: it is the cold path, and the checkpoint cannot carry
                 // the finished Turn's body.
@@ -536,16 +569,21 @@ impl ThreadObservations {
                     .store
                     .history(&child.id)
                     .await?
-                    .items_for_turn(&turn.turn_id)
+                    .items_for_turn(&turn.id)
                     .await?;
+                let mut result = crate::studio::thread_projection::TurnResult::from_items(&items);
+                restore_finish(services, &child.id, &turn.id, &mut result).await?;
                 reports::publish_terminal(
                     services,
                     &child,
                     &checkpoint.state,
-                    turn,
-                    checkpoint.state_revision,
-                    false,
-                    &crate::studio::thread_projection::TurnResult::from_items(&items),
+                    reports::TerminalPublication {
+                        turn: reports::TerminalTurn::Saved(&turn),
+                        sequence: turn.revision,
+                        wake: false,
+                        result: &result,
+                        source: ReviewDeliverySource::Reconciliation,
+                    },
                 )
                 .await?;
             }
@@ -1142,6 +1180,7 @@ async fn run(
     // the fault when something unrelated happened to arrive.
     let mut persistence = projector.store.thread_persistence().subscribe();
     let mut current = thread.snapshot();
+    let continuous = state.observed_before_execution;
     let mut worker = ProjectionWorker {
         services: projector,
         id,
@@ -1150,6 +1189,11 @@ async fn run(
         recovered_through,
         feed,
         live: None,
+        live_floor: recovered_through,
+        pending_terminal: None,
+        // Fresh bootstrap may have a nonzero fence; the registered owner proved that its
+        // reliable channel was installed before any execution or model call.
+        continuous,
     };
     // Product facts are projected once per committed revision; the live projection additionally
     // follows every owner snapshot so streaming previews reach the same single publisher.
@@ -1207,6 +1251,7 @@ async fn run(
                 .unwrap_or_else(|_| Err(anyhow::anyhow!("Thread product projection panicked")));
         match result {
             Ok(()) => {
+                worker.continuous = true;
                 if products {
                     projected = Some((current.commit_sequence, current.lifecycle));
                 }
@@ -1239,6 +1284,11 @@ async fn run(
                 }
             }
             Err(error) => {
+                worker.continuous = false;
+                worker.live_floor = worker.live_floor.max(current.commit_sequence);
+                if let Some(pending) = worker.pending_terminal.as_mut() {
+                    pending.source = ReviewDeliverySource::Reconciliation;
+                }
                 // A fact this owner could not project leaves the committed stream discontinuous for
                 // every subscriber, so the feed tells them to resynchronize from the durable window
                 // instead of letting the client splice a hole; the worker retries the same watermark.
@@ -1268,6 +1318,9 @@ async fn run(
             update = updates.next() => match update {
                 Some(snapshot) => current = snapshot,
                 None => {
+                    worker.continuous = false;
+                    worker.live_floor = worker.live_floor.max(worker.thread.snapshot().commit_sequence);
+                    if let Some(pending) = worker.pending_terminal.as_mut() { pending.source = ReviewDeliverySource::Reconciliation; }
                     worker.state.progress.send_modify(|progress| progress.error = Some(Arc::new(anyhow::anyhow!("Thread subscription ended before its final projection"))));
                     tokio::select! {
                         () = worker.state.retry.notified() => {}
@@ -1297,6 +1350,117 @@ struct ProjectionWorker {
     recovered_through: u64,
     feed: Arc<ThreadLiveFeed>,
     live: Option<LiveOwner>,
+    /// Commits already visible at installation or across an observation failure cannot first-send.
+    live_floor: u64,
+    pending_terminal: Option<PendingTerminal>,
+    continuous: bool,
+}
+
+/// One current projection notification, not a queue or a second result store. Its body remains in
+/// the existing projection/history. First-send authority is consumed before any fallible await.
+struct PendingTerminal {
+    turn: pl_core::thread::TurnRecord,
+    sequence: u64,
+    source: ReviewDeliverySource,
+    wake: bool,
+}
+
+impl PendingTerminal {
+    async fn publish(
+        &mut self,
+        services: &ObservationServices,
+        live: &LiveOwner,
+        snapshot: &ThreadSnapshot,
+        state: &WorkerState,
+    ) -> Result<bool> {
+        if let Some(parent) = live.thread.parent_thread_id.as_deref()
+            && services
+                .threads
+                .terminal_report_accepted(parent, &live.thread.id, self.sequence)
+                .await?
+        {
+            return Ok(true);
+        }
+        let is_review = crate::studio::workspace_receipt::from_snapshot(snapshot)?
+            .is_some_and(|assignment| assignment.mode == pl_protocol::AgentWorkspaceMode::Review);
+        // Terminal commits precede release of their live execution. Wait for its actual snapshot
+        // transition, without treating a later execution as the finished review's cleanup.
+        if is_review
+            && snapshot.execution.as_ref().is_some_and(|execution| {
+                execution.turn_id.as_deref() == Some(self.turn.turn_id.as_str())
+            })
+        {
+            return Ok(false);
+        }
+        let source = self.source;
+        self.source = ReviewDeliverySource::Reconciliation;
+        if is_review {
+            await_history_durable(
+                &live.channel,
+                &live.thread.id,
+                live.channel.handoff_ticket(),
+            )
+            .await?;
+        }
+        let mut result = turn_result(services, live, &self.turn.turn_id).await?;
+        restore_finish(services, &live.thread.id, &self.turn.turn_id, &mut result).await?;
+        let source = if state
+            .reconciliation_through
+            .load(std::sync::atomic::Ordering::Acquire)
+            >= self.sequence
+        {
+            ReviewDeliverySource::Reconciliation
+        } else {
+            source
+        };
+        reports::publish_terminal(
+            services,
+            &live.thread,
+            snapshot,
+            reports::TerminalPublication {
+                turn: reports::TerminalTurn::Live(&self.turn),
+                sequence: self.sequence,
+                wake: self.wake,
+                result: &result,
+                source,
+            },
+        )
+        .await?;
+        Ok(true)
+    }
+}
+
+async fn restore_finish(
+    services: &ObservationServices,
+    id: &str,
+    turn: &str,
+    result: &mut crate::studio::thread_projection::TurnResult,
+) -> Result<()> {
+    if result.finish.is_some() {
+        return Ok(());
+    }
+    let Some(tool) = result
+        .last_tool()
+        .filter(|tool| tool.invocation().name() == pl_tool::finish_turn::TOOL_FINISH_TURN)
+    else {
+        return Ok(());
+    };
+    let Some(saved) = services
+        .store
+        .history(id)
+        .await?
+        .tool_task(tool.invocation().tool_call_id())
+        .await?
+    else {
+        return Ok(());
+    };
+    if saved.task.turn_id == turn {
+        result.finish = saved
+            .delivery
+            .as_ref()
+            .and_then(crate::studio::thread_projection::committed_finish);
+    }
+    Ok(())
 }
 
 /// The report facts of one finished Turn: the live projection's bounded accumulator when it folded
@@ -1418,9 +1582,15 @@ impl ProjectionWorker {
             recovered_through,
             feed,
             live,
+            live_floor,
+            pending_terminal,
+            continuous,
             ..
         } = self;
         let recovered_through = *recovered_through;
+        if !*continuous {
+            *live_floor = (*live_floor).max(snapshot.commit_sequence);
+        }
         if live.is_none() {
             // The product association is resolved once, when this projection owner is installed.
             // A Thread re-activated after its directory entry left memory reads it from SQLite here.
@@ -1449,6 +1619,19 @@ impl ProjectionWorker {
         // root; it never changes for a Thread, so a commit does not re-read the directory DTO for it.
         let owner_product = live.thread.clone();
         let mut newest_commit_at = 0_i64;
+        // If projection failed before handing this candidate over, re-project that same write
+        // first. Never wait on durability for a terminal this owner has not actually prepared.
+        if let Some(pending) = pending_terminal.as_mut()
+            && live
+                .channel
+                .next_unprojected()
+                .is_none_or(|write| write.effect.sequence != pending.sequence)
+        {
+            if !pending.publish(services, live, snapshot, state).await? {
+                return Ok(());
+            }
+            *pending_terminal = None;
+        }
         while let Some(write) = live.channel.next_unprojected() {
             let sequence = write.effect.sequence;
             if sequence <= recovered_through {
@@ -1457,6 +1640,27 @@ impl ProjectionWorker {
                 live.prepare_behind(services, id.as_str(), &write).await?;
                 continue;
             }
+            let terminal = write
+                .effect
+                .turn
+                .as_ref()
+                .filter(|turn| turn.state != pl_core::thread::TurnState::Running);
+            if let Some(turn) = terminal
+                && pending_terminal.is_none()
+            {
+                // Retain the identity before any fallible projection/billing work. On failure the
+                // worker keeps this candidate but irreversibly removes its first-send authority.
+                *pending_terminal = Some(PendingTerminal {
+                    turn: turn.clone(),
+                    sequence,
+                    source: if *continuous && sequence > *live_floor {
+                        ReviewDeliverySource::LiveTerminal
+                    } else {
+                        ReviewDeliverySource::Reconciliation
+                    },
+                    wake: sequence > recovered_through,
+                });
+            }
             live.advance(services, id.as_str(), &write).await?;
             billing::record(
                 &services.performance,
@@ -1464,24 +1668,47 @@ impl ProjectionWorker {
                 &write.effect,
             )?;
             newest_commit_at = newest_commit_at.max(write.effect.committed_at);
-            if let Some(turn) = write
-                .effect
-                .turn
-                .as_ref()
-                .filter(|turn| turn.state != pl_core::thread::TurnState::Running)
-            {
+            if terminal.is_some() {
                 // The terminal report carries the whole Turn from the reliable in-memory projection:
                 // a long Turn commits its text and tool facts over many effects, so reporting only
                 // the effect that finished it would drop the earlier visible output.
-                let result = turn_result(services, live, &turn.turn_id).await?;
+                let pending = pending_terminal
+                    .as_mut()
+                    .expect("terminal notification just installed");
+                let current = thread.snapshot();
+                if !pending.publish(services, live, &current, state).await? {
+                    break;
+                }
+                *pending_terminal = None;
+            }
+        }
+        // Installation and failure recovery can start after Core released the finished Turn.
+        // Reconcile the canonical durable terminal once, without activating a model or first-send.
+        if !*continuous && pending_terminal.is_none() && owner_product.parent_thread_id.is_some() {
+            await_history_durable(&live.channel, id, live.channel.handoff_ticket()).await?;
+            if let Some((_, Some(turn))) = services
+                .store
+                .history(id)
+                .await?
+                .read_only_checkpoint_with_latest_turn()
+                .await?
+                && turn.state.is_terminal()
+                && owner_product.parent_thread_id.is_some()
+            {
+                let current = thread.snapshot();
+                let mut result = turn_result(services, live, &turn.id).await?;
+                restore_finish(services, id, &turn.id, &mut result).await?;
                 reports::publish_terminal(
                     services,
                     &owner_product,
-                    snapshot,
-                    turn,
-                    sequence,
-                    sequence > recovered_through,
-                    &result,
+                    &current,
+                    reports::TerminalPublication {
+                        turn: reports::TerminalTurn::Saved(&turn),
+                        sequence: turn.revision,
+                        wake: false,
+                        result: &result,
+                        source: ReviewDeliverySource::Reconciliation,
+                    },
                 )
                 .await?;
             }

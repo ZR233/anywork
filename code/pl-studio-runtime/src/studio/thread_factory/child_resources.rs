@@ -35,14 +35,40 @@ impl StudioChildResources for StudioThreadFactory {
             .find(|project| project.id == parent.project_id)
             .ok_or_else(|| ThreadAssemblyError::Identity(parent.project_id.clone()))?;
         let root_thread = self.thread_record(&parent.root_thread_id).await?;
-        let project_root = match self
-            .bind_bot_project(&request.id, &parent.root_thread_id, &mut project)
-            .await?
-        {
-            Some(root) => root,
-            None => {
-                crate::studio::agent_host::workspace_preparation::resolved_project_root(&project)
-                    .map_err(|error| resource_error("resolve child project root", error))?
+        let reviewed =
+            if profile.profile.workspace_mode == pl_protocol::AgentWorkspaceMode::Review {
+                let target = request
+                    .review_target
+                    .as_ref()
+                    .filter(|target| target.baseline.is_some())
+                    .ok_or_else(|| {
+                        ThreadAssemblyError::Identity("review has no verified target".into())
+                    })?;
+                let mut assignment = request.review_workspace.clone().ok_or_else(|| {
+                    ThreadAssemblyError::ReviewTargetInvalid(target.agent_id.clone())
+                })?;
+                if let Some(actual) = self.tool_project(&target.agent_id) {
+                    project = actual;
+                }
+                assignment.mode = pl_protocol::AgentWorkspaceMode::Review;
+                assignment.writable_paths = None;
+                assignment.review_target = Some(target.clone());
+                Some(assignment)
+            } else {
+                None
+            };
+        let project_root = if let Some(assignment) = &reviewed {
+            PathBuf::from(&assignment.project_root)
+        } else {
+            match self
+                .bind_bot_project(&request.id, &parent.root_thread_id, &mut project)
+                .await?
+            {
+                Some(root) => root,
+                None => crate::studio::agent_host::workspace_preparation::resolved_project_root(
+                    &project,
+                )
+                .map_err(|error| resource_error("resolve child project root", error))?,
             }
         };
         let session_root =
@@ -57,29 +83,25 @@ impl StudioChildResources for StudioThreadFactory {
         // 之前设置，离开本函数（成功、失败、取消或展开）时由守卫清除。标记键是 child_id，
         // 不会影响会话路径的判定。
         let _creation = self.services.worktrees.creation_guard(&request.id);
-        let review_target = match request.review_target_agent_id.as_deref() {
-            None => None,
-            Some(target_id) => Some(
-                self.resolve_review_target(target_id, &request.caller, &parent, &project)
-                    .await?,
-            ),
+        let assignment = if let Some(assignment) = reviewed {
+            assignment
+        } else {
+            crate::studio::agent_host::workspace_preparation::prepare_workspace(
+                &self.services.worktrees,
+                &self.services.ssh_manager,
+                crate::studio::agent_host::workspace_preparation::WorkspacePreparation {
+                    project: &project,
+                    project_root,
+                    root_thread_id: &parent.root_thread_id,
+                    child_id: &request.id,
+                    mode: profile.profile.workspace_mode,
+                    writable_paths: request.writable_paths.clone(),
+                    session_root,
+                },
+            )
+            .await
+            .map_err(|error| resource_error("prepare child workspace", error))?
         };
-        let assignment = crate::studio::agent_host::workspace_preparation::prepare_workspace(
-            &self.services.worktrees,
-            &self.services.ssh_manager,
-            crate::studio::agent_host::workspace_preparation::WorkspacePreparation {
-                project: &project,
-                project_root,
-                root_thread_id: &parent.root_thread_id,
-                child_id: &request.id,
-                mode: profile.profile.workspace_mode,
-                writable_paths: request.writable_paths.clone(),
-                session_root,
-                review_target,
-            },
-        )
-        .await
-        .map_err(|error| resource_error("prepare child workspace", error))?;
         check_cancelled(request)?;
         let workspace =
             ToolWorkspace::new(assigned_workspace(&assignment, root_thread.workspace_mode))
@@ -106,6 +128,12 @@ impl StudioChildResources for StudioThreadFactory {
         check_cancelled(request)?;
         let workspace_payload = crate::studio::workspace_receipt::to_payload(&assignment)
             .map_err(|error| resource_error("encode child workspace receipt", error))?;
+        Self::configure_review_finish(
+            &mut prepared_tools.tools,
+            &request.id,
+            &profile.profile,
+            &assignment,
+        )?;
         let receipt = workspace_payload.content().to_owned();
         let agent = ResolvedAgentDefinition::from_profile(&profile.profile).map_err(|error| {
             ThreadAssemblyError::Identity(format!("invalid child Agent: {error}"))
@@ -351,77 +379,5 @@ fn check_cancelled(request: &ChildThreadRequest) -> Result<(), ThreadAssemblyErr
         Err(pl_core::thread::ThreadError::Cancelled.into())
     } else {
         Ok(())
-    }
-}
-
-impl StudioThreadFactory {
-    /// Resolves one reviewed agent's workspace facts for a `review` Profile spawn.
-    ///
-    /// 关系校验（调用者的直接 child、同一根会话与 Project）先行；worktree 被审者以 durable
-    /// lease 为 canonical 事实并核对物理工作树仍存在，非 worktree 被审者的工作区即会话工作区
-    /// 根，由 `prepare_workspace` 派生。review child 不获取、不转移被审者的 lease。
-    async fn resolve_review_target(
-        &self,
-        target_id: &str,
-        caller: &str,
-        parent: &crate::studio::ThreadRecord,
-        project: &crate::studio::ProjectRecord,
-    ) -> Result<
-        crate::studio::agent_host::workspace_preparation::ReviewWorkspaceTarget,
-        ThreadAssemblyError,
-    > {
-        use crate::studio::agent_host::worktree_lease::{
-            WorktreeLeaseOwnerKind, WorktreeLeaseState,
-        };
-        let invalid = || ThreadAssemblyError::ReviewTargetInvalid(target_id.to_owned());
-        let target = self
-            .services
-            .product_events
-            .thread_snapshot(target_id)
-            .map(crate::studio::ThreadRecord::from_directory_thread)
-            .ok_or_else(invalid)?;
-        if target.parent_thread_id.as_deref() != Some(caller)
-            || target.root_thread_id != parent.root_thread_id
-            || target.project_id != project.id
-        {
-            return Err(invalid());
-        }
-        let Some(lease) = self.services.worktrees.get(target_id) else {
-            return Ok(
-                crate::studio::agent_host::workspace_preparation::ReviewWorkspaceTarget {
-                    agent_id: target_id.to_owned(),
-                    worktree: None,
-                },
-            );
-        };
-        if lease.owner_kind != WorktreeLeaseOwnerKind::Child
-            || lease.root_thread_id != parent.root_thread_id
-            || lease.state == WorktreeLeaseState::Cleaned
-        {
-            return Err(invalid());
-        }
-        let manager = crate::studio::agent_host::workspace_preparation::manager_from_lease(
-            &self.services.ssh_manager,
-            &lease,
-        )
-        .map_err(|error| resource_error("open reviewed workspace manager", error))?;
-        let handle = crate::agent::worktree::WorktreeHandle {
-            path: PathBuf::from(&lease.path),
-            base_commit: lease.base_commit.clone(),
-        };
-        match manager.verify(&handle).await {
-            Ok(()) => {}
-            Err(error) => return Err(resource_error("preview reviewed workspace", error)),
-        }
-        Ok(
-            crate::studio::agent_host::workspace_preparation::ReviewWorkspaceTarget {
-                agent_id: target_id.to_owned(),
-                worktree: Some(pl_protocol::AgentWorktreeSnapshot {
-                    repository_root: lease.repository_root.clone(),
-                    path: lease.path.clone(),
-                    base_commit: lease.base_commit.clone(),
-                }),
-            },
-        )
     }
 }

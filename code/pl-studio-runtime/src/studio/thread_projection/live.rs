@@ -551,6 +551,7 @@ pub(in crate::studio) struct TurnResult {
     /// Tail of the visible commentary, used only when the Turn committed no final text.
     commentary: BTreeMap<(u64, String), String>,
     last_tool: Option<(u64, ThreadToolItem)>,
+    pub(in crate::studio) finish: Option<pl_tool::finish_turn::SavedFinishTurn>,
 }
 
 impl TurnResult {
@@ -604,6 +605,19 @@ impl TurnResult {
         }
         if let Some((_, tool)) = &self.last_tool {
             bytes = bytes.saturating_add(tool_bytes(tool));
+        }
+        if let Some(finish) = &self.finish {
+            bytes = bytes
+                .saturating_add(finish.message.len() as u64)
+                .saturating_add(
+                    finish
+                        .feedback_message
+                        .as_ref()
+                        .map_or(0, |body| body.len()) as u64,
+                )
+                .saturating_add(finish.review.as_ref().map_or(0, |review| {
+                    review.summary.len() + review.reviewed_version.len()
+                }) as u64);
         }
         bytes
     }
@@ -1119,6 +1133,13 @@ impl LiveProjection {
         }
         for item in &items {
             self.record(item.clone())?;
+        }
+        for delivery in effect.deliveries.iter() {
+            if let Some(finish) = super::completions::committed_finish(delivery)
+                && let Some(turn) = state.live_calls.get(&delivery.call_id)
+            {
+                self.results.entry(turn.clone()).or_default().finish = Some(finish);
+            }
         }
         Ok(Arc::new(PreparedEffect {
             sequence: effect.sequence,

@@ -6,6 +6,7 @@ mod activity;
 pub(in crate::studio) use activity::{ActivityDetailRead, ActivityProjection, project_activity};
 mod compactions;
 mod completions;
+pub(in crate::studio) use completions::committed_finish;
 mod content;
 pub(in crate::studio) use content::{
     continuation_request_digest, input_presentation, prompt_request_digest,

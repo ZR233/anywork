@@ -237,17 +237,24 @@ pub(super) struct Spawn {
 pub(super) struct Report {
     pub child_id: String,
     pub commit_sequence: u64,
+    #[serde(deserialize_with = "super::review_wire::terminal_turn")]
     pub turn: Turn,
+    pub turn_id: String,
+    #[serde(deserialize_with = "super::review_wire::required_option")]
+    pub input_id: Option<String>,
     pub message: String,
     pub messages: Vec<MessageIdentity>,
     pub running_tasks: Vec<String>,
     pub pending_interactions: Vec<String>,
     pub permissions: Vec<Permission>,
+    pub review: Option<super::review_wire::Review>,
+    pub last_tool: Option<serde::de::IgnoredAny>,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct Turn {
+    #[serde(deserialize_with = "super::review_wire::required_option")]
     pub input_id: Option<String>,
     pub turn_id: String,
     pub state: TurnState,
@@ -287,11 +294,13 @@ pub(super) enum PermissionState {
 }
 
 impl Report {
-    fn validate_identity(&self) -> Result<()> {
+    pub fn validate_identity(&self) -> Result<()> {
         ensure!(
             !self.child_id.trim().is_empty()
                 && self.commit_sequence > 0
-                && !self.turn.turn_id.trim().is_empty(),
+                && !self.turn_id.trim().is_empty()
+                && self.turn_id == self.turn.turn_id
+                && self.input_id == self.turn.input_id,
             "terminal report lacks committed child/Turn identity"
         );
         // A message-triggered Turn has no chat inputId. Never infer an input
@@ -455,6 +464,7 @@ pub(super) struct AgentRow {
     pub lifecycle: Lifecycle,
     pub pending_inputs: usize,
     pub running_tasks: usize,
+    #[serde(deserialize_with = "super::review_wire::required_option")]
     pub last_turn: Option<Turn>,
 }
 
@@ -524,12 +534,30 @@ pub(super) enum SavedItemState {
     Turn {
         data: SavedTurn,
     },
+    Text {
+        data: SavedText,
+    },
     // Non-Turn items are not evidence for a Turn. Their payload is irrelevant
     // to this projection; their thread/ordinal fields are still validated.
     // Internal tagging ignores their data object without treating malformed
     // known Turn data as an unknown variant.
     #[serde(other)]
     Other,
+}
+
+#[derive(Deserialize)]
+pub(super) struct SavedText {
+    pub channel: SavedTextChannel,
+    pub text: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) enum SavedTextChannel {
+    User,
+    ParentAgent,
+    Commentary,
+    Final,
 }
 
 #[derive(Deserialize)]

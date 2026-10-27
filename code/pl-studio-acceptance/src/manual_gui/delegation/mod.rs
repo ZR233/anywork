@@ -3,6 +3,7 @@
 
 mod config;
 mod recovery;
+mod review_feedback;
 
 use super::*;
 use pl_provider_fixture::delegation::{LiveState, Scenario};
@@ -63,6 +64,10 @@ pub(super) fn run(
     let mut states = Vec::new();
     let journey = (|| -> Result<()> {
         fs::create_dir_all(project.join("work"))?;
+        fs::write(
+            project.join("work/review-surface.txt"),
+            "Controlled review surface v1. No user data.\n",
+        )?;
         ensure!(
             Command::new("git")
                 .current_dir(&project)
@@ -87,7 +92,7 @@ pub(super) fn run(
         )?;
         let phases: &[&str] = if matches!(
             context.scenario,
-            Scenario::Lifecycle | Scenario::Window | Scenario::Recovery
+            Scenario::Lifecycle | Scenario::Window | Scenario::Recovery | Scenario::ReviewFeedback
         ) {
             &["first", "reopen"]
         } else {
@@ -123,6 +128,13 @@ pub(super) fn run(
                     recovery::check_reopened(first, &state)?;
                 } else {
                     recovery::check_first(&state)?;
+                }
+            }
+            if context.scenario == Scenario::ReviewFeedback {
+                if let Some(first) = states.first() {
+                    review_feedback::check_reopened(first, &state)?;
+                } else {
+                    review_feedback::check_first(&state)?;
                 }
             }
             states.push(state);
@@ -194,6 +206,8 @@ pub(super) fn run(
             "error":journey.as_ref().err().map(|error| format!("{error:#}")),
             "fixtureError":stopped.as_ref().err().map(|error| format!("{error:#}")),
             "unprovedConcurrency":["evaluate/send/close lock ordering","spawn/archive interleaving","cancelled write waiter commit/cleanup failure"],
+            "reviewEvidenceBoundary":"accepted forward receipt + exact target model wrapper/hash + new committed Turn; no inferred inputId or complete inbox ledger",
+            "unprovedReviewRecovery":["observer crash before handoff","same-identity report replay without a public injection entry","all-crash-windows exactly-once"],
         }))?,
     )?;
     println!(
@@ -305,7 +319,7 @@ fn manual_phase(
     phase: &str,
 ) -> Result<()> {
     println!(
-        "Observe {phase} using Flutter Driver. Type action codes to record; done captures and shuts down this phase. Lifecycle/window/recovery reopen the SAME environment automatically. Ctrl-C fails and cleans up."
+        "Observe {phase} using Flutter Driver. Type action codes to record; done captures and shuts down this phase. Lifecycle/window/recovery/review-feedback reopen the SAME environment automatically. Ctrl-C fails and cleans up."
     );
     let (tx, rx) = mpsc::channel();
     thread::spawn(move || {

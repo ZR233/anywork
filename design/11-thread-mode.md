@@ -72,7 +72,7 @@
   "expectedStateId": "working",
   "targetStateId": "integrating",
   "completion": {
-    "reason": "所有实现子任务均已交付并通过局部审查",
+    "reason": "计划成果已按当前实施策略交付，相关依赖与必要验证均已核对",
     "summary": "完成核心模块实现与定向回归测试",
     "evidence": ["cargo test -p pl-core passed"]
   }
@@ -90,16 +90,25 @@
 ```text
 planning -> editing_documents
 editing_documents -> working
-working -> integrating
-integrating -> working | reviewing
+working -> editing_documents | integrating
+integrating -> editing_documents | working | reviewing
 reviewing -> working | editing_documents | completed
 所有非终态 -> stopped
 completed、stopped 为终态
 ```
 
 在 `mode.task` 中：
+根智能体不运行命令和不编写业务实现的职责适用于全部阶段，规划期也没有只读 shell、Git 或工具链探测例外；按需读取设计与证据不授权绕过该边界。接口与关键伪代码属于设计，完整业务实现不能改以派发正文代写（见 [12](./12-collaboration.md)）。
+
 1. **`planning`（规划阶段）**：智能体必须通过 `plan_submit` 提交完整计划并请求用户确认；计划确认流程由独立的计划状态机（`plan_*` 工具，见 [13](./13-plan.md)）管理，在用户批准前工作流阶段始终保持为 `planning`。仅当宿主计划状态投影为 `approved` 后，才允许转换至 `editing_documents`。
-2. **`editing_documents` → `working` → `integrating` → `reviewing`**：在 `working` 阶段各执行子智能体独立完成编码、局部测试与局部审查；本地目录任务通过后直接完成，独立工作树（`worktree`）任务通过后由根智能体增量合入。`integrating` 阶段核对全部子任务与代码合入完整性；`reviewing` 阶段由根智能体对照完整计划执行整体集成与功能验收。若发现代码缺陷则退回 `working` 交由原执行者修复，若发现设计偏差则退回 `editing_documents` 同步设计文档，两条返工路径均须重新经过 `integrating` 与 `reviewing` 后方可进入 `completed` 终态（详见 [12](./12-collaboration.md)）。
+2. **`editing_documents`（设计阶段）**：根智能体作为架构师和项目经理，先维护与批准计划一致的设计和接口。具体编码、命令、实验、Git 与电脑操作均委派现有子智能体；该职责是提示词契约，不是按阶段切换的工具硬权限。
+3. **`working`（实施阶段）**：根智能体选择和调整实施策略，子智能体执行明确任务。工作树并行与增量审查、目录分工与集中验证等仅为建议，不是固定分支；不要求每个执行者都获得独立局部审查批准。执行者发现任何路线、设计等与实现冲突或不确定时停止实施并清楚报告，可附灵感与建议供根智能体裁定，等待明确续跑安排；停工轮次不能记作任务完成。
+4. **`integrating`（核对成果阶段）**：按实际策略核对计划成果、依赖和版本。根智能体负责合入决策，执行者承担实际 Git 操作；目录改动已经在会话工作区，不制造合入。未解决的依赖、冲突或缺失证据不得声明完成。
+5. **`reviewing`（整体验收阶段）**：由审查者承担适用的独立整体代码审查、检查与功能验收，根智能体综合真实证据作最终判断。可以复用有效证据、合并重复审查，不固定代理数量、轮次或实施策略。代码缺陷返回 `working`，设计偏差返回 `editing_documents`；修复后重新核对集成和验收，确认必要资源回收后才进入 `completed`。
+
+**正常推进与设计返工分别判断**：`working` 或 `integrating` 中已确认需要修订设计时，可直接返回 `editing_documents`，不要求先满足“实现全部交付”或“集成已完成”的前向条件，也不重启整个运行实例。返工转换记录问题证据、裁定及受影响任务，保留现场、已有成果与仍有效的验证；依赖新设计的实施暂停，根智能体完成设计同步后明确安排续跑。仅需解释既有契约而无需改设计时，可在当前阶段裁定并继续。涉及目标、范围或关键决策变化时仍遵循计划确认契约，不以返工边绕过授权。
+
+角色、停工报告、可选建议、审查回送及返工契约统一见 [12](./12-collaboration.md)。策略自由不修改用户目标、授权与项目门禁；目标、范围及关键架构未变的常规调度调整不要求重复批准同一计划。状态说明、完成标准与边的声明性守卫不得重新加入逐执行者审查或某种工作区的隐藏门槛。
 
 ## 11.7 桌面界面展示与条件发布
 

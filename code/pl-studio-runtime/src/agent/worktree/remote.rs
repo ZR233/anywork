@@ -51,17 +51,34 @@ struct SshRemoteWorktreeTransport {
     ssh_manager: Arc<SshManager>,
     server_id: String,
     repo_root: String,
+    frozen: Option<pl_tool::remote::RemoteWorkspaceFileBackend>,
 }
 
 impl SshRemoteWorktreeTransport {
     async fn host(&self) -> Result<pl_tool::remote::RemoteWorkspaceHost, WorktreeError> {
-        self.ssh_manager
-            .open_workspace_host(&self.server_id, self.repo_root.clone())
-            .await
-            .map_err(|source| WorktreeError::Remote {
-                operation: "SSH open workspace host",
-                source,
-            })
+        self.open_host(self.repo_root.clone()).await
+    }
+
+    async fn open_host(
+        &self,
+        root: String,
+    ) -> Result<pl_tool::remote::RemoteWorkspaceHost, WorktreeError> {
+        let result = match &self.frozen {
+            Some(frozen) => {
+                self.ssh_manager
+                    .open_workspace_host_on_connection(&self.server_id, frozen, root)
+                    .await
+            }
+            None => {
+                self.ssh_manager
+                    .open_workspace_host(&self.server_id, root)
+                    .await
+            }
+        };
+        result.map_err(|source| WorktreeError::Remote {
+            operation: "SSH open workspace host",
+            source,
+        })
     }
 }
 
@@ -74,14 +91,7 @@ impl RemoteWorktreeTransport for SshRemoteWorktreeTransport {
         async move {
             // The shared Git directory can be outside a linked checkout's execution root. Open
             // only this Git-confirmed metadata root; do not widen the execution workspace.
-            let host = self
-                .ssh_manager
-                .open_workspace_host(&self.server_id, common_dir)
-                .await
-                .map_err(|source| WorktreeError::Remote {
-                    operation: "SSH open Git admin host",
-                    source,
-                })?;
+            let host = self.open_host(common_dir).await?;
             let mut bytes = Vec::new();
             host.files
                 .copy_capture_bounded(&relative_path, &mut bytes, MAX_ADMIN_BACKLINK_BYTES as u64)
@@ -162,6 +172,26 @@ impl RemoteWorktreeBackend {
                 ssh_manager,
                 server_id,
                 repo_root: repo_root.clone(),
+                frozen: None,
+            }),
+            repo_root,
+        })
+    }
+
+    /// Read-only Studio ownership checks retain the exact live execution connection.
+    pub(crate) fn from_frozen_connection(
+        ssh_manager: Arc<SshManager>,
+        server_id: String,
+        repo_root: PathBuf,
+        frozen: pl_tool::remote::RemoteWorkspaceFileBackend,
+    ) -> Result<Self, WorktreeError> {
+        let repo_root = remote_path(&repo_root)?;
+        Ok(Self {
+            transport: Arc::new(SshRemoteWorktreeTransport {
+                ssh_manager,
+                server_id,
+                repo_root: repo_root.clone(),
+                frozen: Some(frozen),
             }),
             repo_root,
         })

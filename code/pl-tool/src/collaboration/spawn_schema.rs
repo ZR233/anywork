@@ -72,6 +72,10 @@ fn branch(
         properties.remove("writablePaths");
     }
     if profile.workspace_mode == AgentWorkspaceMode::Review {
+        properties.insert(
+            "reviewFeedback".into(),
+            super::thread::ReviewFeedback::json_schema(&mut SchemaGenerator::default()).to_value(),
+        );
         // Option<String> is appropriate for parsing all modes, but a review branch requires a
         // non-null target. The host still checks that the target is an authorized direct child.
         properties.insert(
@@ -85,6 +89,7 @@ fn branch(
             .push(Value::String("reviewTargetAgentId".into()));
     } else {
         properties.remove("reviewTargetAgentId");
+        properties.remove("reviewFeedback");
     }
     if mode == DelegationMode::Automatic {
         let mut generator = schemars::generate::SchemaSettings::default()

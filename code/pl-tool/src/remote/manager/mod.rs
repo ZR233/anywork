@@ -615,14 +615,38 @@ impl SshManager {
         server_id: &str,
         path: String,
     ) -> Result<RemoteWorkspaceHost, RemoteClientError> {
-        // 跨端入口统一归一化为 POSIX：宿主形态（含 Windows 分隔符）的同一远端目录必须
-        // 映射到同一个缓存键与同一个 helper workspace，不得因 canonicalize 失败或重复
-        // 打开而产生两个 workspace handle。缓存键语义保持既有形状（请求路径用于查找、
-        // helper canonical 路径用于存放）。
-        let path = normalize_remote_absolute_path(&path)
-            .map_err(|error| RemoteClientError::Protocol(error.to_string()))?;
+        let path = normalized_workspace_path(&path)?;
         let _operation = self.admit_connection().await?;
         let client = self.client(server_id).await?;
+        self.open_workspace_with_client(server_id, path, client)
+            .await
+    }
+
+    /// Opens a host-only inspection root on an existing logical helper session, never connecting,
+    /// bootstrapping or uploading a helper. The returned host must not be registered as model tools.
+    /// # Errors
+    /// Rejects an unavailable/replaced logical client or helper open failure. Owner-managed
+    /// reattachment of the same logical session keeps its existing leases and openings valid.
+    pub async fn open_workspace_host_on_connection(
+        &self,
+        server_id: &str,
+        frozen: &RemoteWorkspaceFileBackend,
+        path: String,
+    ) -> Result<RemoteWorkspaceHost, RemoteClientError> {
+        let path = normalized_workspace_path(&path)?;
+        let _operation = self.admit_connection().await?;
+        self.open_workspace_with_client(server_id, path, frozen.frozen_client()?)
+            .await
+    }
+
+    async fn open_workspace_with_client(
+        &self,
+        server_id: &str,
+        path: String,
+        client: RemoteClient,
+    ) -> Result<RemoteWorkspaceHost, RemoteClientError> {
+        // Both entries validate/normalize before connection admission. Cache keys retain the
+        // original contract: request path for lookup, helper canonical path for storage.
         // Keep transport, workspace and environment from one connection, even if
         // reconnect raced the initial lookup. Never publish a mixed-generation host.
         let connection = self
@@ -660,7 +684,7 @@ impl SshManager {
                         let client = client.clone();
                         let environment = connection.execution_environment.clone();
                         self.operations.spawn(async move {
-                            let result = tokio::time::timeout(
+                            let mut result = tokio::time::timeout(
                                 std::time::Duration::from_secs(15),
                                 client.open_workspace_lease(
                                     path,
@@ -674,6 +698,16 @@ impl SshManager {
                             })
                             .and_then(|v| v)
                             .map(|lease| (lease, environment));
+                            let connections = manager.connections.lock().await;
+                            if !connections.get(&key.0).is_some_and(|connection| {
+                                connection.client.is_same_connection(&client)
+                            }) || client.is_disconnected()
+                                || result
+                                    .as_ref()
+                                    .is_ok_and(|(lease, _)| !lease.is_connection(&client))
+                            {
+                                result = Err(RemoteClientError::Disconnected);
+                            }
                             if let Ok((lease, environment)) = &result {
                                 manager
                                     .workspaces
@@ -687,9 +721,17 @@ impl SshManager {
                                         },
                                     );
                             }
+                            drop(connections);
                             // Publish the weak cache before releasing single-flight registration.
                             // A new caller cannot slip between removal and cache publication.
                             manager.opening_workspaces.lock().await.remove(&key);
+                            let connections = manager.connections.lock().await;
+                            if !connections.get(&key.0).is_some_and(|connection| {
+                                connection.client.is_same_connection(&client)
+                            }) || client.is_disconnected()
+                            {
+                                result = Err(RemoteClientError::Disconnected);
+                            }
                             report.send_replace(Some(result));
                         });
                         receiver
@@ -709,6 +751,17 @@ impl SshManager {
                 (lease, environment)
             }
         };
+        // A shared open may have belonged to another connection generation. Never silently retry
+        // or publish its host, even when alias, requested path and helper workspace id match.
+        let connections = self.connections.lock().await;
+        if !connections
+            .get(server_id)
+            .is_some_and(|connection| connection.client.is_same_connection(&client))
+            || client.is_disconnected()
+            || !lease.is_connection(&client)
+        {
+            return Err(RemoteClientError::Disconnected);
+        }
         Ok(RemoteWorkspaceHost {
             files: RemoteWorkspaceFileBackend::new(client.clone(), lease.clone()),
             commands: RemoteCommandBackend::new(client.clone(), lease.clone()),
@@ -856,6 +909,11 @@ impl SshManager {
             }
         }
     }
+}
+
+fn normalized_workspace_path(path: &str) -> Result<String, RemoteClientError> {
+    normalize_remote_absolute_path(path)
+        .map_err(|error| RemoteClientError::Protocol(error.to_string()))
 }
 
 pub(super) fn execution_environment_from_hello(

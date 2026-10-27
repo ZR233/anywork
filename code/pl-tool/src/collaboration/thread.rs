@@ -53,9 +53,20 @@ pub struct AgentSpawn {
     pub writable_paths: Option<Vec<String>>,
     /// Pure agentId of the reviewed direct child; required by review Profiles and rejected otherwise. The host adopts that agent's frozen workspace.
     pub review_target_agent_id: Option<String>,
+    /// Optional host-bound feedback to the reviewed executor; accepted only by review Profiles.
+    #[serde(default, deserialize_with = "review_feedback")]
+    pub review_feedback: Option<ReviewFeedback>,
     /// Product-owned creation metadata; never interpreted as framework permissions.
     #[serde(default)]
     pub metadata: serde_json::Value,
+}
+
+pub use pl_protocol::AgentReviewFeedback as ReviewFeedback;
+
+fn review_feedback<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<ReviewFeedback>, D::Error> {
+    serde::Deserialize::deserialize(deserializer).map(Some)
 }
 
 /// Validated single-line task title, supplied by the caller before child resources are allocated.

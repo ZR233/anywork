@@ -148,7 +148,7 @@ impl StudioThreadAssembler {
         }
     }
 
-    async fn durable_message_identity(
+    pub(super) async fn durable_message_identity(
         &self,
         thread_id: &str,
         message_id: &str,

@@ -4,6 +4,7 @@ mod admission;
 mod agent_close;
 mod agent_evaluation;
 mod agent_operations;
+pub(crate) mod agent_review;
 mod agent_services;
 mod agents;
 mod delegation_models;

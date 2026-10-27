@@ -2473,7 +2473,7 @@ async fn workspace_receipt_upgrade_preserves_nested_ownership_and_rejects_corrup
         let migrated = migrate_model_access(&store).await?;
         let saved = &migrated.state.extensions["studio.workspace"];
         assert_eq!(saved.revision, 23);
-        assert_eq!(saved.payload.version(), 2);
+        assert_eq!(saved.payload.version(), 3);
         if let Some(worktree) = receipt.get_mut("worktree") {
             worktree
                 .as_object_mut()

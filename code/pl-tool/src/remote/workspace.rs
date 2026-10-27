@@ -47,6 +47,14 @@ pub struct RemoteWorkspaceFileBackend {
 }
 
 impl RemoteWorkspaceFileBackend {
+    pub(in crate::remote) fn frozen_client(
+        &self,
+    ) -> std::result::Result<RemoteClient, RemoteClientError> {
+        if self.client.is_disconnected() || !self.lease.is_connection(&self.client) {
+            return Err(RemoteClientError::Disconnected);
+        }
+        Ok(self.client.clone())
+    }
     pub(super) fn new(
         client: RemoteClient,
         lease: std::sync::Arc<super::client::workspace::WorkspaceLease>,

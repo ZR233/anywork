@@ -72,10 +72,7 @@ impl ThreadBuiltin {
                 "exec",
                 "Run a shell command in the configured workspace. Completion includes process exit and output drain. Long commands return a task receipt; use wait or get_tool_task to observe completion. Full output is archived as a resource.",
             ),
-            Self::FinishTurn => schema::<crate::finish_turn::FinishTurnInput>(
-                "finish_turn",
-                "End this Turn with a complete Markdown report. Report results, evidence or problems requiring the parent. No message length limit. Do not repeat a final reply afterward; this does not declare the task complete.",
-            ),
+            Self::FinishTurn => crate::finish_turn::declaration(),
             Self::AskUser => schema::<crate::ask_user::AskUserInput>(
                 "request_user_input",
                 "Ask structured questions and suspend until the user answers or cancels.",

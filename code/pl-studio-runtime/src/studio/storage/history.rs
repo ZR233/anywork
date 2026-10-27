@@ -2429,6 +2429,103 @@ mod storage_fault_tests {
     use super::*;
     use crate::studio::thread_projection::order;
 
+    /// Real SQLite representation maintenance must preserve old review history without granting
+    /// feedback/baselines, and roll back both the checkpoint and migration name on save failure.
+    #[tokio::test]
+    async fn review_receipt_upgrade_is_atomic_and_does_not_infer_authority() -> Result<()> {
+        use pl_core::{
+            context::OpaquePayload,
+            thread::{ThreadCheckpoint, ThreadSnapshot, extensions::ExtensionRecord},
+        };
+        for version in [1, 2] {
+            let directory = tempfile::tempdir()?;
+            let path = directory.path().join("history.sqlite");
+            let id = format!("review-receipt-v{version}");
+            let store = HistoryStore::open(&path, &id).await?;
+            let legacy = serde_json::json!({
+                "mode": "review", "projectRoot": "/project", "root": "/checkout",
+                "writablePaths": null,
+                "worktree": if version == 1 {
+                    serde_json::json!({"repositoryRoot":"/project", "path":"/checkout", "branch":"old-branch", "baseCommit":"abc"})
+                } else {
+                    serde_json::json!({"repositoryRoot":"/project", "path":"/checkout", "baseCommit":"abc"})
+                },
+                "reviewTarget": {"agentId":"original-executor"}
+            });
+            let checkpoint = ThreadCheckpoint::capture(
+                id.clone(),
+                0,
+                ThreadSnapshot {
+                    commit_sequence: 0,
+                    extensions: std::collections::BTreeMap::from([(
+                        "studio.workspace".into(),
+                        ExtensionRecord {
+                            revision: 7,
+                            payload: OpaquePayload::new(
+                                "pl.studio.workspace",
+                                version,
+                                serde_json::to_string(&legacy)?,
+                            )?,
+                        },
+                    )]),
+                    ..Default::default()
+                },
+            );
+            store.import_checkpoint(&checkpoint, &[]).await?;
+            let connection = store.writer().await?;
+            connection.db.execute_unprepared(
+                "DELETE FROM seaql_migrations WHERE version='m20261027_000003_history_review_receipt';
+                 CREATE TRIGGER reject_review_upgrade BEFORE UPDATE ON session_checkpoint
+                 BEGIN SELECT RAISE(ABORT, 'injected review checkpoint failure'); END;"
+            ).await?;
+            let error = schema::prepare(&connection.db, &id, schema::Preparation::Schema, None)
+                .await
+                .expect_err("checkpoint failure must fail the representation migration");
+            assert!(format!("{error:#}").contains("injected review checkpoint failure"));
+            let unchanged = checkpoint::read(&connection.db, &id)
+                .await?
+                .context("preserved checkpoint")?;
+            assert_eq!(
+                unchanged.state.extensions["studio.workspace"].payload,
+                checkpoint.state.extensions["studio.workspace"].payload
+            );
+            assert!(connection.db.query_one_raw(statement(
+                "SELECT version FROM seaql_migrations WHERE version='m20261027_000003_history_review_receipt'", vec![]
+            )).await?.is_none(), "a failed transaction cannot mark the migration applied");
+            connection
+                .db
+                .execute_unprepared("DROP TRIGGER reject_review_upgrade")
+                .await?;
+            schema::prepare(&connection.db, &id, schema::Preparation::Schema, None).await?;
+            let migrated = checkpoint::read(&connection.db, &id)
+                .await?
+                .context("migrated checkpoint")?;
+            let record = &migrated.state.extensions["studio.workspace"];
+            assert_eq!(
+                record.revision, 7,
+                "representation upgrade does not fabricate an application revision"
+            );
+            assert_eq!(record.payload.version(), 3);
+            let assignment = crate::studio::workspace_receipt::from_payload(&record.payload)?;
+            let target = assignment.review_target.context("preserved target")?;
+            assert_eq!(target.agent_id, "original-executor");
+            assert!(
+                target.feedback.is_none() && target.baseline.is_none(),
+                "old records cannot gain new authority"
+            );
+            assert_eq!(assignment.root, "/checkout");
+            assert_eq!(
+                assignment
+                    .worktree
+                    .context("preserved worktree")?
+                    .base_commit,
+                "abc"
+            );
+            assert_eq!(migrated.history_fence, checkpoint.history_fence);
+        }
+        Ok(())
+    }
+
     /// Content preparation is the only upgrade boundary for cold reads. The real SQLite failure
     /// occurs after DROP but before the format update, exercising the official step transaction.
     #[tokio::test]

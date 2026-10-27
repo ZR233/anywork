@@ -9,6 +9,8 @@ mod session_files;
 mod thread_seed;
 mod thread_tools;
 mod tool_bindings;
+mod workspace_validation;
+pub(crate) use workspace_validation::{ReviewWorkspaceCheck, ReviewWorkspaceError};
 
 pub(in crate::studio) use tool_bindings::RefreshedToolBinding;
 

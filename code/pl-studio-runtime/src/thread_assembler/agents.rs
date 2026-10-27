@@ -191,6 +191,28 @@ impl AgentControlHost for AgentHost {
             .ensure_agent_admission_open(&context.thread_id)
             .map_err(ToolError::new)?;
         let (factory, reservation) = owner.reserve_child(&context).map_err(ToolError::new)?;
+        if request.review_target_agent_id.as_deref() == Some(context.thread_id.as_str()) {
+            return Err(ToolError::new(ThreadAssemblyError::ReviewTargetInvalid(
+                context.thread_id.clone(),
+            )));
+        }
+        let _review_operation = match request.review_target_agent_id.as_deref() {
+            Some(target) => Some(owner.agent_operation(target).await),
+            None => None,
+        };
+        let review_target = match request.review_target_agent_id.as_deref() {
+            Some(target) => Some(
+                owner
+                    .freeze_review_target(&context.thread_id, target, request.review_feedback)
+                    .await
+                    .map_err(|error| ToolError::new(super::agent_services::ServiceError(error)))?,
+            ),
+            None => None,
+        };
+        let (review_target, review_workspace, review_check) = match review_target {
+            Some((target, workspace, check)) => (Some(target), Some(workspace), Some(check)),
+            None => (None, None, None),
+        };
         let delegation = {
             let state = owner.0.state();
             let caller = state
@@ -215,6 +237,9 @@ impl AgentControlHost for AgentHost {
                 task_summary: request.task_summary,
                 writable_paths: request.writable_paths,
                 review_target_agent_id: request.review_target_agent_id,
+                review_feedback: request.review_feedback,
+                review_target,
+                review_workspace,
                 metadata: OpaquePayload::new(
                     "pl.studio.agent-metadata",
                     1,
@@ -246,6 +271,19 @@ impl AgentControlHost for AgentHost {
             .await);
         }
         let id = spec.id.clone();
+        if let Some(check) = &review_check
+            && let Err(error) = check.confirm().await
+        {
+            return Err(cleanup_spawn_failure(
+                &owner,
+                &id,
+                ThreadAssemblyError::Resource {
+                    operation: "recheck reviewed workspace before publication",
+                    source: Box::new(error),
+                },
+            )
+            .await);
+        }
         let options = spec.execution;
         let child = owner.assemble_child(spec, &context).await;
         let child = match child {
@@ -289,6 +327,27 @@ impl AgentControlHost for AgentHost {
             }
         };
         let model = crate::studio::delegation::profile_model(&profile);
+        if let Some(check) = &review_check
+            && let Err(error) = check.confirm().await
+        {
+            return Err(cleanup_spawn_failure(
+                &owner,
+                &id,
+                ThreadAssemblyError::Resource {
+                    operation: "confirm reviewed workspace before publication",
+                    source: Box::new(error),
+                },
+            )
+            .await);
+        }
+        if reservation.cancellation.is_cancelled() || context.cancellation.is_cancelled() {
+            return Err(cleanup_spawn_failure(
+                &owner,
+                &id,
+                pl_core::thread::ThreadError::Cancelled.into(),
+            )
+            .await);
+        }
         let _operation = owner.agent_operation(&id).await;
         if let Err(error) = owner.publish_child_resources(&id) {
             return Err(cleanup_spawn_failure(&owner, &id, error).await);

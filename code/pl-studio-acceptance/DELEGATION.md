@@ -16,6 +16,7 @@ cargo xtask manual-gui --scenario delegation-lifecycle --output <artifacts>/life
 cargo xtask manual-gui --scenario delegation-window --output <artifacts>/window --retain-environment
 cargo xtask manual-gui --scenario delegation-enablement --output <artifacts>/enablement
 cargo xtask manual-gui --scenario delegation-recovery --output <artifacts>/recovery --retain-environment
+cargo xtask manual-gui --scenario delegation-review-feedback --output <artifacts>/review-feedback --retain-environment --delegation-driver code/anywork/test_driver/delegation_review_feedback_journey.dart
 ```
 
 默认是有交互终端的原生 debug/Driver 场景。Linux SSH 没有显示时，复用已有的
@@ -23,7 +24,7 @@ cargo xtask manual-gui --scenario delegation-recovery --output <artifacts>/recov
 端口不使用 `1420`。Xvfb 由外层 `xvfb-run` 拥有，必须等待外层命令退出后核对回收。
 不能直接运行 `flutter run`，也不要使用 demo。GUI 未完成生成/编译时不要盲启动。
 
-可选 `--delegation-driver <当前会话 scratch 中的 Dart 脚本>`。harness 通过已有纯
+可选 `--delegation-driver <正式或当前会话 scratch 中的 Dart 脚本>`。harness 通过已有纯
 Dart Driver 入口运行它，依次传入：
 
 1. 本次实测 VM Service URL；2. 合成 Git project；3. 本阶段 evidence directory；
@@ -34,7 +35,7 @@ Dart Driver 入口运行它，依次传入：
 assertion。**脚本返回前不要 shutdown 应用**，harness 随后调用既有
 `manual_capture.dart`，要求 `capture-stage.txt=shutdown_completed` 并等待所属 GUI
 进程真正退出。无脚本时，外部 Driver 操作完后输入 `done`，其他动作码仅记录、不会替你
-点击 UI。生命周期、窗口和恢复场景会在第一次 `done`/脚本返回后自动重开同一 home，第二次
+点击 UI。生命周期、窗口、恢复和 review-feedback 场景会在第一次 `done`/脚本返回后自动重开同一 home，第二次
 `done` 才结束。EOF、取消、超时、缺主流程、provider 拒绝、Driver 非零、shutdown 或
 进程退出异常都向最外层非零传播。
 
@@ -74,10 +75,19 @@ home 导致工作区绝对路径失效。重开仍需原 fixture 端口；结束
   每步后四个 root-only 声明均仍缺席；非空结果（包括20条截断结果）不能证明隔离。
 - 发现回执的 missing/null/非数组、空或重复 ID、超过20条均失败；原 callId/name/query
   参数必须对应，不复用旧多词查询结果。没有空 query、通配或一次截断列表的漏检捷径。
-- 每个 child authored Turn 正常脚本为四次真实 discover 模型响应加一次 final 响应，共五次
-  provider 请求；四个 callId 使用同 Turn 前缀及各自索引，返修输入有新的前缀，不重复调用
-  身份、不提高生产 step limit。供应商 observation 仍保留各次 discover 与最终完成，原
-  required final checkpoint、关闭后零新增 child 请求及 F1/F2 oracle 均不变。
+- 普通 executor/explorer 的 authored Turn 正常脚本仍是四次真实 discover 模型响应加一次
+  final 响应，共五次 provider 请求。typed reviewer 则是四次隔离发现，再真实发现 read_file、
+  读取 `work/review-surface.txt`，最后真实 `finish_turn(review)`，共七次请求；审查结论不再
+  从自然 final 文案猜测。四个隔离 callId 使用同 Turn 前缀及各自索引，父新 authored 返修
+  输入有新的前缀，不重复调用身份、不提高生产 step limit。review-feedback 的自动回送没有
+  新的 authored marker，执行者复用其已有工具历史，新增请求只处理实际 wrapper。
+  observation 仍保留各次 discover 与真实交付，原 required checkpoint、关闭后零新增 child
+  请求及 F1/F2 oracle 均不变。
+
+既有 routing/lifecycle/window/recovery reviewer 均消费结构化 disposition、summary、实际读取的
+文件 hash、绑定目标和 `(agentId,turnId)`。旧短期望仅作为 summary；完整 findings 带独特正文
+sentinel 留在 reviewer 历史。普通执行者的完整报告保持原样。`lastTurn=null` 仍按下节查询
+真实最新完成历史，不因 compact 缺原全文或最后工具而跳过任何原判据。
 
 有限 HTTP 消费方回放只能证明发送查询、typed 回执校验及脚本步数；不能以重放空回执
 代替真实 root 的揭示或 child 权限隔离，更不能补造成功目录/历史来宣称 GUI 主流程通过。
@@ -450,3 +460,123 @@ Authorization、完整系统提示词或操作者正文。最终 fixture 原请�
 `account-journey-summary.json` 记录检查事实，人工仍核对中英文文案、截图、价表、账单与进程回收。
 新账号通过 typed `initialBillingKind` 随创建提交；普通编辑不填写该字段，已有账号携带该字段
 会被拒绝而非覆盖类别。创建原子性与失败场景应在隔离账号中核对，不录入真实凭据。
+
+## 6. delegation-review-feedback：结构化审查与受限自动回送
+
+使用本文件开头的正式脚本命令。该场景复用现有 manual-gui、synthetic A/B loopback 账号、
+真实 GUI/bridge/Runtime/Thread 工具、fixture response gate、OwnedProcess 和
+manual_capture；不新增 harness、生产角色、用户配置、消费账本 API 或数据库注入。
+脚本在项目草稿通过真实菜单选 **Simple、自动/平衡**，每个独立问题创建新 root。
+Simple 只避免无关 Plan 交互；这不能证明 Task 的提示词、模型决策质量、真实固定/自动
+用户配置或供应商兼容性。后续真实 Task 验收仍是独立要求。
+
+### first：实际动作及标记
+
+正式 Driver 自动执行以下顺序；无脚本时也必须用 Flutter Driver 做相同真实 UI 操作，
+不要在 shell/DB 中创建产品 Thread 或改状态。
+
+| root | 用户输入 marker | 必需 provider checkpoint |
+| --- | --- | --- |
+| 正常原 root | `[[delegation:review-feedback:normal]]` | `rf-normal-compact-complete` |
+| 同一正常 root，先记 compact 再主动读全文 | `[[delegation:review-feedback:normal-full]]` | `rf-full-history-complete` |
+| 新 root / approved | `[[delegation:review-feedback:approved]]` | `rf-approved-complete` |
+| 新 root / inconclusive | `[[delegation:review-feedback:inconclusive]]` | `rf-inconclusive-complete` |
+| 新 root / 自然 final，无 review | `[[delegation:review-feedback:natural]]` | `rf-natural-complete` |
+| 新 root / needsChanges，省略 feedback | `[[delegation:review-feedback:omitted]]` | `rf-omitted-complete` |
+| 新 root / 非法参数 | `[[delegation:review-feedback:illegal]]` | `rf-illegal-complete` |
+| 新 root / busy | `[[delegation:review-feedback:busy]]` | `rf-busy-complete` |
+| 新 root / changed | `[[delegation:review-feedback:changed]]` | `rf-changed-complete` |
+| 新 root / closed | `[[delegation:review-feedback:closed]]` | `rf-closed-complete` |
+
+1. harness 在隔离项目建立小文件 `work/review-surface.txt`。执行者仅获 `work` directory
+   范围。root 通过真实查询选 A/shared executor 和 B/shared reviewer，并等待原执行者
+   完整交付、真实目录 idle、公开最新完成 Turn 后，才以真实 targetID 创建 fresh Review，
+   显式 `reviewFeedback:toExecutor`。reviewer 必须真实 `read_file` 取得完整内容/hash，
+   把 `work/review-surface.txt sha256:…` 填入 reviewedVersion；供应商只模拟结论，不冒充
+   真正业务代码审查，也不以 marker 代替实际版本证据。
+2. 正常 reviewer 通过真实 `finish_turn` 提交 needsChanges。完整 message 包含
+   `RF_FULLBODY_ONLY_c4286037`，独立 native commentary 包含
+   `RF_COMMENTARY_ONLY_a93f8712`，summary 不含两者。只有正常 findings 跨过既有 32 KiB
+   UI 预览界限，以便真实打开全文详情；其他分支较短。这是有界审查材料，不造上下文压缩
+   负载，compact 一词只指父紧凑报告。
+3. 核宿主 `forward.accepted {messageId,sequence}`；executor 的实际 provider 请求必须含
+   **精确完整** wrapper、正文和其中的实际 reviewer/target/review Turn。其最终报告只给
+   正文/完整 wrapper 的 SHA-256 和它真正收到的绑定，不回抄 sentinel 给父。再核同 executor
+   的新 committed Turn、冻结 route、公开最新完成历史与无 pending。fresh 新 reviewer
+   独立提交 approved，核 executor 没有因此新增请求或 Turn。不得复用前 reviewer 上下文。
+4. 在父主动全文读取之前，每个实际父 provider 请求都检查上述 sentinel 没有经默认
+   message/commentary/finish 参数或最后工具注入。GUI compact 截图仅是辅助；不是零泄漏
+   的主证据。记录 `rf-normal-compact-complete` 后才提交 normal-full。它通过公开
+   `read_agent_session` 的真实 agent/turn、descending/full、每页50、最多4页找到精确
+   原文和 commentary；随后出现全文属于显式授权读取，不记为默认泄漏。
+5. Driver 打开已有 agent 菜单，核各实际 child 的冻结 route；再进入原 reviewer 只读历史，
+   展开真实正文详情、复制后通过既有只读 clipboard 命令逐字核全文并留截图。无需也不要求
+   target 上不存在的反馈输入历史卡片。返回原 root 后继续其余独立 roots。
+6. approved、inconclusive、natural、omitted 分别核真实结论与 forward 状态。natural 必须
+   missingConclusion/inconclusive，不可能 approved；省略反馈是 notRequested。每个场景从
+   实际发出 review spawn 时保存 target provider 计数，收到审查报告后再取真实目录/公开
+   最新完成历史与计数，核原目标没有新工作，不把 schema 中没有参数当运行期拒绝证明。
+7. illegal root 真正向非 Review `spawn_agent` 传 reviewFeedback，要求工具拒绝、前后真实
+   child 身份/父子集合不变且无新 provider 请求；其普通 executor 另真正调用带 review 的
+   finish_turn，必须拒绝，随后普通完整报告不具有有效 review。没有伪造目标 ID。
+
+### 三种确定性交错与后态
+
+busy/changed/closed 均先获得真实 idle target 交付，再创建冻结 Review。供应商在 reviewer
+即将发起 read_file 的模型响应处 hold，不拦截或伪造 read_file 工具回执；root 等实际请求
+到达后才推进，不以 sleep 猜 reviewer 状态。
+
+- **busy**：root 真实 send 自己的新要求，等目标实际响应到达并 hold，真实 list_agents
+  必须看到 Running Turn；才 release reviewer。要求明确拒绝且无反馈新增请求。之后释放
+  target 自己的 gate，等待这个父输入对应的完成报告、新 Turn、真实最新完成历史并回收。
+- **changed**：root 真实 send 新要求并等待完整新交付、idle 与公开最新完成 Turn；再 release
+  reviewer，要求 targetChanged 拒绝。反馈后重新读目录/最新历史，不能复用 release 前快照。
+- **closed**：root 取得真实 close_agent Closed/preserve 回执与真实 Closed 目录状态后再
+  release reviewer；要求 targetUnavailable 或明确 admissionRejected。收到结论后再次读取
+  目标目录及最新完成历史，核没有新 Turn/input/provider 请求。
+
+四个固定 gate 名为 `rf-review-busy`、`rf-review-changed`、`rf-review-closed`、
+`rf-target-busy`，其 arrived/released 在 `/delegation/state` 可观察。脚本主链由真实工具
+步骤确认前置条件后自动释放同一 owner 的 CancellationToken，不需要操作者抢先 release。
+既有 `POST /delegation/release` 也识别这四个名字，但提前释放返回409；人工不得跳过真实
+前置条件。每个外部 gate 的等待有180秒上限，停止 fixture 会取消等待；没有通用重试队列。
+
+错误诊断消费当前 typed 状态：forward.reason 用 kind/detail，admissionRejected、
+storageUnavailable、sendUnconfirmed 的 detail 严格为1..8个字符串，每项最多512 Unicode
+字符，允许诊断空字符串，不解析文案决定分类。workspaceCheckRejected 使用
+`{certainty:invalid|unconfirmed,source:[…]}`，与 sendUnconfirmed 不混淆；结论 reason 的
+targetVerificationFailed 是生产 Serde **外部 tag** 的同类载荷，只能 inconclusive。
+未请求的物理核验失败不是本场景的绿灯。必须存在的可空字段缺失时解码失败，不当作 null。
+
+### 正常 shutdown 与 reopen
+
+first 完成后，Driver 保存来自真实 snapshot 的 projectId/root threadId 到隔离环境
+`review-feedback-baseline.json`，只作为导航证据，不写产品状态。脚本返回前不 shutdown；
+harness 继续 manual_capture，等待 shutdown_completed、GUI exit 和进程树回收，然后用
+**同一 home、同一仍存活 fixture** 重开。
+
+reopen 通过真实侧栏选择原 project/root，提交 `[[delegation:review-feedback:reopen]]`，
+要求 `rf-reopen-complete`。公开 root 输入/历史查询触发正常 reconciliation：原父 compact
+报告 child/turn/input/commit 身份和 forward 回执不变；target 最新完成 Turn 仍是先前返修
+完成；first/reopen 全部 child provider 请求计数不增加。root 自己的查询可新增请求，
+不新建 recovery 工作分支、不向 target 重发旧任务。
+
+该证明是 **受理回执 + 实际目标模型精确 wrapper/hash + 新提交 Turn + 正常重开计数**
+的组合。`messages` 不是完整 inbox 消费清单、消息触发 Turn 的 inputId 可以 null；公开未
+提供的身份明确记录，不反推 opaque ID、不编造 message/input 对应的私有账本。
+
+### 证据、限时与未覆盖
+
+- 真实截图/快照：各 checkpoint、`normal-child-list`、`reviewer-full-history-detail`、
+  两阶段 manual_capture；provider-observations.json、requests.json、gui/fixture/Driver
+  日志与 `review-feedback-driver.json` 共同核对。脚本没有屏幕或产品数据模拟写入。
+- Driver 每次业务完成等待最多300秒，UI点击最多30秒、详情加载/滚动最多60秒；harness
+  每阶段总上限1800秒，正常退出最多120秒。轮询间隔只决定观测频率，不作为完成依据。
+- first 的10个 checkpoint 与 reopen 的独立 checkpoint 均必需，缺失、重复、provider
+  拒绝、Driver非零、capture或进程退出失败都保留失败，不用“命令启动成功”代替旅程完成。
+- humanVerdict 始终 pending，必须人工核截图、状态、真实工具回执、请求和 reviewer 历史。
+  本次代码准备阶段不运行 GUI/live/full；Dart 工程包环境与最终单脚本语义分析由 root
+  集成阶段完成，静态脚本核对或 Rust 编译不冒充其通过。
+- 无公开 report 重投、observer crash 或未移交窗口入口；这些仅由代码审查/获准保存专项
+  覆盖，本场景不实测、不私写库、不宣称所有崩溃 exactly-once、逐 inbox 账本、跨平台、
+  Task提示词遵循或真实模型审查质量已获证明。

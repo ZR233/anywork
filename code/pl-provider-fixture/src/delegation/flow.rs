@@ -345,7 +345,14 @@ impl<'a> Flow<'a> {
                 .filter(|report| {
                     report.child_id == child.agent_id
                         && report.commit_sequence > after
-                        && report.message == message
+                        && if child.profile_id == "reviewer" {
+                            report
+                                .review
+                                .as_ref()
+                                .is_some_and(|review| review.summary == message)
+                        } else {
+                            report.message == message
+                        }
                 })
                 .collect();
             if let Some(report) = matches
@@ -353,6 +360,22 @@ impl<'a> Flow<'a> {
                 .max_by_key(|report| report.commit_sequence)
             {
                 report.completed()?;
+                if child.profile_id == "reviewer" {
+                    let review = report
+                        .review
+                        .as_ref()
+                        .context("review report lacks typed conclusion")?;
+                    require(
+                        report.last_tool.is_none(),
+                        "review compact report leaked last tool",
+                    )?;
+                    review.require_legacy(message, &report)?;
+                } else {
+                    require(
+                        report.review.is_none(),
+                        "ordinary executor acquired review authority",
+                    )?;
+                }
                 return Ok(report);
             }
             let _ = self.raw(

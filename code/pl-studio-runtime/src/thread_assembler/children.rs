@@ -18,6 +18,9 @@ pub struct ChildThreadRequest {
     pub task_summary: pl_tool::collaboration::thread::AgentTaskSummary,
     pub writable_paths: Option<Vec<String>>,
     pub review_target_agent_id: Option<String>,
+    pub review_feedback: Option<pl_tool::collaboration::thread::ReviewFeedback>,
+    pub review_target: Option<pl_protocol::AgentReviewTargetSnapshot>,
+    pub review_workspace: Option<pl_protocol::AgentWorkspaceAssignmentSnapshot>,
     pub metadata: pl_core::context::OpaquePayload,
 }
 
@@ -142,6 +145,13 @@ impl<R: StudioChildResources> StudioChildFactory for ConfiguredChildFactory<R> {
             && profile.profile.workspace_mode != pl_protocol::AgentWorkspaceMode::Directory
         {
             return Err(ThreadAssemblyError::WorkspaceScope(
+                request.profile_id.clone(),
+            ));
+        }
+        if request.review_feedback.is_some()
+            && profile.profile.workspace_mode != pl_protocol::AgentWorkspaceMode::Review
+        {
+            return Err(ThreadAssemblyError::ReviewTargetScope(
                 request.profile_id.clone(),
             ));
         }

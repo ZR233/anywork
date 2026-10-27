@@ -5,6 +5,10 @@ mod flow;
 mod journeys;
 mod lifecycle;
 mod recovery;
+mod review_child;
+mod review_feedback;
+mod review_interleaving;
+mod review_wire;
 mod routing;
 mod window;
 mod wire;
@@ -23,6 +27,7 @@ pub enum Scenario {
     Window,
     Enablement,
     Recovery,
+    ReviewFeedback,
 }
 
 impl Scenario {
@@ -33,6 +38,7 @@ impl Scenario {
             "delegation-window" => Some(Self::Window),
             "delegation-enablement" => Some(Self::Enablement),
             "delegation-recovery" => Some(Self::Recovery),
+            "delegation-review-feedback" => Some(Self::ReviewFeedback),
             _ => None,
         }
     }
@@ -44,6 +50,7 @@ impl Scenario {
             Self::Window => "delegation-window",
             Self::Enablement => "delegation-enablement",
             Self::Recovery => "delegation-recovery",
+            Self::ReviewFeedback => "delegation-review-feedback",
         }
     }
 }
@@ -69,6 +76,9 @@ pub(super) struct Environment {
     // Copies of real committed receipts, solely for the second root's negative
     // authorization attempt. Never used to emulate a product evaluation store.
     foreign: Arc<Mutex<Option<wire::Evaluation>>>,
+    review_wrappers: Arc<Mutex<Vec<review_child::ObservedWrapper>>>,
+    review_first: Arc<Mutex<Option<review_feedback::FirstEvidence>>>,
+    review_gates: review_interleaving::Gates,
 }
 
 impl Environment {
@@ -96,6 +106,7 @@ impl Environment {
             inflight_released: self.inflight_release.is_cancelled(),
             repair_arrived: self.repair_arrived.is_cancelled(),
             repair_released: self.repair_release.is_cancelled(),
+            review_gates: self.review_gates.snapshot(),
         })
     }
 
@@ -170,6 +181,7 @@ pub struct LiveState {
     pub inflight_released: bool,
     pub repair_arrived: bool,
     pub repair_released: bool,
+    pub review_gates: Vec<review_interleaving::GateSnapshot>,
 }
 
 pub(super) fn routes(app: Router<AppState>) -> Router<AppState> {
@@ -201,6 +213,12 @@ struct Release {
 async fn release(State(state): State<AppState>, Json(request): Json<Release>) -> Response {
     // Release is allowed only after the actual request reached the handler;
     // pre-releasing a gate would invalidate the in-flight proof.
+    if request.gate.starts_with("rf-") {
+        return match state.delegation.review_gates.release(&request.gate) {
+            Ok(()) => Json(json!({"released":request.gate})).into_response(),
+            Err(error) => (StatusCode::CONFLICT, error.to_string()).into_response(),
+        };
+    }
     if request.gate != "inflight" || !state.delegation.inflight_arrived.is_cancelled() {
         return (
             StatusCode::CONFLICT,
@@ -323,6 +341,7 @@ pub(super) async fn responses(
         } else {
             journeys::decide(&request, &state.delegation)?
         };
+        state.delegation.review_gates.before_record(&decision.note, &state.stopping).await?;
         if decision.wait_for_repair {
             tokio::select! {
                 () = state.stopping.cancelled() => bail!("fixture stopped before repair request arrived"),
@@ -340,6 +359,7 @@ pub(super) async fn responses(
             state.delegation.repair_arrived.cancel();
         }
         recorded = Some(record(&state, &path, body.clone(), &request, &decision, true)?);
+        state.delegation.review_gates.after_record(&decision.note, &state.stopping).await?;
         if matches!(decision.note.as_str(), "inflight_arrived" | "repair_arrived") {
             let release = if decision.note == "inflight_arrived" { &state.delegation.inflight_release } else { &state.delegation.repair_release };
             tokio::select! {
@@ -350,9 +370,24 @@ pub(super) async fn responses(
         }
         let id = format!("delegation-{}", Sha256::digest(&bytes).iter().take(8).map(|byte| format!("{byte:02x}")).collect::<String>());
         let events = if let Some(call) = decision.call {
-            responses_tool_calls(&id, &request.model, &[RealtimeToolCall {
-                item_id: &format!("{}-item", call.id), call_id: &call.id, name: &call.name, arguments: call.arguments.to_string(),
-            }])
+            let item_id = format!("{}-item", call.id);
+            let calls = [RealtimeToolCall {
+                item_id: &item_id, call_id: &call.id, name: &call.name, arguments: call.arguments.to_string(),
+            }];
+            if decision.text.is_empty() {
+                responses_tool_calls(&id, &request.model, &calls)
+            } else {
+                let mut events = responses_text_and_tool_calls(&decision.text, &id, &request.model, &calls);
+                // The producer's native phase, not a tagged-text imitation.
+                for event in &mut events {
+                    if let Some(item) = event.get_mut("item")
+                        && item.get("type").and_then(Value::as_str) == Some("message")
+                    {
+                        item["phase"] = "commentary".into();
+                    }
+                }
+                events
+            }
         } else {
             responses_text(&decision.text, &id, &request.model)
         };
@@ -534,6 +569,19 @@ pub fn verify_requests(scenario: Scenario, requests: &[RecordedRequest]) -> Resu
             "recovery_child_review_initial",
             "recovery_child_repair",
             "recovery_child_review_resumed",
+        ],
+        Scenario::ReviewFeedback => &[
+            "rf-normal-compact-complete",
+            "rf-full-history-complete",
+            "rf-reopen-complete",
+            "rf-approved-complete",
+            "rf-inconclusive-complete",
+            "rf-natural-complete",
+            "rf-omitted-complete",
+            "rf-illegal-complete",
+            "rf-busy-complete",
+            "rf-changed-complete",
+            "rf-closed-complete",
         ],
     };
     for note in required {
