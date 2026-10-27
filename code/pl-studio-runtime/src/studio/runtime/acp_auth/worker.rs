@@ -35,7 +35,7 @@ pub(super) type ChildReader = Pin<Box<dyn AsyncRead + Send>>;
 
 /// 官方程序需要的宿主环境变量白名单。
 ///
-/// 只有这些键会被显式转交；**其余继承来的环境一律显式删除**（`env_remove`），因此宿主进程
+/// 只有这些键会被显式转交；其余继承来的环境通过 `env_clear` 或 `env_remove` 删除，因此宿主进程
 /// 的其它变量（尤其是凭据类）不会进入官方程序。凭据始终由官方程序自行管理，产品的日志与
 /// 状态里不出现任何环境值。
 const ENV_ALLOWLIST: &[&str] = &[
@@ -50,6 +50,20 @@ const ENV_ALLOWLIST: &[&str] = &[
     "LANG",
     "LC_ALL",
     "LC_CTYPE",
+    // 官方网络库可能只读取环境代理；清空这些值会让已配置的登录/onboarding 请求改为直连。
+    // 原样透传地址与绕过规则，代理选择仍由宿主配置和官方网络库负责，值不进入日志。
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "ALL_PROXY",
+    "NO_PROXY",
+    #[cfg(not(windows))]
+    "http_proxy",
+    #[cfg(not(windows))]
+    "https_proxy",
+    #[cfg(not(windows))]
+    "all_proxy",
+    #[cfg(not(windows))]
+    "no_proxy",
     "XDG_CONFIG_HOME",
     "XDG_DATA_HOME",
     "XDG_CACHE_HOME",
