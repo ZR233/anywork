@@ -230,13 +230,10 @@ impl StudioThreadFactory {
                     &workspace_root_id,
                     project_root.clone(),
                 )?;
-            Ok::<_, crate::PureError>((session_root, project_root))
+            Ok::<_, anyhow::Error>((session_root, project_root))
         })
         .await?
-        .map_err(|error| ThreadAssemblyError::Workspace {
-            thread_id: id.to_owned(),
-            reason: error.to_string(),
-        })?;
+        .map_err(|error| resource_error("resolve root workspace", error))?;
         if workspace_mode == pl_protocol::ThreadWorkspaceMode::Worktree {
             crate::studio::agent_host::workspace_preparation::verify_root_session_worktree(
                 &self.services.worktrees,
@@ -245,10 +242,7 @@ impl StudioThreadFactory {
                 &thread.root_thread_id,
             )
             .await
-            .map_err(|error| ThreadAssemblyError::Workspace {
-                thread_id: id.to_owned(),
-                reason: error.to_string(),
-            })?;
+            .map_err(|error| resource_error("verify root workspace", error))?;
         }
         let workspace = ToolWorkspace::new(match workspace_mode {
             pl_protocol::ThreadWorkspaceMode::Local => AgentWorkspace::local(&root),

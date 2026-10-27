@@ -187,11 +187,10 @@ impl StudioRuntime {
             Some(lease) => lease.path.clone(),
             None => project.path.clone(),
         };
-        let workspace_branch = session_lease.as_ref().map(|lease| lease.branch.clone());
         report(
             ThreadPreparationStage::InitializingSession,
             Some(&workspace_path),
-            workspace_branch.as_deref(),
+            None,
         );
         let (mut delta, mut thread) = DirectoryDelta::register_root_thread(
             thread_id,
@@ -253,7 +252,7 @@ impl StudioRuntime {
         report(
             ThreadPreparationStage::SubmittingPrompt,
             Some(&thread.workspace_path),
-            workspace_branch.as_deref(),
+            None,
         );
         let submission = self
             .submit_prompt_for_owned_thread_with_lifecycle_lock(

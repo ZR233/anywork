@@ -145,9 +145,7 @@ impl StudioRuntime {
     /// Observation never changes lease state. Existence is established only by backend stat.
     async fn worktree_issue_facts(&self, lease: &WorktreeLease) -> WorktreeIssueFacts {
         let observation = match lease.validate_identity() {
-            Err(_) => Err(WorktreeError::IdentityMismatch(
-                "the durable lease does not match its owner-derived path and branch".into(),
-            )),
+            Err(error) => Err(error),
             Ok(()) => match self.worktree_manager(lease) {
                 Ok(manager) => manager.preview(&worktree_handle(lease)).await,
                 Err(error) => Err(error),
@@ -231,7 +229,7 @@ impl StudioRuntime {
                 state: lease.state.label().to_string(),
                 repository_root: lease.repository_root.clone(),
                 path: lease.path.clone(),
-                branch: lease.branch.clone(),
+                branch: preview.and_then(|preview| preview.branch.clone()),
                 base_commit: lease.base_commit.clone(),
                 head_commit: preview.map(|preview| preview.head.clone()),
                 dirty: preview.map(|preview| !preview.changed_files.is_empty()),
@@ -277,7 +275,7 @@ impl StudioRuntime {
         // Re-read the lease *after* the guards: the facts the card was rendered from may already be
         // stale, and every check below must run against the state that is true while nothing else can
         // change it.
-        let mut lease = self
+        let lease = self
             .agent_facility
             .worktrees
             .get(owner_thread_id)
@@ -305,59 +303,71 @@ impl StudioRuntime {
         // live Thread still owns. The lease state cannot grant that: a `preserved` site may be a
         // directory a running child is using, so only a site whose owner Thread is no longer live is
         // eligible for explicit cleanup.
-        let handle = worktree_handle(&lease);
-        let preflight = async {
+        anyhow::ensure!(
+            !self
+                .worktree_owner_facts(&lease.owner_thread_id)
+                .await?
+                .live,
+            "worktree lease is still owned by a live Thread"
+        );
+        let owner = self.find_owned_thread(&lease.owner_thread_id).await?;
+        if let Some(owner) = &owner {
             anyhow::ensure!(
-                !self
-                    .worktree_owner_facts(&lease.owner_thread_id)
-                    .await?
-                    .live,
-                "worktree lease is still owned by a live Thread"
+                lease.project_id == owner.project_id
+                    && lease.root_thread_id == owner.root_thread_id,
+                WorktreeError::IdentityMismatch(
+                    "owner: lease differs from the directory owner".into()
+                )
             );
-            lease.validate_identity()?;
-            let manager = self.worktree_manager(&lease)?;
-            let status = manager.preview(&handle).await?;
-            anyhow::ensure!(
-                status.changed_files.is_empty(),
-                "cleanup refused tracked, untracked or ignored local content"
-            );
-            Ok::<_, anyhow::Error>(manager)
         }
-        .await;
-        let manager = match preflight {
-            Ok(manager) => manager,
-            Err(error) => {
-                self.publish_worktree_recovery(None, &lease).await;
-                return Err(error);
-            }
+        let project = match self
+            .agent_facility
+            .product_events
+            .project_snapshot()
+            .await
+            .into_iter()
+            .find(|project| project.id == lease.project_id)
+        {
+            Some(project) => project,
+            None => self
+                .store
+                .read_project(&lease.project_id)
+                .await?
+                .ok_or_else(|| {
+                    WorktreeError::IdentityMismatch("project: lease project is missing".into())
+                })?,
         };
-        // Persist intent before the destructive operation; removal never deletes the branch.
-        lease.transition(WorktreeLeaseState::CleanupRequested);
-        self.agent_facility.worktrees.record(lease.clone())?;
-        if let Err(error) = self.agent_facility.worktrees.flush().await {
-            // No destructive operation was attempted. Keep a retryable owner fact and a fresh CAS
-            // card rather than stranding the process-local lease at cleanupRequested.
-            lease.transition(WorktreeLeaseState::Preserved);
-            self.agent_facility.worktrees.record(lease.clone())?;
-            self.publish_worktree_recovery(
-                Some("cleanup intent could not be saved; no removal was attempted"),
-                &lease,
+        anyhow::ensure!(
+            project.ssh_alias == lease.ssh_alias,
+            WorktreeError::IdentityMismatch("remote target: project differs from the lease".into())
+        );
+        let project_root =
+            crate::studio::agent_host::workspace_preparation::resolved_project_root(&project)?;
+        let (repository, manager) =
+            crate::studio::agent_host::workspace_preparation::repository_manager(
+                &self.ssh_manager,
+                project.ssh_alias.as_deref(),
+                &project_root,
             )
-            .await;
+            .await?;
+        anyhow::ensure!(
+            repository == std::path::Path::new(&lease.repository_root),
+            WorktreeError::IdentityMismatch("repository: project differs from the lease".into())
+        );
+        if let Err(error) = crate::studio::agent_host::workspace_preparation::cleanup_workspace(
+            &self.agent_facility.worktrees,
+            &manager,
+            lease,
+            crate::agent::worktree::WorktreeCleanupPolicy::Safe,
+        )
+        .await
+        {
+            if let Some(remaining) = self.agent_facility.worktrees.get(owner_thread_id) {
+                self.publish_worktree_recovery(Some("safe cleanup did not complete"), &remaining)
+                    .await;
+            }
             return Err(error);
         }
-        if let Err(error) = manager.remove_clean(&handle).await {
-            lease.transition(WorktreeLeaseState::Preserved);
-            self.agent_facility.worktrees.record(lease.clone())?;
-            // 回落改变了 lease revision：必须同步刷新卡片，否则下一次显式重试会被 CAS 拒绝。
-            self.publish_worktree_recovery(Some(&worktree_error_diagnostic(&error)), &lease)
-                .await;
-            self.agent_facility.worktrees.flush().await?;
-            return Err(error.into());
-        }
-        lease.transition(WorktreeLeaseState::Cleaned);
-        self.agent_facility.worktrees.record(lease.clone())?;
-        self.agent_facility.worktrees.flush().await?;
         let issues = self.recovery.remove(&worktree_issue_id(owner_thread_id));
         self.agent_facility
             .product_events
@@ -577,9 +587,8 @@ fn worktree_error_diagnostic(error: &WorktreeError) -> String {
 /// Describes a lease by its actual ownership and state instead of assuming `preserved`.
 fn worktree_state_message(lease: &WorktreeLease) -> String {
     format!(
-        "Pure {} worktree {} is {} and needs explicit review",
+        "Managed {} worktree is {} and needs explicit review",
         lease.owner_kind.label(),
-        lease.branch,
         lease.state.label()
     )
 }
@@ -587,7 +596,6 @@ fn worktree_state_message(lease: &WorktreeLease) -> String {
 fn worktree_handle(lease: &WorktreeLease) -> WorktreeHandle {
     WorktreeHandle {
         path: PathBuf::from(&lease.path),
-        branch: lease.branch.clone(),
         base_commit: lease.base_commit.clone(),
     }
 }

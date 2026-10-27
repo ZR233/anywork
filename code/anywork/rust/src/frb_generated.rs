@@ -17408,7 +17408,7 @@ impl SseDecode for crate::api::studio::types::runtime::BridgeWorktreeRecoveryPre
         let mut var_state = <String>::sse_decode(deserializer);
         let mut var_repositoryRoot = <String>::sse_decode(deserializer);
         let mut var_path = <String>::sse_decode(deserializer);
-        let mut var_branch = <String>::sse_decode(deserializer);
+        let mut var_branch = <Option<String>>::sse_decode(deserializer);
         let mut var_baseCommit = <String>::sse_decode(deserializer);
         let mut var_headCommit = <Option<String>>::sse_decode(deserializer);
         let mut var_dirty = <Option<bool>>::sse_decode(deserializer);
@@ -43502,7 +43502,7 @@ impl SseEncode for crate::api::studio::types::runtime::BridgeWorktreeRecoveryPre
         <String>::sse_encode(self.state, serializer);
         <String>::sse_encode(self.repository_root, serializer);
         <String>::sse_encode(self.path, serializer);
-        <String>::sse_encode(self.branch, serializer);
+        <Option<String>>::sse_encode(self.branch, serializer);
         <String>::sse_encode(self.base_commit, serializer);
         <Option<String>>::sse_encode(self.head_commit, serializer);
         <Option<bool>>::sse_encode(self.dirty, serializer);

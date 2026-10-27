@@ -3,11 +3,12 @@ use super::worktree_lease::{
     WorktreeLease, WorktreeLeaseOwner, WorktreeLeaseOwnerKind, WorktreeLeaseState,
 };
 use crate::agent::worktree::{
-    LocalWorktreeBackend, RemoteWorktreeBackend, WorktreeBackend, WorktreeCreateSpec,
-    WorktreeHandle, WorktreeManager, WorktreeOwnership,
+    LocalWorktreeBackend, RemoteWorktreeBackend, WorktreeBackend, WorktreeCleanupPolicy,
+    WorktreeCreateFailureDisposition, WorktreeCreateSpec, WorktreeError, WorktreeHandle,
+    WorktreeManager, WorktreeOwnership,
 };
 use crate::studio::records::ProjectRecord;
-use crate::{PureError, Result};
+use anyhow::{Context, Result};
 use pl_protocol::{AgentWorkspaceAssignmentSnapshot, AgentWorkspaceMode, AgentWorktreeSnapshot};
 use std::{
     path::{Path, PathBuf},
@@ -39,15 +40,11 @@ pub(in crate::studio) struct ReviewWorkspaceTarget {
     pub worktree: Option<AgentWorktreeSnapshot>,
 }
 
-pub(in crate::studio) struct SpawnWorktreeLease {
-    pub lease: WorktreeLease,
-}
-
 pub(in crate::studio) async fn prepare_workspace(
     worktrees: &WorktreeLeaseOwner,
     ssh_manager: &Arc<pl_tool::remote::SshManager>,
     request: WorkspacePreparation<'_>,
-) -> Result<(AgentWorkspaceAssignmentSnapshot, Option<SpawnWorktreeLease>)> {
+) -> Result<AgentWorkspaceAssignmentSnapshot> {
     let project_root = request.project_root;
     let session_root = request.session_root;
     let child_id = request.child_id.to_owned();
@@ -62,18 +59,15 @@ pub(in crate::studio) async fn prepare_workspace(
     let project_root_text = workspace_path_text(&project_root, remote)?;
     let session_root_text = workspace_path_text(&session_root, remote)?;
 
-    let (assignment, worktree) = match mode {
-        AgentWorkspaceMode::Unrestricted => (
-            AgentWorkspaceAssignmentSnapshot {
-                mode,
-                project_root: project_root_text,
-                root: session_root_text,
-                writable_paths: None,
-                worktree: None,
-                review_target: None,
-            },
-            None,
-        ),
+    let assignment = match mode {
+        AgentWorkspaceMode::Unrestricted => AgentWorkspaceAssignmentSnapshot {
+            mode,
+            project_root: project_root_text,
+            root: session_root_text,
+            writable_paths: None,
+            worktree: None,
+            review_target: None,
+        },
         AgentWorkspaceMode::Review => {
             let target = request.review_target.ok_or_else(|| {
                 lifecycle_error("review workspace requires a reviewed agent workspace")
@@ -82,19 +76,16 @@ pub(in crate::studio) async fn prepare_workspace(
                 Some(worktree) => (worktree.path.clone(), Some(worktree)),
                 None => (session_root_text.clone(), None),
             };
-            (
-                AgentWorkspaceAssignmentSnapshot {
-                    mode,
-                    project_root: project_root_text,
-                    root,
-                    writable_paths: None,
-                    worktree,
-                    review_target: Some(pl_protocol::AgentReviewTargetSnapshot {
-                        agent_id: target.agent_id,
-                    }),
-                },
-                None,
-            )
+            AgentWorkspaceAssignmentSnapshot {
+                mode,
+                project_root: project_root_text,
+                root,
+                writable_paths: None,
+                worktree,
+                review_target: Some(pl_protocol::AgentReviewTargetSnapshot {
+                    agent_id: target.agent_id,
+                }),
+            }
         }
         AgentWorkspaceMode::Directory => {
             let writable_paths = writable_paths
@@ -112,101 +103,44 @@ pub(in crate::studio) async fn prepare_workspace(
                         .collect::<Result<Vec<_>>>()
                 })
                 .transpose()?;
-            (
-                AgentWorkspaceAssignmentSnapshot {
-                    mode,
-                    project_root: project_root_text,
-                    root: session_root_text,
-                    writable_paths,
-                    worktree: None,
-                    review_target: None,
-                },
-                None,
-            )
+            AgentWorkspaceAssignmentSnapshot {
+                mode,
+                project_root: project_root_text,
+                root: session_root_text,
+                writable_paths,
+                worktree: None,
+                review_target: None,
+            }
         }
         AgentWorkspaceMode::Worktree => {
-            let (repository_root, manager) = repository_manager(
+            let durable = create_owned_worktree(
+                worktrees,
                 ssh_manager,
-                request.project.ssh_alias.as_deref(),
-                &project_root,
-            )
-            .await?;
-            let base_commit = manager
-                .resolve_head(&repository_root)
-                .await
-                .map_err(|error| lifecycle_error(error.to_string()))?;
-            let ownership = WorktreeOwnership::Child {
-                child_id: child_id.clone(),
-            };
-            let path = WorktreeManager::allocate_path(
-                &repository_root,
-                request.root_thread_id,
-                &ownership,
-            );
-            let branch = WorktreeManager::branch_for(&ownership);
-            // 远端 lease 的仓库根与 worktree 路径必须记录为 POSIX：会话工作区根、workspace
-            // 打开参数与 git 路径参数都从该记录派生，宿主分隔符不得进入 durable 事实。
-            let repository_root_text = workspace_path_text(&repository_root, remote)?;
-            let mut durable = WorktreeLease {
-                revision: 1,
-                state: WorktreeLeaseState::Prepared,
-                owner_kind: WorktreeLeaseOwnerKind::Child,
-                owner_thread_id: child_id.clone(),
-                root_thread_id: request.root_thread_id.to_owned(),
-                project_id: request.project.id.clone(),
-                ssh_alias: request.project.ssh_alias.clone(),
-                repository_root: repository_root_text.clone(),
-                path: workspace_path_text(&path, remote)?,
-                branch: branch.clone(),
-                base_commit: base_commit.clone(),
-            };
-            prepare_repository_worktree_pool(
-                ssh_manager,
-                request.project.ssh_alias.as_deref(),
-                &repository_root,
-            )
-            .await?;
-            worktrees
-                .record(durable.clone())
-                .map_err(|error| lifecycle_error(error.to_string()))?;
-            let handle = match manager
-                .create(WorktreeCreateSpec {
-                    repo_root: repository_root.clone(),
-                    root_thread_id: request.root_thread_id.to_owned(),
-                    ownership,
-                    base_commit: base_commit.clone(),
-                })
-                .await
-            {
-                Ok(handle) => handle,
-                Err(error) => {
-                    settle_failed_create(worktrees, durable, &error).await;
-                    return Err(lifecycle_error(error.to_string()));
-                }
-            };
-            let handle_path_text = workspace_path_text(&handle.path, remote)?;
-            durable.path = handle_path_text.clone();
-            durable.branch = handle.branch.clone();
-            (
-                AgentWorkspaceAssignmentSnapshot {
-                    mode,
-                    project_root: project_root_text,
-                    root: handle_path_text.clone(),
-                    writable_paths: None,
-                    worktree: Some(AgentWorktreeSnapshot {
-                        repository_root: repository_root_text,
-                        path: handle_path_text,
-                        branch: handle.branch.clone(),
-                        base_commit,
-                    }),
-                    review_target: None,
+                OwnedWorktreeCreation {
+                    project: request.project,
+                    project_root: &project_root,
+                    root_thread_id: request.root_thread_id,
+                    ownership: WorktreeOwnership::Child { child_id },
                 },
-                Some(SpawnWorktreeLease { lease: durable }),
+                &|_, _, _| {},
             )
+            .await?;
+            AgentWorkspaceAssignmentSnapshot {
+                mode,
+                project_root: project_root_text,
+                root: durable.path.clone(),
+                writable_paths: None,
+                worktree: Some(AgentWorktreeSnapshot {
+                    repository_root: durable.repository_root.clone(),
+                    path: durable.path.clone(),
+                    base_commit: durable.base_commit.clone(),
+                }),
+                review_target: None,
+            }
         }
     };
 
-    Ok((assignment, worktree))
+    Ok(assignment)
 }
 
 pub(in crate::studio) fn backend_for(
@@ -218,7 +152,7 @@ pub(in crate::studio) fn backend_for(
         Some(server_id) => {
             RemoteWorktreeBackend::new(ssh_manager.clone(), server_id, project_root.to_path_buf())
                 .map(|backend| Arc::new(backend) as Arc<dyn WorktreeBackend>)
-                .map_err(|error| lifecycle_error(error.to_string()))
+                .map_err(anyhow::Error::from)
         }
         None => Ok(Arc::new(LocalWorktreeBackend::default())),
     }
@@ -250,7 +184,7 @@ pub(in crate::studio) async fn repository_manager(
     let resolver = backend_for(ssh_manager, ssh_alias, project_root)?;
     let repository_root = WorktreeManager::resolve_repository_root(resolver.as_ref(), project_root)
         .await
-        .map_err(|error| lifecycle_error(error.to_string()))?;
+        .map_err(anyhow::Error::from)?;
     let backend = backend_for(ssh_manager, ssh_alias, &repository_root)?;
     Ok((
         repository_root.clone(),
@@ -258,161 +192,203 @@ pub(in crate::studio) async fn repository_manager(
     ))
 }
 
-/// Creates the physical worktree of a root session and records its `prepared` lease.
-///
-/// Preflight (repository root and `HEAD` resolution over the Project's own backend) runs
-/// before any resource exists; the physical create then runs on the backend rooted at that
-/// repository root, so local and SSH Projects share one convention. A failed physical
-/// create settles the durable lease through the existing
-/// `WorktreeCreateFailureDisposition` and never bypasses a Git lock or a registered
-/// worktree identity.
+/// Root and child creation share repository/base resolution, durable ownership and Git creation.
+struct OwnedWorktreeCreation<'a> {
+    project: &'a ProjectRecord,
+    project_root: &'a Path,
+    root_thread_id: &'a str,
+    ownership: WorktreeOwnership,
+}
+
+async fn create_owned_worktree<F>(
+    worktrees: &WorktreeLeaseOwner,
+    ssh_manager: &Arc<pl_tool::remote::SshManager>,
+    request: OwnedWorktreeCreation<'_>,
+    progress: &F,
+) -> Result<WorktreeLease>
+where
+    F: Fn(pl_protocol::studio::ThreadPreparationStage, Option<&str>, Option<&str>) + Send + Sync,
+{
+    use pl_protocol::studio::{StudioError, StudioErrorCode, ThreadPreparationStage};
+    anyhow::ensure!(
+        worktrees.get(request.ownership.owner_id()).is_none(),
+        "an owned lease already exists; creation cannot replace its original site"
+    );
+    progress(ThreadPreparationStage::ResolvingRepository, None, None);
+    let (repository_root, manager) = repository_manager(
+        ssh_manager,
+        request.project.ssh_alias.as_deref(),
+        request.project_root,
+    )
+    .await
+    .context(StudioError::new(
+        StudioErrorCode::Unavailable,
+        "Could not resolve the project's Git repository. Check repository access.",
+        false,
+    ))?;
+    let base_commit = manager
+        .resolve_head(&repository_root)
+        .await
+        .context(StudioError::new(
+            StudioErrorCode::Unavailable,
+            "Could not resolve the repository's HEAD. Check that it has an accessible commit.",
+            false,
+        ))?;
+    let remote = request.project.ssh_alias.is_some();
+    let path = WorktreeManager::allocate_path(
+        &repository_root,
+        request.root_thread_id,
+        &request.ownership,
+    );
+    let mut lease = WorktreeLease {
+        revision: 1,
+        state: WorktreeLeaseState::Prepared,
+        owner_kind: match &request.ownership {
+            WorktreeOwnership::Session { .. } => WorktreeLeaseOwnerKind::Session,
+            WorktreeOwnership::Child { .. } => WorktreeLeaseOwnerKind::Child,
+        },
+        owner_thread_id: request.ownership.owner_id().to_owned(),
+        root_thread_id: request.root_thread_id.to_owned(),
+        project_id: request.project.id.clone(),
+        ssh_alias: request.project.ssh_alias.clone(),
+        repository_root: workspace_path_text(&repository_root, remote)?,
+        path: workspace_path_text(&path, remote)?,
+        base_commit: base_commit.clone(),
+    };
+    prepare_repository_worktree_pool(
+        ssh_manager,
+        request.project.ssh_alias.as_deref(),
+        &repository_root,
+    )
+    .await?;
+    worktrees.record(lease.clone())?;
+    if let Err(error) = worktrees.flush().await {
+        // No Git command ran. Do not let unpublished cancellation infer a successful allocation
+        // from the prepared fact when persistence itself failed.
+        lease.transition(WorktreeLeaseState::Preserved);
+        worktrees.record(lease)?;
+        return Err(error.context("save prepared worktree ownership; creation was not attempted"));
+    }
+    progress(
+        ThreadPreparationStage::CreatingWorktree,
+        Some(&lease.path),
+        None,
+    );
+    if let Err(failure) = manager
+        .create(WorktreeCreateSpec {
+            repo_root: repository_root,
+            root_thread_id: request.root_thread_id.to_owned(),
+            ownership: request.ownership,
+            base_commit,
+        })
+        .await
+    {
+        // A failed spawned command may have left a registration or pre-existing conflicting leaf.
+        // Preserve uncertain ownership rather than deleting a resource Git did not confirm creating.
+        lease.transition(match failure.disposition() {
+            WorktreeCreateFailureDisposition::NoSideEffects => WorktreeLeaseState::Cleaned,
+            WorktreeCreateFailureDisposition::MayHaveCreated => WorktreeLeaseState::Preserved,
+        });
+        worktrees.record(lease)?;
+        worktrees
+            .flush()
+            .await
+            .context("settle failed worktree creation")?;
+        return Err(anyhow::Error::new(failure).context(StudioError::new(
+            StudioErrorCode::Unavailable,
+            "Git could not create the managed worktree. Check conflicts, permissions and disk space.", false,
+        )));
+    }
+    Ok(lease)
+}
+
 pub(in crate::studio) async fn create_root_session_worktree<F>(
     worktrees: &WorktreeLeaseOwner,
     ssh_manager: &Arc<pl_tool::remote::SshManager>,
     project: &ProjectRecord,
     thread_id: &str,
     progress: &F,
-) -> anyhow::Result<WorktreeLease>
+) -> Result<WorktreeLease>
 where
     F: Fn(pl_protocol::studio::ThreadPreparationStage, Option<&str>, Option<&str>) + Send + Sync,
 {
-    use pl_protocol::studio::ThreadPreparationStage;
-    anyhow::ensure!(
-        worktrees.get(thread_id).is_none(),
-        "a saved session worktree lease already exists; creation cannot replace its original site"
-    );
-    progress(ThreadPreparationStage::ResolvingRepository, None, None);
     let project_root = resolved_project_root(project)?;
-    let (repository_root, manager) =
-        repository_manager(ssh_manager, project.ssh_alias.as_deref(), &project_root)
-            .await
-            .map_err(|error| {
-                anyhow::Error::new(error).context(pl_protocol::studio::StudioError::new(
-                    pl_protocol::studio::StudioErrorCode::Unavailable,
-                    "Could not resolve the project's Git repository. Check that the project is inside a Git repository and the repository is accessible.",
-                    false,
-                ))
-            })?;
-    let base_commit = manager
-        .resolve_head(&repository_root)
-        .await
-        .map_err(|error| {
-            anyhow::Error::new(error).context(pl_protocol::studio::StudioError::new(
-                pl_protocol::studio::StudioErrorCode::Unavailable,
-                "Could not resolve the repository's HEAD. Check that the repository has a commit and is accessible.",
-                false,
-            ))
-        })?;
-    let ownership = WorktreeOwnership::Session {
-        thread_id: thread_id.to_owned(),
-    };
-    let path = WorktreeManager::allocate_path(&repository_root, thread_id, &ownership);
-    let branch = WorktreeManager::branch_for(&ownership);
-    // 远端项目的 durable lease 记录 POSIX 形式；本地项目保留宿主形态。
-    let remote = project.ssh_alias.is_some();
-    let durable = WorktreeLease {
-        revision: 1,
-        state: WorktreeLeaseState::Prepared,
-        owner_kind: WorktreeLeaseOwnerKind::Session,
-        owner_thread_id: thread_id.to_owned(),
-        root_thread_id: thread_id.to_owned(),
-        project_id: project.id.clone(),
-        ssh_alias: project.ssh_alias.clone(),
-        repository_root: workspace_path_text(&repository_root, remote)?,
-        path: workspace_path_text(&path, remote)?,
-        branch,
-        base_commit: base_commit.clone(),
-    };
-    prepare_repository_worktree_pool(ssh_manager, project.ssh_alias.as_deref(), &repository_root)
-        .await?;
-    worktrees
-        .record(durable.clone())
-        .map_err(|error| lifecycle_error(error.to_string()))?;
-    progress(
-        ThreadPreparationStage::CreatingWorktree,
-        Some(&durable.path),
-        Some(&durable.branch),
-    );
-    let handle = match manager
-        .create(WorktreeCreateSpec {
-            repo_root: repository_root,
-            root_thread_id: thread_id.to_owned(),
-            ownership,
-            base_commit,
-        })
-        .await
-    {
-        Ok(handle) => handle,
-        Err(error) => {
-            settle_failed_create(worktrees, durable, &error).await;
-            return Err(anyhow::Error::new(error).context(pl_protocol::studio::StudioError::new(
-                pl_protocol::studio::StudioErrorCode::Unavailable,
-                "Git could not create or check out the session worktree. Check repository permissions and available disk space.",
-                false,
-            )));
-        }
-    };
-    if !workspace_paths_equal(&handle.path, &path, remote)? || handle.branch != durable.branch {
-        return Err(settle_identity_mismatch(worktrees, durable).into());
-    }
-    Ok(durable)
+    create_owned_worktree(
+        worktrees,
+        ssh_manager,
+        OwnedWorktreeCreation {
+            project,
+            project_root: &project_root,
+            root_thread_id: thread_id,
+            ownership: WorktreeOwnership::Session {
+                thread_id: thread_id.to_owned(),
+            },
+        },
+        progress,
+    )
+    .await
 }
 
-/// 收束一个 durable worktree lease：`validate_identity → preview_existing →
-/// cleanupRequested → discard → cleaned`，任一步失败回落 `preserved` 并返回错误。
-///
-/// 这是 child 显式关闭路径的实现；`disposition == Preserve` 时只把 lease
-/// 收束为 `preserved` 而不删除物理资源，`Cleanup` 才删除 Pure-owned 工作树与分支。
+/// All removal entries retain the same durable sequence: ownership/intent → Git → result.
+/// The caller owns its lifecycle/agent operation until this entire sequence settles.
+pub(in crate::studio) async fn cleanup_workspace(
+    leases: &WorktreeLeaseOwner,
+    manager: &WorktreeManager,
+    mut lease: WorktreeLease,
+    policy: WorktreeCleanupPolicy,
+) -> Result<()> {
+    lease.validate_identity()?;
+    lease.transition(WorktreeLeaseState::CleanupRequested);
+    leases.record(lease.clone())?;
+    if let Err(error) = leases.flush().await {
+        lease.transition(WorktreeLeaseState::Preserved);
+        leases.record(lease)?;
+        return Err(error.context("save worktree cleanup intent; no deletion attempted"));
+    }
+    let handle = WorktreeHandle {
+        path: PathBuf::from(&lease.path),
+        base_commit: lease.base_commit.clone(),
+    };
+    if let Err(error) = manager.cleanup(&handle, policy).await {
+        lease.transition(WorktreeLeaseState::Preserved);
+        leases.record(lease)?;
+        leases
+            .flush()
+            .await
+            .context("save failed worktree cleanup")?;
+        return Err(error.into());
+    }
+    lease.transition(WorktreeLeaseState::Cleaned);
+    leases.record(lease)?;
+    leases.flush().await?;
+    Ok(())
+}
+
+/// Preserve never opens or inspects Git. Cleanup carries explicit destructive authorization.
 pub(in crate::studio) async fn close_workspace(
     leases: &WorktreeLeaseOwner,
     manager: &WorktreeManager,
     mut lease: WorktreeLease,
     disposition: pl_tool::collaboration::thread::AgentWorkspaceDisposition,
-) -> anyhow::Result<()> {
+) -> Result<()> {
     use pl_tool::collaboration::thread::AgentWorkspaceDisposition;
+    // Keep the existing close API's completed-resource semantics. A historical cleaned lease is
+    // not authorization to remove another checkout that later appears at the same textual path.
     if lease.state == WorktreeLeaseState::Cleaned {
         return Ok(());
     }
-    lease.transition(WorktreeLeaseState::Preserved);
-    leases.record(lease.clone())?;
     match disposition {
-        AgentWorkspaceDisposition::Preserve => return Ok(()),
-        AgentWorkspaceDisposition::Cleanup => {}
+        AgentWorkspaceDisposition::Preserve => {
+            if lease.state != WorktreeLeaseState::Preserved {
+                lease.transition(WorktreeLeaseState::Preserved);
+                leases.record(lease)?;
+            }
+            leases.flush().await
+        }
+        AgentWorkspaceDisposition::Cleanup => {
+            cleanup_workspace(leases, manager, lease, WorktreeCleanupPolicy::Discard).await
+        }
     }
-    lease.validate_identity()?;
-    let handle = WorktreeHandle {
-        path: PathBuf::from(&lease.path),
-        branch: lease.branch.clone(),
-        base_commit: lease.base_commit.clone(),
-    };
-    manager.preview_existing(&handle).await?;
-    lease.transition(WorktreeLeaseState::CleanupRequested);
-    leases.record(lease.clone())?;
-    if let Err(error) = manager.discard(&handle).await {
-        lease.transition(WorktreeLeaseState::Preserved);
-        leases.record(lease)?;
-        return Err(error.into());
-    }
-    lease.transition(WorktreeLeaseState::Cleaned);
-    leases.record(lease)?;
-    Ok(())
-}
-
-/// 收束一个身份不符的已创建会话 worktree：保留现场（`preserved`）并返回类型化错误。
-///
-/// 绝不删除物理资源，也不留下停在 `prepared` 的 lease；调用方负责随后的发布。
-fn settle_identity_mismatch(worktrees: &WorktreeLeaseOwner, mut lease: WorktreeLease) -> PureError {
-    let error =
-        lifecycle_error("created session worktree identity differs from its Pure-owned lease");
-    lease.transition(WorktreeLeaseState::Preserved);
-    if let Err(persist_error) = worktrees.record(lease.clone()) {
-        tracing::error!(
-            owner_thread_id = lease.owner_thread_id,
-            error = %persist_error,
-            "failed to preserve an identity-mismatched session worktree lease"
-        );
-    }
-    error
 }
 
 /// Resolves the workspace root of a root session from its canonical product fact.
@@ -449,9 +425,7 @@ pub(in crate::studio) fn root_session_workspace_root(
                     lease.state.label()
                 )));
             }
-            lease
-                .validate_identity()
-                .map_err(|error| lifecycle_error(error.to_string()))?;
+            lease.validate_identity().map_err(anyhow::Error::from)?;
             Ok(PathBuf::from(&lease.path))
         }
     }
@@ -465,12 +439,10 @@ pub(in crate::studio) async fn verify_root_session_worktree(
     project: &ProjectRecord,
     root_thread_id: &str,
 ) -> Result<()> {
-    let lease = worktrees
-        .get(root_thread_id)
-        .ok_or_else(|| lifecycle_error("the root session worktree lease is missing"))?;
-    lease
-        .validate_identity()
-        .map_err(|error| lifecycle_error(error.to_string()))?;
+    let lease = worktrees.get(root_thread_id).ok_or_else(|| {
+        WorktreeError::IdentityMismatch("owner: root session lease is missing".into())
+    })?;
+    lease.validate_identity().map_err(anyhow::Error::from)?;
     if lease.owner_kind != WorktreeLeaseOwnerKind::Session
         || lease.owner_thread_id != root_thread_id
         || lease.project_id != project.id
@@ -480,9 +452,10 @@ pub(in crate::studio) async fn verify_root_session_worktree(
             WorktreeLeaseState::Cleaned | WorktreeLeaseState::CleanupRequested
         )
     {
-        return Err(lifecycle_error(
-            "the root session worktree lease does not match the active project and owner",
-        ));
+        return Err(WorktreeError::IdentityMismatch(
+            "owner/project/remote target differs from the root lease".into(),
+        )
+        .into());
     }
     let (repository_root, repository) = repository_manager(
         ssh_manager,
@@ -495,41 +468,19 @@ pub(in crate::studio) async fn verify_root_session_worktree(
         Path::new(&lease.repository_root),
         project.ssh_alias.is_some(),
     )? {
-        return Err(lifecycle_error(
-            "the saved session worktree belongs to another project repository",
-        ));
+        return Err(WorktreeError::IdentityMismatch(
+            "repository: saved session lease belongs to another project repository".into(),
+        )
+        .into());
     }
     repository
-        .preview(&WorktreeHandle {
+        .verify(&WorktreeHandle {
             path: PathBuf::from(&lease.path),
-            branch: lease.branch,
             base_commit: lease.base_commit,
         })
         .await
-        .map_err(|error| lifecycle_error(error.to_string()))?;
+        .map_err(anyhow::Error::from)?;
     Ok(())
-}
-
-async fn settle_failed_create(
-    worktrees: &WorktreeLeaseOwner,
-    mut lease: WorktreeLease,
-    error: &crate::agent::worktree::WorktreeError,
-) {
-    let state = match error {
-        crate::agent::worktree::WorktreeError::OperationFailedWithCleanup { .. }
-        | crate::agent::worktree::WorktreeError::CleanupFailed { .. } => {
-            WorktreeLeaseState::Preserved
-        }
-        _ => WorktreeLeaseState::Cleaned,
-    };
-    lease.transition(state);
-    if let Err(persist_error) = worktrees.record(lease.clone()) {
-        tracing::error!(
-            owner_thread_id = lease.owner_thread_id,
-            error = %persist_error,
-            "failed to settle durable worktree lease after create failure"
-        );
-    }
 }
 
 async fn prepare_repository_worktree_pool(
@@ -542,10 +493,10 @@ async fn prepare_repository_worktree_pool(
             let host = ssh_manager
                 .open_workspace_host(server, workspace_path_text(repository_root, true)?)
                 .await
-                .map_err(|error| lifecycle_error(error.to_string()))?;
+                .map_err(anyhow::Error::from)?;
             pl_tool::workspace::prepare_worktree_pool(&host.files)
                 .await
-                .map_err(|error| lifecycle_error(error.to_string()))
+                .map_err(anyhow::Error::from)
         }
         None => {
             let backend = pl_tool::workspace_file::LocalWorkspaceFileBackend::new(
@@ -553,10 +504,10 @@ async fn prepare_repository_worktree_pool(
                 false,
             )
             .await
-            .map_err(|error| lifecycle_error(error.to_string()))?;
+            .map_err(anyhow::Error::from)?;
             pl_tool::workspace::prepare_worktree_pool(&backend)
                 .await
-                .map_err(|error| lifecycle_error(error.to_string()))
+                .map_err(anyhow::Error::from)
         }
     }
 }
@@ -564,7 +515,7 @@ async fn prepare_repository_worktree_pool(
 pub(in crate::studio) fn resolved_project_root(project: &ProjectRecord) -> Result<PathBuf> {
     if project.ssh_alias.is_some() {
         let value = pl_tool::remote::normalize_remote_absolute_path(project.path.trim())
-            .map_err(|error| lifecycle_error(error.to_string()))?;
+            .map_err(anyhow::Error::from)?;
         if value == "/" {
             return Err(lifecycle_error(format!(
                 "invalid remote project workspace: {}",
@@ -574,7 +525,7 @@ pub(in crate::studio) fn resolved_project_root(project: &ProjectRecord) -> Resul
         Ok(PathBuf::from(value))
     } else {
         pl_tool::workspace::resolve_workspace_root(&PathBuf::from(&project.path))
-            .map_err(|error| lifecycle_error(error.to_string()))
+            .map_err(anyhow::Error::from)
     }
 }
 
@@ -586,7 +537,7 @@ pub(in crate::studio) fn resolved_project_root(project: &ProjectRecord) -> Resul
 fn workspace_path_text(path: &Path, remote: bool) -> Result<String> {
     if remote {
         pl_tool::remote::normalize_remote_absolute_path(&path.to_string_lossy())
-            .map_err(|error| lifecycle_error(error.to_string()))
+            .map_err(anyhow::Error::from)
     } else {
         Ok(path.to_string_lossy().into_owned())
     }
@@ -600,11 +551,8 @@ fn workspace_paths_equal(left: &Path, right: &Path, remote: bool) -> Result<bool
     }
 }
 
-fn lifecycle_error(error: impl Into<String>) -> PureError {
-    PureError::ToolExecutionFailed {
-        tool: "studio_workspace".into(),
-        error: error.into(),
-    }
+fn lifecycle_error(error: impl Into<String>) -> anyhow::Error {
+    WorktreeError::InvalidResource(error.into()).into()
 }
 
 fn normalize_scope(requested: Option<Vec<String>>) -> Result<Option<Vec<String>>> {

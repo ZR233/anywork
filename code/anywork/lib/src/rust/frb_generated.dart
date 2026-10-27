@@ -16013,7 +16013,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       state: dco_decode_String(arr[4]),
       repositoryRoot: dco_decode_String(arr[5]),
       path: dco_decode_String(arr[6]),
-      branch: dco_decode_String(arr[7]),
+      branch: dco_decode_opt_String(arr[7]),
       baseCommit: dco_decode_String(arr[8]),
       headCommit: dco_decode_opt_String(arr[9]),
       dirty: dco_decode_opt_box_autoadd_bool(arr[10]),
@@ -29674,7 +29674,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_state = sse_decode_String(deserializer);
     var var_repositoryRoot = sse_decode_String(deserializer);
     var var_path = sse_decode_String(deserializer);
-    var var_branch = sse_decode_String(deserializer);
+    var var_branch = sse_decode_opt_String(deserializer);
     var var_baseCommit = sse_decode_String(deserializer);
     var var_headCommit = sse_decode_opt_String(deserializer);
     var var_dirty = sse_decode_opt_box_autoadd_bool(deserializer);
@@ -42378,7 +42378,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_String(self.state, serializer);
     sse_encode_String(self.repositoryRoot, serializer);
     sse_encode_String(self.path, serializer);
-    sse_encode_String(self.branch, serializer);
+    sse_encode_opt_String(self.branch, serializer);
     sse_encode_String(self.baseCommit, serializer);
     sse_encode_opt_String(self.headCommit, serializer);
     sse_encode_opt_box_autoadd_bool(self.dirty, serializer);

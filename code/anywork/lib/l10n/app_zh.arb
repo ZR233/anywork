@@ -1342,6 +1342,8 @@
   "settingsWorktreeInspectionMissing": "工作树缺失",
   "settingsWorktreeInspectionIdentityMismatch": "工作树身份不匹配",
   "settingsWorktreeInspectionUnavailable": "暂时无法检查",
+  "settingsWorktreeDetached": "已核实：detached HEAD（无当前分支）",
+  "settingsWorktreeBranchUnknown": "当前分支未知",
   "settingsWorktreeRetry": "重试检查",
   "startupPreparing": "正在准备应用…",
   "startupStorage": "正在打开本地数据…",

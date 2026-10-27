@@ -3675,6 +3675,13 @@ class AppLocalizationsEn extends AppLocalizations {
   String get settingsWorktreeInspectionUnavailable => 'Inspection unavailable';
 
   @override
+  String get settingsWorktreeDetached =>
+      'Verified detached HEAD (no current branch)';
+
+  @override
+  String get settingsWorktreeBranchUnknown => 'Current branch unknown';
+
+  @override
   String get settingsWorktreeRetry => 'Retry inspection';
 
   @override

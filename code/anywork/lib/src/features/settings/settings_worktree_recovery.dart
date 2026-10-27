@@ -42,7 +42,15 @@ class _WorktreeRecoverySectionState
     };
     return SettingsResourceRow(
       key: ValueKey('worktree-recovery-$identity'),
-      title: worktree.branch,
+      title:
+          worktree.branch ??
+          switch (worktree.inspection) {
+            WorktreeInspection.available => l10n.settingsWorktreeDetached,
+            WorktreeInspection.missing ||
+            WorktreeInspection.identityMismatch ||
+            WorktreeInspection.unavailable =>
+              l10n.settingsWorktreeBranchUnknown,
+          },
       subtitle: owner,
       icon: Icons.account_tree_outlined,
       status: Text(

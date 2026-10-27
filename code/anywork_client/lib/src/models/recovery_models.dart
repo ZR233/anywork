@@ -45,7 +45,7 @@ class WorktreeRecoveryPreview {
   final String state;
   final String repositoryRoot;
   final String path;
-  final String branch;
+  final String? branch;
   final String baseCommit;
   final String? headCommit;
   final bool? dirty;

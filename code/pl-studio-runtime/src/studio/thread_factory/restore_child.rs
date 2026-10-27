@@ -146,9 +146,10 @@ impl StudioThreadFactory {
                     &root_thread_id,
                     project_root.clone(),
                 )?;
-            Ok::<_, crate::PureError>((project_root, session_root))
+            Ok::<_, anyhow::Error>((project_root, session_root))
         })
-        .await??;
+        .await?
+        .map_err(|error| resource_error("resolve restored session workspace", error))?;
         if workspace_mode == pl_protocol::ThreadWorkspaceMode::Worktree {
             crate::studio::agent_host::workspace_preparation::verify_root_session_worktree(
                 &self.services.worktrees,
@@ -367,23 +368,12 @@ impl StudioThreadFactory {
                 .map_err(|error| resource_error("open reviewed workspace manager", error))?;
                 let handle = crate::agent::worktree::WorktreeHandle {
                     path: PathBuf::from(&lease.path),
-                    branch: lease.branch.clone(),
                     base_commit: lease.base_commit.clone(),
                 };
-                let Some(status) = manager
-                    .preview_existing(&handle)
+                manager
+                    .verify(&handle)
                     .await
-                    .map_err(|error| resource_error("inspect reviewed workspace", error))?
-                else {
-                    return Err(ThreadAssemblyError::Identity(format!(
-                        "review target {target_id} worktree is missing"
-                    )));
-                };
-                if status.branch.as_deref() != Some(lease.branch.as_str()) {
-                    return Err(ThreadAssemblyError::Identity(format!(
-                        "review target {target_id} worktree is checked out on another branch"
-                    )));
-                }
+                    .map_err(|error| resource_error("verify reviewed workspace", error))?;
             }
             None => {
                 if std::path::Path::new(&assignment.root) != session_root {
@@ -427,7 +417,7 @@ impl StudioThreadFactory {
                 "the saved child worktree is cleaned or cleanup is in progress",
             ));
         }
-        // The saved site is only ever touched at the Pure-owned path and branch its own identity
+        // The saved site is only ever touched at the managed path its stable ownership
         // derives, and only while it still matches this child, its root, its project and its receipt.
         lease
             .validate_identity()
@@ -441,11 +431,10 @@ impl StudioThreadFactory {
         .map_err(|error| resource_error("open restored child workspace manager", error))?;
         let handle = crate::agent::worktree::WorktreeHandle {
             path: PathBuf::from(&lease.path),
-            branch: lease.branch.clone(),
             base_commit: lease.base_commit.clone(),
         };
         manager
-            .preview(&handle)
+            .verify(&handle)
             .await
             .map_err(|error| resource_error("inspect restored child workspace", error))?;
         Ok(lease)
@@ -476,7 +465,7 @@ impl StudioThreadFactory {
 ///
 /// These are the facts that do not depend on the physical site: ownership, root session, project,
 /// remote target, the repository the current Project resolves
-/// to today, and the frozen receipt's repository, path, branch and base commit.
+/// to today, and the frozen receipt's repository, path and base commit.
 fn verify_worktree_declarations(
     lease: &crate::studio::agent_host::worktree_lease::WorktreeLease,
     receipt: &pl_protocol::AgentWorktreeSnapshot,
@@ -512,9 +501,6 @@ fn verify_worktree_declarations(
     }
     if !same_workspace_path(&lease.path, &receipt.path, remote) {
         return Err("the saved lease and its receipt name different worktree paths".into());
-    }
-    if lease.branch != receipt.branch {
-        return Err("the saved lease and its receipt name different branches".into());
     }
     if lease.base_commit != receipt.base_commit {
         return Err(

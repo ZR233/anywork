@@ -3499,6 +3499,12 @@ class AppLocalizationsZh extends AppLocalizations {
   String get settingsWorktreeInspectionUnavailable => '暂时无法检查';
 
   @override
+  String get settingsWorktreeDetached => '已核实：detached HEAD（无当前分支）';
+
+  @override
+  String get settingsWorktreeBranchUnknown => '当前分支未知';
+
+  @override
   String get settingsWorktreeRetry => '重试检查';
 
   @override
