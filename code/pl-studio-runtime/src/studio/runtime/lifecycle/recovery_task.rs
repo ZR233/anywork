@@ -42,11 +42,22 @@ impl StudioRuntime {
         *slot = Some(BackgroundTask::new(tokio::spawn(async move {
             let mut issues = Vec::new();
             let result = async {
+                if let Err(error) = runtime.threads.resume_agent_closes().await {
+                    // Only new, durable explicit grants are resumed, with their original policy.
+                    // The retained collaboration owner outlives cancellation of this scan.
+                    tracing::warn!(%error, "explicit child retirement recovery remains pending");
+                }
+                runtime
+                    .append_agent_close_recovery_issues(&mut issues)
+                    .await?;
                 let stage = crate::startup_timing::Stage::new("recover_worktrees");
                 runtime.append_worktree_recovery_issues(&mut issues).await?;
                 drop(stage);
                 runtime
                     .append_unavailable_project_recovery_issues(&mut issues)
+                    .await?;
+                runtime
+                    .append_thread_execution_recovery_issues(&mut issues)
                     .await?;
                 Ok::<_, anyhow::Error>(())
             }
@@ -56,7 +67,8 @@ impl StudioRuntime {
                     issues.retain(|issue| issue.worktree.as_ref().is_none_or(|preview| {
                         runtime.agent_facility.worktrees.get(&preview.owner_thread_id)
                             .is_some_and(|lease| lease.revision == preview.lease_revision
-                                && lease.state != crate::studio::agent_host::worktree_lease::WorktreeLeaseState::Cleaned)
+                                && (lease.state != crate::studio::agent_host::worktree_lease::WorktreeLeaseState::Cleaned
+                                    || !runtime.agent_facility.worktrees.is_durable(&lease)))
                     }));
                     runtime.recovery.replace(issues);
                 }

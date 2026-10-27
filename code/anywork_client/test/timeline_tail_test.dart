@@ -454,8 +454,9 @@ void main() {
       ),
     );
     final frame = (await delivered).snapshot! as StudioTimelineBaselineFrame;
-    expect(frame.baseline.version, 11);
-    expect(frame.baseline.items.single.id, 'fresh');
+    final history = frame.baseline;
+    expect(history.version, 11);
+    expect(history.items.single.id, 'fresh');
     expect(frame.resyncReason, StudioTimelineResyncReason.lagging);
     // 重同步后的补丁以新基线版本为 from。
     final next = ready.channel.state.waitFor(

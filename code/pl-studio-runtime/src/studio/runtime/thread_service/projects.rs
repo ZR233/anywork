@@ -222,6 +222,7 @@ impl StudioRuntime {
     }
 
     pub(super) fn ensure_project_thread_admission_open(&self, project_id: &str) -> Result<()> {
+        self.recovery.ensure_project_execution_access(project_id)?;
         anyhow::ensure!(
             self.store
                 .workspaces()

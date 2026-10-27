@@ -694,7 +694,7 @@ void main() {
     transport.pendingOpens.last.complete(second);
     final reopened = await session.timeline.ready;
     expect(reopened.baseline.subscriptionId, 'second');
-    expect(reopened.baseline.version, 1);
+    expect((reopened).baseline.version, 1);
     // 新 attempt 的补丁必须从它自己的基线开始。
     await second.nextStarted.future;
     second.emit(patch(1, 2, subscriptionId: 'second'));
@@ -717,7 +717,7 @@ void main() {
       final connection = TestTimelineConnection(initial: baseline(2));
       transport.pendingOpens.single.complete(connection);
       final ready = await session.timeline.ready;
-      expect(ready.baseline.version, 2);
+      expect((ready).baseline.version, 2);
       expect(session.state.hasSnapshot, isFalse);
       expect(session.state.sync.phase, DomainSyncPhase.idle);
       await session.close();

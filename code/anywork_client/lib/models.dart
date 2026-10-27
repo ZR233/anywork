@@ -26,6 +26,7 @@ export 'src/models/runtime_models.dart';
 export 'src/models/settings_models.dart';
 export 'src/models/settings_snapshot_projection.dart';
 export 'src/models/startup_models.dart';
+export 'src/models/submission_models.dart';
 export 'src/models/studio_commands.dart';
 export 'src/models/studio_enums.dart';
 export 'src/models/studio_shutdown_models.dart';

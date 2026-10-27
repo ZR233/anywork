@@ -21,6 +21,11 @@ impl StudioThreadFactory {
         request: ThreadPreparation,
     ) -> Result<StudioThreadSpec, ThreadAssemblyError> {
         let id = &request.identity.id;
+        self.services
+            .store
+            .ensure_agent_execution_allowed(id)
+            .await
+            .map_err(|error| resource_error("check child retirement intent", error))?;
         let thread = self.thread_record(id).await?;
         if thread.parent_thread_id != request.identity.parent_id
             || thread.parent_thread_id.is_none()
@@ -36,6 +41,15 @@ impl StudioThreadFactory {
             ));
         }
         let protocol_thread: pl_protocol::Thread = thread.clone().into();
+        self.ensure_bot_execution_workspace(&protocol_thread, None)
+            .await?;
+        self.verify_execution_workspace(
+            &protocol_thread,
+            None,
+            super::ExecutionWorkspaceCheck::Prepare,
+        )
+        .await
+        .map_err(Self::workspace_usage_error)?;
         let checkpoint =
             super::recovery::load_checkpoint_for_recovery(&self.services.store, &protocol_thread)
                 .await
@@ -53,8 +67,19 @@ impl StudioThreadFactory {
             return Err(ThreadAssemblyError::Closed);
         }
         let mut project = self.project_record(&thread.project_id).await?;
+        let workspace_usage = self
+            .reserve_thread_workspace_use(id, &thread.root_thread_id, &project)
+            .await
+            .map_err(Self::workspace_usage_error)?;
+        request.workspace_owner.retain(&workspace_usage);
         let bot_root = self
-            .bind_bot_project(id, &thread.root_thread_id, &mut project)
+            .bind_bot_project(
+                id,
+                &thread.root_thread_id,
+                &mut project,
+                &workspace_usage,
+                super::root_resources::BotWorkspacePreparation::Existing,
+            )
             .await?;
         let restored = checkpoint.state.clone();
         let saved = restored
@@ -207,6 +232,9 @@ impl StudioThreadFactory {
             ));
         }
         let workspace = super::child_resources::assigned_workspace(&assignment, workspace_mode);
+        self.assign_workspace_use(&workspace_usage, &project, workspace.root())
+            .await
+            .map_err(Self::workspace_usage_error)?;
 
         let resources = FileResourceStore::new(
             self.services
@@ -218,6 +246,8 @@ impl StudioThreadFactory {
         );
         let mut prepared = self
             .prepare_thread_tools(ThreadToolAssembly {
+                assignment: Some(&assignment),
+                workspace_usage: workspace_usage.clone(),
                 thread_id: id,
                 cancellation: &request.cancellation,
                 config: &config,
@@ -247,6 +277,7 @@ impl StudioThreadFactory {
         )
         .with_hosted_tools(prepared.hosted);
         let spec = StudioThreadSpec {
+            workspace_usage: Some(workspace_usage),
             preparation_guard: prepared.binding_guard.take(),
             context_preparation: crate::compaction::preparer(
                 &route,
@@ -300,6 +331,13 @@ impl StudioThreadFactory {
             })?
             .agent_id;
         let target = self.thread_record(target_id).await?;
+        self.services
+            .store
+            .ensure_agent_execution_allowed(target_id)
+            .await
+            .map_err(|error| {
+                resource_error("reject restoring a retired review workspace", error)
+            })?;
         if target.parent_thread_id != thread.parent_thread_id
             || target.root_thread_id != thread.root_thread_id
             || target.project_id != thread.project_id
@@ -351,9 +389,11 @@ impl StudioThreadFactory {
                         ))
                     })?;
                 let manager = crate::studio::agent_host::workspace_preparation::manager_from_lease(
+                    &self.services.store,
                     &self.services.ssh_manager,
                     &lease,
                 )
+                .await
                 .map_err(|error| resource_error("open reviewed workspace manager", error))?;
                 let handle = crate::agent::worktree::WorktreeHandle {
                     path: PathBuf::from(&lease.path),
@@ -374,19 +414,14 @@ impl StudioThreadFactory {
                         "review target {target_id} worktree is checked out on another branch"
                     )));
                 }
-                verify_worktree_site(
-                    &repository,
-                    &repository_root,
-                    &lease.path,
-                    &lease.branch,
-                    remote,
-                )
-                .await
-                .map_err(|reason| {
-                    ThreadAssemblyError::Identity(format!(
-                        "review target {target_id} worktree: {reason}"
-                    ))
-                })?;
+                repository
+                    .validate_registered_site(PathBuf::from(&lease.path).as_path(), &lease.branch)
+                    .await
+                    .map_err(|reason| {
+                        ThreadAssemblyError::Identity(format!(
+                            "review target {target_id} worktree: {reason}"
+                        ))
+                    })?;
             }
             None => {
                 if std::path::Path::new(&assignment.root) != session_root {
@@ -453,9 +488,11 @@ impl StudioThreadFactory {
         verify_worktree_declarations(&lease, receipt, thread, project, &repository_root)
             .map_err(|reason| missing(&reason))?;
         let manager = crate::studio::agent_host::workspace_preparation::manager_from_lease(
+            &self.services.store,
             &self.services.ssh_manager,
             &lease,
         )
+        .await
         .map_err(|error| resource_error("open restored child workspace manager", error))?;
         let handle = crate::agent::worktree::WorktreeHandle {
             path: PathBuf::from(&lease.path),
@@ -472,15 +509,10 @@ impl StudioThreadFactory {
                         "the saved child worktree is checked out on another branch",
                     ));
                 }
-                verify_worktree_site(
-                    &repository,
-                    &repository_root,
-                    &lease.path,
-                    &lease.branch,
-                    project.ssh_alias.is_some(),
-                )
-                .await
-                .map_err(|reason| missing(&reason))?;
+                repository
+                    .validate_registered_site(PathBuf::from(&lease.path).as_path(), &lease.branch)
+                    .await
+                    .map_err(|reason| missing(&reason.to_string()))?;
                 // A grant whose rebuild already landed is spent here: this directory is the rebuilt
                 // one, so losing it later must not authorize another rebuild from an old restore.
                 let mut lease = lease;
@@ -508,13 +540,16 @@ impl StudioThreadFactory {
         }
         let _creating = self.services.worktrees.creation_guard(child_id);
         let rebuilt = crate::studio::agent_host::workspace_preparation::recreate_child_worktree(
+            &self.services.store,
             &self.services.worktrees,
             &self.services.ssh_manager,
-            project,
-            &thread.root_thread_id,
-            child_id,
-            receipt,
-            &repository_root,
+            crate::studio::agent_host::workspace_preparation::ChildWorktreeRecreation {
+                project,
+                root_thread_id: &thread.root_thread_id,
+                child_id,
+                receipt,
+                repository_root: &repository_root,
+            },
         )
         .await
         .map_err(|error| resource_error("recreate restored child worktree", error))?;
@@ -522,15 +557,10 @@ impl StudioThreadFactory {
         // rebuild can never land outside them even though it was authorized.
         verify_worktree_declarations(&rebuilt, receipt, thread, project, &repository_root)
             .map_err(|reason| missing(&reason))?;
-        verify_worktree_site(
-            &repository,
-            &repository_root,
-            &rebuilt.path,
-            &rebuilt.branch,
-            project.ssh_alias.is_some(),
-        )
-        .await
-        .map_err(|reason| missing(&reason))?;
+        repository
+            .validate_registered_site(PathBuf::from(&rebuilt.path).as_path(), &rebuilt.branch)
+            .await
+            .map_err(|reason| missing(&reason.to_string()))?;
         // The authorization is spent once the rebuild settled, so a later ordinary continuation can
         // never rebuild this site again on the strength of an old restore. Consumption is itself a
         // lease revision: the rebuild already recorded a newer lease, and `record` admits only
@@ -562,6 +592,7 @@ impl StudioThreadFactory {
             &project_root,
         )
         .await
+        .map(|(repository, manager, _)| (repository, manager))
         .map_err(|error| resource_error("resolve restored child repository", error))
     }
 }
@@ -614,53 +645,6 @@ fn verify_worktree_declarations(
         return Err(
             "the saved lease and its receipt were created from different base commits".into(),
         );
-    }
-    Ok(())
-}
-
-/// Proves that the directory at `path` is a worktree of the resolved repository, on `branch`.
-///
-/// Two Git facts are required, because a directory existing proves nothing: another repository's
-/// worktree, or a stale registration whose directory is gone, can sit at the same path.
-///
-/// 1. The resolved repository registers it as its own worktree on that branch, and the registration is
-///    not `prunable` (a prunable entry is a stale record of a directory Git can no longer see).
-/// 2. The directory and the resolved repository share one common Git directory, which is the
-///    repository identity itself rather than a path convention.
-async fn verify_worktree_site(
-    repository: &crate::agent::worktree::WorktreeManager,
-    repository_root: &std::path::Path,
-    path: &str,
-    branch: &str,
-    remote: bool,
-) -> Result<(), String> {
-    let registered = repository
-        .registered_worktrees()
-        .await
-        .map_err(|error| format!("the project repository cannot list its worktrees: {error}"))?;
-    let owned = registered.iter().any(|entry| {
-        !entry.prunable
-            && same_workspace_path(&entry.path, path, remote)
-            && entry.branch.as_deref() == Some(branch)
-    });
-    if !owned {
-        return Err(
-            "the resolved repository does not register this directory as its worktree on the declared branch"
-                .into(),
-        );
-    }
-    let site = repository
-        .git_common_dir(std::path::Path::new(path))
-        .await
-        .map_err(|error| format!("the saved worktree does not answer as a Git worktree: {error}"))?
-        .ok_or_else(|| "the saved worktree's Git identity cannot be resolved".to_string())?;
-    let owner = repository
-        .git_common_dir(repository_root)
-        .await
-        .map_err(|error| format!("the project repository cannot name its Git directory: {error}"))?
-        .ok_or_else(|| "the project repository's Git identity cannot be resolved".to_string())?;
-    if site != owner {
-        return Err("the saved worktree belongs to another Git repository".into());
     }
     Ok(())
 }

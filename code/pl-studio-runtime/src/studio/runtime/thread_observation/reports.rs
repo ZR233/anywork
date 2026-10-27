@@ -1,6 +1,7 @@
-//! One immutable projection per terminal Turn; no separate delivery state or mutable report store.
+//! Preserve the original terminal projection in child history before attempting parent delivery.
 use super::ObservationServices;
 use crate::studio::thread_projection::TurnResult;
+use crate::thread_assembler::observation::ParentMessageDelivery;
 use anyhow::Result;
 use pl_core::{
     context::{ContextContent, OpaquePayload},
@@ -35,44 +36,58 @@ struct MessageIdentity<'a> {
 pub(super) async fn publish_terminal(
     services: &ObservationServices,
     thread: &Thread,
+    message: pl_core::thread::inbox::ThreadMessage,
+    wake: bool,
+) -> Result<Option<ParentMessageDelivery>> {
+    let Some(parent) = thread.parent_thread_id.as_deref() else {
+        return Ok(None);
+    };
+    let delivery = services
+        .threads
+        .notify_parent(parent, message, wake)
+        .await?;
+    match &delivery {
+        ParentMessageDelivery::Accepted {
+            message_id,
+            sequence,
+        } => {
+            tracing::trace!(%message_id, parent_sequence = sequence, "terminal report admitted; durable receipt still required")
+        }
+        ParentMessageDelivery::ProvenExisting {
+            message_id,
+            sequence,
+        } => {
+            tracing::trace!(%message_id, parent_sequence = sequence, "terminal report already durable")
+        }
+        ParentMessageDelivery::Skipped(reason) => tracing::trace!(
+            ?reason,
+            "terminal report publication skipped; no delivery ACK"
+        ),
+    }
+    // Keeping the child projection drainable during shutdown is not a delivery ACK. Retirement
+    // separately verifies the exact report identities in the parent's durable history index.
+    Ok(Some(delivery))
+}
+
+/// Frozen while the projection still owns the exact terminal write's snapshot and Turn result.
+/// The writer stores this message alongside that effect, even if publication is skipped or fails.
+pub(super) fn terminal_message(
+    thread: &Thread,
     snapshot: &ThreadSnapshot,
     turn: &TurnRecord,
     sequence: u64,
-    wake: bool,
     result: &TurnResult,
-) -> Result<()> {
-    let Some(parent) = thread.parent_thread_id.as_deref() else {
-        return Ok(());
-    };
-    // The result facts come from the reliable in-memory projection that owns this Thread's live
-    // facts; the hot path never reads them back from history, and a Turn that committed its visible
-    // output over many effects reports all of it rather than only the effect that finished it.
-    let report = report(thread, turn, snapshot, result)?;
-    let content = serde_json::to_string(&report)?;
-    let message_id = format!(
-        "studio.child.{}:{}:{}",
-        thread.id.len(),
-        thread.id,
-        sequence
-    );
-    services
-        .threads
-        .notify_parent(
-            parent,
-            pl_core::thread::inbox::ThreadMessage {
-                kind: pl_core::context::AgentMessageKind::Report,
-                // Preserve the sequence-derived identity used by historical terminal notifications.
-                id: message_id,
-                source_id: format!("studio.child:{}", thread.id),
-                payload: OpaquePayload::new("pl.studio.turn-report", 1, content.clone())?,
-                context: vec![ContextContent::Text {
-                    text: content.into(),
-                }],
-            },
-            wake,
-        )
-        .await?;
-    Ok(())
+) -> Result<pl_core::thread::inbox::ThreadMessage> {
+    let content = serde_json::to_string(&report(thread, turn, snapshot, result)?)?;
+    Ok(pl_core::thread::inbox::ThreadMessage {
+        kind: pl_core::context::AgentMessageKind::Report,
+        id: crate::studio::agent_close::terminal_report_id(&thread.id, sequence),
+        source_id: format!("studio.child:{}", thread.id),
+        payload: OpaquePayload::new("pl.studio.turn-report", 1, content.clone())?,
+        context: vec![ContextContent::Text {
+            text: content.into(),
+        }],
+    })
 }
 
 fn report<'a>(

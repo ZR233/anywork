@@ -557,6 +557,39 @@ void main() {
   );
 
   test(
+    'Driver new-thread projection retains the raw composer failure object',
+    () async {
+      final client = AnyworkClient(
+        transport: _UnusedTransport(),
+        clientId: 'driver-failure-projection',
+      );
+      const project = StudioProject(
+        id: 'project',
+        name: 'Project',
+        path: '/project',
+      );
+      client.project.applyProjectDirectory(
+        ProjectDirectoryState(revision: 1, values: [project]),
+      );
+      client.selection.selectProject(project.id);
+      const failure = StudioFailure(
+        code: StudioFailureCode.permissionDenied,
+        message: 'Typed recovery failure from attachment admission',
+        retryable: false,
+        correlationId: 'driver-recovery-failure',
+      );
+      client.attachments.reportNewThreadFailure(project.id, failure);
+      final timeline = TimelineSessionOwner(client: client);
+      addTearDown(timeline.close);
+
+      final facts = queryStudioDriverFacts(client, timeline: timeline);
+      expect(facts.newThreadComposer.failure, same(failure));
+      expect(facts.newThreadComposer.error, failure.toString());
+      expect((await client.close()).complete, isTrue);
+    },
+  );
+
+  test(
     'Driver facts map typed acp install failures without dynamic dispatch',
     () async {
       final transport = _UnusedTransport();

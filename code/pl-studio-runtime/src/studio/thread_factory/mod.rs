@@ -1,14 +1,20 @@
 //! Product configuration and shared service leases used to construct core Threads.
+mod bot_workspace;
 mod child_resources;
 mod close_child;
 mod errors;
+mod execution_admission;
+mod execution_cleanup;
 pub(crate) mod recovery;
 mod restore_child;
+mod worktree_close;
+pub(crate) use execution_admission::ExecutionWorkspaceCheck;
 mod root_resources;
 mod session_files;
 mod thread_seed;
 mod thread_tools;
 mod tool_bindings;
+mod workspace_usage;
 
 pub(in crate::studio) use tool_bindings::RefreshedToolBinding;
 

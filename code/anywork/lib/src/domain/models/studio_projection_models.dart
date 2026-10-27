@@ -38,39 +38,63 @@ abstract class SidebarView with _$SidebarView {
     @Default(false) bool directoryIsLoading,
   }) = _SidebarView;
 
-  factory SidebarView.fromState(StudioState state) {
+  factory SidebarView.fromDirectories({
+    required List<StudioProject> projects,
+    required List<StudioThread> rootThreads,
+    required String? selectedProjectId,
+    required String? selectedRootThreadId,
+    required bool isBusy,
+    required List<StudioRecoveryIssue> recoveryIssues,
+    required Map<String, String> modeDisplayNames,
+    required bool directoryHasMore,
+    required bool directoryIsLoading,
+  }) {
     final projectRecoveryIssues = <String, StudioRecoveryIssue>{};
-    for (final project in state.projects) {
-      final issue = state.recoveryIssue(
-        scope: RecoveryIssueScope.project,
+    for (final project in projects) {
+      final issue = recoveryIssuesForTarget(
+        recoveryIssues,
         projectId: project.id,
-      );
+      ).firstOrNull;
       if (issue != null) projectRecoveryIssues[project.id] = issue;
     }
     final threadRecoveryIssues = <String, StudioRecoveryIssue>{};
-    for (final thread in state.rootThreads) {
-      final issue = state.recoveryIssue(
-        scope: RecoveryIssueScope.thread,
+    for (final thread in rootThreads) {
+      final issue = recoveryIssuesForTarget(
+        recoveryIssues,
+        projectId: thread.projectId,
         threadId: thread.id,
-      );
+      ).firstOrNull;
       if (issue != null) threadRecoveryIssues[thread.id] = issue;
     }
     return SidebarView(
-      projects: state.projects,
-      rootThreads: state.rootThreads,
-      selectedProjectId: state.selectedProjectId,
-      selectedRootThreadId: state.selectedRootThread?.id,
-      isBusy: state.isBusy,
+      projects: projects,
+      rootThreads: rootThreads,
+      selectedProjectId: selectedProjectId,
+      selectedRootThreadId: selectedRootThreadId,
+      isBusy: isBusy,
       projectRecoveryIssues: projectRecoveryIssues,
       threadRecoveryIssues: threadRecoveryIssues,
-      modeDisplayNames: {
-        for (final mode in state.threadModeCatalog.modes)
-          mode.id: mode.displayName,
-      },
-      directoryHasMore: state.threadDirectory.hasMore,
-      directoryIsLoading: state.threadDirectory.isLoading,
+      modeDisplayNames: modeDisplayNames,
+      directoryHasMore: directoryHasMore,
+      directoryIsLoading: directoryIsLoading,
     );
   }
+
+  factory SidebarView.fromState(StudioState state) =>
+      SidebarView.fromDirectories(
+        projects: state.projects,
+        rootThreads: state.rootThreads,
+        selectedProjectId: state.selectedProjectId,
+        selectedRootThreadId: state.selectedRootThread?.id,
+        isBusy: state.isBusy,
+        recoveryIssues: state.recoveryIssues,
+        modeDisplayNames: {
+          for (final mode in state.threadModeCatalog.modes)
+            mode.id: mode.displayName,
+        },
+        directoryHasMore: state.threadDirectory.hasMore,
+        directoryIsLoading: state.threadDirectory.isLoading,
+      );
 }
 
 @freezed

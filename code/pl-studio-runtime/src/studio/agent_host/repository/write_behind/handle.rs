@@ -18,6 +18,20 @@ use super::state::update_healthy_state;
 use super::worker::supervise_writer;
 
 pub(super) struct WriterShared {
+    #[cfg(test)]
+    pub(super) lease_ticket_gate: Mutex<
+        Option<(
+            std::sync::mpsc::SyncSender<()>,
+            std::sync::mpsc::Receiver<()>,
+        )>,
+    >,
+    #[cfg(test)]
+    pub(super) cleaned_ack_gate: Mutex<
+        Option<(
+            tokio::sync::oneshot::Sender<()>,
+            tokio::sync::oneshot::Receiver<()>,
+        )>,
+    >,
     pub(super) store: StudioStore,
     pub(super) queue: Mutex<VecDeque<QueuedMutation>>,
     /// 已从 queue 取出、但尚未 durable 的 typed mutation 副本。
@@ -76,6 +90,10 @@ impl ThreadWriteBehindWriter {
         let (state, _) = watch::channel(PersistenceStateSnapshot::default());
         Self {
             shared: Arc::new(WriterShared {
+                #[cfg(test)]
+                lease_ticket_gate: Mutex::new(None),
+                #[cfg(test)]
+                cleaned_ack_gate: Mutex::new(None),
                 store,
                 queue: Mutex::new(VecDeque::new()),
                 inflight: Mutex::new(VecDeque::new()),
@@ -141,8 +159,8 @@ impl ThreadWriteBehindWriter {
         }
         let ticket = self.next_ticket();
         queue.push_back(queue_directory(ticket, delta));
-        drop(queue);
         self.record_visible_commit();
+        drop(queue);
         update_healthy_state(&self.shared, self.pending_commit_count());
         self.shared.work_notify.notify_one();
     }
@@ -150,14 +168,24 @@ impl ThreadWriteBehindWriter {
     pub(in crate::studio) fn record_worktree_lease(
         &self,
         lease: crate::studio::agent_host::worktree_lease::WorktreeLease,
-    ) {
+    ) -> u64 {
         self.ensure_task();
+        let mut queue = self.lock_queue_shared();
         let ticket = self.next_ticket();
-        self.lock_queue_shared()
-            .push_back(queue_worktree_lease(ticket, lease));
+        #[cfg(test)]
+        {
+            let gate = self.shared.lease_ticket_gate.lock().unwrap().take();
+            if let Some((entered, release)) = gate {
+                let _ = entered.send(());
+                let _ = release.recv();
+            }
+        }
+        queue.push_back(queue_worktree_lease(ticket, lease));
         self.record_visible_commit();
+        drop(queue);
         update_healthy_state(&self.shared, self.pending_commit_count());
         self.shared.work_notify.notify_one();
+        ticket
     }
 
     /// 持久化已进入 Blocked 时，flush 立即返回诊断；瞬时故障则继续等待自动恢复。
@@ -322,5 +350,443 @@ impl ThreadWriteBehindWriter {
     /// 更新后才能观察并取走该 commit，避免从零计数递减下溢。
     fn record_visible_commit(&self) {
         self.pending_commits.fetch_add(1, Ordering::AcqRel);
+    }
+}
+
+#[cfg(test)]
+mod storage_fault_tests {
+    use super::*;
+    use crate::agent::worktree::{
+        WorktreeBackend, WorktreeCreateFailure, WorktreeError, WorktreeManager, WorktreeOwnership,
+        WorktreeStatus,
+    };
+    use crate::studio::agent_host::worktree_lease::{
+        WorktreeLease, WorktreeLeaseOwner, WorktreeLeaseOwnerKind, WorktreeLeaseState,
+    };
+    use anyhow::{Context, Result};
+    use futures::{FutureExt, future::BoxFuture};
+    use sea_orm::ConnectionTrait;
+    use std::path::{Path, PathBuf};
+    use std::sync::atomic::AtomicBool;
+
+    fn lease(repo: &Path, id: &str) -> WorktreeLease {
+        let ownership = WorktreeOwnership::Child {
+            child_id: id.into(),
+        };
+        WorktreeLease {
+            revision: 1,
+            state: WorktreeLeaseState::Prepared,
+            owner_kind: WorktreeLeaseOwnerKind::Child,
+            owner_thread_id: id.into(),
+            root_thread_id: "root".into(),
+            project_id: "project".into(),
+            ssh_alias: None,
+            repository_root: repo.to_string_lossy().into_owned(),
+            path: WorktreeManager::allocate_path(repo, "root", &ownership)
+                .to_string_lossy()
+                .into_owned(),
+            branch: WorktreeManager::branch_for(&ownership),
+            base_commit: "a".repeat(40),
+            restore_authorized_at: None,
+        }
+    }
+
+    async fn settled(writer: &ThreadWriteBehindWriter, target: u64) -> Result<()> {
+        let _request = writer.request_flush();
+        let mut updates = writer.subscribe_state();
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while writer.saved_watermark() < target {
+                updates.changed().await.context("writer state closed")?;
+            }
+            Ok::<_, anyhow::Error>(())
+        })
+        .await??;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn lease_ticket_admission_is_fifo_across_the_batch_boundary() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let store = StudioStore::open(temp.path().join("studio/v2/studio.sqlite")).await?;
+        store.database().execute_unprepared("CREATE TRIGGER reject_boundary_lease BEFORE INSERT ON studio_objects WHEN NEW.owner_id='boundary' BEGIN SELECT RAISE(ABORT,'controlled lease admission rejection'); END").await?;
+        let writer = ThreadWriteBehindWriter::new(store.clone());
+        for index in 0..super::super::queue::MAX_BATCH_COMMITS - 1 {
+            writer.record_worktree_lease(lease(temp.path(), &format!("entry-{index}")));
+        }
+        let (entered, waiting) = std::sync::mpsc::sync_channel(1);
+        let (release, released) = std::sync::mpsc::channel();
+        *writer.shared.lease_ticket_gate.lock().unwrap() = Some((entered, released));
+        let runtime = tokio::runtime::Handle::current();
+        let admitting = writer.clone();
+        let critical = lease(temp.path(), "boundary");
+        let task = std::thread::spawn(move || {
+            let _runtime = runtime.enter();
+            admitting.record_worktree_lease(critical)
+        });
+        waiting.recv_timeout(std::time::Duration::from_secs(5))?;
+        let directory = DirectoryDelta {
+            project_removals: vec![crate::studio::store::directory::ProjectRemoval {
+                project_id: "unused-project".into(),
+                thread_ids: vec![],
+                closed_at: 1,
+            }],
+            ..Default::default()
+        };
+        // The former allocation-before-lock implementation permits precisely the bad 65-before-64
+        // interleaving here. The corrected implementation holds this lock through admission.
+        let admission_holds_queue = writer.shared.queue.try_lock().is_err();
+        if !admission_holds_queue {
+            writer.record_directory(directory.clone());
+        }
+        release.send(())?;
+        let ticket = task
+            .join()
+            .map_err(|_| anyhow::anyhow!("admission thread failed"))?;
+        if admission_holds_queue {
+            writer.record_directory(directory);
+        }
+        assert!(
+            admission_holds_queue,
+            "ticket assignment and enqueue must share the queue lock"
+        );
+        assert_eq!(ticket, 64);
+        assert_eq!(writer.admitted_ticket(), 65);
+        assert_eq!(writer.pending_commit_count(), 65);
+        assert_eq!(
+            writer
+                .shared
+                .queue
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|entry| entry.ticket())
+                .collect::<Vec<_>>(),
+            (1..=65).collect::<Vec<_>>()
+        );
+        let blocked = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            writer.flush_through(ticket),
+        )
+        .await?;
+        assert!(
+            blocked.is_err(),
+            "a later directory ticket must never confirm the rejected lease"
+        );
+        assert!(writer.saved_watermark() < ticket);
+        assert!(
+            crate::studio::agent_host::worktree_lease::load_leases(&store)
+                .await?
+                .is_empty()
+        );
+        store
+            .database()
+            .execute_unprepared("DROP TRIGGER reject_boundary_lease")
+            .await?;
+        writer.retry_now();
+        settled(&writer, 65).await?;
+        assert_eq!(writer.pending_commit_count(), 0);
+        assert!(
+            crate::studio::agent_host::worktree_lease::load_leases(&store)
+                .await?
+                .iter()
+                .any(|lease| lease.owner_thread_id == "boundary")
+        );
+        writer.shutdown().await?;
+        Ok(())
+    }
+
+    #[derive(Debug)]
+    struct CleanupIo {
+        removed: AtomicBool,
+        removals: AtomicUsize,
+        branch_removed: AtomicBool,
+        replacement_after_remove: AtomicBool,
+        path: PathBuf,
+        common_dir: PathBuf,
+        branch: String,
+    }
+
+    impl CleanupIo {
+        fn new(lease: &WorktreeLease) -> Self {
+            Self {
+                removed: AtomicBool::new(false),
+                removals: AtomicUsize::new(0),
+                branch_removed: AtomicBool::new(false),
+                replacement_after_remove: AtomicBool::new(false),
+                path: lease.path.clone().into(),
+                common_dir: Path::new(&lease.repository_root).join(".git"),
+                branch: lease.branch.clone(),
+            }
+        }
+    }
+
+    type GitResult<'a, T> = BoxFuture<'a, Result<T, WorktreeError>>;
+    impl WorktreeBackend for CleanupIo {
+        fn delete_branch_at<'a>(
+            &'a self,
+            _: &'a Path,
+            branch: &'a str,
+            expected_head: &'a str,
+        ) -> GitResult<'a, ()> {
+            async move {
+                if branch != self.branch || expected_head != "a".repeat(40) {
+                    return Err(WorktreeError::InvalidResource(
+                        "reference CAS mismatch".into(),
+                    ));
+                }
+                self.branch_removed.store(true, Ordering::Release);
+                Ok(())
+            }
+            .boxed()
+        }
+        fn branch_head<'a>(&'a self, _: &'a Path, _: &'a str) -> GitResult<'a, Option<String>> {
+            async { Ok((!self.branch_removed.load(Ordering::Acquire)).then(|| "a".repeat(40))) }
+                .boxed()
+        }
+        fn is_ancestor<'a>(&'a self, _: &'a Path, _: &'a str, _: &'a str) -> GitResult<'a, bool> {
+            async { Ok(true) }.boxed()
+        }
+        fn resolve_repo_root<'a>(&'a self, path: &'a Path) -> GitResult<'a, PathBuf> {
+            async move { Ok(path.to_owned()) }.boxed()
+        }
+        fn create_parent<'a>(&'a self, _: &'a Path, _: &'a Path) -> GitResult<'a, ()> {
+            async { Ok(()) }.boxed()
+        }
+        fn path_exists<'a>(&'a self, _: &'a Path) -> GitResult<'a, bool> {
+            async {
+                Ok(!self.removed.load(Ordering::Acquire)
+                    || self.replacement_after_remove.load(Ordering::Acquire))
+            }
+            .boxed()
+        }
+        fn create<'a>(
+            &'a self,
+            _: &'a Path,
+            _: &'a str,
+            _: &'a Path,
+            _: &'a str,
+        ) -> BoxFuture<'a, Result<(), WorktreeCreateFailure>> {
+            async {
+                Err(WorktreeCreateFailure::no_side_effects(
+                    WorktreeError::InvalidResource("not a create fixture".into()),
+                ))
+            }
+            .boxed()
+        }
+        fn resolve_head<'a>(&'a self, _: &'a Path) -> GitResult<'a, String> {
+            async { Ok("a".repeat(40)) }.boxed()
+        }
+        fn status<'a>(&'a self, _: &'a Path) -> GitResult<'a, WorktreeStatus> {
+            async {
+                Ok(WorktreeStatus {
+                    head: "a".repeat(40),
+                    branch: Some(self.branch.clone()),
+                    changed_files: vec![],
+                })
+            }
+            .boxed()
+        }
+        fn remove<'a>(&'a self, _: &'a Path, _: &'a Path, _: bool) -> GitResult<'a, ()> {
+            async {
+                self.removals.fetch_add(1, Ordering::AcqRel);
+                self.removed.store(true, Ordering::Release);
+                Ok(())
+            }
+            .boxed()
+        }
+        fn worktree_list<'a>(&'a self, _: &'a Path) -> GitResult<'a, String> {
+            async {
+                Ok(if self.removed.load(Ordering::Acquire) {
+                    String::new()
+                } else {
+                    format!(
+                        "worktree {}\nHEAD {}\nbranch refs/heads/{}\n\n",
+                        self.path.display(),
+                        "a".repeat(40),
+                        self.branch
+                    )
+                })
+            }
+            .boxed()
+        }
+        fn git_common_dir<'a>(&'a self, _: &'a Path) -> GitResult<'a, String> {
+            async { Ok(self.common_dir.to_string_lossy().into_owned()) }.boxed()
+        }
+    }
+
+    #[tokio::test]
+    async fn cleaned_reentry_waits_for_its_completion_commit_and_ack() -> Result<()> {
+        use crate::studio::agent_host::workspace_preparation::close_workspace;
+        use pl_tool::collaboration::thread::WorkspaceRelease;
+        let temp = tempfile::tempdir()?;
+        let store = StudioStore::open(temp.path().join("studio/v2/studio.sqlite")).await?;
+        let writer = ThreadWriteBehindWriter::new(store.clone());
+        let leases = WorktreeLeaseOwner::new(writer.clone());
+        let unchanged = lease(temp.path(), "already-durable");
+        leases.record_durable(unchanged.clone()).await?;
+        // A failed identity check or physical postcondition must retain a durable cleanup owner,
+        // not publish Cleaned or delete either a replacement directory or its surviving branch.
+        for (id, changed_branch) in [("changed-branch", true), ("replacement-path", false)] {
+            let prepared = lease(temp.path(), id);
+            leases.record_durable(prepared.clone()).await?;
+            let mut io = CleanupIo::new(&prepared);
+            if changed_branch {
+                io.branch = "user-owned-branch".into();
+            } else {
+                io.replacement_after_remove.store(true, Ordering::Release);
+            }
+            let io = Arc::new(io);
+            let manager = WorktreeManager::new(temp.path().to_owned(), io.clone());
+            assert!(
+                close_workspace(
+                    &store,
+                    &leases,
+                    &manager,
+                    prepared,
+                    WorkspaceRelease::Cleanup
+                )
+                .await
+                .is_err()
+            );
+            let pending = leases.get(id).context("pending cleanup identity")?;
+            assert_eq!(pending.state, WorktreeLeaseState::Preserved);
+            assert!(leases.is_durable(&pending));
+            assert_eq!(
+                io.removals.load(Ordering::Acquire),
+                usize::from(!changed_branch)
+            );
+            assert!(!io.branch_removed.load(Ordering::Acquire));
+            assert!(io.path_exists(&io.path).await?);
+        }
+        let prepared = lease(temp.path(), "cleanup");
+        leases.record_durable(prepared.clone()).await?;
+        let io = Arc::new(CleanupIo::new(&prepared));
+        let manager = WorktreeManager::new(temp.path().to_owned(), io.clone());
+        store.database().execute_unprepared("CREATE TRIGGER reject_cleaned BEFORE UPDATE ON studio_objects WHEN json_extract(NEW.payload_json,'$.state')='cleaned' BEGIN SELECT RAISE(ABORT,'controlled completion rejection'); END").await?;
+        assert!(
+            close_workspace(
+                &store,
+                &leases,
+                &manager,
+                prepared,
+                WorkspaceRelease::Cleanup
+            )
+            .await
+            .is_err()
+        );
+        let cleaned = leases.get("cleanup").context("retained cleanup phase")?;
+        assert_eq!(cleaned.state, WorktreeLeaseState::Cleaned);
+        assert!(!leases.is_durable(&cleaned));
+        leases.record_durable(unchanged).await.context(
+            "an unrelated blocked completion cannot invalidate an earlier lease receipt",
+        )?;
+        assert!(
+            close_workspace(
+                &store,
+                &leases,
+                &manager,
+                cleaned.clone(),
+                WorkspaceRelease::Cleanup
+            )
+            .await
+            .is_err(),
+            "a hot Cleaned label is not a durable completion receipt"
+        );
+        assert_eq!(io.removals.load(Ordering::Acquire), 1);
+        store
+            .database()
+            .execute_unprepared("DROP TRIGGER reject_cleaned")
+            .await?;
+        writer.retry_now();
+        settled(&writer, writer.admitted_ticket()).await?;
+        close_workspace(
+            &store,
+            &leases,
+            &manager,
+            cleaned,
+            WorkspaceRelease::Cleanup,
+        )
+        .await?;
+        assert_eq!(io.removals.load(Ordering::Acquire), 1);
+
+        // A separate physical cleanup commits, but its ACK is deliberately held back.
+        let next = lease(temp.path(), "cancelled-cleanup");
+        leases.record_durable(next.clone()).await?;
+        let io = Arc::new(CleanupIo::new(&next));
+        let manager = WorktreeManager::new(temp.path().to_owned(), io.clone());
+        let (entered, waiting) = tokio::sync::oneshot::channel();
+        let (release, released) = tokio::sync::oneshot::channel();
+        *writer.shared.cleaned_ack_gate.lock().unwrap() = Some((entered, released));
+        let cleanup_leases = leases.clone();
+        let cleanup_store = store.clone();
+        let cleanup_manager = manager.clone();
+        let cleanup = tokio::spawn(async move {
+            close_workspace(
+                &cleanup_store,
+                &cleanup_leases,
+                &cleanup_manager,
+                next,
+                WorkspaceRelease::Cleanup,
+            )
+            .await
+        });
+        waiting.await?;
+        cleanup.abort();
+        assert!(cleanup.await.unwrap_err().is_cancelled());
+        let mut cleaned = leases
+            .get("cancelled-cleanup")
+            .context("cancelled completion phase")?;
+        // Also exercise consume_restore: its new revision must not bypass the pending receipt.
+        cleaned.grant_restore(1);
+        leases.record(cleaned.clone())?;
+        let mut retry = Box::pin(close_workspace(
+            &store,
+            &leases,
+            &manager,
+            cleaned,
+            WorkspaceRelease::Cleanup,
+        ));
+        assert!(
+            futures::poll!(retry.as_mut()).is_pending(),
+            "completion reentry must wait for writer ACK"
+        );
+        drop(retry);
+        release
+            .send(())
+            .map_err(|_| anyhow::anyhow!("completion writer lost its owner"))?;
+        settled(&writer, writer.admitted_ticket()).await?;
+        let cleaned = leases
+            .get("cancelled-cleanup")
+            .context("completion phase after ACK")?;
+        close_workspace(
+            &store,
+            &leases,
+            &manager,
+            cleaned,
+            WorkspaceRelease::Cleanup,
+        )
+        .await?;
+        assert_eq!(io.removals.load(Ordering::Acquire), 1);
+        assert!(leases.is_durable(&leases.get("cancelled-cleanup").unwrap()));
+        io.branch_removed.store(false, Ordering::Release);
+        let cleaned = leases
+            .get("cancelled-cleanup")
+            .context("durable completion")?;
+        assert!(
+            close_workspace(
+                &store,
+                &leases,
+                &manager,
+                cleaned,
+                WorkspaceRelease::Cleanup
+            )
+            .await
+            .is_err(),
+            "a completion retry must not delete a replacement branch"
+        );
+        assert!(!io.branch_removed.load(Ordering::Acquire));
+        assert_eq!(io.removals.load(Ordering::Acquire), 1);
+        writer.shutdown().await?;
+        Ok(())
     }
 }

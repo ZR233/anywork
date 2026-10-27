@@ -3,10 +3,11 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
+use super::{SshManager, SshServerProfile};
 use futures::FutureExt;
 use futures::future::BoxFuture;
 use pl_tool::execution::{ExecutionBackend, ExecutionOutput, ExecutionRequest};
-use pl_tool::remote::{SshManager, normalize_remote_absolute_path};
+use pl_tool::remote::normalize_remote_absolute_path;
 
 use pl_tool::git::GitPolicy;
 
@@ -34,8 +35,6 @@ trait RemoteWorktreeTransport: std::fmt::Debug + Send + Sync {
     fn create_directory<'a>(&'a self, relative_path: String) -> BoxFuture<'a, Result<(), String>>;
 
     fn path_exists<'a>(&'a self, relative_path: String) -> BoxFuture<'a, Result<bool, String>>;
-
-    fn remove_path<'a>(&'a self, relative_path: String) -> BoxFuture<'a, Result<(), String>>;
 }
 
 #[derive(Debug)]
@@ -43,14 +42,32 @@ struct SshRemoteWorktreeTransport {
     ssh_manager: Arc<SshManager>,
     server_id: String,
     repo_root: String,
+    profile: SshServerProfile,
+    require_canonical_root: bool,
 }
 
 impl SshRemoteWorktreeTransport {
     async fn host(&self) -> Result<pl_tool::remote::RemoteWorkspaceHost, String> {
-        self.ssh_manager
+        let host = self
+            .ssh_manager
             .open_workspace_host(&self.server_id, self.repo_root.clone())
             .await
-            .map_err(|error| error.to_string())
+            .map_err(|error| error.to_string())?;
+        if (
+            host.profile.host_name.as_str(),
+            host.profile.port,
+            host.profile.username.as_str(),
+        ) != (
+            self.profile.host_name.as_str(),
+            self.profile.port,
+            self.profile.username.as_str(),
+        ) {
+            return Err("SSH worktree endpoint changed during the operation".into());
+        }
+        if self.require_canonical_root && host.files.canonical_path() != self.repo_root {
+            return Err("SSH repository canonical identity changed during the operation".into());
+        }
+        Ok(host)
     }
 }
 
@@ -94,33 +111,40 @@ impl RemoteWorktreeTransport for SshRemoteWorktreeTransport {
         }
         .boxed()
     }
-
-    fn remove_path<'a>(&'a self, relative_path: String) -> BoxFuture<'a, Result<(), String>> {
-        async move {
-            self.host()
-                .await?
-                .files
-                .remove_path(relative_path, None, true)
-                .await
-                .map_err(|error| error.to_string())
-        }
-        .boxed()
-    }
 }
 
 impl RemoteWorktreeBackend {
     pub fn new(
         ssh_manager: Arc<SshManager>,
-        server_id: impl Into<String>,
+        profile: SshServerProfile,
         repo_root: PathBuf,
     ) -> Result<Self, WorktreeError> {
-        let server_id = server_id.into();
+        Self::connect(ssh_manager, profile, repo_root, false)
+    }
+
+    pub(crate) fn canonical_repository(
+        ssh_manager: Arc<SshManager>,
+        profile: SshServerProfile,
+        repo_root: PathBuf,
+    ) -> Result<Self, WorktreeError> {
+        Self::connect(ssh_manager, profile, repo_root, true)
+    }
+
+    fn connect(
+        ssh_manager: Arc<SshManager>,
+        profile: SshServerProfile,
+        repo_root: PathBuf,
+        require_canonical_root: bool,
+    ) -> Result<Self, WorktreeError> {
+        let server_id = profile.alias.clone();
         let repo_root = remote_path(&repo_root)?;
         Ok(Self {
             transport: Arc::new(SshRemoteWorktreeTransport {
                 ssh_manager,
                 server_id,
                 repo_root: repo_root.clone(),
+                profile,
+                require_canonical_root,
             }),
             repo_root,
             policy: GitPolicy::default(),
@@ -194,6 +218,50 @@ fn remote_path(path: &Path) -> Result<String, WorktreeError> {
 }
 
 impl WorktreeBackend for RemoteWorktreeBackend {
+    fn delete_branch_at<'a>(
+        &'a self,
+        repo_root: &'a Path,
+        branch: &'a str,
+        expected_head: &'a str,
+    ) -> BoxFuture<'a, Result<(), WorktreeError>> {
+        async move {
+            self.policy
+                .validate_branch(branch)
+                .map_err(|_| WorktreeError::UnsafeBranch(branch.into()))?;
+            let args = super::backend::delete_reference_args(branch, expected_head);
+            super::backend::checked_output(&args, self.run_git(repo_root, &args).await?).map(|_| ())
+        }
+        .boxed()
+    }
+
+    fn branch_head<'a>(
+        &'a self,
+        repo_root: &'a Path,
+        branch: &'a str,
+    ) -> BoxFuture<'a, Result<Option<String>, WorktreeError>> {
+        async move {
+            self.policy
+                .validate_branch(branch)
+                .map_err(|_| WorktreeError::UnsafeBranch(branch.into()))?;
+            let args = super::backend::reference_args(branch);
+            super::backend::reference_result(&args, self.run_git(repo_root, &args).await?)
+        }
+        .boxed()
+    }
+
+    fn is_ancestor<'a>(
+        &'a self,
+        repo_root: &'a Path,
+        ancestor: &'a str,
+        descendant: &'a str,
+    ) -> BoxFuture<'a, Result<bool, WorktreeError>> {
+        async move {
+            let args = super::backend::ancestor_args(ancestor, descendant);
+            super::backend::ancestor_result(&args, self.run_git(repo_root, &args).await?)
+        }
+        .boxed()
+    }
+
     fn resolve_repo_root<'a>(
         &'a self,
         path: &'a Path,
@@ -240,20 +308,6 @@ impl WorktreeBackend for RemoteWorktreeBackend {
         .boxed()
     }
 
-    fn remove_leaf<'a>(
-        &'a self,
-        _repo_root: &'a Path,
-        target_path: &'a Path,
-    ) -> BoxFuture<'a, Result<(), WorktreeError>> {
-        async move {
-            self.transport
-                .remove_path(self.relative_path(target_path)?)
-                .await
-                .map_err(WorktreeError::Io)
-        }
-        .boxed()
-    }
-
     fn create<'a>(
         &'a self,
         repo_root: &'a Path,
@@ -284,7 +338,7 @@ impl WorktreeBackend for RemoteWorktreeBackend {
                 .map_err(WorktreeCreateFailure::may_have_created)?;
             checked_output(&args, output)
                 .map(|_| ())
-                .map_err(WorktreeCreateFailure::no_side_effects)
+                .map_err(WorktreeCreateFailure::may_have_created)
         }
         .boxed()
     }
@@ -337,22 +391,6 @@ impl WorktreeBackend for RemoteWorktreeBackend {
                 args.push("--force".to_string());
             }
             args.push(remote_path(target_path)?);
-            let output = self.run_git(repo_root, &args).await?;
-            checked_output(&args, output).map(|_| ())
-        }
-        .boxed()
-    }
-
-    fn delete_branch<'a>(
-        &'a self,
-        repo_root: &'a Path,
-        branch: &'a str,
-    ) -> BoxFuture<'a, Result<(), WorktreeError>> {
-        async move {
-            self.policy
-                .validate_branch(branch)
-                .map_err(|_| WorktreeError::UnsafeBranch(branch.to_string()))?;
-            let args = vec!["branch".to_string(), "-D".to_string(), branch.to_string()];
             let output = self.run_git(repo_root, &args).await?;
             checked_output(&args, output).map(|_| ())
         }

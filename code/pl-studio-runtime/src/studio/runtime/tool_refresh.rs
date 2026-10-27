@@ -401,6 +401,7 @@ impl StudioRuntime {
             id: issue_id.clone(),
             scope: crate::studio::StudioRecoveryIssueScope::Thread,
             category: crate::studio::StudioRecoveryIssueCategory::ToolCatalog,
+            impact: crate::studio::StudioRecoveryImpact::Advisory,
             action: crate::studio::StudioRecoveryIssueAction::Retry,
             project_id: None,
             thread_id: Some(id.to_string()),

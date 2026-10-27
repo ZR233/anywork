@@ -281,6 +281,10 @@ impl StudioRuntime {
                 failures.push(StudioStartupError::input(step, error));
             }
         }
+        self.thread_factory
+            .restore_workspace_admission()
+            .await
+            .map_err(|error| StudioStartupError::input("restore_workspace_admission", error))?;
         match leases {
             Ok(leases) => self.agent_facility.worktrees.restore(leases),
             Err(error) => failures.push(StudioStartupError::input("worktree_leases", error)),

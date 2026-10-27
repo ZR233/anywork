@@ -678,6 +678,7 @@ impl OwnedProcess {
     }
 
     fn stop(&mut self, report: &Path) -> Result<std::process::ExitStatus> {
+        let started = Instant::now();
         #[cfg(unix)]
         {
             let status = Command::new("kill")
@@ -710,7 +711,30 @@ impl OwnedProcess {
             }
             thread::sleep(Duration::from_millis(100));
         }
-        status.context("fixture did not write requests-file after graceful signal")
+        status = self.child.try_wait()?;
+        let report_visible = report.is_file();
+        let elapsed_ms = started.elapsed().as_millis();
+        let status_text = status.map(|status| status.to_string());
+        let mut stderr = io::stderr().lock();
+        let diagnostic_result = writeln!(
+            stderr,
+            "fixture_stop_deadline elapsed_ms={elapsed_ms} process_status={status_text:?} report_visible={report_visible}"
+        )
+        .context("failed to write fixture stop deadline diagnostic")
+        .and_then(|()| {
+        stderr
+            .flush()
+                .context("failed to flush fixture stop deadline diagnostic")
+        });
+        let deadline_error = anyhow::anyhow!(
+            "fixture stop deadline reached: process exit and requests-file were not both confirmed within the deadline (boundary observation: process_status={status_text:?}, report_visible={report_visible})"
+        );
+        match diagnostic_result {
+            Ok(()) => Err(deadline_error),
+            Err(diagnostic_error) => Err(anyhow::anyhow!(
+                "{deadline_error:#}; stop deadline diagnostic also failed: {diagnostic_error:#}"
+            )),
+        }
     }
 }
 
@@ -797,6 +821,7 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
                     | "delegation-window"
                     | "delegation-enablement"
                     | "delegation-recovery"
+                    | "delegation-worktree"
             ),
         "--retain-environment is supported by --scenario gui, single-instance, tool-scroll, \
          timeline-history, stress-body-large, wait-events, acp-auto-install and the delegation scenes"

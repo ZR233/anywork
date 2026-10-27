@@ -23,7 +23,7 @@ impl StudioRuntime {
         Ok(guard)
     }
 
-    async fn run_archive<T: Send + 'static>(
+    pub(in crate::studio::runtime) async fn run_archive<T: Send + 'static>(
         &self,
         operation: impl std::future::Future<Output = Result<T>> + Send + 'static,
     ) -> Result<T> {

@@ -49,7 +49,7 @@ pub use activity::{
 pub use agent::*;
 pub use agent_profile::{
     AgentProfileSnapshot, AgentReviewTargetSnapshot, AgentWorkspaceAssignmentSnapshot,
-    AgentWorkspaceDisposition, AgentWorkspaceMode, AgentWorktreeSnapshot,
+    AgentWorkspaceMode, AgentWorktreeSnapshot,
 };
 pub use agent_session::plan::{
     AGENT_SESSION_PLAN_CONFIRMATION_QUESTION_ID, AgentSessionPlanAvailableTransition,

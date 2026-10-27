@@ -5413,4 +5413,45 @@ class AppLocalizationsEn extends AppLocalizations {
   @override
   String get childInteractionDecisionAccepted =>
       'The decision was accepted. Waiting for the session to confirm it.';
+
+  @override
+  String recoveryDiagnostic(
+    String id,
+    String owner,
+    String impact,
+    String detail,
+    String actions,
+  ) {
+    return 'Recovery issue $id\n$owner · $impact\n$detail\nAvailable recovery actions: $actions';
+  }
+
+  @override
+  String get recoveryOwnerApplication => 'Application';
+
+  @override
+  String recoveryOwnerProject(String projectId) {
+    return 'Project $projectId';
+  }
+
+  @override
+  String recoveryOwnerThread(String threadId, String projectId) {
+    return 'Session $threadId · project $projectId';
+  }
+
+  @override
+  String get recoveryUnknownOwner => 'Not recorded';
+
+  @override
+  String get recoveryImpactAdvisory =>
+      'Attention required; access and execution remain available';
+
+  @override
+  String get recoveryImpactExecutionBlocked =>
+      'Execution is blocked; safe history remains readable';
+
+  @override
+  String get recoveryImpactAccessBlocked => 'Access and execution are blocked';
+
+  @override
+  String get recoveryNoAvailableActions => 'None currently available';
 }

@@ -2669,5 +2669,32 @@
     }
   },
   "childInteractionRetry": "Reload",
-  "childInteractionDecisionAccepted": "The decision was accepted. Waiting for the session to confirm it."
+  "childInteractionDecisionAccepted": "The decision was accepted. Waiting for the session to confirm it.",
+  "recoveryDiagnostic": "Recovery issue {id}\n{owner} · {impact}\n{detail}\nAvailable recovery actions: {actions}",
+  "@recoveryDiagnostic": {
+    "placeholders": {
+      "id": { "type": "String" },
+      "owner": { "type": "String" },
+      "impact": { "type": "String" },
+      "detail": { "type": "String" },
+      "actions": { "type": "String" }
+}
+  },
+  "recoveryOwnerApplication": "Application",
+  "recoveryOwnerProject": "Project {projectId}",
+  "@recoveryOwnerProject": {
+    "placeholders": { "projectId": { "type": "String" } }
+  },
+  "recoveryOwnerThread": "Session {threadId} · project {projectId}",
+  "@recoveryOwnerThread": {
+    "placeholders": {
+      "threadId": { "type": "String" },
+      "projectId": { "type": "String" }
+    }
+  },
+  "recoveryUnknownOwner": "Not recorded",
+  "recoveryImpactAdvisory": "Attention required; access and execution remain available",
+  "recoveryImpactExecutionBlocked": "Execution is blocked; safe history remains readable",
+  "recoveryImpactAccessBlocked": "Access and execution are blocked",
+  "recoveryNoAvailableActions": "None currently available"
 }

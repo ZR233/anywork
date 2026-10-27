@@ -30,7 +30,6 @@ impl StudioRuntime {
         title: &str,
     ) -> Result<ThreadRecord> {
         let _lifecycle_guard = self.thread_lifecycle_admission().await?;
-        self.ensure_project_thread_admission_open(project_id)?;
         let thread_id = thread_id.into();
         if let Some(existing) = self.find_owned_thread(&thread_id).await? {
             anyhow::ensure!(
@@ -41,8 +40,14 @@ impl StudioRuntime {
                 existing.visibility == crate::studio::ThreadVisibility::Active,
                 "archived Thread cannot accept bot traffic"
             );
+            let protocol = pl_protocol::Thread::from(existing.clone());
+            self.check_thread_read_access(&protocol)?;
+            self.verify_thread_execution_preparation(&protocol, None)
+                .await?;
+            self.check_thread_execution_access(&protocol)?;
             return Ok(existing);
         }
+        self.ensure_project_thread_admission_open(project_id)?;
         let project = self
             .agent_facility
             .product_events
@@ -51,6 +56,9 @@ impl StudioRuntime {
             .into_iter()
             .find(|project| project.id == project_id)
             .context("selected Project not found")?;
+        self.thread_factory
+            .verify_project_workspace(&project)
+            .await?;
         let (mut delta, mut thread) = DirectoryDelta::register_root_thread(
             thread_id,
             project_id,
@@ -132,6 +140,9 @@ impl StudioRuntime {
             .cloned()
             .context("selected Project not found")?;
         self.ensure_project_thread_admission_open(&request.project_id)?;
+        self.thread_factory
+            .verify_project_workspace(&project)
+            .await?;
         self.ensure_mode_available(&request.mode)?;
 
         // D4：会话工作区在发布 Thread 之前就已确定。`worktree` 先做前置校验与物理创建，
@@ -150,6 +161,7 @@ impl StudioRuntime {
             self.agent_facility.worktrees.mark_creating(&thread_id);
             let created =
                 crate::studio::agent_host::workspace_preparation::create_root_session_worktree(
+                    &self.store,
                     &self.agent_facility.worktrees,
                     &self.ssh_manager,
                     &project,
@@ -430,19 +442,19 @@ impl StudioRuntime {
         // 归档先结束整棵树的活动工作（design/01 §1.4）：中断当前 Turn、丢弃未消费输入，
         // 再有界等待收束；无法结束时返回类型化失败并保留会话现场。
         self.end_thread_tree_work(&removed_thread_ids).await?;
-        // 归档是破坏性动作：按 per-cause `Cleanup` 收束该会话树拥有的物理工作树
-        // （会话自身 lease + 树内 child lease），复用唯一 `close_workspace` 状态机；
-        // 任一步失败回落 `preserved` 并发布 Recovery，归档本身仍完成（design/12 §12.5）。
-        self.archive_cleanup_workspaces(&removed_thread_ids).await;
         self.retire_archived_thread_tree(&removed_thread_ids)
             .await?;
-        self.publish_archived_cleanup_recovery(&removed_thread_ids)
-            .await;
         let committed = self
             .agent_facility
             .product_events
             .commit_directory(DirectoryDelta::archive_threads(removed_thread_ids.clone()))
             .await?;
+        // 归档是破坏性动作：按 per-cause `Cleanup` 收束该会话树拥有的物理工作树
+        // （会话自身 lease + 树内 child lease），复用唯一 `close_workspace` 状态机；
+        // 任一步失败回落 `preserved` 并发布 Recovery，归档本身仍完成（design/12 §12.5）。
+        self.archive_cleanup_workspaces(&removed_thread_ids).await;
+        self.publish_archived_cleanup_recovery(&removed_thread_ids)
+            .await;
         for removed_thread_id in &removed_thread_ids {
             self.title_tasks
                 .cancel(
@@ -502,9 +514,11 @@ impl StudioRuntime {
                 Some(lease) if lease.state == WorktreeLeaseState::Preserved => {
                     let manager =
                         crate::studio::agent_host::workspace_preparation::manager_from_lease(
+                            &self.store,
                             &self.ssh_manager,
                             lease,
-                        )?;
+                        )
+                        .await?;
                     let handle = crate::agent::worktree::WorktreeHandle {
                         path: std::path::PathBuf::from(&lease.path),
                         branch: lease.branch.clone(),
@@ -529,6 +543,7 @@ impl StudioRuntime {
                 self.agent_facility.worktrees.mark_creating(&thread_id);
                 let created =
                     crate::studio::agent_host::workspace_preparation::create_root_session_worktree(
+                        &self.store,
                         &self.agent_facility.worktrees,
                         &self.ssh_manager,
                         &project,
@@ -708,6 +723,29 @@ impl StudioRuntime {
     /// [`Self::publish_archived_cleanup_recovery`] 在关闭之后统一发布。
     async fn archive_cleanup_workspaces(&self, thread_ids: &[String]) {
         use crate::studio::agent_host::worktree_lease::WorktreeLeaseState;
+        let mut retiring_worktrees = Vec::new();
+        for id in thread_ids {
+            if let Some(lease) = self.agent_facility.worktrees.get(id)
+                && lease.state != WorktreeLeaseState::Cleaned
+                && let Ok(identity) =
+                    crate::studio::agent_host::workspace_preparation::cleanup_identity(
+                        &self.store,
+                        &lease,
+                    )
+                    .await
+            {
+                retiring_worktrees.push(identity);
+            }
+        }
+        for id in thread_ids {
+            if let Err(error) = self
+                .thread_factory
+                .cleanup_archived_execution_files(id, &retiring_worktrees)
+                .await
+            {
+                tracing::warn!(%error, thread_id = id, "archived execution files remain owned for cleanup");
+            }
+        }
         for thread_id in thread_ids {
             let Some(lease) = self.agent_facility.worktrees.get(thread_id) else {
                 continue;
@@ -715,25 +753,34 @@ impl StudioRuntime {
             if lease.state == WorktreeLeaseState::Cleaned {
                 continue;
             }
-            let manager = match crate::studio::agent_host::workspace_preparation::manager_from_lease(
-                &self.ssh_manager,
-                &lease,
-            ) {
-                Ok(manager) => manager,
-                Err(error) => {
-                    tracing::warn!(
-                        %error,
-                        thread_id = %thread_id,
-                        "archived session tree worktree manager could not be opened"
-                    );
-                    continue;
-                }
-            };
+            if let Err(error) = self.thread_factory.prepare_workspace_cleanup(&lease).await {
+                tracing::warn!(%error, thread_id, "archived workspace borrowers could not be confirmed");
+                continue;
+            }
+            let manager =
+                match crate::studio::agent_host::workspace_preparation::manager_from_lease(
+                    &self.store,
+                    &self.ssh_manager,
+                    &lease,
+                )
+                .await
+                {
+                    Ok(manager) => manager,
+                    Err(error) => {
+                        tracing::warn!(
+                            %error,
+                            thread_id = %thread_id,
+                            "archived session tree worktree manager could not be opened"
+                        );
+                        continue;
+                    }
+                };
             if let Err(error) = crate::studio::agent_host::workspace_preparation::close_workspace(
+                &self.store,
                 &self.agent_facility.worktrees,
                 &manager,
                 lease,
-                pl_tool::collaboration::thread::AgentWorkspaceDisposition::Cleanup,
+                pl_tool::collaboration::thread::WorkspaceRelease::Cleanup,
             )
             .await
             {

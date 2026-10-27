@@ -11,6 +11,7 @@ import 'package:multi_split_view/multi_split_view.dart';
 
 import '../../app/app_graph.dart';
 import '../../presentation/providers/client_provider.dart';
+import '../../presentation/providers/recovery_store.dart';
 
 import '../../shared/studio_loading.dart';
 import '../../shared/recovery_check_status.dart';

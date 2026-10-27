@@ -87,9 +87,11 @@ final class _Transport implements StudioTransport {
   final continues = StreamController<_ContinueCall>.broadcast();
   final interactions = StreamController<_InteractionCall>.broadcast();
   final compactions = <Completer<void>>[];
+  final Completer<void> compactEntered = Completer<void>();
   final List<StreamController<ProductTopicFrame>> topicSinks = [];
   final List<ContinuationOperationView> continuationReads = [];
   ContinuationOperationView? continuationReadReply;
+  int continuationReadCalls = 0;
   List<ChildInteractionSummary> childInteractions = const [];
   int childInteractionReads = 0;
   int stopCalls = 0;
@@ -101,6 +103,7 @@ final class _Transport implements StudioTransport {
     expect(threadId, 'thread');
     final reply = Completer<void>();
     compactions.add(reply);
+    if (!compactEntered.isCompleted) compactEntered.complete();
     return reply.future;
   }
 
@@ -179,6 +182,7 @@ final class _Transport implements StudioTransport {
     String threadId,
     String operationId,
   ) async {
+    continuationReadCalls += 1;
     final reply = continuationReadReply;
     if (reply == null) {
       throw const StudioFailure(
@@ -421,6 +425,7 @@ ThreadWorkspace _workspace({
   StudioTurnView? activeTurn,
   AgentExecutionView? execution,
   ContinuationView? continuation,
+  ThreadStorageStateView? storage,
   List<PendingInteraction> interactions = const [],
 }) => ThreadWorkspace(
   thread: _thread(),
@@ -433,6 +438,7 @@ ThreadWorkspace _workspace({
     continuation: continuation,
   ),
   activeTurn: activeTurn,
+  storage: storage,
 );
 
 StudioTurnView _turn({bool completed = false, String turnId = 'turn'}) =>
@@ -747,7 +753,8 @@ void main() {
     expect(session.state.runtime!.modelId, 'alpha');
     expect(session.state.sync.phase, DomainSyncPhase.ready);
     final delivered = session.timeline.lastDeliveredFrame;
-    expect((delivered! as StudioTimelineBaselineFrame).baseline.version, 300);
+    final history = (delivered! as StudioTimelineBaselineFrame).baseline;
+    expect(history.version, 300);
     expect(transport.windowOpens, 1);
     expect(transport.window.requestCloseCalls, 0);
   });
@@ -894,6 +901,50 @@ void main() {
       );
     },
   );
+
+  test('execution recovery does not gate an explicit stop request', () async {
+    final transport = _Transport();
+    final client = _client(transport);
+    client
+        .session('thread')
+        .applySnapshot(
+          _workspace(activeTurn: _turn(), execution: _execution()),
+        );
+    client.recovery.apply(
+      RecoveryStateSnapshot(
+        revision: 2,
+        values: const [
+          StudioRecoveryIssue(
+            id: 'execution-paused',
+            scope: RecoveryIssueScope.thread,
+            category: RecoveryIssueCategory.storage,
+            impact: RecoveryIssueImpact.executionBlocked,
+            availableActions: [],
+            projectId: 'project',
+            threadId: 'thread',
+            detail: 'New work is paused while storage is repaired',
+          ),
+        ],
+      ),
+    );
+
+    final entered = transport.stops.stream.first;
+    final stopping = client.threadCommands.stop('thread');
+    final call = await entered;
+    expect(transport.stopCalls, 1);
+    expect(call.threadId, 'thread');
+    expect(call.executionId, 'execution-1');
+    call.reply.complete(
+      StopThreadCommandReply(
+        threadId: call.threadId,
+        executionId: call.executionId,
+        stopped: true,
+        receipt: _identityReceipt(call.operationId),
+      ),
+    );
+    expect(await stopping, isA<StopRequested>());
+    await client.close();
+  });
 
   for (final framesFirst in [false, true]) {
     for (final stopped in [false, true]) {
@@ -1091,6 +1142,79 @@ void main() {
       },
     );
   }
+
+  test(
+    'queued interaction rechecks Recovery before transport invocation',
+    () async {
+      final transport = _Transport();
+      final client = _client(transport);
+      const projectIssue = StudioRecoveryIssue(
+        id: 'project-preparation-unavailable',
+        scope: RecoveryIssueScope.project,
+        category: RecoveryIssueCategory.repository,
+        impact: RecoveryIssueImpact.executionBlocked,
+        availableActions: [],
+        projectId: 'project',
+        detail:
+            'Only Project preparation is blocked until a Thread issue arrives',
+      );
+      client.recovery.apply(
+        RecoveryStateSnapshot(revision: 2, values: const [projectIssue]),
+      );
+      final compacting = client.threadCommands.compactThread('thread');
+      await transport.compactEntered.future;
+
+      final interaction = _interaction();
+      client
+          .session('thread')
+          .applySnapshot(_workspace(interactions: [interaction]));
+      final resolving = client.threadCommands.resolveActiveInteraction(
+        'thread',
+        interaction.id,
+        _resolution,
+      );
+      final operation = client.mutations.latest('interaction:thread')!;
+      client.recovery.apply(
+        RecoveryStateSnapshot(
+          revision: 3,
+          values: [
+            projectIssue,
+            StudioRecoveryIssue(
+              id: 'queued-interaction-block',
+              scope: RecoveryIssueScope.thread,
+              category: RecoveryIssueCategory.repository,
+              impact: RecoveryIssueImpact.executionBlocked,
+              availableActions: const [RecoveryIssueAction.retry],
+              threadId: 'thread',
+              detail: 'Interaction execution must wait for recovery',
+            ),
+          ],
+        ),
+      );
+
+      transport.compactions.single.complete();
+      await compacting;
+      await expectLater(
+        resolving,
+        throwsA(
+          isA<StudioFailure>()
+              .having(
+                (failure) => failure.code,
+                'code',
+                StudioFailureCode.permissionDenied,
+              )
+              .having(
+                (failure) => recoveryIssueFromFailure(failure)?.id,
+                'issue id',
+                'queued-interaction-block',
+              ),
+        ),
+      );
+      expect(transport.interactionCalls, 0);
+      expect(operation.state.value.phase, OperationPhase.rejected);
+      expect(operation.state.value.receipt, isNull);
+    },
+  );
 
   test('old interaction ACK cannot clear a newer interaction intent', () async {
     final transport = _Transport();
@@ -2079,6 +2203,41 @@ void main() {
       reason: 'Exactly one continue request was dispatched',
     );
 
+    client.recovery.apply(
+      RecoveryStateSnapshot(
+        revision: 2,
+        values: const [
+          StudioRecoveryIssue(
+            id: 'continue-execution-paused',
+            scope: RecoveryIssueScope.thread,
+            category: RecoveryIssueCategory.storage,
+            impact: RecoveryIssueImpact.executionBlocked,
+            availableActions: [],
+            projectId: 'project',
+            threadId: 'thread',
+            detail: 'New execution is paused',
+          ),
+        ],
+      ),
+    );
+    client
+        .session('thread')
+        .applySnapshot(
+          _workspace(
+            revision: 3,
+            activeTurn: _turn(turnId: 'turn-continued'),
+            execution: _execution(
+              id: 'execution-continued',
+              turnId: 'turn-continued',
+            ),
+            storage: const ThreadStorageStateView(
+              execution: ThreadStorageExecution.paused,
+              resumeRequired: true,
+              lastError: 'writer is waiting for explicit recovery',
+            ),
+          ),
+        );
+
     // A lost receipt is reconciled by the original identity, never resent.
     transport.continuationReadReply = ContinuationOperationView(
       threadId: 'thread',
@@ -2096,6 +2255,8 @@ void main() {
       expectedModelRouteRevision: 1,
     );
     expect(reread.inputId, operation.id.value);
+    expect(transport.continueCalls, 1);
+    expect(transport.continuationReadCalls, 1);
     expect(transport.continuationReads, hasLength(1));
     final view = await client.threadCommands.readContinuationOperation(
       'thread',
@@ -2109,6 +2270,286 @@ void main() {
       ),
       hasLength(1),
       reason: 'Re-reading never allocates a second operation',
+    );
+  });
+
+  test(
+    'access recovery prevents re-reading an existing continuation identity',
+    () async {
+      final transport = _Transport();
+      final client = _client(transport);
+      final entered = transport.continues.stream.first;
+      final continuing = client.threadCommands.continueThread(
+        'thread',
+        _continuation(),
+        expectedModelRouteRevision: 1,
+      );
+      final call = await entered;
+      call.reply.complete(
+        ContinueThreadCommandReply(
+          threadId: 'thread',
+          inputId: call.operationId.value,
+          continuationId: call.continuationId,
+          cursor: 4,
+          receipt: _identityReceipt(call.operationId),
+        ),
+      );
+      await continuing;
+      expect(transport.continueCalls, 1);
+
+      client.recovery.apply(
+        RecoveryStateSnapshot(
+          revision: 2,
+          values: const [
+            StudioRecoveryIssue(
+              id: 'thread-history-inaccessible',
+              scope: RecoveryIssueScope.thread,
+              category: RecoveryIssueCategory.storage,
+              impact: RecoveryIssueImpact.accessBlocked,
+              availableActions: [RecoveryIssueAction.retry],
+              projectId: 'project',
+              threadId: 'thread',
+              detail: 'Thread history cannot be read safely',
+            ),
+          ],
+        ),
+      );
+
+      await expectLater(
+        client.threadCommands.continueThread(
+          'thread',
+          _continuation(),
+          expectedModelRouteRevision: 1,
+        ),
+        throwsA(
+          isA<StudioFailure>().having(
+            (failure) => recoveryIssueFromFailure(failure)?.id,
+            'issue id',
+            'thread-history-inaccessible',
+          ),
+        ),
+      );
+      await expectLater(
+        client.threadCommands.readContinuationOperation(
+          'thread',
+          call.operationId.value,
+        ),
+        throwsA(
+          isA<StudioFailure>().having(
+            (failure) => recoveryIssueFromFailure(failure)?.id,
+            'issue id',
+            'thread-history-inaccessible',
+          ),
+        ),
+      );
+      expect(transport.continuationReadCalls, 0);
+      expect(transport.continueCalls, 1);
+    },
+  );
+
+  test('a not-found continue identity cannot send a new request through storage pause', () async {
+    final transport = _Transport();
+    final client = _client(transport);
+    final entered = transport.continues.stream.first;
+    final continuing = client.threadCommands.continueThread(
+      'thread',
+      _continuation(),
+      expectedModelRouteRevision: 1,
+    );
+    final call = await entered;
+    call.reply.complete(
+      ContinueThreadCommandReply(
+        threadId: 'thread',
+        inputId: call.operationId.value,
+        continuationId: call.continuationId,
+        cursor: 4,
+        receipt: _identityReceipt(call.operationId),
+      ),
+    );
+    await continuing;
+    expect(transport.continueCalls, 1);
+
+    client
+        .session('thread')
+        .applySnapshot(
+          _workspace(
+            revision: 2,
+            storage: const ThreadStorageStateView(
+              execution: ThreadStorageExecution.paused,
+              resumeRequired: true,
+              lastError: 'writer recovery still requires an explicit continue',
+            ),
+          ),
+        );
+    await expectLater(
+      client.threadCommands.continueThread(
+        'thread',
+        _continuation(),
+        expectedModelRouteRevision: 1,
+      ),
+      throwsA(
+        isA<StudioFailure>().having(
+          (failure) => failure.code,
+          'code',
+          StudioFailureCode.storage,
+        ),
+      ),
+    );
+    expect(transport.continuationReadCalls, 1);
+    expect(transport.continueCalls, 1);
+    expect(
+      client.mutations.operations.where(
+        (operation) => operation.target == 'continue:thread',
+      ),
+      hasLength(1),
+      reason: 'A missing old operation does not allocate a new blocked request',
+    );
+  });
+
+  test('a storage gate discovered while continue waits in the lane rejects the unsent identity', () async {
+    final transport = _Transport();
+    final client = _client(transport);
+    final compacting = client.threadCommands.compactThread('thread');
+    await transport.compactEntered.future;
+
+    final continuing = client.threadCommands.continueThread(
+      'thread',
+      _continuation(),
+      expectedModelRouteRevision: 1,
+    );
+    final unsentOperation = client.mutations.latest('continue:thread')!;
+    client
+        .session('thread')
+        .applySnapshot(
+          _workspace(
+            revision: 2,
+            storage: const ThreadStorageStateView(
+              execution: ThreadStorageExecution.paused,
+              resumeRequired: true,
+              lastError: 'storage paused while continue was queued',
+            ),
+          ),
+        );
+    transport.compactions.single.complete();
+    await compacting;
+
+    StudioFailure? rejection;
+    try {
+      await continuing;
+    } on StudioFailure catch (error) {
+      rejection = error;
+    }
+    expect(rejection, isA<StudioFailure>());
+    final storageRejection = rejection as StudioFailure;
+    expect(storageRejection.code, StudioFailureCode.storage);
+    expect(unsentOperation.state.value.phase, OperationPhase.rejected);
+    expect(
+      identical(unsentOperation.state.value.error, storageRejection),
+      isTrue,
+    );
+    expect(transport.continueCalls, 0);
+    expect(transport.continuationReadCalls, 0);
+
+    client.session('thread').applySnapshot(_workspace(revision: 3));
+    final entered = transport.continues.stream.first;
+    final retry = client.threadCommands.continueThread(
+      'thread',
+      _continuation(),
+      expectedModelRouteRevision: 1,
+    );
+    final retryCall = await entered;
+    expect(retryCall.operationId, isNot(unsentOperation.id));
+    retryCall.reply.complete(
+      ContinueThreadCommandReply(
+        threadId: 'thread',
+        inputId: retryCall.operationId.value,
+        continuationId: retryCall.continuationId,
+        cursor: 5,
+        receipt: _identityReceipt(retryCall.operationId),
+      ),
+    );
+    await retry;
+    expect(transport.continueCalls, 1);
+    expect(transport.continuationReadCalls, 0);
+  });
+
+  test('a post-transport storage failure remains unknown and re-reads the original identity', () async {
+    final transport = _Transport();
+    final client = _client(transport);
+    final entered = transport.continues.stream.first;
+    final continuing = client.threadCommands.continueThread(
+      'thread',
+      _continuation(),
+      expectedModelRouteRevision: 1,
+    );
+    final call = await entered;
+    final operation = client.mutations.latest('continue:thread')!;
+    const storageFailure = StudioFailure(
+      code: StudioFailureCode.storage,
+      message: 'transport failed after continuation dispatch',
+      retryable: false,
+      correlationId: 'continue-transport-storage',
+    );
+    call.reply.completeError(storageFailure);
+    await expectLater(continuing, throwsA(same(storageFailure)));
+    expect(operation.state.value.phase, OperationPhase.unknownOutcome);
+    expect(identical(operation.state.value.error, storageFailure), isTrue);
+    expect(transport.continueCalls, 1);
+
+    client.recovery.apply(
+      RecoveryStateSnapshot(
+        revision: 2,
+        values: const [
+          StudioRecoveryIssue(
+            id: 'continue-execution-paused',
+            scope: RecoveryIssueScope.thread,
+            category: RecoveryIssueCategory.storage,
+            impact: RecoveryIssueImpact.executionBlocked,
+            availableActions: [],
+            projectId: 'project',
+            threadId: 'thread',
+            detail: 'New execution is paused',
+          ),
+        ],
+      ),
+    );
+    client
+        .session('thread')
+        .applySnapshot(
+          _workspace(
+            revision: 2,
+            storage: const ThreadStorageStateView(
+              execution: ThreadStorageExecution.paused,
+              resumeRequired: true,
+              lastError: 'writer remains paused',
+            ),
+          ),
+        );
+    transport.continuationReadReply = ContinuationOperationView(
+      threadId: 'thread',
+      operationId: operation.id.value,
+      inputId: operation.id.value,
+      continuationId: call.continuationId,
+      acceptedSequence: 5,
+      state: const ConsumedContinuation('continued-turn'),
+      durable: true,
+      receipt: _identityReceipt(operation.id),
+    );
+    final reconciled = await client.threadCommands.continueThread(
+      'thread',
+      _continuation(),
+      expectedModelRouteRevision: 1,
+    );
+
+    expect(reconciled.inputId, operation.id.value);
+    expect(transport.continuationReadCalls, 1);
+    expect(transport.continueCalls, 1);
+    expect(
+      client.mutations.operations.where(
+        (item) => item.target == 'continue:thread',
+      ),
+      hasLength(1),
+      reason: 'The storage failure is reconciled by its original operation ID',
     );
   });
 

@@ -157,6 +157,114 @@ void main() {
     },
   );
 
+  for (final status in [ThreadStatusView.closing, ThreadStatusView.closed]) {
+    test(
+      '${status.name} preserves the complete history display and rejects new execution',
+      () async {
+        final ready = await open();
+        final session = ready.client.session('thread');
+        final lease = ready.owner.lease('thread')!;
+        final messages = [...lease.controller.messages];
+        final draft = ready.client.composer('thread')
+          ..updateDraft('keep closed draft');
+        ready.client.threadDirectory.applyWindow(
+          ThreadDirectoryWindow(
+            threads: [_thread().copyWith(status: status)],
+            revision: 2,
+          ),
+        );
+        session.applySnapshot(
+          workspaceFor('thread')
+              .copyWith(thread: _thread().copyWith(status: status)),
+        );
+
+        expect(ready.owner.lease('thread'), same(lease));
+        expect(lease.controller.messages, messages);
+        expect(lease.queries!.isActive, isTrue);
+        await expectLater(
+          ready.owner.prepareSend('thread'),
+          throwsA(
+            isA<StudioFailure>().having(
+              (failure) => failure.detailsJson,
+              'closed reason',
+              contains('threadClosed'),
+            ),
+          ),
+        );
+        await expectLater(
+          ready.client.threadCommands.submitComposer(
+            'thread',
+            const StudioPromptInput(
+              inputId: 'closed-input',
+              text: 'not sent',
+              attachmentDraftIds: [],
+            ),
+            expectedModelRouteRevision: 1,
+          ),
+          throwsA(
+            isA<SubmissionNotSent>().having(
+              (failure) => (failure.error as StudioFailure).detailsJson,
+              'closed reason',
+              contains('threadClosed'),
+            ),
+          ),
+        );
+        expect(ready.transport.promptEntered.isCompleted, isFalse);
+        expect(draft.state.draft, 'keep closed draft');
+        expect(lease.controller.messages, messages);
+        await ready.owner.returnToLive('thread');
+        expect(
+          ready.owner
+              .lease('thread')!
+              .controller
+              .messages
+              .map((message) => message.id),
+          ['a', 'b'],
+        );
+      },
+    );
+  }
+
+  for (final closeSession in [true, false]) {
+    test(
+      'synchronous history subscription ${closeSession ? 'close' : 'retire'} stops the original start stack',
+      () async {
+        final transport = _ScriptedTransport()
+          ..synchronousInitial = ThreadSnapshotFrame(
+            workspace: workspaceFor('thread'),
+          );
+        final budget = ResourceBudget();
+        final session = StudioThreadSession(
+          'thread',
+          transport: transport,
+          directory: ThreadDirectoryStore(),
+          budget: budget,
+        );
+        Future<CloseReport>? stopped;
+        var stopping = false;
+        final observation = session.source.watch((state) {
+          if (!stopping && state.hasSnapshot) {
+            stopping = true;
+            stopped = closeSession ? session.close() : session.retire();
+          }
+        });
+        addTearDown(() async {
+          observation.cancel();
+          await session.close();
+          await transport.closeRuntimeStreams();
+        });
+        expect(session.start, returnsNormally);
+        expect(stopped, isNotNull);
+        expect((await stopped!).complete, isTrue);
+        expect(session.isActive, isFalse);
+        expect(session.timeline.hasDemand, isFalse);
+        expect(transport.opens, 0);
+        expect(budget.used(ResourceKind.pendingOperation), 0);
+        expect(budget.used(ResourceKind.observer), 0);
+      },
+    );
+  }
+
   test(
     'history freezes the displayed set and only reports new output',
     () async {
@@ -2316,6 +2424,8 @@ StudioThread _thread([String id = 'thread']) => StudioThread(
 );
 
 final class _ScriptedTransport implements StudioTransport {
+  ThreadSnapshotFrame? synchronousInitial;
+
   final List<_ScriptedConnection> connections = [];
 
   /// 非空时所有连接都用它作为首帧条目。
@@ -2353,7 +2463,14 @@ final class _ScriptedTransport implements StudioTransport {
   Stream<ThreadStreamFrame> subscribeThread(String threadId) {
     final controller = StreamController<ThreadStreamFrame>.broadcast();
     _bindings.add(controller);
-    return controller.stream;
+    final initial = synchronousInitial;
+    return initial == null
+        ? controller.stream
+        : _SynchronousFirstFrameStream(controller.stream, initial);
+  }
+
+  Future<void> closeRuntimeStreams() async {
+    await Future.wait([for (final binding in _bindings) binding.close()]);
   }
 
   @override
@@ -2391,6 +2508,31 @@ final class _ScriptedTransport implements StudioTransport {
   dynamic noSuchMethod(Invocation invocation) => throw UnsupportedError(
     'Unused transport capability: ${invocation.memberName}',
   );
+}
+
+/// Delivers a transport-owned baseline during listen installation, without
+/// reproducing any Session/source/lifecycle reduction in the fixture.
+final class _SynchronousFirstFrameStream extends Stream<ThreadStreamFrame> {
+  _SynchronousFirstFrameStream(this.delegate, this.initial);
+  final Stream<ThreadStreamFrame> delegate;
+  final ThreadStreamFrame initial;
+
+  @override
+  StreamSubscription<ThreadStreamFrame> listen(
+    void Function(ThreadStreamFrame)? onData, {
+    Function? onError,
+    void Function()? onDone,
+    bool? cancelOnError,
+  }) {
+    final subscription = delegate.listen(
+      onData,
+      onError: onError,
+      onDone: onDone,
+      cancelOnError: cancelOnError,
+    );
+    onData?.call(initial);
+    return subscription;
+  }
 }
 
 final class _ScriptedConnection implements StudioTimelineConnection {

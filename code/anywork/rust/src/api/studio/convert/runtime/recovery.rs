@@ -6,6 +6,15 @@ use pl_studio_runtime::StudioRecoveryIssue;
 pub(crate) fn bridge_recovery_issue(issue: StudioRecoveryIssue) -> BridgeStudioRecoveryIssueDto {
     BridgeStudioRecoveryIssueDto {
         id: issue.id,
+        impact: match issue.impact {
+            pl_studio_runtime::StudioRecoveryImpact::Advisory => BridgeRecoveryImpact::Advisory,
+            pl_studio_runtime::StudioRecoveryImpact::ExecutionBlocked => {
+                BridgeRecoveryImpact::ExecutionBlocked
+            }
+            pl_studio_runtime::StudioRecoveryImpact::AccessBlocked => {
+                BridgeRecoveryImpact::AccessBlocked
+            }
+        },
         scope: match issue.scope {
             pl_studio_runtime::StudioRecoveryIssueScope::Application => {
                 BridgeRecoveryIssueScope::Application
@@ -33,12 +42,6 @@ pub(crate) fn bridge_recovery_issue(issue: StudioRecoveryIssue) -> BridgeStudioR
             pl_studio_runtime::StudioRecoveryIssueAction::None => Vec::new(),
             pl_studio_runtime::StudioRecoveryIssueAction::Retry => {
                 vec![BridgeRecoveryIssueAction::Retry]
-            }
-            pl_studio_runtime::StudioRecoveryIssueAction::CleanupThread => {
-                vec![BridgeRecoveryIssueAction::CleanupThread]
-            }
-            pl_studio_runtime::StudioRecoveryIssueAction::RemoveProject => {
-                vec![BridgeRecoveryIssueAction::RemoveProject]
             }
             pl_studio_runtime::StudioRecoveryIssueAction::CleanupWorktree => {
                 vec![BridgeRecoveryIssueAction::CleanupWorktree]

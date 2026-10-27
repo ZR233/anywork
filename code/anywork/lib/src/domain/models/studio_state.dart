@@ -310,25 +310,6 @@ class StudioState {
       .where((issue) => issue.scope == RecoveryIssueScope.application)
       .toList();
 
-  StudioRecoveryIssue? recoveryIssue({
-    RecoveryIssueScope? scope,
-    String? projectId,
-    String? threadId,
-    String? id,
-    bool blockingOnly = false,
-  }) {
-    return recoveryIssues
-        .where(
-          (issue) =>
-              (!blockingOnly || issue.blocksAccess) &&
-              (scope == null || issue.scope == scope) &&
-              (projectId == null || issue.projectId == projectId) &&
-              (threadId == null || issue.threadId == threadId) &&
-              (id == null || issue.id == id),
-        )
-        .firstOrNull;
-  }
-
   RoleSettingsView? role(String key) =>
       roles.where((role) => role.key == key).firstOrNull;
 

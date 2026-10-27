@@ -161,12 +161,38 @@ class _AgentMarkdownState extends ConsumerState<_AgentMarkdown> {
             ),
           );
         },
-        onLinkTap: (url, _) {
-          unawaited(_openTimelineWebLink(context, ref, url));
+        // 不设置全局点击回调，拒绝的目标才能保留为无手势文字。
+        inlineLinkBuilder: (link) {
+          if (safeExternalWebUrl(link.url) == null) {
+            return TextSpan(children: link.labelSpans, style: link.style);
+          }
+          return LinkTextSpan.wrapping(
+            children: link.labelSpans,
+            url: link.url,
+            linkStyle: link.linkStyle,
+            style: link.style,
+            hoverStyle: link.hoverStyle,
+            onTap: () {
+              unawaited(_openTimelineWebLink(context, ref, link.url));
+            },
+          );
         },
-        inlineLinkBuilder: (link) => safeExternalWebUrl(link.url) == null
-            ? TextSpan(children: link.labelSpans, style: link.style)
-            : link.defaultSpan(),
+        inlineSourceTagBuilder: (tag) {
+          final url = tag.url;
+          return SourceTagBuildDetails(
+            context: tag.context,
+            config: tag.config,
+            style: tag.style,
+            id: tag.id,
+            url: url,
+            sourceTagStyle: tag.sourceTagStyle,
+            onTap: url != null && safeExternalWebUrl(url) != null
+                ? () {
+                    unawaited(_openTimelineWebLink(context, ref, url));
+                  }
+                : null,
+          ).defaultSpan();
+        },
         inlineCodeStyle: InlineCodeStyle(
           // 与其他代码表面共用包注册字体，中文缺失字形由系统回退。
           fontFamily: studioCodeFontFamily,

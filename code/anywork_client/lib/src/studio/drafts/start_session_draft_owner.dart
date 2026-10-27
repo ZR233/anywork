@@ -129,15 +129,11 @@ class StartSessionDraftOwner extends ReadModel<StartSessionDraft> {
     if (!projects.any((project) => project.id == projectId)) {
       throw StateError('Project is no longer available');
     }
-    final blocked =
-        _client.recovery.state.value?.values.any(
-          (issue) =>
-              issue.blocksAccess &&
-              issue.scope == RecoveryIssueScope.project &&
-              issue.projectId == projectId,
-        ) ??
-        false;
-    if (blocked) throw StateError('Project submission is blocked by recovery');
+    final recoveryIssue = recoveryIssueBlockingExecution(
+      _client.recovery.state.value?.values ?? const [],
+      projectId: projectId,
+    );
+    if (recoveryIssue != null) throw recoveryIssue.blockedFailure();
     final project = state.forProject(projectId);
     final composer = _client.attachments.state.newThread(projectId);
     if (project.text.trim().isEmpty && composer.attachments.isEmpty) {
@@ -308,9 +304,14 @@ class StartSessionDraftOwner extends ReadModel<StartSessionDraft> {
       );
       return true;
     } catch (cause) {
-      final error = cause is NewThreadStartFailed ? cause.error : cause;
+      final error = switch (cause) {
+        NewThreadStartFailed(:final error) => error,
+        SubmissionNotSent(:final error) => error,
+        _ => cause,
+      };
       // A transport error cannot replace this invocation's typed terminal outcome.
-      final rejected = cause is NewThreadStartFailed;
+      final rejected =
+          cause is NewThreadStartFailed || cause is SubmissionNotSent;
       if (acceptedResult != null) {
         frozen.operation.syncFailed(error);
         await _client.attachments.completeFrozen(
@@ -412,7 +413,7 @@ class StartSessionDraftOwner extends ReadModel<StartSessionDraft> {
         .newThreadBinding(frozen.projectId)
         .write(
           ComposerThreadState.failure(
-            error: error.toString(),
+            error: error,
             draft: composer.draft,
             attachments: composer.attachments,
             submissionRevision: composer.submissionRevision,

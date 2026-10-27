@@ -33,17 +33,14 @@ pub enum WorktreeError {
     GitStatusUnknown { args: String, stderr: String },
     #[error("worktree io error: {0}")]
     Io(String),
+    #[error("{operation}; creation may have left resources for the workspace cleanup owner")]
+    CreationIncomplete { operation: Box<WorktreeError> },
     #[error("{operation}; rollback succeeded")]
     OperationFailedAfterCleanup { operation: Box<WorktreeError> },
     #[error("{operation}; rollback failed: {cleanup}")]
     OperationFailedWithCleanup {
         operation: Box<WorktreeError>,
         cleanup: Box<WorktreeError>,
-    },
-    #[error("{context} cleanup failed: {failures:?}")]
-    CleanupFailed {
-        context: String,
-        failures: Vec<WorktreeError>,
     },
 }
 
@@ -96,6 +93,27 @@ impl WorktreeCreateFailure {
 }
 
 pub trait WorktreeBackend: fmt::Debug + Send + Sync {
+    /// Atomically deletes this owned reference only if it still has the authorized object ID.
+    fn delete_branch_at<'a>(
+        &'a self,
+        repo_root: &'a Path,
+        branch: &'a str,
+        expected_head: &'a str,
+    ) -> BoxFuture<'a, Result<(), WorktreeError>>;
+
+    fn branch_head<'a>(
+        &'a self,
+        repo_root: &'a Path,
+        branch: &'a str,
+    ) -> BoxFuture<'a, Result<Option<String>, WorktreeError>>;
+
+    fn is_ancestor<'a>(
+        &'a self,
+        repo_root: &'a Path,
+        ancestor: &'a str,
+        descendant: &'a str,
+    ) -> BoxFuture<'a, Result<bool, WorktreeError>>;
+
     fn resolve_repo_root<'a>(
         &'a self,
         path: &'a Path,
@@ -108,12 +126,6 @@ pub trait WorktreeBackend: fmt::Debug + Send + Sync {
     ) -> BoxFuture<'a, Result<(), WorktreeError>>;
 
     fn path_exists<'a>(&'a self, path: &'a Path) -> BoxFuture<'a, Result<bool, WorktreeError>>;
-
-    fn remove_leaf<'a>(
-        &'a self,
-        repo_root: &'a Path,
-        target_path: &'a Path,
-    ) -> BoxFuture<'a, Result<(), WorktreeError>>;
 
     fn create<'a>(
         &'a self,
@@ -138,12 +150,6 @@ pub trait WorktreeBackend: fmt::Debug + Send + Sync {
         repo_root: &'a Path,
         target_path: &'a Path,
         force: bool,
-    ) -> BoxFuture<'a, Result<(), WorktreeError>>;
-
-    fn delete_branch<'a>(
-        &'a self,
-        repo_root: &'a Path,
-        branch: &'a str,
     ) -> BoxFuture<'a, Result<(), WorktreeError>>;
 
     /// Lists the worktrees this repository has registered, as Git itself reports them.
@@ -210,6 +216,50 @@ impl LocalWorktreeBackend {
 }
 
 impl WorktreeBackend for LocalWorktreeBackend {
+    fn delete_branch_at<'a>(
+        &'a self,
+        repo_root: &'a Path,
+        branch: &'a str,
+        expected_head: &'a str,
+    ) -> BoxFuture<'a, Result<(), WorktreeError>> {
+        async move {
+            self.policy
+                .validate_branch(branch)
+                .map_err(|_| WorktreeError::UnsafeBranch(branch.into()))?;
+            let args = delete_reference_args(branch, expected_head);
+            self.run_git(repo_root, &args).await.map(|_| ())
+        }
+        .boxed()
+    }
+
+    fn branch_head<'a>(
+        &'a self,
+        repo_root: &'a Path,
+        branch: &'a str,
+    ) -> BoxFuture<'a, Result<Option<String>, WorktreeError>> {
+        async move {
+            self.policy
+                .validate_branch(branch)
+                .map_err(|_| WorktreeError::UnsafeBranch(branch.into()))?;
+            let args = reference_args(branch);
+            reference_result(&args, self.run_git_output(repo_root, &args).await?)
+        }
+        .boxed()
+    }
+
+    fn is_ancestor<'a>(
+        &'a self,
+        repo_root: &'a Path,
+        ancestor: &'a str,
+        descendant: &'a str,
+    ) -> BoxFuture<'a, Result<bool, WorktreeError>> {
+        async move {
+            let args = ancestor_args(ancestor, descendant);
+            ancestor_result(&args, self.run_git_output(repo_root, &args).await?)
+        }
+        .boxed()
+    }
+
     fn resolve_repo_root<'a>(
         &'a self,
         path: &'a Path,
@@ -252,22 +302,6 @@ impl WorktreeBackend for LocalWorktreeBackend {
         .boxed()
     }
 
-    fn remove_leaf<'a>(
-        &'a self,
-        repo_root: &'a Path,
-        target_path: &'a Path,
-    ) -> BoxFuture<'a, Result<(), WorktreeError>> {
-        async move {
-            pl_tool::workspace::path_safety::remove_dir_all_no_follow_async(
-                &repo_root.join(".anywork/worktrees"),
-                target_path,
-            )
-            .await
-            .map_err(|error| WorktreeError::Io(error.to_string()))
-        }
-        .boxed()
-    }
-
     fn create<'a>(
         &'a self,
         repo_root: &'a Path,
@@ -300,7 +334,7 @@ impl WorktreeBackend for LocalWorktreeBackend {
                     })?;
             checked_output(&args, output)
                 .map(|_| ())
-                .map_err(WorktreeCreateFailure::no_side_effects)
+                .map_err(WorktreeCreateFailure::may_have_created)
         }
         .boxed()
     }
@@ -355,21 +389,6 @@ impl WorktreeBackend for LocalWorktreeBackend {
         .boxed()
     }
 
-    fn delete_branch<'a>(
-        &'a self,
-        repo_root: &'a Path,
-        branch: &'a str,
-    ) -> BoxFuture<'a, Result<(), WorktreeError>> {
-        async move {
-            self.policy
-                .validate_branch(branch)
-                .map_err(|_| WorktreeError::UnsafeBranch(branch.to_string()))?;
-            let args = vec!["branch".to_string(), "-D".to_string(), branch.to_string()];
-            self.run_git(repo_root, &args).await.map(|_| ())
-        }
-        .boxed()
-    }
-
     fn worktree_list<'a>(
         &'a self,
         repo_root: &'a Path,
@@ -393,6 +412,55 @@ impl WorktreeBackend for LocalWorktreeBackend {
         }
         .boxed()
     }
+}
+
+pub(super) fn reference_args(branch: &str) -> Vec<String> {
+    vec![
+        "rev-parse".into(),
+        "--verify".into(),
+        "--quiet".into(),
+        format!("refs/heads/{branch}"),
+    ]
+}
+
+pub(super) fn delete_reference_args(branch: &str, expected_head: &str) -> Vec<String> {
+    vec![
+        "update-ref".into(),
+        "--no-deref".into(),
+        "-d".into(),
+        format!("refs/heads/{branch}"),
+        expected_head.into(),
+    ]
+}
+
+pub(super) fn ancestor_args(ancestor: &str, descendant: &str) -> Vec<String> {
+    vec![
+        "merge-base".into(),
+        "--is-ancestor".into(),
+        ancestor.into(),
+        descendant.into(),
+    ]
+}
+
+pub(super) fn reference_result(
+    args: &[String],
+    output: ExecutionOutput,
+) -> Result<Option<String>, WorktreeError> {
+    if output.status == 1 {
+        return Ok(None);
+    }
+    let output = checked_output(args, output)?;
+    non_empty_head(args, &output.stdout).map(Some)
+}
+
+pub(super) fn ancestor_result(
+    args: &[String],
+    output: ExecutionOutput,
+) -> Result<bool, WorktreeError> {
+    if output.status == 1 {
+        return Ok(false);
+    }
+    checked_output(args, output).map(|_| true)
 }
 
 pub(super) fn git_request(cwd: &Path, args: &[String]) -> ExecutionRequest {

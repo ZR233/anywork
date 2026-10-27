@@ -53,9 +53,10 @@ final class StudioThreadSession extends ReadModel<ThreadSessionState> {
     if (_closed) throw StateError('Thread session is closed');
     if (_active) return;
     _active = true;
-    _lifecycleVersion++;
+    final version = ++_lifecycleVersion;
     _runtimeRetries = 0;
     _subscribe();
+    if (_closed || !_active || version != _lifecycleVersion) return;
     // 内容需求与状态观察独立：会话显示期间始终存在一条有界内容连接。
     timeline.start();
   }

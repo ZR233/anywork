@@ -10,6 +10,8 @@ pub use backend::{
     WorktreeError, WorktreeStatus,
 };
 pub use manager::{
-    WorktreeCreateSpec, WorktreeHandle, WorktreeManager, WorktreeOwnership, is_pure_branch,
+    WorktreeCreateSpec, WorktreeHandle, WorktreeManager, WorktreeOwnership,
+    WorktreeRetirementRequest, is_pure_branch,
 };
+pub use pl_tool::remote::{SshManager, SshServerProfile};
 pub use remote::RemoteWorktreeBackend;

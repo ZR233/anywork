@@ -1861,6 +1861,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   BridgeReadyUpdaterState dco_decode_bridge_ready_updater_state(dynamic raw);
 
   @protected
+  BridgeRecoveryImpact dco_decode_bridge_recovery_impact(dynamic raw);
+
+  @protected
   BridgeRecoveryIssueAction dco_decode_bridge_recovery_issue_action(
     dynamic raw,
   );
@@ -5614,6 +5617,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   BridgeReadyUpdaterState sse_decode_bridge_ready_updater_state(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeRecoveryImpact sse_decode_bridge_recovery_impact(
     SseDeserializer deserializer,
   );
 
@@ -10097,6 +10105,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_bridge_ready_updater_state(
     BridgeReadyUpdaterState self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_recovery_impact(
+    BridgeRecoveryImpact self,
     SseSerializer serializer,
   );
 

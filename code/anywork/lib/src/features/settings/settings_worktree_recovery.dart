@@ -42,19 +42,31 @@ class _WorktreeRecoverySectionState
         ].join(' · '),
       ),
       actions: [
-        TextButton.icon(
-          key: ValueKey('worktree-cleanup-$identity'),
-          onPressed: _cleaning ? null : () => _cleanup(worktree),
-          icon: _cleaning
-              ? const SizedBox.square(
-                  dimension: 16,
-                  child: CircularProgressIndicator(strokeWidth: 2),
-                )
-              : const Icon(Icons.delete_sweep_outlined, size: 18),
-          label: Text(context.l10n.settingsWorktreeCleanup),
-        ),
+        if (widget.issue.availableActions.contains(
+          RecoveryIssueAction.cleanupWorktree,
+        ))
+          TextButton.icon(
+            key: ValueKey('worktree-cleanup-$identity'),
+            onPressed: _cleaning ? null : () => _cleanup(worktree),
+            icon: _cleaning
+                ? const SizedBox.square(
+                    dimension: 16,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : const Icon(Icons.delete_sweep_outlined, size: 18),
+            label: Text(context.l10n.settingsWorktreeCleanup),
+          ),
+        if (widget.issue.canRetry)
+          TextButton.icon(
+            key: ValueKey('worktree-retry-$identity'),
+            onPressed: _cleaning ? null : _retryRecovery,
+            icon: const Icon(Icons.refresh, size: 18),
+            label: Text(context.l10n.runtimeFatalRetry),
+          ),
       ],
       children: [
+        SelectableText(context.recoveryIssueLabel(widget.issue)),
+        const SizedBox(height: 8),
         SelectableText(
           [
             l10n.settingsWorktreeBase(worktree.baseCommit),
@@ -90,5 +102,9 @@ class _WorktreeRecoverySectionState
     } finally {
       if (mounted) setState(() => _cleaning = false);
     }
+  }
+
+  Future<void> _retryRecovery() async {
+    await ref.read(anyworkClientProvider).directoryCommands.retryRecovery();
   }
 }

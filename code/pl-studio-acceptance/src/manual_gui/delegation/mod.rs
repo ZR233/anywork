@@ -63,13 +63,23 @@ pub(super) fn run(
     let mut states = Vec::new();
     let journey = (|| -> Result<()> {
         fs::create_dir_all(project.join("work"))?;
+        run_fixture_git(&project, &["init", "-q"])?;
+        fs::write(project.join(".gitignore"), ".anywork/\n")?;
+        fs::write(
+            project.join("fixture-base.txt"),
+            "Synthetic delegation acceptance project base.\n",
+        )?;
+        run_fixture_git(&project, &["add", "--", ".gitignore", "fixture-base.txt"])?;
+        run_fixture_git(&project, &["commit", "-q", "-m", "fixture base"])?;
+        let head = run_fixture_git(&project, &["rev-parse", "--verify", "HEAD"])?;
         ensure!(
-            Command::new("git")
-                .current_dir(&project)
-                .args(["init", "-q"])
-                .status()?
-                .success(),
-            "failed to initialize isolated delegation project"
+            !String::from_utf8_lossy(&head.stdout).trim().is_empty(),
+            "isolated delegation project has no initial commit"
+        );
+        let status = run_fixture_git(&project, &["status", "--porcelain"])?;
+        ensure!(
+            status.stdout.is_empty(),
+            "isolated delegation project is not clean after its initial commit"
         );
         fs::write(
             context.output.join("delegation-runbook.md"),
@@ -87,7 +97,7 @@ pub(super) fn run(
         )?;
         let phases: &[&str] = if matches!(
             context.scenario,
-            Scenario::Lifecycle | Scenario::Window | Scenario::Recovery
+            Scenario::Lifecycle | Scenario::Window | Scenario::Recovery | Scenario::Worktree
         ) {
             &["first", "reopen"]
         } else {
@@ -203,6 +213,33 @@ pub(super) fn run(
     let result = bots_fixture::with_cleanup(journey, final_state);
     let result = bots_fixture::with_cleanup(result, stopped);
     bots_fixture::with_cleanup(bots_fixture::with_cleanup(result, logs), requests)
+}
+
+fn run_fixture_git(project: &Path, args: &[&str]) -> Result<std::process::Output> {
+    let output = Command::new("git")
+        .current_dir(project)
+        .args([
+            "-c",
+            "core.hooksPath=/dev/null",
+            "-c",
+            "credential.helper=",
+            "-c",
+            "commit.gpgsign=false",
+            "-c",
+            "user.name=Anywork Fixture",
+            "-c",
+            "user.email=fixture@example.invalid",
+        ])
+        .args(args)
+        .output()
+        .context("run isolated delegation project Git command")?;
+    ensure!(
+        output.status.success(),
+        "isolated delegation project Git command {:?} failed: {}",
+        args,
+        String::from_utf8_lossy(&output.stderr)
+    );
+    Ok(output)
 }
 
 fn run_phase(

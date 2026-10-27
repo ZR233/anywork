@@ -334,7 +334,7 @@ pub(crate) async fn thread_timeline_events(
         .open_timeline_tail(&thread_id)
         .await
         .map_err(ApiError::from)?;
-    let baseline = stream.initial().map_err(ApiError::from)?;
+    let baseline = stream.initial().await.map_err(ApiError::from)?;
     let shutdown = state.shutdown.clone();
     // 一个批次容量：核心已经合帧，慢消费者由核心判定连续性或重同步，而不是在 transport 堆积。
     let (sender, receiver) = mpsc::channel(1);

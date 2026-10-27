@@ -13,6 +13,7 @@ pub struct ThreadActivation {
 /// Preparation cancellation belongs to the assembler, independently of individual waiting clients.
 #[derive(Debug)]
 pub struct ThreadPreparation {
+    pub workspace_owner: super::WorkspacePreparationOwner,
     pub identity: ThreadActivation,
     pub cancellation: tokio_util::sync::CancellationToken,
     /// Preflighted collaboration registrations; no physical tool allocation has started yet.
@@ -61,22 +62,38 @@ impl StudioThreadAssembler {
                     if entry.parent_id != identity.parent_id {
                         return Err(ThreadAssemblyError::Identity(identity.id));
                     }
-                    if entry.ready && entry.thread.snapshot().lifecycle == ThreadLifecycle::Open {
+                    if entry.purpose != super::EntryPurpose::ReportReceiver
+                        && entry.ready
+                        && entry.thread.snapshot().lifecycle == ThreadLifecycle::Open
+                    {
                         return Ok(entry.thread.clone());
                     }
-                    if !state.creating.contains_key(&identity.id) {
+                    if entry.purpose != super::EntryPurpose::ReportReceiver
+                        && !state.creating.contains_key(&identity.id)
+                    {
                         return Err(ThreadAssemblyError::Unpublished(identity.id));
                     }
                 }
-                match state.creating.get(&identity.id) {
+                let preparation = match state.creating.get(&identity.id) {
                     Some(preparation) if preparation.parent_id == identity.parent_id => {
                         Some(preparation.result.clone())
                     }
                     Some(_) => return Err(ThreadAssemblyError::Identity(identity.id)),
                     None => None,
-                }
+                };
+                (
+                    state
+                        .entries
+                        .get(&identity.id)
+                        .is_some_and(|entry| entry.purpose == super::EntryPurpose::ReportReceiver),
+                    preparation,
+                )
             };
-            match waiting {
+            if waiting.0 {
+                self.finish_report_receiver(&identity.id).await?;
+                continue;
+            }
+            match waiting.1 {
                 Some(Some(result)) => return await_result(result).await,
                 Some(None) => {
                     changed.await;
@@ -110,6 +127,7 @@ impl StudioThreadAssembler {
             self.0.changed.notify_waiters();
             let owner = self.clone();
             tokio::spawn(async move {
+                let workspace_owner = super::WorkspacePreparationOwner::default();
                 let operation = std::panic::AssertUnwindSafe(async {
                     let _operation = owner.agent_operation(&identity.id).await;
                     if owner.0.state().sealed_agents.contains_key(&identity.id) {
@@ -129,6 +147,7 @@ impl StudioThreadAssembler {
                     };
                     let spec = factory
                         .prepare(ThreadPreparation {
+                            workspace_owner: workspace_owner.clone(),
                             identity: identity.clone(),
                             cancellation: cancellation.clone(),
                             agent_controls,

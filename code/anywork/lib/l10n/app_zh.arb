@@ -2123,5 +2123,14 @@
   "childInteractionDecideFailed": "决定未被接受：{message}",
   "childInteractionLoadFailed": "无法读取子任务待决交互：{message}",
   "childInteractionRetry": "重新读取",
-  "childInteractionDecisionAccepted": "决定已受理，等待会话确认。"
+  "childInteractionDecisionAccepted": "决定已受理，等待会话确认。",
+  "recoveryDiagnostic": "恢复问题 {id}\n{owner} · {impact}\n{detail}\n可用恢复操作：{actions}",
+  "recoveryOwnerApplication": "应用",
+  "recoveryOwnerProject": "项目 {projectId}",
+  "recoveryOwnerThread": "会话 {threadId} · 项目 {projectId}",
+  "recoveryUnknownOwner": "未记录",
+  "recoveryImpactAdvisory": "需要关注，不影响访问与执行",
+  "recoveryImpactExecutionBlocked": "执行受阻，仍可读取安全的历史",
+  "recoveryImpactAccessBlocked": "访问与执行受阻",
+  "recoveryNoAvailableActions": "当前无可用操作"
 }

@@ -9,6 +9,17 @@ impl StudioRuntime {
         &self,
         id: &str,
     ) -> Result<pl_core::thread::ThreadHandle> {
+        let record = self.read_protocol_thread(id).await?;
+        self.store.ensure_agent_execution_allowed(id).await?;
+        self.check_thread_read_access(&record)?;
+        let live = self
+            .threads
+            .observed_thread(id)
+            .map(|thread| thread.snapshot());
+        self.verify_thread_execution_preparation(&record, live.as_ref())
+            .await?;
+        self.check_thread_execution_access(&record)?;
+        self.store.ensure_agent_execution_allowed(id).await?;
         let _activation_pin = self.pin_thread(id);
         if let Some(thread) = self.threads.thread(id) {
             self.residency.touch(id).await;
@@ -29,6 +40,13 @@ impl StudioRuntime {
                 break;
             }
             let record = self.read_owned_thread(&cursor).await?;
+            self.store.ensure_agent_execution_allowed(&cursor).await?;
+            self.verify_thread_execution_preparation(
+                &pl_protocol::Thread::from(record.clone()),
+                None,
+            )
+            .await?;
+            self.check_thread_execution_access(&pl_protocol::Thread::from(record.clone()))?;
             anyhow::ensure!(
                 record.visibility == crate::studio::ThreadVisibility::Active,
                 "archived Thread cannot be activated for execution"

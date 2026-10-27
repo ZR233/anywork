@@ -771,7 +771,7 @@ fn wire__crate__api__studio__handlers__chat__BridgeTimeline_initial_impl(
     rust_vec_len_: i32,
     data_len_: i32,
 ) {
-    FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec, _, _>(
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_async::<flutter_rust_bridge::for_generated::SseCodec, _, _, _>(
         flutter_rust_bridge::for_generated::TaskInfo {
             debug_name: "BridgeTimeline_initial",
             port: Some(port_),
@@ -791,9 +791,9 @@ fn wire__crate__api__studio__handlers__chat__BridgeTimeline_initial_impl(
                 flutter_rust_bridge::for_generated::RustAutoOpaqueInner<BridgeTimeline>,
             >>::sse_decode(&mut deserializer);
             deserializer.end();
-            move |context| {
+            move |context| async move {
                 transform_result_sse::<_, crate::api::studio::types::error::BridgeError>(
-                    (move || {
+                    (move || async move {
                         let mut api_that_guard = None;
                         let decode_indices_ =
                             flutter_rust_bridge::for_generated::lockable_compute_decode_order(
@@ -803,7 +803,10 @@ fn wire__crate__api__studio__handlers__chat__BridgeTimeline_initial_impl(
                             );
                         for i in decode_indices_ {
                             match i {
-                                0 => api_that_guard = Some(api_that.lockable_decode_sync_ref()),
+                                0 => {
+                                    api_that_guard =
+                                        Some(api_that.lockable_decode_async_ref().await)
+                                }
                                 _ => unreachable!(),
                             }
                         }
@@ -811,9 +814,11 @@ fn wire__crate__api__studio__handlers__chat__BridgeTimeline_initial_impl(
                         let output_ok =
                             crate::api::studio::handlers::chat::BridgeTimeline::initial(
                                 &*api_that_guard,
-                            )?;
+                            )
+                            .await?;
                         std::result::Result::Ok(output_ok)
-                    })(),
+                    })()
+                    .await,
                 )
             }
         },
@@ -11688,15 +11693,26 @@ impl SseDecode for crate::api::studio::types::updater::BridgeReadyUpdaterState {
     }
 }
 
+impl SseDecode for crate::api::studio::types::runtime::BridgeRecoveryImpact {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut inner = <i32>::sse_decode(deserializer);
+        return match inner {
+            0 => crate::api::studio::types::runtime::BridgeRecoveryImpact::Advisory,
+            1 => crate::api::studio::types::runtime::BridgeRecoveryImpact::ExecutionBlocked,
+            2 => crate::api::studio::types::runtime::BridgeRecoveryImpact::AccessBlocked,
+            _ => unreachable!("Invalid variant for BridgeRecoveryImpact: {}", inner),
+        };
+    }
+}
+
 impl SseDecode for crate::api::studio::types::runtime::BridgeRecoveryIssueAction {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
         let mut inner = <i32>::sse_decode(deserializer);
         return match inner {
             0 => crate::api::studio::types::runtime::BridgeRecoveryIssueAction::Retry,
-            1 => crate::api::studio::types::runtime::BridgeRecoveryIssueAction::CleanupThread,
-            2 => crate::api::studio::types::runtime::BridgeRecoveryIssueAction::RemoveProject,
-            3 => crate::api::studio::types::runtime::BridgeRecoveryIssueAction::CleanupWorktree,
+            1 => crate::api::studio::types::runtime::BridgeRecoveryIssueAction::CleanupWorktree,
             _ => unreachable!("Invalid variant for BridgeRecoveryIssueAction: {}", inner),
         };
     }
@@ -13110,6 +13126,8 @@ impl SseDecode for crate::api::studio::types::runtime::BridgeStudioRecoveryIssue
             <crate::api::studio::types::runtime::BridgeRecoveryIssueCategory>::sse_decode(
                 deserializer,
             );
+        let mut var_impact =
+            <crate::api::studio::types::runtime::BridgeRecoveryImpact>::sse_decode(deserializer);
         let mut var_availableActions = <Vec<
             crate::api::studio::types::runtime::BridgeRecoveryIssueAction,
         >>::sse_decode(deserializer);
@@ -13123,6 +13141,7 @@ impl SseDecode for crate::api::studio::types::runtime::BridgeStudioRecoveryIssue
             id: var_id,
             scope: var_scope,
             category: var_category,
+            impact: var_impact,
             available_actions: var_availableActions,
             project_id: var_projectId,
             thread_id: var_threadId,
@@ -26329,15 +26348,35 @@ impl flutter_rust_bridge::IntoIntoDart<crate::api::studio::types::updater::Bridg
     }
 }
 // Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::api::studio::types::runtime::BridgeRecoveryImpact {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        match self {
+            Self::Advisory => 0.into_dart(),
+            Self::ExecutionBlocked => 1.into_dart(),
+            Self::AccessBlocked => 2.into_dart(),
+            _ => unreachable!(),
+        }
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::api::studio::types::runtime::BridgeRecoveryImpact
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::api::studio::types::runtime::BridgeRecoveryImpact>
+    for crate::api::studio::types::runtime::BridgeRecoveryImpact
+{
+    fn into_into_dart(self) -> crate::api::studio::types::runtime::BridgeRecoveryImpact {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
 impl flutter_rust_bridge::IntoDart
     for crate::api::studio::types::runtime::BridgeRecoveryIssueAction
 {
     fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
         match self {
             Self::Retry => 0.into_dart(),
-            Self::CleanupThread => 1.into_dart(),
-            Self::RemoveProject => 2.into_dart(),
-            Self::CleanupWorktree => 3.into_dart(),
+            Self::CleanupWorktree => 1.into_dart(),
             _ => unreachable!(),
         }
     }
@@ -28048,6 +28087,7 @@ impl flutter_rust_bridge::IntoDart
             self.id.into_into_dart().into_dart(),
             self.scope.into_into_dart().into_dart(),
             self.category.into_into_dart().into_dart(),
+            self.impact.into_into_dart().into_dart(),
             self.available_actions.into_into_dart().into_dart(),
             self.project_id.into_into_dart().into_dart(),
             self.thread_id.into_into_dart().into_dart(),
@@ -37542,15 +37582,30 @@ impl SseEncode for crate::api::studio::types::updater::BridgeReadyUpdaterState {
     }
 }
 
+impl SseEncode for crate::api::studio::types::runtime::BridgeRecoveryImpact {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <i32>::sse_encode(
+            match self {
+                crate::api::studio::types::runtime::BridgeRecoveryImpact::Advisory => 0,
+                crate::api::studio::types::runtime::BridgeRecoveryImpact::ExecutionBlocked => 1,
+                crate::api::studio::types::runtime::BridgeRecoveryImpact::AccessBlocked => 2,
+                _ => {
+                    unimplemented!("");
+                }
+            },
+            serializer,
+        );
+    }
+}
+
 impl SseEncode for crate::api::studio::types::runtime::BridgeRecoveryIssueAction {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
         <i32>::sse_encode(
             match self {
                 crate::api::studio::types::runtime::BridgeRecoveryIssueAction::Retry => 0,
-                crate::api::studio::types::runtime::BridgeRecoveryIssueAction::CleanupThread => 1,
-                crate::api::studio::types::runtime::BridgeRecoveryIssueAction::RemoveProject => 2,
-                crate::api::studio::types::runtime::BridgeRecoveryIssueAction::CleanupWorktree => 3,
+                crate::api::studio::types::runtime::BridgeRecoveryIssueAction::CleanupWorktree => 1,
                 _ => {
                     unimplemented!("");
                 }
@@ -38590,6 +38645,10 @@ impl SseEncode for crate::api::studio::types::runtime::BridgeStudioRecoveryIssue
         );
         <crate::api::studio::types::runtime::BridgeRecoveryIssueCategory>::sse_encode(
             self.category,
+            serializer,
+        );
+        <crate::api::studio::types::runtime::BridgeRecoveryImpact>::sse_encode(
+            self.impact,
             serializer,
         );
         <Vec<crate::api::studio::types::runtime::BridgeRecoveryIssueAction>>::sse_encode(

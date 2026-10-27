@@ -35,8 +35,21 @@ impl StudioChildResources for StudioThreadFactory {
             .find(|project| project.id == parent.project_id)
             .ok_or_else(|| ThreadAssemblyError::Identity(parent.project_id.clone()))?;
         let root_thread = self.thread_record(&parent.root_thread_id).await?;
+        self.check_bot_spawn_workspace(request, profile, &root_thread)
+            .await?;
+        let workspace_usage = self
+            .reserve_thread_workspace_use(&request.id, &parent.root_thread_id, &project)
+            .await
+            .map_err(Self::workspace_usage_error)?;
+        request.workspace_owner.retain(&workspace_usage);
         let project_root = match self
-            .bind_bot_project(&request.id, &parent.root_thread_id, &mut project)
+            .bind_bot_project(
+                &request.id,
+                &parent.root_thread_id,
+                &mut project,
+                &workspace_usage,
+                super::root_resources::BotWorkspacePreparation::New,
+            )
             .await?
         {
             Some(root) => root,
@@ -64,11 +77,52 @@ impl StudioChildResources for StudioThreadFactory {
                     .await?,
             ),
         };
+        let caller_workspace = if profile.profile.workspace_mode
+            == pl_protocol::AgentWorkspaceMode::Worktree
+        {
+            let (actual, execution_project) = self.actual_tool_workspace(&request.caller)?;
+            let identity = self
+                .resolve_workspace_identity(&execution_project, actual.root())
+                .await
+                .map_err(Self::workspace_usage_error)?;
+            let frozen = self
+                .services
+                .store
+                .workspace_identity(&request.caller)
+                .await
+                .map_err(|error| resource_error("read caller physical execution binding", error))?
+                .ok_or_else(|| {
+                    ThreadAssemblyError::Identity(
+                        "caller has no frozen physical execution binding".into(),
+                    )
+                })?;
+            if identity != frozen {
+                return Err(ThreadAssemblyError::Identity(
+                    "caller actual execution workspace changed".into(),
+                ));
+            }
+            Some(identity)
+        } else {
+            None
+        };
+        let caller_repository_root = caller_workspace.as_ref().and_then(|identity| {
+            self.services
+                .worktrees
+                .get(&request.caller)
+                .filter(|lease| {
+                    lease.path == identity.root
+                        && lease.project_id == project.id
+                        && lease.root_thread_id == parent.root_thread_id
+                })
+                .map(|lease| PathBuf::from(lease.repository_root))
+        });
         let (assignment, worktree) =
             crate::studio::agent_host::workspace_preparation::prepare_workspace(
                 &self.services.worktrees,
                 &self.services.ssh_manager,
                 crate::studio::agent_host::workspace_preparation::WorkspacePreparation {
+                    store: &self.services.store,
+                    usage: &workspace_usage,
                     project: &project,
                     project_root,
                     root_thread_id: &parent.root_thread_id,
@@ -76,15 +130,20 @@ impl StudioChildResources for StudioThreadFactory {
                     mode: profile.profile.workspace_mode,
                     writable_paths: request.writable_paths.clone(),
                     session_root,
+                    caller_workspace,
+                    caller_repository_root,
                     review_target,
                 },
             )
             .await
-            .map_err(|error| resource_error("prepare child workspace", error))?;
+            .map_err(|source| ThreadAssemblyError::ChildWorkspacePreparation { source })?;
         check_cancelled(request)?;
         let workspace =
             ToolWorkspace::new(assigned_workspace(&assignment, root_thread.workspace_mode))
                 .with_lsp_runtime(Some(self.services.lsp_runtime.clone()));
+        self.assign_workspace_use(&workspace_usage, &project, workspace.root())
+            .await
+            .map_err(Self::workspace_usage_error)?;
         let store = FileResourceStore::new(
             self.services
                 .store
@@ -93,6 +152,8 @@ impl StudioChildResources for StudioThreadFactory {
         );
         let mut prepared_tools = self
             .prepare_thread_tools(super::thread_tools::ThreadToolAssembly {
+                assignment: Some(&assignment),
+                workspace_usage: workspace_usage.clone(),
                 thread_id: &request.id,
                 cancellation: &request.cancellation,
                 config: &profile.config,
@@ -162,6 +223,15 @@ impl StudioChildResources for StudioThreadFactory {
             ),
             ("studio.creation-metadata".into(), request.metadata.clone()),
         ]);
+        if let Some(worktree) = worktree {
+            let mut lease = worktree.lease;
+            lease.transition(crate::studio::agent_host::worktree_lease::WorktreeLeaseState::Active);
+            self.services
+                .worktrees
+                .record_durable(lease)
+                .await
+                .map_err(|error| resource_error("activate workspace lease", error))?;
+        }
         self.services
             .product_events
             .register_child_thread(crate::studio::store::directory::RegisteredChildThread {
@@ -180,14 +250,6 @@ impl StudioChildResources for StudioThreadFactory {
             })
             .await
             .map_err(|error| resource_error("register child product association", error))?;
-        if let Some(worktree) = worktree {
-            let mut lease = worktree.lease;
-            lease.transition(crate::studio::agent_host::worktree_lease::WorktreeLeaseState::Active);
-            self.services
-                .worktrees
-                .record(lease)
-                .map_err(|error| resource_error("activate workspace lease", error))?;
-        }
         let persisted_thread = self
             .services
             .product_events
@@ -206,6 +268,7 @@ impl StudioChildResources for StudioThreadFactory {
         )
         .with_hosted_tools(prepared_tools.hosted);
         let spec = StudioThreadSpec {
+            workspace_usage: Some(workspace_usage),
             preparation_guard: prepared_tools.binding_guard.take(),
             context_preparation: crate::compaction::preparer(
                 &profile.route,
@@ -241,8 +304,20 @@ impl StudioChildResources for StudioThreadFactory {
     async fn close_published(
         &self,
         id: &str,
-        disposition: pl_tool::collaboration::thread::AgentWorkspaceDisposition,
+        disposition: pl_tool::collaboration::thread::WorkspaceRelease,
     ) -> Result<(), ThreadAssemblyError> {
+        if self
+            .services
+            .store
+            .agent_close(id)
+            .await
+            .map_err(|error| resource_error("read explicit retirement ownership", error))?
+            .is_some()
+        {
+            // The explicit close job owns the precise lease revisions now. Ordinary host shutdown
+            // only releases its Thread; it cannot mutate or consume this destructive grant.
+            return Ok(());
+        }
         let Some(lease) = self.services.worktrees.get(id) else {
             return Ok(());
         };
@@ -253,11 +328,19 @@ impl StudioChildResources for StudioThreadFactory {
             return Ok(());
         }
         let manager = crate::studio::agent_host::workspace_preparation::manager_from_lease(
+            &self.services.store,
             &self.services.ssh_manager,
             &lease,
         )
+        .await
         .map_err(|error| resource_error("open published workspace manager", error))?;
+        if disposition == pl_tool::collaboration::thread::WorkspaceRelease::Cleanup {
+            self.prepare_workspace_cleanup(&lease)
+                .await
+                .map_err(|error| resource_error("check workspace cleanup uses", error))?;
+        }
         crate::studio::agent_host::workspace_preparation::close_workspace(
+            &self.services.store,
             &self.services.worktrees,
             &manager,
             lease,
@@ -267,38 +350,14 @@ impl StudioChildResources for StudioThreadFactory {
         .map_err(|error| resource_error("close published workspace", error))
     }
 
-    async fn discard_unpublished(&self, id: &str) -> Result<(), ThreadAssemblyError> {
-        if let Some(mut lease) = self.services.worktrees.get(id) {
-            use crate::studio::agent_host::worktree_lease::WorktreeLeaseState;
-            let unpublished_child = lease.owner_kind
-                == crate::studio::agent_host::worktree_lease::WorktreeLeaseOwnerKind::Child;
-            if unpublished_child && lease.state != WorktreeLeaseState::Cleaned {
-                let manager = crate::studio::agent_host::workspace_preparation::manager_from_lease(
-                    &self.services.ssh_manager,
-                    &lease,
-                )
-                .map_err(|error| resource_error("open unpublished workspace manager", error))?;
-                let handle = crate::agent::worktree::WorktreeHandle {
-                    path: PathBuf::from(&lease.path),
-                    branch: lease.branch.clone(),
-                    base_commit: lease.base_commit.clone(),
-                };
-                match manager.discard(&handle).await {
-                    Ok(()) => lease.transition(WorktreeLeaseState::Cleaned),
-                    Err(error) => {
-                        lease.transition(WorktreeLeaseState::Preserved);
-                        self.services.worktrees.record(lease).map_err(|failure| {
-                            resource_error("retain failed workspace cleanup", failure)
-                        })?;
-                        return Err(resource_error("discard unpublished workspace", error));
-                    }
-                }
-                self.services
-                    .worktrees
-                    .record(lease)
-                    .map_err(|error| resource_error("record workspace cleanup", error))?;
-            }
-        }
+    async fn discard_unpublished(
+        &self,
+        id: &str,
+        usage: Option<&crate::studio::WorkspaceUsageLease>,
+    ) -> Result<(), ThreadAssemblyError> {
+        self.discard_prepared_workspace(id, usage)
+            .await
+            .map_err(|error| resource_error("discard unpublished assigned resources", error))?;
         if self.services.product_events.thread_snapshot(id).is_some() {
             self.services
                 .product_events
@@ -355,8 +414,8 @@ impl StudioThreadFactory {
     /// Resolves one reviewed agent's workspace facts for a `review` Profile spawn.
     ///
     /// 关系校验（调用者的直接 child、同一根会话与 Project）先行；worktree 被审者以 durable
-    /// lease 为 canonical 事实并核对物理工作树仍存在，非 worktree 被审者的工作区即会话工作区
-    /// 根，由 `prepare_workspace` 派生。review child 不获取、不转移被审者的 lease。
+    /// lease 为 canonical 事实并核对物理工作树仍存在；其他目标也只消费其实际冻结 assignment。
+    /// review child 不获取、不转移被审者的 ownership lease。
     async fn resolve_review_target(
         &self,
         target_id: &str,
@@ -370,6 +429,11 @@ impl StudioThreadFactory {
         use crate::studio::agent_host::worktree_lease::{
             WorktreeLeaseOwnerKind, WorktreeLeaseState,
         };
+        self.services
+            .store
+            .ensure_agent_execution_allowed(target_id)
+            .await
+            .map_err(|error| resource_error("reject borrowing a retiring workspace", error))?;
         let invalid = || ThreadAssemblyError::ReviewTargetInvalid(target_id.to_owned());
         let target = self
             .services
@@ -383,44 +447,85 @@ impl StudioThreadFactory {
         {
             return Err(invalid());
         }
-        let Some(lease) = self.services.worktrees.get(target_id) else {
-            return Ok(
-                crate::studio::agent_host::workspace_preparation::ReviewWorkspaceTarget {
-                    agent_id: target_id.to_owned(),
-                    worktree: None,
-                },
-            );
+        let protocol = pl_protocol::Thread::from(target.clone());
+        let live = self
+            .bindings
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(target_id)
+            .cloned();
+        let assignment = if let Some(binding) = &live {
+            if binding.target_invalidated || binding.lifetime.cancellation.is_cancelled() {
+                return Err(invalid());
+            }
+            binding.assignment.clone().ok_or_else(invalid)?
+        } else {
+            let checkpoint =
+                super::recovery::load_checkpoint_read_only(&self.services.store, &protocol)
+                    .await
+                    .map_err(|error| {
+                        resource_error("read reviewed actual workspace assignment", error)
+                    })?
+                    .ok_or_else(invalid)?;
+            if crate::studio::agent_close::is_explicitly_closed(&checkpoint.state)
+                .map_err(|error| resource_error("read reviewed close intent", error))?
+            {
+                return Err(invalid());
+            }
+            crate::studio::workspace_receipt::from_snapshot(&checkpoint.state)
+                .map_err(|error| resource_error("decode reviewed workspace assignment", error))?
+                .ok_or_else(invalid)?
         };
-        if lease.owner_kind != WorktreeLeaseOwnerKind::Child
-            || lease.root_thread_id != parent.root_thread_id
-            || lease.state == WorktreeLeaseState::Cleaned
+        let frozen = self
+            .services
+            .store
+            .workspace_identity(target_id)
+            .await
+            .map_err(|error| resource_error("read reviewed physical identity", error))?
+            .ok_or_else(invalid)?;
+        let actual = self
+            .resolve_workspace_identity(project, std::path::Path::new(&assignment.root))
+            .await
+            .map_err(Self::workspace_usage_error)?;
+        if actual != frozen {
+            return Err(invalid());
+        }
+        if let Some(binding) = &live
+            && binding.workspace.root() != std::path::Path::new(&assignment.root)
         {
             return Err(invalid());
         }
-        let manager = crate::studio::agent_host::workspace_preparation::manager_from_lease(
-            &self.services.ssh_manager,
-            &lease,
-        )
-        .map_err(|error| resource_error("open reviewed workspace manager", error))?;
-        let handle = crate::agent::worktree::WorktreeHandle {
-            path: PathBuf::from(&lease.path),
-            branch: lease.branch.clone(),
-            base_commit: lease.base_commit.clone(),
-        };
-        match manager.preview_existing(&handle).await {
-            Ok(Some(_)) => {}
-            Ok(None) => return Err(invalid()),
-            Err(error) => return Err(resource_error("preview reviewed workspace", error)),
+        if assignment.mode == pl_protocol::AgentWorkspaceMode::Worktree {
+            let lease = self.services.worktrees.get(target_id).ok_or_else(invalid)?;
+            let receipt = assignment.worktree.as_ref().ok_or_else(invalid)?;
+            if lease.owner_kind != WorktreeLeaseOwnerKind::Child
+                || lease.root_thread_id != parent.root_thread_id
+                || lease.project_id != project.id
+                || lease.state == WorktreeLeaseState::Cleaned
+                || lease.path != assignment.root
+                || lease.path != receipt.path
+                || lease.branch != receipt.branch
+                || lease.base_commit != receipt.base_commit
+                || lease.repository_root != receipt.repository_root
+            {
+                return Err(invalid());
+            }
+            let manager = crate::studio::agent_host::workspace_preparation::manager_from_lease(
+                &self.services.store,
+                &self.services.ssh_manager,
+                &lease,
+            )
+            .await
+            .map_err(|error| resource_error("open reviewed workspace manager", error))?;
+            manager
+                .validate_registered_site(std::path::Path::new(&lease.path), &lease.branch)
+                .await
+                .map_err(|error| resource_error("verify reviewed worktree identity", error))?;
         }
         Ok(
             crate::studio::agent_host::workspace_preparation::ReviewWorkspaceTarget {
                 agent_id: target_id.to_owned(),
-                worktree: Some(pl_protocol::AgentWorktreeSnapshot {
-                    repository_root: lease.repository_root.clone(),
-                    path: lease.path.clone(),
-                    branch: lease.branch.clone(),
-                    base_commit: lease.base_commit.clone(),
-                }),
+                assignment,
             },
         )
     }

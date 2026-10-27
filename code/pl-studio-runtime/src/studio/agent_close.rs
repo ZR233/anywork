@@ -5,6 +5,70 @@ use pl_core::{context::OpaquePayload, thread::ThreadSnapshot};
 pub(crate) const EXTENSION: &str = "studio.agent-close";
 const FORMAT: &str = "pl.studio.agent-close";
 
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct AgentCloseOutcome {
+    pub target: String,
+    pub agents: Vec<AgentCloseResult>,
+    pub error: Option<pl_protocol::StateError>,
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct AgentCloseResult {
+    pub agent_id: String,
+    pub execution_closed: bool,
+    pub worktree_cleanup: AgentWorktreeCleanup,
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub(crate) enum AgentWorktreeCleanup {
+    Pending,
+    NotApplicable,
+    NotPresent {
+        path: String,
+        registration_present: bool,
+    },
+    Removed {
+        path: String,
+    },
+    Failed {
+        path: Option<String>,
+        error: pl_protocol::StateError,
+    },
+}
+
+impl AgentWorktreeCleanup {
+    pub(crate) fn is_terminal(&self) -> bool {
+        matches!(
+            self,
+            Self::NotApplicable | Self::NotPresent { .. } | Self::Removed { .. }
+        )
+    }
+}
+
+pub(crate) fn state_error(error: &anyhow::Error) -> pl_protocol::StateError {
+    pl_protocol::StateError {
+        code: "agentCloseIncomplete".into(),
+        message: format!("{error:#}"),
+        retryable: true,
+    }
+}
+
+/// Identity of the original terminal effect, never the later close/checkpoint watermark.
+pub(crate) fn terminal_report_id(child_id: &str, terminal_sequence: u64) -> String {
+    format!(
+        "studio.child.{}:{child_id}:{terminal_sequence}",
+        child_id.len()
+    )
+}
+
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ExplicitClose {}

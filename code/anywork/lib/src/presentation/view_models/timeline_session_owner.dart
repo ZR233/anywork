@@ -802,6 +802,7 @@ final class TimelineSessionOwner {
   /// 但**仅选择变化**不撤销已经冻结的发送：展示前置不再适用就收束它，由调用方继续提交
   /// 原冻结目标；真实准备失败与退出仍然抛出。
   Future<void> prepareSend(String threadId) async {
+    _requireExecutionOpen(threadId);
     if (_closed || lease(threadId) == null) return;
     try {
       await _establishLiveGeneration(threadId);
@@ -836,6 +837,30 @@ final class TimelineSessionOwner {
     final pending = _pendingSwitch;
     if (pending == null || pending.result.isCompleted) return;
     pending.result.completeError(error);
+  }
+
+  void _requireExecutionOpen(String threadId) {
+    final directory = _client.threadDirectory.state;
+    final thread = [
+      ...directory.window.threads,
+      ...directory.overlayThreads,
+    ].where((thread) => thread.id == threadId).firstOrNull;
+    if (thread?.status.blocksNewExecution == true ||
+        _sessionOf(threadId)
+                ?.state
+                .workspace
+                ?.thread
+                .status
+                .blocksNewExecution ==
+            true) {
+      throw const StudioFailure(
+        code: StudioFailureCode.permissionDenied,
+        message: 'Finally closed Threads are read-only',
+        retryable: false,
+        correlationId: 'app-timeline-thread-closed',
+        detailsJson: '{"reason":"threadClosed"}',
+      );
+    }
   }
 
   /// 同一 Thread/展示代次的视口补齐与触底分页共用同一个在途 future。
