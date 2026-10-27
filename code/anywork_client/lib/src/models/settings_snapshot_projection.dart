@@ -85,7 +85,9 @@ SettingsStateSnapshot projectSettingsSnapshot({
           models: [
             for (final model in catalogProvider.models)
               model.copyWith(
-                enabled: !account.disabledModels.contains(model.modelId),
+                enabled:
+                    account.modelEnabledOverrides[model.modelId] ??
+                    model.enabled,
               ),
           ],
           modelCatalog: catalogProvider.modelCatalog,

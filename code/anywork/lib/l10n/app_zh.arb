@@ -2091,7 +2091,7 @@
   "delegationFrozen": "创建会话时已保存 · 只读",
   "delegationModelNotRecorded": "模型未记录",
   "settingsModelEnabled": "启用",
-  "settingsModelEnabledHint": "统一用于新的模型选择与子智能体分发，不打断在途调用。",
+  "settingsModelEnabledHint": "统一用于新的模型选择与子智能体分发，不打断在途调用。线上未列出的内置模型可手动开启，实际可调用性由服务端决定。",
   "settingsModelDisabled": "已禁用，不能用于新选择",
   "settingsModelSaving": "保存中…",
   "settingsModelSaveFailed": "尚未保存，开关显示上次确认的值。可再次切换重试。",

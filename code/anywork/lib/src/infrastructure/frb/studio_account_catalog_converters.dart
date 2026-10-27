@@ -76,7 +76,7 @@ AccountModelCatalog _accountModelCatalogFromFrb(
 AccountModelConfiguration _modelConfigurationFromFrb(
   frb.BridgeAccountSettingsDto value,
 ) => AccountModelConfiguration(
-  disabledModels: value.disabledModels,
+  modelEnabledOverrides: value.modelEnabledOverrides,
   connections: {
     for (final connection in value.modelConnectionModes)
       connection.modelId: switch (connection.connectionMode) {

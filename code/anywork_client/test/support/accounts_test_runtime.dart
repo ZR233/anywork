@@ -313,7 +313,7 @@ List<AccountDomainFrame> accountFrames(
         ],
       ),
       modelConfiguration: AccountModelConfiguration(
-        disabledModels: account.disabledModels,
+        modelEnabledOverrides: account.modelEnabledOverrides,
         connections: {
           for (final entry in account.modelConnectionModes.entries)
             entry.key: switch (entry.value) {

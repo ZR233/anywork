@@ -236,18 +236,21 @@ class AccountModelTile extends StatelessWidget {
         width: 60,
         height: 48,
         child: Center(
-          child: Switch(
-            key: ValueKey<String>(
-              AccountViewKeyValues.modelEnabled(
-                value.key.account.kind.name,
-                value.key.account.id,
-                value.key.modelId,
+          child: Tooltip(
+            message: l10n.settingsModelEnabledHint,
+            child: Switch(
+              key: ValueKey<String>(
+                AccountViewKeyValues.modelEnabled(
+                  value.key.account.kind.name,
+                  value.key.account.id,
+                  value.key.modelId,
+                ),
               ),
+              value: value.enabled,
+              onChanged: value.canToggle && !value.saving
+                  ? (enabled) => actions.onEnabledChanged(value.key, enabled)
+                  : null,
             ),
-            value: value.enabled,
-            onChanged: value.canToggle && !value.saving
-                ? (enabled) => actions.onEnabledChanged(value.key, enabled)
-                : null,
           ),
         ),
       ),
@@ -256,6 +259,7 @@ class AccountModelTile extends StatelessWidget {
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             const Divider(),
+            Text(l10n.settingsModelEnabledHint),
             if (value.saving) const LinearProgressIndicator(minHeight: 2),
             if (value.error != null) AccountInlineError(message: value.error!),
             if (value.summary != null)

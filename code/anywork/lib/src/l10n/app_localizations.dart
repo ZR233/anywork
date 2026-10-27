@@ -9465,7 +9465,7 @@ abstract class AppLocalizations {
   /// No description provided for @settingsModelEnabledHint.
   ///
   /// In en, this message translates to:
-  /// **'Applies to all new model selections and subagent delegation. Running calls are not interrupted.'**
+  /// **'Applies to all new model selections and subagent delegation. Running calls are not interrupted. Bundled models absent from the online list can be enabled manually; the server determines actual availability.'**
   String get settingsModelEnabledHint;
 
   /// No description provided for @settingsModelDisabled.

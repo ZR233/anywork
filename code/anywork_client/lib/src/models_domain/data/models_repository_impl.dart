@@ -122,13 +122,19 @@ final class ModelsRepositoryImpl implements ModelsRepository {
     if (frame.catalog != null && frame.catalog!.identity != frame.identity)
       throw StateError('Model catalog identity mismatch');
     final generation = observations.generation;
+    final configuration = _state.value.configurations[frame.identity];
     _state.publish(
       ModelDirectoryState(
         accounts: {
           ..._state.value.accounts,
           frame.identity: AccountResource(
             stamp: frame.stamp,
-            value: frame.catalog,
+            value: frame.catalog?.withConfiguration(
+              configuration?.loaded == true &&
+                      configuration?.stamp?.ownerEpoch == frame.stamp.ownerEpoch
+                  ? configuration?.value
+                  : null,
+            ),
           ),
         },
         configurations: _state.value.configurations,
@@ -168,9 +174,20 @@ final class ModelsRepositoryImpl implements ModelsRepository {
     ResourceStamp stamp,
     AccountModelConfiguration? configuration,
   ) {
+    final catalog = _state.value.accounts[identity];
     _state.publish(
       ModelDirectoryState(
-        accounts: _state.value.accounts,
+        accounts: {
+          ..._state.value.accounts,
+          if (catalog != null && catalog.stamp?.ownerEpoch == stamp.ownerEpoch)
+            identity: AccountResource(
+              stamp: catalog.stamp,
+              value: catalog.value?.withConfiguration(configuration),
+              failure: catalog.failure,
+              stale: catalog.stale,
+              loading: catalog.loading,
+            ),
+        },
         configurations: {
           ..._state.value.configurations,
           identity: AccountResource(stamp: stamp, value: configuration),

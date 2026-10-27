@@ -2595,7 +2595,7 @@
   "delegationFrozen": "Saved at session creation · read-only",
   "delegationModelNotRecorded": "Model not recorded",
   "settingsModelEnabled": "Enabled",
-  "settingsModelEnabledHint": "Applies to all new model selections and subagent delegation. Running calls are not interrupted.",
+  "settingsModelEnabledHint": "Applies to all new model selections and subagent delegation. Running calls are not interrupted. Bundled models absent from the online list can be enabled manually; the server determines actual availability.",
   "settingsModelDisabled": "Disabled for new selections",
   "settingsModelSaving": "Saving…",
   "settingsModelSaveFailed": "Not saved. The switch shows the last confirmed value. Toggle again to retry.",

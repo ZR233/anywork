@@ -5015,7 +5015,8 @@ class AppLocalizationsZh extends AppLocalizations {
   String get settingsModelEnabled => '启用';
 
   @override
-  String get settingsModelEnabledHint => '统一用于新的模型选择与子智能体分发，不打断在途调用。';
+  String get settingsModelEnabledHint =>
+      '统一用于新的模型选择与子智能体分发，不打断在途调用。线上未列出的内置模型可手动开启，实际可调用性由服务端决定。';
 
   @override
   String get settingsModelDisabled => '已禁用，不能用于新选择';

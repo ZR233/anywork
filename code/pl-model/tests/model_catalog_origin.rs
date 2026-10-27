@@ -224,7 +224,7 @@ fn template_capabilities_use_only_the_current_source_token() {
 }
 
 #[tokio::test]
-async fn overlay_replaces_bundled_members_and_keeps_manual_priority_with_exact_price_join() {
+async fn overlay_retains_missing_bundled_members_disabled_and_keeps_exact_price_join() {
     let definition = bundled_model_definition("openai").unwrap();
     let known = &definition.models[0];
     let withdrawn = definition
@@ -251,11 +251,12 @@ async fn overlay_replaces_bundled_members_and_keeps_manual_priority_with_exact_p
     );
     config.set_model_catalog_overlay(observed).unwrap();
     let catalog = config.effective_catalog(None).unwrap();
-    assert!(
-        catalog
-            .iter()
-            .all(|entry| entry.model.model_id != withdrawn.model_id)
-    );
+    let missing = catalog
+        .iter()
+        .find(|entry| entry.model.model_id == withdrawn.model_id)
+        .unwrap();
+    assert_eq!(missing.origin, AccountModelOrigin::Bundled);
+    assert!(!missing.enabled);
     let known_entry = catalog
         .iter()
         .find(|entry| entry.model.model_id == known.model_id)
@@ -540,10 +541,11 @@ fn historical_cache_preserves_complete_membership() {
         ])
         .unwrap();
     let ids = config
-        .effective_models(None)
+        .effective_catalog(None)
         .unwrap()
         .into_iter()
-        .map(|model| model.model_id)
+        .filter(|entry| entry.origin == AccountModelOrigin::Online)
+        .map(|entry| entry.model.model_id)
         .collect::<Vec<_>>();
     assert_eq!(
         ids,
@@ -574,6 +576,7 @@ fn online_and_manual_members_share_one_route() {
             .effective_catalog(None)
             .unwrap()
             .iter()
+            .filter(|entry| entry.origin != AccountModelOrigin::Bundled)
             .map(|entry| (entry.model.model_id.as_str(), entry.origin))
             .collect::<Vec<_>>(),
         vec![
@@ -712,6 +715,7 @@ async fn discovery_keeps_manual_members_and_complete_online_inventory() {
     assert_eq!(
         catalog
             .iter()
+            .filter(|entry| entry.origin != AccountModelOrigin::Bundled)
             .map(|entry| (entry.model.model_id.as_str(), entry.origin))
             .collect::<Vec<_>>(),
         vec![
@@ -785,7 +789,15 @@ async fn media_only_inventory_remains_selectable() {
     );
     assert_eq!(models.len(), 2);
     config.set_model_catalog_overlay(models).unwrap();
-    assert_eq!(config.effective_catalog(None).unwrap().len(), 2);
+    assert_eq!(
+        config
+            .effective_catalog(None)
+            .unwrap()
+            .iter()
+            .filter(|entry| entry.origin == AccountModelOrigin::Online)
+            .count(),
+        2
+    );
     server.finish().await;
 }
 
@@ -837,7 +849,11 @@ fn unknown_online_price_is_not_zero_and_descriptor_keeps_origin() {
     observed.context_window = None;
     observed.max_output_tokens = None;
     config.set_model_catalog_overlay(vec![observed]).unwrap();
-    let entry = &config.effective_catalog(None).unwrap()[0];
+    let catalog = config.effective_catalog(None).unwrap();
+    let entry = catalog
+        .iter()
+        .find(|entry| entry.model.model_id == "online-only")
+        .unwrap();
     assert_eq!(entry.origin, AccountModelOrigin::Online);
     assert_eq!(entry.model.pricing, ModelPricing::Unknown);
     let descriptor = model_descriptor(entry);

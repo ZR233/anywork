@@ -710,7 +710,8 @@ abstract final class StudioDriverState {
               {
                 'accountId': entry.key.accountId,
                 ...studioDriverResourceJson(entry.value),
-                'disabledModels': entry.value.value?.disabledModels,
+                'modelEnabledOverrides':
+                    entry.value.value?.modelEnabledOverrides,
                 'connections': entry.value.value?.connections.map(
                   (key, value) => MapEntry(key, value.name),
                 ),
