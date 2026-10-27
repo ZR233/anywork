@@ -45,18 +45,21 @@ class AccountsListView extends StatelessWidget {
           children: [
             Text(
               l10n.settingsAccountsTitle,
-              style: Theme.of(context).textTheme.headlineMedium,
+              style: Theme.of(context).textTheme.headlineLarge
+                  ?.copyWith(fontWeight: FontWeight.w800),
             ),
             Wrap(
               spacing: 8,
               runSpacing: 8,
               children: [
                 OutlinedButton.icon(
+                  style: accountActionButtonStyle(context),
                   onPressed: value.canRefresh ? onRefreshAll : null,
                   icon: const Icon(Icons.refresh),
                   label: Text(l10n.settingsRefreshUsage),
                 ),
                 FilledButton.icon(
+                  style: accountActionButtonStyle(context),
                   key: const ValueKey<String>('account-add'),
                   onPressed: value.canAdd ? onAdd : null,
                   icon: const Icon(Icons.add),
@@ -75,6 +78,7 @@ class AccountsListView extends StatelessWidget {
               key: const ValueKey<String>('accounts-search'),
               value: AccountTextPresentation(raw: value.search),
               label: l10n.settingsSearchAccounts,
+              prefixIcon: const Icon(Icons.search),
               onChanged: onSearchChanged,
             ),
           ),
@@ -132,31 +136,37 @@ class AccountsListView extends StatelessWidget {
               // Main-area width, not window width: the settings sidebar is external.
               final wide =
                   constraints.maxWidth >=
-                  1000 *
-                      MediaQuery.textScalerOf(context).scale(1).clamp(1, 1.3);
+                  880 * MediaQuery.textScalerOf(context).scale(1).clamp(1, 1.3);
               return Card(
+                color: accountGroupSurface(context),
                 clipBehavior: Clip.antiAlias,
                 child: Column(
                   children: [
                     if (wide)
                       Padding(
                         padding: const EdgeInsets.fromLTRB(20, 16, 20, 16),
-                        child: Row(
-                          children: [
-                            Expanded(
-                              flex: 4,
-                              child: Text(l10n.settingsAccountTitle),
-                            ),
-                            Expanded(
-                              flex: 2,
-                              child: Text(l10n.accountsStatusColumn),
-                            ),
-                            Expanded(
-                              flex: 5,
-                              child: Text(l10n.accountsBalanceColumn),
-                            ),
-                            const SizedBox(width: 48),
-                          ],
+                        child: DefaultTextStyle.merge(
+                          style: const TextStyle(
+                            fontSize: 16,
+                            fontWeight: FontWeight.w600,
+                          ),
+                          child: Row(
+                            children: [
+                              Expanded(
+                                flex: 7,
+                                child: Text(l10n.settingsAccountsTitle),
+                              ),
+                              Expanded(
+                                flex: 4,
+                                child: Text(l10n.accountsStatusColumn),
+                              ),
+                              Expanded(
+                                flex: 12,
+                                child: Text(l10n.accountsBalanceColumn),
+                              ),
+                              const SizedBox(width: 48),
+                            ],
+                          ),
                         ),
                       ),
                     for (var i = 0; i < value.rows.length; i++) ...[
@@ -204,7 +214,7 @@ class _AccountRow extends StatelessWidget {
         AccountBrandMark(
           fallbackName: value.name,
           iconKey: value.iconKey,
-          size: 44,
+          size: 64,
           active: value.isDefault,
         ),
         const SizedBox(width: 16),
@@ -212,28 +222,47 @@ class _AccountRow extends StatelessWidget {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text(value.name, style: Theme.of(context).textTheme.titleMedium),
+              Wrap(
+                spacing: 10,
+                runSpacing: 6,
+                crossAxisAlignment: WrapCrossAlignment.center,
+                children: [
+                  Text(
+                    value.name,
+                    style: Theme.of(context).textTheme.titleLarge
+                        ?.copyWith(fontWeight: FontWeight.w700),
+                  ),
+                  if (value.isDefault)
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 10,
+                        vertical: 4,
+                      ),
+                      decoration: BoxDecoration(
+                        color: Theme.of(context).colorScheme.surfaceContainer,
+                        borderRadius: BorderRadius.circular(16),
+                      ),
+                      child: Text(
+                        l10n.settingsDefaultBadge,
+                        style: Theme.of(context).textTheme.bodyLarge
+                            ?.copyWith(fontSize: 16),
+                      ),
+                    ),
+                ],
+              ),
               if (value.operationError case final error?)
                 AccountInlineError(message: error),
-              if (value.isDefault)
-                Text(
-                  l10n.settingsDefaultBadge,
-                  style: Theme.of(context).textTheme.labelSmall,
-                ),
             ],
           ),
         ),
       ],
     );
     final status = value.key.kind == AccountKind.acp
-        ? Text(
-            value.acpStatus ?? l10n.acpAccountProviderChip,
-            style: Theme.of(context).textTheme.labelLarge,
+        ? AccountStatusBadge(
+            label: value.acpStatus ?? l10n.acpAccountProviderChip,
           )
-        : value.billing == null
-        ? Text(l10n.settingsBillingUnknown)
         : AccountBillingBadge(
-            billing: value.billing!,
+            billing: value.billing ?? AccountBilling.unknown,
             health: value.usage?.balanceHealth ?? AccountBalanceHealth.unknown,
           );
     final usage = value.key.kind == AccountKind.native && value.usage != null
@@ -244,7 +273,11 @@ class _AccountRow extends StatelessWidget {
           )
         : const SizedBox.shrink();
     // Menu is a sibling of the detail target: opening/actions never bubble to it.
-    final menu = MenuAnchor(
+    final menu = AccountMenuButton(
+      buttonKey: ValueKey<String>(
+        AccountViewKeyValues.rowMenu(value.key.kind.name, value.key.id),
+      ),
+      tooltip: l10n.settingsAccountActions,
       menuChildren: [
         for (final action in value.actions)
           MenuItemButton(
@@ -257,16 +290,6 @@ class _AccountRow extends StatelessWidget {
             }),
           ),
       ],
-      builder: (context, controller, child) => IconButton(
-        key: ValueKey<String>(
-          AccountViewKeyValues.rowMenu(value.key.kind.name, value.key.id),
-        ),
-        tooltip: l10n.settingsAccountActions,
-        onPressed: value.actions.isEmpty
-            ? null
-            : () => controller.isOpen ? controller.close() : controller.open(),
-        icon: const Icon(Icons.more_horiz),
-      ),
     );
     return ColoredBox(
       color: selected
@@ -279,7 +302,7 @@ class _AccountRow extends StatelessWidget {
                 crossAxisAlignment: CrossAxisAlignment.center,
                 children: [
                   Expanded(
-                    flex: 4,
+                    flex: 7,
                     child: InkWell(
                       key: ValueKey<String>(
                         AccountViewKeyValues.row(
@@ -295,13 +318,13 @@ class _AccountRow extends StatelessWidget {
                     ),
                   ),
                   Expanded(
-                    flex: 2,
+                    flex: 4,
                     child: Padding(
                       padding: const EdgeInsets.only(right: 12),
                       child: status,
                     ),
                   ),
-                  Expanded(flex: 5, child: usage),
+                  Expanded(flex: 12, child: usage),
                   SizedBox(width: 48, child: menu),
                 ],
               )
