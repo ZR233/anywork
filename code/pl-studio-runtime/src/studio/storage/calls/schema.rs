@@ -3,10 +3,11 @@
 //! 迁移只做加法并保持可重入：先把旧 `model_calls` 的累计费用保全为摘要，再把保留期内的正文按批
 //! 转换成 JSONL 日志记录（按 `(thread_id, call_id, kind)` 幂等去重），最后才删除旧表并清理无引用的
 //! blobs 目录。旧结构的耗时列不构成当前统计口径的样本，因此旧性能统计直接丢弃、不迁移；原始日志、
-//! 账单与费用保留。任何一步失败都不会前移 `schema_version`，源数据因此保留，下次打开可继续；旧版本
-//! （v1）的数据根不在本模块触碰范围内。
+//! 账单与费用保留。导出失败保留旧格式及源表；最终事务提交后，blobs 清理失败保留待清理标记，
+//! 下次打开继续。旧版本（v1）的数据根不在本模块触碰范围内。
 
 use super::*;
+use sea_orm_migration::{DbErr, MigrationName, MigrationTrait, MigratorTraitSelf, SchemaManager};
 
 /// 旧格式可能写入的内联/引用列；迁移前补齐，读取端只按固定列名访问。
 const LEGACY_MODEL_COLUMNS: &[(&str, &str)] = &[
@@ -49,78 +50,283 @@ const LEGACY_MIGRATION_BATCH: i64 = 256;
 /// 迁移后待清理的 blobs 目录名。
 const LEGACY_BLOBS_DIR_NAME: &str = "blobs";
 
-/// 建立当前 schema（只做加法），并推进旧版本数据。
-pub(super) async fn initialize(
-    db: &DatabaseConnection,
-    log: &mut CallLog,
-    root_dir: &Path,
-) -> Result<()> {
-    if table_exists(db, "calls_meta").await?
-        && let Some(row) = db
-            .query_one_raw(statement(
-                "SELECT schema_version FROM calls_meta WHERE id=1",
-                vec![],
-            ))
-            .await?
-    {
-        let version: i64 = row.try_get("", "schema_version")?;
+/// Validate an existing file before opening a writer or touching its companion logs.
+pub(super) async fn inspect_existing(path: &Path) -> Result<()> {
+    if !tokio::fs::try_exists(path).await? {
+        return Ok(());
+    }
+    let options = crate::studio::paths::sqlite_file_options(
+        path,
+        crate::studio::paths::SqliteFileMode::ReadOnly,
+        |options| options,
+    )
+    .await?;
+    let db = Database::connect(options).await?;
+    let result = preflight(&db)
+        .await
+        .map_err(|error| crate::studio::startup::migration_error("calls", "preflight", error));
+    let close = db.close().await;
+    result?;
+    close?;
+    Ok(())
+}
+
+pub(super) async fn initialize(db: &DatabaseConnection, root_dir: &Path) -> Result<()> {
+    preflight(db)
+        .await
+        .map_err(|error| crate::studio::startup::migration_error("calls", "preflight", error))?;
+    let migrator = Migrator {
+        log_dir: root_dir.join(super::CALL_LOG_DIR_NAME),
+    };
+    if let Err(error) = migrator.up(db, None).await {
+        let pending = migrator
+            .get_pending_migrations_read_only(db)
+            .await
+            .unwrap_or_default();
+        let step = pending
+            .first()
+            .map_or("migration bookkeeping", |migration| migration.name());
+        return Err(crate::studio::startup::migration_error(
+            "calls", step, error,
+        ));
+    }
+    retry_pending_cleanup(db, root_dir).await.map_err(|error| {
+        crate::studio::startup::migration_error("calls", "legacy blob cleanup", error)
+    })?;
+    Ok(())
+}
+async fn preflight(db: &DatabaseConnection) -> Result<()> {
+    let manager = SchemaManager::new(db);
+    if manager.has_table("calls_meta").await? {
+        let version = format_version(db).await?;
         ensure!(
             (1..=CALLS_SCHEMA_VERSION).contains(&version),
             "unsupported calls schema {version}; existing data preserved"
         );
-        // 账号/模型接入身份改名前必须先于任何按新列名读取的语句执行；这里只做列改名，
-        // 不读写样本内容，失败时不推进 `schema_version`，下次打开可重试。
-        rename_performance_identity_columns(db).await?;
+        if version == 7 {
+            for table in [
+                "call_watermarks",
+                "call_log_index",
+                "call_usage_summary",
+                "performance_samples",
+            ] {
+                ensure!(
+                    manager.has_table(table).await?,
+                    "current calls table {table} is missing; existing data preserved"
+                );
+            }
+        }
+    } else {
+        ensure!(db.query_one_raw(statement("SELECT 1 FROM sqlite_schema WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name<>'seaql_migrations' LIMIT 1", vec![])).await?.is_none(), "unversioned nonempty calls database; existing data preserved");
+        ensure!(
+            Migrator {
+                log_dir: PathBuf::new()
+            }
+            .get_applied_migrations_read_only(db)
+            .await?
+            .is_empty(),
+            "calls schema is missing; existing data preserved"
+        );
     }
-    ensure_schema(db).await?;
-    let row = db
-        .query_one_raw(statement(
-            "SELECT schema_version,database_id FROM calls_meta WHERE id=1",
-            vec![],
-        ))
-        .await?;
-    let Some(row) = row else {
-        db.execute_raw(statement(
-            "INSERT INTO calls_meta(
-                id,schema_version,database_id,pending_cleanup,throughput_epoch)
-             VALUES(1,?,?,0,?)",
-            vec![
-                CALLS_SCHEMA_VERSION.into(),
-                crate::studio::new_id("calls-db").into(),
-                i64::from(event::THROUGHPUT_EPOCH).into(),
-            ],
-        ))
-        .await?;
-        return Ok(());
-    };
-    let version: i64 = row.try_get("", "schema_version")?;
-    ensure!(
-        version <= CALLS_SCHEMA_VERSION,
-        "unsupported future calls schema {version}; existing data preserved"
-    );
-    let database_id: Option<String> = row.try_get("", "database_id")?;
-    if database_id.as_deref().is_none_or(str::is_empty) {
-        db.execute_raw(statement(
-            "UPDATE calls_meta SET database_id=? WHERE id=1",
-            vec![crate::studio::new_id("calls-db").into()],
-        ))
-        .await?;
+    for row in db
+        .query_all_raw(statement("PRAGMA quick_check", vec![]))
+        .await?
+    {
+        ensure!(
+            row.try_get_by_index::<String>(0)? == "ok",
+            "calls database integrity check failed"
+        );
     }
-    if version < 5 {
-        migrate_from_legacy(db, log).await?;
-    } else if version < CALLS_SCHEMA_VERSION {
-        let tx = db.begin().await?;
-        detach_legacy_performance(&tx).await?;
-        tx.execute_raw(statement(
-            "UPDATE calls_meta SET schema_version=? WHERE id=1",
-            vec![CALLS_SCHEMA_VERSION.into()],
-        ))
-        .await?;
-        tx.commit().await?;
+    let pending = Migrator {
+        log_dir: PathBuf::new(),
     }
-    reset_legacy_throughput_samples(db).await?;
-    retry_pending_cleanup(db, root_dir).await?;
+    .get_pending_migrations_read_only(db)
+    .await?;
+    if pending.is_empty() {
+        ensure!(
+            format_version(db).await? == CALLS_SCHEMA_VERSION,
+            "calls format conflicts with completed migrations; existing data preserved"
+        );
+    }
     Ok(())
+}
+async fn format_version(db: &impl ConnectionTrait) -> Result<i64, DbErr> {
+    db.query_one_raw(statement(
+        "SELECT schema_version FROM calls_meta WHERE id=1",
+        vec![],
+    ))
+    .await?
+    .ok_or_else(|| DbErr::Migration("missing calls format; existing data preserved".into()))?
+    .try_get("", "schema_version")
+}
+fn conversion(error: anyhow::Error) -> DbErr {
+    match error.downcast::<DbErr>() {
+        Ok(error) => error,
+        Err(error) => DbErr::Migration(format!("{error:#}")),
+    }
+}
+struct Migrator {
+    log_dir: PathBuf,
+}
+impl MigratorTraitSelf for Migrator {
+    fn migrations(&self) -> Vec<Box<dyn MigrationTrait>> {
+        vec![
+            Box::new(CallsSchema),
+            Box::new(LegacySummary),
+            Box::new(ExportLog {
+                log_dir: self.log_dir.clone(),
+            }),
+            Box::new(FinalizeLegacy),
+            Box::new(ThroughputEpoch),
+        ]
+    }
+}
+
+struct CallsSchema;
+impl MigrationName for CallsSchema {
+    fn name(&self) -> &str {
+        "m20261026_000001_calls_schema"
+    }
+}
+#[sea_orm_migration::async_trait::async_trait]
+impl MigrationTrait for CallsSchema {
+    fn use_transaction(&self) -> Option<bool> {
+        Some(true)
+    }
+    async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        let db = manager.get_connection();
+        rename_performance_identity_columns(db)
+            .await
+            .map_err(conversion)?;
+        ensure_schema(db).await.map_err(conversion)?;
+        db.execute_raw(statement("INSERT OR IGNORE INTO calls_meta(id,schema_version,database_id,pending_cleanup,throughput_epoch) VALUES(1,?,?,0,?)",
+            vec![7i64.into(), crate::studio::new_id("calls-db").into(), 1i64.into()])).await?;
+        db.execute_raw(statement("UPDATE calls_meta SET database_id=? WHERE id=1 AND (database_id IS NULL OR database_id='')", vec![crate::studio::new_id("calls-db").into()])).await?;
+        if format_version(db).await? < 5
+            && table_exists(db, "model_calls").await.map_err(conversion)?
+        {
+            ensure_columns(db, "model_calls", LEGACY_MODEL_COLUMNS)
+                .await
+                .map_err(conversion)?;
+        }
+        Ok(())
+    }
+}
+
+struct LegacySummary;
+impl MigrationName for LegacySummary {
+    fn name(&self) -> &str {
+        "m20261026_000002_calls_legacy_summary"
+    }
+}
+#[sea_orm_migration::async_trait::async_trait]
+impl MigrationTrait for LegacySummary {
+    fn use_transaction(&self) -> Option<bool> {
+        Some(true)
+    }
+    async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        let db = manager.get_connection();
+        if format_version(db).await? < 5
+            && table_exists(db, "model_calls").await.map_err(conversion)?
+        {
+            summary::migrate_from_legacy(db).await.map_err(conversion)?;
+            db.execute_unprepared("INSERT OR REPLACE INTO legacy_auxiliary_usage(thread_id,payload)
+                SELECT thread_id,json_object('inferenceCount',COUNT(*),'promptTokens',COALESCE(SUM(input_tokens),0),
+                'completionTokens',COALESCE(SUM(output_tokens),0),'cachedPromptTokens',COALESCE(SUM(cache_read_tokens),0),
+                'cacheWriteTokens',COALESCE(SUM(cache_write_tokens),0),'reasoningTokens',COALESCE(SUM(reasoning_tokens),0),
+                'totalTokens',COALESCE(SUM(total_tokens),0),'hasIncompleteUsage',json('true'),'cacheIncomplete',json('true'),
+                'hasUnpricedUsage',json(CASE WHEN MAX(has_unpriced_usage)>0 THEN 'true' ELSE 'false' END))
+                FROM model_calls WHERE terminal=1 AND purpose IN ('title','review') GROUP BY thread_id").await?;
+        }
+        Ok(())
+    }
+}
+
+struct ExportLog {
+    log_dir: PathBuf,
+}
+impl MigrationName for ExportLog {
+    fn name(&self) -> &str {
+        "m20261026_000003_calls_export_log"
+    }
+}
+#[sea_orm_migration::async_trait::async_trait]
+impl MigrationTrait for ExportLog {
+    // JSONL durability and the bounded SQLite index batches are separate resources.
+    fn use_transaction(&self) -> Option<bool> {
+        Some(false)
+    }
+    async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        let sea_orm_migration::SchemaManagerConnection::Connection(db) = manager.get_connection()
+        else {
+            return Err(DbErr::Migration(
+                "call log export requires its owning connection outside a transaction".into(),
+            ));
+        };
+        if format_version(*db).await? >= 5 {
+            return Ok(());
+        }
+        let mut log = CallLog::prepare(self.log_dir.clone())
+            .await
+            .map_err(conversion)?;
+        // A durable append may precede a failed index commit; recover it before any retry.
+        log.rebuild_index(db).await.map_err(conversion)?;
+        if table_exists(*db, "model_calls").await.map_err(conversion)? {
+            convert_legacy_rows(db, &mut log)
+                .await
+                .map_err(conversion)?;
+        }
+        if table_exists(*db, "tool_calls").await.map_err(conversion)? {
+            convert_legacy_tools(db, &mut log)
+                .await
+                .map_err(conversion)?;
+        }
+        Ok(())
+    }
+}
+
+struct FinalizeLegacy;
+impl MigrationName for FinalizeLegacy {
+    fn name(&self) -> &str {
+        "m20261026_000004_calls_finalize_legacy"
+    }
+}
+#[sea_orm_migration::async_trait::async_trait]
+impl MigrationTrait for FinalizeLegacy {
+    fn use_transaction(&self) -> Option<bool> {
+        Some(true)
+    }
+    async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        let db = manager.get_connection();
+        let version = format_version(db).await?;
+        if version < 7 {
+            detach_legacy_performance(db).await.map_err(conversion)?;
+            if version < 5 {
+                db.execute_unprepared("DROP TABLE IF EXISTS model_calls; DROP TABLE IF EXISTS tool_calls; DROP TABLE IF EXISTS call_bodies; UPDATE calls_meta SET pending_cleanup=1 WHERE id=1;").await?;
+            }
+            db.execute_unprepared("UPDATE calls_meta SET schema_version=7 WHERE id=1")
+                .await?;
+        }
+        Ok(())
+    }
+}
+
+struct ThroughputEpoch;
+impl MigrationName for ThroughputEpoch {
+    fn name(&self) -> &str {
+        "m20261026_000005_calls_throughput_epoch"
+    }
+}
+#[sea_orm_migration::async_trait::async_trait]
+impl MigrationTrait for ThroughputEpoch {
+    fn use_transaction(&self) -> Option<bool> {
+        Some(true)
+    }
+    async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        reset_legacy_throughput_samples(manager.get_connection())
+            .await
+            .map_err(conversion)
+    }
 }
 
 /// 一次性丢弃旧统计口径的性能样本，不换算、不回填。
@@ -128,7 +334,7 @@ pub(super) async fn initialize(
 /// 口径切换只作废派生的速度投影：累计费用、执行幂等身份、原始调用日志与会话历史都保持原样。
 /// 标记存在 `calls_meta.throughput_epoch`，因此重启、日志重建和后续升级都不会重复清空，
 /// 也不会把旧 JSONL 重新投影成旧口径样本。
-async fn reset_legacy_throughput_samples(db: &DatabaseConnection) -> Result<()> {
+async fn reset_legacy_throughput_samples(db: &impl ConnectionTrait) -> Result<()> {
     let row = db
         .query_one_raw(statement(
             "SELECT throughput_epoch FROM calls_meta WHERE id=1",
@@ -139,20 +345,18 @@ async fn reset_legacy_throughput_samples(db: &DatabaseConnection) -> Result<()> 
         .map(|row| row.try_get::<i64>("", "throughput_epoch"))
         .transpose()?
         .unwrap_or(0);
-    if epoch >= i64::from(event::THROUGHPUT_EPOCH) {
+    if epoch >= 1 {
         return Ok(());
     }
-    let tx = db.begin().await?;
-    tx.execute_unprepared("DELETE FROM performance_samples")
+    db.execute_unprepared("DELETE FROM performance_samples")
         .await?;
-    tx.execute_raw(statement(
+    db.execute_raw(statement(
         "UPDATE calls_meta SET throughput_epoch=? WHERE id=1",
-        vec![i64::from(event::THROUGHPUT_EPOCH).into()],
+        vec![1i64.into()],
     ))
     .await?;
-    tx.commit().await?;
     tracing::info!(
-        epoch = event::THROUGHPUT_EPOCH,
+        epoch = 1,
         "discarded previous throughput samples after the statistics epoch change"
     );
     Ok(())
@@ -191,7 +395,7 @@ pub(super) async fn retry_pending_cleanup(db: &DatabaseConnection, root_dir: &Pa
     Ok(())
 }
 
-async fn ensure_schema(db: &DatabaseConnection) -> Result<()> {
+async fn ensure_schema(db: &impl ConnectionTrait) -> Result<()> {
     db.execute_unprepared(
         "CREATE TABLE IF NOT EXISTS calls_meta (
             id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -287,7 +491,7 @@ async fn ensure_schema(db: &DatabaseConnection) -> Result<()> {
 /// Keep the performance projection independent of retired source tables. This also
 /// repairs schema 5 databases whose parent was already dropped; log replay refills
 /// any samples erased by the old cascading delete, without touching billing totals.
-async fn detach_legacy_performance(tx: &DatabaseTransaction) -> Result<()> {
+async fn detach_legacy_performance(tx: &impl ConnectionTrait) -> Result<()> {
     let foreign_keys = tx
         .query_all_raw(statement(
             "PRAGMA foreign_key_list(performance_samples)",
@@ -320,58 +524,6 @@ async fn detach_legacy_performance(tx: &DatabaseTransaction) -> Result<()> {
             ON performance_samples(completed_at DESC,thread_id DESC,call_id DESC);",
     )
     .await?;
-    Ok(())
-}
-
-/// 把旧库保全地迁移到当前日志格式；只有全部成功才前移版本并删除旧结构。
-async fn migrate_from_legacy(db: &DatabaseConnection, log: &mut CallLog) -> Result<()> {
-    let from_version: i64 = db
-        .query_one_raw(statement(
-            "SELECT schema_version FROM calls_meta WHERE id=1",
-            vec![],
-        ))
-        .await?
-        .map(|row| row.try_get::<i64>("", "schema_version"))
-        .transpose()?
-        .unwrap_or(0);
-    tracing::warn!(
-        from = from_version,
-        to = CALLS_SCHEMA_VERSION,
-        "migrating calls schema to the versioned JSONL log layout"
-    );
-    if table_exists(db, "model_calls").await? {
-        ensure_columns(db, "model_calls", LEGACY_MODEL_COLUMNS).await?;
-        // 顺序固定：先保全累计摘要，再转换保留期正文到日志。旧结构的耗时列不构成当前
-        // 统计口径的速度样本，因此不再投影旧性能统计。
-        summary::migrate_from_legacy(db).await?;
-        db.execute_unprepared("INSERT OR REPLACE INTO legacy_auxiliary_usage(thread_id,payload)
-            SELECT thread_id,json_object('inferenceCount',COUNT(*),'promptTokens',COALESCE(SUM(input_tokens),0),
-                'completionTokens',COALESCE(SUM(output_tokens),0),'cachedPromptTokens',COALESCE(SUM(cache_read_tokens),0),
-                'cacheWriteTokens',COALESCE(SUM(cache_write_tokens),0),'reasoningTokens',COALESCE(SUM(reasoning_tokens),0),
-                'totalTokens',COALESCE(SUM(total_tokens),0),'hasIncompleteUsage',json('true'),'cacheIncomplete',json('true'),
-                'hasUnpricedUsage',json(CASE WHEN MAX(has_unpriced_usage)>0 THEN 'true' ELSE 'false' END))
-            FROM model_calls WHERE terminal=1 AND purpose IN ('title','review') GROUP BY thread_id").await?;
-        convert_legacy_rows(db, log).await?;
-    }
-    if table_exists(db, "tool_calls").await? {
-        convert_legacy_tools(db, log).await?;
-    }
-    // Detach the child table before dropping model_calls: its old ON DELETE CASCADE
-    // would otherwise erase the preserved samples and leave an unusable foreign key.
-    let tx = db.begin().await?;
-    detach_legacy_performance(&tx).await?;
-    tx.execute_unprepared("DROP TABLE IF EXISTS model_calls; DROP TABLE IF EXISTS tool_calls; DROP TABLE IF EXISTS call_bodies;").await?;
-    tx.execute_raw(statement(
-        "UPDATE calls_meta SET schema_version=?, pending_cleanup=1 WHERE id=1",
-        vec![CALLS_SCHEMA_VERSION.into()],
-    ))
-    .await?;
-    tx.commit().await?;
-    tracing::info!(
-        from = from_version,
-        to = CALLS_SCHEMA_VERSION,
-        "calls schema migration completed with data preserved"
-    );
     Ok(())
 }
 
@@ -538,7 +690,7 @@ fn opt_u64(row: &QueryResult, column: &str) -> Result<Option<u64>> {
         .and_then(non_negative))
 }
 
-async fn table_exists(db: &DatabaseConnection, table: &str) -> Result<bool> {
+async fn table_exists(db: &impl ConnectionTrait, table: &str) -> Result<bool> {
     let row = db
         .query_one_raw(statement(
             "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
@@ -552,7 +704,7 @@ async fn table_exists(db: &DatabaseConnection, table: &str) -> Result<bool> {
 ///
 /// 改名在 `ensure_schema` 之前完成，因此不会出现"先按新列名补齐空列、再与旧列并存"的
 /// 半迁移状态；旧值与主键、完成时间、用量和时延一律保留。已改名的库上是幂等空操作。
-async fn rename_performance_identity_columns(db: &DatabaseConnection) -> Result<()> {
+async fn rename_performance_identity_columns(db: &impl ConnectionTrait) -> Result<()> {
     if !table_exists(db, "performance_samples").await? {
         return Ok(());
     }
@@ -579,7 +731,7 @@ async fn rename_performance_identity_columns(db: &DatabaseConnection) -> Result<
 
 /// 补齐缺失的列并返回迁移后的列集合；列/表名都是编译期常量，不做动态 SQL 拼接注入面。
 async fn ensure_columns(
-    db: &DatabaseConnection,
+    db: &impl ConnectionTrait,
     table: &str,
     specs: &[(&str, &str)],
 ) -> Result<BTreeSet<String>> {
@@ -607,7 +759,7 @@ async fn migration_columns(db: &DatabaseConnection, table: &str) -> Result<Strin
         .join(","))
 }
 
-async fn table_columns(db: &DatabaseConnection, table: &str) -> Result<BTreeSet<String>> {
+async fn table_columns(db: &impl ConnectionTrait, table: &str) -> Result<BTreeSet<String>> {
     let rows = db
         .query_all_raw(statement(&format!("PRAGMA table_info({table})"), vec![]))
         .await?;
@@ -632,7 +784,7 @@ pub(super) async fn seed_legacy_for_test(path: &Path, seed_sql: &str) -> Result<
     Ok(())
 }
 
-/// 测试用：建立只有 `calls_meta` 的指定版本数据库，再由调用方写入其余结构。
+/// 测试用：旧版本使用指定结构，当前版本补齐其余规范表。
 #[cfg(test)]
 pub(super) async fn seed_version_for_test(
     path: &Path,
@@ -662,6 +814,9 @@ pub(super) async fn seed_version_for_test(
     ))
     .await?;
     db.execute_unprepared(seed_sql).await?;
+    if schema_version == CALLS_SCHEMA_VERSION {
+        ensure_schema(&db).await?;
+    }
     Ok(())
 }
 
@@ -1135,6 +1290,84 @@ mod storage_fault_tests {
             .is_some()
         );
         reopened.stop_best_effort();
+        Ok(())
+    }
+    #[tokio::test]
+    async fn durable_export_rebuilds_its_index_before_retry_without_duplicate_logs_or_costs()
+    -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let path = temp.path().join("calls.sqlite");
+        let now = crate::studio::unix_seconds();
+        seed_legacy_for_test(&path, &format!("INSERT INTO model_calls(thread_id,call_id,turn_id,attempt_id,root_thread_id,revision,admitted_at,started_at,status,terminal,cost_currency,cost_amount) VALUES('thread','call','turn','call','thread',1,{now},{now},'committed',1,'USD',3.5)")).await?;
+        let db = Database::connect(
+            crate::studio::paths::sqlite_file_options(
+                &path,
+                crate::studio::paths::SqliteFileMode::ReadWrite,
+                |options| options,
+            )
+            .await?,
+        )
+        .await?;
+        ensure_schema(&db).await?;
+        db.execute_unprepared("CREATE TRIGGER reject_export_index BEFORE INSERT ON call_log_index BEGIN SELECT RAISE(ABORT,'injected export index failure'); END").await?;
+        db.close().await?;
+        let error = match CallsStore::prepare(&path).await {
+            Ok(_) => anyhow::bail!("injected index failure was ignored"),
+            Err(error) => error,
+        };
+        assert!(format!("{error:#}").contains("m20261026_000003_calls_export_log"));
+        let db = Database::connect(
+            crate::studio::paths::sqlite_file_options(
+                &path,
+                crate::studio::paths::SqliteFileMode::ReadWrite,
+                |options| options,
+            )
+            .await?,
+        )
+        .await?;
+        assert!(table_exists(&db, "model_calls").await?);
+        assert_eq!(
+            db.query_all_raw(statement("SELECT call_id FROM call_log_index", vec![]))
+                .await?
+                .len(),
+            0
+        );
+        assert!(db.query_one_raw(statement("SELECT version FROM seaql_migrations WHERE version='m20261026_000003_calls_export_log'", vec![])).await?.is_none());
+        db.execute_unprepared("DROP TRIGGER reject_export_index")
+            .await?;
+        db.close().await?;
+        for _ in 0..2 {
+            let store = CallsStore::prepare(&path).await?;
+            assert_eq!(
+                store.session_cost_rollups().await?[0].estimated_costs[0].amount,
+                3.5
+            );
+            assert_eq!(
+                store
+                    .writer
+                    .db
+                    .query_all_raw(statement("SELECT call_id FROM call_log_index", vec![]))
+                    .await?
+                    .len(),
+                1
+            );
+            assert!(!table_exists(&store.writer.db, "model_calls").await?);
+            store.close().await?;
+        }
+        let mut entries = tokio::fs::read_dir(temp.path().join("logs")).await?;
+        let mut lines = 0;
+        while let Some(entry) = entries.next_entry().await? {
+            if entry.path().extension().is_some_and(|ext| ext == "jsonl") {
+                lines += tokio::fs::read_to_string(entry.path())
+                    .await?
+                    .lines()
+                    .count();
+            }
+        }
+        assert_eq!(
+            lines, 1,
+            "the durable append must be recovered rather than duplicated"
+        );
         Ok(())
     }
 }

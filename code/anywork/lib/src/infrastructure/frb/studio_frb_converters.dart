@@ -439,7 +439,6 @@ StudioBootstrap studioBootstrapFromFrbSnapshot(
         snapshot.projectId: _skillsStateFromFrb(snapshot),
     },
     threadModeCatalog: _threadModeCatalogFromFrb(value.threadModeCatalog),
-    accountUsageState: _accountUsageStateFromFrb(value.accountUsage),
     updaterState: updaterStateFromFrb(value.updater),
     persistenceState: _persistenceStateFromFrb(value.persistence),
     persistenceQueueState: _persistenceQueueStateFromFrb(
@@ -1327,6 +1326,16 @@ StudioRecoveryIssue _recoveryIssueFromFrb(
     worktree: issue.worktree == null
         ? null
         : WorktreeRecoveryPreview(
+            inspection: switch (issue.worktree!.inspection) {
+              frb.BridgeWorktreeInspection.available =>
+                WorktreeInspection.available,
+              frb.BridgeWorktreeInspection.missing =>
+                WorktreeInspection.missing,
+              frb.BridgeWorktreeInspection.identityMismatch =>
+                WorktreeInspection.identityMismatch,
+              frb.BridgeWorktreeInspection.unavailable =>
+                WorktreeInspection.unavailable,
+            },
             ownerKind: switch (issue.worktree!.ownerKind) {
               frb.BridgeWorktreeOwner.session => WorktreeOwnerKind.session,
               frb.BridgeWorktreeOwner.child => WorktreeOwnerKind.child,
@@ -1447,4 +1456,37 @@ SettingsCommandReply _settingsCommandReplyFromFrb(
 ) => SettingsCommandReply(
   snapshot: _settingsStateFromFrb(value.snapshot),
   receipt: _commandReceiptFromFrb(value.receipt),
+  accountFrames: [
+    for (final account in value.snapshot.config.settings.accounts)
+      AccountDetailFrame(
+        ResourceStamp(
+          resourceKey: 'settings',
+          ownerEpoch: value.receipt.targets.first.ownerEpoch,
+          revision: value.snapshot.config.revision.toInt(),
+        ),
+        NativeAccountIdentity(account.accountId),
+        _nativeAccountDetailsFromFrb(account),
+        modelConfiguration: _modelConfigurationFromFrb(account),
+      ),
+    for (final account in value.snapshot.config.settings.acpAccounts)
+      AccountDetailFrame(
+        ResourceStamp(
+          resourceKey: 'settings',
+          ownerEpoch: value.receipt.targets.first.ownerEpoch,
+          revision: value.snapshot.config.revision.toInt(),
+        ),
+        AcpAccountIdentity(account.accountId),
+        AcpAccountDetails(_acpAccountFromFrb(account)),
+      ),
+    for (final catalog in value.snapshot.catalog.accounts)
+      AccountModelsFrame(
+        ResourceStamp(
+          resourceKey: 'model-catalog',
+          ownerEpoch: value.receipt.targets.first.ownerEpoch,
+          revision: value.snapshot.catalog.revision.toInt(),
+        ),
+        NativeAccountIdentity(catalog.accountId),
+        _accountModelCatalogFromFrb(catalog),
+      ),
+  ],
 );

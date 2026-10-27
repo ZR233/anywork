@@ -26,6 +26,7 @@ mod protocol;
 pub mod resource_store;
 pub mod statistics;
 mod studio;
+pub use studio::accounts;
 pub mod thread_assembler;
 mod updater;
 mod worker_assets;
@@ -86,9 +87,9 @@ pub use studio::{
     StudioRuntimeLifecycleState, StudioRuntimeOptions, StudioRuntimeSnapshot,
     StudioRuntimeStateKind, StudioStartNewThreadResponse, StudioStartupError,
     StudioStartupErrorKind, StudioStartupRecovery, StudioStore, StudioThreadSubscription,
-    StudioUpdateStateSnapshot, StudioWorktreeRecoveryPreview, ThreadPreparationObserver,
-    ThreadPreparationProgress, ThreadPreparationStage, ThreadRecord, TimelineContentReader,
-    TimelineTailStream,
+    StudioUpdateStateSnapshot, StudioWorktreeInspection, StudioWorktreeRecoveryPreview,
+    ThreadPreparationObserver, ThreadPreparationProgress, ThreadPreparationStage, ThreadRecord,
+    TimelineContentReader, TimelineTailStream,
 };
 pub use updater::{
     PreparedStudioUpdate, StudioUpdate, StudioUpdateAsset, StudioUpdateCancellation,

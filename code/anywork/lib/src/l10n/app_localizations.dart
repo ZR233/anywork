@@ -98,6 +98,294 @@ abstract class AppLocalizations {
     Locale('zh'),
   ];
 
+  /// No description provided for @accountsStateStale.
+  ///
+  /// In en, this message translates to:
+  /// **'The connection changed. Showing previous data until the current account is observed. Your input is kept.'**
+  String get accountsStateStale;
+
+  /// No description provided for @accountsSavePending.
+  ///
+  /// In en, this message translates to:
+  /// **'The change was accepted. Waiting for this account to be observed and saved.'**
+  String get accountsSavePending;
+
+  /// No description provided for @accountsUnknownSaveOutcome.
+  ///
+  /// In en, this message translates to:
+  /// **'The save result is unknown. Your input is kept; do not submit a replacement request blindly.'**
+  String get accountsUnknownSaveOutcome;
+
+  /// No description provided for @accountsRequiredField.
+  ///
+  /// In en, this message translates to:
+  /// **'Enter a non-empty value.'**
+  String get accountsRequiredField;
+
+  /// No description provided for @accountsDuplicateModel.
+  ///
+  /// In en, this message translates to:
+  /// **'Each manual model must have a unique ID.'**
+  String get accountsDuplicateModel;
+
+  /// No description provided for @accountsOutputBudget.
+  ///
+  /// In en, this message translates to:
+  /// **'The output budget must not exceed the context window.'**
+  String get accountsOutputBudget;
+
+  /// No description provided for @accountsOutputModalities.
+  ///
+  /// In en, this message translates to:
+  /// **'Output modalities'**
+  String get accountsOutputModalities;
+
+  /// No description provided for @accountsSavedConnectionFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'The account was saved, but the connection request failed.'**
+  String get accountsSavedConnectionFailed;
+
+  /// No description provided for @accountsTargetMissing.
+  ///
+  /// In en, this message translates to:
+  /// **'This account no longer exists.'**
+  String get accountsTargetMissing;
+
+  /// No description provided for @accountsStatusColumn.
+  ///
+  /// In en, this message translates to:
+  /// **'Status'**
+  String get accountsStatusColumn;
+
+  /// No description provided for @accountsBalanceColumn.
+  ///
+  /// In en, this message translates to:
+  /// **'Balance & quota'**
+  String get accountsBalanceColumn;
+
+  /// No description provided for @accountsSettingsSection.
+  ///
+  /// In en, this message translates to:
+  /// **'Account settings'**
+  String get accountsSettingsSection;
+
+  /// No description provided for @accountsAdvancedSection.
+  ///
+  /// In en, this message translates to:
+  /// **'Advanced information'**
+  String get accountsAdvancedSection;
+
+  /// No description provided for @accountsSyncModels.
+  ///
+  /// In en, this message translates to:
+  /// **'Sync models'**
+  String get accountsSyncModels;
+
+  /// No description provided for @accountsSyncUnsupported.
+  ///
+  /// In en, this message translates to:
+  /// **'This account does not support model discovery.'**
+  String get accountsSyncUnsupported;
+
+  /// No description provided for @accountsSyncingModels.
+  ///
+  /// In en, this message translates to:
+  /// **'Syncing models…'**
+  String get accountsSyncingModels;
+
+  /// No description provided for @accountsQueryIdle.
+  ///
+  /// In en, this message translates to:
+  /// **'Usage has not been checked yet.'**
+  String get accountsQueryIdle;
+
+  /// No description provided for @accountsQueryUnsupported.
+  ///
+  /// In en, this message translates to:
+  /// **'Usage queries are not supported by this account.'**
+  String get accountsQueryUnsupported;
+
+  /// No description provided for @accountsQueryFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Could not refresh usage.'**
+  String get accountsQueryFailed;
+
+  /// No description provided for @accountsUsageLastGood.
+  ///
+  /// In en, this message translates to:
+  /// **'Showing the last successful data.'**
+  String get accountsUsageLastGood;
+
+  /// No description provided for @accountsLoading.
+  ///
+  /// In en, this message translates to:
+  /// **'Loading accounts…'**
+  String get accountsLoading;
+
+  /// No description provided for @accountsRetry.
+  ///
+  /// In en, this message translates to:
+  /// **'Retry'**
+  String get accountsRetry;
+
+  /// No description provided for @accountsAutomatic.
+  ///
+  /// In en, this message translates to:
+  /// **'Automatic'**
+  String get accountsAutomatic;
+
+  /// No description provided for @accountsOverride.
+  ///
+  /// In en, this message translates to:
+  /// **'Override'**
+  String get accountsOverride;
+
+  /// No description provided for @accountsBillingDisclaimer.
+  ///
+  /// In en, this message translates to:
+  /// **'Billing settings only control this app’s cost estimates. No charge does not mean the provider is free. A subscription does not guarantee quota or exclude additional charges.'**
+  String get accountsBillingDisclaimer;
+
+  /// No description provided for @accountsSource.
+  ///
+  /// In en, this message translates to:
+  /// **'Source'**
+  String get accountsSource;
+
+  /// No description provided for @accountsVerifySignIn.
+  ///
+  /// In en, this message translates to:
+  /// **'Verify sign-in'**
+  String get accountsVerifySignIn;
+
+  /// No description provided for @accountsLowQuota.
+  ///
+  /// In en, this message translates to:
+  /// **'Low remaining quota'**
+  String get accountsLowQuota;
+
+  /// No description provided for @accountsRemaining.
+  ///
+  /// In en, this message translates to:
+  /// **'Remaining'**
+  String get accountsRemaining;
+
+  /// No description provided for @accountsPriceTiers.
+  ///
+  /// In en, this message translates to:
+  /// **'Tiered prices'**
+  String get accountsPriceTiers;
+
+  /// No description provided for @accountsPerformance.
+  ///
+  /// In en, this message translates to:
+  /// **'Performance samples'**
+  String get accountsPerformance;
+
+  /// No description provided for @accountsEvaluations.
+  ///
+  /// In en, this message translates to:
+  /// **'Recent evaluations (up to 10)'**
+  String get accountsEvaluations;
+
+  /// No description provided for @accountsReadout.
+  ///
+  /// In en, this message translates to:
+  /// **'Load performance & evaluations'**
+  String get accountsReadout;
+
+  /// No description provided for @accountsConnection.
+  ///
+  /// In en, this message translates to:
+  /// **'Connection'**
+  String get accountsConnection;
+
+  /// No description provided for @accountsHttp.
+  ///
+  /// In en, this message translates to:
+  /// **'HTTP'**
+  String get accountsHttp;
+
+  /// No description provided for @accountsWebSocket.
+  ///
+  /// In en, this message translates to:
+  /// **'WebSocket'**
+  String get accountsWebSocket;
+
+  /// No description provided for @accountsUnsavedTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Save account changes?'**
+  String get accountsUnsavedTitle;
+
+  /// No description provided for @accountsUnsavedBody.
+  ///
+  /// In en, this message translates to:
+  /// **'Save before leaving, discard your changes, or keep editing. If saving fails, your input stays here.'**
+  String get accountsUnsavedBody;
+
+  /// No description provided for @accountsDiscard.
+  ///
+  /// In en, this message translates to:
+  /// **'Discard changes'**
+  String get accountsDiscard;
+
+  /// No description provided for @accountsKeepEditing.
+  ///
+  /// In en, this message translates to:
+  /// **'Keep editing'**
+  String get accountsKeepEditing;
+
+  /// No description provided for @accountsDirty.
+  ///
+  /// In en, this message translates to:
+  /// **'Unsaved changes'**
+  String get accountsDirty;
+
+  /// No description provided for @accountsTemplatePickerHint.
+  ///
+  /// In en, this message translates to:
+  /// **'Choose a model API account or an official ACP integration.'**
+  String get accountsTemplatePickerHint;
+
+  /// No description provided for @accountsDeleteTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Delete this account?'**
+  String get accountsDeleteTitle;
+
+  /// No description provided for @accountsDeleteBody.
+  ///
+  /// In en, this message translates to:
+  /// **'Only remove the selected account after checking references. History and bills are kept. Removing an ACP integration does not sign out the official program.'**
+  String get accountsDeleteBody;
+
+  /// No description provided for @accountsBack.
+  ///
+  /// In en, this message translates to:
+  /// **'Back to accounts'**
+  String get accountsBack;
+
+  /// No description provided for @accountsClearSearch.
+  ///
+  /// In en, this message translates to:
+  /// **'Clear search'**
+  String get accountsClearSearch;
+
+  /// No description provided for @accountsShowCredential.
+  ///
+  /// In en, this message translates to:
+  /// **'Show credential'**
+  String get accountsShowCredential;
+
+  /// No description provided for @accountsHideCredential.
+  ///
+  /// In en, this message translates to:
+  /// **'Hide credential'**
+  String get accountsHideCredential;
+
   /// No description provided for @promptAccepted.
   ///
   /// In en, this message translates to:
@@ -281,7 +569,7 @@ abstract class AppLocalizations {
   /// No description provided for @sidebarArchiveSessionConfirmBody.
   ///
   /// In en, this message translates to:
-  /// **'Archiving ends any running work, deletes this session tree\'s worktree along with any uncommitted or unmerged content, then moves the session out of the list. Continue?'**
+  /// **'Archiving stops active work in this session and its child sessions, then moves them to the archived list. Session history, workspaces, branches, and uncommitted content are kept. Continue?'**
   String get sidebarArchiveSessionConfirmBody;
 
   /// No description provided for @sidebarArchiveSessionConfirmAction.
@@ -2976,6 +3264,12 @@ abstract class AppLocalizations {
   /// **'Failed to read image'**
   String get timelineViewImageFailed;
 
+  /// No description provided for @timelineViewImageStopped.
+  ///
+  /// In en, this message translates to:
+  /// **'Stopped reading image'**
+  String get timelineViewImageStopped;
+
   /// No description provided for @timelineReadFileCompleted.
   ///
   /// In en, this message translates to:
@@ -3300,6 +3594,42 @@ abstract class AppLocalizations {
   /// **'Wait failed'**
   String get timelineToolWaitFailed;
 
+  /// No description provided for @timelineTurnStopped.
+  ///
+  /// In en, this message translates to:
+  /// **'Turn stopped'**
+  String get timelineTurnStopped;
+
+  /// No description provided for @timelineTurnCancelled.
+  ///
+  /// In en, this message translates to:
+  /// **'Turn cancelled'**
+  String get timelineTurnCancelled;
+
+  /// No description provided for @timelineTurnRuntimeShutdown.
+  ///
+  /// In en, this message translates to:
+  /// **'Runtime shut down; turn stopped'**
+  String get timelineTurnRuntimeShutdown;
+
+  /// No description provided for @timelineTurnAgentClosed.
+  ///
+  /// In en, this message translates to:
+  /// **'Agent closed; turn stopped'**
+  String get timelineTurnAgentClosed;
+
+  /// No description provided for @timelineTurnRecoveryStopped.
+  ///
+  /// In en, this message translates to:
+  /// **'Turn stopped during recovery'**
+  String get timelineTurnRecoveryStopped;
+
+  /// No description provided for @timelineTurnCoalesced.
+  ///
+  /// In en, this message translates to:
+  /// **'Turn merged into a later turn'**
+  String get timelineTurnCoalesced;
+
   /// No description provided for @timelineToolCompleted.
   ///
   /// In en, this message translates to:
@@ -3369,7 +3699,7 @@ abstract class AppLocalizations {
   /// No description provided for @timelineToolInterrupted.
   ///
   /// In en, this message translates to:
-  /// **'{name} interrupted'**
+  /// **'{name} stopped'**
   String timelineToolInterrupted(String name);
 
   /// No description provided for @timelineAgentSubagent.
@@ -5223,7 +5553,7 @@ abstract class AppLocalizations {
   /// No description provided for @settingsWorktreeCleanup.
   ///
   /// In en, this message translates to:
-  /// **'Clean up worktree and branch'**
+  /// **'Remove worktree (keep branch)'**
   String get settingsWorktreeCleanup;
 
   /// No description provided for @settingsWorktreeOwnerSession.
@@ -5877,7 +6207,7 @@ abstract class AppLocalizations {
   /// No description provided for @sidebarRestore.
   ///
   /// In en, this message translates to:
-  /// **'Restore session'**
+  /// **'Unarchive session'**
   String get sidebarRestore;
 
   /// No description provided for @sidebarPin.
@@ -6246,6 +6576,54 @@ abstract class AppLocalizations {
   /// **'dirty'**
   String get settingsWorktreeDirty;
 
+  /// No description provided for @settingsWorktreeClean.
+  ///
+  /// In en, this message translates to:
+  /// **'No uncommitted changes'**
+  String get settingsWorktreeClean;
+
+  /// No description provided for @settingsWorktreeDirtyUnknown.
+  ///
+  /// In en, this message translates to:
+  /// **'Change status unknown'**
+  String get settingsWorktreeDirtyUnknown;
+
+  /// No description provided for @settingsWorktreeChangedFilesUnknown.
+  ///
+  /// In en, this message translates to:
+  /// **'Changed files are not yet known. Retry the inspection.'**
+  String get settingsWorktreeChangedFilesUnknown;
+
+  /// No description provided for @settingsWorktreeInspectionAvailable.
+  ///
+  /// In en, this message translates to:
+  /// **'Worktree verified'**
+  String get settingsWorktreeInspectionAvailable;
+
+  /// No description provided for @settingsWorktreeInspectionMissing.
+  ///
+  /// In en, this message translates to:
+  /// **'Worktree missing'**
+  String get settingsWorktreeInspectionMissing;
+
+  /// No description provided for @settingsWorktreeInspectionIdentityMismatch.
+  ///
+  /// In en, this message translates to:
+  /// **'Worktree identity mismatch'**
+  String get settingsWorktreeInspectionIdentityMismatch;
+
+  /// No description provided for @settingsWorktreeInspectionUnavailable.
+  ///
+  /// In en, this message translates to:
+  /// **'Inspection unavailable'**
+  String get settingsWorktreeInspectionUnavailable;
+
+  /// No description provided for @settingsWorktreeRetry.
+  ///
+  /// In en, this message translates to:
+  /// **'Retry inspection'**
+  String get settingsWorktreeRetry;
+
   /// No description provided for @startupPreparing.
   ///
   /// In en, this message translates to:
@@ -6417,7 +6795,7 @@ abstract class AppLocalizations {
   /// No description provided for @settingsModelCatalogFailed.
   ///
   /// In en, this message translates to:
-  /// **'Startup model sync failed. The current list is still available.'**
+  /// **'Model sync failed. The current list is still available.'**
   String get settingsModelCatalogFailed;
 
   /// No description provided for @settingsModelCatalogCacheWarning.
@@ -7785,7 +8163,7 @@ abstract class AppLocalizations {
   /// No description provided for @timelineWaitInterrupted.
   ///
   /// In en, this message translates to:
-  /// **'Wait interrupted'**
+  /// **'Wait stopped'**
   String get timelineWaitInterrupted;
 
   /// No description provided for @timelineWaitTargetCount.
@@ -7863,7 +8241,7 @@ abstract class AppLocalizations {
   /// No description provided for @timelineWaitStatusInterrupted.
   ///
   /// In en, this message translates to:
-  /// **'Interrupted'**
+  /// **'Stopped'**
   String get timelineWaitStatusInterrupted;
 
   /// No description provided for @conversationActivityWaitingTools.

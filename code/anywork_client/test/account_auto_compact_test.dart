@@ -1,7 +1,11 @@
 import 'dart:async';
 
+import 'package:anywork_client/accounts.dart';
+import 'package:anywork_client/model_directory.dart';
 import 'package:anywork_client/studio_client.dart';
 import 'package:test/test.dart';
+
+import 'support/accounts_test_runtime.dart';
 
 const _alpha = AccountModelView(
   modelId: 'alpha',
@@ -35,58 +39,52 @@ final _account = AccountSettingsView(
   usageLabel: '',
   models: const [_alpha, _beta],
   autoCompactLimits: {
-    'alpha': AccountModelAutoCompactView(modelId: _alpha.modelId),
-    'beta': AccountModelAutoCompactView(
-      modelId: _beta.modelId,
+    'alpha': const AccountModelAutoCompactView(modelId: 'alpha'),
+    'beta': const AccountModelAutoCompactView(
+      modelId: 'beta',
       overrideLimit: 250,
     ),
     _orphan.modelId: _orphan,
   },
 );
-
-SettingsStateSnapshot _snapshot(int revision, AccountSettingsView account) =>
-    SettingsStateSnapshot(revision: revision, accounts: [account]);
+const _identity = NativeAccountIdentity('fixture');
+SettingsStateSnapshot _snapshot(
+  int revision,
+  AccountSettingsView account, {
+  int catalog = 0,
+}) => SettingsStateSnapshot(
+  revision: revision,
+  modelCatalogRevision: catalog,
+  accounts: [account],
+);
 
 class _SaveCall {
-  _SaveCall(this.revision, this.command, this.id);
+  _SaveCall(this.revision, this.identity, this.intent, this.id);
   final int revision;
-  final AccountCommand command;
+  final AccountModelIdentity identity;
+  final AutoCompactIntent intent;
   final OperationId id;
   final reply = Completer<SettingsCommandReply>();
-
-  void complete(int revision, AccountSettingsView account) {
-    reply.complete(
-      SettingsCommandReply(
-        snapshot: _snapshot(revision, account),
-        receipt: StudioCommandReceipt(
-          operationId: id,
-          disposition: CommitDisposition.applied,
-          targets: [
-            ResourceStamp(
-              resourceKey: 'settings',
-              ownerEpoch: 'fixture-owner',
-              revision: revision,
-            ),
-          ],
-          effect: EffectPoint.immediate,
-          effective: true,
-          durable: true,
-        ),
+  void complete(int revision, AccountSettingsView account) => reply.complete(
+    accountReply(
+      snapshot: _snapshot(revision, account),
+      receipt: StudioCommandReceipt(
+        operationId: id,
+        disposition: CommitDisposition.applied,
+        targets: [testStamp('settings', revision, epoch: 'fixture-owner')],
+        effect: EffectPoint.immediate,
+        effective: true,
+        durable: true,
       ),
-    );
-  }
+    ),
+  );
 }
 
-/// 只脚本化远端 CAS/响应，不实现命令构造、解析、lane 或 reducer。
-class _Transport implements StudioTransport {
-  final calls = StreamController<_SaveCall>();
+class _Transport extends AccountsTestTransport {
+  final calls = StreamController<_SaveCall>.broadcast();
   SettingsStateSnapshot? refreshed;
   int refreshes = 0;
-
-  @override
-  Stream<ProductTopicFrame> subscribeProductTopic(ProductTopic topic) =>
-      const Stream.empty();
-
+  CreateAccountCommand? creation;
   @override
   Future<SettingsStateSnapshot> readSettingsState() async {
     refreshes++;
@@ -94,54 +92,86 @@ class _Transport implements StudioTransport {
   }
 
   @override
-  Future<SettingsCommandReply> saveAccount(
+  Future<SettingsCommandReply> setAccountModelAutoCompact(
     int revision,
-    AccountCommand command, {
+    AccountModelIdentity identity,
+    AutoCompactIntent intent, {
     required OperationId operationId,
   }) {
-    final call = _SaveCall(revision, command, operationId);
+    final call = _SaveCall(revision, identity, intent, operationId);
     calls.add(call);
     return call.reply.future;
   }
 
   @override
-  dynamic noSuchMethod(Invocation invocation) =>
-      throw UnsupportedError('Unused: ${invocation.memberName}');
-}
-
-AnyworkClient _client(_Transport transport) {
-  final client = AnyworkClient(
-    transport: transport,
-    clientId: 'fixture-client',
-  );
-  client.applyBootstrap(
-    StudioBootstrap(
-      ownerEpoch: 'fixture-owner',
-      projectDirectory: ProjectDirectoryState(values: const [], revision: 1),
-      threadDirectory: ThreadDirectoryWindow(threads: const [], revision: 1),
-      agentDirectory: AgentDirectoryState(revision: 1),
-      settingsState: _snapshot(1, _account),
-      recoveryState: RecoveryStateSnapshot(revision: 1),
-      mcpState: McpStateSnapshot(revision: 1),
-      lspState: LspStateSnapshot(revision: 1),
-      skillsByProject: const {},
-      threadModeCatalog: const ThreadModeCatalogView(),
-      accountUsageState: AccountUsageStateSnapshot(revision: 1),
-      updaterState: DisabledUpdaterStateSnapshot(
-        revision: 1,
-        updatedAt: DateTime.utc(2026),
+  Future<SettingsCommandReply> createAccount(
+    int revision,
+    CreateAccountCommand command, {
+    required OperationId operationId,
+  }) async {
+    creation = command;
+    return accountReply(
+      snapshot: SettingsStateSnapshot(
+        revision: revision + 1,
+        accounts: [
+          _account,
+          AccountSettingsView(
+            id: command.identity.accountId,
+            name: command.name,
+            protocol: command.protocol,
+            baseUrl: command.baseUrl,
+            defaultModelId: '',
+            status: 'ready',
+            usageLabel: '',
+            models: [
+              for (final model in command.customModels)
+                AccountModelView(
+                  modelId: model.modelId,
+                  displayName: model.displayName,
+                  reasoningEfforts: const [],
+                  origin: ModelOrigin.manual,
+                  contextWindow: model.contextWindow,
+                  maxOutputTokens: model.maxOutputTokens,
+                ),
+            ],
+          ),
+        ],
       ),
-      persistenceState: const PersistenceStateSnapshot.ready(),
-    ),
-  );
-  addTearDown(client.close);
-  addTearDown(transport.calls.close);
-  return client;
+      receipt: StudioCommandReceipt(
+        operationId: operationId,
+        disposition: CommitDisposition.applied,
+        targets: [testStamp('settings', revision + 1, epoch: epoch)],
+        effect: EffectPoint.futureSession,
+        effective: false,
+        durable: true,
+      ),
+    );
+  }
 }
 
-Map<String, int> _limits(AccountCommand command) => {
-  for (final item in command.modelAutoCompactLimits) item.modelId: item.limit,
-};
+AccountsTestRuntime _client(_Transport transport) {
+  transport.epoch = 'fixture-owner';
+  final runtime = AccountsTestRuntime(transport, clientId: 'fixture-client');
+  runtime.seed(_snapshot(1, _account));
+  addTearDown(runtime.close);
+  addTearDown(transport.calls.close);
+  return runtime;
+}
+
+AccountModelConfiguration _config(AccountsTestRuntime runtime) =>
+    runtime.domains.models.state.value.configurations[_identity]!.value!;
+AccountModelCatalog _catalog(AccountsTestRuntime runtime) =>
+    runtime.domains.models.state.value.accounts[_identity]!.value!;
+Future<OperationState> _set(
+  AccountsTestRuntime runtime,
+  String model,
+  int? limit,
+) => runtime.domains.models.setAutoCompact(
+  modelIdentity('fixture', model),
+  limit == null
+      ? const AutoCompactIntent.clear()
+      : AutoCompactIntent.set(limit),
+);
 
 void main() {
   test('enablement keeps backend defaults and explicit intents across independent clocks', () {
@@ -163,40 +193,35 @@ void main() {
         ),
       ],
     );
-    var state = mergeSettingsProjection(
-      const SettingsProjectionState(),
-      frame(1, 1, const {}, false),
-    );
-    AccountSettingsView account() => state.canonical!.accounts.single;
-    expect(account().models.map((model) => model.enabled), [false, false]);
-    state = mergeSettingsProjection(
-      state,
-      frame(2, 1, const {'alpha': true}, false),
-      scope: SettingsMergeScope.configOnly,
-    );
-    expect(account().models.map((model) => model.enabled), [true, false]);
-    state = mergeSettingsProjection(
-      state,
-      frame(1, 2, const {}, false),
-      scope: SettingsMergeScope.catalogOnly,
-    );
-    expect(account().modelEnabledOverrides, {'alpha': true});
-    expect(account().models.map((model) => model.enabled), [true, false]);
-    state = mergeSettingsProjection(
-      state,
-      frame(3, 1, const {'alpha': false}, true),
-      scope: SettingsMergeScope.configOnly,
-    );
-    state = mergeSettingsProjection(
-      state,
-      frame(2, 3, const {'alpha': true}, true),
-      scope: SettingsMergeScope.catalogOnly,
-    );
-    expect(account().modelEnabledOverrides, {'alpha': false});
-    expect(account().models.map((model) => model.enabled), [false, false]);
+    final runtime = _client(_Transport());
+    const identity = NativeAccountIdentity('fixture');
+    void accept(SettingsStateSnapshot snapshot) => runtime.seed(snapshot);
+    AccountModelCatalog catalog() =>
+        runtime.domains.models.state.value.accounts[identity]!.value!;
+    AccountModelConfiguration configuration() =>
+        runtime.domains.models.state.value.configurations[identity]!.value!;
+    accept(frame(1, 1, const {}, false));
+    expect(catalog().models.map((model) => model.enabled), [false, false]);
+    accept(frame(2, 1, const {'alpha': true}, false));
+    expect(catalog().models.map((model) => model.enabled), [true, false]);
+    accept(frame(1, 2, const {}, false));
+    expect(configuration().modelEnabledOverrides, {'alpha': true});
+    expect(catalog().models.map((model) => model.enabled), [true, false]);
+    accept(frame(3, 1, const {'alpha': false}, true));
+    accept(frame(2, 3, const {'alpha': true}, true));
+    expect(configuration().modelEnabledOverrides, {'alpha': false});
+    expect(catalog().models.map((model) => model.enabled), [false, false]);
+    final current = runtime.domains.models.state.value.accounts[identity];
+    accept(frame(2, 2, const {'alpha': true}, true));
     expect(
-      mergeSettingsProjection(state, frame(2, 2, const {'alpha': true}, true)),
-      same(state),
+      runtime.domains.models.state.value.accounts[identity],
+      same(current),
+    );
+    accept(frame(4, 3, const {}, false));
+    expect(
+      catalog().models.map((model) => model.enabled),
+      [true, false],
+      reason: 'Clearing explicit intent restores the retained backend default, not a previously projected override',
     );
   });
 
@@ -225,54 +250,60 @@ void main() {
               ),
           ],
         );
-    var state = mergeSettingsProjection(
-      const SettingsProjectionState(),
-      frame(1, 1, 1000),
-    );
-    state = mergeSettingsProjection(
-      state,
-      frame(1, 2, 2000),
-      scope: SettingsMergeScope.catalogOnly,
+    final runtime = _client(_Transport());
+    runtime.seed(frame(1, 1, 1000));
+    runtime.domains.acceptCatalog(frame(1, 2, 2000), 'fixture-owner');
+    List<int?> windows() => [
+      for (final id in ['first', 'second'])
+        runtime
+            .domains
+            .models
+            .state
+            .value
+            .accounts[NativeAccountIdentity(id)]!
+            .value!
+            .models
+            .single
+            .contextWindow,
+    ];
+    expect(windows(), [2000, 2000]);
+    runtime.seed(frame(2, 1, 1000));
+    expect(
+      runtime
+          .domains
+          .models
+          .state
+          .value
+          .configurations[const NativeAccountIdentity('first')]!
+          .stamp!
+          .revision,
+      2,
     );
     expect(
-      state.canonical!.accounts.map(
-        (account) => account.models.single.contextWindow,
-      ),
-      [2000, 2000],
+      runtime
+          .domains
+          .models
+          .state
+          .value
+          .accounts[const NativeAccountIdentity('first')]!
+          .stamp!
+          .revision,
+      2,
     );
-    state = mergeSettingsProjection(state, frame(2, 1, 1000));
-    expect(state.settingsRevision, 2);
-    expect(state.modelCatalogRevision, 2);
-    expect(
-      state.canonical!.accounts.map(
-        (account) => account.models.single.contextWindow,
-      ),
-      [2000, 2000],
-    );
-    expect(mergeSettingsProjection(state, frame(1, 1, 1000)), same(state));
+    expect(windows(), [2000, 2000]);
+    final state = runtime.domains.models.state.value;
+    runtime.seed(frame(1, 1, 1000));
+    expect(runtime.domains.models.state.value, same(state));
   });
 
   test(
     'catalog policy is passed through unchanged across independent watermarks',
     () {
+      final runtime = _client(_Transport());
       final configured = _account.withAutoCompactLimit(
         const AccountModelAutoCompactView(modelId: 'alpha', overrideLimit: 150),
       );
-      var state = mergeSettingsProjection(
-        const SettingsProjectionState(),
-        _snapshot(1, configured),
-      );
-      AccountSettingsView current() => state.canonical!.accounts.single;
-      AccountModelAutoCompactView limit() => current().autoCompactLimitFor(
-        current().models
-                .where((model) => model.modelId == 'alpha')
-                .firstOrNull ??
-            const AccountModelView(
-              modelId: 'alpha',
-              displayName: '',
-              reasoningEfforts: [],
-            ),
-      );
+      runtime.seed(_snapshot(2, configured));
       SettingsStateSnapshot frame(
         int revision,
         List<AccountModelView> models,
@@ -288,24 +319,38 @@ void main() {
         autoCompactLimit: 137,
         adjustment: ModelContextAdjustment.safetyLimit,
       );
-      state = mergeSettingsProjection(
-        state,
+      runtime.domains.acceptCatalog(
         frame(2, [
           _alpha.copyWith(contextWindow: 2000, context: backendPolicy),
           _beta,
         ]),
-        scope: SettingsMergeScope.catalogOnly,
+        'fixture-owner',
       );
-      expect(state.settingsRevision, 1);
-      expect(current().name, 'Fixture');
-      expect(limit().overrideLimit, 150);
       expect(
-        limit().context,
-        same(backendPolicy),
-        reason: 'backend policy is not reconstructed from capacity or override',
+        runtime
+            .domains
+            .models
+            .state
+            .value
+            .configurations[_identity]!
+            .stamp!
+            .revision,
+        2,
       );
-      state = mergeSettingsProjection(
-        state,
+      expect(
+        (runtime.domains.accounts.details(_identity).value.value
+                as NativeAccountDetails)
+            .name,
+        'Fixture',
+      );
+      expect(_config(runtime).autoCompactLimits['alpha'], 150);
+      expect(
+        _catalog(runtime).model('alpha')!.context,
+        same(backendPolicy),
+        reason:
+            'The backend policy is not reconstructed from capacity or override',
+      );
+      runtime.domains.acceptCatalog(
         frame(3, [
           const AccountModelView(
             modelId: 'alpha',
@@ -314,88 +359,114 @@ void main() {
           ),
           _beta,
         ]),
-        scope: SettingsMergeScope.catalogOnly,
+        'fixture-owner',
       );
-      expect(limit().overrideLimit, 150);
-      expect(limit().context.autoCompactLimit, isNull);
-      state = mergeSettingsProjection(
-        state,
-        frame(4, [_beta]),
-        scope: SettingsMergeScope.catalogOnly,
-      );
-      expect(current().autoCompactLimits['alpha']?.overrideLimit, 150);
-      expect(current().autoCompactLimits[_orphan.modelId]?.overrideLimit, 777);
-      state = mergeSettingsProjection(
-        state,
-        frame(5, [_alpha.copyWith(context: backendPolicy), _beta]),
-        scope: SettingsMergeScope.catalogOnly,
-      );
-      final reply = configured.withAutoCompactLimit(
-        const AccountModelAutoCompactView(modelId: 'alpha', overrideLimit: 300),
-      );
-      state = mergeSettingsProjection(
-        state,
-        _snapshot(2, reply),
-        scope: SettingsMergeScope.configOnly,
-      );
-      expect(state.modelCatalogRevision, 5);
-      expect(limit().overrideLimit, 300);
+      expect(_config(runtime).autoCompactLimits['alpha'], 150);
       expect(
-        limit().context,
-        same(backendPolicy),
-        reason: 'old config replies cannot roll back final catalog policy',
+        _catalog(runtime).model('alpha')!.context.autoCompactLimit,
+        isNull,
       );
-      expect(_limits(AccountCommandBuilder.buildAccount(current())), {
+      runtime.domains.acceptCatalog(frame(4, [_beta]), 'fixture-owner');
+      expect(_config(runtime).autoCompactLimits['alpha'], 150);
+      expect(_config(runtime).autoCompactLimits[_orphan.modelId], 777);
+      runtime.domains.acceptCatalog(
+        frame(5, [_alpha.copyWith(context: backendPolicy), _beta]),
+        'fixture-owner',
+      );
+      runtime.seed(
+        _snapshot(
+          3,
+          configured.withAutoCompactLimit(
+            const AccountModelAutoCompactView(
+              modelId: 'alpha',
+              overrideLimit: 300,
+            ),
+          ),
+        ),
+      );
+      expect(
+        runtime.domains.models.state.value.accounts[_identity]!.stamp!.revision,
+        5,
+      );
+      expect(_config(runtime).autoCompactLimits['alpha'], 300);
+      expect(
+        _catalog(runtime).model('alpha')!.context,
+        same(backendPolicy),
+        reason:
+            'Old configuration replies cannot roll back final catalog policy',
+      );
+      expect(_config(runtime).autoCompactLimits, {
         'alpha': 300,
         'beta': 250,
         _orphan.modelId: 777,
       });
-      expect(
-        mergeSettingsProjection(state, _snapshot(1, configured)),
-        same(state),
-      );
+      final state = runtime.domains.models.state.value;
+      runtime.seed(_snapshot(1, configured));
+      expect(runtime.domains.models.state.value, same(state));
     },
   );
 
-  test('payload preserves raw intent and unknown manual capacities', () {
-    final selected = _account.withAutoCompactLimit(
-      const AccountModelAutoCompactView(modelId: 'alpha', overrideLimit: 200),
+  test('payload preserves raw intent and unknown manual capacities', () async {
+    final transport = _Transport();
+    final runtime = _client(transport);
+    final calls = StreamIterator(transport.calls.stream);
+    addTearDown(calls.cancel);
+    final saving = _set(runtime, 'alpha', 200);
+    await calls.moveNext();
+    expect(
+      (calls.current.intent as SetAutoCompactLimit).limit,
+      200,
+      reason: 'Only the backend normalizes an equal default',
     );
-    final command = AccountCommandBuilder.buildAccount(selected);
-    expect(_limits(command), {
+    calls.current.complete(
+      2,
+      _account.withAutoCompactLimit(
+        const AccountModelAutoCompactView(modelId: 'alpha', overrideLimit: 200),
+      ),
+    );
+    await saving;
+    expect(_config(runtime).autoCompactLimits, {
       'alpha': 200,
       'beta': 250,
       _orphan.modelId: 777,
-    }, reason: 'only the backend normalizes an equal default');
-    final unknown = AccountModelView(
-      modelId: 'unknown',
-      displayName: '',
-      reasoningEfforts: const [],
-      origin: ModelOrigin.manual,
+    });
+    await runtime.domains.accounts.create(
+      CreateAccountCommand(
+        identity: const NativeAccountIdentity('manual'),
+        name: 'Manual',
+        protocol: 'open_ai_compatible',
+        baseUrl: 'https://example.invalid',
+        secret: const AccountSecretCommand.preserve(),
+        customModels: const [
+          AccountModelCommand(
+            modelId: 'unknown',
+            displayName: '',
+            wireApi: 'chat_completions',
+            contextWindow: null,
+            maxOutputTokens: null,
+          ),
+        ],
+      ),
     );
-    final saved = AccountCommandBuilder.buildAccount(
-      selected.copyWith(models: [unknown]),
-    );
-    expect(saved.customModels.single.contextWindow, isNull);
-    expect(saved.customModels.single.maxOutputTokens, isNull);
+    expect(transport.creation!.customModels.single.contextWindow, isNull);
+    expect(transport.creation!.customModels.single.maxOutputTokens, isNull);
   });
 
-  test('inline intents rebuild at lane entry and every CAS retry without dropping siblings or unavailable overrides', () async {
+  test('inline narrow intents replay at lane entry and CAS retry without dropping siblings or unavailable overrides', () async {
     final transport = _Transport();
-    final client = _client(transport);
+    final runtime = _client(transport);
     final calls = StreamIterator(transport.calls.stream);
     addTearDown(calls.cancel);
-    final commands = client.settingsCommands;
-    final first = commands.setModelAutoCompactLimit('fixture', 'alpha', 100);
+    final first = _set(runtime, 'alpha', 100);
     await calls.moveNext();
     final initial = calls.current;
     expect(initial.revision, 1);
-    expect(initial.command.secret.action, AccountSecretAction.preserve);
-    expect(initial.command.id, 'fixture');
-    final second = commands.setModelAutoCompactLimit('fixture', 'alpha', 150);
-    final reset = commands.setModelAutoCompactLimit('fixture', 'beta', null);
-    final alphaKey = 'model-auto-compact:7:fixture:alpha';
-    final latest = client.mutations.latest('settings:$alphaKey')!;
+    expect(initial.identity.accountId, 'fixture');
+    expect(initial.identity.modelId, 'alpha');
+    final second = _set(runtime, 'alpha', 150);
+    final reset = _set(runtime, 'beta', null);
+    const key = 'model:compact:7:fixture:alpha';
+    final latest = runtime.board.latest(key)!;
     final external = _account
         .copyWith(
           name: 'External name',
@@ -404,8 +475,8 @@ void main() {
           billingKindOverride: BillingKind.noCharge,
         )
         .withAutoCompactLimit(
-          AccountModelAutoCompactView(
-            modelId: _beta.modelId,
+          const AccountModelAutoCompactView(
+            modelId: 'beta',
             overrideLimit: 400,
           ),
         );
@@ -422,87 +493,101 @@ void main() {
     final retried = calls.current;
     expect(retried.id, initial.id);
     expect(retried.revision, 2);
-    expect(retried.command.name, 'External name');
-    expect(retried.command.baseUrl, 'http://changed.invalid');
-    expect(retried.command.initialBillingKind, isNull);
-    expect(_limits(retried.command), {
-      'alpha': 100,
+    expect(retried.identity, initial.identity);
+    expect((retried.intent as SetAutoCompactLimit).limit, 100);
+    expect(
+      (runtime.domains.accounts.details(_identity).value.value
+              as NativeAccountDetails)
+          .name,
+      'External name',
+    );
+    expect(
+      (runtime.domains.accounts.details(_identity).value.value
+              as NativeAccountDetails)
+          .baseUrl,
+      'http://changed.invalid',
+    );
+    expect(_config(runtime).autoCompactLimits, {
       'beta': 400,
       _orphan.modelId: 777,
     });
     final afterFirst = external.withAutoCompactLimit(
-      AccountModelAutoCompactView(modelId: _alpha.modelId, overrideLimit: 100),
+      const AccountModelAutoCompactView(modelId: 'alpha', overrideLimit: 100),
     );
     retried.complete(3, afterFirst);
     await first;
-    await calls.moveNext();
-    expect(client.mutations.latest('settings:$alphaKey')?.id, latest.id);
     expect(
-      client.settings.state.commands[alphaKey]?.isPending,
+      runtime.domains.accounts.state.value.account(_identity)!.billingKind,
+      BillingKind.noCharge,
+      reason: 'Billing is observed from summaries, not inferred from a target detail watermark',
+    );
+    await calls.moveNext();
+    expect(runtime.board.latest(key)?.id, latest.id);
+    expect(
+      runtime.board.latest(key)!.state.value.isPending,
       isTrue,
-      reason: 'old ACK cannot clear newer intent',
+      reason: 'Old ACK cannot clear newer intent',
     );
     expect(
-      client
-          .settings
-          .state
-          .canonical!
-          .accounts
-          .single
-          .autoCompactLimits['alpha']!
-          .overrideLimit,
+      _config(runtime).autoCompactLimits['alpha'],
       100,
-      reason: 'no optimistic canonical',
+      reason: 'There is no optimistic canonical',
     );
     final next = calls.current;
     expect(next.revision, 3);
-    expect(_limits(next.command), {
-      'alpha': 150,
-      'beta': 400,
-      _orphan.modelId: 777,
-    });
+    expect((next.intent as SetAutoCompactLimit).limit, 150);
+    expect(_config(runtime).autoCompactLimits['beta'], 400);
+    expect(_config(runtime).autoCompactLimits[_orphan.modelId], 777);
     final afterSecond = external.withAutoCompactLimit(
-      AccountModelAutoCompactView(modelId: _alpha.modelId, overrideLimit: 150),
+      const AccountModelAutoCompactView(modelId: 'alpha', overrideLimit: 150),
     );
     next.complete(4, afterSecond);
     await second;
     await calls.moveNext();
     final restoring = calls.current;
     expect(restoring.revision, 4);
-    expect(_limits(restoring.command), {'alpha': 150, _orphan.modelId: 777});
+    expect(restoring.identity.modelId, 'beta');
+    expect(restoring.intent, isA<ClearAutoCompactLimit>());
     var joined = false;
-    final closing = commands.close().then((_) => joined = true);
-    await Future<void>.delayed(Duration.zero);
+    final closing = runtime.coordinator.close().then((_) => joined = true);
+    await Future<void>.value();
     expect(
       joined,
       isFalse,
-      reason: 'settings owner waits for the in-flight response',
+      reason: 'The settings owner waits for its in-flight response',
     );
     restoring.complete(
       5,
       afterSecond.withAutoCompactLimit(
-        AccountModelAutoCompactView(modelId: _beta.modelId),
+        const AccountModelAutoCompactView(modelId: 'beta'),
       ),
     );
     await reset;
     await closing;
-    expect(joined, isTrue, reason: 'Client settings owner joins queued writes');
-    expect(transport.refreshes, 1);
+    expect(joined, isTrue);
+    expect(_config(runtime).autoCompactLimits, {
+      'alpha': 150,
+      _orphan.modelId: 777,
+    });
+    expect(
+      transport.refreshes,
+      2,
+      reason: 'CAS retry refreshes the target settings and catalog, not an aggregate bootstrap',
+    );
   });
 
   test('old failed intent cannot erase newer pending edit; latest failure can be explicitly retried', () async {
     final transport = _Transport();
-    final client = _client(transport);
+    final runtime = _client(transport);
     final calls = StreamIterator(transport.calls.stream);
     addTearDown(calls.cancel);
-    final commands = client.settingsCommands;
-    final first = commands.setModelAutoCompactLimit('fixture', 'alpha', 100);
+    final first = _set(runtime, 'alpha', 100);
     final firstFailure = expectLater(first, throwsA(isA<StudioFailure>()));
     await calls.moveNext();
     final older = calls.current;
-    final second = commands.setModelAutoCompactLimit('fixture', 'alpha', 150);
+    final second = _set(runtime, 'alpha', 150);
     final secondFailure = expectLater(second, throwsA(isA<StudioFailure>()));
-    const key = 'model-auto-compact:7:fixture:alpha';
+    const key = 'model:compact:7:fixture:alpha';
     const error = StudioFailure(
       code: StudioFailureCode.invalidArgument,
       message: 'Rejected by owner',
@@ -512,23 +597,24 @@ void main() {
     older.reply.completeError(error);
     await firstFailure;
     await calls.moveNext();
-    expect(client.settings.state.commands[key]?.isPending, isTrue);
+    expect(runtime.board.latest(key)!.state.value.isPending, isTrue);
     calls.current.reply.completeError(error);
     await secondFailure;
-    expect(client.settings.state.commands[key]?.phase, CommandPhase.failed);
-    final retry = commands.setModelAutoCompactLimit('fixture', 'alpha', 150);
+    expect(
+      runtime.board.latest(key)!.state.value.phase,
+      OperationPhase.rejected,
+    );
+    final retry = _set(runtime, 'alpha', 150);
     await calls.moveNext();
-    expect(_limits(calls.current.command)['alpha'], 150);
+    expect((calls.current.intent as SetAutoCompactLimit).limit, 150);
     calls.current.complete(
       2,
       _account.withAutoCompactLimit(
-        AccountModelAutoCompactView(
-          modelId: _alpha.modelId,
-          overrideLimit: 150,
-        ),
+        const AccountModelAutoCompactView(modelId: 'alpha', overrideLimit: 150),
       ),
     );
     await retry;
-    expect(client.settings.state.commands.containsKey(key), isFalse);
+    expect(runtime.board.latest(key)!.state.value.observed, isTrue);
+    expect(runtime.board.latest(key)!.state.value.failurePhase, isNull);
   });
 }

@@ -289,6 +289,7 @@ impl CallsStore {
     }
 
     async fn prepare_with_policy(path: &Path, policy: CallsOpenPolicy) -> Result<Self> {
+        schema::inspect_existing(path).await?;
         if let Some(parent) = path.parent() {
             tokio::fs::create_dir_all(parent).await?;
         }
@@ -296,10 +297,6 @@ impl CallsStore {
             .parent()
             .unwrap_or_else(|| Path::new("."))
             .to_path_buf();
-        let mut log = match policy {
-            CallsOpenPolicy::Degraded => CallLog::open(root_dir.join(CALL_LOG_DIR_NAME)).await?,
-            CallsOpenPolicy::Strict => CallLog::prepare(root_dir.join(CALL_LOG_DIR_NAME)).await?,
-        };
         let mut options = crate::studio::paths::sqlite_file_options(
             path,
             crate::studio::paths::SqliteFileMode::Create,
@@ -319,13 +316,26 @@ impl CallsStore {
             .acquire_timeout(Duration::from_secs(8))
             .sqlx_logging(false);
         let db = Database::connect(options).await?;
-        if let Err(error) = schema::initialize(&db, &mut log, &root_dir).await {
+        if let Err(error) = schema::initialize(&db, &root_dir).await {
             let error = crate::studio::startup::input_error(error);
-            db.close()
-                .await
-                .context("failed to close calls database after initialization failure")?;
+            if let Err(cleanup) = db.close().await {
+                return Err(error.context(format!("calls database cleanup failed: {cleanup}")));
+            }
             return Err(error);
         }
+        let log = match policy {
+            CallsOpenPolicy::Degraded => CallLog::open(root_dir.join(CALL_LOG_DIR_NAME)).await,
+            CallsOpenPolicy::Strict => CallLog::prepare(root_dir.join(CALL_LOG_DIR_NAME)).await,
+        };
+        let mut log = match log {
+            Ok(log) => log,
+            Err(error) => {
+                if let Err(cleanup) = db.close().await {
+                    return Err(crate::studio::startup::cleanup_error(cleanup).context(error));
+                }
+                return Err(error);
+            }
+        };
         let mut startup_error = None;
         if let Err(error) = log.rebuild_index(&db).await {
             if policy == CallsOpenPolicy::Strict {

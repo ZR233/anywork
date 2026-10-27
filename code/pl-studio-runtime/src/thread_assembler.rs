@@ -211,6 +211,12 @@ pub enum ThreadAssemblyError {
     },
 }
 
+#[derive(Clone, Copy)]
+enum PublishedWorkspaceRetirement {
+    Retain,
+    ApplyExplicitClose,
+}
+
 #[derive(Debug)]
 struct Entry {
     /// A close-only cold owner retains its sink until attachment actually succeeds.
@@ -779,11 +785,16 @@ impl StudioThreadAssembler {
     /// Returns in-progress assembly or the actual Thread shutdown failure.
     pub async fn close(&self, id: &str) -> Result<(), ThreadAssemblyError> {
         let _operation = self.agent_operation(id).await;
-        self.close_with_permit(id).await
+        self.close_with_permit(id, PublishedWorkspaceRetirement::Retain)
+            .await
     }
 
     /// The caller retains this identity's operation permit, including cold close restoration.
-    async fn close_with_permit(&self, id: &str) -> Result<(), ThreadAssemblyError> {
+    async fn close_with_permit(
+        &self,
+        id: &str,
+        workspace: PublishedWorkspaceRetirement,
+    ) -> Result<(), ThreadAssemblyError> {
         let _seal = self.seal_agent_operation(id);
         self.join_root_operations(id)
             .await
@@ -805,11 +816,15 @@ impl StudioThreadAssembler {
         if self.0.state().preparing_children.contains_key(id) {
             return Err(ThreadAssemblyError::Preparing(id.into()));
         }
-        self.close_thread(id).await?;
+        self.close_thread(id, workspace).await?;
         self.discard_unpublished_child(id).await
     }
 
-    async fn close_thread(&self, id: &str) -> Result<(), ThreadAssemblyError> {
+    async fn close_thread(
+        &self,
+        id: &str,
+        workspace: PublishedWorkspaceRetirement,
+    ) -> Result<(), ThreadAssemblyError> {
         loop {
             let changed = self.0.changed.notified();
             tokio::pin!(changed);
@@ -886,7 +901,9 @@ impl StudioThreadAssembler {
             }
         }
         self.drain_observation(id).await?;
-        self.close_published_resources(id, &incarnation).await?;
+        if matches!(workspace, PublishedWorkspaceRetirement::ApplyExplicitClose) {
+            self.close_published_resources(id, &incarnation).await?;
+        }
         let removed = {
             let mut state = self.0.state();
             if state

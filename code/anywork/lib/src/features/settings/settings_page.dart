@@ -16,7 +16,8 @@ import 'settings_lsp_tab.dart';
 import 'settings_mcp_tab.dart';
 import 'mode_editor/mode_editor_dialogs.dart';
 import 'mode_editor/mode_editor_page.dart';
-import 'settings_account_tab.dart';
+import 'accounts/connectors/accounts_connector.dart';
+import 'accounts/connectors/account_navigation.dart';
 import 'settings_scope.dart';
 import 'settings_security_tab.dart';
 import 'settings_skills_tab.dart';
@@ -126,12 +127,15 @@ class _SettingsTabVisibilitySyncState
 /// Each settings tab subscribes to the smallest projection it can render.
 /// The retained settings shell therefore survives catalog/config events and a
 /// model click only rebuilds the account tab that displays that catalog.
-class _ProvidersSettingsTab extends StatelessWidget {
+class _ProvidersSettingsTab extends ConsumerWidget {
   const _ProvidersSettingsTab();
 
   @override
-  Widget build(BuildContext context) {
-    return AccountsTab(tabIndex: _SettingsTab.accounts.index);
+  Widget build(BuildContext context, WidgetRef ref) {
+    return AccountsConnector(
+      visible:
+          ref.watch(settingsVisibleTabProvider) == _SettingsTab.accounts.index,
+    );
   }
 }
 
@@ -323,6 +327,9 @@ class _SettingsNav extends ConsumerWidget {
           !await confirmLeaveModeEditor(context, ref)) {
         return;
       }
+      if (!context.mounted || !await confirmLeaveAccountsEditor(context, ref)) {
+        return;
+      }
       if (!context.mounted) return;
       controller.animateTo(index);
     }
@@ -431,6 +438,10 @@ class _SettingsBackTile extends ConsumerWidget {
           borderRadius: BorderRadius.circular(StudioRadii.sm),
           onTap: () async {
             if (!await confirmLeaveModeEditor(context, ref)) return;
+            if (!context.mounted ||
+                !await confirmLeaveAccountsEditor(context, ref)) {
+              return;
+            }
             if (context.mounted && context.canPop()) context.pop();
           },
           child: Padding(

@@ -27,6 +27,8 @@ import 'dart:io';
 
 import 'package:flutter_driver/flutter_driver.dart';
 
+import 'package:anywork/src/features/settings/accounts/state/account_view_key_values.dart';
+
 import 'acp_fixture.dart';
 import 'flutter_driver_session.dart';
 import 'window_control.dart';
@@ -37,33 +39,15 @@ const _settingsOpen = 'settings-open';
 const _settingsPage = 'settings-page';
 const _settingsAccountsTab = 'settings-tab-accounts';
 const _accountAdd = 'account-add';
-const _accountTemplatePicker = 'account-template-picker';
-const _accountTemplateList = 'account-template-list';
 const _accountSave = 'account-save';
 const _accountCancel = 'account-cancel';
-const _accountEditorScroll = 'account-editor-scroll';
-const _accountBaseUrl = 'account-base-url';
-const _accountBaseUrlInput = 'account-base-url-input';
-const _accountApiKey = 'account-api-key';
-const _acpCheck = 'acp-account-check';
-const _acpLogin = 'acp-account-login';
-const _acpCancelAuth = 'acp-account-cancel-auth';
-const _acpBack = 'acp-account-back';
+final _acpCheck = AccountViewKeyValues.acpAction('check');
+final _acpLogin = AccountViewKeyValues.acpAction('login');
+final _acpCancelAuth = AccountViewKeyValues.acpAction('cancelAuthentication');
+const _acpBack = 'account-back';
+final _installPrepare = AccountViewKeyValues.acpAction('prepare');
+final _installCancel = AccountViewKeyValues.acpAction('cancelPreparation');
 
-const _installPanel = 'acp-install-panel';
-const _installPrepare = 'acp-install-prepare';
-const _installCancel = 'acp-install-cancel';
-const _installStage = 'acp-install-stage';
-const _installProgress = 'acp-install-progress';
-const _installProgressText = 'acp-install-progress-text';
-const _installPercent = 'acp-install-percent';
-const _installVersion = 'acp-install-version';
-const _installFailure = 'acp-install-failure';
-const _installRetryCount = 'acp-install-retry-count';
-const _installReady = 'acp-install-ready';
-const _installReused = 'acp-install-reused';
-
-/// 统一选项身份：ACP 侧由 provider wire 值构成，不作为协议猜测依据。
 const _antigravityToken = 'acp-antigravity';
 const _providerWire = 'antigravity';
 
@@ -82,6 +66,78 @@ const _phases = {
   'reuse',
   'faults-unsafe-zip',
 };
+
+/// Local generations may advance while waiting for the initial observation.
+/// The offered action, not a fixed generation, proves local preparation ended.
+bool _isUnclaimedSharedReady(Map? editor, Map? panel) {
+  final generation = panel?['preparationGeneration'];
+  final actions = panel?['actions'];
+  return generation is int &&
+      generation >= 0 &&
+      panel?['phase'] == 'ready' &&
+      panel?['claimedOperationId'] == null &&
+      panel?['preparedForEditor'] == false &&
+      editor?['canSave'] == false &&
+      actions is List &&
+      actions.contains('usePrepared');
+}
+
+/// The production panel uses plain Text/SelectableText for status, facts and
+/// progress. Only a complete, identified panel can prove a label is absent.
+bool _acpPanelHasText(Map<String, dynamic> root, String text) {
+  if (root['widgetRuntimeType'] != 'AcpAccountPanel') {
+    throw StateError('no production ACP panel diagnostics');
+  }
+  var found = false;
+  var textNodes = 0;
+  void visit(Map node) {
+    final children = node['children'];
+    if (node['truncated'] == true ||
+        (node['hasChildren'] == true &&
+            (children is! List || children.isEmpty))) {
+      throw StateError('ACP panel diagnostics were truncated');
+    }
+    final properties = node['properties'];
+    final type = node['widgetRuntimeType'];
+    if (type == 'Offstage') {
+      final flags = properties is List
+          ? properties
+                .whereType<Map>()
+                .where((property) => property['name'] == 'offstage')
+                .toList()
+          : const <Map>[];
+      if (flags.length != 1 || flags.single['value'] is! bool) {
+        throw StateError('ACP panel has no observed offstage flag');
+      }
+      if (flags.single['value'] == true) return;
+    }
+    if (type == 'Text' || type == 'SelectableText') {
+      final values = properties is List
+          ? properties
+                .whereType<Map>()
+                .where((property) => property['name'] == 'data')
+                .toList()
+          : const <Map>[];
+      if (values.length != 1 || values.single['value'] is! String) {
+        throw StateError('ACP panel text diagnostics are incomplete');
+      }
+      textNodes++;
+      if (values.single['value'] == text) found = true;
+    }
+    if (children is List) {
+      for (final child in children) {
+        if (child is! Map) {
+          throw StateError('invalid ACP panel diagnostic child');
+        }
+        visit(child);
+      }
+    }
+  }
+
+  visit(root);
+  if (textNodes == 0) throw StateError('ACP panel has no observed text');
+  return found;
+}
 
 Future<void> main(List<String> args) async {
   final phase = args.length >= 3 ? args[2] : null;
@@ -455,9 +511,8 @@ Future<Map<String, Object?>> writeAcpInstallCapture({
 /// 与本快照配置的 configuredConnectionRevision 匹配时才可供认证使用。异步认证
 /// 观察暂缺不等于配置被改写，也不能用配置字段替代已加载认证事实。
 Map<String, Map<String, Object?>> acpAccountsView(
-  Map<String, dynamic> snapshot, {
-  required String provider,
-}) {
+  Map<String, dynamic> snapshot,
+) {
   final settings = snapshot['settings'];
   if (settings is! Map) return const {};
   final accounts = settings['acpAccounts'];
@@ -478,14 +533,12 @@ Map<String, Map<String, Object?>> acpAccountsView(
   final view = <String, Map<String, Object?>>{};
   for (final account in accounts) {
     if (account is! Map) continue;
-    if (account['provider'] != provider) continue;
     final id = account['accountId'];
     if (id is! String || id.isEmpty) continue;
     if (view.containsKey(id)) throw StateError('duplicate ACP accountId: $id');
     final configuredRevision = account['connectionRevision'];
     view[id] = <String, Object?>{
       'name': account['name'],
-      'provider': account['provider'],
       'configuredConnectionRevision': configuredRevision,
       'connectionRevision':
           configuredRevision is int && revisions[id] == configuredRevision
@@ -526,11 +579,10 @@ bool acpOldAccountsIntact(
   for (final entry in baseline.entries) {
     final other = now[entry.key];
     if (other == null) return false;
-    for (final field in const [
-      'name',
-      'provider',
-      'configuredConnectionRevision',
-    ]) {
+    // Summary identity includes the canonical connection revision. Provider
+    // details are deliberately not opened for every list row or compared as
+    // an always-null placeholder here.
+    for (final field in const ['name', 'configuredConnectionRevision']) {
       if (other[field] != entry.value[field]) return false;
     }
   }
@@ -612,10 +664,7 @@ Map<String, dynamic>? acpObservedAuthState(
   Map<String, dynamic> snapshot,
   AcpAccountIdentity identity,
 ) {
-  if (acpAccountsView(
-        snapshot,
-        provider: _providerWire,
-      )[identity.accountId]?['connectionRevision'] !=
+  if (acpAccountsView(snapshot)[identity.accountId]?['connectionRevision'] !=
       identity.connectionRevision) {
     return null;
   }
@@ -802,6 +851,9 @@ class _Journey {
   Map<String, Object?>? _cancellingObservation;
   Map<String, Object?>? _savedAccount;
   String? _activeInstallOperation;
+  String? _activeInstallEditorId;
+  String? _activeInstallTargetId;
+  Map<String, Object?>? _preparationSelection;
 
   /// 本 phase 任何准备/保存副作用之前的 canonical ACP 账号基线。
   ///
@@ -819,10 +871,9 @@ class _Journey {
       throw StateError('$phase requires a canonical pre-existing ACP baseline');
     }
     if (phase == 'first') await _prepareRequired();
-    if (phase != 'auth-faults' && phase != 'restart') {
+    if (!const {'auth-faults', 'restart', 'retry'}.contains(phase)) {
       await _openTemplatePicker();
       await _chooseTemplate(_antigravityToken, dyScroll: 200);
-      await _watchBaseline();
     }
     switch (phase) {
       case 'first':
@@ -860,7 +911,68 @@ class _Journey {
   Future<void> _openTemplatePicker() async {
     _enterStep('open-template-picker');
     await _tap(_accountAdd);
-    await _waitFor(_accountTemplatePicker);
+    await driver.waitFor(find.byType('AccountTemplatePickerView'));
+  }
+
+  String _templateKey(String token) => AccountViewKeyValues.template(
+    token == _antigravityToken ? 'acp' : 'native',
+    token == _antigravityToken ? _providerWire : token,
+  );
+
+  Map<String, dynamic>? _presentation(Map<String, dynamic> snapshot) =>
+      (snapshot['driverDiagnostics']?['accountsPresentation'] as Map?)
+          ?.cast<String, dynamic>();
+
+  Future<SerializableFinder> _editorScroll() async {
+    final editor = _presentation(await _snapshot())?['editor'] as Map?;
+    if (editor == null) throw StateError('no observed editor');
+    final target = editor['target'] as Map?;
+    if (editor['editorId'] is! String ||
+        (editor['editorId'] as String).isEmpty ||
+        target?['id'] is! String ||
+        (target!['id'] as String).isEmpty) {
+      throw StateError('the current editor has no observed typed identity');
+    }
+    final viewType = switch (target['kind']) {
+      'native' => 'NativeAccountEditorView',
+      'acp' => 'AcpAccountEditorView',
+      _ => throw StateError('the current editor has an unknown account kind'),
+    };
+    final view = find.descendant(
+      of: find.byValueKey(_settingsPage),
+      matching: find.byType(viewType),
+    );
+    // The production ListView uses PageStorageKey to retain scroll position;
+    // the official ByValueKey finder cannot match that distinct key type.
+    return find.descendant(of: view, matching: find.byType('ListView'));
+  }
+
+  Future<Map<String, dynamic>> _usageLabels() async => (jsonDecode(
+    await driver.requestData('account-usage-state'),
+  ) as Map)['labels'].cast<String, dynamic>();
+
+  SerializableFinder get _panel => find.byType('AcpAccountPanel');
+
+  Future<void> _waitPanelStatus(Map<String, dynamic> snapshot) async {
+    final status = _presentation(snapshot)?['acp']?['status'];
+    if (status is! String || status.isEmpty) {
+      throw StateError('no observed ACP panel status');
+    }
+    await driver.waitFor(
+      find.descendant(of: _panel, matching: find.text(status)),
+    );
+  }
+
+  Future<bool> _panelTextPresent(String text) async {
+    final diagnostics = await driver.sendCommand(
+      GetDiagnosticsTree(
+        find.descendant(of: find.byValueKey(_settingsPage), matching: _panel),
+        DiagnosticsType.widget,
+        subtreeDepth: 128,
+        timeout: _controlWait,
+      ),
+    );
+    return _acpPanelHasText(diagnostics, text);
   }
 
   Future<void> _ensureTemplateVisible(
@@ -869,22 +981,123 @@ class _Journey {
   }) async {
     stage = '$_step:scroll-template:$token';
     await driver.scrollUntilVisible(
-      find.byValueKey(_accountTemplateList),
-      find.byValueKey('account-template-option-$token'),
+      find.descendant(
+        of: find.byType('AccountTemplatePickerView'),
+        matching: find.byType('Scrollable'),
+      ),
+      find.byValueKey(_templateKey(token)),
       dyScroll: dyScroll,
       timeout: _controlWait,
     );
   }
 
-  Future<void> _chooseTemplate(String token, {required double dyScroll}) async {
+  Future<void> _chooseTemplate(
+    String token, {
+    required double dyScroll,
+    String? retryOfOperation,
+  }) async {
     await _ensureTemplateVisible(token, dyScroll: dyScroll);
+    // A cold list has no install demand. Freeze that unknown provenance rather
+    // than waiting here for an observation only the editor can own.
+    final before = await _snapshot();
+    final oldOperation = _operationId(before);
+    final oldEditorId = _presentation(before)?['editor']?['editorId'];
     _enterStep('choose-template:$token');
-    await _tap('account-template-option-$token');
-    await _waitFor(_installPanel);
+    await _tap(_templateKey(token));
+    await driver.waitFor(_panel);
+    await _watchBaseline();
+    final started = await _until('template-selection-operation', (snapshot) {
+      if (!_installLoaded(snapshot) || _install(snapshot)['stale'] == true) {
+        return false;
+      }
+      final editor = _presentation(snapshot)?['editor'];
+      final panel = _presentation(snapshot)?['acp'];
+      final editorId = editor?['editorId'];
+      final targetId = editor?['target']?['id'];
+      final operation = _operationId(snapshot);
+      if (editorId is! String ||
+          editorId.isEmpty ||
+          editorId == oldEditorId ||
+          editor?['creating'] != true ||
+          editor?['target']?['kind'] != 'acp' ||
+          targetId is! String ||
+          targetId.isEmpty ||
+          panel?['target']?['kind'] != 'acp' ||
+          panel?['target']?['id'] != targetId ||
+          panel?['editorId'] != editorId ||
+          panel?['creating'] != true ||
+          panel?['providerId'] != _providerWire ||
+          operation == null ||
+          operation.isEmpty) {
+        return false;
+      }
+      if (_installLoaded(before) &&
+          _phaseOf(before) == 'ready' &&
+          (operation != oldOperation ||
+              panel?['claimedOperationId'] != null ||
+              panel?['preparedForEditor'] == true)) {
+        throw StateError(
+          'selecting a template replaced or implicitly claimed shared Ready',
+        );
+      }
+      // Observing shared Ready is also legal, including a cold editor whose
+      // pre-click install mirror was unknown. It is not a new admission.
+      if (_phaseOf(snapshot) == 'ready' &&
+          _isUnclaimedSharedReady(editor as Map?, panel as Map?)) {
+        return true;
+      }
+      if (operation == oldOperation || operation == retryOfOperation) {
+        return false;
+      }
+      // A nonempty operation alone is not evidence when the pre-click install
+      // value was unknown: the selected editor must own this admission.
+      if (panel?['claimedOperationId'] != operation ||
+          panel?['preparationGeneration'] is! int ||
+          (panel['preparationGeneration'] as int) <= 0) {
+        return false;
+      }
+      if (_phaseOf(snapshot) != 'ready' && editor?['canSave'] != false) {
+        throw StateError('an unfinished preparation enabled account saving');
+      }
+      if (_phaseOf(snapshot) == 'ready' &&
+          (panel?['preparedForEditor'] != true || editor?['canSave'] != true)) {
+        return false;
+      }
+      return true;
+    }, timeout: _startupWait);
+    _activeInstallOperation = _operationId(started);
+    _activeInstallEditorId =
+        _presentation(started)?['editor']?['editorId'] as String;
+    _activeInstallTargetId =
+        _presentation(started)?['editor']?['target']?['id'] as String;
+    final sharedReady =
+        _presentation(started)?['acp']?['preparedForEditor'] == false &&
+        _phaseOf(started) == 'ready';
+    _preparationSelection = {
+      'action': 'templateSelection',
+      'beforeLoaded': _installLoaded(before),
+      'beforeStamp': _install(before)['stamp'],
+      'beforeOperationId': oldOperation,
+      'beforePhase': _installLoaded(before) ? _phaseOf(before) : null,
+      'retryOfOperation': retryOfOperation,
+      'editorId': _activeInstallEditorId,
+      'target': {'kind': 'acp', 'id': _activeInstallTargetId},
+      'operationId': _activeInstallOperation,
+      'phaseAtAdmissionObservation': _phaseOf(started),
+      'outcome': sharedReady ? 'sharedReadyUnclaimed' : 'newPreparation',
+    };
+    if (sharedReady) {
+      if (phase != 'reuse') {
+        throw StateError(
+          '$phase requires a fresh fixture preparation, but the observed baseline was already shared Ready',
+        );
+      }
+      await _usePreparedForEditor(started);
+    } else {
+      checks['templateSelectionStartedFreshOperation'] = true;
+    }
     checks['managedPreparationVisible'] = true;
-    checks['prepareActionVisible'] = await _present(_installPrepare);
-    await _waitForAbsent(_accountSave);
-    checks['saveHiddenBeforeReady'] = true;
+    checks['saveGateMatchesPreparationPhase'] = true;
   }
 
   Future<void> _tap(String key, {Duration timeout = _controlWait}) async {
@@ -893,50 +1106,115 @@ class _Journey {
     await driver.tap(find.byValueKey(key));
   }
 
+  Future<void> _tapPanelAction(String key) async {
+    final panel = find.descendant(
+      of: find.byValueKey(_settingsPage),
+      matching: _panel,
+    );
+    await _tapInAccountBody(
+      key,
+      // Both production hosts (ACP editor and details) own one ListView
+      // ancestor of the panel. Do not target its nested selectable text or
+      // confuse the editor's fixed footer Cancel with cancelPreparation.
+      owner: find.ancestor(of: panel, matching: find.byType('ListView')),
+      target: find.descendant(of: panel, matching: find.byValueKey(key)),
+      dyScroll: -200,
+    );
+  }
+
+  Future<void> _tapInAccountBody(
+    String key, {
+    required SerializableFinder owner,
+    required SerializableFinder target,
+    required double dyScroll,
+  }) async {
+    final deadline = DateTime.now().add(_controlWait);
+    Duration remaining() {
+      final budget = deadline.difference(DateTime.now());
+      if (budget <= Duration.zero) {
+        throw StateError('account body action $key exceeded $_controlWait');
+      }
+      return budget;
+    }
+
+    stage = '$_step:reveal:$key';
+    await driver.scrollUntilVisible(
+      owner,
+      target,
+      dyScroll: dyScroll,
+      timeout: remaining(),
+    );
+    stage = '$_step:tappable:$key';
+    final budget = remaining();
+    await driver.sendCommand(
+      WaitForTappable(
+        target,
+        timeout: budget < FlutterDriverSession.geometryDeadline
+            ? budget
+            : FlutterDriverSession.geometryDeadline,
+      ),
+    );
+    // Progress may keep scheduling frames. Wait only for this real control to
+    // be hittable, then issue exactly one tap; never replay a side effect.
+    stage = '$_step:tap:$key';
+    await driver.tap(target, timeout: remaining());
+  }
+
   Future<void> _waitFor(String key, {Duration timeout = _controlWait}) async {
     stage = '$_step:wait:$key';
     await driver.waitFor(find.byValueKey(key), timeout: timeout);
   }
 
-  Future<bool> _present(String key, {Duration? timeout}) async {
-    try {
-      await driver.waitFor(
-        find.byValueKey(key),
-        timeout: timeout ?? const Duration(seconds: 2),
-      );
-      return true;
-    } on Object catch (original, stack) {
-      // 只有正向确认缺席才返回 false；传输失败不能变成通过的负向断言。
-      try {
-        await _waitForAbsent(
-          key,
-          timeout: timeout ?? const Duration(seconds: 2),
-        );
-      } on Object {
-        Error.throwWithStackTrace(original, stack);
-      }
-      return false;
-    }
-  }
-
   Future<void> _waitForAbsent(String key, {Duration timeout = _controlWait}) =>
       driver.waitForAbsent(find.byValueKey(key), timeout: timeout);
 
-  Future<void> _openDetails(String accountId) async {
-    _enterStep('open-acp-details:$accountId');
-    await _tap('acp-account-row-$accountId');
-    await _waitFor('acp-account-detail-$accountId');
+  Future<void> _openDetails(AcpAccountIdentity identity) async {
+    _enterStep('open-acp-details:${identity.accountId}');
+    await _tap(AccountViewKeyValues.row('acp', identity.accountId));
+    await driver.waitFor(find.byType('AcpAccountPanel'));
+    await _until(
+      'selected-acp-details',
+      (snapshot) =>
+          _presentation(snapshot)?['selected']?['kind'] == 'acp' &&
+          _presentation(snapshot)?['selected']?['id'] == identity.accountId,
+    );
+    // Only this real UI action creates the auth observer. Now require the
+    // target's loaded auth identity to match the frozen configuration identity.
+    await _until('selected-acp-auth-loaded', (snapshot) {
+      if (snapshot['settings']?['accountDomains']?['summaries']?['loaded'] !=
+          true) {
+        return false;
+      }
+      if (_accounts(
+            snapshot,
+          )[identity.accountId]?['configuredConnectionRevision'] !=
+          identity.connectionRevision) {
+        throw StateError('selected ACP configuration identity changed');
+      }
+      return _authState(snapshot, identity) != null;
+    }, timeout: _startupWait);
   }
 
   Future<void> _returnToAccounts() async {
-    await _tap(_acpBack);
+    final details = find.descendant(
+      of: find.byValueKey(_settingsPage),
+      matching: find.byType('AccountDetailsView'),
+    );
+    // Panel actions can scroll the top Back control offscreen. The details
+    // host remains mounted even when that lazy ListView child is absent.
+    await _tapInAccountBody(
+      _acpBack,
+      owner: find.descendant(of: details, matching: find.byType('ListView')),
+      target: find.descendant(of: details, matching: find.byValueKey(_acpBack)),
+      dyScroll: 200,
+    );
     await _waitFor(_accountAdd);
   }
 
   Future<void> _revealInEditor(String key, {double dyScroll = -200}) async {
     stage = '$_step:reveal:$key';
     await driver.scrollUntilVisible(
-      find.byValueKey(_accountEditorScroll),
+      await _editorScroll(),
       find.byValueKey(key),
       dyScroll: dyScroll,
       timeout: _controlWait,
@@ -1026,21 +1304,25 @@ class _Journey {
   }
 
   Map<String, Map<String, Object?>> _accounts(Map<String, dynamic> snapshot) =>
-      acpAccountsView(snapshot, provider: _providerWire);
+      acpAccountsView(snapshot);
 
-  /// 采本 phase 的 canonical 账号基线：先等 read 与 watch 都真实加载完成，
-  /// 再按 accountId 建视图；不用显示名推身份。
+  /// The list owns summaries, not auth. Configuration identities are sufficient
+  /// for a no-write baseline; target auth is awaited only after opening details.
   Future<void> _readAccountsBaseline() async {
     stage = '$_step:await-accounts-baseline';
     final state = await _until('acp-accounts-loaded', (snapshot) {
       final settings = snapshot['settings'];
       if (settings is! Map) return false;
-      final auth = settings['acpAuth'];
-      if (auth is! Map || auth['loaded'] != true) return false;
+      final domains = settings['accountDomains'];
+      if (domains is! Map ||
+          domains['summaries'] is! Map ||
+          domains['summaries']['loaded'] != true) {
+        return false;
+      }
       if (settings['acpAccounts'] is! List) return false;
       // 已存在账号的连接代次也必须已经给出，否则这条基线不构成可靠身份。
       return _accounts(snapshot).values
-          .every((view) => view['connectionRevision'] is int);
+          .every((view) => view['configuredConnectionRevision'] is int);
     }, timeout: _startupWait);
     _accountsBaseline = _accounts(state);
     _accountsBaselineReady = true;
@@ -1088,17 +1370,19 @@ class _Journey {
       timeout: _startupWait,
     );
     final before = _authRevision(baseline);
-    await _tap(_acpCheck);
+    await _tapPanelAction(_acpCheck);
     return _awaitAuth(identity, kind, afterRevision: before);
   }
 
-  AcpAccountIdentity _identityFor(
+  AcpAccountIdentity _configuredIdentityFor(
     String accountId,
     Map<String, dynamic> state,
   ) {
-    final revision = _accounts(state)[accountId]?['connectionRevision'];
+    final revision = _accounts(
+      state,
+    )[accountId]?['configuredConnectionRevision'];
     if (revision is! int) {
-      throw StateError('no loaded current auth identity for $accountId');
+      throw StateError('no loaded configuration identity for $accountId');
     }
     return (accountId: accountId, connectionRevision: revision);
   }
@@ -1110,11 +1394,11 @@ class _Journey {
     if (_accountsBaseline.length != 1) {
       throw StateError('first requires exactly one seeded ACP account');
     }
-    final identity = _identityFor(
+    final identity = _configuredIdentityFor(
       _accountsBaseline.keys.single,
       await _snapshot(),
     );
-    await _openDetails(identity.accountId);
+    await _openDetails(identity);
     final failed = await _checkAndAwait(identity, 'failed');
     final failure = _authState(failed, identity)?['failure'];
     if (failure is! Map ||
@@ -1143,7 +1427,104 @@ class _Journey {
     await _prepareToDownloading('progress');
     await _prepareToReady('ready');
     await _adaptiveCaptures();
+    await _reopenAndClaimPrepared();
     await _saveAndObserve('connected');
+  }
+
+  /// A ready installation is shared, but a fresh editor must explicitly claim
+  /// it. Reopening uses real leave confirmation and does not prepare again.
+  Future<void> _reopenAndClaimPrepared() async {
+    final before = await _snapshot();
+    final oldEditor = _presentation(before)?['editor'] as Map?;
+    if (oldEditor == null || _operationId(before) != _activeInstallOperation) {
+      throw StateError('ready claim has no current editor/installation');
+    }
+    await _tap(_accountCancel);
+    if (oldEditor['dirty'] == true || oldEditor['saving'] == true) {
+      await driver.waitFor(find.byType('AccountUnsavedChangesDialog'));
+      await driver.tap(
+        find.descendant(
+          of: find.byType('AccountUnsavedChangesDialog'),
+          matching: find.text((await _usageLabels())['discard'] as String),
+        ),
+      );
+    }
+    await _waitFor(_accountAdd);
+    await _openTemplatePicker();
+    await _ensureTemplateVisible(_antigravityToken, dyScroll: 200);
+    final beforeSelection = await _snapshot();
+    if (!_installLoaded(beforeSelection) ||
+        _phaseOf(beforeSelection) != 'ready' ||
+        _operationId(beforeSelection) != _activeInstallOperation) {
+      throw StateError(
+        'shared ready baseline was lost before template selection',
+      );
+    }
+    await _tap(_templateKey(_antigravityToken));
+    await driver.waitFor(_panel);
+    final unclaimed = await _until('fresh-editor-shared-ready', (snapshot) {
+      if (_installLoaded(snapshot) &&
+          _operationId(snapshot) != _activeInstallOperation) {
+        throw StateError('reopening shared Ready started another preparation');
+      }
+      final editor = _presentation(snapshot)?['editor'];
+      final panel = _presentation(snapshot)?['acp'];
+      if (editor?['editorId'] is String &&
+          editor?['editorId'] != oldEditor['editorId'] &&
+          (panel?['claimedOperationId'] != null ||
+              panel?['preparedForEditor'] == true)) {
+        throw StateError('reopening shared Ready implicitly claimed it');
+      }
+      return editor?['editorId'] is String &&
+          editor?['editorId'] != oldEditor['editorId'] &&
+          editor?['creating'] == true &&
+          editor?['target']?['kind'] == 'acp' &&
+          panel?['editorId'] == editor?['editorId'] &&
+          panel?['target']?['kind'] == 'acp' &&
+          panel?['target']?['id'] == editor?['target']?['id'] &&
+          panel?['providerId'] == _providerWire &&
+          _isUnclaimedSharedReady(editor as Map?, panel as Map?);
+    });
+    await _usePreparedForEditor(unclaimed);
+  }
+
+  Future<void> _usePreparedForEditor(Map<String, dynamic> unclaimed) async {
+    final editor = _presentation(unclaimed)?['editor'] as Map;
+    final panel = _presentation(unclaimed)?['acp'] as Map;
+    if (!_isUnclaimedSharedReady(editor, panel) ||
+        _operationId(unclaimed) != _activeInstallOperation) {
+      throw StateError('shared ready implicitly authorized a fresh editor');
+    }
+    final beforeGeneration = panel['preparationGeneration'] as int;
+    _assertAccountsUnchanged(unclaimed, 'sharedReadyDidNotSave');
+    checks['sharedReadyRequiresExplicitClaim'] = true;
+    await _tapPanelAction(AccountViewKeyValues.acpAction('usePrepared'));
+    final claimed = await _until('explicit-prepared-claim', (snapshot) {
+      if (_installLoaded(snapshot) &&
+          _operationId(snapshot) != _activeInstallOperation) {
+        throw StateError('usePrepared started a replacement installation');
+      }
+      final currentEditor = _presentation(snapshot)?['editor'];
+      final currentPanel = _presentation(snapshot)?['acp'];
+      return currentEditor?['editorId'] == editor['editorId'] &&
+          currentEditor?['target']?['kind'] == 'acp' &&
+          currentEditor?['target']?['id'] == editor['target']['id'] &&
+          currentPanel?['editorId'] == editor['editorId'] &&
+          currentPanel?['target']?['kind'] == 'acp' &&
+          currentPanel?['target']?['id'] == editor['target']['id'] &&
+          currentEditor?['canSave'] == true &&
+          currentPanel?['preparedForEditor'] == true &&
+          currentPanel?['preparationGeneration'] is int &&
+          (currentPanel['preparationGeneration'] as int) > beforeGeneration &&
+          currentPanel?['claimedOperationId'] == _activeInstallOperation;
+    });
+    if (_operationId(claimed) != _activeInstallOperation) {
+      throw StateError('usePrepared started a replacement installation');
+    }
+    _activeInstallEditorId = editor['editorId'] as String;
+    _activeInstallTargetId = editor['target']['id'] as String;
+    checks['explicitUsePreparedClaimsSameOperation'] = true;
+    await _capture('explicit-prepared-claim', expectedInstallPhase: 'ready');
   }
 
   /// resume 使用 H2 自己的已有账号基线，不假设它与 first 共用 home。
@@ -1165,13 +1546,14 @@ class _Journey {
     if (id.isEmpty || !_accountsBaseline.containsKey(id)) {
       throw StateError('first saved account $id is absent in this runtime');
     }
-    // 前一 runtime 的 revision 只属于前一份证据；这里使用当前已加载的认证身份。
-    return _identityFor(id, await _snapshot());
+    // The previous runtime's revision is evidence only. The current summary
+    // supplies the configuration identity; opening details will observe auth.
+    return _configuredIdentityFor(id, await _snapshot());
   }
 
   Future<void> _restartPhase() async {
     final identity = await _firstSavedIdentity();
-    await _openDetails(identity.accountId);
+    await _openDetails(identity);
     await _awaitAuth(identity, 'unchecked');
     checks['authLoadedUncheckedAfterRestart'] = true;
     await _capture(
@@ -1196,7 +1578,7 @@ class _Journey {
     final fixture = this.fixture!;
     await fixture.validate();
     final identity = await _firstSavedIdentity();
-    await _openDetails(identity.accountId);
+    await _openDetails(identity);
 
     // 真正等待中的登录 → 放行 → 同 PID session/new 校验，不手写 credential。
     _enterStep('fixture-first-login');
@@ -1214,7 +1596,7 @@ class _Journey {
     await _fixtureCheckRequired(identity, 'failure');
     final failureFrom = await fixture.eventCount();
     final failureRevision = _authRevision(await _snapshot());
-    await _tap(_acpLogin);
+    await _tapPanelAction(_acpLogin);
     final failed = await _awaitAuth(
       identity,
       'failed',
@@ -1251,7 +1633,7 @@ class _Journey {
     await _resetFixture(authentication: 'wait');
     await _fixtureCheckRequired(identity, 'cancel');
     final cancelFrom = await fixture.eventCount();
-    await _tap(_acpLogin);
+    await _tapPanelAction(_acpLogin);
     final authenticating = await _awaitAuth(identity, 'authenticating');
     final operation = _authState(authenticating, identity)?['operationId'];
     if (operation is! String || operation.isEmpty) {
@@ -1262,7 +1644,7 @@ class _Journey {
       (evidence) => evidence.authenticatePid != null,
     );
     await _waitFixtureMarker('auth-started');
-    await _tap(_acpCancelAuth);
+    await _tapPanelAction(_acpCancelAuth);
     await _awaitAuth(identity, 'cancelled');
     final cancelled = await _waitForAttempt(
       cancelFrom,
@@ -1324,7 +1706,7 @@ class _Journey {
     bool captureAuthenticating = false,
   }) async {
     final from = await fixture!.eventCount();
-    await _tap(_acpLogin);
+    await _tapPanelAction(_acpLogin);
     final state = await _awaitAuth(identity, 'authenticating');
     final operation = _authState(state, identity)?['operationId'];
     if (operation is! String || operation.isEmpty) {
@@ -1405,55 +1787,175 @@ class _Journey {
     _enterStep('native-form-regression');
     final before = await _snapshot();
     final nativeBefore = _nativeConfiguration(before);
-    final templates = (before['settings'] as Map)['nativeTemplates'];
-    if (templates is! List || templates.isEmpty || templates.first is! String) {
+    // Opening the production picker declares template demand; snapshots only
+    // observe the directory and must not load it on behalf of the UI.
+    await _openTemplatePicker();
+    late final Map<String, dynamic> templateSnapshot;
+    Map? catalog;
+    try {
+      templateSnapshot = await _until('native-template-directory-loaded', (
+        snapshot,
+      ) {
+        catalog = snapshot['settings']['accountDomains']['templates'] as Map;
+        return catalog!['loaded'] == true;
+      });
+    } on Object {
+      stderr.writeln('Native template directory observation: $catalog');
+      rethrow;
+    }
+    final templates = (templateSnapshot['settings'] as Map)['nativeTemplates'];
+    if (catalog!['usable'] != true ||
+        templates is! List ||
+        templates.isEmpty ||
+        templates.first is! String ||
+        (templates.first as String).isEmpty) {
       throw StateError(
-        'no real Native template is available for form regression',
+        'no real Native template is available for form regression; '
+        'catalog=$catalog templates=$templates',
       );
     }
     final token = templates.first as String;
-    await _openTemplatePicker();
+    // Creation allocates the first free id for this real template within its
+    // account kind. Check that target, rather than assuming the bare token is
+    // unused or treating a previously selected ACP account as the new target.
+    final occupied = {
+      for (final account
+          in (before['settings']['accountDomains']['accounts'] as List)
+              .cast<Map>())
+        if (account['kind'] == 'native') account['id'],
+    };
+    var expectedTarget = token;
+    for (var suffix = 2; occupied.contains(expectedTarget); suffix++) {
+      expectedTarget = '$token-$suffix';
+    }
     await _ensureTemplateVisible(token, dyScroll: -200);
-    await _tap('account-template-option-$token');
-    await _waitFor(_accountBaseUrl);
-    await _waitFor(_accountApiKey);
-    await _revealInEditor(_accountBaseUrlInput);
-    await _tap(_accountBaseUrlInput);
+    await _tap(_templateKey(token));
+    final deadline = DateTime.now().add(_controlWait);
+    Duration remaining() {
+      final budget = deadline.difference(DateTime.now());
+      if (budget <= Duration.zero) {
+        throw StateError('Native form editor exceeded $_controlWait');
+      }
+      return budget;
+    }
+
+    String? editorId;
+    bool editorReady(Map<String, dynamic> snapshot) {
+      final presentation = _presentation(snapshot);
+      final editor = presentation?['editor'] as Map?;
+      if (editorId != null &&
+          editor != null &&
+          (editor['editorId'] != editorId ||
+              editor['target']?['kind'] != 'native' ||
+              editor['target']?['id'] != expectedTarget ||
+              editor['creating'] != true)) {
+        throw StateError('Native form editor identity changed');
+      }
+      if (editor?['target']?['kind'] != 'native' ||
+          editor?['creating'] != true) {
+        return false;
+      }
+      if (editor?['target']?['id'] != expectedTarget) {
+        throw StateError('Native template created an unexpected target');
+      }
+      final id = editor?['editorId'];
+      if (id is! String || id.isEmpty) return false;
+      editorId ??= id;
+      return editor?['stale'] == false &&
+          editor?['saving'] == false &&
+          presentation?['mountedViews']?['nativeEditor']?['editorId'] == id;
+    }
+
+    final ready = await _until(
+      'native-template-editor-mounted',
+      editorReady,
+      timeout: remaining(),
+    ).timeout(remaining());
+    final initialRevision = _presentation(ready)?['editor']?['draftRevision'];
+    if (initialRevision is! int || initialRevision < 0) {
+      throw StateError('Native form editor has no observed draft revision');
+    }
+    final endpoint = AccountViewKeyValues.editorField(editorId!, 'endpoint');
+    final credential = AccountViewKeyValues.editorField(
+      editorId!,
+      'credential',
+    );
+    final nativeView = find.descendant(
+      of: find.byValueKey(_settingsPage),
+      matching: find.byType('NativeAccountEditorView'),
+    );
+    final endpointField = find.descendant(
+      of: nativeView,
+      matching: find.byValueKey(endpoint),
+    );
+    await driver.waitFor(endpointField, timeout: remaining());
+    await driver.waitFor(
+      find.descendant(of: nativeView, matching: find.byValueKey(credential)),
+      timeout: remaining(),
+    );
+    await _revealInEditor(endpoint).timeout(remaining());
+    if (!editorReady(await _snapshot().timeout(remaining()))) {
+      throw StateError('Native form editor lost readiness before input');
+    }
+    final input = find.descendant(
+      of: endpointField,
+      matching: find.byType('EditableText'),
+    );
+    await driver.tap(input, timeout: remaining());
     const baseUrl = 'https://fixture.invalid/v1';
-    await driver.enterText(baseUrl);
-    if (await driver.getText(find.byValueKey(_accountBaseUrlInput)) !=
-        baseUrl) {
+    await driver.enterText(baseUrl).timeout(remaining());
+    await _until('native-form-input-owned', (snapshot) {
+      if (!editorReady(snapshot)) return false;
+      final editor = _presentation(snapshot)!['editor'] as Map;
+      final revision = editor['draftRevision'];
+      return editor['dirty'] == true &&
+          revision is int &&
+          revision > initialRevision;
+    }, timeout: remaining()).timeout(remaining());
+    if (await driver.getText(input).timeout(remaining()) != baseUrl) {
       throw StateError('Native form did not retain its actual input');
     }
-    await _capture('native-form');
+    await _capture('native-form').timeout(remaining());
+    if (!editorReady(await _snapshot().timeout(remaining())) ||
+        await driver.getText(input).timeout(remaining()) != baseUrl) {
+      throw StateError('Native form owner or raw input changed before cancel');
+    }
     await _tap(_accountCancel);
-    await _waitForAbsent(_accountBaseUrl);
+    await driver.waitFor(find.byType('AccountUnsavedChangesDialog'));
+    await driver.tap(
+      find.descendant(
+        of: find.byType('AccountUnsavedChangesDialog'),
+        matching: find.text((await _usageLabels())['discard'] as String),
+      ),
+    );
+    await _waitForAbsent(endpoint);
     final after = await _snapshot();
     checks['nativeFormRenderedAndCancelledWithoutSaving'] =
         _nativeConfiguration(after) == nativeBefore;
   }
 
   String _nativeConfiguration(Map<String, dynamic> snapshot) {
-    final accounts = (snapshot['settings'] as Map)['accounts'];
-    if (accounts is! List) {
-      throw StateError('canonical Native accounts are missing');
-    }
+    final domains = snapshot['settings']['accountDomains'] as Map;
+    final summaries = domains['accounts'] as List;
     final configured = [
-      for (final entry in accounts.cast<Map>())
-        {
-          for (final field in const [
-            'id',
-            'templateId',
-            'protocol',
-            'billingKind',
-            'billingKindOverride',
-            'defaultModelId',
-            'hasBearerToken',
-          ])
-            field: entry[field],
-        },
+      for (final entry in summaries.cast<Map>())
+        if (entry['kind'] == 'native')
+          {
+            for (final field in const [
+              'kind',
+              'id',
+              'name',
+              'isDefault',
+              'billingKind',
+              'billingKindOverride',
+              'credentialReady',
+              'usageQueryRevision',
+            ])
+              field: entry[field],
+          },
     ]..sort((left, right) => '${left['id']}'.compareTo('${right['id']}'));
-    // 不把模型目录的后台进度等运行时观察误当成 Native 账号配置被保存。
+    // The query identity covers credential/endpoint semantics without exposing
+    // either. Catalog observation/loading stamps are not account config writes.
     return jsonEncode(configured);
   }
 
@@ -1465,7 +1967,6 @@ class _Journey {
 
   /// cancel：瞬态取图可选，真实动作、同 op 的终态取图与账号不变仍是必需。
   Future<void> _cancelPhase() async {
-    await _startPreparation();
     await _waitDownloading();
     final downloading = await _snapshot();
     final operationId = requireAcpInstallCapture(
@@ -1486,7 +1987,7 @@ class _Journey {
       expectedInstallPhase: 'downloading',
     );
     // 取消是显式动作：点面板里的“取消下载”，不靠离开页面。
-    await _tap(_installCancel);
+    await _tapPanelAction(_installCancel);
     checks['cancelActionSent'] = true;
 
     stage = '$_step:await-cancelling';
@@ -1600,6 +2101,16 @@ class _Journey {
     checks['retryHasCancelEvidence'] = true;
 
     _enterStep('retry-prepare');
+    // This phase is a new runtime, so selecting the template is the explicit
+    // retry UI action. Validate prior cancellation before that side effect and
+    // require a fresh operation instead of clicking Prepare a second time.
+    await _openTemplatePicker();
+    await _chooseTemplate(
+      _antigravityToken,
+      dyScroll: 200,
+      retryOfOperation: previousOperation,
+    );
+    checks['retryTemplateActionSent'] = true;
     await _prepareToDownloading('progress-retry');
     final before = await _snapshot();
     final operationId = _operationId(before);
@@ -1632,11 +2143,12 @@ class _Journey {
     return summary;
   }
 
-  /// reuse：新 runtime 显式 prepare 重新校验完整资产；不保存，包 GET=0 由 peer 核验。
+  /// reuse：新 runtime 选择模板触发一次准备；不保存，包 GET=0 由 peer 核验。
   Future<void> _reusePhase() async {
-    await _startPreparation();
     await _prepareToReady('ready-reused');
-    checks['reusedBadgeVisible'] = await _present(_installReused);
+    checks['reusedBadgeVisible'] = await _panelTextPresent(
+      (await _usageLabels())['installReused'] as String,
+    );
     final entry = _entry(await _snapshot());
     checks['reuseFlagTrue'] = entry?['reused'] == true;
     _assertAccountsUnchanged(await _snapshot(), 'reuseDidNotSave');
@@ -1644,17 +2156,17 @@ class _Journey {
 
   /// unsafe archive 可以按真实 Failed 结束；不为形式强加额外副作用重试。
   Future<void> _faultPhase(String expectedCode, String captureName) async {
-    await _startPreparation();
     final failed = await _until(
       'acp-install-failed:$expectedCode',
       (state) =>
-          _phaseOf(state) == 'failed' &&
-          _operationId(state) == _activeInstallOperation &&
+          _thisInstallOperation(state, 'failed') &&
           _failureOf(state)?['code'] == expectedCode,
       timeout: _installWait,
     );
     checks['failureCodeIs$expectedCode'] = true;
-    await _waitFor(_installFailure);
+    await driver.waitFor(
+      find.descendant(of: _panel, matching: find.byType('AccountInlineError')),
+    );
     checks['failureVisible'] = true;
     checks['failureHasOperation'] = _operationId(failed)?.isNotEmpty == true;
     final operationId = _activeInstallOperation;
@@ -1664,7 +2176,10 @@ class _Journey {
     final failureText = await driver
         .getText(
           find.descendant(
-            of: find.byValueKey(_installFailure),
+            of: find.descendant(
+              of: _panel,
+              matching: find.byType('AccountInlineError'),
+            ),
             matching: find.byType('Text'),
           ),
         )
@@ -1686,37 +2201,55 @@ class _Journey {
   /// 两者不能共用同一断言，否则合法 known total 会被记成未知而整轮失败。
   bool get _downloadTotalUnknownByContract => phase == 'first';
 
-  Future<void> _startPreparation() async {
-    final oldOperation = _operationId(await _snapshot());
-    await _tap(_installPrepare);
-    final started = await _until('fresh-install-operation', (state) {
-      final operation = _operationId(state);
-      return operation != null &&
-          operation.isNotEmpty &&
-          operation != oldOperation;
-    }, timeout: _startupWait);
-    _activeInstallOperation = _operationId(started);
-  }
-
   bool _thisInstallOperation(Map<String, dynamic> state, String expectedPhase) {
+    if (_activeInstallOperation == null ||
+        _activeInstallEditorId == null ||
+        _activeInstallTargetId == null) {
+      throw StateError('no preparation was admitted by the template action');
+    }
     if (_operationId(state) != _activeInstallOperation) {
       throw StateError(
         'install switched from $_activeInstallOperation to ${_operationId(state)}',
       );
     }
+    final editor = _presentation(state)?['editor'];
+    final panel = _presentation(state)?['acp'];
+    if (editor?['editorId'] != _activeInstallEditorId ||
+        panel?['editorId'] != _activeInstallEditorId ||
+        editor?['target']?['kind'] != 'acp' ||
+        editor?['target']?['id'] != _activeInstallTargetId ||
+        panel?['target']?['kind'] != 'acp' ||
+        panel?['target']?['id'] != _activeInstallTargetId ||
+        panel?['claimedOperationId'] != _activeInstallOperation) {
+      throw StateError(
+        'preparation lost its selected editor/operation binding',
+      );
+    }
     if (_phaseOf(state) == 'failed' && expectedPhase != 'failed') {
       throw StateError('installation failed: ${_failureOf(state)}');
+    }
+    if (_phaseOf(state) != 'ready' && editor?['canSave'] != false) {
+      throw StateError('an unfinished preparation enabled account saving');
     }
     return _phaseOf(state) == expectedPhase;
   }
 
   Future<void> _prepareToDownloading(String captureName) async {
-    await _startPreparation();
     await _waitDownloading();
     checks['downloadingShowsBytes'] = true;
-    checks['progressBarVisible'] = await _present(_installProgress);
-    checks['progressTextVisible'] = await _present(_installProgressText);
-    checks['stageVisible'] = await _present(_installStage);
+    await driver.waitFor(
+      find.descendant(
+        of: _panel,
+        matching: find.byType('LinearProgressIndicator'),
+      ),
+    );
+    checks['progressBarVisible'] = true;
+    final panel = _presentation(await _snapshot())?['acp'];
+    checks['progressTextVisible'] =
+        panel?['progressLabel'] is String &&
+        await _panelTextPresent(panel['progressLabel'] as String);
+    await _waitPanelStatus(await _snapshot());
+    checks['stageVisible'] = true;
     final current = await _snapshot();
     final progress = _progressOf(current);
     final completed = progress?['completedBytes'];
@@ -1729,30 +2262,37 @@ class _Journey {
           total == null &&
           completed is int &&
           completed > 0;
-      // 有界缺席观察：已缺席立即通过；若 UI 仍在渲染百分比则超时异常向上传播，
-      // 本轮如实失败。不用 `_present` 的“等满超时再返回 false”，那会把 first 的
-      // 下载拖到结束后才记录，交给 D 的 phase 核验时已经物是人非。
-      await driver.waitForAbsent(
-        find.byValueKey(_installPercent),
-        timeout: _controlWait,
-      );
-      checks['unknownTotalHasNoPercent'] = true;
+      // The production panel uses a progress bar plus exact byte text, not a
+      // percent Text widget. Unknown total must keep that bar indeterminate.
+      checks['unknownTotalIndeterminateProgress'] =
+          _presentation(current)?['acp']?['progress'] == null;
     } else {
       // resume/retry 的外部场景带官方 Content-Length：总量必须为正，进度落在
-      // 0 < completed < total 的真实中途，百分比与真实 UI 一致地出现。
+      // 0 < completed < total 的真实中途，呈现 fraction 必须匹配真实字节比。
       checks['knownTotalShowsRealProgress'] =
           total is int &&
           total > 0 &&
           completed is int &&
           completed > 0 &&
           completed < total;
-      checks['knownTotalHasPercent'] = await _present(_installPercent);
+      final fraction = _presentation(current)?['acp']?['progress'];
+      checks['knownTotalHasDeterminateProgress'] =
+          fraction is num &&
+          fraction > 0 &&
+          fraction < 1 &&
+          fraction == completed / total;
     }
     final retryCount = _entry(current)?['retryCount'];
     checks['retryCountRenderedWhenPresent'] =
         retryCount is! int || retryCount == 0
         ? true
-        : await _present(_installRetryCount);
+        : await _panelTextPresent(
+                (await _usageLabels())['installRetries'] as String,
+              ) &&
+              await _panelTextPresent(
+                (await _usageLabels())['installRetryValues'][_providerWire]
+                    as String,
+              );
     await _capture(captureName, expectedInstallPhase: 'downloading');
   }
 
@@ -1787,14 +2327,29 @@ class _Journey {
     _requireFixedRelease(_releaseOf(ready));
     checks['readyHasProgram'] = program is String && program.isNotEmpty;
     checks['readyHasRelease'] = true;
-    await _waitFor(_installReady);
-    checks['readyBadgeVisible'] = true;
-    checks['versionFactVisible'] = await _present(_installVersion);
-    checks['saveVisibleAfterReady'] = await _present(_accountSave);
+    await _waitPanelStatus(ready);
+    checks['readyBadgeVisible'] =
+        _presentation(ready)?['acp']?['phase'] == 'ready';
+    checks['versionFactVisible'] = await _panelTextPresent('1.4.1');
+    // This editor selected the template and owns the admission. Do not hide a
+    // lost binding by silently claiming shared Ready here; that is exercised
+    // separately by _reopenAndClaimPrepared's explicit usePrepared action.
+    final claimed = await _until(
+      'editor-claims-prepared',
+      (snapshot) =>
+          _thisInstallOperation(snapshot, 'ready') &&
+          _presentation(snapshot)?['acp']?['preparedForEditor'] == true &&
+          _presentation(snapshot)?['editor']?['canSave'] == true,
+    );
+    checks['preparedExplicitlyOwned'] =
+        _presentation(claimed)?['acp']?['claimedOperationId'] ==
+        _activeInstallOperation;
+    await _waitFor(_accountSave, timeout: const Duration(seconds: 2));
+    checks['saveVisibleAfterReady'] = true;
     await _waitForAbsent(_installPrepare);
     checks['prepareHiddenAfterReady'] = true;
-    await _waitForAbsent(_installStage);
-    checks['readyDoesNotPretendClosing'] = true;
+    checks['readyDoesNotPretendClosing'] =
+        _presentation(claimed)?['acp']?['phase'] == 'ready';
     await _capture(captureName, expectedInstallPhase: 'ready');
   }
 
@@ -2009,8 +2564,13 @@ class _Journey {
   }) async {
     stage = '$_step:capture:$name';
     if (expectedAuth != null) {
-      await _waitFor('acp-account-detail-${expectedAuth.identity.accountId}');
-      await _waitFor('acp-account-auth-state-${expectedAuth.kind}');
+      await driver.waitFor(_panel);
+      final selected = _presentation(await _snapshot())?['selected'];
+      if (selected?['kind'] != 'acp' ||
+          selected?['id'] != expectedAuth.identity.accountId) {
+        throw StateError('auth capture is not showing target details');
+      }
+      await _waitPanelStatus(await _snapshot());
     }
     final before = await _snapshot();
     String? beforeOperation;
@@ -2153,6 +2713,9 @@ class _Journey {
       cancellingObservation: _cancellingObservation,
       savedAccount: _savedAccount,
     );
+    if (_preparationSelection != null) {
+      payload['preparationSelection'] = _preparationSelection;
+    }
     await File(
       '${output.path}/$_scenario-summary-$phase.json',
     ).writeAsString('${const JsonEncoder.withIndent('  ').convert(payload)}\n');

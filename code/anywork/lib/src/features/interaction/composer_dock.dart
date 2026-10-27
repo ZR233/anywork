@@ -1,5 +1,7 @@
 import 'dart:async';
 
+import 'package:anywork_client/model_directory.dart';
+
 import 'package:anywork_client/studio_client.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -1803,7 +1805,7 @@ class _StopButton extends ConsumerWidget {
 
 /// route 为空时仍保留模型选择器，并显示不可用原因，避免静默隐藏。
 List<Widget> _modelRouteSelectorChildren({
-  required List<AccountSettingsView> accounts,
+  required List<ModelSelectionAccount> accounts,
   required bool pending,
   bool enabled = true,
   required String unavailableReason,

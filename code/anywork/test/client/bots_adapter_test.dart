@@ -4,7 +4,6 @@ import 'dart:convert';
 
 import 'package:anywork/src/app/app_graph.dart';
 import 'package:anywork/src/platform/feishu_app_links.dart';
-import 'package:anywork/src/presentation/view_models/timeline_session_owner.dart';
 import 'package:anywork/src/shared/studio_driver_projection.dart';
 import 'package:anywork/src/shared/studio_driver_state.dart';
 import 'package:anywork_client/studio_client.dart';
@@ -105,20 +104,39 @@ void main() {
     'Driver bots projection excludes secrets and verification URLs',
     () async {
       final transport = RecordingDemoTransport();
-      final client = AnyworkClient(
+      final graph = AppGraph(
+        statisticsFeed: const TestStatisticsFeedPort(),
         transport: transport,
         clientId: 'bots-driver',
       );
-      addTearDown(client.close);
+      final client = graph.client;
+      addTearDown(
+        () => graph.close(
+          deadline: DateTime.now().add(const Duration(seconds: 5)),
+        ),
+      );
       await client.bootstrap();
       await client.botsCommands.startRegistration(
         name: 'Scan bot',
         projectId: 'project-local',
       );
-      final timeline = TimelineSessionOwner(client: client);
-      addTearDown(timeline.close);
-      bindStudioDriver(client, timeline: timeline);
-      final facts = queryStudioDriverFacts(client, timeline: timeline);
+      final timeline = graph.timeline;
+      bindStudioDriver(
+        client,
+        accountsRepository: graph.accounts,
+        modelsRepository: graph.models,
+        usageRepository: graph.accountUsage,
+        acpService: graph.acp,
+        timeline: timeline,
+      );
+      final facts = queryStudioDriverFacts(
+        client,
+        accountsRepository: graph.accounts,
+        modelsRepository: graph.models,
+        usageRepository: graph.accountUsage,
+        acpService: graph.acp,
+        timeline: timeline,
+      );
       final json = jsonDecode(
         StudioDriverState.snapshotJson(observed: facts),
       ) as Map<String, dynamic>;

@@ -363,6 +363,8 @@ impl StudioRuntime {
     }
 
     async fn dispose_startup(&self) -> Result<(), StudioStartupError> {
+        self.account_usage.request_close();
+        let usage = self.account_usage.close().await;
         let catalogs = self.stop_model_catalog_probes().await;
         // All independent cleanup runs even when one task reports an error.
         let results = tokio::join!(
@@ -394,6 +396,7 @@ impl StudioRuntime {
         let bots = self.bots.shutdown().await;
         let storage = self.store.close().await;
         catalogs.map_err(|error| internal("stop_model_catalogs", error))?;
+        usage.map_err(|error| internal("stop_account_usage", error))?;
         for result in [
             results.0, results.1, results.2, results.3, results.4, results.5, results.6,
         ] {

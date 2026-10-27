@@ -72,6 +72,7 @@ impl RemoteWorkspaceFileBackend {
     ) -> std::result::Result<u64, RemoteDownloadError> {
         let path = self
             .path_request(path.to_owned(), None)
+            .map_err(remote_file_error)
             .map_err(RemoteDownloadError::Path)?;
         let opened = self
             .request(RemoteRequest::OpenRead(path), &[])
@@ -161,7 +162,9 @@ impl RemoteWorkspaceFileBackend {
         Ok(offset)
     }
     pub(super) async fn upload(&self, request: WorkspaceFileWriteRequest) -> Result<()> {
-        let target = self.path_request(request.path, request.cwd)?;
+        let target = self
+            .path_request(request.path, request.cwd)
+            .map_err(remote_file_error)?;
         self.upload_bytes(target, request.mode.into(), request.content.as_bytes())
             .await
     }
@@ -175,7 +178,8 @@ impl RemoteWorkspaceFileBackend {
         reader: &mut R,
     ) -> Result<u64> {
         self.upload_reader(
-            self.path_request(path.to_owned(), None)?,
+            self.path_request(path.to_owned(), None)
+                .map_err(remote_file_error)?,
             mode.into(),
             total_len,
             reader,

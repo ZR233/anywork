@@ -12,10 +12,6 @@ impl StudioRuntime {
         self.account_usage.check(account_id).await
     }
 
-    pub async fn apply_account_config(&self) -> Result<AccountUsageStateSnapshot> {
-        self.account_usage.apply_config().await
-    }
-
     pub async fn read_update_state(&self) -> StudioUpdateStateSnapshot {
         self.updater.read().await
     }

@@ -779,6 +779,8 @@ class BridgeModelCatalogDescriptor {
 sealed class BridgeModelCatalogError with _$BridgeModelCatalogError {
   const BridgeModelCatalogError._();
 
+  const factory BridgeModelCatalogError.taskFailed() =
+      BridgeModelCatalogError_TaskFailed;
   const factory BridgeModelCatalogError.unsupported() =
       BridgeModelCatalogError_Unsupported;
   const factory BridgeModelCatalogError.configuration() =
@@ -806,6 +808,8 @@ sealed class BridgeModelCatalogError with _$BridgeModelCatalogError {
 enum BridgeModelCatalogSource { default_, cached, online }
 
 class BridgeModelCatalogStatusDto {
+  final BigInt queryGeneration;
+  final String? operationId;
   final bool supported;
   final BridgeModelCatalogSource source;
   final bool probing;
@@ -815,6 +819,8 @@ class BridgeModelCatalogStatusDto {
   final BridgeModelCatalogCacheWarning? cacheWarning;
 
   const BridgeModelCatalogStatusDto({
+    required this.queryGeneration,
+    this.operationId,
     required this.supported,
     required this.source,
     required this.probing,
@@ -826,6 +832,8 @@ class BridgeModelCatalogStatusDto {
 
   @override
   int get hashCode =>
+      queryGeneration.hashCode ^
+      operationId.hashCode ^
       supported.hashCode ^
       source.hashCode ^
       probing.hashCode ^
@@ -839,6 +847,8 @@ class BridgeModelCatalogStatusDto {
       identical(this, other) ||
       other is BridgeModelCatalogStatusDto &&
           runtimeType == other.runtimeType &&
+          queryGeneration == other.queryGeneration &&
+          operationId == other.operationId &&
           supported == other.supported &&
           source == other.source &&
           probing == other.probing &&

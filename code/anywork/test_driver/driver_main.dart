@@ -8,6 +8,19 @@ import 'dart:io';
 import 'package:anywork/main.dart' as studio;
 import 'package:anywork_client/studio_client.dart';
 import 'package:anywork_client/statistics.dart';
+import 'package:anywork_client/accounts.dart';
+import 'package:anywork_client/model_directory.dart';
+import 'package:anywork/src/features/settings/accounts/state/account_presentations.dart';
+import 'package:anywork/src/features/settings/accounts/state/account_view_state.dart';
+import 'package:anywork/src/features/settings/accounts/views/accounts_list_view.dart';
+import 'package:anywork/src/features/settings/accounts/views/account_details_view.dart';
+import 'package:anywork/src/features/settings/accounts/views/native_account_editor_view.dart';
+import 'package:anywork/src/features/settings/accounts/views/acp_account_editor_view.dart';
+import 'package:anywork/src/features/settings/accounts/view_models/accounts_view_model.dart';
+import 'package:anywork/src/features/settings/accounts/view_models/account_details_view_model.dart';
+import 'package:anywork/src/features/settings/accounts/view_models/account_editor_view_model.dart';
+import 'package:anywork/src/features/settings/accounts/view_models/account_models_view_model.dart';
+import 'package:anywork/src/features/settings/accounts/view_models/acp_account_view_model.dart';
 import 'package:anywork/src/app/app_graph.dart';
 import 'package:anywork/src/app/studio_host_lifecycle.dart';
 import 'package:anywork/src/app/studio_shutdown.dart';
@@ -72,7 +85,15 @@ void main() {
     ],
   );
   // Driver 只借用当前 AppGraph 的 Client 与展示 owner；绑定不建立内容订阅。
-  bindStudioDriver(graph.client, timeline: graph.timeline);
+  bindStudioDriver(
+    graph.client,
+    timeline: graph.timeline,
+    accountsRepository: graph.accounts,
+    modelsRepository: graph.models,
+    usageRepository: graph.accountUsage,
+    acpService: graph.acp,
+    observedAccountDetails: _observedAccountDetails,
+  );
   _applyShutdownFaultOverride();
   studio.bootstrapStudio(container: _container);
   // 生产 widget（`_StudioLifecycleCoordinator.initState`）会在**首帧构建时**安装它
@@ -1154,6 +1175,184 @@ String _driverSnapshotJson() {
   return jsonEncode(snapshot);
 }
 
+AccountsViewState? _existingAccountsView() =>
+    _container.exists(accountsViewModelProvider)
+    ? _container.read(accountsViewModelProvider).asData?.value
+    : null;
+
+AccountIdentity _domainIdentity(AccountDisplayKey key) =>
+    key.kind == AccountKind.native
+    ? NativeAccountIdentity(key.id)
+    : AcpAccountIdentity(key.id);
+
+Map<AccountIdentity, AccountResource<AccountDetails>>
+_observedAccountDetails() {
+  final view = _existingAccountsView();
+  final result = <AccountIdentity, AccountResource<AccountDetails>>{};
+  final selected = view?.selected;
+  if (selected != null) {
+    final provider = accountDetailsViewModelProvider(selected);
+    if (_container.exists(provider)) {
+      result[_domainIdentity(selected)] = _container
+          .read(provider.notifier)
+          .readObservedDetails();
+    }
+  }
+  // Direct row -> editor need not have created a details VM.
+  final editor = view?.editor;
+  if (editor != null) {
+    final provider = accountEditorViewModelProvider(editor);
+    if (_container.exists(provider)) {
+      final resource = _container.read(provider.notifier).readObservedDetails();
+      if (resource != null) result[_domainIdentity(editor.target)] = resource;
+    }
+  }
+  return result;
+}
+
+Iterable<AccountDisplayKey> _existingModelKeys() sync* {
+  final view = _existingAccountsView();
+  final keys = {
+    if (view?.selected != null) view!.selected!,
+    if (view?.editor != null) view!.editor!.target,
+  };
+  for (final key in keys) {
+    if (key.kind == AccountKind.native &&
+        _container.exists(accountModelsViewModelProvider(key))) {
+      yield key;
+    }
+  }
+}
+
+AccountModelPresentation? _observedModel(String accountId, String modelId) {
+  final key = AccountDisplayKey(kind: AccountKind.native, id: accountId);
+  final provider = accountModelsViewModelProvider(key);
+  if (!_container.exists(provider)) return null;
+  return _container
+      .read(provider)
+      .asData
+      ?.value
+      .catalog
+      .models
+      .where((model) => model.key.modelId == modelId)
+      .firstOrNull;
+}
+
+Map<String, Object?> _accountsPresentation() {
+  final view = _existingAccountsView();
+  Map<String, Object?>? identity(AccountDisplayKey? key) =>
+      key == null ? null : {'kind': key.kind.name, 'id': key.id};
+  final selected = view?.selected;
+  final editorKey = view?.editor;
+  AccountDetailsViewState? details;
+  AccountEditorViewState? editor;
+  if (selected != null) {
+    final provider = accountDetailsViewModelProvider(selected);
+    if (_container.exists(provider)) {
+      details = _container.read(provider).asData?.value;
+    }
+  }
+  if (editorKey != null) {
+    final provider = accountEditorViewModelProvider(editorKey);
+    if (_container.exists(provider)) {
+      editor = _container.read(provider).asData?.value;
+    }
+  }
+  final acpKey = editor?.acpKey ?? details?.acpKey;
+  AccountAcpViewState? acp;
+  if (acpKey != null) {
+    final provider = acpAccountViewModelProvider(acpKey);
+    if (_container.exists(provider)) {
+      acp = _container.read(provider).asData?.value;
+    }
+  }
+  return {
+    'observed': view != null,
+    'mountedViews': _mountedAccountsViews(),
+    'selected': identity(selected),
+    'search': view?.list.search,
+    'choosingTemplate': view?.choosingTemplate,
+    'details': details == null
+        ? null
+        : {'observed': details.observed, 'stale': details.stale},
+    'editor': editor == null
+        ? null
+        : {
+            'editorId': editor.key.editorId,
+            'target': identity(editor.key.target),
+            'creating': editor.key.creating,
+            'dirty': editor.dirty,
+            'saving': editor.saving,
+            'canSave': editor.canSave,
+            'draftRevision': editor.draftRevision,
+            'stale': editor.stale,
+          },
+    'models': [
+      for (final key in _existingModelKeys())
+        {
+          'target': identity(key),
+          'stale': _container
+              .read(accountModelsViewModelProvider(key))
+              .asData
+              ?.value
+              .stale,
+          'readouts': {
+            for (final entry
+                in _container
+                        .read(accountModelsViewModelProvider(key))
+                        .asData
+                        ?.value
+                        .readouts
+                        .entries ??
+                    const <MapEntry<String, AccountReadoutState>>[])
+              entry.key: {'phase': entry.value.phase.name},
+          },
+        },
+    ],
+    'acp': acpKey == null
+        ? null
+        : {
+            'target': identity(acpKey.target),
+            'providerId': acpKey.providerId,
+            'connectionRevision': acpKey.connectionRevision,
+            'editorId': acpKey.editorId,
+            'creating': acpKey.creating,
+            'phase': acp?.panel.phase.name,
+            'actions': acp?.panel.availableActions
+                .map((value) => value.name)
+                .toList(),
+            'progress': acp?.panel.progress,
+            'status': acp?.panel.status,
+            'progressLabel': acp?.panel.progressLabel,
+            'preparedForEditor': acp?.preparedForEditor,
+            'claimedOperationId': acp?.claimedOperationId,
+            'preparationGeneration': acp?.preparationGeneration,
+          },
+  };
+}
+
+/// Inspect only explicit safe props of the mounted production views. In
+/// particular, never serialize their raw editor fields or error messages.
+Map<String, Object?> _mountedAccountsViews() {
+  final root = WidgetsBinding.instance.rootElement;
+  Map<String, Object?>? nativeEditor;
+  if (root != null) {
+    _visitElements(root, (element) {
+      final widget = element.widget;
+      if (widget is NativeAccountEditorView) {
+        nativeEditor = {
+          'editorId': widget.value.editorId,
+          'compactModelIds': [
+            for (final model in widget.value.declaredModels)
+              if (model.compact != null) model.key.modelId,
+          ],
+        };
+      }
+    });
+  }
+  return {'nativeEditor': nativeEditor};
+}
+
 /// Read-only Client facts for delegation acceptance; no hidden UI-bypassing writes.
 Map<String, Object?> _delegationSnapshot(StudioDriverFacts facts) {
   final store = _client.settings.state;
@@ -1181,49 +1380,38 @@ Map<String, Object?> _delegationSnapshot(StudioDriverFacts facts) {
         ? null
         : {'mode': defaults.mode.name, 'preference': defaults.preference.name},
     'settingsRevision': store.settingsRevision,
-    'catalogRevision': store.modelCatalogRevision,
+    'catalogs': [
+      for (final entry
+          in facts.modelDirectory?.accounts.entries ??
+              const <
+                MapEntry<
+                  NativeAccountIdentity,
+                  AccountResource<AccountModelCatalog>
+                >
+              >[])
+        {
+          'accountId': entry.key.accountId,
+          ...studioDriverResourceJson(entry.value),
+        },
+    ],
     'accountModels': [
-      for (final account
-          in store.canonical?.accounts ?? const <AccountSettingsView>[])
+      for (final account in facts.accounts)
         for (final model in account.models)
           {
             'accountId': account.id,
             'modelId': model.modelId,
             'enabled': model.enabled,
             'textEligible': model.matchesType(ModelType.text),
-            'pending':
-                store
-                    .commands[accountModelEnabledMutationKey(
-                      account.id,
-                      model.modelId,
-                    )]
-                    ?.isPending ==
-                true,
-            'pendingEnabled':
-                store
-                        .commands[accountModelEnabledMutationKey(
-                          account.id,
-                          model.modelId,
-                        )]
-                        ?.isPending ==
-                    true
-                ? store
-                      .commands[accountModelEnabledMutationKey(
-                        account.id,
-                        model.modelId,
-                      )]
-                      ?.target
-                      .enabled
-                : null,
-            'error': store
-                .commands[accountModelEnabledMutationKey(
-                  account.id,
-                  model.modelId,
-                )]
-                ?.error
-                ?.message,
-            'billingKind': account.billingKind.name,
-            'billingKindOverride': account.billingKindOverride?.name,
+            'pending': _observedModel(account.id, model.modelId)?.saving,
+            'failed': switch (_observedModel(account.id, model.modelId)) {
+              null => null,
+              final presentation => presentation.error != null,
+            },
+            'billingKind': account.billingKind?.name,
+            'billingKindOverride': facts.accountSummaries
+                ?.account(NativeAccountIdentity(account.id))
+                ?.billingKindOverride
+                ?.name,
           },
     ],
     'drafts': [
@@ -1274,34 +1462,54 @@ Map<String, Object?> _delegationSnapshot(StudioDriverFacts facts) {
           'frozenModel': route(agent.frozenModel),
         },
     ],
-    // Only open, explicitly queried details. Never copy evaluations into the directory.
-    'modelDetails': [
-      for (final entry in _client.modelDetailQueries.state.entries)
-        {
-          'accountId': entry.key.accountId,
-          'modelId': entry.key.modelId,
-          'loading': entry.value.loading,
-          'error': entry.value.error?.message,
-          'errorCode': entry.value.error?.code.name,
-          'available': entry.value.value?.available,
-          'evaluationCount': entry.value.value?.recentEvaluations.length,
-          'evaluations': [
-            for (final evaluation
-                in entry.value.value?.recentEvaluations ??
-                    const <AgentEvaluation>[])
-              {
-                'agentId': evaluation.agentId,
-                'turnId': evaluation.turnId,
-                'revision': evaluation.revision,
-                'model': route(evaluation.model),
-                'outcome': evaluation.outcome.name,
-                'comment': evaluation.comment,
-                'updatedAt': evaluation.updatedAt,
-              },
-          ],
-        },
-    ],
+    // Both an in-flight/failed readout and its last finite result are retained.
+    'modelDetails': _delegationModelDetails(),
   };
+}
+
+List<Map<String, Object?>> _delegationModelDetails() => [
+  for (final key in _existingModelKeys()) ..._observedReadouts(key),
+];
+
+Iterable<Map<String, Object?>> _observedReadouts(AccountDisplayKey key) sync* {
+  final provider = accountModelsViewModelProvider(key);
+  if (!_container.exists(provider)) return;
+  final view = _container.read(provider).asData?.value;
+  final performance = _container
+      .read(provider.notifier)
+      .readObservedPerformance();
+  for (final entry
+      in view?.readouts.entries ??
+          const <MapEntry<String, AccountReadoutState>>[]) {
+    final detail = performance[entry.key];
+    yield {
+      'accountId': key.id,
+      'modelId': entry.key,
+      'phase': entry.value.phase.name,
+      'loading': entry.value.phase == AccountReadoutPhase.loading,
+      'failed': entry.value.phase == AccountReadoutPhase.failed,
+      'available': detail?.available,
+      'evaluationCount': detail?.recentEvaluations.length,
+      'evaluations': detail == null
+          ? null
+          : [
+              for (final evaluation in detail.recentEvaluations)
+                {
+                  'agentId': evaluation.agentId,
+                  'turnId': evaluation.turnId,
+                  'revision': evaluation.revision,
+                  'model': {
+                    'accountId': evaluation.model.accountId,
+                    'modelId': evaluation.model.modelId,
+                    'effort': evaluation.model.effort,
+                  },
+                  'outcome': evaluation.outcome.name,
+                  'comment': evaluation.comment,
+                  'updatedAt': evaluation.updatedAt,
+                },
+            ],
+    };
+  }
 }
 
 Map<String, Object?> _driverDiagnostics({StudioDriverFacts? observed}) {
@@ -1395,7 +1603,14 @@ Map<String, Object?> _driverDiagnostics({StudioDriverFacts? observed}) {
       'thread': _driverComposerDiagnostics(facts.threadComposer),
     },
     'accounts': _driverProviderDiagnostics(facts),
-    'topics': studioDriverTopicDiagnostics(_client),
+    'accountsPresentation': _accountsPresentation(),
+    'topics': studioDriverTopicDiagnostics(
+      _client,
+      accountsRepository: _container.read(appGraphProvider).accounts,
+      modelsRepository: _container.read(appGraphProvider).models,
+      usageRepository: _container.read(appGraphProvider).accountUsage,
+      acpService: _container.read(appGraphProvider).acp,
+    ),
     'seams': <String, Object?>{
       // No production ClipboardImageReader override/fixture is present in this
       // Driver entrypoint. The fixture request below therefore does not claim
@@ -1513,47 +1728,58 @@ Map<String, Object?>? _driverComposerDiagnostics(
 }
 
 Map<String, Object?> _driverProviderDiagnostics(StudioDriverFacts facts) {
-  final settingsAvailable = facts.settingsReady;
-  if (!settingsAvailable) {
-    return <String, Object?>{
-      'availability': 'unavailable',
-      'list': null,
-      'details': null,
-    };
-  }
-  final accounts = facts.accounts;
+  final summaries = facts.accountSummaries;
   return <String, Object?>{
-    'availability': 'available',
-    // The list projection deliberately contains count/status metadata only.
-    // Model model_ids are retained in the detail projection below.
-    'list': [
-      for (final account in accounts)
-        <String, Object?>{
-          'id': account.id,
-          'status': account.status,
-          'modelCount': account.models.length,
-          'defaultModelConfigured': account.defaultModelId.isNotEmpty,
-        },
-    ],
-    'details': [
-      for (final account in accounts)
-        <String, Object?>{
-          'id': account.id,
-          'models': [
-            for (final model in account.models)
-              <String, Object?>{
-                'modelId': model.modelId,
-                'name': model.displayName,
-                'origin': model.origin.name,
-                'contextWindow': model.contextWindow,
-                'maxOutputTokens': model.maxOutputTokens,
-                'reasoningEfforts': model.reasoningEfforts,
-                'inputCapabilities': [
-                  for (final capability in model.inputCapabilities)
-                    capability.modality.name,
-                ],
+    'availability': summaries?.loaded == true ? 'available' : 'unavailable',
+    'list': summaries?.loaded != true
+        ? null
+        : [
+            for (final account in summaries!.accounts)
+              {
+                'kind': account.identity is NativeAccountIdentity
+                    ? 'native'
+                    : 'acp',
+                'id': account.identity.accountId,
+                'isDefault': account.isDefault,
+                'credentialReady': account.credentialReady,
+                'billingKind': account.billingKind?.name,
               },
           ],
+    'details': [
+      for (final account in facts.accounts)
+        <String, Object?>{
+          'kind': 'native',
+          'id': account.id,
+          ...studioDriverResourceJson(
+            facts.modelDirectory?.accounts[NativeAccountIdentity(account.id)],
+          ),
+          'models':
+              facts
+                      .modelDirectory
+                      ?.accounts[NativeAccountIdentity(account.id)]
+                      ?.value ==
+                  null
+              ? null
+              : [
+                  for (final model
+                      in facts
+                          .modelDirectory!
+                          .accounts[NativeAccountIdentity(account.id)]!
+                          .value!
+                          .models)
+                    <String, Object?>{
+                      'modelId': model.modelId,
+                      'name': model.displayName,
+                      'origin': model.origin.name,
+                      'contextWindow': model.contextWindow,
+                      'maxOutputTokens': model.maxOutputTokens,
+                      'reasoningEfforts': model.reasoningEfforts,
+                      'inputCapabilities': [
+                        for (final capability in model.inputCapabilities)
+                          capability.modality.name,
+                      ],
+                    },
+                ],
         },
     ],
   };
@@ -1712,72 +1938,63 @@ Future<String> _handleSearchSettings() async {
 
 /// Read-only typed Client projection; no request, reducer or test write path.
 String _accountUsageStateJson() {
-  BuildContext? settingsContext;
+  final facts = StudioDriverState.readFacts();
+  final snapshot =
+      jsonDecode(StudioDriverState.snapshotJson(observed: facts)) as Map;
+  final settings = snapshot['settings'] as Map;
+  final domains = settings['accountDomains'] as Map;
   final root = WidgetsBinding.instance.rootElement;
+  BuildContext? context;
   if (root != null) {
     _visitElements(root, (element) {
-      if (element.widget.runtimeType.toString() == 'AccountList' ||
-          element.widget.runtimeType.toString() == 'AccountEditor') {
-        settingsContext = element;
+      if (element.widget is AccountsListView ||
+          element.widget is AccountDetailsView ||
+          element.widget is NativeAccountEditorView ||
+          element.widget is AcpAccountEditorView) {
+        context = element;
       }
     });
   }
-  final labels = settingsContext?.l10n;
-  final usage = _client.accountUsage.state.value;
-  final queries = _client.accountUsageQueries.state;
+  final labels = context?.l10n;
   return jsonEncode({
+    'schemaVersion': 2,
+    'summaries': domains['summaries'],
     'accounts': [
-      for (final account
-          in _client.settings.state.canonical?.accounts ??
-              const <AccountSettingsView>[])
+      for (final summary in domains['accounts'] as List)
         {
-          'id': account.id,
-          'name': account.name,
-          'templateId': account.templateId,
-          'protocol': account.protocol,
-          'usageQueryRevision': account.usageQueryRevision,
-          'hasBearerToken': account.hasBearerToken,
+          ...summary as Map,
+          for (final detail in settings['accounts'] as List)
+            if ((detail as Map)['id'] == summary['id'] &&
+                summary['kind'] == 'native')
+              for (final key in const [
+                'templateId',
+                'protocol',
+                'hasBearerToken',
+              ])
+                key: detail[key],
         },
     ],
-    'revision': usage?.revision,
-    'usages': [
-      for (final record in usage?.usages ?? const <AccountUsageView>[])
-        {'id': record.accountId, ..._accountUsageJson(record.state)},
-    ],
-    'loadingAccountIds': queries.loadingAccountIds.toList(),
-    'errorsByAccountId': queries.errorsByAccountId,
+    'usage': domains['usage'],
+    'presentation': _accountsPresentation(),
     if (labels != null)
       'labels': {
         'displayName': labels.settingsDisplayName,
         'delete': labels.settingsDeleteAccount,
         'setDefault': labels.settingsSetAsDefaultAccount,
+        'noCharge': labels.settingsNoCharge,
+        'restore': labels.settingsModelAutoCompactRestore,
+        'discard': labels.accountsDiscard,
+        'installReused': labels.acpInstallReusedBadge,
+        'installRetries': labels.acpInstallFactRetries,
+        'installRetryValues': {
+          for (final entry
+              in facts.acpInstall?.installations ??
+                  const <StudioDriverAcpInstallEntryFacts>[])
+            entry.provider: labels.acpInstallRetryValue(entry.retryCount),
+        },
       },
   });
 }
-
-Map<String, Object?> _accountUsageJson(AccountUsageStateView state) =>
-    switch (state) {
-      UnsupportedAccountUsageView() => {'kind': 'unsupported'},
-      MissingCredentialAccountUsageView() => {'kind': 'missingCredential'},
-      FailedAccountUsageView(:final code, :final retryable) => {
-        'kind': 'failed',
-        'code': code,
-        'retryable': retryable,
-      },
-      ReadyAccountUsageView(:final data) => {
-        'kind': 'ready',
-        ...switch (data) {
-          DeepSeekBalanceAccountUsageView(:final balance) => {
-            'balances': [
-              for (final balance in balance.balances) balance.totalBalance,
-            ],
-          },
-          ZhipuCodingPlanAccountUsageView(:final codingPlan) => {
-            'windows': [for (final limit in codingPlan.limits) limit.window],
-          },
-        },
-      },
-    };
 
 Future<String> _handleSearchMcpState() async {
   final mcp = _client.mcp.state.value;

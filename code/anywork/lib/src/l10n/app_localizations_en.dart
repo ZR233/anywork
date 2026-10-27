@@ -10,6 +10,162 @@ class AppLocalizationsEn extends AppLocalizations {
   AppLocalizationsEn([String locale = 'en']) : super(locale);
 
   @override
+  String get accountsStateStale =>
+      'The connection changed. Showing previous data until the current account is observed. Your input is kept.';
+
+  @override
+  String get accountsSavePending =>
+      'The change was accepted. Waiting for this account to be observed and saved.';
+
+  @override
+  String get accountsUnknownSaveOutcome =>
+      'The save result is unknown. Your input is kept; do not submit a replacement request blindly.';
+
+  @override
+  String get accountsRequiredField => 'Enter a non-empty value.';
+
+  @override
+  String get accountsDuplicateModel =>
+      'Each manual model must have a unique ID.';
+
+  @override
+  String get accountsOutputBudget =>
+      'The output budget must not exceed the context window.';
+
+  @override
+  String get accountsOutputModalities => 'Output modalities';
+
+  @override
+  String get accountsSavedConnectionFailed =>
+      'The account was saved, but the connection request failed.';
+
+  @override
+  String get accountsTargetMissing => 'This account no longer exists.';
+
+  @override
+  String get accountsStatusColumn => 'Status';
+
+  @override
+  String get accountsBalanceColumn => 'Balance & quota';
+
+  @override
+  String get accountsSettingsSection => 'Account settings';
+
+  @override
+  String get accountsAdvancedSection => 'Advanced information';
+
+  @override
+  String get accountsSyncModels => 'Sync models';
+
+  @override
+  String get accountsSyncUnsupported =>
+      'This account does not support model discovery.';
+
+  @override
+  String get accountsSyncingModels => 'Syncing models…';
+
+  @override
+  String get accountsQueryIdle => 'Usage has not been checked yet.';
+
+  @override
+  String get accountsQueryUnsupported =>
+      'Usage queries are not supported by this account.';
+
+  @override
+  String get accountsQueryFailed => 'Could not refresh usage.';
+
+  @override
+  String get accountsUsageLastGood => 'Showing the last successful data.';
+
+  @override
+  String get accountsLoading => 'Loading accounts…';
+
+  @override
+  String get accountsRetry => 'Retry';
+
+  @override
+  String get accountsAutomatic => 'Automatic';
+
+  @override
+  String get accountsOverride => 'Override';
+
+  @override
+  String get accountsBillingDisclaimer =>
+      'Billing settings only control this app’s cost estimates. No charge does not mean the provider is free. A subscription does not guarantee quota or exclude additional charges.';
+
+  @override
+  String get accountsSource => 'Source';
+
+  @override
+  String get accountsVerifySignIn => 'Verify sign-in';
+
+  @override
+  String get accountsLowQuota => 'Low remaining quota';
+
+  @override
+  String get accountsRemaining => 'Remaining';
+
+  @override
+  String get accountsPriceTiers => 'Tiered prices';
+
+  @override
+  String get accountsPerformance => 'Performance samples';
+
+  @override
+  String get accountsEvaluations => 'Recent evaluations (up to 10)';
+
+  @override
+  String get accountsReadout => 'Load performance & evaluations';
+
+  @override
+  String get accountsConnection => 'Connection';
+
+  @override
+  String get accountsHttp => 'HTTP';
+
+  @override
+  String get accountsWebSocket => 'WebSocket';
+
+  @override
+  String get accountsUnsavedTitle => 'Save account changes?';
+
+  @override
+  String get accountsUnsavedBody =>
+      'Save before leaving, discard your changes, or keep editing. If saving fails, your input stays here.';
+
+  @override
+  String get accountsDiscard => 'Discard changes';
+
+  @override
+  String get accountsKeepEditing => 'Keep editing';
+
+  @override
+  String get accountsDirty => 'Unsaved changes';
+
+  @override
+  String get accountsTemplatePickerHint =>
+      'Choose a model API account or an official ACP integration.';
+
+  @override
+  String get accountsDeleteTitle => 'Delete this account?';
+
+  @override
+  String get accountsDeleteBody =>
+      'Only remove the selected account after checking references. History and bills are kept. Removing an ACP integration does not sign out the official program.';
+
+  @override
+  String get accountsBack => 'Back to accounts';
+
+  @override
+  String get accountsClearSearch => 'Clear search';
+
+  @override
+  String get accountsShowCredential => 'Show credential';
+
+  @override
+  String get accountsHideCredential => 'Hide credential';
+
+  @override
   String get promptAccepted => 'Accepted';
 
   @override
@@ -114,7 +270,7 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get sidebarArchiveSessionConfirmBody =>
-      'Archiving ends any running work, deletes this session tree\'s worktree along with any uncommitted or unmerged content, then moves the session out of the list. Continue?';
+      'Archiving stops active work in this session and its child sessions, then moves them to the archived list. Session history, workspaces, branches, and uncommitted content are kept. Continue?';
 
   @override
   String get sidebarArchiveSessionConfirmAction => 'Archive';
@@ -1660,6 +1816,9 @@ class AppLocalizationsEn extends AppLocalizations {
   String get timelineViewImageFailed => 'Failed to read image';
 
   @override
+  String get timelineViewImageStopped => 'Stopped reading image';
+
+  @override
   String get timelineReadFileCompleted => 'Read';
 
   @override
@@ -1830,6 +1989,24 @@ class AppLocalizationsEn extends AppLocalizations {
   String get timelineToolWaitFailed => 'Wait failed';
 
   @override
+  String get timelineTurnStopped => 'Turn stopped';
+
+  @override
+  String get timelineTurnCancelled => 'Turn cancelled';
+
+  @override
+  String get timelineTurnRuntimeShutdown => 'Runtime shut down; turn stopped';
+
+  @override
+  String get timelineTurnAgentClosed => 'Agent closed; turn stopped';
+
+  @override
+  String get timelineTurnRecoveryStopped => 'Turn stopped during recovery';
+
+  @override
+  String get timelineTurnCoalesced => 'Turn merged into a later turn';
+
+  @override
   String timelineToolCompleted(String name) {
     return '$name completed';
   }
@@ -1882,7 +2059,7 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String timelineToolInterrupted(String name) {
-    return '$name interrupted';
+    return '$name stopped';
   }
 
   @override
@@ -2916,7 +3093,7 @@ class AppLocalizationsEn extends AppLocalizations {
   }
 
   @override
-  String get settingsWorktreeCleanup => 'Clean up worktree and branch';
+  String get settingsWorktreeCleanup => 'Remove worktree (keep branch)';
 
   @override
   String get settingsWorktreeOwnerSession => 'Session worktree';
@@ -3254,7 +3431,7 @@ class AppLocalizationsEn extends AppLocalizations {
   String get sidebarArchived => 'Archived';
 
   @override
-  String get sidebarRestore => 'Restore session';
+  String get sidebarRestore => 'Unarchive session';
 
   @override
   String get sidebarPin => 'Pin';
@@ -3475,6 +3652,32 @@ class AppLocalizationsEn extends AppLocalizations {
   String get settingsWorktreeDirty => 'dirty';
 
   @override
+  String get settingsWorktreeClean => 'No uncommitted changes';
+
+  @override
+  String get settingsWorktreeDirtyUnknown => 'Change status unknown';
+
+  @override
+  String get settingsWorktreeChangedFilesUnknown =>
+      'Changed files are not yet known. Retry the inspection.';
+
+  @override
+  String get settingsWorktreeInspectionAvailable => 'Worktree verified';
+
+  @override
+  String get settingsWorktreeInspectionMissing => 'Worktree missing';
+
+  @override
+  String get settingsWorktreeInspectionIdentityMismatch =>
+      'Worktree identity mismatch';
+
+  @override
+  String get settingsWorktreeInspectionUnavailable => 'Inspection unavailable';
+
+  @override
+  String get settingsWorktreeRetry => 'Retry inspection';
+
+  @override
   String get startupPreparing => 'Preparing application…';
 
   @override
@@ -3564,7 +3767,7 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get settingsModelCatalogFailed =>
-      'Startup model sync failed. The current list is still available.';
+      'Model sync failed. The current list is still available.';
 
   @override
   String get settingsModelCatalogCacheWarning =>
@@ -4334,7 +4537,7 @@ class AppLocalizationsEn extends AppLocalizations {
   String get timelineWaitFailed => 'Wait failed';
 
   @override
-  String get timelineWaitInterrupted => 'Wait interrupted';
+  String get timelineWaitInterrupted => 'Wait stopped';
 
   @override
   String timelineWaitTargetCount(int count) {
@@ -4387,7 +4590,7 @@ class AppLocalizationsEn extends AppLocalizations {
   String get timelineWaitStatusCancelled => 'Cancelled';
 
   @override
-  String get timelineWaitStatusInterrupted => 'Interrupted';
+  String get timelineWaitStatusInterrupted => 'Stopped';
 
   @override
   String get conversationActivityWaitingTools => 'Waiting for tools';

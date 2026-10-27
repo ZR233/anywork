@@ -1,5 +1,7 @@
 import 'dart:async';
 
+import 'package:anywork_client/model_directory.dart';
+
 import 'package:flutter/material.dart';
 import 'package:anywork_client/studio_client.dart' show ModelRouteQueries;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -294,7 +296,7 @@ class ModelRoleSelector extends StatelessWidget {
     super.key,
   });
 
-  final List<AccountSettingsView> accounts;
+  final List<ModelSelectionAccount> accounts;
   final String accountId;
   final String modelId;
   final String? effort;
@@ -404,7 +406,7 @@ class ReasoningEffortSelector extends StatelessWidget {
     super.key,
   });
 
-  final List<AccountSettingsView> accounts;
+  final List<ModelSelectionAccount> accounts;
   final String accountId;
   final String modelId;
   final String? effort;
@@ -498,7 +500,7 @@ IconData sessionModeIcon(ThreadModeId mode) {
 }
 
 ModelSelectionOption? modelForRoute(
-  List<AccountSettingsView> accounts,
+  List<ModelSelectionAccount> accounts,
   String accountId,
   String modelId,
 ) {
@@ -510,5 +512,5 @@ ModelSelectionOption? modelForRoute(
       .firstOrNull;
 }
 
-List<ModelSelectionOption> modelOptions(List<AccountSettingsView> accounts) =>
+List<ModelSelectionOption> modelOptions(List<ModelSelectionAccount> accounts) =>
     buildModelSelectionOptions(accounts, type: ModelType.text);

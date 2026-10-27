@@ -61,6 +61,15 @@ pub(super) fn decode_checkpoint(
     row: sea_orm::QueryResult,
     thread_id: &str,
 ) -> Result<ThreadCheckpoint, SessionStoreError> {
+    decode_checkpoint_at_schema(row, thread_id, ThreadCheckpoint::SCHEMA_VERSION)
+}
+
+/// Historical migrations validate their fixed envelope target rather than the live format.
+pub(super) fn decode_checkpoint_at_schema(
+    row: sea_orm::QueryResult,
+    thread_id: &str,
+    expected_schema: u32,
+) -> Result<ThreadCheckpoint, SessionStoreError> {
     let envelope: String = row.try_get("", "envelope")?;
     let hash: String = row.try_get("", "payload_hash")?;
     if crate::context::content_hash(envelope.as_bytes()) != hash {
@@ -80,7 +89,7 @@ pub(super) fn decode_checkpoint(
             "Thread checkpoint ownership mismatch".into(),
         ));
     }
-    if !ThreadCheckpoint::supports_schema(checkpoint.schema_version)
+    if checkpoint.schema_version != expected_schema
         || i64::from(checkpoint.schema_version) != schema_version
     {
         return Err(SessionStoreError::Invalid(format!(

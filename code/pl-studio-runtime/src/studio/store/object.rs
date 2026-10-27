@@ -2,10 +2,7 @@
 
 use anyhow::{Context, Result, bail};
 use pl_core::context::content_hash;
-use sea_orm::{
-    ActiveModelTrait, ActiveValue::Set, ColumnTrait, ConnectionTrait, EntityTrait, IntoActiveModel,
-    QueryFilter,
-};
+use sea_orm::{ActiveModelTrait, ActiveValue::Set, ConnectionTrait, EntityTrait, IntoActiveModel};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
@@ -40,20 +37,6 @@ where
     decode_object::<T>(row)
         .map(Some)
         .map_err(crate::studio::startup::input_error)
-}
-
-pub(in crate::studio) async fn load_objects<T>(db: &impl ConnectionTrait) -> Result<Vec<T>>
-where
-    T: PersistedStudioObject,
-{
-    studio_object::Entity::find()
-        .filter(studio_object::Column::OwnerKind.eq(T::OWNER_KIND))
-        .filter(studio_object::Column::ObjectKind.eq(T::OBJECT_KIND))
-        .all(db)
-        .await?
-        .into_iter()
-        .map(|row| decode_object::<T>(row).map_err(crate::studio::startup::input_error))
-        .collect()
 }
 
 pub(in crate::studio) async fn put_object<T>(

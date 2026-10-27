@@ -13,7 +13,12 @@ impl StudioRuntime {
     }
 
     pub(super) fn validate_operation_id(operation_id: &str) -> Result<()> {
-        anyhow::ensure!(!operation_id.trim().is_empty(), "operationId is required");
+        if operation_id.trim().is_empty() {
+            return Err(pl_protocol::studio::StudioError::invalid_argument(
+                "operationId is required",
+            )
+            .into());
+        }
         Ok(())
     }
 

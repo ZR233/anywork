@@ -567,7 +567,7 @@ impl ShutdownCollector {
 /// 定位 SQLite / OS 失败原因。这里保留**结构性的事实**：typed `StudioError` 的稳定诊断码与
 /// 已脱敏 message、`std::io::Error` 的 kind 与原始 OS 错误码、`sea_orm::DbErr` 的失败分类与
 /// 可公开的 SQL 错误码；未知类型只保留规模。所有分支都不写正文或凭据。
-fn redacted_chain(error: &anyhow::Error) -> String {
+pub(super) fn redacted_chain(error: &anyhow::Error) -> String {
     let mut parts = Vec::new();
     for cause in error.chain() {
         if let Some(studio) = cause.downcast_ref::<pl_protocol::studio::StudioError>() {
@@ -852,6 +852,7 @@ mod stage_order {
     pub(super) const ACP_AUTH: usize = 17;
     pub(super) const BOTS: usize = 18;
     pub(super) const ACP_INSTALL: usize = 19;
+    pub(super) const ACCOUNT_USAGE: usize = 20;
 }
 
 /// 在常驻槽位上只启动一次真正的 stop 工作；已存在则返回同一共享句柄。
@@ -1220,6 +1221,7 @@ impl StudioRuntime {
     /// 背景 watcher 用 abort 即刻停摆；title 任务用一次性取消信号。此步不做任何可能无界阻塞的
     /// 服务 join，保证所有独立资源先收到取消。
     async fn broadcast_cancel(&self) {
+        self.account_usage.request_close();
         use super::super::background_task;
         background_task::signal(&self.settings_refresh).await;
         background_task::signal(&self.recovery_task).await;
@@ -1306,6 +1308,13 @@ impl StudioRuntime {
         // issue、不会伪报 Clean）。这些阶段彼此独立，因此并发发起、并发等待（不会用前一个的等待
         // 耗尽后续阶段预算）。
         let mut producers: FuturesUnordered<StageBranch> = FuturesUnordered::new();
+        producers.push(self.stage_branch(
+            budget,
+            stage_order::ACCOUNT_USAGE,
+            "accountUsage",
+            Some(SERVICE_STAGE_LIMIT),
+            |runtime| async move { runtime.account_usage.close().await },
+        ));
         producers.push(self.stage_branch(
             budget,
             stage_order::MODEL_CATALOG,

@@ -83,11 +83,7 @@ class StartSessionDraftOwner extends ReadModel<StartSessionDraft> {
     final efforts = {...state.effortIntents};
     if (changed) {
       final effort = ModelRouteQueries.effortAfterModelSelection(
-        ModelRouteQueries.model(
-          snapshot?.accounts ?? const [],
-          accountId,
-          modelId,
-        ),
+        ModelRouteQueries.model(_client.modelAccounts, accountId, modelId),
         null,
       );
       if (effort != null && effort.isNotEmpty) {
@@ -152,7 +148,7 @@ class StartSessionDraftOwner extends ReadModel<StartSessionDraft> {
     if (_unknown[projectId] == (stamp, attachmentStamp)) {
       throw StateError('The previous submission outcome is unknown');
     }
-    final route = _freezeRoute(project.mode);
+    final route = resolveRoute(project.mode);
     final defaults = _client.settings.state.canonical!.delegation;
     final delegation = project.resolveDelegation(defaults);
     final operation = _client.mutations.begin(
@@ -423,7 +419,8 @@ class StartSessionDraftOwner extends ReadModel<StartSessionDraft> {
         );
   }
 
-  ModeModelRouteView _freezeRoute(ThreadModeId mode) {
+  /// Freezes the current draft selection for submission or attachment admission.
+  ModeModelRouteView resolveRoute(ThreadModeId mode) {
     final settings = _client.settings.state;
     if (!settings.configLoaded)
       throw StateError('Settings are not available yet');
@@ -440,7 +437,7 @@ class StartSessionDraftOwner extends ReadModel<StartSessionDraft> {
     if (route == null || route.accountId.isEmpty || route.modelId.isEmpty) {
       throw StateError('A complete model route is required');
     }
-    final account = settings.canonical?.accounts
+    final account = _client.modelAccounts
         .where((value) => value.id == route.accountId)
         .firstOrNull;
     final model = account?.models

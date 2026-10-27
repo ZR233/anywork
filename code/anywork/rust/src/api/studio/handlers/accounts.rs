@@ -1,29 +1,6 @@
 use crate::api::studio::bridge_runtime::active_bridge;
-use crate::api::studio::convert::runtime::{
-    bridge_account_usage_state, bridge_skill_search_result, bridge_skills_state,
-};
-use crate::api::studio::types::{
-    BridgeAccountUsageStateSnapshot, BridgeError, BridgeSkillSearchResult,
-    BridgeSkillsStateSnapshot,
-};
-// ── Account usage ──
-
-pub async fn read_account_usage_state() -> Result<BridgeAccountUsageStateSnapshot, BridgeError> {
-    let bridge = active_bridge().await?;
-    Ok(account_usage_state(
-        bridge.studio.read_account_usage_state().await,
-    ))
-}
-
-pub async fn check_account_usage(
-    account_id: String,
-) -> Result<BridgeAccountUsageStateSnapshot, BridgeError> {
-    let bridge = active_bridge().await?;
-    Ok(account_usage_state(
-        bridge.studio.check_account_usage(&account_id).await?,
-    ))
-}
-
+use crate::api::studio::convert::runtime::{bridge_skill_search_result, bridge_skills_state};
+use crate::api::studio::types::{BridgeError, BridgeSkillSearchResult, BridgeSkillsStateSnapshot};
 pub async fn read_skills_state(
     project_id: String,
 ) -> Result<BridgeSkillsStateSnapshot, BridgeError> {
@@ -58,12 +35,6 @@ pub async fn search_skills(
             .search_skills(&project_id, &query, limit as usize)
             .await?,
     ))
-}
-
-fn account_usage_state(
-    state: pl_studio_runtime::AccountUsageStateSnapshot,
-) -> BridgeAccountUsageStateSnapshot {
-    bridge_account_usage_state(state.state)
 }
 
 fn skills_state(state: pl_studio_runtime::SkillsStateSnapshot) -> BridgeSkillsStateSnapshot {

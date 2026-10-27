@@ -8,6 +8,7 @@ import 'package:flutter_test/flutter_test.dart';
 
 import 'package:anywork/src/app/app_graph.dart';
 import 'package:anywork/src/infrastructure/frb/studio_api.dart';
+import 'package:anywork/src/presentation/providers/account_domains.dart';
 import 'package:anywork/src/presentation/providers/selection_store.dart';
 import 'package:anywork/src/presentation/providers/settings_store.dart';
 import 'package:anywork/src/domain/models/studio_models.dart';
@@ -48,12 +49,18 @@ void main() {
 
   late ProviderContainer container;
   late AppGraph graph;
+  late DemoStudioTransport transport;
+  late ProviderSubscription<Object?> modelsHold;
+  var containerDisposed = false;
+  var graphClosed = false;
 
   setUp(() async {
-    final api = DemoStudioTransport(lspActivityLoop: false);
+    transport = DemoStudioTransport(lspActivityLoop: false);
+    containerDisposed = false;
+    graphClosed = false;
     graph = AppGraph(
       statisticsFeed: const TestStatisticsFeedPort(),
-      transport: api,
+      transport: transport,
       clientId: 'selector-test',
     );
     container = ProviderContainer(
@@ -61,6 +68,11 @@ void main() {
     );
     await graph.client.bootstrap();
     await graph.client.directoryCommands.beginNewThread();
+    modelsHold = container.listen(modelSelectionAccountsProvider, (_, _) {});
+    await _waitForModelDirectory(graph);
+    // Finish the real-zone provider baseline before testWidgets enters its
+    // fake clock; otherwise an already queued rebuild blocks later UI updates.
+    await container.pump();
     final selection = container.read(selectionStoreProvider);
     expect(selection.selectedProjectId, isNotNull);
     expect(selection.selectedThreadId, isNull, reason: '起始页草稿不绑定已有会话');
@@ -71,8 +83,21 @@ void main() {
   });
 
   tearDown(() async {
-    container.dispose();
-    await graph.close(deadline: DateTime.now().add(const Duration(seconds: 5)));
+    if (!containerDisposed) {
+      modelsHold.close();
+      container.dispose();
+    }
+    if (graphClosed) return;
+    final report = await graph
+        .close(deadline: DateTime.now().add(const Duration(seconds: 5)))
+        .timeout(const Duration(seconds: 6));
+    expect(
+      report.complete,
+      isTrue,
+      reason: report.unresolved
+          .map((value) => '${value.owner}: ${value.reason}')
+          .join('; '),
+    );
   });
 
   Widget harness(Widget child) => UncontrolledProviderScope(
@@ -84,6 +109,31 @@ void main() {
       home: Scaffold(body: Center(child: child)),
     ),
   );
+
+  Future<void> closeStartPageFixture(WidgetTester tester) async {
+    await tester.pumpWidget(const SizedBox.shrink());
+    modelsHold.close();
+    container.dispose();
+    containerDisposed = true;
+    await pumpClientFuture(
+      tester,
+      transport.beginRuntimeExit(remainingMs: 5000),
+      'start-page demo business stop',
+    );
+    final report = await pumpClientFuture(
+      tester,
+      graph.close(deadline: DateTime.now().add(const Duration(seconds: 5))),
+      'start-page selector fixture close',
+    );
+    expect(
+      report.complete,
+      isTrue,
+      reason: report.unresolved
+          .map((value) => '${value.owner}: ${value.reason}')
+          .join('; '),
+    );
+    graphClosed = true;
+  }
 
   /// 命中“被标记为选中”的菜单行：选中态由行自身的 `Semantics.selected` 表达，
   /// 而该 `Semantics` 位于行键（`KeyedSubtree`）之内。
@@ -254,11 +304,16 @@ void main() {
   });
 
   testWidgets('未打开项目时输入禁用，会话选择器仍可先定好草稿路由', (tester) async {
-    graph.client.selection.restoreStartup(
-      projectId: null,
-      threadId: null,
-      needsOpen: false,
-    );
+    await tester.runAsync(() async {
+      // This is fixture setup, not a widget action. Retire the project topics
+      // on the same real queue on which bootstrap opened them.
+      graph.client.selection.restoreStartup(
+        projectId: null,
+        threadId: null,
+        needsOpen: false,
+      );
+      await container.pump();
+    });
 
     await tester.pumpWidget(harness(const StartPageComposerDock()));
     await tester.pumpAndSettle();
@@ -268,7 +323,7 @@ void main() {
     );
     expect(input.enabled, isFalse, reason: '未打开项目不能提交新会话');
 
-    final accounts = container.read(settingsStoreProvider).canonical!.accounts;
+    final accounts = container.read(modelSelectionAccountsProvider);
     final before = container.read(startPageComposerViewProvider);
     final routeBefore = before.displayRoute(before.mode)!;
     // 选一个与当前路由不同、且带有多个强度候选的模型：证明选择真的落到草稿上。
@@ -374,7 +429,7 @@ void main() {
   });
 
   testWidgets('选择器被锁定时点击给出可见原因，不静默吞掉点击', (tester) async {
-    final accounts = container.read(settingsStoreProvider).canonical!.accounts;
+    final accounts = container.read(modelSelectionAccountsProvider);
     final option = modelOptions(accounts).first;
 
     await tester.pumpWidget(
@@ -519,6 +574,35 @@ void main() {
         reason:
             'an unmodified Enter must share the send button submission path',
       );
+      await pumpClientFuture(
+        tester,
+        graph.client.startDraft.source.waitFor((state) => !state.submitting),
+        'Enter submission terminal',
+      );
+      final createdThreadId = graph.client.selection.state.selectedThreadId!;
+      final created = await pumpClientFuture(
+        tester,
+        graph.client.threadDirectory.source.waitFor(
+          (state) => state.window.threads.any(
+            (thread) => thread.id == createdThreadId,
+          ),
+        ),
+        'Enter submission canonical directory row',
+      );
+      final provisionalTitle = created.window.threads
+          .firstWhere((thread) => thread.id == createdThreadId)
+          .title;
+      final titlePublished = graph.client.threadDirectory.source.waitFor(
+        (state) => state.window.threads.any(
+          (thread) =>
+              thread.id == createdThreadId && thread.title != provisionalTitle,
+        ),
+      );
+      // Drain Demo's 650ms title job through its actual directory publication;
+      // stopping the runtime only cancels its separately tracked prompt jobs.
+      await tester.pump(const Duration(milliseconds: 650));
+      await pumpClientFuture(tester, titlePublished, 'demo title publication');
+      await closeStartPageFixture(tester);
     },
   );
 
@@ -554,15 +638,23 @@ void main() {
           .session(threadId)
           .source
           .waitFor((state) => state.hasSnapshot);
+      await _waitForModelDirectory(graph);
     }
 
     /// testWidgets 在测试体结束前检查未完成定时器：成功路径在这里关闭 owner。
     Future<void> closeScenario(WidgetTester tester) async {
       await tester.pumpWidget(const SizedBox.shrink());
-      await pumpClientFuture(
+      final report = await pumpClientFuture(
         tester,
         graph.close(deadline: DateTime.now().add(const Duration(seconds: 5))),
         'workflow route scenario close',
+      );
+      expect(
+        report.complete,
+        isTrue,
+        reason: report.unresolved
+            .map((value) => '${value.owner}: ${value.reason}')
+            .join('; '),
       );
       composerHold.close();
       workflowContainer.dispose();
@@ -874,6 +966,19 @@ String? _otherEffort(ProviderContainer container, String current) {
       .firstOrNull;
 }
 
+Future<void> _waitForModelDirectory(AppGraph graph) async {
+  const limit = Duration(seconds: 5);
+  await graph.accounts.state.waitFor((state) => state.loaded).timeout(limit);
+  await graph.models.state
+      .waitFor(
+        (state) => state.accounts.values.any(
+          (resource) =>
+              resource.loaded && resource.value?.models.isNotEmpty == true,
+        ),
+      )
+      .timeout(limit);
+}
+
 /// 已建根会话的 workflow 场景注入：Demo transport 不产生 workflow runtime，也不随
 /// 提交推进 Thread 目录 status；这里只在 canonical 帧上补齐这两类环境事实（active
 /// workflow run 与目录 status），命令、CAS 与帧收敛全部走真实 Demo transport 与
@@ -926,7 +1031,6 @@ class _WorkflowScenarioTransport extends DemoStudioTransport {
       lspState: snapshot.lspState,
       skillsByProject: snapshot.skillsByProject,
       threadModeCatalog: snapshot.threadModeCatalog,
-      accountUsageState: snapshot.accountUsageState,
       updaterState: snapshot.updaterState,
       persistenceState: snapshot.persistenceState,
       persistenceQueueState: snapshot.persistenceQueueState,

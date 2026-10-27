@@ -41,6 +41,8 @@ pub(crate) fn model_catalog_snapshot(
             let status = match catalog.catalogs.get(id).cloned() {
                 Some(status) => status,
                 None => pl_protocol::studio::StudioModelCatalogStatus {
+                    query_generation: 0,
+                    operation_id: None,
                     supported: account.discovery_profile()?.is_some(),
                     source: pl_protocol::studio::StudioModelCatalogSource::Default,
                     probing: false,
@@ -88,88 +90,7 @@ fn settings_view(
         .models
         .accounts
         .iter()
-        .map(|(id, account)| {
-            let models = account
-                .effective_catalog(None)?
-                .into_iter()
-                .map(|entry| entry.model)
-                .collect::<Vec<_>>();
-            let default_model_id = config
-                .models
-                .routes
-                .values()
-                .find(|route| route.account_id == *id)
-                .map(|route| route.model_id.clone())
-                .or_else(|| models.first().map(|model| model.model_id.clone()))
-                .unwrap_or_default();
-            let service_capabilities = account.service_capabilities()?;
-            let catalog_id = match &account.catalog {
-                AccountModelCatalogConfig::Bundled { catalog, .. } => Some(catalog.to_string()),
-                AccountModelCatalogConfig::Explicit { .. } => None,
-            };
-            Ok(StudioAccountSettings {
-                billing_kind: account.billing_kind()?,
-                billing_kind_override: account.billing_kind,
-                model_enabled_overrides: account.model_enabled_overrides().clone(),
-                account_id: id.to_string(),
-                template_id: account.template_id().map(ToString::to_string),
-                protocol: account.protocol.as_str().to_string(),
-                name: account.name.clone(),
-                base_url: account.base_url.clone(),
-                has_bearer_token: account.resolved_bearer_token().is_some(),
-                usage_query_revision: state
-                    .usage_query_revision(id)
-                    .context("account usage query identity is missing")?,
-                credential_required: account.protocol
-                    != pl_model::protocol::ProtocolKind::OpenAiCompatible,
-                capability_source: match &account.capabilities {
-                    AccountCapabilitySelection::TemplateDefaults => "template_defaults",
-                    AccountCapabilitySelection::Explicit(_) => "explicit",
-                }
-                .to_string(),
-                hosted_web_search: service_capabilities.web_search.hosted_responses,
-                hosted_web_search_dialect: service_capabilities
-                    .web_search
-                    .hosted_dialect
-                    .as_str()
-                    .to_string(),
-                standalone_web_search: service_capabilities
-                    .web_search
-                    .standalone
-                    .map(|dialect| dialect.as_str().to_string()),
-                prompt_cache_dialect: service_capabilities
-                    .prompt_cache
-                    .dialect
-                    .as_str()
-                    .to_string(),
-                responses_programmatic_tool_calling: service_capabilities
-                    .responses_tools
-                    .programmatic_tool_calling,
-                default_model_id,
-                custom_models: account
-                    .editable_models()
-                    .iter()
-                    .map(custom_model_settings)
-                    .collect(),
-                model_connection_modes: account
-                    .connection_overrides()
-                    .iter()
-                    .map(|(model_id, mode)| StudioModelConnectionSettings {
-                        model_id: model_id.clone(),
-                        connection_mode: connection_mode_label(*mode).to_string(),
-                    })
-                    .collect(),
-                model_auto_compact_limits: account
-                    .auto_compact_overrides()
-                    .iter()
-                    .map(|(model_id, limit)| StudioModelAutoCompactSettings {
-                        model_id: model_id.clone(),
-                        override_limit: Some(*limit),
-                    })
-                    .collect(),
-                catalog_id,
-            })
-        })
+        .map(|(id, account)| account_settings(state, id, account))
         .collect::<Result<Vec<_>>>()?;
     let mode_model_routes = config
         .mode_model_routes
@@ -387,4 +308,92 @@ fn connection_mode_label(mode: ConnectionMode) -> &'static str {
         ConnectionMode::WebSocket => "web_socket",
         ConnectionMode::Http => "http",
     }
+}
+
+/// Projects only this account; list and usage observations never expand every model.
+pub(crate) fn account_settings(
+    state: &ConfigRuntimeSnapshot,
+    id: &pl_model::config::AccountId,
+    account: &pl_model::config::AccountConfig,
+) -> Result<StudioAccountSettings> {
+    let config = state.canonical_config();
+    let models = account
+        .effective_catalog(None)?
+        .into_iter()
+        .map(|entry| entry.model)
+        .collect::<Vec<_>>();
+    let default_model_id = config
+        .models
+        .routes
+        .values()
+        .find(|route| route.account_id == *id)
+        .map(|route| route.model_id.clone())
+        .or_else(|| models.first().map(|model| model.model_id.clone()))
+        .unwrap_or_default();
+    let service_capabilities = account.service_capabilities()?;
+    let catalog_id = match &account.catalog {
+        AccountModelCatalogConfig::Bundled { catalog, .. } => Some(catalog.to_string()),
+        AccountModelCatalogConfig::Explicit { .. } => None,
+    };
+    Ok(StudioAccountSettings {
+        billing_kind: account.billing_kind()?,
+        billing_kind_override: account.billing_kind,
+        model_enabled_overrides: account.model_enabled_overrides().clone(),
+        account_id: id.to_string(),
+        template_id: account.template_id().map(ToString::to_string),
+        protocol: account.protocol.as_str().to_string(),
+        name: account.name.clone(),
+        base_url: account.base_url.clone(),
+        has_bearer_token: account.resolved_bearer_token().is_some(),
+        usage_query_revision: state
+            .usage_query_revision(id)
+            .context("account usage query identity is missing")?,
+        credential_required: account.protocol != pl_model::protocol::ProtocolKind::OpenAiCompatible,
+        capability_source: match &account.capabilities {
+            AccountCapabilitySelection::TemplateDefaults => "template_defaults",
+            AccountCapabilitySelection::Explicit(_) => "explicit",
+        }
+        .to_string(),
+        hosted_web_search: service_capabilities.web_search.hosted_responses,
+        hosted_web_search_dialect: service_capabilities
+            .web_search
+            .hosted_dialect
+            .as_str()
+            .to_string(),
+        standalone_web_search: service_capabilities
+            .web_search
+            .standalone
+            .map(|dialect| dialect.as_str().to_string()),
+        prompt_cache_dialect: service_capabilities
+            .prompt_cache
+            .dialect
+            .as_str()
+            .to_string(),
+        responses_programmatic_tool_calling: service_capabilities
+            .responses_tools
+            .programmatic_tool_calling,
+        default_model_id,
+        custom_models: account
+            .editable_models()
+            .iter()
+            .map(custom_model_settings)
+            .collect(),
+        model_connection_modes: account
+            .connection_overrides()
+            .iter()
+            .map(|(model_id, mode)| StudioModelConnectionSettings {
+                model_id: model_id.clone(),
+                connection_mode: connection_mode_label(*mode).to_string(),
+            })
+            .collect(),
+        model_auto_compact_limits: account
+            .auto_compact_overrides()
+            .iter()
+            .map(|(model_id, limit)| StudioModelAutoCompactSettings {
+                model_id: model_id.clone(),
+                override_limit: Some(*limit),
+            })
+            .collect(),
+        catalog_id,
+    })
 }

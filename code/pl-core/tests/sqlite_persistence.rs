@@ -52,7 +52,7 @@ async fn sqlite_v10_context_migration_preserves_history_and_marks_unknown_usage_
         .await
         .unwrap();
     db.execute_raw(Statement::from_sql_and_values(DatabaseBackend::Sqlite, "UPDATE thread_checkpoints SET schema_version=3,envelope=?,payload_hash='damaged' WHERE thread_id='v10'", vec![encoded.clone().into()])).await.unwrap();
-    db.execute_unprepared("DROP TABLE thread_tool_task_resources; DROP TABLE thread_tool_tasks; PRAGMA user_version=10")
+    db.execute_unprepared("DROP TABLE thread_tool_task_resources; DROP TABLE thread_tool_tasks; DROP TABLE IF EXISTS seaql_migrations; PRAGMA user_version=10")
         .await
         .unwrap();
     db.close().await.unwrap();
@@ -74,7 +74,13 @@ async fn sqlite_v10_context_migration_preserves_history_and_marks_unknown_usage_
         .unwrap()
         .try_get::<i64>("", "user_version")
         .unwrap();
-    assert_eq!(version, 10, "a failed migration cannot advance its version");
+    assert_eq!(
+        version, 12,
+        "the preceding task-index step committed independently"
+    );
+    assert!(db.query_one_raw(Statement::from_string(DatabaseBackend::Sqlite,
+        "SELECT version FROM seaql_migrations WHERE version='m20261026_000007_core_checkpoint_v5'"))
+        .await.unwrap().is_none(), "a failed checkpoint conversion cannot publish its completion record");
     let row = db
         .query_one_raw(Statement::from_string(
             DatabaseBackend::Sqlite,
@@ -384,7 +390,7 @@ async fn sqlite_v8_migration_backfills_checkpoint_usage_from_saved_effects() {
     ))
     .await
     .unwrap();
-    db.execute_unprepared("DROP TABLE thread_tool_task_resources; DROP TABLE thread_tool_tasks; PRAGMA user_version=8")
+    db.execute_unprepared("DROP TABLE thread_tool_task_resources; DROP TABLE thread_tool_tasks; DROP TABLE IF EXISTS seaql_migrations; PRAGMA user_version=8")
         .await
         .unwrap();
     db.close().await.unwrap();
@@ -1038,7 +1044,7 @@ async fn migrate_v7_adds_checkpoint_table_without_losing_effects() {
 
     // 退回 schema 7：删除新表并复位版本，保留已验证的 effect/entry/history 数据。
     tamper(&options, "DROP TABLE thread_checkpoints").await;
-    tamper(&options, "DROP TABLE thread_tool_task_resources; DROP TABLE thread_tool_tasks; PRAGMA user_version=7").await;
+    tamper(&options, "DROP TABLE thread_tool_task_resources; DROP TABLE thread_tool_tasks; DROP TABLE IF EXISTS seaql_migrations; PRAGMA user_version=7").await;
 
     // 迁移前 open 必须拒绝版本 7，而不是静默重建或迁移。
     assert!(matches!(
@@ -1072,156 +1078,221 @@ async fn migrate_v7_adds_checkpoint_table_without_losing_effects() {
 }
 
 #[tokio::test]
-async fn sqlite_v11_migration_converts_a_schema_4_checkpoint() {
+async fn sqlite_migration_converts_schema_4_with_old_or_current_tables() {
     use sea_orm::{ConnectionTrait, DatabaseBackend, Statement};
 
-    let directory = tempfile::tempdir().unwrap();
-    let options = SqliteSessionOptions {
-        path: directory.path().join("legacy-envelope.sqlite"),
-    };
-    let store = SqliteSessionStore::open(options.clone()).await.unwrap();
-    let (model, _) = ScriptedModel::new(&[]);
-    let thread =
-        ThreadHandle::start("legacy-envelope".into(), DynModelSession::new(model)).unwrap();
-    thread
-        .attach_storage(ColdStoreHandle::new(store.clone()))
+    for format in [11, 12] {
+        let directory = tempfile::tempdir().unwrap();
+        let options = SqliteSessionOptions {
+            path: directory.path().join("legacy-envelope.sqlite"),
+        };
+        let store = SqliteSessionStore::open(options.clone()).await.unwrap();
+        let (model, _) = ScriptedModel::new(&[]);
+        let thread =
+            ThreadHandle::start("legacy-envelope".into(), DynModelSession::new(model)).unwrap();
+        thread
+            .attach_storage(ColdStoreHandle::new(store.clone()))
+            .await
+            .unwrap();
+        thread
+            .submit_input_and_run(
+                pl_core::thread::input::ThreadInput {
+                    id: "asked".into(),
+                    purpose: pl_core::thread::input::InputPurpose::Message,
+                    payload: OpaquePayload::text("Please handle this request"),
+                    context: vec![support::text("Please handle this request")],
+                },
+                pl_core::thread::input::InputDriverOptions {
+                    max_model_steps: pl_core::thread::ModelStepLimit::Limited(
+                        2.try_into().expect("nonzero limit"),
+                    ),
+                },
+            )
+            .await
+            .unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            while !thread
+                .snapshot()
+                .terminal_inputs
+                .iter()
+                .any(|identity| identity.id == "asked")
+            {
+                tokio::task::yield_now().await;
+            }
+        })
         .await
-        .unwrap();
-    thread
-        .submit_input_and_run(
-            pl_core::thread::input::ThreadInput {
-                id: "asked".into(),
-                purpose: pl_core::thread::input::InputPurpose::Message,
-                payload: OpaquePayload::text("Please handle this request"),
-                context: vec![support::text("Please handle this request")],
-            },
-            pl_core::thread::input::InputDriverOptions {
-                max_model_steps: pl_core::thread::ModelStepLimit::Limited(
-                    2.try_into().expect("nonzero limit"),
-                ),
-            },
-        )
-        .await
-        .unwrap();
-    tokio::time::timeout(std::time::Duration::from_secs(10), async {
-        while !thread
-            .snapshot()
-            .terminal_inputs
-            .iter()
-            .any(|identity| identity.id == "asked")
-        {
-            tokio::task::yield_now().await;
-        }
-    })
-    .await
-    .expect("the turn consumes its input");
-    thread.flush().await.unwrap();
-    thread.close().await.unwrap();
-    store.shutdown().await.unwrap();
+        .expect("the turn consumes its input");
+        thread.flush().await.unwrap();
+        thread.close().await.unwrap();
+        store.shutdown().await.unwrap();
 
-    // Rewrite the stored checkpoint into the schema-4 shape: the fields that schema never had are absent.
-    let db = sea_orm::Database::connect(format!("sqlite://{}?mode=rw", options.path.display()))
-        .await
-        .unwrap();
-    let row = db
-        .query_one_raw(Statement::from_string(
-            DatabaseBackend::Sqlite,
-            "SELECT envelope FROM thread_checkpoints WHERE thread_id='legacy-envelope'",
-        ))
-        .await
-        .unwrap()
-        .unwrap();
-    let envelope: String = row.try_get("", "envelope").unwrap();
-    let mut value: serde_json::Value = serde_json::from_str(&envelope).unwrap();
-    value["schemaVersion"] = serde_json::json!(4);
-    {
-        let state = value["state"].as_object_mut().expect("state object");
-        state.remove("continuation");
-        state.remove("execution");
-        state.remove("executionSequence");
-        state.remove("requiredDurableSequence");
-        for key in ["inputs", "terminalInputs"] {
-            if let Some(records) = state.get_mut(key).and_then(serde_json::Value::as_array_mut) {
-                for record in records {
-                    let record = record.as_object_mut().expect("input object");
-                    record.remove("purpose");
-                    record.remove("continuation");
+        // Rewrite the stored checkpoint into the schema-4 shape: the fields that schema never had are absent.
+        let db = sea_orm::Database::connect(format!("sqlite://{}?mode=rw", options.path.display()))
+            .await
+            .unwrap();
+        let row = db
+            .query_one_raw(Statement::from_string(
+                DatabaseBackend::Sqlite,
+                "SELECT envelope FROM thread_checkpoints WHERE thread_id='legacy-envelope'",
+            ))
+            .await
+            .unwrap()
+            .unwrap();
+        let envelope: String = row.try_get("", "envelope").unwrap();
+        let mut value: serde_json::Value = serde_json::from_str(&envelope).unwrap();
+        value["schemaVersion"] = serde_json::json!(4);
+        {
+            let state = value["state"].as_object_mut().expect("state object");
+            state.remove("continuation");
+            state.remove("execution");
+            state.remove("executionSequence");
+            state.remove("requiredDurableSequence");
+            for key in ["inputs", "terminalInputs"] {
+                if let Some(records) = state.get_mut(key).and_then(serde_json::Value::as_array_mut)
+                {
+                    for record in records {
+                        let record = record.as_object_mut().expect("input object");
+                        record.remove("purpose");
+                        record.remove("continuation");
+                    }
                 }
             }
         }
-    }
-    let envelope = serde_json::to_string(&value).unwrap();
-    let hash = pl_core::context::content_hash(envelope.as_bytes());
-    db.execute_raw(Statement::from_sql_and_values(
+        let envelope = serde_json::to_string(&value).unwrap();
+        let hash = pl_core::context::content_hash(envelope.as_bytes());
+        db.execute_raw(Statement::from_sql_and_values(
         DatabaseBackend::Sqlite,
         "UPDATE thread_checkpoints SET schema_version=4,envelope=?,payload_hash=? WHERE thread_id='legacy-envelope'",
         vec![envelope.into(), hash.into()],
     ))
     .await
     .unwrap();
-    db.execute_unprepared(
-        "DROP TABLE thread_tool_task_resources; DROP TABLE thread_tool_tasks; PRAGMA user_version=11",
-    )
-    .await
-    .unwrap();
-    db.close().await.unwrap();
-
-    // The explicit migration converts the envelope, its indexed version and its hash together.
-    migration::migrate_to_current(options.clone(), |_| Ok(()))
-        .await
-        .unwrap();
-    let db = sea_orm::Database::connect(format!("sqlite://{}?mode=rw", options.path.display()))
-        .await
-        .unwrap();
-    let version: i64 = db
-        .query_one_raw(Statement::from_string(
-            DatabaseBackend::Sqlite,
-            "PRAGMA user_version",
+        if format == 11 {
+            db.execute_unprepared(
+                "DROP TABLE thread_tool_task_resources; DROP TABLE thread_tool_tasks",
+            )
+            .await
+            .unwrap();
+        }
+        db.execute_unprepared(&format!(
+            "DROP TABLE seaql_migrations; PRAGMA user_version={format}"
         ))
         .await
-        .unwrap()
-        .unwrap()
-        .try_get("", "user_version")
         .unwrap();
-    assert_eq!(version, 12);
-    db.close().await.unwrap();
+        db.close().await.unwrap();
 
-    let reopened = SqliteSessionStore::open(options).await.unwrap();
-    let restored = reopened
-        .read_thread_checkpoint("legacy-envelope")
-        .await
-        .unwrap()
+        // The explicit migration converts the envelope, its indexed version and its hash together.
+        migration::migrate_to_current(options.clone(), |_| Ok(()))
+            .await
+            .unwrap();
+        let db = sea_orm::Database::connect(format!("sqlite://{}?mode=rw", options.path.display()))
+            .await
+            .unwrap();
+        let version: i64 = db
+            .query_one_raw(Statement::from_string(
+                DatabaseBackend::Sqlite,
+                "PRAGMA user_version",
+            ))
+            .await
+            .unwrap()
+            .unwrap()
+            .try_get("", "user_version")
+            .unwrap();
+        assert_eq!(version, 12);
+        db.close().await.unwrap();
+
+        let reopened = SqliteSessionStore::open(options).await.unwrap();
+        let restored = reopened
+            .read_thread_checkpoint("legacy-envelope")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(restored.schema_version, ThreadCheckpoint::SCHEMA_VERSION);
+        // Missing fields take their defaults, and no continuation is invented for work that never owed any.
+        assert!(restored.state.continuation.is_none());
+        assert!(restored.state.execution.is_none());
+        assert_eq!(restored.state.execution_sequence, 0);
+        assert_eq!(restored.state.required_durable_sequence, None);
+        assert!(
+            restored
+                .state
+                .terminal_inputs
+                .iter()
+                .all(
+                    |identity| identity.purpose == pl_core::thread::input::InputPurpose::Message
+                        && identity.continuation.is_none()
+                )
+        );
+        assert!(
+            !restored.state.terminal_inputs.is_empty(),
+            "the fixture must really carry the consumed input it strips"
+        );
+
+        // The converted checkpoint is a usable restart state, not just readable bytes.
+        let (model, _) = ScriptedModel::new(&[]);
+        let resumed = ThreadHandle::resume(
+            "legacy-envelope".into(),
+            DynModelSession::new(model),
+            Some(restored),
+        )
         .unwrap();
-    assert_eq!(restored.schema_version, ThreadCheckpoint::SCHEMA_VERSION);
-    // Missing fields take their defaults, and no continuation is invented for work that never owed any.
-    assert!(restored.state.continuation.is_none());
-    assert!(restored.state.execution.is_none());
-    assert_eq!(restored.state.execution_sequence, 0);
-    assert_eq!(restored.state.required_durable_sequence, None);
-    assert!(
-        restored
-            .state
-            .terminal_inputs
-            .iter()
-            .all(
-                |identity| identity.purpose == pl_core::thread::input::InputPurpose::Message
-                    && identity.continuation.is_none()
+        assert!(resumed.snapshot().continuation.is_none());
+        resumed.close().await.unwrap();
+        reopened.shutdown().await.unwrap();
+    }
+}
+
+/// Current pre-framework databases are adopted once; neither a numeric future format nor an
+/// unknown official migration may cause schema/data writes through ordinary or explicit opening.
+#[tokio::test]
+async fn sqlite_adopts_current_database_and_refuses_future_writes() {
+    use sea_orm::{ConnectionTrait, Database};
+    for fault in ["format", "migration", "missing_table", "checkpoint"] {
+        let directory = tempfile::tempdir().unwrap();
+        let options = SqliteSessionOptions {
+            path: directory.path().join("future.sqlite"),
+        };
+        let store = SqliteSessionStore::open(options.clone()).await.unwrap();
+        store.shutdown().await.unwrap();
+        let url = format!("sqlite://{}?mode=rw", options.path.display());
+        let db = Database::connect(&url).await.unwrap();
+        db.execute_unprepared("DROP TABLE seaql_migrations")
+            .await
+            .unwrap();
+        db.close().await.unwrap();
+        let adopted = SqliteSessionStore::open(options.clone()).await.unwrap();
+        adopted.shutdown().await.unwrap();
+        let db = Database::connect(&url).await.unwrap();
+        if fault == "format" {
+            db.execute_unprepared("PRAGMA user_version=999")
+                .await
+                .unwrap();
+        } else if fault == "missing_table" {
+            db.execute_unprepared("DROP TABLE seaql_migrations; DROP TABLE session_entries")
+                .await
+                .unwrap();
+        } else if fault == "checkpoint" {
+            let mut checkpoint = ThreadCheckpoint::capture("future".into(), 0, Default::default());
+            checkpoint.schema_version = 6;
+            let envelope = serde_json::to_string(&checkpoint).unwrap();
+            db.execute_raw(sea_orm::Statement::from_sql_and_values(sea_orm::DatabaseBackend::Sqlite,
+                "INSERT INTO thread_checkpoints(thread_id,schema_version,state_revision,history_fence,envelope,payload_hash) VALUES('future',6,0,0,?,?)",
+                vec![envelope.clone().into(), pl_core::context::content_hash(envelope.as_bytes()).into()])).await.unwrap();
+        } else {
+            db.execute_unprepared(
+                "INSERT INTO seaql_migrations(version,applied_at) VALUES('m99999999_future',1)",
             )
-    );
-    assert!(
-        !restored.state.terminal_inputs.is_empty(),
-        "the fixture must really carry the consumed input it strips"
-    );
-
-    // The converted checkpoint is a usable restart state, not just readable bytes.
-    let (model, _) = ScriptedModel::new(&[]);
-    let resumed = ThreadHandle::resume(
-        "legacy-envelope".into(),
-        DynModelSession::new(model),
-        Some(restored),
-    )
-    .unwrap();
-    assert!(resumed.snapshot().continuation.is_none());
-    resumed.close().await.unwrap();
-    reopened.shutdown().await.unwrap();
+            .await
+            .unwrap();
+        }
+        db.close().await.unwrap();
+        let before = tokio::fs::read(&options.path).await.unwrap();
+        assert!(SqliteSessionStore::open(options.clone()).await.is_err());
+        assert!(
+            migration::migrate_to_current(options.clone(), |_| Ok(()))
+                .await
+                .is_err()
+        );
+        assert_eq!(tokio::fs::read(&options.path).await.unwrap(), before);
+    }
 }

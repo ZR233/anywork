@@ -5,6 +5,8 @@ import 'dart:io';
 
 import 'package:flutter_driver/flutter_driver.dart';
 
+import 'package:anywork/src/features/settings/accounts/state/account_view_key_values.dart';
+
 import 'flutter_driver_session.dart';
 import 'realtime_journey.dart'
     show isDurableSettled, timelineRows, turnId, turnStatus;
@@ -165,19 +167,19 @@ class _Probe {
 
   _Json? account(_Json state, String id) => (state['accounts'] as List)
       .whereType<Map>()
-      .where((value) => value['id'] == id)
+      .where((value) => value['kind'] == 'native' && value['id'] == id)
       .firstOrNull
       ?.cast<String, dynamic>();
-  _Json? record(_Json state, String id) => (state['usages'] as List)
+  _Json? record(_Json state, String id) => (state['usage']['accounts'] as List)
       .whereType<Map>()
-      .where((value) => value['id'] == id)
+      .where((value) => value['accountId'] == id)
       .firstOrNull
       ?.cast<String, dynamic>();
   bool pending(_Json state, String id) =>
-      (state['loadingAccountIds'] as List).contains(id);
+      record(state, id)?['phase'] == 'querying';
   Set<String> ids(_Json state) => {
     for (final value in state['accounts'] as List)
-      (value as Map)['id'] as String,
+      if ((value as Map)['kind'] == 'native') value['id'] as String,
   };
 
   void require(bool condition, String message) {
@@ -206,7 +208,7 @@ class _Probe {
   }
 
   Future<void> scrollRow(String id) async {
-    final row = find.byValueKey('account-row-$id');
+    final row = find.byValueKey(AccountViewKeyValues.row('native', id));
     await driver.scrollUntilVisible(
       find.ancestor(
         of: row,
@@ -219,29 +221,57 @@ class _Probe {
     );
   }
 
-  Future<void> rowMenu(String id, String labelKey) async {
-    await scrollRow(id);
-    final labels = (await usage())['labels'] as Map;
-    await driver.rawTap(
-      find.descendant(
-        of: find.byValueKey('account-row-$id'),
-        matching: find.byType('IconButton'),
-      ),
-    );
-    await driver.rawTap(find.text(labels[labelKey] as String));
+  Future<void> returnToList() async {
+    final presentation = (await usage())['presentation'] as Map;
+    if (presentation['selected'] != null) await tap('account-back');
+    await driver.waitFor(find.byValueKey('account-add'));
   }
 
-  Future<void> changeName(String value) async {
-    final label = ((await usage())['labels'] as Map)['displayName'] as String;
-    await driver.rawTap(
-      find.ancestor(
-        of: find.text(label),
-        matching: find.byType('SettingsTextEdit'),
-        firstMatchOnly: true,
+  Future<void> rowMenu(String id, String labelKey) async {
+    await returnToList();
+    await scrollRow(id);
+    final state = await usage();
+    final labels = state['labels'] as Map;
+    await tap(AccountViewKeyValues.rowMenu('native', id));
+    await driver.rawTap(find.text(labels[labelKey] as String));
+    if (labelKey == 'delete') {
+      if (account(state, id)?['isDefault'] == true) {
+        final replacement = (state['accounts'] as List).cast<Map>().firstWhere(
+          (value) => value['kind'] == 'native' && value['id'] != id,
+        );
+        await driver.rawTap(
+          find.descendant(
+            of: find.byType('SimpleDialog'),
+            matching: find.text(replacement['name'] as String),
+          ),
+        );
+      }
+      await driver.waitFor(find.byType('AccountDeleteDialog'));
+      await driver.rawTap(
+        find.descendant(
+          of: find.byType('AccountDeleteDialog'),
+          matching: find.byType('FilledButton'),
+        ),
+      );
+      await driver.waitForAbsent(find.byType('AccountDeleteDialog'));
+    }
+  }
+
+  Future<String> editorId() async =>
+      (await usage())['presentation']['editor']['editorId'] as String;
+
+  Future<void> editField(String field, String value) async {
+    final finder = find.descendant(
+      of: find.byValueKey(
+        AccountViewKeyValues.editorField(await editorId(), field),
       ),
+      matching: find.byType('EditableText'),
     );
+    await driver.rawTap(finder);
     await driver.enterText(value);
   }
+
+  Future<void> changeName(String value) => editField('name', value);
 
   Future<void> save() async {
     await tap('account-save');
@@ -250,16 +280,17 @@ class _Probe {
       timeout: const Duration(seconds: 8),
     );
     await driver.waitFor(
-      find.byValueKey('account-add'),
-      timeout: const Duration(seconds: 3),
+      find.byValueKey('account-edit'),
+      timeout: const Duration(seconds: 8),
     );
   }
 
   Future<String> addAccount(String label, String template) async {
     final before = ids(await usage());
     await tap('account-add');
-    await tap('account-template');
-    final option = find.text(label);
+    final option = find.byValueKey(
+      AccountViewKeyValues.template('native', template),
+    );
     await driver.scrollUntilVisible(
       find.ancestor(
         of: option,
@@ -271,13 +302,15 @@ class _Probe {
       timeout: const Duration(seconds: 15),
     );
     await driver.rawTap(option);
-    await tap('account-base-url');
-    await driver.enterText(args[3]);
+    await editField('endpoint', args[3]);
     final stopwatch = Stopwatch()..start();
     await save();
     final state = await waitForState(
       usage,
-      (state) => ids(state).difference(before).length == 1,
+      (state) =>
+          ids(state).difference(before).length == 1 &&
+          account(state, ids(state).difference(before).single)?['templateId'] ==
+              template,
       'new canonical account',
     );
     final id = ids(state).difference(before).single;
@@ -292,7 +325,7 @@ class _Probe {
       usage,
       (state) =>
           !pending(state, id) &&
-          record(state, id)?['kind'] ==
+          record(state, id)?['phase'] ==
               (template == 'zhipu-coding-plan'
                   ? 'missingCredential'
                   : 'unsupported'),
@@ -303,8 +336,14 @@ class _Probe {
       'accountId': id,
       'elapsedMillis': stopwatch.elapsedMilliseconds,
     });
+    await returnToList();
     await tap('account-add');
-    await tap('account-cancel');
+    await driver.rawTap(
+      find.descendant(
+        of: find.byType('AccountTemplatePickerView'),
+        matching: find.byType('OutlinedButton'),
+      ),
+    );
     await driver.waitForAbsent(find.byValueKey('account-save'));
     return id;
   }
@@ -383,12 +422,17 @@ class _Probe {
       (state) =>
           pending(state, slow) &&
           !pending(state, fast) &&
-          record(state, fast)?['kind'] == 'ready' &&
-          record(state, denied)?['kind'] == 'failed',
+          record(state, fast)?['phase'] == 'succeeded' &&
+          record(state, denied)?['phase'] == 'failed',
       'per-card ready/failed before slow completes',
     );
     require(
-      (record(parallel, fast)!['balances'] as List).contains('88.00'),
+      (record(parallel, fast)!['lastGood']['value']['balances'] as List)
+          .cast<Map>()
+          .any(
+            (balance) =>
+                balance['total'] == '88.00' && balance['currency'] is String,
+          ),
       'fast result payload was not mapped',
     );
     await capture('parallel-quota');
@@ -401,7 +445,7 @@ class _Probe {
 
     final oldRevision = account(parallel, fast)!['usageQueryRevision'];
     await scrollRow(fast);
-    await tap('account-row-$fast');
+    await tap(AccountViewKeyValues.row('native', fast));
     await tap('account-edit');
     await changeName('Usage fast renamed');
     await save();
@@ -431,11 +475,16 @@ class _Probe {
       (state) =>
           !pending(state, slow) &&
           record(state, slow) == null &&
-          record(state, fast)?['kind'] == 'ready',
+          record(state, fast)?['phase'] == 'succeeded',
       'deleted in-flight usage discarded',
     );
     await tap('account-add');
-    await tap('account-cancel');
+    await driver.rawTap(
+      find.descendant(
+        of: find.byType('AccountTemplatePickerView'),
+        matching: find.byType('OutlinedButton'),
+      ),
+    );
     await tap('settings-tab-general');
     await tap('settings-tab-accounts');
     await requireCounts(1, 1);
@@ -451,9 +500,10 @@ class _Probe {
     await addAccount(args[6], 'zhipu');
     final addedPlan = await addAccount(args[5], 'zhipu-coding-plan');
     await scrollRow(addedPlan);
-    await tap('account-row-$addedPlan');
+    await tap(AccountViewKeyValues.row('native', addedPlan));
     await tap('account-edit');
     await tap('account-cancel');
+    await returnToList();
     await requireCounts(1, 1);
     require(
       (await fixture(_fixtureStatePath))['mcpReleased'] == false,
@@ -477,7 +527,9 @@ class _Probe {
       account(completed, slow) == null && record(completed, slow) == null,
       'late deleted-account response revived a usage record',
     );
-    savedAccounts = completed['accounts'] as List;
+    savedAccounts = (completed['accounts'] as List)
+        .where((value) => (value as Map)['kind'] == 'native')
+        .toList();
     finalFixture = await fixture(_fixtureStatePath);
     await capture('complete');
   }
@@ -501,8 +553,8 @@ class _Probe {
       usage,
       (state) =>
           !pending(state, fast) &&
-          record(state, fast)?['kind'] == 'ready' &&
-          record(state, denied)?['kind'] == 'failed',
+          record(state, fast)?['phase'] == 'succeeded' &&
+          record(state, denied)?['phase'] == 'failed',
       'restart typed usage',
     );
     final expected = {
@@ -521,7 +573,9 @@ class _Probe {
       (previous['fastQuotaStarted'] as int) + 1,
       (previous['deniedQuotaStarted'] as int) + 1,
     );
-    savedAccounts = state['accounts'] as List;
+    savedAccounts = (state['accounts'] as List)
+        .where((value) => (value as Map)['kind'] == 'native')
+        .toList();
     finalFixture = await fixture(_fixtureStatePath);
     stages.add({
       'stage': 'restart-canonical-and-new-page-demand',

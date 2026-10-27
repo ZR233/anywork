@@ -1,5 +1,7 @@
 import 'dart:async';
 
+import 'package:anywork_client/model_directory.dart';
+
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
@@ -83,7 +85,7 @@ String? modelTextFilterMessage(BuildContext context, AccountModelView? model) {
 
 /// Queries the canonical type classification; presentation only deduplicates routes.
 List<ModelSelectionOption> buildModelSelectionOptions(
-  List<AccountSettingsView> accounts, {
+  List<ModelSelectionAccount> accounts, {
   ModelType? type,
 }) {
   return {

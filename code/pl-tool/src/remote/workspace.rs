@@ -94,19 +94,26 @@ impl RemoteWorkspaceFileBackend {
             && self.canonical_path == other.canonical_path
     }
 
-    fn path_request(&self, path: String, cwd: Option<String>) -> Result<RemotePathRequest> {
+    fn path_request(
+        &self,
+        path: String,
+        cwd: Option<String>,
+    ) -> std::result::Result<RemotePathRequest, RemoteClientError> {
         Ok(RemotePathRequest {
             workspace_id: self.workspace_id.clone(),
             path: resolve_remote_path(path, cwd)?,
         })
     }
 
-    /// 读取路径元数据；不存在时返回 `None`。
+    /// 读取路径元数据；仅 helper 明确返回 `PathNotFound` 时返回 `None`。
+    ///
+    /// # Errors
+    /// 保留本地路径校验、连接和 helper 响应的原生错误分类；不从显示文本推断缺失。
     pub async fn stat_optional(
         &self,
         path: String,
         cwd: Option<String>,
-    ) -> Result<Option<WorkspaceFileStat>> {
+    ) -> std::result::Result<Option<WorkspaceFileStat>, RemoteClientError> {
         let path = self.path_request(path, cwd)?;
         let reply = self.request(RemoteRequest::Stat(path), &[]).await;
         match reply {
@@ -119,22 +126,21 @@ impl RemoteWorkspaceFileBackend {
                     readonly: Some(stat.readonly),
                     modified_at: stat.modified_at,
                 })),
-                response => Err(tool_error(
-                    "stat_path",
-                    format!("unexpected remote stat response: {response:?}"),
+                _ => Err(RemoteClientError::Protocol(
+                    "unexpected remote stat response".into(),
                 )),
             },
             Err(RemoteClientError::Remote {
                 code: pl_protocol::remote::RemoteErrorCode::PathNotFound,
                 ..
             }) => Ok(None),
-            Err(error) => Err(remote_file_error(error)),
+            Err(error) => Err(error),
         }
     }
 
     /// 递归创建 workspace 内的目录。
     pub async fn create_directory(&self, path: String, cwd: Option<String>) -> Result<()> {
-        let request = self.path_request(path, cwd)?;
+        let request = self.path_request(path, cwd).map_err(remote_file_error)?;
         let reply = self
             .request(RemoteRequest::CreateDirectory(request), &[])
             .await
@@ -149,7 +155,7 @@ impl RemoteWorkspaceFileBackend {
         cwd: Option<String>,
         body: &[u8],
     ) -> Result<()> {
-        let target = self.path_request(path, cwd)?;
+        let target = self.path_request(path, cwd).map_err(remote_file_error)?;
         self.upload_bytes(
             target,
             pl_protocol::remote::RemoteWriteMode::Overwrite,
@@ -165,7 +171,7 @@ impl RemoteWorkspaceFileBackend {
         cwd: Option<String>,
         recursive: bool,
     ) -> Result<()> {
-        let path = self.path_request(path, cwd)?;
+        let path = self.path_request(path, cwd).map_err(remote_file_error)?;
         let reply = self
             .request(
                 RemoteRequest::RemovePath(RemoteRemoveRequest {
@@ -187,8 +193,10 @@ impl RemoteWorkspaceFileBackend {
         target: String,
         cwd: Option<String>,
     ) -> Result<()> {
-        let source = self.path_request(source, cwd.clone())?;
-        let target = self.path_request(target, cwd)?;
+        let source = self
+            .path_request(source, cwd.clone())
+            .map_err(remote_file_error)?;
+        let target = self.path_request(target, cwd).map_err(remote_file_error)?;
         let reply = self
             .request(
                 RemoteRequest::RenamePath(RemoteRenameRequest {
@@ -211,11 +219,14 @@ impl RemoteWorkspaceFileBackend {
         cwd: Option<String>,
         recursive: bool,
     ) -> Result<()> {
-        let source = self.path_request(source, cwd.clone())?;
-        let target = self.path_request(target, cwd)?;
+        let source = self
+            .path_request(source, cwd.clone())
+            .map_err(remote_file_error)?;
+        let target = self.path_request(target, cwd).map_err(remote_file_error)?;
         let stat = self
             .stat_optional(source.path.clone(), None)
-            .await?
+            .await
+            .map_err(remote_file_error)?
             .ok_or_else(|| tool_error("copy_path", "source path does not exist"))?;
         if !stat.is_dir {
             return self.copy_file(source.path, target.path).await;
@@ -299,7 +310,11 @@ pub async fn load_remote_workspace_instructions(
         )
         .filter(|name| seen.insert(name.clone()));
     for path in candidates {
-        let Some(stat) = backend.stat_optional(path.clone(), None).await? else {
+        let Some(stat) = backend
+            .stat_optional(path.clone(), None)
+            .await
+            .map_err(remote_file_error)?
+        else {
             continue;
         };
         if !stat.is_file {
@@ -335,11 +350,13 @@ impl WorkspaceFileBackend for RemoteWorkspaceFileBackend {
         &self,
         request: WorkspaceFileStatRequest,
     ) -> Result<Option<WorkspaceFileStat>> {
-        RemoteWorkspaceFileBackend::stat_optional(self, request.path, request.cwd).await
+        RemoteWorkspaceFileBackend::stat_optional(self, request.path, request.cwd)
+            .await
+            .map_err(remote_file_error)
     }
 
     async fn read_text(&self, request: WorkspaceFileReadRequest) -> Result<String> {
-        let path = resolve_remote_path(request.path, request.cwd)?;
+        let path = resolve_remote_path(request.path, request.cwd).map_err(remote_file_error)?;
         let mut bytes = self
             .client
             .resident_buffer(self.client.content_budget())
@@ -350,7 +367,7 @@ impl WorkspaceFileBackend for RemoteWorkspaceFileBackend {
         String::from_utf8(bytes.into_bytes()).map_err(|e| tool_error("read_file", e))
     }
     async fn read_bytes(&self, request: WorkspaceFileReadBytesRequest) -> Result<Vec<u8>> {
-        let path = resolve_remote_path(request.path, request.cwd)?;
+        let path = resolve_remote_path(request.path, request.cwd).map_err(remote_file_error)?;
         let mut bytes = self
             .client
             .resident_buffer(request.max_bytes)
@@ -369,7 +386,8 @@ impl WorkspaceFileBackend for RemoteWorkspaceFileBackend {
     }
 
     async fn list(&self, request: WorkspaceFileListRequest) -> Result<WorkspaceFileListResult> {
-        let root = resolve_remote_path(request.path.clone(), request.cwd.clone())?;
+        let root = resolve_remote_path(request.path.clone(), request.cwd.clone())
+            .map_err(remote_file_error)?;
         let implicit = request.implicit_recovery;
         self.listings.page(request, self.walk(root, implicit)).await
     }
@@ -384,7 +402,10 @@ impl WorkspaceFileBackend for RemoteWorkspaceFileBackend {
     }
 }
 
-fn resolve_remote_path(path: String, cwd: Option<String>) -> Result<String> {
+fn resolve_remote_path(
+    path: String,
+    cwd: Option<String>,
+) -> std::result::Result<String, RemoteClientError> {
     let mut components = Vec::new();
     for source in cwd
         .filter(|cwd| !cwd.trim().is_empty() && cwd != ".")
@@ -392,16 +413,19 @@ fn resolve_remote_path(path: String, cwd: Option<String>) -> Result<String> {
         .chain(std::iter::once(path))
     {
         if source.starts_with('/') || source.contains('\\') {
-            return Err(tool_error(
-                "file",
-                "remote workspace paths must be relative POSIX paths",
-            ));
+            return Err(RemoteClientError::Remote {
+                code: super::RemoteErrorCode::InvalidRequest,
+                message: "remote workspace paths must be relative POSIX paths".into(),
+            });
         }
         for component in source.split('/') {
             match component {
                 "" | "." => {}
                 ".." => {
-                    return Err(tool_error("file", "remote path must not escape workspace"));
+                    return Err(RemoteClientError::Remote {
+                        code: super::RemoteErrorCode::WorkspaceEscape,
+                        message: "remote path must not escape workspace".into(),
+                    });
                 }
                 value => components.push(value.to_string()),
             }
@@ -414,6 +438,6 @@ fn resolve_remote_path(path: String, cwd: Option<String>) -> Result<String> {
     })
 }
 
-fn remote_file_error(error: RemoteClientError) -> pl_protocol::PureError {
+pub(super) fn remote_file_error(error: RemoteClientError) -> pl_protocol::PureError {
     tool_error("file", error)
 }

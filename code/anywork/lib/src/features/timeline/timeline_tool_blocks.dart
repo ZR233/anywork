@@ -114,7 +114,7 @@ class _WebSearchToolCardState extends State<_WebSearchToolCard> {
           child: Text(
             error!,
             style: context.text.bodySmall?.copyWith(
-              color: context.colors.error,
+              color: _toolDiagnosticColor(context, item),
             ),
           ),
         )
@@ -379,7 +379,7 @@ class _ToolDetailsState extends State<_ToolDetails> {
           child: Text(
             error,
             style: context.text.bodySmall?.copyWith(
-              color: context.colors.error,
+              color: _toolDiagnosticColor(context, item),
             ),
           ),
         ),
@@ -603,6 +603,14 @@ String _toolElapsedLabel(BuildContext context, Duration elapsed) {
       : l10n.timelineToolElapsedMinutesSeconds(minutes, remainder);
 }
 
+/// 取消与中断的原始诊断保留原文，但按正常控制结果用中性色呈现；
+/// 真实失败（含拒绝）继续保持错误色醒目。
+Color _toolDiagnosticColor(BuildContext context, _ToolItem item) =>
+    switch (item.status) {
+      'cancelled' || 'interrupted' => context.colors.onSurfaceVariant,
+      _ => context.colors.error,
+    };
+
 String _prettyToolPayload(String value) {
   try {
     return const JsonEncoder.withIndent('  ').convert(jsonDecode(value));
@@ -644,14 +652,9 @@ const _toolActiveStatuses = {
   'awaitingApproval',
 };
 
-/// 失败、取消、拒绝与中断的统一判定：工具行与思考行只替换图标，不改文案颜色。
-const _issueStatuses = {
-  'failed',
-  'cancelled',
-  'denied',
-  'interrupted',
-  'budgetLimited',
-};
+/// 真正失败、拒绝与预算限制的统一判定：工具行与思考行只替换图标，不改文案
+/// 颜色。取消与中断是正常控制结果，保持中性图标与次级色，不算问题。
+const _issueStatuses = {'failed', 'denied', 'budgetLimited'};
 
 /// 工具名到展示类目的有界映射；未知工具保留名称与真实状态，不猜测语义。
 ///
@@ -872,10 +875,8 @@ String _toolTitle(BuildContext context, _ToolItem item) {
   if (item.name == 'view_image') {
     return switch (item.status) {
       'succeeded' => context.l10n.timelineViewImageRead,
-      'failed' ||
-      'denied' ||
-      'cancelled' ||
-      'interrupted' => context.l10n.timelineViewImageFailed,
+      'failed' || 'denied' => context.l10n.timelineViewImageFailed,
+      'cancelled' || 'interrupted' => context.l10n.timelineViewImageStopped,
       'queued' ||
       'running' ||
       'streaming' ||

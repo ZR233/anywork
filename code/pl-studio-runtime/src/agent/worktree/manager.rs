@@ -137,7 +137,42 @@ impl WorktreeManager {
 
     pub async fn preview(&self, handle: &WorktreeHandle) -> Result<WorktreeStatus, WorktreeError> {
         self.validate_handle(handle)?;
-        self.backend.status(&handle.path).await
+        if !self.backend.path_exists(&handle.path).await? {
+            return Err(WorktreeError::Missing);
+        }
+        let registered = self.registered_worktrees().await?;
+        let target = super::backend::resolved_git_path(
+            &handle.path.to_string_lossy(),
+            &self.repo_root.to_string_lossy(),
+        );
+        if target.is_none()
+            || !registered.iter().any(|entry| {
+                !entry.prunable
+                    && super::backend::resolved_git_path(
+                        &entry.path,
+                        &self.repo_root.to_string_lossy(),
+                    ) == target
+                    && entry.branch.as_deref() == Some(handle.branch.as_str())
+            })
+        {
+            return Err(WorktreeError::IdentityMismatch(
+                "git worktree list does not register the expected path and branch".into(),
+            ));
+        }
+        let site = self.git_common_dir(&handle.path).await?;
+        let owner = self.git_common_dir(&self.repo_root).await?;
+        if site.is_none() || site != owner {
+            return Err(WorktreeError::IdentityMismatch(
+                "git rev-parse --git-common-dir does not match the owning repository".into(),
+            ));
+        }
+        let status = self.backend.status(&handle.path).await?;
+        if status.branch.as_deref() != Some(handle.branch.as_str()) {
+            return Err(WorktreeError::IdentityMismatch(
+                "git rev-parse --abbrev-ref HEAD does not match the lease branch".into(),
+            ));
+        }
+        Ok(status)
     }
 
     /// Previews a remaining owned worktree while allowing cleanup retries after directory removal.
@@ -150,7 +185,7 @@ impl WorktreeManager {
     ) -> Result<Option<WorktreeStatus>, WorktreeError> {
         self.validate_handle(handle)?;
         if self.backend.path_exists(&handle.path).await? {
-            self.backend.status(&handle.path).await.map(Some)
+            self.preview(handle).await.map(Some)
         } else {
             Ok(None)
         }
@@ -285,6 +320,23 @@ impl WorktreeManager {
             context: handle.path.display().to_string(),
             failures,
         })
+    }
+
+    /// Removes only a verified, clean worktree, retaining its branch and refusing missing sites.
+    ///
+    /// # Errors
+    /// Propagates identity/status failures and Git's non-force removal refusal. Never falls back to
+    /// filesystem deletion. The caller must serialize the owner and durably request cleanup first.
+    pub async fn remove_clean(&self, handle: &WorktreeHandle) -> Result<(), WorktreeError> {
+        let status = self.preview(handle).await?;
+        if !status.changed_files.is_empty() {
+            return Err(WorktreeError::InvalidResource(
+                "cleanup refused tracked, untracked or ignored local content".into(),
+            ));
+        }
+        self.backend
+            .remove(&self.repo_root, &handle.path, false)
+            .await
     }
 }
 

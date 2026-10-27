@@ -170,6 +170,7 @@ pub(super) fn reconcile(
     paths: &ConfigPaths,
     desired: &StudioConfig,
     old: &BTreeMap<AccountId, Observation>,
+    generation: u64,
 ) -> Result<BTreeMap<AccountId, Observation>> {
     let mut next = BTreeMap::new();
     for (id, account) in &desired.models.accounts {
@@ -193,12 +194,12 @@ pub(super) fn reconcile(
         }
         let mut observation = Observation {
             identity: identity.clone(),
-            generation: old
-                .get(id)
-                .map_or(1, |previous| previous.generation.saturating_add(1)),
+            generation,
             cancellation: CancellationToken::new(),
             cache: None,
             status: Status {
+                query_generation: generation,
+                operation_id: None,
                 supported,
                 source: Source::Default,
                 probing: false,
@@ -778,7 +779,7 @@ mod migration_tests {
         let mut config = StudioConfig::default_config().unwrap();
         config.models.accounts.insert(id.clone(), account.clone());
 
-        let first = reconcile(&paths, &config, &BTreeMap::new()).unwrap();
+        let first = reconcile(&paths, &config, &BTreeMap::new(), 1).unwrap();
         let observation = first.get(&id).unwrap();
         assert_eq!(observation.status.source, Source::Cached);
         assert_eq!(observation.status.last_success_at, Some(123));
@@ -786,7 +787,7 @@ mod migration_tests {
 
         let mut switched = config.clone();
         switched.models.accounts.get_mut(&id).unwrap().protocol = ProtocolKind::DeepSeek;
-        let second = reconcile(&paths, &switched, &first).unwrap();
+        let second = reconcile(&paths, &switched, &first, 2).unwrap();
         let observation = second.get(&id).unwrap();
         assert_eq!(observation.generation, 2);
         assert!(
@@ -800,7 +801,7 @@ mod migration_tests {
         );
 
         // 切回原协议时当前身份的成功文件仍在，可继续作为展示与失败回退。
-        let back = reconcile(&paths, &config, &second).unwrap();
+        let back = reconcile(&paths, &config, &second, 3).unwrap();
         let observation = back.get(&id).unwrap();
         assert_eq!(observation.generation, 3);
         assert_eq!(observation.status.source, Source::Cached);
@@ -1000,7 +1001,11 @@ mod migration_tests {
         assert_eq!(status.error, None);
 
         let probe = runtime
-            .begin_model_catalog_probe(id.clone())
+            .begin_model_catalog_probe(
+                id.clone(),
+                runtime.model_catalog_generation(&id).unwrap(),
+                "probe-failure".into(),
+            )
             .unwrap()
             .expect("bundled account probes discovery");
         assert!(probe.previous.is_none(), "迁移快照不能作为解码器前次声明");
@@ -1027,7 +1032,11 @@ mod migration_tests {
         );
 
         let probe = runtime
-            .begin_model_catalog_probe(id.clone())
+            .begin_model_catalog_probe(
+                id.clone(),
+                runtime.model_catalog_generation(&id).unwrap(),
+                "probe-success".into(),
+            )
             .unwrap()
             .unwrap();
         assert!(probe.previous.is_none(), "完整响应前不继承旧声明");
@@ -1051,7 +1060,11 @@ mod migration_tests {
         assert_eq!(status.error, None);
 
         let probe = runtime
-            .begin_model_catalog_probe(id.clone())
+            .begin_model_catalog_probe(
+                id.clone(),
+                runtime.model_catalog_generation(&id).unwrap(),
+                "probe-conditional".into(),
+            )
             .unwrap()
             .unwrap();
         let previous = probe

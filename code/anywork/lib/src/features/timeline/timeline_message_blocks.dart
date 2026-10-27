@@ -682,7 +682,11 @@ class _CompactionBlock extends StatelessWidget {
   }
 }
 
-/// Turn 的失败/中断结论文本；正常完成的 Turn 不额外占一行。
+/// Turn 的终态结论；正常完成的 Turn 不额外占一行。
+///
+/// 取消与中断是正常控制结果，不等同执行失败：使用与思考／工具摘要对齐的
+/// 紧凑中性状态行（停止图标 + 本地化文案），不使用错误底色或错误图标；
+/// 真正失败与预算限制继续给出明确原因的错误横幅（design/19 §19.9）。
 class _TurnOutcomeBlock extends StatelessWidget {
   const _TurnOutcomeBlock({required this.item});
 
@@ -690,10 +694,30 @@ class _TurnOutcomeBlock extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final reason = item.error;
-    if (!item.isTerminal || reason == null || reason.isEmpty) {
-      return const SizedBox.shrink();
-    }
+    if (!item.isTerminal) return const SizedBox.shrink();
+    return switch (item.state) {
+      ThreadTurnItemStateView(:final state) => switch (state) {
+        CancelledStudioTurnState(:final cause) => Semantics(
+          liveRegion: true,
+          child: TimelineActivityRow(
+            key: ValueKey('timeline-turn-outcome:${item.id}'),
+            icon: Icons.stop_circle_outlined,
+            label: _turnCancellationLabel(context, cause),
+            expandable: false,
+          ),
+        ),
+        FailedStudioTurnState() ||
+        BudgetLimitedStudioTurnState() => _turnErrorBanner(context, item.error),
+        QueuedStudioTurnState() ||
+        RunningStudioTurnState() ||
+        CompletedStudioTurnState() => const SizedBox.shrink(),
+      },
+      _ => _turnErrorBanner(context, item.error),
+    };
+  }
+
+  Widget _turnErrorBanner(BuildContext context, String? reason) {
+    if (reason == null || reason.isEmpty) return const SizedBox.shrink();
     return Semantics(
       liveRegion: true,
       child: Container(
@@ -723,6 +747,23 @@ class _TurnOutcomeBlock extends StatelessWidget {
     );
   }
 }
+
+/// 按 typed 取消原因本地化。当前点击停止与运行中发送新消息都收束为
+/// `Interrupted`；typed `UserRequested`（如 demo 停止）同样表示正常用户控制。
+/// 两者都用中性“本轮已停止”；不根据草稿或活动推断打断来源，也不暗示已自动
+/// 继续。`Unspecified` 保留“本轮已取消”。
+String _turnCancellationLabel(
+  BuildContext context,
+  StudioTurnCancellationCause cause,
+) => switch (cause) {
+  InterruptedTurnCancellation() ||
+  UserRequestedTurnCancellation() => context.l10n.timelineTurnStopped,
+  UnspecifiedTurnCancellation() => context.l10n.timelineTurnCancelled,
+  RuntimeShutdownTurnCancellation() => context.l10n.timelineTurnRuntimeShutdown,
+  AgentClosedTurnCancellation() => context.l10n.timelineTurnAgentClosed,
+  RecoveryTurnCancellation() => context.l10n.timelineTurnRecoveryStopped,
+  CoalescedTurnCancellation() => context.l10n.timelineTurnCoalesced,
+};
 
 /// 一条技能激活的可见活动行，必要时与原 `skill_view` 调用共享这一行。
 ///
@@ -902,15 +943,10 @@ class _MarkdownBubble extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
+    // 取消与中断是正常控制结果，不用错误气泡；只有真实失败/拒绝/预算限制保留。
     final isIssue =
         !isUser &&
-        const {
-          'failed',
-          'interrupted',
-          'cancelled',
-          'denied',
-          'budgetLimited',
-        }.contains(entry.status);
+        const {'failed', 'denied', 'budgetLimited'}.contains(entry.status);
     final surface = isUser
         ? _MarkdownSurface.user
         : isIssue

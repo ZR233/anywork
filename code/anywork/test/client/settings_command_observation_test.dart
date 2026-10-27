@@ -1,6 +1,12 @@
 import 'dart:async';
 
 import 'package:anywork_client/studio_client.dart';
+import 'package:anywork_client/accounts.dart';
+import 'package:anywork_client/model_directory.dart';
+import 'package:anywork/src/app/app_graph.dart';
+
+import 'support/test_statistics_feed.dart';
+
 import 'package:flutter_test/flutter_test.dart';
 
 import 'support/recording_demo_transport.dart';
@@ -34,143 +40,176 @@ class _SettingsTransport extends RecordingDemoTransport {
 
 void main() {
   test('created no-charge account clears to automatic without replaying an override', () async {
-    final client = AnyworkClient(
+    final graph = AppGraph(
       transport: RecordingDemoTransport(),
+      statisticsFeed: const TestStatisticsFeedPort(),
       clientId: 'created-billing',
     );
-    addTearDown(client.close);
-    await client.bootstrap();
-    const id = 'created-no-charge';
-    final catalog = client.settings.state.accountCatalog;
-    final template = catalog.templates.first;
-    final draft = template.createAccount(
-      id,
-      catalog.modelsFor(template.modelCatalogId),
+    addTearDown(
+      () =>
+          graph.close(deadline: DateTime.now().add(const Duration(seconds: 5))),
     );
-    await client.settingsCommands.saveAccount(
-      AccountCommandBuilder.buildAccount(
-        draft,
-        initialBillingKind: BillingKind.noCharge,
-      ),
+    await graph.client.bootstrap();
+    final summaries = graph.accounts.observeSummaries();
+    addTearDown(summaries.release);
+    await graph.accounts.state.waitFor((value) => value.loaded);
+    await graph.accounts.loadTemplates();
+    final template = graph.accounts.state.value.templates.templates.first;
+    const identity = NativeAccountIdentity('created-no-charge');
+    final create = CreateAccountCommand(
+      identity: identity,
+      name: template.displayName,
+      templateId: template.id,
+      protocol: template.protocol,
+      baseUrl: template.baseUrl,
+      secret: const AccountSecretCommand.clear(),
+      initialBillingKind: BillingKind.noCharge,
     );
-    AccountSettingsView current() => client.settings.state.canonical!.accounts
-        .singleWhere((account) => account.id == id);
+    await graph.accounts.create(create);
+    await graph.accounts.state.waitFor(
+      (value) => value.account(identity) != null,
+    );
+    AccountSummary current() => graph.accounts.state.value.account(identity)!;
     expect(current().billingKind, BillingKind.noCharge);
     expect(current().billingKindOverride, BillingKind.noCharge);
-    // An ordinary endpoint edit preserves the explicit initial intent.
-    await client.settingsCommands.saveAccount(
-      AccountCommandBuilder.buildAccount(
-        draft.copyWith(
-          name: 'Edited connection',
-          baseUrl: 'https://changed.example/v1',
-        ),
+    await graph.accounts.patch(
+      const PatchAccountCommand(
+        identity: identity,
+        name: AccountTextPatch.set('Edited connection'),
+        baseUrl: AccountTextPatch.set('https://changed.example/v1'),
       ),
     );
     expect(current().billingKind, BillingKind.noCharge);
     expect(current().billingKindOverride, BillingKind.noCharge);
-    await client.settingsCommands.setAccountBillingKind(id, null);
-    // Demo templates are synthetic and supply no canonical native billing facts.
-    expect(current().billingKind, BillingKind.unknown);
-    expect(current().billingKindOverride, isNull);
-    // Stale connection drafts cannot restore the cleared no-charge override.
-    await client.settingsCommands.saveAccount(
-      AccountCommandBuilder.buildAccount(
-        draft.copyWith(
-          billingKind: BillingKind.noCharge,
-          billingKindOverride: BillingKind.noCharge,
-        ),
-      ),
+    await graph.accounts.setBillingKind(identity, null);
+    await graph.accounts.state.waitFor(
+      (value) => value.account(identity)?.billingKindOverride == null,
     );
     expect(current().billingKind, BillingKind.unknown);
     expect(current().billingKindOverride, isNull);
-    await client.settingsCommands.setAccountBillingKind(
-      id,
-      BillingKind.subscription,
+    // Ordinary patches cannot carry any billing snapshot to replay a stale override.
+    await graph.accounts.patch(
+      const PatchAccountCommand(
+        identity: identity,
+        name: AccountTextPatch.set('Stale editor name'),
+      ),
     );
-    await client.settingsCommands.saveAccount(
-      AccountCommandBuilder.buildAccount(draft),
+    expect(current().billingKind, BillingKind.unknown);
+    expect(current().billingKindOverride, isNull);
+    await graph.accounts.setBillingKind(identity, BillingKind.subscription);
+    await graph.accounts.state.waitFor(
+      (value) =>
+          value.account(identity)?.billingKindOverride ==
+          BillingKind.subscription,
     );
+    await graph.accounts.patch(const PatchAccountCommand(identity: identity));
     expect(current().billingKind, BillingKind.subscription);
     expect(current().billingKindOverride, BillingKind.subscription);
-    await client.settingsCommands.removeAccount(id);
-    // Reusing an ID is a new resource, not an old inferred-category cache hit.
-    await client.settingsCommands.saveAccount(
-      AccountCommandBuilder.buildAccount(draft),
+    await graph.accounts.remove(identity);
+    await graph.accounts.state.waitFor(
+      (value) => value.account(identity) == null,
+    );
+    await graph.accounts.create(
+      CreateAccountCommand(
+        identity: identity,
+        name: template.displayName,
+        templateId: template.id,
+        protocol: template.protocol,
+        baseUrl: template.baseUrl,
+        secret: const AccountSecretCommand.clear(),
+      ),
+    );
+    await graph.accounts.state.waitFor(
+      (value) => value.account(identity) != null,
     );
     expect(current().billingKind, BillingKind.unknown);
     expect(current().billingKindOverride, isNull);
-    await client.settingsCommands.setAccountBillingKind(
-      id,
-      BillingKind.noCharge,
+    await graph.accounts.setBillingKind(identity, BillingKind.noCharge);
+    await graph.accounts.setBillingKind(identity, null);
+    await graph.accounts.state.waitFor(
+      (value) => value.account(identity)?.billingKindOverride == null,
     );
-    await client.settingsCommands.setAccountBillingKind(id, null);
     expect(current().billingKind, BillingKind.unknown);
   });
 
-  test('model enabled command accepts its own canonical receipt', () async {
-    final transport = RecordingDemoTransport();
-    final client = AnyworkClient(
-      transport: transport,
+  test('model commands observe their own canonical content and retain independent settings', () async {
+    final graph = AppGraph(
+      transport: RecordingDemoTransport(),
+      statisticsFeed: const TestStatisticsFeedPort(),
       clientId: 'enabled-receipt',
     );
-    addTearDown(client.close);
-    await client.bootstrap();
-    final account = client.settings.state.canonical!.accounts.first;
-    final model = account.models.first;
-    final key = accountModelEnabledMutationKey(account.id, model.modelId);
-    await client.settingsCommands.setAccountModelEnabled(
-      account.id,
-      model.modelId,
-      false,
+    addTearDown(
+      () =>
+          graph.close(deadline: DateTime.now().add(const Duration(seconds: 5))),
     );
-    expect(
-      client.settings.state.canonical!.accounts.first.models.first.enabled,
-      isFalse,
-    );
-    expect(client.settings.state.commands[key]?.isPending ?? false, isFalse);
-    expect(client.settings.state.commands[key]?.error, isNull);
-    await client.settingsCommands.setAccountBillingKind(
-      account.id,
-      BillingKind.noCharge,
-    );
-    expect(
-      client.settings.state.canonical!.accounts.first.billingKindOverride,
-      BillingKind.noCharge,
-    );
-    expect(
-      client.settings.state.canonical!.accounts.first.billingKind,
-      BillingKind.noCharge,
-    );
-    await client.settingsCommands.setAccountBillingKind(account.id, null);
-    expect(
-      client.settings.state.canonical!.accounts.first.billingKindOverride,
-      isNull,
-    );
-    final current = client.settings.state.canonical!.accounts.first;
-    await client.settingsCommands.saveAccount(
-      AccountCommandBuilder.buildAccount(
-        current.copyWith(
-          models: [
-            ...current.models,
-            const AccountModelView(
-              modelId: 'manual-receipt',
-              displayName: 'Manual',
-              reasoningEfforts: [],
-              contextWindow: 1000,
-              maxOutputTokens: 100,
-              origin: ModelOrigin.manual,
-            ),
-          ],
-        ),
-        secret: const AccountSecretCommand.preserve(),
+    await graph.client.bootstrap();
+    final summaries = graph.accounts.observeSummaries();
+    addTearDown(summaries.release);
+    final directory = graph.models.observeDirectory();
+    addTearDown(directory.release);
+    await graph.accounts.state.waitFor((value) => value.loaded);
+    await graph.models.state.waitFor(
+      (value) => value.accounts.values.any(
+        (resource) => resource.loaded && resource.value!.models.isNotEmpty,
       ),
     );
-    await client.settingsCommands.removeAccountModel(
-      account.id,
-      'manual-receipt',
+    final account = modelSelectionAccounts(
+      graph.accounts.state.value,
+      graph.models.state.value,
+    ).first;
+    final identity = NativeAccountIdentity(account.id);
+    final model = AccountModelIdentity(
+      account: identity,
+      modelId: account.models.first.modelId,
+    );
+    final operation = await graph.models.setEnabled(model, false);
+    expect(graph.models.state.value.model(model)!.enabled, isFalse);
+    expect(operation.isPending, isFalse);
+    expect(operation.error, isNull);
+    expect(operation.observed, isTrue);
+    await graph.accounts.setBillingKind(identity, BillingKind.noCharge);
+    expect(
+      graph.accounts.state.value.account(identity)!.billingKindOverride,
+      BillingKind.noCharge,
     );
     expect(
-      client.settings.state.canonical!.accounts.first.models.any(
+      graph.accounts.state.value.account(identity)!.billingKind,
+      BillingKind.noCharge,
+    );
+    await graph.accounts.setBillingKind(identity, null);
+    expect(
+      graph.accounts.state.value.account(identity)!.billingKindOverride,
+      isNull,
+    );
+    await graph.accounts.patch(
+      PatchAccountCommand(
+        identity: identity,
+        customModels: AccountModelsPatch.set([
+          for (final model in account.models.where(
+            (model) => model.origin == ModelOrigin.manual,
+          ))
+            AccountModelCommand(
+              modelId: model.modelId,
+              displayName: model.displayName,
+              wireApi: model.wireApi,
+              contextWindow: model.contextWindow,
+              maxOutputTokens: model.maxOutputTokens,
+            ),
+          const AccountModelCommand(
+            modelId: 'manual-receipt',
+            displayName: 'Manual',
+            wireApi: 'chat',
+            contextWindow: 1000,
+            maxOutputTokens: 100,
+          ),
+        ]),
+      ),
+    );
+    await graph.models.removeManual(
+      AccountModelIdentity(account: identity, modelId: 'manual-receipt'),
+    );
+    expect(
+      graph.models.state.value.accounts[identity]!.value!.models.any(
         (m) => m.modelId == 'manual-receipt',
       ),
       isFalse,

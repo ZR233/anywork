@@ -1,9 +1,10 @@
 use super::{Observation, config, http, saved, sqlite, wire};
 use anyhow::{Context, Result, bail, ensure};
 use pl_protocol::studio::{
-    BotModelRoute, BotSecretUpdate, CreateThreadRequest, NewThreadModelRoute, SaveBotRequest,
-    SetThreadModeRequest, SettingsFieldUpdate, StudioPromptInput, SubmitPromptRequest,
-    UpdateAccountRequest, UpdateSettingsFieldRequest,
+    AccountConnectionMode, AccountModelsPatch, AccountTextPatch, BotModelRoute, BotSecretUpdate,
+    CreateThreadRequest, ModelConnectionIntent, NewThreadModelRoute, PatchAccountRequest,
+    SaveBotRequest, SetAccountModelConnectionRequest, SetThreadModeRequest, SettingsFieldUpdate,
+    StudioPromptInput, SubmitPromptRequest, UpdateSettingsFieldRequest,
 };
 use pl_protocol::{ThreadItemState, ThreadStatus, TurnState};
 use pl_provider_fixture::{
@@ -570,25 +571,52 @@ impl Observation<'_> {
         operation: &str,
     ) -> Result<()> {
         let current = self.session.http()?.read_settings().await?;
-        let model_url = self
-            .session
-            .model
-            .as_ref()
-            .context("model fixture missing")?
-            .base_url();
-        let reply = self
+        let (custom_models, secret) = config::account_models_patch(update);
+        let model_ids = match &custom_models {
+            AccountModelsPatch::Set { models } => models
+                .iter()
+                .map(|model| model.model_id.clone())
+                .collect::<Vec<_>>(),
+            _ => bail!("catalog observation must explicitly replace its synthetic models"),
+        };
+        let mut reply = self
             .session
             .http()?
-            .save_account(&UpdateAccountRequest {
+            .patch_account(&PatchAccountRequest {
                 operation_id: format!("agent-{operation}"),
                 expected_revision: current.config.revision,
-                account: config::account_update(&model_url, update),
+                account_id: config::CHILD_ACCOUNT.into(),
+                name: AccountTextPatch::Keep,
+                base_url: AccountTextPatch::Keep,
+                template_id: AccountTextPatch::Keep,
+                protocol: AccountTextPatch::Keep,
+                secret,
+                custom_models,
             })
             .await?;
         ensure!(
             reply.receipt.durable && reply.snapshot.config.revision > current.config.revision,
             "account catalog update was not durably acknowledged"
         );
+        // Connection selection is a separate narrow intent. Carry each real receipt's
+        // revision forward; a later failure must not be reported as a rolled-back patch.
+        for (index, model_id) in model_ids.into_iter().enumerate() {
+            reply = self
+                .session
+                .http()?
+                .set_model_connection(&SetAccountModelConnectionRequest {
+                    operation_id: format!("agent-{operation}-connection-{index}"),
+                    expected_revision: reply.snapshot.config.revision,
+                    account_id: config::CHILD_ACCOUNT.into(),
+                    model_id,
+                    connection: ModelConnectionIntent::Set(AccountConnectionMode::Http),
+                })
+                .await?;
+            ensure!(
+                reply.receipt.durable,
+                "catalog patch applied, but model connection was not durably acknowledged"
+            );
+        }
         Ok(())
     }
 

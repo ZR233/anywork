@@ -426,6 +426,8 @@ pub struct BridgeModelCatalogAccountDto {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct BridgeModelCatalogStatusDto {
+    pub query_generation: u64,
+    pub operation_id: Option<String>,
     pub supported: bool,
     pub source: BridgeModelCatalogSource,
     pub probing: bool,
@@ -446,6 +448,7 @@ pub enum BridgeModelCatalogSource {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", tag = "kind")]
 pub enum BridgeModelCatalogError {
+    TaskFailed,
     Unsupported,
     Configuration,
     Timeout,
@@ -499,6 +502,8 @@ impl From<pl_protocol::studio::StudioModelCatalogStatus> for BridgeModelCatalogS
             StudioModelCatalogSource as Source,
         };
         Self {
+            query_generation: status.query_generation,
+            operation_id: status.operation_id,
             supported: status.supported,
             source: match status.source {
                 Source::Default => BridgeModelCatalogSource::Default,
@@ -521,6 +526,7 @@ impl From<pl_protocol::studio::StudioModelCatalogStatus> for BridgeModelCatalogS
                 Error::CacheIdentity => BridgeModelCatalogError::CacheIdentity,
                 Error::UnexpectedNotModified => BridgeModelCatalogError::UnexpectedNotModified,
                 Error::CacheWrite => BridgeModelCatalogError::CacheWrite,
+                Error::TaskFailed => BridgeModelCatalogError::TaskFailed,
                 Error::Closing => BridgeModelCatalogError::Closing,
             }),
             cache_warning: status.cache_warning.map(|warning| match warning {

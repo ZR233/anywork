@@ -18,7 +18,7 @@ pub struct SearchSkillsRequest {
 
 /// 完整模型选择：账号、模型与可选 effort。
 ///
-/// 同一份定义服务三处：新建会话草稿冻结的 route、child 派发时的模型选择输入，以及目录/
+/// 同一份定义服务新建会话草稿与附件准入的 route、child 派发时的模型选择输入，以及目录/
 /// 运行时投影的冻结模型身份摘要。它只描述「选了哪个模型」，不携带权限、工作区或 Profile。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, schemars::JsonSchema, ToSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]

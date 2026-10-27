@@ -10,6 +10,7 @@ import '../../l10n/studio_l10n.dart';
 import '../../platform/external_url_launcher.dart';
 import '../../platform/feishu_app_links.dart';
 import '../../presentation/providers/client_provider.dart';
+import '../../presentation/providers/account_domains.dart';
 import '../../shared/studio_driver_keys.dart';
 import '../../shared/model_route_selector.dart';
 import '../shell/studio_shell.dart';
@@ -591,7 +592,7 @@ class _BotsTabState extends ConsumerState<BotsTab> {
   }
 
   Widget _buildModel(BotSnapshot bot) {
-    final accounts = ref.watch(settingsAgentsViewProvider).accounts;
+    final accounts = ref.watch(modelSelectionAccountsProvider);
     final options = buildModelSelectionOptions(accounts, type: ModelType.text);
     final route = bot.modelRoute;
     final selected = options

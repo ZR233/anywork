@@ -104,6 +104,8 @@ ModelCatalogStatusView _modelCatalogStatusFromFrb(
     frb.BridgeModelCatalogSource.online => ModelCatalogSource.online,
   },
   probing: status.probing,
+  queryGeneration: status.queryGeneration.toInt(),
+  operationId: status.operationId,
   lastSuccessAt: status.lastSuccessAt?.toInt(),
   checkedAt: status.checkedAt?.toInt(),
   error: switch (status.error) {
@@ -142,6 +144,9 @@ ModelCatalogStatusView _modelCatalogStatusFromFrb(
     ),
     frb.BridgeModelCatalogError_Closing() => const ModelCatalogErrorView(
       ModelCatalogFailure.closing,
+    ),
+    frb.BridgeModelCatalogError_TaskFailed() => const ModelCatalogErrorView(
+      ModelCatalogFailure.taskFailed,
     ),
   },
   cacheWarning: switch (status.cacheWarning) {

@@ -10,16 +10,7 @@ import '../types/runtime.dart';
 
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-// These functions are ignored because they are not marked as `pub`: `account_usage_state`, `owned_skills_state`, `skills_state`
-
-Future<BridgeAccountUsageStateSnapshot> readAccountUsageState() =>
-    RustLib.instance.api.crateApiStudioHandlersAccountsReadAccountUsageState();
-
-Future<BridgeAccountUsageStateSnapshot> checkAccountUsage({
-  required String accountId,
-}) => RustLib.instance.api.crateApiStudioHandlersAccountsCheckAccountUsage(
-  accountId: accountId,
-);
+// These functions are ignored because they are not marked as `pub`: `owned_skills_state`, `skills_state`
 
 Future<BridgeSkillsStateSnapshot> readSkillsState({
   required String projectId,

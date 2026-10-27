@@ -4,6 +4,8 @@ import 'package:anywork/src/app/app_graph.dart';
 import 'package:anywork/src/features/status/status_view.dart';
 import 'package:anywork/src/domain/models/studio_reactive_projections.dart';
 import 'package:anywork_client/studio_client.dart';
+import 'package:anywork_client/accounts_ports.dart';
+import 'package:anywork_client/model_directory.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -28,9 +30,25 @@ void main() {
         (state) => state.snapshot is StudioTimelineBaselineFrame,
       );
       final initial = session.state.workspace!;
-      final canonical = graph.client.settings.state.canonical!;
-      final account = canonical.accounts.first;
-      final model = account.models.first;
+      final summaries = graph.accounts.observeSummaries();
+      addTearDown(summaries.release);
+      final directory = graph.models.observeDirectory();
+      addTearDown(directory.release);
+      await graph.accounts.state.waitFor((value) => value.loaded);
+      await graph.models.state.waitFor(
+        (value) => value.accounts.values.any(
+          (resource) =>
+              resource.loaded && resource.value?.models.isNotEmpty == true,
+        ),
+      );
+      final account = modelSelectionAccounts(
+        graph.accounts.state.value,
+        graph.models.state.value,
+      ).first;
+      final identity = NativeAccountIdentity(account.id);
+      final resource = graph.models.state.value.accounts[identity]!;
+      final catalog = resource.value!;
+      final model = catalog.models.first;
       final frozen = initial.runtime.copyWith(
         modelId: model.modelId,
         autoCompactLimit: 922000,
@@ -52,29 +70,42 @@ void main() {
         (_, _) {},
       );
       addTearDown(context.close);
+      final changed = model.copyWith(
+        context: const ModelContextView(
+          unavailable: null,
+          contextWindow: 1050000,
+          inputTokenLimit: 922000,
+          autoCompactLimit: 14780,
+        ),
+      );
       final accounts = [
-        account.copyWith(
-          models: [
-            model.copyWith(
-              context: const ModelContextView(
-                unavailable: null,
-                contextWindow: 1050000,
-                inputTokenLimit: 922000,
-                autoCompactLimit: 14780,
-              ),
-            ),
-          ],
+        ModelSelectionAccount(
+          id: account.id,
+          name: account.name,
+          billingKind: account.billingKind,
+          models: [changed],
         ),
       ];
-      final updated = SettingsStateSnapshot(
-        revision: canonical.revision,
-        modelCatalogRevision: canonical.modelCatalogRevision + 1,
-        accounts: accounts,
+      graph.accountDomains.acceptFrame(
+        AccountModelsFrame(
+          ResourceStamp(
+            resourceKey: 'model-catalog',
+            ownerEpoch: resource.stamp!.ownerEpoch,
+            revision: resource.stamp!.revision + 1,
+          ),
+          identity,
+          AccountModelCatalog(
+            identity: identity,
+            models: [changed],
+            status: catalog.status,
+          ),
+        ),
       );
-      graph.client.settings.merge(updated);
       expect(context.read()?.autoCompactLimit, 14780);
       expect(context.read()?.contextWindow, 1050000);
-      graph.client.settings.merge(canonical);
+      graph.accountDomains.acceptFrame(
+        AccountModelsFrame(resource.stamp!, identity, catalog),
+      );
       expect(
         context.read()?.autoCompactLimit,
         14780,
@@ -92,15 +123,19 @@ void main() {
         922000,
         reason: 'historical binding is immutable',
       );
-      graph.client.settings.merge(
-        SettingsStateSnapshot(
-          revision: canonical.revision,
-          modelCatalogRevision: updated.modelCatalogRevision + 1,
-          accounts: [
-            account.copyWith(
-              models: [model.copyWith(context: const ModelContextView())],
-            ),
-          ],
+      graph.accountDomains.acceptFrame(
+        AccountModelsFrame(
+          ResourceStamp(
+            resourceKey: 'model-catalog',
+            ownerEpoch: resource.stamp!.ownerEpoch,
+            revision: resource.stamp!.revision + 2,
+          ),
+          identity,
+          AccountModelCatalog(
+            identity: identity,
+            models: [model.copyWith(context: const ModelContextView())],
+            status: catalog.status,
+          ),
         ),
       );
       expect(
