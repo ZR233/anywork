@@ -14,6 +14,13 @@ pub(super) fn read(
                 .with_account_projection(|config, _| {
                     let mut accounts = Vec::with_capacity(config.config.models.accounts.len());
                     let desired = config.canonical_config();
+                    let account_catalog = desired
+                        .models
+                        .accounts
+                        .values()
+                        .any(|account| account.template_id().is_some())
+                        .then(pl_model::config::builtin_account_catalog)
+                        .transpose()?;
                     let default = desired
                         .mode_model_routes
                         .get(&pl_protocol::ThreadModeId::simple())
@@ -28,7 +35,15 @@ pub(super) fn read(
                                 account_id: id.to_string(),
                             },
                             name: account.name.clone(),
-                            brand_key: account.template_id().map(ToString::to_string),
+                            brand_key: account.template_id().and_then(|template_id| {
+                                account_catalog
+                                    .as_ref()?
+                                    .templates
+                                    .iter()
+                                    .find(|template| template.id == *template_id)?
+                                    .icon_key
+                                    .clone()
+                            }),
                             is_default: default == Some(id),
                             billing_kind: Some(account.billing_kind()?),
                             billing_kind_override: account.billing_kind,

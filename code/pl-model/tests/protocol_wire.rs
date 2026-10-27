@@ -324,10 +324,7 @@ fn tiny_png() -> Vec<u8> {
 #[tokio::test]
 async fn responses_files_use_native_file_parts_and_preserve_the_reliable_bytes() {
     use base64::Engine;
-    use pl_model::model::{
-        MediaRepresentation, MediaWireFormat, ModelInputCapability, ModelInputSource,
-        ModelMediaInputProfile, ModelModality,
-    };
+    use pl_model::model::{MediaRepresentation, MediaWireFormat, ModelModality};
     for (protocol, transport) in [
         (
             Protocol::ResponsesHttp,
@@ -338,7 +335,7 @@ async fn responses_files_use_native_file_parts_and_preserve_the_reliable_bytes()
             ModelTransportProfile::responses_websocket(),
         ),
     ] {
-        let events = responses_text("file received", "file-response", "file-model");
+        let events = responses_text("file received", "file-response", "gpt-6.1-terra");
         let reply = if protocol == Protocol::ResponsesWebSocket {
             Reply::WebSocket(events)
         } else {
@@ -348,17 +345,18 @@ async fn responses_files_use_native_file_parts_and_preserve_the_reliable_bytes()
             FixtureServer::start(vec![Step::prompt(protocol, "read retained file", 0, reply)])
                 .await
                 .unwrap();
-        let mut info = model("file-model", transport);
-        info.capabilities.input.push(ModelInputCapability::media(
-            ModelModality::File,
-            vec![ModelInputSource::Local],
-        ));
-        info.binding.request.media.push(ModelMediaInputProfile {
-            modality: ModelModality::File,
-            wire: MediaWireFormat::ResponsesInputFile,
-            first_send: vec![MediaRepresentation::DataUrl],
-            replay: vec![MediaRepresentation::DataUrl],
-        });
+        let mut info = bundled("gpt-6.1-terra");
+        info.binding.set_transport(transport);
+        assert!(
+            info.capabilities
+                .supports_input_modality(ModelModality::File)
+        );
+        assert!(info.binding.request.media.iter().any(|media| {
+            media.modality == ModelModality::File
+                && media.wire == MediaWireFormat::ResponsesInputFile
+                && media.first_send.contains(&MediaRepresentation::DataUrl)
+                && media.replay.contains(&MediaRepresentation::DataUrl)
+        }));
         let bytes = "中文文件正文-PR138".as_bytes();
         let request = CompletionRequest::builder()
             .messages(vec![Message {
@@ -3019,55 +3017,101 @@ async fn coding_plan_uses_responses_http_and_model_effort_not_chat_thinking() {
 }
 
 #[tokio::test]
-async fn new_openai_provider_routes_gpt6_sol_none_effort_through_responses() {
+async fn gpt61_terra_uses_medium_default_and_explicit_efforts_through_responses() {
+    use pl_model::config::{
+        AccountId, AgentModelConfig, AgentRoleId, ModelRouteConfig, ReasoningEffort,
+    };
+
     let preset = builtin_account_catalog()
         .unwrap()
         .templates
         .into_iter()
         .find(|item| item.id.as_str() == "openai")
         .unwrap();
-    let mut model = preset
-        .account
-        .effective_models(None)
-        .unwrap()
-        .into_iter()
-        .find(|model| model.model_id == preset.suggested_model_id)
-        .unwrap();
-    let fixture = FixtureServer::start(vec![Step::prompt(
-        Protocol::ResponsesHttp,
-        "new provider prompt",
-        0,
-        Reply::Sse(responses_text("sol result", "sol-1", "gpt-6-sol")),
-    )])
+    let fixture = FixtureServer::start(vec![
+        Step::prompt(
+            Protocol::ResponsesHttp,
+            "default prompt",
+            0,
+            Reply::Sse(responses_text("default", "terra-1", "gpt-6.1-terra")),
+        ),
+        Step::prompt(
+            Protocol::ResponsesHttp,
+            "none prompt",
+            1,
+            Reply::Sse(responses_text("none", "terra-2", "gpt-6.1-terra")),
+        ),
+        Step::prompt(
+            Protocol::ResponsesHttp,
+            "max prompt",
+            2,
+            Reply::Sse(responses_text("max", "terra-3", "gpt-6.1-terra")),
+        ),
+    ])
     .await
     .unwrap();
-    model
-        .binding
-        .set_transport(ModelTransportProfile::responses_http());
-    let runtime = ModelRuntime::new_with_account_id(
-        "fixture",
-        ProtocolEndpoint::openai(Some(fixture.base_url())),
-        model,
-    )
-    .unwrap();
-    let reply = runtime
-        .complete(
-            CompletionRequest::builder()
-                .messages(vec![user("new provider prompt")])
-                .reasoning(Some(ReasoningConfig {
-                    effort: Some("none".into()),
-                    summary: None,
-                }))
-                .build(),
-            ModelInvocationContext::default(),
-        )
-        .await
+    let mut account = preset.account;
+    account.base_url = fixture.base_url();
+    account
+        .set_model_connection_mode("gpt-6.1-terra", pl_model::protocol::ConnectionMode::Http)
         .unwrap();
-    assert_eq!(reply.content.as_deref(), Some("sol result"));
+    let entry = account
+        .effective_catalog(None)
+        .unwrap()
+        .into_iter()
+        .find(|entry| entry.model.model_id == "gpt-6.1-terra")
+        .unwrap();
+    let default_effort = entry
+        .model
+        .default_effort()
+        .expect("Terra model declares a default effort");
+    let account_id = AccountId::new("openai-fixture").unwrap();
+    let role = AgentRoleId::new("executor").unwrap();
+    for (prompt, selected_effort) in [
+        ("default prompt", default_effort.as_str()),
+        ("none prompt", "none"),
+        ("max prompt", "max"),
+    ] {
+        let route = ModelRouteConfig {
+            account_id: account_id.clone(),
+            model_id: "gpt-6.1-terra".into(),
+            effort: Some(ReasoningEffort::new(selected_effort)),
+        };
+        let config = AgentModelConfig {
+            accounts: [(account_id.clone(), account.clone())].into(),
+            routes: [(role.clone(), route)].into(),
+        };
+        let resolved = config.resolve(&role).unwrap();
+        let reasoning = resolved.reasoning_config();
+        let runtime = ModelRuntime::new_with_account_id(
+            resolved.account_id.as_str(),
+            resolved.endpoint,
+            resolved.model,
+        )
+        .unwrap();
+        let request = CompletionRequest::builder()
+            .messages(vec![user(prompt)])
+            .reasoning(reasoning)
+            .build();
+        runtime
+            .complete(request, ModelInvocationContext::default())
+            .await
+            .unwrap();
+    }
     let records = fixture.finish().await.unwrap();
-    assert_eq!(records[0].path, "/v1/responses");
-    assert_eq!(records[0].body["model"], "gpt-6-sol");
-    assert_eq!(records[0].body["reasoning"]["effort"], "none");
+    assert!(records.iter().all(|record| record.path == "/v1/responses"));
+    assert!(
+        records
+            .iter()
+            .all(|record| record.body["model"] == "gpt-6.1-terra")
+    );
+    assert_eq!(
+        records
+            .iter()
+            .map(|record| record.body["reasoning"]["effort"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        ["medium", "none", "max"]
+    );
 }
 
 #[tokio::test]
@@ -3113,6 +3157,45 @@ async fn openai_image_is_sent_as_replayable_input_image_and_cache_usage_is_bille
             .decode(encoded)
             .unwrap(),
         bytes
+    );
+}
+
+#[tokio::test]
+async fn terra_image_is_sent_as_responses_input_image() {
+    let fixture = FixtureServer::start(vec![Step::prompt(
+        Protocol::ResponsesHttp,
+        "describe",
+        0,
+        Reply::Sse(responses_text("a pixel", "terra-image", "gpt-6.1-terra")),
+    )])
+    .await
+    .unwrap();
+    let mut info = bundled("gpt-6.1-terra");
+    info.binding
+        .set_transport(ModelTransportProfile::responses_http());
+    let runtime = ModelRuntime::new_with_account_id(
+        "fixture",
+        ProtocolEndpoint::openai(Some(fixture.base_url())),
+        info,
+    )
+    .unwrap();
+    let result = runtime
+        .complete(
+            image_request("describe", tiny_png()),
+            ModelInvocationContext::default(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(result.content.as_deref(), Some("a pixel"));
+    let records = fixture.finish().await.unwrap();
+    assert_eq!(records[0].body["model"], "gpt-6.1-terra");
+    let image = &records[0].body["input"][0]["content"][1];
+    assert_eq!(image["type"], "input_image");
+    assert!(
+        image["image_url"]
+            .as_str()
+            .unwrap()
+            .starts_with("data:image/png;base64,")
     );
 }
 
@@ -3422,7 +3505,7 @@ async fn native_checkpoint_replay_requires_bound_origin_and_explicit_model_famil
     .to_string();
     let legacy_payload = OpaquePayload::new("pl.model.compaction", 2, legacy_content.clone())
         .expect("legacy payload is valid");
-    let legacy_context = ContextSnapshot {
+    let mut legacy_context = ContextSnapshot {
         revision: 3,
         records: vec![ContextRecord {
             id: "compaction:origin-attempt".into(),
@@ -3437,11 +3520,20 @@ async fn native_checkpoint_replay_requires_bound_origin_and_explicit_model_famil
         }]
         .into(),
     };
-    // A cold record is decoded in place; its bytes are not rewritten.
+    assert!(source.validate_context_origin(&legacy_context).is_err());
+    let ContextContent::Opaque { payload } =
+        &mut std::sync::Arc::make_mut(&mut legacy_context.records)[0].content[0]
+    else {
+        panic!("legacy native payload")
+    };
+    *payload = pl_model::runtime::migration::migrate_payload(payload)
+        .unwrap()
+        .unwrap();
+    // Explicit migration produces the only format accepted by normal request preparation.
     let before = legacy_context.records[0].content.clone();
     source.validate_context_origin(&legacy_context).unwrap();
     assert_eq!(legacy_context.records[0].content, before);
-    // The prepare path (not only validate) must consume the legacy checkpoint.
+    // The prepare path (not only validate) consumes the upgraded checkpoint.
     source
         .estimate_input(
             &ModelRequest {
@@ -3526,8 +3618,12 @@ async fn native_checkpoint_replay_requires_bound_origin_and_explicit_model_famil
                 source_id: "model.compaction".into(),
             },
             content: vec![ContextContent::Opaque {
-                payload: OpaquePayload::new("pl.model.compaction", 2, mismatched.to_string())
-                    .expect("mismatched payload is valid"),
+                payload: pl_model::runtime::migration::migrate_payload(
+                    &OpaquePayload::new("pl.model.compaction", 2, mismatched.to_string())
+                        .expect("mismatched payload is valid"),
+                )
+                .unwrap()
+                .unwrap(),
             }],
             tool_calls: vec![],
         }]

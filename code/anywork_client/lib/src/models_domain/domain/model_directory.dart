@@ -12,13 +12,41 @@ import 'immutable_model.dart';
 
 final class AccountModelCatalog {
   AccountModelCatalog({
-    required this.identity,
+    required NativeAccountIdentity identity,
     required Iterable<AccountModelView> models,
-    required this.status,
-  }) : models = List.unmodifiable(models.map(immutableModelDescriptor));
+    required ModelCatalogStatusView status,
+  }) : this._(
+         identity,
+         List.unmodifiable(models.map(immutableModelDescriptor)),
+         status,
+         const {},
+       );
+  AccountModelCatalog._(
+    this.identity,
+    this._sourceModels,
+    this.status,
+    Map<String, bool> overrides,
+  ) : models = List.unmodifiable([
+        for (final model in _sourceModels)
+          if (overrides[model.modelId] case final enabled?)
+            model.copyWith(enabled: enabled)
+          else
+            model,
+      ]);
   final NativeAccountIdentity identity;
+  // Keep the received descriptors so a later configuration frame cannot turn
+  // yesterday's explicit override into today's automatic backend default.
+  final List<AccountModelView> _sourceModels;
   final List<AccountModelView> models;
   final ModelCatalogStatusView status;
+  AccountModelCatalog withConfiguration(
+    AccountModelConfiguration? configuration,
+  ) => AccountModelCatalog._(
+    identity,
+    _sourceModels,
+    status,
+    configuration?.modelEnabledOverrides ?? const {},
+  );
   AccountModelView? model(String id) =>
       models.where((model) => model.modelId == id).firstOrNull;
 }
@@ -46,13 +74,13 @@ final class ModelDirectoryState {
 /// model-catalog stamps. These clocks are deliberately not collapsed.
 final class AccountModelConfiguration {
   AccountModelConfiguration({
-    Iterable<String> disabledModels = const [],
+    Map<String, bool> modelEnabledOverrides = const {},
     Map<String, AccountConnectionMode> connections = const {},
     Map<String, int> autoCompactLimits = const {},
-  }) : disabledModels = List.unmodifiable(disabledModels),
+  }) : modelEnabledOverrides = Map.unmodifiable(modelEnabledOverrides),
        connections = Map.unmodifiable(connections),
        autoCompactLimits = Map.unmodifiable(autoCompactLimits);
-  final List<String> disabledModels;
+  final Map<String, bool> modelEnabledOverrides;
   final Map<String, AccountConnectionMode> connections;
   final Map<String, int> autoCompactLimits;
 }

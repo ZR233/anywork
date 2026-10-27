@@ -2595,7 +2595,7 @@ mod storage_fault_tests {
         let frame = OpaquePayload::new(
             "pl.model.assistant",
             // 与 pl-model 当前 `pl.model.assistant` 帧版本一致（该常量不对外重导出）。
-            3,
+            4,
             serde_json::to_string(&Frame {
                 receipt: &receipt,
                 bindings: Vec::new(),

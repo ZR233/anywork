@@ -174,6 +174,57 @@ Future<OperationState> _set(
 );
 
 void main() {
+  test('enablement keeps backend defaults and explicit intents across independent clocks', () {
+    SettingsStateSnapshot frame(
+      int settings,
+      int catalog,
+      Map<String, bool> overrides,
+      bool enabled,
+    ) => SettingsStateSnapshot(
+      revision: settings,
+      modelCatalogRevision: catalog,
+      accounts: [
+        _account.copyWith(
+          modelEnabledOverrides: overrides,
+          models: [
+            _alpha.copyWith(enabled: enabled),
+            _beta.copyWith(enabled: false),
+          ],
+        ),
+      ],
+    );
+    final runtime = _client(_Transport());
+    const identity = NativeAccountIdentity('fixture');
+    void accept(SettingsStateSnapshot snapshot) => runtime.seed(snapshot);
+    AccountModelCatalog catalog() =>
+        runtime.domains.models.state.value.accounts[identity]!.value!;
+    AccountModelConfiguration configuration() =>
+        runtime.domains.models.state.value.configurations[identity]!.value!;
+    accept(frame(1, 1, const {}, false));
+    expect(catalog().models.map((model) => model.enabled), [false, false]);
+    accept(frame(2, 1, const {'alpha': true}, false));
+    expect(catalog().models.map((model) => model.enabled), [true, false]);
+    accept(frame(1, 2, const {}, false));
+    expect(configuration().modelEnabledOverrides, {'alpha': true});
+    expect(catalog().models.map((model) => model.enabled), [true, false]);
+    accept(frame(3, 1, const {'alpha': false}, true));
+    accept(frame(2, 3, const {'alpha': true}, true));
+    expect(configuration().modelEnabledOverrides, {'alpha': false});
+    expect(catalog().models.map((model) => model.enabled), [false, false]);
+    final current = runtime.domains.models.state.value.accounts[identity];
+    accept(frame(2, 2, const {'alpha': true}, true));
+    expect(
+      runtime.domains.models.state.value.accounts[identity],
+      same(current),
+    );
+    accept(frame(4, 3, const {}, false));
+    expect(
+      catalog().models.map((model) => model.enabled),
+      [true, false],
+      reason: 'Clearing explicit intent restores the retained backend default, not a previously projected override',
+    );
+  });
+
   test('one catalog revision updates shared metadata across routes and rejects older responses', () {
     SettingsStateSnapshot frame(int settings, int catalog, int context) =>
         SettingsStateSnapshot(

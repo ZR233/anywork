@@ -328,7 +328,7 @@ class DemoStudioTransport extends StudioTransport
           modelConfiguration: native == null
               ? null
               : AccountModelConfiguration(
-                  disabledModels: native.disabledModels,
+                  modelEnabledOverrides: native.modelEnabledOverrides,
                   connections: {
                     for (final entry in native.modelConnectionModes.entries)
                       entry.key: switch (entry.value) {
@@ -485,9 +485,8 @@ class DemoStudioTransport extends StudioTransport
           if (model.origin != ModelOrigin.manual) model,
         ...manual,
       ],
-      disabledModels: current.disabledModels
-          .where((id) => !removed.contains(id))
-          .toList(),
+      modelEnabledOverrides: {...current.modelEnabledOverrides}
+        ..removeWhere((id, _) => removed.contains(id)),
       modelConnectionModes: {...current.modelConnectionModes}
         ..removeWhere((id, _) => removed.contains(id)),
       autoCompactLimits: {...current.autoCompactLimits}
@@ -2489,7 +2488,7 @@ class DemoStudioTransport extends StudioTransport
           p.defaultModelId,
           p.billingKind,
           p.billingKindOverride,
-          p.disabledModels,
+          p.modelEnabledOverrides,
           [
             for (final m in p.customModels)
               [
@@ -4920,9 +4919,10 @@ class DemoStudioTransport extends StudioTransport
           a
         else
           a.copyWith(
-            disabledModels: enabled
-                ? ([...a.disabledModels]..remove(modelId))
-                : {...a.disabledModels, modelId}.toList(),
+            modelEnabledOverrides: {
+              ...a.modelEnabledOverrides,
+              modelId: enabled,
+            },
             models: [
               for (final m in a.models)
                 if (m.modelId == modelId) m.copyWith(enabled: enabled) else m,

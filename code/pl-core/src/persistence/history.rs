@@ -123,21 +123,8 @@ pub(super) async fn read(
     )).await?;
     let mut history = Vec::with_capacity(rows.len());
     for row in rows {
-        let envelope: String = row.try_get("", "envelope")?;
         let digest: String = row.try_get("", "payload_hash")?;
-        if crate::context::content_hash(envelope.as_bytes()) != digest {
-            return Err(SessionStoreError::Invalid(
-                "history content digest mismatch".into(),
-            ));
-        }
-        let commit: SessionEntryCommit = serde_json::from_str(&envelope)?;
-        let sequence: i64 = row.try_get("", "sequence")?;
-        if u64::try_from(sequence).ok() != Some(commit.sequence) {
-            return Err(SessionStoreError::Invalid(
-                "history sequence/index mismatch".into(),
-            ));
-        }
-        validate_commit(&commit, session_id, history.len() as u64 + 1)?;
+        let commit = decode_commit(row, session_id, history.len() as u64 + 1)?;
         last_digest = Some(digest);
         history.push(commit);
     }
@@ -154,4 +141,27 @@ pub(super) async fn read(
         ));
     }
     Ok(history)
+}
+
+pub(super) fn decode_commit(
+    row: sea_orm::QueryResult,
+    session_id: &str,
+    expected_sequence: u64,
+) -> Result<SessionEntryCommit, SessionStoreError> {
+    let envelope: String = row.try_get("", "envelope")?;
+    let digest: String = row.try_get("", "payload_hash")?;
+    if crate::context::content_hash(envelope.as_bytes()) != digest {
+        return Err(SessionStoreError::Invalid(
+            "history content digest mismatch".into(),
+        ));
+    }
+    let commit: SessionEntryCommit = serde_json::from_str(&envelope)?;
+    let sequence: i64 = row.try_get("", "sequence")?;
+    if u64::try_from(sequence).ok() != Some(commit.sequence) {
+        return Err(SessionStoreError::Invalid(
+            "history sequence/index mismatch".into(),
+        ));
+    }
+    validate_commit(&commit, session_id, expected_sequence)?;
+    Ok(commit)
 }

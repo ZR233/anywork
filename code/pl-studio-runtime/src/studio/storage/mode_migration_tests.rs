@@ -2404,6 +2404,17 @@ async fn migrate_model_access(store: &HistoryStore) -> Result<ThreadCheckpoint> 
 async fn workspace_receipt_upgrade_preserves_nested_ownership_and_rejects_corruption() -> Result<()>
 {
     use sea_orm::{DbBackend, Statement};
+    async fn applied_migrations(db: &impl ConnectionTrait) -> Result<Vec<String>> {
+        db.query_all_raw(Statement::from_string(
+            DbBackend::Sqlite,
+            "SELECT json_array(version,applied_at) AS fact FROM seaql_migrations ORDER BY version",
+        ))
+        .await?
+        .into_iter()
+        .map(|row| Ok(row.try_get("", "fact")?))
+        .collect()
+    }
+
     for mode in ["directory", "worktree", "review"] {
         let directory = tempfile::tempdir()?;
         let path = directory.path().join("history.sqlite");
@@ -2442,6 +2453,23 @@ async fn workspace_receipt_upgrade_preserves_nested_ownership_and_rejects_corrup
             crate::studio::workspace_receipt::from_snapshot(&original.state).is_err(),
             "normal reads must not silently decode retired receipts"
         );
+        let db = raw_database(&path).await?;
+        let content_prepared = applied_migrations(&db).await?;
+        let (read_only, _) = store
+            .read_only_checkpoint_with_latest_turn()
+            .await?
+            .context("prepared content is readable before lifecycle recovery")?;
+        assert_eq!(
+            serde_json::to_value(read_only)?,
+            serde_json::to_value(&original)?,
+            "content reads retain the pending lifecycle representation and checkpoint facts"
+        );
+        assert_eq!(
+            applied_migrations(&db).await?,
+            content_prepared,
+            "a content read cannot advance lifecycle preparation"
+        );
+        db.close().await?;
         let migrated = migrate_model_access(&store).await?;
         let saved = &migrated.state.extensions["studio.workspace"];
         assert_eq!(saved.revision, 23);
@@ -2491,9 +2519,40 @@ async fn workspace_receipt_upgrade_preserves_nested_ownership_and_rejects_corrup
         ))
         .await?;
         db.execute_unprepared("DELETE FROM seaql_migrations WHERE version='m20261026_000007a_history_workspace_receipt'").await?;
+        let pending_workspace = applied_migrations(&db).await?;
         db.close().await?;
         drop(store);
         let reopened = HistoryStore::open(&path, "migration").await?;
+        let (read_only, _) = reopened
+            .read_only_checkpoint_with_latest_turn()
+            .await?
+            .context("pending workspace lifecycle does not invalidate prepared content")?;
+        assert_eq!(
+            serde_json::to_value(read_only)?,
+            serde_json::to_value(&original)?
+        );
+        let db = raw_database(&path).await?;
+        assert_eq!(
+            applied_migrations(&db).await?,
+            pending_workspace,
+            "cold reads do not complete pending workspace recovery"
+        );
+        reopened.prepare_history_access().await?;
+        assert_eq!(
+            applied_migrations(&db).await?,
+            pending_workspace,
+            "Schema must not advance workspace lifecycle after ModelAccess was applied"
+        );
+        let (read_only, _) = reopened
+            .read_only_checkpoint_with_latest_turn()
+            .await?
+            .context("content preparation retains the existing checkpoint")?;
+        assert_eq!(
+            serde_json::to_value(read_only)?,
+            serde_json::to_value(&original)?,
+            "Schema preparation must preserve the original receipt, state and history fence"
+        );
+        db.close().await?;
         assert_eq!(
             serde_json::to_value(migrate_model_access(&reopened).await?)?,
             serde_json::to_value(&migrated)?,
@@ -2785,6 +2844,8 @@ async fn cold_child_open_and_parent_recovery_prepare_checkpoint_envelopes() -> R
     for (id, role) in [
         ("retired-child", crate::config::ROOT_AGENT_ROUTE_KEY),
         ("cold-child", "executor"),
+        ("timeline-child", "executor"),
+        ("turn-page-child", "executor"),
     ] {
         let mut child = bound_thread(id);
         child.project_id = project.id.clone();
@@ -2811,6 +2872,26 @@ async fn cold_child_open_and_parent_recovery_prepare_checkpoint_envelopes() -> R
     drop(store);
     let runtime = crate::StudioRuntime::initialize(options()).await?;
     let result = async {
+        // These children have no execution owner. Both independent content entrypoints must
+        // prepare only SQLite content before querying, leaving model/instruction recovery pending.
+        for (child, path) in children.iter().skip(2) {
+            assert!(HistoryStore::open(path, &child.id).await?.checkpoint().await.is_err());
+            if child.id == "timeline-child" {
+                assert!(runtime.timeline_page(&child.id, &pl_protocol::TimelinePageQuery {
+                    before: None, limit: Some(10),
+                }).await?.items.is_empty());
+            } else {
+                assert!(runtime.list_thread_turns(&child.id, None, 10).await?.turns.is_empty());
+            }
+            let checkpoint = HistoryStore::open(path, &child.id).await?.checkpoint().await?.context("prepared content checkpoint")?;
+            assert_eq!(checkpoint.state.context, saved_state(BTreeMap::new()).context);
+            assert!(checkpoint.state.extensions.is_empty(), "content access must not regenerate instructions");
+            let db = raw_database(path).await?;
+            assert!(db.query_one_raw(sea_orm::Statement::from_string(sea_orm::DatabaseBackend::Sqlite,
+                "SELECT version FROM seaql_migrations WHERE version IN ('m20261026_000007_history_model_access','m20261026_000008_history_execution_identity')"
+            )).await?.is_none(), "content access must not advance execution recovery");
+            db.close().await?;
+        }
         // The retired child's first saved-state lookup decides whether an owner may be installed.
         // It must happen after migration even when that lookup proves the child is not sealed.
         let child = &children[0].0;
@@ -3303,6 +3384,44 @@ fn legacy_native_context(inference_id: &str, sealed: &str) -> Result<ContextReco
     })
 }
 
+/// Seed an earlier producer representation directly; current live effect writers reject it.
+async fn persist_legacy_producer(
+    store: &HistoryStore,
+    path: &std::path::Path,
+    state: ThreadSnapshot,
+) -> Result<()> {
+    let original = state.extensions.clone();
+    let mut seed = state;
+    for record in seed.extensions.values_mut() {
+        if let Some(current) = crate::studio::producer_migration::normalize(&record.payload)? {
+            record.payload = current;
+        }
+    }
+    persist(store, seed, true).await?;
+    let db = raw_database(path).await?;
+    let row = db
+        .query_one_raw(sea_orm::Statement::from_string(
+            sea_orm::DatabaseBackend::Sqlite,
+            "SELECT payload FROM session_checkpoint WHERE id=1",
+        ))
+        .await?
+        .context("seed checkpoint")?;
+    let mut raw: serde_json::Value = serde_json::from_str(&row.try_get::<String>("", "payload")?)?;
+    raw["state"]["extensions"] = serde_json::to_value(original)?;
+    let encoded = serde_json::to_string(&raw)?;
+    db.execute_raw(sea_orm::Statement::from_sql_and_values(
+        sea_orm::DatabaseBackend::Sqlite,
+        "UPDATE session_checkpoint SET payload=?,payload_hash=? WHERE id=1",
+        [
+            encoded.clone().into(),
+            pl_core::context::content_hash(encoded.as_bytes()).into(),
+        ],
+    ))
+    .await?;
+    db.close().await?;
+    Ok(())
+}
+
 fn opaque_record(id: &str, content: &str) -> Result<ContextRecord> {
     Ok(ContextRecord {
         id: id.into(),
@@ -3341,7 +3460,7 @@ async fn legacy_native_compaction_receipt_upgrades_sources_through_the_history_u
         "不可改写的用户/厂商正文",
     )?);
     state.context.records = records.into();
-    persist(&history, state.clone(), true).await?;
+    persist_legacy_producer(&history, &history_path, state.clone()).await?;
     let before = history.checkpoint().await?.context("legacy checkpoint")?;
     raw_database(&history_path)
         .await?
@@ -3365,11 +3484,14 @@ async fn legacy_native_compaction_receipt_upgrades_sources_through_the_history_u
         checkpoint.state.context.revision,
         before.state.context.revision
     );
+    let receipt = &checkpoint.state.extensions[crate::compaction::LATEST_RECEIPT];
     assert_eq!(
-        checkpoint.state.extensions[crate::compaction::LATEST_RECEIPT],
-        before.state.extensions[crate::compaction::LATEST_RECEIPT],
-        "回执扩展本身按版本化解码，字节不变"
+        receipt.revision,
+        before.state.extensions[crate::compaction::LATEST_RECEIPT].revision
     );
+    assert_eq!(receipt.payload.version(), 3);
+    let decoded = crate::compaction::decode_receipt(3, receipt.payload.content())?;
+    assert_eq!(decoded.inference_id, "compact-call");
     assert_eq!(upgraded.watermark().await?, 1);
 
     let compaction = checkpoint
@@ -3444,7 +3566,7 @@ async fn unusable_legacy_compaction_source_fails_closed_without_rewriting() -> R
         tool_calls: vec![],
     });
     state.context.records = records.into();
-    persist(&store, state, true).await?;
+    persist_legacy_producer(&store, &path, state).await?;
     raw_database(&path)
         .await?
         .execute_unprepared(
@@ -3460,29 +3582,34 @@ async fn unusable_legacy_compaction_source_fails_closed_without_rewriting() -> R
         "升级步骤没有被标记完成，仍可重试"
     );
     drop(failed);
-    // 原数据与旧版本仍可重试读取，升级没有被部分提交。
+    // 普通读取拒绝未准备格式；直接检查原始迁移输入证明失败没有部分提交。
     let retryable = HistoryStore::open(&path, "migration").await?;
-    let checkpoint = retryable
-        .checkpoint()
+    assert!(retryable.checkpoint().await.is_err());
+    let inspect = raw_database(&path).await?;
+    let row = inspect.query_one_raw(sea_orm::Statement::from_string(sea_orm::DatabaseBackend::Sqlite,
+        "SELECT schema_version,revision FROM history_meta,session_checkpoint WHERE history_meta.id=1 AND session_checkpoint.id=1"
+    )).await?.context("preserved checkpoint")?;
+    assert_eq!(row.try_get::<i64>("", "schema_version")?, 5);
+    assert_eq!(row.try_get::<i64>("", "revision")?, 1);
+    let row = inspect
+        .query_one_raw(sea_orm::Statement::from_string(
+            sea_orm::DatabaseBackend::Sqlite,
+            "SELECT payload FROM current_context WHERE record_id='compaction:compact-call'",
+        ))
         .await?
-        .context("preserved checkpoint")?;
-    assert_eq!(checkpoint.state_revision, 1);
-    let compaction = checkpoint
-        .state
-        .context
-        .records
-        .iter()
-        .find(|record| record.id == "compaction:compact-call")
         .context("preserved compaction record")?;
+    let compaction: ContextRecord = serde_json::from_str(&row.try_get::<String>("", "payload")?)?;
     let [ContextContent::Opaque { payload }] = compaction.content.as_slice() else {
         anyhow::bail!("preserved compaction record is not opaque");
     };
     assert_eq!(payload.version(), 1, "失败不升级来源结构");
     assert_eq!(payload.content(), unusable, "原正文逐字保留");
+    inspect.close().await?;
 
     // 单一解码边界本身拒绝未知旧适配值与未来版本。
     let unsafe_receipt = LEGACY_NATIVE_RECEIPT.replace("\"deepSeek\"", "\"mysteryVendor\"");
     assert!(crate::compaction::decode_receipt(1, &unsafe_receipt).is_err());
+    assert!(crate::studio::producer_migration::compaction_receipt(1, &unsafe_receipt).is_err());
     assert!(crate::compaction::decode_receipt(3, LEGACY_NATIVE_RECEIPT).is_err());
     Ok(())
 }

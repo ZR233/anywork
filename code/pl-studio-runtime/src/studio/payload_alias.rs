@@ -28,16 +28,3 @@ pub(crate) fn rename_key(
         }
     }
 }
-
-/// 旧厂商适配值 → 当前协议值；只用于产品自己持久化的接入身份字段。
-pub(crate) fn protocol_from_legacy_adapter(value: &str) -> Option<&'static str> {
-    match value {
-        "openAi" | "open_ai" => Some("open_ai"),
-        "deepSeek" | "deep_seek" => Some("deep_seek"),
-        "zhipu" => Some("zhipu"),
-        "miMo" | "mi_mo" => Some("mi_mo"),
-        "xai" => Some("xai"),
-        "openAiCompatible" | "open_ai_compatible" => Some("open_ai_compatible"),
-        _ => None,
-    }
-}

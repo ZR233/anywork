@@ -11,6 +11,7 @@ pub(crate) mod model_route;
 pub(crate) mod paths;
 pub(crate) mod payload_alias;
 mod persistence;
+pub(crate) mod producer_migration;
 mod product_event_bus;
 mod records;
 mod recovery_registry;

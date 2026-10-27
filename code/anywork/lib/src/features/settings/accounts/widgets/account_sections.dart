@@ -3,6 +3,25 @@ import 'package:flutter/material.dart';
 import '../../../../l10n/app_localizations.dart';
 import '../state/account_presentations.dart';
 
+export 'account_billing_control.dart';
+export 'account_menu_button.dart';
+
+/// A near-white warm surface scoped to account groups, not an app theme.
+Color accountGroupSurface(BuildContext context) => Color.lerp(
+  Theme.of(context).colorScheme.surfaceContainerLowest,
+  Colors.white,
+  .76,
+)!;
+
+ButtonStyle accountActionButtonStyle(BuildContext context) => ButtonStyle(
+  minimumSize: const WidgetStatePropertyAll(Size(0, 42)),
+  visualDensity: VisualDensity.standard,
+  textStyle: WidgetStatePropertyAll(
+    Theme.of(context).textTheme.bodyLarge
+        ?.copyWith(fontSize: 16, fontWeight: FontWeight.w600),
+  ),
+);
+
 String accountBillingLabel(AppLocalizations l10n, AccountBilling billing) =>
     switch (billing) {
       AccountBilling.unknown => l10n.settingsBillingUnknown,
@@ -42,14 +61,25 @@ class AccountSection extends StatelessWidget {
           spacing: 12,
           runSpacing: 8,
           children: [
-            Text(title, style: Theme.of(context).textTheme.titleMedium),
+            Text(
+              title,
+              style: Theme.of(context).textTheme.titleLarge
+                  ?.copyWith(fontWeight: FontWeight.w700),
+            ),
             if (actions.isNotEmpty)
               Wrap(spacing: 8, runSpacing: 8, children: actions),
           ],
         ),
         const SizedBox(height: 12),
         Card(
-          child: Padding(padding: const EdgeInsets.all(16), child: child),
+          color: accountGroupSurface(context),
+          child: Padding(
+            padding: const EdgeInsets.all(16),
+            child: DefaultTextStyle.merge(
+              style: const TextStyle(fontSize: 16),
+              child: child,
+            ),
+          ),
         ),
       ],
     ),
@@ -96,9 +126,16 @@ class AccountFacts extends StatelessWidget {
             builder: (context, constraints) {
               final label = Text(
                 fact.label,
-                style: Theme.of(context).textTheme.bodySmall,
+                style: Theme.of(context).textTheme.bodyLarge?.copyWith(
+                  fontSize: 16,
+                  color: Theme.of(context).colorScheme.onSurfaceVariant,
+                ),
               );
-              final value = AccountSelectableText(fact.value);
+              final value = AccountSelectableText(
+                fact.value,
+                style: Theme.of(context).textTheme.bodyLarge
+                    ?.copyWith(fontSize: 16),
+              );
               return constraints.maxWidth < 460
                   ? Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
@@ -138,7 +175,10 @@ class AccountInlineError extends StatelessWidget {
         ),
         Text(
           message,
-          style: TextStyle(color: Theme.of(context).colorScheme.error),
+          style: Theme.of(context).textTheme.bodyLarge?.copyWith(
+            fontSize: 16,
+            color: Theme.of(context).colorScheme.error,
+          ),
         ),
         if (onRetry != null)
           TextButton(
@@ -161,6 +201,7 @@ class AccountRawTextField extends StatefulWidget {
     this.obscure = false,
     this.maxLines = 1,
     this.keyboardType,
+    this.prefixIcon,
     super.key,
   });
   final AccountTextPresentation value;
@@ -170,6 +211,7 @@ class AccountRawTextField extends StatefulWidget {
   final bool obscure;
   final int maxLines;
   final TextInputType? keyboardType;
+  final Widget? prefixIcon;
 
   @override
   State<AccountRawTextField> createState() => _AccountRawTextFieldState();
@@ -224,7 +266,11 @@ class _AccountRawTextFieldState extends State<AccountRawTextField> {
       enableSuggestions: !widget.obscure,
       maxLines: widget.maxLines,
       keyboardType: widget.keyboardType,
+      style: Theme.of(context).textTheme.bodyLarge?.copyWith(fontSize: 16),
       decoration: InputDecoration(
+        labelStyle: Theme.of(context).textTheme.bodyLarge
+            ?.copyWith(fontSize: 16),
+        prefixIcon: widget.prefixIcon,
         labelText: widget.label,
         errorText: widget.value.error,
         helperText: widget.value.helper,
@@ -246,65 +292,4 @@ class _AccountRawTextFieldState extends State<AccountRawTextField> {
       ),
     ),
   );
-}
-
-class AccountBillingControl extends StatelessWidget {
-  const AccountBillingControl({
-    required this.value,
-    required this.onChanged,
-    required this.onReset,
-    super.key,
-  });
-  final AccountBillingPresentation value;
-  final ValueChanged<AccountBilling> onChanged;
-  final VoidCallback onReset;
-
-  @override
-  Widget build(BuildContext context) {
-    final l10n = AppLocalizations.of(context);
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        AccountFacts(
-          facts: [
-            AccountDisplayFact(
-              label: l10n.settingsBillingEffective,
-              value: accountBillingLabel(l10n, value.effective),
-            ),
-          ],
-        ),
-        Wrap(
-          spacing: 8,
-          runSpacing: 8,
-          crossAxisAlignment: WrapCrossAlignment.center,
-          children: [
-            Text(
-              value.billingKindOverride == null
-                  ? l10n.settingsBillingAutomatic
-                  : l10n.settingsBillingOverride,
-            ),
-            for (final billing in value.allowedOverrides)
-              ChoiceChip(
-                label: Text(accountBillingLabel(l10n, billing)),
-                selected: value.billingKindOverride == billing,
-                onSelected: value.saving ? null : (_) => onChanged(billing),
-              ),
-            if (value.billingKindOverride != null)
-              TextButton.icon(
-                onPressed: value.saving ? null : onReset,
-                icon: const Icon(Icons.restart_alt, size: 18),
-                label: Text(l10n.settingsModelAutoCompactRestore),
-              ),
-          ],
-        ),
-        if (value.saving) const LinearProgressIndicator(),
-        if (value.error != null) AccountInlineError(message: value.error!),
-        const SizedBox(height: 8),
-        Text(
-          l10n.accountsBillingDisclaimer,
-          style: Theme.of(context).textTheme.bodySmall,
-        ),
-      ],
-    );
-  }
 }

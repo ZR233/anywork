@@ -1,9 +1,13 @@
 import 'package:flutter/material.dart';
 
+import '../../../../app/theme/studio_semantic_colors.dart';
 import '../../../../l10n/app_localizations.dart';
 import '../state/account_presentations.dart';
 import '../state/account_view_key_values.dart';
+import 'account_compact_view.dart';
 import 'account_sections.dart';
+
+export 'account_compact_view.dart';
 
 /// Narrow model intents shared by detail and editor views. Never a reducer.
 @immutable
@@ -44,46 +48,65 @@ class AccountModelsView extends StatelessWidget {
           runSpacing: 8,
           crossAxisAlignment: WrapCrossAlignment.center,
           children: [
-            Text(
-              l10n.settingsAccountModelsTitle,
-              style: Theme.of(context).textTheme.titleMedium,
-            ),
-            if (value.canSync || value.canRetry)
-              OutlinedButton.icon(
-                key: const ValueKey<String>('account-model-sync'),
-                onPressed: value.syncing ? null : onSync,
-                icon: const Icon(Icons.sync),
-                label: Text(
-                  value.syncing
-                      ? l10n.accountsSyncingModels
-                      : value.error != null
-                      ? l10n.accountsRetry
-                      : l10n.accountsSyncModels,
+            Wrap(
+              spacing: 16,
+              runSpacing: 8,
+              crossAxisAlignment: WrapCrossAlignment.center,
+              children: [
+                Text(
+                  l10n.settingsAccountModelsTitle,
+                  style: Theme.of(context).textTheme.titleLarge
+                      ?.copyWith(fontWeight: FontWeight.w700),
                 ),
+                if (value.canSync || value.canRetry)
+                  OutlinedButton.icon(
+                    style: accountActionButtonStyle(context),
+                    key: const ValueKey<String>('account-model-sync'),
+                    onPressed: value.syncing ? null : onSync,
+                    icon: const Icon(Icons.sync),
+                    label: Text(
+                      value.syncing
+                          ? l10n.accountsSyncingModels
+                          : value.error != null
+                          ? l10n.accountsRetry
+                          : l10n.accountsSyncModels,
+                    ),
+                  ),
+              ],
+            ),
+            if (value.sourceLabel != null || value.checkedLabel != null)
+              Wrap(
+                spacing: 16,
+                runSpacing: 4,
+                alignment: WrapAlignment.end,
+                crossAxisAlignment: WrapCrossAlignment.center,
+                children: [
+                  if (value.sourceLabel != null)
+                    Text(
+                      '${l10n.accountsSource} · ${value.sourceLabel}',
+                      style: Theme.of(context).textTheme.bodyMedium
+                          ?.copyWith(fontSize: 14),
+                    ),
+                  if (value.checkedLabel != null)
+                    Text(
+                      '${l10n.settingsModelCatalogChecked} ${value.checkedLabel}',
+                      style: Theme.of(context).textTheme.bodyMedium
+                          ?.copyWith(fontSize: 14),
+                    ),
+                ],
               ),
           ],
         ),
         if (!value.canSync && !value.canRetry && !value.syncing)
           Padding(
             padding: const EdgeInsets.symmetric(vertical: 8),
-            child: Text(l10n.accountsSyncUnsupported),
+            child: Text(
+              l10n.accountsSyncUnsupported,
+              style: Theme.of(context).textTheme.bodyLarge
+                  ?.copyWith(fontSize: 16),
+            ),
           ),
         if (value.syncing) const LinearProgressIndicator(minHeight: 2),
-        if (value.sourceLabel != null || value.checkedLabel != null)
-          AccountFacts(
-            facts: [
-              if (value.sourceLabel != null)
-                AccountDisplayFact(
-                  label: l10n.accountsSource,
-                  value: value.sourceLabel!,
-                ),
-              if (value.checkedLabel != null)
-                AccountDisplayFact(
-                  label: l10n.settingsModelCatalogChecked,
-                  value: value.checkedLabel!,
-                ),
-            ],
-          ),
         if (value.error != null)
           AccountInlineError(
             message: value.error!,
@@ -92,21 +115,31 @@ class AccountModelsView extends StatelessWidget {
         if (value.models.isEmpty)
           Padding(
             padding: const EdgeInsets.all(16),
-            child: Text(l10n.settingsModelCatalogEmpty),
+            child: Text(
+              l10n.settingsModelCatalogEmpty,
+              style: Theme.of(context).textTheme.bodyLarge
+                  ?.copyWith(fontSize: 16),
+            ),
           ),
         for (final origin in AccountModelOrigin.values)
           if (value.models.any((model) => model.origin == origin)) ...[
             Padding(
               padding: const EdgeInsets.only(top: 16, bottom: 8),
-              child: Text(switch (origin) {
-                AccountModelOrigin.online =>
-                  l10n.settingsAccountOnlineModelsTitle,
-                AccountModelOrigin.bundled => l10n.settingsModelCatalogDefault,
-                AccountModelOrigin.manual =>
-                  l10n.settingsAccountCustomModelsTitle,
-              }, style: Theme.of(context).textTheme.labelLarge),
+              child: Text(
+                switch (origin) {
+                  AccountModelOrigin.online =>
+                    l10n.settingsAccountOnlineModelsTitle,
+                  AccountModelOrigin.bundled =>
+                    l10n.settingsModelCatalogDefault,
+                  AccountModelOrigin.manual =>
+                    l10n.settingsAccountCustomModelsTitle,
+                },
+                style: Theme.of(context).textTheme.bodyLarge
+                    ?.copyWith(fontSize: 16),
+              ),
             ),
             Card(
+              color: accountGroupSurface(context),
               clipBehavior: Clip.antiAlias,
               child: Column(
                 children: [
@@ -160,25 +193,64 @@ class AccountModelTile extends StatelessWidget {
       controlAffinity: ListTileControlAffinity.leading,
       tilePadding: const EdgeInsetsDirectional.only(start: 12, end: 16),
       childrenPadding: const EdgeInsets.fromLTRB(20, 0, 20, 20),
-      title: Text(value.name, style: Theme.of(context).textTheme.titleSmall),
-      subtitle: value.summary == null ? null : Text(value.summary!),
+      title: Wrap(
+        spacing: 12,
+        runSpacing: 6,
+        crossAxisAlignment: WrapCrossAlignment.center,
+        children: [
+          Text(
+            value.name,
+            style: Theme.of(context).textTheme.titleMedium
+                ?.copyWith(fontSize: 18, fontWeight: FontWeight.w700),
+          ),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+            decoration: BoxDecoration(
+              color: value.origin == AccountModelOrigin.online
+                  ? Theme.of(context)
+                        .extension<StudioSemanticColors>()!
+                        .successContainer
+                  : Theme.of(context).colorScheme.surfaceContainerLow,
+              borderRadius: BorderRadius.circular(20),
+            ),
+            child: Text(
+              switch (value.origin) {
+                AccountModelOrigin.online => l10n.settingsModelOriginOnline,
+                AccountModelOrigin.bundled => l10n.settingsModelOriginBundled,
+                AccountModelOrigin.manual => l10n.settingsModelOriginManual,
+              },
+              style: Theme.of(context).textTheme.bodyLarge?.copyWith(
+                fontSize: 16,
+                color: value.origin == AccountModelOrigin.online
+                    ? Theme.of(context)
+                          .extension<StudioSemanticColors>()!
+                          .success
+                    : Theme.of(context).colorScheme.onSurfaceVariant,
+              ),
+            ),
+          ),
+        ],
+      ),
       // Exactly one fixed trailing slot on every model, with no extra chevron.
       trailing: SizedBox(
         width: 60,
         height: 48,
         child: Center(
-          child: Switch(
-            key: ValueKey<String>(
-              AccountViewKeyValues.modelEnabled(
-                value.key.account.kind.name,
-                value.key.account.id,
-                value.key.modelId,
+          child: Tooltip(
+            message: l10n.settingsModelEnabledHint,
+            child: Switch(
+              key: ValueKey<String>(
+                AccountViewKeyValues.modelEnabled(
+                  value.key.account.kind.name,
+                  value.key.account.id,
+                  value.key.modelId,
+                ),
               ),
+              value: value.enabled,
+              onChanged: value.canToggle && !value.saving
+                  ? (enabled) => actions.onEnabledChanged(value.key, enabled)
+                  : null,
             ),
-            value: value.enabled,
-            onChanged: value.canToggle && !value.saving
-                ? (enabled) => actions.onEnabledChanged(value.key, enabled)
-                : null,
           ),
         ),
       ),
@@ -187,8 +259,18 @@ class AccountModelTile extends StatelessWidget {
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             const Divider(),
+            Text(l10n.settingsModelEnabledHint),
             if (value.saving) const LinearProgressIndicator(minHeight: 2),
             if (value.error != null) AccountInlineError(message: value.error!),
+            if (value.summary != null)
+              Padding(
+                padding: const EdgeInsets.symmetric(vertical: 8),
+                child: Text(
+                  value.summary!,
+                  style: Theme.of(context).textTheme.bodyMedium
+                      ?.copyWith(fontSize: 14),
+                ),
+              ),
             AccountFacts(facts: value.capabilities),
             AccountFacts(
               facts: [
@@ -302,7 +384,8 @@ class AccountModelTile extends StatelessWidget {
                       ),
                       Text(
                         evaluation.updatedLabel,
-                        style: Theme.of(context).textTheme.bodySmall,
+                        style: Theme.of(context).textTheme.bodyMedium
+                            ?.copyWith(fontSize: 14),
                       ),
                       AccountFacts(facts: evaluation.scores),
                       AccountSelectableText(evaluation.comment),
@@ -332,90 +415,6 @@ class AccountModelTile extends StatelessWidget {
             ),
           ],
         ),
-      ],
-    );
-  }
-}
-
-class AccountCompactView extends StatelessWidget {
-  const AccountCompactView({
-    required this.value,
-    required this.onChanged,
-    required this.onReset,
-    required this.onRetry,
-    super.key,
-  });
-  final AccountCompactPresentation value;
-  final ValueChanged<String> onChanged;
-  final VoidCallback onReset;
-  final VoidCallback onRetry;
-
-  @override
-  Widget build(BuildContext context) {
-    final l10n = AppLocalizations.of(context);
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        Wrap(
-          alignment: WrapAlignment.spaceBetween,
-          spacing: 8,
-          runSpacing: 8,
-          crossAxisAlignment: WrapCrossAlignment.center,
-          children: [
-            Text(
-              l10n.settingsModelAutoCompactTitle,
-              style: Theme.of(context).textTheme.titleSmall,
-            ),
-            if (value.canReset)
-              TextButton.icon(
-                onPressed: value.saving ? null : onReset,
-                icon: const Icon(Icons.restart_alt),
-                label: Text(l10n.settingsModelAutoCompactRestore),
-              ),
-          ],
-        ),
-        Text(
-          value.overridden ? l10n.accountsOverride : l10n.accountsAutomatic,
-          style: Theme.of(context).textTheme.bodySmall,
-        ),
-        const SizedBox(height: 8),
-        AccountRawTextField(
-          value: AccountTextPresentation(raw: value.raw, error: value.error),
-          label: l10n.settingsModelAutoCompactInputLabel,
-          onChanged: onChanged,
-          enabled: value.canEdit,
-          keyboardType: TextInputType.number,
-        ),
-        // No parsing, rounding or filtering: exact raw intent goes to the VM.
-        AccountFacts(
-          facts: [
-            if (value.effective != null && value.effective != value.raw)
-              AccountDisplayFact(
-                label: l10n.settingsModelAutoCompactEffectiveLabel,
-                value: value.effective!,
-              ),
-            if (value.automatic != null &&
-                value.automatic != value.effective &&
-                value.automatic != value.raw)
-              AccountDisplayFact(
-                label: l10n.accountsAutomatic,
-                value: value.automatic!,
-              ),
-          ],
-        ),
-        Text(
-          l10n.settingsModelAutoCompactHelp,
-          style: Theme.of(context).textTheme.bodySmall,
-        ),
-        if (value.saving) Text(l10n.settingsModelAutoCompactSaving),
-        if (value.canRetry)
-          Align(
-            alignment: AlignmentDirectional.centerStart,
-            child: TextButton(
-              onPressed: onRetry,
-              child: Text(l10n.settingsModelAutoCompactRetry),
-            ),
-          ),
       ],
     );
   }

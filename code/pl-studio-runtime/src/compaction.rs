@@ -810,7 +810,7 @@ pub(crate) struct CompactionReceipt {
 
 impl CompactionReceipt {
     /// v3 adds explicit no-charge accounting; native context-only checkpoints are unchanged.
-    const VERSION: u32 = 3;
+    pub(crate) const VERSION: u32 = 3;
 
     pub(crate) fn into_payload(
         self,
@@ -842,52 +842,13 @@ fn receipt_error(
     }
 }
 
-/// 版本化压缩回执的唯一边界解码。
-///
-/// v1 载荷的 `binding` 是 Provider/Preset 时代的 camelCase 接入身份
-/// （`providerInstanceId`/`requestedModel`/`adapter`/`protocol`）。迁移与产品投影都必须共用这一
-/// 处转换，才能在不猜账号/模型的前提下把旧冻结事实并入当前账号、配置模型与厂商协议语义。
-/// 只改本 crate 自己写入的已知键；`accounting`、`inferenceId`、`purpose`、`isolation`、观察与
-/// 用量等冻结事实原样保留，不改写 opaque 正文。
+/// Ordinary consumers only accept the prepared current receipt.
 pub(crate) fn decode_receipt(version: u32, content: &str) -> anyhow::Result<CompactionReceipt> {
     anyhow::ensure!(
-        (1..=CompactionReceipt::VERSION).contains(&version),
-        "unsupported auxiliary accounting receipt"
+        version == CompactionReceipt::VERSION,
+        "unsupported compaction receipt version"
     );
-    let mut value: serde_json::Value = serde_json::from_str(content)?;
-    if version < 2 {
-        let receipt = value
-            .as_object_mut()
-            .ok_or_else(|| anyhow::anyhow!("compaction receipt is not an object"))?;
-        if let Some(binding) = receipt
-            .get_mut("binding")
-            .and_then(serde_json::Value::as_object_mut)
-        {
-            // 真实 v1 binding 是 camelCase：providerInstanceId/requestedModel/adapter/protocol。
-            crate::studio::payload_alias::rename_key(binding, "providerInstanceId", "accountId")?;
-            crate::studio::payload_alias::rename_key(binding, "requestedModel", "modelId")?;
-            // 旧 `protocol` 是 wire API；旧 `adapter` 才是当前厂商协议选择。
-            crate::studio::payload_alias::rename_key(binding, "protocol", "wireApi")?;
-            if let Some(adapter) = binding.remove("adapter") {
-                let adapter = adapter.as_str().unwrap_or_default();
-                let protocol = crate::studio::payload_alias::protocol_from_legacy_adapter(adapter)
-                    .ok_or_else(|| {
-                        anyhow::anyhow!("unsupported legacy account adapter in compaction receipt")
-                    })?;
-                binding.insert(
-                    "protocol".into(),
-                    serde_json::Value::String(protocol.into()),
-                );
-            }
-        }
-    }
-    let receipt: CompactionReceipt = serde_json::from_value(value)?;
-    anyhow::ensure!(
-        version == CompactionReceipt::VERSION
-            || receipt.accounting.pricing != pl_protocol::PricingOutcome::NoCharge,
-        "no-charge accounting requires compaction receipt version 3"
-    );
-    Ok(receipt)
+    Ok(serde_json::from_str(content)?)
 }
 
 /// Producer payload conversion is confined to the persisted checkpoint migration boundary.
@@ -913,7 +874,10 @@ pub(crate) fn migrate_checkpoint_sources(
     if record.payload.format() != "pl.studio.compaction" || record.payload.version() != 1 {
         return Ok(());
     }
-    let receipt = decode_receipt(record.payload.version(), record.payload.content())?;
+    let receipt = crate::studio::producer_migration::compaction_receipt(
+        record.payload.version(),
+        record.payload.content(),
+    )?;
     if receipt.error.is_some() || receipt.implementation.as_deref() != Some("native") {
         return Ok(());
     }

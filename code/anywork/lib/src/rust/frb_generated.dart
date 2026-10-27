@@ -6884,6 +6884,14 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  Map<String, bool> dco_decode_Map_String_bool_None(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return Map.fromEntries(
+      dco_decode_list_record_string_bool(raw).map((e) => MapEntry(e.$1, e.$2)),
+    );
+  }
+
+  @protected
   BridgeAccountObservation
   dco_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeAccountObservation(
     dynamic raw,
@@ -8895,7 +8903,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       billingKindOverride: dco_decode_opt_box_autoadd_bridge_billing_kind(
         arr[1],
       ),
-      disabledModels: dco_decode_list_String(arr[2]),
+      modelEnabledOverrides: dco_decode_Map_String_bool_None(arr[2]),
       accountId: dco_decode_String(arr[3]),
       templateId: dco_decode_opt_String(arr[4]),
       protocol: dco_decode_String(arr[5]),
@@ -16900,6 +16908,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  List<(String, bool)> dco_decode_list_record_string_bool(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return (raw as List<dynamic>).map(dco_decode_record_string_bool).toList();
+  }
+
+  @protected
   List<RemoteDirectoryEntryDto> dco_decode_list_remote_directory_entry_dto(
     dynamic raw,
   ) {
@@ -17611,6 +17625,16 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  (String, bool) dco_decode_record_string_bool(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 2) {
+      throw Exception('Expected 2 elements, got ${arr.length}');
+    }
+    return (dco_decode_String(arr[0]), dco_decode_bool(arr[1]));
+  }
+
+  @protected
   RemoteDirectoryEntryDto dco_decode_remote_directory_entry_dto(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
@@ -18193,6 +18217,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       sse_decode_usize(deserializer),
       sse_decode_i_32(deserializer),
     );
+  }
+
+  @protected
+  Map<String, bool> sse_decode_Map_String_bool_None(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var inner = sse_decode_list_record_string_bool(deserializer);
+    return Map.fromEntries(inner.map((e) => MapEntry(e.$1, e.$2)));
   }
 
   @protected
@@ -20540,7 +20573,9 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_billingKind = sse_decode_bridge_billing_kind(deserializer);
     var var_billingKindOverride =
         sse_decode_opt_box_autoadd_bridge_billing_kind(deserializer);
-    var var_disabledModels = sse_decode_list_String(deserializer);
+    var var_modelEnabledOverrides = sse_decode_Map_String_bool_None(
+      deserializer,
+    );
     var var_accountId = sse_decode_String(deserializer);
     var var_templateId = sse_decode_opt_String(deserializer);
     var var_protocol = sse_decode_String(deserializer);
@@ -20567,7 +20602,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     return BridgeAccountSettingsDto(
       billingKind: var_billingKind,
       billingKindOverride: var_billingKindOverride,
-      disabledModels: var_disabledModels,
+      modelEnabledOverrides: var_modelEnabledOverrides,
       accountId: var_accountId,
       templateId: var_templateId,
       protocol: var_protocol,
@@ -31063,6 +31098,20 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  List<(String, bool)> sse_decode_list_record_string_bool(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    var len_ = sse_decode_i_32(deserializer);
+    var ans_ = <(String, bool)>[];
+    for (var idx_ = 0; idx_ < len_; ++idx_) {
+      ans_.add(sse_decode_record_string_bool(deserializer));
+    }
+    return ans_;
+  }
+
+  @protected
   List<RemoteDirectoryEntryDto> sse_decode_list_remote_directory_entry_dto(
     SseDeserializer deserializer,
   ) {
@@ -32201,6 +32250,14 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  (String, bool) sse_decode_record_string_bool(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_field0 = sse_decode_String(deserializer);
+    var var_field1 = sse_decode_bool(deserializer);
+    return (var_field0, var_field1);
+  }
+
+  @protected
   RemoteDirectoryEntryDto sse_decode_remote_directory_entry_dto(
     SseDeserializer deserializer,
   ) {
@@ -32832,6 +32889,18 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_usize(
       (self as BridgeTimelineImpl).frbInternalSseEncode(move: false),
+      serializer,
+    );
+  }
+
+  @protected
+  void sse_encode_Map_String_bool_None(
+    Map<String, bool> self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_list_record_string_bool(
+      self.entries.map((e) => (e.key, e.value)).toList(),
       serializer,
     );
   }
@@ -35273,7 +35342,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       self.billingKindOverride,
       serializer,
     );
-    sse_encode_list_String(self.disabledModels, serializer);
+    sse_encode_Map_String_bool_None(self.modelEnabledOverrides, serializer);
     sse_encode_String(self.accountId, serializer);
     sse_encode_opt_String(self.templateId, serializer);
     sse_encode_String(self.protocol, serializer);
@@ -43543,6 +43612,18 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_list_record_string_bool(
+    List<(String, bool)> self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_i_32(self.length, serializer);
+    for (final item in self) {
+      sse_encode_record_string_bool(item, serializer);
+    }
+  }
+
+  @protected
   void sse_encode_list_remote_directory_entry_dto(
     List<RemoteDirectoryEntryDto> self,
     SseSerializer serializer,
@@ -44599,6 +44680,16 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_String(self.path, serializer);
     sse_encode_opt_String(self.sshAlias, serializer);
     sse_encode_i_64(self.updatedAt, serializer);
+  }
+
+  @protected
+  void sse_encode_record_string_bool(
+    (String, bool) self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_String(self.$1, serializer);
+    sse_encode_bool(self.$2, serializer);
   }
 
   @protected

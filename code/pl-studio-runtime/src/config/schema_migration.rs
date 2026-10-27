@@ -101,7 +101,7 @@ fn atomic_write(path: &Path, content: &[u8]) -> Result<()> {
 
 /// 一个已接续完成的迁移操作。
 ///
-/// 旧版本的待续操作可能以更早的 schema（23–25）为目标：这类操作必须先按它自己的候选、摘要与
+/// 旧版本的待续操作可能以更早的 schema（23–26）为目标：这类操作必须先按它自己的候选、摘要与
 /// 提交步骤完成，再由调用方从该**已提交版本**继续升级到当前 schema，不能改写旧目标或伪造摘要。
 #[derive(Debug)]
 pub(super) struct ResumedOperation {
@@ -311,8 +311,8 @@ fn commit_with_tokens(
     };
     let candidate = &config_resource.candidate;
     // 盘上写入的始终是日志记录的原始候选字节；这里只解码一份**只读**的当前形状视图，供候选
-    // 校验与凭据复制使用。旧目标（23–25）候选可能带当前 schema 已退役的字段（ACP 的
-    // `program`/`args` 或账号 `pricing_mode`），视图先退役它们，不改变原候选写入内容。
+    // 校验与凭据复制使用。旧目标（23–26）候选可能带当前 schema 已退役的字段（ACP 的
+    // `program`/`args`、账号 `pricing_mode` 或 `disabled_models`），视图先转换它们，不改变原候选写入内容。
     let target_is_current = journal.target_version == STUDIO_CONFIG_SCHEMA_VERSION;
     let candidate_view = if target_is_current {
         candidate.clone()
@@ -759,7 +759,8 @@ pub(super) fn rewrite_account_document(
 /// 迁移边界的文档级入口：退役 ACP 旧执行字段与账号旧估算开关。
 ///
 /// 23 及以上的规范化配置不再改写账号/路由/Profile 键，也不读旧 `provider:<id>` 凭据命名空间；
-/// 24→25 移除 ACP 的 `program`/`args`，25→26 移除账号 `pricing_mode`。没有旧字段时
+/// 24→25 移除 ACP 的 `program`/`args`，25→26 移除账号 `pricing_mode`，
+/// 26→27 将禁用集合转换为显式关闭映射。没有旧字段时
 /// 原字节返回，避免对同一内容做额外重编码；有旧字段时才按候选重写。
 pub(super) fn retire_legacy_config_fields_document(text: &str) -> Result<String> {
     let mut value: toml::Value = toml::from_str(text)
@@ -768,6 +769,7 @@ pub(super) fn retire_legacy_config_fields_document(text: &str) -> Result<String>
     // 旧估算开关不表达计费意图。只在版本迁移边界删除，绝不推导 NoCharge，
     // 也不触碰 billing_kind、目录参考价格、凭据及其他账号字段。
     let mut retired_pricing = false;
+    let mut migrated_enablement = false;
     if let Some(accounts) = value
         .get_mut("models")
         .and_then(|models| models.get_mut("accounts"))
@@ -778,9 +780,26 @@ pub(super) fn retire_legacy_config_fields_document(text: &str) -> Result<String>
             .filter_map(|(_, account)| account.as_table_mut())
         {
             retired_pricing |= account.remove("pricing_mode").is_some();
+            if let Some(disabled) = account.remove("disabled_models") {
+                let disabled = disabled.as_array().ok_or_else(|| {
+                    PureError::ConfigError("legacy disabled_models must be an array".into())
+                })?;
+                let mut overrides = toml::Table::new();
+                for model in disabled {
+                    let model_id = model.as_str().ok_or_else(|| {
+                        PureError::ConfigError("legacy disabled model must be a string".into())
+                    })?;
+                    overrides.insert(model_id.to_string(), toml::Value::Boolean(false));
+                }
+                account.insert(
+                    "model_enabled_overrides".into(),
+                    toml::Value::Table(overrides),
+                );
+                migrated_enablement = true;
+            }
         }
     }
-    if !retired_acp && !retired_pricing {
+    if !retired_acp && !retired_pricing && !migrated_enablement {
         return Ok(text.to_string());
     }
     toml::to_string(&value).map_err(|error| {
@@ -1023,6 +1042,7 @@ effort = "high"
         let text = std::str::from_utf8(&original).unwrap();
         let mut inline_tokens = BTreeMap::new();
         let rewritten = rewrite_account_document(text, &mut inline_tokens)?;
+        let rewritten = retire_legacy_config_fields_document(&rewritten)?;
         let mut config = crate::config::store::parse_migrated_config(rewritten.as_bytes())?;
         config.schema_version = STUDIO_CONFIG_SCHEMA_VERSION;
         let candidate = crate::config::store::serialize_persisted_config(&config)?;
@@ -1893,10 +1913,10 @@ catalog = "deepseek"
             &config.models.accounts[&pl_model::config::AccountId::new("deepseek").unwrap()];
         assert_eq!(
             account
-                .disabled_models()
+                .model_enabled_overrides()
                 .get("deepseek-flash")
-                .map(String::as_str),
-            Some("deepseek-flash")
+                .copied(),
+            Some(false)
         );
         assert_eq!(
             account.billing_kind,
@@ -1960,6 +1980,15 @@ catalog = "deepseek"
             .iter_mut()
         {
             account.as_table_mut().unwrap().remove("pricing_mode");
+            account.as_table_mut().unwrap().remove("disabled_models");
+            account.as_table_mut().unwrap().insert(
+                "model_enabled_overrides".into(),
+                toml::Value::Table(
+                    [("deepseek-flash".into(), false.into())]
+                        .into_iter()
+                        .collect(),
+                ),
+            );
         }
         assert_eq!(toml::from_str::<toml::Value>(&persisted).unwrap(), expected);
         assert_eq!(
@@ -1972,6 +2001,108 @@ catalog = "deepseek"
         );
         assert!(!operation_dir(&fixture.paths).exists());
         store.load_for_startup().expect("upgraded config reloads");
+        assert_eq!(config_backups(&fixture.paths).len(), 1);
+    }
+
+    #[test]
+    fn schema_26_enablement_migrates_through_startup_preserving_other_configuration() {
+        let mut original: toml::Value = toml::from_str(&schema_24_main_document(true)).unwrap();
+        original["schema_version"] = 26.into();
+        let acp = original["acp"]["accounts"]["antigravity-1"]
+            .as_table_mut()
+            .unwrap();
+        acp.remove("program");
+        acp.remove("args");
+        let catalog = original["models"]["accounts"]["deepseek"]["catalog"]
+            .as_table_mut()
+            .unwrap();
+        let manual = pl_model::model::ModelInfo::compatible("manual-preserved");
+        catalog.insert(
+            "additional_models".into(),
+            toml::Value::Array(vec![toml::Value::try_from(manual).unwrap()]),
+        );
+        catalog.insert(
+            "connection_overrides".into(),
+            toml::Value::Table(
+                [("manual-preserved".into(), "http".into())]
+                    .into_iter()
+                    .collect(),
+            ),
+        );
+        catalog.insert(
+            "auto_compact_overrides".into(),
+            toml::Value::Table(
+                [("manual-preserved".into(), 10_000.into())]
+                    .into_iter()
+                    .collect(),
+            ),
+        );
+        let original = toml::to_string(&original).unwrap();
+        assert!(original.contains("disabled_models"));
+        assert!(!original.contains("model_enabled_overrides"));
+        let profile = canonical_profile_on_disk();
+        let fixture = make_fixture(&original, Some(&profile));
+        let credentials = std::sync::Arc::new(MemoryCredentialStore::default());
+        credentials
+            .save("deepseek", "linked-account-secret")
+            .unwrap();
+        let store = crate::config::ConfigStore::with_shared_credentials(
+            fixture.paths.clone(),
+            std::sync::Arc::clone(&credentials),
+        );
+        let loaded = store
+            .load_for_startup()
+            .expect("schema 26 startup migration");
+        assert_main_fields_preserved(&loaded);
+        assert_eq!(loaded.schema_version, 27);
+        let mut expected: toml::Value = toml::from_str(&original).unwrap();
+        expected["schema_version"] = 27.into();
+        let account = expected["models"]["accounts"]["deepseek"]
+            .as_table_mut()
+            .unwrap();
+        account.remove("disabled_models");
+        account.insert(
+            "model_enabled_overrides".into(),
+            toml::Value::Table(
+                [("deepseek-flash".into(), false.into())]
+                    .into_iter()
+                    .collect(),
+            ),
+        );
+        let persisted = fs::read_to_string(fixture.paths.config_file()).unwrap();
+        assert!(!persisted.contains("disabled_models"));
+        assert_eq!(toml::from_str::<toml::Value>(&persisted).unwrap(), expected);
+        assert_eq!(
+            credentials.load("deepseek").unwrap().as_deref(),
+            Some("linked-account-secret")
+        );
+        assert_eq!(
+            fs::read_to_string(fixture.paths.agents_dir().join("verify.toml")).unwrap(),
+            profile
+        );
+        assert_eq!(
+            fs::read(config_backups(&fixture.paths).pop().unwrap()).unwrap(),
+            original.as_bytes()
+        );
+        assert!(!operation_dir(&fixture.paths).exists());
+        assert_main_fields_preserved(&store.load_for_startup().unwrap());
+        assert_eq!(config_backups(&fixture.paths).len(), 1);
+
+        // 当前 schema 不把旧字段静默忽略或当成运行时兼容入口。
+        expected["models"]["accounts"]["deepseek"]
+            .as_table_mut()
+            .unwrap()
+            .insert(
+                "disabled_models".into(),
+                toml::Value::Array(vec!["deepseek-flash".into()]),
+            );
+        let retired = toml::to_string(&expected).unwrap();
+        fs::write(fixture.paths.config_file(), &retired).unwrap();
+        assert!(store.load_for_startup().is_err());
+        assert_eq!(
+            fs::read_to_string(fixture.paths.config_file()).unwrap(),
+            retired
+        );
         assert_eq!(config_backups(&fixture.paths).len(), 1);
     }
 
@@ -2091,7 +2222,7 @@ catalog = "deepseek"
                 .models
                 .accounts
                 .values()
-                .all(|account| account.disabled_models().is_empty()
+                .all(|account| account.model_enabled_overrides().is_empty()
                     && account.billing_kind.is_none())
         );
         // 不降级、不重写：文件字节不变，也没有迁移备份或操作目录。

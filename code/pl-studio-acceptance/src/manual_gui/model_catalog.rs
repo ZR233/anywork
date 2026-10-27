@@ -259,7 +259,7 @@ cargo xtask manual-gui --scenario gui --model-catalog-inventory a --model-catalo
 
 状态机：库存 A 启动 → 协调器断言 `catalog-openai` 缓存 model_id 集合含 `fixture-model-old`、`gpt-6-astra`、`gpt-6.1-sol` → 停 GUI（保留 home）→ 停 fixture（shutdown 后复制 `<evidence>/model-catalog-requests-a.json`）→ 写库存 B（去掉 `fixture-model-old` 与内置 model_id `gpt-6.1-sol`，保留 `gpt-6-astra`；`openai-second` 改为 `gpt-6-sol`）→ **同一端口**重启 fixture → 同一 home 重启 GUI → 协调器断言 old 与 `gpt-6.1-sol` 消失、`gpt-6-astra` 仍在、`checkedAt` 前进，并记录被选中的 `cachePath`。阶段 A 把 `catalog-openai` 路由设为 `fixture-model-old` 并写入连接/压缩覆盖；阶段 B 断言 `config.toml` 仍保留该路由与覆盖。
 
-协调器断言 = 缓存 model_id 集合（present/absent）+ `checkedAt` 前进 + 路由与覆盖保留。`origin=online` / `source=online` 由第 6 项（`--model-catalog-inventory a` 的成功在线观测）的人工观察与截图确认（缓存文件无法直接断言 origin/source）。`--model-catalog-restart` 只产出协调器断言与缓存/日志证据，**不产出 GUI 截图**；要看来源徽标/`source=online` 需另跑一次 `--scenario gui --model-catalog-inventory a`。协调器失败即非零退出并打印缓存片段。改库存只刷新界面不够。
+协调器断言 = 原始在线缓存 model_id 集合（present/absent）+ `checkedAt` 前进 + 路由与覆盖保留。上述内置项的“消失”仅指在线缓存；管理目录仍须保留 `gpt-6.1-sol`，显示 `origin=bundled` 且自动默认关闭，显式启用后恢复选择资格。线上独有的 `fixture-model-old` 则从管理目录消失，覆盖不得将它重新注入。`origin=online` / `source=online` 由第 6 项（`--model-catalog-inventory a` 的成功在线观测）的人工观察与截图确认（缓存文件无法直接断言 origin/source）。`--model-catalog-restart` 只产出协调器断言与缓存/日志证据，**不产出 GUI 截图**；要看来源徽标/`source=online` 需另跑一次 `--scenario gui --model-catalog-inventory a`。协调器失败即非零退出并打印缓存片段。改库存只刷新界面不够。
 
 阶段 B 证据：`<evidence>/model-catalog-requests-b.json`（对应 fixture shutdown 后）、`catalog-phase-b-gui.log`、`fixture-restart.log`、`requests-restart.json`、`model-catalog-phase-a.json` / `model-catalog-phase-b.json`、脱敏 `config-phase-a.toml` / `config-phase-b.toml`。
 
