@@ -277,11 +277,12 @@ function accountModelsList(a){
 function modelPrefs(id){
  const maxTokens=id==='flash'?1050000:state.manualModels.find(m=>m.id===id)?.contextTokens||128000;
  const autoVal=Math.round(maxTokens*0.9);
+ const isOpenAi=selectedAccount()?.id==='openai';
  return state.modelPrefs[id]||(state.modelPrefs[id]={
   threshold:id==='flash'?'475000':String(autoVal),
   auto:id!=='flash',
   connection:'auto',
-  wireApi:'chat',
+  wireApi:isOpenAi?'responses':'chat',
   contextTokens:maxTokens,
   maxOutput:id==='flash'?32000:8192,
   caps:id==='flash'?['流式输出','视觉输入','思考推理','工具调用']:id.startsWith('manual')?['流式输出','工具调用']:['流式输出','思考推理','工具调用']
@@ -417,7 +418,9 @@ function modelItem(id,name,source='online',expanded=false){
  const capsText=(prefs.caps||['流式输出','思考推理','工具调用']).filter(c=>c!=='视觉输入').join(' / ');
  const specSummary=`${formatTokens(maxTokens)} 上下文 · ${prefs.caps?.includes('视觉输入')?'文本与视觉':'文本生成'}${capsText?` · ${capsText}`:''}`;
  const ratios=[[0.9,'自动 90%',true],[0.75,'75%',false],[0.5,'50%',false],[0.25,'25%',false]];
- return `<mdui-collapse-item value="${id}" ${expanded?'data-expanded':''}><mdui-list-item slot="header" class="aw-model-header" headline="${escapeHTML(displayTitle)}" description="${escapeHTML(specSummary)}">${icon('chevron-right','icon')}<div slot="end-icon" class="aw-model-end-actions">${btn('详情与评价','modelInfo','text','arrow-up-right',`data-model="${id}"`)}${`<mdui-switch ${enabled?'checked':''} data-model-switch="${id}" aria-label="启用 ${escapeHTML(name)}"></mdui-switch>`}</div></mdui-list-item><div class="aw-model-body"><div class="aw-threshold-block"><div class="aw-threshold-info"><h4>上下文自动压缩阈值 <span class="aw-status ${s==='thresholdFailed'||s==='thresholdError'?'error':prefs.auto?'neutral':'success'}" data-threshold-badge="${id}">${s==='thresholdFailed'?'保存失败':prefs.auto?`自动策略 · 90% (${formatTokens(maxLimit)})`:`手动覆盖 · ${formatTokens(curVal)}`}</span></h4><p>会话累计达到该词元数时自动总结早期上下文。上限为窗口的 90%（${maxLimit.toLocaleString()} tokens），预留输出预算。</p><div class="aw-threshold-error" data-threshold-error="${id}" ${s!=='thresholdError'?'hidden':''}>请输入正整数，且不超过当前模型可用上限（${maxLimit.toLocaleString()} tokens）。</div>${s==='thresholdFailed'?`<div class="aw-query-note error">草稿已保留${btn('重试保存','retryThreshold','text')}</div>`:''}</div><div class="aw-threshold-controls"><div class="aw-preset-chips" role="group" aria-label="压缩阈值比例预设">${ratios.map(([r,label,isAuto])=>{const target=Math.round(maxTokens*r);const active=isAuto?prefs.auto:(!prefs.auto&&Math.abs(curVal-target)<500);return `<mdui-chip selectable ${active?'selected':''} data-action="thresholdPreset" data-model="${id}" data-ratio="${r}" ${isAuto?'data-auto="true"':''}>${label}</mdui-chip>`;}).join('')}</div><div class="aw-threshold-input-wrap"><mdui-text-field variant="outlined" label="精确阈值" value="${s==='thresholdError'?'0':escapeHTML(prefs.threshold)}" data-threshold="${id}" type="number" min="1" max="${maxLimit}" step="1000"><span slot="suffix">tokens</span></mdui-text-field><span class="aw-save-state" data-threshold-status="${id}">${icon('check')}${prefs.auto?'自动':'已保存'}</span></div></div></div><div class="aw-model-config-bar"><div class="aw-row"><span class="aw-muted">连接方式：</span><mdui-segmented-button-group selects="single" class="aw-conn-group" value="${prefs.connection}" aria-label="连接方式"><mdui-segmented-button value="auto" data-action="setConn" data-model="${id}" data-conn="auto">自动 (HTTP)</mdui-segmented-button><mdui-segmented-button value="http" data-action="setConn" data-model="${id}" data-conn="http">HTTP</mdui-segmented-button><mdui-segmented-button value="ws" ${prefs.wireApi==='responses'?'data-action="setConn" data-model="'+id+'" data-conn="ws"':'disabled'}>WebSocket</mdui-segmented-button></mdui-segmented-button-group><small class="aw-muted">${prefs.wireApi==='responses'?'支持 HTTP 与 WebSocket':'Chat Completions 仅支持 HTTP'}</small></div>${source==='manual'?`<div class="aw-row">${btn('编辑规格','editModel','text','pencil',`data-model="${id}"`)}${btn('删除','deleteModel','text','trash-2',`data-model="${id}"`)}</div>`:''}</div></div></mdui-collapse-item>`;
+ const multiConn=prefs.wireApi==='responses';
+ const showConfigBar=multiConn||source==='manual';
+ return `<mdui-collapse-item value="${id}" ${expanded?'data-expanded':''}><mdui-list-item slot="header" class="aw-model-header" headline="${escapeHTML(displayTitle)}" description="${escapeHTML(specSummary)}">${icon('chevron-right','icon')}<div slot="end-icon" class="aw-model-end-actions">${btn('详情与评价','modelInfo','text','arrow-up-right',`data-model="${id}"`)}${`<mdui-switch ${enabled?'checked':''} data-model-switch="${id}" aria-label="启用 ${escapeHTML(name)}"></mdui-switch>`}</div></mdui-list-item><div class="aw-model-body"><div class="aw-threshold-block"><div class="aw-threshold-info"><h4>上下文自动压缩阈值 <span class="aw-status ${s==='thresholdFailed'||s==='thresholdError'?'error':prefs.auto?'neutral':'success'}" data-threshold-badge="${id}">${s==='thresholdFailed'?'保存失败':prefs.auto?`自动策略 · 90% (${formatTokens(maxLimit)})`:`手动覆盖 · ${formatTokens(curVal)}`}</span></h4><p>会话累计达到该词元数时自动总结早期上下文。上限为窗口的 90%（${maxLimit.toLocaleString()} tokens），预留输出预算。</p><div class="aw-threshold-error" data-threshold-error="${id}" ${s!=='thresholdError'?'hidden':''}>请输入正整数，且不超过当前模型可用上限（${maxLimit.toLocaleString()} tokens）。</div>${s==='thresholdFailed'?`<div class="aw-query-note error">草稿已保留${btn('重试保存','retryThreshold','text')}</div>`:''}</div><div class="aw-threshold-controls"><div class="aw-preset-chips" role="group" aria-label="压缩阈值比例预设">${ratios.map(([r,label,isAuto])=>{const target=Math.round(maxTokens*r);const active=isAuto?prefs.auto:(!prefs.auto&&Math.abs(curVal-target)<500);return `<mdui-chip selectable ${active?'selected':''} data-action="thresholdPreset" data-model="${id}" data-ratio="${r}" ${isAuto?'data-auto="true"':''}>${label}</mdui-chip>`;}).join('')}</div><div class="aw-threshold-input-wrap"><mdui-text-field variant="outlined" label="精确阈值" value="${s==='thresholdError'?'0':escapeHTML(prefs.threshold)}" data-threshold="${id}" type="number" min="1" max="${maxLimit}" step="1000"><span slot="suffix">tokens</span></mdui-text-field><mdui-button variant="tonal" class="aw-threshold-save-btn" data-action="saveThreshold" data-model="${id}" ${s==='thresholdError'?'disabled':''}>保存</mdui-button></div></div></div>${showConfigBar?`<div class="aw-model-config-bar">${multiConn?`<div class="aw-row"><span class="aw-muted">连接方式：</span><mdui-segmented-button-group selects="single" class="aw-conn-group" value="${prefs.connection}" aria-label="连接方式"><mdui-segmented-button value="auto" data-action="setConn" data-model="${id}" data-conn="auto">自动 (HTTP)</mdui-segmented-button><mdui-segmented-button value="http" data-action="setConn" data-model="${id}" data-conn="http">HTTP</mdui-segmented-button><mdui-segmented-button value="ws" data-action="setConn" data-model="${id}" data-conn="ws">WebSocket</mdui-segmented-button></mdui-segmented-button-group></div>`:`<span class="aw-muted">连接方式：HTTP（当前协议唯一支持方式）</span>`}${source==='manual'?`<div class="aw-row">${btn('编辑规格','editModel','text','pencil',`data-model="${id}"`)}${btn('删除','deleteModel','text','trash-2',`data-model="${id}"`)}</div>`:''}</div>`:''}</div></mdui-collapse-item>`;
 }
 function modelsMarkup(a){
  const s=scenario(a),empty=s==='modelEmpty';
@@ -435,7 +438,7 @@ function acpDetail(a){
 }
 function detailMarkup(){
  const a=selectedAccount();
- return `<div class="aw-topbar"><mdui-button variant="text" data-action="back" class="aw-back">${icon('arrow-left','icon')}返回账号列表</mdui-button>${iconBtn('设置导航','mobileNav','menu','class="aw-menu-mobile"')}</div><div class="aw-page-header"><div class="aw-detail-identity">${logo(a,true)}<div><div class="aw-detail-title-row"><h1>${escapeHTML(a.name)}</h1>${accountStatus(a)}${state.defaultId===a.id?chip('默认账号'):''}</div><div class="aw-endpoint"><code>${escapeHTML(a.endpoint)}</code>${a.kind!=='acp'?iconBtn('复制 Endpoint 地址','copyEndpoint','copy','class="aw-copy-btn"'):''}</div></div></div><div class="aw-row">${a.kind!=='acp'&&state.defaultId!==a.id?btn('设为默认','setDefault','text','star',`data-id="${a.id}"`):''}${btn('编辑账号','edit','outlined','pencil')}${rowMenu(a)}</div></div>${a.kind==='acp'?acpDetail(a):balanceDetail(a)+settingsMarkup(a)+modelsMarkup(a)}`;
+ return `<div class="aw-topbar"><mdui-button variant="text" data-action="back" class="aw-back">${icon('arrow-left','icon')}返回账号列表</mdui-button>${iconBtn('设置导航','mobileNav','menu','class="aw-menu-mobile"')}</div><div class="aw-page-header"><div class="aw-detail-identity">${logo(a,true)}<div><div class="aw-detail-title-row"><h1>${escapeHTML(a.name)}</h1>${accountStatus(a)}${state.defaultId===a.id?chip('默认账号'):''}</div><div class="aw-endpoint"><code>${escapeHTML(a.endpoint)}</code>${a.kind!=='acp'?iconBtn('复制 Endpoint 地址','copyEndpoint','copy','class="aw-copy-btn"'):''}</div></div></div><div class="aw-row">${a.kind!=='acp'&&state.defaultId!==a.id?btn('设为默认','setDefault','text','star',`data-id="${a.id}"`):''}${btn('编辑账号','edit','outlined','pencil')}${iconBtn('删除账号','delete','trash-2',`data-id="${a.id}" class="aw-delete-icon-btn"`)}</div></div>${a.kind==='acp'?acpDetail(a):balanceDetail(a)+settingsMarkup(a)+modelsMarkup(a)}`;
 }
 
 function renderSelectors(){
@@ -551,7 +554,8 @@ function editModelDialog(modelId='',adding=true){
  const curName=adding?'':(state.modelNames[modelId]||state.manualModels.find(m=>m.id===modelId)?.name||'自定义推理模型');
  const curRawId=adding?'':(state.manualModels.find(m=>m.id===modelId)?.rawId||'custom-reasoner-v1');
  const allCaps=['流式输出','工具调用','思考推理','视觉输入'];
- openDialog(adding?'添加手动模型':'编辑手动模型规格',`<p class="aw-dialog-copy">${adding?'手动声明供应商尚未列入在线目录的模型，显式指定上下文容量与协议。':'调整自定义模型的显示名称、容量预算、接口协议与能力声明。'}</p><div class="aw-dialog-form"><div class="aw-dialog-row-2"><mdui-text-field id="aw-model-rawid" variant="outlined" label="模型 ID (model_id)" value="${escapeHTML(curRawId)}" placeholder="如 deepseek-r2-preview" ${adding?'required':'disabled helper="模型 ID 创建后不可修改"'}></mdui-text-field><mdui-text-field id="aw-model-name" variant="outlined" label="显示名称" value="${escapeHTML(curName)}" placeholder="留空则默认使用模型 ID"></mdui-text-field></div><div class="aw-dialog-label"><span>容量预算 (Tokens)</span><div class="aw-preset-chips"><mdui-chip data-action="modelCapPreset" data-ctx="128000" data-out="8192">128k / 8k</mdui-chip><mdui-chip data-action="modelCapPreset" data-ctx="200000" data-out="16384">200k / 16k</mdui-chip><mdui-chip data-action="modelCapPreset" data-ctx="1050000" data-out="32000">1.05M / 32k</mdui-chip></div></div><div class="aw-dialog-row-2"><mdui-text-field id="aw-model-ctx" variant="outlined" label="上下文窗口" type="number" value="${prefs.contextTokens||128000}" min="1024" step="1024"><span slot="suffix">tokens</span></mdui-text-field><mdui-text-field id="aw-model-out" variant="outlined" label="最大输出预算" type="number" value="${prefs.maxOutput||8192}" min="256" step="256"><span slot="suffix">tokens</span></mdui-text-field></div><div class="aw-dialog-row-2"><mdui-select id="aw-model-wire" label="接口协议 (Wire API)" value="${prefs.wireApi||'chat'}" variant="outlined"><mdui-menu-item value="chat">Chat Completions</mdui-menu-item><mdui-menu-item value="responses">Responses API</mdui-menu-item></mdui-select><mdui-select id="aw-model-conn" label="默认连接方式" value="${prefs.connection||'auto'}" variant="outlined" helper="Chat Completions 仅支持 HTTP"><mdui-menu-item value="auto">自动 (HTTP)</mdui-menu-item><mdui-menu-item value="http">HTTP</mdui-menu-item><mdui-menu-item value="ws" id="aw-ws-option" ${prefs.wireApi==='responses'?'':'disabled'}>WebSocket</mdui-menu-item></mdui-select></div><div class="aw-dialog-label"><span>支持能力声明（影响模型选择器与多模态输入）</span></div><div class="aw-capabilities" id="aw-model-caps">${allCaps.map(c=>`<mdui-chip selectable ${(prefs.caps||[]).includes(c)?'selected':''} data-cap="${c}">${c}</mdui-chip>`).join('')}</div></div>`,()=>{
+ const isResp=prefs.wireApi==='responses';
+ openDialog(adding?'添加手动模型':'编辑手动模型规格',`<p class="aw-dialog-copy">${adding?'手动声明供应商尚未列入在线目录的模型，显式指定上下文容量与协议。':'调整自定义模型的显示名称、容量预算、接口协议与能力声明。'}</p><div class="aw-dialog-form"><div class="aw-dialog-row-2"><mdui-text-field id="aw-model-rawid" variant="outlined" label="模型 ID (model_id)" value="${escapeHTML(curRawId)}" placeholder="如 deepseek-r2-preview" ${adding?'required':'disabled helper="模型 ID 创建后不可修改"'}></mdui-text-field><mdui-text-field id="aw-model-name" variant="outlined" label="显示名称" value="${escapeHTML(curName)}" placeholder="留空则默认使用模型 ID"></mdui-text-field></div><div class="aw-dialog-label"><span>容量预算 (Tokens)</span><div class="aw-preset-chips"><mdui-chip data-action="modelCapPreset" data-ctx="128000" data-out="8192">128k / 8k</mdui-chip><mdui-chip data-action="modelCapPreset" data-ctx="200000" data-out="16384">200k / 16k</mdui-chip><mdui-chip data-action="modelCapPreset" data-ctx="1050000" data-out="32000">1.05M / 32k</mdui-chip></div></div><div class="aw-dialog-row-2"><mdui-text-field id="aw-model-ctx" variant="outlined" label="上下文窗口" type="number" value="${prefs.contextTokens||128000}" min="1024" step="1024"><span slot="suffix">tokens</span></mdui-text-field><mdui-text-field id="aw-model-out" variant="outlined" label="最大输出预算" type="number" value="${prefs.maxOutput||8192}" min="256" step="256"><span slot="suffix">tokens</span></mdui-text-field></div><div class="aw-dialog-row-2"><mdui-select id="aw-model-wire" label="接口协议 (Wire API)" value="${prefs.wireApi||'chat'}" variant="outlined"><mdui-menu-item value="chat">Chat Completions</mdui-menu-item><mdui-menu-item value="responses">Responses API</mdui-menu-item></mdui-select><mdui-select id="aw-model-conn" label="默认连接方式" value="${isResp?(prefs.connection||'auto'):'http'}" variant="outlined" ${isResp?'helper="支持 HTTP 与 WebSocket"':'disabled helper="当前协议仅支持 HTTP，无需选择"'}><mdui-menu-item value="auto">自动 (HTTP)</mdui-menu-item><mdui-menu-item value="http">HTTP</mdui-menu-item><mdui-menu-item value="ws" id="aw-ws-option" ${isResp?'':'disabled'}>WebSocket</mdui-menu-item></mdui-select></div><div class="aw-dialog-label"><span>支持能力声明（影响模型选择器与多模态输入）</span></div><div class="aw-capabilities" id="aw-model-caps">${allCaps.map(c=>`<mdui-chip selectable ${(prefs.caps||[]).includes(c)?'selected':''} data-cap="${c}">${c}</mdui-chip>`).join('')}</div></div>`,()=>{
   const rawIdField=$('#aw-model-rawid'),nameField=$('#aw-model-name');
   const rawId=rawIdField.value.trim(),name=nameField.value.trim()||rawId;
   if(adding&&!rawId){rawIdField.setCustomValidity('请输入模型 ID');rawIdField.reportValidity();return false;}
@@ -630,25 +634,29 @@ function wireLocal(){
   b.addEventListener('click',e=>{e.stopPropagation();openModel(b.dataset.model,b.dataset.tab||'');});
  });
  $$('[data-threshold]').forEach(field=>{
-  let timer;
   field.addEventListener('input',()=>{
-   clearTimeout(timer);
    const id=field.dataset.threshold,prefs=modelPrefs(id);
-   const maxLimit=Math.round((prefs.contextTokens||(id==='flash'?1050000:128000))*0.9);
-   const n=Number(field.value),valid=/^[1-9]\d*$/.test(field.value)&&n<=maxLimit;
+   const maxTokens=prefs.contextTokens||(id==='flash'?1050000:128000);
+   const maxLimit=Math.round(maxTokens*0.9);
+   const raw=field.value.trim();
+   const n=Number(raw),valid=/^[1-9]\d*$/.test(raw)&&n<=maxLimit;
+   field.dataset.pendingAuto=valid&&n===maxLimit?'true':'false';
    const error=$(`[data-threshold-error="${id}"]`);
    if(error)error.hidden=valid;
-   const label=$(`[data-threshold-status="${id}"]`);
-   if(label)label.textContent=valid?'正在保存…':'超出上限';
-   if(valid){
-    const value=field.value;
-    timer=setTimeout(()=>{
-     prefs.threshold=value;prefs.auto=false;
-     if(label){label.innerHTML=icon('check')+'已保存';hydrateIcons();}
-     const badge=$(`[data-threshold-badge="${id}"]`);
-     if(badge){badge.className='aw-status success';badge.textContent=`手动覆盖 · ${formatTokens(value)}`;}
-     $$(`[data-action="thresholdPreset"][data-model="${id}"]`).forEach(c=>{c.selected=false;});
-    },380);
+   const saveBtn=$(`[data-action="saveThreshold"][data-model="${id}"]`);
+   if(saveBtn){
+    saveBtn.disabled=!valid;
+    saveBtn.variant=valid&&raw!==String(prefs.threshold)?'filled':'tonal';
+   }
+   $$(`[data-action="thresholdPreset"][data-model="${id}"]`).forEach(c=>{
+    const target=Math.round(maxTokens*(Number(c.dataset.ratio)||0.9));
+    c.selected=valid&&Math.abs(n-target)<500;
+   });
+  });
+  field.addEventListener('keydown',e=>{
+   if(e.key==='Enter'){
+    e.preventDefault();
+    $(`[data-action="saveThreshold"][data-model="${field.dataset.threshold}"]`)?.click();
    }
   });
  });
@@ -686,7 +694,11 @@ $('#aw-dialog-content').addEventListener('change',e=>{
   const isResp=e.target.value==='responses';
   const wsOpt=$('#aw-ws-option'),connSel=$('#aw-model-conn');
   if(wsOpt)wsOpt.disabled=!isResp;
-  if(!isResp&&connSel&&connSel.value==='ws')connSel.value='http';
+  if(connSel){
+   connSel.disabled=!isResp;
+   connSel.helper=isResp?'支持 HTTP 与 WebSocket':'当前协议仅支持 HTTP，无需选择';
+   if(!isResp)connSel.value='http';
+  }
  }
 });
 $('#aw-dialog-cancel').addEventListener('click',closeDialog);
@@ -829,11 +841,38 @@ root.addEventListener('click',e=>{
   const id=el.dataset.model,ratio=Number(el.dataset.ratio)||0.9,isAuto=el.dataset.auto==='true';
   const prefs=modelPrefs(id);
   const maxTokens=prefs.contextTokens||(id==='flash'?1050000:128000);
-  prefs.threshold=String(Math.round(maxTokens*ratio));
+  const nextVal=String(Math.round(maxTokens*ratio));
+  const field=$(`[data-threshold="${id}"]`);
+  if(field){
+   field.value=nextVal;
+   field.dataset.pendingAuto=isAuto?'true':'false';
+  }
+  const error=$(`[data-threshold-error="${id}"]`);
+  if(error)error.hidden=true;
+  $$(`[data-action="thresholdPreset"][data-model="${id}"]`).forEach(c=>{c.selected=c===el;});
+  const saveBtn=$(`[data-action="saveThreshold"][data-model="${id}"]`);
+  if(saveBtn){
+   saveBtn.disabled=false;
+   saveBtn.variant=nextVal!==String(prefs.threshold)||(isAuto!==prefs.auto)?'filled':'tonal';
+  }
+  return;
+ }
+ if(action==='saveThreshold'){
+  const id=el.dataset.model,prefs=modelPrefs(id);
+  const maxTokens=prefs.contextTokens||(id==='flash'?1050000:128000);
+  const maxLimit=Math.round(maxTokens*0.9);
+  const field=$(`[data-threshold="${id}"]`);
+  const raw=field?field.value.trim():String(prefs.threshold);
+  const n=Number(raw),valid=/^[1-9]\d*$/.test(raw)&&n<=maxLimit;
+  const error=$(`[data-threshold-error="${id}"]`);
+  if(error)error.hidden=valid;
+  if(!valid)return;
+  const isAuto=field?.dataset.pendingAuto==='true'||n===maxLimit;
+  prefs.threshold=raw;
   prefs.auto=isAuto;
   if(state.scenario==='thresholdError'||state.scenario==='thresholdFailed')state.scenario='normal';
   render();
-  toast(isAuto?`已恢复自动压缩阈值（${formatTokens(prefs.threshold)} tokens）`:`压缩阈值已设为 ${Math.round(ratio*100)}%（${formatTokens(prefs.threshold)} tokens）`);
+  toast(isAuto?`已保存为自动压缩阈值（${formatTokens(raw)} tokens）`:`压缩阈值已保存（${formatTokens(raw)} tokens）`);
   return;
  }
  if(action==='retryThreshold'){state.scenario='normal';render();toast('压缩阈值已保存');return;}

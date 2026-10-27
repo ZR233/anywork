@@ -438,6 +438,13 @@ body { margin: 0; padding: 20px 24px 32px; background: #f3ede3; }
 }
 #aw-accounts .aw-copy-btn:hover { opacity: 1; }
 #aw-accounts .aw-copy-btn svg { width: 13px; height: 13px; }
+#aw-accounts .aw-delete-icon-btn {
+  color: rgb(var(--mdui-color-on-surface-variant));
+}
+#aw-accounts .aw-delete-icon-btn:hover {
+  color: rgb(var(--mdui-color-error));
+  background: rgba(var(--mdui-color-error), 0.08);
+}
 #aw-accounts .aw-balance-card {
   --shape-corner: 16px;
   padding: 20px 22px;
@@ -580,9 +587,13 @@ body { margin: 0; padding: 20px 24px 32px; background: #f3ede3; }
   align-items: center;
   gap: 8px;
   width: 100%;
-  max-width: 280px;
+  max-width: 296px;
 }
 #aw-accounts .aw-threshold-input-wrap mdui-text-field { flex: 1; }
+#aw-accounts .aw-threshold-save-btn {
+  height: 38px;
+  flex-shrink: 0;
+}
 #aw-accounts .aw-threshold-error { font-size: 11px; color: rgb(var(--mdui-color-error)); margin-top: 2px; }
 #aw-accounts .aw-model-config-bar {
   display: flex;
