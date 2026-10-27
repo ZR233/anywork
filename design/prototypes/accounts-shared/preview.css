@@ -59,6 +59,9 @@ body { margin: 0; padding: 20px 24px 32px; background: #f3ede3; }
   --mdui-typescale-title-medium-size: 16px;
   --mdui-typescale-label-large-tracking: 0;
   --mdui-typescale-body-large-tracking: 0;
+  --mdui-typescale-label-small-line-height: 1rem;
+  --mdui-typescale-label-medium-line-height: 1rem;
+  --mdui-typescale-label-large-line-height: 1.25rem;
   color-scheme: light;
   color: rgb(var(--mdui-color-on-surface));
   font: 14px/1.55 var(--aw-font);
@@ -87,7 +90,8 @@ body { margin: 0; padding: 20px 24px 32px; background: #f3ede3; }
 #aw-accounts mdui-button-icon svg { width: 18px; height: 18px; }
 #aw-accounts mdui-divider { --color: rgb(var(--mdui-color-outline-variant)); margin: 0; }
 #aw-accounts mdui-menu { min-width: 168px; }
-#aw-accounts mdui-menu-item { font-size: 13px; }
+#aw-accounts mdui-menu-item { font-size: 13px; line-height: 1.5; }
+#aw-accounts [slot="end-icon"] { line-height: 1.5; }
 #aw-accounts mdui-menu-item span[slot=icon] svg { width: 17px; height: 17px; }
 #aw-accounts mdui-linear-progress { --height: 5px; --shape-corner: 999px; }
 #aw-accounts mdui-list { padding: 0; }
@@ -481,7 +485,7 @@ body { margin: 0; padding: 20px 24px 32px; background: #f3ede3; }
 #aw-accounts .aw-setting-card {
   background: rgb(var(--mdui-color-surface-container-lowest));
   --mdui-color-surface: var(--mdui-color-surface-container-lowest);
-  overflow: hidden;
+  overflow: visible;
   --shape-corner: 12px;
 }
 #aw-accounts .aw-billing-end {
