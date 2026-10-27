@@ -12,26 +12,35 @@ void main() {
     'recovery FRB frames preserve inspection and unknown cleanup evidence',
     () {
       const cases =
-          <(runtime_dto.BridgeWorktreeInspection, WorktreeInspection)>[
+          <(runtime_dto.BridgeWorktreeInspection, WorktreeInspection, String?)>[
             (
               runtime_dto.BridgeWorktreeInspection.available,
               WorktreeInspection.available,
+              null,
             ),
             (
               runtime_dto.BridgeWorktreeInspection.missing,
               WorktreeInspection.missing,
+              null,
+            ),
+            (
+              runtime_dto.BridgeWorktreeInspection.missing,
+              WorktreeInspection.missing,
+              'topic/kept',
             ),
             (
               runtime_dto.BridgeWorktreeInspection.identityMismatch,
               WorktreeInspection.identityMismatch,
+              null,
             ),
             (
               runtime_dto.BridgeWorktreeInspection.unavailable,
               WorktreeInspection.unavailable,
+              null,
             ),
           ];
 
-      for (final (wireInspection, expectedInspection) in cases) {
+      for (final (wireInspection, expectedInspection, branch) in cases) {
         final issue = runtime_dto.BridgeStudioRecoveryIssueDto(
           id: 'worktree-recovery',
           scope: runtime_dto.BridgeRecoveryIssueScope.thread,
@@ -46,7 +55,7 @@ void main() {
             state: 'preserved',
             repositoryRoot: '/projects/demo',
             path: '/projects/demo/.anywork/worktrees/thread-archive-1/session',
-            branch: 'pure-session-thread-archive-1',
+            branch: branch,
             baseCommit: 'base-commit',
             headCommit: null,
             dirty: null,
@@ -80,6 +89,7 @@ void main() {
         expect(worktree.dirty, isNull);
         expect(worktree.changedFiles, isNull);
         expect(worktree.headCommit, isNull);
+        expect(worktree.branch, branch);
         expect(
           worktree.path,
           '/projects/demo/.anywork/worktrees/thread-archive-1/session',

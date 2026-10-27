@@ -53,16 +53,6 @@ impl StudioChildResources for StudioThreadFactory {
                 project_root.clone(),
             )
             .map_err(|error| resource_error("resolve session workspace root", error))?;
-        if root_thread.workspace_mode == pl_protocol::ThreadWorkspaceMode::Worktree {
-            crate::studio::agent_host::workspace_preparation::verify_root_session_worktree(
-                &self.services.worktrees,
-                &self.services.ssh_manager,
-                &project,
-                &parent.root_thread_id,
-            )
-            .await
-            .map_err(|error| resource_error("verify parent session workspace", error))?;
-        }
         // child 的创建窗口与 root 会话一样由进程内 creating 标记保护：标记在记录 `prepared`
         // 之前设置，离开本函数（成功、失败、取消或展开）时由守卫清除。标记键是 child_id，
         // 不会影响会话路径的判定。
@@ -74,23 +64,22 @@ impl StudioChildResources for StudioThreadFactory {
                     .await?,
             ),
         };
-        let (assignment, worktree) =
-            crate::studio::agent_host::workspace_preparation::prepare_workspace(
-                &self.services.worktrees,
-                &self.services.ssh_manager,
-                crate::studio::agent_host::workspace_preparation::WorkspacePreparation {
-                    project: &project,
-                    project_root,
-                    root_thread_id: &parent.root_thread_id,
-                    child_id: &request.id,
-                    mode: profile.profile.workspace_mode,
-                    writable_paths: request.writable_paths.clone(),
-                    session_root,
-                    review_target,
-                },
-            )
-            .await
-            .map_err(|error| resource_error("prepare child workspace", error))?;
+        let assignment = crate::studio::agent_host::workspace_preparation::prepare_workspace(
+            &self.services.worktrees,
+            &self.services.ssh_manager,
+            crate::studio::agent_host::workspace_preparation::WorkspacePreparation {
+                project: &project,
+                project_root,
+                root_thread_id: &parent.root_thread_id,
+                child_id: &request.id,
+                mode: profile.profile.workspace_mode,
+                writable_paths: request.writable_paths.clone(),
+                session_root,
+                review_target,
+            },
+        )
+        .await
+        .map_err(|error| resource_error("prepare child workspace", error))?;
         check_cancelled(request)?;
         let workspace =
             ToolWorkspace::new(assigned_workspace(&assignment, root_thread.workspace_mode))
@@ -190,8 +179,7 @@ impl StudioChildResources for StudioThreadFactory {
             })
             .await
             .map_err(|error| resource_error("register child product association", error))?;
-        if let Some(worktree) = worktree {
-            let mut lease = worktree.lease;
+        if let Some(mut lease) = self.services.worktrees.get(&request.id) {
             lease.transition(crate::studio::agent_host::worktree_lease::WorktreeLeaseState::Active);
             self.services
                 .worktrees
@@ -290,10 +278,15 @@ impl StudioChildResources for StudioThreadFactory {
                 .map_err(|error| resource_error("open unpublished workspace manager", error))?;
                 let handle = crate::agent::worktree::WorktreeHandle {
                     path: PathBuf::from(&lease.path),
-                    branch: lease.branch.clone(),
                     base_commit: lease.base_commit.clone(),
                 };
-                match manager.discard(&handle).await {
+                match manager
+                    .cleanup(
+                        &handle,
+                        crate::agent::worktree::WorktreeCleanupPolicy::Discard,
+                    )
+                    .await
+                {
                     Ok(()) => lease.transition(WorktreeLeaseState::Cleaned),
                     Err(error) => {
                         lease.transition(WorktreeLeaseState::Preserved);
@@ -414,12 +407,10 @@ impl StudioThreadFactory {
         .map_err(|error| resource_error("open reviewed workspace manager", error))?;
         let handle = crate::agent::worktree::WorktreeHandle {
             path: PathBuf::from(&lease.path),
-            branch: lease.branch.clone(),
             base_commit: lease.base_commit.clone(),
         };
-        match manager.preview_existing(&handle).await {
-            Ok(Some(_)) => {}
-            Ok(None) => return Err(invalid()),
+        match manager.verify(&handle).await {
+            Ok(()) => {}
             Err(error) => return Err(resource_error("preview reviewed workspace", error)),
         }
         Ok(
@@ -428,7 +419,6 @@ impl StudioThreadFactory {
                 worktree: Some(pl_protocol::AgentWorktreeSnapshot {
                     repository_root: lease.repository_root.clone(),
                     path: lease.path.clone(),
-                    branch: lease.branch.clone(),
                     base_commit: lease.base_commit.clone(),
                 }),
             },

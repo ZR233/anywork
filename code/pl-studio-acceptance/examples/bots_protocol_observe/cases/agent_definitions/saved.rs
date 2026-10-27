@@ -534,7 +534,7 @@ pub(super) async fn load(home: &Path, thread_id: &str) -> Result<Option<SavedEvi
                 "pl.studio.agent-profile",
                 2,
             )?,
-            workspace: optional(extensions, "studio.workspace", "pl.studio.workspace", 1)?,
+            workspace: optional(extensions, "studio.workspace", "pl.studio.workspace", 2)?,
             compaction: optional(
                 extensions,
                 "studio.compaction.latest",

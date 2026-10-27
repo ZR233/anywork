@@ -8,11 +8,9 @@ use futures::future::BoxFuture;
 use pl_tool::execution::{ExecutionBackend, ExecutionOutput, ExecutionRequest};
 use pl_tool::remote::{SshManager, normalize_remote_absolute_path};
 
-use pl_tool::git::GitPolicy;
-
 use super::backend::{
-    branch_args, changed_files, checked_output, current_branch, git_common_dir_args,
-    non_empty_head, worktree_list_args,
+    MAX_ADMIN_BACKLINK_BYTES, branch_args, changed_files, checked_admin_dir, checked_output,
+    current_branch, decode_backlink, git_common_dir_args, non_empty_head, worktree_list_args,
 };
 use super::{WorktreeBackend, WorktreeCreateFailure, WorktreeError, WorktreeStatus};
 
@@ -22,10 +20,15 @@ const WORKTREE_GIT_TIMEOUT: Duration = Duration::from_secs(120);
 pub struct RemoteWorktreeBackend {
     transport: Arc<dyn RemoteWorktreeTransport>,
     repo_root: String,
-    policy: GitPolicy,
 }
 
 trait RemoteWorktreeTransport: std::fmt::Debug + Send + Sync {
+    fn read_admin_backlink<'a>(
+        &'a self,
+        common_dir: String,
+        relative_path: String,
+    ) -> BoxFuture<'a, Result<Vec<u8>, WorktreeError>>;
+
     fn run<'a>(
         &'a self,
         request: ExecutionRequest,
@@ -41,9 +44,6 @@ trait RemoteWorktreeTransport: std::fmt::Debug + Send + Sync {
         &'a self,
         relative_path: String,
     ) -> BoxFuture<'a, Result<bool, WorktreeError>>;
-
-    fn remove_path<'a>(&'a self, relative_path: String)
-    -> BoxFuture<'a, Result<(), WorktreeError>>;
 }
 
 #[derive(Debug)]
@@ -66,6 +66,35 @@ impl SshRemoteWorktreeTransport {
 }
 
 impl RemoteWorktreeTransport for SshRemoteWorktreeTransport {
+    fn read_admin_backlink<'a>(
+        &'a self,
+        common_dir: String,
+        relative_path: String,
+    ) -> BoxFuture<'a, Result<Vec<u8>, WorktreeError>> {
+        async move {
+            // The shared Git directory can be outside a linked checkout's execution root. Open
+            // only this Git-confirmed metadata root; do not widen the execution workspace.
+            let host = self
+                .ssh_manager
+                .open_workspace_host(&self.server_id, common_dir)
+                .await
+                .map_err(|source| WorktreeError::Remote {
+                    operation: "SSH open Git admin host",
+                    source,
+                })?;
+            let mut bytes = Vec::new();
+            host.files
+                .copy_capture_bounded(&relative_path, &mut bytes, MAX_ADMIN_BACKLINK_BYTES as u64)
+                .await
+                .map_err(|source| WorktreeError::RemoteDownload {
+                    operation: "remote read Git admin backlink",
+                    source,
+                })?;
+            Ok(bytes)
+        }
+        .boxed()
+    }
+
     fn run<'a>(
         &'a self,
         request: ExecutionRequest,
@@ -118,24 +147,6 @@ impl RemoteWorktreeTransport for SshRemoteWorktreeTransport {
         }
         .boxed()
     }
-
-    fn remove_path<'a>(
-        &'a self,
-        relative_path: String,
-    ) -> BoxFuture<'a, Result<(), WorktreeError>> {
-        async move {
-            self.host()
-                .await?
-                .files
-                .remove_path(relative_path, None, true)
-                .await
-                .map_err(|source| WorktreeError::RemoteFile {
-                    operation: "remote remove worktree leaf",
-                    source,
-                })
-        }
-        .boxed()
-    }
 }
 
 impl RemoteWorktreeBackend {
@@ -153,7 +164,6 @@ impl RemoteWorktreeBackend {
                 repo_root: repo_root.clone(),
             }),
             repo_root,
-            policy: GitPolicy::default(),
         })
     }
 
@@ -223,6 +233,31 @@ fn remote_path(path: &Path) -> Result<String, WorktreeError> {
 }
 
 impl WorktreeBackend for RemoteWorktreeBackend {
+    fn worktree_backlink<'a>(
+        &'a self,
+        path: &'a Path,
+        common_dir: &'a str,
+    ) -> BoxFuture<'a, Result<String, WorktreeError>> {
+        async move {
+            let args = vec!["rev-parse".into(), "--absolute-git-dir".into()];
+            let output = checked_output(&args, self.run_git(path, &args).await?)?;
+            let admin = checked_admin_dir(&output.stdout, common_dir)?;
+            let relative = admin
+                .strip_prefix(&format!("{common_dir}/"))
+                .ok_or_else(|| {
+                    WorktreeError::IdentityMismatch(
+                        "registration admin directory is outside the common directory".into(),
+                    )
+                })?;
+            let bytes = self
+                .transport
+                .read_admin_backlink(common_dir.to_owned(), format!("{relative}/gitdir"))
+                .await?;
+            decode_backlink(&bytes, &admin)
+        }
+        .boxed()
+    }
+
     fn resolve_repo_root<'a>(
         &'a self,
         path: &'a Path,
@@ -258,41 +293,25 @@ impl WorktreeBackend for RemoteWorktreeBackend {
         .boxed()
     }
 
-    fn path_exists<'a>(&'a self, path: &'a Path) -> BoxFuture<'a, Result<bool, WorktreeError>> {
-        async move { self.transport.path_exists(self.relative_path(path)?).await }.boxed()
-    }
-
-    fn remove_leaf<'a>(
+    fn path_exists<'a>(
         &'a self,
         _repo_root: &'a Path,
-        target_path: &'a Path,
-    ) -> BoxFuture<'a, Result<(), WorktreeError>> {
-        async move {
-            self.transport
-                .remove_path(self.relative_path(target_path)?)
-                .await
-        }
-        .boxed()
+        path: &'a Path,
+    ) -> BoxFuture<'a, Result<bool, WorktreeError>> {
+        async move { self.transport.path_exists(self.relative_path(path)?).await }.boxed()
     }
 
     fn create<'a>(
         &'a self,
         repo_root: &'a Path,
-        branch: &'a str,
         target_path: &'a Path,
         base_commit: &'a str,
     ) -> BoxFuture<'a, Result<(), WorktreeCreateFailure>> {
         async move {
-            self.policy.validate_branch(branch).map_err(|_| {
-                WorktreeCreateFailure::no_side_effects(WorktreeError::UnsafeBranch(
-                    branch.to_string(),
-                ))
-            })?;
             let args = vec![
                 "worktree".to_string(),
                 "add".to_string(),
-                "-b".to_string(),
-                branch.to_string(),
+                "--detach".to_string(),
                 // git 路径参数使用 POSIX 绝对路径：它与 lease 记录的 `path`、会话工作区根
                 // 以及远端 workspace handle 根是同一字符串；目录/文件操作所用的
                 // workspace-relative 形式是该绝对 POSIX 路径对仓库根的确定性投影。
@@ -305,7 +324,7 @@ impl WorktreeBackend for RemoteWorktreeBackend {
                 .map_err(WorktreeCreateFailure::may_have_created)?;
             checked_output(&args, output)
                 .map(|_| ())
-                .map_err(WorktreeCreateFailure::no_side_effects)
+                .map_err(WorktreeCreateFailure::may_have_created)
         }
         .boxed()
     }
@@ -359,22 +378,6 @@ impl WorktreeBackend for RemoteWorktreeBackend {
                 args.push("--force".to_string());
             }
             args.push(remote_path(target_path)?);
-            let output = self.run_git(repo_root, &args).await?;
-            checked_output(&args, output).map(|_| ())
-        }
-        .boxed()
-    }
-
-    fn delete_branch<'a>(
-        &'a self,
-        repo_root: &'a Path,
-        branch: &'a str,
-    ) -> BoxFuture<'a, Result<(), WorktreeError>> {
-        async move {
-            self.policy
-                .validate_branch(branch)
-                .map_err(|_| WorktreeError::UnsafeBranch(branch.to_string()))?;
-            let args = vec!["branch".to_string(), "-D".to_string(), branch.to_string()];
             let output = self.run_git(repo_root, &args).await?;
             checked_output(&args, output).map(|_| ())
         }

@@ -22,6 +22,27 @@ fn studio_error_from_ref(error: &anyhow::Error) -> StudioError {
     if let Some(error) = error.downcast_ref::<StudioError>() {
         return error.clone();
     }
+    if let Some(error) = error
+        .chain()
+        .find_map(|cause| cause.downcast_ref::<crate::agent::worktree::WorktreeError>())
+    {
+        use crate::agent::worktree::WorktreeError;
+        let (code, retryable) = match error {
+            WorktreeError::IdentityMismatch(_) => (StudioErrorCode::Conflict, false),
+            WorktreeError::InvalidResource(_) => (StudioErrorCode::InvalidArgument, false),
+            WorktreeError::Missing => (StudioErrorCode::Unavailable, true),
+            WorktreeError::LocalIo { .. } => (StudioErrorCode::Storage, true),
+            WorktreeError::GitLaunchFailed { .. }
+            | WorktreeError::GitTimedOut { .. }
+            | WorktreeError::GitExited { .. }
+            | WorktreeError::GitStatusUnknown { .. }
+            | WorktreeError::Remote { .. }
+            | WorktreeError::RemoteExecution { .. }
+            | WorktreeError::RemoteDownload { .. }
+            | WorktreeError::RemoteFile { .. } => (StudioErrorCode::Unavailable, true),
+        };
+        return StudioError::new(code, error.safe_diagnostic(), retryable);
+    }
     if let Some(startup) = error.downcast_ref::<crate::StudioStartupError>() {
         if let Some(ConfigRuntimeError::ModeDefinitions(cause)) = error
             .chain()

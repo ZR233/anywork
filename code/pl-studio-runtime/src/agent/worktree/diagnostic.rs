@@ -1,13 +1,12 @@
 //! Worktree-specific safe failure facts, not a general-purpose secret sanitizer.
-use super::{RemoteClientError, RemoteExecutionError, WorktreeError};
+use super::{RemoteClientError, RemoteDownloadError, RemoteExecutionError, WorktreeError};
 
 impl WorktreeError {
     pub(crate) fn safe_diagnostic(&self) -> String {
         let message = match self {
             Self::Missing => "stat: worktree path not found".into(),
-            Self::IdentityMismatch(_) => {
-                "worktree registration, common-dir or branch identity mismatch".into()
-            }
+            // Identity messages are produced only from fixed application vocabulary, never stderr.
+            Self::IdentityMismatch(reason) => format!("worktree identity: {reason}"),
             Self::GitLaunchFailed { args, message } => format!(
                 "git {}: launch failed; {}",
                 git_operation(args),
@@ -37,6 +36,9 @@ impl WorktreeError {
             Self::RemoteExecution { args, source } => {
                 format!("git {}: {}", git_operation(args), execution_cause(source))
             }
+            Self::RemoteDownload { operation, source } => {
+                format!("{operation}: {}", download_cause(source))
+            }
             Self::RemoteFile { operation, source } => format!(
                 "{operation}: {}",
                 match source {
@@ -50,26 +52,32 @@ impl WorktreeError {
                 }
             ),
             Self::InvalidResource(_) => "worktree backend or owned-path validation failed".into(),
-            Self::UnsafeBranch(_) => "branch validation refused the operation".into(),
-            Self::OperationFailedAfterCleanup { operation } => {
-                format!("{}; rollback succeeded", operation.safe_diagnostic())
-            }
-            Self::OperationFailedWithCleanup { operation, cleanup } => format!(
-                "{}; rollback failed: {}",
-                operation.safe_diagnostic(),
-                cleanup.safe_diagnostic()
-            ),
-            Self::CleanupFailed { failures, .. } => format!(
-                "worktree cleanup failed: {}",
-                failures
-                    .iter()
-                    .take(4)
-                    .map(Self::safe_diagnostic)
-                    .collect::<Vec<_>>()
-                    .join("; ")
-            ),
         };
         message.chars().take(2048).collect()
+    }
+}
+
+/// Preserve the transfer phase and typed cause without reflecting paths or arbitrary helper text.
+pub(super) fn download_cause(error: &RemoteDownloadError) -> String {
+    match error {
+        RemoteDownloadError::Path(_) => "remote file path invalid or outside workspace".into(),
+        RemoteDownloadError::Read { offset, source } => {
+            format!("remote file read at byte {offset}: {}", remote_code(source))
+        }
+        RemoteDownloadError::Inconsistent { offset } => {
+            format!("remote file transfer range or checksum inconsistent at byte {offset}")
+        }
+        RemoteDownloadError::Response(_) => {
+            "remote file transfer: unexpected helper response (details withheld)".into()
+        }
+        RemoteDownloadError::Write { offset, source } => format!(
+            "remote file buffer at byte {offset}: filesystem {:?}; os_code={:?}",
+            source.kind(),
+            source.raw_os_error()
+        ),
+        RemoteDownloadError::TooLarge { total, limit } => {
+            format!("remote file transfer size limit exceeded; bytes={total}; limit={limit}")
+        }
     }
 }
 
@@ -141,6 +149,8 @@ fn safe_command_cause(diagnostic: &str) -> &'static str {
     } else if diagnostic.contains("not a git repository") {
         "Git repository identity is unavailable"
     } else if diagnostic.contains("is locked")
+        || diagnostic.contains("locked working tree")
+        || diagnostic.contains("locked worktree")
         || diagnostic.contains("Unable to create") && diagnostic.contains(".lock")
     {
         "Git resource is locked or its lock cannot be created"

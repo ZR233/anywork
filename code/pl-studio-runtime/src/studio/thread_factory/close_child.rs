@@ -98,9 +98,8 @@ impl StudioThreadFactory {
                     && lease.owner_thread_id == thread.id
                     && lease.root_thread_id == thread.root_thread_id
                     && lease.project_id == thread.project_id
-                    && lease.repository_root == assignment.project_root
+                    && lease.repository_root == receipt.repository_root
                     && lease.path == receipt.path
-                    && lease.branch == receipt.branch
                     && lease.base_commit == receipt.base_commit
             })
             .ok_or_else(|| {

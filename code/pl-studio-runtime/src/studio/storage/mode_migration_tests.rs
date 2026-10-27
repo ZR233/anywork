@@ -2400,6 +2400,211 @@ async fn migrate_model_access(store: &HistoryStore) -> Result<ThreadCheckpoint> 
         .context("prepared model access")
 }
 
+#[tokio::test]
+async fn workspace_receipt_upgrade_preserves_nested_ownership_and_rejects_corruption() -> Result<()>
+{
+    use sea_orm::{DbBackend, Statement};
+    async fn applied_migrations(db: &impl ConnectionTrait) -> Result<Vec<String>> {
+        db.query_all_raw(Statement::from_string(
+            DbBackend::Sqlite,
+            "SELECT json_array(version,applied_at) AS fact FROM seaql_migrations ORDER BY version",
+        ))
+        .await?
+        .into_iter()
+        .map(|row| Ok(row.try_get("", "fact")?))
+        .collect()
+    }
+
+    for mode in ["directory", "worktree", "review"] {
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("history.sqlite");
+        let store = HistoryStore::open(&path, "migration").await?;
+        let mut receipt = serde_json::json!({
+            "mode": mode, "projectRoot": "/repo", "root": "/repo",
+            "writablePaths": ["/repo/src"]
+        });
+        if mode != "directory" {
+            receipt["root"] = "/repo/.anywork/worktrees/root/target".into();
+            receipt["worktree"] = serde_json::json!({
+                "repositoryRoot": "/repo", "path": "/repo/.anywork/worktrees/root/target",
+                "branch": "pure-agent-target", "baseCommit": "base"
+            });
+        }
+        if mode == "review" {
+            receipt["reviewTarget"] = serde_json::json!({"agentId": "target"});
+        }
+        let mut extensions = BTreeMap::from([(
+            "studio.workspace".into(),
+            record(23, "pl.studio.workspace", 1, &receipt.to_string())?,
+        )]);
+        // Close facts and frozen Profiles are independent and must remain byte-for-byte unchanged.
+        extensions.insert(
+            crate::studio::agent_close::EXTENSION.into(),
+            ExtensionRecord {
+                revision: 24,
+                payload: crate::studio::agent_close::encode()?,
+            },
+        );
+        let mut state = saved_state(extensions);
+        crate::studio::delegation::migrate(&mut state)?;
+        persist(&store, state, true).await?;
+        let original = store.checkpoint().await?.context("original")?;
+        assert!(
+            crate::studio::workspace_receipt::from_snapshot(&original.state).is_err(),
+            "normal reads must not silently decode retired receipts"
+        );
+        let db = raw_database(&path).await?;
+        let content_prepared = applied_migrations(&db).await?;
+        let (read_only, _) = store
+            .read_only_checkpoint_with_latest_turn()
+            .await?
+            .context("prepared content is readable before lifecycle recovery")?;
+        assert_eq!(
+            serde_json::to_value(read_only)?,
+            serde_json::to_value(&original)?,
+            "content reads retain the pending lifecycle representation and checkpoint facts"
+        );
+        assert_eq!(
+            applied_migrations(&db).await?,
+            content_prepared,
+            "a content read cannot advance lifecycle preparation"
+        );
+        db.close().await?;
+        let migrated = migrate_model_access(&store).await?;
+        let saved = &migrated.state.extensions["studio.workspace"];
+        assert_eq!(saved.revision, 23);
+        assert_eq!(saved.payload.version(), 2);
+        if let Some(worktree) = receipt.get_mut("worktree") {
+            worktree
+                .as_object_mut()
+                .context("worktree object")?
+                .remove("branch");
+        }
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(saved.payload.content())?,
+            receipt
+        );
+        let mut expected = original.clone();
+        expected
+            .state
+            .extensions
+            .get_mut("studio.workspace")
+            .context("receipt")?
+            .payload = saved.payload.clone();
+        assert_eq!(
+            serde_json::to_value(&migrated)?,
+            serde_json::to_value(expected)?,
+            "history fence, close intent and all unrelated checkpoint facts survive"
+        );
+        // Emulate a released database which has already completed 008, before the new 007a
+        // maintenance step existed. Only its workspace representation and that step are retired.
+        store.prepare_execution_identity(|_| Ok(())).await?;
+        let db = raw_database(&path).await?;
+        let execution = db.query_one_raw(Statement::from_sql_and_values(DbBackend::Sqlite,
+            "SELECT applied_at FROM seaql_migrations WHERE version='m20261026_000008_history_execution_identity'",
+            vec![],
+        )).await?.context("applied execution-identity migration")?.try_get::<i64>("", "applied_at")?;
+        let mut legacy = original.clone();
+        // SQLite stores context separately; preserve its normalized envelope instead of embedding
+        // the materialized reader view back into the checkpoint row.
+        legacy.state.context.records = Default::default();
+        let legacy = serde_json::to_string(&legacy)?;
+        db.execute_raw(Statement::from_sql_and_values(
+            DbBackend::Sqlite,
+            "UPDATE session_checkpoint SET payload=?,payload_hash=? WHERE id=1",
+            vec![
+                legacy.clone().into(),
+                pl_core::context::content_hash(legacy.as_bytes()).into(),
+            ],
+        ))
+        .await?;
+        db.execute_unprepared("DELETE FROM seaql_migrations WHERE version='m20261026_000007a_history_workspace_receipt'").await?;
+        let pending_workspace = applied_migrations(&db).await?;
+        db.close().await?;
+        drop(store);
+        let reopened = HistoryStore::open(&path, "migration").await?;
+        let (read_only, _) = reopened
+            .read_only_checkpoint_with_latest_turn()
+            .await?
+            .context("pending workspace lifecycle does not invalidate prepared content")?;
+        assert_eq!(
+            serde_json::to_value(read_only)?,
+            serde_json::to_value(&original)?
+        );
+        let db = raw_database(&path).await?;
+        assert_eq!(
+            applied_migrations(&db).await?,
+            pending_workspace,
+            "cold reads do not complete pending workspace recovery"
+        );
+        reopened.prepare_history_access().await?;
+        assert_eq!(
+            applied_migrations(&db).await?,
+            pending_workspace,
+            "Schema must not advance workspace lifecycle after ModelAccess was applied"
+        );
+        let (read_only, _) = reopened
+            .read_only_checkpoint_with_latest_turn()
+            .await?
+            .context("content preparation retains the existing checkpoint")?;
+        assert_eq!(
+            serde_json::to_value(read_only)?,
+            serde_json::to_value(&original)?,
+            "Schema preparation must preserve the original receipt, state and history fence"
+        );
+        db.close().await?;
+        assert_eq!(
+            serde_json::to_value(migrate_model_access(&reopened).await?)?,
+            serde_json::to_value(&migrated)?,
+            "a missing 007a still runs after a previously completed 008"
+        );
+        let db = raw_database(&path).await?;
+        assert_eq!(db.query_one_raw(Statement::from_sql_and_values(DbBackend::Sqlite,
+            "SELECT applied_at FROM seaql_migrations WHERE version='m20261026_000008_history_execution_identity'", vec![]
+        )).await?.context("retained execution migration")?.try_get::<i64>("", "applied_at")?, execution);
+        db.close().await?;
+        drop(reopened);
+        let reopened = HistoryStore::open(&path, "migration").await?;
+        assert_eq!(
+            serde_json::to_value(migrate_model_access(&reopened).await?)?,
+            serde_json::to_value(migrated)?,
+            "reopening the upgraded database is idempotent"
+        );
+    }
+    for (version, receipt) in [
+        (
+            1,
+            serde_json::json!({"mode":"worktree","projectRoot":"/repo","root":"/tree",
+            "worktree":{"repositoryRoot":"/repo","path":"/tree","branch":17,"baseCommit":"base"}}),
+        ),
+        (
+            1,
+            serde_json::json!({"mode":"directory","projectRoot":"/repo","root":"/repo","unknown":true}),
+        ),
+        (
+            99,
+            serde_json::json!({"mode":"directory","projectRoot":"/repo","root":"/repo"}),
+        ),
+    ] {
+        let directory = tempfile::tempdir()?;
+        let store =
+            HistoryStore::open(&directory.path().join("history.sqlite"), "migration").await?;
+        let mut state = saved_state(BTreeMap::from([(
+            "studio.workspace".into(),
+            record(23, "pl.studio.workspace", version, &receipt.to_string())?,
+        )]));
+        crate::studio::delegation::migrate(&mut state)?;
+        persist(&store, state, true).await?;
+        let original = store.checkpoint().await?.context("original")?;
+        assert!(migrate_model_access(&store).await.is_err());
+        assert_eq!(
+            serde_json::to_value(store.checkpoint().await?.context("retained")?)?,
+            serde_json::to_value(original)?
+        );
+    }
+    Ok(())
+}
+
 /// 故障注入与结构降级只通过真实 SQLite 文件完成，不使用生产句柄的私有入口。
 async fn raw_database(path: &std::path::Path) -> Result<sea_orm::DatabaseConnection> {
     Ok(sea_orm::Database::connect(

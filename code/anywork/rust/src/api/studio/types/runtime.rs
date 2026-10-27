@@ -188,7 +188,7 @@ pub struct BridgeWorktreeRecoveryPreviewDto {
     pub state: String,
     pub repository_root: String,
     pub path: String,
-    pub branch: String,
+    pub branch: Option<String>,
     pub base_commit: String,
     pub head_commit: Option<String>,
     pub dirty: Option<bool>,

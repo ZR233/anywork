@@ -942,7 +942,7 @@ class BridgeWorktreeRecoveryPreviewDto {
   final String state;
   final String repositoryRoot;
   final String path;
-  final String branch;
+  final String? branch;
   final String baseCommit;
   final String? headCommit;
   final bool? dirty;
@@ -956,7 +956,7 @@ class BridgeWorktreeRecoveryPreviewDto {
     required this.state,
     required this.repositoryRoot,
     required this.path,
-    required this.branch,
+    this.branch,
     required this.baseCommit,
     this.headCommit,
     this.dirty,

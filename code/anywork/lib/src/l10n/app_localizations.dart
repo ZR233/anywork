@@ -6618,6 +6618,18 @@ abstract class AppLocalizations {
   /// **'Inspection unavailable'**
   String get settingsWorktreeInspectionUnavailable;
 
+  /// No description provided for @settingsWorktreeDetached.
+  ///
+  /// In en, this message translates to:
+  /// **'Verified detached HEAD (no current branch)'**
+  String get settingsWorktreeDetached;
+
+  /// No description provided for @settingsWorktreeBranchUnknown.
+  ///
+  /// In en, this message translates to:
+  /// **'Current branch unknown'**
+  String get settingsWorktreeBranchUnknown;
+
   /// No description provided for @settingsWorktreeRetry.
   ///
   /// In en, this message translates to:

@@ -302,15 +302,7 @@ impl StudioThreadFactory {
             }
         }
         let child = thread.parent_thread_id.is_some();
-        let assignment = snapshot
-            .extensions
-            .get("studio.workspace")
-            .map(|saved| {
-                serde_json::from_str::<pl_protocol::AgentWorkspaceAssignmentSnapshot>(
-                    saved.payload.content(),
-                )
-            })
-            .transpose()
+        let assignment = crate::studio::workspace_receipt::from_snapshot(snapshot)
             .map_err(|error| resource_error("decode workspace binding", error))?;
         let config = self.services.config_runtime.read()?.config;
         let (_, selector) = crate::studio::model_route::route_record(snapshot, child)

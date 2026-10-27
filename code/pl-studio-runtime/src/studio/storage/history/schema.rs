@@ -41,6 +41,9 @@ impl MigratorTraitSelf for Migrator {
             Box::new(ModelAccess {
                 thread_id: self.thread_id.clone(),
             }),
+            Box::new(WorkspaceReceipt {
+                thread_id: self.thread_id.clone(),
+            }),
             Box::new(ExecutionIdentity {
                 thread_id: self.thread_id.clone(),
                 candidate: self.execution_identity.clone(),
@@ -57,9 +60,17 @@ pub(super) enum Preparation {
     ExecutionIdentity,
 }
 const MODEL_ACCESS: &str = "m20261026_000007_history_model_access";
+// Ordered between model-access and execution identity: cold close needs representation maintenance
+// without requiring (or activating) a Mode/model/tool execution owner.
+const WORKSPACE_RECEIPT: &str = "m20261026_000007a_history_workspace_receipt";
 pub(super) const EXECUTION_IDENTITY: &str = "m20261026_000008_history_execution_identity";
 const RETIRE_ORDINALS: &str = "m20261027_000001_history_retire_ordinals";
 const PRODUCER_PAYLOADS: &str = "m20261027_000002_history_producer_payloads";
+
+// Content preparation and current-only readers share the same lifecycle boundary.
+fn is_lifecycle_migration(name: &str) -> bool {
+    matches!(name, MODEL_ACCESS | WORKSPACE_RECEIPT | EXECUTION_IDENTITY)
+}
 
 pub(super) async fn prepare(
     db: &DatabaseConnection,
@@ -81,11 +92,11 @@ pub(super) async fn prepare(
     let steps = match phase {
         Preparation::Schema => pending
             .iter()
-            .take_while(|step| !matches!(step.name(), MODEL_ACCESS | EXECUTION_IDENTITY))
+            .take_while(|step| !is_lifecycle_migration(step.name()))
             .count(),
         Preparation::ModelAccess => pending
             .iter()
-            .position(|step| step.name() == MODEL_ACCESS)
+            .position(|step| step.name() == WORKSPACE_RECEIPT)
             .map_or(0, |index| index + 1),
         Preparation::ExecutionIdentity => pending.len(),
     };
@@ -246,7 +257,7 @@ pub(super) async fn validate_current(db: &impl ConnectionTrait, thread_id: &str)
             .get_pending_migrations_read_only(db)
             .await?
             .iter()
-            .all(|step| matches!(step.name(), MODEL_ACCESS | EXECUTION_IDENTITY)),
+            .all(|step| is_lifecycle_migration(step.name())),
         "history content requires explicit storage preparation; existing data preserved"
     );
     Ok(())
@@ -619,6 +630,36 @@ impl MigrationTrait for ModelAccess {
         crate::studio::agent_close::is_explicitly_closed(&migrated.state).map_err(conversion)?;
         crate::studio::model_route::migration::upgrade(&mut migrated.state).map_err(conversion)?;
         crate::studio::delegation::migrate(&mut migrated.state).map_err(conversion)?;
+        checkpoint::write_representation(db, &original, &migrated)
+            .await
+            .map_err(conversion)
+    }
+}
+
+struct WorkspaceReceipt {
+    thread_id: String,
+}
+impl MigrationName for WorkspaceReceipt {
+    fn name(&self) -> &str {
+        WORKSPACE_RECEIPT
+    }
+}
+#[sea_orm_migration::async_trait::async_trait]
+impl MigrationTrait for WorkspaceReceipt {
+    fn use_transaction(&self) -> Option<bool> {
+        Some(true)
+    }
+    async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        let db = manager.get_connection();
+        let Some(original) = checkpoint::read(db, &self.thread_id)
+            .await
+            .map_err(conversion)?
+        else {
+            return Ok(());
+        };
+        let mut migrated = original.clone();
+        crate::studio::workspace_receipt::migration::upgrade(&mut migrated.state)
+            .map_err(conversion)?;
         checkpoint::write_representation(db, &original, &migrated)
             .await
             .map_err(conversion)

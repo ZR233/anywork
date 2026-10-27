@@ -1794,6 +1794,8 @@
   "settingsWorktreeInspectionMissing": "Worktree missing",
   "settingsWorktreeInspectionIdentityMismatch": "Worktree identity mismatch",
   "settingsWorktreeInspectionUnavailable": "Inspection unavailable",
+  "settingsWorktreeDetached": "Verified detached HEAD (no current branch)",
+  "settingsWorktreeBranchUnknown": "Current branch unknown",
   "settingsWorktreeRetry": "Retry inspection",
   "startupPreparing": "Preparing application…",
   "startupStorage": "Opening local data…",

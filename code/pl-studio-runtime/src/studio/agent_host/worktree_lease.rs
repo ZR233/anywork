@@ -46,7 +46,7 @@ impl WorktreeLeaseOwnerKind {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(in crate::studio) struct WorktreeLease {
     pub revision: u64,
     pub state: WorktreeLeaseState,
@@ -58,7 +58,6 @@ pub(in crate::studio) struct WorktreeLease {
     pub ssh_alias: Option<String>,
     pub repository_root: String,
     pub path: String,
-    pub branch: String,
     pub base_commit: String,
 }
 
@@ -69,7 +68,7 @@ impl WorktreeLease {
         self.state = state;
     }
 
-    /// 该 lease 的 Pure-owned 归属；路径 leaf、分支与身份校验都由它派生。
+    /// 该 lease 的稳定归属；不约束可变的 Git 分支或 HEAD。
     pub(in crate::studio) fn ownership(&self) -> crate::agent::worktree::WorktreeOwnership {
         use crate::agent::worktree::WorktreeOwnership;
         match self.owner_kind {
@@ -82,36 +81,35 @@ impl WorktreeLease {
         }
     }
 
-    /// 按归属校验期望 leaf 与期望 branch，仍拒绝任何非 Pure 分支。
-    pub(in crate::studio) fn validate_identity(&self) -> Result<()> {
-        use crate::agent::worktree::WorktreeManager;
+    /// 按稳定归属校验受管路径，Git 注册与仓库检查由物理边界负责。
+    pub(in crate::studio) fn validate_identity(
+        &self,
+    ) -> Result<(), crate::agent::worktree::WorktreeError> {
+        use crate::agent::worktree::{WorktreeError, WorktreeManager};
+        let mismatch = |reason: &str| WorktreeError::IdentityMismatch(reason.to_owned());
         let repository_root = std::path::Path::new(&self.repository_root);
         let ownership = self.ownership();
-        anyhow::ensure!(
-            self.owner_kind != WorktreeLeaseOwnerKind::Session
-                || self.owner_thread_id == self.root_thread_id,
-            "session worktree lease belongs to a different root"
-        );
+        if self.owner_kind == WorktreeLeaseOwnerKind::Session
+            && self.owner_thread_id != self.root_thread_id
+        {
+            return Err(mismatch("owner: session lease belongs to another root"));
+        }
         let expected =
             WorktreeManager::allocate_path(repository_root, &self.root_thread_id, &ownership);
         if self.ssh_alias.is_some() {
             let expected =
-                pl_tool::remote::normalize_remote_absolute_path(&expected.to_string_lossy())?;
-            let actual = pl_tool::remote::normalize_remote_absolute_path(&self.path)?;
-            anyhow::ensure!(
-                actual == expected,
-                "worktree cleanup refused a mismatched Pure-owned leaf"
-            );
+                pl_tool::remote::normalize_remote_absolute_path(&expected.to_string_lossy())
+                    .map_err(|_| mismatch("path: remote managed leaf is invalid"))?;
+            let actual = pl_tool::remote::normalize_remote_absolute_path(&self.path)
+                .map_err(|_| mismatch("path: remote lease path is invalid"))?;
+            if actual != expected {
+                return Err(mismatch("path: lease differs from its owned leaf"));
+            }
         } else {
-            anyhow::ensure!(
-                std::path::Path::new(&self.path) == expected,
-                "worktree cleanup refused a mismatched Pure-owned leaf"
-            );
+            if std::path::Path::new(&self.path) != expected {
+                return Err(mismatch("path: lease differs from its owned leaf"));
+            }
         }
-        anyhow::ensure!(
-            self.branch == WorktreeManager::branch_for(&ownership),
-            "worktree cleanup refused a mismatched Pure-owned branch"
-        );
         Ok(())
     }
 }
@@ -121,7 +119,7 @@ impl PersistedStudioObject for WorktreeLease {
 
     const OWNER_KIND: &'static str = "agent";
     const OBJECT_KIND: &'static str = "worktreeLease";
-    const SCHEMA_VERSION: i64 = 3;
+    const SCHEMA_VERSION: i64 = 4;
 
     fn revision(&self) -> u64 {
         self.revision
