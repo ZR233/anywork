@@ -157,27 +157,7 @@ impl ReplayState {
             .ok_or(ReplayError::SequenceExhausted)?;
         let session_id = self.session_id.as_deref().unwrap_or(&commit.session_id);
         validate_commit(commit, session_id, sequence)?;
-        // Validate the complete ordered batch before mutating the materialized records.
-        let mut presence = BTreeMap::new();
-        for change in &commit.changes {
-            match change {
-                SessionEntryChange::Put { entry } => {
-                    presence.insert(entry.id.as_str(), true);
-                }
-                SessionEntryChange::Delete { entry_id } => {
-                    let exists = presence
-                        .get(entry_id.as_str())
-                        .copied()
-                        .unwrap_or_else(|| self.entries.contains_key(entry_id));
-                    if !exists {
-                        return Err(ReplayError::MissingRecord {
-                            id: entry_id.clone(),
-                        });
-                    }
-                    presence.insert(entry_id.as_str(), false);
-                }
-            }
-        }
+        validate_changes(&commit.changes, |id| self.entries.contains_key(id))?;
         for change in &commit.changes {
             match change {
                 SessionEntryChange::Put { entry } => {
@@ -208,6 +188,35 @@ impl ReplayState {
         });
         entries
     }
+}
+
+/// Checks ordered changes against an existing projection without decoding business payloads.
+/// Database migrations supply a bounded set of affected identities instead of loading all bodies.
+pub(crate) fn validate_changes(
+    changes: &[SessionEntryChange],
+    contains: impl Fn(&str) -> bool,
+) -> Result<(), ReplayError> {
+    let mut presence = BTreeMap::new();
+    for change in changes {
+        match change {
+            SessionEntryChange::Put { entry } => {
+                presence.insert(entry.id.as_str(), true);
+            }
+            SessionEntryChange::Delete { entry_id } => {
+                let exists = presence
+                    .get(entry_id.as_str())
+                    .copied()
+                    .unwrap_or_else(|| contains(entry_id));
+                if !exists {
+                    return Err(ReplayError::MissingRecord {
+                        id: entry_id.clone(),
+                    });
+                }
+                presence.insert(entry_id.as_str(), false);
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Replays complete contiguous history without invoking payload decoders.

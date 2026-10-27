@@ -1,3 +1,5 @@
+#[path = "support/effect_fixture.rs"]
+mod effect_fixture;
 mod support;
 
 #[tokio::test]
@@ -52,12 +54,17 @@ async fn sqlite_v10_context_migration_preserves_history_and_marks_unknown_usage_
         .await
         .unwrap();
     db.execute_raw(Statement::from_sql_and_values(DatabaseBackend::Sqlite, "UPDATE thread_checkpoints SET schema_version=3,envelope=?,payload_hash='damaged' WHERE thread_id='v10'", vec![encoded.clone().into()])).await.unwrap();
+    effect_fixture::rewrite_effects(&db, |entry| {
+        entry.type_id = "pl.core.thread-commit".into();
+        entry.schema_version = 3;
+    })
+    .await;
     db.execute_unprepared("DROP TABLE thread_tool_task_resources; DROP TABLE thread_tool_tasks; DROP TABLE IF EXISTS seaql_migrations; PRAGMA user_version=10")
         .await
         .unwrap();
     db.close().await.unwrap();
     assert!(
-        migration::migrate_to_current(options.clone(), |_| Ok(()))
+        migration::migrate_to_current(options.clone())
             .await
             .is_err()
     );
@@ -98,7 +105,7 @@ async fn sqlite_v10_context_migration_preserves_history_and_marks_unknown_usage_
     .await
     .unwrap();
     db.close().await.unwrap();
-    migration::migrate_to_current(options.clone(), |_| Ok(()))
+    migration::migrate_to_current(options.clone())
         .await
         .unwrap();
     let reopened = SqliteSessionStore::open(options).await.unwrap();
@@ -390,12 +397,17 @@ async fn sqlite_v8_migration_backfills_checkpoint_usage_from_saved_effects() {
     ))
     .await
     .unwrap();
+    effect_fixture::rewrite_effects(&db, |entry| {
+        entry.type_id = "pl.core.thread-commit".into();
+        entry.schema_version = 3;
+    })
+    .await;
     db.execute_unprepared("DROP TABLE thread_tool_task_resources; DROP TABLE thread_tool_tasks; DROP TABLE IF EXISTS seaql_migrations; PRAGMA user_version=8")
         .await
         .unwrap();
     db.close().await.unwrap();
 
-    migration::migrate_to_current(options.clone(), |_| Ok(()))
+    migration::migrate_to_current(options.clone())
         .await
         .unwrap();
     let reopened = SqliteSessionStore::open(options).await.unwrap();
@@ -1036,7 +1048,7 @@ async fn migrate_v7_adds_checkpoint_table_without_losing_effects() {
         .history_fence;
     thread.close().await.unwrap();
     assert!(
-        migration::migrate_to_current(options.clone(), |_| Ok(()))
+        migration::migrate_to_current(options.clone())
             .await
             .is_err()
     );
@@ -1052,10 +1064,10 @@ async fn migrate_v7_adds_checkpoint_table_without_losing_effects() {
         Err(SessionStoreError::UnsupportedSchema { found: 7, .. })
     ));
 
-    migration::migrate_to_current(options.clone(), |_| Ok(()))
+    migration::migrate_to_current(options.clone())
         .await
         .unwrap();
-    migration::migrate_to_current(options.clone(), |_| Ok(()))
+    migration::migrate_to_current(options.clone())
         .await
         .unwrap();
     let reopened = SqliteSessionStore::open(options).await.unwrap();
@@ -1182,7 +1194,7 @@ async fn sqlite_migration_converts_schema_4_with_old_or_current_tables() {
         db.close().await.unwrap();
 
         // The explicit migration converts the envelope, its indexed version and its hash together.
-        migration::migrate_to_current(options.clone(), |_| Ok(()))
+        migration::migrate_to_current(options.clone())
             .await
             .unwrap();
         let db = sea_orm::Database::connect(format!("sqlite://{}?mode=rw", options.path.display()))
@@ -1198,7 +1210,7 @@ async fn sqlite_migration_converts_schema_4_with_old_or_current_tables() {
             .unwrap()
             .try_get("", "user_version")
             .unwrap();
-        assert_eq!(version, 12);
+        assert_eq!(version, 13);
         db.close().await.unwrap();
 
         let reopened = SqliteSessionStore::open(options).await.unwrap();
@@ -1289,7 +1301,7 @@ async fn sqlite_adopts_current_database_and_refuses_future_writes() {
         let before = tokio::fs::read(&options.path).await.unwrap();
         assert!(SqliteSessionStore::open(options.clone()).await.is_err());
         assert!(
-            migration::migrate_to_current(options.clone(), |_| Ok(()))
+            migration::migrate_to_current(options.clone())
                 .await
                 .is_err()
         );

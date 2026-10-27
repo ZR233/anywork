@@ -1,12 +1,19 @@
 //! Producer-owned model binding migration and account identity through public API only.
 use pl_core::context::OpaquePayload;
 use pl_model::model::ModelInfo;
+use pl_model::runtime::migration::migrate_payload;
 use pl_model::{
     config::ModelRouteConfig,
     protocol::{ProtocolEndpoint, ProtocolKind, WireApi},
     runtime::{ModelRuntime, model_failure_receipt, model_request_receipt, model_response_receipt},
 };
 use serde_json::json;
+
+fn current(payload: &OpaquePayload) -> OpaquePayload {
+    migrate_payload(payload)
+        .expect("producer migration succeeds")
+        .unwrap_or_else(|| payload.clone())
+}
 
 fn legacy_binding() -> serde_json::Value {
     json!({
@@ -98,7 +105,8 @@ fn legacy_frame_payload(version: u32) -> OpaquePayload {
 
 #[test]
 fn legacy_prepared_request_keeps_frozen_source_and_identity() {
-    let receipt = model_request_receipt(&legacy_request_with_prompt(1))
+    assert!(model_request_receipt(&legacy_request_with_prompt(1)).is_err());
+    let receipt = model_request_receipt(&current(&legacy_request_with_prompt(1)))
         .expect("legacy record with its real non-empty prompt migrates");
     assert_eq!(receipt.binding.account_id, "deepseek");
     assert_eq!(receipt.binding.model_id, "deepseek-v4-pro");
@@ -172,7 +180,8 @@ fn legacy_prepared_request_keeps_frozen_source_and_identity() {
 
 #[test]
 fn current_prepared_request_is_read_without_legacy_fields() {
-    let migrated = model_request_receipt(&legacy_request_payload(1)).expect("legacy migrates");
+    let migrated =
+        model_request_receipt(&current(&legacy_request_payload(1))).expect("legacy migrates");
     let current = OpaquePayload::new(
         "pl.model.prepared-request",
         2,
@@ -214,11 +223,21 @@ fn unknown_prepared_request_versions_fail_closed() {
 
 #[test]
 fn legacy_assistant_frame_migrates_its_binding() {
+    let legacy = legacy_frame_payload(2);
+    let output = pl_core::model::ModelStepOutput {
+        content: vec![pl_core::context::ContextContent::Opaque { payload: legacy }],
+        attempt_id: "old".into(),
+        base_context_revision: 0,
+        tool_calls: vec![],
+        private_context: None,
+        usage: Default::default(),
+    };
+    assert!(model_response_receipt(&output).is_err());
     let output = pl_core::model::ModelStepOutput {
         attempt_id: "attempt".into(),
         base_context_revision: 0,
         content: vec![pl_core::context::ContextContent::Opaque {
-            payload: legacy_frame_payload(2),
+            payload: current(&legacy_frame_payload(2)),
         }],
         tool_calls: Vec::new(),
         private_context: None,
@@ -241,7 +260,9 @@ fn legacy_assistant_frame_migrates_its_binding() {
     for version in [3, 4] {
         let mut historical = output.clone();
         historical.content = vec![pl_core::context::ContextContent::Opaque {
-            payload: OpaquePayload::new("pl.model.assistant", version, frame.to_string()).unwrap(),
+            payload: current(
+                &OpaquePayload::new("pl.model.assistant", version, frame.to_string()).unwrap(),
+            ),
         }];
         let decoded = model_response_receipt(&historical).unwrap().unwrap();
         assert_eq!(decoded.response.accounting, receipt.response.accounting);
@@ -252,7 +273,12 @@ fn legacy_assistant_frame_migrates_its_binding() {
         current.content = vec![pl_core::context::ContextContent::Opaque {
             payload: OpaquePayload::new("pl.model.assistant", version, frame.to_string()).unwrap(),
         }];
-        let decoded = model_response_receipt(&current);
+        let payload = match &current.content[0] {
+            pl_core::context::ContextContent::Opaque { payload } => payload,
+            _ => unreachable!(),
+        };
+        let migrated = migrate_payload(payload);
+        let decoded = migrated.and_then(|_| model_response_receipt(&current));
         if version == 3 {
             assert!(
                 decoded.is_err(),
@@ -304,8 +330,15 @@ fn legacy_failure_receipts_migrate_and_unknown_versions_fail_closed() {
         .to_string(),
     )
     .expect("payload is valid");
+    let historical = pl_core::model::ModelError {
+        details: Some(Box::new(legacy.clone())),
+        kind: pl_core::model::ModelFailureKind::Unavailable,
+        usage: Box::default(),
+        source: None,
+    };
+    assert!(model_failure_receipt(&historical).is_err());
     let error = pl_core::model::ModelError {
-        details: Some(Box::new(legacy)),
+        details: Some(Box::new(current(&legacy))),
         kind: pl_core::model::ModelFailureKind::Unavailable,
         usage: Box::default(),
         source: None,
@@ -325,7 +358,13 @@ fn legacy_failure_receipts_migrate_and_unknown_versions_fail_closed() {
     for version in [3, 4] {
         let historical = pl_core::model::ModelError {
             details: Some(Box::new(
-                OpaquePayload::new("pl.model.failure", version, current.to_string()).unwrap(),
+                pl_model::runtime::migration::migrate_payload(
+                    &OpaquePayload::new("pl.model.failure", version, current.to_string()).unwrap(),
+                )
+                .unwrap()
+                .unwrap_or_else(|| {
+                    OpaquePayload::new("pl.model.failure", version, current.to_string()).unwrap()
+                }),
             )),
             kind: pl_core::model::ModelFailureKind::Unavailable,
             usage: Box::default(),
@@ -349,7 +388,8 @@ fn legacy_failure_receipts_migrate_and_unknown_versions_fail_closed() {
             usage: Box::default(),
             source: None,
         };
-        let decoded = model_failure_receipt(&frozen);
+        let decoded = migrate_payload(frozen.details.as_ref().unwrap())
+            .and_then(|_| model_failure_receipt(&frozen));
         if version == 3 {
             assert!(
                 decoded.is_err(),
@@ -408,4 +448,144 @@ fn route_selector_serializes_account_and_model_identity() {
             model_id: "deepseek-flash".into()
         }
     );
+}
+
+#[test]
+fn producer_migration_preserves_opaque_material_precision_and_is_idempotent() {
+    let mut raw: serde_json::Value =
+        serde_json::from_str(legacy_frame_payload(2).content()).unwrap();
+    let vendor = "{ \"opaque\": 9007199254740993, \"text\": \"原始材料\" }";
+    let binding = pl_core::model::ModelToolCall {
+        call_id: "call-frozen".into(),
+        tool_id: "tool-frozen".into(),
+        arguments: OpaquePayload::new("application/json", 1, vendor).unwrap(),
+    };
+    raw["bindings"] = serde_json::to_value(vec![&binding]).unwrap();
+    raw["receipt"]["response"]["toolCalls"] =
+        serde_json::to_value(vec![pl_model::completion::ToolCall::function_raw(
+            "item-frozen",
+            "tool-name",
+            vendor.into(),
+            "call-frozen",
+        )])
+        .unwrap();
+    raw["receipt"]["response"]["vendorExtension"] = json!({"raw": vendor});
+    raw["futureNumeric"] = json!(0);
+    raw["receipt"]["binding"]["futureBinding"] = json!([vendor]);
+    let exact = raw.to_string().replace(
+        "\"futureNumeric\":0",
+        "\"futureNumeric\":123456789012345678901234567890.123456789",
+    );
+    let original = OpaquePayload::new("pl.model.assistant", 2, exact).unwrap();
+    let upgraded = migrate_payload(&original).unwrap().unwrap();
+    let current: serde_json::Value = serde_json::from_str(upgraded.content()).unwrap();
+    assert!(
+        upgraded
+            .content()
+            .contains("123456789012345678901234567890.123456789")
+    );
+    assert_eq!(current["receipt"]["response"], raw["receipt"]["response"]);
+    assert_eq!(
+        current["receipt"]["binding"]["futureBinding"],
+        json!([vendor])
+    );
+    assert!(migrate_payload(&upgraded).unwrap().is_none());
+    let output = pl_core::model::ModelStepOutput {
+        attempt_id: "attempt-frozen".into(),
+        base_context_revision: 7,
+        content: vec![pl_core::context::ContextContent::Opaque { payload: upgraded }],
+        tool_calls: vec![binding],
+        private_context: None,
+        usage: Default::default(),
+    };
+    let receipt = model_response_receipt(&output).unwrap().unwrap();
+    assert_eq!(receipt.response.tool_calls[0].payload_text(), vendor);
+    assert!(
+        migrate_payload(&OpaquePayload::new("vendor.opaque", 99, vendor).unwrap())
+            .unwrap()
+            .is_none()
+    );
+    raw["receipt"]["binding"]["accountId"] = json!("conflicting-account");
+    assert!(
+        migrate_payload(&OpaquePayload::new("pl.model.assistant", 2, raw.to_string()).unwrap())
+            .is_err()
+    );
+    for version in [1, 99] {
+        assert!(migrate_payload(&legacy_frame_payload(version)).is_err());
+    }
+    let mut request: serde_json::Value =
+        serde_json::from_str(legacy_request_with_prompt(1).content()).unwrap();
+    request["prompt"]["accountHash"] = json!("conflicting-fingerprint");
+    assert!(
+        migrate_payload(
+            &OpaquePayload::new("pl.model.prepared-request", 1, request.to_string()).unwrap()
+        )
+        .is_err()
+    );
+}
+
+#[tokio::test]
+async fn assistant_request_reconstruction_requires_explicit_producer_preparation() {
+    use pl_core::{
+        context::{ContextContent, ContextRecord, ContextSnapshot, ContextSource},
+        model::{ModelRequest, ToolCallMode},
+    };
+    let runtime = ModelRuntime::new_with_account_id(
+        "deepseek",
+        ProtocolEndpoint::compatible("fixture", "http://127.0.0.1:1"),
+        ModelInfo::compatible("deepseek-v4-pro"),
+    )
+    .unwrap();
+    let model = pl_model::runtime::ThreadModel::new(runtime, None);
+    let mut raw: serde_json::Value =
+        serde_json::from_str(legacy_frame_payload(2).content()).unwrap();
+    raw["receipt"]["response"]["content"] = json!("frozen answer");
+    let payload = OpaquePayload::new("pl.model.assistant", 2, raw.to_string()).unwrap();
+    let request = |payload: OpaquePayload| ModelRequest {
+        thread_id: "thread".into(),
+        turn_id: "turn".into(),
+        attempt_id: "request".into(),
+        context: ContextSnapshot {
+            revision: 7,
+            records: vec![
+                ContextRecord {
+                    id: "user".into(),
+                    turn_id: None,
+                    source: ContextSource::User,
+                    content: vec![ContextContent::Text {
+                        text: "question".into(),
+                    }],
+                    tool_calls: vec![],
+                },
+                ContextRecord {
+                    id: "assistant".into(),
+                    turn_id: None,
+                    source: ContextSource::Assistant,
+                    content: vec![
+                        ContextContent::Text {
+                            text: "frozen answer".into(),
+                        },
+                        ContextContent::Opaque { payload },
+                    ],
+                    tool_calls: vec![],
+                },
+            ]
+            .into(),
+        },
+        tools: Default::default(),
+        tool_call_mode: ToolCallMode::Parallel,
+        solo_tool_ids: Default::default(),
+        committed_private_context: None,
+        resources: None,
+        cancellation: Default::default(),
+        progress: None,
+    };
+    assert!(
+        model
+            .estimate_input(&request(payload.clone()), None)
+            .await
+            .is_err()
+    );
+    let upgraded = migrate_payload(&payload).unwrap().unwrap();
+    assert!(model.estimate_input(&request(upgraded), None).await.is_ok());
 }

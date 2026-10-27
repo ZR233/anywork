@@ -23,6 +23,7 @@ pub use compaction::{
 };
 mod codec;
 mod media;
+pub mod migration;
 pub(crate) mod progress;
 mod receipt;
 pub use media::{

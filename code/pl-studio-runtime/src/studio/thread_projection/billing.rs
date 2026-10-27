@@ -12,7 +12,7 @@ pub(crate) struct AuxiliaryBillingReceipt {
 
 impl AuxiliaryBillingReceipt {
     /// v3 adds explicit no-charge accounting, without reinterpreting older Disabled records.
-    const VERSION: u32 = 3;
+    pub(crate) const VERSION: u32 = 3;
 
     pub(crate) fn into_payload(self) -> Result<pl_core::context::OpaquePayload> {
         Ok(pl_core::context::OpaquePayload::new(
@@ -114,8 +114,7 @@ fn attempt_billing(
     pl_model::runtime::model_attempt_billing(attempt, recorded_at).map_err(anyhow::Error::new)
 }
 
-/// 辅助计费回执的读取边界：v1 的 `provider/account_instance_id/model/reasoning_effort`
-/// 只在这里并入当前账号/配置模型/推理强度语义。
+/// Current-only auxiliary receipt projection boundary.
 pub(super) fn decode_auxiliary_receipt_for_projection(
     version: u32,
     content: &str,
@@ -125,43 +124,10 @@ pub(super) fn decode_auxiliary_receipt_for_projection(
 
 fn decode_auxiliary_receipt(version: u32, content: &str) -> Result<AuxiliaryBillingReceipt> {
     anyhow::ensure!(
-        (1..=AuxiliaryBillingReceipt::VERSION).contains(&version),
+        version == AuxiliaryBillingReceipt::VERSION,
         "unsupported auxiliary billing version"
     );
-    let mut value: serde_json::Value = serde_json::from_str(content)?;
-    if version < 2 {
-        let billing = value
-            .get_mut("billing")
-            .and_then(serde_json::Value::as_object_mut)
-            .ok_or_else(|| anyhow::anyhow!("auxiliary billing receipt has no billing object"))?;
-        // 真实 v1 载荷是 camelCase：providerInstanceId/provider/model/reasoningEffort。
-        super::super::payload_alias::rename_key(billing, "providerInstanceId", "accountId")?;
-        super::super::payload_alias::rename_key(billing, "provider", "accountDisplayName")?;
-        super::super::payload_alias::rename_key(billing, "reasoningEffort", "effort")?;
-        // 旧 `model` 可能是发送模型或当前路由模型；只有冻结观察里的配置模型能证明身份。
-        billing.remove("model");
-        let configured = billing
-            .get("modelObservation")
-            .and_then(|observation| observation.get("configuredModel"))
-            .and_then(serde_json::Value::as_str)
-            .map(str::to_owned);
-        if let Some(configured) = configured {
-            billing.insert("modelId".into(), serde_json::Value::String(configured));
-        }
-        // 退役的轮换原因：账号身份轮换沿用当前 `accountChanged` 事实。
-        if let Some(reason) = billing.get_mut("prefixChangedReason")
-            && reason.as_str() == Some("providerChanged")
-        {
-            *reason = serde_json::Value::String("accountChanged".into());
-        }
-    }
-    let receipt: AuxiliaryBillingReceipt = serde_json::from_value(value)?;
-    anyhow::ensure!(
-        version == AuxiliaryBillingReceipt::VERSION
-            || receipt.billing.accounting.pricing != pl_protocol::PricingOutcome::NoCharge,
-        "no-charge accounting requires auxiliary billing version 3"
-    );
-    Ok(receipt)
+    Ok(serde_json::from_str(content)?)
 }
 
 #[cfg(test)]
@@ -241,6 +207,10 @@ mod tests {
             LEGACY_AUX_BUDGET,
         )
         .unwrap();
+        assert!(billing_facts(&batch("studio.auxiliary-billing.title", payload.clone())).is_err());
+        let payload = crate::studio::producer_migration::normalize(&payload)
+            .unwrap()
+            .unwrap();
         let facts = billing_facts(&batch("studio.auxiliary-billing.title", payload)).unwrap();
         assert_eq!(facts.len(), 1);
         let record = &facts[0].record;
@@ -283,6 +253,10 @@ mod tests {
             );
         let payload =
             pl_core::context::OpaquePayload::new("pl.studio.auxiliary-billing", 1, legacy).unwrap();
+        assert!(billing_facts(&batch("studio.auxiliary-billing.title", payload.clone())).is_err());
+        let payload = crate::studio::producer_migration::normalize(&payload)
+            .unwrap()
+            .unwrap();
         let facts = billing_facts(&batch("studio.auxiliary-billing.title", payload)).unwrap();
         let record = &facts[0].record;
         assert!(
@@ -325,6 +299,10 @@ mod tests {
         let payload =
             pl_core::context::OpaquePayload::new("pl.studio.compaction", 1, LEGACY_COMPACTION)
                 .unwrap();
+        assert!(billing_facts(&batch("studio.compaction.latest", payload.clone())).is_err());
+        let payload = crate::studio::producer_migration::normalize(&payload)
+            .unwrap()
+            .unwrap();
         let facts = billing_facts(&batch("studio.compaction.latest", payload)).unwrap();
         assert_eq!(facts.len(), 1);
         let record = &facts[0].record;

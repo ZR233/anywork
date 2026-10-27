@@ -1,13 +1,7 @@
 //! Explicit offline migrations, ordered and committed by SeaORM.
-use super::{SessionStoreError, SqliteSessionOptions, history, sqlite, thread_history};
-use crate::{
-    context::OpaquePayload,
-    storage::{SessionEntry, SessionEntryChange},
-    thread::ThreadEffectBatch,
-};
+use super::{SessionStoreError, SqliteSessionOptions, sqlite};
 use sea_orm::{ConnectionTrait, Database, DatabaseConnection, DbErr};
 use sea_orm_migration::{MigrationName, MigrationTrait, MigratorTraitSelf, SchemaManager};
-use std::sync::Arc;
 
 /// Minimal view of a stored checkpoint the usage backfill needs.
 ///
@@ -36,13 +30,9 @@ struct UsageBackfillState {
 
 /// Upgrades an existing database while holding its exclusive maintenance lease.
 /// Each official migration commits independently; failures preserve source data for retry.
-/// The callback is owned by the migration and must have no external side effects.
 /// # Errors
 /// Rejects missing or active databases, unsupported formats, invalid facts and storage failures.
-pub async fn migrate_to_current(
-    options: SqliteSessionOptions,
-    transform: impl Fn(&mut ThreadEffectBatch) -> Result<(), SessionStoreError> + Send + Sync + 'static,
-) -> Result<(), SessionStoreError> {
+pub async fn migrate_to_current(options: SqliteSessionOptions) -> Result<(), SessionStoreError> {
     if !tokio::fs::try_exists(&options.path).await? {
         return Err(SessionStoreError::Invalid(
             "session database does not exist".into(),
@@ -62,9 +52,7 @@ pub async fn migrate_to_current(
     let db = Database::connect(url.to_string()).await?;
     let result = async {
         preflight(&db, true).await?;
-        let migrator = Migrator {
-            transform: Arc::new(transform),
-        };
+        let migrator = Migrator;
         if let Err(error) = migrator.up(&db, None).await {
             let pending = migrator
                 .get_pending_migrations_read_only(&db)
@@ -94,9 +82,7 @@ pub async fn migrate_to_current(
 
 pub(super) async fn initialize(db: &DatabaseConnection) -> Result<(), SessionStoreError> {
     preflight(db, false).await?;
-    let migrator = Migrator {
-        transform: Arc::new(|_: &mut ThreadEffectBatch| Ok(())),
-    };
+    let migrator = Migrator;
     if let Err(error) = migrator.up(db, None).await {
         let pending = migrator
             .get_pending_migrations_read_only(db)
@@ -115,7 +101,7 @@ pub(super) async fn initialize(db: &DatabaseConnection) -> Result<(), SessionSto
 
 pub(super) async fn inspect_existing(
     path: &std::path::Path,
-    allow_legacy: bool,
+    allow_upgrade: bool,
 ) -> Result<(), SessionStoreError> {
     if !tokio::fs::try_exists(path).await? {
         return Ok(());
@@ -130,7 +116,7 @@ pub(super) async fn inspect_existing(
     let mut options = sea_orm::ConnectOptions::new(url.to_string());
     options.max_connections(1);
     let db = Database::connect(options).await?;
-    let result = preflight(&db, allow_legacy).await;
+    let result = preflight(&db, allow_upgrade).await;
     match (result, db.close().await) {
         (Ok(()), Ok(())) => Ok(()),
         (Err(error), Ok(())) => Err(error),
@@ -149,14 +135,14 @@ async fn version(db: &impl ConnectionTrait) -> Result<i64, SessionStoreError> {
         .ok_or_else(|| SessionStoreError::Invalid("missing session format".into()))?
         .try_get_by_index(0)?)
 }
-async fn preflight(db: &DatabaseConnection, allow_legacy: bool) -> Result<(), SessionStoreError> {
+async fn preflight(db: &DatabaseConnection, allow_upgrade: bool) -> Result<(), SessionStoreError> {
     let found = version(db).await?;
     if found == 0 {
-        if allow_legacy || db.query_one_raw(sqlite::statement("SELECT 1 FROM sqlite_schema WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name<>'seaql_migrations' LIMIT 1", vec![])).await?.is_some() {
+        if allow_upgrade || db.query_one_raw(sqlite::statement("SELECT 1 FROM sqlite_schema WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name<>'seaql_migrations' LIMIT 1", vec![])).await?.is_some() {
             return Err(SessionStoreError::UnsupportedSchema { found, supported: super::SESSION_SCHEMA_VERSION });
         }
-    } else if !(6..=super::SESSION_SCHEMA_VERSION).contains(&found)
-        || (!allow_legacy && found != super::SESSION_SCHEMA_VERSION)
+    } else if !(7..=super::SESSION_SCHEMA_VERSION).contains(&found)
+        || (!allow_upgrade && found != super::SESSION_SCHEMA_VERSION)
     {
         return Err(SessionStoreError::UnsupportedSchema {
             found,
@@ -170,7 +156,7 @@ async fn preflight(db: &DatabaseConnection, allow_legacy: bool) -> Result<(), Se
     {
         return Err(SessionStoreError::Invalid("unsupported checkpoint schema; existing data preserved".into()));
     }
-    if found == 12 {
+    if found >= 12 {
         let manager = SchemaManager::new(db);
         for table in [
             "session_entries",
@@ -197,7 +183,7 @@ async fn preflight(db: &DatabaseConnection, allow_legacy: bool) -> Result<(), Se
             ));
         }
     }
-    if !allow_legacy
+    if !allow_upgrade
         && found != 0
         && db
             .query_one_raw(sqlite::statement(
@@ -209,9 +195,7 @@ async fn preflight(db: &DatabaseConnection, allow_legacy: bool) -> Result<(), Se
     {
         return Err(SessionStoreError::MigrationRequired);
     }
-    let migrator = Migrator {
-        transform: Arc::new(|_: &mut ThreadEffectBatch| Ok(())),
-    };
+    let migrator = Migrator;
     let pending = migrator.get_pending_migrations_read_only(db).await?;
     if pending.is_empty() && found != super::SESSION_SCHEMA_VERSION {
         return Err(SessionStoreError::Invalid(
@@ -231,24 +215,18 @@ async fn preflight(db: &DatabaseConnection, allow_legacy: bool) -> Result<(), Se
     Ok(())
 }
 
-struct Migrator<F> {
-    transform: Arc<F>,
-}
-impl<F> MigratorTraitSelf for Migrator<F>
-where
-    F: Fn(&mut ThreadEffectBatch) -> Result<(), SessionStoreError> + Send + Sync + 'static,
-{
+struct Migrator;
+impl MigratorTraitSelf for Migrator {
     fn migrations(&self) -> Vec<Box<dyn MigrationTrait>> {
         vec![
             Box::new(InitialSchema),
-            Box::new(CurrentEntries {
-                transform: self.transform.clone(),
-            }),
+            Box::new(CurrentEntries),
             Box::new(CheckpointTable),
             Box::new(UsageSummary),
             Box::new(AttemptIdentity),
             Box::new(TaskIndex),
             Box::new(CheckpointV5),
+            Box::new(CurrentEffects),
         ]
     }
 }
@@ -302,29 +280,24 @@ impl MigrationTrait for InitialSchema {
     }
 }
 
-struct CurrentEntries<F> {
-    transform: Arc<F>,
-}
-impl<F> MigrationName for CurrentEntries<F> {
+// Preserve this published ledger identity, but never read or convert pre-v2 journals.
+struct CurrentEntries;
+impl MigrationName for CurrentEntries {
     fn name(&self) -> &str {
         "m20261026_000002_core_entries_v7"
     }
 }
 #[sea_orm_migration::async_trait::async_trait]
-impl<F> MigrationTrait for CurrentEntries<F>
-where
-    F: Fn(&mut ThreadEffectBatch) -> Result<(), SessionStoreError> + Send + Sync + 'static,
-{
-    fn use_transaction(&self) -> Option<bool> {
-        Some(true)
-    }
+impl MigrationTrait for CurrentEntries {
     async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
-        let db = manager.get_connection();
-        if version(db).await.map_err(conversion)? < 7 {
-            convert_entries(db, self.transform.as_ref())
-                .await
-                .map_err(conversion)?;
-            db.execute_unprepared("PRAGMA user_version=7").await?;
+        if version(manager.get_connection())
+            .await
+            .map_err(conversion)?
+            < 7
+        {
+            return Err(DbErr::Migration(
+                "pre-v2 session formats are unsupported".into(),
+            ));
         }
         Ok(())
     }
@@ -434,90 +407,27 @@ impl MigrationTrait for CheckpointV5 {
     }
 }
 
-async fn convert_entries(
-    tx: &impl ConnectionTrait,
-    transform: &impl Fn(&mut ThreadEffectBatch) -> Result<(), SessionStoreError>,
-) -> Result<(), SessionStoreError> {
-    let sessions = tx.query_all_raw(sqlite::statement("SELECT session_id FROM session_history_heads UNION SELECT session_id FROM session_entries UNION SELECT session_id FROM session_entry_history", vec![])).await?;
-    for row in sessions {
-        let id: String = row.try_get("", "session_id")?;
-        let mut history = history::read(tx, &id, None).await?;
-        let mut current = sqlite::entries(tx, &id, None).await?;
-        let sort = |entries: &mut Vec<SessionEntry>| entries.sort_by(|a, b| a.id.cmp(&b.id));
-        sort(&mut current);
-        let mut replay = crate::storage::replay_entries(&history)?;
-        sort(&mut replay);
-        if replay != current {
-            return Err(SessionStoreError::Invalid(
-                "history and current entries disagree".into(),
-            ));
-        }
-        for batch in &mut history {
-            for change in &mut batch.changes {
-                if let SessionEntryChange::Put { entry } = change {
-                    convert(entry, transform)?;
-                }
-            }
-            let encoded = serde_json::to_string(batch)?;
-            let hash = crate::context::content_hash(encoded.as_bytes());
-            tx.execute_raw(sqlite::statement("UPDATE session_entry_history SET envelope=?,payload_hash=? WHERE session_id=? AND sequence=?", vec![encoded.into(), hash.clone().into(), id.clone().into(), (batch.sequence as i64).into()])).await?;
-            tx.execute_raw(sqlite::statement(
-                "UPDATE session_history_heads SET payload_hash=? WHERE session_id=? AND sequence=?",
-                vec![
-                    hash.into(),
-                    id.clone().into(),
-                    (batch.sequence as i64).into(),
-                ],
-            ))
-            .await?;
-        }
-        for entry in &mut current {
-            convert(entry, transform)?;
-            let encoded = serde_json::to_string(entry)?;
-            let hash = crate::context::content_hash(encoded.as_bytes());
-            tx.execute_raw(sqlite::statement(
-                "UPDATE session_entries SET envelope=?,payload_hash=? WHERE session_id=? AND id=?",
-                vec![
-                    encoded.into(),
-                    hash.into(),
-                    id.clone().into(),
-                    entry.id.clone().into(),
-                ],
-            ))
-            .await?;
-        }
-        let mut replay = crate::storage::replay_entries(&history)?;
-        sort(&mut replay);
-        if replay != current {
-            return Err(SessionStoreError::Invalid(
-                "migration changed current/history equivalence".into(),
-            ));
-        }
-        let mut commits = Vec::new();
-        for entry in &current {
-            if entry.id.starts_with("pl.resource.thread-commit.") {
-                let payload = OpaquePayload::new(
-                    entry.type_id.clone(),
-                    entry.schema_version,
-                    entry.payload.clone(),
-                )
-                .map_err(|e| SessionStoreError::Invalid(e.to_string()))?;
-                let commit = ThreadEffectBatch::decode(&payload)
-                    .map_err(|e| SessionStoreError::Invalid(e.to_string()))?;
-                if commit.thread_id != id
-                    || entry.id != format!("pl.resource.thread-commit.{:020}", commit.sequence)
-                {
-                    return Err(SessionStoreError::Invalid(
-                        "commit ownership mismatch".into(),
-                    ));
-                }
-                commits.push(Arc::new(commit));
-            }
-        }
-        crate::thread::journal::legacy_migration::replay(&commits)
-            .map_err(|e| SessionStoreError::Invalid(e.to_string()))?;
+struct CurrentEffects;
+impl MigrationName for CurrentEffects {
+    fn name(&self) -> &str {
+        "m20261026_000008_core_effect_batch_v1"
     }
-    Ok(())
+}
+#[sea_orm_migration::async_trait::async_trait]
+impl MigrationTrait for CurrentEffects {
+    fn use_transaction(&self) -> Option<bool> {
+        Some(true)
+    }
+    async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        let db = manager.get_connection();
+        if version(db).await.map_err(conversion)? < 13 {
+            super::effect_migration::convert_effects(db)
+                .await
+                .map_err(conversion)?;
+            db.execute_unprepared("PRAGMA user_version=13").await?;
+        }
+        Ok(())
+    }
 }
 
 async fn create_checkpoint_table(tx: &impl ConnectionTrait) -> Result<(), SessionStoreError> {
@@ -617,7 +527,7 @@ async fn backfill_usage(tx: &impl ConnectionTrait) -> Result<(), SessionStoreErr
                     )));
                 }
                 for effect_row in effects {
-                    let effect = thread_history::decode_effect(effect_row, &thread_id)?;
+                    let effect = super::effect_migration::decode_effect(effect_row, &thread_id)?;
                     if effect.sequence != expected {
                         return Err(SessionStoreError::Invalid(format!(
                             "Thread {thread_id} usage history has a sequence gap at {expected}"
@@ -722,7 +632,7 @@ async fn backfill_attempt_identity(tx: &impl ConnectionTrait) -> Result<(), Sess
                     )));
                 }
                 for row in effects {
-                    let effect = thread_history::decode_effect(row, &thread_id)?;
+                    let effect = super::effect_migration::decode_effect(row, &thread_id)?;
                     if effect.sequence != expected {
                         return Err(SessionStoreError::Invalid(format!(
                             "Thread {thread_id} identity history has a sequence gap at {expected}"
@@ -750,31 +660,5 @@ async fn backfill_attempt_identity(tx: &impl ConnectionTrait) -> Result<(), Sess
             .await?;
         }
     }
-    Ok(())
-}
-
-fn convert(
-    entry: &mut SessionEntry,
-    transform: &impl Fn(&mut ThreadEffectBatch) -> Result<(), SessionStoreError>,
-) -> Result<(), SessionStoreError> {
-    if entry.type_id != "pl.core.thread-commit" {
-        return Ok(());
-    }
-    if entry.schema_version != 2 {
-        return Err(SessionStoreError::Invalid(
-            "unsupported migration commit version".into(),
-        ));
-    }
-    let mut value: serde_json::Value = serde_json::from_str(&entry.payload)?;
-    if let Some(state) = value.get_mut("turn").and_then(|turn| turn.get_mut("state"))
-        && state.get("kind").and_then(|v| v.as_str()) == Some("finished")
-        && state.get("value").and_then(|v| v.as_str()) == Some("toolCompleted")
-    {
-        state["value"] = "completed".into();
-    }
-    let mut commit: ThreadEffectBatch = serde_json::from_value(value)?;
-    transform(&mut commit)?;
-    entry.schema_version = 3;
-    entry.payload = serde_json::to_string(&commit)?;
     Ok(())
 }

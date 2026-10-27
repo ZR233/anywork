@@ -1772,11 +1772,7 @@ mod storage_fault_tests {
         };
         let extension = ExtensionRecord {
             revision: 1,
-            payload: OpaquePayload::new(
-                "pl.studio.compaction",
-                2,
-                serde_json::to_string(&receipt)?,
-            )?,
+            payload: receipt.clone().into_payload()?,
         };
         let state = ThreadSnapshot {
             commit_sequence: 1,
