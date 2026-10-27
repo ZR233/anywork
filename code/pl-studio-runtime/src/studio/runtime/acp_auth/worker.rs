@@ -38,7 +38,7 @@ pub(super) type ChildReader = Pin<Box<dyn AsyncRead + Send>>;
 /// 只有这些键会被显式转交；**其余继承来的环境一律显式删除**（`env_remove`），因此宿主进程
 /// 的其它变量（尤其是凭据类）不会进入官方程序。凭据始终由官方程序自行管理，产品的日志与
 /// 状态里不出现任何环境值。
-const ENV_ALLOWLIST: [&str; 22] = [
+const ENV_ALLOWLIST: &[&str] = &[
     "HOME",
     "USER",
     "LOGNAME",
@@ -67,6 +67,29 @@ const ENV_ALLOWLIST: [&str; 22] = [
     "XAUTHORITY",
     "WAYLAND_DISPLAY",
     "DBUS_SESSION_BUS_ADDRESS",
+    // Windows 的系统与用户目录是原生运行时和官方凭据定位所需的宿主上下文；尤其不能清掉
+    // SystemRoot，否则官方 Python server 导入 asyncio 时会因 Winsock 10106 直接退出。
+    // std::env::var_os 在 Windows 按原生大小写无关规则读取，不合成任何缺省值。
+    #[cfg(windows)]
+    "SYSTEMROOT",
+    #[cfg(windows)]
+    "WINDIR",
+    #[cfg(windows)]
+    "USERPROFILE",
+    #[cfg(windows)]
+    "HOMEDRIVE",
+    #[cfg(windows)]
+    "HOMEPATH",
+    #[cfg(windows)]
+    "APPDATA",
+    #[cfg(windows)]
+    "LOCALAPPDATA",
+    #[cfg(windows)]
+    "USERNAME",
+    #[cfg(windows)]
+    "COMSPEC",
+    #[cfg(windows)]
+    "PATHEXT",
 ];
 
 /// 启动官方程序的进程内请求；只含已校验的绝对程序路径与字面 argv。
