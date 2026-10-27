@@ -42,6 +42,49 @@ fn selectable_ids(account: &AccountConfig) -> Vec<String> {
         .collect()
 }
 
+/// 成功的空名单只改变内置默认资格；显式开启可以恢复选择和路由解析。
+#[test]
+fn missing_bundled_member_can_be_explicitly_enabled_after_successful_empty_inventory() {
+    let mut account = openai_account();
+    assert!(member(&account, "gpt-6-luna").enabled);
+    account.set_model_catalog_overlay(Vec::new()).unwrap();
+    let missing = member(&account, "gpt-6-luna");
+    assert_eq!(
+        missing.origin,
+        pl_model::config::AccountModelOrigin::Bundled
+    );
+    assert!(!missing.enabled);
+    assert!(selectable_ids(&account).is_empty());
+    assert!(
+        account
+            .model_selection_guide("gpt-6-luna")
+            .unwrap()
+            .is_some()
+    );
+    account.set_model_enabled("gpt-6-luna", true).unwrap();
+    assert!(selectable_ids(&account).contains(&"gpt-6-luna".into()));
+    let account_id = AccountId::new("missing").unwrap();
+    let role = AgentRoleId::new("executor").unwrap();
+    let route = ModelRouteConfig {
+        account_id: account_id.clone(),
+        model_id: "gpt-6-luna".into(),
+        effort: missing.model.default_effort().map(ReasoningEffort::new),
+    };
+    let mut config = AgentModelConfig {
+        accounts: [(account_id.clone(), account)].into(),
+        routes: [(role.clone(), route.clone())].into(),
+    };
+    assert!(config.resolve_route(role.clone(), &route).is_ok());
+    let bytes = serde_json::to_vec(&config.accounts[&account_id]).unwrap();
+    let mut reopened: AccountConfig = serde_json::from_slice(&bytes).unwrap();
+    reopened.set_model_catalog_overlay(Vec::new()).unwrap();
+    assert!(member(&reopened, "gpt-6-luna").enabled);
+    reopened.set_model_enabled("gpt-6-luna", false).unwrap();
+    config.accounts.insert(account_id, reopened);
+    assert!(config.resolve_route(role, &route).is_err());
+    assert_eq!(config.routes.values().next(), Some(&route));
+}
+
 /// 禁用保留成员、来源与其他覆盖，只是把它从选择资格里排除。
 #[test]
 fn disabled_model_stays_in_catalog_but_loses_selection_qualification() {
@@ -84,7 +127,10 @@ fn disabled_model_stays_in_catalog_but_loses_selection_qualification() {
 
     // 重新启用恢复选择资格，且不产生新的成员或覆盖。
     account.set_model_enabled("gpt-6-luna", true).unwrap();
-    assert!(account.disabled_models().is_empty());
+    assert_eq!(
+        account.model_enabled_overrides().get("gpt-6-luna"),
+        Some(&true)
+    );
     assert!(selectable_ids(&account).contains(&"gpt-6-luna".to_string()));
     assert_eq!(account.effective_catalog(None).unwrap().len(), total);
 }
@@ -108,15 +154,18 @@ fn disabled_models_do_not_cross_account_boundaries() {
 fn set_model_enabled_rejects_unknown_members_without_mutation() {
     let mut account = openai_account();
     account.set_model_enabled("gpt-6-luna", false).unwrap();
-    let before = account.disabled_models().clone();
+    let before = account.model_enabled_overrides().clone();
     assert!(account.set_model_enabled("not-a-member", false).is_err());
     assert!(account.set_model_enabled("not-a-member", true).is_err());
-    assert_eq!(account.disabled_models(), &before);
+    assert_eq!(account.model_enabled_overrides(), &before);
     account.set_model_enabled("gpt-6-luna", false).unwrap();
-    assert_eq!(account.disabled_models(), &before);
+    assert_eq!(account.model_enabled_overrides(), &before);
     account.set_model_enabled("gpt-6-luna", true).unwrap();
     account.set_model_enabled("gpt-6-luna", true).unwrap();
-    assert!(account.disabled_models().is_empty());
+    assert_eq!(
+        account.model_enabled_overrides().get("gpt-6-luna"),
+        Some(&true)
+    );
 }
 
 /// 撤下再出现的同一成员继续应用保存的禁用覆盖，且不误判为配置损坏。
@@ -135,14 +184,15 @@ fn disabled_member_survives_withdrawal_and_reappearance() {
         .cloned()
         .collect::<Vec<ModelInfo>>();
     account.set_model_catalog_overlay(withdrawn).unwrap();
-    assert!(account.disabled_models().contains("gpt-6-luna"));
-    assert!(
-        !account
-            .effective_catalog(None)
-            .unwrap()
-            .iter()
-            .any(|entry| entry.model.model_id == "gpt-6-luna")
+    assert_eq!(
+        account.model_enabled_overrides().get("gpt-6-luna"),
+        Some(&false)
     );
+    assert_eq!(
+        member(&account, "gpt-6-luna").origin,
+        pl_model::config::AccountModelOrigin::Bundled
+    );
+    assert!(!member(&account, "gpt-6-luna").enabled);
     let id = AccountId::new("openai-main").unwrap();
     account.validate_declarations(&id).unwrap();
 
@@ -243,6 +293,58 @@ fn resolved_catalog_cache_keeps_disabled_members_unselectable() {
     let inventory = account.effective_models(None).unwrap();
     account.set_model_catalog_overlay(inventory).unwrap();
     assert!(!selectable_ids(account).contains(&"gpt-6-luna".to_string()));
+
+    // 即使开启时与自动默认相同，也保存意图，后续成功空名单不能把它关闭。
+    account.set_model_enabled("gpt-6-astra", true).unwrap();
+    account.set_model_catalog_overlay(Vec::new()).unwrap();
+    config.reconcile_model_catalog().unwrap();
+    let account = config.accounts.values_mut().next().unwrap();
+    assert!(member(account, "gpt-6-astra").enabled);
+    assert!(!member(account, "gpt-6-luna").enabled);
+    assert!(!member(account, "gpt-6-sol").enabled);
+    account.set_model_enabled("gpt-6-astra", false).unwrap();
+    assert!(selectable_ids(account).is_empty());
+}
+
+/// 显式开启不修复未知上下文，撤下的线上独有成员也不能靠覆盖变成库存。
+#[test]
+fn explicit_enablement_does_not_create_inventory_or_bypass_context() {
+    let mut account = openai_account();
+    let mut online = ModelInfo::compatible("online-unknown-context");
+    online.context_window = None;
+    online.max_context_window = None;
+    online
+        .binding
+        .set_transport(pl_model::model::ModelTransportProfile::responses_websocket());
+    account
+        .set_model_catalog_overlay(vec![online.clone()])
+        .unwrap();
+    account.set_model_enabled(&online.model_id, true).unwrap();
+    assert!(member(&account, &online.model_id).enabled);
+    assert!(!selectable_ids(&account).contains(&online.model_id));
+    account.set_model_catalog_overlay(Vec::new()).unwrap();
+    assert!(
+        account
+            .effective_catalog(None)
+            .unwrap()
+            .iter()
+            .all(|entry| entry.model.model_id != online.model_id)
+    );
+    assert!(account.set_model_enabled(&online.model_id, true).is_err());
+    assert!(
+        account
+            .model_selection_guide(&online.model_id)
+            .unwrap()
+            .is_none()
+    );
+    account
+        .set_model_catalog_overlay(vec![online.clone()])
+        .unwrap();
+    assert!(member(&account, &online.model_id).enabled);
+    assert_eq!(
+        member(&account, &online.model_id).origin,
+        pl_model::config::AccountModelOrigin::Online
+    );
 }
 
 /// 计费类别来自明确模板与 canonical endpoint，与金额统计开关独立。
@@ -347,7 +449,7 @@ fn billing_kind_follows_template_and_canonical_endpoint() {
     .unwrap();
     assert_eq!(legacy.billing_kind, None);
     assert_eq!(legacy.billing_kind().unwrap(), BillingKind::Unknown);
-    assert!(legacy.disabled_models().is_empty());
+    assert!(legacy.model_enabled_overrides().is_empty());
     assert!(
         legacy
             .effective_catalog(None)
@@ -556,7 +658,7 @@ fn account_selection_guide_requires_current_non_manual_member() {
     // 其他目录的 model_id 不在本账号目录里，不回落到系统目录。
     assert!(account.model_selection_guide("glm-5.3").unwrap().is_none());
 
-    // 在线目录撤下成员：当前没有该成员，不返回原资料。
+    // 在线目录撤下内置成员：仍在管理目录，默认关闭但保留资料。
     let mut withdrawn = openai_account();
     let inventory = withdrawn.effective_models(None).unwrap();
     withdrawn
@@ -572,7 +674,7 @@ fn account_selection_guide_requires_current_non_manual_member() {
         withdrawn
             .model_selection_guide("gpt-6-luna")
             .unwrap()
-            .is_none()
+            .is_some()
     );
 
     // 同 ID 的手工覆盖由用户定义语义，不附内置资料。

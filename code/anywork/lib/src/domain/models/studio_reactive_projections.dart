@@ -1,6 +1,6 @@
 import 'package:anywork_client/models.dart';
 import 'package:anywork_client/studio_client.dart' show ModelRouteQueries;
-import 'package:flutter/foundation.dart' show listEquals;
+import 'package:flutter/foundation.dart' show listEquals, mapEquals;
 
 import 'agent_workspace_view.dart';
 import 'studio_state.dart';
@@ -556,7 +556,7 @@ int _modeRouteHash(ModeModelRouteView route) =>
 bool _accountEquals(AccountSettingsView left, AccountSettingsView right) {
   return left.billingKind == right.billingKind &&
       left.billingKindOverride == right.billingKindOverride &&
-      listEquals(left.disabledModels, right.disabledModels) &&
+      mapEquals(left.modelEnabledOverrides, right.modelEnabledOverrides) &&
       _catalogStatusEquals(left.modelCatalog, right.modelCatalog) &&
       left.id == right.id &&
       left.templateId == right.templateId &&
@@ -591,7 +591,11 @@ bool _accountEquals(AccountSettingsView left, AccountSettingsView right) {
 int _accountHash(AccountSettingsView account) => Object.hashAll([
   account.billingKind,
   account.billingKindOverride,
-  Object.hashAll(account.disabledModels),
+  Object.hashAllUnordered(
+    account.modelEnabledOverrides.entries.map(
+      (entry) => Object.hash(entry.key, entry.value),
+    ),
+  ),
   _catalogStatusHash(account.modelCatalog),
   account.id,
   account.templateId,

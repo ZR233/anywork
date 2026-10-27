@@ -110,7 +110,7 @@ fn settings_view(
             Ok(StudioAccountSettings {
                 billing_kind: account.billing_kind()?,
                 billing_kind_override: account.billing_kind,
-                disabled_models: account.disabled_models().iter().cloned().collect(),
+                model_enabled_overrides: account.model_enabled_overrides().clone(),
                 account_id: id.to_string(),
                 template_id: account.template_id().map(ToString::to_string),
                 protocol: account.protocol.as_str().to_string(),

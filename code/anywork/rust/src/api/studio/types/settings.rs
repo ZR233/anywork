@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use serde::{Deserialize, Serialize};
 
 use super::{
@@ -386,7 +388,7 @@ pub struct BridgeModeModelSettingsDto {
 pub struct BridgeAccountSettingsDto {
     pub billing_kind: BridgeBillingKind,
     pub billing_kind_override: Option<BridgeBillingKind>,
-    pub disabled_models: Vec<String>,
+    pub model_enabled_overrides: HashMap<String, bool>,
     pub account_id: String,
     /// 可选的内置账号模板引用；完全自定义账号为 `None`。
     pub template_id: Option<String>,

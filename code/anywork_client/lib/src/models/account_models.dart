@@ -243,7 +243,7 @@ class AccountSettingsView {
   const AccountSettingsView({
     this.billingKind = BillingKind.unknown,
     this.billingKindOverride,
-    this.disabledModels = const [],
+    this.modelEnabledOverrides = const {},
     this.modelCatalog = const ModelCatalogStatusView(),
     required this.id,
     this.templateId,
@@ -277,7 +277,7 @@ class AccountSettingsView {
 
   final BillingKind billingKind;
   final BillingKind? billingKindOverride;
-  final List<String> disabledModels;
+  final Map<String, bool> modelEnabledOverrides;
   final ModelCatalogStatusView modelCatalog;
   final String id;
 
@@ -362,7 +362,7 @@ class AccountSettingsView {
     ModelCatalogStatusView? modelCatalog,
     BillingKind? billingKind,
     Object? billingKindOverride = _accountSettingsUnset,
-    List<String>? disabledModels,
+    Map<String, bool>? modelEnabledOverrides,
     String? id,
     Object? templateId = _accountTemplateUnset,
     String? protocol,
@@ -398,7 +398,8 @@ class AccountSettingsView {
       billingKindOverride: identical(billingKindOverride, _accountSettingsUnset)
           ? this.billingKindOverride
           : billingKindOverride as BillingKind?,
-      disabledModels: disabledModels ?? this.disabledModels,
+      modelEnabledOverrides:
+          modelEnabledOverrides ?? this.modelEnabledOverrides,
       id: id ?? this.id,
       templateId: identical(templateId, _accountTemplateUnset)
           ? this.templateId

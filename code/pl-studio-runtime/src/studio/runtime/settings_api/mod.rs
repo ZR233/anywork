@@ -431,11 +431,9 @@ impl StudioRuntime {
                         ))
                     })?;
                 account.set_model_enabled(&request.model_id, request.enabled)?;
-                changed = desired
-                    .models
-                    .accounts
-                    .get(&account_id)
-                    .is_some_and(|old| old.disabled_models() != account.disabled_models());
+                changed = desired.models.accounts.get(&account_id).is_some_and(|old| {
+                    old.model_enabled_overrides() != account.model_enabled_overrides()
+                });
                 next.models.accounts.insert(account_id.clone(), account);
                 Ok(next)
             },

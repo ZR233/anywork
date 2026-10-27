@@ -144,6 +144,62 @@ Map<String, int> _limits(AccountCommand command) => {
 };
 
 void main() {
+  test('enablement keeps backend defaults and explicit intents across independent clocks', () {
+    SettingsStateSnapshot frame(
+      int settings,
+      int catalog,
+      Map<String, bool> overrides,
+      bool enabled,
+    ) => SettingsStateSnapshot(
+      revision: settings,
+      modelCatalogRevision: catalog,
+      accounts: [
+        _account.copyWith(
+          modelEnabledOverrides: overrides,
+          models: [
+            _alpha.copyWith(enabled: enabled),
+            _beta.copyWith(enabled: false),
+          ],
+        ),
+      ],
+    );
+    var state = mergeSettingsProjection(
+      const SettingsProjectionState(),
+      frame(1, 1, const {}, false),
+    );
+    AccountSettingsView account() => state.canonical!.accounts.single;
+    expect(account().models.map((model) => model.enabled), [false, false]);
+    state = mergeSettingsProjection(
+      state,
+      frame(2, 1, const {'alpha': true}, false),
+      scope: SettingsMergeScope.configOnly,
+    );
+    expect(account().models.map((model) => model.enabled), [true, false]);
+    state = mergeSettingsProjection(
+      state,
+      frame(1, 2, const {}, false),
+      scope: SettingsMergeScope.catalogOnly,
+    );
+    expect(account().modelEnabledOverrides, {'alpha': true});
+    expect(account().models.map((model) => model.enabled), [true, false]);
+    state = mergeSettingsProjection(
+      state,
+      frame(3, 1, const {'alpha': false}, true),
+      scope: SettingsMergeScope.configOnly,
+    );
+    state = mergeSettingsProjection(
+      state,
+      frame(2, 3, const {'alpha': true}, true),
+      scope: SettingsMergeScope.catalogOnly,
+    );
+    expect(account().modelEnabledOverrides, {'alpha': false});
+    expect(account().models.map((model) => model.enabled), [false, false]);
+    expect(
+      mergeSettingsProjection(state, frame(2, 2, const {'alpha': true}, true)),
+      same(state),
+    );
+  });
+
   test('one catalog revision updates shared metadata across routes and rejects older responses', () {
     SettingsStateSnapshot frame(int settings, int catalog, int context) =>
         SettingsStateSnapshot(

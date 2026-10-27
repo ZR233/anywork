@@ -26,6 +26,7 @@
 - **版本 `20 → 21`**：将 `models.providers.<id>.capabilities.web_search.standalone = "deep_seek_anthropic_messages"` 改写为 `"deep_seek_tools_api"`，并按版本默认值补齐 `[deepseek_web_search]` 的 `fetch_enabled`。
 - **版本 `21 → 22 → 23`**：`21 → 22` 将旧模型声明中的 `slug` 转换为 `model_id`；`22 → 23` 将模型接入领域的 `Provider/Preset` 统一迁移为 `Account/AccountTemplate`（`models.providers` 转为 `models.accounts`，账号 `preset` 转为 `template`、`adapter` 转为 `protocol`，角色、工作模式与用户智能体模板中的 `provider`/`model` 转为 `account_id`/`model_id`）。
 - **版本 `24 → 25`**：保留或补齐 ACP 账号集合，显式移除旧版 ACP 的自定义 `program`/`args` 字段，同时保留模型禁用集合（`disabled_models`）、计费类别覆盖（`billing_kind`）与子智能体分发默认设置（`[delegation]`）。
+- **版本 `26 → 27`**：将各账号旧 `disabled_models` 成员转换为 `model_enabled_overrides` 中值为 `false` 的条目，移除旧字段；未明确禁用的模型保持自动，不批量写入 `true`。转换保持账号身份、凭据关联、路由及其余覆盖不变，并沿用启动期备份、原子提交与中断恢复边界；正常读写仅消费新映射。
 
 所有设置变更命令（Settings command）均须携带 `expectedSettingsRevision`，成功后返回新的 `SettingsConfigSnapshot`；当模型目录发生变化时一并返回 `ModelCatalogSnapshot`，并分别发布 `SettingsConfigStateChanged` 与 `ModelCatalogStateChanged` 事件。直接响应结构 `SettingsStateResponse` 仅用于在单次调用中同时带回配置与目录两份独立资源，消费端仍按各自修订号幂等合并；CAS 冲突或校验失败时保留当前权威状态。
 
@@ -55,7 +56,7 @@
 
 ### 20.2.1 模型启用、计费类别与分发默认设置
 
-- **模型禁用集合（`disabled_models`）**：保存精确 `model_id` 的禁用集合，缺省为空。新增模型默认启用；在线目录暂时撤回某模型时保留其禁用覆盖，待该模型恢复后继续生效（资格过滤与准入规则见 [06](./06-model.md)）。模型启用状态切换使用独立类型化变更命令（携带 `operationId`、`expectedSettingsRevision`、`accountId`、`modelId` 与 `enabled`），提交后同时推进设置水位与目录资格水位；因禁用模型导致既有路由不可用时仅标记路由 `unavailable`，不自动篡改用户已选路由。
+- **模型启用覆盖（`model_enabled_overrides`）**：保存精确 `model_id` 到布尔值的映射，缺省为空；条目为明确开启或关闭，缺项表示按 [06](./06-model.md) 的目录规则自动解析。线上未列出的内置项仍在配置列表展示，用户可显式开启；来源变化或重启不清除已保存意图。模型启用状态切换复用独立类型化变更命令（携带 `operationId`、`expectedSettingsRevision`、`accountId`、`modelId` 与 `enabled`），只更新指定成员的覆盖，提交后同时推进设置水位与目录资格水位。设置快照以 `modelEnabledOverrides` 发布期望配置，目录快照发布已解析的 `enabled`；两者不是两份独立启用设置。禁用导致既有路由不可用时仅标记路由 `unavailable`，不自动篡改用户已选路由。
 - **账号计费类别（`billing_kind`）**：可选值为 `metered | subscription | noCharge | unknown`，作为账号计费意图的唯一持久化事实源。省略时按明确模板与权威端点地址自动推导生效类别，无法匹配时为 `unknown`；显式配置值优先且不被端点地址修改静默覆盖，自动推导结果亦不回写为显式配置。权威设置快照同时投影生效值 `billingKind`（用于展示与筛选）与可空覆盖值 `billingKindOverride`（表达用户显式意图）。账号页的「不计费」开关即该类别的布尔投影：开启时写入显式 `noCharge`，关闭时清除覆盖并恢复自动推导。
 - **子智能体分发默认设置（`[delegation]`）**：保存 `mode = profile | automatic`（默认 `profile`）与 `preference = economy | balanced | fast`（默认 `balanced`）。两个字段各自使用独立的类型化设置命令，仅改变未来新建会话的默认值；已建会话在创建准入时冻结解析后的非空枚举，后续不再回读全局默认设置（见 [12](./12-collaboration.md) §12.7）。
 
@@ -81,7 +82,7 @@
 本地 `config.toml` 字段统一采用 `snake_case` 命名（与 API 传输层的 `camelCase` 区分），精简示例如下：
 
 ```toml
-schema_version = 25
+schema_version = 27
 
 disabled_system_agents = []
 

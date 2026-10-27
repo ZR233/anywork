@@ -77,7 +77,7 @@ pub(crate) fn bridge_settings(
             .map(|account| BridgeAccountSettingsDto {
                 billing_kind: account.billing_kind.into(),
                 billing_kind_override: account.billing_kind_override.map(Into::into),
-                disabled_models: account.disabled_models,
+                model_enabled_overrides: account.model_enabled_overrides.into_iter().collect(),
                 account_id: account.account_id,
                 template_id: account.template_id,
                 protocol: account.protocol,

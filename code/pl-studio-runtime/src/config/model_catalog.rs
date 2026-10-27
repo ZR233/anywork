@@ -650,7 +650,15 @@ mod migration_tests {
         account
             .set_model_catalog_overlay(cache.models.clone())
             .unwrap();
-        assert_eq!(account.effective_models(None).unwrap()[0], cache.models[0]);
+        assert_eq!(
+            account
+                .effective_models(None)
+                .unwrap()
+                .into_iter()
+                .find(|model| model.model_id == "exact-Unchanged-ID")
+                .unwrap(),
+            cache.models[0]
+        );
         let persisted = fs::read(cache_path(&paths, &id, &identity)).unwrap();
         let again = read_cache(&paths, &id, &identity, &account)
             .unwrap()

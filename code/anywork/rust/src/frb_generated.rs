@@ -5699,6 +5699,14 @@ impl SseDecode for BridgeTimeline {
     }
 }
 
+impl SseDecode for std::collections::HashMap<String, bool> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut inner = <Vec<(String, bool)>>::sse_decode(deserializer);
+        return inner.into_iter().collect();
+    }
+}
+
 impl SseDecode
     for RustOpaqueMoi<
         flutter_rust_bridge::for_generated::RustAutoOpaqueInner<BridgeEventSubscription>,
@@ -6278,7 +6286,8 @@ impl SseDecode for crate::api::studio::types::settings::BridgeAccountSettingsDto
         let mut var_billingKindOverride = <Option<
             crate::api::studio::types::delegation::BridgeBillingKind,
         >>::sse_decode(deserializer);
-        let mut var_disabledModels = <Vec<String>>::sse_decode(deserializer);
+        let mut var_modelEnabledOverrides =
+            <std::collections::HashMap<String, bool>>::sse_decode(deserializer);
         let mut var_accountId = <String>::sse_decode(deserializer);
         let mut var_templateId = <Option<String>>::sse_decode(deserializer);
         let mut var_protocol = <String>::sse_decode(deserializer);
@@ -6307,7 +6316,7 @@ impl SseDecode for crate::api::studio::types::settings::BridgeAccountSettingsDto
         return crate::api::studio::types::settings::BridgeAccountSettingsDto {
             billing_kind: var_billingKind,
             billing_kind_override: var_billingKindOverride,
-            disabled_models: var_disabledModels,
+            model_enabled_overrides: var_modelEnabledOverrides,
             account_id: var_accountId,
             template_id: var_templateId,
             protocol: var_protocol,
@@ -17733,6 +17742,18 @@ impl SseDecode for Vec<crate::api::studio::types::response::ProjectDto> {
     }
 }
 
+impl SseDecode for Vec<(String, bool)> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut len_ = <i32>::sse_decode(deserializer);
+        let mut ans_ = Vec::with_capacity(len_ as usize);
+        for idx_ in 0..len_ {
+            ans_.push(<(String, bool)>::sse_decode(deserializer));
+        }
+        return ans_;
+    }
+}
+
 impl SseDecode for Vec<crate::api::studio::types::ssh::RemoteDirectoryEntryDto> {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
@@ -18775,6 +18796,15 @@ impl SseDecode for crate::api::studio::types::response::ProjectDto {
             ssh_alias: var_sshAlias,
             updated_at: var_updatedAt,
         };
+    }
+}
+
+impl SseDecode for (String, bool) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_field0 = <String>::sse_decode(deserializer);
+        let mut var_field1 = <bool>::sse_decode(deserializer);
+        return (var_field0, var_field1);
     }
 }
 
@@ -19857,7 +19887,7 @@ impl flutter_rust_bridge::IntoDart
         [
             self.billing_kind.into_into_dart().into_dart(),
             self.billing_kind_override.into_into_dart().into_dart(),
-            self.disabled_models.into_into_dart().into_dart(),
+            self.model_enabled_overrides.into_into_dart().into_dart(),
             self.account_id.into_into_dart().into_dart(),
             self.template_id.into_into_dart().into_dart(),
             self.protocol.into_into_dart().into_dart(),
@@ -32673,6 +32703,13 @@ impl SseEncode for BridgeTimeline {
     }
 }
 
+impl SseEncode for std::collections::HashMap<String, bool> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <Vec<(String, bool)>>::sse_encode(self.into_iter().collect(), serializer);
+    }
+}
+
 impl SseEncode
     for RustOpaqueMoi<
         flutter_rust_bridge::for_generated::RustAutoOpaqueInner<BridgeEventSubscription>,
@@ -33170,7 +33207,10 @@ impl SseEncode for crate::api::studio::types::settings::BridgeAccountSettingsDto
             self.billing_kind_override,
             serializer,
         );
-        <Vec<String>>::sse_encode(self.disabled_models, serializer);
+        <std::collections::HashMap<String, bool>>::sse_encode(
+            self.model_enabled_overrides,
+            serializer,
+        );
         <String>::sse_encode(self.account_id, serializer);
         <Option<String>>::sse_encode(self.template_id, serializer);
         <String>::sse_encode(self.protocol, serializer);
@@ -41967,6 +42007,16 @@ impl SseEncode for Vec<crate::api::studio::types::response::ProjectDto> {
     }
 }
 
+impl SseEncode for Vec<(String, bool)> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <i32>::sse_encode(self.len() as _, serializer);
+        for item in self {
+            <(String, bool)>::sse_encode(item, serializer);
+        }
+    }
+}
+
 impl SseEncode for Vec<crate::api::studio::types::ssh::RemoteDirectoryEntryDto> {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
@@ -42845,6 +42895,14 @@ impl SseEncode for crate::api::studio::types::response::ProjectDto {
         <String>::sse_encode(self.path, serializer);
         <Option<String>>::sse_encode(self.ssh_alias, serializer);
         <i64>::sse_encode(self.updated_at, serializer);
+    }
+}
+
+impl SseEncode for (String, bool) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <String>::sse_encode(self.0, serializer);
+        <bool>::sse_encode(self.1, serializer);
     }
 }
 

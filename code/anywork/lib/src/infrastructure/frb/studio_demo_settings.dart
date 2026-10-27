@@ -387,7 +387,7 @@ List<AccountSettingsView> _providersFromCommands(
       // Automatic is Unknown, never a memo of the current effective override.
       billingKind: billingOverride ?? BillingKind.unknown,
       billingKindOverride: billingOverride,
-      disabledModels: previousAccount?.disabledModels ?? const [],
+      modelEnabledOverrides: previousAccount?.modelEnabledOverrides ?? const {},
       capabilitySource: 'template_defaults',
       hostedWebSearch:
           previousAccount?.hostedWebSearch ?? template.hostedWebSearch,

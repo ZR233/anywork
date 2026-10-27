@@ -184,7 +184,7 @@ AccountSettingsView _accountSettingsFromFrb(
     billingKindOverride: value.billingKindOverride == null
         ? null
         : _billingKindFromFrb(value.billingKindOverride!),
-    disabledModels: List.unmodifiable(value.disabledModels),
+    modelEnabledOverrides: Map.unmodifiable(value.modelEnabledOverrides),
     id: value.accountId,
     templateId: value.templateId,
     protocol: value.protocol,

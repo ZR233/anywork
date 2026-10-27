@@ -404,10 +404,10 @@ fn image_output_models_stay_out_of_the_text_catalog() {
     // 图像输出模型不属于对话目录，因此不参与路由、压缩与附件能力校验。
     assert_eq!(
         account
-            .effective_models(Some(ModelType::Text))
+            .selectable_catalog(Some(ModelType::Text))
             .unwrap()
             .iter()
-            .map(|model| model.model_id.as_str())
+            .map(|entry| entry.model.model_id.as_str())
             .collect::<Vec<_>>(),
         vec!["gpt-6-astra"]
     );

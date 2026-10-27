@@ -1800,7 +1800,7 @@ class DemoStudioTransport extends StudioTransport
           p.defaultModelId,
           p.billingKind,
           p.billingKindOverride,
-          p.disabledModels,
+          p.modelEnabledOverrides,
           [
             for (final m in p.customModels)
               [
@@ -4214,9 +4214,10 @@ class DemoStudioTransport extends StudioTransport
           a
         else
           a.copyWith(
-            disabledModels: enabled
-                ? ([...a.disabledModels]..remove(modelId))
-                : {...a.disabledModels, modelId}.toList(),
+            modelEnabledOverrides: {
+              ...a.modelEnabledOverrides,
+              modelId: enabled,
+            },
             models: [
               for (final m in a.models)
                 if (m.modelId == modelId) m.copyWith(enabled: enabled) else m,

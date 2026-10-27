@@ -170,9 +170,9 @@ pub struct AccountConfig {
     /// Successful endpoint observation, never persisted as desired user configuration.
     #[serde(skip)]
     model_catalog_overlay: Option<Vec<ModelInfo>>,
-    /// 精确 model_id 的禁用覆盖；空表示全部启用，撤下的成员保留覆盖以便重新出现时继续生效。
-    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
-    disabled_models: BTreeSet<String>,
+    /// 精确 model_id 的显式启用覆盖；缺项按当前目录自动决定，撤下成员仍保留意图。
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    model_enabled_overrides: BTreeMap<String, bool>,
     #[serde(skip)]
     resolved_catalog: Option<Vec<AccountModelEntry>>,
 }
@@ -235,7 +235,7 @@ impl AccountConfig {
             capabilities: AccountCapabilitySelection::Explicit(service_capabilities),
             catalog,
             model_catalog_overlay: None,
-            disabled_models: BTreeSet::new(),
+            model_enabled_overrides: BTreeMap::new(),
             resolved_catalog: None,
         }
     }
@@ -348,7 +348,7 @@ impl AccountConfig {
             .collect())
     }
 
-    /// 有效目录查询；每条成员携带来源与启用投影，不从默认定义补回在线名单缺失的模型。
+    /// 管理目录查询；保留全部绑定内置定义，合并当前在线与手工成员。
     ///
     /// 类型筛选消费已合并的定义，不用于发现阶段或改变供应商成员。启用意图在每次读取时
     /// 从 desired 配置投影，因此已解析目录缓存不会把禁用成员漏成可用。
@@ -379,7 +379,13 @@ impl AccountConfig {
         Ok(catalog
             .into_iter()
             .map(|mut entry| {
-                entry.enabled = !self.disabled_models.contains(&entry.model.model_id);
+                let automatic = entry.origin != AccountModelOrigin::Bundled
+                    || self.model_catalog_overlay.is_none();
+                entry.enabled = self
+                    .model_enabled_overrides
+                    .get(&entry.model.model_id)
+                    .copied()
+                    .unwrap_or(automatic);
                 entry
             })
             .filter(|entry| {
@@ -406,7 +412,7 @@ impl AccountConfig {
 
     /// 切换一个目录成员的启用状态。
     ///
-    /// 这是模型启用的唯一 mutation：只改该精确 `model_id` 的禁用意图，保留成员来源、
+    /// 这是模型启用的唯一 mutation：只改该精确 `model_id` 的显式意图，保留成员来源、
     /// 连接覆盖、压缩阈值覆盖、凭据与其他模型；把在线成员切换为启用不会把它转成手工成员。
     /// 已禁用的成员被目录撤下后覆盖仍保留，重新出现时继续生效。
     ///
@@ -420,19 +426,16 @@ impl AccountConfig {
         {
             return Err(PureError::ConfigError(format!("unknown model: {model_id}")));
         }
-        if enabled {
-            self.disabled_models.remove(model_id);
-        } else {
-            self.disabled_models.insert(model_id.to_string());
-        }
+        self.model_enabled_overrides
+            .insert(model_id.to_string(), enabled);
         Ok(())
     }
 
-    /// 返回当前保存的禁用覆盖；空集合表示全部启用。
+    /// 返回当前保存的显式启用覆盖；缺项表示自动。
     ///
     /// 调用方据此投影管理页开关与配置保存，不需要第二份自动分发白名单。
-    pub fn disabled_models(&self) -> &BTreeSet<String> {
-        &self.disabled_models
+    pub fn model_enabled_overrides(&self) -> &BTreeMap<String, bool> {
+        &self.model_enabled_overrides
     }
 
     /// 由明确模板与 canonical endpoint 推导的计费类别。
@@ -478,7 +481,7 @@ impl AccountConfig {
     ///
     /// 资料只按「目录 + model_id」精确命中，并要求该 model_id 仍是当前有效目录成员：显式
     /// （自定义）目录没有内置资料，手工覆盖同 ID 的成员由用户定义语义而不附内置资料，
-    /// 在线撤下的成员也不会从系统目录补回。资料不是能力声明，也不进入 runtime 载荷。
+    /// 内置成员即使默认关闭仍可读取资料。资料不是能力声明，也不进入 runtime 载荷。
     ///
     /// # Errors
     /// 读取当前有效目录失败时返回配置错误，不把失败伪装成「没有资料」。
@@ -537,11 +540,7 @@ impl AccountConfig {
         let Some(overlay) = &self.model_catalog_overlay else {
             return Ok(local.into_values().collect());
         };
-        let mut entries = local
-            .iter()
-            .filter(|(_, entry)| entry.origin == AccountModelOrigin::Manual)
-            .map(|(key, entry)| (key.clone(), entry.clone()))
-            .collect::<BTreeMap<_, _>>();
+        let mut entries = local.clone();
         let discovery = self.discovery_profile()?;
         for observed in overlay {
             let declared = local.get(&observed.model_id);
@@ -583,7 +582,7 @@ impl AccountConfig {
         Ok(entries.into_values().collect())
     }
 
-    /// Publish a complete successful inventory; even an empty inventory replaces defaults.
+    /// Publish a complete successful online inventory; absent bundled members default to disabled.
     /// The host owns query identity/generation checks and durable publication ordering.
     /// # Errors
     /// Explicit/unsupported catalogs or any invalid declaration reject the whole observation.
@@ -728,8 +727,8 @@ impl AccountConfig {
                 auto_compact_overrides.remove(model_id);
             }
         }
-        // 手工成员被删除后，其禁用覆盖不再有可恢复的成员来源。
-        self.disabled_models.remove(model_id);
+        // 手工成员被删除后，移除对应的显式启用覆盖。
+        self.model_enabled_overrides.remove(model_id);
         Ok(())
     }
 
@@ -969,18 +968,18 @@ impl AccountConfig {
                 )));
             }
         }
-        for model_id in &self.disabled_models {
+        for model_id in self.model_enabled_overrides.keys() {
             if model_id.trim().is_empty() {
                 return Err(PureError::ConfigError(format!(
-                    "account {account_id} contains an empty disabled model"
+                    "account {account_id} contains an empty model enablement override"
                 )));
             }
-            // 在线目录撤下的成员保留禁用覆盖属于合法 desired 状态，不视为配置损坏。
+            // 在线目录撤下的成员保留启用覆盖属于合法 desired 状态，不视为配置损坏。
             if !model_ids.contains(model_id.as_str())
                 && (strict_availability || self.discovery_profile()?.is_none())
             {
                 return Err(PureError::ConfigError(format!(
-                    "account {account_id} disabled model references unknown model: {model_id}"
+                    "account {account_id} model enablement override references unknown model: {model_id}"
                 )));
             }
         }
