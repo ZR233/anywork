@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../../../../l10n/app_localizations.dart';
+import '../../../../shared/account_brand.dart';
 import '../state/account_presentations.dart';
 import '../state/account_view_key_values.dart';
 import '../widgets/account_models_view.dart';
@@ -45,6 +46,9 @@ class NativeAccountEditorView extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final l10n = AppLocalizations.of(context);
+    final template = value.templates
+        .where((template) => template.key == value.templateKey)
+        .firstOrNull;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
@@ -59,11 +63,24 @@ class NativeAccountEditorView extends StatelessWidget {
             controller: scrollController,
             padding: const EdgeInsets.all(24),
             children: [
-              Text(
-                value.accountKey == null
-                    ? l10n.settingsNewAccount
-                    : l10n.settingsEditAccount,
-                style: Theme.of(context).textTheme.headlineMedium,
+              Row(
+                children: [
+                  AccountBrandMark(
+                    fallbackName: template?.name ?? value.name.raw,
+                    iconKey: template?.iconKey,
+                    size: 56,
+                  ),
+                  const SizedBox(width: 16),
+                  Expanded(
+                    child: Text(
+                      value.accountKey == null
+                          ? l10n.settingsNewAccount
+                          : l10n.settingsEditAccount,
+                      style: Theme.of(context).textTheme.headlineMedium
+                          ?.copyWith(fontWeight: FontWeight.w700),
+                    ),
+                  ),
+                ],
               ),
               if (value.dirty)
                 Padding(

@@ -1,9 +1,9 @@
 import 'package:flutter/material.dart';
 
 import '../../../../l10n/app_localizations.dart';
-import '../../../../shared/account_brand.dart';
 import '../state/account_presentations.dart';
 import '../state/account_view_key_values.dart';
+import '../widgets/account_details_header.dart';
 import '../widgets/account_models_view.dart';
 import '../widgets/account_sections.dart';
 import '../widgets/account_usage_view.dart';
@@ -63,57 +63,11 @@ class AccountDetailsView extends StatelessWidget {
           ),
         ),
         const SizedBox(height: 16),
-        Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            AccountBrandMark(
-              fallbackName: value.name,
-              iconKey: value.iconKey,
-              size: 56,
-            ),
-            const SizedBox(width: 16),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    value.name,
-                    style: Theme.of(context).textTheme.headlineMedium,
-                  ),
-                  if (value.endpoint != null)
-                    AccountSelectableText(
-                      value.endpoint!,
-                      style: Theme.of(context).textTheme.bodyMedium,
-                    ),
-                ],
-              ),
-            ),
-          ],
-        ),
-        const SizedBox(height: 12),
-        Wrap(
-          spacing: 8,
-          runSpacing: 8,
-          children: [
-            if (value.canEdit)
-              OutlinedButton.icon(
-                key: const ValueKey<String>('account-edit'),
-                onPressed: onEdit,
-                icon: const Icon(Icons.edit_outlined),
-                label: Text(l10n.settingsEditAccount),
-              ),
-            if (value.canSetDefault)
-              TextButton(
-                onPressed: onSetDefault,
-                child: Text(l10n.settingsSetAsDefaultAccount),
-              ),
-            if (value.canDelete)
-              TextButton.icon(
-                onPressed: onDelete,
-                icon: const Icon(Icons.delete_outline),
-                label: Text(l10n.settingsDeleteAccount),
-              ),
-          ],
+        AccountDetailsHeader(
+          value: value,
+          onEdit: onEdit,
+          onDelete: onDelete,
+          onSetDefault: onSetDefault,
         ),
         const SizedBox(height: 24),
         if (value.loading) const LinearProgressIndicator(minHeight: 2),
@@ -164,21 +118,81 @@ class _NativeDetails extends StatelessWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        AccountSection(
-          title: l10n.accountsBalanceColumn,
-          actions: [
-            AccountBillingBadge(
-              billing: value.billing.effective,
-              health: value.usage.balanceHealth,
+        Padding(
+          padding: const EdgeInsets.only(bottom: 24),
+          child: Card(
+            color: accountGroupSurface(context),
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Wrap(
+                    alignment: WrapAlignment.spaceBetween,
+                    crossAxisAlignment: WrapCrossAlignment.center,
+                    spacing: 16,
+                    runSpacing: 8,
+                    children: [
+                      Wrap(
+                        spacing: 16,
+                        runSpacing: 8,
+                        crossAxisAlignment: WrapCrossAlignment.center,
+                        children: [
+                          Text(
+                            l10n.accountsBalanceColumn,
+                            style: Theme.of(context).textTheme.titleLarge
+                                ?.copyWith(fontWeight: FontWeight.w700),
+                          ),
+                          AccountBillingBadge(
+                            billing: value.billing.effective,
+                            health: value.usage.balanceHealth,
+                          ),
+                        ],
+                      ),
+                      Wrap(
+                        spacing: 12,
+                        crossAxisAlignment: WrapCrossAlignment.center,
+                        children: [
+                          if (value.usage.updatedLabel != null)
+                            Text(
+                              l10n.settingsUsageUpdated(
+                                value.usage.updatedLabel!,
+                              ),
+                              style: Theme.of(context).textTheme.bodyMedium
+                                  ?.copyWith(fontSize: 14),
+                            ),
+                          IconButton(
+                            key: const ValueKey<String>('account-usage-check'),
+                            tooltip: l10n.settingsRefreshUsage,
+                            onPressed: value.usage.canRefresh
+                                ? onRefreshUsage
+                                : null,
+                            icon: const Icon(Icons.refresh),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 16),
+                  Container(
+                    padding: const EdgeInsets.all(20),
+                    decoration: BoxDecoration(
+                      color: accountGroupSurface(context),
+                      border: Border.all(
+                        color: Theme.of(context).colorScheme.outlineVariant,
+                      ),
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: AccountUsageView(
+                      value: value.usage,
+                      onRetry: onRefreshUsage,
+                      showUpdated: false,
+                    ),
+                  ),
+                ],
+              ),
             ),
-            IconButton(
-              key: const ValueKey<String>('account-usage-check'),
-              tooltip: l10n.settingsRefreshUsage,
-              onPressed: value.usage.canRefresh ? onRefreshUsage : null,
-              icon: const Icon(Icons.refresh),
-            ),
-          ],
-          child: AccountUsageView(value: value.usage, onRetry: onRefreshUsage),
+          ),
         ),
         AccountSection(
           title: l10n.accountsSettingsSection,
@@ -201,13 +215,18 @@ class _NativeDetails extends StatelessWidget {
                 onChanged: onBillingChanged,
                 onReset: onResetBilling,
               ),
+              if (value.advanced.isNotEmpty) const Divider(),
               if (value.advanced.isNotEmpty)
                 ExpansionTile(
                   // The typed details-page ancestor key scopes this per account.
                   key: const PageStorageKey<String>(
                     'account-advanced-expanded',
                   ),
-                  title: Text(l10n.accountsAdvancedSection),
+                  title: Text(
+                    l10n.accountsAdvancedSection,
+                    style: Theme.of(context).textTheme.bodyLarge
+                        ?.copyWith(fontSize: 16),
+                  ),
                   tilePadding: EdgeInsets.zero,
                   children: [AccountFacts(facts: value.advanced)],
                 ),

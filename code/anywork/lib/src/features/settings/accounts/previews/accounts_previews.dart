@@ -1,10 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/widget_previews.dart';
 
-import '../../../../app/theme/material3_theme.dart';
-import '../../../../l10n/app_localizations.dart';
 import '../accounts_views.dart';
 import 'account_preview_fixtures.dart';
+import 'account_preview_host.dart';
+import 'account_template_preview_fixtures.dart';
 
 // Sizes below are available MAIN CONTENT AREA, excluding the settings sidebar.
 // First Web preview still compiles Flutter. No application graph is initialized.
@@ -13,25 +13,28 @@ import 'account_preview_fixtures.dart';
   group: 'Accounts · List',
   size: Size(1240, 920),
 )
-Widget accountsListWidePreview() => _list(AccountPreviewFixtures.list);
+Widget accountsListWidePreview() =>
+    accountListPreview(AccountPreviewFixtures.list);
 
 @Preview(
   name: 'List / 390 narrow',
   group: 'Accounts · List',
   size: Size(390, 844),
 )
-Widget accountsListNarrowPreview() => _list(AccountPreviewFixtures.list);
+Widget accountsListNarrowPreview() =>
+    accountListPreview(AccountPreviewFixtures.list);
 
 @Preview(
   name: 'List / long names / text 1.3',
   group: 'Accounts · List',
   size: Size(780, 900),
 )
-Widget accountsListLargeTextPreview() => _list(
+Widget accountsListLargeTextPreview() => accountListPreview(
   AccountPreviewFixtures.list.copyWith(
     rows: [
       AccountPreviewFixtures.list.rows.first.copyWith(
         name: '用于海外与研发环境的长账号名称 · 合成多币种余额与精确金额',
+        usage: AccountPreviewFixtures.balance,
       ),
     ],
   ),
@@ -43,18 +46,20 @@ Widget accountsListLargeTextPreview() => _list(
   group: 'Accounts · List',
   size: Size(780, 600),
 )
-Widget accountsListLoadingPreview() =>
-    _list(const AccountsListPresentation(phase: AccountListPhase.loading));
+Widget accountsListLoadingPreview() => accountListPreview(
+  const AccountsListPresentation(phase: AccountListPhase.loading),
+);
 
 @Preview(name: 'List / empty', group: 'Accounts · List', size: Size(780, 600))
-Widget accountsListEmptyPreview() => _list(const AccountsListPresentation());
+Widget accountsListEmptyPreview() =>
+    accountListPreview(const AccountsListPresentation());
 
 @Preview(
   name: 'List / no search results',
   group: 'Accounts · List',
   size: Size(780, 600),
 )
-Widget accountsListNoSearchPreview() => _list(
+Widget accountsListNoSearchPreview() => accountListPreview(
   const AccountsListPresentation(
     search: 'no-such-account',
     searchHasNoResults: true,
@@ -66,7 +71,7 @@ Widget accountsListNoSearchPreview() => _list(
   group: 'Accounts · List',
   size: Size(1240, 700),
 )
-Widget accountsListRefreshingPreview() => _list(
+Widget accountsListRefreshingPreview() => accountListPreview(
   AccountPreviewFixtures.list.copyWith(
     refreshing: true,
     rows: [
@@ -84,7 +89,7 @@ Widget accountsListRefreshingPreview() => _list(
   group: 'Accounts · List',
   size: Size(1240, 700),
 )
-Widget accountsListHealthPreview() => _list(
+Widget accountsListHealthPreview() => accountListPreview(
   AccountPreviewFixtures.list.copyWith(
     rows: [
       AccountPreviewFixtures.list.rows.first.copyWith(
@@ -115,7 +120,7 @@ Widget accountsListHealthPreview() => _list(
   group: 'Accounts · List',
   size: Size(780, 600),
 )
-Widget accountsListFailurePreview() => _list(
+Widget accountsListFailurePreview() => accountListPreview(
   const AccountsListPresentation(
     phase: AccountListPhase.failed,
     error: '合成读取错误：账号列表暂时不可用。',
@@ -127,7 +132,8 @@ Widget accountsListFailurePreview() => _list(
   group: 'Accounts · Detail',
   size: Size(1180, 1100),
 )
-Widget accountDetailsWidePreview() => _details(AccountPreviewFixtures.details);
+Widget accountDetailsWidePreview() =>
+    accountDetailsPreviewHost(AccountPreviewFixtures.details);
 
 @Preview(
   name: 'Details / 390 narrow',
@@ -135,14 +141,14 @@ Widget accountDetailsWidePreview() => _details(AccountPreviewFixtures.details);
   size: Size(390, 844),
 )
 Widget accountDetailsNarrowPreview() =>
-    _details(AccountPreviewFixtures.details);
+    accountDetailsPreviewHost(AccountPreviewFixtures.details);
 
 @Preview(
   name: 'Details / long name / text 1.3',
   group: 'Accounts · Detail',
   size: Size(720, 1000),
 )
-Widget accountDetailsLargeTextPreview() => _details(
+Widget accountDetailsLargeTextPreview() => accountDetailsPreviewHost(
   AccountPreviewFixtures.details.copyWith(name: '研发专用长账号名称 · 不截断的详情标题'),
   textScale: 1.3,
 );
@@ -152,16 +158,50 @@ Widget accountDetailsLargeTextPreview() => _details(
   group: 'Accounts · Detail',
   size: Size(1100, 1000),
 )
-Widget accountDetailsSubscriptionPreview() => _details(
+Widget accountDetailsSubscriptionPreview() => accountDetailsPreviewHost(
   _withNative(
-    AccountPreviewFixtures.details,
+    AccountTemplatePreviewFixtures.details('zhipu-coding-plan'),
     usage: AccountPreviewFixtures.subscription,
     billing: const AccountBillingPresentation(
       effective: AccountBilling.subscription,
       billingKindOverride: AccountBilling.subscription,
       allowedOverrides: AccountPreviewFixtures.billingOverrides,
     ),
-  ).copyWith(name: 'Zhipu Coding Plan', iconKey: 'zhipu'),
+  ),
+);
+
+@Preview(
+  name: 'List / multi-currency / full decimal precision',
+  group: 'Accounts · List',
+  size: Size(1240, 700),
+)
+Widget accountsListMultiCurrencyPreview() => accountListPreview(
+  AccountPreviewFixtures.list.copyWith(
+    rows: [
+      AccountPreviewFixtures.list.rows.first.copyWith(
+        usage: AccountPreviewFixtures.balance,
+      ),
+    ],
+  ),
+);
+
+@Preview(
+  name: 'List / failed last-good / retry',
+  group: 'Accounts · List',
+  size: Size(1240, 700),
+)
+Widget accountsListLastGoodPreview() => accountListPreview(
+  AccountPreviewFixtures.list.copyWith(
+    rows: [
+      AccountPreviewFixtures.list.rows.first.copyWith(
+        usage: AccountPreviewFixtures.balance.copyWith(
+          phase: AccountQueryPhase.failed,
+          canRetry: true,
+          error: '合成网络错误，请重试。',
+        ),
+      ),
+    ],
+  ),
 );
 
 @Preview(
@@ -169,7 +209,7 @@ Widget accountDetailsSubscriptionPreview() => _details(
   group: 'Accounts · Detail',
   size: Size(1100, 1100),
 )
-Widget accountDetailsFailurePreview() => _details(
+Widget accountDetailsFailurePreview() => accountDetailsPreviewHost(
   _withNative(
     AccountPreviewFixtures.details,
     usage: AccountPreviewFixtures.balance.copyWith(
@@ -189,7 +229,7 @@ Widget accountDetailsFailurePreview() => _details(
   group: 'Accounts · Components',
   size: Size(640, 400),
 )
-Widget accountUsageFirstFailurePreview() => _host(
+Widget accountUsageFirstFailurePreview() => accountPreviewHost(
   (record) => ListView(
     padding: const EdgeInsets.all(24),
     children: [
@@ -212,7 +252,7 @@ Widget accountUsageFirstFailurePreview() => _host(
   group: 'Accounts · Detail',
   size: Size(800, 900),
 )
-Widget accountDetailsAcpPreview() => _details(
+Widget accountDetailsAcpPreview() => accountDetailsPreviewHost(
   AccountDetailsPresentation(
     key: AccountPreviewFixtures.acpKey,
     name: '官方 ACP 接入',
@@ -228,7 +268,7 @@ Widget accountDetailsAcpPreview() => _details(
   size: Size(900, 1100),
 )
 Widget accountNativeEditorPreview() =>
-    _nativeEditor(AccountPreviewFixtures.editor);
+    accountNativeEditorPreviewHost(AccountPreviewFixtures.editor);
 
 @Preview(
   name: 'Editor / Native / 390 narrow',
@@ -236,14 +276,14 @@ Widget accountNativeEditorPreview() =>
   size: Size(390, 844),
 )
 Widget accountNativeEditorNarrowPreview() =>
-    _nativeEditor(AccountPreviewFixtures.editor);
+    accountNativeEditorPreviewHost(AccountPreviewFixtures.editor);
 
 @Preview(
   name: 'Editor / Native / validation & failed save',
   group: 'Accounts · Editor',
   size: Size(800, 1100),
 )
-Widget accountNativeEditorInvalidPreview() => _nativeEditor(
+Widget accountNativeEditorInvalidPreview() => accountNativeEditorPreviewHost(
   AccountPreviewFixtures.editor.copyWith(
     error: '保存失败，原始输入保持不变。',
     endpoint: const AccountTextPresentation(
@@ -265,7 +305,7 @@ Widget accountNativeEditorInvalidPreview() => _nativeEditor(
   group: 'Accounts · Editor',
   size: Size(720, 1000),
 )
-Widget accountNativeEditorCreatePreview() => _nativeEditor(
+Widget accountNativeEditorCreatePreview() => accountNativeEditorPreviewHost(
   AccountPreviewFixtures.editor.copyWith(
     accountKey: null,
     canChangeTemplate: true,
@@ -280,7 +320,7 @@ Widget accountNativeEditorCreatePreview() => _nativeEditor(
   group: 'Accounts · Editor',
   size: Size(800, 900),
 )
-Widget accountAcpEditorUnpreparedPreview() => _acpEditor(
+Widget accountAcpEditorUnpreparedPreview() => accountAcpEditorPreviewHost(
   AccountPreviewFixtures.acpEditor.copyWith(
     preparation: const AcpAccountPresentation(
       phase: AcpPresentationPhase.idle,
@@ -301,14 +341,14 @@ Widget accountAcpEditorUnpreparedPreview() => _acpEditor(
   size: Size(800, 900),
 )
 Widget accountAcpEditorPreparingPreview() =>
-    _acpEditor(AccountPreviewFixtures.acpEditor);
+    accountAcpEditorPreviewHost(AccountPreviewFixtures.acpEditor);
 
 @Preview(
   name: 'Editor / ACP / login primary / save secondary',
   group: 'Accounts · Editor',
   size: Size(720, 900),
 )
-Widget accountAcpEditorLoginPreview() => _acpEditor(
+Widget accountAcpEditorLoginPreview() => accountAcpEditorPreviewHost(
   AccountPreviewFixtures.acpEditor.copyWith(
     accountKey: AccountPreviewFixtures.acpKey,
     canSave: true,
@@ -321,7 +361,7 @@ Widget accountAcpEditorLoginPreview() => _acpEditor(
   group: 'Accounts · Editor',
   size: Size(390, 844),
 )
-Widget accountAcpEditorPreparedPreview() => _acpEditor(
+Widget accountAcpEditorPreparedPreview() => accountAcpEditorPreviewHost(
   AccountPreviewFixtures.acpEditor.copyWith(
     preparation: const AcpAccountPresentation(
       phase: AcpPresentationPhase.ready,
@@ -340,7 +380,7 @@ Widget accountAcpEditorPreparedPreview() => _acpEditor(
   group: 'Accounts · Editor',
   size: Size(800, 900),
 )
-Widget accountAcpEditorReadyPreview() => _acpEditor(
+Widget accountAcpEditorReadyPreview() => accountAcpEditorPreviewHost(
   AccountPreviewFixtures.acpEditor.copyWith(
     canSave: true,
     saveAndConnect: true,
@@ -357,7 +397,7 @@ Widget accountAcpEditorReadyPreview() => _acpEditor(
   group: 'Accounts · Editor',
   size: Size(720, 900),
 )
-Widget accountAcpEditorFailedPreview() => _acpEditor(
+Widget accountAcpEditorFailedPreview() => accountAcpEditorPreviewHost(
   AccountPreviewFixtures.acpEditor.copyWith(
     error: '下载失败，账号尚未保存。',
     preparation: const AcpAccountPresentation(
@@ -375,14 +415,14 @@ Widget accountAcpEditorFailedPreview() => _acpEditor(
   group: 'Accounts · Components',
   size: Size(900, 1300),
 )
-Widget accountModelExpandedPreview() => _host(
+Widget accountModelExpandedPreview() => accountPreviewHost(
   (record) => ListView(
     padding: const EdgeInsets.all(24),
     children: [
       Card(
         child: AccountModelTile(
           value: AccountPreviewFixtures.model,
-          actions: _modelActions(record),
+          actions: accountPreviewModelActions(record),
           initiallyExpanded: true,
         ),
       ),
@@ -396,7 +436,7 @@ Widget accountModelExpandedPreview() => _host(
   group: 'Accounts · Components',
   size: Size(390, 900),
 )
-Widget accountCompactInvalidPreview() => _host(
+Widget accountCompactInvalidPreview() => accountPreviewHost(
   (record) => ListView(
     padding: const EdgeInsets.all(24),
     children: [
@@ -425,7 +465,7 @@ Widget accountCompactInvalidPreview() => _host(
   group: 'Accounts · Components',
   size: Size(720, 700),
 )
-Widget accountAcpVerifyPreview() => _host(
+Widget accountAcpVerifyPreview() => accountPreviewHost(
   (record) => ListView(
     padding: const EdgeInsets.all(24),
     children: [
@@ -455,7 +495,7 @@ Widget accountAcpVerifyPreview() => _host(
   group: 'Accounts · Components',
   size: Size(720, 800),
 )
-Widget accountTemplatePickerPreview() => _host(
+Widget accountTemplatePickerPreview() => accountPreviewHost(
   (record) => AccountTemplatePickerView(
     templates: AccountPreviewFixtures.templates,
     onSelected: (key) => record('template: ${key.kind.name}/${key.id}'),
@@ -476,7 +516,7 @@ Widget accountTemplatePickerNarrowPreview() => accountTemplatePickerPreview();
   group: 'Accounts · Components',
   size: Size(640, 480),
 )
-Widget accountUnsavedDialogPreview() => _host(
+Widget accountUnsavedDialogPreview() => accountPreviewHost(
   (record) => Center(
     child: AccountUnsavedChangesDialog(
       error: '合成保存失败，请重试或继续编辑。',
@@ -491,7 +531,7 @@ Widget accountUnsavedDialogPreview() => _host(
   group: 'Accounts · Components',
   size: Size(640, 480),
 )
-Widget accountDeleteDialogPreview() => _host(
+Widget accountDeleteDialogPreview() => accountPreviewHost(
   (record) => Center(
     child: AccountDeleteDialog(
       name: '合成手动模型',
@@ -518,251 +558,5 @@ AccountDetailsPresentation _withNative(
         catalog: catalog ?? native.catalog,
       ),
     ),
-  );
-}
-
-Widget _host(
-  Widget Function(ValueChanged<String> record) builder, {
-  required Object scenarioIdentity,
-  double textScale = 1,
-}) => _PreviewHost(
-  builder: builder,
-  scenarioIdentity: scenarioIdentity,
-  textScale: textScale,
-);
-Widget _list(AccountsListPresentation value, {double textScale = 1}) => _host(
-  (record) => _ListScenario(initial: value, record: record),
-  scenarioIdentity: value,
-  textScale: textScale,
-);
-Widget _nativeEditor(
-  NativeAccountEditorPresentation value, {
-  double textScale = 1,
-}) => _host(
-  (record) => _NativeEditorScenario(initial: value, record: record),
-  scenarioIdentity: value,
-  textScale: textScale,
-);
-Widget _acpEditor(AcpAccountEditorPresentation value) => _host(
-  (record) => _AcpEditorScenario(initial: value, record: record),
-  scenarioIdentity: value,
-);
-Widget _details(AccountDetailsPresentation value, {double textScale = 1}) =>
-    _host(
-      (record) => AccountDetailsView(
-        value: value,
-        onBack: () => record('back'),
-        onEdit: () => record('edit'),
-        onDelete: () => record('delete'),
-        onSetDefault: () => record('set default'),
-        onRefreshUsage: () => record('refresh usage'),
-        onBillingChanged: (billing) => record('billing: ${billing.name}'),
-        onResetBilling: () => record('reset billing'),
-        onSyncModels: () => record('sync models'),
-        modelActions: _modelActions(record),
-        onAcpAction: (action) => record('ACP: ${action.name}'),
-        onLoginMethodChanged: (id) => record('login method: $id'),
-        onRetry: () => record('retry detail'),
-      ),
-      scenarioIdentity: value,
-      textScale: textScale,
-    );
-
-AccountModelActions _modelActions(ValueChanged<String> record) =>
-    AccountModelActions(
-      onEnabledChanged: (key, enabled) =>
-          record('${key.modelId}: enabled $enabled'),
-      onConnectionChanged: (key, connection) =>
-          record('${key.modelId}: ${connection.name}'),
-      onCompactChanged: (key, raw) => record('${key.modelId}: threshold $raw'),
-      onAction: (key, action) => record('${key.modelId}: ${action.name}'),
-    );
-
-class _PreviewHost extends StatefulWidget {
-  const _PreviewHost({
-    required this.builder,
-    required this.scenarioIdentity,
-    required this.textScale,
-  });
-  final Widget Function(ValueChanged<String>) builder;
-
-  /// Immutable fixture value or stable component label, never callback identity.
-  final Object scenarioIdentity;
-  final double textScale;
-  @override
-  State<_PreviewHost> createState() => _PreviewHostState();
-}
-
-class _PreviewHostState extends State<_PreviewHost> {
-  static const _initialAction =
-      'Synthetic data · actions are recorded locally only';
-  String _lastAction = _initialAction;
-
-  @override
-  void didUpdateWidget(covariant _PreviewHost oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    if (oldWidget.scenarioIdentity != widget.scenarioIdentity ||
-        oldWidget.textScale != widget.textScale) {
-      _lastAction = _initialAction;
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) => MaterialApp(
-    debugShowCheckedModeBanner: false,
-    locale: const Locale('zh'),
-    theme: pureStudioTheme(locale: const Locale('zh')),
-    localizationsDelegates: AppLocalizations.localizationsDelegates,
-    supportedLocales: AppLocalizations.supportedLocales,
-    builder: (context, child) => MediaQuery(
-      data: MediaQuery.of(context)
-          .copyWith(textScaler: TextScaler.linear(widget.textScale)),
-      // MaterialApp's builder context is below the production Theme. Reset the
-      // Previewer's explicit ListTileTheme rather than inheriting its dark tiles.
-      child: ListTileTheme(
-        data: Theme.of(context).listTileTheme,
-        child: child!,
-      ),
-    ),
-    home: Scaffold(
-      body: widget.builder((action) => setState(() => _lastAction = action)),
-      bottomNavigationBar: Material(
-        child: Padding(
-          padding: const EdgeInsets.all(8),
-          child: Text(
-            _lastAction,
-            maxLines: 3,
-            overflow: TextOverflow.ellipsis,
-            style: const TextStyle(fontSize: 11),
-          ),
-        ),
-      ),
-    ),
-  );
-}
-
-class _ListScenario extends StatefulWidget {
-  const _ListScenario({required this.initial, required this.record});
-  final AccountsListPresentation initial;
-  final ValueChanged<String> record;
-  @override
-  State<_ListScenario> createState() => _ListScenarioState();
-}
-
-class _ListScenarioState extends State<_ListScenario> {
-  late String _search = widget.initial.search;
-
-  @override
-  void didUpdateWidget(covariant _ListScenario oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    if (oldWidget.initial != widget.initial) {
-      _search = widget.initial.search;
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final rows = widget.initial.rows
-        .where((row) => row.name.toLowerCase().contains(_search.toLowerCase()))
-        .toList();
-    return AccountsListView(
-      value: widget.initial.copyWith(
-        search: _search,
-        rows: rows,
-        searchHasNoResults: _search.isNotEmpty && rows.isEmpty,
-      ),
-      onSearchChanged: (raw) => setState(() => _search = raw),
-      onAdd: () => widget.record('add account'),
-      onRefreshAll: () => widget.record('refresh all'),
-      onOpen: (key) => widget.record('open: ${key.kind.name}/${key.id}'),
-      onRowAction: (key, action) =>
-          widget.record('${key.kind.name}/${key.id}: ${action.name}'),
-      onRetry: () => widget.record('retry list'),
-    );
-  }
-}
-
-class _NativeEditorScenario extends StatefulWidget {
-  const _NativeEditorScenario({required this.initial, required this.record});
-  final NativeAccountEditorPresentation initial;
-  final ValueChanged<String> record;
-  @override
-  State<_NativeEditorScenario> createState() => _NativeEditorScenarioState();
-}
-
-class _NativeEditorScenarioState extends State<_NativeEditorScenario> {
-  late NativeAccountEditorPresentation _value = widget.initial;
-
-  @override
-  void didUpdateWidget(covariant _NativeEditorScenario oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    if (oldWidget.initial != widget.initial) {
-      _value = widget.initial;
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) => NativeAccountEditorView(
-    value: _value,
-    onFieldChanged: (field, raw) => setState(() {
-      _value = switch (field) {
-        NativeAccountField.name => _value.copyWith(
-          name: _value.name.copyWith(raw: raw),
-        ),
-        NativeAccountField.endpoint => _value.copyWith(
-          endpoint: _value.endpoint.copyWith(raw: raw),
-        ),
-        NativeAccountField.credential => _value.copyWith(
-          credential: _value.credential.copyWith(raw: raw),
-        ),
-      };
-    }),
-    onTemplateChanged: (key) =>
-        widget.record('template: ${key.kind.name}/${key.id}'),
-    onBillingChanged: (billing) => widget.record('billing: ${billing.name}'),
-    onResetBilling: () => widget.record('reset billing'),
-    onAddModel: () => widget.record('add manual model'),
-    onManualModelFieldChanged: (key, field, raw) =>
-        widget.record('$key: ${field.name} $raw'),
-    onManualModelConnectionChanged: (key, connection) =>
-        widget.record('$key: ${connection.name}'),
-    onManualModelWireApiChanged: (key, wireApi) =>
-        widget.record('$key: ${wireApi.name}'),
-    onRemoveManualModel: (key) => widget.record('remove manual: $key'),
-    modelActions: _modelActions(widget.record),
-    onSave: () => widget.record('save (not persisted)'),
-    onCancel: () => widget.record('cancel editor'),
-  );
-}
-
-class _AcpEditorScenario extends StatefulWidget {
-  const _AcpEditorScenario({required this.initial, required this.record});
-  final AcpAccountEditorPresentation initial;
-  final ValueChanged<String> record;
-  @override
-  State<_AcpEditorScenario> createState() => _AcpEditorScenarioState();
-}
-
-class _AcpEditorScenarioState extends State<_AcpEditorScenario> {
-  late AcpAccountEditorPresentation _value = widget.initial;
-
-  @override
-  void didUpdateWidget(covariant _AcpEditorScenario oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    if (oldWidget.initial != widget.initial) {
-      _value = widget.initial;
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) => AcpAccountEditorView(
-    value: _value,
-    onNameChanged: (raw) => setState(
-      () => _value = _value.copyWith(name: _value.name.copyWith(raw: raw)),
-    ),
-    onAction: (action) => widget.record('ACP: ${action.name}'),
-    onLoginMethodChanged: (method) => widget.record('method: $method'),
-    onSave: () => widget.record('save ACP (not persisted)'),
-    onCancel: () => widget.record('cancel ACP editor'),
   );
 }

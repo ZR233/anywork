@@ -12,7 +12,7 @@ abstract final class AccountPreviewFixtures {
   );
   static const templateKey = AccountTemplateKey(
     kind: AccountKind.native,
-    id: 'synthetic-deepseek',
+    id: 'deepseek',
   );
   static const billingOverrides = [
     AccountBilling.metered,
@@ -40,6 +40,21 @@ abstract final class AccountPreviewFixtures {
         currency: 'USD',
         total: '12.345678901',
         toppedUp: '12.345678901',
+      ),
+    ],
+  );
+  static const normalBalance = AccountUsagePresentation(
+    phase: AccountQueryPhase.ready,
+    hasLastGood: true,
+    balanceHealth: AccountBalanceHealth.sufficient,
+    canRefresh: true,
+    updatedLabel: '10/26 12:34',
+    balances: [
+      AccountCurrencyBalance(
+        currency: 'CNY',
+        total: '2595.22',
+        granted: '0.00',
+        toppedUp: '2595.22',
       ),
     ],
   );
@@ -172,7 +187,7 @@ abstract final class AccountPreviewFixtures {
     key: nativeKey,
     name: 'DeepSeek',
     iconKey: 'deepseek',
-    endpoint: 'https://api.synthetic.invalid/v1',
+    endpoint: 'https://api.deepseek.com',
     canEdit: true,
     canDelete: true,
     canSetDefault: true,
@@ -181,7 +196,7 @@ abstract final class AccountPreviewFixtures {
         credentialReady: true,
         billing: billing,
         catalog: catalog,
-        usage: balance,
+        usage: normalBalance,
         advanced: const [
           AccountDisplayFact(label: '账号 ID', value: 'synthetic-native'),
           AccountDisplayFact(label: '模板', value: '合成 DeepSeek'),
@@ -219,7 +234,7 @@ abstract final class AccountPreviewFixtures {
         name: 'DeepSeek',
         iconKey: 'deepseek',
         billing: AccountBilling.metered,
-        usage: balance,
+        usage: normalBalance,
         actions: AccountRowAction.values,
       ),
       const AccountRowPresentation(
@@ -234,6 +249,14 @@ abstract final class AccountPreviewFixtures {
         actions: [AccountRowAction.edit, AccountRowAction.delete],
       ),
       const AccountRowPresentation(
+        key: AccountDisplayKey(kind: AccountKind.native, id: 'synthetic-xai'),
+        name: 'xAI',
+        iconKey: 'xai',
+        billing: AccountBilling.metered,
+        usage: AccountUsagePresentation(phase: AccountQueryPhase.unsupported),
+        actions: [AccountRowAction.edit, AccountRowAction.delete],
+      ),
+      const AccountRowPresentation(
         key: AccountDisplayKey(kind: AccountKind.native, id: 'synthetic-zhipu'),
         name: 'Zhipu Coding Plan',
         iconKey: 'zhipu',
@@ -242,32 +265,11 @@ abstract final class AccountPreviewFixtures {
         usage: subscription,
         actions: AccountRowAction.values,
       ),
-      AccountRowPresentation(
-        key: const AccountDisplayKey(
-          kind: AccountKind.native,
-          id: 'synthetic-failed',
-        ),
-        name: '刷新失败 · 保留最近成功数据',
-        iconKey: 'deepseek',
-        billing: AccountBilling.metered,
-        usage: balance.copyWith(
-          phase: AccountQueryPhase.failed,
-          canRetry: true,
-          error: '合成网络错误，请重试。',
-        ),
-        actions: AccountRowAction.values,
-      ),
       const AccountRowPresentation(
         key: AccountDisplayKey(kind: AccountKind.native, id: 'synthetic-local'),
         name: '本地服务',
         billing: AccountBilling.noCharge,
         usage: AccountUsagePresentation(phase: AccountQueryPhase.unsupported),
-        actions: [AccountRowAction.edit, AccountRowAction.delete],
-      ),
-      const AccountRowPresentation(
-        key: acpKey,
-        name: '官方 ACP · 合成接入',
-        acpStatus: '需要登录',
         actions: [AccountRowAction.edit, AccountRowAction.delete],
       ),
     ],
@@ -279,39 +281,44 @@ abstract final class AccountPreviewFixtures {
       iconKey: 'deepseek',
     ),
     AccountTemplatePresentation(
-      key: AccountTemplateKey(kind: AccountKind.native, id: 'synthetic-zhipu'),
+      key: AccountTemplateKey(kind: AccountKind.native, id: 'zhipu'),
       name: '智谱',
       iconKey: 'zhipu',
     ),
     AccountTemplatePresentation(
-      key: AccountTemplateKey(kind: AccountKind.native, id: 'synthetic-openai'),
-      name: 'OpenAI · 合成模板',
+      key: AccountTemplateKey(kind: AccountKind.native, id: 'openai'),
+      name: 'OpenAI',
       iconKey: 'openai',
     ),
     AccountTemplatePresentation(
-      key: AccountTemplateKey(kind: AccountKind.native, id: 'synthetic-xai'),
-      name: 'xAI · 合成模板',
+      key: AccountTemplateKey(kind: AccountKind.native, id: 'xai'),
+      name: 'xAI',
       iconKey: 'xai',
     ),
     AccountTemplatePresentation(
-      key: AccountTemplateKey(kind: AccountKind.native, id: 'synthetic-mimo'),
-      name: 'MiMo · 合成模板',
+      key: AccountTemplateKey(kind: AccountKind.native, id: 'mimo-api'),
+      name: 'MiMo API',
       iconKey: 'mimo',
     ),
     AccountTemplatePresentation(
       key: AccountTemplateKey(
         kind: AccountKind.native,
-        id: 'synthetic-compatible',
+        id: 'openai-compatible',
       ),
-      name: '兼容接口 · 合成模板',
+      name: 'OpenAI API 兼容',
     ),
     AccountTemplatePresentation(
-      key: AccountTemplateKey(kind: AccountKind.native, id: 'synthetic-local'),
-      name: '本地模型 · 合成模板',
+      key: AccountTemplateKey(
+        kind: AccountKind.native,
+        id: 'zhipu-coding-plan',
+      ),
+      name: 'Zhipu Coding Plan',
+      iconKey: 'zhipu',
     ),
     AccountTemplatePresentation(
-      key: AccountTemplateKey(kind: AccountKind.native, id: 'synthetic-team'),
-      name: '团队网关 · 合成模板',
+      key: AccountTemplateKey(kind: AccountKind.native, id: 'mimo-token-plan'),
+      name: 'MiMo Token Plan',
+      iconKey: 'mimo',
     ),
   ];
   // Native entries intentionally precede ACP in input; the production picker
@@ -319,7 +326,7 @@ abstract final class AccountPreviewFixtures {
   static const templates = [
     ...nativeTemplates,
     AccountTemplatePresentation(
-      key: AccountTemplateKey(kind: AccountKind.acp, id: 'synthetic-acp'),
+      key: AccountTemplateKey(kind: AccountKind.acp, id: 'antigravity'),
       name: 'Antigravity',
       description: '合成受管服务器（仅预览）',
     ),
@@ -330,7 +337,7 @@ abstract final class AccountPreviewFixtures {
     templateKey: templateKey,
     templates: nativeTemplates,
     name: AccountTextPresentation(raw: 'DeepSeek'),
-    endpoint: AccountTextPresentation(raw: 'https://api.synthetic.invalid/v1'),
+    endpoint: AccountTextPresentation(raw: 'https://api.deepseek.com'),
     credential: AccountTextPresentation(),
     hasStoredCredential: true,
     protocolLabel: 'DeepSeek',
