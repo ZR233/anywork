@@ -1,5 +1,5 @@
 // Shared account design: shell, fixture data, and local-only interactions using Material 3 (MDUI) default components.
-document.getElementById("aw-preview-mount").innerHTML = "<div id=\"aw-accounts\" class=\"mdui-theme-light\" aria-label=\"账号列表与详情 Material 3 全变体设计预览\">\n  <mdui-card variant=\"outlined\" class=\"aw-previewbar\" aria-label=\"设计评审场景切换\"><span class=\"aw-previewlabel\"><i data-lucide=\"sliders-horizontal\" aria-hidden=\"true\"></i>场景预览</span><mdui-select id=\"aw-type\" label=\"账户变体\" value=\"overview\" variant=\"outlined\"></mdui-select><mdui-select id=\"aw-scenario\" class=\"aw-state-select\" label=\"展示状态\" value=\"normal\" variant=\"outlined\"></mdui-select><div class=\"aw-stepper\" aria-label=\"快速切换场景\"><mdui-tooltip content=\"上一场景\"><mdui-button-icon id=\"aw-prev-scenario\" aria-label=\"上一场景\"><i data-lucide=\"chevron-left\" aria-hidden=\"true\"></i></mdui-button-icon></mdui-tooltip><span class=\"aw-scenario-index\" id=\"aw-scenario-index\">1 / 62</span><mdui-tooltip content=\"下一场景\"><mdui-button-icon id=\"aw-next-scenario\" aria-label=\"下一场景\"><i data-lucide=\"chevron-right\" aria-hidden=\"true\"></i></mdui-button-icon></mdui-tooltip></div><mdui-segmented-button-group selects=\"single\" class=\"aw-view-group\" id=\"aw-view-group\" value=\"list\" aria-label=\"视图切换\"><mdui-segmented-button value=\"list\" id=\"aw-view-list\">账号列表</mdui-segmented-button><mdui-segmented-button value=\"detail\" id=\"aw-view-detail\">账号详情</mdui-segmented-button><mdui-segmented-button value=\"model\" id=\"aw-view-model\">模型资料</mdui-segmented-button></mdui-segmented-button-group></mdui-card>\n  <div class=\"aw-shell\" id=\"aw-shell\"><aside class=\"aw-sidebar\"><div class=\"aw-brand\"><mdui-avatar><i data-lucide=\"cat\" aria-hidden=\"true\"></i></mdui-avatar>糊来帮</div><mdui-button variant=\"text\" class=\"aw-back-chat\" id=\"aw-back-chat\"><span slot=\"icon\"><i data-lucide=\"arrow-left\" aria-hidden=\"true\"></i></span>返回聊天</mdui-button><nav id=\"aw-nav\" aria-label=\"设置导航\"></nav><div class=\"aw-sidebar-bottom\"><span class=\"aw-small-dot\"></span>设置 · 本地工作空间</div></aside><main class=\"aw-main\" id=\"aw-main\"><div class=\"aw-loading\"><mdui-circular-progress></mdui-circular-progress>正在加载 Material 3 组件…</div></main></div>\n  <div class=\"aw-preview-foot\"><span><i data-lucide=\"palette\" aria-hidden=\"true\"></i>Material 3 · 暹罗浅色 · 标准组件</span><span id=\"aw-coverage\">示例数据 · 不连接真实账户</span></div>\n  <mdui-dialog id=\"aw-dialog\" headline=\"账号设置\" close-on-esc><div id=\"aw-dialog-content\"></div><mdui-button slot=\"action\" variant=\"text\" id=\"aw-dialog-cancel\">取消</mdui-button><mdui-button slot=\"action\" variant=\"filled\" id=\"aw-dialog-save\">保存</mdui-button></mdui-dialog>\n  <mdui-dialog id=\"aw-leave-dialog\" headline=\"放弃未保存的修改？\" description=\"你的修改还未保存，关闭后将恢复原有配置。\"><mdui-button slot=\"action\" variant=\"text\" id=\"aw-keep-editing\">继续编辑</mdui-button><mdui-button slot=\"action\" variant=\"filled\" id=\"aw-discard\">放弃修改</mdui-button></mdui-dialog>\n  <mdui-snackbar id=\"aw-snackbar\" placement=\"bottom\" auto-close-delay=\"2800\" closeable></mdui-snackbar>\n</div>";
+document.getElementById("aw-preview-mount").innerHTML = "<div id=\"aw-accounts\" class=\"mdui-theme-light\" aria-label=\"账号列表与详情 Material 3 全变体设计预览\">\n  <mdui-card variant=\"outlined\" class=\"aw-previewbar\" aria-label=\"设计评审场景切换\"><span class=\"aw-previewlabel\"><i data-lucide=\"sliders-horizontal\" aria-hidden=\"true\"></i>场景预览</span><mdui-select id=\"aw-type\" label=\"账户变体\" value=\"overview\" variant=\"outlined\"></mdui-select><mdui-select id=\"aw-scenario\" class=\"aw-state-select\" label=\"展示状态\" value=\"normal\" variant=\"outlined\"></mdui-select><div class=\"aw-stepper\" aria-label=\"快速切换场景\"><mdui-tooltip content=\"上一场景\"><mdui-button-icon id=\"aw-prev-scenario\" aria-label=\"上一场景\"><i data-lucide=\"chevron-left\" aria-hidden=\"true\"></i></mdui-button-icon></mdui-tooltip><span class=\"aw-scenario-index\" id=\"aw-scenario-index\">1 / 62</span><mdui-tooltip content=\"下一场景\"><mdui-button-icon id=\"aw-next-scenario\" aria-label=\"下一场景\"><i data-lucide=\"chevron-right\" aria-hidden=\"true\"></i></mdui-button-icon></mdui-tooltip></div><mdui-segmented-button-group selects=\"single\" class=\"aw-view-group\" id=\"aw-view-group\" value=\"list\" aria-label=\"视图切换\"><mdui-segmented-button value=\"list\" id=\"aw-view-list\">账号列表</mdui-segmented-button><mdui-segmented-button value=\"add\" id=\"aw-view-add\">添加账号</mdui-segmented-button><mdui-segmented-button value=\"detail\" id=\"aw-view-detail\">账号详情</mdui-segmented-button><mdui-segmented-button value=\"model\" id=\"aw-view-model\">模型资料</mdui-segmented-button></mdui-segmented-button-group></mdui-card>\n  <div class=\"aw-shell\" id=\"aw-shell\"><aside class=\"aw-sidebar\"><div class=\"aw-brand\"><mdui-avatar><i data-lucide=\"cat\" aria-hidden=\"true\"></i></mdui-avatar>糊来帮</div><mdui-button variant=\"text\" class=\"aw-back-chat\" id=\"aw-back-chat\"><span slot=\"icon\"><i data-lucide=\"arrow-left\" aria-hidden=\"true\"></i></span>返回聊天</mdui-button><nav id=\"aw-nav\" aria-label=\"设置导航\"></nav><div class=\"aw-sidebar-bottom\"><span class=\"aw-small-dot\"></span>设置 · 本地工作空间</div></aside><main class=\"aw-main\" id=\"aw-main\"><div class=\"aw-loading\"><mdui-circular-progress></mdui-circular-progress>正在加载 Material 3 组件…</div></main></div>\n  <div class=\"aw-preview-foot\"><span><i data-lucide=\"palette\" aria-hidden=\"true\"></i>Material 3 · 暹罗浅色 · 标准组件</span><span id=\"aw-coverage\">示例数据 · 不连接真实账户</span></div>\n  <mdui-dialog id=\"aw-dialog\" headline=\"账号设置\" close-on-esc><div id=\"aw-dialog-content\"></div><mdui-button slot=\"action\" variant=\"text\" id=\"aw-dialog-cancel\">取消</mdui-button><mdui-button slot=\"action\" variant=\"filled\" id=\"aw-dialog-save\">保存</mdui-button></mdui-dialog>\n  <mdui-dialog id=\"aw-leave-dialog\" headline=\"放弃未保存的修改？\" description=\"你的修改还未保存，关闭后将恢复原有配置。\"><mdui-button slot=\"action\" variant=\"text\" id=\"aw-keep-editing\">继续编辑</mdui-button><mdui-button slot=\"action\" variant=\"filled\" id=\"aw-discard\">放弃修改</mdui-button></mdui-dialog>\n  <mdui-snackbar id=\"aw-snackbar\" placement=\"bottom\" auto-close-delay=\"2800\" closeable></mdui-snackbar>\n</div>";
 
 (() => {
 const root=document.getElementById('aw-accounts');const $=s=>root.querySelector(s);const $$=s=>Array.from(root.querySelectorAll(s));
@@ -14,12 +14,14 @@ const logo=(a,large=false)=>`<span class="aw-logo${large?' large':''}">${LOGOS[a
 const formatTokens=n=>{const v=Number(n);if(!Number.isFinite(v)||v<=0)return '—';if(v>=1e6)return `${+(v/1e6).toFixed(2)}M`;if(v>=1e3)return `${+(v/1e3).toFixed(2)}k`;return String(Math.round(v));};
 
 const accountTemplates=[
- {key:'acp',name:'Antigravity',brand:'acp',kind:'acp',endpoint:'受管应用 · ACP 接入',protocol:'ACP 受管接入 v1.4.1',billing:'unknown',desc:'受管应用 · 免密授权接入'},
- {key:'deepseek',name:'DeepSeek',brand:'deepseek',kind:'balance',endpoint:'https://api.deepseek.com',protocol:'DeepSeek API',billing:'metered',desc:'官方 API · 支持实时余额查询'},
- {key:'openai',name:'OpenAI',brand:'openai',kind:'metered',endpoint:'https://api.openai.com/v1',protocol:'Responses / Chat API',billing:'metered',desc:'OpenAI 官方模型服务'},
- {key:'zhipu',name:'Zhipu Coding Plan',brand:'zhipu',kind:'subscription',endpoint:'https://open.bigmodel.cn/api/coding/paas/v4',protocol:'OpenAI-compatible',billing:'subscription',desc:'智谱编程套餐 · 多周期订阅额度'},
- {key:'ollama',name:'Ollama',brand:'local',kind:'free',endpoint:'http://localhost:11434/v1',protocol:'OpenAI-compatible',billing:'noCharge',desc:'本机推理服务 · 无需密钥'},
- {key:'custom',name:'OpenAI 兼容服务',brand:'custom',kind:'metered',endpoint:'https://api.example.com/v1',protocol:'OpenAI-compatible',billing:'metered',desc:'自定义 Endpoint 与模型目录'}
+ {key:'deepseek',name:'DeepSeek',group:'主流云端服务',brand:'deepseek',kind:'balance',endpoint:'https://api.deepseek.com',protocol:'DeepSeek API',billing:'metered',badge:'实时余额 · 目录同步',capSummary:'支持实时余额查询与在线模型自动同步',desc:'DeepSeek 官方 API，支持上下文缓存立省与推理模型'},
+ {key:'openai',name:'OpenAI',group:'主流云端服务',brand:'openai',kind:'metered',endpoint:'https://api.openai.com/v1',protocol:'Responses / Chat API',billing:'metered',badge:'Responses API · WebSocket',capSummary:'支持 HTTP / WebSocket 传输与在线目录同步',desc:'OpenAI 官方模型服务，支持 GPT-5 与 Responses 协议'},
+ {key:'zhipu',name:'Zhipu Coding Plan',group:'主流云端服务',brand:'zhipu',kind:'subscription',endpoint:'https://open.bigmodel.cn/api/coding/paas/v4',protocol:'OpenAI-compatible',billing:'subscription',badge:'多周期订阅额度',capSummary:'支持 5 小时 / 每周 / MCP 多周期配额跟踪',desc:'智谱 GLM 编程订阅套餐，实时展示周期剩余配额'},
+ {key:'xai',name:'xAI (Grok)',group:'主流云端服务',brand:'xai',kind:'metered',endpoint:'https://api.x.ai/v1',protocol:'OpenAI-compatible',billing:'metered',badge:'按量付费 · 目录同步',capSummary:'支持在线模型目录同步与工具调用',desc:'xAI 官方接口，提供 Grok 系列长上下文推理模型'},
+ {key:'anthropic',name:'Anthropic Claude',group:'主流云端服务',brand:'custom',kind:'metered',endpoint:'https://api.anthropic.com/v1',protocol:'Anthropic Messages API',billing:'metered',badge:'Messages API · 扩展思考',capSummary:'支持扩展思考预算与 Prompt 缓存计费',desc:'Anthropic 官方模型服务，支持 Claude 系列代码与分析模型'},
+ {key:'acp',name:'Antigravity',group:'受管应用接入 (ACP)',brand:'acp',kind:'acp',endpoint:'受管应用 · ACP 接入',protocol:'ACP 受管接入 v1.4.1',billing:'unknown',badge:'受管程序 · OAuth 登录',capSummary:'固定版本 v1.4.1 自动准备 · 浏览器授权登录',desc:'由本应用自动管理受管程序安装与认证，无需手动填写密钥'},
+ {key:'ollama',name:'Ollama (本地服务)',group:'本地与自定义网关',brand:'local',kind:'free',endpoint:'http://localhost:11434/v1',protocol:'OpenAI-compatible',billing:'noCharge',badge:'本机推理 · 免密直连',capSummary:'默认不计费 · 手动声明与管理本地模型',desc:'连接本机运行的 Ollama 推理服务，无需配置 API 密钥'},
+ {key:'custom',name:'OpenAI 兼容服务',group:'本地与自定义网关',brand:'custom',kind:'metered',endpoint:'https://api.example.com/v1',protocol:'OpenAI-compatible',billing:'metered',badge:'自定义网关 / 企业代理',capSummary:'支持自定义 Endpoint、协议切换与手动模型扩展',desc:'接入任意兼容 OpenAI Chat Completions 或 Responses API 的服务端'}
 ];
 
 const groups={
@@ -37,7 +39,10 @@ const groups={
 const allSteps=Object.entries(groups).flatMap(([type,g])=>g.states.map(([s,label])=>({type,scenario:s,label})));
 const totalScenarios=allSteps.length;
 
-let state={type:'overview',scenario:'normal',page:document.getElementById('aw-preview-mount').dataset.page,selected:'deepseek',search:'',defaultId:'zhipu',modelEnabled:{flash:true,pro:true,bundled:false,manual:true},threshold:'475000',modelPrefs:{},modelNames:{},deletedModels:[],manualModels:[],billingSelections:{},selectedModel:'flash',modelTab:'reviews',reviewFilter:'all',reviewStar:0,reviewTag:'',reviewSort:'recent',reviewVisible:4,reviewExpanded:[],detailScroll:0,detailExpanded:['flash'],deleted:[],editedNames:{},editedEndpoints:{},secretConfigured:{},acpLoginMethod:'oauth',addTemplate:'deepseek',listScroll:0};
+const urlParams=new URLSearchParams(location.search);
+const initPage=['list','add','detail','model'].includes(urlParams.get('page'))?urlParams.get('page'):document.getElementById('aw-preview-mount').dataset.page;
+const initTpl=accountTemplates.some(t=>t.key===urlParams.get('tpl'))?urlParams.get('tpl'):'deepseek';
+let state={type:'overview',scenario:'normal',page:initPage,selected:'deepseek',search:'',defaultId:'zhipu',modelEnabled:{flash:true,pro:true,bundled:false,manual:true},threshold:'475000',modelPrefs:{},modelNames:{},deletedModels:[],manualModels:[],billingSelections:{},selectedModel:'flash',modelTab:'reviews',reviewFilter:'all',reviewStar:0,reviewTag:'',reviewSort:'recent',reviewVisible:4,reviewExpanded:[],detailScroll:0,detailExpanded:['flash'],deleted:[],editedNames:{},editedEndpoints:{},secretConfigured:{},acpLoginMethod:'oauth',addTemplate:initTpl,tplDropdownOpen:urlParams.get('tplOpen')==='1',tplSearch:'',listScroll:0};
 const defaultAccounts=[
  {id:'deepseek',name:'DeepSeek',brand:'deepseek',kind:'balance',endpoint:'https://api.deepseek.com',billing:'metered'},
  {id:'openai',name:'OpenAI',brand:'openai',kind:'metered',endpoint:'https://api.openai.com/v1',billing:'metered'},
@@ -51,7 +56,7 @@ function savedRestore(snapshot){
  const p=snapshot?.privateContent;if(!p)return;
  if(groups[p.type])state.type=p.type;
  if(groups[state.type].states.some(([k])=>k===p.scenario))state.scenario=p.scenario;
- if(['list','detail','model'].includes(p.page))state.page=p.page;
+ if(['list','add','detail','model'].includes(p.page))state.page=p.page;
  if(typeof p.selected==='string')state.selected=p.selected;
  if(typeof p.search==='string')state.search=p.search.slice(0,120);
  if(typeof p.selectedModel==='string')state.selectedModel=p.selectedModel;
@@ -436,6 +441,32 @@ function acpDetail(a){
  const s=scenario(a),stage=acpStage(s),install=state.type==='acpInstall';
  return `<mdui-card variant="filled" class="aw-balance-card"><div class="aw-card-header"><div><h2>${install?'受管安装进度':'连接与认证状态'}</h2><small>${install?'官方固定版本 v1.4.1':'受管应用接入'}</small></div><mdui-segmented-button-group selects="single" class="aw-conn-group" value="${install?'install':'auth'}" aria-label="切换受管状态视图"><mdui-segmented-button value="auth" data-action="switchAcpMode" data-mode="auth">连接与认证</mdui-segmented-button><mdui-segmented-button value="install" data-action="switchAcpMode" data-mode="install">受管安装 v1.4.1</mdui-segmented-button></mdui-segmented-button-group></div><div class="aw-acp-stage"><mdui-avatar style="width:46px;height:46px">${icon(stage.ico)}</mdui-avatar><div><h2>${stage.summary}</h2><p>${stage.description}</p></div></div>${stage.busy?`<div class="aw-acp-progress"><mdui-linear-progress ${s==='download'?'value="0.46"':''} aria-label="${stage.summary}"></mdui-linear-progress>${s==='download'?'<small>当前下载进度 · 示例数值</small>':''}</div>`:''}${s==='required'?`<div class="aw-row" style="margin-bottom:12px"><span class="aw-muted" style="font-size:12px">登录方式：</span><mdui-chip selectable ${state.acpLoginMethod==='oauth'?'selected':''} data-action="setAcpMethod" data-method="oauth">浏览器 OAuth 授权（推荐）</mdui-chip><mdui-chip selectable ${state.acpLoginMethod==='terminal'?'selected':''} data-action="setAcpMethod" data-method="terminal">终端命令登录</mdui-chip></div>`:''}<div class="aw-acp-actions">${stage.action?btn(stage.action,stage.actionId,stage.busy?'outlined':'filled',stage.actionId.includes('cancel')?'x':''):''}${s==='authenticating'?btn('我已完成登录','verifyAcp','tonal'):''}${['checking','verifying','closing','cancelling','close','installCancelling'].includes(s)?'<small>操作完成后将自动更新状态</small>':''}</div>${install?`<div class="aw-install-steps">${[['resolve','解析'],['download','下载'],['verify','校验'],['extract','解压'],['publish','准备'],['ready','就绪']].map(([k,label])=>`<mdui-chip class="aw-chip-sm" ${k===s?'elevated':''}>${icon(k===s?'circle-dot':'circle','icon')}${label}</mdui-chip>`).join('')}</div>`:''}</mdui-card><section class="aw-section"><div class="aw-section-heading"><h2>接入设置</h2></div><mdui-card variant="outlined" class="aw-setting-card"><mdui-list><mdui-list-item nonclickable headline="安装状态" description="ACP · 官方受管程序（版本 1.4.1）">${icon('package-check','icon')}${chip('v1.4.1 已就绪','slot="end-icon"')}</mdui-list-item><mdui-divider></mdui-divider><mdui-list-item nonclickable headline="认证方式" description="${s==='terminal'||state.acpLoginMethod==='terminal'?'终端命令登录':s==='noMethods'?'服务端未提供':s==='unsupportedMethod'?'当前方式不受支持':'浏览器 OAuth 授权流程'}">${icon('shield-check','icon')}</mdui-list-item><mdui-divider></mdui-divider><mdui-collapse><mdui-collapse-item value="acp-adv"><mdui-list-item slot="header" headline="高级信息" description="antigravity-demo · ${['verified','normal'].includes(s)?'Antigravity · 示例身份':'身份尚未获取'}">${icon('sliders-horizontal','icon')}${icon('chevron-right','end-icon')}</mdui-list-item><div class="aw-advanced-content"><span>账号 ID</span><code>antigravity-demo</code><span>服务身份</span><span>${['verified','normal'].includes(s)?'Antigravity · 示例身份':'尚未获取'}</span><span>安装来源</span><span>官方受管发行</span></div></mdui-collapse-item></mdui-collapse></mdui-list></mdui-card></section>`;
 }
+function filteredTemplates(){
+ const q=state.tplSearch.trim().toLowerCase();
+ if(!q)return accountTemplates;
+ return accountTemplates.filter(t=>[t.name,t.key,t.group,t.protocol,t.badge,t.desc,t.endpoint].some(s=>s.toLowerCase().includes(q)));
+}
+function tplDropdownListMarkup(){
+ const list=filteredTemplates(),curKey=state.addTemplate;
+ if(!list.length)return `<div class="aw-tpl-empty">${icon('search')}<p>未找到匹配的账号模板</p>${btn('清除搜索词','clearTplSearch','tonal')}</div>`;
+ const groupsOrder=['主流云端服务','受管应用接入 (ACP)','本地与自定义网关'];
+ return groupsOrder.map(g=>{
+  const items=list.filter(t=>t.group===g);
+  if(!items.length)return '';
+  return `<div class="aw-tpl-group"><div class="aw-tpl-group-head">${escapeHTML(g)}</div>${items.map(t=>{
+   const sel=t.key===curKey;
+   return `<button type="button" class="aw-tpl-option${sel?' selected':''}" data-action="pickTemplate" data-tpl="${t.key}" role="option" aria-selected="${sel}">${logo(t)}<div class="aw-tpl-option-main"><div class="aw-tpl-option-title"><strong>${escapeHTML(t.name)}</strong><span class="aw-status ${sel?'success':'neutral'}">${escapeHTML(t.badge)}</span></div><small>${escapeHTML(t.desc)} · <code>${escapeHTML(t.endpoint)}</code></small></div><div class="aw-tpl-option-end">${sel?`<span class="aw-tpl-selected-mark">${icon('check')}当前已选</span>`:`<span class="aw-tpl-proto-tag">${escapeHTML(t.protocol)}</span>`}</div></button>`;
+  }).join('')}</div>`;
+ }).join('');
+}
+function addPageMarkup(){
+ const tpl=accountTemplates.find(t=>t.key===state.addTemplate)||accountTemplates[0];
+ const isAcp=tpl.kind==='acp',isLocal=tpl.key==='ollama',isCustom=tpl.key==='custom';
+ const filteredCount=filteredTemplates().length;
+ const billingSelect=`<mdui-select id="aw-add-billing" label="计费方式" value="auto" variant="outlined" helper="仅影响本应用费用估算，实际费用以供应商结算为准"><mdui-menu-item value="auto">自动（${billingName(tpl.billing)}）</mdui-menu-item><mdui-menu-item value="metered">按量付费</mdui-menu-item><mdui-menu-item value="subscription">订阅</mdui-menu-item><mdui-menu-item value="noCharge">不计费</mdui-menu-item><mdui-menu-item value="unknown">未知</mdui-menu-item></mdui-select>`;
+ const secretField=`<mdui-text-field id="aw-edit-secret" label="API 密钥" type="password" placeholder="sk-..." helper="加密存储于本机安全凭据库，不会明文写入配置文件（可留空稍后配置）" variant="outlined" autocomplete="off"><mdui-button-icon slot="end-icon" data-action="toggleSecretVis" aria-label="显示或隐藏密钥">${icon('eye')}</mdui-button-icon></mdui-text-field>`;
+ return `<div class="aw-topbar"><mdui-button variant="text" data-action="back" class="aw-back">${icon('arrow-left','icon')}返回账号列表</mdui-button>${iconBtn('设置导航','mobileNav','menu','class="aw-menu-mobile"')}</div><div class="aw-page-header"><div><h1>添加账号</h1><p class="aw-page-subtitle">选择预设供应商模板或自定义网关，自动预填接口协议、默认服务地址与计费方式。</p></div></div><mdui-card variant="outlined" class="aw-add-card${state.tplDropdownOpen?' dropdown-open':''}" id="aw-add-tpl-card"><div class="aw-add-card-head"><div><h2>1. 选择账号模板</h2><p>通过可搜索下拉列表快速筛选供应商模板，切换模板会自动预填下方默认参数</p></div><span class="aw-status neutral">${icon('layers')}支持搜索 · 共 ${accountTemplates.length} 个模板</span></div><div class="aw-tpl-dropdown" id="aw-tpl-dropdown"><button type="button" class="aw-tpl-trigger${state.tplDropdownOpen?' open':''}" data-action="toggleTplDropdown" aria-haspopup="listbox" aria-expanded="${state.tplDropdownOpen}">${logo(tpl,true)}<div class="aw-tpl-trigger-body"><div class="aw-tpl-trigger-top"><strong>${escapeHTML(tpl.name)}</strong><span class="aw-status success">${escapeHTML(tpl.badge)}</span><span class="aw-tpl-group-tag">${escapeHTML(tpl.group)}</span></div><div class="aw-tpl-trigger-desc">${escapeHTML(tpl.desc)} · 默认地址 <code>${escapeHTML(tpl.endpoint)}</code></div></div><div class="aw-tpl-trigger-end"><span class="aw-tpl-change-hint">${icon('search')}搜索 / 切换模板</span><span class="aw-tpl-chevron">${icon('chevron-down')}</span></div></button><div class="aw-tpl-panel" id="aw-tpl-panel" ${state.tplDropdownOpen?'':'hidden'} role="listbox" aria-label="账号模板列表"><div class="aw-tpl-search-bar"><mdui-text-field id="aw-tpl-search" variant="outlined" placeholder="搜索供应商名称、协议或关键词（如 DeepSeek、OpenAI、Claude、ACP、本地）…" value="${escapeHTML(state.tplSearch)}" clearable>${icon('search','icon')}</mdui-text-field><span class="aw-tpl-count" id="aw-tpl-count">匹配 ${filteredCount} / ${accountTemplates.length}</span></div><div class="aw-tpl-list" id="aw-tpl-list">${tplDropdownListMarkup()}</div></div></div><div class="aw-tpl-summary-grid"><div><small>预设接口协议</small><strong>${escapeHTML(tpl.protocol)}</strong></div><div><small>模板默认计费</small><strong>${billingName(tpl.billing)}</strong></div><div><small>目录与用量能力</small><strong>${escapeHTML(tpl.capSummary)}</strong></div></div></mdui-card><mdui-card variant="outlined" class="aw-add-card"><div class="aw-add-card-head"><div><h2>2. ${isAcp?'受管应用与计费配置':'连接、凭据与计费配置'}</h2><p>${isAcp?'确认账户显示名称、计费策略与官方受管服务程序准备状态':'自定义账号名称、服务地址、API 密钥与计费估算方式'}</p></div></div><div class="aw-add-form-body">${isAcp?`<div class="aw-dialog-row-2"><mdui-text-field id="aw-edit-name" label="账号名称" value="${escapeHTML(tpl.name)}" helper="用于在聊天模型选择器与设置列表中标识该受管接入账号" variant="outlined" required></mdui-text-field>${billingSelect}</div><div class="aw-acp-prep-box"><div class="aw-row"><mdui-avatar style="width:40px;height:40px">${icon('package-check')}</mdui-avatar><div><strong style="font-size:13.5px;display:block">受管服务程序 · Antigravity v1.4.1</strong><small>官方固定受管发行已准备就绪，创建账号后将自动发起连接检查与浏览器 OAuth 登录授权</small></div></div><span class="aw-status success">${icon('check')}v1.4.1 已就绪</span></div>`:`<div class="aw-dialog-row-2"><mdui-text-field id="aw-edit-name" label="账号名称" value="${escapeHTML(tpl.name)}" helper="用于在聊天模型选择器与费用统计中区分不同账号" variant="outlined" required></mdui-text-field><mdui-text-field id="aw-edit-endpoint" label="服务地址 (Endpoint)" value="${escapeHTML(tpl.endpoint)}" helper="默认地址：${escapeHTML(tpl.endpoint)}" variant="outlined" required><mdui-button slot="end-icon" variant="text" data-action="resetEndpoint" data-default="${escapeHTML(tpl.endpoint)}" style="height:28px;font-size:11px">恢复默认</mdui-button></mdui-text-field></div>${isCustom?`<div class="aw-dialog-row-2"><mdui-select id="aw-add-wire" label="默认接口协议 (Wire API)" value="chat" variant="outlined" helper="决定默认使用 Chat Completions 还是 Responses API"><mdui-menu-item value="chat">OpenAI Chat Completions</mdui-menu-item><mdui-menu-item value="responses">OpenAI Responses API</mdui-menu-item></mdui-select>${billingSelect}</div>${secretField}`:isLocal?`<div class="aw-dialog-row-2">${billingSelect}<div class="aw-acp-prep-box aw-local-prep-box"><div class="aw-row">${icon('server')}<div><strong style="font-size:13px;display:block">本机免密推理服务</strong><small>本地 Ollama 默认免密直连，无需填写 API 密钥</small></div></div><span class="aw-status success">${icon('check')}免密直连</span></div></div>`:`<div class="aw-dialog-row-2">${secretField}${billingSelect}</div>`}<div class="aw-add-default-row"><div><strong>设为默认账号</strong><small>新建聊天会话时默认优先选用此账号下的可用模型</small></div><mdui-switch id="aw-add-default" aria-label="设为默认账号"></mdui-switch></div>`}</div><div class="aw-add-footer"><span class="aw-add-security-note">${icon('shield-check')}凭据由操作系统级安全凭据库加密保护</span><div class="aw-row">${btn('取消','back','text')}${btn(isAcp?'创建并检查连接':'创建账号','submitAddAccount','filled',isAcp?'plug-zap':'check')}</div></div></mdui-card>`;
+}
 function detailMarkup(){
  const a=selectedAccount();
  return `<div class="aw-topbar"><mdui-button variant="text" data-action="back" class="aw-back">${icon('arrow-left','icon')}返回账号列表</mdui-button>${iconBtn('设置导航','mobileNav','menu','class="aw-menu-mobile"')}</div><div class="aw-page-header"><div class="aw-detail-identity">${logo(a,true)}<div><div class="aw-detail-title-row"><h1>${escapeHTML(a.name)}</h1>${accountStatus(a)}${state.defaultId===a.id?chip('默认账号'):''}</div><div class="aw-endpoint"><code>${escapeHTML(a.endpoint)}</code>${a.kind!=='acp'?iconBtn('复制 Endpoint 地址','copyEndpoint','copy','class="aw-copy-btn"'):''}</div></div></div><div class="aw-row">${a.kind!=='acp'&&state.defaultId!==a.id?btn('设为默认','setDefault','text','star',`data-id="${a.id}"`):''}${btn('编辑账号','edit','outlined','pencil')}${iconBtn('删除账号','delete','trash-2',`data-id="${a.id}" class="aw-delete-icon-btn"`)}</div></div>${a.kind==='acp'?acpDetail(a):balanceDetail(a)+settingsMarkup(a)+modelsMarkup(a)}`;
@@ -464,17 +495,20 @@ function renderSelectors(){
  $('#aw-coverage').textContent=`共 ${totalScenarios} 个预览场景 · 金额、价格、性能与评价均为设计样例，不连接真实账户`;
 }
 function render(){
- if(state.type==='boundaries'&&state.scenario!=='long')state.page='list';
+ if(state.type==='boundaries'&&state.scenario!=='long'&&state.page!=='add')state.page='list';
  if(state.page==='model'&&selectedAccount().kind==='acp')state.page='detail';
  renderSelectors();
- $('#aw-main').innerHTML=state.page==='list'?listMarkup():state.page==='model'?modelPageMarkup():detailMarkup();
+ $('#aw-main').innerHTML=state.page==='list'?listMarkup():state.page==='add'?addPageMarkup():state.page==='model'?modelPageMarkup():detailMarkup();
  hydrateIcons();
  wireLocal();
 }
 function navigate(page,id){
- if(page==='detail'){state.listScroll=window.scrollY;state.selected=id||targetId();}
+ if(page==='detail'||page==='add')state.listScroll=window.scrollY;
+ if(page==='detail')state.selected=id||targetId();
+ if(page!=='add')state.tplDropdownOpen=false;
  state.page=page;render();save();
  if(page==='list')requestAnimationFrame(()=>window.scrollTo({top:state.listScroll,behavior:'instant'}));
+ if(page==='add')requestAnimationFrame(()=>$('#aw-main').scrollIntoView({block:'start'}));
 }
 function setScenario(s,type=state.type){
  state.type=type;state.scenario=s;state.selected=targetId();
@@ -502,29 +536,14 @@ function closeDialog(){
  if(dialogDirty){$('#aw-leave-dialog').open=true;return;}
  $('#aw-dialog').open=false;
 }
-function renderAddTemplateFields(tplKey){
- const tpl=accountTemplates.find(t=>t.key===tplKey)||accountTemplates[1];
- const isAcp=tpl.kind==='acp',isLocal=tpl.key==='ollama';
- return `<div class="aw-dialog-label"><span>账号模板</span><small>切换模板会自动填入默认地址与协议</small></div><div class="aw-template-grid" role="radiogroup" aria-label="选择账号模板">${accountTemplates.map(t=>`<button type="button" class="aw-template-card${t.key===tpl.key?' selected':''}" data-action="pickTemplate" data-tpl="${t.key}" role="radio" aria-checked="${t.key===tpl.key}">${logo(t)}<div class="aw-template-meta"><strong>${escapeHTML(t.name)}</strong><small>${escapeHTML(t.desc)}</small></div></button>`).join('')}</div><mdui-text-field id="aw-edit-name" label="账号名称" value="${escapeHTML(tpl.name)}" helper="用于在聊天模型选择器与账单统计中区分不同账号" variant="outlined" required></mdui-text-field>${isAcp?`<div class="aw-acp-prep-box"><div class="aw-row"><mdui-avatar style="width:36px;height:36px">${icon('package-check')}</mdui-avatar><div><strong style="font-size:13px;display:block">受管服务程序 · Antigravity v1.4.1</strong><small>官方固定受管发行已准备就绪，保存后将自动发起连接检查</small></div></div><span class="aw-status success">${icon('check')}已就绪</span></div>`:`<mdui-text-field id="aw-edit-endpoint" label="服务地址 (Endpoint)" value="${escapeHTML(tpl.endpoint)}" helper="接口协议：${escapeHTML(tpl.protocol)}" variant="outlined" required></mdui-text-field>${isLocal?'<div class="aw-acp-prep-box"><div class="aw-row">'+icon('server')+'<small>本地推理服务默认免密连接，保存后可直接添加本地模型。</small></div></div>':`<mdui-text-field id="aw-edit-secret" label="API 密钥" type="password" placeholder="sk-..." helper="密钥将加密存储于系统凭据库，不会明文写入配置文件" variant="outlined" autocomplete="off"><mdui-button-icon slot="end-icon" data-action="toggleSecretVis" aria-label="显示或隐藏密钥">${icon('eye')}</mdui-button-icon></mdui-text-field>`}`}`;
-}
 function editAccount(a,adding=false){
- dialogIntent='edit';
  if(adding){
-  openDialog('添加账号',`<p class="aw-dialog-copy">支持受管应用接入（ACP）与主流模型服务模板，选择模板后可一键预填默认参数。</p><div class="aw-dialog-form" id="aw-add-form">${renderAddTemplateFields(state.addTemplate)}</div>`,()=>{
-   const tpl=accountTemplates.find(t=>t.key===state.addTemplate)||accountTemplates[1];
-   const field=$('#aw-edit-name'),name=field.value.trim();
-   if(!name){field.setCustomValidity('请输入账号名称');field.reportValidity();return false;}
-   const id='added'+Date.now();
-   const endpoint=tpl.kind==='acp'?'受管应用 · ACP 接入':$('#aw-edit-endpoint')?.value.trim()||tpl.endpoint;
-   defaultAccounts.push({id,name,brand:tpl.brand,kind:tpl.kind,billing:tpl.billing,endpoint});
-   const secretVal=$('#aw-edit-secret')?.value.trim();
-   if(secretVal)state.secretConfigured[id]='sk-••••••••'+secretVal.slice(-4);
-   state.selected=id;
-   toast(tpl.kind==='acp'?'账号已保存，正在发起连接检查':'账号已添加到列表');
-   return true;
-  },state.addTemplate==='acp'?'保存并连接':'添加账号');
+  state.tplDropdownOpen=false;
+  state.tplSearch='';
+  navigate('add');
   return;
  }
+ dialogIntent='edit';
  const defaultEp=defaultAccounts.find(d=>d.id===a.id)?.endpoint||a.endpoint;
  openDialog('编辑账号信息',`<p class="aw-dialog-copy">修改账号显示名称或自定义网关地址；账号 ID（<code>${escapeHTML(a.id)}-demo</code>）创建后保持稳定。</p><div class="aw-dialog-form"><mdui-text-field id="aw-edit-name" label="账号名称" value="${escapeHTML(a.name)}" variant="outlined" required></mdui-text-field>${a.kind!=='acp'?`<mdui-text-field id="aw-edit-endpoint" label="服务地址 (Endpoint)" value="${escapeHTML(a.endpoint)}" helper="默认地址：${escapeHTML(defaultEp)}" variant="outlined" required><mdui-button slot="end-icon" variant="text" data-action="resetEndpoint" data-default="${escapeHTML(defaultEp)}" style="height:28px;font-size:11px">恢复默认</mdui-button></mdui-text-field>`:''}</div>`,()=>{
   const field=$('#aw-edit-name'),name=field.value.trim();
@@ -626,6 +645,16 @@ function wireLocal(){
   $('.aw-tools-meta').textContent=nextMeta.textContent;
   renderSelectors();hydrateIcons();save();
  });
+ const tplSearch=$('#aw-tpl-search');
+ const updateTplList=()=>{
+  state.tplSearch=tplSearch?tplSearch.value:'';
+  const listEl=$('#aw-tpl-list'),countEl=$('#aw-tpl-count');
+  if(listEl)listEl.innerHTML=tplDropdownListMarkup();
+  if(countEl)countEl.textContent=`匹配 ${filteredTemplates().length} / ${accountTemplates.length}`;
+  hydrateIcons();
+ };
+ tplSearch?.addEventListener('input',updateTplList);
+ tplSearch?.addEventListener('clear',()=>{setTimeout(updateTplList,0);});
  $$('[data-model-switch]').forEach(sw=>{
   sw.addEventListener('click',e=>e.stopPropagation());
   sw.addEventListener('change',()=>{state.modelEnabled[sw.dataset.modelSwitch]=sw.checked;toast(sw.checked?'模型已启用':'模型已停用');});
@@ -684,6 +713,7 @@ $('#aw-scenario').addEventListener('change',()=>{
 $('#aw-prev-scenario').addEventListener('click',()=>stepScenario(-1));
 $('#aw-next-scenario').addEventListener('click',()=>stepScenario(1));
 $('#aw-view-list').addEventListener('click',()=>navigate('list'));
+$('#aw-view-add')?.addEventListener('click',()=>{state.tplDropdownOpen=false;state.tplSearch='';navigate('add');});
 $('#aw-view-detail').addEventListener('click',()=>navigate('detail',state.type==='overview'?state.selected:targetId()));
 $('#aw-view-model').addEventListener('click',()=>{if(state.page!=='model')openModel('flash');});
 $('#aw-back-chat').addEventListener('click',()=>toast('当前设计稿聚焦账号列表与详情'));
@@ -708,6 +738,13 @@ $('#aw-keep-editing').addEventListener('click',()=>{$('#aw-leave-dialog').open=f
 $('#aw-discard').addEventListener('click',()=>{dialogDirty=false;$('#aw-leave-dialog').open=false;$('#aw-dialog').open=false;});
 
 root.addEventListener('click',e=>{
+ if(state.tplDropdownOpen&&!e.target.closest('#aw-tpl-dropdown')){
+  state.tplDropdownOpen=false;
+  const panel=$('#aw-tpl-panel'),trigger=$('.aw-tpl-trigger'),card=$('#aw-add-tpl-card');
+  if(panel)panel.hidden=true;
+  if(trigger){trigger.classList.remove('open');trigger.setAttribute('aria-expanded','false');}
+  if(card)card.classList.remove('dropdown-open');
+ }
  const row=e.target.closest('[data-open-account]');
  if(row){navigate('detail',row.dataset.openAccount);return;}
  const nav=e.target.closest('[data-nav]');
@@ -720,13 +757,61 @@ root.addEventListener('click',e=>{
  if(dropdown)dropdown.open=false;
  if(action==='back'){navigate('list');return;}
  if(action==='mobileNav'){$('#aw-shell').classList.toggle('aw-nav-open');return;}
+ if(action==='toggleTplDropdown'){
+  state.tplDropdownOpen=!state.tplDropdownOpen;
+  const panel=$('#aw-tpl-panel'),trigger=$('.aw-tpl-trigger'),card=$('#aw-add-tpl-card');
+  if(panel)panel.hidden=!state.tplDropdownOpen;
+  if(trigger){
+   trigger.classList.toggle('open',state.tplDropdownOpen);
+   trigger.setAttribute('aria-expanded',String(state.tplDropdownOpen));
+  }
+  if(card)card.classList.toggle('dropdown-open',state.tplDropdownOpen);
+  if(state.tplDropdownOpen)requestAnimationFrame(()=>$('#aw-tpl-search')?.focus());
+  return;
+ }
+ if(action==='clearTplSearch'){
+  state.tplSearch='';
+  const tf=$('#aw-tpl-search'),listEl=$('#aw-tpl-list'),countEl=$('#aw-tpl-count');
+  if(tf)tf.value='';
+  if(listEl)listEl.innerHTML=tplDropdownListMarkup();
+  if(countEl)countEl.textContent=`匹配 ${accountTemplates.length} / ${accountTemplates.length}`;
+  hydrateIcons();
+  return;
+ }
  if(action==='pickTemplate'){
   state.addTemplate=el.dataset.tpl;
-  const form=$('#aw-add-form');
-  if(form){
-   form.innerHTML=renderAddTemplateFields(state.addTemplate);
-   $('#aw-dialog-save').textContent=state.addTemplate==='acp'?'保存并连接':'添加账号';
-   hydrateIcons();
+  state.tplDropdownOpen=false;
+  state.tplSearch='';
+  render();save();
+  const tpl=accountTemplates.find(t=>t.key===state.addTemplate);
+  if(tpl)toast(`已切换至「${tpl.name}」模板`);
+  return;
+ }
+ if(action==='submitAddAccount'){
+  const field=$('#aw-edit-name'),name=field?field.value.trim():'';
+  if(!name){field?.setCustomValidity('请输入账号名称');field?.reportValidity();return;}
+  const tpl=accountTemplates.find(t=>t.key===state.addTemplate)||accountTemplates[0];
+  const targetAcctId=defaultAccounts.some(d=>d.id===tpl.key)?tpl.key:(tpl.key==='anthropic'?'openai':'deepseek');
+  state.editedNames[targetAcctId]=name;
+  const epField=$('#aw-edit-endpoint');
+  if(epField&&epField.value.trim())state.editedEndpoints[targetAcctId]=epField.value.trim();
+  const billingField=$('#aw-add-billing');
+  if(billingField&&billingField.value)state.billingSelections[targetAcctId]=billingField.value;
+  const secretField=$('#aw-edit-secret');
+  if(secretField&&secretField.value.trim()){
+   const val=secretField.value.trim();
+   state.secretConfigured[targetAcctId]='sk-••••••••'+(val.length>=4?val.slice(-4):'9f2a');
+  }
+  const defSw=$('#aw-add-default');
+  if(defSw?.checked)state.defaultId=targetAcctId;
+  state.selected=targetAcctId;
+  state.page='detail';
+  if(tpl.kind==='acp'){
+   runAcp('checking','verified');
+   toast(`已创建受管账号「${name}」，正在检查连接`);
+  }else{
+   render();save();
+   toast(`账号「${name}」已创建`);
   }
   return;
  }
