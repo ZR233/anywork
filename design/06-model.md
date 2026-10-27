@@ -95,6 +95,7 @@ Studio 读取能力矩阵用于会话装配校验与界面展示：图片输入�
 
 各厂商默认连接绑定如下：
 - **OpenAI**：使用 Responses 协议，同时支持 WebSocket 与 HTTP 且默认采用 WebSocket；当切换为 HTTP 时仍调用 `/responses` 端点消费 SSE，绝不隐式降级为 Chat Completions。
+- **GPT-6.1 Terra**：作为 OpenAI 目录的独立型号沿用上述 Responses 绑定，工具调用不走 Chat Completions；支持文本、图片及已声明的 PDF/文本文件输入，输出为文本。其 `effort` 候选为 `none`、`low`、`medium`、`high`、`xhigh`、`max`，独立默认值为 `medium`，不因 `none` 排在首位而改变默认推理强度。模型未预设自动压缩阈值，按 §6.7 安全输入上限推导，不继承其他型号的预设；新增目录成员不改变推荐型号或已有路由。能力与参数依据 [Terra 模型说明](https://developers.openai.com/api/docs/models/gpt-6.1-terra)及 [GPT-6 指南](https://developers.openai.com/api/docs/guides/latest-model)，价格及核验时间由内置目录维护。
 - **DeepSeek / xAI / 智谱 Coding Plan**：使用 `Responses + HTTP`。
 - **智谱通用目录 / MiMo**：使用 `Chat Completions + HTTP`。
 
