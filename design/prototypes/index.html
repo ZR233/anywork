@@ -1,162 +1,507 @@
 <!doctype html>
-<html lang="zh-CN">
+<html lang="zh-CN" class="mdui-theme-light">
 <head>
-<meta charset="utf-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>anywork · Claude Warm · 桌面设计稿</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Inter:wght@400;450;500;600;700&family=JetBrains+Mono:wght@400;500&family=Noto+Sans+SC:wght@400;500;600&display=swap" rel="stylesheet">
-<style>
-  :root{
-    --font-sans:"Inter","Noto Sans SC",-apple-system,"SF Pro Text","PingFang SC","Microsoft YaHei",system-ui,sans-serif;
-    --font-serif:"Instrument Serif","Noto Serif SC",Georgia,serif;
-    --font-mono:"JetBrains Mono","SF Mono",Consolas,monospace;
-    --paper:#faf9f7; --paper-2:#f3eeea; --paper-3:#ece5de;
-    --ink:#2b2520; --ink-soft:#6b635a; --ink-faint:#a8a097;
-    --line:#e6ddd6; --line-2:#dcd2c8;
-    --clay:#d97757; --clay-soft:#f8e6dc; --clay-deep:#b85c3e;
-    --sage:#6b8e5a; --sage-soft:#e3ead8;
-    --ochre:#c08a3e; --ochre-soft:#f4e8d2;
-    --rose:#c25563; --rose-soft:#f4dde1;
-    --shadow-1:0 1px 2px rgba(60,48,30,.04),0 4px 12px -8px rgba(120,80,55,.12);
-    --shadow-2:0 1px 2px rgba(60,48,30,.05),0 8px 24px -14px rgba(120,80,55,.2);
-  }
-  *{box-sizing:border-box}
-  html,body{margin:0}
-  body{font-family:var(--font-sans);color:var(--ink);background:var(--paper);-webkit-font-smoothing:antialiased;line-height:1.55;
-    background-image:radial-gradient(60% 50% at 100% 0%,rgba(217,119,87,.08),transparent 60%),radial-gradient(50% 40% at 0% 100%,rgba(217,119,87,.05),transparent 60%);}
-  .wrap{max-width:1140px;margin:0 auto;padding:56px 32px 80px}
-  .hero{margin-bottom:44px}
-  .eyebrow{font-family:var(--font-mono);font-size:12px;font-weight:600;letter-spacing:.14em;text-transform:uppercase;color:var(--clay);margin:0 0 14px}
-  h1{font-family:var(--font-serif);font-size:44px;letter-spacing:-.02em;margin:0 0 14px;font-weight:400;line-height:1.1}
-  h1 em{font-style:italic;color:var(--clay)}
-  .lede{font-size:16px;color:var(--ink-soft);max-width:680px;margin:0;line-height:1.65}
-  .meta{display:flex;gap:8px;flex-wrap:wrap;margin-top:22px}
-  .meta span{font-size:12px;color:var(--ink-soft);background:#fff;border:1px solid var(--line);padding:6px 12px;border-radius:999px;font-weight:500}
-  .meta b{color:var(--ink);font-weight:600}
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="referrer" content="no-referrer" />
+  <title>糊来帮 (anywork) · 桌面设计稿索引</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/mdui@2.1.4/mdui.css" />
+  <script defer src="https://cdn.jsdelivr.net/npm/mdui@2.1.4/mdui.global.js"></script>
+  <script defer src="https://unpkg.com/lucide@1.17.0/dist/umd/lucide.js"></script>
+  <style>
+    :root {
+      color-scheme: light;
+      --mdui-color-primary: 81, 64, 57;
+      --mdui-color-primary-container: 225, 212, 197;
+      --mdui-color-on-primary: 246, 240, 231;
+      --mdui-color-on-primary-container: 64, 54, 47;
+      --mdui-color-inverse-primary: 225, 212, 197;
+      --mdui-color-secondary: 102, 88, 78;
+      --mdui-color-secondary-container: 225, 212, 197;
+      --mdui-color-on-secondary: 246, 240, 231;
+      --mdui-color-on-secondary-container: 64, 54, 47;
+      --mdui-color-tertiary: 85, 121, 140;
+      --mdui-color-tertiary-container: 221, 233, 240;
+      --mdui-color-on-tertiary: 246, 240, 231;
+      --mdui-color-on-tertiary-container: 43, 66, 79;
+      --mdui-color-surface: 243, 237, 227;
+      --mdui-color-surface-dim: 231, 222, 210;
+      --mdui-color-surface-bright: 246, 240, 231;
+      --mdui-color-surface-container-lowest: 246, 240, 231;
+      --mdui-color-surface-container-low: 239, 230, 218;
+      --mdui-color-surface-container: 231, 222, 210;
+      --mdui-color-surface-container-high: 225, 212, 197;
+      --mdui-color-surface-container-highest: 217, 202, 185;
+      --mdui-color-surface-variant: 217, 202, 185;
+      --mdui-color-on-surface: 64, 54, 47;
+      --mdui-color-on-surface-variant: 102, 88, 78;
+      --mdui-color-inverse-surface: 64, 54, 47;
+      --mdui-color-inverse-on-surface: 246, 240, 231;
+      --mdui-color-background: 243, 237, 227;
+      --mdui-color-on-background: 64, 54, 47;
+      --mdui-color-error: 145, 68, 71;
+      --mdui-color-error-container: 243, 224, 221;
+      --mdui-color-on-error: 246, 240, 231;
+      --mdui-color-on-error-container: 145, 68, 71;
+      --mdui-color-outline: 138, 122, 108;
+      --mdui-color-outline-variant: 216, 205, 191;
+      --mdui-color-shadow: 64, 54, 47;
+      --mdui-color-scrim: 64, 54, 47;
+      --mdui-color-surface-tint-color: 81, 64, 57;
+      --mdui-typescale-label-small-line-height: 1rem;
 
-  .swatch-strip{display:flex;gap:0;height:54px;border-radius:12px;overflow:hidden;border:1px solid var(--line);margin:30px 0 0}
-  .swatch-strip i{flex:1;display:block}
-  .swatch-strip .lab{display:flex;align-items:flex-end;justify-content:center;padding-bottom:6px;font-family:var(--font-mono);font-size:9px;color:#fff;text-shadow:0 1px 2px rgba(0,0,0,.3)}
+      --aw-eye-blue: #55798c;
+      --aw-eye-blue-soft: #6f94a8;
+      --aw-success: #42604c;
+      --aw-success-bg: #e5ebe2;
+      --aw-warning: #795625;
+      --aw-warning-bg: #f0e3cd;
+      --aw-error: #914447;
+      --aw-error-bg: #f3e0dd;
+      --font-sans: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans CJK SC", "Microsoft YaHei UI", system-ui, sans-serif;
+      --font-mono: "JetBrains Mono", Consolas, monospace;
+    }
 
-  .sec{margin-top:44px}
-  .sec-t{display:flex;align-items:center;gap:10px;margin-bottom:16px}
-  .sec-t b{font-family:var(--font-serif);font-size:22px;font-weight:400}
-  .sec-t .n{font-family:var(--font-mono);font-size:11px;color:var(--clay);background:var(--clay-soft);border:1px solid #f0ddd0;padding:3px 10px;border-radius:999px}
-  .sec-t .cnt{margin-left:auto;font-family:var(--font-mono);font-size:11px;color:var(--ink-faint)}
+    * { box-sizing: border-box; }
+    html, body { margin: 0; }
+    body {
+      font-family: var(--font-sans);
+      color: rgb(var(--mdui-color-on-surface));
+      background: rgb(var(--mdui-color-surface));
+      -webkit-font-smoothing: antialiased;
+      line-height: 1.55;
+    }
 
-  .grid{display:grid;grid-template-columns:1fr 1fr;gap:18px}
-  @media(max-width:820px){.grid{grid-template-columns:1fr}.wrap{padding:44px 20px 60px}h1{font-size:34px}}
+    .wrap {
+      max-width: 1080px;
+      margin: 0 auto;
+      padding: 40px 28px 64px;
+    }
 
-  .card{position:relative;display:block;text-decoration:none;color:inherit;background:#fff;border:1px solid var(--line);border-radius:16px;overflow:hidden;transition:transform .25s,box-shadow .25s,border-color .25s}
-  .card:hover{transform:translateY(-3px);box-shadow:0 18px 40px -20px rgba(120,80,55,.35);border-color:var(--line-2)}
-  .body-c{padding:20px 22px}
-  .body-c .name{display:flex;align-items:baseline;gap:10px;margin-bottom:7px}
-  .body-c .name h2{margin:0;font-size:19px;font-weight:600;letter-spacing:-.01em}
-  .body-c .name .zh{font-family:var(--font-serif);font-style:italic;color:var(--ink-faint);font-size:14px}
-  .body-c p{margin:0 0 14px;font-size:13px;color:var(--ink-soft);line-height:1.6}
-  .tags{display:flex;gap:6px;flex-wrap:wrap}
-  .tags span{font-size:11px;color:var(--ink-soft);background:var(--paper-2);border:1px solid var(--line);padding:4px 9px;border-radius:999px;font-weight:500}
-  .open{position:absolute;bottom:20px;right:22px;font-family:var(--font-mono);font-size:11px;font-weight:600;color:var(--clay);opacity:0;transition:opacity .2s}
-  .card:hover .open{opacity:1}
+    svg { width: 18px; height: 18px; display: block; flex-shrink: 0; }
+    mdui-chip { --shape-corner: 8px; }
+    mdui-chip.chip-tag { height: 26px; font-size: 11.5px; pointer-events: none; }
+    code { font: 12px/1.5 var(--font-mono); color: rgb(var(--mdui-color-on-surface)); }
 
-  .note{margin-top:40px;padding:22px 24px;background:#fff;border:1px solid var(--line);border-radius:16px;font-size:13.5px;color:var(--ink-soft);line-height:1.7}
-  .note b{color:var(--ink)}
-  .note h3{margin:0 0 8px;font-size:14px;color:var(--ink);font-weight:600}
-  .note ul{margin:8px 0 0;padding-left:20px}
-  .note li{margin:3px 0}
-  .src{margin-top:30px;font-size:12px;color:var(--ink-faint);line-height:1.8}
-  .src code{font-family:var(--font-mono);font-size:11px}
-</style>
+    /* Hero Card */
+    .hero-card {
+      padding: 28px 30px;
+      background: rgb(var(--mdui-color-surface-container-lowest));
+      --shape-corner: 16px;
+      margin-bottom: 32px;
+    }
+    .hero-top {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      flex-wrap: wrap;
+      margin-bottom: 14px;
+    }
+    .brand-row {
+      display: inline-flex;
+      align-items: center;
+      gap: 12px;
+    }
+    .brand-row mdui-avatar {
+      width: 38px;
+      height: 38px;
+      --shape-corner: 10px;
+      background: rgb(var(--mdui-color-primary));
+      color: rgb(var(--mdui-color-on-primary));
+    }
+    .eyebrow {
+      font: 600 11.5px/1.4 var(--font-mono);
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      color: var(--aw-eye-blue);
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .eye-dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: var(--aw-eye-blue);
+      display: inline-block;
+    }
+    h1 {
+      font-size: 30px;
+      font-weight: 600;
+      letter-spacing: -0.6px;
+      margin: 0 0 10px;
+      line-height: 1.25;
+    }
+    .lede {
+      font-size: 14.5px;
+      color: rgb(var(--mdui-color-on-surface-variant));
+      max-width: 760px;
+      margin: 0;
+      line-height: 1.65;
+    }
+    .meta-chips {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      margin-top: 18px;
+    }
+
+    /* Swatch Strip */
+    .swatch-strip {
+      display: grid;
+      grid-template-columns: repeat(10, minmax(0, 1fr));
+      height: 56px;
+      border-radius: 12px;
+      overflow: hidden;
+      border: 1px solid rgb(var(--mdui-color-outline-variant));
+      margin-top: 22px;
+    }
+    .swatch {
+      display: flex;
+      flex-direction: column;
+      justify-content: flex-end;
+      padding: 6px 8px;
+      font: 500 10px/1.2 var(--font-mono);
+    }
+    .swatch.dark { color: #f6f0e7; }
+    .swatch.light { color: #40362f; }
+    .swatch small { font-size: 9px; opacity: 0.82; }
+
+    /* Sections */
+    .sec { margin-top: 32px; }
+    .sec-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 14px;
+    }
+    .sec-title {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .sec-title h2 {
+      margin: 0;
+      font-size: 18px;
+      font-weight: 600;
+      letter-spacing: -0.2px;
+    }
+    .sec-cnt {
+      font: 500 11.5px/1 var(--font-mono);
+      color: rgb(var(--mdui-color-on-surface-variant));
+    }
+
+    /* Card Grids */
+    .grid-3 {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 16px;
+    }
+    .grid-2 {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 16px;
+    }
+    .proto-card {
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      padding: 20px 22px;
+      background: rgb(var(--mdui-color-surface-container-lowest));
+      --shape-corner: 14px;
+      text-decoration: none;
+      color: inherit;
+      height: 100%;
+    }
+    .card-top {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      margin-bottom: 8px;
+    }
+    .card-top h3 {
+      margin: 0;
+      font-size: 16px;
+      font-weight: 600;
+      letter-spacing: -0.2px;
+    }
+    .card-zh {
+      font-size: 12px;
+      color: rgb(var(--mdui-color-on-surface-variant));
+      font-weight: 400;
+      margin-left: 6px;
+    }
+    .card-arrow {
+      color: rgb(var(--mdui-color-primary));
+      opacity: 0.65;
+      transition: transform 0.18s ease, opacity 0.18s ease;
+    }
+    .proto-card:hover .card-arrow {
+      transform: translate(2px, -2px);
+      opacity: 1;
+    }
+    .proto-card p {
+      margin: 0 0 14px;
+      font-size: 13px;
+      color: rgb(var(--mdui-color-on-surface-variant));
+      line-height: 1.6;
+    }
+    .tags {
+      display: flex;
+      gap: 6px;
+      flex-wrap: wrap;
+      margin-top: auto;
+    }
+
+    /* Spec Card */
+    .spec-card {
+      margin-top: 32px;
+      background: rgb(var(--mdui-color-surface-container-lowest));
+      --shape-corner: 14px;
+      overflow: hidden;
+    }
+    .foot {
+      margin-top: 20px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      flex-wrap: wrap;
+      font-size: 12px;
+      color: rgb(var(--mdui-color-on-surface-variant));
+      padding: 0 4px;
+    }
+    .foot a {
+      color: rgb(var(--mdui-color-primary));
+      font-weight: 500;
+      text-decoration: none;
+    }
+    .foot a:hover { text-decoration: underline; }
+
+    @media (max-width: 900px) {
+      .grid-3, .grid-2 { grid-template-columns: 1fr; }
+      .swatch-strip { grid-template-columns: repeat(5, minmax(0, 1fr)); height: 104px; }
+      .wrap { padding: 24px 16px 48px; }
+      h1 { font-size: 24px; }
+    }
+  </style>
 </head>
 <body>
-<div class="wrap">
-
-  <div class="hero">
-    <p class="eyebrow">anywork · Claude Warm · 桌面设计稿 · 2026</p>
-    <h1>Claude 暖色 <em>桌面设计稿</em></h1>
-    <p class="lede">在现有 anywork 全部功能基础上重设计：奶油暖白纸面 + 赭橙（#d97757）主调，低对比侧栏、居中阅读流、紧凑可扫描设置。完整覆盖 20 屏（4 个分组文件），共享同一套 design token。</p>
-    <div class="meta">
-      <span><b>20</b> 屏设计稿</span>
-      <span><b>4</b> 个分组文件</span>
-      <span>Design Token 系统</span>
-      <span>覆盖全部功能 + 状态变体</span>
-    </div>
-    <div class="swatch-strip">
-      <i style="background:#faf9f7"></i>
-      <i style="background:#f3eeea"></i>
-      <i style="background:#ece5de"></i>
-      <i style="background:#e6ddd6"></i>
-      <i style="background:#d97757" class="lab">clay</i>
-      <i style="background:#b85c3e"></i>
-      <i style="background:#6b8e5a" class="lab">sage</i>
-      <i style="background:#c08a3e" class="lab">ochre</i>
-      <i style="background:#c25563" class="lab">rose</i>
-      <i style="background:#2b2520" class="lab">ink</i>
-    </div>
-  </div>
-
-  <div class="sec">
-    <div class="sec-t"><span class="n">1</span><b>工作台 + 运行时</b><span class="cnt">7 屏</span></div>
-    <div class="grid">
-      <a class="card" href="06-claude-warm-workspace.html">
-        <div class="body-c">
-          <div class="name"><h2>Workspace &amp; Runtime</h2><span class="zh">聊天工作台 + 状态</span></div>
-          <p>侧栏归档/关闭按钮、主工作台四态（空闲 / 流式 / 空会话 / 无项目）、状态栏常驻条与 hover popover、运行时详情面板（上下文 ring / token / 费用 / 能力 / 子智能体 / turn 阶段）。含侧栏 + 状态栏细节特写。</p>
-          <div class="tags"><span>侧栏归档</span><span>4 状态</span><span>状态栏</span><span>详情面板</span><span>特写</span></div>
-          <span class="open">打开 7 屏 →</span>
+  <div class="wrap">
+    <mdui-card variant="outlined" class="hero-card">
+      <div class="hero-top">
+        <div class="brand-row">
+          <mdui-avatar><i data-lucide="cat" aria-hidden="true"></i></mdui-avatar>
+          <div>
+            <div class="eyebrow"><span class="eye-dot"></span>糊来帮 (anywork) · Siamese Light Theme</div>
+          </div>
         </div>
-      </a>
-      <a class="card" href="06-claude-warm-interactions.html">
-        <div class="body-c">
-          <div class="name"><h2>Interaction Docks</h2><span class="zh">交互 Dock</span></div>
-          <p>三类 pending interaction 互斥替换普通输入：工具授权、用户输入（分题 + secret + Other）、计划确认。停止按钮常驻，计划正文留在 timeline 卡片。</p>
-          <div class="tags"><span>toolApproval</span><span>userInput</span><span>planConfirmation</span><span>分题交互</span></div>
-          <span class="open">打开 4 屏 →</span>
+        <mdui-chip class="chip-tag" tabindex="-1">Material 3 标准组件</mdui-chip>
+      </div>
+      <h1>暹罗浅色 · 桌面界面设计稿索引</h1>
+      <p class="lede">
+        主页、会话、详情面板与全部设置页统一采用<strong>暹罗浅色主题</strong>（奶油底色 <code>#F3EDE3</code>、海豹棕主操作 <code>#514039</code>、眼眸蓝辅助点缀 <code>#55798C</code>），复用 Material 3 标准组件体系与居中阅读流布局。
+      </p>
+      <div class="meta-chips">
+        <mdui-chip class="chip-tag" tabindex="-1"><span slot="icon"><i data-lucide="palette"></i></span>暹罗浅色色板</mdui-chip>
+        <mdui-chip class="chip-tag" tabindex="-1"><span slot="icon"><i data-lucide="layers"></i></span>Material 3 组件</mdui-chip>
+        <mdui-chip class="chip-tag" tabindex="-1"><span slot="icon"><i data-lucide="check-circle-2"></i></span>62 个账户与模型场景</mdui-chip>
+        <mdui-chip class="chip-tag" tabindex="-1"><span slot="icon"><i data-lucide="layout"></i></span>20 屏工作台与设置基线</mdui-chip>
+      </div>
+      <div class="swatch-strip" aria-label="暹罗浅色主题色板">
+        <div class="swatch light" style="background:#F6F0E7"><span>Lowest</span><small>#F6F0E7</small></div>
+        <div class="swatch light" style="background:#F3EDE3"><span>Surface</span><small>#F3EDE3</small></div>
+        <div class="swatch light" style="background:#EFE6DA"><span>Low</span><small>#EFE6DA</small></div>
+        <div class="swatch light" style="background:#E7DED2"><span>Container</span><small>#E7DED2</small></div>
+        <div class="swatch light" style="background:#E1D4C5"><span>High</span><small>#E1D4C5</small></div>
+        <div class="swatch dark" style="background:#514039"><span>Primary</span><small>#514039</small></div>
+        <div class="swatch dark" style="background:#40362F"><span>OnSurface</span><small>#40362F</small></div>
+        <div class="swatch dark" style="background:#55798C"><span>EyeBlue</span><small>#55798C</small></div>
+        <div class="swatch dark" style="background:#42604C"><span>Success</span><small>#42604C</small></div>
+        <div class="swatch dark" style="background:#914447"><span>Error</span><small>#914447</small></div>
+      </div>
+    </mdui-card>
+
+    <section class="sec" aria-label="Material 3 账号与模型评价设计稿">
+      <div class="sec-head">
+        <div class="sec-title">
+          <mdui-chip class="chip-tag" tabindex="-1">核心交互稿</mdui-chip>
+          <h2>账号与模型评价（Material 3）</h2>
         </div>
-      </a>
+        <span class="sec-cnt">共享 accounts-shared · 2026-10-27</span>
+      </div>
+      <div class="grid-2">
+        <mdui-card variant="outlined" clickable href="accounts-list/index.html" class="proto-card">
+          <div>
+            <div class="card-top">
+              <h3>账号列表</h3>
+              <span class="card-arrow"><i data-lucide="arrow-up-right" aria-hidden="true"></i></span>
+            </div>
+            <p>计费与状态列统一展示计费方式或 ACP 进度，可用余额内联展示健康状态，覆盖 Native 与 ACP 全部 62 个账户变体。</p>
+          </div>
+          <div class="tags">
+            <mdui-chip class="chip-tag" tabindex="-1">62 个预览场景</mdui-chip>
+            <mdui-chip class="chip-tag" tabindex="-1">场景快捷步进</mdui-chip>
+          </div>
+        </mdui-card>
+
+        <mdui-card variant="outlined" clickable href="accounts-list/index.html?page=add" class="proto-card">
+          <div>
+            <div class="card-top">
+              <h3>添加账号</h3>
+              <span class="card-arrow"><i data-lucide="arrow-up-right" aria-hidden="true"></i></span>
+            </div>
+            <p>独立添加账号页面，采用带实时搜索与分组标签的下拉模板选择器，自动预填接口协议与服务地址，并支持在创建时直接配置计费方式。</p>
+          </div>
+          <div class="tags">
+            <mdui-chip class="chip-tag" tabindex="-1">可搜索模板下拉框</mdui-chip>
+            <mdui-chip class="chip-tag" tabindex="-1">创建时配置计费方式</mdui-chip>
+          </div>
+        </mdui-card>
+
+        <mdui-card variant="outlined" clickable href="account-details/index.html" class="proto-card">
+          <div>
+            <div class="card-top">
+              <h3>账号详情</h3>
+              <span class="card-arrow"><i data-lucide="arrow-up-right" aria-hidden="true"></i></span>
+            </div>
+            <p>单列分组呈现账户余额、多周期订阅额度、Material 3 列表式账号设置与模型目录，支持上下文自动压缩阈值与计费覆盖。</p>
+          </div>
+          <div class="tags">
+            <mdui-chip class="chip-tag" tabindex="-1">模型开关与阈值</mdui-chip>
+            <mdui-chip class="chip-tag" tabindex="-1">ACP 安装与认证</mdui-chip>
+          </div>
+        </mdui-card>
+
+        <mdui-card variant="outlined" clickable href="model-details/index.html" class="proto-card">
+          <div>
+            <div class="card-top">
+              <h3>模型详情、价格与评价</h3>
+              <span class="card-arrow"><i data-lucide="arrow-up-right" aria-hidden="true"></i></span>
+            </div>
+            <p>独立模型资料页，支持同账号模型快速切换，展示规格与实测性能样本、阶梯价格、评分分布及标注评价模型与关联任务的模拟评价。</p>
+          </div>
+          <div class="tags">
+            <mdui-chip class="chip-tag" tabindex="-1">同账号模型切换</mdui-chip>
+            <mdui-chip class="chip-tag" tabindex="-1">评价筛选与依据</mdui-chip>
+          </div>
+        </mdui-card>
+      </div>
+    </section>
+
+    <section class="sec" aria-label="工作台与运行时设计稿">
+      <div class="sec-head">
+        <div class="sec-title">
+          <mdui-chip class="chip-tag" tabindex="-1">分组 1</mdui-chip>
+          <h2>工作台与运行时</h2>
+        </div>
+        <span class="sec-cnt">11 屏</span>
+      </div>
+      <div class="grid-2">
+        <mdui-card variant="outlined" clickable href="06-claude-warm-workspace.html" class="proto-card">
+          <div>
+            <div class="card-top">
+              <h3>Workspace &amp; Runtime<span class="card-zh">聊天工作台与状态栏</span></h3>
+              <span class="card-arrow"><i data-lucide="arrow-up-right" aria-hidden="true"></i></span>
+            </div>
+            <p>侧栏项目与会话管理、主工作台四态（空闲 / 流式 / 空会话 / 无项目）、状态栏常驻指示器与悬停详情浮层。</p>
+          </div>
+          <div class="tags">
+            <mdui-chip class="chip-tag" tabindex="-1">工作台 4 状态</mdui-chip>
+            <mdui-chip class="chip-tag" tabindex="-1">状态栏与详情浮层</mdui-chip>
+            <mdui-chip class="chip-tag" tabindex="-1">7 屏</mdui-chip>
+          </div>
+        </mdui-card>
+
+        <mdui-card variant="outlined" clickable href="06-claude-warm-interactions.html" class="proto-card">
+          <div>
+            <div class="card-top">
+              <h3>Interaction Docks<span class="card-zh">输入区交互停靠栏</span></h3>
+              <span class="card-arrow"><i data-lucide="arrow-up-right" aria-hidden="true"></i></span>
+            </div>
+            <p>三类待处理交互互斥替换常规输入区：工具审批、分步用户提问（含敏感输入与自定义选项）、计划确认。</p>
+          </div>
+          <div class="tags">
+            <mdui-chip class="chip-tag" tabindex="-1">toolApproval</mdui-chip>
+            <mdui-chip class="chip-tag" tabindex="-1">userInput</mdui-chip>
+            <mdui-chip class="chip-tag" tabindex="-1">planConfirmation</mdui-chip>
+            <mdui-chip class="chip-tag" tabindex="-1">4 屏</mdui-chip>
+          </div>
+        </mdui-card>
+      </div>
+    </section>
+
+    <section class="sec" aria-label="设置页历史参考设计稿">
+      <div class="sec-head">
+        <div class="sec-title">
+          <mdui-chip class="chip-tag" tabindex="-1">分组 2</mdui-chip>
+          <h2>设置页其余分组参考</h2>
+        </div>
+        <span class="sec-cnt">10 屏</span>
+      </div>
+      <div class="grid-2">
+        <mdui-card variant="outlined" clickable href="06-claude-warm-providers.html" class="proto-card">
+          <div>
+            <div class="card-top">
+              <h3>Providers (Legacy)<span class="card-zh">早期供应商参考稿</span></h3>
+              <span class="card-arrow"><i data-lucide="arrow-up-right" aria-hidden="true"></i></span>
+            </div>
+            <p>早期供应商列表、详情、新增与编辑布局参考；最新 Material 3 账号与模型设计以顶部三份核心交互稿为准。</p>
+          </div>
+          <div class="tags">
+            <mdui-chip class="chip-tag" tabindex="-1">列表与配额卡</mdui-chip>
+            <mdui-chip class="chip-tag" tabindex="-1">新增与编辑</mdui-chip>
+            <mdui-chip class="chip-tag" tabindex="-1">4 屏</mdui-chip>
+          </div>
+        </mdui-card>
+
+        <mdui-card variant="outlined" clickable href="06-claude-warm-settings.html" class="proto-card">
+          <div>
+            <div class="card-top">
+              <h3>Settings Tabs<span class="card-zh">其余 6 个设置标签页</span></h3>
+              <span class="card-arrow"><i data-lucide="arrow-up-right" aria-hidden="true"></i></span>
+            </div>
+            <p>涵盖指令（Instructions）、技能（Skills）、角色（Roles）、MCP 服务、安全（Security）与通用（General）设置。</p>
+          </div>
+          <div class="tags">
+            <mdui-chip class="chip-tag" tabindex="-1">Instructions</mdui-chip>
+            <mdui-chip class="chip-tag" tabindex="-1">Skills &amp; MCP</mdui-chip>
+            <mdui-chip class="chip-tag" tabindex="-1">Roles &amp; General</mdui-chip>
+            <mdui-chip class="chip-tag" tabindex="-1">6 屏</mdui-chip>
+          </div>
+        </mdui-card>
+      </div>
+    </section>
+
+    <mdui-card variant="outlined" class="spec-card">
+      <mdui-list>
+        <mdui-list-subheader>暹罗浅色主题与桌面视觉规范（依据 design/19-studio-ui.md）</mdui-list-subheader>
+        <mdui-list-item nonclickable headline="色彩体系" description="奶油底色 (#F3EDE3 / #F6F0E7) · 海豹棕主色 (#514039) · 眼眸蓝辅助点缀 (#55798C) · 成功 (#42604C) / 警告 (#795625) / 错误 (#914447)">
+          <span slot="icon"><i data-lucide="palette" aria-hidden="true"></i></span>
+        </mdui-list-item>
+        <mdui-divider></mdui-divider>
+        <mdui-list-item nonclickable headline="字体与排版" description="正文遵循宿主系统字体 (Inter / Segoe UI / Microsoft YaHei UI)，代码、路径、词元与配置键统一使用 JetBrains Mono 等宽字体">
+          <span slot="icon"><i data-lucide="type" aria-hidden="true"></i></span>
+        </mdui-list-item>
+        <mdui-divider></mdui-divider>
+        <mdui-list-item nonclickable headline="组件与边界" description="优先复用 Material 3 标准组件；全部 HTML 静态稿用于视觉与交互预览，示例数值不连接真实账户，不替代架构契约或原生验收">
+          <span slot="icon"><i data-lucide="shield-check" aria-hidden="true"></i></span>
+        </mdui-list-item>
+      </mdui-list>
+    </mdui-card>
+
+    <div class="foot">
+      <span>原型目录：<code>design/prototypes/</code> · 架构规范：<a href="../19-studio-ui.md">design/19-studio-ui.md</a></span>
+      <span>历史暖色索引归档：<a href="06-claude-warm-index.html">06-claude-warm-index.html</a></span>
     </div>
   </div>
-
-  <div class="sec">
-    <div class="sec-t"><span class="n">2</span><b>设置页</b><span class="cnt">10 屏</span></div>
-    <div class="grid">
-      <a class="card" href="06-claude-warm-providers.html">
-        <div class="body-c">
-          <div class="name"><h2>Providers</h2><span class="zh">模型供应商</span></div>
-          <p>列表（用量配额卡：Zhipu 5h/周/MCP 进度、DeepSeek 余额拆分、缺 key / 刷新中态）、详情（配额明细 + 工具用量 + 模型清单）、新增（模板选择 + 建议 id）、编辑（自定义模型增删）。</p>
-          <div class="tags"><span>配额卡</span><span>页面栈互斥</span><span>保存/取消</span></div>
-          <span class="open">打开 4 屏 →</span>
-        </div>
-      </a>
-      <a class="card" href="06-claude-warm-settings.html">
-        <div class="body-c">
-          <div class="name"><h2>Settings · 其余</h2><span class="zh">6 个 tab</span></div>
-          <p>Instructions（失焦保存）、Skills（Discover）、Roles（四角色下拉即写回）、MCP（stdio/HTTP + built-in 锁定）、Security（紧凑三选项）、General（UI 偏好开关）。</p>
-          <div class="tags"><span>Instructions</span><span>Skills</span><span>Roles</span><span>MCP</span><span>Security</span><span>General</span></div>
-          <span class="open">打开 6 屏 →</span>
-        </div>
-      </a>
-    </div>
-  </div>
-
-  <div class="note">
-    <h3>设计原则</h3>
-    <b>暖白纸面 · 赭橙点缀 · 低对比侧栏 · 居中阅读流</b>。20 屏共享同一套 design token（Claude 风格暖色），覆盖现有 anywork 全部功能与状态变体，作为后续 Flutter 端重构的视觉权威依据。
-    <ul>
-      <li>色板：paper 暖白系 + clay 赭橙主色 + sage/ochre/rose 语义色</li>
-      <li>字体：Instrument Serif 标题 / Inter 正文 / JetBrains Mono 代码与领域值</li>
-      <li>布局：双栏（侧栏浅于主区），主区居中阅读流，设置页全窗口替换聊天页</li>
-      <li>状态：idle / streaming / empty / no-project / 配额 / 刷新中 / 缺 key 全覆盖</li>
-    </ul>
-  </div>
-
-  <div class="src">
-    Claude desktop 风格暖色（背景更白净、赭橙更亮）。<br>
-    原型目录：<code>design/prototypes/</code> · 设计系统总览：<a href="06-claude-warm-index.html" style="color:var(--clay);text-decoration:none">06-claude-warm-index.html</a>
-  </div>
-
-</div>
+  <script>
+    window.addEventListener('DOMContentLoaded', () => {
+      if (globalThis.lucide) lucide.createIcons({ attrs: { width: 18, height: 18 } });
+    });
+  </script>
 </body>
 </html>
