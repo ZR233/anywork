@@ -35,7 +35,6 @@ part 'timeline_markdown_blocks.dart';
 part 'timeline_message_blocks.dart';
 part 'timeline_group_blocks.dart';
 part 'timeline_plan_blocks.dart';
-part 'timeline_preview_host.dart';
 part 'timeline_remote_image_blocks.dart';
 part 'timeline_tool_blocks.dart';
 part 'timeline_user_input_blocks.dart';

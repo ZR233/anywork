@@ -32,7 +32,6 @@ impl AgentWorkspaceMode {
 pub struct AgentWorktreeSnapshot {
     pub repository_root: String,
     pub path: String,
-    pub branch: String,
     pub base_commit: String,
 }
 

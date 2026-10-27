@@ -86,23 +86,12 @@ final class _BootstrapTopicTransport extends _TopicTransport {
     lspState: LspStateSnapshot(revision: 1),
     skillsByProject: const {},
     threadModeCatalog: const ThreadModeCatalogView(),
-    accountUsageState: AccountUsageStateSnapshot(revision: 1),
     updaterState: DisabledUpdaterStateSnapshot(
       revision: 1,
       updatedAt: DateTime.utc(2026),
     ),
     persistenceState: const PersistenceStateSnapshot.ready(),
   );
-
-  @override
-  Future<AccountCatalogView> loadAccountCatalog() async =>
-      AccountCatalogView.empty();
-
-  /// Bootstrap 先读 Native 目录、再读 ACP 目录，然后才租用常驻 topic；
-  /// ACP 目录在这里只是空默认值，不启动官方程序、也不检查凭据。
-  @override
-  Future<AcpAccountCatalogView> loadAcpAccountCatalog() async =>
-      AcpAccountCatalogView.empty();
 }
 
 ProductTopicBaselineFrame _updater(int revision) => ProductTopicBaselineFrame(

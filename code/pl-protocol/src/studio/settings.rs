@@ -99,9 +99,9 @@ pub struct StudioAccountSettings {
     pub custom_models: Vec<StudioCustomModelSettings>,
     pub model_connection_modes: Vec<StudioModelConnectionSettings>,
     pub model_auto_compact_limits: Vec<StudioModelAutoCompactSettings>,
-    /// 精确 model_id 的禁用集合（按 model_id 字典序）；空表示全部启用，撤下的成员仍保留覆盖。
+    /// 精确 model_id 的显式启用覆盖；缺项表示自动，撤下的成员仍保留覆盖。
     #[serde(default)]
-    pub disabled_models: Vec<String>,
+    pub model_enabled_overrides: std::collections::BTreeMap<String, bool>,
     pub catalog_id: Option<String>,
 }
 
@@ -109,6 +109,8 @@ pub struct StudioAccountSettings {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct StudioModelCatalogStatus {
+    pub query_generation: u64,
+    pub operation_id: Option<String>,
     pub supported: bool,
     pub source: StudioModelCatalogSource,
     pub probing: bool,
@@ -144,6 +146,7 @@ pub enum StudioModelCatalogError {
     CacheIdentity,
     UnexpectedNotModified,
     CacheWrite,
+    TaskFailed,
     Closing,
 }
 

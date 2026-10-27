@@ -658,7 +658,14 @@ impl StudioRuntime {
         let residency_pin = self.residency.pin_many([request.thread_id.clone()]);
         let thread = self.read_protocol_thread(&request.thread_id).await?;
         self.check_thread_read_access(&thread)?;
-        let candidate = async {
+        // Cold parent recovery nests history preparation under this operation. Keep its candidate
+        // on the heap so composing subscriptions does not duplicate the large future on the stack.
+        let candidate = Box::pin(async {
+            self.store
+                .history(&request.thread_id)
+                .await?
+                .prepare_history_access()
+                .await?;
             let explicitly_closed = thread.parent_thread_id.is_some()
                 && (self.store.agent_close(&request.thread_id).await?.is_some()
                     || crate::studio::agent_close::is_explicitly_closed(
@@ -693,7 +700,7 @@ impl StudioRuntime {
                 || (self.check_thread_execution_access(&thread).is_err()
                     && self.threads.observed_thread(&request.thread_id).is_none())
             {
-                // Safe observation never performs schema preparation or workspace activation.
+                // Content was prepared above; safe observation never activates an execution workspace.
                 let snapshot = self.thread_snapshot(&request.thread_id).await?;
                 // A retired child has no owner to retain its last Turn and its subscription emits only
                 // this snapshot, so the newest finished Turn is read once here — bounded, body-free — and
@@ -756,7 +763,7 @@ impl StudioRuntime {
                 }))
             };
             Ok::<_, anyhow::Error>(source)
-        }
+        })
         .await;
         self.check_thread_read_access(&thread)?;
         let source = candidate?;

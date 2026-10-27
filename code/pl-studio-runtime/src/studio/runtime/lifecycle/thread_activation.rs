@@ -119,22 +119,31 @@ impl StudioRuntime {
     /// offers "clean up" for a workspace a live child runs in.
     async fn bind_activated_workspace(&self, thread_id: &str) -> Result<()> {
         use crate::studio::agent_host::worktree_lease::WorktreeLeaseState;
-        if let Some(mut lease) = self.agent_facility.worktrees.get(thread_id)
-            && matches!(
+        if let Some(mut lease) = self.agent_facility.worktrees.get(thread_id) {
+            // The factory verified this cold binding before publication. Hot owner accesses
+            // reuse it; only lease promotion and Recovery projection remain here.
+            anyhow::ensure!(
+                !matches!(
+                    lease.state,
+                    WorktreeLeaseState::Cleaned | WorktreeLeaseState::CleanupRequested
+                ),
+                "the published workspace is cleaned or cleanup is in progress"
+            );
+            if matches!(
                 lease.state,
                 WorktreeLeaseState::Prepared | WorktreeLeaseState::Preserved
-            )
-        {
-            lease.transition(WorktreeLeaseState::Active);
-            // A lease that could not be saved as `active` is not a restored site: the failure is
-            // propagated so the caller can retry, and the Recovery entry below is deliberately kept —
-            // retiring it would tell the product the site is fine while its own record says otherwise.
-            self.agent_facility
-                .worktrees
-                .record(lease)
-                .map_err(|error| {
-                    anyhow::anyhow!("the activated workspace lease could not be saved: {error}")
-                })?;
+            ) {
+                lease.transition(WorktreeLeaseState::Active);
+                // A lease that could not be saved as `active` is not a restored site: the failure is
+                // propagated so the caller can retry, and the Recovery entry below is deliberately kept —
+                // retiring it would tell the product the site is fine while its own record says otherwise.
+                self.agent_facility
+                    .worktrees
+                    .record(lease)
+                    .map_err(|error| {
+                        anyhow::anyhow!("the activated workspace lease could not be saved: {error}")
+                    })?;
+            }
         }
         let stale = self
             .recovery

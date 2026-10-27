@@ -10,6 +10,7 @@ import '../../domain/models/agent_list_stop.dart';
 import '../../domain/models/agent_membership.dart';
 import '../../l10n/studio_l10n.dart';
 import '../../presentation/providers/client_provider.dart';
+import '../../presentation/providers/account_domains.dart';
 import '../../shared/studio_driver_keys.dart';
 
 /// 智能体切换列表。
@@ -387,8 +388,17 @@ class _AgentSwitcherMenuState extends ConsumerState<AgentSwitcherMenu> {
               ? context.l10n.agentRoleRetired
               : context.roleLabel(role));
     final frozen = agent.frozenModel ?? thread?.frozenModel;
+    final account = ref
+        .watch(modelSelectionAccountsProvider)
+        .where((account) => account.id == frozen?.accountId)
+        .firstOrNull;
+    final descriptor = account?.models
+        .where((model) => model.modelId == frozen?.modelId)
+        .firstOrNull;
     final modelLabel = frozen == null
         ? context.l10n.delegationModelNotRecorded
+        : descriptor?.displayName.isNotEmpty == true
+        ? descriptor!.displayName
         : frozen.modelId;
     final modelTooltip = frozen == null
         ? modelLabel

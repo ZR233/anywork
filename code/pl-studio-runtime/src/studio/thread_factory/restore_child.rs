@@ -2,8 +2,7 @@
 //!
 //! A `worktree` child whose saved receipt has no physical worktree is **not** silently rebuilt: a
 //! missing directory is a broken site and fails with a typed `Workspace` error that the activation
-//! path publishes as a Recovery diagnosis. The same deterministic path is recreated only when the
-//! explicit archive restore recorded its own durable authorization in the lease.
+//! path publishes as a Recovery diagnosis. Ordinary activation never recreates the saved site.
 use super::{StudioThreadFactory, errors::resource_error, thread_tools::ThreadToolAssembly};
 use crate::{
     agent::definition::VerifiedAgentIdentity,
@@ -116,7 +115,7 @@ impl StudioThreadFactory {
             .await
             .map_err(|error| resource_error("open child instruction migration writer", error))?;
         let checkpoint = history
-            .migrate_recovery_checkpoint(&checkpoint, |state| {
+            .prepare_execution_identity(|state| {
                 crate::instruction::migrate_saved_representation(state, &saved_identity)
             })
             .await
@@ -152,29 +151,40 @@ impl StudioThreadFactory {
                 "child project target changed".into(),
             ));
         }
-        // 非 worktree child 的工作区根跟随其根会话；`worktree` child 仍以 Project 仓库
-        // `HEAD` 为 base。
+        // Resolve the actual root once. Existing child worktrees keep their original receipt;
+        // this boundary neither selects a new HEAD nor rebuilds the session checkout.
         let workspace_mode = thread.workspace_mode;
-        let root_thread_id = thread.root_thread_id.clone();
+        let root_thread = self.thread_record(&thread.root_thread_id).await?;
+        if root_thread.workspace_mode != workspace_mode {
+            return Err(ThreadAssemblyError::Identity(
+                "saved child root workspace mode changed".into(),
+            ));
+        }
+        let local_root = bot_root
+            .clone()
+            .unwrap_or_else(|| PathBuf::from(&root_thread.workspace_path));
         let project_copy = project.clone();
-        let worktrees = self.services.worktrees.clone();
-        let (root, session_root) = tokio::task::spawn_blocking(move || {
-            let project_root = match bot_root {
+        let root = tokio::task::spawn_blocking(move || {
+            Ok::<_, anyhow::Error>(match bot_root {
                 Some(root) => root,
                 None => crate::studio::agent_host::workspace_preparation::resolved_project_root(
                     &project_copy,
                 )?,
-            };
-            let session_root =
-                crate::studio::agent_host::workspace_preparation::root_session_workspace_root(
-                    &worktrees,
-                    workspace_mode,
-                    &root_thread_id,
-                    project_root.clone(),
-                )?;
-            Ok::<_, crate::PureError>((project_root, session_root))
+            })
         })
-        .await??;
+        .await?
+        .map_err(|error| resource_error("resolve restored session workspace", error))?;
+        let session_root =
+            crate::studio::agent_host::workspace_preparation::root_session_workspace_root(
+                &self.services.store,
+                &self.services.worktrees,
+                &self.services.ssh_manager,
+                &root_thread,
+                &project,
+                local_root,
+            )
+            .await
+            .map_err(|error| resource_error("resolve restored root session workspace", error))?;
         if std::path::Path::new(&assignment.project_root) != root {
             return Err(ThreadAssemblyError::Identity(
                 "saved child workspace has a different project root".into(),
@@ -186,13 +196,8 @@ impl StudioThreadFactory {
                 if std::path::Path::new(&assignment.root) == session_root
                     && assignment.worktree.is_none() => {}
             pl_protocol::AgentWorkspaceMode::Review => {
-                self.ensure_restored_review_workspace(
-                    &assignment,
-                    &thread,
-                    &project,
-                    &session_root,
-                )
-                .await?;
+                self.ensure_restored_review_workspace(&assignment, &thread, &project)
+                    .await?;
             }
             pl_protocol::AgentWorkspaceMode::Worktree => {
                 let receipt = assignment
@@ -308,148 +313,39 @@ impl StudioThreadFactory {
         Ok(prepared.tools.install(spec))
     }
 
-    /// 校验 review child 的被审目标工作区仍与冻结收据一致；reviewer 不拥有 lease，
-    /// 因此从不代为重建被审者的工作树，目标缺失或已清理时类型化失败。
+    /// Creation and restoration borrow the same target's full frozen actual assignment. A missing
+    /// lease never means caller session_root, and review of a borrower never transfers ownership.
     async fn ensure_restored_review_workspace(
         &self,
         assignment: &pl_protocol::AgentWorkspaceAssignmentSnapshot,
         thread: &crate::studio::ThreadRecord,
         project: &crate::studio::ProjectRecord,
-        session_root: &std::path::Path,
     ) -> Result<(), ThreadAssemblyError> {
-        use crate::studio::agent_host::worktree_lease::{
-            WorktreeLeaseOwnerKind, WorktreeLeaseState,
-        };
-        let target_id = &assignment
+        let target = assignment
             .review_target
             .as_ref()
-            .ok_or_else(|| {
-                ThreadAssemblyError::Identity(format!(
-                    "child {} review workspace has no review target",
-                    thread.id
-                ))
-            })?
-            .agent_id;
-        let target = self.thread_record(target_id).await?;
-        self.services
-            .store
-            .ensure_agent_execution_allowed(target_id)
-            .await
-            .map_err(|error| {
-                resource_error("reject restoring a retired review workspace", error)
-            })?;
-        if target.parent_thread_id != thread.parent_thread_id
-            || target.root_thread_id != thread.root_thread_id
-            || target.project_id != thread.project_id
+            .ok_or_else(|| ThreadAssemblyError::Identity("review target is missing".into()))?;
+        let caller = thread
+            .parent_thread_id
+            .as_deref()
+            .ok_or(ThreadAssemblyError::ChildDepth)?;
+        let parent = self.thread_record(caller).await?;
+        let frozen = self
+            .resolve_review_target(&target.agent_id, caller, &parent, project)
+            .await?;
+        if assignment.root != frozen.assignment.root
+            || assignment.project_root != frozen.assignment.project_root
+            || assignment.worktree != frozen.assignment.worktree
+            || assignment.writable_paths.is_some()
         {
-            return Err(ThreadAssemblyError::Identity(format!(
-                "review target {target_id} is not a sibling of child {}",
-                thread.id
-            )));
-        }
-        match &assignment.worktree {
-            Some(expected) => {
-                // The reviewed directory is the one the assignment names, and it is bound to the same
-                // facts a reused child site is bound to: the review child must not run anywhere the
-                // target's own lease and receipt do not prove.
-                let remote = project.ssh_alias.is_some();
-                if !same_workspace_path(&assignment.root, &expected.path, remote) {
-                    return Err(ThreadAssemblyError::Identity(format!(
-                        "review workspace root is not the reviewed worktree of {target_id}"
-                    )));
-                }
-                let lease = self
-                    .services
-                    .worktrees
-                    .get(target_id)
-                    .filter(|lease| lease.owner_kind == WorktreeLeaseOwnerKind::Child)
-                    .ok_or_else(|| {
-                        ThreadAssemblyError::Identity(format!(
-                            "review target {target_id} no longer owns the reviewed worktree"
-                        ))
-                    })?;
-                if lease.state == WorktreeLeaseState::Cleaned {
-                    return Err(ThreadAssemblyError::Identity(format!(
-                        "review target {target_id} worktree was already cleaned"
-                    )));
-                }
-                if lease.state == WorktreeLeaseState::CleanupRequested {
-                    return Err(ThreadAssemblyError::Identity(format!(
-                        "review target {target_id} worktree is being cleaned up"
-                    )));
-                }
-                let (repository_root, repository) = self.restored_child_repository(project).await?;
-                lease
-                    .validate_identity()
-                    .map_err(|error| resource_error("validate reviewed worktree lease", error))?;
-                verify_worktree_declarations(&lease, expected, &target, project, &repository_root)
-                    .map_err(|reason| {
-                        ThreadAssemblyError::Identity(format!(
-                            "review target {target_id} worktree: {reason}"
-                        ))
-                    })?;
-                let manager = crate::studio::agent_host::workspace_preparation::manager_from_lease(
-                    &self.services.store,
-                    &self.services.ssh_manager,
-                    &lease,
-                )
-                .await
-                .map_err(|error| resource_error("open reviewed workspace manager", error))?;
-                let handle = crate::agent::worktree::WorktreeHandle {
-                    path: PathBuf::from(&lease.path),
-                    branch: lease.branch.clone(),
-                    base_commit: lease.base_commit.clone(),
-                };
-                let Some(status) = manager
-                    .preview_existing(&handle)
-                    .await
-                    .map_err(|error| resource_error("inspect reviewed workspace", error))?
-                else {
-                    return Err(ThreadAssemblyError::Identity(format!(
-                        "review target {target_id} worktree is missing"
-                    )));
-                };
-                if status.branch.as_deref() != Some(lease.branch.as_str()) {
-                    return Err(ThreadAssemblyError::Identity(format!(
-                        "review target {target_id} worktree is checked out on another branch"
-                    )));
-                }
-                repository
-                    .validate_registered_site(PathBuf::from(&lease.path).as_path(), &lease.branch)
-                    .await
-                    .map_err(|reason| {
-                        ThreadAssemblyError::Identity(format!(
-                            "review target {target_id} worktree: {reason}"
-                        ))
-                    })?;
-            }
-            None => {
-                if std::path::Path::new(&assignment.root) != session_root {
-                    return Err(ThreadAssemblyError::Identity(
-                        "review workspace root does not match the session workspace".into(),
-                    ));
-                }
-            }
+            return Err(ThreadAssemblyError::Identity(
+                "review target actual assignment differs from the original frozen borrow".into(),
+            ));
         }
         Ok(())
     }
 
-    /// Verifies the saved worktree of a restored child; recreating it needs an explicit archive restore
-    /// authorization recorded in the lease itself.
-    ///
-    /// The state machine is fixed by two facts, checked in this order:
-    ///
-    /// 1. **Is the original site still there?** `preview_existing` decides that, and an existing site is
-    ///    always verified and reused — whatever the lease state is and whether or not a restore
-    ///    authorized a rebuild. Preserving and reusing the real directory is exactly what a normal
-    ///    continuation must do; a `preserved` lease from a failed cleanup is a live site, not a reason
-    ///    to refuse.
-    /// 2. **Does the site have to be rebuilt?** Only then is the durable `restore_authorized_at` fact
-    ///    required, and only the explicit archive restore writes it. A cleanup of a crashed site leaves
-    ///    no such fact, so it never authorizes creating a directory and never presents a fresh one as
-    ///    the original workspace. The grant covers a rebuild that was interrupted too — a lease left at
-    ///    `prepared` by a process that exited between recording the grant and creating the directory is
-    ///    retried here — and it is consumed once the rebuild settles (design/12 §12.5).
+    /// Verifies and reuses the original child site; missing or cleaned sites are never rebuilt.
     async fn ensure_restored_child_worktree(
         &self,
         receipt: &pl_protocol::AgentWorktreeSnapshot,
@@ -461,10 +357,8 @@ impl StudioThreadFactory {
             thread_id: child_id.clone(),
             reason: reason.to_owned(),
         };
-        // The repository is resolved from the current Project once, before either outcome: a rebuild
-        // must be bound to exactly the facts a reuse is bound to, or the authorization would be a way
-        // to create a site outside the project's own repository.
-        let (repository_root, repository) = self.restored_child_repository(project).await?;
+        // Resolve through the current Project before accepting the saved lease and receipt.
+        let (repository_root, _repository) = self.restored_child_repository(project).await?;
         let lease = self.services.worktrees.get(child_id).ok_or_else(|| {
             missing(
                 "the saved child worktree has no session lease; a normal continuation does not create one",
@@ -473,14 +367,16 @@ impl StudioThreadFactory {
         // A site whose cleanup is in flight is not a reusable site: the directory is about to be
         // removed, so presenting it as the child's workspace would hand out a path that disappears
         // underneath the owner.
-        if lease.state
-            == crate::studio::agent_host::worktree_lease::WorktreeLeaseState::CleanupRequested
-        {
+        if matches!(
+            lease.state,
+            crate::studio::agent_host::worktree_lease::WorktreeLeaseState::CleanupRequested
+                | crate::studio::agent_host::worktree_lease::WorktreeLeaseState::Cleaned
+        ) {
             return Err(missing(
-                "a cleanup of the saved child worktree is in progress; retry after it settles",
+                "the saved child worktree is cleaned or cleanup is in progress",
             ));
         }
-        // The saved site is only ever touched at the Pure-owned path and branch its own identity
+        // The saved site is only ever touched at the managed path its stable ownership
         // derives, and only while it still matches this child, its root, its project and its receipt.
         lease
             .validate_identity()
@@ -496,83 +392,13 @@ impl StudioThreadFactory {
         .map_err(|error| resource_error("open restored child workspace manager", error))?;
         let handle = crate::agent::worktree::WorktreeHandle {
             path: PathBuf::from(&lease.path),
-            branch: lease.branch.clone(),
             base_commit: lease.base_commit.clone(),
         };
-        match manager.preview_existing(&handle).await {
-            // The original site is still there: prove it belongs to this child and this repository, then
-            // reuse it. No authorization is needed to keep using what already exists, so a `preserved`
-            // site is never refused.
-            Ok(Some(status)) => {
-                if status.branch.as_deref() != Some(lease.branch.as_str()) {
-                    return Err(missing(
-                        "the saved child worktree is checked out on another branch",
-                    ));
-                }
-                repository
-                    .validate_registered_site(PathBuf::from(&lease.path).as_path(), &lease.branch)
-                    .await
-                    .map_err(|reason| missing(&reason.to_string()))?;
-                // A grant whose rebuild already landed is spent here: this directory is the rebuilt
-                // one, so losing it later must not authorize another rebuild from an old restore.
-                let mut lease = lease;
-                if lease.consume_restore() {
-                    self.services
-                        .worktrees
-                        .record(lease.clone())
-                        .map_err(|error| {
-                            resource_error("record reused child worktree lease", error)
-                        })?;
-                }
-                return Ok(lease);
-            }
-            // The site is gone: only an explicit archive restore authorizes creating it again, whatever
-            // state the interrupted attempt left the lease in.
-            Ok(None) if lease.restore_authorized_at.is_none() => {
-                return Err(missing(
-                    "the saved child worktree is missing without an explicit archive restore; its original site is not rebuilt here",
-                ));
-            }
-            Ok(None) => {}
-            Err(error) => {
-                return Err(resource_error("inspect restored child workspace", error));
-            }
-        }
-        let _creating = self.services.worktrees.creation_guard(child_id);
-        let rebuilt = crate::studio::agent_host::workspace_preparation::recreate_child_worktree(
-            &self.services.store,
-            &self.services.worktrees,
-            &self.services.ssh_manager,
-            crate::studio::agent_host::workspace_preparation::ChildWorktreeRecreation {
-                project,
-                root_thread_id: &thread.root_thread_id,
-                child_id,
-                receipt,
-                repository_root: &repository_root,
-            },
-        )
-        .await
-        .map_err(|error| resource_error("recreate restored child worktree", error))?;
-        // The new site answers to the same declarations and to the same resolved repository, so a
-        // rebuild can never land outside them even though it was authorized.
-        verify_worktree_declarations(&rebuilt, receipt, thread, project, &repository_root)
-            .map_err(|reason| missing(&reason))?;
-        repository
-            .validate_registered_site(PathBuf::from(&rebuilt.path).as_path(), &rebuilt.branch)
+        manager
+            .verify(&handle)
             .await
-            .map_err(|reason| missing(&reason.to_string()))?;
-        // The authorization is spent once the rebuild settled, so a later ordinary continuation can
-        // never rebuild this site again on the strength of an old restore. Consumption is itself a
-        // lease revision: the rebuild already recorded a newer lease, and `record` admits only
-        // `previous + 1`.
-        let mut rebuilt = rebuilt;
-        if rebuilt.consume_restore() {
-            self.services
-                .worktrees
-                .record(rebuilt.clone())
-                .map_err(|error| resource_error("record restored child worktree lease", error))?;
-        }
-        Ok(rebuilt)
+            .map_err(|error| resource_error("inspect restored child workspace", error))?;
+        Ok(lease)
     }
 
     /// The repository the current Project really resolves to, plus a manager anchored on it.
@@ -599,9 +425,9 @@ impl StudioThreadFactory {
 
 /// Binds a lease and its frozen receipt to the child, its project and the resolved repository.
 ///
-/// These are the facts that do not depend on the physical site, so both a reuse and a rebuild are held
-/// to them: ownership, root session, project, remote target, the repository the current Project resolves
-/// to today, and the frozen receipt's repository, path, branch and base commit.
+/// These are the facts that do not depend on the physical site: ownership, root session, project,
+/// remote target, the repository the current Project resolves
+/// to today, and the frozen receipt's repository, path and base commit.
 fn verify_worktree_declarations(
     lease: &crate::studio::agent_host::worktree_lease::WorktreeLease,
     receipt: &pl_protocol::AgentWorktreeSnapshot,
@@ -637,9 +463,6 @@ fn verify_worktree_declarations(
     }
     if !same_workspace_path(&lease.path, &receipt.path, remote) {
         return Err("the saved lease and its receipt name different worktree paths".into());
-    }
-    if lease.branch != receipt.branch {
-        return Err("the saved lease and its receipt name different branches".into());
     }
     if lease.base_commit != receipt.base_commit {
         return Err(

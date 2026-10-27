@@ -22,6 +22,29 @@ fn studio_error_from_ref(error: &anyhow::Error) -> StudioError {
     if let Some(error) = error.downcast_ref::<StudioError>() {
         return error.clone();
     }
+    if let Some(error) = error
+        .chain()
+        .find_map(|cause| cause.downcast_ref::<crate::agent::worktree::WorktreeError>())
+    {
+        use crate::agent::worktree::WorktreeError;
+        let (code, retryable) = match error {
+            WorktreeError::IdentityMismatch(_) => (StudioErrorCode::Conflict, false),
+            WorktreeError::InvalidResource(_) | WorktreeError::MissingHead => {
+                (StudioErrorCode::InvalidArgument, false)
+            }
+            WorktreeError::Missing => (StudioErrorCode::Unavailable, true),
+            WorktreeError::LocalIo { .. } => (StudioErrorCode::Storage, true),
+            WorktreeError::GitLaunchFailed { .. }
+            | WorktreeError::GitTimedOut { .. }
+            | WorktreeError::GitExited { .. }
+            | WorktreeError::GitStatusUnknown { .. }
+            | WorktreeError::Remote { .. }
+            | WorktreeError::RemoteExecution { .. }
+            | WorktreeError::RemoteDownload { .. }
+            | WorktreeError::RemoteFile { .. } => (StudioErrorCode::Unavailable, true),
+        };
+        return StudioError::new(code, error.safe_diagnostic(), retryable);
+    }
     if let Some(startup) = error.downcast_ref::<crate::StudioStartupError>() {
         if let Some(ConfigRuntimeError::ModeDefinitions(cause)) = error
             .chain()
@@ -37,6 +60,19 @@ fn studio_error_from_ref(error: &anyhow::Error) -> StudioError {
             );
         }
         if startup.kind == crate::StudioStartupErrorKind::Migration {
+            if error
+                .chain()
+                .any(|cause| cause.is::<crate::studio::AccountUsageCacheMigrationError>())
+            {
+                return StudioError::new(
+                    StudioErrorCode::InvalidArgument,
+                    "账号用量缓存升级失败，原记录已保留。请使用支持该数据版本的应用重试。",
+                    false,
+                )
+                .with_details(
+                    serde_json::json!({"startupStep": startup.step, "startupKind": "Migration"}),
+                );
+            }
             return StudioError::new(
                 StudioErrorCode::InvalidArgument,
                 "配置迁移失败，原文件已保留。请检查模型标识与配置声明后重新启动。",
@@ -72,6 +108,12 @@ fn studio_error_from_ref(error: &anyhow::Error) -> StudioError {
     }
     if let Some(error) = error.downcast_ref::<ConfigRuntimeError>() {
         return match error {
+            ConfigRuntimeError::ModelDiscoveryUnsupported => {
+                StudioError::invalid_argument("Model discovery is unsupported").with_reason(
+                    pl_protocol::studio::StudioErrorReason::AccountModelDiscoveryUnsupported,
+                    serde_json::json!({}),
+                )
+            }
             ConfigRuntimeError::StaleRevision { expected, actual } => StudioError::new(
                 StudioErrorCode::StaleRevision,
                 "Studio data changed; reload and try again",

@@ -22,8 +22,11 @@ enum WorktreeOwnerKind {
   bool get isSession => this == WorktreeOwnerKind.session;
 }
 
+enum WorktreeInspection { available, missing, identityMismatch, unavailable }
+
 class WorktreeRecoveryPreview {
   const WorktreeRecoveryPreview({
+    required this.inspection,
     required this.ownerKind,
     required this.ownerThreadId,
     required this.leaseRevision,
@@ -37,17 +40,18 @@ class WorktreeRecoveryPreview {
     required this.changedFiles,
   });
 
+  final WorktreeInspection inspection;
   final WorktreeOwnerKind ownerKind;
   final String ownerThreadId;
   final int leaseRevision;
   final String state;
   final String repositoryRoot;
   final String path;
-  final String branch;
+  final String? branch;
   final String baseCommit;
   final String? headCommit;
-  final bool dirty;
-  final List<String> changedFiles;
+  final bool? dirty;
+  final List<String>? changedFiles;
 }
 
 class StudioRecoveryIssue {

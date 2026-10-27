@@ -24,15 +24,12 @@ impl HistoryStore {
         let tx = connection.db.begin().await?;
         // A shared read-only connection can predate an explicit writer upgrade. Validate the
         // current transaction's identity/schema, not a cached version or the writer fast path.
-        let (database_id, schema_version) =
-            super::validate_existing(&tx, &self.state.thread_id).await?;
+        let (database_id, _) = super::validate_existing(&tx, &self.state.thread_id).await?;
         ensure!(
             database_id == connection.database_id,
             "canonical history identity changed"
         );
-        let result = if schema_version < 5 {
-            None
-        } else if let Some(checkpoint) = read(&tx, &self.state.thread_id).await? {
+        let result = if let Some(checkpoint) = read(&tx, &self.state.thread_id).await? {
             let turn =
                 super::read_latest_turn_at(&tx, &self.state.thread_id, checkpoint.history_fence)
                     .await?;
@@ -49,48 +46,52 @@ impl HistoryStore {
         let Some(connection) = self.reader().await? else {
             return Ok(None);
         };
-        if connection.schema_version < 5 && self.state.writer.get().is_none() {
-            return Ok(None);
-        }
         let tx = connection.db.begin().await?;
         let result = read(&tx, &self.state.thread_id).await?;
         tx.commit().await?;
         Ok(result)
     }
 
-    /// Commits a representation upgrade of saved extensions before a recovered owner can be observed.
-    ///
-    /// `migrate` may only rewrite extension payload encodings (for example a retired Mode, model route
-    /// or Agent Profile format). It cannot change business state: the checkpoint watermark, context,
-    /// usage, workflow and history fence stay as saved, and the extension revisions keep their values.
-    /// The original checkpoint is compared inside the writer transaction, so a concurrent commit or
-    /// another recovery can never be overwritten by a stale candidate; without a representation
-    /// change nothing is written at all.
-    pub(crate) async fn migrate_recovery_checkpoint(
+    /// Advances the same Migrator after the v2 TOML import boundary has finished.
+    pub(crate) async fn prepare_model_access(&self) -> Result<Option<ThreadCheckpoint>> {
+        super::schema::prepare(
+            &self.writer().await?.db,
+            &self.state.thread_id,
+            super::schema::Preparation::ModelAccess,
+            None,
+        )
+        .await?;
+        self.checkpoint().await
+    }
+
+    /// The owner supplies verified Mode/Agent facts; SeaORM commits this named migration and its
+    /// completion record together. Candidate construction has no storage or external side effects.
+    pub(crate) async fn prepare_execution_identity(
         &self,
-        original: &ThreadCheckpoint,
         migrate: impl FnOnce(&mut pl_core::thread::ThreadSnapshot) -> Result<()>,
     ) -> Result<ThreadCheckpoint> {
-        ensure!(
-            original.thread_id == self.state.thread_id,
-            "checkpoint belongs to another Thread"
-        );
-        let mut migrated = original.clone();
-        migrate(&mut migrated.state)?;
-        if migrated.state.extensions == original.state.extensions {
-            return Ok(migrated);
-        }
-        let tx = begin_write(&self.writer().await?.db).await?;
-        let current = read(&tx, &self.state.thread_id)
+        let original = self
+            .prepare_model_access()
             .await?
             .context("recovery checkpoint is absent")?;
-        ensure!(
-            serde_json::to_vec(&current)? == serde_json::to_vec(original)?,
-            "checkpoint changed during recovery migration; original data preserved"
-        );
-        write(&tx, &migrated, None).await?;
-        tx.commit().await?;
-        Ok(migrated)
+        let mut migrated = original.clone();
+        migrate(&mut migrated.state).map_err(|error| {
+            crate::studio::startup::migration_error(
+                "history",
+                super::schema::EXECUTION_IDENTITY,
+                error,
+            )
+        })?;
+        super::schema::prepare(
+            &self.writer().await?.db,
+            &self.state.thread_id,
+            super::schema::Preparation::ExecutionIdentity,
+            Some((original, migrated)),
+        )
+        .await?;
+        self.checkpoint()
+            .await?
+            .context("prepared checkpoint is absent")
     }
 
     /// The only import boundary for a validated, fully materialized v2 TOML checkpoint.
@@ -99,6 +100,11 @@ impl HistoryStore {
         checkpoint: &ThreadCheckpoint,
         legacy_costs: &[super::super::calls::PurposeUsageProjection],
     ) -> Result<()> {
+        // Schema preparation may have completed on the empty database before TOML is loaded.
+        // Normalize at this import boundary as well, using exactly the SQLite conversion rules.
+        let mut normalized = checkpoint.clone();
+        crate::studio::producer_migration::checkpoint(&mut normalized)?;
+        let checkpoint = &normalized;
         ensure!(
             checkpoint.thread_id == self.state.thread_id,
             "checkpoint belongs to another Thread"
@@ -213,9 +219,6 @@ impl HistoryStore {
         let Some(connection) = self.reader().await? else {
             return Ok(false);
         };
-        if connection.schema_version < 5 && self.state.writer.get().is_none() {
-            return Ok(false);
-        }
         let row = connection
             .db
             .query_one_raw(statement(
@@ -257,6 +260,80 @@ pub(super) async fn verify_committed(
             && watermark >= integer(checkpoint.state_revision)?,
         "durable checkpoint does not cover retried history"
     );
+    Ok(())
+}
+
+/// Representation migrations update only the extension portion of the original JSON. Context
+/// rows, unknown producer fields, history watermarks and usage facts keep their stored encoding.
+pub(super) async fn write_representation(
+    tx: &impl ConnectionTrait,
+    original: &ThreadCheckpoint,
+    migrated: &ThreadCheckpoint,
+) -> Result<()> {
+    let mut unchanged = migrated.clone();
+    unchanged.state.extensions = original.state.extensions.clone();
+    unchanged.state.extension_sequence = original.state.extension_sequence;
+    ensure!(
+        serde_json::to_vec(&unchanged)? == serde_json::to_vec(original)?,
+        "representation migration changed checkpoint business state"
+    );
+    if migrated.state.extensions == original.state.extensions
+        && migrated.state.extension_sequence == original.state.extension_sequence
+    {
+        return Ok(());
+    }
+    let row = tx
+        .query_one_raw(statement(
+            "SELECT payload FROM session_checkpoint WHERE id=1",
+            vec![],
+        ))
+        .await?
+        .context("recovery checkpoint is absent")?;
+    let mut payload: serde_json::Value =
+        serde_json::from_str(&row.try_get::<String>("", "payload")?)?;
+    let extensions = payload["state"]
+        .as_object_mut()
+        .context("checkpoint state is not an object")?
+        .entry("extensions")
+        .or_insert_with(|| serde_json::json!({}))
+        .as_object_mut()
+        .context("checkpoint extensions are not an object")?;
+    for (key, record) in &migrated.state.extensions {
+        match original.state.extensions.get(key) {
+            Some(previous) if previous == record => {}
+            Some(previous) => {
+                let saved = extensions
+                    .get_mut(key)
+                    .context("saved extension is absent")?;
+                if previous.revision != record.revision {
+                    saved["revision"] = record.revision.into();
+                }
+                if previous.payload != record.payload {
+                    saved["payload"]["format"] = record.payload.format().into();
+                    saved["payload"]["version"] = record.payload.version().into();
+                    saved["payload"]["content"] = record.payload.content().into();
+                }
+            }
+            None => {
+                extensions.insert(key.clone(), serde_json::to_value(record)?);
+            }
+        }
+    }
+    for key in original.state.extensions.keys() {
+        if !migrated.state.extensions.contains_key(key) {
+            extensions.remove(key);
+        }
+    }
+    if original.state.extension_sequence != migrated.state.extension_sequence {
+        payload["state"]["extensionSequence"] = migrated.state.extension_sequence.into();
+    }
+    let payload = serde_json::to_string(&payload)?;
+    let hash = content_hash(payload.as_bytes());
+    tx.execute_raw(statement(
+        "UPDATE session_checkpoint SET payload=?,payload_hash=? WHERE id=1",
+        vec![payload.into(), hash.into()],
+    ))
+    .await?;
     Ok(())
 }
 
@@ -352,7 +429,68 @@ pub(super) async fn write(
     Ok(())
 }
 
-async fn read(tx: &impl ConnectionTrait, thread_id: &str) -> Result<Option<ThreadCheckpoint>> {
+pub(super) async fn read(
+    tx: &impl ConnectionTrait,
+    thread_id: &str,
+) -> Result<Option<ThreadCheckpoint>> {
+    read_with(tx, thread_id, ThreadCheckpoint::SCHEMA_VERSION, |payload| {
+        Ok(serde_json::from_str(payload)?)
+    })
+    .await
+}
+
+/// The schema step shares every hash, identity, context and fence check with ordinary reads.
+/// Only this explicit writer boundary can decode a retired envelope.
+pub(super) async fn migrate_envelope(tx: &impl ConnectionTrait, thread_id: &str) -> Result<()> {
+    #[derive(serde::Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct Header {
+        schema_version: u32,
+    }
+
+    let mut upgraded = false;
+    let mut schema_four = None;
+    let checkpoint = read_with(tx, thread_id, 5, |payload| {
+        let header: Header = serde_json::from_str(payload)?;
+        if header.schema_version == 5 {
+            return Ok(serde_json::from_str(payload)?);
+        }
+        if header.schema_version == 4 {
+            let mut migrated: serde_json::Value = serde_json::from_str(payload)?;
+            migrated["schemaVersion"] = serde_json::json!(5);
+            schema_four = Some(serde_json::to_string(&migrated)?);
+            upgraded = true;
+            return Ok(serde_json::from_value(migrated)?);
+        }
+        upgraded = true;
+        Ok(ThreadCheckpoint::decode_legacy(payload)?)
+    })
+    .await?;
+    let Some(mut checkpoint) = checkpoint.filter(|_| upgraded) else {
+        return Ok(());
+    };
+    // Context already has its own canonical rows. This envelope step changes no context bytes,
+    // history items, revisions or business state, and must not prune additional saved facts.
+    checkpoint.state.context.records = Default::default();
+    let payload = match schema_four {
+        Some(payload) => payload,
+        None => serde_json::to_string(&checkpoint)?,
+    };
+    let hash = content_hash(payload.as_bytes());
+    tx.execute_raw(statement(
+        "UPDATE session_checkpoint SET payload=?,payload_hash=? WHERE id=1",
+        vec![payload.into(), hash.into()],
+    ))
+    .await?;
+    Ok(())
+}
+
+async fn read_with(
+    tx: &impl ConnectionTrait,
+    thread_id: &str,
+    expected_schema: u32,
+    decode: impl FnOnce(&str) -> Result<ThreadCheckpoint>,
+) -> Result<Option<ThreadCheckpoint>> {
     let Some(row) = tx.query_one_raw(statement(
         "SELECT revision,context_revision,context_count,payload,payload_hash FROM session_checkpoint WHERE id=1", vec![],
     )).await? else { return Ok(None) };
@@ -361,10 +499,10 @@ async fn read(tx: &impl ConnectionTrait, thread_id: &str) -> Result<Option<Threa
         content_hash(payload.as_bytes()) == row.try_get::<String>("", "payload_hash")?,
         "checkpoint content hash mismatch"
     );
-    let mut checkpoint: ThreadCheckpoint = serde_json::from_str(&payload)?;
+    let mut checkpoint = decode(&payload)?;
     ensure!(
         checkpoint.thread_id == thread_id
-            && ThreadCheckpoint::supports_schema(checkpoint.schema_version)
+            && checkpoint.schema_version == expected_schema
             && checkpoint.is_materialized()
             && checkpoint.state.context.records.is_empty()
             && checkpoint.state_revision == checkpoint.state.commit_sequence
@@ -462,9 +600,6 @@ impl HistoryStore {
         let Some(connection) = self.reader().await? else {
             return Ok(None);
         };
-        if connection.schema_version < 5 && self.state.writer.get().is_none() {
-            return Ok(None);
-        }
         let tx = connection.db.begin().await?;
         let Some(row) = tx
             .query_one_raw(statement(
@@ -482,6 +617,11 @@ impl HistoryStore {
             "accounting checkpoint hash mismatch"
         );
         let checkpoint: ThreadCheckpoint = serde_json::from_str(&payload)?;
+        ensure!(
+            checkpoint.schema_version == ThreadCheckpoint::SCHEMA_VERSION
+                && checkpoint.thread_id == self.state.thread_id,
+            "accounting checkpoint requires explicit storage preparation or has a foreign identity"
+        );
         let mut purposes =
             std::collections::BTreeMap::<Option<String>, Vec<pl_protocol::RuntimeCostAmount>>::new(
             );

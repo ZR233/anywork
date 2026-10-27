@@ -223,18 +223,23 @@ async fn text_lists_and_route_admission_use_each_account_resolved_context() {
     config.reconcile_model_catalog().unwrap();
     let a = &config.accounts[&a_id];
     let all = a.effective_catalog(None).unwrap();
-    assert_eq!(all.len(), 7);
     assert_eq!(
-        a.effective_models(Some(ModelType::Text))
+        all.iter()
+            .filter(|entry| entry.origin == pl_model::config::AccountModelOrigin::Online)
+            .count(),
+        7
+    );
+    assert_eq!(
+        a.selectable_catalog(Some(ModelType::Text))
             .unwrap()
             .iter()
-            .map(|model| model.model_id.as_str())
+            .map(|entry| entry.model.model_id.as_str())
             .collect::<Vec<_>>(),
         ["max-only", "without-tools-or-prices"]
     );
     assert_eq!(
         config.accounts[&b_id]
-            .effective_models(Some(ModelType::Text))
+            .selectable_catalog(Some(ModelType::Text))
             .unwrap()
             .len(),
         1
@@ -324,7 +329,12 @@ async fn captured_camelcase_effort_defaults_keep_their_clock_and_do_not_restore_
     assert_eq!(models[0].supported_efforts(), ["low", "high"]);
     assert_eq!(models[0].default_effort().as_deref(), Some("high"));
     accept_observation(&mut a, models.clone(), 10);
-    models = a.effective_models(None).unwrap();
+    models = a
+        .effective_models(None)
+        .unwrap()
+        .into_iter()
+        .filter(|model| model.model_id == "shared-effort")
+        .collect();
     let mut b = provider("http://127.0.0.1:1", ProtocolKind::OpenAi);
     accept_observation(
         &mut b,
@@ -348,7 +358,12 @@ async fn captured_camelcase_effort_defaults_keep_their_clock_and_do_not_restore_
         };
         let next = updated(query.execute(Some(&cache)).await.unwrap());
         accept_observation(config.accounts.get_mut(&a_id).unwrap(), next, order);
-        models = config.accounts[&a_id].effective_models(None).unwrap();
+        models = config.accounts[&a_id]
+            .effective_models(None)
+            .unwrap()
+            .into_iter()
+            .filter(|model| model.model_id == "shared-effort")
+            .collect();
         assert_eq!(
             models[0].observation.as_ref().unwrap().parameter_defaults["effort"].order,
             if order < 50 { 10 } else { 50 }
@@ -357,7 +372,9 @@ async fn captured_camelcase_effort_defaults_keep_their_clock_and_do_not_restore_
         let observed = config.accounts[&a_id]
             .effective_models(None)
             .unwrap()
-            .remove(0);
+            .into_iter()
+            .find(|model| model.model_id == "shared-effort")
+            .unwrap();
         match order {
             30 => {
                 assert_eq!(observed.supported_efforts(), ["low", "high"]);
@@ -384,7 +401,9 @@ async fn captured_camelcase_effort_defaults_keep_their_clock_and_do_not_restore_
         let sibling = config.accounts[&AccountId::new("b").unwrap()]
             .effective_models(None)
             .unwrap()
-            .remove(0);
+            .into_iter()
+            .find(|model| model.model_id == "shared-effort")
+            .unwrap();
         assert!(sibling.supported_efforts().is_empty());
         assert_eq!(sibling.default_effort(), None);
         assert!(!sibling.capabilities.reasoning);
@@ -516,13 +535,18 @@ async fn account_catalog_resolves_own_fields_prices_and_wire_without_cross_accou
         config.accounts[&AccountId::new("unrelated").unwrap()]
             .effective_models(None)
             .unwrap()
-            .len(),
+            .iter()
+            .filter(|model| model.model_id == "other")
+            .count(),
         1
     );
     assert_eq!(
         config.accounts[&AccountId::new("unrelated").unwrap()]
             .effective_models(None)
-            .unwrap()[0]
+            .unwrap()
+            .into_iter()
+            .find(|model| model.model_id == "other")
+            .unwrap()
             .model_id,
         "other"
     );
@@ -623,7 +647,9 @@ async fn missing_fields_and_304_keep_original_order_within_one_account_only() {
         config.accounts[&AccountId::new(id).unwrap()]
             .effective_models(None)
             .unwrap()
-            .remove(0)
+            .into_iter()
+            .find(|model| model.model_id == "shared")
+            .unwrap()
     };
     let observed = model("z-first");
     assert_eq!(observed.context_window, Some(4096));
@@ -716,7 +742,9 @@ async fn later_success_wins_inside_the_observing_account_only() {
         config.accounts[&AccountId::new(id).unwrap()]
             .effective_models(None)
             .unwrap()
-            .remove(0)
+            .into_iter()
+            .find(|model| model.model_id == "shared")
+            .unwrap()
     };
     // Each account only observes its own successful request; completion order is not global.
     let slow_model = model("a-slow");
@@ -799,8 +827,14 @@ async fn current_endpoint_prefix_query_auth_and_safe_identity_are_used() {
     );
     assert_eq!(model.pricing, ModelPricing::Unknown);
     config.set_model_catalog_overlay(models.clone()).unwrap();
-    let descriptor: pl_model::config::ModelDescriptor =
-        model_descriptor(&config.effective_catalog(None).unwrap()[0]);
+    let descriptor: pl_model::config::ModelDescriptor = model_descriptor(
+        &config
+            .effective_catalog(None)
+            .unwrap()
+            .into_iter()
+            .find(|entry| entry.model.model_id == model.model_id)
+            .unwrap(),
+    );
     assert_eq!(descriptor.context_window, None);
     assert_eq!(descriptor.max_context_window, None);
     assert_eq!(descriptor.max_output_tokens, None);
@@ -1027,7 +1061,14 @@ async fn rich_envelopes_drive_real_inference_wire_and_unknown_pricing_preserves_
         assert!(model.base_instructions.is_empty());
         let mut config = provider("http://127.0.0.1:1", adapter);
         config.set_model_catalog_overlay(models).unwrap();
-        let descriptor = model_descriptor(&config.effective_catalog(None).unwrap()[0]);
+        let descriptor = model_descriptor(
+            &config
+                .effective_catalog(None)
+                .unwrap()
+                .into_iter()
+                .find(|entry| entry.model.model_id == "future-model")
+                .unwrap(),
+        );
         assert_eq!(descriptor.context_window, Some(64000));
         assert_eq!(descriptor.context.auto_compact_limit, Some(expected_limit));
         assert_eq!(
@@ -1379,9 +1420,9 @@ async fn gpt61_id_only_inventory_and_old_fallback_cache_enable_real_image_input(
     };
     use pl_provider_fixture::{FixtureServer, Protocol, Reply, Step, responses_text};
     let adapter = ProtocolKind::OpenAi;
-    let model_id = "gpt-6.1-sol";
+    let model_id = "gpt-6.1-terra";
     let mut old = discover(
-        json!({"data":[{"id":"unregistered-old-id","display_name":"GPT-6.1 Sol","description":"Provider description without capability declarations."}]}),
+        json!({"data":[{"id":"unregistered-old-id","display_name":"GPT-6.1 Terra","description":"Provider description without capability declarations."}]}),
         adapter,
     )
     .await
@@ -1393,7 +1434,7 @@ async fn gpt61_id_only_inventory_and_old_fallback_cache_enable_real_image_input(
     old.binding.request.media.clear();
     let description = old.description.clone();
     let server = Server::responses(vec![
-        http(200, "", &json!({"data":[{"id":model_id,"display_name":"GPT-6.1 Sol","created":1790640000,"object":"model","owned_by":"openai","type":"model"}]}).to_string()),
+        http(200, "", &json!({"data":[{"id":model_id,"display_name":"GPT-6.1 Terra","created":1790640000,"object":"model","owned_by":"openai","type":"model"}]}).to_string()),
         http(200, "", &json!({"data":[{"id":model_id,"input_modalities":["text"],"supported_reasoning_levels":[]}]}).to_string()),
     ]).await;
     let mut config = provider(&server.url, adapter);
@@ -1419,8 +1460,10 @@ async fn gpt61_id_only_inventory_and_old_fallback_cache_enable_real_image_input(
         .unwrap()
         .effective_models(None)
         .unwrap()
-        .remove(0);
-    assert_eq!(startup.display_name, "GPT-6.1 Sol");
+        .into_iter()
+        .find(|model| model.model_id == model_id)
+        .unwrap();
+    assert_eq!(startup.display_name, "GPT-6.1 Terra");
     assert_eq!(
         startup.description,
         bundled_model_definition("openai")
@@ -1438,7 +1481,12 @@ async fn gpt61_id_only_inventory_and_old_fallback_cache_enable_real_image_input(
     );
     let models = updated(query.execute(Some(&cache)).await.unwrap());
     config.set_model_catalog_overlay(models).unwrap();
-    let mut model = config.effective_models(None).unwrap().remove(0);
+    let mut model = config
+        .effective_models(None)
+        .unwrap()
+        .into_iter()
+        .find(|model| model.model_id == model_id)
+        .unwrap();
     assert_eq!(model.model_id, model_id);
     assert_eq!(model.description, description);
     assert_eq!(model.context_window, Some(1_050_000));
@@ -1449,16 +1497,16 @@ async fn gpt61_id_only_inventory_and_old_fallback_cache_enable_real_image_input(
         ))
         .context
         .auto_compact_limit,
-        Some(475_000)
+        Some(922_000)
     );
     assert_eq!(
         model.resolve_context(None).auto_compact_limit,
-        Some(475_000)
+        Some(922_000)
     );
     assert_eq!(model.max_output_tokens, Some(128_000));
     assert_eq!(
         model.supported_efforts(),
-        ["low", "medium", "high", "xhigh", "max"]
+        ["none", "low", "medium", "high", "xhigh", "max"]
     );
     assert!(
         model_descriptor(&pl_model::config::AccountModelEntry::new(
@@ -1470,7 +1518,12 @@ async fn gpt61_id_only_inventory_and_old_fallback_cache_enable_real_image_input(
     );
     let explicit = updated(query.execute(None).await.unwrap());
     config.set_model_catalog_overlay(explicit).unwrap();
-    let explicit = config.effective_models(None).unwrap().remove(0);
+    let explicit = config
+        .effective_models(None)
+        .unwrap()
+        .into_iter()
+        .find(|model| model.model_id == model_id)
+        .unwrap();
     assert!(
         !explicit
             .capabilities
@@ -1547,6 +1600,46 @@ async fn gpt61_id_only_inventory_and_old_fallback_cache_enable_real_image_input(
             .unwrap()
             .starts_with("data:image/png;base64,")
     );
+}
+
+#[test]
+fn gpt61_terra_is_selectable_with_safe_context_and_documented_tiered_pricing() {
+    use pl_model::model::{PricingMode, UsageReport};
+
+    let account = pl_model::config::builtin_account_catalog()
+        .unwrap()
+        .templates
+        .into_iter()
+        .find(|template| template.id.as_str() == "openai")
+        .unwrap()
+        .account;
+    let selected = account
+        .selectable_catalog(Some(ModelType::Text))
+        .unwrap()
+        .into_iter()
+        .find(|entry| entry.model.model_id == "gpt-6.1-terra")
+        .unwrap();
+    let model = selected.model;
+    assert_eq!(
+        model.resolve_context(None).auto_compact_limit,
+        Some(922_000)
+    );
+
+    for (input_tokens, expected_rate) in [(272_000, 1.0), (272_001, 2.0)] {
+        let usage = UsageReport {
+            input_tokens: Some(input_tokens),
+            output_tokens: Some(0),
+            cache_read_tokens: Some(0),
+            cache_write_tokens: Some(0),
+            total_tokens: Some(input_tokens),
+            ..Default::default()
+        };
+        let accounting = model.pricing.account(usage, PricingMode::Catalog, 0);
+        assert_eq!(
+            accounting.price_snapshot.unwrap().input_per_mtok,
+            Some(expected_rate)
+        );
+    }
 }
 
 #[tokio::test]
@@ -1640,7 +1733,10 @@ async fn online_declarations_override_builtin_metadata_across_successful_polls()
     let mut config = provider("http://127.0.0.1:1", ProtocolKind::OpenAi);
     config.set_model_catalog_overlay(raised.clone()).unwrap();
     let effective = config.effective_catalog(None).unwrap();
-    let entry = &effective[0];
+    let entry = effective
+        .iter()
+        .find(|entry| entry.model.model_id == builtin.model_id)
+        .unwrap();
     assert_eq!(entry.origin, pl_model::config::AccountModelOrigin::Online);
     // 价格仍只按本地精确 ID 关联。
     assert_eq!(entry.model.pricing, builtin.pricing);
@@ -2064,7 +2160,13 @@ async fn overlay_replaces_inventory_manual_wins_and_prices_join_only_local_exact
         additional_models.push(manual.clone());
     }
     config.set_model_catalog_overlay(api).unwrap();
-    let effective = config.effective_models(None).unwrap();
+    let effective = config
+        .effective_catalog(None)
+        .unwrap()
+        .into_iter()
+        .filter(|entry| entry.origin != pl_model::config::AccountModelOrigin::Bundled)
+        .map(|entry| entry.model)
+        .collect::<Vec<_>>();
     assert_eq!(
         effective
             .iter()
@@ -2088,7 +2190,15 @@ async fn overlay_replaces_inventory_manual_wins_and_prices_join_only_local_exact
     let reread: AccountConfig = serde_json::from_value(persisted).unwrap();
     assert!(!reread.has_model_catalog_overlay());
     config.set_model_catalog_overlay(Vec::new()).unwrap();
-    assert_eq!(config.effective_models(None).unwrap(), vec![manual]);
+    assert_eq!(
+        config
+            .selectable_catalog(None)
+            .unwrap()
+            .into_iter()
+            .map(|entry| entry.model)
+            .collect::<Vec<_>>(),
+        vec![manual]
+    );
     if let pl_model::config::AccountModelCatalogConfig::Bundled {
         additional_models, ..
     } = &mut config.catalog
@@ -2108,7 +2218,8 @@ async fn overlay_replaces_inventory_manual_wins_and_prices_join_only_local_exact
     assert!(empty.is_empty());
     let mut fresh = provider("http://127.0.0.1:1", ProtocolKind::DeepSeek);
     fresh.set_model_catalog_overlay(empty).unwrap();
-    assert!(fresh.effective_models(None).unwrap().is_empty());
+    assert!(!fresh.effective_catalog(None).unwrap().is_empty());
+    assert!(fresh.selectable_catalog(None).unwrap().is_empty());
 }
 
 #[tokio::test]
@@ -2513,7 +2624,12 @@ async fn discovery_profile_validity_is_independent_of_connection_mode_order() {
         .set_model_connection_mode("profile-order", pl_model::protocol::ConnectionMode::Http)
         .unwrap();
     assert_eq!(
-        config.effective_models(None).unwrap()[0]
+        config
+            .effective_models(None)
+            .unwrap()
+            .into_iter()
+            .find(|model| model.model_id == "profile-order")
+            .unwrap()
             .binding
             .transport
             .default_connection_mode,
@@ -2546,7 +2662,14 @@ async fn discovery_profile_validity_is_independent_of_connection_mode_order() {
     let inherited = updated(query.execute(Some(&cache)).await.unwrap());
     assert_eq!(inherited[0].binding.transport, model.binding.transport);
     config.set_model_catalog_overlay(inherited.clone()).unwrap();
-    let descriptor = model_descriptor(&config.effective_catalog(None).unwrap()[0]);
+    let descriptor = model_descriptor(
+        &config
+            .effective_catalog(None)
+            .unwrap()
+            .into_iter()
+            .find(|entry| entry.model.model_id == model.model_id)
+            .unwrap(),
+    );
     assert_eq!(descriptor.transport.connection_modes.len(), 1);
     assert_eq!(descriptor.transport.connection_modes[0].id, "web_socket");
     for modes in [
@@ -2566,7 +2689,16 @@ async fn discovery_profile_validity_is_independent_of_connection_mode_order() {
             ModelCatalogQueryError::Protocol
         );
     }
-    assert_eq!(config.effective_models(None).unwrap(), inherited);
+    assert_eq!(
+        config
+            .effective_catalog(None)
+            .unwrap()
+            .into_iter()
+            .filter(|entry| entry.origin == pl_model::config::AccountModelOrigin::Online)
+            .map(|entry| entry.model)
+            .collect::<Vec<_>>(),
+        inherited
+    );
     let requests = server.finish().await;
     assert_eq!(requests.len(), 3);
     assert!(

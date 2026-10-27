@@ -54,9 +54,21 @@ impl AgentWorktreeCleanup {
 }
 
 pub(crate) fn state_error(error: &anyhow::Error) -> pl_protocol::StateError {
+    // The original typed transport error remains the internal cause. Serializing its entire
+    // source chain would bypass the worktree boundary's safe SSH/Git diagnostic vocabulary.
+    let message = match error
+        .chain()
+        .find_map(|cause| cause.downcast_ref::<crate::agent::worktree::WorktreeError>())
+    {
+        Some(worktree @ crate::agent::worktree::WorktreeError::InvalidResource(_)) => {
+            worktree.to_string()
+        }
+        Some(worktree) => worktree.safe_diagnostic(),
+        None => format!("{error:#}"),
+    };
     pl_protocol::StateError {
         code: "agentCloseIncomplete".into(),
-        message: format!("{error:#}"),
+        message: message.chars().take(2048).collect(),
         retryable: true,
     }
 }

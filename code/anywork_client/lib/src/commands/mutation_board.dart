@@ -18,6 +18,14 @@ enum OperationPhase {
   syncFailed,
 }
 
+/// A local owner's concrete lifetime, independent of wire epoch spelling.
+/// The owner supplies this immutable qualification at operation admission.
+abstract interface class OperationObservationOwner {
+  /// Retirement is permanent for this admitted lifetime; matching wire epoch
+  /// text in a replacement lifetime must not make this true again.
+  bool get isCurrent;
+}
+
 final class CommitReceipt {
   CommitReceipt({
     required this.operationId,
@@ -96,7 +104,11 @@ final class MutationBoard {
   final Map<String, ObservationStamp> _observed = {};
   int _sequence = 0;
 
-  OperationHandle begin({required String target, DraftStamp? draft}) {
+  OperationHandle begin({
+    required String target,
+    DraftStamp? draft,
+    OperationObservationOwner? observationOwner,
+  }) {
     final id = OperationId('$clientId:${++_sequence}');
     final permit = budget.acquire(
       ResourceKind.pendingOperation,
@@ -106,6 +118,7 @@ final class MutationBoard {
       this,
       OperationState(id: id, target: target, draft: draft),
       permit,
+      observationOwner,
     );
     _operations[id] = operation;
     _latest[target] = id;
@@ -164,11 +177,16 @@ final class MutationBoard {
 }
 
 final class OperationHandle {
-  OperationHandle._(this._board, OperationState initial, this._permit)
-    : state = LatestValue(initial);
+  OperationHandle._(
+    this._board,
+    OperationState initial,
+    this._permit,
+    this._observationOwner,
+  ) : state = LatestValue(initial);
 
   final MutationBoard _board;
   final ResourcePermit _permit;
+  final OperationObservationOwner? _observationOwner;
   final LatestValue<OperationState> state;
   OperationId get id => state.value.id;
 
@@ -180,15 +198,18 @@ final class OperationHandle {
     if (current.failurePhase == OperationPhase.rejected) {
       throw StateError('A rejected operation cannot subsequently be accepted');
     }
+    final canObserve = _observationOwner?.isCurrent ?? true;
     _publish(
       OperationState(
         id: id,
         target: current.target,
         draft: current.draft,
         receipt: receipt,
-        observed: _board._covers(receipt),
+        observed: current.observed || canObserve && _board._covers(receipt),
         effective: current.effective || receipt.effective,
         durable: current.durable || receipt.durable,
+        failurePhase: canObserve ? null : current.failurePhase,
+        error: canObserve ? null : current.error,
       ),
     );
   }
@@ -196,7 +217,11 @@ final class OperationHandle {
   void _mergeObservation() {
     final current = state.value;
     final receipt = current.receipt;
-    if (receipt == null || current.observed || !_board._covers(receipt)) return;
+    if (receipt == null ||
+        current.observed ||
+        !(_observationOwner?.isCurrent ?? true) ||
+        !_board._covers(receipt))
+      return;
     _publish(
       OperationState(
         id: id,
@@ -206,6 +231,8 @@ final class OperationHandle {
         observed: true,
         effective: current.effective,
         durable: current.durable,
+        failurePhase: current.failurePhase,
+        error: current.error,
       ),
     );
   }
@@ -220,6 +247,7 @@ final class OperationHandle {
     if (current.receipt?.requiresIdentityObservation != true) {
       throw StateError('Only an identity receipt can be explicitly observed');
     }
+    if (!(_observationOwner?.isCurrent ?? true)) return;
     if (current.observed) return;
     _publish(
       OperationState(

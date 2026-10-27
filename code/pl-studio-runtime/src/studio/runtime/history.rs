@@ -1,8 +1,7 @@
 //! Direct SQL history queries; execution owners are never activated for historical pages.
 //!
-//! 冷历史读取复用 `history.rs` 的只读句柄：它只读打开一个**已存在**的 history 数据库，
-//! 不创建目录/数据库、不执行 schema 变更；缺失的库以空 Turn 页回答，损坏或身份不符的库
-//! 直接失败闭锁。只有显式激活/写入才会由历史 writer 建库。
+//! 无句柄的独立轮次入口先显式准备已有 SQLite 内容，再通过只读查询核对 checkpoint 栅栏。
+//! 不推进模型或执行身份准备，不装配 owner；缺失库不创建，损坏或身份不符直接失败。
 
 use anyhow::Result;
 
@@ -15,9 +14,7 @@ impl StudioRuntime {
         cursor: Option<&str>,
         limit: usize,
     ) -> Result<pl_protocol::ThreadTurnPage> {
-        self.read_owned_thread(thread_id).await?;
-        // Reading a Turn page is a projection, not a preparation step.
-        self.read_timeline_history(thread_id)
+        self.prepare_timeline_history(thread_id)
             .await?
             .turn_page(cursor, limit)
             .await

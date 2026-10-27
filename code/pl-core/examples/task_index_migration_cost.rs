@@ -61,10 +61,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     drop(store);
     let url = format!("sqlite://{}?mode=rw", options.path.display());
     let db = Database::connect(url.clone()).await?;
-    db.execute_unprepared("DROP TABLE thread_tool_task_resources; DROP TABLE thread_tool_tasks; PRAGMA user_version=11").await?;
+    db.execute_unprepared("DROP TABLE thread_tool_task_resources; DROP TABLE thread_tool_tasks; DROP TABLE IF EXISTS seaql_migrations; PRAGMA user_version=11").await?;
     db.close().await?;
     let start = Instant::now();
-    migration::migrate_to_current(options.clone(), |_| Ok(())).await?;
+    migration::migrate_to_current(options.clone()).await?;
     let migration_ms = start.elapsed().as_secs_f64() * 1000.0;
     let db = Database::connect(url).await?;
     let plan = db

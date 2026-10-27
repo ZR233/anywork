@@ -249,7 +249,7 @@ impl StudioThreadFactory {
                 .await
                 .map_err(|error| resource_error("open Mode recovery writer", error))?;
             *checkpoint = history
-                .migrate_recovery_checkpoint(checkpoint, |state| {
+                .prepare_execution_identity(|state| {
                     crate::mode::migrate_mode_snapshot(state, &self.services.thread_modes)?;
                     // A root's saved Mode identity is required evidence: without it neither the
                     // Mode nor the legacy Agent role can be attributed, so the original
@@ -345,33 +345,34 @@ impl StudioThreadFactory {
         // 会话工作区只能由 canonical workspace_mode 与 durable lease 解析；
         // `worktree` 缺失、身份不符或已清理都显式失败，绝不回落到主工作区。
         let workspace_mode = thread.workspace_mode;
-        let workspace_root_id = thread.root_thread_id.clone();
         let project_copy = project.clone();
         let bot_root = bot
             .as_ref()
             .map(|_| std::path::PathBuf::from(&project.path));
-        let worktrees = self.services.worktrees.clone();
-        let (root, canonical_project_root) = tokio::task::spawn_blocking(move || {
+        let local_root = bot_root
+            .clone()
+            .unwrap_or_else(|| std::path::PathBuf::from(&thread.workspace_path));
+        let canonical_project_root = tokio::task::spawn_blocking(move || {
             let project_root = match bot_root {
                 Some(root) => root,
                 None => crate::studio::agent_host::workspace_preparation::resolved_project_root(
                     &project_copy,
                 )?,
             };
-            let session_root =
-                crate::studio::agent_host::workspace_preparation::root_session_workspace_root(
-                    &worktrees,
-                    workspace_mode,
-                    &workspace_root_id,
-                    project_root.clone(),
-                )?;
-            Ok::<_, crate::PureError>((session_root, project_root))
+            Ok::<_, anyhow::Error>(project_root)
         })
         .await?
-        .map_err(|error| ThreadAssemblyError::Workspace {
-            thread_id: id.to_owned(),
-            reason: error.to_string(),
-        })?;
+        .map_err(|error| resource_error("resolve root workspace", error))?;
+        let root = crate::studio::agent_host::workspace_preparation::root_session_workspace_root(
+            &self.services.store,
+            &self.services.worktrees,
+            &self.services.ssh_manager,
+            &thread,
+            &project,
+            local_root,
+        )
+        .await
+        .map_err(|error| resource_error("resolve root workspace", error))?;
         let workspace = ToolWorkspace::new(match workspace_mode {
             pl_protocol::ThreadWorkspaceMode::Local => AgentWorkspace::local(&root),
             pl_protocol::ThreadWorkspaceMode::Worktree => {

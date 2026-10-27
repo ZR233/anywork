@@ -16,10 +16,12 @@ use sea_orm::{
     Statement, TransactionOptions, TransactionTrait, Value,
 };
 
-const HISTORY_SCHEMA_VERSION: i64 = 8;
+const HISTORY_SCHEMA_VERSION: i64 = 9;
 
 mod checkpoint;
 mod parent_report;
+mod producer;
+mod schema;
 /// 单页返回的总 payload 字节预算；达到预算即停止装入更多条目。
 const PAGE_BYTE_BUDGET: usize = 2 * 1024 * 1024;
 /// 单条预览预算必须小于整页预算，否则一条预览都无法落入一页。
@@ -270,6 +272,10 @@ impl HistoryStore {
     /// that `connect(mode=rwc)` just created.
     async fn reader(&self) -> Result<Option<&HistoryConnection>> {
         if let Some(writer) = self.state.writer.get() {
+            ensure!(
+                writer.schema_version == HISTORY_SCHEMA_VERSION,
+                "history requires explicit storage preparation"
+            );
             return Ok(Some(writer));
         }
         // The first writer may have created the file with `connect(mode=rwc)` while its schema and
@@ -324,33 +330,62 @@ impl HistoryStore {
     /// released as soon as the connection is published, and every later call returns through the
     /// fast path above it.
     async fn writer(&self) -> Result<&HistoryConnection> {
+        self.open_writer(crate::studio::paths::SqliteFileMode::Create)
+            .await?
+            .context("history writer was not initialized")
+    }
+
+    async fn open_writer(
+        &self,
+        mode: crate::studio::paths::SqliteFileMode,
+    ) -> Result<Option<&HistoryConnection>> {
         if let Some(writer) = self.state.writer.get() {
-            return Ok(writer);
+            return Ok(Some(writer));
         }
         let _initializing = self.state.init.write().await;
-        self.state
-            .writer
-            .get_or_try_init(|| async {
-                let parent = self
-                    .state
-                    .path
-                    .parent()
-                    .context("history database path has no parent directory")?;
-                tokio::fs::create_dir_all(parent).await?;
-                let db = connect(&self.state.path).await?;
-                #[cfg(test)]
-                if let Some((entered, release)) = self.state.init_gate.lock().await.take() {
-                    let _ = entered.send(());
-                    let _ = release.await;
-                }
-                let database_id = initialize(&db, &self.state.thread_id).await?;
-                Ok::<HistoryConnection, anyhow::Error>(HistoryConnection {
-                    db,
-                    database_id,
-                    schema_version: HISTORY_SCHEMA_VERSION,
+        if matches!(mode, crate::studio::paths::SqliteFileMode::ReadWrite)
+            && !tokio::fs::try_exists(&self.state.path).await?
+        {
+            return Ok(None);
+        }
+        let writer =
+            self.state
+                .writer
+                .get_or_try_init(|| async {
+                    schema::inspect_existing(&self.state.path, &self.state.thread_id).await?;
+                    let parent = self
+                        .state
+                        .path
+                        .parent()
+                        .context("history database path has no parent directory")?;
+                    if matches!(mode, crate::studio::paths::SqliteFileMode::Create) {
+                        tokio::fs::create_dir_all(parent).await?;
+                    }
+                    let db = connect(&self.state.path, mode).await?;
+                    #[cfg(test)]
+                    if let Some((entered, release)) = self.state.init_gate.lock().await.take() {
+                        let _ = entered.send(());
+                        let _ = release.await;
+                    }
+                    let (database_id, schema_version) =
+                        match schema::initialize(&db, &self.state.thread_id).await {
+                            Ok(identity) => identity,
+                            Err(error) => {
+                                if let Err(cleanup) = db.close().await {
+                                    return Err(crate::studio::startup::cleanup_error(cleanup)
+                                        .context(error));
+                                }
+                                return Err(error);
+                            }
+                        };
+                    Ok::<HistoryConnection, anyhow::Error>(HistoryConnection {
+                        db,
+                        database_id,
+                        schema_version,
+                    })
                 })
-            })
-            .await
+                .await?;
+        Ok(Some(writer))
     }
 
     /// Atomically applies one immutable writer batch and advances its fixed waterline.
@@ -713,14 +748,17 @@ impl HistoryStore {
 
     /// Upgrades existing history before an active owner seeds its canonical projection.
     pub(crate) async fn prepare_activation(&self) -> Result<()> {
-        if self
-            .reader()
-            .await?
-            .is_some_and(|connection| connection.schema_version < HISTORY_SCHEMA_VERSION)
-        {
-            self.writer().await?;
-        }
+        // Envelope migrations evolve independently from the table format. Every existing
+        // activation lets the official migrator decide which named steps remain pending.
+        self.open_writer(crate::studio::paths::SqliteFileMode::ReadWrite)
+            .await?;
         Ok(())
+    }
+
+    /// Explicit content-access preparation. No TOML import, owner activation or identity recovery;
+    /// an absent history remains absent. Uses the same writer/init lock as owner activation.
+    pub(crate) async fn prepare_history_access(&self) -> Result<()> {
+        self.prepare_activation().await
     }
 
     /// Only a committed hidden disposition can discharge a pruned input without a timeline row.
@@ -734,13 +772,6 @@ impl HistoryStore {
         }
         let Some(connection) = self.reader().await? else {
             return Ok(Default::default());
-        };
-        // A cold v2 reader may page history without touching the database. An active projection
-        // needs the new proof column, so its owning writer upgrades that existing database first.
-        let connection = if connection.schema_version < HISTORY_SCHEMA_VERSION {
-            self.writer().await?
-        } else {
-            connection
         };
         let mut hidden = std::collections::BTreeSet::new();
         let ids = ids.into_iter().collect::<Vec<_>>();
@@ -790,13 +821,6 @@ impl HistoryStore {
         let Some(connection) = self.reader().await? else {
             return Ok(None);
         };
-        // 缺少索引表只意味着这条身份“未知”，不是存储故障：升级前写入的库还没有这张表，写者会在
-        // 下一次提交时补建它，冷读既不能失败也不能替它建表。是否真有这条历史由上层的旧历史探测
-        // 决定，从而让索引之前的消息 fail-closed 而不是被当成新消息重投。缺表之外的一切错误
-        // （IO、损坏库、schema 不可读）都必须原样上抛，绝不伪装成“没有这条身份”。
-        if !message_identity_index_exists(connection).await? {
-            return Ok(None);
-        }
         let row = connection
             .db
             .query_one_raw(statement(
@@ -1695,18 +1719,17 @@ async fn read_latest_turn_at(
     Ok(Some(history.turn))
 }
 
-async fn connect(path: &Path) -> Result<DatabaseConnection> {
-    let mut options = crate::studio::paths::sqlite_file_options(
-        path,
-        crate::studio::paths::SqliteFileMode::Create,
-        |options| {
-            options
-                .journal_mode(SqliteJournalMode::Wal)
-                .synchronous(SqliteSynchronous::Full)
-                .busy_timeout(Duration::from_secs(5))
-                .foreign_keys(true)
-        },
-    )
+async fn connect(
+    path: &Path,
+    mode: crate::studio::paths::SqliteFileMode,
+) -> Result<DatabaseConnection> {
+    let mut options = crate::studio::paths::sqlite_file_options(path, mode, |options| {
+        options
+            .journal_mode(SqliteJournalMode::Wal)
+            .synchronous(SqliteSynchronous::Full)
+            .busy_timeout(Duration::from_secs(5))
+            .foreign_keys(true)
+    })
     .await?;
     options
         .max_connections(1)
@@ -1815,8 +1838,8 @@ async fn validate_existing(db: &impl ConnectionTrait, thread_id: &str) -> Result
     let row = row.context("history database identity row is missing")?;
     let version: i64 = row.try_get("", "schema_version")?;
     ensure!(
-        (2..=HISTORY_SCHEMA_VERSION).contains(&version),
-        "unsupported history schema {version}; existing data preserved"
+        version == HISTORY_SCHEMA_VERSION,
+        "history schema {version} requires explicit storage preparation or is unsupported; existing data preserved"
     );
     let owner: String = row.try_get("", "thread_id")?;
     ensure!(
@@ -1828,6 +1851,7 @@ async fn validate_existing(db: &impl ConnectionTrait, thread_id: &str) -> Result
         !database_id.is_empty(),
         "history database identity is empty"
     );
+    schema::validate_current(db, thread_id).await?;
     Ok((database_id, version))
 }
 
@@ -2177,525 +2201,6 @@ async fn query_chat_ids(
 }
 
 /// Creates or validates the schema and returns the owning database identity.
-async fn initialize(db: &DatabaseConnection, thread_id: &str) -> Result<String> {
-    // Refuse future layouts before performing even additive schema writes.
-    if db
-        .query_one_raw(statement(
-            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='history_meta'",
-            vec![],
-        ))
-        .await?
-        .is_some()
-        && let Some(row) = db
-            .query_one_raw(statement(
-                "SELECT schema_version,thread_id FROM history_meta WHERE id=1",
-                vec![],
-            ))
-            .await?
-    {
-        let version: i64 = row.try_get("", "schema_version")?;
-        ensure!(
-            (1..=HISTORY_SCHEMA_VERSION).contains(&version),
-            "unsupported history schema {version}; existing data preserved"
-        );
-        ensure!(
-            row.try_get::<String>("", "thread_id")? == thread_id,
-            "history database belongs to another Thread"
-        );
-    }
-    db.execute_unprepared(
-        "CREATE TABLE IF NOT EXISTS history_meta (
-            id INTEGER PRIMARY KEY CHECK (id = 1),
-            schema_version INTEGER NOT NULL,
-            database_id TEXT NOT NULL,
-            thread_id TEXT NOT NULL,
-            applied_write_seq INTEGER NOT NULL
-        );
-        CREATE TABLE IF NOT EXISTS history_items (
-            ordinal INTEGER PRIMARY KEY,
-            item_id TEXT NOT NULL UNIQUE,
-            turn_id TEXT NOT NULL,
-            kind TEXT NOT NULL,
-            revision INTEGER NOT NULL,
-            lifecycle TEXT NOT NULL,
-            created_at INTEGER NOT NULL,
-            updated_at INTEGER NOT NULL,
-            payload TEXT NOT NULL CHECK (json_valid(payload)),
-            last_write_seq INTEGER NOT NULL
-        );
-        CREATE INDEX IF NOT EXISTS history_items_by_turn
-            ON history_items(turn_id, ordinal);
-        -- 最新终态按 ordinal 排序；缺口恢复另按原始 write_seq 范围读取。
-        CREATE INDEX IF NOT EXISTS history_items_by_kind_lifecycle
-            ON history_items(kind, lifecycle, ordinal);
-        CREATE INDEX IF NOT EXISTS history_terminal_turns_by_write_seq
-            ON history_items(last_write_seq,ordinal) WHERE kind='turn' AND lifecycle='terminal';
-        -- `agent_page` 的 text-only 稀疏过滤同样带 ordinal 方向，单独一条 (kind, ordinal) 索引
-        -- 才能同时满足过滤与排序。
-        CREATE INDEX IF NOT EXISTS history_items_by_kind
-            ON history_items(kind, ordinal);
-        CREATE TABLE IF NOT EXISTS history_turns (
-            turn_id TEXT PRIMARY KEY,
-            first_ordinal INTEGER NOT NULL,
-            last_ordinal INTEGER NOT NULL,
-            revision INTEGER NOT NULL,
-            payload TEXT NOT NULL CHECK (json_valid(payload)),
-            last_write_seq INTEGER NOT NULL
-        );
-        -- Turn 页是 `last_ordinal` 上的 keyset 倒序扫描；没有这条索引时深翻页会退化成全表
-        -- 扫描 + 排序。
-        CREATE INDEX IF NOT EXISTS history_turns_by_last_ordinal
-            ON history_turns(last_ordinal);
-        CREATE TABLE IF NOT EXISTS history_input_identities (
-            item_id TEXT PRIMARY KEY,
-            ordinal INTEGER NOT NULL,
-            revision INTEGER NOT NULL,
-            digest TEXT NOT NULL,
-            request_digest TEXT,
-            presentation TEXT CHECK (presentation IN ('visible','hidden')),
-            payload TEXT NOT NULL CHECK (json_valid(payload)),
-            last_write_seq INTEGER NOT NULL
-        );
-        CREATE TABLE IF NOT EXISTS history_fact_receipts (
-            item_id TEXT NOT NULL,
-            revision INTEGER NOT NULL,
-            kind TEXT NOT NULL,
-            digest TEXT NOT NULL,
-            payload TEXT NOT NULL CHECK (json_valid(payload)),
-            last_write_seq INTEGER NOT NULL,
-            PRIMARY KEY(item_id, revision)
-        );
-        -- 已受理消息的最小身份索引：原始消息 id、时间线条目身份、受理序号与正文摘要。
-        -- `digest` 可空，只用于迁移回填留下的“身份已知、正文不可验证”行（读取方 fail-closed）。
-        CREATE TABLE IF NOT EXISTS history_message_identities (
-            message_id TEXT PRIMARY KEY,
-            item_id TEXT NOT NULL,
-            sequence INTEGER NOT NULL,
-            digest TEXT,
-            last_write_seq INTEGER NOT NULL
-        );
-        CREATE TABLE IF NOT EXISTS session_checkpoint (
-            id INTEGER PRIMARY KEY CHECK(id=1),
-            revision INTEGER NOT NULL,
-            context_revision INTEGER NOT NULL,
-            context_count INTEGER NOT NULL,
-            payload TEXT NOT NULL,
-            payload_hash TEXT NOT NULL,
-            legacy_cleanup INTEGER NOT NULL DEFAULT 0
-        );
-        CREATE TABLE IF NOT EXISTS session_costs (
-            purpose TEXT NOT NULL,
-            currency TEXT NOT NULL,
-            amount REAL NOT NULL,
-            PRIMARY KEY(purpose,currency)
-        );
-        CREATE TABLE IF NOT EXISTS current_context (
-            ordinal INTEGER PRIMARY KEY,
-            record_id TEXT NOT NULL UNIQUE,
-            payload TEXT NOT NULL,
-            payload_hash TEXT NOT NULL
-        );
-        CREATE TABLE IF NOT EXISTS history_tool_tasks (
-            call_id TEXT PRIMARY KEY,
-            revision INTEGER NOT NULL,
-            task_payload TEXT NOT NULL CHECK (json_valid(task_payload)),
-            delivery_payload TEXT CHECK (delivery_payload IS NULL OR json_valid(delivery_payload)),
-            last_write_seq INTEGER NOT NULL
-        );",
-    )
-    .await?;
-    // 幂等身份索引的 host 提交摘要列是加法扩展：已存在的索引保留原行，只补上可空的列。
-    if let Err(error) = db
-        .execute_unprepared("ALTER TABLE history_input_identities ADD COLUMN request_digest TEXT")
-        .await
-    {
-        ensure!(
-            error.to_string().contains("duplicate column name"),
-            "history identity index cannot add its request digest column: {error}"
-        );
-    }
-    let row = db
-        .query_one_raw(statement(
-            "SELECT schema_version,database_id,thread_id FROM history_meta WHERE id=1",
-            vec![],
-        ))
-        .await?;
-    match row {
-        Some(row) => {
-            let version: i64 = row.try_get("", "schema_version")?;
-            ensure!(
-                (1..=HISTORY_SCHEMA_VERSION).contains(&version),
-                "unsupported history schema {version}; existing data preserved"
-            );
-            let owner: String = row.try_get("", "thread_id")?;
-            ensure!(
-                owner == thread_id,
-                "history database belongs to another Thread"
-            );
-            let database_id: String = row.try_get("", "database_id")?;
-            ensure!(
-                !database_id.is_empty(),
-                "history database identity is empty"
-            );
-            if version < HISTORY_SCHEMA_VERSION {
-                let tx = begin_write(db).await?;
-                if version < 3 {
-                    if let Err(error) = tx
-                        .execute_unprepared(
-                            "ALTER TABLE history_input_identities ADD COLUMN presentation TEXT \
-                         CHECK (presentation IN ('visible','hidden'))",
-                        )
-                        .await
-                    {
-                        ensure!(
-                            error.to_string().contains("duplicate column name"),
-                            "history identity index cannot add presentation: {error}"
-                        );
-                    }
-                    backfill_legacy_hidden_inputs(&tx).await?;
-                }
-                if version < 4 {
-                    migrate_unconsumed_input_bindings(&tx).await?;
-                }
-                if version < 6 {
-                    migrate_context_sources(&tx, thread_id).await?;
-                }
-                // schema 8 起，工具条目自带由 canonical 交互派生的 typed 问答历史：普通问答与
-                // plan_submit 的计划确认共用同一结构。更早的库只能从 durable 交互回执原位补齐，
-                // 同一函数覆盖两个产品格式，因此 v6 与 v7 库都在这里推进到最新结构。
-                if version < 8 {
-                    backfill_tool_user_input(&tx, thread_id).await?;
-                }
-                tx.execute_raw(statement(
-                    "UPDATE history_meta SET schema_version=? WHERE id=1 AND schema_version=?",
-                    vec![HISTORY_SCHEMA_VERSION.into(), version.into()],
-                ))
-                .await?;
-                tx.commit().await?;
-            }
-            Ok(database_id)
-        }
-        None => {
-            let database_id = crate::studio::new_id("history-db");
-            db.execute_raw(statement(
-                "INSERT INTO history_meta(
-                    id,schema_version,database_id,thread_id,applied_write_seq
-                 ) VALUES(1,?,?,?,0)",
-                vec![
-                    HISTORY_SCHEMA_VERSION.into(),
-                    database_id.clone().into(),
-                    thread_id.to_owned().into(),
-                ],
-            ))
-            .await?;
-            Ok(database_id)
-        }
-    }
-}
-
-/// Converts current context and its envelope atomically; history bodies remain byte-identical.
-async fn migrate_context_sources(tx: &impl ConnectionTrait, thread_id: &str) -> Result<()> {
-    use pl_core::{context::content_hash, thread::ThreadCheckpoint};
-    let Some(row) = tx
-        .query_one_raw(statement(
-            "SELECT payload,payload_hash FROM session_checkpoint WHERE id=1",
-            vec![],
-        ))
-        .await?
-    else {
-        return Ok(());
-    };
-    let payload: String = row.try_get("", "payload")?;
-    ensure!(
-        content_hash(payload.as_bytes()) == row.try_get::<String>("", "payload_hash")?,
-        "checkpoint migration hash mismatch"
-    );
-    let mut root: serde_json::Value = serde_json::from_str(&payload)?;
-    let rows = tx
-        .query_all_raw(statement(
-            "SELECT ordinal,record_id,payload,payload_hash FROM current_context ORDER BY ordinal",
-            vec![],
-        ))
-        .await?;
-    let mut records = Vec::new();
-    for (index, row) in rows.iter().enumerate() {
-        ensure!(
-            row.try_get::<i64>("", "ordinal")? == i64::try_from(index)?,
-            "context migration ordinal mismatch"
-        );
-        let bytes: String = row.try_get("", "payload")?;
-        ensure!(
-            content_hash(bytes.as_bytes()) == row.try_get::<String>("", "payload_hash")?,
-            "context migration hash mismatch"
-        );
-        let record: pl_core::context::ContextRecord = serde_json::from_str(&bytes)?;
-        ensure!(
-            record.id == row.try_get::<String>("", "record_id")?,
-            "context migration identity mismatch"
-        );
-        records.push(record);
-    }
-    root["state"]["context"]["records"] = serde_json::to_value(&records)?;
-    let mut checkpoint: ThreadCheckpoint =
-        if root["schemaVersion"].as_u64() == Some(u64::from(ThreadCheckpoint::SCHEMA_VERSION)) {
-            serde_json::from_value(root)?
-        } else {
-            ThreadCheckpoint::decode_legacy(&serde_json::to_string(&root)?)?
-        };
-    ensure!(
-        checkpoint.thread_id == thread_id
-            && checkpoint.state_revision == checkpoint.state.commit_sequence,
-        "checkpoint migration ownership mismatch"
-    );
-    crate::compaction::migrate_checkpoint_sources(&mut checkpoint)?;
-    for (index, record) in checkpoint.state.context.records.iter().enumerate() {
-        let encoded = serde_json::to_string(record)?;
-        tx.execute_raw(statement(
-            "UPDATE current_context SET payload=?,payload_hash=? WHERE ordinal=? AND record_id=?",
-            vec![
-                encoded.clone().into(),
-                content_hash(encoded.as_bytes()).into(),
-                i64::try_from(index)?.into(),
-                record.id.clone().into(),
-            ],
-        ))
-        .await?;
-    }
-    checkpoint.state.context.records = Default::default();
-    let encoded = serde_json::to_string(&checkpoint)?;
-    tx.execute_raw(statement(
-        "UPDATE session_checkpoint SET payload=?,payload_hash=? WHERE id=1",
-        vec![
-            encoded.clone().into(),
-            content_hash(encoded.as_bytes()).into(),
-        ],
-    ))
-    .await?;
-    Ok(())
-}
-
-/// The old projection inferred input bindings from running Turns before model admission. A Turn
-/// naming the input proves its identity; absence from the transactionally maintained terminal
-/// ledger proves it was not consumed or discarded at this durable watermark.
-async fn migrate_unconsumed_input_bindings(db: &impl ConnectionTrait) -> Result<()> {
-    let mut cursor = 0_i64;
-    loop {
-        let rows = db
-            .query_all_raw(statement(
-                "SELECT i.ordinal,i.payload,t.payload AS turn_payload FROM history_items i
-             JOIN history_items t ON t.turn_id=i.turn_id AND t.kind='turn'
-             LEFT JOIN history_input_identities identity ON identity.item_id=i.item_id
-             WHERE i.ordinal>? AND i.turn_id!='' AND i.kind!='turn' AND identity.item_id IS NULL
-             ORDER BY i.ordinal LIMIT 400",
-                vec![cursor.into()],
-            ))
-            .await?;
-        if rows.is_empty() {
-            break;
-        }
-        for row in rows {
-            cursor = row.try_get("", "ordinal")?;
-            let mut item: ThreadItem =
-                serde_json::from_str(&row.try_get::<String>("", "payload")?)?;
-            let turn_item: ThreadItem =
-                serde_json::from_str(&row.try_get::<String>("", "turn_payload")?)?;
-            let ThreadItemState::Turn(turn) = turn_item.state() else {
-                continue;
-            };
-            if turn.input_id() != Some(item.id.as_str()) {
-                continue;
-            }
-            let old_turn = std::mem::take(&mut item.turn_id);
-            item.revision = item
-                .revision
-                .checked_add(1)
-                .context("migrated input revision overflow")?;
-            db.execute_raw(statement(
-                "UPDATE history_items SET turn_id='',revision=?,payload=? WHERE item_id=?",
-                vec![
-                    integer(item.revision)?.into(),
-                    serde_json::to_string(&item)?.into(),
-                    item.id.into(),
-                ],
-            ))
-            .await?;
-            db.execute_raw(statement(
-                "UPDATE history_turns SET first_ordinal=(SELECT MIN(ordinal) FROM history_items WHERE turn_id=?) WHERE turn_id=?",
-                vec![old_turn.clone().into(), old_turn.into()],
-            )).await?;
-        }
-    }
-    Ok(())
-}
-
-/// Legacy v2 rows have no presentation. Only a resolved interaction receipt that names the
-/// continuation and records a hidden product option proves why its timeline row is absent.
-async fn backfill_legacy_hidden_inputs(db: &impl ConnectionTrait) -> Result<()> {
-    use pl_core::thread::interactions::{InteractionRecord, InteractionState};
-    let mut cursor = 0_i64;
-    loop {
-        let rows = db
-            .query_all_raw(statement(
-                "SELECT rowid,payload FROM history_fact_receipts \
-             WHERE kind='interaction' AND rowid>? ORDER BY rowid LIMIT 100",
-                vec![cursor.into()],
-            ))
-            .await?;
-        if rows.is_empty() {
-            break;
-        }
-        for row in rows {
-            cursor = row.try_get("", "rowid")?;
-            let record: InteractionRecord =
-                serde_json::from_str(&row.try_get::<String>("", "payload")?)
-                    .context("legacy interaction receipt cannot be decoded")?;
-            let Some(id) = record.continuation_id.as_deref() else {
-                continue;
-            };
-            ensure!(
-                id == format!("interaction:{}:continuation", record.request.id),
-                "legacy interaction continuation identity conflicts with its receipt"
-            );
-            if !matches!(record.state, InteractionState::Resolved(_))
-                || record.request.payload.version() != 1
-            {
-                continue;
-            }
-            let hidden = match record.request.payload.format() {
-                "pl.tool.user-input" => true,
-                crate::plan_tool::PLAN_CONFIRMATION_FORMAT => {
-                    let prompt: crate::plan_tool::PlanConfirmationPrompt =
-                        serde_json::from_str(record.request.payload.content())
-                            .context("legacy Plan confirmation cannot be decoded")?;
-                    prompt.presentation == pl_protocol::MessagePresentation::Hidden
-                }
-                _ => false,
-            };
-            if !hidden {
-                continue;
-            }
-            let identity = db
-                .query_one_raw(statement(
-                    "SELECT presentation FROM history_input_identities WHERE item_id=?",
-                    vec![id.to_owned().into()],
-                ))
-                .await?;
-            let Some(identity) = identity else {
-                continue;
-            };
-            let presentation: Option<String> = identity.try_get("", "presentation")?;
-            ensure!(
-                presentation
-                    .as_deref()
-                    .is_none_or(|value| value == "hidden"),
-                "legacy hidden continuation conflicts with its input identity"
-            );
-            ensure!(
-                db.query_one_raw(statement(
-                    "SELECT item_id FROM history_items WHERE item_id=?",
-                    vec![id.to_owned().into()],
-                ))
-                .await?
-                .is_none(),
-                "legacy hidden continuation has a visible timeline item"
-            );
-            db.execute_raw(statement(
-                "UPDATE history_input_identities SET presentation='hidden' WHERE item_id=?",
-                vec![id.to_owned().into()],
-            ))
-            .await?;
-        }
-    }
-    Ok(())
-}
-
-/// Attaches the accepted user-input history to the tool item that raised it in already-written
-/// history.
-///
-/// A version-7 or older database stored the questions and the answer only in the interaction fact,
-/// because the timeline row was written before the tool item carried a typed projection. That covers
-/// the ordinary question tool and the Plan confirmation a `plan_submit` call raises: both are the
-/// same canonical interaction fact on the call's own item. The receipts are the durable evidence of
-/// that fact, so the migration re-derives the projection from them and updates the calling item **in
-/// place**: the row keeps its `item_id`, ordinal, Turn binding, creation time, content revision and
-/// body, and only gains the typed history. Nothing is replayed, no tool runs again, no model context
-/// changes and the private answer receipt is never rewritten, so an already resolved question or
-/// Plan decision cannot be answered twice, lose an answer or be re-derived from the current Plan. A
-/// repeated open re-reads a database that already carries the projection and changes nothing.
-async fn backfill_tool_user_input(db: &impl ConnectionTrait, thread_id: &str) -> Result<()> {
-    use crate::studio::thread_projection::{
-        attach_tool_user_input, order, project_tool_user_input,
-    };
-    use pl_core::thread::interactions::InteractionRecord;
-
-    let mut cursor = 0_i64;
-    loop {
-        let rows = db
-            .query_all_raw(statement(
-                "SELECT rowid,item_id,payload FROM history_fact_receipts \
-             WHERE kind='interaction' AND rowid>? ORDER BY rowid LIMIT 100",
-                vec![cursor.into()],
-            ))
-            .await?;
-        if rows.is_empty() {
-            break;
-        }
-        for row in rows {
-            cursor = row.try_get("", "rowid")?;
-            let record: InteractionRecord =
-                serde_json::from_str(&row.try_get::<String>("", "payload")?)
-                    .context("legacy interaction receipt cannot be decoded")?;
-            let receipt: String = row.try_get("", "item_id")?;
-            ensure!(
-                receipt == order::receipt_id("interaction", &record.request.id),
-                "legacy interaction receipt identity conflicts with its payload"
-            );
-            let Some(user_input) = project_tool_user_input(thread_id, &record)? else {
-                continue;
-            };
-            // Receipts are appended per revision, so an identity's newest row is applied last and
-            // wins: the settled answer supersedes the pending projection, never the other way round.
-            let call_id =
-                pl_core::tool::opaque::interaction_tool_call_id(user_input.interaction_id())
-                    .context("user-input interaction names no tool call")?;
-            let tool_id = order::tool_id(call_id);
-            let row = db
-                .query_one_raw(statement(
-                    "SELECT revision,payload FROM history_items WHERE item_id=?",
-                    vec![tool_id.clone().into()],
-                ))
-                .await?
-                .with_context(|| {
-                    format!("user-input history `{tool_id}` has no durable tool item")
-                })?;
-            let stored_revision: i64 = row.try_get("", "revision")?;
-            let mut item: ThreadItem = serde_json::from_str(&row.try_get::<String>("", "payload")?)
-                .with_context(|| format!("tool item `{tool_id}` cannot be decoded"))?;
-            if item.tool().and_then(|tool| tool.user_input()) == Some(&user_input) {
-                continue;
-            }
-            attach_tool_user_input(&mut item, user_input)?;
-            // 迁移只原位改载荷，不推进内容版本：schema 升级在读基线之前完成，下一次内容变化仍由
-            // 既有版本机制推进一次。迁移自己推进 revision 会让紧接的提交撞上同一版本的不同载荷，
-            // 或把真实内容版本挤到迁移伪造的版本域之下。
-            ensure!(
-                integer(item.revision)? == stored_revision,
-                "tool item `{tool_id}` row and payload versions disagree"
-            );
-            db.execute_raw(statement(
-                "UPDATE history_items SET payload=? WHERE item_id=? AND revision=?",
-                vec![
-                    serde_json::to_string(&item)?.into(),
-                    item.id.clone().into(),
-                    stored_revision.into(),
-                ],
-            ))
-            .await?;
-        }
-    }
-    Ok(())
-}
-
 fn statement(sql: &str, values: Vec<Value>) -> Statement {
     Statement::from_sql_and_values(DatabaseBackend::Sqlite, sql, values)
 }
@@ -2800,24 +2305,6 @@ fn presentation_label(presentation: pl_protocol::MessagePresentation) -> &'stati
         pl_protocol::MessagePresentation::Visible => "visible",
         pl_protocol::MessagePresentation::Hidden => "hidden",
     }
-}
-
-/// Reports whether one history database already carries the durable message identity index.
-///
-/// A database written before that index existed has no such table until the writer creates it on its
-/// next commit, so a cold read must report "this identity is unknown" instead of failing (and must
-/// never create the table itself). Reading the catalog is a plain read; any failure of it is a real
-/// storage failure the caller must surface rather than swallow.
-async fn message_identity_index_exists(connection: &HistoryConnection) -> Result<bool> {
-    Ok(connection
-        .db
-        .query_one_raw(statement(
-            "SELECT name FROM sqlite_master
-             WHERE type='table' AND name='history_message_identities'",
-            vec![],
-        ))
-        .await?
-        .is_some())
 }
 
 /// Records the minimal durable identity of one message this effect admitted.
@@ -2985,6 +2472,306 @@ mod storage_fault_tests {
     use super::*;
     use crate::studio::thread_projection::order;
 
+    /// Content preparation is the only upgrade boundary for cold reads. The real SQLite failure
+    /// occurs after DROP but before the format update, exercising the official step transaction.
+    #[tokio::test]
+    async fn explicit_history_preparation_retires_ordinals_atomically() -> Result<()> {
+        use pl_core::{
+            context::ContextSnapshot,
+            thread::{ThreadCheckpoint, ThreadEffectBatch, ThreadSnapshot},
+        };
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("history.sqlite");
+        let thread = "retire-ordinals";
+        let store = HistoryStore::open(&path, thread).await?;
+        let mut item = ThreadItem::completed_user_message(
+            "input-1".into(),
+            thread.into(),
+            "".into(),
+            "preserved body".into(),
+            vec![],
+            17,
+        );
+        item.ordinal = 41;
+        item.revision = 3;
+        let checkpoint = ThreadCheckpoint::capture(
+            thread.into(),
+            1,
+            ThreadSnapshot {
+                commit_sequence: 1,
+                context: ContextSnapshot::default(),
+                ..Default::default()
+            },
+        );
+        let effect = ThreadEffectBatch {
+            thread_id: thread.into(),
+            sequence: 1,
+            ..Default::default()
+        };
+        store
+            .commit_checkpoint_effect(
+                &checkpoint,
+                &effect,
+                EffectCommit {
+                    items: std::slice::from_ref(&item),
+                    rolled_back_turns: &Default::default(),
+                    identities: &[],
+                    messages: &[MessageIdentityWrite {
+                        message_id: "input-1".into(),
+                        item_id: "input-1".into(),
+                        sequence: 1,
+                        digest: Some("accepted digest".into()),
+                    }],
+                    receipts: &[FactReceiptWrite {
+                        item_id: "receipt-1".into(),
+                        revision: 1,
+                        kind: "interaction",
+                        payload: "{}".into(),
+                    }],
+                    tasks: &[],
+                    deliveries: &[],
+                    delivery_repairs: &[],
+                    attempt: None,
+                },
+            )
+            .await?;
+        // Reproduce a v8 DB which already completed *all* published lifecycle steps. The new
+        // content step must still run without asking for a new execution-identity candidate.
+        store.prepare_execution_identity(|_| Ok(())).await?;
+        let expected = history_facts(&store.writer().await?.db).await?;
+        store.writer().await?.db.execute_unprepared(
+            "DELETE FROM seaql_migrations WHERE version='m20261027_000001_history_retire_ordinals';
+             UPDATE history_meta SET schema_version=8;
+             CREATE TABLE history_ordinals (next_ordinal INTEGER NOT NULL);
+             INSERT INTO history_ordinals VALUES(9000);
+             CREATE TRIGGER reject_retire BEFORE UPDATE OF schema_version ON history_meta
+             WHEN NEW.schema_version=9 BEGIN SELECT RAISE(ABORT,'injected retirement failure'); END;"
+        ).await?;
+        drop(store);
+        let history = HistoryStore::open(&path, thread).await?;
+        assert!(history.watermark().await.is_err());
+        assert!(history.checkpoint().await.is_err());
+        assert!(history.message_identity("input-1").await.is_err());
+        assert!(history.prepare_history_access().await.is_err());
+        let inspect = connect_read_only(&path).await?;
+        assert_eq!(schema::version(&inspect).await?, 8);
+        assert_eq!(history_facts(&inspect).await?, expected);
+        assert!(
+            sea_orm_migration::SchemaManager::new(&inspect)
+                .has_table("history_ordinals")
+                .await?
+        );
+        assert!(inspect.query_one_raw(statement(
+            "SELECT 1 FROM seaql_migrations WHERE version='m20261027_000001_history_retire_ordinals'", vec![]
+        )).await?.is_none());
+        inspect.close().await?;
+        let repair = connect(&path, crate::studio::paths::SqliteFileMode::ReadWrite).await?;
+        repair
+            .execute_unprepared("DROP TRIGGER reject_retire")
+            .await?;
+        repair.close().await?;
+
+        let (entered, release) = history.arm_init_gate().await;
+        let reading = async {
+            entered.await?;
+            let waiting = history.arm_reader_before_init().await;
+            let page = history.chat_page(None, 10);
+            tokio::pin!(page);
+            tokio::select! {
+                biased;
+                _ = &mut page => anyhow::bail!("cold reader completed before schema preparation"),
+                result = waiting => result?,
+            }
+            release
+                .send(())
+                .map_err(|_| anyhow::anyhow!("preparation gate dropped"))?;
+            page.await
+        };
+        // Both futures remain owned by this test, including cancellation and failure paths.
+        let (prepared, page) = tokio::time::timeout(Duration::from_secs(30), async {
+            tokio::join!(history.prepare_history_access(), reading)
+        })
+        .await?;
+        prepared?;
+        let page = page?;
+        assert_eq!(page.items.len(), 1);
+        assert_eq!(page.items[0].item_id, item.id);
+        assert_eq!(history_facts(&history.writer().await?.db).await?, expected);
+        assert_eq!(history.watermark().await?, 1);
+        assert_eq!(
+            history
+                .checkpoint()
+                .await?
+                .context("checkpoint")?
+                .history_fence,
+            1
+        );
+        assert!(
+            !sea_orm_migration::SchemaManager::new(&history.writer().await?.db)
+                .has_table("history_ordinals")
+                .await?
+        );
+        history.prepare_history_access().await?;
+        assert_eq!(history_facts(&history.writer().await?.db).await?, expected);
+        drop(history);
+        let cold = HistoryStore::open(&path, thread).await?;
+        assert_eq!(cold.chat_page(None, 10).await?.items.len(), 1);
+        assert_eq!(cold.latest_allocated_order().await?, 41);
+        assert!(
+            cold.state.writer.get().is_none(),
+            "cold page must remain read-only"
+        );
+        Ok(())
+    }
+
+    /// Capture raw authority bytes, revisions, ordering and receipts, not reserialized DTOs.
+    async fn history_facts(db: &impl ConnectionTrait) -> Result<Vec<String>> {
+        let mut facts = Vec::new();
+        for query in [
+            "SELECT json_array(database_id,thread_id,applied_write_seq) AS fact FROM history_meta ORDER BY id",
+            "SELECT json_array(ordinal,item_id,turn_id,kind,revision,lifecycle,created_at,updated_at,payload,last_write_seq) AS fact FROM history_items ORDER BY ordinal",
+            "SELECT json_array(turn_id,first_ordinal,last_ordinal,revision,payload,last_write_seq) AS fact FROM history_turns ORDER BY turn_id",
+            "SELECT json_array(item_id,ordinal,revision,digest,request_digest,presentation,payload,last_write_seq) AS fact FROM history_input_identities ORDER BY item_id",
+            "SELECT json_array(message_id,item_id,sequence,digest,last_write_seq) AS fact FROM history_message_identities ORDER BY message_id",
+            "SELECT json_array(item_id,revision,kind,digest,payload,last_write_seq) AS fact FROM history_fact_receipts ORDER BY item_id,revision",
+            "SELECT json_array(id,revision,context_revision,context_count,payload,payload_hash,legacy_cleanup) AS fact FROM session_checkpoint ORDER BY id",
+            "SELECT json_array(ordinal,record_id,payload,payload_hash) AS fact FROM current_context ORDER BY ordinal",
+            "SELECT json_array(purpose,currency,amount) AS fact FROM session_costs ORDER BY purpose,currency",
+            "SELECT json_array(call_id,revision,task_payload,delivery_payload,last_write_seq) AS fact FROM history_tool_tasks ORDER BY call_id",
+        ] {
+            for row in db.query_all_raw(statement(query, vec![])).await? {
+                facts.push(row.try_get("", "fact")?);
+            }
+        }
+        Ok(facts)
+    }
+
+    #[tokio::test]
+    async fn history_access_preserves_absence_and_rejects_damaged_current_schema() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("absent/history.sqlite");
+        let absent = HistoryStore::open(&path, "absent").await?;
+        absent.prepare_history_access().await?;
+        assert!(absent.chat_page(None, 10).await?.items.is_empty());
+        assert!(absent.checkpoint().await?.is_none());
+        assert!(!path.parent().context("parent")?.exists());
+        let legacy = directory.path().join("state.toml");
+        tokio::fs::write(&legacy, b"not decoded by historical content access").await?;
+        let toml_only =
+            HistoryStore::open(&directory.path().join("history.sqlite"), "toml-only").await?;
+        toml_only.prepare_history_access().await?;
+        assert!(toml_only.checkpoint().await?.is_none());
+        assert_eq!(
+            tokio::fs::read(&legacy).await?,
+            b"not decoded by historical content access"
+        );
+        assert!(!directory.path().join("history.sqlite").exists());
+        for damage in [
+            "DROP TABLE history_message_identities",
+            "ALTER TABLE history_input_identities DROP COLUMN presentation",
+            "DROP TABLE session_checkpoint",
+            "UPDATE history_meta SET schema_version=8",
+        ] {
+            let directory = tempfile::tempdir()?;
+            let path = directory.path().join("history.sqlite");
+            let store = HistoryStore::open(&path, "damaged").await?;
+            save_receipt(&store, 1, "preserved-receipt").await?;
+            let facts = history_facts(&store.writer().await?.db).await?;
+            let records = store.writer().await?.db.query_one_raw(statement(
+                "SELECT group_concat(version) AS records FROM (SELECT version FROM seaql_migrations ORDER BY version)", vec![]
+            )).await?.context("migration records")?.try_get::<String>("", "records")?;
+            store.writer().await?.db.execute_unprepared(damage).await?;
+            let damaged_version = schema::version(&store.writer().await?.db).await?;
+            store.writer().await?.db.clone().close().await?;
+            drop(store);
+            let source = tokio::fs::read(&path).await?;
+            let cold = HistoryStore::open(&path, "damaged").await?;
+            assert!(cold.message_identity("unknown").await.is_err());
+            assert!(cold.checkpoint().await.is_err());
+            assert!(cold.prepare_history_access().await.is_err());
+            assert!(
+                cold.state.writer.get().is_none(),
+                "damaged marker must not publish a current writer"
+            );
+            assert!(cold.watermark().await.is_err());
+            assert_eq!(
+                tokio::fs::read(&path).await?,
+                source,
+                "failed preparation must preserve source bytes"
+            );
+            let inspect = connect_read_only(&path).await?;
+            assert!(schema::validate_current(&inspect, "damaged").await.is_err());
+            assert_eq!(schema::version(&inspect).await?, damaged_version);
+            if damaged_version != HISTORY_SCHEMA_VERSION {
+                assert_eq!(
+                    history_facts(&inspect).await?,
+                    facts,
+                    "marker damage must preserve all reliable facts"
+                );
+            }
+            assert_eq!(
+                inspect
+                    .query_one_raw(statement(
+                        "SELECT group_concat(version) AS records FROM (SELECT version FROM seaql_migrations ORDER BY version)",
+                        vec![]
+                    ))
+                    .await?
+                    .context("migrations")?
+                    .try_get::<String>("", "records")?,
+                records
+            );
+            inspect.close().await?;
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn supported_v2_formats_require_preparation_before_current_cold_reads() -> Result<()> {
+        for version in [1, 8] {
+            let directory = tempfile::tempdir()?;
+            let path = directory.path().join("history.sqlite");
+            let store = HistoryStore::open(&path, "supported-v2").await?;
+            let mut item = ThreadItem::completed_user_message(
+                "input-1".into(),
+                "supported-v2".into(),
+                "".into(),
+                "saved history".into(),
+                vec![],
+                17,
+            );
+            item.ordinal = 19;
+            item.revision = 1;
+            store.commit(1, std::slice::from_ref(&item), &[]).await?;
+            let db = &store.writer().await?.db;
+            db.execute_unprepared("DROP TABLE seaql_migrations; ALTER TABLE history_input_identities DROP COLUMN request_digest").await?;
+            if version == 1 {
+                db.execute_unprepared("DROP TABLE history_message_identities; ALTER TABLE history_input_identities DROP COLUMN presentation").await?;
+            }
+            db.execute_raw(statement(
+                "UPDATE history_meta SET schema_version=?",
+                vec![version.into()],
+            ))
+            .await?;
+            drop(store);
+            let cold = HistoryStore::open(&path, "supported-v2").await?;
+            assert!(cold.chat_page(None, 10).await.is_err());
+            let inspect = connect_read_only(&path).await?;
+            assert_eq!(schema::version(&inspect).await?, version);
+            inspect.close().await?;
+            cold.prepare_history_access().await?;
+            drop(cold);
+            let prepared = HistoryStore::open(&path, "supported-v2").await?;
+            assert_eq!(
+                prepared.existing_items([item.id.clone()]).await?[&item.id],
+                item
+            );
+            assert_eq!(prepared.chat_page(None, 10).await?.items.len(), 1);
+            assert_eq!(prepared.watermark().await?, 1);
+            assert!(prepared.state.writer.get().is_none());
+        }
+        Ok(())
+    }
+
     /// A durable terminal Turn is readable by its own Turn identity, and a later revision of the
     /// same Turn identity is rejected instead of silently rewriting committed history.
     #[tokio::test]
@@ -3127,14 +2914,20 @@ mod storage_fault_tests {
         .await?;
         db.execute_unprepared(
             "ALTER TABLE history_input_identities DROP COLUMN presentation; \
-             UPDATE history_meta SET schema_version=2",
+             DROP TABLE IF EXISTS seaql_migrations; UPDATE history_meta SET schema_version=2",
         )
         .await?;
         drop(db);
         drop(store);
 
         let migrated = HistoryStore::open(&path, "legacy-plan").await?;
-        assert_eq!(migrated.watermark().await?, 1);
+        assert!(migrated.watermark().await.is_err());
+        assert!(
+            migrated
+                .hidden_input_identities([id.clone()])
+                .await
+                .is_err()
+        );
         let old = Database::connect(
             crate::studio::paths::sqlite_file_options(
                 &path,
@@ -3154,6 +2947,7 @@ mod storage_fault_tests {
             .try_get::<i64>("", "schema_version")?;
         assert_eq!(version, 2);
         drop(old);
+        migrated.prepare_history_access().await?;
         assert_eq!(
             migrated
                 .hidden_input_identities([id.clone(), "unproven-input".into()])
@@ -3261,15 +3055,14 @@ mod storage_fault_tests {
             .writer()
             .await?
             .db
-            .execute_unprepared("UPDATE history_meta SET schema_version=3")
+            .execute_unprepared(
+                "DROP TABLE IF EXISTS seaql_migrations; UPDATE history_meta SET schema_version=3",
+            )
             .await?;
         drop(store);
         let migrated = HistoryStore::open(&path, "migration").await?;
-        // Ordinary cold reads retain their read-only contract.
-        assert_eq!(
-            migrated.existing_items(["pending".into()]).await?["pending"].turn_id,
-            "turn-pending"
-        );
+        // Ordinary cold reads reject unprepared formats instead of interpreting legacy rows.
+        assert!(migrated.existing_items(["pending".into()]).await.is_err());
         migrated.prepare_activation().await?;
         let saved = migrated
             .existing_items(items.iter().map(|item| item.id.clone()))
@@ -4058,14 +3851,14 @@ mod storage_fault_tests {
             ],
         ))
         .await?;
-        db.execute_unprepared("UPDATE history_meta SET schema_version=5; CREATE TRIGGER reject_context_migration BEFORE UPDATE ON current_context BEGIN SELECT RAISE(ABORT,'injected context migration failure'); END;").await?;
+        db.execute_unprepared("DROP TABLE IF EXISTS seaql_migrations; UPDATE history_meta SET schema_version=5; CREATE TRIGGER reject_context_migration BEFORE UPDATE ON current_context BEGIN SELECT RAISE(ABORT,'injected context migration failure'); END;").await?;
         drop(store);
         let failed = HistoryStore::open(&path, "context-migration").await?;
         assert!(failed.prepare_activation().await.is_err());
-        let reader = failed.reader().await?.context("reader")?;
-        assert_eq!(reader.schema_version, 5);
+        assert!(failed.reader().await.is_err());
+        let reader = connect_read_only(&path).await?;
+        assert_eq!(schema::version(&reader).await?, 5);
         let row = reader
-            .db
             .query_one_raw(statement(
                 "SELECT payload FROM session_checkpoint WHERE id=1",
                 vec![],
@@ -4264,7 +4057,14 @@ mod storage_fault_tests {
         let history = HistoryStore::open(&path, "costs").await?;
         history.prepare_activation().await?;
         let restored = history.checkpoint().await?.unwrap();
-        assert_eq!(restored.state.extensions, frozen_billing);
+        for (id, old) in frozen_billing {
+            let actual = &restored.state.extensions[&id];
+            assert_eq!(actual.revision, old.revision);
+            assert_eq!(actual.payload.version(), 3);
+            let expected =
+                crate::studio::producer_migration::normalize(&old.payload)?.unwrap_or(old.payload);
+            assert_eq!(actual.payload, expected);
+        }
         let batch = pl_core::thread::ThreadEffectBatch {
             committed_at: 42,
             extensions: restored
@@ -4328,118 +4128,287 @@ mod storage_fault_tests {
     #[tokio::test]
     async fn toml_checkpoint_import_cleans_only_replaced_files_and_reopens() -> Result<()> {
         use pl_core::thread::{ThreadCheckpoint, ThreadSnapshot};
-        let directory = tempfile::tempdir()?;
-        let mut snapshot = ThreadSnapshot::default();
-        snapshot.context.records = vec![pl_core::context::ContextRecord {
-            id: "retained".into(),
-            turn_id: None,
-            source: pl_core::context::ContextSource::User,
-            content: vec![pl_core::context::ContextContent::Text {
-                text: std::sync::Arc::from("retained migration body"),
-            }],
-            tool_calls: vec![],
-        }]
-        .into();
-        let checkpoint = ThreadCheckpoint::capture("import".into(), 0, snapshot);
-        let (external, bodies) = checkpoint.externalize_bodies(1);
-        let mut legacy =
-            serde_json::to_value(toml::from_str::<toml::Value>(&toml::to_string(&external)?)?)?;
-        legacy["schemaVersion"] = serde_json::json!(2);
-        legacy["state"]["attempts"] = serde_json::json!([{
-            "turnId":"old", "attemptId":"old-attempt", "input":{"revision":0,"records":[]},
-            "tools":[], "outcome":{"kind":"running"}
-        }]);
-        let original = toml::to_string(&legacy)?;
-        tokio::fs::write(directory.path().join("state.toml"), original.as_bytes()).await?;
-        tokio::fs::write(
-            directory.path().join("state.prev.toml"),
-            original.as_bytes(),
-        )
-        .await?;
-        tokio::fs::create_dir_all(directory.path().join("blobs/checkpoint")).await?;
-        tokio::fs::write(
-            directory.path().join("blobs/checkpoint/orphan"),
-            b"obsolete",
-        )
-        .await?;
-        tokio::fs::write(directory.path().join("blobs/attachment"), b"keep").await?;
-        let state = super::super::state::StateStore::new(directory.path().to_owned(), "import");
-        let history =
-            HistoryStore::open(&directory.path().join("history.sqlite"), "import").await?;
-        assert!(
-            state.load(&history).await.is_err(),
-            "missing migration body must preserve source"
-        );
-        assert!(tokio::fs::try_exists(directory.path().join("state.toml")).await?);
-        for body in bodies {
-            let hex = body
-                .entry
-                .reference
-                .digest()
-                .strip_prefix("sha256:")
-                .context("digest")?;
-            let directory = directory.path().join("blobs/checkpoint").join(&hex[..2]);
-            tokio::fs::create_dir_all(&directory).await?;
-            tokio::fs::write(directory.join(hex), &body.bytes).await?;
-        }
-        legacy["schemaVersion"] = serde_json::json!(999);
-        let future = toml::to_string(&legacy)?;
-        tokio::fs::write(directory.path().join("state.toml"), &future).await?;
-        assert!(
-            state.load(&history).await.is_err(),
-            "a valid backup must not hide an unknown primary version"
-        );
-        assert_eq!(
-            tokio::fs::read_to_string(directory.path().join("state.toml")).await?,
-            future
-        );
-        tokio::fs::write(directory.path().join("state.toml"), &original).await?;
-        history.writer().await?.db.execute_unprepared("CREATE TRIGGER reject_import BEFORE INSERT ON session_checkpoint BEGIN SELECT RAISE(ABORT,'migration interrupted'); END;").await?;
-        assert!(state.load(&history).await.is_err());
-        assert!(history.checkpoint().await?.is_none());
-        assert!(tokio::fs::try_exists(directory.path().join("state.toml")).await?);
-        history
-            .writer()
-            .await?
-            .db
-            .execute_unprepared("DROP TRIGGER reject_import")
+        for (schema, external_metadata, has_saved_route) in [
+            (1, false, false),
+            (2, false, false),
+            (2, true, false),
+            (2, true, true),
+        ] {
+            let directory = tempfile::tempdir()?;
+            let expected_route = pl_model::config::ModelRouteConfig {
+                account_id: pl_model::config::AccountId::new(if has_saved_route {
+                    "saved-account"
+                } else {
+                    "frozen-account"
+                })?,
+                model_id: if has_saved_route {
+                    "saved-model"
+                } else {
+                    "frozen-model"
+                }
+                .into(),
+                effort: Some(pl_model::config::ReasoningEffort::new(if has_saved_route {
+                    "low"
+                } else {
+                    "high"
+                })),
+            };
+            let mut snapshot = ThreadSnapshot::default();
+            snapshot.context.records = vec![pl_core::context::ContextRecord {
+                id: "retained".into(),
+                turn_id: None,
+                source: pl_core::context::ContextSource::User,
+                content: vec![pl_core::context::ContextContent::Text {
+                    text: std::sync::Arc::from("retained migration body"),
+                }],
+                tool_calls: vec![],
+            }]
+            .into();
+            if has_saved_route {
+                snapshot.extension_sequence = 9;
+                snapshot.extensions.insert(
+                    crate::studio::model_route::MODEL_ROUTE_EXTENSION.into(),
+                    pl_core::thread::extensions::ExtensionRecord {
+                        revision: 9,
+                        payload: crate::studio::model_route::encode(&expected_route)?,
+                    },
+                );
+            }
+            let checkpoint = ThreadCheckpoint::capture("import".into(), 0, snapshot);
+            let (external, bodies) = if schema == 1 {
+                (checkpoint.clone(), Vec::new())
+            } else {
+                checkpoint.externalize_bodies(1)
+            };
+            let mut legacy =
+                serde_json::to_value(toml::from_str::<toml::Value>(&toml::to_string(&external)?)?)?;
+            legacy["schemaVersion"] = serde_json::json!(schema);
+            legacy["state"]["attempts"] = serde_json::json!([{
+                "turnId":"old", "attemptId":"old-attempt", "input":{"revision":0,"records":[]},
+                "tools":[], "outcome":{"kind":"running"}
+            }]);
+            let metadata_content = serde_json::json!({
+            "binding": { "providerInstanceId":"frozen-account", "requestedModel":"frozen-model",
+                "adapter":"deepSeek", "protocol":"responses", "isolation":"frozen-source-isolation", "purpose":"turn" },
+            "tools":[], "toolChoice":"auto", "parallelToolCalls":false, "reasoning":{"effort":"high"},
+            "temperature":null, "maxTokens":null, "vendorOpaque":"{ \"original\": 9007199254740993 }"
+        }).to_string();
+            let metadata = pl_core::context::OpaquePayload::new(
+                "pl.model.prepared-request",
+                1,
+                if external_metadata {
+                    ""
+                } else {
+                    &metadata_content
+                },
+            )?;
+            legacy["state"]["attempts"][0]["requestMetadata"] = serde_json::to_value(metadata)?;
+            let metadata_body = external_metadata
+                .then(|| pl_core::thread::CheckpointBodyReference::of(metadata_content.as_bytes()));
+            if let Some(reference) = &metadata_body {
+                let entry = pl_core::thread::LegacyCheckpointExternalBody {
+                    slot: pl_core::thread::LegacyCheckpointBodySlot::AttemptMetadata {
+                        attempt_index: 0,
+                    },
+                    body: pl_core::thread::CheckpointBodyKind::Opaque {
+                        format: "pl.model.prepared-request".into(),
+                        version: 1,
+                    },
+                    reference: reference.clone(),
+                };
+                legacy
+                    .as_object_mut()
+                    .context("legacy manifest")?
+                    .entry("externalBodies")
+                    .or_insert_with(|| serde_json::json!([]))
+                    .as_array_mut()
+                    .context("external bodies")?
+                    .push(serde_json::to_value(entry)?);
+            }
+            let original = toml::to_string(&legacy)?;
+            tokio::fs::write(directory.path().join("state.toml"), original.as_bytes()).await?;
+            tokio::fs::write(
+                directory.path().join("state.prev.toml"),
+                original.as_bytes(),
+            )
             .await?;
-        history
-            .writer()
-            .await?
-            .db
-            .execute_unprepared("UPDATE history_meta SET applied_write_seq=1")
+            tokio::fs::create_dir_all(directory.path().join("blobs/checkpoint")).await?;
+            tokio::fs::write(
+                directory.path().join("blobs/checkpoint/orphan"),
+                b"obsolete",
+            )
             .await?;
-        assert!(
-            state.load(&history).await.is_err(),
-            "mismatched history fence must preserve source"
-        );
-        assert!(tokio::fs::try_exists(directory.path().join("state.toml")).await?);
-        history
-            .writer()
-            .await?
-            .db
-            .execute_unprepared("UPDATE history_meta SET applied_write_seq=0")
-            .await?;
-        let imported = state.load(&history).await?.context("imported checkpoint")?;
-        assert_eq!(imported.state.context, checkpoint.state.context);
-        assert!(imported.state.attempt_ids.contains_key("old-attempt"));
-        assert_eq!(imported.state_revision, checkpoint.state_revision);
-        assert!(!tokio::fs::try_exists(directory.path().join("state.toml")).await?);
-        assert!(!tokio::fs::try_exists(directory.path().join("state.prev.toml")).await?);
-        assert!(!tokio::fs::try_exists(directory.path().join("blobs/checkpoint")).await?);
-        assert_eq!(
-            tokio::fs::read(directory.path().join("blobs/attachment")).await?,
-            b"keep"
-        );
-        assert_eq!(
-            state
-                .load(&history)
+            tokio::fs::write(directory.path().join("blobs/attachment"), b"keep").await?;
+            let state = super::super::state::StateStore::new(directory.path().to_owned(), "import");
+            let history =
+                HistoryStore::open(&directory.path().join("history.sqlite"), "import").await?;
+            if !bodies.is_empty() {
+                assert!(
+                    state.prepare_recovery(&history).await.is_err(),
+                    "missing migration body must preserve source"
+                );
+            }
+            assert!(tokio::fs::try_exists(directory.path().join("state.toml")).await?);
+            for body in bodies {
+                let hex = body
+                    .entry
+                    .reference
+                    .digest()
+                    .strip_prefix("sha256:")
+                    .context("digest")?;
+                let directory = directory.path().join("blobs/checkpoint").join(&hex[..2]);
+                tokio::fs::create_dir_all(&directory).await?;
+                tokio::fs::write(directory.join(hex), &body.bytes).await?;
+            }
+            if let Some(reference) = &metadata_body {
+                let hex = reference
+                    .digest()
+                    .strip_prefix("sha256:")
+                    .context("metadata digest")?;
+                let body_dir = directory.path().join("blobs/checkpoint").join(&hex[..2]);
+                tokio::fs::create_dir_all(&body_dir).await?;
+                tokio::fs::write(body_dir.join(hex), b"corrupt metadata body").await?;
+                assert!(
+                    state.prepare_recovery(&history).await.is_err(),
+                    "invalid metadata body must fail before producer decoding"
+                );
+                assert_eq!(
+                    tokio::fs::read_to_string(directory.path().join("state.toml")).await?,
+                    original
+                );
+                assert_eq!(
+                    tokio::fs::read(body_dir.join(hex)).await?,
+                    b"corrupt metadata body"
+                );
+                tokio::fs::write(body_dir.join(hex), metadata_content.as_bytes()).await?;
+            }
+            let mut unknown_metadata = legacy.clone();
+            unknown_metadata["state"]["attempts"][0]["requestMetadata"]["version"] =
+                serde_json::json!(99);
+            let unknown_metadata = toml::to_string(&unknown_metadata)?;
+            for name in ["state.toml", "state.prev.toml"] {
+                tokio::fs::write(directory.path().join(name), &unknown_metadata).await?;
+            }
+            assert!(
+                state.prepare_recovery(&history).await.is_err(),
+                "unknown producer version must preserve the old manifest"
+            );
+            assert!(history.checkpoint().await?.is_none());
+            for name in ["state.toml", "state.prev.toml"] {
+                assert_eq!(
+                    tokio::fs::read_to_string(directory.path().join(name)).await?,
+                    unknown_metadata
+                );
+                tokio::fs::write(directory.path().join(name), &original).await?;
+            }
+            legacy["schemaVersion"] = serde_json::json!(999);
+            let future = toml::to_string(&legacy)?;
+            tokio::fs::write(directory.path().join("state.toml"), &future).await?;
+            assert!(
+                state.prepare_recovery(&history).await.is_err(),
+                "a valid backup must not hide an unknown primary version"
+            );
+            assert_eq!(
+                tokio::fs::read_to_string(directory.path().join("state.toml")).await?,
+                future
+            );
+            tokio::fs::write(directory.path().join("state.toml"), &original).await?;
+            history.writer().await?.db.execute_unprepared("CREATE TRIGGER reject_import BEFORE INSERT ON session_checkpoint BEGIN SELECT RAISE(ABORT,'migration interrupted'); END;").await?;
+            assert!(state.prepare_recovery(&history).await.is_err());
+            assert!(history.checkpoint().await?.is_none());
+            assert_eq!(
+                tokio::fs::read_to_string(directory.path().join("state.toml")).await?,
+                original
+            );
+            assert_eq!(
+                tokio::fs::read_to_string(directory.path().join("state.prev.toml")).await?,
+                original
+            );
+            if let Some(reference) = &metadata_body {
+                let hex = reference
+                    .digest()
+                    .strip_prefix("sha256:")
+                    .context("metadata digest")?;
+                assert_eq!(
+                    tokio::fs::read(
+                        directory
+                            .path()
+                            .join("blobs/checkpoint")
+                            .join(&hex[..2])
+                            .join(hex)
+                    )
+                    .await?,
+                    metadata_content.as_bytes(),
+                    "failed SQLite import must retain the original metadata body"
+                );
+            }
+            history
+                .writer()
                 .await?
-                .context("reopened")?
-                .state_revision,
-            imported.state_revision
-        );
+                .db
+                .execute_unprepared("DROP TRIGGER reject_import")
+                .await?;
+            history
+                .writer()
+                .await?
+                .db
+                .execute_unprepared("UPDATE history_meta SET applied_write_seq=1")
+                .await?;
+            assert!(
+                state.prepare_recovery(&history).await.is_err(),
+                "mismatched history fence must preserve source"
+            );
+            assert!(tokio::fs::try_exists(directory.path().join("state.toml")).await?);
+            history
+                .writer()
+                .await?
+                .db
+                .execute_unprepared("UPDATE history_meta SET applied_write_seq=0")
+                .await?;
+            let imported = state
+                .prepare_recovery(&history)
+                .await?
+                .context("imported checkpoint")?;
+            assert_eq!(imported.state.context, checkpoint.state.context);
+            let saved_route = crate::studio::model_route::saved(&imported.state)?
+                .context("frozen imported route")?;
+            assert_eq!(saved_route.route, expected_route);
+            if has_saved_route {
+                assert_eq!(imported.state.extensions, checkpoint.state.extensions);
+                assert_eq!(
+                    imported.state.extension_sequence,
+                    checkpoint.state.extension_sequence
+                );
+            }
+            let reliable = history
+                .checkpoint()
+                .await?
+                .context("committed SQLite checkpoint")?;
+            assert_eq!(
+                crate::studio::model_route::saved(&reliable.state)?
+                    .context("reliable route")?
+                    .route,
+                expected_route
+            );
+
+            assert!(imported.state.attempt_ids.contains_key("old-attempt"));
+            assert_eq!(imported.state_revision, checkpoint.state_revision);
+            assert!(!tokio::fs::try_exists(directory.path().join("state.toml")).await?);
+            assert!(!tokio::fs::try_exists(directory.path().join("state.prev.toml")).await?);
+            assert!(!tokio::fs::try_exists(directory.path().join("blobs/checkpoint")).await?);
+            assert_eq!(
+                tokio::fs::read(directory.path().join("blobs/attachment")).await?,
+                b"keep"
+            );
+            assert_eq!(
+                state
+                    .prepare_recovery(&history)
+                    .await?
+                    .context("reopened")?
+                    .state_revision,
+                imported.state_revision
+            );
+        }
         Ok(())
     }
 
@@ -4985,7 +4954,9 @@ mod storage_fault_tests {
             .writer()
             .await?
             .db
-            .execute_unprepared("UPDATE history_meta SET schema_version=6")
+            .execute_unprepared(
+                "DROP TABLE IF EXISTS seaql_migrations; UPDATE history_meta SET schema_version=6",
+            )
             .await?;
         drop(store);
 
@@ -5081,7 +5052,9 @@ mod storage_fault_tests {
             .writer()
             .await?
             .db
-            .execute_unprepared("UPDATE history_meta SET schema_version=6")
+            .execute_unprepared(
+                "DROP TABLE IF EXISTS seaql_migrations; UPDATE history_meta SET schema_version=6",
+            )
             .await?;
         drop(store);
 
@@ -5196,7 +5169,9 @@ mod storage_fault_tests {
             .writer()
             .await?
             .db
-            .execute_unprepared("UPDATE history_meta SET schema_version=6")
+            .execute_unprepared(
+                "DROP TABLE IF EXISTS seaql_migrations; UPDATE history_meta SET schema_version=6",
+            )
             .await?;
         drop(store);
 
@@ -5285,7 +5260,9 @@ mod storage_fault_tests {
             .writer()
             .await?
             .db
-            .execute_unprepared("UPDATE history_meta SET schema_version=7")
+            .execute_unprepared(
+                "DROP TABLE IF EXISTS seaql_migrations; UPDATE history_meta SET schema_version=7",
+            )
             .await?;
         drop(store);
 
@@ -5456,7 +5433,7 @@ mod storage_fault_tests {
             .await?
             .db
             .execute_unprepared(
-                "UPDATE history_meta SET schema_version=7; \
+                "DROP TABLE IF EXISTS seaql_migrations; UPDATE history_meta SET schema_version=7; \
                  CREATE TRIGGER reject_plan_history BEFORE UPDATE ON history_items \
                  BEGIN SELECT RAISE(ABORT,'injected plan history failure'); END;",
             )
@@ -5465,10 +5442,10 @@ mod storage_fault_tests {
 
         let failed = HistoryStore::open(&path, thread_id).await?;
         assert!(failed.prepare_activation().await.is_err());
-        let reader = failed.reader().await?.context("reader")?;
-        assert_eq!(reader.schema_version, 7);
+        assert!(failed.reader().await.is_err());
+        let reader = connect_read_only(&path).await?;
+        assert_eq!(schema::version(&reader).await?, 7);
         let row = reader
-            .db
             .query_one_raw(statement(
                 "SELECT payload FROM history_items WHERE item_id=?",
                 vec![saved.id.clone().into()],
@@ -5658,7 +5635,7 @@ mod storage_fault_tests {
                 .writer()
                 .await?
                 .db
-                .execute_unprepared("UPDATE history_meta SET schema_version=6")
+                .execute_unprepared("DROP TABLE IF EXISTS seaql_migrations; UPDATE history_meta SET schema_version=6")
                 .await?;
             drop(store);
 
@@ -5673,14 +5650,24 @@ mod storage_fault_tests {
                 "the diagnostic must not leak a private answer: {diagnostic}"
             );
             // 显式失败：条目仍是迁移前的样子，没有被伪造成已回答。
-            let unchanged = reopened.existing_items([saved.id.clone()]).await?;
+            assert!(reopened.existing_items([saved.id.clone()]).await.is_err());
+            let inspect = connect_read_only(&path).await?;
+            let row = inspect
+                .query_one_raw(statement(
+                    "SELECT payload FROM history_items WHERE item_id=?",
+                    vec![saved.id.clone().into()],
+                ))
+                .await?
+                .context("preserved Q&A item")?;
+            let unchanged: ThreadItem =
+                serde_json::from_str(&row.try_get::<String>("", "payload")?)?;
             assert!(
                 unchanged
-                    .get(&saved.id)
-                    .and_then(|item| item.tool())
+                    .tool()
                     .is_some_and(|tool| tool.user_input().is_none()),
                 "a failed migration must not publish a Q&A projection"
             );
+            inspect.close().await?;
         }
         Ok(())
     }

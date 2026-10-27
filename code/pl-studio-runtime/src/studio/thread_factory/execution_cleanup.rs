@@ -1,4 +1,4 @@
-//! Failed unpublished preparation and explicit ordinary archive release only assigned resources.
+//! Failed unpublished preparation retains uncertain worktrees and its real cleanup owner.
 use super::StudioThreadFactory;
 use crate::studio::agent_host::{
     workspace_preparation,
@@ -7,24 +7,16 @@ use crate::studio::agent_host::{
     },
 };
 use anyhow::{Context, Result, ensure};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 impl StudioThreadFactory {
-    pub(in crate::studio) async fn prepare_workspace_cleanup(
-        &self,
-        lease: &crate::studio::agent_host::worktree_lease::WorktreeLease,
-    ) -> Result<()> {
-        workspace_preparation::cleanup_identity(&self.services.store, lease).await?;
-        Ok(())
-    }
-
     pub(super) async fn discard_prepared_workspace(
         &self,
         id: &str,
         usage: Option<&WorkspaceUsageLease>,
     ) -> Result<()> {
         ensure!(
-            !self.services.store.agent_close(id).await?.is_some(),
+            self.services.store.agent_close(id).await?.is_none(),
             "explicitly closed resources belong to the child close owner"
         );
         let result = self.discard_prepared_workspace_inner(id, usage).await;
@@ -32,7 +24,7 @@ impl StudioThreadFactory {
             if let Some(mut lease) = self.services.worktrees.get(id)
                 && lease.state != WorktreeLeaseState::Cleaned
             {
-                lease.settle(WorktreeLeaseState::Preserved);
+                lease.transition(WorktreeLeaseState::Preserved);
                 if let Err(retention) = self.services.worktrees.record_durable(lease).await {
                     return Err(error.context(format!(
                         "cannot persist unpublished workspace cleanup owner: {retention:#}"
@@ -61,8 +53,7 @@ impl StudioThreadFactory {
                 .await?
             }
         };
-        let removal = if let Some(lease) = &lease {
-            self.prepare_workspace_cleanup(lease).await?;
+        let removal = if lease.is_some() {
             Some(
                 self.services
                     .worktrees
@@ -86,30 +77,15 @@ impl StudioThreadFactory {
             None
         };
         if let Some(mut lease) = lease {
-            let manager = workspace_preparation::manager_from_lease(
-                &self.services.store,
-                &self.services.ssh_manager,
-                &lease,
-            )
-            .await?;
-            lease.validate_identity()?;
-            let handle = crate::agent::worktree::WorktreeHandle {
-                path: lease.path.clone().into(),
-                branch: lease.branch.clone(),
-                base_commit: lease.base_commit.clone(),
-            };
-            // A NoSideEffects create failure already settled Cleaned. It grants no authority to
-            // remove a pre-existing site. Unpublished children have never executed, so rollback
-            // of a real partial creation is restricted to its frozen base, not a later branch.
-            if lease.state == WorktreeLeaseState::Cleaned {
-                manager.verify_discarded(&handle).await?;
-            } else {
-                manager.discard_incomplete_creation(&handle).await?;
+            if lease.state != WorktreeLeaseState::Cleaned {
+                lease.transition(WorktreeLeaseState::Preserved);
+                self.services.worktrees.record_durable(lease).await?;
+                anyhow::bail!(
+                    "unpublished worktree creation has no confirmed deletion authority; original site and preparation owner preserved"
+                );
             }
-            // Git removed the whole exclusive root, including SessionFiles. Do not delete files
-            // inside it before Git proves identity or in order to bypass a Git refusal.
-            lease.settle(WorktreeLeaseState::Cleaned);
-            self.services.worktrees.record_durable(lease).await?;
+            // NoSideEffects is the only settled creation failure. Do not probe or delete a path
+            // that may have predated this attempt; only discharge our logical cleanup use.
         } else {
             self.remove_owned_execution_files(id, &identity, Path::new(&identity.root))
                 .await?;
@@ -118,55 +94,6 @@ impl StudioThreadFactory {
         if let Some(removal) = removal {
             removal.complete();
         } else {
-            self.services
-                .worktrees
-                .release_workspace_resources(id, &identity)?;
-        }
-        Ok(())
-    }
-
-    pub(in crate::studio) async fn cleanup_archived_execution_files(
-        &self,
-        id: &str,
-        retiring_worktrees: &[WorkspaceIdentity],
-    ) -> Result<()> {
-        let thread = self
-            .services
-            .store
-            .catalog()
-            .get(id)
-            .context("archive cleanup owner is missing")?;
-        ensure!(
-            thread.to_thread().archived,
-            "execution files cleanup needs the ordinary archive's committed intent"
-        );
-        if self.services.store.agent_close(id).await?.is_some() {
-            return Ok(());
-        }
-        self.services.worktrees.ensure_thread_workspace_idle(id)?;
-        let Some(identity) = self.services.store.workspace_identity(id).await? else {
-            return Ok(());
-        };
-        // Ordinary local-root archiving never acquired final-retirement authority for its shared
-        // execution files. Release only files already inside this archive's destructive WT scope.
-        if !retiring_worktrees
-            .iter()
-            .any(|outer| identity.within(outer))
-        {
-            return Ok(());
-        }
-        let resolution = self
-            .services
-            .worktrees
-            .cleanup_resolution(id, identity.clone())?;
-        let container = self.services.worktrees.get(id).map_or_else(
-            || PathBuf::from(&identity.root),
-            |lease| PathBuf::from(lease.repository_root),
-        );
-        self.remove_owned_execution_files(id, &identity, &container)
-            .await?;
-        drop(resolution);
-        if self.services.worktrees.get(id).is_none() {
             self.services
                 .worktrees
                 .release_workspace_resources(id, &identity)?;

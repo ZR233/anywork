@@ -1,8 +1,13 @@
 import 'dart:async';
 
+import 'package:anywork_client/accounts.dart';
+import 'package:anywork_client/model_directory.dart';
 import 'package:anywork_client/studio_client.dart';
 import 'package:test/test.dart';
 
+import 'support/accounts_test_runtime.dart';
+
+const _identity = NativeAccountIdentity('account');
 const _model = AccountModelView(
   modelId: 'online',
   displayName: 'Online',
@@ -27,7 +32,6 @@ const _account = AccountSettingsView(
   usageLabel: '',
   billingKind: BillingKind.subscription,
 );
-
 SettingsStateSnapshot _snapshot(int revision, AccountSettingsView account) =>
     SettingsStateSnapshot(
       revision: revision,
@@ -43,7 +47,7 @@ SettingsStateSnapshot _snapshot(int revision, AccountSettingsView account) =>
       ],
     );
 
-class _Call {
+final class _Call {
   _Call(
     this.kind,
     this.revision,
@@ -61,24 +65,17 @@ class _Call {
   final BillingKind? billingKind;
   final OperationId operationId;
   final reply = Completer<SettingsCommandReply>();
-
   void complete(
     SettingsStateSnapshot snapshot, {
     OperationId? foreignId,
     CommitDisposition disposition = CommitDisposition.applied,
   }) => reply.complete(
-    SettingsCommandReply(
+    accountReply(
       snapshot: snapshot,
       receipt: StudioCommandReceipt(
         operationId: foreignId ?? operationId,
         disposition: disposition,
-        targets: [
-          ResourceStamp(
-            resourceKey: 'settings',
-            ownerEpoch: 'owner',
-            revision: snapshot.revision,
-          ),
-        ],
+        targets: [testStamp('settings', snapshot.revision)],
         effect: EffectPoint.futureSession,
         effective: false,
         durable: true,
@@ -87,8 +84,8 @@ class _Call {
   );
 }
 
-/// Supplies scripted owner replies only; the real Client owns retries/lane/merge.
-class _Transport implements StudioTransport {
+/// Only scripts owner replies. Real domain mutations own CAS, identity and merge.
+final class _Transport extends AccountsTestTransport {
   final calls = StreamController<_Call>.broadcast();
   SettingsStateSnapshot? refreshed;
   int refreshes = 0;
@@ -153,59 +150,41 @@ class _Transport implements StudioTransport {
     calls.add(call);
     return call.reply.future;
   }
-
-  @override
-  dynamic noSuchMethod(Invocation invocation) =>
-      throw UnsupportedError('Unexpected ${invocation.memberName}');
 }
 
-AnyworkClient _client(_Transport transport) {
-  final client = AnyworkClient(transport: transport, clientId: 'narrow');
-  client.applyBootstrap(
-    StudioBootstrap(
-      ownerEpoch: 'owner',
-      projectDirectory: ProjectDirectoryState(values: const [], revision: 1),
-      threadDirectory: const ThreadDirectoryWindow(),
-      agentDirectory: AgentDirectoryState(revision: 1),
-      settingsState: _snapshot(1, _account),
-      recoveryState: RecoveryStateSnapshot(revision: 1),
-      mcpState: McpStateSnapshot(revision: 1),
-      lspState: LspStateSnapshot(revision: 1),
-      skillsByProject: const {},
-      threadModeCatalog: const ThreadModeCatalogView(),
-      accountUsageState: AccountUsageStateSnapshot(revision: 1),
-      updaterState: DisabledUpdaterStateSnapshot(
-        revision: 1,
-        updatedAt: DateTime.utc(2026),
-      ),
-      persistenceState: const PersistenceStateSnapshot.ready(),
-    ),
-  );
+AccountsTestRuntime _client(_Transport transport) {
+  final runtime = AccountsTestRuntime(transport, clientId: 'narrow');
+  runtime.seed(_snapshot(1, _account));
   addTearDown(() async {
-    await client.close();
+    await runtime.close();
     await transport.calls.close();
   });
-  return client;
+  return runtime;
 }
 
+AccountModelCatalog _catalog(AccountsTestRuntime runtime) =>
+    runtime.domains.models.state.value.accounts[_identity]!.value!;
+AccountModelConfiguration _configuration(AccountsTestRuntime runtime) =>
+    runtime.domains.models.state.value.configurations[_identity]!.value!;
+AccountSummary _summary(AccountsTestRuntime runtime) =>
+    runtime.domains.accounts.state.value.account(_identity)!;
+const _enabledKey = 'model:enabled:7:account:online';
+
 void main() {
-  test('rapid enabled intents survive CAS refresh and keep unrelated canonical fields', () async {
+  test('rapid enabled intents survive CAS refresh and preserve unrelated canonical fields', () async {
     final transport = _Transport();
     final client = _client(transport);
-    final commands = client.settingsCommands;
     final firstCall = transport.calls.stream.first;
-    final first = commands.setAccountModelEnabled('account', 'online', false);
-    final firstId = client.mutations
-        .latest(
-          'settings:${accountModelEnabledMutationKey('account', 'online')}',
-        )!
-        .id;
-    final second = commands.setAccountModelEnabled('account', 'online', true);
-    final secondId = client.mutations
-        .latest(
-          'settings:${accountModelEnabledMutationKey('account', 'online')}',
-        )!
-        .id;
+    final first = client.domains.models.setEnabled(
+      modelIdentity('account', 'online'),
+      false,
+    );
+    final firstId = client.board.latest(_enabledKey)!.id;
+    final second = client.domains.models.setEnabled(
+      modelIdentity('account', 'online'),
+      true,
+    );
+    final secondId = client.board.latest(_enabledKey)!.id;
     final call = await firstCall;
     expect(call.operationId, firstId);
     expect(call.revision, 1);
@@ -213,7 +192,7 @@ void main() {
       baseUrl: 'https://changed.invalid',
       hasBearerToken: true,
       usageQueryRevision: 4,
-      modelConnectionModes: const {'online': 'websocket'},
+      modelConnectionModes: const {'online': 'web_socket'},
       autoCompactLimits: const {
         'online': AccountModelAutoCompactView(
           modelId: 'online',
@@ -236,25 +215,27 @@ void main() {
     expect(retry.revision, 2);
     expect(retry.enabled, isFalse);
     final disabled = concurrent.copyWith(
-      disabledModels: const ['online'],
+      modelEnabledOverrides: const {'online': false},
       models: [_model.copyWith(enabled: false), _manual],
     );
     final secondCall = transport.calls.stream.first;
     retry.complete(_snapshot(3, disabled));
     await first;
-    final key = accountModelEnabledMutationKey('account', 'online');
     expect(
-      client.settings.state.commands[key]?.target.enabled,
-      isTrue,
-      reason: 'The older ACK must not clear the newer intent',
+      client.board.latest(_enabledKey)!.id,
+      secondId,
+      reason: 'An older ACK cannot clear the newer intent',
     );
-    final preservedRoute =
-        client.settings.state.canonical!.modeModelRoutes.single;
-    expect(preservedRoute.modelId, 'online');
+    expect(client.board.latest(_enabledKey)!.state.value.isPending, isTrue);
     expect(
-      client.settings.state.canonical!.accounts.single
-          .modelsFor(type: ModelType.text)
-          .map((m) => m.modelId),
+      client.client.settings.state.canonical!.modeModelRoutes.single.modelId,
+      'online',
+    );
+    expect(
+      modelSelectionAccounts(
+        client.domains.accounts.state.value,
+        client.domains.models.state.value,
+      ).single.modelsFor(type: ModelType.text).map((m) => m.modelId),
       ['manual'],
     );
     final next = await secondCall;
@@ -264,40 +245,48 @@ void main() {
     expect(next.enabled, isTrue);
     next.complete(_snapshot(4, concurrent));
     await second;
-    expect(transport.refreshes, 1);
-    final canonical = client.settings.state.canonical!.accounts.single;
-    expect(canonical.baseUrl, concurrent.baseUrl);
-    expect(canonical.hasBearerToken, isTrue);
-    expect(canonical.usageQueryRevision, 4);
-    expect(canonical.modelConnectionModes, concurrent.modelConnectionModes);
-    expect(canonical.autoCompactLimits['online']?.overrideLimit, 777);
-    expect(canonical.billingKind, BillingKind.subscription);
-    expect(canonical.models.first.origin, ModelOrigin.online);
-    expect(client.settings.state.commands[key], isNull);
     expect(
-      client.settings.state.canonical!.modeModelRoutes.single.modelId,
+      transport.refreshes,
+      2,
+      reason: 'CAS retries refresh the target detail and its independent model source, not an aggregate bootstrap',
+    );
+    final detail =
+        client.domains.accounts.details(_identity).value.value!
+            as NativeAccountDetails;
+    expect(detail.baseUrl, concurrent.baseUrl);
+    expect(detail.hasBearerToken, isTrue);
+    expect(detail.usageQueryRevision, 4);
+    expect(_configuration(client).connections, {
+      'online': AccountConnectionMode.webSocket,
+    });
+    expect(_configuration(client).autoCompactLimits, {'online': 777});
+    expect(_summary(client).billingKind, BillingKind.subscription);
+    expect(_catalog(client).models.first.origin, ModelOrigin.online);
+    expect(client.board.latest(_enabledKey)!.state.value.isPending, isFalse);
+    expect(
+      client.client.settings.state.canonical!.modeModelRoutes.single.modelId,
       'online',
     );
   });
 
-  test('narrow billing and removal keep operation identity, null intent, and foreign receipts rejected', () async {
+  test('billing and removal preserve identity, explicit clear, failures and foreign-receipt rejection', () async {
     final transport = _Transport();
     final client = _client(transport);
     var entered = transport.calls.stream.first;
-    var pending = client.settingsCommands.setAccountBillingKind(
-      'account',
+    var pending = client.domains.accounts.setBillingKind(
+      _identity,
       BillingKind.noCharge,
     );
     var call = await entered;
     expect(call.billingKind, BillingKind.noCharge);
     expect(
-      client.settings.state.canonical!.accounts.single.billingKind,
+      _summary(client).billingKind,
       BillingKind.subscription,
       reason: 'No optimistic billing success',
     );
     expect(
       call.operationId,
-      client.mutations.latest('settings:account-billing-kind:account')!.id,
+      client.board.latest('account:billing:account')!.id,
     );
     call.complete(
       _snapshot(
@@ -309,31 +298,22 @@ void main() {
       ),
     );
     await pending;
-    expect(
-      client.settings.state.canonical!.accounts.single.billingKind,
-      BillingKind.noCharge,
-    );
+    expect(_summary(client).billingKind, BillingKind.noCharge);
     entered = transport.calls.stream.first;
-    pending = client.settingsCommands.setAccountBillingKind('account', null);
+    pending = client.domains.accounts.setBillingKind(_identity, null);
     call = await entered;
     expect(
       call.billingKind,
       isNull,
-      reason: 'Turning no charge off must clear, not replay the effective kind',
+      reason: 'Clear must not replay the effective classification',
     );
     call.complete(_snapshot(3, _account));
     await pending;
-    expect(
-      client.settings.state.canonical!.accounts.single.billingKind,
-      BillingKind.subscription,
-    );
-    expect(
-      client.settings.state.canonical!.accounts.single.billingKindOverride,
-      isNull,
-    );
+    expect(_summary(client).billingKind, BillingKind.subscription);
+    expect(_summary(client).billingKindOverride, isNull);
     entered = transport.calls.stream.first;
-    pending = client.settingsCommands.setAccountBillingKind(
-      'account',
+    pending = client.domains.accounts.setBillingKind(
+      _identity,
       BillingKind.noCharge,
     );
     final billingFailure = expectLater(pending, throwsA(isA<StudioFailure>()));
@@ -347,35 +327,25 @@ void main() {
       ),
     );
     await billingFailure;
-    expect(
-      client.settings.state.canonical!.accounts.single.billingKind,
-      BillingKind.subscription,
-    );
-    expect(
-      client.settings.state.canonical!.accounts.single.billingKindOverride,
-      isNull,
-    );
+    expect(_summary(client).billingKind, BillingKind.subscription);
+    expect(_summary(client).billingKindOverride, isNull);
     entered = transport.calls.stream.first;
-    pending = client.settingsCommands.removeAccountModel('account', 'manual');
+    pending = client.domains.models.removeManual(
+      modelIdentity('account', 'manual'),
+    );
     call = await entered;
     expect(call.kind, 'remove');
     expect(call.modelId, 'manual');
     expect(
       call.operationId,
-      client.mutations.latest('settings:account-model:7:account:manual')!.id,
+      client.board.latest('model:remove:7:account:manual')!.id,
     );
     call.complete(_snapshot(4, _account.copyWith(models: const [_model])));
     await pending;
-    expect(
-      client.settings.state.canonical!.accounts.single.models.map(
-        (m) => m.modelId,
-      ),
-      ['online'],
-    );
+    expect(_catalog(client).models.map((m) => m.modelId), ['online']);
     entered = transport.calls.stream.first;
-    pending = client.settingsCommands.setAccountModelEnabled(
-      'account',
-      'online',
+    pending = client.domains.models.setEnabled(
+      modelIdentity('account', 'online'),
       true,
     );
     call = await entered;
@@ -384,17 +354,10 @@ void main() {
       disposition: CommitDisposition.noChange,
     );
     await pending;
-    expect(
-      client.settings.state.commands[accountModelEnabledMutationKey(
-        'account',
-        'online',
-      )],
-      isNull,
-    );
+    expect(client.board.latest(_enabledKey)!.state.value.isPending, isFalse);
     entered = transport.calls.stream.first;
-    pending = client.settingsCommands.setAccountModelEnabled(
-      'account',
-      'online',
+    pending = client.domains.models.setEnabled(
+      modelIdentity('account', 'online'),
       false,
     );
     final writeFailure = expectLater(
@@ -417,23 +380,15 @@ void main() {
       ),
     );
     await writeFailure;
+    expect(_catalog(client).models.single.enabled, isTrue);
     expect(
-      client.settings.state.canonical!.accounts.single.models.single.enabled,
-      isTrue,
-    );
-    expect(
-      client
-          .settings
-          .state
-          .commands[accountModelEnabledMutationKey('account', 'online')]
-          ?.error
-          ?.message,
+      (client.board.latest(_enabledKey)!.state.value.error as StudioFailure)
+          .message,
       'Write failed before commit',
     );
     entered = transport.calls.stream.first;
-    pending = client.settingsCommands.setAccountModelEnabled(
-      'account',
-      'online',
+    pending = client.domains.models.setEnabled(
+      modelIdentity('account', 'online'),
       false,
     );
     final rejected = expectLater(
@@ -448,24 +403,32 @@ void main() {
     );
     call = await entered;
     call.complete(
-      _snapshot(99, _account.copyWith(disabledModels: const ['online'])),
+      _snapshot(
+        99,
+        _account.copyWith(modelEnabledOverrides: const {'online': false}),
+      ),
       foreignId: const OperationId('foreign'),
     );
     await rejected;
     expect(
-      client.settings.state.settingsRevision,
+      client
+          .domains
+          .models
+          .state
+          .value
+          .configurations[_identity]!
+          .stamp!
+          .revision,
       4,
       reason: 'Foreign receipts cannot poison canonical state',
     );
-    final failed = client
-        .settings
-        .state
-        .commands[accountModelEnabledMutationKey('account', 'online')];
-    expect(failed?.isPending, isFalse);
-    expect(failed?.error?.code, StudioFailureCode.protocol);
+    final failed = client.board.latest(_enabledKey)!.state.value;
     expect(
-      client.settings.state.canonical!.accounts.single.models.single.enabled,
+      failed.isPending,
       isTrue,
+      reason: 'A foreign receipt cannot prove rejection or observation of this operation',
     );
+    expect((failed.error as StudioFailure).code, StudioFailureCode.protocol);
+    expect(_catalog(client).models.single.enabled, isTrue);
   });
 }

@@ -2,11 +2,13 @@
 //! committed child report; fixture observations only link those facts on reopen.
 mod absent;
 mod admission;
+mod branch_journey;
 mod evidence;
 mod exec;
 mod git;
 mod guards;
 mod no_head;
+mod partial_close;
 mod reopen;
 
 use super::{Environment, SHARED_MODEL, flow::*, journeys::Decision, wire::*};
@@ -63,7 +65,7 @@ pub(super) fn run(flow: &Flow<'_>, prompt: &str, environment: &Environment) -> P
     let evidence = match phase {
         "directory" | "nested" => baseline(flow, &root.id, phase)?,
         "dirty" => admission::run(flow, &root.id)?,
-        "guards" => guards::run(flow, &root.id)?,
+        "guards" => guards::run(flow, &root.id, environment)?,
         "reopen" => reopen::run(flow, environment, &root.id)?,
         _ => return Err(anyhow::anyhow!("unrecognized worktree phase").into()),
     };
@@ -208,6 +210,7 @@ fn observe_child(flow: &Flow<'_>, label: &str, root: &str, child: Spawn) -> Prog
         report: TerminalReport::observed(report)?,
         git,
         evaluation: evaluation.evaluation,
+        checkout_history: Vec::new(),
     })
 }
 
@@ -244,7 +247,8 @@ fn baseline(flow: &Flow<'_>, root: &str, phase: &str) -> Progress<Evidence> {
         &marker("read", &parent),
         None,
     )?;
-    let child = observe_child(flow, "baseline-executor", root, child)?;
+    let mut child = observe_child(flow, "baseline-executor", root, child)?;
+    git::new_detached_child(&parent, &child.git)?;
     require(
         child.git.path != parent.path
             && child.git.head == parent.head
@@ -252,13 +256,16 @@ fn baseline(flow: &Flow<'_>, root: &str, phase: &str) -> Progress<Evidence> {
             && child.git.status.is_empty(),
         "worktree child did not derive a clean isolated actual caller HEAD",
     )?;
+    if phase == "directory" {
+        branch_journey::create(flow, &mut child)?;
+    }
     let before_review = git::capture(
         flow,
         "baseline-before-review",
         Action::Read,
         std::slice::from_ref(&child.git.path),
     )?;
-    git::retained(&parent, &child.git, &before_review)?;
+    git::retained(&parent, child.checkout(), &before_review)?;
     let reviewer = flow.spawn(
         "baseline-reviewer",
         "reviewer",
@@ -268,9 +275,10 @@ fn baseline(flow: &Flow<'_>, root: &str, phase: &str) -> Progress<Evidence> {
     )?;
     let reviewer = observe_child(flow, "baseline-reviewer", root, reviewer)?;
     require(
-        reviewer.git.path == child.git.path
-            && reviewer.git.head == child.git.head
-            && reviewer.git.common_dir == child.git.common_dir,
+        git::same_identity(&reviewer.git, child.checkout())
+            && reviewer.git.head == child.checkout().head
+            && reviewer.git.branch == child.checkout().branch
+            && reviewer.git.detached == child.checkout().detached,
         "reviewer did not borrow the target actual assignment",
     )?;
     let after_review = git::capture(
@@ -296,8 +304,11 @@ fn baseline(flow: &Flow<'_>, root: &str, phase: &str) -> Progress<Evidence> {
         "closing reviewer removed the borrowed directory",
     )?;
     evidence.closes.push(closed_review);
+    if phase == "directory" {
+        branch_journey::finish(flow, &mut child)?;
+    }
     let closed_child = successful_close(flow, "baseline-close-executor", &child, &parent)?;
-    git::removed(&parent, &child.git, &closed_child.git)?;
+    git::removed(&parent, child.checkout(), &closed_child.git)?;
     evidence.closes.push(closed_child);
     evidence.children.extend([child, reviewer]);
     Ok(evidence)
@@ -305,6 +316,16 @@ fn baseline(flow: &Flow<'_>, root: &str, phase: &str) -> Progress<Evidence> {
 
 fn successful_close(flow: &Flow<'_>, label: &str, child: &Child, parent: &Git) -> Progress<Close> {
     let spawn = child.spawn.as_spawn();
+    let checkout = child.checkout();
+    let before = git::capture(
+        flow,
+        &format!("{label}-before"),
+        Action::Read,
+        std::slice::from_ref(&checkout.path),
+    )?;
+    if spawn.profile_id == "worktree_executor" {
+        git::retained(parent, checkout, &before)?;
+    }
     let result = flow.close(label, &spawn)?;
     require(
         result.agents.len() == 1,
@@ -318,7 +339,7 @@ fn successful_close(flow: &Flow<'_>, label: &str, child: &Child, parent: &Git) -
     let owned = spawn.profile_id == "worktree_executor";
     require(
         if owned {
-            matches!(&expected.worktree_cleanup, WorktreeCleanup::Removed { path } if path == &child.git.path)
+            matches!(&expected.worktree_cleanup, WorktreeCleanup::Removed { path } if path == &checkout.path)
         } else {
             expected.worktree_cleanup == WorktreeCleanup::NotApplicable
         },
@@ -329,14 +350,17 @@ fn successful_close(flow: &Flow<'_>, label: &str, child: &Child, parent: &Git) -
         flow,
         &format!("{label}-git"),
         Action::Read,
-        std::slice::from_ref(&child.git.path),
+        std::slice::from_ref(&checkout.path),
     )?;
     git::parent_unchanged(parent, &git)?;
+    git::close_preserved(&before, &git, owned.then_some(checkout.path.as_str()))?;
     Ok(Close {
         label: label.into(),
         force: false,
         result,
         tool_output,
+        owner_error: None,
+        before: Some(before),
         git,
     })
 }

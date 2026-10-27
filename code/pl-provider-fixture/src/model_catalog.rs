@@ -3,7 +3,7 @@
 //! The control file is read once when the fixture process starts. Changing the
 //! file never affects a running listener; operators rewrite it and restart.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::sync::{Arc, Mutex};
 use std::{fs, net::SocketAddr, path::Path, time::Duration};
 
@@ -20,6 +20,7 @@ use serde_json::{Value, json};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpStream,
+    sync::oneshot,
 };
 
 use super::AppState;
@@ -40,6 +41,12 @@ pub const OPENAI_PATH: &str = "/v1/openai/models";
 pub const OPENAI_SECOND_PATH: &str = "/v1/openai-second/models";
 pub const DEEPSEEK_PATH: &str = "/v1/deepseek/models";
 pub const MIMO_PATH: &str = "/v1/mimo/models";
+/// Runtime control endpoint (the fixture listener binds to IPv4 loopback only).
+pub const CONTROL_PATH: &str = "/__model_catalog/control";
+
+const MAX_ACCEPTED_PER_PROVIDER: usize = 256;
+const MAX_GATE_WAITERS_PER_PROVIDER: usize = 16;
+const MAX_CONTROL_STATE_BYTES: usize = 64 * 1024;
 
 /// Image model ID prefix used only when reporting payload composition in the
 /// self-check. The fixture returns the complete captured resource unchanged.
@@ -189,12 +196,304 @@ pub struct ModelCatalogControl {
     pub mimo: ModelCatalogProviderControl,
 }
 
-#[derive(Clone, Copy)]
-enum CatalogProvider {
+#[derive(Debug, Clone, Copy, Deserialize)]
+pub(super) enum CatalogProvider {
+    #[serde(rename = "openai")]
     Openai,
+    #[serde(rename = "openai-second")]
     OpenaiSecond,
+    #[serde(rename = "deepseek")]
     DeepSeek,
+    #[serde(rename = "mimo")]
     Mimo,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub(super) enum CatalogInventory {
+    A,
+    B,
+    Empty,
+    Real,
+    RejectAll,
+    RejectSecond,
+}
+
+/// Runtime controls are local to one catalog-enabled listener. Each GET takes
+/// an immutable provider-control snapshot before registering any gate wait.
+#[derive(Clone)]
+pub(super) struct ModelCatalogRuntime {
+    state: Arc<Mutex<ModelCatalogRuntimeState>>,
+    stopping: tokio_util::sync::CancellationToken,
+}
+
+struct ModelCatalogRuntimeState {
+    control: ModelCatalogControl,
+    next_identity: u64,
+    providers: HashMap<&'static str, ProviderRuntimeState>,
+}
+
+#[derive(Default)]
+struct ProviderRuntimeState {
+    requests: usize,
+    gated: bool,
+    failure: bool,
+    accepted: Vec<String>,
+    waiters: HashMap<String, oneshot::Sender<()>>,
+}
+
+struct GateRegistration {
+    state: std::sync::Weak<Mutex<ModelCatalogRuntimeState>>,
+    provider: &'static str,
+    identity: String,
+}
+
+type CatalogGateWait = Option<(oneshot::Receiver<()>, GateRegistration)>;
+type AcceptedCatalogRequest = (ModelCatalogProviderControl, CatalogGateWait);
+
+impl Drop for GateRegistration {
+    fn drop(&mut self) {
+        if let Some(state) = self.state.upgrade() {
+            let mut state = state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if let Some(provider) = state.providers.get_mut(self.provider) {
+                provider.waiters.remove(&self.identity);
+            }
+        }
+    }
+}
+
+impl ModelCatalogRuntime {
+    pub(super) fn new(
+        control: ModelCatalogControl,
+        stopping: tokio_util::sync::CancellationToken,
+    ) -> Self {
+        let providers = PROVIDER_SUFFIXES
+            .into_iter()
+            .map(|provider| (provider, ProviderRuntimeState::default()))
+            .collect();
+        Self {
+            state: Arc::new(Mutex::new(ModelCatalogRuntimeState {
+                control,
+                next_identity: 1,
+                providers,
+            })),
+            stopping,
+        }
+    }
+
+    fn accept(&self, provider: CatalogProvider) -> Result<AcceptedCatalogRequest> {
+        let mut state = self.state.lock().expect("fixture state poisoned");
+        let identity = format!("catalog-{:06}", state.next_identity);
+        let next_identity = state
+            .next_identity
+            .checked_add(1)
+            .context("model catalog request identity budget exhausted")?;
+        let mut plan = state.control.entry(provider).clone();
+        let provider_state = state
+            .providers
+            .get(provider.instance())
+            .expect("known catalog provider");
+        if provider_state.failure {
+            plan.reject = true;
+            plan.status = None;
+            plan.protocol_error = false;
+            plan.hang = false;
+        }
+        let provider_state = state
+            .providers
+            .get(provider.instance())
+            .expect("known catalog provider");
+        ensure!(
+            provider_state.accepted.len() < MAX_ACCEPTED_PER_PROVIDER,
+            "model catalog accepted request budget exhausted for provider"
+        );
+        let requests = provider_state
+            .requests
+            .checked_add(1)
+            .context("model catalog request count exhausted")?;
+        let is_gated = provider_state.gated && !plan.hang;
+        if is_gated {
+            ensure!(
+                provider_state.waiters.len() < MAX_GATE_WAITERS_PER_PROVIDER,
+                "model catalog gate waiter budget exhausted for provider"
+            );
+        }
+        let candidate =
+            control_state_snapshot(&state, Some((provider.instance(), &identity, is_gated)))?;
+        ensure!(
+            serde_json::to_vec(&candidate)?.len() <= MAX_CONTROL_STATE_BYTES,
+            "model catalog control state response budget exhausted"
+        );
+
+        state.next_identity = next_identity;
+        let provider_state = state
+            .providers
+            .get_mut(provider.instance())
+            .expect("known catalog provider");
+        provider_state.requests = requests;
+        provider_state.accepted.push(identity.clone());
+        let registration = if is_gated {
+            let (sender, receiver) = oneshot::channel();
+            provider_state.waiters.insert(identity.clone(), sender);
+            Some((
+                receiver,
+                GateRegistration {
+                    state: Arc::downgrade(&self.state),
+                    provider: provider.instance(),
+                    identity,
+                },
+            ))
+        } else {
+            None
+        };
+        Ok((plan, registration))
+    }
+
+    async fn wait(&self, registration: Option<(oneshot::Receiver<()>, GateRegistration)>) -> bool {
+        if let Some((receiver, _registration)) = registration {
+            tokio::select! {
+                result = receiver => result.is_ok(),
+                () = self.stopping.cancelled() => false,
+            }
+        } else {
+            self.stopping.cancelled().await;
+            false
+        }
+    }
+
+    fn snapshot(&self) -> Result<ModelCatalogControlState> {
+        let state = self.state.lock().expect("fixture state poisoned");
+        control_state_snapshot(&state, None)
+    }
+
+    fn apply(&self, command: CatalogControlCommand) -> Result<ModelCatalogControlState> {
+        let mut state = self.state.lock().expect("fixture state poisoned");
+        match command {
+            CatalogControlCommand::Inventory { name } => {
+                let name = match name {
+                    CatalogInventory::A => "a",
+                    CatalogInventory::B => "b",
+                    CatalogInventory::Empty => "empty",
+                    CatalogInventory::Real => "real",
+                    CatalogInventory::RejectAll => "reject-all",
+                    CatalogInventory::RejectSecond => "reject-second",
+                };
+                state.control = ModelCatalogControl::named(name)?
+            }
+            CatalogControlCommand::Failure { provider, enabled } => {
+                state
+                    .providers
+                    .get_mut(provider.instance())
+                    .expect("known catalog provider")
+                    .failure = enabled;
+            }
+            CatalogControlCommand::Gate { provider, enabled } => {
+                state
+                    .providers
+                    .get_mut(provider.instance())
+                    .expect("known catalog provider")
+                    .gated = enabled;
+            }
+            CatalogControlCommand::Release { provider } => {
+                let waiters = std::mem::take(
+                    &mut state
+                        .providers
+                        .get_mut(provider.instance())
+                        .expect("known catalog provider")
+                        .waiters,
+                );
+                for (_, sender) in waiters {
+                    let _ = sender.send(());
+                }
+            }
+            CatalogControlCommand::State {} => {}
+        }
+        drop(state);
+        self.snapshot()
+    }
+}
+
+fn control_state_snapshot(
+    state: &ModelCatalogRuntimeState,
+    additional: Option<(&'static str, &str, bool)>,
+) -> Result<ModelCatalogControlState> {
+    let providers = PROVIDER_SUFFIXES
+        .into_iter()
+        .map(|provider| -> Result<_> {
+            let current = state
+                .providers
+                .get(provider)
+                .expect("known catalog provider");
+            let mut accepted = current.accepted.clone();
+            let mut waiting: Vec<_> = current.waiters.keys().cloned().collect();
+            if let Some((added_provider, identity, is_waiting)) = additional
+                && added_provider == provider
+            {
+                accepted.push(identity.to_owned());
+                if is_waiting {
+                    waiting.push(identity.to_owned());
+                }
+            }
+            let requests =
+                if additional.is_some_and(|(added_provider, _, _)| added_provider == provider) {
+                    current
+                        .requests
+                        .checked_add(1)
+                        .context("model catalog request count exhausted")?
+                } else {
+                    current.requests
+                };
+            Ok((
+                provider,
+                ModelCatalogProviderState {
+                    requests,
+                    gated: current.gated,
+                    failing: current.failure,
+                    accepted,
+                    waiting,
+                },
+            ))
+        })
+        .collect::<Result<HashMap<_, _>>>()?;
+    Ok(ModelCatalogControlState { providers })
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ModelCatalogControlState {
+    providers: HashMap<&'static str, ModelCatalogProviderState>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ModelCatalogProviderState {
+    requests: usize,
+    gated: bool,
+    failing: bool,
+    accepted: Vec<String>,
+    waiting: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(tag = "action", rename_all = "camelCase", deny_unknown_fields)]
+pub(super) enum CatalogControlCommand {
+    Inventory {
+        name: CatalogInventory,
+    },
+    Failure {
+        provider: CatalogProvider,
+        enabled: bool,
+    },
+    Gate {
+        provider: CatalogProvider,
+        enabled: bool,
+    },
+    Release {
+        provider: CatalogProvider,
+    },
+    State {},
 }
 
 impl CatalogProvider {
@@ -285,7 +584,8 @@ impl ModelCatalogControl {
         }
     }
 
-    /// Inventory B: same as A with `fixture-model-old` withdrawn.
+    /// Inventory B withdraws online-only `fixture-model-old` and bundled `gpt-6.1-sol`.
+    /// Only the raw online inventory loses both; management retains the bundled member disabled.
     pub fn inventory_b() -> Self {
         let openai = ModelCatalogProviderControl {
             models: vec!["gpt-6-astra".into()],
@@ -545,17 +845,31 @@ fn payload_response(raw: &str, status: u16) -> Response {
 }
 
 async fn respond(state: AppState, provider: CatalogProvider) -> Response {
-    let Some(control) = state.model_catalog.as_ref() else {
+    let Some(runtime) = state.model_catalog.as_ref() else {
         return StatusCode::NOT_FOUND.into_response();
     };
-    let entry = control.entry(provider);
+    let (entry, gate) = match runtime.accept(provider) {
+        Ok(accepted) => accepted,
+        Err(error) => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(json!({"error": error.to_string()})),
+            )
+                .into_response();
+        }
+    };
     if entry.hang {
         // Record before waiting so a coordinator can observe the hang without
         // racing shutdown; the request still blocks until the listener stops.
         state
             .model_catalog_hits
             .record(provider, provider.path(), 503, true);
-        state.stopping.cancelled().await;
+        runtime.wait(None).await;
+        return StatusCode::SERVICE_UNAVAILABLE.into_response();
+    }
+    if let Some(registration) = gate
+        && !runtime.wait(Some(registration)).await
+    {
         return StatusCode::SERVICE_UNAVAILABLE.into_response();
     }
     if entry.protocol_error {
@@ -630,6 +944,25 @@ pub(super) async fn deepseek_models(State(state): State<AppState>) -> Response {
 
 pub(super) async fn mimo_models(State(state): State<AppState>) -> Response {
     respond(state, CatalogProvider::Mimo).await
+}
+
+/// Loopback-only runtime control for catalog acceptance. Input is closed over
+/// named inventories and known provider instances; no arbitrary paths or URLs.
+pub(super) async fn control(
+    State(state): State<AppState>,
+    Json(command): Json<CatalogControlCommand>,
+) -> Response {
+    let Some(runtime) = state.model_catalog.as_ref() else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    match runtime.apply(command) {
+        Ok(snapshot) => Json(snapshot).into_response(),
+        Err(error) => (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": error.to_string()})),
+        )
+            .into_response(),
+    }
 }
 
 /// Returns why a payload instance cannot serve its capture, or `None` when the

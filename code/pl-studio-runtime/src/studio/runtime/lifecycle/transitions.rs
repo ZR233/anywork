@@ -11,6 +11,8 @@ impl StudioRuntime {
     /// Every stage must succeed for this to return `Ok`; a failed or timed-out run keeps the
     /// runtime in `Failed` with the owners/handles retained so the caller can retry explicitly.
     pub async fn shutdown_runtime(&self) -> Result<StudioRuntimeSnapshot> {
+        // Seal before waiting for an admitted archive/cleanup, without aborting its worker.
+        self.shutdown_latch.arm();
         let _lifecycle_guard = self.lifecycle_lock.lock().await;
         self.execute_strict_shutdown().await?;
         self.runtime_snapshot().await

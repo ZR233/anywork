@@ -42,7 +42,7 @@ impl StudioChildResources for StudioThreadFactory {
             .await
             .map_err(Self::workspace_usage_error)?;
         request.workspace_owner.retain(&workspace_usage);
-        let project_root = match self
+        let bot_root = self
             .bind_bot_project(
                 &request.id,
                 &parent.root_thread_id,
@@ -50,8 +50,11 @@ impl StudioChildResources for StudioThreadFactory {
                 &workspace_usage,
                 super::root_resources::BotWorkspacePreparation::New,
             )
-            .await?
-        {
+            .await?;
+        let local_root = bot_root
+            .clone()
+            .unwrap_or_else(|| PathBuf::from(&root_thread.workspace_path));
+        let project_root = match bot_root {
             Some(root) => root,
             None => {
                 crate::studio::agent_host::workspace_preparation::resolved_project_root(&project)
@@ -60,11 +63,14 @@ impl StudioChildResources for StudioThreadFactory {
         };
         let session_root =
             crate::studio::agent_host::workspace_preparation::root_session_workspace_root(
+                &self.services.store,
                 &self.services.worktrees,
-                root_thread.workspace_mode,
-                &parent.root_thread_id,
-                project_root.clone(),
+                &self.services.ssh_manager,
+                &root_thread,
+                &project,
+                local_root,
             )
+            .await
             .map_err(|error| resource_error("resolve session workspace root", error))?;
         // child 的创建窗口与 root 会话一样由进程内 creating 标记保护：标记在记录 `prepared`
         // 之前设置，离开本函数（成功、失败、取消或展开）时由守卫清除。标记键是 child_id，
@@ -136,7 +142,9 @@ impl StudioChildResources for StudioThreadFactory {
                 },
             )
             .await
-            .map_err(|source| ThreadAssemblyError::ChildWorkspacePreparation { source })?;
+            .map_err(|source| ThreadAssemblyError::ChildWorkspacePreparation {
+                source: source.reallocate_into_boxed_dyn_error_without_backtrace(),
+            })?;
         check_cancelled(request)?;
         let workspace =
             ToolWorkspace::new(assigned_workspace(&assignment, root_thread.workspace_mode))
@@ -327,27 +335,25 @@ impl StudioChildResources for StudioThreadFactory {
         {
             return Ok(());
         }
-        let manager = crate::studio::agent_host::workspace_preparation::manager_from_lease(
-            &self.services.store,
-            &self.services.ssh_manager,
-            &lease,
-        )
-        .await
-        .map_err(|error| resource_error("open published workspace manager", error))?;
-        if disposition == pl_tool::collaboration::thread::WorkspaceRelease::Cleanup {
-            self.prepare_workspace_cleanup(&lease)
-                .await
-                .map_err(|error| resource_error("check workspace cleanup uses", error))?;
+        // Logical Preserve must finish before opening any Git/SSH manager. It releases the
+        // actual Entry/Tool usage when the existing close owner drops them, not the checkout.
+        if disposition != pl_tool::collaboration::thread::WorkspaceRelease::Preserve {
+            return Err(ThreadAssemblyError::Identity(
+                "generic release cannot authorize worktree deletion".into(),
+            ));
         }
-        crate::studio::agent_host::workspace_preparation::close_workspace(
-            &self.services.store,
-            &self.services.worktrees,
-            &manager,
-            lease,
-            disposition,
-        )
-        .await
-        .map_err(|error| resource_error("close published workspace", error))
+        let mut lease = lease;
+        if lease.state != crate::studio::agent_host::worktree_lease::WorktreeLeaseState::Cleaned {
+            lease.transition(
+                crate::studio::agent_host::worktree_lease::WorktreeLeaseState::Preserved,
+            );
+            self.services
+                .worktrees
+                .record_durable(lease)
+                .await
+                .map_err(|error| resource_error("preserve published workspace ownership", error))?;
+        }
+        Ok(())
     }
 
     async fn discard_unpublished(
@@ -416,7 +422,7 @@ impl StudioThreadFactory {
     /// 关系校验（调用者的直接 child、同一根会话与 Project）先行；worktree 被审者以 durable
     /// lease 为 canonical 事实并核对物理工作树仍存在；其他目标也只消费其实际冻结 assignment。
     /// review child 不获取、不转移被审者的 ownership lease。
-    async fn resolve_review_target(
+    pub(super) async fn resolve_review_target(
         &self,
         target_id: &str,
         caller: &str,
@@ -501,15 +507,20 @@ impl StudioThreadFactory {
             if lease.owner_kind != WorktreeLeaseOwnerKind::Child
                 || lease.root_thread_id != parent.root_thread_id
                 || lease.project_id != project.id
-                || lease.state == WorktreeLeaseState::Cleaned
+                || matches!(
+                    lease.state,
+                    WorktreeLeaseState::Cleaned | WorktreeLeaseState::CleanupRequested
+                )
                 || lease.path != assignment.root
                 || lease.path != receipt.path
-                || lease.branch != receipt.branch
                 || lease.base_commit != receipt.base_commit
                 || lease.repository_root != receipt.repository_root
             {
                 return Err(invalid());
             }
+            lease
+                .validate_identity()
+                .map_err(|error| resource_error("verify reviewed ownership lease", error))?;
             let manager = crate::studio::agent_host::workspace_preparation::manager_from_lease(
                 &self.services.store,
                 &self.services.ssh_manager,
@@ -518,7 +529,10 @@ impl StudioThreadFactory {
             .await
             .map_err(|error| resource_error("open reviewed workspace manager", error))?;
             manager
-                .validate_registered_site(std::path::Path::new(&lease.path), &lease.branch)
+                .verify(&crate::agent::worktree::WorktreeHandle {
+                    path: lease.path.clone().into(),
+                    base_commit: lease.base_commit.clone(),
+                })
                 .await
                 .map_err(|error| resource_error("verify reviewed worktree identity", error))?;
         }

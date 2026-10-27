@@ -212,7 +212,7 @@ class BridgeAccountCatalogSnapshot {
 class BridgeAccountSettingsDto {
   final BridgeBillingKind billingKind;
   final BridgeBillingKind? billingKindOverride;
-  final List<String> disabledModels;
+  final Map<String, bool> modelEnabledOverrides;
   final String accountId;
 
   /// 可选的内置账号模板引用；完全自定义账号为 `None`。
@@ -242,7 +242,7 @@ class BridgeAccountSettingsDto {
   const BridgeAccountSettingsDto({
     required this.billingKind,
     this.billingKindOverride,
-    required this.disabledModels,
+    required this.modelEnabledOverrides,
     required this.accountId,
     this.templateId,
     required this.protocol,
@@ -268,7 +268,7 @@ class BridgeAccountSettingsDto {
   int get hashCode =>
       billingKind.hashCode ^
       billingKindOverride.hashCode ^
-      disabledModels.hashCode ^
+      modelEnabledOverrides.hashCode ^
       accountId.hashCode ^
       templateId.hashCode ^
       protocol.hashCode ^
@@ -296,7 +296,7 @@ class BridgeAccountSettingsDto {
           runtimeType == other.runtimeType &&
           billingKind == other.billingKind &&
           billingKindOverride == other.billingKindOverride &&
-          disabledModels == other.disabledModels &&
+          modelEnabledOverrides == other.modelEnabledOverrides &&
           accountId == other.accountId &&
           templateId == other.templateId &&
           protocol == other.protocol &&
@@ -779,6 +779,8 @@ class BridgeModelCatalogDescriptor {
 sealed class BridgeModelCatalogError with _$BridgeModelCatalogError {
   const BridgeModelCatalogError._();
 
+  const factory BridgeModelCatalogError.taskFailed() =
+      BridgeModelCatalogError_TaskFailed;
   const factory BridgeModelCatalogError.unsupported() =
       BridgeModelCatalogError_Unsupported;
   const factory BridgeModelCatalogError.configuration() =
@@ -806,6 +808,8 @@ sealed class BridgeModelCatalogError with _$BridgeModelCatalogError {
 enum BridgeModelCatalogSource { default_, cached, online }
 
 class BridgeModelCatalogStatusDto {
+  final BigInt queryGeneration;
+  final String? operationId;
   final bool supported;
   final BridgeModelCatalogSource source;
   final bool probing;
@@ -815,6 +819,8 @@ class BridgeModelCatalogStatusDto {
   final BridgeModelCatalogCacheWarning? cacheWarning;
 
   const BridgeModelCatalogStatusDto({
+    required this.queryGeneration,
+    this.operationId,
     required this.supported,
     required this.source,
     required this.probing,
@@ -826,6 +832,8 @@ class BridgeModelCatalogStatusDto {
 
   @override
   int get hashCode =>
+      queryGeneration.hashCode ^
+      operationId.hashCode ^
       supported.hashCode ^
       source.hashCode ^
       probing.hashCode ^
@@ -839,6 +847,8 @@ class BridgeModelCatalogStatusDto {
       identical(this, other) ||
       other is BridgeModelCatalogStatusDto &&
           runtimeType == other.runtimeType &&
+          queryGeneration == other.queryGeneration &&
+          operationId == other.operationId &&
           supported == other.supported &&
           source == other.source &&
           probing == other.probing &&

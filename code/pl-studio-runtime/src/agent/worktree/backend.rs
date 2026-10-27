@@ -9,16 +9,19 @@ use pl_tool::execution::{
     ExecutionOutput, ExecutionRequest, LocalExecutionBackend, LocalExecutionFailure,
 };
 
-use pl_tool::git::GitPolicy;
-
 const WORKTREE_GIT_TIMEOUT: Duration = Duration::from_secs(120);
+pub(super) const MAX_ADMIN_BACKLINK_BYTES: usize = 128 * 1024;
 
 #[derive(Debug, thiserror::Error)]
 pub enum WorktreeError {
+    #[error("worktree path is missing; no cleanup was performed")]
+    Missing,
+    #[error("工作区没有有效的 HEAD commit；请先完成初始 commit 后重试")]
+    MissingHead,
+    #[error("worktree identity mismatch: {0}")]
+    IdentityMismatch(String),
     #[error("invalid worktree resource: {0}")]
     InvalidResource(String),
-    #[error("unsafe git branch `{0}`")]
-    UnsafeBranch(String),
     #[error("failed to launch git {args}: {message}")]
     GitLaunchFailed { args: String, message: String },
     #[error("git {args} timed out")]
@@ -31,16 +34,35 @@ pub enum WorktreeError {
     },
     #[error("git {args} status is unknown: {stderr}")]
     GitStatusUnknown { args: String, stderr: String },
-    #[error("worktree io error: {0}")]
-    Io(String),
-    #[error("{operation}; creation may have left resources for the workspace cleanup owner")]
-    CreationIncomplete { operation: Box<WorktreeError> },
-    #[error("{operation}; rollback succeeded")]
-    OperationFailedAfterCleanup { operation: Box<WorktreeError> },
-    #[error("{operation}; rollback failed: {cleanup}")]
-    OperationFailedWithCleanup {
-        operation: Box<WorktreeError>,
-        cleanup: Box<WorktreeError>,
+    #[error("{operation}: filesystem error ({:?}, os={:?})", .source.kind(), .source.raw_os_error())]
+    LocalIo {
+        operation: &'static str,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("{operation}: {}", super::diagnostic::remote_code(.source))]
+    Remote {
+        operation: &'static str,
+        #[source]
+        source: super::RemoteClientError,
+    },
+    #[error("git {}: {}", super::diagnostic::git_operation(.args), super::diagnostic::execution_cause(.source))]
+    RemoteExecution {
+        args: String,
+        #[source]
+        source: super::RemoteExecutionError,
+    },
+    #[error("{operation}: {}", super::diagnostic::download_cause(.source))]
+    RemoteDownload {
+        operation: &'static str,
+        #[source]
+        source: super::RemoteDownloadError,
+    },
+    #[error("{operation}: remote file operation failed")]
+    RemoteFile {
+        operation: &'static str,
+        #[source]
+        source: crate::PureError,
     },
 }
 
@@ -55,30 +77,32 @@ pub struct WorktreeStatus {
     pub head: String,
     /// The checked-out branch of the directory, or `None` when it is not on any branch.
     ///
-    /// A reuse decision needs this: the path alone does not prove the directory at that path is the
-    /// worktree the saved lease describes, and a detached HEAD cannot prove it either.
+    /// This is mutable state, not resource identity.
     pub branch: Option<String>,
     pub changed_files: Vec<String>,
+    /// Ignored content belongs to Recovery Safe protection, not the spawn dirty gate.
+    pub ignored_files: Vec<String>,
 }
 
 #[derive(Debug, thiserror::Error)]
 #[error("{error}")]
 pub struct WorktreeCreateFailure {
-    error: WorktreeError,
+    #[source]
+    error: Box<WorktreeError>,
     disposition: WorktreeCreateFailureDisposition,
 }
 
 impl WorktreeCreateFailure {
     pub fn no_side_effects(error: WorktreeError) -> Self {
         Self {
-            error,
+            error: Box::new(error),
             disposition: WorktreeCreateFailureDisposition::NoSideEffects,
         }
     }
 
     pub fn may_have_created(error: WorktreeError) -> Self {
         Self {
-            error,
+            error: Box::new(error),
             disposition: WorktreeCreateFailureDisposition::MayHaveCreated,
         }
     }
@@ -88,25 +112,12 @@ impl WorktreeCreateFailure {
     }
 
     pub fn into_error(self) -> WorktreeError {
-        self.error
+        *self.error
     }
 }
 
 pub trait WorktreeBackend: fmt::Debug + Send + Sync {
-    /// Atomically deletes this owned reference only if it still has the authorized object ID.
-    fn delete_branch_at<'a>(
-        &'a self,
-        repo_root: &'a Path,
-        branch: &'a str,
-        expected_head: &'a str,
-    ) -> BoxFuture<'a, Result<(), WorktreeError>>;
-
-    fn branch_head<'a>(
-        &'a self,
-        repo_root: &'a Path,
-        branch: &'a str,
-    ) -> BoxFuture<'a, Result<Option<String>, WorktreeError>>;
-
+    /// Proves commit delivery without rewriting or deleting any reference.
     fn is_ancestor<'a>(
         &'a self,
         repo_root: &'a Path,
@@ -125,12 +136,15 @@ pub trait WorktreeBackend: fmt::Debug + Send + Sync {
         target_path: &'a Path,
     ) -> BoxFuture<'a, Result<(), WorktreeError>>;
 
-    fn path_exists<'a>(&'a self, path: &'a Path) -> BoxFuture<'a, Result<bool, WorktreeError>>;
+    fn path_exists<'a>(
+        &'a self,
+        repo_root: &'a Path,
+        path: &'a Path,
+    ) -> BoxFuture<'a, Result<bool, WorktreeError>>;
 
     fn create<'a>(
         &'a self,
         repo_root: &'a Path,
-        branch: &'a str,
         target_path: &'a Path,
         base_commit: &'a str,
     ) -> BoxFuture<'a, Result<(), WorktreeCreateFailure>>;
@@ -154,9 +168,8 @@ pub trait WorktreeBackend: fmt::Debug + Send + Sync {
 
     /// Lists the worktrees this repository has registered, as Git itself reports them.
     ///
-    /// This is the repository's own identity statement: a directory can exist at an expected path and
-    /// even be a Git worktree of *another* repository, but only the resolved repository can report it
-    /// as its own worktree on a given branch.
+    /// This is the repository's own identity statement: an expected directory alone cannot prove
+    /// ownership. Branches and HEAD are not identity.
     fn worktree_list<'a>(
         &'a self,
         repo_root: &'a Path,
@@ -169,19 +182,25 @@ pub trait WorktreeBackend: fmt::Debug + Send + Sync {
     /// this a repository identity fact rather than a path convention.
     fn git_common_dir<'a>(&'a self, path: &'a Path)
     -> BoxFuture<'a, Result<String, WorktreeError>>;
+
+    /// Reads the checkout backlink from its Git worktree admin directory after checking that the
+    /// admin directory is a direct registration under the already verified common directory.
+    fn worktree_backlink<'a>(
+        &'a self,
+        path: &'a Path,
+        common_dir: &'a str,
+    ) -> BoxFuture<'a, Result<String, WorktreeError>>;
 }
 
 #[derive(Debug, Clone)]
 pub struct LocalWorktreeBackend {
     backend: LocalExecutionBackend,
-    policy: GitPolicy,
 }
 
 impl Default for LocalWorktreeBackend {
     fn default() -> Self {
         Self {
             backend: LocalExecutionBackend,
-            policy: GitPolicy::default(),
         }
     }
 }
@@ -216,37 +235,6 @@ impl LocalWorktreeBackend {
 }
 
 impl WorktreeBackend for LocalWorktreeBackend {
-    fn delete_branch_at<'a>(
-        &'a self,
-        repo_root: &'a Path,
-        branch: &'a str,
-        expected_head: &'a str,
-    ) -> BoxFuture<'a, Result<(), WorktreeError>> {
-        async move {
-            self.policy
-                .validate_branch(branch)
-                .map_err(|_| WorktreeError::UnsafeBranch(branch.into()))?;
-            let args = delete_reference_args(branch, expected_head);
-            self.run_git(repo_root, &args).await.map(|_| ())
-        }
-        .boxed()
-    }
-
-    fn branch_head<'a>(
-        &'a self,
-        repo_root: &'a Path,
-        branch: &'a str,
-    ) -> BoxFuture<'a, Result<Option<String>, WorktreeError>> {
-        async move {
-            self.policy
-                .validate_branch(branch)
-                .map_err(|_| WorktreeError::UnsafeBranch(branch.into()))?;
-            let args = reference_args(branch);
-            reference_result(&args, self.run_git_output(repo_root, &args).await?)
-        }
-        .boxed()
-    }
-
     fn is_ancestor<'a>(
         &'a self,
         repo_root: &'a Path,
@@ -260,6 +248,49 @@ impl WorktreeBackend for LocalWorktreeBackend {
         .boxed()
     }
 
+    fn worktree_backlink<'a>(
+        &'a self,
+        path: &'a Path,
+        common_dir: &'a str,
+    ) -> BoxFuture<'a, Result<String, WorktreeError>> {
+        async move {
+            use tokio::io::AsyncReadExt;
+            let args = vec!["rev-parse".into(), "--absolute-git-dir".into()];
+            let output = self.run_git(path, &args).await?;
+            let admin = checked_admin_dir(&output.stdout, common_dir)?;
+            let backlink = Path::new(&admin).join("gitdir");
+            pl_tool::workspace::path_safety::validate_path_for_write_async(
+                Path::new(common_dir),
+                &backlink,
+            )
+            .await
+            .map_err(|error| match error {
+                pl_tool::workspace::path_safety::PathSafetyError::Io {
+                    operation, source, ..
+                } => WorktreeError::LocalIo { operation, source },
+                _ => WorktreeError::IdentityMismatch(
+                    "registration admin path crosses an unsafe ancestor".into(),
+                ),
+            })?;
+            let file = tokio::fs::File::open(&backlink).await.map_err(|source| {
+                WorktreeError::LocalIo {
+                    operation: "open Git admin backlink",
+                    source,
+                }
+            })?;
+            let mut bytes = Vec::new();
+            file.take((MAX_ADMIN_BACKLINK_BYTES + 1) as u64)
+                .read_to_end(&mut bytes)
+                .await
+                .map_err(|source| WorktreeError::LocalIo {
+                    operation: "read Git admin backlink",
+                    source,
+                })?;
+            decode_backlink(&bytes, &admin)
+        }
+        .boxed()
+    }
+
     fn resolve_repo_root<'a>(
         &'a self,
         path: &'a Path,
@@ -268,7 +299,10 @@ impl WorktreeBackend for LocalWorktreeBackend {
             let args = vec!["rev-parse".to_string(), "--show-toplevel".to_string()];
             let output = self.run_git(path, &args).await?;
             let root = non_empty_head(&args, &output.stdout)?;
-            dunce::canonicalize(root).map_err(|error| WorktreeError::Io(error.to_string()))
+            dunce::canonicalize(root).map_err(|source| WorktreeError::LocalIo {
+                operation: "canonicalize repository root",
+                source,
+            })
         }
         .boxed()
     }
@@ -286,17 +320,41 @@ impl WorktreeBackend for LocalWorktreeBackend {
             })?;
             tokio::fs::create_dir_all(parent)
                 .await
-                .map_err(|error| WorktreeError::Io(error.to_string()))
+                .map_err(|source| WorktreeError::LocalIo {
+                    operation: "create worktree parent",
+                    source,
+                })
         }
         .boxed()
     }
 
-    fn path_exists<'a>(&'a self, path: &'a Path) -> BoxFuture<'a, Result<bool, WorktreeError>> {
+    fn path_exists<'a>(
+        &'a self,
+        repo_root: &'a Path,
+        path: &'a Path,
+    ) -> BoxFuture<'a, Result<bool, WorktreeError>> {
         async move {
+            // Reject symlink/reparse traversal even when Git's stale registration still names
+            // the expected text. Only inspect ancestors, never the checkout contents.
+            pl_tool::workspace::path_safety::validate_path_for_write_async(repo_root, path)
+                .await
+                .map_err(|error| match error {
+                    pl_tool::workspace::path_safety::PathSafetyError::Io {
+                        operation,
+                        source,
+                        ..
+                    } => WorktreeError::LocalIo { operation, source },
+                    _ => WorktreeError::IdentityMismatch(
+                        "path crosses a symlink or unsafe ancestor".into(),
+                    ),
+                })?;
             match tokio::fs::symlink_metadata(path).await {
                 Ok(_) => Ok(true),
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
-                Err(error) => Err(WorktreeError::Io(error.to_string())),
+                Err(source) => Err(WorktreeError::LocalIo {
+                    operation: "stat worktree path",
+                    source,
+                }),
             }
         }
         .boxed()
@@ -305,21 +363,14 @@ impl WorktreeBackend for LocalWorktreeBackend {
     fn create<'a>(
         &'a self,
         repo_root: &'a Path,
-        branch: &'a str,
         target_path: &'a Path,
         base_commit: &'a str,
     ) -> BoxFuture<'a, Result<(), WorktreeCreateFailure>> {
         async move {
-            self.policy.validate_branch(branch).map_err(|_| {
-                WorktreeCreateFailure::no_side_effects(WorktreeError::UnsafeBranch(
-                    branch.to_string(),
-                ))
-            })?;
             let args = vec![
                 "worktree".to_string(),
                 "add".to_string(),
-                "-b".to_string(),
-                branch.to_string(),
+                "--detach".to_string(),
                 local_git_path_argument(target_path),
                 base_commit.to_string(),
             ];
@@ -344,9 +395,8 @@ impl WorktreeBackend for LocalWorktreeBackend {
         worktree_path: &'a Path,
     ) -> BoxFuture<'a, Result<String, WorktreeError>> {
         async move {
-            let args = vec!["rev-parse".to_string(), "HEAD".to_string()];
-            let output = self.run_git(worktree_path, &args).await?;
-            non_empty_head(&args, &output.stdout)
+            let args = head_args();
+            head_result(&args, self.run_git_output(worktree_path, &args).await?)
         }
         .boxed()
     }
@@ -361,12 +411,14 @@ impl WorktreeBackend for LocalWorktreeBackend {
                 "status".to_string(),
                 "--porcelain=v1".to_string(),
                 "--untracked-files=all".to_string(),
+                "--ignored=matching".to_string(),
             ];
             let output = self.run_git(worktree_path, &args).await?;
             Ok(WorktreeStatus {
                 head,
                 branch: current_branch(&self.run_git(worktree_path, &branch_args()).await?),
                 changed_files: changed_files(&output.stdout),
+                ignored_files: ignored_files(&output.stdout),
             })
         }
         .boxed()
@@ -414,25 +466,6 @@ impl WorktreeBackend for LocalWorktreeBackend {
     }
 }
 
-pub(super) fn reference_args(branch: &str) -> Vec<String> {
-    vec![
-        "rev-parse".into(),
-        "--verify".into(),
-        "--quiet".into(),
-        format!("refs/heads/{branch}"),
-    ]
-}
-
-pub(super) fn delete_reference_args(branch: &str, expected_head: &str) -> Vec<String> {
-    vec![
-        "update-ref".into(),
-        "--no-deref".into(),
-        "-d".into(),
-        format!("refs/heads/{branch}"),
-        expected_head.into(),
-    ]
-}
-
 pub(super) fn ancestor_args(ancestor: &str, descendant: &str) -> Vec<String> {
     vec![
         "merge-base".into(),
@@ -440,17 +473,6 @@ pub(super) fn ancestor_args(ancestor: &str, descendant: &str) -> Vec<String> {
         ancestor.into(),
         descendant.into(),
     ]
-}
-
-pub(super) fn reference_result(
-    args: &[String],
-    output: ExecutionOutput,
-) -> Result<Option<String>, WorktreeError> {
-    if output.status == 1 {
-        return Ok(None);
-    }
-    let output = checked_output(args, output)?;
-    non_empty_head(args, &output.stdout).map(Some)
 }
 
 pub(super) fn ancestor_result(
@@ -480,7 +502,7 @@ pub(super) fn git_request(cwd: &Path, args: &[String]) -> ExecutionRequest {
         program: PathBuf::from("git"),
         args: full_args,
         cwd: cwd.to_path_buf(),
-        env: BTreeMap::new(),
+        env: BTreeMap::from([("LC_ALL".into(), "C".into())]),
         timeout: Some(WORKTREE_GIT_TIMEOUT),
     }
 }
@@ -504,6 +526,27 @@ pub(super) fn checked_output(
     }
 }
 
+pub(super) fn head_args() -> Vec<String> {
+    vec![
+        "rev-parse".into(),
+        "--verify".into(),
+        "--quiet".into(),
+        "HEAD^{commit}".into(),
+    ]
+}
+
+pub(super) fn head_result(
+    args: &[String],
+    output: ExecutionOutput,
+) -> Result<String, WorktreeError> {
+    // --verify --quiet uses 1 for a missing valid commit. Other failures retain their typed Git
+    // cause instead of being mislabeled as an unborn repository.
+    if output.status == 1 {
+        return Err(WorktreeError::MissingHead);
+    }
+    non_empty_head(args, &checked_output(args, output)?.stdout)
+}
+
 pub(super) fn non_empty_head(args: &[String], stdout: &str) -> Result<String, WorktreeError> {
     let head = stdout.trim();
     if head.is_empty() {
@@ -517,8 +560,17 @@ pub(super) fn non_empty_head(args: &[String], stdout: &str) -> Result<String, Wo
 }
 
 pub(super) fn changed_files(stdout: &str) -> Vec<String> {
+    status_files(stdout, false)
+}
+
+pub(super) fn ignored_files(stdout: &str) -> Vec<String> {
+    status_files(stdout, true)
+}
+
+fn status_files(stdout: &str, ignored: bool) -> Vec<String> {
     let mut files = stdout
         .lines()
+        .filter(|line| line.starts_with("!! ") == ignored)
         .filter_map(|line| line.get(3..))
         .map(|path| path.rsplit_once(" -> ").map_or(path, |(_, path)| path))
         .map(str::to_string)
@@ -540,6 +592,38 @@ pub(super) fn worktree_list_args() -> Vec<String> {
 /// The git arguments that report the Git directory shared with the owning repository.
 pub(super) fn git_common_dir_args() -> Vec<String> {
     vec!["rev-parse".to_string(), "--git-common-dir".to_string()]
+}
+
+pub(super) fn checked_admin_dir(raw: &str, common_dir: &str) -> Result<String, WorktreeError> {
+    let admin = resolved_git_path(raw, "").ok_or_else(|| {
+        WorktreeError::IdentityMismatch("registration admin directory cannot be normalized".into())
+    })?;
+    let prefix = format!("{common_dir}/worktrees/");
+    if !admin
+        .strip_prefix(&prefix)
+        .is_some_and(|leaf| !leaf.is_empty() && !leaf.contains('/'))
+    {
+        return Err(WorktreeError::IdentityMismatch(
+            "registration admin directory is outside the owning repository".into(),
+        ));
+    }
+    Ok(admin)
+}
+
+pub(super) fn decode_backlink(bytes: &[u8], admin_dir: &str) -> Result<String, WorktreeError> {
+    if bytes.len() > MAX_ADMIN_BACKLINK_BYTES {
+        return Err(WorktreeError::IdentityMismatch(
+            "registration admin backlink exceeds its path bound".into(),
+        ));
+    }
+    let text = std::str::from_utf8(bytes).map_err(|_| {
+        WorktreeError::IdentityMismatch("registration admin backlink is not a UTF-8 path".into())
+    })?;
+    // Git can rewrite both linking files to relative paths during creation or repair. The
+    // backlink is relative to this verified admin directory, not to the checkout or common dir.
+    resolved_git_path(text, admin_dir).ok_or_else(|| {
+        WorktreeError::IdentityMismatch("registration admin backlink cannot be normalized".into())
+    })
 }
 
 // --- worktree path normalization (self-contained; verified offline by a scratch harness) ---
@@ -657,12 +741,9 @@ fn split_git_root(value: &str) -> Option<(String, String, bool)> {
 }
 // --- end worktree path normalization ---
 
-/// One worktree a repository has registered: its path and the branch checked out there.
-///
-/// `branch` is `None` for a detached worktree, which cannot prove a declared branch.
+/// The repository's registration identity; mutable HEAD/branch state is irrelevant here.
 pub(crate) struct RegisteredWorktree {
     pub path: String,
-    pub branch: Option<String>,
     /// Git reports a worktree whose directory is gone as `prunable`: it is a stale registration, not a
     /// site that may be reused.
     pub prunable: bool,
@@ -676,23 +757,16 @@ pub(crate) fn registered_worktrees(stdout: &str) -> Vec<RegisteredWorktree> {
     let mut worktrees = Vec::new();
     for block in stdout.split("\n\n") {
         let mut path = None;
-        let mut branch = None;
         let mut prunable = false;
         for line in block.lines() {
             if let Some(value) = line.strip_prefix("worktree ") {
                 path = Some(value.trim().to_string());
-            } else if let Some(value) = line.strip_prefix("branch ") {
-                branch = value.trim().strip_prefix("refs/heads/").map(str::to_string);
             } else if line.trim() == "prunable" || line.starts_with("prunable ") {
                 prunable = true;
             }
         }
         if let Some(path) = path {
-            worktrees.push(RegisteredWorktree {
-                path,
-                branch,
-                prunable,
-            });
+            worktrees.push(RegisteredWorktree { path, prunable });
         }
     }
     worktrees
@@ -709,8 +783,7 @@ pub(super) fn branch_args() -> Vec<String> {
 
 /// The branch a directory is on, or `None` when it is not on any branch.
 ///
-/// `git rev-parse --abbrev-ref HEAD` answers `HEAD` for a detached worktree, which proves nothing
-/// about the branch a caller declared, so it is reported as "unknown" instead of as a branch name.
+/// `git rev-parse --abbrev-ref HEAD` answers `HEAD` for a detached checkout.
 pub(super) fn current_branch(output: &ExecutionOutput) -> Option<String> {
     let branch = output.stdout.trim();
     if branch.is_empty() || branch == "HEAD" {

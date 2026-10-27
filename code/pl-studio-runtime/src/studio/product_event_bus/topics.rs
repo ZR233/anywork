@@ -6,7 +6,7 @@
 
 use std::collections::BTreeMap;
 
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, watch};
 
 use crate::{StudioProductEventEnvelope, StudioProductTopic};
 
@@ -20,9 +20,17 @@ const TOPIC_CHANNEL_CAPACITY: usize = 256;
 #[derive(Debug, Default)]
 pub(super) struct TopicChannels {
     channels: BTreeMap<StudioProductTopic, broadcast::Sender<StudioProductEventEnvelope>>,
+    signals: BTreeMap<StudioProductTopic, watch::Sender<()>>,
 }
 
 impl TopicChannels {
+    /// Wake-only latest-state observation: no business payload and no event backlog.
+    pub(super) fn subscribe_signal(&mut self, topic: &StudioProductTopic) -> watch::Receiver<()> {
+        self.signals
+            .entry(topic.clone())
+            .or_insert_with(|| watch::channel(()).0)
+            .subscribe()
+    }
     /// 订阅一个 topic；通道不存在时以固定容量创建。
     pub(super) fn subscribe(
         &mut self,
@@ -40,6 +48,9 @@ impl TopicChannels {
     /// 判断新旧，因此同一通道内序列不连续不是 lag。
     pub(super) fn dispatch(&mut self, envelope: &StudioProductEventEnvelope) {
         let topic = StudioProductTopic::of_kind(&envelope.kind);
+        if let Some(signal) = self.signals.get(&topic) {
+            signal.send_replace(());
+        }
         if let Some(sender) = self.channels.get(&topic)
             && sender.send(envelope.clone()).is_err()
         {

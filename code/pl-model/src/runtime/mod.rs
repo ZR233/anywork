@@ -43,6 +43,7 @@ pub use prompt_diagnostics::{PromptCacheInput, prompt_diagnostics};
 pub use pl_protocol::{PromptPrefixChangedReason, ThreadPromptMetadata, ThreadPromptSnapshot};
 
 mod thread_model;
+pub use thread_model::migration;
 pub use thread_model::{
     ModelCallBinding, ModelFailureReceipt, ModelRequestReceipt, ModelResponseReceipt,
     ThreadCompaction, ThreadCompactionDecision, ThreadCompactionOptions, ThreadCompactionStrategy,

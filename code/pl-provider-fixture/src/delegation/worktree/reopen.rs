@@ -3,7 +3,7 @@ use super::*;
 
 pub(super) fn run(flow: &Flow<'_>, environment: &Environment, root: &str) -> Progress<Evidence> {
     // Only final receipts are eligible; tool dispatch observations are not state.
-    let receipts: Vec<Receipt> = {
+    let observed: Vec<(usize, Receipt)> = {
         let observations = environment
             .observations
             .lock()
@@ -18,36 +18,73 @@ pub(super) fn run(flow: &Flow<'_>, environment: &Environment, root: &str) -> Pro
                     )
             })
             .map(|row| {
-                serde_json::from_value::<Receipt>(
+                let receipt = serde_json::from_value::<Receipt>(
                     row.receipt
                         .clone()
                         .context("final worktree observation has no receipt")?,
                 )
-                .context("decode observed final receipt")
+                .context("decode observed final receipt")?;
+                let expected_phase = if row.note == "worktree_directory_baseline_complete" {
+                    "directory"
+                } else {
+                    "guards"
+                };
+                require(
+                    receipt.phase == expected_phase,
+                    "final worktree note/phase association changed",
+                )?;
+                Ok((row.ordinal, receipt))
             })
             .collect::<Result<Vec<_>>>()?
             .into_iter()
-            .filter(|receipt| receipt.root_agent_id == root)
+            .filter(|(_, receipt)| receipt.root_agent_id == root)
             .collect()
     };
     require(
-        receipts
+        observed
             .iter()
-            .filter(|receipt| receipt.phase == "directory")
+            .filter(|(_, receipt)| receipt.phase == "directory")
             .count()
             == 1
-            && receipts
+            && observed
                 .iter()
-                .filter(|receipt| receipt.phase == "guards")
+                .filter(|(_, receipt)| receipt.phase == "guards")
                 .count()
                 == 1,
         "reopen needs this original root's unique directory and guards final receipts",
     )?;
+    let (guards_ordinal, guards) = observed
+        .iter()
+        .find(|(_, receipt)| receipt.phase == "guards")
+        .context("reopen has no original-root guards receipt")?;
+    require(
+        observed
+            .iter()
+            .all(|(ordinal, _)| ordinal <= guards_ordinal),
+        "guards is not the latest original-root completed baseline",
+    )?;
+    let checkpoints: Vec<_> = guards
+        .evidence
+        .checkpoints
+        .iter()
+        .filter(|checkpoint| checkpoint.label == "parent")
+        .collect();
+    require(
+        checkpoints.len() == 1,
+        "guards final receipt needs exactly one real parent checkpoint",
+    )?;
+    let baseline = &checkpoints[0].git;
     flow.discover()?;
     let parent = git::capture(flow, "reopen-parent", Action::Read, &[])?;
     require(parent.status.is_empty(), "reopened parent is dirty")?;
+    git::parent_unchanged(baseline, &parent)?;
+    require(
+        baseline.refs == parent.refs,
+        "reopened refs differ from the original-root guards successor baseline",
+    )?;
     let mut evidence = Evidence::default();
-    for receipt in receipts {
+    evidence.checkpoint("guards-parent-baseline", baseline.clone());
+    for (_, receipt) in observed {
         let Evidence {
             children,
             mut closes,
@@ -97,7 +134,7 @@ pub(super) fn run(flow: &Flow<'_>, environment: &Environment, root: &str) -> Pro
                 close: &prior.result,
                 root,
                 turn_id: &child.report.turn.turn_id,
-                marker: &marker("read", &child.git),
+                marker: &marker("read", child.checkout()),
             })?;
             let git = git::capture(
                 flow,
@@ -106,6 +143,10 @@ pub(super) fn run(flow: &Flow<'_>, environment: &Environment, root: &str) -> Pro
                 std::slice::from_ref(&child.git.path),
             )?;
             git::parent_unchanged(&parent, &git)?;
+            require(
+                parent.refs == git.refs,
+                "reopen observations changed the verified successor refs",
+            )?;
             if child.spawn.profile_id == "worktree_executor" {
                 let member = prior
                     .result
@@ -116,7 +157,7 @@ pub(super) fn run(flow: &Flow<'_>, environment: &Environment, root: &str) -> Pro
                 match &member.worktree_cleanup {
                     WorktreeCleanup::Removed { path } => {
                         require(path == &child.git.path, "reopened Removed path changed")?;
-                        git::removed(&parent, &child.git, &git)?;
+                        git::removed_site(path, &git)?;
                     }
                     WorktreeCleanup::NotPresent { path, .. } => {
                         require(path == &child.git.path, "reopened NotPresent path changed")?;
@@ -152,14 +193,7 @@ pub(super) fn run(flow: &Flow<'_>, environment: &Environment, root: &str) -> Pro
                 == WorktreeCleanup::NotApplicable
             {
                 // A reviewer whose executor was removed shares that absent path.
-                require(
-                    !git.worktrees.iter().any(|tree| tree.path == child.git.path)
-                        && git
-                            .targets
-                            .iter()
-                            .any(|target| target.path == child.git.path && !target.exists),
-                    "reopened reviewer recreated a worktree",
-                )?;
+                git::removed_site(&child.git.path, &git)?;
             } else {
                 return Err(anyhow::anyhow!("reopened reviewer had owned worktree cleanup").into());
             }

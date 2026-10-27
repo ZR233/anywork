@@ -4,7 +4,6 @@ import 'dart:ui' show PointerDeviceKind;
 import 'package:flutter/material.dart';
 import 'package:flutter/gestures.dart' show DragStartBehavior;
 import 'package:flutter/services.dart';
-import 'package:flutter/widget_previews.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:multi_split_view/multi_split_view.dart';
@@ -15,11 +14,9 @@ import '../../presentation/providers/recovery_store.dart';
 
 import '../../shared/studio_loading.dart';
 import '../../shared/recovery_check_status.dart';
-import '../../app/theme/material3_theme.dart';
 import '../../app/theme/studio_tokens.dart';
 import '../../domain/models/studio_models.dart';
 
-import '../../l10n/app_localizations.dart';
 import '../../l10n/studio_l10n.dart';
 import '../../platform/studio_platform.dart';
 import '../../platform/host_app_icons.dart';
@@ -59,7 +56,6 @@ part 'runtime_banners.dart';
 part 'studio_shell_chrome.dart';
 part 'studio_startup.dart';
 part 'agent_workspace_pane.dart';
-part 'agent_workspace_preview.dart';
 
 typedef ProjectDirectoryPicker = Future<String?> Function(BuildContext context);
 

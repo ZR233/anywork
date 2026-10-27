@@ -44,7 +44,10 @@ pub(crate) fn bridge_recovery_issue(issue: StudioRecoveryIssue) -> BridgeStudioR
                 vec![BridgeRecoveryIssueAction::Retry]
             }
             pl_studio_runtime::StudioRecoveryIssueAction::CleanupWorktree => {
-                vec![BridgeRecoveryIssueAction::CleanupWorktree]
+                vec![
+                    BridgeRecoveryIssueAction::Retry,
+                    BridgeRecoveryIssueAction::CleanupWorktree,
+                ]
             }
         },
         project_id: issue.project_id,
@@ -53,6 +56,20 @@ pub(crate) fn bridge_recovery_issue(issue: StudioRecoveryIssue) -> BridgeStudioR
         worktree: issue
             .worktree
             .map(|worktree| BridgeWorktreeRecoveryPreviewDto {
+                inspection: match worktree.inspection {
+                    pl_studio_runtime::StudioWorktreeInspection::Available => {
+                        BridgeWorktreeInspection::Available
+                    }
+                    pl_studio_runtime::StudioWorktreeInspection::Missing => {
+                        BridgeWorktreeInspection::Missing
+                    }
+                    pl_studio_runtime::StudioWorktreeInspection::IdentityMismatch => {
+                        BridgeWorktreeInspection::IdentityMismatch
+                    }
+                    pl_studio_runtime::StudioWorktreeInspection::Unavailable => {
+                        BridgeWorktreeInspection::Unavailable
+                    }
+                },
                 owner_kind: match worktree.owner_kind {
                     pl_studio_runtime::StudioRecoveryWorktreeOwner::Session => {
                         BridgeWorktreeOwner::Session

@@ -2,6 +2,9 @@ import 'dart:async';
 
 import 'package:anywork_client/studio_client.dart';
 import 'package:test/test.dart';
+import 'package:anywork_client/model_directory.dart';
+
+import 'support/accounts_test_runtime.dart';
 
 const _online = AccountModelView(
   modelId: 'online-model',
@@ -67,8 +70,8 @@ class _RemoveCall {
   final reply = Completer<SettingsCommandReply>();
 }
 
-class _Transport implements StudioTransport {
-  final calls = StreamController<_RemoveCall>();
+class _Transport extends AccountsTestTransport {
+  final calls = StreamController<_RemoveCall>.broadcast();
   SettingsStateSnapshot? refreshed;
   int refreshes = 0;
 
@@ -99,66 +102,57 @@ class _Transport implements StudioTransport {
       throw UnsupportedError('Unused: ${invocation.memberName}');
 }
 
-AnyworkClient _client(_Transport transport, AccountSettingsView account) {
-  final client = AnyworkClient(transport: transport, clientId: 'origin-client');
-  client.applyBootstrap(
-    StudioBootstrap(
-      ownerEpoch: 'origin-owner',
-      projectDirectory: ProjectDirectoryState(values: const [], revision: 1),
-      threadDirectory: ThreadDirectoryWindow(threads: const [], revision: 1),
-      agentDirectory: AgentDirectoryState(revision: 1),
-      settingsState: _snapshot(7, account, modelCatalogRevision: 1),
-      recoveryState: RecoveryStateSnapshot(revision: 1),
-      mcpState: McpStateSnapshot(revision: 1),
-      lspState: LspStateSnapshot(revision: 1),
-      skillsByProject: const {},
-      threadModeCatalog: const ThreadModeCatalogView(),
-      accountUsageState: AccountUsageStateSnapshot(revision: 1),
-      updaterState: DisabledUpdaterStateSnapshot(
-        revision: 1,
-        updatedAt: DateTime.utc(2026),
-      ),
-      persistenceState: const PersistenceStateSnapshot.ready(),
-    ),
-  );
+AccountsTestRuntime _client(_Transport transport, AccountSettingsView account) {
+  transport.epoch = 'origin-owner';
+  final client = AccountsTestRuntime(transport, clientId: 'origin-client');
+  client.seed(_snapshot(7, account, modelCatalogRevision: 1));
   addTearDown(client.close);
   addTearDown(transport.calls.close);
   return client;
 }
 
 void main() {
-  test(
-    'accountWithCatalogMetadata projects origin groups without modelId diffs',
-    () {
-      final joined = accountWithCatalogMetadata(
-        _account(),
-        const AccountCatalogView.empty(),
-      );
-      expect(joined.onlineModels.map((model) => model.modelId), [
-        'online-model',
-      ]);
-      expect(joined.bundledModels.map((model) => model.modelId), [
-        'bundled-model',
-      ]);
-      expect(joined.customModels.map((model) => model.modelId), [
-        'manual-model',
-      ]);
-      expect(joined.models.map((model) => model.origin), [
-        ModelOrigin.online,
-        ModelOrigin.bundled,
-        ModelOrigin.manual,
-      ]);
-    },
-  );
+  test('one model domain preserves origin groups without modelId diffs', () {
+    final runtime = _client(_Transport(), _account());
+    final joined = runtime
+        .domains
+        .models
+        .state
+        .value
+        .accounts[const NativeAccountIdentity('fixture')]!
+        .value!;
+    expect(
+      joined.models
+          .where((model) => model.origin == ModelOrigin.online)
+          .map((model) => model.modelId),
+      ['online-model'],
+    );
+    expect(
+      joined.models
+          .where((model) => model.origin == ModelOrigin.bundled)
+          .map((model) => model.modelId),
+      ['bundled-model'],
+    );
+    expect(
+      joined.models
+          .where((model) => model.origin == ModelOrigin.manual)
+          .map((model) => model.modelId),
+      ['manual-model'],
+    );
+    expect(joined.models.map((model) => model.origin), [
+      ModelOrigin.online,
+      ModelOrigin.bundled,
+      ModelOrigin.manual,
+    ]);
+  });
 
   test(
     'removeAccountModel uses canonical revision and merges returned snapshot',
     () async {
       final transport = _Transport();
       final client = _client(transport, _account());
-      final pending = client.settingsCommands.removeAccountModel(
-        'fixture',
-        'manual-model',
+      final pending = client.domains.models.removeManual(
+        modelIdentity('fixture', 'manual-model'),
       );
       final call = await transport.calls.stream.first;
       expect(call.revision, 7);
@@ -166,9 +160,7 @@ void main() {
       expect(call.modelId, 'manual-model');
       expect(
         call.operationId,
-        client.mutations
-            .latest('settings:account-model:7:fixture:manual-model')!
-            .id,
+        client.board.latest('model:remove:7:fixture:manual-model')!.id,
       );
       final remaining = _account(
         models: const [_online, _bundled],
@@ -178,7 +170,7 @@ void main() {
         },
       );
       call.reply.complete(
-        SettingsCommandReply(
+        accountReply(
           snapshot: _snapshot(8, remaining, modelCatalogRevision: 2),
           receipt: StudioCommandReceipt(
             operationId: call.operationId,
@@ -197,15 +189,34 @@ void main() {
         ),
       );
       final snapshot = await pending;
-      expect(snapshot.revision, 8);
-      final account = client.settings.state.canonical!.accounts.single;
+      expect((snapshot.receipt!.targets.single as ResourceStamp).revision, 8);
+      final account = client
+          .domains
+          .models
+          .state
+          .value
+          .accounts[const NativeAccountIdentity('fixture')]!
+          .value!;
       expect(account.models.map((model) => model.modelId), [
         'online-model',
         'bundled-model',
       ]);
-      expect(account.customModels, isEmpty);
-      expect(account.modelConnectionModes.containsKey('manual-model'), isFalse);
-      expect(account.autoCompactLimits.containsKey('manual-model'), isFalse);
+      expect(
+        account.models.where((model) => model.origin == ModelOrigin.manual),
+        isEmpty,
+      );
+      final configuration = client
+          .domains
+          .models
+          .state
+          .value
+          .configurations[const NativeAccountIdentity('fixture')]!
+          .value!;
+      expect(configuration.connections.containsKey('manual-model'), isFalse);
+      expect(
+        configuration.autoCompactLimits.containsKey('manual-model'),
+        isFalse,
+      );
     },
   );
 
@@ -220,16 +231,30 @@ void main() {
       reasoningEfforts: const ['low', 'high'],
       defaultReasoningEffort: 'high',
     );
-    client.settings.merge(
+    client.seed(
       _snapshot(7, _account(models: [updated]), modelCatalogRevision: 4),
     );
-    client.settings.merge(
+    client.seed(
       _snapshot(8, _account(models: const [_online]), modelCatalogRevision: 2),
     );
-    final merged = client.settings.state.canonical!;
-    expect(merged.revision, 8);
-    expect(merged.modelCatalogRevision, 4);
-    final model = merged.accounts.single.modelsFor(type: ModelType.text).single;
+    final merged = client.domains.models.state.value;
+    expect(
+      merged
+          .configurations[const NativeAccountIdentity('fixture')]!
+          .stamp!
+          .revision,
+      8,
+    );
+    expect(
+      merged.accounts[const NativeAccountIdentity('fixture')]!.stamp!.revision,
+      4,
+    );
+    final model = merged
+        .accounts[const NativeAccountIdentity('fixture')]!
+        .value!
+        .models
+        .where((model) => model.enabled && model.matchesType(ModelType.text))
+        .single;
     expect(model.modelId, 'online-model');
     expect(model.defaultReasoningEffort, 'high');
     expect(model.reasoningEfforts, ['low', 'high']);
@@ -241,17 +266,32 @@ void main() {
         ),
       ],
     );
-    client.settings.merge(
+    client.seed(
       _snapshot(8, _account(models: [excluded]), modelCatalogRevision: 5),
     );
     expect(
-      client.settings.state.canonical!.accounts.single.modelsFor(
-        type: ModelType.text,
-      ),
+      client
+          .domains
+          .models
+          .state
+          .value
+          .accounts[const NativeAccountIdentity('fixture')]!
+          .value!
+          .models
+          .where((model) => model.enabled && model.matchesType(ModelType.text)),
       isEmpty,
     );
     expect(
-      client.settings.state.canonical!.accounts.single.models.single.modelId,
+      client
+          .domains
+          .models
+          .state
+          .value
+          .accounts[const NativeAccountIdentity('fixture')]!
+          .value!
+          .models
+          .single
+          .modelId,
       'online-model',
     );
   });

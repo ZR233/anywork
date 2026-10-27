@@ -16,6 +16,7 @@ mod error;
 mod interaction;
 pub(in crate::studio) mod object;
 mod project;
+pub(super) mod schema;
 pub(in crate::studio) mod session_layout;
 pub(in crate::studio) mod settings;
 mod thread;

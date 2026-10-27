@@ -1,4 +1,5 @@
 import 'package:anywork_client/models.dart';
+import 'package:anywork_client/model_directory.dart';
 import 'package:freezed_annotation/freezed_annotation.dart';
 
 part 'agent_workspace_view.freezed.dart';
@@ -21,7 +22,7 @@ abstract class AgentWorkspaceView with _$AgentWorkspaceView {
     required PendingInteraction? activeInteraction,
     required ComposerThreadState composer,
     required AgentComposerMode composerMode,
-    required List<AccountSettingsView> accounts,
+    required List<ModelSelectionAccount> accounts,
     @Default(<ModeModelRouteView>[]) List<ModeModelRouteView> modeModelRoutes,
     required List<RoleSettingsView> roles,
     required List<StudioAgentView> agents,

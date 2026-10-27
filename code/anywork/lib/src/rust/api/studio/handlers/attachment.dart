@@ -5,6 +5,7 @@
 
 import '../../../frb_generated.dart';
 import '../types/attachment.dart';
+import '../types/delegation.dart';
 import '../types/error.dart';
 
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';

@@ -21,7 +21,9 @@ use pl_model::model::{
     ModelMediaInputProfile, ModelModality, ModelTransportProfile,
 };
 use pl_model::protocol::ProtocolEndpoint;
-use pl_studio_runtime::config::{McpServerTransport, StudioConfig, StudioMcpServerEntry};
+use pl_studio_runtime::config::{
+    ConfigPaths, ConfigRuntime, ConfigStore, McpServerTransport, StudioConfig, StudioMcpServerEntry,
+};
 use sea_orm::sqlx::{
     Connection as _,
     sqlite::{SqliteConnectOptions, SqliteConnection},
@@ -69,6 +71,10 @@ pub(crate) struct ManualGuiOptions {
     /// Damage an isolated startup input, then capture recovery and its backup.
     #[arg(long, value_parser = ["config", "database", "log", "cache"])]
     pub(crate) startup_fault: Option<String>,
+    /// Seed the isolated GUI from a closed SQLite-consistent home copy. The source is read-only;
+    /// model endpoints become loopback fixtures, external tools and robot connections are disabled.
+    #[arg(long, value_name = "DIR", conflicts_with_all = ["startup_fault", "bots_fixture", "model_catalog_url", "model_catalog_control", "model_catalog_inventory"])]
+    pub(crate) seed_home_copy: Option<PathBuf>,
     /// Add isolated OpenAI, DeepSeek and MiMo discovery instances against a loopback model-list fixture.
     #[arg(long, value_name = "URL")]
     pub(crate) model_catalog_url: Option<String>,
@@ -806,6 +812,10 @@ fn cleanup_bots_gui_start(
 pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
     delegation::validate(&options)?;
     ensure!(
+        options.seed_home_copy.is_none() || options.scenario == "gui",
+        "--seed-home-copy requires --scenario gui"
+    );
+    ensure!(
         !options.retain_environment
             || matches!(
                 options.scenario.as_str(),
@@ -971,7 +981,11 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
         .tempdir_in(&output)
         .context("failed to create isolated GUI home")?;
     let home = working.path().join("home");
-    fs::create_dir(&home)?;
+    if let Some(source) = &options.seed_home_copy {
+        copy_closed_home(source, &home)?;
+    } else {
+        fs::create_dir(&home)?;
+    }
 
     // The 1.4.1 journey needs no HTTP model step: it drives the fixed distribution
     // peer, the real managed install chain and the real ACP handshake instead, so
@@ -1138,31 +1152,34 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
         ready.scenario == options.scenario,
         "fixture scenario does not match request"
     );
-    if let Err(error) =
-        write_config(&home, &ready, options.web_search_fault.as_deref()).and_then(|()| {
-            if let Some(control) = catalog_control.as_ref() {
-                ensure!(
-                    options.scenario == "gui",
-                    "--model-catalog-inventory/--model-catalog-control require --scenario gui"
-                );
-                model_catalog::configure(&home, &ready.base_url, Some(control))?;
-                model_catalog::write_runbook(
-                    &output,
-                    &home,
-                    &catalog_control_path,
-                    control,
-                    &ready.base_url,
-                )?;
-            } else if let Some(url) = &options.model_catalog_url {
-                ensure!(
-                    options.scenario == "gui",
-                    "--model-catalog-url requires --scenario gui"
-                );
-                model_catalog::configure(&home, url, None)?;
-            }
-            Ok(())
-        })
-    {
+    if let Err(error) = (if options.seed_home_copy.is_some() {
+        write_copy_fixture_config(&home, &ready)
+    } else {
+        write_config(&home, &ready, options.web_search_fault.as_deref())
+    })
+    .and_then(|()| {
+        if let Some(control) = catalog_control.as_ref() {
+            ensure!(
+                options.scenario == "gui",
+                "--model-catalog-inventory/--model-catalog-control require --scenario gui"
+            );
+            model_catalog::configure(&home, &ready.base_url, Some(control))?;
+            model_catalog::write_runbook(
+                &output,
+                &home,
+                &catalog_control_path,
+                control,
+                &ready.base_url,
+            )?;
+        } else if let Some(url) = &options.model_catalog_url {
+            ensure!(
+                options.scenario == "gui",
+                "--model-catalog-url requires --scenario gui"
+            );
+            model_catalog::configure(&home, url, None)?;
+        }
+        Ok(())
+    }) {
         let _ = fixture.stop(&requests_file);
         drop(fixture);
         write_fixture_log(&fixture_log_path, &output.join("fixture.log"))?;
@@ -1550,6 +1567,13 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
         if options.scenario == "gui" {
             gui_command.args(["--log-level", "info"]);
         }
+        if options.seed_home_copy.is_some() {
+            // Observe the real native wait status; Flutter's resident runner reports zero even
+            // when the app exits abnormally during migration/restart review.
+            gui_command
+                .args(["--native-launch", "--native-exit-report"])
+                .arg(output.join("native-exit.json"));
+        }
         if matches!(options.scenario.as_str(), "stress" | "tool-scroll") {
             gui_command.arg("--profile");
         }
@@ -1657,7 +1681,7 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
                 );
                 thread::sleep(Duration::from_millis(100));
             };
-            capture(&app_dir, &home, &vm_url, &output, &interrupt_rx)?;
+            capture(&app_dir, &home, &vm_url, &output, &interrupt_rx, false)?;
             ensure!(
                 status.success(),
                 "tool expansion observation failed: {status}"
@@ -1788,7 +1812,14 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
                         }
                         ensure!(probe.child.wait()?.success(), "GUI stress probe failed");
                     }
-                    capture(&app_dir, &home, &vm_url, &output, &interrupt_rx)?;
+                    capture(
+                        &app_dir,
+                        &home,
+                        &vm_url,
+                        &output,
+                        &interrupt_rx,
+                        options.seed_home_copy.is_some(),
+                    )?;
                     return Ok(());
                 }
                 Ok(InputEvent::Eof) => bail!("manual GUI input closed before done"),
@@ -1806,6 +1837,17 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
             thread::sleep(Duration::from_millis(200));
         }
     })();
+    let session = session.and_then(|()| {
+        if options.seed_home_copy.is_some() {
+            let status = wait_for_gui_exit(&mut gui, Duration::from_secs(30), "migration review")?;
+            ensure!(
+                status.success(),
+                "migration review GUI exited abnormally: {status}"
+            );
+            require_native_exit(&output.join("native-exit.json"), None)?;
+        }
+        Ok(())
+    });
     let gui_log_result = write_sanitized_log(&gui_log_path, &output.join("gui.log"));
     if stress_stage.exists() {
         fs::copy(&stress_stage, output.join("stress-stage.txt"))?;
@@ -1948,6 +1990,11 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
         println!("Evidence: {} (human verdict pending)", output.display());
         gui_log_result?;
         if fixture_state == "pending" {
+            // A migration review opens saved sessions without sending a model request. Preserve
+            // its database evidence even when the GUI exits before review can complete.
+            if options.seed_home_copy.is_some() && options.retain_environment {
+                keep_isolated_environment(working, &home, &output, None)?;
+            }
             session?;
             println!("Fixture main step was not exercised; review remains pending.");
             return Ok(());
@@ -2388,7 +2435,10 @@ fn run_timeline_history_scenario(
                 &fs::read(output.join(format!("timeline-history-{phase}.json")))
                     .with_context(|| format!("timeline-history {phase} wrote no report"))?,
             )?;
-            require_timeline_native_exit(output, phase, report["pid"].as_u64())?;
+            require_native_exit(
+                &output.join(format!("timeline-history-{phase}-native-exit.json")),
+                report["pid"].as_u64(),
+            )?;
             ensure!(
                 report.get("pass") == Some(&serde_json::Value::Bool(true)),
                 "timeline-history {phase} did not pass: {}",
@@ -2663,7 +2713,10 @@ fn run_timeline_history_scenario(
                 &fs::read(output.join("observations.json"))
                     .context("displacement collector wrote no observations")?,
             )?;
-            require_timeline_native_exit(output, "displacement", observations["pid"].as_u64())?;
+            require_native_exit(
+                &output.join("timeline-history-displacement-native-exit.json"),
+                observations["pid"].as_u64(),
+            )?;
             ensure!(
                 observations.get("checksPassed") == Some(&serde_json::Value::Bool(true)),
                 "displacement matrix recorded failures: {}",
@@ -2884,15 +2937,16 @@ fn start_timeline_history_gui(
     OwnedProcess::start(&mut command, false)
 }
 
-fn require_timeline_native_exit(output: &Path, phase: &str, pid: Option<u64>) -> Result<()> {
-    let path = output.join(format!("timeline-history-{phase}-native-exit.json"));
+fn require_native_exit(path: &Path, pid: Option<u64>) -> Result<()> {
     let report: serde_json::Value = serde_json::from_slice(
-        &fs::read(&path)
+        &fs::read(path)
             .with_context(|| format!("missing native exit report {}", path.display()))?,
     )?;
     ensure!(
         report["schema"] == "anywork-native-exit/1"
-            && pid.is_some_and(|pid| pid > 0 && report["pid"].as_u64() == Some(pid))
+            && report["pid"]
+                .as_u64()
+                .is_some_and(|actual| actual > 0 && pid.is_none_or(|expected| actual == expected))
             && report["exitCode"].as_i64() == Some(0)
             && report["signal"].is_null()
             && report["cancelled"].as_bool() == Some(false)
@@ -2902,7 +2956,7 @@ fn require_timeline_native_exit(output: &Path, phase: &str, pid: Option<u64>) ->
             && report["reclaimedDescendants"]
                 .as_array()
                 .is_some_and(Vec::is_empty),
-        "timeline-history {phase} native host did not exit cleanly: {report}"
+        "native host did not exit cleanly: {report}"
     );
     Ok(())
 }
@@ -3116,9 +3170,85 @@ fn validate_ready(ready: &FixtureReady) -> Result<()> {
     Ok(())
 }
 
-/// Writes the isolated [home]'s config, forwarding the operator-selected
-/// web-search fault to [`web_search::write_config`].
-///
+/// Accept only closed copies: a live WAL cannot be copied with ordinary filesystem operations.
+/// The source remains untouched; every modification happens inside the harness-owned environment.
+fn copy_closed_home(source: &Path, target: &Path) -> Result<()> {
+    ensure!(
+        source.join("config.toml").is_file(),
+        "copy config.toml is missing"
+    );
+    fn validate(path: &Path) -> Result<()> {
+        for entry in fs::read_dir(path)? {
+            let entry = entry?;
+            let kind = entry.file_type()?;
+            ensure!(
+                !kind.is_symlink(),
+                "links are not accepted in a migration copy"
+            );
+            if kind.is_dir() {
+                validate(&entry.path())?;
+            } else {
+                let name = entry.file_name();
+                let name = name.to_string_lossy();
+                ensure!(
+                    !name.ends_with("-wal") && !name.ends_with("-shm"),
+                    "seed home must be a closed, SQLite-consistent copy"
+                );
+            }
+        }
+        Ok(())
+    }
+    validate(source)?;
+    copy_startup_evidence(source, target)
+}
+
+fn write_copy_fixture_config(home: &Path, ready: &FixtureReady) -> Result<()> {
+    // Run the normal protected startup migration on the isolated copy. ConfigStore::new uses an
+    // in-memory credential store, so this does not hydrate or rewrite system credentials.
+    {
+        let runtime =
+            ConfigRuntime::initialize(ConfigStore::new(ConfigPaths::from_config_dir(home)))?;
+        drop(runtime);
+    }
+    // Read the migrated desired document strictly; never substitute effective runtime config.
+    let mut config: StudioConfig = toml::from_str(&fs::read_to_string(home.join("config.toml"))?)?;
+    for account in config.models.accounts.values_mut() {
+        let models = account
+            .effective_models(None)?
+            .into_iter()
+            .map(|mut model| {
+                model
+                    .binding
+                    .set_transport(ModelTransportProfile::responses_http());
+                model.binding.request.api_model = None;
+                model
+            })
+            .collect();
+        *account = AccountConfig::from_explicit_models(
+            ProtocolEndpoint::compatible("Local migration fixture", &ready.base_url),
+            models,
+        );
+    }
+    config.mcp.servers.clear();
+    config.lsp.servers.clear();
+    config.acp = Default::default();
+    config.skills.user_dir = home.join("skills").to_string_lossy().into_owned();
+    // Bots have their own canonical documents. Disable them before runtime startup, including
+    // each original identity, without deleting their ledger or touching its selected credential.
+    let bots = home.join("v2/bots");
+    if bots.is_dir() {
+        for entry in fs::read_dir(bots)? {
+            let path = entry?.path().join("config.toml");
+            if path.is_file() {
+                let mut bot: toml::Table = toml::from_str(&fs::read_to_string(&path)?)?;
+                bot.insert("enabled".into(), toml::Value::Boolean(false));
+                fs::write(path, toml::to_string_pretty(&bot)?)?;
+            }
+        }
+    }
+    persist_config(home, &config)
+}
+
 /// This is the single writer every scenario (including the descendant
 /// `shutdown` module) uses; the `web_search_fault` selector is only meaningful
 /// for the `web-search` scenario, so the other callers pass `None`.
@@ -3288,17 +3418,25 @@ fn write_config_with_lsp_server(
     persist_config(home, &config)
 }
 
-/// Uses the same build/artifact-discovery contract as the xtask launcher, so
-/// Cargo's configured target directory and native executable suffix stay owned
-/// by Cargo rather than being guessed by the readiness loop.
+/// Builds the standalone fixture with Cargo's release profile before service
+/// deadlines; GUI build mode is independent. Cargo owns artifact discovery, so
+/// its configured target directory and native executable suffix are not guessed.
 fn build_fixture_executable(workspace: &Path) -> Result<PathBuf> {
     const PACKAGE: &str = "pl-provider-fixture";
-    let args = ["build", "--locked", "-p", PACKAGE, "--bin", PACKAGE];
+    let args = [
+        "build",
+        "--release",
+        "--locked",
+        "-p",
+        PACKAGE,
+        "--bin",
+        PACKAGE,
+    ];
     let mut build = Command::new("cargo");
     build.current_dir(workspace).args(args);
     process::run_checked(
         &mut build,
-        "cargo build --locked -p pl-provider-fixture --bin pl-provider-fixture",
+        "cargo build --release --locked -p pl-provider-fixture --bin pl-provider-fixture",
     )?;
 
     let discovery = Command::new("cargo")
@@ -3384,6 +3522,26 @@ fn fixture_config(
         preset.context_window = Some(64_000);
         preset.max_context_window = Some(64_000);
         preset.auto_compact_token_limit = Some(24_000);
+        preset.capabilities.input.push(ModelInputCapability::media(
+            ModelModality::Image,
+            vec![ModelInputSource::Local],
+        ));
+        preset.binding.request.media.push(ModelMediaInputProfile {
+            modality: ModelModality::Image,
+            wire: MediaWireFormat::ResponsesInputImage,
+            first_send: vec![MediaRepresentation::DataUrl],
+            replay: vec![MediaRepresentation::DataUrl],
+        });
+        let mut file_input =
+            ModelInputCapability::media(ModelModality::File, vec![ModelInputSource::Local]);
+        file_input.limits.media_types = vec!["application/pdf".into()];
+        preset.capabilities.input.push(file_input);
+        preset.binding.request.media.push(ModelMediaInputProfile {
+            modality: ModelModality::File,
+            wire: MediaWireFormat::ResponsesInputFile,
+            first_send: vec![MediaRepresentation::DataUrl],
+            replay: vec![MediaRepresentation::DataUrl],
+        });
         let mut unknown = models[0].clone();
         unknown.model_id = "fixture-unknown".into();
         unknown.display_name = "Fixture with unknown context capacity".into();
@@ -3602,6 +3760,7 @@ fn capture(
     vm_url: &str,
     output: &Path,
     interrupt: &mpsc::Receiver<()>,
+    exit_native: bool,
 ) -> Result<()> {
     let driver_log_path = output.join("capture-driver.log");
     let driver_log = File::create(&driver_log_path)?;
@@ -3612,6 +3771,9 @@ fn capture(
         .env("ANYWORK_HOME", home)
         .stdout(Stdio::from(driver_log.try_clone()?))
         .stderr(Stdio::from(driver_log));
+    if exit_native {
+        command.arg("--exit");
+    }
     let mut capture = OwnedProcess::start(&mut command, false)?;
     let deadline = Instant::now() + Duration::from_secs(120);
     loop {

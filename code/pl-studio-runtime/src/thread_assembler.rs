@@ -170,7 +170,7 @@ pub enum ThreadAssemblyError {
     #[error("prepare child workspace failed: {source}")]
     ChildWorkspacePreparation {
         #[source]
-        source: PureError,
+        source: Box<dyn std::error::Error + Send + Sync>,
     },
     #[error("only a root Thread may create child agents")]
     ChildDepth,

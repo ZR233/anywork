@@ -133,11 +133,11 @@ impl StudioRuntime {
     }
 
     pub(super) async fn shutdown_agent_framework(&self) -> Result<()> {
-        // Shutdown already owns lifecycle admission; an accepted archive released it only after
-        // its full close/commit continuation concluded. Join the retained task before storage stops.
-        let archive = background_task::finish(&self.archive_task).await;
-        self.archive_task.lock().await.take();
-        archive.context("failed to join archive operation")?;
+        // Shutdown already owns lifecycle admission; an accepted archive/cleanup releases it only after
+        // its full operation and terminal commit conclude. Join the retained task before storage stops.
+        let lifecycle = background_task::finish(&self.thread_lifecycle_task).await;
+        self.thread_lifecycle_task.lock().await.take();
+        lifecycle.context("failed to join Thread lifecycle operation")?;
         let thread_failures = self.threads.close_all().await;
         if !thread_failures.is_empty() {
             return Err(ThreadCloseFailures(thread_failures).into());

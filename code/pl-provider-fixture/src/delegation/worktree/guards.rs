@@ -11,7 +11,7 @@ enum Expected<'a> {
     Removed,
 }
 
-pub(super) fn run(flow: &Flow<'_>, root: &str) -> Progress<Evidence> {
+pub(super) fn run(flow: &Flow<'_>, root: &str, environment: &Environment) -> Progress<Evidence> {
     let parent = git::capture(flow, "guards-parent", Action::Read, &[])?;
     require(
         parent.status.is_empty(),
@@ -70,6 +70,14 @@ pub(super) fn run(flow: &Flow<'_>, root: &str) -> Progress<Evidence> {
                 "default close destroyed the child's dirty synthetic file",
             )?;
         }
+        evidence.partial_closed_sends.push(partial_close::verify(
+            flow,
+            environment,
+            root,
+            &format!("{label}-sealed-send"),
+            &child,
+            &denied,
+        )?);
         evidence.closes.push(denied);
         evidence.closes.push(close(
             flow,
@@ -199,12 +207,7 @@ pub(super) fn run(flow: &Flow<'_>, root: &str) -> Progress<Evidence> {
 }
 
 fn isolated(parent: &Git, child: &Git) -> Result<()> {
-    require(
-        child.path != parent.path
-            && child.common_dir == parent.common_dir
-            && child.branch != parent.branch,
-        "guard child did not acquire its own worktree assignment",
-    )
+    git::new_detached_child(parent, child)
 }
 
 fn close(
@@ -215,11 +218,53 @@ fn close(
     force: bool,
     expected: Expected<'_>,
 ) -> Progress<Close> {
-    let tool_output = flow.raw(
-        label,
-        "close_agent",
-        json!({"target":child.spawn.agent_id,"force":force}),
+    let before = git::capture(
+        flow,
+        &format!("{label}-before"),
+        Action::Read,
+        std::slice::from_ref(&child.git.path),
     )?;
+    git::retained(parent, &child.git, &before)?;
+    let arguments = json!({"target":child.spawn.agent_id,"force":force});
+    let (tool_output, owner_error) = if matches!(expected, Expected::Removed) {
+        let _: Closed = flow.read(label, "close_agent", arguments.clone())?;
+        let call_id = format!("{}-{label}", flow.prefix);
+        let (index, output) = flow
+            .request
+            .tool_call_output(&call_id, "close_agent", &arguments)?
+            .context("successful guard close lost its original call/output")?;
+        let text = match output {
+            ToolCallOutput::Immediate(text) => text,
+            ToolCallOutput::Pending { task_id, .. } => {
+                let completion = flow
+                    .request
+                    .task_completion_after(index, &task_id, "close_agent")?
+                    .context("Flow did not resolve the guard close terminal report")?;
+                require(
+                    completion.status == TaskCompletionStatus::Succeeded,
+                    "guard removal did not finish successfully",
+                )?;
+                completion.projection
+            }
+        };
+        (text, None)
+    } else {
+        let owner_error = match flow.read::<Closed>(label, "close_agent", arguments.clone()) {
+            Err(Stop::Call(call)) => return Err(Stop::Call(call)),
+            Err(Stop::Failed(error)) => Some(format!("{error:#}")),
+            Ok(result) => {
+                require(
+                    result.error.is_some(),
+                    "protected cleanup unexpectedly succeeded",
+                )?;
+                None
+            }
+        };
+        (
+            no_head::observed_failure(flow, label, "close_agent", arguments)?.output,
+            owner_error,
+        )
+    };
     // Expected cleanup failures retain their actual structured partial result,
     // even though the framework appends its tool-failure annotation afterwards.
     let result: Closed = exec::first(&tool_output)?;
@@ -303,14 +348,18 @@ fn close(
     )?;
     if matches!(expected, Expected::Removed) {
         git::removed(parent, &child.git, &git)?;
+        git::close_preserved(&before, &git, Some(child.git.path.as_str()))?;
     } else {
         git::retained(parent, &child.git, &git)?;
+        git::close_preserved(&before, &git, None)?;
     }
     Ok(Close {
         label: label.into(),
         force,
         result,
         tool_output,
+        owner_error,
+        before: Some(before),
         git,
     })
 }

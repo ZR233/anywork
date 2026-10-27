@@ -7,14 +7,22 @@ use crate::studio::storage::history::HistoryStore;
 use anyhow::Result;
 
 impl StudioRuntime {
+    /// Explicit access boundary, separate from strictly read-only projections and receipt queries.
+    /// Prepares only existing history content; never imports TOML or activates an execution owner.
+    pub(super) async fn prepare_timeline_history(&self, thread_id: &str) -> Result<HistoryStore> {
+        let thread = self.read_protocol_thread(thread_id).await?;
+        self.check_thread_read_access(&thread)?;
+        let history = self.store.history(thread_id).await?;
+        history.prepare_history_access().await?;
+        self.read_timeline_history(thread_id).await
+    }
+
     /// 只读地打开一个 Thread 的 history 数据库，并校验它已越过 durable checkpoint 栅栏。
     ///
     /// 关键约束：不激活 owner、不 flush writer、不触发恢复。需要的持久化栅栏直接来自已落盘的
     /// checkpoint（`history_fence`），因此冷 Thread 与热 Thread 走同一条只读路径。栅栏未满足时以
     /// 类型化 `Busy` 失败闭锁，绝不回落到落后行、也绝不因此自动恢复或激活 owner；空库与真实栅栏
     /// 落后是两种不同的事实。
-    /// Same durable-fence check as [`Self::ensure_timeline_history`] without preparing storage.
-    ///
     /// Read-only lookups (an accepted-operation query, or the repeat check of a control command
     /// before the owner is activated) must not migrate a legacy checkpoint or delete the files it
     /// replaced. A storage fault or an unreached fence is propagated as its typed error; only a
@@ -23,17 +31,6 @@ impl StudioRuntime {
         let thread = self.read_protocol_thread(thread_id).await?;
         self.check_thread_read_access(&thread)?;
         read_history(&self.store, &thread).await
-    }
-
-    pub(super) async fn ensure_timeline_history(&self, thread_id: &str) -> Result<HistoryStore> {
-        let history = self.store.history(thread_id).await?;
-        let thread = self.read_protocol_thread(thread_id).await?;
-        let fence = crate::studio::thread_factory::recovery::load_checkpoint(&self.store, &thread)
-            .await?
-            .map_or(0, |checkpoint| checkpoint.history_fence);
-        let watermark = history.watermark().await?;
-        ensure_fence_reached(watermark, fence)?;
-        Ok(history)
     }
 }
 

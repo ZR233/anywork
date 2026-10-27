@@ -2,7 +2,9 @@
 use super::{StudioThreadFactory, errors::resource_error};
 use crate::studio::{
     ProjectRecord,
-    agent_host::worktree_lease::{WorkspaceEndpoint, WorkspaceIdentity, WorkspaceUsageLease},
+    agent_host::worktree_lease::{
+        WorkspaceEndpoint, WorkspaceIdentity, WorkspaceUsageLease, WorktreeLease,
+    },
 };
 use crate::thread_assembler::ThreadAssemblyError;
 use anyhow::Result;
@@ -10,8 +12,12 @@ use std::path::Path;
 
 impl StudioThreadFactory {
     /// Restore execution seals and only unfinished physical delete seals before preparation opens.
-    pub(in crate::studio) async fn restore_workspace_admission(&self) -> Result<()> {
-        for record in self.services.store.agent_closes().await? {
+    pub(in crate::studio) async fn restore_workspace_admission(
+        &self,
+        leases: Vec<WorktreeLease>,
+    ) -> Result<()> {
+        let records = self.services.store.agent_closes().await?;
+        for record in &records {
             self.services
                 .store
                 .catalog()
@@ -30,6 +36,17 @@ impl StudioThreadFactory {
                         .worktrees
                         .preserve_workspace_resources(&record.agent_id, binding.identity.clone());
                 }
+            }
+        }
+        // Pending physical seals must precede hydration so cleanupRequested is not downgraded.
+        // Conversely, hydration's legacy-resource protection cannot revive a terminal member's
+        // already returned use: retained SessionFiles and refs are not live borrowers.
+        self.services.worktrees.restore(leases);
+        for record in &records {
+            if record.worktree_cleanup.is_terminal() {
+                self.services
+                    .worktrees
+                    .release_stopped_runtime_resources(&record.agent_id);
             }
         }
         Ok(())

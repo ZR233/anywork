@@ -1,8 +1,11 @@
+import 'support/test_statistics_feed.dart';
+
+import 'package:anywork/src/app/app_graph.dart';
+
 import 'dart:async';
 import 'dart:convert';
 
 import 'package:anywork/src/infrastructure/frb/studio_api.dart';
-import 'package:anywork/src/presentation/view_models/timeline_session_owner.dart';
 import 'package:anywork/src/rust/api/studio/types/bots.dart' as frb_bots;
 import 'package:anywork/src/rust/api/studio/types/event.dart' as frb_event;
 import 'package:anywork/src/rust/api/studio/types/product_topic.dart'
@@ -336,11 +339,17 @@ void main() {
           ),
         ),
       );
-      final client = AnyworkClient(
+      final graph = AppGraph(
+        statisticsFeed: const TestStatisticsFeedPort(),
         transport: transport,
         clientId: 'bots-frb-driver',
       );
-      addTearDown(client.close);
+      final client = graph.client;
+      addTearDown(
+        () => graph.close(
+          deadline: DateTime.now().add(const Duration(seconds: 5)),
+        ),
+      );
       await client.bootstrap();
       final scope = client.channels.acquireSettingsScope(
         BridgeSettingsScopeKind.bots,
@@ -351,12 +360,18 @@ void main() {
         (clock) => clock.loaded && clock.revision == 7,
       );
 
-      final timeline = TimelineSessionOwner(client: client);
-      addTearDown(timeline.close);
+      final timeline = graph.timeline;
 
       Map<String, dynamic> driverJson() => jsonDecode(
         StudioDriverState.snapshotJson(
-          observed: queryStudioDriverFacts(client, timeline: timeline),
+          observed: queryStudioDriverFacts(
+            client,
+            accountsRepository: graph.accounts,
+            modelsRepository: graph.models,
+            usageRepository: graph.accountUsage,
+            acpService: graph.acp,
+            timeline: timeline,
+          ),
         ),
       ) as Map<String, dynamic>;
 

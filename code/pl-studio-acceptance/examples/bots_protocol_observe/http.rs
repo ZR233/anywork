@@ -159,11 +159,29 @@ impl StudioHttp {
         self.get_json("/api/v1/settings").await
     }
 
-    pub async fn save_account(
+    pub async fn patch_account(
         &self,
-        request: &pl_protocol::studio::UpdateAccountRequest,
+        request: &pl_protocol::studio::PatchAccountRequest,
     ) -> Result<pl_protocol::studio::SettingsCommandReply> {
-        self.put_json("/api/v1/settings/account", request).await
+        let path = "/api/v1/accounts";
+        let response = self
+            .command_client
+            .patch(format!("{}{path}", self.base))
+            .json(request)
+            .send()
+            .await
+            .with_context(|| format!("PATCH {path}"))?;
+        let status = response.status();
+        let text = response.text().await?;
+        decode_json(status, &text, path)
+    }
+
+    pub async fn set_model_connection(
+        &self,
+        request: &pl_protocol::studio::SetAccountModelConnectionRequest,
+    ) -> Result<pl_protocol::studio::SettingsCommandReply> {
+        self.put_json("/api/v1/accounts/model-connection", request)
+            .await
     }
 
     pub async fn update_settings_field(

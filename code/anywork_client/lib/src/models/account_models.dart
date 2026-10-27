@@ -243,7 +243,7 @@ class AccountSettingsView {
   const AccountSettingsView({
     this.billingKind = BillingKind.unknown,
     this.billingKindOverride,
-    this.disabledModels = const [],
+    this.modelEnabledOverrides = const {},
     this.modelCatalog = const ModelCatalogStatusView(),
     required this.id,
     this.templateId,
@@ -277,7 +277,7 @@ class AccountSettingsView {
 
   final BillingKind billingKind;
   final BillingKind? billingKindOverride;
-  final List<String> disabledModels;
+  final Map<String, bool> modelEnabledOverrides;
   final ModelCatalogStatusView modelCatalog;
   final String id;
 
@@ -362,7 +362,7 @@ class AccountSettingsView {
     ModelCatalogStatusView? modelCatalog,
     BillingKind? billingKind,
     Object? billingKindOverride = _accountSettingsUnset,
-    List<String>? disabledModels,
+    Map<String, bool>? modelEnabledOverrides,
     String? id,
     Object? templateId = _accountTemplateUnset,
     String? protocol,
@@ -398,7 +398,8 @@ class AccountSettingsView {
       billingKindOverride: identical(billingKindOverride, _accountSettingsUnset)
           ? this.billingKindOverride
           : billingKindOverride as BillingKind?,
-      disabledModels: disabledModels ?? this.disabledModels,
+      modelEnabledOverrides:
+          modelEnabledOverrides ?? this.modelEnabledOverrides,
       id: id ?? this.id,
       templateId: identical(templateId, _accountTemplateUnset)
           ? this.templateId
@@ -513,46 +514,6 @@ class AccountTemplateView {
   final String promptCacheDialect;
   final bool responsesProgrammaticToolCalling;
   final String? iconKey;
-
-  /// 以该模板重建一份完整的不可变账号草稿；模板只提供创建默认值。
-  AccountSettingsView createAccount(
-    String accountId,
-    List<AccountModelView> models,
-  ) {
-    return AccountSettingsView(
-      id: accountId,
-      templateId: id,
-      protocol: protocol,
-      name: displayName,
-      subtitle: description,
-      baseUrl: baseUrl,
-      bearerToken: '',
-      hasBearerToken: false,
-      usageQueryRevision: 0,
-      defaultModelId: suggestedModelId,
-      models: [
-        for (final model in models)
-          model.origin == ModelOrigin.bundled
-              ? model
-              : model.copyWith(origin: ModelOrigin.bundled),
-      ],
-      status: credentialEnv.isEmpty ? 'ready' : 'missingCredential',
-      credentialRequired: credentialEnv.isNotEmpty,
-      usageLabel: '${models.length} models',
-      modelCount: '${models.length}',
-      updatedAt: 'Draft',
-      catalogId: modelCatalogId,
-      credentialLabel: credentialLabel,
-      credentialEnv: credentialEnv,
-      capabilitySource: 'template_defaults',
-      hostedWebSearch: hostedWebSearch,
-      hostedWebSearchDialect: hostedWebSearchDialect,
-      standaloneWebSearch: standaloneWebSearch,
-      promptCacheDialect: promptCacheDialect,
-      responsesProgrammaticToolCalling: responsesProgrammaticToolCalling,
-      iconKey: iconKey,
-    );
-  }
 }
 
 class ModelConnectionModeView {
@@ -561,45 +522,6 @@ class ModelConnectionModeView {
   final String id;
   final String displayName;
 }
-
-AccountSettingsView accountWithCatalogMetadata(
-  AccountSettingsView account,
-  AccountCatalogView catalog,
-) {
-  final template = catalog.template(account.templateId ?? '');
-  AccountModelView applyConnectionMode(AccountModelView model) =>
-      model.copyWith(
-        connectionMode:
-            account.modelConnectionModes[model.modelId] ??
-            model.defaultConnectionMode,
-      );
-  final effectiveModels = account.models.map(applyConnectionMode).toList();
-  return account.copyWith(
-    subtitle: account.subtitle.isEmpty && template != null
-        ? template.description
-        : account.subtitle,
-    catalogId: template?.modelCatalogId ?? account.catalogId,
-    credentialLabel: template?.credentialLabel ?? account.credentialLabel,
-    credentialEnv: template?.credentialEnv ?? account.credentialEnv,
-    iconKey: template?.iconKey ?? account.iconKey,
-    models: effectiveModels,
-    modelCount: '${effectiveModels.length}',
-    usageLabel: effectiveModels.isEmpty
-        ? account.defaultModelId
-        : '${effectiveModels.length} models',
-  );
-}
-
-/// 为整组供应商附加静态目录元数据。
-///
-/// 所有 UI 投影都通过这里完成目录 join，避免设置、状态栏和 Driver 各自
-/// 维护一份字段合并逻辑。
-List<AccountSettingsView> accountsWithCatalogMetadata(
-  Iterable<AccountSettingsView> accounts,
-  AccountCatalogView catalog,
-) => [
-  for (final account in accounts) accountWithCatalogMetadata(account, catalog),
-];
 
 class AccountUsageView {
   const AccountUsageView({

@@ -239,10 +239,9 @@ impl StudioRecoveryRegistry {
         });
         for issue in issues {
             if !inner.removed.contains(&issue.id)
-                && !issue
-                    .thread_id
-                    .as_ref()
-                    .is_some_and(|id| inner.retired_threads.contains(id))
+                && !issue.thread_id.as_ref().is_some_and(|id| {
+                    inner.retired_threads.contains(id) && !is_worktree_issue(&issue)
+                })
             {
                 inner.issues.push(issue);
             }
@@ -277,9 +276,9 @@ impl StudioRecoveryRegistry {
     ) -> ObservedResource<Vec<StudioRecoveryIssue>> {
         let mut inner = self.inner.lock().expect("recovery lock poisoned");
         inner.retired_threads.insert(thread_id.into());
-        inner
-            .issues
-            .retain(|issue| issue.thread_id.as_deref() != Some(thread_id));
+        inner.issues.retain(|issue| {
+            issue.thread_id.as_deref() != Some(thread_id) || is_worktree_issue(issue)
+        });
         inner.touch();
         inner.snapshot()
     }
@@ -290,6 +289,10 @@ impl StudioRecoveryRegistry {
         inner.touch();
         inner.snapshot()
     }
+}
+
+fn is_worktree_issue(issue: &StudioRecoveryIssue) -> bool {
+    issue.id.starts_with("worktree-lease-")
 }
 impl Default for StudioRecoveryRegistry {
     fn default() -> Self {

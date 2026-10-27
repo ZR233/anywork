@@ -19,6 +19,7 @@ pub(super) struct Evidence {
     pub reopened: Vec<Reopened>,
     pub no_head: Option<no_head::NoHeadEvidence>,
     pub not_present: Vec<absent::AbsentCase>,
+    pub partial_closed_sends: Vec<partial_close::PartialSendEvidence>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -78,6 +79,14 @@ pub(super) struct Child {
     pub report: TerminalReport,
     pub git: Git,
     pub evaluation: Evaluation,
+    /// Actual subsequent checkout observations; the completed report remains immutable.
+    pub checkout_history: Vec<Git>,
+}
+
+impl Child {
+    pub fn checkout(&self) -> &Git {
+        self.checkout_history.last().unwrap_or(&self.git)
+    }
 }
 
 #[derive(Serialize, Deserialize)]
@@ -180,6 +189,8 @@ pub(super) struct Close {
     pub force: bool,
     pub result: Closed,
     pub tool_output: String,
+    pub owner_error: Option<String>,
+    pub before: Option<Git>,
     pub git: Git,
 }
 

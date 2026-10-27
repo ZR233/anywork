@@ -83,7 +83,6 @@ impl StudioThreadFactory {
         let manager = self.close_worktree_manager(&binding).await?;
         let handle = WorktreeHandle {
             path: binding.lease.path.clone().into(),
-            branch: binding.lease.branch.clone(),
             base_commit: binding.lease.base_commit.clone(),
         };
         let common = manager
@@ -194,10 +193,12 @@ impl StudioThreadFactory {
         );
         if let Some(grant) = &record.git {
             ensure!(
-                grant.expected_head == site.head && grant.delivery == delivery,
-                "previous close grant HEAD or delivery identity changed; possible replacement preserved"
+                grant.delivery == delivery,
+                "previous close grant delivery identity changed; possible replacement preserved"
             );
         }
+        // A confirmed non-removal consumed no content authority. HEAD is checked again for this
+        // attempt and saved in its new grant, never promoted to permanent resource identity.
         if let Ok((workspace, project)) = self.actual_tool_workspace(&record.root_id) {
             let actual = self
                 .resolve_workspace_identity(&project, workspace.root())
@@ -236,11 +237,8 @@ impl StudioThreadFactory {
         if let Err(error) = manager.retire_child(&handle, &request).await {
             // A known Git refusal can be retried only after re-proving the same remaining site.
             // An interrupted job leaves removal_started set and never replays on restart.
-            if matches!(
-                &error,
-                crate::agent::worktree::WorktreeError::GitExited { .. }
-                    | crate::agent::worktree::WorktreeError::GitLaunchFailed { .. }
-            ) && let Ok((Some(current), true)) = manager.child_cleanup_site(&handle).await
+            if removal_definitely_refused(&error)
+                && let Ok((Some(current), true)) = manager.child_cleanup_site(&handle).await
                 && current.head == request.expected_head
                 && let Some(grant) = &mut record.git
             {
@@ -269,13 +267,13 @@ impl StudioThreadFactory {
             .worktrees
             .get(id)
             .context("closed worktree lease disappeared")?;
-        // Final close retains the independent branch/ref. Do not give the ordinary archive's
-        // Cleaned label a weaker meaning; its own later explicit authorization may remove refs.
+        // Final close retains all independent refs. Generic release cannot replay this close's
+        // physical authority; its exact terminal result remains in the durable close record.
         if !matches!(
             lease.state,
             WorktreeLeaseState::Preserved | WorktreeLeaseState::Cleaned
         ) {
-            lease.settle(WorktreeLeaseState::Preserved);
+            lease.transition(WorktreeLeaseState::Preserved);
             self.services.worktrees.record_durable(lease).await?;
         }
         Ok(())
@@ -321,5 +319,21 @@ impl StudioThreadFactory {
             );
         }
         Ok(())
+    }
+}
+
+/// Only a confirmed refusal before removal can release the persisted started fence. In
+/// particular a transport spawn error is not proof that the helper never spawned Git.
+fn removal_definitely_refused(error: &crate::agent::worktree::WorktreeError) -> bool {
+    use crate::agent::worktree::{RemoteExecutionError, WorktreeError};
+    match error {
+        WorktreeError::GitExited { args, .. } | WorktreeError::GitLaunchFailed { args, .. } => {
+            args.starts_with("worktree remove ")
+        }
+        WorktreeError::RemoteExecution {
+            args,
+            source: RemoteExecutionError::WorkingDirectory,
+        } => args.starts_with("worktree remove "),
+        _ => false,
     }
 }

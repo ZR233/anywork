@@ -141,7 +141,6 @@ impl StudioThreadFactory {
                     && current.project_id == original.project_id
                     && current.repository_root == original.repository_root
                     && current.path == original.path
-                    && current.branch == original.branch
                     && current.base_commit == original.base_commit
                     && current.ssh_alias == original.ssh_alias,
                 "closed child ownership binding changed"
@@ -297,7 +296,6 @@ impl StudioThreadFactory {
                     && lease.project_id == thread.project_id
                     && lease.repository_root == receipt.repository_root
                     && lease.path == receipt.path
-                    && lease.branch == receipt.branch
                     && lease.base_commit == receipt.base_commit
             })
             .ok_or_else(|| {

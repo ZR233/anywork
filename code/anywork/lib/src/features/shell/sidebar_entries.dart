@@ -691,10 +691,10 @@ class _ThreadMenuButtonState extends State<_ThreadMenuButton> {
             child: Text(context.l10n.sidebarRenameSession),
           ),
           MenuItemButton(
-            // 归档只从更多菜单进入，使用独立 key 供 Driver 精确定位菜单项。
+            // 归档不依赖工作区访问状态；物理工作树检查与归档相互独立。
             key: ValueKey('thread-menu-archive-${thread.id}'),
             overflowAxis: Axis.vertical,
-            onPressed: widget.blocked ? null : () => _select('archive'),
+            onPressed: () => _select('archive'),
             child: Text(context.l10n.sidebarArchiveSession),
           ),
           MenuItemButton(

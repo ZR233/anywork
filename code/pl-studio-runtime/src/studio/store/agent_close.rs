@@ -1,7 +1,8 @@
 //! The explicit execution seal and one original owned-worktree binding, not a history source.
+mod migration;
 use super::{
     StudioStore,
-    object::{PersistedStudioObject, load_object, load_objects, put_object},
+    object::{PersistedStudioObject, decode_object, load_object, put_object},
 };
 use crate::studio::{
     agent_close::{AgentCloseResult, AgentWorktreeCleanup},
@@ -10,6 +11,7 @@ use crate::studio::{
     },
 };
 use anyhow::{Context, Result, ensure};
+pub(super) use migration::upgrade_bindings;
 use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, TransactionTrait};
 use serde::{Deserialize, Serialize};
 
@@ -68,7 +70,7 @@ impl PersistedStudioObject for AgentCloseRecord {
     type PersistenceDto = Self;
     const OWNER_KIND: &'static str = "thread";
     const OBJECT_KIND: &'static str = "agentClose";
-    const SCHEMA_VERSION: i64 = 1;
+    const SCHEMA_VERSION: i64 = 2;
 
     fn revision(&self) -> u64 {
         self.revision
@@ -159,7 +161,14 @@ impl StudioStore {
     }
 
     pub(crate) async fn agent_closes(&self) -> Result<Vec<AgentCloseRecord>> {
-        load_objects(self.database()).await
+        use crate::studio::entity::studio_object;
+        studio_object::Entity::find()
+            .filter(studio_object::Column::ObjectKind.eq(AgentCloseRecord::OBJECT_KIND))
+            .all(self.database())
+            .await?
+            .into_iter()
+            .map(decode_object::<AgentCloseRecord>)
+            .collect()
     }
 
     /// An unpublished old candidate never grants deletion; its source is left untouched.

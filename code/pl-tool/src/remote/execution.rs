@@ -6,10 +6,53 @@ use tokio::io::AsyncRead;
 
 use crate::execution::{ExecutionBackend, ExecutionOutput, ExecutionRequest};
 
-use super::RemoteClient;
 use super::path::relative_workspace_path;
+use super::{RemoteClient, RemoteClientError};
 
 static NEXT_EXECUTION_ID: AtomicU64 = AtomicU64::new(0);
+
+/// 远端命令失败的阶段；显示文本不包含路径、命令或底层诊断原文。
+///
+/// 原生来源供宿主分类并安全生成诊断，不能直接展示完整 source 链。
+#[derive(thiserror::Error)]
+pub enum RemoteExecutionError {
+    #[error("remote command working directory is invalid or escapes the workspace")]
+    WorkingDirectory,
+    #[error("remote command spawn failed")]
+    Spawn {
+        #[source]
+        source: RemoteClientError,
+    },
+    #[error("remote command output stream is missing")]
+    OutputMissing,
+    #[error("stream-only remote execution returned an unexpected capture receipt")]
+    UnexpectedCapture,
+    #[error("remote command output buffer allocation failed")]
+    Buffer {
+        #[source]
+        source: RemoteClientError,
+    },
+    #[error("remote command output read failed")]
+    Read {
+        #[source]
+        source: std::io::Error,
+    },
+    /// ManagedCommand 已只提供字符串，不推测其中的远端错误码。
+    #[error("remote command wait failed")]
+    Wait { reason: String },
+    /// 取消后已等待进程退出与输出收束；保留收束失败而不冒称成功。
+    #[error("remote command timed out")]
+    TimedOut {
+        #[source]
+        settlement_error: Option<Box<RemoteExecutionError>>,
+    },
+}
+
+impl std::fmt::Debug for RemoteExecutionError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(self, formatter)
+    }
+}
 
 /// 在远端 workspace 中执行宿主传入的 Git/worktree 命令。
 #[derive(Debug, Clone)]
@@ -35,7 +78,7 @@ impl RemoteExecutionBackend {
 }
 
 impl ExecutionBackend for RemoteExecutionBackend {
-    type Error = String;
+    type Error = RemoteExecutionError;
 
     async fn run(
         &self,
@@ -62,11 +105,11 @@ impl ExecutionBackend for RemoteExecutionBackend {
                 },
             )
             .await
-            .map_err(|error| error.to_string())?;
+            .map_err(|source| RemoteExecutionError::Spawn { source })?;
         drop(transport.take_stdin());
         let cancellation = transport.cancellation();
-        let stdout = transport.take_stdout().ok_or("remote stdout is missing")?;
-        let stderr = transport.take_stderr().ok_or("remote stderr is missing")?;
+        let stdout = transport.take_stdout();
+        let stderr = transport.take_stderr();
         let wait = collect_process_output(stdout, stderr, &mut transport, &self.client);
         tokio::pin!(wait);
         let result = match request.timeout {
@@ -74,14 +117,8 @@ impl ExecutionBackend for RemoteExecutionBackend {
                 Ok(result) => result,
                 Err(_) => {
                     cancellation.cancel();
-                    return Err(match wait.await {
-                        Ok(_) => {
-                            "remote command timed out; process exit and output drain completed"
-                                .to_string()
-                        }
-                        Err(error) => format!(
-                            "remote command timed out; exit or output drain failed: {error}"
-                        ),
+                    return Err(RemoteExecutionError::TimedOut {
+                        settlement_error: wait.await.err().map(Box::new),
                     });
                 }
             },
@@ -92,47 +129,55 @@ impl ExecutionBackend for RemoteExecutionBackend {
 }
 
 async fn collect_process_output(
-    stdout: impl AsyncRead + Unpin,
-    stderr: impl AsyncRead + Unpin,
+    stdout: Option<impl AsyncRead + Unpin>,
+    stderr: Option<impl AsyncRead + Unpin>,
     command: &mut crate::command::ManagedCommand,
     client: &RemoteClient,
-) -> Result<ExecutionOutput, String> {
+) -> Result<ExecutionOutput, RemoteExecutionError> {
     let (stdout, stderr, exit) = tokio::join!(
         read_all(stdout, client, command.cancellation()),
         read_all(stderr, client, command.cancellation()),
         command.wait()
     );
-    let exit = exit?;
+    // Output failures request cancellation. Report the typed initiating failure rather
+    // than replacing it with an untyped wait error caused by that cancellation.
+    let stdout = stdout?;
+    let stderr = stderr?;
+    let exit = exit.map_err(|reason| RemoteExecutionError::Wait { reason })?;
     if exit.capture.is_some() {
-        return Err("stream-only execution returned an unexpected capture receipt".into());
+        return Err(RemoteExecutionError::UnexpectedCapture);
     }
     Ok(ExecutionOutput {
         status: exit.exit_code.unwrap_or(-1),
-        stdout: String::from_utf8_lossy(&stdout?).into_owned(),
-        stderr: String::from_utf8_lossy(&stderr?).into_owned(),
+        stdout: String::from_utf8_lossy(&stdout).into_owned(),
+        stderr: String::from_utf8_lossy(&stderr).into_owned(),
     })
 }
 
 async fn read_all(
-    mut reader: impl AsyncRead + Unpin,
+    reader: Option<impl AsyncRead + Unpin>,
     client: &RemoteClient,
     cancellation: crate::command::CommandCancellation,
-) -> Result<Vec<u8>, String> {
-    let mut bytes = client
-        .resident_buffer(client.content_budget())
-        .map_err(|error| error.to_string())?;
+) -> Result<Vec<u8>, RemoteExecutionError> {
+    let Some(mut reader) = reader else {
+        cancellation.cancel();
+        return Err(RemoteExecutionError::OutputMissing);
+    };
+    let mut bytes = match client.resident_buffer(client.content_budget()) {
+        Ok(bytes) => bytes,
+        Err(source) => {
+            cancellation.cancel();
+            return Err(RemoteExecutionError::Buffer { source });
+        }
+    };
     if let Err(error) = tokio::io::copy(&mut reader, &mut bytes).await {
         cancellation.cancel();
-        return Err(format!("read remote command output: {error}"));
+        return Err(RemoteExecutionError::Read { source: error });
     }
     Ok(bytes.into_bytes())
 }
 
-fn remote_cwd(cwd: &Path, canonical_root: &str) -> Result<String, String> {
-    relative_workspace_path(canonical_root, cwd).map_err(|()| {
-        format!(
-            "remote command cwd '{}' escapes workspace '{canonical_root}'",
-            cwd.display()
-        )
-    })
+fn remote_cwd(cwd: &Path, canonical_root: &str) -> Result<String, RemoteExecutionError> {
+    relative_workspace_path(canonical_root, cwd)
+        .map_err(|()| RemoteExecutionError::WorkingDirectory)
 }

@@ -26,14 +26,24 @@ fixture 仅模拟 loopback 外部供应商及响应 gate。`verdict.json` 始终
 仅限本次环境；只有合成文件显式暂存，身份与 hook 配置限定单条命令，不修改用户 Git 配置。
 
 - 干净基线：child 的实际目录和 HEAD 由 child 自身命令报告；HEAD 必须等于 caller
-  准入时的实际 HEAD。reviewer 的命令必须观察同一实际目录，不产生新工作树或分支。
+  准入时的实际 HEAD。默认新工作树必须实际为 detached，创建前后全部 refs 不变；
+  路径、common-dir、独立管理目录及注册/backlink 共同证明现场，不能用非空分支名代替。
+  reviewer 的命令必须观察同一实际目录，不产生新工作树或分支。
+- 可变分支：只在 directory 阶段的一名已完成 child 上，经真实 exec 显式创建合成业务分支，
+  由 reviewer 观察同一实际 assignment，再改名、detach 并重新附着于改名后的分支。
+  默认 close 仍须成功且保留该业务 ref。原完成报告不改写，后续 checkout 观察单独记录；
+  不为所有 child 创建分支以掩盖默认 detached 行为。
 - 脏准入：分别建立未跟踪、暂存和未暂存改动；worktree spawn 明确拒绝后，目录成员、
   工作树注册、refs 与原改动保持不变。directory/reviewer 不受该干净检查限制。
 - 无 HEAD 准入：仅在本次合成仓库暂时指向尚未创建的分支，以真实 Git 返回确认无 HEAD，
   经公开 spawn 取得要求初始 commit 的失败；拒绝前后成员、注册、refs、索引与文件保持不变。
-  随后恢复原符号分支，确认原 HEAD 和干净状态，不生成替代提交。
+  随后恢复原符号引用或原 direct HEAD，确认原 OID、索引、文件与目录状态，不生成替代提交。
+  已切换后的真实失败也必须尝试收束原 HEAD，再传播原错误；恢复失败保留双方错误。
+  正常跨请求的工具等待不是终止失败，不能为了立即恢复而跳过正在验证的无 HEAD 窗口。
 - 关闭：默认清理保护脏改动和未交付提交；真正的 reviewer 借用与 Git 锁连 force 也不能
-  绕过。解除本次合成阻碍后，重试只删除原绑定工作树，独立 ref 和相邻目录仍存在。
+  绕过。默认清理失败但执行已关闭时，先证明同一成员、原轮次和真实永久关闭的发送拒绝，
+  provider 请求计数不增，再允许 force 重试。解除本次合成阻碍后，只删除原绑定工作树；
+  关闭前后全部既有 refs 不变，注册仅允许移除明确绑定一项，相邻目录仍存在。
 - 重启：同一 home 正常重开后读取原完整历史、报告和已有评价；已最终关闭 child 拒绝
   续跑且无新增 provider 请求，未显式关闭 child 则可按原身份恢复。
 - 不存在的绑定：对已完成的合成 child 分别通过 Git 移除工作树，或将其目录移至本次独有
@@ -62,6 +72,10 @@ cargo xtask manual-gui --scenario delegation-worktree --output <artifacts>/workt
 `GDK_BACKEND=x11 xvfb-run -a ... script -q -e -c '<上述命令>' /dev/null` 入口；动态
 端口不使用 `1420`。Xvfb 由外层 `xvfb-run` 拥有，必须等待外层命令退出后核对回收。
 不能直接运行 `flutter run`，也不要使用 demo。GUI 未完成生成/编译时不要盲启动。
+
+独立供应商 fixture 由 harness 在服务期限开始前使用 Cargo `release` profile 构建，
+GUI 仍保持上述原生 debug/Driver 模式。完整请求证据、原子发布和真实进程退出仍须在
+既定停止期限内完成；不因业务阶段已经通过而忽略收尾失败。
 
 可选 `--delegation-driver <当前会话 scratch 中的 Dart 脚本>`。harness 通过已有纯
 Dart Driver 入口运行它，依次传入：

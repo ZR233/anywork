@@ -385,9 +385,7 @@ mod storage_fault_tests {
             path: WorktreeManager::allocate_path(repo, "root", &ownership)
                 .to_string_lossy()
                 .into_owned(),
-            branch: WorktreeManager::branch_for(&ownership),
             base_commit: "a".repeat(40),
-            restore_authorized_at: None,
         }
     }
 
@@ -499,7 +497,7 @@ mod storage_fault_tests {
     struct CleanupIo {
         removed: AtomicBool,
         removals: AtomicUsize,
-        branch_removed: AtomicBool,
+        identity_conflict: bool,
         replacement_after_remove: AtomicBool,
         path: PathBuf,
         common_dir: PathBuf,
@@ -511,37 +509,29 @@ mod storage_fault_tests {
             Self {
                 removed: AtomicBool::new(false),
                 removals: AtomicUsize::new(0),
-                branch_removed: AtomicBool::new(false),
+                identity_conflict: false,
                 replacement_after_remove: AtomicBool::new(false),
                 path: lease.path.clone().into(),
                 common_dir: Path::new(&lease.repository_root).join(".git"),
-                branch: lease.branch.clone(),
+                branch: "business".into(),
             }
         }
     }
 
     type GitResult<'a, T> = BoxFuture<'a, Result<T, WorktreeError>>;
     impl WorktreeBackend for CleanupIo {
-        fn delete_branch_at<'a>(
-            &'a self,
-            _: &'a Path,
-            branch: &'a str,
-            expected_head: &'a str,
-        ) -> GitResult<'a, ()> {
-            async move {
-                if branch != self.branch || expected_head != "a".repeat(40) {
-                    return Err(WorktreeError::InvalidResource(
-                        "reference CAS mismatch".into(),
-                    ));
-                }
-                self.branch_removed.store(true, Ordering::Release);
-                Ok(())
+        fn worktree_backlink<'a>(&'a self, _: &'a Path, _: &'a str) -> GitResult<'a, String> {
+            async {
+                let path = self.path.to_string_lossy().replace('\\', "/");
+                #[cfg(windows)]
+                let path = path.to_ascii_lowercase();
+                Ok(if self.identity_conflict {
+                    format!("{path}/another/.git")
+                } else {
+                    format!("{path}/.git")
+                })
             }
             .boxed()
-        }
-        fn branch_head<'a>(&'a self, _: &'a Path, _: &'a str) -> GitResult<'a, Option<String>> {
-            async { Ok((!self.branch_removed.load(Ordering::Acquire)).then(|| "a".repeat(40))) }
-                .boxed()
         }
         fn is_ancestor<'a>(&'a self, _: &'a Path, _: &'a str, _: &'a str) -> GitResult<'a, bool> {
             async { Ok(true) }.boxed()
@@ -552,7 +542,7 @@ mod storage_fault_tests {
         fn create_parent<'a>(&'a self, _: &'a Path, _: &'a Path) -> GitResult<'a, ()> {
             async { Ok(()) }.boxed()
         }
-        fn path_exists<'a>(&'a self, _: &'a Path) -> GitResult<'a, bool> {
+        fn path_exists<'a>(&'a self, _: &'a Path, _: &'a Path) -> GitResult<'a, bool> {
             async {
                 Ok(!self.removed.load(Ordering::Acquire)
                     || self.replacement_after_remove.load(Ordering::Acquire))
@@ -562,7 +552,6 @@ mod storage_fault_tests {
         fn create<'a>(
             &'a self,
             _: &'a Path,
-            _: &'a str,
             _: &'a Path,
             _: &'a str,
         ) -> BoxFuture<'a, Result<(), WorktreeCreateFailure>> {
@@ -582,6 +571,7 @@ mod storage_fault_tests {
                     head: "a".repeat(40),
                     branch: Some(self.branch.clone()),
                     changed_files: vec![],
+                    ignored_files: vec![],
                 })
             }
             .boxed()
@@ -616,8 +606,8 @@ mod storage_fault_tests {
 
     #[tokio::test]
     async fn cleaned_reentry_waits_for_its_completion_commit_and_ack() -> Result<()> {
-        use crate::studio::agent_host::workspace_preparation::close_workspace;
-        use pl_tool::collaboration::thread::WorkspaceRelease;
+        use crate::agent::worktree::WorktreeCleanupPolicy;
+        use crate::studio::agent_host::workspace_preparation::cleanup_workspace;
         let temp = tempfile::tempdir()?;
         let store = StudioStore::open(temp.path().join("studio/v2/studio.sqlite")).await?;
         let writer = ThreadWriteBehindWriter::new(store.clone());
@@ -625,25 +615,26 @@ mod storage_fault_tests {
         let unchanged = lease(temp.path(), "already-durable");
         leases.record_durable(unchanged.clone()).await?;
         // A failed identity check or physical postcondition must retain a durable cleanup owner,
-        // not publish Cleaned or delete either a replacement directory or its surviving branch.
-        for (id, changed_branch) in [("changed-branch", true), ("replacement-path", false)] {
+        // not publish Cleaned or delete a replacement directory. Branch observations never grant
+        // or revoke identity and refs remain outside this deletion boundary.
+        for (id, identity_conflict) in [("changed-backlink", true), ("replacement-path", false)] {
             let prepared = lease(temp.path(), id);
             leases.record_durable(prepared.clone()).await?;
             let mut io = CleanupIo::new(&prepared);
-            if changed_branch {
-                io.branch = "user-owned-branch".into();
+            if identity_conflict {
+                io.identity_conflict = true;
             } else {
                 io.replacement_after_remove.store(true, Ordering::Release);
             }
             let io = Arc::new(io);
             let manager = WorktreeManager::new(temp.path().to_owned(), io.clone());
             assert!(
-                close_workspace(
+                cleanup_workspace(
                     &store,
                     &leases,
                     &manager,
                     prepared,
-                    WorkspaceRelease::Cleanup
+                    WorktreeCleanupPolicy::Safe
                 )
                 .await
                 .is_err()
@@ -653,10 +644,9 @@ mod storage_fault_tests {
             assert!(leases.is_durable(&pending));
             assert_eq!(
                 io.removals.load(Ordering::Acquire),
-                usize::from(!changed_branch)
+                usize::from(!identity_conflict)
             );
-            assert!(!io.branch_removed.load(Ordering::Acquire));
-            assert!(io.path_exists(&io.path).await?);
+            assert!(io.path_exists(temp.path(), &io.path).await?);
         }
         let prepared = lease(temp.path(), "cleanup");
         leases.record_durable(prepared.clone()).await?;
@@ -664,12 +654,12 @@ mod storage_fault_tests {
         let manager = WorktreeManager::new(temp.path().to_owned(), io.clone());
         store.database().execute_unprepared("CREATE TRIGGER reject_cleaned BEFORE UPDATE ON studio_objects WHEN json_extract(NEW.payload_json,'$.state')='cleaned' BEGIN SELECT RAISE(ABORT,'controlled completion rejection'); END").await?;
         assert!(
-            close_workspace(
+            cleanup_workspace(
                 &store,
                 &leases,
                 &manager,
                 prepared,
-                WorkspaceRelease::Cleanup
+                WorktreeCleanupPolicy::Safe
             )
             .await
             .is_err()
@@ -681,12 +671,12 @@ mod storage_fault_tests {
             "an unrelated blocked completion cannot invalidate an earlier lease receipt",
         )?;
         assert!(
-            close_workspace(
+            cleanup_workspace(
                 &store,
                 &leases,
                 &manager,
                 cleaned.clone(),
-                WorkspaceRelease::Cleanup
+                WorktreeCleanupPolicy::Safe
             )
             .await
             .is_err(),
@@ -699,12 +689,12 @@ mod storage_fault_tests {
             .await?;
         writer.retry_now();
         settled(&writer, writer.admitted_ticket()).await?;
-        close_workspace(
+        cleanup_workspace(
             &store,
             &leases,
             &manager,
             cleaned,
-            WorkspaceRelease::Cleanup,
+            WorktreeCleanupPolicy::Safe,
         )
         .await?;
         assert_eq!(io.removals.load(Ordering::Acquire), 1);
@@ -721,12 +711,12 @@ mod storage_fault_tests {
         let cleanup_store = store.clone();
         let cleanup_manager = manager.clone();
         let cleanup = tokio::spawn(async move {
-            close_workspace(
+            cleanup_workspace(
                 &cleanup_store,
                 &cleanup_leases,
                 &cleanup_manager,
                 next,
-                WorkspaceRelease::Cleanup,
+                WorktreeCleanupPolicy::Safe,
             )
             .await
         });
@@ -736,15 +726,15 @@ mod storage_fault_tests {
         let mut cleaned = leases
             .get("cancelled-cleanup")
             .context("cancelled completion phase")?;
-        // Also exercise consume_restore: its new revision must not bypass the pending receipt.
-        cleaned.grant_restore(1);
+        // A subsequent logical observation must not bypass the pending receipt.
+        cleaned.transition(WorktreeLeaseState::Cleaned);
         leases.record(cleaned.clone())?;
-        let mut retry = Box::pin(close_workspace(
+        let mut retry = Box::pin(cleanup_workspace(
             &store,
             &leases,
             &manager,
             cleaned,
-            WorkspaceRelease::Cleanup,
+            WorktreeCleanupPolicy::Safe,
         ));
         assert!(
             futures::poll!(retry.as_mut()).is_pending(),
@@ -758,33 +748,33 @@ mod storage_fault_tests {
         let cleaned = leases
             .get("cancelled-cleanup")
             .context("completion phase after ACK")?;
-        close_workspace(
+        cleanup_workspace(
             &store,
             &leases,
             &manager,
             cleaned,
-            WorkspaceRelease::Cleanup,
+            WorktreeCleanupPolicy::Safe,
         )
         .await?;
         assert_eq!(io.removals.load(Ordering::Acquire), 1);
         assert!(leases.is_durable(&leases.get("cancelled-cleanup").unwrap()));
-        io.branch_removed.store(false, Ordering::Release);
+        io.replacement_after_remove.store(true, Ordering::Release);
         let cleaned = leases
             .get("cancelled-cleanup")
             .context("durable completion")?;
         assert!(
-            close_workspace(
+            cleanup_workspace(
                 &store,
                 &leases,
                 &manager,
                 cleaned,
-                WorkspaceRelease::Cleanup
+                WorktreeCleanupPolicy::Safe
             )
             .await
             .is_err(),
-            "a completion retry must not delete a replacement branch"
+            "a completion retry must not delete a replacement checkout"
         );
-        assert!(!io.branch_removed.load(Ordering::Acquire));
+        assert!(io.path_exists(temp.path(), &io.path).await?);
         assert_eq!(io.removals.load(Ordering::Acquire), 1);
         writer.shutdown().await?;
         Ok(())

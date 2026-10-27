@@ -2,12 +2,14 @@ use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
 use crate::studio::StudioStore;
-use crate::studio::store::object::{PersistedStudioObject, load_objects};
+use crate::studio::store::object::PersistedStudioObject;
 mod identity;
 mod usage;
 pub(in crate::studio) use identity::resolve_physical_workspace;
 pub(crate) use identity::{WorkspaceEndpoint, WorkspaceIdentity};
 pub use usage::WorkspaceUsageLease;
+
+mod migration;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -49,7 +51,7 @@ impl WorktreeLeaseOwnerKind {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(in crate::studio) struct WorktreeLease {
     pub revision: u64,
     pub state: WorktreeLeaseState,
@@ -61,60 +63,17 @@ pub(in crate::studio) struct WorktreeLease {
     pub ssh_alias: Option<String>,
     pub repository_root: String,
     pub path: String,
-    pub branch: String,
     pub base_commit: String,
-    /// 显式归档恢复留下的授权事实：只有在清理之后又走了一次显式归档恢复，才允许在同一
-    /// 确定性路径重建该工作树。
-    ///
-    /// 它不是从 `Cleaned` 推断出来的资格：`Cleaned` 也可能来自崩溃遗留现场的显式清理，
-    /// 那种情况下重建会用一个新目录冒充原现场，因此普通调度必须失败并保留 Recovery 现场。
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub restore_authorized_at: Option<i64>,
 }
 
 impl WorktreeLease {
     /// Moves the lease to `state` and bumps its revision.
-    ///
-    /// The restore authorization is deliberately untouched here: only an explicit new cleanup
-    /// ([`close_workspace`]) or a successful rebuild may consume it, so an unsuccessful attempt (any
-    /// of the failure settlements, or a process exiting mid-create) keeps the site retryable.
     pub fn transition(&mut self, state: WorktreeLeaseState) {
         self.revision = self.revision.saturating_add(1);
         self.state = state;
     }
 
-    /// Settles the lease into `state` and ends any archive-restore window, in one revision.
-    ///
-    /// Settlement paths use this instead of `transition` + a separate field write: ending the window
-    /// and moving the state are one fact, and `record` admits only `previous + 1`.
-    pub(in crate::studio) fn settle(&mut self, state: WorktreeLeaseState) {
-        self.restore_authorized_at = None;
-        self.transition(state);
-    }
-
-    /// 显式归档恢复对该站点重建一次工作树的授权，作为一次新的 lease revision。
-    ///
-    /// 只由归档恢复入口写入。授权本身是 lease 的一个事实，`record` 只接受
-    /// 「上一条 + 1」，所以写入必须同时递增 revision；只改字段会让归档恢复在授权写入处
-    /// revision 冲突并中止。
-    pub(in crate::studio) fn grant_restore(&mut self, at: i64) {
-        self.revision = self.revision.saturating_add(1);
-        self.restore_authorized_at = Some(at);
-    }
-
-    /// 花掉归档恢复授权，作为一次新的 lease revision；返回此前是否确实持有授权。
-    ///
-    /// 一次授权只换一次重建：重建成功、进入新的显式清理、Recovery 清理以及启动结算都会调用
-    /// 它，因此残留在 `cleaned` lease 上的旧授权不会让后续普通激活重建工作树。
-    pub(in crate::studio) fn consume_restore(&mut self) -> bool {
-        if self.restore_authorized_at.take().is_none() {
-            return false;
-        }
-        self.revision = self.revision.saturating_add(1);
-        true
-    }
-
-    /// 该 lease 的 Pure-owned 归属；路径 leaf、分支与身份校验都由它派生。
+    /// 该 lease 的稳定归属；不约束可变的 Git 分支或 HEAD。
     pub(in crate::studio) fn ownership(&self) -> crate::agent::worktree::WorktreeOwnership {
         use crate::agent::worktree::WorktreeOwnership;
         match self.owner_kind {
@@ -127,31 +86,35 @@ impl WorktreeLease {
         }
     }
 
-    /// 按归属校验期望 leaf 与期望 branch，仍拒绝任何非 Pure 分支。
-    pub(in crate::studio) fn validate_identity(&self) -> Result<()> {
-        use crate::agent::worktree::WorktreeManager;
+    /// 按稳定归属校验受管路径，Git 注册与仓库检查由物理边界负责。
+    pub(in crate::studio) fn validate_identity(
+        &self,
+    ) -> Result<(), crate::agent::worktree::WorktreeError> {
+        use crate::agent::worktree::{WorktreeError, WorktreeManager};
+        let mismatch = |reason: &str| WorktreeError::IdentityMismatch(reason.to_owned());
         let repository_root = std::path::Path::new(&self.repository_root);
         let ownership = self.ownership();
+        if self.owner_kind == WorktreeLeaseOwnerKind::Session
+            && self.owner_thread_id != self.root_thread_id
+        {
+            return Err(mismatch("owner: session lease belongs to another root"));
+        }
         let expected =
             WorktreeManager::allocate_path(repository_root, &self.root_thread_id, &ownership);
         if self.ssh_alias.is_some() {
             let expected =
-                pl_tool::remote::normalize_remote_absolute_path(&expected.to_string_lossy())?;
-            let actual = pl_tool::remote::normalize_remote_absolute_path(&self.path)?;
-            anyhow::ensure!(
-                actual == expected,
-                "worktree cleanup refused a mismatched Pure-owned leaf"
-            );
+                pl_tool::remote::normalize_remote_absolute_path(&expected.to_string_lossy())
+                    .map_err(|_| mismatch("path: remote managed leaf is invalid"))?;
+            let actual = pl_tool::remote::normalize_remote_absolute_path(&self.path)
+                .map_err(|_| mismatch("path: remote lease path is invalid"))?;
+            if actual != expected {
+                return Err(mismatch("path: lease differs from its owned leaf"));
+            }
         } else {
-            anyhow::ensure!(
-                std::path::Path::new(&self.path) == expected,
-                "worktree cleanup refused a mismatched Pure-owned leaf"
-            );
+            if std::path::Path::new(&self.path) != expected {
+                return Err(mismatch("path: lease differs from its owned leaf"));
+            }
         }
-        anyhow::ensure!(
-            self.branch == WorktreeManager::branch_for(&ownership),
-            "worktree cleanup refused a mismatched Pure-owned branch"
-        );
         Ok(())
     }
 }
@@ -161,7 +124,7 @@ impl PersistedStudioObject for WorktreeLease {
 
     const OWNER_KIND: &'static str = "agent";
     const OBJECT_KIND: &'static str = "worktreeLease";
-    const SCHEMA_VERSION: i64 = 2;
+    const SCHEMA_VERSION: i64 = 4;
 
     fn revision(&self) -> u64 {
         self.revision
@@ -191,8 +154,15 @@ impl PersistedStudioObject for WorktreeLease {
 }
 
 pub(in crate::studio) async fn load_leases(store: &StudioStore) -> Result<Vec<WorktreeLease>> {
-    load_objects(store.database()).await
+    migration::load(store.database())
+        .await
+        .map_err(|error| error.context(WorktreeLeaseMigrationFailed))
 }
+
+/// A failed lease upgrade must stop startup, never enter backup/reset recovery.
+#[derive(Debug, thiserror::Error)]
+#[error("worktree lease storage upgrade failed")]
+pub(in crate::studio) struct WorktreeLeaseMigrationFailed;
 
 /// Canonical process-local lease owner. Storage never participates in admission.
 #[derive(Clone)]
@@ -275,7 +245,7 @@ impl WorktreeLeaseOwner {
                 {
                     // A site whose cleanup did not settle also lost the restore window it may still
                     // have carried: the next settlement starts from scratch, never from an old grant.
-                    lease.settle(WorktreeLeaseState::Preserved);
+                    lease.transition(WorktreeLeaseState::Preserved);
                     self.writer.record_worktree_lease(lease.clone())
                 } else {
                     // Hydrated values have already crossed the product database transaction.

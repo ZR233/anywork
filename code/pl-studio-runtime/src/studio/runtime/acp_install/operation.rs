@@ -185,11 +185,11 @@ async fn execute(
     let sidecar_path = download_paths(&archive_path)[2].clone();
     let ensure_sidecar: download::SidecarEnsure = std::sync::Arc::new(move || {
         let stage = AcpInstallStage::Download;
-        if sidecar_root.require_private_file(&sidecar_path, stage)? {
+        if sidecar_root.require_file(&sidecar_path, stage)? {
             return Ok(());
         }
         create_private_download_file(&sidecar_path, stage)?;
-        sidecar_root.require_private_file(&sidecar_path, stage)?;
+        sidecar_root.require_file(&sidecar_path, stage)?;
         Ok(())
     });
     let downloaded = stage_task(&context, AcpInstallStage::Download, async move {
@@ -268,7 +268,7 @@ async fn execute(
         .tempdir_in(&staging_root)
         .map_err(|_| failure(AcpInstallFailureCode::Io, AcpInstallStage::Extract, true))?;
     let staging_path = staging.path().to_path_buf();
-    root.require_private_directory(&staging_path, AcpInstallStage::Extract)?;
+    root.require_directory(&staging_path, AcpInstallStage::Extract)?;
     register_staging(operation, &staging_path);
 
     let extract_progress = progress_emitter(
@@ -734,17 +734,17 @@ fn validate_download_paths(root: &ManagedRoot, archive: &Path) -> Result<(), Acp
     let [final_path, part_path, sidecar_path] = download_paths(archive);
     root.validate_write(&final_path, stage)?;
     // final 由库用 rename 生成（继承 part 的权限），不预创建，避免影响 resume 判定。
-    root.require_private_file(&final_path, stage)?;
+    root.require_file(&final_path, stage)?;
     for path in [&part_path, &sidecar_path] {
         root.validate_write(path, stage)?;
-        if root.require_private_file(path, stage)? {
+        if root.require_file(path, stage)? {
             continue;
         }
         // `downlowd` 0.1.4 用 `OpenOptions::create(true).write(true)` 打开 part 与 sidecar，没有
         // 公开的权限配置项；两处都是"存在则复用、打开后 truncate/seek"，因此在私有父目录内
         // 预创建空文件既不改 resume 语义，也不破坏 sidecar 语义，只是把权限固定成 0600。
         create_private_download_file(path, stage)?;
-        root.require_private_file(path, stage)?;
+        root.require_file(path, stage)?;
     }
     Ok(())
 }
@@ -772,7 +772,7 @@ fn verify_download_sidecars(root: &ManagedRoot, archive: &Path) -> Result<(), Ac
     let stage = AcpInstallStage::Verify;
     for path in download_paths(archive) {
         root.validate_existing_or_missing(&path, stage)?;
-        root.require_private_file(&path, stage)?;
+        root.require_file(&path, stage)?;
     }
     Ok(())
 }
@@ -832,8 +832,8 @@ fn open_lock_file(path: &Path, stage: AcpInstallStage) -> Result<std::fs::File, 
             if path_safety::is_link_or_reparse(&metadata) || !metadata.is_file() {
                 return Err(failure(AcpInstallFailureCode::Io, stage, false));
             }
-            // 既有锁文件同样要满足私有性（Windows：真实 owner+DACL），再交给跨进程锁。
-            super::private_acl::verify_private_object(path, false, stage)?;
+            #[cfg(unix)]
+            super::permissions::verify(path, false, stage)?;
             std::fs::OpenOptions::new()
                 .read(true)
                 .write(true)
@@ -853,8 +853,8 @@ fn open_lock_file(path: &Path, stage: AcpInstallStage) -> Result<std::fs::File, 
             let file = options
                 .open(path)
                 .map_err(|_| failure(AcpInstallFailureCode::Io, stage, true))?;
-            // 新建锁文件在交给跨进程锁之前核验私有性（Unix：无宽写/特殊位；Windows：真实 owner+DACL）。
-            super::private_acl::verify_private_object(path, false, stage)?;
+            #[cfg(unix)]
+            super::permissions::verify(path, false, stage)?;
             Ok(file)
         }
         Err(_) => Err(failure(AcpInstallFailureCode::Io, stage, true)),

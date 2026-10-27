@@ -161,21 +161,6 @@ impl StudioThreadFactory {
             });
         if let Some(lease) = &lease {
             lease.validate_identity()?;
-            if lease.state == WorktreeLeaseState::Cleaned
-                && lease.restore_authorized_at.is_some()
-                && check == ExecutionWorkspaceCheck::Prepare
-            {
-                let manager = workspace_preparation::manager_from_lease(
-                    &self.services.store,
-                    &self.services.ssh_manager,
-                    lease,
-                )
-                .await?;
-                manager
-                    .resolve_head(Path::new(&lease.repository_root))
-                    .await?;
-                return Ok(());
-            }
             ensure!(
                 lease.state != WorktreeLeaseState::Cleaned,
                 "execution worktree was cleaned"
@@ -197,19 +182,11 @@ impl StudioThreadFactory {
             )
             .await?;
             manager
-                .validate_registered_site(Path::new(&lease.path), &lease.branch)
-                .await?;
-            let status = manager
-                .preview(&crate::agent::worktree::WorktreeHandle {
+                .verify(&crate::agent::worktree::WorktreeHandle {
                     path: lease.path.into(),
-                    branch: lease.branch.clone(),
                     base_commit: lease.base_commit,
                 })
                 .await?;
-            ensure!(
-                status.branch.as_deref() == Some(lease.branch.as_str()),
-                "execution worktree branch changed"
-            );
         } else if assignment
             .as_ref()
             .is_some_and(|assignment| assignment.worktree.is_some())

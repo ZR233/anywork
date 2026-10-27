@@ -11,62 +11,28 @@ use pl_core::{
 };
 
 const FORMAT: &str = "pl.model.compaction";
-const NATIVE_CHECKPOINT_VERSION: u32 = 3;
-const LEGACY_NATIVE_CHECKPOINT_VERSION: u32 = 2;
+pub(super) const NATIVE_CHECKPOINT_VERSION: u32 = 3;
 
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct NativeCheckpoint {
+pub(super) struct NativeCheckpoint {
     binding: super::receipt::ModelCallBinding,
     #[serde(default)]
     compatibility_family: Option<String>,
-    item: ModelContextItem,
+    pub(super) item: ModelContextItem,
 }
 
-/// 原生 checkpoint 迁移前的形状：绑定字段仍是 provider/requestedModel/adapter/protocol。
-///
-/// 只在 `pl.model.compaction` version 2 的显式解码边界使用；当前类型不保留旧字段别名。
-#[derive(serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct LegacyNativeCheckpoint {
-    binding: super::receipt::LegacyModelCallBinding,
-    #[serde(default)]
-    compatibility_family: Option<String>,
-    item: ModelContextItem,
-}
-
-impl LegacyNativeCheckpoint {
-    fn migrate(self) -> NativeCheckpoint {
-        NativeCheckpoint {
-            binding: self.binding.migrate(),
-            compatibility_family: self.compatibility_family,
-            item: self.item,
-        }
-    }
-}
-
-/// Decode the current checkpoint shape at its explicit producer version boundary.
-///
-/// version 3 is current; version 2 is the same frozen binding conversion used by the other
-/// producer payloads (stable ID from the binding, not any display name). The item and its
-/// encrypted content are moved verbatim, and no catalog or display name is consulted.
 fn decode_checkpoint(payload: &OpaquePayload) -> Result<NativeCheckpoint, ModelError> {
-    match payload.version() {
-        NATIVE_CHECKPOINT_VERSION => serde_json::from_str(payload.content())
-            .map_err(|error| failure(ModelFailureKind::IncompatibleContext, error)),
-        LEGACY_NATIVE_CHECKPOINT_VERSION => {
-            let legacy: LegacyNativeCheckpoint = serde_json::from_str(payload.content())
-                .map_err(|error| failure(ModelFailureKind::IncompatibleContext, error))?;
-            Ok(legacy.migrate())
-        }
-        _ => Err(failure(
+    if payload.version() != NATIVE_CHECKPOINT_VERSION {
+        return Err(failure(
             ModelFailureKind::IncompatibleContext,
-            AdapterError::Content("unsupported native checkpoint version"),
-        )),
+            AdapterError::Content("unsupported native compaction checkpoint"),
+        ));
     }
+    serde_json::from_str(payload.content())
+        .map_err(|error| failure(ModelFailureKind::IncompatibleContext, error))
 }
 
-/// Host-selected reduction behavior. Native support is queried from the selected adapter.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ThreadCompactionStrategy {
     TextSummary,
@@ -455,10 +421,19 @@ pub fn migrate_legacy_compaction(
     {
         return Ok(false);
     }
-    let bytes = serde_json::to_string(&NativeCheckpoint {
+    #[derive(serde::Serialize)]
+    #[serde(rename_all = "camelCase")]
+    struct MigratedCheckpoint<'a> {
+        binding: super::receipt::ModelCallBinding,
+        compatibility_family: Option<String>,
+        item: &'a serde_json::value::RawValue,
+    }
+    let raw_item = serde_json::from_str(payload.content())
+        .map_err(|error| failure(ModelFailureKind::IncompatibleContext, error))?;
+    let bytes = serde_json::to_string(&MigratedCheckpoint {
         binding,
         compatibility_family: None,
-        item,
+        item: raw_item,
     })
     .map_err(|error| failure(ModelFailureKind::IncompatibleContext, error))?;
     record.content = vec![ContextContent::Opaque {

@@ -1,6 +1,7 @@
 //! Studio child Agent 的 Git worktree 隔离实现。
 
 mod backend;
+mod diagnostic;
 mod manager;
 mod remote;
 
@@ -10,8 +11,8 @@ pub use backend::{
     WorktreeError, WorktreeStatus,
 };
 pub use manager::{
-    WorktreeCreateSpec, WorktreeHandle, WorktreeManager, WorktreeOwnership,
-    WorktreeRetirementRequest, is_pure_branch,
+    WorktreeCleanupPolicy, WorktreeCreateSpec, WorktreeHandle, WorktreeManager, WorktreeOwnership,
+    WorktreeRetirementRequest,
 };
-pub use pl_tool::remote::{SshManager, SshServerProfile};
+pub use pl_tool::remote::{RemoteClientError, RemoteDownloadError, RemoteExecutionError};
 pub use remote::RemoteWorktreeBackend;

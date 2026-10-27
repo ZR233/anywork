@@ -281,12 +281,12 @@ impl StudioRuntime {
                 failures.push(StudioStartupError::input(step, error));
             }
         }
-        self.thread_factory
-            .restore_workspace_admission()
-            .await
-            .map_err(|error| StudioStartupError::input("restore_workspace_admission", error))?;
         match leases {
-            Ok(leases) => self.agent_facility.worktrees.restore(leases),
+            Ok(leases) => self
+                .thread_factory
+                .restore_workspace_admission(leases)
+                .await
+                .map_err(|error| StudioStartupError::input("restore_workspace_admission", error))?,
             Err(error) => failures.push(StudioStartupError::input("worktree_leases", error)),
         }
         // Global SSH config is outside the product backup boundary; its diagnostic is independent.
@@ -367,6 +367,8 @@ impl StudioRuntime {
     }
 
     async fn dispose_startup(&self) -> Result<(), StudioStartupError> {
+        self.account_usage.request_close();
+        let usage = self.account_usage.close().await;
         let catalogs = self.stop_model_catalog_probes().await;
         // All independent cleanup runs even when one task reports an error.
         let results = tokio::join!(
@@ -398,6 +400,7 @@ impl StudioRuntime {
         let bots = self.bots.shutdown().await;
         let storage = self.store.close().await;
         catalogs.map_err(|error| internal("stop_model_catalogs", error))?;
+        usage.map_err(|error| internal("stop_account_usage", error))?;
         for result in [
             results.0, results.1, results.2, results.3, results.4, results.5, results.6,
         ] {

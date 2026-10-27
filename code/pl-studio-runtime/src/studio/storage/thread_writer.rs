@@ -2060,9 +2060,6 @@ pub(crate) mod storage_fault_tests {
         let child_receipt = AgentWorktreeSnapshot {
             repository_root: repository.to_string_lossy().into_owned(),
             path: child_site.to_string_lossy().into_owned(),
-            branch: WorktreeManager::branch_for(&WorktreeOwnership::Child {
-                child_id: "worktree-owner".into(),
-            }),
             base_commit: "a".repeat(40),
         };
         let mut cases = Vec::new();
@@ -2137,22 +2134,18 @@ pub(crate) mod storage_fault_tests {
             .await?;
         let project = store.read_project("project-test").await?.unwrap();
         let fixture = close_factory(&store)?;
-        for (owner, kind, root_id, path, branch) in [
+        for (owner, kind, root_id, path) in [
             (
                 "worktree-owner",
                 WorktreeLeaseOwnerKind::Child,
                 root.id.as_str(),
                 child_site.clone(),
-                child_receipt.branch.clone(),
             ),
             (
                 root_worktree.id.as_str(),
                 WorktreeLeaseOwnerKind::Session,
                 root_worktree.id.as_str(),
                 root_site.clone(),
-                WorktreeManager::branch_for(&WorktreeOwnership::Session {
-                    thread_id: root_worktree.id.clone(),
-                }),
             ),
         ] {
             let mut lease = WorktreeLease {
@@ -2165,9 +2158,7 @@ pub(crate) mod storage_fault_tests {
                 ssh_alias: None,
                 repository_root: repository.to_string_lossy().into_owned(),
                 path: path.to_string_lossy().into_owned(),
-                branch,
                 base_commit: "a".repeat(40),
-                restore_authorized_at: None,
             };
             fixture.worktrees.record_durable(lease.clone()).await?;
             lease.transition(WorktreeLeaseState::Active);
@@ -2363,9 +2354,7 @@ pub(crate) mod storage_fault_tests {
             path: WorktreeManager::allocate_path(&repository, &parent.id, &ownership)
                 .to_string_lossy()
                 .into_owned(),
-            branch: WorktreeManager::branch_for(&ownership),
             base_commit: head.clone(),
-            restore_authorized_at: None,
         };
         fixture.worktrees.record_durable(lease.clone()).await?;
         let handle = manager
@@ -2398,7 +2387,6 @@ pub(crate) mod storage_fault_tests {
             worktree: Some(pl_protocol::AgentWorktreeSnapshot {
                 repository_root: lease.repository_root.clone(),
                 path: lease.path.clone(),
-                branch: lease.branch.clone(),
                 base_commit: lease.base_commit.clone(),
             }),
         };
@@ -2482,7 +2470,11 @@ pub(crate) mod storage_fault_tests {
             &["commit", "--quiet", "-m", "undelivered child work"],
         )
         .await?;
-        let retained_head = git(&handle.path, &["rev-parse", "HEAD"]).await?;
+        let before_refusal_head = git(&handle.path, &["rev-parse", "HEAD"]).await?;
+        // Detached creation owns no branch. An independently created business ref must survive
+        // close even when the child checks it out after its ownership was frozen.
+        let retained_branch = "retained-business";
+        git(&handle.path, &["switch", "-c", retained_branch]).await?;
         let (_, error) = fixture
             .factory
             .finish_child_worktree_cleanup(&child)
@@ -2501,6 +2493,42 @@ pub(crate) mod storage_fault_tests {
             .factory
             .begin_child_close(&child, None, true)
             .await?;
+        git(&repository, &["worktree", "lock", &lease.path]).await?;
+        let (_, error) = fixture
+            .factory
+            .finish_child_worktree_cleanup(&child)
+            .await?;
+        assert!(
+            error
+                .context("Git lock must still block force")?
+                .message
+                .contains("locked")
+        );
+        assert!(
+            !store
+                .agent_close(&child.id)
+                .await?
+                .unwrap()
+                .git
+                .unwrap()
+                .removal_started,
+            "a confirmed Git refusal plus the original remaining site permits a fresh attempt"
+        );
+        // A previous attempt's expected HEAD is content authorization, not permanent identity.
+        tokio::fs::write(
+            handle.path.join("tracked"),
+            b"advanced after confirmed refusal",
+        )
+        .await?;
+        git(&handle.path, &["add", "tracked"]).await?;
+        git(
+            &handle.path,
+            &["commit", "--quiet", "-m", "advance after refused removal"],
+        )
+        .await?;
+        let retained_head = git(&handle.path, &["rev-parse", "HEAD"]).await?;
+        assert_ne!(retained_head, before_refusal_head);
+        git(&repository, &["worktree", "unlock", &lease.path]).await?;
         let (removed, error) = fixture
             .factory
             .finish_child_worktree_cleanup(&child)
@@ -2514,7 +2542,7 @@ pub(crate) mod storage_fault_tests {
         );
         assert!(!tokio::fs::try_exists(&handle.path).await?);
         assert_eq!(
-            git(&repository, &["rev-parse", &lease.branch]).await?,
+            git(&repository, &["rev-parse", retained_branch]).await?,
             retained_head
         );
         assert_eq!(serde_json::to_vec(&history.checkpoint().await?)?, saved);
@@ -2528,7 +2556,7 @@ pub(crate) mod storage_fault_tests {
         );
         git(
             &repository,
-            &["worktree", "add", &lease.path, &lease.branch],
+            &["worktree", "add", &lease.path, retained_branch],
         )
         .await?;
         let (repeated, error) = fixture
@@ -2541,7 +2569,12 @@ pub(crate) mod storage_fault_tests {
         );
         assert_eq!(repeated.worktree_cleanup, removed.worktree_cleanup);
         assert!(tokio::fs::try_exists(&handle.path).await?);
-        fixture.factory.restore_workspace_admission().await?;
+        fixture
+            .factory
+            .restore_workspace_admission(
+                crate::studio::agent_host::worktree_lease::load_leases(&store).await?,
+            )
+            .await?;
         assert!(tokio::fs::try_exists(&handle.path).await?);
         assert!(
             store
@@ -2550,6 +2583,35 @@ pub(crate) mod storage_fault_tests {
                 .is_err()
         );
         assert!(history.checkpoint().await?.is_some());
+        // A fresh process hydrates the top-level lease after it reads the close record. The old
+        // preserved ownership must not resurrect a physical borrow once this result is terminal.
+        let restarted = close_factory(&store)?;
+        restarted
+            .factory
+            .restore_workspace_admission(
+                crate::studio::agent_host::worktree_lease::load_leases(&store).await?,
+            )
+            .await?;
+        let container = WorkspaceIdentity::canonical(
+            WorkspaceEndpoint::Local,
+            repository.to_string_lossy().into_owned(),
+        )?;
+        let seal = restarted.worktrees.try_seal_workspace(
+            "new-container-owner",
+            container.clone(),
+            &std::collections::BTreeSet::new(),
+        )?;
+        restarted
+            .worktrees
+            .release_workspace_seal("new-container-owner", &container)?;
+        drop(seal);
+        assert!(
+            store
+                .ensure_agent_execution_allowed(&child.id)
+                .await
+                .is_err()
+        );
+        restarted.shutdown().await?;
         fixture.shutdown().await?;
         Ok(())
     }
@@ -3872,7 +3934,7 @@ pub(crate) mod storage_fault_tests {
         let frame = OpaquePayload::new(
             "pl.model.assistant",
             // 与 pl-model 当前 `pl.model.assistant` 帧版本一致（该常量不对外重导出）。
-            3,
+            4,
             serde_json::to_string(&Frame {
                 receipt: &receipt,
                 bindings: Vec::new(),

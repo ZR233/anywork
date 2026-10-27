@@ -451,7 +451,6 @@ mod migration_tests {
             worktree: Some(pl_protocol::AgentWorktreeSnapshot {
                 repository_root: other.workspace_path.clone(),
                 path: other.workspace_path.clone(),
-                branch: "pure-agent-legacy-bot-worktree".into(),
                 base_commit: "a".repeat(40),
             }),
             review_target: None,

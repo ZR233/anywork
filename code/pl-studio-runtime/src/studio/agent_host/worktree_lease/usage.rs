@@ -363,27 +363,6 @@ impl WorktreeLeaseOwner {
             .owner
             .clone())
     }
-    pub(in crate::studio) fn usage_endpoint(
-        &self,
-        usage: &WorkspaceUsageLease,
-    ) -> Result<WorkspaceEndpoint> {
-        self.usage_owner(usage)?;
-        let state = self
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        match &state
-            .workspace
-            .active
-            .get(&usage.0.serial)
-            .context("workspace use is missing")?
-            .target
-        {
-            UsageTarget::Assigned(identity) => Ok(identity.endpoint.clone()),
-            UsageTarget::Resolving(endpoint) => Ok(endpoint.clone()),
-            _ => anyhow::bail!("workspace endpoint is not proven"),
-        }
-    }
     pub(in crate::studio) fn preserve_workspace_resources(
         &self,
         owner: &str,

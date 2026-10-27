@@ -31,6 +31,9 @@ impl StudioRuntime {
         &self,
         host_thread_id: &str,
     ) -> Result<Vec<ChildInteractionSummary>> {
+        // Opening publishes the parent owner before cold-child preparation finishes. A composer
+        // read must await that lifecycle boundary while remaining strictly read-only itself.
+        let _lifecycle_guard = self.lifecycle_lock.lock().await;
         // Listing shares the decision entry's host check: a child id cannot read the interactions of
         // its own subtree, so "main session projection, child read-only" holds for reads too.
         self.ensure_root_host(host_thread_id).await?;

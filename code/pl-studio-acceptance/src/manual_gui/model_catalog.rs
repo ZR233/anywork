@@ -196,7 +196,7 @@ pub(super) fn write_runbook(
     let runbook = format!(
         r#"# 在线目录发现人工验收 Runbook
 
-同步只在启动初始化执行一次。改库存必须重启 GUI（以及读取控制文件的 fixture 进程）。不要热加载。
+既有 `--model-catalog-restart` 场景仍验证重启初始化。Issue 168 的同进程场景使用下述 loopback 控制端点切换后继模拟响应，不需要重启 fixture 或 GUI；这些动作只是环境设置证据，不代表产品已应用目录结果。
 
 ## 环境
 
@@ -211,7 +211,26 @@ pub(super) fn write_runbook(
 - 当前控制文件库存:
 {inventory}
 
-命名库存用 `--model-catalog-inventory a|b|empty|reject-all|reject-second|real`；自定义文件用 `--model-catalog-control PATH`。每次运行都是全新隔离 home，改库存请重跑一次命令，不要热重启。
+命名库存用 `--model-catalog-inventory a|b|empty|reject-all|reject-second|real`；自定义文件用 `--model-catalog-control PATH`。这些参数只确定本次启动的初始库存；运行中切换后继库存请使用上面的 loopback control endpoint，不需要重启。
+
+## 同进程运行时控制（Issue 168）
+
+fixture 仅绑定 IPv4 loopback。发送 `POST http://127.0.0.1:<port>/__model_catalog/control`，其中 `<port>` 与 `{base}` 相同。控制只作用于后续接纳的目录 GET，不改产品配置、目录缓存或 GUI 状态，不接受 URL、路径或真实 credential。
+
+```json
+{{"action":"inventory","name":"b"}}
+{{"action":"failure","provider":"openai","enabled":true}}
+{{"action":"gate","provider":"openai","enabled":true}}
+{{"action":"release","provider":"openai"}}
+{{"action":"state"}}
+```
+
+库存仅接受 `a`、`b`、`empty`、`real`、`reject-all`、`reject-second`；provider 仅接受 `openai`、`openai-second`、`deepseek`、`mimo`。`failure` 让该 provider 后续请求返回 HTTP 401，`enabled:false` 解除。成功返回 HTTP 200 快照：`providers` map 每项含 `requests` 计数、`gated`、`failing`、`accepted` 合成身份数组和 `waiting` 身份数组。Gate 在接纳时生效；关闭 gate 只影响新请求，已等待请求仍须 `release`。先轮询 `state` 确认 `waiting` 含身份，再 `release`，不用固定 sleep。每个已接纳请求冻结其响应计划，后续切换库存/失败不会替换在途响应。每个 provider 最多保留 256 个已接纳身份、最多 16 个 gate waiter；全状态 JSON 不超过 64 KiB。触顶时新目录 GET 在接纳前返回 HTTP 503 `{{"error":"..."}}`，不增加计数或留身份。未知 action/provider/inventory 和额外字段返回 HTTP 422；JSON 语法错误保持 Axum 原始状态码（例如 `{{` 返回 HTTP 400）。
+
+```sh
+curl -sS -X POST http://127.0.0.1:PORT/__model_catalog/control \
+  -H 'content-type: application/json' -d '{{"action":"state"}}'
+```
 
 JSON 字段（每个 account：`openai` / `openai-second` / `deepseek` / `mimo`）:
 
@@ -240,7 +259,7 @@ cargo xtask manual-gui --scenario gui --model-catalog-inventory a --model-catalo
 
 状态机：库存 A 启动 → 协调器断言 `catalog-openai` 缓存 model_id 集合含 `fixture-model-old`、`gpt-6-astra`、`gpt-6.1-sol` → 停 GUI（保留 home）→ 停 fixture（shutdown 后复制 `<evidence>/model-catalog-requests-a.json`）→ 写库存 B（去掉 `fixture-model-old` 与内置 model_id `gpt-6.1-sol`，保留 `gpt-6-astra`；`openai-second` 改为 `gpt-6-sol`）→ **同一端口**重启 fixture → 同一 home 重启 GUI → 协调器断言 old 与 `gpt-6.1-sol` 消失、`gpt-6-astra` 仍在、`checkedAt` 前进，并记录被选中的 `cachePath`。阶段 A 把 `catalog-openai` 路由设为 `fixture-model-old` 并写入连接/压缩覆盖；阶段 B 断言 `config.toml` 仍保留该路由与覆盖。
 
-协调器断言 = 缓存 model_id 集合（present/absent）+ `checkedAt` 前进 + 路由与覆盖保留。`origin=online` / `source=online` 由第 6 项（`--model-catalog-inventory a` 的成功在线观测）的人工观察与截图确认（缓存文件无法直接断言 origin/source）。`--model-catalog-restart` 只产出协调器断言与缓存/日志证据，**不产出 GUI 截图**；要看来源徽标/`source=online` 需另跑一次 `--scenario gui --model-catalog-inventory a`。协调器失败即非零退出并打印缓存片段。改库存只刷新界面不够。
+协调器断言 = 原始在线缓存 model_id 集合（present/absent）+ `checkedAt` 前进 + 路由与覆盖保留。上述内置项的“消失”仅指在线缓存；管理目录仍须保留 `gpt-6.1-sol`，显示 `origin=bundled` 且自动默认关闭，显式启用后恢复选择资格。线上独有的 `fixture-model-old` 则从管理目录消失，覆盖不得将它重新注入。`origin=online` / `source=online` 由第 6 项（`--model-catalog-inventory a` 的成功在线观测）的人工观察与截图确认（缓存文件无法直接断言 origin/source）。`--model-catalog-restart` 只产出协调器断言与缓存/日志证据，**不产出 GUI 截图**；要看来源徽标/`source=online` 需另跑一次 `--scenario gui --model-catalog-inventory a`。协调器失败即非零退出并打印缓存片段。改库存只刷新界面不够。
 
 阶段 B 证据：`<evidence>/model-catalog-requests-b.json`（对应 fixture shutdown 后）、`catalog-phase-b-gui.log`、`fixture-restart.log`、`requests-restart.json`、`model-catalog-phase-a.json` / `model-catalog-phase-b.json`、脱敏 `config-phase-a.toml` / `config-phase-b.toml`。
 

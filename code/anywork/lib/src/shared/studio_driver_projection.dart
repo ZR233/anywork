@@ -1,6 +1,10 @@
 import 'dart:convert';
 
 import 'package:anywork_client/studio_client.dart';
+import 'package:anywork_client/accounts.dart';
+import 'package:anywork_client/account_usage.dart';
+import 'package:anywork_client/acp.dart';
+import 'package:anywork_client/model_directory.dart';
 import 'package:flutter_chat_core/flutter_chat_core.dart';
 
 import '../domain/models/agent_workspace_view.dart';
@@ -18,9 +22,23 @@ import 'studio_driver_state.dart';
 void bindStudioDriver(
   AnyworkClient client, {
   required TimelineSessionOwner timeline,
+  required AccountsRepository accountsRepository,
+  required ModelsRepository modelsRepository,
+  required AccountUsageRepository usageRepository,
+  required AcpService acpService,
+  Map<AccountIdentity, AccountResource<AccountDetails>> Function()?
+  observedAccountDetails,
 }) {
   StudioDriverState.bindSnapshotQuery(
-    () => queryStudioDriverFacts(client, timeline: timeline),
+    () => queryStudioDriverFacts(
+      client,
+      timeline: timeline,
+      accountsRepository: accountsRepository,
+      modelsRepository: modelsRepository,
+      usageRepository: usageRepository,
+      acpService: acpService,
+      observedAccountDetails: observedAccountDetails?.call() ?? const {},
+    ),
   );
 }
 
@@ -29,16 +47,21 @@ void bindStudioDriver(
 StudioDriverFacts queryStudioDriverFacts(
   AnyworkClient client, {
   required TimelineSessionOwner timeline,
+  required AccountsRepository accountsRepository,
+  required ModelsRepository modelsRepository,
+  required AccountUsageRepository usageRepository,
+  required AcpService acpService,
+  Map<AccountIdentity, AccountResource<AccountDetails>> observedAccountDetails =
+      const {},
 }) {
   final selection = client.selection.state;
   final directory = client.threadDirectory.state;
   final threads = [...directory.window.threads, ...directory.overlayThreads];
   final settings = client.settings.state;
   final canonical = settings.canonical;
-  final accounts = accountsWithCatalogMetadata(
-    canonical?.accounts ?? const <AccountSettingsView>[],
-    settings.accountCatalog,
-  );
+  final summaries = accountsRepository.state.value;
+  final models = modelsRepository.state.value;
+  final accounts = modelSelectionAccounts(summaries, models);
   final projects = client.project.state;
   final project = projectById(
     projects.projects?.values.toList(growable: false) ??
@@ -120,17 +143,22 @@ StudioDriverFacts queryStudioDriverFacts(
     threadComposer: threadComposer,
     settingsRevision: settings.settingsRevision,
     sidebarWidth: canonical?.state.value?.general.sidebarWidth,
-    modelCatalogRevision: settings.modelCatalogRevision,
     modeModelRoutes: canonical?.modeModelRoutes ?? const [],
     roles: canonical?.roles ?? const [],
     accounts: accounts,
-    acpAccounts: canonical?.acpAccounts ?? const [],
+    accountSummaries: summaries,
+    modelDirectory: models,
+    accountUsage: usageRepository.state.value,
+    accountUsageQueryFailures: usageRepository.queryFailures.value,
+    accountDetails: observedAccountDetails,
     accountTemplates: [
-      for (final template in settings.accountCatalog.templates) template.id,
+      for (final template in summaries.templates.templates) template.id,
     ],
-    acpAuth: client.acpAuth.state.value ?? const AcpAuthSnapshotView.empty(),
+    acpAuth: acpService.auth.value.value ?? const AcpAuthSnapshotView.empty(),
+    acpAuthResource: acpService.auth.value,
+    acpInstallResource: acpService.install.value,
     // 单一来源：canonical 观察的加载事实，不由 revision 或空快照推断。
-    acpAuthLoaded: client.acpAuth.state.loaded,
+    acpAuthLoaded: acpService.auth.value.loaded,
     commands: settings.commands.values.toList(growable: false),
     settingsReady: canonical?.state.value != null,
     persistence:
@@ -140,13 +168,19 @@ StudioDriverFacts queryStudioDriverFacts(
     project: project,
     workspace: workspace,
     bots: _botsFacts(client),
-    acpInstall: _acpInstallFacts(client),
+    acpInstall: _acpInstallFacts(acpService),
   );
 }
 
 /// Diagnostics read an existing registry and existing domain mirrors. Reading
 /// this endpoint never changes topic demand, even if no Widget observes it.
-Map<String, Object?> studioDriverTopicDiagnostics(AnyworkClient client) {
+Map<String, Object?> studioDriverTopicDiagnostics(
+  AnyworkClient client, {
+  required AccountsRepository accountsRepository,
+  required ModelsRepository modelsRepository,
+  required AccountUsageRepository usageRepository,
+  required AcpService acpService,
+}) {
   final refs = client.channels.activeTopicRefCountViews();
   return <String, Object?>{
     'availability': 'available',
@@ -157,6 +191,28 @@ Map<String, Object?> studioDriverTopicDiagnostics(AnyworkClient client) {
     },
     'connections': _connectionCounts(client),
     'projectionRevisions': _projectionRevisions(client),
+    // Domain observations expose business resource stamps, not transport sync
+    // counters. Reading these surfaces acquires no display/network demand.
+    'accountDomains': {
+      'summaries': studioDriverSummariesJson(accountsRepository.state.value),
+      'catalogs': [
+        for (final entry in modelsRepository.state.value.accounts.entries)
+          {
+            'accountId': entry.key.accountId,
+            ...studioDriverResourceJson(entry.value),
+          },
+      ],
+      'configurations': [
+        for (final entry in modelsRepository.state.value.configurations.entries)
+          {
+            'accountId': entry.key.accountId,
+            ...studioDriverResourceJson(entry.value),
+          },
+      ],
+      'usage': studioDriverResourceJson(usageRepository.state.value),
+      'acpAuth': studioDriverResourceJson(acpService.auth.value),
+      'acpInstall': studioDriverResourceJson(acpService.install.value),
+    },
   };
 }
 
@@ -382,9 +438,7 @@ Map<String, int> _connectionCounts(AnyworkClient client) {
   final counts = _SyncCounts();
   final settings = client.settings.state;
   counts.add(settings.configSync);
-  counts.add(settings.catalogSync);
   counts.add(settings.agentProfilesSync);
-  counts.add(client.acpAuth.state.sync);
   counts.add(client.project.state.projectSync);
   counts.add(client.project.state.agentSync);
   counts.add(client.threadDirectory.state.sync);
@@ -392,7 +446,6 @@ Map<String, int> _connectionCounts(AnyworkClient client) {
   counts.add(client.mcp.state.sync);
   counts.add(client.lsp.state.sync);
   counts.add(client.modeCatalog.state.sync);
-  counts.add(client.accountUsage.state.sync);
   counts.add(client.updater.state.sync);
   counts.add(client.persistence.state.stateSync);
   counts.add(client.persistence.state.queueSync);
@@ -426,16 +479,13 @@ Map<String, Object?> _projectionRevisions(AnyworkClient client) {
   ];
   return <String, Object?>{
     'settings': settings.settingsRevision,
-    'modelCatalog': settings.modelCatalogRevision,
     'recovery': client.recovery.state.revision,
     'mcp': client.mcp.state.revision,
     'lsp': client.lsp.state.revision,
     'threadModeCatalog': client.modeCatalog.state.revision,
-    'accountUsage': client.accountUsage.state.revision,
     'persistence': client.persistence.state.stateRevision,
     'persistenceQueue': client.persistence.state.queue?.revision,
     'agentProfiles': settings.agentProfiles?.revision,
-    'acpAuth': client.acpAuth.state.revision,
     'bots': client.bots.state.revision,
     'threadDirectory': client.threadDirectory.state.revision,
     'selectedThread': session?.workspace?.revision,
@@ -598,8 +648,8 @@ StudioDriverBotsFacts? _botsFacts(AnyworkClient client) {
 ///
 /// 未加载时返回 null（不能把空快照当成“未准备”的事实）；loaded 但 revision 0
 /// 仍然如实给出事实，Driver 需要的正是 rev0 也提交观察的证据。
-StudioDriverAcpInstallFacts? _acpInstallFacts(AnyworkClient client) {
-  final clock = client.acpInstall.state;
+StudioDriverAcpInstallFacts? _acpInstallFacts(AcpService service) {
+  final clock = service.install.value;
   final snapshot = clock.value;
   if (!clock.loaded && snapshot == null) return null;
   String phase(AcpInstallStateView state) => switch (state) {
@@ -623,7 +673,7 @@ StudioDriverAcpInstallFacts? _acpInstallFacts(AnyworkClient client) {
       snapshot?.installations ?? const <AcpInstallEntryView>[];
   return StudioDriverAcpInstallFacts(
     loaded: clock.loaded,
-    revision: snapshot?.revision ?? clock.revision,
+    revision: snapshot?.revision ?? clock.stamp?.revision ?? 0,
     installations: [
       for (final entry in installations)
         StudioDriverAcpInstallEntryFacts(

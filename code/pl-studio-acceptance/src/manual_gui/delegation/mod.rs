@@ -320,6 +320,7 @@ fn run_phase(
         &vm,
         output,
         context.interrupt,
+        false,
     )?;
     ensure!(
         fs::read_to_string(output.join("capture-stage.txt"))?.trim() == "shutdown_completed",

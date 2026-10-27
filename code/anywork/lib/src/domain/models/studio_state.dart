@@ -1,4 +1,7 @@
 import 'package:anywork_client/models.dart';
+import 'package:anywork_client/accounts.dart';
+import 'package:anywork_client/account_usage.dart';
+import 'package:anywork_client/model_directory.dart';
 import 'package:anywork_client/studio_client.dart' show AgentDirectoryQueries;
 
 import 'agent_workspace_view.dart';
@@ -28,6 +31,8 @@ class StudioState {
     required this.threadDirectory,
     required this.agentDirectory,
     required this.settingsState,
+    required this.accountsState,
+    required this.modelDirectoryState,
     required this.recoveryState,
     required this.mcpState,
     required this.lspState,
@@ -81,7 +86,10 @@ class StudioState {
   final LspStateSnapshot lspState;
   final Map<String, SkillsStateSnapshot> skillsByProject;
   final ThreadModeCatalogView threadModeCatalog;
-  final AccountUsageStateSnapshot accountUsageState;
+  final AccountsState accountsState;
+  final ModelDirectoryState modelDirectoryState;
+  final AccountResource<Map<NativeAccountIdentity, AccountUsageObservation>>
+  accountUsageState;
   final UpdaterStateSnapshot updaterState;
   final PersistenceStateSnapshot persistenceState;
 
@@ -118,10 +126,19 @@ class StudioState {
   Map<String, StudioAgentView> get agentsByThread => {
     for (final agent in agentDirectory.values) agent.threadId: agent,
   };
-  List<AccountSettingsView> get accounts => settingsState.accounts;
-  String? get defaultAccountId => settingsState.defaultAccountId;
+  List<ModelSelectionAccount> get accounts =>
+      modelSelectionAccounts(accountsState, modelDirectoryState);
+  String? get defaultAccountId => accountsState.accounts
+      .where(
+        (account) =>
+            account.identity is NativeAccountIdentity && account.isDefault,
+      )
+      .firstOrNull
+      ?.identity
+      .accountId;
   List<ModeModelRouteView> get modeModelRoutes => settingsState.modeModelRoutes;
-  List<AccountUsageView> get accountUsages => accountUsageState.usages;
+  List<AccountUsageObservation> get accountUsages =>
+      accountUsageState.value?.values.toList(growable: false) ?? const [];
   SessionCostsStateView? get selectedSessionCostState {
     final rootId = selectedRootThread?.id;
     return rootId == null ? null : sessionCostsByRoot[rootId];
@@ -329,12 +346,15 @@ class StudioState {
     ThreadDirectoryWindow? threadDirectory,
     AgentDirectoryState? agentDirectory,
     SettingsStateSnapshot? settingsState,
+    AccountsState? accountsState,
+    ModelDirectoryState? modelDirectoryState,
     RecoveryStateSnapshot? recoveryState,
     McpStateSnapshot? mcpState,
     LspStateSnapshot? lspState,
     Map<String, SkillsStateSnapshot>? skillsByProject,
     ThreadModeCatalogView? threadModeCatalog,
-    AccountUsageStateSnapshot? accountUsageState,
+    AccountResource<Map<NativeAccountIdentity, AccountUsageObservation>>?
+    accountUsageState,
     UpdaterStateSnapshot? updaterState,
     PersistenceStateSnapshot? persistenceState,
     Object? persistenceQueueState = _studioStateUnset,
@@ -366,6 +386,8 @@ class StudioState {
       threadDirectory: threadDirectory ?? this.threadDirectory,
       agentDirectory: agentDirectory ?? this.agentDirectory,
       settingsState: settingsState ?? this.settingsState,
+      accountsState: accountsState ?? this.accountsState,
+      modelDirectoryState: modelDirectoryState ?? this.modelDirectoryState,
       recoveryState: recoveryState ?? this.recoveryState,
       mcpState: mcpState ?? this.mcpState,
       lspState: lspState ?? this.lspState,

@@ -7,15 +7,16 @@ import '../../../anywork_client.dart'
 import '../anywork_client.dart';
 import '../stores/domain_sync.dart';
 import 'command_lane.dart';
+import '../../../accounts_ports.dart'
+    show
+        SettingsWriteCoordinator,
+        SettingsWriteOwner,
+        SettingsWriteOwnerChanged;
 
 class SettingsCommands {
   SettingsCommands(this._client);
   final AnyworkClient _client;
-  final CommandLane _lane = CommandLane();
-
-  /// 供同 revision 的会话 route 写入复用这条 lane，避免与配置 CAS 交叉覆盖。
-  Future<T> enqueueSettingsWrite<T>(Future<T> Function() action) =>
-      _lane.enqueue(action);
+  SettingsWriteCoordinator get _lane => _client.settingsWrites;
 
   Future<SettingsStateSnapshot> applySettingsField(
     SettingsFieldCommand command, {
@@ -26,148 +27,6 @@ class SettingsCommands {
       target: settingsFieldTarget(command),
       (revision, operationId) =>
           _api.applySettingsField(revision, command, operationId: operationId),
-    );
-  }
-
-  Future<SettingsStateSnapshot> saveAccount(AccountCommand command) {
-    return _run(
-      'account:${command.id}',
-      target: CommandTarget(accountId: command.id, label: command.name),
-      (revision, operationId) =>
-          _api.saveAccount(revision, command, operationId: operationId),
-    );
-  }
-
-  /// Narrow CAS intent; never serializes an account draft or sibling settings.
-  Future<SettingsStateSnapshot> setAccountModelEnabled(
-    String accountId,
-    String modelId,
-    bool enabled,
-  ) => _run(
-    accountModelEnabledMutationKey(accountId, modelId),
-    target: CommandTarget(
-      accountId: accountId,
-      modelId: modelId,
-      enabled: enabled,
-    ),
-    (revision, operationId) => _api.setAccountModelEnabled(
-      revision,
-      accountId,
-      modelId,
-      enabled,
-      operationId: operationId,
-    ),
-  );
-
-  /// Null explicitly restores inference; Unknown is a separate explicit override.
-  Future<SettingsStateSnapshot> setAccountBillingKind(
-    String accountId,
-    BillingKind? billingKind,
-  ) => _run(
-    'account-billing-kind:$accountId',
-    target: CommandTarget(accountId: accountId, label: billingKind?.name),
-    (revision, operationId) => _api.setAccountBillingKind(
-      revision,
-      accountId,
-      billingKind,
-      operationId: operationId,
-    ),
-  );
-
-  /// 只持有目标模型意图；在串行 lane 内、每次 CAS 重试时都基于最新 canonical 重建。
-  /// 其它模型覆盖、目录、endpoint 和凭据不会被发起输入时的旧快照覆盖。
-  Future<SettingsStateSnapshot> setModelAutoCompactLimit(
-    String accountId,
-    String modelId,
-    int? limit,
-  ) {
-    if (limit != null && limit <= 0) {
-      return Future.error(
-        ArgumentError.value(limit, 'limit', 'Must be positive'),
-      );
-    }
-    return _run(
-      'model-auto-compact:${accountId.length}:$accountId:$modelId',
-      target: CommandTarget(accountId: accountId, modelId: modelId),
-      (revision, operationId) {
-        final account = _client.settings.state.canonical?.accounts
-            .where((account) => account.id == accountId)
-            .firstOrNull;
-        final model = account?.models
-            .where((model) => model.modelId == modelId)
-            .firstOrNull;
-        if (account == null || model == null) {
-          throw StudioFailure(
-            code: StudioFailureCode.notFound,
-            message: 'Account model is unavailable: $accountId/$modelId',
-            retryable: false,
-            correlationId: 'client-model-auto-compact',
-          );
-        }
-        final updated = account.withAutoCompactLimit(
-          AccountModelAutoCompactView(modelId: modelId, overrideLimit: limit),
-        );
-        final command = AccountCommandBuilder.buildAccount(
-          updated,
-          secret: const AccountSecretCommand.preserve(),
-        );
-        return _api.saveAccount(revision, command, operationId: operationId);
-      },
-    );
-  }
-
-  Future<SettingsStateSnapshot> removeAccountModel(
-    String accountId,
-    String modelId,
-  ) {
-    return _run(
-      'account-model:${accountId.length}:$accountId:$modelId',
-      target: CommandTarget(accountId: accountId, modelId: modelId),
-      (revision, operationId) => _api.removeAccountModel(
-        revision,
-        accountId,
-        modelId,
-        operationId: operationId,
-      ),
-    );
-  }
-
-  Future<SettingsStateSnapshot> removeAccount(
-    String accountId, {
-    String? replacementAccountId,
-  }) {
-    return _run(
-      'account:$accountId',
-      target: CommandTarget(accountId: accountId, label: replacementAccountId),
-      (revision, operationId) => _api.removeAccount(
-        revision,
-        accountId,
-        replacementAccountId: replacementAccountId,
-        operationId: operationId,
-      ),
-    );
-  }
-
-  /// 保存（或更新）一个 ACP 接入配置。
-  ///
-  /// 与 Native 账号写入共用同一 settings CAS lane：两种账号类型不会交叉覆盖配置
-  /// revision，冲突按同一规则刷新 canonical 后重试。
-  Future<SettingsStateSnapshot> saveAcpAccount(AcpAccountUpdateView account) {
-    return _run(
-      'acp-account:${account.accountId}',
-      target: CommandTarget(accountId: account.accountId, label: account.name),
-      (revision, operationId) =>
-          _api.saveAcpAccount(revision, account, operationId: operationId),
-    );
-  }
-
-  /// 删除一个 ACP 接入配置；删除不注销官方程序持有的凭据。
-  Future<SettingsStateSnapshot> removeAcpAccount(String accountId) {
-    return _run(
-      'acp-account:$accountId',
-      target: CommandTarget(accountId: accountId),
-      (revision, operationId) =>
-          _api.removeAcpAccount(revision, accountId, operationId: operationId),
     );
   }
 
@@ -231,23 +90,6 @@ class SettingsCommands {
     );
   }
 
-  Future<void> setDefaultAccount(String accountId) async {
-    await _run('default-account', target: CommandTarget(accountId: accountId), (
-      revision,
-      operationId,
-    ) {
-      final accounts = _client.settings.state.canonical?.accounts ?? const [];
-      if (!accounts.any((account) => account.id == accountId)) {
-        throw StateError('Account is unavailable: $accountId');
-      }
-      return _api.setDefaultAccount(
-        revision,
-        accountId,
-        operationId: operationId,
-      );
-    });
-  }
-
   Future<void> saveUserAgentProfile(AgentProfileDraft draft) async {
     await _run(
       'user-agent-profile:${draft.id}',
@@ -270,14 +112,20 @@ class SettingsCommands {
   }
 
   /// 只刷新事实源，不重放保存。失败时保留调用方原来的冲突错误。
-  Future<SettingsStateSnapshot?> refreshCanonical() async {
+  Future<SettingsStateSnapshot?> refreshCanonical({
+    SettingsWriteOwner? owner,
+  }) async {
+    final captured = owner ?? _lane.captureOwner();
+    _lane.requireOwner(captured);
     try {
       final snapshot = await _api.readSettingsState();
-      if (!_client.isClosed) {
-        _client.settings.merge(snapshot);
-      }
+      // The read carries no owner stamp itself. Never attach a retired read to
+      // whatever runtime epoch happens to be current when its future completes.
+      _lane.requireOwner(captured);
+      _client.acceptSettingsSnapshot(snapshot, owner: captured);
       return snapshot;
     } catch (_) {
+      _lane.requireOwner(captured);
       return null;
     }
   }
@@ -293,17 +141,33 @@ class SettingsCommands {
     CommandTarget target = const CommandTarget(),
   }) {
     if (_client.isClosed) return Future.error(StateError('Client is closed'));
+    final owner = _lane.captureOwner();
+    var issued = false;
+    Object? requestFailure;
     // Latest intent is visible before queueing. An older ACK may still update
     // canonical and its own operation record, but cannot erase this intent.
-    final operation = _client.mutations.begin(target: 'settings:$key');
+    final operation = _client.mutations.begin(
+      target: 'settings:$key',
+      observationOwner: owner,
+    );
     final store = _client.settings;
     store.beginCommand(key, target);
     return _lane.enqueue(() async {
       try {
+        _lane.requireOwner(owner);
         final reply = await retryRevisionConflict(() async {
-          final revision = await _expectedSettingsRevision();
-          return request(revision, operation.id);
-        }, refresh: () async => await refreshCanonical() != null);
+          _lane.requireOwner(owner);
+          final revision = await _expectedSettingsRevision(owner);
+          _lane.requireOwner(owner);
+          issued = true;
+          requestFailure = null;
+          try {
+            return await request(revision, operation.id);
+          } catch (error) {
+            requestFailure = error;
+            rethrow;
+          }
+        }, refresh: () async => await refreshCanonical(owner: owner) != null);
         if (reply.receipt.operationId != operation.id) {
           throw const StudioFailure(
             code: StudioFailureCode.protocol,
@@ -312,19 +176,27 @@ class SettingsCommands {
             correlationId: 'client-settings-receipt',
           );
         }
-        if (!_client.isClosed) store.merge(reply.snapshot);
+        // Qualification was bound at admission. Retain the real receipt even
+        // if reduction synchronously reconnects, without enabling old proofs.
         operation.accept(reply.receipt.toCommitReceipt());
-        _confirm(key, operation);
+        _lane.requireOwner(owner);
+        _client.acceptSettingsReply(reply, owner: owner);
+        _lane.requireOwner(owner);
+        _confirm(key, operation, owner);
         return reply.snapshot;
       } catch (error) {
         if (operation.state.value.receipt != null) {
           operation.syncFailed(error);
-        } else if (_knownRejection(error)) {
-          operation.reject(error);
+        } else if (_knownRejection(error) ||
+            error is SettingsWriteOwnerChanged &&
+                (!issued || _knownRejection(requestFailure))) {
+          operation.reject(requestFailure ?? error);
         } else {
           operation.unknownOutcome(error);
         }
-        if (!_client.isClosed && _isLatest(operation)) {
+        if (!_client.isClosed &&
+            _lane.isCurrentOwner(owner) &&
+            _isLatest(operation)) {
           store.failCommand(
             key,
             typedCommandFailure(error, correlationId: 'client-settings'),
@@ -340,12 +212,19 @@ class SettingsCommands {
       _client.mutations.latest(operation.state.value.target)?.id ==
       operation.id;
 
-  void _confirm(String key, OperationHandle operation) {
+  void _confirm(
+    String key,
+    OperationHandle operation,
+    SettingsWriteOwner owner,
+  ) {
     if (_client.isClosed) return;
     void settle(OperationState result) {
       if (!result.observed && result.failurePhase == null) return;
       _confirmations.remove(operation.id)?.cancel();
-      if (_client.isClosed || !_isLatest(operation)) return;
+      if (_client.isClosed ||
+          !_lane.isCurrentOwner(owner) ||
+          !_isLatest(operation))
+        return;
       if (result.observed) _client.settings.clearCommand(key);
     }
 
@@ -366,14 +245,16 @@ class SettingsCommands {
   }
 
   Future<void> close() {
-    _lane.seal();
-    return _lane.join();
+    return _lane.close();
   }
 
-  Future<int> _expectedSettingsRevision() async {
+  Future<int> _expectedSettingsRevision(SettingsWriteOwner owner) async {
+    _lane.requireOwner(owner);
     final current = _client.settings.state;
+    if (_client.settingsWrites.stamp case final stamp?) return stamp.revision;
     if (current.configLoaded) return current.settingsRevision;
-    final refreshed = await refreshCanonical();
+    final refreshed = await refreshCanonical(owner: owner);
+    _lane.requireOwner(owner);
     final loaded = _client.settings.state;
     if (refreshed == null || !loaded.configLoaded) {
       throw _settingsNotReady;
@@ -431,9 +312,6 @@ String settingsFieldMutationKey(SettingsFieldCommand command) =>
       RoleReasoningEffortCommand(:final role) => 'agent-role:effort:$role',
     };
 
-String accountModelEnabledMutationKey(String accountId, String modelId) =>
-    'account-model-enabled:${accountId.length}:$accountId:$modelId';
-
 CommandTarget settingsFieldTarget(
   SettingsFieldCommand command,
 ) => switch (command) {
@@ -450,7 +328,7 @@ CommandTarget settingsFieldTarget(
   _ => const CommandTarget(),
 };
 
-bool _knownRejection(Object error) =>
+bool _knownRejection(Object? error) =>
     error is StudioFailure &&
     switch (error.code) {
       StudioFailureCode.invalidArgument ||

@@ -1,4 +1,10 @@
 import 'support/test_statistics_feed.dart';
+import 'support/unused_account_ports.dart';
+
+import 'package:anywork_client/accounts_ports.dart';
+import 'package:anywork_client/accounts.dart';
+import 'package:anywork_client/model_directory.dart';
+import 'package:anywork_client/account_usage.dart';
 
 import 'dart:async';
 import 'dart:convert';
@@ -9,7 +15,6 @@ import 'package:anywork/src/domain/models/plan_confirmation_ownership.dart';
 import 'package:anywork/src/features/interaction/composer_view.dart';
 import 'package:anywork/src/features/shell/shell_view.dart';
 import 'package:anywork/src/features/status/status_view.dart';
-import 'package:anywork/src/presentation/view_models/timeline_session_owner.dart';
 import 'package:anywork/src/shared/studio_driver_projection.dart';
 import 'package:anywork/src/shared/studio_driver_state.dart';
 import 'package:anywork_client/studio_client.dart';
@@ -18,7 +23,8 @@ import 'package:flutter_test/flutter_test.dart';
 
 import 'support/recording_demo_transport.dart';
 
-final class _UnusedTransport implements StudioTransport {
+final class _UnusedTransport extends UnusedAccountPorts
+    implements StudioTransport {
   var calls = 0;
 
   @override
@@ -186,11 +192,14 @@ void main() {
       ['cold-executor', 'nested', 'faulted', root.id, 'cold-closed'],
       reason: 'Status grouping keeps stable canonical order inside each group',
     );
-    final timeline = TimelineSessionOwner(client: client);
-    addTearDown(timeline.close);
+    final timeline = graph.timeline;
     expect(
       queryStudioDriverFacts(
         client,
+        accountsRepository: graph.accounts,
+        modelsRepository: graph.models,
+        usageRepository: graph.accountUsage,
+        acpService: graph.acp,
         timeline: timeline,
       ).workspace?.agents.map((a) => a.threadId),
       [root.id, 'cold-executor', 'cold-closed', 'nested', 'faulted'],
@@ -259,11 +268,17 @@ void main() {
     'canonical saved agent routes retain selection without activating children',
     () async {
       final transport = _ColdDirectoryTransport();
-      final client = AnyworkClient(
+      final graph = AppGraph(
         transport: transport,
+        statisticsFeed: const TestStatisticsFeedPort(),
         clientId: 'cold-frozen',
       );
-      addTearDown(client.close);
+      final client = graph.client;
+      addTearDown(
+        () => graph.close(
+          deadline: DateTime.now().add(const Duration(seconds: 5)),
+        ),
+      );
       const frozen = NewThreadModelRoute(
         accountId: 'account-b',
         modelId: 'shared',
@@ -325,9 +340,15 @@ void main() {
         threadId: child.id,
         needsOpen: true,
       );
-      final timeline = TimelineSessionOwner(client: client);
-      addTearDown(timeline.close);
-      final facts = queryStudioDriverFacts(client, timeline: timeline);
+      final timeline = graph.timeline;
+      final facts = queryStudioDriverFacts(
+        client,
+        accountsRepository: graph.accounts,
+        modelsRepository: graph.models,
+        usageRepository: graph.accountUsage,
+        acpService: graph.acp,
+        timeline: timeline,
+      );
       expect(
         facts.workspace?.agents
             .where((a) => a.threadId == child.id)
@@ -450,7 +471,14 @@ void main() {
     );
     expect(client.findThread('thread-main'), same(canonical));
     final timeline = graph.timeline;
-    final facts = queryStudioDriverFacts(client, timeline: timeline);
+    final facts = queryStudioDriverFacts(
+      client,
+      accountsRepository: graph.accounts,
+      modelsRepository: graph.models,
+      usageRepository: graph.accountUsage,
+      acpService: graph.acp,
+      timeline: timeline,
+    );
     final json =
         jsonDecode(StudioDriverState.snapshotJson(observed: facts)) as Map;
     expect((json['workspace'] as Map)['threadStatus'], 'idle');
@@ -474,7 +502,14 @@ void main() {
     expect((json['timelineScroll'] as Map)['isScrolling'], isFalse);
     final generation = facts.timeline!.generation;
     await timeline.returnToLive('thread-main');
-    final switched = queryStudioDriverFacts(client, timeline: timeline);
+    final switched = queryStudioDriverFacts(
+      client,
+      accountsRepository: graph.accounts,
+      modelsRepository: graph.models,
+      usageRepository: graph.accountUsage,
+      acpService: graph.acp,
+      timeline: timeline,
+    );
     expect(switched.timeline!.generation, greaterThan(generation));
     expect(switched.timeline!.threadId, 'thread-main');
     // 切代次后诊断仍读当前 lease 的真实身份，不残留上一代几何。
@@ -491,9 +526,16 @@ void main() {
     'Driver reads current Client facts without creating any owner or lease',
     () async {
       final transport = _UnusedTransport();
-      final client = AnyworkClient(
+      final graph = AppGraph(
+        statisticsFeed: const TestStatisticsFeedPort(),
         transport: transport,
         clientId: 'driver-query',
+      );
+      final client = graph.client;
+      addTearDown(
+        () => graph.close(
+          deadline: DateTime.now().add(const Duration(seconds: 5)),
+        ),
       );
       final thread = StudioThread(
         id: 'thread',
@@ -508,9 +550,15 @@ void main() {
       client.threadDirectory.applyWindow(
         ThreadDirectoryWindow(threads: [thread], revision: 1),
       );
-      final timeline = TimelineSessionOwner(client: client);
-      addTearDown(timeline.close);
-      bindStudioDriver(client, timeline: timeline);
+      final timeline = graph.timeline;
+      bindStudioDriver(
+        client,
+        accountsRepository: graph.accounts,
+        modelsRepository: graph.models,
+        usageRepository: graph.accountUsage,
+        acpService: graph.acp,
+        timeline: timeline,
+      );
       final usageBefore = client.budget.usage.length;
       final original = StudioDriverState.readFacts();
       expect(original.rootThreads.single.title, 'Original title');
@@ -541,9 +589,27 @@ void main() {
           jsonDecode(StudioDriverState.snapshotJson()) as Map<String, dynamic>;
       expect(json.containsKey('timelineScroll'), isTrue);
       expect(json['timelineScroll'], isNull);
+      final settingsJson = json['settings'] as Map;
+      expect(settingsJson.containsKey('modelCatalogRevision'), isFalse);
+      final domains = settingsJson['accountDomains'] as Map;
+      expect(domains['schemaVersion'], 2);
+      expect(domains['templates'], {
+        'loaded': false,
+        'revision': null,
+        'usable': null,
+      });
+      expect(settingsJson['nativeTemplates'], isNull);
+      expect(current.accountDetails, isEmpty);
+      expect((domains['usage'] as Map)['stamp'], isNull);
       final directory = json['sidebarDirectory'] as Map<String, dynamic>;
       expect(directory['titles'], {'thread': 'Updated canonical title'});
-      studioDriverTopicDiagnostics(client);
+      studioDriverTopicDiagnostics(
+        client,
+        accountsRepository: graph.accounts,
+        modelsRepository: graph.models,
+        usageRepository: graph.accountUsage,
+        acpService: graph.acp,
+      );
       expect(client.sessionStates, isEmpty);
       expect(client.composerState('thread'), isNull);
       expect(client.budget.usage.length, usageBefore);
@@ -556,13 +622,218 @@ void main() {
     },
   );
 
+  test('Driver domain snapshot keeps target clocks, unknown details and exact last-good usage', () {
+    const native = NativeAccountIdentity('shared-id');
+    const acp = AcpAccountIdentity('shared-id');
+    const summariesStamp = ResourceStamp(
+      resourceKey: 'account-summaries',
+      ownerEpoch: 'owner-a',
+      revision: 17,
+    );
+    const usageStamp = ResourceStamp(
+      resourceKey: 'account-usage',
+      ownerEpoch: 'owner-b',
+      revision: 0,
+    );
+    const capabilities = AccountCapabilities(
+      setDefault: true,
+      edit: true,
+      remove: true,
+      queryUsage: true,
+      syncModels: true,
+      editModels: true,
+      acpAuth: false,
+    );
+    final summaries = [
+      const AccountSummary(
+        identity: native,
+        name: 'Native',
+        isDefault: true,
+        capabilities: capabilities,
+      ),
+      const AccountSummary(
+        identity: acp,
+        name: 'ACP',
+        isDefault: false,
+        acpConnectionRevision: 9,
+        capabilities: capabilities,
+      ),
+    ];
+    Map snapshot({
+      required AccountsState accounts,
+      AccountUsagePhase phase = AccountUsagePhase.querying,
+    }) =>
+        (jsonDecode(
+              StudioDriverState.snapshotJson(
+                observed: StudioDriverFacts(
+                  acpAuthLoaded: false,
+                  accountSummaries: accounts,
+                  accounts: modelSelectionAccounts(
+                    accounts,
+                    ModelDirectoryState(),
+                  ),
+                  accountUsage: AccountResource(
+                    stamp: usageStamp,
+                    stale: true,
+                    value: {
+                      native: AccountUsageObservation(
+                        identity: native,
+                        queryRevision: 4,
+                        revision: 2,
+                        phase: phase,
+                        operationId: 'query-4',
+                        checkedAt: 100,
+                        lastGood: AccountUsageSuccess(
+                          checkedAt: 90,
+                          value: AccountBalance(
+                            available: true,
+                            balances: const [
+                              AccountMoneyBalance(
+                                currency: 'CNY',
+                                total: '88.000000000000000001',
+                                granted: '0.00',
+                                toppedUp: '88.000000000000000001',
+                              ),
+                              AccountMoneyBalance(
+                                currency: 'USD',
+                                total: '0.01',
+                                granted: '0.01',
+                                toppedUp: '0.00',
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    },
+                  ),
+                  accountUsageQueryFailures: {
+                    native: const StudioFailure(
+                      code: StudioFailureCode.unavailable,
+                      message: 'DO_NOT_EXPOSE_TOKEN',
+                      retryable: true,
+                      correlationId: 'query-transport',
+                      detailsJson: 'DO_NOT_EXPOSE_DETAILS',
+                    ),
+                  },
+                ),
+              ),
+            ) as Map)['settings']
+            as Map;
+    final settings = snapshot(
+      accounts: AccountsState(stamp: summariesStamp, accounts: summaries),
+    );
+    final domains = settings['accountDomains'] as Map;
+    expect(
+      domains['summaries']['stamp'],
+      studioDriverStampJson(summariesStamp),
+    );
+    expect(domains['usage']['stamp'], studioDriverStampJson(usageStamp));
+    expect(domains['usage']['stale'], isTrue);
+    expect(domains['templates'], {
+      'loaded': false,
+      'revision': null,
+      'usable': null,
+    }, reason: 'A loaded summary is not a loaded static template catalog');
+    final identities = (domains['accounts'] as List).cast<Map>();
+    expect(
+      identities.map(
+        (entry) => [entry['kind'], entry['id'], entry['acpConnectionRevision']],
+      ),
+      [
+        ['native', 'shared-id', null],
+        ['acp', 'shared-id', 9],
+      ],
+    );
+    for (final entry in identities) {
+      expect(entry['details']['loaded'], isFalse);
+      expect(entry['details']['stamp'], isNull);
+    }
+    final nativeJson = (settings['accounts'] as List).single as Map;
+    expect(nativeJson.containsKey('defaultModelId'), isFalse);
+    expect(nativeJson.containsKey('status'), isFalse);
+    expect(nativeJson['hasBearerToken'], isNull);
+    expect(nativeJson['templateId'], isNull);
+    expect(domains['usage']['queryFailures'], [
+      {
+        'accountId': 'shared-id',
+        'code': 'unavailable',
+        'retryable': true,
+        'correlationId': 'query-transport',
+      },
+    ]);
+    expect(jsonEncode(settings), isNot(contains('DO_NOT_EXPOSE')));
+    for (final phase in AccountUsagePhase.values) {
+      final current = snapshot(
+        accounts: AccountsState(stamp: summariesStamp, accounts: summaries),
+        phase: phase,
+      );
+      final observation =
+          (current['accountDomains']['usage']['accounts'] as List).single;
+      expect(
+        observation['phase'],
+        phase.name,
+        reason: 'Transport failure never fabricates a canonical failed phase',
+      );
+      expect(observation['lastGood'], {
+        'checkedAt': 90,
+        'value': {
+          'kind': 'balance',
+          'available': true,
+          'balances': [
+            {
+              'currency': 'CNY',
+              'total': '88.000000000000000001',
+              'granted': '0.00',
+              'toppedUp': '88.000000000000000001',
+            },
+            {
+              'currency': 'USD',
+              'total': '0.01',
+              'granted': '0.01',
+              'toppedUp': '0.00',
+            },
+          ],
+        },
+      });
+    }
+    final observedEmpty = snapshot(
+      accounts: AccountsState(
+        accounts: summaries,
+        templates: const AccountCatalogView(
+          schemaVersion: 1,
+          revision: 'templates-only',
+          templates: [],
+          modelCatalogs: {},
+        ),
+      ),
+    );
+    expect(observedEmpty['accountDomains']['summaries']['loaded'], isFalse);
+    expect(observedEmpty['accountDomains']['templates'], {
+      'loaded': true,
+      'revision': 'templates-only',
+      'usable': false,
+    });
+    expect(observedEmpty['nativeTemplates'], isEmpty);
+  });
+
   test(
     'Driver new-thread projection retains the raw composer failure object',
-    () async {
-      final client = AnyworkClient(
-        transport: _UnusedTransport(),
+    () {
+      final transport = _UnusedTransport();
+      final graph = AppGraph(
+        statisticsFeed: const TestStatisticsFeedPort(),
+        transport: transport,
         clientId: 'driver-failure-projection',
       );
+      addTearDown(() async {
+        expect(
+          (await graph.close(
+            deadline: DateTime.now().add(const Duration(seconds: 5)),
+          )).complete,
+          isTrue,
+        );
+      });
+      final client = graph.client;
       const project = StudioProject(
         id: 'project',
         name: 'Project',
@@ -579,13 +850,18 @@ void main() {
         correlationId: 'driver-recovery-failure',
       );
       client.attachments.reportNewThreadFailure(project.id, failure);
-      final timeline = TimelineSessionOwner(client: client);
-      addTearDown(timeline.close);
 
-      final facts = queryStudioDriverFacts(client, timeline: timeline);
+      final facts = queryStudioDriverFacts(
+        client,
+        timeline: graph.timeline,
+        accountsRepository: graph.accounts,
+        modelsRepository: graph.models,
+        usageRepository: graph.accountUsage,
+        acpService: graph.acp,
+      );
       expect(facts.newThreadComposer.failure, same(failure));
       expect(facts.newThreadComposer.error, failure.toString());
-      expect((await client.close()).complete, isTrue);
+      expect(transport.calls, 0);
     },
   );
 
@@ -593,24 +869,27 @@ void main() {
     'Driver facts map typed acp install failures without dynamic dispatch',
     () async {
       final transport = _UnusedTransport();
-      final client = AnyworkClient(
+      final graph = AppGraph(
+        statisticsFeed: const TestStatisticsFeedPort(),
         transport: transport,
         clientId: 'acp-install-facts',
+      );
+      final client = graph.client;
+      addTearDown(
+        () => graph.close(
+          deadline: DateTime.now().add(const Duration(seconds: 5)),
+        ),
       );
       addTearDown(
         () => client.close(
           deadline: DateTime.now().add(const Duration(seconds: 5)),
         ),
       );
-      final timeline = TimelineSessionOwner(client: client);
-      addTearDown(
-        () => timeline.close(
-          deadline: DateTime.now().add(const Duration(seconds: 5)),
-        ),
-      );
+      final timeline = graph.timeline;
 
       // Failed 是终态：状态层没有阶段，阶段事实由失败类别自己携带。
-      client.acpInstall.apply(
+      _applyInstall(
+        graph,
         const AcpInstallSnapshotView(
           revision: 7,
           updatedAt: 1760000000,
@@ -630,7 +909,14 @@ void main() {
           ],
         ),
       );
-      final failed = queryStudioDriverFacts(client, timeline: timeline);
+      final failed = queryStudioDriverFacts(
+        client,
+        accountsRepository: graph.accounts,
+        modelsRepository: graph.models,
+        usageRepository: graph.accountUsage,
+        acpService: graph.acp,
+        timeline: timeline,
+      );
       final failedInstall = failed.acpInstall!;
       expect(failedInstall.loaded, isTrue);
       expect(failedInstall.revision, 7);
@@ -644,7 +930,8 @@ void main() {
       expect(failedEntry.failureRetryable, isTrue);
 
       // Closing 是收束阶段：带 cancelled 失败，阶段为 close，不能被 Ready 吞掉。
-      client.acpInstall.apply(
+      _applyInstall(
+        graph,
         const AcpInstallSnapshotView(
           revision: 8,
           updatedAt: 1760000010,
@@ -664,7 +951,14 @@ void main() {
           ],
         ),
       );
-      final closing = queryStudioDriverFacts(client, timeline: timeline);
+      final closing = queryStudioDriverFacts(
+        client,
+        accountsRepository: graph.accounts,
+        modelsRepository: graph.models,
+        usageRepository: graph.accountUsage,
+        acpService: graph.acp,
+        timeline: timeline,
+      );
       final closingInstall = closing.acpInstall!;
       expect(closingInstall.revision, 8);
       final closingEntry = closingInstall.installations.single;
@@ -691,7 +985,16 @@ void main() {
 
   test('timeline facts expose authoritative text channel and plan-confirmation bool', () async {
     final transport = _ScriptedTimelineTransport();
-    final client = AnyworkClient(transport: transport, clientId: 'facts');
+    final graph = AppGraph(
+      statisticsFeed: const TestStatisticsFeedPort(),
+      transport: transport,
+      clientId: 'facts',
+    );
+    final client = graph.client;
+    addTearDown(
+      () =>
+          graph.close(deadline: DateTime.now().add(const Duration(seconds: 5))),
+    );
     addTearDown(
       () => client.close(
         deadline: DateTime.now().add(const Duration(seconds: 5)),
@@ -702,16 +1005,18 @@ void main() {
       ThreadDirectoryPage(threads: [_factsThread()], revision: 1),
       revision: 1,
     );
-    final timeline = TimelineSessionOwner(client: client);
-    addTearDown(
-      () => timeline.close(
-        deadline: DateTime.now().add(const Duration(seconds: 5)),
-      ),
-    );
+    final timeline = graph.timeline;
     client.workspace.selectThread('thread', projectId: 'project');
     await timeline.source.waitFor((state) => state?.generation != 0);
 
-    bindStudioDriver(client, timeline: timeline);
+    bindStudioDriver(
+      client,
+      accountsRepository: graph.accounts,
+      modelsRepository: graph.models,
+      usageRepository: graph.accountUsage,
+      acpService: graph.acp,
+      timeline: timeline,
+    );
     final json =
         jsonDecode(StudioDriverState.snapshotJson()) as Map<String, dynamic>;
     final items = (json['timeline'] as Map<String, dynamic>)['items'] as List;
@@ -769,9 +1074,16 @@ void main() {
       final transport = _ScriptedTimelineTransport(
         baseline: _attachmentBaseline,
       );
-      final client = AnyworkClient(
+      final graph = AppGraph(
+        statisticsFeed: const TestStatisticsFeedPort(),
         transport: transport,
         clientId: 'attachments',
+      );
+      final client = graph.client;
+      addTearDown(
+        () => graph.close(
+          deadline: DateTime.now().add(const Duration(seconds: 5)),
+        ),
       );
       addTearDown(
         () => client.close(
@@ -783,16 +1095,18 @@ void main() {
         ThreadDirectoryPage(threads: [_factsThread()], revision: 1),
         revision: 1,
       );
-      final timeline = TimelineSessionOwner(client: client);
-      addTearDown(
-        () => timeline.close(
-          deadline: DateTime.now().add(const Duration(seconds: 5)),
-        ),
-      );
+      final timeline = graph.timeline;
       client.workspace.selectThread('thread', projectId: 'project');
       await timeline.source.waitFor((state) => state?.generation != 0);
 
-      bindStudioDriver(client, timeline: timeline);
+      bindStudioDriver(
+        client,
+        accountsRepository: graph.accounts,
+        modelsRepository: graph.models,
+        usageRepository: graph.accountUsage,
+        acpService: graph.acp,
+        timeline: timeline,
+      );
       final opensBefore = transport.opens;
       final facts = StudioDriverState.readFacts();
       expect(facts.timeline, isNotNull);
@@ -974,6 +1288,8 @@ void main() {
           observed: StudioDriverFacts(
             acpAuthLoaded: false,
             workspace: _identityWorkspace(route: route),
+            accountSummaries: _identitySummaries(),
+            accountDetails: _identityDetails(),
           ),
         ),
       ) as Map<String, dynamic>;
@@ -985,7 +1301,8 @@ void main() {
     expect(routed['modelAccount'], {
       'id': 'acct-b',
       'hasBearerToken': true,
-      'credentialEnv': 'ACCT_B_KEY',
+      'credentialReady': true,
+      'credentialEnv': null,
     });
     expect(routed['modelCapabilities'], ['text', 'image']);
 
@@ -1068,13 +1385,11 @@ AgentWorkspaceView _identityWorkspace({required ThreadModelRouteView? route}) {
     activeInteraction: null,
     composer: const ComposerThreadState.idle(),
     composerMode: AgentComposerMode.editable,
-    accounts: const [
-      AccountSettingsView(
+    accounts: [
+      ModelSelectionAccount(
         id: 'acct-a',
         name: 'Account A',
-        baseUrl: 'http://a.invalid',
-        credentialEnv: 'ACCT_A_KEY',
-        defaultModelId: 'a-only',
+        billingKind: BillingKind.unknown,
         models: [
           AccountModelView(
             modelId: 'a-only',
@@ -1088,16 +1403,11 @@ AgentWorkspaceView _identityWorkspace({required ThreadModelRouteView? route}) {
             ],
           ),
         ],
-        status: 'ready',
-        usageLabel: '',
       ),
-      AccountSettingsView(
+      ModelSelectionAccount(
         id: 'acct-b',
         name: 'Account B',
-        baseUrl: 'http://b.invalid',
-        hasBearerToken: true,
-        credentialEnv: 'ACCT_B_KEY',
-        defaultModelId: 'shared-model',
+        billingKind: BillingKind.unknown,
         models: [
           AccountModelView(
             modelId: 'shared-model',
@@ -1115,8 +1425,6 @@ AgentWorkspaceView _identityWorkspace({required ThreadModelRouteView? route}) {
             ],
           ),
         ],
-        status: 'ready',
-        usageLabel: '',
       ),
     ],
     roles: const [],
@@ -1169,7 +1477,8 @@ final class _FactsConnection implements StudioTimelineConnection {
   }
 }
 
-final class _ScriptedTimelineTransport implements StudioTransport {
+final class _ScriptedTimelineTransport extends UnusedAccountPorts
+    implements StudioTransport {
   _ScriptedTimelineTransport({StudioTimelineBaseline Function()? baseline})
     : _baseline = baseline ?? _factsBaseline;
 
@@ -1422,3 +1731,54 @@ StudioTimelineBaseline _attachmentBaseline() => StudioTimelineBaseline(
     ),
   ],
 );
+
+void _applyInstall(AppGraph graph, AcpInstallSnapshotView snapshot) =>
+    graph.accountDomains.acceptFrame(
+      AcpInstallFrame(
+        ResourceStamp(
+          resourceKey: 'acp-install',
+          ownerEpoch: 'driver-owner',
+          revision: snapshot.revision,
+        ),
+        snapshot,
+      ),
+    );
+
+AccountsState _identitySummaries() => AccountsState(
+  accounts: const [
+    AccountSummary(
+      identity: NativeAccountIdentity('acct-b'),
+      name: 'Account B',
+      isDefault: false,
+      credentialReady: true,
+      capabilities: AccountCapabilities(
+        setDefault: false,
+        edit: true,
+        remove: true,
+        queryUsage: false,
+        syncModels: false,
+        editModels: true,
+        acpAuth: false,
+      ),
+    ),
+  ],
+);
+Map<AccountIdentity, AccountResource<AccountDetails>> _identityDetails() => {
+  const NativeAccountIdentity('acct-b'): AccountResource(
+    stamp: const ResourceStamp(
+      resourceKey: 'settings',
+      ownerEpoch: 'identity',
+      revision: 1,
+    ),
+    value: NativeAccountDetails(
+      identity: const NativeAccountIdentity('acct-b'),
+      name: 'Account B',
+      protocol: 'open_ai_compatible',
+      baseUrl: 'http://b.invalid',
+      hasBearerToken: true,
+      credentialRequired: true,
+      usageQueryRevision: 1,
+      customModels: const [],
+    ),
+  ),
+};

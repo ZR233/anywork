@@ -255,9 +255,9 @@ struct AcpSettingsObserver {
 }
 
 impl SettingsCommitObserver for AcpSettingsObserver {
-    fn settings_committed(&self, revision: u64, config: &StudioConfig) {
+    fn settings_committed(&self, snapshot: &crate::ConfigRuntimeSnapshot) {
         if let Some(inner) = self.inner.upgrade() {
-            inner.observe_committed(revision, config);
+            inner.observe_committed(snapshot.revision, snapshot.canonical_config());
         }
     }
 }

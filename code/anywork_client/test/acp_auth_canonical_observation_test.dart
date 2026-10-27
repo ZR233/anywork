@@ -2,18 +2,22 @@ import 'dart:async';
 
 import 'package:anywork_client/studio_client.dart';
 import 'package:test/test.dart';
+import 'package:anywork_client/accounts.dart';
+import 'package:anywork_client/accounts_ports.dart';
+
+import 'support/accounts_test_runtime.dart';
 
 /// `acp-auth` 的 canonical 水位必须由生产观察链登记。
 ///
-/// 命令回执的 targets 是 `acp-auth`，产品 topic 帧与命令响应进入同一 reducer；如果
+/// 命令回执的 targets 是 `acp-auth`，领域观察帧与命令响应进入同一 reducer；如果
 /// Client 只登记 settings/thread-directory/mode-catalog 的水位，check/login/cancel
 /// 受理后会永久停在 `awaitingObservation`（UI 正常，close 报告却挂着 pending
-/// operation）。这些用例只驱动生产入口（真实 `AnyworkClient`、真实
+/// operation）。这些用例只驱动生产入口（真实分域仓储、真实
 /// MutationBoard/预算/命令 lane、真实 bootstrap ownerEpoch、真实命令方法），fake
 /// 仅出现在 transport 边界，并且不调用 `observeResource` 之类内部动作替代被测行为。
 const _epoch = 'epoch-acp';
 
-final class _AcpTransport implements StudioTransport {
+final class _AcpTransport extends AccountsTestTransport {
   /// 保存的接入连接身份；所有用例沿用同一身份（7）。
   final int connectionRevision = 7;
   final List<String> accountIds = const ['acp-1'];
@@ -33,7 +37,7 @@ final class _AcpTransport implements StudioTransport {
   Completer<void>? pendingStart;
 
   /// start 命令已到达 transport 的信号（测试用它等待入口，不做无界轮询）。
-  final Completer<void> startEntered = Completer<void>();
+  Completer<void> startEntered = Completer<void>();
 
   StudioCommandReceipt _receipt(OperationId operationId, int revision) =>
       StudioCommandReceipt(
@@ -130,7 +134,6 @@ StudioBootstrap _bootstrap(_AcpTransport transport) => StudioBootstrap(
   lspState: LspStateSnapshot(revision: 1),
   skillsByProject: const {},
   threadModeCatalog: const ThreadModeCatalogView(),
-  accountUsageState: AccountUsageStateSnapshot(revision: 1),
   updaterState: DisabledUpdaterStateSnapshot(
     revision: 1,
     updatedAt: DateTime.utc(2026),
@@ -138,16 +141,23 @@ StudioBootstrap _bootstrap(_AcpTransport transport) => StudioBootstrap(
   persistenceState: const PersistenceStateSnapshot.ready(),
 );
 
-AnyworkClient _client(_AcpTransport transport) {
-  final client = AnyworkClient(transport: transport, clientId: 'acp');
-  client.applyBootstrap(_bootstrap(transport));
-  addTearDown(client.close);
-  return client;
+AccountsTestRuntime _client(_AcpTransport transport) {
+  transport.epoch = _epoch;
+  final runtime = AccountsTestRuntime(transport, clientId: 'acp');
+  runtime.seed(_bootstrap(transport).settingsState);
+  addTearDown(runtime.close);
+  return runtime;
 }
 
-/// 该接入最近一次认证命令对应的 operation（MutationBoard 保留最新意图）。
-OperationHandle _operation(AnyworkClient client) =>
-    client.mutations.latest('acp-auth:acp-1')!;
+OperationHandle _operation(AccountsTestRuntime runtime) =>
+    runtime.board.latest('acp-auth:acp-1')!;
+void _apply(AccountsTestRuntime runtime, AcpAuthSnapshotView snapshot) =>
+    runtime.domains.acceptFrame(
+      AcpAuthFrame(
+        testStamp('acp-auth', snapshot.revision, epoch: _epoch),
+        snapshot,
+      ),
+    );
 
 const _authenticating = AcpAuthSnapshotView(
   revision: 5,
@@ -169,7 +179,7 @@ void main() {
     final transport = _AcpTransport();
     final client = _client(transport);
 
-    await client.acpCommands.check('acp-1');
+    await client.domains.acp.check(const AcpAccountIdentity('acp-1'));
 
     expect(transport.lastAction, isA<AcpCheckActionView>());
     expect(transport.lastExpectedConnectionRevision, 7);
@@ -181,15 +191,26 @@ void main() {
 
     final report = await client.close();
     expect(report.unresolved, isEmpty);
-    expect(client.unresolvedResources, isEmpty);
+    expect(client.client.unresolvedResources, isEmpty);
   });
 
   test('login 与 cancel 走同一 acp-auth 水位', () async {
     final transport = _AcpTransport();
     final client = _client(transport);
 
-    await client.acpCommands.check('acp-1');
-    await client.acpCommands.login('acp-1', methodId: 'browser');
+    await client.domains.acp.check(const AcpAccountIdentity('acp-1'));
+    _apply(
+      client,
+      transport._snapshot(
+        2,
+        const AcpVerifiedState(checkedAt: 2, server: null),
+      ),
+    );
+    transport.startRevision = 3;
+    await client.domains.acp.login(
+      const AcpAccountIdentity('acp-1'),
+      methodId: 'browser',
+    );
     expect(transport.lastAction, isA<AcpAuthenticateActionView>());
     expect(
       (transport.lastAction as AcpAuthenticateActionView).methodId,
@@ -198,9 +219,9 @@ void main() {
     expect(_operation(client).state.value.observed, isTrue);
 
     // topic 先给出在途 operation 身份：取消以该操作作为目标。
-    client.acpAuth.apply(_authenticating);
+    _apply(client, _authenticating);
     transport.cancelRevision = 6;
-    await client.acpCommands.cancel('acp-1');
+    await client.domains.acp.cancelAuth(const AcpAccountIdentity('acp-1'));
 
     expect(transport.lastCancelTarget?.value, 'op-auth');
     final cancelState = _operation(client).state.value;
@@ -210,7 +231,7 @@ void main() {
     expect((await client.close()).unresolved, isEmpty);
   });
 
-  // 注意：本用例把“canonical 帧”直接送入产品 reducer 入口（`acpAuth.apply`，即
+  // 注意：本用例把“canonical 帧”直接送入产品 reducer 入口（`AccountDomainResources.acceptFrame`，即
   // 生产 topic owner 与命令响应共用的同一个 store 入口），不经过 bridge 的 topic
   // 帧编解码；真实 topic 订阅→reducer 的接线由 `acp_auth_topic_contract_test.dart`
   // 证明。这里只验证“水位先到 / 回执迟到”的收敛顺序。
@@ -218,18 +239,20 @@ void main() {
     final transport = _AcpTransport()..holdStart = true;
     final client = _client(transport);
 
-    final connecting = client.acpCommands.check('acp-1');
+    final connecting = client.domains.acp.check(
+      const AcpAccountIdentity('acp-1'),
+    );
     await transport.startEntered.future.timeout(const Duration(seconds: 5));
     expect(transport.pendingStart, isNotNull);
     // 回执仍挂在 transport 上：水位只能来自 reducer 收到的这一帧。
-    client.acpAuth.apply(_authenticating);
+    _apply(client, _authenticating);
     expect(_operation(client).state.value.observed, isFalse);
 
     transport.pendingStart!.complete();
     await connecting;
 
     // 迟到的回执（revision 1 < 5）不得回退水位，且同一 operation 仍被观察到。
-    expect(client.acpAuth.state.revision, 5);
+    expect(client.domains.acp.auth.value.stamp!.revision, 5);
     final state = _operation(client).state.value;
     expect(state.observed, isTrue);
     expect(state.isPending, isFalse);
@@ -239,9 +262,10 @@ void main() {
   test('首帧 revision 0 也是有效 canonical 水位', () async {
     final transport = _AcpTransport()..startRevision = 0;
     final client = _client(transport);
-    expect(client.acpAuth.state.loaded, isFalse);
+    expect(client.domains.acp.auth.value.loaded, isFalse);
 
-    client.acpAuth.apply(
+    _apply(
+      client,
       const AcpAuthSnapshotView(
         revision: 0,
         updatedAt: 0,
@@ -254,9 +278,9 @@ void main() {
         ],
       ),
     );
-    expect(client.acpAuth.state.loaded, isTrue);
+    expect(client.domains.acp.auth.value.loaded, isTrue);
 
-    await client.acpCommands.check('acp-1');
+    await client.domains.acp.check(const AcpAccountIdentity('acp-1'));
 
     final state = _operation(client).state.value;
     expect(state.observed, isTrue);
@@ -267,11 +291,12 @@ void main() {
   test('更旧的 revision 帧不回退水位，也不重新挂起回执', () async {
     final transport = _AcpTransport()..startRevision = 4;
     final client = _client(transport);
-    await client.acpCommands.check('acp-1');
-    expect(client.acpAuth.state.revision, 4);
+    await client.domains.acp.check(const AcpAccountIdentity('acp-1'));
+    expect(client.domains.acp.auth.value.stamp!.revision, 4);
 
     // 迟到/重复的旧帧进入同一 reducer 后被丢弃。
-    client.acpAuth.apply(
+    _apply(
+      client,
       const AcpAuthSnapshotView(
         revision: 2,
         updatedAt: 2,
@@ -284,11 +309,35 @@ void main() {
         ],
       ),
     );
-    expect(client.acpAuth.state.revision, 4);
+    expect(client.domains.acp.auth.value.stamp!.revision, 4);
 
-    // 目标 revision 更旧（3 < 4）的回执由已登记水位覆盖，不重新进入 pending。
-    transport.startRevision = 3;
-    await client.acpCommands.check('acp-1');
+    // A completed first operation permits a new one. Its own busy frame may
+    // arrive before its lower-revision admission response, not merely another
+    // account/operation's global watermark.
+    _apply(
+      client,
+      transport._snapshot(
+        5,
+        const AcpVerifiedState(checkedAt: 5, server: null),
+      ),
+    );
+    transport.startRevision = 6;
+    transport.holdStart = true;
+    transport.startEntered = Completer<void>();
+    final connecting = client.domains.acp.check(
+      const AcpAccountIdentity('acp-1'),
+    );
+    await transport.startEntered.future;
+    _apply(
+      client,
+      transport._snapshot(
+        7,
+        AcpCheckingState(operationId: _operation(client).id.value),
+      ),
+    );
+    transport.pendingStart!.complete();
+    await connecting;
+    expect(client.domains.acp.auth.value.stamp!.revision, 7);
     final state = _operation(client).state.value;
     expect(state.observed, isTrue);
     expect(state.isPending, isFalse);

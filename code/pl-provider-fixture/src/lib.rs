@@ -117,9 +117,10 @@ pub use model_catalog::kick_hang_probes as model_catalog_kick_hang_probes;
 pub use model_catalog::self_check as model_catalog_self_check;
 pub use model_catalog::{
     CONTROL_FILE_NAME as MODEL_CATALOG_CONTROL_FILE_NAME,
-    DEEPSEEK_PATH as MODEL_CATALOG_DEEPSEEK_PATH, MIMO_MEDIA_MODEL_IDS,
-    MIMO_PATH as MODEL_CATALOG_MIMO_PATH, ModelCatalogControl, ModelCatalogProviderControl,
-    ModelCatalogRequestReport, OPENAI_PATH as MODEL_CATALOG_OPENAI_PATH,
+    CONTROL_PATH as MODEL_CATALOG_CONTROL_PATH, DEEPSEEK_PATH as MODEL_CATALOG_DEEPSEEK_PATH,
+    MIMO_MEDIA_MODEL_IDS, MIMO_PATH as MODEL_CATALOG_MIMO_PATH, ModelCatalogControl,
+    ModelCatalogProviderControl, ModelCatalogRequestReport,
+    OPENAI_PATH as MODEL_CATALOG_OPENAI_PATH,
     OPENAI_SECOND_PATH as MODEL_CATALOG_OPENAI_SECOND_PATH,
 };
 
@@ -1729,7 +1730,7 @@ struct AppState {
     stress: Arc<Mutex<StressProgress>>,
     web_search: Arc<Mutex<web_search::WebSearchState>>,
     provider_usage: provider_usage::ProviderUsageGates,
-    model_catalog: Option<Arc<model_catalog::ModelCatalogControl>>,
+    model_catalog: Option<model_catalog::ModelCatalogRuntime>,
     model_catalog_hits: model_catalog::ModelCatalogHits,
     agent_definitions: Option<agent_definitions::AgentDefinitionControl>,
     delegation: delegation::Environment,
@@ -1795,18 +1796,21 @@ impl FixtureServer {
         let provider_usage_enabled = options.provider_usage;
         let model_catalog_enabled = options.model_catalog.is_some();
         let agent_definitions_enabled = options.agent_definitions.is_some();
+        let stopping = CancellationToken::new();
         let state = AppState {
             script: Arc::new(Mutex::new(ScriptState {
                 steps,
                 ..Default::default()
             })),
-            stopping: CancellationToken::new(),
+            stopping: stopping.clone(),
             stress: Arc::new(Mutex::new(StressProgress::default())),
             web_search: Arc::new(Mutex::new(web_search::WebSearchState::new(
                 options.web_search.unwrap_or_default(),
             ))),
             provider_usage: provider_usage::ProviderUsageGates::new(),
-            model_catalog: options.model_catalog.map(Arc::new),
+            model_catalog: options
+                .model_catalog
+                .map(|control| model_catalog::ModelCatalogRuntime::new(control, stopping.clone())),
             model_catalog_hits: model_catalog::ModelCatalogHits::default(),
             agent_definitions: options.agent_definitions,
             delegation: delegation::Environment::new(options.delegation),
@@ -1896,6 +1900,10 @@ impl FixtureServer {
         };
         let app = if model_catalog_enabled {
             app.route(
+                model_catalog::CONTROL_PATH,
+                post(model_catalog::control).fallback(unexpected_route),
+            )
+            .route(
                 model_catalog::OPENAI_PATH,
                 get(model_catalog::openai_models).fallback(unexpected_route),
             )

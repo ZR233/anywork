@@ -657,13 +657,9 @@ void main() {
   };
 
   test('保存身份只认新增 accountId，旧 id 改代次属改写而非新增', () {
-    final empty = acpAccountsView(
-      snapshotWith(accounts: const []),
-      provider: 'antigravity',
-    );
+    final empty = acpAccountsView(snapshotWith(accounts: const []));
     final saved = acpAccountsView(
       snapshotWith(accounts: [accountEntry()], auth: [authEntry()]),
-      provider: 'antigravity',
     );
     expect(acpAddedAccountIds(saved, empty), ['antigravity']);
     expect(acpSaveVerdict(saved, empty), AcpSaveVerdict.ready);
@@ -676,7 +672,6 @@ void main() {
         accounts: [accountEntry(revision: 2)],
         auth: [authEntry(revision: 2)],
       ),
-      provider: 'antigravity',
     );
     expect(acpAddedAccountIds(rewritten, saved), isEmpty);
     expect(acpSaveVerdict(rewritten, saved), AcpSaveVerdict.tampered);
@@ -686,16 +681,12 @@ void main() {
         accounts: [accountEntry(name: 'Replaced')],
         auth: [authEntry()],
       ),
-      provider: 'antigravity',
     );
     expect(() => acpSavedAccountIdentity(renamedOld, saved), throwsStateError);
   });
 
   test('多个新增账号是终局失败，不在等待里挑一个', () {
-    final empty = acpAccountsView(
-      snapshotWith(accounts: const []),
-      provider: 'antigravity',
-    );
+    final empty = acpAccountsView(snapshotWith(accounts: const []));
     final ambiguous = acpAccountsView(
       snapshotWith(
         accounts: [
@@ -707,7 +698,6 @@ void main() {
           authEntry(id: 'antigravity-2'),
         ],
       ),
-      provider: 'antigravity',
     );
     final added = acpAddedAccountIds(ambiguous, empty);
     expect(added, hasLength(2));
@@ -717,7 +707,6 @@ void main() {
     expect(acpSaveVerdict(ambiguous, empty), isNot(AcpSaveVerdict.pending));
     final laterSingle = acpAccountsView(
       snapshotWith(accounts: [accountEntry()], auth: [authEntry()]),
-      provider: 'antigravity',
     );
     var observations = 0;
     AcpAccountIdentity? waitForIdentity() {
@@ -734,21 +723,16 @@ void main() {
   });
 
   test('唯一新增账号也要等连接代次落定才算可用身份', () {
-    final empty = acpAccountsView(
-      snapshotWith(accounts: const []),
-      provider: 'antigravity',
-    );
+    final empty = acpAccountsView(snapshotWith(accounts: const []));
     // 账号已出现但 acpAuth 还没写入代次 → 继续等，不拿 null 代次去核对。
     final pendingRevision = acpAccountsView(
       snapshotWith(accounts: [accountEntry()]),
-      provider: 'antigravity',
     );
     expect(acpAddedAccountIds(pendingRevision, empty), ['antigravity']);
     expect(acpSaveVerdict(pendingRevision, empty), AcpSaveVerdict.pending);
     // 代次落定 → 可用身份。
     final settled = acpAccountsView(
       snapshotWith(accounts: [accountEntry()], auth: [authEntry()]),
-      provider: 'antigravity',
     );
     expect(acpSaveVerdict(settled, empty), AcpSaveVerdict.ready);
     // 旧账号丢失同样是终局失败。
@@ -758,12 +742,10 @@ void main() {
   test('“没保存”= 账号配置与基线一致，不是列表为空', () {
     final baseline = acpAccountsView(
       snapshotWith(accounts: [accountEntry()], auth: [authEntry()]),
-      provider: 'antigravity',
     );
     // 历史账号仍在但配置未变 → 未保存成立（旧实现的“必须为空”会误判失败）。
     final unchanged = acpAccountsView(
       snapshotWith(accounts: [accountEntry()], auth: [authEntry()]),
-      provider: 'antigravity',
     );
     expect(acpAccountsEqual(unchanged, baseline), isTrue);
     // 账号列表顺序不影响结论（身份按 accountId 建）。
@@ -772,7 +754,6 @@ void main() {
         accounts: [accountEntry(id: 'z-second')],
         auth: [authEntry()],
       ),
-      provider: 'antigravity',
     );
     expect(acpAccountsEqual(reordered, baseline), isFalse);
     // 名称被改写也不能被准备或新建保存掩盖。
@@ -781,7 +762,6 @@ void main() {
         accounts: [accountEntry(name: 'Overwritten')],
         auth: [authEntry()],
       ),
-      provider: 'antigravity',
     );
     expect(acpAccountsEqual(rewritten, baseline), isFalse);
     // 新连接代次
@@ -790,14 +770,10 @@ void main() {
         accounts: [accountEntry(revision: 2)],
         auth: [authEntry(revision: 2)],
       ),
-      provider: 'antigravity',
     );
     expect(acpAccountsEqual(resaved, baseline), isFalse);
     // 账号被丢掉
-    final dropped = acpAccountsView(
-      snapshotWith(accounts: const []),
-      provider: 'antigravity',
-    );
+    final dropped = acpAccountsView(snapshotWith(accounts: const []));
     expect(acpAccountsEqual(dropped, baseline), isFalse);
   });
 
@@ -813,7 +789,6 @@ void main() {
           authEntry(id: 'second'),
         ],
       ),
-      provider: 'antigravity',
     );
     expect(view.keys, ['antigravity', 'second']);
     expect(view['antigravity']!['connectionRevision'], 1);
@@ -822,7 +797,6 @@ void main() {
   test('acpAuth 未加载时不合成连接代次', () {
     final view = acpAccountsView(
       snapshotWith(accounts: [accountEntry()], authLoaded: false),
-      provider: 'antigravity',
     );
     expect(view['antigravity']!['connectionRevision'], isNull);
   });
@@ -833,7 +807,6 @@ void main() {
         accounts: [accountEntry(revision: 9)],
         auth: [authEntry(revision: 7)],
       ),
-      provider: 'antigravity',
     );
     expect(stale['antigravity']!['connectionRevision'], isNull);
     expect(acpSaveVerdict(stale, const {}), AcpSaveVerdict.pending);
@@ -842,7 +815,6 @@ void main() {
         accounts: [accountEntry(revision: 9)],
         auth: [authEntry(revision: 9)],
       ),
-      provider: 'antigravity',
     );
     expect(current['antigravity']!['connectionRevision'], 9);
     expect(acpSaveVerdict(current, const {}), AcpSaveVerdict.ready);
@@ -860,7 +832,6 @@ void main() {
           authEntry(id: 'second', revision: 4),
         ],
       ),
-      provider: 'antigravity',
     );
     final reordered = acpAccountsView(
       snapshotWith(
@@ -873,7 +844,6 @@ void main() {
           authEntry(),
         ],
       ),
-      provider: 'antigravity',
     );
     expect(acpAccountsEqual(reordered, baseline), isTrue);
     final awaitingAuth = acpAccountsView(
@@ -884,7 +854,6 @@ void main() {
         ],
         authLoaded: false,
       ),
-      provider: 'antigravity',
     );
     expect(acpOldAccountsIntact(awaitingAuth, baseline), isTrue);
   });

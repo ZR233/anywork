@@ -10,6 +10,9 @@ struct Inventory {
     head: Option<String>,
     common_dir: Option<String>,
     branch: Option<String>,
+    detached: Option<bool>,
+    git_dir: Option<String>,
+    admin_backlink: Option<String>,
     status: Option<String>,
     files: BTreeMap<String, Option<Vec<u8>>>,
     tree_digest: Option<String>,
@@ -59,7 +62,7 @@ def _raise_walk_error(error):
 def inspect(path):
     exists = os.path.lexists(path)
     if not exists:
-        return {'path':path,'exists':False,'head':None,'commonDir':None,'branch':None,'status':None,'files':{},'treeDigest':None,'entries':0}
+        return {'path':path,'exists':False,'head':None,'commonDir':None,'branch':None,'detached':None,'gitDir':None,'adminBacklink':None,'status':None,'files':{},'treeDigest':None,'entries':0}
     assert os.path.isdir(path) and not os.path.islink(path)
     files = {}
     for name in ['fixture-base.txt', '.gitignore', 'fixture-parent.txt', 'fixture-dirty.txt', 'fixture-child-dirty.txt', 'fixture-child-commit.txt']:
@@ -85,7 +88,9 @@ def inspect(path):
                 assert stat.S_ISDIR(mode), 'unexpected synthetic worktree entry kind'
             entries.append(identity)
     digest = hashlib.sha256(json.dumps(sorted(entries), separators=(',',':')).encode()).hexdigest()
-    return {'path':path,'exists':True,'head':git('rev-parse','--verify','HEAD',cwd=path).strip(),'commonDir':os.path.realpath(git('rev-parse','--path-format=absolute','--git-common-dir',cwd=path).strip()),'branch':git('symbolic-ref','--short','HEAD',cwd=path).strip(),'status':git('status','--porcelain',cwd=path),'files':files,'treeDigest':digest,'entries':len(entries)}
+    common, admin, backlink = physical(path)
+    branch = symbolic_branch(cwd=path)
+    return {'path':path,'exists':True,'head':git('rev-parse','--verify','HEAD',cwd=path).strip(),'commonDir':common,'branch':branch,'detached':branch is None,'gitDir':admin,'adminBacklink':backlink,'status':git('status','--porcelain',cwd=path),'files':files,'treeDigest':digest,'entries':len(entries)}
 original = params['original']
 neighbor = params['neighbor']
 assert original != root and os.path.isabs(original)
@@ -128,6 +133,7 @@ pub(super) fn run(
             None,
         )?;
         let child = observe_child(flow, label, root, spawn)?;
+        git::new_detached_child(parent, &child.git)?;
         require(
             child.git.path != parent.path
                 && child.git.head == parent.head
@@ -206,6 +212,8 @@ pub(super) fn run(
             force: false,
             result,
             tool_output,
+            owner_error: None,
+            before: None,
             git,
         });
         let (restored, after_retry, retry_owner_error, retry_failure) = if registered {
@@ -286,6 +294,8 @@ pub(super) fn run(
                 force: false,
                 result,
                 tool_output: failure.output.clone(),
+                owner_error: owner_error.clone(),
+                before: None,
                 git,
             });
             (Some(restored), Some(after), owner_error, Some(failure))
@@ -329,8 +339,9 @@ fn check_parent(parent: &Git, child: &Git, site: &Site) -> Result<()> {
         site.parent_path == parent.path
             && site.parent_head == parent.head
             && site.common_dir == parent.common_dir
-            && site.refs.get(&format!("refs/heads/{}", child.branch)) == Some(&child.head),
-        "NotPresent probe changed parent identity or lost the independent child ref",
+            && git::refs_preserved(&parent.refs, &site.refs)
+            && git::refs_preserved(&child.refs, &site.refs),
+        "NotPresent probe changed parent identity or lost an originally present ref",
     )
 }
 
@@ -340,7 +351,10 @@ fn check_present_child(child: &Git, inventory: &Inventory) -> Result<()> {
             && inventory.exists
             && inventory.head.as_deref() == Some(child.head.as_str())
             && inventory.common_dir.as_deref() == Some(child.common_dir.as_str())
-            && inventory.branch.as_deref() == Some(child.branch.as_str())
+            && inventory.branch == child.branch
+            && inventory.detached == Some(child.detached)
+            && inventory.git_dir.as_deref() == Some(child.git_dir.as_str())
+            && inventory.admin_backlink == child.admin_backlink
             && inventory.status.as_deref() == Some(child.status.as_str())
             && inventory
                 .tree_digest
@@ -362,6 +376,9 @@ fn same_contents(a: &Inventory, b: &Inventory) -> bool {
         && a.head == b.head
         && a.common_dir == b.common_dir
         && a.branch == b.branch
+        && a.detached == b.detached
+        && a.git_dir == b.git_dir
+        && a.admin_backlink == b.admin_backlink
         && a.status == b.status
         && a.files == b.files
         && a.tree_digest == b.tree_digest
@@ -377,7 +394,12 @@ fn check_registration(child: &Git, site: &Site, registered: bool) -> Result<()> 
     require(
         if registered {
             rows.len() == 1
-                && rows[0].branch == format!("refs/heads/{}", child.branch)
+                && rows[0].branch
+                    == child
+                        .branch
+                        .as_ref()
+                        .map(|branch| format!("refs/heads/{branch}"))
+                && rows[0].detached == child.detached
                 && rows[0].head == child.head
         } else {
             rows.is_empty()
