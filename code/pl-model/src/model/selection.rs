@@ -145,6 +145,7 @@ pub fn bundled_selection_guides() -> &'static [BundledSelectionGuide] {
 
 /// 2026-10-22（UTC）的核验时间；本批次资料统一在该日期核对来源。
 const VERIFIED_AT: i64 = 1_792_627_200;
+const TERRA_VERIFIED_AT: i64 = 1_793_059_200;
 
 const OPENAI_MODELS_DOC: &str = "https://developers.openai.com/api/docs/models";
 
@@ -181,6 +182,32 @@ static BUNDLED_SELECTION_GUIDES: &[BundledSelectionGuide] = &[
                         metric_version: Some("v4.1.1"),
                         score: None,
                     }),
+                },
+            ],
+        },
+    },
+    BundledSelectionGuide {
+        catalogs: &["openai"],
+        model_id: "gpt-6.1-terra",
+        guide: ModelSelectionGuide {
+            summary: "面向视觉推理、屏幕操作与自然写作的 OpenAI 型号；适合以图像理解和交互为核心的任务。",
+            task_suitability: &[AgentTaskCategory::Multimodal, AgentTaskCategory::Reasoning],
+            limitations: &[
+                "官方资料未提供此处可直接比较的独立基准分数或社区结论",
+                "本资料不将其定位为编码旗舰；具体适配仍取决于任务输入与所选 effort",
+            ],
+            sources: &[
+                ModelSelectionSource {
+                    kind: ModelSelectionSourceKind::Official,
+                    url: "https://developers.openai.com/api/docs/models/gpt-6.1-terra",
+                    verified_at: TERRA_VERIFIED_AT,
+                    measurement: None,
+                },
+                ModelSelectionSource {
+                    kind: ModelSelectionSourceKind::Official,
+                    url: "https://developers.openai.com/api/docs/guides/latest-model",
+                    verified_at: TERRA_VERIFIED_AT,
+                    measurement: None,
                 },
             ],
         },

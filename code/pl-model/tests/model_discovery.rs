@@ -1379,9 +1379,9 @@ async fn gpt61_id_only_inventory_and_old_fallback_cache_enable_real_image_input(
     };
     use pl_provider_fixture::{FixtureServer, Protocol, Reply, Step, responses_text};
     let adapter = ProtocolKind::OpenAi;
-    let model_id = "gpt-6.1-sol";
+    let model_id = "gpt-6.1-terra";
     let mut old = discover(
-        json!({"data":[{"id":"unregistered-old-id","display_name":"GPT-6.1 Sol","description":"Provider description without capability declarations."}]}),
+        json!({"data":[{"id":"unregistered-old-id","display_name":"GPT-6.1 Terra","description":"Provider description without capability declarations."}]}),
         adapter,
     )
     .await
@@ -1393,7 +1393,7 @@ async fn gpt61_id_only_inventory_and_old_fallback_cache_enable_real_image_input(
     old.binding.request.media.clear();
     let description = old.description.clone();
     let server = Server::responses(vec![
-        http(200, "", &json!({"data":[{"id":model_id,"display_name":"GPT-6.1 Sol","created":1790640000,"object":"model","owned_by":"openai","type":"model"}]}).to_string()),
+        http(200, "", &json!({"data":[{"id":model_id,"display_name":"GPT-6.1 Terra","created":1790640000,"object":"model","owned_by":"openai","type":"model"}]}).to_string()),
         http(200, "", &json!({"data":[{"id":model_id,"input_modalities":["text"],"supported_reasoning_levels":[]}]}).to_string()),
     ]).await;
     let mut config = provider(&server.url, adapter);
@@ -1420,7 +1420,7 @@ async fn gpt61_id_only_inventory_and_old_fallback_cache_enable_real_image_input(
         .effective_models(None)
         .unwrap()
         .remove(0);
-    assert_eq!(startup.display_name, "GPT-6.1 Sol");
+    assert_eq!(startup.display_name, "GPT-6.1 Terra");
     assert_eq!(
         startup.description,
         bundled_model_definition("openai")
@@ -1449,16 +1449,16 @@ async fn gpt61_id_only_inventory_and_old_fallback_cache_enable_real_image_input(
         ))
         .context
         .auto_compact_limit,
-        Some(475_000)
+        Some(922_000)
     );
     assert_eq!(
         model.resolve_context(None).auto_compact_limit,
-        Some(475_000)
+        Some(922_000)
     );
     assert_eq!(model.max_output_tokens, Some(128_000));
     assert_eq!(
         model.supported_efforts(),
-        ["low", "medium", "high", "xhigh", "max"]
+        ["none", "low", "medium", "high", "xhigh", "max"]
     );
     assert!(
         model_descriptor(&pl_model::config::AccountModelEntry::new(
@@ -1547,6 +1547,46 @@ async fn gpt61_id_only_inventory_and_old_fallback_cache_enable_real_image_input(
             .unwrap()
             .starts_with("data:image/png;base64,")
     );
+}
+
+#[test]
+fn gpt61_terra_is_selectable_with_safe_context_and_documented_tiered_pricing() {
+    use pl_model::model::{PricingMode, UsageReport};
+
+    let account = pl_model::config::builtin_account_catalog()
+        .unwrap()
+        .templates
+        .into_iter()
+        .find(|template| template.id.as_str() == "openai")
+        .unwrap()
+        .account;
+    let selected = account
+        .selectable_catalog(Some(ModelType::Text))
+        .unwrap()
+        .into_iter()
+        .find(|entry| entry.model.model_id == "gpt-6.1-terra")
+        .unwrap();
+    let model = selected.model;
+    assert_eq!(
+        model.resolve_context(None).auto_compact_limit,
+        Some(922_000)
+    );
+
+    for (input_tokens, expected_rate) in [(272_000, 1.0), (272_001, 2.0)] {
+        let usage = UsageReport {
+            input_tokens: Some(input_tokens),
+            output_tokens: Some(0),
+            cache_read_tokens: Some(0),
+            cache_write_tokens: Some(0),
+            total_tokens: Some(input_tokens),
+            ..Default::default()
+        };
+        let accounting = model.pricing.account(usage, PricingMode::Catalog, 0);
+        assert_eq!(
+            accounting.price_snapshot.unwrap().input_per_mtok,
+            Some(expected_rate)
+        );
+    }
 }
 
 #[tokio::test]
