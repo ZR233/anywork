@@ -430,10 +430,15 @@ async fn safe_recovery_reports_git_lock_without_deleting_or_expanding_authorizat
             error.code,
             error.message
         );
+        let root_path = Path::new(&root.thread.workspace_path);
+        ensure!(root_path.exists(), "failed cleanup removed the checkout");
+        let worktrees = git(&env.repo, &["worktree", "list", "--porcelain", "-z"])?;
         ensure!(
-            Path::new(&root.thread.workspace_path).exists()
-                && git(&env.repo, &["worktree", "list", "--porcelain"])?
-                    .contains(&root.thread.workspace_path)
+            worktrees
+                .split('\0')
+                .filter_map(|record| record.strip_prefix("worktree "))
+                .any(|path| Path::new(path) == root_path),
+            "failed cleanup removed the worktree registration"
         );
         git(
             &env.repo,
