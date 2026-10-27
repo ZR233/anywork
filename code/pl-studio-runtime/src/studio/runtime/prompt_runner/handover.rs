@@ -117,6 +117,7 @@ impl StudioRuntime {
             id: issue_id.clone(),
             scope: crate::studio::StudioRecoveryIssueScope::Thread,
             category: crate::studio::StudioRecoveryIssueCategory::Storage,
+            impact: crate::studio::StudioRecoveryImpact::ExecutionBlocked,
             action: crate::studio::StudioRecoveryIssueAction::Retry,
             project_id: None,
             thread_id: Some(child_id.to_owned()),

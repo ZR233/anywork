@@ -5325,4 +5325,43 @@ class AppLocalizationsZh extends AppLocalizations {
 
   @override
   String get childInteractionDecisionAccepted => '决定已受理，等待会话确认。';
+
+  @override
+  String recoveryDiagnostic(
+    String id,
+    String owner,
+    String impact,
+    String detail,
+    String actions,
+  ) {
+    return '恢复问题 $id\n$owner · $impact\n$detail\n可用恢复操作：$actions';
+  }
+
+  @override
+  String get recoveryOwnerApplication => '应用';
+
+  @override
+  String recoveryOwnerProject(String projectId) {
+    return '项目 $projectId';
+  }
+
+  @override
+  String recoveryOwnerThread(String threadId, String projectId) {
+    return '会话 $threadId · 项目 $projectId';
+  }
+
+  @override
+  String get recoveryUnknownOwner => '未记录';
+
+  @override
+  String get recoveryImpactAdvisory => '需要关注，不影响访问与执行';
+
+  @override
+  String get recoveryImpactExecutionBlocked => '执行受阻，仍可读取安全的历史';
+
+  @override
+  String get recoveryImpactAccessBlocked => '访问与执行受阻';
+
+  @override
+  String get recoveryNoAvailableActions => '当前无可用操作';
 }

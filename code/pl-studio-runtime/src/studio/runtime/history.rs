@@ -1,7 +1,7 @@
 //! Direct SQL history queries; execution owners are never activated for historical pages.
 //!
-//! 独立轮次页先显式准备已有历史，再以只读句柄查询。缺失库仍为空且不创建；
-//! 准备不导入 TOML、不激活执行 owner，损坏或身份不符直接失败。
+//! 无句柄的独立轮次入口先显式准备已有 SQLite 内容，再通过只读查询核对 checkpoint 栅栏。
+//! 不推进模型或执行身份准备，不装配 owner；缺失库不创建，损坏或身份不符直接失败。
 
 use anyhow::Result;
 

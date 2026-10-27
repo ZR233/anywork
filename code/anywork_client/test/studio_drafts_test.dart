@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:anywork_client/studio_client.dart';
@@ -18,6 +19,8 @@ final class _DraftTransport extends AccountsTestTransport {
       StreamController<ThreadStreamFrame>.broadcast();
   final Completer<StudioPromptInput> promptEntered = Completer();
   final Completer<SubmitPromptReceipt> promptReply = Completer();
+  final Completer<void> compactEntered = Completer<void>();
+  Completer<void>? compactGate;
   final Completer<
     ({
       StudioPromptInput input,
@@ -33,8 +36,14 @@ final class _DraftTransport extends AccountsTestTransport {
   final StreamController<NewThreadStartEvent> startEvents =
       StreamController.broadcast();
   int startCalls = 0;
+  int threadSubscriptionCalls = 0;
+  int timelineOpenCalls = 0;
+  int activateProjectCalls = 0;
+  int recoveryRetryCalls = 0;
+  final resumedThreads = <String>[];
   final List<String> removed = [];
   int promptCalls = 0;
+  int compactCalls = 0;
 
   /// 非空时提交以该错误结束；用于证明已知拒绝不会被当成未知结果。
   Object? promptFailure;
@@ -49,11 +58,46 @@ final class _DraftTransport extends AccountsTestTransport {
   final window = _DraftConnection();
 
   @override
-  Stream<ThreadStreamFrame> subscribeThread(String threadId) => frames.stream;
+  Stream<ThreadStreamFrame> subscribeThread(String threadId) {
+    threadSubscriptionCalls += 1;
+    return frames.stream;
+  }
 
   @override
-  Future<StudioTimelineConnection> openTimeline(String threadId) async =>
-      window;
+  Future<StudioTimelineConnection> openTimeline(String threadId) async {
+    timelineOpenCalls += 1;
+    return window;
+  }
+
+  @override
+  Future<void> compactThread(String threadId) {
+    compactCalls += 1;
+    if (!compactEntered.isCompleted) compactEntered.complete();
+    return compactGate?.future ?? Future<void>.value();
+  }
+
+  @override
+  Future<void> activateProject(String projectId) async {
+    activateProjectCalls += 1;
+  }
+
+  @override
+  Future<RecoveryStateSnapshot> retryRecovery() async {
+    recoveryRetryCalls += 1;
+    return RecoveryStateSnapshot(
+      revision: recoveryRetryCalls + 1,
+      values: const [],
+    );
+  }
+
+  @override
+  Future<PersistenceQueueSnapshot> resumeThreadHistory(
+    String threadId,
+    int faultGeneration,
+  ) async {
+    resumedThreads.add(threadId);
+    return const PersistenceQueueSnapshot.empty();
+  }
 
   @override
   Future<SubmitPromptReceipt> submitPrompt(
@@ -230,40 +274,83 @@ const _project = StudioProject(
   path: '/project',
 );
 
-StudioThread _thread([String id = 'thread']) => StudioThread(
-  id: id,
-  projectId: _project.id,
-  title: 'Thread',
-  mode: ThreadModeId.simple,
-  delegationMode: DelegationMode.profile,
-  delegationPreference: DelegationPreference.balanced,
-  updatedAt: DateTime.utc(2026),
-  workspacePath: _project.path,
+StudioThread _thread([String id = 'thread', String? parentThreadId]) =>
+    StudioThread(
+      id: id,
+      projectId: _project.id,
+      title: 'Thread',
+      mode: ThreadModeId.simple,
+      delegationMode: DelegationMode.profile,
+      delegationPreference: DelegationPreference.balanced,
+      updatedAt: DateTime.utc(2026),
+      parentThreadId: parentThreadId,
+      rootThreadId: parentThreadId == null ? '' : 'thread',
+      workspacePath: _project.path,
+    );
+
+ThreadWorkspace _workspace({
+  int revision = 1,
+  StudioTurnView? turn,
+  ThreadStorageStateView? storage,
+}) => ThreadWorkspace(
+  thread: _thread(),
+  revision: revision,
+  interactions: const [],
+  activeTurn: turn,
+  latestTurn: turn,
+  storage: storage,
+  runtime: const ThreadRuntimeView(
+    modelId: 'alpha',
+    contextTokens: 0,
+    contextWindow: 100,
+    totalTokens: 0,
+    costLabel: '',
+    activeSkills: [],
+    activeMcpServers: [],
+    activeLspServers: [],
+    modelRoute: ThreadModelRouteView(
+      accountId: 'account',
+      modelId: 'alpha',
+      effort: 'medium',
+      revision: 1,
+      available: true,
+    ),
+  ),
 );
 
-ThreadWorkspace _workspace({int revision = 1, StudioTurnView? turn}) =>
-    ThreadWorkspace(
-      thread: _thread(),
-      revision: revision,
-      interactions: const [],
-      activeTurn: turn,
-      latestTurn: turn,
-      runtime: const ThreadRuntimeView(
-        modelId: 'alpha',
-        contextTokens: 0,
-        contextWindow: 100,
-        totalTokens: 0,
-        costLabel: '',
-        activeSkills: [],
-        activeMcpServers: [],
-        activeLspServers: [],
-        modelRoute: ThreadModelRouteView(
-          accountId: 'account',
-          modelId: 'alpha',
-          effort: 'medium',
-          revision: 1,
-          available: true,
-        ),
+StudioRecoveryIssue _recoveryIssue({
+  required String id,
+  required RecoveryIssueScope scope,
+  required RecoveryIssueImpact impact,
+  String? projectId,
+  String? threadId,
+  List<RecoveryIssueAction> availableActions = const [],
+  String detail = 'Recovery needs attention',
+}) => StudioRecoveryIssue(
+  id: id,
+  scope: scope,
+  category: RecoveryIssueCategory.repository,
+  impact: impact,
+  availableActions: availableActions,
+  projectId: projectId,
+  threadId: threadId,
+  detail: detail,
+);
+
+ChildInteractionSummary _childInteractionSummary(String childThreadId) =>
+    ChildInteractionSummary(
+      childThreadId: childThreadId,
+      interactionId: 'interaction-$childThreadId',
+      kind: InteractionKind.userInput,
+      revision: 1,
+      interaction: PendingInteraction(
+        id: 'interaction-$childThreadId',
+        threadId: childThreadId,
+        turnId: 'turn-$childThreadId',
+        kind: InteractionKind.userInput,
+        title: 'Question',
+        body: 'Answer from the main session',
+        revision: 1,
       ),
     );
 
@@ -361,6 +448,116 @@ Future<void> _close(AnyworkClient client, _DraftTransport transport) async {
 }
 
 void main() {
+  test('Recovery failure display requires a complete canonical owner', () {
+    StudioFailure failureWith(Map<String, Object?> fields) => StudioFailure(
+      code: StudioFailureCode.permissionDenied,
+      message: 'Original diagnostic must remain',
+      retryable: false,
+      correlationId: 'recovery-owner-validation',
+      detailsJson: jsonEncode({'kind': 'recovery', ...fields}),
+    );
+
+    final validThreadOnly = failureWith({
+      'issueId': 'thread-only',
+      'scope': 'thread',
+      'owner': {'scope': 'thread', 'id': 'child'},
+      'category': 'repository',
+      'impact': 'executionBlocked',
+      'projectId': null,
+      'threadId': 'child',
+      'detail': 'The child worktree is unavailable',
+      'availableActions': [],
+    });
+    final decoded = recoveryIssueFromFailure(validThreadOnly);
+    expect(decoded?.scope, RecoveryIssueScope.thread);
+    expect(decoded?.projectId, isNull);
+    expect(decoded?.threadId, 'child');
+
+    final malformedDetails = <Map<String, Object?>>[
+      {
+        'issueId': 'missing-thread',
+        'scope': 'thread',
+        'owner': {'scope': 'thread', 'id': null},
+        'category': 'repository',
+        'impact': 'executionBlocked',
+        'projectId': null,
+        'detail': 'Partial diagnosis',
+        'availableActions': [],
+      },
+      {
+        'issueId': 'blank-thread',
+        'scope': 'thread',
+        'owner': {'scope': 'thread', 'id': '  '},
+        'category': 'repository',
+        'impact': 'executionBlocked',
+        'projectId': null,
+        'threadId': '  ',
+        'detail': 'Partial diagnosis',
+        'availableActions': [],
+      },
+      {
+        'issueId': 'missing-project',
+        'scope': 'project',
+        'owner': {'scope': 'project', 'id': null},
+        'category': 'repository',
+        'impact': 'executionBlocked',
+        'projectId': null,
+        'threadId': null,
+        'detail': 'Partial diagnosis',
+        'availableActions': [],
+      },
+      {
+        'issueId': 'wrong-project-type',
+        'scope': 'project',
+        'owner': {'scope': 'project', 'id': 17},
+        'category': 'repository',
+        'impact': 'executionBlocked',
+        'projectId': 17,
+        'threadId': null,
+        'detail': 'Partial diagnosis',
+        'availableActions': [],
+      },
+      {
+        'issueId': 'mismatched-owner',
+        'scope': 'thread',
+        'owner': {'scope': 'thread', 'id': 'another-thread'},
+        'category': 'repository',
+        'impact': 'executionBlocked',
+        'projectId': null,
+        'threadId': 'child',
+        'detail': 'Partial diagnosis',
+        'availableActions': [],
+      },
+      {
+        'issueId': 'unknown-impact',
+        'scope': 'thread',
+        'owner': {'scope': 'thread', 'id': 'child'},
+        'category': 'repository',
+        'impact': 'futureImpact',
+        'projectId': null,
+        'threadId': 'child',
+        'detail': 'Partial diagnosis',
+        'availableActions': [],
+      },
+      {
+        'issueId': 'unknown-action',
+        'scope': 'thread',
+        'owner': {'scope': 'thread', 'id': 'child'},
+        'category': 'repository',
+        'impact': 'executionBlocked',
+        'projectId': null,
+        'threadId': 'child',
+        'detail': 'Partial diagnosis',
+        'availableActions': ['removeProject'],
+      },
+    ];
+    for (final details in malformedDetails) {
+      final failure = failureWith(details);
+      expect(recoveryIssueFromFailure(failure), isNull);
+      expect(failure.message, 'Original diagnostic must remain');
+    }
+  });
+
   test('new Thread attachments freeze the selected route and recover after rejection', () async {
     final transport = _DraftTransport();
     final staged = Completer<String?>();
@@ -1477,6 +1674,850 @@ void main() {
     expect(client.attachments.unresolvedStagingPaths, isEmpty);
     expect(client.budget.used(ResourceKind.attachment), 0);
     await client.close();
+  });
+
+  test('project recovery and exact child issues still permit healthy root selection, history and accepted submit', () async {
+    final transport = _DraftTransport();
+    final client = _client(transport);
+    client.threadDirectory.applyWindow(
+      ThreadDirectoryWindow(
+        threads: [_thread(), _thread('child-thread', 'thread')],
+        revision: 1,
+      ),
+    );
+    final session = client.session('thread');
+    session.applySnapshot(_workspace());
+    client.recovery.apply(
+      RecoveryStateSnapshot(
+        revision: 1,
+        values: [
+          _recoveryIssue(
+            id: 'project-preparation-block',
+            scope: RecoveryIssueScope.project,
+            impact: RecoveryIssueImpact.executionBlocked,
+            projectId: _project.id,
+            detail: 'Project preparation requires recovery, not this healthy Thread',
+          ),
+          _recoveryIssue(
+            id: 'preserved-child-worktree',
+            scope: RecoveryIssueScope.thread,
+            impact: RecoveryIssueImpact.advisory,
+            projectId: null,
+            threadId: 'child-thread',
+            availableActions: [RecoveryIssueAction.cleanupWorktree],
+            detail: 'Preserved child worktree remains available for review',
+          ),
+          _recoveryIssue(
+            id: 'thread-only-child-execution',
+            scope: RecoveryIssueScope.thread,
+            impact: RecoveryIssueImpact.executionBlocked,
+            threadId: 'child-thread',
+            availableActions: [RecoveryIssueAction.retry],
+            detail:
+                'Only the child depends on the unavailable execution resource',
+          ),
+        ],
+      ),
+    );
+
+    await client.directoryCommands.selectThread('thread');
+    expect(client.selection.state.selectedThreadId, 'thread');
+    await client.directoryCommands.openSelectedThread();
+    session.start();
+    await session.timeline.ready;
+    expect(session.isActive, isTrue);
+    expect(transport.threadSubscriptionCalls, 1);
+    expect(transport.timelineOpenCalls, 1);
+    await client.directoryCommands.resumeThreadHistory('thread', 5);
+    expect(transport.resumedThreads, ['thread']);
+
+    final owner = client.composer('thread');
+    owner.updateDraft('submit from a healthy root');
+    final submitted = owner.submit();
+    final input = await transport.promptEntered.future;
+    session.applySnapshot(
+      _workspace(
+        revision: 2,
+        turn: StudioTurnView(
+          inputId: input.inputId,
+          turnId: 'root-turn',
+          threadId: 'thread',
+          revision: 1,
+          state: const QueuedStudioTurnState(queuedAt: 1),
+          updatedAt: DateTime.utc(2026),
+        ),
+      ),
+    );
+    transport.promptReply.complete(
+      SubmitPromptReceipt(
+        threadId: 'thread',
+        inputId: input.inputId,
+        cursor: 7,
+      ),
+    );
+    await submitted;
+
+    expect(transport.promptCalls, 1);
+    expect(input.text, 'submit from a healthy root');
+    expect(owner.state.draft, isEmpty);
+    expect(owner.state.isSubmissionPending, isFalse);
+    expect(
+      client.mutations.lookup(OperationId(input.inputId))?.state.value.receipt,
+      isNotNull,
+      reason:
+          'The draft clears only after the actual backend acceptance receipt',
+    );
+
+    await client.directoryCommands.retryRecovery();
+    expect(transport.recoveryRetryCalls, 1);
+    client.recovery.apply(
+      RecoveryStateSnapshot(
+        revision: 3,
+        values: [
+          _recoveryIssue(
+            id: 'project-preparation-block',
+            scope: RecoveryIssueScope.project,
+            impact: RecoveryIssueImpact.executionBlocked,
+            projectId: _project.id,
+            detail: 'Project preparation remains unavailable',
+          ),
+          _recoveryIssue(
+            id: 'thread-only-child-execution',
+            scope: RecoveryIssueScope.thread,
+            impact: RecoveryIssueImpact.executionBlocked,
+            threadId: 'child-thread',
+            availableActions: [RecoveryIssueAction.retry],
+            detail: 'The child cannot execute until recovery completes',
+          ),
+        ],
+      ),
+    );
+    await expectLater(
+      client.threadCommands.compactThread('child-thread'),
+      throwsA(
+        isA<StudioFailure>()
+            .having(
+              (failure) => failure.code,
+              'code',
+              StudioFailureCode.permissionDenied,
+            )
+            .having(
+              (failure) => recoveryIssueFromFailure(failure)?.id,
+              'issue id',
+              'thread-only-child-execution',
+            )
+            .having(
+              (failure) => recoveryIssueFromFailure(failure)?.projectId,
+              'optional project id',
+              isNull,
+            )
+            .having(
+              (failure) => recoveryIssueFromFailure(failure)?.threadId,
+              'canonical thread id',
+              'child-thread',
+            ),
+      ),
+    );
+    await expectLater(
+      client.threadCommands.resolveChildInteraction(
+        'thread',
+        _childInteractionSummary('child-thread'),
+        const UserInputResolutionCommand(answers: []),
+      ),
+      throwsA(
+        isA<StudioFailure>()
+            .having(
+              (failure) => failure.code,
+              'code',
+              StudioFailureCode.permissionDenied,
+            )
+            .having(
+              (failure) => recoveryIssueFromFailure(failure)?.id,
+              'issue id',
+              'thread-only-child-execution',
+            ),
+      ),
+    );
+    await client.directoryCommands.selectThread('thread');
+    expect(client.selection.state.selectedThreadId, 'thread');
+    await _close(client, transport);
+  });
+
+  test(
+    'queued start preflight rejection preserves draft and attachment for retry',
+    () async {
+      for (final scope in [
+        RecoveryIssueScope.application,
+        RecoveryIssueScope.project,
+      ]) {
+        final transport = _DraftTransport()..compactGate = Completer<void>();
+        final client = _client(transport);
+        final queuedLaneCommand = client.threadCommands.compactThread(
+          'lane-holder',
+        );
+        await transport.compactEntered.future;
+
+        final owner = client.startDraft;
+        owner.updateDraft(_project.id, 'retry after queued recovery rejection');
+        await client.attachments.admitNewThread(
+          projectId: _project.id,
+          mode: ThreadModeId.simple,
+          sources: [const AttachmentDraftSource.localFile('/retry.bin')],
+        );
+        final submit = owner.submit(_project.id);
+        final attachedId = client.attachments.state
+            .newThread(_project.id)
+            .attachments
+            .single
+            .id;
+
+        client.recovery.apply(
+          RecoveryStateSnapshot(
+            revision: 1,
+            values: [
+              _recoveryIssue(
+                id: 'queued-${scope.name}-block',
+                scope: scope,
+                impact: RecoveryIssueImpact.executionBlocked,
+                projectId: scope == RecoveryIssueScope.project
+                    ? _project.id
+                    : null,
+                availableActions: [RecoveryIssueAction.retry],
+                detail: 'Preparation became blocked while this command waited',
+              ),
+            ],
+          ),
+        );
+        expect(transport.startCalls, 0);
+        transport.compactGate!.complete();
+        await queuedLaneCommand;
+
+        expect(await submit, isFalse);
+        expect(transport.startCalls, 0);
+        expect(
+          owner.state.preparations[_project.id]?.phase,
+          NewThreadPreparationPhase.failed,
+          reason:
+              'A local preflight rejection is known, not an unknown outcome',
+        );
+        expect(
+          client.mutations.latest('start:${_project.id}')?.state.value.phase,
+          OperationPhase.rejected,
+        );
+        expect(
+          owner.state.forProject(_project.id).text,
+          'retry after queued recovery rejection',
+        );
+        expect(
+          client.attachments.state.newThread(_project.id).attachments.single.id,
+          attachedId,
+        );
+
+        client.recovery.apply(RecoveryStateSnapshot(revision: 2, values: []));
+        final retry = owner.submit(_project.id);
+        final request = await transport.startEntered.future;
+        expect(transport.startCalls, 1);
+        expect(request.input.text, 'retry after queued recovery rejection');
+        expect(request.input.attachmentDraftIds, [attachedId]);
+        final thread = _thread('recovered-start');
+        transport.startReply.complete(
+          StartNewThreadResult(
+            thread: thread,
+            receipt: SubmitPromptReceipt(
+              threadId: thread.id,
+              inputId: request.input.inputId,
+              cursor: 1,
+            ),
+          ),
+        );
+        expect(await retry, isTrue);
+        expect(owner.state.forProject(_project.id).text, isEmpty);
+        await _close(client, transport);
+      }
+    },
+  );
+
+  test('application and project execution blocks preserve navigation but reject new session preparation', () async {
+    final transport = _DraftTransport();
+    final client = _client(transport);
+    const otherProject = StudioProject(
+      id: 'other-project',
+      name: 'Other',
+      path: '/other',
+    );
+    client.project.applyProjectDirectory(
+      ProjectDirectoryState(values: [_project, otherProject], revision: 2),
+    );
+    client.threadDirectory.applyWindow(
+      ThreadDirectoryWindow(
+        threads: [_thread(), _thread('affected-thread')],
+        revision: 1,
+      ),
+    );
+    final session = client.session('thread');
+    session.applySnapshot(_workspace());
+    client.recovery.apply(
+      RecoveryStateSnapshot(
+        revision: 1,
+        values: [
+          _recoveryIssue(
+            id: 'application-execution-pause',
+            scope: RecoveryIssueScope.application,
+            impact: RecoveryIssueImpact.executionBlocked,
+            detail: 'Application execution is paused for every target',
+          ),
+        ],
+      ),
+    );
+
+    await client.directoryCommands.selectProject(otherProject.id);
+    expect(client.selection.state.selectedProjectId, otherProject.id);
+    expect(
+      transport.activateProjectCalls,
+      0,
+      reason: 'Selection is safe navigation; activation performs execution preparation',
+    );
+    await client.directoryCommands.selectProject(_project.id);
+    expect(client.selection.state.selectedProjectId, _project.id);
+    expect(transport.activateProjectCalls, 0);
+    await client.directoryCommands.openSelectedThread();
+    session.start();
+    await session.timeline.ready;
+    expect(session.isActive, isTrue);
+    expect(transport.timelineOpenCalls, 1);
+    await expectLater(
+      client.threadCommands.compactThread('thread'),
+      throwsA(
+        isA<StudioFailure>().having(
+          (failure) => recoveryIssueFromFailure(failure)?.id,
+          'Application owner',
+          'application-execution-pause',
+        ),
+      ),
+    );
+    expect(transport.compactCalls, 0);
+
+    final owner = client.startDraft;
+    await client.directoryCommands.beginNewThread(projectId: _project.id);
+    owner.updateDraft(_project.id, 'retain under application block');
+    await client.attachments.admitNewThread(
+      projectId: _project.id,
+      mode: ThreadModeId.simple,
+      sources: [const AttachmentDraftSource.localFile('/application.bin')],
+    );
+    expect(await owner.submit(_project.id), isFalse);
+    expect(transport.startCalls, 0);
+    expect(
+      owner.state.forProject(_project.id).text,
+      'retain under application block',
+    );
+    expect(
+      client.attachments.state.newThread(_project.id).attachments.single.id,
+      'attachment-1-0',
+    );
+    expect(
+      client.attachments.state.newThread(_project.id).error,
+      contains('application-execution-pause'),
+    );
+    await client.directoryCommands.retryRecovery();
+    expect(
+      transport.recoveryRetryCalls,
+      1,
+      reason: 'An execution blocker must not disable diagnostic recovery retry',
+    );
+    await owner.discardProject(_project.id);
+
+    client.recovery.apply(
+      RecoveryStateSnapshot(
+        revision: 3,
+        values: [
+          _recoveryIssue(
+            id: 'project-execution-pause',
+            scope: RecoveryIssueScope.project,
+            impact: RecoveryIssueImpact.executionBlocked,
+            projectId: _project.id,
+            availableActions: [RecoveryIssueAction.retry],
+            detail: 'Project helper preparation is unavailable',
+          ),
+          _recoveryIssue(
+            id: 'dependent-thread-execution-pause',
+            scope: RecoveryIssueScope.thread,
+            impact: RecoveryIssueImpact.executionBlocked,
+            projectId: _project.id,
+            threadId: 'affected-thread',
+            detail: 'This existing Thread still uses the unavailable resource',
+          ),
+        ],
+      ),
+    );
+    await client.directoryCommands.selectProject(otherProject.id);
+    expect(transport.activateProjectCalls, 1);
+    await client.directoryCommands.selectProject(_project.id);
+    expect(client.selection.state.selectedProjectId, _project.id);
+    expect(
+      transport.activateProjectCalls,
+      1,
+      reason:
+          'Project execution recovery changes selection without preparing it',
+    );
+    await client.directoryCommands.beginNewThread(projectId: _project.id);
+    await client.directoryCommands.resumeThreadHistory('thread', 9);
+    expect(transport.resumedThreads, ['thread']);
+    await expectLater(
+      client.directoryCommands.resumeThreadHistory('affected-thread', 9),
+      throwsA(
+        isA<StudioFailure>().having(
+          (failure) => recoveryIssueFromFailure(failure)?.id,
+          'issue id',
+          'dependent-thread-execution-pause',
+        ),
+      ),
+    );
+    expect(transport.resumedThreads, [
+      'thread',
+    ], reason: 'Only the precise affected Thread is rejected before transport');
+
+    owner.updateDraft(_project.id, 'retain this new-session request');
+    await client.attachments.admitNewThread(
+      projectId: _project.id,
+      mode: ThreadModeId.simple,
+      sources: [const AttachmentDraftSource.localFile('/request.bin')],
+    );
+    final attachedId = client.attachments.state
+        .newThread(_project.id)
+        .attachments
+        .single
+        .id;
+    expect(await owner.submit(_project.id), isFalse);
+
+    expect(
+      owner.state.forProject(_project.id).text,
+      'retain this new-session request',
+    );
+    final composer = client.attachments.state.newThread(_project.id);
+    expect(composer.attachments.single.id, attachedId);
+    expect(composer.error, contains('project-execution-pause'));
+    expect(composer.error, contains('project project'));
+    expect(transport.startCalls, 0);
+    expect(client.mutations.operations, isEmpty);
+    await owner.discardProject(_project.id);
+    await _close(client, transport);
+  });
+
+  test('multiple application, project and thread issues select the exact blocking owner and preserve composer state', () async {
+    final transport = _DraftTransport();
+    final client = _client(transport);
+    client.threadDirectory.applyWindow(
+      ThreadDirectoryWindow(threads: [_thread()], revision: 1),
+    );
+    client.session('thread').applySnapshot(_workspace());
+    client.recovery.apply(
+      RecoveryStateSnapshot(
+        revision: 1,
+        values: [
+          _recoveryIssue(
+            id: 'application-advisory',
+            scope: RecoveryIssueScope.application,
+            impact: RecoveryIssueImpact.advisory,
+            detail: 'Unrelated application reminder',
+          ),
+          _recoveryIssue(
+            id: 'project-execution-block',
+            scope: RecoveryIssueScope.project,
+            impact: RecoveryIssueImpact.executionBlocked,
+            projectId: _project.id,
+            detail: 'Project worktree preparation is blocked',
+          ),
+          _recoveryIssue(
+            id: 'thread-access-block',
+            scope: RecoveryIssueScope.thread,
+            impact: RecoveryIssueImpact.accessBlocked,
+            projectId: _project.id,
+            threadId: 'thread',
+            availableActions: [
+              RecoveryIssueAction.retry,
+              RecoveryIssueAction.cleanupWorktree,
+            ],
+            detail: 'The requested thread history cannot be accessed',
+          ),
+        ],
+      ),
+    );
+
+    client.recovery.apply(
+      RecoveryStateSnapshot(
+        revision: 2,
+        values: [
+          _recoveryIssue(
+            id: 'project-execution-block',
+            scope: RecoveryIssueScope.project,
+            impact: RecoveryIssueImpact.executionBlocked,
+            projectId: _project.id,
+            detail: 'Project preparation still requires recovery',
+          ),
+          _recoveryIssue(
+            id: 'thread-execution-block',
+            scope: RecoveryIssueScope.thread,
+            impact: RecoveryIssueImpact.executionBlocked,
+            projectId: null,
+            threadId: 'thread',
+            detail: 'This Thread actual execution resource blocks continuation',
+          ),
+        ],
+      ),
+    );
+    await expectLater(
+      client.directoryCommands.resumeThreadHistory('thread', 7),
+      throwsA(
+        isA<StudioFailure>().having(
+          (failure) => recoveryIssueFromFailure(failure)?.id,
+          'issue id',
+          'thread-execution-block',
+        ),
+      ),
+    );
+    client.recovery.apply(
+      RecoveryStateSnapshot(
+        revision: 3,
+        values: [
+          _recoveryIssue(
+            id: 'application-advisory',
+            scope: RecoveryIssueScope.application,
+            impact: RecoveryIssueImpact.advisory,
+            detail: 'Unrelated application reminder',
+          ),
+          _recoveryIssue(
+            id: 'project-execution-block',
+            scope: RecoveryIssueScope.project,
+            impact: RecoveryIssueImpact.executionBlocked,
+            projectId: _project.id,
+            detail: 'Project worktree preparation is blocked',
+          ),
+          _recoveryIssue(
+            id: 'thread-access-block',
+            scope: RecoveryIssueScope.thread,
+            impact: RecoveryIssueImpact.accessBlocked,
+            projectId: _project.id,
+            threadId: 'thread',
+            availableActions: [
+              RecoveryIssueAction.retry,
+              RecoveryIssueAction.cleanupWorktree,
+            ],
+            detail: 'The requested thread history cannot be accessed',
+          ),
+        ],
+      ),
+    );
+
+    await expectLater(
+      client.directoryCommands.selectThread('thread'),
+      throwsA(
+        isA<StudioFailure>().having(
+          (failure) => recoveryIssueFromFailure(failure)?.id,
+          'issue id',
+          'thread-access-block',
+        ),
+      ),
+    );
+    await expectLater(
+      client.directoryCommands.restoreThread('thread'),
+      throwsA(
+        isA<StudioFailure>().having(
+          (failure) => recoveryIssueFromFailure(failure)?.id,
+          'issue id',
+          'thread-access-block',
+        ),
+      ),
+    );
+    final owner = client.composer('thread');
+    owner.updateDraft('keep blocked draft');
+    await owner.addLocalAttachments(['/blocked.bin']);
+    final attachmentIds = owner.state.attachments
+        .map((item) => item.id)
+        .toList();
+    await owner.submit();
+
+    expect(transport.promptCalls, 0);
+    expect(owner.state.draft, 'keep blocked draft');
+    expect(owner.state.attachments.map((item) => item.id), attachmentIds);
+    expect(owner.state.error, contains('thread-access-block'));
+    expect(owner.state.error, contains('project project, thread thread'));
+    expect(
+      owner.state.error,
+      contains('The requested thread history cannot be accessed'),
+    );
+    expect(owner.state.error, contains('retry, cleanupWorktree'));
+    expect(client.mutations.operations, isEmpty);
+
+    SubmissionNotSent? notSent;
+    try {
+      await client.threadCommands.submitComposer(
+        'thread',
+        const StudioPromptInput(
+          inputId: 'blocked-command',
+          text: 'must not reach the backend',
+          attachmentDraftIds: [],
+        ),
+        expectedModelRouteRevision: 1,
+      );
+    } on SubmissionNotSent catch (rejection) {
+      notSent = rejection;
+    }
+    expect(notSent, isNotNull);
+    expect(notSent!.error, isA<StudioFailure>());
+    final commandFailure = notSent.error as StudioFailure;
+    expect(commandFailure.code, StudioFailureCode.permissionDenied);
+    final details =
+        jsonDecode(commandFailure.detailsJson!) as Map<String, dynamic>;
+    expect(details['kind'], 'recovery');
+    expect(details['issueId'], 'thread-access-block');
+    expect(details['owner'], {'scope': 'thread', 'id': 'thread'});
+    expect(details['projectId'], _project.id);
+    expect(details['threadId'], 'thread');
+    expect(
+      details['detail'],
+      'The requested thread history cannot be accessed',
+    );
+    expect(details['availableActions'], ['retry', 'cleanupWorktree']);
+    expect(transport.promptCalls, 0);
+    await owner.discard();
+    await _close(client, transport);
+  });
+
+  for (final status in [ThreadStatusView.closing, ThreadStatusView.closed]) {
+    test(
+      '${status.name} is permanently read-only without consuming the draft or admitting a cold child',
+      () async {
+        final transport = _DraftTransport();
+        final client = _client(transport);
+        client.threadDirectory.applyWindow(
+          ThreadDirectoryWindow(
+            threads: [
+              _thread().copyWith(status: status),
+              _thread('closed-child', 'thread').copyWith(status: status),
+            ],
+            revision: 1,
+          ),
+        );
+        final session = client.session('thread');
+        session.applySnapshot(
+          _workspace().copyWith(thread: _thread().copyWith(status: status)),
+        );
+        final owner = client.composer('thread')
+          ..updateDraft('keep the closed Thread draft');
+        await owner.addLocalAttachments(['/closed-thread.bin']);
+        final attachmentIds = owner.state.attachments
+            .map((item) => item.id)
+            .toList();
+        await owner.submit();
+        expect(transport.promptCalls, 0);
+        expect(owner.state.draft, 'keep the closed Thread draft');
+        expect(owner.state.attachments.map((item) => item.id), attachmentIds);
+        await expectLater(
+          client.threadCommands.submitComposer(
+            'thread',
+            const StudioPromptInput(
+              inputId: 'closed-input',
+              text: 'never dispatched',
+              attachmentDraftIds: [],
+            ),
+            expectedModelRouteRevision: 1,
+          ),
+          throwsA(
+            isA<SubmissionNotSent>().having(
+              (failure) => (failure.error as StudioFailure).detailsJson,
+              'closed reason',
+              contains('threadClosed'),
+            ),
+          ),
+        );
+        client.threadDirectory.applyWindow(
+          ThreadDirectoryWindow(
+            threads: [
+              _thread(),
+              _thread('closed-child', 'thread').copyWith(status: status),
+            ],
+            revision: 2,
+          ),
+        );
+        session.applySnapshot(_workspace(revision: 2));
+        expect(client.existingSession('closed-child'), isNull);
+        expect(
+          () => client.threadCommands.resolveChildInteraction(
+            'thread',
+            _childInteractionSummary('closed-child'),
+            const UserInputResolutionCommand(answers: []),
+          ),
+          throwsA(
+            isA<StudioFailure>().having(
+              (failure) => failure.detailsJson,
+              'closed reason',
+              contains('threadClosed'),
+            ),
+          ),
+        );
+        expect(client.existingSession('closed-child'), isNull);
+        expect(client.existingComposer('closed-child'), isNull);
+        await owner.discard();
+        await _close(client, transport);
+      },
+    );
+  }
+
+  test('storage continuation failure remains distinct from advisory recovery and preserves attachments', () async {
+    final transport = _DraftTransport();
+    final client = _client(transport);
+    final storage = ThreadStorageStateView(
+      execution: ThreadStorageExecution.paused,
+      resumeRequired: true,
+      lastError: 'writer flush stalled at sequence 12',
+    );
+    client.session('thread').applySnapshot(_workspace(storage: storage));
+    client.recovery.apply(
+      RecoveryStateSnapshot(
+        revision: 1,
+        values: [
+          _recoveryIssue(
+            id: 'advisory-note',
+            scope: RecoveryIssueScope.application,
+            impact: RecoveryIssueImpact.advisory,
+          ),
+        ],
+      ),
+    );
+    final owner = client.composer('thread');
+    owner.updateDraft('retain while storage is paused');
+    await owner.addLocalAttachments(['/storage-blocked.bin']);
+    final attachmentId = owner.state.attachments.single.id;
+    await owner.submit();
+
+    expect(transport.promptCalls, 0);
+    expect(owner.state.draft, 'retain while storage is paused');
+    expect(owner.state.attachments.single.id, attachmentId);
+    expect(owner.state.error, contains('writer flush stalled at sequence 12'));
+    expect(owner.state.error, isNot(contains('advisory-note')));
+
+    SubmissionNotSent? notSent;
+    try {
+      await client.threadCommands.submitComposer(
+        'thread',
+        const StudioPromptInput(
+          inputId: 'storage-blocked-command',
+          text: 'must remain unsubmitted',
+          attachmentDraftIds: [],
+        ),
+        expectedModelRouteRevision: 1,
+      );
+    } on SubmissionNotSent catch (rejection) {
+      notSent = rejection;
+    }
+    expect(notSent, isNotNull);
+    expect(notSent!.error, isA<StudioFailure>());
+    final commandFailure = notSent.error as StudioFailure;
+    expect(commandFailure.code, StudioFailureCode.storage);
+    final details =
+        jsonDecode(commandFailure.detailsJson!) as Map<String, dynamic>;
+    expect(details['execution'], 'paused');
+    expect(details['lastError'], 'writer flush stalled at sequence 12');
+    expect(transport.promptCalls, 0);
+    await owner.discard();
+    await _close(client, transport);
+  });
+
+  test('queued storage preflight rejection is known and the frozen composer can retry', () async {
+    final transport = _DraftTransport()..compactGate = Completer<void>();
+    final client = _client(transport);
+    final session = client.session('thread');
+    session.applySnapshot(_workspace());
+    final queuedLaneCommand = client.threadCommands.compactThread(
+      'lane-holder',
+    );
+    await transport.compactEntered.future;
+
+    final owner = client.composer('thread');
+    owner.updateDraft('retry after storage resumes');
+    await owner.addLocalAttachments(['/storage-race.bin']);
+    final frozenAttachmentId = owner.state.attachments.single.id;
+    final submit = owner.submit();
+    final pausedStorage = ThreadStorageStateView(
+      execution: ThreadStorageExecution.paused,
+      resumeRequired: true,
+      lastError: 'writer failed while composer command was queued',
+    );
+    session.applySnapshot(_workspace(revision: 2, storage: pausedStorage));
+
+    transport.compactGate!.complete();
+    await queuedLaneCommand;
+    await submit;
+    expect(transport.promptCalls, 0);
+    expect(owner.state.draft, 'retry after storage resumes');
+    expect(owner.state.attachments.single.id, frozenAttachmentId);
+    expect(
+      owner.state.error,
+      contains('writer failed while composer command was queued'),
+    );
+    expect(
+      client.mutations.operations.single.phase,
+      OperationPhase.rejected,
+      reason: 'A lane-time Client preflight proves the prompt was not sent',
+    );
+
+    session.applySnapshot(_workspace(revision: 3));
+    final retry = owner.submit();
+    final input = await transport.promptEntered.future;
+    expect(input.text, 'retry after storage resumes');
+    expect(input.attachmentDraftIds, [frozenAttachmentId]);
+    expect(transport.promptCalls, 1);
+    session.applySnapshot(
+      _workspace(
+        revision: 4,
+        turn: StudioTurnView(
+          inputId: input.inputId,
+          turnId: 'retried-turn',
+          threadId: 'thread',
+          revision: 1,
+          state: const QueuedStudioTurnState(queuedAt: 1),
+          updatedAt: DateTime.utc(2026),
+        ),
+      ),
+    );
+    transport.promptReply.complete(
+      SubmitPromptReceipt(
+        threadId: 'thread',
+        inputId: input.inputId,
+        cursor: 8,
+      ),
+    );
+    await retry;
+    expect(owner.state.draft, isEmpty);
+    expect(owner.state.attachments, isEmpty);
+    await _close(client, transport);
+  });
+
+  test('transport storage failure remains unknown and is not made retryable by local preflight handling', () async {
+    final transport = _DraftTransport()
+      ..promptFailure = const StudioFailure(
+        code: StudioFailureCode.storage,
+        message: 'transport reported a storage failure after submission',
+        retryable: false,
+        correlationId: 'transport-storage-failure',
+      );
+    final client = _client(transport);
+    client.session('thread').applySnapshot(_workspace());
+    final owner = client.composer('thread');
+    owner.updateDraft('do not duplicate a possibly accepted request');
+
+    await owner.submit();
+    expect(transport.promptCalls, 1);
+    expect(owner.state.draft, 'do not duplicate a possibly accepted request');
+    expect(
+      client.mutations.operations.single.phase,
+      OperationPhase.unknownOutcome,
+    );
+    await owner.submit();
+    expect(transport.promptCalls, 1);
+    await owner.discard();
+    await _close(client, transport);
   });
 
   test('a child target rejection stays typed, keeps the draft and never becomes unknown', () async {

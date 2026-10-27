@@ -40,7 +40,8 @@ void main() {
         hasOlder: true,
       ),
     );
-    final page = await future;
+    final result = await future;
+    final page = result;
     expect(page.items.single.id, 'older');
     expect(page.before, 'tlp1.next');
     expect(page.hasOlder, isTrue);
@@ -279,6 +280,59 @@ void main() {
     expect(budget.used(ResourceKind.pendingOperation), 0);
     expect(budget.used(ResourceKind.chatHandle), 0);
   });
+
+  for (final detail in [false, true]) {
+    test(
+      'synchronous ${detail ? 'detail' : 'page'} close keeps the admitted history query joined',
+      () async {
+        final ready = await open();
+        final budget = ready.channel.budget;
+        Future<CloseReport>? closing;
+        ready.connection.onQuery = () {
+          closing = ready.scope.close(deadline: DateTime.now());
+        };
+        final pending = detail
+            ? ready.scope.readDetail(
+                itemId: 'item',
+                query: const StudioTimelineDetailQuery(
+                  field: ThreadTextFieldView(),
+                  revision: 1,
+                ),
+              )
+            : ready.scope.page();
+        final rejected = expectLater(
+          pending,
+          throwsA(isA<StaleTimelineScope>()),
+        );
+        expect((await closing!).complete, isFalse);
+        expect(budget.used(ResourceKind.pendingOperation), 1);
+        if (detail) {
+          ready.connection.detailResult!.complete(
+            const StudioTimelineDetailChunk(
+              itemId: 'item',
+              field: ThreadTextFieldView(),
+              revision: 1,
+              text: 'original history',
+              totalBytes: 16,
+              continuation: null,
+            ),
+          );
+        } else {
+          ready.connection.pageResult!.complete(
+            StudioTimelinePage(
+              items: [timelineItem(1)],
+              before: null,
+              hasOlder: false,
+            ),
+          );
+        }
+        await rejected;
+        expect((await ready.scope.close()).complete, isTrue);
+        expect(budget.used(ResourceKind.pendingOperation), 0);
+        await ready.channel.close();
+      },
+    );
+  }
 
   test('scope 真实 join 干净后解除连接归属，不积压到整条连接关闭', () async {
     final transport = TestTimelineTransport();

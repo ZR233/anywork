@@ -2,12 +2,13 @@
 use super::child_resources::{CleanupGate, UnpublishedChild};
 use super::{StudioThreadSpec, ThreadAssemblyError};
 use futures::future::BoxFuture;
-use pl_tool::collaboration::thread::AgentWorkspaceDisposition;
+use pl_tool::collaboration::thread::WorkspaceRelease;
 use std::{future::Future, sync::Arc};
 
 /// Facts passed to the product factory; caller identity is supplied by core, not model arguments.
 #[derive(Debug, Clone)]
 pub struct ChildThreadRequest {
+    pub workspace_owner: super::WorkspacePreparationOwner,
     pub id: String,
     pub cancellation: tokio_util::sync::CancellationToken,
     pub caller: String,
@@ -38,7 +39,7 @@ pub trait StudioChildFactory: Send + Sync + std::fmt::Debug + 'static {
     fn close_published(
         &self,
         _id: &str,
-        _disposition: AgentWorkspaceDisposition,
+        _disposition: WorkspaceRelease,
     ) -> impl Future<Output = Result<(), ThreadAssemblyError>> + Send {
         async { Ok(()) }
     }
@@ -48,6 +49,7 @@ pub trait StudioChildFactory: Send + Sync + std::fmt::Debug + 'static {
     fn discard_unpublished(
         &self,
         id: &str,
+        usage: Option<&super::WorkspaceUsageLease>,
     ) -> impl Future<Output = Result<(), ThreadAssemblyError>> + Send;
 }
 
@@ -69,7 +71,7 @@ pub trait StudioChildResources: Send + Sync + std::fmt::Debug + 'static {
     fn close_published(
         &self,
         _id: &str,
-        _disposition: AgentWorkspaceDisposition,
+        _disposition: WorkspaceRelease,
     ) -> impl Future<Output = Result<(), ThreadAssemblyError>> + Send {
         async { Ok(()) }
     }
@@ -79,6 +81,7 @@ pub trait StudioChildResources: Send + Sync + std::fmt::Debug + 'static {
     fn discard_unpublished(
         &self,
         id: &str,
+        usage: Option<&super::WorkspaceUsageLease>,
     ) -> impl Future<Output = Result<(), ThreadAssemblyError>> + Send;
 }
 
@@ -108,7 +111,7 @@ impl<R: StudioChildResources> StudioChildFactory for ConfiguredChildFactory<R> {
     fn close_published(
         &self,
         id: &str,
-        disposition: AgentWorkspaceDisposition,
+        disposition: WorkspaceRelease,
     ) -> impl Future<Output = Result<(), ThreadAssemblyError>> + Send {
         self.resources.close_published(id, disposition)
     }
@@ -116,8 +119,9 @@ impl<R: StudioChildResources> StudioChildFactory for ConfiguredChildFactory<R> {
     fn discard_unpublished(
         &self,
         id: &str,
+        usage: Option<&super::WorkspaceUsageLease>,
     ) -> impl Future<Output = Result<(), ThreadAssemblyError>> + Send {
-        self.resources.discard_unpublished(id)
+        self.resources.discard_unpublished(id, usage)
     }
 
     async fn prepare(
@@ -178,12 +182,13 @@ trait ErasedFactory: Send + Sync + std::fmt::Debug {
     fn close_published<'a>(
         &'a self,
         id: &'a str,
-        disposition: AgentWorkspaceDisposition,
+        disposition: WorkspaceRelease,
     ) -> BoxFuture<'a, Result<(), ThreadAssemblyError>>;
 
     fn discard_unpublished<'a>(
         &'a self,
         id: &'a str,
+        usage: Option<&'a super::WorkspaceUsageLease>,
     ) -> BoxFuture<'a, Result<(), ThreadAssemblyError>>;
     fn prepare(
         &self,
@@ -194,7 +199,7 @@ impl<T: StudioChildFactory> ErasedFactory for T {
     fn close_published<'a>(
         &'a self,
         id: &'a str,
-        disposition: AgentWorkspaceDisposition,
+        disposition: WorkspaceRelease,
     ) -> BoxFuture<'a, Result<(), ThreadAssemblyError>> {
         Box::pin(StudioChildFactory::close_published(self, id, disposition))
     }
@@ -202,8 +207,9 @@ impl<T: StudioChildFactory> ErasedFactory for T {
     fn discard_unpublished<'a>(
         &'a self,
         id: &'a str,
+        usage: Option<&'a super::WorkspaceUsageLease>,
     ) -> BoxFuture<'a, Result<(), ThreadAssemblyError>> {
-        Box::pin(StudioChildFactory::discard_unpublished(self, id))
+        Box::pin(StudioChildFactory::discard_unpublished(self, id, usage))
     }
     fn prepare(
         &self,
@@ -219,13 +225,17 @@ impl ChildFactory {
     pub(super) async fn close_published(
         &self,
         id: &str,
-        disposition: AgentWorkspaceDisposition,
+        disposition: WorkspaceRelease,
     ) -> Result<(), ThreadAssemblyError> {
         self.0.close_published(id, disposition).await
     }
 
-    pub(super) async fn discard_unpublished(&self, id: &str) -> Result<(), ThreadAssemblyError> {
-        self.0.discard_unpublished(id).await
+    pub(super) async fn discard_unpublished(
+        &self,
+        id: &str,
+        usage: Option<&super::WorkspaceUsageLease>,
+    ) -> Result<(), ThreadAssemblyError> {
+        self.0.discard_unpublished(id, usage).await
     }
     pub(super) fn new(factory: impl StudioChildFactory) -> Self {
         Self(Arc::new(factory))
@@ -327,6 +337,8 @@ impl super::StudioThreadAssembler {
         state.unpublished_children.insert(
             id.clone(),
             UnpublishedChild {
+                workspace: Default::default(),
+                disposal: Default::default(),
                 parent: context.thread_id.clone(),
                 factory: factory.clone(),
                 cleanup: Arc::new(CleanupGate::default()),

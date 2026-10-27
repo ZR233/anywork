@@ -5,7 +5,96 @@ use super::{
     protocol::error::{FeishuError, FeishuErrorKind},
 };
 
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct CreatedWorkspace {
+    schema_version: u32,
+    thread_id: String,
+}
+
+fn completion_matches(
+    text: &str,
+    thread_id: &str,
+    source: &std::path::Path,
+) -> std::io::Result<bool> {
+    if text == source.to_string_lossy() {
+        return Ok(true);
+    }
+    let created: CreatedWorkspace = serde_json::from_str(text).map_err(std::io::Error::other)?;
+    Ok(created.schema_version == 1 && created.thread_id == thread_id)
+}
+
 impl BotRuntime {
+    #[cfg(test)]
+    pub(crate) async fn install_workspace_migration_fixture(
+        &self,
+        bot_id: &str,
+        root_id: &str,
+        project_id: &str,
+    ) -> Result<(), FeishuError> {
+        let mut config = BotConfigFile::new(
+            bot_id.into(),
+            "Workspace migration".into(),
+            project_id.into(),
+            "cli_workspace_fixture".into(),
+        )?;
+        config.enabled = false;
+        config.model_route = Some(self.default_model_route()?);
+        let dir = self.inner.paths.bot_dir(bot_id);
+        super::config::save_config(&dir.join("config.toml"), &config)?;
+        let store = super::storage::BotStateStore::new(dir.join("state.sqlite"));
+        store
+            .claim_thread_binding("workspace-chat", "workspace-creation", project_id)
+            .await?;
+        store
+            .bind_thread("workspace-chat", root_id, "workspace-creation", project_id)
+            .await?;
+        self.load().await
+    }
+
+    pub(crate) fn workspace_root(&self, config: &BotConfigFile) -> std::path::PathBuf {
+        self.inner.paths.bot_dir(&config.id).join("workspace")
+    }
+    pub(crate) async fn workspace_migration_complete(
+        &self,
+        config: &BotConfigFile,
+        thread_id: &str,
+        old_root: &str,
+    ) -> Result<bool, FeishuError> {
+        let files = pl_tool::workspace::SessionFiles::new(thread_id);
+        let target = self.workspace_root(config).join(files.root());
+        let marker = target.join(".migration-complete");
+        pl_tool::workspace::path_safety::validate_path_for_write_async(
+            &self.inner.paths.bot_dir(&config.id),
+            &marker,
+        )
+        .await
+        .map_err(workspace_error)?;
+        match tokio::fs::read_to_string(&marker).await {
+            Ok(source) => {
+                pl_tool::workspace::path_safety::validate_existing_path_async(
+                    &self.inner.paths.bot_dir(&config.id),
+                    &marker,
+                )
+                .await
+                .map_err(workspace_error)?;
+                if !completion_matches(
+                    &source,
+                    thread_id,
+                    &std::path::Path::new(old_root).join(files.root()),
+                )
+                .map_err(workspace_error)?
+                {
+                    return Err(workspace_error(
+                        "workspace migration completion belongs to a different source",
+                    ));
+                }
+                Ok(true)
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+            Err(error) => Err(workspace_error(error)),
+        }
+    }
     pub(crate) async fn ensure_workspace_project(
         &self,
         bot_id: &str,
@@ -51,15 +140,68 @@ impl BotRuntime {
         thread_id: &str,
         old_root: &str,
     ) -> Result<std::path::PathBuf, FeishuError> {
-        let root = self.inner.paths.bot_dir(&config.id).join("workspace");
+        let root = self.workspace_root(config);
+        let target_container = self.inner.paths.bot_dir(&config.id);
+        let source_container = std::path::PathBuf::from(old_root);
         let files = pl_tool::workspace::SessionFiles::new(thread_id);
         let source = std::path::Path::new(old_root).join(files.root());
         let target = root.join(files.root());
         let root_copy = root.clone();
+        let owner = thread_id.to_owned();
         tokio::task::spawn_blocking(move || {
-            migrate_owned_directory(&source, &target)?;
+            migrate_owned_directory(
+                &source_container,
+                &source,
+                &target_container,
+                &target,
+                &owner,
+            )?;
             std::fs::create_dir_all(target.join("uploads"))?;
             std::fs::canonicalize(root_copy)
+        })
+        .await
+        .map_err(workspace_error)?
+        .map_err(workspace_error)
+    }
+
+    /// A newly dispatched identity has no old execution files to migrate or source to read.
+    pub(crate) async fn prepare_new_workspace(
+        &self,
+        config: &BotConfigFile,
+        thread_id: &str,
+    ) -> Result<std::path::PathBuf, FeishuError> {
+        let root = self.workspace_root(config);
+        let container = self.inner.paths.bot_dir(&config.id);
+        let target = root.join(pl_tool::workspace::SessionFiles::new(thread_id).root());
+        let owner = thread_id.to_owned();
+        tokio::task::spawn_blocking(move || -> std::io::Result<std::path::PathBuf> {
+            pl_tool::workspace::path_safety::validate_path_for_write(&container, &target)
+                .map_err(std::io::Error::other)?;
+            std::fs::create_dir_all(target.join("uploads"))?;
+            let marker = target.join(".migration-complete");
+            pl_tool::workspace::path_safety::validate_path_for_write(&container, &marker)
+                .map_err(std::io::Error::other)?;
+            match std::fs::read_to_string(&marker) {
+                Ok(text) => {
+                    let created: CreatedWorkspace =
+                        serde_json::from_str(&text).map_err(std::io::Error::other)?;
+                    if created.schema_version != 1 || created.thread_id != owner {
+                        return Err(std::io::Error::other(
+                            "new workspace completion has another owner",
+                        ));
+                    }
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    let bytes = serde_json::to_vec(&CreatedWorkspace {
+                        schema_version: 1,
+                        thread_id: owner,
+                    })
+                    .map_err(std::io::Error::other)?;
+                    pl_tool::workspace::write_file_atomically(&marker, &bytes)?;
+                }
+                Err(error) => return Err(error),
+            }
+            std::fs::canonicalize(root)
         })
         .await
         .map_err(workspace_error)?
@@ -68,17 +210,33 @@ impl BotRuntime {
 }
 
 fn migrate_owned_directory(
+    source_container: &std::path::Path,
     source: &std::path::Path,
+    target_container: &std::path::Path,
     target: &std::path::Path,
+    thread_id: &str,
 ) -> std::io::Result<()> {
-    reject_link(source)?;
+    pl_tool::workspace::path_safety::validate_path_for_write(target_container, target)
+        .map_err(std::io::Error::other)?;
     reject_link(target)?;
     std::fs::create_dir_all(target)?;
     let marker = target.join(".migration-complete");
-    if source != target && source.is_dir() && !marker.exists() {
-        copy_owned_directory(source, target)?;
-        pl_tool::workspace::write_file_atomically(&marker, source.to_string_lossy().as_bytes())?;
+    if marker.exists() {
+        reject_link(&marker)?;
+        if !completion_matches(&std::fs::read_to_string(&marker)?, thread_id, source)? {
+            return Err(std::io::Error::other(
+                "workspace migration completion has a different source",
+            ));
+        }
+        return Ok(());
     }
+    pl_tool::workspace::path_safety::validate_path_for_write(source_container, source)
+        .map_err(std::io::Error::other)?;
+    reject_link(source)?;
+    if source != target && source.is_dir() {
+        copy_owned_directory(source, target)?;
+    }
+    pl_tool::workspace::write_file_atomically(&marker, source.to_string_lossy().as_bytes())?;
     Ok(())
 }
 
@@ -154,12 +312,14 @@ mod migration_tests {
         fs::write(source.join(".venv/python"), "not relocatable").unwrap();
         fs::create_dir_all(&target).unwrap();
         fs::write(target.join("scratch"), "interrupted destination").unwrap();
-        assert!(migrate_owned_directory(&source, &target).is_err());
+        assert!(
+            migrate_owned_directory(&business, &source, temp.path(), &target, "owned").is_err()
+        );
         assert!(!target.join(".migration-complete").exists());
         fs::remove_file(target.join("scratch")).unwrap();
         fs::create_dir_all(target.join("scratch")).unwrap();
         fs::write(target.join("scratch/new.txt"), "new work").unwrap();
-        migrate_owned_directory(&source, &target).unwrap();
+        migrate_owned_directory(&business, &source, temp.path(), &target, "owned").unwrap();
         assert_eq!(
             fs::read_to_string(target.join("scratch/new.txt")).unwrap(),
             "new work"
@@ -175,10 +335,24 @@ mod migration_tests {
         assert!(!target.join(".venv").exists());
         assert!(source.join(".venv/python").exists());
         fs::remove_file(target.join("scratch/old.txt")).unwrap();
-        migrate_owned_directory(&source, &target).unwrap();
+        migrate_owned_directory(&business, &source, temp.path(), &target, "owned").unwrap();
         assert!(
             !target.join("scratch/old.txt").exists(),
             "completed migrations must not resurrect intentionally removed work files"
+        );
+        fs::rename(
+            &business,
+            temp.path().join("old-business-no-longer-mounted"),
+        )
+        .unwrap();
+        migrate_owned_directory(&business, &source, temp.path(), &target, "owned").unwrap();
+        assert_eq!(
+            fs::read_to_string(target.join("scratch/new.txt")).unwrap(),
+            "new work"
+        );
+        assert!(
+            !source.exists(),
+            "a completed migration must not recreate its old source"
         );
     }
 }

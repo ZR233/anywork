@@ -5,6 +5,27 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
 };
 
+/// The actual preparation/unpublished owner retains its physical use independently of a caller
+/// waiting for preparation. A published Entry takes over before this owner is released.
+#[derive(Debug, Clone, Default)]
+pub struct WorkspacePreparationOwner(Arc<std::sync::Mutex<Option<super::WorkspaceUsageLease>>>);
+impl WorkspacePreparationOwner {
+    pub(crate) fn retain(&self, usage: &super::WorkspaceUsageLease) {
+        let previous = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .replace(usage.clone());
+        drop(previous);
+    }
+    pub(super) fn take(&self) -> Option<super::WorkspaceUsageLease> {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+    }
+}
+
 #[derive(Debug, Default)]
 pub(super) struct CleanupGate {
     busy: AtomicBool,
@@ -36,11 +57,16 @@ impl CleanupGate {
     }
 }
 
+type DisposalTask =
+    Arc<tokio::sync::Mutex<Option<tokio::task::JoinHandle<Result<(), ThreadAssemblyError>>>>>;
+
 #[derive(Debug, Clone)]
 pub(super) struct UnpublishedChild {
+    pub(super) workspace: WorkspacePreparationOwner,
     pub(super) parent: String,
     pub(super) factory: ChildFactory,
     pub(super) cleanup: Arc<CleanupGate>,
+    pub(super) disposal: DisposalTask,
 }
 
 impl super::StudioThreadAssembler {
@@ -65,7 +91,9 @@ impl super::StudioThreadAssembler {
             return Err(ThreadAssemblyError::Closed);
         }
         entry.ready = true;
-        state.unpublished_children.remove(id);
+        let unpublished = state.unpublished_children.remove(id);
+        drop(state);
+        drop(unpublished);
         Ok(())
     }
 
@@ -89,13 +117,45 @@ impl super::StudioThreadAssembler {
             return Ok(());
         };
         let _cleanup = pending.cleanup.acquire().await;
+        let mut disposal = pending.disposal.lock().await;
+        if disposal.is_none() {
+            let owner = self.clone();
+            let id = id.to_owned();
+            let resources = pending.clone();
+            *disposal = Some(tokio::spawn(async move {
+                owner.dispose_unpublished(&id, resources).await
+            }));
+        }
+        let result = disposal.as_mut().unwrap().await;
+        disposal.take();
+        result.map_err(|source| ThreadAssemblyError::Resource {
+            operation: "join unpublished workspace cleanup",
+            source: Box::new(source),
+        })?
+    }
+
+    async fn dispose_unpublished(
+        &self,
+        id: &str,
+        pending: UnpublishedChild,
+    ) -> Result<(), ThreadAssemblyError> {
         if !self.0.state().unpublished_children.contains_key(id) {
             return Ok(());
         }
-        self.close_thread(id, super::PublishedWorkspaceRetirement::Retain)
-            .await?;
-        pending.factory.discard_unpublished(id).await?;
-        self.0.state().unpublished_children.remove(id);
+        self.close_thread(id).await?;
+        let usage = pending.workspace.take();
+        if let Err(error) = pending
+            .factory
+            .discard_unpublished(id, usage.as_ref())
+            .await
+        {
+            if let Some(usage) = &usage {
+                pending.workspace.retain(usage);
+            }
+            return Err(error);
+        }
+        let removed = { self.0.state().unpublished_children.remove(id) };
+        drop(removed);
         Ok(())
     }
 }

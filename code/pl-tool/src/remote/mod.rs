@@ -43,6 +43,8 @@ pub use workspace::{
 /// 该类型只暴露环境原语；工具名与 schema 由 pl-tool 提供，权限策略与 Turn 装配由宿主负责。
 #[derive(Debug, Clone)]
 pub struct RemoteWorkspaceHost {
+    /// Frozen non-secret endpoint of the exact transport that returned this canonical workspace.
+    pub profile: std::sync::Arc<SshServerProfile>,
     pub files: RemoteWorkspaceFileBackend,
     pub commands: RemoteCommandBackend,
     pub git: RemoteExecutionBackend,

@@ -677,19 +677,25 @@ final class StudioTimelineQueryScope {
     } catch (error, stack) {
       return Future.error(error, stack);
     }
-    final task = _execute(connection, query, permit);
-    late final Future<void> joined;
-    joined = task
-        .then<void>(
-          (_) {},
-          onError: (Object _, StackTrace _) {
-            // 调用方持有这次查询的错误；join 路径只等它真正结束。
-          },
-        )
-        .whenComplete(() {
-          _accepted.remove(joined);
-        });
+    // The external query may synchronously retire/close this scope. Admit its
+    // real join before invoking transport, not after its first callback.
+    final completion = Completer<void>();
+    final joined = completion.future;
     _accepted.add(joined);
+    final task = _execute(connection, query, permit);
+    unawaited(
+      task
+          .then<void>(
+            (_) {},
+            onError: (Object _, StackTrace _) {
+              // 调用方持有这次查询的错误；join 路径只等它真正结束。
+            },
+          )
+          .whenComplete(() {
+            _accepted.remove(joined);
+            completion.complete();
+          }),
+    );
     return task;
   }
 
@@ -703,6 +709,9 @@ final class StudioTimelineQueryScope {
       // 迟到的回包不写新一代展示：scope 或 attempt 已退役即拒绝发布。
       if (!isActive) throw const StaleTimelineScope();
       return result;
+    } catch (_) {
+      if (!isActive) throw const StaleTimelineScope();
+      rethrow;
     } finally {
       permit.release();
     }

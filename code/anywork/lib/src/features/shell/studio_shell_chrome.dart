@@ -1,14 +1,17 @@
 part of 'studio_shell.dart';
 
-class _Header extends StatelessWidget {
+class _Header extends ConsumerWidget {
   const _Header({required this.state});
 
   final HeaderView state;
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     final thread = state.selectedRootThread;
     final project = state.selectedProject;
+    final recoveryIssues =
+        ref.watch(recoveryStoreProvider).value?.values ??
+        const <StudioRecoveryIssue>[];
     final projectLabel = project?.name.trim() ?? '';
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
@@ -71,6 +74,7 @@ class _Header extends StatelessWidget {
               AgentSwitcherMenu(
                 agents: state.agents,
                 workspaceThreads: state.workspaceThreads,
+                recoveryIssues: recoveryIssues,
                 selectedThreadId: state.selectedThreadId,
                 pendingInteractionThreadIds: {
                   for (final interaction in state.pendingInteractions)

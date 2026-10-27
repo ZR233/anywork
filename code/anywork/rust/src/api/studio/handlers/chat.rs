@@ -32,7 +32,7 @@ pub struct BridgeTimeline {
     reader: SyncMutex<Option<Arc<TimelineContentReader>>>,
     /// 串行化取帧；`page`/`read_detail` 不经过它。
     tail: Mutex<Option<TimelineTailStream>>,
-    initial: SyncMutex<Option<BridgeTimelineBaseline>>,
+    initial_pending: AtomicBool,
     /// 同时只允许一个在途 `next`；第二个直接 `Busy`。
     next_in_flight: AtomicBool,
     cancel: CancellationToken,
@@ -68,16 +68,15 @@ pub async fn open_timeline(thread_id: String) -> Result<BridgeTimeline, BridgeEr
         () = cancel.cancelled() => return Err(timeline_closed()),
         reader = bridge.studio.timeline_reader(&thread_id) => Arc::new(reader?),
     };
-    let mut stream = tokio::select! {
+    let stream = tokio::select! {
         biased;
         () = cancel.cancelled() => return Err(timeline_closed()),
         stream = reader.open_tail() => stream?,
     };
-    let initial = timeline_content::baseline(stream.initial()?)?;
     Ok(BridgeTimeline {
         reader: SyncMutex::new(Some(reader)),
         tail: Mutex::new(Some(stream)),
-        initial: SyncMutex::new(Some(initial)),
+        initial_pending: AtomicBool::new(true),
         next_in_flight: AtomicBool::new(false),
         cancel,
         activity: SyncMutex::new(TimelineActivity::default()),
@@ -90,16 +89,6 @@ fn timeline_closed() -> BridgeError {
     pl_protocol::studio::StudioError::new(
         pl_protocol::studio::StudioErrorCode::Cancelled,
         "timeline handle is closed",
-        false,
-    )
-    .into()
-}
-
-/// 首帧已经交付过：它是单次移交，不是可重复读取的 getter。
-fn baseline_taken() -> BridgeError {
-    pl_protocol::studio::StudioError::new(
-        pl_protocol::studio::StudioErrorCode::Conflict,
-        "the timeline first frame was already delivered by this handle",
         false,
     )
     .into()
@@ -134,13 +123,18 @@ impl BridgeTimeline {
     /// The baseline is moved out and the handle keeps no second copy, so a long-lived connection costs
     /// one bounded continuity baseline instead of "first page + continuity copy". A closed handle and
     /// an already-delivered first frame are distinct typed errors.
-    pub fn initial(&self) -> Result<BridgeTimelineBaseline, BridgeError> {
+    pub async fn initial(&self) -> Result<BridgeTimelineBaseline, BridgeError> {
         let _call = self.begin_call()?;
-        self.initial
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .take()
-            .ok_or_else(baseline_taken)
+        let mut tail = self.lock_tail().await?;
+        let stream = tail.as_mut().ok_or_else(timeline_closed)?;
+        let baseline = tokio::select! {
+            biased;
+            () = self.cancel.cancelled() => return Err(timeline_closed()),
+            baseline = stream.initial() => baseline?,
+        };
+        let baseline = timeline_content::baseline(baseline)?;
+        self.initial_pending.store(false, Ordering::Release);
+        Ok(baseline)
     }
 
     /// Reads one stateless page: newest, or strictly older than the opaque `before` token.
@@ -263,12 +257,6 @@ impl BridgeTimeline {
                 .unwrap_or_else(|error| error.into_inner())
                 .take(),
         );
-        drop(
-            self.initial
-                .lock()
-                .unwrap_or_else(|error| error.into_inner())
-                .take(),
-        );
     }
 
     fn begin_call(&self) -> Result<TimelineCall<'_>, BridgeError> {
@@ -292,17 +280,9 @@ impl BridgeTimeline {
             .ok_or_else(timeline_closed)
     }
 
-    /// Whether the cached first frame has been handed to the consumer.
-    ///
-    /// The check takes the short synchronous lock only; it never waits for a frame and never takes the
-    /// tail lock, so it cannot queue a second consumer.
+    /// Whether the first frame has been handed to the consumer, independently of the tail lock.
     fn ensure_first_frame_delivered(&self) -> Result<(), BridgeError> {
-        let delivered = self
-            .initial
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .is_none();
-        if delivered {
+        if !self.initial_pending.load(Ordering::Acquire) {
             Ok(())
         } else {
             Err(initial_required())

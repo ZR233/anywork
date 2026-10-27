@@ -5,6 +5,42 @@ use super::super::background_task::{self, BackgroundTask};
 use super::super::lsp_state::health;
 
 impl StudioRuntime {
+    pub(in crate::studio::runtime) fn check_thread_read_access(
+        &self,
+        thread: &pl_protocol::Thread,
+    ) -> Result<()> {
+        self.recovery.ensure_thread_read_access(thread)
+    }
+
+    pub(in crate::studio::runtime) fn check_thread_execution_access(
+        &self,
+        thread: &pl_protocol::Thread,
+    ) -> Result<()> {
+        self.recovery.ensure_thread_execution_access(thread)
+    }
+
+    pub(in crate::studio::runtime) async fn verify_thread_execution_preparation(
+        &self,
+        thread: &pl_protocol::Thread,
+        snapshot: Option<&pl_core::thread::ThreadSnapshot>,
+    ) -> Result<()> {
+        let result = self
+            .thread_factory
+            .verify_execution_workspace(
+                thread,
+                snapshot,
+                crate::studio::thread_factory::ExecutionWorkspaceCheck::Prepare,
+            )
+            .await;
+        let state = self
+            .recovery
+            .apply_execution_workspace_check(thread, result.as_ref().err());
+        self.agent_facility
+            .product_events
+            .emit_recovery_state(state);
+        result
+    }
+
     /// 订阅 pin：guard 存活期间该线程不参与 LRU 淘汰，Drop 时自动解除。
     ///
     /// bridge 订阅 producer task 持有该 guard——订阅取消/流关闭即解除 pin。

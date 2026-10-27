@@ -93,7 +93,8 @@ impl AgentTaskSummary {
     }
 }
 
-/// Explicit disposition for a product-owned child workspace after its Thread closes.
+/// Physical workspace release used by host shutdown and explicit project archival.
+/// This is not a `close_agent` policy or permission to retire a child's saved session.
 #[derive(
     Debug,
     Clone,
@@ -106,12 +107,21 @@ impl AgentTaskSummary {
     schemars::JsonSchema,
 )]
 #[serde(rename_all = "camelCase")]
-pub enum AgentWorkspaceDisposition {
+pub enum WorkspaceRelease {
     /// Retain the workspace and its recoverable lease for later inspection or integration.
     #[default]
     Preserve,
-    /// Request checked cleanup of the child-owned workspace after integration.
+    /// The host has independently authorized disposal (for example project archival).
     Cleanup,
+}
+
+/// Explicit final child close. Force only permits discarding dirty or unmerged child content;
+/// identity, locks, borrowers, process exit and durable storage acknowledgements remain required.
+#[derive(Debug, Clone, Copy, Default, serde::Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AgentCloseOptions {
+    #[serde(default)]
+    pub force: bool,
 }
 
 /// Product coordinator ports. Return the original business facts and the chosen model projection together.
@@ -139,7 +149,7 @@ pub trait AgentControlHost: Send + Sync + std::fmt::Debug + 'static {
         &self,
         caller: &str,
         target: &str,
-        disposition: AgentWorkspaceDisposition,
+        options: AgentCloseOptions,
     ) -> impl std::future::Future<Output = Result<ToolOutput, ToolError>> + Send;
 }
 
@@ -168,7 +178,7 @@ struct Target {
 struct CloseInput {
     target: String,
     #[serde(default)]
-    workspace_disposition: AgentWorkspaceDisposition,
+    force: bool,
 }
 
 #[derive(serde::Deserialize, schemars::JsonSchema)]
@@ -210,7 +220,7 @@ impl AgentControlKind {
             ),
             Self::Close => pl_protocol::ToolSpec::function(
                 "close_agent",
-                "Close a descendant agent and its descendants. Preserve workspaces by default; request cleanup only after integration. Failed resource closures remain retryable.",
+                "Permanently close a descendant and its descendants: stop and join execution, tools and processes, await existing save acknowledgements, and remove only each child's own existing bound Git worktree. Full history, checkpoints, reliable attachments, reports, statistics, evaluations, independent session files and branch refs are retained. Finish review and integration first; otherwise keep it idle or interrupt it. By default dirty/untracked changes or a child HEAD not contained in the actual root delivery HEAD block worktree cleanup. force=true permits discarding only that content, never bypassing ownership, Git identity or locks, active borrowers, process exit or save acknowledgements. The result reports executionClosed and worktreeCleanup per agent; partial failure retains all member facts and may be retried only against the original binding.",
                 schemars::schema_for!(CloseInput).to_value(),
             ),
         }))
@@ -311,7 +321,9 @@ impl<H: AgentControlHost> Tool for ThreadAgentControl<H> {
                     .close(
                         &context.thread_id,
                         &target.target,
-                        target.workspace_disposition,
+                        AgentCloseOptions {
+                            force: target.force,
+                        },
                     )
                     .await
             }

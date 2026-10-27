@@ -9,13 +9,48 @@ use super::super::StudioRuntime;
 use super::super::lsp_state::health;
 use super::super::{SkillSearchResult, SkillsStateSnapshot};
 
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ProjectActivationRecoveryBlock<'a> {
+    project_id: &'a str,
+    issues: Vec<crate::StudioRecoveryIssue>,
+}
+
 impl StudioRuntime {
+    /// Prepares workspace services, including helper binding and executable LSP version probes.
+    /// This is not a read-only navigation/history query; blocked projects remain available through
+    /// the independent directory and history reads when their access is not blocked.
     pub async fn activate_project(&self, project_id: &str) -> Result<()> {
-        if self.recovery_issues().iter().any(|issue| {
-            issue.scope == crate::StudioRecoveryIssueScope::Project
-                && issue.project_id.as_deref() == Some(project_id)
-        }) {
-            anyhow::bail!("selected project is blocked by a recovery issue");
+        let issues = self
+            .recovery_issues()
+            .into_iter()
+            .filter(|issue| {
+                let applies = match issue.scope {
+                    crate::StudioRecoveryIssueScope::Application => true,
+                    crate::StudioRecoveryIssueScope::Project => {
+                        issue.project_id.as_deref() == Some(project_id)
+                    }
+                    crate::StudioRecoveryIssueScope::Thread => false,
+                };
+                applies
+                    && match issue.impact {
+                        crate::StudioRecoveryImpact::Advisory => false,
+                        crate::StudioRecoveryImpact::ExecutionBlocked
+                        | crate::StudioRecoveryImpact::AccessBlocked => true,
+                    }
+            })
+            .collect::<Vec<_>>();
+        if !issues.is_empty() {
+            return Err(pl_protocol::studio::StudioError::new(
+                pl_protocol::studio::StudioErrorCode::Unavailable,
+                "Project execution preparation is blocked by recovery",
+                true,
+            )
+            .with_details(serde_json::to_value(ProjectActivationRecoveryBlock {
+                project_id,
+                issues,
+            })?)
+            .into());
         }
         let project = self.project_record(project_id).await?;
         if let Some(server_id) = &project.ssh_alias {

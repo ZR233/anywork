@@ -282,7 +282,11 @@ impl StudioRuntime {
             }
         }
         match leases {
-            Ok(leases) => self.agent_facility.worktrees.restore(leases),
+            Ok(leases) => self
+                .thread_factory
+                .restore_workspace_admission(leases)
+                .await
+                .map_err(|error| StudioStartupError::input("restore_workspace_admission", error))?,
             Err(error) => failures.push(StudioStartupError::input("worktree_leases", error)),
         }
         // Global SSH config is outside the product backup boundary; its diagnostic is independent.

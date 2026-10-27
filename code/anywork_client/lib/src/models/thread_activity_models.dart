@@ -1,3 +1,6 @@
+import 'dart:convert';
+
+import 'failure_models.dart';
 import 'thread_wait_models.dart';
 import 'collection_equality.dart';
 
@@ -298,6 +301,32 @@ class ThreadStorageStateView {
     if (error != null && error.isNotEmpty) return error;
     return null;
   }
+}
+
+StudioFailure threadStorageContinuationFailure(ThreadStorageStateView storage) {
+  final reason = storage.blockingReason;
+  final state = storage.execution.name;
+  return StudioFailure(
+    code: StudioFailureCode.storage,
+    message: reason == null || reason.isEmpty
+        ? 'Thread execution is blocked by storage state $state '
+              '(fault=${storage.hasFault}, pressurePaused=${storage.pressurePaused}, '
+              'resumeRequired=${storage.resumeRequired}).'
+        : 'Thread execution is blocked by storage recovery: $reason',
+    retryable: false,
+    correlationId: 'client-thread-storage-continuation',
+    detailsJson: jsonEncode({
+      'execution': state,
+      'fault': storage.fault?.name,
+      'faultGeneration': storage.faultGeneration,
+      'acceptedSequence': storage.acceptedSequence,
+      'durableSequence': storage.durableSequence,
+      'pressurePaused': storage.pressurePaused,
+      'resumeRequired': storage.resumeRequired,
+      'canResume': storage.canResume,
+      'lastError': reason,
+    }),
+  );
 }
 
 /// 活动详情里的一段内容（reasoning 或输出正文）。

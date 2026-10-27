@@ -24,6 +24,10 @@ import 'support/pump_client_future.dart';
 
 import 'package:anywork_client/studio_client.dart'
     show
+        RecoveryIssueCategory,
+        RecoveryIssueImpact,
+        RecoveryIssueScope,
+        RecoveryStateSnapshot,
         ModelRouteQueries,
         ProductTopicBaselineFrame,
         ProductTopicDataFrame,
@@ -504,6 +508,65 @@ void main() {
           .forProject(projectId)
           .workspaceMode,
       ThreadWorkspaceMode.worktree,
+    );
+  });
+
+  testWidgets('起始页Recovery诊断完整可滚动且附件错误不被遮蔽', (tester) async {
+    final projectId = container.read(selectionStoreProvider).selectedProjectId!;
+    final current = graph.client.recovery.state.value;
+    final detail = List.filled(12, '项目工作区需要检查').join('，');
+    graph.client.recovery.apply(
+      RecoveryStateSnapshot(
+        revision: (current?.revision ?? 0) + 1,
+        values: [
+          StudioRecoveryIssue(
+            id: 'start-project-recovery',
+            scope: RecoveryIssueScope.project,
+            category: RecoveryIssueCategory.repository,
+            impact: RecoveryIssueImpact.executionBlocked,
+            availableActions: const [],
+            projectId: projectId,
+            detail: detail,
+          ),
+        ],
+      ),
+    );
+
+    await tester.pumpWidget(harness(const StartPageComposerDock()));
+    await tester.pumpAndSettle();
+
+    final blocker = tester.widget<Text>(
+      find.byKey(StudioDriverKeys.composerBlocker),
+    );
+    expect(blocker.data, contains('恢复问题 start-project-recovery'));
+    expect(blocker.data, contains('项目 $projectId'));
+    expect(blocker.data, contains('执行受阻，仍可读取安全的历史'));
+    expect(blocker.data, contains(detail));
+    expect(blocker.data, contains('可用恢复操作：当前无可用操作'));
+    expect(blocker.maxLines, isNull);
+    expect(blocker.overflow, isNull);
+
+    final reasons = find.byKey(const ValueKey('composer-reasons'));
+    expect(tester.getSize(reasons).height, lessThanOrEqualTo(84));
+    final scrollable = find.descendant(
+      of: reasons,
+      matching: find.byType(Scrollable),
+    );
+    final scrollPosition = tester.state<ScrollableState>(scrollable).position;
+    expect(scrollPosition.maxScrollExtent, greaterThan(0));
+    await tester.drag(scrollable, const Offset(0, -240));
+    await tester.pumpAndSettle();
+    expect(scrollPosition.pixels, greaterThan(0));
+
+    graph.client.attachments.reportNewThreadFailure(
+      projectId,
+      StateError('Clipboard image could not be read during recovery'),
+    );
+    await tester.pump();
+    expect(find.byKey(StudioDriverKeys.composerError), findsOneWidget);
+    expect(
+      tester.widget<Text>(find.byKey(StudioDriverKeys.composerError)).data,
+      contains('Clipboard image could not be read during recovery'),
     );
   });
 

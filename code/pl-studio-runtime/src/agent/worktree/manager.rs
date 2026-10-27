@@ -13,6 +13,17 @@ pub struct WorktreeHandle {
     pub base_commit: String,
 }
 
+/// Durable caller authorization for one exact, stopped child workspace identity.
+/// The product owner must separately prove lease ownership, no active borrowers and writer ACK.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorktreeRetirementRequest {
+    pub delivery_target: PathBuf,
+    pub expected_head: String,
+    pub expected_common_dir: String,
+    /// Only permits discarding dirty or not-yet-integrated content. Git locks remain binding.
+    pub force: bool,
+}
+
 /// Stable ownership determines the managed leaf, never the mutable Git state.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WorktreeOwnership {
@@ -88,6 +99,23 @@ impl WorktreeManager {
         self.backend.resolve_head(path).await
     }
 
+    /// Pins the caller's actual clean checkout before a child or branch is created.
+    pub(crate) async fn clean_spawn_head(&self, path: &Path) -> Result<String, WorktreeError> {
+        let head = self.backend.resolve_head(path).await?;
+        let status = self.backend.status(path).await?;
+        if !status.changed_files.is_empty() {
+            return Err(WorktreeError::InvalidResource(
+                "请先完成 commit，使工作区干净后重试（包括已暂存、未暂存及未跟踪文件）".into(),
+            ));
+        }
+        if status.head != head {
+            return Err(WorktreeError::InvalidResource(
+                "工作区 HEAD 在准备期间发生变化，请重试".into(),
+            ));
+        }
+        Ok(head)
+    }
+
     pub(crate) async fn registered_worktrees(
         &self,
     ) -> Result<Vec<super::RegisteredWorktree>, WorktreeError> {
@@ -144,6 +172,21 @@ impl WorktreeManager {
         self.backend
             .create(&self.repo_root, &handle.path, &handle.base_commit)
             .await?;
+        self.verify(&handle)
+            .await
+            .map_err(WorktreeCreateFailure::may_have_created)?;
+        let created_head = self
+            .backend
+            .resolve_head(&handle.path)
+            .await
+            .map_err(WorktreeCreateFailure::may_have_created)?;
+        if created_head != handle.base_commit {
+            return Err(WorktreeCreateFailure::may_have_created(
+                WorktreeError::IdentityMismatch(
+                    "created worktree HEAD differs from the pinned base".into(),
+                ),
+            ));
+        }
         Ok(handle)
     }
 
@@ -214,6 +257,115 @@ impl WorktreeManager {
         Ok((exists, registration.is_some()))
     }
 
+    pub(crate) async fn child_cleanup_site(
+        &self,
+        handle: &WorktreeHandle,
+    ) -> Result<(Option<WorktreeStatus>, bool), WorktreeError> {
+        let (exists, registered) = self.inspect_identity(handle).await?;
+        Ok((
+            if exists {
+                Some(self.backend.status(&handle.path).await?)
+            } else {
+                None
+            },
+            registered,
+        ))
+    }
+
+    pub(crate) async fn validate_child_delivery(
+        &self,
+        request: &WorktreeRetirementRequest,
+    ) -> Result<(), WorktreeError> {
+        if self.git_common_dir(&self.repo_root).await?.as_ref()
+            != Some(&request.expected_common_dir)
+            || self
+                .git_common_dir(&request.delivery_target)
+                .await?
+                .as_ref()
+                != Some(&request.expected_common_dir)
+        {
+            return Err(WorktreeError::IdentityMismatch(
+                "close repository or actual delivery site changed".into(),
+            ));
+        }
+        if !request.force {
+            let delivered = self.backend.resolve_head(&request.delivery_target).await?;
+            if !self
+                .backend
+                .is_ancestor(&self.repo_root, &request.expected_head, &delivered)
+                .await?
+            {
+                return Err(WorktreeError::InvalidResource("child HEAD is not contained in the actual root delivery HEAD; integrate it or explicitly force close".into()));
+            }
+        }
+        Ok(())
+    }
+
+    pub async fn retire_child(
+        &self,
+        handle: &WorktreeHandle,
+        request: &WorktreeRetirementRequest,
+    ) -> Result<(), WorktreeError> {
+        self.validate_handle(handle)?;
+        if handle
+            .path
+            .file_name()
+            .is_some_and(|leaf| leaf == SESSION_WORKTREE_LEAF)
+            || handle.path == request.delivery_target
+            || !matches!(request.expected_head.len(), 40 | 64)
+            || !request
+                .expected_head
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit())
+            || request.expected_common_dir.is_empty()
+        {
+            return Err(WorktreeError::InvalidResource(
+                "retirement requires one stopped child and a distinct delivery target".into(),
+            ));
+        }
+        self.validate_child_delivery(request).await?;
+        let (site, _) = self.child_cleanup_site(handle).await?;
+        let site = site.ok_or_else(|| {
+            WorktreeError::IdentityMismatch(
+                "child disappeared before removal; registration preserved".into(),
+            )
+        })?;
+        if site.head != request.expected_head {
+            return Err(WorktreeError::IdentityMismatch(
+                "child HEAD changed after the persisted deletion grant".into(),
+            ));
+        }
+        if !request.force && !site.changed_files.is_empty() {
+            return Err(WorktreeError::InvalidResource(
+                "child has uncommitted or untracked changes; explicit force is required".into(),
+            ));
+        }
+        self.backend
+            .remove(&self.repo_root, &handle.path, request.force)
+            .await?;
+        self.verify_child_retired(handle, &request.expected_common_dir)
+            .await
+    }
+
+    pub(crate) async fn verify_child_retired(
+        &self,
+        handle: &WorktreeHandle,
+        common: &str,
+    ) -> Result<(), WorktreeError> {
+        if self.git_common_dir(&self.repo_root).await?.as_deref() != Some(common) {
+            return Err(WorktreeError::IdentityMismatch(
+                "retired repository identity changed".into(),
+            ));
+        }
+        let (exists, registered) = self.inspect_identity(handle).await?;
+        if exists || registered {
+            return Err(WorktreeError::IdentityMismatch(
+                "closed child path or exact registration is present; replacement preserved".into(),
+            ));
+        }
+        Ok(())
+    }
+
     /// The single physical removal boundary. No branch deletion, recursive filesystem fallback,
     /// double force or repository-wide prune is permitted. The caller durably owns cleanup intent.
     pub async fn cleanup(
@@ -226,13 +378,8 @@ impl WorktreeManager {
             if !exists {
                 return Err(WorktreeError::Missing);
             }
-            if !self
-                .backend
-                .status(&handle.path)
-                .await?
-                .changed_files
-                .is_empty()
-            {
+            let status = self.backend.status(&handle.path).await?;
+            if !status.changed_files.is_empty() || !status.ignored_files.is_empty() {
                 return Err(WorktreeError::InvalidResource(
                     "cleanup refused tracked, untracked or ignored local content".into(),
                 ));

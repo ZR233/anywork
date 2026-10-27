@@ -5,6 +5,7 @@ impl WorktreeError {
     pub(crate) fn safe_diagnostic(&self) -> String {
         let message = match self {
             Self::Missing => "stat: worktree path not found".into(),
+            Self::MissingHead => "工作区没有有效的 HEAD commit；请先完成初始 commit 后重试".into(),
             // Identity messages are produced only from fixed application vocabulary, never stderr.
             Self::IdentityMismatch(reason) => format!("worktree identity: {reason}"),
             Self::GitLaunchFailed { args, message } => format!(

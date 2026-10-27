@@ -27,6 +27,22 @@ async fn managed_worktrees_are_detached_and_keep_every_branch() -> Result<()> {
     let repo = temp.path().join("repo");
     std::fs::create_dir(&repo)?;
     git(&repo, &["init", "-b", "main"])?;
+    let manager = WorktreeManager::new(repo.clone(), Arc::new(LocalWorktreeBackend::default()));
+    assert!(
+        matches!(
+            manager.resolve_head(&repo).await,
+            Err(WorktreeError::MissingHead)
+        ),
+        "an unborn repository requires an initial commit before worktree creation"
+    );
+    assert!(!repo.join(".anywork/worktrees").exists());
+    assert!(
+        matches!(
+            manager.resolve_head(&temp.path().join("missing")).await,
+            Err(WorktreeError::GitLaunchFailed { .. })
+        ),
+        "real execution failures must not be mislabeled as a missing initial commit"
+    );
     git(&repo, &["config", "user.name", "Worktree Test"])?;
     git(&repo, &["config", "user.email", "worktree@example.invalid"])?;
     std::fs::write(repo.join("file.txt"), "initial\n")?;
@@ -42,7 +58,6 @@ async fn managed_worktrees_are_detached_and_keep_every_branch() -> Result<()> {
         &["commit", "-am", "advance project after fixed base"],
     )?;
     assert_ne!(git(&repo, &["rev-parse", "HEAD"])?, base);
-    let manager = WorktreeManager::new(repo.clone(), Arc::new(LocalWorktreeBackend::default()));
     for ownership in [
         WorktreeOwnership::Session {
             thread_id: "root".into(),
@@ -183,8 +198,13 @@ async fn cleanup_preserves_dirty_content_and_git_locks_until_explicit_discard() 
     let status = repo.manager.preview(&handle).await?;
     assert_eq!(
         status.changed_files.len(),
-        3,
-        "preview includes every content class"
+        2,
+        "spawn-relevant changes include tracked and untracked content"
+    );
+    assert_eq!(
+        status.ignored_files.len(),
+        1,
+        "ignored content remains visible independently"
     );
     assert!(
         repo.manager
@@ -195,6 +215,18 @@ async fn cleanup_preserves_dirty_content_and_git_locks_until_explicit_discard() 
     for file in ["file.txt", "untracked.txt", "ignored.txt"] {
         assert!(handle.path.join(file).exists());
     }
+    git(&handle.path, &["restore", "--", "file.txt"])?;
+    std::fs::remove_file(handle.path.join("untracked.txt"))?;
+    let ignored_only = repo.manager.preview(&handle).await?;
+    assert!(ignored_only.changed_files.is_empty());
+    assert_eq!(ignored_only.ignored_files.len(), 1);
+    assert!(
+        repo.manager
+            .cleanup(&handle, WorktreeCleanupPolicy::Safe)
+            .await
+            .is_err(),
+        "Recovery Safe protects ignored content even with no ordinary changes"
+    );
     git(
         &repo.path,
         &["worktree", "lock", handle.path.to_str().context("path")?],

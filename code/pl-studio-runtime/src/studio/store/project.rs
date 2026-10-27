@@ -431,7 +431,13 @@ async fn inspect_database(path: &Path) -> Result<()> {
     let validation = match version {
         Ok(STUDIO_DATABASE_SCHEMA_VERSION) => validate_database(&database).await,
         // 上一个大版本的 v2 库可以在打开后原地升级；更早的 dev 版本仍交给启动入口。
-        Ok(0 | UPGRADEABLE_STUDIO_DATABASE_SCHEMA_VERSION..=24) => Ok(()),
+        Ok(0) => Ok(()),
+        Ok(version)
+            if (UPGRADEABLE_STUDIO_DATABASE_SCHEMA_VERSION..STUDIO_DATABASE_SCHEMA_VERSION)
+                .contains(&version) =>
+        {
+            Ok(())
+        }
         Ok(19..=21) => Err(StudioDatabaseError::StorageMigrationRequired.into()),
         Ok(found) => Err(StudioDatabaseError::UnsupportedSchema {
             found,
@@ -715,7 +721,10 @@ mod v2_schema_upgrade_tests {
         }
         tokio::fs::write(paths.catalog_file(), toml::to_string(&catalog)?).await?;
         let upgraded = StudioStore::open(paths.database()).await?;
-        assert_eq!(database_schema_version(upgraded.database()).await?, 25);
+        assert_eq!(
+            database_schema_version(upgraded.database()).await?,
+            STUDIO_DATABASE_SCHEMA_VERSION
+        );
         let saved = upgraded
             .catalog()
             .get(&child.id)
@@ -840,7 +849,10 @@ mod v2_schema_upgrade_tests {
         }
         tokio::fs::write(paths.catalog_file(), toml::to_string(&catalog)?).await?;
         let upgraded = StudioStore::open(paths.database()).await?;
-        assert_eq!(database_schema_version(upgraded.database()).await?, 25);
+        assert_eq!(
+            database_schema_version(upgraded.database()).await?,
+            STUDIO_DATABASE_SCHEMA_VERSION
+        );
         let kept: pl_protocol::Thread = upgraded
             .read_thread("kept-thread")
             .await?

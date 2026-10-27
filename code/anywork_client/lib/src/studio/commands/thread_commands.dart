@@ -2,8 +2,7 @@ import 'dart:async';
 
 import '../../../models.dart';
 import '../../../studio_ports.dart';
-import '../../../accounts_ports.dart'
-    show SettingsWriteOwner, SettingsWriteOwnerChanged;
+import '../../../accounts_ports.dart' show SettingsWriteOwner;
 import '../../../anywork_client.dart'
     show
         ReadModel,
@@ -75,8 +74,13 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard> {
     _begin(key, label: threadId);
     return _lane.enqueue(() async {
       try {
-        if (_blocksThread(threadId))
-          throw StateError('Thread access is blocked by recovery');
+        _throwIfExecutionClosed(threadId);
+        final issue = _executionBlockerForThread(threadId);
+        if (issue != null) throw issue.blockedFailure();
+        final storage = _client.session(threadId).state.storage;
+        if (storage?.blocksContinuation == true) {
+          throw threadStorageContinuationFailure(storage!);
+        }
         await _api.compactThread(threadId);
         _clear(key);
       } catch (error) {
@@ -135,11 +139,17 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard> {
     return _lane.enqueue(() async {
       final thread = _directoryThread(threadId);
       final runtime = _client.session(threadId).state.runtime;
+      final recoveryIssue = _accessBlockerForThread(threadId);
+      if (recoveryIssue != null) {
+        final failure = recoveryIssue.blockedFailure();
+        operation.reject(failure);
+        if (_isLatest(operation)) _fail(key, threadId, failure);
+        throw failure;
+      }
       if (thread == null ||
           !thread.isRoot ||
           thread.status != ThreadStatusView.idle ||
-          (runtime?.hasActiveWorkflow ?? false) ||
-          _blocksThread(threadId)) {
+          (runtime?.hasActiveWorkflow ?? false)) {
         operation.reject(StateError('Thread mode change is unavailable'));
         if (_isLatest(operation)) _clear(key);
         return;
@@ -163,33 +173,50 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard> {
   }
 
   /// 草稿仍属于后续 route 层。这里只接受已经组装好的输入，不写 composer canonical。
+  ///
+  /// Client-side validation, Recovery, storage, or lane rejection before the
+  /// transport method is invoked throws [SubmissionNotSent] with the original
+  /// typed error. Errors after invocation propagate unchanged so callers can
+  /// preserve unknown-outcome protection.
   Future<SubmitPromptReceipt> submitComposer(
     String threadId,
     StudioPromptInput input, {
     required int expectedModelRouteRevision,
-  }) {
-    _ensureOpen();
-    return _lane.enqueue(() async {
-      if (input.text.trim().isEmpty && input.attachmentDraftIds.isEmpty) {
-        throw ArgumentError('Prompt cannot be empty');
-      }
-      if (_blocksThread(threadId))
-        throw StateError('Thread access is blocked by recovery');
-      final key = 'submit:$threadId';
-      _begin(key, label: threadId);
-      try {
-        final receipt = await _api.submitPrompt(
-          threadId,
-          input,
-          expectedModelRouteRevision: expectedModelRouteRevision,
-        );
-        _clear(key);
-        return receipt;
-      } catch (error) {
-        _fail(key, threadId, error);
-        rethrow;
-      }
-    });
+  }) async {
+    var transportInvoked = false;
+    try {
+      _ensureOpen();
+      return await _lane.enqueue(() async {
+        _throwIfExecutionClosed(threadId);
+        if (input.text.trim().isEmpty && input.attachmentDraftIds.isEmpty) {
+          throw ArgumentError('Prompt cannot be empty');
+        }
+        final issue = _executionBlockerForThread(threadId);
+        if (issue != null) throw issue.blockedFailure();
+        final storage = _client.session(threadId).state.storage;
+        if (storage?.blocksContinuation == true) {
+          throw threadStorageContinuationFailure(storage!);
+        }
+        final key = 'submit:$threadId';
+        _begin(key, label: threadId);
+        try {
+          transportInvoked = true;
+          final receipt = await _api.submitPrompt(
+            threadId,
+            input,
+            expectedModelRouteRevision: expectedModelRouteRevision,
+          );
+          _clear(key);
+          return receipt;
+        } catch (error) {
+          _fail(key, threadId, error);
+          rethrow;
+        }
+      });
+    } catch (error) {
+      if (!transportInvoked) throw SubmissionNotSent(error);
+      rethrow;
+    }
   }
 
   /// 解析当前会话的 pending interaction。
@@ -202,6 +229,15 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard> {
     InteractionResolutionCommand resolution,
   ) {
     _ensureOpen();
+    _throwIfExecutionClosed(threadId);
+    final recoveryIssue = _executionBlockerForThread(threadId);
+    if (recoveryIssue != null) {
+      return Future<void>.error(recoveryIssue.blockedFailure());
+    }
+    final storage = _client.session(threadId).state.storage;
+    if (storage?.blocksContinuation == true) {
+      return Future<void>.error(threadStorageContinuationFailure(storage!));
+    }
     final key = 'interaction:$threadId';
     final operation = _client.mutations.begin(target: key);
     final displayed = _client
@@ -228,6 +264,23 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard> {
       rethrow;
     }
     return _lane.enqueue(() async {
+      final queuedRecoveryIssue = _executionBlockerForThread(threadId);
+      if (_isExecutionClosed(threadId)) {
+        final failure = _closedReadOnlyFailure;
+        _rejectQueuedOperation(operation, key, interactionId, failure);
+        throw failure;
+      }
+      if (queuedRecoveryIssue != null) {
+        final failure = queuedRecoveryIssue.blockedFailure();
+        _rejectQueuedOperation(operation, key, interactionId, failure);
+        throw failure;
+      }
+      final queuedStorage = _client.session(threadId).state.storage;
+      if (queuedStorage?.blocksContinuation == true) {
+        final failure = threadStorageContinuationFailure(queuedStorage!);
+        _rejectQueuedOperation(operation, key, interactionId, failure);
+        throw failure;
+      }
       final active = [..._client.session(threadId).state.interactions]
         ..sort(
           (left, right) =>
@@ -272,6 +325,12 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard> {
     });
   }
 
+  /// Creates a new root thread through the single progress/terminal transport.
+  ///
+  /// A Client rejection before transport invocation throws
+  /// [SubmissionNotSent]. A backend-emitted [NewThreadStartFailed] remains its
+  /// original definite terminal event; stream errors or EOF after invocation
+  /// remain unwrapped and do not prove rejection.
   Future<StartNewThreadResult?> submitNewThread({
     required String projectId,
     required StudioPromptInput input,
@@ -281,66 +340,76 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard> {
     required DelegationPreference delegationPreference,
     String? workspaceMode,
     required void Function(ThreadPreparationProgress) onProgress,
-  }) {
-    _ensureOpen();
-    final navigation = _client.selection.beginNavigation();
-    final selection = _client.selection.state;
-    return _lane.enqueue(() async {
-      if (input.text.trim().isEmpty && input.attachmentDraftIds.isEmpty) {
-        return null;
-      }
-      if (_blocksProject(projectId)) return null;
-      final key = 'new-thread:$projectId';
-      _begin(key, label: projectId);
-      try {
-        await for (final event in _api.startNewThread(
-          projectId,
-          input,
-          mode,
-          route: route,
-          delegationMode: delegationMode,
-          delegationPreference: delegationPreference,
-          workspaceMode: workspaceMode,
-        )) {
-          switch (event) {
-            case NewThreadStartProgress(:final progress):
-              if (progress.projectId != projectId ||
-                  progress.inputId != input.inputId) {
-                throw StateError(
-                  'New Thread preparation identity did not match',
-                );
-              }
-              onProgress(progress);
-            case NewThreadStartFailed():
-              throw event;
-            case NewThreadStartSucceeded(:final result):
-              if (result.thread.projectId != projectId ||
-                  result.receipt.threadId != result.thread.id ||
-                  result.receipt.inputId != input.inputId) {
-                throw StateError('New Thread submission receipt did not match');
-              }
-              if (!_client.isClosed &&
-                  _client.selection.isCurrentNavigation(navigation) &&
-                  identical(_client.selection.state, selection)) {
-                // 目录条目由 owner 的目录增量交付（commit_directory 已在命令内发布）；
-                // 命令成功后不重读聚合状态（design/25 §25.5）。
-                _client.selection.selectThread(
-                  projectId: projectId,
-                  threadId: result.thread.id,
-                );
-              }
-              _clear(key);
-              return result;
-          }
+  }) async {
+    var transportInvoked = false;
+    try {
+      _ensureOpen();
+      final navigation = _client.selection.beginNavigation();
+      final selection = _client.selection.state;
+      return await _lane.enqueue(() async {
+        if (input.text.trim().isEmpty && input.attachmentDraftIds.isEmpty) {
+          return null;
         }
-        throw StateError(
-          'New Thread creation ended without a terminal outcome',
-        );
-      } catch (error) {
-        _fail(key, projectId, error);
-        rethrow;
-      }
-    });
+        final key = 'new-thread:$projectId';
+        _begin(key, label: projectId);
+        try {
+          final issue = _executionBlockerForProject(projectId);
+          if (issue != null) throw issue.blockedFailure();
+          transportInvoked = true;
+          await for (final event in _api.startNewThread(
+            projectId,
+            input,
+            mode,
+            route: route,
+            delegationMode: delegationMode,
+            delegationPreference: delegationPreference,
+            workspaceMode: workspaceMode,
+          )) {
+            switch (event) {
+              case NewThreadStartProgress(:final progress):
+                if (progress.projectId != projectId ||
+                    progress.inputId != input.inputId) {
+                  throw StateError(
+                    'New Thread preparation identity did not match',
+                  );
+                }
+                onProgress(progress);
+              case NewThreadStartFailed():
+                throw event;
+              case NewThreadStartSucceeded(:final result):
+                if (result.thread.projectId != projectId ||
+                    result.receipt.threadId != result.thread.id ||
+                    result.receipt.inputId != input.inputId) {
+                  throw StateError(
+                    'New Thread submission receipt did not match',
+                  );
+                }
+                if (!_client.isClosed &&
+                    _client.selection.isCurrentNavigation(navigation) &&
+                    identical(_client.selection.state, selection)) {
+                  // 目录条目由 owner 的目录增量交付（commit_directory 已在命令内发布）；
+                  // 命令成功后不重读聚合状态（design/25 §25.5）。
+                  _client.selection.selectThread(
+                    projectId: projectId,
+                    threadId: result.thread.id,
+                  );
+                }
+                _clear(key);
+                return result;
+            }
+          }
+          throw StateError(
+            'New Thread creation ended without a terminal outcome',
+          );
+        } catch (error) {
+          _fail(key, projectId, error);
+          rethrow;
+        }
+      });
+    } catch (error) {
+      if (!transportInvoked) throw SubmissionNotSent(error);
+      rethrow;
+    }
   }
 
   /// 主会话自己的精确停止。
@@ -592,15 +661,16 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard> {
         _childRequiresParentScheduling(threadId),
       );
     }
+    final accessIssue = _accessBlockerForThread(threadId);
+    if (accessIssue != null) {
+      return Future<ContinueThreadCommandReply>.error(
+        accessIssue.blockedFailure(),
+      );
+    }
     final continuationId = continuation.id;
     final intentKey = '$threadId:$continuationId';
     final existing = _continuationIntents[intentKey];
     if (existing?.inFlight case final inFlight?) return inFlight;
-    if (_blocksThread(threadId)) {
-      return Future<ContinueThreadCommandReply>.error(
-        StateError('Thread access is blocked by recovery'),
-      );
-    }
     if (existing != null && existing.operationId != null) {
       // A previous explicit intent already owns an identity: read the original
       // operation instead of dispatching a second one.
@@ -619,6 +689,19 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard> {
           existing.inFlight = null;
         }
       });
+    }
+    _throwIfExecutionClosed(threadId);
+    final recoveryIssue = _executionBlockerForThread(threadId);
+    if (recoveryIssue != null) {
+      return Future<ContinueThreadCommandReply>.error(
+        recoveryIssue.blockedFailure(),
+      );
+    }
+    final storage = _client.session(threadId).state.storage;
+    if (storage?.blocksContinuation == true) {
+      return Future<ContinueThreadCommandReply>.error(
+        threadStorageContinuationFailure(storage!),
+      );
     }
     if (continuation.claimed) {
       // The canonical projection already says this intent was claimed: another
@@ -654,8 +737,17 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard> {
       if (_isLatest(operation)) _fail(key, threadId, error);
       return Future<ContinueThreadCommandReply>.error(error);
     }
+    var transportInvoked = false;
     final task = _lane.enqueue(() async {
       try {
+        _throwIfExecutionClosed(threadId);
+        final recoveryIssue = _executionBlockerForThread(threadId);
+        if (recoveryIssue != null) throw recoveryIssue.blockedFailure();
+        final storage = _client.session(threadId).state.storage;
+        if (storage?.blocksContinuation == true) {
+          throw threadStorageContinuationFailure(storage!);
+        }
+        transportInvoked = true;
         final reply = await _api.continueThread(
           threadId,
           continuationId,
@@ -669,7 +761,16 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard> {
         operation.accept(reply.receipt.toCommitReceipt());
         return reply;
       } catch (error) {
-        _failOperation(operation, error);
+        if (transportInvoked) {
+          _failOperation(operation, error);
+        } else {
+          // The allocated ID was never sent and must not be reconciled as an
+          // unknown operation after a local lane-time rejection.
+          operation.reject(error);
+          if (identical(_continuationIntents[intentKey], intent)) {
+            _continuationIntents.remove(intentKey);
+          }
+        }
         if (_isLatest(operation)) _fail(key, threadId, error);
         rethrow;
       }
@@ -688,9 +789,10 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard> {
     String operationId,
   ) {
     _ensureOpen();
-    return _lane.run(
-      () => _api.readContinuationOperation(threadId, operationId),
-    );
+    return _lane.run(() {
+      _throwIfAccessBlockedForThread(threadId);
+      return _api.readContinuationOperation(threadId, operationId);
+    });
   }
 
   /// 该会话当前继续点的规范投影；未打开或没有未完成工作时为空。
@@ -707,9 +809,10 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard> {
     String hostThreadId,
   ) {
     _ensureOpen();
-    if (_blocksThread(hostThreadId)) {
+    final recoveryIssue = _accessBlockerForThread(hostThreadId);
+    if (recoveryIssue != null) {
       return Future<List<ChildInteractionSummary>>.error(
-        StateError('Thread access is blocked by recovery'),
+        recoveryIssue.blockedFailure(),
       );
     }
     return _lane.run(() async {
@@ -730,6 +833,16 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard> {
     InteractionResolutionCommand resolution,
   ) {
     _ensureOpen();
+    _throwIfExecutionClosed(hostThreadId);
+    _throwIfExecutionClosed(summary.childThreadId);
+    final recoveryIssue = _executionBlockerForThread(hostThreadId);
+    if (recoveryIssue != null) {
+      return Future<void>.error(recoveryIssue.blockedFailure());
+    }
+    final storage = _client.sessionState(hostThreadId)?.storage;
+    if (storage?.blocksContinuation == true) {
+      return Future<void>.error(threadStorageContinuationFailure(storage!));
+    }
     if (summary.childThreadId == hostThreadId ||
         summary.interaction.threadId != summary.childThreadId ||
         _isChildThread(hostThreadId)) {
@@ -741,6 +854,21 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard> {
         reason: StudioFailureReason.interactionNotHosted,
       );
       return Future<void>.error(failure);
+    }
+    final childRecoveryIssue = _executionBlockerForThread(
+      summary.childThreadId,
+    );
+    if (childRecoveryIssue != null) {
+      return Future<void>.error(childRecoveryIssue.blockedFailure());
+    }
+    final childStorage = _client
+        .existingSession(summary.childThreadId)
+        ?.state
+        .storage;
+    if (childStorage?.blocksContinuation == true) {
+      return Future<void>.error(
+        threadStorageContinuationFailure(childStorage!),
+      );
     }
     final key = 'interaction:$hostThreadId';
     final operation = _client.mutations.begin(target: key);
@@ -763,6 +891,45 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard> {
       return Future<void>.error(error);
     }
     return _lane.enqueue(() async {
+      final hostRecoveryIssue = _executionBlockerForThread(hostThreadId);
+      if (_isExecutionClosed(hostThreadId) ||
+          _isExecutionClosed(summary.childThreadId)) {
+        _rejectQueuedOperation(
+          operation,
+          key,
+          summary.interactionId,
+          _closedReadOnlyFailure,
+        );
+        throw _closedReadOnlyFailure;
+      }
+      if (hostRecoveryIssue != null) {
+        final failure = hostRecoveryIssue.blockedFailure();
+        _rejectQueuedOperation(operation, key, summary.interactionId, failure);
+        throw failure;
+      }
+      final hostStorage = _client.sessionState(hostThreadId)?.storage;
+      if (hostStorage?.blocksContinuation == true) {
+        final failure = threadStorageContinuationFailure(hostStorage!);
+        _rejectQueuedOperation(operation, key, summary.interactionId, failure);
+        throw failure;
+      }
+      final childRecoveryIssue = _executionBlockerForThread(
+        summary.childThreadId,
+      );
+      if (childRecoveryIssue != null) {
+        final failure = childRecoveryIssue.blockedFailure();
+        _rejectQueuedOperation(operation, key, summary.interactionId, failure);
+        throw failure;
+      }
+      final childStorage = _client
+          .existingSession(summary.childThreadId)
+          ?.state
+          .storage;
+      if (childStorage?.blocksContinuation == true) {
+        final failure = threadStorageContinuationFailure(childStorage!);
+        _rejectQueuedOperation(operation, key, summary.interactionId, failure);
+        throw failure;
+      }
       try {
         final response = await _api.respondInteraction(
           hostThreadId,
@@ -795,7 +962,14 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard> {
     _watchObservation(operation, () => _clear(key));
     return _lane.enqueue(() async {
       final thread = _directoryThread(threadId);
-      if (thread == null || !thread.isRoot || _blocksThread(threadId)) {
+      final recoveryIssue = _accessBlockerForThread(threadId);
+      if (recoveryIssue != null) {
+        final failure = recoveryIssue.blockedFailure();
+        _failOperation(operation, failure);
+        if (_isLatest(operation)) _fail(key, threadId, failure);
+        throw failure;
+      }
+      if (thread == null || !thread.isRoot) {
         operation.reject(StateError('Thread rename is unavailable'));
         if (_isLatest(operation)) _clear(key);
         return null;
@@ -836,6 +1010,13 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard> {
     _watchObservation(operation, () => _clear(key));
     return _lane.enqueue(() async {
       final thread = _directoryThread(threadId);
+      final recoveryIssue = _accessBlockerForThread(threadId);
+      if (recoveryIssue != null) {
+        final failure = recoveryIssue.blockedFailure();
+        _failOperation(operation, failure);
+        if (_isLatest(operation)) _fail(key, threadId, failure);
+        throw failure;
+      }
       if (thread == null || !thread.isRoot) {
         operation.reject(StateError('Thread archive is unavailable'));
         if (_isLatest(operation)) _clear(key);
@@ -884,6 +1065,7 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard> {
     Object? requestFailure;
     try {
       _client.settingsWrites.requireOwner(owner);
+      _throwIfAccessBlockedForThread(threadId);
       if (!_client.settings.state.configLoaded) {
         final refreshed = await _client.settingsCommands.refreshCanonical(
           owner: owner,
@@ -895,11 +1077,14 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard> {
       }
       final response = await retryRevisionConflict(() async {
         _client.settingsWrites.requireOwner(owner);
+        _throwIfAccessBlockedForThread(threadId);
+        var attemptIssued = false;
         try {
           return await _requestThreadModelRoute(
             operationId: operation.id,
             owner: owner,
             onIssue: () {
+              attemptIssued = true;
               issued = true;
               requestFailure = null;
             },
@@ -909,7 +1094,7 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard> {
             effort: effort,
           );
         } catch (error) {
-          requestFailure = error;
+          if (attemptIssued) requestFailure = error;
           rethrow;
         }
       }, refresh: () => _refreshRouteOwners(threadId, owner));
@@ -922,13 +1107,12 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard> {
         _rememberWarning(threadId, response.warning);
       }
     } catch (error) {
-      if (error is SettingsWriteOwnerChanged && !issued) {
+      if (!issued) {
         operation.reject(error);
       } else {
-        _failOperation(
-          operation,
-          error is SettingsWriteOwnerChanged ? requestFailure ?? error : error,
-        );
+        // Refresh or local admission failures cannot replace the outcome of
+        // the last request that actually crossed the transport boundary.
+        _failOperation(operation, requestFailure ?? error);
       }
       if (!_client.isClosed &&
           _client.settingsWrites.isCurrentOwner(owner) &&
@@ -954,6 +1138,7 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard> {
     String? effort,
   }) async {
     _client.settingsWrites.requireOwner(owner);
+    _throwIfAccessBlockedForThread(threadId);
     final session = _client.session(threadId).state;
     final route = session.runtime?.modelRoute;
     final target = _findModel(accountId, modelId);
@@ -961,6 +1146,7 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard> {
       throw StateError('Selected thread model route is unavailable.');
     }
     _client.settingsWrites.requireOwner(owner);
+    _throwIfAccessBlockedForThread(threadId);
     onIssue();
     return _api.setThreadModelRoute(
       operationId: operationId,
@@ -980,10 +1166,12 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard> {
     SettingsWriteOwner owner,
   ) async {
     _client.settingsWrites.requireOwner(owner);
+    _throwIfAccessBlockedForThread(threadId);
     final settings = await _client.settingsCommands.refreshCanonical(
       owner: owner,
     );
     _client.settingsWrites.requireOwner(owner);
+    _throwIfAccessBlockedForThread(threadId);
     if (settings == null || !!_client.isClosed) return false;
     try {
       await _client.session(threadId).resyncRuntime();
@@ -994,6 +1182,7 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard> {
       return false;
     }
     _client.settingsWrites.requireOwner(owner);
+    _throwIfAccessBlockedForThread(threadId);
     return !_client.isClosed;
   }
 
@@ -1079,6 +1268,7 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard> {
       throw StateError('A continuation intent has no operation identity');
     }
     try {
+      _throwIfAccessBlockedForThread(threadId);
       final view = await _api.readContinuationOperation(
         threadId,
         operationId.value,
@@ -1139,26 +1329,76 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard> {
     }
   }
 
-  bool _blocksThread(String threadId) =>
-      _blocks(scope: RecoveryIssueScope.thread, threadId: threadId);
-
-  bool _blocksProject(String projectId) =>
-      _blocks(scope: RecoveryIssueScope.project, projectId: projectId);
-
-  bool _blocks({
-    required RecoveryIssueScope scope,
-    String? projectId,
-    String? threadId,
-  }) {
-    final issues = _client.recovery.state.value?.values ?? const [];
-    return issues.any(
-      (issue) =>
-          issue.blocksAccess &&
-          issue.scope == scope &&
-          (projectId == null || issue.projectId == projectId) &&
-          (threadId == null || issue.threadId == threadId),
-    );
+  String? _projectIdForThread(String threadId) {
+    final directoryProjectId = _directoryThread(threadId)?.projectId;
+    if (directoryProjectId != null) return directoryProjectId;
+    final workspaceProjectId = _client
+        .existingSession(threadId)
+        ?.state
+        .workspace
+        ?.thread
+        .projectId;
+    if (workspaceProjectId != null) return workspaceProjectId;
+    final selection = _client.selection.state;
+    return selection.selectedThreadId == threadId
+        ? selection.selectedProjectId
+        : null;
   }
+
+  StudioRecoveryIssue? _accessBlockerForThread(String threadId) =>
+      recoveryIssueBlockingAccess(
+        _client.recovery.state.value?.values ?? const [],
+        projectId: _projectIdForThread(threadId),
+        threadId: threadId,
+      );
+
+  StudioRecoveryIssue? _executionBlockerForThread(String threadId) =>
+      recoveryIssueBlockingExecution(
+        _client.recovery.state.value?.values ?? const [],
+        projectId: _projectIdForThread(threadId),
+        threadId: threadId,
+      );
+
+  StudioRecoveryIssue? _executionBlockerForProject(String projectId) =>
+      recoveryIssueBlockingExecution(
+        _client.recovery.state.value?.values ?? const [],
+        projectId: projectId,
+      );
+
+  void _throwIfAccessBlockedForThread(String threadId) {
+    final issue = _accessBlockerForThread(threadId);
+    if (issue != null) throw issue.blockedFailure();
+  }
+
+  static const _closedReadOnlyFailure = StudioFailure(
+    code: StudioFailureCode.permissionDenied,
+    message: 'Finally closed Threads are read-only',
+    retryable: false,
+    correlationId: 'client-thread-closed',
+    detailsJson: '{"reason":"threadClosed"}',
+  );
+
+  void _throwIfExecutionClosed(String threadId) {
+    if (_isExecutionClosed(threadId)) {
+      throw _closedReadOnlyFailure;
+    }
+  }
+
+  // A read-only gate must not admit a cold child owner. Missing local facts
+  // remain unknown; the backend still authoritatively rejects retired targets.
+  bool _isExecutionClosed(String threadId) =>
+      _directoryThread(threadId)?.status.blocksNewExecution == true ||
+      _client
+              .sessionState(threadId)
+              ?.workspace
+              ?.thread
+              .status
+              .blocksNewExecution ==
+          true ||
+      switch (_agentEntry(threadId)?.state) {
+        ClosingStudioAgent() || ClosedStudioAgent() => true,
+        _ => false,
+      };
 
   void _rememberWarning(String threadId, String? warning) {
     final warnings = {...state.warnings};
@@ -1337,6 +1577,16 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard> {
     } else {
       operation.unknownOutcome(error);
     }
+  }
+
+  void _rejectQueuedOperation(
+    OperationHandle operation,
+    String key,
+    String label,
+    Object error,
+  ) {
+    operation.reject(error);
+    if (_isLatest(operation)) _fail(key, label, error);
   }
 }
 
