@@ -27,8 +27,7 @@ use super::mapping::failure;
 
 /// 产品自建目录权限：仅属主可读写执行（显式设置，不依赖 umask）。
 ///
-/// 只有 Unix 有目录权限位；Windows 的私有性由真实 owner + DACL 承载（见 `private_acl`），
-/// 因此不提供非 Unix 占位常量。
+/// 只有 Unix 有目录权限位；Windows 沿用受信用户目录的原生 ACL。
 #[cfg(unix)]
 pub(super) const DIRECTORY_MODE: u32 = 0o700;
 
@@ -54,7 +53,7 @@ impl ManagedRoot {
         #[cfg(unix)]
         sync_directory_chain(trusted_home, &root, stage)?;
         let managed = Self { root };
-        managed.require_private_directory(&managed.root.clone(), stage)?;
+        managed.require_directory(&managed.root.clone(), stage)?;
         Ok(managed)
     }
 
@@ -100,7 +99,7 @@ impl ManagedRoot {
         path_safety::validate_existing_path(trusted_home, &root)
             .map_err(|_| link_rejected(stage))?;
         let managed = Self { root };
-        managed.require_private_directory(&managed.root.clone(), stage)?;
+        managed.require_directory(&managed.root.clone(), stage)?;
         Ok(Some(managed))
     }
 
@@ -128,10 +127,10 @@ impl ManagedRoot {
         path_safety::validate_existing_path(&self.root, path).map_err(|_| link_rejected(stage))
     }
 
-    /// 校验一个既有受管目录既是真实目录（无链接），又是产品私有权限。
+    /// 校验既有受管目录是真实目录（无链接），Unix 另核对产品权限位。
     ///
     /// 用于安装根、已发布安装目录这类不在 `ensure_dir` 链路上、但仍属于产品管理树的目录。
-    pub(super) fn require_private_directory(
+    pub(super) fn require_directory(
         &self,
         path: &Path,
         stage: AcpInstallStage,
@@ -143,14 +142,16 @@ impl ManagedRoot {
         if !metadata.is_dir() {
             return Err(not_a_directory(stage));
         }
-        super::private_acl::verify_private_object(path, true, stage)
+        #[cfg(unix)]
+        super::permissions::verify(path, true, stage)?;
+        Ok(())
     }
 
-    /// 校验一个既有受管文件是真实普通文件（无链接），且满足私有性规则。
+    /// 校验既有受管文件是真实普通文件（无链接），Unix 另核对权限位。
     ///
     /// 覆盖 part/sidecar、锁文件、回执与已安装成员：在**使用或写入资产之前**检查，
     /// 不会因为目录已校验过就让文件绕过边界（design/28 §28.7）。
-    pub(super) fn require_private_file(
+    pub(super) fn require_file(
         &self,
         path: &Path,
         stage: AcpInstallStage,
@@ -162,7 +163,8 @@ impl ManagedRoot {
             return Err(failure(AcpInstallFailureCode::Io, stage, false));
         }
         self.validate_existing(path, stage)?;
-        super::private_acl::verify_private_object(path, false, stage)?;
+        #[cfg(unix)]
+        super::permissions::verify(path, false, stage)?;
         Ok(true)
     }
 
@@ -252,7 +254,7 @@ pub(super) fn installed_path(
 
 /// 从锚点逐层走到 `target`：既有的必须是真实目录，缺失的用显式权限创建。
 ///
-/// 私有权限只在**安装根及其以下**（`acp-servers`、downloads/locks/staging/installed 与其
+/// Unix 私有权限只在**安装根及其以下**（`acp-servers`、downloads/locks/staging/installed 与其
 /// provider/target 层）要求；锚点与中间层（受信 Studio home、Studio 自己的 `studio/` 目录）是宿主
 /// 可信布局，只要求是真实目录，不因为它们的既有 mode 拒绝整个接入，也不去 chmod 别人的目录。
 /// 安装根以下的既存目录若已不是私有权限（如 0755/0777），一律拒绝而不是悄悄收权
@@ -260,7 +262,7 @@ pub(super) fn installed_path(
 fn walk_real_directories(
     anchor: &Path,
     target: &Path,
-    private_from: &Path,
+    _private_from: &Path,
     stage: AcpInstallStage,
 ) -> Result<(), AcpInstallFailure> {
     let relative = target
@@ -271,11 +273,12 @@ fn walk_real_directories(
         Ok(metadata) if metadata.is_dir() && !path_safety::is_link_or_reparse(&metadata) => {}
         Ok(_) => return Err(link_rejected(stage)),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            create_private_directory(anchor)?;
+            create_directory(anchor)?;
+            #[cfg(unix)]
             apply_directory_mode(anchor)?;
-            // 新建目录在写入任何子资产之前就要被证明是私有的（Windows 读真实 owner+DACL，
-            // 不推断继承结果；Unix 复核 0700）。
-            require_private_directory(anchor, stage)?;
+            // Unix 新建目录在写入子资产前复核 0700；Windows 沿用原生 ACL。
+            #[cfg(unix)]
+            super::permissions::verify(anchor, true, stage)?;
         }
         Err(_) => return Err(io(stage)),
     }
@@ -285,16 +288,20 @@ fn walk_real_directories(
         };
         current.push(part);
         match std::fs::symlink_metadata(&current) {
-            Ok(metadata) if metadata.is_dir() && !path_safety::is_link_or_reparse(&metadata) => {
-                if current.starts_with(private_from) {
-                    require_private_directory(&current, stage)?;
+            Ok(metadata) if metadata.is_dir() && !path_safety::is_link_or_reparse(&metadata) =>
+            {
+                #[cfg(unix)]
+                if current.starts_with(_private_from) {
+                    super::permissions::verify(&current, true, stage)?;
                 }
             }
             Ok(_) => return Err(link_rejected(stage)),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                create_private_directory(&current)?;
+                create_directory(&current)?;
+                #[cfg(unix)]
                 apply_directory_mode(&current)?;
-                require_private_directory(&current, stage)?;
+                #[cfg(unix)]
+                super::permissions::verify(&current, true, stage)?;
             }
             Err(_) => return Err(io(stage)),
         }
@@ -302,15 +309,10 @@ fn walk_real_directories(
     Ok(())
 }
 
-/// 受管目录的私有性核验：Unix 看 mode，Windows 看真实 owner + DACL（见 `private_acl`）。
-fn require_private_directory(path: &Path, stage: AcpInstallStage) -> Result<(), AcpInstallFailure> {
-    super::private_acl::verify_private_object(path, true, stage)
-}
-
 /// 以显式权限创建目录：Unix 在创建调用上就限制为产品私有权限，不留"先宽后收"的窗口。
 ///
 /// 创建权限仍会被进程 umask 收紧，因此调用方随后必须显式设置最终权限。
-fn create_private_directory(path: &Path) -> Result<(), AcpInstallFailure> {
+fn create_directory(path: &Path) -> Result<(), AcpInstallFailure> {
     // 只有 Unix 通过 `DirBuilderExt::mode` 在创建调用上限制权限，因此可变绑定只在那里存在。
     #[cfg(unix)]
     let mut builder = std::fs::DirBuilder::new();
@@ -326,19 +328,12 @@ fn create_private_directory(path: &Path) -> Result<(), AcpInstallFailure> {
         .map_err(|_| io(AcpInstallStage::Extract))
 }
 
-/// 显式目录权限；Unix 上创建后立即设置，避免依赖 umask。
-pub(super) fn apply_directory_mode(path: &Path) -> Result<(), AcpInstallFailure> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(DIRECTORY_MODE))
-            .map_err(|_| io(AcpInstallStage::Extract))?;
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = path;
-    }
-    Ok(())
+/// Unix 创建后显式设置目录权限，避免依赖 umask。
+#[cfg(unix)]
+fn apply_directory_mode(path: &Path) -> Result<(), AcpInstallFailure> {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(DIRECTORY_MODE))
+        .map_err(|_| io(AcpInstallStage::Extract))
 }
 
 /// Unix 专用：同步从锚点到目标父目录的每一层，保证新建目录项逐级 durable。
