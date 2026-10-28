@@ -584,7 +584,7 @@ class ModeEditorJourney {
     await tap('mode-editor-node-working');
     final property = find.byValueKey('mode-editor-detail-scroll');
     await driver.waitFor(property, timeout: const Duration(seconds: 30));
-    final field = find.byValueKey('mode-editor-detail-state-title');
+    final field = find.byValueKey('mode-editor-detail-state-instructions');
     final beforeScroll = await driver.getTopLeft(field);
     await driver.scrollBy(
       find.byValueKey('mode-editor-detail-scroll'),
