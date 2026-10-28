@@ -1518,6 +1518,9 @@ Iterable<Map<String, Object?>> _observedReadouts(AccountDisplayKey key) sync* {
 Map<String, Object?> _driverDiagnostics({StudioDriverFacts? observed}) {
   final facts = observed ?? StudioDriverState.readFacts();
   final workspace = facts.workspace;
+  final session = workspace == null
+      ? null
+      : _client.conversations.existingSession(workspace.thread.id)?.state;
   final runtime = workspace?.runtime;
   final liveUsage = runtime?.liveUsage;
   final observedUsage =
@@ -1599,6 +1602,13 @@ Map<String, Object?> _driverDiagnostics({StudioDriverFacts? observed}) {
               'responseMillis': responseMillis,
               'tokensPerSecond': tokensPerSecond,
             },
+    },
+    'stateStream': {
+      'threadId': session?.threadId,
+      'hasSnapshot': session?.hasSnapshot ?? false,
+      'epoch': session?.streamEpoch,
+      'baseRevision': session?.baseRevision,
+      'revision': session?.revision,
     },
     'skills': _driverSkillsDiagnostics(),
     'composer': <String, Object?>{

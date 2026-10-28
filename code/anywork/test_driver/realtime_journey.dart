@@ -627,9 +627,17 @@ class RealtimeJourney {
       'delayed',
     );
     final waiting = await waitFor(
-      (snapshot) =>
-          turnId(snapshot) != context.priorTurnId &&
-          assistantContentCount(snapshot) == context.priorContent,
+      (snapshot) {
+        final diagnostics = snapshot['driverDiagnostics'] as Map?;
+        final stream = diagnostics?['stateStream'] as Map?;
+        return turnId(snapshot) != null &&
+            turnId(snapshot) != context.priorTurnId &&
+            assistantContentCount(snapshot) == context.priorContent &&
+            stream?['threadId'] ==
+                TimelineObservation.optional(snapshot)?.threadId &&
+            stream?['hasSnapshot'] == true &&
+            stream?['epoch'] is int;
+      },
       'delayed_waiting',
       timeout: const Duration(seconds: 20),
       abort: threadFaulted,
@@ -848,6 +856,7 @@ class RealtimeJourney {
     var observedGrowth = false;
     var identityResetObserved = false;
     var activityToolOpened = false;
+    String? openedActivityIdentity;
     var activityDetailGrowth = false;
     int? previousDetailLines;
     final activityDetailSamples = <Map<String, Object?>>[];
@@ -899,8 +908,22 @@ class RealtimeJourney {
       // Once the call is terminal no further live sample or activity can arrive.
       final toolTerminal =
           tool != null && _terminalToolStatuses.contains(tool['status']);
+      final activityIdentity = activity?['identity'] as String?;
+      if (activityToolOpened && activityIdentity != openedActivityIdentity) {
+        activityToolOpened = false;
+        previousDetailLines = null;
+      }
+      final waitTool = timelineToolByCallId(
+        snapshot,
+        'realtime-long-wait-call',
+      );
+      final stableToolActivity =
+          waitTool != null &&
+          _liveToolStatuses.contains(waitTool.status) &&
+          activity?['activeToolCount'] == 2;
       if (!toolTerminal &&
           !activityToolOpened &&
+          stableToolActivity &&
           activity != null &&
           (!wantIdentityReset || identityResetObserved)) {
         if (activity['expanded'] != true) {
@@ -914,11 +937,24 @@ class RealtimeJourney {
           timeout: const Duration(seconds: 5),
         );
         activityToolOpened = true;
+        openedActivityIdentity = activityIdentity;
       }
       if (!toolTerminal && activityToolOpened) {
-        final rendered = await driver.sendCommand(
-          ToolProbe(activityToolDetails, 'readText'),
-        );
+        final Map<String, dynamic> rendered;
+        try {
+          rendered = await driver.sendCommand(
+            ToolProbe(activityToolDetails, 'readText'),
+          );
+        } on DriverError {
+          final retired = await this.snapshot();
+          final retiredTool = _toolByCallId(retired, callId);
+          if (retiredTool != null &&
+              _terminalToolStatuses.contains(retiredTool['status'])) {
+            latest = retired;
+            break;
+          }
+          rethrow;
+        }
         final texts =
             ((rendered['samples'] as List).single as Map)['texts'] as List;
         final outputs = texts.whereType<String>().where(
@@ -939,6 +975,7 @@ class RealtimeJourney {
           activityDetailSamples.add({
             'at': DateTime.now().millisecondsSinceEpoch,
             'callId': callId,
+            'activityIdentity': openedActivityIdentity,
             'lines': lines,
             'text': output,
           });
