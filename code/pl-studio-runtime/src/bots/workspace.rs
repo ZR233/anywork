@@ -229,10 +229,12 @@ fn migrate_owned_directory(
         }
         return Ok(());
     }
+    // A catalog refresh may have passed admission before the source went offline. Only a
+    // live source workspace can prove that an absent owned directory means an empty migration.
     if !std::fs::metadata(source_container)?.is_dir() {
         return Err(std::io::Error::new(
             std::io::ErrorKind::NotADirectory,
-            "bot workspace migration source is not a directory",
+            "workspace migration source is not a directory",
         ));
     }
     pl_tool::workspace::path_safety::validate_path_for_write(source_container, source)
@@ -304,6 +306,31 @@ fn workspace_error(error: impl std::fmt::Display) -> FeishuError {
 mod migration_tests {
     use super::migrate_owned_directory;
     use std::fs;
+
+    #[test]
+    fn incomplete_migration_cannot_publish_completion_after_source_workspace_disappears() {
+        let temp = tempfile::tempdir().unwrap();
+        let business = temp.path().join("business");
+        let source = business.join(".anywork/sessions/owned");
+        let target = temp.path().join("bot/workspace/.anywork/sessions/owned");
+        fs::create_dir_all(&business).unwrap();
+        // An existing workspace may legitimately have no old Thread-owned files.
+        migrate_owned_directory(&business, &source, temp.path(), &target, "owned").unwrap();
+        fs::write(target.join("new-work.txt"), "preserve target work").unwrap();
+        fs::rename(&business, temp.path().join("source-offline")).unwrap();
+        // A completed migration is independent of the old source.
+        migrate_owned_directory(&business, &source, temp.path(), &target, "owned").unwrap();
+        fs::remove_file(target.join(".migration-complete")).unwrap();
+        assert!(
+            migrate_owned_directory(&business, &source, temp.path(), &target, "owned").is_err(),
+            "a missing source workspace is not proof of an empty completed migration"
+        );
+        assert!(!target.join(".migration-complete").exists());
+        assert_eq!(
+            fs::read_to_string(target.join("new-work.txt")).unwrap(),
+            "preserve target work"
+        );
+    }
 
     #[test]
     fn interrupted_copy_resumes_without_overwriting_new_files_or_touching_business_data() {
