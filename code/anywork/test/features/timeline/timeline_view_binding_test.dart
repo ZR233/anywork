@@ -1743,25 +1743,24 @@ void main() {
   });
 
   testWidgets(
-    '独立 TimelineActivityGroupBlock 仅接受自有 sealed 消息，支持持续追加、上层转换与分组边界报错',
+    '独立 TimelineActivityGroupBlock 仅接受自有 sealed 消息，不感知轮次并支持持续追加与上层转换',
     (tester) async {
       final controller = TimelineActivityGroupController(
         id: 'standalone-group',
       );
       addTearDown(controller.dispose);
 
-      // 1. 通过组件自有的 sealed TimelineThinkingGroupMessage 追加首条仅含概要的思考消息。
-      controller.addOrThrow(
+      // 1. 通过组件自有的 sealed TimelineThinkingGroupMessage 追加首条仅含概要的思考消息（无需传入 threadId/turnId）。
+      final replacedFirst = controller.add(
         TimelineThinkingGroupMessage(
           id: 'think-only-summary',
-          threadId: 'thread',
-          turnId: 'turn-1',
           order: 1,
           createdAt: timestamp,
           completedAt: timestamp.add(const Duration(seconds: 2)),
           summary: '正在设计方案 `step-1`',
         ),
       );
+      expect(replacedFirst, isFalse);
 
       await tester.pumpWidget(
         host(
@@ -1814,10 +1813,10 @@ void main() {
         completedToolItem,
       );
       expect(convertedTool, isA<TimelineActivityConverted>());
-      final addToolResult = controller.tryAdd(
+      final replacedTool = controller.add(
         (convertedTool as TimelineActivityConverted).message,
       );
-      expect(addToolResult, isA<TimelineGroupAddAccepted>());
+      expect(replacedTool, isFalse);
       await tester.pumpAndSettle();
       expect(readTopRow().icon, isNull);
       expect(readTopRow().label, 'Worked for 8s · 1 tools');
@@ -1842,58 +1841,30 @@ void main() {
         findsOneWidget,
       );
 
-      // 4. 当向工作组追加跨轮次 / 跨线程 / 回退状态不一致的 sealed 消息时，返回 TimelineGroupBoundaryError。
-      final turnRejected = controller.tryAdd(
+      // 4. 持续追加含正文的思考消息，验证同 id 幂等更新与含正文思考消息可展开。
+      controller.add(
         TimelineThinkingGroupMessage(
-          id: 'think-turn-2',
-          threadId: 'thread',
-          turnId: 'turn-2',
+          id: 'think-with-content',
           order: 3,
-          createdAt: timestamp.add(const Duration(seconds: 9)),
+          createdAt: timestamp.add(const Duration(seconds: 8)),
           completedAt: timestamp.add(const Duration(seconds: 10)),
-          summary: 'Next turn',
+          summary: '正在整理细节',
+          content: '完整推理正文',
         ),
       );
-      expect(turnRejected, isA<TimelineGroupAddRejected>());
-      expect(
-        (turnRejected as TimelineGroupAddRejected).error.reason,
-        TimelineGroupBoundaryReason.turnMismatch,
-      );
-
-      final threadRejected = controller.tryAdd(
-        TimelineThinkingGroupMessage(
-          id: 'think-thread-2',
-          threadId: 'thread-2',
-          turnId: 'turn-1',
-          order: 3,
-          createdAt: timestamp.add(const Duration(seconds: 9)),
-          completedAt: timestamp.add(const Duration(seconds: 10)),
-          summary: 'Other thread',
-        ),
+      await tester.pumpAndSettle();
+      expect(readTopRow().label, 'Worked for 10s · 1 tools');
+      final expandableThinkingSummary = find.byKey(
+        StudioDriverKeys.timelineActivitySummary('think-with-content'),
       );
       expect(
-        (threadRejected as TimelineGroupAddRejected).error.reason,
-        TimelineGroupBoundaryReason.threadMismatch,
+        tester
+            .widget<TimelineActivityRow>(expandableThinkingSummary)
+            .expandable,
+        isTrue,
       );
 
-      final rolledBackRejected = controller.tryAdd(
-        TimelineThinkingGroupMessage(
-          id: 'think-rolled-back',
-          threadId: 'thread',
-          turnId: 'turn-1',
-          order: 3,
-          rolledBack: true,
-          createdAt: timestamp.add(const Duration(seconds: 9)),
-          completedAt: timestamp.add(const Duration(seconds: 10)),
-          summary: 'Rolled back',
-        ),
-      );
-      expect(
-        (rolledBackRejected as TimelineGroupAddRejected).error.reason,
-        TimelineGroupBoundaryReason.contextDispositionMismatch,
-      );
-
-      // 5. 上层转换器对组外类型（助手正文、未完成项等）直接拒绝转换。
+      // 5. 上层转换器对组外类型（助手正文、未完成项等）直接拒绝转换，由上层决定结束当前工作组。
       final assistantItem = StudioTimelineItem(
         item: ThreadItemView(
           id: 'assistant-1',

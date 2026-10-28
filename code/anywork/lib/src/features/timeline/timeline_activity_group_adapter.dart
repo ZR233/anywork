@@ -55,11 +55,12 @@ final class TimelineActivityConversionRejected
 
 /// 上层时间线载荷到工作组组件自有 `sealed` 消息类型 [TimelineActivityGroupMessage] 的转换器。
 ///
-/// 工作组组件自身不接受任何组外类型；上层在向工作组追加消息前通过本转换器完成过滤与转换：
+/// 轮次与何时开启新工作组由上层派发方决定；工作组组件自身只接受 [TimelineActivityGroupMessage]，
+/// 不感知轮次或组外类型。上层在向工作组追加消息前通过本转换器完成单条转换：
 /// - 若转换返回 [TimelineActivityConverted]，可将得到的 [TimelineActivityGroupMessage]
-///   传给 [TimelineActivityGroupController.tryAdd]；
+///   传给 [TimelineActivityGroupController.add]；
 /// - 若转换返回 [TimelineActivityConversionRejected]，说明遇到了非工作组条目或未完成项，
-///   上层据此结束当前工作组。
+///   上层据此结束当前工作组并按需开启下一段。
 abstract final class TimelineActivityGroupAdapter {
   static TimelineActivityConversionResult convertItem(
     StudioTimelineItem item, {
@@ -121,8 +122,6 @@ abstract final class TimelineActivityGroupAdapter {
         return TimelineActivityConverted(
           TimelineThinkingGroupMessage(
             id: item.id,
-            threadId: item.threadId,
-            turnId: item.turnId,
             order: item.ordinal,
             createdAt: item.createdAt,
             completedAt: completedAt,
@@ -186,8 +185,6 @@ abstract final class TimelineActivityGroupAdapter {
         return TimelineActivityConverted(
           TimelineToolGroupMessage(
             id: item.id,
-            threadId: item.threadId,
-            turnId: item.turnId,
             order: item.ordinal,
             createdAt: item.createdAt,
             completedAt: completedAt,
@@ -215,8 +212,6 @@ abstract final class TimelineActivityGroupAdapter {
         return TimelineActivityConverted(
           TimelineSkillGroupMessage(
             id: item.id,
-            threadId: item.threadId,
-            turnId: item.turnId,
             order: item.ordinal,
             createdAt: item.createdAt,
             completedAt: activatedAt,

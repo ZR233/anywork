@@ -37,16 +37,15 @@ enum TimelineToolGroupOutcome {
 /// - [TimelineToolGroupMessage]（工具调用消息，含 `wait` / `sleep`）
 /// - [TimelineSkillGroupMessage]（技能加载消息）
 ///
-/// 用户消息、助手回复正文、轮次状态、原始记录、问答/计划回执、连续读图图集等
-/// 工作组外类型在编译期即被排除，由上层调用方在转换阶段拦截切分。
+/// 会话（`threadId`）、轮次（`turnId`）以及何时切换新工作组由上层派发方决定；
+/// 工作组组件自身不感知轮次，也不接受用户消息、助手回复正文、轮次状态、原始记录、
+/// 问答/计划回执、连续读图图集等工作组外类型。
 @immutable
 sealed class TimelineActivityGroupMessage {
   const TimelineActivityGroupMessage({
     required this.id,
     required this.createdAt,
     required this.completedAt,
-    this.threadId = 'default-thread',
-    this.turnId = 'default-turn',
     this.order = 0,
     this.rolledBack = false,
     this.details = const [],
@@ -54,8 +53,6 @@ sealed class TimelineActivityGroupMessage {
   });
 
   final String id;
-  final String threadId;
-  final String turnId;
   final int order;
   final DateTime createdAt;
   final DateTime completedAt;
@@ -77,8 +74,6 @@ final class TimelineThinkingGroupMessage extends TimelineActivityGroupMessage {
     this.summary = '',
     this.content = '',
     this.summaryChunks = const [],
-    super.threadId,
-    super.turnId,
     super.order,
     super.rolledBack,
     super.details,
@@ -130,8 +125,6 @@ final class TimelineToolGroupMessage extends TimelineActivityGroupMessage {
     this.error,
     this.outputArtifacts = const [],
     this.wait,
-    super.threadId,
-    super.turnId,
     super.order,
     super.rolledBack,
     super.details,
@@ -177,8 +170,6 @@ final class TimelineSkillGroupMessage extends TimelineActivityGroupMessage {
       SkillActivationCauseKind.userGesture,
       '',
     ),
-    super.threadId,
-    super.turnId,
     super.order,
     super.rolledBack,
     super.details,
@@ -192,77 +183,12 @@ final class TimelineSkillGroupMessage extends TimelineActivityGroupMessage {
   final SkillActivationCauseView cause;
 }
 
-/// 工作组内部判断需要开启新分组的边界原因。
-///
-/// 由于工作组入参已通过 [TimelineActivityGroupMessage] `sealed` 类型排除了所有组外类型
-/// 和未完成态，组内追加只需校验同组上下文边界。
-enum TimelineGroupBoundaryReason {
-  /// 所属会话 `threadId` 与当前工作组不一致。
-  threadMismatch,
-
-  /// 所属轮次 `turnId` 与当前工作组不一致（进入新轮次，需要新分组）。
-  turnMismatch,
-
-  /// 上下文回退状态 `rolledBack` 与当前工作组不一致。
-  contextDispositionMismatch,
-}
-
-@immutable
-final class TimelineGroupBoundaryError {
-  const TimelineGroupBoundaryError({
-    required this.reason,
-    required this.groupId,
-    required this.incomingItemId,
-    required this.message,
-  });
-
-  final TimelineGroupBoundaryReason reason;
-  final String groupId;
-  final String incomingItemId;
-  final String message;
-
-  @override
-  String toString() =>
-      'TimelineGroupBoundaryError($reason, groupId: $groupId, '
-      'incomingItemId: $incomingItemId): $message';
-}
-
-final class TimelineGroupBoundaryException implements Exception {
-  const TimelineGroupBoundaryException(this.error);
-
-  final TimelineGroupBoundaryError error;
-
-  @override
-  String toString() => error.toString();
-}
-
-sealed class TimelineGroupAddResult {
-  const TimelineGroupAddResult();
-}
-
-final class TimelineGroupAddAccepted extends TimelineGroupAddResult {
-  const TimelineGroupAddAccepted({
-    required this.replaced,
-    required this.memberCount,
-  });
-
-  final bool replaced;
-  final int memberCount;
-}
-
-final class TimelineGroupAddRejected extends TimelineGroupAddResult {
-  const TimelineGroupAddRejected(this.error);
-
-  final TimelineGroupBoundaryError error;
-}
-
 /// 思考与工具工作组独立控制器。
 ///
 /// 只接受 [TimelineActivityGroupMessage]（`sealed` 限定思考、工具、技能三类已完成消息）：
-/// - 支持通过 [tryAdd] / [addOrThrow] 持续向组内添加已完成消息；
-/// - 当检测到 `threadId`、`turnId` 或 `rolledBack` 变化需要切分新分组时，返回
-///   [TimelineGroupAddRejected]（携带 [TimelineGroupBoundaryError]）通知调用方；
-/// - 自动配对同轮次成功的 `skill_view` 工具调用与 [TimelineSkillGroupMessage]，
+/// - 支持通过 [add] / [addAll] 持续向组内添加已完成活动消息；
+/// - 轮次与何时新建工作组由上层派发方决定，控制器本身不感知轮次；
+/// - 自动配对组内成功的 `skill_view` 工具调用与 [TimelineSkillGroupMessage]，
 ///   并静态计算整组工作时长 [elapsedDuration] 与工具/技能计数。
 class TimelineActivityGroupController extends ChangeNotifier {
   TimelineActivityGroupController({
@@ -270,9 +196,7 @@ class TimelineActivityGroupController extends ChangeNotifier {
     bool initiallyExpanded = false,
     Iterable<TimelineActivityGroupMessage> initialMessages = const [],
   }) : _expanded = initiallyExpanded {
-    for (final message in initialMessages) {
-      addOrThrow(message);
-    }
+    addAll(initialMessages);
   }
 
   final String id;
@@ -291,8 +215,6 @@ class TimelineActivityGroupController extends ChangeNotifier {
 
   bool get isEmpty => _messages.isEmpty;
   int get length => _messages.length;
-
-  TimelineActivityGroupMessage? get anchor => _messages.firstOrNull;
 
   UnmodifiableListView<TimelineActivityGroupMessage> get messages =>
       UnmodifiableListView(_messages);
@@ -363,52 +285,10 @@ class TimelineActivityGroupController extends ChangeNotifier {
     return null;
   }
 
-  /// 校验 [message] 是否可加入当前工作组；若需要分组则返回 [TimelineGroupBoundaryError]。
-  TimelineGroupBoundaryError? boundaryErrorFor(
-    TimelineActivityGroupMessage message,
-  ) {
-    final first = anchor;
-    if (first == null) return null;
-    if (message.threadId != first.threadId) {
-      return TimelineGroupBoundaryError(
-        reason: TimelineGroupBoundaryReason.threadMismatch,
-        groupId: id,
-        incomingItemId: message.id,
-        message:
-            'Incoming message ${message.id} belongs to thread ${message.threadId}, '
-            'which differs from group thread ${first.threadId}.',
-      );
-    }
-    if (message.turnId != first.turnId) {
-      return TimelineGroupBoundaryError(
-        reason: TimelineGroupBoundaryReason.turnMismatch,
-        groupId: id,
-        incomingItemId: message.id,
-        message:
-            'Incoming message ${message.id} belongs to turn ${message.turnId}, '
-            'which differs from group turn ${first.turnId}.',
-      );
-    }
-    if (message.rolledBack != first.rolledBack) {
-      return TimelineGroupBoundaryError(
-        reason: TimelineGroupBoundaryReason.contextDispositionMismatch,
-        groupId: id,
-        incomingItemId: message.id,
-        message:
-            'Incoming message ${message.id} has rolledBack=${message.rolledBack}, '
-            'which differs from group rolledBack=${first.rolledBack}.',
-      );
-    }
-    return null;
-  }
-
-  /// 尝试向工作组追加一条 [TimelineActivityGroupMessage]；当需要切分新分组时返回
-  /// [TimelineGroupAddRejected]。
-  TimelineGroupAddResult tryAdd(TimelineActivityGroupMessage message) {
-    final error = boundaryErrorFor(message);
-    if (error != null) {
-      return TimelineGroupAddRejected(error);
-    }
+  /// 向工作组持续添加一条已完成 [TimelineActivityGroupMessage]（同 `id` 幂等替换）。
+  ///
+  /// 返回 `true` 表示替换了已存在的同 `id` 消息，返回 `false` 表示新增消息。
+  bool add(TimelineActivityGroupMessage message) {
     final existingIndex = _messages.indexWhere((m) => m.id == message.id);
     final replaced = existingIndex >= 0;
     if (replaced) {
@@ -419,19 +299,25 @@ class TimelineActivityGroupController extends ChangeNotifier {
     }
     _recomputeSkillPairs();
     notifyListeners();
-    return TimelineGroupAddAccepted(
-      replaced: replaced,
-      memberCount: _messages.length,
-    );
+    return replaced;
   }
 
-  /// 向工作组追加一条 [TimelineActivityGroupMessage]；若触发分组边界则抛出
-  /// [TimelineGroupBoundaryException]。
-  void addOrThrow(TimelineActivityGroupMessage message) {
-    final result = tryAdd(message);
-    if (result case TimelineGroupAddRejected(:final error)) {
-      throw TimelineGroupBoundaryException(error);
+  /// 批量向工作组添加已完成 [TimelineActivityGroupMessage]。
+  void addAll(Iterable<TimelineActivityGroupMessage> messages) {
+    var changed = false;
+    for (final message in messages) {
+      final existingIndex = _messages.indexWhere((m) => m.id == message.id);
+      if (existingIndex >= 0) {
+        _messages[existingIndex] = message;
+      } else {
+        _messages.add(message);
+      }
+      changed = true;
     }
+    if (!changed) return;
+    _messages.sort(_compareMessages);
+    _recomputeSkillPairs();
+    notifyListeners();
   }
 
   static int _compareMessages(

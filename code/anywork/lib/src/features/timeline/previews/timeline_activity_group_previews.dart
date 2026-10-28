@@ -89,7 +89,7 @@ Widget timelineActivityGroupPureThinkingPreview() =>
     );
 
 @Preview(
-  name: 'Activity Group / Interactive Append & Boundary Error',
+  name: 'Activity Group / Interactive Continuous Append',
   group: 'Timeline · Activity Group',
   size: Size(820, 640),
 )

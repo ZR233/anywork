@@ -33,7 +33,7 @@ class _ActivityGroupPreviewHost extends StatefulWidget {
 
 class _ActivityGroupPreviewHostState extends State<_ActivityGroupPreviewHost> {
   static const _initialAction =
-      '合成已完成数据 · 组件仅接受自有 sealed TimelineActivityGroupMessage';
+      '合成已完成数据 · 组件仅接受自有 sealed TimelineActivityGroupMessage，轮次与新建组由上层决定';
   String _lastAction = _initialAction;
 
   @override
@@ -91,13 +91,9 @@ abstract final class TimelineActivityGroupPreviewFixtures {
     required int endOffsetSeconds,
     required String summary,
     String content = '',
-    String threadId = 'thread-preview',
-    String turnId = 'turn-1',
     bool rolledBack = false,
   }) => TimelineThinkingGroupMessage(
     id: id,
-    threadId: threadId,
-    turnId: turnId,
     order: sequence,
     createdAt: _baseTime.add(Duration(seconds: startOffsetSeconds)),
     completedAt: _baseTime.add(Duration(seconds: endOffsetSeconds)),
@@ -114,13 +110,9 @@ abstract final class TimelineActivityGroupPreviewFixtures {
     required String toolName,
     required String arguments,
     required String output,
-    String threadId = 'thread-preview',
-    String turnId = 'turn-1',
     bool rolledBack = false,
   }) => TimelineToolGroupMessage(
     id: id,
-    threadId: threadId,
-    turnId: turnId,
     order: sequence,
     createdAt: _baseTime.add(Duration(seconds: startOffsetSeconds)),
     completedAt: _baseTime.add(Duration(seconds: endOffsetSeconds)),
@@ -139,7 +131,7 @@ abstract final class TimelineActivityGroupPreviewFixtures {
       id: id,
       initiallyExpanded: expanded,
     );
-    controller.addOrThrow(
+    controller.add(
       completedThinking(
         id: 'think-summary-only',
         sequence: 1,
@@ -148,7 +140,7 @@ abstract final class TimelineActivityGroupPreviewFixtures {
         summary: '正在梳理 **`TimelineActivityGroupMessage`** 封闭类型与折叠契约',
       ),
     );
-    controller.addOrThrow(
+    controller.add(
       completedTool(
         id: 'tool-read-file',
         sequence: 2,
@@ -156,22 +148,23 @@ abstract final class TimelineActivityGroupPreviewFixtures {
         endOffsetSeconds: 5,
         toolName: 'read_file',
         arguments: '{"path":"code/anywork/lib/src/features/timeline/timeline_activity_group_models.dart"}',
-        output: 'Read 340 lines from timeline_activity_group_models.dart',
+        output: 'Read 320 lines from timeline_activity_group_models.dart',
       ),
     );
-    controller.addOrThrow(
+    controller.add(
       completedThinking(
         id: 'think-with-content',
         sequence: 3,
         startOffsetSeconds: 5,
         endOffsetSeconds: 7,
-        summary: '正在设计 **分组边界报错** 与 `tryAdd` 返回结构',
+        summary: '正在设计 **零轮次感知控制器** 与 `add` 持续追加接口',
         content:
             '1. 顶层折叠行移除左侧图标，保持展示 `工作了 8 秒 · 2 个工具`。\n'
-            '2. 展开后，仅含 `summary` 的思考行不渲染展开箭头；含 `content` 的思考行支持二次展开查看思考内容。',
+            '2. 展开后，仅含 `summary` 的思考行不渲染展开箭头；含 `content` 的思考行支持二次展开查看思考内容。\n'
+            '3. 轮次切换与新建工作组由上层决定，组件无需感知 `turnId`。',
       ),
     );
-    controller.addOrThrow(
+    controller.add(
       completedTool(
         id: 'tool-edit-file',
         sequence: 4,
@@ -193,7 +186,7 @@ abstract final class TimelineActivityGroupPreviewFixtures {
       id: id,
       initiallyExpanded: expanded,
     );
-    controller.addOrThrow(
+    controller.add(
       completedThinking(
         id: 'think-pure-1',
         sequence: 1,
@@ -228,7 +221,6 @@ class _TimelineActivityGroupInteractivePreviewState
       );
   int _nextSeq = 5;
   int _nextSeconds = 8;
-  TimelineGroupBoundaryError? _lastBoundaryError;
 
   @override
   void dispose() {
@@ -237,16 +229,9 @@ class _TimelineActivityGroupInteractivePreviewState
   }
 
   void _appendMessage(TimelineActivityGroupMessage message, String label) {
-    final result = _controller.tryAdd(message);
+    _controller.add(message);
     setState(() {
-      switch (result) {
-        case TimelineGroupAddAccepted(:final memberCount):
-          _lastBoundaryError = null;
-          widget.record('已追加 $label · 当前共 $memberCount 条成员');
-        case TimelineGroupAddRejected(:final error):
-          _lastBoundaryError = error;
-          widget.record('需要新分组 (${error.reason.name}): ${error.message}');
-      }
+      widget.record('已追加 $label · 当前共 ${_controller.length} 条成员');
     });
   }
 
@@ -261,7 +246,7 @@ class _TimelineActivityGroupInteractivePreviewState
         sequence: seq,
         startOffsetSeconds: start,
         endOffsetSeconds: end,
-        summary: '第 $seq 步：已完成 **`widget-preview`** 纯组件边界校验（仅概要，不可展开）',
+        summary: '第 $seq 步：已完成 **`widget-preview`** 纯组件校验（仅概要，不可展开）',
       ),
       '仅概要思考',
     );
@@ -305,36 +290,6 @@ class _TimelineActivityGroupInteractivePreviewState
     );
   }
 
-  void _triggerTurnMismatch() {
-    final seq = _nextSeq++;
-    _appendMessage(
-      TimelineActivityGroupPreviewFixtures.completedThinking(
-        id: 'think-next-turn-$seq',
-        sequence: seq,
-        startOffsetSeconds: _nextSeconds,
-        endOffsetSeconds: _nextSeconds + 2,
-        turnId: 'turn-2',
-        summary: '下一轮次 (turn-2) 的思考消息',
-      ),
-      '跨轮次消息',
-    );
-  }
-
-  void _triggerRolledBackMismatch() {
-    final seq = _nextSeq++;
-    _appendMessage(
-      TimelineActivityGroupPreviewFixtures.completedThinking(
-        id: 'think-rolled-back-$seq',
-        sequence: seq,
-        startOffsetSeconds: _nextSeconds,
-        endOffsetSeconds: _nextSeconds + 2,
-        rolledBack: true,
-        summary: '已回退上下文的思考消息',
-      ),
-      '上下文回退不一致消息',
-    );
-  }
-
   void _resetGroup() {
     final old = _controller;
     setState(() {
@@ -344,7 +299,6 @@ class _TimelineActivityGroupInteractivePreviewState
       );
       _nextSeq = 5;
       _nextSeconds = 8;
-      _lastBoundaryError = null;
     });
     old.dispose();
     widget.record('已重置思考与工具组');
@@ -352,7 +306,6 @@ class _TimelineActivityGroupInteractivePreviewState
 
   @override
   Widget build(BuildContext context) {
-    final error = _lastBoundaryError;
     return ListView(
       padding: const EdgeInsets.all(24),
       children: [
@@ -378,18 +331,6 @@ class _TimelineActivityGroupInteractivePreviewState
               icon: const Icon(Icons.build_outlined, size: 16),
               label: const Text('+ 已完成工具'),
             ),
-            OutlinedButton.icon(
-              key: const ValueKey('preview-trigger-turn-mismatch'),
-              onPressed: _triggerTurnMismatch,
-              icon: const Icon(Icons.call_split_outlined, size: 16),
-              label: const Text('测试跨轮次分组报错'),
-            ),
-            OutlinedButton.icon(
-              key: const ValueKey('preview-trigger-context-mismatch'),
-              onPressed: _triggerRolledBackMismatch,
-              icon: const Icon(Icons.history_toggle_off, size: 16),
-              label: const Text('测试回退状态报错'),
-            ),
             TextButton.icon(
               key: const ValueKey('preview-reset-group'),
               onPressed: _resetGroup,
@@ -398,35 +339,6 @@ class _TimelineActivityGroupInteractivePreviewState
             ),
           ],
         ),
-        if (error != null) ...[
-          const SizedBox(height: 12),
-          Container(
-            key: const ValueKey('preview-boundary-error-banner'),
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-            decoration: BoxDecoration(
-              color: Theme.of(context).colorScheme.errorContainer,
-              borderRadius: BorderRadius.circular(StudioRadii.sm),
-            ),
-            child: Row(
-              children: [
-                Icon(
-                  Icons.warning_amber_rounded,
-                  size: 18,
-                  color: Theme.of(context).colorScheme.onErrorContainer,
-                ),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: Text(
-                    '需要开启新分组 [${error.reason.name}] · incoming=${error.incomingItemId}\n${error.message}',
-                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                      color: Theme.of(context).colorScheme.onErrorContainer,
-                    ),
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ],
         const SizedBox(height: 16),
         ConstrainedBox(
           constraints: const BoxConstraints(
