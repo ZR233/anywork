@@ -106,6 +106,18 @@ async fn run_writer(shared: Arc<WriterShared>, pending_commits: Arc<AtomicUsize>
         let commit_count = batch.commit_count();
         match apply_batch(&shared.store, &batch).await {
             Ok(()) => {
+                #[cfg(test)]
+                if batch.entries.iter().any(|entry| {
+                    let super::queue::StudioMutation::Directory(mutation) = &entry.mutation;
+                    matches!(mutation.as_ref(), super::queue::StudioDirectoryMutation::WorktreeLease(lease)
+                        if lease.state == crate::studio::agent_host::worktree_lease::WorktreeLeaseState::Cleaned)
+                }) {
+                    let gate = shared.cleaned_ack_gate.lock().unwrap().take();
+                    if let Some((entered, release)) = gate {
+                        let _ = entered.send(());
+                        let _ = release.await;
+                    }
+                }
                 let was_unhealthy = matches!(
                     shared.state.borrow().state,
                     PersistenceState::Degraded(_) | PersistenceState::Recovering(_)

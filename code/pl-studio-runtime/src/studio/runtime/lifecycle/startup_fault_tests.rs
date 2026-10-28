@@ -126,6 +126,172 @@ async fn canonical_project_without_sqlite_mirror_accepts_and_restores_new_thread
     Ok(())
 }
 
+#[tokio::test]
+async fn recovery_scope_and_execution_dependencies_survive_bot_materialization_and_scan_races()
+-> Result<()> {
+    use crate::config::{ConfigPaths, ConfigStore, StudioConfig};
+    use crate::{StudioRecoveryImpact as Impact, StudioRecoveryIssueScope as Scope};
+    use pl_model::config::{AccountConfig, AccountId, ModelRouteConfig};
+    use pl_model::model::ModelInfo;
+    use pl_model::protocol::ProtocolEndpoint;
+    let temp = tempfile::tempdir()?;
+    let home = temp.path().join("home");
+    let original = temp.path().join("original-project");
+    tokio::fs::create_dir_all(&original).await?;
+    let endpoint = std::net::TcpListener::bind("127.0.0.1:0")?;
+    let account = AccountId::new("recovery-fixture")?;
+    let route = ModelRouteConfig {
+        account_id: account.clone(),
+        model_id: "recovery-model".into(),
+        effort: None,
+    };
+    let mut config = StudioConfig::default_config()?;
+    config.models.accounts.clear();
+    config.models.accounts.insert(
+        account,
+        AccountConfig::from_explicit_models(
+            ProtocolEndpoint::compatible(
+                "Recovery fixture",
+                format!("http://{}", endpoint.local_addr()?),
+            ),
+            vec![ModelInfo::compatible(&route.model_id)],
+        ),
+    );
+    for selected in config
+        .models
+        .routes
+        .values_mut()
+        .chain(config.mode_model_routes.values_mut())
+    {
+        *selected = route.clone();
+    }
+    config.runtime.tool_capabilities = pl_tool::workspace::ToolCapabilityConfig {
+        exec: false,
+        workspace_files: false,
+        skills: false,
+        mcp: false,
+        lsp: false,
+        ask_user: false,
+        git: false,
+    };
+    config.skills.enabled = false;
+    ConfigStore::new(ConfigPaths::from_config_dir(&home)).save(&config)?;
+    let runtime = StudioRuntime::initialize(options(&home)).await?;
+    super::super::background_task::finish(&runtime.recovery_task)
+        .await
+        .map_err(anyhow::Error::new)?;
+    let project = runtime.open_project(&original).await?;
+    let ordinary = runtime.create_thread(&project.id, "ordinary owner").await?;
+    let bot_root_id = "bot-recovery-root";
+    runtime
+        .bots
+        .install_workspace_migration_fixture("botR1234", bot_root_id, &project.id)
+        .await?;
+    let bot_root = runtime
+        .create_thread_with_id(bot_root_id, &project.id, "bot owner")
+        .await?;
+    runtime.flush_persistence().await?;
+    let managed = runtime
+        .store
+        .workspace_identity(bot_root_id)
+        .await?
+        .unwrap()
+        .root;
+    assert_ne!(managed, bot_root.workspace_path);
+    let marker = Path::new(&managed)
+        .join(pl_tool::workspace::SessionFiles::new(bot_root_id).root())
+        .join(".migration-complete");
+    let completion = tokio::fs::read(&marker).await?;
+    tokio::fs::rename(&original, temp.path().join("original-offline")).await?;
+    let before = runtime.store.catalog().entries().len();
+    // No scan has described this failure yet: actual new-root preparation must still reject it
+    // before directory publication, and the hot ordinary owner cannot reuse a cached binding.
+    assert!(
+        runtime
+            .create_thread(&project.id, "must not publish")
+            .await
+            .is_err()
+    );
+    assert_eq!(runtime.store.catalog().entries().len(), before);
+    let physical = runtime.ensure_thread_owner(&ordinary.id).await.unwrap_err();
+    assert!(
+        physical
+            .chain()
+            .any(|error| error.downcast_ref::<std::io::Error>().is_some())
+    );
+    runtime.retry_recovery().await?;
+    super::super::background_task::finish(&runtime.recovery_task)
+        .await
+        .map_err(anyhow::Error::new)?;
+    let issues = runtime.recovery_issues();
+    assert!(issues.iter().any(|issue| issue.scope == Scope::Project
+        && issue.project_id.as_deref() == Some(&project.id)
+        && issue.impact == Impact::ExecutionBlocked));
+    assert!(issues.iter().any(|issue| issue.scope == Scope::Thread
+        && issue.thread_id.as_deref() == Some(&ordinary.id)
+        && issue.impact == Impact::ExecutionBlocked));
+    assert!(!issues.iter().any(|issue| issue.scope == Scope::Thread
+        && issue.thread_id.as_deref() == Some(bot_root_id)
+        && issue.impact != Impact::Advisory));
+    assert!(
+        runtime.ensure_thread_owner(bot_root_id).await.is_ok(),
+        "completed healthy M does not inherit Project O failure"
+    );
+    assert!(
+        runtime
+            .create_thread_with_id(bot_root_id, &project.id, "same binding")
+            .await
+            .is_ok(),
+        "existing identity is a Thread target, not new Project preparation"
+    );
+    assert!(
+        runtime
+            .create_thread(&project.id, "project gate remains blocked")
+            .await
+            .is_err()
+    );
+    assert_eq!(runtime.store.catalog().entries().len(), before);
+    assert!(
+        runtime.thread_snapshot(&ordinary.id).await.is_ok(),
+        "execution blockage preserves safe readonly history"
+    );
+
+    // Identity M is persisted before the copy completion ACK: losing that completion must make
+    // the original source a real dependency again, rather than silently treating M as complete.
+    tokio::fs::remove_file(&marker).await?;
+    runtime.retry_recovery().await?;
+    super::super::background_task::finish(&runtime.recovery_task)
+        .await
+        .map_err(anyhow::Error::new)?;
+    assert!(runtime.ensure_thread_owner(bot_root_id).await.is_err());
+    assert!(
+        runtime
+            .recovery_issues()
+            .iter()
+            .any(|issue| issue.thread_id.as_deref() == Some(bot_root_id)
+                && issue.impact == Impact::ExecutionBlocked)
+    );
+    tokio::fs::write(&marker, completion).await?;
+    runtime.retry_recovery().await?;
+    super::super::background_task::finish(&runtime.recovery_task)
+        .await
+        .map_err(anyhow::Error::new)?;
+    runtime.ensure_thread_owner(bot_root_id).await?;
+    tokio::fs::rename(&managed, temp.path().join("managed-offline")).await?;
+    assert!(
+        runtime.ensure_thread_owner(bot_root_id).await.is_err(),
+        "hot M resource loss is checked without another scan"
+    );
+    assert!(runtime.thread_snapshot(bot_root_id).await.is_ok());
+    runtime.shutdown_runtime().await?;
+    endpoint.set_nonblocking(true)?;
+    assert!(
+        matches!(endpoint.accept(), Err(error) if error.kind() == std::io::ErrorKind::WouldBlock),
+        "workspace admission must not call the model endpoint"
+    );
+    Ok(())
+}
+
 async fn seed(home: &Path) -> Result<StudioPaths> {
     let runtime = StudioRuntime::initialize(options(home)).await?;
     let store = runtime.store.clone();

@@ -26,8 +26,14 @@ class InteractionStopView extends StatelessWidget {
     if (state.executionId == null && failure == null) {
       return const SizedBox.shrink();
     }
+    // 停止失败同样优先保留 typed Recovery 语义；无结构化 issue 才落到 reason/原文。
+    final recoveryIssue = failure == null
+        ? null
+        : recoveryIssueFromFailure(failure);
     final failureText = failure == null
         ? null
+        : recoveryIssue != null
+        ? context.recoveryIssueFailureLabel(failure)
         : failure.reason != null || failure.message.trim().isEmpty
         ? context.composerFailureReasonLabel(failure.reason)
         : failure.message;
@@ -63,15 +69,29 @@ class InteractionStopView extends StatelessWidget {
         if (failureText != null)
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
-            child: Text(
-              failureText,
-              key: const ValueKey('interaction-stop-failure'),
-              maxLines: 3,
-              overflow: TextOverflow.ellipsis,
-              style: context.text.bodySmall?.copyWith(
-                color: context.colors.error,
-              ),
-            ),
+            // Recovery 诊断完整保留并通过区内滚动访问；普通原因仍限三行省略。
+            child: recoveryIssue == null
+                ? Text(
+                    failureText,
+                    key: const ValueKey('interaction-stop-failure'),
+                    maxLines: 3,
+                    overflow: TextOverflow.ellipsis,
+                    style: context.text.bodySmall?.copyWith(
+                      color: context.colors.error,
+                    ),
+                  )
+                : ConstrainedBox(
+                    constraints: const BoxConstraints(maxHeight: 84),
+                    child: SingleChildScrollView(
+                      child: Text(
+                        failureText,
+                        key: const ValueKey('interaction-stop-failure'),
+                        style: context.text.bodySmall?.copyWith(
+                          color: context.colors.error,
+                        ),
+                      ),
+                    ),
+                  ),
           ),
       ],
     );

@@ -72,26 +72,32 @@ final class ComposerModelBlocker extends ComposerBlocker {
   int get hashCode => (ComposerModelBlocker).hashCode;
 }
 
-/// 会话工作区缺失或不可访问。
-final class ComposerWorkspaceBlocker extends ComposerBlocker {
-  const ComposerWorkspaceBlocker();
+/// Studio Recovery 明确阻止该目标访问或执行。
+final class ComposerRecoveryBlocker extends ComposerBlocker {
+  const ComposerRecoveryBlocker(this.issue);
+
+  final StudioRecoveryIssue issue;
 
   @override
   bool get blocksSubmission => true;
 
   @override
-  bool operator ==(Object other) => other is ComposerWorkspaceBlocker;
+  bool operator ==(Object other) =>
+      other is ComposerRecoveryBlocker && issue == other.issue;
 
   @override
-  int get hashCode => (ComposerWorkspaceBlocker).hashCode;
+  int get hashCode => Object.hash(ComposerRecoveryBlocker, issue);
 }
 
 /// 后端返回的类型化失败原因（继续、停止或提交被明确拒绝）。
 final class ComposerFailureBlocker extends ComposerBlocker {
-  const ComposerFailureBlocker(this.reason);
+  const ComposerFailureBlocker(this.reason, {this.recoveryIssue});
 
   /// 后端提供的结构化原因；`null` 表示没有可识别原因，展示层用中性说明代替。
   final StudioFailureReason? reason;
+
+  /// Recovery 拒绝的结构化 issue；UI 使用当前 locale 格式化展示。
+  final StudioRecoveryIssue? recoveryIssue;
 
   /// 只表达「上一次操作被拒绝」，用户仍可按当前事实重试。
   @override
@@ -99,10 +105,46 @@ final class ComposerFailureBlocker extends ComposerBlocker {
 
   @override
   bool operator ==(Object other) =>
-      other is ComposerFailureBlocker && reason == other.reason;
+      other is ComposerFailureBlocker &&
+      reason == other.reason &&
+      recoveryIssue?.id == other.recoveryIssue?.id &&
+      recoveryIssue?.scope == other.recoveryIssue?.scope &&
+      recoveryIssue?.category == other.recoveryIssue?.category &&
+      recoveryIssue?.impact == other.recoveryIssue?.impact &&
+      recoveryIssue?.projectId == other.recoveryIssue?.projectId &&
+      recoveryIssue?.threadId == other.recoveryIssue?.threadId &&
+      recoveryIssue?.detail == other.recoveryIssue?.detail &&
+      _sameRecoveryActions(
+        recoveryIssue?.availableActions,
+        other.recoveryIssue?.availableActions,
+      );
 
   @override
-  int get hashCode => reason.hashCode;
+  int get hashCode => Object.hash(
+    reason,
+    recoveryIssue?.id,
+    recoveryIssue?.scope,
+    recoveryIssue?.category,
+    recoveryIssue?.impact,
+    recoveryIssue?.projectId,
+    recoveryIssue?.threadId,
+    recoveryIssue?.detail,
+    Object.hashAll(recoveryIssue?.availableActions ?? const []),
+  );
+}
+
+bool _sameRecoveryActions(
+  List<RecoveryIssueAction>? left,
+  List<RecoveryIssueAction>? right,
+) {
+  if (identical(left, right)) return true;
+  if (left == null || right == null || left.length != right.length) {
+    return false;
+  }
+  for (var index = 0; index < left.length; index += 1) {
+    if (left[index] != right[index]) return false;
+  }
+  return true;
 }
 
 /// 主按钮的完整语义状态。

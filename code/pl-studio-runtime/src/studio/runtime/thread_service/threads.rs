@@ -30,7 +30,6 @@ impl StudioRuntime {
         title: &str,
     ) -> Result<ThreadRecord> {
         let _lifecycle_guard = self.thread_lifecycle_admission().await?;
-        self.ensure_project_thread_admission_open(project_id)?;
         let thread_id = thread_id.into();
         if let Some(existing) = self.find_owned_thread(&thread_id).await? {
             anyhow::ensure!(
@@ -41,8 +40,14 @@ impl StudioRuntime {
                 existing.visibility == crate::studio::ThreadVisibility::Active,
                 "archived Thread cannot accept bot traffic"
             );
+            let protocol = pl_protocol::Thread::from(existing.clone());
+            self.check_thread_read_access(&protocol)?;
+            self.verify_thread_execution_preparation(&protocol, None)
+                .await?;
+            self.check_thread_execution_access(&protocol)?;
             return Ok(existing);
         }
+        self.ensure_project_thread_admission_open(project_id)?;
         let project = self
             .agent_facility
             .product_events
@@ -51,6 +56,9 @@ impl StudioRuntime {
             .into_iter()
             .find(|project| project.id == project_id)
             .context("selected Project not found")?;
+        self.thread_factory
+            .verify_project_workspace(&project)
+            .await?;
         let (mut delta, mut thread) = DirectoryDelta::register_root_thread(
             thread_id,
             project_id,
@@ -132,6 +140,9 @@ impl StudioRuntime {
             .cloned()
             .context("selected Project not found")?;
         self.ensure_project_thread_admission_open(&request.project_id)?;
+        self.thread_factory
+            .verify_project_workspace(&project)
+            .await?;
         self.ensure_mode_available(&request.mode)?;
 
         // D4：会话工作区在发布 Thread 之前就已确定。`worktree` 先做前置校验与物理创建，
@@ -150,6 +161,7 @@ impl StudioRuntime {
             self.agent_facility.worktrees.mark_creating(&thread_id);
             let created =
                 crate::studio::agent_host::workspace_preparation::create_root_session_worktree(
+                    &self.store,
                     &self.agent_facility.worktrees,
                     &self.ssh_manager,
                     &project,
@@ -187,11 +199,10 @@ impl StudioRuntime {
             Some(lease) => lease.path.clone(),
             None => project.path.clone(),
         };
-        let workspace_branch = session_lease.as_ref().map(|lease| lease.branch.clone());
         report(
             ThreadPreparationStage::InitializingSession,
             Some(&workspace_path),
-            workspace_branch.as_deref(),
+            None,
         );
         let (mut delta, mut thread) = DirectoryDelta::register_root_thread(
             thread_id,
@@ -253,7 +264,7 @@ impl StudioRuntime {
         report(
             ThreadPreparationStage::SubmittingPrompt,
             Some(&thread.workspace_path),
-            workspace_branch.as_deref(),
+            None,
         );
         let submission = self
             .submit_prompt_for_owned_thread_with_lifecycle_lock(

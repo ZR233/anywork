@@ -6618,6 +6618,18 @@ abstract class AppLocalizations {
   /// **'Inspection unavailable'**
   String get settingsWorktreeInspectionUnavailable;
 
+  /// No description provided for @settingsWorktreeDetached.
+  ///
+  /// In en, this message translates to:
+  /// **'Verified detached HEAD (no current branch)'**
+  String get settingsWorktreeDetached;
+
+  /// No description provided for @settingsWorktreeBranchUnknown.
+  ///
+  /// In en, this message translates to:
+  /// **'Current branch unknown'**
+  String get settingsWorktreeBranchUnknown;
+
   /// No description provided for @settingsWorktreeRetry.
   ///
   /// In en, this message translates to:
@@ -10037,6 +10049,66 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'The decision was accepted. Waiting for the session to confirm it.'**
   String get childInteractionDecisionAccepted;
+
+  /// No description provided for @recoveryDiagnostic.
+  ///
+  /// In en, this message translates to:
+  /// **'Recovery issue {id}\n{owner} · {impact}\n{detail}\nAvailable recovery actions: {actions}'**
+  String recoveryDiagnostic(
+    String id,
+    String owner,
+    String impact,
+    String detail,
+    String actions,
+  );
+
+  /// No description provided for @recoveryOwnerApplication.
+  ///
+  /// In en, this message translates to:
+  /// **'Application'**
+  String get recoveryOwnerApplication;
+
+  /// No description provided for @recoveryOwnerProject.
+  ///
+  /// In en, this message translates to:
+  /// **'Project {projectId}'**
+  String recoveryOwnerProject(String projectId);
+
+  /// No description provided for @recoveryOwnerThread.
+  ///
+  /// In en, this message translates to:
+  /// **'Session {threadId} · project {projectId}'**
+  String recoveryOwnerThread(String threadId, String projectId);
+
+  /// No description provided for @recoveryUnknownOwner.
+  ///
+  /// In en, this message translates to:
+  /// **'Not recorded'**
+  String get recoveryUnknownOwner;
+
+  /// No description provided for @recoveryImpactAdvisory.
+  ///
+  /// In en, this message translates to:
+  /// **'Attention required; access and execution remain available'**
+  String get recoveryImpactAdvisory;
+
+  /// No description provided for @recoveryImpactExecutionBlocked.
+  ///
+  /// In en, this message translates to:
+  /// **'Execution is blocked; safe history remains readable'**
+  String get recoveryImpactExecutionBlocked;
+
+  /// No description provided for @recoveryImpactAccessBlocked.
+  ///
+  /// In en, this message translates to:
+  /// **'Access and execution are blocked'**
+  String get recoveryImpactAccessBlocked;
+
+  /// No description provided for @recoveryNoAvailableActions.
+  ///
+  /// In en, this message translates to:
+  /// **'None currently available'**
+  String get recoveryNoAvailableActions;
 }
 
 class _AppLocalizationsDelegate

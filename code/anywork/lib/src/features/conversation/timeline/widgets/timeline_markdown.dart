@@ -9,13 +9,22 @@ import 'timeline_plain_text.dart';
 /// messages use them; Markdown uses this public builder with explicit media
 /// actions and the existing soft-wrapping code/table components. Never repair,
 /// trim or insert characters into canonical text.
+///
+/// The autolink recognizer also claims bare emails (`a@b`), `mailto:`/`xmpp:`,
+/// `<scheme:...>` and case-insensitive `www.` hosts. Those candidates must not
+/// stay on the official text path where a global tap callback could hand them
+/// a gesture, so plain `@`/`:` and any-casing `www.` route here too. A stray
+/// colon or at-sign taking the Markdown path is acceptable; mutating canonical
+/// text is not.
 bool timelineNeedsSafeMarkdown(String text) =>
     text.contains('\n') ||
     text.contains('\r') ||
     RegExp(r'^(?: {0,3}(?:[-+]\s+|\d+[.)]\s+))').hasMatch(text) ||
     RegExp(r'[\\`*_\[\]()#>~!|]').hasMatch(text) ||
     text.contains('://') ||
-    text.contains('www.');
+    text.contains('@') ||
+    text.contains(':') ||
+    RegExp(r'www\.', caseSensitive: false).hasMatch(text);
 
 class TimelineMarkdown extends StatelessWidget {
   const TimelineMarkdown({
@@ -42,10 +51,33 @@ class TimelineMarkdown extends StatelessWidget {
       text,
       key: ValueKey('gpt-markdown-$id'),
       style: style,
-      onLinkTap: (url, _) => onLink(url),
-      inlineLinkBuilder: (link) => isSafeLink(link.url)
-          ? link.defaultSpan()
-          : TextSpan(children: link.labelSpans, style: link.style),
+      // No global onLinkTap: unsafe targets must keep their text without any
+      // gesture instead of relying on a final callback to refuse the launch.
+      inlineLinkBuilder: (link) {
+        if (!isSafeLink(link.url)) {
+          return TextSpan(children: link.labelSpans, style: link.style);
+        }
+        return LinkTextSpan.wrapping(
+          children: link.labelSpans,
+          url: link.url,
+          linkStyle: link.linkStyle,
+          style: link.style,
+          hoverStyle: link.hoverStyle,
+          onTap: () => onLink(link.url),
+        );
+      },
+      inlineSourceTagBuilder: (tag) {
+        final url = tag.url;
+        return SourceTagBuildDetails(
+          context: tag.context,
+          config: tag.config,
+          style: tag.style,
+          id: tag.id,
+          url: url,
+          sourceTagStyle: tag.sourceTagStyle,
+          onTap: url != null && isSafeLink(url) ? () => onLink(url) : null,
+        ).defaultSpan();
+      },
       imageBuilder: (context, url, _, _) => imageBuilder(context, url),
       styleSheet: GptMarkdownStyleSheet(
         table: TableStyle(

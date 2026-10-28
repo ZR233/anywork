@@ -113,16 +113,15 @@ final class ComposerDraftImpl extends ReadModel<ComposerThreadState>
         reason: StudioFailureReason.childThreadRequiresParentScheduling,
       );
     }
-    final blocked =
-        _dependencies.recovery.value.value?.values.any(
-          (issue) =>
-              issue.blocksAccess &&
-              issue.scope == RecoveryIssueScope.thread &&
-              issue.threadId == threadId,
-        ) ??
-        false;
-    if (blocked || session.storage?.blocksContinuation == true) {
-      throw StateError('Thread submission is blocked by recovery');
+    final recoveryIssue = recoveryIssueBlockingExecution(
+      _dependencies.recovery.value.value?.values ?? const [],
+      projectId: session.workspace!.thread.projectId,
+      threadId: threadId,
+    );
+    if (recoveryIssue != null) throw recoveryIssue.blockedFailure();
+    final storage = session.storage;
+    if (storage?.blocksContinuation == true) {
+      throw threadStorageContinuationFailure(storage!);
     }
     final route = session.runtime?.modelRoute;
     if (route == null || !route.available)
@@ -251,7 +250,7 @@ final class ComposerDraftImpl extends ReadModel<ComposerThreadState>
         if (!_closed && stamp == frozen.stamp) {
           apply(
             ComposerThreadState.failure(
-              error: error.toString(),
+              error: error,
               draft: state.draft,
               attachments: state.attachments,
               submissionRevision: state.submissionRevision,
@@ -306,9 +305,10 @@ final class ComposerDraftImpl extends ReadModel<ComposerThreadState>
         threadId: threadId,
       );
     } catch (error) {
+      final failure = error is SubmissionNotSent ? error.error : error;
       if (acceptedReceipt != null) {
         evidence.cancel();
-        frozen.operation.syncFailed(error);
+        frozen.operation.syncFailed(failure);
         await _dependencies.attachments.completeFrozen(
           operationId: frozen.operation.id,
           accepted: true,
@@ -316,9 +316,10 @@ final class ComposerDraftImpl extends ReadModel<ComposerThreadState>
           projectId: frozen.projectId,
           threadId: threadId,
         );
-      } else if (isKnownSubmissionRejection(error)) {
+      } else if (error is SubmissionNotSent ||
+          isKnownSubmissionRejection(failure)) {
         evidence.cancel();
-        frozen.operation.reject(error);
+        frozen.operation.reject(failure);
         await _dependencies.attachments.completeFrozen(
           operationId: frozen.operation.id,
           accepted: false,
@@ -328,12 +329,12 @@ final class ComposerDraftImpl extends ReadModel<ComposerThreadState>
         );
       } else {
         _unknownStamp = frozen.stamp;
-        frozen.operation.unknownOutcome(error);
+        frozen.operation.unknownOutcome(failure);
       }
       if (!_closed && stamp == frozen.stamp) {
         apply(
           ComposerThreadState.failure(
-            error: error.toString(),
+            error: failure,
             draft: state.draft,
             attachments: state.attachments,
             submissionRevision: state.submissionRevision,

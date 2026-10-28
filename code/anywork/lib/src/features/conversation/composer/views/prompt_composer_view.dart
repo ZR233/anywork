@@ -20,8 +20,49 @@ import 'composer_support_views.dart';
 /// 原因区的最大高度：三行文案在窄矮窗口里换行时改在区内滚动，不撑破底栏。
 const double _composerReasonMaxHeight = 84;
 
-/// 单条原因的最大行数：超长文案省略，完整原因仍由 canonical 错误与日志承载。
+/// 非 Recovery 原因的最大行数；Recovery 诊断在受限滚动区域内完整展示。
 const int _composerReasonMaxLines = 3;
+
+StudioRecoveryIssue? _recoveryIssueForBlocker(ComposerBlocker? blocker) {
+  if (blocker is ComposerRecoveryBlocker) return blocker.issue;
+  if (blocker is ComposerFailureBlocker) return blocker.recoveryIssue;
+  return null;
+}
+
+/// 草稿 owner 记录的提交失败里提取 typed Recovery issue。
+StudioRecoveryIssue? _composerFailureRecoveryIssue(
+  ComposerThreadState composer,
+) {
+  final failure = composer.failure;
+  return recoveryIssueFromFailure(failure is StudioFailure ? failure : null);
+}
+
+/// 完整语义相等才把两条 Recovery 诊断视为同一事实；id 相同或文案相同都不够。
+bool _sameRecoveryDiagnostic(
+  StudioRecoveryIssue left,
+  StudioRecoveryIssue right,
+) {
+  if (left.id != right.id ||
+      left.scope != right.scope ||
+      left.category != right.category ||
+      left.impact != right.impact ||
+      left.projectId != right.projectId ||
+      left.threadId != right.threadId ||
+      left.detail != right.detail ||
+      left.availableActions.length != right.availableActions.length) {
+    return false;
+  }
+  for (var index = 0; index < left.availableActions.length; index += 1) {
+    if (left.availableActions[index] != right.availableActions[index]) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/// Recovery 拒绝的失败走本地化诊断行，不再重复渲染原始 SDK 文本。
+bool _showRawComposerError(ComposerThreadState composer) =>
+    _composerFailureRecoveryIssue(composer) == null;
 
 class PromptComposerView extends StatefulWidget {
   const PromptComposerView({
@@ -56,7 +97,6 @@ class PromptComposerView extends StatefulWidget {
     this.textController,
     this.compact = false,
     this.submissionLocked = false,
-    this.showSubmissionError = true,
     super.key,
   });
 
@@ -123,7 +163,6 @@ class PromptComposerView extends StatefulWidget {
 
   /// 起始页在设置 lane 排空前就置位的提交哨兵。线程路径保持 false。
   final bool submissionLocked;
-  final bool showSubmissionError;
 
   @override
   State<PromptComposerView> createState() => PromptComposerViewState();
@@ -214,7 +253,11 @@ class PromptComposerViewState extends State<PromptComposerView> {
   ComposerBlocker? get _stopFailure {
     final command = widget.stopCommand;
     if (command == null || command.phase != CommandPhase.failed) return null;
-    return ComposerFailureBlocker(command.error?.reason);
+    final error = command.error;
+    return ComposerFailureBlocker(
+      error?.reason,
+      recoveryIssue: recoveryIssueFromFailure(error),
+    );
   }
 
   @override
@@ -346,7 +389,11 @@ class PromptComposerViewState extends State<PromptComposerView> {
   /// 额外的组合状态检查，也不会因组合文本而误提交。
   void _submit() {
     // 空输入继续只能由点击按钮发起：Enter 不触发无内容的继续操作。
-    if (!widget.enabled || !_action.enterSubmits) return;
+    if (!widget.enabled ||
+        !_action.enterSubmits ||
+        (widget.blocker?.blocksSubmission ?? false)) {
+      return;
+    }
     // 中文/日文输入法组词期间的回车由平台确认候选，框架不参与提交。
     if (_controller.value.composing.isValid) return;
     widget.onSubmit();
@@ -528,7 +575,7 @@ class PromptComposerViewState extends State<PromptComposerView> {
               ),
             ),
           ),
-          if (widget.showSubmissionError && composer.error != null)
+          if (composer.error != null && _showRawComposerError(composer))
             Align(
               alignment: Alignment.centerLeft,
               child: Padding(
@@ -589,41 +636,76 @@ class PromptComposerViewState extends State<PromptComposerView> {
     );
   }
 
-  /// 原因区：canonical 阻塞、typed 失败与中断原因各自成行，一处也不丢弃。
+  /// 原因区：canonical 阻塞、typed 失败与中断原因集中一处；同一 Recovery 事实
+  /// 多来源出现只渲染第一处，独特诊断不丢。
   ///
-  /// 三行文案在窄矮窗口里会换行，因此整体套在受高度约束的滚动容器内，并给每行行数
-  /// 上限：受限尺寸下仍然可见可读，也不把外层 footer 撑出 `RenderFlex` 溢出。
+  /// 整体套在受高度约束的滚动容器内：普通原因限制行数，Recovery 诊断则完整保留
+  /// 长度（含 detail/actions），通过区内滚动访问，不撑破外层 footer。
   Widget? _reasonRegion(
     BuildContext context, {
     required ComposerBlocker? blocker,
     required String? continuationNote,
   }) {
     final stopFailure = _stopFailure;
+    final composerRecoveryIssue = _composerFailureRecoveryIssue(
+      widget.composer,
+    );
+    // 仅本次 build 内去重：完整语义相等的 Recovery issue 只渲染一次
+    // （id/scope/category/impact/project/thread/detail/actions 全比较）；
+    // 普通（非 Recovery）原因即使文案相同也各自保留，不做字符串去重。
+    final seen = <StudioRecoveryIssue>[];
+    bool claim(StudioRecoveryIssue? issue) {
+      if (issue == null) return true;
+      if (seen.any((other) => _sameRecoveryDiagnostic(other, issue))) {
+        return false;
+      }
+      seen.add(issue);
+      return true;
+    }
+
     final lines = <Widget>[
-      if (blocker != null)
+      if (blocker != null && claim(_recoveryIssueForBlocker(blocker)))
         _reasonLine(
           context,
           context.composerBlockerLabel(blocker),
           StudioDriverKeys.composerBlocker,
           emphasized: true,
+          maxLines: _recoveryIssueForBlocker(blocker) == null
+              ? _composerReasonMaxLines
+              : null,
         ),
-      // 上一次继续/提交被拒绝或结果未知的原因单独成行：它不改变 canonical 阻塞的
-      // 准入判定，也不会因为 canonical 阻塞出现而消失。
-      if (widget.failure case final failure?)
+      // 上一次继续/提交被拒绝或结果未知的原因保留展示：它不改变 canonical 阻塞的
+      // 准入判定；同一 Recovery 事实已被前一行认领时不再重复。
+      if (widget.failure case final failure?
+          when claim(_recoveryIssueForBlocker(failure)))
         _reasonLine(
           context,
           context.composerBlockerLabel(failure),
           const ValueKey('composer-failure'),
           emphasized: true,
+          maxLines: _recoveryIssueForBlocker(failure) == null
+              ? _composerReasonMaxLines
+              : null,
         ),
-      // 停止被拒绝的原因来自 Client 命令板：它跨重建与切换会话可见，因此单独成行，
-      // 既不会掩盖上面的原因，也不会被上面掩盖。
-      if (stopFailure != null)
+      // 停止被拒绝的原因来自 Client 命令板：它跨重建与切换会话可见，独特诊断
+      // 不被上面任何一行掩盖；同一 Recovery 事实已认领时不再重复。
+      if (stopFailure != null && claim(_recoveryIssueForBlocker(stopFailure)))
         _reasonLine(
           context,
           context.composerBlockerLabel(stopFailure),
           const ValueKey('composer-stop-failure'),
           emphasized: true,
+          maxLines: _recoveryIssueForBlocker(stopFailure) == null
+              ? _composerReasonMaxLines
+              : null,
+        ),
+      if (composerRecoveryIssue != null && claim(composerRecoveryIssue))
+        _reasonLine(
+          context,
+          context.recoveryIssueLabel(composerRecoveryIssue),
+          const ValueKey('composer-recovery-failure'),
+          emphasized: true,
+          maxLines: null,
         ),
       // 命令板长时间未结算：说明结果未确认，不再无限锁死停止入口。
       if (_stopUnconfirmed)
@@ -668,13 +750,14 @@ class PromptComposerViewState extends State<PromptComposerView> {
     String text,
     Key key, {
     required bool emphasized,
+    int? maxLines = _composerReasonMaxLines,
   }) {
     final colors = Theme.of(context).colorScheme;
     return Text(
       text,
       key: key,
-      maxLines: _composerReasonMaxLines,
-      overflow: TextOverflow.ellipsis,
+      maxLines: maxLines,
+      overflow: maxLines == null ? null : TextOverflow.ellipsis,
       style: Theme.of(context).textTheme.bodySmall?.copyWith(
         color: emphasized ? colors.error : colors.onSurfaceVariant,
       ),

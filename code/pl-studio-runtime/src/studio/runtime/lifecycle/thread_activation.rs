@@ -9,6 +9,17 @@ impl StudioRuntime {
         &self,
         id: &str,
     ) -> Result<pl_core::thread::ThreadHandle> {
+        let record = self.read_protocol_thread(id).await?;
+        self.store.ensure_agent_execution_allowed(id).await?;
+        self.check_thread_read_access(&record)?;
+        let live = self
+            .threads
+            .observed_thread(id)
+            .map(|thread| thread.snapshot());
+        self.verify_thread_execution_preparation(&record, live.as_ref())
+            .await?;
+        self.check_thread_execution_access(&record)?;
+        self.store.ensure_agent_execution_allowed(id).await?;
         let _activation_pin = self.pin_thread(id);
         if let Some(thread) = self.threads.thread(id) {
             self.residency.touch(id).await;
@@ -29,6 +40,13 @@ impl StudioRuntime {
                 break;
             }
             let record = self.read_owned_thread(&cursor).await?;
+            self.store.ensure_agent_execution_allowed(&cursor).await?;
+            self.verify_thread_execution_preparation(
+                &pl_protocol::Thread::from(record.clone()),
+                None,
+            )
+            .await?;
+            self.check_thread_execution_access(&pl_protocol::Thread::from(record.clone()))?;
             anyhow::ensure!(
                 record.visibility == crate::studio::ThreadVisibility::Active,
                 "archived Thread cannot be activated for execution"
@@ -102,33 +120,15 @@ impl StudioRuntime {
     async fn bind_activated_workspace(&self, thread_id: &str) -> Result<()> {
         use crate::studio::agent_host::worktree_lease::WorktreeLeaseState;
         if let Some(mut lease) = self.agent_facility.worktrees.get(thread_id) {
-            let verified = async {
-                anyhow::ensure!(
-                    !matches!(
-                        lease.state,
-                        WorktreeLeaseState::Cleaned | WorktreeLeaseState::CleanupRequested
-                    ),
-                    "the saved workspace is cleaned or cleanup is in progress"
-                );
-                lease.validate_identity()?;
-                let manager = crate::studio::agent_host::workspace_preparation::manager_from_lease(
-                    &self.ssh_manager,
-                    &lease,
-                )?;
-                manager
-                    .preview(&crate::agent::worktree::WorktreeHandle {
-                        path: std::path::PathBuf::from(&lease.path),
-                        branch: lease.branch.clone(),
-                        base_commit: lease.base_commit.clone(),
-                    })
-                    .await?;
-                Ok::<_, anyhow::Error>(())
-            }
-            .await;
-            if let Err(error) = verified {
-                self.publish_worktree_recovery(None, &lease).await;
-                return Err(error);
-            }
+            // The factory verified this cold binding before publication. Hot owner accesses
+            // reuse it; only lease promotion and Recovery projection remain here.
+            anyhow::ensure!(
+                !matches!(
+                    lease.state,
+                    WorktreeLeaseState::Cleaned | WorktreeLeaseState::CleanupRequested
+                ),
+                "the published workspace is cleaned or cleanup is in progress"
+            );
             if matches!(
                 lease.state,
                 WorktreeLeaseState::Prepared | WorktreeLeaseState::Preserved

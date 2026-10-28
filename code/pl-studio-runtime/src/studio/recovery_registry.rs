@@ -72,7 +72,122 @@ impl State {
 pub struct StudioRecoveryRegistry {
     inner: Arc<Mutex<State>>,
 }
+
+enum ThreadAccess {
+    Read,
+    Execute,
+}
+
 impl StudioRecoveryRegistry {
+    pub(crate) fn ensure_thread_read_access(
+        &self,
+        thread: &pl_protocol::Thread,
+    ) -> anyhow::Result<()> {
+        self.ensure_thread_access(thread, ThreadAccess::Read)
+    }
+
+    pub(crate) fn ensure_thread_execution_access(
+        &self,
+        thread: &pl_protocol::Thread,
+    ) -> anyhow::Result<()> {
+        self.ensure_thread_access(thread, ThreadAccess::Execute)
+    }
+
+    fn ensure_thread_access(
+        &self,
+        thread: &pl_protocol::Thread,
+        access: ThreadAccess,
+    ) -> anyhow::Result<()> {
+        use crate::{StudioRecoveryImpact as Impact, StudioRecoveryIssueScope as Scope};
+        let issues = self
+            .snapshot()
+            .into_iter()
+            .filter(|issue| {
+                let applies = match issue.scope {
+                    Scope::Application => true,
+                    Scope::Project => false,
+                    Scope::Thread => {
+                        issue.thread_id.as_deref() == Some(thread.id.as_str())
+                            && (issue.project_id.is_none()
+                                || thread.project_id.is_empty()
+                                || issue.project_id.as_deref() == Some(thread.project_id.as_str()))
+                    }
+                };
+                applies
+                    && match issue.impact {
+                        Impact::Advisory => false,
+                        Impact::ExecutionBlocked => matches!(access, ThreadAccess::Execute),
+                        Impact::AccessBlocked => true,
+                    }
+            })
+            .collect::<Vec<_>>();
+        if issues.is_empty() {
+            return Ok(());
+        }
+        Err(pl_protocol::studio::StudioError::new(
+            pl_protocol::studio::StudioErrorCode::Unavailable,
+            match access {
+                ThreadAccess::Execute => "Thread execution is blocked by recovery",
+                ThreadAccess::Read => "Thread access is blocked by recovery",
+            },
+            true,
+        )
+        .with_details(serde_json::to_value(issues)?)
+        .into())
+    }
+
+    pub(crate) fn ensure_project_execution_access(&self, project_id: &str) -> anyhow::Result<()> {
+        use crate::{StudioRecoveryImpact as Impact, StudioRecoveryIssueScope as Scope};
+        let issues = self
+            .snapshot()
+            .into_iter()
+            .filter(|issue| {
+                (issue.scope == Scope::Application
+                    || (issue.scope == Scope::Project
+                        && issue.project_id.as_deref() == Some(project_id)))
+                    && issue.impact != Impact::Advisory
+            })
+            .collect::<Vec<_>>();
+        if issues.is_empty() {
+            return Ok(());
+        }
+        Err(pl_protocol::studio::StudioError::new(
+            pl_protocol::studio::StudioErrorCode::Unavailable,
+            "Project execution preparation is blocked by recovery",
+            true,
+        )
+        .with_details(serde_json::json!({"projectId": project_id, "issues": issues}))
+        .into())
+    }
+
+    pub(crate) fn apply_execution_workspace_check(
+        &self,
+        thread: &pl_protocol::Thread,
+        error: Option<&anyhow::Error>,
+    ) -> ObservedResource<Vec<StudioRecoveryIssue>> {
+        let id = format!("execution-workspace:{}", thread.id);
+        let issue = error.map(|error| Self::execution_workspace_issue(thread, error));
+        self.update_if_current(&id, issue, || true, |_| {});
+        self.state()
+    }
+
+    pub(crate) fn execution_workspace_issue(
+        thread: &pl_protocol::Thread,
+        error: &anyhow::Error,
+    ) -> StudioRecoveryIssue {
+        StudioRecoveryIssue {
+            id: format!("execution-workspace:{}", thread.id),
+            scope: crate::StudioRecoveryIssueScope::Thread,
+            category: crate::StudioRecoveryIssueCategory::Repository,
+            impact: crate::StudioRecoveryImpact::ExecutionBlocked,
+            action: crate::StudioRecoveryIssueAction::Retry,
+            project_id: Some(thread.project_id.clone()),
+            thread_id: Some(thread.id.clone()),
+            message: format!("Thread execution workspace is unavailable: {error:#}"),
+            worktree: None,
+        }
+    }
+
     pub fn new() -> Self {
         Self {
             inner: Arc::new(Mutex::new(State {

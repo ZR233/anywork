@@ -1342,6 +1342,8 @@
   "settingsWorktreeInspectionMissing": "工作树缺失",
   "settingsWorktreeInspectionIdentityMismatch": "工作树身份不匹配",
   "settingsWorktreeInspectionUnavailable": "暂时无法检查",
+  "settingsWorktreeDetached": "已核实：detached HEAD（无当前分支）",
+  "settingsWorktreeBranchUnknown": "当前分支未知",
   "settingsWorktreeRetry": "重试检查",
   "startupPreparing": "正在准备应用…",
   "startupStorage": "正在打开本地数据…",
@@ -2186,5 +2188,14 @@
   "childInteractionDecideFailed": "决定未被接受：{message}",
   "childInteractionLoadFailed": "无法读取子任务待决交互：{message}",
   "childInteractionRetry": "重新读取",
-  "childInteractionDecisionAccepted": "决定已受理，等待会话确认。"
+  "childInteractionDecisionAccepted": "决定已受理，等待会话确认。",
+  "recoveryDiagnostic": "恢复问题 {id}\n{owner} · {impact}\n{detail}\n可用恢复操作：{actions}",
+  "recoveryOwnerApplication": "应用",
+  "recoveryOwnerProject": "项目 {projectId}",
+  "recoveryOwnerThread": "会话 {threadId} · 项目 {projectId}",
+  "recoveryUnknownOwner": "未记录",
+  "recoveryImpactAdvisory": "需要关注，不影响访问与执行",
+  "recoveryImpactExecutionBlocked": "执行受阻，仍可读取安全的历史",
+  "recoveryImpactAccessBlocked": "访问与执行受阻",
+  "recoveryNoAvailableActions": "当前无可用操作"
 }

@@ -11,7 +11,8 @@ pub use backend::{
     WorktreeError, WorktreeStatus,
 };
 pub use manager::{
-    WorktreeCreateSpec, WorktreeHandle, WorktreeManager, WorktreeOwnership, is_pure_branch,
+    WorktreeCleanupPolicy, WorktreeCreateSpec, WorktreeHandle, WorktreeManager, WorktreeOwnership,
+    WorktreeRetirementRequest,
 };
-pub use pl_tool::remote::{RemoteClientError, RemoteExecutionError};
+pub use pl_tool::remote::{RemoteClientError, RemoteDownloadError, RemoteExecutionError};
 pub use remote::RemoteWorktreeBackend;

@@ -10,7 +10,7 @@ void main() {
     final fixture = ConversationFixture();
     final feed = await fixture.open();
     final scope = fixture.session().content.openScope(generation: 1)!;
-    for (final limit in [0, 101]) {
+    for (final limit in [0, 101, -1]) {
       await expectLater(
         scope.page(limit: limit),
         throwsA(isA<StudioFailure>()),
@@ -127,9 +127,9 @@ void main() {
         final pending = scope.page();
         final failed = expectLater(
           pending,
-          throwsA(
-            synchronousThrow ? same(failure) : isA<StaleConversationScope>(),
-          ),
+          // 回调先退役 scope 再抛错：迟到失败与迟到成功一样不进入新代次，
+          // 统一转 Stale；活跃 scope 的原始 typed 错误另由下方测试覆盖。
+          throwsA(isA<StaleConversationScope>()),
         );
         expect(
           admittedDuringCallback,
@@ -331,6 +331,147 @@ void main() {
     await expectLater(scope.page(), throwsA(isA<StaleConversationScope>()));
     expect(fixture.transport.opens, hasLength(1));
     await fixture.close();
+  });
+
+  test('close 失败时连接许可保持到显式重试', () async {
+    final fixture = ConversationFixture();
+    final feed = await fixture.open();
+    feed.closeFailure = StateError('native close failed');
+    final report = await fixture.close();
+    expect(report.complete, isFalse);
+    feed.closeFailure = null;
+    expect((await fixture.client.retryCleanup()).complete, isTrue);
+  });
+
+  test('native close 已返回但页查询仍在途时不提前 clean', () async {
+    final budget = ResourceBudget();
+    final fixture = ConversationFixture(budget: budget);
+    final feed = await fixture.open();
+    final scope = fixture.session().content.openScope(generation: 1)!;
+    final reply = Completer<ConversationPage>();
+    feed.onPage = (_, _) => reply.future;
+    final pending = scope.page();
+    expect(budget.used(ResourceKind.pendingOperation), 1);
+
+    final report = await fixture.close(
+      deadline: DateTime.now().add(const Duration(milliseconds: 40)),
+    );
+    // 连接自身的 close 已经返回（不是靠 native close 挂起来“等”）。
+    expect(feed.closeCalls, 1);
+    expect(report.complete, isFalse, reason: '真实受理的页查询仍持有许可');
+    expect(budget.used(ResourceKind.pendingOperation), 1);
+    expect(budget.used(ResourceKind.chatHandle), 1);
+
+    reply.complete(
+      const ConversationPage(items: [], before: null, hasOlder: false),
+    );
+    await expectLater(pending, throwsA(isA<StaleConversationScope>()));
+    // 查询真实收束后，清理才能归还许可并移除观察。
+    expect((await fixture.client.retryCleanup()).complete, isTrue);
+    expect(budget.used(ResourceKind.pendingOperation), 0);
+    expect(budget.used(ResourceKind.chatHandle), 0);
+  });
+
+  for (final detail in [false, true]) {
+    for (final lateFailure in [false, true]) {
+      test(
+        'synchronous ${detail ? 'detail' : 'page'} close keeps the admitted history query joined'
+        '${lateFailure ? ' (late failure)' : ''}',
+        () async {
+          final budget = ResourceBudget();
+          final fixture = ConversationFixture(budget: budget);
+          final feed = await fixture.open();
+          final scope = fixture.session().content.openScope(generation: 1)!;
+          final pageReply = Completer<ConversationPage>();
+          final detailReply = Completer<ConversationDetailChunk>();
+          Future<CloseReport>? closing;
+          feed.onQuery = () {
+            closing = scope.close(deadline: DateTime.now());
+          };
+          if (detail) {
+            feed.onDetail = (_, _) => detailReply.future;
+          } else {
+            feed.onPage = (_, _) => pageReply.future;
+          }
+          final pending = detail
+              ? scope.readDetail(
+                  itemId: 'item',
+                  query: const ConversationDetailQuery(
+                    field: ThreadTextFieldView(),
+                    revision: 1,
+                  ),
+                )
+              : scope.page();
+          final rejected = expectLater(
+            pending,
+            throwsA(isA<StaleConversationScope>()),
+          );
+          expect((await closing!).complete, isFalse);
+          expect(budget.used(ResourceKind.pendingOperation), 1);
+          if (detail) {
+            if (lateFailure) {
+              detailReply.completeError(StateError('late native failure'));
+            } else {
+              detailReply.complete(
+                const ConversationDetailChunk(
+                  itemId: 'item',
+                  field: ThreadTextFieldView(),
+                  revision: 1,
+                  text: 'original history',
+                  totalBytes: 16,
+                  continuation: null,
+                ),
+              );
+            }
+          } else {
+            if (lateFailure) {
+              pageReply.completeError(StateError('late native failure'));
+            } else {
+              pageReply.complete(
+                ConversationPage(
+                  items: [timelineItem(1)],
+                  before: null,
+                  hasOlder: false,
+                ),
+              );
+            }
+          }
+          await rejected;
+          expect((await scope.close()).complete, isTrue);
+          expect(budget.used(ResourceKind.pendingOperation), 0);
+          await fixture.close();
+        },
+      );
+    }
+  }
+
+  test('scope 真实 join 干净后解除连接归属，不积压到整条连接关闭', () async {
+    final budget = ResourceBudget();
+    final fixture = ConversationFixture(budget: budget);
+    final feed = await fixture.open();
+
+    // 同连接多代次：每个 scope 的查询都真实收束并归还许可。
+    for (var round = 0; round < 3; round++) {
+      final scope = fixture.session().content.openScope(generation: round + 1)!;
+      final reply = Completer<ConversationPage>();
+      feed.onPage = (_, _) => reply.future;
+      final page = scope.page();
+      reply.complete(
+        const ConversationPage(items: [], before: null, hasOlder: false),
+      );
+      await expectLater(page, completes);
+      expect((await scope.close()).complete, isTrue);
+      expect(budget.used(ResourceKind.pendingOperation), 0);
+    }
+    // 干净 join 之后既没有未解决项，也不影响后续关闭。
+    expect(
+      (await fixture.session().content.joinRetired(
+        deadline: DateTime.now().add(const Duration(milliseconds: 20)),
+      )).unresolved,
+      isEmpty,
+    );
+    expect((await fixture.close()).complete, isTrue);
+    expect(budget.used(ResourceKind.chatHandle), 0);
   });
 
   test('qualified pages cannot skip query-before identities but may return them authoritatively', () async {

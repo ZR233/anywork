@@ -38,14 +38,18 @@ class StartPageComposerViewModel extends _$StartPageComposerViewModel {
         .firstOrNull;
     final recovery = ref.watch(recoveryStoreProvider).value?.values ?? const [];
     final projectId = project?.id;
-    final blocked =
-        projectId != null &&
-        recovery.any(
-          (issue) =>
-              issue.blocksAccess &&
-              issue.scope == RecoveryIssueScope.project &&
-              issue.projectId == projectId,
-        );
+    // 新建目标没有 thread 身份：只按 Application 与目标 project 的 issue 判定。
+    // 访问受阻连编辑入口都撤掉；执行阻塞保留编辑、只禁提交。
+    final recoveryIssue = projectId == null
+        ? null
+        : recoveryIssueBlockingExecution(recovery, projectId: projectId);
+    final accessIssue = projectId == null
+        ? null
+        : recoveryIssueBlockingAccess(recovery, projectId: projectId);
+    final canEdit =
+        project != null &&
+        selection.selectedThreadId == null &&
+        accessIssue == null;
     final canonical = settings.canonical;
     final catalog = ref.watch(modeCatalogStoreProvider).value;
     final attachments = ref.watch(attachmentDraftsProvider);
@@ -54,8 +58,9 @@ class StartPageComposerViewModel extends _$StartPageComposerViewModel {
       accounts: accounts,
       modeModelRoutes: canonical?.modeModelRoutes ?? const [],
       settingsLoaded: settings.configLoaded,
-      canSubmit:
-          project != null && selection.selectedThreadId == null && !blocked,
+      canEdit: canEdit,
+      canSubmit: canEdit && recoveryIssue == null,
+      recoveryIssue: recoveryIssue,
       commands: settings.commands,
       diagnostics: attachments.forProject(projectId),
       modeCatalog: catalog,
@@ -181,6 +186,14 @@ class ComposerDockViewModel extends _$ComposerDockViewModel {
       directory: threads,
     );
     final projectId = thread?.projectId;
+    final selection = ref.watch(selectionStoreProvider);
+    // 已有线程目标：Application 与本 thread 的 issue 才约束它；project issue 不沿
+    // 祖先挡健康线程。目录缺项目身份时回退当前选择，不创建冷 owner。
+    final recoveryBlocker = recoveryIssueBlockingExecution(
+      recovery,
+      projectId: projectId ?? selection.selectedProjectId,
+      threadId: threadId,
+    );
     final routeCommand = settings.commands['thread-route:$threadId'];
     final canonicalRoute = session.runtime?.modelRoute;
     final client = ref.read(anyworkClientProvider);
@@ -224,12 +237,12 @@ class ComposerDockViewModel extends _$ComposerDockViewModel {
           : null,
       saveBlocked:
           storage != null && (storage.hasFault || storage.resumeRequired),
-      workspaceBlocked: recovery.any(
-        (issue) =>
-            issue.blocksAccess &&
-            issue.scope == RecoveryIssueScope.thread &&
-            issue.threadId == threadId,
-      ),
+      recoveryIssue: recoveryBlocker,
+      // 目录 thread 与已加载 canonical workspace.thread 任一 closing/closed
+      // 都不显示执行入口；这是纯投影，事实源仍是两个 canonical 观察。
+      executionClosed:
+          (thread?.status.blocksNewExecution ?? false) ||
+          (session.workspace?.thread.status.blocksNewExecution ?? false),
       childInteractions: visibleChildInteractions.hostThreadId == threadId
           ? visibleChildInteractions.visibleItems
           : const [],

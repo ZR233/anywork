@@ -13,6 +13,8 @@ use pl_tool::workspace::ToolWorkspace;
 
 #[derive(Clone)]
 pub(super) struct ToolBinding {
+    pub assignment: Option<pl_protocol::AgentWorkspaceAssignmentSnapshot>,
+    pub workspace_usage: crate::studio::agent_host::worktree_lease::WorkspaceUsageLease,
     pub lifetime: std::sync::Arc<ThreadToolLifetime>,
     pub incarnation: std::sync::Arc<()>,
     pub target_invalidated: bool,
@@ -32,7 +34,7 @@ pub(super) struct ToolBinding {
 #[derive(Default)]
 pub(super) struct ThreadToolLifetime {
     gate: std::sync::Arc<tokio::sync::Mutex<()>>,
-    cancellation: tokio_util::sync::CancellationToken,
+    pub(super) cancellation: tokio_util::sync::CancellationToken,
 }
 
 /// Candidate metadata is published only after the Thread accepts its registrations.
@@ -42,6 +44,24 @@ pub(in crate::studio) struct RefreshedToolBinding {
 }
 
 impl StudioThreadFactory {
+    /// The execution workspace is owned by the live tool binding, not the product directory row.
+    pub(super) fn actual_tool_workspace(
+        &self,
+        id: &str,
+    ) -> Result<(ToolWorkspace, ProjectRecord), ThreadAssemblyError> {
+        let bindings = self
+            .bindings
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let binding = bindings.get(id).ok_or_else(|| {
+            ThreadAssemblyError::Identity(format!("caller {id} has no actual execution workspace"))
+        })?;
+        if binding.target_invalidated || binding.lifetime.cancellation.is_cancelled() {
+            return Err(ThreadAssemblyError::Closed);
+        }
+        Ok((binding.workspace.clone(), binding.project.clone()))
+    }
+
     pub(in crate::studio) fn tool_operation(
         &self,
         id: &str,
@@ -193,6 +213,11 @@ impl StudioThreadFactory {
             .remove(id)
         {
             binding.lifetime.cancellation.cancel();
+            if self.services.worktrees.get(id).is_none() {
+                self.services
+                    .worktrees
+                    .release_stopped_runtime_resources(id);
+            }
         }
     }
     pub(super) fn forget_tool_binding_if_current(
@@ -210,6 +235,11 @@ impl StudioThreadFactory {
             && let Some(binding) = bindings.remove(id)
         {
             binding.lifetime.cancellation.cancel();
+            if self.services.worktrees.get(id).is_none() {
+                self.services
+                    .worktrees
+                    .release_stopped_runtime_resources(id);
+            }
         }
     }
 
@@ -283,8 +313,23 @@ impl StudioThreadFactory {
                     "project target disappeared; reactivate this Thread".into(),
                 )
             })?;
-        self.bind_bot_project(id, &thread.root_thread_id, &mut project)
+        self.verify_execution_workspace(
+            &thread.clone().into(),
+            Some(snapshot),
+            super::ExecutionWorkspaceCheck::Execute,
+        )
+        .await
+        .map_err(Self::workspace_usage_error)?;
+        self.ensure_bot_execution_workspace(&thread.clone().into(), Some(snapshot))
             .await?;
+        self.bind_bot_project(
+            id,
+            &thread.root_thread_id,
+            &mut project,
+            &binding.workspace_usage,
+            super::root_resources::BotWorkspacePreparation::Existing,
+        )
+        .await?;
         ensure_same_target(&binding.project, &project)?;
         if let Some(previous) = &binding.ssh_profile {
             let current = self
@@ -302,15 +347,7 @@ impl StudioThreadFactory {
             }
         }
         let child = thread.parent_thread_id.is_some();
-        let assignment = snapshot
-            .extensions
-            .get("studio.workspace")
-            .map(|saved| {
-                serde_json::from_str::<pl_protocol::AgentWorkspaceAssignmentSnapshot>(
-                    saved.payload.content(),
-                )
-            })
-            .transpose()
+        let assignment = crate::studio::workspace_receipt::from_snapshot(snapshot)
             .map_err(|error| resource_error("decode workspace binding", error))?;
         let config = self.services.config_runtime.read()?.config;
         let (_, selector) = crate::studio::model_route::route_record(snapshot, child)
@@ -391,6 +428,8 @@ impl StudioThreadFactory {
         let mut prepared = self
             .prepare_thread_tools_with(
                 ThreadToolAssembly {
+                    assignment: binding.assignment.as_ref(),
+                    workspace_usage: binding.workspace_usage.clone(),
                     thread_id: id,
                     cancellation: &cancellation,
                     config: &config,

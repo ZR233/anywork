@@ -821,6 +821,55 @@ void main() {
   });
 
   test(
+    'Driver new-thread projection retains the raw composer failure object',
+    () {
+      final transport = _UnusedTransport();
+      final graph = AppGraph(
+        statisticsFeed: const TestStatisticsFeedPort(),
+        transport: transport,
+        clientId: 'driver-failure-projection',
+      );
+      addTearDown(() async {
+        expect(
+          (await graph.close(
+            deadline: DateTime.now().add(const Duration(seconds: 5)),
+          )).complete,
+          isTrue,
+        );
+      });
+      final client = graph.client;
+      const project = StudioProject(
+        id: 'project',
+        name: 'Project',
+        path: '/project',
+      );
+      client.project.applyProjectDirectory(
+        ProjectDirectoryState(revision: 1, values: [project]),
+      );
+      client.selection.selectProject(project.id);
+      const failure = StudioFailure(
+        code: StudioFailureCode.permissionDenied,
+        message: 'Typed recovery failure from attachment admission',
+        retryable: false,
+        correlationId: 'driver-recovery-failure',
+      );
+      client.attachments.reportNewThreadFailure(project.id, failure);
+
+      final facts = queryStudioDriverFacts(
+        client,
+        timeline: graph.timeline,
+        accountsRepository: graph.accounts,
+        modelsRepository: graph.models,
+        usageRepository: graph.accountUsage,
+        acpService: graph.acp,
+      );
+      expect(facts.newThreadComposer.failure, same(failure));
+      expect(facts.newThreadComposer.error, failure.toString());
+      expect(transport.calls, 0);
+    },
+  );
+
+  test(
     'Driver facts map typed acp install failures without dynamic dispatch',
     () async {
       final transport = _UnusedTransport();

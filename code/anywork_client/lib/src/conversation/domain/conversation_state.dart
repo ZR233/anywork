@@ -36,6 +36,7 @@ class ThreadSessionState {
       workspace?.interactions ?? const [];
   ThreadActivityView? get activity => workspace?.activity;
   ThreadStorageStateView? get storage => workspace?.storage;
+  StudioTurnView? get lastTurn => workspace?.lastTurn;
 
   ThreadStreamWatermark get watermark => ThreadStreamWatermark(
     hasSnapshot: hasSnapshot,

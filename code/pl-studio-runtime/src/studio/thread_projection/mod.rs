@@ -15,9 +15,13 @@ mod effect;
 pub(in crate::studio) use effect::project_effect_items;
 mod live;
 pub(in crate::studio) use live::{
-    LiveEvent, LiveProjection, PreparedEffect, TurnEvent, TurnResult, retained_bytes,
-    seed_interaction_targets, seed_repaired_targets,
+    LiveEvent, LiveProjection, PreparedEffect, TurnEvent, TurnResult, seed_interaction_targets,
+    seed_repaired_targets,
 };
+// The free item estimate is only read outside its own module by the storage
+// fault test that asserts the budget covers real bodies, so it stays test-only.
+#[cfg(test)]
+pub(in crate::studio) use live::retained_bytes;
 // The retained-window bound is only read outside its own module by the storage fault test that has
 // to commit more parts than the window holds, so it stays a test-only re-export.
 #[cfg(test)]

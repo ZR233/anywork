@@ -317,7 +317,7 @@ final class SidebarViewProvider
   }
 }
 
-String _$sidebarViewHash() => r'c9fb52d34eb9fad227a5950bcbdac09f0efd6f80';
+String _$sidebarViewHash() => r'3085cd6b54e6019e6b0c123ee5006eb1adb16e23';
 
 @ProviderFor(headerView)
 final headerViewProvider = HeaderViewProvider._();

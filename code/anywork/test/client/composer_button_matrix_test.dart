@@ -1460,6 +1460,210 @@ void main() {
     await _close(tester, composer);
   });
 
+  testWidgets('root Recovery诊断完整滚动展示且不遮挡后续异类错误', (tester) async {
+    final composer = await _composer(tester);
+    final projectId = composer.workspace.thread.projectId;
+    final current = composer.graph.client.recovery.state.value;
+    final issue = StudioRecoveryIssue(
+      id: 'root-recovery-diagnostic',
+      scope: RecoveryIssueScope.thread,
+      category: RecoveryIssueCategory.repository,
+      impact: RecoveryIssueImpact.executionBlocked,
+      availableActions: const [RecoveryIssueAction.retry],
+      projectId: projectId,
+      threadId: _threadId,
+      detail: List.filled(12, 'The root worktree needs attention').join(' '),
+    );
+    composer.graph.client.recovery.apply(
+      RecoveryStateSnapshot(
+        revision: (current?.revision ?? 0) + 1,
+        values: [issue],
+      ),
+    );
+    final owner = composer.graph.client.drafts.composer(_threadId);
+    owner.reportFailure(issue.blockedFailure());
+    await _pump(tester, composer);
+
+    final blockerFinder = find.byKey(StudioDriverKeys.composerBlocker);
+    final blocker = tester.widget<Text>(blockerFinder);
+    expect(blocker.data, contains(issue.id));
+    expect(blocker.data, contains(issue.detail));
+    expect(blocker.data, contains('Available recovery actions: Retry'));
+    expect(blocker.maxLines, isNull);
+    expect(blocker.overflow, isNull);
+    expect(find.byKey(StudioDriverKeys.composerError), findsNothing);
+    final reasons = find.byKey(const ValueKey('composer-reasons'));
+    expect(tester.getSize(reasons).height, lessThanOrEqualTo(84));
+    final scrollable = find.descendant(
+      of: reasons,
+      matching: find.byType(Scrollable),
+    );
+    final scrollPosition = tester.state<ScrollableState>(scrollable).position;
+    expect(scrollPosition.maxScrollExtent, greaterThan(0));
+    await tester.drag(scrollable, const Offset(0, -240));
+    await tester.pumpAndSettle();
+    expect(scrollPosition.pixels, greaterThan(0));
+
+    owner.reportFailure(StateError('Attachment preview failed after recovery'));
+    await tester.pump();
+    expect(find.byKey(StudioDriverKeys.composerError), findsOneWidget);
+    expect(
+      tester.widget<Text>(find.byKey(StudioDriverKeys.composerError)).data,
+      contains('Attachment preview failed after recovery'),
+      reason: 'An unrelated new diagnostic remains visible beside the blocker',
+    );
+    owner.reportFailure(
+      const StudioFailure(
+        code: StudioFailureCode.permissionDenied,
+        message: 'Unstructured permission diagnostic',
+        retryable: false,
+        correlationId: 'unstructured-permission',
+      ),
+    );
+    await tester.pump();
+    expect(find.byKey(StudioDriverKeys.composerError), findsOneWidget);
+    expect(
+      tester.widget<Text>(find.byKey(StudioDriverKeys.composerError)).data,
+      contains('Unstructured permission diagnostic'),
+      reason: 'An untyped permission failure is not converted to Recovery UI',
+    );
+    owner.reportFailure(
+      const StudioFailure(
+        code: StudioFailureCode.permissionDenied,
+        message: 'original diagnostic must remain',
+        retryable: false,
+        correlationId: 'incomplete-recovery-owner',
+        detailsJson:
+            '{"kind":"recovery","issueId":"incomplete","scope":"thread",'
+            '"category":"repository","impact":"executionBlocked",'
+            '"detail":"partial diagnostic","availableActions":[]}',
+      ),
+    );
+    await tester.pump();
+    expect(find.byKey(StudioDriverKeys.composerError), findsOneWidget);
+    expect(
+      tester.widget<Text>(find.byKey(StudioDriverKeys.composerError)).data,
+      contains('original diagnostic must remain'),
+      reason: 'Incomplete owner details do not replace the original message',
+    );
+    await _close(tester, composer);
+  });
+
+  testWidgets('同一 Recovery 事实跨来源只渲一次，独特诊断与普通文案不去重', (tester) async {
+    final composer = await _composer(tester);
+    final projectId = composer.workspace.thread.projectId;
+    final issue = StudioRecoveryIssue(
+      id: 'shared-recovery-diagnostic',
+      scope: RecoveryIssueScope.thread,
+      category: RecoveryIssueCategory.repository,
+      impact: RecoveryIssueImpact.executionBlocked,
+      availableActions: const [RecoveryIssueAction.retry],
+      projectId: projectId,
+      threadId: _threadId,
+      detail: 'The shared worktree diagnostic',
+    );
+    final distinctIssue = StudioRecoveryIssue(
+      id: 'shared-recovery-diagnostic',
+      scope: RecoveryIssueScope.thread,
+      category: RecoveryIssueCategory.storage,
+      impact: RecoveryIssueImpact.executionBlocked,
+      availableActions: const [],
+      projectId: projectId,
+      threadId: _threadId,
+      detail: 'A distinct storage diagnostic sharing the id',
+    );
+    const neutralLabel =
+        'The last action could not be confirmed. '
+        'Check the session state before retrying.';
+
+    // 普通失败先各来一条：即使文案完全相同也不做字符串去重。
+    // 顺序注意：先 stop（不依赖 continuation），再 continue；把 continuation
+    // 置空的 publish 会让 continue 失败行失去归属。
+    await composer.publish(execution: _running);
+    await tester.pump();
+    composer.transport.stopError = const StudioFailure(
+      code: StudioFailureCode.busy,
+      message: 'plain duplicate',
+      retryable: true,
+      correlationId: 'plain-stop',
+    );
+    await tester.tap(find.byKey(StudioDriverKeys.composerStop));
+    await tester.pump();
+    await tester.pump();
+    await composer.publish(execution: null, continuation: _continuation);
+    await tester.pump();
+    composer.transport.continueError = const StudioFailure(
+      code: StudioFailureCode.busy,
+      message: 'plain duplicate',
+      retryable: true,
+      correlationId: 'plain-continue',
+    );
+    await tester.tap(find.byKey(StudioDriverKeys.composerContinue));
+    await tester.pump();
+    await tester.pump();
+    expect(
+      find.text(neutralLabel),
+      findsNWidgets(2),
+      reason: '普通失败同文案各自保留，不触发 Recovery 去重',
+    );
+
+    // continue 失败、canonical 阻塞与草稿失败随后携带同一完整 issue。
+    composer.transport.continueError = issue.blockedFailure();
+    await composer.publish(execution: null, continuation: _continuation);
+    await tester.pump();
+    await tester.tap(find.byKey(StudioDriverKeys.composerContinue));
+    await tester.pump();
+    await tester.pump();
+    final owner = composer.graph.client.drafts.composer(_threadId);
+    owner.reportFailure(issue.blockedFailure());
+    final current = composer.graph.client.recovery.state.value;
+    composer.graph.client.recovery.apply(
+      RecoveryStateSnapshot(
+        revision: (current?.revision ?? 0) + 1,
+        values: [issue],
+      ),
+    );
+    await tester.pump();
+    await tester.pump();
+    expect(
+      find.textContaining('shared-recovery-diagnostic'),
+      findsOneWidget,
+      reason: 'canonical/continue/draft 的同一 Recovery 事实只渲一次',
+    );
+    expect(
+      find.byKey(StudioDriverKeys.composerError),
+      findsNothing,
+      reason: 'Recovery 拒绝的草稿失败不重复渲染原始 SDK 文本',
+    );
+
+    // stop 失败也换成同一 issue：仍只有一行。
+    await composer.publish(execution: _running, continuation: null);
+    await tester.pump();
+    composer.transport.stopError = issue.blockedFailure();
+    await tester.tap(find.byKey(StudioDriverKeys.composerStop));
+    await tester.pump();
+    await tester.pump();
+    expect(find.textContaining('shared-recovery-diagnostic'), findsOneWidget);
+
+    // 同 ID 不同 category/detail/actions：独特诊断不被 id 去重。
+    composer.graph.client.recovery.apply(
+      RecoveryStateSnapshot(
+        revision: (current?.revision ?? 0) + 2,
+        values: [distinctIssue],
+      ),
+    );
+    await tester.pump();
+    await tester.pump();
+    expect(
+      find.textContaining('shared-recovery-diagnostic'),
+      findsNWidgets(2),
+      reason: '同 ID 但完整语义不同的诊断都保留',
+    );
+    expect(find.textContaining(issue.detail), findsOneWidget);
+    expect(find.textContaining(distinctIssue.detail), findsOneWidget);
+    await _close(tester, composer);
+  });
+
   testWidgets('受限尺寸下三类原因同时存在不溢出且可读', (tester) async {
     tester.view.physicalSize = const Size(320, 480);
     tester.view.devicePixelRatio = 1;

@@ -15,7 +15,13 @@ abstract class StartPageComposerViewState with _$StartPageComposerViewState {
     required List<ModelSelectionAccount> accounts,
     required List<ModeModelRouteView> modeModelRoutes,
     required bool settingsLoaded,
+
+    /// Recovery 已判为访问受阻时不允许编辑；执行阻塞只禁提交。
+    required bool canEdit,
     required bool canSubmit,
+
+    /// 同目标规则选出的最高优先级执行阻塞 issue；`null` 表示没有。
+    required StudioRecoveryIssue? recoveryIssue,
     required Map<String, CommandStatus> commands,
     required List<ComposerTargetDiagnostic> diagnostics,
     required ThreadModeCatalogView? modeCatalog,
@@ -64,7 +70,13 @@ abstract class ComposerDockViewState with _$ComposerDockViewState {
     required CommandStatus? continueCommand,
     int? queuedStopStartedAtMs,
     required bool saveBlocked,
-    required bool workspaceBlocked,
+
+    /// 同一 Client 目标规则选出的最高优先级执行恢复阻塞。
+    required StudioRecoveryIssue? recoveryIssue,
+
+    /// 目录 thread 或已加载 canonical workspace.thread 已 closing/closed：
+    /// 不显示执行入口，历史仍展示、草稿不清。
+    required bool executionClosed,
     required List<ChildInteractionSummary> childInteractions,
     required int childInteractionGeneration,
     required Map<String, String> childInteractionSources,
@@ -117,13 +129,18 @@ abstract class ComposerDockViewState with _$ComposerDockViewState {
             continueCommand?.target.label == continuation!.id
         ? continueCommand
         : null;
-    final reason = command?.error?.reason;
-    return command == null ? null : ComposerFailureBlocker(reason);
+    final error = command?.error;
+    return command == null
+        ? null
+        : ComposerFailureBlocker(
+            error?.reason,
+            recoveryIssue: recoveryIssueFromFailure(error),
+          );
   }
 
   ComposerBlocker? get canonicalBlocker {
     if (saveBlocked) return const ComposerStorageBlocker();
-    if (workspaceBlocked) return const ComposerWorkspaceBlocker();
+    if (recoveryIssue case final issue?) return ComposerRecoveryBlocker(issue);
     if (modelUnavailable) return const ComposerModelBlocker();
     return null;
   }

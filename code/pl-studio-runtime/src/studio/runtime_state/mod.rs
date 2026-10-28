@@ -49,14 +49,21 @@ pub enum StudioRecoveryIssueCategory {
     Storage,
 }
 
+/// Authoritative admission impact, independent of diagnostic category and display grouping.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum StudioRecoveryImpact {
+    Advisory,
+    ExecutionBlocked,
+    AccessBlocked,
+}
+
 /// UI 可执行的恢复动作。
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub enum StudioRecoveryIssueAction {
     None,
     Retry,
-    CleanupThread,
-    RemoveProject,
     CleanupWorktree,
 }
 
@@ -106,7 +113,7 @@ pub struct StudioWorktreeRecoveryPreview {
     pub state: String,
     pub repository_root: String,
     pub path: String,
-    pub branch: String,
+    pub branch: Option<String>,
     pub base_commit: String,
     pub head_commit: Option<String>,
     pub dirty: Option<bool>,
@@ -120,6 +127,7 @@ pub struct StudioRecoveryIssue {
     pub id: String,
     pub scope: StudioRecoveryIssueScope,
     pub category: StudioRecoveryIssueCategory,
+    pub impact: StudioRecoveryImpact,
     pub action: StudioRecoveryIssueAction,
     pub project_id: Option<String>,
     pub thread_id: Option<String>,

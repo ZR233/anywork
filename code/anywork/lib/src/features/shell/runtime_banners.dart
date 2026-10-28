@@ -123,7 +123,7 @@ class _ApplicationRecoveryBannerState
       message: [
         ...archived,
         ...otherIssues,
-      ].map((issue) => issue.detail).join('\n'),
+      ].map(context.recoveryIssueLabel).join('\n'),
       child: ColoredBox(
         color: colors.errorContainer,
         child: Padding(
@@ -139,12 +139,15 @@ class _ApplicationRecoveryBannerState
                   children: [
                     for (final issue in archived) ...[
                       Text(context.l10n.recoveryArchiveNotice),
-                      SelectableText(issue.detail),
+                      SelectableText(context.recoveryIssueLabel(issue)),
                     ],
-                    if (otherIssues.isNotEmpty)
+                    if (otherIssues.isNotEmpty) ...[
                       Text(
                         context.l10n.recoveryGlobalWarning(otherIssues.length),
                       ),
+                      for (final issue in otherIssues)
+                        SelectableText(context.recoveryIssueLabel(issue)),
+                    ],
                   ],
                 ),
               ),
@@ -154,6 +157,31 @@ class _ApplicationRecoveryBannerState
                   tooltip: context.l10n.recoveryArchiveDismiss,
                   onPressed: () => setState(() => _archiveDismissed = true),
                   icon: const Icon(Icons.close),
+                ),
+              if (widget.issues.any((issue) => issue.canRetry))
+                Consumer(
+                  builder: (context, ref, _) => TextButton.icon(
+                    key: const ValueKey('recovery-application-retry'),
+                    onPressed: () async {
+                      try {
+                        await ref
+                            .read(anyworkClientProvider)
+                            .directoryCommands
+                            .retryRecovery();
+                      } on Object catch (error) {
+                        if (!context.mounted) return;
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(
+                            content: Text(
+                              context.recoveryIssueFailureLabel(error),
+                            ),
+                          ),
+                        );
+                      }
+                    },
+                    icon: const Icon(Icons.refresh, size: 18),
+                    label: Text(context.l10n.runtimeFatalRetry),
+                  ),
                 ),
             ],
           ),

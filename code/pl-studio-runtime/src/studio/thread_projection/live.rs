@@ -26,11 +26,13 @@ use pl_core::{
     thread::{ThreadEffectBatch, ThreadSnapshot, TurnState},
 };
 use pl_protocol::{
-    InteractionRequest, SkillActivationCause, SkillActivationResourceBase, ThreadAgentItem,
-    ThreadAgentState, ThreadAttachment, ThreadContentLifecycle, ThreadInferenceItem,
-    ThreadInferenceState, ThreadItem, ThreadItemState, ThreadRawItem, ThreadSkillItem,
-    ThreadTextChannel, ThreadTextItem, ThreadThinkingItem, ThreadToolItem, ThreadToolOutput,
-    ThreadToolState, Turn, TurnPhase,
+    InteractionContent, InteractionContinuationMessage, InteractionPurpose, InteractionRequest,
+    SkillActivationCause, SkillActivationResourceBase, ThreadAgentItem, ThreadAgentState,
+    ThreadAttachment, ThreadContentLifecycle, ThreadInferenceItem, ThreadInferenceState,
+    ThreadItem, ThreadItemState, ThreadRawItem, ThreadSkillItem, ThreadTextChannel, ThreadTextItem,
+    ThreadThinkingItem, ThreadToolItem, ThreadToolOutput, ThreadToolState, ToolApprovalState, Turn,
+    TurnCancellationCause, TurnPhase, TurnRolloverOutcome, UserInputAnswer, UserInputState,
+    UserQuestion, UserQuestionOption,
 };
 
 use super::ProjectionError;
@@ -90,6 +92,39 @@ pub(in crate::studio) enum TurnEvent {
 pub(in crate::studio) enum LiveEvent {
     Turn { turn: Turn, event: TurnEvent },
     Interaction(Box<InteractionRequest>),
+}
+
+impl LiveEvent {
+    /// Conservative retained-memory estimate of this one status-feed event.
+    ///
+    /// The estimate covers the event's own shell (`size_of::<LiveEvent>()`, an interaction's `Box`
+    /// pointer included) plus the independently owned variable-length bodies it carries: a Turn's
+    /// identities and its state's diagnostics, an interaction's scope, purpose, questions,
+    /// accepted answers, approval request, continuation and lifecycle reasons. It follows the same
+    /// style as the free `retained_bytes` item estimate below: every body is walked in place,
+    /// nothing is serialized or cloned into a `ThreadItem`, every keyed entry pays a fixed
+    /// [`RETAINED_ENTRY_OVERHEAD`] shell, and all arithmetic saturates. Content bodies are
+    /// deliberately absent from this vocabulary (see [`LiveEvent`]), so no event charges bytes the
+    /// content window owns, and the items a commit also produced are charged by
+    /// [`PreparedEffect::retained_bytes`] — a status-feed event is a separate resident fact, never
+    /// the shared `Arc` of a prepared batch.
+    ///
+    /// Shell contract: the value includes the element's own shell, so a caller holding a
+    /// `Vec<LiveEvent>` charges only its spare capacity on top — `(capacity - len) *
+    /// size_of::<LiveEvent>()` — instead of re-charging the shells of the elements it already
+    /// holds; an empty list therefore adds no dynamic budget.
+    pub(in crate::studio) fn retained_bytes(&self) -> u64 {
+        match self {
+            Self::Turn { turn, .. } => (std::mem::size_of::<Self>() as u64)
+                .saturating_add(turn.id.len() as u64)
+                .saturating_add(turn.thread_id.len() as u64)
+                .saturating_add(optional_bytes(turn.input_id.as_deref()))
+                .saturating_add(turn_state_bytes(&turn.state)),
+            Self::Interaction(interaction) => (std::mem::size_of::<Self>() as u64)
+                .saturating_add(std::mem::size_of::<InteractionRequest>() as u64)
+                .saturating_add(interaction_request_bytes(interaction)),
+        }
+    }
 }
 
 /// One in-flight streaming preview's resident fact.
@@ -240,12 +275,46 @@ fn revision_bytes(id: &str) -> u64 {
 /// Every item carries its own **content version** (never the effect sequence that happens to
 /// commit it). The writer stores that exact version and confirms it back by identity/version, so a
 /// save receipt can never acknowledge a payload it did not write.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(in crate::studio) struct PreparedEffect {
     /// Effect sequence this batch belongs to; the writer matches it against its admission queue.
     pub(in crate::studio) sequence: u64,
     /// The canonical items the effect committed, in the order the durable rows are written.
     pub(in crate::studio) items: Vec<ThreadItem>,
+    /// Exact terminal handoff, committed in the same history transaction as its terminal effect.
+    pub(in crate::studio) parent_report: Option<pl_core::thread::inbox::ThreadMessage>,
+}
+
+impl PreparedEffect {
+    /// Cheap retained-memory estimate of this prepared batch, owner-provided for the reliable
+    /// budget.
+    ///
+    /// This is the batch's one estimate — the very value the writer's reliable queue has always
+    /// charged at handoff — moved next to the content it sizes, so the projection owner that
+    /// builds a batch and the writer that budgets it can never drift into two formulas for one
+    /// fact. It stays the established conservative estimate rather than a claim of exact physical
+    /// memory: the items are summed by the free `retained_bytes` item estimate below (every
+    /// variable-length body plus each item's fixed shell), and a terminal parent report is charged
+    /// as `content * 2 + id + 256` —
+    /// the report's context carries a second copy of the same content text, and the fixed term
+    /// covers the message shell and the short identity fields that are not summed individually.
+    /// Nothing is serialized, no second budget account is created, and the arithmetic saturates.
+    ///
+    /// Shell contract: the value includes each item's and the report's own shell, but not the
+    /// `items` vector's allocation — a caller holding that vector charges only its spare capacity
+    /// (`(capacity - len) * size_of::<ThreadItem>()`) on top of this method; an empty batch
+    /// without a report still estimates at zero.
+    pub(in crate::studio) fn retained_bytes(&self) -> u64 {
+        retained_bytes(&self.items).saturating_add(self.parent_report.as_ref().map_or(
+            0,
+            |message| {
+                (message.payload.content().len() as u64)
+                    .saturating_mul(2)
+                    .saturating_add(message.id.len() as u64)
+                    .saturating_add(256)
+            },
+        ))
+    }
 }
 
 /// Cheap retained-memory estimate of one prepared batch.
@@ -395,28 +464,36 @@ fn wait_bytes(wait: &pl_protocol::ThreadWaitPresentation) -> u64 {
     }
 }
 
+/// Question bodies of one user-input request, shared by every owner of [`UserQuestion`].
+///
+/// Both owners of the same questions — the tool item's typed history projection and the status
+/// feed's interaction event — score them with this one formula: header, question and option bodies
+/// plus a fixed entry shell per question and per option. A pending question's id is not charged;
+/// an accepted answer names it by id and that answer entry is charged on resolution, which is the
+/// split the tool-item estimate has always used.
+fn user_questions_bytes(questions: &[UserQuestion]) -> u64 {
+    questions.iter().fold(0_u64, |total, question| {
+        total
+            .saturating_add(question.header.len() as u64)
+            .saturating_add(question.question.len() as u64)
+            .saturating_add(question.options.as_ref().map_or(0, |options| {
+                options.iter().fold(0_u64, |total, option| {
+                    total
+                        .saturating_add(option.label.len() as u64)
+                        .saturating_add(option.description.len() as u64)
+                        .saturating_add(RETAINED_ENTRY_OVERHEAD)
+                })
+            }))
+            .saturating_add(RETAINED_ENTRY_OVERHEAD)
+    })
+}
+
 /// Questions and accepted answers of one user-input history projection.
 ///
 /// The question bodies and the answer values are resident here and in the content fields the window
 /// delivers, so the residency estimate charges every one of them exactly once per item.
 fn user_input_bytes(user_input: &pl_protocol::ThreadToolUserInput) -> u64 {
-    let questions = user_input
-        .questions()
-        .iter()
-        .fold(0_u64, |total, question| {
-            total
-                .saturating_add(question.header.len() as u64)
-                .saturating_add(question.question.len() as u64)
-                .saturating_add(question.options.as_ref().map_or(0, |options| {
-                    options.iter().fold(0_u64, |total, option| {
-                        total
-                            .saturating_add(option.label.len() as u64)
-                            .saturating_add(option.description.len() as u64)
-                            .saturating_add(RETAINED_ENTRY_OVERHEAD)
-                    })
-                }))
-                .saturating_add(RETAINED_ENTRY_OVERHEAD)
-        });
+    let questions = user_questions_bytes(user_input.questions());
     user_input
         .answers()
         .iter()
@@ -531,6 +608,209 @@ fn skill_bytes(skill: &ThreadSkillItem) -> u64 {
         SkillActivationResourceBase::Url { url } => url.len() as u64,
         SkillActivationResourceBase::Opaque { description } => description.len() as u64,
     })
+}
+
+/// Variable-length diagnostics one Turn lifecycle state holds beyond its inline scalars.
+///
+/// The state's scalar shell is already part of `Turn`'s inline layout, so only owned strings are
+/// charged: a failed Turn's structured failure, a coalesced cancellation's target identity and a
+/// budget rollover's error. Every other variant carries only timestamps and copied discriminants.
+fn turn_state_bytes(state: &pl_protocol::TurnState) -> u64 {
+    match state {
+        pl_protocol::TurnState::Queued(_) | pl_protocol::TurnState::Running(_) => 0,
+        pl_protocol::TurnState::Completed(_) => 0,
+        pl_protocol::TurnState::Cancelled(state) => match state.cause() {
+            TurnCancellationCause::Coalesced { target_turn_id } => target_turn_id.len() as u64,
+            TurnCancellationCause::Unspecified
+            | TurnCancellationCause::UserRequested
+            | TurnCancellationCause::RuntimeShutdown
+            | TurnCancellationCause::AgentClosed
+            | TurnCancellationCause::Interrupted
+            | TurnCancellationCause::Recovery => 0,
+        },
+        pl_protocol::TurnState::Failed(state) => {
+            let failure = state.failure();
+            optional_bytes(failure.code.as_deref()).saturating_add(failure.message.len() as u64)
+        }
+        pl_protocol::TurnState::BudgetLimited(state) => match state.rollover() {
+            TurnRolloverOutcome::Failed { error } => error.len() as u64,
+            TurnRolloverOutcome::NotAttempted | TurnRolloverOutcome::Succeeded => 0,
+        },
+    }
+}
+
+/// Variable-length bodies one interaction aggregate holds beyond its inline shells.
+///
+/// The interaction is boxed inside [`LiveEvent`], so its heap shell is charged separately by
+/// [`LiveEvent::retained_bytes`]; this walks only the owned strings, the question and answer bodies
+/// and the opaque approval arguments.
+fn interaction_request_bytes(interaction: &InteractionRequest) -> u64 {
+    let scope = &interaction.scope;
+    let mut bytes = (interaction.interaction_id.len() as u64)
+        .saturating_add(scope.thread_id.len() as u64)
+        .saturating_add(scope.turn_id.len() as u64)
+        .saturating_add(optional_bytes(scope.item_id.as_deref()))
+        .saturating_add(optional_bytes(scope.tool_id.as_deref()))
+        .saturating_add(optional_bytes(scope.agent_path.as_deref()))
+        .saturating_add(interaction_purpose_bytes(&scope.purpose))
+        .saturating_add(interaction_content_bytes(&interaction.content));
+    if let Some(continuation) = &interaction.continuation {
+        bytes = bytes.saturating_add(match &continuation.message {
+            InteractionContinuationMessage::Resolution => 0,
+            InteractionContinuationMessage::Question { question_id } => question_id.len() as u64,
+        });
+    }
+    bytes
+}
+
+/// Owned identity strings one interaction purpose carries; the general purpose carries none.
+fn interaction_purpose_bytes(purpose: &InteractionPurpose) -> u64 {
+    match purpose {
+        InteractionPurpose::General => 0,
+        InteractionPurpose::AgentSessionPlanConfirmation(purpose) => (purpose.operation_id.len()
+            as u64)
+            .saturating_add(purpose.argument_hash.len() as u64)
+            .saturating_add(purpose.plan_hash.len() as u64),
+    }
+}
+
+/// Event-only estimate of one user-input request's questions.
+///
+/// Unlike the shared history formula ([`user_questions_bytes`]), a status-feed
+/// event keeps every question — pending or resolved — resident on its own, so
+/// each question's id is charged here. The slice arrives through a borrowed
+/// `&[UserQuestion]`, whose capacity is not public; the element shells are
+/// therefore a logical estimate over the initialized elements, and each public
+/// `String`/`Vec` body is charged by its visible capacity plus element shells.
+/// Inline `String`/`Vec` stack shells are already part of
+/// `size_of::<UserQuestion>()` and are never charged twice.
+fn event_user_questions_bytes(questions: &[UserQuestion]) -> u64 {
+    let mut bytes =
+        (std::mem::size_of::<UserQuestion>() as u64).saturating_mul(questions.len() as u64);
+    for question in questions {
+        bytes = bytes
+            .saturating_add(question.id.capacity() as u64)
+            .saturating_add(question.header.capacity() as u64)
+            .saturating_add(question.question.capacity() as u64);
+        if let Some(options) = &question.options {
+            bytes = bytes.saturating_add(
+                (std::mem::size_of::<UserQuestionOption>() as u64)
+                    .saturating_mul(options.capacity() as u64),
+            );
+            for option in options {
+                bytes = bytes
+                    .saturating_add(option.label.capacity() as u64)
+                    .saturating_add(option.description.capacity() as u64);
+            }
+        }
+    }
+    bytes
+}
+
+/// Event-only recursive heap estimate of one opaque JSON body.
+///
+/// Scalars carry no heap of their own; a string charges its visible capacity,
+/// an array charges its capacity in `Value` shells plus each element's dynamic
+/// bodies, and an object charges one logical entry shell per visible
+/// `(key, value)` pair plus both sides' dynamic bodies. This intentionally does
+/// not guess private map-node or allocator metadata, which the budget contract
+/// already documents as out of scope.
+fn event_json_heap_bytes(value: &serde_json::Value) -> u64 {
+    match value {
+        serde_json::Value::Null | serde_json::Value::Bool(_) | serde_json::Value::Number(_) => 0,
+        serde_json::Value::String(text) => text.capacity() as u64,
+        serde_json::Value::Array(values) => {
+            let mut bytes = (std::mem::size_of::<serde_json::Value>() as u64)
+                .saturating_mul(values.capacity() as u64);
+            for value in values {
+                bytes = bytes.saturating_add(event_json_heap_bytes(value));
+            }
+            bytes
+        }
+        serde_json::Value::Object(entries) => {
+            let entry_shell = (std::mem::size_of::<String>() as u64)
+                .saturating_add(std::mem::size_of::<serde_json::Value>() as u64);
+            let mut bytes = 0_u64;
+            for (key, value) in entries {
+                bytes = bytes
+                    .saturating_add(entry_shell)
+                    .saturating_add(key.capacity() as u64)
+                    .saturating_add(event_json_heap_bytes(value));
+            }
+            bytes
+        }
+    }
+}
+
+/// Questions, answers and approval bodies of one interaction's typed content.
+///
+/// This is the status-feed event path: questions use [`event_user_questions_bytes`]
+/// (every pending id is charged) and approval arguments use the event-only JSON
+/// heap walk, keeping the shared history formula untouched.
+fn interaction_content_bytes(content: &InteractionContent) -> u64 {
+    match content {
+        InteractionContent::UserInput(user_input) => {
+            event_user_questions_bytes(user_input.questions())
+                .saturating_add(user_input_state_bytes(user_input.state()))
+        }
+        InteractionContent::ToolApproval(tool_approval) => {
+            let request = tool_approval.request();
+            (request.name.len() as u64)
+                .saturating_add(event_json_heap_bytes(&request.arguments))
+                .saturating_add(optional_bytes(request.working_directory.as_deref()))
+                .saturating_add(optional_bytes(request.parent_agent_id.as_deref()))
+                .saturating_add(tool_approval_state_bytes(tool_approval.state()))
+        }
+    }
+}
+
+/// Operation identities, accepted answers and cancellation reasons of one user-input interaction.
+///
+/// Event-path estimate: every public `String` charges its visible capacity, the
+/// resolved answer map pays one logical entry shell per visible `(key, value)`
+/// pair (the private hash node stays uncharged), and each answer's `Vec` pays
+/// its capacity in `String` shells plus the strings' own dynamic bodies. Inline
+/// stack shells already sit inside the entry shell and are never re-charged.
+fn user_input_state_bytes(state: &UserInputState) -> u64 {
+    match state {
+        UserInputState::Pending(state) => state.operation_id().len() as u64,
+        UserInputState::Resolved(state) => {
+            let entry_shell = (std::mem::size_of::<String>() as u64)
+                .saturating_add(std::mem::size_of::<UserInputAnswer>() as u64);
+            let mut bytes = state.operation_id().len() as u64;
+            for (question_id, answer) in state.answers() {
+                bytes = bytes
+                    .saturating_add(entry_shell)
+                    .saturating_add(question_id.capacity() as u64)
+                    .saturating_add(
+                        (std::mem::size_of::<String>() as u64)
+                            .saturating_mul(answer.answers.capacity() as u64),
+                    );
+                for value in &answer.answers {
+                    bytes = bytes.saturating_add(value.capacity() as u64);
+                }
+            }
+            bytes
+        }
+        UserInputState::Cancelled(state) => {
+            (state.operation_id().len() as u64).saturating_add(state.reason().len() as u64)
+        }
+        UserInputState::Expired(state) => state.operation_id().len() as u64,
+    }
+}
+
+/// Operation identities and decision reasons of one tool-approval interaction.
+fn tool_approval_state_bytes(state: &ToolApprovalState) -> u64 {
+    match state {
+        ToolApprovalState::Pending(state) => state.operation_id().len() as u64,
+        ToolApprovalState::Resolved(state) => {
+            (state.operation_id().len() as u64).saturating_add(optional_bytes(state.reason()))
+        }
+        ToolApprovalState::Cancelled(state) => {
+            (state.operation_id().len() as u64).saturating_add(state.reason().len() as u64)
+        }
+        ToolApprovalState::Expired(state) => state.operation_id().len() as u64,
+    }
 }
 
 /// The facts a parent/child report and the directory summary need from one Turn.
@@ -1129,6 +1409,7 @@ impl LiveProjection {
         Ok(Arc::new(PreparedEffect {
             sequence: effect.sequence,
             items,
+            parent_report: None,
         }))
     }
 

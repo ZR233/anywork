@@ -196,7 +196,11 @@ class _TimelineViewState extends State<TimelineView> {
             sentBackgroundColor: Colors.transparent,
             receivedTextStyle: context.text.bodyMedium?.copyWith(height: 1.57),
             sentTextStyle: context.text.bodyMedium?.copyWith(height: 1.57),
-            onLinkTap: (url, _) => widget.onLink(url),
+            // Defense in depth only: unsafe candidates never reach a gesture
+            // because the Markdown path leaves them as plain text spans.
+            onLinkTap: (url, _) {
+              if (widget.isSafeLink(url)) widget.onLink(url);
+            },
           ),
         _terminal(entry.first),
         TimelineDetailNotices(item: entry.first, onDetail: widget.onDetail),
@@ -261,7 +265,9 @@ class _TimelineViewState extends State<TimelineView> {
                 receivedTextStyle: context.text.bodyMedium?.copyWith(
                   height: 1.57,
                 ),
-                onLinkTap: (url, _) => widget.onLink(url),
+                onLinkTap: (url, _) {
+                  if (widget.isSafeLink(url)) widget.onLink(url);
+                },
               ),
             TimelineDetailNotices(item: item, onDetail: widget.onDetail),
           ],

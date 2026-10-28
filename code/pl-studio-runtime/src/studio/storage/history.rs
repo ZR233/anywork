@@ -19,6 +19,7 @@ use sea_orm::{
 const HISTORY_SCHEMA_VERSION: i64 = 9;
 
 mod checkpoint;
+mod parent_report;
 mod producer;
 mod schema;
 /// 单页返回的总 payload 字节预算；达到预算即停止装入更多条目。
@@ -1285,6 +1286,48 @@ impl HistoryStore {
             "terminal Turn item does not resolve to a terminal Turn record"
         );
         Ok(Some(history.turn))
+    }
+
+    /// Body-free keyset of the real terminal effects that own parent report identities.
+    /// The bounded canonical item index is reused; there is no second delivery ledger.
+    pub(crate) async fn terminal_report_sequences(&self, after: u64) -> Result<Vec<u64>> {
+        let Some(connection) = self.reader().await? else {
+            return Ok(Vec::new());
+        };
+        let rows = connection
+            .db
+            .query_all_raw(statement(
+                "SELECT last_write_seq FROM history_items
+             WHERE kind='turn' AND lifecycle='terminal' AND last_write_seq>?
+             ORDER BY last_write_seq ASC LIMIT 128",
+                vec![
+                    i64::try_from(after)
+                        .context("terminal report cursor exceeds SQLite")?
+                        .into(),
+                ],
+            ))
+            .await?;
+        rows.into_iter()
+            .map(|row| {
+                let sequence: i64 = row.try_get("", "last_write_seq")?;
+                u64::try_from(sequence).context("negative terminal report sequence")
+            })
+            .collect()
+    }
+
+    pub(crate) async fn terminal_report_sequence(&self, turn_id: &str) -> Result<Option<u64>> {
+        let Some(connection) = self.reader().await? else {
+            return Ok(None);
+        };
+        let row = connection.db.query_one_raw(statement(
+            "SELECT last_write_seq FROM history_items WHERE kind='turn' AND lifecycle='terminal' AND turn_id=? LIMIT 1",
+            vec![turn_id.to_owned().into()],
+        )).await?;
+        row.map(|row| {
+            let sequence: i64 = row.try_get("", "last_write_seq")?;
+            u64::try_from(sequence).context("negative terminal report sequence")
+        })
+        .transpose()
     }
 
     /// Reads the latest admitted Turn at exactly the caller's proven durable fence, without bodies.
@@ -3262,6 +3305,90 @@ mod storage_fault_tests {
                 .payload,
             "{}"
         );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn terminal_parent_report_is_atomic_immutable_and_reopens_without_reconstruction()
+    -> Result<()> {
+        use pl_core::{
+            context::{AgentMessageKind, ContextContent, OpaquePayload},
+            thread::inbox::ThreadMessage,
+        };
+        async fn commit(
+            store: &HistoryStore,
+            sequence: u64,
+            message: &ThreadMessage,
+        ) -> Result<()> {
+            let receipts = [FactReceiptWrite {
+                item_id: message.id.clone(),
+                revision: 1,
+                kind: "parentReport",
+                payload: serde_json::to_string(message)?,
+            }];
+            store
+                .commit_effect(
+                    sequence,
+                    EffectCommit {
+                        items: &[],
+                        rolled_back_turns: &Default::default(),
+                        identities: &[],
+                        messages: &[],
+                        receipts: &receipts,
+                        tasks: &[],
+                        deliveries: &[],
+                        delivery_repairs: &[],
+                        attempt: None,
+                    },
+                )
+                .await
+        }
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("history.sqlite");
+        let store = HistoryStore::open(&path, "child-报告").await?;
+        save_receipt(&store, 1, "initial").await?;
+        let body = format!("\0{}", "original terminal facts".repeat(8_000));
+        let message = ThreadMessage {
+            kind: AgentMessageKind::Report,
+            id: crate::studio::agent_close::terminal_report_id("child-报告", 2),
+            source_id: "studio.child:child-报告".into(),
+            payload: OpaquePayload::new("pl.studio.turn-report", 1, body.clone())?,
+            context: vec![ContextContent::Text { text: body.into() }],
+        };
+        store.writer().await?.db.execute_unprepared("CREATE TRIGGER reject_parent_report BEFORE INSERT ON history_fact_receipts WHEN NEW.kind='parentReport' BEGIN SELECT RAISE(ABORT,'controlled report rejection'); END").await?;
+        assert!(commit(&store, 2, &message).await.is_err());
+        assert_eq!(store.watermark().await?, 1);
+        assert!(store.parent_report(2).await?.is_none());
+        store
+            .writer()
+            .await?
+            .db
+            .execute_unprepared("DROP TRIGGER reject_parent_report")
+            .await?;
+        commit(&store, 2, &message).await?;
+        assert_eq!(store.watermark().await?, 2);
+        let mut conflicting = message.clone();
+        conflicting.payload =
+            OpaquePayload::new("pl.studio.turn-report", 1, "not the original body")?;
+        assert!(commit(&store, 3, &conflicting).await.is_err());
+        assert_eq!(store.watermark().await?, 2);
+        drop(store);
+        let reopened = HistoryStore::open(&path, "child-报告").await?;
+        assert_eq!(
+            reopened.parent_report(2).await?.unwrap().digest(),
+            message.digest()
+        );
+        assert!(reopened.parent_report(3).await?.is_none());
+        reopened
+            .writer()
+            .await?
+            .db
+            .execute_unprepared(
+                "UPDATE history_fact_receipts SET payload='{}' WHERE kind='parentReport'",
+            )
+            .await?;
+        assert!(reopened.parent_report(2).await.is_err());
+        drop(reopened);
         Ok(())
     }
 

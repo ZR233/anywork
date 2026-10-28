@@ -5,6 +5,37 @@ anywork release notes are generated from Conventional Commits by Release Please.
 以下已发布记录保留当时的名称与行为，不作为当前工程规范；当前架构演进规则见
 [AGENTS.md](AGENTS.md)，数据迁移契约及实现缺口见[存储设计](design/17-studio-storage.md)。
 
+## [6.32.0](https://github.com/ZR233/anywork/compare/v6.31.0...v6.32.0) (2026-10-27)
+
+
+### ⚠ BREAKING CHANGES
+
+* **studio:** close_agent 移除 workspaceDisposition，使用 target/force 参数及逐成员 executionClosed/worktreeCleanup 结果；worktree 派生要求实际 caller 干净且有有效 HEAD，最终关闭后不可续跑或新增评价。
+
+### Bug Fixes
+
+* **studio:** 修复 Windows Antigravity 服务器准备与登录 ([#194](https://github.com/ZR233/anywork/issues/194)) ([8911ce7](https://github.com/ZR233/anywork/commit/8911ce7444e5c9dd96e0c74617c30a68473da303))
+* **studio:** 修复工作树派生、最终关闭与恢复隔离 ([#196](https://github.com/ZR233/anywork/issues/196)) ([bf35812](https://github.com/ZR233/anywork/commit/bf35812a85cd32f59db18dad0e63ddc16242aa13))
+
+## [6.31.0](https://github.com/ZR233/anywork/compare/v6.30.0...v6.31.0) (2026-10-27)
+
+
+### ⚠ BREAKING CHANGES
+
+* **storage:** 移除旧 journal 读取和重放 API，migrate_to_current 不再接收 transform 回调。模型普通回执解码仅接受当前格式，嵌入式宿主须显式执行 runtime::migration 生产者转换；pre-v2 会话数据原样隔离、不读取或删除。
+* **studio:** 模型启用配置及设置快照由 disabled_models/disabledModels 替换为 model_enabled_overrides/modelEnabledOverrides；schema 26 配置通过启动迁移保留已有禁用选择。
+
+### Bug Fixes
+
+* **studio:** 对齐账号页视觉并修复套餐品牌标识 ([#183](https://github.com/ZR233/anywork/issues/183)) ([f3f7ffd](https://github.com/ZR233/anywork/commit/f3f7ffd59edfe3aeecfd962e2f1948fe295a22d5))
+* **studio:** 支持手动启用线上未列出的内置模型 ([#185](https://github.com/ZR233/anywork/issues/185)) ([f82678f](https://github.com/ZR233/anywork/commit/f82678f00835f14a1dc56548631a5ad47a8344d6))
+* **studio:** 解耦工作树身份与当前分支 ([#189](https://github.com/ZR233/anywork/issues/189)) ([3b4d8fa](https://github.com/ZR233/anywork/commit/3b4d8fac5c263fad832b21849e09b73a16f87d72)), closes [#180](https://github.com/ZR233/anywork/issues/180)
+
+
+### Refactoring
+
+* **storage:** 统一 v2 会话历史与生产者载荷格式 ([#188](https://github.com/ZR233/anywork/issues/188)) ([2f94d1f](https://github.com/ZR233/anywork/commit/2f94d1f35fb759103afbc58a7131ed390116bab5))
+
 ## [6.30.0](https://github.com/ZR233/anywork/compare/v6.29.0...v6.30.0) (2026-10-27)
 
 

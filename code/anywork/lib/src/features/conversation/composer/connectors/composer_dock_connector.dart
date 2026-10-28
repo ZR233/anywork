@@ -9,6 +9,7 @@ import 'package:desktop_drop/desktop_drop.dart';
 import '../../../../app/theme/studio_tokens.dart';
 
 import '../../../../l10n/studio_l10n.dart';
+import '../../../../domain/models/composer_primary_action.dart';
 import '../../../../platform/clipboard_image_reader.dart';
 import '../../../../platform/dropped_attachments.dart';
 import '../../../../platform/local_file_dialogs.dart';
@@ -61,6 +62,9 @@ class ComposerDockConnector extends ConsumerWidget {
     final view = viewAsync.requireValue;
     final thread = view.thread;
     if (thread == null) return const SizedBox.shrink();
+    // 最终关闭（closing/closed）是永久只读事实：不显示执行入口，正文历史仍在
+    // Timeline 展示，草稿由 SDK owner 保留不清。
+    if (view.executionClosed) return const SizedBox.shrink();
     final interaction = view.activeInteraction;
     final additionalDiagnostics = [
       for (final diagnostic in view.additionalDiagnostics)
@@ -226,10 +230,11 @@ class _StartPageComposerBodyState
       pasteTargetId: widget.projectId,
       targetDiagnostic: target,
       additionalDiagnostics: additional,
-      enabled: projection.canSubmit,
+      enabled: projection.canEdit,
+      blocker: projection.recoveryIssue == null
+          ? null
+          : ComposerRecoveryBlocker(projection.recoveryIssue!),
       submissionLocked: projection.submitting,
-      showSubmissionError:
-          projection.preparation?.failure?.toString() != composer.error,
       inputCapabilities: model?.inputCapabilities ?? const [],
       selectorBar: selectorBar,
       settingsMenu: projectId == null

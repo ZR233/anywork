@@ -1042,6 +1042,11 @@ final class ConversationQueryScopeImpl implements ConversationQueryScope {
         }
       }
       return result;
+    } catch (_) {
+      // 查询失败也遵守同一退役边界：scope 已退役时不让迟到失败进入新代次；
+      // 活跃 scope 的原始 typed 错误原样传播。
+      if (!isActive) throw const StaleConversationScope();
+      rethrow;
     } finally {
       permit.release();
     }

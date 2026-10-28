@@ -96,6 +96,10 @@ class TestConversationFeed implements ConversationFeed {
   final List<({String? before, int? limit})> pageRequests = [];
   final List<({String itemId, ConversationDetailQuery query})> detailRequests =
       [];
+
+  /// 同步查询注入：恰在 page/detail 返回受控 future 之前调用，回调里可以
+  /// 同步退役/关闭 scope；每次请求各自持有独立 future，不复用同一 Completer。
+  void Function()? onQuery;
   @override
   Stream<ConversationFrame> get events {
     if (++eventConsumers != 1) throw StateError('A feed permits one consumer');
@@ -151,6 +155,7 @@ class TestConversationFeed implements ConversationFeed {
   @override
   Future<ConversationPage> page({String? before, int? limit}) {
     pageRequests.add((before: before, limit: limit));
+    onQuery?.call();
     return onPage?.call(before, limit) ??
         Future.value(
           const ConversationPage(items: [], before: null, hasOlder: false),
@@ -163,6 +168,7 @@ class TestConversationFeed implements ConversationFeed {
     required ConversationDetailQuery query,
   }) {
     detailRequests.add((itemId: itemId, query: query));
+    onQuery?.call();
     return onDetail?.call(itemId, query) ??
         Future.error(UnsupportedError('Unscripted detail'));
   }

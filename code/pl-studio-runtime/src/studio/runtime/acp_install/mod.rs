@@ -10,7 +10,7 @@
 //! - `operation`：单次操作的 supervisor（解析→锁→下载→校验→解压→发布→终态）。
 //! - `prepare`：认证前的固定受管安装只读验证；复用同一验证边界，不新建第二套校验器。
 //! - `mapping`：失败分类到安全摘要与命令错误的映射。
-//! - `private_acl`：受管对象私有性核验（Unix mode，Windows 真实 owner + DACL）。
+//! - `permissions`：Unix 受管对象的权限位核验；Windows 沿用用户目录的原生 ACL。
 //!
 //! 只读查询与订阅都不联网、不扫描、不启动任何程序：只有显式 start 命令才写文件，而 `prepare`
 //! 只对既有安装做只读验证（不联网、不下载、不修复）。安装是共享资产：它不绑定账号、不写
@@ -22,8 +22,9 @@ mod download;
 mod mapping;
 mod operation;
 mod paths;
+#[cfg(unix)]
+mod permissions;
 mod prepare;
-mod private_acl;
 mod registry;
 mod source;
 

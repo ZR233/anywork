@@ -9,7 +9,7 @@ use std::{
     task::Poll,
 };
 use tokio::{
-    sync::{Notify, watch},
+    sync::{Notify, oneshot},
     task::{Id, JoinError, JoinHandle, JoinSet},
 };
 
@@ -59,9 +59,9 @@ impl AgentOperations {
         operation: impl Future<Output = Result<T>> + Send + 'static,
     ) -> Result<T>
     where
-        T: Clone + Send + Sync + 'static,
+        T: Send + 'static,
     {
-        let (publication, mut result) = watch::channel(None);
+        let (publication, result) = oneshot::channel();
         {
             let mut driver = self.0.driver.lock().await;
             let mut jobs = self.0.jobs();
@@ -79,20 +79,15 @@ impl AgentOperations {
                 let outcome = operation
                     .await
                     .map_err(|error| Arc::new(ServiceError(error)));
-                publication.send_replace(Some(outcome));
+                let _ = publication.send(outcome);
             });
             jobs.callers.insert(task.id(), caller);
         }
         self.0.wake.wake();
-        loop {
-            if let Some(outcome) = result.borrow_and_update().clone() {
-                return outcome.map_err(anyhow::Error::new);
-            }
-            result
-                .changed()
-                .await
-                .context("collaboration worker stopped without a conclusion")?;
-        }
+        result
+            .await
+            .context("collaboration worker stopped without a conclusion")?
+            .map_err(anyhow::Error::new)
     }
 
     pub(super) async fn join_root(&self, root: &str) -> Result<()> {

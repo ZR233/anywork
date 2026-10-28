@@ -35,14 +35,27 @@ use preview::timeline_item;
 /// 句柄即释放这些引用，而 Thread、Turn 与历史 writer 继续运行。
 #[derive(Clone)]
 pub struct TimelineContentReader {
-    thread_id: String,
+    thread: pl_protocol::Thread,
+    recovery: crate::studio::StudioRecoveryRegistry,
     session: Session,
 }
 
 impl TimelineContentReader {
     /// 本句柄所属的 Thread 身份。
     pub fn thread_id(&self) -> &str {
-        &self.thread_id
+        &self.thread.id
+    }
+
+    /// 复核本句柄的恢复读准入：与分页、详情和尾部建立共用同一 Registry 决策。
+    ///
+    /// 组合观察在交付已捕获的基线或已就绪事件前调用它——仍使用原已登记接收者与原捕获
+    /// 基线，不为检查重新订阅或重读正文。`AccessBlocked` 拒绝读取，执行阻塞与 advisory
+    /// 不额外禁止健康历史；失败保留原类型化错误。
+    ///
+    /// # Errors
+    /// 传播 [`crate::studio::StudioRecoveryRegistry::ensure_thread_read_access`] 的类型化失败。
+    pub(crate) fn ensure_read_access(&self) -> Result<()> {
+        self.recovery.ensure_thread_read_access(&self.thread)
     }
 
     /// 读一页最新或更旧的 keyset 页。
@@ -50,9 +63,10 @@ impl TimelineContentReader {
     /// # Errors
     /// 未知／跨 Thread 的游标与非法条目数返回 `InvalidArgument`，其余为宿主的类型化存储与预览失败。
     pub async fn page(&self, query: &TimelinePageQuery) -> Result<TimelinePage> {
+        self.recovery.ensure_thread_read_access(&self.thread)?;
         let before = match query.before.as_deref() {
             None => None,
-            Some(token) => Some(page_cursor(&self.thread_id, token)?),
+            Some(token) => Some(page_cursor(&self.thread.id, token)?),
         };
         let page = self
             .session
@@ -61,17 +75,18 @@ impl TimelineContentReader {
                 limit: query.limit(),
             })
             .await?;
+        self.recovery.ensure_thread_read_access(&self.thread)?;
         let mut items = Vec::with_capacity(page.items.len());
         for item in &page.items {
             items.push(timeline_item(item)?);
         }
         Ok(TimelinePage {
-            thread_id: self.thread_id.clone(),
+            thread_id: self.thread.id.clone(),
             items,
             before: page
                 .before
                 .as_ref()
-                .map(|cursor| encode_page_cursor(&self.thread_id, cursor)),
+                .map(|cursor| encode_page_cursor(&self.thread.id, cursor)),
             has_older: page.has_older,
         })
     }
@@ -85,24 +100,26 @@ impl TimelineContentReader {
         item_id: &str,
         query: &TimelineDetailQuery,
     ) -> Result<TimelineDetailChunk> {
+        self.recovery.ensure_thread_read_access(&self.thread)?;
         let mut request = ChatDetailRequest::new(item_id, core_field(query.field), query.revision);
         if let Some(token) = query.continuation.as_deref() {
             request =
-                request.with_continuation(detail_cursor(&self.thread_id, item_id, query, token)?);
+                request.with_continuation(detail_cursor(&self.thread.id, item_id, query, token)?);
         }
         if let Some(max_bytes) = query.max_bytes {
             request = request.with_max_bytes(max_bytes as usize);
         }
         let chunk = self.session.read_detail(request).await?;
+        self.recovery.ensure_thread_read_access(&self.thread)?;
         Ok(TimelineDetailChunk {
-            thread_id: self.thread_id.clone(),
+            thread_id: self.thread.id.clone(),
             item_id: chunk.item_id,
             field: query.field,
             revision: chunk.revision,
             text: chunk.text,
             total_bytes: chunk.total_bytes,
             continuation: chunk.continuation.map(|cursor| {
-                encode_detail_cursor(&self.thread_id, item_id, query, cursor.offset())
+                encode_detail_cursor(&self.thread.id, item_id, query, cursor.offset())
             }),
         })
     }
@@ -112,9 +129,12 @@ impl TimelineContentReader {
     /// # Errors
     /// 共享基线的存储与预览读取失败。
     pub async fn open_tail(&self) -> Result<TimelineTailStream> {
+        self.recovery.ensure_thread_read_access(&self.thread)?;
         let tail = self.session.subscribe_tail().await?;
+        self.recovery.ensure_thread_read_access(&self.thread)?;
         Ok(TimelineTailStream {
-            thread_id: self.thread_id.clone(),
+            thread: self.thread.clone(),
+            recovery: self.recovery.clone(),
             // 复用已有的 id 能力（时间前缀 + 进程内序号），因此重启后也不会重复旧身份，且不额外
             // 引入随机/编码依赖。
             subscription_id: crate::studio::ids::new_id("timeline-tail"),
@@ -125,7 +145,8 @@ impl TimelineContentReader {
 
 /// 一条 `GET /timeline/events` 连接或一个 FRB `BridgeTimeline` 自有的尾部观察。
 pub struct TimelineTailStream {
-    thread_id: String,
+    thread: pl_protocol::Thread,
+    recovery: crate::studio::StudioRecoveryRegistry,
     subscription_id: String,
     tail: ChatTail,
 }
@@ -142,16 +163,19 @@ impl TimelineTailStream {
     ///
     /// # Errors
     /// 首帧已被取用，或条目的内容字段身份无法映射成产品字段——都明确失败，不猜一个标签。
-    pub fn initial(&mut self) -> Result<TimelineTailBaseline> {
+    pub async fn initial(&mut self) -> Result<TimelineTailBaseline> {
+        self.recovery.ensure_thread_read_access(&self.thread)?;
         let baseline = self.tail.initial()?;
         self.baseline(&baseline)
     }
 
     /// 等待并交付下一帧；`Ok(None)` 只表示会话不再发布进度。
     pub async fn next(&mut self) -> Result<Option<TimelineTailUpdate>> {
+        self.recovery.ensure_thread_read_access(&self.thread)?;
         let Some(update) = self.tail.next().await? else {
             return Ok(None);
         };
+        self.recovery.ensure_thread_read_access(&self.thread)?;
         self.convert(update).map(Some)
     }
 
@@ -172,7 +196,7 @@ impl TimelineTailStream {
             before: baseline
                 .before
                 .as_ref()
-                .map(|cursor| encode_page_cursor(&self.thread_id, cursor)),
+                .map(|cursor| encode_page_cursor(&self.thread.id, cursor)),
             has_older: baseline.has_older,
         })
     }
@@ -298,13 +322,21 @@ impl StudioRuntime {
         // 该入口由存储重构提供，负责 prepare_history_access + 只读 checkpoint fence；
         // 不在读取映射复制迁移或为旧结构保留 fallback。
         self.prepare_timeline_history(thread_id).await?;
+        self.timeline_projection_reader(thread_id).await
+    }
+
+    /// Handle construction and detail reads check the prepared representation without migrating it.
+    async fn timeline_projection_reader(&self, thread_id: &str) -> Result<TimelineContentReader> {
+        self.read_timeline_history(thread_id).await?;
         Ok(TimelineContentReader {
-            thread_id: thread_id.to_owned(),
-            session: self.chat_session(thread_id).await?,
+            thread: self.read_protocol_thread(thread_id).await?,
+            recovery: self.recovery.clone(),
+            session: self.store.chat_session(thread_id).await?,
         })
     }
 
-    /// 读一页轻量预览；HTTP 与 FRB 共用同一份映射。
+    /// 独立内容入口先显式打开已有历史，再读一页轻量预览；HTTP 与 FRB 共用同一份映射。
+    /// 已打开句柄的后续分页仍由 [`TimelineContentReader::page`] 严格只读完成。
     ///
     /// # Errors
     /// 见 [`TimelineContentReader::page`]。
@@ -334,7 +366,7 @@ impl StudioRuntime {
         item_id: &str,
         query: &TimelineDetailQuery,
     ) -> Result<TimelineDetailChunk> {
-        self.timeline_reader(thread_id)
+        self.timeline_projection_reader(thread_id)
             .await?
             .read_detail(item_id, query)
             .await

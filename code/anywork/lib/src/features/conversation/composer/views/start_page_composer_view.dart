@@ -5,6 +5,7 @@ import 'package:desktop_drop/desktop_drop.dart';
 import 'package:flutter/material.dart';
 
 import '../../../../app/theme/studio_tokens.dart';
+import '../../../../domain/models/composer_primary_action.dart';
 import 'prompt_composer_view.dart';
 
 class StartPageComposerView extends StatelessWidget {
@@ -15,8 +16,8 @@ class StartPageComposerView extends StatelessWidget {
     required this.targetDiagnostic,
     required this.additionalDiagnostics,
     required this.enabled,
+    this.blocker,
     required this.submissionLocked,
-    required this.showSubmissionError,
     required this.inputCapabilities,
     required this.selectorBar,
     required this.settingsMenu,
@@ -39,8 +40,10 @@ class StartPageComposerView extends StatelessWidget {
   final ComposerTargetDiagnostic? targetDiagnostic;
   final List<ComposerTargetDiagnostic> additionalDiagnostics;
   final bool enabled;
+
+  /// 起始页同目标规则选出的执行阻塞；访问受阻时整个输入入口已撤掉。
+  final ComposerBlocker? blocker;
   final bool submissionLocked;
-  final bool showSubmissionError;
   final List<ModelInputCapabilityView> inputCapabilities;
   final Widget selectorBar;
   final Widget? settingsMenu;
@@ -79,8 +82,8 @@ class StartPageComposerView extends StatelessWidget {
             targetDiagnostic: targetDiagnostic,
             additionalDiagnostics: additionalDiagnostics,
             enabled: enabled,
+            blocker: blocker,
             submissionLocked: submissionLocked,
-            showSubmissionError: showSubmissionError,
             inputCapabilities: inputCapabilities,
             selectorBar: selectorBar,
             settingsMenu: settingsMenu,

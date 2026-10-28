@@ -476,9 +476,10 @@ void main() {
         fixture.repository.setVisibleThread('B');
         expect(redirected, isTrue);
         expect(oldA.requestCloseStarted.isCompleted, isTrue);
-        final expectedTargets = boundary == 'retirement'
-            ? ['A', 'A']
-            : ['A', 'B', 'A'];
+        // 新契约：重定向在调用返回前同步撤销不再是最新请求的 demand。
+        // activation 边界上的 B attempt 在 transport open 之前退役，B 从未
+        // 打开连接；两个边界都只有一次全新的 A 恢复。
+        final expectedTargets = ['A', 'A'];
         expect(
           fixture.transport.opens.map((open) => open.threadId),
           expectedTargets,
@@ -498,13 +499,11 @@ void main() {
           ),
         );
         if (boundary == 'activation') {
-          final oldB = TestConversationFeed(
-            threadId: 'B',
-            subscriptionId: 'old-B',
+          expect(
+            fixture.transport.opens.map((open) => open.threadId),
+            isNot(contains('B')),
+            reason: '撤销后的 B 不再打开内容连接',
           );
-          fixture.transport.opens[1].result.complete(oldB);
-          await oldB.closeCompleted.future;
-          expect(oldB.eventConsumers, 0);
         }
         expect(current.requestCloseCalls, 0);
         observation.cancel();
@@ -562,6 +561,144 @@ void main() {
       expect(budget.usage, isEmpty);
     },
   );
+
+  test('a pending native close of an older attempt never blocks retiring a fresh attempt of the same owner', () async {
+    final budget = ResourceBudget(
+      // The gated close of the first A holds its permit until the end;
+      // B1/A2 cleanups release asynchronously, so transient demand peaks
+      // above four live attempts even though only one is truly pending.
+      capacities: {...ResourceBudget().capacities, ResourceKind.chatHandle: 8},
+    );
+    final fixture = ConversationFixture(budget: budget);
+    // A opens first; its native close stays gated to simulate a slow worker.
+    fixture.repository.setVisibleThread('A');
+    await fixture.transport.opened(0);
+    final oldA = TestConversationFeed(threadId: 'A', subscriptionId: 'old-A');
+    oldA.closeGate = Completer<void>();
+    fixture.transport.opens[0].result.complete(oldA);
+    await oldA.deliver(
+      ConversationBaselineEvent(
+        baseline: baseline(
+          1,
+          subscriptionId: 'old-A',
+          items: [timelineItem(1, threadId: 'A')],
+        ),
+      ),
+    );
+    // Leaving A starts its retirement while its native close hangs.
+    fixture.repository.setVisibleThread('B');
+    await oldA.closeStarted.future;
+    await fixture.transport.opened(1);
+    final firstB = TestConversationFeed(threadId: 'B', subscriptionId: 'b-1');
+    fixture.transport.opens[1].result.complete(firstB);
+    await firstB.deliver(
+      ConversationBaselineEvent(
+        baseline: baseline(
+          2,
+          subscriptionId: 'b-1',
+          items: [timelineItem(2, threadId: 'B')],
+        ),
+      ),
+    );
+    // Returning to A must mint a fresh attempt, not resurrect the retired one.
+    fixture.repository.setVisibleThread('A');
+    await fixture.transport.opened(2);
+    final newA = TestConversationFeed(threadId: 'A', subscriptionId: 'new-A');
+    fixture.transport.opens[2].result.complete(newA);
+    await newA.deliver(
+      ConversationBaselineEvent(
+        baseline: baseline(
+          3,
+          subscriptionId: 'new-A',
+          items: [timelineItem(3, threadId: 'A')],
+        ),
+      ),
+    );
+    final owner = fixture.repository.existingSession('A')!;
+    expect(owner.isActive, isTrue);
+    // Leaving A again retires the fresh attempt synchronously, even though
+    // the same owner still has an older native close in flight.
+    fixture.repository.setVisibleThread('B');
+    expect(owner.isActive, isFalse);
+    // The product signals requestClose once per retirement; the feed's own
+    // close() may echo requestClose again. The native close itself runs once.
+    expect(newA.requestCloseCalls, greaterThanOrEqualTo(1));
+    expect(newA.closeCalls, 1);
+    await newA.closeCompleted.future;
+    expect(owner.content.currentAttemptId, isNull);
+    await fixture.transport.opened(3);
+    final secondB = TestConversationFeed(threadId: 'B', subscriptionId: 'b-2');
+    fixture.transport.opens[3].result.complete(secondB);
+    await secondB.deliver(
+      ConversationBaselineEvent(
+        baseline: baseline(
+          4,
+          subscriptionId: 'b-2',
+          items: [timelineItem(4, threadId: 'B')],
+        ),
+      ),
+    );
+    expect(fixture.transport.opens.map((e) => e.threadId), [
+      'A',
+      'B',
+      'A',
+      'B',
+    ]);
+    // Releasing the gated close lets every retirement settle to zero.
+    oldA.closeGate!.complete();
+    await oldA.closeCompleted.future;
+    expect((await fixture.close()).complete, isTrue);
+    expect(budget.usage, isEmpty);
+  });
+
+  test('A -> B -> A synchronous cascade mints a new attempt id for the returning A', () async {
+    final budget = ResourceBudget(
+      // The cascade runs without awaiting cleanups: both retired permits are
+      // still held when the returning A mints its fresh attempt.
+      capacities: {...ResourceBudget().capacities, ResourceKind.chatHandle: 4},
+    );
+    final fixture = ConversationFixture(budget: budget);
+    final attemptsPerThread = <String, List<Object?>>{};
+    void record(String id) {
+      final owner = fixture.repository.existingSession(id);
+      if (owner != null) {
+        attemptsPerThread
+            .putIfAbsent(id, () => [])
+            .add(owner.content.currentAttemptId!);
+      }
+    }
+
+    void drain(String id) {
+      fixture.repository.setVisibleThread(id);
+      record(id);
+    }
+
+    drain('A');
+    drain('B');
+    drain('A');
+    // The two A attempts are distinct generations: the cascade really
+    // retired the first demand and minted a second one, not a reuse.
+    expect(attemptsPerThread['A'], hasLength(2));
+    expect(attemptsPerThread['A']![0], isNot(same(attemptsPerThread['A']![1])));
+    expect(attemptsPerThread['B'], hasLength(1));
+    expect(fixture.transport.opens.map((e) => e.threadId), ['A', 'B', 'A']);
+    await Future.wait([
+      fixture.transport.opened(0),
+      fixture.transport.opened(1),
+      fixture.transport.opened(2),
+    ]);
+    fixture.transport.opens[0].result.complete(
+      TestConversationFeed(threadId: 'A', subscriptionId: 'a-1'),
+    );
+    fixture.transport.opens[1].result.complete(
+      TestConversationFeed(threadId: 'B', subscriptionId: 'b-1'),
+    );
+    fixture.transport.opens[2].result.complete(
+      TestConversationFeed(threadId: 'A', subscriptionId: 'a-2'),
+    );
+    expect((await fixture.close()).complete, isTrue);
+      expect(budget.usage, isEmpty);
+  });
 
   test(
     'leaving settings cancels only GUI demand and returning opens new baseline',

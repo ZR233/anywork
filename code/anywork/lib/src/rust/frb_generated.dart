@@ -12744,6 +12744,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  BridgeRecoveryImpact dco_decode_bridge_recovery_impact(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return BridgeRecoveryImpact.values[raw as int];
+  }
+
+  @protected
   BridgeRecoveryIssueAction dco_decode_bridge_recovery_issue_action(
     dynamic raw,
   ) {
@@ -13762,18 +13768,19 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   ) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 8)
-      throw Exception('unexpected arr length: expect 8 but see ${arr.length}');
+    if (arr.length != 9)
+      throw Exception('unexpected arr length: expect 9 but see ${arr.length}');
     return BridgeStudioRecoveryIssueDto(
       id: dco_decode_String(arr[0]),
       scope: dco_decode_bridge_recovery_issue_scope(arr[1]),
       category: dco_decode_bridge_recovery_issue_category(arr[2]),
-      availableActions: dco_decode_list_bridge_recovery_issue_action(arr[3]),
-      projectId: dco_decode_opt_String(arr[4]),
-      threadId: dco_decode_opt_String(arr[5]),
-      detail: dco_decode_String(arr[6]),
+      impact: dco_decode_bridge_recovery_impact(arr[3]),
+      availableActions: dco_decode_list_bridge_recovery_issue_action(arr[4]),
+      projectId: dco_decode_opt_String(arr[5]),
+      threadId: dco_decode_opt_String(arr[6]),
+      detail: dco_decode_String(arr[7]),
       worktree: dco_decode_opt_box_autoadd_bridge_worktree_recovery_preview_dto(
-        arr[7],
+        arr[8],
       ),
     );
   }
@@ -16100,7 +16107,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       state: dco_decode_String(arr[4]),
       repositoryRoot: dco_decode_String(arr[5]),
       path: dco_decode_String(arr[6]),
-      branch: dco_decode_String(arr[7]),
+      branch: dco_decode_opt_String(arr[7]),
       baseCommit: dco_decode_String(arr[8]),
       headCommit: dco_decode_opt_String(arr[9]),
       dirty: dco_decode_opt_box_autoadd_bool(arr[10]),
@@ -25551,6 +25558,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  BridgeRecoveryImpact sse_decode_bridge_recovery_impact(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var inner = sse_decode_i_32(deserializer);
+    return BridgeRecoveryImpact.values[inner];
+  }
+
+  @protected
   BridgeRecoveryIssueAction sse_decode_bridge_recovery_issue_action(
     SseDeserializer deserializer,
   ) {
@@ -26834,6 +26850,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_id = sse_decode_String(deserializer);
     var var_scope = sse_decode_bridge_recovery_issue_scope(deserializer);
     var var_category = sse_decode_bridge_recovery_issue_category(deserializer);
+    var var_impact = sse_decode_bridge_recovery_impact(deserializer);
     var var_availableActions = sse_decode_list_bridge_recovery_issue_action(
       deserializer,
     );
@@ -26848,6 +26865,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       id: var_id,
       scope: var_scope,
       category: var_category,
+      impact: var_impact,
       availableActions: var_availableActions,
       projectId: var_projectId,
       threadId: var_threadId,
@@ -29843,7 +29861,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_state = sse_decode_String(deserializer);
     var var_repositoryRoot = sse_decode_String(deserializer);
     var var_path = sse_decode_String(deserializer);
-    var var_branch = sse_decode_String(deserializer);
+    var var_branch = sse_decode_opt_String(deserializer);
     var var_baseCommit = sse_decode_String(deserializer);
     var var_headCommit = sse_decode_opt_String(deserializer);
     var var_dirty = sse_decode_opt_box_autoadd_bool(deserializer);
@@ -39315,6 +39333,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_bridge_recovery_impact(
+    BridgeRecoveryImpact self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_i_32(self.index, serializer);
+  }
+
+  @protected
   void sse_encode_bridge_recovery_issue_action(
     BridgeRecoveryIssueAction self,
     SseSerializer serializer,
@@ -40260,6 +40287,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_String(self.id, serializer);
     sse_encode_bridge_recovery_issue_scope(self.scope, serializer);
     sse_encode_bridge_recovery_issue_category(self.category, serializer);
+    sse_encode_bridge_recovery_impact(self.impact, serializer);
     sse_encode_list_bridge_recovery_issue_action(
       self.availableActions,
       serializer,
@@ -42610,7 +42638,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_String(self.state, serializer);
     sse_encode_String(self.repositoryRoot, serializer);
     sse_encode_String(self.path, serializer);
-    sse_encode_String(self.branch, serializer);
+    sse_encode_opt_String(self.branch, serializer);
     sse_encode_String(self.baseCommit, serializer);
     sse_encode_opt_String(self.headCommit, serializer);
     sse_encode_opt_box_autoadd_bool(self.dirty, serializer);

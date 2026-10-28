@@ -69,7 +69,7 @@ impl StudioRuntime {
         let reader = self.timeline_reader(thread_id).await?;
         let mut content = reader.open_tail().await?;
         let subscription_id = content.subscription_id().to_owned();
-        let initial = content.initial()?;
+        let initial = content.initial().await?;
         let state = self
             .subscribe_thread(ThreadSubscriptionRequest {
                 thread_id: thread_id.to_owned(),
@@ -108,13 +108,21 @@ impl ConversationFeed {
     /// 取消本次等待不会重建任何域的读取。两个源都自然结束才返回 `None`。
     ///
     /// # Errors
-    /// 已请求关闭时优先返回类型化 `Cancelled`；源错误原样传播，不伪装成自然结束。
+    /// 已请求关闭时优先返回类型化 `Cancelled`；源错误原样传播，不伪装成自然结束。交付任何
+    /// 已捕获数据前复核同一读准入：复核失败保留原错误并收束本观察，不转成空数据或正常结束。
     pub async fn recv(&mut self) -> Result<Option<ConversationEvent>> {
         loop {
             if self.cancel.is_cancelled() {
                 return Err(cancelled());
             }
             if let Some(baseline) = self.initial.take() {
+                // 缓存基线可能已跨过等待：在已登记接收者与已捕获基线上复核同一读准入，
+                // 不重新订阅、不重读正文；失败时收束原观察并保留类型化错误。
+                if let Err(error) = self.reader.ensure_read_access() {
+                    self.initial = Some(baseline);
+                    self.request_close();
+                    return Err(error);
+                }
                 return Ok(Some(ConversationEvent::ContentBaseline { baseline }));
             }
             if self.state_wait.is_none() && self.content_wait.is_none() {
@@ -127,6 +135,11 @@ impl ConversationFeed {
                     self.state_wait = None;
                     match result {
                         Ok(Some(update)) => {
+                            if let Err(error) = self.reader.ensure_read_access() {
+                                drop(state);
+                                self.request_close();
+                                return Err(error);
+                            }
                             self.state_wait = Some(wait_state(state, self.cancel.clone()));
                             return Ok(Some(ConversationEvent::State { update: Box::new(update) }));
                         }
@@ -141,6 +154,11 @@ impl ConversationFeed {
                     self.content_wait = None;
                     match result {
                         Ok(Some(update)) => {
+                            if let Err(error) = self.reader.ensure_read_access() {
+                                content.close();
+                                self.request_close();
+                                return Err(error);
+                            }
                             self.content_wait = Some(wait_content(content, self.cancel.clone()));
                             return Ok(Some(ConversationEvent::ContentUpdate { update }));
                         }

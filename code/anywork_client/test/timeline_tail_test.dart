@@ -397,6 +397,12 @@ void main() {
       expect(frame.isResync, isTrue);
       expect(frame.baseline.version, 50);
       await feed.deliver(ConversationUpdateEvent(update: patch(50, 51)));
+      // 重同步后的补丁以新基线版本为 from：新基线已被真正采纳。
+      final updated =
+          fixture.session().content.lastDeliveredFrame
+              as ConversationPatchFrame;
+      expect(updated.patch.from, 50);
+      expect(updated.patch.to, 51);
       await fixture.close();
       expect(
         await reject(

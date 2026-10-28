@@ -477,7 +477,7 @@ ComposerThreadState _newThreadComposer(
   final submitting = draft.submitting || attachments.isSubmissionPending;
   if (!submitting && attachments is FailedComposerThreadState) {
     return FailedComposerThreadState(
-      error: attachments.error,
+      error: attachments.failure,
       draft: text,
       attachments: attachments.attachments,
       submissionRevision: attachments.submissionRevision,

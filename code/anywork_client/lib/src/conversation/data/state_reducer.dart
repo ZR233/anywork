@@ -23,9 +23,12 @@ ThreadSessionState applyThreadSnapshotState(
     todo: snapshot.todo,
     activity: snapshot.activity,
     storage: snapshot.storage,
+    // choose 不是结合运算：必须按 latest → snapshot.latest → snapshot.active
+    // 的固定左结合次序折叠，右折叠会让同身份 terminal 候选提前挡掉更高的
+    // active revision（A terminal 5 → B latest 6 → A active 7 末态应为 A 7）。
     latestTurn: newestSessionTurn(
-      base.latestTurn,
-      newestSessionTurn(snapshot.latestTurn, snapshot.activeTurn),
+      newestSessionTurn(base.latestTurn, snapshot.latestTurn),
+      snapshot.activeTurn,
     ),
   );
   return current.copyWith(
@@ -77,21 +80,6 @@ ThreadSessionState applyThreadNotificationState(
     baseRevision: frame.baseRevision ?? frame.revision - 1,
     sync: current.sync.connected(),
   );
-}
-
-StudioTurnView? newestSessionTurn(StudioTurnView? left, StudioTurnView? right) {
-  if (left == null) return right;
-  if (right == null) return left;
-  if (left.turnId == right.turnId) {
-    if (right.revision == left.revision) {
-      return right.state.isBusy && left.state.isTerminal ? left : right;
-    }
-    return right.revision > left.revision ? right : left;
-  }
-  final timeOrder = right.updatedAt.compareTo(left.updatedAt);
-  return timeOrder > 0 || (timeOrder == 0 && right.revision > left.revision)
-      ? right
-      : left;
 }
 
 ThreadWorkspace _applyTurn(

@@ -93,10 +93,10 @@ struct IncarnationStatus {
     metrics: ThreadPersistenceMetrics,
     /// Terminal fact: this incarnation's writer task ended while it still owed commits.
     ///
-    /// The incarnations that follow start from the published checkpoint, which does not contain
-    /// these commits, so a later successful save cannot recover them and must not clear this
-    /// diagnostic. Its obligations stay counted, which is what makes the process-wide drain fail
-    /// with the real reason instead of hanging or reporting a synthetic success.
+    /// The shared channel retains these facts, but a successor's registration alone does not
+    /// prove adoption. Its obligations stay counted until a real successor queue report covers
+    /// every fact, so the process-wide drain fails with the real reason instead of hanging or
+    /// reporting a synthetic success while no writer owns the queue.
     released_dirty: Option<String>,
 }
 
@@ -133,16 +133,24 @@ impl IncarnationStatus {
 /// it. One entry per incarnation is what makes three obligations hold at once: a stale report can
 /// never overwrite the newer incarnation's row, an accepted-but-undurable fact is never dropped
 /// when its writer is superseded, and a replaced writer that stops dirty keeps failing the drain
-/// explicitly with its own error.
+/// explicitly until a real successor adopts its queue or proves it durable.
 ///
 /// The map stays bounded because a stopped incarnation is removed as soon as it owes nothing.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 struct ThreadStatus {
     incarnations: BTreeMap<usize, IncarnationStatus>,
+    channel: Arc<HistoryChannel>,
 }
 
 #[derive(Debug)]
 struct Inner {
+    #[cfg(test)]
+    release_gate: Mutex<
+        Option<(
+            std::sync::mpsc::SyncSender<()>,
+            std::sync::mpsc::Receiver<()>,
+        )>,
+    >,
     threads: Mutex<BTreeMap<String, ThreadStatus>>,
     /// Last cumulative usage summary per Thread.
     ///
@@ -161,7 +169,6 @@ struct Inner {
     history: Mutex<BTreeMap<String, HistoryStoreShare>>,
     /// Views and the active writer share one session without pinning cold sessions forever.
     chats: Mutex<BTreeMap<String, WeakSession>>,
-    channels: Mutex<BTreeMap<String, Arc<HistoryChannel>>>,
     queued_bytes: Arc<AtomicU64>,
     state: watch::Sender<ThreadPersistenceSnapshot>,
     retry: Notify,
@@ -170,16 +177,31 @@ struct Inner {
 #[derive(Debug, Clone)]
 pub(crate) struct ThreadPersistenceCoordinator(Arc<Inner>);
 
+/// Claim and RAII release are established in the same synchronous registration boundary.
+pub(crate) struct HistoryWriterRegistration {
+    coordinator: ThreadPersistenceCoordinator,
+    thread_id: String,
+    owner: usize,
+    pub(crate) channel: Arc<HistoryChannel>,
+}
+
+impl Drop for HistoryWriterRegistration {
+    fn drop(&mut self) {
+        self.coordinator.detach(&self.thread_id, self.owner);
+    }
+}
+
 impl Default for ThreadPersistenceCoordinator {
     fn default() -> Self {
         let (state, _) = watch::channel(ThreadPersistenceSnapshot::default());
         Self(Arc::new(Inner {
+            #[cfg(test)]
+            release_gate: Mutex::new(None),
             threads: Mutex::new(BTreeMap::new()),
             usage: Mutex::new(BTreeMap::new()),
             calls: Mutex::new(CallsQueueMetrics::default()),
             history: Mutex::new(BTreeMap::new()),
             chats: Mutex::new(BTreeMap::new()),
-            channels: Mutex::new(BTreeMap::new()),
             queued_bytes: Arc::new(AtomicU64::new(0)),
             state,
             retry: Notify::new(),
@@ -188,6 +210,16 @@ impl Default for ThreadPersistenceCoordinator {
 }
 
 impl ThreadPersistenceCoordinator {
+    #[cfg(test)]
+    pub(crate) fn arm_release_gate(
+        &self,
+    ) -> (std::sync::mpsc::Receiver<()>, std::sync::mpsc::Sender<()>) {
+        let (entered, waiting) = std::sync::mpsc::sync_channel(1);
+        let (release, released) = std::sync::mpsc::channel();
+        *self.0.release_gate.lock().unwrap() = Some((entered, released));
+        (waiting, release)
+    }
+
     pub(crate) fn chat_session(&self, thread_id: &str) -> Option<Session> {
         let mut chats = self
             .0
@@ -218,23 +250,37 @@ impl ThreadPersistenceCoordinator {
     /// The manager owns admitted history independently of a writer or GUI subscription.
     pub(crate) fn history_channel(&self, thread_id: &str) -> Arc<HistoryChannel> {
         self.0
-            .channels
+            .threads
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .entry(thread_id.to_owned())
-            .or_insert_with(|| Arc::new(HistoryChannel::new(self.0.queued_bytes.clone())))
+            .or_insert_with(|| ThreadStatus {
+                incarnations: BTreeMap::new(),
+                channel: Arc::new(HistoryChannel::new(self.0.queued_bytes.clone())),
+            })
+            .channel
             .clone()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn retained_history_channel(&self, thread_id: &str) -> Option<Arc<HistoryChannel>> {
+        self.0
+            .threads
+            .lock()
+            .unwrap()
+            .get(thread_id)
+            .map(|status| status.channel.clone())
     }
 
     /// Retry a fixed session fault generation and wait for its required history/checkpoint fence.
     pub(crate) async fn retry_history(&self, thread_id: &str, generation: u64) -> Result<()> {
         let channel = self
             .0
-            .channels
+            .threads
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .get(thread_id)
-            .cloned()
+            .map(|status| status.channel.clone())
             .ok_or_else(|| anyhow::anyhow!("Thread has no pending history recovery"))?;
         let mut updates = channel.subscribe();
         channel.retry(generation)?;
@@ -311,16 +357,39 @@ impl ThreadPersistenceCoordinator {
             // Only the reported incarnation's own row may change: a superseded writer that is still
             // draining its task must not overwrite (or re-add pending work behind) the watermarks of
             // the writer that replaced it, and it must never create a row it does not own.
-            let Some(incarnation) = threads
-                .get_mut(thread_id)
-                .and_then(|status| status.incarnations.get_mut(&owner))
-            else {
+            let Some(status) = threads.get_mut(thread_id) else {
+                return;
+            };
+            let Some(incarnation) = status.incarnations.get_mut(&owner) else {
                 return;
             };
             incarnation.pending = pending.into_iter().map(|sequence| (sequence, ())).collect();
             incarnation.pending_checkpoint = pending_checkpoint;
             incarnation.error = error;
             incarnation.metrics = metrics;
+            // A cancelled initializer has not adopted a predecessor's obligations merely by
+            // reserving an identity. Retire its stopped predecessor only after a real queue report
+            // proves that every owed fact is either adopted by this incarnation or already durable.
+            let inherited = &status.incarnations[&owner];
+            let covered = status
+                .incarnations
+                .iter()
+                .filter_map(|(id, previous)| {
+                    (*id != owner
+                        && previous.released_dirty.is_some()
+                        && previous.pending.keys().all(|sequence| {
+                            inherited.pending.contains_key(sequence)
+                                || inherited.metrics.history_durable_sequence >= *sequence
+                        })
+                        && (!previous.pending_checkpoint
+                            || inherited.metrics.state_durable_revision
+                                >= previous.metrics.state_dirty_revision))
+                        .then_some(*id)
+                })
+                .collect::<Vec<_>>();
+            for id in covered {
+                status.incarnations.remove(&id);
+            }
         }
         self.refresh();
     }
@@ -331,20 +400,21 @@ impl ThreadPersistenceCoordinator {
     /// own [`Self::detach`] — which runs when its task has actually ended — may decide that a queue
     /// was released unsaved, so an overlapping incarnation can never be talked out of an obligation
     /// it accepted and still owns.
-    pub(crate) fn claim(&self, thread_id: &str, owner: usize) {
-        {
+    pub(crate) fn claim(&self, thread_id: &str, owner: usize) -> Result<HistoryWriterRegistration> {
+        let channel = {
             let mut threads = self
                 .0
                 .threads
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            let status = threads.entry(thread_id.to_owned()).or_default();
-            // A prior task has ended, but its channel and unacknowledged batches survived here.
-            // The replacement adopts that same queue, so the predecessor's diagnostic is no
-            // longer a separate outstanding obligation.
-            status
-                .incarnations
-                .retain(|_, previous| previous.released_dirty.is_none());
+            let status = threads
+                .entry(thread_id.to_owned())
+                .or_insert_with(|| ThreadStatus {
+                    incarnations: BTreeMap::new(),
+                    channel: Arc::new(HistoryChannel::new(self.0.queued_bytes.clone())),
+                });
+            anyhow::ensure!(!status.channel.is_stopping(), "history writer is stopping");
+            // Queue adoption is confirmed by update(), not by this preparation reservation.
             let superseded: Vec<usize> = status
                 .incarnations
                 .iter()
@@ -364,8 +434,16 @@ impl ThreadPersistenceCoordinator {
                     "Thread persistence writer incarnations overlap"
                 );
             }
-        }
+            status.channel.clone()
+        };
+        let registration = HistoryWriterRegistration {
+            coordinator: self.clone(),
+            thread_id: thread_id.into(),
+            owner,
+            channel,
+        };
         self.refresh();
+        Ok(registration)
     }
 
     /// Releases one Thread's watermarks when its per-Thread writer stops.
@@ -375,6 +453,19 @@ impl ThreadPersistenceCoordinator {
     /// commits those obligations stay counted and become an explicit terminal diagnostic, so
     /// shutdown fails with the real reason instead of hanging or reporting a synthetic success.
     pub(crate) fn detach(&self, thread_id: &str, owner: usize) {
+        let channel = self
+            .0
+            .threads
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(thread_id)
+            .map(|status| status.channel.clone());
+        let Some(channel) = channel else {
+            return;
+        };
+        // Do not take the channel's progress lock under the registry lock: reports take them in
+        // the opposite order. A concurrent new claim keeps its own incarnation and prevents removal.
+        let clean = channel.is_clean();
         let mut threads = self
             .0
             .threads
@@ -383,6 +474,9 @@ impl ThreadPersistenceCoordinator {
         let mut empty = false;
         let mut unavailable = false;
         if let Some(status) = threads.get_mut(thread_id) {
+            if !status.incarnations.contains_key(&owner) {
+                return;
+            }
             // Decide before mutating: `record_released_commits` deliberately keeps the row alive
             // when it owes commits, so the removal decision must come from the pre-release state.
             let mut release = false;
@@ -402,14 +496,9 @@ impl ThreadPersistenceCoordinator {
                 // pending entries are kept so the drain keeps seeing them and fails explicitly.
                 record_released_commits(incarnation, thread_id);
             }
-            unavailable = release
-                && !status
-                    .incarnations
-                    .iter()
-                    .any(|(id, incarnation)| *id != owner && incarnation.is_live());
-            if release && !unavailable {
-                status.incarnations.remove(&owner);
-            }
+            // A live successor may only have reserved its identity. Keep these obligations until
+            // its real queue report proves adoption; cancellation before that report must not make
+            // the process-wide drain mistake an unowned queue for a durable one.
             if let Some(error) = stale_error {
                 tracing::error!(
                     thread_id,
@@ -421,26 +510,42 @@ impl ThreadPersistenceCoordinator {
             if drop_row {
                 status.incarnations.remove(&owner);
             }
+            // An initializer can exit owing nothing itself while leaving its stopped predecessor's
+            // queue unowned. Publish that channel's failure from all remaining obligations, not
+            // just the departing incarnation, so both history barriers observe the terminal fact.
+            unavailable = status
+                .incarnations
+                .values()
+                .any(|incarnation| incarnation.owed() > 0)
+                && !status.incarnations.values().any(IncarnationStatus::is_live);
             empty = status.incarnations.is_empty();
         }
-        if empty {
+        if empty && clean {
             threads.remove(thread_id);
         }
         drop(threads);
-        if unavailable {
-            self.history_channel(thread_id).mark_unavailable();
-        } else if empty {
-            let mut channels = self
-                .0
-                .channels
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            if channels
-                .get(thread_id)
-                .is_some_and(|channel| channel.is_clean())
-            {
-                channels.remove(thread_id);
+        #[cfg(test)]
+        {
+            let gate = self.0.release_gate.lock().unwrap().take();
+            if let Some((entered, release)) = gate {
+                let _ = entered.send(());
+                let _ = release.recv();
             }
+        }
+        if unavailable {
+            // Recheck at publication, in the same progress -> registry order as a queue report.
+            // A successor may have initialized after the earlier registration was released.
+            channel.mark_unavailable(|| {
+                self.0
+                    .threads
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .get(thread_id)
+                    .is_some_and(|status| {
+                        Arc::ptr_eq(&status.channel, &channel)
+                            && !status.incarnations.values().any(IncarnationStatus::is_live)
+                    })
+            });
         }
         // The history registry holds no strong reference, so prune the entries whose Thread released
         // its last handle: the map stays bounded by the Threads that currently have a history writer
@@ -614,10 +719,10 @@ impl ThreadPersistenceCoordinator {
 /// Records the terminal fact that one writer incarnation stopped while it still owed commits.
 ///
 /// Called under the Threads lock from `detach`, the one place that knows a writer task has actually
-/// ended. A stopped writer can never make these facts durable, so the diagnostic is what turns an
-/// undrainable queue into an explicit shutdown failure instead of an unbounded wait. It stays
-/// visible for the life of the process: the following incarnations start from the published
-/// checkpoint, which does not contain these commits.
+/// ended. A stopped writer can never make these facts durable, so the diagnostic turns an unowned
+/// queue into an explicit shutdown failure instead of an unbounded wait. The shared channel keeps
+/// the facts available for a successor, whose real queue report must prove adoption or durability
+/// before this stopped incarnation's diagnostic may be removed.
 ///
 /// Its `pending` bookkeeping is deliberately kept: the obligation is still owned by this
 /// incarnation, so the process-wide drain keeps counting it and fails with this error instead of

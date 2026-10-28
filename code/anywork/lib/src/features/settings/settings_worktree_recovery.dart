@@ -42,7 +42,15 @@ class _WorktreeRecoverySectionState
     };
     return SettingsResourceRow(
       key: ValueKey('worktree-recovery-$identity'),
-      title: worktree.branch,
+      title:
+          worktree.branch ??
+          switch (worktree.inspection) {
+            WorktreeInspection.available => l10n.settingsWorktreeDetached,
+            WorktreeInspection.missing ||
+            WorktreeInspection.identityMismatch ||
+            WorktreeInspection.unavailable =>
+              l10n.settingsWorktreeBranchUnknown,
+          },
       subtitle: owner,
       icon: Icons.account_tree_outlined,
       status: Text(
@@ -68,12 +76,14 @@ class _WorktreeRecoverySectionState
         if (widget.issue.canRetry)
           TextButton.icon(
             key: ValueKey('worktree-retry-$identity'),
-            onPressed: _cleaning ? null : _retryInspection,
+            onPressed: _cleaning ? null : _retryRecovery,
             icon: const Icon(Icons.refresh, size: 18),
             label: Text(context.l10n.settingsWorktreeRetry),
           ),
       ],
       children: [
+        SelectableText(context.recoveryIssueLabel(widget.issue)),
+        const SizedBox(height: 8),
         SelectableText(
           [
             l10n.settingsWorktreeBase(worktree.baseCommit),
@@ -116,7 +126,7 @@ class _WorktreeRecoverySectionState
           context.l10n.settingsWorktreeInspectionUnavailable,
       };
 
-  Future<void> _retryInspection() async {
+  Future<void> _retryRecovery() async {
     setState(() => _cleaning = true);
     try {
       await ref.read(anyworkClientProvider).directoryCommands.retryRecovery();

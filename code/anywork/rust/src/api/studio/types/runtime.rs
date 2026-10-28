@@ -159,12 +159,18 @@ pub enum BridgeRecoveryIssueCategory {
     Storage,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum BridgeRecoveryImpact {
+    Advisory,
+    ExecutionBlocked,
+    AccessBlocked,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub enum BridgeRecoveryIssueAction {
     Retry,
-    CleanupThread,
-    RemoveProject,
     CleanupWorktree,
 }
 
@@ -188,7 +194,7 @@ pub struct BridgeWorktreeRecoveryPreviewDto {
     pub state: String,
     pub repository_root: String,
     pub path: String,
-    pub branch: String,
+    pub branch: Option<String>,
     pub base_commit: String,
     pub head_commit: Option<String>,
     pub dirty: Option<bool>,
@@ -209,6 +215,7 @@ pub struct BridgeStudioRecoveryIssueDto {
     pub id: String,
     pub scope: BridgeRecoveryIssueScope,
     pub category: BridgeRecoveryIssueCategory,
+    pub impact: BridgeRecoveryImpact,
     pub available_actions: Vec<BridgeRecoveryIssueAction>,
     pub project_id: Option<String>,
     pub thread_id: Option<String>,

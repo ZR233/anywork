@@ -4,8 +4,29 @@ use anyhow::{Context, Result};
 use pl_core::thread::{DeferredModelUpdatePrecondition, ThreadHandle};
 
 impl AgentServices {
-    pub(super) async fn prepare_model_admission(&self, thread: &ThreadHandle) -> Result<()> {
+    pub(super) async fn prepare_model_admission(
+        &self,
+        id: &str,
+        thread: &ThreadHandle,
+    ) -> Result<()> {
+        self.store.ensure_agent_execution_allowed(id).await?;
         let snapshot = thread.snapshot();
+        let record = self.record(id).await?;
+        self.recovery.ensure_thread_read_access(&record)?;
+        let resources = self
+            .factory
+            .verify_execution_workspace(
+                &record,
+                Some(&snapshot),
+                crate::studio::thread_factory::ExecutionWorkspaceCheck::Execute,
+            )
+            .await;
+        self.events.emit_recovery_state(
+            self.recovery
+                .apply_execution_workspace_check(&record, resources.as_ref().err()),
+        );
+        resources?;
+        self.recovery.ensure_thread_execution_access(&record)?;
         anyhow::ensure!(
             !crate::studio::agent_close::is_explicitly_closed(&snapshot)?,
             "child is explicitly closed"
@@ -79,7 +100,7 @@ impl StudioThreadAssembler {
         // before assembly, so every production path resolves its frozen selector against it.
         if let Some(services) = services {
             services
-                .prepare_model_admission(thread)
+                .prepare_model_admission(id, thread)
                 .await
                 .map_err(|source| ThreadAssemblyError::Resource {
                     operation: "admit Thread model",

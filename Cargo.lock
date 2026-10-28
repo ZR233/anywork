@@ -3649,6 +3649,7 @@ dependencies = [
  "pl-lsp",
  "pl-model",
  "pl-protocol",
+ "pl-provider-fixture",
  "pl-remote-helper",
  "pl-tool",
  "pl-trace",

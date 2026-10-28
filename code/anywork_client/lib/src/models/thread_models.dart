@@ -491,6 +491,29 @@ final class ThreadContextCompactionItemStateView extends ThreadItemStateView {
   final DateTime compactedAt;
 }
 
+/// 合并已采纳 Turn 事实与候选 Turn 的唯一共享规则。
+///
+/// [StudioTurnView.revision] 来自同一 Thread 的 core commit sequence，可跨
+/// Turn 身份比较；不是每 Turn 局部计数，也不跨 Thread 比较。只有候选
+/// revision 严格大于已采纳值才替换，小于或等于一律保留已采纳值，相同修订的
+/// 不同身份不制造额外顺序，[StudioTurnView.updatedAt] 不参与比较。同一
+/// Turn 身份上已采纳的终态事实不可被 busy 候选回退。
+StudioTurnView? newestSessionTurn(
+  StudioTurnView? alreadyAdopted,
+  StudioTurnView? candidate,
+) {
+  if (alreadyAdopted == null) return candidate;
+  if (candidate == null) return alreadyAdopted;
+  if (alreadyAdopted.turnId == candidate.turnId &&
+      alreadyAdopted.state.isTerminal &&
+      candidate.state.isBusy) {
+    return alreadyAdopted;
+  }
+  return candidate.revision > alreadyAdopted.revision
+      ? candidate
+      : alreadyAdopted;
+}
+
 class ThreadWorkspace {
   const ThreadWorkspace({
     required this.thread,
@@ -528,13 +551,7 @@ class ThreadWorkspace {
   final ThreadStorageStateView? storage;
 
   /// 最近 Turn 事实：当前执行的 Turn 不早于已观测到的终态 Turn。
-  StudioTurnView? get lastTurn {
-    final observed = latestTurn;
-    final active = activeTurn;
-    if (active == null) return observed;
-    if (observed == null || active.revision >= observed.revision) return active;
-    return observed;
-  }
+  StudioTurnView? get lastTurn => newestSessionTurn(latestTurn, activeTurn);
 
   ThreadWorkspace copyWith({
     StudioThread? thread,

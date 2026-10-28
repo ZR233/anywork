@@ -1,6 +1,6 @@
 //! Published workspace cleanup remains owned until the frozen close policy succeeds.
 use super::{Registry, State, StudioThreadAssembler, ThreadAssemblyError};
-use pl_tool::collaboration::thread::AgentWorkspaceDisposition;
+use pl_tool::collaboration::thread::WorkspaceRelease;
 use std::sync::{Arc, Weak};
 
 /// Admission is sealed only while an operation owns this guard. Durable explicit-close intent
@@ -58,11 +58,25 @@ impl StudioThreadAssembler {
     pub(super) async fn seal_agent_close(
         &self,
         targets: &[(usize, String)],
-        disposition: AgentWorkspaceDisposition,
+        disposition: WorkspaceRelease,
     ) -> Result<AgentOperationSeal, ThreadAssemblyError> {
         let mut ids = targets.iter().map(|(_, id)| id).collect::<Vec<_>>();
         ids.sort();
         ids.dedup();
+        let close_seal = {
+            let mut state = self.0.state();
+            if let Some(id) = ids
+                .iter()
+                .find(|id| state.sealed_agents.contains_key(id.as_str()))
+            {
+                return Err(ThreadAssemblyError::CloseDisposition((*id).clone()));
+            }
+            seal(
+                &self.0,
+                &mut state,
+                ids.iter().map(|id| (*id).clone()).collect(),
+            )
+        };
         let mut permits = Vec::new();
         for id in &ids {
             permits.push(self.agent_operation(id).await);
@@ -88,15 +102,11 @@ impl StudioThreadAssembler {
                         entry.published_resources_closed = false;
                     }
                     entry.workspace_disposition = Some(disposition);
+                    entry.ready = false;
                 }
-                entry.ready = false;
             }
         }
-        Ok(seal(
-            &self.0,
-            &mut state,
-            ids.into_iter().cloned().collect(),
-        ))
+        Ok(close_seal)
     }
 
     /// Caller holds this identity's operation permit and has just successfully flushed its close
@@ -104,7 +114,7 @@ impl StudioThreadAssembler {
     pub(super) fn freeze_agent_close_disposition(
         &self,
         id: &str,
-        disposition: AgentWorkspaceDisposition,
+        disposition: WorkspaceRelease,
     ) -> Result<(), ThreadAssemblyError> {
         let mut state = self.0.state();
         let entry = state
@@ -156,14 +166,10 @@ impl StudioThreadAssembler {
                         && Arc::ptr_eq(&entry.incarnation, incarnation)
                 })
                 .and_then(|entry| {
-                    // Ordinary retirement (archive or host shutdown) only stops/saves execution.
-                    // Published workspace disposition belongs to an explicit close_agent intent;
-                    // do not synthesize one here or even open the workspace backend.
-                    let disposition = entry.workspace_disposition?;
-                    state
-                        .child_factory
-                        .clone()
-                        .map(|factory| (factory, disposition))
+                    state.child_factory.clone().map(|factory| {
+                        let disposition = entry.workspace_disposition.unwrap_or_default();
+                        (factory, disposition)
+                    })
                 })
         };
         if let Some((factory, disposition)) = resource {

@@ -165,6 +165,152 @@ void main() {
     },
   );
 
+  for (final status in [ThreadStatusView.closing, ThreadStatusView.closed]) {
+    test(
+      '${status.name} preserves the complete history display and rejects new execution',
+      () async {
+        final ready = await open();
+        final lease = ready.owner.lease('thread')!;
+        final messages = [...lease.controller.messages];
+        final draft = ready.client.drafts.composer('thread')
+          ..updateDraft('keep closed draft');
+        ready.client.threadDirectory.applyWindow(
+          ThreadDirectoryWindow(
+            threads: [_thread().copyWith(status: status)],
+            revision: 2,
+          ),
+        );
+        // Canonical 状态经 typed feed 的 state 帧进入；目录身份与快照同时关闭。
+        ready.transport.workspace = (threadId) =>
+            workspaceFor(threadId)
+                .copyWith(thread: _thread(threadId).copyWith(status: status));
+        ready.connection.emitState(
+          ThreadSnapshotFrame(
+            workspace: workspaceFor('thread')
+                .copyWith(thread: _thread().copyWith(status: status)),
+          ),
+        );
+        await _until(
+          () =>
+              ready.client.conversations
+                  .existingSession('thread')
+                  ?.state
+                  .workspace
+                  ?.thread
+                  .status ==
+              status,
+        );
+
+        expect(ready.owner.lease('thread'), same(lease));
+        expect(lease.controller.messages, messages);
+        expect(lease.queries!.isActive, isTrue);
+        await expectLater(
+          ready.owner.prepareSend('thread'),
+          throwsA(
+            isA<StudioFailure>().having(
+              (failure) => failure.detailsJson,
+              'closed reason',
+              contains('threadClosed'),
+            ),
+          ),
+        );
+        await expectLater(
+          ready.client.threadCommands.submitComposer(
+            'thread',
+            const StudioPromptInput(
+              inputId: 'closed-input',
+              text: 'not sent',
+              attachmentDraftIds: [],
+            ),
+            expectedModelRouteRevision: 1,
+          ),
+          throwsA(
+            isA<SubmissionNotSent>().having(
+              (failure) => (failure.error as StudioFailure).detailsJson,
+              'closed reason',
+              contains('threadClosed'),
+            ),
+          ),
+        );
+        expect(ready.transport.promptEntered.isCompleted, isFalse);
+        expect(draft.state.draft, 'keep closed draft');
+        expect(lease.controller.messages, messages);
+        await ready.owner.returnToLive('thread');
+        expect(
+          ready.owner
+              .lease('thread')!
+              .controller
+              .messages
+              .map((message) => message.id),
+          ['a', 'b'],
+        );
+      },
+    );
+  }
+
+  for (final closeConversations in [true, false]) {
+    test('synchronous ChatOpening listener '
+        '${closeConversations ? 'close' : 'demand withdrawal'} '
+        'stops the original start stack', () async {
+      final transport = _ScriptedTransport()..workspace = workspaceFor;
+      final client = AnyworkClient(
+        transport: transport,
+        clientId: 'owner-reentry',
+      );
+      addTearDown(
+        () => client.close(
+          deadline: DateTime.now().add(const Duration(seconds: 5)),
+        ),
+      );
+      client.selection.markOpened();
+      client.threadDirectory.applyBaseline(
+        ThreadDirectoryPage(threads: [_thread()], revision: 1),
+        revision: 1,
+      );
+      final session = client.conversations.session('thread');
+      var stopping = false;
+      Future<CloseReport>? stopped;
+      final observation = session.content.state.watch((state) {
+        if (!stopping && state is ChatOpening<ConversationContentFrame>) {
+          stopping = true;
+          if (closeConversations) {
+            stopped = client.conversations.close();
+          } else {
+            // 撤需求合同：返回前旧 attempt 必须已失效，不依赖外层 drain。
+            client.conversations.setVisibleThread(null);
+          }
+        }
+      });
+      addTearDown(() async {
+        observation.cancel();
+      });
+      client.workspace.selectThread('thread', projectId: 'project');
+      expect(
+        () => client.conversations.setVisibleThread('thread'),
+        returnsNormally,
+        reason: '首条 ChatOpening 发布期间的重入监听不得卡死启动栈',
+      );
+      expect(stopping, isTrue);
+      await _until(() => session.content.hasDemand == false);
+      if (closeConversations) {
+        expect((await stopped!).complete, isTrue);
+        expect(session.isClosed, isTrue);
+        expect(transport.opens, 0);
+        expect(client.budget.used(ResourceKind.readModel), 0);
+      } else {
+        // 合同：撤需求返回即旧 attempt 失效，底层不得再打开 feed。
+        // SDK 生产修复由原作者负责；本断言按合同期待（先红后绿）。
+        final report = await session.content.joinRetired();
+        expect(report.complete, isTrue);
+        expect(session.isActive, isFalse);
+        expect(transport.connections, isEmpty);
+        expect(transport.opens, 0);
+      }
+      expect(client.budget.used(ResourceKind.chatHandle), 0);
+      expect(client.budget.used(ResourceKind.pendingOperation), 0);
+    });
+  }
+
   test(
     'history freezes the displayed set and only reports new output',
     () async {
