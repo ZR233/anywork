@@ -30,6 +30,7 @@ final class AccountSummary {
     required this.identity,
     required this.name,
     this.brandKey,
+    this.displayEndpoint,
     required this.isDefault,
     this.billingKind,
     this.billingKindOverride,
@@ -41,6 +42,9 @@ final class AccountSummary {
   final AccountIdentity identity;
   final String name;
   final String? brandKey;
+
+  /// Display-only canonical origin; never a source for saved connection settings.
+  final String? displayEndpoint;
   final bool isDefault;
   final BillingKind? billingKind;
   final BillingKind? billingKindOverride;

@@ -23,8 +23,8 @@ final class _ListAttempt {
   final observations = <Observation>[];
 }
 
-/// Summary-only list and navigation. This owner never opens a detail slot and
-/// never copies an editor's draft. Visibility is separate from subscriptions.
+/// Summary-only list and actions. Page location and finite editor resources
+/// belong to the Router and editor session, never this owner.
 @riverpod
 class AccountsViewModel extends _$AccountsViewModel {
   late AccountsRepository _accounts;
@@ -34,12 +34,6 @@ class AccountsViewModel extends _$AccountsViewModel {
   AccountDemand? _usageDemand;
   AccountDemand? _summaryDemand;
   String _search = '';
-  AccountDisplayKey? _selected;
-  AccountEditorKey? _editor;
-  bool _choosing = false;
-  bool _templatesLoading = false;
-  String? _templateError;
-  int _editorSequence = 0;
   final Map<AccountDisplayKey, String> _errors = {};
   final Set<AccountDisplayKey> _pending = {};
   final Map<AccountDisplayKey, _ListAttempt> _attempts = {};
@@ -61,7 +55,6 @@ class AccountsViewModel extends _$AccountsViewModel {
       _accounts.state.watch(_summariesChanged),
       _usage.state.watch((_) => _publish()),
       _usage.queryFailures.watch((_) => _publish()),
-      _acp.templates.watch((_) => _publish()),
     ];
     ref.onDispose(() {
       releaseAccountDemand(_summaryDemand);
@@ -96,103 +89,6 @@ class AccountsViewModel extends _$AccountsViewModel {
   void search(String raw) {
     _search = raw;
     _publish();
-  }
-
-  void open(AccountDisplayKey key) {
-    if (_editor != null) {
-      throw StateError('Confirm the editor before navigating');
-    }
-    _selected = key;
-    _choosing = false;
-    _publish();
-  }
-
-  void back() {
-    if (_editor != null) {
-      throw StateError('Confirm the editor before navigating');
-    }
-    _selected = null;
-    _choosing = false;
-    _publish();
-  }
-
-  void edit(AccountDisplayKey key) {
-    if (_editor != null) {
-      throw StateError('Confirm the editor before navigating');
-    }
-    _editor = AccountEditorKey(
-      editorId: 'account-editor-${++_editorSequence}',
-      target: key,
-      creating: false,
-    );
-    _selected = key;
-    _publish();
-  }
-
-  /// The caller has already resolved save/discard/cancel with the editor owner.
-  void finishEditor(AccountEditorKey key, {bool saved = false}) {
-    if (_editor != key) return;
-    _editor = null;
-    if (saved) _selected = key.target;
-    _publish();
-  }
-
-  Future<void> chooseTemplate() async {
-    if (_editor != null) {
-      throw StateError('Confirm the editor before navigating');
-    }
-    _choosing = true;
-    _templatesLoading = true;
-    _templateError = null;
-    _publish();
-    try {
-      await Future.wait([_accounts.loadTemplates(), _acp.loadTemplates()]);
-    } catch (error) {
-      if (ref.mounted) _templateError = safeAccountError(error, _strings);
-    } finally {
-      if (ref.mounted) {
-        _templatesLoading = false;
-        _publish();
-      }
-    }
-  }
-
-  void cancelTemplate() {
-    _choosing = false;
-    _publish();
-  }
-
-  /// Stable identity is allocated before constructing the form. Native and ACP
-  /// may use the same bare id; collisions are checked within the selected kind.
-  AccountEditorKey? create(AccountTemplateKey template) {
-    final exists = template.kind == AccountKind.native
-        ? _accounts.state.value.templates.template(template.id) != null
-        : _acp.templates.value.templates.any(
-            (value) => value.provider.wire == template.id,
-          );
-    if (!exists || _editor != null) {
-      _templateError = _strings['unknownTemplate'];
-      _publish();
-      return null;
-    }
-    final used = {
-      for (final account in _accounts.state.value.accounts)
-        if (displayIdentity(account.identity).kind == template.kind)
-          account.identity.accountId,
-    };
-    var id = template.id;
-    for (var suffix = 2; used.contains(id); suffix++) {
-      id = '${template.id}-$suffix';
-    }
-    _editor = AccountEditorKey(
-      editorId: 'account-editor-${++_editorSequence}',
-      target: AccountDisplayKey(kind: template.kind, id: id),
-      template: template,
-      creating: true,
-    );
-    _choosing = false;
-    _publish();
-    return _editor;
   }
 
   Future<void> refresh(AccountDisplayKey key) async {
@@ -249,6 +145,11 @@ class AccountsViewModel extends _$AccountsViewModel {
         AccountRowPresentation(
           key: displayIdentity(summary.identity),
           name: summary.name,
+          content: AccountRowContent.native(
+            billing: displayBilling(summary.billingKind),
+            usage: const AccountUsagePresentation(),
+            displayEndpoint: summary.displayEndpoint,
+          ),
         ),
   ];
 
@@ -313,10 +214,6 @@ class AccountsViewModel extends _$AccountsViewModel {
         final message = operationMessage(operation, _strings);
         if (message == null) {
           _errors.remove(key);
-          if (_selected == key &&
-              _accounts.state.value.account(domainIdentity(key)) == null) {
-            _selected = null;
-          }
         } else {
           _errors[key] = message;
         }
@@ -376,12 +273,6 @@ class AccountsViewModel extends _$AccountsViewModel {
         _pending.remove(attempt.key);
       }
     }
-    if (source.loaded &&
-        _editor == null &&
-        _selected != null &&
-        source.account(domainIdentity(_selected!)) == null) {
-      _selected = null;
-    }
     _refreshErrors.removeWhere(
       (key, value) =>
           source.loaded &&
@@ -400,8 +291,6 @@ class AccountsViewModel extends _$AccountsViewModel {
           account.identity.accountId.toLowerCase().contains(query);
     });
     return AccountsViewState(
-      selected: _selected,
-      editor: _editor,
       actions: {
         for (final attempt in _attempts.values)
           if (_owns(attempt))
@@ -412,32 +301,6 @@ class AccountsViewModel extends _$AccountsViewModel {
               message: _errors[attempt.key],
             ),
       },
-      choosingTemplate: _choosing,
-      templatesLoading: _templatesLoading,
-      templateError: _templateError,
-      templates: [
-        for (final template in _acp.templates.value.templates)
-          AccountTemplatePresentation(
-            key: AccountTemplateKey(
-              kind: AccountKind.acp,
-              id: template.provider.wire,
-            ),
-            name: template.displayName,
-            iconKey: template.iconKey,
-            description: template.description,
-          ),
-        if (source.templates.revision.isNotEmpty)
-          for (final template in source.templates.templates)
-            AccountTemplatePresentation(
-              key: AccountTemplateKey(
-                kind: AccountKind.native,
-                id: template.id,
-              ),
-              name: template.displayName,
-              iconKey: template.iconKey,
-              description: template.description,
-            ),
-      ],
       list: AccountsListPresentation(
         phase: source.stamp == null
             ? (source.failure != null
@@ -446,8 +309,6 @@ class AccountsViewModel extends _$AccountsViewModel {
             : AccountListPhase.ready,
         search: _search,
         searchHasNoResults: _search.trim().isNotEmpty && filtered.isEmpty,
-        selectedKey: _selected,
-        editingKey: _editor?.target,
         refreshing: source.loading,
         canAdd: source.loaded,
         canRefresh: source.loaded,
@@ -459,17 +320,18 @@ class AccountsViewModel extends _$AccountsViewModel {
               name: account.name,
               iconKey: account.brandKey,
               isDefault: account.isDefault,
-              billing: account.identity is NativeAccountIdentity
-                  ? displayBilling(account.billingKind)
-                  : null,
-              usage: account.identity is NativeAccountIdentity
-                  ? projectUsage(
-                      account,
-                      _usage.state.value,
-                      _usage.queryFailures.value,
-                      _strings,
+              content: account.identity is NativeAccountIdentity
+                  ? AccountRowContent.native(
+                      billing: displayBilling(account.billingKind),
+                      displayEndpoint: account.displayEndpoint,
+                      usage: projectUsage(
+                        account,
+                        _usage.state.value,
+                        _usage.queryFailures.value,
+                        _strings,
+                      ),
                     )
-                  : null,
+                  : AccountRowContent.acp(status: _strings['acp']),
               operationError:
                   _errors[displayIdentity(account.identity)] ??
                   _refreshErrors[displayIdentity(account.identity)]?.message,

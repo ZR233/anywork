@@ -263,6 +263,7 @@ class BridgeAccountSummary {
   final BridgeAccountIdentity identity;
   final String name;
   final String? brandKey;
+  final String? displayEndpoint;
   final bool isDefault;
   final BridgeBillingKind? billingKind;
   final BridgeBillingKind? billingKindOverride;
@@ -277,6 +278,7 @@ class BridgeAccountSummary {
     required this.identity,
     required this.name,
     this.brandKey,
+    this.displayEndpoint,
     required this.isDefault,
     this.billingKind,
     this.billingKindOverride,
@@ -291,6 +293,7 @@ class BridgeAccountSummary {
       identity.hashCode ^
       name.hashCode ^
       brandKey.hashCode ^
+      displayEndpoint.hashCode ^
       isDefault.hashCode ^
       billingKind.hashCode ^
       billingKindOverride.hashCode ^
@@ -307,6 +310,7 @@ class BridgeAccountSummary {
           identity == other.identity &&
           name == other.name &&
           brandKey == other.brandKey &&
+          displayEndpoint == other.displayEndpoint &&
           isDefault == other.isDefault &&
           billingKind == other.billingKind &&
           billingKindOverride == other.billingKindOverride &&

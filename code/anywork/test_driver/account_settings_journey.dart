@@ -8,7 +8,7 @@ import 'package:anywork/src/features/settings/accounts/state/account_view_key_va
 import 'driver_observation.dart';
 import 'flutter_driver_session.dart';
 
-/// Real-bridge manual journey for detail-list auto-save, not a widget test.
+/// Real-bridge manual journey for explicit model threshold saves.
 /// Run with cargo xtask manual-gui --scenario gui, then:
 /// cargo dart test_driver/account_settings_journey.dart VM_URL OUTPUT_DIR
 /// Only the isolated fixture account is edited; no system credential account
@@ -84,25 +84,58 @@ Future<void> main(List<String> args) async {
 
     await recorder.setCompactInput(id, model, '18000');
     await recorder.capture('input-pending', await recorder.readSnapshot());
+    await recorder.capture(
+      'input-draft-not-submitted',
+      await recorder.observeDraftUnchanged(
+        id,
+        model,
+        automatic,
+        baseline['settings']['revision'] as int,
+      ),
+    );
+    await recorder.visitModelDetails(id, model, expectedRaw: '18000');
+    await recorder.tapCompactSave(id, model);
     final afterInput = await recorder.waitThreshold(id, model, {
       ...automatic,
       'override': 18000,
       'effective': 18000,
     });
-    await recorder.capture('input-applied-without-save', afterInput);
+    await recorder.capture('explicit-save-applied', afterInput);
     const excessive = 9000000000;
     await recorder.setCompactInput(id, model, '$excessive');
-    final aboveExpected = {
-      ...automatic,
-      'override': excessive,
-      'adjustment': 'safetyLimit',
-    };
-    final above = await recorder.waitThreshold(id, model, aboveExpected);
+    await recorder.tapCompactSave(id, model);
+    final contextWindow =
+        (fixture['modelDetails'] as List).cast<Map>().singleWhere(
+              (item) => item['modelId'] == model,
+            )['contextWindow']
+            as int;
+    final above = await recorder.waitLimit(
+      id,
+      model,
+      (value) {
+        final effective = value['effective'];
+        return value['override'] == excessive &&
+            value['adjustment'] == 'safetyLimit' &&
+            effective is int &&
+            effective > 0 &&
+            effective <= contextWindow &&
+            effective < excessive;
+      },
+      expected: {
+        'override': excessive,
+        'adjustment': 'safetyLimit',
+        'effective':
+            'positive backend clamp within contextWindow=$contextWindow',
+      },
+    );
+    // Automatic policy is not the safety cap. Observe the real normalized
+    // result instead of assuming Clear and an excessive override share a value.
+    final aboveExpected = Map<String, dynamic>.from(_limit(above, id, model));
     await recorder.capture('above-safe-clamped', above);
 
     await recorder.setCompactInput(id, model, 'not-a-number');
-    // The negative debounce observation starts only after both sources settled.
-    final invalid = await recorder.observeInvalidUnchanged(
+    // Invalid draft input must not alter either authoritative resource.
+    final invalid = await recorder.observeDraftUnchanged(
       id,
       model,
       aboveExpected,
@@ -115,11 +148,12 @@ Future<void> main(List<String> args) async {
     await recorder.capture('restored-default', reset);
 
     // Rapid typing must keep the newest raw input and eventually canonicalize
-    // it without a page round trip. Deterministic CAS/old-ACK races live in the
+    // it only after explicit Save, without a page round trip. Deterministic CAS/old-ACK races live in the
     // SDK-only Client suite, rather than being faked inside Driver.
     await recorder.setCompactInput(id, model, '19000');
     await recorder.setCompactInput(id, model, '21000');
     await driver.sendTextInputAction(TextInputAction.done);
+    await recorder.tapCompactSave(id, model);
     final latestExpected = {
       ...automatic,
       'override': 21000,
@@ -152,6 +186,7 @@ Future<void> main(List<String> args) async {
       );
     }
     await recorder.setCompactInput(id, unknown, '17000');
+    await recorder.tapCompactSave(id, unknown);
     final unknownApplied = await recorder.waitThreshold(id, unknown, {
       ...unknownAutomatic,
       'override': 17000,
@@ -162,16 +197,10 @@ Future<void> main(List<String> args) async {
 
     // Billing is an immediate, narrow detail action. A later connection form
     // save must preserve it rather than replay a stale account card.
-    final noCharge = find.ancestor(
-      of: find.descendant(
-        of: find.byType('AccountBillingControl'),
-        matching: find.text(await recorder.label('noCharge')),
-      ),
-      matching: find.byType('ChoiceChip'),
-      firstMatchOnly: true,
-    );
-    await recorder.revealDetails(id, noCharge);
-    await driver.tap(noCharge);
+    final billingMenu = find.byValueKey('account-billing-menu');
+    await recorder.revealDetails(id, billingMenu);
+    await driver.rawTap(billingMenu);
+    await driver.rawTap(find.byValueKey('account-billing-noCharge'));
     await recorder.capture(
       'no-charge-canonical',
       await recorder.waitBilling(id, 'noCharge', 'noCharge'),
@@ -250,7 +279,7 @@ Future<void> main(List<String> args) async {
       );
     }
     await File('${output.path}/account-journey-summary.json').writeAsString(
-      '${const JsonEncoder.withIndent('  ').convert({'fixtureAccountId': id, 'model': model, 'unknownModel': unknown, 'inlineAutoSave': true, 'backendPolicy': true, 'restoreDefault': true, 'invalidNotPersisted': true, 'aboveSafeClamped': true, 'latestIntent': true, 'siblingsUnchanged': true, 'secondEditorEntryAbsent': true, 'noChargeCanonical': true, 'connectionEditPreservesBilling': true, 'noChargeOffClearsOverride': true, 'humanVerdict': 'pending'})}\n',
+      '${const JsonEncoder.withIndent('  ').convert({'fixtureAccountId': id, 'model': model, 'unknownModel': unknown, 'explicitSave': true, 'unsavedDraftNotPersisted': true, 'modelDetailsThreeTabsRetainDraft': true, 'backendPolicy': true, 'restoreDefault': true, 'invalidNotPersisted': true, 'aboveSafeClamped': true, 'latestIntent': true, 'siblingsUnchanged': true, 'secondEditorEntryAbsent': true, 'noChargeCanonical': true, 'connectionEditPreservesBilling': true, 'noChargeOffClearsOverride': true, 'humanVerdict': 'pending'})}\n',
     );
     stdout.writeln('Account journey captured; human verdict pending.');
   } finally {
@@ -359,14 +388,14 @@ class _Recorder {
     throw StateError('canonical threshold did not settle: $id/$model');
   }
 
-  Future<Map<String, dynamic>> observeInvalidUnchanged(
+  Future<Map<String, dynamic>> observeDraftUnchanged(
     String id,
     String model,
     Map<String, dynamic> expected,
     int settingsRevision,
   ) async {
-    // Preserve the existing 1100ms negative window beyond the 650ms debounce,
-    // but inspect throughout it rather than sleeping past a possible write.
+    // Observe beyond the removed automatic-submit timer to prove raw typing
+    // (valid or invalid) never writes canonical settings before Save.
     final deadline = DateTime.now().add(const Duration(milliseconds: 1100));
     while (true) {
       final snapshot = await readSnapshot();
@@ -377,9 +406,10 @@ class _Recorder {
         await recordThresholdFailure(id, model, {
           ...expected,
           'settingsRevision': settingsRevision,
-          'condition': 'unchanged throughout the invalid-input debounce window',
+          'condition':
+              'unchanged throughout the unsaved-draft observation window',
         }, snapshot);
-        throw StateError('invalid input changed canonical settings');
+        throw StateError('unsaved draft changed canonical settings');
       }
       final remaining = deadline.difference(DateTime.now()).inMilliseconds;
       if (remaining <= 0) return snapshot;
@@ -776,11 +806,63 @@ class _Recorder {
     await driver.enterText(value);
   }
 
+  Future<void> tapCompactSave(String id, String modelId) async {
+    final tile = await revealCompact(id, modelId);
+    final save = find.descendant(
+      of: _compactViewFinder(tile),
+      matching: find.byValueKey('account-compact-save'),
+    );
+    await driver.scrollUntilVisible(
+      await detailsScroll(id),
+      save,
+      dyScroll: -180,
+      timeout: FlutterDriverSession.tapDeadline,
+    );
+    await driver.sendCommand(
+      WaitForTappable(save, timeout: FlutterDriverSession.geometryDeadline),
+    );
+    await driver.rawTap(save);
+  }
+
+  Future<void> visitModelDetails(
+    String id,
+    String modelId, {
+    required String expectedRaw,
+  }) async {
+    final readout = find.byValueKey(
+      AccountViewKeyValues.modelReadout('native', id, modelId),
+    );
+    await revealDetails(id, readout);
+    await driver.rawTap(readout);
+    await driver.waitFor(find.byType('AccountModelDetailsView'));
+    for (final (tab, content) in const [
+      ('specs', 'AccountModelSpecifications'),
+      ('prices', 'AccountModelPricing'),
+      ('evaluations', 'AccountEvaluationsView'),
+    ]) {
+      await driver.rawTap(find.byValueKey('account-model-$tab-tab'));
+      await driver.waitForNoPendingFrame(
+        timeout: FlutterDriverSession.geometryDeadline,
+      );
+      await driver.waitFor(find.byType(content));
+      await capture('model-details-$tab', await readSnapshot());
+    }
+    await driver.rawTap(find.byValueKey('account-model-back'));
+    await driver.waitForAbsent(find.byType('AccountModelDetailsView'));
+    await driver.waitForNoPendingFrame(
+      timeout: FlutterDriverSession.geometryDeadline,
+    );
+    final tile = await revealCompact(id, modelId);
+    if (await driver.getText(_compactInputFinder(tile)) != expectedRaw) {
+      throw StateError('model details navigation lost the unsaved threshold');
+    }
+  }
+
   Future<void> tapCompactReset(String id, String modelId) async {
     final tile = await revealCompact(id, modelId);
     final reset = find.descendant(
       of: _compactViewFinder(tile),
-      matching: find.text(await label('restore')),
+      matching: find.byValueKey('account-compact-reset'),
     );
     await driver.scrollUntilVisible(
       await detailsScroll(id),
@@ -788,7 +870,7 @@ class _Recorder {
       dyScroll: -180,
       timeout: FlutterDriverSession.tapDeadline,
     );
-    await driver.tap(reset);
+    await driver.rawTap(reset);
   }
 }
 

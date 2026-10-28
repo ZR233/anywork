@@ -873,6 +873,7 @@ class _Journey {
     if (phase == 'first') await _prepareRequired();
     if (!const {'auth-faults', 'restart', 'retry'}.contains(phase)) {
       await _openTemplatePicker();
+      if (phase == 'first') await _capture('template-menu-open');
       await _chooseTemplate(_antigravityToken, dyScroll: 200);
     }
     switch (phase) {
@@ -911,7 +912,88 @@ class _Journey {
   Future<void> _openTemplatePicker() async {
     _enterStep('open-template-picker');
     await _tap(_accountAdd);
-    await driver.waitFor(find.byType('AccountTemplatePickerView'));
+    stage = '$_step:template-picker-ready';
+    final ready = await _until('template-picker-ready', (snapshot) {
+      final editor = _presentation(snapshot)?['editor'] as Map?;
+      final editorId = editor?['editorId'];
+      final target = editor?['target'];
+      final templates =
+          snapshot['settings']?['accountDomains']?['templates'] as Map?;
+      return editor?['creating'] == true &&
+          editor?['stale'] == false &&
+          editor?['saving'] == false &&
+          editorId is String &&
+          editorId.isNotEmpty &&
+          target is Map &&
+          const {'native', 'acp'}.contains(target['kind']) &&
+          target['id'] is String &&
+          (target['id'] as String).isNotEmpty &&
+          templates?['loaded'] == true &&
+          templates?['usable'] == true;
+    });
+    final editor = _presentation(ready)!['editor'] as Map;
+    final target = editor['target'] as Map;
+    final templates = ready['settings']['accountDomains']['templates'] as Map;
+    final nativeTemplates = ready['settings']['nativeTemplates'];
+    stdout.writeln(
+      '$stage ${jsonEncode({
+        'editorId': editor['editorId'],
+        'target': {'kind': target['kind'], 'id': target['id']},
+        'creating': editor['creating'],
+        'stale': editor['stale'],
+        'saving': editor['saving'],
+        'templatesLoaded': templates['loaded'],
+        'templatesUsable': templates['usable'],
+        'nativeTemplatesCount': nativeTemplates is List ? nativeTemplates.length : null,
+      })}',
+    );
+    await driver.waitFor(find.byValueKey('account-template-selector'));
+    stage = '$_step:tap:account-template-selector-toggle';
+    await driver.rawTap(
+      find.descendant(
+        of: find.byValueKey('account-template-selector'),
+        matching: find.byType('IconButton'),
+      ),
+      timeout: _controlWait,
+    );
+  }
+
+  /// The picker now belongs to an already-open creation draft. Selecting a
+  /// different template resolves that draft through the production dialog.
+  Future<bool> _selectTemplate(String token) async {
+    final before = await _snapshot();
+    final presentation = _presentation(before);
+    final editor = presentation?['editor'] as Map?;
+    if (editor == null ||
+        editor['creating'] != true ||
+        editor['saving'] != false) {
+      throw StateError('template selection has no idle creation editor');
+    }
+    final nativeTemplates = before['settings']['nativeTemplates'] as List;
+    final bool sameTemplate;
+    if (token == _antigravityToken) {
+      sameTemplate =
+          editor['target']?['kind'] == 'acp' &&
+          presentation?['acp']?['providerId'] == _providerWire;
+    } else {
+      sameTemplate =
+          editor['target']?['kind'] == 'native' &&
+          nativeTemplates.isNotEmpty &&
+          nativeTemplates.first == token;
+    }
+    await _tap(_templateKey(token));
+    if (!sameTemplate && editor['dirty'] == true) {
+      final dialog = find.byType('AccountUnsavedChangesDialog');
+      await driver.waitFor(dialog);
+      await driver.rawTap(
+        find.descendant(
+          of: dialog,
+          matching: find.text((await _usageLabels())['discard'] as String),
+        ),
+      );
+      await driver.waitForAbsent(dialog);
+    }
+    return !sameTemplate;
   }
 
   String _templateKey(String token) => AccountViewKeyValues.template(
@@ -942,9 +1024,17 @@ class _Journey {
       of: find.byValueKey(_settingsPage),
       matching: find.byType(viewType),
     );
-    // The production ListView uses PageStorageKey to retain scroll position;
-    // the official ByValueKey finder cannot match that distinct key type.
-    return find.descendant(of: view, matching: find.byType('ListView'));
+    final scaffold = find.descendant(
+      of: view,
+      matching: find.byType('AccountEditorScaffold'),
+    );
+    // The scaffold's Expanded content first enters this outer scroll view,
+    // before any field or selectable text can introduce an inner scroll owner.
+    return find.descendant(
+      of: scaffold,
+      matching: find.byType('SingleChildScrollView'),
+      firstMatchOnly: true,
+    );
   }
 
   Future<Map<String, dynamic>> _usageLabels() async => (jsonDecode(
@@ -979,13 +1069,17 @@ class _Journey {
     String token, {
     required double dyScroll,
   }) async {
+    final option = find.byValueKey(_templateKey(token));
+    stage = '$_step:wait-template-option:$token';
+    await driver.waitFor(option, timeout: _controlWait);
     stage = '$_step:scroll-template:$token';
     await driver.scrollUntilVisible(
-      find.descendant(
-        of: find.byType('AccountTemplatePickerView'),
+      find.ancestor(
+        of: option,
         matching: find.byType('Scrollable'),
+        firstMatchOnly: true,
       ),
-      find.byValueKey(_templateKey(token)),
+      option,
       dyScroll: dyScroll,
       timeout: _controlWait,
     );
@@ -1003,9 +1097,15 @@ class _Journey {
     final oldOperation = _operationId(before);
     final oldEditorId = _presentation(before)?['editor']?['editorId'];
     _enterStep('choose-template:$token');
-    await _tap(_templateKey(token));
+    if (phase == 'first') await _capture('template-visible-$token');
+    final switched = await _selectTemplate(token);
     await driver.waitFor(_panel);
     await _watchBaseline();
+    if (!switched && _phaseOf(await _snapshot()) != 'ready') {
+      // Default ACP opens only a draft; unlike an explicit template switch,
+      // it must not admit installation until the user presses Prepare.
+      await _tapPanelAction(AccountViewKeyValues.acpAction('prepare'));
+    }
     final started = await _until('template-selection-operation', (snapshot) {
       if (!_installLoaded(snapshot) || _install(snapshot)['stale'] == true) {
         return false;
@@ -1017,7 +1117,7 @@ class _Journey {
       final operation = _operationId(snapshot);
       if (editorId is! String ||
           editorId.isEmpty ||
-          editorId == oldEditorId ||
+          (switched && editorId == oldEditorId) ||
           editor?['creating'] != true ||
           editor?['target']?['kind'] != 'acp' ||
           targetId is! String ||
@@ -1074,7 +1174,7 @@ class _Journey {
         _presentation(started)?['acp']?['preparedForEditor'] == false &&
         _phaseOf(started) == 'ready';
     _preparationSelection = {
-      'action': 'templateSelection',
+      'action': switched ? 'templateSelection' : 'explicitPrepare',
       'beforeLoaded': _installLoaded(before),
       'beforeStamp': _install(before)['stamp'],
       'beforeOperationId': oldOperation,
@@ -1103,20 +1203,29 @@ class _Journey {
   Future<void> _tap(String key, {Duration timeout = _controlWait}) async {
     await _waitFor(key, timeout: timeout);
     stage = '$_step:tap:$key';
-    await driver.tap(find.byValueKey(key));
+    await driver.rawTap(find.byValueKey(key));
   }
 
   Future<void> _tapPanelAction(String key) async {
-    final panel = find.descendant(
-      of: find.byValueKey(_settingsPage),
-      matching: _panel,
-    );
+    final presentation = _presentation(await _snapshot());
+    final SerializableFinder owner;
+    if (presentation?['editor'] != null) {
+      owner = await _editorScroll();
+    } else {
+      if (presentation?['selected'] == null) {
+        throw StateError('no observed account host for ACP panel action');
+      }
+      final details = find.descendant(
+        of: find.byValueKey(_settingsPage),
+        matching: find.byType('AccountDetailsView'),
+      );
+      owner = find.descendant(of: details, matching: find.byType('ListView'));
+    }
+    final panel = find.descendant(of: owner, matching: _panel);
     await _tapInAccountBody(
       key,
-      // Both production hosts (ACP editor and details) own one ListView
-      // ancestor of the panel. Do not target its nested selectable text or
-      // confuse the editor's fixed footer Cancel with cancelPreparation.
-      owner: find.ancestor(of: panel, matching: find.byType('ListView')),
+      // Panel domain actions are not the editor footer's Cancel intent.
+      owner: owner,
       target: find.descendant(of: panel, matching: find.byValueKey(key)),
       dyScroll: -200,
     );
@@ -1213,9 +1322,10 @@ class _Journey {
 
   Future<void> _revealInEditor(String key, {double dyScroll = -200}) async {
     stage = '$_step:reveal:$key';
+    final owner = await _editorScroll();
     await driver.scrollUntilVisible(
-      await _editorScroll(),
-      find.byValueKey(key),
+      owner,
+      find.descendant(of: owner, matching: find.byValueKey(key)),
       dyScroll: dyScroll,
       timeout: _controlWait,
     );
@@ -1439,6 +1549,7 @@ class _Journey {
     if (oldEditor == null || _operationId(before) != _activeInstallOperation) {
       throw StateError('ready claim has no current editor/installation');
     }
+    await _revealInEditor(_accountCancel);
     await _tap(_accountCancel);
     if (oldEditor['dirty'] == true || oldEditor['saving'] == true) {
       await driver.waitFor(find.byType('AccountUnsavedChangesDialog'));
@@ -1460,7 +1571,7 @@ class _Journey {
         'shared ready baseline was lost before template selection',
       );
     }
-    await _tap(_templateKey(_antigravityToken));
+    await _selectTemplate(_antigravityToken);
     await driver.waitFor(_panel);
     final unclaimed = await _until('fresh-editor-shared-ready', (snapshot) {
       if (_installLoaded(snapshot) &&
@@ -1829,7 +1940,7 @@ class _Journey {
       expectedTarget = '$token-$suffix';
     }
     await _ensureTemplateVisible(token, dyScroll: -200);
-    await _tap(_templateKey(token));
+    await _selectTemplate(token);
     final deadline = DateTime.now().add(_controlWait);
     Duration remaining() {
       final budget = deadline.difference(DateTime.now());
@@ -1920,6 +2031,7 @@ class _Journey {
         await driver.getText(input).timeout(remaining()) != baseUrl) {
       throw StateError('Native form owner or raw input changed before cancel');
     }
+    await _revealInEditor(_accountCancel);
     await _tap(_accountCancel);
     await driver.waitFor(find.byType('AccountUnsavedChangesDialog'));
     await driver.tap(
@@ -2344,6 +2456,7 @@ class _Journey {
     checks['preparedExplicitlyOwned'] =
         _presentation(claimed)?['acp']?['claimedOperationId'] ==
         _activeInstallOperation;
+    // Existence is not footer visibility or hit-testability; reveal at the tap.
     await _waitFor(_accountSave, timeout: const Duration(seconds: 2));
     checks['saveVisibleAfterReady'] = true;
     await _waitForAbsent(_installPrepare);
@@ -2366,6 +2479,7 @@ class _Journey {
 
     _enterStep('save-and-connect');
     _savingNewAccount = true;
+    await _revealInEditor(_accountSave);
     await _tap(_accountSave);
 
     stage = '$_step:await-saved-account';

@@ -31,7 +31,7 @@ pub(super) fn run(
             fs::create_dir(&home)?;
             fs::create_dir(&output)?;
             fs::create_dir(&coord)?;
-            write_config_with_profile(&home, ready, profile)?;
+            write_config_with_profile(&home, ready, profile, false)?;
             let mut prior_context = None;
             for phase in ["first", "restart", "recheck"] {
                 let gui_log = coord.join(format!("{phase}-gui.log"));

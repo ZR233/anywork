@@ -9,6 +9,7 @@ import 'package:go_router/go_router.dart';
 import 'package:multi_split_view/multi_split_view.dart';
 
 import '../../app/app_graph.dart';
+import '../../app/routing/app_route.dart';
 import '../../presentation/providers/client_provider.dart';
 
 import '../../shared/studio_loading.dart';

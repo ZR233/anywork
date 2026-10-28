@@ -4,6 +4,18 @@ import 'account_presentations.dart';
 
 part 'account_view_state.freezed.dart';
 
+/// Locates finite resources for an actual route entry, not a page selection or
+/// an editor id. Query-only focus changes do not replace this identity.
+@freezed
+sealed class AccountEditorEntryKey with _$AccountEditorEntryKey {
+  const factory AccountEditorEntryKey.creating({required String routeEntryId}) =
+      CreatingAccountEditorEntryKey;
+  const factory AccountEditorEntryKey.editing({
+    required String routeEntryId,
+    required AccountDisplayKey account,
+  }) = EditingAccountEditorEntryKey;
+}
+
 /// A form instance, not an account identity. Reopening the same account creates
 /// a new editor and cannot inherit an earlier asynchronous completion.
 @freezed
@@ -13,6 +25,8 @@ abstract class AccountEditorKey with _$AccountEditorKey {
     required AccountDisplayKey target,
     required bool creating,
     AccountTemplateKey? template,
+    String? focusModelId,
+    @Default(false) bool addModel,
   }) = _AccountEditorKey;
 }
 
@@ -32,14 +46,21 @@ abstract class AccountActionPresentation with _$AccountActionPresentation {
 abstract class AccountsViewState with _$AccountsViewState {
   const factory AccountsViewState({
     required AccountsListPresentation list,
-    AccountDisplayKey? selected,
-    AccountEditorKey? editor,
-    @Default(false) bool choosingTemplate,
-    @Default(false) bool templatesLoading,
-    @Default([]) List<AccountTemplatePresentation> templates,
-    String? templateError,
     @Default({}) Map<AccountDisplayKey, AccountActionPresentation> actions,
   }) = _AccountsViewState;
+}
+
+/// Current draft resources of one editor entry. The Router alone owns location.
+@freezed
+abstract class AccountEditorSessionState with _$AccountEditorSessionState {
+  const factory AccountEditorSessionState({
+    required AccountEditorEntryKey entry,
+    AccountEditorKey? editor,
+    @Default(false) bool templatesLoading,
+    @Default(<AccountTemplatePresentation>[])
+    List<AccountTemplatePresentation> templates,
+    String? error,
+  }) = _AccountEditorSessionState;
 }
 
 @freezed
@@ -69,7 +90,8 @@ abstract class AccountAcpKey with _$AccountAcpKey {
 abstract class AccountReadoutState with _$AccountReadoutState {
   const factory AccountReadoutState({
     required AccountReadoutPhase phase,
-    @Default([]) List<AccountDisplayFact> performance,
+    AccountPerformancePresentation? performance,
+    @Default([]) List<AccountDisplayFact> guidance,
     @Default([]) List<AccountModelEvaluation> evaluations,
     String? error,
   }) = _AccountReadoutState;

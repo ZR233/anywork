@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../../l10n/app_localizations.dart';
+import '../../../../app/routing/app_route.dart';
 import '../state/account_presentations.dart';
 import '../state/account_view_state.dart';
 import '../view_models/account_details_view_model.dart';
@@ -12,7 +13,6 @@ import '../view_models/accounts_view_model.dart';
 import '../view_models/acp_account_view_model.dart';
 import '../views/account_details_view.dart';
 import 'account_actions.dart';
-import 'account_navigation.dart';
 import 'account_strings.dart';
 
 class AccountDetailsConnector extends ConsumerStatefulWidget {
@@ -27,6 +27,40 @@ class _AccountDetailsConnectorState
     extends ConsumerState<AccountDetailsConnector> {
   String? _locale;
   AccountAcpKey? _localizedAcp;
+  void Function()? _releaseModels;
+
+  @override
+  void initState() {
+    super.initState();
+    _retainModels();
+  }
+
+  void _retainModels() {
+    if (widget.account.kind == AccountKind.native) {
+      _releaseModels = ref
+          .read(accountModelsViewModelProvider(widget.account).notifier)
+          .retainAccountScope();
+    }
+  }
+
+  @override
+  void didUpdateWidget(covariant AccountDetailsConnector oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.account != widget.account) {
+      _releaseModels?.call();
+      _releaseModels = null;
+      _locale = null;
+      _localizedAcp = null;
+      _retainModels();
+    }
+  }
+
+  @override
+  void dispose() {
+    _releaseModels?.call();
+    super.dispose();
+  }
+
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
@@ -34,15 +68,16 @@ class _AccountDetailsConnectorState
     if (_locale == l10n.localeName) return;
     _locale = l10n.localeName;
     _localizedAcp = null;
+    final account = widget.account;
     scheduleMicrotask(() {
-      if (!mounted) return;
+      if (!mounted || widget.account != account) return;
       final strings = accountStrings(l10n);
       ref
-          .read(accountDetailsViewModelProvider(widget.account).notifier)
+          .read(accountDetailsViewModelProvider(account).notifier)
           .setStrings(strings);
       if (widget.account.kind == AccountKind.native) {
         ref
-            .read(accountModelsViewModelProvider(widget.account).notifier)
+            .read(accountModelsViewModelProvider(account).notifier)
             .setStrings(strings);
       }
     });
@@ -66,7 +101,7 @@ class _AccountDetailsConnectorState
       _localizedAcp = acpKey;
       final strings = accountStrings(AppLocalizations.of(context));
       scheduleMicrotask(() {
-        if (mounted) {
+        if (mounted && _localizedAcp == acpKey) {
           ref
               .read(acpAccountViewModelProvider(acpKey).notifier)
               .setStrings(strings);
@@ -82,16 +117,11 @@ class _AccountDetailsConnectorState
         final navigation = ref.read(accountsViewModelProvider.notifier);
         return AccountDetailsView(
           value: owner.presentation(catalog: models?.catalog, acp: acp?.panel),
-          onBack: () async {
-            if (await confirmLeaveAccountsEditor(context, ref) && mounted) {
-              navigation.back();
-            }
-          },
-          onEdit: () async {
-            if (await confirmLeaveAccountsEditor(context, ref) && mounted) {
-              navigation.edit(widget.account);
-            }
-          },
+          onBack: () => const SettingsRoute().go(context),
+          onEdit: () => AccountEditRoute(
+            kind: widget.account.kind,
+            accountId: widget.account.id,
+          ).go(context),
           onDelete: () => deleteAccount(context, ref, widget.account),
           onSetDefault: () => navigation.setDefault(widget.account),
           onRefreshUsage: owner.refreshUsage,
@@ -100,6 +130,11 @@ class _AccountDetailsConnectorState
           onSyncModels: () => ref
               .read(accountModelsViewModelProvider(widget.account).notifier)
               .sync(),
+          onAddModel: () => AccountEditRoute(
+            kind: widget.account.kind,
+            accountId: widget.account.id,
+            addModel: true,
+          ).go(context),
           modelActions: accountModelActions(context, ref),
           onAcpAction: (action) {
             if (acpKey != null) {

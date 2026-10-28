@@ -61,6 +61,7 @@ pub(super) fn frame(value: p::AccountDomainFrame) -> BridgeAccountDomainFrame {
                     identity: account.identity.into(),
                     name: account.name,
                     brand_key: account.brand_key,
+                    display_endpoint: account.display_endpoint,
                     is_default: account.is_default,
                     billing_kind: account.billing_kind.map(Into::into),
                     billing_kind_override: account.billing_kind_override.map(Into::into),

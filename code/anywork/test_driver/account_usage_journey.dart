@@ -20,6 +20,7 @@ typedef _Json = Map<String, dynamic>;
 /// 快照是两个不同接口；旅程只读取/驱动 fixture，不新增兼容别名。
 const _fixtureStatePath = '/__provider_usage/state';
 const _fixtureReleasePath = '/__provider_usage/release';
+const _fixtureControlPath = '/__provider_usage/control';
 
 Future<void> main(List<String> args) async {
   if (args.length < 7 || args.length > 8) {
@@ -200,6 +201,129 @@ class _Probe {
     );
   }
 
+  void requireFastBalance(_Json state, {required bool recovered}) {
+    final lastGood = record(state, fast)?['lastGood'] as Map?;
+    final value = lastGood?['value'] as Map?;
+    require(
+      lastGood?['checkedAt'] is int &&
+          value?['kind'] == 'balance' &&
+          value?['available'] == true,
+      'fast canonical balance is unavailable: $lastGood',
+    );
+    final balances = (value!['balances'] as List).cast<Map>();
+    require(
+      balances.length == 2,
+      'fast must retain both currencies: $balances',
+    );
+    for (final (currency, total, granted, toppedUp) in [
+      (
+        'USD',
+        recovered ? '89.00' : '88.00',
+        recovered ? '9.00' : '8.00',
+        '80.00',
+      ),
+      (
+        'CNY',
+        '0.000000000000000001',
+        '0.000000000000000001',
+        '0.000000000000000000',
+      ),
+    ]) {
+      final matches = balances
+          .where((balance) => balance['currency'] == currency)
+          .toList();
+      require(
+        matches.length == 1 &&
+            (
+                  matches.single['total'],
+                  matches.single['granted'],
+                  matches.single['toppedUp'],
+                ) ==
+                (total, granted, toppedUp),
+        'fast $currency precision or components changed: $balances',
+      );
+    }
+  }
+
+  void requirePlanQuota(_Json state, String id) {
+    final observation = record(state, id);
+    final value = observation?['lastGood']?['value'] as Map?;
+    require(
+      observation?['phase'] == 'succeeded' &&
+          !pending(state, id) &&
+          observation?['failure'] == null &&
+          value?['kind'] == 'subscription' &&
+          value?['level'] == 'fixture-plan',
+      'Plan canonical quota did not succeed: $observation',
+    );
+    final quotas = (value!['quotas'] as List).cast<Map>();
+    require(quotas.length == 2, 'Plan must retain both quota windows: $quotas');
+    for (final (window, used, remaining, percentage, resetAt) in const [
+      ('fiveHour', 95, 5, 95, 1700000000),
+      ('weekly', 10, 90, 10, 1700086400),
+    ]) {
+      final matches = quotas
+          .where((quota) => quota['window'] == window)
+          .toList();
+      require(
+        matches.length == 1 &&
+            (
+                  matches.single['used'],
+                  matches.single['total'],
+                  matches.single['remaining'],
+                  matches.single['percentage'],
+                  matches.single['resetAt'],
+                ) ==
+                (used, 100, remaining, percentage, resetAt),
+        'Plan $window quota or Unix-second reset was not mapped: $quotas',
+      );
+    }
+  }
+
+  void requireFixtureDelta(
+    _Json state,
+    Map baseline, {
+    required int fastIncrement,
+    int planIncrement = 0,
+    int failedIncrement = 0,
+    bool armed = false,
+  }) {
+    require(
+      state['fastQuotaStarted'] ==
+              (baseline['fastQuotaStarted'] as int) + fastIncrement &&
+          state['deniedQuotaStarted'] == baseline['deniedQuotaStarted'] &&
+          state['planQuotaStarted'] ==
+              (baseline['planQuotaStarted'] as int) + planIncrement &&
+          state['fastQuotaFailed'] ==
+              (baseline['fastQuotaFailed'] as int) + failedIncrement &&
+          state['fastQuotaFailureArmed'] == armed &&
+          state['slowQuotaStarted'] == baseline['slowQuotaStarted'] &&
+          state['mcpStarted'] == baseline['mcpStarted'] &&
+          state['mcpReleased'] == baseline['mcpReleased'] &&
+          state['slowQuotaReleased'] == baseline['slowQuotaReleased'],
+      'unexpected quota/MCP admission or control state: baseline=$baseline current=$state',
+    );
+  }
+
+  Future<void> revealDetails(SerializableFinder target) async {
+    await driver.waitFor(target, timeout: const Duration(seconds: 15));
+    await driver.scrollUntilVisible(
+      find.ancestor(
+        of: target,
+        matching: find.byType('Scrollable'),
+        firstMatchOnly: true,
+      ),
+      target,
+      dyScroll: -180,
+      timeout: const Duration(seconds: 15),
+    );
+  }
+
+  SerializableFinder get detailsUsage => find.descendant(
+    of: find.byType('AccountDetailsView'),
+    matching: find.byType('AccountUsageView'),
+  );
+
   Future<void> openSettings() async {
     await tap('settings-open');
     await driver.waitFor(find.byValueKey('settings-page'));
@@ -223,7 +347,20 @@ class _Probe {
 
   Future<void> returnToList() async {
     final presentation = (await usage())['presentation'] as Map;
-    if (presentation['selected'] != null) await tap('account-back');
+    if (presentation['selected'] != null) {
+      final list = find.descendant(
+        of: find.byType('AccountDetailsView'),
+        matching: find.byType('ListView'),
+      );
+      await driver.waitFor(list, timeout: const Duration(seconds: 15));
+      await driver.scrollUntilVisible(
+        list,
+        find.byValueKey('account-back'),
+        dyScroll: 180,
+        timeout: const Duration(seconds: 15),
+      );
+      await tap('account-back');
+    }
     await driver.waitFor(find.byValueKey('account-add'));
   }
 
@@ -273,8 +410,24 @@ class _Probe {
 
   Future<void> changeName(String value) => editField('name', value);
 
+  Future<void> _tapEditorFooter(String key) async {
+    final target = find.byValueKey(key);
+    await driver.waitFor(target, timeout: const Duration(seconds: 15));
+    await driver.scrollUntilVisible(
+      find.ancestor(
+        of: target,
+        matching: find.byType('Scrollable'),
+        firstMatchOnly: true,
+      ),
+      target,
+      dyScroll: -180,
+      timeout: const Duration(seconds: 15),
+    );
+    await tap(key);
+  }
+
   Future<void> save() async {
-    await tap('account-save');
+    await _tapEditorFooter('account-save');
     await driver.waitForAbsent(
       find.byValueKey('account-save'),
       timeout: const Duration(seconds: 8),
@@ -288,6 +441,27 @@ class _Probe {
   Future<String> addAccount(String label, String template) async {
     final before = ids(await usage());
     await tap('account-add');
+    final opened = await waitForState(
+      usage,
+      (state) =>
+          state['presentation']?['editor']?['creating'] == true &&
+          state['presentation']?['editor']?['stale'] == false,
+      'default account editor',
+    );
+    final original = opened['presentation']['editor'] as Map;
+    final templates =
+        (await driver.readSnapshot())['settings']['nativeTemplates'] as List;
+    require(
+      templates.isNotEmpty && original['target']?['kind'] == 'native',
+      'usage creation requires the real default Native editor',
+    );
+    final switching = templates.first != template;
+    final selector = find.byValueKey('account-template-selector');
+    await driver.waitFor(selector, timeout: const Duration(seconds: 15));
+    await driver.rawTap(
+      find.descendant(of: selector, matching: find.byType('IconButton')),
+      timeout: const Duration(seconds: 15),
+    );
     final option = find.byValueKey(
       AccountViewKeyValues.template('native', template),
     );
@@ -302,6 +476,19 @@ class _Probe {
       timeout: const Duration(seconds: 15),
     );
     await driver.rawTap(option);
+    if (switching) {
+      await discardDialog();
+      await waitForState(
+        usage,
+        (state) =>
+            state['presentation']?['editor']?['editorId'] !=
+                original['editorId'] &&
+            state['presentation']?['editor']?['target']?['kind'] == 'native' &&
+            state['presentation']?['editor']?['creating'] == true &&
+            state['presentation']?['editor']?['stale'] == false,
+        'new template editor identity',
+      );
+    }
     await editField('endpoint', args[3]);
     final stopwatch = Stopwatch()..start();
     await save();
@@ -338,14 +525,35 @@ class _Probe {
     });
     await returnToList();
     await tap('account-add');
-    await driver.rawTap(
-      find.descendant(
-        of: find.byType('AccountTemplatePickerView'),
-        matching: find.byType('OutlinedButton'),
-      ),
-    );
-    await driver.waitForAbsent(find.byValueKey('account-save'));
+    await discardNewEditor();
     return id;
+  }
+
+  Future<void> discardDialog() async {
+    final dialog = find.byType('AccountUnsavedChangesDialog');
+    await driver.waitFor(dialog);
+    final label = (await usage())['labels']['discard'] as String;
+    await driver.rawTap(
+      find.descendant(of: dialog, matching: find.text(label)),
+    );
+    await driver.waitForAbsent(dialog);
+  }
+
+  Future<void> discardNewEditor() async {
+    final snapshot = await waitForState(
+      usage,
+      (state) =>
+          state['presentation']?['editor']?['creating'] == true &&
+          state['presentation']?['editor']?['saving'] == false,
+      'new editor before discard',
+    );
+    require(
+      snapshot['presentation']['editor']['dirty'] == true,
+      'new editor unexpectedly has no creation draft',
+    );
+    await _tapEditorFooter('account-cancel');
+    await discardDialog();
+    await driver.waitForAbsent(find.byValueKey('account-save'));
   }
 
   Future<void> run() async {
@@ -426,15 +634,7 @@ class _Probe {
           record(state, denied)?['phase'] == 'failed',
       'per-card ready/failed before slow completes',
     );
-    require(
-      (record(parallel, fast)!['lastGood']['value']['balances'] as List)
-          .cast<Map>()
-          .any(
-            (balance) =>
-                balance['total'] == '88.00' && balance['currency'] is String,
-          ),
-      'fast result payload was not mapped',
-    );
+    requireFastBalance(parallel, recovered: false);
     await capture('parallel-quota');
     stages.add({
       'stage': 'automatic-parallel-quota',
@@ -479,12 +679,7 @@ class _Probe {
       'deleted in-flight usage discarded',
     );
     await tap('account-add');
-    await driver.rawTap(
-      find.descendant(
-        of: find.byType('AccountTemplatePickerView'),
-        matching: find.byType('OutlinedButton'),
-      ),
-    );
+    await discardNewEditor();
     await tap('settings-tab-general');
     await tap('settings-tab-accounts');
     await requireCounts(1, 1);
@@ -497,12 +692,12 @@ class _Probe {
       'deletedResultAbsent': true,
     });
 
-    await addAccount(args[6], 'zhipu');
+    final addedOrdinary = await addAccount(args[6], 'zhipu');
     final addedPlan = await addAccount(args[5], 'zhipu-coding-plan');
     await scrollRow(addedPlan);
     await tap(AccountViewKeyValues.row('native', addedPlan));
     await tap('account-edit');
-    await tap('account-cancel');
+    await _tapEditorFooter('account-cancel');
     await returnToList();
     await requireCounts(1, 1);
     require(
@@ -522,15 +717,204 @@ class _Probe {
       ),
       'generic MCP ready after release',
     );
+    await returnToList();
+    await scrollRow(fast);
+    await tap(AccountViewKeyValues.row('native', fast));
+    final beforeRefresh = await waitForState(
+      usage,
+      (state) =>
+          state['presentation']?['selected']?['kind'] == 'native' &&
+          state['presentation']?['selected']?['id'] == fast &&
+          state['presentation']?['editor'] == null &&
+          record(state, fast)?['phase'] == 'succeeded' &&
+          !pending(state, fast),
+      'fast detail before controlled refresh',
+    );
+    requireFastBalance(beforeRefresh, recovered: false);
+    final oldLastGood = jsonEncode(record(beforeRefresh, fast)!['lastGood']);
+    final baseline = await fixture(_fixtureStatePath);
+    await requireCounts(1, 1);
+    require(
+      baseline['fastQuotaStarted'] == 1 &&
+          baseline['deniedQuotaStarted'] == 1 &&
+          baseline['slowQuotaStarted'] == 1 &&
+          baseline['planQuotaStarted'] == 0 &&
+          baseline['fastQuotaFailed'] == 0 &&
+          baseline['fastQuotaFailureArmed'] == false &&
+          baseline['mcpReleased'] == true,
+      'unexpected baseline before new quota intents: $baseline',
+    );
+    await revealDetails(detailsUsage);
+    await capture('fast-multi-currency');
+    final armed = await fixture(_fixtureControlPath, {
+      'action': 'failNextFastQuota',
+    });
+    requireFixtureDelta(armed, baseline, fastIncrement: 0, armed: true);
+    final refresh = find.byValueKey('account-usage-check');
+    await revealDetails(refresh);
+    await tap('account-usage-check');
+    final failed = await waitForState(
+      usage,
+      (state) =>
+          record(state, fast)?['phase'] == 'failed' &&
+          !pending(state, fast) &&
+          record(state, fast)?['failure']?['retryable'] == true,
+      'fast controlled failure with retained last-good',
+    );
+    require(
+      jsonEncode(record(failed, fast)!['lastGood']) == oldLastGood,
+      'failed refresh changed last-good timestamp or complete value',
+    );
+    requireFastBalance(failed, recovered: false);
+    final afterFailure = await fixture(_fixtureStatePath);
+    requireFixtureDelta(
+      afterFailure,
+      baseline,
+      fastIncrement: 1,
+      failedIncrement: 1,
+    );
+    await revealDetails(detailsUsage);
+    await capture('fast-last-good-failure');
+    final retry = find.descendant(
+      of: detailsUsage,
+      matching: find.byType('TextButton'),
+    );
+    await revealDetails(retry);
+    await driver.rawTap(retry, timeout: const Duration(seconds: 15));
+    final recovered = await waitForState(
+      usage,
+      (state) =>
+          record(state, fast)?['phase'] == 'succeeded' &&
+          record(state, fast)?['failure'] == null &&
+          !pending(state, fast) &&
+          jsonEncode(record(state, fast)?['lastGood']) != oldLastGood,
+      'fast real Retry recovery',
+    );
+    requireFastBalance(recovered, recovered: true);
+    require(
+      jsonEncode(record(recovered, fast)!['lastGood']) != oldLastGood,
+      'Retry did not replace the old last-good value',
+    );
+    final afterRetry = await fixture(_fixtureStatePath);
+    requireFixtureDelta(
+      afterRetry,
+      baseline,
+      fastIncrement: 2,
+      failedIncrement: 1,
+    );
+    await revealDetails(detailsUsage);
+    await capture('fast-retry-recovered');
+    stages.add({
+      'stage': 'fast-multi-currency-last-good-retry',
+      'accountId': fast,
+      'lastGoodRetained': record(failed, fast)!['lastGood'],
+      'lastGoodRecovered': record(recovered, fast)!['lastGood'],
+      'failedOperationId': record(failed, fast)!['operationId'],
+      'recoveredOperationId': record(recovered, fast)!['operationId'],
+      'fixtureAfterFailure': afterFailure,
+      'fixtureAfterRetry': afterRetry,
+    });
+
+    await returnToList();
+    await scrollRow(addedPlan);
+    await tap(AccountViewKeyValues.row('native', addedPlan));
+    final planBefore = await waitForState(
+      usage,
+      (state) =>
+          state['presentation']?['selected']?['kind'] == 'native' &&
+          state['presentation']?['selected']?['id'] == addedPlan &&
+          state['presentation']?['editor'] == null &&
+          account(state, addedPlan)?['details']?['loaded'] == true &&
+          account(state, addedPlan)?['details']?['stale'] == false &&
+          account(state, addedPlan)?['hasBearerToken'] == false,
+      'observed Plan details before credential edit',
+    );
+    final planRevision = account(planBefore, addedPlan)!['usageQueryRevision'];
+    require(
+      planRevision is int,
+      'Plan has no canonical usage revision before credential Save',
+    );
+    final idsBeforeCredential = ids(planBefore);
+    await tap('account-edit');
+    await editField('credential', 'fixture-usage-plan');
+    await save();
+    final planSaved = await waitForState(
+      usage,
+      (state) =>
+          account(state, addedPlan)?['credentialReady'] == true &&
+          account(state, addedPlan)?['hasBearerToken'] == true &&
+          account(state, addedPlan)?['usageQueryRevision'] is int &&
+          account(state, addedPlan)?['usageQueryRevision'] != planRevision &&
+          record(state, addedPlan)?['phase'] == 'succeeded' &&
+          !pending(state, addedPlan),
+      'same Plan canonical credential and automatic quota',
+    );
+    require(
+      ids(planSaved).length == idsBeforeCredential.length &&
+          ids(planSaved).containsAll(idsBeforeCredential),
+      'credential Save created another account',
+    );
+    requirePlanQuota(planSaved, addedPlan);
+    final afterPlan = await fixture(_fixtureStatePath);
+    requireFixtureDelta(
+      afterPlan,
+      baseline,
+      fastIncrement: 2,
+      planIncrement: 1,
+      failedIncrement: 1,
+    );
+    await revealDetails(detailsUsage);
+    await capture('plan-quota-low');
+    stages.add({
+      'stage': 'plan-credential-and-dual-quota',
+      'accountId': addedPlan,
+      'previousUsageRevision': planRevision,
+      'usageQueryRevision': account(
+        planSaved,
+        addedPlan,
+      )!['usageQueryRevision'],
+      'credentialReady': account(planSaved, addedPlan)!['credentialReady'],
+      'hasBearerToken': account(planSaved, addedPlan)!['hasBearerToken'],
+      'lastGood': record(planSaved, addedPlan)!['lastGood'],
+      'accountIds': ids(planSaved).toList(),
+      'fixtureAfterCredentialSave': afterPlan,
+    });
+    await returnToList();
     final completed = await usage();
     require(
       account(completed, slow) == null && record(completed, slow) == null,
       'late deleted-account response revived a usage record',
     );
+    require(
+      record(completed, denied)?['phase'] == 'failed',
+      'denied record lost its original failure',
+    );
+    require(
+      record(completed, fast)?['phase'] == 'succeeded' &&
+          !pending(completed, fast),
+      'fast recovery was lost',
+    );
+    requireFastBalance(completed, recovered: true);
+    requirePlanQuota(completed, addedPlan);
+    final expectedIds = {...ids(parallel)}
+      ..remove(slow)
+      ..addAll([addedOrdinary, addedPlan]);
+    require(
+      ids(completed).length == expectedIds.length &&
+          ids(completed).containsAll(expectedIds),
+      'rename/credential saves or creation produced unexpected account identities',
+    );
     savedAccounts = (completed['accounts'] as List)
         .where((value) => (value as Map)['kind'] == 'native')
         .toList();
     finalFixture = await fixture(_fixtureStatePath);
+    requireFixtureDelta(
+      finalFixture,
+      baseline,
+      fastIncrement: 2,
+      planIncrement: 1,
+      failedIncrement: 1,
+    );
     await capture('complete');
   }
 
@@ -539,14 +923,20 @@ class _Probe {
       await File('${args[2]}/account-usage-summary-first.json').readAsString(),
     ) as Map).cast<String, dynamic>();
     final previous = first['fixture'] as Map;
+    final planStage = (first['stages'] as List).cast<Map>().singleWhere(
+      (stage) => stage['stage'] == 'save-zhipu-coding-plan',
+    );
+    final addedPlan = planStage['accountId'] as String;
     await openSettings();
-    await waitForState(
+    final admitted = await waitForState(
       () => fixture(_fixtureStatePath),
       (state) =>
           state['fastQuotaStarted'] ==
               (previous['fastQuotaStarted'] as int) + 1 &&
           state['deniedQuotaStarted'] ==
-              (previous['deniedQuotaStarted'] as int) + 1,
+              (previous['deniedQuotaStarted'] as int) + 1 &&
+          state['planQuotaStarted'] ==
+              (previous['planQuotaStarted'] as int) + 1,
       'new page lifecycle automatic quota load',
     );
     final state = await waitForState(
@@ -554,7 +944,9 @@ class _Probe {
       (state) =>
           !pending(state, fast) &&
           record(state, fast)?['phase'] == 'succeeded' &&
-          record(state, denied)?['phase'] == 'failed',
+          record(state, denied)?['phase'] == 'failed' &&
+          record(state, addedPlan)?['phase'] == 'succeeded' &&
+          !pending(state, addedPlan),
       'restart typed usage',
     );
     final expected = {
@@ -569,17 +961,75 @@ class _Probe {
       account(state, fast)?['name'] == 'Usage fast renamed',
       'canonical edited name did not survive restart',
     );
+    require(
+      record(state, slow) == null,
+      'deleted slow usage record revived after restart',
+    );
+    requireFastBalance(state, recovered: true);
+    requirePlanQuota(state, addedPlan);
+    require(
+      admitted['fastQuotaFailed'] == previous['fastQuotaFailed'] &&
+          admitted['fastQuotaFailed'] == 1 &&
+          admitted['fastQuotaFailureArmed'] == false,
+      'restart replayed the controlled failure or rearmed it: $admitted',
+    );
     await requireCounts(
       (previous['fastQuotaStarted'] as int) + 1,
       (previous['deniedQuotaStarted'] as int) + 1,
     );
-    savedAccounts = (state['accounts'] as List)
+    await scrollRow(addedPlan);
+    await tap(AccountViewKeyValues.row('native', addedPlan));
+    final observedPlan = await waitForState(
+      usage,
+      (state) =>
+          state['presentation']?['selected']?['kind'] == 'native' &&
+          state['presentation']?['selected']?['id'] == addedPlan &&
+          state['presentation']?['editor'] == null &&
+          account(state, addedPlan)?['details']?['loaded'] == true &&
+          account(state, addedPlan)?['details']?['stale'] == false &&
+          account(state, addedPlan)?['credentialReady'] == true &&
+          account(state, addedPlan)?['hasBearerToken'] == true,
+      'restart observed same Plan credential',
+    );
+    requirePlanQuota(observedPlan, addedPlan);
+    await revealDetails(detailsUsage);
+    await capture('plan-quota-low');
+    await returnToList();
+    final completed = await usage();
+    requirePlanQuota(completed, addedPlan);
+    requireFastBalance(completed, recovered: true);
+    require(
+      record(completed, denied)?['phase'] == 'failed' &&
+          account(completed, slow) == null &&
+          record(completed, slow) == null,
+      'restart detail observation changed independent account results',
+    );
+    savedAccounts = (completed['accounts'] as List)
         .where((value) => (value as Map)['kind'] == 'native')
         .toList();
     finalFixture = await fixture(_fixtureStatePath);
+    require(
+      finalFixture['fastQuotaStarted'] == admitted['fastQuotaStarted'] &&
+          finalFixture['deniedQuotaStarted'] ==
+              admitted['deniedQuotaStarted'] &&
+          finalFixture['planQuotaStarted'] == admitted['planQuotaStarted'] &&
+          finalFixture['slowQuotaStarted'] == previous['slowQuotaStarted'] &&
+          finalFixture['fastQuotaFailed'] == admitted['fastQuotaFailed'] &&
+          finalFixture['fastQuotaFailureArmed'] == false,
+      'restart details caused extra quota requests or replayed the fault: $finalFixture',
+    );
     stages.add({
       'stage': 'restart-canonical-and-new-page-demand',
       'accountIds': expected.toList(),
+      'planAccountId': addedPlan,
+      'planCredentialReady': account(
+        observedPlan,
+        addedPlan,
+      )!['credentialReady'],
+      'planHasBearerToken': account(observedPlan, addedPlan)!['hasBearerToken'],
+      'planLastGood': record(completed, addedPlan)!['lastGood'],
+      'fastLastGood': record(completed, fast)!['lastGood'],
+      'fixtureAfterDemand': admitted,
     });
     await capture('complete');
   }

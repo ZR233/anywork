@@ -10,7 +10,9 @@ use pl_protocol::studio::{
 };
 
 use crate::PermissionMode;
+use crate::account_usage::account_usage_query_kind;
 use crate::config::{AccountId, ModelRouteConfig, ReasoningEffort};
+use crate::first_run::AccountTemplateKind;
 
 use super::StudioRuntime;
 
@@ -61,7 +63,17 @@ impl StudioRuntime {
 
     /// Reads the canonical built-in account and model catalog.
     pub fn load_account_catalog(&self) -> Result<pl_protocol::AccountCatalogSnapshot> {
-        Ok(pl_model::config::builtin_account_catalog()?.snapshot()?)
+        let mut snapshot = pl_model::config::builtin_account_catalog()?.snapshot()?;
+        for template in &mut snapshot.templates {
+            template.supports_usage_query = Some(
+                account_usage_query_kind(AccountTemplateKind::from_key(&template.id)?).is_some(),
+            );
+        }
+        // Keep the PL base revision in the hash input: it also covers transport profiles
+        // that are not represented by the catalog DTO itself.
+        let value = serde_json::to_value(&snapshot)?;
+        snapshot.revision = crate::hash::canonical_json_hash(&value);
+        Ok(snapshot)
     }
 
     /// Reads the secret-free canonical Settings snapshot from the in-memory owner.

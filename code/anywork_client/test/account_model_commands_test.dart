@@ -316,17 +316,19 @@ void main() {
       _identity,
       BillingKind.noCharge,
     );
-    final billingFailure = expectLater(pending, throwsA(isA<StudioFailure>()));
     call = await entered;
-    call.reply.completeError(
-      const StudioFailure(
-        code: StudioFailureCode.storage,
-        message: 'Billing write failed',
-        retryable: false,
-        correlationId: 'billing-write-failure',
-      ),
+    const billingError = StudioFailure(
+      code: StudioFailureCode.storage,
+      message: 'Billing write failed',
+      retryable: false,
+      correlationId: 'billing-write-failure',
     );
-    await billingFailure;
+    call.reply.completeError(billingError);
+    final billingFailure = await pending;
+    expect(billingFailure.id, call.operationId);
+    expect(billingFailure.failurePhase, OperationPhase.unknownOutcome);
+    expect(billingFailure.error, same(billingError));
+    expect(billingFailure.receipt, isNull);
     expect(_summary(client).billingKind, BillingKind.subscription);
     expect(_summary(client).billingKindOverride, isNull);
     entered = transport.calls.stream.first;
@@ -360,26 +362,19 @@ void main() {
       modelIdentity('account', 'online'),
       false,
     );
-    final writeFailure = expectLater(
-      pending,
-      throwsA(
-        isA<StudioFailure>().having(
-          (e) => e.code,
-          'code',
-          StudioFailureCode.storage,
-        ),
-      ),
-    );
     call = await entered;
-    call.reply.completeError(
-      const StudioFailure(
-        code: StudioFailureCode.storage,
-        message: 'Write failed before commit',
-        retryable: true,
-        correlationId: 'owner-write-failure',
-      ),
+    const writeError = StudioFailure(
+      code: StudioFailureCode.storage,
+      message: 'Write failed before commit',
+      retryable: true,
+      correlationId: 'owner-write-failure',
     );
-    await writeFailure;
+    call.reply.completeError(writeError);
+    final writeFailure = await pending;
+    expect(writeFailure.id, call.operationId);
+    expect(writeFailure.failurePhase, OperationPhase.unknownOutcome);
+    expect(writeFailure.error, same(writeError));
+    expect(writeFailure.receipt, isNull);
     expect(_catalog(client).models.single.enabled, isTrue);
     expect(
       (client.board.latest(_enabledKey)!.state.value.error as StudioFailure)
@@ -391,16 +386,6 @@ void main() {
       modelIdentity('account', 'online'),
       false,
     );
-    final rejected = expectLater(
-      pending,
-      throwsA(
-        isA<StudioFailure>().having(
-          (e) => e.code,
-          'code',
-          StudioFailureCode.protocol,
-        ),
-      ),
-    );
     call = await entered;
     call.complete(
       _snapshot(
@@ -409,7 +394,14 @@ void main() {
       ),
       foreignId: const OperationId('foreign'),
     );
-    await rejected;
+    final foreignReceiptFailure = await pending;
+    expect(foreignReceiptFailure.id, call.operationId);
+    expect(foreignReceiptFailure.failurePhase, OperationPhase.unknownOutcome);
+    expect(foreignReceiptFailure.receipt, isNull);
+    expect(
+      (foreignReceiptFailure.error as StudioFailure).code,
+      StudioFailureCode.protocol,
+    );
     expect(
       client
           .domains
@@ -423,6 +415,7 @@ void main() {
       reason: 'Foreign receipts cannot poison canonical state',
     );
     final failed = client.board.latest(_enabledKey)!.state.value;
+    expect(foreignReceiptFailure, same(failed));
     expect(
       failed.isPending,
       isTrue,

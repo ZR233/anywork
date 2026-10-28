@@ -673,6 +673,9 @@ pub struct BridgeAccountTemplateDescriptor {
     pub model_catalog_id: String,
     /// 模板默认的厂商协议；与 ProtocolKind 的 wire 值一致。
     pub protocol: String,
+    pub default_billing_kind: BridgeBillingKind,
+    pub supports_model_discovery: bool,
+    pub supports_usage_query: Option<bool>,
     pub suggested_model_id: String,
     pub icon_key: Option<String>,
     pub service_capabilities: BridgeServiceCapabilitiesDescriptor,
@@ -869,6 +872,9 @@ impl From<pl_protocol::AccountCatalogSnapshot> for BridgeAccountCatalogSnapshot 
                     credential_env: preset.credential.env_var,
                     model_catalog_id: preset.model_catalog_id,
                     protocol: preset.protocol,
+                    default_billing_kind: preset.default_billing_kind.into(),
+                    supports_model_discovery: preset.supports_model_discovery,
+                    supports_usage_query: preset.supports_usage_query,
                     suggested_model_id: preset.suggested_model_id,
                     icon_key: preset.icon_key,
                     service_capabilities: BridgeServiceCapabilitiesDescriptor {

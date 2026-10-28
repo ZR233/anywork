@@ -107,6 +107,7 @@ AccountDomainFrame _accountFrameFromFrb(
           identity: _accountIdentityFromFrb(account.identity),
           name: account.name,
           brandKey: account.brandKey,
+          displayEndpoint: account.displayEndpoint,
           isDefault: account.isDefault,
           billingKind: account.billingKind == null
               ? null
@@ -297,6 +298,9 @@ AccountCatalogView accountCatalogFromFrb(
           modelCatalogId: template.modelCatalogId,
           protocol: template.protocol,
           suggestedModelId: template.suggestedModelId,
+          defaultBillingKind: _billingKindFromFrb(template.defaultBillingKind),
+          supportsModelDiscovery: template.supportsModelDiscovery,
+          supportsUsageQuery: template.supportsUsageQuery,
           hostedWebSearch:
               template.serviceCapabilities.webSearch.hostedResponses,
           hostedWebSearchDialect:

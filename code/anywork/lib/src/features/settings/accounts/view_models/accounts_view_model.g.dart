@@ -39,7 +39,7 @@ final class AccountsViewModelProvider
   AccountsViewModel create() => AccountsViewModel();
 }
 
-String _$accountsViewModelHash() => r'ca3fdbc2a2e89ca12f92bfb19cadab947430ab6c';
+String _$accountsViewModelHash() => r'f89bf1340e25f72e7742482661ff6b2ccf73600d';
 
 /// Summary-only list and navigation. This owner never opens a detail slot and
 /// never copies an editor's draft. Visibility is separate from subscriptions.

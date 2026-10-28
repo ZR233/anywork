@@ -1,13 +1,14 @@
 import 'package:flutter/material.dart';
 
 import '../../../../l10n/app_localizations.dart';
-import '../../../../shared/account_brand.dart';
 import '../state/account_presentations.dart';
 import '../state/account_view_key_values.dart';
 import '../widgets/account_models_view.dart';
+import '../widgets/account_editor_fields.dart';
 import '../widgets/account_sections.dart';
+import '../widgets/account_template_selector.dart';
 
-class NativeAccountEditorView extends StatelessWidget {
+class NativeAccountEditorView extends StatefulWidget {
   const NativeAccountEditorView({
     required this.value,
     required this.onFieldChanged,
@@ -23,6 +24,11 @@ class NativeAccountEditorView extends StatelessWidget {
     required this.onSave,
     required this.onCancel,
     this.scrollController,
+    this.templateSelector,
+    this.manualSectionKey,
+    this.focusManualModelEditorKey,
+    this.focusManualModelId = false,
+    this.onSetDefaultOnCreateChanged,
     super.key,
   });
   final NativeAccountEditorPresentation value;
@@ -42,328 +48,233 @@ class NativeAccountEditorView extends StatelessWidget {
   final VoidCallback onSave;
   final VoidCallback onCancel;
   final ScrollController? scrollController;
+  final Widget? templateSelector;
+  final Key? manualSectionKey;
+  final String? focusManualModelEditorKey;
+  final bool focusManualModelId;
+  final ValueChanged<bool>? onSetDefaultOnCreateChanged;
+
+  @override
+  State<NativeAccountEditorView> createState() =>
+      _NativeAccountEditorViewState();
+}
+
+class _NativeAccountEditorViewState extends State<NativeAccountEditorView> {
+  final Map<String, GlobalKey> _rowKeys = {};
+  final FocusNode _targetFocus = FocusNode();
+  int _focusGeneration = 0;
+  int? _scheduledGeneration;
+  bool _focusCompleted = false;
+
+  @override
+  void didUpdateWidget(covariant NativeAccountEditorView oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.value.editorId != widget.value.editorId ||
+        oldWidget.focusManualModelEditorKey !=
+            widget.focusManualModelEditorKey ||
+        oldWidget.focusManualModelId != widget.focusManualModelId) {
+      _focusGeneration++;
+      _focusCompleted = false;
+    }
+    if (oldWidget.value.editorId != widget.value.editorId) _rowKeys.clear();
+  }
+
+  void _scheduleFocus() {
+    final target = widget.focusManualModelEditorKey;
+    if (target == null ||
+        _focusCompleted ||
+        _scheduledGeneration == _focusGeneration ||
+        !widget.value.manualModels.any((model) => model.editorKey == target)) {
+      return;
+    }
+    final generation = _focusGeneration;
+    _scheduledGeneration = generation;
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      if (!mounted || generation != _focusGeneration) return;
+      _scheduledGeneration = null;
+      final targetContext = _rowKeys[target]?.currentContext;
+      if (targetContext == null) return;
+      await Scrollable.ensureVisible(
+        targetContext,
+        alignment: .15,
+        duration: Duration.zero,
+      );
+      if (!mounted ||
+          generation != _focusGeneration ||
+          _rowKeys[target]?.currentContext == null) {
+        return;
+      }
+      _targetFocus.requestFocus();
+      _focusCompleted = true;
+    });
+  }
+
+  @override
+  void dispose() {
+    _focusGeneration++;
+    _targetFocus.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
+    final value = widget.value;
     final l10n = AppLocalizations.of(context);
-    final template = value.templates
-        .where((template) => template.key == value.templateKey)
-        .firstOrNull;
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
+    final ids = value.manualModels.map((model) => model.editorKey).toSet();
+    _rowKeys.removeWhere((key, _) => !ids.contains(key));
+    for (final id in ids) {
+      _rowKeys.putIfAbsent(id, GlobalKey.new);
+    }
+    _scheduleFocus();
+    return AccountEditorScaffold(
+      title: value.accountKey == null
+          ? l10n.settingsNewAccount
+          : l10n.settingsEditAccount,
+      dirty: value.dirty,
+      scrollKey: PageStorageKey<String>(
+        AccountViewKeyValues.editorScroll(
+          AccountKind.native.name,
+          value.editorId,
+        ),
+      ),
+      scrollController: widget.scrollController,
       children: [
-        Expanded(
-          child: ListView(
-            key: PageStorageKey<String>(
-              AccountViewKeyValues.editorScroll(
-                AccountKind.native.name,
-                value.editorId,
-              ),
-            ),
-            controller: scrollController,
-            padding: const EdgeInsets.all(24),
+        AccountSection(
+          title: l10n.settingsAccountTemplate,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              Row(
-                children: [
-                  AccountBrandMark(
-                    fallbackName: template?.name ?? value.name.raw,
-                    iconKey: template?.iconKey,
-                    size: 56,
+              Text(l10n.accountsTemplatesHint),
+              const SizedBox(height: 16),
+              widget.templateSelector ??
+                  AccountTemplateSelector(
+                    templates: value.templates,
+                    selected: value.templateKey,
+                    enabled: value.canChangeTemplate && !value.saving,
+                    onSelected: widget.onTemplateChanged,
                   ),
-                  const SizedBox(width: 16),
-                  Expanded(
-                    child: Text(
-                      value.accountKey == null
-                          ? l10n.settingsNewAccount
-                          : l10n.settingsEditAccount,
-                      style: Theme.of(context).textTheme.headlineMedium
-                          ?.copyWith(fontWeight: FontWeight.w700),
-                    ),
-                  ),
-                ],
-              ),
-              if (value.dirty)
-                Padding(
-                  padding: const EdgeInsets.only(top: 8),
-                  child: Text(
-                    l10n.accountsDirty,
-                    style: Theme.of(context).textTheme.bodySmall,
-                  ),
-                ),
-              const SizedBox(height: 24),
-              if (value.error != null)
-                AccountInlineError(message: value.error!),
-              AccountSection(
-                title: l10n.settingsAccountConnectionTitle,
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    Text(
-                      l10n.settingsAccountTemplate,
-                      style: Theme.of(context).textTheme.labelLarge,
-                    ),
-                    Wrap(
-                      spacing: 8,
-                      runSpacing: 8,
-                      children: [
-                        for (final template in value.templates)
-                          ChoiceChip(
-                            label: Text(template.name),
-                            selected: template.key == value.templateKey,
-                            onSelected: value.canChangeTemplate && !value.saving
-                                ? (_) => onTemplateChanged(template.key)
-                                : null,
-                          ),
-                      ],
-                    ),
-                    const SizedBox(height: 16),
-                    AccountRawTextField(
-                      key: ValueKey<String>(
-                        AccountViewKeyValues.editorField(
-                          value.editorId,
-                          NativeAccountField.name.name,
-                        ),
-                      ),
-                      value: value.name,
-                      label: l10n.settingsDisplayName,
-                      onChanged: (raw) =>
-                          onFieldChanged(NativeAccountField.name, raw),
-                    ),
-                    const SizedBox(height: 16),
-                    AccountRawTextField(
-                      key: ValueKey<String>(
-                        AccountViewKeyValues.editorField(
-                          value.editorId,
-                          NativeAccountField.endpoint.name,
-                        ),
-                      ),
-                      value: value.endpoint,
-                      label: l10n.settingsBaseUrl,
-                      keyboardType: TextInputType.url,
-                      onChanged: (raw) =>
-                          onFieldChanged(NativeAccountField.endpoint, raw),
-                    ),
-                    const SizedBox(height: 16),
-                    AccountRawTextField(
-                      key: ValueKey<String>(
-                        AccountViewKeyValues.editorField(
-                          value.editorId,
-                          NativeAccountField.credential.name,
-                        ),
-                      ),
-                      value: value.credential,
-                      label: value.hasStoredCredential
-                          ? l10n.settingsApiKeyKeepCurrent
-                          : value.credentialRequired
-                          ? l10n.settingsApiKey
-                          : l10n.settingsApiKeyOptional,
-                      obscure: true,
-                      onChanged: (raw) =>
-                          onFieldChanged(NativeAccountField.credential, raw),
-                    ),
-                    AccountFacts(
-                      facts: [
-                        if (value.accountKey != null)
-                          AccountDisplayFact(
-                            label: l10n.settingsAccountId,
-                            value: value.accountKey!.id,
-                          ),
-                        AccountDisplayFact(
-                          label: l10n.settingsAccountProtocol,
-                          value: value.protocolLabel,
-                        ),
-                      ],
-                    ),
-                  ],
-                ),
-              ),
-              AccountSection(
-                title: l10n.settingsBillingKind,
-                child: AccountBillingControl(
+            ],
+          ),
+        ),
+        if (value.error != null) AccountInlineError(message: value.error!),
+        AccountSection(
+          title: l10n.accountsConnectionBillingTitle,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              AccountNativeConnectionFields(
+                value: value,
+                onChanged: widget.onFieldChanged,
+                billingControl: AccountBillingControl(
                   value: value.billing,
-                  onChanged: onBillingChanged,
-                  onReset: onResetBilling,
+                  onChanged: widget.onBillingChanged,
+                  onReset: widget.onResetBilling,
+                  layout: AccountBillingControlLayout.field,
                 ),
               ),
-              if (value.declaredModels.isNotEmpty)
-                AccountSection(
-                  title: l10n.settingsAccountModelsTitle,
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: [
-                      for (final model in value.declaredModels)
-                        AccountModelTile(
-                          key: ValueKey<String>(
-                            AccountViewKeyValues.modelItem(
-                              model.key.account.kind.name,
-                              model.key.account.id,
-                              model.key.modelId,
-                            ),
-                          ),
-                          value: model,
-                          actions: modelActions,
-                        ),
-                    ],
+              if (value.showSetDefaultOnCreate) ...[
+                const SizedBox(height: 16),
+                Card.filled(
+                  margin: EdgeInsets.zero,
+                  child: SwitchListTile(
+                    key: const ValueKey('account-set-default-on-create'),
+                    title: Text(l10n.accountsSetDefaultOnCreate),
+                    subtitle: Text(l10n.accountsSetDefaultOnCreateHint),
+                    value: value.setDefaultOnCreate,
+                    onChanged: value.saving
+                        ? null
+                        : widget.onSetDefaultOnCreateChanged,
                   ),
                 ),
-              AccountSection(
-                title: l10n.settingsAccountCustomModelsTitle,
-                actions: [
-                  OutlinedButton.icon(
-                    onPressed: value.canAddModel ? onAddModel : null,
-                    icon: const Icon(Icons.add),
-                    label: Text(l10n.settingsAddModel),
-                  ),
-                ],
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    if (value.manualModels.isEmpty)
-                      Text(l10n.settingsNoCustomModels),
-                    for (final model in value.manualModels)
-                      Padding(
-                        key: ValueKey<String>(
-                          AccountViewKeyValues.manualItem(model.editorKey),
-                        ),
-                        padding: const EdgeInsets.only(bottom: 20),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.stretch,
-                          children: [
-                            AccountRawTextField(
-                              key: ValueKey<String>(
-                                AccountViewKeyValues.manualField(
-                                  model.editorKey,
-                                  ManualModelField.id.name,
-                                ),
-                              ),
-                              value: model.id,
-                              label: l10n.settingsModelId,
-                              enabled: model.canEditId,
-                              onChanged: (raw) => onManualModelFieldChanged(
-                                model.editorKey,
-                                ManualModelField.id,
-                                raw,
-                              ),
-                            ),
-                            const SizedBox(height: 12),
-                            AccountRawTextField(
-                              key: ValueKey<String>(
-                                AccountViewKeyValues.manualField(
-                                  model.editorKey,
-                                  ManualModelField.name.name,
-                                ),
-                              ),
-                              value: model.name,
-                              label: l10n.settingsDisplayName,
-                              onChanged: (raw) => onManualModelFieldChanged(
-                                model.editorKey,
-                                ManualModelField.name,
-                                raw,
-                              ),
-                            ),
-                            const SizedBox(height: 12),
-                            AccountRawTextField(
-                              key: ValueKey<String>(
-                                AccountViewKeyValues.manualField(
-                                  model.editorKey,
-                                  ManualModelField.contextWindow.name,
-                                ),
-                              ),
-                              value: model.contextWindow,
-                              label: l10n.settingsContextBudget,
-                              keyboardType: TextInputType.number,
-                              onChanged: (raw) => onManualModelFieldChanged(
-                                model.editorKey,
-                                ManualModelField.contextWindow,
-                                raw,
-                              ),
-                            ),
-                            const SizedBox(height: 12),
-                            AccountRawTextField(
-                              key: ValueKey<String>(
-                                AccountViewKeyValues.manualField(
-                                  model.editorKey,
-                                  ManualModelField.maxOutputTokens.name,
-                                ),
-                              ),
-                              value: model.maxOutputTokens,
-                              label: l10n.settingsOutputBudget,
-                              keyboardType: TextInputType.number,
-                              onChanged: (raw) => onManualModelFieldChanged(
-                                model.editorKey,
-                                ManualModelField.maxOutputTokens,
-                                raw,
-                              ),
-                            ),
-                            const SizedBox(height: 12),
-                            Wrap(
-                              spacing: 8,
-                              runSpacing: 8,
-                              crossAxisAlignment: WrapCrossAlignment.center,
-                              children: [
-                                Text(l10n.settingsProtocolType),
-                                for (final wireApi in model.allowedWireApis)
-                                  ChoiceChip(
-                                    label: Text(switch (wireApi) {
-                                      AccountWireApi.chatCompletions =>
-                                        l10n.settingsProtocolChatCompletionsHttp,
-                                      AccountWireApi.responses =>
-                                        l10n.settingsProtocolResponsesHttp,
-                                    }),
-                                    selected: model.wireApi == wireApi,
-                                    onSelected: (_) =>
-                                        onManualModelWireApiChanged(
-                                          model.editorKey,
-                                          wireApi,
-                                        ),
-                                  ),
-                              ],
-                            ),
-                            const SizedBox(height: 12),
-                            Wrap(
-                              spacing: 8,
-                              runSpacing: 8,
-                              crossAxisAlignment: WrapCrossAlignment.center,
-                              children: [
-                                Text(l10n.accountsConnection),
-                                for (final connection
-                                    in model.allowedConnections)
-                                  ChoiceChip(
-                                    label: Text(
-                                      accountConnectionLabel(l10n, connection),
-                                    ),
-                                    selected: model.connection == connection,
-                                    onSelected: (_) =>
-                                        onManualModelConnectionChanged(
-                                          model.editorKey,
-                                          connection,
-                                        ),
-                                  ),
-                                if (model.canRemove)
-                                  TextButton.icon(
-                                    onPressed: () =>
-                                        onRemoveManualModel(model.editorKey),
-                                    icon: const Icon(Icons.delete_outline),
-                                    label: Text(l10n.settingsRemoveModel),
-                                  ),
-                              ],
-                            ),
-                            if (model.error != null)
-                              AccountInlineError(message: model.error!),
-                          ],
-                        ),
-                      ),
-                  ],
-                ),
+              ],
+              const Divider(height: 32),
+              AccountEditorFooter(
+                saving: value.saving,
+                canSave: value.canSave,
+                saveLabel: value.accountKey == null
+                    ? l10n.settingsAddAccount
+                    : null,
+                onSave: widget.onSave,
+                onCancel: widget.onCancel,
               ),
             ],
           ),
         ),
-        AccountEditorFooter(
-          saving: value.saving,
-          canSave: value.canSave,
-          onSave: onSave,
-          onCancel: onCancel,
+        if (value.declaredModels.isNotEmpty)
+          AccountSection(
+            title: l10n.settingsAccountModelsTitle,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                for (final model in value.declaredModels)
+                  AccountModelListItem(
+                    key: ValueKey<String>(
+                      AccountViewKeyValues.modelItem(
+                        model.key.account.kind.name,
+                        model.key.account.id,
+                        model.key.modelId,
+                      ),
+                    ),
+                    value: model,
+                    actions: widget.modelActions,
+                  ),
+              ],
+            ),
+          ),
+        AccountSection(
+          key: widget.manualSectionKey,
+          title: l10n.settingsAccountCustomModelsTitle,
+          actions: [
+            OutlinedButton.icon(
+              onPressed: value.canAddModel ? widget.onAddModel : null,
+              icon: const Icon(Icons.add),
+              label: Text(l10n.settingsAddModel),
+            ),
+          ],
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              if (value.manualModels.isEmpty) Text(l10n.settingsNoCustomModels),
+              for (final model in value.manualModels)
+                Padding(
+                  key: _rowKeys[model.editorKey],
+                  padding: const EdgeInsets.only(bottom: 20),
+                  child: KeyedSubtree(
+                    key: ValueKey(
+                      AccountViewKeyValues.manualItem(model.editorKey),
+                    ),
+                    child: AccountManualModelEditor(
+                      value: model,
+                      idFocusNode:
+                          widget.focusManualModelEditorKey == model.editorKey &&
+                              widget.focusManualModelId
+                          ? _targetFocus
+                          : null,
+                      nameFocusNode:
+                          widget.focusManualModelEditorKey == model.editorKey &&
+                              !widget.focusManualModelId
+                          ? _targetFocus
+                          : null,
+                      onFieldChanged: (field, raw) =>
+                          widget.onManualModelFieldChanged(
+                            model.editorKey,
+                            field,
+                            raw,
+                          ),
+                      onConnectionChanged: (connection) =>
+                          widget.onManualModelConnectionChanged(
+                            model.editorKey,
+                            connection,
+                          ),
+                      onWireApiChanged: (api) => widget
+                          .onManualModelWireApiChanged(model.editorKey, api),
+                      onRemove: () =>
+                          widget.onRemoveManualModel(model.editorKey),
+                    ),
+                  ),
+                ),
+            ],
+          ),
         ),
       ],
     );
@@ -391,11 +302,11 @@ class AccountEditorFooter extends StatelessWidget {
   Widget build(BuildContext context) {
     final l10n = AppLocalizations.of(context);
     return Material(
-      color: Theme.of(context).colorScheme.surface,
+      type: MaterialType.transparency,
       child: SafeArea(
         top: false,
         child: Padding(
-          padding: const EdgeInsets.all(16),
+          padding: const EdgeInsets.symmetric(vertical: 4),
           child: Wrap(
             alignment: WrapAlignment.end,
             crossAxisAlignment: WrapCrossAlignment.center,

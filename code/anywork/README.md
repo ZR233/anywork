@@ -67,11 +67,24 @@ The default app path initializes the native FRB runtime and subscribes only to t
 
 ## 账号组件预览
 
-账号列表、详情、编辑与关键组件的纯入口是
-`lib/src/features/settings/accounts/accounts_views.dart`；它只导出不可变呈现值与生产视图，
-不导出 ViewModel、Connector、Client 或 Rust bridge。官方预览入口位于该功能的
-`previews/accounts_previews.dart`，直接复用生产组件、主题、本地化和品牌资源，以合成数据
-覆盖宽窄布局、额度、失败保留数据、Native/ACP 编辑等场景；预览动作仅改变本地展示或记录回调。
+账号组件的官方预览分为三组入口：
+
+- `previews/accounts_previews.dart` 展示账号整页与状态场景。
+- `previews/account_template_previews.dart` 展示 8 个 Native 模板及 Antigravity 的
+  List、Details、Editor 状态。
+- `previews/account_component_previews.dart` 按生产职责分组提供组件预览入口，直接实例化生产组件，
+  覆盖身份与 Native/ACP 列表项、额度/用量/状态、模板选择器的 true/false/unknown usage，
+  Native 连接与凭据/计费字段、编辑器默认值和手动模型焦点、菜单的两种触发方式、显式保存的
+  Models 列表、模型规格/价格/缺失价格、评价筛选与卡片/摘要、ACP 面板与确认对话框、资料页三标签。
+  例如 `accountMenuButtonTriggersPreview`、`accountTemplateSelectorPreview`、
+  `accountListItemWithDisplayOriginPreview`、`accountNativeEditorSetDefaultOnCreatePreview`、
+  `accountModelSpecificationsPreview` 与 `accountEvaluationFiltersPreview`。
+
+以上入口复用生产组件、主题、本地化和品牌资源，以合成数据展示宽窄布局及状态；它们不通过
+ProviderScope、Client 或 FRB 建立业务运行时，预览动作仅改变本地展示或记录回调。纯视图入口
+`lib/src/features/settings/accounts/accounts_views.dart` 只导出不可变呈现值与生产视图，
+不导出 ViewModel、Connector、Client 或 Rust bridge。合成数据预览不是原生运行、供应商、凭据、
+持久化或 canonical 业务状态的证明。
 
 官方工具会编译项目内所有已发现的预览，搜索筛选不是依赖隔离。不要在原生应用壳的
 `part` 中注册预览，或通过预览入口导入 AppGraph/FRB；旧工作区聚合预览已移除，

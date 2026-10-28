@@ -147,8 +147,8 @@ class DemoAcpAuth {
 }
 
 const demoAccountCatalogFixture = AccountCatalogView(
-  schemaVersion: 6,
-  revision: 'demo-future-catalog-v6',
+  schemaVersion: 19,
+  revision: 'demo-synthetic-catalog-v19',
   templates: [
     AccountTemplateView(
       id: 'future-account',
@@ -160,6 +160,9 @@ const demoAccountCatalogFixture = AccountCatalogView(
       modelCatalogId: 'future-catalog',
       protocol: 'open_ai_compatible',
       suggestedModelId: 'future-model',
+      defaultBillingKind: BillingKind.unknown,
+      supportsModelDiscovery: false,
+      supportsUsageQuery: false,
       hostedWebSearch: true,
       hostedWebSearchDialect: 'open_ai_responses',
       standaloneWebSearch: 'future_search_dialect',
@@ -176,6 +179,9 @@ const demoAccountCatalogFixture = AccountCatalogView(
       modelCatalogId: 'openai-compatible',
       protocol: 'open_ai_compatible',
       suggestedModelId: '',
+      defaultBillingKind: BillingKind.unknown,
+      supportsModelDiscovery: false,
+      supportsUsageQuery: false,
     ),
   ],
   modelCatalogs: {

@@ -286,26 +286,28 @@ final class OperationHandle {
     );
   }
 
-  void reject(Object error) => _fail(OperationPhase.rejected, error);
-  void unknownOutcome(Object error) =>
+  OperationState reject(Object error) => _fail(OperationPhase.rejected, error);
+  OperationState unknownOutcome(Object error) =>
       _fail(OperationPhase.unknownOutcome, error);
-  void syncFailed(Object error) => _fail(OperationPhase.syncFailed, error);
+  OperationState syncFailed(Object error) =>
+      _fail(OperationPhase.syncFailed, error);
 
-  void _fail(OperationPhase phase, Object error) {
+  OperationState _fail(OperationPhase phase, Object error) {
     final current = state.value;
-    _publish(
-      OperationState(
-        id: id,
-        target: current.target,
-        draft: current.draft,
-        receipt: current.receipt,
-        observed: current.observed,
-        effective: current.effective,
-        durable: current.durable,
-        failurePhase: phase,
-        error: error,
-      ),
+    final next = OperationState(
+      id: id,
+      target: current.target,
+      draft: current.draft,
+      receipt: current.receipt,
+      observed: current.observed,
+      effective: current.effective,
+      durable: current.durable,
+      failurePhase: phase,
+      error: error,
     );
+    _publish(next);
+    // Synchronous observers may have advanced the live handle during publish.
+    return next;
   }
 
   void _publish(OperationState next) {

@@ -11,6 +11,8 @@ abstract interface class AccountDemand {
   Future<void> release();
 }
 
+/// All settings writes return this operation's frozen failure after admission;
+/// errors before admission still throw. A normal return may still be pending.
 abstract interface class AccountsRepository {
   ValueObservation<AccountsState> get state;
   ValueObservation<AccountResource<AccountDetails>> details(

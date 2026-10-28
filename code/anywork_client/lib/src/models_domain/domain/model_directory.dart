@@ -135,6 +135,9 @@ final class ModelSyncAdmission {
   final bool joinedExisting;
 }
 
+/// Settings writes return this operation's frozen failure after admission;
+/// errors before admission still throw. A normal return may still be pending.
+/// This does not change sync or performance query error handling.
 abstract interface class ModelsRepository {
   ValueObservation<ModelDirectoryState> get state;
   AccountDemand observeAccount(NativeAccountIdentity identity);

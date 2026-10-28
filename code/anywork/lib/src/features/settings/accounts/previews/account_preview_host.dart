@@ -8,24 +8,37 @@ Widget accountPreviewHost(
   Widget Function(ValueChanged<String> record) builder, {
   required Object scenarioIdentity,
   double textScale = 1,
+  Locale locale = const Locale('zh'),
 }) => _PreviewHost(
   builder: builder,
   scenarioIdentity: scenarioIdentity,
   textScale: textScale,
+  locale: locale,
 );
 Widget accountListPreview(
   AccountsListPresentation value, {
   double textScale = 1,
+  Locale locale = const Locale('zh'),
 }) => accountPreviewHost(
   (record) => _ListScenario(initial: value, record: record),
   scenarioIdentity: value,
   textScale: textScale,
+  locale: locale,
 );
 Widget accountNativeEditorPreviewHost(
   NativeAccountEditorPresentation value, {
   double textScale = 1,
+  String? focusManualModelEditorKey,
+  bool focusManualModelId = false,
+  ValueChanged<bool>? onSetDefaultOnCreateChanged,
 }) => accountPreviewHost(
-  (record) => _NativeEditorScenario(initial: value, record: record),
+  (record) => _NativeEditorScenario(
+    initial: value,
+    record: record,
+    focusManualModelEditorKey: focusManualModelEditorKey,
+    focusManualModelId: focusManualModelId,
+    onSetDefaultOnCreateChanged: onSetDefaultOnCreateChanged,
+  ),
   scenarioIdentity: value,
   textScale: textScale,
 );
@@ -44,6 +57,7 @@ Widget accountDetailsPreviewHost(
     onEdit: () => record('edit'),
     onDelete: () => record('delete'),
     onSetDefault: () => record('set default'),
+    onAddModel: () => record('add manual model'),
     onRefreshUsage: () => record('refresh usage'),
     onBillingChanged: (billing) => record('billing: ${billing.name}'),
     onResetBilling: () => record('reset billing'),
@@ -59,6 +73,8 @@ Widget accountDetailsPreviewHost(
 
 AccountModelActions accountPreviewModelActions(ValueChanged<String> record) =>
     AccountModelActions(
+      onCompactPreset: (key, percent) =>
+          record('preset ${key.modelId}: $percent%'),
       onEnabledChanged: (key, enabled) =>
           record('${key.modelId}: enabled $enabled'),
       onConnectionChanged: (key, connection) =>
@@ -72,35 +88,48 @@ class _PreviewHost extends StatefulWidget {
     required this.builder,
     required this.scenarioIdentity,
     required this.textScale,
+    required this.locale,
   });
   final Widget Function(ValueChanged<String>) builder;
 
   /// Immutable fixture value or stable component label, never callback identity.
   final Object scenarioIdentity;
   final double textScale;
+  final Locale locale;
   @override
   State<_PreviewHost> createState() => _PreviewHostState();
 }
 
 class _PreviewHostState extends State<_PreviewHost> {
-  static const _initialAction =
-      'Synthetic data · actions are recorded locally only';
-  String _lastAction = _initialAction;
+  final GlobalKey<ScaffoldMessengerState> _messengerKey =
+      GlobalKey<ScaffoldMessengerState>();
+
+  void _record(String action) {
+    final messenger = _messengerKey.currentState;
+    if (messenger == null) return;
+    messenger
+      ..hideCurrentSnackBar()
+      ..showSnackBar(
+        SnackBar(content: Text(action), duration: const Duration(seconds: 2)),
+      );
+  }
 
   @override
   void didUpdateWidget(covariant _PreviewHost oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.scenarioIdentity != widget.scenarioIdentity ||
-        oldWidget.textScale != widget.textScale) {
-      _lastAction = _initialAction;
+        oldWidget.textScale != widget.textScale ||
+        oldWidget.locale != widget.locale) {
+      _messengerKey.currentState?.clearSnackBars();
     }
   }
 
   @override
   Widget build(BuildContext context) => MaterialApp(
     debugShowCheckedModeBanner: false,
-    locale: const Locale('zh'),
-    theme: pureStudioTheme(locale: const Locale('zh')),
+    scaffoldMessengerKey: _messengerKey,
+    locale: widget.locale,
+    theme: pureStudioTheme(locale: widget.locale),
     localizationsDelegates: AppLocalizations.localizationsDelegates,
     supportedLocales: AppLocalizations.supportedLocales,
     builder: (context, child) => MediaQuery(
@@ -114,17 +143,9 @@ class _PreviewHostState extends State<_PreviewHost> {
       ),
     ),
     home: Scaffold(
-      body: widget.builder((action) => setState(() => _lastAction = action)),
-      bottomNavigationBar: Material(
-        child: Padding(
-          padding: const EdgeInsets.all(8),
-          child: Text(
-            _lastAction,
-            maxLines: 3,
-            overflow: TextOverflow.ellipsis,
-            style: const TextStyle(fontSize: 11),
-          ),
-        ),
+      body: KeyedSubtree(
+        key: ValueKey<Object>(widget.scenarioIdentity),
+        child: widget.builder(_record),
       ),
     ),
   );
@@ -172,9 +193,18 @@ class _ListScenarioState extends State<_ListScenario> {
 }
 
 class _NativeEditorScenario extends StatefulWidget {
-  const _NativeEditorScenario({required this.initial, required this.record});
+  const _NativeEditorScenario({
+    required this.initial,
+    required this.record,
+    this.focusManualModelEditorKey,
+    this.focusManualModelId = false,
+    this.onSetDefaultOnCreateChanged,
+  });
   final NativeAccountEditorPresentation initial;
   final ValueChanged<String> record;
+  final String? focusManualModelEditorKey;
+  final bool focusManualModelId;
+  final ValueChanged<bool>? onSetDefaultOnCreateChanged;
   @override
   State<_NativeEditorScenario> createState() => _NativeEditorScenarioState();
 }
@@ -221,6 +251,15 @@ class _NativeEditorScenarioState extends State<_NativeEditorScenario> {
     modelActions: accountPreviewModelActions(widget.record),
     onSave: () => widget.record('save (not persisted)'),
     onCancel: () => widget.record('cancel editor'),
+    focusManualModelEditorKey: widget.focusManualModelEditorKey,
+    focusManualModelId: widget.focusManualModelId,
+    onSetDefaultOnCreateChanged: (enabled) {
+      setState(() {
+        _value = _value.copyWith(setDefaultOnCreate: enabled);
+      });
+      widget.onSetDefaultOnCreateChanged?.call(enabled);
+      widget.record('set default on create: $enabled');
+    },
   );
 }
 

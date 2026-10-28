@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../../l10n/app_localizations.dart';
+import '../../../../app/routing/app_route.dart';
 import '../../../../platform/external_url_launcher.dart';
 import '../state/account_presentations.dart';
 import '../state/account_view_state.dart';
@@ -10,7 +11,6 @@ import '../view_models/accounts_view_model.dart';
 import '../view_models/acp_account_view_model.dart';
 import '../views/account_dialogs.dart';
 import '../widgets/account_models_view.dart';
-import 'account_navigation.dart';
 
 Future<bool> confirmAccountDelete(
   BuildContext context,
@@ -34,9 +34,6 @@ Future<void> deleteAccount(
   AccountDisplayKey key,
 ) async {
   final navigation = ref.read(accountsViewModelProvider.notifier);
-  if (!await confirmLeaveAccountsEditor(context, ref) || !context.mounted) {
-    return;
-  }
   final name = navigation.accountName(key);
   AccountDisplayKey? replacement;
   if (navigation.needsReplacement(key)) {
@@ -57,48 +54,60 @@ Future<void> deleteAccount(
     if (replacement == null || !context.mounted) return;
   }
   if (!await confirmAccountDelete(context, name) || !context.mounted) return;
-  await navigation.remove(key, replacement: replacement);
+  final removed = await navigation.remove(key, replacement: replacement);
+  if (removed && context.mounted) const SettingsRoute().go(context);
 }
 
-AccountModelActions accountModelActions(
-  BuildContext context,
-  WidgetRef ref,
-) => AccountModelActions(
-  onEnabledChanged: (key, enabled) => ref
-      .read(accountModelsViewModelProvider(key.account).notifier)
-      .setEnabled(key.modelId, enabled),
-  onConnectionChanged: (key, connection) => ref
-      .read(accountModelsViewModelProvider(key.account).notifier)
-      .setConnection(key.modelId, connection),
-  onCompactChanged: (key, raw) => ref
-      .read(accountModelsViewModelProvider(key.account).notifier)
-      .changeCompact(key.modelId, raw),
-  onAction: (key, action) async {
-    final owner = ref.read(
-      accountModelsViewModelProvider(key.account).notifier,
+AccountModelActions accountModelActions(BuildContext context, WidgetRef ref) =>
+    AccountModelActions(
+      onEnabledChanged: (key, enabled) => ref
+          .read(accountModelsViewModelProvider(key.account).notifier)
+          .setEnabled(key.modelId, enabled),
+      onConnectionChanged: (key, connection) => ref
+          .read(accountModelsViewModelProvider(key.account).notifier)
+          .setConnection(key.modelId, connection),
+      onCompactChanged: (key, raw) => ref
+          .read(accountModelsViewModelProvider(key.account).notifier)
+          .changeCompact(key.modelId, raw),
+      onCompactPreset: (key, percent) => ref
+          .read(accountModelsViewModelProvider(key.account).notifier)
+          .presetCompact(key.modelId, percent),
+      onAction: (key, action) async {
+        final owner = ref.read(
+          accountModelsViewModelProvider(key.account).notifier,
+        );
+        switch (action) {
+          case AccountModelAction.loadReadout:
+            AccountModelRoute(
+              kind: key.account.kind,
+              accountId: key.account.id,
+              modelId: key.modelId,
+            ).go(context);
+          case AccountModelAction.retryReadout:
+            await owner.loadReadout(key.modelId);
+          case AccountModelAction.saveCompact:
+            await owner.saveCompact(key.modelId);
+          case AccountModelAction.resetCompact:
+            await owner.resetCompact(key.modelId);
+          case AccountModelAction.retryCompact:
+            await owner.retryCompact(key.modelId);
+          case AccountModelAction.delete:
+            if (await confirmAccountDelete(
+              context,
+              key.modelId,
+              manualModel: true,
+            )) {
+              await owner.removeManual(key.modelId);
+            }
+          case AccountModelAction.edit:
+            AccountEditRoute(
+              kind: key.account.kind,
+              accountId: key.account.id,
+              focusModelId: key.modelId,
+            ).go(context);
+        }
+      },
     );
-    switch (action) {
-      case AccountModelAction.loadReadout || AccountModelAction.retryReadout:
-        await owner.loadReadout(key.modelId);
-      case AccountModelAction.resetCompact:
-        await owner.resetCompact(key.modelId);
-      case AccountModelAction.retryCompact:
-        await owner.retryCompact(key.modelId);
-      case AccountModelAction.delete:
-        if (await confirmAccountDelete(
-          context,
-          key.modelId,
-          manualModel: true,
-        )) {
-          await owner.removeManual(key.modelId);
-        }
-      case AccountModelAction.edit:
-        if (await confirmLeaveAccountsEditor(context, ref) && context.mounted) {
-          ref.read(accountsViewModelProvider.notifier).edit(key.account);
-        }
-    }
-  },
-);
 
 Future<void> performAcpAction(
   BuildContext context,

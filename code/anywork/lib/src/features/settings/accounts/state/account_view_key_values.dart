@@ -17,6 +17,8 @@ abstract final class AccountViewKeyValues {
       'accounts-model-enabled:${jsonEncode([kind, accountId, modelId])}';
   static String modelDetails(String kind, String accountId, String modelId) =>
       'accounts-model-details:${jsonEncode([kind, accountId, modelId])}';
+  static String modelReadout(String kind, String accountId, String modelId) =>
+      'accounts-model-readout:${jsonEncode([kind, accountId, modelId])}';
   static String modelItem(String kind, String accountId, String modelId) =>
       'accounts-model-item:${jsonEncode([kind, accountId, modelId])}';
   static String detailsScroll(String kind, String id) =>
