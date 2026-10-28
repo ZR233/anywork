@@ -69,7 +69,7 @@ impl RemoteWorkspaceFileBackend {
     pub async fn open_directory(&self, path: String) -> Result<RemoteDirectoryReader> {
         open(&self.client, self.lease.clone(), path).await
     }
-    pub(in crate::remote) async fn walk(&self, path: String, implicit: bool) -> Result<Entries> {
+    pub(in crate::remote) async fn walk(&self, path: String) -> Result<Entries> {
         let root = open(&self.client, self.lease.clone(), path).await?;
         let client = self.client.clone();
         let workspace = self.lease.clone();
@@ -89,10 +89,7 @@ impl RemoteWorkspaceFileBackend {
                     };
                     if entry.is_symlink
                         || (entry.is_directory
-                            && crate::workspace_file::listing::skip_directory(
-                                &entry.path,
-                                implicit,
-                            ))
+                            && crate::workspace_file::listing::skip_directory(&entry.path))
                     {
                         continue;
                     }

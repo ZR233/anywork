@@ -428,7 +428,7 @@ pub fn gui_tool_scroll_script(powershell: bool, resource_lifecycle: bool) -> Vec
                     return RealtimeToolCall {
                         item_id,
                         call_id,
-                        name: "read_file",
+                        name: "stat_path",
                         arguments: json!({"path": if item_id == "scroll-item-short" {
                             "scroll-fixture/entry-000.txt"
                         } else {

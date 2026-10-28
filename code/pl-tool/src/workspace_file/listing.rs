@@ -137,10 +137,9 @@ impl ListingPager {
             ));
         }
         self.start_reaper();
-        let query = serde_json::to_string(
-            &serde_json::json!({"path":request.path,"cwd":request.cwd,
-            "glob":request.glob,"includeDirs":request.include_dirs,"recovery":request.implicit_recovery}),
-        )?;
+        let query =
+            serde_json::to_string(&serde_json::json!({"path":request.path,"cwd":request.cwd,
+            "glob":request.glob,"includeDirs":request.include_dirs}))?;
         let (id, walk) = if let Some(id) = request.cursor.as_ref() {
             let state = self
                 .0
@@ -183,20 +182,10 @@ impl ListingPager {
         }
         let mut files = Vec::new();
         let mut finished = false;
-        let mut scanned = 0usize;
-        // Recovery is deliberately a lower-priority bounded observation, not an exhaustive search.
-        let scan_budget = request
-            .max_files
-            .saturating_mul(std::thread::available_parallelism().map_or(1, usize::from))
-            .saturating_mul(std::mem::size_of::<WorkspaceFileListEntry>())
-            .max(request.max_files);
         if let Some(pending) = traversal.pending.take() {
             files.push(pending);
         }
         while files.len() <= request.max_files {
-            if request.implicit_recovery && scanned >= scan_budget {
-                break;
-            }
             let entry = tokio::select! {
                 _ = stop.cancelled() => return Err(crate::tool_error("list_files", "directory cursor closed")),
                 entry = traversal.entries.next() => entry,
@@ -206,7 +195,6 @@ impl ListingPager {
                 break;
             };
             let entry = entry?;
-            scanned = scanned.saturating_add(entry.path.len());
             if entry.is_dir && !request.include_dirs {
                 continue;
             }
@@ -232,7 +220,7 @@ impl ListingPager {
         files.sort();
         drop(traversal);
         let truncated = !finished;
-        let next_cursor = if truncated && !request.implicit_recovery {
+        let next_cursor = if truncated {
             let expires = tokio::time::Instant::now() + Duration::from_secs(300);
             let mut state = self
                 .0
@@ -279,14 +267,13 @@ impl ListingPager {
     }
 }
 
-pub(crate) fn skip_directory(path: &str, implicit_recovery: bool) -> bool {
+pub(crate) fn skip_directory(path: &str) -> bool {
     let name = path
         .trim_end_matches('/')
         .rsplit('/')
         .next()
         .unwrap_or(path);
     matches!(name, ".git" | "target" | "node_modules")
-        || (implicit_recovery && name == "commands" && path.contains(".anywork/sessions/"))
 }
 
 fn remove_cursor(state: &mut State, id: &str) {

@@ -4,5 +4,6 @@
 - Paths may use `/` or `\`, but quote paths that contain spaces. Do not rely on drive-relative paths such as `C:foo`; use workspace-relative paths or full absolute paths such as `C:\repo\file`.
 - UNC paths (`\\server\share\...`) and verbatim paths (`\\?\C:\...`, `\\?\UNC\...`) are accepted only after runtime policy checks. Do not use them to bypass the workspace boundary.
 - Prefer `rg` for content search and `rg --files` for file discovery when available. Keep fallback search commands compatible with the runtime shell.
+- 读取文件内容用当前 shell 方言提供的命令（PowerShell 的 `Get-Content`、`Select-Object`；`cmd` 的 `type`、`findstr /n`），长文件只取所需范围并保留行号。命令缺失或参数语义不确定时先核实，再换用等价手段；不在 PowerShell 内照搬 POSIX 专用命令。
 - Do not mix shell deletion pipelines across PowerShell and cmd. For filesystem edits, prefer file tools or apply_patch; when a shell delete is necessary, keep path resolution and deletion in the active shell.
 - Commands return session task receipts. Use `wait` for completion and `write_stdin` with taskId only for nonempty input; do not poll or launch duplicate commands.
