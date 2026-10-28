@@ -114,8 +114,9 @@ fn requested_paths_for_tool(name: &str, arguments: &serde_json::Value) -> Vec<St
     match name {
         "exec" => get_working_directory(arguments).into_iter().collect(),
         "write_stdin" => Vec::new(),
-        "read_file" | "write_file" | "stat_path" | "view_image" | "create_directory"
-        | "delete_path" => argument_path(arguments, "path").into_iter().collect(),
+        "write_file" | "stat_path" | "view_image" | "create_directory" | "delete_path" => {
+            argument_path(arguments, "path").into_iter().collect()
+        }
         "lsp_query" => argument_path(arguments, "filePath").into_iter().collect(),
         "list_files" => argument_path(arguments, "path")
             .into_iter()

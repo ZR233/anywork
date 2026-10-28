@@ -1837,13 +1837,13 @@ class AppLocalizationsEn extends AppLocalizations {
   String get timelineViewImageStopped => 'Stopped reading image';
 
   @override
-  String get timelineReadFileCompleted => 'Read';
+  String get timelineToolReadCompleted => 'Read';
 
   @override
-  String get timelineReadFileReading => 'Reading';
+  String get timelineToolReadReading => 'Reading';
 
   @override
-  String get timelineReadFileFailed => 'Unable to read';
+  String get timelineToolReadFailed => 'Unable to read';
 
   @override
   String get timelineToolEditSucceeded => 'Edited';

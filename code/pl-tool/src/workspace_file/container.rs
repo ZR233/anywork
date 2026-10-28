@@ -128,13 +128,13 @@ where
             .await
             .map_err(|error| {
                 tool_error(
-                    "read_file",
+                    "workspace_file",
                     format!("failed to read `{}`: {error}", request.path),
                 )
             })?;
         String::from_utf8(bytes).map_err(|error| {
             tool_error(
-                "read_file",
+                "workspace_file",
                 format!("failed to decode `{}` as UTF-8: {error}", request.path),
             )
         })
@@ -233,7 +233,6 @@ where
     async fn list(&self, request: WorkspaceFileListRequest) -> Result<WorkspaceFileListResult> {
         let path = request.path.clone();
         let cwd = request.cwd.clone();
-        let implicit = request.implicit_recovery;
         self.listings.page(request, async {
             use futures::StreamExt;
             let allocation = tokio::task::spawn_blocking(|| pl_remote_helper::budget::ResourcePolicy::default().allocation()).await
@@ -246,7 +245,7 @@ where
                 return Err(tool_error("list_files", "container listing could not complete within its resource grant"));
             }
             let entries = output.stdout.lines().filter(|line| !line.is_empty() && line.trim_end_matches('/') != path.trim_end_matches('/'))
-                .filter(|line| !super::listing::skip_directory(line, implicit))
+                .filter(|line| !super::listing::skip_directory(line))
                 .map(|line| Ok(super::WorkspaceFileListEntry { path: line.trim_end_matches('/').to_owned(), is_dir: line.ends_with('/') }))
                 .collect::<Vec<_>>();
             Ok(futures::stream::iter(entries).boxed() as super::listing::Entries)

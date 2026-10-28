@@ -3294,23 +3294,23 @@ abstract class AppLocalizations {
   /// **'Stopped reading image'**
   String get timelineViewImageStopped;
 
-  /// No description provided for @timelineReadFileCompleted.
+  /// No description provided for @timelineToolReadCompleted.
   ///
   /// In en, this message translates to:
   /// **'Read'**
-  String get timelineReadFileCompleted;
+  String get timelineToolReadCompleted;
 
-  /// No description provided for @timelineReadFileReading.
+  /// No description provided for @timelineToolReadReading.
   ///
   /// In en, this message translates to:
   /// **'Reading'**
-  String get timelineReadFileReading;
+  String get timelineToolReadReading;
 
-  /// No description provided for @timelineReadFileFailed.
+  /// No description provided for @timelineToolReadFailed.
   ///
   /// In en, this message translates to:
   /// **'Unable to read'**
-  String get timelineReadFileFailed;
+  String get timelineToolReadFailed;
 
   /// No description provided for @timelineToolEditSucceeded.
   ///
